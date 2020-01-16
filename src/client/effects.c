@@ -321,7 +321,8 @@ void CL_MuzzleFlash(void)
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/hyprbf1a.wav"), volume, ATTN_NORM, 0);
         break;
     case MZ_MACHINEGUN:
-        DL_COLOR(1, .5, 0);
+        //DL_COLOR(1, .5, 0);
+		DL_COLOR(1, .7, .2);
 		DL_RADIUS(50);
         Q_snprintf(soundname, sizeof(soundname), "weapons/machgf%ib.wav", (rand() % 5) + 1);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound(soundname), volume, ATTN_NORM, 0);
