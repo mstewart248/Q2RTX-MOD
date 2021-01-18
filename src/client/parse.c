@@ -669,6 +669,7 @@ static void CL_ParseTEntPacket(void)
     case TE_SHIELD_SPARKS:
     case TE_SHOTGUN:
     case TE_BLASTER:
+	case TE_HYPERBLASTER:
     case TE_GREENBLOOD:
     case TE_BLASTER2:
 	case TE_FLECHETTE:

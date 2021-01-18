@@ -351,6 +351,10 @@ qhandle_t R_RegisterModel(const char *name)
 
 		filelen = FS_LoadFile(normalized, (void **)&rawdata);
 
+		if (filelen == -2) {
+			memcpy(extension, ".md2", 4);
+			filelen = FS_LoadFile(normalized, (void **)&rawdata);
+		}
 		memcpy(extension, ".md2", 4);
 	}
 

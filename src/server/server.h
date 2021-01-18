@@ -110,7 +110,7 @@ typedef struct {
 
 typedef struct {
     int         solid32;
-
+	qboolean	gibscale;
 #if USE_FPS
 
 // must be > MAX_FRAMEDIV

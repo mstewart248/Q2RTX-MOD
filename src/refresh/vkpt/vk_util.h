@@ -133,6 +133,7 @@ const char *qvk_result_to_string(VkResult result);
 		qvkCmdEndDebugUtilsLabelEXT(cmd_buf); \
 	}
 
+
 static inline size_t align(size_t x, size_t alignment)
 {
 	return (x + (alignment - 1)) & ~(alignment - 1);

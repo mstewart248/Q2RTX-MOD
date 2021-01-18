@@ -68,6 +68,7 @@ typedef struct {
 		ex_poly2,
 		ex_light,
 		ex_blaster,
+		ex_hyperblaster,
 		ex_flare
 	} type;
 
@@ -1034,3 +1035,4 @@ void FX_Init(void);
 
 // RTX development feature that loads and spawns a set of material sample balls
 #define CL_RTX_SHADERBALLS 1
+

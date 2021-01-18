@@ -81,6 +81,25 @@ void ClipGibVelocity(edict_t *ent)
         ent->velocity[2] = 500;
 }
 
+void ClipGibVelocityRail(edict_t* ent) {
+	if (ent->velocity[0] > 100) {
+		ent->velocity[0] = 100;
+	}
+	else if (ent->velocity[0] < -100) {
+		ent->velocity[0] = -100;
+	}
+	if (ent->velocity[1] > 100) {
+		ent->velocity[1] = 100;
+	}
+	else if (ent->velocity[1] < -100) {
+		ent->velocity[1] = -100;
+	}
+	if (ent->velocity[2] < 350) {
+		ent->velocity[2] = 350;
+	}
+
+}
+
 
 /*
 =================
@@ -93,8 +112,8 @@ void gib_think(edict_t *self)
     self->nextthink = level.time + FRAMETIME;
 
     if (self->s.frame == 10) {
-        self->think = G_FreeEdict;
-        self->nextthink = level.time + 8 + random() * 10;
+		self->think = gib_think; // = G_FreeEdict;
+        self->nextthink = level.time + 10 + random() * 10;
     }
 }
 
@@ -139,9 +158,9 @@ void ThrowGib(edict_t *self, char *gibname, int damage, int type)
 
     VectorScale(self->size, 0.5, size);
     VectorAdd(self->absmin, size, origin);
-    gib->s.origin[0] = origin[0] + crandom() * size[0];
-    gib->s.origin[1] = origin[1] + crandom() * size[1];
-    gib->s.origin[2] = origin[2] + crandom() * size[2];
+    gib->s.origin[0] = origin[0] + crandom() * (size[0] * 2);
+    gib->s.origin[1] = origin[1] + crandom() * (size[1] * 2);
+    gib->s.origin[2] = origin[2] + crandom() * (size[1] * 2);
 
     gi.setmodel(gib, gibname);
     gib->solid = SOLID_NOT;
@@ -149,11 +168,12 @@ void ThrowGib(edict_t *self, char *gibname, int damage, int type)
     gib->flags |= FL_NO_KNOCKBACK;
     gib->takedamage = DAMAGE_YES;
     gib->die = gib_die;
+	
 
     if (type == GIB_ORGANIC) {
-        gib->movetype = MOVETYPE_TOSS;
+        gib->movetype = MOVETYPE_EXPLODE;
         gib->touch = gib_touch;
-        vscale = 0.5;
+        vscale = 1.0;
     } else {
         gib->movetype = MOVETYPE_BOUNCE;
         vscale = 1.0;
@@ -161,21 +181,208 @@ void ThrowGib(edict_t *self, char *gibname, int damage, int type)
 
     VelocityForDamage(damage, vd);
     VectorMA(self->velocity, vscale, vd, gib->velocity);
-    ClipGibVelocity(gib);
-    gib->avelocity[0] = random() * 600;
-    gib->avelocity[1] = random() * 600;
+    //ClipGibVelocity(gib);
+    gib->avelocity[0] = random() * 300;
+    gib->avelocity[1] = random() * 300;
     gib->avelocity[2] = random() * 600;
 
-    gib->think = G_FreeEdict;
-    gib->nextthink = level.time + 10 + random() * 10;
+    //gib->think = G_FreeEdict;
+   // gib->nextthink = level.time + 10 + random() * 10;
 
     gi.linkentity(gib);
+}
+
+
+
+void ThrowGibRail(edict_t *self, char *gibname, int damage, int type)
+{
+	edict_t *gib;
+	vec3_t  vd;
+	vec3_t  origin;
+	vec3_t  size;
+	float   vscale;
+
+	gib = G_Spawn();
+
+	VectorScale(self->size, 0.5, size);
+	VectorAdd(self->absmin, size, origin);
+	gib->s.origin[0] = origin[0] + crandom() * (size[0] * 2);
+	gib->s.origin[1] = origin[1] + crandom() * (size[1] * 2);
+	gib->s.origin[2] = origin[2] + crandom() * (size[1] * 2);
+
+	gi.setmodel(gib, gibname);
+	gib->solid = SOLID_NOT;
+	gib->s.effects |= EF_GIB;
+	gib->flags |= FL_NO_KNOCKBACK;
+	gib->takedamage = DAMAGE_YES;
+	gib->die = gib_die;
+
+
+	if (type == GIB_ORGANIC) {
+		gib->movetype = MOVETYPE_EXPLODE;
+		gib->touch = gib_touch;
+		vscale = 1.0;
+	}
+	else {
+		gib->movetype = MOVETYPE_BOUNCE;
+		vscale = 1.0;
+	}
+
+	VelocityForDamage(damage, vd);
+	VectorMA(self->velocity, vscale, vd, gib->velocity);
+	ClipGibVelocityRail(gib);
+	gib->avelocity[0] = random() * 600;
+	gib->avelocity[1] = random() * 600;
+	gib->avelocity[2] = random() * 600;
+	gi.linkentity(gib);
+}
+
+void ThrowGibNoExplode(edict_t *self, char *gibname, int damage, int type)
+{
+	edict_t *gib;
+	vec3_t  vd;
+	vec3_t  origin;
+	vec3_t  size;
+	float   vscale;
+
+	gib = G_Spawn();
+
+	gib->size[0] = 1.0;
+	gib->size[1] = 1.0;
+	gib->size[2] = 1.0f;
+
+	VectorScale(self->size, 0.5, size);
+	VectorAdd(self->absmin, size, origin);
+	gib->s.origin[0] = origin[0] + crandom() * (size[0]);
+	gib->s.origin[1] = origin[1] + crandom() * (size[1]);
+	gib->s.origin[2] = origin[2] + crandom() * (size[1]);
+
+	gi.setmodel(gib, gibname);
+	
+
+	gib->solid = SOLID_NOT;
+	gib->s.effects |= EF_GIB;
+	gib->flags |= FL_NO_KNOCKBACK;
+	gib->takedamage = DAMAGE_YES;
+	gib->die = gib_die;
+
+	if (type == GIB_ORGANIC) {
+		gib->movetype = MOVETYPE_TOSS;
+		gib->touch = gib_touch;
+		vscale = 1.0;
+	}
+	else {
+		gib->movetype = MOVETYPE_BOUNCE;
+		vscale = 1.0;
+	}
+
+	VelocityForDamage(damage, vd);
+	VectorMA(self->velocity, vscale, vd, gib->velocity);
+	
+	ClipGibVelocity(gib);
+	gib->avelocity[0] = random() * 600;
+	gib->avelocity[1] = random() * 800;
+	gib->avelocity[2] = random() * 600;
+	gi.linkentity(gib);
+}
+
+
+void ThrowGibDisposible(edict_t *self, char *gibname, int damage, int type)
+{
+	edict_t *gib;
+	vec3_t  vd;
+	vec3_t  origin;
+	vec3_t  size;
+	float   vscale;
+
+	gib = G_Spawn();
+
+	gib->size[0] = 1.0;
+	gib->size[1] = 1.0;
+	gib->size[2] = 1.0f;
+
+	VectorScale(self->size, 0.5, size);
+	VectorAdd(self->absmin, size, origin);
+	gib->s.origin[0] = origin[0] + crandom() * (size[0]);
+	gib->s.origin[1] = origin[1] + crandom() * (size[1]);
+	gib->s.origin[2] = origin[2] + crandom() * (size[1]);
+
+	gi.setmodel(gib, gibname);
+
+
+	gib->solid = SOLID_NOT;
+	gib->s.effects |= EF_GIB;
+	gib->flags |= FL_NO_KNOCKBACK;
+	gib->takedamage = DAMAGE_YES;
+	gib->die = gib_die;
+
+	if (type == GIB_ORGANIC) {
+		gib->movetype = MOVETYPE_TOSS;
+		gib->touch = gib_touch;
+		vscale = 1.0;
+	}
+	else {
+		gib->movetype = MOVETYPE_BOUNCE;
+		vscale = 1.0;
+	}
+
+	VelocityForDamage(damage, vd);
+	VectorMA(self->velocity, vscale, vd, gib->velocity);
+
+	ClipGibVelocity(gib);
+	gib->avelocity[0] = random() * 600;
+	gib->avelocity[1] = random() * 800;
+	gib->avelocity[2] = random() * 600;
+	gib->think = G_FreeEdict;
+	gib->nextthink = level.time + 10 + random() * 10;
+	gi.linkentity(gib);
 }
 
 void ThrowHead(edict_t *self, char *gibname, int damage, int type)
 {
     vec3_t  vd;
     float   vscale;
+	edict_t *gib;
+	vec3_t  origin;
+	vec3_t  size;
+
+	gib = G_Spawn();
+
+	gib->size[0] = 1.0;
+	gib->size[1] = 1.0;
+	gib->size[2] = 1.0f;
+
+	VectorScale(self->size, 0.5, size);
+	VectorAdd(self->absmin, size, origin);
+	gib->s.origin[0] = origin[0] + crandom() * (size[0]);
+	gib->s.origin[1] = origin[1] + crandom() * (size[1]);
+	gib->s.origin[2] = origin[2] + crandom() * (size[1]);
+
+	gi.setmodel(gib, gibname);
+
+	gib->solid = SOLID_NOT;
+	gib->s.effects |= EF_GIB;
+	gib->flags |= FL_NO_KNOCKBACK;
+	gib->takedamage = DAMAGE_YES;
+	gib->die = gib_die;
+
+	if (type == GIB_ORGANIC) {
+		gib->movetype = MOVETYPE_TOSS;
+		gib->touch = gib_touch;
+		vscale = 1.0;
+	}
+	else {
+		gib->movetype = MOVETYPE_BOUNCE;
+		vscale = 1.0;
+	}
+
+	VelocityForDamage(damage, vd);
+	VectorMA(self->velocity, vscale, vd, gib->velocity);
+
+	ClipGibVelocity(gib);
+	gib->avelocity[0] = random() * 600;
+	gib->avelocity[1] = random() * 800;
+	gib->avelocity[2] = random() * 600;
 
     self->s.skinnum = 0;
     self->s.frame = 0;
@@ -183,7 +390,7 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type)
     VectorClear(self->maxs);
 
     self->s.modelindex2 = 0;
-    gi.setmodel(self, gibname);
+    gi.setmodel(self, "models/objects/gibs/sm_meat/tris.md2");
     self->solid = SOLID_NOT;
     self->s.effects |= EF_GIB;
     self->s.effects &= ~EF_FLIES;
@@ -207,13 +414,52 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type)
     ClipGibVelocity(self);
 
     self->avelocity[YAW] = crandom() * 600;
-
-    self->think = G_FreeEdict;
+	self->think = G_FreeEdict;
     self->nextthink = level.time + 10 + random() * 10;
 
     gi.linkentity(self);
+	gi.linkentity(gib);
 }
 
+void ThrowHeadDisposible(edict_t *self, char *gibname, int damage, int type)
+{
+	vec3_t  vd;
+	float   vscale;
+
+	self->s.skinnum = 0;
+	self->s.frame = 0;
+	VectorClear(self->mins);
+	VectorClear(self->maxs);
+
+	self->s.modelindex2 = 0;
+	gi.setmodel(self, gibname);
+	self->solid = SOLID_NOT;
+	self->s.effects |= EF_GIB;
+	self->s.effects &= ~EF_FLIES;
+	self->s.sound = 0;
+	self->flags |= FL_NO_KNOCKBACK;
+	self->svflags &= ~SVF_MONSTER;
+	self->takedamage = DAMAGE_YES;
+	self->die = gib_die;
+
+	if (type == GIB_ORGANIC) {
+		self->movetype = MOVETYPE_TOSS;
+		self->touch = gib_touch;
+		vscale = 0.5;
+	}
+	else {
+		self->movetype = MOVETYPE_BOUNCE;
+		vscale = 1.0;
+	}
+
+	VelocityForDamage(damage, vd);
+	VectorMA(self->velocity, vscale, vd, self->velocity);
+	ClipGibVelocity(self);
+	self->avelocity[YAW] = crandom() * 600;
+	self->think = G_FreeEdict;
+	self->nextthink = level.time + 10 + random() * 10;
+	gi.linkentity(self);
+}
 
 void ThrowClientHead(edict_t *self, int damage)
 {
@@ -283,8 +529,8 @@ void ThrowDebris(edict_t *self, char *modelname, float speed, vec3_t origin)
     chunk->avelocity[0] = random() * 600;
     chunk->avelocity[1] = random() * 600;
     chunk->avelocity[2] = random() * 600;
-    chunk->think = G_FreeEdict;
-    chunk->nextthink = level.time + 5 + random() * 5;
+    //chunk->think = G_FreeEdict;
+    //chunk->nextthink = level.time + 5 + random() * 5;
     chunk->s.frame = 0;
     chunk->flags = 0;
     chunk->classname = "debris";
@@ -1162,7 +1408,7 @@ void misc_deadsoldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, 
         return;
 
     gi.sound(self, CHAN_BODY, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
-    for (n = 0; n < 4; n++)
+    for (n = 0; n < 16; n++)
         ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
     ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
 }

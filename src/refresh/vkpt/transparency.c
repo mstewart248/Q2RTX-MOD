@@ -16,10 +16,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
+
 #include <assert.h>
 #include "shared/shared.h"
 #include "vkpt.h"
 #include "vk_util.h"
+
 
 #define TR_PARTICLE_MAX_NUM    MAX_PARTICLES
 #define TR_BEAM_MAX_NUM        MAX_ENTITIES
@@ -29,6 +31,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define TR_POSITION_SIZE       3 * sizeof(float)
 #define TR_COLOR_SIZE          4 * sizeof(float)
 #define TR_SPRITE_INFO_SIZE    2 * sizeof(float)
+
 
 struct
 {
@@ -62,11 +65,18 @@ struct
 	VkBufferMemoryBarrier transfer_barriers[4];
 } transparency;
 
+typedef struct {
+	float* view_matrix;
+	particle_t* particles;
+	int particle_num;
+} ParticleData;
+
 // initialization
 static void create_buffers();
 static qboolean allocate_and_bind_memory_to_buffers();
 static void create_buffer_views();
 static void fill_index_buffer();
+void threaded_particles();
 
 // update
 static void write_particle_geometry(const float* view_matrix, const particle_t* particles, int particle_num);
@@ -80,6 +90,11 @@ cvar_t* cvar_pt_beam_lights = NULL;
 extern cvar_t* cvar_pt_enable_particles;
 extern cvar_t* cvar_pt_particle_emissive;
 extern cvar_t* cvar_pt_projection;
+float particle_size;
+vec3_t view_y;
+vec3_t view_origin;
+float* thisViewMatrix;
+SDL_mutex* mutex;
 
 void cast_u32_to_f32_color(int color_index, const color_t* pcolor, float* color_f32, float hdr_factor)
 {
@@ -182,6 +197,18 @@ void update_transparency(VkCommandBuffer command_buffer, const float* view_matri
 
 	if (particle_num > 0 || beam_num > 0 || sprite_num > 0)
 	{
+		
+		//if (particle_num > 10000) {
+		//	ParticleData* data = malloc(sizeof(ParticleData));
+
+		//	data->view_matrix = view_matrix;
+		//	data->particles = particles;
+		//	data->particle_num = particle_num;
+		//	write_particle_geometry_threaded(data);
+		//}
+		//else {
+		//	write_particle_geometry(view_matrix, particles, particle_num);
+		//}
 		write_particle_geometry(view_matrix, particles, particle_num);
 		write_beam_geometry(view_matrix, entities, entity_num);
 		write_sprite_geometry(view_matrix, entities, entity_num);
@@ -314,6 +341,87 @@ static void write_particle_geometry(const float* view_matrix, const particle_t* 
 	}
 }
 
+
+//static void write_particle_geometry_threaded(void* data)
+//{
+//	ParticleData *tData = data;
+//
+//	float* view_matrix = tData->view_matrix;
+//	particle_t* particles = tData->particles;
+//	int particle_num = tData->particle_num;
+//
+//	particle_size = cvar_pt_particle_size->value;
+//	//thisViewMatrix = view_matrix;
+//
+//	const vec3_t view_y = { view_matrix[1], view_matrix[5], view_matrix[9] };
+//
+//	// TODO: remove vkpt_refdef.fd, it's better to calculate it from the view matrix
+//	const vec3_t view_origin = { vkpt_refdef.fd->vieworg[0], vkpt_refdef.fd->vieworg[1], vkpt_refdef.fd->vieworg[2] };
+//
+//	// TODO: use better alignment?
+//	vec3_t* vertex_positions = (vec3_t*)(transparency.mapped_host_buffer + transparency.vertex_position_host_offset);
+//	float* particle_colors = (float*)(transparency.mapped_host_buffer + transparency.particle_color_host_offset);
+//
+//	int i;
+//
+//#pragma omp parallel for
+//		for (i = 0; i < particle_num; i++)
+//		{
+//			const particle_t* particle = particles + i;
+//			vec3_t* VertexPointer = vertex_positions + (i * 4);
+//			float* workingColor = particle_colors + (i * 4);
+//
+//			cast_u32_to_f32_color(particle->color, &particle->rgba, workingColor, particle->brightness);
+//			workingColor[3] = particle->alpha;
+//			//particle_colors = particle_colors + 4;
+//
+//			vec3_t origin;
+//			VectorCopy(particle->origin, origin);
+//
+//			vec3_t z_axis;
+//			VectorSubtract(view_origin, origin, z_axis);
+//			VectorNormalize(z_axis);
+//
+//			vec3_t x_axis;
+//			vec3_t y_axis;
+//			CrossProduct(z_axis, view_y, x_axis);
+//			CrossProduct(x_axis, z_axis, y_axis);
+//
+//			const float size_factor = pow(particle->alpha, 0.05f);
+//			if (particle->radius == 0.f)
+//			{
+//				VectorScale(y_axis, particle_size * size_factor, y_axis);
+//				VectorScale(x_axis, particle_size * size_factor, x_axis);
+//			}
+//			else
+//			{
+//				VectorScale(y_axis, particle->radius, y_axis);
+//				VectorScale(x_axis, particle->radius, x_axis);
+//			}
+//
+//			vec3_t temp;
+//			VectorSubtract(origin, x_axis, temp);
+//			VectorAdd(temp, y_axis, VertexPointer[0]);
+//
+//			VectorAdd(origin, x_axis, temp);
+//			VectorAdd(temp, y_axis, VertexPointer[1]);
+//
+//			VectorAdd(origin, x_axis, temp);
+//			VectorSubtract(temp, y_axis, VertexPointer[2]);
+//
+//			VectorSubtract(origin, x_axis, temp);
+//			VectorSubtract(temp, y_axis, VertexPointer[3]);
+//
+//			//vertex_positions += 4;
+//
+//		}
+//	
+//
+//}
+//	
+
+
+
 static void write_beam_geometry(const float* view_matrix, const entity_t* entities, int entity_num)
 {
 	const float beam_width = cvar_pt_beam_width->value;
@@ -372,6 +480,7 @@ static void write_beam_geometry(const float* view_matrix, const entity_t* entiti
 		VectorAdd(begin, x_axis, vertex_positions[2]);
 		VectorSubtract(begin, x_axis, vertex_positions[3]);
 		vertex_positions += 4;
+
 	}
 }
 

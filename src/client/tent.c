@@ -47,6 +47,7 @@ qhandle_t   cl_mod_explo4;
 qhandle_t   cl_mod_bfg_explo;
 qhandle_t   cl_mod_powerscreen;
 qhandle_t   cl_mod_laser;
+qhandle_t   cl_mod_newlaser;
 qhandle_t   cl_mod_dmspot;
 qhandle_t   cl_mod_explosions[4];
 
@@ -112,8 +113,7 @@ void CL_RegisterTEntModels(void)
     cl_mod_bfg_explo = R_RegisterModel("sprites/s_bfg2.sp2");
     cl_mod_powerscreen = R_RegisterModel("models/items/armor/effect/tris.md2");
     cl_mod_laser = R_RegisterModel("models/objects/laser/tris.md2");
-    cl_mod_dmspot = R_RegisterModel("models/objects/dmspot/tris.md2");
-
+    cl_mod_dmspot = R_RegisterModel("models/objects/dmspot/tris.md2");	
     cl_mod_lightning = R_RegisterModel("models/proj/lightning/tris.md2");
     cl_mod_heatbeam = R_RegisterModel("models/proj/beam/tris.md2");
 	cl_mod_explo4_big = R_RegisterModel("models/objects/r_explode2/tris.md2");
@@ -251,10 +251,23 @@ static light_curve_t ex_poly_light[] = {
     { { 0.f,        0.f,        0.f       }, 10.0f, 72.00f }
 };
 
-static light_curve_t ex_blaster_light[] = {
+static light_curve_t ex_hyper_blaster_light[] = {
 	{ { 0.04f,      0.02f,      0.0f      },  5.f, 15.00f },
 	{ { 0.2f,       0.15f,      0.01f     }, 15.f, 15.00f },
 	{ { 0.04f,      0.02f,      0.0f      },  5.f, 15.00f },
+};
+
+
+static light_curve_t ex_blaster_light[] = {
+	{ { 0.04f,      0.02f,      0.04f      },  5.f, 15.00f },
+	{ { 0.5f,       0.2f,      0.5f		   }, 15.f, 15.00f },
+	{ { 0.04f,      0.02f,      0.04f      },  5.f, 15.00f },
+};
+
+static light_curve_t ex_flare_light[] = {
+	{ { 1.2f,       0.75f,      0.15f     }, 10.f,  5.00f },
+	{ { 1.6f,       1.0f,       0.2f      }, 10.f, 10.00f },
+	{ { 1.2f,       0.75f,      0.15f     }, 10.f,  5.00f },
 };
 
 static void CL_AddExplosionLight(explosion_t *ex, float phase)
@@ -264,6 +277,10 @@ static void CL_AddExplosionLight(explosion_t *ex, float phase)
 
 	switch (ex->type)
 	{
+	case ex_hyperblaster:
+		curve = ex_hyper_blaster_light;
+		curve_size = LENGTH(ex_hyper_blaster_light);
+		break;
 	case ex_poly:
 		curve = ex_poly_light;
 		curve_size = LENGTH(ex_poly_light);
@@ -327,6 +344,7 @@ static void CL_AddExplosions(void)
                 ex->type = ex_free;
             break;
 		case ex_misc:
+		case ex_hyperblaster:
 		case ex_blaster:
 		case ex_flare:
         case ex_light:
@@ -1142,7 +1160,7 @@ void CL_ParseTEnt(void)
     case TE_BLUEHYPERBLASTER:
         CL_BlasterParticles(te.pos1, te.dir);
         break;
-
+	case TE_HYPERBLASTER:
     case TE_BLASTER:            // blaster hitting wall
     case TE_BLASTER2:           // green blaster hitting wall
 	case TE_FLECHETTE:          // flechette
@@ -1154,10 +1172,17 @@ void CL_ParseTEnt(void)
         ex->ent.flags = RF_FULLBRIGHT | RF_TRANSLUCENT;
 		ex->ent.tent_type = te.type;
         switch (te.type) {
+		case TE_HYPERBLASTER:
+			CL_BlasterParticles(te.pos1, te.dir);
+			ex->lightcolor[0] = 1;
+			ex->lightcolor[1] = 1;
+			ex->type = ex_hyperblaster;
+			break;
         case TE_BLASTER:
             CL_BlasterParticles(te.pos1, te.dir);
-            ex->lightcolor[0] = 1;
-            ex->lightcolor[1] = 1;
+            ex->lightcolor[0] = 0.5;
+            ex->lightcolor[1] = 0.3;
+			ex->lightcolor[2] = 0.5;
             break;
         case TE_BLASTER2:
             CL_BlasterParticles2(te.pos1, te.dir, 0xd0);

@@ -35,6 +35,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "physical_sky.h"
 #include "../../client/client.h"
 #include "../../client/ui/ui.h"
+#include "server/server.h"
 
 #include "shader/vertex_buffer.h"
 
@@ -1566,7 +1567,8 @@ static void process_bsp_entity(const entity_t* entity, int* bsp_mesh_idx, int* i
 	}
 
 	world_entity_ids[entity_frame_num][current_bsp_mesh_index] = entity->id;
-
+	
+	
 	float transform[16];
 	create_entity_matrix(transform, (entity_t*)entity, qfalse);
 	BspMeshInstance* ubo_instance_info = uniform_instance_buffer->bsp_mesh_instances + current_bsp_mesh_index;
@@ -1577,6 +1579,7 @@ static void process_bsp_entity(const entity_t* entity, int* bsp_mesh_idx, int* i
 	bsp_model_t* model = vkpt_refdef.bsp_mesh_world.models + (~entity->model);
 
 	vec3_t origin;
+	
 	transform_point(model->center, transform, origin);
 	int cluster = BSP_PointLeaf(bsp_world_model->nodes, origin)->cluster;
 
@@ -1679,6 +1682,8 @@ static void process_regular_entity(
 	uint32_t* ubo_instance_buf_size = (uint32_t*)uniform_instance_buffer->model_instance_buf_size;
 	uint32_t* ubo_model_idx_offset = (uint32_t*)uniform_instance_buffer->model_idx_offset;
 	uint32_t* ubo_model_cluster_id = (uint32_t*)uniform_instance_buffer->model_cluster_id;
+	
+	
 
 	float transform[16];
 	create_entity_matrix(transform, (entity_t*)entity, is_viewer_weapon);
@@ -1713,6 +1718,8 @@ static void process_regular_entity(
 		}
 
 		uint32_t material_id = fill_model_instance(entity, model, mesh, transform, current_model_instance_index, is_viewer_weapon, is_double_sided);
+
+
 		if (!material_id)
 			continue;
 
@@ -2115,6 +2122,7 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 		const int num_warmup_frames = 5;
 		const int num_frames_to_accumulate = get_accumulation_rendering_framenum();
 
+
 		ref_mode->enable_accumulation = qtrue;
 		ref_mode->enable_denoiser = qfalse;
 		ref_mode->num_bounce_rays = 2;
@@ -2466,6 +2474,7 @@ R_RenderFrame_RTX(refdef_t *fd)
 	qboolean render_world = (fd->rdflags & RDF_NOWORLDMODEL) == 0;
 
 	static float previous_time = -1.f;
+
 	float frame_time = min(1.f, max(0.f, fd->time - previous_time));
 	previous_time = fd->time;
 
@@ -2486,6 +2495,7 @@ R_RenderFrame_RTX(refdef_t *fd)
 
 	mleaf_t* viewleaf = bsp_world_model ? BSP_PointLeaf(bsp_world_model->nodes, fd->vieworg) : NULL;
 	
+
 	qboolean sun_visible_prev = qfalse;
 	static float prev_adapted_luminance = 0.f;
 	float adapted_luminance = 0.f;
@@ -2532,6 +2542,8 @@ R_RenderFrame_RTX(refdef_t *fd)
 	QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
 	prepare_ubo(fd, viewleaf, &ref_mode, sky_matrix, render_world);
 	ubo->prev_adapted_luminance = prev_adapted_luminance;
+
+
 
 	vkpt_physical_sky_update_ubo(ubo, &sun_light, render_world);
 	vkpt_bloom_update(ubo, frame_time, ubo->medium != MEDIUM_NONE, menu_mode);

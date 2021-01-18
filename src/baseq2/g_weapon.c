@@ -316,6 +316,42 @@ void blaster_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *s
     G_FreeEdict(self);
 }
 
+void hyper_blaster_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+	int     mod;
+
+	if (other == self->owner)
+		return;
+
+	if (surf && (surf->flags & SURF_SKY)) {
+		G_FreeEdict(self);
+		return;
+	}
+
+	if (self->owner->client)
+		PlayerNoise(self->owner, self->s.origin, PNOISE_IMPACT);
+
+	if (other->takedamage) {
+		if (self->spawnflags & 1)
+			mod = MOD_HYPERBLASTER;
+		else
+			mod = MOD_BLASTER;
+		T_Damage(other, self, self->owner, self->velocity, self->s.origin, plane->normal, self->dmg, 1, DAMAGE_ENERGY, mod);
+	}
+	else {
+		gi.WriteByte(svc_temp_entity);
+		gi.WriteByte(TE_HYPERBLASTER);
+		gi.WritePosition(self->s.origin);
+		if (!plane)
+			gi.WriteDir(vec3_origin);
+		else
+			gi.WriteDir(plane->normal);
+		gi.multicast(self->s.origin, MULTICAST_PVS);
+	}
+
+	G_FreeEdict(self);
+}
+
 void fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int effect, qboolean hyper)
 {
     edict_t *bolt;
@@ -343,7 +379,7 @@ void fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed
     bolt->s.modelindex = gi.modelindex("models/objects/laser/tris.md2");
     bolt->s.sound = gi.soundindex("misc/lasfly.wav");
     bolt->owner = self;
-    bolt->touch = blaster_touch;
+    bolt->touch = !hyper ? blaster_touch : hyper_blaster_touch;
     bolt->nextthink = level.time + 2;
     bolt->think = G_FreeEdict;
     bolt->dmg = damage;

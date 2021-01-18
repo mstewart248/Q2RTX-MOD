@@ -140,7 +140,7 @@ void InitGame(void)
     deathmatch = gi.cvar("deathmatch", "0", CVAR_LATCH);
     coop = gi.cvar("coop", "0", CVAR_LATCH);
     skill = gi.cvar("skill", "1", CVAR_LATCH);
-    maxentities = gi.cvar("maxentities", "1024", CVAR_LATCH);
+    maxentities = gi.cvar("maxentities", "4096", CVAR_LATCH);
 
     // change anytime vars
     dmflags = gi.cvar("dmflags", "0", CVAR_SERVERINFO);
@@ -186,7 +186,8 @@ void InitGame(void)
     game.helpmessage2[0] = 0;
 
     // initialize all entities for this game
-    game.maxentities = maxentities->value;
+
+	game.maxentities = 4096;
     clamp(game.maxentities, (int)maxclients->value + 1, MAX_EDICTS);
     g_edicts = gi.TagMalloc(game.maxentities * sizeof(g_edicts[0]), TAG_GAME);
     globals.edicts = g_edicts;

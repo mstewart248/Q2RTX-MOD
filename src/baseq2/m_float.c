@@ -64,7 +64,12 @@ void floater_fire_blaster(edict_t *self)
     int     effect;
 
     if ((self->s.frame == FRAME_attak104) || (self->s.frame == FRAME_attak107))
-        effect = EF_HYPERBLASTER;
+		if (self->monsterFireHyperBlaster) {
+			effect = EF_HYPERBLASTER;			
+		}
+		else {
+			effect = EF_BLASTER;
+		}
     else
         effect = 0;
     AngleVectors(self->s.angles, forward, right, NULL);
@@ -74,7 +79,13 @@ void floater_fire_blaster(edict_t *self)
     end[2] += self->enemy->viewheight;
     VectorSubtract(end, start, dir);
 
-    monster_fire_blaster(self, start, dir, 1, 1000, MZ2_FLOAT_BLASTER_1, effect);
+	if (self->monsterFireHyperBlaster) {
+		monster_fire_hyper_blaster(self, start, dir, 1, 1000, MZ2_FLOAT_BLASTER_1, effect);
+	}
+	else {
+		monster_fire_blaster(self, start, dir, 1, 1000, MZ2_FLOAT_BLASTER_1, effect);
+	}
+    
 }
 
 
@@ -585,7 +596,17 @@ void floater_dead(edict_t *self)
 
 void floater_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
+	int     n;
+
     gi.sound(self, CHAN_VOICE, sound_death1, 1, ATTN_NORM, 0);
+
+	for (n = 0; n < 8; n++) {
+		ThrowGibRail(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+		ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+		ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+		ThrowGibNoExplode(self, "models/objects/gibs/sm_metal/tris.md2", damage, GIB_METALLIC);
+	}		
+
     BecomeExplosion1(self);
 }
 
@@ -597,6 +618,15 @@ void SP_monster_floater(edict_t *self)
         G_FreeEdict(self);
         return;
     }
+
+	float val = crandom();
+
+	if (val < 0) {
+		self->monsterFireHyperBlaster = qtrue;
+	}
+	else {
+		self->monsterFireHyperBlaster = qfalse;
+	}
 
     sound_attack2 = gi.soundindex("floater/fltatck2.wav");
     sound_attack3 = gi.soundindex("floater/fltatck3.wav");
@@ -622,7 +652,7 @@ void SP_monster_floater(edict_t *self)
 
     self->pain = floater_pain;
     self->die = floater_die;
-
+	
     self->monsterinfo.stand = floater_stand;
     self->monsterinfo.walk = floater_walk;
     self->monsterinfo.run = floater_run;

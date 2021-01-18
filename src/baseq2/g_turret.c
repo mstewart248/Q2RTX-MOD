@@ -274,8 +274,10 @@ void turret_driver_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int
     self->target_ent->move_angles[0] = 0;
 
     // remove the driver from the end of them team chain
-    for (ent = self->target_ent->teammaster; ent->teamchain != self; ent = ent->teamchain)
-        ;
+	for (ent = self->target_ent->teammaster; ent->teamchain != self; ent = ent->teamchain) {
+		
+	}
+        
     ent->teamchain = NULL;
     self->teammaster = NULL;
     self->flags &= ~FL_TEAMSLAVE;

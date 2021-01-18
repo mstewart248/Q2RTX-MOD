@@ -759,6 +759,8 @@ void Blaster_Fire(edict_t *ent, vec3_t g_offset, int damage, qboolean hyper, int
 }
 
 
+
+
 void Weapon_Blaster_Fire(edict_t *ent)
 {
     int     damage;

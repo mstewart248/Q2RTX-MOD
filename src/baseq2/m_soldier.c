@@ -480,7 +480,12 @@ void soldier_fire(edict_t *self, int flash_number)
     }
 
     if (self->s.skinnum <= 1) {
-        monster_fire_blaster(self, start, aim, 5, 600, flash_index, EF_BLASTER);
+		if (self->monsterFireHyperBlaster) {
+			monster_fire_hyper_blaster(self, start, aim, 5, 600, flash_index, EF_HYPERBLASTER);
+		}
+		else {
+			monster_fire_blaster(self, start, aim, 5, 600, flash_index, EF_BLASTER);
+		}
     } else if (self->s.skinnum <= 3) {
         monster_fire_shotgun(self, start, aim, 2, 1, DEFAULT_SHOTGUN_HSPREAD, DEFAULT_SHOTGUN_VSPREAD, DEFAULT_SHOTGUN_COUNT, flash_index);
     } else {
@@ -1099,17 +1104,115 @@ void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
     int     n;
 
 // check for gib
-    if (self->health <= self->gib_health) {
-        gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
-        for (n = 0; n < 3; n++)
-            ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-        ThrowGib(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);
-        ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
-        self->deadflag = DEAD_DEAD;
-        return;
-    }
 
-    if (self->deadflag == DEAD_DEAD)
+    if (self->health <= self->gib_health) {
+        gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NONE, 0);     		
+		
+		if (InflictorGibExplosion(inflictor, self)) {
+			
+			VectorScale(self->size, 1.2, self->size);
+
+			for (n = 0; n < 16; n++) {
+				if (n < 8) {
+					ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+				}
+				ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+			}
+			
+			ThrowGib(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);			
+			ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+			VectorScale(self->size, 0.8, self->size);
+		}
+		else if (!Q_stricmp(inflictor->classname, "bolt")) {
+			ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+			self->takedamage = DAMAGE_YES;
+		}
+		else if (inflictor->client == NULL) {
+			if (self->takedamage != DAMAGE_MAYBE && self->takedamage != DAMAGE_NO) {
+				for (n = 0; n < 8; n++)
+					ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+
+				self->takedamage = DAMAGE_MAYBE;
+			}
+			else {
+				for (n = 0; n < 8; n++) {
+					ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+					ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+				}
+				
+				ThrowGibNoExplode(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);
+				ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+				self->takedamage = DAMAGE_NO;
+			}			
+		}
+		else {			
+			if(!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_machinegun")) {
+				ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+				self->takedamage = DAMAGE_YES;
+			}
+			else if (!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_supershotgun") ||
+					!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_shotgun")) {
+				if (self->death_count < 3) {		
+					ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);					
+					self->takedamage = DAMAGE_YES;
+				}
+				else {
+					for (n = 0; n < 8; n++) {
+						ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);						
+					}
+					ThrowGibNoExplode(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);
+					ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+					self->takedamage = DAMAGE_NO;
+				}
+			}
+			else if (!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_chaingun")) {
+				if (self->death_count < 3) {
+					ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+					self->takedamage = DAMAGE_YES;
+				}
+				else {
+					for (n = 0; n < 8; n++) {
+						ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+						ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+					}
+					ThrowGibNoExplode(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);
+					ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+					self->takedamage = DAMAGE_NO;
+				}
+			}
+			else if (!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_railgun")) {
+				for (n = 0; n < 8; n++) {
+					ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+					ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+					ThrowGibRail(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+				}
+				
+				ThrowGibNoExplode(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);				
+				ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+			}
+			else {
+				if (self->takedamage != DAMAGE_MAYBE && self->takedamage != DAMAGE_NO) {
+					for (n = 0; n < 8; n++)
+						ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+
+					self->takedamage = DAMAGE_MAYBE;
+				}
+				else {
+					for (n = 0; n < 8; n++)
+						ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+
+					ThrowGibNoExplode(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);
+					ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+					self->takedamage = DAMAGE_NO;
+				}
+			}		
+		}
+	
+		self->deadflag = DEAD_DEAD;
+		return;
+    }
+	// 
+    if (self->deadflag == DEAD_DEAD) 
         return;
 
 // regular death
@@ -1194,6 +1297,15 @@ void SP_monster_soldier_light(edict_t *self)
     }
 
     SP_monster_soldier_x(self);
+
+	float val = crandom();
+
+	if (val < 0) {
+		self->monsterFireHyperBlaster = qtrue;
+	}
+	else {
+		self->monsterFireHyperBlaster = qfalse;
+	}
 
     sound_pain_light = gi.soundindex("soldier/solpain2.wav");
     sound_death_light = gi.soundindex("soldier/soldeth2.wav");

@@ -622,6 +622,7 @@ static void draw_alias_mesh(maliasmesh_t *mesh)
 
 void GL_DrawAliasModel(model_t *model)
 {
+	
     entity_t *ent = glr.ent;
     glCullResult_t cull;
     int i;

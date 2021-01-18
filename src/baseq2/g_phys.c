@@ -308,7 +308,12 @@ SV_AddGravity
 */
 void SV_AddGravity(edict_t *ent)
 {
-    ent->velocity[2] -= ent->gravity * sv_gravity->value * FRAMETIME;
+	if (ent->movetype == MOVETYPE_EXPLODE) {
+		ent->velocity[2] -= (ent->gravity * sv_gravity->value * FRAMETIME) / 3;
+	}
+	else {
+		ent->velocity[2] -= ent->gravity * sv_gravity->value * FRAMETIME;
+	}
 }
 
 /*
@@ -661,7 +666,11 @@ void SV_Physics_Toss(edict_t *ent)
     qboolean    wasinwater;
     qboolean    isinwater;
     vec3_t      old_origin;
-
+	
+	if (ent->movetype == MOVETYPE_EXPLODE) {
+		float i;
+		i = 0;
+	}
 // regular thinking
     SV_RunThink(ent);
     if (!ent->inuse)
@@ -693,11 +702,29 @@ void SV_Physics_Toss(edict_t *ent)
         SV_AddGravity(ent);
 
 // move angles
-    VectorMA(ent->s.angles, FRAMETIME, ent->avelocity, ent->s.angles);
+    
 
 // move origin
     VectorScale(ent->velocity, FRAMETIME, move);
     trace = SV_PushEntity(ent, move);
+	
+	vec3_t res;
+
+	VectorSubtract(trace.endpos, ent->s.old_origin, res);
+
+	if (res[0] != 0 && res[1] != 0 && res[2] != 0) {
+		VectorMA(ent->s.angles, FRAMETIME, ent->avelocity, ent->s.angles);
+		if (ent->s.oldEffects == EF_GIB) {
+			ent->s.effects = EF_GIB;
+		}
+	}
+	else {
+		if (ent->s.effects == EF_GIB) {
+			ent->s.oldEffects = EF_GIB;
+			ent->s.effects = NULL;
+		}
+	}
+
     if (!ent->inuse)
         return;
 
@@ -925,6 +952,7 @@ void G_RunEntity(edict_t *ent)
     case MOVETYPE_BOUNCE:
     case MOVETYPE_FLY:
     case MOVETYPE_FLYMISSILE:
+	case MOVETYPE_EXPLODE:
         SV_Physics_Toss(ent);
         break;
     default:

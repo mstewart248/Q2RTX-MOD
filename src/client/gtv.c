@@ -140,7 +140,7 @@ void CL_GTV_EmitFrame(void)
     for (i = 1; i < MAX_EDICTS; i++) {
         oldes = &cls.gtv.entities[i];
         ent = &cl_entities[i];
-
+		
         if (ent->serverframe != cl.frame.number) {
             if (oldes->number) {
                 // the old entity isn't present in the new message

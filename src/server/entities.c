@@ -452,7 +452,8 @@ void SV_BuildClientFrame(client_t *client)
 
     for (e = 1; e < client->pool->num_edicts; e++) {
         ent = EDICT_POOL(client, e);
-
+		
+		
         // ignore entities not in use
         if (!ent->inuse && (g_features->integer & GMF_PROPERINUSE)) {
             continue;
@@ -535,6 +536,9 @@ void SV_BuildClientFrame(client_t *client)
         // add it to the circular client_entities array
         state = &svs.entities[svs.next_entity % svs.num_entities];
         MSG_PackEntity(state, &es, Q2PRO_SHORTANGLES(client, e));
+
+
+
 
 #if USE_FPS
         // fix old entity origins for clients not running at

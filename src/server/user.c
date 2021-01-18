@@ -62,6 +62,7 @@ static void create_baselines(void)
         if (!ES_INUSE(&ent->s)) {
             continue;
         }
+		
 
         ent->s.number = i;
 
@@ -71,6 +72,7 @@ static void create_baselines(void)
         }
 
         base = *chunk + (i & SV_BASELINES_MASK);
+
         MSG_PackEntity(base, &ent->s, Q2PRO_SHORTANGLES(sv_client, i));
 
 #if USE_MVD_CLIENT

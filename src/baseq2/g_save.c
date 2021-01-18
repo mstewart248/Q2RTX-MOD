@@ -832,6 +832,10 @@ void ReadGame(const char *filename)
 
     read_fields(f, gamefields, &game);
 
+	if (game.maxentities != 4096) {
+		game.maxentities = 4096;
+	}
+
     // should agree with server's version
     if (game.maxclients != (int)maxclients->value) {
         fclose(f);

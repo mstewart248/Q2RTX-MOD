@@ -20,11 +20,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #ifndef  __VKPT_H__
 #define  __VKPT_H__
 
+
 #include <vulkan/vulkan.h>
 #define HAVE_M_PI
 #include <SDL.h>
 #include <SDL_vulkan.h>
-
 #include "vk_util.h"
 
 #include "shared/shared.h"

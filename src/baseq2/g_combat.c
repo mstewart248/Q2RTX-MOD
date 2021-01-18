@@ -86,7 +86,7 @@ qboolean CanDamage(edict_t *targ, edict_t *inflictor)
 Killed
 ============
 */
-void Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
+qboolean Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     if (targ->health < -999)
         targ->health = -999;
@@ -117,6 +117,13 @@ void Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage, ve
     }
 
     targ->die(targ, inflictor, attacker, damage, point);
+
+	if (targ->health <= targ->gib_health) {
+		return qtrue;
+	}
+	else {
+		return qfalse;
+	}
 }
 
 
@@ -368,6 +375,12 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, vec3_t dir, 
     int         asave;
     int         psave;
     int         te_sparks;
+	static edict_t* lastTarget = NULL;
+	static float lastKillTime = 0.0f;
+
+	if (targ->death_count == NULL) {
+		targ->death_count = 0;
+	}
 
     if (!targ->takedamage)
         return;
@@ -476,8 +489,43 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, vec3_t dir, 
 
         if (targ->health <= 0) {
             if ((targ->svflags & SVF_MONSTER) || (client))
-                targ->flags |= FL_NO_KNOCKBACK;
-            Killed(targ, inflictor, attacker, take, point);
+                targ->flags |= FL_NO_KNOCKBACK;			
+
+			if (lastTarget == NULL) {
+				if (Killed(targ, inflictor, attacker, take, point)) {
+					lastTarget = targ;
+					targ->death_count++;
+					lastKillTime = level.time;
+				}
+			}
+			else if (lastTarget == targ) {
+				float diff = level.time - lastKillTime;
+
+				if (diff > 0.5) {
+					Killed(targ, inflictor, attacker, take, point);
+					lastTarget = targ;
+					targ->death_count++;
+					lastKillTime = level.time;
+				}
+				else {
+					if (inflictor->client != NULL) {
+						if (!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_machinegun") || !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_chaingun") ||
+						    !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_supershotgun") || !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_shotgun")) {
+							Killed(targ, inflictor, attacker, take, point);
+						}						
+					}
+					else if (!Q_stricmp(inflictor->classname, "bolt")) {
+						Killed(targ, inflictor, attacker, take, point);
+					}
+				}
+			}
+			else {
+				if (Killed(targ, inflictor, attacker, take, point)) {
+					targ->death_count++;
+					lastTarget = targ;
+					lastKillTime = level.time;
+				}
+			}
             return;
         }
     }
@@ -510,6 +558,16 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, vec3_t dir, 
     }
 }
 
+qboolean InflictorGibExplosion(edict_t* inflictor, edict_t* self) {
+	if (!Q_stricmp(inflictor->classname, "rocket") || !Q_stricmp(inflictor->classname, "misc_explobox")
+		|| !Q_stricmp(inflictor->classname, "hgrenade") || !Q_stricmp(inflictor->classname, "grenade")
+		|| !Q_stricmp(inflictor->classname, "bfg blast") || !Q_stricmp(self->classname, "turret_driver") || self->health < -400) {
+		return qtrue;
+	}
+	else {
+		return qfalse;
+	}
+}
 
 /*
 ============

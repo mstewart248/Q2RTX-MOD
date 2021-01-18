@@ -18,19 +18,21 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "vkpt.h"
+#include "baseq2/g_local.h"
 
 void
 create_entity_matrix(float matrix[16], entity_t *e, qboolean enable_left_hand)
 {
 	vec3_t axis[3];
 	vec3_t origin;
+	
 	origin[0] = (1.f-e->backlerp) * e->origin[0] + e->backlerp * e->oldorigin[0];
 	origin[1] = (1.f-e->backlerp) * e->origin[1] + e->backlerp * e->oldorigin[1];
 	origin[2] = (1.f-e->backlerp) * e->origin[2] + e->backlerp * e->oldorigin[2];
 
 	AnglesToAxis(e->angles, axis);
 
-	float scale = (e->scale > 0.f) ? e->scale : 1.f;
+	float scale = (e->scale != 0.f) ? e->scale : 1.f;
 
 	vec3_t scales = { scale, scale, scale };
 	if ((e->flags & RF_LEFTHAND) && enable_left_hand)
@@ -55,6 +57,47 @@ create_entity_matrix(float matrix[16], entity_t *e, qboolean enable_left_hand)
 
 	matrix[3]  = 0.0f;
 	matrix[7]  = 0.0f;
+	matrix[11] = 0.0f;
+	matrix[15] = 1.0f;
+}
+
+void
+create_entity_matrix_noscale(float matrix[16], entity_t *e, qboolean enable_left_hand)
+{
+	vec3_t axis[3];
+	vec3_t origin;
+
+	origin[0] = (1.f - e->backlerp) * e->origin[0] + e->backlerp * e->oldorigin[0];
+	origin[1] = (1.f - e->backlerp) * e->origin[1] + e->backlerp * e->oldorigin[1];
+	origin[2] = (1.f - e->backlerp) * e->origin[2] + e->backlerp * e->oldorigin[2];
+
+	AnglesToAxis(e->angles, axis);
+
+	float scale = 2.f;
+
+	vec3_t scales = { scale, scale, scale };
+	if ((e->flags & RF_LEFTHAND) && enable_left_hand)
+	{
+		scales[1] *= -1.f;
+	}
+
+	matrix[0] = axis[0][0] * scales[0];
+	matrix[4] = axis[1][0] * scales[1];
+	matrix[8] = axis[2][0] * scales[2];
+	matrix[12] = origin[0];
+
+	matrix[1] = axis[0][1] * scales[0];
+	matrix[5] = axis[1][1] * scales[1];
+	matrix[9] = axis[2][1] * scales[2];
+	matrix[13] = origin[1];
+
+	matrix[2] = axis[0][2] * scales[0];
+	matrix[6] = axis[1][2] * scales[1];
+	matrix[10] = axis[2][2] * scales[2];
+	matrix[14] = origin[2];
+
+	matrix[3] = 0.0f;
+	matrix[7] = 0.0f;
 	matrix[11] = 0.0f;
 	matrix[15] = 1.0f;
 }

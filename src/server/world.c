@@ -161,7 +161,7 @@ void SV_LinkEdict(cm_t *cm, edict_t *ent)
     int         i, j;
     int         area;
     mnode_t     *topnode;
-
+	
     // set the size
     VectorSubtract(ent->maxs, ent->mins, ent->size);
 
@@ -199,7 +199,7 @@ void SV_LinkEdict(cm_t *cm, edict_t *ent)
     ent->absmax[0] += 1;
     ent->absmax[1] += 1;
     ent->absmax[2] += 1;
-
+	
 // link to PVS leafs
     ent->num_clusters = 0;
     ent->areanum = 0;
@@ -285,8 +285,10 @@ void PF_LinkEdict(edict_t *ent)
         return;
     }
 
+	 
     entnum = NUM_FOR_EDICT(ent);
     sent = &sv.entities[entnum];
+	
 
     // encode the size into the entity_state for client prediction
     switch (ent->solid) {
@@ -304,10 +306,12 @@ void PF_LinkEdict(edict_t *ent)
         sent->solid32 = PACKED_BSP;     // FIXME: use 255?
         break;
     default:
+		
         ent->s.solid = 0;
         sent->solid32 = 0;
         break;
     }
+
 
     SV_LinkEdict(&sv.cm, ent);
 

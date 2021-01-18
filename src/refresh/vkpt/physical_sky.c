@@ -469,9 +469,12 @@ vkpt_physical_sky_record_cmd_buffer(VkCommandBuffer cmd_buf)
 	if (!skyNeedsUpdate)
 		return VK_SUCCESS;
 
+
 	RecordCommandBufferShadowmap(cmd_buf);
+	
 
 	reset_sun_color_buffer(cmd_buf);
+
 
     {
         VkDescriptorSet desc_sets[] = {
@@ -860,9 +863,11 @@ vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light,
 
 	if (render_world && !(skyDesc->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX))
 	{
+
 		vec3_t forward;
 		VectorScale(light->direction_envmap, -1.0f, forward);
 		UpdateTerrainShadowMapView(forward);
+		
 	}
 
     return VK_SUCCESS;

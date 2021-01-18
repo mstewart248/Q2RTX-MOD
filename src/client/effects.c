@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "client.h"
 
+
 static void CL_LogoutEffect(vec3_t org, int type);
 
 static vec3_t avelocities[NUMVERTEXNORMALS];
@@ -308,7 +309,7 @@ void CL_MuzzleFlash(void)
 
     switch (mz.weapon) {
     case MZ_BLASTER:
-        DL_COLOR(1, 1, 0);
+        DL_COLOR(0, 0, 1);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/blastf1a.wav"), volume, ATTN_NORM, 0);
         break;
     case MZ_BLUEHYPERBLASTER:
@@ -320,7 +321,8 @@ void CL_MuzzleFlash(void)
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/hyprbf1a.wav"), volume, ATTN_NORM, 0);
         break;
     case MZ_MACHINEGUN:
-        DL_COLOR(1, 1, 0);
+        DL_COLOR(1, .5, 0);
+		DL_RADIUS(50);
         Q_snprintf(soundname, sizeof(soundname), "weapons/machgf%ib.wav", (rand() % 5) + 1);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound(soundname), volume, ATTN_NORM, 0);
         break;
@@ -452,11 +454,11 @@ void CL_MuzzleFlash(void)
 	// Q2RTX
 	}
 
-	if (vid_rtx->integer)
-	{
-		// don't add muzzle flashes in RTX mode
-		DL_RADIUS(0.f);
-	}
+	//if (vid_rtx->integer)
+	//{
+	//	// don't add muzzle flashes in RTX mode
+	//	DL_RADIUS(0.f);
+	//}
 }
 
 
@@ -1321,7 +1323,7 @@ void CL_BlasterParticles(vec3_t org, vec3_t dir)
 
         p->time = cl.time;
 
-        p->color = 0xe0 + (rand() & 7);
+        p->color = 115 + (rand() & 7);
 		p->brightness = cvar_pt_particle_emissive->value;
 
         d = rand() & 15;
@@ -1375,7 +1377,7 @@ void CL_BlasterTrail(vec3_t start, vec3_t end)
         p->alpha = 1.0;
         p->alphavel = -1.0 / (0.3 + frand() * 0.2);
 
-        p->color = 0xe0;
+        p->color = 115;
 		p->brightness = cvar_pt_particle_emissive->value;
 		
         for (j = 0; j < 3; j++) {
@@ -1386,6 +1388,49 @@ void CL_BlasterTrail(vec3_t start, vec3_t end)
 
         VectorAdd(move, vec, move);
     }
+}
+
+void CL_HyoerBlasterTrail(vec3_t start, vec3_t end)
+{
+	vec3_t      move;
+	vec3_t      vec;
+	float       len;
+	int         j;
+	cparticle_t *p;
+	int         dec;
+
+	VectorCopy(start, move);
+	VectorSubtract(end, start, vec);
+	len = VectorNormalize(vec);
+
+	dec = 5;
+	VectorScale(vec, 5, vec);
+
+	// FIXME: this is a really silly way to have a loop
+	while (len > 0) {
+		len -= dec;
+
+		p = CL_AllocParticle();
+		if (!p)
+			return;
+		VectorClear(p->accel);
+
+		p->time = cl.time;
+
+		p->alpha = 1.0;
+		p->alphavel = -1.0 / (0.3 + frand() * 0.2);
+
+		p->color = 0xe0;
+		p->brightness = cvar_pt_particle_emissive->value;
+
+		for (j = 0; j < 3; j++) {
+			p->org[j] = move[j] + crand();
+			p->vel[j] = crand() * 5;
+			p->accel[j] = 0;
+		}
+
+		VectorAdd(move, vec, move);
+	}
 }
 
 /*
@@ -1505,7 +1550,7 @@ void CL_DiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
     VectorSubtract(end, start, vec);
     len = VectorNormalize(vec);
 
-    dec = 0.5;
+    dec = 0.8;
     VectorScale(vec, dec, vec);
 
     if (old->trailcount > 900) {
@@ -1536,7 +1581,7 @@ void CL_DiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
                 p->alphavel = -1.0 / (1 + frand() * 0.4);
 
                 p->color = 0xe8 + (rand() & 7);
-				p->brightness = 1.0f;
+				p->brightness = 0.0f;
 
                 for (j = 0; j < 3; j++) {
                     p->org[j] = move[j] + crand() * orgscale;
@@ -1575,8 +1620,101 @@ void CL_DiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
         old->trailcount -= 5;
         if (old->trailcount < 100)
             old->trailcount = 100;
+
         VectorAdd(move, vec, move);
     }
+}
+
+void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
+{
+	vec3_t      move;
+	vec3_t      vec;
+	float       len;
+	int         j;
+	cparticle_t *p;
+	float       dec;
+	float       orgscale;
+	float       velscale;
+	float valueTest;
+
+	VectorCopy(start, move);
+	VectorSubtract(end, start, vec);
+	len = VectorNormalize(vec);
+
+	dec = 0.5;
+	VectorScale(vec, dec, vec);
+
+	if (old->trailcount > 900) {
+		orgscale = 4;
+		velscale = 15;
+	}
+	else if (old->trailcount > 800) {
+		orgscale = 2;
+		velscale = 10;
+	}
+	else {
+		orgscale = 1;
+		velscale = 5;
+	}
+
+		len = len * orgscale;
+	while (len > 0) {
+		len -= dec;
+
+		// drop less particles as it flies
+	
+		p = CL_AllocParticle();
+		if (!p)
+			return;
+		VectorClear(p->accel);
+
+		p->time = cl.time;
+
+		if (flags & EF_GIB) {
+			p->alpha = 1.0;
+			valueTest = (4.0 + frand() * 0.4);			
+			p->alphavel = -1.0 / valueTest;
+			p->color = 235 + (rand() % 5);
+			p->brightness = 10.0f;
+
+			for (j = 0; j < 3; j++) {
+				p->org[j] = move[j] + crand();
+				p->vel[j] = crand() * velscale;
+				p->accel[j] = 0;
+			}
+			p->vel[2] -= PARTICLE_GRAVITY;
+		}
+		else if (flags & EF_GREENGIB) {
+			p->alpha = 1.0;
+			p->alphavel = -1.0 / (1 + frand() * 0.4);
+
+			p->color = 0xdb + (rand() & 7);
+			p->brightness = 1.0f;
+
+			for (j = 0; j < 3; j++) {
+				p->org[j] = move[j] + crand() * orgscale;
+				p->vel[j] = crand() * velscale;
+				p->accel[j] = 0;
+			}
+			p->vel[2] -= PARTICLE_GRAVITY;
+		}
+		else {
+			p->alpha = 1.0;
+			p->alphavel = -1.0 / (1 + frand() * 0.2);
+
+			p->color = 4 + (rand() & 7);
+			p->brightness = 1.0f;
+
+			for (j = 0; j < 3; j++) {
+				p->org[j] = move[j] + crand() * orgscale;
+				p->vel[j] = crand() * velscale;
+			}
+			p->accel[2] = 20;
+		}
+	}
+
+		
+	
 }
 
 /*
@@ -2010,10 +2148,13 @@ void CL_AddParticles(void)
     for (p = active_particles; p; p = next) {
         next = p->next;
 
-        if (p->alphavel != INSTANT_PARTICLE) {
-            time = (cl.time - p->time) * 0.001;
-            alpha = p->alpha + time * p->alphavel;
-            if (alpha <= 0) {
+		if (p->alphavel != INSTANT_PARTICLE) {
+
+
+			time = (cl.time - p->time) * 0.0015;
+			alpha = p->alpha + time * p->alphavel;
+
+            if (alpha <= 0.2) {
                 // faded out
                 p->next = free_particles;
                 free_particles = p;

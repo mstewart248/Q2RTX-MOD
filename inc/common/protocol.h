@@ -23,7 +23,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // protocol.h -- communications protocols
 //
 
-#define MAX_MSGLEN  0x8000  // max length of a message, 32k
+#define MAX_MSGLEN  0x80000  // max length of a message, 32k
 
 #define PROTOCOL_VERSION_OLD        26
 #define PROTOCOL_VERSION_DEFAULT    34
@@ -84,8 +84,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SUPPRESSCOUNT_BITS      4
 #define SUPPRESSCOUNT_MASK      ((1 << SUPPRESSCOUNT_BITS) - 1)
 
-#define MAX_PACKET_ENTITIES     1024
-#define MAX_PARSE_ENTITIES      (MAX_PACKET_ENTITIES * UPDATE_BACKUP)
+#define MAX_PACKET_ENTITIES     4096
+#define MAX_PARSE_ENTITIES      4096 * UPDATE_BACKUP    // should be MAX_PACKET_ENTITIES * UPDATE_BACKUP
 #define PARSE_ENTITIES_MASK     (MAX_PARSE_ENTITIES - 1)
 
 #define MAX_PACKET_USERCMDS     32

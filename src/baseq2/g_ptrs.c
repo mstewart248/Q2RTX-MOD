@@ -532,6 +532,7 @@ extern void walkmonster_start_go(void);
 extern void barrel_touch(void);
 extern void bfg_touch(void);
 extern void blaster_touch(void);
+extern void hyper_blaster_touch(void);
 extern void button_touch(void);
 extern void door_touch(void);
 extern void drop_temp_touch(void);
@@ -1151,6 +1152,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, barrel_touch },
 { P_touch, bfg_touch },
 { P_touch, blaster_touch },
+{ P_touch, hyper_blaster_touch },
 { P_touch, button_touch },
 { P_touch, door_touch },
 { P_touch, drop_temp_touch },

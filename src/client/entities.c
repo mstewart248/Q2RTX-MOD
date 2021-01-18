@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "client.h"
 #include "refresh/models.h"
+#include "baseq2/g_local.h"
 
 extern qhandle_t cl_mod_powerscreen;
 extern qhandle_t cl_mod_laser;
@@ -208,7 +209,6 @@ static void entity_event(int number)
     if (cent->event_frame != cl.frame.number)
         return;
 #endif
-
     switch (cent->current.event) {
     case EV_ITEM_RESPAWN:
         S_StartSound(NULL, number, CHAN_WEAPON, S_RegisterSound("items/respawn1.wav"), 1, ATTN_IDLE, 0);
@@ -520,12 +520,13 @@ static void CL_AddPacketEntities(void)
     clientinfo_t        *ci;
     unsigned int        effects, renderfx;
 
+	
     // bonus items rotate at a fixed rate
     autorotate = anglemod(cl.time * 0.1f);
 
     // brush models can auto animate their frames
     autoanim = 2 * cl.time / 1000;
-
+	
     memset(&ent, 0, sizeof(ent));
 
     for (pnum = 0; pnum < cl.frame.numEntities; pnum++) {
@@ -534,10 +535,19 @@ static void CL_AddPacketEntities(void)
 
         cent = &cl_entities[s1->number];
         ent.id = cent->id + RESERVED_ENTITIY_COUNT;
-
+		
         effects = s1->effects;
-        renderfx = s1->renderfx;
-
+        renderfx = s1->renderfx;	
+	
+		
+		
+		//if (effects == EF_GIBSCALE) {
+		//	if (ent.scale == 0) {
+		//		ent.scale = .25; //crandom();
+		//	}
+		//}
+		
+		
         // set frame
         if (effects & EF_ANIM01)
             ent.frame = autoanim & 1;
@@ -667,6 +677,7 @@ static void CL_AddPacketEntities(void)
             } else {
                 ent.skinnum = s1->skinnum;
                 ent.skin = 0;
+				
                 ent.model = cl.model_draw[s1->modelindex];
                 if (ent.model == cl_mod_laser || ent.model == cl_mod_dmspot)
                     renderfx |= RF_NOSHADOW;
@@ -879,15 +890,20 @@ static void CL_AddPacketEntities(void)
                     V_AddLight(ent.origin, 200, 0.1f, 0.4f, 0.12f);
                 } else {
                     CL_BlasterTrail(cent->lerp_origin, ent.origin);
-                    V_AddLight(ent.origin, 200, 0.6f, 0.4f, 0.12f);
+                    V_AddLight(ent.origin, 200, 0.5f, 0.3f, 0.5f);
                 }
             } else if (effects & EF_HYPERBLASTER) {
-                if (effects & EF_TRACKER)
-                    V_AddLight(ent.origin, 200, 0.1f, 0.4f, 0.12f);
-                else
-                    V_AddLight(ent.origin, 200, 0.6f, 0.4f, 0.12f);
-            } else if (effects & EF_GIB) {
-                CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
+				if (effects & EF_TRACKER) {
+					CL_BlasterTrail2(cent->lerp_origin, ent.origin);
+					V_AddLight(ent.origin, 200, 0.1f, 0.4f, 0.12f);
+				}
+				else {
+					CL_HyoerBlasterTrail(cent->lerp_origin, ent.origin);
+					V_AddLight(ent.origin, 200, 0.6f, 0.4f, 0.12f);
+				}
+            } else if (effects == EF_GIB || effects == EF_GIBSCALE) {			
+				
+				CL_NonDiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);				
             } else if (effects & EF_GRENADE) {
                 if (!(cl_disable_particles->integer & NOPART_GRENADE_TRAIL)) {
                     CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);

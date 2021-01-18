@@ -358,7 +358,12 @@ void flyer_fire(edict_t *self, int flash_number)
     int     effect;
 
     if ((self->s.frame == FRAME_attak204) || (self->s.frame == FRAME_attak207) || (self->s.frame == FRAME_attak210))
-        effect = EF_HYPERBLASTER;
+		if (self->monsterFireHyperBlaster) {
+			effect = EF_HYPERBLASTER;
+		}
+		else {
+			effect = EF_BLASTER;
+		}
     else
         effect = 0;
     AngleVectors(self->s.angles, forward, right, NULL);
@@ -368,7 +373,12 @@ void flyer_fire(edict_t *self, int flash_number)
     end[2] += self->enemy->viewheight;
     VectorSubtract(end, start, dir);
 
-    monster_fire_blaster(self, start, dir, 1, 1000, flash_number, effect);
+	if (self->monsterFireHyperBlaster) {
+		monster_fire_hyper_blaster(self, start, dir, 1, 1000, flash_number, effect);
+	}
+	else {
+		monster_fire_blaster(self, start, dir, 1, 1000, flash_number, effect);
+	}
 }
 
 void flyer_fireleft(edict_t *self)
@@ -539,7 +549,17 @@ void flyer_pain(edict_t *self, edict_t *other, float kick, int damage)
 
 void flyer_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
+	int     n;
+
     gi.sound(self, CHAN_VOICE, sound_die, 1, ATTN_NORM, 0);
+	
+	for (n = 0; n < 4; n++) {
+		ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+		ThrowGibRail(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+		ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+		ThrowGibNoExplode(self, "models/objects/gibs/sm_metal/tris.md2", damage, GIB_METALLIC);
+	}
+
     BecomeExplosion1(self);
 }
 
@@ -552,6 +572,15 @@ void SP_monster_flyer(edict_t *self)
         G_FreeEdict(self);
         return;
     }
+
+	float val = crandom();
+
+	if (val < 0) {
+		self->monsterFireHyperBlaster = qtrue;
+	}
+	else {
+		self->monsterFireHyperBlaster = qfalse;
+	}
 
     // fix a map bug in jail5.bsp
     if (!Q_stricmp(level.mapname, "jail5") && (self->s.origin[2] == -104)) {

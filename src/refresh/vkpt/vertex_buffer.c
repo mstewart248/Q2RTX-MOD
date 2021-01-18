@@ -44,6 +44,7 @@ static BufferResource_t null_buffer;
 VkResult
 vkpt_vertex_buffer_bsp_upload_staging()
 {
+	
 	vkWaitForFences(qvk.device, 1, &qvk.fence_vertex_sync, VK_TRUE, ~((uint64_t)0));
 	vkResetFences(qvk.device, 1, &qvk.fence_vertex_sync);
 	
@@ -390,8 +391,9 @@ vkpt_light_buffer_upload_to_staging(qboolean render_world, bsp_mesh_t *bsp_mesh,
 	// materials
 	int nmaterials = MAT_GetNumPBRMaterials();
 	pbr_material_t const * materials = MAT_GetPBRMaterialsTable();
+	int nmat;
 
-	for (int nmat = 0; nmat < nmaterials; nmat++)
+	for (nmat = 0; nmat < nmaterials; nmat++)
 	{
 		pbr_material_t const * material = materials + nmat;
 		uint32_t* mat_data = lbo->material_table + nmat * 4;
@@ -460,7 +462,7 @@ vkpt_vertex_buffer_upload_models()
 		if(!r_models[i].meshes) {
 			// model does not exist
 			continue;
-		}
+		}		
 
 		if (r_models[i].registration_sequence <= vbo->registration_sequence) {
 			// VBO is valid, nothing to do
