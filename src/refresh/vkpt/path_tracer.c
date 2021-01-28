@@ -36,6 +36,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 static uint32_t shaderGroupHandleSize = 0;
 static uint32_t shaderGroupBaseAlignment = 0;
+static uint32_t minAccelerationStructureScratchOffsetAlignment = 0;
 
 typedef struct accel_bottom_match_info_s {
 	int fast_build;
@@ -145,9 +146,14 @@ vkpt_pt_init()
 {
 	if (qvk.use_khr_ray_tracing)
 	{
+		VkPhysicalDeviceAccelerationStructurePropertiesKHR accel_struct_properties = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
+			.pNext = NULL
+		};
+
 		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rt_properties_khr = {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR,
-			.pNext = NULL
+			.pNext = &accel_struct_properties
 		};
 
 		VkPhysicalDeviceProperties2 dev_props2 = {
@@ -159,6 +165,7 @@ vkpt_pt_init()
 
 		shaderGroupBaseAlignment = rt_properties_khr.shaderGroupBaseAlignment;
 		shaderGroupHandleSize = rt_properties_khr.shaderGroupHandleSize;
+		minAccelerationStructureScratchOffsetAlignment = accel_struct_properties.minAccelerationStructureScratchOffsetAlignment;
 	}
 	else
 	{
@@ -539,6 +546,7 @@ vkpt_pt_create_accel_bottom(
 
 		// Update the scratch buffer ptr
 		scratch_buf_ptr += sizeInfo.buildScratchSize;
+		scratch_buf_ptr = align(scratch_buf_ptr, minAccelerationStructureScratchOffsetAlignment);
 		assert(scratch_buf_ptr < SIZE_SCRATCH_BUFFER);
 
 		// build offset
@@ -826,11 +834,11 @@ vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, qboolean include_world
 	append_blas(instances, &num_instances, &blas_dynamic[idx], AS_INSTANCE_FLAG_DYNAMIC, AS_FLAG_OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, 0);
 	append_blas(instances, &num_instances, &blas_transparent_models[idx], AS_INSTANCE_FLAG_DYNAMIC | transparent_model_primitive_offset, AS_FLAG_TRANSPARENT, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, 0);
 	append_blas(instances, &num_instances, &blas_explosions[idx], AS_INSTANCE_FLAG_DYNAMIC | explosions_primitive_offset, AS_FLAG_EXPLOSIONS, 0, 3);
+    append_blas(instances, &num_instances, &blas_viewer_weapon[idx], AS_INSTANCE_FLAG_DYNAMIC | viewer_weapon_primitive_offset, AS_FLAG_VIEWER_WEAPON, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | (weapon_left_handed ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR : 0), 0);
 
 	if (cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON)
 	{
 		append_blas(instances, &num_instances, &blas_viewer_models[idx], AS_INSTANCE_FLAG_DYNAMIC | viewer_model_primitive_offset, AS_FLAG_VIEWER_MODELS, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, 0);
-		append_blas(instances, &num_instances, &blas_viewer_weapon[idx], AS_INSTANCE_FLAG_DYNAMIC | viewer_weapon_primitive_offset, AS_FLAG_VIEWER_WEAPON, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | (weapon_left_handed ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR : 0), 0);
 	}
 
 	if (cvar_pt_enable_particles->integer != 0)
