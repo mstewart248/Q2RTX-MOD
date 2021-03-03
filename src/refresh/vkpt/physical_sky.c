@@ -647,13 +647,42 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	process_gamepad_input();
 
-	float azimuth, elevation;
+	double azimuth, elevation;
 
-	static float start_time = 0.0f, sun_animate_changed = 0.0f;
+	static float start_time = 0.0f, sun_animate_changed = 0.0f, sun_last_update = 0.0f, old_elevation = 0.0f, old_azimuth = 0.0f, static_time = 0.0f, last_time = 0.0f;
+	static qboolean bLevelChangeTwice = qfalse;
+	static qboolean bStaticTimeKicked = qfalse;
+
+	if (sun_animate->value > 0) {
+		if (last_time > time) {
+			if (bLevelChangeTwice) {
+				static_time += last_time;
+			}
+			sun_last_update = 0.0f;
+			bLevelChangeTwice = qtrue;
+		}
+
+		last_time = time;
+
+		if (!bStaticTimeKicked) {
+			if (static_time > time) {
+				time += static_time;
+				bStaticTimeKicked = qtrue;
+			}
+			else {
+				static_time = time;
+			}
+		}
+		else {
+			time += static_time;
+		}
+	}
+
 	if (sun_animate->value != sun_animate_changed)
 	{
 		start_time = time;
 		sun_animate_changed = sun_animate->value;
+		sun_last_update = 0.0f;
 	}
 
 	const int preset = active_sun_preset();
@@ -714,28 +743,41 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 		default:
 			if (sun_animate->value > 0.0f)
 			{
-				float elapsed = (time - start_time) * 1000.f * sun_animate->value;
+				float elapsed = (time - start_time) * 250.f * sun_animate->value;
+				float usedElapsed;
 
-				azimuth = fmod(sun_azimuth->value + elapsed / (24.f * 60.f * 60.f), 360.0f);
+				
+				if((elapsed - sun_last_update > (1000 * sun_animate->value)) || sun_last_update == 0) {					
+					azimuth = fmod(sun_azimuth->value + elapsed / (24.f * 60.f * 60.f), 360.0f);
+					sun_last_update = elapsed;
 
-				float e = fmod(sun_elevation->value + elapsed / (60.f * 60.f), 360.0f);
-				if (e > 270.f)
-					elevation = -(360.f - e);
-				else if (e > 180.0f)
-				{
-					elevation = -(e - 180.0f);
-					azimuth = fmod(azimuth + 180.f, 360.f);
+
+					double e = fmod(sun_elevation->value + elapsed / (60.f * 60.f), 360.0f);
+					if (e > 270.f)
+						elevation = -(360.f - e);
+					else if (e > 180.0f)
+					{
+						elevation = -(e - 180.0f);
+						azimuth = fmod(azimuth + 180.f, 360.f);
+					}
+					else if (e > 90.0f)
+					{
+						elevation = 180.0f - e;
+						azimuth = fmod(azimuth + 180.f, 360.f);
+					}
+					else
+						elevation = e;
+					elevation = max(-90, min(90, elevation));
+
+					old_elevation = elevation;
+					old_azimuth = azimuth;
+					skyNeedsUpdate = VK_TRUE;
 				}
-				else if (e > 90.0f)
-				{
-					elevation = 180.0f - e;
-					azimuth = fmod(azimuth + 180.f, 360.f);
+				else {
+					skyNeedsUpdate = VK_FALSE;
+					elevation = old_elevation;
+					azimuth = old_azimuth;
 				}
-				else
-					elevation = e;
-				elevation = max(-90, min(90, elevation));
-
-				skyNeedsUpdate = VK_TRUE;
 			}
 			else
 			{
