@@ -30,7 +30,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MIN_PACKETLEN                   512     // don't allow smaller packets
 #define MAX_PACKETLEN                   4096    // max length of a single packet
 #define PACKET_HEADER                   10      // two ints and a short (worst case)
-#define MAX_PACKETLEN_DEFAULT           1400    // default quake2 limit
+#define MAX_PACKETLEN_DEFAULT           4096    // default quake2 limit changed from 1400
 #define MAX_PACKETLEN_WRITABLE          (MAX_PACKETLEN - PACKET_HEADER)
 #define MAX_PACKETLEN_WRITABLE_DEFAULT  (MAX_PACKETLEN_DEFAULT - PACKET_HEADER)
 
