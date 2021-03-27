@@ -136,8 +136,7 @@ VkptInit_t vkpt_initialization[] = {
 	{ "images",   vkpt_create_images,                  vkpt_destroy_images,                  VKPT_INIT_SWAPCHAIN_RECREATE, 0 },
 	{ "draw",     vkpt_draw_initialize,                vkpt_draw_destroy,                    VKPT_INIT_DEFAULT,            0 },
 	{ "pt",       vkpt_pt_init,                        vkpt_pt_destroy,                      VKPT_INIT_DEFAULT,            0 },
-	{ "pt|",      vkpt_pt_create_pipelines,            vkpt_pt_destroy_pipelines,            VKPT_INIT_SWAPCHAIN_RECREATE
-	                                                                                       | VKPT_INIT_RELOAD_SHADER,      0 },
+	{ "pt|",      vkpt_pt_create_pipelines,            vkpt_pt_destroy_pipelines,            VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "draw|",    vkpt_draw_create_pipelines,          vkpt_draw_destroy_pipelines,          VKPT_INIT_SWAPCHAIN_RECREATE
 	                                                                                       | VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "vbo|",     vkpt_vertex_buffer_create_pipelines, vkpt_vertex_buffer_destroy_pipelines, VKPT_INIT_RELOAD_SHADER,      0 },
@@ -536,9 +535,14 @@ qvkDestroyDebugUtilsMessengerEXT(
 VkResult
 create_swapchain()
 {
+    num_accumulated_frames = 0;
+
 	/* create swapchain (query details and ignore them afterwards :-) )*/
 	VkSurfaceCapabilitiesKHR surf_capabilities;
 	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(qvk.physical_device, qvk.surface, &surf_capabilities);
+
+	if (surf_capabilities.currentExtent.width == 0 || surf_capabilities.currentExtent.height == 0)
+		return VK_SUCCESS;
 
 	uint32_t num_formats = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(qvk.physical_device, qvk.surface, &num_formats, NULL);
@@ -687,8 +691,6 @@ out:;
 
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, qtrue);
 	vkpt_wait_idle(qvk.queue_graphics, &qvk.cmd_buffers_graphics);
-
-	num_accumulated_frames = 0;
 
 	return VK_SUCCESS;
 }
@@ -1394,9 +1396,13 @@ destroy_swapchain()
 {
 	for(int i = 0; i < qvk.num_swap_chain_images; i++) {
 		vkDestroyImageView  (qvk.device, qvk.swap_chain_image_views[i], NULL);
+		qvk.swap_chain_image_views[i] = VK_NULL_HANDLE;
 	}
+	qvk.num_swap_chain_images = 0;
 
-	vkDestroySwapchainKHR(qvk.device,   qvk.swap_chain, NULL);
+	vkDestroySwapchainKHR(qvk.device, qvk.swap_chain, NULL);
+	qvk.swap_chain = VK_NULL_HANDLE;
+
 	return VK_SUCCESS;
 }
 
@@ -2503,6 +2509,9 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 void
 R_RenderFrame_RTX(refdef_t *fd)
 {
+	if (!qvk.swap_chain)
+		return;
+
 	vkpt_refdef.fd = fd;
 	qboolean render_world = (fd->rdflags & RDF_NOWORLDMODEL) == 0;
 
@@ -2948,6 +2957,18 @@ R_BeginFrame_RTX(void)
 		exit(1);
 	}
 
+	if (!qvk.swap_chain)
+	{
+		VkSurfaceCapabilitiesKHR surf_capabilities;
+		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(qvk.physical_device, qvk.surface, &surf_capabilities);
+
+		// see if we're un-minimized again
+		if (surf_capabilities.currentExtent.width != 0 && surf_capabilities.currentExtent.height != 0)
+		{
+			recreate_swapchain();
+		}
+	}
+
 	drs_process();
 	if (vkpt_refdef.fd)
 	{
@@ -2965,9 +2986,11 @@ R_BeginFrame_RTX(void)
 		recreate_swapchain();
 	}
 
-
-
 retry:;
+
+	if (!qvk.swap_chain) // we're minimized, don't render
+		return;
+
 #ifdef VKPT_DEVICE_GROUPS
 	VkAcquireNextImageInfoKHR acquire_info = {
 		.sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR,
@@ -3025,6 +3048,12 @@ void
 R_EndFrame_RTX(void)
 {
 	LOG_FUNC();
+
+	if (!qvk.swap_chain)
+	{
+		vkpt_draw_clear_stretch_pics();
+		return;
+	}
 
 	if(cvar_profiler->integer)
 		draw_profiler(cvar_flt_enable->integer != 0);
@@ -3132,7 +3161,7 @@ R_EndFrame_RTX(void)
 void
 R_ModeChanged_RTX(int width, int height, int flags, int rowbytes, void *pixels)
 {
-	Com_Printf("mode changed %d %d\n", width, height);
+	Com_DPrintf("mode changed %d %d\n", width, height);
 
 	r_config.width  = width;
 	r_config.height = height;
