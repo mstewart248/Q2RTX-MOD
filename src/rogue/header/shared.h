@@ -30,9 +30,9 @@ typedef enum {false, true}  qboolean;
 #define YAW 1                       /* left / right */
 #define ROLL 2                      /* fall over */
 
-#define MAX_STRING_CHARS 1024       /* max length of a string passed to Cmd_TokenizeString */
-#define MAX_STRING_TOKENS 80        /* max tokens resulting from Cmd_TokenizeString */
-#define MAX_TOKEN_CHARS 128         /* max length of an individual token */
+#define MAX_STRING_CHARS 4096      /* max length of a string passed to Cmd_TokenizeString */
+#define MAX_STRING_TOKENS 256        /* max tokens resulting from Cmd_TokenizeString */
+#define MAX_TOKEN_CHARS 1024        /* max length of an individual token */
 
 #define MAX_QPATH 64                /* max length of a quake game pathname */
 
@@ -46,7 +46,7 @@ typedef enum {false, true}  qboolean;
 /* per-level limits */
 /* */
 #define MAX_CLIENTS 256             /* absolute limit */
-#define MAX_EDICTS 1024             /* must change protocol to increase more */
+#define MAX_EDICTS 8192           /* must change protocol to increase more */
 #define MAX_LIGHTSTYLES 256
 #define MAX_MODELS 256              /* these are sent over the net as bytes */
 #define MAX_SOUNDS 256              /* so they cannot be blindly increased */
@@ -285,6 +285,8 @@ struct genctx_s;
 
 typedef void(*xchanged_t)(struct cvar_s *);
 typedef void(*xgenerator_t)(struct genctx_s *);
+typedef enum { qfalse, qtrue } qboolean;
+
 
 /* nothing outside the Cvar_*() functions should modify these fields! */
 typedef struct cvar_s
@@ -522,7 +524,8 @@ typedef struct
    An entity that has effects will be sent to the client even if
    it has a zero index model. */
 #define EF_ROTATE 0x00000001                /* rotate (bonus items) */
-#define EF_GIB 0x00000002                   /* leave a trail */
+#define EF_GIB 0x00000002  
+#define EF_GIBSCALE 0x00000003 /* leave a trail */
 #define EF_BLASTER 0x00000008               /* redlight + trail */
 #define EF_ROCKET 0x00000010                /* redlight + trail */
 #define EF_GRENADE 0x00000020
@@ -850,6 +853,7 @@ typedef enum
 	TE_GUNSHOT,
 	TE_BLOOD,
 	TE_BLASTER,
+	TE_HYPERBLASTER,
 	TE_RAILTRAIL,
 	TE_SHOTGUN,
 	TE_EXPLOSION1,
@@ -1047,6 +1051,7 @@ typedef struct entity_state_s
 	int frame;
 	int skinnum;
 	unsigned int effects;
+	unsigned int oldEffects;
 	int renderfx;
 	int solid;              /* for client side prediction, 8*(bits 0-4) is x/y radius */
 							/* 8*(bits 5-9) is z down distance, 8(bits10-15) is z up */

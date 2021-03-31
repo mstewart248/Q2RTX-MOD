@@ -214,7 +214,7 @@ InitGame(void)
 	deathmatch = gi.cvar ("deathmatch", "0", CVAR_LATCH);
 	coop = gi.cvar ("coop", "0", CVAR_LATCH);
 	skill = gi.cvar ("skill", "1", CVAR_LATCH);
-	maxentities = gi.cvar ("maxentities", "1024", CVAR_LATCH);
+	maxentities = gi.cvar ("maxentities", "4096", CVAR_LATCH);
 	gamerules = gi.cvar ("gamerules", "0", CVAR_LATCH);			//PGM
 
 	/* change anytime vars */
@@ -468,7 +468,10 @@ WriteField1(FILE *f, field_t *field, byte *base)
 
 				if (!func)
 				{
-					gi.error ("WriteField1: function not in list, can't save game");
+					//gi.error ("WriteField1: function not in list, can't save game");
+					len = 0;
+					*(int*)p = len;
+					break;
 				}
 
 				len = strlen(func->funcStr)+1;
@@ -535,7 +538,9 @@ WriteField2(FILE *f, field_t *field, byte *base)
 
 				if (!func)
 				{
-					gi.error ("WriteField2: function not in list, can't save game");
+					len = 0;
+					//gi.error ("WriteField2: function not in list, can't save game");
+					break;
 				}
 
 				len = strlen(func->funcStr)+1;

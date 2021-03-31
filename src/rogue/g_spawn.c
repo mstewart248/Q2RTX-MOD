@@ -736,6 +736,7 @@ SpawnEntities(const char *mapname, char *entities, const char *spawnpoint)
 	int i;
 	float skill_level;
 
+
 	if (!mapname || !entities || !spawnpoint)
 	{
 		return;

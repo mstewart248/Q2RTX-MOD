@@ -46,7 +46,7 @@ typedef enum {false, true} qboolean;
 /* per-level limits */
 /* */
 #define MAX_CLIENTS 256             /* absolute limit */
-#define MAX_EDICTS 1024             /* must change protocol to increase more */
+#define MAX_EDICTS 8192            /* must change protocol to increase more */
 #define MAX_LIGHTSTYLES 256
 #define MAX_MODELS 256              /* these are sent over the net as bytes */
 #define MAX_SOUNDS 256              /* so they cannot be blindly increased */
@@ -94,6 +94,7 @@ typedef vec_t vec5_t[5];
 typedef int fixed4_t;
 typedef int fixed8_t;
 typedef int fixed16_t;
+typedef enum { qfalse, qtrue } qboolean;
 
 #ifndef M_PI
  #define M_PI 3.14159265358979323846 /* matches value in gcc v2 math.h */
