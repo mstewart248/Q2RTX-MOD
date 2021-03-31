@@ -73,7 +73,7 @@ static int drs_effective_scale = 0;
 cvar_t* cvar_min_driver_version = NULL;
 cvar_t* cvar_min_driver_version_khr = NULL;
 cvar_t* cvar_min_driver_version_amd = NULL;
-cvar_t *cvar_nv_ray_tracing = NULL;
+cvar_t *cvar_ray_tracing_api = NULL;
 cvar_t *cvar_vk_validation = NULL;
 
 extern uiStatic_t uis;
@@ -394,6 +394,7 @@ QVK_t qvk = {
 
 #define VK_EXTENSION_DO(a) PFN_##a q##a = 0;
 LIST_EXTENSIONS_KHR
+LIST_EXTENSIONS_KHR_PIPELINE
 LIST_EXTENSIONS_NV
 LIST_EXTENSIONS_DEBUG
 LIST_EXTENSIONS_INSTANCE
@@ -429,6 +430,12 @@ const char *vk_requested_device_extensions_khr[] = {
 	VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
 	VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 	VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME
+};
+
+const char* vk_requested_device_extensions_ray_query[] = {
+	VK_KHR_RAY_QUERY_EXTENSION_NAME,
+	VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME
 };
 
@@ -897,7 +904,10 @@ init_vulkan()
 		num_device_groups = 1;
 		_VK(vkEnumeratePhysicalDeviceGroups(qvk.instance, &num_device_groups, &device_group_info));
 
-		if (device_group_info.physicalDeviceCount > VKPT_MAX_GPUS) {
+		if (device_group_info.physicalDeviceCount > VKPT_MAX_GPUS)
+		{
+			Com_EPrintf("SLI: device group 0 has %d devices, which is more than maximum supported count (%d).\n",
+				device_group_info.physicalDeviceCount, VKPT_MAX_GPUS);
 			return qfalse;
 		}
 
@@ -910,23 +920,46 @@ init_vulkan()
 		for(int i = 0; i < qvk.device_count; i++) {
 			qvk.device_group_physical_devices[i] = device_group_create_info.pPhysicalDevices[i];
 		}
-	} else
-#endif
+		Com_Printf("SLI: using device group 0 with %d device(s).\n", qvk.device_count);
+	}
+	else
+	{
 		qvk.device_count = 1;
+		if (!cvar_sli->integer)
+			Com_Printf("SLI: multi-GPU support disabled through the 'sli' console variable.\n");
+		else
+			Com_Printf("SLI: no device groups found, using a single device.\n");
+	}
+#else
+	qvk.device_count = 1;
+#endif
 
 	int picked_device_with_khr = -1;
 	int picked_device_with_nv = -1;
+	int picked_device_with_ray_query = -1;
+	VkDriverId picked_driver_khr = VK_DRIVER_ID_MAX_ENUM;
+	VkDriverId picked_driver_ray_query = VK_DRIVER_ID_MAX_ENUM;
 	qvk.use_khr_ray_tracing = qfalse;
+	qvk.use_ray_query = qfalse;
 
 	for(int i = 0; i < num_devices; i++) 
 	{
-		VkPhysicalDeviceProperties dev_properties;
-		VkPhysicalDeviceFeatures   dev_features;
-		vkGetPhysicalDeviceProperties(devices[i], &dev_properties);
-		vkGetPhysicalDeviceFeatures  (devices[i], &dev_features);
+		VkPhysicalDeviceDriverProperties driver_properties = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+			.pNext = NULL
+		};
 
-		Com_Printf("Physical device %d: %s\n", i, dev_properties.deviceName);
-		Com_Printf("Max number of allocations: %d\n", dev_properties.limits.maxMemoryAllocationCount);
+		VkPhysicalDeviceProperties2 dev_properties2 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+			.pNext = &driver_properties
+		};
+		vkGetPhysicalDeviceProperties2(devices[i], &dev_properties2);
+
+		VkPhysicalDeviceFeatures dev_features;
+		vkGetPhysicalDeviceFeatures(devices[i], &dev_features);
+
+		Com_Printf("Physical device %d: %s\n", i, dev_properties2.properties.deviceName);
+
 		uint32_t num_ext;
 		vkEnumerateDeviceExtensionProperties(devices[i], NULL, &num_ext, NULL);
 
@@ -951,27 +984,70 @@ init_vulkan()
 				if (picked_device_with_khr < 0)
 				{
 					picked_device_with_khr = i;
+					picked_driver_khr = driver_properties.driverID;
+				}
+			}
+
+			if (!strcmp(ext_properties[j].extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME))
+			{
+				if (picked_device_with_ray_query < 0)
+				{
+					picked_device_with_ray_query = i;
+					picked_driver_ray_query = driver_properties.driverID;
 				}
 			}
 		}
 	}
 
 	int picked_device = -1;
-	if ((!cvar_nv_ray_tracing->integer || picked_device_with_nv < 0) && picked_device_with_khr >= 0)
-	{
-		picked_device = picked_device_with_khr;
-		qvk.use_khr_ray_tracing = qtrue;
 
-		if (cvar_nv_ray_tracing->integer)
-		{
-			Com_WPrintf("Use of %s is requested through cvar %s, but there is no GPU that supports it. Switching to KHR.\n",
-				VK_NV_RAY_TRACING_EXTENSION_NAME, cvar_nv_ray_tracing->name);
-		}
-	}
-	else if(picked_device_with_nv >= 0)
+	if (!Q_strcasecmp(cvar_ray_tracing_api->string, "query") && picked_device_with_ray_query >= 0)
 	{
-		picked_device = picked_device_with_nv;
+		qvk.use_khr_ray_tracing = qtrue;
+		qvk.use_ray_query = qtrue;
+		picked_device = picked_device_with_ray_query;
+	}
+	else if (!Q_strcasecmp(cvar_ray_tracing_api->string, "pipeline") && picked_device_with_khr >= 0)
+	{
+		qvk.use_khr_ray_tracing = qtrue;
+		qvk.use_ray_query = qfalse;
+		picked_device = picked_device_with_khr;
+	}
+	else if (!Q_strcasecmp(cvar_ray_tracing_api->string, "nv") && picked_device_with_nv >= 0)
+	{
 		qvk.use_khr_ray_tracing = qfalse;
+		qvk.use_ray_query = qfalse;
+		picked_device = picked_device_with_nv;
+	}
+
+	if (picked_device < 0)
+	{
+		if (Q_strcasecmp(cvar_ray_tracing_api->string, "auto"))
+		{
+			Com_WPrintf("Requested Ray Tracing API (%s) is not available, switching to automatic selection.\n", cvar_ray_tracing_api->string);
+		}
+
+		if (picked_driver_ray_query == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
+		{
+			// Pick KHR_ray_query on NVIDIA drivers, if available.
+			// Currently, ray queries are very slow on AMD.
+			qvk.use_khr_ray_tracing = qtrue;
+			qvk.use_ray_query = qtrue;
+			picked_device = picked_device_with_ray_query;
+		}
+		else if (picked_device_with_khr >= 0)
+		{
+			// If KHR_ray_tracing_pipeline is available, pick that over NV_ray_tracing
+			qvk.use_khr_ray_tracing = qtrue;
+			qvk.use_ray_query = qfalse;
+			picked_device = picked_device_with_khr;
+		}
+		else if (picked_device_with_nv >= 0)
+		{
+			qvk.use_khr_ray_tracing = qfalse;
+			qvk.use_ray_query = qfalse;
+			picked_device = picked_device_with_nv;
+		}
 	}
 
 	if (picked_device < 0)
@@ -998,7 +1074,9 @@ init_vulkan()
 		qvk.timestampPeriod = dev_properties2.properties.limits.timestampPeriod;
 
 		Com_Printf("Picked physical device %d: %s\n", picked_device, dev_properties2.properties.deviceName);
-		Com_Printf("Using %s\n", qvk.use_khr_ray_tracing ? VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME : VK_NV_RAY_TRACING_EXTENSION_NAME);
+		Com_Printf("Using %s\n", qvk.use_khr_ray_tracing 
+			? (qvk.use_ray_query ? VK_KHR_RAY_QUERY_EXTENSION_NAME : VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)
+			: VK_NV_RAY_TRACING_EXTENSION_NAME);
 
 #ifdef _WIN32
 		if (dev_properties2.properties.vendorID == 0x10de) // NVIDIA vendor ID
@@ -1149,19 +1227,12 @@ init_vulkan()
 
 #ifdef VKPT_DEVICE_GROUPS
 	if (qvk.device_count > 1) {
-		Com_Printf("Enabling multi-GPU support\n");
 		idx_features.pNext = &device_group_create_info;
 	}
 #endif
-	VkPhysicalDeviceRayTracingPipelineFeaturesKHR physical_device_rt_features = {
-		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
-		.pNext = &idx_features,
-		.rayTracingPipeline = VK_TRUE
-	};
-
 	VkPhysicalDeviceAccelerationStructureFeaturesKHR physical_device_as_features = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
-		.pNext = &physical_device_rt_features,
+		.pNext = &idx_features,
 		.accelerationStructure = VK_TRUE,
 	};
 
@@ -1169,6 +1240,18 @@ init_vulkan()
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
 		.pNext = &physical_device_as_features,
 		.bufferDeviceAddress = VK_TRUE
+	};
+
+	VkPhysicalDeviceRayTracingPipelineFeaturesKHR physical_device_rt_pipeline_features = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
+		.pNext = &physical_device_address_features,
+		.rayTracingPipeline = VK_TRUE
+	};
+
+	VkPhysicalDeviceRayQueryFeaturesKHR physical_device_ray_query_features = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+		.pNext = &physical_device_address_features,
+		.rayQuery = VK_TRUE
 	};
 
 	VkPhysicalDeviceFeatures2 device_features = {
@@ -1239,7 +1322,7 @@ init_vulkan()
 	};
 
 	uint32_t max_extension_count = LENGTH(vk_requested_device_extensions_common);
-	max_extension_count += max(LENGTH(vk_requested_device_extensions_khr), LENGTH(vk_requested_device_extensions_nv));
+	max_extension_count += max(max(LENGTH(vk_requested_device_extensions_khr), LENGTH(vk_requested_device_extensions_nv)), LENGTH(vk_requested_device_extensions_ray_query));
 	max_extension_count += LENGTH(vk_requested_device_extensions_debug);
 
 	const char** device_extensions = alloca(sizeof(char*) * max_extension_count);
@@ -1250,9 +1333,20 @@ init_vulkan()
 
 	if(qvk.use_khr_ray_tracing)
 	{
-		append_string_list(device_extensions, &device_extension_count, max_extension_count, 
-			vk_requested_device_extensions_khr, LENGTH(vk_requested_device_extensions_khr));
-		device_features.pNext = &physical_device_address_features;
+		if (qvk.use_ray_query)
+		{
+			append_string_list(device_extensions, &device_extension_count, max_extension_count,
+				vk_requested_device_extensions_ray_query, LENGTH(vk_requested_device_extensions_ray_query));
+
+			device_features.pNext = &physical_device_ray_query_features;
+		}
+		else
+		{
+			append_string_list(device_extensions, &device_extension_count, max_extension_count,
+				vk_requested_device_extensions_khr, LENGTH(vk_requested_device_extensions_khr));
+
+			device_features.pNext = &physical_device_rt_pipeline_features;
+		}
 	}
 	else
 	{
@@ -1289,6 +1383,10 @@ init_vulkan()
 	if (qvk.use_khr_ray_tracing)
 	{
 		LIST_EXTENSIONS_KHR
+		if (!qvk.use_ray_query)
+		{
+			LIST_EXTENSIONS_KHR_PIPELINE
+		}
 	}
 	else
 	{
@@ -1314,7 +1412,12 @@ create_shader_module_from_file(const char *name, const char *enum_name, qboolean
 	if (is_rt_shader)
 	{
 		if (qvk.use_khr_ray_tracing)
-			suffix = ".khr";
+		{
+			if (qvk.use_ray_query)
+				suffix = ".rq";
+			else
+				suffix = ".khr";
+		}
 		else
 			suffix = ".nv";
 	}
@@ -1370,9 +1473,13 @@ vkpt_load_shader_modules()
 	} while(0);
 
 #define IS_RT_SHADER qfalse
-	LIST_SHADER_MODULES
+	LIST_SHADER_MODULES;
 #define IS_RT_SHADER qtrue
-	LIST_RT_SHADER_MODULES
+	LIST_RT_RGEN_SHADER_MODULES
+	if(!qvk.use_ray_query)
+	{
+		LIST_RT_PIPELINE_SHADER_MODULES
+	}
 #undef IS_RT_SHADER
 
 #undef SHADER_MODULE_DO
@@ -1455,6 +1562,7 @@ destroy_vulkan()
 	// Clear the extension function pointers to make sure they don't refer non-requested extensions after vid_restart
 #define VK_EXTENSION_DO(a) q##a = NULL;
 	LIST_EXTENSIONS_KHR
+	LIST_EXTENSIONS_KHR_PIPELINE
 	LIST_EXTENSIONS_NV
 	LIST_EXTENSIONS_DEBUG
 	LIST_EXTENSIONS_INSTANCE
@@ -3201,6 +3309,15 @@ static float halton(int base, int index) {
 	return r;
 };
 
+// Autocompletion support for ray_tracing_api cvar
+static void ray_tracing_api_g(genctx_t *ctx)
+{
+	Prompt_AddMatch(ctx, "auto");
+	Prompt_AddMatch(ctx, "query");
+	Prompt_AddMatch(ctx, "pipeline");
+	Prompt_AddMatch(ctx, "nv");
+}
+
 /* called when the library is loaded */
 qboolean
 R_Init_RTX(qboolean total)
@@ -3263,9 +3380,14 @@ R_Init_RTX(qboolean total)
 	// Minimum AMD driver version
 	cvar_min_driver_version_amd = Cvar_Get("min_driver_version_amd", "21.1.1", 0);
 
-	// When nonzero, the game will pick NV_ray_tracing if both NV and KHR extensions are available
-	cvar_nv_ray_tracing = Cvar_Get("nv_ray_tracing", "0", CVAR_REFRESH | CVAR_ARCHIVE);
-	
+	// Selects which RT API to use:
+	//  auto     - automatic selection based on the GPU
+	//  query    - prefer KHR_ray_query
+	//  pipeline - prefer KHR_ray_tracing_pipeline
+	//  nv       - prefer NV_ray_tracing
+	cvar_ray_tracing_api = Cvar_Get("ray_tracing_api", "auto", CVAR_REFRESH | CVAR_ARCHIVE);
+	cvar_ray_tracing_api->generator = &ray_tracing_api_g;
+
 	// When nonzero, the Vulkan validation layer is requested
 	cvar_vk_validation = Cvar_Get("vk_validation", "0", CVAR_REFRESH | CVAR_ARCHIVE);
 
