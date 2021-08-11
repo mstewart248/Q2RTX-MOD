@@ -684,6 +684,85 @@ int Q_strcasecmp(const char *s1, const char *s2)
     return 0;        /* strings are equal */
 }
 
+int Q_strHas(const char* inputString, const char* searchString) {
+    char* inputSearchPointer = searchString;
+    int currIndex;
+    int currSearchIndex;
+    qboolean qFound = qfalse;
+
+    do {
+        char* currPointer = inputString;
+        
+        currIndex = *inputString++;
+        currSearchIndex = *searchString;
+
+        if (Q_tolower(currIndex) == Q_tolower(currSearchIndex)) {
+            qFound = qtrue;
+            searchString++;
+        }
+        else {
+            qFound = qfalse;
+            searchString = inputSearchPointer;
+        }
+
+    } while (currIndex && *searchString);
+
+    if (qFound && !*searchString) {
+        return 1;
+    }
+
+    return 0;
+}
+
+int Q_strTextureCompare(const char* inputString, const char* compareString) {
+    int inputIndex, compareIndex;
+    char* originalInputPointer = inputString;
+    char* originalComparePointer = compareString;
+    char* lastInputSlashIndex = NULL, *lastCompareSlashIndex = NULL;
+
+    do {
+        char* currPointer = inputString;
+        inputIndex = *inputString++;     
+        
+        if ((char)inputIndex == '/') {
+            lastInputSlashIndex = currPointer;
+        }
+
+    } while (inputIndex);
+
+    inputString = originalInputPointer;
+
+    do {
+        char* currPointer = compareString;
+        compareIndex = *compareString++;
+
+        if ((char)compareIndex == '/') {
+            lastCompareSlashIndex = currPointer;
+        }
+    } while (compareIndex);
+
+    compareString = originalComparePointer;
+
+    if (lastInputSlashIndex && lastCompareSlashIndex) {
+
+        do {
+            inputIndex = *lastInputSlashIndex++;
+            compareIndex = *lastCompareSlashIndex++;
+
+            if (Q_tolower(inputIndex) != Q_tolower(compareIndex)) {
+                return 1;
+            }
+
+        } while (inputIndex && compareIndex);
+    }
+    else {
+        return -1;
+    }
+
+    return 0;
+
+}
+
 char *Q_strcasestr(const char *s1, const char *s2)
 {
     size_t l1, l2;
