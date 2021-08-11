@@ -28,6 +28,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <tinyobj_loader_c.h>
 
 extern cvar_t *cvar_pt_enable_nodraw;
+extern cvar_t *cvar_pt_enable_surface_lights;
+extern cvar_t *cvar_pt_enable_surface_lights_warp;
+extern cvar_t *cvar_pt_surface_lights_fake_emissive_algo;
 
 static void
 remove_collinear_edges(float* positions, float* tex_coords, int* num_vertices)
@@ -300,9 +303,10 @@ get_triangle_off_center(const float* positions, float* center, float* anti_cente
 	CrossProduct(e1, e2, normal);
 	float length = VectorNormalize(normal);
 
-	// Offset the center by one normal to make sure that the point is
+	// Offset the center by a fraction of the normal to make sure that the point is
 	// inside a BSP leaf and not on a boundary plane.
 
+	VectorScale(normal, 0.01, normal);
 	VectorAdd(center, normal, center);
 
 	if (anti_center)
@@ -380,7 +384,7 @@ is_sky_or_lava_cluster(bsp_mesh_t* wm, mface_t* surf, int cluster, int material_
 	return qfalse;
 }
 
-static void merge_pvs_rows(bsp_t* bsp, char* src, char* dst)
+static void merge_pvs_rows(bsp_t* bsp, byte* src, byte* dst)
 {
 	for (int i = 0; i < bsp->visrowsize; i++)
 	{
@@ -389,7 +393,7 @@ static void merge_pvs_rows(bsp_t* bsp, char* src, char* dst)
 }
 
 #define FOREACH_BIT_BEGIN(SET,ROWSIZE,VAR) \
-	for (int _byte_idx = 0; _byte_idx < ROWSIZE; _byte_idx++) { \
+	for (int _byte_idx = 0; _byte_idx < (ROWSIZE); _byte_idx++) { \
 	if (SET[_byte_idx]) { \
 		for (int _bit_idx = 0; _bit_idx < 8; _bit_idx++) { \
 			if (SET[_byte_idx] & (1 << _bit_idx)) { \
@@ -397,7 +401,7 @@ static void merge_pvs_rows(bsp_t* bsp, char* src, char* dst)
 
 #define FOREACH_BIT_END  } } } }
 
-static void connect_pvs(bsp_t* bsp, int cluster_a, char* pvs_a, int cluster_b, char* pvs_b)
+static void connect_pvs(bsp_t* bsp, int cluster_a, byte* pvs_a, int cluster_b, byte* pvs_b)
 {
 	FOREACH_BIT_BEGIN(pvs_a, bsp->visrowsize, vis_cluster_a)
 		if (vis_cluster_a != cluster_a && vis_cluster_a != cluster_b)
@@ -421,12 +425,12 @@ static void make_pvs_symmetric(bsp_t* bsp)
 {
 	for (int cluster = 0; cluster < bsp->vis->numclusters; cluster++)
 	{
-		char* pvs = BSP_GetPvs(bsp, cluster);
+		byte* pvs = BSP_GetPvs(bsp, cluster);
 
 		FOREACH_BIT_BEGIN(pvs, bsp->visrowsize, vis_cluster)
 			if (vis_cluster != cluster)
 			{
-				char* vis_pvs = BSP_GetPvs(bsp, vis_cluster);
+				byte* vis_pvs = BSP_GetPvs(bsp, vis_cluster);
 				Q_SetBit(vis_pvs, cluster);
 			}
 		FOREACH_BIT_END
@@ -441,12 +445,12 @@ static void build_pvs2(bsp_t* bsp)
 
 	for (int cluster = 0; cluster < bsp->vis->numclusters; cluster++)
 	{
-		char* pvs = BSP_GetPvs(bsp, cluster);
-		char* dest_pvs = BSP_GetPvs2(bsp, cluster);
+		byte* pvs = BSP_GetPvs(bsp, cluster);
+		byte* dest_pvs = BSP_GetPvs2(bsp, cluster);
 		memcpy(dest_pvs, pvs, bsp->visrowsize);
 
 		FOREACH_BIT_BEGIN(pvs, bsp->visrowsize, vis_cluster)
-			char* pvs2 = BSP_GetPvs(bsp, vis_cluster);
+			byte* pvs2 = BSP_GetPvs(bsp, vis_cluster);
 			merge_pvs_rows(bsp, pvs2, dest_pvs);
 		FOREACH_BIT_END
 	}
@@ -552,8 +556,8 @@ collect_surfaces(int *idx_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int (*
 
 						if (cluster >= 0 && anti_cluster >= 0 && cluster != anti_cluster)
 						{
-							char* pvs_cluster = BSP_GetPvs(bsp, cluster);
-							char* pvs_anti_cluster = BSP_GetPvs(bsp, anti_cluster);
+							byte* pvs_cluster = BSP_GetPvs(bsp, cluster);
+							byte* pvs_anti_cluster = BSP_GetPvs(bsp, anti_cluster);
 
 							if (!Q_IsBitSet(pvs_cluster, anti_cluster) || !Q_IsBitSet(pvs_anti_cluster, cluster))
 							{
@@ -726,7 +730,7 @@ is_light_material(uint32_t material)
 }
 
 static void
-collect_ligth_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, int* allocated_lights, light_poly_t** lights)
+collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, int* allocated_lights, light_poly_t** lights)
 {
 	mface_t *surfaces = model_idx < 0 ? bsp->faces : bsp->models[model_idx].firstface;
 	int num_faces = model_idx < 0 ? bsp->numfaces : bsp->models[model_idx].numfaces;
@@ -985,7 +989,7 @@ collect_ligth_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 }
 
 static void
-collect_sky_and_lava_ligth_polys(bsp_mesh_t *wm, bsp_t* bsp)
+collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 {
 	for (int i = 0; i < bsp->numfaces; i++)
 	{
@@ -999,6 +1003,8 @@ collect_sky_and_lava_ligth_polys(bsp_mesh_t *wm, bsp_t* bsp)
 
 		qboolean is_sky = !!(flags & SURF_SKY);
 		qboolean is_lava = surf->texinfo->material ? MAT_IsKind(surf->texinfo->material->flags, MATERIAL_KIND_LAVA) : qfalse;
+
+		is_lava &= (surf->texinfo->material->image_emissive != NULL);
 
 		if (!is_sky && !is_lava)
 			continue;
@@ -1094,8 +1100,8 @@ encode_normal(vec3_t normal)
     pp[0] = pp[0] * 0.5f + 0.5f;
     pp[1] = pp[1] * 0.5f + 0.5f;
 
-    pp[0] = clamp(pp[0], 0.f, 1.f);
-    pp[1] = clamp(pp[1], 0.f, 1.f);
+    clamp(pp[0], 0.f, 1.f);
+    clamp(pp[1], 0.f, 1.f);
 
     uint32_t ux = (uint32_t)(pp[0] * 0xffffu);
     uint32_t uy = (uint32_t)(pp[1] * 0xffffu);
@@ -1227,7 +1233,7 @@ load_sky_and_lava_clusters(bsp_mesh_t* wm, const char* map_name)
     qboolean found_map = qfalse;
 
     char* filebuf = NULL;
-    FS_LoadFile(filename, &filebuf);
+    FS_LoadFile(filename, (void**)&filebuf);
     
     if (filebuf)
     {
@@ -1237,7 +1243,7 @@ load_sky_and_lava_clusters(bsp_mesh_t* wm, const char* map_name)
     else
     {
         // try to load the global file
-        FS_LoadFile("sky_clusters.txt", &filebuf);
+        FS_LoadFile("sky_clusters.txt", (void**)&filebuf);
         if (!filebuf)
         {
             Com_WPrintf("Couldn't read sky_clusters.txt\n");
@@ -1298,7 +1304,7 @@ load_cameras(bsp_mesh_t* wm, const char* map_name)
 	wm->num_cameras = 0;
 
 	char* filebuf = NULL;
-	FS_LoadFile("cameras.txt", &filebuf);
+	FS_LoadFile("cameras.txt", (void**)&filebuf);
 	if (!filebuf)
 	{
 		Com_WPrintf("Couldn't read cameras.txt\n");
@@ -1365,14 +1371,15 @@ compute_sky_visibility(bsp_mesh_t *wm, bsp_t *bsp)
 		int prim = wm->world_sky_offset / 3 + i;
 
 		int cluster = wm->clusters[prim];
-		clusters_with_sky[cluster >> 3] |= (1 << (cluster & 7));
+		if ((cluster >> 3) < VIS_MAX_BYTES)
+			clusters_with_sky[cluster >> 3] |= (1 << (cluster & 7));
 	}
 
 	for (int cluster = 0; cluster < numclusters; cluster++)
 	{
 		if (clusters_with_sky[cluster >> 3] & (1 << (cluster & 7)))
 		{
-			char* mask = BSP_GetPvs(bsp, cluster);
+			byte* mask = BSP_GetPvs(bsp, cluster);
 
 			for (int i = 0; i < bsp->visrowsize; i++)
 				wm->sky_visibility[i] |= mask[i];
@@ -1480,7 +1487,7 @@ collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
 		if(light->cluster < 0)
 			continue;
 
-		const byte* pvs = BSP_GetPvs(bsp, light->cluster);
+		const byte* pvs = (const byte*)BSP_GetPvs(bsp, light->cluster);
 
 		FOREACH_BIT_BEGIN(pvs, bsp->visrowsize, other_cluster)
 			aabb_t* cluster_aabb = wm->cluster_aabbs + other_cluster;
@@ -1647,7 +1654,7 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
     wm->materials = Z_Malloc(MAX_VERT_BSP / 3 * sizeof(*wm->materials));
     wm->clusters = Z_Malloc(MAX_VERT_BSP / 3 * sizeof(*wm->clusters));
 
-	// clear these here because `bsp_mesh_load_custom_sky` creates lights before `collect_ligth_polys`
+	// clear these here because `bsp_mesh_load_custom_sky` creates lights before `collect_light_polys`
 	wm->num_light_polys = 0;
 	wm->allocated_light_polys = 0;
 	wm->light_polys = NULL;
@@ -1731,8 +1738,8 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 
 	compute_cluster_aabbs(wm);
 
-	collect_ligth_polys(wm, bsp, -1, &wm->num_light_polys, &wm->allocated_light_polys, &wm->light_polys);
-	collect_sky_and_lava_ligth_polys(wm, bsp);
+	collect_light_polys(wm, bsp, -1, &wm->num_light_polys, &wm->allocated_light_polys, &wm->light_polys);
+	collect_sky_and_lava_light_polys(wm, bsp);
 
 	for (int k = 0; k < bsp->nummodels; k++)
 	{
@@ -1742,7 +1749,7 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 		model->allocated_light_polys = 0;
 		model->light_polys = NULL;
 		
-		collect_ligth_polys(wm, bsp, k, &model->num_light_polys, &model->allocated_light_polys, &model->light_polys);
+		collect_light_polys(wm, bsp, k, &model->num_light_polys, &model->allocated_light_polys, &model->light_polys);
 
 		model->transparent = is_model_transparent(wm, model);
 	}
@@ -1773,6 +1780,19 @@ bsp_mesh_destroy(bsp_mesh_t *wm)
 	memset(wm, 0, sizeof(*wm));
 }
 
+static image_t* get_fake_emissive_image(image_t* diffuse)
+{
+	switch(cvar_pt_surface_lights_fake_emissive_algo->integer)
+	{
+	case 0:
+		return diffuse;
+	case 1:
+		return vkpt_fake_emissive_texture(diffuse);
+	default:
+		return NULL;
+	}
+}
+
 void
 bsp_mesh_register_textures(bsp_t *bsp)
 {
@@ -1792,37 +1812,67 @@ bsp_mesh_register_textures(bsp_t *bsp)
 		if (!mat)
 			Com_EPrintf("error finding material '%s'\n", buffer);
 
-		image_t* image_diffuse = IMG_Find(buffer, IT_WALL, flags | IF_SRGB);
-		image_t* image_normals = NULL;
-		image_t* image_emissive = NULL;
+		vkpt_material_images_t images;
+		vkpt_load_material_images(&images, buffer, IT_WALL, flags);
 
-		if (image_diffuse != R_NOTEXTURE)
+		if (images.normals && !images.normals->processing_complete)
 		{
-			// attempt loading the second texture
-			Q_concat(buffer, sizeof(buffer), "textures/", info->name, "_n.tga", NULL);
-			FS_NormalizePath(buffer, buffer);
-			image_normals = IMG_Find(buffer, IT_WALL, flags);
-			if (image_normals == R_NOTEXTURE) image_normals = NULL;
+			vkpt_normalize_normal_map(images.normals);
+		}
 
-            if (image_normals && !image_normals->processing_complete)
-            {
-                vkpt_normalize_normal_map(image_normals);
-            }
+		if(cvar_pt_enable_surface_lights->value)
+		{
+			/* Synthesize an emissive material if the BSP surface has the LIGHT flag but the
+			   material has no emissive image.
+			   - Skip SKY and NODRAW surfaces, they'll be handled differently.
+			   - Make WARP surfaces optional, as giving water, slime... an emissive texture clashes visually. */
+			qboolean synth_surface_material = ((info->c.flags & (SURF_LIGHT | SURF_SKY | SURF_NODRAW)) == SURF_LIGHT)
+				&& (info->radiance != 0);
+			qboolean needs_emissive = synth_surface_material && (images.emissive == NULL);
 
-			// attempt loading the emissive texture
-			Q_concat(buffer, sizeof(buffer), "textures/", info->name, "_light.tga", NULL);
-			FS_NormalizePath(buffer, buffer);
-			image_emissive = IMG_Find(buffer, IT_WALL, flags | IF_SRGB);
-			if (image_emissive == R_NOTEXTURE) image_emissive = NULL;
+			qboolean is_warp_surface = (info->c.flags & SURF_WARP) != 0;
+			/* HACK: If set, assign an "emissive" texture to the material,
+			   but then set material ID to the original (non-emissive) one.
+			   This causes the surface to emit light, but no emissive component
+			   appears when the surface is rendered */
+			qboolean warp_surface_hack = is_warp_surface && (cvar_pt_enable_surface_lights_warp->value == 1);
 
-			if (image_emissive && !image_emissive->processing_complete && (mat->emissive_scale > 0.f) && ((mat->flags & MATERIAL_FLAG_LIGHT) != 0 || MAT_IsKind(mat->flags, MATERIAL_KIND_LAVA)))
+			qboolean material_custom = MAT_IsCustom(mat->flags);
+			synth_surface_material &= (cvar_pt_enable_surface_lights->value >= 2) || material_custom || warp_surface_hack;
+			if(cvar_pt_enable_surface_lights_warp->value == 0)
+				synth_surface_material &= !is_warp_surface;
+			if(synth_surface_material && needs_emissive)
 			{
-				vkpt_extract_emissive_texture_info(image_emissive);
+				pbr_material_t *new_mat = MAT_CloneForRadiance(mat, info->radiance);
+				if (warp_surface_hack)
+				{
+					new_mat->flags = (new_mat->flags & ~MATERIAL_INDEX_MASK) | (mat->flags & MATERIAL_INDEX_MASK);
+				}
+				mat = new_mat;
+				if(mat->image_emissive && (mat->image_emissive != R_NOTEXTURE))
+				{
+					// Use previously created emissive image
+					images.emissive = mat->image_emissive;
+				}
+				else
+				{
+					images.emissive = get_fake_emissive_image(images.diffuse);
+				}
+			}
+			else if(needs_emissive && !material_custom)
+			{
+				// Print something for materials listed in materials.csv
+				Com_DPrintf("Material '%s' used on LIGHT surface doesn't have emissive image\n", info->name);
 			}
 		}
 
+		if (images.emissive && !images.emissive->processing_complete && (mat->emissive_scale > 0.f) && ((mat->flags & MATERIAL_FLAG_LIGHT) != 0 || MAT_IsKind(mat->flags, MATERIAL_KIND_LAVA)))
+		{
+			vkpt_extract_emissive_texture_info(images.emissive);
+		}
+
 		// finish registration
-		MAT_RegisterPBRMaterial(mat, image_diffuse, image_normals, image_emissive);
+		MAT_RegisterPBRMaterial(mat, images.diffuse, images.normals, images.emissive);
 
 		info->material = mat;
 	}

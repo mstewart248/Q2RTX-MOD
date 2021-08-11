@@ -1,4 +1,5 @@
-cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.9)
+cmake_policy(SET CMP0069 NEW)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -30,6 +31,7 @@ OPTION(CONFIG_VKPT_ENABLE_DEVICE_GROUPS "Enable device groups (multi-gpu) suppor
 OPTION(CONFIG_VKPT_ENABLE_IMAGE_DUMPS "Enable image dumping functionality" OFF)
 OPTION(CONFIG_USE_CURL "Use CURL for HTTP support" ON)
 OPTION(CONFIG_LINUX_PACKAGING_SUPPORT "Enable Linux Packaging support" OFF)
+OPTION(CONFIG_LINUX_PACKAGING_SKIP_PKZ "Skip zipping the game contents into .pkz when packaging (for quicker iteration)" OFF)
 OPTION(CONFIG_LINUX_STEAM_RUNTIME_SUPPORT "Enable Linux Steam Runtime support" OFF)
 IF(WIN32)
     SET(DEFAULT_BUILD_GLSLANG OFF)
@@ -37,7 +39,20 @@ ELSE()
     SET(DEFAULT_BUILD_GLSLANG ON)
 ENDIF()
 OPTION(CONFIG_BUILD_GLSLANG "Build glslangValidator from source instead of using the SDK" ${DEFAULT_BUILD_GLSLANG})
+OPTION(CONFIG_BUILD_IPO "Enable interprocedural optimizations" OFF)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+include(CheckIPOSupported)
+
+IF(CONFIG_BUILD_IPO)
+    check_ipo_supported(RESULT result OUTPUT output)
+    if(result)
+        MESSAGE(STATUS "Enabled interprocedural optimizations")
+    else()
+        MESSAGE(STATUS "Interprocedural optimizations not supported: ${output}")
+        SET(CONFIG_BUILD_IPO OFF)
+    endif()
+ENDIF()
 
 # ---------- Setup output Directories -------------------------
 set (CMAKE_LIBRARY_OUTPUT_DIRECTORY
@@ -71,6 +86,8 @@ link_directories(.)
 
 set(CMAKE_INSTALL_PREFIX ${PROJECT_BINARY_DIR}/install)
 
+SET(CMAKE_INTERPROCEDURAL_OPTIMIZATION ${CONFIG_BUILD_IPO})
+
 add_subdirectory(src)
 
 IF(CONFIG_LINUX_PACKAGING_SUPPORT)
@@ -83,9 +100,15 @@ IF(CONFIG_LINUX_PACKAGING_SUPPORT)
     set(CPACK_PACKAGE_VERSION_MAJOR ${Q2RTX_VERSION_MAJOR})
     set(CPACK_PACKAGE_VERSION_MINOR ${Q2RTX_VERSION_MINOR})
     set(CPACK_PACKAGE_VERSION_PATCH ${Q2RTX_VERSION_POINT})
-    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}")
-    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
     set(CPACK_DEBIAN_PACKAGE_SECTION "games")
+    
+    IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+    ELSE()
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+    ENDIF()
+
+    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}-${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
 
     set(CPACK_PACKAGE_CONTACT "http://nvidia.com/object/support.html")
 

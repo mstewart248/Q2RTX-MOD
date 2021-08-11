@@ -176,8 +176,7 @@ typedef struct refdef_s {
 typedef enum {
     QVF_ACCELERATED     = (1 << 0),
     QVF_GAMMARAMP       = (1 << 1),
-    QVF_FULLSCREEN      = (1 << 2),
-    QVF_VIDEOSYNC       = (1 << 3)
+    QVF_FULLSCREEN      = (1 << 2)
 } vidFlags_t;
 
 typedef struct {
@@ -203,7 +202,13 @@ typedef enum {
     IF_REPEAT       = (1 << 6),
     IF_NEAREST      = (1 << 7),
     IF_OPAQUE       = (1 << 8),
-	IF_SRGB         = (1 << 9)
+    IF_SRGB         = (1 << 9),
+    IF_FAKE_EMISSIVE= (1 << 10),
+
+    // Image source indicator/requirement flags
+    IF_SRC_BASE     = (0x1 << 16),
+    IF_SRC_GAME     = (0x2 << 16),
+    IF_SRC_MASK     = (0x3 << 16),
 } imageflags_t;
 
 typedef enum {

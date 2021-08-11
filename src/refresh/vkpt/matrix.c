@@ -21,7 +21,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "baseq2/g_local.h"
 
 void
-create_entity_matrix(float matrix[16], entity_t *e, qboolean enable_left_hand)
+create_entity_matrix(mat4_t matrix, entity_t *e, qboolean enable_left_hand)
 {
 	vec3_t axis[3];
 	vec3_t origin;
@@ -102,8 +102,7 @@ create_entity_matrix_noscale(float matrix[16], entity_t *e, qboolean enable_left
 	matrix[15] = 1.0f;
 }
 
-void
-create_projection_matrix(float matrix[16], float znear, float zfar, float fov_x, float fov_y)
+create_projection_matrix(mat4_t matrix, float znear, float zfar, float fov_x, float fov_y)
 {
 	float xmin, xmax, ymin, ymax;
 	float width, height, depth;
@@ -140,7 +139,7 @@ create_projection_matrix(float matrix[16], float znear, float zfar, float fov_x,
 }
 
 void
-create_orthographic_matrix(float matrix[16], float xmin, float xmax,
+create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 		float ymin, float ymax, float znear, float zfar)
 {
 	float width, height, depth;
@@ -171,7 +170,7 @@ create_orthographic_matrix(float matrix[16], float xmin, float xmax,
 }
 
 void
-create_view_matrix(float matrix[16], refdef_t *fd)
+create_view_matrix(mat4_t matrix, refdef_t *fd)
 {
 	vec3_t viewaxis[3];
 	AnglesToAxis(fd->viewangles, viewaxis);
@@ -198,7 +197,7 @@ create_view_matrix(float matrix[16], refdef_t *fd)
 }
 
 void
-inverse(const float *m, float *inv)
+inverse(const mat4_t m, mat4_t inv)
 {
 	inv[0] = m[5]  * m[10] * m[15] -
 	         m[5]  * m[11] * m[14] -
@@ -321,7 +320,7 @@ inverse(const float *m, float *inv)
 }
 
 void
-mult_matrix_matrix(float *p, const float *a, const float *b)
+mult_matrix_matrix(mat4_t p, const mat4_t a, const mat4_t b)
 {
 	for(int i = 0; i < 4; i++) {
 		for(int j = 0; j < 4; j++) {
@@ -335,7 +334,7 @@ mult_matrix_matrix(float *p, const float *a, const float *b)
 }
 
 void
-mult_matrix_vector(float *p, const float *a, const float *b)
+mult_matrix_vector(mat4_t p, const mat4_t a, const vec4_t b)
 {
 	int j;
 	for (j = 0; j < 4; j++) {

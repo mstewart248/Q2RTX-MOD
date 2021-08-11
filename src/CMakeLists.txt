@@ -1,4 +1,12 @@
-cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.9)
+cmake_policy(SET CMP0069 NEW)
+
+if (UNIX)
+	FIND_PACKAGE(OpenAL)
+	if (NOT OPENAL_INCLUDE_DIR)
+		message(FATAL_ERROR "Can't find OpenAL. Please install the libopenal-dev package.")
+	endif()
+endif()
 
 SET(SRC_BASEQ2
 	baseq2/g_ai.c
@@ -380,6 +388,7 @@ SET(HEADERS_COMMON
 SET(SRC_REFRESH
 	refresh/images.c
 	refresh/models.c
+	refresh/model_iqm.c
 	refresh/stb/stb.c
 )
 
@@ -474,6 +483,7 @@ SET(SRC_VKPT
 	refresh/vkpt/buddy_allocator.c
 	refresh/vkpt/device_memory_allocator.c
 	refresh/vkpt/god_rays.c
+	refresh/vkpt/conversion.c
 )
 
 SET(HEADERS_VKPT
@@ -484,6 +494,7 @@ SET(HEADERS_VKPT
 	refresh/vkpt/material.h
 	refresh/vkpt/physical_sky.h
 	refresh/vkpt/precomputed_sky.h
+	refresh/vkpt/conversion.h
 )
 
 set(SRC_SHADERS
@@ -525,32 +536,37 @@ set(SRC_RT_SHADERS
 	refresh/vkpt/shader/path_tracer_particle.rahit
 	refresh/vkpt/shader/path_tracer_sprite.rahit
 	refresh/vkpt/shader/path_tracer_beam.rahit
+	refresh/vkpt/shader/path_tracer_beam.rint
 	refresh/vkpt/shader/path_tracer_explosion.rahit
 	refresh/vkpt/shader/path_tracer_shadow.rmiss
 	refresh/vkpt/shader/reflect_refract.rgen
 )
 
-include(../cmake/compileShaders.cmake)
+# Only build shaders in 64-bit builds, because the client
+# is also only built for 64-bit systems.
+IF(IS_64_BIT)
+    include(../cmake/compileShaders.cmake)
 
-foreach(s ${SRC_RT_SHADERS})
-	get_filename_component(shader_name ${s} NAME)
-	get_filename_component(shader_ext ${s} EXT)
-	compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode OUTPUT_FILE_NAME "${shader_name}.nv" DEFINES "-DNV_RAY_TRACING")
-	compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode OUTPUT_FILE_NAME "${shader_name}.khr" DEFINES "-DKHR_RAY_TRACING")
-	if (shader_ext STREQUAL ".rgen")
-		compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode OUTPUT_FILE_NAME "${shader_name}.rq" DEFINES "-DKHR_RAY_QUERY" STAGE "comp")
-	endif()
-endforeach()
+    foreach(s ${SRC_RT_SHADERS})
+        get_filename_component(shader_name ${s} NAME)
+        get_filename_component(shader_ext ${s} EXT)
+        compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode OUTPUT_FILE_NAME "${shader_name}.nv" DEFINES "-DNV_RAY_TRACING")
+        compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode OUTPUT_FILE_NAME "${shader_name}.khr" DEFINES "-DKHR_RAY_TRACING")
+        if (shader_ext STREQUAL ".rgen")
+            compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode OUTPUT_FILE_NAME "${shader_name}.rq" DEFINES "-DKHR_RAY_QUERY" STAGE "comp")
+        endif()
+    endforeach()
 
-foreach(s ${SRC_SHADERS})
-	compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode)
-endforeach()
+    foreach(s ${SRC_SHADERS})
+        compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode)
+    endforeach()
 
-add_custom_target(shaders DEPENDS ${shader_bytecode})
+    add_custom_target(shaders DEPENDS ${shader_bytecode})
 
-if(TARGET glslangValidator)
-	add_dependencies(shaders glslangValidator)
-endif()
+    if(TARGET glslangValidator)
+        add_dependencies(shaders glslangValidator)
+    endif()
+ENDIF()
 
 # Embed version number
 ADD_DEFINITIONS(-DVERSION_MAJOR=${Q2RTX_VERSION_MAJOR})
@@ -574,84 +590,89 @@ IF(WIN32)
 	ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS)
 ENDIF()
 
-ADD_LIBRARY(gamex86_baseq2 SHARED ${SRC_BASEQ2} ${HEADERS_BASEQ2} ${SRC_SHARED})
-ADD_LIBRARY(gamex86_xatrix SHARED ${SRC_XATRIX} ${HEADERS_XATRIX})
-ADD_LIBRARY(gamex86_rogue SHARED ${SRC_ROGUE} ${HEADERS_ROGUE})
+ADD_LIBRARY(baseq2 SHARED ${SRC_BASEQ2} ${HEADERS_BASEQ2} ${SRC_SHARED})
 
 IF(WIN32)
-ADD_EXECUTABLE(client WIN32 
-	${SRC_CLIENT} ${HEADERS_CLIENT} 
-	${SRC_COMMON} ${HEADERS_COMMON} 
-	${SRC_REFRESH} ${SRC_SHADERS} 
-	${SRC_SHARED} 
-	${SRC_WINDOWS} ${SRC_WINDOWS_CLIENT} ${HEADERS_WINDOWS}
-	${SRC_SERVER} ${HEADERS_SERVER}
-	windows/res/q2rtx.rc
-)
-ADD_EXECUTABLE(server 
-	${SRC_COMMON} ${HEADERS_COMMON} 
-	${SRC_SHARED} 
-	${SRC_WINDOWS} ${HEADERS_WINDOWS}
-	${SRC_SERVER} ${HEADERS_SERVER}
-	server/ac.c
-	client/null.c
-	windows/res/q2rtxded.rc
-)
+    IF(IS_64_BIT)
+        ADD_EXECUTABLE(client WIN32 
+            ${SRC_CLIENT} ${HEADERS_CLIENT} 
+            ${SRC_COMMON} ${HEADERS_COMMON} 
+            ${SRC_REFRESH} ${SRC_SHADERS} 
+            ${SRC_SHARED} 
+            ${SRC_WINDOWS} ${SRC_WINDOWS_CLIENT} ${HEADERS_WINDOWS}
+            ${SRC_SERVER} ${HEADERS_SERVER}
+            windows/res/q2rtx.rc
+        )
+    ENDIF()
+    ADD_EXECUTABLE(server 
+        ${SRC_COMMON} ${HEADERS_COMMON} 
+        ${SRC_SHARED} 
+        ${SRC_WINDOWS} ${HEADERS_WINDOWS}
+        ${SRC_SERVER} ${HEADERS_SERVER}
+        server/ac.c
+        client/null.c
+        windows/res/q2rtxded.rc
+    )
 ELSE()
-ADD_EXECUTABLE(client
-	${SRC_CLIENT} ${HEADERS_CLIENT} 
-	${SRC_COMMON} ${HEADERS_COMMON} 
-	${SRC_REFRESH} ${SRC_SHADERS} 
-	${SRC_SHARED} 
-	${SRC_LINUX} ${SRC_LINUX_CLIENT}
-	${SRC_SERVER} ${HEADERS_SERVER}
-)
-ADD_EXECUTABLE(server
-	${SRC_COMMON} ${HEADERS_COMMON} 
-	${SRC_SHARED} 
-	${SRC_LINUX}
-	${SRC_SERVER} ${HEADERS_SERVER}
-	server/ac.c
-	client/null.c
-)
+    IF(IS_64_BIT)
+        ADD_EXECUTABLE(client
+            ${SRC_CLIENT} ${HEADERS_CLIENT} 
+            ${SRC_COMMON} ${HEADERS_COMMON} 
+            ${SRC_REFRESH} ${SRC_SHADERS} 
+            ${SRC_SHARED} 
+            ${SRC_LINUX} ${SRC_LINUX_CLIENT}
+            ${SRC_SERVER} ${HEADERS_SERVER}
+        )
+    ENDIF()
+    ADD_EXECUTABLE(server
+        ${SRC_COMMON} ${HEADERS_COMMON} 
+        ${SRC_SHARED} 
+        ${SRC_LINUX}
+        ${SRC_SERVER} ${HEADERS_SERVER}
+        server/ac.c
+        client/null.c
+    )
 ENDIF()
 
-TARGET_COMPILE_DEFINITIONS(client PRIVATE USE_SERVER=1 USE_CLIENT=1)
 TARGET_COMPILE_DEFINITIONS(server PRIVATE USE_SERVER=1 USE_CLIENT=0)
 
-IF(CONFIG_USE_CURL)
-	TARGET_SOURCES(client PRIVATE ${SRC_CLIENT_HTTP})
-	TARGET_COMPILE_DEFINITIONS(client PRIVATE USE_CURL=1)
-	TARGET_LINK_LIBRARIES(client libcurl)
+IF (TARGET client)
+    TARGET_COMPILE_DEFINITIONS(client PRIVATE USE_SERVER=1 USE_CLIENT=1)
+
+    IF(CONFIG_USE_CURL)
+        TARGET_SOURCES(client PRIVATE ${SRC_CLIENT_HTTP})
+        TARGET_COMPILE_DEFINITIONS(client PRIVATE USE_CURL=1)
+        TARGET_LINK_LIBRARIES(client libcurl)
+    ENDIF()
+
+    add_dependencies(client shaders)
+
+    IF (CONFIG_GL_RENDERER)
+        TARGET_SOURCES(client PRIVATE ${SRC_GL} ${HEADERS_GL})
+        TARGET_COMPILE_DEFINITIONS(client PRIVATE REF_GL=1 USE_REF=1)
+    ENDIF()
+
+    IF (CONFIG_VKPT_RENDERER)
+        TARGET_SOURCES(client PRIVATE ${SRC_VKPT} ${HEADERS_VKPT})
+        TARGET_INCLUDE_DIRECTORIES(client PRIVATE ${CMAKE_SOURCE_DIR}/extern/Vulkan-Headers/include)
+        LINK_DIRECTORIES(client PRIVATE ${CMAKE_SOURCE_DIR})
+        TARGET_COMPILE_DEFINITIONS(client PRIVATE REF_VKPT=1 USE_REF=1)
+        IF (CONFIG_VKPT_ENABLE_DEVICE_GROUPS)
+            TARGET_COMPILE_DEFINITIONS(client PRIVATE VKPT_DEVICE_GROUPS)
+        ENDIF()
+        if (CONFIG_VKPT_ENABLE_IMAGE_DUMPS)
+            TARGET_COMPILE_DEFINITIONS(client PRIVATE VKPT_IMAGE_DUMPS)
+        ENDIF()
+        IF (WIN32)
+        TARGET_LINK_LIBRARIES(client vulkan-1)
+        ELSE ()
+        TARGET_LINK_LIBRARIES(client vulkan)
+        ENDIF()
+    ENDIF()
+
+    TARGET_LINK_LIBRARIES(client stb)
+    TARGET_LINK_LIBRARIES(client tinyobjloader)
 ENDIF()
-
-add_dependencies(client shaders)
-
-IF (CONFIG_GL_RENDERER)
-	TARGET_SOURCES(client PRIVATE ${SRC_GL} ${HEADERS_GL})
-	TARGET_COMPILE_DEFINITIONS(client PRIVATE REF_GL=1 USE_REF=1)
-ENDIF()
-
-IF (CONFIG_VKPT_RENDERER)
-	TARGET_SOURCES(client PRIVATE ${SRC_VKPT} ${HEADERS_VKPT})
-	TARGET_INCLUDE_DIRECTORIES(client PRIVATE ${CMAKE_SOURCE_DIR}/extern/Vulkan-Headers/include)
-	LINK_DIRECTORIES(client PRIVATE ${CMAKE_SOURCE_DIR})
-	TARGET_COMPILE_DEFINITIONS(client PRIVATE REF_VKPT=1 USE_REF=1)
-	IF (CONFIG_VKPT_ENABLE_DEVICE_GROUPS)
-		TARGET_COMPILE_DEFINITIONS(client PRIVATE VKPT_DEVICE_GROUPS)
-	ENDIF()
-	if (CONFIG_VKPT_ENABLE_IMAGE_DUMPS)
-		TARGET_COMPILE_DEFINITIONS(client PRIVATE VKPT_IMAGE_DUMPS)
-	ENDIF()
-	IF (WIN32)
-	TARGET_LINK_LIBRARIES(client vulkan-1)
-	ELSE ()
-	TARGET_LINK_LIBRARIES(client vulkan)
-	ENDIF()
-ENDIF()
-
-TARGET_LINK_LIBRARIES(client stb)
-TARGET_LINK_LIBRARIES(client tinyobjloader)
 
 SOURCE_GROUP("baseq2\\sources" FILES ${SRC_BASEQ2})
 SOURCE_GROUP("baseq2\\headers" FILES ${HEADERS_BASEQ2})
@@ -673,59 +694,69 @@ SOURCE_GROUP("windows\\sources" FILES ${SRC_WINDOWS})
 SOURCE_GROUP("windows\\headers" FILES ${HEADERS_WINDOWS})
 
 IF (WIN32)
-	TARGET_INCLUDE_DIRECTORIES(client PRIVATE ../VC/inc)
-	TARGET_INCLUDE_DIRECTORIES(server PRIVATE ../VC/inc)
-	TARGET_INCLUDE_DIRECTORIES(gamex86_baseq2 PRIVATE ../VC/inc)
-	TARGET_INCLUDE_DIRECTORIES(gamex86_xatrix PRIVATE ../VC/inc)
-	TARGET_INCLUDE_DIRECTORIES(gamex86_rogue PRIVATE ../VC/inc)
-	TARGET_SOURCES(gamex86_baseq2 PRIVATE windows/res/baseq2.rc)
+    IF(TARGET client)
+        TARGET_INCLUDE_DIRECTORIES(client PRIVATE ../VC/inc)
+        TARGET_LINK_LIBRARIES(client winmm ws2_32)
+        SET_TARGET_PROPERTIES(client PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        # macro redefinition, deprecation
+        TARGET_COMPILE_OPTIONS(client PRIVATE /wd4005 /wd4996)
+    ENDIF()
 
-	TARGET_LINK_LIBRARIES(client winmm ws2_32)
-	TARGET_LINK_LIBRARIES(server winmm ws2_32)
+    TARGET_INCLUDE_DIRECTORIES(server PRIVATE ../VC/inc)
+    TARGET_INCLUDE_DIRECTORIES(baseq2 PRIVATE ../VC/inc)
+    TARGET_SOURCES(baseq2 PRIVATE windows/res/baseq2.rc)
 
-	set_target_properties(client PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-	set_target_properties(server PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    TARGET_LINK_LIBRARIES(server winmm ws2_32)
 
-	# macro redefinition, deprecation
-	target_compile_options(client PRIVATE /wd4005 /wd4996)
-	target_compile_options(server PRIVATE /wd4005 /wd4996)
-	target_compile_options(gamex86_baseq2 PRIVATE /wd4005 /wd4996)
-	target_compile_options(gamex86_xatrix PRIVATE /wd4005 /wd4996)
-	target_compile_options(gamex86_rogue PRIVATE /wd4005 /wd4996)
+    SET_TARGET_PROPERTIES(server PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+    # macro redefinition, deprecation
+    TARGET_COMPILE_OPTIONS(server PRIVATE /wd4005 /wd4996)
+    TARGET_COMPILE_OPTIONS(baseq2 PRIVATE /wd4005 /wd4996)
 ENDIF()
 
-TARGET_INCLUDE_DIRECTORIES(gamex86_baseq2 PRIVATE ../inc)
-TARGET_INCLUDE_DIRECTORIES(gamex86_xatrix PRIVATE ../inc)
-TARGET_INCLUDE_DIRECTORIES(gamex86_rogue PRIVATE ../inc)
+TARGET_INCLUDE_DIRECTORIES(baseq2 PRIVATE ../inc)
 
-TARGET_INCLUDE_DIRECTORIES(client PRIVATE ../inc)
-TARGET_INCLUDE_DIRECTORIES(client PRIVATE "${ZLIB_INCLUDE_DIRS}")
+IF(TARGET client)
+    TARGET_INCLUDE_DIRECTORIES(client PRIVATE ../inc)
+    TARGET_INCLUDE_DIRECTORIES(client PRIVATE "${ZLIB_INCLUDE_DIRS}")
+ENDIF()
+
 TARGET_INCLUDE_DIRECTORIES(server PRIVATE ../inc)
 TARGET_INCLUDE_DIRECTORIES(server PRIVATE "${ZLIB_INCLUDE_DIRS}")
 
 # Use dynamic zlib for steam runtime
 if (CONFIG_LINUX_STEAM_RUNTIME_SUPPORT)
-    TARGET_LINK_LIBRARIES(client SDL2main SDL2-static z)
-    TARGET_LINK_LIBRARIES(server SDL2main SDL2-static z)
+    IF(TARGET client)
+        TARGET_LINK_LIBRARIES(client SDL2main SDL2-static z)
+    ENDIF()
+    TARGET_LINK_LIBRARIES(server z)
 else()
-    TARGET_LINK_LIBRARIES(client SDL2main SDL2-static zlibstatic)
-    TARGET_LINK_LIBRARIES(server SDL2main SDL2-static zlibstatic)
+    IF(TARGET client)
+        TARGET_LINK_LIBRARIES(client SDL2main SDL2-static zlibstatic)
+    ENDIF()
+    TARGET_LINK_LIBRARIES(server zlibstatic)
 endif()
 
-SET_TARGET_PROPERTIES(client
-    PROPERTIES
-    OUTPUT_NAME "q2rtx"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}"
-    DEBUG_POSTFIX ""
-)
+IF(UNIX)
+    TARGET_LINK_LIBRARIES(server dl m)
+ENDIF()
+
+IF(TARGET client)
+    SET_TARGET_PROPERTIES(client
+        PROPERTIES
+        OUTPUT_NAME "q2rtx"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}"
+        DEBUG_POSTFIX ""
+    )
+ENDIF()
 
 SET_TARGET_PROPERTIES(server
     PROPERTIES
-    OUTPUT_NAME "q2rtxded"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
@@ -734,9 +765,15 @@ SET_TARGET_PROPERTIES(server
     DEBUG_POSTFIX ""
 )
 
+IF (IS_64_BIT)
+    SET_TARGET_PROPERTIES(server PROPERTIES OUTPUT_NAME "q2rtxded")
+ELSE()
+    SET_TARGET_PROPERTIES(server PROPERTIES OUTPUT_NAME "q2rtxded-x86")
+ENDIF()
+
 # specify both LIBRARY and RUNTIME because one works only on Windows and another works only on Linux
 
-SET_TARGET_PROPERTIES(gamex86_baseq2
+SET_TARGET_PROPERTIES(baseq2
     PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/baseq2"
     LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/baseq2"
@@ -785,36 +822,42 @@ SET_TARGET_PROPERTIES(gamex86_rogue
 )
 
 IF(IS_64_BIT)
-	SET_TARGET_PROPERTIES(gamex86_baseq2
-		PROPERTIES
-		LIBRARY_OUTPUT_NAME "gamex86_64"
-		RUNTIME_OUTPUT_NAME "gamex86_64"
-	)
-	
-SET_TARGET_PROPERTIES(gamex86_xatrix
-		PROPERTIES
-		LIBRARY_OUTPUT_NAME "gamex86_64"
-		RUNTIME_OUTPUT_NAME "gamex86_64"
-	)	
-	
-SET_TARGET_PROPERTIES(gamex86_rogue
-		PROPERTIES
-		LIBRARY_OUTPUT_NAME "gamex86_64"
-		RUNTIME_OUTPUT_NAME "gamex86_64"
-	)		
+	IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+		SET_TARGET_PROPERTIES(baseq2
+			PROPERTIES
+			LIBRARY_OUTPUT_NAME "gameaarch64"
+			RUNTIME_OUTPUT_NAME "gameaarch64"
+		)
+	ELSE()
+		SET_TARGET_PROPERTIES(baseq2
+			PROPERTIES
+			LIBRARY_OUTPUT_NAME "gamex86_64"
+			RUNTIME_OUTPUT_NAME "gamex86_64"
+		)
+	ENDIF()
+ELSE()
+    SET_TARGET_PROPERTIES(baseq2
+        PROPERTIES
+        LIBRARY_OUTPUT_NAME "gamex86"
+        RUNTIME_OUTPUT_NAME "gamex86"
+    )
 ENDIF()
 
 IF(CONFIG_LINUX_PACKAGING_SUPPORT)
     # Put the real game binary in /usr/share so we can have a wrapper in /usr/bin
-    INSTALL(TARGETS client DESTINATION share/quake2rtx/bin COMPONENT shareware)
+    IF(TARGET client)
+        INSTALL(TARGETS client DESTINATION share/quake2rtx/bin COMPONENT shareware)
+    ENDIF()
     INSTALL(TARGETS server DESTINATION games COMPONENT shareware)
 
-    # Compress NVIDIA custom content
-    INSTALL(CODE "set(SOURCE \"${CMAKE_SOURCE_DIR}\")"
-        SCRIPT "${CMAKE_SOURCE_DIR}/setup/package_media.cmake"
-        SCRIPT "${CMAKE_SOURCE_DIR}/setup/package_shaders.cmake"
-        COMPONENT shareware)
-    INSTALL(TARGETS gamex86 DESTINATION share/quake2rtx/baseq2 COMPONENT shareware)
+    IF(NOT CONFIG_LINUX_PACKAGING_SKIP_PKZ)
+	    # Compress NVIDIA custom content
+	    INSTALL(CODE "set(SOURCE \"${CMAKE_SOURCE_DIR}\")"
+	        SCRIPT "${CMAKE_SOURCE_DIR}/setup/package_media.cmake"
+	        SCRIPT "${CMAKE_SOURCE_DIR}/setup/package_shaders.cmake"
+	        COMPONENT shareware)
+	ENDIF()
+    INSTALL(TARGETS baseq2 DESTINATION share/quake2rtx/baseq2 COMPONENT shareware)
 
     # Package data files, including the shareware pak0 for demo levels
     set (SHAREWARE_DATA_FILES_LIST

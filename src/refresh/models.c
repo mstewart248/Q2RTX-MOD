@@ -28,6 +28,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "format/md3.h"
 #endif
 #include "format/sp2.h"
+#include "format/iqm.h"
 #include "refresh/images.h"
 #include "refresh/models.h"
 
@@ -224,7 +225,7 @@ get_model_class(const char *name)
 		return MCLASS_REGULAR;
 }
 
-static qerror_t MOD_LoadSP2(model_t *model, const void *rawdata, size_t length)
+static qerror_t MOD_LoadSP2(model_t *model, const void *rawdata, size_t length, const char* mod_name)
 {
     dsp2header_t header;
     dsp2frame_t *src_frame;
@@ -302,6 +303,9 @@ static qerror_t MOD_LoadSP2(model_t *model, const void *rawdata, size_t length)
     return Q_ERR_SUCCESS;
 }
 
+#define TRY_MODEL_SRC_GAME      1
+#define TRY_MODEL_SRC_BASE      0
+
 qhandle_t R_RegisterModel(const char *name)
 {
     char normalized[MAX_QPATH];
@@ -344,19 +348,31 @@ qhandle_t R_RegisterModel(const char *name)
         goto done;
     }
 
-	char* extension = normalized + namelen - 4;
-	if (namelen > 4 && (strcmp(extension, ".md2") == 0) && vid_rtx->integer)
-	{
-		memcpy(extension, ".md3", 4);
+    // Always prefer models from the game dir, even if format might be 'inferior'
+    for (int try_location = Q_stricmp(fs_game->string, BASEGAME) ? TRY_MODEL_SRC_GAME : TRY_MODEL_SRC_BASE;
+         try_location >= TRY_MODEL_SRC_BASE;
+         try_location--)
+    {
+        int fs_flags = 0;
+        if (try_location > 0)
+            fs_flags = try_location == TRY_MODEL_SRC_GAME ? FS_PATH_GAME : FS_PATH_BASE;
 
-		filelen = FS_LoadFile(normalized, (void **)&rawdata);
+        char* extension = normalized + namelen - 4;
+        if (namelen > 4 && (strcmp(extension, ".md2") == 0) && vid_rtx->integer)
+        {
+            memcpy(extension, ".md3", 4);
 
-		if (filelen == -2) {
-			memcpy(extension, ".md2", 4);
-			filelen = FS_LoadFile(normalized, (void **)&rawdata);
-		}
-		memcpy(extension, ".md2", 4);
-	}
+            filelen = FS_LoadFileFlags(normalized, (void **)&rawdata, fs_flags);
+
+            memcpy(extension, ".md2", 4);
+        }
+        if (!rawdata)
+        {
+            filelen = FS_LoadFileFlags(normalized, (void **)&rawdata, fs_flags);
+        }
+        if (rawdata)
+            break;
+    }
 
 	if (!rawdata)
 	{
@@ -391,7 +407,16 @@ qhandle_t R_RegisterModel(const char *name)
     case SP2_IDENT:
         load = MOD_LoadSP2;
         break;
+    case IQM_IDENT:
+        load = MOD_LoadIQM;
+        break;
     default:
+        ret = Q_ERR_UNKNOWN_FORMAT;
+        goto fail2;
+    }
+
+    if (!load)
+    {
         ret = Q_ERR_UNKNOWN_FORMAT;
         goto fail2;
     }
@@ -405,7 +430,7 @@ qhandle_t R_RegisterModel(const char *name)
     memcpy(model->name, normalized, namelen + 1);
     model->registration_sequence = registration_sequence;
 
-    ret = load(model, rawdata, filelen);
+    ret = load(model, rawdata, filelen, name);
 
     FS_FreeFile(rawdata);
 
