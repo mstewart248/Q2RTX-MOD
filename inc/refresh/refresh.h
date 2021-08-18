@@ -140,6 +140,7 @@ typedef struct ref_feedback_s {
 
 	char        view_material[MAX_QPATH];
 	char        view_material_override[MAX_QPATH];
+    int         view_material_index;
 
 	vec3_t      hdr_color;
 } ref_feedback_t;
@@ -204,6 +205,7 @@ typedef enum {
     IF_OPAQUE       = (1 << 8),
     IF_SRGB         = (1 << 9),
     IF_FAKE_EMISSIVE= (1 << 10),
+    IF_EXACT        = (1 << 11),
 
     // Image source indicator/requirement flags
     IF_SRC_BASE     = (0x1 << 16),

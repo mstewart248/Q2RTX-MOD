@@ -33,6 +33,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define MAX_LIGHT_POLYS         4096
 #define LIGHT_POLY_VEC4S        4
+#define MATERIAL_UINTS          5
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      4096
@@ -65,6 +66,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	VERTEX_BUFFER_LIST_DO(uint32_t, 1, materials_bsp,         (MAX_VERT_BSP / 3    )) \
 	VERTEX_BUFFER_LIST_DO(uint32_t, 1, clusters_bsp,          (MAX_VERT_BSP / 3    )) \
 	VERTEX_BUFFER_LIST_DO(float,    1, texel_density_bsp,     (MAX_VERT_BSP / 3    )) \
+	VERTEX_BUFFER_LIST_DO(float,    1, emissive_factors_bsp,  (MAX_VERT_BSP / 3    )) \
 	VERTEX_BUFFER_LIST_DO(uint32_t, 1, sky_visibility,        (MAX_LIGHT_LISTS / 32)) \
 
 #define MODEL_DYNAMIC_VERTEX_BUFFER_LIST \
@@ -80,7 +82,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	VERTEX_BUFFER_LIST_DO(float,    1, texel_density_instanced, (MAX_PRIM_MODEL    )) \
 
 #define LIGHT_BUFFER_LIST \
-	VERTEX_BUFFER_LIST_DO(uint32_t, 4, material_table,        (MAX_PBR_MATERIALS)) \
+	VERTEX_BUFFER_LIST_DO(uint32_t, 1, material_table,        (MAX_PBR_MATERIALS * MATERIAL_UINTS)) \
 	VERTEX_BUFFER_LIST_DO(float,    4, light_polys,           (MAX_LIGHT_POLYS * LIGHT_POLY_VEC4S)) \
 	VERTEX_BUFFER_LIST_DO(uint32_t, 1, light_list_offsets,    (MAX_LIGHT_LISTS     )) \
 	VERTEX_BUFFER_LIST_DO(uint32_t, 1, light_list_lights,     (MAX_LIGHT_LIST_NODES)) \
@@ -204,10 +206,11 @@ struct MaterialInfo
 	uint diffuse_texture;
 	uint normals_texture;
 	uint emissive_texture;
+	uint mask_texture;
 	float bump_scale;
 	float roughness_override;
-	float specular_scale;
-	float emissive_scale;
+	float metalness_factor;
+	float emissive_factor;
 	float light_style_scale;
 	uint num_frames;
 	uint next_frame;
@@ -418,6 +421,7 @@ struct Triangle
 	uint   cluster;
 	float  alpha;
 	float  texel_density;
+	float  emissive_factor;
 };
 
 Triangle
@@ -451,6 +455,8 @@ get_bsp_triangle(uint prim_id)
 	t.cluster = get_clusters_bsp(prim_id);
 
 	t.texel_density = get_texel_density_bsp(prim_id);
+
+	t.emissive_factor = get_emissive_factors_bsp(prim_id);
 
 	t.alpha = 1.0;
 
@@ -488,6 +494,8 @@ get_instanced_triangle(uint prim_id)
 	t.alpha = get_alpha_instanced(prim_id);
 
 	t.texel_density = get_texel_density_instanced(prim_id);
+
+	t.emissive_factor = 1.f;
 
 	return t;
 }
@@ -531,18 +539,26 @@ store_instanced_triangle(Triangle t, uint instance_id, uint prim_id)
 MaterialInfo
 get_material_info(uint material_id)
 {
-	uvec4 data = get_material_table(material_id & MATERIAL_INDEX_MASK);
+	uint material_index = material_id & MATERIAL_INDEX_MASK;
+	
+	uint data[MATERIAL_UINTS];
+	data[0] = get_material_table(material_index * MATERIAL_UINTS + 0);
+	data[1] = get_material_table(material_index * MATERIAL_UINTS + 1);
+	data[2] = get_material_table(material_index * MATERIAL_UINTS + 2);
+	data[3] = get_material_table(material_index * MATERIAL_UINTS + 3);
+	data[4] = get_material_table(material_index * MATERIAL_UINTS + 4);
 
 	MaterialInfo minfo;
-	minfo.diffuse_texture = data.x & 0xffff;
-	minfo.normals_texture = data.x >> 16;
-	minfo.emissive_texture = data.y & 0xffff;
-	minfo.num_frames = (data.y >> 28) & 0x000f;
-	minfo.next_frame = (data.y >> 16) & 0x0fff;
-	minfo.bump_scale = unpackHalf2x16(data.z).x;
-	minfo.roughness_override = unpackHalf2x16(data.z).y;
-	minfo.specular_scale = unpackHalf2x16(data.w).x;
-	minfo.emissive_scale = unpackHalf2x16(data.w).y;
+	minfo.diffuse_texture = data[0] & 0xffff;
+	minfo.normals_texture = data[0] >> 16;
+	minfo.emissive_texture = data[1] & 0xffff;
+	minfo.mask_texture = data[1] >> 16;
+	minfo.bump_scale = unpackHalf2x16(data[2]).x;
+	minfo.roughness_override = unpackHalf2x16(data[2]).y;
+	minfo.metalness_factor = unpackHalf2x16(data[3]).x;
+	minfo.emissive_factor = unpackHalf2x16(data[3]).y;
+	minfo.num_frames = data[4] & 0xffff;
+	minfo.next_frame = (data[4] >> 16) & (MAX_PBR_MATERIALS - 1);
 
 	// Apply the light style for non-camera materials.
 	// Camera materials use the same bits to store the camera ID.
@@ -551,7 +567,7 @@ get_material_info(uint material_id)
 		uint light_style = (material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT;
 		if(light_style != 0) 
 		{
-			minfo.emissive_scale *= get_light_styles(light_style);
+			minfo.emissive_factor *= get_light_styles(light_style);
 		}
 	}
 

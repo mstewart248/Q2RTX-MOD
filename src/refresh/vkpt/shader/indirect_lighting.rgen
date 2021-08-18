@@ -198,7 +198,7 @@ indirect_lighting(
 	bounce_ray.t_min = 0;
 	bounce_ray.t_max = 10000;
 
-	bounce_ray.origin -= view_direction.xyz * 0.001;
+	bounce_ray.origin -= view_direction.xyz * 0.01;
 
 	int bounce_cull_mask = BOUNCE_RAY_CULL_MASK;
 	int shadow_cull_mask = SHADOW_RAY_CULL_MASK;
@@ -248,8 +248,6 @@ indirect_lighting(
 		indirect_specular_weight /= max(1, cone_size * global_ubo.pt_specular_anti_flicker * 0.01);
 	}
 
-	float projected_triangle_area = projected_tri_area_simple(triangle.positions, position);
-	
 	if(is_sky(ray_payload_brdf))
 	{
 		// On the first bounce, analytic lights are processed in the direct lighting pass, so 
@@ -275,12 +273,22 @@ indirect_lighting(
 			else if(is_specular_ray)
 			{
 				// MIS with direct specular
-				direct_specular_weight *= 1.0 - smoothstep(
-					global_ubo.pt_direct_area_threshold,
-					global_ubo.pt_direct_area_threshold * 2, 
-					projected_triangle_area);
+				if (global_ubo.pt_specular_mis != 0)
+				{
+					mat3 projected_positions = project_triangle(triangle.positions, position);
 
-				bounce_contrib = bounce_throughput * env * (1.0 - direct_specular_weight);
+					vec3 bary = get_hit_barycentric(ray_payload_brdf);
+					vec3 pos_on_triangle = triangle.positions * bary;
+					pos_on_triangle -= position;
+					pos_on_triangle = normalize(pos_on_triangle);
+
+					float pdfw = get_triangle_pdfw(projected_positions, pos_on_triangle);
+
+					direct_specular_weight *= get_specular_sampled_lighting_weight(primary_roughness,
+						normal, -view_direction.xyz, bounce_direction, pdfw);
+				}
+
+				bounce_contrib = bounce_throughput * env * indirect_specular_weight * (1.0 - direct_specular_weight);
 			}
 		}
 
@@ -297,7 +305,7 @@ indirect_lighting(
 
 		if((bounce_material_id & MATERIAL_FLAG_WARP) != 0)
 		{
-			tex_coord = lava_uv_warp(tex_coord);
+			tex_coord = lava_uv_warp(tex_coord, global_ubo.time);
 		}
 
 		MaterialInfo bounce_minfo = get_material_info(triangle.material_id);
@@ -305,6 +313,10 @@ indirect_lighting(
 		// world-space
 		vec3 bounce_position = triangle.positions * bary;
 		vec3 bounce_geo_normal = normalize(triangle.normals * bary);
+			
+		if (dot(bounce_geo_normal, bounce_direction) > 0)
+			bounce_geo_normal = -bounce_geo_normal;
+		
 		vec3 bounce_normal  = bounce_geo_normal;
 		vec3 bounce_albedo = global_textureLod(bounce_minfo.diffuse_texture, tex_coord, 2).rgb;
 		if((triangle.material_id & MATERIAL_FLAG_CORRECT_ALBEDO) != 0)

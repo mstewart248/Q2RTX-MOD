@@ -477,7 +477,7 @@ main()
 	reflection_ray.t_max = PRIMARY_RAY_T_MAX;
 
 	if(dot(direction, normal) >= 0)
-		reflection_ray.origin -= view_direction.xyz * 0.001;
+		reflection_ray.origin -= view_direction.xyz * 0.01;
 	else
 		reflection_ray.origin -= normal.xyz * 0.001;
 
@@ -529,6 +529,9 @@ main()
 	vec2 tex_coord    = triangle.tex_coords * bary;
 	vec3 new_geo_normal = normalize(triangle.normals * bary);
 
+	if (dot(new_geo_normal, direction) > 0)
+		new_geo_normal = -new_geo_normal;
+	
 	// Compute the LOD for the texture on the reflected/refracted surface.
 	// We don't have texture gradients here, so just estimate the LOD
 	// based on the ray "cone size" and distance. The "cone size" is computed

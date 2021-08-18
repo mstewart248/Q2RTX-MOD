@@ -104,6 +104,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define LIST_RT_PIPELINE_SHADER_MODULES \
 	SHADER_MODULE_DO(QVK_MOD_PATH_TRACER_RCHIT)                      \
+	SHADER_MODULE_DO(QVK_MOD_PATH_TRACER_MASKED_RAHIT)               \
 	SHADER_MODULE_DO(QVK_MOD_PATH_TRACER_PARTICLE_RAHIT)             \
 	SHADER_MODULE_DO(QVK_MOD_PATH_TRACER_BEAM_RAHIT)                 \
 	SHADER_MODULE_DO(QVK_MOD_PATH_TRACER_BEAM_RINT)                  \
@@ -190,8 +191,7 @@ typedef struct QVK_s {
 	uint32_t                    num_swap_chain_images;
 	VkImage*                    swap_chain_images;
 	VkImageView*                swap_chain_image_views;
-
-	qboolean                    use_khr_ray_tracing;
+	
 	qboolean                    use_ray_query;
 	qboolean                    enable_validation;
 
@@ -290,7 +290,7 @@ typedef struct QVK_s {
 
 extern QVK_t qvk;
 
-#define LIST_EXTENSIONS_KHR \
+#define LIST_EXTENSIONS_ACCEL_STRUCT \
 	VK_EXTENSION_DO(vkCreateAccelerationStructureKHR) \
 	VK_EXTENSION_DO(vkDestroyAccelerationStructureKHR) \
 	VK_EXTENSION_DO(vkCmdBuildAccelerationStructuresKHR) \
@@ -300,23 +300,10 @@ extern QVK_t qvk;
 	VK_EXTENSION_DO(vkGetAccelerationStructureBuildSizesKHR) \
 	VK_EXTENSION_DO(vkGetBufferDeviceAddress) \
 
-#define LIST_EXTENSIONS_KHR_PIPELINE \
+#define LIST_EXTENSIONS_RAY_PIPELINE \
 	VK_EXTENSION_DO(vkCreateRayTracingPipelinesKHR) \
 	VK_EXTENSION_DO(vkCmdTraceRaysKHR) \
 	VK_EXTENSION_DO(vkGetRayTracingShaderGroupHandlesKHR) \
-
-#define LIST_EXTENSIONS_NV \
-	VK_EXTENSION_DO(vkCreateAccelerationStructureNV) \
-	VK_EXTENSION_DO(vkDestroyAccelerationStructureNV) \
-	VK_EXTENSION_DO(vkGetAccelerationStructureMemoryRequirementsNV) \
-	VK_EXTENSION_DO(vkBindAccelerationStructureMemoryNV) \
-	VK_EXTENSION_DO(vkCmdBuildAccelerationStructureNV) \
-	VK_EXTENSION_DO(vkCmdCopyAccelerationStructureNV) \
-	VK_EXTENSION_DO(vkCmdTraceRaysNV) \
-	VK_EXTENSION_DO(vkCreateRayTracingPipelinesNV) \
-	VK_EXTENSION_DO(vkGetRayTracingShaderGroupHandlesNV) \
-	VK_EXTENSION_DO(vkGetAccelerationStructureHandleNV) \
-	VK_EXTENSION_DO(vkCmdWriteAccelerationStructuresPropertiesNV) \
 
 #define LIST_EXTENSIONS_DEBUG \
 	VK_EXTENSION_DO(vkDebugMarkerSetObjectNameEXT) \
@@ -326,9 +313,8 @@ extern QVK_t qvk;
 	VK_EXTENSION_DO(vkCmdEndDebugUtilsLabelEXT)
 
 #define VK_EXTENSION_DO(a) extern PFN_##a q##a;
-LIST_EXTENSIONS_KHR
-LIST_EXTENSIONS_KHR_PIPELINE
-LIST_EXTENSIONS_NV
+LIST_EXTENSIONS_ACCEL_STRUCT
+LIST_EXTENSIONS_RAY_PIPELINE
 LIST_EXTENSIONS_DEBUG
 LIST_EXTENSIONS_INSTANCE
 #undef VK_EXTENSION_DO
@@ -356,6 +342,7 @@ typedef struct bsp_model_s {
 	light_poly_t *light_polys;
 
 	qboolean transparent;
+	qboolean masked;
 } bsp_model_t;
 
 typedef struct aabb_s {
@@ -372,6 +359,9 @@ typedef struct bsp_mesh_s {
 
 	uint32_t world_transparent_offset;
 	uint32_t world_transparent_count;
+	
+	uint32_t world_masked_offset;
+	uint32_t world_masked_count;
 
 	uint32_t world_sky_offset;
 	uint32_t world_sky_count;
@@ -384,6 +374,7 @@ typedef struct bsp_mesh_s {
 	int *indices;
 	uint32_t *materials;
 	float *texel_density;
+	float *emissive_factors;
 	int num_indices;
 	int num_vertices;
 
@@ -500,6 +491,8 @@ typedef struct EntityUploadInfo
 	uint32_t dynamic_vertex_num;
 	uint32_t transparent_model_vertex_offset;
 	uint32_t transparent_model_vertex_num;
+	uint32_t masked_model_vertex_offset;
+	uint32_t masked_model_vertex_num;
 	uint32_t viewer_model_vertex_offset;
 	uint32_t viewer_model_vertex_num;
 	uint32_t viewer_weapon_vertex_offset;
@@ -532,13 +525,6 @@ void vkpt_extract_emissive_texture_info(image_t *image);
 void vkpt_textures_prefetch();
 void vkpt_invalidate_texture_descriptors();
 void vkpt_init_light_textures();
-
-typedef struct vkpt_material_images_s {
-    image_t *diffuse;
-    image_t *normals;
-    image_t *emissive;
-} vkpt_material_images_t;
-void vkpt_load_material_images(vkpt_material_images_t* images, const char *diffuse_path, imagetype_t type, imageflags_t flags);
 
 VkCommandBuffer vkpt_begin_command_buffer(cmd_buf_group_t* group);
 void vkpt_free_command_buffers(cmd_buf_group_t* group);
@@ -631,7 +617,7 @@ VkResult vkpt_pt_create_pipelines();
 VkResult vkpt_pt_destroy_pipelines();
 
 VkResult vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, qboolean include_world, qboolean weapon_left_handed);
-VkResult vkpt_pt_create_static(int num_vertices, int num_vertices_transparent, int num_vertices_sky, int num_vertices_custom_sky);
+VkResult vkpt_pt_create_static(int num_vertices, int num_vertices_transparent, int num_vertices_maksed, int num_vertices_sky, int num_vertices_custom_sky);
 void vkpt_pt_destroy_static();
 VkResult vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf);
 VkResult vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce);
@@ -709,7 +695,7 @@ VkBufferView get_transparency_beam_intersect_buffer_view();
 void get_transparency_counts(int* particle_num, int* beam_num, int* sprite_num);
 void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t *bsp, entity_t* entities, int num_entites, float adapted_luminance);
 qboolean vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t *bsp, vec3_t begin, vec3_t end, vec3_t color, float radius);
-qboolean get_triangle_off_center(const float* positions, float* center, float* anti_center);
+qboolean get_triangle_off_center(const float* positions, float* center, float* anti_center, float offset);
 
 VkResult vkpt_initialize_god_rays();
 VkResult vkpt_destroy_god_rays();
