@@ -102,6 +102,7 @@ create_entity_matrix_noscale(float matrix[16], entity_t *e, qboolean enable_left
 	matrix[15] = 1.0f;
 }
 
+void
 create_projection_matrix(mat4_t matrix, float znear, float zfar, float fov_x, float fov_y)
 {
 	float xmin, xmax, ymin, ymax;
