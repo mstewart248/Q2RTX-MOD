@@ -100,6 +100,111 @@ static void export_obj_frames(model_t* model, const char* path_pattern)
 	}
 }
 
+static void extract_model_lights(model_t* model)
+{
+	// Count the triangles in the model that have a material with the is_light flag set
+	
+	int num_lights = 0;
+	
+	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
+	{
+		const maliasmesh_t* mesh = model->meshes + mesh_idx;
+		for (int skin_idx = 0; skin_idx < mesh->numskins; skin_idx++)
+		{
+			const pbr_material_t* mat = mesh->materials[skin_idx];
+			if ((mat->flags & MATERIAL_FLAG_LIGHT) != 0 && mat->image_emissive)
+			{
+				if (mesh->numskins != 1)
+				{
+					Com_DPrintf("Warning: model %s mesh %d has LIGHT material(s) but more than 1 skin (%d), "
+						"which is unsupported.\n", model->name, mesh->numskins);
+					return;
+				}
+
+				num_lights += mesh->numtris;
+			}
+		}
+	}
+
+	// If there are no light triangles, there's nothing to do
+	if (num_lights == 0)
+		return;
+
+	// Validate our current implementation limitations, give warnings if they are hit
+	
+	if (model->numframes > 1)
+	{
+		Com_DPrintf("Warning: model %s has LIGHT material(s) but more than 1 vertex animation frame, "
+			"which is unsupported.\n", model->name);
+		return;
+	}
+
+	if (model->iqmData && model->iqmData->blend_weights)
+	{
+		Com_DPrintf("Warning: model %s has LIGHT material(s) and skeletal animations, "
+			"which is unsupported.\n", model->name);
+		return;
+	}
+
+	// Actually extract the lights now
+	
+	model->light_polys = Hunk_Alloc(&model->hunk, sizeof(light_poly_t) * num_lights);
+	model->num_light_polys = num_lights;
+
+	num_lights = 0;
+
+	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
+	{
+		const maliasmesh_t* mesh = model->meshes + mesh_idx;
+		assert(mesh->numskins == 1);
+		assert(mesh->indices);
+		assert(mesh->positions);
+		
+		pbr_material_t* mat = mesh->materials[0];
+		if ((mat->flags & MATERIAL_FLAG_LIGHT) != 0 && mat->image_emissive)
+		{
+			for (int tri_idx = 0; tri_idx < mesh->numtris; tri_idx++)
+			{
+				light_poly_t* light = model->light_polys + num_lights;
+				num_lights++;
+
+				int i0 = mesh->indices[tri_idx * 3 + 0];
+				int i1 = mesh->indices[tri_idx * 3 + 1];
+				int i2 = mesh->indices[tri_idx * 3 + 2];
+				
+				assert(i0 < mesh->numverts);
+				assert(i1 < mesh->numverts);
+				assert(i2 < mesh->numverts);
+
+				memcpy(light->positions + 0, mesh->positions + i0, sizeof(vec3_t));
+				memcpy(light->positions + 3, mesh->positions + i1, sizeof(vec3_t));
+				memcpy(light->positions + 6, mesh->positions + i2, sizeof(vec3_t));
+				
+				// Cluster is assigned after model instancing and transformation
+				light->cluster = -1;
+
+				light->material = mat;
+
+				VectorCopy(mat->image_emissive->light_color, light->color);
+
+				if (!mat->image_emissive->entire_texture_emissive)
+				{
+					// This extraction doesn't support partially emissive textures, so pretend the entire
+					// texture is uniformly emissive and dim the light according to the area fraction.
+					light->emissive_factor =
+						(mat->image_emissive->max_light_texcoord[0] - mat->image_emissive->min_light_texcoord[0]) *
+						(mat->image_emissive->max_light_texcoord[1] - mat->image_emissive->min_light_texcoord[1]);
+				}
+				else
+					light->emissive_factor = 1.f;
+				
+				get_triangle_off_center(light->positions, light->off_center, NULL, 1.f);
+				
+			}
+		}
+	}
+}
+
 qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name)
 {
 	dmd2header_t    header;
@@ -357,6 +462,8 @@ qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, con
 		dst_mesh->indices[i + 2] = tmp;
 	}
 
+	extract_model_lights(model);
+
 	Hunk_End(&model->hunk);
 	return Q_ERR_SUCCESS;
 
@@ -565,6 +672,8 @@ qerror_t MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, con
 	//if (strstr(model->name, "v_blast"))
 	//	export_obj_frames(model, "export/v_blast_%d.obj");
 
+	extract_model_lights(model);
+
 	Hunk_End(&model->hunk);
 	return Q_ERR_SUCCESS;
 
@@ -599,13 +708,13 @@ qerror_t MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, con
 		iqm_mesh_t* iqm_mesh = &model->iqmData->meshes[model_idx];
 		maliasmesh_t* mesh = &model->meshes[model_idx];
 
-		mesh->indices = (int*)iqm_mesh->data->indices + iqm_mesh->first_triangle * 3;
-		mesh->positions = (vec3_t*)(iqm_mesh->data->positions + iqm_mesh->first_vertex * 3);
-		mesh->normals = (vec3_t*)(iqm_mesh->data->normals + iqm_mesh->first_vertex * 3);
-		mesh->tex_coords = (vec2_t*)(iqm_mesh->data->texcoords + iqm_mesh->first_vertex * 2);
-		mesh->tangents = (vec3_t*)(iqm_mesh->data->tangents + iqm_mesh->first_vertex * 3);
-		mesh->blend_indices = (uint32_t*)(iqm_mesh->data->blend_indices + iqm_mesh->first_vertex * 4);
-		mesh->blend_weights = (vec4_t*)(iqm_mesh->data->blend_weights + iqm_mesh->first_vertex * 4);
+		mesh->indices = iqm_mesh->data->indices ? (int*)iqm_mesh->data->indices + iqm_mesh->first_triangle * 3 : NULL;
+		mesh->positions = iqm_mesh->data->positions ? (vec3_t*)(iqm_mesh->data->positions + iqm_mesh->first_vertex * 3) : NULL;
+		mesh->normals = iqm_mesh->data->normals ? (vec3_t*)(iqm_mesh->data->normals + iqm_mesh->first_vertex * 3) : NULL;
+		mesh->tex_coords = iqm_mesh->data->texcoords ? (vec2_t*)(iqm_mesh->data->texcoords + iqm_mesh->first_vertex * 2) : NULL;
+		mesh->tangents = iqm_mesh->data->tangents ? (vec3_t*)(iqm_mesh->data->tangents + iqm_mesh->first_vertex * 3) : NULL;
+		mesh->blend_indices = iqm_mesh->data->blend_indices ? (uint32_t*)(iqm_mesh->data->blend_indices + iqm_mesh->first_vertex * 4) : NULL;
+		mesh->blend_weights = iqm_mesh->data->blend_weights ? (vec4_t*)(iqm_mesh->data->blend_weights + iqm_mesh->first_vertex * 4) : NULL;
 
 		mesh->numindices = (int)(iqm_mesh->num_triangles * 3);
 		mesh->numverts = (int)iqm_mesh->num_vertexes;
@@ -632,6 +741,8 @@ qerror_t MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, con
 		mesh->materials[0] = mat;
 		mesh->numskins = 1; // looks like IQM only supports one skin?
 	}
+
+	extract_model_lights(model);
 
 	Hunk_End(&model->hunk);
 	

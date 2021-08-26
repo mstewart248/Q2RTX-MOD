@@ -321,15 +321,6 @@ LIST_EXTENSIONS_INSTANCE
 
 #define MAX_SKY_CLUSTERS 1024
 
-typedef struct light_poly_s {
-	float positions[9]; // 3x vec3_t
-	vec3_t off_center;
-	vec3_t color;
-	struct pbr_material_s* material;
-	int cluster;
-	int style;
-} light_poly_t;
-
 typedef struct bsp_model_s {
 	uint32_t idx_offset;
 	uint32_t idx_count;
@@ -404,6 +395,7 @@ typedef struct bsp_mesh_s {
 void bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name);
 void bsp_mesh_destroy(bsp_mesh_t *wm);
 void bsp_mesh_register_textures(bsp_t *bsp);
+void bsp_mesh_animate_light_polys(bsp_mesh_t *wm);
 
 typedef struct vkpt_refdef_s {
 	QVKUniformBuffer_t uniform_buffer;
@@ -520,7 +512,7 @@ VkResult vkpt_textures_upload_envmap(int w, int h, byte *data);
 void vkpt_textures_destroy_unused();
 void vkpt_textures_update_descriptor_set();
 void vkpt_normalize_normal_map(image_t *image);
-image_t *vkpt_fake_emissive_texture(image_t *image);
+image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int);
 void vkpt_extract_emissive_texture_info(image_t *image);
 void vkpt_textures_prefetch();
 void vkpt_invalidate_texture_descriptors();
