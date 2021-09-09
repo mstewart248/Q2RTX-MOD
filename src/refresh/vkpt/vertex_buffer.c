@@ -1,17 +1,14 @@
 /*
 Copyright (C) 2018 Christoph Schied
 Copyright (C) 2019, NVIDIA CORPORATION. All rights reserved.
-
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
 (at your option) any later version.
-
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
-
 You should have received a copy of the GNU General Public License along
 with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
@@ -45,10 +42,9 @@ static BufferResource_t null_buffer;
 VkResult
 vkpt_vertex_buffer_bsp_upload_staging()
 {
-	
 	vkWaitForFences(qvk.device, 1, &qvk.fence_vertex_sync, VK_TRUE, ~((uint64_t)0));
 	vkResetFences(qvk.device, 1, &qvk.fence_vertex_sync);
-	
+
 	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 
 	VkBufferCopy copyRegion = {
@@ -62,7 +58,7 @@ vkpt_vertex_buffer_bsp_upload_staging()
 		.buffer = qvk.buf_vertex_bsp.buffer,
 		.offset = 0,
 		.size = VK_WHOLE_SIZE,
-	);
+		);
 
 	if (qvk.buf_light_stats[0].buffer)
 	{
@@ -108,15 +104,15 @@ vkpt_iqm_matrix_buffer_upload_staging(VkCommandBuffer cmd_buf)
 		.size = sizeof(IqmMatrixBuffer),
 	};
 	vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_iqm_matrices.buffer, 1, &copyRegion);
-	
+
 	return VK_SUCCESS;
 }
 
 VkResult
-vkpt_vertex_buffer_upload_bsp_mesh_to_staging(bsp_mesh_t *bsp_mesh)
+vkpt_vertex_buffer_upload_bsp_mesh_to_staging(bsp_mesh_t* bsp_mesh)
 {
 	assert(bsp_mesh);
-	BspVertexBuffer *vbo = (BspVertexBuffer *) buffer_map(&qvk.buf_vertex_bsp_staging);
+	BspVertexBuffer* vbo = (BspVertexBuffer*)buffer_map(&qvk.buf_vertex_bsp_staging);
 	assert(vbo);
 
 	int num_vertices = bsp_mesh->num_vertices;
@@ -126,10 +122,11 @@ vkpt_vertex_buffer_upload_bsp_mesh_to_staging(bsp_mesh_t *bsp_mesh)
 		num_vertices = MAX_VERT_BSP;
 	}
 
-	memcpy(vbo->positions_bsp,  bsp_mesh->positions, num_vertices * sizeof(float) * 3   );
-	memcpy(vbo->tex_coords_bsp, bsp_mesh->tex_coords,num_vertices * sizeof(float) * 2   );
-    memcpy(vbo->tangents_bsp,   bsp_mesh->tangents,  num_vertices * sizeof(uint32_t) / 3);
-	memcpy(vbo->materials_bsp,  bsp_mesh->materials, num_vertices * sizeof(uint32_t) / 3);
+	memcpy(vbo->positions_bsp, bsp_mesh->positions, num_vertices * sizeof(float) * 3);
+	memcpy(vbo->tex_coords_bsp, bsp_mesh->tex_coords, num_vertices * sizeof(float) * 2);
+	memcpy(vbo->tangents_bsp, bsp_mesh->tangents, num_vertices * sizeof(uint32_t) / 3);
+	memcpy(vbo->materials_bsp, bsp_mesh->materials, num_vertices * sizeof(uint32_t) / 3);
+	memcpy(vbo->emissive_factors_bsp, bsp_mesh->emissive_factors, num_vertices * sizeof(uint32_t) / 3);
 	memcpy(vbo->clusters_bsp, bsp_mesh->clusters, num_vertices * sizeof(uint32_t) / 3);
 	memcpy(vbo->texel_density_bsp, bsp_mesh->texel_density, num_vertices * sizeof(float) / 3);
 
@@ -208,7 +205,7 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 	}
 
 	// See if we have enough room in the interaction buffer
-	
+
 	if (required_size > MAX_LIGHT_LIST_NODES)
 	{
 		Com_WPrintf("Insufficient light interaction buffer size (%d needed). Increase MAX_LIGHT_LIST_NODES.\n", required_size);
@@ -216,10 +213,10 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 		// Copy the BSP light lists verbatim
 		memcpy(dst_lists, bsp_mesh->cluster_lights, sizeof(uint32_t) * bsp_mesh->cluster_light_offsets[bsp_mesh->num_clusters]);
 		memcpy(dst_list_offsets, bsp_mesh->cluster_light_offsets, sizeof(uint32_t) * (bsp_mesh->num_clusters + 1));
-		
+
 		return;
 	}
-	
+
 	// Copy the static light lists, and make room in these lists to inject the model lights
 
 	int tail = 0;
@@ -230,9 +227,9 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 		dst_list_offsets[c] = tail;
 		memcpy(dst_lists + tail, bsp_mesh->cluster_lights + bsp_mesh->cluster_light_offsets[c], sizeof(uint32_t) * original_size);
 		tail += original_size;
-		
+
 		assert(tail + max_cluster_model_lights[c] < MAX_LIGHT_LIST_NODES);
-		
+
 		if (max_cluster_model_lights[c] > 0) {
 			memset(dst_lists + tail, 0xff, sizeof(uint32_t) * max_cluster_model_lights[c]);
 		}
@@ -275,7 +272,7 @@ copy_light(const light_poly_t* light, float* vblight, const float* sky_radiance)
 		prev_style = max(0.f, min(2.f, prev_style));
 	}
 
-	float mat_scale = light->material ? light->material->emissive_scale : 1.f;
+	float mat_scale = light->material ? light->material->emissive_factor : 1.f;
 
 	VectorCopy(light->positions + 0, vblight + 0);
 	VectorCopy(light->positions + 3, vblight + 4);
@@ -304,26 +301,25 @@ extern vkpt_refdef_t vkpt_refdef;
 extern char cluster_debug_mask[VIS_MAX_BYTES];
 
 VkResult
-vkpt_light_buffer_upload_to_staging(qboolean render_world, bsp_mesh_t *bsp_mesh, bsp_t* bsp, int num_model_lights, light_poly_t* transformed_model_lights, const float* sky_radiance)
+vkpt_light_buffer_upload_to_staging(qboolean render_world, bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, light_poly_t* transformed_model_lights, const float* sky_radiance)
 {
 	assert(bsp_mesh);
 
 	BufferResource_t* staging = qvk.buf_light_staging + qvk.current_frame_index;
 
-	LightBuffer *lbo = (LightBuffer *)buffer_map(staging);
+	LightBuffer* lbo = (LightBuffer*)buffer_map(staging);
 	assert(lbo);
 
 	if (render_world)
 	{
 		assert(bsp_mesh->num_clusters + 1 < MAX_LIGHT_LISTS);
 		assert(bsp_mesh->num_cluster_lights < MAX_LIGHT_LIST_NODES);
-		assert(MAT_GetNumPBRMaterials() < MAX_PBR_MATERIALS);
 		assert(bsp_mesh->num_light_polys + num_model_lights < MAX_LIGHT_POLYS);
 
 		int model_light_offset = bsp_mesh->num_light_polys;
 		max_model_lights = max(max_model_lights, num_model_lights);
 
-		if(max_model_lights > 0)
+		if (max_model_lights > 0)
 		{
 			// If any of the BSP models contain lights, inject these lights right into the visibility lists.
 			// The shader doesn't know that these lights are dynamic.
@@ -376,26 +372,28 @@ vkpt_light_buffer_upload_to_staging(qboolean render_world, bsp_mesh_t *bsp_mesh,
 	}
 
 	// materials
-	int nmaterials = MAT_GetNumPBRMaterials();
-	pbr_material_t const * materials = MAT_GetPBRMaterialsTable();
-	int nmat;
 
-	for (nmat = 0; nmat < nmaterials; nmat++)
+	for (int nmat = 0; nmat < MAX_PBR_MATERIALS; nmat++)
 	{
-		pbr_material_t const * material = materials + nmat;
-		uint32_t* mat_data = lbo->material_table + nmat * 4;
-		memset(mat_data, 0, sizeof(uint32_t) * 4);
+		pbr_material_t const* material = r_materials + nmat;
 
-		if (material->image_diffuse) mat_data[0] |= (material->image_diffuse - r_images);
+		uint32_t* mat_data = lbo->material_table + nmat * MATERIAL_UINTS;
+		memset(mat_data, 0, sizeof(uint32_t) * MATERIAL_UINTS);
+
+		if (material->registration_sequence == 0)
+			continue;
+
+		if (material->image_base) mat_data[0] |= (material->image_base - r_images);
 		if (material->image_normals) mat_data[0] |= (material->image_normals - r_images) << 16;
 		if (material->image_emissive) mat_data[1] |= (material->image_emissive - r_images);
-		mat_data[1] |= (material->num_frames & 0x000f) << 28;
-		mat_data[1] |= (material->next_frame & 0x0fff) << 16;
+		if (material->image_mask) mat_data[1] |= (material->image_mask - r_images) << 16;
 
 		mat_data[2] = floatToHalf(material->bump_scale);
-		mat_data[2] |= floatToHalf(material->rough_override) << 16;
-		mat_data[3] = floatToHalf(material->specular_scale);
-		mat_data[3] |= floatToHalf(material->emissive_scale) << 16;
+		mat_data[2] |= floatToHalf(material->roughness_override) << 16;
+		mat_data[3] = floatToHalf(material->metalness_factor);
+		mat_data[3] |= floatToHalf(material->emissive_factor) << 16;
+		mat_data[4] |= (material->num_frames & 0xffff);
+		mat_data[4] |= (material->next_frame & 0xffff) << 16;
 	}
 
 	memcpy(lbo->cluster_debug_mask, cluster_debug_mask, MAX_LIGHT_LISTS / 8);
@@ -434,7 +432,7 @@ vkpt_vertex_buffer_upload_models()
 	int vertex_offset = 0;
 	qboolean any_models_to_upload = qfalse;
 
-	for(int i = 0; i < MAX_MODELS; i++)
+	for (int i = 0; i < MAX_MODELS; i++)
 	{
 		const model_t* model = &r_models[i];
 		model_vbo_t* vbo = model_vertex_data + i;
@@ -448,10 +446,10 @@ vkpt_vertex_buffer_upload_models()
 			continue;
 		}
 
-		if(!model->meshes) {
+		if (!model->meshes) {
 			// model does not exist
 			continue;
-		}		
+		}
 
 		if (model->registration_sequence <= vbo->registration_sequence) {
 			// VBO is valid, nothing to do
@@ -460,13 +458,13 @@ vkpt_vertex_buffer_upload_models()
 
 		//Com_Printf("Loading model[%d] %s\n", i, model->name);
 
-        assert(model->numframes > 0);
+		assert(model->numframes > 0);
 
 		int model_vertices = 0;
 		int model_indices = 0;
 		for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
 		{
-			maliasmesh_t *m = model->meshes + nmesh;
+			maliasmesh_t* m = model->meshes + nmesh;
 			int num_verts = model->numframes * m->numverts;
 
 			model_vertices += num_verts;
@@ -479,8 +477,8 @@ vkpt_vertex_buffer_upload_models()
 		else
 			vbo_size += model_vertices * sizeof(model_vertex_t);
 
-		buffer_create(&vbo->buffer, vbo_size, 
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+		buffer_create(&vbo->buffer, vbo_size,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		buffer_create(&vbo->staging_buffer, vbo_size,
@@ -492,7 +490,7 @@ vkpt_vertex_buffer_upload_models()
 
 		for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
 		{
-			maliasmesh_t *m = model->meshes + nmesh;
+			maliasmesh_t* m = model->meshes + nmesh;
 
 			assert(m->numverts > 0);
 
@@ -508,12 +506,12 @@ vkpt_vertex_buffer_upload_models()
 					memcpy(vtx->position, m->positions + nvert, sizeof(vec3_t));
 					memcpy(vtx->normal, m->normals + nvert, sizeof(vec3_t));
 					memcpy(vtx->texcoord, m->tex_coords + nvert, sizeof(vec2_t));
-					
+
 					if (m->tangents)
 						memcpy(vtx->tangent, m->tangents + nvert, sizeof(vec3_t));
 					else
 						VectorSet(vtx->tangent, 0.f, 0.f, 0.f);
-					
+
 					if (m->blend_indices && m->blend_weights)
 					{
 						vtx->blend_indices = m->blend_indices[nvert];
@@ -525,7 +523,7 @@ vkpt_vertex_buffer_upload_models()
 						Vector4Set(vtx->blend_weights, 0.f, 0.f, 0.f, 0.f);
 					}
 				}
-			    
+
 				write_ptr += num_verts * (int)(sizeof(iqm_vertex_t) / sizeof(uint32_t));
 			}
 			else
@@ -540,7 +538,7 @@ vkpt_vertex_buffer_upload_models()
 
 				write_ptr += num_verts * (int)(sizeof(model_vertex_t) / sizeof(uint32_t));
 			}
-			
+
 			m->idx_offset = write_ptr;
 
 			memcpy(staging_data + write_ptr, m->indices, sizeof(uint32_t) * m->numindices);
@@ -564,7 +562,7 @@ vkpt_vertex_buffer_upload_models()
 #if 0
 			char buf[1024];
 			snprintf(buf, sizeof buf, "model_%04d.obj", i);
-			FILE *f = fopen(buf, "wb+");
+			FILE* f = fopen(buf, "wb+");
 			assert(f);
 			for (int j = 0; j < m->numverts; j++) {
 				fprintf(f, "v %f %f %f\n",
@@ -688,9 +686,9 @@ vkpt_vertex_buffer_create()
 	};
 
 	VkDescriptorSetLayoutCreateInfo layout_info = {
-		.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.bindingCount = LENGTH(vbo_layout_bindings),
-		.pBindings    = vbo_layout_bindings,
+		.pBindings = vbo_layout_bindings,
 	};
 
 	_VK(vkCreateDescriptorSetLayout(qvk.device, &layout_info, NULL, &qvk.desc_set_layout_vertex_buffer));
@@ -752,24 +750,24 @@ vkpt_vertex_buffer_create()
 	}
 
 	VkDescriptorPoolSize pool_size = {
-		.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		.descriptorCount = LENGTH(vbo_layout_bindings) + MAX_MODELS + 128,
 	};
 
 	VkDescriptorPoolCreateInfo pool_info = {
-		.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 		.poolSizeCount = 1,
-		.pPoolSizes    = &pool_size,
-		.maxSets       = 2,
+		.pPoolSizes = &pool_size,
+		.maxSets = 2,
 	};
 
 	_VK(vkCreateDescriptorPool(qvk.device, &pool_info, NULL, &desc_pool_vertex_buffer));
 
 	VkDescriptorSetAllocateInfo descriptor_set_alloc_info = {
-		.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		.descriptorPool     = desc_pool_vertex_buffer,
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = desc_pool_vertex_buffer,
 		.descriptorSetCount = 1,
-		.pSetLayouts        = &qvk.desc_set_layout_vertex_buffer,
+		.pSetLayouts = &qvk.desc_set_layout_vertex_buffer,
 	};
 
 	_VK(vkAllocateDescriptorSets(qvk.device, &descriptor_set_alloc_info, &qvk.desc_set_vertex_buffer));
@@ -777,17 +775,17 @@ vkpt_vertex_buffer_create()
 	VkDescriptorBufferInfo buf_info = {
 		.buffer = qvk.buf_vertex_bsp.buffer,
 		.offset = 0,
-		.range  = sizeof(BspVertexBuffer),
+		.range = sizeof(BspVertexBuffer),
 	};
 
 	VkWriteDescriptorSet output_buf_write = {
-		.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet          = qvk.desc_set_vertex_buffer,
-		.dstBinding      = BSP_VERTEX_BUFFER_BINDING_IDX,
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = qvk.desc_set_vertex_buffer,
+		.dstBinding = BSP_VERTEX_BUFFER_BINDING_IDX,
 		.dstArrayElement = 0,
-		.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		.descriptorCount = 1,
-		.pBufferInfo     = &buf_info,
+		.pBufferInfo = &buf_info,
 	};
 
 	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
@@ -924,16 +922,16 @@ vkpt_vertex_buffer_destroy()
 	return VK_SUCCESS;
 }
 
-VkResult vkpt_light_stats_create(bsp_mesh_t *bsp_mesh)
+VkResult vkpt_light_stats_create(bsp_mesh_t* bsp_mesh)
 {
 	vkpt_light_stats_destroy();
 
 	// Light statistics: 2 uints (shadowed, unshadowed) per light per surface orientation (6) per cluster.
 	uint32_t num_stats = bsp_mesh->num_clusters * bsp_mesh->num_light_polys * 6 * 2;
 
-    // Handle rare cases when the map has zero lights
-    if (num_stats == 0)
-        num_stats = 1;
+	// Handle rare cases when the map has zero lights
+	if (num_stats == 0)
+		num_stats = 1;
 
 	for (int frame = 0; frame < NUM_LIGHT_STATS_BUFFERS; frame++)
 	{
@@ -991,7 +989,7 @@ vkpt_vertex_buffer_create_pipelines()
 	assert(!pipeline_layout_instance_geometry);
 
 	assert(qvk.desc_set_layout_ubo);
-	assert(qvk.desc_set_layout_vertex_buffer); 
+	assert(qvk.desc_set_layout_vertex_buffer);
 
 	VkDescriptorSetLayout desc_set_layouts[] = {
 		qvk.desc_set_layout_ubo,
@@ -999,10 +997,10 @@ vkpt_vertex_buffer_create_pipelines()
 		qvk.desc_set_layout_model_vbos
 	};
 
-	CREATE_PIPELINE_LAYOUT(qvk.device, &pipeline_layout_instance_geometry, 
+	CREATE_PIPELINE_LAYOUT(qvk.device, &pipeline_layout_instance_geometry,
 		.setLayoutCount = LENGTH(desc_set_layouts),
-		.pSetLayouts    = desc_set_layouts,
-	);
+		.pSetLayouts = desc_set_layouts,
+		);
 
 	VkComputePipelineCreateInfo compute_pipeline_info[] = {
 		{
@@ -1062,28 +1060,29 @@ vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, qboolean
 	{
 		vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_animate_materials);
 
-		int num_groups = (((vkpt_refdef.bsp_mesh_world.world_idx_count + vkpt_refdef.bsp_mesh_world.world_transparent_count) / 3) + 255) / 256;
+		int num_groups = (((vkpt_refdef.bsp_mesh_world.world_idx_count + vkpt_refdef.bsp_mesh_world.world_transparent_count
+			+ vkpt_refdef.bsp_mesh_world.world_masked_count) / 3) + 255) / 256;
 		vkCmdDispatch(cmd_buf, num_groups, 1, 1);
 	}
 
 	VkBufferMemoryBarrier barrier = {
-		.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-		.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT,
-		.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT,
-		.buffer              = qvk.buf_vertex_model_dynamic.buffer,
-		.size                = qvk.buf_vertex_model_dynamic.size,
+		.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+		.buffer = qvk.buf_vertex_model_dynamic.buffer,
+		.size = qvk.buf_vertex_model_dynamic.size,
 		.srcQueueFamilyIndex = qvk.queue_idx_graphics,
 		.dstQueueFamilyIndex = qvk.queue_idx_graphics
 	};
 
 	vkCmdPipelineBarrier(
-			cmd_buf,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			0,
-			0, NULL,
-			1, &barrier,
-			0, NULL);
+		cmd_buf,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0,
+		0, NULL,
+		1, &barrier,
+		0, NULL);
 
 	return VK_SUCCESS;
 }
