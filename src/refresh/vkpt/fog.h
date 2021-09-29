@@ -1,5 +1,5 @@
 /*
-Copyright (C) 2019, NVIDIA CORPORATION. All rights reserved.
+Copyright (C) 2021, NVIDIA CORPORATION. All rights reserved.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,15 +16,25 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#version 460
-#extension GL_GOOGLE_include_directive    : enable
+#ifndef __FOG_H_
+#define __FOG_H_
 
-#include "path_tracer.h"
+#include <shared/shared.h>
 
-layout(location = 1) rayPayloadInEXT RayPayloadShadow ray_payload_shadow;
-
-void
-main()
+typedef struct
 {
-	ray_payload_shadow.missed = 1;
-}
+	vec3_t point_a;
+	vec3_t point_b;
+	vec3_t color;
+	float half_extinction_distance;
+	int softface; // 0 = none, 1 = xa, 2 = xb, 3 = ya, 4 = yb, 5 = za, 6 = zb
+} fog_volume_t;
+
+struct ShaderFogVolume;
+
+void vkpt_fog_init(void);
+void vkpt_fog_shutdown(void);
+void vkpt_fog_reset(void);
+void vkpt_fog_upload(struct ShaderFogVolume* dst);
+
+#endif // __FOG_H_
