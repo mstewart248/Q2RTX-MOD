@@ -143,6 +143,7 @@ typedef struct ref_feedback_s {
     int         view_material_index;
 
 	vec3_t      hdr_color;
+	float       adapted_luminance;
 } ref_feedback_t;
 
 typedef struct refdef_s {

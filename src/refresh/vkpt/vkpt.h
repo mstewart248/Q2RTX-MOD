@@ -433,7 +433,7 @@ typedef struct sun_light_s {
 } sun_light_t;
 
 void mult_matrix_matrix(mat4_t p, const mat4_t a, const mat4_t b);
-void mult_matrix_vector(mat4_t p, const mat4_t a, const vec4_t b);
+void mult_matrix_vector(vec4_t v, const mat4_t a, const vec4_t b);
 void create_entity_matrix(mat4_t matrix, entity_t *e, qboolean enable_left_hand);
 void create_projection_matrix(mat4_t matrix, float znear, float zfar, float fov_x, float fov_y);
 void create_view_matrix(mat4_t matrix, refdef_t *fd);
@@ -661,6 +661,7 @@ VkResult vkpt_tone_mapping_reset(VkCommandBuffer cmd_buf);
 VkResult vkpt_tone_mapping_destroy_pipelines();
 VkResult vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time);
 void vkpt_tone_mapping_request_reset();
+void vkpt_tone_mapping_draw_debug();
 
 VkResult vkpt_shadow_map_initialize();
 VkResult vkpt_shadow_map_destroy();
