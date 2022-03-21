@@ -287,7 +287,8 @@ main()
 
 		if(spec_bounce_index == 0)
 		{
-			checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION;
+			if (checkerboard_flags == CHECKERBOARD_FLAG_PRIMARY)
+				checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION;
 
 			// Don't compute MVs or do surface replacement for dynamic models.
 			// Dynamic models are usually moving or curved, which makes MVs incorrect,
@@ -301,7 +302,6 @@ main()
 		// This is a non-physical see-through material.
 		// One ray stops at the primary surface, the other goes through it.
 
-		checkerboard_flags = CHECKERBOARD_FLAG_PRIMARY | CHECKERBOARD_FLAG_REFRACTION;
 		correct_motion_vector = 2;
 	}
 	else
@@ -464,7 +464,7 @@ main()
 	int reflection_cull_mask = REFLECTION_RAY_CULL_MASK;
 	if(global_ubo.first_person_model != 0 && include_player_model)
 		reflection_cull_mask |= AS_FLAG_VIEWER_MODELS;
-	else
+	else if (!(primary_is_weapon && primary_is_transparent))
 		reflection_cull_mask |= AS_FLAG_VIEWER_WEAPON;
 
 	if(push_constants.bounce_index < int(global_ubo.pt_reflect_refract - 1))
@@ -485,13 +485,18 @@ main()
 
 	// Add the transparency encountered along the reflection ray
 
+	Triangle triangle;
+
 	if (found_intersection(ray_payload_geometry))
+	{
 		reflection_ray.t_max = ray_payload_geometry.hit_distance;
+	 	triangle = get_hit_triangle(ray_payload_geometry);
+	}
 
 	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false);
 	transparent = alpha_blend_premultiplied(transparent, effects * vec4(throughput, 1));
 
-	if(is_sky(ray_payload_geometry))
+	if(!found_intersection(ray_payload_geometry) || is_sky(triangle.material_id))
 	{
 		// Reflection ray hit the sky - store an empty surface into the G-buffer,
 		// blend the environment under the transparency.
@@ -528,42 +533,42 @@ main()
 		throughput *= extinction(primary_medium, ray_payload_geometry.hit_distance);
 	}
 
-	Triangle triangle = get_hit_triangle(ray_payload_geometry);
 	vec3 bary         = get_hit_barycentric(ray_payload_geometry);
 	vec2 tex_coord    = triangle.tex_coords * bary;
+	vec3 new_position = triangle.positions * bary;
+	vec3 new_pos_prev = triangle.positions_prev * bary;
 	vec3 new_geo_normal = normalize(triangle.normals * bary);
+	material_id    = triangle.material_id;
+	cluster_idx    = triangle.cluster;
 
 	vec3 new_flat_normal = normalize(cross(
 		triangle.positions[1] - triangle.positions[0],
 		triangle.positions[2] - triangle.positions[1]));
 	
-	if (dot(new_flat_normal, direction) > 0)
+	float flat_normal_sign = (global_ubo.weapon_left_handed != 0 && (triangle.material_id & MATERIAL_FLAG_WEAPON) != 0) ? -1.0 : 1.0;
+	
+	if (dot(new_flat_normal, direction) * flat_normal_sign > 0)
 		new_geo_normal = -new_geo_normal;
 	
 	// Compute the LOD for the texture on the reflected/refracted surface.
 	// We don't have texture gradients here, so just estimate the LOD
 	// based on the ray "cone size" and distance. The "cone size" is computed
 	// in `primary_rays.rgen` and stored in the throughput texture.
-	float lod = 0;
+	optical_path_length += ray_payload_geometry.hit_distance;
+
+	float half_cone_angle = texelFetch(TEX_PT_BOUNCE_THROUGHPUT, ipos, 0).a;
+	
+	vec2 tex_coord_x, tex_coord_y;
+	float fwidth_depth;
+	compute_anisotropic_texture_gradients(new_position, new_flat_normal, direction, 
+		optical_path_length * half_cone_angle, triangle.positions, 
+		triangle.tex_coords, tex_coord, tex_coord_x, tex_coord_y, fwidth_depth);
+
+	if(global_ubo.pt_texture_lod_bias != 0)
 	{
-		optical_path_length += ray_payload_geometry.hit_distance;
-
-		float footprint_size_over_distance = texelFetch(TEX_PT_BOUNCE_THROUGHPUT, ipos, 0).a;
-		float ray_footprint = footprint_size_over_distance * optical_path_length;
-		float footprint_texels = ray_footprint * triangle.texel_density / max(0.01, abs(dot(direction, new_geo_normal)));
-
-		if(footprint_texels > 0)
-		{
-			float checkerboard_bias = bitCount(checkerboard_flags) == 2 ? 1 : 0;
-			lod = max(0, log2(footprint_texels * 2) + global_ubo.pt_texture_lod_bias + checkerboard_bias);
-		}
+		tex_coord_x *= pow(2.0, global_ubo.pt_texture_lod_bias);
+		tex_coord_y *= pow(2.0, global_ubo.pt_texture_lod_bias);
 	}
-
-	/* world-space */
-	vec3 new_position = triangle.positions * bary;
-	vec3 new_pos_prev = triangle.positions_prev * bary;
-	material_id    = triangle.material_id;
-	cluster_idx    = triangle.cluster;
 
 	if(correct_motion_vector == 1 && spec_bounce_index == 0 || correct_motion_vector == 2)
 	{			
@@ -594,21 +599,6 @@ main()
 		vec3 motion;
 		motion.xy = screen_pos_prev - screen_pos_curr;
 		motion.z = distance_prev - distance_curr;
-
-
-		// compute the depth slope using ray differentials
-		const ivec2 image_position = get_image_position();
-		const vec2 pixel_center = vec2(image_position) + vec2(0.5);
-		const vec2 inUV = pixel_center / vec2(get_image_size());
-
-		Ray ray_0 = get_primary_ray(inUV);
-		Ray ray_x = get_primary_ray(inUV + vec2(1.0 / float(global_ubo.width), 0));
-		Ray ray_y = get_primary_ray(inUV + vec2(0, 1.0 / float(global_ubo.height)));
-
-		float depth_vs_0 = ray_distance_to_plane(ref_pos_curr, ref_geo_normal, global_ubo.cam_pos.xyz, ray_0.direction);
-		float depth_vs_x = ray_distance_to_plane(ref_pos_curr, ref_geo_normal, global_ubo.cam_pos.xyz, ray_x.direction);
-		float depth_vs_y = ray_distance_to_plane(ref_pos_curr, ref_geo_normal, global_ubo.cam_pos.xyz, ray_y.direction);
-		float fwidth_depth = 1.0 / max(0.1, (abs(depth_vs_x - depth_vs_0) * 2 + abs(depth_vs_y - depth_vs_0)));
 
 		// Use negative depth for reflections and refractions to prevent various filters from
 		// filtering across reflection boundaries.
@@ -642,9 +632,9 @@ main()
 		triangle, 
 		bary,
 		tex_coord, 
-		vec2(0), 
-		vec2(0), 
-		lod, 
+		tex_coord_x, 
+		tex_coord_y, 
+		-1, 
 		geo_normal, 
 		primary_base_color, 
 		normal, 
@@ -655,7 +645,7 @@ main()
 
 	primary_is_weapon = false;
 
-	if((is_chrome(material_id) || is_screen(material_id) || is_camera(material_id)) && primary_roughness >= MAX_MIRROR_ROUGHNESS)
+	if((is_chrome(material_id) || is_screen(material_id) || is_camera(material_id)) && primary_roughness >= MAX_MIRROR_ROUGHNESS || is_transparent(material_id))
 	{
 		material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_REGULAR;
 	}
@@ -701,21 +691,51 @@ main()
 		}
 	}
 
+	if (triangle.alpha < 1.0)
+	{
+		// Translucent objects.
+		if (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) == 1)
+		{
+			// Split the path if it wasn't split before.
+			throughput *= 2;
+			checkerboard_flags = CHECKERBOARD_FLAG_PRIMARY | CHECKERBOARD_FLAG_REFRACTION;
+
+			if (!is_odd_checkerboard)
+			{
+				// This field stays on the surface.
+				throughput *= triangle.alpha;
+			}
+			else
+			{
+				// This field goes through the surface.
+				material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_TRANSPARENT;
+				throughput *= 1.0 - triangle.alpha;
+			}
+		}
+		else
+		{
+			// If the path was split *on the same model* before, continue tracing.
+			// We don't want to show the internal geometry of a translucent model.
+			uint primary_instance_index = imageLoad(IMG_PT_VISBUF_PRIM_A, ipos).x;
+			if (primary_instance_index == triangle.instance_index)
+			{
+				material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_TRANSPARENT;
+			}
+		}
+	}
+
 	if(luminance(primary_emissive) > 0) {
     	// Emissive component on the reflected/refracted surface - blend it with zero alpha
 		transparent = alpha_blend_premultiplied(transparent, vec4(primary_emissive * throughput, 0));
 	}
 
-	bool is_dynamic_primitive = is_dynamic_instance(ray_payload_geometry);
-	uint primitive_id = get_primitive(ray_payload_geometry);
-
-	uvec2 vis_buf;
-	vis_buf.x = is_dynamic_primitive
-		? get_instance_id_instanced(primitive_id)
-		: visbuf_pack_static_prim(primitive_id);
-	vis_buf.y = visbuf_pack_barycentrics(bary);
-	
-	imageStore(IMG_PT_VISBUF_A, ipos, uvec4(vis_buf, 0, 0));
+	{
+		uvec2 vis_buf;
+		vis_buf.x = triangle.instance_index;
+		vis_buf.y = triangle.instance_prim;
+		imageStore(IMG_PT_VISBUF_PRIM_A, ipos, uvec4(vis_buf, 0, 0));
+		imageStore(IMG_PT_VISBUF_BARY_A, ipos, vec4(bary.yz, 0, 0));
+	}
 
 	// Store the surface parameters into the G-buffer for the indirect lighting shader
 	if(is_camera(material_id))

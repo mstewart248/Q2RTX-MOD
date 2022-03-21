@@ -17,10 +17,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef  _GLOBAL_UBO_DESCRIPTOR_SET_LAYOUT_H_
-#define  _GLOBAL_UBO_DESCRIPTOR_SET_LAYOUT_H_
+#ifndef  _GLOBAL_UBO_H_
+#define  _GLOBAL_UBO_H_
 
 #include "constants.h"
+#include "shader_structs.h"
 
 #define GLOBAL_UBO_BINDING_IDX               0
 #define GLOBAL_INSTANCE_BUFFER_BINDING_IDX   1
@@ -88,7 +89,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_metallic_override, -1) /* overrides metallic parameter of all materials if non-negative, [0..1] */ \
 	UBO_CVAR_DO(pt_ndf_trim, 0.9) /* trim factor for GGX NDF sampling (0..1] */ \
 	UBO_CVAR_DO(pt_num_bounce_rays, 1) /* number of bounce rays, valid values are 0 (disabled), 0.5 (half-res diffuse), 1 (full-res diffuse + specular), 2 (two bounces) */ \
-	UBO_CVAR_DO(pt_particle_softness, 1.0) /* particle softness */ \
+	UBO_CVAR_DO(pt_particle_softness, 0.7) /* particle softness */ \
+	UBO_CVAR_DO(pt_particle_brightness, 100) /* particle brightness */ \
 	UBO_CVAR_DO(pt_reflect_refract, 2) /* number of reflection or refraction bounces: 0, 1 or 2 */ \
 	UBO_CVAR_DO(pt_roughness_override, -1) /* overrides roughness of all materials if non-negative, [0..1] */ \
 	UBO_CVAR_DO(pt_specular_anti_flicker, 2) /* fade factor for rough reflections of surfaces far away, [0..inf) */ \
@@ -119,6 +121,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(tm_reinhard, 0.5) /* blend factor between adaptive curve tonemapper (0) and Reinhard curve (1) */ \
 	UBO_CVAR_DO(tm_slope_blur_sigma, 12.0) /* sigma for Gaussian blur of tone curve slopes, (0..inf) */ \
 	UBO_CVAR_DO(tm_white_point, 10.0) /* how bright colors can be before they become white, (0..inf) */ \
+	UBO_CVAR_DO(tm_hdr_peak_nits, 800.0) /* Exposure value 0 is mapped to this display brightness (post tonemapping) */ \
+	UBO_CVAR_DO(tm_hdr_saturation_scale, 100) /* HDR mode saturation adjustment, percentage [0..200], with 0% -> desaturated, 100% -> normal, 200% -> oversaturated */ \
+	UBO_CVAR_DO(ui_hdr_nits, 300) /* HDR mode UI (stretch pic) brightness in nits */ \
 
     
 #define GLOBAL_UBO_VAR_LIST \
@@ -158,7 +163,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             num_sphere_lights) \
 	GLOBAL_UBO_VAR_LIST_DO(int ,            num_static_lights) \
-	GLOBAL_UBO_VAR_LIST_DO(int,             num_static_primitives) \
+	GLOBAL_UBO_VAR_LIST_DO(uint,            num_static_primitives) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             cluster_debug_index) \
 	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             water_normal_texture) \
@@ -199,7 +204,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	\
 	GLOBAL_UBO_VAR_LIST_DO(vec2,            sub_pixel_jitter) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           prev_adapted_luminance) \
-	GLOBAL_UBO_VAR_LIST_DO(float,           padding1) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           tonemap_hdr_clamp_strength) \
 	GLOBAL_UBO_VAR_LIST_DO(vec4,            fs_blend_color) \
 	\
 	GLOBAL_UBO_VAR_LIST_DO(vec4,            world_center) \
@@ -220,105 +225,40 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	GLOBAL_UBO_VAR_LIST_DO(mat4,            security_camera_data[MAX_CAMERAS]) \
 	GLOBAL_UBO_VAR_LIST_DO(ShaderFogVolume, fog_volumes[MAX_FOG_VOLUMES]) \
 	\
+	GLOBAL_UBO_VAR_LIST_DO(int,             weapon_left_handed) \
+	\
 	UBO_CVAR_LIST // WARNING: Do not put any other members into global_ubo after this: the CVAR list is not vec4-aligned
 
-#define INSTANCE_BUFFER_VAR_LIST \
-	INSTANCE_BUFFER_VAR_LIST_DO(int,             model_indices            [SHADER_MAX_ENTITIES + SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            model_current_to_prev    [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            model_prev_to_current    [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            world_current_to_prev    [SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            world_prev_to_current    [SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            bsp_prim_offset          [SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            model_idx_offset         [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            model_cluster_id         [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            model_cluster_id_prev    [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            bsp_cluster_id           [SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            bsp_cluster_id_prev      [SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(ModelInstance,   model_instances          [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(ModelInstance,   model_instances_prev     [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(BspMeshInstance, bsp_mesh_instances       [SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(BspMeshInstance, bsp_mesh_instances_prev  [SHADER_MAX_BSP_ENTITIES]) \
-	/* stores the offset into the instance buffer in numberof primitives */ \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            model_instance_buf_offset[SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            model_instance_buf_size  [SHADER_MAX_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            bsp_instance_buf_offset  [SHADER_MAX_BSP_ENTITIES]) \
-	INSTANCE_BUFFER_VAR_LIST_DO(uint,            bsp_instance_buf_size    [SHADER_MAX_BSP_ENTITIES]) \
 
-#ifndef VKPT_SHADER
-
-#if SHADER_MAX_ENTITIES != MAX_ENTITIES
-#error need to update constant here
-#endif
-
-typedef uint32_t uvec4_t[4];
-typedef int ivec4_t[4];
-typedef uint32_t uint;
-
-typedef struct {
-	float M[16]; // mat4
-
-	uint32_t material;
-	int offset_curr;
-	int offset_prev; // matrix offset for IQM
-	float backlerp;
-
-	float alpha;
-	int idx_offset;
-	int model_index;
-	int is_iqm;
-} ModelInstance;
-
-typedef struct {
-	float M[16];
-	int frame; float padding[3];
-} BspMeshInstance;
-
-typedef struct ShaderFogVolume {
-	vec3_t mins;
-	uint is_active;
-	vec3_t maxs;
-	float pad2;
-	vec3_t color;
-	float pad3;
-	vec4_t density;
-} ShaderFogVolume_t;
-
-#define int_t int32_t
-typedef struct QVKUniformBuffer_s {
-#define GLOBAL_UBO_VAR_LIST_DO(type, name) type##_t name;
-	GLOBAL_UBO_VAR_LIST
-#undef  GLOBAL_UBO_VAR_LIST_DO
-} QVKUniformBuffer_t;
-
-typedef struct QVKInstanceBuffer_s {
-#define INSTANCE_BUFFER_VAR_LIST_DO(type, name) type name;
-	INSTANCE_BUFFER_VAR_LIST
-#undef  INSTANCE_BUFFER_VAR_LIST_DO
-} QVKInstanceBuffer_t;
-#undef int_t
-
-#else
-
-struct ModelInstance {
-	mat4 M;
+BEGIN_SHADER_STRUCT( ModelInstance )
+{
+	mat4 transform;
+	mat4 transform_prev;
 
 	uint material;
-	int offset_curr;
-	int offset_prev; // matrix offset for IQM
-	float backlerp;
+	int cluster;
+	uint source_buffer_idx;
+	uint prim_count;
 
+	uint prim_offset_curr_pose_curr_frame;
+	uint prim_offset_prev_pose_curr_frame;
+	uint prim_offset_curr_pose_prev_frame;
+	uint prim_offset_prev_pose_prev_frame;
+	
+	float pose_lerp_curr_frame;
+	float pose_lerp_prev_frame;
+	int iqm_matrix_offset_curr_frame;
+	int iqm_matrix_offset_prev_frame;
+
+	int frame;
 	float alpha;
-	int idx_offset;
-	int model_index;
-	int is_iqm;
-};
+	uint render_buffer_idx;
+	uint render_prim_offset;
+}
+END_SHADER_STRUCT( ModelInstance )
 
-struct BspMeshInstance {
-	mat4 M;
-	ivec4 frame;
-};
-
-struct ShaderFogVolume {
+BEGIN_SHADER_STRUCT( ShaderFogVolume )
+{
 	vec3 mins;
 	uint is_active;
 	vec3 maxs;
@@ -326,7 +266,30 @@ struct ShaderFogVolume {
 	vec3 color;
 	float pad3;
 	vec4 density;
-};
+}
+END_SHADER_STRUCT( ShaderFogVolume )
+
+BEGIN_SHADER_STRUCT( InstanceBuffer )
+{
+	uint            animated_model_indices   [MAX_MODEL_INSTANCES];
+	uint            model_current_to_prev    [MAX_MODEL_INSTANCES];
+	uint            model_prev_to_current    [MAX_MODEL_INSTANCES];
+	ModelInstance   model_instances          [MAX_MODEL_INSTANCES];
+	uint            tlas_instance_prim_offsets[MAX_TLAS_INSTANCES];
+	int             tlas_instance_model_indices[MAX_TLAS_INSTANCES];
+}
+END_SHADER_STRUCT( InstanceBuffer )
+
+
+#ifndef VKPT_SHADER
+
+typedef struct QVKUniformBuffer_s {
+#define GLOBAL_UBO_VAR_LIST_DO(type, name) type name;
+	GLOBAL_UBO_VAR_LIST
+#undef  GLOBAL_UBO_VAR_LIST_DO
+} QVKUniformBuffer_t;
+
+#else
 
 struct GlobalUniformBuffer {
 #define GLOBAL_UBO_VAR_LIST_DO(type, name) type name;
@@ -334,22 +297,16 @@ struct GlobalUniformBuffer {
 #undef  GLOBAL_UBO_VAR_LIST_DO
 };
 
-struct GlobalUniformInstanceBuffer {
-#define INSTANCE_BUFFER_VAR_LIST_DO(type, name) type name;
-	INSTANCE_BUFFER_VAR_LIST
-#undef  INSTANCE_BUFFER_VAR_LIST_DO
-};
-
 layout(set = GLOBAL_UBO_DESC_SET_IDX, binding = GLOBAL_UBO_BINDING_IDX, std140) uniform UBO {
 	GlobalUniformBuffer global_ubo;
 };
 
-layout(set = GLOBAL_UBO_DESC_SET_IDX, binding = GLOBAL_INSTANCE_BUFFER_BINDING_IDX) readonly buffer InstanceUBO {
-	GlobalUniformInstanceBuffer instance_buffer;
+layout(set = GLOBAL_UBO_DESC_SET_IDX, binding = GLOBAL_INSTANCE_BUFFER_BINDING_IDX) readonly buffer InstanceSSBO {
+	InstanceBuffer instance_buffer;
 };
 
 #endif
 
 #undef UBO_CVAR_DO
 
-#endif  /*_GLOBAL_UBO_DESCRIPTOR_SET_LAYOUT_H_*/
+#endif  /*_GLOBAL_UBO_H_*/

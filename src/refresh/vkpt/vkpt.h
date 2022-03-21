@@ -46,8 +46,6 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "shader/vertex_buffer.h"
 
 #define LENGTH(a) ((sizeof (a)) / (sizeof(*(a))))
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-#define MAX(a,b) ((a) > (b) ? (a) : (b))
 
 #define LOG_FUNC_(f) do {} while(0)
 //#define LOG_FUNC_(f) Com_Printf("%s\n", f)
@@ -99,6 +97,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_FSR_EASU_FP32_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_FSR_RCAS_FP16_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_FSR_RCAS_FP32_COMP)                     \
+	SHADER_MODULE_DO(QVK_MOD_NORMALIZE_NORMAL_MAP_COMP)              \
 
 #define LIST_RT_RGEN_SHADER_MODULES \
 	SHADER_MODULE_DO(QVK_MOD_PRIMARY_RAYS_RGEN)                      \
@@ -160,7 +159,7 @@ typedef struct semaphore_group_s {
 	VkSemaphore render_finished;
 	VkSemaphore transfer_finished;
 	VkSemaphore trace_finished;
-	qboolean trace_signaled;
+	bool trace_signaled;
 } semaphore_group_t;
 
 typedef struct QVK_s {
@@ -182,6 +181,8 @@ typedef struct QVK_s {
 	VkSurfaceKHR                surface;
 	VkSwapchainKHR              swap_chain;
 	VkSurfaceFormatKHR          surf_format;
+	bool                        surf_is_hdr;
+	bool                        surf_vsync;
 	VkPresentModeKHR            present_mode;
 	VkExtent2D                  extent_screen_images;
 	VkExtent2D                  extent_render;
@@ -195,9 +196,9 @@ typedef struct QVK_s {
 	VkImage*                    swap_chain_images;
 	VkImageView*                swap_chain_image_views;
 	
-	qboolean                    use_ray_query;
-	qboolean                    enable_validation;
-	qboolean                    supports_fp16;
+	bool                        use_ray_query;
+	bool                        enable_validation;
+	bool                        supports_fp16;
 
 	cmd_buf_group_t             cmd_buffers_graphics;
 	cmd_buf_group_t             cmd_buffers_transfer;
@@ -212,7 +213,6 @@ typedef struct QVK_s {
 	VkDebugUtilsMessengerEXT    dbg_messenger;
 
 	VkFence                     fences_frame_sync[MAX_FRAMES_IN_FLIGHT];
-	VkFence                     fence_vertex_sync;
 
 
 	int                         win_width;
@@ -230,6 +230,7 @@ typedef struct QVK_s {
 	// when set, we'll do a WFI before acquire for this many frames
 	uint32_t                    wait_for_idle_frames;
 	float                       timestampPeriod;
+	bool                        frame_menu_mode;
 
 	VkShaderModule              shader_modules[NUM_QVK_SHADER_MODULES];
 
@@ -250,13 +251,10 @@ typedef struct QVK_s {
 
 	VkDescriptorSetLayout       desc_set_layout_vertex_buffer;
 	VkDescriptorSet             desc_set_vertex_buffer;
-
-	VkDescriptorSetLayout       desc_set_layout_model_vbos;
-	VkDescriptorSet             desc_set_model_vbos;
-
-	BufferResource_t            buf_vertex_bsp;
-	BufferResource_t            buf_vertex_bsp_staging;
-	BufferResource_t            buf_vertex_model_dynamic;
+	
+	BufferResource_t            buf_world;
+	BufferResource_t            buf_primitive_instanced;
+	BufferResource_t            buf_positions_instanced;
 
 	BufferResource_t            buf_light;
 	BufferResource_t            buf_light_staging[MAX_FRAMES_IN_FLIGHT];
@@ -277,7 +275,7 @@ typedef struct QVK_s {
                                 tex_sampler_nearest,
                                 tex_sampler_nearest_mipmap_aniso,
                                 tex_sampler_linear_clamp;
-
+	
 	float                       sintab[256];
 
 	VkImage screenshot_image;
@@ -325,9 +323,42 @@ LIST_EXTENSIONS_INSTANCE
 
 #define MAX_SKY_CLUSTERS 1024
 
-typedef struct bsp_model_s {
-	uint32_t idx_offset;
-	uint32_t idx_count;
+typedef mat3 prim_positions_t;
+
+typedef struct
+{
+	uint8_t* geometry_storage;
+	VkAccelerationStructureGeometryKHR* geometries;
+	VkAccelerationStructureBuildRangeInfoKHR* build_ranges;
+	uint32_t* prim_counts;
+	uint32_t* prim_offsets;
+	uint32_t num_geometries;
+	uint32_t max_geometries;
+	VkAccelerationStructureBuildSizesInfoKHR build_sizes;
+	VkDeviceSize blas_data_offset;
+	VkAccelerationStructureKHR accel;
+	VkDeviceAddress blas_device_address;
+	VkGeometryInstanceFlagsKHR instance_flags;
+	uint32_t instance_mask;
+	uint32_t sbt_offset;
+} model_geometry_t;
+
+typedef struct {
+	BufferResource_t buffer;
+	BufferResource_t staging_buffer;
+	int registration_sequence;
+	model_geometry_t geom_opaque;
+	model_geometry_t geom_transparent;
+	model_geometry_t geom_masked;
+	size_t vertex_data_offset;
+	uint32_t total_tris;
+	bool is_static;
+} model_vbo_t;
+
+typedef struct
+{
+	model_geometry_t geometry;
+
 	vec3_t center;
 	vec3_t aabb_min;
 	vec3_t aabb_max;
@@ -336,8 +367,8 @@ typedef struct bsp_model_s {
 	int allocated_light_polys;
 	light_poly_t *light_polys;
 
-	qboolean transparent;
-	qboolean masked;
+	bool transparent;
+	bool masked;
 } bsp_model_t;
 
 typedef struct aabb_s {
@@ -346,36 +377,23 @@ typedef struct aabb_s {
 } aabb_t;
 
 typedef struct bsp_mesh_s {
-	uint32_t world_idx_count;
 	bsp_model_t *models;
 	int num_models;
 
 	aabb_t world_aabb;
 
-	uint32_t world_transparent_offset;
-	uint32_t world_transparent_count;
-	
-	uint32_t world_masked_offset;
-	uint32_t world_masked_count;
+	VboPrimitive* primitives;
+	uint32_t num_primitives_allocated;
+	uint32_t num_primitives;
+	size_t vertex_data_offset;
 
-	uint32_t world_sky_offset;
-	uint32_t world_sky_count;
-
-	uint32_t world_custom_sky_offset;
-	uint32_t world_custom_sky_count;
-
-	float *positions, *tex_coords;
-	uint32_t* normals;
-	uint32_t* tangents;
-	int *indices;
-	uint32_t *materials;
-	float *texel_density;
-	float *emissive_factors;
-	int num_indices;
-	int num_vertices;
+	model_geometry_t geom_opaque;
+	model_geometry_t geom_transparent;
+	model_geometry_t geom_masked;
+	model_geometry_t geom_sky;
+	model_geometry_t geom_custom_sky;
 
 	int num_clusters;
-	int *clusters;
 
 	int num_cluster_lights;
 	int *cluster_light_offsets;
@@ -387,7 +405,7 @@ typedef struct bsp_mesh_s {
 
 	uint32_t sky_clusters[MAX_SKY_CLUSTERS];
 	int num_sky_clusters;
-	qboolean all_lava_emissive;
+	bool all_lava_emissive;
 
 	struct { vec3_t pos; vec3_t dir; } cameras[MAX_CAMERAS];
 	int num_cameras;
@@ -401,10 +419,11 @@ void bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name);
 void bsp_mesh_destroy(bsp_mesh_t *wm);
 void bsp_mesh_register_textures(bsp_t *bsp);
 void bsp_mesh_animate_light_polys(bsp_mesh_t *wm);
+uint32_t encode_normal(const vec3_t normal);
 
 typedef struct vkpt_refdef_s {
 	QVKUniformBuffer_t uniform_buffer;
-	QVKInstanceBuffer_t uniform_instance_buffer;
+	InstanceBuffer uniform_instance_buffer;
 	refdef_t *fd;
 	float view_matrix[16];
 	float projection_matrix[16];
@@ -423,18 +442,20 @@ typedef struct vkpt_refdef_s {
 
 extern vkpt_refdef_t vkpt_refdef;
 
+extern BufferResource_t buf_accel_scratch;
+
 typedef struct sun_light_s {
 	vec3_t direction;
 	vec3_t direction_envmap;
 	vec3_t color;
 	float angular_size_rad;
-	qboolean use_physical_sky;
-	qboolean visible;
+	bool use_physical_sky;
+	bool visible;
 } sun_light_t;
 
 void mult_matrix_matrix(mat4_t p, const mat4_t a, const mat4_t b);
 void mult_matrix_vector(vec4_t v, const mat4_t a, const vec4_t b);
-void create_entity_matrix(mat4_t matrix, entity_t *e, qboolean enable_left_hand);
+void create_entity_matrix(mat4_t matrix, entity_t *e, bool enable_left_hand);
 void create_projection_matrix(mat4_t matrix, float znear, float zfar, float fov_x, float fov_y);
 void create_view_matrix(mat4_t matrix, refdef_t *fd);
 void inverse(const mat4_t m, mat4_t inv);
@@ -487,19 +508,19 @@ typedef enum {
 typedef struct EntityUploadInfo
 {
 	uint32_t num_instances;
-	uint32_t num_vertices;
-	uint32_t dynamic_vertex_num;
-	uint32_t transparent_model_vertex_offset;
-	uint32_t transparent_model_vertex_num;
-	uint32_t masked_model_vertex_offset;
-	uint32_t masked_model_vertex_num;
-	uint32_t viewer_model_vertex_offset;
-	uint32_t viewer_model_vertex_num;
-	uint32_t viewer_weapon_vertex_offset;
-	uint32_t viewer_weapon_vertex_num;
-	uint32_t explosions_vertex_offset;
-	uint32_t explosions_vertex_num;
-	qboolean weapon_left_handed;
+	uint32_t num_prims;
+	uint32_t opaque_prim_count;
+	uint32_t transparent_prim_offset;
+	uint32_t transparent_prim_count;
+	uint32_t masked_prim_offset;
+	uint32_t masked_prim_count;
+	uint32_t viewer_model_prim_offset;
+	uint32_t viewer_model_prim_count;
+	uint32_t viewer_weapon_prim_offset;
+	uint32_t viewer_weapon_prim_count;
+	uint32_t explosions_prim_offset;
+	uint32_t explosions_prim_count;
+	bool weapon_left_handed;
 } EntityUploadInfo;
 
 VkDescriptorSet qvk_get_current_desc_set_textures();
@@ -511,7 +532,7 @@ VkResult vkpt_profiler_next_frame(VkCommandBuffer cmd_buf);
 void draw_profiler(int enable_asvgf);
 double vkpt_get_profiler_result(int idx);
 
-VkResult vkpt_readback(struct ReadbackBuffer* dst);
+VkResult vkpt_readback(ReadbackBuffer* dst);
 
 VkResult vkpt_textures_initialize();
 VkResult vkpt_textures_destroy();
@@ -519,7 +540,6 @@ VkResult vkpt_textures_end_registration();
 VkResult vkpt_textures_upload_envmap(int w, int h, byte *data);
 void vkpt_textures_destroy_unused();
 void vkpt_textures_update_descriptor_set();
-void vkpt_normalize_normal_map(image_t *image);
 image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int);
 void vkpt_extract_emissive_texture_info(image_t *image);
 void vkpt_textures_prefetch();
@@ -547,7 +567,7 @@ void vkpt_submit_command_buffer(
 void vkpt_submit_command_buffer_simple(
 	VkCommandBuffer cmd_buf,
 	VkQueue queue,
-	qboolean all_gpus);
+	bool all_gpus);
 
 
 #define ALL_GPUS (-1)
@@ -588,21 +608,29 @@ VkResult vkpt_draw_clear_stretch_pics();
 
 VkResult vkpt_uniform_buffer_create();
 VkResult vkpt_uniform_buffer_destroy();
-VkResult vkpt_uniform_buffer_update(VkCommandBuffer command_buffer);
+VkResult vkpt_uniform_buffer_upload_to_staging();
+void vkpt_uniform_buffer_copy_from_staging(VkCommandBuffer command_buffer);
 
+void vkpt_init_model_geometry(model_geometry_t* info, uint32_t max_geometries);
+void vkpt_destroy_model_geometry(model_geometry_t* info);
+void vkpt_append_model_geometry(model_geometry_t* info, uint32_t num_prims, uint32_t prim_offset, const char* model_name);
 VkResult vkpt_vertex_buffer_create();
 VkResult vkpt_vertex_buffer_destroy();
-VkResult vkpt_vertex_buffer_upload_bsp_mesh_to_staging(bsp_mesh_t *bsp_mesh);
+void vkpt_vertex_buffer_ensure_primbuf_size(uint32_t prim_count);
+VkResult vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh);
+void vkpt_vertex_buffer_cleanup_bsp_mesh(bsp_mesh_t *bsp_mesh);
 VkResult vkpt_vertex_buffer_create_pipelines();
 VkResult vkpt_vertex_buffer_destroy_pipelines();
-VkResult vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, qboolean update_world_animations);
+VkResult vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, bool update_world_animations);
+void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index);
 VkResult vkpt_vertex_buffer_upload_models();
-VkResult vkpt_vertex_buffer_bsp_upload_staging();
 void vkpt_light_buffer_reset_counts();
-VkResult vkpt_light_buffer_upload_to_staging(qboolean render_world, bsp_mesh_t *bsp_mesh, bsp_t* bsp, int num_model_lights, light_poly_t* transformed_model_lights, const float* sky_radiance);
+VkResult vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp_t* bsp, int num_model_lights, light_poly_t* transformed_model_lights, const float* sky_radiance);
 VkResult vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf);
 VkResult vkpt_light_stats_create(bsp_mesh_t *bsp_mesh);
 VkResult vkpt_light_stats_destroy();
+bool vkpt_model_is_static(const model_t* model);
+const model_vbo_t* vkpt_get_model_vbo(const model_t* model);
 
 VkResult vkpt_iqm_matrix_buffer_upload_staging(VkCommandBuffer cmd_buf);
 
@@ -616,9 +644,10 @@ VkResult vkpt_pt_destroy();
 VkResult vkpt_pt_create_pipelines();
 VkResult vkpt_pt_destroy_pipelines();
 
-VkResult vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, qboolean include_world, qboolean weapon_left_handed);
-VkResult vkpt_pt_create_static(int num_vertices, int num_vertices_transparent, int num_vertices_maksed, int num_vertices_sky, int num_vertices_custom_sky);
-void vkpt_pt_destroy_static();
+void vkpt_pt_reset_instances();
+void vkpt_pt_instance_model_blas(const model_geometry_t* geom, const mat4 transform, uint32_t buffer_idx, int model_instance_index, uint32_t override_instance_mask);
+
+VkResult vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo* upload_info, bool weapon_left_handed);
 VkResult vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf);
 VkResult vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce);
 VkResult vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays);
@@ -629,7 +658,7 @@ VkResult vkpt_asvgf_initialize();
 VkResult vkpt_asvgf_destroy();
 VkResult vkpt_asvgf_create_pipelines();
 VkResult vkpt_asvgf_destroy_pipelines();
-VkResult vkpt_asvgf_filter(VkCommandBuffer cmd_buf, qboolean enable_lf);
+VkResult vkpt_asvgf_filter(VkCommandBuffer cmd_buf, bool enable_lf);
 VkResult vkpt_compositing(VkCommandBuffer cmd_buf);
 VkResult vkpt_interleave(VkCommandBuffer cmd_buf);
 VkResult vkpt_taa(VkCommandBuffer cmd_buf);
@@ -640,8 +669,8 @@ VkResult vkpt_fsr_initialize();
 VkResult vkpt_fsr_destroy();
 VkResult vkpt_fsr_create_pipelines();
 VkResult vkpt_fsr_destroy_pipelines();
-qboolean vkpt_fsr_is_enabled();
-qboolean vkpt_fsr_needs_upscale();
+bool vkpt_fsr_is_enabled();
+bool vkpt_fsr_needs_upscale();
 void vkpt_fsr_update_ubo(QVKUniformBuffer_t *ubo);
 VkResult vkpt_fsr_do(VkCommandBuffer cmd_buf);
 VkResult vkpt_fsr_final_blit(VkCommandBuffer cmd_buf);
@@ -651,7 +680,7 @@ VkResult vkpt_bloom_destroy();
 VkResult vkpt_bloom_create_pipelines();
 VkResult vkpt_bloom_destroy_pipelines();
 void vkpt_bloom_reset();
-void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, qboolean under_water, qboolean menu_mode);
+void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode);
 VkResult vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf);
 
 VkResult vkpt_tone_mapping_initialize();
@@ -667,14 +696,20 @@ VkResult vkpt_shadow_map_initialize();
 VkResult vkpt_shadow_map_destroy();
 VkResult vkpt_shadow_map_create_pipelines();
 VkResult vkpt_shadow_map_destroy_pipelines();
-VkResult vkpt_shadow_map_render(VkCommandBuffer cmd_buf, float* view_projection_matrix, int num_static_verts, int num_dynamic_verts, int transparent_offset, int num_transparent_verts);
+VkResult vkpt_shadow_map_render(VkCommandBuffer cmd_buf, float* view_projection_matrix,
+	uint32_t static_offset, uint32_t num_static_verts,
+	uint32_t dynamic_offset, uint32_t num_dynamic_verts,
+	uint32_t transparent_offset, uint32_t num_transparent_verts);
 VkImageView vkpt_shadow_map_get_view();
-void vkpt_shadow_map_setup(const sun_light_t* light, const float* bbox_min, const float* bbox_max, float* VP, float* depth_scale, qboolean random_sampling);
+void vkpt_shadow_map_setup(const sun_light_t* light, const float* bbox_min, const float* bbox_max,
+	float* VP, float* depth_scale, bool random_sampling);
+void vkpt_shadow_map_reset_instances();
+void vkpt_shadow_map_add_instance(const float* model_matrix, VkBuffer buffer, size_t vertex_offset, uint32_t prim_count);
 
-qerror_t load_img(const char *name, image_t *image);
+int load_img(const char *name, image_t *image);
 // Transparency module API
 
-qboolean initialize_transparency();
+bool initialize_transparency();
 void destroy_transparency();
 
 void update_transparency(VkCommandBuffer command_buffer, const float* view_matrix,
@@ -706,8 +741,8 @@ VkBufferView get_transparency_sprite_info_buffer_view();
 VkBufferView get_transparency_beam_intersect_buffer_view();
 void get_transparency_counts(int* particle_num, int* beam_num, int* sprite_num);
 void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t *bsp, entity_t* entities, int num_entites, float adapted_luminance);
-qboolean vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t *bsp, vec3_t begin, vec3_t end, vec3_t color, float radius);
-qboolean get_triangle_off_center(const float* positions, float* center, float* anti_center, float offset);
+bool vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t *bsp, vec3_t begin, vec3_t end, vec3_t color, float radius);
+bool get_triangle_off_center(const float* positions, float* center, float* anti_center, float offset);
 
 VkResult vkpt_initialize_god_rays();
 VkResult vkpt_destroy_god_rays();
@@ -715,7 +750,7 @@ VkResult vkpt_god_rays_create_pipelines();
 VkResult vkpt_god_rays_destroy_pipelines();
 VkResult vkpt_god_rays_update_images();
 VkResult vkpt_god_rays_noop();
-qboolean vkpt_god_rays_enabled(const sun_light_t* sun_light);
+bool vkpt_god_rays_enabled(const sun_light_t* sun_light);
 void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass);
 void vkpt_record_god_rays_filter_command_buffer(VkCommandBuffer command_buffer);
 void vkpt_god_rays_prepare_ubo(
@@ -741,17 +776,17 @@ typedef struct maliasmesh_s {
     int             numverts;
     int             numtris;
     int             numindices;
-    int             idx_offset;    /* offset in vertex buffer on device */
-    int             vertex_offset; /* offset in vertex buffer on device */
+    int             tri_offset; /* offset in vertex buffer on device */
     int             *indices;
     vec3_t          *positions;
     vec3_t          *normals;
     vec2_t          *tex_coords;
-	vec3_t          *tangents;      // iqm only
+	vec3_t          *tangents;
 	uint32_t        *blend_indices; // iqm only
-	vec4_t          *blend_weights; // iqm only
+	uint32_t        *blend_weights; // iqm only
 	struct pbr_material_s *materials[MAX_ALIAS_SKINS];
     int             numskins;
+	bool            handedness;
 } maliasmesh_t;
 
 // needed for model.c
@@ -804,15 +839,16 @@ void R_DrawFill8_RTX(int x, int y, int w, int h, int c);
 void R_DrawFill32_RTX(int x, int y, int w, int h, uint32_t color);
 void R_DrawChar_RTX(int x, int y, int flags, int c, qhandle_t font);
 int R_DrawString_RTX(int x, int y, int flags, size_t maxlen, const char *s, qhandle_t font);
-qboolean R_InterceptKey_RTX(unsigned key, qboolean down);
+bool R_InterceptKey_RTX(unsigned key, bool down);
 
 void IMG_Load_RTX(image_t *image, byte *pic);
 void IMG_Unload_RTX(image_t *image);
 byte *IMG_ReadPixels_RTX(int *width, int *height, int *rowbytes);
+float *IMG_ReadPixelsHDR_RTX(int *width, int *height);
 
-qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
-qerror_t MOD_LoadMD3_RTX(model_t* model, const void* rawdata, size_t length, const char* mod_name);
-qerror_t MOD_LoadIQM_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
+int MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
+int MOD_LoadMD3_RTX(model_t* model, const void* rawdata, size_t length, const char* mod_name);
+int MOD_LoadIQM_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 void MOD_Reference_RTX(model_t *model);
 
 #endif  /*__VKPT_H__*/

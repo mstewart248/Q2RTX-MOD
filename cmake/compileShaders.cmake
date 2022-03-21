@@ -2,6 +2,9 @@ set(SHADER_SOURCE_DEPENDENCIES
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/asvgf.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/brdf.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/constants.h
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/fsr_easu.glsl
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/fsr_rcas.glsl
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/fsr_utils.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/global_textures.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/global_ubo.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/god_rays_shared.h
@@ -13,7 +16,6 @@ set(SHADER_SOURCE_DEPENDENCIES
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/precomputed_sky.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/precomputed_sky_params.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/projection.glsl
-    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/read_visbuf.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/sky.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/tiny_encryption_algorithm.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/tone_mapping_utils.glsl

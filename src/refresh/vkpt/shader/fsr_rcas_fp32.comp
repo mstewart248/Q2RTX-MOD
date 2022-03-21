@@ -32,6 +32,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FsrRcasLoad     FsrRcasLoadF
 #define load_coord      ASU2
 #define FsrRcasInput    FsrRcasInputF
+#define FsrSrtm         FsrSrtmF
+#define FsrSrtmInv      FsrSrtmInvF
 
 // Actual implementation
 #include "fsr_rcas.glsl"

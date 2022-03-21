@@ -115,6 +115,8 @@ void InitGame(void)
 {
     gi.dprintf("==== InitGame ====\n");
 
+    Q_srand(time(NULL));
+
     gun_x = gi.cvar("gun_x", "0", 0);
     gun_y = gi.cvar("gun_y", "0", 0);
     gun_z = gi.cvar("gun_z", "0", 0);
@@ -383,7 +385,7 @@ void CheckNeedPass(void)
     // if password or spectator_password has changed, update needpass
     // as needed
     if (password->modified || spectator_password->modified) {
-        password->modified = spectator_password->modified = qfalse;
+        password->modified = spectator_password->modified = false;
 
         need = 0;
 
@@ -406,7 +408,7 @@ void CheckDMRules(void)
     int         i;
     gclient_t   *cl;
 
-    if (level.intermissiontime)
+    if (level.intermission_framenum)
         return;
 
     if (!deathmatch->value)
@@ -451,7 +453,7 @@ void ExitLevel(void)
     gi.AddCommandString(command);
     level.changemap = NULL;
     level.exitintermission = 0;
-    level.intermissiontime = 0;
+    level.intermission_framenum = 0;
     ClientEndServerFrames();
 
     // clear some things before going to next level

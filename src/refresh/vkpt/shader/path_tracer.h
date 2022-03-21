@@ -134,22 +134,22 @@ Converting skyboxes to local lights provides two benefits:
 #define gl_RayFlagsSkipProceduralPrimitives 0x200 // not defined in GLSL
 
 #define INSTANCE_DYNAMIC_FLAG        (1u << 31)
-#define INSTANCE_SKY_FLAG            (1u << 30)
-#define PRIM_ID_MASK (~(INSTANCE_DYNAMIC_FLAG | INSTANCE_SKY_FLAG))
+#define PRIM_ID_MASK (~INSTANCE_DYNAMIC_FLAG)
 
 #define GLOBAL_UBO_DESC_SET_IDX 1
 #include "global_ubo.h"
 
 
 layout (push_constant) uniform push_constant_block {
-	int gpu_index;
-    int bounce_index;
+   int gpu_index;
+   int bounce_index;
 } push_constants;
 
 struct RayPayloadGeometry {
-	vec2 barycentric;
-	uint instance_prim;
-	float hit_distance;
+   vec2 barycentric;
+   int buffer_and_instance_idx;
+   uint primitive_id;
+   float hit_distance;
 };
 
 struct RayPayloadEffects {
@@ -157,6 +157,12 @@ struct RayPayloadEffects {
    uint distances; // half2x16 - min and max
    uvec4 fog1; // half8x16: .xy = color.rgba; .z = t_min, t_max; .w = density: a and b for (a*t + b)
    uvec4 fog2; // same as fog1 but for a fog volume further away
+#ifndef KHR_RAY_QUERY
+   // Store TMax in the payload because gl_RayTmaxEXT changes while the ray is being traced.
+   // See the GLSL_EXT_ray_tracing spec near "description for gl_RayTminEXT and gl_RayTmaxEXT"
+   // https://github.com/KhronosGroup/GLSL/blob/master/extensions/ext/GLSL_EXT_ray_tracing.txt 
+   float rayTmax; 
+#endif
 };
 
 struct HitAttributeBeam {

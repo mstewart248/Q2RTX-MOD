@@ -148,7 +148,10 @@ static void extract_model_lights(model_t* model)
 
 	// Actually extract the lights now
 	
-	model->light_polys = Hunk_Alloc(&model->hunk, sizeof(light_poly_t) * num_lights);
+	if (!(model->light_polys = Hunk_Alloc(&model->hunk, sizeof(light_poly_t) * num_lights))) {
+		Com_DPrintf("Warning: unable to allocate memory for %i light polygons.\n", num_lights);
+		return;
+	}
 	model->num_light_polys = num_lights;
 
 	num_lights = 0;
@@ -205,7 +208,107 @@ static void extract_model_lights(model_t* model)
 	}
 }
 
-qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name)
+static void compute_missing_model_tangents(model_t* model)
+{
+	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
+	{
+		maliasmesh_t* mesh = model->meshes + mesh_idx;
+
+		if (mesh->tangents)
+			continue;
+
+		size_t tangent_size = mesh->numverts * model->numframes * sizeof(vec3_t);
+
+		mesh->tangents = MOD_Malloc(tangent_size);
+
+		memset(mesh->tangents, 0, tangent_size);
+
+		int handedness = 0;
+
+		for (int frame = 0; frame < model->numframes; frame++)
+		{
+			int voffset = frame * mesh->numverts;
+
+			for (int tri = 0; tri < mesh->numtris; tri++)
+			{
+				int iA = mesh->indices[tri * 3 + 0] + voffset;
+				int iB = mesh->indices[tri * 3 + 1] + voffset;
+				int iC = mesh->indices[tri * 3 + 2] + voffset;
+
+				const vec3_t* pA = mesh->positions + iA;
+				const vec3_t* pB = mesh->positions + iB;
+				const vec3_t* pC = mesh->positions + iC;
+
+				const vec2_t* tA = mesh->tex_coords + iA;
+				const vec2_t* tB = mesh->tex_coords + iB;
+				const vec2_t* tC = mesh->tex_coords + iC;
+
+				vec3_t dP0, dP1;
+				VectorSubtract(*pB, *pA, dP0);
+				VectorSubtract(*pC, *pA, dP1);
+
+				vec2_t dt0, dt1;
+				Vector2Subtract(*tB, *tA, dt0);
+				Vector2Subtract(*tC, *tA, dt1);
+
+				float inv_r = dt0[0] * dt1[1] - dt1[0] * dt0[1];
+
+				if (inv_r == 0.f)
+					continue;
+
+				float r = 1.f / inv_r;
+
+				vec3_t tangent = {
+					(dt1[1] * dP0[0] - dt0[1] * dP1[0]) * r,
+					(dt1[1] * dP0[1] - dt0[1] * dP1[1]) * r,
+					(dt1[1] * dP0[2] - dt0[1] * dP1[2]) * r };
+
+				VectorNormalize(tangent);
+
+				vec3_t* tangentA = mesh->tangents + iA;
+				vec3_t* tangentB = mesh->tangents + iB;
+				vec3_t* tangentC = mesh->tangents + iC;
+
+				VectorAdd(*tangentA, tangent, *tangentA);
+				VectorAdd(*tangentB, tangent, *tangentB);
+				VectorAdd(*tangentC, tangent, *tangentC);
+
+				if (handedness == 0)
+				{
+					vec3_t bitangent = {
+						(dt0[0] * dP1[0] - dt1[0] * dP0[0]) * r,
+						(dt0[0] * dP1[1] - dt1[0] * dP0[1]) * r,
+						(dt0[0] * dP1[2] - dt1[0] * dP0[2]) * r };
+
+					VectorNormalize(bitangent);
+
+					const vec3_t* normal = mesh->normals + iA;
+
+					vec3_t cross;
+					CrossProduct(*normal, tangent, cross);
+
+					float dot = DotProduct(cross, bitangent);
+
+					if (dot < 0.f)
+						handedness = -1;
+					else if (dot > 0.f)
+						handedness = 1;
+				}
+			}
+		}
+
+		for (int vtx = 0; vtx < mesh->numverts * model->numframes; vtx++)
+		{
+			vec3_t* tangent = mesh->tangents + vtx;
+
+			VectorNormalize(*tangent);
+		}
+
+		mesh->handedness = (handedness < 0);
+	}
+}
+
+int MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name)
 {
 	dmd2header_t    header;
 	dmd2frame_t     *src_frame;
@@ -224,17 +327,14 @@ qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, con
 	char            skinname[MAX_QPATH];
 	vec_t           scale_s, scale_t;
 	vec3_t          mins, maxs;
-	qerror_t        ret;
+	int             ret;
 
 	if (length < sizeof(header)) {
 		return Q_ERR_FILE_TOO_SMALL;
 	}
 
 	// byte swap the header
-	header = *(dmd2header_t *)rawdata;
-	for (int i = 0; i < sizeof(header) / 4; i++) {
-		((uint32_t *)&header)[i] = LittleLong(((uint32_t *)&header)[i]);
-	}
+	LittleBlock(&header, rawdata, sizeof(header));
 
 	// validate the header
 	ret = MOD_ValidateMD2(&header, length);
@@ -276,7 +376,7 @@ qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, con
 		return Q_ERR_TOO_FEW;
 	}
 
-	qboolean all_normals_same = qtrue;
+	bool all_normals_same = true;
 	int same_normal = -1;
 
 	src_frame = (dmd2frame_t *)((byte *)rawdata + header.ofs_frames);
@@ -290,7 +390,7 @@ qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, con
 		if (same_normal < 0)
 			same_normal = normal;
 		else if (normal != same_normal)
-			all_normals_same = qfalse;
+			all_normals_same = false;
 	}
 
 	for (int i = 0; i < numindices; i++) {
@@ -328,18 +428,18 @@ qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, con
 	model->type = MOD_ALIAS;
 	model->nummeshes = 1;
 	model->numframes = header.num_frames;
-	model->meshes = MOD_Malloc(sizeof(maliasmesh_t));
-	model->frames = MOD_Malloc(header.num_frames * sizeof(maliasframe_t));
+	CHECK(model->meshes = MOD_Malloc(sizeof(maliasmesh_t)));
+	CHECK(model->frames = MOD_Malloc(header.num_frames * sizeof(maliasframe_t)));
 
 	dst_mesh = model->meshes;
 	dst_mesh->numtris    = numindices / 3;
 	dst_mesh->numindices = numindices;
 	dst_mesh->numverts   = numverts;
 	dst_mesh->numskins   = header.num_skins;
-	dst_mesh->positions  = MOD_Malloc(numverts   * header.num_frames * sizeof(vec3_t));
-	dst_mesh->normals    = MOD_Malloc(numverts   * header.num_frames * sizeof(vec3_t));
-	dst_mesh->tex_coords = MOD_Malloc(numverts   * header.num_frames * sizeof(vec2_t));
-    dst_mesh->indices    = MOD_Malloc(numindices * sizeof(int));
+	CHECK(dst_mesh->positions  = MOD_Malloc(numverts   * header.num_frames * sizeof(vec3_t)));
+	CHECK(dst_mesh->normals    = MOD_Malloc(numverts   * header.num_frames * sizeof(vec3_t)));
+	CHECK(dst_mesh->tex_coords = MOD_Malloc(numverts   * header.num_frames * sizeof(vec2_t)));
+    CHECK(dst_mesh->indices    = MOD_Malloc(numindices * sizeof(int)));
 
 	if (dst_mesh->numtris != header.num_tris) {
 		Com_DPrintf("%s has %d bad triangles\n", model->name, header.num_tris - dst_mesh->numtris);
@@ -462,6 +562,8 @@ qerror_t MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, con
 		dst_mesh->indices[i + 2] = tmp;
 	}
 
+	compute_missing_model_tangents(model);
+
 	extract_model_lights(model);
 
 	Hunk_End(&model->hunk);
@@ -477,7 +579,7 @@ fail:
 #define TAB_SIN(x) qvk.sintab[(x) & 255]
 #define TAB_COS(x) qvk.sintab[((x) + 64) & 255]
 
-static qerror_t MOD_LoadMD3Mesh(model_t *model, maliasmesh_t *mesh,
+static int MOD_LoadMD3Mesh(model_t *model, maliasmesh_t *mesh,
 		const byte *rawdata, size_t length, size_t *offset_p)
 {
 	dmd3mesh_t      header;
@@ -491,15 +593,13 @@ static qerror_t MOD_LoadMD3Mesh(model_t *model, maliasmesh_t *mesh,
 	vec2_t          *dst_tc;
 	int  *dst_idx;
 	char            skinname[MAX_QPATH];
-	int             i;
+	int             i, ret;
 
 	if (length < sizeof(header))
 		return Q_ERR_BAD_EXTENT;
 
 	// byte swap the header
-	header = *(dmd3mesh_t *)rawdata;
-	for (i = 0; i < sizeof(header) / 4; i++)
-		((uint32_t *)&header)[i] = LittleLong(((uint32_t *)&header)[i]);
+	LittleBlock(&header, rawdata, sizeof(header));
 
 	if (header.meshsize < sizeof(header) || header.meshsize > length)
 		return Q_ERR_BAD_EXTENT;
@@ -530,10 +630,10 @@ static qerror_t MOD_LoadMD3Mesh(model_t *model, maliasmesh_t *mesh,
 	mesh->numindices = header.num_tris * 3;
 	mesh->numverts = header.num_verts;
 	mesh->numskins = header.num_skins;
-	mesh->positions = MOD_Malloc(header.num_verts * model->numframes * sizeof(vec3_t));
-	mesh->normals = MOD_Malloc(header.num_verts * model->numframes * sizeof(vec3_t));
-	mesh->tex_coords = MOD_Malloc(header.num_verts * model->numframes * sizeof(vec2_t));
-    mesh->indices = MOD_Malloc(sizeof(int) * header.num_tris * 3);
+	CHECK(mesh->positions = MOD_Malloc(header.num_verts * model->numframes * sizeof(vec3_t)));
+	CHECK(mesh->normals = MOD_Malloc(header.num_verts * model->numframes * sizeof(vec3_t)));
+	CHECK(mesh->tex_coords = MOD_Malloc(header.num_verts * model->numframes * sizeof(vec2_t)));
+    CHECK(mesh->indices = MOD_Malloc(sizeof(int) * header.num_tris * 3));
 
 	// load all skins
 	src_skin = (dmd3skin_t *)(rawdata + header.ofs_skins);
@@ -554,6 +654,7 @@ static qerror_t MOD_LoadMD3Mesh(model_t *model, maliasmesh_t *mesh,
     dst_tc = mesh->tex_coords;
     for (int frame = 0; frame < header.num_frames; frame++)
 	{
+		maliasframe_t *f = &model->frames[frame];
 		src_tc = (dmd3coord_t *)(rawdata + header.ofs_tcs);
 
 		for (i = 0; i < header.num_verts; i++) 
@@ -573,6 +674,11 @@ static qerror_t MOD_LoadMD3Mesh(model_t *model, maliasmesh_t *mesh,
 
 			(*dst_tc)[0] = LittleFloat(src_tc->st[0]);
 			(*dst_tc)[1] = LittleFloat(src_tc->st[1]);
+
+			for (int k = 0; k < 3; k++) {
+                f->bounds[0][k] = min(f->bounds[0][k], (*dst_vert)[k]);
+                f->bounds[1][k] = max(f->bounds[1][k], (*dst_vert)[k]);
+            }
 
 			src_vert++; dst_vert++; dst_norm++;
 			src_tc++; dst_tc++;
@@ -599,9 +705,12 @@ static qerror_t MOD_LoadMD3Mesh(model_t *model, maliasmesh_t *mesh,
 	*offset_p = header.meshsize;
 
 	return Q_ERR_SUCCESS;
+
+fail:
+	return ret;
 }
 
-qerror_t MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name)
+int MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name)
 {
 	dmd3header_t    header;
 	size_t          end, offset, remaining;
@@ -609,15 +718,13 @@ qerror_t MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, con
 	maliasframe_t   *dst_frame;
 	const byte      *src_mesh;
 	int             i;
-	qerror_t        ret;
+	int             ret;
 
 	if (length < sizeof(header))
 		return Q_ERR_FILE_TOO_SMALL;
 
 	// byte swap the header
-	header = *(dmd3header_t *)rawdata;
-	for (i = 0; i < sizeof(header) / 4; i++)
-		((uint32_t *)&header)[i] = LittleLong(((uint32_t *)&header)[i]);
+	LittleBlock(&header, rawdata, sizeof(header));
 
 	if (header.ident != MD3_IDENT)
 		return Q_ERR_UNKNOWN_FORMAT;
@@ -641,8 +748,8 @@ qerror_t MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, con
 	model->type = MOD_ALIAS;
 	model->numframes = header.num_frames;
 	model->nummeshes = header.num_meshes;
-	model->meshes = MOD_Malloc(sizeof(maliasmesh_t) * header.num_meshes);
-	model->frames = MOD_Malloc(sizeof(maliasframe_t) * header.num_frames);
+	CHECK(model->meshes = MOD_Malloc(sizeof(maliasmesh_t) * header.num_meshes));
+	CHECK(model->frames = MOD_Malloc(sizeof(maliasframe_t) * header.num_frames));
 
 	// load all frames
 	src_frame = (dmd3frame_t *)((byte *)rawdata + header.ofs_frames);
@@ -651,9 +758,7 @@ qerror_t MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, con
 		LittleVector(src_frame->translate, dst_frame->translate);
 		VectorSet(dst_frame->scale, MD3_XYZ_SCALE, MD3_XYZ_SCALE, MD3_XYZ_SCALE);
 
-		LittleVector(src_frame->mins, dst_frame->bounds[0]);
-		LittleVector(src_frame->maxs, dst_frame->bounds[1]);
-		dst_frame->radius = LittleFloat(src_frame->radius);
+		ClearBounds(dst_frame->bounds[0], dst_frame->bounds[1]);
 
 		src_frame++; dst_frame++;
 	}
@@ -669,8 +774,21 @@ qerror_t MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, con
 		remaining -= offset;
 	}
 
-	//if (strstr(model->name, "v_blast"))
-	//	export_obj_frames(model, "export/v_blast_%d.obj");
+    // calculate frame bounds
+    dst_frame = model->frames;
+    for (i = 0; i < header.num_frames; i++) {
+        VectorScale(dst_frame->bounds[0], MD3_XYZ_SCALE, dst_frame->bounds[0]);
+        VectorScale(dst_frame->bounds[1], MD3_XYZ_SCALE, dst_frame->bounds[1]);
+
+        dst_frame->radius = RadiusFromBounds(dst_frame->bounds[0], dst_frame->bounds[1]);
+
+        VectorAdd(dst_frame->bounds[0], dst_frame->translate, dst_frame->bounds[0]);
+        VectorAdd(dst_frame->bounds[1], dst_frame->translate, dst_frame->bounds[1]);
+
+        dst_frame++;
+    }
+
+	compute_missing_model_tangents(model);
 
 	extract_model_lights(model);
 
@@ -683,12 +801,12 @@ fail:
 }
 #endif
 
-qerror_t MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, const char* mod_name)
+int MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, const char* mod_name)
 {
 	Hunk_Begin(&model->hunk, 0x4000000);
 	model->type = MOD_ALIAS;
 
-	qerror_t res = MOD_LoadIQM_Base(model, rawdata, length, mod_name);
+	int res = MOD_LoadIQM_Base(model, rawdata, length, mod_name), ret;
 
 	if (res != Q_ERR_SUCCESS)
 	{
@@ -699,7 +817,7 @@ qerror_t MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, con
 	char base_path[MAX_QPATH];
 	COM_FilePath(mod_name, base_path, sizeof(base_path));
 
-	model->meshes = MOD_Malloc(sizeof(maliasmesh_t) * model->iqmData->num_meshes);
+	CHECK(model->meshes = MOD_Malloc(sizeof(maliasmesh_t) * model->iqmData->num_meshes));
 	model->nummeshes = (int)model->iqmData->num_meshes;
 	model->numframes = 1; // these are baked frames, so that the VBO uploader will only make one copy of the vertices
 
@@ -714,7 +832,7 @@ qerror_t MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, con
 		mesh->tex_coords = iqm_mesh->data->texcoords ? (vec2_t*)(iqm_mesh->data->texcoords + iqm_mesh->first_vertex * 2) : NULL;
 		mesh->tangents = iqm_mesh->data->tangents ? (vec3_t*)(iqm_mesh->data->tangents + iqm_mesh->first_vertex * 3) : NULL;
 		mesh->blend_indices = iqm_mesh->data->blend_indices ? (uint32_t*)(iqm_mesh->data->blend_indices + iqm_mesh->first_vertex * 4) : NULL;
-		mesh->blend_weights = iqm_mesh->data->blend_weights ? (vec4_t*)(iqm_mesh->data->blend_weights + iqm_mesh->first_vertex * 4) : NULL;
+		mesh->blend_weights = iqm_mesh->data->blend_weights ? (uint32_t*)(iqm_mesh->data->blend_weights + iqm_mesh->first_vertex * 4) : NULL;
 
 		mesh->numindices = (int)(iqm_mesh->num_triangles * 3);
 		mesh->numverts = (int)iqm_mesh->num_vertexes;
@@ -742,12 +860,19 @@ qerror_t MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, con
 		mesh->numskins = 1; // looks like IQM only supports one skin?
 	}
 
+	compute_missing_model_tangents(model);
+
 	extract_model_lights(model);
 
 	Hunk_End(&model->hunk);
 	
 	return Q_ERR_SUCCESS;
+
+fail:
+	return ret;
 }
+
+extern model_vbo_t model_vertex_data[];
 
 void MOD_Reference_RTX(model_t *model)
 {
@@ -775,6 +900,7 @@ void MOD_Reference_RTX(model_t *model)
 	}
 
 	model->registration_sequence = registration_sequence;
+	model_vertex_data[model - r_models].registration_sequence = registration_sequence;
 }
 
 // vim: shiftwidth=4 noexpandtab tabstop=4 cindent

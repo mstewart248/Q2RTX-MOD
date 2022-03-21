@@ -5,7 +5,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 project(quake2-RTX)
 set(Q2RTX_VERSION_MAJOR 1)
-set(Q2RTX_VERSION_MINOR 5)
+set(Q2RTX_VERSION_MINOR 6)
 set(Q2RTX_VERSION_POINT 0)
 
 # get short-hash
@@ -84,6 +84,11 @@ IF(MSVC)
 
     # Enable multi-processor compilation when using MSBuild
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
+
+ELSEIF(CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse -mfpmath=sse")
+
 ENDIF()
 
 

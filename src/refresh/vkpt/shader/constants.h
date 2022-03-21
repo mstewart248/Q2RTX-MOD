@@ -103,6 +103,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define ENVIRONMENT_STATIC 1
 #define ENVIRONMENT_DYNAMIC 2
 
+#define MAX_MODEL_INSTANCES      8192 // MAX_ENTITIES * (some number of geometries per model, usually 1)
+#define MAX_RESERVED_INSTANCES   16   // TLAS instances reserved for skinned geometry, particles and the like
+#define MAX_TLAS_INSTANCES       (MAX_MODEL_INSTANCES + MAX_RESERVED_INSTANCES)
 
 #define SHADER_MAX_ENTITIES                  8192
 #define SHADER_MAX_BSP_ENTITIES              8192
@@ -123,10 +126,6 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 // Effects TLAS flags
 #define AS_FLAG_EFFECTS         (1 << 0)
-
-#define AS_INSTANCE_FLAG_DYNAMIC        (1 << 23)
-#define AS_INSTANCE_FLAG_SKY            (1 << 22)
-#define AS_INSTANCE_MASK_OFFSET (AS_INSTANCE_FLAG_SKY - 1)
 
 #define RT_PAYLOAD_GEOMETRY      0
 #define RT_PAYLOAD_EFFECTS       1
