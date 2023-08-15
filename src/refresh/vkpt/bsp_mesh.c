@@ -135,15 +135,9 @@ compute_emissive(mtexinfo_t *texinfo)
 
 	const float bsp_emissive = (float)texinfo->radiance * cvar_pt_bsp_radiance_scale->value;
 
-	const qboolean is_emissive_fake = texinfo->material->image_emissive && ((texinfo->material->image_emissive->flags & IF_FAKE_EMISSIVE) != 0);
-
-	// If emissive is "fake", treat absence of SURF_LIGHT flag as "not emissive"
-	// If emissive is not "fake" (ie explicit image), treat absence of SURF_LIGHT flag as "fully emissive"
-	const float fallback_emissive = is_emissive_fake ? 0.f : 1.f;
-
 	return ((texinfo->c.flags & SURF_LIGHT) && texinfo->material->bsp_radiance)
 		? bsp_emissive
-		: fallback_emissive;
+		: texinfo->material->default_radiance;
 }
 
 #define DUMP_WORLD_MESH_TO_OBJ 0
@@ -167,15 +161,12 @@ create_poly(
 	mbasis_t bases  [    /*max_vertices*/ 32];
 	mtexinfo_t *texinfo = surf->texinfo;
 	assert(surf->numsurfedges < max_vertices);
+	(void)max_vertices;
 	
 	float sc[2] = { 1.f, 1.f };
-	if (texinfo->material)
-	{
-		image_t* image_diffuse = texinfo->material->image_base;
-		if (image_diffuse && image_diffuse->width && image_diffuse->height) {
-			sc[0] = 1.0f / (float)image_diffuse->width;
-			sc[1] = 1.0f / (float)image_diffuse->height;
-		}
+	if (texinfo->material && texinfo->material->original_width && texinfo->material->original_height) {
+		sc[0] = 1.0f / (float)texinfo->material->original_width;
+		sc[1] = 1.0f / (float)texinfo->material->original_height;
 	}
 	
 	for (int i = 0; i < surf->numsurfedges; i++) {
@@ -343,6 +334,31 @@ belongs_to_model(bsp_t *bsp, mface_t *surf)
 	return 0;
 }
 
+// Classification of what kind of sky a surface is
+enum sky_class_e
+{
+	// Not sky
+	SKY_CLASS_NO,
+	// Sky material (selected by filter_static_sky)
+	SKY_CLASS_MATERIAL,
+	// User-defined sky enabled by pt_bsp_sky_lights > 1 (selected by filter_nodraw_sky_lights)
+	SKY_CLASS_NODRAW_SKYLIGHT
+};
+
+static inline enum sky_class_e classify_sky(int flags, int surf_flags)
+{
+	if (MAT_IsKind(flags, MATERIAL_KIND_SKY))
+		return SKY_CLASS_MATERIAL;
+
+	if (cvar_pt_bsp_sky_lights->integer > 1) {
+		int nodraw_skylight_expected = SURF_SKY | SURF_LIGHT | SURF_NODRAW;
+		if ((surf_flags & nodraw_skylight_expected) == nodraw_skylight_expected)
+			return SKY_CLASS_NODRAW_SKYLIGHT;
+	}
+
+	return SKY_CLASS_NO;
+}
+
 static int filter_static_masked(int flags, int surf_flags)
 {
 	if ((surf_flags & SURF_NODRAW) && cvar_pt_enable_nodraw->integer)
@@ -385,10 +401,12 @@ static int filter_static_transparent(int flags, int surf_flags)
 
 static int filter_static_sky(int flags, int surf_flags)
 {
-	if ((surf_flags & SURF_NODRAW) && cvar_pt_enable_nodraw->integer)
+	enum sky_class_e sky_class = classify_sky(flags, surf_flags);
+
+	if (((surf_flags & SURF_NODRAW) && cvar_pt_enable_nodraw->integer) || (sky_class == SKY_CLASS_NODRAW_SKYLIGHT))
 		return 0;
 	
-	if (MAT_IsKind(flags, MATERIAL_KIND_SKY))
+	if (sky_class == SKY_CLASS_MATERIAL)
 		return 1;
 
 	return 0;
@@ -407,8 +425,8 @@ static int filter_all(int flags, int surf_flags)
 
 static int filter_nodraw_sky_lights(int flags, int surf_flags)
 {
-	int expected = SURF_SKY | SURF_LIGHT | SURF_NODRAW;
-	return (surf_flags & expected) == expected;
+	enum sky_class_e sky_class = classify_sky(flags, surf_flags);
+	return sky_class == SKY_CLASS_NODRAW_SKYLIGHT;
 }
 
 // Computes a point at a small distance above the center of the triangle.
@@ -1171,6 +1189,15 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		if(!texinfo->material)
 			continue;
 
+		int flags = surf->drawflags;
+		if (surf->texinfo) flags |= surf->texinfo->c.flags;
+
+		// Don't create light polys from SKY surfaces, those are handled separately.
+		// Sometimes, textures with a light fixture are used on sky polys (like in rlava1),
+		// and that leads to subdivision of those sky polys into a large number of lights.
+		if (flags & SURF_SKY)
+			continue;
+
 		// Check if any animation frame is a light material
 		bool any_light_frame = false;
 		{
@@ -1218,8 +1245,7 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 			continue;
 		}
 
-		image_t* image_diffuse = texinfo->material->image_base;
-		float tex_scale[2] = { 1.0f / image_diffuse->width, 1.0f / image_diffuse->height };
+		float tex_scale[2] = { 1.0f / texinfo->material->original_width, 1.0f / texinfo->material->original_height };
 
 		collect_one_light_poly(bsp, surf, texinfo, model_idx, plane,
 							   tex_scale, min_light_texcoord, max_light_texcoord,
@@ -1467,25 +1493,13 @@ load_sky_and_lava_clusters(bsp_mesh_t* wm, const char* map_name)
     char filename[MAX_QPATH];
     Q_snprintf(filename, sizeof(filename), "maps/sky/%s.txt", map_name);
 
-    bool found_map = false;
-
     char* filebuf = NULL;
     FS_LoadFile(filename, (void**)&filebuf);
     
-    if (filebuf)
+    if (!filebuf)
     {
-        // we have a map-specific file - no need to look for map name
-        found_map = true;
-    }
-    else
-    {
-        // try to load the global file
-        FS_LoadFile("sky_clusters.txt", (void**)&filebuf);
-        if (!filebuf)
-        {
-            Com_WPrintf("Couldn't read sky_clusters.txt\n");
-            return;
-        }
+        Com_DPrintf("Couldn't read %s\n", filename);
+        return;
     }
 
 	char const * ptr = (char const *)filebuf;
@@ -1501,31 +1515,14 @@ load_sky_and_lava_clusters(bsp_mesh_t* wm, const char* map_name)
 		const char* word = strtok(linebuf, delimiters);
 		while (word)
 		{
-			if ((word[0] >= 'a' && word[0] <= 'z') || (word[0] >= 'A' && word[0] <= 'Z'))
-			{
-				bool matches = strcmp(word, map_name) == 0;
+			assert(wm->num_sky_clusters < MAX_SKY_CLUSTERS);
 
-				if (!found_map && matches)
-				{
-					found_map = true;
-				}
-				else if (found_map && !matches)
-				{
-					Z_Free(filebuf);
-					return;
-				}
-			}
-			else if (found_map)
+			if (!strcmp(word, "!all_lava"))
+				wm->all_lava_emissive = true;
+			else
 			{
-				assert(wm->num_sky_clusters < MAX_SKY_CLUSTERS);
-
-				if (!strcmp(word, "!all_lava"))
-					wm->all_lava_emissive = true;
-				else
-				{
-					int cluster = atoi(word);
-					wm->sky_clusters[wm->num_sky_clusters++] = cluster;
-				}
+				int cluster = atoi(word);
+				wm->sky_clusters[wm->num_sky_clusters++] = cluster;
 			}
 
 			word = strtok(NULL, delimiters);
@@ -2029,7 +2026,12 @@ bsp_mesh_register_textures(bsp_t *bsp)
 				synth_surface_material &= !is_warp_surface;
 			
 			if (synth_surface_material)
+			{
 				MAT_SynthesizeEmissive(mat);
+				/* If emissive is "fake", treat absence of BSP radiance flag as "not emissive":
+				* The assumption is that this is closer to the author's intention */
+				mat->default_radiance = 0.0f;
+			}
 		}
 		
 		info->material = mat;

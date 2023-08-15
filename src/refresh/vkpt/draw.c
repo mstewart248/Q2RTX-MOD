@@ -78,7 +78,7 @@ extern cvar_t* cvar_ui_hdr_nits;
 extern cvar_t* cvar_tm_hdr_saturation_scale;
 
 VkExtent2D
-vkpt_draw_get_extent()
+vkpt_draw_get_extent(void)
 {
 	return qvk.extent_unscaled;
 }
@@ -179,7 +179,7 @@ static inline void enqueue_stretch_pic(
 }
 
 static void
-create_render_pass()
+create_render_pass(void)
 {
 	LOG_FUNC();
 	VkAttachmentDescription color_attachment = {
@@ -524,8 +524,8 @@ vkpt_draw_create_pipelines()
 		.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
 		.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
 		.colorBlendOp        = VK_BLEND_OP_ADD,
-		.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-		.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+		.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+		.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
 		.alphaBlendOp        = VK_BLEND_OP_ADD,
 	};
 
@@ -789,7 +789,7 @@ R_SetColor_RTX(uint32_t color)
 }
 
 void
-R_LightPoint_RTX(vec3_t origin, vec3_t light)
+R_LightPoint_RTX(const vec3_t origin, vec3_t light)
 {
 	VectorSet(light, 1, 1, 1);
 }

@@ -37,7 +37,7 @@ project_triangle(mat3 positions, vec3 p)
 }
 
 float
-projected_tri_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight)
+spherical_tri_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight)
 {
 	positions[0] = positions[0] - p;
 	positions[1] = positions[1] - p;
@@ -53,66 +53,125 @@ projected_tri_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, floa
 	float specular = phong(n, L, V, phong_exp) * phong_scale;
 	float brdf = mix(1.0, specular, phong_weight);
 
-	positions[0] = normalize(positions[0]);
-	positions[1] = normalize(positions[1]);
-	positions[2] = normalize(positions[2]);
+	// Project triangle to unit sphere
+	vec3 A = normalize(positions[0]);
+	vec3 B = normalize(positions[1]);
+	vec3 C = normalize(positions[2]);
+	// Planes passing through two vertices and origin. They'll be used to obtain the angles.
+	vec3 norm_AB = normalize(cross(A, B));
+	vec3 norm_BC = normalize(cross(B, C));
+	vec3 norm_CA = normalize(cross(C, A));
+	// Side of spherical triangle
+	float cos_c = dot(A, B);
+	// Angles at vertices
+	float cos_alpha = dot(norm_AB, -norm_CA);
+	float cos_beta = dot(norm_BC, -norm_AB);
+	float cos_gamma = dot(norm_CA, -norm_BC);
 
-	vec3 a = cross(positions[1] - positions[0], positions[2] - positions[0]);
-	float pa = max(length(a) - 1e-5, 0.);
+	// Area of spherical triangle
+	float area = 2 * atan(abs(dot(A, cross(B, C))), 1 + dot(A, B) + dot(B, C) + dot(A, C));
+	float pa = max(area - 1e-5, 0.);
 	return pa * brdf;
 }
 
-float pdf_area_to_solid_angle(float pdfA, float distance_, float cos_theta)
+float get_spherical_triangle_pdfw(mat3 positions)
 {
-    return pdfA * square(distance_) / cos_theta;
+	// Project triangle to unit sphere
+	vec3 A = normalize(positions[0]);
+	vec3 B = normalize(positions[1]);
+	vec3 C = normalize(positions[2]);
+	// Planes passing through two vertices and origin. They'll be used to obtain the angles.
+	vec3 norm_AB = normalize(cross(A, B));
+	vec3 norm_BC = normalize(cross(B, C));
+	vec3 norm_CA = normalize(cross(C, A));
+	// Side of spherical triangle
+	float cos_c = dot(A, B);
+	// Angles at vertices
+	float cos_alpha = dot(norm_AB, -norm_CA);
+	float cos_beta = dot(norm_BC, -norm_AB);
+	float cos_gamma = dot(norm_CA, -norm_BC);
+
+	// Area of spherical triangle
+	float area = 2 * atan(abs(dot(A, cross(B, C))), 1 + dot(A, B) + dot(B, C) + dot(A, C));
+
+	// Since the solid angle is distributed uniformly, the PDF wrt to solid angle is simply:
+	return 1 / area;
 }
 
-float get_triangle_pdfw(mat3 positions, vec3 sample_pos)
-{
-	vec3 normal = cross(positions[1] - positions[0], positions[2] - positions[0]);
-	float normal_length = length(normal);
-	float sample_pos_distance = length(sample_pos);
-
-	// The samples should be more or less on the unit sphere. If they are much closer than
-	// 1 unit away, this means the projected light is very large, and the surface is likely
-	// on the light itself.
-	float clamped_sample_pos_distance = max(sample_pos_distance, 0.1);
-
-	if (normal_length > 0 && sample_pos_distance > 0)
-	{
-		float cos_theta = -dot(normal / normal_length, sample_pos / sample_pos_distance);
-		return pdf_area_to_solid_angle(2.0 / normal_length, clamped_sample_pos_distance, cos_theta);
-	}
-
-	return 0;
-}
-
+/* Sample a triangle, projected to a unit sphere.
+ *
+ * The implementation is based on the algorithm described in:
+ * James Arvo. 1995. Stratified sampling of spherical triangles.
+ * Proceedings of the 22nd annual conference on Computer graphics and interactive techniques (SIGGRAPH '95).
+ * Association for Computing Machinery, New York, NY, USA, 437–438.
+ * https://doi.org/10.1145/218380.218500
+ */
 vec3
-sample_projected_triangle(vec3 p, mat3 positions, vec2 rnd, out vec3 light_normal, out float pdfw)
+sample_projected_triangle(vec3 pt, mat3 positions, vec2 rnd, out vec3 light_normal, out float pdfw)
 {
 	light_normal = cross(positions[1] - positions[0], positions[2] - positions[0]);
 	light_normal = normalize(light_normal);
 
-	positions[0] = positions[0] - p;
-	positions[1] = positions[1] - p;
-	positions[2] = positions[2] - p;
+	// Use surface point as origin
+	positions[0] = positions[0] - pt;
+	positions[1] = positions[1] - pt;
+	positions[2] = positions[2] - pt;
 
+	// Distance of triangle to origin
 	float o = dot(light_normal, positions[0]);
 
-	positions[0] = normalize(positions[0]);
-	positions[1] = normalize(positions[1]);
-	positions[2] = normalize(positions[2]);
+	// Project triangle to unit sphere
+	vec3 A = normalize(positions[0]);
+	vec3 B = normalize(positions[1]);
+	vec3 C = normalize(positions[2]);
+	// Planes passing through two vertices and origin. They'll be used to obtain the angles.
+	vec3 norm_AB = normalize(cross(A, B));
+	vec3 norm_BC = normalize(cross(B, C));
+	vec3 norm_CA = normalize(cross(C, A));
+	// Side of spherical triangle
+	float cos_c = dot(A, B);
+	// Angles at vertices
+	float cos_alpha = dot(norm_AB, -norm_CA);
+	float cos_beta = dot(norm_BC, -norm_AB);
+	float cos_gamma = dot(norm_CA, -norm_BC);
 
-	vec3 direction = positions * sample_triangle(rnd);
-	float dl = length(direction);
+	// Area of spherical triangle. From: "On the Measure of Solid Angles", F. Eriksson, 1990.
+	float area = 2 * atan(abs(dot(A, cross(B, C))), 1 + dot(A, B) + dot(B, C) + dot(A, C));
 
-	// n (p + d * t - p[i]) == 0
-	// -n (p - pi) / n d == o / n d == t
+	// Use one random variable to select the new area.
+	float new_area = rnd.x * area;
+
+	float sin_alpha = sqrt(1 - cos_alpha * cos_alpha); // = sin(acos(cos_alpha))
+	float sin_new_area = sin(new_area);
+	float cos_new_area = cos(new_area);
+	// Save the sine and cosine of the angle phi.
+	float p = sin_new_area * cos_alpha - cos_new_area * sin_alpha;
+	float q = cos_new_area * cos_alpha + sin_new_area * sin_alpha;
+
+	// Compute the pair (u, v) that determines new_beta.
+	float u = q - cos_alpha;
+	float v = p + sin_alpha * cos_c;
+
+	// Let cos_b be the cosine of the new edge length new_b.
+	float cos_b = clamp(((v * q - u * p) * cos_alpha - v) / ((v * p + u * q) * sin_alpha), -1, 1);
+
+	// Compute the third vertex of the sub-triangle.
+	vec3 new_C = cos_b * A + sqrt(1 - cos_b * cos_b) * normalize(C - dot(C, A) * A);
+
+	// Use the other random variable to select cos(phi).
+	float z = 1 - rnd.y * (1 - dot(new_C, B));
+
+	// Construct the corresponding point on the sphere.
+	vec3 direction = z * B + sqrt(1 - z * z) * normalize(new_C - dot(new_C, B) * B);
+	// ...which is also the direction!
+
+	// Line-plane intersection
 	vec3 lo = direction * (o / dot(light_normal, direction));
-	
-	pdfw = get_triangle_pdfw(positions, direction);
 
-	return p + lo;
+	// Since the solid angle is distributed uniformly, the PDF wrt to solid angle is simply:
+	pdfw = 1 / area;
+
+	return pt + lo;
 }
 
 uint get_light_stats_addr(uint cluster, uint light, uint side)
@@ -153,8 +212,14 @@ sample_polygonal_lights(
 
 	uint list_start = light_buffer.light_list_offsets[list_idx];
 	uint list_end   = light_buffer.light_list_offsets[list_idx + 1];
+	/* The light count we base light selection on may differ from the current count
+	 * to avoid gradient estimation breaking (see comment on light_counts_history).
+	 * Obtain the frame number for the historical count from the RNG seed
+	 * (which is also the historical RNG seed) */
+	uint history_index = (rng_seed >> RNG_SEED_SHIFT_FRAME) % LIGHT_COUNT_HISTORY;
+	uint light_count = light_counts_history[history_index].sample_light_counts[list_idx];
 
-	float partitions = ceil(float(list_end - list_start) / float(MAX_BRUTEFORCE_SAMPLING));
+	float partitions = ceil(float(light_count) / float(MAX_BRUTEFORCE_SAMPLING));
 	rng.x *= partitions;
 	float fpart = min(floor(rng.x), partitions-1);
 	rng.x -= fpart;
@@ -167,12 +232,20 @@ sample_polygonal_lights(
 
 	#pragma unroll
 	for(uint i = 0, n_idx = list_start; i < MAX_BRUTEFORCE_SAMPLING; i++, n_idx += stride) {
-		if (n_idx >= list_end)
+		if (n_idx >= list_start + light_count)
 			break;
 		
+		if(n_idx >= list_end)
+		{
+			light_masses[i] = 0;
+			continue;
+		}
+
 		uint current_idx = light_buffer.light_list_lights[n_idx];
 
-		if(current_idx == ~0u)
+		// In case of polygon light overflow, the host code will still populate the light lists
+		// with invalid indices. Skip those lights here, so they have pdf=0 and will not be selected.
+		if (current_idx >= MAX_LIGHT_POLYS)
 		{
 			light_masses[i] = 0;
 			continue;
@@ -180,7 +253,7 @@ sample_polygonal_lights(
 
 		LightPolygon light = get_light_polygon(current_idx);
 
-		float m = projected_tri_area(light.positions, p, n, V, phong_exp, phong_scale, phong_weight);
+		float m = spherical_tri_area(light.positions, p, n, V, phong_exp, phong_scale, phong_weight);
 
 		float light_lum = luminance(light.color);
 
@@ -241,7 +314,7 @@ sample_polygonal_lights(
 
 	#pragma unroll
 	for(uint i = 0, n_idx = list_start; i < MAX_BRUTEFORCE_SAMPLING; i++, n_idx += stride) {
-		if (n_idx >= list_end)
+		if (n_idx >= list_start + light_count)
 			break;
 		pdf = light_masses[i];
 		current_idx = int(n_idx);
@@ -293,8 +366,80 @@ sample_polygonal_lights(
 	light_color /= pdf;
 }
 
+float
+compute_dynlight_sphere(uint light_idx, vec3 light_center, vec3 p, out vec3 position_light, vec3 rng)
+{
+	vec3 c = light_center - p;
+	float dist = length(c);
+	float rdist = 1.0 / dist;
+	vec3 L = c * rdist;
+
+	float sphere_radius = global_ubo.dyn_light_data[light_idx].radius;
+	float irradiance = 2 * (1 - sqrt(max(0, 1 - square(sphere_radius * rdist))));
+
+	mat3 onb = construct_ONB_frisvad(L);
+	vec3 diskpt;
+	diskpt.xy = sample_disk(rng.yz);
+	diskpt.z = sqrt(max(0, 1 - diskpt.x * diskpt.x - diskpt.y * diskpt.y));
+
+	position_light = light_center + (onb[0] * diskpt.x + onb[2] * diskpt.y - L * diskpt.z) * sphere_radius;
+
+	return irradiance;
+}
+
+float
+compute_dynlight_spot(uint light_idx, uint spot_style, vec3 light_center, vec3 p, out vec3 position_light, vec3 rng)
+{
+	mat3 onb = construct_ONB_frisvad(global_ubo.dyn_light_data[light_idx].spot_direction);
+	// Emit light from a small disk around the origin
+	float emitter_radius = global_ubo.dyn_light_data[light_idx].radius;
+	vec2 diskpt = sample_disk(rng.yz);
+	position_light = light_center + (onb[0] * diskpt.x + onb[2] * diskpt.y) * emitter_radius;
+
+	vec3 c = position_light - p;
+	float dist = length(c);
+	float rdist = 1.0 / dist;
+	vec3 L = c * rdist;
+
+	// Direction from emission point to surface, in a basis where +Y is the spot direction
+	vec3 L_l = -L * onb;
+	float cosTheta = L_l.y; // cosine of angle to spot direction
+	float falloff;
+
+	if(spot_style == DYNLIGHT_SPOT_EMISSION_PROFILE_FALLOFF) {
+		const vec2 spot_falloff = unpackHalf2x16(global_ubo.dyn_light_data[light_idx].spot_data);
+		const float cosTotalWidth = spot_falloff.x;
+		const float cosFalloffStart = spot_falloff.y;
+
+		if(cosTheta < cosTotalWidth)
+			falloff = 0;
+		else if (cosTheta > cosFalloffStart)
+			falloff = 1;
+		else {
+			float delta = (cosTheta - cosTotalWidth) / (cosFalloffStart - cosTotalWidth);
+			falloff = (delta * delta) * (delta * delta);
+		}
+	} else if(spot_style == DYNLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE) {
+		const uint spot_data = global_ubo.dyn_light_data[light_idx].spot_data;
+		const float theta = acos(cosTheta);
+		const float totalWidth = unpackHalf2x16(spot_data).x;
+		const uint texture_num = spot_data >> 16;
+
+		if (cosTheta >= 0) {
+			// Use the angle directly as texture coordinate for better angular resolution next to the center of the beam
+			float tc = clamp(theta / totalWidth, 0, 1);
+			falloff = global_texture(texture_num, vec2(tc, 0)).r;
+		} else
+			falloff = 0;
+	}
+
+	float irradiance = 2 * falloff * square(rdist);
+
+	return irradiance;
+}
+
 void
-sample_spherical_lights(
+sample_dynamic_lights(
 		vec3 p,
 		vec3 n,
 		vec3 gn,
@@ -306,32 +451,28 @@ sample_spherical_lights(
 	position_light = vec3(0);
 	light_color = vec3(0);
 
-	if(global_ubo.num_sphere_lights == 0)
+	if(global_ubo.num_dyn_lights == 0)
 		return;
 
-	float random_light = rng.x * global_ubo.num_sphere_lights;
-	uint light_idx = min(global_ubo.num_sphere_lights - 1, uint(random_light));
+	float random_light = rng.x * global_ubo.num_dyn_lights;
+	uint light_idx = min(global_ubo.num_dyn_lights - 1, uint(random_light));
 
-	vec4 light_center_radius = global_ubo.sphere_light_data[light_idx * 2];
-	float sphere_radius = light_center_radius.w;
+	vec3 light_center = global_ubo.dyn_light_data[light_idx].center;
 
-	light_color = global_ubo.sphere_light_data[light_idx * 2 + 1].rgb;
+	light_color = global_ubo.dyn_light_data[light_idx].color;
 
-	vec3 c = light_center_radius.xyz - p;
-	float dist = length(c);
-	float rdist = 1.0 / dist;
-	vec3 L = c * rdist;
+	uint light_type = global_ubo.dyn_light_data[light_idx].type & 0xffff;
+	uint light_style = global_ubo.dyn_light_data[light_idx].type >> 16;
 
-	float irradiance = 2 * (1 - sqrt(max(0, 1 - square(sphere_radius * rdist))));
+	float irradiance;
+	if(light_type == DYNLIGHT_SPHERE) {
+		irradiance = compute_dynlight_sphere(light_idx, light_center, p, position_light, rng);
+	} else {
+		irradiance = compute_dynlight_spot(light_idx, light_style, light_center, p, position_light, rng);
+	}
 	irradiance = min(irradiance, max_solid_angle);
-	irradiance *= float(global_ubo.num_sphere_lights); // 1 / pdf
+	irradiance *= float(global_ubo.num_dyn_lights); // 1 / pdf
 
-	mat3 onb = construct_ONB_frisvad(L);
-	vec3 diskpt;
-	diskpt.xy = sample_disk(rng.yz);
-	diskpt.z = sqrt(max(0, 1 - diskpt.x * diskpt.x - diskpt.y * diskpt.y));
-
-	position_light = light_center_radius.xyz + (onb[0] * diskpt.x + onb[2] * diskpt.y - L * diskpt.z) * sphere_radius;
 	light_color *= irradiance;
 
 	if(dot(position_light - p, gn) <= 0)

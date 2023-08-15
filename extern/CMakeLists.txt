@@ -37,9 +37,10 @@ endif()
 
 # On a 32-bit target, only the server is built, and it doesn't need SDL
 if (IS_64_BIT)
-    option(SDL_SHARED"" OFF)
-    option(SDL_STATIC"" ON)
+    option(SDL_SHARED "" OFF)
+    option(SDL_STATIC "" ON)
     option(SDL_SHARED_ENABLED_BY_DEFAULT OFF)
+    option(SDL_TEST OFF)
 
     if (CONFIG_LINUX_STEAM_RUNTIME_SUPPORT)
     	option(INPUT_TSLIB OFF)
@@ -50,6 +51,7 @@ if (IS_64_BIT)
     set_target_properties(SDL2main PROPERTIES FOLDER extern)
     set_target_properties(SDL2-static PROPERTIES FOLDER extern)
     set_target_properties(uninstall PROPERTIES FOLDER extern)
+    set_target_properties(sdl_headers_copy PROPERTIES FOLDER extern)
 endif()
 
 #
@@ -84,3 +86,25 @@ target_include_directories(stb INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/stb)
 
 add_library(tinyobjloader INTERFACE)
 target_include_directories(tinyobjloader INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tinyobjloader-c)
+
+#
+# openal-soft (64-bit only, not needed for the 32-bit server)
+#
+
+if (IS_64_BIT)
+    set(LIBTYPE STATIC)
+    option(FORCE_STATIC_VCRT "" ON)
+    option(ALSOFT_UTILS "" OFF)
+    option(ALSOFT_EXAMPLES "" OFF)
+    option(ALSOFT_UPDATE_BUILD_VERSION "" OFF)
+    option(ALSOFT_INSTALL "" OFF)
+    option(ALSOFT_INSTALL_CONFIG "" OFF)
+    option(ALSOFT_INSTALL_HRTF_DATA "" OFF)
+    option(ALSOFT_INSTALL_AMBDEC_PRESETS "" OFF)
+    option(ALSOFT_INSTALL_EXAMPLES "" OFF)
+    option(ALSOFT_INSTALL_UTILS "" OFF)
+    add_subdirectory(openal-soft)
+    set_target_properties(OpenAL PROPERTIES FOLDER extern/openal-soft)
+    set_target_properties(common PROPERTIES FOLDER extern/openal-soft)
+    set_target_properties(ex-common PROPERTIES FOLDER extern/openal-soft)
+endif()

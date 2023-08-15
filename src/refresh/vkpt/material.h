@@ -41,6 +41,8 @@ typedef struct pbr_material_s {
 	char filename_mask[MAX_QPATH];
 	char source_matfile[MAX_QPATH];
 	uint32_t source_line;
+	int original_width;
+	int original_height;
 	image_t * image_base;
 	image_t * image_normals;
 	image_t * image_emissive;
@@ -57,6 +59,7 @@ typedef struct pbr_material_s {
 	int next_frame;
 	bool light_styles;
 	bool bsp_radiance;
+	float default_radiance;
 	imageflags_t image_flags;
 	imagetype_t image_type;
 	bool synth_emissive;

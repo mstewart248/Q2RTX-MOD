@@ -410,10 +410,7 @@ static void CL_Record_f(void)
         if (!*s)
             continue;
 
-        len = strlen(s);
-        if (len > MAX_QPATH)
-            len = MAX_QPATH;
-
+        len = Q_strnlen(s, MAX_QPATH);
         if (msg_write.cursize + len + 4 > size) {
             if (!CL_WriteDemoMessage(&msg_write))
                 return;
@@ -470,10 +467,7 @@ static void resume_record(void)
 
             s = cl.configstrings[index];
 
-            len = strlen(s);
-            if (len > MAX_QPATH)
-                len = MAX_QPATH;
-
+            len = Q_strnlen(s, MAX_QPATH);
             if (cls.demo.buffer.cursize + len + 4 > cls.demo.buffer.maxsize) {
                 if (!CL_WriteDemoMessage(&cls.demo.buffer))
                     return;
@@ -610,7 +604,8 @@ static void finish_demo(int ret)
 {
     char *s = Cvar_VariableString("nextserver");
 
-    if (!s[0]) {
+    // Only execute nextserver if back-to-back timedemos are complete
+    if (!s[0] && cls.timedemo.run_current >= cls.timedemo.runs_total) {
         if (ret == 0) {
             Com_Error(ERR_DISCONNECT, "Demo finished");
         } else {
@@ -620,11 +615,13 @@ static void finish_demo(int ret)
 
     CL_Disconnect(ERR_RECONNECT);
 
-    Cvar_Set("nextserver", "");
+    if (cls.timedemo.run_current < cls.timedemo.runs_total)
+        return;
 
     Cbuf_AddText(&cmd_buffer, s);
     Cbuf_AddText(&cmd_buffer, "\n");
-    Cbuf_Execute(&cmd_buffer);
+
+    Cvar_Set("nextserver", "");
 }
 
 static void update_status(void)
@@ -807,10 +804,7 @@ void CL_EmitDemoSnapshot(void)
         if (!strcmp(from, to))
             continue;
 
-        len = strlen(to);
-        if (len > MAX_QPATH)
-            len = MAX_QPATH;
-
+        len = Q_strnlen(to, MAX_QPATH);
         MSG_WriteByte(svc_configstring);
         MSG_WriteShort(i);
         MSG_WriteData(to, len);
@@ -879,6 +873,12 @@ void CL_FirstDemoFrame(void)
 
     // begin timedemo
     if (com_timedemo->integer) {
+        if(cls.timedemo.runs_total == 0) {
+            cls.timedemo.runs_total = com_timedemo->integer;
+            cls.timedemo.run_current = 0;
+            cls.timedemo.results = Z_Malloc(cls.timedemo.runs_total * sizeof(unsigned));
+        }
+
         cls.demo.time_frames = 0;
         cls.demo.time_start = Sys_Milliseconds();
     }
@@ -1179,11 +1179,25 @@ void CL_CleanupDemos(void)
             unsigned msec = Sys_Milliseconds();
 
             if (msec > cls.demo.time_start) {
-                float sec = (msec - cls.demo.time_start) * 0.001f;
-                float fps = cls.demo.time_frames / sec;
+                cls.timedemo.results[cls.timedemo.run_current] = msec - cls.demo.time_start;
 
-                Com_Printf("%u frames, %3.1f seconds: %f fps\n",
-                           cls.demo.time_frames, sec, fps);
+                cls.timedemo.run_current++;
+                if (cls.timedemo.run_current >= cls.timedemo.runs_total) {
+                    // Print timedemo results
+                    for (int i = 0; i < cls.timedemo.runs_total; i++) {
+                        float sec = cls.timedemo.results[i] * 0.001f;
+                        float fps = cls.demo.time_frames / sec;
+
+                        Com_Printf("%u frames, %3.2f seconds: %f fps\n",
+                                cls.demo.time_frames, sec, fps);
+                    }
+                    // Clean up
+                    Z_Free(cls.timedemo.results);
+                    memset(&cls.timedemo, 0, sizeof(cls.timedemo));
+                } else {
+                    // Restart demo
+                    Cbuf_InsertText(&cmd_buffer, va("demo %s", cls.servername));
+                }
             }
         }
     }

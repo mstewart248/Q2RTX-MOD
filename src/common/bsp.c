@@ -1099,12 +1099,13 @@ typedef struct {
     int (*load)(bsp_t *, void *, size_t);
     uint8_t lump;
     uint8_t disksize;
-    uint16_t memsize;
+    uint8_t diskalign;
+    uint32_t memsize;
     uint32_t maxcount;
 } lump_info_t;
 
 #define L(func, lump, disk_t, mem_t) \
-    { BSP_Load##func, LUMP_##lump, sizeof(disk_t), sizeof(mem_t), MAX_MAP_##lump }
+    { BSP_Load##func, LUMP_##lump, sizeof(disk_t), q_alignof(disk_t), sizeof(mem_t), MAX_MAP_##lump }
 
 static const lump_info_t bsp_lumps[] = {
     L(Visibility,   VISIBILITY,     byte,           byte),
@@ -1309,9 +1310,7 @@ void BSP_Free(bsp_t *bsp)
     if (!bsp) {
         return;
     }
-    if (bsp->refcount <= 0) {
-        Com_Error(ERR_FATAL, "%s: negative refcount", __func__);
-    }
+    Q_assert(bsp->refcount > 0);
     if (--bsp->refcount == 0) {
 		if (bsp->pvs2_matrix)
 		{
@@ -1452,6 +1451,7 @@ bool BSP_SavePatchedPVS(bsp_t *bsp)
 		return false;
 }
 
+#if USE_REF
 static bool BSP_FindBspxLump(dheader_t* header, size_t file_size, const char* name, const void** pLump, size_t* pLumpSize)
 {
 	// Find the end of the last BSP lump
@@ -1499,7 +1499,6 @@ static bool BSP_FindBspxLump(dheader_t* header, size_t file_size, const char* na
 	return false;
 }
 
-#if USE_REF
 static void BSP_LoadBspxNormals(bsp_t* bsp, const void* data, size_t data_size)
 {
 	if (data_size < sizeof(bspx_facenormals_header_t))
@@ -1566,13 +1565,13 @@ int BSP_Load(const char *name, bsp_t **bsp_p)
     size_t          lumpcount[HEADER_LUMPS];
     size_t          memsize;
 
-    if (!name || !bsp_p)
-        Com_Error(ERR_FATAL, "%s: NULL", __func__);
+    Q_assert(name);
+    Q_assert(bsp_p);
 
     *bsp_p = NULL;
 
     if (!*name)
-        return Q_ERR_NOENT;
+        return Q_ERR(ENOENT);
 
     if ((bsp = BSP_Find(name)) != NULL) {
         Com_PageInMemory(bsp->hunk.base, bsp->hunk.cursize);
@@ -1611,6 +1610,10 @@ int BSP_Load(const char *name, bsp_t **bsp_p)
         end = ofs + len;
         if (end < ofs || end > filelen) {
             ret = Q_ERR_BAD_EXTENT;
+            goto fail2;
+        }
+        if (ofs % info->diskalign) {
+            ret = Q_ERR_BAD_ALIGN;
             goto fail2;
         }
         if (len % info->disksize) {
@@ -1714,7 +1717,7 @@ HELPER FUNCTIONS
 
 static lightpoint_t *light_point;
 
-static bool BSP_RecursiveLightPoint(mnode_t *node, float p1f, float p2f, vec3_t p1, vec3_t p2)
+static bool BSP_RecursiveLightPoint(mnode_t *node, float p1f, float p2f, const vec3_t p1, const vec3_t p2)
 {
     vec_t d1, d2, frac, midf;
     vec3_t mid;
@@ -1776,7 +1779,7 @@ static bool BSP_RecursiveLightPoint(mnode_t *node, float p1f, float p2f, vec3_t 
     return false;
 }
 
-void BSP_LightPoint(lightpoint_t *point, vec3_t start, vec3_t end, mnode_t *headnode)
+void BSP_LightPoint(lightpoint_t *point, const vec3_t start, const vec3_t end, mnode_t *headnode)
 {
     light_point = point;
     light_point->surf = NULL;
@@ -1785,8 +1788,8 @@ void BSP_LightPoint(lightpoint_t *point, vec3_t start, vec3_t end, mnode_t *head
     BSP_RecursiveLightPoint(headnode, 0, 1, start, end);
 }
 
-void BSP_TransformedLightPoint(lightpoint_t *point, vec3_t start, vec3_t end,
-                               mnode_t *headnode, vec3_t origin, vec3_t angles)
+void BSP_TransformedLightPoint(lightpoint_t *point, const vec3_t start, const vec3_t end,
+                               mnode_t *headnode, const vec3_t origin, const vec3_t angles)
 {
     vec3_t start_l, end_l;
     vec3_t axis[3];

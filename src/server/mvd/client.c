@@ -107,7 +107,7 @@ unsigned    mvd_last_activity;
 
 jmp_buf     mvd_jmpbuf;
 
-#ifdef _DEBUG
+#if USE_DEBUG
 cvar_t      *mvd_shownet;
 #endif
 
@@ -584,10 +584,7 @@ static void demo_emit_snapshot(mvd_t *mvd)
         if (!strcmp(from, to))
             continue;
 
-        len = strlen(to);
-        if (len > MAX_QPATH)
-            len = MAX_QPATH;
-
+        len = Q_strnlen(to, MAX_QPATH);
         MSG_WriteByte(mvd_configstring);
         MSG_WriteShort(i);
         MSG_WriteData(to, len);
@@ -1396,7 +1393,7 @@ static neterr_t run_connect(gtv_t *gtv)
 static neterr_t run_stream(gtv_t *gtv)
 {
     neterr_t ret;
-#ifdef _DEBUG
+#if USE_DEBUG
     int count;
     size_t usage;
 #endif
@@ -1406,7 +1403,7 @@ static neterr_t run_stream(gtv_t *gtv)
         return ret;
     }
 
-#ifdef _DEBUG
+#if USE_DEBUG
     count = 0;
     usage = FIFO_Usage(&gtv->stream.recv);
 #endif
@@ -1421,19 +1418,19 @@ static neterr_t run_stream(gtv_t *gtv)
             if (!parse_message(gtv, &gtv->z_buf)) {
                 break;
             }
-#ifdef _DEBUG
+#if USE_DEBUG
             count++;
 #endif
         }
     } else
 #endif
         while (parse_message(gtv, &gtv->stream.recv)) {
-#ifdef _DEBUG
+#if USE_DEBUG
             count++;
 #endif
         }
 
-#ifdef _DEBUG
+#if USE_DEBUG
     if (mvd_shownet->integer == -1) {
         size_t total = usage - FIFO_Usage(&gtv->stream.recv);
 
@@ -1849,10 +1846,7 @@ static void emit_gamestate(mvd_t *mvd)
         if (!*s)
             continue;
 
-        len = strlen(s);
-        if (len > MAX_QPATH)
-            len = MAX_QPATH;
-
+        len = Q_strnlen(s, MAX_QPATH);
         MSG_WriteShort(i);
         MSG_WriteData(s, len);
         MSG_WriteByte(0);
@@ -2558,7 +2552,7 @@ MVD_Register
 */
 void MVD_Register(void)
 {
-#ifdef _DEBUG
+#if USE_DEBUG
     mvd_shownet = Cvar_Get("mvd_shownet", "0", 0);
 #endif
     mvd_timeout = Cvar_Get("mvd_timeout", "90", 0);

@@ -98,9 +98,8 @@ extern cvar_t* cvar_pt_bilerp_pics;
 void vkpt_textures_prefetch()
 {
     char * buffer = NULL;
-    int buffer_size = 0;
     char const * filename = "prefetch.txt";
-    buffer_size = FS_LoadFile(filename, (void**)&buffer);
+    FS_LoadFile(filename, (void**)&buffer);
     if (buffer == NULL)
     {
         Com_EPrintf("Can't load '%s'\n", filename);
@@ -161,7 +160,7 @@ void vkpt_textures_destroy_unused()
 }
 
 static void
-destroy_envmap()
+destroy_envmap(void)
 {
 	if (imv_envmap != VK_NULL_HANDLE) {
 		vkDestroyImageView(qvk.device, imv_envmap, NULL);
@@ -330,7 +329,7 @@ vkpt_textures_upload_envmap(int w, int h, byte *data)
 }
 
 static VkResult
-load_blue_noise()
+load_blue_noise(void)
 {
 	const int num_images = NUM_BLUE_NOISE_TEX / 4;
 	const int res = BLUE_NOISE_RES;
@@ -664,7 +663,6 @@ static inline void _bilerp_get_next_output_line(struct bilerp_s *bilerp, const f
 		bilerp->current_input_data = tmp;
 	} else {
 		// Odd output line: interpolate between input lines
-		float *color_dest = bilerp->next_input_data;
 		memcpy(bilerp->next_input_data, next_input, input_w * sizeof(float) * 3);
 
 		float *color_ptr = bilerp->current_input_data;
@@ -1066,7 +1064,7 @@ void IMG_ReloadAll(void)
     Com_Printf("Reloaded %d textures\n", reloaded);
 }
 
-void create_invalid_texture()
+void create_invalid_texture(void)
 {
 	const VkImageCreateInfo image_create_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -1145,7 +1143,7 @@ void create_invalid_texture()
 	vkQueueWaitIdle(qvk.queue_graphics);
 }
 
-void destroy_invalid_texture()
+void destroy_invalid_texture(void)
 {
 	vkDestroyImage(qvk.device, tex_invalid_texture_image, NULL);
 	vkDestroyImageView(qvk.device, tex_invalid_texture_image_view, NULL);
@@ -1172,7 +1170,7 @@ static void normalize_write_descriptor(uint32_t frame, uint32_t index, VkImageVi
 	vkUpdateDescriptorSets(qvk.device, 1, &write_info, 0, NULL);
 }
 
-static void normalize_init()
+static void normalize_init(void)
 {
 	VkDescriptorSetLayoutBinding binding = {
 		.binding = 0,
@@ -1231,7 +1229,7 @@ static void normalize_init()
 	}
 }
 
-static void normalize_destroy()
+static void normalize_destroy(void)
 {
 	vkDestroyPipeline(qvk.device, normalize_pipeline, NULL);
 	normalize_pipeline = NULL;
@@ -1477,7 +1475,7 @@ vkpt_textures_initialize()
 }
 
 static void
-destroy_tex_images()
+destroy_tex_images(void)
 {
 	for(int i = 0; i < MAX_RIMAGES; i++) {
 		if(tex_image_views[i]) {
@@ -1533,6 +1531,19 @@ static VkMemoryAllocateFlagsInfo mem_alloc_flags_broadcast = {
 		.flags = VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT,
 };
 #endif
+
+static VkFormat get_image_format(image_t *q_img)
+{
+	switch(q_img->pixel_format)
+	{
+	case PF_R8G8B8A8_UNORM:
+		return q_img->is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+	case PF_R16_UNORM:
+		return VK_FORMAT_R16_UNORM;
+	}
+	assert(false);
+	return VK_FORMAT_R8G8B8A8_UNORM;
+}
 
 VkResult
 vkpt_textures_end_registration()
@@ -1608,7 +1619,7 @@ vkpt_textures_end_registration()
 		img_info.extent.width = q_img->upload_width;
 		img_info.extent.height = q_img->upload_height;
 		img_info.mipLevels = get_num_miplevels(q_img->upload_width, q_img->upload_height);
-		img_info.format = q_img->is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+		img_info.format = get_image_format(q_img);
 		if (!q_img->is_srgb)
 			img_info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 		else
@@ -1666,7 +1677,7 @@ vkpt_textures_end_registration()
 
 		img_view_info.image = tex_images[i];
 		img_view_info.subresourceRange.levelCount = num_mip_levels;
-		img_view_info.format = q_img->is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+		img_view_info.format = get_image_format(q_img);
 		_VK(vkCreateImageView(qvk.device, &img_view_info, NULL, tex_image_views + i));
 		ATTACH_LABEL_VARIABLE(tex_image_views[i], IMAGE_VIEW);
 
@@ -1726,8 +1737,9 @@ vkpt_textures_end_registration()
 			.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
 			.newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
 		);
-		
-		memcpy(staging_buffer + offset, q_img->pix_data, wd * ht * 4);
+
+		int bytes_per_pixel = q_img->pixel_format == PF_R16_UNORM ? 2 : 4;
+		memcpy(staging_buffer + offset, q_img->pix_data, wd * ht * bytes_per_pixel);
 
 		VkBufferImageCopy cpy_info = {
 			.bufferOffset = offset,
@@ -1925,6 +1937,8 @@ void vkpt_textures_update_descriptor_set()
 				sampler = qvk.tex_sampler_nearest;
 		} else if (q_img->flags & IF_NEAREST) {
 			sampler = qvk.tex_sampler_nearest;
+		} else if (q_img->flags & IF_BILERP) {
+			sampler = qvk.tex_sampler_linear_clamp;
 		} else if (q_img->type == IT_SPRITE) {
 			sampler = qvk.tex_sampler_linear_clamp;
 		} else if (q_img->type == IT_FONT) {
@@ -2008,7 +2022,7 @@ destroy_readback_image(VkImage *image, VkDeviceMemory *memory, VkDeviceSize *mem
 	*memory_size = 0;
 }
 
-static VkDeviceSize available_video_memory()
+static VkDeviceSize available_video_memory(void)
 {
 	VkDeviceSize mem = 0;
 	for (uint32_t heap_num = 0; heap_num < qvk.mem_properties.memoryHeapCount; heap_num++)
@@ -2052,12 +2066,15 @@ LIST_IMAGES_A_B
 	};
 
 #ifdef VKPT_DEVICE_GROUPS
+	if (qvk.device_count > 1)
+	{
 #define IMG_DO(_name, _binding, _vkformat, _glslformat, _w, _h) \
 	images_create_info[VKPT_IMG_##_name].flags |= \
 		VK_IMAGE_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT;
 LIST_IMAGES
 LIST_IMAGES_A_B
 #undef IMG_DO
+	}
 #endif
 
 	size_t total_size = 0;

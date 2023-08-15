@@ -264,7 +264,7 @@ static int VID_SDL_EventFilter(void *userdata, SDL_Event *event)
     return 1;
 }
 
-static void VID_GetDisplayList()
+static void VID_GetDisplayList(void)
 {
     int num_displays = SDL_GetNumVideoDisplays();
     int string_size = 0;
@@ -459,6 +459,13 @@ bool VID_Init(graphics_api_t api)
     }
 
     VID_SetMode();
+
+    /* Explicitly set an "active" state to ensure at least one frame is displayed.
+       Required for Wayland (on Fedora 36/GNOME/NVIDIA driver 510.68.02/SDL 2.0.22) -
+       without that, we never get a window event and thus the activation state sticks
+       at ACT_MINIMIZED, never rendering anything. */
+    CL_Activate(ACT_RESTORED);
+
     return true;
 
 fail:

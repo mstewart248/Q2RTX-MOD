@@ -21,6 +21,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/protocol.h"
 #include "common/sizebuf.h"
 #include "common/math.h"
+#include "common/intreadwrite.h"
 
 /*
 ==============================================================================
@@ -91,8 +92,7 @@ void MSG_WriteChar(int c)
     byte    *buf;
 
 #ifdef PARANOID
-    if (c < -128 || c > 127)
-        Com_Error(ERR_FATAL, "MSG_WriteChar: range error");
+    Q_assert(c >= -128 && c <= 127);
 #endif
 
     buf = SZ_GetSpace(&msg_write, 1);
@@ -109,8 +109,7 @@ void MSG_WriteByte(int c)
     byte    *buf;
 
 #ifdef PARANOID
-    if (c < 0 || c > 255)
-        Com_Error(ERR_FATAL, "MSG_WriteByte: range error");
+    Q_assert(c >= 0 && c <= 255);
 #endif
 
     buf = SZ_GetSpace(&msg_write, 1);
@@ -127,13 +126,11 @@ void MSG_WriteShort(int c)
     byte    *buf;
 
 #ifdef PARANOID
-    if (c < ((short)0x8000) || c > (short)0x7fff)
-        Com_Error(ERR_FATAL, "MSG_WriteShort: range error");
+    Q_assert(c >= -0x8000 && c <= 0x7fff);
 #endif
 
     buf = SZ_GetSpace(&msg_write, 2);
-    buf[0] = c & 0xff;
-    buf[1] = c >> 8;
+    WL16(buf, c);
 }
 
 /*
@@ -146,10 +143,7 @@ void MSG_WriteLong(int c)
     byte    *buf;
 
     buf = SZ_GetSpace(&msg_write, 4);
-    buf[0] = c & 0xff;
-    buf[1] = (c >> 8) & 0xff;
-    buf[2] = (c >> 16) & 0xff;
-    buf[3] = c >> 24;
+    WL32(buf, c);
 }
 
 /*
@@ -1437,7 +1431,7 @@ int MSG_ReadShort(void)
     if (!buf) {
         c = -1;
     } else {
-        c = (signed short)LittleShortMem(buf);
+        c = (signed short)RL16(buf);
     }
 
     return c;
@@ -1451,7 +1445,7 @@ int MSG_ReadWord(void)
     if (!buf) {
         c = -1;
     } else {
-        c = (unsigned short)LittleShortMem(buf);
+        c = (unsigned short)RL16(buf);
     }
 
     return c;
@@ -1465,7 +1459,7 @@ int MSG_ReadLong(void)
     if (!buf) {
         c = -1;
     } else {
-        c = LittleLongMem(buf);
+        c = RL32(buf);
     }
 
     return c;
@@ -2306,7 +2300,7 @@ void MSG_ParseDeltaPlayerstate_Packet(const player_state_t *from,
 ==============================================================================
 */
 
-#ifdef _DEBUG
+#if USE_DEBUG
 
 #define SHOWBITS(x) Com_LPrintf(PRINT_DEVELOPER, x " ")
 
@@ -2489,5 +2483,5 @@ const char *MSG_ServerCommandString(int cmd)
 
 #endif // USE_CLIENT || USE_MVD_CLIENT
 
-#endif // _DEBUG
+#endif // USE_DEBUG
 

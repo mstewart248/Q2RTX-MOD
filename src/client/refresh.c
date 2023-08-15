@@ -408,10 +408,10 @@ refcfg_t r_config;
 ref_type_t(*R_Init)(bool total) = NULL;
 void(*R_Shutdown)(bool total) = NULL;
 void(*R_BeginRegistration)(const char *map) = NULL;
-void(*R_SetSky)(const char *name, float rotate, vec3_t axis) = NULL;
+void(*R_SetSky)(const char *name, float rotate, const vec3_t axis) = NULL;
 void(*R_EndRegistration)(void) = NULL;
 void(*R_RenderFrame)(refdef_t *fd) = NULL;
-void(*R_LightPoint)(vec3_t origin, vec3_t light) = NULL;
+void(*R_LightPoint)(const vec3_t origin, vec3_t light) = NULL;
 void(*R_ClearColor)(void) = NULL;
 void(*R_SetAlpha)(float clpha) = NULL;
 void(*R_SetAlphaScale)(float alpha) = NULL;
@@ -431,7 +431,7 @@ void(*R_EndFrame)(void) = NULL;
 void(*R_ModeChanged)(int width, int height, int flags, int rowbytes, void *pixels) = NULL;
 void(*R_AddDecal)(decal_t *d) = NULL;
 bool(*R_InterceptKey)(unsigned key, bool down) = NULL;
-bool(*R_IsHDR)() = NULL;
+bool(*R_IsHDR)(void) = NULL;
 
 void(*IMG_Unload)(image_t *image) = NULL;
 void(*IMG_Load)(image_t *image, byte *pic) = NULL;
@@ -453,11 +453,11 @@ float R_ClampScale(cvar_t *var)
 	if (var->value)
 		return 1.0f / Cvar_ClampValue(var, 1.0f, 10.0f);
 
-	if (r_config.width * r_config.height >= 2560 * 1440)
-		return 0.25f;
+	if (r_config.width >= 3840 && r_config.height >= 2160)
+		return 0.25f; // 4x scaling
 
-	if (r_config.width * r_config.height >= 1280 * 720)
-		return 0.5f;
+	if (r_config.width >= 1920 && r_config.height >= 1080)
+		return 0.5f;  // 2x scaling
 
 	return 1.0f;
 }

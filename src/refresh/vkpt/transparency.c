@@ -82,10 +82,10 @@ typedef struct {
 } ParticleData;
 
 // initialization
-static void create_buffers();
-static bool allocate_and_bind_memory_to_buffers();
-static void create_buffer_views();
-static void fill_index_buffer();
+static void create_buffers(void);
+static bool allocate_and_bind_memory_to_buffers(void);
+static void create_buffer_views(void);
+static void fill_index_buffer(void);
 void threaded_particles();
 
 // update
@@ -148,8 +148,8 @@ bool initialize_transparency()
 	if (allocate_and_bind_memory_to_buffers() != VK_TRUE)
 		return false;
 
-	create_buffer_views(transparency);
-	fill_index_buffer(transparency);
+	create_buffer_views();
+	fill_index_buffer();
 
 	return true;
 }
@@ -673,7 +673,7 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 		image_t *image = frame->image;
 
 		sprite_info[0] = image - r_images;
-		sprite_info[1] = *(uint32_t*)&e->alpha;
+		memcpy(&sprite_info[1], &e->alpha, sizeof(uint32_t));
 
 		// set up the quad - reference code is in function GL_DrawSpriteModel
 
@@ -728,8 +728,6 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 
 static void upload_geometry(VkCommandBuffer command_buffer)
 {
-	const size_t frame_offset = transparency.host_frame_index * transparency.host_frame_size;
-
 	transparency.sprite_vertex_device_offset = transparency.particle_num * 4 * TR_POSITION_SIZE;
 
     const size_t host_buffer_offset = transparency.host_frame_index * transparency.host_frame_size;
@@ -822,7 +820,7 @@ static void upload_geometry(VkCommandBuffer command_buffer)
 }
 
 
-static void create_buffers()
+static void create_buffers(void)
 {
 	const VkBufferCreateInfo host_buffer_info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -875,7 +873,7 @@ static void create_buffers()
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 }
 
-static bool allocate_and_bind_memory_to_buffers()
+static bool allocate_and_bind_memory_to_buffers(void)
 {
 	VkMemoryRequirements host_buffer_requirements;
 	vkGetBufferMemoryRequirements(qvk.device, transparency.host_buffer, &host_buffer_requirements);
@@ -911,7 +909,7 @@ static bool allocate_and_bind_memory_to_buffers()
 	return true;
 }
 
-static void create_buffer_views()
+static void create_buffer_views(void)
 {
 	const VkBufferViewCreateInfo particle_color_view_info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
@@ -954,7 +952,7 @@ static void create_buffer_views()
 		&transparency.beam_intersect_buffer_view));
 }
 
-static void fill_index_buffer()
+static void fill_index_buffer(void)
 {
 	uint16_t* indices = (uint16_t*)transparency.host_buffer_shadow;
 

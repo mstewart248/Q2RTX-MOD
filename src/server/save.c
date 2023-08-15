@@ -18,8 +18,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "server.h"
 
-#define SAVE_MAGIC1     (('2'<<24)|('V'<<16)|('S'<<8)|'S')  // "SSV2"
-#define SAVE_MAGIC2     (('2'<<24)|('V'<<16)|('A'<<8)|'S')  // "SAV2"
+#define SAVE_MAGIC1     MakeLittleLong('S','S','V','2')
+#define SAVE_MAGIC2     MakeLittleLong('S','A','V','2')
 #define SAVE_VERSION    1
 
 #define SAVE_CURRENT    ".current"
@@ -100,10 +100,7 @@ static int write_level_file(void)
         if (!s[0])
             continue;
 
-        len = strlen(s);
-        if (len > MAX_QPATH)
-            len = MAX_QPATH;
-
+        len = Q_strnlen(s, MAX_QPATH);
         MSG_WriteShort(i);
         MSG_WriteData(s, len);
         MSG_WriteByte(0);
@@ -500,11 +497,11 @@ void SV_AutoSaveBegin(mapcmd_t *cmd)
 
 void SV_AutoSaveEnd(void)
 {
-    if (sv.state != ss_game)
-        return;
+	if (sv.state != ss_game)
+		return;
 
-    if (SV_NoSaveGames())
-        return;
+	if (SV_NoSaveGames())
+		return;
 
 	// save the map just entered to include the player position (client edict shell)
 	if (write_level_file())

@@ -101,9 +101,10 @@ void generate_rng_seed(ivec2 ipos, bool is_odd_checkerboard)
 	uint frame_offset = frame_num / NUM_BLUE_NOISE_TEX;
 
 	rng_seed = 0;
-	rng_seed |= (uint(ipos.x + frame_offset) % BLUE_NOISE_RES) <<  0u;
-	rng_seed |= (uint(ipos.y + (frame_offset << 4)) % BLUE_NOISE_RES) << 10u;
-	rng_seed |= uint(frame_num + uint(is_odd_checkerboard)) << 20;
+	rng_seed |= (uint(ipos.x + frame_offset) % BLUE_NOISE_RES) << RNG_SEED_SHIFT_X;
+	rng_seed |= (uint(ipos.y + (frame_offset << 4)) % BLUE_NOISE_RES) << RNG_SEED_SHIFT_Y;
+	rng_seed |= uint(is_odd_checkerboard) << RNG_SEED_SHIFT_ISODD;
+	rng_seed |= uint(frame_num) << RNG_SEED_SHIFT_FRAME;
 
 	imageStore(IMG_ASVGF_RNG_SEED_A, ipos, uvec4(rng_seed));
 }
@@ -301,6 +302,9 @@ main()
 	}
 
 	uint material_id = triangle.material_id;
+	// will be used in case of transparency, to retain difference between TRANSPARENT and TRANSP_MODEL
+	// default to TRANSP_MODEL so transparency on other material kind works (needed for eg gunalpha)
+	uint transparency_kind = (material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT ? MATERIAL_KIND_TRANSPARENT : MATERIAL_KIND_TRANSP_MODEL;
 
 	if((is_chrome(material_id) || is_screen(material_id) || is_camera(material_id)) && primary_roughness >= MAX_MIRROR_ROUGHNESS || is_transparent(material_id))
 	{
@@ -378,7 +382,7 @@ main()
 		else
 		{
 			// This field goes through the surface.
-			material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_TRANSPARENT;
+			material_id = (material_id & ~MATERIAL_KIND_MASK) | transparency_kind;
 			throughput *= 1.0 - triangle.alpha;
 		}
 	}

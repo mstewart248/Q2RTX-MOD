@@ -114,10 +114,8 @@ static void write_configstrings(void)
         if (!string[0]) {
             continue;
         }
-        length = strlen(string);
-        if (length > MAX_QPATH) {
-            length = MAX_QPATH;
-        }
+        length = Q_strnlen(string, MAX_QPATH);
+
         // check if this configstring will overflow
         if (need_flush_msg(length + 4)) {
             SV_ClientAddMessage(sv_client, MSG_GAMESTATE);
@@ -186,11 +184,7 @@ static void write_gamestate(void)
         if (!string[0]) {
             continue;
         }
-        length = strlen(string);
-        if (length > MAX_QPATH) {
-            length = MAX_QPATH;
-        }
-
+        length = Q_strnlen(string, MAX_QPATH);
         MSG_WriteShort(i);
         MSG_WriteData(string, length);
         MSG_WriteByte(0);

@@ -42,9 +42,7 @@ cvar_t *gl_modulate_world;
 cvar_t *gl_coloredlightmaps;
 cvar_t *gl_brightness;
 cvar_t *gl_dynamic;
-#if USE_DLIGHTS
 cvar_t *gl_dlight_falloff;
-#endif
 cvar_t *gl_modulate_entities;
 cvar_t *gl_doublelight_entities;
 cvar_t *gl_fontshadow;
@@ -59,7 +57,7 @@ cvar_t *gl_drawsky;
 cvar_t *gl_showtris;
 cvar_t *gl_showorigins;
 cvar_t *gl_showtearing;
-#ifdef _DEBUG
+#if USE_DEBUG
 cvar_t *gl_showstats;
 cvar_t *gl_showscrap;
 cvar_t *gl_nobind;
@@ -116,7 +114,7 @@ static void GL_SetupFrustum(void)
     }
 }
 
-glCullResult_t GL_CullBox(vec3_t bounds[2])
+glCullResult_t GL_CullBox(const vec3_t bounds[2])
 {
     int i, bits;
     glCullResult_t cull;
@@ -164,7 +162,7 @@ glCullResult_t GL_CullSphere(const vec3_t origin, float radius)
     return cull;
 }
 
-glCullResult_t GL_CullLocalBox(const vec3_t origin, vec3_t bounds[2])
+glCullResult_t GL_CullLocalBox(const vec3_t origin, const vec3_t bounds[2])
 {
     vec3_t points[8];
     cplane_t *p;
@@ -291,13 +289,13 @@ void GL_RotateForEntity(vec3_t origin, float scale)
     GL_ForceMatrix(glr.entmatrix);
 }
 
-static void GL_DrawSpriteModel(model_t *model)
+static void GL_DrawSpriteModel(const model_t *model)
 {
     static const vec_t tcoords[8] = { 0, 1, 0, 0, 1, 1, 1, 0 };
-    entity_t *e = glr.ent;
-    mspriteframe_t *frame = &model->spriteframes[e->frame % model->numframes];
-    image_t *image = frame->image;
-    float alpha = (e->flags & RF_TRANSLUCENT) ? e->alpha : 1;
+    const entity_t *e = glr.ent;
+    const mspriteframe_t *frame = &model->spriteframes[e->frame % model->numframes];
+    const image_t *image = frame->image;
+    const float alpha = (e->flags & RF_TRANSLUCENT) ? e->alpha : 1;
     int bits = GLS_DEPTHMASK_FALSE;
     vec3_t up, down, left, right;
     vec3_t points[4];
@@ -353,7 +351,7 @@ static void GL_DrawNullModel(void)
         U32_GREEN, U32_GREEN,
         U32_BLUE, U32_BLUE
     };
-    entity_t *e = glr.ent;
+    const entity_t *e = glr.ent;
     vec3_t points[6];
 
     VectorCopy(e->origin, points[0]);
@@ -441,7 +439,7 @@ static void GL_DrawEntities(int mask)
         case MOD_EMPTY:
             break;
         default:
-            Com_Error(ERR_FATAL, "%s: bad model type", __func__);
+            Q_assert(!"bad model type");
         }
 
         if (gl_showorigins->integer) {
@@ -515,20 +513,16 @@ void R_RenderFrame_GL(refdef_t *fd)
 {
     GL_Flush2D();
 
-    if (!gl_static.world.cache && !(fd->rdflags & RDF_NOWORLDMODEL)) {
-        Com_Error(ERR_FATAL, "%s: NULL worldmodel", __func__);
-    }
+    Q_assert(gl_static.world.cache || (fd->rdflags & RDF_NOWORLDMODEL));
 
     glr.drawframe++;
 
     glr.fd = *fd;
     glr.num_beams = 0;
 
-#if USE_DLIGHTS
     if (gl_dynamic->integer != 1 || gl_vertexlight->integer) {
         glr.fd.num_dlights = 0;
     }
-#endif
 
     if (lm.dirty) {
         GL_RebuildLighting();
@@ -564,7 +558,7 @@ void R_RenderFrame_GL(refdef_t *fd)
         GL_Blend();
     }
 
-#ifdef _DEBUG
+#if USE_DEBUG
     if (gl_lightmap->integer > 1) {
         Draw_Lightmaps();
     }
@@ -592,7 +586,7 @@ void R_BeginFrame_GL(void)
 
 void R_EndFrame_GL(void)
 {
-#ifdef _DEBUG
+#if USE_DEBUG
     if (gl_showstats->integer) {
         GL_Flush2D();
         Draw_Stats();
@@ -721,9 +715,7 @@ static void GL_Register(void)
     gl_brightness->changed = gl_lightmap_changed;
     gl_dynamic = Cvar_Get("gl_dynamic", "1", 0);
     gl_dynamic->changed = gl_lightmap_changed;
-#if USE_DLIGHTS
     gl_dlight_falloff = Cvar_Get("gl_dlight_falloff", "1", 0);
-#endif
     gl_modulate_entities = Cvar_Get("gl_modulate_entities", "1", 0);
     gl_modulate_entities->changed = gl_modulate_entities_changed;
     gl_doublelight_entities = Cvar_Get("gl_doublelight_entities", "1", 0);
@@ -740,7 +732,7 @@ static void GL_Register(void)
     gl_showtris = Cvar_Get("gl_showtris", "0", CVAR_CHEAT);
     gl_showorigins = Cvar_Get("gl_showorigins", "0", CVAR_CHEAT);
     gl_showtearing = Cvar_Get("gl_showtearing", "0", CVAR_CHEAT);
-#ifdef _DEBUG
+#if USE_DEBUG
     gl_showstats = Cvar_Get("gl_showstats", "0", 0);
     gl_showscrap = Cvar_Get("gl_showscrap", "0", 0);
     gl_nobind = Cvar_Get("gl_nobind", "0", CVAR_CHEAT);

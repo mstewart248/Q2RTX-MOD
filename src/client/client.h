@@ -471,6 +471,14 @@ typedef struct client_static_s {
         bool        seeking;
         bool        eof;
     } demo;
+    struct {
+        // Number of timedemo runs to perform
+        int         runs_total;
+        // Current run
+        int         run_current;
+        // Results of timedemo runs
+        unsigned    *results;
+    } timedemo;
 
 #if USE_CLIENT_GTV
     struct {
@@ -503,6 +511,10 @@ extern char        cl_cmdbuf_text[MAX_STRING_CHARS];
 #define NOEXP_GRENADE   1
 #define NOEXP_ROCKET    2
 
+#define DLHACK_ROCKET_COLOR         1
+#define DLHACK_SMALLER_EXPLOSION    2
+#define DLHACK_NO_MUZZLEFLASH       4
+
 //
 // cvars
 //
@@ -515,7 +527,7 @@ extern cvar_t    *cl_rollhack;
 extern cvar_t    *cl_noglow;
 extern cvar_t    *cl_nolerp;
 
-#ifdef _DEBUG
+#if USE_DEBUG
 #define SHOWNET(level, ...) \
     if (cl_shownet->integer > level) \
         Com_LPrintf(PRINT_DEVELOPER, __VA_ARGS__)
@@ -540,6 +552,7 @@ extern cvar_t    *cl_disable_particles;
 extern cvar_t    *cl_disable_explosions;
 extern cvar_t    *cl_explosion_sprites;
 extern cvar_t    *cl_explosion_frametime;
+extern cvar_t    *cl_dlight_hacks;
 
 extern cvar_t    *cl_chat_notify;
 extern cvar_t    *cl_chat_sound;
@@ -683,7 +696,7 @@ typedef struct {
 typedef struct {
     int entity;
     int weapon;
-    int silenced;
+    bool silenced;
 } mz_params_t;
 
 typedef struct {
@@ -710,9 +723,11 @@ void CL_SeekDemoMessage(void);
 //
 void CL_DeltaFrame(void);
 void CL_AddEntities(void);
+// Adjust a gun origin so that the gun doesn't intersect with walls. Used for view weapons.
+void CL_AdjustGunPosition(vec3_t viewangles, vec3_t *gun_origin);
 void CL_CalcViewValues(void);
 
-#ifdef _DEBUG
+#if USE_DEBUG
 void CL_CheckEntityPresent(int entnum, const char *what);
 #endif
 
@@ -732,14 +747,10 @@ void V_Shutdown(void);
 void V_RenderView(void);
 void V_AddEntity(entity_t *ent);
 void V_AddParticle(particle_t *p);
-#if USE_DLIGHTS
-void V_AddLight(vec3_t org, float intensity, float r, float g, float b);
-void V_AddLightEx(vec3_t org, float intensity, float r, float g, float b, float radius);
-#else
-#define V_AddLight(org, intensity, r, g, b)
-#define V_AddLightEx(org, intensity, r, g, b, radius)
-#endif
-void V_AddLightStyle(int style, vec4_t value);
+void V_AddLight(const vec3_t org, float intensity, float r, float g, float b);
+void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float b, float radius);
+void V_AddSpotLight(const vec3_t org, const vec3_t dir, float intensity, float r, float g, float b, float width_angle, float falloff_angle);
+void V_AddLightStyle(int style, float value);
 void CL_UpdateBlendSetting(void);
 
 
@@ -752,7 +763,6 @@ typedef struct cl_sustain_s {
     int     type;
     int     endtime;
     int     nextthink;
-    int     thinkinterval;
     vec3_t  org;
     vec3_t  dir;
     int     color;
@@ -761,7 +771,7 @@ typedef struct cl_sustain_s {
     void    (*think)(struct cl_sustain_s *self);
 } cl_sustain_t;
 
-void CL_SmokeAndFlash(vec3_t origin);
+void CL_SmokeAndFlash(const vec3_t origin);
 
 void CL_RegisterTEntSounds(void);
 void CL_RegisterTEntModels(void);
@@ -801,7 +811,6 @@ typedef struct cparticle_s {
 	float   brightness;
 } cparticle_t;
 
-#if USE_DLIGHTS
 typedef struct cdlight_s {
     int     key;        // so entities can reuse same entry
     vec3_t  color;
@@ -810,75 +819,64 @@ typedef struct cdlight_s {
     float   die;        // stop lighting after this time
     float   decay;      // drop this each second
 	vec3_t  velosity;     // move this far each second
-    //float   minlight;   // don't add when contributing less
 } cdlight_t;
-#endif
 
-void CL_BigTeleportParticles(vec3_t org);
-void CL_RocketTrail(vec3_t start, vec3_t end, centity_t *old);
-void CL_DiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags);
-void CL_FlyEffect(centity_t *ent, vec3_t origin);
+void CL_BigTeleportParticles(const vec3_t org);
+void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old);
+void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, int flags);
+void CL_FlyEffect(centity_t *ent, const vec3_t origin);
 void CL_BfgParticles(entity_t *ent);
-void CL_ItemRespawnParticles(vec3_t org);
+void CL_ItemRespawnParticles(const vec3_t org);
 void CL_InitEffects(void);
 void CL_ClearEffects(void);
-void CL_BlasterParticles(vec3_t org, vec3_t dir);
-void CL_ExplosionParticles(vec3_t org);
-void CL_BFGExplosionParticles(vec3_t org);
-void CL_BlasterTrail(vec3_t start, vec3_t end);
+void CL_BlasterParticles(const vec3_t org, const vec3_t dir);
+void CL_ExplosionParticles(const vec3_t org);
+void CL_BFGExplosionParticles(const vec3_t org);
+void CL_BlasterTrail(const vec3_t start, const vec3_t end);
 void CL_OldRailTrail(void);
-void CL_BubbleTrail(vec3_t start, vec3_t end);
-void CL_FlagTrail(vec3_t start, vec3_t end, int color);
+void CL_BubbleTrail(const vec3_t start, const vec3_t end);
+void CL_FlagTrail(const vec3_t start, const vec3_t end, int color);
 void CL_MuzzleFlash(void);
 void CL_MuzzleFlash2(void);
-void CL_TeleporterParticles(vec3_t org);
-void CL_TeleportParticles(vec3_t org);
-void CL_ParticleEffect(vec3_t org, vec3_t dir, int color, int count);
-void CL_ParticleEffectWaterSplash(vec3_t org, vec3_t dir, int color, int count);
-void CL_BloodParticleEffect(vec3_t org, vec3_t dir, int color, int count);
-void CL_ParticleEffect2(vec3_t org, vec3_t dir, int color, int count);
+void CL_TeleporterParticles(const vec3_t org);
+void CL_TeleportParticles(const vec3_t org);
+void CL_ParticleEffect(const vec3_t org, const vec3_t dir, int color, int count);
+void CL_ParticleEffectWaterSplash(const vec3_t org, const vec3_t dir, int color, int count);
+void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int count);
+void CL_ParticleEffect2(const vec3_t org, const vec3_t dir, int color, int count);
 cparticle_t *CL_AllocParticle(void);
 void CL_RunParticles(void);
 void CL_AddParticles(void);
-#if USE_DLIGHTS
 cdlight_t *CL_AllocDlight(int key);
-void CL_RunDLights(void);
 void CL_AddDLights(void);
-#endif
-void CL_ClearLightStyles(void);
 void CL_SetLightStyle(int index, const char *s);
-void CL_RunLightStyles(void);
 void CL_AddLightStyles(void);
 
 //
 // newfx.c
 //
 
-void CL_BlasterParticles2(vec3_t org, vec3_t dir, unsigned int color);
-void CL_BlasterTrail2(vec3_t start, vec3_t end);
-void CL_DebugTrail(vec3_t start, vec3_t end);
-#if USE_DLIGHTS
-void CL_Flashlight(int ent, vec3_t pos);
-#endif
-void CL_ForceWall(vec3_t start, vec3_t end, int color);
-void CL_BubbleTrail2(vec3_t start, vec3_t end, int dist);
-void CL_Heatbeam(vec3_t start, vec3_t end);
-void CL_ParticleSteamEffect(vec3_t org, vec3_t dir, int color, int count, int magnitude);
-void CL_TrackerTrail(vec3_t start, vec3_t end, int particleColor);
-void CL_TagTrail(vec3_t start, vec3_t end, int color);
-#if USE_DLIGHTS
-void CL_ColorFlash(vec3_t pos, int ent, int intensity, float r, float g, float b);
-#endif
-void CL_Tracker_Shell(vec3_t origin);
-void CL_MonsterPlasma_Shell(vec3_t origin);
-void CL_ColorExplosionParticles(vec3_t org, int color, int run);
-void CL_ParticleSmokeEffect(vec3_t org, vec3_t dir, int color, int count, int magnitude);
+void CL_BlasterParticles2(const vec3_t org, const vec3_t dir, unsigned int color);
+void CL_BlasterTrail2(const vec3_t start, const vec3_t end);
+void CL_DebugTrail(const vec3_t start, const vec3_t end);
+void CL_Flashlight(int ent, const vec3_t pos);
+void CL_ForceWall(const vec3_t start, const vec3_t end, int color);
+void CL_BubbleTrail2(const vec3_t start, const vec3_t end, int dist);
+void CL_Heatbeam(const vec3_t start, const vec3_t end);
+void CL_ParticleSteamEffect(const vec3_t org, const vec3_t dir, int color, int count, int magnitude);
+void CL_TrackerTrail(const vec3_t start, const vec3_t end, int particleColor);
+void CL_TagTrail(const vec3_t start, const vec3_t end, int color);
+void CL_ColorFlash(const vec3_t pos, int ent, int intensity, float r, float g, float b);
+void CL_Tracker_Shell(const vec3_t origin);
+void CL_MonsterPlasma_Shell(const vec3_t origin);
+void CL_ColorExplosionParticles(const vec3_t org, int color, int run);
+void CL_ParticleSmokeEffect(const vec3_t org, const vec3_t dir, int color, int count, int magnitude);
 void CL_Widowbeamout(cl_sustain_t *self);
 void CL_Nukeblast(cl_sustain_t *self);
 void CL_WidowSplash(void);
-void CL_IonripperTrail(vec3_t start, vec3_t end);
-void CL_TrapParticles(centity_t *ent, vec3_t origin);
-void CL_ParticleEffect3(vec3_t org, vec3_t dir, int color, int count);
+void CL_IonripperTrail(const vec3_t start, const vec3_t end);
+void CL_TrapParticles(centity_t *ent, const vec3_t origin);
+void CL_ParticleEffect3(const vec3_t org, const vec3_t dir, int color, int count);
 void CL_ParticleSteamEffect2(cl_sustain_t *self);
 
 
@@ -951,7 +949,7 @@ void    SCR_SizeDown(void);
 void    SCR_CenterPrint(const char *str);
 void    SCR_FinishCinematic(void);
 void    SCR_PlayCinematic(const char *name);
-void    SCR_RunCinematic();
+void    SCR_RunCinematic(void);
 void    SCR_BeginLoadingPlaque(void);
 void    SCR_EndLoadingPlaque(void);
 void    SCR_TouchPics(void);
@@ -991,7 +989,7 @@ void HTTP_CleanupDownloads(void);
 #define HTTP_Init()                     (void)0
 #define HTTP_Shutdown()                 (void)0
 #define HTTP_SetServer(url)             (void)0
-#define HTTP_QueueDownload(path, type)  Q_ERR_NOSYS
+#define HTTP_QueueDownload(path, type)  Q_ERR(ENOSYS)
 #define HTTP_RunDownloads()             (void)0
 #define HTTP_CleanupDownloads()         (void)0
 #endif

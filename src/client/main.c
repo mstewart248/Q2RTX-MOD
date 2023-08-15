@@ -38,7 +38,7 @@ cvar_t  *cl_rollhack;
 cvar_t  *cl_noglow;
 cvar_t  *cl_nolerp;
 
-#ifdef _DEBUG
+#if USE_DEBUG
 cvar_t  *cl_shownet;
 cvar_t  *cl_showmiss;
 cvar_t  *cl_showclamp;
@@ -50,6 +50,8 @@ cvar_t  *cl_thirdperson_range;
 
 cvar_t  *cl_disable_particles;
 cvar_t  *cl_disable_explosions;
+cvar_t  *cl_dlight_hacks;
+
 cvar_t  *cl_chat_notify;
 cvar_t  *cl_chat_sound;
 cvar_t  *cl_chat_filter;
@@ -700,7 +702,6 @@ void CL_ClearState(void)
 {
     S_StopAllSounds();
     CL_ClearEffects();
-    CL_ClearLightStyles();
     CL_ClearTEnts();
     LOC_FreeLocations();
 
@@ -1004,58 +1005,6 @@ static void CL_ParseInfoMessage(void)
     if (r->adr.type != NA_BROADCAST)
         r->type = REQ_FREE;
 }
-
-/*
-====================
-CL_Packet_f
-
-packet <destination> <contents>
-
-Contents allows \n escape character
-====================
-*/
-/*
-void CL_Packet_f (void)
-{
-    char    send[2048];
-    int     i, l;
-    char    *in, *out;
-    netadr_t    adr;
-
-    if (Cmd_Argc() != 3)
-    {
-        Com_Printf ("packet <destination> <contents>\n");
-        return;
-    }
-
-    if (!NET_StringToAdr (Cmd_Argv(1), &adr))
-    {
-        Com_Printf ("Bad address\n");
-        return;
-    }
-    if (!adr.port)
-        adr.port = BigShort (PORT_SERVER);
-
-    in = Cmd_Argv(2);
-    out = send+4;
-    send[0] = send[1] = send[2] = send[3] = (char)0xff;
-
-    l = strlen (in);
-    for (i=0; i<l; i++)
-    {
-        if (in[i] == '\\' && in[i+1] == 'n')
-        {
-            *out++ = '\n';
-            i++;
-        }
-        else
-            *out++ = in[i];
-    }
-    *out = 0;
-
-    NET_SendPacket (NS_CLIENT, out-send, send, &adr);
-}
-*/
 
 /*
 =================
@@ -2351,12 +2300,12 @@ static size_t CL_ResolutionScale_m(char *buffer, size_t size)
 	return Q_scnprintf(buffer, size, "%d", cl.refdef.feedback.resolution_scale);
 }
 
-int CL_GetFps()
+int CL_GetFps(void)
 {
 	return C_FPS;
 }
 
-int CL_GetResolutionScale()
+int CL_GetResolutionScale(void)
 {
 	return cl.refdef.feedback.resolution_scale;
 }
@@ -2788,7 +2737,7 @@ static void CL_InitLocal(void)
     warn_on_fps_rounding(cl_maxfps);
     warn_on_fps_rounding(r_maxfps);
 
-#ifdef _DEBUG
+#if USE_DEBUG
     cl_shownet = Cvar_Get("cl_shownet", "0", 0);
     cl_showmiss = Cvar_Get("cl_showmiss", "0", 0);
     cl_showclamp = Cvar_Get("showclamp", "0", 0);
@@ -2810,6 +2759,8 @@ static void CL_InitLocal(void)
     cl_disable_explosions = Cvar_Get("cl_disable_explosions", "0", 0);
 	cl_explosion_sprites = Cvar_Get("cl_explosion_sprites", "1", 0);
 	cl_explosion_frametime = Cvar_Get("cl_explosion_frametime", "20", 0);
+    cl_dlight_hacks = Cvar_Get("cl_dlight_hacks", "0", 0);
+
     cl_gibs = Cvar_Get("cl_gibs", "1", 0);
     cl_gibs->changed = cl_gibs_changed;
 
@@ -3123,7 +3074,7 @@ typedef enum {
     ASYNC_FULL
 } sync_mode_t;
 
-#ifdef _DEBUG
+#if USE_DEBUG
 static const char *const sync_names[] = {
     "SYNC_TIMEDEMO",
     "SYNC_MAXFPS",
@@ -3334,21 +3285,13 @@ unsigned CL_Frame(unsigned msec)
         ref_extra -= ref_msec;
         R_FRAMES++;
 
-run_fx:
         // update audio after the 3D view was drawn
         S_Update();
-
-        // advance local effects for next frame
-#if USE_DLIGHTS
-        CL_RunDLights();
-#endif
-
-        CL_RunLightStyles();
         SCR_RunCinematic();
     } else if (sync_mode == SYNC_SLEEP_10) {
         // force audio and effects update if not rendering
         CL_CalcViewValues();
-        goto run_fx;
+        S_Update();
     }
 
     // check connection timeout
@@ -3427,9 +3370,7 @@ void CL_Init(void)
     IN_Init();
 
 #if USE_ZLIB
-    if (inflateInit2(&cls.z, -MAX_WBITS) != Z_OK) {
-        Com_Error(ERR_FATAL, "%s: inflateInit2() failed", __func__);
-    }
+    Q_assert(inflateInit2(&cls.z, -MAX_WBITS) == Z_OK);
 #endif
 
     CL_LoadDownloadIgnores();

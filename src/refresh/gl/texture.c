@@ -553,6 +553,8 @@ static void GL_SetFilterAndRepeat(imagetype_t type, imageflags_t flags)
 
         if (flags & IF_NEAREST) {
             nearest = true;
+        } else if(flags & IF_BILERP) {
+            nearest = true;
         } else if (type == IT_FONT) {
             nearest = (gl_bilerp_chars->integer == 0);
         } else if (type == IT_PIC) {
@@ -990,7 +992,7 @@ void GL_InitImages(void)
     GL_ShowErrors(__func__);
 }
 
-#ifdef _DEBUG
+#if USE_DEBUG
 extern image_t *r_charset;
 #endif
 
@@ -1013,7 +1015,7 @@ void GL_ShutdownImages(void)
     qglDeleteTextures(NUM_TEXNUMS, gl_static.texnums);
     qglDeleteTextures(LM_MAX_LIGHTMAPS, lm.texnums);
 
-#ifdef _DEBUG
+#if USE_DEBUG
     r_charset = NULL;
 #endif
 

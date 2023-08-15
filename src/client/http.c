@@ -25,7 +25,7 @@ static cvar_t  *cl_http_max_connections;
 static cvar_t  *cl_http_proxy;
 static cvar_t  *cl_http_default_url;
 
-#ifdef _DEBUG
+#if USE_DEBUG
 static cvar_t  *cl_http_debug;
 #endif
 
@@ -129,7 +129,7 @@ oversize:
     return 0;
 }
 
-#ifdef _DEBUG
+#if USE_DEBUG
 static int debug_func(CURL *c, curl_infotype type, char *data, size_t size, void *ptr)
 {
     if (type == CURLINFO_TEXT) {
@@ -272,7 +272,7 @@ static void start_download(dlqueue_t *entry, dlhandle_t *dl)
         dl->curl = curl_easy_init();
 
     curl_easy_setopt(dl->curl, CURLOPT_ENCODING, "");
-#ifdef _DEBUG
+#if USE_DEBUG
     if (cl_http_debug->integer) {
         curl_easy_setopt(dl->curl, CURLOPT_DEBUGFUNCTION, debug_func);
         curl_easy_setopt(dl->curl, CURLOPT_VERBOSE, 1L);
@@ -444,7 +444,7 @@ void HTTP_Init(void)
     cl_http_proxy = Cvar_Get("cl_http_proxy", "", 0);
     cl_http_default_url = Cvar_Get("cl_http_default_url", "", 0);
 
-#ifdef _DEBUG
+#if USE_DEBUG
     cl_http_debug = Cvar_Get("cl_http_debug", "0", 0);
 #endif
 
@@ -526,7 +526,7 @@ void HTTP_SetServer(const char *url)
 HTTP_QueueDownload
 
 Called from the precache check to queue a download. Return value of
-Q_ERR_NOSYS will cause standard UDP downloading to be used instead.
+Q_ERR(ENOSYS) will cause standard UDP downloading to be used instead.
 ===============
 */
 int HTTP_QueueDownload(const char *path, dltype_t type)
@@ -538,7 +538,7 @@ int HTTP_QueueDownload(const char *path, dltype_t type)
 
     // no http server (or we got booted)
     if (!curl_multi)
-        return Q_ERR_NOSYS;
+        return Q_ERR(ENOSYS);
 
     // first download queued, so we want the mod filelist
     need_list = LIST_EMPTY(&cls.download.queue);

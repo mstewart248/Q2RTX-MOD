@@ -5,7 +5,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 project(quake2-RTX)
 set(Q2RTX_VERSION_MAJOR 1)
-set(Q2RTX_VERSION_MINOR 6)
+set(Q2RTX_VERSION_MINOR 7)
 set(Q2RTX_VERSION_POINT 0)
 
 # get short-hash
@@ -40,6 +40,7 @@ ELSE()
 ENDIF()
 OPTION(CONFIG_BUILD_GLSLANG "Build glslangValidator from source instead of using the SDK" ${DEFAULT_BUILD_GLSLANG})
 OPTION(CONFIG_BUILD_IPO "Enable interprocedural optimizations" OFF)
+OPTION(CONFIG_BUILD_SHADER_DEBUG_INFO "Build shaders with debug info" OFF)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 include(CheckIPOSupported)
@@ -93,14 +94,27 @@ IF(MSVC)
     # Enable multi-processor compilation when using MSBuild
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
 
+    # Also adjust C++ flags, needed for 3rd party code
+    replace_msvcrt(CMAKE_CXX_FLAGS_DEBUG "/MTd")
+    replace_msvcrt(CMAKE_CXX_FLAGS_MINSIZEREL "/MT")
+    replace_msvcrt(CMAKE_CXX_FLAGS_RELEASE "/MT")
+    replace_msvcrt(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/MT")
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
+
+ELSEIF(CMAKE_SYSTEM_PROCESSOR STREQUAL "ppc64le")
+
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcpu=native")
 
 ELSEIF(CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
 
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse -mfpmath=sse")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse2 -mfpmath=sse")
 
 ENDIF()
 
-
+# Work around CMAKE_INSTALL_PREFIX being a relative directory when using -B
+# on Windows, which in turn trips up 'file(RELATIVE_PATH ...)' used in SDL2
+set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/extern/install)
 
 add_subdirectory(extern)
 
@@ -126,6 +140,8 @@ IF(CONFIG_LINUX_PACKAGING_SUPPORT)
     
     IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
         set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+    ELSEIF(CMAKE_SYSTEM_PROCESSOR STREQUAL "ppc64le")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "ppc64el")
     ELSE()
         set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
     ENDIF()
@@ -136,7 +152,7 @@ IF(CONFIG_LINUX_PACKAGING_SUPPORT)
 
     set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://www.nvidia.com/en-us/geforce/news/quake-ii-rtx-ray-tracing-vulkan-vkray-geforce-rtx/")
 
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libopenal1, libvulkan1")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libvulkan1")
 
     set(CPACK_DEB_PACKAGE_COMPONENT ON)
     set(CPACK_DEB_COMPONENT_INSTALL ON)

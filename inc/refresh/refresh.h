@@ -50,8 +50,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SHELL_WHITE_COLOR   0xD7
 
 // NOTE: these flags are intentionally the same value
-#define RF_LEFTHAND         0x80000000
-#define RF_NOSHADOW         0x80000000
+#define RF_LEFTHAND         RF_NOSHADOW
 
 #define RF_SHELL_MASK       (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE | \
                              RF_SHELL_DOUBLE | RF_SHELL_HALF_DAM)
@@ -94,6 +93,18 @@ typedef struct entity_s {
 	float scale;
 } entity_t;
 
+typedef enum dlight_type_e
+{
+    DLIGHT_SPHERE = 0,
+    DLIGHT_SPOT
+} dlight_type;
+
+typedef enum dlight_spot_emission_profile_e
+{
+    DLIGHT_SPOT_EMISSION_PROFILE_FALLOFF = 0,
+    DLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE
+} dlight_spot_emission_profile;
+
 typedef struct dlight_s {
     vec3_t  origin;
 #if USE_REF == REF_GL
@@ -102,6 +113,32 @@ typedef struct dlight_s {
     vec3_t  color;
     float   intensity;
 	float   radius;
+
+    // VKPT light types support
+    dlight_type light_type;
+    // Spotlight options
+    struct {
+        // Spotlight emission profile
+        dlight_spot_emission_profile emission_profile;
+        // Spotlight direction
+        vec3_t  direction;
+        union {
+            // Options for DLIGHT_SPOT_EMISSION_PROFILE_FALLOFF
+            struct {
+                // Cosine of angle of spotlight cone width (no emission beyond that)
+                float   cos_total_width;
+                // Cosine of angle of start of falloff (full emission below that)
+                float   cos_falloff_start;
+            };
+            // Options for DLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE
+            struct {
+                // Angle of spotlight cone width (no emission beyond that), in radians
+                float   total_width;
+                // Emission profile texture, indexed by 'angle / total_width'
+                qhandle_t texture;
+            };
+        };
+    } spot;
 } dlight_t;
 
 typedef struct particle_s {
@@ -208,6 +245,7 @@ typedef enum {
     IF_FAKE_EMISSIVE= (1 << 10),
     IF_EXACT        = (1 << 11),
     IF_NORMAL_MAP   = (1 << 12),
+    IF_BILERP       = (1 << 13), // always lerp, independent of bilerp_pics cvar
 
     // Image source indicator/requirement flags
     IF_SRC_BASE     = (0x1 << 16),
@@ -263,7 +301,7 @@ qhandle_t R_RegisterRawImage(const char *name, int width, int height, byte* pic,
                           imageflags_t flags);
 void R_UnregisterImage(qhandle_t handle);
 
-extern void    (*R_SetSky)(const char *name, float rotate, vec3_t axis);
+extern void    (*R_SetSky)(const char *name, float rotate, const vec3_t axis);
 extern void    (*R_EndRegistration)(void);
 
 #define R_RegisterPic(name)     R_RegisterImage(name, IT_PIC, IF_PERMANENT | IF_SRGB, NULL)
@@ -272,7 +310,7 @@ extern void    (*R_EndRegistration)(void);
 #define R_RegisterSkin(name)    R_RegisterImage(name, IT_SKIN, IF_SRGB, NULL)
 
 extern void    (*R_RenderFrame)(refdef_t *fd);
-extern void    (*R_LightPoint)(vec3_t origin, vec3_t light);
+extern void    (*R_LightPoint)(const vec3_t origin, vec3_t light);
 
 extern void    (*R_ClearColor)(void);
 extern void    (*R_SetAlpha)(float clpha);
@@ -300,13 +338,13 @@ extern void    (*R_ModeChanged)(int width, int height, int flags, int rowbytes, 
 extern void    (*R_AddDecal)(decal_t *d);
 
 extern bool    (*R_InterceptKey)(unsigned key, bool down);
-extern bool    (*R_IsHDR)();
+extern bool    (*R_IsHDR)(void);
 
 #if REF_GL
-void R_RegisterFunctionsGL();
+void R_RegisterFunctionsGL(void);
 #endif
 #if REF_VKPT
-void R_RegisterFunctionsRTX();
+void R_RegisterFunctionsRTX(void);
 #endif
 
 #endif // REFRESH_H

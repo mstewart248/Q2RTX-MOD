@@ -16,7 +16,6 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#define _GNU_SOURCE
 #include "shared/shared.h"
 #include "system/hunk.h"
 #include <sys/mman.h>
@@ -28,16 +27,14 @@ static long pagesize;
 void Hunk_Init(void)
 {
     pagesize = sysconf(_SC_PAGESIZE);
-    if (pagesize & (pagesize - 1))
-        Com_Error(ERR_FATAL, "Bad system page size");
+    Q_assert(pagesize && !(pagesize & (pagesize - 1)));
 }
 
 void Hunk_Begin(memhunk_t *hunk, size_t maxsize)
 {
     void *buf;
 
-    if (maxsize > SIZE_MAX - (pagesize - 1))
-        Com_Error(ERR_FATAL, "%s: size > SIZE_MAX", __func__);
+    Q_assert(maxsize <= SIZE_MAX - (pagesize - 1));
 
     // reserve a huge chunk of memory, but don't commit any yet
     hunk->cursize = 0;
@@ -55,15 +52,11 @@ void *Hunk_Alloc(memhunk_t *hunk, size_t size)
 {
     void *buf;
 
-    if (size > SIZE_MAX - 63)
-        Com_Error(ERR_FATAL, "%s: size > SIZE_MAX", __func__);
+    Q_assert(size <= SIZE_MAX - 63);
+    Q_assert(hunk->cursize <= hunk->maxsize);
 
     // round to cacheline
     size = ALIGN(size, 64);
-
-    if (hunk->cursize > hunk->maxsize)
-        Com_Error(ERR_FATAL, "%s: cursize > maxsize", __func__);
-
     if (size > hunk->maxsize - hunk->cursize)
         return NULL;
 
@@ -76,9 +69,7 @@ void Hunk_End(memhunk_t *hunk)
 {
     size_t newsize;
 
-    if (hunk->cursize > hunk->maxsize)
-        Com_Error(ERR_FATAL, "%s: cursize > maxsize", __func__);
-
+    Q_assert(hunk->cursize <= hunk->maxsize);
     newsize = ALIGN(hunk->cursize, pagesize);
 
     if (newsize < hunk->maxsize) {

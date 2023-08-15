@@ -242,6 +242,13 @@ sprite explosion effects. Default value is 20 ms.
 When this variable is set to 1, regular mushroom explosion models are 
 replaced with sprites. Affects both OpenGL and RTX renderers. Default value is 1.
 
+#### `cl_dlight_hacks`
+Toggles miscellaneous dynamic light effects options. This variable
+is a bitmask. Default value is 0.
+  - 1 — make rocket projectile light red instead of yellow
+  - 2 — make rocket/grenade explosion light radius smaller
+  - 4 — disable muzzle flashes for machinegun and chaingun
+
 #### `cl_noglow`
 Disables the glowing effect on bonus entities like ammo, health, etc.
 Default value is 0 (glowing enabled).
@@ -801,14 +808,14 @@ Enables the water caustics and tinted glass transmission effects. The setting is
 shared because these effects use the same ray query to find the transparent surfaces.
 Default value is 1.
 
-#### `pt_direct_polygon_lights`, `pt_direct_sphere_lights`
+#### `pt_direct_polygon_lights`, `pt_direct_dyn_lights`
 Switch for direct light sampling mode. Default values are 1.
 
 - -1 — sample direct lights with GI rays as regular emissive surfaces (only for polygonal lights)
 - 0 — do not include direct lights
 - 1 — sample direct lights with next event estimation
 
-#### `pt_indirect_polygon_lights`, `pt_indirect_sphere_lights`
+#### `pt_indirect_polygon_lights`, `pt_indirect_dyn_lights`
 Switch for indirect light sampling mode. See above. Default values are 1.
 
 #### `pt_direct_sun_light`
@@ -891,7 +898,8 @@ override. Default value is -1.
 #### `pt_show_sky`
 Enables visualization of skybox geometry, useful for tuning maps for the RTX renderer
 because one can use the `cl_clusterthere` macro to display the clusters for the sky
-and list those clusters in the `baseq2/sky_clusters.txt` file. Default value is 0.
+and list those clusters in map-specific sky cluster file, `maps/sky/<mapname>.txt`.
+Default value is 0.
 
 #### `pt_texture_lod_bias`
 LOD bias for texture sampling. Negative values mean sharper textures, positive values 

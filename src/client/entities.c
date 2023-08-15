@@ -421,7 +421,7 @@ void CL_DeltaFrame(void)
     SCR_SetCrosshairColor();
 }
 
-#ifdef _DEBUG
+#if USE_DEBUG
 // for debugging problems when out-of-date entity origin is referenced
 void CL_CheckEntityPresent(int entnum, const char *what)
 {
@@ -794,7 +794,7 @@ static void CL_AddPacketEntities(void)
 				VectorCopy(ent.origin, origin);
 				origin[2] += offset;
 
-				V_AddLightEx(origin, 500.f, 1.6f * brightness, 1.0f * brightness, 0.2f * brightness, 5.f);
+				V_AddSphereLight(origin, 500.f, 1.6f * brightness, 1.0f * brightness, 0.2f * brightness, 5.f);
                     }
                 }
 
@@ -871,7 +871,10 @@ static void CL_AddPacketEntities(void)
                 if (!(cl_disable_particles->integer & NOPART_ROCKET_TRAIL)) {
                     CL_RocketTrail(cent->lerp_origin, ent.origin, cent);
                 }
-                V_AddLight(ent.origin, 200, 0.6f, 0.4f, 0.12f);
+                if (cl_dlight_hacks->integer & DLHACK_ROCKET_COLOR)
+                    V_AddLight(ent.origin, 200, 1, 0.23f, 0);
+                else
+                    V_AddLight(ent.origin, 200, 0.6f, 0.4f, 0.12f);
             } else if (effects & EF_BLASTER) {
                 if (effects & EF_TRACKER) {
                     CL_BlasterTrail2(cent->lerp_origin, ent.origin);
@@ -902,24 +905,20 @@ static void CL_AddPacketEntities(void)
             } else if (effects & EF_BFG) {
                 if (effects & EF_ANIM_ALLFAST) {
                     CL_BfgParticles(&ent);
-#if USE_DLIGHTS
                     i = 100;
                 } else {
                     static const int bfg_lightramp[6] = {300, 400, 600, 300, 150, 75};
-
-                    i = s1->frame; clamp(i, 0, 5);
+                    i = s1->frame;
+                    clamp(i, 0, 5);
                     i = bfg_lightramp[i];
-#endif
                 }
 				const vec3_t nvgreen = { 0.2716f, 0.5795f, 0.04615f };
-				V_AddLightEx(ent.origin, i, nvgreen[0], nvgreen[1], nvgreen[2], 20.f);
+				V_AddSphereLight(ent.origin, i, nvgreen[0], nvgreen[1], nvgreen[2], 20.f);
             } else if (effects & EF_TRAP) {
                 ent.origin[2] += 32;
                 CL_TrapParticles(cent, ent.origin);
-#if USE_DLIGHTS
                 i = (Q_rand() % 100) + 100;
                 V_AddLight(ent.origin, i, 1, 0.8f, 0.1f);
-#endif
             } else if (effects & EF_FLAG1) {
                 CL_FlagTrail(cent->lerp_origin, ent.origin, 242);
                 V_AddLight(ent.origin, 225, 1, 0.1f, 0.1f);
@@ -931,12 +930,8 @@ static void CL_AddPacketEntities(void)
                 V_AddLight(ent.origin, 225, 1.0f, 1.0f, 0.0f);
             } else if (effects & EF_TRACKERTRAIL) {
                 if (effects & EF_TRACKER) {
-#if USE_DLIGHTS
-                    float intensity;
-
-                    intensity = 50 + (500 * (sin(cl.time / 500.0f) + 1.0f));
+                    float intensity = 50 + (500 * (sin(cl.time / 500.0f) + 1.0f));
                     V_AddLight(ent.origin, intensity, -1.0f, -1.0f, -1.0f);
-#endif
                 } else {
                     CL_Tracker_Shell(cent->lerp_origin);
                     V_AddLight(ent.origin, 155, -1.0f, -1.0f, -1.0f);
@@ -991,6 +986,31 @@ static int shell_effect_hack(void)
     return flags;
 }
 
+void CL_AdjustGunPosition(vec3_t viewangles, vec3_t *gun_origin)
+{
+    vec3_t view_dir, right_dir, up_dir;
+    vec3_t gun_real_pos, gun_tip;
+    const float gun_length = 28.f;
+    const float gun_right = 10.f;
+    const float gun_up = -5.f;
+    trace_t trace;
+    static vec3_t mins = { -4, -4, -4 }, maxs = { 4, 4, 4 };
+
+    AngleVectors(viewangles, view_dir, right_dir, up_dir);
+    VectorMA(*gun_origin, gun_right, right_dir, gun_real_pos);
+    VectorMA(gun_real_pos, gun_up, up_dir, gun_real_pos);
+    VectorMA(gun_real_pos, gun_length, view_dir, gun_tip);
+
+    CM_BoxTrace(&trace, gun_real_pos, gun_tip, mins, maxs, cl.bsp->nodes, MASK_SOLID);
+
+    if (trace.fraction != 1.0f)
+    {
+        VectorMA(trace.endpos, -gun_length, view_dir, *gun_origin);
+        VectorMA(*gun_origin, -gun_right, right_dir, *gun_origin);
+        VectorMA(*gun_origin, -gun_up, up_dir, *gun_origin);
+    }
+}
+
 /*
 ==============
 CL_AddViewWeapon
@@ -1042,30 +1062,8 @@ static void CL_AddViewWeapon(void)
         VectorMA(gun.origin, ofs, cl.v_forward, gun.origin);
     }
 
-	// adjust the gun origin so that the gun doesn't intersect with walls
-	{
-		vec3_t view_dir, right_dir, up_dir;
-		vec3_t gun_real_pos, gun_tip;
-		const float gun_length = 28.f;
-		const float gun_right = 10.f;
-		const float gun_up = -5.f;
-		trace_t trace;
-		static vec3_t mins = { -4, -4, -4 }, maxs = { 4, 4, 4 };
-
-		AngleVectors(cl.refdef.viewangles, view_dir, right_dir, up_dir);
-		VectorMA(gun.origin, gun_right, right_dir, gun_real_pos);
-		VectorMA(gun_real_pos, gun_up, up_dir, gun_real_pos);
-		VectorMA(gun_real_pos, gun_length, view_dir, gun_tip);
-
-		CM_BoxTrace(&trace, gun_real_pos, gun_tip, mins, maxs, cl.bsp->nodes, MASK_SOLID);
-
-		if (trace.fraction != 1.0f) 
-		{
-			VectorMA(trace.endpos, -gun_length, view_dir, gun.origin);
-			VectorMA(gun.origin, -gun_right, right_dir, gun.origin);
-			VectorMA(gun.origin, -gun_up, up_dir, gun.origin);
-		}
-	}
+    // adjust the gun origin so that the gun doesn't intersect with walls
+    CL_AdjustGunPosition(cl.refdef.viewangles, &gun.origin);
 
     VectorCopy(gun.origin, gun.oldorigin);      // don't lerp at all
 
@@ -1148,7 +1146,7 @@ static void CL_SetupThirdPersionView(void)
     float fscale, rscale;
     float dist, angle, range;
     trace_t trace;
-    static vec3_t mins = { -4, -4, -4 }, maxs = { 4, 4, 4 };
+    static const vec3_t mins = { -4, -4, -4 }, maxs = { 4, 4, 4 };
 
     // if dead, set a nice view angle
     if (cl.frame.ps.stats[STAT_HEALTH] <= 0) {
@@ -1415,9 +1413,7 @@ void CL_AddEntities(void)
     CL_AddPacketEntities();
     CL_AddTEnts();
     CL_AddParticles();
-#if USE_DLIGHTS
     CL_AddDLights();
-#endif
     CL_AddLightStyles();
 	CL_AddTestModel();
     LOC_AddLocationsToScene();
