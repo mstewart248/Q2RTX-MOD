@@ -1122,20 +1122,20 @@ G_SetClientFrame(edict_t *ent)
 
 	if (client->ps.pmove.pm_flags & PMF_DUCKED)
 	{
-		duck = true;
+		duck = qtrue;
 	}
 	else
 	{
-		duck = false;
+		duck = qfalse;
 	}
 
 	if (xyspeed)
 	{
-		run = true;
+		run = qtrue;
 	}
 	else
 	{
-		run = false;
+		run = qfalse;
 	}
 
 	/* check for stand/duck and stop/go transitions */
@@ -1376,7 +1376,7 @@ ClientEndServerFrame(edict_t *ent)
 		if (ent->client->showscores)
 		{
 			DeathmatchScoreboardMessage(ent, ent->enemy);
-			gi.unicast(ent, false);
+			gi.unicast(ent, qfalse);
 		}
 
 		/* if the help computer is up, update it */
@@ -1384,7 +1384,7 @@ ClientEndServerFrame(edict_t *ent)
 		{
 			ent->client->pers.helpchanged = 0;
 			HelpComputerMessage(ent);
-			gi.unicast(ent, false);
+			gi.unicast(ent, qfalse);
 		}
 	}
 
@@ -1392,6 +1392,6 @@ ClientEndServerFrame(edict_t *ent)
 	if (ent->client->showinventory)
 	{
 		InventoryMessage(ent);
-		gi.unicast(ent, false);
+		gi.unicast(ent, qfalse);
 	}
 }

@@ -287,29 +287,29 @@ qboolean Spawn_CheckCoop_MapHacks (edict_t *ent)
 {
 	if(!coop->value || !ent)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if(!Q_stricmp(level.mapname, "xsewer1"))
 	{
 		if(ent->classname && !Q_stricmp(ent->classname, "trigger_relay") && ent->target && !Q_stricmp(ent->target, "t3") && ent->targetname && !Q_stricmp(ent->targetname, "t2"))
 		{
-			return true;
+			return qtrue;
 		}
 		if(ent->classname && !Q_stricmp(ent->classname, "func_button") && ent->target && !Q_stricmp(ent->target, "t16") && ent->model && !Q_stricmp(ent->model, "*71"))
 		{
 			ent->message = "Overflow valve maintenance\nhatch A opened.";
-			return false;
+			return qfalse;
 		}
 
 		if(ent->classname && !Q_stricmp(ent->classname, "trigger_once") && ent->model && !Q_stricmp(ent->model, "*3"))
 		{
 			ent->message = "Overflow valve maintenance\nhatch B opened.";
-			return false;
+			return qfalse;
 		}
 	}
 
-	return false;
+	return qfalse;
 }
 
 /*
@@ -489,7 +489,7 @@ ED_ParseEdict(char *data, edict_t *ent)
 		return NULL;
 	}
 
-	init = false;
+	init = qfalse;
 	memset(&st, 0, sizeof(st));
 
 	/* go through all the dictionary pairs */
@@ -523,7 +523,7 @@ ED_ParseEdict(char *data, edict_t *ent)
 			gi.error("ED_ParseEntity: closing brace without data");
 		}
 
-		init = true;
+		init = qtrue;
 
 		/* keynames with a leading underscore are
 		   used for utility comments, and are
@@ -908,7 +908,7 @@ SP_worldspawn(edict_t *ent)
 
 	ent->movetype = MOVETYPE_PUSH;
 	ent->solid = SOLID_BSP;
-	ent->inuse = true; /* since the world doesn't use G_Spawn() */
+	ent->inuse = qtrue; /* since the world doesn't use G_Spawn() */
 	ent->s.modelindex = 1; /* world model is always index 1 */
 
 	/* reserve some spots for dead player

@@ -1113,6 +1113,9 @@ struct edict_s
 	moveinfo_t moveinfo;
 	monsterinfo_t monsterinfo;
 
+	qboolean monsterFireHyperBlaster;
+	int death_count;
+
 	int orders;
 };
 

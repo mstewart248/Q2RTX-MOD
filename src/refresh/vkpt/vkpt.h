@@ -790,7 +790,7 @@ typedef struct maliasmesh_s {
 } maliasmesh_t;
 
 // needed for model.c
-#define TESS_MAX_VERTICES   16384
+#define TESS_MAX_VERTICES   (2 * 16384)
 #define TESS_MAX_INDICES    (3 * TESS_MAX_VERTICES)
 
 #define QGL_INDEX_TYPE  GLuint

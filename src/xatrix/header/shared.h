@@ -19,7 +19,7 @@
 #include <time.h>
 
 typedef unsigned char byte;
-typedef enum {false, true} qboolean;
+typedef enum { qfalse, qtrue } qboolean;
 
 #ifndef NULL
  #define NULL ((void *)0)
@@ -30,9 +30,9 @@ typedef enum {false, true} qboolean;
 #define YAW 1                       /* left / right */
 #define ROLL 2                      /* fall over */
 
-#define MAX_STRING_CHARS 1024       /* max length of a string passed to Cmd_TokenizeString */
-#define MAX_STRING_TOKENS 80        /* max tokens resulting from Cmd_TokenizeString */
-#define MAX_TOKEN_CHARS 128         /* max length of an individual token */
+#define MAX_STRING_CHARS 4096       /* max length of a string passed to Cmd_TokenizeString */
+#define MAX_STRING_TOKENS 256        /* max tokens resulting from Cmd_TokenizeString */
+#define MAX_TOKEN_CHARS 1024        /* max length of an individual token */
 
 #define MAX_QPATH 64                /* max length of a quake game pathname */
 
@@ -94,7 +94,6 @@ typedef vec_t vec5_t[5];
 typedef int fixed4_t;
 typedef int fixed8_t;
 typedef int fixed16_t;
-typedef enum { qfalse, qtrue } qboolean;
 
 #ifndef M_PI
  #define M_PI 3.14159265358979323846 /* matches value in gcc v2 math.h */

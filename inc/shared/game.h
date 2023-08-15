@@ -26,6 +26,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //
 
 #define GAME_API_VERSION    3
+#define GAME_API_VERSION_RERELEASE 2022
 
 // edict->svflags
 
@@ -63,7 +64,7 @@ typedef struct edict_s edict_t;
 typedef struct gclient_s gclient_t;
 
 
-#ifndef GAME_INCLUDE
+#ifndef GAME_INCLUDE2
 
 struct gclient_s {
     player_state_t  ps;     // communicated by server to clients

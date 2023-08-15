@@ -23,7 +23,7 @@
 
 edict_t *trail[TRAIL_LENGTH];
 int trail_head;
-qboolean trail_active = false;
+qboolean trail_active = qfalse;
 
 void
 PlayerTrail_Init(void)
@@ -42,7 +42,7 @@ PlayerTrail_Init(void)
 	}
 
 	trail_head = 0;
-	trail_active = true;
+	trail_active = qtrue;
 }
 
 void

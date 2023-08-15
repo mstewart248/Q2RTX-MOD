@@ -605,7 +605,7 @@ brain_tounge_attack_ok(vec3_t start, vec3_t end)
 
 	if (VectorLength(dir) > 512)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* check for min/max pitch */
@@ -618,10 +618,10 @@ brain_tounge_attack_ok(vec3_t start, vec3_t end)
 
 	if (fabs(angles[0]) > 30)
 	{
-		return false;
+		return qfalse;
 	}
 
-	return true;
+	return qtrue;
 }
 
 void

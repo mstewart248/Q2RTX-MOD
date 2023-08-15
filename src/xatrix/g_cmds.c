@@ -50,12 +50,12 @@ OnSameTeam(edict_t *ent1, edict_t *ent2)
 
 	if (!ent1 || !ent2)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (!((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))
 	{
-		return false;
+		return qfalse;
 	}
 
 	ClientTeam(ent1, ent1Team);
@@ -63,10 +63,10 @@ OnSameTeam(edict_t *ent1, edict_t *ent2)
 
 	if (ent1Team[0] != '\0' && strcmp(ent1Team, ent2Team) == 0)
 	{
-		return true;
+		return qtrue;
 	}
 
-	return false;
+	return qfalse;
 }
 
 void
@@ -218,11 +218,11 @@ Cmd_Give_f(edict_t *ent)
 
 	if (Q_stricmp(name, "all") == 0)
 	{
-		give_all = true;
+		give_all = qtrue;
 	}
 	else
 	{
-		give_all = false;
+		give_all = qfalse;
 	}
 
 	if (give_all || (Q_stricmp(gi.argv(1), "health") == 0))
@@ -640,8 +640,8 @@ Cmd_Score_f(edict_t *ent)
 		return;
 	}
 
-	ent->client->showinventory = false;
-	ent->client->showhelp = false;
+	ent->client->showinventory = qfalse;
+	ent->client->showhelp = qfalse;
 
 	if (!deathmatch->value && !coop->value)
 	{
@@ -650,13 +650,13 @@ Cmd_Score_f(edict_t *ent)
 
 	if (ent->client->showscores)
 	{
-		ent->client->showscores = false;
+		ent->client->showscores = qfalse;
 		return;
 	}
 
-	ent->client->showscores = true;
+	ent->client->showscores = qtrue;
 	DeathmatchScoreboardMessage(ent, ent->enemy);
-	gi.unicast(ent, true);
+	gi.unicast(ent, qtrue);
 }
 
 	void
@@ -674,19 +674,19 @@ Cmd_Help_f(edict_t *ent)
 		return;
 	}
 
-	ent->client->showinventory = false;
-	ent->client->showscores = false;
+	ent->client->showinventory = qfalse;
+	ent->client->showscores = qfalse;
 
 	if (ent->client->showhelp)
 	{
-		ent->client->showhelp = false;
+		ent->client->showhelp = qfalse;
 		return;
 	}
 
-	ent->client->showhelp = true;
+	ent->client->showhelp = qtrue;
 	ent->client->pers.helpchanged = 0;
 	HelpComputerMessage(ent);
-	gi.unicast(ent, true);
+	gi.unicast(ent, qtrue);
 }
 
 void
@@ -701,18 +701,18 @@ Cmd_Inven_f(edict_t *ent)
 
 	cl = ent->client;
 
-	cl->showscores = false;
-	cl->showhelp = false;
+	cl->showscores = qfalse;
+	cl->showhelp = qfalse;
 
 	if (cl->showinventory)
 	{
-		cl->showinventory = false;
+		cl->showinventory = qfalse;
 		return;
 	}
 
-	cl->showinventory = true;
+	cl->showinventory = qtrue;
     InventoryMessage(ent);
-	gi.unicast(ent, true);
+	gi.unicast(ent, qtrue);
 }
 
 void
@@ -948,9 +948,9 @@ Cmd_PutAway_f(edict_t *ent)
 		return;
 	}
 
-	ent->client->showscores = false;
-	ent->client->showhelp = false;
-	ent->client->showinventory = false;
+	ent->client->showscores = qfalse;
+	ent->client->showhelp = qfalse;
+	ent->client->showinventory = qfalse;
 }
 
 int
@@ -1109,7 +1109,7 @@ Cmd_Say_f(edict_t *ent, qboolean team, qboolean arg0)
 
 	if (!((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))
 	{
-		team = false;
+		team = qfalse;
 	}
 
 	if (team)
@@ -1280,13 +1280,13 @@ ClientCommand(edict_t *ent)
 
 	if (Q_stricmp(cmd, "say") == 0)
 	{
-		Cmd_Say_f(ent, false, false);
+		Cmd_Say_f(ent, qfalse, qfalse);
 		return;
 	}
 
 	if (Q_stricmp(cmd, "say_team") == 0)
 	{
-		Cmd_Say_f(ent, true, false);
+		Cmd_Say_f(ent, qtrue, qfalse);
 		return;
 	}
 
@@ -1397,7 +1397,7 @@ ClientCommand(edict_t *ent)
 	}
 	else /* anything that doesn't match a command will be a chat */
 	{
-		Cmd_Say_f(ent, false, true);
+		Cmd_Say_f(ent, qfalse, qtrue);
 	}
 }
 

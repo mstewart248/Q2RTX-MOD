@@ -1354,6 +1354,7 @@ void CL_BlasterTrail(vec3_t start, vec3_t end)
     dec = 5;
     VectorScale(vec, 5, vec);
 
+
     // FIXME: this is a really silly way to have a loop
     while (len > 0) {
         len -= dec;
@@ -1368,8 +1369,9 @@ void CL_BlasterTrail(vec3_t start, vec3_t end)
         p->alpha = 1.0;
         p->alphavel = -1.0f / (0.3f + frand() * 0.2f);
 
-        p->color = 115;
+        p->color = 108;
 		p->brightness = cvar_pt_particle_emissive->value;
+    
 		
         for (j = 0; j < 3; j++) {
             p->org[j] = move[j] + crand();

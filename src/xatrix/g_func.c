@@ -1277,7 +1277,7 @@ door_hit_bottom(edict_t *self)
 	}
 
 	self->moveinfo.state = STATE_BOTTOM;
-	door_use_areaportals(self, false);
+	door_use_areaportals(self, qfalse);
 }
 
 void
@@ -1366,7 +1366,7 @@ door_go_up(edict_t *self, edict_t *activator)
 	}
 
 	G_UseTargets(self, activator);
-	door_use_areaportals(self, true);
+	door_use_areaportals(self, qtrue);
 }
 
 void
@@ -1553,7 +1553,7 @@ Think_SpawnDoorTrigger(edict_t *ent)
 
 	if (ent->spawnflags & DOOR_START_OPEN)
 	{
-		door_use_areaportals(ent, true);
+		door_use_areaportals(ent, qtrue);
 	}
 
 	Think_CalcMoveSpeed(ent);
@@ -2199,7 +2199,7 @@ train_next(edict_t *self)
 	vec3_t dest;
 	qboolean first;
 
-	first = true;
+	first = qtrue;
 
 again:
 
@@ -2228,7 +2228,7 @@ again:
 			return;
 		}
 
-		first = false;
+		first = qfalse;
 		VectorSubtract(ent->s.origin, self->mins, self->s.origin);
 		VectorCopy(self->s.origin, self->s.old_origin);
 		self->s.event = EV_OTHER_TELEPORT;
@@ -2691,7 +2691,7 @@ door_secret_use(edict_t *self, edict_t *other /* unused */, edict_t *activator /
 	}
 
 	Move_Calc(self, self->pos1, door_secret_move1);
-	door_use_areaportals(self, true);
+	door_use_areaportals(self, qtrue);
 }
 
 void
@@ -2782,7 +2782,7 @@ door_secret_done(edict_t *self)
 		self->takedamage = DAMAGE_YES;
 	}
 
-	door_use_areaportals(self, false);
+	door_use_areaportals(self, qfalse);
 }
 
 void

@@ -317,7 +317,7 @@ visible(edict_t *self, edict_t *other)
 
 	if (!self || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	VectorCopy(self->s.origin, spot1);
@@ -328,10 +328,10 @@ visible(edict_t *self, edict_t *other)
 
 	if (trace.fraction == 1.0)
 	{
-		return true;
+		return qtrue;
 	}
 
-	return false;
+	return qfalse;
 }
 
 /*
@@ -347,7 +347,7 @@ infront(edict_t *self, edict_t *other)
 
 	if (!self || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	AngleVectors(self->s.angles, forward, NULL, NULL);
@@ -357,10 +357,10 @@ infront(edict_t *self, edict_t *other)
 
 	if (dot > 0.3)
 	{
-		return true;
+		return qtrue;
 	}
 
-	return false;
+	return qfalse;
 }
 
 /* ============================================================================ */
@@ -471,25 +471,25 @@ FindTarget(edict_t *self)
 
 	if (!self)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (self->monsterinfo.aiflags & AI_GOOD_GUY)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* if we're going to a combat point, just proceed */
 	if (self->monsterinfo.aiflags & AI_COMBAT_POINT)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* if the first spawnflag bit is set, the
 	   monster will only wake up on really seeing
 	   the player, not another monster getting angry
 	   or hearing something */
-	heardit = false;
+	heardit = qfalse;
 
 	if ((level.sight_entity_framenum >= (level.framenum - 1)) &&
 		!(self->spawnflags & 1))
@@ -498,20 +498,20 @@ FindTarget(edict_t *self)
 
 		if (client->enemy == self->enemy)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 	else if (level.sound_entity_framenum >= (level.framenum - 1))
 	{
 		client = level.sound_entity;
-		heardit = true;
+		heardit = qtrue;
 	}
 	else if (!(self->enemy) &&
 			 (level.sound2_entity_framenum >= (level.framenum - 1)) &&
 			 !(self->spawnflags & 1))
 	{
 		client = level.sound2_entity;
-		heardit = true;
+		heardit = qtrue;
 	}
 	else
 	{
@@ -519,50 +519,50 @@ FindTarget(edict_t *self)
 
 		if (!client)
 		{
-			return false; /* no clients to get mad at */
+			return qfalse; /* no clients to get mad at */
 		}
 	}
 
 	/* if the entity went away, forget it */
 	if (!client->inuse)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (client == self->enemy)
 	{
-		return true;
+		return qtrue;
 	}
 
 	if (client->client)
 	{
 		if (client->flags & FL_NOTARGET)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 	else if (client->svflags & SVF_MONSTER)
 	{
 		if (!client->enemy)
 		{
-			return false;
+			return qfalse;
 		}
 
 		if (client->enemy->flags & FL_NOTARGET)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 	else if (heardit)
 	{
 		if (client->owner->flags & FL_NOTARGET)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 	else
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (!heardit)
@@ -571,32 +571,32 @@ FindTarget(edict_t *self)
 
 		if (r == RANGE_FAR)
 		{
-			return false;
+			return qfalse;
 		}
 
 		/* is client in an spot too dark to be seen? */
 		if (client->light_level <= 5)
 		{
-			return false;
+			return qfalse;
 		}
 
 		if (!visible(self, client))
 		{
-			return false;
+			return qfalse;
 		}
 
 		if (r == RANGE_NEAR)
 		{
 			if ((client->show_hostile < (int)level.time) && !infront(self, client))
 			{
-				return false;
+				return qfalse;
 			}
 		}
 		else if (r == RANGE_MID)
 		{
 			if (!infront(self, client))
 			{
-				return false;
+				return qfalse;
 			}
 		}
 
@@ -613,7 +613,7 @@ FindTarget(edict_t *self)
 				if (!self->enemy->client)
 				{
 					self->enemy = NULL;
-					return false;
+					return qfalse;
 				}
 			}
 		}
@@ -626,14 +626,14 @@ FindTarget(edict_t *self)
 		{
 			if (!visible(self, client))
 			{
-				return false;
+				return qfalse;
 			}
 		}
 		else
 		{
 			if (!gi.inPHS(self->s.origin, client->s.origin))
 			{
-				return false;
+				return qfalse;
 			}
 		}
 
@@ -641,7 +641,7 @@ FindTarget(edict_t *self)
 
 		if (VectorLength(temp) > 1000) /* too far to hear */
 		{
-			return false;
+			return qfalse;
 		}
 
 		/* check area portals - if they are different
@@ -650,7 +650,7 @@ FindTarget(edict_t *self)
 		{
 			if (!gi.AreasConnected(self->areanum, client->areanum))
 			{
-				return false;
+				return qfalse;
 			}
 		}
 
@@ -671,7 +671,7 @@ FindTarget(edict_t *self)
 		self->monsterinfo.sight(self, self->enemy);
 	}
 
-	return true;
+	return qtrue;
 }
 
 /* ============================================================================= */
@@ -683,17 +683,17 @@ FacingIdeal(edict_t *self)
 
 	if (!self)
 	{
-		return false;
+		return qfalse;
 	}
 
 	delta = anglemod(self->s.angles[YAW] - self->ideal_yaw);
 
 	if ((delta > 45) && (delta < 315))
 	{
-		return false;
+		return qfalse;
 	}
 
-	return true;
+	return qtrue;
 }
 
 /* ============================================================================= */
@@ -707,7 +707,7 @@ M_CheckAttack(edict_t *self)
 
 	if (!self || !self->enemy || !self->enemy->inuse)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (self->enemy->health > 0)
@@ -725,7 +725,7 @@ M_CheckAttack(edict_t *self)
 		/* do we have a clear shot? */
 		if (tr.ent != self->enemy)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 
@@ -735,7 +735,7 @@ M_CheckAttack(edict_t *self)
 		/* don't always melee in easy mode */
 		if ((skill->value == 0) && (rand() & 3))
 		{
-			return false;
+			return qfalse;
 		}
 
 		if (self->monsterinfo.melee)
@@ -747,23 +747,23 @@ M_CheckAttack(edict_t *self)
 			self->monsterinfo.attack_state = AS_MISSILE;
 		}
 
-		return true;
+		return qtrue;
 	}
 
 	/* missile attack */
 	if (!self->monsterinfo.attack)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (level.time < self->monsterinfo.attack_finished)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (enemy_range == RANGE_FAR)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (self->monsterinfo.aiflags & AI_STAND_GROUND)
@@ -784,7 +784,7 @@ M_CheckAttack(edict_t *self)
 	}
 	else
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (skill->value == 0)
@@ -800,7 +800,7 @@ M_CheckAttack(edict_t *self)
 	{
 		self->monsterinfo.attack_state = AS_MISSILE;
 		self->monsterinfo.attack_finished = level.time + 2 * random();
-		return true;
+		return qtrue;
 	}
 
 	if (self->flags & FL_FLY)
@@ -815,7 +815,7 @@ M_CheckAttack(edict_t *self)
 		}
 	}
 
-	return false;
+	return qfalse;
 }
 
 /*
@@ -914,9 +914,9 @@ ai_checkattack(edict_t *self, float dist)
 
 	if (!self || !self->enemy || !self->enemy->inuse)
 	{
-		enemy_vis = false;
+		enemy_vis = qfalse;
 
-		return false;
+		return qfalse;
 	}
 
 	/* this causes monsters to run blindly
@@ -925,7 +925,7 @@ ai_checkattack(edict_t *self, float dist)
 	{
 		if (self->monsterinfo.aiflags & AI_COMBAT_POINT)
 		{
-			return false;
+			return qfalse;
 		}
 
 		if ((self->monsterinfo.aiflags & AI_SOUND_TARGET) && !visible(self, self->goalentity))
@@ -954,25 +954,25 @@ ai_checkattack(edict_t *self, float dist)
 			else
 			{
 				self->show_hostile = (int)level.time + 1;
-				return false;
+				return qfalse;
 			}
 		}
 	}
 
-	enemy_vis = false;
+	enemy_vis = qfalse;
 
 	/* see if the enemy is dead */
-	hesDeadJim = false;
+	hesDeadJim = qfalse;
 
 	if ((!self->enemy) || (!self->enemy->inuse))
 	{
-		hesDeadJim = true;
+		hesDeadJim = qtrue;
 	}
 	else if (self->monsterinfo.aiflags & AI_MEDIC)
 	{
 		if (self->enemy->health > 0)
 		{
-			hesDeadJim = true;
+			hesDeadJim = qtrue;
 			self->monsterinfo.aiflags &= ~AI_MEDIC;
 		}
 	}
@@ -982,14 +982,14 @@ ai_checkattack(edict_t *self, float dist)
 		{
 			if (self->enemy->health <= -80)
 			{
-				hesDeadJim = true;
+				hesDeadJim = qtrue;
 			}
 		}
 		else
 		{
 			if (self->enemy->health <= 0)
 			{
-				hesDeadJim = true;
+				hesDeadJim = qtrue;
 			}
 		}
 	}
@@ -1021,7 +1021,7 @@ ai_checkattack(edict_t *self, float dist)
 				self->monsterinfo.stand(self);
 			}
 
-			return true;
+			return qtrue;
 		}
 	}
 
@@ -1040,7 +1040,7 @@ ai_checkattack(edict_t *self, float dist)
 	{
 		if (FindTarget(self))
 		{
-			return true;
+			return qtrue;
 		}
 	}
 
@@ -1055,20 +1055,20 @@ ai_checkattack(edict_t *self, float dist)
 	if (self->monsterinfo.attack_state == AS_MISSILE)
 	{
 		ai_run_missile(self);
-		return true;
+		return qtrue;
 	}
 
 	if (self->monsterinfo.attack_state == AS_MELEE)
 	{
 		ai_run_melee(self);
-		return true;
+		return qtrue;
 	}
 
 	/* if enemy is not currently
 	   visible, we will never attack */
 	if (!enemy_vis)
 	{
-		return false;
+		return qfalse;
 	}
 
 	return self->monsterinfo.checkattack(self);
@@ -1154,14 +1154,14 @@ ai_run(edict_t *self, float dist)
 	tempgoal = G_Spawn();
 	self->goalentity = tempgoal;
 
-	new = false;
+	new = qfalse;
 
 	if (!(self->monsterinfo.aiflags & AI_LOST_SIGHT))
 	{
 		/* just lost sight of the player, decide where to go first */
 		self->monsterinfo.aiflags |= (AI_LOST_SIGHT | AI_PURSUIT_LAST_SEEN);
 		self->monsterinfo.aiflags &= ~(AI_PURSUE_NEXT | AI_PURSUE_TEMP);
-		new = true;
+		new = qtrue;
 	}
 
 	if (self->monsterinfo.aiflags & AI_PURSUE_NEXT)
@@ -1177,7 +1177,7 @@ ai_run(edict_t *self, float dist)
 			marker = NULL;
 			VectorCopy(self->monsterinfo.saved_goal,
 					self->monsterinfo.last_sighting);
-			new = true;
+			new = qtrue;
 		}
 		else if (self->monsterinfo.aiflags & AI_PURSUIT_LAST_SEEN)
 		{
@@ -1194,7 +1194,7 @@ ai_run(edict_t *self, float dist)
 			VectorCopy(marker->s.origin, self->monsterinfo.last_sighting);
 			self->monsterinfo.trail_time = marker->timestamp;
 			self->s.angles[YAW] = self->ideal_yaw = marker->s.angles[YAW];
-			new = true;
+			new = qtrue;
 		}
 	}
 

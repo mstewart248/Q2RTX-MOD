@@ -878,7 +878,7 @@ static void CL_AddPacketEntities(void)
                     V_AddLight(ent.origin, 200, 0.1f, 0.4f, 0.12f);
                 } else {
                     CL_BlasterTrail(cent->lerp_origin, ent.origin);
-                    V_AddLight(ent.origin, 200, 0.5f, 0.3f, 0.5f);
+                    V_AddLight(ent.origin, 200, 0.9f, 0.7f, 0.9f);
                 }
             } else if (effects & EF_HYPERBLASTER) {
 				if (effects & EF_TRACKER) {

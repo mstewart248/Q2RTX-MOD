@@ -449,7 +449,7 @@ parasite_drain_attack_ok(vec3_t start, vec3_t end)
 
 	if (VectorLength(dir) > 256)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* check for min/max pitch */
@@ -462,10 +462,10 @@ parasite_drain_attack_ok(vec3_t start, vec3_t end)
 
 	if (fabs(angles[0]) > 30)
 	{
-		return false;
+		return qfalse;
 	}
 
-	return true;
+	return qtrue;
 }
 
 void

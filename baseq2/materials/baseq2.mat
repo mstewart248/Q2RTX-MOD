@@ -13805,3 +13805,6 @@ textures/test/num_space:
 	texture_base textures/test/num_space.wal
 	base_factor 2.5
 
+textures/swamp/ceil_1_1:
+	texture_emissive textures/swamp/ceil_1_1_light.tga
+	base_factor 2.5

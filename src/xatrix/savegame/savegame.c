@@ -795,7 +795,7 @@ WriteGame(const char *filename, qboolean autosave)
 
 	game.autosaved = autosave;
 	fwrite(&game, sizeof(game), 1, f);
-	game.autosaved = false;
+	game.autosaved = qfalse;
 
 	for (i = 0; i < game.maxclients; i++)
 	{
@@ -1155,7 +1155,7 @@ ReadLevel(const char *filename)
 	{
 		ent = &g_edicts[i + 1];
 		ent->client = game.clients + i;
-		ent->client->pers.connected = false;
+		ent->client->pers.connected = qfalse;
 	}
 
 	/* do any load time things at this point */

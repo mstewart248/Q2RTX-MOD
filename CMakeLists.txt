@@ -69,6 +69,14 @@ if (CMAKE_SIZEOF_VOID_P EQUAL 8)
     set( IS_64_BIT 1 )
 endif ()
 
+if (MSVC_VERSION GREATER_EQUAL "1900")
+    include(CheckCXXCompilerFlag)
+    CHECK_CXX_COMPILER_FLAG("/std:c++latest" _cpp_latest_flag_supported)
+    if (_cpp_latest_flag_supported)
+        add_compile_options("/std:c++latest")
+    endif()
+endif()
+
 IF(MSVC)
     macro(replace_msvcrt var value)
         # Remove the existing /MD-type flags, if any
@@ -84,6 +92,7 @@ IF(MSVC)
 
     # Enable multi-processor compilation when using MSBuild
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
+
 
 ELSEIF(CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
 

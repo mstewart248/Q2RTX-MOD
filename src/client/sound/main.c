@@ -827,7 +827,7 @@ void S_StartSound(const vec3_t origin, int entnum, int entchannel, qhandle_t hSf
         return;
     }
 
-    if (sfx->name[0] == '*') {
+     if (sfx->name[0] == '*') {
         sfx = S_RegisterSexedSound(entnum, sfx->name);
         if (!sfx)
             return;

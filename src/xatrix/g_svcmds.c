@@ -71,7 +71,7 @@ StringToFilter(char *s, ipfilter_t *f)
 
 	if (!s || !f)
 	{
-		return false;
+		return qfalse;
 	}
 
 	for (i = 0; i < 4; i++)
@@ -85,7 +85,7 @@ StringToFilter(char *s, ipfilter_t *f)
 		if ((*s < '0') || (*s > '9'))
 		{
 			gi.cprintf(NULL, PRINT_HIGH, "Bad filter address: %s\n", s);
-			return false;
+			return qfalse;
 		}
 
 		j = 0;
@@ -114,52 +114,37 @@ StringToFilter(char *s, ipfilter_t *f)
 	f->mask = *(unsigned *)m;
 	f->compare = *(unsigned *)b;
 
-	return true;
+	return qtrue;
 }
 
-qboolean
-SV_FilterPacket(char *from)
+qboolean SV_FilterPacket(char* from)
 {
-	int i;
-	unsigned in;
-	byte m[4];
-	char *p;
-
-	if (!from)
-	{
-		return false;
-	}
+	int     i;
+	unsigned    in;
+	union {
+		byte b[4];
+		unsigned u32;
+	} m;
+	char* p;
 
 	i = 0;
 	p = from;
-
-	while (*p && i < 4)
-	{
-		m[i] = 0;
-
-		while (*p >= '0' && *p <= '9')
-		{
-			m[i] = m[i] * 10 + (*p - '0');
+	while (*p && i < 4) {
+		m.b[i] = 0;
+		while (*p >= '0' && *p <= '9') {
+			m.b[i] = m.b[i] * 10 + (*p - '0');
 			p++;
 		}
-
-		if (!*p || (*p == ':'))
-		{
+		if (!*p || *p == ':')
 			break;
-		}
-
 		i++, p++;
 	}
 
-	in = *(unsigned *)m;
+	in = m.u32;
 
 	for (i = 0; i < numipfilters; i++)
-	{
 		if ((in & ipfilters[i].mask) == ipfilters[i].compare)
-		{
 			return (int)filterban->value;
-		}
-	}
 
 	return (int)!filterban->value;
 }

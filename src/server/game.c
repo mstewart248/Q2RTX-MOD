@@ -875,7 +875,7 @@ void SV_InitGameProgs(void)
         Com_Error(ERR_DROP, "Game library returned NULL exports");
     }
 
-    if (ge->apiversion != GAME_API_VERSION) {
+    if (ge->apiversion != GAME_API_VERSION && ge->apiversion != GAME_API_VERSION_RERELEASE) {
         Com_Error(ERR_DROP, "Game library is version %d, expected %d",
                   ge->apiversion, GAME_API_VERSION);
     }

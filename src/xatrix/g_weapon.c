@@ -63,12 +63,12 @@ fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
 
 	if (!self)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (!self->enemy)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* see if enemy is in range */
@@ -77,7 +77,7 @@ fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
 
 	if (range > aim[0])
 	{
-		return false;
+		return qfalse;
 	}
 
 	if ((aim[1] > self->mins[0]) && (aim[1] < self->maxs[0]))
@@ -106,7 +106,7 @@ fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
 	{
 		if (!tr.ent->takedamage)
 		{
-			return false;
+			return qfalse;
 		}
 
 		/* if it will hit any client/monster then hit the one we wanted to hit */
@@ -128,7 +128,7 @@ fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
 
 	if (!(tr.ent->svflags & SVF_MONSTER) && (!tr.ent->client))
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* do our special form of knockback here */
@@ -142,7 +142,7 @@ fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
 		self->enemy->groundentity = NULL;
 	}
 
-	return true;
+	return qtrue;
 }
 
 /*
@@ -159,7 +159,7 @@ fire_lead(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick,
 	float r;
 	float u;
 	vec3_t water_start;
-	qboolean water = false;
+	qboolean water = qfalse;
 	int content_mask = MASK_SHOT | MASK_WATER;
 
 	if (!self)
@@ -182,7 +182,7 @@ fire_lead(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick,
 
 		if (gi.pointcontents(start) & MASK_WATER)
 		{
-			water = true;
+			water = qtrue;
 			VectorCopy(start, water_start);
 			content_mask &= ~MASK_WATER;
 		}
@@ -194,7 +194,7 @@ fire_lead(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick,
 		{
 			int color;
 
-			water = true;
+			water = qtrue;
 			VectorCopy(tr.endpos, water_start);
 
 			if (!VectorCompare(start, tr.endpos))
@@ -893,7 +893,7 @@ fire_rail(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick)
 	VectorMA(start, 8192, aimdir, end);
 	VectorCopy(start, from);
 	ignore = self;
-	water = false;
+	water = qfalse;
 	mask = MASK_SHOT | CONTENTS_SLIME | CONTENTS_LAVA;
 
 	while (ignore)
@@ -903,7 +903,7 @@ fire_rail(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick)
 		if (tr.contents & (CONTENTS_SLIME | CONTENTS_LAVA))
 		{
 			mask &= ~(CONTENTS_SLIME | CONTENTS_LAVA);
-			water = true;
+			water = qtrue;
 		}
 		else
 		{

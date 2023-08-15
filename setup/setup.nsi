@@ -75,6 +75,12 @@ Section "Engine Files (Required)" Section_Game
 	File "${SOURCE_DIR}\baseq2\gamex86.dll"
 	File "${SOURCE_DIR}\baseq2\gamex86.pdb"
 
+	SetOutPath "$INSTDIR\rerelease"
+	File "${SOURCE_DIR}\rerelease\gamex86_64.dll"
+	File "${SOURCE_DIR}\rerelease\gamex86_64.pdb"
+	File "${SOURCE_DIR}\rerelease\gamex86.dll"
+	File "${SOURCE_DIR}\rerelease\gamex86.pdb"
+
 	SetCompress OFF
 	File "${SOURCE_DIR}\baseq2\shaders.pkz"
 	File "${SOURCE_DIR}\baseq2\blue_noise.pkz"

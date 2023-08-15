@@ -182,7 +182,7 @@ Pickup_Powerup(edict_t *ent, edict_t *other)
 
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	quantity = other->client->pers.inventory[ITEM_INDEX(ent->item)];
@@ -190,12 +190,12 @@ Pickup_Powerup(edict_t *ent, edict_t *other)
 	if (((skill->value == 1) &&
 		 (quantity >= 2)) || ((skill->value >= 2) && (quantity >= 1)))
 	{
-		return false;
+		return qfalse;
 	}
 
 	if ((coop->value) && (ent->item->flags & IT_STAY_COOP) && (quantity > 0))
 	{
-		return false;
+		return qfalse;
 	}
 
 	other->client->pers.inventory[ITEM_INDEX(ent->item)]++;
@@ -235,7 +235,7 @@ Pickup_Powerup(edict_t *ent, edict_t *other)
 		}
 	}
 
-	return true;
+	return qtrue;
 }
 
 void
@@ -258,7 +258,7 @@ Pickup_Adrenaline(edict_t *ent, edict_t *other)
 {
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (!deathmatch->value)
@@ -276,7 +276,7 @@ Pickup_Adrenaline(edict_t *ent, edict_t *other)
 		SetRespawn(ent, ent->item->quantity);
 	}
 
-	return true;
+	return qtrue;
 }
 
 qboolean
@@ -284,7 +284,7 @@ Pickup_AncientHead(edict_t *ent, edict_t *other)
 {
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	other->max_health += 2;
@@ -294,7 +294,7 @@ Pickup_AncientHead(edict_t *ent, edict_t *other)
 		SetRespawn(ent, ent->item->quantity);
 	}
 
-	return true;
+	return qtrue;
 }
 
 qboolean
@@ -305,7 +305,7 @@ Pickup_Bandolier(edict_t *ent, edict_t *other)
 
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (other->client->pers.max_bullets < 250)
@@ -368,7 +368,7 @@ Pickup_Bandolier(edict_t *ent, edict_t *other)
 		SetRespawn(ent, ent->item->quantity);
 	}
 
-	return true;
+	return qtrue;
 }
 
 qboolean
@@ -379,7 +379,7 @@ Pickup_Pack(edict_t *ent, edict_t *other)
 
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (other->client->pers.max_bullets < 300)
@@ -527,7 +527,7 @@ Pickup_Pack(edict_t *ent, edict_t *other)
 		SetRespawn(ent, ent->item->quantity);
 	}
 
-	return true;
+	return qtrue;
 }
 
 /* ====================================================================== */
@@ -697,7 +697,7 @@ Pickup_Key(edict_t *ent, edict_t *other)
 {
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (coop->value)
@@ -707,7 +707,7 @@ Pickup_Key(edict_t *ent, edict_t *other)
 			if (other->client->pers.power_cubes &
 				((ent->spawnflags & 0x0000ff00) >> 8))
 			{
-				return false;
+				return qfalse;
 			}
 
 			other->client->pers.inventory[ITEM_INDEX(ent->item)]++;
@@ -718,17 +718,17 @@ Pickup_Key(edict_t *ent, edict_t *other)
 		{
 			if (other->client->pers.inventory[ITEM_INDEX(ent->item)])
 			{
-				return false;
+				return qfalse;
 			}
 
 			other->client->pers.inventory[ITEM_INDEX(ent->item)] = 1;
 		}
 
-		return true;
+		return qtrue;
 	}
 
 	other->client->pers.inventory[ITEM_INDEX(ent->item)]++;
-	return true;
+	return qtrue;
 }
 
 /* ====================================================================== */
@@ -741,12 +741,12 @@ Add_Ammo(edict_t *ent, gitem_t *item, int count)
 
 	if (!ent || !item)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (!ent->client)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (item->tag == AMMO_BULLETS)
@@ -783,14 +783,14 @@ Add_Ammo(edict_t *ent, gitem_t *item, int count)
 	}
 	else
 	{
-		return false;
+		return qfalse;
 	}
 
 	index = ITEM_INDEX(item);
 
 	if (ent->client->pers.inventory[index] == max)
 	{
-		return false;
+		return qfalse;
 	}
 
 	ent->client->pers.inventory[index] += count;
@@ -800,7 +800,7 @@ Add_Ammo(edict_t *ent, gitem_t *item, int count)
 		ent->client->pers.inventory[index] = max;
 	}
 
-	return true;
+	return qtrue;
 }
 
 qboolean
@@ -812,7 +812,7 @@ Pickup_Ammo(edict_t *ent, edict_t *other)
 
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	weapon = (ent->item->flags & IT_WEAPON);
@@ -834,7 +834,7 @@ Pickup_Ammo(edict_t *ent, edict_t *other)
 
 	if (!Add_Ammo(other, ent->item, count))
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (weapon && !oldcount)
@@ -853,7 +853,7 @@ Pickup_Ammo(edict_t *ent, edict_t *other)
 		SetRespawn(ent, 30);
 	}
 
-	return true;
+	return qtrue;
 }
 
 void
@@ -925,14 +925,14 @@ Pickup_Health(edict_t *ent, edict_t *other)
 {
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (!(ent->style & HEALTH_IGNORE_MAX))
 	{
 		if (other->health >= other->max_health)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 
@@ -963,7 +963,7 @@ Pickup_Health(edict_t *ent, edict_t *other)
 		}
 	}
 
-	return true;
+	return qtrue;
 }
 
 /* ====================================================================== */
@@ -1011,7 +1011,7 @@ Pickup_Armor(edict_t *ent, edict_t *other)
 
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* get info on new armor */
@@ -1090,7 +1090,7 @@ Pickup_Armor(edict_t *ent, edict_t *other)
 			/* if we're already maxed out then we don't need the new armor */
 			if (other->client->pers.inventory[old_armor_index] >= newcount)
 			{
-				return false;
+				return qfalse;
 			}
 
 			/* update current armor value */
@@ -1103,7 +1103,7 @@ Pickup_Armor(edict_t *ent, edict_t *other)
 		SetRespawn(ent, 20);
 	}
 
-	return true;
+	return qtrue;
 }
 
 /* ====================================================================== */
@@ -1177,7 +1177,7 @@ Pickup_PowerArmor(edict_t *ent, edict_t *other)
 
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	quantity = other->client->pers.inventory[ITEM_INDEX(ent->item)];
@@ -1198,7 +1198,7 @@ Pickup_PowerArmor(edict_t *ent, edict_t *other)
 		}
 	}
 
-	return true;
+	return qtrue;
 }
 
 void

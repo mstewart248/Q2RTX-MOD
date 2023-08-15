@@ -1392,7 +1392,7 @@ qboolean ClientConnect(edict_t *ent, char *userinfo)
 
     // check to see if they are on the banned IP list
     value = Info_ValueForKey(userinfo, "ip");
-    if (SV_FilterPacket(value)) {
+     if (SV_FilterPacket(value)) {
         Info_SetValueForKey(userinfo, "rejmsg", "Banned.");
         return false;
     }

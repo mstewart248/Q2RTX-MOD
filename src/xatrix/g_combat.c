@@ -20,7 +20,7 @@ CanDamage(edict_t *targ, edict_t *inflictor)
 
 	if (!targ || !inflictor)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* bmodels need special checking because their origin is 0,0,0 */
@@ -33,15 +33,15 @@ CanDamage(edict_t *targ, edict_t *inflictor)
 
 		if (trace.fraction == 1.0)
 		{
-			return true;
+			return qtrue;
 		}
 
 		if (trace.ent == targ)
 		{
-			return true;
+			return qtrue;
 		}
 
-		return false;
+		return qfalse;
 	}
 
 	trace = gi.trace(inflictor->s.origin, vec3_origin, vec3_origin,
@@ -49,7 +49,7 @@ CanDamage(edict_t *targ, edict_t *inflictor)
 
 	if (trace.fraction == 1.0)
 	{
-		return true;
+		return qtrue;
 	}
 
 	VectorCopy(targ->s.origin, dest);
@@ -60,7 +60,7 @@ CanDamage(edict_t *targ, edict_t *inflictor)
 
 	if (trace.fraction == 1.0)
 	{
-		return true;
+		return qtrue;
 	}
 
 	VectorCopy(targ->s.origin, dest);
@@ -71,7 +71,7 @@ CanDamage(edict_t *targ, edict_t *inflictor)
 
 	if (trace.fraction == 1.0)
 	{
-		return true;
+		return qtrue;
 	}
 
 	VectorCopy(targ->s.origin, dest);
@@ -82,7 +82,7 @@ CanDamage(edict_t *targ, edict_t *inflictor)
 
 	if (trace.fraction == 1.0)
 	{
-		return true;
+		return qtrue;
 	}
 
 	VectorCopy(targ->s.origin, dest);
@@ -93,10 +93,10 @@ CanDamage(edict_t *targ, edict_t *inflictor)
 
 	if (trace.fraction == 1.0)
 	{
-		return true;
+		return qtrue;
 	}
 
-	return false;
+	return qfalse;
 }
 
 void
@@ -635,7 +635,7 @@ T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, vec3_t dir,
 	asave += save;
 
 	/* team damage avoidance */
-	if (!(dflags & DAMAGE_NO_PROTECTION) && false)
+	if (!(dflags & DAMAGE_NO_PROTECTION) && qfalse)
 	{
 		return;
 	}

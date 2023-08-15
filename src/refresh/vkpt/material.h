@@ -24,7 +24,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <shared/list.h>
 #include <refresh/refresh.h>
 
-#define MAX_PBR_MATERIALS 4096
+#define MAX_PBR_MATERIALS 8192
 
 typedef struct image_s image_t;
 

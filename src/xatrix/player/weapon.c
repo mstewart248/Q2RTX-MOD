@@ -136,7 +136,7 @@ Pickup_Weapon(edict_t *ent, edict_t *other)
 
 	if (!ent || !other)
 	{
-		return false;
+		return qfalse;
 	}
 
 	index = ITEM_INDEX(ent->item);
@@ -146,7 +146,7 @@ Pickup_Weapon(edict_t *ent, edict_t *other)
 	{
 		if (!(ent->spawnflags & (DROPPED_ITEM | DROPPED_PLAYER_ITEM)))
 		{
-			return false; /* leave the weapon for others to pickup */
+			return qfalse; /* leave the weapon for others to pickup */
 		}
 	}
 
@@ -197,7 +197,7 @@ Pickup_Weapon(edict_t *ent, edict_t *other)
 		other->client->newweapon = ent->item;
 	}
 
-	return true;
+	return qtrue;
 }
 
 /*
@@ -218,7 +218,7 @@ ChangeWeapon(edict_t *ent)
 	{
 		ent->client->grenade_time = level.time;
 		ent->client->weapon_sound = 0;
-		weapon_grenade_fire(ent, false);
+		weapon_grenade_fire(ent, qfalse);
 		ent->client->grenade_time = 0;
 	}
 
@@ -865,8 +865,8 @@ Weapon_Grenade(edict_t *ent)
 				(level.time >= ent->client->grenade_time))
 			{
 				ent->client->weapon_sound = 0;
-				weapon_grenade_fire(ent, true);
-				ent->client->grenade_blew_up = true;
+				weapon_grenade_fire(ent, qtrue);
+				ent->client->grenade_blew_up = qtrue;
 			}
 
 			if (ent->client->buttons & BUTTON_ATTACK)
@@ -879,7 +879,7 @@ Weapon_Grenade(edict_t *ent)
 				if (level.time >= ent->client->grenade_time)
 				{
 					ent->client->ps.gunframe = 15;
-					ent->client->grenade_blew_up = false;
+					ent->client->grenade_blew_up = qfalse;
 				}
 				else
 				{
@@ -891,7 +891,7 @@ Weapon_Grenade(edict_t *ent)
 		if (ent->client->ps.gunframe == 12)
 		{
 			ent->client->weapon_sound = 0;
-			weapon_grenade_fire(ent, false);
+			weapon_grenade_fire(ent, qfalse);
 		}
 
 		if ((ent->client->ps.gunframe == 15) &&
@@ -1112,7 +1112,7 @@ Weapon_Blaster_Fire(edict_t *ent)
 		damage = 10;
 	}
 
-	Blaster_Fire(ent, vec3_origin, damage, false, EF_BLASTER);
+	Blaster_Fire(ent, vec3_origin, damage, qfalse, EF_BLASTER);
 	ent->client->ps.gunframe++;
 }
 
@@ -1195,7 +1195,7 @@ Weapon_HyperBlaster_Fire(edict_t *ent)
 				damage = 20;
 			}
 
-			Blaster_Fire(ent, offset, damage, true, effect);
+			Blaster_Fire(ent, offset, damage, qtrue, effect);
 
 			if (!((int)dmflags->value & DF_INFINITE_AMMO))
 			{
@@ -2201,8 +2201,8 @@ Weapon_Trap(edict_t *ent)
 				(level.time >= ent->client->grenade_time))
 			{
 				ent->client->weapon_sound = 0;
-				weapon_trap_fire(ent, true);
-				ent->client->grenade_blew_up = true;
+				weapon_trap_fire(ent, qtrue);
+				ent->client->grenade_blew_up = qtrue;
 			}
 
 			if (ent->client->buttons & BUTTON_ATTACK)
@@ -2215,7 +2215,7 @@ Weapon_Trap(edict_t *ent)
 				if (level.time >= ent->client->grenade_time)
 				{
 					ent->client->ps.gunframe = 15;
-					ent->client->grenade_blew_up = false;
+					ent->client->grenade_blew_up = qfalse;
 				}
 				else
 				{
@@ -2227,7 +2227,7 @@ Weapon_Trap(edict_t *ent)
 		if (ent->client->ps.gunframe == 12)
 		{
 			ent->client->weapon_sound = 0;
-			weapon_trap_fire(ent, false);
+			weapon_trap_fire(ent, qfalse);
 
 			if (ent->client->pers.inventory[ent->client->ammo_index] == 0)
 			{

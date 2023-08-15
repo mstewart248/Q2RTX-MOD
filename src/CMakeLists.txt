@@ -87,6 +87,152 @@ SET(HEADERS_BASEQ2
 	baseq2/m_tank.h
 )
 
+SET(SRC_RERELEASE
+	rerelease/cg_main.cpp
+	rerelease/cg_screen.cpp
+	rerelease/g_ai.cpp
+	rerelease/g_chase.cpp
+	rerelease/g_cmds.cpp
+	rerelease/g_combat.cpp
+	rerelease/g_func.cpp
+	rerelease/g_items.cpp
+	rerelease/g_main.cpp
+	rerelease/g_misc.cpp
+	rerelease/g_monster.cpp
+	rerelease/g_phys.cpp
+	rerelease/g_save.cpp
+	rerelease/g_spawn.cpp
+	rerelease/g_svcmds.cpp
+	rerelease/g_target.cpp
+	rerelease/g_trigger.cpp
+	rerelease/g_turret.cpp
+	rerelease/g_utils.cpp
+	rerelease/g_weapon.cpp
+	rerelease/m_actor.cpp
+	rerelease/m_arachnid.cpp
+	rerelease/m_berserk.cpp
+	rerelease/m_boss2.cpp
+	rerelease/m_boss3.cpp
+	rerelease/m_boss31.cpp
+	rerelease/m_boss32.cpp
+	rerelease/m_brain.cpp
+	rerelease/m_chick.cpp
+	rerelease/m_flipper.cpp
+	rerelease/m_float.cpp
+	rerelease/m_flyer.cpp
+	rerelease/m_gladiator.cpp
+	rerelease/m_guardian.cpp
+	rerelease/m_guncmdr.cpp
+	rerelease/m_gunner.cpp
+	rerelease/m_hover.cpp
+	rerelease/m_infantry.cpp
+	rerelease/m_insane.cpp
+	rerelease/m_medic.cpp
+	rerelease/m_move.cpp
+	rerelease/m_mutant.cpp
+	rerelease/m_parasite.cpp
+	rerelease/m_shambler.cpp
+	rerelease/m_soldier.cpp
+	rerelease/m_supertank.cpp
+	rerelease/m_tank.cpp
+	rerelease/p_client.cpp
+	rerelease/p_hud.cpp
+	rerelease/p_move.cpp
+	rerelease/p_trail.cpp
+	rerelease/p_view.cpp
+	rerelease/p_weapon.cpp
+	rerelease/q_std.cpp
+	rerelease/bots/bot_debug.cpp
+	rerelease/bots/bot_exports.cpp
+	rerelease/bots/bot_think.cpp
+	rerelease/bots/bot_utils.cpp
+	rerelease/ctf/g_ctf.cpp
+	rerelease/ctf/p_ctf_menu.cpp
+	rerelease/rogue/g_rogue_combat.cpp
+	rerelease/rogue/g_rogue_func.cpp
+	rerelease/rogue/g_rogue_items.cpp
+	rerelease/rogue/g_rogue_misc.cpp
+	rerelease/rogue/g_rogue_monster.cpp
+	rerelease/rogue/g_rogue_newai.cpp
+	rerelease/rogue/g_rogue_newdm.cpp
+	rerelease/rogue/g_rogue_newfnc.cpp
+	rerelease/rogue/g_rogue_newtarg.cpp
+	rerelease/rogue/g_rogue_newtrig.cpp
+	rerelease/rogue/g_rogue_newweap.cpp
+	rerelease/rogue/g_rogue_phys.cpp
+	rerelease/rogue/g_rogue_spawn.cpp
+	rerelease/rogue/g_rogue_sphere.cpp
+	rerelease/rogue/g_rogue_utils.cpp
+	rerelease/rogue/m_rogue_carrier.cpp
+	rerelease/rogue/m_rogue_stalker.cpp
+	rerelease/rogue/m_rogue_turret.cpp
+	rerelease/rogue/m_rogue_widow.cpp
+	rerelease/rogue/m_rogue_widow2.cpp
+	rerelease/rogue/p_rogue_weapon.cpp
+	rerelease/rogue/rogue_dm_ball.cpp
+	rerelease/rogue/rogue_dm_tag.cpp
+	rerelease/xatrix/g_xatrix_func.cpp
+	rerelease/xatrix/g_xatrix_items.cpp
+	rerelease/xatrix/g_xatrix_misc.cpp
+	rerelease/xatrix/g_xatrix_monster.cpp
+	rerelease/xatrix/g_xatrix_target.cpp
+	rerelease/xatrix/g_xatrix_weapon.cpp
+	rerelease/xatrix/m_xatrix_fixbot.cpp
+	rerelease/xatrix/m_xatrix_gekk.cpp
+	rerelease/xatrix/p_xatrix_weapon.cpp
+)
+
+SET(HEADERS_RERELEASE
+	rerelease/game.h
+	rerelease/g_local.h
+	rerelease/bg_local.h
+	rerelease/cg_local.h		
+	rerelease/g_statusbar.h
+	rerelease/m_actor.h
+	rerelease/m_arachnid.h
+	rerelease/m_berserk.h
+	rerelease/m_boss2.h
+	rerelease/m_boss31.h
+	rerelease/m_boss32.h
+	rerelease/m_brain.h
+	rerelease/m_chick.h
+	rerelease/m_flash.h
+	rerelease/m_flipper.h
+	rerelease/m_float.h
+	rerelease/m_flyer.h
+	rerelease/m_gladiator.h
+	rerelease/m_guardian.h
+	rerelease/m_gunner.h
+	rerelease/m_hover.h
+	rerelease/m_infantry.h
+	rerelease/m_insane.h
+	rerelease/m_medic.h
+	rerelease/m_mutant.h
+	rerelease/m_parasite.h
+	rerelease/m_player.h
+	rerelease/m_rider.h
+	rerelease/m_shambler.h
+	rerelease/m_soldier.h
+	rerelease/m_supertank.h
+	rerelease/m_tank.h
+	rerelease/q_std.h
+	rerelease/q_vec3.h
+	rerelease/bots/bot_debug.h
+	rerelease/bots/bot_exports.h
+	rerelease/bots/bot_includes.h
+	rerelease/bots/bot_think.h
+	rerelease/bots/bot_utils.h
+	rerelease/ctf/g_ctf.h
+	rerelease/ctf/p_ctf_menu.h
+	rerelease/rogue/m_rogue_carrier.h
+	rerelease/rogue/m_rogue_stalker.h
+	rerelease/rogue/m_rogue_turret.h
+	rerelease/rogue/m_rogue_widow.h
+	rerelease/rogue/m_rogue_widow2.h
+	rerelease/xatrix/m_xatrix_fixbot.h
+	rerelease/xatrix/m_xatrix_gekk.h
+)
+
 SET(SRC_XATRIX
 	xatrix/g_ai.c
 	xatrix/g_chase.c
@@ -600,6 +746,8 @@ IF(WIN32)
 ENDIF()
 
 ADD_LIBRARY(baseq2 SHARED ${SRC_BASEQ2} ${HEADERS_BASEQ2} ${SRC_SHARED})
+ADD_LIBRARY(rerelease SHARED ${SRC_RERELEASE} ${HEADERS_RERELEASE} )
+ADD_LIBRARY(xatrix SHARED ${SRC_XATRIX} ${HEADERS_XATRIX})
 
 IF(WIN32)
     IF(IS_64_BIT)
@@ -685,6 +833,8 @@ ENDIF()
 
 SOURCE_GROUP("baseq2\\sources" FILES ${SRC_BASEQ2})
 SOURCE_GROUP("baseq2\\headers" FILES ${HEADERS_BASEQ2})
+SOURCE_GROUP("rerelease\\sources" FILES ${SRC_RERELEASE})
+SOURCE_GROUP("rerelease\\headers" FILES ${HEADERS_RERELEASE})
 SOURCE_GROUP("xatrix\\sources" FILES ${SRC_XATRIX})
 SOURCE_GROUP("xatrix\\headers" FILES ${HEADERS_XATRIX})
 SOURCE_GROUP("rogue\\sources" FILES ${SRC_ROGUE})
@@ -711,9 +861,24 @@ IF (WIN32)
         TARGET_COMPILE_OPTIONS(client PRIVATE /wd4005 /wd4996)
     ENDIF()
 
+
+		find_package(jsoncpp)
+		target_link_libraries(rerelease PRIVATE JsonCpp)
+		add_compile_definitions(rerelease PRIVATE GAME_INCLUDE)
+		add_compile_definitions(rerelease PRIVATE KEX_Q2GAME_EXPORTS)
+		add_compile_definitions(rerelease PRIVATE KEX_Q2GAME_DYNAMIC)
+		add_compile_definitions(rerelease PRIVATE NO_FMT_SOURCE)
+		add_compile_definitions(rerelease PRIVATE USE_CPP20_FORMAT)
+
+	
+
     TARGET_INCLUDE_DIRECTORIES(server PRIVATE ../VC/inc)
     TARGET_INCLUDE_DIRECTORIES(baseq2 PRIVATE ../VC/inc)
+	TARGET_INCLUDE_DIRECTORIES(xatrix PRIVATE ../VC/inc)
+
     TARGET_SOURCES(baseq2 PRIVATE windows/res/baseq2.rc)
+	TARGET_SOURCES(rerelease PRIVATE windows/res/rerelease.rc)
+	TARGET_SOURCES(xatrix PRIVATE windows/res/xatrix.rc)
 
     TARGET_LINK_LIBRARIES(server winmm ws2_32)
 
@@ -725,6 +890,7 @@ IF (WIN32)
 ENDIF()
 
 TARGET_INCLUDE_DIRECTORIES(baseq2 PRIVATE ../inc)
+TARGET_INCLUDE_DIRECTORIES(xatrix PRIVATE ../inc)
 
 IF(TARGET client)
     TARGET_INCLUDE_DIRECTORIES(client PRIVATE ../inc)
@@ -798,6 +964,38 @@ SET_TARGET_PROPERTIES(baseq2
     DEBUG_POSTFIX ""
 )
 
+SET_TARGET_PROPERTIES(rerelease
+	PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/rerelease"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/rerelease"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/rerelease"
+    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/rerelease"
+    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/rerelease"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/rerelease"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/rerelease"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/rerelease"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/rerelease"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/rerelease"
+    PREFIX ""
+    DEBUG_POSTFIX ""
+)
+
+
+SET_TARGET_PROPERTIES(xatrix
+	PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/xatrix"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/xatrix"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/xatrix"
+    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/xatrix"
+    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/xatrix"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/xatrix"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/xatrix"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/xatrix"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/xatrix"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/xatrix"
+    PREFIX ""
+    DEBUG_POSTFIX ""
+)
 
 IF(IS_64_BIT)
 	IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
@@ -806,8 +1004,28 @@ IF(IS_64_BIT)
 			LIBRARY_OUTPUT_NAME "gameaarch64"
 			RUNTIME_OUTPUT_NAME "gameaarch64"
 		)
+		SET_TARGET_PROPERTIES(rerelease
+			PROPERTIES
+			LIBRARY_OUTPUT_NAME "gameaarch64"
+			RUNTIME_OUTPUT_NAME "gameaarch64"
+		)
+		SET_TARGET_PROPERTIES(xatrix
+			PROPERTIES
+			LIBRARY_OUTPUT_NAME "gameaarch64"
+			RUNTIME_OUTPUT_NAME "gameaarch64"
+		)
 	ELSE()
 		SET_TARGET_PROPERTIES(baseq2
+			PROPERTIES
+			LIBRARY_OUTPUT_NAME "gamex86_64"
+			RUNTIME_OUTPUT_NAME "gamex86_64"
+		)
+		SET_TARGET_PROPERTIES(rerelease
+			PROPERTIES
+			LIBRARY_OUTPUT_NAME "gamex86_64"
+			RUNTIME_OUTPUT_NAME "gamex86_64"
+		)
+		SET_TARGET_PROPERTIES(xatrix
 			PROPERTIES
 			LIBRARY_OUTPUT_NAME "gamex86_64"
 			RUNTIME_OUTPUT_NAME "gamex86_64"
@@ -819,6 +1037,17 @@ ELSE()
         LIBRARY_OUTPUT_NAME "gamex86"
         RUNTIME_OUTPUT_NAME "gamex86"
     )
+	SET_TARGET_PROPERTIES(rerelease
+        PROPERTIES
+        LIBRARY_OUTPUT_NAME "gamex86"
+        RUNTIME_OUTPUT_NAME "gamex86"
+    )
+
+	SET_TARGET_PROPERTIES(xatrix
+		PROPERTIES
+        LIBRARY_OUTPUT_NAME "gamex86"
+        RUNTIME_OUTPUT_NAME "gamex86"
+	)
 ENDIF()
 
 IF(CONFIG_LINUX_PACKAGING_SUPPORT)

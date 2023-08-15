@@ -428,7 +428,7 @@ blastoff(edict_t *self, vec3_t start, vec3_t aimdir, int damage,
 	float r;
 	float u;
 	vec3_t water_start;
-	qboolean water = false;
+	qboolean water = qfalse;
 	int content_mask = MASK_SHOT | MASK_WATER;
 
   	if (!self)
@@ -454,7 +454,7 @@ blastoff(edict_t *self, vec3_t start, vec3_t aimdir, int damage,
 
 		if (gi.pointcontents(start) & MASK_WATER)
 		{
-			water = true;
+			water = qtrue;
 			VectorCopy(start, water_start);
 			content_mask &= ~MASK_WATER;
 		}
@@ -466,7 +466,7 @@ blastoff(edict_t *self, vec3_t start, vec3_t aimdir, int damage,
 		{
 			int color;
 
-			water = true;
+			water = qtrue;
 			VectorCopy(tr.endpos, water_start);
 
 			if (!VectorCompare(start, tr.endpos))

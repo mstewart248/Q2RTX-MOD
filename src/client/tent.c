@@ -262,9 +262,9 @@ static light_curve_t ex_hyper_blaster_light[] = {
 
 
 static light_curve_t ex_blaster_light[] = {
-	{ { 0.04f,      0.02f,      0.04f      },  5.f, 15.00f },
-	{ { 0.5f,       0.2f,      0.5f		   }, 15.f, 15.00f },
-	{ { 0.04f,      0.02f,      0.04f      },  5.f, 15.00f },
+	{ { 0.9f,      0.7f,      0.9f      },  5.f, 15.00f },
+	{ { 0.8f,       0.65f,      0.8f		   }, 15.f, 15.00f },
+	{ { 0.04f,      0.03f,      0.04f      },  5.f, 15.00f },
 };
 
 static light_curve_t ex_flare_light[] = {

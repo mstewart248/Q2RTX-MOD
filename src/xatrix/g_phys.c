@@ -102,19 +102,19 @@ SV_RunThink(edict_t *ent)
 
   	if (!ent)
 	{
-		return false;
+		return qfalse;
 	}
 
 	thinktime = ent->nextthink;
 
 	if (thinktime <= 0)
 	{
-		return true;
+		return qtrue;
 	}
 
 	if (thinktime > level.time + 0.001)
 	{
-		return true;
+		return qtrue;
 	}
 
 	ent->nextthink = 0;
@@ -126,7 +126,7 @@ SV_RunThink(edict_t *ent)
 
 	ent->think(ent);
 
-	return false;
+	return qfalse;
 }
 
 /*
@@ -573,7 +573,7 @@ SV_Push(edict_t *pusher, vec3_t move, vec3_t amove)
 
 	if (!pusher)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* clamp the move to 1/8 units, so the position will
@@ -753,7 +753,7 @@ SV_Push(edict_t *pusher, vec3_t move, vec3_t amove)
 			gi.linkentity(p->ent);
 		}
 
-		return false;
+		return qfalse;
 	}
 
 	/* see if anything we moved has touched a trigger */
@@ -762,7 +762,7 @@ SV_Push(edict_t *pusher, vec3_t move, vec3_t amove)
 		G_TouchTriggers(p->ent);
 	}
 
-	return true;
+	return qtrue;
 }
 
 /*
@@ -1080,7 +1080,7 @@ void
 SV_Physics_Step(edict_t *ent)
 {
 	qboolean wasonground;
-	qboolean hitsound = false;
+	qboolean hitsound = qfalse;
 	float *vel;
 	float speed, newspeed, control;
 	float friction;
@@ -1104,11 +1104,11 @@ SV_Physics_Step(edict_t *ent)
 
 	if (groundentity)
 	{
-		wasonground = true;
+		wasonground = qtrue;
 	}
 	else
 	{
-		wasonground = false;
+		wasonground = qfalse;
 	}
 
 	if (ent->avelocity[0] || ent->avelocity[1] || ent->avelocity[2])
@@ -1127,7 +1127,7 @@ SV_Physics_Step(edict_t *ent)
 			{
 				if (ent->velocity[2] < sv_gravity->value * -0.1)
 				{
-					hitsound = true;
+					hitsound = qtrue;
 				}
 
 				if (ent->waterlevel == 0)

@@ -1169,7 +1169,13 @@ void *Sys_LoadLibrary(const char *path, const char *sym, void **handle)
     if (!module) {
         Com_SetLastError(va("%s: LoadLibrary failed with error %lu",
                             path, GetLastError()));
-        return NULL;
+
+        module = LoadLibraryW(path);
+        
+        if (!module) {
+
+            return NULL;
+        }
     }
 
     if (sym) {

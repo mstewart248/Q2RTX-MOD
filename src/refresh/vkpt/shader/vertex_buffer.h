@@ -23,16 +23,16 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "shader_structs.h"
 
 #define MAX_LIGHT_LISTS         (1 << 14)
-#define MAX_LIGHT_LIST_NODES    (1 << 19)
+#define MAX_LIGHT_LIST_NODES    (1 << 21)
 
 #define MAX_IQM_MATRICES        32768
 
-#define MAX_LIGHT_POLYS         4096
+#define MAX_LIGHT_POLYS         8192
 #define LIGHT_POLY_VEC4S        4
 #define MATERIAL_UINTS          6
 
 // should match the same constant declared in material.h
-#define MAX_PBR_MATERIALS      4096
+#define MAX_PBR_MATERIALS      8192
 
 #define LIGHT_TEXTURE_SCALE     0
 

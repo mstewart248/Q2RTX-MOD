@@ -27,7 +27,7 @@ M_CheckBottom(edict_t *ent)
 
   	if (!ent)
 	{
-		return false;
+		return qfalse;
 	}
 
 	VectorAdd(ent->s.origin, ent->mins, mins);
@@ -53,7 +53,7 @@ M_CheckBottom(edict_t *ent)
 	}
 
 	c_yes++;
-	return true; /* we got out easy */
+	return qtrue; /* we got out easy */
 
 realcheck:
 	c_no++;
@@ -70,7 +70,7 @@ realcheck:
 
 	if (trace.fraction == 1.0)
 	{
-		return false;
+		return qfalse;
 	}
 
 	mid = bottom = trace.endpos[2];
@@ -93,13 +93,13 @@ realcheck:
 
 			if ((trace.fraction == 1.0) || (mid - trace.endpos[2] > STEPSIZE))
 			{
-				return false;
+				return qfalse;
 			}
 		}
 	}
 
 	c_yes++;
-	return true;
+	return qtrue;
 }
 
 /*
@@ -123,7 +123,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 
   	if (!ent)
 	{
-		return false;
+		return qfalse;
 	}
 
 	/* try the move */
@@ -237,7 +237,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 
 					if (contents & MASK_WATER)
 					{
-						return false;
+						return qfalse;
 					}
 				}
 			}
@@ -254,7 +254,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 
 					if (!(contents & MASK_WATER))
 					{
-						return false;
+						return qfalse;
 					}
 				}
 			}
@@ -269,7 +269,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 					G_TouchTriggers(ent);
 				}
 
-				return true;
+				return qtrue;
 			}
 
 			if (!ent->enemy)
@@ -278,7 +278,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 			}
 		}
 
-		return false;
+		return qfalse;
 	}
 
 	/* push down from a step height above the wished position */
@@ -299,7 +299,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 
 	if (trace.allsolid)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (trace.startsolid)
@@ -310,7 +310,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 
 		if (trace.allsolid || trace.startsolid)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 
@@ -324,7 +324,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 
 		if (contents & MASK_WATER)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 
@@ -342,10 +342,10 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 			}
 
 			ent->groundentity = NULL;
-			return true;
+			return qtrue;
 		}
 
-		return false; /* walked off an edge */
+		return qfalse; /* walked off an edge */
 	}
 
 	/* check point traces down for dangling corners */
@@ -364,11 +364,11 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 				G_TouchTriggers(ent);
 			}
 
-			return true;
+			return qtrue;
 		}
 
 		VectorCopy(oldorg, ent->s.origin);
-		return false;
+		return qfalse;
 	}
 
 	if (ent->flags & FL_PARTIALGROUND)
@@ -386,7 +386,7 @@ SV_movestep(edict_t *ent, vec3_t move, qboolean relink)
 		G_TouchTriggers(ent);
 	}
 
-	return true;
+	return qtrue;
 }
 
 /* ============================================================================ */
@@ -461,7 +461,7 @@ SV_StepDirection(edict_t *ent, float yaw, float dist)
 
   	if (!ent)
 	{
-		return false;
+		return qfalse;
 	}
 
 	ent->ideal_yaw = yaw;
@@ -474,7 +474,7 @@ SV_StepDirection(edict_t *ent, float yaw, float dist)
 
 	VectorCopy(ent->s.origin, oldorigin);
 
-	if (SV_movestep(ent, move, false))
+	if (SV_movestep(ent, move, qfalse))
 	{
 		delta = ent->s.angles[YAW] - ent->ideal_yaw;
 
@@ -486,12 +486,12 @@ SV_StepDirection(edict_t *ent, float yaw, float dist)
 
 		gi.linkentity(ent);
 		G_TouchTriggers(ent);
-		return true;
+		return qtrue;
 	}
 
 	gi.linkentity(ent);
 	G_TouchTriggers(ent);
-	return false;
+	return qfalse;
 }
 
 void
@@ -642,23 +642,23 @@ SV_CloseEnough(edict_t *ent, edict_t *goal, float dist)
 
     if (!ent || !goal)
 	{
-		return false;
+		return qfalse;
 	}
 
 	for (i = 0; i < 3; i++)
 	{
 		if (goal->absmin[i] > ent->absmax[i] + dist)
 		{
-			return false;
+			return qfalse;
 		}
 
 		if (goal->absmax[i] < ent->absmin[i] - dist)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 
-	return true;
+	return qtrue;
 }
 
 void
@@ -701,12 +701,12 @@ M_walkmove(edict_t *ent, float yaw, float dist)
 
   	if (!ent)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (!ent->groundentity && !(ent->flags & (FL_FLY | FL_SWIM)))
 	{
-		return false;
+		return qfalse;
 	}
 
 	yaw = yaw * M_PI * 2 / 360;
@@ -715,5 +715,5 @@ M_walkmove(edict_t *ent, float yaw, float dist)
 	move[1] = sin(yaw) * dist;
 	move[2] = 0;
 
-	return SV_movestep(ent, move, true);
+	return SV_movestep(ent, move, qtrue);
 }

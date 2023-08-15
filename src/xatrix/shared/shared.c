@@ -853,7 +853,7 @@ Swap_Init(void)
 	/* set the byte swapping variables in a portable manner */
 	if (*(short *)swaptest == 1)
 	{
-		bigendien = false;
+		bigendien = qfalse;
 		_BigShort = ShortSwap;
 		_LittleShort = ShortNoSwap;
 		_BigLong = LongSwap;
@@ -864,7 +864,7 @@ Swap_Init(void)
 	}
 	else
 	{
-		bigendien = true;
+		bigendien = qtrue;
 		_BigShort = ShortNoSwap;
 		_LittleShort = ShortSwap;
 		_BigLong = LongNoSwap;
@@ -1148,62 +1148,42 @@ Q_strlcat(char *dst, const char *src, int size)
 char *
 Info_ValueForKey(char *s, char *key)
 {
-	char pkey[512];
-	static char value[2][512]; /* use two buffers so compares
-								 work without stomping on each other */
-	static int valueindex;
-	char *o;
+	static char value[4][MAX_INFO_STRING];
+	static int  valueindex;
+	char        pkey[MAX_INFO_STRING];
+	char* o;
 
-	valueindex ^= 1;
-
+	valueindex++;
 	if (*s == '\\')
-	{
 		s++;
-	}
-
-	while (1)
-	{
+	while (1) {
 		o = pkey;
-
-		while (*s != '\\')
-		{
+		while (*s != '\\') {
 			if (!*s)
-			{
-				return "";
-			}
-
+				goto fail;
 			*o++ = *s++;
 		}
-
 		*o = 0;
 		s++;
 
-		o = value[valueindex];
-
-		while (*s != '\\' && *s)
-		{
-			if (!*s)
-			{
-				return "";
-			}
-
+		o = value[valueindex & 3];
+		while (*s != '\\' && *s) {
 			*o++ = *s++;
 		}
-
 		*o = 0;
 
 		if (!strcmp(key, pkey))
-		{
-			return value[valueindex];
-		}
+			return value[valueindex & 3];
 
 		if (!*s)
-		{
-			return "";
-		}
-
+			goto fail;
 		s++;
 	}
+
+fail:
+	o = value[valueindex & 3];
+	*o = 0;
+	return o;
 }
 
 void
@@ -1279,15 +1259,15 @@ Info_Validate(char *s)
 {
 	if (strstr(s, "\""))
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (strstr(s, ";"))
 	{
-		return false;
+		return qfalse;
 	}
 
-	return true;
+	return qtrue;
 }
 
 void

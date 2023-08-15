@@ -940,13 +940,13 @@ medic_checkattack(edict_t *self)
 {
   	if (!self)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (self->monsterinfo.aiflags & AI_MEDIC)
 	{
 		medic_attack(self);
-		return true;
+		return qtrue;
 	}
 
 	return M_CheckAttack(self);

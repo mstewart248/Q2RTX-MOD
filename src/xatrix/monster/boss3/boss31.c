@@ -747,7 +747,7 @@ Jorg_CheckAttack(edict_t *self)
 
   	if (!self)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (self->enemy->health > 0)
@@ -765,7 +765,7 @@ Jorg_CheckAttack(edict_t *self)
 		/* do we have a clear shot? */
 		if (tr.ent != self->enemy)
 		{
-			return false;
+			return qfalse;
 		}
 	}
 
@@ -787,23 +787,23 @@ Jorg_CheckAttack(edict_t *self)
 			self->monsterinfo.attack_state = AS_MISSILE;
 		}
 
-		return true;
+		return qtrue;
 	}
 
 	/* missile attack */
 	if (!self->monsterinfo.attack)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (level.time < self->monsterinfo.attack_finished)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (enemy_range == RANGE_FAR)
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (self->monsterinfo.aiflags & AI_STAND_GROUND)
@@ -824,14 +824,14 @@ Jorg_CheckAttack(edict_t *self)
 	}
 	else
 	{
-		return false;
+		return qfalse;
 	}
 
 	if (random() < chance)
 	{
 		self->monsterinfo.attack_state = AS_MISSILE;
 		self->monsterinfo.attack_finished = level.time + 2 * random();
-		return true;
+		return qtrue;
 	}
 
 	if (self->flags & FL_FLY)
@@ -846,7 +846,7 @@ Jorg_CheckAttack(edict_t *self)
 		}
 	}
 
-	return false;
+	return qfalse;
 }
 
 /*

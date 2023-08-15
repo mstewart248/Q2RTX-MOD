@@ -319,10 +319,10 @@ int MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const ch
 	maliasframe_t   *dst_frame;
 	maliasmesh_t    *dst_mesh;
 	int             val;
-	uint16_t        remap[TESS_MAX_INDICES];
-	uint16_t        vertIndices[TESS_MAX_INDICES];
-	uint16_t        tcIndices[TESS_MAX_INDICES];
-	uint16_t        finalIndices[TESS_MAX_INDICES];
+	uint16_t*        remap = (uint16_t*)malloc(TESS_MAX_INDICES * sizeof(uint16_t)); 
+	uint16_t*       vertIndices = (uint16_t*)malloc(TESS_MAX_INDICES * sizeof(uint16_t));
+	uint16_t*        tcIndices = (uint16_t*)malloc(TESS_MAX_INDICES * sizeof(uint16_t));
+	uint16_t*        finalIndices = (uint16_t*)malloc(TESS_MAX_INDICES * sizeof(uint16_t));
 	int             numverts, numindices;
 	char            skinname[MAX_QPATH];
 	vec_t           scale_s, scale_t;
