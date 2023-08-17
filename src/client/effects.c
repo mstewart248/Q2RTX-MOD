@@ -185,8 +185,7 @@ void CL_MuzzleFlash(void)
     volume = 1.0f - 0.8f * mz.silenced;
 
     switch (mz.weapon) {
-    case MZ_BLASTER:
-        DL_COLOR(0, 0, 1);
+    case MZ_BLASTER:        
         VectorSet(dl->color, 1, 1, 0);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/blastf1a.wav"), volume, ATTN_NORM, 0);
         break;
@@ -200,8 +199,6 @@ void CL_MuzzleFlash(void)
         break;
     case MZ_MACHINEGUN:
         //DL_COLOR(1, .5, 0);
-		DL_COLOR(1, .7, .2);
-		DL_RADIUS(50);
         VectorSet(dl->color, 1, 1, 0);
         Q_snprintf(soundname, sizeof(soundname), "weapons/machgf%ib.wav", (Q_rand() % 5) + 1);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound(soundname), volume, ATTN_NORM, 0);
@@ -334,6 +331,18 @@ void CL_MuzzleFlash(void)
 	//	// don't add muzzle flashes in RTX mode
 	//	DL_RADIUS(0.f);
 	//}
+
+    if (cl_dlight_hacks->integer & DLHACK_NO_MUZZLEFLASH) {
+        switch (mz.weapon) {
+        case MZ_MACHINEGUN:
+        case MZ_CHAINGUN1:
+        case MZ_CHAINGUN2:
+        case MZ_CHAINGUN3:
+            memset(dl, 0, sizeof(*dl));
+            break;
+        }
+    }
+
 }
 
 
