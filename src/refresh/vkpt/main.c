@@ -125,6 +125,7 @@ int num_accumulated_frames = 0;
 static bool frame_ready = false;
 
 static float sky_rotation = 0.f;
+static int sky_autorotate = 0;
 static vec3_t sky_axis = { 0.f };
 
 #define NUM_TAA_SAMPLES 128
@@ -2533,7 +2534,7 @@ prepare_sky_matrix(float time, vec3_t sky_matrix[3])
 {
 	if (sky_rotation != 0.f)
 	{
-		SetupRotationMatrix(sky_matrix, sky_axis, time * sky_rotation);
+		SetupRotationMatrix(sky_matrix, sky_axis, (sky_autorotate ? time : 1.f) * sky_rotation);
 	}
 	else
 	{
@@ -4020,7 +4021,7 @@ IMG_ReadPixelsHDR_RTX(int *width, int *height)
 }
 
 void
-R_SetSky_RTX(const char *name, float rotate, const vec3_t axis)
+R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 {
 	int     i;
 	char    pathname[MAX_QPATH];
@@ -4030,13 +4031,14 @@ R_SetSky_RTX(const char *name, float rotate, const vec3_t axis)
 	byte *data = NULL;
 
 	sky_rotation = rotate;
+	sky_autorotate = autorotate;
 	VectorNormalize2(axis, sky_axis);
 
 	int avg_color[3] = { 0 };
 	int w_prev, h_prev;
 	for (i = 0; i < 6; i++) {
 		Q_concat(pathname, sizeof(pathname), "env/", name, suf[i], ".tga");
-		FS_NormalizePath(pathname, pathname);
+		FS_NormalizePath(pathname);
 		image_t *img = IMG_Find(pathname, IT_SKY, IF_NONE);
 
 		if(img == R_NOTEXTURE) {

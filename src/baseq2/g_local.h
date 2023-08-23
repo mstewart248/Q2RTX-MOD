@@ -345,6 +345,7 @@ typedef struct {
     // world vars
     char        *sky;
     float       skyrotate;
+    int         skyautorotate;
     vec3_t      skyaxis;
     char        *nextmap;
 
