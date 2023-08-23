@@ -36,6 +36,7 @@ void SV_ErrorEvent(netadr_t *from, int ee_errno, int ee_info);
 void SV_Init(void);
 void SV_Shutdown(const char *finalmsg, error_type_t type);
 unsigned SV_Frame(unsigned msec);
+int SV_GetWaterLevel(void);
 #if USE_SYSCON
 void SV_SetConsoleTitle(void);
 #endif

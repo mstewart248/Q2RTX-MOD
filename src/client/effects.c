@@ -180,7 +180,7 @@ void CL_MuzzleFlash(void)
     VectorMA(dl->origin, 18, fv, dl->origin);
     VectorMA(dl->origin, 16, rv, dl->origin);
     dl->radius = 100 * (2 - mz.silenced) + (Q_rand() & 31);
-    dl->die = cl.time + 16;
+    dl->die = cl.time + 33;
 
     volume = 1.0f - 0.8f * mz.silenced;
 
@@ -199,7 +199,8 @@ void CL_MuzzleFlash(void)
         break;
     case MZ_MACHINEGUN:
         //DL_COLOR(1, .5, 0);
-        VectorSet(dl->color, 1, 1, 0);
+        VectorSet(dl->color, 1, .7, .2);
+        dl->radius = 50;
         Q_snprintf(soundname, sizeof(soundname), "weapons/machgf%ib.wav", (Q_rand() % 5) + 1);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound(soundname), volume, ATTN_NORM, 0);
         break;

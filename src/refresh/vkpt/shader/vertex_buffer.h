@@ -22,8 +22,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "shader_structs.h"
 
-#define MAX_LIGHT_LISTS         (1 << 14)
-#define MAX_LIGHT_LIST_NODES    (1 << 21)
+#define MAX_LIGHT_LISTS         (1 << 15)
+#define MAX_LIGHT_LIST_NODES    (1 << 22)
 #define LIGHT_COUNT_HISTORY     16
 
 #define MAX_IQM_MATRICES        32768

@@ -152,7 +152,7 @@ static void Draw(menuFrameWork_t *self)
 
     Menu_Draw(self);
 
-    R_RenderFrame(&m_player.refdef);
+    R_RenderFrame(&m_player.refdef, 0);
 
     R_SetScale(uis.scale);
 }

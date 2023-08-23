@@ -381,7 +381,7 @@ static int read_server_file(void)
     Com_AbortFunc(NULL, NULL);
 
     // go to the map
-    SV_SpawnServer(&cmd);
+    SV_SpawnServer(&cmd, (qboolean)Q_strHas(cmd.buffer, "mgu"));
     return 0;
 }
 

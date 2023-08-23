@@ -2573,7 +2573,7 @@ prepare_camera(const vec3_t position, const vec3_t direction, mat4_t data)
 }
 
 static void
-prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, const vec3_t sky_matrix[3], bool render_world)
+prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, const vec3_t sky_matrix[3], bool render_world, int waterLevel)
 {
 	const bsp_mesh_t* wm = &vkpt_refdef.bsp_mesh_world;
 
@@ -2654,6 +2654,10 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		ubo->medium = MEDIUM_LAVA;
 	else
 		ubo->medium = MEDIUM_NONE;
+
+	if (waterLevel == 3) {
+		ubo->medium = MEDIUM_WATER;
+	}
 
 	ubo->time = fd->time;
 	ubo->num_static_primitives = 0;
@@ -2796,7 +2800,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 
 /* renders the map ingame */
 void
-R_RenderFrame_RTX(refdef_t *fd)
+R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 {
 	if (!qvk.swap_chain)
 		return;
@@ -2887,7 +2891,7 @@ R_RenderFrame_RTX(refdef_t *fd)
 	vkpt_vertex_buffer_ensure_primbuf_size(upload_info.num_prims);
 
 	QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
-	prepare_ubo(fd, viewleaf, &ref_mode, sky_matrix, render_world);
+	prepare_ubo(fd, viewleaf, &ref_mode, sky_matrix, render_world, waterLevel);
 	ubo->prev_adapted_luminance = prev_adapted_luminance;
 
 	if (cvar_tm_blend_enable->integer)

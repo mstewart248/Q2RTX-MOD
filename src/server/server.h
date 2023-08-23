@@ -596,7 +596,7 @@ void sv_min_timeout_changed(cvar_t *self);
 // sv_init.c
 //
 void SV_ClientReset(client_t *client);
-void SV_SpawnServer(mapcmd_t *cmd);
+void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap);
 bool SV_ParseMapCmd(mapcmd_t *cmd);
 void SV_InitGame(unsigned mvd_spawn);
 

@@ -1124,11 +1124,14 @@ void Qcommon_Frame(void)
 
     remaining = SV_Frame(msec);
 
+    int waterLevel = SV_GetWaterLevel();
+    
 #if USE_CLIENT
     if (host_speeds->integer)
         time_between = Sys_Milliseconds();
 
-    clientrem = CL_Frame(msec);
+    clientrem = CL_Frame(msec, waterLevel);
+
     if (remaining > clientrem) {
         remaining = clientrem;
     }

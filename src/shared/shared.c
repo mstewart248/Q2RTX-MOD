@@ -734,6 +734,131 @@ int Q_strTextureCompare(const char* inputString, const char* compareString) {
 
 }
 
+char* GetEmptyString(size_t inputStringLength) {
+    char* res = malloc(inputStringLength);
+    char* startPointer = res;
+
+    for (int i = 0; i < inputStringLength; i++) {
+        *res = '\0';
+        res++;
+    }
+
+    res = startPointer;
+
+    return res;
+}
+
+
+const char* Q_FixValue(const char* value) {
+    int yLength = 0;
+    int beforeYLen = 0;
+    char* orignalValuePointer = value;
+    char* yValueStart;
+    char* yValueEnd;
+    char* destYValue = GetEmptyString(strlen(value));
+    char* destString = GetEmptyString(strlen(value) + 1);
+    char* destStringStart = destString;
+    qboolean bFirstSpace = qfalse;
+
+
+    do {
+        char* currPointer = value;
+        value++;
+
+        if (*currPointer == ' ' && !bFirstSpace) {
+            bFirstSpace = qtrue;                       
+        }
+
+    } while (value && !bFirstSpace);
+
+
+    if (bSecondSpace) {
+        char* newYValueString = GetEmptyString(64);
+        size_t len = max(yLength, 0);
+        memcpy(destYValue, yValueStart, len);
+        int intValueY = atoi(destYValue);
+
+        intValueY -= 200;
+        Q_strlcat(destString, orignalValuePointer, (size_t)(beforeYLen + 1));
+        destString += beforeYLen;
+        Q_strlcat(destString, newYValueString, strlen(newYValueString) + 1);
+        destString += strlen(newYValueString);
+        Q_strlcat(destString, yValueEnd, strlen(yValueEnd) + 1);
+        free(newYValueString);
+    }
+
+    value = orignalValuePointer;
+    memcpy(value, destStringStart, strlen(destStringStart));
+    free(destString);
+    free(destYValue);
+
+    return destStringStart;
+}
+
+
+const char* Q_FixValue2(const char* value) {
+    int yLength = 0;
+    int beforeYLen = 0;
+    char* orignalValuePointer = value;
+    char* yValueStart;
+    char* yValueEnd;
+    char* destYValue = GetEmptyString(strlen(value));
+    char* destString = GetEmptyString(strlen(value) + 1);
+    char* destStringStart = destString;
+    qboolean bFirstSpace = qfalse;
+    qboolean bSecondSpace = qfalse;
+
+    do {
+        qboolean bThisIndexFirstSpace = false;
+        char* currPointer = value;
+        value++;
+
+        if (*currPointer == ' ' && !bFirstSpace) {
+            bFirstSpace = qtrue;
+            yValueStart = currPointer + 1;
+            bThisIndexFirstSpace = true;
+        }
+
+        if (bFirstSpace && !bThisIndexFirstSpace) {
+            yLength++;
+        }
+        else {
+            beforeYLen++;
+        }
+
+        if (*currPointer == ' ' && bFirstSpace && !bThisIndexFirstSpace) {
+            yLength--;
+            bSecondSpace = true;
+            yValueEnd = currPointer;
+        }
+
+    } while (value && !bSecondSpace);
+
+    
+    if (bSecondSpace) {
+        char* newYValueString = GetEmptyString(64);
+        size_t len = max(yLength, 0);
+        memcpy(destYValue, yValueStart, len);
+        int intValueY = atoi(destYValue);
+
+        intValueY -= 200;      
+        Q_strlcat(destString, orignalValuePointer, (size_t)(beforeYLen + 1));
+        destString += beforeYLen;
+        Q_strlcat(destString, newYValueString, strlen(newYValueString) + 1);
+        destString += strlen(newYValueString);
+        Q_strlcat(destString, yValueEnd, strlen(yValueEnd) + 1);
+        free(newYValueString);
+    }      
+
+    value = orignalValuePointer;
+    memcpy(value, destStringStart, strlen(destStringStart));
+    free(destString);
+    free(destYValue);    
+
+    return destStringStart;
+}
+
+
 char *Q_strcasestr(const char *s1, const char *s2)
 {
     size_t l1, l2;

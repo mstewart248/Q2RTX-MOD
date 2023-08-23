@@ -492,7 +492,7 @@ V_RenderView
 
 ==================
 */
-void V_RenderView(void)
+void V_RenderView(int waterLevel)
 {
     // an invalid frame will just use the exact previous refdef
     // we can't use the old frame if the video mode has changed, though...
@@ -574,7 +574,7 @@ void V_RenderView(void)
         qsort(cl.refdef.entities, cl.refdef.num_entities, sizeof(cl.refdef.entities[0]), entitycmpfnc);
     }
 
-    R_RenderFrame(&cl.refdef);
+    R_RenderFrame(&cl.refdef, waterLevel);
 #if USE_DEBUG
     if (cl_stats->integer)
         Com_Printf("ent:%i  lt:%i  part:%i\n", r_numentities, r_numdlights, r_numparticles);

@@ -1073,7 +1073,7 @@ static void SCR_TimeRefresh_f(void)
         R_BeginFrame();
         for (i = 0; i < 128; i++) {
             cl.refdef.viewangles[1] = i / 128.0f * 360.0f;
-            R_RenderFrame(&cl.refdef);
+            R_RenderFrame(&cl.refdef, 0);
         }
         R_EndFrame();
     } else {
@@ -1081,7 +1081,7 @@ static void SCR_TimeRefresh_f(void)
             cl.refdef.viewangles[1] = i / 128.0f * 360.0f;
 
             R_BeginFrame();
-            R_RenderFrame(&cl.refdef);
+            R_RenderFrame(&cl.refdef, 0);
             R_EndFrame();
         }
     }
@@ -1958,7 +1958,7 @@ static void SCR_Draw2D(void)
 	R_SetAlphaScale(1.0f);
 }
 
-static void SCR_DrawActive(void)
+static void SCR_DrawActive(int waterLevel)
 {
     // if full screen menu is up, do nothing at all
     if (!UI_IsTransparent())
@@ -2004,7 +2004,7 @@ static void SCR_DrawActive(void)
     SCR_TileClear();
 
     // draw 3D game view
-    V_RenderView();
+    V_RenderView(waterLevel);
 
     // draw all 2D elements
     SCR_Draw2D();
@@ -2020,7 +2020,7 @@ This is called every frame, and can also be called explicitly to flush
 text to the screen.
 ==================
 */
-void SCR_UpdateScreen(void)
+void SCR_UpdateScreen(int waterLevel)
 {
     static int recursive;
 
@@ -2049,7 +2049,7 @@ void SCR_UpdateScreen(void)
     R_BeginFrame();
 
     // do 3D refresh drawing
-    SCR_DrawActive();
+    SCR_DrawActive(waterLevel);
 
     // draw main menu
     UI_Draw(cls.realtime);

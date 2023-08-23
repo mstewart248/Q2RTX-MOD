@@ -137,7 +137,7 @@ Change the server to a new map, taking all connected
 clients along with it.
 ================
 */
-void SV_SpawnServer(mapcmd_t *cmd)
+void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
 {
     int         i;
     client_t    *client;
@@ -232,7 +232,7 @@ void SV_SpawnServer(mapcmd_t *cmd)
     sv.state = ss_loading;
 
     // load and spawn all other entities
-    ge->SpawnEntities(sv.name, entitystring, cmd->spawnpoint);
+    ge->SpawnEntities(sv.name, entitystring, cmd->spawnpoint, isMguMap);
 
     // run two frames to allow everything to settle
     ge->RunFrame(); sv.framenum++;

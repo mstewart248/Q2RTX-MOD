@@ -198,7 +198,7 @@ typedef struct {
     void (*Shutdown)(void);
 
     // each new level entered will cause a call to SpawnEntities
-    void (*SpawnEntities)(const char *mapname, const char *entstring, const char *spawnpoint);
+    void (*SpawnEntities)(const char *mapname, const char *entstring, const char *spawnpoint, qboolean isMguMap);
 
     // Read/Write Game is for storing persistant cross level information
     // about the world state and the clients.
@@ -220,7 +220,7 @@ typedef struct {
     void (*ClientThink)(edict_t *ent, usercmd_t *cmd);
 
     void (*RunFrame)(void);
-
+    int (*GetWaterLevel)(void);
     // ServerCommand will be called when an "sv <command>" command is issued on the
     // server console.
     // The game can issue gi.argc() / gi.argv() commands to get the rest

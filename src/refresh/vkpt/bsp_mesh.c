@@ -1667,7 +1667,7 @@ light_affects_cluster(light_poly_t* light, const aabb_t* aabb)
 static void
 collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
 {
-#define MAX_LIGHTS_PER_CLUSTER 1024
+#define MAX_LIGHTS_PER_CLUSTER 4096
 	int* cluster_lights = Z_Malloc(MAX_LIGHTS_PER_CLUSTER * wm->num_clusters * sizeof(int));
 	int* cluster_light_counts = Z_Mallocz(wm->num_clusters * sizeof(int));
 

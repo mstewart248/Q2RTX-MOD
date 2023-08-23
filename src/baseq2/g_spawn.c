@@ -464,13 +464,70 @@ Parses an edict out of the given string, returning the new position
 ed should be a properly initialized empty edict.
 ====================
 */
-void ED_ParseEdict(const char **data, edict_t *ent)
+void ED_ParseEdict(const char **data, edict_t *ent, const char* nextTarget)
 {
     bool        init;
-    char        *key, *value;
+    char        *key, *value, *originalData, *originValue = NULL;
+
+    qboolean qbAdjustOriginY = qfalse;
+    qboolean isFuncTrain = qfalse;
+    qboolean nextTargetUpdated = qfalse;
 
     init = false;
+    originalData = data;
     memset(&st, 0, sizeof(st));
+
+    //Trying to figure out if ent is a func_train or func_train path to adjust the height positioning because it's too high in the new maps.
+    while (1) {
+        // parse key
+        key = COM_Parse(data);
+        if (key[0] == '}')
+            break;
+        if (!*data)
+            gi.error("%s: EOF without closing brace", __func__);
+
+        // parse value
+        value = COM_Parse(data);
+
+        if (!isFuncTrain) {
+            isFuncTrain = (qboolean)Q_strHas(value, "func_train");
+            if (isFuncTrain) {
+                qbAdjustOriginY = qtrue;
+            }
+        }
+
+        if (strlen(nextTarget) > 0 && !nextTargetUpdated) {
+            if (Q_strHas(key, "targetname") && Q_strHas(value, nextTarget)) {
+                if (originValue == NULL) {
+                    qbAdjustOriginY = qtrue;
+                }
+                else {
+                }
+            }
+        }
+
+        if (isFuncTrain && Q_strcasecmp(key, "target") == 0) {
+            memcpy(nextTarget, value, strlen(value));
+            nextTargetUpdated = qtrue;
+        }
+
+        if (Q_strcasecmp(key, "origin") == 0) {
+            originValue = value;
+            if (qbAdjustOriginY) {
+                Q_FixValue(value);
+            }
+        }
+
+        if (!*data)
+            gi.error("%s: EOF without closing brace", __func__);
+
+        if (value[0] == '}')
+            gi.error("%s: closing brace without data", __func__);
+
+
+    }
+
+    data = originalData;
 
 // go through all the dictionary pairs
     while (1) {
@@ -483,6 +540,7 @@ void ED_ParseEdict(const char **data, edict_t *ent)
 
         // parse value
         value = COM_Parse(data);
+
         if (!*data)
             gi.error("%s: EOF without closing brace", __func__);
 
@@ -503,10 +561,33 @@ void ED_ParseEdict(const char **data, edict_t *ent)
         }
     }
 
+
+
     if (!init)
         memset(ent, 0, sizeof(*ent));
 }
 
+void FixOriginValuesForFuncTrain(const char* value) {
+    //char* dest; 
+    //const char* xValue = GetSpecifcValue(0, value);
+    //const char* yValue = GetSpecifcValue(1, value);
+    //const char* zValue = GetSpecifcValue(2, value);
+}
+
+const char* GetSpecifcValue(int index, const char* value) {
+    //char* val;
+    //bool bValFound = false;
+    //bool bValStart = false;
+
+    //return value;
+
+    //while (!bValFound && *value) {
+    //
+    //}
+    
+    
+
+}
 
 /*
 ================
@@ -565,13 +646,14 @@ Creates a server's entity / program execution context by
 parsing textual entity definitions out of an ent file.
 ==============
 */
-void SpawnEntities(const char *mapname, const char *entities, const char *spawnpoint)
+void SpawnEntities(const char *mapname, const char *entities, const char *spawnpoint, qboolean isMguMap)
 {
     edict_t     *ent;
     int         inhibit;
     char        *com_token;
     int         i;
     float       skill_level;
+    char* nextTarget = GetEmptyString((size_t)64);
 
     skill_level = floor(skill->value);
     if (skill_level < 0)
@@ -597,6 +679,8 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
 
     ent = NULL;
     inhibit = 0;
+    
+
 
 // parse ents
     while (1) {
@@ -611,7 +695,7 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
             ent = g_edicts;
         else
             ent = G_Spawn();
-        ED_ParseEdict(&entities, ent);
+        ED_ParseEdict(&entities, ent, nextTarget);
 
         // yet another map hack
         if (!Q_stricmp(level.mapname, "command") && !Q_stricmp(ent->classname, "trigger_once") && !Q_stricmp(ent->model, "*27"))

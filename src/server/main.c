@@ -1897,6 +1897,17 @@ processing are run even when server is not yet initalized.
 Returns amount of extra frametime available for sleeping on IO.
 ==================
 */
+
+int SV_GetWaterLevel() {
+    if (ge) {
+        int waterLevel = ge->GetWaterLevel();
+
+        return waterLevel;
+    }
+    else {
+        return 0;
+    }
+}
 unsigned SV_Frame(unsigned msec)
 {
 #if USE_CLIENT
@@ -1948,6 +1959,7 @@ unsigned SV_Frame(unsigned msec)
 
         // let everything in the world think and move
         SV_RunGameFrame();
+               
 
         // send messages back to the UDP clients
         SV_SendClientMessages();

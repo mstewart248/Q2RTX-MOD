@@ -71,7 +71,7 @@ typedef int qhandle_t;
 #define MAX_STRING_TOKENS   256     // max tokens resulting from Cmd_TokenizeString
 #define MAX_TOKEN_CHARS     1024    // max length of an individual token
 #define MAX_NET_STRING      2048    // max length of a string used in network protocol
-
+#define MAX_VALUE_LENGTH    64
 #define MAX_QPATH           64      // max length of a quake game pathname
 #define MAX_OSPATH          256     // max length of a filesystem pathname
 
@@ -486,6 +486,8 @@ bool COM_IsWhite(const char *s);
 char *COM_Parse(const char **data_p);
 // data is an in/out parm, returns a parsed out token
 size_t COM_Compress(char *data);
+char* GetEmptyString(size_t inputStringLength);
+const char* Q_FixValue(const char* value);
 
 int SortStrcmp(const void *p1, const void *p2);
 int SortStricmp(const void *p1, const void *p2);

@@ -27,7 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 ==============================================================================
 */
 
-#define IDBSPHEADER     MakeLittleLong('I','B','S','P')
+#define IDBSPHEADER     (('P'<<24)+('S'<<16)+('B'<<8)+'I')
 #define BSPVERSION      38
 
 

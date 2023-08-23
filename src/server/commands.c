@@ -278,7 +278,9 @@ static void SV_Map(bool restart)
     // clear pending CM
     Com_AbortFunc(NULL, NULL);
 
-    SV_SpawnServer(&cmd);
+    qboolean isMGUMap = (qboolean)Q_strHas(cmd.buffer, "mgu");
+
+    SV_SpawnServer(&cmd, isMGUMap);
 
 	// In order to make the autosaves save player locations where they have entered the level,
 	// we need to defer the call to SV_AutoSaveEnd until the client has connected and 

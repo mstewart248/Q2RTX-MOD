@@ -309,7 +309,7 @@ extern void    (*R_EndRegistration)(void);
 #define R_RegisterFont(name)    R_RegisterImage(name, IT_FONT, IF_PERMANENT | IF_SRGB, NULL)
 #define R_RegisterSkin(name)    R_RegisterImage(name, IT_SKIN, IF_SRGB, NULL)
 
-extern void    (*R_RenderFrame)(refdef_t *fd);
+extern void    (*R_RenderFrame)(refdef_t *fd, int waterLevel);
 extern void    (*R_LightPoint)(const vec3_t origin, vec3_t light);
 
 extern void    (*R_ClearColor)(void);
