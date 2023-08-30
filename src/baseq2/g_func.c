@@ -866,7 +866,7 @@ void door_go_down(edict_t *self)
     }
 
     self->moveinfo.state = STATE_DOWN;
-    if (strcmp(self->classname, "func_door") == 0)
+    if (strcmp(self->classname, "func_door") == 0 || strcmp(self->classname, "func_water") == 0)
         Move_Calc(self, self->moveinfo.start_origin, door_hit_bottom);
     else if (strcmp(self->classname, "func_door_rotating") == 0)
         AngleMove_Calc(self, door_hit_bottom);
@@ -890,7 +890,7 @@ void door_go_up(edict_t *self, edict_t *activator)
         self->s.sound = self->moveinfo.sound_middle;
     }
     self->moveinfo.state = STATE_UP;
-    if (strcmp(self->classname, "func_door") == 0)
+    if (strcmp(self->classname, "func_door") == 0 || strcmp(self->classname, "func_water") == 0)
         Move_Calc(self, self->moveinfo.end_origin, door_hit_top);
     else if (strcmp(self->classname, "func_door_rotating") == 0)
         AngleMove_Calc(self, door_hit_top);
@@ -899,9 +899,106 @@ void door_go_up(edict_t *self, edict_t *activator)
     door_use_areaportals(self, true);
 }
 
+void smart_water_go_up(edict_t* self) 
+{
+    float	 distance;
+    edict_t* lowestPlayer;
+    edict_t* ent;
+    float	 lowestPlayerPt;
+
+    if (self->moveinfo.state == STATE_TOP)
+    { // reset top wait time
+        if (self->moveinfo.wait >= 0)
+            self->nextthink = level.framenum + self->moveinfo.wait * BASE_FRAMERATE;
+        return;
+    }
+
+    if (self->health)
+    {
+        if (self->absmax[2] >= self->health)
+        {
+            VectorClear(self->velocity);
+           // self->velocity = {};
+            self->nextthink = 0;
+            self->moveinfo.state = STATE_TOP;
+            return;
+        }
+    }
+
+    if (!(self->flags & FL_TEAMSLAVE))
+    {
+        if (self->moveinfo.sound_start)
+            gi.sound(self, CHAN_NO_PHS_ADD | CHAN_VOICE, self->moveinfo.sound_start, 1, ATTN_STATIC, 0);
+    }
+
+    self->s.sound = self->moveinfo.sound_middle;
+
+    // find the lowest player point.
+    lowestPlayerPt = 999999;
+    lowestPlayer = NULL;
+    for (uint32_t i = 0; i < game.maxclients; i++)
+    {
+        ent = &g_edicts[1 + i];
+
+        // don't count dead or unused player slots
+        if ((ent->inuse) && (ent->health > 0))
+        {
+            if (ent->absmin[2] < lowestPlayerPt)
+            {
+                lowestPlayerPt = ent->absmin[2];
+                lowestPlayer = ent;
+            }
+        }
+    }
+
+    if (!lowestPlayer)
+    {
+        return;
+    }
+
+    distance = lowestPlayerPt - self->absmax[2];
+
+    // for the calculations, make sure we intend to go up at least a little.
+    if (distance < self->accel)
+    {
+        distance = 100;
+        self->moveinfo.speed = 5;
+    }
+    else
+        self->moveinfo.speed = distance / self->accel;
+
+    if (self->moveinfo.speed < 5)
+        self->moveinfo.speed = 5;
+    else if (self->moveinfo.speed > self->speed)
+        self->moveinfo.speed = self->speed;
+
+    vec3_t clearVec = { 0, 0, 1 };
+
+    // FIXME - should this allow any movement other than straight up?
+    VectorCopy(clearVec, self->moveinfo.dir);
+
+    //self->moveinfo.dir = { 0, 0, 1 };
+    vec3_t multVector;
+    VectorScale(self->moveinfo.dir, self->moveinfo.speed, self->velocity);
+
+    //self->velocity = self->moveinfo.dir * self->moveinfo.speed;
+    self->moveinfo.remaining_distance = distance;
+
+    if (self->moveinfo.state != STATE_UP)
+    {
+        G_UseTargets(self, lowestPlayer);
+        door_use_areaportals(self, true);
+        self->moveinfo.state = STATE_UP;
+    }
+
+    self->think = smart_water_go_up;
+    self->nextthink = level.framenum + self->moveinfo.wait * BASE_FRAMERATE;
+}
+
 void door_use(edict_t *self, edict_t *other, edict_t *activator)
 {
     edict_t *ent;
+    vec3_t	 center; // PGM
 
     if (self->flags & FL_TEAMSLAVE)
         return;
@@ -917,6 +1014,21 @@ void door_use(edict_t *self, edict_t *other, edict_t *activator)
             return;
         }
     }
+
+    VectorClear(center);
+    VectorAdd(self->mins, self->maxs, center);
+    //center = self->mins + self->maxs;
+    VectorScale(center, .5f, center);
+    //center *= 0.5f;
+
+    //if ((strcmp(self->classname, "func_water") == 0) /* && (gi.pointcontents(center) & MASK_WATER) && self->spawnflags & 2*/)
+    //{
+    //    self->message = NULL;
+    //    self->touch = NULL;
+    //    self->enemy = activator;
+    //    smart_water_go_up(self);
+    //    return;
+    //}
 
     // trigger all paired doors
     for (ent = self ; ent ; ent = ent->teamchain) {
@@ -1289,6 +1401,21 @@ void SP_func_door_rotating(edict_t *ent)
         ent->think = Think_SpawnDoorTrigger;
 }
 
+void smart_water_blocked(edict_t* self, edict_t* other) 
+{
+    if (!(other->svflags & SVF_MONSTER) && (!other->client))
+    {
+        // give it a chance to go away on it's own terms (like gibs)
+        T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, 100000, 1, 0, MOD_LAVA);
+        // if it's still there, nuke it
+        if (other && other->inuse && other->solid) // PGM
+            BecomeExplosion1(other);
+        return;
+    }
+
+    T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, 100, 1, 0, MOD_LAVA);
+}
+
 
 /*QUAKED func_water (0 .5 .8) ? START_OPEN
 func_water is a moveable water brush.  It must be targeted to operate.  Use a non-water texture at your own risk.
@@ -1355,6 +1482,15 @@ void SP_func_water(edict_t *self)
         self->speed = 25;
     self->moveinfo.accel = self->moveinfo.decel = self->moveinfo.speed = self->speed;
 
+    if (self->spawnflags & 2) // smart water
+    {
+        // this is actually the divisor of the lowest player's distance to determine speed.
+        // self->speed then becomes the cap of the speed.
+        if (!self->accel)
+            self->accel = 20;
+        self->blocked = smart_water_blocked;
+    }
+
     if (!self->wait)
         self->wait = -1;
     self->moveinfo.wait = self->wait;
@@ -1364,7 +1500,7 @@ void SP_func_water(edict_t *self)
     if (self->wait == -1)
         self->spawnflags |= DOOR_TOGGLE;
 
-    self->classname = "func_door";
+    //self->classname = "func_door";
 
     gi.linkentity(self);
 }

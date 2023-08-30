@@ -500,6 +500,11 @@ bool SV_Push(edict_t *pusher, vec3_t move, vec3_t amove)
                 check->groundentity = NULL;
 
             block = SV_TestEntityPosition(check);
+
+            if (Q_strcasecmp(pusher->classname, "func_water") == 0) {
+                block = NULL;
+            }
+
             if (!block) {
                 // pushed ok
                 gi.linkentity(check);
@@ -568,7 +573,7 @@ void SV_Physics_Pusher(edict_t *ent)
 //retry:
     pushed_p = pushed;
     for (part = ent ; part ; part = part->teamchain) {
-        if (!VectorEmpty(part->velocity) || !VectorEmpty(part->avelocity)) {
+        if (!VectorEmpty(part->velocity) || !VectorEmpty(part->avelocity) ) {
             // object is moving
             VectorScale(part->velocity, FRAMETIME, move);
             VectorScale(part->avelocity, FRAMETIME, amove);

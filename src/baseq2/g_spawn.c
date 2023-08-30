@@ -34,6 +34,7 @@ void SP_item_health(edict_t *self);
 void SP_item_health_small(edict_t *self);
 void SP_item_health_large(edict_t *self);
 void SP_item_health_mega(edict_t *self);
+void SP_info_teleport_destination(edict_t* self);
 
 void SP_info_player_start(edict_t *ent);
 void SP_info_player_deathmatch(edict_t *ent);
@@ -68,6 +69,7 @@ void SP_trigger_counter(edict_t *ent);
 void SP_trigger_elevator(edict_t *ent);
 void SP_trigger_gravity(edict_t *ent);
 void SP_trigger_monsterjump(edict_t *ent);
+void SP_trigger_teleport(edict_t* self);
 
 void SP_target_temp_entity(edict_t *ent);
 void SP_target_speaker(edict_t *ent);
@@ -147,6 +149,10 @@ void SP_turret_breach(edict_t *self);
 void SP_turret_base(edict_t *self);
 void SP_turret_driver(edict_t *self);
 
+qboolean IsEntFuncTrain(const char** data);
+char* GetEntityValue(const char** data, const char* searchKey);
+
+
 static const spawn_func_t spawn_funcs[] = {
     {"item_health", SP_item_health},
     {"item_health_small", SP_item_health_small},
@@ -157,6 +163,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"info_player_deathmatch", SP_info_player_deathmatch},
     {"info_player_coop", SP_info_player_coop},
     {"info_player_intermission", SP_info_player_intermission},
+    {"info_teleport_destination", SP_info_teleport_destination},
 
     {"func_plat", SP_func_plat},
     {"func_button", SP_func_button},
@@ -186,6 +193,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"trigger_elevator", SP_trigger_elevator},
     {"trigger_gravity", SP_trigger_gravity},
     {"trigger_monsterjump", SP_trigger_monsterjump},
+    {"trigger_teleport", SP_trigger_teleport},
 
     {"target_temp_entity", SP_target_temp_entity},
     {"target_speaker", SP_target_speaker},
@@ -205,6 +213,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"target_earthquake", SP_target_earthquake},
     {"target_character", SP_target_character},
     {"target_string", SP_target_string},
+    
 
     {"worldspawn", SP_worldspawn},
     {"viewthing", SP_viewthing},
@@ -465,71 +474,47 @@ Parses an edict out of the given string, returning the new position
 ed should be a properly initialized empty edict.
 ====================
 */
-void ED_ParseEdict(const char **data, edict_t *ent, const char* nextTarget)
+void ED_ParseEdict(const char **data, edict_t *ent, const char* pathList, int* mapVersion)
 {
     bool        init;
-    char        *key, *value, *originalData, *originValue = NULL;
+    char        *key, *value, *checkFogColor, *originValue = NULL;
+    const char* originalData = *data;
+    const char* storedValue = NULL;
+    char* targetName = GetEntityValue(data, "targetname");
 
-    qboolean qbAdjustOriginY = qfalse;
-    qboolean isFuncTrain = qfalse;
-    qboolean nextTargetUpdated = qfalse;
-
-    init = false;
-    originalData = data;
-    memset(&st, 0, sizeof(st));
-    st.skyautorotate = 1;
-
-    //Trying to figure out if ent is a func_train or func_train path to adjust the height positioning because it's too high in the new maps.
-    while (1) {
-        // parse key
-        key = COM_Parse(data);
-        if (key[0] == '}')
-            break;
-        if (!*data)
-            gi.error("%s: EOF without closing brace", __func__);
-
-        // parse value
-        value = COM_Parse(data);
-
-        if (!isFuncTrain) {
-            isFuncTrain = (qboolean)Q_strHas(value, "func_train");
-            if (isFuncTrain) {
-                qbAdjustOriginY = qtrue;
-            }
+    if (targetName != NULL) {
+        if (Q_strHas(pathList, targetName)) {
+            char* tempOrigin = GetEntityValue(data, "origin");
+            if (tempOrigin != NULL) {
+                originValue = GetEmptyString(strlen(tempOrigin));
+                strcpy(originValue, tempOrigin);
+            }            
         }
-
-        if (strlen(nextTarget) > 0 && !nextTargetUpdated) {
-            if (Q_strHas(key, "targetname") && Q_strHas(value, nextTarget)) {
-                if (originValue == NULL) {
-                    qbAdjustOriginY = qtrue;
-                }
-                else {
-                }
-            }
-        }
-
-        if (isFuncTrain && Q_strcasecmp(key, "target") == 0) {
-            memcpy(nextTarget, value, strlen(value));
-            nextTargetUpdated = qtrue;
-        }
-
-        if (Q_strcasecmp(key, "origin") == 0) {
-            originValue = value;
-            if (qbAdjustOriginY) {
-                Q_FixValue(value);
-            }
-        }
-
-        if (!*data)
-            gi.error("%s: EOF without closing brace", __func__);
-
-        if (value[0] == '}')
-            gi.error("%s: closing brace without data", __func__);
-
-
     }
 
-    data = originalData;
+    char* inputMapVersion = GetEntityValue(data, "mapversion");
+
+    if (inputMapVersion != NULL) {
+        *mapVersion = atoi(inputMapVersion);
+    }
+
+    if (*mapVersion == 0) {
+        checkFogColor = GetEntityValue(data, "fog_color");
+        if (checkFogColor != NULL) {
+            *mapVersion = 1;
+        }
+    }
+
+    if (originValue != NULL) {
+        Q_FixValue(originValue, (qboolean)(*mapVersion == 1));
+        Q_FixValue1(originValue, (qboolean)(*mapVersion == 1));
+        storedValue = GetEmptyString(strlen(originValue));
+        strcpy(storedValue, originValue);
+    }
+
+    init = false;
+    memset(&st, 0, sizeof(st));
+    st.skyautorotate = 1;
 
 // go through all the dictionary pairs
     while (1) {
@@ -551,6 +536,9 @@ void ED_ParseEdict(const char **data, edict_t *ent, const char* nextTarget)
 
         init = true;
 
+        if ((Q_strcasecmp(key, "origin") == 0 || Q_strcasecmp(key, "speed") == 0) && storedValue != NULL) {
+            value = storedValue;
+        }
         // keynames with a leading underscore are used for utility comments,
         // and are immediately discarded by quake
         if (key[0] == '_')
@@ -563,32 +551,80 @@ void ED_ParseEdict(const char **data, edict_t *ent, const char* nextTarget)
         }
     }
 
-
-
     if (!init)
         memset(ent, 0, sizeof(*ent));
 }
 
-void FixOriginValuesForFuncTrain(const char* value) {
-    //char* dest; 
-    //const char* xValue = GetSpecifcValue(0, value);
-    //const char* yValue = GetSpecifcValue(1, value);
-    //const char* zValue = GetSpecifcValue(2, value);
+qboolean IsEntFuncTrain(const char** data) {
+    char* key, * value;
+    const char* originalData = *data;
+    qboolean isFuncTrain = qfalse;
+
+    while (1) {
+        // parse key
+        key = COM_Parse(data);
+        if (key[0] == '}')
+            break;
+        if (!*data)
+            gi.error("%s: EOF without closing brace", __func__);
+
+        // parse value
+        value = COM_Parse(data);
+
+        if (!isFuncTrain) {
+            isFuncTrain = (qboolean)Q_strHas(value, "func_train");
+            if (isFuncTrain) {
+                *data = originalData;
+                return isFuncTrain;
+            }
+        }
+
+        if (!*data)
+            gi.error("%s: EOF without closing brace", __func__);
+
+        if (value[0] == '}')
+            gi.error("%s: closing brace without data", __func__);
+
+
+    }
+
+    *data = originalData;
+
+    return isFuncTrain;
 }
 
-const char* GetSpecifcValue(int index, const char* value) {
-    //char* val;
-    //bool bValFound = false;
-    //bool bValStart = false;
+char* GetEntityValue(const char** data, const char* searchKey) {
+    char* key, * value;
+    const char* originalData = *data;
 
-    //return value;
+    while (1) {
+        // parse key
+        key = COM_Parse(data);
+        if (key[0] == '}')
+            break;
+        if (!*data)
+            gi.error("%s: EOF without closing brace", __func__);
 
-    //while (!bValFound && *value) {
-    //
-    //}
-    
-    
+        // parse value
+        value = COM_Parse(data);
 
+        if (Q_strcasecmp(key, searchKey) == 0) {
+            *data = originalData;
+            return value;
+        }
+
+        if (!*data)
+            gi.error("%s: EOF without closing brace", __func__);
+
+        if (value[0] == '}')
+            gi.error("%s: closing brace without data", __func__);
+
+
+    }
+
+    *data = originalData;
+
+    return NULL;
 }
 
 /*
@@ -640,6 +676,169 @@ void G_FindTeams(void)
     gi.dprintf("%i teams with %i entities\n", c, c2);
 }
 
+
+char* GetFuncTrainTargetList(const char* entities) {
+    const char* entitiesStart = entities;
+    char* funcTrainList = GetEmptyString(256);
+    char* funcTranListStart = funcTrainList;
+    const char** data;
+    char* com_token;
+
+    while (1) {
+        // parse the opening brace
+        com_token = COM_Parse(&entities);
+        if (!entities)
+            break;
+        if (com_token[0] != '{')
+            gi.error("ED_LoadFromFile: found %s when expecting {", com_token);
+
+
+        data = &entities;
+
+        qboolean isFuncTrain = IsEntFuncTrain(data);
+
+        if (isFuncTrain) {
+            const char* tempTargetName = GetEntityValue(data, "target");
+            memcpy(funcTrainList, tempTargetName, strlen(tempTargetName));
+            funcTrainList += (strlen(tempTargetName));
+            *funcTrainList = ';';
+            funcTrainList++;
+
+        }
+
+        while (1) {
+            char *key, *value;
+
+            // parse key
+            key = COM_Parse(data);
+            if (key[0] == '}')
+                break;
+            if (!*data)
+                gi.error("%s: EOF without closing brace", __func__);
+
+            // parse value
+            value = COM_Parse(data);
+
+            if (!*data)
+                gi.error("%s: EOF without closing brace", __func__);
+
+            if (value[0] == '}')
+                gi.error("%s: closing brace without data", __func__);
+        }
+
+    }
+
+    entities = entitiesStart;
+
+    return funcTranListStart;
+}
+
+char* GetValueFromList(const char** list) {
+    char *res, *resStart;
+    char* listStart = *list;
+    int beforeSeperator = 0;
+
+    while (list) {
+        if (**list == ';') {
+            (*list)++;
+            break;
+        }
+
+        beforeSeperator++;        
+
+        (*list)++;
+    }
+
+    res = GetEmptyString(beforeSeperator + 1);
+    resStart = res;
+    memcpy(res, listStart, beforeSeperator);
+    res = resStart;
+
+    return res;
+}
+
+void CreateListOfPaths(const char* entities, const char* outString) {
+    const char* entitiesStart = entities;
+    char* funcTrainList = GetFuncTrainTargetList(entities);
+    char* workingTargetList = GetEmptyString(256);    
+    char* workingListStart = workingTargetList;    
+    char *com_token, *searchTarget;
+    const char** data;
+    qboolean bNoSearchTargetUpdate = qfalse;
+
+    while ((funcTrainList && strlen(funcTrainList) > 0) || bNoSearchTargetUpdate) {
+        
+        if (!bNoSearchTargetUpdate) {
+            searchTarget = GetValueFromList(&funcTrainList);
+        }
+        else {
+            bNoSearchTargetUpdate = qfalse;
+        }
+
+        while (1) {
+            // parse the opening brace
+            com_token = COM_Parse(&entities);
+            if (!entities)
+                break;
+            if (com_token[0] != '{')
+                gi.error("ED_LoadFromFile: found %s when expecting {", com_token);
+
+            data = &entities;
+
+            char* tempTargetName = GetEntityValue(data, "targetname");
+
+            if (tempTargetName != NULL) {
+                if (Q_strcasecmp(tempTargetName, searchTarget) == 0) {
+                    memcpy(workingTargetList, tempTargetName, strlen(tempTargetName));
+                    workingTargetList += strlen(tempTargetName);
+                    *workingTargetList = ';';
+                    workingTargetList++;
+                    
+                    char* tempSearchTarget = GetEntityValue(data, "target");
+
+                    if (tempSearchTarget != NULL) {
+                        char* newTargetStart;
+                        if (!Q_strHas(workingListStart, tempSearchTarget)) {
+                            bNoSearchTargetUpdate = qtrue;
+                            free(searchTarget);
+                            searchTarget = GetEmptyString(strlen(tempSearchTarget) + 1);
+                            newTargetStart = searchTarget;
+                            memcpy(searchTarget, tempSearchTarget, strlen(tempSearchTarget));
+                            searchTarget = newTargetStart;
+                        }                        
+                    }                    
+                }
+            }
+
+            while (1) {
+                char* key, * value;
+
+                // parse key
+                key = COM_Parse(data);
+                if (key[0] == '}')
+                    break;
+                if (!*data)
+                    gi.error("%s: EOF without closing brace", __func__);
+
+                // parse value
+                value = COM_Parse(data);
+
+                if (!*data)
+                    gi.error("%s: EOF without closing brace", __func__);
+
+                if (value[0] == '}')
+                    gi.error("%s: closing brace without data", __func__);
+            }
+
+        }
+        entities = entitiesStart;
+    }
+
+    memcpy(outString, workingListStart, strlen(workingListStart));
+}
+
+
+
 /*
 ==============
 SpawnEntities
@@ -655,8 +854,10 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     char        *com_token;
     int         i;
     float       skill_level;
-    char* nextTarget = GetEmptyString((size_t)64);
+    int* mapVersion = (int*)malloc(sizeof(int));
+    char* pathList = GetEmptyString(256);
 
+    *mapVersion = 0;
     skill_level = floor(skill->value);
     if (skill_level < 0)
         skill_level = 0;
@@ -682,7 +883,7 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     ent = NULL;
     inhibit = 0;
     
-
+    CreateListOfPaths(entities, pathList);
 
 // parse ents
     while (1) {
@@ -697,7 +898,7 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
             ent = g_edicts;
         else
             ent = G_Spawn();
-        ED_ParseEdict(&entities, ent, nextTarget);
+        ED_ParseEdict(&entities, ent, pathList, mapVersion);
 
         // yet another map hack
         if (!Q_stricmp(level.mapname, "command") && !Q_stricmp(ent->classname, "trigger_once") && !Q_stricmp(ent->model, "*27"))

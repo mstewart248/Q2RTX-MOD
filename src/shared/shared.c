@@ -749,47 +749,123 @@ char* GetEmptyString(size_t inputStringLength) {
 }
 
 
-const char* Q_FixValue(const char* value) {
+const char* Q_FixValue(const char* value, qboolean halfValue) {
+    int yLength = 0;
+    int beforeYLen = 0;
+    char* orignalValuePointer = value;
+    char* yValueStart;
+    char* destYValue = GetEmptyString(strlen(value));
+    char* destString = GetEmptyString(strlen(value) + 2);
+    char* destStringStart = destString;
+    qboolean bFirstSpace = qfalse;
+    qboolean bSecondSpace = qfalse;
+
+    yValueStart = value;
+
+    do {
+        char* currPointer = value;
+        value++;
+
+        if (*currPointer == ' ' && bFirstSpace && !bSecondSpace) {
+            bSecondSpace = qtrue;
+            yValueStart = currPointer + 1;
+        }
+
+        if (*currPointer == ' ' && !bFirstSpace) {
+            bFirstSpace = qtrue;
+
+        }
+
+    } while (value && !bSecondSpace);
+
+
+    if (bSecondSpace) {
+
+        yLength = strlen(yValueStart);
+        beforeYLen = strlen(orignalValuePointer) - yLength;
+
+        char* newYValueString = GetEmptyString(strlen(yValueStart));
+        size_t len = max(yLength, 0);
+        memcpy(destYValue, yValueStart, len);
+        int intValueY = atoi(destYValue);
+
+        if (!halfValue) {
+            intValueY -= 500;
+        }
+        else {
+            intValueY -= 250;
+        }
+        sprintf(newYValueString, "%d", intValueY);
+        Q_strlcat(destString, orignalValuePointer, beforeYLen + 1);
+        destString += beforeYLen;
+        Q_strlcat(destString, newYValueString, strlen(newYValueString) + 1);
+    }
+
+    value = orignalValuePointer;
+    //value = GetEmptyString(strlen(destStringStart));
+    memcpy(value, destStringStart, strlen(destStringStart) + 1);
+
+    return destStringStart;
+}
+
+
+const char* Q_FixValue1(const char* value, qboolean halfValue) {
     int yLength = 0;
     int beforeYLen = 0;
     char* orignalValuePointer = value;
     char* yValueStart;
     char* yValueEnd;
+    char* lastPointerValue = NULL;
     char* destYValue = GetEmptyString(strlen(value));
     char* destString = GetEmptyString(strlen(value) + 1);
     char* destStringStart = destString;
     qboolean bFirstSpace = qfalse;
 
 
+    yValueStart = value;
+
     do {
         char* currPointer = value;
         value++;
 
+        yLength++;
+
         if (*currPointer == ' ' && !bFirstSpace) {
-            bFirstSpace = qtrue;                       
+            bFirstSpace = qtrue;
+            yValueEnd = lastPointerValue;
+            yLength--;
         }
+
+
+        lastPointerValue = currPointer;
+        
+        
 
     } while (value && !bFirstSpace);
 
 
-    if (bSecondSpace) {
+    if (bFirstSpace) {
         char* newYValueString = GetEmptyString(64);
         size_t len = max(yLength, 0);
         memcpy(destYValue, yValueStart, len);
         int intValueY = atoi(destYValue);
 
-        intValueY -= 200;
-        Q_strlcat(destString, orignalValuePointer, (size_t)(beforeYLen + 1));
-        destString += beforeYLen;
+        if (!halfValue) {
+            intValueY -= 70;
+        }
+        else {
+            intValueY -= 130;
+        }
+        sprintf(newYValueString, "%d", intValueY);
         Q_strlcat(destString, newYValueString, strlen(newYValueString) + 1);
         destString += strlen(newYValueString);
-        Q_strlcat(destString, yValueEnd, strlen(yValueEnd) + 1);
+        Q_strlcat(destString, lastPointerValue, strlen(lastPointerValue) + 1);
         free(newYValueString);
     }
 
     value = orignalValuePointer;
+    //value = GetEmptyString(strlen(destStringStart));
     memcpy(value, destStringStart, strlen(destStringStart));
-    free(destString);
     free(destYValue);
 
     return destStringStart;
@@ -841,7 +917,8 @@ const char* Q_FixValue2(const char* value) {
         memcpy(destYValue, yValueStart, len);
         int intValueY = atoi(destYValue);
 
-        intValueY -= 200;      
+        intValueY -= 100;     
+        sprintf(newYValueString, "%d", intValueY);
         Q_strlcat(destString, orignalValuePointer, (size_t)(beforeYLen + 1));
         destString += beforeYLen;
         Q_strlcat(destString, newYValueString, strlen(newYValueString) + 1);
@@ -852,7 +929,6 @@ const char* Q_FixValue2(const char* value) {
 
     value = orignalValuePointer;
     memcpy(value, destStringStart, strlen(destStringStart));
-    free(destString);
     free(destYValue);    
 
     return destStringStart;

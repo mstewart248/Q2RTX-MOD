@@ -76,7 +76,11 @@ cvar_t  *sv_features;
 
 cvar_t  *sv_flaregun;
 
+char* GetFuncTrainTargetList(const char* entities);
+char* GetValueFromList(const char* list);
+void CreateListOfPaths(const char* entities, const char* outString);
 void SpawnEntities(const char *mapname, const char *entities, const char *spawnpoint, qboolean isMguMap);
+
 void ClientThink(edict_t *ent, usercmd_t *cmd);
 qboolean ClientConnect(edict_t *ent, char *userinfo);
 void ClientUserinfoChanged(edict_t *ent, char *userinfo);

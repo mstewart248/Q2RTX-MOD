@@ -137,6 +137,118 @@ void SP_trigger_multiple(edict_t *ent)
     gi.linkentity(ent);
 }
 
+void trigger_teleport_touch(edict_t* self, edict_t* other, cplane_t* plane, csurface_t* surf)
+{
+    edict_t* dest;
+    vec3_t zeroVel;
+
+    zeroVel[0] = 0;
+    zeroVel[1] = 0;
+    zeroVel[2] = 0;
+
+    if (/*(self->spawnflags & SPAWNFLAG_TELEPORT_PLAYER_ONLY) &&*/ !(other->client))
+        return;
+
+    if (self->delay)
+        return;
+
+    dest = G_PickTarget(self->target);
+    if (!dest)
+    {
+        Com_Printf("Teleport Destination not found!\n");
+        return;
+    }
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_TELEPORT_EFFECT);
+    gi.WritePosition(other->s.origin);
+    gi.multicast(other->s.origin, MULTICAST_PVS);
+
+    
+    VectorCopy(dest->s.origin, other->s.origin);
+    //other->s.origin = dest->s.origin;
+    VectorCopy(dest->s.origin, other->s.old_origin);
+    //other->s.old_origin = dest->s.origin;
+    other->s.origin[2] += 10;
+
+    // clear the velocity and hold them in place briefly
+    VectorClear(other->velocity);
+    //other->velocity = zeroVel;
+
+    if (other->client)
+    {
+        other->client->ps.pmove.pm_time = 160; // hold time
+        other->client->ps.pmove.pm_flags |= PMF_TIME_TELEPORT;
+
+        // draw the teleport splash at source and on the player
+        other->s.event = EV_PLAYER_TELEPORT;
+
+        // set angles
+        VectorSubtract(dest->s.angles, other->client->resp.cmd_angles, other->client->ps.pmove.delta_angles);
+        //other->client->ps.pmove.delta_angles = dest->s.angles - other->client->resp.cmd_angles;
+
+        VectorClear(other->client->ps.viewangles);
+        //other->client->ps.viewangles = {};
+        VectorClear(other->client->v_angle);
+    }
+
+    VectorClear(other->s.angles);
+    //other->s.angles = {};
+
+    gi.linkentity(other);
+
+    // kill anything at the destination
+    KillBox(other->client);
+
+    // [Paril-KEX] move sphere, if we own it
+    //if (other->client && other->client->owned_sphere)
+    //{
+    //    edict_t* sphere = other->client->owned_sphere;
+    //    sphere->s.origin = other->s.origin;
+    //    sphere->s.origin[2] = other->absmax[2];
+    //    sphere->s.angles[YAW] = other->s.angles[YAW];
+    //    gi.linkentity(sphere);
+    //}
+}
+
+void trigger_teleport_use(edict_t* self, edict_t* other, edict_t* activator) 
+{
+    if (self->delay)
+        self->delay = 0;
+    else
+        self->delay = 1;
+}
+
+void SP_trigger_teleport(edict_t* self)
+{
+    if (!self->wait)
+        self->wait = 0.2f;
+
+    self->delay = 0;
+
+    if (self->targetname)
+    {
+        self->use = trigger_teleport_use;
+        if (!self->spawnflags & 8)
+            self->delay = 1;
+    }
+
+    self->touch = trigger_teleport_touch;
+
+    self->solid = SOLID_TRIGGER;
+    self->movetype = MOVETYPE_NONE;
+
+    if (self->s.angles)
+        G_SetMovedir(self->s.angles, self->movedir);
+
+    gi.setmodel(self, self->model);
+    gi.linkentity(self);
+}
+
+void SP_info_teleport_destination(edict_t* self)
+{
+}
+
 
 /*QUAKED trigger_once (.5 .5 .5) ? x x TRIGGERED
 Triggers once, then removes itself.

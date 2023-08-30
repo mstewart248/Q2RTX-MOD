@@ -386,6 +386,15 @@ void CL_PrepRefresh(void)
     // set sky textures and speed
     CL_SetSky();
 
+    if (Q_stricmp(cl.gamedir, "rerelease") == 0) {
+        if (Q_strHas(cl.mapname, "mgu") && !Q_strHas(cl.mapname, "mguhub")) {
+            vec3_t  axis;
+
+            VectorSet(axis, 0, 0, 1);
+            R_SetSky("base", 0.0, 1, axis);
+        }
+    }
+
     // the renderer can now free unneeded stuff
     R_EndRegistration();
 

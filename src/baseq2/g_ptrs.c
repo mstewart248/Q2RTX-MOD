@@ -605,6 +605,10 @@ extern void Use_Target_Speaker(void);
 extern void use_target_splash(void);
 extern void Use_Target_Tent(void);
 extern void walkmonster_start_go(void);
+extern void trigger_teleport_use(void);
+extern void trigger_teleport_touch(void);
+extern void smart_water_go_up(void);
+
 const save_ptr_t save_ptrs[] = {
 { P_prethink, misc_viper_bomb_prethink },
 { P_think, AngleMove_Begin },
@@ -675,6 +679,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, turret_driver_link },
 { P_think, turret_driver_think },
 { P_think, walkmonster_start_go },
+{ P_think, smart_water_go_up},
 { P_blocked, door_blocked },
 { P_blocked, door_secret_blocked },
 { P_blocked, plat_blocked },
@@ -707,6 +712,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, trigger_gravity_touch },
 { P_touch, trigger_monsterjump_touch },
 { P_touch, trigger_push_touch },
+{ P_touch, trigger_teleport_touch },
 { P_use, actor_use },
 { P_use, button_use },
 { P_use, commander_body_use },
@@ -756,6 +762,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, Use_Target_Speaker },
 { P_use, use_target_splash },
 { P_use, Use_Target_Tent },
+{ P_use, trigger_teleport_use },
 { P_pain, actor_pain },
 { P_pain, berserk_pain },
 { P_pain, boss2_pain },

@@ -487,7 +487,10 @@ char *COM_Parse(const char **data_p);
 // data is an in/out parm, returns a parsed out token
 size_t COM_Compress(char *data);
 char* GetEmptyString(size_t inputStringLength);
-const char* Q_FixValue(const char* value);
+const char* Q_FixValue(const char* value, qboolean halfValue);
+const char* Q_FixValue1(const char* value, qboolean halfValue);
+const char* Q_FixValue2(const char* value);
+int Q_strHas(const char* inputString, const char* searchString);
 
 int SortStrcmp(const void *p1, const void *p2);
 int SortStricmp(const void *p1, const void *p2);
