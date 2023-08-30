@@ -387,7 +387,7 @@ void CL_PrepRefresh(void)
     CL_SetSky();
 
     if (Q_stricmp(cl.gamedir, "rerelease") == 0) {
-        if (Q_strHas(cl.mapname, "mgu") && !Q_strHas(cl.mapname, "mguhub")) {
+        if (!Q_strHas(cl.mapname, "mguhub")) {
             vec3_t  axis;
 
             VectorSet(axis, 0, 0, 1);

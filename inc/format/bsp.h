@@ -54,7 +54,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define     MAX_MAP_PORTALS     65536
 #define     MAX_MAP_EDGES       128000
 #define     MAX_MAP_SURFEDGES   256000
-#define     MAX_MAP_LIGHTING    0x800000
+#define     MAX_MAP_LIGHTING    0x900000
 #define     MAX_MAP_VISIBILITY  0x300000
 
 // QBSP stuff
