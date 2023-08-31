@@ -699,10 +699,12 @@ char* GetFuncTrainTargetList(const char* entities) {
 
         if (isFuncTrain) {
             const char* tempTargetName = GetEntityValue(data, "target");
-            memcpy(funcTrainList, tempTargetName, strlen(tempTargetName));
-            funcTrainList += (strlen(tempTargetName));
-            *funcTrainList = ';';
-            funcTrainList++;
+            if (tempTargetName != NULL) {
+                memcpy(funcTrainList, tempTargetName, strlen(tempTargetName));
+                funcTrainList += (strlen(tempTargetName));
+                *funcTrainList = ';';
+                funcTrainList++;
+            }            
 
         }
 
@@ -883,7 +885,10 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     ent = NULL;
     inhibit = 0;
     
-    CreateListOfPaths(entities, pathList);
+    if (!Q_strHas(mapname, "base")) {
+        CreateListOfPaths(entities, pathList);
+    }
+    
 
 // parse ents
     while (1) {

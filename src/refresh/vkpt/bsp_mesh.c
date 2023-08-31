@@ -1093,7 +1093,7 @@ collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, int model
 
 			// Create triangles for the polygon, using a triangle fan topology
 
-			const int num_triangles = instance.len - 2;
+			const int num_triangles = 1; //instance.len - 2;
 
 			for (int i = 0; i < num_triangles; i++)
 			{
@@ -1667,7 +1667,7 @@ light_affects_cluster(light_poly_t* light, const aabb_t* aabb)
 static void
 collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
 {
-#define MAX_LIGHTS_PER_CLUSTER 4096
+#define MAX_LIGHTS_PER_CLUSTER 3064
 	int* cluster_lights = Z_Malloc(MAX_LIGHTS_PER_CLUSTER * wm->num_clusters * sizeof(int));
 	int* cluster_light_counts = Z_Mallocz(wm->num_clusters * sizeof(int));
 
