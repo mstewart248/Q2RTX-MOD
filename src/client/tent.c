@@ -1088,7 +1088,7 @@ void CL_ParseTEnt(void)
         if (!(cl_disable_particles->integer & NOPART_BLOOD))
         {
             // CL_ParticleEffect(te.pos1, te.dir, 0xe8, 60);
-            CL_BloodParticleEffect(te.pos1, te.dir, 0xe8, 1000);
+            CL_BloodParticleEffect(te.pos1, te.dir, 0xe8, 40);
         }
         break;
 

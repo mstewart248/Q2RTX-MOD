@@ -26,7 +26,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MAX_DLIGHTS     32
 
 #define MAX_ENTITIES    8192    // == MAX_PACKET_ENTITIES * 2
-#define MAX_PARTICLES   100000
+#define MAX_PARTICLES   1000000
 #define MAX_LIGHTSTYLES 256
 
 #define POWERSUIT_SCALE     4.0f

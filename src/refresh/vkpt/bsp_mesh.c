@@ -648,21 +648,27 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 			continue;
 		}
 
-		if (Q_strHas(surf->texinfo->name, "lava") && !Q_strHas(surf->texinfo->name, "brlava")) {
+		if (Q_strHas(surf->texinfo->name, "lava") && !Q_strHas(surf->texinfo->name, "brlava") && Q_strHas(bsp->name, "q2dm3")) {
 			continue;
 		}
 
+		
 		uint32_t material_id = surf->texinfo->material ? surf->texinfo->material->flags : 0;
 		uint32_t surf_flags = surf->drawflags | surf->texinfo->c.flags;
 
+
 		// ugly hacks for situations when the same texture is used with different effects
+
+		if (Q_strHas(surf->texinfo->name, "glocrys_1b") && surf->texinfo->c.value == 0) {
+			//Com_EPrintf("DrawFlag: %d\n", surf->drawflags);
+			surf_flags = SURF_SKY;
+		}
 
 		if ((MAT_IsKind(material_id, MATERIAL_KIND_WATER) || MAT_IsKind(material_id, MATERIAL_KIND_SLIME)) && !(surf_flags & SURF_WARP))
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_REGULAR);
 
 		if (MAT_IsKind(material_id, MATERIAL_KIND_GLASS) && !(surf_flags & SURF_TRANS_MASK))
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_REGULAR);
-		
 		// custom transparent surfaces
 		if (surf_flags & SURF_SKY)
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_SKY);
