@@ -648,6 +648,10 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 			continue;
 		}
 
+		if (Q_strHas(surf->texinfo->name, "lava") && !Q_strHas(surf->texinfo->name, "brlava")) {
+			continue;
+		}
+
 		uint32_t material_id = surf->texinfo->material ? surf->texinfo->material->flags : 0;
 		uint32_t surf_flags = surf->drawflags | surf->texinfo->c.flags;
 
@@ -2014,7 +2018,7 @@ bsp_mesh_register_textures(bsp_t *bsp)
 			   material has no emissive image.
 			   - Skip SKY and NODRAW surfaces, they'll be handled differently.
 			   - Make WARP surfaces optional, as giving water, slime... an emissive texture clashes visually. */
-			bool synth_surface_material = ((info->c.flags & (SURF_LIGHT | SURF_SKY | SURF_NODRAW)) == SURF_LIGHT)
+			bool synth_surface_material = ((info->c.flags & (SURF_LIGHT | SURF_SKY |  SURF_NODRAW)) == SURF_LIGHT)
 				&& (info->radiance != 0);
 			
 			bool is_warp_surface = (info->c.flags & SURF_WARP) != 0;

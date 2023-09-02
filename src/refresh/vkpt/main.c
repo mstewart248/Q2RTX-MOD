@@ -2943,12 +2943,18 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	{
 		// Transfer the light buffer from staging into device memory.
 		// Previous frame's tracing still uses device memory, so only do the copy after that is finished.
-
+		
 		VkCommandBuffer transfer_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
+		VkCommandBuffer trace_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 
-		vkpt_light_buffer_upload_staging(transfer_cmd_buf);
+		_VK(vkpt_profiler_query(trace_cmd_buf, PROFILER_FRAME_TIME, PROFILER_START));
+
+		BEGIN_PERF_MARKER(transfer_cmd_buf, PROFILER_UPLOAD_LIGHTS);
+		vkpt_light_buffer_upload_staging(transfer_cmd_buf);			
 		vkpt_iqm_matrix_buffer_upload_staging(transfer_cmd_buf);
+		END_PERF_MARKER(transfer_cmd_buf, PROFILER_UPLOAD_LIGHTS);
 
+		
 		for (int gpu = 0; gpu < qvk.device_count; gpu++)
 		{
 			device_indices[gpu] = gpu;
@@ -2966,11 +2972,10 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			qvk.device_count, transfer_semaphores, device_indices, 
 			VK_NULL_HANDLE);
 
+		
 		*prev_trace_signaled = false;
-	}
 
-	{
-		VkCommandBuffer trace_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+		
 
 		update_transparency(trace_cmd_buf, *ubo->V, fd->particles, fd->num_particles, fd->entities, fd->num_entities);
 
@@ -2980,7 +2985,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		// put a profiler query without a marker for the frame begin/end - because markers do not 
 		// work well across different command lists
-		_VK(vkpt_profiler_query(trace_cmd_buf, PROFILER_FRAME_TIME, PROFILER_START));
+		
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_UPDATE_ENVIRONMENT);
 		if (render_world)
@@ -3372,11 +3377,14 @@ retry:;
 
 	// Process the profiler queries - always enabled to support DRS
 	{
-		VkCommandBuffer reset_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
-
-		_VK(vkpt_profiler_next_frame(reset_cmd_buf));
+		VkCommandBuffer reset_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics); 		
+		VkCommandBuffer reset_cmd_buf_transfer = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
 
 		vkpt_submit_command_buffer_simple(reset_cmd_buf, qvk.queue_graphics, true);
+		vkpt_reset_query_pool(reset_cmd_buf_transfer);
+		_VK(vkpt_profiler_next_frame(reset_cmd_buf, qfalse));	
+		
+		
 	}
 
 	vkpt_textures_destroy_unused();
@@ -3400,8 +3408,12 @@ R_EndFrame_RTX(void)
 		return;
 	}
 
-	if(cvar_profiler->integer)
+	if (cvar_profiler->integer) {
+		VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
+
 		draw_profiler(cvar_flt_enable->integer != 0);
+	}
+		
 	if(cvar_tm_debug->integer)
 		vkpt_tone_mapping_draw_debug();
 

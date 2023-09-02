@@ -168,6 +168,8 @@ reset_samples(int idx)
 VkResult
 vkpt_profiler_query(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action)
 {
+	int profilerQueriesPerFrmae = NUM_PROFILER_QUERIES_PER_FRAME;
+
 	idx = idx * 2 + action + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME;
 
 	set_current_gpu(cmd_buf, 0);
@@ -185,8 +187,17 @@ vkpt_profiler_query(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action)
 	return VK_SUCCESS;
 }
 
+VkResult 
+vkpt_reset_query_pool(VkCommandBuffer cmd_buf) {
+	vkCmdResetQueryPool(cmd_buf, profiler_data.query_pool,
+		NUM_PROFILER_QUERIES_PER_FRAME * qvk.current_frame_index,
+		NUM_PROFILER_QUERIES_PER_FRAME);
+
+	return VK_SUCCESS;
+}
+
 VkResult
-vkpt_profiler_next_frame(VkCommandBuffer cmd_buf)
+vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
 {
 	// Resize sample buffers, if necessary
 	size_t new_samples = max(cvar_profiler_samples->integer, 1);
@@ -194,10 +205,13 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf)
 		set_sample_count(new_samples);
 
 	bool any_queries_used = false;
+	int profileQueriesPerframe = NUM_PROFILER_QUERIES_PER_FRAME;
 
 	for (int idx = 0; idx < NUM_PROFILER_QUERIES_PER_FRAME; idx++)
 	{
-		if (profiler_data.queries_used[idx + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME])
+		int queryIndex = idx + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME;
+
+		if (profiler_data.queries_used[queryIndex])
 		{
 			any_queries_used = true;
 			break;
@@ -206,6 +220,8 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf)
 
 	if (any_queries_used)
 	{
+		//memset(profiler_data.query_pool_results, 0, sizeof(profiler_data.query_pool_results));
+
 		VkResult result = vkGetQueryPoolResults(qvk.device, profiler_data.query_pool,
 			NUM_PROFILER_QUERIES_PER_FRAME * qvk.current_frame_index,
 			NUM_PROFILER_QUERIES_PER_FRAME,
@@ -225,7 +241,10 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf)
 	{
 		for (int idx = 0; idx < NUM_PROFILER_ENTRIES; idx++)
 		{
-			if (!profiler_data.queries_used[idx * 2 + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME])
+
+			int queriesUsedIndex = idx * 2 + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME;
+
+			if (!profiler_data.queries_used[queriesUsedIndex])
 			{
 				profiler_data.query_pool_results[idx * 2 + 0] = 0;
 				profiler_data.query_pool_results[idx * 2 + 1] = 0;
@@ -252,7 +271,10 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf)
 			NUM_PROFILER_QUERIES_PER_FRAME * qvk.current_frame_index, 
 			NUM_PROFILER_QUERIES_PER_FRAME);
 
-	memset(profiler_data.queries_used + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME, 0, sizeof(bool) * NUM_PROFILER_QUERIES_PER_FRAME);
+	//if (secondPass) {
+		memset(profiler_data.queries_used + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME, 0, sizeof(bool) * NUM_PROFILER_QUERIES_PER_FRAME);
+	//}
+	
 
 	return VK_SUCCESS;
 }
@@ -301,8 +323,9 @@ draw_profiler(int enable_asvgf)
 	draw_query(x, y, font, &#name[9], name); y += 10;
 
 	PROFILER_DO(PROFILER_FRAME_TIME, 0);
+	PROFILER_DO(PROFILER_UPLOAD_LIGHTS, 1);
 	PROFILER_DO(PROFILER_INSTANCE_GEOMETRY, 1);
-	PROFILER_DO(PROFILER_BVH_UPDATE, 1);
+	PROFILER_DO(PROFILER_BVH_UPDATE, 1);	
 	PROFILER_DO(PROFILER_UPDATE_ENVIRONMENT, 1);
 	PROFILER_DO(PROFILER_SHADOW_MAP, 1);
 	PROFILER_DO(PROFILER_PRIMARY_RAYS, 1);

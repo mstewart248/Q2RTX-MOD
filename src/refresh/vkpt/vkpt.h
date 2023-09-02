@@ -471,6 +471,7 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_FRAME_TIME,                 0) \
 	PROFILER_DO(PROFILER_INSTANCE_GEOMETRY,          1) \
 	PROFILER_DO(PROFILER_BVH_UPDATE,                 1) \
+    PROFILER_DO(PROFILER_UPLOAD_LIGHTS,              1) \
 	PROFILER_DO(PROFILER_PRIMARY_RAYS,               1) \
 	PROFILER_DO(PROFILER_REFLECT_REFRACT_1,          1) \
 	PROFILER_DO(PROFILER_REFLECT_REFRACT_2,          1) \
@@ -535,7 +536,9 @@ VkDescriptorSet qvk_get_current_desc_set_textures(void);
 VkResult vkpt_profiler_initialize(void);
 VkResult vkpt_profiler_destroy(void);
 VkResult vkpt_profiler_query(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action);
-VkResult vkpt_profiler_next_frame(VkCommandBuffer cmd_buf);
+
+VkResult vkpt_reset_query_pool(VkCommandBuffer cmd_buf);
+VkResult vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass);
 void draw_profiler(int enable_asvgf);
 double vkpt_get_profiler_result(int idx);
 

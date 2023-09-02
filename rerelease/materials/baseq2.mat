@@ -1682,7 +1682,42 @@ textures/e1u1/bluekeypad:
 	texture_normals overrides/bluekeypad_n.tga
 	base_factor 2.5
 
+textures/e1u1/sewer2:
+	texture_base otextures/e1u1/sewer2.wal
+	kind WATER
+	base_factor 2.5
+	
+textures/unused/bluwter:
+	texture_base overrides/bluwter.tga
+	kind WATER
+	base_factor 2.5
+
 textures/e1u1/bluwter:
+	texture_base overrides/bluwter.tga
+	kind WATER
+	base_factor 2.5
+	
+textures/e1u2/bluwter:
+	texture_base overrides/bluwter.tga
+	kind WATER
+	base_factor 2.5
+	
+textures/e1u3/bluwter:
+	texture_base overrides/bluwter.tga
+	kind WATER
+	base_factor 2.5
+	
+textures/e2u2/bluwter:
+	texture_base overrides/bluwter.tga
+	kind WATER
+	base_factor 2.5
+	
+textures/e2u3/bluwter:
+	texture_base overrides/bluwter.tga
+	kind WATER
+	base_factor 2.5
+	
+textures/e3u1/bluwter:
 	texture_base overrides/bluwter.tga
 	kind WATER
 	base_factor 2.5
@@ -1799,11 +1834,6 @@ textures/e1u1/broken2_3:
 textures/e1u1/broken2_4:
 	texture_base overrides/broken2_4.tga
 	texture_normals overrides/broken2_4_n.tga
-	base_factor 2.5
-
-textures/e1u1/brwater:
-	texture_base textures/e1u1/brwater.wal
-	kind WATER
 	base_factor 2.5
 
 textures/e1u1/btactmach:
@@ -3734,11 +3764,6 @@ textures/e1u2/bigmet1_2:
 	texture_normals overrides/bigmet1_2_n.tga
 	base_factor 2.5
 
-textures/e1u2/bluwter:
-	texture_base overrides/bluwter.tga
-	kind WATER
-	base_factor 2.5
-
 textures/e1u2/box02_3:
 	texture_base overrides/box02_3.tga
 	texture_normals overrides/box02_3_n.tga
@@ -5069,11 +5094,6 @@ textures/e1u3/bluekeypad:
 	texture_normals overrides/bluekeypad_n.tga
 	base_factor 2.5
 
-textures/e1u3/bluwter:
-	texture_base overrides/bluwter.tga
-	kind WATER
-	base_factor 2.5
-
 textures/e1u3/broken1_1:
 	texture_base overrides/broken1_1.tga
 	texture_normals overrides/broken1_1_n.tga
@@ -5084,11 +5104,56 @@ textures/e1u3/broken2_4:
 	texture_normals overrides/broken2_4_n.tga
 	base_factor 2.5
 
+textures/e1u1/brwater:
+	texture_base textures/e1u1/brwater.wal
+	kind WATER
+	base_factor 2.5
+	
+textures/e1u2/brwater:
+	texture_base textures/e1u2/brwater.wal
+	kind WATER
+	base_factor 2.5
+	
 textures/e1u3/brwater:
 	texture_base textures/e1u3/brwater.wal
 	kind WATER
 	base_factor 2.5
 
+textures/e2u1/brwater:
+	texture_base textures/e2u1/brwater.wal
+	kind WATER
+	base_factor 2.5
+	
+textures/e2u2/brwater:
+	texture_base textures/e2u2/brwater.wal
+	kind WATER
+	base_factor 2.5
+	
+textures/e2u3/brwater:
+	texture_base textures/e2u3/brwater.wal
+	kind WATER
+	base_factor 2.5
+
+textures/e3u1/brwater:
+	texture_base textures/e3u1/brwater.wal
+	kind WATER
+	base_factor 2.5
+
+textures/unused/btwater:
+	texture_base textures/unused/btwater.wal
+	kind WATER
+	base_factor 2.5
+
+textures/r_hanger/crwater:
+	texture_base textures/r_hanger/crwater.wal
+	kind WATER
+	base_factor 2.5
+
+textures/r_natural/crwater:
+	texture_base textures/r_natural/crwater.wal
+	kind WATER
+	base_factor 2.5
+	
 textures/e1u3/btactmach:
 	texture_base overrides/btactmach.tga
 	texture_normals overrides/btactmach_n.tga
@@ -8064,10 +8129,10 @@ textures/e2u2/belt2_5:
 	texture_normals overrides/belt2_5_n.tga
 	base_factor 2.5
 
-textures/e2u2/bluwter:
-	texture_base overrides/bluwter.tga
+textures/e2u2/bluwatr:
+	texture_base textures/e2u2/bluwatr.wal
 	kind WATER
-	base_factor 2.5
+	base_factor 2.5	
 
 textures/e2u2/bmetal11_1:
 	texture_base overrides/bmetal11_1.tga
@@ -9035,11 +9100,6 @@ textures/e2u3/blume9_2:
 textures/e2u3/blumt2_6:
 	texture_base overrides/blumt2_6.tga
 	texture_normals overrides/blumt2_6_n.tga
-	base_factor 2.5
-
-textures/e2u3/bluwter:
-	texture_base overrides/bluwter.tga
-	kind WATER
 	base_factor 2.5
 
 textures/e2u3/bmetal11_1:
@@ -10663,11 +10723,6 @@ textures/e3u1/black:
 	texture_base overrides/black.tga
 	base_factor 2.5
 
-textures/e3u1/bluwter:
-	texture_base overrides/bluwter.tga
-	kind WATER
-	base_factor 2.5
-
 textures/e3u1/box1_5:
 	texture_base overrides/box1_5.tga
 	texture_normals overrides/box1_5_n.tga
@@ -10703,11 +10758,6 @@ textures/e3u1/broken2_2:
 	texture_normals overrides/broken2_2_n.tga
 	base_factor 2.5
 	specular_factor 0.1
-
-textures/e3u1/brwater:
-	texture_base textures/e3u1/brwater.wal
-	kind WATER
-	base_factor 2.5
 
 textures/e3u1/btactmach:
 	texture_base overrides/btactmach.tga
