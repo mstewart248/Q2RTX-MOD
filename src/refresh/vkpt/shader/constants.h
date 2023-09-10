@@ -45,6 +45,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define AA_MODE_OFF 0
 #define AA_MODE_TAA 1
 #define AA_MODE_UPSCALE 2
+#define AA_MODE_DLSS 3
 
 // Scaling factors for lighting components when they are stored in textures.
 // FP16 and RGBE textures have very limited range, and these factors help bring the signal within that range.

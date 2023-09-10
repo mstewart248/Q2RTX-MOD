@@ -41,7 +41,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "server/server.h"
 
 #include "shader/vertex_buffer.h"
-
+#include "DLSS.h"
 #include <vulkan/vulkan.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -130,6 +130,9 @@ static vec3_t sky_axis = { 0.f };
 
 #define NUM_TAA_SAMPLES 128
 static vec2_t taa_samples[NUM_TAA_SAMPLES];
+
+#define VK_NVX_BINARY_IMPORT "VK_NVX_binary_import"
+#define VK_NVX_IMAGE_VIEW_HANDLE "VK_NVX_image_view_handle"
 
 typedef enum {
 	VKPT_INIT_DEFAULT            = (0),
@@ -284,11 +287,9 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 	vkDeviceWaitIdle(qvk.device);
 
 	qvk.extent_render = get_render_extent();
-	qvk.extent_screen_images = get_screen_image_extent();
-
+	qvk.extent_screen_images = get_screen_image_extent();	
 	qvk.extent_taa_images.width = max(qvk.extent_screen_images.width, qvk.extent_unscaled.width);
 	qvk.extent_taa_images.height = max(qvk.extent_screen_images.height, qvk.extent_unscaled.height);
-
 	qvk.gpu_slice_width = (qvk.extent_render.width + qvk.device_count - 1) / qvk.device_count;
 
 	for(int i = 0; i < LENGTH(vkpt_initialization); i++) {
@@ -318,6 +319,9 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 	vkpt_textures_prefetch();
 
 	water_normal_texture = IMG_Find("textures/water_n.tga", IT_SKIN, IF_PERMANENT);
+
+	char* vkExtensions = GetDLSSVulkanInstanceExtensions();
+	char* dlssExtensions = GetDLSSVulkanDeviceExtensions();
 
 	return VK_SUCCESS;
 }
@@ -429,13 +433,19 @@ const char *vk_requested_device_extensions_ray_pipeline[] = {
 	VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
 	VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 	VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
-	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME
+	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+	VK_NVX_BINARY_IMPORT,
+	VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
+	VK_NVX_IMAGE_VIEW_HANDLE
 };
 
 const char* vk_requested_device_extensions_ray_query[] = {
 	VK_KHR_RAY_QUERY_EXTENSION_NAME,
 	VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME
+	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+	VK_NVX_BINARY_IMPORT,
+	VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
+	VK_NVX_IMAGE_VIEW_HANDLE
 };
 
 const char *vk_requested_device_extensions_debug[] = {
@@ -883,6 +893,7 @@ init_vulkan(void)
 	{
 		inst_create_info.ppEnabledLayerNames = vk_validation_layers;
 		inst_create_info.enabledLayerCount = LENGTH(vk_validation_layers);
+	
 		qvk.enable_validation = true;
 	}
 
@@ -930,6 +941,9 @@ init_vulkan(void)
 
 	_VK(qvkCreateDebugUtilsMessengerEXT(qvk.instance, &dbg_create_info, NULL, &qvk.dbg_messenger));
 
+	
+
+
 	/* create surface */
 	if(!SDL_Vulkan_CreateSurface(qvk.window, qvk.instance, &qvk.surface)) {
 		Com_EPrintf("SDL2 could not create a surface!\n");
@@ -942,7 +956,7 @@ init_vulkan(void)
 	if(num_devices == 0)
 		return false;
 	VkPhysicalDevice *devices = alloca(sizeof(VkPhysicalDevice) *num_devices);
-	_VK(vkEnumeratePhysicalDevices(qvk.instance, &num_devices, devices));
+	_VK(vkEnumeratePhysicalDevices(qvk.instance, &num_devices, devices));	
 
 #ifdef VKPT_DEVICE_GROUPS
 	uint32_t num_device_groups = 0;
@@ -1375,6 +1389,10 @@ init_vulkan(void)
 		return false;
 	}
 
+	if (DLSSEnabled()) {
+		DLSSConstructor(qvk.instance, qvk.device, qvk.physical_device, "FFA5FAF5-2329-44AB-A423-3D9B3B177C88", qtrue);
+	}
+	
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_graphics, 0, &qvk.queue_graphics);
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_transfer, 0, &qvk.queue_transfer);
 
@@ -2505,9 +2523,15 @@ evaluate_taa_settings(const reference_mode_t* ref_mode)
 	int flt_taa = cvar_flt_taa->integer;
 	// FSR RCAS needs upscaled input; if EASU was disabled, force to TAAU
 	bool force_upscaling = vkpt_fsr_is_enabled() && vkpt_fsr_needs_upscale();
-	if(force_upscaling)
+	qboolean dlssEnabled = DLSSEnabled();
+
+	if(force_upscaling && !dlssEnabled)
 	{
 		flt_taa = AA_MODE_UPSCALE;
+	}
+	
+	if (dlssEnabled) {
+		flt_taa = AA_MODE_OFF;
 	}
 
 	if (flt_taa == AA_MODE_TAA)
@@ -2674,6 +2698,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 #undef UBO_CVAR_DO
 
 	bool fsr_enabled = vkpt_fsr_is_enabled();
+	qboolean dlss_enabled = DLSSEnabled();
 
 	if (!ref_mode->enable_denoiser)
 	{
@@ -2695,13 +2720,22 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			ubo->pt_ndf_trim = 1.f;
 		}
 	}
-	else if(fsr_enabled || (qvk.effective_aa_mode == AA_MODE_UPSCALE))
+	else if(fsr_enabled || (qvk.effective_aa_mode == AA_MODE_UPSCALE || qvk.effective_aa_mode == AA_MODE_DLSS))
 	{
 		// adjust texture LOD bias to the resolution scale, i.e. use negative bias if scale is < 100
 		float resolution_scale = (drs_effective_scale != 0) ? (float)drs_effective_scale : (float)scr_viewsize->integer;
 		resolution_scale *= 0.01f;
 		clamp(resolution_scale, 0.1f, 1.f);
+
+		if (qvk.effective_aa_mode == AA_MODE_DLSS) {
+			resolution_scale = GetDLSSResolutionScale();
+		}
+
 		ubo->pt_texture_lod_bias = cvar_pt_texture_lod_bias->value + log2f(resolution_scale);
+	}
+
+	if (DLSSEnabled()) {
+		ubo->pt_texture_lod_bias = cvar_pt_texture_lod_bias->value + log2f(GetDLSSResolutionScale());
 	}
 
 	{
@@ -2756,7 +2790,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		ubo->flt_taa = 0;
 	}
 
-	if (qvk.effective_aa_mode == AA_MODE_UPSCALE)
+	if (qvk.effective_aa_mode == AA_MODE_UPSCALE || DLSSEnabled())
 	{
 		int taa_index = (int)(qvk.frame_counter % NUM_TAA_SAMPLES);
 		ubo->sub_pixel_jitter[0] = taa_samples[taa_index][0];
@@ -3137,6 +3171,16 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			vkpt_fsr_do(post_cmd_buf);
 		}
 
+		if (DLSSEnabled()) {
+			DLSSRenderResolution resObj;
+			resObj.inputWidth = qvk.extent_render.width;
+			resObj.inputHeight = qvk.extent_render.height;
+			resObj.outputWidth = qvk.extent_unscaled.width;
+			resObj.outputHeight = qvk.extent_unscaled.height;
+
+			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);
+		}
+
 		{
 			VkBufferCopy copyRegion = { 0, 0, sizeof(ReadbackBuffer) };
 			vkCmdCopyBuffer(post_cmd_buf, qvk.buf_readback.buffer, qvk.buf_readback_staging[qvk.current_frame_index].buffer, 1, &copyRegion);
@@ -3429,6 +3473,9 @@ R_EndFrame_RTX(void)
 		{
 			vkpt_final_blit_simple(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.extent_taa_output);
 		}
+		else if (DLSSEnabled()) {
+			vkpt_final_blit_simpleDLSS(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.extent_taa_output);
+		}
 		else
 		{
 			VkExtent2D extent_unscaled_half;
@@ -3672,6 +3719,7 @@ R_Init_RTX(bool total)
 
 	drs_init();
 	vkpt_fsr_init_cvars();
+	InitDLSSCvars();
 
 	// Minimum NVIDIA driver version - this is a cvar in case something changes in the future,
 	// and the current test no longer works.
@@ -3759,6 +3807,10 @@ R_Init_RTX(bool total)
 void
 R_Shutdown_RTX(bool total)
 {
+	if (total) {
+		//DLSSDeconstructor();
+	}
+	
 	vkpt_freecam_reset();
 
 	vkDeviceWaitIdle(qvk.device);
@@ -3794,6 +3846,7 @@ R_Shutdown_RTX(bool total)
 	IMG_Shutdown();
 	MOD_Shutdown(); // todo: currently leaks memory, need to clear submeshes
 	VID_Shutdown();
+	
 }
 
 // for screenshots

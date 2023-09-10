@@ -613,6 +613,7 @@ VkResult vkpt_draw_destroy_pipelines(void);
 VkResult vkpt_draw_create_pipelines(void);
 VkResult vkpt_draw_submit_stretch_pics(VkCommandBuffer cmd_buf);
 VkResult vkpt_final_blit_simple(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent);
+VkResult vkpt_final_blit_simpleDLSS(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent);
 VkResult vkpt_final_blit_filtered(VkCommandBuffer cmd_buf);
 VkResult vkpt_draw_clear_stretch_pics(void);
 

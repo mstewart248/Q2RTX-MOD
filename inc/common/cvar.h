@@ -108,7 +108,7 @@ void Cvar_SetValue(cvar_t *var, float value, from_t from);
 void Cvar_SetInteger(cvar_t *var, int value, from_t from);
 //void Cvar_SetHex(cvar_t *var, int value, from_t from);
 // expands value to a string and calls Cvar_Set
-
+void change_string_value(cvar_t* var, const char* value, from_t from);
 int Cvar_ClampInteger(cvar_t *var, int min, int max);
 float Cvar_ClampValue(cvar_t *var, float min, float max);
 

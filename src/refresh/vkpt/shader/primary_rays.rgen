@@ -109,6 +109,11 @@ void generate_rng_seed(ivec2 ipos, bool is_odd_checkerboard)
 	imageStore(IMG_ASVGF_RNG_SEED_A, ipos, uvec4(rng_seed));
 }
 
+float ConvertDepth(float raylength) {	
+
+	return ((raylength - 1) / (1000 - 1) * 2) / 10;
+}
+
 void
 main()
 {
@@ -164,7 +169,12 @@ main()
 	if (found_intersection(ray_payload_geometry))
 	{
 		ray.t_max = ray_payload_geometry.hit_distance;
-	 	triangle = get_hit_triangle(ray_payload_geometry);
+	 	triangle = get_hit_triangle(ray_payload_geometry);	
+		imageStore(IMG_PT_VIEW_DEPTH_Buffer, ipos, vec4(0.8f + (ConvertDepth(ray_payload_geometry.hit_distance))));
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(ray_payload_geometry.hit_distance));		
+	}
+	else {
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX));
 	}
 
 	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false);
@@ -250,6 +260,7 @@ main()
 		ray_payload_geometry.hit_distance * half_cone_angle, triangle.positions, 
 		triangle.tex_coords, tex_coord, tex_coord_x, tex_coord_y, fwidth_depth);
 
+	
 	if(global_ubo.pt_texture_lod_bias != 0)
 	{
 		tex_coord_x *= pow(2.0, global_ubo.pt_texture_lod_bias);
@@ -268,7 +279,7 @@ main()
 	motion.xy = screen_pos_prev - screen_pos_curr;
 	motion.z = distance_prev - distance_curr;
 
-	imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
+	imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));	
 	imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
 
 	vec3 primary_base_color = vec3(1);

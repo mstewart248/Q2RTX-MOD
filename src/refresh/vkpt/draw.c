@@ -687,6 +687,8 @@ vkpt_final_blit_simple(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent
 		.y = extent.height,
 		.z = 1
 	};
+
+	
 	VkOffset3D blit_size_unscaled = {
 		.x = qvk.extent_unscaled.width,.y = qvk.extent_unscaled.height,.z = 1
 	};
@@ -721,6 +723,81 @@ vkpt_final_blit_simple(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent
 
 	return VK_SUCCESS;
 }
+
+
+VkResult
+vkpt_final_blit_simpleDLSS(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent)
+{
+	VkImageSubresourceRange subresource_range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 1
+	};
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = qvk.swap_chain_images[qvk.current_swap_chain_image_index],
+		.subresourceRange = subresource_range,
+		.srcAccessMask = 0,
+		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+	);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = image,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+	);
+
+	float dlssScale = GetDLSSMultResolutionScale();
+
+	VkOffset3D blit_size = {
+		.x = qvk.extent_unscaled.width,
+		.y = qvk.extent_unscaled.height,
+		.z = 1
+	};
+
+
+	VkOffset3D blit_size_unscaled = {
+		.x = qvk.extent_unscaled.width,.y = qvk.extent_unscaled.height,.z = 1
+	};
+	VkImageBlit img_blit = {
+		.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+		.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+		.srcOffsets = { [1] = blit_size },
+		.dstOffsets = { [1] = blit_size_unscaled },
+	};
+	vkCmdBlitImage(cmd_buf,
+		image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		qvk.swap_chain_images[qvk.current_swap_chain_image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		1, &img_blit, VK_FILTER_NEAREST);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = qvk.swap_chain_images[qvk.current_swap_chain_image_index],
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = 0,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+	);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = image,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL
+	);
+
+	return VK_SUCCESS;
+}
+
 
 VkResult
 vkpt_final_blit_filtered(VkCommandBuffer cmd_buf)

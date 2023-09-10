@@ -287,6 +287,7 @@ SET(SRC_VKPT
 	refresh/vkpt/device_memory_allocator.c
 	refresh/vkpt/god_rays.c
 	refresh/vkpt/conversion.c
+	refresh/vkpt/DLSS.c
 )
 
 SET(HEADERS_VKPT
@@ -300,6 +301,7 @@ SET(HEADERS_VKPT
 	refresh/vkpt/physical_sky.h
 	refresh/vkpt/precomputed_sky.h
 	refresh/vkpt/conversion.h
+	refresh/vkpt/DLSS.h
 )
 
 set(SRC_SHADERS
@@ -439,7 +441,7 @@ IF(WIN32)
             ${SRC_WINDOWS} ${SRC_WINDOWS_CLIENT} ${HEADERS_WINDOWS}
             ${SRC_SERVER} ${HEADERS_SERVER}
             windows/res/q2rtx.rc
-        )
+         )
     ENDIF()
     ADD_EXECUTABLE(server 
         ${SRC_COMMON} ${HEADERS_COMMON} 
@@ -449,7 +451,7 @@ IF(WIN32)
         server/ac.c
         client/null.c
         windows/res/q2rtxded.rc
-    )
+     )
 ELSE()
     IF(IS_64_BIT)
         ADD_EXECUTABLE(client
@@ -549,6 +551,35 @@ IF (WIN32)
     # macro redefinition, deprecation
     TARGET_COMPILE_OPTIONS(server PRIVATE /wd4005 /wd4996)
     TARGET_COMPILE_OPTIONS(baseq2 PRIVATE /wd4005 /wd4996)
+
+	if(CONFIG_USE_DLSS)
+		message(STATUS "Q2RTX_WITH_NVIDIA_DLSS enabled")
+		add_definitions(-DRG_USE_NVIDIA_DLSS)
+		message(STATUS "${CMAKE_BUILD_TYPE} Q2RTX BUILD")
+
+		if (DEFINED ENV{DLSS_SDK_PATH})
+			message(STATUS "Found DLSS SDK: $ENV{DLSS_SDK_PATH}")
+			target_include_directories(client PRIVATE "$ENV{DLSS_SDK_PATH}/include")
+			if (WIN32)
+				add_definitions(-DNV_WINDOWS)
+				if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+					target_link_libraries(client "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64/nvsdk_ngx_s_dbg.lib")
+				else()
+					target_link_libraries(client "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64/nvsdk_ngx_s.lib")
+				endif()
+			else()
+				target_link_libraries(client "$ENV{DLSS_SDK_PATH}/lib/Linux_x86_64/libnvsdk_ngx.a")
+				target_link_libraries(client ${CMAKE_DL_LIBS})
+			endif()
+		else()
+			message(FATAL_ERROR 
+				"Can't find DLSS_SDK_PATH environment variable. "
+				"Please, provide the path to https://github.com/NVIDIA/DLSS, to configure the library")
+		endif()
+	endif()
+
+	
+
 ENDIF()
 
 TARGET_INCLUDE_DIRECTORIES(baseq2 PRIVATE ../inc)
