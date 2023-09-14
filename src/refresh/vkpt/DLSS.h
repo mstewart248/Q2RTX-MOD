@@ -78,6 +78,8 @@ char* GetDLSSVulkanInstanceExtensions();
 char* GetDLSSVulkanDeviceExtensions();
 void viewsize_changed(cvar_t* self);
 float GetDLSSMultResolutionScale();
+qboolean DLSSChanged();
+void DLSSSwapChainRecreated();
 
 struct DLSS {	
 	VkDevice device;

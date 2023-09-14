@@ -22,11 +22,14 @@
 
 DLSS dlssObj;
 cvar_t* cvar_pt_dlss = NULL;
+qboolean recreateSwapChain = qfalse;
 extern cvar_t* scr_viewsize;
+int oldCvarValue;
 
 void InitDLSSCvars() 
 {
     cvar_pt_dlss = Cvar_Get("pt_dlss", "0", CVAR_ARCHIVE);
+    oldCvarValue = cvar_pt_dlss->integer;
     cvar_pt_dlss->changed = viewsize_changed;
     viewsize_changed(cvar_pt_dlss);
 }
@@ -72,8 +75,8 @@ float GetDLSSMultResolutionScale() {
 
 qboolean DLSSConstructor(VkInstance _instance, VkDevice _device, VkPhysicalDevice _physDevice, const char* _pAppGuid, qboolean _enableDebug)  {
 
-    if (dlssObj.created) {
-        return qtrue;
+    if (dlssObj.isInitalized) {
+        DLSSDeconstructor();
     }
     dlssObj.device = _device;
     dlssObj.isInitalized = qfalse;
@@ -196,7 +199,7 @@ void DLSSDeconstructor() {
         }
 
         NVSDK_NGX_VULKAN_DestroyParameters(dlssObj.pParams);
-        NVSDK_NGX_VULKAN_Shutdown1(dlssObj.device);
+        NVSDK_NGX_VULKAN_Shutdown(dlssObj.device);
 
         dlssObj.pParams = NULL;
         dlssObj.isInitalized = qfalse;
@@ -285,24 +288,29 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
                      .InTargetHeight = resObject.outputHeight }
     };
 
-    int dlssCreateFeatureFlags = dlssParams.InFeatureCreateFlags;
+    int DlssCreateFeatureFlags = NVSDK_NGX_DLSS_Feature_Flags_None;
+    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
     // motion vectors are in render resolution, not target resolution
     //dlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
     //dlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted; // NVSDK_NGX_DLSS_Feature_Flags_MVJittered;
-    dlssCreateFeatureFlags |= 0; // NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
-    dlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure; // NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
-    dlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted; // NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+    //dlssCreateFeatureFlags |= 0; // NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+    //dlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure; // NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+    //dlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted; // NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+
+    dlssParams.InFeatureCreateFlags = DlssCreateFeatureFlags;
 
     // only one phys device
     uint32_t creationNodeMask = 1;
     uint32_t visibilityNodeMask = 1;
 
-    NVSDK_NGX_Handle** ppOutHandle;
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
 
     NVSDK_NGX_Result res = NGX_VULKAN_CREATE_DLSS_EXT(cmd, creationNodeMask, visibilityNodeMask, &dlssObj.pDlssFeature, dlssObj.pParams, &dlssParams);
     NVSDK_NGX_Result ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_SuperSampling, dlssObj.pParams, &dlssObj.pDlssFeature);
+       
 
-    
     if (NVSDK_NGX_FAILED(res))
     {
         Com_EPrintf("DLSS: NGX_VULKAN_CREATE_DLSS_EXT fail: %d", (int)res);
@@ -346,10 +354,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         resObject.inputWidth,
         resObject.inputHeight,
     };
-    NVSDK_NGX_Dimensions  DoubleSourceSize = {
-        resObject.outputWidth * 2,
-        resObject.outputHeight * 2,
-    };
+
     NVSDK_NGX_Dimensions targetSize = {
         resObject.outputWidth,
         resObject.outputHeight,
@@ -359,22 +364,17 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         resObject.outputHeight,
     };
 
-    //VKPT_IMG_ASVGF_COLOR
-    //VKPT_IMG_PT_MOTION
-    //VKPT_IMG_TAA_OUTPUT
-    //VKPT_IMG_PT_VISBUF_PRIM_A
-    //debugPrintfEXT("%v2i %f %f\n", ipos, ray_payload_geometry.hit_distance, clamp(ray_payload_geometry.hit_distance / 1000, 0.0f, 1.0f));
 
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_TAA_OUTPUT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_FLAT_MOTION]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_RAY_LENGTH]);
-    //BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_VISBUF_PRIM_A + frame_idx]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_VIEW_DEPTH_Buffer]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
     
-    NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, qfalse);
-    NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, qtrue);
-    NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_MOTION], qvk.images_views[VKPT_IMG_FLAT_MOTION], DoubleSourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, qfalse);
+    NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, qfalse);
+    NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, qfalse);
+    NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, qtrue);    
     NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_PT_VIEW_DEPTH_Buffer], qvk.images_views[VKPT_IMG_PT_VIEW_DEPTH_Buffer], depthize, VK_FORMAT_R32G32B32A32_SFLOAT, qfalse);
     NVSDK_NGX_Resource_VK rayLengthResource = ToNGXResource(qvk.images[VKPT_IMG_PT_RAY_LENGTH], qvk.images_views[VKPT_IMG_PT_RAY_LENGTH], sourceSize, VK_FORMAT_R32_SFLOAT, qfalse);
     NVSDK_NGX_Resource_VK transparentResoruce = ToNGXResource(qvk.images[VKPT_IMG_PT_TRANSPARENT], qvk.images_views[VKPT_IMG_PT_TRANSPARENT], depthize, VK_FORMAT_R16G16B16A16_SFLOAT, qfalse);
@@ -494,6 +494,14 @@ char* GetFolderPath()
 }
 
 void viewsize_changed(cvar_t* self) {
+    if (oldCvarValue == 0 && self->integer != 0) {
+        recreateSwapChain = qtrue;
+    }
+
+    if (oldCvarValue != 0 && self->integer == 0) {
+        recreateSwapChain = qtrue;
+    }
+
     switch (self->integer) {
     case 1:
         Cvar_SetInteger(scr_viewsize, 50, FROM_MENU);
@@ -505,6 +513,17 @@ void viewsize_changed(cvar_t* self) {
         Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);   
         return;
     }
+
+    oldCvarValue = self->integer;
+}
+
+
+qboolean DLSSChanged() {
+    return recreateSwapChain;
+}
+
+void DLSSSwapChainRecreated() {
+    recreateSwapChain = qfalse;
 }
 
 void DLSSPrintCallback(const char* message, NVSDK_NGX_Logging_Level loggingLevel, NVSDK_NGX_Feature sourceComponent) {

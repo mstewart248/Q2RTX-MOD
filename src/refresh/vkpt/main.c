@@ -292,6 +292,10 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 	qvk.extent_taa_images.height = max(qvk.extent_screen_images.height, qvk.extent_unscaled.height);
 	qvk.gpu_slice_width = (qvk.extent_render.width + qvk.device_count - 1) / qvk.device_count;
 
+	if (DLSSEnabled()) {
+		qvk.extent_taa_images = qvk.extent_render;
+	}
+
 	for(int i = 0; i < LENGTH(vkpt_initialization); i++) {
 		VkptInit_t *init = vkpt_initialization + i;
 		if((init->flags & init_flags) != init_flags)
@@ -1389,9 +1393,7 @@ init_vulkan(void)
 		return false;
 	}
 
-	if (DLSSEnabled()) {
-		DLSSConstructor(qvk.instance, qvk.device, qvk.physical_device, "FFA5FAF5-2329-44AB-A423-3D9B3B177C88", qtrue);
-	}
+
 	
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_graphics, 0, &qvk.queue_graphics);
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_transfer, 0, &qvk.queue_transfer);
@@ -1415,6 +1417,11 @@ init_vulkan(void)
 #undef VK_EXTENSION_DO
 
 	Com_Printf("-----------------------\n");
+
+
+	if (DLSSEnabled()) {
+		DLSSConstructor(qvk.instance, qvk.device, qvk.physical_device, "FFA5FAF5-2329-44AB-A423-3D9B3B177C88", qtrue);
+	}
 
 	return true;
 }
@@ -3562,7 +3569,8 @@ R_EndFrame_RTX(void)
 #endif
 
 	VkResult res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
-	if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR) {
+	if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR || DLSSChanged()) {
+		DLSSSwapChainRecreated();
 		recreate_swapchain();
 	}
 	qvk.frame_counter++;
@@ -3807,12 +3815,8 @@ R_Init_RTX(bool total)
 void
 R_Shutdown_RTX(bool total)
 {
-	if (total) {
-		//DLSSDeconstructor();
-	}
-	
 	vkpt_freecam_reset();
-
+	DLSSDeconstructor();
 	vkDeviceWaitIdle(qvk.device);
 
 	// Persist current DRS scale

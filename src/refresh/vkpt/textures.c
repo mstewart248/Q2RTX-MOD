@@ -2256,6 +2256,7 @@ LIST_IMAGES_A_B
 	img_info[VKPT_IMG_ASVGF_TAA_A].sampler = qvk.tex_sampler;
 	img_info[VKPT_IMG_ASVGF_TAA_B].sampler = qvk.tex_sampler;
 	img_info[VKPT_IMG_TAA_OUTPUT].sampler = qvk.tex_sampler;
+	img_info[VKPT_IMG_PT_DLSS_MOTION].sampler = qvk.tex_sampler;
 
 	VkWriteDescriptorSet output_img_write[NUM_IMAGES * 2];
 
