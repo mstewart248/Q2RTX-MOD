@@ -1,4 +1,4 @@
-# Quake II RTX
+# Quake II RTX (Modified)
 
 [![Build Status](https://github.com/NVIDIA/Q2RTX/actions/workflows/build.yml/badge.svg)](https://github.com/NVIDIA/Q2RTX/actions/workflows/build.yml)
 
