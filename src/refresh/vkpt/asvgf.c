@@ -432,6 +432,32 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 							offset_left,
 							offset_right,
 							extent);
+		vkpt_mgpu_image_copy(cmd_buf, 
+						    VKPT_IMG_PT_VIEW_DEPTH_SPLIT,
+							VKPT_IMG_PT_VIEW_DEPTH_SPLIT,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_RAY_LENGTH,
+							VKPT_IMG_PT_RAY_LENGTH,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_TRANSPARENT,
+							VKPT_IMG_PT_TRANSPARENT,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
 
 		vkpt_mgpu_global_barrier(cmd_buf);
 		
@@ -457,6 +483,7 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_FLAT_COLOR]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_FLAT_MOTION]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DEPTH_SPLIT]);
 
 	return VK_SUCCESS;
 }

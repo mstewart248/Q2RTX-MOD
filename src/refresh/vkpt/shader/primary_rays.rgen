@@ -27,6 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
+
 #pragma optionNV(unroll all)
 
 #include "path_tracer_rgen.h"
@@ -170,11 +171,26 @@ main()
 	{
 		ray.t_max = ray_payload_geometry.hit_distance;
 	 	triangle = get_hit_triangle(ray_payload_geometry);	
-		imageStore(IMG_PT_VIEW_DEPTH_Buffer, ipos, vec4(0.8f + (ConvertDepth(ray_payload_geometry.hit_distance))));
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(ray_payload_geometry.hit_distance));		
+		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(0.8f + (ConvertDepth(ray_payload_geometry.hit_distance))));
+		
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+		
+		numSamples++;
+		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));		
 	}
 	else {
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX));
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+
+		numSamples++;
+
+		float averageDistance = (storedDistance + PRIMARY_RAY_T_MAX) / numSamples;
+
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
 	}
 
 	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false);

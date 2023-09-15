@@ -184,4 +184,8 @@ void main()
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
     else
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
+
+    imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
+    imageStore(IMG_DLSS_RAY_LENGTH, opos, imageLoad(IMG_PT_RAY_LENGTH, ipos + ivec2(other_side_offset, 0)));
+    imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
 }
