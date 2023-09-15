@@ -27,6 +27,8 @@ original game.
 ## Features
 
 **Quake II RTX** introduces the following features:
+  - DLSS 2.0 Support
+  - Rerelease Map Support
   - Caustics approximation and coloring of light that passes through tinted glass
   - Cutting-edge denoising technology
   - Cylindrical projection mode
