@@ -511,6 +511,25 @@ main()
 	{
 		reflection_ray.t_max = ray_payload_geometry.hit_distance;
 	 	triangle = get_hit_triangle(ray_payload_geometry);
+
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+		
+		numSamples++;
+		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+	}
+	else {
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+
+		numSamples++;
+
+		float averageDistance = (storedDistance + PRIMARY_RAY_T_MAX) / numSamples;
+
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
 	}
 
 	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false);
@@ -627,6 +646,7 @@ main()
 
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
 		imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
+		imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion, fwidth_depth));
 	}
 	else if(spec_bounce_index == 0)
 	{
@@ -635,6 +655,7 @@ main()
 		vec4 motion = imageLoad(IMG_PT_MOTION, ipos);
 		motion.z = -motion.z;
 		imageStore(IMG_PT_MOTION, ipos, motion);
+		imageStore(IMG_PT_REFLECT_MOTION, ipos, motion);
 	}
 
 	position = new_position;

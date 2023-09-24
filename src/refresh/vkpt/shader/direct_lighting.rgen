@@ -109,7 +109,14 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 
     high_freq += direct_diffuse;
     o_specular += direct_specular;
-	
+
+	imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
+	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness, 0, 0, 0));
+	imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic, 0, 0, 0));
+	imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
+	imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
+
 	if(global_ubo.pt_direct_sun_light != 0)
 	{
 		vec3 direct_sun_diffuse, direct_sun_specular;
@@ -158,4 +165,26 @@ main()
 	imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
 	imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(high_freq)));
 	imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(specular)));
+
+	if (found_intersection(ray_payload_geometry))
+	{
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+		
+		numSamples++;
+		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+	}
+	else {
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+
+		numSamples++;
+
+		float averageDistance = (storedDistance + PRIMARY_RAY_T_MAX) / numSamples;
+
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+	}
 }

@@ -809,6 +809,7 @@ typedef struct cparticle_s {
     float   alphavel;
     color_t rgba;
 	float   brightness;
+    int     particleType;
 } cparticle_t;
 
 typedef struct cdlight_s {

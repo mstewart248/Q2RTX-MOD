@@ -748,6 +748,20 @@ char* GetEmptyString(size_t inputStringLength) {
     return res;
 }
 
+vec3_t* GetEmptyVector3(int size) {
+    vec3_t* res = malloc(size * sizeof(vec3_t));
+    vec3_t* start = res;
+
+    for (int i = 0; i < size; i++) {
+        VectorClear(*res);
+        res++;
+    }
+
+    res = start;
+
+    return res;
+}
+
 
 const char* Q_FixValue(const char* value, qboolean halfValue) {
     int yLength = 0;

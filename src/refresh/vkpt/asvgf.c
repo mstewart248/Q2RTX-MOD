@@ -459,6 +459,88 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 							offset_right,
 							extent);
 
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_REFLECT_MOTION,
+							VKPT_IMG_PT_REFLECT_MOTION,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_ALBEDO,
+							VKPT_IMG_PT_ALBEDO,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_SPECULAR,
+							VKPT_IMG_PT_SPECULAR,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_ROUGHNESS,
+							VKPT_IMG_PT_ROUGHNESS,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_METALLIC,
+							VKPT_IMG_PT_METALLIC,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_NORMAL,
+							VKPT_IMG_PT_NORMAL,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_MATERIALID,
+							VKPT_IMG_PT_MATERIALID,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_EMISSIVE,
+							VKPT_IMG_PT_EMISSIVE,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_INDIRECT_ALBEDO,
+							VKPT_IMG_PT_INDIRECT_ALBEDO,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+
 		vkpt_mgpu_global_barrier(cmd_buf);
 		
 		END_PERF_MARKER(cmd_buf, PROFILER_MGPU_TRANSFERS);

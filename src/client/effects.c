@@ -746,10 +746,12 @@ static void CL_ClearParticles(void)
 cparticle_t *CL_AllocParticle(void)
 {
     cparticle_t *p;
+       
 
     if (!free_particles)
         return NULL;
     p = free_particles;
+    p->particleType = 0;
     free_particles = p->next;
     p->next = active_particles;
     active_particles = p;
@@ -920,7 +922,7 @@ void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int c
         p->time = cl.time;
 
         p->color = color + (Q_rand() & 7);
-		p->brightness = 0.5f;
+		p->brightness = 10.0f;
 
         d = (Q_rand() & 31) * 10.0f;
         for (j = 0; j < 3; j++) {
@@ -1497,6 +1499,7 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 		// drop less particles as it flies
 	
 		p = CL_AllocParticle();
+        p->particleType = 1;
 		if (!p)
 			return;
 		VectorClear(p->accel);
@@ -1508,7 +1511,7 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 			valueTest = (4.0 + frand() * 0.4);			
 			p->alphavel = -1.0 / valueTest;
 			p->color = 235 + (rand() % 5);
-			p->brightness = 10.0f;
+			p->brightness = 1.0f;
 
 			for (j = 0; j < 3; j++) {
 				p->org[j] = move[j] + crand();
@@ -1522,7 +1525,7 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 			p->alphavel = -1.0 / (1 + frand() * 0.4);
 
 			p->color = 0xdb + (rand() & 7);
-			p->brightness = 1.0f;
+			p->brightness = 10.0f;
 
 			for (j = 0; j < 3; j++) {
 				p->org[j] = move[j] + crand() * orgscale;
@@ -1544,6 +1547,8 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 			}
 			p->accel[2] = 20;
 		}
+
+        
 	}
 
 		
@@ -1983,6 +1988,12 @@ void CL_AddParticles(void)
             alpha = p->alpha + time * p->alphavel;
             if (alpha <= 0) {
                 // faded out
+                p->next = free_particles;
+                free_particles = p;
+                continue;
+            }
+
+            if (p->particleType == 1 && time > 2 /* && p->org[2] < cl.refdef.vieworg[2]*/) {
                 p->next = free_particles;
                 free_particles = p;
                 continue;

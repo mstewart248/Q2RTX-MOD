@@ -109,6 +109,8 @@ indirect_lighting(
     vec3 primary_albedo, primary_base_reflectivity;
     get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
 
+	imageStore(IMG_PT_INDIRECT_ALBEDO, ipos, vec4(primary_albedo, 0));
+
 	bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
 
 	float direct_specular_weight = smoothstep(
@@ -247,6 +249,27 @@ indirect_lighting(
 
 	bool bounce_is_sky_light = false;
 
+	if(found_intersection(ray_payload_geometry)) {
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+		
+		numSamples++;
+		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+	}
+	else {
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+
+		numSamples++;
+
+		float averageDistance = (storedDistance + PRIMARY_RAY_T_MAX) / numSamples;
+
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+	}
+
 	if(!found_intersection(ray_payload_geometry)) 
 	{
 		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
@@ -342,6 +365,8 @@ indirect_lighting(
 
 
 		vec3 emissive = sample_emissive_texture(triangle.material_id, bounce_minfo, tex_coord, vec2(0), vec2(0), is_specular_ray ? 2 : 3);
+		
+
 		emissive *= triangle.emissive_factor;
 
     	emissive += get_emissive_shell(triangle.material_id) * bounce_base_color;

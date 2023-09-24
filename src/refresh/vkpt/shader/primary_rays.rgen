@@ -111,8 +111,14 @@ void generate_rng_seed(ivec2 ipos, bool is_odd_checkerboard)
 }
 
 float ConvertDepth(float raylength) {	
+	float res = ((raylength - 1) / (1000 - 1) * 2.48) / 10;
 
-	return ((raylength - 1) / (1000 - 1) * 2) / 10;
+	if(res > .24f) {
+		res = .24f; 
+	}
+
+
+	return res;  
 }
 
 void
@@ -171,7 +177,7 @@ main()
 	{
 		ray.t_max = ray_payload_geometry.hit_distance;
 	 	triangle = get_hit_triangle(ray_payload_geometry);	
-		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(0.8f + (ConvertDepth(ray_payload_geometry.hit_distance))));
+		
 		
 		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
 		float storedDistance = storedLength[0];
@@ -231,6 +237,7 @@ main()
 		imageStore(IMG_PT_VISBUF_BARY_A, ipos, vec4(0));
 		imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(0));
 		imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
+		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(1.0f));
 		return;
 	}
 
@@ -297,6 +304,7 @@ main()
 
 	imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));	
 	imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
+	imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(0.75f + (ConvertDepth(distance_curr))));
 
 	vec3 primary_base_color = vec3(1);
 	float primary_metallic = 0;
@@ -449,6 +457,7 @@ main()
 	imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(primary_base_color, primary_specular_factor));
 	imageStore(IMG_PT_METALLIC_A, ipos, vec4(primary_metallic, primary_roughness, 0, 0));
 	imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(1, 1, 1, distance_curr));
+	imageStore(IMG_PT_EMISSIVE, ipos, vec4(primary_emissive, 0));
 
 	// Debug visualization of the PVS (Potentially Visible Set)
 	if(triangle.cluster >= 0 && global_ubo.cluster_debug_index >= 0)

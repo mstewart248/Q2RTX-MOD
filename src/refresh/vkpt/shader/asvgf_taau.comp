@@ -294,7 +294,7 @@ main()
         color_output = PQEncode(linear_color_output);
     }
     else
-    {
+    { 
         linear_color_output = PQDecode(color_output);
     }
 
@@ -304,7 +304,7 @@ main()
         readback.hdr_color = linear_color_output;
     }
 
-    vec2 mDLSS = get_shared_motion(int_render_pos, group_base_lores).xy * 100;
+    vec2 mDLSS = get_shared_motion(int_render_pos, group_base_lores).xy; // * 100;
 
     imageStore(IMG_ASVGF_TAA_A, ipos, vec4(color_output, 0));
 	imageStore(IMG_TAA_OUTPUT, ipos, vec4(linear_color_output, 1));

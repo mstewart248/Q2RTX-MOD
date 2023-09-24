@@ -1029,6 +1029,6 @@ void fire_flaregun(edict_t *self, vec3_t start, vec3_t aimdir,
 	flare->radius_dmg = damage;
 	flare->dmg_radius = damage_radius;
 	flare->classname = "flare";
-	flare->timestamp = level.framenum + (int)(15.f * BASE_FRAMERATE); //live for 15 seconds 
+	flare->timestamp = level.framenum + (int)(60.f * BASE_FRAMERATE); //live for 60 seconds 
 	gi.linkentity(flare);
 }

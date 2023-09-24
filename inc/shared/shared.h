@@ -487,6 +487,7 @@ char *COM_Parse(const char **data_p);
 // data is an in/out parm, returns a parsed out token
 size_t COM_Compress(char *data);
 char* GetEmptyString(size_t inputStringLength);
+vec3_t* GetEmptyVector3(int size);
 const char* Q_FixValue(const char* value, qboolean halfValue);
 const char* Q_FixValue1(const char* value, qboolean halfValue);
 const char* Q_FixValue2(const char* value);
