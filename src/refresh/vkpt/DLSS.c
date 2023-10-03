@@ -301,29 +301,23 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
 
     int DlssCreateFeatureFlags = NVSDK_NGX_DLSS_Feature_Flags_None;
     DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
-    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+    //DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
 
     dlssParams.InFeatureCreateFlags = DlssCreateFeatureFlags;
 
     // only one phys device
     uint32_t creationNodeMask = 1;
     uint32_t visibilityNodeMask = 1;    
-    uint32_t denoise = 1;
-    uint32_t inRtxValue = 1;
-    float firefly = .25f;
-    float outfireFly = 0;
+
 
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetI(dlssObj.pParams, NVSDK_NGX_Parameter_RTXValue, NVSDK_NGX_RTX_Value_On);
-    NVSDK_NGX_Parameter_GetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, &outfireFly);
-    NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, firefly);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, denoise);
+    NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0);
+    NVSDK_NGX_Parameter_SetI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 1);
 
     NVSDK_NGX_Result res = NGX_VULKAN_CREATE_DLSS_EXT(cmd, creationNodeMask, visibilityNodeMask, &dlssObj.pDlssFeature, dlssObj.pParams, &dlssParams);
-    NVSDK_NGX_Result ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_SuperSampling, dlssObj.pParams, &dlssObj.pDlssFeature);
-   
+    NVSDK_NGX_Result ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_SuperSampling, dlssObj.pParams, &dlssObj.pDlssFeature);    
      
     if (NVSDK_NGX_FAILED(res))
     {
@@ -408,10 +402,10 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);    
     NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], targetSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
-    NVSDK_NGX_Resource_VK rayLengthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
+    NVSDK_NGX_Resource_VK rayLengthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
     NVSDK_NGX_Resource_VK transparentResoruce = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK motionVec2 = ToNGXResource(qvk.images[VKPT_IMG_PT_MOTION], qvk.images_views[VKPT_IMG_PT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_PT_REFLECT_MOTION], qvk.images_views[VKPT_IMG_PT_REFLECT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK motionVec3D = ToNGXResource(qvk.images[VKPT_IMG_DLSS_3DMOTION_VECTOR], qvk.images_views[VKPT_IMG_DLSS_3DMOTION_VECTOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK albedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specular = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
@@ -420,6 +414,46 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK materialid = ToNGXResource(qvk.images[VKPT_IMG_DLSS_MATERIALID], qvk.images_views[VKPT_IMG_DLSS_MATERIALID], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK emissive = ToNGXResource(qvk.images[VKPT_IMG_DLSS_EMISSIVE], qvk.images_views[VKPT_IMG_DLSS_EMISSIVE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK indirectAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_INDIRECT_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK specularAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+
+    switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
+        case 1:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
+            break;
+        case 2:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_3DMOTION_VECTOR], qvk.images_views[VKPT_IMG_DLSS_3DMOTION_VECTOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 3:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 4:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 5:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 6:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 7:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_METALLIC], qvk.images_views[VKPT_IMG_DLSS_METALLIC], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 8:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 9:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_MATERIALID], qvk.images_views[VKPT_IMG_DLSS_MATERIALID], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 10:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_EMISSIVE], qvk.images_views[VKPT_IMG_DLSS_EMISSIVE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 11:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_INDIRECT_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 12:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+    }
 
     NVSDK_NGX_VK_GBuffer inBuffer = {
         .pInAttrib[NVSDK_NGX_GBUFFER_ALBEDO] = &albedo        
@@ -432,6 +466,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_MATERIALID] = &materialid;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_EMISSIVE] = &emissive;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_INDIRECT_ALBEDO] = &indirectAlbedo;
+    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_ALBEDO] = &specularAlbedo;
 
     NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
         .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
@@ -449,15 +484,14 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         .InTranslucencySubrectBase = sourceOffset,
         .InFrameTimeDeltaInMsec = timeDelta * 1000.0,
         .pInRayTracingHitDistance = &rayLengthResource,
-        .pInMotionVectors3D = &motionVec2,
+        .pInMotionVectors3D = &motionVec3D,
         .pInTransparencyMask = &transparentResoruce,
         .pInMotionVectorsReflections = &reflectMotion,
         .InToneMapperType = NVSDK_NGX_TONEMAPPER_REINHARD,
         .GBufferSurface = inBuffer
     };
 
-    NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 1);
+    
     NVSDK_NGX_Result res = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, dlssObj.pDlssFeature, dlssObj.pParams, &evalParams);
 
     if (NVSDK_NGX_FAILED(res))
@@ -555,13 +589,8 @@ char* GetFolderPath()
 }
 
 void viewsize_changed(cvar_t* self) {
-    if (oldCvarValue == 0 && self->integer != 0) {
-        recreateSwapChain = qtrue;
-    }
 
-    if (oldCvarValue != 0 && self->integer == 0) {
-        recreateSwapChain = qtrue;
-    }
+    recreateSwapChain = qtrue;
 
     switch (self->integer) {
     case -1:

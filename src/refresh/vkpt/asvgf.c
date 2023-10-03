@@ -414,6 +414,7 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 		VkOffset2D offset_left = { 0, 0 };
 		VkOffset2D offset_right = { qvk.extent_render.width / 2, 0 };
 		VkExtent2D extent = { qvk.extent_render.width / 2, qvk.extent_render.height };
+	
 
 		vkpt_mgpu_image_copy(cmd_buf,
 							VKPT_IMG_PT_MOTION,
@@ -540,6 +541,14 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 							offset_right,
 							extent);
 
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_SPECULAR_ALBEDO,
+							VKPT_IMG_PT_SPECULAR_ALBEDO,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
 
 		vkpt_mgpu_global_barrier(cmd_buf);
 		

@@ -324,8 +324,8 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 
 	water_normal_texture = IMG_Find("textures/water_n.tga", IT_SKIN, IF_PERMANENT);
 
-	char* vkExtensions = GetDLSSVulkanInstanceExtensions();
-	char* dlssExtensions = GetDLSSVulkanDeviceExtensions();
+	//char* vkExtensions = GetDLSSVulkanInstanceExtensions();
+	//char* dlssExtensions = GetDLSSVulkanDeviceExtensions();
 
 	return VK_SUCCESS;
 }
@@ -1590,20 +1590,16 @@ destroy_vulkan(void)
 	return 0;
 }
 
-typedef struct entity_hash_s {
-	unsigned int mesh : 8;
-	unsigned int model : 9;
-	unsigned int entity : 14;
-	unsigned int bsp : 1;
-} entity_hash_t;
+
 
 static int entity_frame_num = 0;
 static uint32_t model_entity_ids[2][MAX_MODEL_INSTANCES];
 static int model_entity_id_count[2];
+static int light_entity_ids[2][MAX_MODEL_LIGHTS];
+static int light_entity_id_count[2];
 static int iqm_matrix_count[2];
 static ModelInstance model_instances_prev[MAX_MODEL_INSTANCES];
 
-#define MAX_MODEL_LIGHTS 16384
 static int num_model_lights = 0;
 static light_poly_t model_lights[MAX_MODEL_LIGHTS];
 
@@ -1728,29 +1724,51 @@ static void add_dlight_spot(const dlight_t* light, DynLightData* dynlight_data)
 }
 
 static void
-add_dlights(const dlight_t* lights, int num_lights, QVKUniformBuffer_t* ubo)
+add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, int* light_entity_ids)
 {
-	ubo->num_dyn_lights = 0;
-
-	for (int i = 0; i < num_lights; i++)
+	for (int i = 0; i < num_dlights; i++)
 	{
-		const dlight_t* light = lights + i;
+		if (*num_lights >= max_lights)
+			return;
 
-		DynLightData* dynlight_data = ubo->dyn_light_data + ubo->num_dyn_lights;
-		VectorCopy(light->origin, dynlight_data->center);
-		VectorScale(light->color, light->intensity / 25.f, dynlight_data->color);
-		dynlight_data->radius = light->radius;
-		switch(light->light_type) {
-		case DLIGHT_SPHERE:
-			dynlight_data->type = DYNLIGHT_SPHERE;
-			break;
-		case DLIGHT_SPOT:
-			dynlight_data->type = DYNLIGHT_SPOT;
-			add_dlight_spot(light, dynlight_data);
-			break;
+		const dlight_t* dlight = dlights + i;
+		light_poly_t* light = light_list + *num_lights;
+
+		light->cluster = BSP_PointLeaf(bsp->nodes, dlight->origin)->cluster;
+
+		entity_hash_t hash;
+		hash.entity = i + 1; //entity ID
+		hash.mesh = 0xAA;
+
+		if (light->cluster >= 0)
+		{
+			//Super wasteful but we want to have all lights in the same list.
+
+			VectorCopy(dlight->origin, light->positions + 0);
+			VectorScale(dlight->color, dlight->intensity / 25.f, light->color);
+			light->positions[3] = dlight->radius;
+			light->material = NULL;
+			light->style = 0;
+
+			switch (dlight->light_type) {
+			case DLIGHT_SPHERE:
+				light->type = DYNLIGHT_SPHERE;
+				hash.model = 0xFE;
+				break;
+			case DLIGHT_SPOT:
+				light->type = DYNLIGHT_SPOT;
+				// Copy spot data
+				VectorCopy(dlight->spot.direction, light->positions + 6);
+				light->positions[4] = dlight->spot.cos_total_width;
+				light->positions[5] = dlight->spot.cos_falloff_start;
+				hash.model = 0xFD;
+				break;
+			}
+
+			light_entity_ids[(*num_lights)] = *(uint32_t*)&hash;
+			(*num_lights)++;
+
 		}
-
-		ubo->num_dyn_lights++;
 	}
 }
 
@@ -1762,7 +1780,7 @@ static inline void transform_point(const float* p, const float* matrix, float* r
 	VectorCopy(transformed, result); // vec4 -> vec3
 }
 
-static void instance_model_lights(int num_light_polys, const light_poly_t* light_polys, const float* transform)
+static void instance_model_lights(int num_light_polys, const light_poly_t* light_polys, const float* transform, entity_hash_t hash)
 {
 	for (int nlight = 0; nlight < num_light_polys; nlight++)
 	{
@@ -1792,6 +1810,10 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		VectorCopy(src_light->color, dst_light->color);
 		dst_light->material = src_light->material;
 		dst_light->style = src_light->style;
+		dst_light->type = DYNLIGHT_POLYGON;
+
+		hash.mesh = nlight; //More a light index than a mesh
+		light_entity_ids[entity_frame_num][num_model_lights] = *(uint32_t*)&hash;
 
 		num_model_lights++;
 	}
@@ -1876,7 +1898,7 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	mi->render_buffer_idx = VERTEX_BUFFER_WORLD;
 	mi->render_prim_offset = model->geometry.prim_offsets[0];
 	
-	instance_model_lights(model->num_light_polys, model->light_polys, transform);
+	instance_model_lights(model->num_light_polys, model->light_polys, transform, hash);
 
 	if (model->geometry.accel)
 	{
@@ -2066,7 +2088,13 @@ static void process_regular_entity(
 		mult_matrix_vector(end, transform, offset2);
 		VectorSet(color, 0.25f, 0.5f, 0.07f);
 
-		vkpt_build_cylinder_light(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, begin, end, color, 1.5f);
+		entity_hash_t hash;
+		hash.entity = entity->id;
+		hash.model = entity->model;
+		hash.mesh = 0;
+		hash.bsp = 0;
+
+		vkpt_build_cylinder_light(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, begin, end, color, 1.5f, hash, light_entity_ids[entity_frame_num]);
 	}
 
 	*instance_count = current_instance_index;
@@ -2138,7 +2166,13 @@ prepare_entities(EntityUploadInfo* upload_info)
 				const bool is_viewer_weapon = (entity->flags & RF_WEAPONMODEL) != 0;
 				create_entity_matrix(transform, (entity_t*)entity, is_viewer_weapon);
 
-				instance_model_lights(model->num_light_polys, model->light_polys, transform);
+				entity_hash_t hash;
+				hash.entity = i + 1;
+				hash.model = ~entity->model;
+				hash.mesh = 0;
+				hash.bsp = 0;
+
+				instance_model_lights(model->num_light_polys, model->light_polys, transform, hash);
 			}
 		}
 	}
@@ -2215,6 +2249,7 @@ prepare_entities(EntityUploadInfo* upload_info)
 	
 	memset(instance_buffer->model_current_to_prev, -1, sizeof(instance_buffer->model_current_to_prev));
 	memset(instance_buffer->model_prev_to_current, -1, sizeof(instance_buffer->model_prev_to_current));
+	memset(instance_buffer->mlight_prev_to_current, ~0u, sizeof(instance_buffer->mlight_prev_to_current));
 	
 	model_entity_id_count[entity_frame_num] = model_instance_idx;
 	for(int i = 0; i < model_entity_id_count[entity_frame_num]; i++) {
@@ -2822,7 +2857,6 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	VectorCopy(sky_matrix[1], ubo->environment_rotation_matrix[1]);
 	VectorCopy(sky_matrix[2], ubo->environment_rotation_matrix[2]);
 	
-	add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, ubo);
 
 	if (wm->num_cameras > 0)
 	{
@@ -2837,6 +2871,22 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	}
 
 	ubo->num_cameras = wm->num_cameras;
+}
+
+static void
+update_mlight_prev_to_current()
+{
+	light_entity_id_count[entity_frame_num] = num_model_lights;
+	for (int i = 0; i < light_entity_id_count[entity_frame_num]; i++) {
+		entity_hash_t hash = *(entity_hash_t*)&light_entity_ids[entity_frame_num][i];
+		if (hash.entity == 0u) continue;
+		for (int j = 0; j < light_entity_id_count[!entity_frame_num]; j++) {
+			if (light_entity_ids[entity_frame_num][i] == light_entity_ids[!entity_frame_num][j]) {
+				vkpt_refdef.uniform_instance_buffer.mlight_prev_to_current[j] = i;
+				break;
+			}
+		}
+	}
 }
 
 
@@ -2914,6 +2964,10 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	bool update_world_animations = (new_world_anim_frame != world_anim_frame);
 	world_anim_frame = new_world_anim_frame;
 
+
+
+
+
 	num_model_lights = 0;
 	EntityUploadInfo upload_info = { 0 };
 	vkpt_pt_reset_instances();
@@ -2927,9 +2981,11 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_sky,         g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_custom_sky,  g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
 
-		vkpt_build_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, fd->entities, fd->num_entities, prev_adapted_luminance);
+		vkpt_build_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, fd->entities, fd->num_entities, prev_adapted_luminance, light_entity_ids[entity_frame_num], &num_model_lights);
+		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 	}
 
+	update_mlight_prev_to_current();
 	vkpt_vertex_buffer_ensure_primbuf_size(upload_info.num_prims);
 
 	QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
@@ -2988,6 +3044,54 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		VkCommandBuffer transfer_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
 		VkCommandBuffer trace_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 
+		const VkClearColorValue emptyColor = {
+		.float32[0] = 0.0f,
+		.float32[1] = 0.0f,
+		.float32[2] = 0.0f,
+		.float32[3] = 0.0f
+			};
+
+		const VkImageSubresourceRange subresource_range_reflect = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.levelCount = 1,
+			.layerCount = 1
+		};
+		VkImageSubresourceRange reflectRange = subresource_range_reflect;
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_MOTION], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_REFLECT_MOTION],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_ALBEDO],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_RAY_LENGTH], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_RAY_LENGTH],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+		
 		_VK(vkpt_profiler_query(trace_cmd_buf, PROFILER_FRAME_TIME, PROFILER_START));
 
 		BEGIN_PERF_MARKER(transfer_cmd_buf, PROFILER_UPLOAD_LIGHTS);

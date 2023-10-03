@@ -145,6 +145,7 @@ begin video
 		range "texture LOD bias" pt_texture_lod_bias -2 2 0.5
         pairs "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
         pairs "DLSS 2.0" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3
+        pairs "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12
         toggle "AMD FSR 1.0" flt_fsr_enable
         range --status "lower is sharper" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01        
         pairs "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2
@@ -155,6 +156,7 @@ begin video
         toggle "god rays" gr_enable
         toggle "bloom" bloom_enable
         blank
+        pairs "ReStir Direct Illuminaton" pt_restir off 0 on 1
         toggle "denoiser" flt_enable
         toggle "textures" flt_fixed_albedo ~1
         pairs "texture filtering" pt_nearest "anisotropic" 0 "mixed" 1 "nearest (noisy)" 2

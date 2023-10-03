@@ -79,6 +79,7 @@ right before this shader is invoked, see function `vkpt_interleave`.
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_nonuniform_qualifier    : enable
+#extension GL_EXT_debug_printf : enable
 
 #define GLOBAL_UBO_DESC_SET_IDX 0
 #include "global_ubo.h"
@@ -127,6 +128,12 @@ vec4 safe_load(ivec2 pos)
 ivec2 get_output_position()
 {
     return ivec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y);
+}
+
+float ConvertDistance(float rayLength) {
+    float res = ((rayLength - 1) / (5000 - 1) * 1);
+
+    return res;
 }
 
 void main()
@@ -181,35 +188,44 @@ void main()
     imageStore(IMG_FLAT_COLOR, opos, color);
 
     if(use_center_mv) {
+        vec4 rayLengthSecondVec = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
         imageStore(IMG_DLSS_REFLECT_MOTION, opos, imageLoad(IMG_PT_REFLECT_MOTION, ipos));
+        imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos));
+        imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
+        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthSecondVec.x / rayLengthSecondVec.y), 0, 0, 0));
+        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos));
+        imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos));
+        imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos));
+        imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos));
+        imageStore(IMG_DLSS_METALLIC, opos, imageLoad(IMG_PT_METALLIC, ipos));
+        imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos));
+        imageStore(IMG_DLSS_MATERIALID, opos, imageLoad(IMG_PT_MATERIALID, ipos));
+        imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE, ipos));
+        imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, ipos));
+        imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos));
     }        
     else {
+        vec4 rayLengthVec = imageLoad(IMG_PT_RAY_LENGTH, ipos + ivec2(other_side_offset, 0));
+
+        debugPrintfEXT("%v4f: %f \n", rayLengthVec, ConvertDistance(rayLengthVec.x / rayLengthVec.y));
+
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_REFLECT_MOTION, opos, imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthVec.x / rayLengthVec.y), 0, 0 , 0));   
+        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos + ivec2(other_side_offset, 0)));        
+        imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_METALLIC, opos, imageLoad(IMG_PT_METALLIC, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_MATERIALID, opos, imageLoad(IMG_PT_MATERIALID, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos + ivec2(other_side_offset, 0)));
     }
-        
-
-    imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
-    imageStore(IMG_DLSS_RAY_LENGTH, opos, imageLoad(IMG_PT_RAY_LENGTH, ipos + ivec2(other_side_offset, 0)));   
-    imageStore(IMG_DLSS_RAY_LENGTH, opos, imageLoad(IMG_PT_RAY_LENGTH, ipos));   
-    imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos));
-    imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos));
-    imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos));
-    imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos));
-    imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_METALLIC, opos, imageLoad(IMG_PT_METALLIC, ipos));
-    imageStore(IMG_DLSS_METALLIC, opos, imageLoad(IMG_PT_METALLIC, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos));
-    imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_MATERIALID, opos, imageLoad(IMG_PT_MATERIALID, ipos));
-    imageStore(IMG_DLSS_MATERIALID, opos, imageLoad(IMG_PT_MATERIALID, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE, ipos));
-    imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, ipos));
-    imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
+    
 }
