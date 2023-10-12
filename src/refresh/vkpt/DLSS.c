@@ -332,8 +332,7 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
                      .InHeight = resObject.inputHeight,
                      .InTargetWidth = resObject.outputWidth,
                      .InTargetHeight = resObject.outputHeight,
-                     .InPerfQualityValue = ToNGXPerfQuality(),
-                     .InDenoiseMode = 1
+                     .InPerfQualityValue = ToNGXPerfQuality()
                    }
         
     };
