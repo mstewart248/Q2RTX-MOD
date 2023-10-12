@@ -78,6 +78,7 @@ void DLSSApply(VkCommandBuffer cmd, QVK_t qvk, struct DLSSRenderResolution resOb
 char* GetDLSSVulkanInstanceExtensions();
 char* GetDLSSVulkanDeviceExtensions();
 void viewsize_changed(cvar_t* self);
+void DlssModeChanged(cvar_t* self);
 float GetDLSSMultResolutionScale();
 qboolean DLSSChanged();
 void DLSSSwapChainRecreated();

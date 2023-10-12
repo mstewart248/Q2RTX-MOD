@@ -22,15 +22,19 @@
 
 DLSS dlssObj;
 cvar_t* cvar_pt_dlss = NULL;
+cvar_t* cvar_pt_dlss_dldn = NULL;
 qboolean recreateSwapChain = qfalse;
+qboolean dlssModeChanged = qfalse;
 extern cvar_t* scr_viewsize;
 int oldCvarValue;
 
 void InitDLSSCvars() 
 {
     cvar_pt_dlss = Cvar_Get("pt_dlss", "0", CVAR_ARCHIVE);
+    cvar_pt_dlss_dldn = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE);
     oldCvarValue = cvar_pt_dlss->integer;
     cvar_pt_dlss->changed = viewsize_changed;
+    cvar_pt_dlss_dldn->changed = DlssModeChanged;
     viewsize_changed(cvar_pt_dlss);
 }
 
@@ -57,6 +61,10 @@ float GetDLSSResolutionScale() {
             return .59f;
         case 3:
             return .66f;
+        case 4:
+            return .77f;
+        case 5:
+            return 1.0f;
         default:
             return 1.0;
     }
@@ -72,6 +80,10 @@ float GetDLSSMultResolutionScale() {
         return (4 * .59f);
     case 3:
         return (4 * .66f);
+    case 4: 
+        return (4 * .77f);
+    case 5:
+        return 1;
     default:
         return 1.0;
     }
@@ -177,12 +189,24 @@ qboolean CheckSupport() {
     NVSDK_NGX_Result featureInitResult;
     NVSDK_NGX_Result res;
     float isDlssSupported = 0;
+    bool dldenoise = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
 
-    res = NVSDK_NGX_Parameter_GetF(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSampling_Available, &isDlssSupported);
+    if (!dldenoise) {
+        res = NVSDK_NGX_Parameter_GetF(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSampling_Available, &isDlssSupported);
+    }
+    else {
+        res = NVSDK_NGX_Parameter_GetF(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &isDlssSupported);
+    }    
 
     if (NVSDK_NGX_FAILED(res) || !isDlssSupported) {
-        res = NVSDK_NGX_Parameter_GetI(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, (int*)&featureInitResult);
 
+        if (!dldenoise) {
+            res = NVSDK_NGX_Parameter_GetI(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, (int*)&featureInitResult);
+        }
+        else {
+            res = NVSDK_NGX_Parameter_GetI(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSamplingDenoising_FeatureInitResult, (int*)&featureInitResult);
+        }
+        
         if (NVSDK_NGX_SUCCEED(res))
         {
             Com_EPrintf("DLSS: Not available on this hardware/platform. FeatureInitResult=%d", (int)(featureInitResult));
@@ -244,8 +268,13 @@ NVSDK_NGX_PerfQuality_Value ToNGXPerfQuality()
     case 3:
         myValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;  
         break;
+    case 4:
+        myValue = NVSDK_NGX_PerfQuality_Value_UltraQuality;
+        break;
+    case 5:
+        myValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+        break;
     default:
-        Q_assert(0);
         myValue = NVSDK_NGX_PerfQuality_Value_Balanced;        
         break;
     }
@@ -258,6 +287,11 @@ qboolean IsDLSSAvailable() {
 }
 
 qboolean AreSameDLSSFeatureValues(struct DLSSRenderResolution resObject) {
+
+    if (dlssModeChanged) {
+        dlssModeChanged = qfalse;
+        return qfalse;
+    }
     qboolean res = ((dlssObj.prevDlssFeatureValues.renderWidth == resObject.inputWidth &&
         dlssObj.prevDlssFeatureValues.renderHeight == resObject.inputHeight &&
         dlssObj.prevDlssFeatureValues.upscaledWidth == resObject.outputWidth &&
@@ -292,33 +326,62 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
         DestroyDLSSFeature();
     }
 
+
+    NVSDK_NGX_DLDenoise_Create_Params denoiseParm = {
+         .Feature = {.InWidth = resObject.inputWidth,
+                     .InHeight = resObject.inputHeight,
+                     .InTargetWidth = resObject.outputWidth,
+                     .InTargetHeight = resObject.outputHeight,
+                     .InPerfQualityValue = ToNGXPerfQuality(),
+                     .InDenoiseMode = 1
+                   }
+        
+    };
+
     NVSDK_NGX_DLSS_Create_Params dlssParams = {
         .Feature = {.InWidth = resObject.inputWidth,
                      .InHeight = resObject.inputHeight,
                      .InTargetWidth = resObject.outputWidth,
-                     .InTargetHeight = resObject.outputHeight }
+                     .InTargetHeight = resObject.outputHeight,
+                     .InPerfQualityValue = ToNGXPerfQuality()
+                   }
     };
 
     int DlssCreateFeatureFlags = NVSDK_NGX_DLSS_Feature_Flags_None;
+    
     DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
-    //DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+   
+    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_Reserved_0;
+    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+
 
     dlssParams.InFeatureCreateFlags = DlssCreateFeatureFlags;
-
+    denoiseParm.InFeatureCreateFlags = DlssCreateFeatureFlags;
+    denoiseParm.InDenoiseMode = 1;
     // only one phys device
     uint32_t creationNodeMask = 1;
     uint32_t visibilityNodeMask = 1;    
-
+    bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;;
 
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0);
-    NVSDK_NGX_Parameter_SetI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 1);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
+    NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0f);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 2);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DenoiseMode, 2);
+    NVSDK_NGX_Result res;
+    NVSDK_NGX_Result ssres;
 
-    NVSDK_NGX_Result res = NGX_VULKAN_CREATE_DLSS_EXT(cmd, creationNodeMask, visibilityNodeMask, &dlssObj.pDlssFeature, dlssObj.pParams, &dlssParams);
-    NVSDK_NGX_Result ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_SuperSampling, dlssObj.pParams, &dlssObj.pDlssFeature);    
-     
+    if (!denoiseMode) {
+        res = NGX_VULKAN_CREATE_DLSS_EXT(cmd, creationNodeMask, visibilityNodeMask, &dlssObj.pDlssFeature, dlssObj.pParams, &dlssParams);
+        ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_SuperSampling, dlssObj.pParams, &dlssObj.pDlssFeature);
+    }
+    else {
+        res = NGX_VULKAN_CREATE_DLSSDN_EXT(cmd, creationNodeMask, visibilityNodeMask, &dlssObj.pDlssFeature, dlssObj.pParams, &denoiseParm);
+        ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_Reserved13, dlssObj.pParams, &dlssObj.pDlssFeature);
+    }
+  
     if (NVSDK_NGX_FAILED(res))
     {
         Com_EPrintf("DLSS: NGX_VULKAN_CREATE_DLSS_EXT fail: %d", (int)res);
@@ -353,6 +416,11 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         Com_Error(ERR_FATAL, "Nvidia DLSS is not supported (or DLSS dynamic library files are notfound). Check availability before usage.");
     }
 
+    if (ToNGXPerfQuality() == NVSDK_NGX_PerfQuality_Value_DLAA) {
+        resObject.outputWidth = resObject.inputWidth;
+        resObject.outputHeight = resObject.inputHeight;
+    }
+
     ValidateDLSSFeature(cmd, resObject);
 
     if (dlssObj.pDlssFeature == NULL)
@@ -371,7 +439,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Dimensions targetSize = {
         resObject.outputWidth,
         resObject.outputHeight,
-    };
+    };    
 
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_TAA_OUTPUT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
@@ -389,6 +457,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_MATERIALID]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_EMISSIVE]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO]);
 
     BUFFER_BARRIER(cmd,
         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -467,6 +536,9 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_EMISSIVE] = &emissive;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_INDIRECT_ALBEDO] = &indirectAlbedo;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_ALBEDO] = &specularAlbedo;
+    inBuffer.pInAttrib[13] = &albedo;
+    inBuffer.pInAttrib[14] = &albedo;
+    inBuffer.pInAttrib[15] = &albedo;
 
     NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
         .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
@@ -478,7 +550,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         .InReset = resetAccum ? 1 : 0,
         .InMVScaleX = sourceSize.Width,
         .InMVScaleY = sourceSize.Height,
-        .InColorSubrectBase = sourceOffset, 
+        .InColorSubrectBase = sourceOffset,
         .InDepthSubrectBase = sourceOffset,
         .InMVSubrectBase = sourceOffset,
         .InTranslucencySubrectBase = sourceOffset,
@@ -488,10 +560,11 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         .pInTransparencyMask = &transparentResoruce,
         .pInMotionVectorsReflections = &reflectMotion,
         .InToneMapperType = NVSDK_NGX_TONEMAPPER_REINHARD,
-        .GBufferSurface = inBuffer
-    };
+        .GBufferSurface = inBuffer,
+        .pInSpecularAlbedo = &specularAlbedo
+        
+    };    
 
-    
     NVSDK_NGX_Result res = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, dlssObj.pDlssFeature, dlssObj.pParams, &evalParams);
 
     if (NVSDK_NGX_FAILED(res))
@@ -605,11 +678,42 @@ void viewsize_changed(cvar_t* self) {
     case 3:
         Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);   
         return;
+    case 4:
+        Cvar_SetInteger(scr_viewsize, 77, FROM_MENU);
+        return;
+    case 5:
+        Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
+        return;
     }
 
     oldCvarValue = self->integer;
 }
 
+void DlssModeChanged(cvar_t* self) {
+    recreateSwapChain = qtrue;
+    dlssModeChanged = qtrue;
+
+    switch (cvar_pt_dlss->integer) {
+    case -1:
+        Cvar_SetInteger(scr_viewsize, 25, FROM_MENU);
+        return;
+    case 1:
+        Cvar_SetInteger(scr_viewsize, 50, FROM_MENU);
+        return;
+    case 2:
+        Cvar_SetInteger(scr_viewsize, 59, FROM_MENU);
+        return;
+    case 3:
+        Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);
+        return;
+    case 4:
+        Cvar_SetInteger(scr_viewsize, 77, FROM_MENU);
+        return;
+    case 5:
+        Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
+        return;
+    }
+}
 
 qboolean DLSSChanged() {
     return recreateSwapChain;
