@@ -536,9 +536,6 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_EMISSIVE] = &emissive;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_INDIRECT_ALBEDO] = &indirectAlbedo;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_ALBEDO] = &specularAlbedo;
-    inBuffer.pInAttrib[13] = &albedo;
-    inBuffer.pInAttrib[14] = &albedo;
-    inBuffer.pInAttrib[15] = &albedo;
 
     NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
         .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
