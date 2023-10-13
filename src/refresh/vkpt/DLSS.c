@@ -356,7 +356,7 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
 
     dlssParams.InFeatureCreateFlags = DlssCreateFeatureFlags;
     denoiseParm.InFeatureCreateFlags = DlssCreateFeatureFlags;
-    denoiseParm.InDenoiseMode = 1;
+
     // only one phys device
     uint32_t creationNodeMask = 1;
     uint32_t visibilityNodeMask = 1;    
