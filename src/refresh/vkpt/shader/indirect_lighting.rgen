@@ -259,6 +259,8 @@ indirect_lighting(
 		float totalDistance = storedDistance + ray_payload_geometry.hit_distance;
 
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
+		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(totalDistance, 0, 0, 0));
+
 	}
 	else {
 		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
@@ -271,6 +273,7 @@ indirect_lighting(
 		float totalDistance = storedDistance + PRIMARY_RAY_T_MAX;
 
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
 	}
 
 	if(!found_intersection(ray_payload_geometry)) 

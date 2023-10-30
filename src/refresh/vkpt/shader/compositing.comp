@@ -66,9 +66,15 @@ main()
 
 	// Composite
 	vec3 final_color = composite_color(base_color.rgb, metal_rough.r, throughput, low_freq, high_freq, specular, transparent);
+	vec3 color_no_transparency = composite_color_without_transparent(base_color.rgb, metal_rough.r, throughput, low_freq, high_freq, specular);
+
+	//imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb, 0));
+	//imageStore(IMG_PT_ALBEDO, ipos, vec4(base_color.rgb, 0));
 
 	final_color *= STORAGE_SCALE_HDR;
 	
+
 	imageStore(IMG_ASVGF_COLOR, ipos, vec4(final_color, checkerboard_flags));
+	imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb * STORAGE_SCALE_HDR, 0));
 }
 

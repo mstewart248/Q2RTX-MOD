@@ -550,6 +550,33 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 							offset_right,
 							extent);
 
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_BEFORE_TRANSPARENT,
+							VKPT_IMG_PT_BEFORE_TRANSPARENT,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_RAYLENGTH_DIFFUSE,
+							VKPT_IMG_PT_RAYLENGTH_DIFFUSE,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_RAYLENGTH_SPECULAR,
+							VKPT_IMG_PT_RAYLENGTH_SPECULAR,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
 		vkpt_mgpu_global_barrier(cmd_buf);
 		
 		END_PERF_MARKER(cmd_buf, PROFILER_MGPU_TRANSFERS);

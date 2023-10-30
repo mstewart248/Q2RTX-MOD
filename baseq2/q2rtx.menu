@@ -146,7 +146,7 @@ begin video
         pairs "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
         pairs "DLSS 2.0" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
         pairs "DLSS 3.5 Ray-Reconstruction" pt_dlss_dldn off 0 on 1
-        pairs "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12
+        pairs "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 throughput 16
         toggle "AMD FSR 1.0" flt_fsr_enable
         range --status "lower is sharper" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01        
         pairs "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2

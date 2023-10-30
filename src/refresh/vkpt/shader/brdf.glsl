@@ -171,3 +171,28 @@ vec3 composite_color(vec3 surf_base_color, float surf_metallic, vec3 throughput,
 
     return final_color;
 }
+
+
+// Compositing function that combines the lighting channels and material
+// parameters into the final pixel color (before post-processing effects)
+vec3 composite_color_without_transparent(vec3 surf_base_color, float surf_metallic, vec3 throughput,
+    vec3 projected_lf, vec3 high_freq, vec3 specular)
+{
+    projected_lf *= global_ubo.flt_scale_lf;
+    high_freq *= global_ubo.flt_scale_hf;
+    specular *= global_ubo.flt_scale_spec;
+
+    vec3 albedo, base_reflectivity;
+    get_reflectivity(surf_base_color, surf_metallic, albedo, base_reflectivity);
+
+    specular = modulate_specular(base_reflectivity, specular);
+
+    if (global_ubo.flt_fixed_albedo != 0)
+        albedo = vec3(global_ubo.flt_fixed_albedo);
+
+    vec3 final_color = (projected_lf.rgb + high_freq.rgb) * albedo + specular.rgb;
+    
+    final_color *= throughput;
+
+    return final_color;
+}

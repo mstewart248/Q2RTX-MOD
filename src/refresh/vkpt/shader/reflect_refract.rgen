@@ -26,6 +26,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_debug_printf : enable
 #pragma optionNV(unroll all)
 
 #define ENABLE_SHADOW_CAUSTICS
@@ -166,7 +167,8 @@ main()
 				{
 					do_split = bitCount(checkerboard_flags) == 1;
 					do_refraction = do_split ? is_odd_checkerboard : (F < 0.1);
-				}
+					
+				}			
 
 				if(do_refraction)
 				{
@@ -215,7 +217,7 @@ main()
 			{
 				do_split = bitCount(checkerboard_flags) == 1;
 				do_refraction = do_split ? is_odd_checkerboard : (F < 0.1);
-			}
+			}		
 
 			if(do_refraction)
 			{
@@ -519,6 +521,7 @@ main()
 		numSamples++;
 		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(ray_payload_geometry.hit_distance, 0, 0, 0));
 	}
 	else {
 		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
@@ -530,6 +533,7 @@ main()
 		float averageDistance = (storedDistance + PRIMARY_RAY_T_MAX) / numSamples;
 
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
 	}
 
 	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false);
@@ -656,6 +660,8 @@ main()
 		motion.z = -motion.z;
 		imageStore(IMG_PT_MOTION, ipos, motion);
 		imageStore(IMG_PT_REFLECT_MOTION, ipos, motion);
+
+		
 	}
 
 	position = new_position;
@@ -805,4 +811,5 @@ main()
 	imageStore(IMG_PT_CLUSTER_A, ipos, uvec4(cluster_idx));
 	imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(primary_base_color, primary_specular_factor));
 	imageStore(IMG_PT_METALLIC_A, ipos, vec4(primary_metallic, primary_roughness, 0, 0));
+	
 }

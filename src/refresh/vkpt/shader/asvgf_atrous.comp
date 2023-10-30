@@ -383,6 +383,9 @@ main()
 
 		// Composite
 		vec3 final_color = composite_color(base_color.rgb, metallic, throughput, projected_lf, filtered_hf, filtered_spec, transparent);
+		vec3 color_no_transparency = composite_color_without_transparent(base_color.rgb, metallic, throughput, projected_lf, filtered_hf, filtered_spec);
+
+		
 
 	    if(global_ubo.flt_show_gradients != 0)
 	    {
@@ -392,10 +395,15 @@ main()
 			final_color.r += gradient_lf * global_ubo.flt_scale_lf;
 			final_color.g += gradient_hf_spec.x * global_ubo.flt_scale_hf;
 			final_color.b += gradient_hf_spec.y * global_ubo.flt_scale_spec;
+			color_no_transparency.r += gradient_lf * global_ubo.flt_scale_lf;
+			color_no_transparency.g += gradient_hf_spec.x * global_ubo.flt_scale_hf;
+			color_no_transparency.b += gradient_hf_spec.y * global_ubo.flt_scale_spec;
 		}
 
 		final_color *= STORAGE_SCALE_HDR;
+		color_no_transparency *= STORAGE_SCALE_HDR;
 
+		imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb, 0));
 		imageStore(IMG_ASVGF_COLOR, ipos, vec4(final_color, checkerboard_flags));
 	}
 }
