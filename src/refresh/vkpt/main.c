@@ -2812,6 +2812,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	ubo->temporal_blend_factor = ref_mode->temporal_blend_factor;
 	ubo->flt_enable = ref_mode->enable_denoiser;
 	ubo->flt_taa = qvk.effective_aa_mode;
+	ubo->pt_dlss = DLSSMode();
 	ubo->pt_num_bounce_rays = ref_mode->num_bounce_rays;
 	ubo->pt_reflect_refract = ref_mode->reflect_refract;
 
@@ -3091,6 +3092,146 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 			);
 
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_SPECULAR], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_SPECULAR],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_ROUGHNESS],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_METALLIC], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_METALLIC],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_NORMAL], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_NORMAL],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_MATERIALID], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_MATERIALID],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_EMISSIVE], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_EMISSIVE],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_INDIRECT_ALBEDO], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_INDIRECT_ALBEDO],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_SPECULAR_ALBEDO], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_SPECULAR_ALBEDO],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_BEFORE_TRANSPARENT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_BEFORE_TRANSPARENT],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_SPECULAR], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_RAYLENGTH_SPECULAR],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_REFLECTED_ALBEDO], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_REFLECTED_ALBEDO],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
 		
 		_VK(vkpt_profiler_query(trace_cmd_buf, PROFILER_FRAME_TIME, PROFILER_START));
 
@@ -3255,12 +3396,14 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		vkpt_taa(post_cmd_buf);
 
-		BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
-		if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
-		{
-			vkpt_bloom_record_cmd_buffer(post_cmd_buf);
+		if (!DLSSEnabled()) {
+			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
+			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
+			{
+				vkpt_bloom_record_cmd_buffer(post_cmd_buf);
+			}
+			END_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
 		}
-		END_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
 
 #ifdef VKPT_IMAGE_DUMPS
 		if (cvar_dump_image->integer)
@@ -3290,6 +3433,13 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			resObj.outputHeight = qvk.extent_unscaled.height;
 
 			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);
+
+			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
+			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
+			{
+				vkpt_bloom_record_cmd_buffer(post_cmd_buf);
+			}
+			END_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
 		}
 
 		{

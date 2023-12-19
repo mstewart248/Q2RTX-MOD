@@ -39,7 +39,14 @@ layout (push_constant) uniform push_constant_block {
 
 vec2 img_to_uv(vec2 ipos)
 {
-    vec2 uv = ipos / vec2(global_ubo.taa_image_width / 4, global_ubo.taa_image_height / 4);
+    vec2 uv;
+
+    if(global_ubo.pt_dlss == 0) {
+        uv = ipos / vec2(global_ubo.taa_image_width / 4, global_ubo.taa_image_height / 4);
+    }
+    else {
+        uv = ipos / vec2(global_ubo.unscaled_width / 4, global_ubo.unscaled_height / 4);
+    }
  
     return uv;
 }
@@ -47,32 +54,72 @@ vec2 img_to_uv(vec2 ipos)
 vec4 load_input(ivec2 ipos)
 {
     if (push.pass == 0)
-        return texelFetch(TEX_BLOOM_VBLUR, ipos, 0);
-    else
-        return texelFetch(TEX_BLOOM_HBLUR, ipos, 0);
+        if(global_ubo.pt_dlss == 0) {
+            return texelFetch(TEX_BLOOM_VBLUR, ipos, 0);
+        }
+        else {
+            return texelFetch(TEX_DLSS_BLOOM_VBLUR, ipos, 0);
+        }
+    else {
+        if(global_ubo.pt_dlss == 0) {
+            return texelFetch(TEX_BLOOM_HBLUR, ipos, 0);
+        }
+        else {
+            return texelFetch(TEX_DLSS_BLOOM_HBLUR, ipos, 0);
+        }
+    }
 }
 
 vec4 fetch_input(vec2 uv)
 {
     if (push.pass == 0)
-        return textureLod(TEX_BLOOM_VBLUR, uv, 0);
-    else
-        return textureLod(TEX_BLOOM_HBLUR, uv, 0);
+        if(global_ubo.pt_dlss == 0) {
+            return textureLod(TEX_BLOOM_VBLUR, uv, 0);
+        }
+        else {
+            return textureLod(TEX_DLSS_BLOOM_VBLUR, uv, 0);
+        }
+    else {
+        if(global_ubo.pt_dlss == 0) {
+            return textureLod(TEX_BLOOM_HBLUR, uv, 0);
+        }
+        else {
+            return textureLod(TEX_DLSS_BLOOM_HBLUR, uv, 0);
+        }
+    }
 }
 
 void write_output(ivec2 ipos, vec4 o)
 {
     if (push.pass == 0)
-        imageStore(IMG_BLOOM_HBLUR, ipos, o);
-    else
-        imageStore(IMG_BLOOM_VBLUR, ipos, o);
+        if(global_ubo.pt_dlss == 0) {
+            imageStore(IMG_BLOOM_HBLUR, ipos, o);
+        }
+        else {
+            imageStore(IMG_DLSS_BLOOM_HBLUR, ipos, o);
+        }
+    else {
+        if(global_ubo.pt_dlss == 0) {
+            imageStore(IMG_BLOOM_VBLUR, ipos, o);
+        }
+        else {
+            imageStore(IMG_DLSS_BLOOM_VBLUR, ipos, o);
+        }
+    }
 }
 
 void
 main()
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
-    ivec2 bloom_extent = ivec2(global_ubo.taa_output_width / 4, global_ubo.taa_output_height / 4);
+    ivec2 bloom_extent;
+
+    if(global_ubo.pt_dlss == 0) {
+        bloom_extent = ivec2(global_ubo.taa_output_width / 4, global_ubo.taa_output_height / 4);
+    }
+    else {
+        bloom_extent = ivec2(global_ubo.unscaled_width / 4, global_ubo.unscaled_height / 4);
+    }
 
     if(any(greaterThanEqual(ipos, bloom_extent)))
     {

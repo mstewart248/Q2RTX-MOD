@@ -28,6 +28,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_debug_printf : enable
 
 #pragma optionNV(unroll all)
 
@@ -481,6 +482,8 @@ main()
 
 	high_freq *= STORAGE_SCALE_HF;
 	specular *= STORAGE_SCALE_SPEC;
+
+	debugPrintfEXT("Specular: %v3f \n", specular);
 	
 	imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
 	imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
@@ -492,25 +495,41 @@ main()
 		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
 		float storedDistance = storedLength[0];
 		float numSamples = storedLength[1];
+
+		vec4 diffuseStoredLength = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos);
+		float diffuseStoredDistance = diffuseStoredLength[0];
+		float diffuseNumSamples = diffuseStoredLength[1];
+
+		vec4 specularStoredLength = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos);
+		float specularStoredDistance = specularStoredLength[0];
+		float specularNumSamples = specularStoredLength[1];
 		
 		numSamples++;
+		diffuseNumSamples++;
+
 		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
 		float totalDistance = storedDistance + ray_payload_geometry.hit_distance;
+		
+		float diffuseAverageDistance = (diffuseStoredDistance + ray_payload_geometry.hit_distance) / diffuseNumSamples;
+		float diffuseTotalDistance = diffuseStoredDistance + ray_payload_geometry.hit_distance;
 
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
-		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(totalDistance, 0, 0, 0));
+		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(diffuseTotalDistance, diffuseNumSamples, diffuseNumSamples, diffuseNumSamples));
+
+		if(specular.x > 0.0 || specular.y > 0.0 || specular.z > 0.0) {
+			specularNumSamples++;
+
+			float specularAverageDistance = (specularStoredDistance + ray_payload_geometry.hit_distance) / specularNumSamples;
+			float specularTotalDistance = specularStoredDistance + ray_payload_geometry.hit_distance;
+
+			imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(specularTotalDistance, specularNumSamples, specularNumSamples, specularNumSamples));
+		}
 	}
 	else {
-		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
-		float storedDistance = storedLength[0];
-		float numSamples = storedLength[1];
-
-		numSamples++;
-
-		float averageDistance = (storedDistance + PRIMARY_RAY_T_MAX) / numSamples;
-		float totalDistance = storedDistance + PRIMARY_RAY_T_MAX;
-
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
-		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX, 1, 1, 1));
+		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(PRIMARY_RAY_T_MAX, 1, 1, 1));
+		if(specular.x > 0.0 || specular.y > 0.0 || specular.z > 0.0) {
+			imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX, 1, 1, 1));
+		}
 	}
 }

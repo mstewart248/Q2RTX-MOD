@@ -30,7 +30,13 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 vec2 img_to_uv(ivec2 ipos)
 {
-    vec2 uv = (vec2(ipos) + vec2(0.5, 0.5)) / vec2(global_ubo.taa_image_width, global_ubo.taa_image_height);
+    vec2 uv;
+    if(global_ubo.pt_dlss == 0) {
+        uv = (vec2(ipos) + vec2(0.5, 0.5)) / vec2(global_ubo.taa_image_width, global_ubo.taa_image_height);
+    }
+    else {
+        uv = (vec2(ipos) + vec2(0.5, 0.5)) / vec2(global_ubo.unscaled_width, global_ubo.unscaled_height);
+    }
     uv = clamp(uv, 0, 1);
     return uv;
 }
@@ -39,14 +45,29 @@ vec2 img_to_uv(ivec2 ipos)
 void main()
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
-    if(any(greaterThanEqual(ipos, ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height))))
-        return;
+
+    if(global_ubo.pt_dlss == 0) {
+        if(any(greaterThanEqual(ipos, ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height))))
+            return;
+    }
+    else {
+        if(any(greaterThanEqual(ipos, ivec2(global_ubo.unscaled_width, global_ubo.unscaled_height))))
+            return;
+    }
     
     vec2 uv = img_to_uv(ipos);
+    vec4 dst;
+    vec4 src;
 
-    vec4 src = textureLod(TEX_BLOOM_VBLUR, uv, 0);
-    vec4 dst = textureLod(TEX_TAA_OUTPUT, uv, 0);
-
+    if(global_ubo.pt_dlss == 0) {
+        src = textureLod(TEX_BLOOM_VBLUR, uv, 0);
+        dst = textureLod(TEX_TAA_OUTPUT, uv, 0);
+    }
+    else {
+        src = textureLod(TEX_DLSS_BLOOM_VBLUR, uv, 0);
+        dst = textureLod(TEX_DLSS_OUTPUT, uv, 0);
+    }
+    
     if (any(isnan(dst)) || any(isinf(dst))) {
         return;
     }
@@ -57,5 +78,11 @@ void main()
     const vec4 blend_factor = vec4(global_ubo.bloom_intensity);
 
     vec4 result = src * blend_factor + dst * (vec4(1.0) - blend_factor);
-    imageStore(IMG_TAA_OUTPUT, ipos, result);
+
+    if(global_ubo.pt_dlss == 0) {
+        imageStore(IMG_TAA_OUTPUT, ipos, result);
+    }
+    else {
+        imageStore(IMG_DLSS_OUTPUT, ipos, result);
+    }
 }

@@ -108,8 +108,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_RAYLENGTH_DIFFUSE,    68, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(PT_RAYLENGTH_SPECULAR,     69, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
 	IMG_DO(DLSS_RAYLENGTH_SPECULAR,   70, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_REFLECTED_ALBEDO,       71, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_REFLECTED_ALBEDO,     72, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_BLOOM_HBLUR,          73, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
+	IMG_DO(DLSS_BLOOM_VBLUR,          74, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
+	
 
-#define NUM_IMAGES_BASE     71
+#define NUM_IMAGES_BASE     75
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
@@ -374,6 +379,12 @@ global_textureSize(uint idx, int level)
 	if(idx >= NUM_GLOBAL_TEXTUES)
 		return ivec2(0);
 	return textureSize(global_texture_descriptors[nonuniformEXT(idx)], level);
+}
+
+bool
+is_waterUBO(uint material)
+{
+	return (material & MATERIAL_KIND_MASK) == MATERIAL_KIND_WATER;
 }
 
 

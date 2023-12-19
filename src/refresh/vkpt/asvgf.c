@@ -577,6 +577,16 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 							offset_right,
 							extent);
 
+		vkpt_mgpu_image_copy(cmd_buf,
+							VKPT_IMG_PT_REFLECTED_ALBEDO,
+							VKPT_IMG_PT_REFLECTED_ALBEDO,
+							1,
+							0,
+							offset_left,
+							offset_right,
+							extent);
+
+		
 		vkpt_mgpu_global_barrier(cmd_buf);
 		
 		END_PERF_MARKER(cmd_buf, PROFILER_MGPU_TRANSFERS);

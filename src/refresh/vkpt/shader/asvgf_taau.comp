@@ -27,6 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_nonuniform_qualifier    : enable
 
+
 #define GROUP_SIZE 16
 #define FILTER_RADIUS 1 
 #define SHARED_SIZE (GROUP_SIZE + FILTER_RADIUS * 3)
@@ -187,7 +188,7 @@ main()
     vec3 color_output = color_center;
     vec3 linear_color_output;
 
-    if(global_ubo.flt_taa != AA_MODE_OFF)
+    if(global_ubo.flt_taa != AA_MODE_OFF || (checkerboard_flags == (CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION)))
     {
         // Regular TAA/TAAU mode
 

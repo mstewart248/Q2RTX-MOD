@@ -1958,6 +1958,11 @@ void vkpt_textures_update_descriptor_set()
 			img_info.sampler = qvk.tex_sampler_linear_clamp;
 		}
 
+		if (i >= VKPT_IMG_DLSS_BLOOM_HBLUR &&
+			i <= VKPT_IMG_DLSS_BLOOM_VBLUR) {
+			img_info.sampler = qvk.tex_sampler_linear_clamp;
+		}
+
 		VkWriteDescriptorSet descriptor_set_write = {
 			.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.dstSet          = qvk_get_current_desc_set_textures(),
@@ -2253,9 +2258,15 @@ LIST_IMAGES_A_B
 	for(int i = VKPT_IMG_BLOOM_HBLUR; i <= VKPT_IMG_BLOOM_VBLUR; i++) {
 		img_info[i].sampler = qvk.tex_sampler_linear_clamp;
 	}
+
+	for (int i = VKPT_IMG_DLSS_BLOOM_HBLUR; i <= VKPT_IMG_DLSS_BLOOM_VBLUR; i++) {
+		img_info[i].sampler = qvk.tex_sampler_linear_clamp;
+	}
+
 	img_info[VKPT_IMG_ASVGF_TAA_A].sampler = qvk.tex_sampler;
 	img_info[VKPT_IMG_ASVGF_TAA_B].sampler = qvk.tex_sampler;
 	img_info[VKPT_IMG_TAA_OUTPUT].sampler = qvk.tex_sampler;
+	img_info[VKPT_IMG_DLSS_OUTPUT].sampler = qvk.tex_sampler;
 	//img_info[VKPT_IMG_PT_DLSS_MOTION].sampler = qvk.tex_sampler;
 
 	VkWriteDescriptorSet output_img_write[NUM_IMAGES * 2];

@@ -110,7 +110,12 @@ main()
 
     vec2 uv = tex_coord * vec2(global_ubo.width, global_ubo.height) / vec2(global_ubo.taa_image_width, global_ubo.taa_image_height);
 
-	color = filter_lanczos(TEX_TAA_OUTPUT, uv);
+    if(global_ubo.pt_dlss == 0) {
+	    color = filter_lanczos(TEX_TAA_OUTPUT, uv);
+    }
+    else {
+        color = filter_lanczos(TEX_DLSS_OUTPUT, uv);
+    }
 	
 	outColor = vec4(color, 1);
 }

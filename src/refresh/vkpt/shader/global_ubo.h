@@ -331,3 +331,5 @@ layout(set = GLOBAL_UBO_DESC_SET_IDX, binding = GLOBAL_INSTANCE_BUFFER_BINDING_I
 #undef UBO_CVAR_DO
 
 #endif  /*_GLOBAL_UBO_H_*/
+
+

@@ -187,15 +187,7 @@ main()
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));		
 	}
 	else {
-		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);		
-		float storedDistance = storedLength[0];
-		float numSamples = storedLength[1];
-
-		numSamples++;
-
-		float averageDistance = (storedDistance + PRIMARY_RAY_T_MAX) / numSamples;
-
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX, 1, 1, 1));
 	}
 
 	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false);

@@ -42,10 +42,19 @@ main()
         {
             ivec2 input_pos = ipos * 4 + ivec2(xx, yy);
 
-            if (input_pos.x < global_ubo.taa_output_width && input_pos.y < global_ubo.taa_output_height)
-            {
-                result += texelFetch(TEX_TAA_OUTPUT, input_pos, 0);
-                count += 1;
+            if(global_ubo.pt_dlss == 0) {
+                if (input_pos.x < global_ubo.taa_output_width && input_pos.y < global_ubo.taa_output_height)
+                {                    
+                    result += texelFetch(TEX_TAA_OUTPUT, input_pos, 0);       
+                    count += 1;
+                }
+            }
+            else {
+                if (input_pos.x < global_ubo.unscaled_width && input_pos.y < global_ubo.unscaled_height)
+                {                 
+                    result += texelFetch(TEX_DLSS_OUTPUT, input_pos, 0);                   
+                    count += 1;
+                }
             }
         }
     }
@@ -55,5 +64,10 @@ main()
         result /= float(count);
     }
 
-    imageStore(IMG_BLOOM_VBLUR, ipos, result);
+    if(global_ubo.pt_dlss == 0) {
+        imageStore(IMG_BLOOM_VBLUR, ipos, result);
+    }
+    else {
+        imageStore(IMG_DLSS_BLOOM_VBLUR, ipos, result);
+    }
 }

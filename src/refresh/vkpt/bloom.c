@@ -17,6 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "vkpt.h"
+#include "DLSS.h"
 #include "system/system.h"
 
 enum {
@@ -56,8 +57,14 @@ static float under_water_animation;
 
 static void compute_push_constants(void)
 {
-	float sigma_pixels = bloom_sigma * (float)(qvk.extent_taa_output.height);
+	float sigma_pixels;
 
+	if (!DLSSEnabled()) {
+		sigma_pixels = bloom_sigma * (float)(qvk.extent_taa_output.height);
+	}
+	else {
+		sigma_pixels = bloom_sigma * (float)(qvk.extent_unscaled.height);
+	}
 	float effective_sigma = sigma_pixels * 0.25f;
 	effective_sigma = min(effective_sigma, 100.f);
 	effective_sigma = max(effective_sigma, 1.f);
@@ -316,8 +323,14 @@ static void bloom_debug_show_image(VkCommandBuffer cmd_buf, int vis_img)
 VkResult
 vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 {
-	VkExtent2D extent = qvk.extent_taa_output;
+	VkExtent2D extent;
 
+	if (!DLSSEnabled()) {
+		extent = qvk.extent_taa_output;
+	}
+	else {
+		extent = qvk.extent_unscaled;
+	}
 	compute_push_constants();
 
 	VkDescriptorSet desc_sets[] = {
@@ -326,7 +339,12 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		qvk.desc_set_vertex_buffer
 	};
 
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	if (!DLSSEnabled()) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
+	}
 
 	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[DOWNSCALE]);
 	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -337,16 +355,25 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		(extent.height / 4 + 15) / 16,
 		1);
 
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_VBLUR]);
+	if (!DLSSEnabled()) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_VBLUR]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_BLOOM_VBLUR]);
+	}
 
-	if(cvar_bloom_debug->integer == 1)
+	if (cvar_bloom_debug->integer == 1)
 	{
 		bloom_debug_show_image(cmd_buf, VKPT_IMG_BLOOM_VBLUR);
 		return VK_SUCCESS;
 	}
 
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_HBLUR]);
-
+	if (!DLSSEnabled()) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_HBLUR]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_BLOOM_HBLUR]);
+	}
 	// apply horizontal blur from BLOOM_VBLUR -> BLOOM_HBLUR
 	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[BLUR]);
 	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -359,7 +386,12 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		(extent.height / 4 + 15) / 16,
 		1);
 
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_HBLUR]);
+	if (!DLSSEnabled()) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_HBLUR]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_BLOOM_HBLUR]);
+	}
 
 	if(cvar_bloom_debug->integer == 2)
 	{
@@ -375,7 +407,12 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		(extent.height / 4 + 15) / 16,
 		1);
 
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_VBLUR]);
+	if (!DLSSEnabled()) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_VBLUR]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_BLOOM_VBLUR]);
+	}
 
 	if(cvar_bloom_debug->integer == 3)
 	{
@@ -392,8 +429,15 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		(extent.height + 15) / 16,
 		1);
 
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_VBLUR]);
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	
+	if (!DLSSEnabled()) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_VBLUR]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_BLOOM_VBLUR]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
+	}
 
 
 	return VK_SUCCESS;

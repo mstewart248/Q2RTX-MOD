@@ -51,6 +51,10 @@ qboolean DLSSEnabled() {
     }
 }
 
+int DLSSMode() {
+    return cvar_pt_dlss->integer;
+}
+
 float GetDLSSResolutionScale() {
     switch (cvar_pt_dlss->integer) {
         case -1:
@@ -461,6 +465,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO]);
 
     BUFFER_BARRIER(cmd,
         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -490,6 +495,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK beforeTransparent = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
         case 1:
@@ -540,6 +546,49 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         case 16:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
+        case 17:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 18:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 19:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_TRANSPARENT], qvk.images_views[VKPT_IMG_PT_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 20:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_MOTION], qvk.images_views[VKPT_IMG_PT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 21:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 22:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_ASVGF_HIST_COLOR_HF], qvk.images_views[VKPT_IMG_ASVGF_HIST_COLOR_HF], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 23:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_SHADING_POSITION], qvk.images_views[VKPT_IMG_PT_SHADING_POSITION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 24:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_COLOR], qvk.images_views[VKPT_IMG_FLAT_COLOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 25:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_MOTION], qvk.images_views[VKPT_IMG_FLAT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 26:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 27:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_THROUGHPUT], qvk.images_views[VKPT_IMG_PT_THROUGHPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 28:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_BOUNCE_THROUGHPUT], qvk.images_views[VKPT_IMG_PT_BOUNCE_THROUGHPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 29:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_HQ_COLOR_INTERLEAVED], qvk.images_views[VKPT_IMG_HQ_COLOR_INTERLEAVED], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+        case 30:
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            break;
+
     }
 
     NVSDK_NGX_VK_GBuffer inBuffer = {
@@ -558,6 +607,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_BEFORE_TRANSPARENCY] = &beforeTransparent;
     inBuffer.pInAttrib[15] = &diffuseLength;
     inBuffer.pInAttrib[16] = &specularLength;
+    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_REFLECTED_ALBEDO] = &reflectedAlbedo;
 
     NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
         .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
