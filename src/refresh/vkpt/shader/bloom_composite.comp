@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_nonuniform_qualifier    : enable
+//#extension GL_EXT_debug_printf : enable
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -65,7 +66,7 @@ void main()
     }
     else {
         src = textureLod(TEX_DLSS_BLOOM_VBLUR, uv, 0);
-        dst = textureLod(TEX_DLSS_OUTPUT, uv, 0);
+        dst = textureLod(TEX_DLSS_OUTPUT, uv, 0);       
     }
     
     if (any(isnan(dst)) || any(isinf(dst))) {
@@ -75,7 +76,7 @@ void main()
     src.a = 0.f;
     dst.a = 1.f;
 
-    const vec4 blend_factor = vec4(global_ubo.bloom_intensity);
+    const vec4 blend_factor =  vec4(global_ubo.bloom_intensity);
 
     vec4 result = src * blend_factor + dst * (vec4(1.0) - blend_factor);
 
@@ -83,6 +84,6 @@ void main()
         imageStore(IMG_TAA_OUTPUT, ipos, result);
     }
     else {
-        imageStore(IMG_DLSS_OUTPUT, ipos, result);
+        imageStore(IMG_DLSS_OUTPUT, ipos, result);        
     }
 }

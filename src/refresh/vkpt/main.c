@@ -177,6 +177,9 @@ VkptInit_t vkpt_initialization[] = {
 	{ "godraysI",   vkpt_god_rays_update_images,        vkpt_god_rays_noop,                 VKPT_INIT_SWAPCHAIN_RECREATE,  0 },
 };
 
+VkImage GetDLSSImage();
+VkExtent2D GetDLSSExtent();
+
 // Values returned by pick_surface_format_*
 typedef struct picked_surface_format_s {
 	// Swapchain surface format
@@ -3058,6 +3061,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			.layerCount = 1
 		};
 		VkImageSubresourceRange reflectRange = subresource_range_reflect;
+		VkImageSubresourceRange specularRange = subresource_range_reflect;
 
 		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_MOTION], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
 
@@ -3232,7 +3236,30 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 			);
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &specularRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
 		
+
+		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_COMPOSITE_TRANSPARENT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
+
+		IMAGE_BARRIER(trace_cmd_buf,
+			.image = qvk.images[VKPT_IMG_PT_COMPOSITE_TRANSPARENT],
+			.subresourceRange = subresource_range_reflect,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			);
+
 		_VK(vkpt_profiler_query(trace_cmd_buf, PROFILER_FRAME_TIME, PROFILER_START));
 
 		BEGIN_PERF_MARKER(transfer_cmd_buf, PROFILER_UPLOAD_LIGHTS);
@@ -3432,14 +3459,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			resObj.outputWidth = qvk.extent_unscaled.width;
 			resObj.outputHeight = qvk.extent_unscaled.height;
 
-			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);
-
-			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
-			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
-			{
-				vkpt_bloom_record_cmd_buffer(post_cmd_buf);
-			}
-			END_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
+			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);			
 		}
 
 		{
@@ -3713,6 +3733,10 @@ R_EndFrame_RTX(void)
 		return;
 	}
 
+	if (DLSSEnabled()) {
+
+	}
+
 	if (cvar_profiler->integer) {
 		VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
 
@@ -3735,7 +3759,16 @@ R_EndFrame_RTX(void)
 			vkpt_final_blit_simple(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.extent_taa_output);
 		}
 		else if (DLSSEnabled()) {
-			vkpt_final_blit_simpleDLSS(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.extent_taa_output);
+
+			BEGIN_PERF_MARKER(cmd_buf, PROFILER_BLOOM);
+			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
+			{
+				vkpt_bloom_record_cmd_buffer(cmd_buf);
+			}
+			END_PERF_MARKER(cmd_buf, PROFILER_BLOOM);
+
+			
+			vkpt_final_blit_simple(cmd_buf, GetDLSSImage(), GetDLSSExtent());
 		}
 		else
 		{
@@ -3828,6 +3861,161 @@ R_EndFrame_RTX(void)
 		recreate_swapchain();
 	}
 	qvk.frame_counter++;
+}
+
+VkExtent2D GetDLSSExtent() {
+	if (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer == 0) {
+		return qvk.extent_unscaled;
+	}
+	else {
+		return qvk.extent_taa_output;
+	}
+}
+
+VkImage GetDLSSImage() {
+	VkImage DisplayImage = NULL;
+
+	switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
+	
+	case 1:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAY_LENGTH];
+		break;
+	case 2:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_3DMOTION_VECTOR];
+		break;
+	case 3:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION];
+		break;
+	case 4:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_ALBEDO];
+		break;
+	case 5:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_SPECULAR];
+		break;
+	case 6:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_ROUGHNESS];
+		break;
+	case 7:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_METALLIC];
+		break;
+	case 8:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_NORMAL];
+		break;
+	case 9:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_MATERIALID];
+		break;
+	case 10:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_EMISSIVE];
+		break;
+	case 11:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO];
+		break;
+	case 12:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO];
+		break;
+	case 13:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_TRANSPARENT];
+		break;
+	case 14:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_DEPTH];
+		break;
+	case 15:
+		DisplayImage = qvk.images[VKPT_IMG_PT_DLSS_MOTION];
+		break;
+	case 16:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT];
+		break;
+	case 17:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE];
+		break;
+	case 18:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR];
+		break;
+	case 19:
+		DisplayImage = qvk.images[VKPT_IMG_PT_TRANSPARENT];
+		break;
+	case 20:
+		DisplayImage = qvk.images[VKPT_IMG_PT_MOTION];
+		break;
+	case 21:
+		DisplayImage = qvk.images[VKPT_IMG_PT_DLSS_MOTION];
+		break;
+	case 22:
+		DisplayImage = qvk.images[VKPT_IMG_ASVGF_HIST_COLOR_HF];
+		break;
+	case 23:
+		DisplayImage = qvk.images[VKPT_IMG_PT_SHADING_POSITION];
+		break;
+	case 24:
+		DisplayImage = qvk.images[VKPT_IMG_FLAT_COLOR];
+		break;
+	case 25:
+		DisplayImage = qvk.images[VKPT_IMG_FLAT_MOTION];
+		break;
+	case 26:
+		DisplayImage = qvk.images[VKPT_IMG_TAA_OUTPUT];
+		break;
+	case 27:
+		DisplayImage = qvk.images[VKPT_IMG_PT_THROUGHPUT];
+		break;
+	case 28:
+		DisplayImage = qvk.images[VKPT_IMG_PT_BOUNCE_THROUGHPUT];
+		break;
+	case 29:
+		DisplayImage = qvk.images[VKPT_IMG_HQ_COLOR_INTERLEAVED];
+		break;
+	case 30:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO];
+		break;
+	case 31:
+		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_LF_SH];
+		break;
+	case 32:
+		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_HF];
+		break;
+	case 33:
+		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_SPEC];
+		break;
+	case 34:
+		DisplayImage = qvk.images[VKPT_IMG_PT_GEO_NORMAL2];
+		break;
+	case 35:
+		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_PRIM_B];
+		break;
+	case 36:
+		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_PRIM_A];
+		break;
+	case 37:
+		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_BARY_B];
+		break;
+	case 38:
+		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_BARY_A];
+		break;
+	case 39:
+		DisplayImage = qvk.images[VKPT_IMG_PT_BASE_COLOR_B];
+		break;
+	case 40:
+		DisplayImage = qvk.images[VKPT_IMG_PT_BASE_COLOR_A];
+		break;
+	case 41:
+		DisplayImage = qvk.images[VKPT_IMG_PT_METALLIC_B];
+		break;
+	case 42:
+		DisplayImage = qvk.images[VKPT_IMG_PT_METALLIC_A];
+		break;
+	case 43:
+		DisplayImage = qvk.images[VKPT_IMG_PT_VIEW_DEPTH_B];
+		break;
+	case 44:
+		DisplayImage = qvk.images[VKPT_IMG_PT_VIEW_DEPTH_A];
+		break;
+
+	default:
+		DisplayImage = qvk.images[VKPT_IMG_DLSS_OUTPUT];
+		break;
+	}
+
+	return DisplayImage;
 }
 
 void

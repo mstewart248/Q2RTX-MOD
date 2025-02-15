@@ -2004,7 +2004,7 @@ static void SCR_DrawActive(int waterLevel)
     SCR_TileClear();
 
     // draw 3D game view
-    V_RenderView(waterLevel);
+    V_RenderView(/*waterLevel*/);
 
     // draw all 2D elements
     SCR_Draw2D();

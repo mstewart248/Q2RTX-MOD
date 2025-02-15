@@ -352,10 +352,12 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
 
     int DlssCreateFeatureFlags = NVSDK_NGX_DLSS_Feature_Flags_None;
     
+    //DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVJittered;
     DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
    
-    //DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_Reserved_0;
+    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_Reserved_0;
     DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
 
 
     dlssParams.InFeatureCreateFlags = DlssCreateFeatureFlags;
@@ -366,14 +368,14 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
     uint32_t visibilityNodeMask = 1;    
     bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;;
 
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, NVSDK_NGX_DLSS_Hint_Render_Preset_F);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
     
     NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0f);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 2);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DenoiseMode, 2);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 1);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DenoiseMode, 1);
     NVSDK_NGX_Result res;
     NVSDK_NGX_Result ssres;
 
@@ -497,6 +499,10 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
+    NVSDK_NGX_VK_GBuffer inBuffer = {
+        .pInAttrib[NVSDK_NGX_GBUFFER_ALBEDO] = &albedo        
+    };
+
     switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
         case 1:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
@@ -540,7 +546,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         case 14:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], targetSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
             break;
-        case 15: 
+        case 15:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
         case 16:
@@ -591,9 +597,6 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 
     }
 
-    NVSDK_NGX_VK_GBuffer inBuffer = {
-        .pInAttrib[NVSDK_NGX_GBUFFER_ALBEDO] = &albedo        
-    };
 
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR] = &specular;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_ROUGHNESS] = &roughness;
@@ -605,8 +608,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_ALBEDO] = &specularAlbedo;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_BEFORE_PARTICLES] = &beforeTransparent;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_BEFORE_TRANSPARENCY] = &beforeTransparent;
-    inBuffer.pInAttrib[15] = &diffuseLength;
-    inBuffer.pInAttrib[16] = &specularLength;
+    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_DIFFUSE_HITDISTANCE] = &diffuseLength;
+    //inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_HITDISTANCE] = &specularLength;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_REFLECTED_ALBEDO] = &reflectedAlbedo;
 
     NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {

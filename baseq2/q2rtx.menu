@@ -146,7 +146,7 @@ begin video
         pairs "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
         pairs "DLSS 2.0" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
         pairs "DLSS 3.5 Ray-Reconstruction" pt_dlss_dldn off 0 on 1
-        pairs "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 BeforeTransparent 16 RayLengthDiffuse 17 raylengthSpecular 18 transparent 19 PT_MOTION 20 DLSS_MOTION 21 ASVGF_HIST_COLOR_HF 22 ShadingPosition 23 FlatColor 24 FlatMotion 25 TAA_Output 26 PT_THROUGHPUT 27 BOUNCE_THROUGHPUT 28 HQ_COLOR_INTERLEAVED 29 Reflected_Albedo 30
+        pairs "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 BeforeTransparent 16 RayLengthDiffuse 17 raylengthSpecular 18 transparent 19 PT_MOTION 20 DLSS_MOTION 21 ASVGF_HIST_COLOR_HF 22 ShadingPosition 23 FlatColor 24 FlatMotion 25 TAA_Output 26 PT_THROUGHPUT 27 BOUNCE_THROUGHPUT 28 HQ_COLOR_INTERLEAVED 29 Reflected_Albedo 30 COLOR_LF 31 COLOR_HF 32 COLOR_SPEC 33 GEO_NORMAL 34 VISBUF_B 35 VISBUF_A 36 VISBUF_BARY_B 37 VISBUF_BARY_A 38 BASECOLOR_B 39 BASECOLOR_A 40 METALLIC_B 41 METALLIC_A 42 DEPTH_B 43 DEPTH_A 44
         toggle "AMD FSR 1.0" flt_fsr_enable
         range --status "lower is sharper" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01        
         pairs "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2

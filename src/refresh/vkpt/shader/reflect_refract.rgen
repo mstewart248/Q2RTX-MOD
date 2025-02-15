@@ -66,6 +66,7 @@ main()
 {
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	//if((rt_LaunchID.z != 0 && global_ubo.current_frame_idx % 2 == 0) || (rt_LaunchID.z == 0  && global_ubo.current_frame_idx % 2 != 0))
+
 	if(rt_LaunchID.z != 0)
 		ipos.x += global_ubo.width / 2;
 
@@ -91,7 +92,9 @@ main()
 		  primary_is_transparent ))
 		return;
 
-	bool is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+	bool is_odd_checkerboard = true; // (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+
+
 	bool do_refraction;
 	rng_seed = texelFetch(TEX_ASVGF_RNG_SEED_A, ipos, 0).r;
 
@@ -220,6 +223,10 @@ main()
 				do_refraction = do_split ? is_odd_checkerboard : (F < 0.1);
 			}		
 
+			/*if(global_ubo.current_frame_idx % 2 != 0) {
+				do_refraction = !do_refraction;
+			}*/
+
 			if(do_refraction)
 			{
 				// Refraction
@@ -228,6 +235,8 @@ main()
 				correction_factor = (1 - F);
 				include_player_model = false; // hide the player model from refractions
 	 			correct_motion_vector = 2;
+
+				
 			}
 			else
 			{
@@ -235,6 +244,7 @@ main()
 				direction = reflect(direction, normal);
 			 	correction_factor = F;
 	 			correct_motion_vector = 1;
+				//debugPrintfEXT("Launch Z: %i Do Reflection frame: %i \n", rt_LaunchID.z, global_ubo.current_frame_idx % 2);
 			}
 
 			if(do_split)
@@ -519,25 +529,31 @@ main()
 		float storedDistance = storedLength[0];
 		float numSamples = storedLength[1];
 
+		
+		numSamples++;
+
+		float totalDistance = storedDistance + ray_payload_geometry.hit_distance;
+	
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
+		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(totalDistance, 0, 0, 0));
+	}
+	else {
+
+		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+		float storedDistance = storedLength[0];
+		float numSamples = storedLength[1];
+		float totalDistance = storedDistance + PRIMARY_RAY_T_MAX;
+
+		numSamples++;
+
 		vec4 specularStoredLength = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos);
 		float specularStoredDistance = specularStoredLength[0];
 		float specularNumSamples = specularStoredLength[1];
-		
-		numSamples++;
+		float specularTotalDistance = specularStoredDistance + PRIMARY_RAY_T_MAX;
+
 		specularNumSamples++;
-
-		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
-		float totalDistance = storedDistance + ray_payload_geometry.hit_distance;
-
-		float specularAverageDistance = (specularStoredDistance + ray_payload_geometry.hit_distance) / specularNumSamples;
-		float specularTotalDistance = specularStoredDistance + ray_payload_geometry.hit_distance;
-
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
-		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(specularTotalDistance, specularNumSamples, specularNumSamples, specularNumSamples));
-	}
-	else {
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX, 1, 1, 1));
-		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX, 1, 1, 1));
+		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
 	}
 
 	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false);
@@ -584,6 +600,7 @@ main()
 	vec2 tex_coord    = triangle.tex_coords * bary;
 	vec3 new_position = triangle.positions * bary;
 	vec3 new_pos_prev = triangle.positions_prev * bary;
+
 	vec3 new_geo_normal = normalize(triangle.normals * bary);
 	material_id    = triangle.material_id;
 	cluster_idx    = triangle.cluster;

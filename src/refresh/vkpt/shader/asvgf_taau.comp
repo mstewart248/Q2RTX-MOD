@@ -26,7 +26,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_nonuniform_qualifier    : enable
-
+//#extension GL_EXT_debug_printf : enable
 
 #define GROUP_SIZE 16
 #define FILTER_RADIUS 1 
@@ -188,7 +188,7 @@ main()
     vec3 color_output = color_center;
     vec3 linear_color_output;
 
-    if(global_ubo.flt_taa != AA_MODE_OFF || (checkerboard_flags == (CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION)))
+    if(global_ubo.flt_taa != AA_MODE_OFF)
     {
         // Regular TAA/TAAU mode
 
@@ -305,8 +305,9 @@ main()
         readback.hdr_color = linear_color_output;
     }
 
-    vec2 mDLSS = get_shared_motion(int_render_pos, group_base_lores).xy; // * 100;
+    vec2 mDLSS = get_shared_motion(int_render_pos, group_base_lores).xy; //* 1000;
 
+    
     imageStore(IMG_ASVGF_TAA_A, ipos, vec4(color_output, 0));
 	imageStore(IMG_TAA_OUTPUT, ipos, vec4(linear_color_output, 1));
     imageStore(IMG_PT_DLSS_MOTION, ipos, vec4(mDLSS, 0, 0));    

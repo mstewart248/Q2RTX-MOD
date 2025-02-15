@@ -54,6 +54,7 @@ cvar_t *cvar_bloom_intensity_water = NULL;
 static float bloom_intensity;
 static float bloom_sigma;
 static float under_water_animation;
+static bool dlssScaled = false;
 
 static void compute_push_constants(void)
 {
@@ -65,6 +66,7 @@ static void compute_push_constants(void)
 	else {
 		sigma_pixels = bloom_sigma * (float)(qvk.extent_unscaled.height);
 	}
+
 	float effective_sigma = sigma_pixels * 0.25f;
 	effective_sigma = min(effective_sigma, 100.f);
 	effective_sigma = max(effective_sigma, 1.f);
@@ -142,6 +144,12 @@ vkpt_bloom_initialize()
 	cvar_bloom_intensity = Cvar_Get("bloom_intensity", "0.002", 0);
 	cvar_bloom_sigma_water = Cvar_Get("bloom_sigma_water", "0.037", 0);
 	cvar_bloom_intensity_water = Cvar_Get("bloom_intensity_water", "0.2", 0);
+
+	if (DLSSEnabled() && !dlssScaled) {
+		cvar_bloom_intensity->value = cvar_bloom_intensity->value * 100;
+		cvar_bloom_sigma->value = cvar_bloom_sigma->value - 0.022;
+		dlssScaled = true;
+	}
 
 	VkDescriptorSetLayout desc_set_layouts[] = {
 		qvk.desc_set_layout_ubo, qvk.desc_set_layout_textures,
@@ -310,14 +318,28 @@ static void bloom_debug_show_image(VkCommandBuffer cmd_buf, int vis_img)
 		.dstOffsets[1] = offset_LR_input,
 	};
 
-	BARRIER_TO_COPY_DEST(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	if (DLSSEnabled()) {
+		BARRIER_TO_COPY_DEST(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
 
-	vkCmdBlitImage(cmd_buf,
-		qvk.images[vis_img], VK_IMAGE_LAYOUT_GENERAL,
-		qvk.images[VKPT_IMG_TAA_OUTPUT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		1, &blit_region, VK_FILTER_LINEAR);
+		vkCmdBlitImage(cmd_buf,
+			qvk.images[vis_img], VK_IMAGE_LAYOUT_GENERAL,
+			qvk.images[VKPT_IMG_DLSS_OUTPUT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1, &blit_region, VK_FILTER_LINEAR);
 
-	BARRIER_FROM_COPY_DEST(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+		BARRIER_FROM_COPY_DEST(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
+	}
+	else {
+		BARRIER_TO_COPY_DEST(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+
+		vkCmdBlitImage(cmd_buf,
+			qvk.images[vis_img], VK_IMAGE_LAYOUT_GENERAL,
+			qvk.images[VKPT_IMG_TAA_OUTPUT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1, &blit_region, VK_FILTER_LINEAR);
+
+		BARRIER_FROM_COPY_DEST(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	}
+
+	
 }
 
 VkResult
@@ -364,7 +386,13 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 
 	if (cvar_bloom_debug->integer == 1)
 	{
-		bloom_debug_show_image(cmd_buf, VKPT_IMG_BLOOM_VBLUR);
+		if (DLSSEnabled()) {
+			bloom_debug_show_image(cmd_buf, VKPT_IMG_DLSS_BLOOM_VBLUR);
+		}
+		else {
+			bloom_debug_show_image(cmd_buf, VKPT_IMG_BLOOM_VBLUR);
+		}
+		
 		return VK_SUCCESS;
 	}
 
@@ -395,7 +423,13 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 
 	if(cvar_bloom_debug->integer == 2)
 	{
-		bloom_debug_show_image(cmd_buf, VKPT_IMG_BLOOM_HBLUR);
+		if (DLSSEnabled()) {
+			bloom_debug_show_image(cmd_buf, VKPT_IMG_DLSS_BLOOM_HBLUR);
+		}
+		else {
+			bloom_debug_show_image(cmd_buf, VKPT_IMG_BLOOM_HBLUR);
+		}
+		
 		return VK_SUCCESS;
 	}
 
@@ -416,7 +450,12 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 
 	if(cvar_bloom_debug->integer == 3)
 	{
-		bloom_debug_show_image(cmd_buf, VKPT_IMG_BLOOM_VBLUR);
+		if (DLSSEnabled()) {
+			bloom_debug_show_image(cmd_buf, VKPT_IMG_DLSS_BLOOM_VBLUR);
+		}
+		else {
+			bloom_debug_show_image(cmd_buf, VKPT_IMG_BLOOM_VBLUR);
+		}
 		return VK_SUCCESS;
 	}
 

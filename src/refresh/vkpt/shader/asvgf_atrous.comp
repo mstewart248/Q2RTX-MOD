@@ -403,6 +403,7 @@ main()
 		final_color *= STORAGE_SCALE_HDR;
 		color_no_transparency *= STORAGE_SCALE_HDR;
 
+		//imageStore(IMG_PT_COMPOSITE_TRANSPARENT, ipos, transparent);
 		imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb, 0));
 		imageStore(IMG_ASVGF_COLOR, ipos, vec4(final_color, checkerboard_flags));
 	}

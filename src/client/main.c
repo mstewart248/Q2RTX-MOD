@@ -3277,7 +3277,7 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
         if (host_speeds->integer)
             time_before_ref = Sys_Milliseconds();
 
-        SCR_UpdateScreen(waterLevel);
+        SCR_UpdateScreen(/*waterLevel*/);
 
         if (host_speeds->integer)
             time_after_ref = Sys_Milliseconds();

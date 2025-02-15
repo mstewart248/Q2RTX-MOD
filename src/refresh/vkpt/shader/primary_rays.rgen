@@ -27,6 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_debug_printf : enable
 
 #pragma optionNV(unroll all)
 
@@ -124,8 +125,13 @@ void
 main()
 {
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
-	if(rt_LaunchID.z != 0)
+	uint secondField = 0;
+
+	if(rt_LaunchID.z != 0) {
 		ipos.x += global_ubo.width / 2;
+		secondField = 1;
+	}
+		
 
 	bool is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
 
@@ -180,14 +186,12 @@ main()
 		
 		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
 		float storedDistance = storedLength[0];
-		float numSamples = storedLength[1];
 		
-		numSamples++;
-		float averageDistance = (storedDistance + ray_payload_geometry.hit_distance) / numSamples;
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(averageDistance, numSamples, numSamples, numSamples));		
+		float totalDistance = storedDistance + ray_payload_geometry.hit_distance;
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, 0,0,0));		
 	}
 	else {
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX, 1, 1, 1));
+		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
 	}
 
 	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false);
@@ -321,6 +325,19 @@ main()
     	primary_emissive,
     	primary_specular_factor);
 
+	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
+	imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
+
+	vec3 primary_albedo, primary_base_reflectivity;
+	get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
+
+	if(primary_albedo[0] > 0 || primary_albedo[1] > 0 || primary_albedo[2] > 0) {
+		imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+	}
+	else {
+		imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_base_reflectivity, 0));
+	}
+
     // Extinction in the primary ray
 	if(global_ubo.medium != MEDIUM_NONE)
 	{
@@ -331,6 +348,8 @@ main()
 	// will be used in case of transparency, to retain difference between TRANSPARENT and TRANSP_MODEL
 	// default to TRANSP_MODEL so transparency on other material kind works (needed for eg gunalpha)
 	uint transparency_kind = (material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT ? MATERIAL_KIND_TRANSPARENT : MATERIAL_KIND_TRANSP_MODEL;
+
+	
 
 	if((is_chrome(material_id) || is_screen(material_id) || is_camera(material_id)) && primary_roughness >= MAX_MIRROR_ROUGHNESS || is_transparent(material_id))
 	{
@@ -413,12 +432,25 @@ main()
 		}
 	}
 
+	if(is_water(material_id) || is_glass(material_id)) {
+		if(primary_albedo[0] > 0 || primary_albedo[1] > 0 || primary_albedo[2] > 0) {
+			imageStore(IMG_PT_COMPOSITE_TRANSPARENT, ipos, vec4(primary_albedo, 0));
+		}
+		else {
+			imageStore(IMG_PT_COMPOSITE_TRANSPARENT, ipos, vec4(primary_base_reflectivity, 0));
+		}
+	}
+
 	if(is_water(material_id) || is_slime(material_id))
 	{
 		normal = get_water_normal(material_id, geo_normal, triangle.tangents[0], position, false);
 
 		if(abs(geo_normal.z) < 0.1)  // hack to detect actual water vs. vertical force fields
 			material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_GLASS;
+
+		
+		
+	
 	}
 		
 	// Store the surface parameters into the G-buffer for the lighting shaders
@@ -445,7 +477,24 @@ main()
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, distance_curr));
 	imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(1, 1, 1, half_cone_angle));
 	imageStore(IMG_PT_CLUSTER_A, ipos, ivec4(triangle.cluster));
-	imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(primary_base_color, primary_specular_factor));
+	if(global_ubo.current_frame_idx % 2 == 0) {
+		uint newX;
+
+		if(secondField == 1) {
+			newX = ipos.x - (global_ubo.width / 2);			
+			//debugPrintfEXT("second field == %i \n", secondField);
+		}
+		else {
+			newX = ipos.x + (global_ubo.width / 2);
+			//debugPrintfEXT("second field == %i \n", secondField);
+		}
+		imageStore(IMG_PT_BASE_COLOR_A, ivec2(newX, ipos.y), vec4(primary_base_color, primary_specular_factor));
+
+	}
+	else {
+		imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(primary_base_color, primary_specular_factor));
+	}
+	
 	imageStore(IMG_PT_METALLIC_A, ipos, vec4(primary_metallic, primary_roughness, 0, 0));
 	imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(1, 1, 1, distance_curr));
 	imageStore(IMG_PT_EMISSIVE, ipos, vec4(primary_emissive, 0));

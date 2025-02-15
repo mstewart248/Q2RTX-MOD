@@ -1046,6 +1046,12 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_NORMAL_A + frame_idx]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_RNG_SEED_A + frame_idx]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DEPTH_SPLIT]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAY_LENGTH]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_METALLIC]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO]);
+
 
 	return VK_SUCCESS;
 }
@@ -1113,6 +1119,15 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_HF]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_SPEC]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAY_LENGTH]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_SPECULAR]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_SPECULAR]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_METALLIC]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_NORMAL]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_MATERIALID]);
 
 	if (cvar_pt_restir->value != 0) {
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_A + frame_idx]);

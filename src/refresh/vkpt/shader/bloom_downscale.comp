@@ -28,6 +28,7 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 #define GLOBAL_TEXTURES_DESC_SET_IDX 1
 #include "global_textures.h"
 
+
 void
 main()
 {
@@ -52,7 +53,7 @@ main()
             else {
                 if (input_pos.x < global_ubo.unscaled_width && input_pos.y < global_ubo.unscaled_height)
                 {                 
-                    result += texelFetch(TEX_DLSS_OUTPUT, input_pos, 0);                   
+                    result += texelFetch(TEX_DLSS_OUTPUT, input_pos, 0);           
                     count += 1;
                 }
             }

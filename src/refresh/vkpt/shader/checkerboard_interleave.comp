@@ -117,6 +117,38 @@ ivec2 get_input_position(out int other_side_offset)
     return pos;
 }
 
+ivec2 get_input_position_transparent(out int other_side_offset)
+{
+    ivec2 pos;
+
+    pos.x = int(gl_GlobalInvocationID.x / 2);
+    pos.y = int(gl_GlobalInvocationID.y);
+
+    int px = int(gl_GlobalInvocationID.x & 1);
+    int py = int(gl_GlobalInvocationID.y & 1);
+
+    other_side_offset = global_ubo.width / 2;
+
+
+    bool is_even_checkerboard = px == py;
+    if(global_ubo.pt_swap_checkerboard != 0)
+        is_even_checkerboard = !is_even_checkerboard;
+
+
+
+    //debugPrintfEXT("Frame: %i IsEven: %i \n", global_ubo.current_frame_idx % 2, is_even_checkerboard);
+
+    if (!is_even_checkerboard)
+    {
+        pos.x += global_ubo.width / 2;
+        other_side_offset = -other_side_offset;
+    }
+
+    return pos;
+}
+
+
+
 vec4 safe_load(ivec2 pos)
 {
     if(pos.x >= global_ubo.width || pos.y >= global_ubo.height)
@@ -131,28 +163,32 @@ ivec2 get_output_position()
 }
 
 float ConvertDistance(float rayLength) {
-    float res = ((rayLength - 1) / (5000 - 1) * 1);
+    float res = ((rayLength - 1) / (10000 - 1) * 1);
 
+    
     return res;
 }
 
 
 
 vec4 multResolutionScale(vec4 inpt) {
-    vec4 newVec;
+    /*vec4 newVec;
 
     newVec[0] = inpt[0] / global_ubo.width;
     newVec[1] = inpt[1] / global_ubo.height;
     newVec[2] = inpt[2];
     newVec[3] = inpt[3];
 
-    return newVec;
+    return newVec;*/
+
+    return inpt;
 }
 
 void main()
 {
     int other_side_offset;
     ivec2 ipos = get_input_position(other_side_offset);
+    ivec2 iposTrans = get_input_position_transparent(other_side_offset);
     ivec2 opos = get_output_position();
     
     if (opos.x >= global_ubo.width || opos.y >= global_ubo.height)
@@ -165,7 +201,7 @@ void main()
     vec4 color;
     bool use_center_mv = true;
     int checkerboard_flags = int(center.a);
-    bool is_checkerboarded_surface = /*(global_ubo.flt_enable != 0) &&*/ (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
+    bool is_checkerboarded_surface = (global_ubo.flt_enable != 0 /*|| global_ubo.pt_dlss != 0*/) && (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
 
     // The alpha channel encodes whether the material uses checkerboard reflections and refractions.
     // Don't do the filter if there is no checkerboarding - which improves sharpness and reduces sparkles.
@@ -205,11 +241,11 @@ void main()
 
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, multResolutionScale(imageLoad(IMG_PT_REFLECT_MOTION, ipos)));
-        imageStore(IMG_DLSS_REFLECT_MOTION, opos, (imageLoad(IMG_PT_REFLECT_MOTION, ipos) * -1));
+        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos).xy * 1000, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
-        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthSecondVec.x / rayLengthSecondVec.y), 0, 0, 0));
-        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos));
+        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthSecondVec.x), 0, 0, 0));
+        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, ipos));
         imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos));
         imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos));
         imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos));
@@ -221,18 +257,22 @@ void main()
         imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos));
         imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos));
         imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos));
-        imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos).x) , 0, 0, 0));
-        imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos).x) , 0, 0, 0));
+
+        vec4 specularRayLength = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos);
+        vec4 diffuseRayLength = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos);
+
+        imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x)));
+        imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x)));
     }        
     else {
         vec4 rayLengthVec = imageLoad(IMG_PT_RAY_LENGTH, ipos + ivec2(other_side_offset, 0));
 
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_REFLECT_MOTION, opos, multResolutionScale(imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0))) * -1 );
+        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0)).xy * 1000, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthVec.x / rayLengthVec.y), 0, 0 , 0));   
-        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
+        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(rayLengthVec.x, 0, 0 , 0));   
+        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos + ivec2(other_side_offset, 0)));        
         imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos + ivec2(other_side_offset, 0)));
@@ -244,8 +284,12 @@ void main()
         imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos + ivec2(other_side_offset, 0)).x) , 0, 0, 0));
-        imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos + ivec2(other_side_offset, 0)).x) , 0, 0, 0));
+
+        vec4 specularRayLength = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos + ivec2(other_side_offset, 0));
+        vec4 diffuseRayLength = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos + ivec2(other_side_offset, 0));
+
+        imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x)));
+        imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(ConvertDistance(specularRayLength.x) , ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x)));
     }
     
 }
