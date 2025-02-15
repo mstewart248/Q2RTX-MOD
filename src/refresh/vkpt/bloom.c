@@ -151,6 +151,12 @@ vkpt_bloom_initialize()
 		dlssScaled = true;
 	}
 
+	if (!DLSSEnabled() && dlssScaled) {
+		cvar_bloom_intensity->value = cvar_bloom_intensity->value / 100;
+		cvar_bloom_sigma->value = cvar_bloom_sigma->value + 0.022;
+		dlssScaled = false;
+	}
+
 	VkDescriptorSetLayout desc_set_layouts[] = {
 		qvk.desc_set_layout_ubo, qvk.desc_set_layout_textures,
 		qvk.desc_set_layout_vertex_buffer

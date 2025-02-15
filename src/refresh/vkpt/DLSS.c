@@ -26,6 +26,7 @@ cvar_t* cvar_pt_dlss_dldn = NULL;
 qboolean recreateSwapChain = qfalse;
 qboolean dlssModeChanged = qfalse;
 extern cvar_t* scr_viewsize;
+extern cvar_t* vid_rtx;
 int oldCvarValue;
 
 void InitDLSSCvars() 
@@ -53,6 +54,10 @@ qboolean DLSSEnabled() {
 
 int DLSSMode() {
     return cvar_pt_dlss->integer;
+}
+
+int DLSSModeDenoise() {
+    return cvar_pt_dlss_dldn->integer;
 }
 
 float GetDLSSResolutionScale() {
@@ -366,12 +371,17 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
     // only one phys device
     uint32_t creationNodeMask = 1;
     uint32_t visibilityNodeMask = 1;    
-    bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;;
+    bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
 
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
+
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSSD_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSSD_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSSD_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSSD_Hint_Render_Preset_UltraQuality, NVSDK_NGX_DLSS_Hint_Render_Preset_J);
     
     NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0f);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 1);
@@ -739,25 +749,27 @@ void viewsize_changed(cvar_t* self) {
     switch (self->integer) {
     case -1:
         Cvar_SetInteger(scr_viewsize, 25, FROM_MENU);
-        return;
+        break;
     case 1:
         Cvar_SetInteger(scr_viewsize, 50, FROM_MENU);
-        return;
+        break;
     case 2:
         Cvar_SetInteger(scr_viewsize, 59, FROM_MENU);
-        return;
+        break;
     case 3:
         Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);   
-        return;
+        break;
     case 4:
         Cvar_SetInteger(scr_viewsize, 77, FROM_MENU);
-        return;
+        break;
     case 5:
         Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
-        return;
+        break;
     }
 
     oldCvarValue = self->integer;
+    Cvar_SetByVar(vid_rtx, "0", FROM_MENU);
+    Cvar_SetByVar(vid_rtx, "1", FROM_MENU);
 }
 
 void DlssModeChanged(cvar_t* self) {

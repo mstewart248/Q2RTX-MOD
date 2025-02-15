@@ -79,6 +79,8 @@ char* GetDLSSVulkanInstanceExtensions();
 char* GetDLSSVulkanDeviceExtensions();
 void viewsize_changed(cvar_t* self);
 void DlssModeChanged(cvar_t* self);
+int DLSSMode();
+int DLSSModeDenoise();
 float GetDLSSMultResolutionScale();
 qboolean DLSSChanged();
 void DLSSSwapChainRecreated();

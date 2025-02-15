@@ -71,7 +71,6 @@ main()
 		ipos.x += global_ubo.width / 2;
 
 	vec4 position_material = imageLoad(IMG_PT_SHADING_POSITION, ipos);
-	
 	vec3 position   = position_material.xyz;
 	uint material_id = floatBitsToUint(position_material.w);
 
@@ -92,8 +91,16 @@ main()
 		  primary_is_transparent ))
 		return;
 
-	bool is_odd_checkerboard = true; // (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+	bool is_odd_checkerboard;
 
+	if(global_ubo.pt_dlssdn == 0) {
+		is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+	}
+	else {
+		float rngRes = get_rng(global_ubo.current_frame_idx + floatBitsToUint(position_material.x) + rt_LaunchID.x);
+
+		is_odd_checkerboard = rngRes > .5;
+	}
 
 	bool do_refraction;
 	rng_seed = texelFetch(TEX_ASVGF_RNG_SEED_A, ipos, 0).r;

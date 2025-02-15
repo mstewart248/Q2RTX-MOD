@@ -295,8 +295,12 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 	qvk.extent_taa_images.height = max(qvk.extent_screen_images.height, qvk.extent_unscaled.height);
 	qvk.gpu_slice_width = (qvk.extent_render.width + qvk.device_count - 1) / qvk.device_count;
 
-	if (DLSSEnabled()) {
+	if (DLSSEnabled()) {		
 		qvk.extent_taa_images = qvk.extent_render;
+	}
+	else {
+		qvk.extent_taa_images.width = max(qvk.extent_screen_images.width, qvk.extent_unscaled.width);
+		qvk.extent_taa_images.height = max(qvk.extent_screen_images.height, qvk.extent_unscaled.height);
 	}
 
 	for(int i = 0; i < LENGTH(vkpt_initialization); i++) {
@@ -2816,6 +2820,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	ubo->flt_enable = ref_mode->enable_denoiser;
 	ubo->flt_taa = qvk.effective_aa_mode;
 	ubo->pt_dlss = DLSSMode();
+	ubo->pt_dlssdn = DLSSModeDenoise();
 	ubo->pt_num_bounce_rays = ref_mode->num_bounce_rays;
 	ubo->pt_reflect_refract = ref_mode->reflect_refract;
 
