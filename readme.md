@@ -24,10 +24,13 @@ The **Quake II** game data files remain copyrighted and licensed under the
 original id Software terms, so you cannot redistribute the pak files from the
 original game.
 
+## Update
+DLSS implementation has been updated to use the latest DLSS SDK. So this project should build now if you link to the newest DLSS SDK without monkey patching the SDK.
+
 ## Features
 
 **Quake II RTX** introduces the following features:
-  - DLSS 2.0 Support
+  - DLSS 4.5 Support (Without frame generation)
   - Rerelease Map Support
   - Caustics approximation and coloring of light that passes through tinted glass
   - Cutting-edge denoising technology
