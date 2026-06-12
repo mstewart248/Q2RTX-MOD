@@ -249,47 +249,41 @@ indirect_lighting(
 
 	bool bounce_is_sky_light = false;
 
-	if(found_intersection(ray_payload_geometry)) {
-		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
-		float storedDistance = storedLength[0];
-		float numSamples = storedLength[1];		
+	/*
+		if(found_intersection(ray_payload_geometry)) {
+			vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+			float storedDistance = storedLength[0];
+			float numSamples = storedLength[1];		
 		
-		numSamples++;
+			numSamples++;
 		
-		float totalDistance = storedDistance + ray_payload_geometry.hit_distance;		
+			float totalDistance = storedDistance + ray_payload_geometry.hit_distance;		
 
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
+			imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
 		
-		if(is_specular_ray) {
-			vec4 specularStoredLength = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos);
-			float specularStoredDistance = specularStoredLength[0];
-			float specularTotalDistance = specularStoredDistance + ray_payload_geometry.hit_distance;
+			if(is_specular_ray) {
+				imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(ray_payload_geometry.hit_distance, ray_payload_geometry.hit_distance, ray_payload_geometry.hit_distance, ray_payload_geometry.hit_distance));
+			}
+			else {
+				imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(ray_payload_geometry.hit_distance, ray_payload_geometry.hit_distance, ray_payload_geometry.hit_distance, ray_payload_geometry.hit_distance));
+			}
 
-			imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(specularTotalDistance, specularTotalDistance, specularTotalDistance, specularTotalDistance));
 		}
 		else {
-			vec4 diffuseStoredLength = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos);
-			float diffuseStoredDistance = diffuseStoredLength[0];
-			float diffuseTotalDistance = diffuseStoredDistance + ray_payload_geometry.hit_distance;
+			vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
+			float storedDistance = storedLength[0];
+			float numSamples = storedLength[1];
+			float totalDistance = storedDistance + PRIMARY_RAY_T_MAX;
 
-			imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(diffuseTotalDistance, diffuseTotalDistance, diffuseTotalDistance, diffuseTotalDistance));
+			numSamples++;
+
+			imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
+			if(!is_specular_ray) {
+				imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(PRIMARY_RAY_T_MAX, PRIMARY_RAY_T_MAX, PRIMARY_RAY_T_MAX, PRIMARY_RAY_T_MAX));
+			}
+
 		}
-
-	}
-	else {
-		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
-		float storedDistance = storedLength[0];
-		float numSamples = storedLength[1];
-		float totalDistance = storedDistance + PRIMARY_RAY_T_MAX;
-
-		numSamples++;
-
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, numSamples, numSamples, numSamples));
-		if(!is_specular_ray) {
-			imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(PRIMARY_RAY_T_MAX, PRIMARY_RAY_T_MAX, PRIMARY_RAY_T_MAX, PRIMARY_RAY_T_MAX));
-		}
-
-	}
+	*/
 
 	if(!found_intersection(ray_payload_geometry)) 
 	{

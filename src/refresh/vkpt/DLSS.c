@@ -805,6 +805,7 @@ void viewsize_changed(cvar_t* self) {
     case 4:
         Cvar_SetInteger(scr_viewsize, 77, FROM_MENU);
         break;
+    case 0:
     case 5:
         Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
         break;
@@ -836,6 +837,7 @@ void DlssModeChanged(cvar_t* self) {
         Cvar_SetInteger(scr_viewsize, 77, FROM_MENU);
         return;
     case 5:
+    case 0:
         Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
         return;
     }

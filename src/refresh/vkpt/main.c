@@ -2898,6 +2898,8 @@ update_mlight_prev_to_current()
 	}
 }
 
+static float lastFrameTime = 0.f;
+static float lastWallClocktime = 0.f;
 
 /* renders the map ingame */
 void
@@ -3459,15 +3461,19 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			resObj.outputHeight = qvk.extent_unscaled.height;
 
 			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);			
+			lastFrameTime = frame_time;
+			lastWallClocktime = frame_wallclock_time;
+		}
+		else {
+			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
+			if (cvar_tm_enable->integer != 0)
+			{
+				vkpt_tone_mapping_record_cmd_buffer(post_cmd_buf, frame_time <= 0.f ? frame_wallclock_time : frame_time, DLSSEnabled());
+			}
+			END_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
 		}
 
-
-		BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
-		if (cvar_tm_enable->integer != 0)
-		{
-			vkpt_tone_mapping_record_cmd_buffer(post_cmd_buf, frame_time <= 0.f ? frame_wallclock_time : frame_time, DLSSEnabled());
-		}
-		END_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
+		
 
 		{
 			VkBufferCopy copyRegion = { 0, 0, sizeof(ReadbackBuffer) };
@@ -3740,10 +3746,6 @@ R_EndFrame_RTX(void)
 		return;
 	}
 
-	if (DLSSEnabled()) {
-
-	}
-
 	if (cvar_profiler->integer) {
 		VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
 
@@ -3773,6 +3775,13 @@ R_EndFrame_RTX(void)
 				vkpt_bloom_record_cmd_buffer(cmd_buf);
 			}
 			END_PERF_MARKER(cmd_buf, PROFILER_BLOOM);
+
+			BEGIN_PERF_MARKER(cmd_buf, PROFILER_TONE_MAPPING);
+			if (cvar_tm_enable->integer != 0)
+			{
+				vkpt_tone_mapping_record_cmd_buffer(cmd_buf, lastFrameTime <= 0.f ? lastWallClocktime : lastFrameTime, DLSSEnabled());
+			}
+			END_PERF_MARKER(cmd_buf, PROFILER_TONE_MAPPING);
 
 			
 			vkpt_final_blit_simple(cmd_buf, GetDLSSImage(), GetDLSSExtent());

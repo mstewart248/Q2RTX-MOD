@@ -153,8 +153,8 @@ vkpt_bloom_initialize()
 	}
 
 	if (DLSSEnabled() && !dlssScaled) {
-		cvar_bloom_intensity->value = original_bloom_intensity +.198;
-		cvar_bloom_sigma->value = original_bloom_sigma - .022;
+		cvar_bloom_intensity->value = original_bloom_intensity; // +.198;
+		cvar_bloom_sigma->value = original_bloom_sigma; // -.022;
 		dlssScaled = true;
 	}
 
