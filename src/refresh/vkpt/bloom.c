@@ -55,6 +55,7 @@ static float bloom_intensity;
 static float bloom_sigma;
 static float under_water_animation;
 static float original_bloom_intensity = -1.0f;
+static float original_bloom_sigma = -1.0f;
 static bool dlssScaled = false;
 
 static void compute_push_constants(void)
@@ -148,17 +149,18 @@ vkpt_bloom_initialize()
 
 	if (original_bloom_intensity == -1.0f) {
 		original_bloom_intensity = cvar_bloom_intensity->value;
+		original_bloom_sigma = cvar_bloom_sigma->value;
 	}
 
 	if (DLSSEnabled() && !dlssScaled) {
-		cvar_bloom_intensity->value = original_bloom_intensity * 150;
-		cvar_bloom_sigma->value = cvar_bloom_sigma->value - 0.022;
+		cvar_bloom_intensity->value = original_bloom_intensity + .148;
+		cvar_bloom_sigma->value = original_bloom_sigma + .113;
 		dlssScaled = true;
 	}
 
 	if (!DLSSEnabled() && dlssScaled) {
-		cvar_bloom_intensity->value = original_bloom_intensity / 150;
-		cvar_bloom_sigma->value = cvar_bloom_sigma->value + 0.022;
+		cvar_bloom_intensity->value = original_bloom_intensity;
+		cvar_bloom_sigma->value = original_bloom_sigma;
 		dlssScaled = false;
 	}
 
@@ -335,7 +337,7 @@ static void bloom_debug_show_image(VkCommandBuffer cmd_buf, int vis_img)
 		vkCmdBlitImage(cmd_buf,
 			qvk.images[vis_img], VK_IMAGE_LAYOUT_GENERAL,
 			qvk.images[VKPT_IMG_DLSS_OUTPUT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			1, &blit_region, VK_FILTER_LINEAR);
+			1, &blit_region, VK_FILTER_NEAREST);
 
 		BARRIER_FROM_COPY_DEST(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
 	}
