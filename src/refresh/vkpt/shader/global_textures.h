@@ -74,7 +74,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(PT_GEO_NORMAL2,            34, R32_UINT,            r32ui,   IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(FSR_EASU_OUTPUT,           35, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
 	IMG_DO(FSR_RCAS_OUTPUT,           36, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(PT_REFLECT_MOTION,         37, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(PT_REFLECT_MOTION,         37, R32G32_SFLOAT,       rg32f,   IMG_WIDTH,           IMG_HEIGHT     ) \
 	IMG_DO(DLSS_OUTPUT,               38, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
 	IMG_DO(PT_VIEW_DEPTH_SPLIT,       39, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
 	IMG_DO(PT_RAY_LENGTH,             40, R32G32_SFLOAT,       rg32f,   IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
@@ -82,7 +82,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_DEPTH,                42, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED)  \
 	IMG_DO(DLSS_RAY_LENGTH,           43, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(DLSS_TRANSPARENT,          44, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(DLSS_REFLECT_MOTION,       45, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(DLSS_REFLECT_MOTION,       45, R32G32_SFLOAT,       rg32f,   IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(PT_ALBEDO,                 46, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
 	IMG_DO(DLSS_ALBEDO,               47, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,		 IMG_HEIGHT_TAA	) \
 	IMG_DO(PT_SPECULAR,               48, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \

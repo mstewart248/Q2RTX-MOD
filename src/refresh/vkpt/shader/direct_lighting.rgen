@@ -325,10 +325,9 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 		o_specular += direct_specular;                
 		if(vis == 0.0f) r.W = 0.0f;
 
-		//imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+
 		imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
-		//imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness, 0, 0, 0));
-		//imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic, 0, 0, 0));
+
 		imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
 		imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
 	}
@@ -342,7 +341,7 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	high_freq = clamp_output(high_freq);
 	o_specular = clamp_output(o_specular);
 
-	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(primary_base_reflectivity, 0));
+	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(primary_albedo, 0));
 
 	if(use_shadow_rays)
 	{
@@ -462,7 +461,7 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 
 	high_freq = clamp_output(high_freq);
 	o_specular = clamp_output(o_specular);
-	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(primary_base_reflectivity, 0));
+	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(primary_albedo, 0));
 }
 
 void

@@ -23,6 +23,8 @@
 #include <vulkan/vulkan.h>
 #include <nvsdk_ngx_helpers_vk.h>
 #include <nvsdk_ngx_helpers.h>
+#include <nvsdk_ngx_helpers_dlssd_vk.h>
+
 
 #include "shared/shared.h"
 #include "vkpt.h"
@@ -89,6 +91,7 @@ struct DLSS {
 	VkDevice device;
     qboolean isInitalized;
     NVSDK_NGX_Parameter* pParams;
+	NVSDK_NGX_DLSSD_Create_Params* pDlssdParams;
     NVSDK_NGX_Handle* pDlssFeature;
     PrevDlssFeatureValues prevDlssFeatureValues;
 	qboolean created;

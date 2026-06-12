@@ -54,6 +54,7 @@ cvar_t *cvar_bloom_intensity_water = NULL;
 static float bloom_intensity;
 static float bloom_sigma;
 static float under_water_animation;
+static float original_bloom_intensity = -1.0f;
 static bool dlssScaled = false;
 
 static void compute_push_constants(void)
@@ -145,14 +146,18 @@ vkpt_bloom_initialize()
 	cvar_bloom_sigma_water = Cvar_Get("bloom_sigma_water", "0.037", 0);
 	cvar_bloom_intensity_water = Cvar_Get("bloom_intensity_water", "0.2", 0);
 
+	if (original_bloom_intensity == -1.0f) {
+		original_bloom_intensity = cvar_bloom_intensity->value;
+	}
+
 	if (DLSSEnabled() && !dlssScaled) {
-		cvar_bloom_intensity->value = cvar_bloom_intensity->value * 100;
+		cvar_bloom_intensity->value = original_bloom_intensity * 150;
 		cvar_bloom_sigma->value = cvar_bloom_sigma->value - 0.022;
 		dlssScaled = true;
 	}
 
 	if (!DLSSEnabled() && dlssScaled) {
-		cvar_bloom_intensity->value = cvar_bloom_intensity->value / 100;
+		cvar_bloom_intensity->value = original_bloom_intensity / 150;
 		cvar_bloom_sigma->value = cvar_bloom_sigma->value + 0.022;
 		dlssScaled = false;
 	}
@@ -172,7 +177,7 @@ vkpt_bloom_initialize()
 		.setLayoutCount         = LENGTH(desc_set_layouts),
 		.pSetLayouts            = desc_set_layouts,
 		.pushConstantRangeCount = 1,
-		.pPushConstantRanges    = &push_constant_range
+		.pPushConstantRanges    = &push_constant_range 
 	);
 	ATTACH_LABEL_VARIABLE(pipeline_layout_blur, PIPELINE_LAYOUT);
 

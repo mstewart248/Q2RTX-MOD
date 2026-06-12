@@ -65,7 +65,6 @@ void
 main() 
 {
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
-	//if((rt_LaunchID.z != 0 && global_ubo.current_frame_idx % 2 == 0) || (rt_LaunchID.z == 0  && global_ubo.current_frame_idx % 2 != 0))
 
 	if(rt_LaunchID.z != 0)
 		ipos.x += global_ubo.width / 2;
@@ -93,14 +92,13 @@ main()
 
 	bool is_odd_checkerboard;
 
-	if(global_ubo.pt_dlssdn == 0) {
-		is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
-	}
-	else {
-		float rngRes = get_rng(global_ubo.current_frame_idx + floatBitsToUint(position_material.x) + rt_LaunchID.x);
 
-		is_odd_checkerboard = rngRes > .5;
-	}
+	is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+
+	//if(global_ubo.current_frame_idx % 2 == 0) {
+		//is_odd_checkerboard = !is_odd_checkerboard;
+	//}
+
 
 	bool do_refraction;
 	rng_seed = texelFetch(TEX_ASVGF_RNG_SEED_A, ipos, 0).r;
@@ -230,9 +228,6 @@ main()
 				do_refraction = do_split ? is_odd_checkerboard : (F < 0.1);
 			}		
 
-			/*if(global_ubo.current_frame_idx % 2 != 0) {
-				do_refraction = !do_refraction;
-			}*/
 
 			if(do_refraction)
 			{
@@ -251,7 +246,6 @@ main()
 				direction = reflect(direction, normal);
 			 	correction_factor = F;
 	 			correct_motion_vector = 1;
-				//debugPrintfEXT("Launch Z: %i Do Reflection frame: %i \n", rt_LaunchID.z, global_ubo.current_frame_idx % 2);
 			}
 
 			if(do_split)

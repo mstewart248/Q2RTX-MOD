@@ -117,6 +117,8 @@ ivec2 get_input_position(out int other_side_offset)
     return pos;
 }
 
+/*
+
 ivec2 get_input_position_transparent(out int other_side_offset)
 {
     ivec2 pos;
@@ -135,9 +137,6 @@ ivec2 get_input_position_transparent(out int other_side_offset)
         is_even_checkerboard = !is_even_checkerboard;
 
 
-
-    //debugPrintfEXT("Frame: %i IsEven: %i \n", global_ubo.current_frame_idx % 2, is_even_checkerboard);
-
     if (!is_even_checkerboard)
     {
         pos.x += global_ubo.width / 2;
@@ -147,6 +146,7 @@ ivec2 get_input_position_transparent(out int other_side_offset)
     return pos;
 }
 
+*/
 
 
 vec4 safe_load(ivec2 pos)
@@ -163,10 +163,11 @@ ivec2 get_output_position()
 }
 
 float ConvertDistance(float rayLength) {
-    float res = ((rayLength - 1) / (10000 - 1) * 1);
+    float res = (rayLength) / 10000;
 
     
     return res;
+    
 }
 
 
@@ -188,7 +189,7 @@ void main()
 {
     int other_side_offset;
     ivec2 ipos = get_input_position(other_side_offset);
-    ivec2 iposTrans = get_input_position_transparent(other_side_offset);
+    //ivec2 iposTrans = get_input_position_transparent(other_side_offset);
     ivec2 opos = get_output_position();
     
     if (opos.x >= global_ubo.width || opos.y >= global_ubo.height)
@@ -201,7 +202,8 @@ void main()
     vec4 color;
     bool use_center_mv = true;
     int checkerboard_flags = int(center.a);
-    bool is_checkerboarded_surface = (global_ubo.flt_enable != 0 /*|| global_ubo.pt_dlss != 0*/) && (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
+    //bool is_checkerboarded_surface = (global_ubo.flt_enable != 0 /*|| global_ubo.pt_dlss != 0*/) && (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
+    bool is_checkerboarded_surface = (global_ubo.flt_enable != 0) && (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
 
     // The alpha channel encodes whether the material uses checkerboard reflections and refractions.
     // Don't do the filter if there is no checkerboarding - which improves sharpness and reduces sparkles.
@@ -241,7 +243,7 @@ void main()
 
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, multResolutionScale(imageLoad(IMG_PT_REFLECT_MOTION, ipos)));
-        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos).xy * 1000, 0, 0));
+        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos).xy, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
         imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthSecondVec.x), 0, 0, 0));
@@ -263,12 +265,14 @@ void main()
 
         imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x)));
         imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x)));
+        
+
     }        
     else {
         vec4 rayLengthVec = imageLoad(IMG_PT_RAY_LENGTH, ipos + ivec2(other_side_offset, 0));
 
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0)).xy * 1000, 0, 0));
+        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0)).xy, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(rayLengthVec.x, 0, 0 , 0));   
