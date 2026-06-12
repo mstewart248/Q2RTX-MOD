@@ -254,7 +254,7 @@ vkpt_tone_mapping_destroy_pipelines()
 // Records the commands to apply tone mapping to the VKPT_IMG_TAA_OUTPUT image
 // in-place, given the time between this frame and the previous frame.
 VkResult
-vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time)
+vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time, bool bDlssEnabled)
 {
 	if (reset_required)
 	{
@@ -267,7 +267,13 @@ vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time)
 		qvk_get_current_desc_set_textures(),
 		qvk.desc_set_vertex_buffer
 	};
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+
+	if (!bDlssEnabled) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
+	}
 
 
 	// Record instructions to run the compute shader that updates the histogram.
@@ -275,10 +281,18 @@ vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time)
 	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline_layout_tone_mapping_histogram, 0, LENGTH(desc_sets), desc_sets, 0, 0);
 
-	vkCmdDispatch(cmd_buf,
-		(qvk.extent_taa_output.width + 15) / 16,
-		(qvk.extent_taa_output.height + 15) / 16,
-		1);
+	if (!bDlssEnabled) {
+		vkCmdDispatch(cmd_buf,
+			(qvk.extent_taa_output.width + 15) / 16,
+			(qvk.extent_taa_output.height + 15) / 16,
+			1);
+	}
+	else {
+		vkCmdDispatch(cmd_buf,
+			(qvk.extent_unscaled.width + 15) / 16,
+			(qvk.extent_unscaled.height + 15) / 16,
+			1);
+	}
 
 	BUFFER_BARRIER(cmd_buf,
 		.buffer = qvk.buf_tonemap.buffer,
@@ -306,7 +320,7 @@ vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time)
 	// shadow edges in some scenes.
 	// In addition, we assume the kernel is symmetric; this allows us to only
 	// specify half of it in our push constant buffer.
-	
+
 	// Note that the second argument of Cvar_Get only specifies the default
 	// value in code if none is set; the value of tm_slope_blur_sigma specified
 	// in global_ubo.h will override this.
@@ -387,9 +401,9 @@ vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time)
 	// * dy/dx(knee_start) = 1
 	// * y(knee_white_point) = tm_white_point.
 	// The solution is as follows:
-	float knee_w = (knee_start*(knee_start - 2.0) + knee_white_point) / (knee_white_point - 1.0);
+	float knee_w = (knee_start * (knee_start - 2.0) + knee_white_point) / (knee_white_point - 1.0);
 	float knee_a = -knee_start * knee_start;
-	float knee_b = knee_w - 2.0*knee_start;
+	float knee_b = knee_w - 2.0 * knee_start;
 
 	float push_constants_tm2_apply[3] = {
 		knee_w, // knee_w in piecewise knee adjustment
@@ -400,15 +414,29 @@ vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time)
 	vkCmdPushConstants(cmd_buf, pipeline_layout_tone_mapping_apply,
 		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants_tm2_apply), push_constants_tm2_apply);
 
-	vkCmdDispatch(cmd_buf,
-		(qvk.extent_taa_output.width + 15) / 16,
-		(qvk.extent_taa_output.height + 15) / 16,
-		1);
+	if (!bDlssEnabled) {
+		vkCmdDispatch(cmd_buf,
+			(qvk.extent_taa_output.width + 15) / 16,
+			(qvk.extent_taa_output.height + 15) / 16,
+			1);
+	}
+	else {
+		vkCmdDispatch(cmd_buf,
+			(qvk.extent_unscaled.width + 15) / 16,
+			(qvk.extent_unscaled.height + 15) / 16,
+			1);
+	}
 
 	// Because VKPT_IMG_TAA_OUTPUT changed, we make sure to wait for the image
 	// to be written before continuing. This could be ensured in several
 	// other ways as well.
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+
+	if (!bDlssEnabled) {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+	}
+	else {
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
+	}
 
 	reset_required = 0;
 

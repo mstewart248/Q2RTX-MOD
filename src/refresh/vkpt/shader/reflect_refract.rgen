@@ -672,7 +672,7 @@ main()
 
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
 		imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
-		imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion, fwidth_depth));
+		imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy, motion.z, fwidth_depth));
 	}
 	else if(spec_bounce_index == 0)
 	{

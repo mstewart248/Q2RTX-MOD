@@ -706,7 +706,7 @@ VkResult vkpt_tone_mapping_destroy(void);
 VkResult vkpt_tone_mapping_create_pipelines(void);
 VkResult vkpt_tone_mapping_reset(VkCommandBuffer cmd_buf);
 VkResult vkpt_tone_mapping_destroy_pipelines(void);
-VkResult vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time);
+VkResult vkpt_tone_mapping_record_cmd_buffer(VkCommandBuffer cmd_buf, float frame_time, bool bDlssEnabled);
 void vkpt_tone_mapping_request_reset(void);
 void vkpt_tone_mapping_draw_debug(void);
 

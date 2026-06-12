@@ -125,13 +125,28 @@ vec3 srgb_dither(vec3 color, ivec2 ipos)
 void main()
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
-    const ivec2 screenSize = ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height);
+    ivec2 screenSize;
+    
+    if(global_ubo.pt_dlss == 0) {
+        screenSize = ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height);
+    }
+    else {
+        screenSize = ivec2(global_ubo.unscaled_width, global_ubo.unscaled_height);
+    }
 
     if(any(greaterThanEqual(ipos, screenSize)))
         return;
 
     // Get input color and luminance.
-    vec3 input_color = imageLoad(IMG_TAA_OUTPUT, ipos).rgb;
+    vec3 input_color;
+
+    if(global_ubo.pt_dlss == 0) {
+        input_color = imageLoad(IMG_TAA_OUTPUT, ipos).rgb;
+    }
+    else {
+        input_color = imageLoad(IMG_DLSS_OUTPUT, ipos).rgb;
+    }
+    
     input_color /= STORAGE_SCALE_HDR;
 
     // Mix in full screen blend color. Scale it up so it's noticeable against bright pixels as well.
@@ -221,5 +236,12 @@ void main()
     }
 
     // Write out to image:
-    imageStore(IMG_TAA_OUTPUT, ipos, vec4(mapped_color, 0));
+
+    if(global_ubo.pt_dlss == 0) {
+        imageStore(IMG_TAA_OUTPUT, ipos, vec4(mapped_color, 0));
+    }
+    else {
+        imageStore(IMG_DLSS_OUTPUT, ipos, vec4(mapped_color, 0));
+    }
+    
 }

@@ -163,8 +163,8 @@ ivec2 get_output_position()
 }
 
 float ConvertDistance(float rayLength) {
-    float res = (rayLength) / 10000;
-
+    //float res = (rayLength) / 10000;
+    float res = rayLength;
     
     return res;
     

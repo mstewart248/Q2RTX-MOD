@@ -3444,12 +3444,6 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		}
 #endif
 
-		BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
-		if (cvar_tm_enable->integer != 0)
-		{
-			vkpt_tone_mapping_record_cmd_buffer(post_cmd_buf, frame_time <= 0.f ? frame_wallclock_time : frame_time);
-		}
-		END_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
 
 		// Skip FSR (upscaling) if image is going to be heavily blurred anyway (menu mode)
 		if(vkpt_fsr_is_enabled() && !qvk.frame_menu_mode)
@@ -3466,6 +3460,14 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);			
 		}
+
+
+		BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
+		if (cvar_tm_enable->integer != 0)
+		{
+			vkpt_tone_mapping_record_cmd_buffer(post_cmd_buf, frame_time <= 0.f ? frame_wallclock_time : frame_time, DLSSEnabled());
+		}
+		END_PERF_MARKER(post_cmd_buf, PROFILER_TONE_MAPPING);
 
 		{
 			VkBufferCopy copyRegion = { 0, 0, sizeof(ReadbackBuffer) };

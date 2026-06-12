@@ -688,7 +688,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 			.pInSpecularAlbedo = &specularAlbedo,
 			.pInDiffuseAlbedo = &albedo,
             .pInRoughness = &roughness,
-            .GBufferSurface = inBuffer,            
+            .GBufferSurface = inBuffer,    
+            .InToneMapperType = NVSDK_NGX_TONEMAPPER_ACES
         };
 
 		NVSDK_NGX_Result res = NGX_VULKAN_EVALUATE_DLSSD_EXT(cmd, dlssObj.pDlssFeature, dlssObj.pParams, &evalParams);

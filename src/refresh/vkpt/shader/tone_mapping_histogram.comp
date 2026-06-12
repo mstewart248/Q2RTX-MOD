@@ -173,11 +173,30 @@ shared uint s_Histogram[HISTOGRAM_BINS];
 void main()
 {
     const ivec2 ipos = ivec2(gl_GlobalInvocationID);
-    const ivec2 screenSize = ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height);
+    ivec2 screenSize;
+    
+    if(global_ubo.pt_dlss == 0) {
+        screenSize = ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height);
+    }
+    else {
+        screenSize = ivec2(global_ubo.unscaled_width, global_ubo.unscaled_height);
+    }
 
     bool validThread = !any(greaterThanEqual(ipos, screenSize));
+    vec3 input_color;
 
-    vec3 input_color = validThread ? imageLoad(IMG_TAA_OUTPUT, ipos).rgb : vec3(0.0);
+    if(validThread) {
+        if(global_ubo.pt_dlss == 0) {
+            input_color = imageLoad(IMG_TAA_OUTPUT, ipos).rgb;
+        }
+        else {
+            input_color = imageLoad(IMG_DLSS_OUTPUT, ipos).rgb;
+        }
+    }
+    else {
+        input_color = vec3(0.0);
+    }    
+
     input_color /= STORAGE_SCALE_HDR;
 
     const uint linear_idx = gl_LocalInvocationIndex;
