@@ -92,8 +92,19 @@ main()
 
 	bool is_odd_checkerboard;
 
-
 	is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+    // per-pixel checkerboard: odd when x and y parity differ
+    //bool is_odd_checkerboard = ((ipos.x & 1) != (ipos.y & 1));
+
+    // keep existing swap toggle (matches checkerboard_interleave.comp behavior)
+    //if (global_ubo.pt_swap_checkerboard != 0)
+        //is_odd_checkerboard = !is_odd_checkerboard;
+
+    // optional: flip assignment each frame (uncomment if you want temporal flipping)
+     //if (global_ubo.current_frame_idx % 2 == 0)
+         //is_odd_checkerboard = !is_odd_checkerboard;
+
+	//is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
 
 	//if(global_ubo.current_frame_idx % 2 == 0) {
 		//is_odd_checkerboard = !is_odd_checkerboard;
@@ -102,6 +113,15 @@ main()
 
 	bool do_refraction;
 	rng_seed = texelFetch(TEX_ASVGF_RNG_SEED_A, ipos, 0).r;
+	float rnd_dofraction = get_rng(RNG_BRDF_FRESNEL(push_constants.bounce_index));
+	bool stochastic_choice;
+	
+	if(global_ubo.pt_dlssdn == 1) {
+		stochastic_choice = rnd_dofraction < 0.5;
+	}
+	else {
+		stochastic_choice = is_odd_checkerboard;
+	}
 
 	vec4 view_direction = imageLoad(IMG_PT_VIEW_DIRECTION, ipos);
 	vec3 direction = view_direction.xyz;
@@ -170,12 +190,12 @@ main()
 				if(spec_bounce_index == 0)
 				{
 					do_split = true;
-					do_refraction = is_odd_checkerboard;
+					do_refraction = stochastic_choice; //is_odd_checkerboard;
 				}
 				else
 				{
 					do_split = bitCount(checkerboard_flags) == 1;
-					do_refraction = do_split ? is_odd_checkerboard : (F < 0.1);
+					do_refraction = do_split ? stochastic_choice : (F < 0.1);
 					
 				}			
 
@@ -220,12 +240,12 @@ main()
 			if(spec_bounce_index == 0)
 			{
 				do_split = true;
-				do_refraction = is_odd_checkerboard;
+				do_refraction = stochastic_choice;
 			}
 			else
 			{
 				do_split = bitCount(checkerboard_flags) == 1;
-				do_refraction = do_split ? is_odd_checkerboard : (F < 0.1);
+				do_refraction = do_split ? stochastic_choice : (F < 0.1);
 			}		
 
 
@@ -388,7 +408,7 @@ main()
 				if(bitCount(checkerboard_flags) == 1)
 				{
 					// do a checkerboard split
-					do_refraction = is_odd_checkerboard && F < 1;
+					do_refraction = stochastic_choice && F < 1;
 					correction_factor = do_refraction ? 1 - F : F;
 					correction_factor *= 2;
 					checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
@@ -447,12 +467,13 @@ main()
 			if(spec_bounce_index == 0)
 			{
 				do_split = F > 0;
-				do_refraction = is_odd_checkerboard;
+				do_refraction = stochastic_choice;
+
 			}
 			else
 			{
 				do_split = bitCount(checkerboard_flags) == 1 && F > 0;
-				do_refraction = do_split ? is_odd_checkerboard  : (F < 0.1);
+				do_refraction = do_split ? stochastic_choice  : (F < 0.1);
 			}
 
 			if(do_refraction)

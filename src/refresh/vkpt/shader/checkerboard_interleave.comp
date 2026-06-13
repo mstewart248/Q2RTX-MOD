@@ -185,6 +185,19 @@ vec4 multResolutionScale(vec4 inpt) {
     return inpt;
 }
 
+vec2 load_reflect_motion(ivec2 p, int other_side_offset) {
+    // Load reflect motion for this field; if it's zero (refraction path), try the neighbor reflection field.
+    vec2 mv = imageLoad(IMG_PT_REFLECT_MOTION, p).xy;
+    // Use small epsilon to be robust against denormals/precision
+    if (length(mv) < 1e-6) {
+        vec2 mv_nei = imageLoad(IMG_PT_REFLECT_MOTION, p + ivec2(other_side_offset, 0)).xy;
+        // If neighbor exists and has non-zero MV, use it; otherwise preserve zero
+        if (length(mv_nei) > 1e-6)
+            mv = mv_nei;
+    }
+    return mv;
+}
+
 void main()
 {
     int other_side_offset;
@@ -244,6 +257,8 @@ void main()
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, multResolutionScale(imageLoad(IMG_PT_REFLECT_MOTION, ipos)));
         imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos).xy, 0, 0));
+        //vec2 reflect_mv = load_reflect_motion(ipos, other_side_offset);
+        //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
         imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthSecondVec.x), 0, 0, 0));
@@ -273,6 +288,8 @@ void main()
 
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0)).xy, 0, 0));
+        //vec2 reflect_mv = load_reflect_motion(ipos + ivec2(other_side_offset, 0), other_side_offset);
+        //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(rayLengthVec.x, 0, 0 , 0));   

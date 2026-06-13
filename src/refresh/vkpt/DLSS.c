@@ -71,7 +71,6 @@ float GetDLSSResolutionScale() {
         case 3:
             return .66f;
         case 4:
-            return .77f;
         case 5:
             return 1.0f;
         default:
@@ -90,7 +89,6 @@ float GetDLSSMultResolutionScale() {
     case 3:
         return (4 * .66f);
     case 4: 
-        return (4 * .77f);
     case 5:
         return 1;
     default:
@@ -278,8 +276,6 @@ NVSDK_NGX_PerfQuality_Value ToNGXPerfQuality()
         myValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;  
         break;
     case 4:
-        myValue = NVSDK_NGX_PerfQuality_Value_UltraQuality;
-        break;
     case 5:
         myValue = NVSDK_NGX_PerfQuality_Value_DLAA;
         break;
@@ -803,8 +799,6 @@ void viewsize_changed(cvar_t* self) {
         Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);   
         break;
     case 4:
-        Cvar_SetInteger(scr_viewsize, 77, FROM_MENU);
-        break;
     case 0:
     case 5:
         Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
@@ -834,8 +828,6 @@ void DlssModeChanged(cvar_t* self) {
         Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);
         return;
     case 4:
-        Cvar_SetInteger(scr_viewsize, 77, FROM_MENU);
-        return;
     case 5:
     case 0:
         Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
