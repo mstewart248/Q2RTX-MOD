@@ -232,7 +232,7 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     sv.state = ss_loading;
 
     // load and spawn all other entities
-    ge->SpawnEntities(sv.name, entitystring, cmd->spawnpoint, isMguMap);
+    ge->SpawnEntities(sv.name, entitystring, cmd->spawnpoint, isMguMap || (qboolean)Q_strHas(fs_gamedir, "rerelease"));
 
     // run two frames to allow everything to settle
     ge->RunFrame(); sv.framenum++;

@@ -94,7 +94,8 @@ main()
 
 	is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
     // per-pixel checkerboard: odd when x and y parity differ
-    //bool is_odd_checkerboard = ((ipos.x & 1) != (ipos.y & 1));
+    
+	//bool is_odd_checkerboard = ((ipos.x & 1) != (ipos.y & 1));
 
     // keep existing swap toggle (matches checkerboard_interleave.comp behavior)
     //if (global_ubo.pt_swap_checkerboard != 0)
@@ -670,7 +671,7 @@ main()
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
 		imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
 		if(!do_refraction) {
-			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy / 2.0, motion.z, fwidth_depth));
+			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy, motion.z, fwidth_depth));
 		}
 		else {
 			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(0.0, 0.0, 0.0, 0.0));
@@ -686,7 +687,7 @@ main()
 		imageStore(IMG_PT_MOTION, ipos, motion);
 
 		if(!do_refraction) {
-			imageStore(IMG_PT_REFLECT_MOTION, ipos, motion / 2.0);
+			imageStore(IMG_PT_REFLECT_MOTION, ipos, motion);
 		}
 		else {
 			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(0.0, 0.0, 0.0, 0.0));

@@ -885,7 +885,7 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     ent = NULL;
     inhibit = 0;
     
-    if (!Q_strHas(mapname, "base")) {
+    if (!Q_strHas(mapname, "base") && isMguMap) {
         CreateListOfPaths(entities, pathList);
     }
     
