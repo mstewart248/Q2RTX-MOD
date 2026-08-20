@@ -1509,6 +1509,9 @@ void SP_func_water(edict_t *self)
 #define TRAIN_START_ON      1
 #define TRAIN_TOGGLE        2
 #define TRAIN_BLOCK_STOPS   4
+// Rerelease func_train flags. Values from src/rerelease/g_func.cpp.
+#define TRAIN_FIX_OFFSET    16
+#define TRAIN_USE_ORIGIN    32
 
 /*QUAKED func_train (0 .5 .8) ? START_ON TOGGLE BLOCK_STOPS
 Trains are moving platforms that players can ride.
@@ -1581,6 +1584,33 @@ void train_wait(edict_t *self)
 
 }
 
+// Where a train sits when it reaches a path_corner.
+//
+// Vanilla aligns the train's bounding-box corner (mins) with the path_corner origin.
+// The rerelease added two spawnflags that change this, and the Call of the Machine maps
+// rely on both: of the func_trains in rerelease/maps, 77 set FIX_OFFSET and 9 set
+// USE_ORIGIN. Ignoring USE_ORIGIN displaces a train by its own mins - potentially
+// hundreds of units - which is what the hand-tuned origin offsets in g_spawn.c were
+// papering over.
+//
+// Mirrors src/rerelease/g_func.cpp, where train_find, train_next, train_resume and the
+// teleport path_corner branch all share this logic.
+static void train_path_dest(edict_t *self, edict_t *ent, vec3_t dest)
+{
+	if (self->spawnflags & TRAIN_USE_ORIGIN) {
+		VectorCopy(ent->s.origin, dest);
+		return;
+	}
+
+	VectorSubtract(ent->s.origin, self->mins, dest);
+
+	if (self->spawnflags & TRAIN_FIX_OFFSET) {
+		dest[0] -= 1.0f;
+		dest[1] -= 1.0f;
+		dest[2] -= 1.0f;
+	}
+}
+
 void train_next(edict_t *self)
 {
     edict_t     *ent;
@@ -1609,7 +1639,7 @@ again:
             return;
         }
         first = false;
-        VectorSubtract(ent->s.origin, self->mins, self->s.origin);
+        train_path_dest(self, ent, self->s.origin);
         VectorCopy(self->s.origin, self->s.old_origin);
         self->s.event = EV_OTHER_TELEPORT;
         gi.linkentity(self);
@@ -1625,7 +1655,7 @@ again:
         self->s.sound = self->moveinfo.sound_middle;
     }
 
-    VectorSubtract(ent->s.origin, self->mins, dest);
+    train_path_dest(self, ent, dest);
     self->moveinfo.state = STATE_TOP;
     VectorCopy(self->s.origin, self->moveinfo.start_origin);
     VectorCopy(dest, self->moveinfo.end_origin);
@@ -1640,7 +1670,7 @@ void train_resume(edict_t *self)
 
     ent = self->target_ent;
 
-    VectorSubtract(ent->s.origin, self->mins, dest);
+    train_path_dest(self, ent, dest);
     self->moveinfo.state = STATE_TOP;
     VectorCopy(self->s.origin, self->moveinfo.start_origin);
     VectorCopy(dest, self->moveinfo.end_origin);
@@ -1663,7 +1693,7 @@ void func_train_find(edict_t *self)
     }
     self->target = ent->target;
 
-    VectorSubtract(ent->s.origin, self->mins, self->s.origin);
+    train_path_dest(self, ent, self->s.origin);
     gi.linkentity(self);
 
     // if not triggered, start immediately

@@ -856,7 +856,8 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     char        *com_token;
     int         i;
     float       skill_level;
-    int* mapVersion = (int*)malloc(sizeof(int));
+    int mapVersionStorage = 0;
+    int* mapVersion = &mapVersionStorage;
     char* pathList = GetEmptyString(256);
 
     *mapVersion = 0;
@@ -885,9 +886,16 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     ent = NULL;
     inhibit = 0;
     
-    if (!Q_strHas(mapname, "base") && isMguMap) {
-        CreateListOfPaths(entities, pathList);
-    }
+    // Retired: this built a list of func_train path targets so ED_ParseEdict could
+    // shift their origins by a hand-tuned constant (Q_FixValue, -500 or -250 on Z).
+    // The real cause was func_train ignoring the rerelease FIX_OFFSET and USE_ORIGIN
+    // spawnflags - see train_path_dest() in g_func.c, which handles it for every map
+    // without needing to know the map's name. Leaving pathList empty keeps the old
+    // code inert; it can be deleted once the flag handling is confirmed good.
+    //
+    // if (!Q_strHas(mapname, "base") && isMguMap) {
+    //     CreateListOfPaths(entities, pathList);
+    // }
     
 
 // parse ents
