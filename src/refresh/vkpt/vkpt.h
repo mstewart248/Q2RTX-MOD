@@ -499,6 +499,7 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_FSR,                        1) \
 	PROFILER_DO(PROFILER_FSR_EASU,                   2) \
 	PROFILER_DO(PROFILER_FSR_RCAS,                   2) \
+	PROFILER_DO(PROFILER_DLSS,                       1) \
 	PROFILER_DO(PROFILER_UPDATE_ENVIRONMENT,         1) \
 	PROFILER_DO(PROFILER_GOD_RAYS,                   1) \
 	PROFILER_DO(PROFILER_GOD_RAYS_REFLECT_REFRACT,   1) \
@@ -782,6 +783,8 @@ void vkpt_god_rays_prepare_ubo(
 void vkpt_freecam_reset(void);
 void vkpt_freecam_update(float frame_time);
 void vkpt_reset_accumulation(void);
+void vkpt_dlss_request_history_reset(void);
+uint32_t vkpt_pt_field_width(void);
 
 typedef struct maliasframe_s {
     vec3_t  scale;

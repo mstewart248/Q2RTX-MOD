@@ -95,6 +95,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_restir, 1) /* switch for using RIS or ReSTIR, 0 or 1 */ \
 	UBO_CVAR_DO(pt_restir_spatial, 1) /* ReSTIR spatial samples */ \
 	UBO_CVAR_DO(pt_restir_max_w, 12.0) /* ReSTIR max weight clamp */ \
+	UBO_CVAR_DO(pt_restir_permutation, 1) /* ReSTIR permutation sampling, 0 or 1 */ \
+	UBO_CVAR_DO(pt_glass_secondary_stochastic, 0) /* secondary glass Fresnel: 0 most-probable path, 1 importance sampled, 2 clamped like reference mode */ \
 	UBO_CVAR_DO(pt_roughness_override, -1) /* overrides roughness of all materials if non-negative, [0..1] */ \
 	UBO_CVAR_DO(pt_specular_anti_flicker, 2) /* fade factor for rough reflections of surfaces far away, [0..inf) */ \
 	UBO_CVAR_DO(pt_specular_mis, 1) /* enables the use of MIS between specular direct lighting and BRDF specular rays */ \
@@ -133,6 +135,31 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(ui_hdr_nits, 300) /* HDR mode UI (stretch pic) brightness in nits */ \
 
     
+/* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
+ *
+ * Q2RTX traces two "fields" that are packed side by side into the screen images,
+ * field 1 starting at x == pt_field_offset.
+ *
+ * pt_fullres_fields == 0 (classic checkerboard): each field is width/2 wide and holds
+ *   one checkerboard half of the screen. Reflection and refraction are split between
+ *   the two fields, so a glass pixel gets either one or the other, and the two are
+ *   interleaved and cross-blurred afterwards.
+ *
+ * pt_fullres_fields == 1 (full-resolution split): each field is a full width x height
+  *   layer of the whole screen. Field 0 is the reflection layer, field 1 the refraction
+ *   layer, and they are summed back together after lighting. Nothing is checkerboarded
+ *   and every pixel gets both paths. This is what DLSS wants - checkerboard rendering
+ *   is explicitly listed as a practice to avoid in the DLSS-RR integration guide (3.5).
+   *   Field 1 is only lit where the two paths actually diverge, so the extra cost is
+   *   proportional to how much glass and water is on screen, not to the frame.
+   *
+   * pt_fullres_fields == 2 (half-resolution split): as above, but the two layers are
+   *   traced on alternating rows and the combine pass fills the untraced rows from
+   *   their neighbour. Same ray count as the classic checkerboard without the
+   *   interleave. Selected by pt_dlss_field_res 2.
+ *
+ * Note: comments inside the list below must stay on one line and precede the trailing
+ * backslash, otherwise they terminate the macro. */
 #define GLOBAL_UBO_VAR_LIST \
 	GLOBAL_UBO_VAR_LIST_DO(int,             current_frame_idx) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             width) \
@@ -182,6 +209,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	GLOBAL_UBO_VAR_LIST_DO(float,           shadow_map_depth_scale) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           god_rays_intensity) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           god_rays_eccentricity) \
+	\
+	GLOBAL_UBO_VAR_LIST_DO(int,             pt_fullres_fields) /* see FIELD LAYOUT note above */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             pt_field_offset) /* x offset / width of one field */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             pt_prev_field_offset) /* previous frame's value */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             pt_denoiser_present) /* A-SVGF *or* DLSS-RR is denoising */ \
 	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             num_cameras) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             screen_image_width) \

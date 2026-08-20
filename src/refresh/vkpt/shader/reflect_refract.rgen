@@ -67,7 +67,7 @@ main()
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 
 	if(rt_LaunchID.z != 0)
-		ipos.x += global_ubo.width / 2;
+		ipos.x += global_ubo.pt_field_offset;
 
 	vec4 position_material = imageLoad(IMG_PT_SHADING_POSITION, ipos);
 	vec3 position   = position_material.xyz;
@@ -88,6 +88,12 @@ main()
 		  primary_is_screen || 
 		  primary_is_camera || 
 		  primary_is_transparent ))
+		return;
+
+	// Half-resolution reflection/refraction: on the rows this frame is not tracing,
+	// both fields stop here and the combine pass fills them in from the neighbouring
+	// row. Only reached for the materials above, so the opaque frame is untouched.
+	if(!PT_FIELD_ROW_TRACED(global_ubo, ipos.y))
 		return;
 
 	bool is_odd_checkerboard;
@@ -112,16 +118,42 @@ main()
 	//}
 
 
-	bool do_refraction;
+	// Must be initialized: the chrome / screen / camera / transparent paths and the
+	// total-internal-reflection paths never assign it, yet it is read further down when
+	// writing the DLSS reflection guides (PT_REFLECT_MOTION / PT_REFLECTED_ALBEDO).
+	bool do_refraction = false;
 	rng_seed = texelFetch(TEX_ASVGF_RNG_SEED_A, ipos, 0).r;
 	float rnd_dofraction = get_rng(RNG_BRDF_FRESNEL(push_constants.bounce_index));
 	bool stochastic_choice;
-	
-	if(global_ubo.pt_dlssdn == 1) {
+
+	// How the reflection / refraction split is assigned to the two fields.
+	//
+	// split_weight compensates for only evaluating one of the two paths per field. In
+	// classic checkerboard mode each field carries one path and the interleave pass
+	// averages neighbouring pixels, so each path is doubled to keep the expectation
+	// right. With full-resolution fields BOTH paths exist for every pixel and are
+	// summed, so no compensation is needed.
+	float split_weight;
+
+	if(global_ubo.pt_fullres_fields != 0)
+	{
+		// Full-resolution split: field 0 is the reflection layer, field 1 the refraction
+		// layer, for every pixel. Deterministic, spatially coherent, and summed back
+		// together by the combine pass - no checkerboard and no stochastic choice.
+		stochastic_choice = is_odd_checkerboard;
+		split_weight = 1.0;
+	}
+	else if(global_ubo.pt_dlssdn == 1) {
+		// Legacy DLSS-RR path: randomize which of the two paths a checkerboard pixel
+		// takes. This trades the visible checkerboard pattern for per-pixel noise and
+		// leaves the guide buffers incoherent; kept only for A/B comparison against
+		// pt_dlss_split_fields.
 		stochastic_choice = rnd_dofraction < 0.5;
+		split_weight = 2.0;
 	}
 	else {
 		stochastic_choice = is_odd_checkerboard;
+		split_weight = 2.0;
 	}
 
 	vec4 view_direction = imageLoad(IMG_PT_VIEW_DIRECTION, ipos);
@@ -130,6 +162,11 @@ main()
 	// Different from primary_is_weapon - this carries over through reflections and refractions
 	int checkerboard_weapon_flag = checkerboard_flags & CHECKERBOARD_FLAG_WEAPON;
 	checkerboard_flags &= CHECKERBOARD_FLAG_FIELD_MASK;
+
+	// Whether this pixel's two fields had already diverged before this bounce.
+	// Used below to hand out the shared transparency overlay exactly once.
+	bool was_split_on_entry = bitCount(checkerboard_flags) > 1;
+	bool transparent_shared = false;
 
 	vec4 throughput_distance = imageLoad(IMG_PT_THROUGHPUT, ipos);
 	vec3 throughput = throughput_distance.rgb;
@@ -216,7 +253,7 @@ main()
 
 				if(do_split)
 				{
-					correction_factor *= 2;
+					correction_factor *= split_weight;
 					checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
 				}
 
@@ -271,7 +308,7 @@ main()
 
 			if(do_split)
 			{
-				correction_factor *= 2;
+				correction_factor *= split_weight;
 				checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
 			}
 
@@ -377,7 +414,7 @@ main()
 		float n_dot_v = dot(direction, -normal);
 		vec3 reflected_direction = reflect(direction, normal);
 
-		if(global_ubo.pt_thick_glass == 2 || global_ubo.pt_thick_glass == 1 && global_ubo.flt_enable == 0)
+		if(global_ubo.pt_thick_glass == 2 || global_ubo.pt_thick_glass == 1 && global_ubo.pt_denoiser_present == 0)
 		{
 			float rand = get_rng(RNG_BRDF_FRESNEL(push_constants.bounce_index));
 					
@@ -405,25 +442,54 @@ main()
 				// Mix of reflection and refraction
 				float F = 0.05 + 0.95 * pow(1.0 - n_dot_v, 5.0);
 
-				bool do_refraction;
-				if(bitCount(checkerboard_flags) == 1)
+				// Do not re-declare do_refraction here: it would shadow the outer one
+				// that the DLSS reflection guides are written from.
+				if(bitCount(checkerboard_flags) == 1 && F < 1)
 				{
-					// do a checkerboard split
-					do_refraction = stochastic_choice && F < 1;
+					// split the two paths between the fields
+					do_refraction = stochastic_choice;
 					correction_factor = do_refraction ? 1 - F : F;
-					correction_factor *= 2;
+					correction_factor *= split_weight;
 					checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
 				}
-				else if(global_ubo.flt_enable != 0)
+				else if(global_ubo.pt_denoiser_present != 0 && global_ubo.pt_glass_secondary_stochastic == 0)
 				{
-					// secondary surface, denoiser enabled - follow the most probable path
+					// Secondary surface with a denoiser downstream - follow the most probable
+					// path. Deterministic, so it costs no variance.
+					//
+					// This is keyed on pt_denoiser_present, not flt_enable: the split between
+					// the two fields only happens at the *first* Fresnel interaction, so with
+					// thick glass (which is two-sided) and pt_reflect_refract > 1 every later
+					// interaction lands here. Taking the stochastic branch below at 1 sample
+					// per pixel per bounce is the dominant source of noise on glass, and it
+					// used to be selected whenever A-SVGF was off - including when DLSS-RR was
+					// doing the denoising.
+					//
+					// The cost of "most probable path" is that the improbable path is discarded, not
+					// sampled: at normal incidence F is about 0.05, so the reflection is dropped
+					// entirely. With thick glass that removes the back-surface reflection - the offset
+					// ghost image a real pane shows. pt_glass_secondary_stochastic 1 sends these
+					// interactions to the importance-sampled branch below instead, restoring it at the
+					// cost of some noise on the faint term. Stock Q2RTX takes this same deterministic
+					// branch whenever A-SVGF is on; RR only ever saw the ghost because flt_enable 0
+					// used to fall through to the reference path.
 					do_refraction = F < 0.75;
 					correction_factor = do_refraction ? 1 - F : F;
 				}
 				else
 				{
-					// secondary surface, reference mode - use importance sampling
-					float corrected_F = clamp(F, 0.25, 0.75);
+					// Sampling probability for the Fresnel choice.
+					//
+					// Reference mode clamps into [0.25, 0.75] so the faint path is represented early
+					// while thousands of samples accumulate. At one sample per pixel that is backwards:
+					// with F around 0.05 the clamp skips the *refraction* - essentially the whole image
+					// seen through the pane - on 25% of pixels, and scales the rest by 1.27. That
+					// dropout on the bright term is far noisier than the reflection it buys.
+					//
+					// Unclamped importance sampling (mode 1) drops the bright path only F of the time
+					// and weights both paths exactly 1, so the ghost still appears but the view through
+					// the glass stays stable.
+					float corrected_F = (global_ubo.pt_glass_secondary_stochastic == 1) ? F : clamp(F, 0.25, 0.75);
 					do_refraction = corrected_F < rand;
 					correction_factor = do_refraction ? (1 - F) / (1 - corrected_F) : F / corrected_F;
 				}
@@ -464,10 +530,14 @@ main()
 			float correction_factor = 1;
 
 			bool do_split;
-			bool do_refraction;
+			// Do not re-declare do_refraction here - see note above.
 			if(spec_bounce_index == 0)
 			{
-				do_split = F > 0;
+				// With full-resolution fields the split is unconditional: field 0 carries
+				// the reflection (weight F, possibly zero) and field 1 the refraction, and
+				// the combine pass sums them. The flags must always say "split" so that
+				// the combine sums rather than averages.
+				do_split = (global_ubo.pt_fullres_fields != 0) || (F > 0);
 				do_refraction = stochastic_choice;
 
 			}
@@ -509,7 +579,7 @@ main()
 
 			if(do_split)
 			{
-				correction_factor *= 2;
+				correction_factor *= split_weight;
 				checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
 			}
 
@@ -525,6 +595,20 @@ main()
 
 	if(push_constants.bounce_index < int(global_ubo.pt_reflect_refract - 1))
 		reflection_cull_mask |= AS_FLAG_TRANSPARENT;
+
+	// In full-resolution field mode the two fields are SUMMED by the combine pass rather
+	// than averaged, so anything the fields inherited in common must not be counted
+	// twice. The transparency overlay accumulated before this surface (particles, beams,
+	// god rays in front of the glass) is identical in both fields, so give each field
+	// half of it. Only the colour is halved - the alpha is left alone so that the
+	// (1 - alpha) attenuation applied to each field's own surface term stays correct,
+	// and so do the effects added after the trace below, which are already weighted by
+	// this field's Fresnel throughput.
+	if(global_ubo.pt_fullres_fields != 0 && !was_split_on_entry && bitCount(checkerboard_flags) > 1)
+	{
+		transparent.rgb *= 0.5;
+		transparent_shared = true;
+	}
 
 	Ray reflection_ray;
 	reflection_ray.origin = position;
@@ -582,7 +666,38 @@ main()
 		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag)));
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(-PRIMARY_RAY_T_MAX));
 		imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, PRIMARY_RAY_T_MAX));
-		
+
+		// DLSS-RR guide buffers for "reflection/refraction ray hit the sky" pixels.
+		// direct_lighting.rgen bails out on material_id == 0, so without this these
+		// pixels keep the primary (glass) roughness/albedo and a zero normal, while
+		// depth would still be the glass's. Everything here describes the virtual sky
+		// surface seen through the reflection/refraction.
+		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(PRIMARY_RAY_T_MAX));
+		imageStore(IMG_PT_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
+		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
+		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(1.0));
+		imageStore(IMG_PT_METALLIC, ipos, vec4(0.0));
+		imageStore(IMG_PT_NORMAL, ipos, vec4(-direction, 0));
+		imageStore(IMG_PT_MATERIALID, ipos, vec4(0, 0, 0, 0));
+		imageStore(IMG_PT_EMISSIVE, ipos, vec4(0));
+
+		// Motion vector for the virtual sky image. The reflected/refracted sky sits at
+		// infinity, so it must not carry the primary surface's parallax - that is what
+		// PT_MOTION would otherwise still hold here. Matches the sky handling in
+		// primary_rays.rgen, and is consistent with the far depth written above.
+		{
+			vec3 prev_view_dir = (global_ubo.V_prev * vec4(direction, 0)).xyz;
+			vec2 prev_screen_pos;
+			float prev_distance;
+			projection_view_to_screen(prev_view_dir, prev_screen_pos, prev_distance, true);
+			vec2 curr_screen_pos = (vec2(get_image_position()) + vec2(0.5)) / vec2(get_image_size());
+			vec2 sky_motion = prev_screen_pos - curr_screen_pos;
+
+			imageStore(IMG_PT_MOTION, ipos, vec4(sky_motion, 0, 0));
+			if(!do_refraction)
+				imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(sky_motion, 0, 0));
+		}
+
 		return;
 	}
 
@@ -670,6 +785,12 @@ main()
 
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
 		imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
+
+		// DLSS depth: the apparent distance of the reflected/refracted surface, which is
+		// what the motion vector above was built from. Positive - the sign flip on
+		// PT_VIEW_DEPTH_A is an internal marker for the Q2RTX filters, not depth data.
+		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(abs(distance_curr)));
+
 		if(!do_refraction) {
 			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy, motion.z, fwidth_depth));
 		}
@@ -759,7 +880,7 @@ main()
 
 			if(do_split)
 			{
-				throughput *= 2;
+				throughput *= split_weight;
 
 				checkerboard_flags = CHECKERBOARD_FLAG_REFRACTION | CHECKERBOARD_FLAG_REFLECTION;
 
@@ -784,7 +905,7 @@ main()
 		if (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) == 1)
 		{
 			// Split the path if it wasn't split before.
-			throughput *= 2;
+			throughput *= split_weight;
 			checkerboard_flags = CHECKERBOARD_FLAG_PRIMARY | CHECKERBOARD_FLAG_REFRACTION;
 
 			if (!is_odd_checkerboard)
@@ -809,6 +930,14 @@ main()
 				material_id = (material_id & ~MATERIAL_KIND_MASK) | transparency_kind;
 			}
 		}
+	}
+
+	// Splits decided after the trace (security cameras, translucent models) share the
+	// whole transparency layer accumulated so far, including this bounce's effects.
+	if(global_ubo.pt_fullres_fields != 0 && !was_split_on_entry && !transparent_shared
+		&& bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1)
+	{
+		transparent.rgb *= 0.5;
 	}
 
 	if(luminance(primary_emissive) > 0) {

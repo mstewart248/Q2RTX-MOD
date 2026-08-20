@@ -131,7 +131,10 @@ void reproject_pixel(ivec2 p, int field_left, int field_right)
 
 	// Compute the previous frame position of this surface
 	vec4 motion = texelFetch(TEX_PT_MOTION, p, 0);
-	vec2 pos_prev = ((vec2(p) + vec2(0.5)) * vec2(global_ubo.inv_width * 2, global_ubo.inv_height) + motion.xy) * vec2(global_ubo.prev_width / 2, global_ubo.prev_height);
+	// A field pixel spans 2 screen pixels horizontally when checkerboarded, 1 when the
+	// fields are full-resolution layers.
+	float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
+	vec2 pos_prev = ((vec2(p) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy) * vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height);
 	ivec2 pp = ivec2(floor(pos_prev));
 
 	if(pp.x < field_left || pp.x >= field_right || pp.y >= global_ubo.prev_height)
@@ -184,11 +187,11 @@ main()
 	ivec2 pos_grad = ipos / GRAD_DWN;
 
 	int field_left = 0;
-	int field_right = global_ubo.prev_width / 2;
-	if (ipos.x >= global_ubo.width / 2)
+	int field_right = global_ubo.pt_prev_field_offset;
+	if (ipos.x >= global_ubo.pt_field_offset)
 	{
 		field_left = field_right;
-		field_right = global_ubo.prev_width;
+		field_right = global_ubo.pt_prev_field_offset * 2;
 	}
 
 	reproject_pixel(ipos, field_left, field_right);

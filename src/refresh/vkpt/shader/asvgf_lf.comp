@@ -79,13 +79,14 @@ filter_image(
 
 	float sum_w_lf = 1.0;
 
-	// Boundaries for the checkerboard field, either left or right half of the screen
+	// Boundaries for this path-tracer field. Classic checkerboard: the left or right
+	// half of the packed image. Full-resolution split: one whole width x height layer.
 	int field_left = 0;
-	int field_right = global_ubo.width / 2;
+	int field_right = global_ubo.pt_field_offset;
 	if(ipos_hires.x >= field_right)
 	{
 		field_left = field_right;
-		field_right = global_ubo.width;
+		field_right = global_ubo.pt_field_offset * 2;
 	}
 
 	// Compute the weighted average of color and moments from a sparse 3x3 pattern around the target pixel

@@ -97,7 +97,11 @@ get_shared_data(ivec2 offset, out float depth, out vec3 normal, out float lum_hf
 	lum_hf = unpackHalf4x16(normal_lum).w;
 }
 
-// Convert a checkerboarded pixel position (left and right fields) to flat-screen position
+// Convert a checkerboarded pixel position (left and right fields) to flat-screen position.
+// These two helpers are only meaningful for the classic checkerboard layout, and are only
+// reached when sample_across_fields is true - which requires current_gpu_slice_width ==
+// width, and is therefore never the case with full-resolution fields (where the packed
+// width is 2 * width). Hence the hard-coded width / 2.
 ivec2 checker_to_flat(ivec2 pos, int width)
 {
 	uint half_width = width / 2;
@@ -148,7 +152,10 @@ main()
 	else   
 	{
 		// Reprojection in checkerboarded coordinates
-		pos_prev = ((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * 2, global_ubo.inv_height) + motion.xy) * vec2(global_ubo.prev_width / 2, global_ubo.prev_height);
+		// A field pixel spans 2 screen pixels horizontally when checkerboarded, 1 when
+		// the fields are full-resolution layers.
+		float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
+		pos_prev = ((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy) * vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height);
 	}
 
 	float motion_length = length(motion.xy * vec2(global_ubo.width, global_ubo.height));
@@ -179,11 +186,11 @@ main()
 		vec2 subpix = fract(pos_prev - vec2(0.5) - pos_ld);
 
 		int field_left = 0;
-		int field_right = sample_across_fields ? global_ubo.prev_width : (global_ubo.prev_width / 2);
-		if (!sample_across_fields && ipos.x >= global_ubo.width / 2)
+		int field_right = sample_across_fields ? global_ubo.prev_width : global_ubo.pt_prev_field_offset;
+		if (!sample_across_fields && ipos.x >= global_ubo.pt_field_offset)
 		{
 			field_left = field_right;
-			field_right = global_ubo.prev_width;
+			field_right = global_ubo.pt_prev_field_offset * 2;
 		}
 
 		// Bilinear/bilateral filter

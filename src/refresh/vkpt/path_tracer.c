@@ -1023,7 +1023,7 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 		push.gpu_index = qvk.device_count == 1 ? -1 : i;
 		push.bounce = 0;
 
-		dispatch_rays(cmd_buf, PIPELINE_PRIMARY_RAYS, push, qvk.extent_render.width / 2, qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+		dispatch_rays(cmd_buf, PIPELINE_PRIMARY_RAYS, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
 	}
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
@@ -1071,7 +1071,7 @@ vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce)
         push.gpu_index = qvk.device_count == 1 ? -1 : i;
         push.bounce = bounce;
 
-        dispatch_rays(cmd_buf, pipeline, push, qvk.extent_render.width / 2, qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+        dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
 	}
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
@@ -1108,7 +1108,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 		push.gpu_index = qvk.device_count == 1 ? -1 : i;
 		push.bounce = 0;
 
-		dispatch_rays(cmd_buf, pipeline, push, qvk.extent_render.width / 2, qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+		dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
 	}
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
@@ -1166,7 +1166,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
                 push.gpu_index = qvk.device_count == 1 ? -1 : i;
                 push.bounce = 0;
 
-                dispatch_rays(cmd_buf, pipeline, push, qvk.extent_render.width / 2, height, qvk.device_count == 1 ? 2 : 1);
+                dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), height, qvk.device_count == 1 ? 2 : 1);
 
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);

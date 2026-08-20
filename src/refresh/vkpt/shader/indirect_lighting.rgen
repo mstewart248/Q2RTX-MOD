@@ -509,7 +509,7 @@ main()
 {
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	if(rt_LaunchID.z != 0)
-		ipos.x += global_ubo.width / 2;
+		ipos.x += global_ubo.pt_field_offset;
 
 	// Half-resolution tracing happens in the "low" GI setting
 	bool half_res = global_ubo.pt_num_bounce_rays == 0.5;
@@ -526,6 +526,25 @@ main()
 	vec3 bounce_direction;
 	vec3 bounce_contrib;
 	bool is_specular_ray;
+
+	// Split-field mode: nothing to bounce for field 1 unless this pixel's two Fresnel
+	// paths genuinely diverged - see direct_lighting.rgen. This is the pass that
+	// dominated the cost of split-field mode.
+	if(global_ubo.pt_fullres_fields != 0)
+	{
+		bool is_second_field = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+		int cb_flags = int(imageLoad(IMG_PT_VIEW_DIRECTION, ipos).w) & CHECKERBOARD_FLAG_FIELD_MASK;
+
+		// Field 1 is idle wherever the two paths never diverged. In half-resolution mode
+		// both fields are also idle on the rows this frame is not tracing - but only on
+		// reflect/refract materials, so the opaque frame stays at full render resolution.
+		bool field1_idle = is_second_field && bitCount(cb_flags) <= 1;
+		bool row_idle = !PT_FIELD_ROW_TRACED(global_ubo, ipos.y)
+			&& IS_REFLECT_REFRACT_KIND(floatBitsToUint(imageLoad(IMG_PT_SHADING_POSITION, ipos).w));
+
+		if(field1_idle || row_idle)
+			return;
+	}
 
 	indirect_lighting(ipos, half_res, bounce_direction, bounce_contrib, is_specular_ray);
 

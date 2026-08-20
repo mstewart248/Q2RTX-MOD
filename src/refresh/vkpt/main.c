@@ -114,6 +114,10 @@ static bsp_t *bsp_world_model;
 
 static bool temporal_frame_valid = false;
 
+// Previous frame's path-tracer field width, for shaders that reproject into last
+// frame's field-packed images.
+static uint32_t pt_field_offset_prev = 0;
+
 static int world_anim_frame = 0;
 
 static vec3_t avg_envmap_color = { 0.f };
@@ -254,6 +258,21 @@ static VkExtent2D get_render_extent(void)
 	return result;
 }
 
+// Width of one path-tracer field. The two fields are packed side by side into the
+// screen images, field 1 starting at this x offset.
+//   classic checkerboard:  width/2, each field holds one checkerboard half
+//   full-resolution split: width,   each field is a full layer of the whole screen
+uint32_t vkpt_pt_field_width(void)
+{
+	return DLSSSplitFieldsEnabled() ? qvk.extent_render.width : (qvk.extent_render.width / 2);
+}
+
+// Total packed width of the path-tracer screen images (both fields).
+static uint32_t get_pt_packed_width(void)
+{
+	return vkpt_pt_field_width() * 2;
+}
+
 static VkExtent2D get_screen_image_extent(void)
 {
 	VkExtent2D result;
@@ -274,14 +293,32 @@ static VkExtent2D get_screen_image_extent(void)
 		result.height = max(qvk.extent_render.height, qvk.extent_unscaled.height);
 	}
 
+	// With full-resolution fields the screen images must hold two width x height layers
+	// side by side. At the usual DLSS scales this is at or below what the images were
+	// already allocated at (Performance: 2 * 50% == 100% of the output width).
+	if (DLSSSplitFieldsEnabled())
+		result.width = max(result.width, qvk.extent_render.width * 2);
+
 	result.width = (result.width + 1) & ~1;
 
 	return result;
 }
 
+// Pending DLSS/DLSS-RR history reset. DLSS exposes InReset for scene transitions
+// (DLSS-RR guide 3.8); it used to be hard-coded to 0, so a map change, teleport or
+// resolution change carried stale history into the new scene. Set on any event that
+// invalidates temporal history, consumed once by the next DLSS evaluation.
+static bool dlss_reset_history = true;
+
+void vkpt_dlss_request_history_reset(void)
+{
+	dlss_reset_history = true;
+}
+
 void vkpt_reset_accumulation()
 {
 	num_accumulated_frames = 0;
+	vkpt_dlss_request_history_reset();
 }
 
 VkResult
@@ -293,7 +330,7 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 	qvk.extent_screen_images = get_screen_image_extent();	
 	qvk.extent_taa_images.width = max(qvk.extent_screen_images.width, qvk.extent_unscaled.width);
 	qvk.extent_taa_images.height = max(qvk.extent_screen_images.height, qvk.extent_unscaled.height);
-	qvk.gpu_slice_width = (qvk.extent_render.width + qvk.device_count - 1) / qvk.device_count;
+	qvk.gpu_slice_width = (get_pt_packed_width() + qvk.device_count - 1) / qvk.device_count;
 
 	if (DLSSEnabled()) {		
 		qvk.extent_taa_images = qvk.extent_render;
@@ -2462,6 +2499,10 @@ typedef struct reference_mode_s
 {
 	bool enable_accumulation;
 	bool enable_denoiser;
+	// DLSS Ray Reconstruction is doing the denoising, so A-SVGF must be bypassed
+	// (enable_denoiser is forced false) but the engine should still behave as though a
+	// denoiser is present for the material / sampling tunings that care.
+	bool rr_denoiser;
 	float num_bounce_rays;
 	float temporal_blend_factor;
 	int reflect_refract;
@@ -2498,6 +2539,7 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 
 		ref_mode->enable_accumulation = true;
 		ref_mode->enable_denoiser = false;
+		ref_mode->rr_denoiser = false;
 		ref_mode->num_bounce_rays = 2;
 		ref_mode->temporal_blend_factor = 1.f / min(max(1, num_accumulated_frames - num_warmup_frames), num_frames_to_accumulate);
 		ref_mode->reflect_refract = max(4, cvar_pt_reflect_refract->integer);
@@ -2549,6 +2591,20 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 
 		ref_mode->enable_accumulation = false;
 		ref_mode->enable_denoiser = !!cvar_flt_enable->integer;
+
+		// DLSS Ray Reconstruction replaces the denoiser - it must be fed the raw noisy
+		// path-traced signal. Running A-SVGF first violates RR's core assumption of
+		// independent samples (RR guide 3.5: "RR assumes independent samples") because
+		// A-SVGF accumulates temporally, and stacking two denoisers destroys the noise
+		// statistics RR was trained on.
+		//
+		// enable_denoiser == false is the engine's existing, self-consistent "no Q2RTX
+		// denoiser" configuration: it makes get_is_gradient() stop reading A-SVGF's
+		// gradient image, and keeps specular demodulation paired up between
+		// direct_lighting.rgen and compositing.comp.
+		ref_mode->rr_denoiser = DLSSBypassDenoiser() ? true : false;
+		if (ref_mode->rr_denoiser)
+			ref_mode->enable_denoiser = false;
 		if (cvar_pt_num_bounce_rays->value == 0.5f)
 			ref_mode->num_bounce_rays = 0.5f;
 		else
@@ -2715,6 +2771,23 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	ubo->screen_image_height = qvk.extent_screen_images.height;
 	ubo->water_normal_texture = water_normal_texture - r_images;
 	ubo->pt_swap_checkerboard = 0;
+
+	// Field layout. See the comment on pt_fullres_fields in global_ubo.h.
+	if (pt_field_offset_prev == 0)
+		pt_field_offset_prev = vkpt_pt_field_width();   // first frame - no history yet
+
+	ubo->pt_fullres_fields = DLSSSplitFieldsEnabled()
+		? (DLSSFieldHalfRes() ? PT_FIELDS_HALFRES : PT_FIELDS_FULLRES)
+		: PT_FIELDS_CHECKERBOARD;
+	ubo->pt_field_offset = (int)vkpt_pt_field_width();
+	ubo->pt_prev_field_offset = (int)pt_field_offset_prev;
+	pt_field_offset_prev = vkpt_pt_field_width();
+
+	// flt_enable answers "is A-SVGF running". This answers "will anything denoise this
+	// frame", which is what the path-selection and material heuristics actually want to
+	// know - DLSS-RR is a denoiser even when A-SVGF is bypassed.
+	ubo->pt_denoiser_present = (ref_mode->enable_denoiser || ref_mode->rr_denoiser) ? 1 : 0;
+
 	qvk.extent_render_prev = qvk.extent_render;
 	qvk.gpu_slice_width_prev = qvk.gpu_slice_width;
 
@@ -2751,13 +2824,20 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 
 	if (!ref_mode->enable_denoiser)
 	{
-		// disable fake specular because it is not supported without denoiser, and the result
-		// looks too dark with it missing
-		ubo->pt_fake_roughness_threshold = 1.f;
+		if (!ref_mode->rr_denoiser)
+		{
+			// disable fake specular because it is not supported without denoiser, and the result
+			// looks too dark with it missing
+			ubo->pt_fake_roughness_threshold = 1.f;
 
-		// swap the checkerboard fields every frame in reference or noisy mode to accumulate 
-		// both reflection and refraction in every pixel
-		ubo->pt_swap_checkerboard = (qvk.frame_counter & 1);
+			// swap the checkerboard fields every frame in reference or noisy mode to accumulate 
+			// both reflection and refraction in every pixel
+			ubo->pt_swap_checkerboard = (qvk.frame_counter & 1);
+		}
+		// With DLSS-RR there *is* a denoiser, so both of those stay at their normal
+		// values. Swapping the checkerboard in particular is actively harmful here: it
+		// would make every glass pixel alternate between the reflection and refraction
+		// path each frame, which is maximal temporal instability for a temporal denoiser.
 
 		if (ref_mode->enable_accumulation)
 		{
@@ -3460,7 +3540,14 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			resObj.outputWidth = qvk.extent_unscaled.width;
 			resObj.outputHeight = qvk.extent_unscaled.height;
 
-			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);			
+			// GPU timestamps around the NGX Evaluate call. DLSS (SR or Ray Reconstruction)
+			// records its own work into post_cmd_buf, so this brackets the real cost.
+			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_DLSS);
+			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter,
+				frame_time <= 0.f ? frame_wallclock_time : frame_time,
+				dlss_reset_history ? qtrue : qfalse);
+			END_PERF_MARKER(post_cmd_buf, PROFILER_DLSS);
+			dlss_reset_history = false;
 			lastFrameTime = frame_time;
 			lastWallClocktime = frame_wallclock_time;
 		}
@@ -3498,12 +3585,14 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 static void temporal_cvar_changed(cvar_t *self)
 {
 	temporal_frame_valid = false;
+	vkpt_dlss_request_history_reset();
 }
 
 static void
 recreate_swapchain(void)
 {
 	vkDeviceWaitIdle(qvk.device);
+	vkpt_dlss_request_history_reset();
 	vkpt_destroy_all(VKPT_INIT_SWAPCHAIN_RECREATE);
 	destroy_swapchain();
 	SDL_GetWindowSize(qvk.window, &qvk.win_width, &qvk.win_height);
@@ -3665,7 +3754,7 @@ R_BeginFrame_RTX(void)
 	}
 
 	qvk.extent_render = get_render_extent();
-	qvk.gpu_slice_width = (qvk.extent_render.width + qvk.device_count - 1) / qvk.device_count;
+	qvk.gpu_slice_width = (get_pt_packed_width() + qvk.device_count - 1) / qvk.device_count;
 	
 	VkExtent2D extent_screen_images = get_screen_image_extent();
 
@@ -4628,6 +4717,9 @@ R_BeginRegistration_RTX(const char *name)
 	LOG_FUNC();
 	Com_Printf("loading %s\n", name);
 	vkDeviceWaitIdle(qvk.device);
+
+	// New level - DLSS must not reproject from the previous one.
+	vkpt_dlss_request_history_reset();
 
 	vkpt_fog_reset();
 

@@ -95,6 +95,33 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // Signals that the surface is a first-person weapon.
 #define CHECKERBOARD_FLAG_WEAPON     8
 
+// pt_fullres_fields - reflection/refraction field layout. See the FIELD LAYOUT note
+// in global_ubo.h.
+#define PT_FIELDS_CHECKERBOARD    0
+#define PT_FIELDS_FULLRES         1
+#define PT_FIELDS_HALFRES         2
+
+// In PT_FIELDS_HALFRES, the reflection and refraction layers are traced only on the
+// rows whose parity matches this frame, alternating every frame; the combine pass reads
+// the untraced rows from their neighbour. Only reflect/refract materials are affected -
+// the opaque frame stays at full render resolution.
+#define PT_FIELD_ROW_TRACED(ubo, y) \
+	((ubo).pt_fullres_fields != PT_FIELDS_HALFRES \
+	 || (((y) & 1) == ((ubo).current_frame_idx & 1)))
+
+// The materials reflect_refract.rgen will trace a second path for. Kept in step with
+// the early-out at the top of that shader; the combine pass needs the same test and
+// cannot include path_tracer_rgen.h.
+#define IS_REFLECT_REFRACT_KIND(m) ( \
+	   ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_WATER \
+	|| ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_SLIME \
+	|| ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_GLASS \
+	|| ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_CHROME \
+	|| ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_CHROME_MODEL \
+	|| ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_SCREEN \
+	|| ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_CAMERA \
+	|| ((m) & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT)
+
 #define MEDIUM_NONE  0
 #define MEDIUM_WATER 1
 #define MEDIUM_SLIME 2

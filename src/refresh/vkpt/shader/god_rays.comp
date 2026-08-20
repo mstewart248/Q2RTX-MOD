@@ -129,7 +129,7 @@ void main()
 	ivec2 pixelPos = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 sourcePixelPos = pixelPos.xy * 2 + GetRotatedGridOffset(pixelPos.xy);
 
-	if (sourcePixelPos.x >= global_ubo.width || sourcePixelPos.y >= global_ubo.height)
+	if (sourcePixelPos.x >= global_ubo.pt_field_offset * 2 || sourcePixelPos.y >= global_ubo.height)
 		return;
 
 	if(push.pass_index != 0)

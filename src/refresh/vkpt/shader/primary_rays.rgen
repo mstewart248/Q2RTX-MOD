@@ -110,17 +110,6 @@ void generate_rng_seed(ivec2 ipos, bool is_odd_checkerboard)
 	imageStore(IMG_ASVGF_RNG_SEED_A, ipos, uvec4(rng_seed));
 }
 
-float ConvertDepth(float raylength) {	
-	float res = ((raylength - 1) / (1000 - 1) * 2.48) / 10;
-
-	if(res > .24f) {
-		res = .24f; 
-	}
-
-
-	return res;  
-}
-
 void
 main()
 {
@@ -128,12 +117,18 @@ main()
 	uint secondField = 0;
 
 	if(rt_LaunchID.z != 0) {
-		ipos.x += global_ubo.width / 2;
+		ipos.x += global_ubo.pt_field_offset;
 		secondField = 1;
 	}
 		
 
 	bool is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+
+	// Compensation for evaluating only one of two split paths per field. Classic
+	// checkerboard averages neighbouring pixels afterwards, so each path is doubled;
+	// full-resolution fields are summed by the combine pass, so no compensation.
+	// Must match split_weight in reflect_refract.rgen.
+	float split_weight = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
 
 	generate_rng_seed(ipos, is_odd_checkerboard);
 
@@ -213,12 +208,17 @@ main()
 			readback.cluster = ~0u;
 		}
 
-		// Compute a motion vector for the sky, because we don't want TAA to blur it
+		// Compute a motion vector for the sky, because we don't want TAA to blur it.
+		// Note: use the *unjittered* pixel centre here. inUV includes the sub-pixel
+		// jitter, which would bake up to a pixel of jitter into the sky motion vectors
+		// while geometry motion vectors are jitter-free - DLSS is told about the jitter
+		// separately via InJitterOffset, so the two must be consistent.
 		vec3 prev_view_dir = (global_ubo.V_prev * vec4(direction, 0)).xyz;
 		vec2 prev_screen_pos;
 		float prev_distance;
 		projection_view_to_screen(prev_view_dir, prev_screen_pos, prev_distance, true);
-		vec2 motion = prev_screen_pos - inUV;
+		vec2 curr_screen_pos = pixel_center / vec2(get_image_size());
+		vec2 motion = prev_screen_pos - curr_screen_pos;
 
 		// Store an empty surface into the G-buffer
 		imageStore(IMG_PT_NORMAL_A, ipos, uvec4(0));
@@ -232,7 +232,20 @@ main()
 		imageStore(IMG_PT_VISBUF_BARY_A, ipos, vec4(0));
 		imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(0));
 		imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
-		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(1.0f));
+		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(PRIMARY_RAY_T_MAX));
+
+		// DLSS-RR guide buffers for sky pixels. The RR integration guide (3.4.2) calls
+		// out uncleared sky pixels as a common integration error and recommends a
+		// neutral 0.5 grey albedo; a zero albedo tells RR the surface absorbs all light,
+		// so the sky radiance becomes unexplainable and is treated as noise. The normal
+		// must also be a unit vector (3.4.3) - zero is not valid input.
+		imageStore(IMG_PT_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
+		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
+		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(1.0));
+		imageStore(IMG_PT_METALLIC, ipos, vec4(0.0));
+		imageStore(IMG_PT_NORMAL, ipos, vec4(-direction, 0));
+		imageStore(IMG_PT_MATERIALID, ipos, vec4(0, 0, 0, 0));
+		imageStore(IMG_PT_EMISSIVE, ipos, vec4(0));
 		return;
 	}
 
@@ -299,7 +312,12 @@ main()
 
 	imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));	
 	imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
-	imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(0.75f + (ConvertDepth(distance_curr))));
+	// DLSS depth. DLSS-RR is created with NVSDK_NGX_DLSS_Depth_Type_Linear, which per the
+	// integration guide (3.4.7) wants "the same depth data used to generate motion vector
+	// data" - plain linear view depth in world units, no remapping and no clamping. This
+	// used to be squashed into 0.75..0.99 and clamped, which destroyed all depth
+	// discrimination past ~968 units and did not match the motion vectors at all.
+	imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(distance_curr));
 
 	vec3 primary_base_color = vec3(1);
 	float primary_metallic = 0;
@@ -368,7 +386,7 @@ main()
 	{
 		if(get_camera_uv(tex_coord, cameraUV))
 		{
-			throughput *= 2;
+			throughput *= split_weight;
 			checkerboard_flags = CHECKERBOARD_FLAG_REFRACTION | CHECKERBOARD_FLAG_REFLECTION;
 			primary_emissive = vec3(0);
 
@@ -396,7 +414,7 @@ main()
 		// Odd checkerboard: reflective part, even checkerboard: surface emissive part
 		// This has to be done here because the reflection shader doesn't know the primary surface emissive component.
 		
-		throughput *= 2;
+		throughput *= split_weight;
 		checkerboard_flags = CHECKERBOARD_FLAG_PRIMARY | CHECKERBOARD_FLAG_REFLECTION;
 
 		if(!is_odd_checkerboard)
@@ -416,7 +434,7 @@ main()
 	if (triangle.alpha < 1.0)
 	{
 		// Translucent objects: split the path.
-		throughput *= 2;
+		throughput *= split_weight;
 		checkerboard_flags = CHECKERBOARD_FLAG_PRIMARY | CHECKERBOARD_FLAG_REFRACTION;
 
 		if (!is_odd_checkerboard)

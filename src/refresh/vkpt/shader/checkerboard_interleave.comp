@@ -101,7 +101,7 @@ ivec2 get_input_position(out int other_side_offset)
     int px = int(gl_GlobalInvocationID.x & 1);
     int py = int(gl_GlobalInvocationID.y & 1);
 
-    other_side_offset = global_ubo.width / 2;
+    other_side_offset = global_ubo.pt_field_offset;
 
 
     bool is_even_checkerboard = px == py;
@@ -110,7 +110,7 @@ ivec2 get_input_position(out int other_side_offset)
 
     if (!is_even_checkerboard)
     {
-        pos.x += global_ubo.width / 2;
+        pos.x += global_ubo.pt_field_offset;
         other_side_offset = -other_side_offset;
     }
 
@@ -198,8 +198,146 @@ vec2 load_reflect_motion(ivec2 p, int other_side_offset) {
     return mv;
 }
 
+
+// ========================================================================== //
+// Full-resolution field combine (global_ubo.pt_fullres_fields != 0)
+//
+// Instead of two checkerboard halves, the path tracer traces a second full-resolution
+// layer of the screen, but only where it is needed:
+//
+//   field 0, at x + 0                  -> the reflection path
+//   field 1, at x + pt_field_offset    -> the refraction path
+//
+// A pixel whose two paths diverge therefore carries BOTH of them, at full internal
+// render resolution, and nothing is checkerboarded. This is what DLSS wants; the
+// DLSS-RR integration guide (3.5) lists checkerboard rendering as a practice to
+// avoid, and the interleave + cross-blur below is what made glass and water look
+// noisy under Ray Reconstruction.
+//
+// The two layers are recombined here:
+//
+//   split pixels (glass, water, translucent, security cameras) - the two fields carry
+//     different light paths, already weighted by their Fresnel / alpha factors, so they
+//     are SUMMED.
+//
+//   everything else - field 1 is never traced or lit at all, so field 0 alone is
+//     taken. Only the pixels that genuinely need a second light path pay for one;
+//     tracing the whole frame twice is what made this mode cost a second frame.
+//
+// The G-buffer handed to DLSS is taken from ONE field so that depth, normal, roughness,
+// albedo and motion all describe the same surface - the requirement that the old
+// checkerboard path could not meet. For split pixels that is the refraction layer: it is
+// the see-through base surface, geometrically continuous with whatever is behind the
+// glass. The reflection layer is handed over separately through the inputs DLSS-RR
+// provides for exactly that purpose - specular motion vectors, specular hit distance and
+// reflected albedo.
+// ========================================================================== //
+void combine_fullres_fields(ivec2 opos)
+{
+    ivec2 p_reflect = opos;
+    ivec2 p_refract = opos + ivec2(global_ubo.pt_field_offset, 0);
+
+    // Half-resolution reflection/refraction: on a row this frame did not trace, a
+    // reflect/refract pixel has no data in either field, so both are read from the
+    // neighbouring row that was traced. Opaque pixels are full resolution, untouched.
+    if(!PT_FIELD_ROW_TRACED(global_ubo, opos.y)
+    	&& IS_REFLECT_REFRACT_KIND(floatBitsToUint(imageLoad(IMG_PT_SHADING_POSITION, p_reflect).w)))
+    {
+    	int src_y = (opos.y + 1 < global_ubo.height) ? opos.y + 1 : opos.y - 1;
+    	p_reflect.y = src_y;
+    	p_refract.y = src_y;
+    }
+
+    vec4 c_reflect = imageLoad(IMG_ASVGF_COLOR, p_reflect);
+    vec4 c_refract = imageLoad(IMG_ASVGF_COLOR, p_refract);
+
+    // Both fields write the same flags; reflect_refract.rgen only marks a pixel as split
+    // when the two fields genuinely diverge.
+    int checkerboard_flags = int(c_reflect.a);
+    bool paths_split = bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1;
+
+    vec3 color;
+    ivec2 p_primary;
+
+    if(paths_split)
+    {
+        color = c_reflect.rgb + c_refract.rgb;
+        p_primary = p_refract;
+    }
+    else
+    {
+        // Field 1 is not lit for non-split pixels (see direct_lighting.rgen), so
+        // field 0 carries the complete path here. Averaging in an unlit field
+        // would halve the image.
+        color = c_reflect.rgb;
+        p_primary = p_reflect;
+    }
+
+    imageStore(IMG_FLAT_COLOR, opos, vec4(color, float(checkerboard_flags)));
+
+    // --- Primary surface: colour motion, depth and the DLSS-RR guide buffers ---------
+    vec4 primary_motion = imageLoad(IMG_PT_MOTION, p_primary);
+
+    imageStore(IMG_FLAT_MOTION,             opos, primary_motion);
+    imageStore(IMG_DLSS_3DMOTION_VECTOR,    opos, primary_motion);
+    imageStore(IMG_DLSS_DEPTH,              opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT,    p_primary));
+    imageStore(IMG_DLSS_ALBEDO,             opos, imageLoad(IMG_PT_ALBEDO,              p_primary));
+    imageStore(IMG_DLSS_SPECULAR,           opos, imageLoad(IMG_PT_SPECULAR,            p_primary));
+    imageStore(IMG_DLSS_ROUGHNESS,          opos, imageLoad(IMG_PT_ROUGHNESS,           p_primary));
+    imageStore(IMG_DLSS_METALLIC,           opos, imageLoad(IMG_PT_METALLIC,            p_primary));
+    imageStore(IMG_DLSS_NORMAL,             opos, imageLoad(IMG_PT_NORMAL,              p_primary));
+    imageStore(IMG_DLSS_MATERIALID,         opos, imageLoad(IMG_PT_MATERIALID,          p_primary));
+    imageStore(IMG_DLSS_EMISSIVE,           opos, imageLoad(IMG_PT_EMISSIVE,            p_primary));
+    imageStore(IMG_DLSS_INDIRECT_ALBEDO,    opos, imageLoad(IMG_PT_INDIRECT_ALBEDO,     p_primary));
+    imageStore(IMG_DLSS_SPECULAR_ALBEDO,    opos, imageLoad(IMG_PT_SPECULAR_ALBEDO,     p_primary));
+    // Colour before the transparency overlay. Like the main colour, the two layers are
+    // summed for split pixels and averaged otherwise, so that this guide stays consistent
+    // with what was written to IMG_FLAT_COLOR above.
+    vec3 before_transparent = paths_split
+        ? imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_reflect).rgb + imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_refract).rgb
+        : imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_reflect).rgb;
+    imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, vec4(before_transparent, 0));
+    imageStore(IMG_DLSS_TRANSPARENT,        opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, p_primary));
+
+    float ray_length      = imageLoad(IMG_PT_RAY_LENGTH,        p_primary).x;
+    float diffuse_length  = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, p_primary).x;
+    imageStore(IMG_DLSS_RAY_LENGTH,        opos, vec4(ray_length, 0, 0, 0));
+    imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuse_length));
+
+    // --- Reflection layer: what DLSS-RR uses to reproject reflections ----------------
+    // For a split pixel this is the reflection field's mirrored motion vector and the
+    // distance from the glass to the reflected surface. For a non-split pixel the
+    // specular lobe sits on the primary surface itself (or the primary surface *is* the
+    // mirrored image, as with chrome), so the primary motion vector is the correct
+    // specular motion vector - handing DLSS a zero here would claim the reflection is
+    // pinned to the screen.
+    vec2 reflect_motion = paths_split
+        ? imageLoad(IMG_PT_REFLECT_MOTION, p_reflect).xy
+        : primary_motion.xy;
+
+    float specular_length = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, p_reflect).x;
+
+    imageStore(IMG_DLSS_REFLECT_MOTION,     opos, vec4(reflect_motion, 0, 0));
+    imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specular_length));
+    imageStore(IMG_DLSS_REFLECTED_ALBEDO,   opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, p_reflect));
+}
+
 void main()
 {
+    if(global_ubo.pt_fullres_fields != 0)
+    {
+        ivec2 opos_full = get_output_position();
+
+        if (opos_full.x >= global_ubo.width || opos_full.y >= global_ubo.height)
+        {
+            imageStore(IMG_FLAT_COLOR, opos_full, vec4(0));
+            return;
+        }
+
+        combine_fullres_fields(opos_full);
+        return;
+    }
+
     int other_side_offset;
     ivec2 ipos = get_input_position(other_side_offset);
     //ivec2 iposTrans = get_input_position_transparent(other_side_offset);
@@ -216,7 +354,7 @@ void main()
     bool use_center_mv = true;
     int checkerboard_flags = int(center.a);
     //bool is_checkerboarded_surface = (global_ubo.flt_enable != 0 /*|| global_ubo.pt_dlss != 0*/) && (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
-    bool is_checkerboarded_surface = (global_ubo.flt_enable != 0) && (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
+    bool is_checkerboarded_surface = (global_ubo.pt_denoiser_present != 0) && (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1);
     //bool is_checkerboarded_surface = false;
     // The alpha channel encodes whether the material uses checkerboard reflections and refractions.
     // Don't do the filter if there is no checkerboarding - which improves sharpness and reduces sparkles.

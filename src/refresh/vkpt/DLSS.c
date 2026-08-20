@@ -23,6 +23,9 @@
 DLSS dlssObj;
 cvar_t* cvar_pt_dlss = NULL;
 cvar_t* cvar_pt_dlss_dldn = NULL;
+cvar_t* cvar_pt_dlss_split_fields = NULL;
+cvar_t* cvar_pt_dlss_bypass_denoiser = NULL;
+cvar_t* cvar_pt_dlss_field_res = NULL;
 qboolean recreateSwapChain = qfalse;
 qboolean dlssModeChanged = qfalse;
 extern cvar_t* scr_viewsize;
@@ -33,10 +36,106 @@ void InitDLSSCvars()
 {
     cvar_pt_dlss = Cvar_Get("pt_dlss", "0", CVAR_ARCHIVE);
     cvar_pt_dlss_dldn = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE);
+
+    // Full-resolution reflection/refraction fields instead of checkerboarding them.
+    //   0 - off, classic Q2RTX checkerboard
+    //   1 - on whenever DLSS is enabled (Super Resolution or Ray Reconstruction)
+    //   2 - always on, even without DLSS
+    // Checkerboard rendering is explicitly listed as a practice to avoid in the
+    // DLSS-RR integration guide (3.5), and it also feeds DLSS-SR inconsistent motion
+    // vectors on glass and water. Costs a second lighting pass over the frame.
+    cvar_pt_dlss_split_fields = Cvar_Get("pt_dlss_split_fields", "1", CVAR_ARCHIVE);
+
+    // Whether DLSS Ray Reconstruction replaces A-SVGF entirely (1) or runs on top of it
+    // (0). 1 is what the RR integration guide asks for - RR wants the raw noisy signal
+    // and assumes independent samples, which A-SVGF's temporal accumulation violates.
+    // 0 restores the pre-existing behaviour of stacking both denoisers, which is less
+    // correct but much smoother if RR alone is not converging.
+    cvar_pt_dlss_bypass_denoiser = Cvar_Get("pt_dlss_bypass_denoiser", "1", CVAR_ARCHIVE);
+
+    // Resolution of the reflection/refraction layers while split fields are active.
+    //   1 - both layers at full internal render resolution
+    //   2 - both layers at half resolution: they are traced on alternating rows and the
+    //       combine pass fills the untraced rows from their neighbour. Same ray count as
+    //       the classic checkerboard, but coherent rather than interleaved. Only
+    //       reflect/refract materials are affected - opaque geometry stays full res.
+    // No effect when pt_dlss_split_fields resolves to off. Safe to change live - the field
+    // layout and every image size stay the same, so no renderer reinitialization.
+    cvar_pt_dlss_field_res = Cvar_Get("pt_dlss_field_res", "1", CVAR_ARCHIVE);
+
     oldCvarValue = cvar_pt_dlss->integer;
     cvar_pt_dlss->changed = viewsize_changed;
     cvar_pt_dlss_dldn->changed = DlssModeChanged;
+    cvar_pt_dlss_split_fields->changed = DlssSplitFieldsChanged;
+    cvar_pt_dlss_field_res->changed = DlssFieldResChanged;
     viewsize_changed(cvar_pt_dlss);
+}
+
+// True when the path tracer should trace two full-resolution layers (field 0 =
+// reflection, field 1 = refraction) rather than two checkerboard halves.
+// Multi-GPU is excluded: there the two fields are how work is split across devices.
+qboolean DLSSSplitFieldsEnabled() {
+    if (cvar_pt_dlss_split_fields == NULL)
+        return qfalse;
+
+    if (qvk.device_count > 1)
+        return qfalse;
+
+    switch (cvar_pt_dlss_split_fields->integer) {
+        case 1:  return DLSSEnabled();
+        case 2:  return qtrue;
+        default: return qfalse;
+    }
+}
+
+// True when the reflection and refraction layers are traced at half vertical
+// resolution - alternating rows, filled in from the neighbouring row by the combine
+// pass. Applies only to reflect/refract materials; opaque geometry is always full
+// resolution.
+qboolean DLSSFieldHalfRes() {
+    if (!DLSSSplitFieldsEnabled())
+        return qfalse;
+
+    return (cvar_pt_dlss_field_res != NULL && cvar_pt_dlss_field_res->integer == 2)
+        ? qtrue : qfalse;
+}
+
+// Report what the cvar actually resolved to. It silently does nothing while
+// pt_dlss_split_fields resolves to off, which is easy to mistake for the mode being
+// broken.
+void DlssFieldResChanged(cvar_t* self) {
+    if (!DLSSSplitFieldsEnabled()) {
+        Com_Printf("pt_dlss_field_res %d: no effect - split fields are off "
+            "(pt_dlss_split_fields %d, pt_dlss %d)\n", self->integer,
+            cvar_pt_dlss_split_fields ? cvar_pt_dlss_split_fields->integer : 0,
+            cvar_pt_dlss ? cvar_pt_dlss->integer : 0);
+        return;
+    }
+
+    Com_Printf("pt_dlss_field_res %d: reflection/refraction at %s render resolution\n",
+        self->integer, (self->integer == 2) ? "half" : "full");
+}
+
+// True when DLSS Ray Reconstruction is the active denoiser, i.e. A-SVGF must be
+// bypassed and the RR guide buffers are what matters.
+qboolean DLSSRayReconstructionActive() {
+    return (DLSSEnabled() && DLSSModeDenoise() == 1) ? qtrue : qfalse;
+}
+
+// True when RR should be the *only* denoiser, i.e. A-SVGF must be skipped.
+qboolean DLSSBypassDenoiser() {
+    if (!DLSSRayReconstructionActive())
+        return qfalse;
+    return (cvar_pt_dlss_bypass_denoiser != NULL && cvar_pt_dlss_bypass_denoiser->integer != 0)
+        ? qtrue : qfalse;
+}
+
+void DlssSplitFieldsChanged(cvar_t* self) {
+    // Changing the field layout changes the size of every path-tracer screen image,
+    // so the renderer has to be reinitialized.
+    recreateSwapChain = qtrue;
+    Cvar_SetByVar(vid_rtx, "0", FROM_MENU);
+    Cvar_SetByVar(vid_rtx, "1", FROM_MENU);
 }
 
 qboolean DLSSCreated() {
@@ -325,8 +424,10 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
         return qtrue;
     }
 
-    SaveDLSSFeatureValues(resObject);
-
+    // NOTE: the resolution is recorded only after a *successful* create, further down.
+    // Saving it up front meant a single failed creation was cached as the current state,
+    // so AreSameDLSSFeatureValues() short-circuited every later call and the feature was
+    // never retried - turning any transient failure into a permanent fatal error.
     if (dlssObj.pDlssFeature != NULL) {
         DestroyDLSSFeature();
     }
@@ -353,18 +454,34 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
                    }
     };
 
+    // Motion vectors are produced at render resolution (IMG_WIDTH_TAA == extent_render)
+    // and are NOT jittered - primary_rays.rgen reprojects unjittered positions, and the
+    // jitter is reported separately through InJitterOffset. So MVLowRes on, MVJittered off.
     int DlssCreateFeatureFlags = NVSDK_NGX_DLSS_Feature_Flags_None;
-    
-    //DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVJittered;
     DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
-   
-    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_Reserved_0;
-    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
-    DlssCreateFeatureFlags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
 
+    // NVSDK_NGX_DLSS_Feature_Flags_Reserved_0 is exactly that - reserved (see
+    // nvsdk_ngx_defs.h). Setting it is undefined behaviour, so it is not set here.
 
-    dlssParams.InFeatureCreateFlags = DlssCreateFeatureFlags;
-    denoiseParm.InFeatureCreateFlags = DlssCreateFeatureFlags;
+    // IsHDR is required by both features: the colour handed to DLSS is VKPT_IMG_TAA_OUTPUT,
+    // which is linear HDR from before tone mapping (DLSS Programming Guide 3.5). It
+    // describes the input colour space and is NOT an exposure control - Ray Reconstruction
+    // refuses to be created without it ("Error: HDR Color required" from
+    // NgxSwinDenoiser::CreateDldnInstance).
+    //
+    // AutoExposure is a different matter: that one really is unsupported by Ray
+    // Reconstruction (RR integration guide 3.7 says to ignore 3.9 Exposure Parameter,
+    // 3.10 Auto Exposure and 3.11 Additional Sharpening), so it is only set for
+    // Super Resolution.
+    int SuperSamplingCreateFlags = DlssCreateFeatureFlags
+                                 | NVSDK_NGX_DLSS_Feature_Flags_IsHDR
+                                 | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+
+    int RayReconstructionCreateFlags = DlssCreateFeatureFlags
+                                 | NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+
+    dlssParams.InFeatureCreateFlags = SuperSamplingCreateFlags;
+    denoiseParm.InFeatureCreateFlags = RayReconstructionCreateFlags;
 
     // only one phys device
     uint32_t creationNodeMask = 1;
@@ -388,24 +505,31 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Use_HW_Depth, NVSDK_NGX_DLSS_Depth_Type_Linear);
 
     NVSDK_NGX_Result res;
-    NVSDK_NGX_Result ssres;
 
+    // NGX_VULKAN_CREATE_DLSS_EXT / NGX_VULKAN_CREATE_DLSSD_EXT1 already call
+    // NVSDK_NGX_VULKAN_CreateFeature(1) internally with the right feature id. Calling
+    // CreateFeature again afterwards created a *second* feature and overwrote the
+    // handle, leaking the first one on every resolution / mode change, and left `res`
+    // describing the handle that had just been thrown away.
     if (!denoiseMode) {
         res = NGX_VULKAN_CREATE_DLSS_EXT(cmd, creationNodeMask, visibilityNodeMask, &dlssObj.pDlssFeature, dlssObj.pParams, &dlssParams);
-        ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_SuperSampling, dlssObj.pParams, &dlssObj.pDlssFeature);
     }
     else {
         res = NGX_VULKAN_CREATE_DLSSD_EXT1(dlssObj.device, cmd, creationNodeMask, visibilityNodeMask, &dlssObj.pDlssFeature, dlssObj.pParams, &denoiseParm);
-        ssres = NVSDK_NGX_VULKAN_CreateFeature(cmd, NVSDK_NGX_Feature_RayReconstruction, dlssObj.pParams, &dlssObj.pDlssFeature);
     }
   
     if (NVSDK_NGX_FAILED(res))
     {
-        Com_EPrintf("DLSS: NGX_VULKAN_CREATE_DLSS_EXT fail: %d", (int)res);
+        // The NGX feature logs in the data path (DLSSTemp/) carry the actual reason,
+        // e.g. "Error: HDR Color required" from NgxSwinDenoiser::CreateDldnInstance.
+        Com_EPrintf("DLSS: %s feature create failed: 0x%08x - see DLSSTemp/nvngx*.log\n",
+            denoiseMode ? "RayReconstruction" : "SuperSampling", (unsigned int)res);
 
         dlssObj.pDlssFeature = NULL;
         return qfalse;
     }
+
+    SaveDLSSFeatureValues(resObject);
 
     return qtrue;
 }
@@ -492,11 +616,16 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);    
-    NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], targetSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
+    // DLSS_DEPTH is now a render-resolution single-channel image (RR guide 3.4.7 wants
+    // depth at input resolution), so describe it with sourceSize / R32_SFLOAT.
+    NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
     NVSDK_NGX_Resource_VK rayLengthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
-    NVSDK_NGX_Resource_VK transparentResoruce = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK motionVec3D = ToNGXResource(qvk.images[VKPT_IMG_DLSS_3DMOTION_VECTOR], qvk.images_views[VKPT_IMG_DLSS_3DMOTION_VECTOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    // DLSS_TRANSPARENT is allocated as R32G32B32A32_SFLOAT - it was being described to
+    // NGX as R16G16B16A16_SFLOAT.
+    NVSDK_NGX_Resource_VK transparentResoruce = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
+    // DLSS_REFLECT_MOTION is allocated as R32G32_SFLOAT - it was being described to NGX
+    // as R16G16B16A16_SFLOAT.
+    NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R32G32_SFLOAT, false);
     NVSDK_NGX_Resource_VK albedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specular = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
@@ -553,10 +682,10 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
         case 13:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
             break;
         case 14:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], targetSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
+            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
             break;
         case 15:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
@@ -610,14 +739,40 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     }
 
 
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR] = &specular;
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_ROUGHNESS] = &roughness;
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_METALLIC] = &metallic;
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_NORMALS] = &normal;
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_MATERIALID] = &materialid;
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_EMISSIVE] = &emissive;
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_INDIRECT_ALBEDO] = &indirectAlbedo;
-    inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_ALBEDO] = &specularAlbedo;
+    // Jitter.
+    //
+    // The programming guide (3.7.3) asks for "the jitter applied to the projection
+    // matrix". Q2RTX never jitters a projection matrix - primary_rays.rgen samples at
+    // (pixel_centre + sub_pixel_jitter) instead. Those are not the same sign: sampling
+    // toward +j makes scene content land at -j in the image, so the equivalent
+    // projection jitter is -sub_pixel_jitter. Hence the negation, which is also what
+    // stock Q2RTX did.
+    //
+    // The axes themselves already agree and need no per-component flip: the jitter is in
+    // y-down pixel space (image_position is a launch index) and projection_view_to_screen
+    // produces y-down UVs, which is why asvgf_temporal.comp can add motion.xy straight
+    // onto a y-down pixel coordinate.
+    //
+    // To settle it empirically rather than by argument, the development nvngx_dlssd.dll
+    // remaps the jitter live: CTRL+ALT+F9 cycles the configurations in the SDK's
+    // utils/DLSS_Debug_Jitter_Configs.txt (0 = as sent, 9 = negate Y, 10 = negate X,
+    // 11 = negate both) and CTRL+ALT+F10 swaps X and Y. Set pt_dlss_jitter_sign 1 first
+    // so the engine sends the raw offset, then cycle.
+    float jitterSign = (float)Cvar_Get("pt_dlss_jitter_sign", "-1", CVAR_ARCHIVE)->integer;
+    if (jitterSign != 1.0f && jitterSign != -1.0f)
+        jitterSign = 1.0f;
+
+    const float jitterX = jitterOffset[0] * jitterSign;
+    const float jitterY = jitterOffset[1] * jitterSign;
+
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR] = &specular;
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_ROUGHNESS] = &roughness;
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_METALLIC] = &metallic;
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_NORMALS] = &normal;
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_MATERIALID] = &materialid;
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_EMISSIVE] = &emissive;
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_INDIRECT_ALBEDO] = &indirectAlbedo;
+    // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_ALBEDO] = &specularAlbedo;
     //inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_BEFORE_PARTICLES] = &beforeTransparent;
     //inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_BEFORE_TRANSPARENCY] = &beforeTransparent;
     //inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_DIFFUSE_HITDISTANCE] = &diffuseLength;
@@ -630,8 +785,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
             .pInDepth = &depthResource,
             .pInMotionVectors = &motionVectorsResource,
-            .InJitterOffsetX = jitterOffset[0] * (-1),
-            .InJitterOffsetY = jitterOffset[1] * (-1),
+            .InJitterOffsetX = jitterX,
+            .InJitterOffsetY = jitterY,
             .InRenderSubrectDimensions = sourceSize,
             .InReset = resetAccum ? 1 : 0,
             .InMVScaleX = sourceSize.Width,
@@ -639,14 +794,13 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .InColorSubrectBase = sourceOffset,
             .InDepthSubrectBase = sourceOffset,
             .InMVSubrectBase = sourceOffset,
-            .InTranslucencySubrectBase = sourceOffset,
-            .InFrameTimeDeltaInMsec = timeDelta * 1000.0,
-            .pInRayTracingHitDistance = &rayLengthResource,
-            .pInMotionVectors3D = &motionVec3D,
-            .pInTransparencyMask = &transparentResoruce,
-            .pInMotionVectorsReflections = &reflectMotion,
+            // .InTranslucencySubrectBase = sourceOffset,  // pairs with pInTransparencyMask, which is Unused/Reserved
+            // .InFrameTimeDeltaInMsec = timeDelta * 1000.0,  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
+            // .pInRayTracingHitDistance = &rayLengthResource,  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
+            // .pInTransparencyMask = &transparentResoruce,  // helpers_vk.h: Unused/Reserved for future use
+            // .pInMotionVectorsReflections = &reflectMotion,  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
             //.InToneMapperType = NVSDK_NGX_TONEMAPPER_REINHARD,
-            .GBufferSurface = inBuffer			
+            // .GBufferSurface = inBuffer  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
 
         };
 
@@ -663,8 +817,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 			.pInOutput = &resolvedColorResource,
             .pInDepth = &depthResource,
             .pInMotionVectors = &motionVectorsResource,
-            .InJitterOffsetX = jitterOffset[0] * (-1),
-            .InJitterOffsetY = jitterOffset[1] * (-1),
+            .InJitterOffsetX = jitterX,
+            .InJitterOffsetY = jitterY,
             .InRenderSubrectDimensions = sourceSize,
             .InReset = resetAccum ? 1 : 0,
             .InMVScaleX = sourceSize.Width,
@@ -672,20 +826,30 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .InColorSubrectBase = sourceOffset,
             .InDepthSubrectBase = sourceOffset,
             .InMVSubrectBase = sourceOffset,
-            .InTranslucencySubrectBase = sourceOffset,
-            .InFrameTimeDeltaInMsec = timeDelta * 1000.0,
-            .pInRayTracingHitDistance = &rayLengthResource,
-            .pInMotionVectors3D = &motionVec3D,
+            // .InTranslucencySubrectBase = sourceOffset,  // no transparency layer is passed
+            // .InFrameTimeDeltaInMsec = timeDelta * 1000.0,  // no 3.4.x section in the RR guide - not a documented RR input
+            // .pInRayTracingHitDistance = &rayLengthResource,  // no 3.4.x section in the RR guide - not a documented RR input (only Specular Hit Distance, 3.4.9, is)
+            // pInMotionVectors3D deliberately not set: PT_MOTION is (screen-space UV
+            // delta, view-distance delta), a mixed-space vector, not a 3D motion vector.
             .pInMotionVectorsReflections = &reflectMotion,			
-            .pInReflectedAlbedo = &reflectedAlbedo,
+            // .pInReflectedAlbedo = &reflectedAlbedo,  // no 3.4.x section in the RR guide - not a documented RR input
 			.pInNormals = &normal,
-			.pInDiffuseHitDistance = &diffuseLength,
+			// .pInDiffuseHitDistance = &diffuseLength,  // no 3.4.x section in the RR guide - not a documented RR input
 			.pInSpecularHitDistance = &specularLength,
 			.pInSpecularAlbedo = &specularAlbedo,
 			.pInDiffuseAlbedo = &albedo,
             .pInRoughness = &roughness,
-            .GBufferSurface = inBuffer,    
-            .InToneMapperType = NVSDK_NGX_TONEMAPPER_ACES
+
+            // Color Before Transparency (RR guide 3.4.11). This is the documented cure for
+            // "ghosting or disappearing particles": a snapshot of the noisy colour before
+            // transparencies are composited on top, so RR can tell overlay pixels from the
+            // primary surface instead of denoising particles as if they were geometry.
+            // The guide requires the same image format as the colour input - both are
+            // R16G16B16A16_SFLOAT here. Already produced by checkerboard_interleave.comp.
+            .pInColorBeforeTransparency = &beforeTransparent,
+            .InColorBeforeTransparencySubrectBase = sourceOffset,
+            // .GBufferSurface = inBuffer,  // no 3.4.x section in the RR guide - not a documented RR input
+            // .InToneMapperType = NVSDK_NGX_TONEMAPPER_ACES  // RR does not support tone mapper hints (RR guide 3.7)
         };
 
 		NVSDK_NGX_Result res = NGX_VULKAN_EVALUATE_DLSSD_EXT(cmd, dlssObj.pDlssFeature, dlssObj.pParams, &evalParams);

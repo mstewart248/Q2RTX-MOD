@@ -18,6 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "vkpt.h"
+#include "DLSS.h"
 
 #include <assert.h>
 
@@ -365,6 +366,10 @@ draw_profiler(int enable_asvgf)
 		PROFILER_DO(PROFILER_FSR, 1);
 		PROFILER_DO(PROFILER_FSR_EASU, 2);
 		PROFILER_DO(PROFILER_FSR_RCAS, 2);
+	}
+	if (DLSSEnabled())
+	{
+		PROFILER_DO(PROFILER_DLSS, 1);
 	}
 #undef PROFILER_DO
 

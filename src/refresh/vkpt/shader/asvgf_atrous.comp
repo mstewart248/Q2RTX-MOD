@@ -116,13 +116,14 @@ filter_image(
 	float sum_w_hf = 1.0;
 	float sum_w_spec = 1.0;
 
-	// Boundaries for the checkerboard field, either left or right half of the screen
+	// Boundaries for this path-tracer field. Classic checkerboard: the left or right
+	// half of the packed image. Full-resolution split: one whole width x height layer.
 	int field_left = 0;
-	int field_right = global_ubo.width / 2;
+	int field_right = global_ubo.pt_field_offset;
 	if(ipos.x >= field_right)
 	{
 		field_left = field_right;
-		field_right = global_ubo.width;
+		field_right = global_ubo.pt_field_offset * 2;
 	}
 
 	// Add some jitter to sample positions to hide the a-trous filter aliasing patterns

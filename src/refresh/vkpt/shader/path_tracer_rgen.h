@@ -129,10 +129,19 @@ env_map(vec3 direction, bool remove_sun)
 // depends on env_map
 #include "light_lists.h"
 
+// Screen pixel this invocation is responsible for.
 ivec2 get_image_position()
 {
 	ivec2 pos;
 
+	// Full-resolution fields: each field is a complete width x height layer of the
+	// screen, so the launch index *is* the screen position. Field 0 traces the
+	// reflection path and field 1 the refraction path, and the two are summed back
+	// together after lighting - no checkerboard, and every pixel gets both.
+	if (global_ubo.pt_fullres_fields != 0)
+		return ivec2(rt_LaunchID.xy);
+
+	// Classic checkerboard: the field holds every other pixel, densely packed.
 	bool is_even_checkerboard = push_constants.gpu_index == 0 || push_constants.gpu_index < 0 && rt_LaunchID.z == 0;
 	if (global_ubo.pt_swap_checkerboard != 0)
 		is_even_checkerboard = !is_even_checkerboard;

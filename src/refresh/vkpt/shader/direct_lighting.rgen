@@ -170,15 +170,41 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	float phong_weight = clamp(primary_specular_factor * luminance(primary_base_reflectivity) / (luminance(primary_base_reflectivity) + luminance(primary_albedo)), 0, 0.9);
     
 	int field_left = 0;
-	int field_right = global_ubo.prev_width / 2;
-	if(ipos.x >= global_ubo.width / 2)
+	int field_right = global_ubo.pt_prev_field_offset;
+	if(ipos.x >= global_ubo.pt_field_offset)
 	{
 		field_left = field_right;
-		field_right = global_ubo.prev_width;
+		field_right = global_ubo.pt_prev_field_offset * 2;
 	}
 	
 	//Do temporal
 	ivec2 pos_prev = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * 2, global_ubo.inv_height) + motion.xy) * vec2(global_ubo.prev_width * 0.5, global_ubo.prev_height));
+
+	// Permutation sampling. Without this every pixel reuses the reservoir at exactly its
+	// own reprojected position every frame, so neighbouring pixels end up sharing light
+	// samples. That correlation is what DLSS-RR is documented not to tolerate - RR guide
+	// 3.5: "RR assumes independent samples, which is violated by ReSTIR temporal and
+	// spatial reuse", with permutation sampling given as the mitigation. Rotating which
+	// neighbour's reservoir a pixel reuses each frame breaks the correlation up.
+	//
+	// Applied to pos_prev before the reduced-resolution derivation below, so the depth and
+	// normal rejection tests validate the same pixel the reservoir is taken from. Permuting
+	// only the reservoir fetch would reuse reservoirs across geometric discontinuities and
+	// trade blotches for fireflies.
+	if(global_ubo.pt_restir_permutation != 0)
+	{
+		ivec2 perm_offset = ivec2(global_ubo.current_frame_idx & 3, (global_ubo.current_frame_idx >> 2) & 3);
+		ivec2 permuted = pos_prev + perm_offset;
+		permuted.x ^= 3;
+		permuted.y ^= 3;
+		permuted -= perm_offset;
+
+		// Keep the original position if the permuted one leaves the field or the screen -
+		// the bounds test below would otherwise reject the reuse entirely.
+		if(permuted.x >= field_left && permuted.x < field_right
+			&& permuted.y >= 0 && permuted.y < global_ubo.height)
+			pos_prev = permuted;
+	}
 	ivec2 pos_prev_r = pos_prev;
 	
 	if(global_ubo.pt_restir == 2) 
@@ -380,10 +406,6 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 		if(vis == 0.0f) r.W = 0.0f;
 
 
-		imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
-
-		imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
-		imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
 	}
 
 	//Normalize reservoir
@@ -395,7 +417,27 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	high_freq = clamp_output(high_freq);
 	o_specular = clamp_output(o_specular);
 
-	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_albedo, alpha, dot(normal, view_direction.xyz) ), 0));
+	// DLSS-RR guide buffers.
+	//
+	// These must all describe the SAME surface. reflect_refract.rgen replaces the
+	// primary surface with the reflected/refracted hit, and this shader runs after it,
+	// so every channel written here describes that post-reflect_refract surface.
+	// Roughness / metallic / diffuse albedo used to be left to primary_rays.rgen, which
+	// meant a glass pixel handed RR the glass's roughness and albedo together with the
+	// reflected surface's normal - an inconsistent G-buffer that RR cannot denoise.
+	//
+	// Written unconditionally: a zero normal is not valid RR input (guide 3.4.3 requires
+	// normalized shading normals), so pixels with no valid reservoir must still get one.
+	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
+	imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
+	imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
+	imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
+	imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
+
+	// Specular albedo takes the specular reflectance (F0), not the diffuse albedo -
+	// see the Specular Albedo Calculation appendix of the RR integration guide.
+	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, alpha, dot(normal, view_direction.xyz) ), 0));
 
 	if(use_shadow_rays)
 	{
@@ -483,10 +525,12 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 	high_freq += direct_diffuse;
 	o_specular += direct_specular;
 	
-	//imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+	// DLSS-RR guide buffers - all describing the post-reflect_refract surface.
+	// See the note in direct_lighting_restir() above.
+	imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
 	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
-	//imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness, 0, 0, 0));
-	//imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic, 0, 0, 0));
+	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
+	imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
 	imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
 	imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
 	
@@ -520,7 +564,8 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 	o_specular = clamp_output(o_specular);
 	float alpha = square(primary_roughness);
 
-	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_albedo, alpha, dot(normal, view_direction.xyz)), 0));
+	// Specular albedo takes the specular reflectance (F0), not the diffuse albedo.
+	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, alpha, dot(normal, view_direction.xyz)), 0));
 }
 
 void
@@ -528,9 +573,39 @@ main()
 {
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	if(rt_LaunchID.z != 0)
-		ipos.x += global_ubo.width / 2;
+		ipos.x += global_ubo.pt_field_offset;
 
 	bool is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+
+	// Split-field mode: field 1 exists only to carry the *other* Fresnel path, and only
+	// on the pixels where reflection and refraction actually diverged - glass, water,
+	// translucent surfaces, security cameras. Anywhere else it would re-light the very
+	// same surface a second time, and the combine pass takes field 0 alone there, so
+	// stop before any light sampling happens. Lighting the whole frame twice is what
+	// made split-field mode cost a second full frame of path tracing.
+	if(global_ubo.pt_fullres_fields != 0)
+	{
+		bool is_second_field = is_odd_checkerboard;
+		int cb_flags = int(imageLoad(IMG_PT_VIEW_DIRECTION, ipos).w) & CHECKERBOARD_FLAG_FIELD_MASK;
+
+		// Field 1 is idle wherever the two paths never diverged. In half-resolution mode
+		// both fields are also idle on the rows this frame is not tracing - but only on
+		// reflect/refract materials, so the opaque frame stays at full render resolution.
+		bool field1_idle = is_second_field && bitCount(cb_flags) <= 1;
+		bool row_idle = !PT_FIELD_ROW_TRACED(global_ubo, ipos.y)
+			&& IS_REFLECT_REFRACT_KIND(floatBitsToUint(imageLoad(IMG_PT_SHADING_POSITION, ipos).w));
+
+		if(field1_idle || row_idle)
+		{
+			// Zero rather than leave last frame's radiance behind, so nothing downstream
+			// can pick up stale values out of a field that isn't being combined.
+			imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
+			imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
+			imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(vec3(0))));
+			imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(vec3(0))));
+			return;
+		}
+	}
 
 	vec3 high_freq, specular;
 	if(global_ubo.pt_restir > 0)

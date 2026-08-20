@@ -2,6 +2,15 @@
 cmake_minimum_required (VERSION 3.9)
 cmake_policy(SET CMP0069 NEW)
 
+# CMake 4.0 removed compatibility with cmake_minimum_required() values below 3.5, which
+# several of the vendored dependencies in extern/ still declare (zlib 2.4.4, glslang
+# 2.8.12, curl 3.0, openal-soft 3.0.2, SDL2 3.0.0). Those are git submodules tracking
+# upstream, so rather than patch them, raise the floor CMake applies to them. Remove this
+# once the submodules are updated to declare 3.5 or newer.
+if(NOT CMAKE_POLICY_VERSION_MINIMUM)
+	set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 project(quake2-RTX)

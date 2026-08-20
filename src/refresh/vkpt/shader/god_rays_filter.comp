@@ -51,11 +51,11 @@ void main()
 	ivec2 lowResOrigin = ivec2(i_position.xy) >> 1;
 
 	int field_left = 0;
-	int field_right = global_ubo.width / 2;
+	int field_right = global_ubo.pt_field_offset;
 	if(i_position.x >= field_right)
 	{
 		field_left = field_right;
-		field_right = global_ubo.width;
+		field_right = global_ubo.pt_field_offset * 2;
 	}
 
 	for (int dy = -2; dy <= 2; dy++)
