@@ -421,6 +421,7 @@ static const save_field_t gamefields[] = {
     I(maxentities),
 
     I(serverflags),
+    I(cross_unit_flags),
 
     I(num_items),
 
@@ -814,7 +815,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    8
+#define SAVE_VERSION    9
 
 /*
 ============
@@ -1062,8 +1063,9 @@ void ReadLevel(const char *filename)
 
         // fire any cross-level triggers
         if (ent->classname)
-            if (strcmp(ent->classname, "target_crosslevel_target") == 0)
-                ent->nextthink = level.framenum + ent->delay * BASE_FRAMERATE;
+            if (strcmp(ent->classname, "target_crosslevel_target") == 0 ||
+                strcmp(ent->classname, "target_crossunit_target") == 0)
+                ent->nextthink = level.framenum + cross_trigger_delay(ent->delay);
 
         if (ent->think == func_clock_think || ent->use == func_clock_use) {
             char *msg = ent->message;

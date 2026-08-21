@@ -436,6 +436,16 @@ void SP_target_blaster(edict_t *self)
 
 //==========================================================
 
+// a cross level/unit target has to think at least one frame after it spawns:
+// SV_RunThink treats nextthink 0 as "no think scheduled", and on level entry
+// (framenum 0) any sub-frame delay - mguhub uses 0.001 - truncates to exactly that.
+int cross_trigger_delay(float delay)
+{
+    int frames = delay * BASE_FRAMERATE;
+
+    return frames > 1 ? frames : 1;
+}
+
 /*QUAKED target_crosslevel_trigger (.5 .5 .5) (-8 -8 -8) (8 8 8) trigger1 trigger2 trigger3 trigger4 trigger5 trigger6 trigger7 trigger8
 Once this trigger is touched/used, any trigger_crosslevel_target with the same trigger number is automatically used when a level is started within the same unit.  It is OK to check multiple triggers.  Message, delay, target, and killtarget also work.
 */
@@ -472,7 +482,62 @@ void SP_target_crosslevel_target(edict_t *self)
     self->svflags = SVF_NOCLIENT;
 
     self->think = target_crosslevel_target_think;
-    self->nextthink = level.framenum + self->delay * BASE_FRAMERATE;
+    self->nextthink = level.framenum + cross_trigger_delay(self->delay);
+}
+
+//==========================================================
+
+/*QUAKED target_crossunit_trigger (.5 .5 .5) (-8 -8 -8) (8 8 8) trigger1 trigger2 trigger3 trigger4 trigger5 trigger6 trigger7 trigger8
+Once this trigger is touched/used, any target_crossunit_target with the same trigger number is automatically used when a level is started, in this unit or any other.  It is OK to check multiple triggers.
+
+Unlike the cross *level* triggers these survive a unit change, which is how the machine games hub remembers which units have already been finished.
+*/
+void trigger_crossunit_trigger_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    game.cross_unit_flags |= self->spawnflags & SFL_CROSS_UNIT_MASK;
+    G_FreeEdict(self);
+}
+
+void SP_target_crossunit_trigger(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->svflags = SVF_NOCLIENT;
+    self->use = trigger_crossunit_trigger_use;
+}
+
+/*QUAKED target_crossunit_target (.5 .5 .5) (-8 -8 -8) (8 8 8) trigger1 trigger2 trigger3 trigger4 trigger5 trigger6 trigger7 trigger8
+Triggered by a target_crossunit_trigger fired in any unit.  If multiple triggers are checked, all must be true.  Delay, target and
+killtarget also work.
+
+"delay"     delay before using targets if the trigger has been activated (default 1)
+*/
+void target_crossunit_target_think(edict_t *self)
+{
+    int flags = self->spawnflags & SFL_CROSS_UNIT_MASK;
+
+    if (flags == (game.cross_unit_flags & flags)) {
+        G_UseTargets(self, self);
+        G_FreeEdict(self);
+    }
+}
+
+void SP_target_crossunit_target(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (!self->delay)
+        self->delay = 1;
+    self->svflags = SVF_NOCLIENT;
+
+    self->think = target_crossunit_target_think;
+    self->nextthink = level.framenum + cross_trigger_delay(self->delay);
 }
 
 //==========================================================

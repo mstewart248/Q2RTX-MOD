@@ -86,6 +86,8 @@ void SP_target_anger(edict_t *ent);
 void SP_trigger_health_relay(edict_t *ent);
 void SP_info_landmark(edict_t *ent);
 void SP_target_crosslevel_target(edict_t *ent);
+void SP_target_crossunit_trigger(edict_t *ent);
+void SP_target_crossunit_target(edict_t *ent);
 void SP_target_laser(edict_t *self);
 void SP_target_help(edict_t *ent);
 void SP_target_actor(edict_t *ent);
@@ -218,6 +220,8 @@ static const spawn_func_t spawn_funcs[] = {
     {"trigger_health_relay", SP_trigger_health_relay},
     {"info_landmark", SP_info_landmark},
     {"target_crosslevel_target", SP_target_crosslevel_target},
+    {"target_crossunit_trigger", SP_target_crossunit_trigger},
+    {"target_crossunit_target", SP_target_crossunit_target},
     {"target_laser", SP_target_laser},
     {"target_help", SP_target_help},
     {"target_actor", SP_target_actor},

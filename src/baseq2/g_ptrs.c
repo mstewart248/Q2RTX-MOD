@@ -561,6 +561,7 @@ extern void tank_walk(void);
 extern void target_actor_touch(void);
 extern void target_anger_use(void);
 extern void target_crosslevel_target_think(void);
+extern void target_crossunit_target_think(void);
 extern void target_earthquake_think(void);
 extern void target_earthquake_use(void);
 extern void target_explosion_explode(void);
@@ -588,6 +589,7 @@ extern void train_use(void);
 extern void train_wait(void);
 extern void trigger_counter_use(void);
 extern void trigger_crosslevel_trigger_use(void);
+extern void trigger_crossunit_trigger_use(void);
 extern void trigger_elevator_init(void);
 extern void trigger_elevator_use(void);
 extern void trigger_enable(void);
@@ -680,6 +682,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, SP_FixCoopSpots },
 { P_think, swimmonster_start_go },
 { P_think, target_crosslevel_target_think },
+{ P_think, target_crossunit_target_think },
 { P_think, target_earthquake_think },
 { P_think, target_explosion_explode },
 { P_think, target_laser_start },
@@ -767,6 +770,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, train_use },
 { P_use, trigger_counter_use },
 { P_use, trigger_crosslevel_trigger_use },
+{ P_use, trigger_crossunit_trigger_use },
 { P_use, trigger_elevator_use },
 { P_use, trigger_enable },
 { P_use, trigger_health_relay_use },

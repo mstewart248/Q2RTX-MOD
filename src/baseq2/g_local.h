@@ -177,6 +177,13 @@ typedef enum {
 #define SFL_CROSS_TRIGGER_8     0x00000080
 #define SFL_CROSS_TRIGGER_MASK  0x000000ff
 
+// game.cross_unit_flags values [rerelease]
+// same trigger bits, but stored separately from serverflags because the
+// cross *level* bits are wiped whenever a target_changelevel enters a new
+// unit, and cross unit state has to outlive that. spawnflag bits 8-15 are
+// reserved by the editor (NOT_EASY and friends), everything else is a trigger.
+#define SFL_CROSS_UNIT_MASK     (~0x0000ff00)
+
 
 // noise types for PlayerNoise
 #define PNOISE_SELF             0
@@ -290,6 +297,9 @@ typedef struct {
 
     // cross level triggers
     int         serverflags;
+
+    // cross unit triggers [rerelease]
+    int         cross_unit_flags;
 
     // items
     int         num_items;
@@ -716,6 +726,11 @@ void BecomeExplosion1(edict_t *self);
 #define CLOCK_MESSAGE_SIZE  16
 void func_clock_think(edict_t *self);
 void func_clock_use(edict_t *self, edict_t *other, edict_t *activator);
+
+//
+// g_target.c
+//
+int cross_trigger_delay(float delay);
 
 //
 // g_ai.c
