@@ -96,6 +96,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_restir_spatial, 1) /* ReSTIR spatial samples */ \
 	UBO_CVAR_DO(pt_restir_max_w, 12.0) /* ReSTIR max weight clamp */ \
 	UBO_CVAR_DO(pt_restir_permutation, 1) /* ReSTIR permutation sampling, 0 or 1 */ \
+	UBO_CVAR_DO(pt_restir_pairwise, 0) /* ReSTIR spatial reuse weighting: 0 legacy count-weighted sum, 1 pairwise MIS */ \
+	UBO_CVAR_DO(pt_restir_boiling, 0) /* ReSTIR boiling filter threshold as a multiple of the local mean, 0 disables */ \
+	UBO_CVAR_DO(pt_restir_debug, 0) /* ReSTIR debug view, same numbering the pt_restir 10..26 views used, 0 disables */ \
 	UBO_CVAR_DO(pt_glass_secondary_stochastic, 0) /* secondary glass Fresnel: 0 most-probable path, 1 importance sampled, 2 clamped like reference mode */ \
 	UBO_CVAR_DO(pt_roughness_override, -1) /* overrides roughness of all materials if non-negative, [0..1] */ \
 	UBO_CVAR_DO(pt_specular_anti_flicker, 2) /* fade factor for rough reflections of surfaces far away, [0..inf) */ \

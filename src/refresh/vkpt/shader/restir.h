@@ -38,7 +38,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define RESTIR_SPACIAL_DISTANCE 32
 #define RESTIR_SPACIAL_SAMPLES  8
 
-#define RESTIR_SAMPLING_M       4
+// A fresh reservoir must scale its chosen sample by roughly list_size/RESTIR_SAMPLING_M
+// to stay unbiased, because that is how many candidates it did not look at. Measured
+// cold-start W on mgu5m1 was ~32 with this at 4, implying list_size ~128 - and that
+// up-weighting is exactly the bright flash seen on newly disoccluded geometry, which
+// then relaxes as reuse accumulates real samples. Raising this lowers the flash
+// proportionally and costs only target-function evaluations (projected area math), no
+// extra rays.
+#define RESTIR_SAMPLING_M       16
 #define RESTIR_M_CLAMP          32
 #define RESTIR_M_VC_CLAMP       16
 
@@ -324,8 +331,13 @@ get_direct_illumination_restir(
 	float phong_weight,
 	int bounce,
 	Reservoir prev_r,
-	out Reservoir reservoir)
+	out Reservoir reservoir,
+	out float dbg_w_fresh,
+	out float dbg_W_fresh)
 {
+	dbg_w_fresh = 0.0;
+	dbg_W_fresh = 0.0;
+
 	init_reservoir(reservoir);
 
 	if (cluster_idx == ~0u)
@@ -379,6 +391,17 @@ get_direct_illumination_restir(
 
 	reservoir.M = RESTIR_SAMPLING_M;
 
+	// Diagnostics for pt_restir 24 / 25: the fresh-candidate reservoir before any reuse.
+	// Gated on the debug range so this costs nothing during play - pt_restir is a uniform,
+	// so the branch is wavefront-uniform and the two values stay dead.
+	if (global_ubo.pt_restir >= 10)
+	{
+		dbg_w_fresh = reservoir.w_sum;
+		dbg_W_fresh = reservoir.p_hat > 0.0
+			? reservoir.w_sum / (reservoir.p_hat * float(RESTIR_SAMPLING_M))
+			: 0.0;
+	}
+
 	//Combine with temporal
 	if (prev_r.W > 0.0 && prev_r.y != RESTIR_INVALID_ID && prev_r.p_hat > 0)
 	{
@@ -390,5 +413,97 @@ get_direct_illumination_restir(
 	if (isnan(reservoir.W) || isinf(reservoir.W)) reservoir.W = 0.0;
 }
 
+
+
+// ========================================================================== //
+// Pairwise MIS for spatial reuse.
+//
+// The legacy combine streams a neighbour with weight  p_hat * W * M  and then
+// does  M += neighbour.M - 1,  normalising at the end with  W = w_sum / (p_hat * M).
+// Those M terms are a stand-in for MIS weights, and they are only correct when every
+// neighbour's sample could have been drawn at this pixel with the same probability.
+// At a shadow or geometry boundary that is false: neighbours whose sample contributes
+// nothing here still inflate M, so W is divided by a count the numerator never got
+// weight from, and the estimate loses energy. That is the sun visibly fading in as
+// reuse accumulates.
+//
+// Pairwise MIS replaces the counts with a balance heuristic evaluated between each
+// neighbour's domain and this pixel's domain, so a neighbour that could not have
+// produced the sample contributes ~0 weight instead of diluting the average. The
+// weights sum to one by construction, so the final estimate normalises as
+// W = w_sum / p_hat with no division by M at all.
+//
+// Reference: Bitterli et al. 2020, and RTXDI's RTXDI_StreamNeighborWithPairwiseMIS /
+// RTXDI_StreamCanonicalWithPairwiseStep.
+// ========================================================================== //
+
+// The shading parameters get_unshadowed_path_contrib needs, for one pixel.
+struct RestirSurface
+{
+	vec3  position;
+	vec3  normal;
+	vec3  view_direction;
+	float phong_exp;
+	float phong_scale;
+	float phong_weight;
+};
+
+// Rebuild a neighbour's shading parameters from the previous frame's G-buffer.
+//
+// NOTE on position: the neighbour's own world position is not available. The
+// G-buffer has no history copy of PT_SHADING_POSITION, and reconstructing it from
+// PT_VIEW_DEPTH_B needs an inverse of V_prev the UBO does not carry plus the field
+// packing inverse, both of which are easy to get subtly wrong. This uses the centre
+// pixel's position instead, keeping the neighbour's own normal and BRDF.
+//
+// That is an approximation of the MIS weight, not of the estimator. MIS weights only
+// have to sum to one across strategies for the result to stay unbiased - the balance
+// heuristic is merely the lowest-variance choice among the valid ones. So this costs
+// a little variance at grazing geometry and nothing in correctness. The neighbour is
+// already required to be within 10% depth and ~25 degrees of normal, so over a few
+// pixels the position error is small next to the distance to the light anyway.
+//
+// Upgrade path if it ever matters: add invV_prev to the UBO, unproject
+// PT_VIEW_DEPTH_B through projection_screen_to_view(.., true), and pass the real
+// position here. Nothing else in this file changes.
+RestirSurface
+load_neighbour_surface(ivec2 pos, vec3 centre_position, vec3 view_direction)
+{
+	RestirSurface s;
+	s.position       = centre_position;
+	s.view_direction = view_direction;
+	s.normal         = decode_normal(texelFetch(TEX_PT_NORMAL_B, pos, 0).x);
+
+	vec2 metal_rough = texelFetch(TEX_PT_METALLIC_B, pos, 0).xy;
+	vec4 base_color  = texelFetch(TEX_PT_BASE_COLOR_B, pos, 0);
+
+	float alpha    = square(metal_rough.y);
+	s.phong_exp    = RoughnessSquareToSpecPower(alpha);
+	s.phong_scale  = min(100, 1 / (M_PI * square(alpha)));
+
+	vec3 albedo, base_reflectivity;
+	get_reflectivity(base_color.rgb, metal_rough.x, albedo, base_reflectivity);
+	s.phong_weight = clamp(base_color.a * luminance(base_reflectivity)
+		/ (luminance(base_reflectivity) + luminance(albedo)), 0, 0.9);
+
+	return s;
+}
+
+float
+eval_target_at(uint light_idx, vec2 light_pos, RestirSurface s)
+{
+	if (light_idx == RESTIR_INVALID_ID) return 0.0;
+	return get_unshadowed_path_contrib(light_idx, s.position, s.normal, s.view_direction,
+		s.phong_exp, s.phong_scale, s.phong_weight, light_pos);
+}
+
+// Balance heuristic between two domains, each weighted by how many samples it stands for.
+// Returns the share of the weight that belongs to the "this" domain.
+float
+pairwise_mis_weight(float w_this, float w_other, float m_this, float m_other)
+{
+	float denom = m_this * w_this + m_other * w_other;
+	return denom > 0.0 ? (m_this * w_this) / denom : 0.0;
+}
 
 #endif  /*_RESTIR_H_*/

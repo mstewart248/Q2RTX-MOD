@@ -1022,7 +1022,7 @@ void IMG_ReloadAll(void)
 
             image->pix_data = new_image.pix_data;
             image->width = new_image.width;
-            image->height = new_image.width;
+            image->height = new_image.height;
             image->upload_width = new_image.upload_width;
             image->upload_height = new_image.upload_height;
             image->processing_complete = false;

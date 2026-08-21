@@ -29,6 +29,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_debug_printf : enable
+#extension GL_KHR_shader_subgroup_arithmetic : require
 
 #pragma optionNV(unroll all)
 
@@ -106,6 +107,10 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 
 	Reservoir r, prev_r, spatial_r;
 	prev_r.W = 0;
+
+	// Diagnostics for pt_restir_debug 24 / 25 - see the debug block below.
+	float dbg_w_fresh = 0.0;
+	float dbg_W_fresh = 0.0;
 
 	vec4 position_material = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0);
 
@@ -268,7 +273,9 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 			phong_weight,
 			0,
 			prev_r,
-			r);
+			r,
+			dbg_w_fresh,
+			dbg_W_fresh);
 	}
 	else
 	{
@@ -285,6 +292,12 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 		init_reservoir(spatial_r);
 		
 		vec2 rng_pos = vec2(get_rng(RNG_RESTIR_SPATIAL_X(0)), get_rng(RNG_RESTIR_SPATIAL_Y(0)));
+
+		// Pairwise MIS state. mis_k is the number of neighbours the weights are shared
+		// out over - the target count, not the tap budget, so neighbours that are never
+		// reached fall back to the canonical sample rather than vanishing.
+		float mis_k = max(1.0, float(global_ubo.pt_restir_spatial));
+		float mis_canonical = 0.0;
 		int distance = use_shadow_rays ? RESTIR_SPACIAL_DISTANCE : 2;
 		int samples = min(RESTIR_SPACIAL_SAMPLES, int(global_ubo.pt_restir_spatial) * 2);
 		ivec2 pos;
@@ -341,8 +354,68 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 				{
 					uvec4 packed_reservoir = texelFetch(TEX_PT_RESTIR_B, sample_pos_r, 0);
 					unpack_reservoir(packed_reservoir, str_idx, st_r);
-					
+
+					// Skip a neighbour that carries no sample. It stored W == 0 because its
+					// own shadow ray was occluded, which says nothing about visibility here,
+					// and unpack_reservoir hands back a fabricated M of RESTIR_M_CLAMP
+					// regardless. Combining it added 0 to w_sum but M-1 to the sample count,
+					// so W = w_sum / (p_hat * M) was diluted by every shadowed neighbour -
+					// which drained roughly half the energy out of sunlit pixels along a
+					// shadow boundary and made the sun visibly fade in as reuse accumulated.
+					// The temporal combine in restir.h already guards this way
+					// ("prev_r.W > 0.0"); the spatial loop simply never did.
+					if(st_r.W <= 0.0) {
+						continue;
+					}
+
+					// The neighbour's sample, evaluated in *this* pixel's domain.
 					float p_hat = get_unshadowed_path_contrib(st_r.y, position, normal, view_direction.xyz, phong_exp, phong_scale, phong_weight, st_r.y_pos);
+
+					if(global_ubo.pt_restir_pairwise != 0)
+					{
+						RestirSurface ns = load_neighbour_surface(sample_pos, position, view_direction.xyz);
+
+						float m_n = float(st_r.M) * mis_k;  // samples the neighbour's domain stands for
+
+						// A canonical reservoir that selected nothing still carries
+						// M == RESTIR_SAMPLING_M: get_direct_illumination_restir counts every
+						// candidate it looked at, even when all of them had zero weight. Feeding
+						// that M in as a domain size would hand a share of the MIS weight to a
+						// strategy that has no sample to spend it on - the neighbours get scaled
+						// down and the canonical's share is then dropped by the guarded stream
+						// below, so the energy simply vanishes. Report an empty canonical as a
+						// zero-size domain instead, which makes pairwise_mis_weight hand the
+						// neighbours a full weight of 1.
+						bool canonical_valid = r.y != RESTIR_INVALID_ID && r.p_hat > 0.0 && r.W > 0.0;
+						float m_c = canonical_valid ? float(r.M) : 0.0;
+
+						// Stream the neighbour's sample with the share of it that belongs
+						// to the neighbour's domain. A sample this surface could not have
+						// produced gets ~0 here instead of diluting a running count.
+						if(p_hat > 0.0)
+						{
+							float p_hat_n = eval_target_at(st_r.y, st_r.y_pos, ns);
+							float mis_n = pairwise_mis_weight(p_hat_n, p_hat, m_n, m_c);
+							if(mis_n > 0.0)
+								update_reservoir(st_r.y, p_hat * mis_n * st_r.W, st_r.y_pos, p_hat, rng, spatial_r);
+						}
+
+						// The canonical sample's share against this same neighbour. Summed
+						// over the neighbours and normalised after the loop, this becomes
+						// the canonical sample's own MIS weight.
+						if(canonical_valid)
+						{
+							float p_hat_c_at_n = eval_target_at(r.y, r.y_pos, ns);
+							mis_canonical += 1.0 - pairwise_mis_weight(p_hat_c_at_n, r.p_hat, m_n, m_c);
+						}
+						else
+							mis_canonical += 1.0;
+
+						processed ++;
+						if(global_ubo.pt_restir_spatial == processed) break;
+						continue;
+					}
+
 					if(p_hat <= 0.0) {
 						continue;
 					}
@@ -357,7 +430,29 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 			
 		}
 
-		if(spatial_r.w_sum != 0)
+		if(global_ubo.pt_restir_pairwise != 0)
+		{
+			// Neighbours that were never streamed - rejected by the depth, normal or
+			// weight tests, or simply not reached - hand their whole share back to the
+			// canonical sample, which keeps the weights summing to one.
+			mis_canonical += mis_k - float(processed);
+			mis_canonical /= mis_k;
+
+			// Stream the canonical sample last, with the weight accumulated above.
+			if(r.y != RESTIR_INVALID_ID && r.W > 0.0 && r.p_hat > 0.0 && mis_canonical > 0.0)
+				update_reservoir(r.y, r.p_hat * mis_canonical * r.W, r.y_pos, r.p_hat, rng, spatial_r);
+
+			// The MIS weights already sum to one, so the estimate normalises with no
+			// division by M. That missing division is the entire bug fix: M no longer
+			// has to mean "samples that contributed weight" for the result to be right.
+			// M is carried over from the canonical reservoir purely so the storage
+			// rescale below and next frame's temporal clamp keep working.
+			spatial_r.M = r.M;
+			spatial_r.W = spatial_r.p_hat > 0.0 ? spatial_r.w_sum / spatial_r.p_hat : 0.0;
+			if(isnan(spatial_r.W) || isinf(spatial_r.W)) spatial_r.W = 0.0;
+			r = spatial_r;
+		}
+		else if(spatial_r.w_sum != 0)
 		{
 			//Combine with the other reservoir
 			if(r.W != 0)
@@ -373,6 +468,36 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 			}
 		}
 	}
+
+	// ---- Boiling filter ---------------------------------------------------------
+	//
+	// pt_restir_boiling is the threshold itself, as a multiple of the local average;
+	// 0 disables. (It used to be keyed off pt_restir 4 / 5 / 6 = 8x / 4x / 16x, because
+	// adding a UBO scalar was thought to shift every later member. The cvar list is the
+	// last thing in global_ubo and is documented there as not vec4-aligned, so appending
+	// floats to it is safe - check_ubo.py still reports 72 members / 448 bytes.)
+	//
+	// This is the RTXDI_BoilingFilter equivalent, and it is the piece this port is
+	// missing relative to RTXDI (which is what RTX Remix uses - hence no boiling there).
+	// Without it a reservoir whose weight greatly exceeds its neighbourhood keeps being
+	// handed to neighbours by spatial reuse and to itself by temporal reuse, so it
+	// self-reinforces and drifts: light and shadow visibly crawling around in motion.
+	//
+	// The subgroup stands in for RTXDI's tile: lanes of a ray-generation shader cover a
+	// small 2D block of pixels, so the subgroup mean is a local spatial mean. Inactive
+	// lanes (pixels that returned early) simply do not contribute, which is fine.
+	if(global_ubo.pt_restir_boiling > 0.0)
+	{
+		float threshold = global_ubo.pt_restir_boiling;
+
+		float w_sum_sg = subgroupAdd(r.W);
+		float w_cnt_sg = subgroupAdd(r.W > 0.0 ? 1.0 : 0.0);
+		float w_avg = w_cnt_sg > 0.0 ? w_sum_sg / w_cnt_sg : 0.0;
+
+		if(w_avg > 0.0 && r.W > w_avg * threshold)
+			r.W = 0.0;
+	}
+	// -----------------------------------------------------------------------------
 
 	if(r.W != 0.0f)
 	{
@@ -408,9 +533,156 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 
 	}
 
+	// Captured before the rescale below, so view 13 shows the w_sum that actually
+	// produced W = w_sum / (p_hat * M) this frame rather than the value stored for
+	// the next one.
+	float dbg_w_sum = r.w_sum;
+
 	//Normalize reservoir
 	float m_clamp = global_ubo.pt_restir != 3 ? float(RESTIR_M_CLAMP) : float(RESTIR_M_VC_CLAMP);
 	r.w_sum = (m_clamp * r.w_sum) / r.M;
+
+	// ---- ReSTIR reservoir debug views -------------------------------------------
+	// Instrumentation for the "sun fades out after a camera turn" bug. Now on its own
+	// cvar, pt_restir_debug, keeping the numbering the pt_restir 10..26 views used so
+	// existing notes still apply. Setting it no longer disturbs the sampling mode, so
+	// the views can be read while pt_restir 2 / 3 or pt_restir_pairwise are active.
+	//
+	//   pt_restir_debug 10 - which light the reservoir holds:
+	//                    green = the sun, blue = a polygon light, red = no reservoir
+	//   pt_restir_debug 11 - log2(W) in quantised colour bands (see ramp below)
+	//   pt_restir_debug 12 - M, banded: black 0, then blue/cyan/green/yellow/red as it grows
+	//   pt_restir_debug 13 - w_sum, same log2 ramp as view 11
+	//   pt_restir_debug 14 - p_hat of the selected sample, same log2 ramp
+	//
+	// Run with: pt_dlss 0, flt_enable 0, flt_fixed_albedo 1, pt_num_bounce_rays 0
+	// so the bands are not multiplied by surface albedo or diluted by indirect light.
+	int restir_debug = int(global_ubo.pt_restir_debug) - 10;
+	if(restir_debug >= 0)
+	{
+		vec3 dbg = vec3(0);
+		if(restir_debug == 0)
+		{
+			if(r.W <= 0.0 || r.y == RESTIR_INVALID_ID) dbg = vec3(1, 0, 0);
+			else if(r.y == RESTIR_ENV_ID)              dbg = vec3(0, 1, 0);
+			else                                       dbg = vec3(0, 0, 1);
+		}
+		else if(restir_debug == 1)
+		{
+			// log2(W) banded: each band is one power of two, so a decay of W shows up
+			// as the colour marching down the ramp rather than as a subtle dimming.
+			if(r.W <= 0.0) dbg = vec3(0);
+			else
+			{
+				float e = clamp(floor(log2(r.W)) + 4.0, 0.0, 7.0);
+				if(e < 1)      dbg = vec3(0.1, 0.0, 0.3);
+				else if(e < 2) dbg = vec3(0.0, 0.0, 1.0);
+				else if(e < 3) dbg = vec3(0.0, 1.0, 1.0);
+				else if(e < 4) dbg = vec3(0.0, 1.0, 0.0);
+				else if(e < 5) dbg = vec3(1.0, 1.0, 0.0);
+				else if(e < 6) dbg = vec3(1.0, 0.5, 0.0);
+				else           dbg = vec3(1.0, 0.0, 0.0);
+			}
+		}
+		else if(restir_debug == 3 || restir_debug == 4)
+		{
+			// The two remaining unknowns in W = w_sum / (p_hat * M). Same one-band-per-
+			// power-of-two ramp as view 11 so the three are directly comparable.
+			float v = (restir_debug == 3) ? dbg_w_sum : r.p_hat;
+			if(v <= 0.0) dbg = vec3(0);
+			else
+			{
+				float e = clamp(floor(log2(v)) + 4.0, 0.0, 7.0);
+				if(e < 1)      dbg = vec3(0.1, 0.0, 0.3);
+				else if(e < 2) dbg = vec3(0.0, 0.0, 1.0);
+				else if(e < 3) dbg = vec3(0.0, 1.0, 1.0);
+				else if(e < 4) dbg = vec3(0.0, 1.0, 0.0);
+				else if(e < 5) dbg = vec3(1.0, 1.0, 0.0);
+				else if(e < 6) dbg = vec3(1.0, 0.5, 0.0);
+				else           dbg = vec3(1.0, 0.0, 0.0);
+			}
+		}
+		else if(restir_debug == 16)
+		{
+			// pt_restir_debug 26 - half-float overflow flag.
+			//
+			// pack_reservoir stores W and w_sum with packHalf2x16, whose maximum is
+			// 65504, and unpack_reservoir zeroes W outright on isinf. Any pixel whose
+			// reservoir exceeds that silently loses its entire history on the very next
+			// frame. R = 1 marks such a pixel, so the mean of R over a region is
+			// directly the fraction of pixels being discarded that way.
+			//
+			// Note this is a sibling branch, not an early return: the reservoir stores
+			// at the end of this function must still run, or there would be no history
+			// for the very thing being measured.
+			bool overflow = isinf(r.W) || isinf(r.w_sum)
+				|| r.W > 65504.0 || r.w_sum > 65504.0;
+			dbg = vec3(overflow ? 1.0 : 0.0, 1.0, 0.0);
+			if(global_ubo.tm_enable == 0)
+				dbg /= float(STORAGE_SCALE_HDR);
+		}
+		else if(restir_debug >= 10)
+		{
+			// Continuous encodings (pt_restir_debug 20..23). The banded views above quantise to
+			// one colour per power of two AND saturate at W >= 4, so they can show that
+			// the fade happened but not how big it is. These encode the value itself so
+			// it can be read back off a screenshot to about 0.1 stop:
+			//
+			//   pt_restir_debug 20 - W        R = (log2(v) + 20) / 48, covering 2^-20 .. 2^28
+			//   pt_restir_debug 21 - M        G = 1 marks a valid sample, G = 0 means none
+			//   pt_restir_debug 22 - w_sum    decode: v = 2^(R * 48 - 20)
+			//
+			// The range is deliberately far wider than the values look like they need:
+			// the fresh-candidate weights are extremely heavy-tailed (mean/median ~4e4),
+			// and an encoding that clips the tail hides exactly the part that carries
+			// most of the energy.
+			//   pt_restir_debug 23 - p_hat
+			//   pt_restir_debug 24 - w_sum from the fresh candidates only, before any reuse
+			//   pt_restir 25 - W the fresh candidates alone would have produced this
+			//                  frame. Comparing 25 against 20 at a settled camera
+			//                  measures the reuse bias directly, with no transient
+			//                  and no timing involved.
+			//
+			// Read these with bloom_enable 0 and gr_enable 0 on top of the usual
+			// pt_dlss 0 / flt_enable 0 / tm_enable 0 / flt_fixed_albedo 1: bloom and god
+			// rays both composite over the image and would corrupt the encoded value.
+			float v;
+			if(restir_debug == 10)      v = r.W;
+			else if(restir_debug == 11) v = float(r.M);
+			else if(restir_debug == 12) v = dbg_w_sum;
+			else if(restir_debug == 13) v = r.p_hat;
+			else if(restir_debug == 14) v = dbg_w_fresh;
+			else                        v = dbg_W_fresh;
+
+			if(v > 0.0 && !isnan(v) && !isinf(v))
+				dbg = vec3(clamp((log2(v) + 20.0) / 48.0, 0.0, 1.0), 1.0, 0.0);
+			else
+				dbg = vec3(0.0);
+
+			// compositing.comp scales the whole frame by STORAGE_SCALE_HDR, and the only
+			// thing that divides it back out is tone_mapping_apply.comp - a pass that
+			// tm_enable 0 skips entirely on the CPU side (main.c). So with tone mapping
+			// off the image reaching the swap chain is 128x overbright and everything
+			// above 1/128 is clipped to white, which silently destroys any encoded value
+			// (and collapses the orange and yellow bands of the views above into one).
+			// These views are meant to be read with tm_enable 0, so cancel it here.
+			if(global_ubo.tm_enable == 0)
+				dbg /= float(STORAGE_SCALE_HDR);
+		}
+		else
+		{
+			float m = float(r.M);
+			if(m <= 0)       dbg = vec3(0);
+			else if(m <= 8)  dbg = vec3(0.0, 0.0, 1.0);
+			else if(m <= 40) dbg = vec3(0.0, 1.0, 1.0);
+			else if(m <= 80) dbg = vec3(0.0, 1.0, 0.0);
+			else if(m <= 160)dbg = vec3(1.0, 1.0, 0.0);
+			else             dbg = vec3(1.0, 0.0, 0.0);
+		}
+		high_freq = dbg;
+		o_specular = vec3(0);
+	}
+	// ------------------------------------------------------------------------------
 
 	o_specular = demodulate_specular(primary_base_reflectivity, o_specular);
 
