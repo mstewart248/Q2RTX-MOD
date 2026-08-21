@@ -65,6 +65,113 @@ void monster_fire_hyper_blaster(edict_t *self, vec3_t start, vec3_t dir, int dam
 	gi.multicast(start, MULTICAST_PVS);
 }
 
+void monster_fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect)
+{
+    fire_ionripper(self, start, dir, damage, speed, effect);
+
+    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteShort(self - g_edicts);
+    gi.WriteByte(flashtype);
+    gi.multicast(start, MULTICAST_PVS);
+}
+
+void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect)
+{
+    fire_blueblaster(self, start, dir, damage, speed, effect);
+
+    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteShort(self - g_edicts);
+    gi.WriteByte(flashtype);
+    gi.multicast(start, MULTICAST_PVS);
+}
+
+/*
+=================
+monster_dabeam
+
+Xatrix "damage beam": a one-frame RF_BEAM entity that traces from the monster to
+its enemy and hurts whatever it passes through. Used by monster_soldier_lasergun.
+The beam entity is spawned by the caller and freed by dabeam_hit a frame later.
+=================
+*/
+void dabeam_hit(edict_t *self)
+{
+    edict_t *ignore;
+    vec3_t  start, end;
+    trace_t tr;
+
+    ignore = self;
+    VectorCopy(self->s.origin, start);
+    VectorMA(start, 2048, self->movedir, end);
+
+    while (1) {
+        tr = gi.trace(start, NULL, NULL, end, ignore,
+                      CONTENTS_SOLID | CONTENTS_MONSTER | CONTENTS_DEADMONSTER);
+        if (!tr.ent)
+            break;
+
+        if (tr.ent->takedamage && !(tr.ent->flags & FL_IMMUNE_LASER) && tr.ent != self->owner)
+            T_Damage(tr.ent, self, self->owner, self->movedir, tr.endpos,
+                     vec3_origin, self->dmg, skill->value, DAMAGE_ENERGY, MOD_TARGET_LASER);
+
+        // stop at the first thing that is not a monster or player
+        if (!(tr.ent->svflags & SVF_MONSTER) && !tr.ent->client) {
+            if (self->spawnflags & SPAWNFLAG_DABEAM_SPARK) {
+                self->spawnflags &= ~SPAWNFLAG_DABEAM_SPARK;
+                gi.WriteByte(svc_temp_entity);
+                gi.WriteByte(TE_LASER_SPARKS);
+                gi.WriteByte(10);
+                gi.WritePosition(tr.endpos);
+                gi.WriteDir(tr.plane.normal);
+                gi.WriteByte(self->s.skinnum);
+                gi.multicast(tr.endpos, MULTICAST_PVS);
+            }
+            break;
+        }
+
+        ignore = tr.ent;
+        VectorCopy(tr.endpos, start);
+    }
+
+    VectorCopy(tr.endpos, self->s.old_origin);
+    self->nextthink = level.framenum + 1;
+    self->think = G_FreeEdict;
+}
+
+void monster_dabeam(edict_t *self)
+{
+    vec3_t last_movedir;
+    vec3_t point;
+
+    self->movetype = MOVETYPE_NONE;
+    self->solid = SOLID_NOT;
+    self->s.renderfx |= RF_BEAM | RF_TRANSLUCENT;
+    self->s.modelindex = 1;     // must be non-zero for the beam to be sent
+
+    self->s.frame = 2;          // beam width
+    self->s.skinnum = 0xf2f2f0f0;   // beam colour (packed palette indices)
+
+    if (self->enemy) {
+        VectorCopy(self->movedir, last_movedir);
+        VectorMA(self->enemy->absmin, 0.5f, self->enemy->size, point);
+        VectorSubtract(point, self->s.origin, self->movedir);
+        VectorNormalize(self->movedir);
+        if (!VectorCompare(self->movedir, last_movedir))
+            self->spawnflags |= SPAWNFLAG_DABEAM_SPARK;
+    } else {
+        G_SetMovedir(self->s.angles, self->movedir);
+    }
+
+    self->think = dabeam_hit;
+    self->nextthink = level.framenum + 1;
+    VectorSet(self->mins, -8, -8, -8);
+    VectorSet(self->maxs, 8, 8, 8);
+    gi.linkentity(self);
+
+    self->spawnflags |= SPAWNFLAG_DABEAM_SPARK | SPAWNFLAG_DABEAM_ON;
+    self->svflags &= ~SVF_NOCLIENT;
+}
+
 void monster_fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int flashtype)
 {
     fire_grenade(self, start, aimdir, damage, speed, 2.5f, damage + 40);

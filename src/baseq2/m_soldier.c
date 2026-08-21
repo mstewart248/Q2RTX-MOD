@@ -440,6 +440,99 @@ static int blaster_flash [] = {MZ2_SOLDIER_BLASTER_1, MZ2_SOLDIER_BLASTER_2, MZ2
 static int shotgun_flash [] = {MZ2_SOLDIER_SHOTGUN_1, MZ2_SOLDIER_SHOTGUN_2, MZ2_SOLDIER_SHOTGUN_3, MZ2_SOLDIER_SHOTGUN_4, MZ2_SOLDIER_SHOTGUN_5, MZ2_SOLDIER_SHOTGUN_6, MZ2_SOLDIER_SHOTGUN_7, MZ2_SOLDIER_SHOTGUN_8};
 static int machinegun_flash [] = {MZ2_SOLDIER_MACHINEGUN_1, MZ2_SOLDIER_MACHINEGUN_2, MZ2_SOLDIER_MACHINEGUN_3, MZ2_SOLDIER_MACHINEGUN_4, MZ2_SOLDIER_MACHINEGUN_5, MZ2_SOLDIER_MACHINEGUN_6, MZ2_SOLDIER_MACHINEGUN_7, MZ2_SOLDIER_MACHINEGUN_8};
 
+/*
+=================
+soldierh_laserbeam / soldierh_fire_weapon
+
+The Xatrix soldierh variants, selected by skinnum on models/monsters/soldierh:
+    0/1  ripper   - bouncing ion blade
+    2/3  hypergun - blue hyperblaster bolts
+    4/5  lasergun - continuous damage beam
+The odd skin of each pair is that variant's pain skin, which soldier_pain sets
+with |= 1, so every test here is a range and not an equality.
+=================
+*/
+static void soldierh_laserbeam(edict_t *self, int flash_index)
+{
+    vec3_t  forward, right, up;
+    vec3_t  start, dir, angles, end;
+    vec3_t  tempvec;
+    edict_t *ent;
+
+    if (Q_rand() % 5 == 0)
+        gi.sound(self, CHAN_AUTO, gi.soundindex("misc/lasfly.wav"), 1, ATTN_STATIC, 0);
+
+    VectorCopy(self->s.origin, start);
+    VectorCopy(self->enemy->s.origin, end);
+    VectorSubtract(end, start, dir);
+    vectoangles(dir, angles);
+    VectorCopy(monster_flash_offset[flash_index], tempvec);
+
+    ent = G_Spawn();
+    VectorCopy(self->s.origin, ent->s.origin);
+    AngleVectors(angles, forward, right, up);
+    VectorCopy(angles, ent->s.angles);
+    VectorCopy(ent->s.origin, start);
+
+    // flash 85 is the left-hand muzzle; its offset needs mirroring
+    if (flash_index == 85)
+        VectorMA(start, tempvec[0] - 14, right, start);
+    else
+        VectorMA(start, tempvec[0] + 2, right, start);
+    VectorMA(start, tempvec[2] + 8, up, start);
+    VectorMA(start, tempvec[1], forward, start);
+
+    VectorCopy(start, ent->s.origin);
+    ent->enemy = self->enemy;
+    ent->owner = self;
+    ent->dmg = 1;
+    ent->classname = "soldier_laserbeam";
+
+    monster_dabeam(ent);
+}
+
+static void soldierh_fire_weapon(edict_t *self, int flash_index)
+{
+    vec3_t  start;
+    vec3_t  forward, right, up;
+    vec3_t  aim, dir, end;
+    float   r, u;
+
+    AngleVectors(self->s.angles, forward, right, NULL);
+    G_ProjectSource(self->s.origin, monster_flash_offset[flash_index], forward, right, start);
+
+    VectorCopy(self->enemy->s.origin, end);
+    end[2] += self->enemy->viewheight;
+    VectorSubtract(end, start, aim);
+    vectoangles(aim, dir);
+    AngleVectors(dir, forward, right, up);
+
+    // these three aim far tighter than the stock soldier's 1000/500 scatter
+    r = crandom() * 100;
+    u = crandom() * 50;
+    VectorMA(start, 8192, forward, end);
+    VectorMA(end, r, right, end);
+    VectorMA(end, u, up, end);
+    VectorSubtract(end, start, aim);
+    VectorNormalize(aim);
+
+    if (self->s.skinnum <= 1) {
+        monster_fire_ionripper(self, start, aim, 5, 600, MZ_IONRIPPER, EF_IONRIPPER);
+    } else if (self->s.skinnum <= 3) {
+        monster_fire_blueblaster(self, start, aim, 1, 600, MZ_BLUEHYPERBLASTER, EF_BLUEHYPERBLASTER);
+    } else {
+        if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME))
+            self->monsterinfo.pause_framenum = level.framenum + (3 + Q_rand() % 8);
+
+        soldierh_laserbeam(self, flash_index);
+
+        if (level.framenum >= self->monsterinfo.pause_framenum)
+            self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+        else
+            self->monsterinfo.aiflags |= AI_HOLD_FRAME;
+    }
+}
+
 void soldier_fire(edict_t *self, int flash_number)
 {
     vec3_t  start;
@@ -450,7 +543,15 @@ void soldier_fire(edict_t *self, int flash_number)
     float   r, u;
     int     flash_index;
 
-    if (self->s.skinnum < 2)
+    // style 1 is the Xatrix "soldierh" family (ripper / hypergun / lasergun). It
+    // shares every animation with the stock soldier - soldierh.md2 is a pure reskin,
+    // frame-for-frame identical - so only the muzzle flash and the weapon differ.
+    if (self->style == 1) {
+        if (self->s.skinnum < 4)
+            flash_index = blaster_flash[flash_number];  // ripper and hypergun
+        else
+            flash_index = machinegun_flash[flash_number];   // laser beam
+    } else if (self->s.skinnum < 2)
         flash_index = blaster_flash[flash_number];
     else if (self->s.skinnum < 4)
         flash_index = shotgun_flash[flash_number];
@@ -477,6 +578,11 @@ void soldier_fire(edict_t *self, int flash_number)
 
         VectorSubtract(end, start, aim);
         VectorNormalize(aim);
+    }
+
+    if (self->style == 1) {
+        soldierh_fire_weapon(self, flash_index);
+        return;
     }
 
     if (self->s.skinnum <= 1) {
@@ -1355,5 +1461,91 @@ void SP_monster_soldier_ss(edict_t *self)
 
     self->s.skinnum = 4;
     self->health = 40;
+    self->gib_health = -30;
+}
+
+
+/*
+=================
+The Xatrix "soldierh" family, used throughout the rerelease Call of the Machine
+maps. models/monsters/soldierh is a pure reskin of the stock soldier - identical
+475 frames and 434 triangles - so these reuse every soldier animation and differ
+only in model, skin, health and weapon. style is set to 1 to tell soldier_fire()
+which family this is, since the skin numbers overlap with the stock soldier's;
+the rerelease marks them the same way. No map sets "style" on a soldier, so
+there is nothing to collide with.
+=================
+*/
+static void SP_monster_soldier_h(edict_t *self)
+{
+    SP_monster_soldier_x(self);
+
+    self->s.modelindex = gi.modelindex("models/monsters/soldierh/tris.md2");
+    self->style = 1;
+}
+
+/*QUAKED monster_soldier_ripper (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
+*/
+void SP_monster_soldier_ripper(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    SP_monster_soldier_h(self);
+
+    sound_pain_light = gi.soundindex("soldier/solpain2.wav");
+    sound_death_light = gi.soundindex("soldier/soldeth2.wav");
+
+    gi.modelindex("models/objects/boomrang/tris.md2");
+    gi.soundindex("misc/lasfly.wav");
+    gi.soundindex("soldier/solatck2.wav");
+
+    self->s.skinnum = 0;
+    self->health = 50;
+    self->gib_health = -30;
+}
+
+/*QUAKED monster_soldier_hypergun (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
+*/
+void SP_monster_soldier_hypergun(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    SP_monster_soldier_h(self);
+
+    gi.modelindex("models/objects/blaser/tris.md2");
+    sound_pain = gi.soundindex("soldier/solpain1.wav");
+    sound_death = gi.soundindex("soldier/soldeth1.wav");
+    gi.soundindex("soldier/solatck1.wav");
+    gi.soundindex("misc/lasfly.wav");
+
+    self->s.skinnum = 2;
+    self->health = 60;
+    self->gib_health = -30;
+}
+
+/*QUAKED monster_soldier_lasergun (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
+*/
+void SP_monster_soldier_lasergun(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    SP_monster_soldier_h(self);
+
+    sound_pain_ss = gi.soundindex("soldier/solpain3.wav");
+    sound_death_ss = gi.soundindex("soldier/soldeth3.wav");
+    gi.soundindex("soldier/solatck3.wav");
+    gi.soundindex("misc/lasfly.wav");
+
+    self->s.skinnum = 4;
+    self->health = 70;
     self->gib_health = -30;
 }

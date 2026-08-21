@@ -701,7 +701,8 @@ void SV_Physics_Toss(edict_t *ent)
 
 // add gravity
     if (ent->movetype != MOVETYPE_FLY
-        && ent->movetype != MOVETYPE_FLYMISSILE)
+        && ent->movetype != MOVETYPE_FLYMISSILE
+        && ent->movetype != MOVETYPE_WALLBOUNCE)
         SV_AddGravity(ent);
 
 // move angles
@@ -732,15 +733,22 @@ void SV_Physics_Toss(edict_t *ent)
         return;
 
     if (trace.fraction < 1) {
-        if (ent->movetype == MOVETYPE_BOUNCE)
+        if (ent->movetype == MOVETYPE_WALLBOUNCE)
+            backoff = 2.0f;
+        else if (ent->movetype == MOVETYPE_BOUNCE)
             backoff = 1.5f;
         else
             backoff = 1;
 
         ClipVelocity(ent->velocity, trace.plane.normal, ent->velocity, backoff);
 
-        // stop if on ground
-        if (trace.plane.normal[2] > 0.7f) {
+        // a wallbounce projectile is a thrown blade - point it the way it now flies
+        if (ent->movetype == MOVETYPE_WALLBOUNCE)
+            vectoangles(ent->velocity, ent->s.angles);
+
+        // stop if on ground (never for wallbounce - it keeps ricocheting until it
+        // hits something damageable or its think frees it)
+        if (trace.plane.normal[2] > 0.7f && ent->movetype != MOVETYPE_WALLBOUNCE) {
             if (ent->velocity[2] < 60 || ent->movetype != MOVETYPE_BOUNCE) {
                 ent->groundentity = trace.ent;
                 ent->groundentity_linkcount = trace.ent->linkcount;
@@ -955,6 +963,7 @@ void G_RunEntity(edict_t *ent)
     case MOVETYPE_BOUNCE:
     case MOVETYPE_FLY:
     case MOVETYPE_FLYMISSILE:
+    case MOVETYPE_WALLBOUNCE:
 	case MOVETYPE_EXPLODE:
         SV_Physics_Toss(ent);
         break;

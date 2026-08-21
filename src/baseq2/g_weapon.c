@@ -408,6 +408,141 @@ void fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed
 
 /*
 =================
+fire_ionripper
+
+Xatrix ion ripper blade. Ricochets off walls (MOVETYPE_WALLBOUNCE) until it hits
+something damageable or its think expires. Used by monster_soldier_ripper.
+=================
+*/
+void ionripper_sparks(edict_t *self)
+{
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_WELDING_SPARKS);
+    gi.WriteByte(0);
+    gi.WritePosition(self->s.origin);
+    gi.WriteDir(vec3_origin);
+    gi.WriteByte(0xe4 + (Q_rand() & 3));
+    gi.multicast(self->s.origin, MULTICAST_PVS);
+
+    G_FreeEdict(self);
+}
+
+void ionripper_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    if (other == self->owner)
+        return;
+
+    if (surf && (surf->flags & SURF_SKY)) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (self->owner->client)
+        PlayerNoise(self->owner, self->s.origin, PNOISE_IMPACT);
+
+    // no damage to give means this was a wall hit: keep bouncing rather than die
+    if (!other->takedamage)
+        return;
+
+    T_Damage(other, self, self->owner, self->velocity, self->s.origin,
+             plane ? plane->normal : vec3_origin, self->dmg, 1, DAMAGE_ENERGY, MOD_RIPPER);
+
+    G_FreeEdict(self);
+}
+
+void fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int effect)
+{
+    edict_t *ion;
+    trace_t tr;
+
+    VectorNormalize(dir);
+
+    ion = G_Spawn();
+    VectorCopy(start, ion->s.origin);
+    VectorCopy(start, ion->s.old_origin);
+    vectoangles(dir, ion->s.angles);
+    VectorScale(dir, speed, ion->velocity);
+
+    ion->movetype = MOVETYPE_WALLBOUNCE;
+    ion->clipmask = MASK_SHOT;
+    ion->solid = SOLID_BBOX;
+    ion->s.effects |= effect;
+    ion->s.renderfx |= RF_FULLBRIGHT;
+    VectorClear(ion->mins);
+    VectorClear(ion->maxs);
+    ion->s.modelindex = gi.modelindex("models/objects/boomrang/tris.md2");
+    ion->s.sound = gi.soundindex("misc/lasfly.wav");
+    ion->owner = self;
+    ion->touch = ionripper_touch;
+    ion->nextthink = level.framenum + 3 * BASE_FRAMERATE;
+    ion->think = ionripper_sparks;
+    ion->dmg = damage;
+    ion->dmg_radius = 100;
+    ion->classname = "ionripper";
+    gi.linkentity(ion);
+
+    if (self->client)
+        check_dodge(self, ion->s.origin, dir, speed);
+
+    tr = gi.trace(self->s.origin, NULL, NULL, ion->s.origin, ion, MASK_SHOT);
+    if (tr.fraction < 1.0f) {
+        VectorMA(ion->s.origin, -10, dir, ion->s.origin);
+        ion->touch(ion, tr.ent, NULL, NULL);
+    }
+}
+
+
+/*
+=================
+fire_blueblaster
+
+The blue hyperblaster bolt fired by monster_soldier_hypergun. Same flight as a
+blaster bolt, different model/effect, and it reuses blaster_touch - the damage
+type it reports is decided by spawnflags there, so leave spawnflags clear.
+=================
+*/
+void fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int effect)
+{
+    edict_t *bolt;
+    trace_t tr;
+
+    VectorNormalize(dir);
+
+    bolt = G_Spawn();
+    bolt->svflags = SVF_DEADMONSTER;
+    VectorCopy(start, bolt->s.origin);
+    VectorCopy(start, bolt->s.old_origin);
+    vectoangles(dir, bolt->s.angles);
+    VectorScale(dir, speed, bolt->velocity);
+    bolt->movetype = MOVETYPE_FLYMISSILE;
+    bolt->clipmask = MASK_SHOT;
+    bolt->solid = SOLID_BBOX;
+    bolt->s.effects |= effect;
+    VectorClear(bolt->mins);
+    VectorClear(bolt->maxs);
+    bolt->s.modelindex = gi.modelindex("models/objects/blaser/tris.md2");
+    bolt->s.sound = gi.soundindex("misc/lasfly.wav");
+    bolt->owner = self;
+    bolt->touch = blaster_touch;
+    bolt->nextthink = level.framenum + 2 * BASE_FRAMERATE;
+    bolt->think = G_FreeEdict;
+    bolt->dmg = damage;
+    bolt->classname = "bolt";
+    gi.linkentity(bolt);
+
+    if (self->client)
+        check_dodge(self, bolt->s.origin, dir, speed);
+
+    tr = gi.trace(self->s.origin, NULL, NULL, bolt->s.origin, bolt, MASK_SHOT);
+    if (tr.fraction < 1.0f) {
+        VectorMA(bolt->s.origin, -10, dir, bolt->s.origin);
+        bolt->touch(bolt, tr.ent, NULL, NULL);
+    }
+}
+
+
+/*
+=================
 fire_grenade
 =================
 */

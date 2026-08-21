@@ -197,7 +197,11 @@ typedef enum {
     MOVETYPE_TOSS,          // gravity
     
 	MOVETYPE_FLYMISSILE,    // extra size to monsters
-    MOVETYPE_BOUNCE
+    MOVETYPE_BOUNCE,
+    // Xatrix ion ripper: bounces off walls instead of sticking, and ignores
+    // gravity. Keep this last - movetype is stored in savegames by value, so
+    // inserting above renumbers every existing entity. DON'T RENUMBER!!!
+    MOVETYPE_WALLBOUNCE
 } movetype_t;
 
 
@@ -493,6 +497,14 @@ extern  int snd_fry;
 #define MOD_TRIGGER_HURT    31
 #define MOD_HIT             32
 #define MOD_TARGET_BLASTER  33
+// Private spawnflag bits used on a live monster_dabeam beam entity. The beam is
+// spawned at runtime and never comes from a map, so these cannot collide with
+// mapper-set spawnflags. (Xatrix wrote these as bare 0x80000000 / 0x1.)
+#define SPAWNFLAG_DABEAM_ON     0x00000001
+#define SPAWNFLAG_DABEAM_SPARK  0x80000000
+
+#define MOD_RIPPER          34
+#define MOD_BLUEBLASTER     35
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -673,6 +685,10 @@ void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t
 void monster_fire_bullet(edict_t *self, vec3_t start, vec3_t dir, int damage, int kick, int hspread, int vspread, int flashtype);
 void monster_fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int count, int flashtype);
 void monster_fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
+void monster_fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
+void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
+void monster_dabeam(edict_t *self);
+void dabeam_hit(edict_t *self);
 void monster_fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int flashtype);
 void monster_fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype);
 void monster_fire_railgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int flashtype);
@@ -727,6 +743,10 @@ bool fire_hit(edict_t *self, vec3_t aim, int damage, int kick);
 void fire_bullet(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int mod);
 void fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int count, int mod);
 void fire_blaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
+void fire_ionripper(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
+void fire_blueblaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
+void ionripper_sparks(edict_t *self);
+void ionripper_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 void fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius);
 void fire_grenade2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius, bool held);
 void fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);

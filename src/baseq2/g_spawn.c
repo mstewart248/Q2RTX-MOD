@@ -132,6 +132,9 @@ void SP_monster_infantry(edict_t *self);
 void SP_monster_soldier_light(edict_t *self);
 void SP_monster_soldier(edict_t *self);
 void SP_monster_soldier_ss(edict_t *self);
+void SP_monster_soldier_ripper(edict_t *self);
+void SP_monster_soldier_hypergun(edict_t *self);
+void SP_monster_soldier_lasergun(edict_t *self);
 void SP_monster_tank(edict_t *self);
 void SP_monster_medic(edict_t *self);
 void SP_monster_flipper(edict_t *self);
@@ -263,6 +266,9 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_soldier_light", SP_monster_soldier_light},
     {"monster_soldier", SP_monster_soldier},
     {"monster_soldier_ss", SP_monster_soldier_ss},
+    {"monster_soldier_ripper", SP_monster_soldier_ripper},
+    {"monster_soldier_hypergun", SP_monster_soldier_hypergun},
+    {"monster_soldier_lasergun", SP_monster_soldier_lasergun},
     {"monster_tank", SP_monster_tank},
     {"monster_tank_commander", SP_monster_tank},
     {"monster_medic", SP_monster_medic},

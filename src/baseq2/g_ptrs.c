@@ -318,6 +318,7 @@ extern void chick_walk(void);
 extern void commander_body_drop(void);
 extern void commander_body_think(void);
 extern void commander_body_use(void);
+extern void dabeam_hit(void);
 extern void debris_die(void);
 extern void door_blocked(void);
 extern void door_go_down(void);
@@ -432,6 +433,8 @@ extern void insane_pain(void);
 extern void insane_run(void);
 extern void insane_stand(void);
 extern void insane_walk(void);
+extern void ionripper_sparks(void);
+extern void ionripper_touch(void);
 extern void jorg_attack(void);
 extern void Jorg_CheckAttack(void);
 extern void jorg_die(void);
@@ -632,6 +635,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, button_return },
 { P_think, commander_body_drop },
 { P_think, commander_body_think },
+{ P_think, dabeam_hit },
 { P_think, door_go_down },
 { P_think, door_secret_move2 },
 { P_think, door_secret_move4 },
@@ -649,6 +653,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, gib_think },
 { P_think, Grenade_Explode },
 { P_think, hover_deadthink },
+{ P_think, ionripper_sparks },
 { P_think, M_droptofloor },
 { P_think, M_FliesOff },
 { P_think, M_FliesOn },
@@ -713,6 +718,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, Grenade_Touch },
 { P_touch, hurt_touch },
 { P_touch, hyper_blaster_touch },
+{ P_touch, ionripper_touch },
 { P_touch, misc_viper_bomb_touch },
 { P_touch, mutant_jump_touch },
 { P_touch, path_corner_touch },
