@@ -584,6 +584,18 @@ static bool NET_SendLoopPacket(netsrc_t sock, const void *data,
 
     loop = &loopbacks[sock ^ 1];
 
+    // A packet longer than a ring slot used to be memcpy'd in regardless, running
+    // over the following loopmsg_t and corrupting both its data and its datalen.
+    // The receiver then took that bogus datalen as msg_read.cursize, which showed
+    // up much later as CL_ParseServerMessage reading past the end of a message
+    // that looked far too short. Drop it loudly instead: losing a packet is
+    // recoverable, silently corrupting the next one is not.
+    if (len > MAX_PACKETLEN) {
+        Com_WPrintf("%s: packet of %zu bytes exceeds MAX_PACKETLEN (%d), dropped\n",
+                    __func__, len, MAX_PACKETLEN);
+        return false;
+    }
+
     msg = &loop->msgs[loop->send & (MAX_LOOPBACK - 1)];
     loop->send++;
 

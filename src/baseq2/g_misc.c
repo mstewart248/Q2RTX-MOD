@@ -2037,3 +2037,15 @@ void SP_misc_teleporter_dest(edict_t *ent)
     gi.linkentity(ent);
 }
 
+/*QUAKED info_landmark (0 0.5 0) (-4 -4 -4) (4 4 4)
+Reference point the rerelease uses to line the player up across a changelevel.
+Ported from src/rerelease/g_misc.cpp. Spawning it is all the entity itself does;
+the transition code that consumes it is a separate piece of work, but without a
+spawn function these were dropped at load and any entity aiming at one lost its
+target.
+*/
+void SP_info_landmark(edict_t *self)
+{
+    VectorCopy(self->s.origin, self->absmin);
+    VectorCopy(self->s.origin, self->absmax);
+}

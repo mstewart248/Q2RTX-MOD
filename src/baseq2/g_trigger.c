@@ -672,3 +672,43 @@ void SP_trigger_monsterjump(edict_t *self)
     self->movedir[2] = st.height;
 }
 
+/*QUAKED trigger_health_relay (0.5 0.5 0.5) (-8 -8 -8) (8 8 8)
+Fires its targets once the entity that used it drops to "speed" percent health
+or below, then removes itself. Ported from src/rerelease/g_monster.cpp.
+*/
+void trigger_health_relay_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    float percent_health;
+
+    if (!other->max_health)
+        return;
+
+    percent_health = (float)other->health / (float)other->max_health;
+    percent_health = max(0.0f, min(1.0f, percent_health));
+
+    // not ready to trigger yet
+    if (percent_health > self->speed)
+        return;
+
+    G_UseTargets(self, activator);
+    G_FreeEdict(self);
+}
+
+void SP_trigger_health_relay(edict_t *self)
+{
+    if (!self->targetname) {
+        gi.dprintf("%s at %s missing targetname\n", self->classname, vtos(self->s.origin));
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (self->speed < 0 || self->speed > 100) {
+        gi.dprintf("%s at %s has bad speed (health percentage), must be 0 to 100\n",
+                   self->classname, vtos(self->s.origin));
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->svflags |= SVF_NOCLIENT;
+    self->use = trigger_health_relay_use;
+}

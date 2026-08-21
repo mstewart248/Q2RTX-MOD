@@ -272,6 +272,8 @@ begin effects
     toggle "rocket explosions" cl_disable_explosions ~1
     toggle "explosion sprites" cl_explosion_sprites
     blank
+    pairs "blaster color" cl_blaster_color "violet" 1 "original orange" 0
+    blank
     action --align "railgun trail setup..." pushmenu railtrail
 end
 

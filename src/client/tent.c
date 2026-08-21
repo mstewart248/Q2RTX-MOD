@@ -266,6 +266,13 @@ static light_curve_t ex_blaster_light[] = {
 	{ { 0.04f,      0.03f,      0.04f      },  5.f, 15.00f },
 };
 
+// Stock Quake II RTX blaster impact light, used when cl_blaster_color is 0.
+static light_curve_t ex_blaster_light_original[] = {
+	{ { 0.04f,      0.02f,      0.0f      },  5.f, 15.00f },
+	{ { 0.2f,       0.15f,      0.01f     }, 15.f, 15.00f },
+	{ { 0.04f,      0.02f,      0.0f      },  5.f, 15.00f },
+};
+
 static light_curve_t ex_flare_light[] = {
 	{ { 1.2f,       0.75f,      0.15f     }, 10.f,  5.00f },
 	{ { 1.6f,       1.0f,       0.2f      }, 10.f, 10.00f },
@@ -288,8 +295,13 @@ static void CL_AddExplosionLight(explosion_t *ex, float phase)
 		curve_size = LENGTH(ex_poly_light);
 		break;
 	case ex_blaster:
-		curve = ex_blaster_light;
-		curve_size = LENGTH(ex_blaster_light);
+		if (cl_blaster_color->integer) {
+			curve = ex_blaster_light;
+			curve_size = LENGTH(ex_blaster_light);
+		} else {
+			curve = ex_blaster_light_original;
+			curve_size = LENGTH(ex_blaster_light_original);
+		}
 		break;
 	default:
 		return;

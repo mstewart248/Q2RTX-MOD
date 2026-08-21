@@ -776,3 +776,63 @@ void SP_target_earthquake(edict_t *self)
 
     self->noise_index = gi.soundindex("world/quake.wav");
 }
+
+/*QUAKED target_anger (1 0 0) (-8 -8 -8) (8 8 8)
+Points the monster named by "target" at the entity named by "killtarget", making
+the latter a valid enemy even if it is not a monster. Ported from
+src/rerelease/rogue/g_rogue_newtarg.cpp.
+
+Note: the rerelease also sets AI_DO_NOT_COUNT on the promoted entity so it is
+excluded from the level monster total. That flag does not exist in this tree, so
+a promoted non-monster will count toward the total shown at level end.
+*/
+void target_anger_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    edict_t *target;
+    edict_t *t;
+
+    target = G_Find(NULL, FOFS(targetname), self->killtarget);
+
+    if (!target || !self->target)
+        return;
+
+    // make whatever it is a "good guy" so the monster will try to kill it
+    if (!(target->svflags & SVF_MONSTER)) {
+        target->monsterinfo.aiflags |= AI_GOOD_GUY;
+        target->svflags |= SVF_MONSTER;
+        target->health = 300;
+    }
+
+    t = NULL;
+    while ((t = G_Find(t, FOFS(targetname), self->target))) {
+        if (t == self) {
+            gi.dprintf("WARNING: entity used itself.\n");
+            continue;
+        }
+        if (!t->use)
+            continue;
+        if (t->health <= 0)
+            continue;
+
+        t->enemy = target;
+        t->monsterinfo.aiflags |= AI_TARGET_ANGER;
+        FoundTarget(t);
+    }
+}
+
+void SP_target_anger(edict_t *self)
+{
+    if (!self->target) {
+        gi.dprintf("target_anger without target!\n");
+        G_FreeEdict(self);
+        return;
+    }
+    if (!self->killtarget) {
+        gi.dprintf("target_anger without killtarget!\n");
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->use = target_anger_use;
+    self->svflags = SVF_NOCLIENT;
+}

@@ -1069,7 +1069,6 @@ typedef enum {
     TE_GUNSHOT,
     TE_BLOOD,
     TE_BLASTER,
-	TE_HYPERBLASTER,
     TE_RAILTRAIL,
     TE_SHOTGUN,
     TE_EXPLOSION1,
@@ -1128,6 +1127,11 @@ typedef enum {
 // Q2RTX
 	TE_FLARE,
 // Q2RTX
+	// Fork-local addition, not part of the stock protocol. It MUST stay at the
+	// end of this enum: maps bake raw temp-entity numbers into the "style" key
+	// of target_temp_entity, so every value below this one has to keep its
+	// standard numbering. DON'T RENUMBER!!!
+	TE_HYPERBLASTER,
 
     TE_NUM_ENTITIES
 } temp_event_t;

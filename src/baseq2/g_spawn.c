@@ -42,6 +42,7 @@ void SP_info_player_coop(edict_t *ent);
 void SP_info_player_intermission(edict_t *ent);
 
 void SP_func_plat(edict_t *ent);
+void SP_func_plat2(edict_t *ent);
 void SP_func_rotating(edict_t *ent);
 void SP_func_button(edict_t *ent);
 void SP_func_door(edict_t *ent);
@@ -81,6 +82,9 @@ void SP_target_splash(edict_t *ent);
 void SP_target_spawner(edict_t *ent);
 void SP_target_blaster(edict_t *ent);
 void SP_target_crosslevel_trigger(edict_t *ent);
+void SP_target_anger(edict_t *ent);
+void SP_trigger_health_relay(edict_t *ent);
+void SP_info_landmark(edict_t *ent);
 void SP_target_crosslevel_target(edict_t *ent);
 void SP_target_laser(edict_t *self);
 void SP_target_help(edict_t *ent);
@@ -141,6 +145,7 @@ void SP_monster_mutant(edict_t *self);
 void SP_monster_supertank(edict_t *self);
 void SP_monster_boss2(edict_t *self);
 void SP_monster_jorg(edict_t *self);
+void SP_monster_makron(edict_t *self);
 void SP_monster_boss3_stand(edict_t *self);
 
 void SP_monster_commander_body(edict_t *self);
@@ -166,6 +171,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"info_teleport_destination", SP_info_teleport_destination},
 
     {"func_plat", SP_func_plat},
+    {"func_plat2", SP_func_plat2},
     {"func_button", SP_func_button},
     {"func_door", SP_func_door},
     {"func_door_secret", SP_func_door_secret},
@@ -205,6 +211,9 @@ static const spawn_func_t spawn_funcs[] = {
     {"target_spawner", SP_target_spawner},
     {"target_blaster", SP_target_blaster},
     {"target_crosslevel_trigger", SP_target_crosslevel_trigger},
+    {"target_anger", SP_target_anger},
+    {"trigger_health_relay", SP_trigger_health_relay},
+    {"info_landmark", SP_info_landmark},
     {"target_crosslevel_target", SP_target_crosslevel_target},
     {"target_laser", SP_target_laser},
     {"target_help", SP_target_help},
@@ -269,6 +278,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_boss2", SP_monster_boss2},
     {"monster_boss3_stand", SP_monster_boss3_stand},
     {"monster_jorg", SP_monster_jorg},
+    {"monster_makron", SP_monster_makron},
 
     {"monster_commander_body", SP_monster_commander_body},
 

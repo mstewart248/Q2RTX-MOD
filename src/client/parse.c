@@ -57,6 +57,15 @@ static inline void CL_ParseDeltaEntity(server_frame_t  *frame,
         VectorCopy(old->origin, state->old_origin);
 }
 
+// Trace of the entity deltas parsed in the current frame. Dumped by
+// CL_ParseServerMessage if the message overruns, to show where the list
+// diverged from the byte offsets the server actually wrote.
+#define ENT_TRACE_MAX 32
+static size_t ent_trace_off[ENT_TRACE_MAX];
+static int    ent_trace_num[ENT_TRACE_MAX];
+static int    ent_trace_bits[ENT_TRACE_MAX];
+static int    ent_trace_n;
+
 static void CL_ParsePacketEntities(server_frame_t *oldframe,
                                    server_frame_t *frame)
 {
@@ -68,6 +77,8 @@ static void CL_ParsePacketEntities(server_frame_t *oldframe,
 
     frame->firstEntity = cl.numEntityStates;
     frame->numEntities = 0;
+
+    ent_trace_n = 0;
 
     // delta from the entities present in oldframe
     oldindex = 0;
@@ -85,7 +96,14 @@ static void CL_ParsePacketEntities(server_frame_t *oldframe,
     }
 
     while (1) {
+        size_t ent_off = msg_read.readcount;
         newnum = MSG_ParseEntityBits(&bits);
+        if (ent_trace_n < ENT_TRACE_MAX) {
+            ent_trace_off[ent_trace_n] = ent_off;
+            ent_trace_num[ent_trace_n] = newnum;
+            ent_trace_bits[ent_trace_n] = bits;
+            ent_trace_n++;
+        }
         if (newnum < 0 || newnum >= MAX_EDICTS) {
             Com_Error(ERR_DROP, "%s: bad number: %d", __func__, newnum);
         }
@@ -1172,8 +1190,13 @@ CL_ParseServerMessage
 */
 void CL_ParseServerMessage(void)
 {
-    int         cmd, extrabits;
-    size_t      readcount;
+    int         cmd = -1, extrabits;
+    size_t      readcount = 0;
+    // Rolling trace of parsed commands, so a desync can be located without
+    // decoding the packet by hand.
+    size_t      trace_off[24];
+    int         trace_cmd[24];
+    int         trace_n = 0;
     int         index, bits;
 
 #if USE_DEBUG
@@ -1189,7 +1212,41 @@ void CL_ParseServerMessage(void)
 //
     while (1) {
         if (msg_read.readcount > msg_read.cursize) {
-            Com_Error(ERR_DROP, "%s: read past end of server message", __func__);
+            // Report which command overran. cmd and readcount still hold the
+            // previous iteration values, so they name the command that did it.
+            // cl_shownet would show this too, but it is compiled out of release
+            // builds (USE_DEBUG is Debug-only), and this failure shows up there.
+            {
+                // Dump the raw packet. The reported svc/te.type are only meaningful
+                // if the stream was still aligned; the bytes settle it either way.
+                size_t dump_i;
+                Com_Printf("---- msg dump, cursize %zu ----\n", msg_read.cursize);
+                for (dump_i = 0; dump_i < msg_read.cursize; dump_i++) {
+                    Com_Printf("%02x ", msg_read.data[dump_i]);
+                    if ((dump_i & 15) == 15)
+                        Com_Printf("\n");
+                }
+                Com_Printf("\n---- end dump ----\n");
+                Com_Printf("---- command trace (%d parsed) ----\n", trace_n);
+                {
+                    int tr_i, tr_first = trace_n > 24 ? trace_n - 24 : 0;
+                    for (tr_i = tr_first; tr_i < trace_n; tr_i++)
+                        Com_Printf("  off %3zu svc %d\n",
+                                   trace_off[tr_i % 24], trace_cmd[tr_i % 24]);
+                }
+                Com_Printf("---- entity deltas (%d) ----\n", ent_trace_n);
+                {
+                    int en_i;
+                    for (en_i = 0; en_i < ent_trace_n; en_i++)
+                        Com_Printf("  off %3zu num %5d bits %08x\n",
+                                   ent_trace_off[en_i], ent_trace_num[en_i],
+                                   (unsigned)ent_trace_bits[en_i]);
+                }
+            }
+            Com_Error(ERR_DROP, "%s: read past end of server message "
+                      "(last svc %d began at %zu, readcount %zu, cursize %zu, te.type %d)",
+                      __func__, cmd, readcount, msg_read.readcount, msg_read.cursize,
+                      te.type);
         }
 
         readcount = msg_read.readcount;
@@ -1198,6 +1255,10 @@ void CL_ParseServerMessage(void)
             SHOWNET(1, "%3zu:END OF MESSAGE\n", msg_read.readcount - 1);
             break;
         }
+
+        trace_off[trace_n % 24] = readcount;
+        trace_cmd[trace_n % 24] = cmd;
+        trace_n++;
 
         extrabits = cmd >> SVCMD_BITS;
         cmd &= SVCMD_MASK;

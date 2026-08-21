@@ -379,7 +379,14 @@ void fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed
     bolt->s.modelindex = gi.modelindex("models/objects/laser/tris.md2");
     bolt->s.sound = gi.soundindex("misc/lasfly.wav");
     bolt->owner = self;
-    bolt->touch = !hyper ? blaster_touch : hyper_blaster_touch;
+    // Written as a branch rather than a ternary so genptr.py can see both
+    // pointers; it only matches a bare identifier after the '='. Neither was
+    // discoverable before, which is why g_ptrs.c had a hand-added entry for
+    // blaster_touch and none at all for hyper_blaster_touch.
+    if (hyper)
+        bolt->touch = hyper_blaster_touch;
+    else
+        bolt->touch = blaster_touch;
     bolt->nextthink = level.framenum + 2 * BASE_FRAMERATE;
     bolt->think = G_FreeEdict;
     bolt->dmg = damage;

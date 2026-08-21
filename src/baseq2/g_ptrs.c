@@ -417,6 +417,7 @@ extern void hover_start_attack(void);
 extern void hover_walk(void);
 extern void hurt_touch(void);
 extern void hurt_use(void);
+extern void hyper_blaster_touch(void);
 extern void infantry_attack(void);
 extern void infantry_die(void);
 extern void infantry_dodge(void);
@@ -509,6 +510,12 @@ extern void parasite_stand(void);
 extern void parasite_start_run(void);
 extern void parasite_start_walk(void);
 extern void path_corner_touch(void);
+extern void plat2_activate(void);
+extern void plat2_blocked(void);
+extern void plat2_go_down(void);
+extern void plat2_go_up(void);
+extern void plat2_hit_bottom(void);
+extern void plat2_hit_top(void);
 extern void plat_blocked(void);
 extern void plat_go_down(void);
 extern void plat_hit_bottom(void);
@@ -520,6 +527,8 @@ extern void rocket_touch(void);
 extern void rotating_blocked(void);
 extern void rotating_touch(void);
 extern void rotating_use(void);
+extern void smart_water_blocked(void);
+extern void smart_water_go_up(void);
 extern void soldier_attack(void);
 extern void soldier_die(void);
 extern void soldier_dodge(void);
@@ -547,6 +556,7 @@ extern void tank_sight(void);
 extern void tank_stand(void);
 extern void tank_walk(void);
 extern void target_actor_touch(void);
+extern void target_anger_use(void);
 extern void target_crosslevel_target_think(void);
 extern void target_earthquake_think(void);
 extern void target_earthquake_use(void);
@@ -568,6 +578,7 @@ extern void Touch_DoorTrigger(void);
 extern void Touch_Item(void);
 extern void Touch_Multi(void);
 extern void Touch_Plat_Center(void);
+extern void Touch_Plat_Center2(void);
 extern void train_blocked(void);
 extern void train_next(void);
 extern void train_use(void);
@@ -578,10 +589,13 @@ extern void trigger_elevator_init(void);
 extern void trigger_elevator_use(void);
 extern void trigger_enable(void);
 extern void trigger_gravity_touch(void);
+extern void trigger_health_relay_use(void);
 extern void trigger_key_use(void);
 extern void trigger_monsterjump_touch(void);
 extern void trigger_push_touch(void);
 extern void trigger_relay_use(void);
+extern void trigger_teleport_touch(void);
+extern void trigger_teleport_use(void);
 extern void turret_blocked(void);
 extern void turret_breach_finish_init(void);
 extern void turret_breach_think(void);
@@ -594,6 +608,7 @@ extern void Use_Item(void);
 extern void use_killbox(void);
 extern void Use_Multi(void);
 extern void Use_Plat(void);
+extern void Use_Plat2(void);
 extern void use_target_blaster(void);
 extern void use_target_changelevel(void);
 extern void use_target_explosion(void);
@@ -605,10 +620,6 @@ extern void Use_Target_Speaker(void);
 extern void use_target_splash(void);
 extern void Use_Target_Tent(void);
 extern void walkmonster_start_go(void);
-extern void trigger_teleport_use(void);
-extern void trigger_teleport_touch(void);
-extern void smart_water_go_up(void);
-
 const save_ptr_t save_ptrs[] = {
 { P_prethink, misc_viper_bomb_prethink },
 { P_think, AngleMove_Begin },
@@ -656,7 +667,10 @@ const save_ptr_t save_ptrs[] = {
 { P_think, Move_Done },
 { P_think, Move_Final },
 { P_think, multi_wait },
+{ P_think, plat2_go_down },
+{ P_think, plat2_go_up },
 { P_think, plat_go_down },
+{ P_think, smart_water_go_up },
 { P_think, SP_CreateCoopSpots },
 { P_think, SP_FixCoopSpots },
 { P_think, swimmonster_start_go },
@@ -679,11 +693,12 @@ const save_ptr_t save_ptrs[] = {
 { P_think, turret_driver_link },
 { P_think, turret_driver_think },
 { P_think, walkmonster_start_go },
-{ P_think, smart_water_go_up},
 { P_blocked, door_blocked },
 { P_blocked, door_secret_blocked },
+{ P_blocked, plat2_blocked },
 { P_blocked, plat_blocked },
 { P_blocked, rotating_blocked },
+{ P_blocked, smart_water_blocked },
 { P_blocked, train_blocked },
 { P_blocked, turret_blocked },
 { P_touch, barrel_touch },
@@ -697,6 +712,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, gib_touch },
 { P_touch, Grenade_Touch },
 { P_touch, hurt_touch },
+{ P_touch, hyper_blaster_touch },
 { P_touch, misc_viper_bomb_touch },
 { P_touch, mutant_jump_touch },
 { P_touch, path_corner_touch },
@@ -709,6 +725,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, Touch_Item },
 { P_touch, Touch_Multi },
 { P_touch, Touch_Plat_Center },
+{ P_touch, Touch_Plat_Center2 },
 { P_touch, trigger_gravity_touch },
 { P_touch, trigger_monsterjump_touch },
 { P_touch, trigger_push_touch },
@@ -734,7 +751,9 @@ const save_ptr_t save_ptrs[] = {
 { P_use, misc_viper_use },
 { P_use, monster_triggered_spawn_use },
 { P_use, monster_use },
+{ P_use, plat2_activate },
 { P_use, rotating_use },
+{ P_use, target_anger_use },
 { P_use, target_earthquake_use },
 { P_use, target_laser_use },
 { P_use, target_lightramp_use },
@@ -744,14 +763,17 @@ const save_ptr_t save_ptrs[] = {
 { P_use, trigger_crosslevel_trigger_use },
 { P_use, trigger_elevator_use },
 { P_use, trigger_enable },
+{ P_use, trigger_health_relay_use },
 { P_use, trigger_key_use },
 { P_use, trigger_relay_use },
+{ P_use, trigger_teleport_use },
 { P_use, Use_Areaportal },
 { P_use, Use_Boss3 },
 { P_use, Use_Item },
 { P_use, use_killbox },
 { P_use, Use_Multi },
 { P_use, Use_Plat },
+{ P_use, Use_Plat2 },
 { P_use, use_target_blaster },
 { P_use, use_target_changelevel },
 { P_use, use_target_explosion },
@@ -762,7 +784,6 @@ const save_ptr_t save_ptrs[] = {
 { P_use, Use_Target_Speaker },
 { P_use, use_target_splash },
 { P_use, Use_Target_Tent },
-{ P_use, trigger_teleport_use },
 { P_pain, actor_pain },
 { P_pain, berserk_pain },
 { P_pain, boss2_pain },
@@ -825,6 +846,8 @@ const save_ptr_t save_ptrs[] = {
 { P_moveinfo_endfunc, door_secret_move1 },
 { P_moveinfo_endfunc, door_secret_move3 },
 { P_moveinfo_endfunc, door_secret_move5 },
+{ P_moveinfo_endfunc, plat2_hit_bottom },
+{ P_moveinfo_endfunc, plat2_hit_top },
 { P_moveinfo_endfunc, plat_hit_bottom },
 { P_moveinfo_endfunc, plat_hit_top },
 { P_moveinfo_endfunc, train_wait },

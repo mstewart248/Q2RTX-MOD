@@ -888,12 +888,21 @@ void droptofloor(edict_t *ent)
 
     tr = gi.trace(ent->s.origin, ent->mins, ent->maxs, dest, ent, MASK_SOLID);
     if (tr.startsolid) {
+        // A trigger-spawned item stays hidden until something reveals it, so mappers
+        // park it inside scenery on purpose. Deleting it there breaks the map: mgu2m3
+        // would lose the yellow key that opens its exit. Leave it where the map put
+        // it. (The rerelease instead nudges it clear with G_FixStuckObject, which is
+        // not ported here.)
+        if (ent->spawnflags & ITEM_TRIGGER_SPAWN)
+            goto placed;
         gi.dprintf("droptofloor: %s startsolid at %s\n", ent->classname, vtos(ent->s.origin));
         G_FreeEdict(ent);
         return;
     }
 
     VectorCopy(tr.endpos, ent->s.origin);
+
+placed:
 
     if (ent->team) {
         ent->flags &= ~FL_TEAMSLAVE;
@@ -1004,8 +1013,14 @@ void SpawnItem(edict_t *ent, gitem_t *item)
 {
     PrecacheItem(item);
 
+    // Vanilla only ever allowed spawnflags on key_power_cube. The rerelease lets any
+    // key be trigger-spawned or made no-touch, and its maps rely on it: mgu2m3 hides
+    // key_yellow_key (spawnflags 1) until the data CD is inserted. Keep the warning
+    // for genuinely unknown bits.
     if (ent->spawnflags) {
-        if (strcmp(ent->classname, "key_power_cube") != 0) {
+        if (item->flags & IT_KEY)
+            ent->spawnflags &= (ITEM_TRIGGER_SPAWN | ITEM_NO_TOUCH);
+        if (ent->spawnflags & ~(ITEM_TRIGGER_SPAWN | ITEM_NO_TOUCH)) {
             ent->spawnflags = 0;
             gi.dprintf("%s at %s has invalid spawnflags set\n", ent->classname, vtos(ent->s.origin));
         }
@@ -2030,6 +2045,35 @@ gitem_t itemlist[] = {
         NULL,
         /* icon */      "i_airstrike",
         /* pickup */    "Airstrike Marker",
+        /* width */     2,
+        0,
+        NULL,
+        IT_STAY_COOP | IT_KEY,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
+    /*QUAKED key_yellow_key (0 .5 .8) (-16 -16 -16) (16 16 16)
+    normal door key - yellow. Added for Quake II N64 / rerelease maps; mgu2m3
+    gates its exit behind a trigger_key that asks for this classname, so without
+    it that level cannot be finished.
+    Note: the rerelease world model is models/items/n64/yellow_key/tris.md2, which
+    is not shipped here - the stock blue key model stands in. The HUD icon is the
+    real one (rerelease/pics/n64/i_yellow_key.tga).
+    */
+    {
+        "key_yellow_key",
+        Pickup_Key,
+        NULL,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/keys/key/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "n64/i_yellow_key",
+        /* pickup */    "Yellow Key",
         /* width */     2,
         0,
         NULL,

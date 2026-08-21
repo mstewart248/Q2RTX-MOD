@@ -669,14 +669,17 @@ void MSG_WriteDeltaEntity(const entity_packed_t *from,
     else
         MSG_WriteByte(to->number);
 
+    // Model indices are 16-bit on the wire: MAX_MODELS is 512, so bytes truncated
+    // anything above 255 and desynced the client. Read side is MSG_ReadWord, and
+    // player_state gunindex is widened to match since it indexes the same list.
     if (bits & U_MODEL)
-        MSG_WriteByte(to->modelindex);
+        MSG_WriteShort(to->modelindex);
     if (bits & U_MODEL2)
-        MSG_WriteByte(to->modelindex2);
+        MSG_WriteShort(to->modelindex2);
     if (bits & U_MODEL3)
-        MSG_WriteByte(to->modelindex3);
+        MSG_WriteShort(to->modelindex3);
     if (bits & U_MODEL4)
-        MSG_WriteByte(to->modelindex4);
+        MSG_WriteShort(to->modelindex4);
 
     if (bits & U_FRAME8)
         MSG_WriteByte(to->frame);
@@ -911,7 +914,7 @@ void MSG_WriteDeltaPlayerstate_Default(const player_packed_t *from, const player
     }
 
     if (pflags & PS_WEAPONINDEX)
-        MSG_WriteByte(to->gunindex);
+        MSG_WriteShort(to->gunindex);
 
     if (pflags & PS_WEAPONFRAME) {
         MSG_WriteByte(to->gunframe);
@@ -1140,7 +1143,7 @@ int MSG_WriteDeltaPlayerstate_Enhanced(const player_packed_t    *from,
     }
 
     if (pflags & PS_WEAPONINDEX)
-        MSG_WriteByte(to->gunindex);
+        MSG_WriteShort(to->gunindex);
 
     if (pflags & PS_WEAPONFRAME)
         MSG_WriteByte(to->gunframe);
@@ -1321,7 +1324,7 @@ void MSG_WriteDeltaPlayerstate_Packet(const player_packed_t *from,
     }
 
     if (pflags & PPS_WEAPONINDEX)
-        MSG_WriteByte(to->gunindex);
+        MSG_WriteShort(to->gunindex);
 
     if (pflags & PPS_WEAPONFRAME)
         MSG_WriteByte(to->gunframe);
@@ -1846,16 +1849,16 @@ void MSG_ParseDeltaEntity(const entity_state_t *from,
     }
 
     if (bits & U_MODEL) {
-        to->modelindex = MSG_ReadByte();
+        to->modelindex = MSG_ReadWord();
     }
     if (bits & U_MODEL2) {
-        to->modelindex2 = MSG_ReadByte();
+        to->modelindex2 = MSG_ReadWord();
     }
     if (bits & U_MODEL3) {
-        to->modelindex3 = MSG_ReadByte();
+        to->modelindex3 = MSG_ReadWord();
     }
     if (bits & U_MODEL4) {
-        to->modelindex4 = MSG_ReadByte();
+        to->modelindex4 = MSG_ReadWord();
     }
 
     if (bits & U_FRAME8)
@@ -2013,7 +2016,7 @@ void MSG_ParseDeltaPlayerstate_Default(const player_state_t *from,
     }
 
     if (flags & PS_WEAPONINDEX) {
-        to->gunindex = MSG_ReadByte();
+        to->gunindex = MSG_ReadWord();
     }
 
     if (flags & PS_WEAPONFRAME) {
@@ -2135,7 +2138,7 @@ void MSG_ParseDeltaPlayerstate_Enhanced(const player_state_t    *from,
     }
 
     if (flags & PS_WEAPONINDEX) {
-        to->gunindex = MSG_ReadByte();
+        to->gunindex = MSG_ReadWord();
     }
 
     if (flags & PS_WEAPONFRAME) {
@@ -2246,7 +2249,7 @@ void MSG_ParseDeltaPlayerstate_Packet(const player_state_t *from,
     }
 
     if (flags & PPS_WEAPONINDEX) {
-        to->gunindex = MSG_ReadByte();
+        to->gunindex = MSG_ReadWord();
     }
 
     if (flags & PPS_WEAPONFRAME) {

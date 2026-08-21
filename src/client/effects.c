@@ -1259,7 +1259,7 @@ void CL_BlasterTrail(const vec3_t start, const vec3_t end)
         p->alpha = 1.0;
         p->alphavel = -1.0f / (0.3f + frand() * 0.2f);
 
-        p->color = 108;
+        p->color = cl_blaster_color->integer ? 108 : 0xe0;
 		p->brightness = cvar_pt_particle_emissive->value;
     
 		

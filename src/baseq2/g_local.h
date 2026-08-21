@@ -139,6 +139,8 @@ typedef enum {
 #define AI_COMBAT_POINT         0x00001000
 #define AI_MEDIC                0x00002000
 #define AI_RESURRECTING         0x00004000
+// Set by target_anger so the monster keeps the enemy it was pointed at.
+#define AI_TARGET_ANGER         0x00008000
 
 //monster attack state
 #define AS_STRAIGHT             1
@@ -1016,6 +1018,8 @@ struct edict_s {
     float       speed, accel, decel;
     vec3_t      movedir;
     vec3_t      pos1, pos2;
+    int         plat2flags;     // func_plat2 state bits (Ground Zero)
+    float       last_move_time; // func_plat2 re-trigger debounce
 
     vec3_t      velocity;
     vec3_t      avelocity;
