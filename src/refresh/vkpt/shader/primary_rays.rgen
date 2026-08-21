@@ -209,15 +209,25 @@ main()
 		}
 
 		// Compute a motion vector for the sky, because we don't want TAA to blur it.
-		// Note: use the *unjittered* pixel centre here. inUV includes the sub-pixel
-		// jitter, which would bake up to a pixel of jitter into the sky motion vectors
-		// while geometry motion vectors are jitter-free - DLSS is told about the jitter
-		// separately via InJitterOffset, so the two must be consistent.
+		//
+		// Anchor it at the *jittered* sample position (inUV), the same as the geometry
+		// motion vectors below. This ray was cast through inUV, so inUV is where this
+		// sky sample currently is on screen; prev_screen_pos is where the same direction
+		// was last frame. "Jitter-free motion vectors" means the vector carries no jitter
+		// *delta* between frames - not that it is anchored at the pixel centre. DLSS
+		// already knows the sub-pixel sample location from InJitterOffset.
+		//
+		// This used to use the unjittered pixel centre, which baked a +/-0.5 px per-frame
+		// Halton offset into every sky motion vector. The same mistake was tried on the
+		// geometry motion vectors and made the whole image visibly vibrate, which is what
+		// identified this one.
 		vec3 prev_view_dir = (global_ubo.V_prev * vec4(direction, 0)).xyz;
 		vec2 prev_screen_pos;
 		float prev_distance;
 		projection_view_to_screen(prev_view_dir, prev_screen_pos, prev_distance, true);
-		vec2 curr_screen_pos = pixel_center / vec2(get_image_size());
+		vec2 curr_screen_pos = (global_ubo.pt_dlss_sky_mv_jitter != 0)
+			? inUV
+			: pixel_center / vec2(get_image_size());
 		vec2 motion = prev_screen_pos - curr_screen_pos;
 
 		// Store an empty surface into the G-buffer
@@ -303,7 +313,8 @@ main()
 	
 	vec2 screen_pos_curr, screen_pos_prev;
 	float distance_curr, distance_prev;
-	projection_view_to_screen((global_ubo.V * vec4(pos_ws_curr, 1)).xyz, screen_pos_curr, distance_curr, false);
+	vec3 view_pos_curr = (global_ubo.V * vec4(pos_ws_curr, 1)).xyz;
+	projection_view_to_screen(view_pos_curr, screen_pos_curr, distance_curr, false);
 	projection_view_to_screen((global_ubo.V_prev * vec4(pos_ws_prev, 1)).xyz, screen_pos_prev, distance_prev, true);
 	
 	vec3 motion;
@@ -312,12 +323,21 @@ main()
 
 	imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));	
 	imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
-	// DLSS depth. DLSS-RR is created with NVSDK_NGX_DLSS_Depth_Type_Linear, which per the
-	// integration guide (3.4.7) wants "the same depth data used to generate motion vector
-	// data" - plain linear view depth in world units, no remapping and no clamping. This
-	// used to be squashed into 0.75..0.99 and clamped, which destroyed all depth
-	// discrimination past ~968 units and did not match the motion vectors at all.
-	imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(distance_curr));
+	// DLSS depth. RR is created with NVSDK_NGX_DLSS_Depth_Type_Linear, and guide 3.4.7
+	// asks for "the same depth data used to generate motion vector data". The motion
+	// vectors come out of the projection matrix, whose linear depth is view-space Z -
+	// but projection_view_to_screen returns length(view_pos), the *radial* distance.
+	// Those differ by 1/cos(angle from the view axis), which is ~1.7 at the corner of a
+	// 90 degree FOV and is largest exactly where the weapon sits. Feeding RR a depth
+	// buffer that disagrees with its motion vectors degrades its internal disocclusion
+	// test, which is what has to reject weapon-coloured history on the background the
+	// gun uncovers as the camera turns.
+	//
+	// Cylindrical projection has no projection matrix, so radial distance stays correct
+	// (and consistent with the motion vectors) there.
+	imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
+		(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+			? view_pos_curr.z : distance_curr));
 
 	vec3 primary_base_color = vec3(1);
 	float primary_metallic = 0;

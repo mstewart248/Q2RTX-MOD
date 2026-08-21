@@ -111,6 +111,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_thick_glass, 0) /* switch for thick glass refraction: 0 (disabled), 1 (reference mode only), 2 (real-time mode) */ \
 	UBO_CVAR_DO(pt_dlss, 0) \
 	UBO_CVAR_DO(pt_dlssdn, 0) \
+	UBO_CVAR_DO(pt_dlss_spec_hitdist, 1) /* feed DLSS-RR a real specular hit distance on opaque surfaces (RR guide 3.4.9); 0 restores the old constant 0 */ \
+	UBO_CVAR_DO(pt_dlss_mirror_guides, 1) /* chrome models (the viewer weapon) hand DLSS-RR the mirror's own normal/albedo/roughness instead of the reflected surface's; 0 restores the old behaviour */ \
+	UBO_CVAR_DO(pt_dlss_linear_z, 1) /* DLSS depth is view-space Z (matches the motion vectors, RR guide 3.4.7); 0 restores radial distance */ \
+	UBO_CVAR_DO(pt_dlss_sky_mv_jitter, 1) /* anchor sky/reflected-sky motion vectors at the jittered sample position like geometry; 0 restores the pixel-centre anchor */ \
 	UBO_CVAR_DO(pt_water_density, 0.5) /* scale for light extinction in water and other media, [0..inf) */ \
 	UBO_CVAR_DO(tm_debug, 0) /* switch to show the histogram (1) or tonemapping curve (2) */ \
 	UBO_CVAR_DO(tm_dyn_range_stops, 7.0) /* Effective display dynamic range in linear stops = log2((max+refl)/(darkest+refl)) (eqn. 6), (-inf..0) */ \

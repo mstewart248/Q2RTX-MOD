@@ -196,3 +196,61 @@ vec3 composite_color_without_transparent(vec3 surf_base_color, float surf_metall
 
     return final_color;
 }
+
+// Split-sum approximation of the specular BRDF's directional albedo.
+// [Ray Tracing Gems, Chapter 32]. Lives here rather than in direct_lighting.rgen
+// because reflect_refract.rgen also needs it to write the DLSS-RR specular albedo
+// guide for mirror models.
+vec3 EnvBRDFApprox2(vec3 specularColor, float alpha, float NoV)
+{
+    NoV = abs(NoV);
+
+    // [Ray Tracing Gems, Chapter 32]
+    vec4 X;
+    X.x = 1.0;
+    X.y = NoV;
+    X.z = NoV * NoV;
+    X.w = NoV * X.z;
+
+    vec4 Y;
+    Y.x = 1.0;
+    Y.y = alpha;
+    Y.z = alpha * alpha;
+    Y.w = alpha * Y.z;
+
+    // Transposed from HLSL for GLSL column-major construction
+    mat2 M1 = mat2(
+        0.99044,   1.29678,
+       -1.28514,  -0.755907
+    );
+
+    mat3 M2 = mat3(
+         1.0,      20.3225, 121.563,
+         2.92338, -27.0302, 626.13,
+        59.4188, 222.592,  316.627
+    );
+
+    mat2 M3 = mat2(
+        0.0365463,  9.0632,
+        3.32707,   -9.04756
+    );
+
+    mat3 M4 = mat3(
+         1.0,      9.04401,  5.56589,
+         3.59685, -16.3174, 19.7886,
+        -1.36772,  9.22949, -20.2123
+    );
+
+    float bias =
+        dot(M1 * X.xy, Y.xy) /
+        dot(M2 * vec3(X.x, X.y, X.w), vec3(Y.x, Y.y, Y.w));
+
+    float scale =
+        dot(M3 * X.xy, Y.xy) /
+        dot(M4 * vec3(X.x, X.z, X.w), vec3(Y.x, Y.y, Y.w));
+
+    // Hack for specular reflectance of 0
+    bias *= clamp(specularColor.g * 50.0, 0.0, 1.0);
+
+    return specularColor * max(0.0, scale) + max(0.0, bias);
+}

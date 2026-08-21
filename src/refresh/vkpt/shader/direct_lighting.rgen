@@ -40,59 +40,6 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 layout(constant_id = 0) const uint spec_enable_caustics = 0;
 
 
-vec3 EnvBRDFApprox2(vec3 specularColor, float alpha, float NoV)
-{
-    NoV = abs(NoV);
-
-    // [Ray Tracing Gems, Chapter 32]
-    vec4 X;
-    X.x = 1.0;
-    X.y = NoV;
-    X.z = NoV * NoV;
-    X.w = NoV * X.z;
-
-    vec4 Y;
-    Y.x = 1.0;
-    Y.y = alpha;
-    Y.z = alpha * alpha;
-    Y.w = alpha * Y.z;
-
-    // Transposed from HLSL for GLSL column-major construction
-    mat2 M1 = mat2(
-        0.99044,   1.29678,
-       -1.28514,  -0.755907
-    );
-
-    mat3 M2 = mat3(
-         1.0,      20.3225, 121.563,
-         2.92338, -27.0302, 626.13,
-        59.4188, 222.592,  316.627
-    );
-
-    mat2 M3 = mat2(
-        0.0365463,  9.0632,
-        3.32707,   -9.04756
-    );
-
-    mat3 M4 = mat3(
-         1.0,      9.04401,  5.56589,
-         3.59685, -16.3174, 19.7886,
-        -1.36772,  9.22949, -20.2123
-    );
-
-    float bias =
-        dot(M1 * X.xy, Y.xy) /
-        dot(M2 * vec3(X.x, X.y, X.w), vec3(Y.x, Y.y, Y.w));
-
-    float scale =
-        dot(M3 * X.xy, Y.xy) /
-        dot(M4 * vec3(X.x, X.z, X.w), vec3(Y.x, Y.y, Y.w));
-
-    // Hack for specular reflectance of 0
-    bias *= clamp(specularColor.g * 50.0, 0.0, 1.0);
-
-    return specularColor * max(0.0, scale) + max(0.0, bias);
-}
 
 void
 direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out vec3 o_specular)
@@ -700,16 +647,24 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	//
 	// Written unconditionally: a zero normal is not valid RR input (guide 3.4.3 requires
 	// normalized shading normals), so pixels with no valid reservoir must still get one.
-	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
-	imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
-	imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
-	imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
-	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
-	imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
+	// A chrome model (the viewer weapon) already had the DLSS-RR guides written from the
+	// mirror surface itself by reflect_refract.rgen, which is what RR wants for a mirror.
+	// Everything below describes the reflected surface, so it must not overwrite them.
+	bool mirror_model_guides = (int(view_direction.w) & CHECKERBOARD_FLAG_MIRROR_MODEL) != 0;
 
-	// Specular albedo takes the specular reflectance (F0), not the diffuse albedo -
-	// see the Specular Albedo Calculation appendix of the RR integration guide.
-	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, alpha, dot(normal, view_direction.xyz) ), 0));
+	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
+	if(!mirror_model_guides)
+	{
+		imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
+		imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
+		imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
+		imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
+
+		// Specular albedo takes the specular reflectance (F0), not the diffuse albedo -
+		// see the Specular Albedo Calculation appendix of the RR integration guide.
+		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, alpha, dot(normal, view_direction.xyz) ), 0));
+	}
 
 	if(use_shadow_rays)
 	{
@@ -799,12 +754,20 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 	
 	// DLSS-RR guide buffers - all describing the post-reflect_refract surface.
 	// See the note in direct_lighting_restir() above.
-	imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+	// A chrome model (the viewer weapon) already had the DLSS-RR guides written from the
+	// mirror surface itself by reflect_refract.rgen, which is what RR wants for a mirror.
+	// Everything below describes the reflected surface, so it must not overwrite them.
+	bool mirror_model_guides = (int(view_direction.w) & CHECKERBOARD_FLAG_MIRROR_MODEL) != 0;
+
 	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
-	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
-	imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
-	imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
-	imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
+	if(!mirror_model_guides)
+	{
+		imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
+		imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
+		imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
+		imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
+	}
 	
 	
 	if(global_ubo.pt_direct_sun_light != 0)
@@ -837,7 +800,8 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 	float alpha = square(primary_roughness);
 
 	// Specular albedo takes the specular reflectance (F0), not the diffuse albedo.
-	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, alpha, dot(normal, view_direction.xyz)), 0));
+	if(!mirror_model_guides)
+		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, alpha, dot(normal, view_direction.xyz)), 0));
 }
 
 void

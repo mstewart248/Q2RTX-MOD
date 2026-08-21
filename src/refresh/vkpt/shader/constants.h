@@ -94,6 +94,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // Not really a checkerboard flag, but it's stored in the same channel.
 // Signals that the surface is a first-person weapon.
 #define CHECKERBOARD_FLAG_WEAPON     8
+// Also not a checkerboard flag. Signals that reflect_refract.rgen replaced this
+// pixel's shading surface with the reflected one but deliberately kept the primary
+// surface's motion vector and depth (MATERIAL_KIND_CHROME_MODEL). The DLSS-RR guide
+// buffers must then describe the mirror itself, not what it reflects.
+#define CHECKERBOARD_FLAG_MIRROR_MODEL 16
 
 // pt_fullres_fields - reflection/refraction field layout. See the FIELD LAYOUT note
 // in global_ubo.h.

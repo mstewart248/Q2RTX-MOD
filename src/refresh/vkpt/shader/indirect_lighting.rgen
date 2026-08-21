@@ -234,6 +234,40 @@ indirect_lighting(
 
 	trace_geometry_ray(bounce_ray, true, bounce_cull_mask);
 
+	// Specular hit distance for DLSS Ray Reconstruction (RR integration guide 3.4.9).
+	//
+	// This is what RR uses to judge how far a specular lobe is decoupled from the surface
+	// carrying it, and therefore how aggressively to reject specular history under motion.
+	// Until now only reflect_refract.rgen wrote it, and only for glass / water / chrome;
+	// every other pixel kept the per-frame clear of 0, which tells RR "the specular is glued
+	// to this surface, accumulate it freely".
+	//
+	// Harmless for world geometry - a static wall's own motion vector already approximates
+	// its reflection's - but exactly wrong for the viewer weapon. The weapon is rigidly
+	// attached to the camera, so its motion vector is ~0 while the room it reflects sweeps
+	// past at the full camera rate. No motion vector can express "the content of this pixel
+	// was replaced rather than moved", so this distance is the only signal that tells RR to
+	// stop trusting the history. At 0 it accumulated for as long as the weapon stayed on
+	// screen, i.e. forever - the ghosting on fast pans.
+	//
+	// The bounce ray above is already traced, so this costs nothing. It is taken whether the
+	// ray came out specular or diffuse: for a specular ray it is exactly the quantity the
+	// guide asks for, and for a diffuse ray it is a cosine-weighted sample of the same
+	// neighbourhood - a far better estimate of how far away what this surface sees is than
+	// zero. RR filters this input, so sample noise here is expected.
+	//
+	// Only the first bounce describes the primary surface, and a value already written by
+	// reflect_refract.rgen is the exact mirror hit distance - do not overwrite it.
+	if(spec_bounce_index == 0 && global_ubo.pt_dlss_spec_hitdist != 0
+		&& imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos).x <= 0.0)
+	{
+		float spec_hit_distance = found_intersection(ray_payload_geometry)
+			? ray_payload_geometry.hit_distance
+			: PRIMARY_RAY_T_MAX;
+
+		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(spec_hit_distance));
+	}
+
 	bounce_contrib = vec3(0);
 
 	if(is_specular_ray)

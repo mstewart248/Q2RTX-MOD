@@ -305,9 +305,17 @@ main()
         readback.hdr_color = linear_color_output;
     }
 
-    vec2 mDLSS = get_shared_motion(int_render_pos, group_base_lores).xy; //* 1000;
+    vec2 mDLSS = get_shared_motion(int_render_pos, group_base_lores).xy;
 
-    
+    // NOTE: do NOT re-anchor this to the pixel centre. primary_rays.rgen traces through
+    // (pixel_centre + sub_pixel_jitter) and builds the motion vector as
+    // (previous unjittered position - projection of that hit), so it is anchored at the
+    // *sample* position. That is what "jitter-free motion vectors" means for DLSS: the
+    // vector carries no jitter *delta* between frames. DLSS already knows where inside
+    // the pixel the sample landed, because InJitterOffset told it. Adding the jitter
+    // back here was tried and measurably wrong - it puts a +/-0.5 px per-frame offset
+    // into every reprojection and the whole image visibly vibrates.
+
     imageStore(IMG_ASVGF_TAA_A, ipos, vec4(color_output, 0));
 	imageStore(IMG_TAA_OUTPUT, ipos, vec4(linear_color_output, 1));
     imageStore(IMG_PT_DLSS_MOTION, ipos, vec4(mDLSS, 0, 0));    

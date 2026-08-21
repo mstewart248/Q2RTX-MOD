@@ -68,6 +68,7 @@ cvar_t *cvar_pt_accumulation_rendering = NULL;
 cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
 cvar_t *cvar_pt_projection = NULL;
 cvar_t *cvar_pt_dof = NULL;
+cvar_t *cvar_pt_dlss_indirect_spec = NULL;
 cvar_t* cvar_pt_freecam = NULL;
 cvar_t *cvar_pt_nearest = NULL;
 cvar_t *cvar_pt_bilerp_chars = NULL;
@@ -2824,20 +2825,35 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 
 	if (!ref_mode->enable_denoiser)
 	{
-		if (!ref_mode->rr_denoiser)
-		{
-			// disable fake specular because it is not supported without denoiser, and the result
-			// looks too dark with it missing
+		// Disable fake specular because it is not supported without the denoiser, and the
+		// result looks too dark with it missing.
+		//
+		// This applies to DLSS-RR too, and used to be skipped for it. Fake specular is
+		// synthesized from the LF spherical harmonics at the end of asvgf_atrous.comp,
+		// which does not run when flt_enable is 0; compositing.comp, the shader that
+		// replaces it, does not compute it, and RR cannot - it never sees the SH data.
+		// Meanwhile indirect_lighting.rgen scales the *real* traced indirect specular by
+		// (1 - fake_specular_weight) on the assumption that the fake term will make up the
+		// difference, so at the default threshold of 0.2 every surface rougher than 0.3
+		// has its indirect specular multiplied by zero with nothing to add it back. On a
+		// rough metal that is nearly all of its indirect light, because get_reflectivity
+		// leaves a metal with no diffuse albedo for the LF/HF channels to modulate.
+		// Setting the threshold to 1 also flips specular_pdf back to 1.0 for pure metals,
+		// so their bounce rays are sampled from the GGX lobe again instead of being split
+		// 50/50 with a diffuse lobe that carries no energy.
+		if (!ref_mode->rr_denoiser || cvar_pt_dlss_indirect_spec->integer != 0)
 			ubo->pt_fake_roughness_threshold = 1.f;
 
+		if (!ref_mode->rr_denoiser)
+		{
 			// swap the checkerboard fields every frame in reference or noisy mode to accumulate 
 			// both reflection and refraction in every pixel
 			ubo->pt_swap_checkerboard = (qvk.frame_counter & 1);
 		}
-		// With DLSS-RR there *is* a denoiser, so both of those stay at their normal
-		// values. Swapping the checkerboard in particular is actively harmful here: it
-		// would make every glass pixel alternate between the reflection and refraction
-		// path each frame, which is maximal temporal instability for a temporal denoiser.
+		// Swapping the checkerboard is specific to having no temporal denoiser at all: with
+		// DLSS-RR it would make every glass pixel alternate between the reflection and
+		// refraction path each frame, which is maximal temporal instability for a temporal
+		// denoiser.
 
 		if (ref_mode->enable_accumulation)
 		{
@@ -4240,6 +4256,11 @@ R_Init_RTX(bool total)
 	// 2 -> enabled in the reference and no-denoiser modes
 	// 3 -> always enabled (where are my glasses?)
 	cvar_pt_dof = Cvar_Get("pt_dof", "1", CVAR_ARCHIVE);
+
+	// DLSS-RR: keep the full real indirect specular instead of the A-SVGF fake specular.
+	// 1 -> forces pt_fake_roughness_threshold to 1 whenever no A-SVGF pass runs (default)
+	// 0 -> previous behaviour, for A/B
+	cvar_pt_dlss_indirect_spec = Cvar_Get("pt_dlss_indirect_spec", "1", CVAR_ARCHIVE);
 
 	// freecam mode toggle
 	cvar_pt_freecam = Cvar_Get("pt_freecam", "1", CVAR_ARCHIVE);

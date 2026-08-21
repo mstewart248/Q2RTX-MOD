@@ -161,6 +161,7 @@ main()
 	int checkerboard_flags = int(view_direction.w);
 	// Different from primary_is_weapon - this carries over through reflections and refractions
 	int checkerboard_weapon_flag = checkerboard_flags & CHECKERBOARD_FLAG_WEAPON;
+	int checkerboard_mirror_flag = 0;
 	checkerboard_flags &= CHECKERBOARD_FLAG_FIELD_MASK;
 
 	// Whether this pixel's two fields had already diverged before this bounce.
@@ -366,7 +367,47 @@ main()
 			// Dynamic models are usually moving or curved, which makes MVs incorrect,
 			// and such models look better with just primary motion vectors.
 			if((material_id & MATERIAL_KIND_MASK) != MATERIAL_KIND_CHROME_MODEL)
+			{
 				correct_motion_vector = 1;
+			}
+			else if(global_ubo.pt_dlss_mirror_guides != 0)
+			{
+				// Chrome *model* - the viewer weapon is the one that matters, since every
+				// v_*/skin material in baseq2.mat is kind CHROME and gets promoted to
+				// CHROME_MODEL by compute_mesh_material_flags.
+				//
+				// The branch above deliberately keeps this pixel's primary motion vector and
+				// depth, but the code below still replaces the shading surface with whatever
+				// the mirror reflects, and direct_lighting.rgen then writes the DLSS-RR guide
+				// buffers from that reflected surface. So RR saw a pixel whose depth and
+				// motion vector said "the gun, not moving" while its normal, albedo and
+				// roughness were the room's, swinging wildly every frame as the camera turned.
+				// That is exactly the inconsistent G-buffer the note in direct_lighting.rgen
+				// warns about, and it is why the reflective parts of the weapon kept ghosting
+				// after the specular hit distance was fixed.
+				//
+				// RR's documented model for a mirror is the opposite split: the primary guides
+				// describe the mirror surface itself, and the reflection is carried by specular
+				// albedo, specular motion vectors and specular hit distance - all of which this
+				// pixel already has. Capture the mirror's own parameters here, before the
+				// replacement below, and flag the pixel so nothing downstream overwrites them.
+				vec2 primary_metal_rough = texelFetch(TEX_PT_METALLIC_A, ipos, 0).xy;
+				float mirror_metallic = primary_metal_rough.x;
+				float mirror_roughness = primary_metal_rough.y;
+
+				vec3 mirror_albedo, mirror_base_reflectivity;
+				get_reflectivity(primary_base_color, mirror_metallic, mirror_albedo, mirror_base_reflectivity);
+
+				imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
+				imageStore(IMG_PT_ALBEDO, ipos, vec4(mirror_albedo, 0));
+				imageStore(IMG_PT_ROUGHNESS, ipos, vec4(mirror_roughness));
+				imageStore(IMG_PT_METALLIC, ipos, vec4(mirror_metallic));
+				imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
+				imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(
+					mirror_base_reflectivity, square(mirror_roughness), dot(normal, view_direction.xyz)), 0));
+
+				checkerboard_mirror_flag = CHECKERBOARD_FLAG_MIRROR_MODEL;
+			}
 		}
 	}
 	else if(primary_is_transparent)
@@ -663,7 +704,7 @@ main()
 		imageStore(IMG_PT_METALLIC_A, ipos, vec4(0));
 		imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
 		imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position + direction * PRIMARY_RAY_T_MAX, uintBitsToFloat(material_id)));
-		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag)));
+		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag)));
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(-PRIMARY_RAY_T_MAX));
 		imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, PRIMARY_RAY_T_MAX));
 
@@ -672,13 +713,21 @@ main()
 		// pixels keep the primary (glass) roughness/albedo and a zero normal, while
 		// depth would still be the glass's. Everything here describes the virtual sky
 		// surface seen through the reflection/refraction.
-		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(PRIMARY_RAY_T_MAX));
-		imageStore(IMG_PT_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
-		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
-		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(1.0));
-		imageStore(IMG_PT_METALLIC, ipos, vec4(0.0));
-		imageStore(IMG_PT_NORMAL, ipos, vec4(-direction, 0));
-		imageStore(IMG_PT_MATERIALID, ipos, vec4(0, 0, 0, 0));
+		// A chrome model keeps its own depth, motion vector and guides - see the
+		// CHROME_MODEL note above. Handing it the sky's would undo that, and outdoors
+		// (where the weapon reflects sky over much of its surface) that is most of the
+		// gun. The reflected sky is already described by the specular hit distance of
+		// PRIMARY_RAY_T_MAX written before this branch.
+		if(checkerboard_mirror_flag == 0)
+		{
+			imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(PRIMARY_RAY_T_MAX));
+			imageStore(IMG_PT_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
+			imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
+			imageStore(IMG_PT_ROUGHNESS, ipos, vec4(1.0));
+			imageStore(IMG_PT_METALLIC, ipos, vec4(0.0));
+			imageStore(IMG_PT_NORMAL, ipos, vec4(-direction, 0));
+			imageStore(IMG_PT_MATERIALID, ipos, vec4(0, 0, 0, 0));
+		}
 		imageStore(IMG_PT_EMISSIVE, ipos, vec4(0));
 
 		// Motion vector for the virtual sky image. The reflected/refracted sky sits at
@@ -690,10 +739,15 @@ main()
 			vec2 prev_screen_pos;
 			float prev_distance;
 			projection_view_to_screen(prev_view_dir, prev_screen_pos, prev_distance, true);
-			vec2 curr_screen_pos = (vec2(get_image_position()) + vec2(0.5)) / vec2(get_image_size());
+			// Anchored at the jittered sample position, matching primary_rays.rgen - see
+			// the note there. sub_pixel_jitter is zero unless upscaling or DLSS is on.
+			vec2 curr_screen_pos = (vec2(get_image_position()) + vec2(0.5)
+				+ ((global_ubo.pt_dlss_sky_mv_jitter != 0) ? global_ubo.sub_pixel_jitter : vec2(0)))
+				/ vec2(get_image_size());
 			vec2 sky_motion = prev_screen_pos - curr_screen_pos;
 
-			imageStore(IMG_PT_MOTION, ipos, vec4(sky_motion, 0, 0));
+			if(checkerboard_mirror_flag == 0)
+				imageStore(IMG_PT_MOTION, ipos, vec4(sky_motion, 0, 0));
 			if(!do_refraction)
 				imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(sky_motion, 0, 0));
 		}
@@ -771,7 +825,8 @@ main()
 		// compute the motion vector assuming that the primary surface is a static plane
 		vec2 screen_pos_curr, screen_pos_prev;
 		float distance_curr, distance_prev;
-		projection_view_to_screen((global_ubo.V * vec4(ref_pos_curr, 1)).xyz, screen_pos_curr, distance_curr, false);
+		vec3 ref_view_pos_curr = (global_ubo.V * vec4(ref_pos_curr, 1)).xyz;
+		projection_view_to_screen(ref_view_pos_curr, screen_pos_curr, distance_curr, false);
 		projection_view_to_screen((global_ubo.V_prev * vec4(ref_pos_prev, 1)).xyz, screen_pos_prev, distance_prev, true);
 
 		vec3 motion;
@@ -789,7 +844,9 @@ main()
 		// DLSS depth: the apparent distance of the reflected/refracted surface, which is
 		// what the motion vector above was built from. Positive - the sign flip on
 		// PT_VIEW_DEPTH_A is an internal marker for the Q2RTX filters, not depth data.
-		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(abs(distance_curr)));
+		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
+			(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+				? abs(ref_view_pos_curr.z) : abs(distance_curr)));
 
 		if(!do_refraction) {
 			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy, motion.z, fwidth_depth));
@@ -970,7 +1027,7 @@ main()
 
 	imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(encode_normal(geo_normal)));
 	imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position.xyz, uintBitsToFloat(material_id)));
-	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag)));
+	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag)));
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, optical_path_length));
 	imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
 	imageStore(IMG_PT_CLUSTER_A, ipos, uvec4(cluster_idx));
