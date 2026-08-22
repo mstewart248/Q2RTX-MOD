@@ -130,6 +130,7 @@ void SP_misc_easterchick2(edict_t *self);
 
 void SP_monster_berserk(edict_t *self);
 void SP_monster_gladiator(edict_t *self);
+void SP_monster_gekk(edict_t *self);
 void SP_monster_gladb(edict_t *self);
 void SP_monster_gunner(edict_t *self);
 void SP_monster_infantry(edict_t *self);
@@ -268,6 +269,7 @@ static const spawn_func_t spawn_funcs[] = {
 
     {"monster_berserk", SP_monster_berserk},
     {"monster_gladiator", SP_monster_gladiator},
+    {"monster_gekk", SP_monster_gekk},
     {"monster_gladb", SP_monster_gladb},
     {"monster_gunner", SP_monster_gunner},
     {"monster_infantry", SP_monster_infantry},

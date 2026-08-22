@@ -404,6 +404,14 @@ void M_droptofloor(edict_t *ent)
     vec3_t      end;
     trace_t     trace;
 
+    // placed off the floor on purpose - leave it where the mapper put it
+    if (ent->spawnflags & SPAWNFLAG_MONSTER_NO_DROP) {
+        gi.linkentity(ent);
+        M_CheckGround(ent);
+        M_CatagorizePosition(ent);
+        return;
+    }
+
     ent->s.origin[2] += 1;
     VectorCopy(ent->s.origin, end);
     end[2] -= 256;

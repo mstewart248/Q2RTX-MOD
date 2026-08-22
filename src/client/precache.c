@@ -442,6 +442,16 @@ void CL_UpdateConfigstring(int index)
         return;
     }
 
+    // A mid-level sky change - target_sky, which every MGU drop-pod opener
+    // fires on landing to stop the descent spin and swap the environment.
+    // Without this the change is dropped and the renderer keeps whatever the
+    // one CL_SetSky() at precache time happened to see, so whether the sky
+    // stops rotating is a race against level load time.
+    if (index == CS_SKY || index == CS_SKYAXIS || index == CS_SKYROTATE) {
+        CL_SetSky();
+        return;
+    }
+
     if (index >= CS_MODELS + 2 && index < CS_MODELS + MAX_MODELS) {
         int i = index - CS_MODELS;
 

@@ -25,7 +25,11 @@ void InitTrigger(edict_t *self)
 
     self->solid = SOLID_TRIGGER;
     self->movetype = MOVETYPE_NONE;
-    gi.setmodel(self, self->model);
+    // the rerelease allows a trigger to define mins/maxs by hand instead of
+    // carrying a brush model - badlands has a model-less trigger_once that
+    // kills the whole map load without this guard
+    if (self->model)
+        gi.setmodel(self, self->model);
     self->svflags = SVF_NOCLIENT;
 }
 
@@ -133,7 +137,10 @@ void SP_trigger_multiple(edict_t *ent)
     if (!VectorEmpty(ent->s.angles))
         G_SetMovedir(ent->s.angles, ent->movedir);
 
-    gi.setmodel(ent, ent->model);
+    // a rerelease trigger may define mins/maxs by hand instead of carrying a
+    // brush model; setmodel(NULL) is a fatal server error
+    if (ent->model)
+        gi.setmodel(ent, ent->model);
     gi.linkentity(ent);
 }
 
@@ -266,7 +273,10 @@ void SP_trigger_teleport(edict_t* self)
     if (self->s.angles)
         G_SetMovedir(self->s.angles, self->movedir);
 
-    gi.setmodel(self, self->model);
+    // a rerelease trigger may define mins/maxs by hand instead of carrying a
+    // brush model; setmodel(NULL) is a fatal server error
+    if (self->model)
+        gi.setmodel(self, self->model);
     gi.linkentity(self);
 }
 

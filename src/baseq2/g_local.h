@@ -246,6 +246,11 @@ typedef struct {
 #define IT_POWERUP      32
 #define IT_MELEE        64      // no ammo, never auto-switched away from on empty
 
+// Rerelease generic monster spawnflag: the mapper placed this monster off
+// the floor deliberately (a ledge, a pipe, mid-air), so do not drop it.
+// mgu4m2 puts four gekks on bit 18; without this they land in solid.
+#define SPAWNFLAG_MONSTER_NO_DROP   0x00040000
+
 // game-side only: marks a non-monster entity a tesla is allowed to zap.
 // Bit 8 is free - the server itself only reads SVF_NOCLIENT/SVF_DEADMONSTER.
 #define SVF_DAMAGEABLE  0x00000008
@@ -562,6 +567,7 @@ extern  int snd_fry;
 #define MOD_RIPPER          34
 #define MOD_BLUEBLASTER     35
 #define MOD_PHALANX         36
+#define MOD_GEKK            38
 // rogue's own numbering is kept so the two sources stay comparable
 #define MOD_TRAP            39
 #define MOD_CHAINFIST       40
@@ -775,6 +781,8 @@ void M_CheckGround(edict_t *ent);
 // g_misc.c
 //
 void ThrowHead(edict_t *self, char *gibname, int damage, int type);
+void ThrowGibACID(edict_t *self, char *gibname, int damage, int type);
+void ThrowHeadACID(edict_t *self, char *gibname, int damage, int type);
 void ThrowClientHead(edict_t *self, int damage);
 void ThrowGib(edict_t *self, char *gibname, int damage, int type);
 void BecomeExplosion1(edict_t *self);

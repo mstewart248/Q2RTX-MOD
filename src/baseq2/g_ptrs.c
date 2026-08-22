@@ -90,6 +90,31 @@ extern int flyer_move_start;
 extern int flyer_move_start_melee;
 extern int flyer_move_stop;
 extern int flyer_move_walk;
+extern int gekk_move_attack1;
+extern int gekk_move_attack2;
+extern int gekk_move_attack;
+extern int gekk_move_chant;
+extern int gekk_move_death1;
+extern int gekk_move_death3;
+extern int gekk_move_death4;
+extern int gekk_move_idle2;
+extern int gekk_move_idle;
+extern int gekk_move_lduck;
+extern int gekk_move_leapatk2;
+extern int gekk_move_leapatk;
+extern int gekk_move_pain1;
+extern int gekk_move_pain2;
+extern int gekk_move_pain;
+extern int gekk_move_rduck;
+extern int gekk_move_run;
+extern int gekk_move_run_start;
+extern int gekk_move_spit;
+extern int gekk_move_stand;
+extern int gekk_move_standunderwater;
+extern int gekk_move_swim_loop;
+extern int gekk_move_swim_start;
+extern int gekk_move_walk;
+extern int gekk_move_wdeath;
 extern int gladb_move_attack_gun;
 extern int gladiator_move_attack_gun;
 extern int gladiator_move_attack_melee;
@@ -385,6 +410,19 @@ extern void func_timer_use(void);
 extern void func_train_find(void);
 extern void func_wall_use(void);
 extern void G_FreeEdict(void);
+extern void gekk_attack(void);
+extern void gekk_checkattack(void);
+extern void gekk_die(void);
+extern void gekk_dodge(void);
+extern void gekk_idle(void);
+extern void gekk_jump_touch(void);
+extern void gekk_melee(void);
+extern void gekk_pain(void);
+extern void gekk_run_start(void);
+extern void gekk_search(void);
+extern void gekk_sight(void);
+extern void gekk_stand(void);
+extern void gekk_walk(void);
 extern void gib_die(void);
 extern void gib_think(void);
 extern void gib_touch(void);
@@ -446,6 +484,7 @@ extern void jorg_search(void);
 extern void jorg_stand(void);
 extern void jorg_walk(void);
 extern void light_use(void);
+extern void loogie_touch(void);
 extern void M_CheckAttack(void);
 extern void M_droptofloor(void);
 extern void M_FliesOff(void);
@@ -738,11 +777,13 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, drop_temp_touch },
 { P_touch, flare_touch },
 { P_touch, func_object_touch },
+{ P_touch, gekk_jump_touch },
 { P_touch, gib_touch },
 { P_touch, Grenade_Touch },
 { P_touch, hurt_touch },
 { P_touch, hyper_blaster_touch },
 { P_touch, ionripper_touch },
+{ P_touch, loogie_touch },
 { P_touch, misc_viper_bomb_touch },
 { P_touch, mutant_jump_touch },
 { P_touch, path_corner_touch },
@@ -828,6 +869,7 @@ const save_ptr_t save_ptrs[] = {
 { P_pain, flipper_pain },
 { P_pain, floater_pain },
 { P_pain, flyer_pain },
+{ P_pain, gekk_pain },
 { P_pain, gladiator_pain },
 { P_pain, gunner_pain },
 { P_pain, hover_pain },
@@ -857,6 +899,7 @@ const save_ptr_t save_ptrs[] = {
 { P_die, floater_die },
 { P_die, flyer_die },
 { P_die, func_explosive_explode },
+{ P_die, gekk_die },
 { P_die, gib_die },
 { P_die, gladiator_die },
 { P_die, gunner_die },
@@ -978,6 +1021,31 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &flyer_move_start_melee },
 { P_monsterinfo_currentmove, &flyer_move_stop },
 { P_monsterinfo_currentmove, &flyer_move_walk },
+{ P_monsterinfo_currentmove, &gekk_move_attack },
+{ P_monsterinfo_currentmove, &gekk_move_attack1 },
+{ P_monsterinfo_currentmove, &gekk_move_attack2 },
+{ P_monsterinfo_currentmove, &gekk_move_chant },
+{ P_monsterinfo_currentmove, &gekk_move_death1 },
+{ P_monsterinfo_currentmove, &gekk_move_death3 },
+{ P_monsterinfo_currentmove, &gekk_move_death4 },
+{ P_monsterinfo_currentmove, &gekk_move_idle },
+{ P_monsterinfo_currentmove, &gekk_move_idle2 },
+{ P_monsterinfo_currentmove, &gekk_move_lduck },
+{ P_monsterinfo_currentmove, &gekk_move_leapatk },
+{ P_monsterinfo_currentmove, &gekk_move_leapatk2 },
+{ P_monsterinfo_currentmove, &gekk_move_pain },
+{ P_monsterinfo_currentmove, &gekk_move_pain1 },
+{ P_monsterinfo_currentmove, &gekk_move_pain2 },
+{ P_monsterinfo_currentmove, &gekk_move_rduck },
+{ P_monsterinfo_currentmove, &gekk_move_run },
+{ P_monsterinfo_currentmove, &gekk_move_run_start },
+{ P_monsterinfo_currentmove, &gekk_move_spit },
+{ P_monsterinfo_currentmove, &gekk_move_stand },
+{ P_monsterinfo_currentmove, &gekk_move_standunderwater },
+{ P_monsterinfo_currentmove, &gekk_move_swim_loop },
+{ P_monsterinfo_currentmove, &gekk_move_swim_start },
+{ P_monsterinfo_currentmove, &gekk_move_walk },
+{ P_monsterinfo_currentmove, &gekk_move_wdeath },
 { P_monsterinfo_currentmove, &gladb_move_attack_gun },
 { P_monsterinfo_currentmove, &gladiator_move_attack_gun },
 { P_monsterinfo_currentmove, &gladiator_move_attack_melee },
@@ -1152,6 +1220,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_stand, flipper_stand },
 { P_monsterinfo_stand, floater_stand },
 { P_monsterinfo_stand, flyer_stand },
+{ P_monsterinfo_stand, gekk_stand },
 { P_monsterinfo_stand, gladiator_stand },
 { P_monsterinfo_stand, gunner_stand },
 { P_monsterinfo_stand, hover_stand },
@@ -1168,6 +1237,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_idle, brain_idle },
 { P_monsterinfo_idle, floater_idle },
 { P_monsterinfo_idle, flyer_idle },
+{ P_monsterinfo_idle, gekk_idle },
 { P_monsterinfo_idle, gladiator_idle },
 { P_monsterinfo_idle, infantry_fidget },
 { P_monsterinfo_idle, medic_idle },
@@ -1177,6 +1247,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_search, berserk_search },
 { P_monsterinfo_search, boss2_search },
 { P_monsterinfo_search, brain_search },
+{ P_monsterinfo_search, gekk_search },
 { P_monsterinfo_search, gladiator_search },
 { P_monsterinfo_search, gunner_search },
 { P_monsterinfo_search, hover_search },
@@ -1192,6 +1263,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_walk, flipper_walk },
 { P_monsterinfo_walk, floater_walk },
 { P_monsterinfo_walk, flyer_walk },
+{ P_monsterinfo_walk, gekk_walk },
 { P_monsterinfo_walk, gladiator_walk },
 { P_monsterinfo_walk, gunner_walk },
 { P_monsterinfo_walk, hover_walk },
@@ -1213,6 +1285,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_run, flipper_start_run },
 { P_monsterinfo_run, floater_run },
 { P_monsterinfo_run, flyer_run },
+{ P_monsterinfo_run, gekk_run_start },
 { P_monsterinfo_run, gladiator_run },
 { P_monsterinfo_run, gunner_run },
 { P_monsterinfo_run, hover_run },
@@ -1228,6 +1301,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_run, tank_run },
 { P_monsterinfo_dodge, brain_dodge },
 { P_monsterinfo_dodge, chick_dodge },
+{ P_monsterinfo_dodge, gekk_dodge },
 { P_monsterinfo_dodge, gunner_dodge },
 { P_monsterinfo_dodge, infantry_dodge },
 { P_monsterinfo_dodge, medic_dodge },
@@ -1237,6 +1311,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_attack, chick_attack },
 { P_monsterinfo_attack, floater_attack },
 { P_monsterinfo_attack, flyer_attack },
+{ P_monsterinfo_attack, gekk_attack },
 { P_monsterinfo_attack, gladiator_attack },
 { P_monsterinfo_attack, gunner_attack },
 { P_monsterinfo_attack, hover_start_attack },
@@ -1255,6 +1330,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_melee, flipper_melee },
 { P_monsterinfo_melee, floater_melee },
 { P_monsterinfo_melee, flyer_melee },
+{ P_monsterinfo_melee, gekk_melee },
 { P_monsterinfo_melee, gladiator_melee },
 { P_monsterinfo_melee, mutant_melee },
 { P_monsterinfo_sight, berserk_sight },
@@ -1263,6 +1339,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sight, flipper_sight },
 { P_monsterinfo_sight, floater_sight },
 { P_monsterinfo_sight, flyer_sight },
+{ P_monsterinfo_sight, gekk_sight },
 { P_monsterinfo_sight, gladiator_sight },
 { P_monsterinfo_sight, gunner_sight },
 { P_monsterinfo_sight, hover_sight },
@@ -1274,6 +1351,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sight, soldier_sight },
 { P_monsterinfo_sight, tank_sight },
 { P_monsterinfo_checkattack, Boss2_CheckAttack },
+{ P_monsterinfo_checkattack, gekk_checkattack },
 { P_monsterinfo_checkattack, Jorg_CheckAttack },
 { P_monsterinfo_checkattack, M_CheckAttack },
 { P_monsterinfo_checkattack, Makron_CheckAttack },

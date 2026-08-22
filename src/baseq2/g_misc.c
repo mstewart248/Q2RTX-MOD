@@ -461,6 +461,90 @@ void ThrowHeadDisposible(edict_t *self, char *gibname, int damage, int type)
 	gi.linkentity(self);
 }
 
+// The gekk's gibs. Same as ThrowGib/ThrowHead but green and self-lit -
+// EF_GREENGIB already has a client-side trail, so no new effect was needed.
+void ThrowGibACID(edict_t *self, char *gibname, int damage, int type)
+{
+    edict_t *gib;
+    vec3_t  vd;
+    vec3_t  origin;
+    vec3_t  size;
+    float   vscale;
+
+    gib = G_Spawn();
+
+    VectorScale(self->size, 0.5f, size);
+    VectorAdd(self->absmin, size, origin);
+    gib->s.origin[0] = origin[0] + crandom() * (size[0] * 2);
+    gib->s.origin[1] = origin[1] + crandom() * (size[1] * 2);
+    gib->s.origin[2] = origin[2] + crandom() * (size[1] * 2);
+
+    gi.setmodel(gib, gibname);
+    gib->solid = SOLID_NOT;
+    gib->s.effects |= EF_GREENGIB;
+    gib->s.renderfx |= RF_FULLBRIGHT;
+    gib->flags |= FL_NO_KNOCKBACK;
+    gib->takedamage = DAMAGE_YES;
+    gib->die = gib_die;
+
+    if (type == GIB_ORGANIC) {
+        gib->movetype = MOVETYPE_EXPLODE;
+        gib->touch = gib_touch;
+        vscale = 1.0f;
+    } else {
+        gib->movetype = MOVETYPE_BOUNCE;
+        vscale = 1.0f;
+    }
+
+    VelocityForDamage(damage, vd);
+    VectorMA(self->velocity, vscale, vd, gib->velocity);
+    gib->avelocity[0] = random() * 300;
+    gib->avelocity[1] = random() * 300;
+    gib->avelocity[2] = random() * 600;
+
+    gi.linkentity(gib);
+}
+
+void ThrowHeadACID(edict_t *self, char *gibname, int damage, int type)
+{
+    vec3_t  vd;
+    float   vscale;
+
+    self->s.skinnum = 0;
+    self->s.frame = 0;
+    VectorClear(self->mins);
+    VectorClear(self->maxs);
+
+    self->s.modelindex2 = 0;
+    gi.setmodel(self, gibname);
+    self->solid = SOLID_NOT;
+    self->s.effects |= EF_GREENGIB;
+    self->s.effects &= ~EF_FLIES;
+    self->s.renderfx |= RF_FULLBRIGHT;
+    self->s.sound = 0;
+    self->flags |= FL_NO_KNOCKBACK;
+    self->svflags &= ~SVF_MONSTER;
+    self->takedamage = DAMAGE_YES;
+    self->die = gib_die;
+
+    if (type == GIB_ORGANIC) {
+        self->movetype = MOVETYPE_TOSS;
+        self->touch = gib_touch;
+        vscale = 0.5f;
+    } else {
+        self->movetype = MOVETYPE_BOUNCE;
+        vscale = 1.0f;
+    }
+
+    VelocityForDamage(damage, vd);
+    VectorMA(self->velocity, vscale, vd, self->velocity);
+    ClipGibVelocity(self);
+
+    self->avelocity[YAW] = crandom() * 600;
+
+    gi.linkentity(self);
+}
+
 void ThrowClientHead(edict_t *self, int damage)
 {
     vec3_t  vd;

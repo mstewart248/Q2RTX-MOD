@@ -36,6 +36,7 @@ SET(SRC_BASEQ2
 	baseq2/m_flipper.c
 	baseq2/m_float.c
 	baseq2/m_flyer.c
+	baseq2/m_gekk.c
 	baseq2/m_gladiator.c
 	baseq2/m_gunner.c
 	baseq2/m_hover.c
@@ -68,6 +69,7 @@ SET(HEADERS_BASEQ2
 	baseq2/m_flipper.h
 	baseq2/m_float.h
 	baseq2/m_flyer.h
+	baseq2/m_gekk.h
 	baseq2/m_gladiator.h
 	baseq2/m_gunner.h
 	baseq2/m_hover.h
