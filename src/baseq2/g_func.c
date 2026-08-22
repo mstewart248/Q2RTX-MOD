@@ -2157,7 +2157,7 @@ void plat2_hit_top(edict_t *ent)
         ent->plat2flags = PLAT2_WAITING;
         if (!(ent->spawnflags & SPAWNFLAGS_PLAT2_TOGGLE)) {
             ent->think = plat2_go_down;
-            ent->nextthink = level.time + 5.0f;
+            ent->nextthink = level.framenum + 5.0f * BASE_FRAMERATE;
         }
         if (deathmatch->value)
             ent->last_move_time = level.time - 1.0f;
@@ -2166,7 +2166,7 @@ void plat2_hit_top(edict_t *ent)
     } else if (!(ent->spawnflags & SPAWNFLAGS_PLAT2_TOP) && !(ent->spawnflags & SPAWNFLAGS_PLAT2_TOGGLE)) {
         ent->plat2flags = PLAT2_NONE;
         ent->think = plat2_go_down;
-        ent->nextthink = level.time + 2.0f;
+        ent->nextthink = level.framenum + 2.0f * BASE_FRAMERATE;
         ent->last_move_time = level.time;
     } else {
         ent->plat2flags = PLAT2_NONE;
@@ -2189,7 +2189,7 @@ void plat2_hit_bottom(edict_t *ent)
         ent->plat2flags = PLAT2_WAITING;
         if (!(ent->spawnflags & SPAWNFLAGS_PLAT2_TOGGLE)) {
             ent->think = plat2_go_up;
-            ent->nextthink = level.time + 5.0f;
+            ent->nextthink = level.framenum + 5.0f * BASE_FRAMERATE;
         }
         if (deathmatch->value)
             ent->last_move_time = level.time - 1.0f;
@@ -2198,7 +2198,7 @@ void plat2_hit_bottom(edict_t *ent)
     } else if ((ent->spawnflags & SPAWNFLAGS_PLAT2_TOP) && !(ent->spawnflags & SPAWNFLAGS_PLAT2_TOGGLE)) {
         ent->plat2flags = PLAT2_NONE;
         ent->think = plat2_go_up;
-        ent->nextthink = level.time + 2.0f;
+        ent->nextthink = level.framenum + 2.0f * BASE_FRAMERATE;
         ent->last_move_time = level.time;
     } else {
         ent->plat2flags = PLAT2_NONE;
@@ -2290,10 +2290,10 @@ void plat2_operate(edict_t *ent, edict_t *other)
 
     if (ent->moveinfo.state == STATE_BOTTOM) {
         ent->think = plat2_go_up;
-        ent->nextthink = level.time + pauseTime;
+        ent->nextthink = level.framenum + pauseTime * BASE_FRAMERATE;
     } else {
         ent->think = plat2_go_down;
-        ent->nextthink = level.time + pauseTime;
+        ent->nextthink = level.framenum + pauseTime * BASE_FRAMERATE;
     }
 }
 

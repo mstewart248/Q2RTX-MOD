@@ -600,12 +600,15 @@ void floater_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
 
     gi.sound(self, CHAN_VOICE, sound_death1, 1, ATTN_NORM, 0);
 
-	for (n = 0; n < 8; n++) {
-		ThrowGibRail(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-		ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-		ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-		ThrowGibNoExplode(self, "models/objects/gibs/sm_metal/tris.md2", damage, GIB_METALLIC);
-	}		
+    // Stock Quake II throws no gibs here at all - the floater just explodes.
+    if (LUDICROUS_GIBS()) {
+        for (n = 0; n < 8; n++) {
+            ThrowGibRail(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowGibNoExplode(self, "models/objects/gibs/sm_metal/tris.md2", damage, GIB_METALLIC);
+        }
+    }
 
     BecomeExplosion1(self);
 }

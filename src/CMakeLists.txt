@@ -19,6 +19,7 @@ SET(SRC_BASEQ2
 	baseq2/g_ptrs_compat_v2.c
 	baseq2/g_save.c
 	baseq2/g_spawn.c
+	baseq2/g_spawnmonster.c
 	baseq2/g_svcmds.c
 	baseq2/g_target.c
 	baseq2/g_trigger.c

@@ -1212,6 +1212,19 @@ void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
 // check for gib
 
     if (self->health <= self->gib_health) {
+        // Stock Quake II: one burst of gibs and the body is gone.
+        if (!LUDICROUS_GIBS()) {
+            gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            for (n = 0; n < 3; n++)
+                ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowGib(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);
+            ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+            self->deadflag = DEAD_DEAD;
+            return;
+        }
+
+        // LUDICROUS GIBS: the burst scales with what killed it, and the
+        // corpse is left shootable so it can be torn down in stages.
         gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NONE, 0);     		
 		
 		if (InflictorGibExplosion(inflictor, self)) {

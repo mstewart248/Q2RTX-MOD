@@ -139,6 +139,7 @@ extern int gunner_move_runandshoot;
 extern int gunner_move_stand;
 extern int gunner_move_walk;
 extern int hover_move_attack1;
+extern int hover_move_attack2;
 extern int hover_move_death1;
 extern int hover_move_end_attack;
 extern int hover_move_pain1;
@@ -203,6 +204,7 @@ extern int makron_move_walk;
 extern int medic_move_attackBlaster;
 extern int medic_move_attackCable;
 extern int medic_move_attackHyperBlaster;
+extern int medic_move_callReinforcements;
 extern int medic_move_death;
 extern int medic_move_duck;
 extern int medic_move_pain1;
@@ -305,6 +307,7 @@ extern void berserk_walk(void);
 extern void bfg_explode(void);
 extern void bfg_think(void);
 extern void bfg_touch(void);
+extern void blaster2_touch(void);
 extern void blaster_touch(void);
 extern void body_die(void);
 extern void boss2_attack(void);
@@ -584,6 +587,7 @@ extern void soldier_stand(void);
 extern void soldier_walk(void);
 extern void SP_CreateCoopSpots(void);
 extern void SP_FixCoopSpots(void);
+extern void spawngrow_think(void);
 extern void supertank_attack(void);
 extern void supertank_die(void);
 extern void supertank_pain(void);
@@ -734,6 +738,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, smart_water_go_up },
 { P_think, SP_CreateCoopSpots },
 { P_think, SP_FixCoopSpots },
+{ P_think, spawngrow_think },
 { P_think, swimmonster_start_go },
 { P_think, target_crosslevel_target_think },
 { P_think, target_crossunit_target_think },
@@ -771,6 +776,7 @@ const save_ptr_t save_ptrs[] = {
 { P_blocked, turret_blocked },
 { P_touch, barrel_touch },
 { P_touch, bfg_touch },
+{ P_touch, blaster2_touch },
 { P_touch, blaster_touch },
 { P_touch, button_touch },
 { P_touch, door_touch },
@@ -1070,6 +1076,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &gunner_move_stand },
 { P_monsterinfo_currentmove, &gunner_move_walk },
 { P_monsterinfo_currentmove, &hover_move_attack1 },
+{ P_monsterinfo_currentmove, &hover_move_attack2 },
 { P_monsterinfo_currentmove, &hover_move_death1 },
 { P_monsterinfo_currentmove, &hover_move_end_attack },
 { P_monsterinfo_currentmove, &hover_move_pain1 },
@@ -1134,6 +1141,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &medic_move_attackBlaster },
 { P_monsterinfo_currentmove, &medic_move_attackCable },
 { P_monsterinfo_currentmove, &medic_move_attackHyperBlaster },
+{ P_monsterinfo_currentmove, &medic_move_callReinforcements },
 { P_monsterinfo_currentmove, &medic_move_death },
 { P_monsterinfo_currentmove, &medic_move_duck },
 { P_monsterinfo_currentmove, &medic_move_pain1 },

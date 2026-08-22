@@ -554,6 +554,7 @@ extern cvar_t    *cl_explosion_sprites;
 extern cvar_t    *cl_explosion_frametime;
 extern cvar_t    *cl_dlight_hacks;
 extern cvar_t    *cl_blaster_color;
+extern cvar_t    *cl_ludicrous_gibs;
 
 extern cvar_t    *cl_chat_notify;
 extern cvar_t    *cl_chat_sound;

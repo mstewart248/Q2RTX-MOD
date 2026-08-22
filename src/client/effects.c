@@ -936,7 +936,8 @@ void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int c
         p->time = cl.time;
 
         p->color = color + (Q_rand() & 7);
-		p->brightness = 10.0f;
+        // ludicrous gibs make blood self-lit enough to glow in the path tracer
+        p->brightness = cl_ludicrous_gibs->integer ? 10.0f : 0.5f;
 
         d = (Q_rand() & 31) * 10.0f;
         for (j = 0; j < 3; j++) {

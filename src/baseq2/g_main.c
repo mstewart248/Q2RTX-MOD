@@ -75,6 +75,7 @@ cvar_t  *sv_maplist;
 cvar_t  *sv_features;
 
 cvar_t  *sv_flaregun;
+cvar_t  *g_ludicrous_gibs;
 
 char* GetFuncTrainTargetList(const char* entities);
 char* GetValueFromList(const char* list);
@@ -185,6 +186,14 @@ void InitGame(void)
 	//   1 = spawn with the flare gun
 	//   2 = spawn with the flare gun and some grenades
 	sv_flaregun = gi.cvar("sv_flaregun", "2", 0);
+
+    // "Ludicrous Gibs" - the fork's exaggerated gore: far more gib chunks, a
+    // heavier blood trail, gibs that never expire, and corpses that can be
+    // shot apart in stages after they are already dead. Off by default, so a
+    // fresh install plays with stock Quake II behaviour. The client registers
+    // the same cvar (see cl_ludicrous_gibs' twin in cl_init) so it exists in
+    // the menu before any map is loaded, and so the particle side can read it.
+    g_ludicrous_gibs = gi.cvar("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
 
     // export our own features
     gi.cvar_forceset("g_features", va("%d", G_FEATURES));

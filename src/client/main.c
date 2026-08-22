@@ -52,6 +52,7 @@ cvar_t  *cl_disable_particles;
 cvar_t  *cl_disable_explosions;
 cvar_t  *cl_dlight_hacks;
 cvar_t  *cl_blaster_color;
+cvar_t  *cl_ludicrous_gibs;
 
 cvar_t  *cl_chat_notify;
 cvar_t  *cl_chat_sound;
@@ -2763,6 +2764,12 @@ static void CL_InitLocal(void)
     cl_dlight_hacks = Cvar_Get("cl_dlight_hacks", "0", 0);
     // 1 = the violet blaster used by this fork, 0 = stock Quake II RTX orange.
     cl_blaster_color = Cvar_Get("cl_blaster_color", "1", CVAR_ARCHIVE);
+
+    // Same cvar the game DLL registers in InitGame - one name, one object, so
+    // the gore setting and the particle trail that goes with it cannot drift
+    // apart. Registered here as well so the Options -> Effects toggle works at
+    // the main menu, before any game library has been loaded.
+    cl_ludicrous_gibs = Cvar_Get("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
 
     cl_gibs = Cvar_Get("cl_gibs", "1", 0);
     cl_gibs->changed = cl_gibs_changed;

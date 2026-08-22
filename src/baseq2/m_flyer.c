@@ -546,13 +546,16 @@ void flyer_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
 	int     n;
 
     gi.sound(self, CHAN_VOICE, sound_die, 1, ATTN_NORM, 0);
-	
-	for (n = 0; n < 4; n++) {
-		ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-		ThrowGibRail(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-		ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-		ThrowGibNoExplode(self, "models/objects/gibs/sm_metal/tris.md2", damage, GIB_METALLIC);
-	}
+
+    // Stock Quake II throws no gibs here at all - the flyer just explodes.
+    if (LUDICROUS_GIBS()) {
+        for (n = 0; n < 4; n++) {
+            ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowGibRail(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowGibNoExplode(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowGibNoExplode(self, "models/objects/gibs/sm_metal/tris.md2", damage, GIB_METALLIC);
+        }
+    }
 
     BecomeExplosion1(self);
 }

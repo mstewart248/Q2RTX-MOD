@@ -282,6 +282,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_tank", SP_monster_tank},
     {"monster_tank_commander", SP_monster_tank},
     {"monster_medic", SP_monster_medic},
+    {"monster_medic_commander", SP_monster_medic},   // ROGUE - same spawn function
     {"monster_flipper", SP_monster_flipper},
     {"monster_chick", SP_monster_chick},
     {"monster_parasite", SP_monster_parasite},
@@ -289,6 +290,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_brain", SP_monster_brain},
     {"monster_floater", SP_monster_floater},
     {"monster_hover", SP_monster_hover},
+    {"monster_daedalus", SP_monster_hover},   // ROGUE - skin/stat variant, same spawn function
     {"monster_mutant", SP_monster_mutant},
     {"monster_supertank", SP_monster_supertank},
     {"monster_boss2", SP_monster_boss2},
@@ -339,6 +341,11 @@ static const spawn_field_t spawn_fields[] = {
     {"angles", FOFS(s.angles), F_VECTOR},
     {"angle", FOFS(s.angles), F_ANGLEHACK},
 
+    // rerelease - per-monster power armor. 1 is a screen and 2 a shield, which
+    // is this tree's POWER_ARMOR_* numbering already, so a plain int works.
+    {"power_armor_type", FOFS(monsterinfo.power_armor_type), F_INT},
+    {"power_armor_power", FOFS(monsterinfo.power_armor_power), F_INT},
+
     {NULL}
 };
 
@@ -361,6 +368,10 @@ static const spawn_field_t temp_fields[] = {
     {"minpitch", STOFS(minpitch), F_FLOAT},
     {"maxpitch", STOFS(maxpitch), F_FLOAT},
     {"nextmap", STOFS(nextmap), F_LSTRING},
+
+    // ROGUE/rerelease - medic commander summon list and per-difficulty health
+    {"reinforcements", STOFS(reinforcements), F_LSTRING},
+    {"health_multiplier", STOFS(health_multiplier), F_FLOAT},
 
     {NULL}
 };
@@ -411,7 +422,7 @@ void ED_CallSpawn(edict_t *ent)
 ED_NewString
 =============
 */
-static char *ED_NewString(const char *string)
+char *ED_NewString(const char *string)
 {
     char    *newb, *new_p;
     int     i, l;

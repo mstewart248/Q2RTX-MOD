@@ -95,20 +95,35 @@ qboolean Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage
 
     if ((targ->svflags & SVF_MONSTER) && (targ->deadflag != DEAD_DEAD)) {
 //      targ->svflags |= SVF_DEADMONSTER;   // now treat as a different content type
-        if (!(targ->monsterinfo.aiflags & AI_GOOD_GUY)) {
+
+        // ROGUE - hand the slot back to whoever summoned this one, so a
+        // commander can keep replacing its escort as the player kills it
+        if ((targ->monsterinfo.aiflags & AI_SPAWNED_MASK) && targ->monsterinfo.commander) {
+            edict_t *commander = targ->monsterinfo.commander;
+            if (commander->inuse && commander->monsterinfo.monster_used > 0)
+                commander->monsterinfo.monster_used--;
+        }
+
+        // AI_DO_NOT_COUNT covers summoned and medic-resurrected monsters; they
+        // must not inflate the level's kill total or the coop score
+        if (!(targ->monsterinfo.aiflags & (AI_GOOD_GUY | AI_DO_NOT_COUNT))) {
             level.killed_monsters++;
             if (coop->value && attacker->client)
                 attacker->client->resp.score++;
-            // medics won't heal monsters that they kill themselves
-            if (strcmp(attacker->classname, "monster_medic") == 0)
-                targ->owner = attacker;
         }
+
+        // medics won't heal monsters that they kill themselves
+        if (!(targ->monsterinfo.aiflags & AI_GOOD_GUY) && strcmp(attacker->classname, "monster_medic") == 0)
+            targ->owner = attacker;
     }
 
     if (targ->movetype == MOVETYPE_PUSH || targ->movetype == MOVETYPE_STOP || targ->movetype == MOVETYPE_NONE) {
-        // doors, triggers, etc
+        // doors, triggers, etc - never gib, so report "did not gib". This used
+        // to be a bare `return;` in a qboolean function, which handed the
+        // caller an indeterminate value; under ludicrous gibs that decides
+        // whether the target becomes the re-kill candidate.
         targ->die(targ, inflictor, attacker, damage, point);
-        return;
+        return qfalse;
     }
 
     if ((targ->svflags & SVF_MONSTER) && (targ->deadflag != DEAD_DEAD)) {
@@ -118,12 +133,9 @@ qboolean Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage
 
     targ->die(targ, inflictor, attacker, damage, point);
 
-	if (targ->health <= targ->gib_health) {
-		return qtrue;
-	}
-	else {
-		return qfalse;
-	}
+    // did it come apart? the caller uses this to decide whether the corpse is
+    // worth tracking for further damage
+    return (targ->health <= targ->gib_health) ? qtrue : qfalse;
 }
 
 
@@ -375,12 +387,10 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     int         asave;
     int         psave;
     int         te_sparks;
-	static edict_t* lastTarget = NULL;
-	static float lastKillTime = 0.0f;
-
-	if (targ->death_count == NULL) {
-		targ->death_count = 0;
-	}
+    // Ludicrous gibs only: which corpse was last re-killed, and when. See the
+    // staged-death block further down.
+    static edict_t *lastTarget = NULL;
+    static float lastKillTime = 0.0f;
 
     if (!targ->takedamage)
         return;
@@ -498,43 +508,56 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
 
         if (targ->health <= 0) {
             if ((targ->svflags & SVF_MONSTER) || (client))
-                targ->flags |= FL_NO_KNOCKBACK;			
+                targ->flags |= FL_NO_KNOCKBACK;
 
-			if (lastTarget == NULL) {
-				if (Killed(targ, inflictor, attacker, take, point)) {
-					lastTarget = targ;
-					targ->death_count++;
-					lastKillTime = level.time;
-				}
-			}
-			else if (lastTarget == targ) {
-				float diff = level.time - lastKillTime;
+            if (!LUDICROUS_GIBS()) {
+                // stock behaviour: a thing dies exactly once
+                Killed(targ, inflictor, attacker, take, point);
+                return;
+            }
 
-				if (diff > 0.5) {
-					Killed(targ, inflictor, attacker, take, point);
-					lastTarget = targ;
-					targ->death_count++;
-					lastKillTime = level.time;
-				}
-				else {
-					if (inflictor->client != NULL) {
-						if (!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_machinegun") || !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_chaingun") ||
-						    !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_supershotgun") || !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_shotgun")) {
-							Killed(targ, inflictor, attacker, take, point);
-						}						
-					}
-					else if (!Q_stricmp(inflictor->classname, "bolt")) {
-						Killed(targ, inflictor, attacker, take, point);
-					}
-				}
-			}
-			else {
-				if (Killed(targ, inflictor, attacker, take, point)) {
-					targ->death_count++;
-					lastTarget = targ;
-					lastKillTime = level.time;
-				}
-			}
+            // LUDICROUS GIBS - a corpse keeps taking damage and can be torn
+            // apart in stages. Killed() reports whether the target gibbed, and
+            // death_count drives how far each monster's die function escalates.
+            // Re-killing the same target is rate limited to twice a second,
+            // except for the rapid-fire weapons and monster blaster bolts,
+            // which are allowed through every hit so sustained fire keeps
+            // chewing on the body.
+            if (lastTarget == NULL) {
+                if (Killed(targ, inflictor, attacker, take, point)) {
+                    lastTarget = targ;
+                    targ->death_count++;
+                    lastKillTime = level.time;
+                }
+            }
+            else if (lastTarget == targ) {
+                float diff = level.time - lastKillTime;
+
+                if (diff > 0.5f) {
+                    Killed(targ, inflictor, attacker, take, point);
+                    lastTarget = targ;
+                    targ->death_count++;
+                    lastKillTime = level.time;
+                }
+                else {
+                    if (inflictor->client != NULL) {
+                        if (!Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_machinegun") || !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_chaingun") ||
+                            !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_supershotgun") || !Q_stricmp(inflictor->client->pers.weapon->classname, "weapon_shotgun")) {
+                            Killed(targ, inflictor, attacker, take, point);
+                        }
+                    }
+                    else if (!Q_stricmp(inflictor->classname, "bolt")) {
+                        Killed(targ, inflictor, attacker, take, point);
+                    }
+                }
+            }
+            else {
+                if (Killed(targ, inflictor, attacker, take, point)) {
+                    targ->death_count++;
+                    lastTarget = targ;
+                    lastKillTime = level.time;
+                }
+            }
             return;
         }
     }

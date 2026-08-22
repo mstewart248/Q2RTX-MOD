@@ -896,9 +896,11 @@ static void CL_AddPacketEntities(void)
 
 					V_AddLight(ent.origin, 200, 0.6f, 0.4f, 0.12f);
 				}
-            } else if (effects == EF_GIB || effects == EF_GIBSCALE) {			
-				
-				CL_NonDiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);				
+            } else if (cl_ludicrous_gibs->integer && (effects == EF_GIB || effects == EF_GIBSCALE)) {
+                // heavy blood trail: many more particles, and they linger
+                CL_NonDiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
+            } else if (effects & EF_GIB) {
+                CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
             } else if (effects & EF_GRENADE) {
                 if (!(cl_disable_particles->integer & NOPART_GRENADE_TRAIL)) {
                     CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);

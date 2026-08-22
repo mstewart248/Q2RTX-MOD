@@ -274,6 +274,8 @@ begin effects
     blank
     pairs "blaster color" cl_blaster_color "violet" 1 "original orange" 0
     blank
+    pairs "ludicrous gibs" g_ludicrous_gibs "off - classic quake ii" 0 "on" 1
+    blank
     action --align "railgun trail setup..." pushmenu railtrail
 end
 

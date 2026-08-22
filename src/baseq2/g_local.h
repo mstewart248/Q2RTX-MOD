@@ -157,6 +157,18 @@ typedef enum {
 // Set by target_anger so the monster keeps the enemy it was pointed at.
 #define AI_TARGET_ANGER         0x00008000
 
+// ROGUE - runtime-spawned monsters (medic commander, carrier, widow). Rogue's
+// own numbering cannot be reused: this tree put AI_TARGET_ANGER at 0x8000,
+// where rogue has AI_WALK_WALLS. aiflags is saved as a plain int and never goes
+// over the wire, so renumbering here is safe as long as SAVE_VERSION moves.
+#define AI_MANUAL_STEERING      0x00010000
+#define AI_IGNORE_SHOTS         0x00020000
+#define AI_DO_NOT_COUNT         0x00040000  // also set on healed monsters
+#define AI_SPAWNED_CARRIER      0x00080000
+#define AI_SPAWNED_MEDIC_C      0x00100000
+#define AI_SPAWNED_WIDOW        0x00200000
+#define AI_SPAWNED_MASK         0x00380000  // catches all three flavours
+
 //monster attack state
 #define AS_STRAIGHT             1
 #define AS_SLIDING              2
@@ -423,6 +435,12 @@ typedef struct {
     // explicitly stops the sky with skyrotate 0 / skyautorotate 0, which a
     // plain zero test would read as "not specified". Set in ED_ParseEdict.
     int         keys_specified;
+
+    // ROGUE/rerelease - the medic commander's summon list, e.g.
+    // "monster_soldier_lasergun 1;monster_soldier_hypergun 2". Rogue hardcoded
+    // this; every MGU commander overrides it, so the key has to be read.
+    char        *reinforcements;
+    float       health_multiplier;
 } spawn_temp_t;
 
 #define SPAWNKEY_SKY            1
@@ -474,6 +492,20 @@ typedef struct {
     void        (*endfunc)(edict_t *self);
 } mmove_t;
 
+// ROGUE - one entry of a monster's summon list. `classname` is a level-tagged
+// string; mins/maxs are cached from a throwaway spawn so the summon can test
+// whether the body actually fits before committing to it.
+#define MAX_REINFORCEMENTS      5   // summoned at once; also the number of
+                                    // standing positions around the commander
+#define MAX_REINFORCEMENT_TYPES 8   // distinct entries in the summon list
+
+typedef struct {
+    char        *classname;
+    int         strength;
+    vec3_t      mins;
+    vec3_t      maxs;
+} reinforcement_t;
+
 typedef struct {
     mmove_t     *currentmove;
     int         aiflags;
@@ -505,6 +537,17 @@ typedef struct {
 
     int         power_armor_type;
     int         power_armor_power;
+
+    // ROGUE - runtime monster spawning (medic commander; carrier and widow use
+    // the same machinery). `strength` is the slot cost, so a commander with 3
+    // slots can summon three light soldiers or one gladiator.
+    reinforcement_t reinforcements[MAX_REINFORCEMENT_TYPES];
+    int         num_reinforcements;
+    int         chosen_reinforcements[MAX_REINFORCEMENTS];  // -1 == unused
+    int         num_chosen_reinforcements;
+    int         monster_slots;
+    int         monster_used;
+    edict_t     *commander;         // who summoned me
 } monsterinfo_t;
 
 
@@ -572,6 +615,7 @@ extern  int snd_fry;
 #define MOD_TRAP            39
 #define MOD_CHAINFIST       40
 #define MOD_DISINTEGRATOR   41
+#define MOD_BLASTER2        43
 #define MOD_HEATBEAM        44
 #define MOD_TESLA           45
 #define MOD_TRACKER         51
@@ -634,6 +678,12 @@ extern  cvar_t  *sv_maplist;
 extern  cvar_t  *sv_features;
 
 extern  cvar_t  *sv_flaregun;
+
+// See g_main.c. Guarded against a NULL cvar so anything that runs before
+// InitGame (or a stray call from a tool build) reads as "off" rather than
+// crashing.
+extern  cvar_t  *g_ludicrous_gibs;
+#define LUDICROUS_GIBS()    (g_ludicrous_gibs && g_ludicrous_gibs->value)
 
 #define world   (&g_edicts[0])
 
@@ -757,6 +807,7 @@ void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t
 void monster_fire_bullet(edict_t *self, vec3_t start, vec3_t dir, int damage, int kick, int hspread, int vspread, int flashtype);
 void monster_fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int count, int flashtype);
 void monster_fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
+void monster_fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_dabeam(edict_t *self);
@@ -822,6 +873,7 @@ bool fire_hit(edict_t *self, vec3_t aim, int damage, int kick);
 void fire_bullet(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int mod);
 void fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int count, int mod);
 void fire_blaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
+void fire_blaster2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
 void fire_ionripper(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_blueblaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
@@ -838,6 +890,28 @@ void fire_grenade2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int s
 void fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
 void fire_rail(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick);
 void fire_bfg(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius);
+
+//
+// g_spawn.c
+//
+void ED_CallSpawn(edict_t *ent);
+char *ED_NewString(const char *string);
+
+//
+// g_spawnmonster.c        ROGUE - runtime monster spawning
+//
+void DetermineBBox(char *classname, vec3_t mins, vec3_t maxs);
+edict_t *CreateMonster(vec3_t origin, vec3_t angles, char *classname);
+edict_t *CreateGroundMonster(vec3_t origin, vec3_t angles, vec3_t entMins, vec3_t entMaxs, char *classname, int height);
+bool CheckSpawnPoint(vec3_t origin, vec3_t mins, vec3_t maxs);
+bool CheckGroundSpawnPoint(vec3_t origin, vec3_t entMins, vec3_t entMaxs, float height, float gravity);
+bool FindSpawnPoint(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoint, float maxMoveUp);
+void SpawnGrow_Spawn(vec3_t startpos, int size);
+void spawngrow_think(edict_t *self);
+edict_t *PickCoopTarget(edict_t *self);
+void M_SetupReinforcements(edict_t *self, const char *reinforcements);
+int M_PickReinforcements(edict_t *self, int max_slots);
+int M_SlotsLeft(edict_t *self);
 
 //
 // g_ptrail.c

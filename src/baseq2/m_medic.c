@@ -40,6 +40,38 @@ static int  sound_hook_hit;
 static int  sound_hook_heal;
 static int  sound_hook_retract;
 
+// ROGUE - the commander is the same model on skin 2 with its own voice, told
+// apart by mass alone (600 vs 400) exactly as rogue and the rerelease do it
+static int  commander_sound_idle1;
+static int  commander_sound_pain1;
+static int  commander_sound_pain2;
+static int  commander_sound_die;
+static int  commander_sound_sight;
+static int  commander_sound_search;
+static int  commander_sound_hook_launch;
+static int  commander_sound_hook_hit;
+static int  commander_sound_hook_heal;
+static int  commander_sound_hook_retract;
+static int  commander_sound_spawn;
+
+#define MEDIC_IS_COMMANDER(self)    ((self)->mass > 400)
+
+// where the summoned monsters appear, relative to the commander's facing
+static const vec3_t reinforcement_position[MAX_REINFORCEMENTS] = {
+    {  80,   0, 0 },
+    {  40,  60, 0 },
+    {  40, -60, 0 },
+    {   0,  80, 0 },
+    {   0, -80, 0 }
+};
+
+// the rerelease's default list, used when a map does not set `reinforcements`.
+// Only mgu5m1 and mgu5m2 leave it out, and both of those commanders are
+// trigger-spawned ambushes where the vanilla mix is the right answer.
+static const char *medic_default_reinforcements =
+    "monster_soldier_light 1;monster_soldier 2;monster_soldier_ss 2;"
+    "monster_infantry 3;monster_gunner 4;monster_medic 5;monster_gladiator 6";
+
 
 edict_t *medic_FindDeadMonster(edict_t *self)
 {
@@ -77,7 +109,7 @@ void medic_idle(edict_t *self)
 {
     edict_t *ent;
 
-    gi.sound(self, CHAN_VOICE, sound_idle1, 1, ATTN_IDLE, 0);
+    gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_idle1 : sound_idle1, 1, ATTN_IDLE, 0);
 
     ent = medic_FindDeadMonster(self);
     if (ent) {
@@ -92,7 +124,7 @@ void medic_search(edict_t *self)
 {
     edict_t *ent;
 
-    gi.sound(self, CHAN_VOICE, sound_search, 1, ATTN_IDLE, 0);
+    gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_search : sound_search, 1, ATTN_IDLE, 0);
 
     if (!self->oldenemy) {
         ent = medic_FindDeadMonster(self);
@@ -108,7 +140,7 @@ void medic_search(edict_t *self)
 
 void medic_sight(edict_t *self, edict_t *other)
 {
-    gi.sound(self, CHAN_VOICE, sound_sight, 1, ATTN_NORM, 0);
+    gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_sight : sound_sight, 1, ATTN_NORM, 0);
 }
 
 
@@ -302,8 +334,10 @@ mmove_t medic_move_pain2 = {FRAME_painb1, FRAME_painb15, medic_frames_pain2, med
 
 void medic_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
+    // the pain skin is the low bit: 0 -> 1 for the medic, 2 -> 3 for the
+    // commander
     if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+        self->s.skinnum |= 1;
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -315,10 +349,10 @@ void medic_pain(edict_t *self, edict_t *other, float kick, int damage)
 
     if (random() < 0.5f) {
         self->monsterinfo.currentmove = &medic_move_pain1;
-        gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+        gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_pain1 : sound_pain1, 1, ATTN_NORM, 0);
     } else {
         self->monsterinfo.currentmove = &medic_move_pain2;
-        gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+        gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_pain2 : sound_pain2, 1, ATTN_NORM, 0);
     }
 }
 
@@ -329,16 +363,17 @@ void medic_fire_blaster(edict_t *self)
     vec3_t  end;
     vec3_t  dir;
     int     effect;
+    int     flash;
 
     if ((self->s.frame == FRAME_attack9) || (self->s.frame == FRAME_attack12))
-		if (self->monsterFireHyperBlaster) {
+		if (self->monsterFireHyperBlaster && !MEDIC_IS_COMMANDER(self)) {
 			effect = EF_HYPERBLASTER;
 		}
 		else {
 			effect = EF_BLASTER;
 		}
     else if ((self->s.frame == FRAME_attack19) || (self->s.frame == FRAME_attack22) || (self->s.frame == FRAME_attack25) || (self->s.frame == FRAME_attack28))
-		if (self->monsterFireHyperBlaster) {
+		if (self->monsterFireHyperBlaster && !MEDIC_IS_COMMANDER(self)) {
 			effect = EF_HYPERBLASTER;
 		}
 		else {
@@ -347,18 +382,25 @@ void medic_fire_blaster(edict_t *self)
     else
         effect = 0;
 
+    flash = MEDIC_IS_COMMANDER(self) ? MZ2_MEDIC_BLASTER_2 : MZ2_MEDIC_BLASTER_1;
+
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_MEDIC_BLASTER_1], forward, right, start);
+    G_ProjectSource(self->s.origin, monster_flash_offset[flash], forward, right, start);
 
     VectorCopy(self->enemy->s.origin, end);
     end[2] += self->enemy->viewheight;
     VectorSubtract(end, start, dir);
 
-	if (self->monsterFireHyperBlaster) {
-		monster_fire_hyper_blaster(self, start, dir, 2, 1000, MZ2_MEDIC_BLASTER_1, effect);
+    if (MEDIC_IS_COMMANDER(self)) {
+        // ROGUE - the commander shoots the green blaster2 bolt, and hits for
+        // 6 rather than 2
+        monster_fire_blaster2(self, start, dir, 6, 1000, flash, effect);
+    }
+	else if (self->monsterFireHyperBlaster) {
+		monster_fire_hyper_blaster(self, start, dir, 2, 1000, flash, effect);
 	}
 	else {
-		monster_fire_blaster(self, start, dir, 2, 1000, MZ2_MEDIC_BLASTER_1, effect);
+		monster_fire_blaster(self, start, dir, 2, 1000, flash, effect);
 	}
 }
 
@@ -417,6 +459,20 @@ void medic_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
 
 // check for gib
     if (self->health <= self->gib_health) {
+        // Stock Quake II: one burst of gibs and the body is gone.
+        if (!LUDICROUS_GIBS()) {
+            gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            for (n = 0; n < 2; n++)
+                ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
+            for (n = 0; n < 4; n++)
+                ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            ThrowHead(self, "models/objects/gibs/head2/tris.md2", damage, GIB_ORGANIC);
+            self->deadflag = DEAD_DEAD;
+            return;
+        }
+
+        // LUDICROUS GIBS: the burst scales with what killed it, and the
+        // corpse is left shootable so it can be torn down in stages.
         gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
 		if (InflictorGibExplosion(inflictor, self)) {
 			VectorScale(self->size, 1.2, self->size);
@@ -527,7 +583,7 @@ void medic_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
         return;
 
 // regular death
-    gi.sound(self, CHAN_VOICE, sound_die, 1, ATTN_NORM, 0);
+    gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_die : sound_die, 1, ATTN_NORM, 0);
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_YES;
 
@@ -643,7 +699,7 @@ mmove_t medic_move_attackBlaster = {FRAME_attack1, FRAME_attack14, medic_frames_
 
 void medic_hook_launch(edict_t *self)
 {
-    gi.sound(self, CHAN_WEAPON, sound_hook_launch, 1, ATTN_NORM, 0);
+    gi.sound(self, CHAN_WEAPON, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_launch : sound_hook_launch, 1, ATTN_NORM, 0);
 }
 
 void ED_CallSpawn(edict_t *ent);
@@ -693,7 +749,7 @@ void medic_cable_attack(edict_t *self)
         return;
 
     if (self->s.frame == FRAME_attack43) {
-        gi.sound(self->enemy, CHAN_AUTO, sound_hook_hit, 1, ATTN_NORM, 0);
+        gi.sound(self->enemy, CHAN_AUTO, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_hit : sound_hook_hit, 1, ATTN_NORM, 0);
         self->enemy->monsterinfo.aiflags |= AI_RESURRECTING;
     } else if (self->s.frame == FRAME_attack50) {
         self->enemy->spawnflags = 0;
@@ -716,7 +772,7 @@ void medic_cable_attack(edict_t *self)
         }
     } else {
         if (self->s.frame == FRAME_attack44)
-            gi.sound(self, CHAN_WEAPON, sound_hook_heal, 1, ATTN_NORM, 0);
+            gi.sound(self, CHAN_WEAPON, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_heal : sound_hook_heal, 1, ATTN_NORM, 0);
     }
 
     // adjust start for beam origin being in middle of a segment
@@ -736,7 +792,7 @@ void medic_cable_attack(edict_t *self)
 
 void medic_hook_retract(edict_t *self)
 {
-    gi.sound(self, CHAN_WEAPON, sound_hook_retract, 1, ATTN_NORM, 0);
+    gi.sound(self, CHAN_WEAPON, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_retract : sound_hook_retract, 1, ATTN_NORM, 0);
     self->enemy->monsterinfo.aiflags &= ~AI_RESURRECTING;
 }
 
@@ -773,12 +829,243 @@ mframe_t medic_frames_attackCable [] = {
 mmove_t medic_move_attackCable = {FRAME_attack33, FRAME_attack60, medic_frames_attackCable, medic_run};
 
 
+
+/*
+==============================================================================
+
+MEDIC COMMANDER - CALLING REINFORCEMENTS                            (rogue/KEX)
+
+The summon runs across one animation, FRAME_attack33..55, in four steps:
+
+  42  medic_start_spawn     - the call goes out, then skip ahead to 48
+  48  medic_determine_spawn - pick the monsters and find them somewhere to
+                              stand; turn around if the only room is behind
+  49  medic_spawngrows      - play the spawn shell over each spot
+  52  medic_finish_spawn    - actually build them
+
+Steps 48/49/52 each re-run FindSpawnPoint, because the commander may have
+turned between them and a player can walk into the spot in the meantime.
+
+==============================================================================
+*/
+
+void medic_start_spawn(edict_t *self)
+{
+    gi.sound(self, CHAN_WEAPON, commander_sound_spawn, 1, ATTN_NORM, 0);
+    self->monsterinfo.nextframe = FRAME_attack48;
+}
+
+void medic_determine_spawn(edict_t *self)
+{
+    vec3_t  f, r, offset, startpoint, spawnpoint;
+    int     count, num_summoned;
+    int     num_success = 0;
+    reinforcement_t *re;
+
+    AngleVectors(self->s.angles, f, r, NULL);
+
+    num_summoned = M_PickReinforcements(self, 0);
+
+    for (count = 0; count < num_summoned; count++) {
+        VectorCopy(reinforcement_position[count], offset);
+        G_ProjectSource(self->s.origin, offset, f, r, startpoint);
+        startpoint[2] += 10;    // a little off the ground
+
+        re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
+
+        if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32)) {
+            if (CheckGroundSpawnPoint(spawnpoint, re->mins, re->maxs, 256, -1)) {
+                num_success++;
+                break;          // found a spot, that is enough to commit
+            }
+        }
+    }
+
+    // nothing in front - see whether spinning round helps
+    if (num_success == 0) {
+        for (count = 0; count < num_summoned; count++) {
+            VectorCopy(reinforcement_position[count], offset);
+            offset[0] *= -1.0f;
+            offset[1] *= -1.0f;
+            G_ProjectSource(self->s.origin, offset, f, r, startpoint);
+            startpoint[2] += 10;
+
+            re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
+
+            if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32)) {
+                if (CheckGroundSpawnPoint(spawnpoint, re->mins, re->maxs, 256, -1)) {
+                    num_success++;
+                    break;
+                }
+            }
+        }
+
+        if (num_success) {
+            self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
+            self->ideal_yaw = anglemod(self->s.angles[YAW]) + 180;
+            if (self->ideal_yaw > 360.0f)
+                self->ideal_yaw -= 360.0f;
+        }
+    }
+
+    if (num_success == 0)
+        self->monsterinfo.nextframe = FRAME_attack53;
+}
+
+void medic_spawngrows(edict_t *self)
+{
+    vec3_t  f, r, offset, startpoint, spawnpoint;
+    int     count, num_summoned;
+    int     num_success = 0;
+    float   current_yaw;
+    reinforcement_t *re;
+
+    // if we have been directed to turn around, hold here until we have
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+        current_yaw = anglemod(self->s.angles[YAW]);
+        if (fabsf(current_yaw - self->ideal_yaw) > 0.1f) {
+            self->monsterinfo.aiflags |= AI_HOLD_FRAME;
+            return;
+        }
+        self->monsterinfo.aiflags &= ~(AI_HOLD_FRAME | AI_MANUAL_STEERING);
+    }
+
+    AngleVectors(self->s.angles, f, r, NULL);
+
+    num_summoned = self->monsterinfo.num_chosen_reinforcements;
+
+    for (count = 0; count < num_summoned; count++) {
+        VectorCopy(reinforcement_position[count], offset);
+        G_ProjectSource(self->s.origin, offset, f, r, startpoint);
+        startpoint[2] += 10;
+
+        re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
+
+        if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32)) {
+            if (CheckGroundSpawnPoint(spawnpoint, re->mins, re->maxs, 256, -1)) {
+                num_success++;
+                // anything with a body taller than a soldier gets the big shell
+                SpawnGrow_Spawn(spawnpoint, (re->maxs[2] - re->mins[2]) > 60 ? 2 : 1);
+            }
+        }
+    }
+
+    if (num_success == 0)
+        self->monsterinfo.nextframe = FRAME_attack53;
+}
+
+void medic_finish_spawn(edict_t *self)
+{
+    edict_t *ent;
+    vec3_t  f, r, offset, startpoint, spawnpoint;
+    int     count, num_summoned;
+    edict_t *designated_enemy;
+    reinforcement_t *re;
+
+    AngleVectors(self->s.angles, f, r, NULL);
+
+    num_summoned = self->monsterinfo.num_chosen_reinforcements;
+
+    for (count = 0; count < num_summoned; count++) {
+        re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
+
+        VectorCopy(reinforcement_position[count], offset);
+        G_ProjectSource(self->s.origin, offset, f, r, startpoint);
+        startpoint[2] += 10;
+
+        ent = NULL;
+        if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32)) {
+            if (CheckSpawnPoint(spawnpoint, re->mins, re->maxs))
+                ent = CreateGroundMonster(spawnpoint, self->s.angles, re->mins, re->maxs, re->classname, 256);
+        }
+
+        if (!ent)
+            continue;
+
+        // run its first think now so it is on its feet this frame
+        if (ent->think) {
+            ent->nextthink = level.framenum;
+            ent->think(ent);
+        }
+
+        ent->monsterinfo.aiflags |= AI_IGNORE_SHOTS | AI_DO_NOT_COUNT | AI_SPAWNED_MEDIC_C;
+        ent->monsterinfo.commander = self;
+        self->monsterinfo.monster_used += re->strength;
+
+        if (self->monsterinfo.aiflags & AI_MEDIC)
+            designated_enemy = self->oldenemy;
+        else
+            designated_enemy = self->enemy;
+
+        if (coop->value) {
+            // spread the escort across the coop players rather than dogpiling
+            designated_enemy = PickCoopTarget(ent);
+            if (designated_enemy) {
+                if (designated_enemy == self->enemy) {
+                    designated_enemy = PickCoopTarget(ent);
+                    if (!designated_enemy)
+                        designated_enemy = self->enemy;
+                }
+            } else {
+                designated_enemy = self->enemy;
+            }
+        }
+
+        if (designated_enemy && designated_enemy->inuse && designated_enemy->health > 0) {
+            ent->enemy = designated_enemy;
+            FoundTarget(ent);
+        } else {
+            ent->enemy = NULL;
+            ent->monsterinfo.stand(ent);
+        }
+    }
+}
+
+mframe_t medic_frames_callReinforcements [] = {
+    // 33-36 are ai_charge here, unlike the cable attack
+    { ai_charge, 2,     NULL },                  // 33
+    { ai_charge, 3,     NULL },
+    { ai_charge, 5,     NULL },
+    { ai_charge, 4.4f,  NULL },                  // 36
+    { ai_charge, 4.7f,  NULL },
+    { ai_charge, 5,     NULL },
+    { ai_charge, 6,     NULL },
+    { ai_charge, 4,     NULL },                  // 40
+    { ai_charge, 0,     NULL },
+    { ai_move,   0,     medic_start_spawn },     // 42
+    { ai_move,   0,     NULL },                  // 43 - 43..47 are skipped
+    { ai_move,   0,     NULL },
+    { ai_move,   0,     NULL },
+    { ai_move,   0,     NULL },
+    { ai_move,   0,     NULL },
+    { ai_move,   0,     medic_determine_spawn }, // 48
+    { ai_charge, 0,     medic_spawngrows },      // 49
+    { ai_move,   0,     NULL },                  // 50
+    { ai_move,   0,     NULL },                  // 51
+    { ai_move,   -15,   medic_finish_spawn },    // 52
+    { ai_move,   -1.5f, NULL },
+    { ai_move,   -1.2f, NULL },
+    { ai_move,   -3,    NULL }
+};
+mmove_t medic_move_callReinforcements = {FRAME_attack33, FRAME_attack55, medic_frames_callReinforcements, medic_run};
+
 void medic_attack(edict_t *self)
 {
-    if (self->monsterinfo.aiflags & AI_MEDIC)
-        self->monsterinfo.currentmove = &medic_move_attackCable;
-    else
-        self->monsterinfo.currentmove = &medic_move_attackBlaster;
+    float r = random();
+
+    if (self->monsterinfo.aiflags & AI_MEDIC) {
+        // a commander with slots left would rather summon than heal
+        if (MEDIC_IS_COMMANDER(self) && r > 0.8f && M_SlotsLeft(self) > 0)
+            self->monsterinfo.currentmove = &medic_move_callReinforcements;
+        else
+            self->monsterinfo.currentmove = &medic_move_attackCable;
+    } else {
+        if (MEDIC_IS_COMMANDER(self) && r > 0.2f && M_SlotsLeft(self) > 0 &&
+            range(self, self->enemy) > RANGE_MELEE)
+            self->monsterinfo.currentmove = &medic_move_callReinforcements;
+        else
+            self->monsterinfo.currentmove = &medic_move_attackBlaster;
+    }
 }
 
 bool medic_checkattack(edict_t *self)
@@ -794,12 +1081,22 @@ bool medic_checkattack(edict_t *self)
 
 /*QUAKED monster_medic (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
 */
+/*QUAKED monster_medic_commander (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
+The medic commander summons reinforcements. The map's `reinforcements` key sets
+what it can call and how much of its slot budget each one costs.
+*/
 void SP_monster_medic(edict_t *self)
 {
+    bool    commander;
+
     if (deathmatch->value) {
         G_FreeEdict(self);
         return;
     }
+
+    // ROGUE - like the daedalus, the commander is told apart by mass from here
+    // on, so this has to be settled before anything reads MEDIC_IS_COMMANDER
+    commander = !strcmp(self->classname, "monster_medic_commander");
 
 	float val = crandom();
 
@@ -810,18 +1107,34 @@ void SP_monster_medic(edict_t *self)
 		self->monsterFireHyperBlaster = qfalse;
 	}
 
-    sound_idle1 = gi.soundindex("medic/idle.wav");
-    sound_pain1 = gi.soundindex("medic/medpain1.wav");
-    sound_pain2 = gi.soundindex("medic/medpain2.wav");
-    sound_die = gi.soundindex("medic/meddeth1.wav");
-    sound_sight = gi.soundindex("medic/medsght1.wav");
-    sound_search = gi.soundindex("medic/medsrch1.wav");
-    sound_hook_launch = gi.soundindex("medic/medatck2.wav");
-    sound_hook_hit = gi.soundindex("medic/medatck3.wav");
-    sound_hook_heal = gi.soundindex("medic/medatck4.wav");
-    sound_hook_retract = gi.soundindex("medic/medatck5.wav");
+    if (commander) {
+        commander_sound_idle1 = gi.soundindex("medic_commander/medidle.wav");
+        commander_sound_pain1 = gi.soundindex("medic_commander/medpain1.wav");
+        commander_sound_pain2 = gi.soundindex("medic_commander/medpain2.wav");
+        commander_sound_die = gi.soundindex("medic_commander/meddeth.wav");
+        commander_sound_sight = gi.soundindex("medic_commander/medsght.wav");
+        commander_sound_search = gi.soundindex("medic_commander/medsrch.wav");
+        commander_sound_hook_launch = gi.soundindex("medic_commander/medatck2c.wav");
+        commander_sound_hook_hit = gi.soundindex("medic_commander/medatck3a.wav");
+        commander_sound_hook_heal = gi.soundindex("medic_commander/medatck4a.wav");
+        commander_sound_hook_retract = gi.soundindex("medic_commander/medatck5a.wav");
+        commander_sound_spawn = gi.soundindex("medic_commander/monsterspawn1.wav");
 
-    gi.soundindex("medic/medatck1.wav");
+        gi.soundindex("medic_commander/medatck1a.wav");
+    } else {
+        sound_idle1 = gi.soundindex("medic/idle.wav");
+        sound_pain1 = gi.soundindex("medic/medpain1.wav");
+        sound_pain2 = gi.soundindex("medic/medpain2.wav");
+        sound_die = gi.soundindex("medic/meddeth1.wav");
+        sound_sight = gi.soundindex("medic/medsght1.wav");
+        sound_search = gi.soundindex("medic/medsrch1.wav");
+        sound_hook_launch = gi.soundindex("medic/medatck2.wav");
+        sound_hook_hit = gi.soundindex("medic/medatck3.wav");
+        sound_hook_heal = gi.soundindex("medic/medatck4.wav");
+        sound_hook_retract = gi.soundindex("medic/medatck5.wav");
+
+        gi.soundindex("medic/medatck1.wav");
+    }
 
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
@@ -832,6 +1145,18 @@ void SP_monster_medic(edict_t *self)
     self->health = 300;
     self->gib_health = -130;
     self->mass = 400;
+
+    if (commander) {
+        self->health = 600;
+        self->gib_health = -130;
+        self->mass = 600;
+        self->yaw_speed = 40;
+    }
+
+    // the rerelease scales a monster's health per difficulty with this key;
+    // mgu3m3 and mgu4m3 both use it to soften their commanders on hard
+    if (st.health_multiplier > 0)
+        self->health = (int)(self->health * st.health_multiplier);
 
     self->pain = medic_pain;
     self->die = medic_die;
@@ -853,4 +1178,32 @@ void SP_monster_medic(edict_t *self)
     self->monsterinfo.scale = MODEL_SCALE;
 
     walkmonster_start(self);
+
+    if (commander) {
+        // walkmonster_start clears skinnum, so this has to come after it
+        self->s.skinnum = 2;
+
+        // the commander ignores incoming fire while it is working
+        self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
+
+        // how much it can summon, before the per-monster strength costs
+        switch ((int)skill->value) {
+        case 0:  self->monsterinfo.monster_slots = 3; break;
+        case 1:  self->monsterinfo.monster_slots = 4; break;
+        default: self->monsterinfo.monster_slots = 6; break;
+        }
+
+        // power_armor_type/power_armor_power are real spawn fields, so mgu4m3's
+        // 250-300 point screens are already in place by the time we get here.
+        // Rogue gives the commander none by default, so nothing to set.
+
+        // parsing the list also precaches every monster in it - a summon
+        // mid-level has no safe way to precache
+        M_SetupReinforcements(self, st.reinforcements ? st.reinforcements : medic_default_reinforcements);
+
+        gi.modelindex("models/items/spawngro/tris.md2");
+        gi.modelindex("models/items/spawngro2/tris.md2");
+    } else {
+        self->s.skinnum = 0;
+    }
 }

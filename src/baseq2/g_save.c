@@ -244,6 +244,48 @@ static const save_field_t entityfields[] = {
     I(monsterinfo.power_armor_type),
     I(monsterinfo.power_armor_power),
 
+    // ROGUE - runtime monster spawning. The reinforcement table is a fixed
+    // array of structs, so each member gets its own positional entry; a
+    // save_field_t addresses one scalar at one offset and cannot stride.
+    L(monsterinfo.reinforcements[0].classname),
+    I(monsterinfo.reinforcements[0].strength),
+    V(monsterinfo.reinforcements[0].mins),
+    V(monsterinfo.reinforcements[0].maxs),
+    L(monsterinfo.reinforcements[1].classname),
+    I(monsterinfo.reinforcements[1].strength),
+    V(monsterinfo.reinforcements[1].mins),
+    V(monsterinfo.reinforcements[1].maxs),
+    L(monsterinfo.reinforcements[2].classname),
+    I(monsterinfo.reinforcements[2].strength),
+    V(monsterinfo.reinforcements[2].mins),
+    V(monsterinfo.reinforcements[2].maxs),
+    L(monsterinfo.reinforcements[3].classname),
+    I(monsterinfo.reinforcements[3].strength),
+    V(monsterinfo.reinforcements[3].mins),
+    V(monsterinfo.reinforcements[3].maxs),
+    L(monsterinfo.reinforcements[4].classname),
+    I(monsterinfo.reinforcements[4].strength),
+    V(monsterinfo.reinforcements[4].mins),
+    V(monsterinfo.reinforcements[4].maxs),
+    L(monsterinfo.reinforcements[5].classname),
+    I(monsterinfo.reinforcements[5].strength),
+    V(monsterinfo.reinforcements[5].mins),
+    V(monsterinfo.reinforcements[5].maxs),
+    L(monsterinfo.reinforcements[6].classname),
+    I(monsterinfo.reinforcements[6].strength),
+    V(monsterinfo.reinforcements[6].mins),
+    V(monsterinfo.reinforcements[6].maxs),
+    L(monsterinfo.reinforcements[7].classname),
+    I(monsterinfo.reinforcements[7].strength),
+    V(monsterinfo.reinforcements[7].mins),
+    V(monsterinfo.reinforcements[7].maxs),
+    I(monsterinfo.num_reinforcements),
+    IA(monsterinfo.chosen_reinforcements, MAX_REINFORCEMENTS),
+    I(monsterinfo.num_chosen_reinforcements),
+    I(monsterinfo.monster_slots),
+    I(monsterinfo.monster_used),
+    E(monsterinfo.commander),
+
     {0}
 #undef _OFS
 };
@@ -826,7 +868,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    16
+#define SAVE_VERSION    18
 
 /*
 ============
