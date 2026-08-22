@@ -164,7 +164,11 @@ void trigger_teleport_touch(edict_t* self, edict_t* other, cplane_t* plane, csur
     gi.WritePosition(other->s.origin);
     gi.multicast(other->s.origin, MULTICAST_PVS);
 
-    
+    // unlink to make sure it can't possibly interfere with KillBox - the
+    // trace inside KillBox ignores nothing, so a still-linked entity
+    // telefrags itself the instant it arrives.
+    gi.unlinkentity(other);
+
     VectorCopy(dest->s.origin, other->s.origin);
     //other->s.origin = dest->s.origin;
     VectorCopy(dest->s.origin, other->s.old_origin);
@@ -195,10 +199,12 @@ void trigger_teleport_touch(edict_t* self, edict_t* other, cplane_t* plane, csur
     VectorClear(other->s.angles);
     //other->s.angles = {};
 
-    gi.linkentity(other);
+    // kill anything at the destination, then put us in the world. This order
+    // is what vanilla does and it matters: KillBox must run while `other` is
+    // unlinked or it kills the arriving player instead of whoever was there.
+    KillBox(other);
 
-    // kill anything at the destination
-    KillBox(other->client);
+    gi.linkentity(other);
 
     // [Paril-KEX] move sphere, if we own it
     //if (other->client && other->client->owned_sphere)
@@ -219,6 +225,8 @@ void trigger_teleport_use(edict_t* self, edict_t* other, edict_t* activator)
         self->delay = 1;
 }
 
+void droppod_light_think(edict_t *self);
+
 void SP_trigger_teleport(edict_t* self)
 {
     if (!self->wait)
@@ -229,8 +237,25 @@ void SP_trigger_teleport(edict_t* self)
     if (self->targetname)
     {
         self->use = trigger_teleport_use;
-        if (!self->spawnflags & 8)
+        // SPAWNFLAG_TELEPORT_START_ON. The parentheses matter: !x & 8 parses as
+        // (!x) & 8, which is always 0, so every targetname'd teleporter stayed
+        // live from level entry. That ejected the player from the MGU drop pods
+        // on frame one, leaving only the arrival earthquake to shake them.
+        if (!(self->spawnflags & 8))
             self->delay = 1;
+
+        // The MGU drop pods are sealed, unlit boxes as far as the path tracer
+        // is concerned - see droppod_light_think. Give them an emergency light
+        // for as long as the pod holds the player.
+        if (self->delay && !strncmp(self->targetname, "droppod", 7)) {
+            edict_t *lamp = G_Spawn();
+
+            lamp->classname = "droppod light";
+            lamp->svflags |= SVF_NOCLIENT;
+            lamp->target_ent = self;
+            lamp->think = droppod_light_think;
+            lamp->nextthink = level.framenum + 1;
+        }
     }
 
     self->touch = trigger_teleport_touch;
@@ -711,4 +736,44 @@ void SP_trigger_health_relay(edict_t *self)
 
     self->svflags |= SVF_NOCLIENT;
     self->use = trigger_health_relay_use;
+}
+
+/*
+======================================================================
+
+DROP POD EMERGENCY LIGHT
+
+The MGU unit openers seal the player in a small pod lit by a plain `light`
+entity (mgu1m1: _color "255 0 0", style 4). Q2RTX path-traces from emissive
+materials and ignores `light` entities entirely, so the pod renders pitch black
+where the rerelease shows a red flashing interior.
+
+Rather than turn every styled light in the game into a dynamic light - mgu1m1
+alone has 42 of them, mgu4m1 has 56 - this drives one dlight for the duration
+of the pod sequence only, attached to the player so it is always in the sealed
+space with them. It stops as soon as the teleporter that ejects them goes live.
+
+======================================================================
+*/
+void droppod_light_think(edict_t *self)
+{
+    edict_t *player = &g_edicts[1];
+
+    // the teleporter this belongs to has gone live (or gone away) - we are done
+    if (!self->target_ent || !self->target_ent->inuse || !self->target_ent->delay) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    // Drop roughly one beat in four so the strobe stays irregular. The pulse
+    // itself cannot go faster than one think (10Hz), so the randomness has to
+    // come from skipped beats plus the jittered radius and life on the client.
+    if (player->inuse && player->client && player->health > 0 && (Q_rand() & 3)) {
+        gi.WriteByte(svc_muzzleflash);
+        gi.WriteShort(player - g_edicts);
+        gi.WriteByte(MZ_PODLIGHT);
+        gi.multicast(player->s.origin, MULTICAST_PVS);
+    }
+
+    self->nextthink = level.framenum + 1;
 }

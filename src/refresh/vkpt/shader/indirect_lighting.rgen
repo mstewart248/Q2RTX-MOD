@@ -268,6 +268,33 @@ indirect_lighting(
 		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(spec_hit_distance));
 	}
 
+	// Diffuse hit distance for DLSS Ray Reconstruction.
+	//
+	// IMG_PT_RAYLENGTH_DIFFUSE had no live writer at all - the only code that filled it
+	// is the commented-out block further down - so checkerboard_interleave.comp was
+	// copying a never-initialised image into IMG_DLSS_RAYLENGTH_DIFFUSE. The buffer was
+	// then not even handed to RR. This is the same hole that specular hit distance had.
+	//
+	// The guide tells RR how far away the geometry feeding a pixel's diffuse lighting is,
+	// which is what sizes its diffuse spatial filter. With no signal RR has to assume a
+	// wide footprint, so a small bright light - a blaster bolt against a wall - gets its
+	// falloff smeared into a flat uniform wash, and light bleeds out of bright areas into
+	// neighbouring dark ones, lifting the blacks.
+	//
+	// The bounce ray is already traced, so like the specular case this costs nothing. It
+	// is written whether the bounce came out diffuse or specular: a diffuse ray is exactly
+	// the cosine-weighted quantity the guide wants, and a specular ray still samples the
+	// same neighbourhood. Writing every frame also keeps the image from going stale, since
+	// nothing clears it.
+	if(spec_bounce_index == 0)
+	{
+		float diff_hit_distance = found_intersection(ray_payload_geometry)
+			? ray_payload_geometry.hit_distance
+			: PRIMARY_RAY_T_MAX;
+
+		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(diff_hit_distance));
+	}
+
 	bounce_contrib = vec3(0);
 
 	if(is_specular_ray)

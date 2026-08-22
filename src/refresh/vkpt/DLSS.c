@@ -26,6 +26,7 @@ cvar_t* cvar_pt_dlss_dldn = NULL;
 cvar_t* cvar_pt_dlss_split_fields = NULL;
 cvar_t* cvar_pt_dlss_bypass_denoiser = NULL;
 cvar_t* cvar_pt_dlss_field_res = NULL;
+cvar_t* cvar_pt_dlss_diff_hitdist = NULL;
 qboolean recreateSwapChain = qfalse;
 qboolean dlssModeChanged = qfalse;
 extern cvar_t* scr_viewsize;
@@ -52,6 +53,13 @@ void InitDLSSCvars()
     // 0 restores the pre-existing behaviour of stacking both denoisers, which is less
     // correct but much smoother if RR alone is not converging.
     cvar_pt_dlss_bypass_denoiser = Cvar_Get("pt_dlss_bypass_denoiser", "1", CVAR_ARCHIVE);
+
+    // Hand DLSS-RR the diffuse hit distance guide. IMG_PT_RAYLENGTH_DIFFUSE had no live
+    // writer at all until 2026-08-21 and the eval param was commented out, so RR was
+    // sizing its diffuse spatial filter with no signal. 0 restores that for an A/B.
+    // Registered here rather than lazily at eval time so it exists from startup and
+    // shows up in cvarlist.
+    cvar_pt_dlss_diff_hitdist = Cvar_Get("pt_dlss_diff_hitdist", "1", CVAR_ARCHIVE);
 
     // Resolution of the reflection/refraction layers while split fields are active.
     //   1 - both layers at full internal render resolution
@@ -636,7 +644,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK indirectAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_INDIRECT_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK beforeTransparent = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    //NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     //NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
@@ -765,6 +773,11 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     const float jitterX = jitterOffset[0] * jitterSign;
     const float jitterY = jitterOffset[1] * jitterSign;
 
+    // Registered in InitDLSSCvars. Kept out of the global UBO entirely - only C code
+    // reads it, so it cannot disturb the UBO layout.
+    const bool useDiffuseHitDist = (cvar_pt_dlss_diff_hitdist != NULL)
+        && cvar_pt_dlss_diff_hitdist->integer != 0;
+
     // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR] = &specular;
     // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_ROUGHNESS] = &roughness;
     // inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_METALLIC] = &metallic;
@@ -834,7 +847,14 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .pInMotionVectorsReflections = &reflectMotion,			
             // .pInReflectedAlbedo = &reflectedAlbedo,  // no 3.4.x section in the RR guide - not a documented RR input
 			.pInNormals = &normal,
-			// .pInDiffuseHitDistance = &diffuseLength,  // no 3.4.x section in the RR guide - not a documented RR input
+			// Diffuse hit distance. The RR guide has no 3.4.x section for it, but that is
+			// not evidence it is ignored - the same was true of pInDisocclusionMask, and
+			// nvsdk_ngx_helpers_dlssd_vk.h does forward this one to NGX as
+			// NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance. It is the guide that sizes RR's
+			// diffuse spatial filter; without it RR over-blurs diffuse lighting, flattening
+			// local light falloff and bleeding bright areas into dark ones.
+			// pt_dlss_diff_hitdist 0 restores the old behaviour for A/B.
+			.pInDiffuseHitDistance = useDiffuseHitDist ? &diffuseLength : NULL,
 			.pInSpecularHitDistance = &specularLength,
 			.pInSpecularAlbedo = &specularAlbedo,
 			.pInDiffuseAlbedo = &albedo,

@@ -274,6 +274,19 @@ void SV_CalcViewOffset(edict_t *ent)
         if (bobcycle & 1)
             delta = -delta;
         angles[ROLL] += delta;
+
+        // add earthquake angles
+        if (ent->client->quake_framenum > level.framenum) {
+            float   quake_time = ent->client->quake_framenum * FRAMETIME;
+            float   factor = (quake_time / max(level.time, FRAMETIME)) * 0.25f;
+
+            if (factor > 1.0f)
+                factor = 1.0f;
+
+            angles[PITCH] += crandom() * factor;
+            angles[YAW]   += crandom() * factor;
+            angles[ROLL]  += crandom() * factor;
+        }
     }
 
 //===================================
@@ -431,6 +444,18 @@ void SV_CalcBlend(edict_t *ent)
             gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage2.wav"), 1, ATTN_NORM, 0);
         if (remaining > 30 || (remaining & 4))
             SV_AddBlend(0, 0, 1, 0.08f, ent->client->ps.blend);
+    } else if (ent->client->double_framenum > level.framenum) {
+        remaining = ent->client->double_framenum - level.framenum;
+        if (remaining == 30)    // beginning to fade
+            gi.sound(ent, CHAN_ITEM, gi.soundindex("misc/ddamage2.wav"), 1, ATTN_NORM, 0);
+        if (remaining > 30 || (remaining & 4))
+            SV_AddBlend(0.9f, 0.7f, 0, 0.08f, ent->client->ps.blend);
+    } else if (ent->client->quadfire_framenum > level.framenum) {
+        remaining = ent->client->quadfire_framenum - level.framenum;
+        if (remaining == 30)    // beginning to fade
+            gi.sound(ent, CHAN_ITEM, gi.soundindex("items/quadfire2.wav"), 1, ATTN_NORM, 0);
+        if (remaining > 30 || (remaining & 4))
+            SV_AddBlend(0, 1, 0, 0.08f, ent->client->ps.blend);
     } else if (ent->client->invincible_framenum > level.framenum) {
         remaining = ent->client->invincible_framenum - level.framenum;
         if (remaining == 30)    // beginning to fade
@@ -719,6 +744,18 @@ void G_SetClientEffects(edict_t *ent)
 
     if (ent->client->quad_framenum > level.framenum) {
         remaining = ent->client->quad_framenum - level.framenum;
+        if (remaining > 30 || (remaining & 4))
+            ent->s.effects |= EF_QUAD;
+    }
+
+    if (ent->client->double_framenum > level.framenum) {
+        remaining = ent->client->double_framenum - level.framenum;
+        if (remaining > 30 || (remaining & 4))
+            ent->s.effects |= EF_DOUBLE;
+    }
+
+    if (ent->client->quadfire_framenum > level.framenum) {
+        remaining = ent->client->quadfire_framenum - level.framenum;
         if (remaining > 30 || (remaining & 4))
             ent->s.effects |= EF_QUAD;
     }

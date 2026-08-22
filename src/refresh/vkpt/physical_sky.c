@@ -62,6 +62,14 @@ cvar_t *sky_transmittance;
 cvar_t *sky_phase_g;
 cvar_t *sky_amb_phase_g;
 
+cvar_t *sky_use_map_skybox;
+
+// Scope of the skybox declared by the currently loaded map, as classified by
+// R_SetSky_RTX: 0 = the map has no usable skybox, 1 = rerelease map, 2 = any
+// other game directory. Compared against sky_use_map_skybox on every query so
+// that toggling the cvar takes effect without reloading the map.
+static int map_skybox_scope = 0;
+
 static uint32_t physical_sky_planet_albedo_map = 0;
 static uint32_t physical_sky_planet_normal_map = 0;
 
@@ -107,6 +115,7 @@ static int active_sun_preset(void)
 }
 
 static void change_image_layouts(VkImage image, const VkImageSubresourceRange* subresource_range);
+void physical_sky_cvar_changed(cvar_t *self);
 
 static void
 destroyEnvTexture(void)
@@ -619,6 +628,29 @@ void vkpt_next_sun_preset()
 	Cvar_SetByVar(sun_preset, va("%d", preset), FROM_CONSOLE);
 }
 
+void vkpt_physical_sky_set_map_skybox(int scope)
+{
+	if (map_skybox_scope != scope)
+	{
+		map_skybox_scope = scope;
+		physical_sky_cvar_changed(NULL);
+	}
+}
+
+// True when the environment cube map set by R_SetSky should be shown as-is,
+// instead of the procedural sky. Either the active physical_sky preset asks for
+// it, or the map ships its own skybox and sky_use_map_skybox allows using it.
+// The space sky is excluded because physical_sky_space.comp already composites
+// the environment map with the procedurally rendered planet.
+bool vkpt_physical_sky_uses_skybox(void)
+{
+	if (map_skybox_scope > 0 && sky_use_map_skybox->integer >= map_skybox_scope
+		&& !physical_sky_space->integer)
+		return true;
+
+	return (GetSkyPreset(physical_sky->integer)->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX) != 0;
+}
+
 void
 vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float time)
 {
@@ -631,7 +663,7 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	PhysicalSkyDesc_t const * skyDesc = GetSkyPreset(skyIndex);
 
-	if ((skyDesc->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX) != 0)
+	if (vkpt_physical_sky_uses_skybox())
 	{
 		// physical sky is disabled - no direct sun light in this mode
 		memset(light, 0, sizeof(*light));
@@ -903,7 +935,7 @@ vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light,
 
 	ubo->sun_visible = light->visible;
 
-	if (render_world && !(skyDesc->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX))
+	if (render_world && !vkpt_physical_sky_uses_skybox())
 	{
 
 		vec3_t forward;
@@ -989,6 +1021,11 @@ void InitialiseSkyCVars()
 
 	physical_sky_brightness = Cvar_Get("physical_sky_brightness", "0", 0);
 	physical_sky_brightness->changed = physical_sky_cvar_changed;
+
+	// 0 = always use the procedural sky, 1 = show the map's own skybox on
+	// rerelease maps, 2 = show it in every game directory
+	sky_use_map_skybox = Cvar_Get("sky_use_map_skybox", "1", CVAR_ARCHIVE);
+	sky_use_map_skybox->changed = physical_sky_cvar_changed;
 }
 
 void UpdatePhysicalSkyCVars()

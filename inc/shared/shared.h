@@ -965,6 +965,11 @@ enum {
 //ROGUE
 // Q2RTX
 #define MZ_FLARE            40
+// A plain coloured dlight with no particles, sound or muzzle offset. The game
+// uses it to light spaces that have no emissive material for the path tracer -
+// the MGU drop pods are lit by a `light` entity, which Q2RTX does not render.
+// Appended, never inserted: these numbers go over the wire.
+#define MZ_PODLIGHT         41
 // Q2RTX
 
     MZ_SILENCED = 128,  // bit flag ORed with one of the above numbers

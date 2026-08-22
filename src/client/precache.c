@@ -384,16 +384,10 @@ void CL_PrepRefresh(void)
     CL_LoadClientinfo(&cl.baseclientinfo, "unnamed\\male/grunt");
 
     // set sky textures and speed
+    // Rerelease maps used to be forced onto a dummy "base" sky here so that the
+    // procedural sky was always used; the renderer now decides that itself from
+    // the map's own skybox and the sky_use_map_skybox cvar.
     CL_SetSky();
-
-    if (Q_stricmp(cl.gamedir, "rerelease") == 0) {
-        if (!Q_strHas(cl.mapname, "mguhub")) {
-            vec3_t  axis;
-
-            VectorSet(axis, 0, 0, 1);
-            R_SetSky("base", 0.0, 1, axis);
-        }
-    }
 
     // the renderer can now free unneeded stuff
     R_EndRegistration();

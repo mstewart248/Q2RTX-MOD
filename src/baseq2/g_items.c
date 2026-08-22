@@ -34,6 +34,13 @@ void Weapon_GrenadeLauncher(edict_t *ent);
 void Weapon_Railgun(edict_t *ent);
 void Weapon_BFG(edict_t *ent);
 void Weapon_FlareGun(edict_t *ent);
+void Weapon_Ionripper(edict_t *ent);
+void Weapon_Phalanx(edict_t *ent);
+void Weapon_ChainFist(edict_t *ent);
+void Weapon_Heatbeam(edict_t *ent);
+void Weapon_Tesla(edict_t *ent);
+void Weapon_Disintegrator(edict_t *ent);
+void Weapon_Trap(edict_t *ent);
 
 gitem_armor_t jacketarmor_info  = { 25,  50, .30, .00, ARMOR_JACKET};
 gitem_armor_t combatarmor_info  = { 50, 100, .60, .30, ARMOR_COMBAT};
@@ -49,6 +56,8 @@ static int  power_shield_index;
 #define HEALTH_TIMED        2
 
 void Use_Quad(edict_t *ent, gitem_t *item);
+void Use_Double(edict_t *ent, gitem_t *item);
+void Use_QuadFire(edict_t *ent, gitem_t *item);
 static int  quad_drop_timeout_hack;
 
 //======================================================================
@@ -225,6 +234,8 @@ bool Pickup_Bandolier(edict_t *ent, edict_t *other)
         other->client->pers.max_cells = 250;
     if (other->client->pers.max_slugs < 75)
         other->client->pers.max_slugs = 75;
+    if (other->client->pers.max_magslug < 75)
+        other->client->pers.max_magslug = 75;
 
     item = FindItem("Bullets");
     if (item) {
@@ -265,6 +276,8 @@ bool Pickup_Pack(edict_t *ent, edict_t *other)
         other->client->pers.max_cells = 300;
     if (other->client->pers.max_slugs < 100)
         other->client->pers.max_slugs = 100;
+    if (other->client->pers.max_magslug < 100)
+        other->client->pers.max_magslug = 100;
 
     item = FindItem("Bullets");
     if (item) {
@@ -314,6 +327,14 @@ bool Pickup_Pack(edict_t *ent, edict_t *other)
             other->client->pers.inventory[index] = other->client->pers.max_slugs;
     }
 
+    item = FindItem("Mag Slug");
+    if (item) {
+        index = ITEM_INDEX(item);
+        other->client->pers.inventory[index] += item->quantity;
+        if (other->client->pers.inventory[index] > other->client->pers.max_magslug)
+            other->client->pers.inventory[index] = other->client->pers.max_magslug;
+    }
+
     if (!(ent->spawnflags & DROPPED_ITEM) && (deathmatch->value))
         SetRespawn(ent, ent->item->quantity);
 
@@ -342,6 +363,54 @@ void Use_Quad(edict_t *ent, gitem_t *item)
         ent->client->quad_framenum = level.framenum + timeout;
 
     gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage.wav"), 1, ATTN_NORM, 0);
+}
+
+// Double Damage (rogue). Shares quad's drop-timeout hack so a dropped one keeps
+// its remaining time, exactly as Use_Quad does.
+void Use_Double(edict_t *ent, gitem_t *item)
+{
+    int     timeout;
+
+    ent->client->pers.inventory[ITEM_INDEX(item)]--;
+    ValidateSelectedItem(ent);
+
+    if (quad_drop_timeout_hack) {
+        timeout = quad_drop_timeout_hack;
+        quad_drop_timeout_hack = 0;
+    } else {
+        timeout = 300;
+    }
+
+    if (ent->client->double_framenum > level.framenum)
+        ent->client->double_framenum += timeout;
+    else
+        ent->client->double_framenum = level.framenum + timeout;
+
+    gi.sound(ent, CHAN_ITEM, gi.soundindex("misc/ddamage1.wav"), 1, ATTN_NORM, 0);
+}
+
+// DualFire Damage (xatrix). Does not multiply damage - it makes every weapon
+// run its think twice per frame, which is handled in Weapon_Generic.
+void Use_QuadFire(edict_t *ent, gitem_t *item)
+{
+    int     timeout;
+
+    ent->client->pers.inventory[ITEM_INDEX(item)]--;
+    ValidateSelectedItem(ent);
+
+    if (quad_drop_timeout_hack) {
+        timeout = quad_drop_timeout_hack;
+        quad_drop_timeout_hack = 0;
+    } else {
+        timeout = 300;
+    }
+
+    if (ent->client->quadfire_framenum > level.framenum)
+        ent->client->quadfire_framenum += timeout;
+    else
+        ent->client->quadfire_framenum = level.framenum + timeout;
+
+    gi.sound(ent, CHAN_ITEM, gi.soundindex("items/quadfire1.wav"), 1, ATTN_NORM, 0);
 }
 
 //======================================================================
@@ -402,6 +471,34 @@ void    Use_Silencer(edict_t *ent, gitem_t *item)
 
 //======================================================================
 
+// item_legacy_head - a rerelease easter egg that raises max health by 5.
+bool Pickup_LegacyHead(edict_t *ent, edict_t *other)
+{
+    other->max_health += 5;
+    other->health += 5;
+
+    if (!(ent->spawnflags & DROPPED_ITEM) && deathmatch->value)
+        SetRespawn(ent, ent->item->quantity);
+
+    return true;
+}
+
+// item_foodcube - not placed by any map; the trap coughs one up after it
+// digests something, with count carrying a fraction of the victim's mass.
+void SP_item_foodcube(edict_t *self)
+{
+    if (deathmatch->value && ((int)dmflags->value & DF_NO_HEALTH)) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->model = "models/objects/trapfx/tris.md2";
+    SpawnItem(self, FindItem("Health"));
+    self->spawnflags |= DROPPED_ITEM;
+    self->style = HEALTH_IGNORE_MAX;
+    self->classname = "foodcube";
+}
+
 bool Pickup_Key(edict_t *ent, edict_t *other)
 {
     if (coop->value) {
@@ -443,6 +540,14 @@ bool Add_Ammo(edict_t *ent, gitem_t *item, int count)
         max = ent->client->pers.max_cells;
     else if (item->tag == AMMO_SLUGS)
         max = ent->client->pers.max_slugs;
+    else if (item->tag == AMMO_MAGSLUG)
+        max = ent->client->pers.max_magslug;
+    else if (item->tag == AMMO_TESLA)
+        max = ent->client->pers.max_tesla;
+    else if (item->tag == AMMO_DISRUPTOR)
+        max = ent->client->pers.max_disruptor;
+    else if (item->tag == AMMO_TRAP)
+        max = ent->client->pers.max_trap;
     else
         return false;
 
@@ -1341,7 +1446,7 @@ gitem_t itemlist[] = {
         WEAP_CHAINGUN,
         NULL,
         0,
-        /* precache */ "weapons/chngnu1a.wav weapons/chngnl1a.wav weapons/machgf3b.wav` weapons/chngnd1a.wav"
+        /* precache */ "weapons/chngnu1a.wav weapons/chngnl1a.wav weapons/machgf3b.wav weapons/chngnd1a.wav"
     },
 
     /*QUAKED ammo_grenades (.3 .3 1) (-16 -16 -16) (16 16 16)
@@ -2074,6 +2179,362 @@ gitem_t itemlist[] = {
         NULL,
         /* icon */      "n64/i_yellow_key",
         /* pickup */    "Yellow Key",
+        /* width */     2,
+        0,
+        NULL,
+        IT_STAY_COOP | IT_KEY,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
+    /*QUAKED ammo_trap (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Trap. 4 instances, all in the rerelease's new base maps (industry, outbase,
+    badlands, refinery). Both ammo and weapon, like hand grenades: thrown, it
+    drags in the nearest living thing, digests it, and leaves a food cube.
+    */
+    {
+        "ammo_trap",
+        Pickup_Ammo,
+        Use_Weapon,
+        Drop_Ammo,
+        Weapon_Trap,
+        "misc/am_pkup.wav",
+        "models/weapons/g_trap/tris.md2", EF_ROTATE,
+        "models/weapons/v_trap/tris.md2",
+        /* icon */      "a_trap",
+        /* pickup */    "Trap",
+        /* width */     3,
+        1,
+        "Trap",
+        IT_AMMO | IT_WEAPON,
+        0,
+        NULL,
+        AMMO_TRAP,
+        /* precache */ "weapons/trapcock.wav weapons/traploop.wav weapons/trapsuck.wav weapons/trapdown.wav models/weapons/z_trap/tris.md2 models/objects/trapfx/tris.md2"
+    },
+
+    /*QUAKED weapon_disintegrator (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Disruptor. One instance, in mgu5m3. Fires a homing bolt that latches onto
+    whatever was under the crosshair and keeps hurting it for half a second
+    through a separate "pain daemon" entity, rather than all at once.
+    */
+    {
+        "weapon_disintegrator",
+        Pickup_Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Disintegrator,
+        "misc/w_pkup.wav",
+        "models/weapons/g_dist/tris.md2", EF_ROTATE,
+        "models/weapons/v_dist/tris.md2",
+        /* icon */      "w_disintegrator",
+        /* pickup */    "Disruptor",
+        0,
+        1,
+        "Rounds",
+        IT_WEAPON,
+        WEAP_DISRUPTOR,
+        NULL,
+        1,
+        /* precache */ "models/proj/disintegrator/tris.md2 weapons/disrupt.wav weapons/disint2.wav weapons/disrupthit.wav"
+    },
+
+    /*QUAKED ammo_disruptor (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Disruptor ammunition. 6 instances, all in mgu5m3.
+    */
+    {
+        "ammo_disruptor",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "misc/am_pkup.wav",
+        "models/ammo/am_disr/tris.md2", 0,
+        NULL,
+        /* icon */      "a_disruptor",
+        /* pickup */    "Rounds",
+        /* width */     3,
+        15,
+        NULL,
+        IT_AMMO,
+        0,
+        NULL,
+        AMMO_DISRUPTOR,
+        /* precache */ ""
+    },
+
+    /*QUAKED ammo_tesla (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Tesla mine - the "land mines" scattered through the MGU maps. 18 instances
+    in scope, 5 of them in mgu5m1. Both ammo and weapon, like hand grenades.
+    */
+    {
+        "ammo_tesla",
+        Pickup_Ammo,
+        Use_Weapon,
+        Drop_Ammo,
+        Weapon_Tesla,
+        "misc/am_pkup.wav",
+        "models/ammo/am_tesl/tris.md2", 0,
+        "models/weapons/v_tesla/tris.md2",
+        /* icon */      "a_tesla",
+        /* pickup */    "Tesla",
+        /* width */     3,
+        5,
+        "Tesla",
+        IT_AMMO | IT_WEAPON,
+        0,
+        NULL,
+        AMMO_TESLA,
+        /* precache */ "models/weapons/v_tesla2/tris.md2 weapons/teslaopen.wav weapons/hgrenb1a.wav weapons/hgrenb2a.wav models/weapons/g_tesla/tris.md2"
+    },
+
+    /*QUAKED weapon_plasmabeam (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Plasma Beam. Rogue's name for it; the rerelease calls the same gun
+    weapon_heatbeam and the MGU maps use both spellings, so both are registered
+    below against the same code.
+    */
+    {
+        "weapon_plasmabeam",
+        Pickup_Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Heatbeam,
+        "misc/w_pkup.wav",
+        "models/weapons/g_beamer/tris.md2", EF_ROTATE,
+        "models/weapons/v_beamer/tris.md2",
+        /* icon */      "w_heatbeam",
+        /* pickup */    "Plasma Beam",
+        0,
+        2,
+        "Cells",
+        IT_WEAPON,
+        WEAP_PLASMA,
+        NULL,
+        0,
+        /* precache */ "models/weapons/v_beamer2/tris.md2 weapons/bfg__l1a.wav"
+    },
+
+    /*QUAKED weapon_heatbeam (.3 .3 1) (-16 -16 -16) (16 16 16)
+    The rerelease spelling of weapon_plasmabeam - mgu3m2 places it under this
+    name. Same weapon, same models; a second itemlist row is the cheapest way to
+    answer both classnames, since spawning goes through FindItemByClassname.
+    */
+    {
+        "weapon_heatbeam",
+        Pickup_Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Heatbeam,
+        "misc/w_pkup.wav",
+        "models/weapons/g_beamer/tris.md2", EF_ROTATE,
+        "models/weapons/v_beamer/tris.md2",
+        /* icon */      "w_heatbeam",
+        /* pickup */    "Plasma Beam",
+        0,
+        2,
+        "Cells",
+        IT_WEAPON,
+        WEAP_PLASMA,
+        NULL,
+        0,
+        /* precache */ "models/weapons/v_beamer2/tris.md2 weapons/bfg__l1a.wav"
+    },
+
+    /*QUAKED weapon_chainfist (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Chainfist. One instance, in mgu3m2. Melee, no ammo; the damage carries
+    DAMAGE_DESTROY_ARMOR so it cuts through armor rather than being soaked by it.
+    */
+    {
+        "weapon_chainfist",
+        Pickup_Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_ChainFist,
+        "misc/w_pkup.wav",
+        "models/weapons/g_chainf/tris.md2", EF_ROTATE,
+        "models/weapons/v_chainf/tris.md2",
+        /* icon */      "w_chainfist",
+        /* pickup */    "Chainfist",
+        0,
+        0,
+        NULL,
+        IT_WEAPON | IT_MELEE,
+        WEAP_CHAINFIST,
+        NULL,
+        1,
+        /* precache */ "weapons/sawidle.wav weapons/sawhit.wav"
+    },
+
+    /*QUAKED item_legacy_head (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Gives +5 to maximum health. One instance, in mgu3secret.
+    The rerelease world model is models/items/legacyhead/tris.md2, which is not
+    shipped here or in either mission pack, so the megahealth head stands in -
+    same treatment key_yellow_key gets.
+    */
+    {
+        "item_legacy_head",
+        Pickup_LegacyHead,
+        NULL,
+        NULL,
+        NULL,
+        "items/pkup.wav",
+        "models/items/c_head/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "i_health",
+        /* pickup */    "Legacy Head",
+        /* width */     3,
+        60,
+        NULL,
+        0,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
+    /*QUAKED item_double (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Double Damage. 12 instances across the MGU maps. Rogue's powerup; the client
+    already renders EF_DOUBLE, so only the game side was missing.
+    */
+    {
+        "item_double",
+        Pickup_Powerup,
+        Use_Double,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/ddamage/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_double",
+        /* pickup */    "Double Damage",
+        /* width */     2,
+        60,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "misc/ddamage1.wav misc/ddamage2.wav misc/ddamage3.wav"
+    },
+
+    /*QUAKED item_quadfire (.3 .3 1) (-16 -16 -16) (16 16 16)
+    DualFire Damage. Xatrix's powerup: it doubles rate of fire, not damage.
+    Reuses EF_QUAD for the visual, as xatrix does - there is no separate effect.
+    */
+    {
+        "item_quadfire",
+        Pickup_Powerup,
+        Use_QuadFire,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/quadfire/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_quadfire",
+        /* pickup */    "DualFire Damage",
+        /* width */     2,
+        60,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "items/quadfire1.wav items/quadfire2.wav items/quadfire3.wav"
+    },
+
+    /*QUAKED weapon_boomer (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Ionripper. Placed by badlands, industry, refinery and w_treat.
+    Xatrix's weapon on xatrix's model; fire_ionripper already exists here from
+    the monster_soldier_ripper port, and the client already renders EF_IONRIPPER
+    and MZ_IONRIPPER, so only the player-side weapon was missing.
+    */
+    {
+        "weapon_boomer",
+        Pickup_Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Ionripper,
+        "misc/w_pkup.wav",
+        "models/weapons/g_boom/tris.md2", EF_ROTATE,
+        "models/weapons/v_boomer/tris.md2",
+        /* icon */      "w_ripper",
+        /* pickup */    "Ionripper",
+        0,
+        2,
+        "Cells",
+        IT_WEAPON,
+        WEAP_BOOMER,
+        NULL,
+        0,
+        /* precache */ "weapons/rg_hum.wav weapons/rippfire.wav"
+    },
+
+    /*QUAKED weapon_phalanx (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Phalanx particle cannon. Placed by industry, badlands, refinery, outbase
+    and mgu1m4. fire_plasma already exists here from the monster_gladb port.
+    */
+    {
+        "weapon_phalanx",
+        Pickup_Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_Phalanx,
+        "misc/w_pkup.wav",
+        "models/weapons/g_shotx/tris.md2", EF_ROTATE,
+        "models/weapons/v_shotx/tris.md2",
+        /* icon */      "w_phallanx",
+        /* pickup */    "Phalanx",
+        0,
+        1,
+        "Mag Slug",
+        IT_WEAPON,
+        WEAP_PHALANX,
+        NULL,
+        0,
+        /* precache */ "weapons/plasshot.wav"
+    },
+
+    /*QUAKED ammo_magslug (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Phalanx ammunition. 31 instances, the most common missing item in scope.
+    */
+    {
+        "ammo_magslug",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "misc/am_pkup.wav",
+        "models/objects/ammo/tris.md2", 0,
+        NULL,
+        /* icon */      "a_mslugs",
+        /* pickup */    "Mag Slug",
+        /* width */     3,
+        10,
+        NULL,
+        IT_AMMO,
+        0,
+        NULL,
+        AMMO_MAGSLUG,
+        /* precache */ ""
+    },
+
+    /*QUAKED key_green_key (0 .5 .8) (-16 -16 -16) (16 16 16)
+    normal door key - green. The one hard progression gate in the rerelease's
+    new base maps: industry places it and locks its exit behind it.
+    */
+    {
+        "key_green_key",
+        Pickup_Key,
+        NULL,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/keys/green_key/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "k_green",
+        /* pickup */    "Green Key",
         /* width */     2,
         0,
         NULL,

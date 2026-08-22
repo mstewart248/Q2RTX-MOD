@@ -92,6 +92,7 @@ void SP_target_laser(edict_t *self);
 void SP_target_help(edict_t *ent);
 void SP_target_actor(edict_t *ent);
 void SP_target_lightramp(edict_t *self);
+void SP_target_sky(edict_t *self);
 void SP_target_earthquake(edict_t *ent);
 void SP_target_character(edict_t *ent);
 void SP_target_string(edict_t *ent);
@@ -227,6 +228,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"target_help", SP_target_help},
     {"target_actor", SP_target_actor},
     {"target_lightramp", SP_target_lightramp},
+    {"target_sky", SP_target_sky},
     {"target_earthquake", SP_target_earthquake},
     {"target_character", SP_target_character},
     {"target_string", SP_target_string},
@@ -569,6 +571,16 @@ void ED_ParseEdict(const char **data, edict_t *ent, const char* pathList, int* m
         if (!ED_ParseField(spawn_fields, key, value, (byte *)ent)) {
             if (!ED_ParseField(temp_fields, key, value, (byte *)&st)) {
                 gi.dprintf("%s: %s is not a field\n", __func__, key);
+            } else {
+                // remember that the key was present at all, for target_sky
+                if (!Q_stricmp(key, "sky"))
+                    st.keys_specified |= SPAWNKEY_SKY;
+                else if (!Q_stricmp(key, "skyrotate"))
+                    st.keys_specified |= SPAWNKEY_SKYROTATE;
+                else if (!Q_stricmp(key, "skyautorotate"))
+                    st.keys_specified |= SPAWNKEY_SKYAUTOROTATE;
+                else if (!Q_stricmp(key, "skyaxis"))
+                    st.keys_specified |= SPAWNKEY_SKYAXIS;
             }
         }
     }
@@ -953,7 +965,8 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
                     continue;
                 }
             } else {
-                if ( /* ((coop->value) && (ent->spawnflags & SPAWNFLAG_NOT_COOP)) || */
+                if ( ((coop->value) && (ent->spawnflags & SPAWNFLAG_NOT_COOP)) ||
+                    (!(coop->value) && (ent->spawnflags & SPAWNFLAG_COOP_ONLY)) ||
                     ((skill->value == 0) && (ent->spawnflags & SPAWNFLAG_NOT_EASY)) ||
                     ((skill->value == 1) && (ent->spawnflags & SPAWNFLAG_NOT_MEDIUM)) ||
                     (((skill->value == 2) || (skill->value == 3)) && (ent->spawnflags & SPAWNFLAG_NOT_HARD))
@@ -964,7 +977,9 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
                 }
             }
 
-            ent->spawnflags &= ~(SPAWNFLAG_NOT_EASY | SPAWNFLAG_NOT_MEDIUM | SPAWNFLAG_NOT_HARD | SPAWNFLAG_NOT_COOP | SPAWNFLAG_NOT_DEATHMATCH);
+            ent->spawnflags &= ~(SPAWNFLAG_NOT_EASY | SPAWNFLAG_NOT_MEDIUM | SPAWNFLAG_NOT_HARD |
+                                 SPAWNFLAG_NOT_COOP | SPAWNFLAG_NOT_DEATHMATCH |
+                                 SPAWNFLAG_RESERVED1 | SPAWNFLAG_COOP_ONLY | SPAWNFLAG_RESERVED2);
         }
 
         ED_CallSpawn(ent);
@@ -1192,6 +1207,8 @@ void SP_worldspawn(edict_t *ent)
     else
         gi.configstring(CS_SKY, "unit1_");
 
+    level.sky_rotate = st.skyrotate;
+    level.sky_autorotate = st.skyautorotate;
     gi.configstring(CS_SKYROTATE, va("%f %d", st.skyrotate, st.skyautorotate));
 
     gi.configstring(CS_SKYAXIS, va("%f %f %f",

@@ -185,7 +185,7 @@ static int CheckPowerArmor(edict_t *ent, const vec3_t point, const vec3_t normal
 
     client = ent->client;
 
-    if (dflags & DAMAGE_NO_ARMOR)
+    if (dflags & (DAMAGE_NO_ARMOR | DAMAGE_NO_POWER_ARMOR))
         return 0;
 
     index = 0;  // shut up gcc
@@ -466,6 +466,15 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
 
     asave = CheckArmor(targ, point, normal, take, te_sparks, dflags);
     take -= asave;
+
+    // DAMAGE_DESTROY_ARMOR chews through the armor *and* still lands in full on
+    // health - rogue used it for the chainfist and DPU rounds. The armor loss
+    // above already happened; this just puts the damage back.
+    if (dflags & DAMAGE_DESTROY_ARMOR) {
+        if (!(targ->flags & FL_GODMODE) && !(dflags & DAMAGE_NO_PROTECTION) &&
+            !(client && client->invincible_framenum > level.framenum))
+            take = damage;
+    }
 
     //treat cheat/powerup savings the same as armor
     asave += save;

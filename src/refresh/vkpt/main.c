@@ -4666,39 +4666,41 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 	const char *suf[6] = { "ft", "bk", "up", "dn", "rt", "lf" };
 
 	byte *data = NULL;
+	// all six faces have to load, at a matching size, for the cube map to be usable
+	bool complete = name[0] != 0;
 
 	sky_rotation = rotate;
 	sky_autorotate = autorotate;
 	VectorNormalize2(axis, sky_axis);
 
 	int avg_color[3] = { 0 };
-	int w_prev, h_prev;
-	for (i = 0; i < 6; i++) {
+	int w_prev = 1, h_prev = 1;
+	for (i = 0; complete && i < 6; i++) {
 		Q_concat(pathname, sizeof(pathname), "env/", name, suf[i], ".tga");
 		FS_NormalizePath(pathname);
 		image_t *img = IMG_Find(pathname, IT_SKY, IF_NONE);
 
 		if(img == R_NOTEXTURE) {
-			if(data) {
-				Z_Free(data);
-			}
-			data = Z_Malloc(6 * sizeof(uint32_t));
-			for(int j = 0; j < 6; j++)
-				((uint32_t *)data)[j] = 0xff00ffffu;
-			w_prev = h_prev = 1;
+			complete = false;
 			break;
 		}
 
-		size_t s = img->upload_width * img->upload_height * 4;
 		if(!data) {
-			data = Z_Malloc(s * 6);
 			w_prev = img->upload_width;
 			h_prev = img->upload_height;
+			data = Z_Malloc((size_t)w_prev * h_prev * 4 * 6);
+		} else if (img->upload_width != w_prev || img->upload_height != h_prev) {
+			Com_WPrintf("Sky face %s is %dx%d, expected %dx%d\n", pathname,
+				img->upload_width, img->upload_height, w_prev, h_prev);
+			complete = false;
+			break;
 		}
+
+		size_t s = (size_t)w_prev * h_prev * 4;
 
 		memcpy(data + s * i, img->pix_data, s);
 
-		for (int p = 0; p < img->upload_width * img->upload_height; p++)
+		for (int p = 0; p < w_prev * h_prev; p++)
 		{
 			uint32_t pix = *((uint32_t*)img->pix_data + p);
 			avg_color[0] += pix & 0xff;
@@ -4706,14 +4708,24 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 			avg_color[2] += (pix >> 16) & 0xff;
 		}
 
-		assert(w_prev == img->upload_width);
-		assert(h_prev == img->upload_height);
-
 		List_Remove(&img->entry);
 
 		IMG_Unload(img);
 
 		memset(img, 0, sizeof(*img));
+	}
+
+	if (!complete) {
+		// no usable skybox: fall back to a 1x1 magenta cube map
+		if(data) {
+			Z_Free(data);
+		}
+		data = Z_Malloc(6 * sizeof(uint32_t));
+		for(int j = 0; j < 6; j++)
+			((uint32_t *)data)[j] = 0xff00ffffu;
+		w_prev = h_prev = 1;
+		avg_color[0] = avg_color[1] = 255 * 6;
+		avg_color[2] = 0;
 	}
 
 	float inv_num_pixels = 1.0f / (w_prev * h_prev * 6);
@@ -4726,6 +4738,11 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 
 	vkpt_textures_upload_envmap(w_prev, h_prev, data);
 	Z_Free(data);
+
+	// Let the sky renderer know whether this map brought a skybox of its own,
+	// and which game it came from - see sky_use_map_skybox.
+	vkpt_physical_sky_set_map_skybox(!complete ? MAP_SKYBOX_NONE :
+		(Q_stricmp(cl.gamedir, "rerelease") == 0 ? MAP_SKYBOX_RERELEASE : MAP_SKYBOX_OTHER));
 }
 
 void R_AddDecal_RTX(decal_t *d)

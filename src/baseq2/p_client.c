@@ -515,6 +515,8 @@ void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
 
     // remove powerups
     self->client->quad_framenum = 0;
+    self->client->double_framenum = 0;
+    self->client->quadfire_framenum = 0;
     self->client->invincible_framenum = 0;
     self->client->breather_framenum = 0;
     self->client->enviro_framenum = 0;
@@ -610,6 +612,10 @@ void InitClientPersistant(gclient_t *client)
     client->pers.max_grenades   = 50;
     client->pers.max_cells      = 200;
     client->pers.max_slugs      = 50;
+    client->pers.max_magslug    = 50;
+    client->pers.max_tesla      = 5;
+    client->pers.max_disruptor  = 100;
+    client->pers.max_trap       = 5;
 
     client->pers.connected = true;
 }
@@ -876,8 +882,28 @@ void    SelectSpawnPoint(edict_t *ent, vec3_t origin, vec3_t angles)
         }
     }
 
+
     VectorCopy(spot->s.origin, origin);
-    origin[2] += 9;
+
+    // Vanilla lifts the spawn 9 units to keep the player clear of the floor,
+    // and the base maps are authored around that. The rerelease does not lift
+    // at all, and its maps put info_player_start at the exact player origin -
+    // mgu1m1's drop pod is only 64 units tall against a 56 unit player, so the
+    // lift buries your head in the pod ceiling. Lift only if the player fits.
+    {
+        static const vec3_t p_mins = { -16, -16, -24 };
+        static const vec3_t p_maxs = {  16,  16,  32 };
+        vec3_t  lifted;
+        trace_t tr;
+
+        VectorCopy(origin, lifted);
+        lifted[2] += 9;
+
+        tr = gi.trace(lifted, p_mins, p_maxs, lifted, NULL, MASK_PLAYERSOLID);
+        if (!tr.startsolid && !tr.allsolid)
+            VectorCopy(lifted, origin);
+    }
+
     VectorCopy(spot->s.angles, angles);
 }
 

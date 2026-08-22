@@ -1257,3 +1257,950 @@ void fire_flaregun(edict_t *self, vec3_t start, vec3_t aimdir,
 	flare->timestamp = level.framenum + (int)(60.f * BASE_FRAMERATE); //live for 60 seconds 
 	gi.linkentity(flare);
 }
+
+/*
+=================
+fire_player_melee
+
+Rogue's generic player melee trace, used here by the chainfist. `quiet`
+suppresses the swing/hit/tink sounds - the chainfist always passes 1, which is
+just as well: weapons/swish.wav, meatht.wav and tink1.wav are not shipped in
+this install, so those branches are deliberately unreachable.
+=================
+*/
+void fire_player_melee(edict_t *self, vec3_t start, vec3_t aim, int reach,
+                       int damage, int kick, int quiet, int mod)
+{
+    vec3_t      forward, right, up;
+    vec3_t      v;
+    vec3_t      point;
+    trace_t     tr;
+
+    vectoangles(aim, v);
+    AngleVectors(v, forward, right, up);
+    VectorNormalize(forward);
+    VectorMA(start, reach, forward, point);
+
+    // see if the hit connects
+    tr = gi.trace(start, NULL, NULL, point, self, MASK_SHOT);
+
+    if (tr.fraction == 1.0f) {
+        if (!quiet)
+            gi.sound(self, CHAN_WEAPON, gi.soundindex("weapons/swish.wav"), 1, ATTN_NORM, 0);
+        return;
+    }
+
+    if (tr.ent->takedamage == DAMAGE_YES || tr.ent->takedamage == DAMAGE_AIM) {
+        // pull the player forward if you do damage
+        VectorMA(self->velocity, 75, forward, self->velocity);
+        VectorMA(self->velocity, 75, up, self->velocity);
+
+        if (mod == MOD_CHAINFIST)
+            T_Damage(tr.ent, self, self, vec3_origin, tr.ent->s.origin, vec3_origin,
+                     damage, kick / 2, DAMAGE_DESTROY_ARMOR | DAMAGE_NO_KNOCKBACK, mod);
+        else
+            T_Damage(tr.ent, self, self, vec3_origin, tr.ent->s.origin, vec3_origin,
+                     damage, kick / 2, DAMAGE_NO_KNOCKBACK, mod);
+
+        if (!quiet)
+            gi.sound(self, CHAN_WEAPON, gi.soundindex("weapons/meatht.wav"), 1, ATTN_NORM, 0);
+    } else {
+        if (!quiet)
+            gi.sound(self, CHAN_WEAPON, gi.soundindex("weapons/tink1.wav"), 1, ATTN_NORM, 0);
+
+        VectorScale(tr.plane.normal, 256, point);
+        gi.WriteByte(svc_temp_entity);
+        gi.WriteByte(TE_GUNSHOT);
+        gi.WritePosition(tr.endpos);
+        gi.WriteDir(point);
+        gi.multicast(tr.endpos, MULTICAST_PVS);
+    }
+}
+
+/*
+=================
+fire_beams / fire_heat
+
+The plasma beam (rogue's "heatbeam"). A hitscan beam re-traced through water,
+with the visible beam sent as a temp entity every frame it fires. The client
+already parses and draws TE_HEATBEAM, TE_HEATBEAM_SPARKS and TE_HEATBEAM_STEAM,
+so nothing was needed on that side.
+=================
+*/
+static void fire_beams(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset,
+                       int damage, int kick, int te_beam, int te_impact, int mod)
+{
+    trace_t     tr;
+    vec3_t      dir;
+    vec3_t      forward, right, up;
+    vec3_t      end;
+    vec3_t      water_start, endpoint;
+    bool        water = false, underwater = false;
+    int         content_mask = MASK_SHOT | MASK_WATER;
+    vec3_t      beam_endpt;
+
+    vectoangles(aimdir, dir);
+    AngleVectors(dir, forward, right, up);
+
+    VectorMA(start, 8192, forward, end);
+
+    if (gi.pointcontents(start) & MASK_WATER) {
+        underwater = true;
+        VectorCopy(start, water_start);
+        content_mask &= ~MASK_WATER;
+    }
+
+    tr = gi.trace(start, NULL, NULL, end, self, content_mask);
+
+    // see if we hit water
+    if (tr.contents & MASK_WATER) {
+        water = true;
+        VectorCopy(tr.endpos, water_start);
+
+        if (!VectorCompare(start, tr.endpos)) {
+            gi.WriteByte(svc_temp_entity);
+            gi.WriteByte(te_impact);
+            gi.WritePosition(water_start);
+            gi.WriteDir(tr.plane.normal);
+            gi.multicast(tr.endpos, MULTICAST_PVS);
+        }
+
+        // re-trace ignoring water this time
+        tr = gi.trace(water_start, NULL, NULL, end, self, MASK_SHOT);
+    }
+
+    VectorCopy(tr.endpos, endpoint);
+
+    // halve the damage if the target is underwater
+    if (water)
+        damage = damage / 2;
+
+    if (!(tr.surface && (tr.surface->flags & SURF_SKY))) {
+        if (tr.fraction < 1.0f) {
+            if (tr.ent->takedamage) {
+                T_Damage(tr.ent, self, self, aimdir, tr.endpos, tr.plane.normal,
+                         damage, kick, DAMAGE_ENERGY, mod);
+            } else if (!water && strncmp(tr.surface->name, "sky", 3)) {
+                gi.WriteByte(svc_temp_entity);
+                gi.WriteByte(TE_HEATBEAM_STEAM);
+                gi.WritePosition(tr.endpos);
+                gi.WriteDir(tr.plane.normal);
+                gi.multicast(tr.endpos, MULTICAST_PVS);
+
+                if (self->client)
+                    PlayerNoise(self, tr.endpos, PNOISE_IMPACT);
+            }
+        }
+    }
+
+    // if it went through water, find the end and make a bubble trail
+    if (water || underwater) {
+        vec3_t  pos;
+
+        VectorSubtract(tr.endpos, water_start, dir);
+        VectorNormalize(dir);
+        VectorMA(tr.endpos, -2, dir, pos);
+
+        if (gi.pointcontents(pos) & MASK_WATER)
+            VectorCopy(pos, tr.endpos);
+        else
+            tr = gi.trace(pos, NULL, NULL, water_start, tr.ent, MASK_WATER);
+
+        VectorAdd(water_start, tr.endpos, pos);
+        VectorScale(pos, 0.5f, pos);
+
+        gi.WriteByte(svc_temp_entity);
+        gi.WriteByte(TE_BUBBLETRAIL2);
+        gi.WritePosition(water_start);
+        gi.WritePosition(tr.endpos);
+        gi.multicast(pos, MULTICAST_PVS);
+    }
+
+    if (!underwater && !water)
+        VectorCopy(tr.endpos, beam_endpt);
+    else
+        VectorCopy(endpoint, beam_endpt);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(te_beam);
+    gi.WriteShort(self - g_edicts);
+    gi.WritePosition(start);
+    gi.WritePosition(beam_endpt);
+    gi.multicast(self->s.origin, MULTICAST_ALL);
+}
+
+void fire_heat(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset,
+               int damage, int kick, bool monster)
+{
+    if (monster)
+        fire_beams(self, start, aimdir, offset, damage, kick,
+                   TE_MONSTER_HEATBEAM, TE_HEATBEAM_SPARKS, MOD_HEATBEAM);
+    else
+        fire_beams(self, start, aimdir, offset, damage, kick,
+                   TE_HEATBEAM, TE_HEATBEAM_SPARKS, MOD_HEATBEAM);
+}
+
+/*
+======================================================================
+
+TESLA MINE (rogue)
+
+The "land mines" the MGU maps scatter around - 18 of them in scope, 5 in mgu5m1
+alone. Thrown like a grenade, it bounces, unfolds over ~1.5s, then spawns a
+SOLID_TRIGGER child covering its zap radius and electrocutes anything damageable
+that it can see, until its life runs out or it is shot.
+
+All timing is converted from rogue's float level.time to this tree's integer
+level.framenum. Note the child trigger is held on teamchain, so tesla_remove
+must free it - a tesla that dies without one is a bug and says so.
+
+======================================================================
+*/
+
+#define TESLA_TIME_TO_LIVE          30
+#define TESLA_DAMAGE_RADIUS         128
+#define TESLA_DAMAGE                3
+#define TESLA_KNOCKBACK             8
+#define TESLA_ACTIVATE_TIME         3
+#define TESLA_EXPLOSION_DAMAGE_MULT 50
+#define TESLA_EXPLOSION_RADIUS      200
+
+void tesla_remove(edict_t *self)
+{
+    edict_t *cur, *next;
+
+    self->takedamage = DAMAGE_NO;
+
+    if (self->teamchain) {
+        cur = self->teamchain;
+        while (cur) {
+            next = cur->teamchain;
+            G_FreeEdict(cur);
+            cur = next;
+        }
+    } else if (self->air_finished_framenum) {
+        gi.dprintf("tesla without a field!\n");
+    }
+
+    self->owner = self->teammaster;     // going away, set the owner correctly
+    self->enemy = NULL;
+
+    // play the quad sound if quadded and it is an underwater explosion
+    if (self->dmg_radius && self->dmg > TESLA_DAMAGE * TESLA_EXPLOSION_DAMAGE_MULT)
+        gi.sound(self, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+
+    Grenade_Explode(self);
+}
+
+void tesla_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
+{
+    tesla_remove(self);
+}
+
+static void tesla_blow(edict_t *self)
+{
+    self->dmg = self->dmg * TESLA_EXPLOSION_DAMAGE_MULT;
+    self->dmg_radius = TESLA_EXPLOSION_RADIUS;
+    tesla_remove(self);
+}
+
+// the trigger exists only so BoxEdicts has something to size the field from;
+// all the damage is done in tesla_think_active
+void tesla_zap(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+}
+
+void tesla_think_active(edict_t *self)
+{
+    int         i, num;
+    edict_t     *touch[MAX_EDICTS], *hit;
+    vec3_t      dir, start;
+    trace_t     tr;
+
+    if (level.framenum > self->air_finished_framenum) {
+        tesla_remove(self);
+        return;
+    }
+
+    VectorCopy(self->s.origin, start);
+    start[2] += 16;
+
+    num = gi.BoxEdicts(self->teamchain->absmin, self->teamchain->absmax,
+                       touch, MAX_EDICTS, AREA_SOLID);
+
+    for (i = 0; i < num; i++) {
+        // if the tesla died while zapping things, stop zapping
+        if (!self->inuse)
+            break;
+
+        hit = touch[i];
+        if (!hit->inuse)
+            continue;
+        if (hit == self)
+            continue;
+        if (hit->health < 1)
+            continue;
+
+        // don't hit clients in single-player or coop
+        if (hit->client && (coop->value || !deathmatch->value))
+            continue;
+
+        if (!(hit->svflags & (SVF_MONSTER | SVF_DAMAGEABLE)) && !hit->client)
+            continue;
+
+        tr = gi.trace(start, vec3_origin, vec3_origin, hit->s.origin, self, MASK_SHOT);
+
+        if (tr.fraction == 1 || tr.ent == hit) {
+            VectorSubtract(hit->s.origin, start, dir);
+
+            // play the quad sound if it is above the "normal" damage
+            if (self->dmg > TESLA_DAMAGE)
+                gi.sound(self, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+
+            // don't do knockback to walking monsters
+            if ((hit->svflags & SVF_MONSTER) && !(hit->flags & (FL_FLY | FL_SWIM)))
+                T_Damage(hit, self, self->teammaster, dir, tr.endpos, tr.plane.normal,
+                         self->dmg, 0, 0, MOD_TESLA);
+            else
+                T_Damage(hit, self, self->teammaster, dir, tr.endpos, tr.plane.normal,
+                         self->dmg, TESLA_KNOCKBACK, 0, MOD_TESLA);
+
+            gi.WriteByte(svc_temp_entity);
+            gi.WriteByte(TE_LIGHTNING);
+            gi.WriteShort(hit - g_edicts);      // destination entity
+            gi.WriteShort(self - g_edicts);     // source entity
+            gi.WritePosition(tr.endpos);
+            gi.WritePosition(start);
+            gi.multicast(start, MULTICAST_PVS);
+        }
+    }
+
+    if (self->inuse) {
+        self->think = tesla_think_active;
+        self->nextthink = level.framenum + 1;
+    }
+}
+
+void tesla_activate(edict_t *self)
+{
+    edict_t *trigger;
+    edict_t *search;
+
+    if (gi.pointcontents(self->s.origin) & (CONTENTS_SLIME | CONTENTS_LAVA | CONTENTS_WATER)) {
+        tesla_blow(self);
+        return;
+    }
+
+    // only check for spawn points in deathmatch
+    if (deathmatch->value) {
+        search = NULL;
+        while ((search = findradius(search, self->s.origin, 1.5f * TESLA_DAMAGE_RADIUS)) != NULL) {
+            if (search->classname &&
+                (!strcmp(search->classname, "info_player_deathmatch") ||
+                 !strcmp(search->classname, "info_player_start") ||
+                 !strcmp(search->classname, "info_player_coop") ||
+                 !strcmp(search->classname, "misc_teleporter_dest")) &&
+                visible(search, self)) {
+                tesla_remove(self);
+                return;
+            }
+        }
+    }
+
+    trigger = G_Spawn();
+    VectorCopy(self->s.origin, trigger->s.origin);
+    VectorSet(trigger->mins, -TESLA_DAMAGE_RADIUS, -TESLA_DAMAGE_RADIUS, self->mins[2]);
+    VectorSet(trigger->maxs, TESLA_DAMAGE_RADIUS, TESLA_DAMAGE_RADIUS, TESLA_DAMAGE_RADIUS);
+    trigger->movetype = MOVETYPE_NONE;
+    trigger->solid = SOLID_TRIGGER;
+    trigger->owner = self;
+    trigger->touch = tesla_zap;
+    trigger->classname = "tesla trigger";
+
+    // does not need to be a teamslave: the bounce move code looks for teamchains
+    gi.linkentity(trigger);
+
+    VectorClear(self->s.angles);
+
+    // clear the owner in deathmatch so it can zap the thrower too
+    if (deathmatch->value)
+        self->owner = NULL;
+
+    self->teamchain = trigger;
+    self->think = tesla_think_active;
+    self->nextthink = level.framenum + 1;
+    self->air_finished_framenum = level.framenum + TESLA_TIME_TO_LIVE * BASE_FRAMERATE;
+}
+
+void tesla_think(edict_t *ent)
+{
+    if (gi.pointcontents(ent->s.origin) & (CONTENTS_SLIME | CONTENTS_LAVA)) {
+        tesla_remove(ent);
+        return;
+    }
+
+    VectorClear(ent->s.angles);
+
+    if (!ent->s.frame)
+        gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/teslaopen.wav"), 1, ATTN_NORM, 0);
+
+    ent->s.frame++;
+
+    if (ent->s.frame > 14) {
+        ent->s.frame = 14;
+        ent->think = tesla_activate;
+        ent->nextthink = level.framenum + 1;
+    } else {
+        // the unfolding animation swaps skins as the legs come out
+        if (ent->s.frame > 9) {
+            if (ent->s.frame == 10) {
+                if (ent->owner && ent->owner->client)
+                    PlayerNoise(ent->owner, ent->s.origin, PNOISE_WEAPON);
+                ent->s.skinnum = 1;
+            } else if (ent->s.frame == 12) {
+                ent->s.skinnum = 2;
+            } else if (ent->s.frame == 14) {
+                ent->s.skinnum = 3;
+            }
+        }
+
+        ent->think = tesla_think;
+        ent->nextthink = level.framenum + 1;
+    }
+}
+
+void tesla_lava(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    vec3_t  land_point;
+
+    if (!plane)
+        return;
+
+    VectorMA(ent->s.origin, -20.0f, plane->normal, land_point);
+
+    if (gi.pointcontents(land_point) & (CONTENTS_SLIME | CONTENTS_LAVA)) {
+        tesla_blow(ent);
+        return;
+    }
+
+    if (random() > 0.5f)
+        gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/hgrenb1a.wav"), 1, ATTN_NORM, 0);
+    else
+        gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/hgrenb2a.wav"), 1, ATTN_NORM, 0);
+}
+
+void fire_tesla(edict_t *self, vec3_t start, vec3_t aimdir, int damage_mult, int speed)
+{
+    edict_t *tesla;
+    vec3_t  dir;
+    vec3_t  forward, right, up;
+
+    vectoangles(aimdir, dir);
+    AngleVectors(dir, forward, right, up);
+
+    tesla = G_Spawn();
+    VectorCopy(start, tesla->s.origin);
+    VectorScale(aimdir, speed, tesla->velocity);
+    VectorMA(tesla->velocity, 200 + crandom() * 10.0f, up, tesla->velocity);
+    VectorMA(tesla->velocity, crandom() * 10.0f, right, tesla->velocity);
+    VectorClear(tesla->s.angles);
+    tesla->movetype = MOVETYPE_BOUNCE;
+    tesla->solid = SOLID_BBOX;
+    tesla->s.effects |= EF_GRENADE;
+    tesla->s.renderfx |= RF_IR_VISIBLE;
+    VectorSet(tesla->mins, -12, -12, 0);
+    VectorSet(tesla->maxs, 12, 12, 20);
+    tesla->s.modelindex = gi.modelindex("models/weapons/g_tesla/tris.md2");
+
+    tesla->owner = self;
+    tesla->teammaster = self;
+
+    tesla->think = tesla_think;
+    tesla->nextthink = level.framenum + TESLA_ACTIVATE_TIME * BASE_FRAMERATE;
+
+    // blow up on contact with lava or slime
+    tesla->touch = tesla_lava;
+
+    if (deathmatch->value)
+        tesla->health = 20;
+    else
+        tesla->health = 30;
+
+    tesla->takedamage = DAMAGE_YES;
+    tesla->die = tesla_die;
+    tesla->dmg = TESLA_DAMAGE * damage_mult;
+    tesla->classname = "tesla";
+    tesla->svflags |= SVF_DAMAGEABLE;
+    tesla->clipmask = MASK_SHOT | CONTENTS_SLIME | CONTENTS_LAVA;
+
+    gi.linkentity(tesla);
+}
+
+/*
+======================================================================
+
+DISRUPTOR / TRACKER (rogue)
+
+The disintegrator fires a homing bolt that latches onto whatever the player was
+aiming at and then keeps hurting it over half a second via a separate "pain
+daemon" entity, rather than doing its damage in one hit. That is why it needs an
+enemy at fire time - Weapon_Disintegrator traces for one first.
+
+EF_TRACKER, EF_TRACKERTRAIL and TE_TRACKER_EXPLOSION already exist in shared.h
+and are all drawn by the client, so nothing was needed on that side.
+
+======================================================================
+*/
+
+#define TRACKER_DAMAGE_FLAGS    (DAMAGE_NO_POWER_ARMOR | DAMAGE_ENERGY | DAMAGE_NO_KNOCKBACK)
+#define TRACKER_IMPACT_FLAGS    (DAMAGE_NO_POWER_ARMOR | DAMAGE_ENERGY)
+#define TRACKER_DAMAGE_TIME     0.5f
+
+void tracker_pain_daemon_think(edict_t *self)
+{
+    static const vec3_t pain_normal = { 0, 0, 1 };
+    int     hurt;
+
+    if (!self->inuse)
+        return;
+
+    if (level.framenum - self->timestamp > TRACKER_DAMAGE_TIME * BASE_FRAMERATE) {
+        if (!self->enemy->client)
+            self->enemy->s.effects &= ~EF_TRACKERTRAIL;
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (self->enemy->health > 0) {
+        T_Damage(self->enemy, self, self->owner, vec3_origin, self->enemy->s.origin,
+                 pain_normal, self->dmg, 0, TRACKER_DAMAGE_FLAGS, MOD_TRACKER);
+
+        // if we killed the player we will have been removed with them
+        if (self->inuse) {
+            // if we killed a monster, gib them
+            if (self->enemy->health < 1) {
+                if (self->enemy->gib_health)
+                    hurt = -self->enemy->gib_health;
+                else
+                    hurt = 500;
+
+                T_Damage(self->enemy, self, self->owner, vec3_origin, self->enemy->s.origin,
+                         pain_normal, hurt, 0, TRACKER_DAMAGE_FLAGS, MOD_TRACKER);
+            }
+
+            if (self->enemy->client)
+                self->enemy->client->tracker_pain_framenum = level.framenum + 1;
+            else
+                self->enemy->s.effects |= EF_TRACKERTRAIL;
+
+            self->nextthink = level.framenum + 1;
+        }
+    } else {
+        if (!self->enemy->client)
+            self->enemy->s.effects &= ~EF_TRACKERTRAIL;
+        G_FreeEdict(self);
+    }
+}
+
+static void tracker_pain_daemon_spawn(edict_t *owner, edict_t *enemy, int damage)
+{
+    edict_t *daemon;
+
+    if (!owner || !enemy)
+        return;
+
+    daemon = G_Spawn();
+    daemon->classname = "pain daemon";
+    daemon->think = tracker_pain_daemon_think;
+    daemon->nextthink = level.framenum + 1;
+    daemon->timestamp = level.framenum;
+    daemon->owner = owner;
+    daemon->enemy = enemy;
+    daemon->dmg = damage;
+}
+
+static void tracker_explode(edict_t *self, cplane_t *plane)
+{
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_TRACKER_EXPLOSION);
+    gi.WritePosition(self->s.origin);
+    gi.multicast(self->s.origin, MULTICAST_PVS);
+
+    G_FreeEdict(self);
+}
+
+void tracker_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    float   damagetime;
+
+    if (other == self->owner)
+        return;
+
+    if (surf && (surf->flags & SURF_SKY)) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (self->client)
+        PlayerNoise(self->owner, self->s.origin, PNOISE_IMPACT);
+
+    if (other->takedamage) {
+        if ((other->svflags & SVF_MONSTER) || other->client) {
+            if (other->health > 0) {    // knockback only for living creatures
+                T_Damage(other, self, self->owner, self->velocity, self->s.origin,
+                         plane ? plane->normal : vec3_origin, 0, self->dmg * 3,
+                         TRACKER_IMPACT_FLAGS, MOD_TRACKER);
+
+                if (!(other->flags & (FL_FLY | FL_SWIM)))
+                    other->velocity[2] += 140;
+
+                damagetime = ((float)self->dmg) * FRAMETIME;
+                damagetime = damagetime / TRACKER_DAMAGE_TIME;
+
+                tracker_pain_daemon_spawn(self->owner, other, (int)damagetime);
+            } else {    // lots of damage (almost autogib) for dead bodies
+                T_Damage(other, self, self->owner, self->velocity, self->s.origin,
+                         plane ? plane->normal : vec3_origin, self->dmg * 4, self->dmg * 3,
+                         TRACKER_IMPACT_FLAGS, MOD_TRACKER);
+            }
+        } else {    // full damage in one shot for inanimate objects
+            T_Damage(other, self, self->owner, self->velocity, self->s.origin,
+                     plane ? plane->normal : vec3_origin, self->dmg, self->dmg * 3,
+                     TRACKER_IMPACT_FLAGS, MOD_TRACKER);
+        }
+    }
+
+    tracker_explode(self, plane);
+}
+
+void tracker_fly(edict_t *self)
+{
+    vec3_t  dest;
+    vec3_t  dir;
+    vec3_t  center;
+
+    if (!self->enemy || !self->enemy->inuse || self->enemy->health < 1) {
+        tracker_explode(self, NULL);
+        return;
+    }
+
+    // hunt for the centre of the enemy where we can work it out
+    if (self->enemy->client) {
+        VectorCopy(self->enemy->s.origin, dest);
+        dest[2] += self->enemy->viewheight;
+    } else if (VectorCompare(self->enemy->absmin, vec3_origin) ||
+               VectorCompare(self->enemy->absmax, vec3_origin)) {
+        VectorCopy(self->enemy->s.origin, dest);
+    } else {
+        VectorMA(vec3_origin, 0.5f, self->enemy->absmin, center);
+        VectorMA(center, 0.5f, self->enemy->absmax, center);
+        VectorCopy(center, dest);
+    }
+
+    VectorSubtract(dest, self->s.origin, dir);
+    VectorNormalize(dir);
+    vectoangles(dir, self->s.angles);
+    VectorScale(dir, self->speed, self->velocity);
+    VectorCopy(dest, self->monsterinfo.saved_goal);
+
+    self->nextthink = level.framenum + 1;
+}
+
+void fire_tracker(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, edict_t *enemy)
+{
+    edict_t *bolt;
+    trace_t tr;
+
+    VectorNormalize(dir);
+
+    bolt = G_Spawn();
+    VectorCopy(start, bolt->s.origin);
+    VectorCopy(start, bolt->s.old_origin);
+    vectoangles(dir, bolt->s.angles);
+    VectorScale(dir, speed, bolt->velocity);
+    bolt->movetype = MOVETYPE_FLYMISSILE;
+    bolt->clipmask = MASK_SHOT;
+    bolt->solid = SOLID_BBOX;
+    bolt->speed = speed;
+    bolt->s.effects = EF_TRACKER;
+    bolt->s.sound = gi.soundindex("weapons/disrupt.wav");
+    VectorClear(bolt->mins);
+    VectorClear(bolt->maxs);
+
+    bolt->s.modelindex = gi.modelindex("models/proj/disintegrator/tris.md2");
+    bolt->touch = tracker_touch;
+    bolt->enemy = enemy;
+    bolt->owner = self;
+    bolt->dmg = damage;
+    bolt->classname = "tracker";
+    gi.linkentity(bolt);
+
+    if (enemy) {
+        bolt->nextthink = level.framenum + 1;
+        bolt->think = tracker_fly;
+    } else {
+        bolt->nextthink = level.framenum + 10 * BASE_FRAMERATE;
+        bolt->think = G_FreeEdict;
+    }
+
+    if (self->client)
+        check_dodge(self, bolt->s.origin, dir, speed);
+
+    tr = gi.trace(self->s.origin, NULL, NULL, bolt->s.origin, bolt, MASK_SHOT);
+    if (tr.fraction < 1.0f) {
+        VectorMA(bolt->s.origin, -10, dir, bolt->s.origin);
+        bolt->touch(bolt, tr.ent, NULL, NULL);
+    }
+}
+
+/*
+======================================================================
+
+TRAP (xatrix)
+
+Thrown like a grenade. Once it lands it opens, drags the nearest living thing
+into itself, kills it outright, sprays blood while it digests, and finally
+coughs up a food cube worth a fraction of the victim's mass.
+
+The client already draws EF_TRAP, so nothing was needed on that side.
+
+======================================================================
+*/
+
+void Trap_Think(edict_t *ent)
+{
+    edict_t *target = NULL;
+    edict_t *best = NULL;
+    vec3_t  vec;
+    int     len, i;
+    int     oldlen = 8000;
+    vec3_t  forward, right, up;
+
+    if (ent->timestamp < level.framenum) {
+        BecomeExplosion1(ent);
+        return;
+    }
+
+    ent->nextthink = level.framenum + 1;
+
+    if (!ent->groundentity)
+        return;
+
+    // digesting: spray blood in a slowly shrinking ring
+    if (ent->s.frame > 4) {
+        if (ent->s.frame == 5) {
+            if (ent->wait == 64)
+                gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/trapdown.wav"), 1, ATTN_IDLE, 0);
+
+            ent->wait -= 2;
+            ent->delay += level.time;
+
+            for (i = 0; i < 3; i++) {
+                float   ang, c, s;
+
+                best = G_Spawn();
+
+                if (ent->enemy && !strcmp(ent->enemy->classname, "monster_gekk")) {
+                    best->s.modelindex = gi.modelindex("models/objects/gekkgib/torso/tris.md2");
+                    best->s.effects |= TE_GREENBLOOD;
+                } else if (ent->mass > 200) {
+                    best->s.modelindex = gi.modelindex("models/objects/gibs/chest/tris.md2");
+                    best->s.effects |= TE_BLOOD;
+                } else {
+                    best->s.modelindex = gi.modelindex("models/objects/gibs/sm_meat/tris.md2");
+                    best->s.effects |= TE_BLOOD;
+                }
+
+                AngleVectors(ent->s.angles, forward, right, up);
+
+                // xatrix calls RotatePointAroundVector(vec, up, right, ang) here.
+                // That helper (and the PerpendicularVector / R_ConcatRotations it
+                // needs) does not exist in this tree, but it is not needed: right
+                // and forward already span the plane perpendicular to up, so the
+                // rotation of `right` about `up` is exactly this.
+                ang = DEG2RAD((360.0f / 3) * i + ent->delay);
+                c = cosf(ang);
+                s = sinf(ang);
+                VectorScale(right, c, vec);
+                VectorMA(vec, s, forward, vec);
+
+                VectorMA(vec, ent->wait / 2, vec, vec);
+                VectorAdd(vec, ent->s.origin, vec);
+                VectorAdd(vec, forward, best->s.origin);
+
+                best->s.origin[2] = ent->s.origin[2] + ent->wait;
+
+                VectorCopy(ent->s.angles, best->s.angles);
+
+                best->solid = SOLID_NOT;
+                best->s.effects |= EF_GIB;
+                best->takedamage = DAMAGE_YES;
+
+                best->movetype = MOVETYPE_TOSS;
+                best->svflags |= SVF_MONSTER;
+                best->deadflag = DEAD_DEAD;
+
+                VectorClear(best->mins);
+                VectorClear(best->maxs);
+
+                best->watertype = gi.pointcontents(best->s.origin);
+                if (best->watertype & MASK_WATER)
+                    best->waterlevel = 1;
+
+                best->nextthink = level.framenum + 1;
+                best->think = G_FreeEdict;
+                gi.linkentity(best);
+            }
+
+            if (ent->wait < 19)
+                ent->s.frame++;
+
+            return;
+        }
+
+        ent->s.frame++;
+
+        if (ent->s.frame == 8) {
+            ent->nextthink = level.framenum + 1 * BASE_FRAMERATE;
+            ent->think = G_FreeEdict;
+
+            best = G_Spawn();
+            SP_item_foodcube(best);
+            VectorCopy(ent->s.origin, best->s.origin);
+            best->s.origin[2] += 16;
+            best->velocity[2] = 400;
+            best->count = ent->mass;
+            gi.linkentity(best);
+            return;
+        }
+
+        return;
+    }
+
+    ent->s.effects &= ~EF_TRAP;
+
+    if (ent->s.frame >= 4) {
+        ent->s.effects |= EF_TRAP;
+        VectorClear(ent->mins);
+        VectorClear(ent->maxs);
+    }
+
+    if (ent->s.frame < 4)
+        ent->s.frame++;
+
+    // find the closest visible living thing
+    while ((target = findradius(target, ent->s.origin, 256)) != NULL) {
+        if (target == ent)
+            continue;
+        if (!(target->svflags & SVF_MONSTER) && !target->client)
+            continue;
+        if (target->health <= 0)
+            continue;
+        if (!visible(ent, target))
+            continue;
+
+        if (!best) {
+            best = target;
+            continue;
+        }
+
+        VectorSubtract(ent->s.origin, target->s.origin, vec);
+        len = VectorLength(vec);
+
+        if (len < oldlen) {
+            oldlen = len;
+            best = target;
+        }
+    }
+
+    // pull the enemy in
+    if (best) {
+        vec3_t  fwd;
+
+        if (best->groundentity) {
+            best->s.origin[2] += 1;
+            best->groundentity = NULL;
+        }
+
+        VectorSubtract(ent->s.origin, best->s.origin, vec);
+        len = VectorLength(vec);
+
+        if (best->client) {
+            VectorNormalize(vec);
+            VectorMA(best->velocity, 250, vec, best->velocity);
+        } else {
+            best->ideal_yaw = vectoyaw(vec);
+            M_ChangeYaw(best);
+            AngleVectors(best->s.angles, fwd, NULL, NULL);
+            VectorScale(fwd, 256, best->velocity);
+        }
+
+        gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/trapsuck.wav"), 1, ATTN_IDLE, 0);
+
+        if (len < 32) {
+            if (best->mass < 400) {
+                T_Damage(best, ent, ent->owner, vec3_origin, best->s.origin,
+                         vec3_origin, 100000, 1, 0, MOD_TRAP);
+                ent->enemy = best;
+                ent->wait = 64;
+                VectorCopy(ent->s.origin, ent->s.old_origin);
+                ent->timestamp = level.framenum + 30 * BASE_FRAMERATE;
+
+                if (deathmatch->value)
+                    ent->mass = best->mass / 4;
+                else
+                    ent->mass = best->mass / 10;
+
+                // start digesting
+                ent->s.frame = 5;
+            } else {
+                // too big to swallow
+                BecomeExplosion1(ent);
+                return;
+            }
+        }
+    }
+}
+
+void fire_trap(edict_t *self, vec3_t start, vec3_t aimdir, int damage,
+               int speed, float timer, float damage_radius, bool held)
+{
+    edict_t *trap;
+    vec3_t  dir;
+    vec3_t  forward, right, up;
+
+    vectoangles(aimdir, dir);
+    AngleVectors(dir, forward, right, up);
+
+    trap = G_Spawn();
+    VectorCopy(start, trap->s.origin);
+    VectorScale(aimdir, speed, trap->velocity);
+    VectorMA(trap->velocity, 200 + crandom() * 10.0f, up, trap->velocity);
+    VectorMA(trap->velocity, crandom() * 10.0f, right, trap->velocity);
+    VectorSet(trap->avelocity, 0, 300, 0);
+    trap->movetype = MOVETYPE_BOUNCE;
+    trap->clipmask = MASK_SHOT;
+    trap->solid = SOLID_BBOX;
+    VectorSet(trap->mins, -4, -4, 0);
+    VectorSet(trap->maxs, 4, 4, 8);
+    trap->s.modelindex = gi.modelindex("models/weapons/z_trap/tris.md2");
+    trap->owner = self;
+    trap->nextthink = level.framenum + 1 * BASE_FRAMERATE;
+    trap->think = Trap_Think;
+    trap->dmg = damage;
+    trap->dmg_radius = damage_radius;
+    trap->classname = "htrap";
+    trap->s.sound = gi.soundindex("weapons/traploop.wav");
+
+    if (held)
+        trap->spawnflags = 3;
+    else
+        trap->spawnflags = 1;
+
+    if (timer <= 0.0f)
+        Grenade_Explode(trap);
+    else
+        gi.linkentity(trap);
+
+    trap->timestamp = level.framenum + 30 * BASE_FRAMERATE;
+}

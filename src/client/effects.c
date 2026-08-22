@@ -324,6 +324,20 @@ void CL_MuzzleFlash(void)
 		dl->radius = 0;
 		S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/flaregun.wav"), volume, ATTN_NORM, 0);
 		break;
+
+	// A bare red light, no particles and no sound. Unlike a real muzzle flash
+	// this sits on the entity rather than at the end of a gun barrel, so the
+	// forward/right offset applied above is undone - the MGU drop pod is only
+	// 32 units across and the offset would put the light outside its walls.
+	case MZ_PODLIGHT:
+		VectorCopy(pl->current.origin, dl->origin);
+		dl->origin[2] += 16;
+		VectorSet(dl->color, 1.0f, 0.0f, 0.0f);              // pure red
+		dl->radius = 80 + (Q_rand() & 63);                   // 80 .. 143
+		// Shorter than the 100ms think interval so each pulse has a real
+		// off-phase, and jittered so the strobe never settles into a rhythm.
+		dl->die = cl.time + 35 + (Q_rand() & 31);            // 35 .. 66ms
+		break;
 	// Q2RTX
     }
 

@@ -806,10 +806,13 @@ void target_earthquake_think(edict_t *self)
         if (!e->groundentity)
             continue;
 
-        e->groundentity = NULL;
-        e->velocity[0] += crandom() * 150;
-        e->velocity[1] += crandom() * 150;
-        e->velocity[2] = self->speed * (100.0f / e->mass);
+        // The rerelease made this a pure screen shake - its own QUAKED comment
+        // says "All players are affected with a screen shake" - and the MGU maps
+        // are tuned for that. Vanilla instead threw the player upward at
+        // speed * (100/mass), which for mgu1m1's speed 1600 is 800 u/s and
+        // launches you straight out of the 64-unit drop pod before it can eject
+        // you. Do not restore the impulse without re-tuning every MGU quake.
+        e->client->quake_framenum = level.framenum + 1 * BASE_FRAMERATE;
     }
 
     if (level.framenum < self->timestamp)
@@ -900,4 +903,64 @@ void SP_target_anger(edict_t *self)
 
     self->use = target_anger_use;
     self->svflags = SVF_NOCLIENT;
+}
+
+/*QUAKED target_sky (.5 .5 .5) (-8 -8 -8) (8 8 8)
+Changes the sky (and/or its rotation) when used.
+
+Every MGU unit opener fires one of these from droppod_tele, so the sky swaps to
+the destination environment at the moment the drop pod ejects you: mgu2m1 to
+unit3_, mgu3m1 to ruined_earth_city_, mgu5m1 to strogg_moon_.
+
+"sky"           new sky basename
+"skyrotate"     rotation speed in degrees/second
+"skyautorotate" 0 to stop rotating, 1 to rotate with time
+"skyaxis"       axis to rotate around
+
+Absent keys are left alone, which is why these have to be tracked separately
+from their values - mgu3m1 deliberately sets skyrotate 0 to halt the sky.
+*/
+void use_target_sky(edict_t *self, edict_t *other, edict_t *activator)
+{
+    if (self->map)
+        gi.configstring(CS_SKY, self->map);
+
+    if (self->count & 3) {
+        // only overwrite the half this entity actually specified; the other
+        // half comes from level.sky_* rather than a configstring read-back,
+        // which this game import does not offer.
+        if (self->count & 1)
+            level.sky_rotate = self->accel;
+        if (self->count & 2)
+            level.sky_autorotate = self->style;
+
+        gi.configstring(CS_SKYROTATE, va("%f %d", level.sky_rotate, level.sky_autorotate));
+    }
+
+    if (self->count & 4)
+        gi.configstring(CS_SKYAXIS, va("%f %f %f",
+                                       self->movedir[0], self->movedir[1], self->movedir[2]));
+}
+
+void SP_target_sky(edict_t *self)
+{
+    self->use = use_target_sky;
+
+    if (st.keys_specified & SPAWNKEY_SKY)
+        self->map = st.sky;
+
+    if (st.keys_specified & SPAWNKEY_SKYAXIS) {
+        self->count |= 4;
+        VectorCopy(st.skyaxis, self->movedir);
+    }
+
+    if (st.keys_specified & SPAWNKEY_SKYROTATE) {
+        self->count |= 1;
+        self->accel = st.skyrotate;
+    }
+
+    if (st.keys_specified & SPAWNKEY_SKYAUTOROTATE) {
+        self->count |= 2;
+        self->style = st.skyautorotate;
+    }
 }

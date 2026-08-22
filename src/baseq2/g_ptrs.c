@@ -341,6 +341,7 @@ extern void door_use(void);
 extern void DoRespawn(void);
 extern void drop_make_touchable(void);
 extern void drop_temp_touch(void);
+extern void droppod_light_think(void);
 extern void droptofloor(void);
 extern void flare_think(void);
 extern void flare_touch(void);
@@ -574,6 +575,12 @@ extern void target_lightramp_think(void);
 extern void target_lightramp_use(void);
 extern void target_string_use(void);
 extern void teleporter_touch(void);
+extern void tesla_activate(void);
+extern void tesla_die(void);
+extern void tesla_lava(void);
+extern void tesla_think(void);
+extern void tesla_think_active(void);
+extern void tesla_zap(void);
 extern void TH_viewthing(void);
 extern void Think_AccelMove(void);
 extern void Think_Boss3Stand(void);
@@ -585,10 +592,14 @@ extern void Touch_Item(void);
 extern void Touch_Multi(void);
 extern void Touch_Plat_Center(void);
 extern void Touch_Plat_Center2(void);
+extern void tracker_fly(void);
+extern void tracker_pain_daemon_think(void);
+extern void tracker_touch(void);
 extern void train_blocked(void);
 extern void train_next(void);
 extern void train_use(void);
 extern void train_wait(void);
+extern void Trap_Think(void);
 extern void trigger_counter_use(void);
 extern void trigger_crosslevel_trigger_use(void);
 extern void trigger_crossunit_trigger_use(void);
@@ -622,6 +633,7 @@ extern void use_target_explosion(void);
 extern void use_target_goal(void);
 extern void Use_Target_Help(void);
 extern void use_target_secret(void);
+extern void use_target_sky(void);
 extern void use_target_spawner(void);
 extern void Use_Target_Speaker(void);
 extern void use_target_splash(void);
@@ -646,6 +658,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, door_secret_move6 },
 { P_think, DoRespawn },
 { P_think, drop_make_touchable },
+{ P_think, droppod_light_think },
 { P_think, droptofloor },
 { P_think, flare_think },
 { P_think, flymonster_start_go },
@@ -690,13 +703,19 @@ const save_ptr_t save_ptrs[] = {
 { P_think, target_laser_start },
 { P_think, target_laser_think },
 { P_think, target_lightramp_think },
+{ P_think, tesla_activate },
+{ P_think, tesla_think },
+{ P_think, tesla_think_active },
 { P_think, TH_viewthing },
 { P_think, Think_AccelMove },
 { P_think, Think_Boss3Stand },
 { P_think, Think_CalcMoveSpeed },
 { P_think, Think_Delay },
 { P_think, Think_SpawnDoorTrigger },
+{ P_think, tracker_fly },
+{ P_think, tracker_pain_daemon_think },
 { P_think, train_next },
+{ P_think, Trap_Think },
 { P_think, trigger_elevator_init },
 { P_think, turret_breach_finish_init },
 { P_think, turret_breach_think },
@@ -733,11 +752,14 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, rotating_touch },
 { P_touch, target_actor_touch },
 { P_touch, teleporter_touch },
+{ P_touch, tesla_lava },
+{ P_touch, tesla_zap },
 { P_touch, Touch_DoorTrigger },
 { P_touch, Touch_Item },
 { P_touch, Touch_Multi },
 { P_touch, Touch_Plat_Center },
 { P_touch, Touch_Plat_Center2 },
+{ P_touch, tracker_touch },
 { P_touch, trigger_gravity_touch },
 { P_touch, trigger_monsterjump_touch },
 { P_touch, trigger_push_touch },
@@ -793,6 +815,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, use_target_goal },
 { P_use, Use_Target_Help },
 { P_use, use_target_secret },
+{ P_use, use_target_sky },
 { P_use, use_target_spawner },
 { P_use, Use_Target_Speaker },
 { P_use, use_target_splash },
@@ -850,6 +873,7 @@ const save_ptr_t save_ptrs[] = {
 { P_die, soldier_die },
 { P_die, supertank_die },
 { P_die, tank_die },
+{ P_die, tesla_die },
 { P_die, turret_driver_die },
 { P_moveinfo_endfunc, button_done },
 { P_moveinfo_endfunc, button_wait },

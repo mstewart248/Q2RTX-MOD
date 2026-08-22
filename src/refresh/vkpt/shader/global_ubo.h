@@ -93,7 +93,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_particle_brightness, 100) /* particle brightness */ \
 	UBO_CVAR_DO(pt_reflect_refract, 2) /* number of reflection or refraction bounces: 0, 1 or 2 */ \
 	UBO_CVAR_DO(pt_restir, 1) /* switch for using RIS or ReSTIR, 0 or 1 */ \
-	UBO_CVAR_DO(pt_restir_spatial, 1) /* ReSTIR spatial samples */ \
+	UBO_CVAR_DO(pt_restir_spatial, 0) /* ReSTIR spatial samples; 0 = temporal-only, the right setting under DLSS-RR */ \
 	UBO_CVAR_DO(pt_restir_max_w, 12.0) /* ReSTIR max weight clamp */ \
 	UBO_CVAR_DO(pt_restir_permutation, 1) /* ReSTIR permutation sampling, 0 or 1 */ \
 	UBO_CVAR_DO(pt_restir_pairwise, 0) /* ReSTIR spatial reuse weighting: 0 legacy count-weighted sum, 1 pairwise MIS */ \
@@ -140,6 +140,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(tm_hdr_peak_nits, 800.0) /* Exposure value 0 is mapped to this display brightness (post tonemapping) */ \
 	UBO_CVAR_DO(tm_hdr_saturation_scale, 100) /* HDR mode saturation adjustment, percentage [0..200], with 0% -> desaturated, 100% -> normal, 200% -> oversaturated */ \
 	UBO_CVAR_DO(ui_hdr_nits, 300) /* HDR mode UI (stretch pic) brightness in nits */ \
+	/* Appended LAST on purpose: a new cvar inserted mid-list shifts every cvar after it in */ \
+	/* the shaders' view, and if the exe and .spv ever go out of sync (a failed link) that */ \
+	/* silently corrupts the tm_* tone-mapping values. Appending keeps that blast radius 0. */ \
+	UBO_CVAR_DO(pt_rr_white_noise, 0) /* hashed white noise instead of the tiled blue-noise texture, per DLSS-RR guide 3.5; 0 keeps the blue noise */ \
 
     
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).

@@ -261,6 +261,8 @@ static const save_field_t levelfields[] = {
     L(changemap),
     I(exitintermission),
     I(intermission_clear),
+    F(sky_rotate),
+    I(sky_autorotate),
     V(intermission_origin),
     V(intermission_angle),
 
@@ -339,6 +341,10 @@ static const save_field_t clientfields[] = {
     I(pers.max_grenades),
     I(pers.max_cells),
     I(pers.max_slugs),
+    I(pers.max_magslug),
+    I(pers.max_tesla),
+    I(pers.max_disruptor),
+    I(pers.max_trap),
 
     T(pers.weapon),
     T(pers.lastweapon),
@@ -398,6 +404,10 @@ static const save_field_t clientfields[] = {
 
     // powerup timers
     FT(quad_framenum),
+    FT(double_framenum),
+    FT(quadfire_framenum),
+    FT(tracker_pain_framenum),
+    FT(quake_framenum),
     FT(invincible_framenum),
     FT(breather_framenum),
     FT(enviro_framenum),
@@ -816,7 +826,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    10
+#define SAVE_VERSION    15
 
 /*
 ============

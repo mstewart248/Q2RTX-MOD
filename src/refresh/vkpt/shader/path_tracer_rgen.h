@@ -186,15 +186,34 @@ get_hit_barycentric(RayPayloadGeometry rp)
 	return bary;
 }
 
+// PCG hash. Low 'bigcrush' failure count, which is what DLSS-RR guide 3.5 asks for when it
+// says to use a high quality hash function.
+uint pcg_hash(uint v)
+{
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
 float
 get_rng(uint idx)
 {
+	// DLSS-RR guide 3.5 requires samples with minimal spatial and temporal correlation, and
+	// explicitly lists "sharing of sampling patterns across the screen" and screen-space
+	// dithering among the practices to avoid. The blue-noise path below does exactly that:
+	// rng_seed packs ipos mod BLUE_NOISE_RES, so every pixel 256 apart draws an identical
+	// sequence. A-SVGF was built around that; RR was not.
+	if(global_ubo.pt_rr_white_noise != 0)
+	{
+		uint h = pcg_hash(rng_seed + idx * 0x9E3779B9u);
+		return min(float(h) * (1.0 / 4294967296.0), 0.9999999999999);
+	}
+
 	uvec3 p = uvec3(rng_seed, rng_seed >> 10, rng_seed >> 20);
 	p.z = (p.z + idx);
 	p &= uvec3(BLUE_NOISE_RES - 1, BLUE_NOISE_RES - 1, NUM_BLUE_NOISE_TEX - 1);
 
 	return min(texelFetch(TEX_BLUE_NOISE, ivec3(p), 0).r, 0.9999999999999);
-	//return fract(vec2(get_rng_uint(idx)) / vec2(0xffffffffu));
 }
 
 bool

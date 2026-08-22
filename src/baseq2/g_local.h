@@ -54,6 +54,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SPAWNFLAG_NOT_HARD          0x00000400
 #define SPAWNFLAG_NOT_DEATHMATCH    0x00000800
 #define SPAWNFLAG_NOT_COOP          0x00001000
+// rerelease additions. COOP_ONLY is the mirror of NOT_COOP: the entity
+// exists ONLY in coop. The MGU unit openers use it to swap the drop-pod
+// intro for a plain spawn at the landing site.
+#define SPAWNFLAG_RESERVED1         0x00002000
+#define SPAWNFLAG_COOP_ONLY         0x00004000
+#define SPAWNFLAG_RESERVED2         0x00008000
 
 // target_changelevel spawnflags [rerelease]
 #define SPAWNFLAG_CHANGELEVEL_CLEAR_INVENTORY   0x00000008
@@ -106,7 +112,13 @@ typedef enum {
     AMMO_ROCKETS,
     AMMO_GRENADES,
     AMMO_CELLS,
-    AMMO_SLUGS
+    AMMO_SLUGS,
+    // mission-pack ammo types the rerelease maps place. Appended, never
+    // inserted: gitem_t->tag is compared by value and lives in savegames.
+    AMMO_MAGSLUG,
+    AMMO_TESLA,
+    AMMO_DISRUPTOR,
+    AMMO_TRAP
 } ammo_t;
 
 
@@ -232,6 +244,11 @@ typedef struct {
 #define IT_STAY_COOP    8
 #define IT_KEY          16
 #define IT_POWERUP      32
+#define IT_MELEE        64      // no ammo, never auto-switched away from on empty
+
+// game-side only: marks a non-monster entity a tesla is allowed to zap.
+// Bit 8 is free - the server itself only reads SVF_NOCLIENT/SVF_DEADMONSTER.
+#define SVF_DAMAGEABLE  0x00000008
 
 // gitem_t->weapmodel for weapons indicates model index
 #define WEAP_BLASTER            1
@@ -246,6 +263,14 @@ typedef struct {
 #define WEAP_RAILGUN            10
 #define WEAP_BFG                11
 #define WEAP_FLAREGUN           12
+// mission-pack weapons placed by the rerelease maps. These index the player
+// model's third-person weapon list, which stops at WEAP_BFG for the stock
+// male/female models, so they simply show no gun in coop rather than misbehave.
+#define WEAP_BOOMER             13
+#define WEAP_PHALANX            14
+#define WEAP_CHAINFIST          15
+#define WEAP_DISRUPTOR          16
+#define WEAP_PLASMA             17
 
 typedef struct gitem_s {
     char        *classname; // spawning name
@@ -329,6 +354,12 @@ typedef struct {
     int         exitintermission;
     // [rerelease] wipe the players' inventory on the way out of this level
     int         intermission_clear;
+
+    // shadow copy of CS_SKYROTATE. There is no gi.get_configstring in this
+    // tree, so target_sky cannot read back the half of the value it is not
+    // changing - the game has to remember it.
+    float       sky_rotate;
+    int         sky_autorotate;
     vec3_t      intermission_origin;
     vec3_t      intermission_angle;
 
@@ -382,7 +413,17 @@ typedef struct {
     float       maxyaw;
     float       minpitch;
     float       maxpitch;
+
+    // target_sky has to tell "key absent" from "key set to 0" - mgu3m1
+    // explicitly stops the sky with skyrotate 0 / skyautorotate 0, which a
+    // plain zero test would read as "not specified". Set in ED_ParseEdict.
+    int         keys_specified;
 } spawn_temp_t;
+
+#define SPAWNKEY_SKY            1
+#define SPAWNKEY_SKYROTATE      2
+#define SPAWNKEY_SKYAUTOROTATE  4
+#define SPAWNKEY_SKYAXIS        8
 
 
 typedef struct {
@@ -521,6 +562,13 @@ extern  int snd_fry;
 #define MOD_RIPPER          34
 #define MOD_BLUEBLASTER     35
 #define MOD_PHALANX         36
+// rogue's own numbering is kept so the two sources stay comparable
+#define MOD_TRAP            39
+#define MOD_CHAINFIST       40
+#define MOD_DISINTEGRATOR   41
+#define MOD_HEATBEAM        44
+#define MOD_TESLA           45
+#define MOD_TRACKER         51
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -686,6 +734,8 @@ void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t
 #define DAMAGE_NO_KNOCKBACK     0x00000008  // do not affect velocity, just view angles
 #define DAMAGE_BULLET           0x00000010  // damage is from a bullet (used for ricochets)
 #define DAMAGE_NO_PROTECTION    0x00000020  // armor, shields, invulnerability, and godmode have no effect
+#define DAMAGE_DESTROY_ARMOR    0x00000040  // damage is done to armor *and* health (chainfist)
+#define DAMAGE_NO_POWER_ARMOR   0x00000100  // damage skips power armor (disruptor)
 
 #define DEFAULT_BULLET_HSPREAD  300
 #define DEFAULT_BULLET_VSPREAD  500
@@ -767,6 +817,12 @@ void fire_blaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int sp
 void fire_ionripper(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_blueblaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
+void fire_player_melee(edict_t *self, vec3_t start, vec3_t aim, int reach, int damage, int kick, int quiet, int mod);
+void fire_heat(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset, int damage, int kick, bool monster);
+void fire_tesla(edict_t *self, vec3_t start, vec3_t aimdir, int damage_mult, int speed);
+void fire_tracker(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, edict_t *enemy);
+void fire_trap(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius, bool held);
+void SP_item_foodcube(edict_t *self);
 void ionripper_sparks(edict_t *self);
 void ionripper_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 void fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius);
@@ -891,6 +947,10 @@ typedef struct {
     int         max_grenades;
     int         max_cells;
     int         max_slugs;
+    int         max_magslug;
+    int         max_tesla;
+    int         max_disruptor;
+    int         max_trap;
 
     gitem_t     *weapon;
     gitem_t     *lastweapon;
@@ -978,6 +1038,10 @@ struct gclient_s {
 
     // powerup timers
     int         quad_framenum;
+    int         double_framenum;    // Double Damage (item_double, rogue)
+    int         quadfire_framenum;  // DualFire Damage (item_quadfire, xatrix)
+    int         tracker_pain_framenum;  // being chewed on by a disruptor
+    int         quake_framenum;         // target_earthquake view shake
     int         invincible_framenum;
     int         breather_framenum;
     int         enviro_framenum;

@@ -44,6 +44,15 @@ void vkpt_physical_sky_latch_local_time(void);
 bool vkpt_physical_sky_needs_update(void);
 void vkpt_next_sun_preset(void);
 
+// Classification of the skybox the current map asks for; see map_skybox_scope
+// in physical_sky.c. Passed to vkpt_physical_sky_set_map_skybox by R_SetSky_RTX.
+#define MAP_SKYBOX_NONE       0
+#define MAP_SKYBOX_RERELEASE  1
+#define MAP_SKYBOX_OTHER      2
+
+void vkpt_physical_sky_set_map_skybox(int scope);
+bool vkpt_physical_sky_uses_skybox(void);
+
 void InitialiseSkyCVars(void);
 
 void UpdatePhysicalSkyCVars(void);

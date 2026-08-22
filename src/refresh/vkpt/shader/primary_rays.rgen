@@ -102,10 +102,23 @@ void generate_rng_seed(ivec2 ipos, bool is_odd_checkerboard)
 
 	uint frame_offset = frame_num / NUM_BLUE_NOISE_TEX;
 
-	rng_seed = 0;
-	rng_seed |= (uint(ipos.x + frame_offset) % BLUE_NOISE_RES) <<  0u;
-	rng_seed |= (uint(ipos.y + (frame_offset << 4)) % BLUE_NOISE_RES) << 10u;
-	rng_seed |= uint(frame_num + uint(is_odd_checkerboard)) << 20;
+	if(global_ubo.pt_rr_white_noise != 0)
+	{
+		// A full 32-bit hash of the true pixel coordinate. The packing below folds ipos
+		// modulo BLUE_NOISE_RES, so two pixels 256 apart share a seed and therefore an
+		// identical random sequence - the screen-space correlation DLSS-RR guide 3.5 says
+		// to avoid. The seed image is R32_UINT, so a whole hash fits.
+		rng_seed = pcg_hash(uint(ipos.x) * 0x9E3779B9u
+		                  ^ pcg_hash(uint(ipos.y))
+		                  ^ pcg_hash(uint(frame_num) * 0x85EBCA6Bu + uint(is_odd_checkerboard)));
+	}
+	else
+	{
+		rng_seed = 0;
+		rng_seed |= (uint(ipos.x + frame_offset) % BLUE_NOISE_RES) <<  0u;
+		rng_seed |= (uint(ipos.y + (frame_offset << 4)) % BLUE_NOISE_RES) << 10u;
+		rng_seed |= uint(frame_num + uint(is_odd_checkerboard)) << 20;
+	}
 
 	imageStore(IMG_ASVGF_RNG_SEED_A, ipos, uvec4(rng_seed));
 }

@@ -34,6 +34,8 @@ pbr_material_t r_materials[MAX_PBR_MATERIALS];
 static pbr_material_t r_global_materials[MAX_PBR_MATERIALS];
 static pbr_material_t r_map_materials[MAX_PBR_MATERIALS];
 static uint32_t num_global_materials = 0;
+// remembered so 'mat reload' can re-read the per-map overrides
+static char current_map_name[MAX_QPATH];
 static uint32_t num_map_materials = 0;
 
 #define RMATERIALS_HASH 256
@@ -43,6 +45,7 @@ static list_t r_materialsHash[RMATERIALS_HASH];
 #define RELOAD_EMISSIVE	2
 
 static uint32_t load_material_file(const char* file_name, pbr_material_t* dest, uint32_t max_items);
+static void load_global_materials(void);
 static void material_command(void);
 static void material_completer(genctx_t* ctx, int argnum);
 
@@ -122,6 +125,16 @@ void MAT_Init()
 	{
 		List_Init(r_materialsHash + i);
 	}
+
+	load_global_materials();
+}
+
+// Parse every materials/*.mat into the global definition table. Split out of
+// MAT_Init so that "mat reload" can re-read them without restarting the game.
+static void load_global_materials(void)
+{
+	memset(r_global_materials, 0, sizeof(r_global_materials));
+	num_global_materials = 0;
 
 	// find all *.mat files in the root
 	int num_files;
@@ -720,6 +733,8 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 
 void MAT_ChangeMap(const char* map_name)
 {
+	Q_strlcpy(current_map_name, map_name ? map_name : "", sizeof(current_map_name));
+
 	// clear the old map-specific materials
 	uint32_t old_map_materails = num_map_materials;
 	if (num_map_materials > 0) {
@@ -1064,6 +1079,54 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    emissive_threshold %d\n", mat->emissive_threshold);
 }
 
+// Re-read every .mat file from disk and rebuild the live materials from it, so
+// brightness and other values can be tuned in a text editor without restarting.
+// The definition tables (r_global_materials / r_map_materials) are safe to
+// repopulate directly, but the *active* materials in r_materials are pointed at
+// by meshes and texinfos, so they are invalidated the same way MAT_ChangeMap
+// does and then rebuilt by CL_PrepRefresh, which re-registers every model and
+// texture and so calls MAT_Find again.
+static void material_command_reload(void)
+{
+	load_global_materials();
+
+	// re-read this map's overrides too, if it has any
+	if (current_map_name[0])
+	{
+		char map_name_no_ext[MAX_QPATH];
+		truncate_extension(current_map_name, map_name_no_ext);
+		char file_name[MAX_QPATH];
+		Q_snprintf(file_name, sizeof(file_name), "%s.mat", map_name_no_ext);
+
+		memset(r_map_materials, 0, sizeof(r_map_materials));
+		num_map_materials = load_material_file(file_name, r_map_materials, MAX_PBR_MATERIALS);
+		if (num_map_materials > 0)
+			Com_Printf("Loaded %d materials from %s\n", num_map_materials, file_name);
+	}
+
+	// Drop every live material so it is re-created from the new definitions.
+	int invalidated = 0;
+	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
+	{
+		pbr_material_t* mat = r_materials + i;
+
+		if (mat->registration_sequence)
+		{
+			List_Remove(&mat->entry);
+			MAT_Reset(mat);
+			++invalidated;
+		}
+	}
+
+	// Rebuild: re-registers models and textures, which re-runs MAT_Find, and
+	// re-uploads geometry whose transparent/masked classification may have
+	// changed along with the materials.
+	vkpt_vertex_buffer_invalidate_static_model_vbos(-1);
+	CL_PrepRefresh();
+
+	Com_Printf("Reloaded material definitions (%d live materials rebuilt).\n", invalidated);
+}
+
 static void material_command_help(void)
 {
 	Com_Printf("mat command - interface to the material system\n");
@@ -1072,6 +1135,7 @@ static void material_command_help(void)
 	Com_Printf("    help: print this message\n");
 	Com_Printf("    print: print the current material, i.e. one at the crosshair\n");
 	Com_Printf("    which: tell where the current material is defined\n");
+	Com_Printf("    reload: re-read all .mat files from disk and rebuild\n");
 	Com_Printf("    save <filename> <options>: save the active materials to a file\n");
 	Com_Printf("        option 'all': save all materials (otherwise only the undefined ones)\n");
 	Com_Printf("        option 'force': overwrite the output file if it exists\n");
@@ -1122,7 +1186,15 @@ static void material_command(void)
 		save_materials(file_name, save_all, force);
 		return;
 	}
-	
+
+	// handled before the crosshair lookup: a reload does not need a material
+	// under the crosshair, and after it the old index would be stale anyway
+	if (strcmp(key, "reload") == 0)
+	{
+		material_command_reload();
+		return;
+	}
+
 	pbr_material_t* mat = NULL;
 
 	if (vkpt_refdef.fd)
