@@ -88,6 +88,8 @@ void BeginIntermission(edict_t *targ)
 
     level.intermission_framenum = level.framenum;
     level.changemap = targ->map;
+    // [rerelease] CLEAR_INVENTORY: strip the players back to defaults on the way out
+    level.intermission_clear = (targ->spawnflags & SPAWNFLAG_CHANGELEVEL_CLEAR_INVENTORY) != 0;
 
     if (strstr(level.changemap, "*")) {
         if (coop->value) {

@@ -90,6 +90,7 @@ extern int flyer_move_start;
 extern int flyer_move_start_melee;
 extern int flyer_move_stop;
 extern int flyer_move_walk;
+extern int gladb_move_attack_gun;
 extern int gladiator_move_attack_gun;
 extern int gladiator_move_attack_melee;
 extern int gladiator_move_death;
@@ -513,6 +514,7 @@ extern void parasite_stand(void);
 extern void parasite_start_run(void);
 extern void parasite_start_walk(void);
 extern void path_corner_touch(void);
+extern void plasma_touch(void);
 extern void plat2_activate(void);
 extern void plat2_blocked(void);
 extern void plat2_go_down(void);
@@ -725,6 +727,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, misc_viper_bomb_touch },
 { P_touch, mutant_jump_touch },
 { P_touch, path_corner_touch },
+{ P_touch, plasma_touch },
 { P_touch, point_combat_touch },
 { P_touch, rocket_touch },
 { P_touch, rotating_touch },
@@ -951,6 +954,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &flyer_move_start_melee },
 { P_monsterinfo_currentmove, &flyer_move_stop },
 { P_monsterinfo_currentmove, &flyer_move_walk },
+{ P_monsterinfo_currentmove, &gladb_move_attack_gun },
 { P_monsterinfo_currentmove, &gladiator_move_attack_gun },
 { P_monsterinfo_currentmove, &gladiator_move_attack_melee },
 { P_monsterinfo_currentmove, &gladiator_move_death },

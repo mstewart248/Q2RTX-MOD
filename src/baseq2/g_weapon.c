@@ -543,6 +543,89 @@ void fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int s
 
 /*
 =================
+plasma_touch
+
+Impact handler for the xatrix plasma bolt fired by monster_gladb. Unlike a
+blaster bolt this does splash damage as well as direct damage.
+=================
+*/
+void plasma_touch(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    vec3_t  origin;
+
+    if (other == ent->owner)
+        return;
+
+    if (surf && (surf->flags & SURF_SKY)) {
+        G_FreeEdict(ent);
+        return;
+    }
+
+    if (ent->owner->client)
+        PlayerNoise(ent->owner, ent->s.origin, PNOISE_IMPACT);
+
+    // back the explosion out of whatever we hit so it is not buried in it
+    VectorMA(ent->s.origin, -0.02f, ent->velocity, origin);
+
+    if (other->takedamage)
+        T_Damage(other, ent, ent->owner, ent->velocity, ent->s.origin,
+                 plane ? plane->normal : vec3_origin, ent->dmg, 0, 0, MOD_PHALANX);
+
+    T_RadiusDamage(ent, ent->owner, ent->radius_dmg, other, ent->dmg_radius, MOD_PHALANX);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_PLASMA_EXPLOSION);
+    gi.WritePosition(origin);
+    gi.multicast(ent->s.origin, MULTICAST_PVS);
+
+    G_FreeEdict(ent);
+}
+
+/*
+=================
+fire_plasma
+
+The plasma bolt fired by monster_gladb. The client already knows EF_PLASMA and
+TE_PLASMA_EXPLOSION, so only the game side was missing.
+=================
+*/
+void fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage)
+{
+    edict_t *plasma;
+
+    VectorNormalize(dir);
+
+    plasma = G_Spawn();
+    VectorCopy(start, plasma->s.origin);
+    VectorCopy(dir, plasma->movedir);
+    vectoangles(dir, plasma->s.angles);
+    VectorScale(dir, speed, plasma->velocity);
+    plasma->movetype = MOVETYPE_FLYMISSILE;
+    plasma->clipmask = MASK_SHOT;
+    plasma->solid = SOLID_BBOX;
+    VectorClear(plasma->mins);
+    VectorClear(plasma->maxs);
+    plasma->s.modelindex = gi.modelindex("sprites/s_photon.sp2");
+    plasma->s.effects |= EF_PLASMA | EF_ANIM_ALLFAST;
+    plasma->s.sound = gi.soundindex("weapons/rockfly.wav");
+    plasma->owner = self;
+    plasma->touch = plasma_touch;
+    // xatrix used level.time + 8000/speed; same lifetime expressed in frames
+    plasma->nextthink = level.framenum + (int)(8000.0f / speed * BASE_FRAMERATE);
+    plasma->think = G_FreeEdict;
+    plasma->dmg = damage;
+    plasma->radius_dmg = radius_damage;
+    plasma->dmg_radius = damage_radius;
+    plasma->classname = "plasma";
+    gi.linkentity(plasma);
+
+    if (self->client)
+        check_dodge(self, plasma->s.origin, dir, speed);
+}
+
+
+/*
+=================
 fire_grenade
 =================
 */

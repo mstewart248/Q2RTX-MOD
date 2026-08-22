@@ -31,6 +31,7 @@ static int  sound_pain1;
 static int  sound_pain2;
 static int  sound_die;
 static int  sound_gun;
+static int  sound_gunb;     // monster_gladb's plasma gun
 static int  sound_cleaver_swing;
 static int  sound_cleaver_hit;
 static int  sound_cleaver_miss;
@@ -188,6 +189,66 @@ mframe_t gladiator_frames_attack_gun [] = {
 };
 mmove_t gladiator_move_attack_gun = {FRAME_attack1, FRAME_attack9, gladiator_frames_attack_gun, gladiator_run};
 
+/*
+monster_gladb - the xatrix gladiator variant. Identical geometry and frame
+names to the stock gladiator (verified against both MD2s), so every move
+table here is shared; only the gun differs. Marked with self->style = 1,
+the same marker the rerelease uses.
+
+Model note: the rerelease puts gladb on gladiatr/tris.md2 at skinnum 2, which
+needs a 3-skin gladiatr.md2 that does not exist in this install. Xatrix's
+models/monsters/gladb/tris.md2 is used instead - 2 skins, so gladiator_pain's
+existing 'skinnum = 1 below half health' works unchanged.
+*/
+void gladbGun(edict_t *self)
+{
+    vec3_t  start;
+    vec3_t  dir;
+    vec3_t  forward, right;
+    int     damage = 35;
+    int     radius_damage = 45;
+
+    AngleVectors(self->s.angles, forward, right, NULL);
+    G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_GLADIATOR_RAILGUN_1], forward, right, start);
+
+    // calc direction to where we targeted
+    VectorSubtract(self->pos1, start, dir);
+    VectorNormalize(dir);
+
+    // the follow-up shots in the burst are weaker
+    if (self->s.frame > FRAME_attack3) {
+        damage /= 2;
+        radius_damage /= 2;
+    }
+
+    fire_plasma(self, start, dir, damage, 725, radius_damage, radius_damage);
+
+    // re-aim between shots
+    if (self->enemy) {
+        VectorCopy(self->enemy->s.origin, self->pos1);
+        self->pos1[2] += self->enemy->viewheight;
+    }
+}
+
+void gladbGun_check(edict_t *self)
+{
+    if (skill->value == 3)
+        gladbGun(self);
+}
+
+mframe_t gladb_frames_attack_gun [] = {
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, gladbGun },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, gladbGun },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, gladbGun_check }
+};
+mmove_t gladb_move_attack_gun = {FRAME_attack1, FRAME_attack9, gladb_frames_attack_gun, gladiator_run};
+
 void gladiator_attack(edict_t *self)
 {
     float   range;
@@ -200,10 +261,16 @@ void gladiator_attack(edict_t *self)
         return;
 
     // charge up the railgun
-    gi.sound(self, CHAN_WEAPON, sound_gun, 1, ATTN_NORM, 0);
     VectorCopy(self->enemy->s.origin, self->pos1);  //save for aiming the shot
     self->pos1[2] += self->enemy->viewheight;
-    self->monsterinfo.currentmove = &gladiator_move_attack_gun;
+
+    if (self->style == 1) {
+        gi.sound(self, CHAN_WEAPON, sound_gunb, 1, ATTN_NORM, 0);
+        self->monsterinfo.currentmove = &gladb_move_attack_gun;
+    } else {
+        gi.sound(self, CHAN_WEAPON, sound_gun, 1, ATTN_NORM, 0);
+        self->monsterinfo.currentmove = &gladiator_move_attack_gun;
+    }
 }
 
 
@@ -431,6 +498,7 @@ void SP_monster_gladiator(edict_t *self)
     sound_pain2 = gi.soundindex("gladiator/gldpain2.wav");
     sound_die = gi.soundindex("gladiator/glddeth2.wav");
     sound_gun = gi.soundindex("gladiator/railgun.wav");
+    sound_gunb = gi.soundindex("weapons/plasshot.wav");
     sound_cleaver_swing = gi.soundindex("gladiator/melee1.wav");
     sound_cleaver_hit = gi.soundindex("gladiator/melee2.wav");
     sound_cleaver_miss = gi.soundindex("gladiator/melee3.wav");
@@ -440,13 +508,24 @@ void SP_monster_gladiator(edict_t *self)
 
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
-    self->s.modelindex = gi.modelindex("models/monsters/gladiatr/tris.md2");
     VectorSet(self->mins, -32, -32, -24);
     VectorSet(self->maxs, 32, 32, 64);
 
-    self->health = 400;
     self->gib_health = -175;
-    self->mass = 400;
+
+    if (self->style == 1) {
+        // monster_gladb. Health and power armour follow the rerelease, which is
+        // what the MGU maps are balanced against - not xatrix's tougher 800.
+        self->s.modelindex = gi.modelindex("models/monsters/gladb/tris.md2");
+        self->health = 250;
+        self->mass = 350;
+        self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
+        self->monsterinfo.power_armor_power = 250;
+    } else {
+        self->s.modelindex = gi.modelindex("models/monsters/gladiatr/tris.md2");
+        self->health = 400;
+        self->mass = 400;
+    }
 
     self->pain = gladiator_pain;
     self->die = gladiator_die;
@@ -466,4 +545,15 @@ void SP_monster_gladiator(edict_t *self)
     self->monsterinfo.scale = MODEL_SCALE;
 
     walkmonster_start(self);
+}
+
+
+/*QUAKED monster_gladb (1 .5 0) (-32 -32 -24) (32 32 64) Ambush Trigger_Spawn Sight
+The xatrix plasma-gun gladiator. Shares everything with monster_gladiator
+except the gun, the model and its toughness.
+*/
+void SP_monster_gladb(edict_t *self)
+{
+    self->style = 1;
+    SP_monster_gladiator(self);
 }

@@ -480,6 +480,31 @@ void ExitLevel(void)
     level.intermission_framenum = 0;
     ClientEndServerFrames();
 
+    // [rerelease] CLEAR_INVENTORY on the target_changelevel: wipe the players
+    // back to their default loadout. Every MGU unit exit back to mguhub sets
+    // this, as does the hub exit to mguboss.
+    if (level.intermission_clear) {
+        level.intermission_clear = 0;
+
+        for (i = 0 ; i < game.maxclients ; i++) {
+            gclient_t   *cl = &game.clients[i];
+            char        userinfo[MAX_INFO_STRING];
+
+            // keep the userinfo so the player keeps their name and skin
+            memcpy(userinfo, cl->pers.userinfo, sizeof(userinfo));
+
+            memset(&cl->pers, 0, sizeof(cl->pers));
+            memset(&cl->resp.coop_respawn, 0, sizeof(cl->resp.coop_respawn));
+
+            memcpy(cl->pers.userinfo, userinfo, sizeof(userinfo));
+            memcpy(cl->resp.coop_respawn.userinfo, userinfo, sizeof(userinfo));
+
+            // zero health here trips PutClientInServer into a full
+            // InitClientPersistant, which resets power armor, weapon and all
+            g_edicts[i + 1].health = 0;
+        }
+    }
+
     // clear some things before going to next level
     for (i = 0 ; i < maxclients->value ; i++) {
         ent = g_edicts + 1 + i;

@@ -260,6 +260,7 @@ static const save_field_t levelfields[] = {
     FT(intermission_framenum),
     L(changemap),
     I(exitintermission),
+    I(intermission_clear),
     V(intermission_origin),
     V(intermission_angle),
 
@@ -815,7 +816,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    9
+#define SAVE_VERSION    10
 
 /*
 ============

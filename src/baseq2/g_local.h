@@ -55,6 +55,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SPAWNFLAG_NOT_DEATHMATCH    0x00000800
 #define SPAWNFLAG_NOT_COOP          0x00001000
 
+// target_changelevel spawnflags [rerelease]
+#define SPAWNFLAG_CHANGELEVEL_CLEAR_INVENTORY   0x00000008
+
 // edict->flags
 #define FL_FLY                  0x00000001
 #define FL_SWIM                 0x00000002  // implied immunity to drowining
@@ -324,6 +327,8 @@ typedef struct {
     int         intermission_framenum;  // time the intermission was started
     char        *changemap;
     int         exitintermission;
+    // [rerelease] wipe the players' inventory on the way out of this level
+    int         intermission_clear;
     vec3_t      intermission_origin;
     vec3_t      intermission_angle;
 
@@ -515,6 +520,7 @@ extern  int snd_fry;
 
 #define MOD_RIPPER          34
 #define MOD_BLUEBLASTER     35
+#define MOD_PHALANX         36
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -760,6 +766,7 @@ void fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int ki
 void fire_blaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
 void fire_ionripper(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_blueblaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
+void fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
 void ionripper_sparks(edict_t *self);
 void ionripper_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 void fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius);
