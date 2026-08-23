@@ -241,6 +241,8 @@ static const save_field_t entityfields[] = {
     FT(monsterinfo.idle_framenum),
     I(monsterinfo.linkcount),
 
+    V(gravityVector),
+    V(offset),
     I(monsterinfo.power_armor_type),
     I(monsterinfo.power_armor_power),
 
@@ -868,7 +870,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    18
+#define SAVE_VERSION    24
 
 /*
 ============

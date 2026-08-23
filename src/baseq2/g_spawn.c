@@ -140,6 +140,19 @@ void SP_monster_soldier_ss(edict_t *self);
 void SP_monster_soldier_ripper(edict_t *self);
 void SP_monster_soldier_hypergun(edict_t *self);
 void SP_monster_soldier_lasergun(edict_t *self);
+void SP_monster_stalker(edict_t *self);
+void SP_monster_turret(edict_t *self);
+
+// rerelease cosmetic / scripting entities (g_rerelease.c)
+void SP_target_poi(edict_t *self);
+void SP_target_music(edict_t *self);
+void SP_target_autosave(edict_t *self);
+void SP_target_story(edict_t *self);
+void SP_rotating_light(edict_t *self);
+void SP_misc_viper_missile(edict_t *self);
+void SP_misc_lavaball(edict_t *self);
+void SP_misc_nuke(edict_t *self);
+void SP_info_nav_lock(edict_t *self);
 void SP_monster_tank(edict_t *self);
 void SP_monster_medic(edict_t *self);
 void SP_monster_flipper(edict_t *self);
@@ -279,6 +292,18 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_soldier_ripper", SP_monster_soldier_ripper},
     {"monster_soldier_hypergun", SP_monster_soldier_hypergun},
     {"monster_soldier_lasergun", SP_monster_soldier_lasergun},
+    {"monster_stalker", SP_monster_stalker},
+    {"monster_turret", SP_monster_turret},
+
+    {"target_poi", SP_target_poi},
+    {"target_music", SP_target_music},
+    {"target_autosave", SP_target_autosave},
+    {"target_story", SP_target_story},
+    {"rotating_light", SP_rotating_light},
+    {"misc_viper_missile", SP_misc_viper_missile},
+    {"misc_lavaball", SP_misc_lavaball},
+    {"misc_nuke", SP_misc_nuke},
+    {"info_nav_lock", SP_info_nav_lock},
     {"monster_tank", SP_monster_tank},
     {"monster_tank_commander", SP_monster_tank},
     {"monster_medic", SP_monster_medic},
@@ -372,6 +397,7 @@ static const spawn_field_t temp_fields[] = {
     // ROGUE/rerelease - medic commander summon list and per-difficulty health
     {"reinforcements", STOFS(reinforcements), F_LSTRING},
     {"health_multiplier", STOFS(health_multiplier), F_FLOAT},
+    {"image", STOFS(image), F_LSTRING},
 
     {NULL}
 };
@@ -426,6 +452,12 @@ char *ED_NewString(const char *string)
 {
     char    *newb, *new_p;
     int     i, l;
+    char    localized[MAX_STRING_CHARS];
+
+    // rerelease maps store "$map_you_found_a_secret" rather than the text.
+    // Resolving here catches every entity key at spawn for the cost of one
+    // comparison, instead of at each of the places a message is displayed.
+    string = L10N_Resolve(string, localized, sizeof(localized));
 
     l = strlen(string) + 1;
 

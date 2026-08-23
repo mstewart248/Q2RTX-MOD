@@ -495,7 +495,12 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
 
 // do the damage
     if (take) {
-        if ((targ->svflags & SVF_MONSTER) || (client))
+        if (targ->flags & FL_MECHANICAL)
+        {
+            // ROGUE - a turret sparks rather than bleeds
+            SpawnDamage(TE_ELECTRIC_SPARKS, point, normal, take);
+        }
+        else if ((targ->svflags & SVF_MONSTER) || (client))
         {
             // SpawnDamage(TE_BLOOD, point, normal, take);
             SpawnDamage(TE_BLOOD, point, dir, take);

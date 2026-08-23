@@ -45,7 +45,12 @@ bool M_CheckBottom(edict_t *ent)
 // if all of the points under the corners are solid world, don't bother
 // with the tougher checks
 // the corners must be within 16 of the midpoint
-    start[2] = mins[2] - 1;
+    // ROGUE - for a ceiling walker the "bottom" is the top of the box
+    if (ent->gravityVector[2] > 0)
+        start[2] = maxs[2] + 1;
+    else
+        start[2] = mins[2] - 1;
+
     for (x = 0 ; x <= 1 ; x++)
         for (y = 0 ; y <= 1 ; y++) {
             start[0] = x ? maxs[0] : mins[0];
@@ -62,12 +67,18 @@ realcheck:
 //
 // check it for real...
 //
-    start[2] = mins[2];
-
 // the midpoint must be within 16 of the bottom
     start[0] = stop[0] = (mins[0] + maxs[0]) * 0.5f;
     start[1] = stop[1] = (mins[1] + maxs[1]) * 0.5f;
-    stop[2] = start[2] - 2 * STEPSIZE;
+
+    if (ent->gravityVector[2] < 0) {
+        start[2] = mins[2];
+        stop[2] = start[2] - 2 * STEPSIZE;
+    } else {
+        start[2] = maxs[2];
+        stop[2] = start[2] + 2 * STEPSIZE;
+    }
+
     trace = gi.trace(start, vec3_origin, vec3_origin, stop, ent, MASK_MONSTERSOLID);
 
     if (trace.fraction == 1.0f)
@@ -82,10 +93,17 @@ realcheck:
 
             trace = gi.trace(start, vec3_origin, vec3_origin, stop, ent, MASK_MONSTERSOLID);
 
-            if (trace.fraction != 1.0f && trace.endpos[2] > bottom)
-                bottom = trace.endpos[2];
-            if (trace.fraction == 1.0f || mid - trace.endpos[2] > STEPSIZE)
-                return false;
+            if (ent->gravityVector[2] > 0) {
+                if (trace.fraction != 1.0f && trace.endpos[2] < bottom)
+                    bottom = trace.endpos[2];
+                if (trace.fraction == 1.0f || trace.endpos[2] - mid > STEPSIZE)
+                    return false;
+            } else {
+                if (trace.fraction != 1.0f && trace.endpos[2] > bottom)
+                    bottom = trace.endpos[2];
+                if (trace.fraction == 1.0f || mid - trace.endpos[2] > STEPSIZE)
+                    return false;
+            }
         }
 
     c_yes++;
@@ -193,9 +211,12 @@ bool SV_movestep(edict_t *ent, vec3_t move, bool relink)
     else
         stepsize = 1;
 
-    neworg[2] += stepsize;
+    // ROGUE - step along the entity's own gravity vector: one stepsize
+    // "up" (against gravity), then trace two stepsizes "down". For normal
+    // gravity this is identical to the old +stepsize / -2*stepsize.
+    VectorMA(neworg, -1 * stepsize, ent->gravityVector, neworg);
     VectorCopy(neworg, end);
-    end[2] -= stepsize * 2;
+    VectorMA(end, 2 * stepsize, ent->gravityVector, end);
 
     trace = gi.trace(neworg, ent->mins, ent->maxs, end, ent, MASK_MONSTERSOLID);
 
@@ -203,7 +224,7 @@ bool SV_movestep(edict_t *ent, vec3_t move, bool relink)
         return false;
 
     if (trace.startsolid) {
-        neworg[2] -= stepsize;
+        VectorMA(neworg, stepsize, ent->gravityVector, neworg);
         trace = gi.trace(neworg, ent->mins, ent->maxs, end, ent, MASK_MONSTERSOLID);
         if (trace.allsolid || trace.startsolid)
             return false;

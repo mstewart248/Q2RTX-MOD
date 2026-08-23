@@ -311,6 +311,12 @@ void SV_AddGravity(edict_t *ent)
 	if (ent->movetype == MOVETYPE_EXPLODE) {
 		ent->velocity[2] -= (ent->gravity * sv_gravity->value * FRAMETIME) / 3;
 	}
+	else if (ent->gravityVector[2] > 0) {
+		// ROGUE - inverted gravity (a stalker on the ceiling). Pull along the
+		// entity's own gravity vector instead of straight down.
+		VectorMA(ent->velocity, ent->gravity * sv_gravity->value * FRAMETIME,
+			ent->gravityVector, ent->velocity);
+	}
 	else {
 		ent->velocity[2] -= ent->gravity * sv_gravity->value * FRAMETIME;
 	}

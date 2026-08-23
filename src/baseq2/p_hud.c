@@ -354,6 +354,53 @@ void Cmd_Help_f(edict_t *ent)
 G_SetStats
 ===============
 */
+/*
+===============
+G_PlayerNotifyGoal
+
+The rerelease announces an objective on screen the moment target_help changes
+it, rather than waiting for the player to open the help computer. The banner
+text comes from the localization table ("Primary Objective:\n{}"), so it reads
+correctly once loc_english.txt is present and falls back to a plain prefix if
+it is not.
+===============
+*/
+void G_PlayerNotifyGoal(edict_t *player)
+{
+    char    buf[1024];
+
+    if (!player->client)
+        return;
+
+    /* Several maps fire the primary and secondary objectives from one
+       targetname in the same frame, and each centerprint replaces the last.
+       Announcing the secondary first leaves the primary on screen, which is
+       what the rerelease shows. */
+    if (player->client->pers.game_help2changed != game.help2changed) {
+        player->client->pers.game_help2changed = game.help2changed;
+        player->client->pers.helpchanged = 1;
+
+        if (*game.helpmessage2) {
+            L10N_Format(buf, sizeof(buf), "$g_secondary_mission_objective",
+                        "Secondary Objective:\n%s", game.helpmessage2);
+            gi.centerprintf(player, "%s", buf);
+            gi.sound(player, CHAN_AUTO, gi.soundindex("misc/talk.wav"), 1, ATTN_NONE, 0);
+        }
+    }
+
+    if (player->client->pers.game_help1changed != game.help1changed) {
+        player->client->pers.game_help1changed = game.help1changed;
+        player->client->pers.helpchanged = 1;
+
+        if (*game.helpmessage1) {
+            L10N_Format(buf, sizeof(buf), "$g_primary_mission_objective",
+                        "Primary Objective:\n%s", game.helpmessage1);
+            gi.centerprintf(player, "%s", buf);
+            gi.sound(player, CHAN_AUTO, gi.soundindex("misc/talk.wav"), 1, ATTN_NONE, 0);
+        }
+    }
+}
+
 void G_SetStats(edict_t *ent)
 {
     gitem_t     *item;

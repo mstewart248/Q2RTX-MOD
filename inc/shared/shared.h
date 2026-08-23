@@ -1190,6 +1190,15 @@ typedef enum {
 #define STAT_CHASE              16
 #define STAT_SPECTATOR          17
 
+// Reserved for a rerelease target_poi HUD, if one is ever wanted. The game
+// already tracks the objective in level.current_poi; nothing sends it to the
+// client, because the rerelease draws no floating marker in these maps and an
+// invented one did not match. 18..31 are unused.
+// #define STAT_POI_ICON        18
+// #define STAT_POI_X           19
+// #define STAT_POI_Y           20
+// #define STAT_POI_Z           21
+
 #define MAX_STATS               32
 
 

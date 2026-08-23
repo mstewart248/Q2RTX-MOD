@@ -60,9 +60,22 @@ static ogg_status_t ogg_status;   /* Status indicator. */
 static stb_vorbis *ogg_file;      /* Ogg Vorbis file. */
 static bool ogg_started;      /* Initialization flag. */
 
-enum { MAX_NUM_OGGTRACKS = 32 };
+/* The rerelease numbers its music up into the 70s - rerelease/music ships
+   track64..track79 - and the maps ask for tracks 64-77. At the old limit of 32
+   those files were never even looked for, so every one of those requests found
+   nothing. 128 covers them with room to spare; the array is just pointers. */
+enum { MAX_NUM_OGGTRACKS = 128 };
 static char* ogg_tracks[MAX_NUM_OGGTRACKS];
 static int ogg_maxfileindex;
+
+/* Every track number that actually has a file, packed with no holes, so a
+   request for a track we do not have can be folded onto one we do. The
+   rerelease maps ask for tracks 64-77 (67 alone is used by 11 maps) while
+   baseq2/music only ships 02-21, and even rerelease/music has nothing between
+   21 and 64 - so both the out-of-range and the sparse-hole cases are real. */
+static int ogg_tracklist[MAX_NUM_OGGTRACKS];
+static int ogg_numtracks;
+static int ogg_firsttrack;
 
 
 enum GameType {
@@ -123,8 +136,8 @@ static int getMappedGOGtrack(int track, enum GameType gameType)
 /*
  * Load list of Ogg Vorbis files in "music/".
  */
-void
-OGG_InitTrackList(void)
+static void
+OGG_ScanTrackList(void)
 {
 	for (int i=0; i<MAX_NUM_OGGTRACKS; ++i)
 	{
@@ -239,6 +252,69 @@ OGG_InitTrackList(void)
 
 	// if tracks have been found above, we would've returned there
 	Com_Printf("No Ogg Vorbis music tracks have been found, so there will be no music.\n");
+}
+
+void
+OGG_InitTrackList(void)
+{
+	OGG_ScanTrackList();
+
+	/* pack the tracks we found into a hole-free list for OGG_WrapTrack() */
+	ogg_numtracks = 0;
+	ogg_firsttrack = 0;
+
+	for (int i = 0; i < MAX_NUM_OGGTRACKS; ++i)
+	{
+		if (ogg_tracks[i] != NULL)
+		{
+			if (ogg_numtracks == 0)
+			{
+				ogg_firsttrack = i;
+			}
+
+			ogg_tracklist[ogg_numtracks++] = i;
+		}
+	}
+
+	if (ogg_numtracks > 0)
+	{
+		Com_Printf("Found %d Ogg Vorbis music tracks (%d..%d).\n", ogg_numtracks,
+			ogg_firsttrack, ogg_tracklist[ogg_numtracks - 1]);
+	}
+}
+
+/*
+ * Fold a requested track number onto one we actually have.
+ *
+ * Anything we do have is returned untouched, so normal playback is unaffected.
+ * Anything else wraps cyclically through the tracks that exist, which is what
+ * makes the rerelease maps' track 64-77 requests play something instead of
+ * printing an error and leaving the level silent.
+ */
+static int
+OGG_WrapTrack(int trackNo)
+{
+	int index;
+
+	if (ogg_numtracks <= 0)
+	{
+		return trackNo;
+	}
+
+	/* we have this one - nothing to do */
+	if (trackNo >= 0 && trackNo < MAX_NUM_OGGTRACKS && ogg_tracks[trackNo] != NULL)
+	{
+		return trackNo;
+	}
+
+	index = (trackNo - ogg_firsttrack) % ogg_numtracks;
+
+	if (index < 0)
+	{
+		index += ogg_numtracks;
+	}
+
+	return ogg_tracklist[index];
 }
 
 // --------
@@ -382,15 +458,22 @@ OGG_PlayTrack(int trackNo)
 		return; // no ogg files at all, ignore this silently instead of printing warnings all the time
 	}
 
-	if ((trackNo < 2) || (trackNo > ogg_maxfileindex))
+	if (trackNo < 2)
 	{
 		Com_Printf("OGG_PlayTrack: %d out of range.\n", trackNo);
 		return;
 	}
 
-	if(ogg_tracks[trackNo] == NULL)
+	/* a track we do not have folds onto one we do, rather than playing nothing */
 	{
-		Com_Printf("OGG_PlayTrack: Don't have a .ogg file for track %d\n", trackNo);
+		int wrapped = OGG_WrapTrack(trackNo);
+
+		if (wrapped != trackNo)
+		{
+			Com_Printf("OGG_PlayTrack: no file for track %d, playing %d instead.\n",
+				trackNo, wrapped);
+			trackNo = wrapped;
+		}
 	}
 
 	/* Check running music. */
@@ -583,9 +666,13 @@ OGG_Cmd(void)
 
 		int track = (int)strtol(Cmd_Argv(2), NULL, 10);
 
-		if (track < 2 || track > ogg_maxfileindex)
+		/* no upper bound: OGG_PlayTrack folds a track we do not have onto
+		   one we do, exactly as it does for a map that asks for one */
+		if (track < 2)
 		{
-			Com_Printf("invalid track %s, must be an number between 2 and %d\n", Cmd_Argv(1), ogg_maxfileindex);
+			Com_Printf("invalid track %s, must be a number >= 2 (have %d..%d)\n",
+				Cmd_Argv(2), ogg_firsttrack,
+				ogg_numtracks > 0 ? ogg_tracklist[ogg_numtracks - 1] : 0);
 			return;
 		}
 		else

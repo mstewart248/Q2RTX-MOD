@@ -187,6 +187,7 @@ typedef struct QVK_s {
 	VkSurfaceFormatKHR          surf_format;
 	bool                        surf_is_hdr;
 	bool                        surf_vsync;
+	uint32_t                    surf_num_images;    /* images actually requested */
 	VkPresentModeKHR            present_mode;
 	VkExtent2D                  extent_screen_images;
 	VkExtent2D                  extent_render;

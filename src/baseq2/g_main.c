@@ -195,6 +195,9 @@ void InitGame(void)
     // the menu before any map is loaded, and so the particle side can read it.
     g_ludicrous_gibs = gi.cvar("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
 
+    // rerelease localized strings; safe to call more than once
+    L10N_Init();
+
     // export our own features
     gi.cvar_forceset("g_features", va("%d", G_FEATURES));
 

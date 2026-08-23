@@ -270,7 +270,9 @@ void M_CheckGround(edict_t *ent)
     if (ent->flags & (FL_SWIM | FL_FLY))
         return;
 
-    if (ent->velocity[2] > 100) {
+    // ROGUE - "up" is whichever way this entity's gravity is not. Multiplying
+    // by gravityVector[2] makes the rising test work for a ceiling walker too.
+    if ((ent->velocity[2] * ent->gravityVector[2]) < -100) {
         ent->groundentity = NULL;
         return;
     }
@@ -278,14 +280,21 @@ void M_CheckGround(edict_t *ent)
 // if the hull point one-quarter unit down is solid the entity is on ground
     point[0] = ent->s.origin[0];
     point[1] = ent->s.origin[1];
-    point[2] = ent->s.origin[2] - 0.25f;
+    point[2] = ent->s.origin[2] + (0.25f * ent->gravityVector[2]);
 
     trace = gi.trace(ent->s.origin, ent->mins, ent->maxs, point, ent, MASK_MONSTERSOLID);
 
     // check steepness
-    if (trace.plane.normal[2] < 0.7f && !trace.startsolid) {
-        ent->groundentity = NULL;
-        return;
+    if (ent->gravityVector[2] < 0) {        // normal gravity
+        if (trace.plane.normal[2] < 0.7f && !trace.startsolid) {
+            ent->groundentity = NULL;
+            return;
+        }
+    } else {                                // inverted gravity
+        if (trace.plane.normal[2] > -0.7f && !trace.startsolid) {
+            ent->groundentity = NULL;
+            return;
+        }
     }
 
 //  ent->groundentity = trace.ent;
@@ -422,9 +431,16 @@ void M_droptofloor(edict_t *ent)
         return;
     }
 
-    ent->s.origin[2] += 1;
-    VectorCopy(ent->s.origin, end);
-    end[2] -= 256;
+    // ROGUE - a ceiling walker drops *up* to its ceiling
+    if (ent->gravityVector[2] < 0) {
+        ent->s.origin[2] += 1;
+        VectorCopy(ent->s.origin, end);
+        end[2] -= 256;
+    } else {
+        ent->s.origin[2] -= 1;
+        VectorCopy(ent->s.origin, end);
+        end[2] += 256;
+    }
 
     trace = gi.trace(ent->s.origin, ent->mins, ent->maxs, end, ent, MASK_MONSTERSOLID);
 
@@ -583,6 +599,64 @@ void monster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activat
     if (activator->client)
         self->enemy = activator;
     self->use = monster_use;
+}
+
+bool monster_start(edict_t *self);
+
+// ROGUE - a monster that never walks (the turret). Same as walkmonster_start
+// but with no ground checks and no drop to floor.
+void stationarymonster_triggered_spawn(edict_t *self)
+{
+    KillBox(self);
+
+    self->solid = SOLID_BBOX;
+    self->movetype = MOVETYPE_NONE;
+    self->svflags &= ~SVF_NOCLIENT;
+    self->air_finished_framenum = level.framenum + 12 * BASE_FRAMERATE;
+    gi.linkentity(self);
+
+    monster_start_go(self);
+
+    if (self->enemy && !(self->spawnflags & 1) && !(self->enemy->flags & FL_NOTARGET))
+        FoundTarget(self);
+    else
+        self->enemy = NULL;
+}
+
+void stationarymonster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    // one frame of delay so we do not telefrag whoever triggered us
+    self->think = stationarymonster_triggered_spawn;
+    self->nextthink = level.framenum + 1;
+    if (activator->client)
+        self->enemy = activator;
+    self->use = monster_use;
+}
+
+void stationarymonster_triggered_start(edict_t *self)
+{
+    self->solid = SOLID_NOT;
+    self->movetype = MOVETYPE_NONE;
+    self->svflags |= SVF_NOCLIENT;
+    self->nextthink = 0;
+    self->use = stationarymonster_triggered_spawn_use;
+}
+
+void stationarymonster_start_go(edict_t *self)
+{
+    if (!self->yaw_speed)
+        self->yaw_speed = 20;
+
+    monster_start_go(self);
+
+    if (self->spawnflags & 2)
+        stationarymonster_triggered_start(self);
+}
+
+void stationarymonster_start(edict_t *self)
+{
+    self->think = stationarymonster_start_go;
+    monster_start(self);
 }
 
 void monster_triggered_start(edict_t *self)

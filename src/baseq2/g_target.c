@@ -111,14 +111,28 @@ void SP_target_speaker(edict_t *ent)
 
 //==========================================================
 
+#define SPAWNFLAG_HELP_HELP1    1
+#define SPAWNFLAG_HELP_SET_POI  2
+
 void Use_Target_Help(edict_t *ent, edict_t *other, edict_t *activator)
 {
-    if (ent->spawnflags & 1)
-        Q_strlcpy(game.helpmessage1, ent->message, sizeof(game.helpmessage2));
-    else
-        Q_strlcpy(game.helpmessage2, ent->message, sizeof(game.helpmessage1));
+    if (ent->spawnflags & SPAWNFLAG_HELP_HELP1) {
+        if (strcmp(game.helpmessage1, ent->message)) {
+            Q_strlcpy(game.helpmessage1, ent->message, sizeof(game.helpmessage1));
+            game.help1changed++;
+        }
+    } else {
+        if (strcmp(game.helpmessage2, ent->message)) {
+            Q_strlcpy(game.helpmessage2, ent->message, sizeof(game.helpmessage2));
+            game.help2changed++;
+        }
+    }
 
     game.helpchanged++;
+
+    // a help target can double as the objective marker
+    if (ent->spawnflags & SPAWNFLAG_HELP_SET_POI)
+        target_poi_use(ent, other, activator);
 }
 
 /*QUAKED target_help (1 0 1) (-16 -16 -24) (16 16 24) help1

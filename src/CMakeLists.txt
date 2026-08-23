@@ -11,10 +11,12 @@ SET(SRC_BASEQ2
 	baseq2/g_combat.c
 	baseq2/g_func.c
 	baseq2/g_items.c
+	baseq2/g_localize.c
 	baseq2/g_main.c
 	baseq2/g_misc.c
 	baseq2/g_monster.c
 	baseq2/g_phys.c
+	baseq2/g_rerelease.c
 	baseq2/g_ptrs.c
 	baseq2/g_ptrs_compat_v2.c
 	baseq2/g_save.c
@@ -48,7 +50,9 @@ SET(SRC_BASEQ2
 	baseq2/m_mutant.c
 	baseq2/m_parasite.c
 	baseq2/m_soldier.c
+	baseq2/m_stalker.c
 	baseq2/m_supertank.c
+	baseq2/m_turret.c
 	baseq2/m_tank.c
 	baseq2/p_client.c
 	baseq2/p_hud.c

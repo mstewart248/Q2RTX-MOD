@@ -1026,6 +1026,10 @@ void ClientEndServerFrame(edict_t *ent)
         G_SetStats(ent);
     G_CheckChaseStats(ent);
 
+    // announce a new objective the moment target_help sets one
+    if (!ent->client->resp.spectator)
+        G_PlayerNotifyGoal(ent);
+
     G_SetClientEvent(ent);
 
     G_SetClientEffects(ent);

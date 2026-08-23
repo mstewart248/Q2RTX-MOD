@@ -78,6 +78,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FL_TEAMSLAVE            0x00000400  // not the first on the team
 #define FL_NO_KNOCKBACK         0x00000800
 #define FL_POWER_ARMOR          0x00001000  // power armor (if any) is active
+#define FL_MECHANICAL           0x00002000  // ROGUE - bleeds sparks, not blood
 #define FL_RESPAWN              0x80000000  // used for item respawning
 
 
@@ -168,6 +169,7 @@ typedef enum {
 #define AI_SPAWNED_MEDIC_C      0x00100000
 #define AI_SPAWNED_WIDOW        0x00200000
 #define AI_SPAWNED_MASK         0x00380000  // catches all three flavours
+#define AI_WALK_WALLS           0x00400000  // stalker: may walk on ceilings
 
 //monster attack state
 #define AS_STRAIGHT             1
@@ -328,6 +330,8 @@ typedef struct {
     char        helpmessage1[512];
     char        helpmessage2[512];
     int         helpchanged;    // flash F1 icon if non 0, play sound
+    int         help1changed;   // rerelease: announce the primary objective
+    int         help2changed;   // rerelease: announce the secondary objective
                                 // and increment only if 1, 2, or 3
 
     gclient_t   *clients;       // [maxclients]
@@ -371,6 +375,15 @@ typedef struct {
     int         exitintermission;
     // [rerelease] wipe the players' inventory on the way out of this level
     int         intermission_clear;
+    int         next_auto_save;     // rerelease target_autosave rate limit
+
+    // rerelease target_poi: where the current objective marker points. The
+    // game side picks it; drawing it is the client's job and is not done yet.
+    bool        valid_poi;
+    vec3_t      current_poi;
+    int         current_poi_image;
+    int         current_poi_stage;
+    edict_t     *current_dynamic_poi;
 
     // shadow copy of CS_SKYROTATE. There is no gi.get_configstring in this
     // tree, so target_sky cannot read back the half of the value it is not
@@ -441,6 +454,7 @@ typedef struct {
     // this; every MGU commander overrides it, so the key has to be read.
     char        *reinforcements;
     float       health_multiplier;
+    char        *image;             // rerelease target_poi compass icon
 } spawn_temp_t;
 
 #define SPAWNKEY_SKY            1
@@ -823,6 +837,11 @@ void swimmonster_start(edict_t *self);
 void flymonster_start(edict_t *self);
 void AttackFinished(edict_t *self, float time);
 void monster_death_use(edict_t *self);
+void stationarymonster_start(edict_t *self);
+void stationarymonster_start_go(edict_t *self);
+void stationarymonster_triggered_start(edict_t *self);
+void stationarymonster_triggered_spawn(edict_t *self);
+void stationarymonster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activator);
 void M_CatagorizePosition(edict_t *ent);
 bool M_CheckAttack(edict_t *self);
 void M_FlyCheck(edict_t *self);
@@ -890,6 +909,16 @@ void fire_grenade2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int s
 void fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
 void fire_rail(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick);
 void fire_bfg(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius);
+
+//
+// g_localize.c        rerelease $localized_string keys
+//
+void L10N_Init(void);
+void L10N_Shutdown(void);
+const char *L10N_Resolve(const char *value, char *out, size_t outsize);
+void L10N_Format(char *out, size_t outsize, const char *key, const char *fallback, const char *arg);
+void G_PlayerNotifyGoal(edict_t *player);
+void target_poi_use(edict_t *ent, edict_t *other, edict_t *activator);
 
 //
 // g_spawn.c
@@ -1042,6 +1071,8 @@ typedef struct {
 
     int         game_helpchanged;
     int         helpchanged;
+    int         game_help1changed;  // rerelease objective announcements
+    int         game_help2changed;
 
     bool        spectator;      // client is a spectator
 } client_persistant_t;
@@ -1297,5 +1328,16 @@ struct edict_s {
 
 	qboolean monsterFireHyperBlaster;
 	int death_count;
+
+    // ROGUE - the surface a wall/ceiling turret is mounted on, recorded from
+    // its spawn angles before it starts tracking a target.
+    vec3_t      offset;
+
+    // ROGUE - which way is down for this entity. Vanilla Quake II has a single
+    // global gravity direction; the stalker walks on ceilings, so it needs its
+    // own. Defaulted to (0,0,-1) in G_InitEdict, and every consumer only takes
+    // the inverted path when gravityVector[2] > 0 - so an entity that never
+    // touches it behaves exactly as it did before.
+    vec3_t      gravityVector;
 };
 

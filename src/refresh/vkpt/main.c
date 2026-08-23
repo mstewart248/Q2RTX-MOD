@@ -56,6 +56,7 @@ cvar_t *cvar_profiler_samples = NULL;
 cvar_t *cvar_profiler_scale = NULL;
 cvar_t *cvar_hdr = NULL;
 cvar_t *cvar_vsync = NULL;
+cvar_t *cvar_swapchain_images = NULL;
 cvar_t *cvar_pt_caustics = NULL;
 cvar_t *cvar_pt_enable_nodraw = NULL;
 cvar_t *cvar_pt_enable_surface_lights = NULL;
@@ -719,10 +720,37 @@ create_swapchain(void)
 		qvk.extent_unscaled.height = max(surf_capabilities.minImageExtent.height, qvk.extent_unscaled.height);
 	}
 
-	uint32_t num_images = 2;
-	//uint32_t num_images = surf_capabilities.minImageCount + 1;
+	/* Swapchain image count.
+
+	   This used to be a hard 2. With FIFO (vid_vsync 1) two images means the
+	   presentation engine owns one and the app owns the other, so nothing can
+	   be queued ahead: after presenting, the next acquire blocks until vblank
+	   releases the other image. The GPU then sits idle for whatever is left of
+	   the refresh interval, and any frame that overruns the interval - which
+	   the added DLSS work makes far easier - misses the next vblank entirely
+	   and the rate halves (60 -> 30, 144 -> 72). That reads as "the frame rate
+	   dropped and the GPU is not busy", and it clears up when the swapchain is
+	   recreated (a resolution change, or toggling fullscreen) purely because
+	   that re-rolls the phase against vblank.
+
+	   minImageCount + 1 gives one image of slack, so the app can build the next
+	   frame while the previous one waits to be scanned out. */
+	uint32_t num_images;
+	if (cvar_swapchain_images->integer > 0)
+		num_images = cvar_swapchain_images->integer;
+	else
+		num_images = surf_capabilities.minImageCount + 1;
+
+	num_images = max(num_images, surf_capabilities.minImageCount);
 	if(surf_capabilities.maxImageCount > 0)
 		num_images = min(num_images, surf_capabilities.maxImageCount);
+
+	qvk.surf_num_images = num_images;
+
+	Com_Printf("Swapchain: %u images (min %u, max %u), present mode %s\n",
+		num_images, surf_capabilities.minImageCount, surf_capabilities.maxImageCount,
+		qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO (vsync)" :
+		qvk.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "MAILBOX");
 
 	VkSwapchainCreateInfoKHR swpch_create_info = {
 		.sType                 = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -3774,7 +3802,8 @@ R_BeginFrame_RTX(void)
 	
 	VkExtent2D extent_screen_images = get_screen_image_extent();
 
-	if(!extents_equal(extent_screen_images, qvk.extent_screen_images) || (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync))
+	if(!extents_equal(extent_screen_images, qvk.extent_screen_images) || (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync)
+	   || (cvar_swapchain_images->integer > 0 && (uint32_t)cvar_swapchain_images->integer != qvk.surf_num_images))
 	{
 		qvk.extent_screen_images = extent_screen_images;
 		recreate_swapchain();
@@ -4209,6 +4238,11 @@ R_Init_RTX(bool total)
 	cvar_profiler_scale = Cvar_Get("profiler_scale", "1", CVAR_ARCHIVE);
 	cvar_vsync = Cvar_Get("vid_vsync", "0", CVAR_ARCHIVE);
 	cvar_vsync->changed = NULL; // in case the GL renderer has set it
+	/* How many images the swapchain asks for. 0 = pick automatically, which is
+	   what you want; 2 reproduces the old hard double-buffered behaviour, and
+	   4 adds another frame of queue depth at the cost of latency. Changing it
+	   recreates the swapchain, so it can be A/B tested without a restart. */
+	cvar_swapchain_images = Cvar_Get("vid_swapchain_images", "0", CVAR_ARCHIVE);
 	cvar_hdr = Cvar_Get("vid_hdr", "0", CVAR_ARCHIVE);
 	cvar_pt_caustics = Cvar_Get("pt_caustics", "1", CVAR_ARCHIVE);
 	cvar_pt_enable_nodraw = Cvar_Get("pt_enable_nodraw", "0", 0);

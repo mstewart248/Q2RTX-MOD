@@ -679,9 +679,38 @@ static void SV_Savegame_f(void)
     Com_Printf("Game saved.\n");
 }
 
+/*
+==============
+SV_AutoSave_f
+
+Writes the automatic save slot on demand. The engine already does this on a
+level change; the rerelease's target_autosave fires it from inside a level, so
+the game library needs something to call.
+==============
+*/
+static void SV_AutoSave_f(void)
+{
+    if (sv.state != ss_game) {
+        Com_Printf("You must be in a game to autosave.' + NL + '");
+        return;
+    }
+
+    if (dedicated->integer) {
+        Com_Printf("Can't autosave on a dedicated server.' + NL + '");
+        return;
+    }
+
+    if (SV_NoSaveGames()) {
+        return;
+    }
+
+    SV_AutoSaveEnd();
+}
+
 static const cmdreg_t c_savegames[] = {
     { "save", SV_Savegame_f, SV_Savegame_c },
     { "load", SV_Loadgame_f, SV_Savegame_c },
+    { "autosave", SV_AutoSave_f },
     { NULL }
 };
 

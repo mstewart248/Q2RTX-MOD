@@ -351,6 +351,9 @@ void G_InitEdict(edict_t *e)
     e->classname = "noclass";
     e->gravity = 1.0f;
     e->s.number = e - g_edicts;
+
+    // down is down unless a monster says otherwise
+    VectorSet(e->gravityVector, 0.0f, 0.0f, -1.0f);
 }
 
 /*
