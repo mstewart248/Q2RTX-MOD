@@ -80,10 +80,20 @@ jobs:
       with:
         submodules: true
 
+    - name: Checkout NVIDIA DLSS SDK
+      uses: actions/checkout@v3
+      with:
+        repository: NVIDIA/DLSS
+        path: DLSS_SDK
+
     - name: Configure
+      env:
+        DLSS_SDK2_PATH: ${{github.workspace}}/DLSS_SDK
       run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCONFIG_BUILD_GLSLANG=ON
 
     - name: Build Game
+      env:
+        DLSS_SDK2_PATH: ${{github.workspace}}/DLSS_SDK
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j2
 
     - name: Upload
