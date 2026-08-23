@@ -560,11 +560,11 @@ IF (WIN32)
     TARGET_COMPILE_OPTIONS(baseq2 PRIVATE /wd4005 /wd4996)
 
 	if(CONFIG_USE_DLSS)
-		message(STATUS "Q2RTX_WITH_NVIDIA_DLSS enabled")
-		add_definitions(-DRG_USE_NVIDIA_DLSS)
 		message(STATUS "${CMAKE_BUILD_TYPE} Q2RTX BUILD")
 
 		if (DEFINED ENV{DLSS_SDK2_PATH})
+			message(STATUS "Q2RTX_WITH_NVIDIA_DLSS enabled")
+			add_definitions(-DRG_USE_NVIDIA_DLSS)
 			message(STATUS "Found DLSS SDK: $ENV{DLSS_SDK2_PATH}")
 			target_include_directories(client PRIVATE "$ENV{DLSS_SDK2_PATH}/include")
 			if (WIN32)
@@ -579,9 +579,11 @@ IF (WIN32)
 				target_link_libraries(client ${CMAKE_DL_LIBS})
 			endif()
 		else()
-			message(FATAL_ERROR 
-				"Can't find DLSS_SDK2_PATH environment variable. "
-				"Please, provide the path to https://github.com/NVIDIA/DLSS, to configure the library")
+			message(WARNING
+				"DLSS_SDK2_PATH is not set, so this build will have no DLSS. "
+				"Clone https://github.com/NVIDIA/DLSS and point DLSS_SDK2_PATH at it "
+				"to enable it. (CI does this automatically; see .github/workflows/build.yml.)")
+			set(CONFIG_USE_DLSS OFF)
 		endif()
 	endif()
 
