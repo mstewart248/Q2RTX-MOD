@@ -44,6 +44,7 @@ model_t      r_models[MAX_RMODELS];
 int          r_numModels;
 
 cvar_t    *cl_md5_models;
+cvar_t    *cl_classic_railgun;
 cvar_t    *cl_testmodel;
 cvar_t    *cl_testfps;
 cvar_t    *cl_testalpha;
@@ -392,25 +393,18 @@ qhandle_t R_RegisterModel(const char *name)
 
         bool try_md3 = cls.ref_type == REF_TYPE_VKPT || (cls.ref_type == REF_TYPE_GL && gl_use_hd_assets->integer);
 
+        // Q2RTX's railgun is a redesign rather than a remaster - a different
+        // gun, not a higher-poly one - so it gets its own switch. Declining it
+        // just means not taking the .md3, and the classic shape then comes from
+        // the MD5 or the MD2 according to cl_md5_models.
+        if (try_md3 && cl_classic_railgun->integer
+            && (strstr(normalized, "weapons/g_rail") || strstr(normalized, "weapons/v_rail")))
+            try_md3 = false;
+
         // MOD_LoadMD5 is NULL in the GL renderer, which has no skeletal path
         bool try_md5 = is_md2 && MOD_LoadMD5 && cl_md5_models->integer;
 
-        // Q2RTX ships 54 hand-remastered .md3 models with authored PBR, and 43
-        // of them are also in the rerelease's md5 set - every weapon and every
-        // item. Those .md3s are the better asset, so by default the rerelease
-        // model only fills in where Q2RTX has none, which in practice means the
-        // monsters. cl_md5_models 2 flips that for anyone who wants the
-        // rerelease art everywhere.
-        if (try_md5 && cl_md5_models->integer >= 2
-            && MOD_BuildMD5Path(normalized, md5_path, sizeof(md5_path)))
-        {
-            filelen = FS_LoadFileFlags(md5_path, (void **)&rawdata, fs_flags);
-
-            if (rawdata)
-                load_name = md5_path;
-        }
-
-        if (!rawdata && is_md2 && try_md3)
+        if (is_md2 && try_md3)
         {
             memcpy(extension, ".md3", 4);
 
@@ -545,14 +539,15 @@ void MOD_Init(void)
     Cmd_AddCommand("modellist", MOD_List_f);
     Cmd_AddCommand("puttest", MOD_PutTest_f);
 
-    // The rerelease's skeletal (MD5) models.
-    //   0 - never; classic .md3/.md2 only
-    //   1 - only where Q2RTX has no remastered .md3 of its own, i.e. the
-    //       monsters. Weapons and items keep Q2RTX's hand-authored models.
-    //   2 - always prefer the rerelease model, shadowing Q2RTX's .md3
-    // Falls back to the .md2 per model either way. CVAR_FILES re-registers
-    // everything on change, so this can be flipped without reloading the map.
+    // Use the rerelease's skeletal (MD5) models instead of the classic MD2s,
+    // wherever one exists. Falls back to the .md2 per model. CVAR_FILES
+    // re-registers everything on change, so it can be flipped in the menu
+    // without reloading the map.
     cl_md5_models = Cvar_Get("cl_md5_models", "1", CVAR_ARCHIVE | CVAR_FILES);
+
+    // Keep the classic railgun rather than Q2RTX's redesigned one. The shape
+    // then comes from the MD5 or the MD2 depending on cl_md5_models.
+    cl_classic_railgun = Cvar_Get("cl_classic_railgun", "0", CVAR_ARCHIVE | CVAR_FILES);
 
     // Path to the test model - can be an .md2, .md3 or .iqm file
     cl_testmodel = Cvar_Get("cl_testmodel", "", 0);

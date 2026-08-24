@@ -276,6 +276,11 @@ begin effects
     blank
     pairs "ludicrous gibs" g_ludicrous_gibs "off - classic quake ii" 0 "on" 1
     blank
+    ifeq vid_rtx 1
+        toggle "md5 models" cl_md5_models
+        toggle "classic railgun" cl_classic_railgun
+        blank
+    endif
     action --align "railgun trail setup..." pushmenu railtrail
 end
 
