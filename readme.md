@@ -33,6 +33,7 @@ DLSS implementation has been updated to use the latest DLSS SDK. So this project
   - DLSS with Ray Reconstruction
   - ReStir DI
   - Rerelease Map Support
+  - Rerelease MD5 Models
   - Caustics approximation and coloring of light that passes through tinted glass
   - Cutting-edge denoising technology
   - Cylindrical projection mode
