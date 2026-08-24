@@ -61,6 +61,7 @@ jobs:
           q2rtxded.exe
           q2rtxded-x86.exe
           baseq2/
+          rerelease/
           rogue/
           license.txt
           notice.txt
@@ -104,6 +105,7 @@ jobs:
           q2rtx
           q2rtxded
           baseq2/
+          rerelease/
           rogue/
           license.txt
           notice.txt
