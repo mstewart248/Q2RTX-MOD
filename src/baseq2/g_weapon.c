@@ -1422,7 +1422,7 @@ void fire_player_melee(edict_t *self, vec3_t start, vec3_t aim, int reach,
 
 /*
 =================
-fire_beams / fire_heat
+fire_beams / fire_heatbeam
 
 The plasma beam (rogue's "heatbeam"). A hitscan beam re-traced through water,
 with the visible beam sent as a temp entity every frame it fires. The client
@@ -1532,8 +1532,8 @@ static void fire_beams(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset
     gi.multicast(self->s.origin, MULTICAST_ALL);
 }
 
-void fire_heat(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset,
-               int damage, int kick, bool monster)
+void fire_heatbeam(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset,
+                   int damage, int kick, bool monster)
 {
     if (monster)
         fire_beams(self, start, aimdir, offset, damage, kick,
@@ -1541,6 +1541,154 @@ void fire_heat(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset,
     else
         fire_beams(self, start, aimdir, offset, damage, kick,
                    TE_HEATBEAM, TE_HEATBEAM_SPARKS, MOD_HEATBEAM);
+}
+
+
+/*
+======================================================================
+
+HEAT-SEEKING ROCKET (xatrix / rerelease)
+
+What monster_chick_heat and monster_boss5 fire. Not to be confused with
+fire_heatbeam above, which is rogue's plasma beam - this tree used to call
+that one "fire_heat", which is the opposite of the rerelease's naming.
+
+The rocket re-aims at the nearest visible player every frame, slewing
+turn_fraction of the way there. The rerelease slerps rather than lerping, so
+the turn rate stays constant no matter how far off target it starts.
+
+======================================================================
+*/
+
+/*
+=================
+VectorSlerp
+
+Spherical interpolation from -> to by frac, both unit length. Falls back to a
+plain lerp when the two are almost parallel, where the sine denominator goes to
+zero and the two agree anyway.
+=================
+*/
+static void VectorSlerp(vec3_t from, vec3_t to, float frac, vec3_t out)
+{
+    float   dot, theta, sin_theta, a, b;
+    vec3_t  scaled;
+    int     i;
+
+    dot = DotProduct(from, to);
+    clamp(dot, -1.0f, 1.0f);
+
+    theta = acosf(dot) * frac;
+    sin_theta = sinf(acosf(dot));
+
+    if (sin_theta < 0.001f) {
+        for (i = 0; i < 3; i++)
+            out[i] = from[i] + (to[i] - from[i]) * frac;
+        VectorNormalize(out);
+        return;
+    }
+
+    a = sinf(acosf(dot) - theta) / sin_theta;
+    b = sinf(theta) / sin_theta;
+
+    VectorScale(from, a, out);
+    VectorScale(to, b, scaled);
+    VectorAdd(out, scaled, out);
+    VectorNormalize(out);
+}
+
+void heat_think(edict_t *self)
+{
+    edict_t *target = NULL;
+    edict_t *acquire = NULL;
+    vec3_t  fwd, vec, dir;
+    float   len, oldlen = 0;
+    float   dot, olddot = 1;
+
+    AngleVectors(self->s.angles, fwd, NULL, NULL);
+
+    while ((target = findradius(target, self->s.origin, 1024)) != NULL) {
+        if (self->owner == target)
+            continue;
+        if (!target->client)
+            continue;
+        if (target->health <= 0)
+            continue;
+        if (!visible(self, target))
+            continue;
+
+        VectorSubtract(self->s.origin, target->s.origin, vec);
+        len = VectorNormalize(vec);
+        dot = DotProduct(vec, fwd);
+
+        // a target that needs less turning wins
+        if (dot >= olddot)
+            continue;
+
+        if (!acquire || dot < olddot || len < oldlen) {
+            acquire = target;
+            oldlen = len;
+            olddot = dot;
+        }
+    }
+
+    if (acquire) {
+        VectorSubtract(acquire->s.origin, self->s.origin, dir);
+        VectorNormalize(dir);
+
+        // if the target is off to the side rather than ahead or behind, the
+        // rerelease flips the target direction so the rocket arcs around
+        // instead of stalling in a turn it cannot make
+        if (DotProduct(self->movedir, dir) < 0.45f && DotProduct(self->movedir, dir) > -0.45f)
+            VectorNegate(dir, dir);
+
+        VectorSlerp(self->movedir, dir, self->accel, self->movedir);
+        vectoangles(self->movedir, self->s.angles);
+
+        if (!self->enemy) {
+            gi.sound(self, CHAN_WEAPON, gi.soundindex("weapons/railgr1a.wav"), 1, ATTN_STATIC, 0);
+            self->enemy = acquire;
+        }
+    } else {
+        self->enemy = NULL;
+    }
+
+    VectorScale(self->movedir, self->speed, self->velocity);
+    self->nextthink = level.framenum + 1;
+}
+
+void fire_heat(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed,
+               float damage_radius, int radius_damage, float turn_fraction)
+{
+    edict_t *heat;
+
+    heat = G_Spawn();
+    VectorCopy(start, heat->s.origin);
+    VectorCopy(dir, heat->movedir);
+    vectoangles(dir, heat->s.angles);
+    VectorScale(dir, speed, heat->velocity);
+    heat->movetype = MOVETYPE_FLYMISSILE;
+    heat->clipmask = MASK_SHOT;
+    heat->solid = SOLID_BBOX;
+    heat->s.effects |= EF_ROCKET;
+    VectorClear(heat->mins);
+    VectorClear(heat->maxs);
+    heat->s.modelindex = gi.modelindex("models/objects/rocket/tris.md2");
+    heat->owner = self;
+    heat->touch = rocket_touch;
+    heat->speed = speed;
+    heat->accel = turn_fraction;
+    heat->classname = "rocket";
+
+    heat->nextthink = level.framenum + 1;
+    heat->think = heat_think;
+
+    heat->dmg = damage;
+    heat->radius_dmg = radius_damage;
+    heat->dmg_radius = damage_radius;
+    heat->s.sound = gi.soundindex("weapons/rockfly.wav");
+
+    gi.linkentity(heat);
 }
 
 /*

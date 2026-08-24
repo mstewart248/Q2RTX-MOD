@@ -283,6 +283,35 @@ void G_SetMovedir(vec3_t angles, vec3_t movedir)
 }
 
 
+/*
+=============
+vectoyaw2
+
+ROGUE's yaw-only vectoangles. Unlike vectoyaw() below it does not truncate, and
+it works off the raw x/y rather than normalizing first - the carrier aims its
+spawn hatch with it, where whole-degree rounding is visible.
+=============
+*/
+float vectoyaw2(vec3_t vec)
+{
+    float yaw;
+
+    if (vec[PITCH] == 0) {
+        if (vec[YAW] == 0)
+            yaw = 0;
+        else if (vec[YAW] > 0)
+            yaw = 90;
+        else
+            yaw = 270;
+    } else {
+        yaw = RAD2DEG(atan2f(vec[YAW], vec[PITCH]));
+        if (yaw < 0)
+            yaw += 360;
+    }
+
+    return yaw;
+}
+
 float vectoyaw(vec3_t vec)
 {
     float   yaw;

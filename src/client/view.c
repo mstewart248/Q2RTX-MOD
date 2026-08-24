@@ -519,7 +519,9 @@ void V_RenderView(int waterLevel)
         }
 #endif
 
-        if(cl_flashlight->integer)
+        // cl_flashlight is the player's own switch; the stat is the rerelease
+        // trigger_flashlight state, so either one turns the light on.
+        if(cl_flashlight->integer || cl.frame.ps.stats[STAT_FLASHLIGHT])
             V_Flashlight();
 
         // never let it sit exactly on a node line, because a water plane can

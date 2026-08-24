@@ -548,7 +548,13 @@ void ChickRocket(edict_t *self)
     VectorSubtract(vec, start, dir);
     VectorNormalize(dir);
 
-    monster_fire_rocket(self, start, dir, 50, 500, MZ2_CHICK_ROCKET_1);
+    // RAFAEL - skin 2 is monster_chick_heat, whose rockets steer. The
+    // rerelease keys the two apart on the skin rather than on the classname,
+    // because they share every frame and every move.
+    if (self->s.skinnum > 1)
+        monster_fire_heat(self, start, dir, 50, 500, MZ2_CHICK_ROCKET_1, 0.15f);
+    else
+        monster_fire_rocket(self, start, dir, 50, 500, MZ2_CHICK_ROCKET_1);
 }
 
 void Chick_PreAttack1(edict_t *self)
@@ -747,4 +753,19 @@ void SP_monster_chick(edict_t *self)
     self->monsterinfo.scale = MODEL_SCALE;
 
     walkmonster_start(self);
+}
+
+/*QUAKED monster_chick_heat (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
+RAFAEL - the iron maiden with heat-seeking rockets. Identical to the plain one
+apart from the skin, which is what ChickRocket branches on.
+*/
+void SP_monster_chick_heat(edict_t *self)
+{
+    SP_monster_chick(self);
+
+    if (!self->inuse)
+        return;             // deathmatch: SP_monster_chick freed it
+
+    self->s.skinnum = 2;
+    gi.soundindex("weapons/railgr1a.wav");
 }

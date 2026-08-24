@@ -29,6 +29,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #endif
 #include "format/sp2.h"
 #include "format/iqm.h"
+#include "format/md5.h"
 #include "refresh/images.h"
 #include "refresh/models.h"
 #include "../client/client.h"
@@ -42,6 +43,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 model_t      r_models[MAX_RMODELS];
 int          r_numModels;
 
+cvar_t    *cl_md5_models;
 cvar_t    *cl_testmodel;
 cvar_t    *cl_testfps;
 cvar_t    *cl_testalpha;
@@ -303,9 +305,40 @@ fail:
 #define TRY_MODEL_SRC_GAME      1
 #define TRY_MODEL_SRC_BASE      0
 
+/*
+=================
+MOD_BuildMD5Path
+
+The rerelease keeps its improved skeletal model beside the classic one, in an
+md5/ subdirectory: models/monsters/soldier/md5/tris.md5mesh next to
+models/monsters/soldier/tris.md2. Turning one path into the other is all the
+per-model fallback this needs - if the MD5 is not there, the MD2 still loads.
+
+(md2_path) must already be normalized and end in ".md2".
+=================
+*/
+static bool MOD_BuildMD5Path(const char *md2_path, char *buffer, size_t size)
+{
+    const char *slash = strrchr(md2_path, '/');
+    size_t dirlen = slash ? (size_t)(slash - md2_path) + 1 : 0;
+    size_t namelen = strlen(md2_path);
+
+    // "md5/" goes in and ".md2" grows to ".md5mesh"
+    if (namelen + 8 >= size)
+        return false;
+
+    memcpy(buffer, md2_path, dirlen);
+    memcpy(buffer + dirlen, "md5/", 4);
+    memcpy(buffer + dirlen + 4, md2_path + dirlen, namelen - dirlen - 4);
+    memcpy(buffer + namelen, ".md5mesh", 9);
+    return true;
+}
+
 qhandle_t R_RegisterModel(const char *name)
 {
     char normalized[MAX_QPATH];
+    char md5_path[MAX_QPATH];
+    const char *load_name = name;
     qhandle_t index;
     size_t namelen;
     int filelen = 0;
@@ -355,14 +388,44 @@ qhandle_t R_RegisterModel(const char *name)
             fs_flags = try_location == TRY_MODEL_SRC_GAME ? FS_PATH_GAME : FS_PATH_BASE;
 
         char* extension = normalized + namelen - 4;
+        bool is_md2 = namelen > 4 && strcmp(extension, ".md2") == 0;
+
         bool try_md3 = cls.ref_type == REF_TYPE_VKPT || (cls.ref_type == REF_TYPE_GL && gl_use_hd_assets->integer);
-        if (namelen > 4 && (strcmp(extension, ".md2") == 0) && try_md3)
+
+        // MOD_LoadMD5 is NULL in the GL renderer, which has no skeletal path
+        bool try_md5 = is_md2 && MOD_LoadMD5 && cl_md5_models->integer;
+
+        // Q2RTX ships 54 hand-remastered .md3 models with authored PBR, and 43
+        // of them are also in the rerelease's md5 set - every weapon and every
+        // item. Those .md3s are the better asset, so by default the rerelease
+        // model only fills in where Q2RTX has none, which in practice means the
+        // monsters. cl_md5_models 2 flips that for anyone who wants the
+        // rerelease art everywhere.
+        if (try_md5 && cl_md5_models->integer >= 2
+            && MOD_BuildMD5Path(normalized, md5_path, sizeof(md5_path)))
+        {
+            filelen = FS_LoadFileFlags(md5_path, (void **)&rawdata, fs_flags);
+
+            if (rawdata)
+                load_name = md5_path;
+        }
+
+        if (!rawdata && is_md2 && try_md3)
         {
             memcpy(extension, ".md3", 4);
 
             filelen = FS_LoadFileFlags(normalized, (void **)&rawdata, fs_flags);
 
             memcpy(extension, ".md2", 4);
+        }
+
+        if (!rawdata && try_md5
+            && MOD_BuildMD5Path(normalized, md5_path, sizeof(md5_path)))
+        {
+            filelen = FS_LoadFileFlags(md5_path, (void **)&rawdata, fs_flags);
+
+            if (rawdata)
+                load_name = md5_path;
         }
         if (!rawdata)
         {
@@ -408,6 +471,9 @@ qhandle_t R_RegisterModel(const char *name)
     case IQM_IDENT:
         load = MOD_LoadIQM;
         break;
+    case MD5_IDENT:
+        load = MOD_LoadMD5;
+        break;
     default:
         ret = Q_ERR_UNKNOWN_FORMAT;
         goto fail2;
@@ -428,7 +494,7 @@ qhandle_t R_RegisterModel(const char *name)
     memcpy(model->name, normalized, namelen + 1);
     model->registration_sequence = registration_sequence;
 
-    ret = load(model, rawdata, filelen, name);
+    ret = load(model, rawdata, filelen, load_name);
 
     FS_FreeFile(rawdata);
 
@@ -478,6 +544,15 @@ void MOD_Init(void)
     Q_assert(!r_numModels);
     Cmd_AddCommand("modellist", MOD_List_f);
     Cmd_AddCommand("puttest", MOD_PutTest_f);
+
+    // The rerelease's skeletal (MD5) models.
+    //   0 - never; classic .md3/.md2 only
+    //   1 - only where Q2RTX has no remastered .md3 of its own, i.e. the
+    //       monsters. Weapons and items keep Q2RTX's hand-authored models.
+    //   2 - always prefer the rerelease model, shadowing Q2RTX's .md3
+    // Falls back to the .md2 per model either way. CVAR_FILES re-registers
+    // everything on change, so this can be flipped without reloading the map.
+    cl_md5_models = Cvar_Get("cl_md5_models", "1", CVAR_ARCHIVE | CVAR_FILES);
 
     // Path to the test model - can be an .md2, .md3 or .iqm file
     cl_testmodel = Cvar_Get("cl_testmodel", "", 0);

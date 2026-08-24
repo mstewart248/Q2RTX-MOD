@@ -5102,6 +5102,7 @@ void R_RegisterFunctionsRTX()
 	MOD_LoadMD2 = MOD_LoadMD2_RTX;
 	MOD_LoadMD3 = MOD_LoadMD3_RTX;
 	MOD_LoadIQM = MOD_LoadIQM_RTX;
+	MOD_LoadMD5 = MOD_LoadMD5_RTX;
 	MOD_Reference = MOD_Reference_RTX;
 }
 

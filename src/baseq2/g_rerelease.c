@@ -517,3 +517,423 @@ void SP_info_nav_lock(edict_t *self)
 {
     G_FreeEdict(self);
 }
+
+/*QUAKED func_eye (0 1 0) ?
+A camera-like eye brush that tracks the nearest player inside its cone of
+vision. mguhub's monitor screens are these: 18 of them, all with
+"eye_position" "24 0 -8" and no pathtarget.
+
+The screen itself is a texture animation on the brush - s.frame 0 is the idle
+face and s.frame 2 the alert one - which this renderer already drives per
+entity (animate_material() in shader/vertex_buffer.h keys off the instance's
+frame), so nothing new is needed on the client.
+
+"pathtarget"    an info_notnull whose origin becomes the eye position
+"eye_position"  eye position by hand, "forward right up" relative to the brush
+"target"/"killtarget"/"delay"/"message"  fired the first time a player is seen
+"radius"        detection radius, default 512
+"speed"         degrees per second the eye turns on each axis, default 45
+"vision_cone"   cone half-width as a dot product, default 0.5
+"wait"          seconds to hold the last aim before returning to neutral
+*/
+#define SPAWNFLAG_FUNC_EYE_FIRED_TARGETS    0x00020000  // internal use only
+
+void func_eye_think(edict_t *self)
+{
+    edict_t *closest_player = NULL;
+    float   closest_dist = 0;
+    vec3_t  fwd, rgt, up, eye_pos, dir, wanted_angles;
+    int     i;
+
+    // find the nearest player inside the cone
+    for (i = 1; i <= game.maxclients; i++) {
+        edict_t *player = &g_edicts[i];
+        float   dist;
+
+        if (!player->inuse || !player->client || player->health <= 0)
+            continue;
+
+        VectorSubtract(player->s.origin, self->s.origin, dir);
+        dist = VectorNormalize(dir);
+
+        if (DotProduct(dir, self->movedir) < self->yaw_speed)
+            continue;
+
+        if (dist >= self->dmg_radius)
+            continue;
+
+        if (!closest_player || dist < closest_dist) {
+            closest_player = player;
+            closest_dist = dist;
+        }
+    }
+
+    self->enemy = closest_player;
+
+    // Where the eye is looking from. move_origin holds a world-space offset by
+    // the time we get here, but the rerelease reads its components back out as
+    // forward/right/up scalars, so the offset ends up rotated. Kept as-is: it
+    // is a 24 unit nudge on a decorative brush and changing it would aim these
+    // differently than the retail game does.
+    AngleVectors(self->s.angles, fwd, rgt, up);
+    VectorCopy(self->s.origin, eye_pos);
+    VectorMA(eye_pos, self->move_origin[0], fwd, eye_pos);
+    VectorMA(eye_pos, self->move_origin[1], rgt, eye_pos);
+    VectorMA(eye_pos, self->move_origin[2], up, eye_pos);
+
+    if (self->enemy) {
+        if (!(self->spawnflags & SPAWNFLAG_FUNC_EYE_FIRED_TARGETS)) {
+            G_UseTargets(self, self->enemy);
+            self->spawnflags |= SPAWNFLAG_FUNC_EYE_FIRED_TARGETS;
+        }
+
+        VectorSubtract(self->enemy->s.origin, eye_pos, dir);
+        VectorNormalize(dir);
+        vectoangles(dir, wanted_angles);
+
+        self->s.frame = 2;
+        self->timestamp = level.framenum + self->wait * BASE_FRAMERATE;
+    } else if (self->timestamp <= level.framenum) {
+        // return to neutral
+        VectorCopy(self->move_angles, wanted_angles);
+        self->s.frame = 0;
+    } else {
+        VectorCopy(self->s.angles, wanted_angles);
+    }
+
+    // pitch and yaw only
+    for (i = 0; i < 2; i++) {
+        float current = anglemod(self->s.angles[i]);
+        float ideal = wanted_angles[i];
+        float move;
+
+        if (current == ideal)
+            continue;
+
+        move = ideal - current;
+
+        if (ideal > current) {
+            if (move >= 180)
+                move -= 360;
+        } else {
+            if (move <= -180)
+                move += 360;
+        }
+
+        if (move > 0) {
+            if (move > self->speed)
+                move = self->speed;
+        } else {
+            if (move < -self->speed)
+                move = -self->speed;
+        }
+
+        self->s.angles[i] = anglemod(current + move);
+    }
+
+    self->nextthink = level.framenum + 1;
+}
+
+void func_eye_setup(edict_t *self)
+{
+    edict_t *eye_pos = G_PickTarget(self->pathtarget);
+
+    if (!eye_pos)
+        gi.dprintf("%s: bad pathtarget '%s'\n", self->classname, self->pathtarget);
+    else
+        VectorSubtract(eye_pos->s.origin, self->s.origin, self->move_origin);
+
+    VectorCopy(self->move_origin, self->movedir);
+    VectorNormalize(self->movedir);
+
+    self->think = func_eye_think;
+    self->nextthink = level.framenum + 1;
+}
+
+void SP_func_eye(edict_t *ent)
+{
+    ent->movetype = MOVETYPE_PUSH;
+    ent->solid = SOLID_BSP;
+    gi.setmodel(ent, ent->model);
+
+    if (!st.radius)
+        ent->dmg_radius = 512;
+    else
+        ent->dmg_radius = st.radius;
+
+    if (!ent->speed)
+        ent->speed = 45;
+
+    if (!ent->yaw_speed)
+        ent->yaw_speed = 0.5f;
+
+    ent->speed *= FRAMETIME;
+    VectorCopy(ent->s.angles, ent->move_angles);
+
+    // the rerelease overrides the documented "wait" key
+    ent->wait = 1.0f;
+
+    if (ent->pathtarget) {
+        ent->think = func_eye_setup;
+        ent->nextthink = level.framenum + 1;
+    } else {
+        vec3_t right, up, move_origin;
+
+        ent->think = func_eye_think;
+        ent->nextthink = level.framenum + 1;
+
+        AngleVectors(ent->move_angles, ent->movedir, right, up);
+
+        VectorCopy(ent->move_origin, move_origin);
+        VectorScale(ent->movedir, move_origin[0], ent->move_origin);
+        VectorMA(ent->move_origin, move_origin[1], right, ent->move_origin);
+        VectorMA(ent->move_origin, move_origin[2], up, ent->move_origin);
+    }
+
+    gi.linkentity(ent);
+}
+
+/*
+=================
+P_ToggleFlashlight
+
+The flashlight itself is already a client feature here - V_Flashlight() in
+src/client/view.c adds a textured spot light from the view. The game only owns
+the on/off state, and ships it to the client in STAT_FLASHLIGHT, because every
+one of this protocol's 32 EF_ bits is taken and there is no room for the
+rerelease's EF_FLASHLIGHT.
+=================
+*/
+void P_ToggleFlashlight(edict_t *ent, bool state)
+{
+    if (!!(ent->flags & FL_FLASHLIGHT) == state)
+        return;
+
+    ent->flags ^= FL_FLASHLIGHT;
+
+    gi.sound(ent, CHAN_AUTO, gi.soundindex(ent->flags & FL_FLASHLIGHT ?
+             "items/flashlight_on.wav" : "items/flashlight_off.wav"), 1, ATTN_STATIC, 0);
+}
+
+/*QUAKED trigger_flashlight (.5 .5 .5) ?
+Turns the player's flashlight on or off as they move through the brush. The
+MGU maps use these to light the player into a dark stretch and switch the light
+back off on the way out; all 87 of them set "style", so the angle-driven mode
+below is never actually taken by a shipping map.
+
+"style"  1 always on, 2 always off, otherwise "angles" decide: moving with the
+         trigger's facing turns it on, moving against it turns it off
+
+The rerelease's CLIPPED spawnflag needs gi.clip(), which this engine does not
+have. No rerelease map sets it, so it is not implemented.
+*/
+void trigger_flashlight_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    if (!other->client)
+        return;
+
+    if (self->style == 1) {
+        P_ToggleFlashlight(other, true);
+    } else if (self->style == 2) {
+        P_ToggleFlashlight(other, false);
+    } else if (VectorLengthSquared(other->velocity) > 32) {
+        vec3_t forward;
+
+        VectorCopy(other->velocity, forward);
+        VectorNormalize(forward);
+        P_ToggleFlashlight(other, DotProduct(forward, self->movedir) > 0);
+    }
+}
+
+void SP_trigger_flashlight(edict_t *self)
+{
+    if (self->s.angles[YAW] == 0)
+        self->s.angles[YAW] = 360;
+
+    InitTrigger(self);
+    self->touch = trigger_flashlight_touch;
+    self->movedir[2] = st.height;
+
+    gi.linkentity(self);
+}
+
+/*QUAKED misc_flare (1.0 1.0 0.0) (-32 -32 -32) (32 32 32) RED GREEN BLUE LOCK_ANGLE
+A glowing corona sprite, hung on lamps and machinery all over the MGU maps
+(186 of them). It is art, not a light source - the rerelease's flare emits
+nothing, and neither does this one. dynamic_light is what actually lights those
+rooms.
+
+"rgba"              tint, "R G B A" as 0..255 or 0..1
+"radius"            size multiplier, 0.3 to 4.2 in the shipping maps
+"image"             the sprite, e.g. sprites/flare_03.tga
+"fade_start_dist"   below this distance the flare is invisible
+"fade_end_dist"     at this distance it is at full strength
+
+Everything the client needs rides in the entity state, because there is no
+per-entity scale or colour in this protocol:
+
+    s.frame         image index (CS_IMAGES)
+    s.skinnum       packed RGBA, straight from the "rgba" key
+    s.modelindex4   size * FLARE_SCALE_UNIT
+    s.modelindex2/3 fade start/end in units / FLARE_FADE_UNIT
+
+modelindex2/3/4 are bytes on the wire, hence the two scale factors - see
+SP_misc_flare for the ranges they have to cover.
+*/
+#define SPAWNFLAG_FLARE_RED         1
+#define SPAWNFLAG_FLARE_GREEN       2
+#define SPAWNFLAG_FLARE_BLUE        4
+#define SPAWNFLAG_FLARE_LOCK_ANGLE  8
+
+void misc_flare_use(edict_t *ent, edict_t *other, edict_t *activator)
+{
+    ent->svflags ^= SVF_NOCLIENT;
+    gi.linkentity(ent);
+}
+
+static int flare_byte(float value, float unit)
+{
+    int i = (int)(value / unit + 0.5f);
+
+    clamp(i, 0, 255);
+    return i;
+}
+
+void SP_misc_flare(edict_t *ent)
+{
+    float scale;
+
+    // modelindex has to be non-zero or the client drops the entity before it
+    // ever looks at renderfx. Nothing is drawn from it - CL_AddPacketEntities
+    // intercepts RF_FLARE first.
+    ent->s.modelindex = 1;
+    ent->s.renderfx = RF_FLARE;
+    ent->movetype = MOVETYPE_NONE;
+    ent->solid = SOLID_NOT;
+
+    scale = st.radius ? st.radius : 1.0f;
+    ent->s.modelindex4 = flare_byte(scale, FLARE_SCALE_UNIT);
+
+    // The rerelease also sets RF_SHELL_* from these. Colour shells need
+    // EF_COLOR_SHELL in this client and a flare never sets it, so the bits
+    // would do nothing; every flare in every map carries an "rgba" saying the
+    // same thing, and that is what tints it here.
+    if (ent->spawnflags & SPAWNFLAG_FLARE_LOCK_ANGLE)
+        ent->s.renderfx |= RF_FLARE_LOCK_ANGLE;
+
+    if (st.image && *st.image) {
+        char name[MAX_QPATH];
+
+        // Two things to fix up. The maps are inconsistent about the path -
+        // some say "sprites/flare_01.tga", some just "flare_04.tga" - and the
+        // client precaches CS_IMAGES with R_RegisterPic2, which prefixes
+        // "pics/" onto any name that is not absolute. A leading slash is the
+        // engine's own escape hatch for that (see R_RegisterImage).
+        if (!strchr(st.image, '/'))
+            Q_snprintf(name, sizeof(name), "/sprites/%s", st.image);
+        else
+            Q_snprintf(name, sizeof(name), "/%s", st.image);
+
+        ent->s.renderfx |= RF_CUSTOMSKIN;
+        ent->s.frame = gi.imageindex(name);
+    } else {
+        ent->s.frame = gi.imageindex("/sprites/flare_01.tga");
+    }
+
+    // no "rgba" key means white
+    if (!ent->s.skinnum)
+        ent->s.skinnum = -1;
+
+    ent->s.modelindex2 = flare_byte(st.fade_start_dist, FLARE_FADE_UNIT);
+    ent->s.modelindex3 = flare_byte(st.fade_end_dist, FLARE_FADE_UNIT);
+
+    VectorSet(ent->mins, -32, -32, -32);
+    VectorSet(ent->maxs, 32, 32, 32);
+
+    if (ent->targetname)
+        ent->use = misc_flare_use;
+
+    gi.linkentity(ent);
+}
+
+/*QUAKED target_light (1 0 0) (-8 -8 -8) (8 8 8) START_ON NO_LERP FLICKER
+A dynamic light the map can switch on and off. All 38 in the rerelease maps are
+"radius" 48, "rgba" "1 1 0.25 1", off at spawn and turned on by a trigger -
+door and lift indicators, spark emitters and the like.
+
+"radius"    light radius, default 150
+"rgba"      colour, "R G B A" as 0..255 or 0..1
+
+s.frame carries the radius and s.skinnum the packed colour; the client turns
+that into a sphere light when it sees RF_CUSTOM_LIGHT.
+
+The rerelease also lerps the colour along a lightstyle string, or toward a
+"target"ed dynamic_light. That needs to read CS_LIGHTS back out of the server,
+which this game API cannot do, and no map in scope uses either - none sets
+"style", "target" or any spawnflag.
+*/
+#define SPAWNFLAG_TARGET_LIGHT_START_ON 1
+#define SPAWNFLAG_TARGET_LIGHT_NO_LERP  2
+#define SPAWNFLAG_TARGET_LIGHT_FLICKER  4
+
+void target_light_flicker_think(edict_t *self)
+{
+    if (random() < 0.5f)
+        self->svflags ^= SVF_NOCLIENT;
+
+    self->nextthink = level.framenum + 1;
+}
+
+void target_light_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->health = !self->health;
+
+    if (self->health)
+        self->svflags &= ~SVF_NOCLIENT;
+    else
+        self->svflags |= SVF_NOCLIENT;
+
+    if (!self->health) {
+        self->think = NULL;
+        self->nextthink = 0;
+        return;
+    }
+
+    if (self->spawnflags & SPAWNFLAG_TARGET_LIGHT_FLICKER) {
+        self->think = target_light_flicker_think;
+        self->nextthink = level.framenum + 1;
+    }
+}
+
+void SP_target_light(edict_t *self)
+{
+    self->s.modelindex = 1;     // see SP_misc_flare
+    self->s.renderfx = RF_CUSTOM_LIGHT;
+    self->s.frame = st.radius ? (int)st.radius : 150;
+    self->svflags |= SVF_NOCLIENT;
+    self->health = 0;
+
+    if (!self->s.skinnum)
+        self->s.skinnum = -1;
+
+    if (self->spawnflags & SPAWNFLAG_TARGET_LIGHT_START_ON)
+        target_light_use(self, self, self);
+
+    self->use = target_light_use;
+
+    gi.linkentity(self);
+}
+
+/*QUAKED dynamic_light (0 1 0) (-8 -8 -8) (8 8 8)
+The rerelease's real-time light. It is handled entirely on the CLIENT, out of
+the BSP entity lump - see src/client/dynamiclights.c - because the lights are
+static and the path tracer already has the light types they need.
+
+This spawn function exists only so the server stops reporting the classname as
+unimplemented once per entity (69 lines a map on mine1/mine2). The edict is
+freed either way; the light is not driven from here.
+*/
+void SP_dynamic_light(edict_t *self)
+{
+    G_FreeEdict(self);
+}

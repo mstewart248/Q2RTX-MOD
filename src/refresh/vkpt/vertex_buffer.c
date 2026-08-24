@@ -741,6 +741,8 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		if (material->image_normals) mat_data[0] |= (material->image_normals - r_images) << 16;
 		if (material->image_emissive) mat_data[1] |= (material->image_emissive - r_images);
 		if (material->image_mask) mat_data[1] |= (material->image_mask - r_images) << 16;
+		if (material->image_roughness) mat_data[6] |= (material->image_roughness - r_images);
+		if (material->image_metallic) mat_data[6] |= (material->image_metallic - r_images) << 16;
 
 		mat_data[2] = floatToHalf(material->bump_scale);
 		mat_data[2] |= floatToHalf(material->roughness_override) << 16;

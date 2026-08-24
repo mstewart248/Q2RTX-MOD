@@ -39,6 +39,8 @@ typedef struct pbr_material_s {
 	char filename_normals[MAX_QPATH];
 	char filename_emissive[MAX_QPATH];
 	char filename_mask[MAX_QPATH];
+	char filename_roughness[MAX_QPATH];
+	char filename_metallic[MAX_QPATH];
 	char source_matfile[MAX_QPATH];
 	uint32_t source_line;
 	int original_width;
@@ -47,6 +49,10 @@ typedef struct pbr_material_s {
 	image_t * image_normals;
 	image_t * image_emissive;
 	image_t * image_mask;
+	// dedicated roughness/metallic maps. When present these win over the
+	// legacy packing (roughness in base alpha, metallic in normals alpha).
+	image_t * image_roughness;
+	image_t * image_metallic;
 	float bump_scale;
 	float roughness_override;
 	float metalness_factor;
@@ -80,6 +86,10 @@ void MAT_ChangeMap(const char* map_name);
 // finds or loads a material by name, which must have no extension
 // all available textures will be initialized in the returned material
 pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags);
+
+// copies the layout-independent tuning (brightness, roughness, kind, ...) of the
+// material definition named (source_name) onto (mat). Textures are not copied.
+void MAT_InheritScalars(pbr_material_t* mat, const char* source_name);
 
 // registration sequence: update registration sequence of images used by the material
 void MAT_UpdateRegistration(pbr_material_t * mat);

@@ -890,6 +890,40 @@ image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int)
 	return new_image;
 }
 
+/*
+=================
+vkpt_fold_emissive_alpha
+
+The rerelease masks its _glow emissive maps with the ALPHA channel and leaves
+content in RGB everywhere else; Q2RTX expects the mask to be in RGB, with black
+where nothing emits. Fold one into the other so the rest of the engine, and the
+shader's sample_emissive_texture(), need know nothing about it.
+
+Measured on models/monsters/soldier: rgb mean 28.3 with alpha mean 1.1, against
+Q2RTX's own skin_light.tga at rgb mean 0.4. Without this the whole model emits.
+=================
+*/
+void
+vkpt_fold_emissive_alpha(image_t *image)
+{
+	if (!image || image->emissive_alpha_folded || !image->pix_data)
+		return;
+
+	byte *pixel = image->pix_data;
+	const int count = image->upload_width * image->upload_height;
+
+	for (int i = 0; i < count; i++, pixel += 4) {
+		pixel[0] = (byte)((pixel[0] * pixel[3]) / 255);
+		pixel[1] = (byte)((pixel[1] * pixel[3]) / 255);
+		pixel[2] = (byte)((pixel[2] * pixel[3]) / 255);
+	}
+
+	image->emissive_alpha_folded = true;
+
+	// any emissive statistics gathered before this are now stale
+	image->processing_complete = false;
+}
+
 void
 vkpt_extract_emissive_texture_info(image_t *image)
 {

@@ -839,6 +839,197 @@ fail:
 	return ret;
 }
 
+/*
+=================
+MD5_SkinPath
+
+The rerelease re-unwrapped its skeletal meshes and ships new artwork for them
+in the same md5/ directory, so a skin cannot be taken from the .md2 path as
+written. What the .md2 still owns is the skin LIST - its order is what
+entity->skinnum indexes - so each entry is redirected by basename into the
+md5/ directory that (base_path) already points at.
+=================
+*/
+static void MD5_SkinPath(const char *base_path, const char *skin, char *buffer, size_t size)
+{
+	const char *slash = strrchr(skin, '/');
+	const char *stem = slash ? slash + 1 : skin;
+	char name[MAX_QPATH];
+	char *dot;
+
+	Q_strlcpy(name, stem, sizeof(name));
+	dot = strrchr(name, '.');
+	if (dot)
+		*dot = 0;
+
+	// MAT_Find truncates the extension anyway; the material system is what
+	// decides which image file actually backs this name
+	Q_snprintf(buffer, size, "%s/%s.png", base_path, name);
+}
+
+/*
+=================
+MD5_LoadSkinsFromMD2
+
+Reads the classic model's skin list so that skinnum keeps selecting the same
+skin it always did. Returns 0 when the .md2 is unreadable, in which case the
+caller uses a single default skin.
+=================
+*/
+static int MD5_LoadSkinsFromMD2(const char *mod_name, const char *base_path, maliasmesh_t *mesh)
+{
+	char md2_path[MAX_QPATH];
+	char skinname[MAX_QPATH];
+	char skinpath[MAX_QPATH];
+	byte *rawdata = NULL;
+	dmd2header_t header;
+	const char *src_skin;
+	const char *slash;
+	size_t dirlen, namelen;
+	int filelen, numskins = 0;
+
+	// "<dir>/md5/tris.md5mesh" -> "<dir>/tris.md2"
+	namelen = strlen(mod_name);
+	if (namelen < 13 || Q_stricmp(mod_name + namelen - 8, ".md5mesh"))
+		return 0;
+
+	slash = strrchr(mod_name, '/');
+	if (!slash || slash - mod_name < 4 || strncmp(slash - 4, "/md5", 4))
+		return 0;
+
+	dirlen = (size_t)(slash - mod_name) - 4 + 1;    // keep the '/' before "md5"
+	if (dirlen + (namelen - 8 - (size_t)(slash + 1 - mod_name)) + 5 >= sizeof(md2_path))
+		return 0;
+
+	memcpy(md2_path, mod_name, dirlen);
+	memcpy(md2_path + dirlen, slash + 1, namelen - 8 - (size_t)(slash + 1 - mod_name));
+	strcpy(md2_path + dirlen + namelen - 8 - (size_t)(slash + 1 - mod_name), ".md2");
+
+	filelen = FS_LoadFile(md2_path, (void **)&rawdata);
+	if (!rawdata)
+		return 0;
+
+	if (filelen < (int)sizeof(header))
+		goto done;
+
+	LittleBlock(&header, rawdata, sizeof(header));
+
+	if (MOD_ValidateMD2(&header, filelen))
+		goto done;
+
+	src_skin = (const char *)rawdata + header.ofs_skins;
+	for (int i = 0; i < header.num_skins && i < MAX_ALIAS_SKINS; i++, src_skin += MD2_MAX_SKINNAME) {
+		if (!Q_memccpy(skinname, src_skin, 0, sizeof(skinname)))
+			break;
+
+		FS_NormalizePath(skinname);
+		MD5_SkinPath(base_path, skinname, skinpath, sizeof(skinpath));
+
+		mesh->materials[numskins] = MAT_Find(skinpath, IT_SKIN, IF_NONE);
+		assert(mesh->materials[numskins]);
+
+		// The re-unwrapped MD5 skins cannot use Q2RTX's hand-authored normal
+		// and emissive maps, but the classic material's tuning is not tied to
+		// a UV layout - without this the model renders at base_factor 1.0
+		// against the 1.5-2.5 the classic skin asks for, i.e. darker than the
+		// .md2 it replaces.
+		MAT_InheritScalars(mesh->materials[numskins], skinname);
+
+		numskins++;
+	}
+
+done:
+	FS_FreeFile(rawdata);
+	return numskins;
+}
+
+int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const char *mod_name)
+{
+	char base_path[MAX_QPATH];
+	int ret;
+
+	Hunk_Begin(&model->hunk, 0x4000000);
+	model->type = MOD_ALIAS;
+
+	int res = MOD_LoadMD5_Base(model, rawdata, length, mod_name);
+
+	if (res != Q_ERR_SUCCESS)
+	{
+		Hunk_Free(&model->hunk);
+		return res;
+	}
+
+	COM_FilePath(mod_name, base_path, sizeof(base_path));
+
+	CHECK(model->meshes = MOD_Malloc(sizeof(maliasmesh_t) * model->iqmData->num_meshes));
+	model->nummeshes = (int)model->iqmData->num_meshes;
+	model->numframes = 1; // baked frames, so the VBO uploader makes one copy of the vertices
+
+	// every mesh of a model shares the one skin list, exactly as the md2's did
+	int numskins = 0;
+	char default_skin[MAX_QPATH];
+	pbr_material_t *shared_materials[MAX_ALIAS_SKINS];
+	maliasmesh_t probe = { 0 };
+
+	numskins = MD5_LoadSkinsFromMD2(mod_name, base_path, &probe);
+	if (numskins == 0)
+	{
+		// no readable .md2 to take the list from; the rerelease always names
+		// the lone skin of such a model "skin"
+		Q_snprintf(default_skin, sizeof(default_skin), "%s/skin.png", base_path);
+		probe.materials[0] = MAT_Find(default_skin, IT_SKIN, IF_NONE);
+		numskins = 1;
+	}
+	memcpy(shared_materials, probe.materials, sizeof(shared_materials));
+
+	for (unsigned model_idx = 0; model_idx < model->iqmData->num_meshes; model_idx++)
+	{
+		iqm_mesh_t *iqm_mesh = &model->iqmData->meshes[model_idx];
+		maliasmesh_t *mesh = &model->meshes[model_idx];
+
+		mesh->indices = (int *)model->iqmData->indices + iqm_mesh->first_triangle * 3;
+		mesh->positions = (vec3_t *)(model->iqmData->positions + iqm_mesh->first_vertex * 3);
+		mesh->normals = (vec3_t *)(model->iqmData->normals + iqm_mesh->first_vertex * 3);
+		mesh->tex_coords = (vec2_t *)(model->iqmData->texcoords + iqm_mesh->first_vertex * 2);
+		mesh->tangents = NULL;
+		mesh->blend_indices = (uint32_t *)(model->iqmData->blend_indices + iqm_mesh->first_vertex * 4);
+		mesh->blend_weights = (uint32_t *)(model->iqmData->blend_weights + iqm_mesh->first_vertex * 4);
+
+		mesh->numindices = (int)(iqm_mesh->num_triangles * 3);
+		mesh->numverts = (int)iqm_mesh->num_vertexes;
+		mesh->numtris = (int)iqm_mesh->num_triangles;
+
+		// the loader emits global indices in the file's winding; make them
+		// mesh local and reverse them, as the IQM and MD2 paths both do
+		for (unsigned triangle_idx = 0; triangle_idx < iqm_mesh->num_triangles; triangle_idx++)
+		{
+			int tri[3];
+			tri[0] = mesh->indices[triangle_idx * 3 + 0];
+			tri[1] = mesh->indices[triangle_idx * 3 + 1];
+			tri[2] = mesh->indices[triangle_idx * 3 + 2];
+
+			mesh->indices[triangle_idx * 3 + 0] = tri[2] - (int)iqm_mesh->first_vertex;
+			mesh->indices[triangle_idx * 3 + 1] = tri[1] - (int)iqm_mesh->first_vertex;
+			mesh->indices[triangle_idx * 3 + 2] = tri[0] - (int)iqm_mesh->first_vertex;
+		}
+
+		memcpy(mesh->materials, shared_materials, sizeof(mesh->materials));
+		mesh->numskins = numskins;
+	}
+
+	compute_missing_model_tangents(model);
+
+	extract_model_lights(model);
+
+	Hunk_End(&model->hunk);
+
+	return Q_ERR_SUCCESS;
+
+fail:
+	Hunk_Free(&model->hunk);
+	return ret;
+}
+
 extern model_vbo_t model_vertex_data[];
 
 void MOD_Reference_RTX(model_t *model)

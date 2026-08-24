@@ -916,6 +916,23 @@ typedef struct {
 #define RF_USE_DISGUISE     0x00040000
 //ROGUE
 
+// rerelease. Bits 20 and 21 were the first free ones; the full 32 bits of
+// renderfx already go over the wire (U_RENDERFX8|U_RENDERFX16 in msg.c).
+#define RF_CUSTOM_LIGHT     0x00100000      // target_light: s.frame is the radius, s.skinnum the packed RGBA
+#define RF_FLARE            0x00200000      // misc_flare: see SP_misc_flare for the rest of the state
+
+// the rerelease aliases these two as well - a flare is never a viewmodel, so
+// RF_MINLIGHT is free to mean "do not turn to face the camera".
+#define RF_FLARE_LOCK_ANGLE RF_MINLIGHT
+
+// misc_flare has to reach the client through modelindex2/3/4, which are
+// bytes. Size covers 0.3 to 4.2, fade distances cover 8 to 512.
+#define FLARE_SCALE_UNIT    0.02f
+#define FLARE_FADE_UNIT     4.0f
+
+// world-space half size of a flare quad at "radius" 1
+#define FLARE_BASE_SIZE     16.0f
+
 // player_state_t->refdef flags
 #define RDF_UNDERWATER      1       // warp the screen as apropriate
 #define RDF_NOWORLDMODEL    2       // used for player configuration screen
@@ -1194,6 +1211,8 @@ typedef enum {
 // already tracks the objective in level.current_poi; nothing sends it to the
 // client, because the rerelease draws no floating marker in these maps and an
 // invented one did not match. 18..31 are unused.
+#define STAT_FLASHLIGHT         18      // rerelease trigger_flashlight, see V_AddEntities
+
 // #define STAT_POI_ICON        18
 // #define STAT_POI_X           19
 // #define STAT_POI_Y           20

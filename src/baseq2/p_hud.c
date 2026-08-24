@@ -532,6 +532,12 @@ void G_SetStats(edict_t *ent)
         ent->client->ps.stats[STAT_HELPICON] = 0;
 
     ent->client->ps.stats[STAT_SPECTATOR] = 0;
+
+    //
+    // rerelease flashlight - the client owns the light itself, the game only
+    // owns the on/off state that trigger_flashlight drives
+    //
+    ent->client->ps.stats[STAT_FLASHLIGHT] = (ent->flags & FL_FLASHLIGHT) ? 1 : 0;
 }
 
 /*

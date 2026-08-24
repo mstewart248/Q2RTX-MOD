@@ -561,6 +561,7 @@ void vkpt_textures_destroy_unused(void);
 void vkpt_textures_update_descriptor_set(void);
 image_t *vkpt_fake_emissive_texture(image_t *image, int bright_threshold_int);
 void vkpt_extract_emissive_texture_info(image_t *image);
+void vkpt_fold_emissive_alpha(image_t *image);
 void vkpt_textures_prefetch(void);
 void vkpt_invalidate_texture_descriptors(void);
 void vkpt_init_light_textures(void);
@@ -871,6 +872,7 @@ float *IMG_ReadPixelsHDR_RTX(int *width, int *height);
 int MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 int MOD_LoadMD3_RTX(model_t* model, const void* rawdata, size_t length, const char* mod_name);
 int MOD_LoadIQM_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
+int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 void MOD_Reference_RTX(model_t *model);
 
 #endif  /*__VKPT_H__*/

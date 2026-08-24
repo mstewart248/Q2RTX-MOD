@@ -23,7 +23,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/cvar.h"
 #include "common/error.h"
 
-#define MAX_DLIGHTS     32
+// the rerelease's dynamic_light entities are submitted as dlights and the
+// busiest map (mine1/mine2) has 69 of them, on top of the transient ones
+#define MAX_DLIGHTS     256
 
 #define MAX_ENTITIES    8192    // == MAX_PACKET_ENTITIES * 2
 #define MAX_PARTICLES   1000000

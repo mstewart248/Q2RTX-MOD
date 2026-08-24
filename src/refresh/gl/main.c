@@ -980,5 +980,6 @@ void R_RegisterFunctionsGL()
 	MOD_LoadMD2 = MOD_LoadMD2_GL;
 	MOD_LoadMD3 = MOD_LoadMD3_GL;
     MOD_LoadIQM = NULL;
+    MOD_LoadMD5 = NULL;   // no skeletal path in the GL renderer
 	MOD_Reference = MOD_Reference_GL;
 }

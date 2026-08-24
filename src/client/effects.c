@@ -66,6 +66,25 @@ void CL_SetLightStyle(int index, const char *s)
 
 /*
 ================
+CL_LightStyleValue
+
+The current value of one light style, for callers that scale their own
+contribution by it rather than going through the renderer's table.
+================
+*/
+float CL_LightStyleValue(int style)
+{
+    const clightstyle_t *ls;
+
+    if (style < 0 || style >= MAX_LIGHTSTYLES)
+        return 1.0f;
+
+    ls = &cl_lightstyles[style];
+    return ls->length ? ls->map[(cl.time / 100) % ls->length] : 1.0f;
+}
+
+/*
+================
 CL_AddLightStyles
 ================
 */

@@ -79,6 +79,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FL_NO_KNOCKBACK         0x00000800
 #define FL_POWER_ARMOR          0x00001000  // power armor (if any) is active
 #define FL_MECHANICAL           0x00002000  // ROGUE - bleeds sparks, not blood
+#define FL_FLASHLIGHT           0x00400000  // rerelease - player flashlight is on
 #define FL_RESPAWN              0x80000000  // used for item respawning
 
 
@@ -170,12 +171,18 @@ typedef enum {
 #define AI_SPAWNED_WIDOW        0x00200000
 #define AI_SPAWNED_MASK         0x00380000  // catches all three flavours
 #define AI_WALK_WALLS           0x00400000  // stalker: may walk on ceilings
+// ROGUE. Rogue puts this at 0x80000, which is AI_SPAWNED_CARRIER here - see
+// the renumbering note above. Set on a kamikaze flyer heading for its target.
+#define AI_CHARGING             0x00800000
 
 //monster attack state
 #define AS_STRAIGHT             1
 #define AS_SLIDING              2
 #define AS_MELEE                3
 #define AS_MISSILE              4
+// ROGUE - the carrier sets this when it cannot see the player but is angry at
+// one anyway, and answers it by opening the hatch and spawning flyers.
+#define AS_BLIND                5
 
 // armor types
 #define ARMOR_NONE              0
@@ -455,6 +462,9 @@ typedef struct {
     char        *reinforcements;
     float       health_multiplier;
     char        *image;             // rerelease target_poi compass icon
+    float       radius;             // rerelease func_eye detection radius
+    int         fade_start_dist;    // rerelease misc_flare
+    int         fade_end_dist;
 } spawn_temp_t;
 
 #define SPAWNKEY_SKY            1
@@ -726,6 +736,7 @@ typedef enum {
     F_ZSTRING,          // string on disk, string in memory
     F_VECTOR,
     F_ANGLEHACK,
+    F_RGBA,             // rerelease "R G B A", 0..255 or 0..1, packed into an int
     F_EDICT,            // index on disk, pointer in memory
     F_ITEM,             // index on disk, pointer in memory
     F_CLIENT,           // index on disk, pointer in memory
@@ -774,6 +785,8 @@ edict_t *findradius(edict_t *from, vec3_t org, float rad);
 edict_t *G_PickTarget(char *targetname);
 void    G_UseTargets(edict_t *ent, edict_t *activator);
 void    G_SetMovedir(vec3_t angles, vec3_t movedir);
+void    P_ToggleFlashlight(edict_t *ent, bool state);
+void    InitTrigger(edict_t *self);
 
 void    G_InitEdict(edict_t *e);
 edict_t *G_Spawn(void);
@@ -881,6 +894,12 @@ int range(edict_t *self, edict_t *other);
 
 void FoundTarget(edict_t *self);
 bool infront(edict_t *self, edict_t *other);
+bool inback(edict_t *self, edict_t *other);
+bool below(edict_t *self, edict_t *other);
+float realrange(edict_t *self, edict_t *other);
+float vectoyaw2(vec3_t vec);
+void PredictAim(edict_t *target, vec3_t start, float bolt_speed, bool eye_height,
+                float offset, vec3_t aimdir, vec3_t aimpoint);
 bool visible(edict_t *self, edict_t *other);
 bool FacingIdeal(edict_t *self);
 
@@ -897,7 +916,17 @@ void fire_ionripper(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int 
 void fire_blueblaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
 void fire_player_melee(edict_t *self, vec3_t start, vec3_t aim, int reach, int damage, int kick, int quiet, int mod);
-void fire_heat(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset, int damage, int kick, bool monster);
+// rogue's plasma beam. Named fire_heatbeam, not fire_heat, to match the
+// rerelease - fire_heat below is xatrix's heat-seeking rocket, a different
+// weapon entirely.
+void fire_heatbeam(edict_t *self, vec3_t start, vec3_t aimdir, vec3_t offset, int damage, int kick, bool monster);
+
+// xatrix/rerelease heat-seeking rocket. turn_fraction is how far it slews
+// toward its target each frame, 0.075 to 0.15 in the shipping maps.
+void fire_heat(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed,
+               float damage_radius, int radius_damage, float turn_fraction);
+void monster_fire_heat(edict_t *self, vec3_t start, vec3_t dir, int damage,
+                       int speed, int flashtype, float turn_fraction);
 void fire_tesla(edict_t *self, vec3_t start, vec3_t aimdir, int damage_mult, int speed);
 void fire_tracker(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, edict_t *enemy);
 void fire_trap(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius, bool held);

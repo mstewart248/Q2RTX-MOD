@@ -34,7 +34,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define TR_POSITION_SIZE       (3 * sizeof(float))
 #define TR_COLOR_SIZE          (4 * sizeof(float))
 #define TR_BEAM_INTERSECT_SIZE (12 * sizeof(float))
-#define TR_SPRITE_INFO_SIZE    (2 * sizeof(float))
+// texture index, alpha, packed RGBA tint, unused. The tint is what lets a
+// rerelease misc_flare colour its corona; ordinary sprites write white.
+#define TR_SPRITE_INFO_SIZE    (4 * sizeof(float))
+
+// sprite_info[3] flags, read by pt_logic_sprite()
+#define SPRITE_INFO_ADDITIVE   1
 
 
 struct
@@ -193,6 +198,11 @@ void update_transparency(VkCommandBuffer command_buffer, const float* view_matri
 			// write_beam_geometry skips zero-width beams as well
 			if(entities[i].frame > 0)
 				++beam_num;
+		}
+		else if (entities[i].flags & RF_FLARE)
+		{
+			// rerelease misc_flare - drawn as a sprite quad with no model
+			++sprite_num;
 		}
 		else if ((entities[i].model & 0x80000000) == 0)
 		{
@@ -669,6 +679,57 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 	{
 		const entity_t *e = entities + i;
 
+		// rerelease misc_flare: no model at all, the entity carries the image
+		// handle in frame, the world-space size in scale and the tint in rgba.
+		// It always faces the camera unless RF_FLARE_LOCK_ANGLE says otherwise.
+		if (e->flags & RF_FLARE)
+		{
+			image_t *flare_image = IMG_ForHandle(e->frame);
+
+			if (!flare_image)
+				continue;
+
+			float half = max(1.f, e->scale) * FLARE_BASE_SIZE;
+
+			sprite_info[0] = flare_image - r_images;
+			memcpy(&sprite_info[1], &e->alpha, sizeof(uint32_t));
+			sprite_info[2] = e->rgba.u32;
+			sprite_info[3] = SPRITE_INFO_ADDITIVE;
+
+			vec3_t flare_x, flare_y;
+
+			VectorCopy(view_x, flare_x);
+
+			// LOCK_ANGLE keeps the quad's vertical axis in world Z so the
+			// corona never rolls with the camera - the same thing the ordinary
+			// sprite path does for a "vertical" sp2. 179 of the 186 flares in
+			// the rerelease maps set it.
+			if (e->flags & RF_FLARE_LOCK_ANGLE)
+				VectorCopy(world_y, flare_y);
+			else
+				VectorCopy(view_y, flare_y);
+
+			VectorScale(flare_x, half, flare_x);
+			VectorScale(flare_y, half, flare_y);
+
+			vec3_t neg_x, neg_y;
+			VectorScale(flare_x, -1.f, neg_x);
+			VectorScale(flare_y, -1.f, neg_y);
+
+			VectorAdd3(e->origin, neg_y, neg_x, vertex_positions[0]);
+			VectorAdd3(e->origin, flare_y, neg_x, vertex_positions[1]);
+			VectorAdd3(e->origin, flare_y, flare_x, vertex_positions[2]);
+			VectorAdd3(e->origin, neg_y, flare_x, vertex_positions[3]);
+
+			vertex_positions += 4;
+			sprite_info += TR_SPRITE_INFO_SIZE / sizeof(uint32_t);
+
+			if (++sprite_count >= TR_SPRITE_MAX_NUM)
+				return;
+
+			continue;
+		}
+
 		if (e->model & 0x80000000)
 			continue;
 
@@ -681,6 +742,8 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 
 		sprite_info[0] = image - r_images;
 		memcpy(&sprite_info[1], &e->alpha, sizeof(uint32_t));
+		sprite_info[2] = 0xffffffff;
+		sprite_info[3] = 0;
 
 		// set up the quad - reference code is in function GL_DrawSpriteModel
 
@@ -726,7 +789,7 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 		VectorAdd3(e->origin, down, right, vertex_positions[3]);
 
 		vertex_positions += 4;
-		sprite_info += TR_SPRITE_INFO_SIZE / sizeof(int);
+		sprite_info += TR_SPRITE_INFO_SIZE / sizeof(uint32_t);
 
 		if (++sprite_count >= TR_SPRITE_MAX_NUM)
 			return;
@@ -935,7 +998,7 @@ static void create_buffer_views(void)
 	const VkBufferViewCreateInfo sprite_info_view_info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
 		.buffer = transparency.sprite_info_buffer.buffer,
-		.format = VK_FORMAT_R32G32_UINT,
+		.format = VK_FORMAT_R32G32B32A32_UINT,
 		.range = TR_SPRITE_MAX_NUM * TR_SPRITE_INFO_SIZE
 	};
 

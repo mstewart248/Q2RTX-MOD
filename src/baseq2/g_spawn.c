@@ -142,6 +142,10 @@ void SP_monster_soldier_hypergun(edict_t *self);
 void SP_monster_soldier_lasergun(edict_t *self);
 void SP_monster_stalker(edict_t *self);
 void SP_monster_turret(edict_t *self);
+void SP_monster_chick_heat(edict_t *self);
+void SP_monster_boss5(edict_t *self);
+void SP_monster_carrier(edict_t *self);
+void SP_monster_kamikaze(edict_t *self);
 
 // rerelease cosmetic / scripting entities (g_rerelease.c)
 void SP_target_poi(edict_t *self);
@@ -153,6 +157,11 @@ void SP_misc_viper_missile(edict_t *self);
 void SP_misc_lavaball(edict_t *self);
 void SP_misc_nuke(edict_t *self);
 void SP_info_nav_lock(edict_t *self);
+void SP_func_eye(edict_t *self);
+void SP_trigger_flashlight(edict_t *self);
+void SP_misc_flare(edict_t *self);
+void SP_target_light(edict_t *self);
+void SP_dynamic_light(edict_t *self);
 void SP_monster_tank(edict_t *self);
 void SP_monster_medic(edict_t *self);
 void SP_monster_flipper(edict_t *self);
@@ -294,6 +303,10 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_soldier_lasergun", SP_monster_soldier_lasergun},
     {"monster_stalker", SP_monster_stalker},
     {"monster_turret", SP_monster_turret},
+    {"monster_chick_heat", SP_monster_chick_heat},
+    {"monster_boss5", SP_monster_boss5},
+    {"monster_carrier", SP_monster_carrier},
+    {"monster_kamikaze", SP_monster_kamikaze},
 
     {"target_poi", SP_target_poi},
     {"target_music", SP_target_music},
@@ -304,6 +317,11 @@ static const spawn_func_t spawn_funcs[] = {
     {"misc_lavaball", SP_misc_lavaball},
     {"misc_nuke", SP_misc_nuke},
     {"info_nav_lock", SP_info_nav_lock},
+    {"func_eye", SP_func_eye},
+    {"trigger_flashlight", SP_trigger_flashlight},
+    {"misc_flare", SP_misc_flare},
+    {"target_light", SP_target_light},
+    {"dynamic_light", SP_dynamic_light},
     {"monster_tank", SP_monster_tank},
     {"monster_tank_commander", SP_monster_tank},
     {"monster_medic", SP_monster_medic},
@@ -352,6 +370,13 @@ static const spawn_field_t spawn_fields[] = {
     {"random", FOFS(random), F_FLOAT},
     {"move_origin", FOFS(move_origin), F_VECTOR},
     {"move_angles", FOFS(move_angles), F_VECTOR},
+
+    // rerelease. These are edict fields, so they belong here and not in the
+    // spawn_temp table below - an FOFS offset applied to spawn_temp_t writes
+    // outside it.
+    {"eye_position", FOFS(move_origin), F_VECTOR},    // func_eye
+    {"vision_cone", FOFS(yaw_speed), F_FLOAT},        // func_eye
+    {"rgba", FOFS(s.skinnum), F_RGBA},                // misc_flare, target_light
     {"style", FOFS(style), F_INT},
     {"count", FOFS(count), F_INT},
     {"health", FOFS(health), F_INT},
@@ -398,6 +423,9 @@ static const spawn_field_t temp_fields[] = {
     {"reinforcements", STOFS(reinforcements), F_LSTRING},
     {"health_multiplier", STOFS(health_multiplier), F_FLOAT},
     {"image", STOFS(image), F_LSTRING},
+    {"radius", STOFS(radius), F_FLOAT},
+    {"fade_start_dist", STOFS(fade_start_dist), F_INT},
+    {"fade_end_dist", STOFS(fade_end_dist), F_INT},
 
     {NULL}
 };
@@ -484,6 +512,41 @@ char *ED_NewString(const char *string)
 
 /*
 ===============
+ED_ParseColor
+
+The rerelease's "rgba" key. Four components, either 0..255 or 0..1 - the
+rerelease decides which by whether any of them is greater than 1, and so does
+this. A single number is taken as an already packed value. The packing is the
+rerelease's own, R in the top byte down to A in the bottom, because that is
+what the entity's skinnum then has to carry to the client.
+===============
+*/
+static int ED_ParseColor(const char *value)
+{
+    float   c[4] = { 0, 0, 0, 1 };
+    bool    is_float = true;
+    int     i, out[4];
+
+    if (!strchr(value, ' '))
+        return atoi(value);
+
+    sscanf(value, "%f %f %f %f", &c[0], &c[1], &c[2], &c[3]);
+
+    for (i = 0; i < 4; i++)
+        if (c[i] > 1.0f)
+            is_float = false;
+
+    for (i = 0; i < 4; i++) {
+        int v = (int)(is_float ? c[i] * 255.0f : c[i]);
+        clamp(v, 0, 255);
+        out[i] = v;
+    }
+
+    return out[3] | (out[2] << 8) | (out[1] << 16) | (out[0] << 24);
+}
+
+/*
+===============
 ED_ParseField
 
 Takes a key/value pair and sets the binary values
@@ -523,6 +586,9 @@ static bool ED_ParseField(const spawn_field_t *fields, const char *key, const ch
                 ((float *)(b + f->ofs))[0] = 0;
                 ((float *)(b + f->ofs))[1] = v;
                 ((float *)(b + f->ofs))[2] = 0;
+                break;
+            case F_RGBA:
+                *(int *)(b + f->ofs) = ED_ParseColor(value);
                 break;
             case F_IGNORE:
                 break;

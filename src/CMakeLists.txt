@@ -35,6 +35,7 @@ SET(SRC_BASEQ2
 	baseq2/m_boss31.c
 	baseq2/m_boss32.c
 	baseq2/m_brain.c
+	baseq2/m_carrier.c
 	baseq2/m_chick.c
 	baseq2/m_flipper.c
 	baseq2/m_float.c
@@ -70,6 +71,7 @@ SET(HEADERS_BASEQ2
 	baseq2/m_boss31.h
 	baseq2/m_boss32.h
 	baseq2/m_brain.h
+	baseq2/m_carrier.h
 	baseq2/m_chick.h
 	baseq2/m_flipper.h
 	baseq2/m_float.h
@@ -98,6 +100,7 @@ SET(SRC_CLIENT
 	client/crc.c
 	client/demo.c
 	client/download.c
+	client/dynamiclights.c
 	client/effects.c
 	client/entities.c
 	client/gtv.c
@@ -196,6 +199,7 @@ SET(SRC_REFRESH
 	refresh/images.c
 	refresh/models.c
 	refresh/model_iqm.c
+	refresh/model_md5.c
 	refresh/stb/stb.c
 )
 

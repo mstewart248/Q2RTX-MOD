@@ -90,6 +90,9 @@ typedef struct image_s {
 	vec2_t          max_light_texcoord;
 	bool            entire_texture_emissive;
 	bool            processing_complete;
+	// set once an alpha-masked emissive map has been folded into its RGB;
+	// guards against multiplying twice on re-registration
+	bool            emissive_alpha_folded;
 #else
     byte            *pixels[4]; // mip levels
 #endif

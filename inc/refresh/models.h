@@ -181,6 +181,7 @@ struct dmd2header_s;
 int MOD_ValidateMD2(struct dmd2header_s *header, size_t length);
 
 int MOD_LoadIQM_Base(model_t* mod, const void* rawdata, size_t length, const char* mod_name);
+int MOD_LoadMD5_Base(model_t* mod, const void* rawdata, size_t length, const char* mod_name);
 bool R_ComputeIQMTransforms(const iqm_model_t* model, const entity_t* entity, float* pose_matrices);
 
 // these are implemented in [gl,sw]_models.c
@@ -190,6 +191,7 @@ extern int (*MOD_LoadMD2)(model_t *model, const void *rawdata, size_t length, co
 extern int (*MOD_LoadMD3)(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 #endif
 extern int(*MOD_LoadIQM)(model_t* model, const void* rawdata, size_t length, const char* mod_name);
+extern int(*MOD_LoadMD5)(model_t* model, const void* rawdata, size_t length, const char* mod_name);
 extern void (*MOD_Reference)(model_t *model);
 
 #endif // MODELS_H

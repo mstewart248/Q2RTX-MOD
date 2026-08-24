@@ -32,7 +32,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define MAX_LIGHT_POLYS         8192
 #define LIGHT_POLY_VEC4S        4
-#define MATERIAL_UINTS          6
+// 7th uint carries the dedicated roughness/metallic texture indices
+#define MATERIAL_UINTS          7
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      8192
@@ -166,6 +167,8 @@ struct MaterialInfo
 	uint normals_texture;
 	uint emissive_texture;
 	uint mask_texture;
+	uint roughness_texture;
+	uint metallic_texture;
 	float bump_scale;
 	float roughness_override;
 	float metalness_factor;
@@ -412,12 +415,15 @@ get_material_info(uint material_id)
 	data[3] = light_buffer.material_table[material_index * MATERIAL_UINTS + 3];
 	data[4] = light_buffer.material_table[material_index * MATERIAL_UINTS + 4];
 	data[5] = light_buffer.material_table[material_index * MATERIAL_UINTS + 5];
+	data[6] = light_buffer.material_table[material_index * MATERIAL_UINTS + 6];
 
 	MaterialInfo minfo;
 	minfo.base_texture = data[0] & 0xffff;
 	minfo.normals_texture = data[0] >> 16;
 	minfo.emissive_texture = data[1] & 0xffff;
 	minfo.mask_texture = data[1] >> 16;
+	minfo.roughness_texture = data[6] & 0xffff;
+	minfo.metallic_texture = data[6] >> 16;
 	minfo.bump_scale = unpackHalf2x16(data[2]).x;
 	minfo.roughness_override = unpackHalf2x16(data[2]).y;
 	minfo.metalness_factor = unpackHalf2x16(data[3]).x;

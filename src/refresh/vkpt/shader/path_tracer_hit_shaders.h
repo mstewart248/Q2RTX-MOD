@@ -153,7 +153,24 @@ vec4 pt_logic_sprite(int primitiveID, vec2 bary)
 	uint texture_index = info.x;
 	float alpha = uintBitsToFloat(info.y);
 	vec4 color = global_textureLod(texture_index, uv, 0);
-	
+
+	// info.z is a packed RGBA tint, written as 0xffffffff by ordinary sprites
+	// and as the "rgba" key by a rerelease misc_flare. Zero means "no tint",
+	// which only happens if something forgot to write it.
+	if (info.z != 0u)
+	{
+		vec3 tint = vec3(float((info.z >> 24) & 0xffu),
+		                 float((info.z >> 16) & 0xffu),
+		                 float((info.z >>  8) & 0xffu)) / 255.0;
+		color.rgb *= tint;
+	}
+
+	// info.w bit 0: the sprite is an additive corona - a rerelease misc_flare
+	// image is greyscale with no alpha channel at all, so its brightness is
+	// what decides how much of it covers the pixel.
+	if ((info.w & 1u) != 0u)
+		color.a = luminance(color.rgb);
+
 	color.a *= alpha;
 	float lum = luminance(color.rgb);
 	if(lum > 0)

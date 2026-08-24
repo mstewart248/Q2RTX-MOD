@@ -531,9 +531,19 @@ static void CL_AddPacketEntities(void)
 
         cent = &cl_entities[s1->number];
         ent.id = cent->id + RESERVED_ENTITIY_COUNT;
+
+        // (ent) is memset once before this loop, not per entity, so anything
+        // only some entity kinds assign leaks into every later entity of the
+        // same frame. misc_flare sets ent.scale and brush models never do,
+        // which let a flare's scale reach a func_door - create_entity_matrix()
+        // then scaled the door about the world origin and threw it out of its
+        // doorway, so it read as flickering out of existence.
+        ent.scale = 0.f;
 		
         effects = s1->effects;
         renderfx = s1->renderfx;	
+
+
 	
 		
 		
@@ -629,6 +639,69 @@ static void CL_AddPacketEntities(void)
                 ent.backlerp = 1.0f - frac;
             }
 #endif
+        }
+
+        // rerelease target_light - a switchable dynamic light with no model.
+        // s.frame is the radius, s.skinnum the packed RGBA. The map turns it
+        // off by setting SVF_NOCLIENT, so simply being here means it is on.
+        if (renderfx & RF_CUSTOM_LIGHT) {
+            float r = ((s1->skinnum >> 24) & 0xff) / 255.0f;
+            float g = ((s1->skinnum >> 16) & 0xff) / 255.0f;
+            float b = ((s1->skinnum >>  8) & 0xff) / 255.0f;
+
+            V_AddLight(ent.origin, s1->frame, r, g, b);
+            goto skip;
+        }
+
+        // rerelease misc_flare - a camera-facing corona quad, drawn by the
+        // path tracer's sprite pass. See SP_misc_flare for the state layout.
+        if (renderfx & RF_FLARE) {
+            vec3_t  delta;
+            float   dist, fade_start, fade_end, alpha = 1.0f;
+
+            // only the vkpt back end knows how to draw one
+            if (cls.ref_type != REF_TYPE_VKPT || !cl_flares->integer)
+                goto skip;
+
+            VectorSubtract(ent.origin, cl.refdef.vieworg, delta);
+            dist = VectorLength(delta);
+
+            fade_start = s1->modelindex2 * FLARE_FADE_UNIT;
+            fade_end = s1->modelindex3 * FLARE_FADE_UNIT;
+
+            // The flare fades IN with distance. Every flare in every map has
+            // fade_end_dist above fade_start_dist, and 55 of them set a start
+            // with no end at all - which only makes sense this way round: the
+            // maps use it to keep a big corona off the screen when the player
+            // is standing right at the lamp.
+            if (fade_end > fade_start)
+                alpha = (dist - fade_start) / (fade_end - fade_start);
+            else if (dist < fade_start)
+                alpha = 0.0f;
+
+            clamp(alpha, 0.0f, 1.0f);
+
+            if (alpha <= 0.0f)
+                goto skip;
+
+            ent.model = 0;
+            ent.skinnum = 0;
+            ent.skin = 0;
+            ent.frame = cl.image_precache[s1->frame & (MAX_IMAGES - 1)];
+            ent.scale = s1->modelindex4 * FLARE_SCALE_UNIT;
+            // the game packs "rgba" as R:G:B:A from the top byte down, and
+            // the sprite shader unpacks it the same way, so pass it straight
+            // through with the alpha byte forced opaque - the fade lives in
+            // ent.alpha instead.
+            ent.rgba.u32 = (s1->skinnum & 0xffffff00u) | 0xffu;
+            ent.alpha = alpha * (((s1->skinnum) & 0xff) / 255.0f);
+            ent.flags = renderfx;
+
+            if (!ent.frame || ent.alpha <= 0.0f)
+                goto skip;
+
+            V_AddEntity(&ent);
+            goto skip;
         }
 
         if ((effects & EF_GIB) && !cl_gibs->integer) {
@@ -1421,6 +1494,7 @@ void CL_AddEntities(void)
     CL_AddDLights();
     CL_AddLightStyles();
 	CL_AddTestModel();
+    CL_AddDynamicLightsToScene();
     LOC_AddLocationsToScene();
 }
 

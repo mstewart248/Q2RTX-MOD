@@ -349,6 +349,82 @@ void Cmd_Noclip_f(edict_t *ent)
 
 /*
 ==================
+Cmd_SpawnMonster_f
+
+argv(0) spawnmonster, argv(1) classname
+
+Drops a monster in front of the player. Every boss in the rerelease maps sits
+behind a level's worth of map, which makes "does this port actually work"
+impossible to answer without playing to it; this answers it in one line. Cheat
+gated exactly like noclip.
+==================
+*/
+void Cmd_SpawnMonster_f(edict_t *ent)
+{
+    vec3_t      forward, spot;
+    trace_t     tr;
+    edict_t     *monster;
+    const char  *classname;
+
+    if ((deathmatch->value || coop->value) && !sv_cheats->value) {
+        gi.cprintf(ent, PRINT_HIGH, "You must run the server with '+set cheats 1' to enable this command.\n");
+        return;
+    }
+
+    classname = gi.args();
+    if (!classname || !*classname || strncmp(classname, "monster_", 8)) {
+        gi.cprintf(ent, PRINT_HIGH, "usage: spawnmonster <monster_classname>\n");
+        return;
+    }
+
+    AngleVectors(ent->client->v_angle, forward, NULL, NULL);
+    forward[2] = 0;
+    VectorNormalize(forward);
+    VectorMA(ent->s.origin, 256, forward, spot);
+
+    // do not drop one inside a wall
+    tr = gi.trace(ent->s.origin, NULL, NULL, spot, ent, MASK_SOLID);
+    VectorCopy(tr.endpos, spot);
+    VectorMA(spot, -32, forward, spot);
+
+    monster = G_Spawn();
+    VectorCopy(spot, monster->s.origin);
+    VectorCopy(ent->s.angles, monster->s.angles);
+    monster->s.angles[PITCH] = monster->s.angles[ROLL] = 0;
+    monster->s.angles[YAW] += 180;
+    monster->classname = ED_NewString(classname);
+
+    ED_CallSpawn(monster);
+
+    if (!monster->inuse) {
+        gi.cprintf(ent, PRINT_HIGH, "%s did not spawn\n", classname);
+        return;
+    }
+
+    // walkmonster_start/flymonster_start defer the real setup by a frame, and
+    // monster_start_go then puts the monster in its stand move and clears what
+    // we are about to set. Run it now instead, the same way CarrierSpawn does
+    // for the flyers it launches.
+    if (monster->think) {
+        monster->nextthink = level.framenum;
+        monster->think(monster);
+    }
+
+    if (!monster->inuse) {
+        gi.cprintf(ent, PRINT_HIGH, "%s did not survive its start\n", classname);
+        return;
+    }
+
+    // it has to be told about us or it just stands there
+    monster->enemy = ent;
+    FoundTarget(monster);
+
+    gi.cprintf(ent, PRINT_HIGH, "spawned %s at %s\n", classname, vtos(spot));
+}
+
+
+/*
+==================
 Cmd_Use_f
 
 Use an inventory item
@@ -888,6 +964,8 @@ void ClientCommand(edict_t *ent)
         Cmd_Notarget_f(ent);
     else if (Q_stricmp(cmd, "noclip") == 0)
         Cmd_Noclip_f(ent);
+    else if (Q_stricmp(cmd, "spawnmonster") == 0)
+        Cmd_SpawnMonster_f(ent);
     else if (Q_stricmp(cmd, "inven") == 0)
         Cmd_Inven_f(ent);
     else if (Q_stricmp(cmd, "invnext") == 0)

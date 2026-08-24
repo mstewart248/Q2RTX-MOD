@@ -290,6 +290,89 @@ infront
 returns 1 if the entity is in front (in sight) of self
 =============
 */
+
+/*
+=============
+inback / below / realrange / PredictAim
+
+ROGUE helpers. The carrier is the first monster here that cares which side of
+itself a player is on - it will not fire its rail gun or rockets at someone
+behind or underneath it, and in coop it deliberately lobs a rocket at whoever
+it is NOT currently fighting.
+=============
+*/
+bool inback(edict_t *self, edict_t *other)
+{
+    vec3_t  vec, forward;
+
+    AngleVectors(self->s.angles, forward, NULL, NULL);
+    VectorSubtract(other->s.origin, self->s.origin, vec);
+    VectorNormalize(vec);
+
+    return DotProduct(vec, forward) < -0.3f;
+}
+
+bool below(edict_t *self, edict_t *other)
+{
+    vec3_t  vec;
+    static const vec3_t down = { 0, 0, -1 };
+
+    VectorSubtract(other->s.origin, self->s.origin, vec);
+    VectorNormalize(vec);
+
+    // an 18 degree cone straight down
+    return DotProduct(vec, down) > 0.95f;
+}
+
+float realrange(edict_t *self, edict_t *other)
+{
+    vec3_t  dir;
+
+    VectorSubtract(self->s.origin, other->s.origin, dir);
+    return VectorLength(dir);
+}
+
+/*
+=============
+PredictAim
+
+Where to shoot so the shot and the target arrive together. `offset` shaves that
+much off the flight time, which the carrier uses (-0.3) to lead a little further
+than the straight solution.
+=============
+*/
+void PredictAim(edict_t *target, vec3_t start, float bolt_speed, bool eye_height,
+                float offset, vec3_t aimdir, vec3_t aimpoint)
+{
+    vec3_t  dir, vec;
+    float   dist, time;
+
+    if (!target || !target->inuse) {
+        if (aimdir)
+            VectorClear(aimdir);
+        return;
+    }
+
+    VectorSubtract(target->s.origin, start, dir);
+    if (eye_height)
+        dir[2] += target->viewheight;
+
+    dist = VectorLength(dir);
+    time = dist / bolt_speed;
+
+    VectorMA(target->s.origin, time - offset, target->velocity, vec);
+    if (eye_height)
+        vec[2] += target->viewheight;
+
+    if (aimdir) {
+        VectorSubtract(vec, start, aimdir);
+        VectorNormalize(aimdir);
+    }
+
+    if (aimpoint)
+        VectorCopy(vec, aimpoint);
+}
+
 bool infront(edict_t *self, edict_t *other)
 {
     vec3_t  vec;
@@ -659,7 +742,12 @@ void ai_run_missile(edict_t *self)
 
     if (FacingIdeal(self)) {
         self->monsterinfo.attack(self);
-        self->monsterinfo.attack_state = AS_STRAIGHT;
+
+        // ROGUE - AS_BLIND has to be cleared here too, or the monster never
+        // leaves it
+        if (self->monsterinfo.attack_state == AS_MISSILE ||
+            self->monsterinfo.attack_state == AS_BLIND)
+            self->monsterinfo.attack_state = AS_STRAIGHT;
     }
 }
 
@@ -800,6 +888,13 @@ bool ai_checkattack(edict_t *self, float dist)
     }
     if (self->monsterinfo.attack_state == AS_MELEE) {
         ai_run_melee(self);
+        return true;
+    }
+
+    // ROGUE - shooting blind. The carrier sets this when it cannot see the
+    // player and answers it by spawning flyers instead of shooting.
+    if (self->monsterinfo.attack_state == AS_BLIND) {
+        ai_run_missile(self);
         return true;
     }
 

@@ -443,6 +443,7 @@ int(*MOD_LoadMD2)(model_t *model, const void *rawdata, size_t length, const char
 int(*MOD_LoadMD3)(model_t *model, const void *rawdata, size_t length, const char* mod_name) = NULL;
 #endif
 int(*MOD_LoadIQM)(model_t* model, const void* rawdata, size_t length, const char* mod_name) = NULL;
+int(*MOD_LoadMD5)(model_t* model, const void* rawdata, size_t length, const char* mod_name) = NULL;
 void(*MOD_Reference)(model_t *model) = NULL;
 
 float R_ClampScale(cvar_t *var)

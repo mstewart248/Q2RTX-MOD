@@ -565,6 +565,7 @@ extern cvar_t    *cl_changemapcmd;
 extern cvar_t    *cl_beginmapcmd;
 
 extern cvar_t    *cl_gibs;
+extern cvar_t    *cl_flares;
 
 #define CL_PLAYER_MODEL_DISABLED     0
 #define CL_PLAYER_MODEL_ONLY_GUN     1
@@ -753,6 +754,15 @@ void V_AddLight(const vec3_t org, float intensity, float r, float g, float b);
 void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float b, float radius);
 void V_AddSpotLight(const vec3_t org, const vec3_t dir, float intensity, float r, float g, float b, float width_angle, float falloff_angle);
 void V_AddLightStyle(int style, float value);
+
+//
+// dynamiclights.c
+//
+void CL_InitDynamicLights(void);
+void CL_LoadDynamicLights(void);
+void CL_FreeDynamicLights(void);
+void CL_AddDynamicLightsToScene(void);
+float CL_LightStyleValue(int style);
 void CL_UpdateBlendSetting(void);
 
 

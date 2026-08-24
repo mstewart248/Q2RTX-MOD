@@ -624,3 +624,115 @@ void SP_monster_flyer(edict_t *self)
 
     flymonster_start(self);
 }
+
+/*
+==============================================================================
+
+ROGUE - the two moves the carrier puts its spawned flyers into, plus the
+kamikaze variant it can spawn instead.
+
+flyer_move_attack3 is the same frames as attack2 but with forward motion, so a
+flyer the carrier launches strafes past the player instead of hovering.
+
+==============================================================================
+*/
+
+void flyer_kamikaze(edict_t *self);
+
+// circle strafe: attack2's frames, but moving
+mframe_t flyer_frames_attack3 [] = {
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, flyer_fireleft },          // left gun
+    { ai_charge, 10, flyer_fireright },         // right gun
+    { ai_charge, 10, flyer_fireleft },          // left gun
+    { ai_charge, 10, flyer_fireright },         // right gun
+    { ai_charge, 10, flyer_fireleft },          // left gun
+    { ai_charge, 10, flyer_fireright },         // right gun
+    { ai_charge, 10, flyer_fireleft },          // left gun
+    { ai_charge, 10, flyer_fireright },         // right gun
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL }
+};
+mmove_t flyer_move_attack3 = {FRAME_attak201, FRAME_attak217, flyer_frames_attack3, flyer_run};
+
+void flyer_kamikaze_explode(edict_t *self)
+{
+    vec3_t  dir;
+
+    // hand the slot back to the carrier that launched us
+    if (self->monsterinfo.commander && self->monsterinfo.commander->inuse &&
+        !strcmp(self->monsterinfo.commander->classname, "monster_carrier"))
+        self->monsterinfo.commander->monsterinfo.monster_slots++;
+
+    VectorClear(dir);
+
+    if (self->enemy) {
+        VectorSubtract(self->enemy->s.origin, self->s.origin, dir);
+        T_Damage(self->enemy, self, self, dir, self->s.origin, vec3_origin,
+                 50, 50, DAMAGE_RADIUS, MOD_UNKNOWN);
+    }
+
+    flyer_die(self, NULL, NULL, 0, dir);
+}
+
+void flyer_kamikaze_check(edict_t *self)
+{
+    // the blocked handling can free us before we get here
+    if (!self->inuse)
+        return;
+
+    if (!self->enemy || !self->enemy->inuse) {
+        flyer_kamikaze_explode(self);
+        return;
+    }
+
+    self->goalentity = self->enemy;
+
+    if (realrange(self, self->enemy) < 90)
+        flyer_kamikaze_explode(self);
+}
+
+mframe_t flyer_frames_kamikaze [] = {
+    { ai_charge, 40, flyer_kamikaze_check },
+    { ai_charge, 40, flyer_kamikaze_check },
+    { ai_charge, 40, flyer_kamikaze_check },
+    { ai_charge, 40, flyer_kamikaze_check },
+    { ai_charge, 40, flyer_kamikaze_check }
+};
+mmove_t flyer_move_kamikaze = {FRAME_rollr02, FRAME_rollr06, flyer_frames_kamikaze, flyer_kamikaze};
+
+void flyer_kamikaze(edict_t *self)
+{
+    self->monsterinfo.currentmove = &flyer_move_kamikaze;
+}
+
+/*QUAKED monster_kamikaze (1 .5 0) (-16 -16 -24) (16 16 16) Ambush Trigger_Spawn Sight
+ROGUE - a flyer that flies into the player and detonates. Only ever spawned at
+runtime by monster_carrier; no map places one directly.
+*/
+void SP_monster_kamikaze(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    SP_monster_flyer(self);
+
+    if (!self->inuse)
+        return;
+
+    // the difference from a plain flyer: it trails fire, and its box is the
+    // shorter one rogue gives it
+    VectorSet(self->maxs, 16, 16, 16);
+    self->s.effects |= EF_ROCKET;
+    self->mass = 100;
+
+    gi.linkentity(self);
+}

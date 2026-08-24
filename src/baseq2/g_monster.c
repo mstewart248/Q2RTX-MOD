@@ -192,6 +192,17 @@ void monster_fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage
     gi.multicast(start, MULTICAST_PVS);
 }
 
+void monster_fire_heat(edict_t *self, vec3_t start, vec3_t dir, int damage,
+                       int speed, int flashtype, float turn_fraction)
+{
+    fire_heat(self, start, dir, damage, speed, damage, damage, turn_fraction);
+
+    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteShort(self - g_edicts);
+    gi.WriteByte(flashtype);
+    gi.multicast(start, MULTICAST_PVS);
+}
+
 void monster_fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype)
 {
     fire_rocket(self, start, dir, damage, speed, damage + 20, damage);

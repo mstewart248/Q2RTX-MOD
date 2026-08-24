@@ -1039,6 +1039,37 @@ get_material(
 	metallic = 0;
 	roughness = 1;
 
+	// Dedicated roughness / metallic maps, RTX-Remix style.
+	//
+	// The legacy packing hides roughness in the BASE texture's alpha and
+	// metallic in the NORMAL map's alpha, which means neither can be authored
+	// without also authoring a normal map, and that both have to be smuggled
+	// through an alpha channel. When a material supplies texture_roughness or
+	// texture_metallic that map wins, and each works on its own.
+	//
+	// With neither supplied the behaviour below is exactly as it was.
+	bool have_roughness_tex = (minfo.roughness_texture != 0);
+	bool have_metallic_tex = (minfo.metallic_texture != 0);
+
+	if (have_roughness_tex)
+	{
+		if (mip_level >= 0)
+			roughness = global_textureLod(minfo.roughness_texture, tex_coord, mip_level).r;
+		else
+			roughness = global_textureGrad(minfo.roughness_texture, tex_coord, tex_coord_x, tex_coord_y).r;
+	}
+
+	if (have_metallic_tex)
+	{
+		float metallic_sample;
+		if (mip_level >= 0)
+			metallic_sample = global_textureLod(minfo.metallic_texture, tex_coord, mip_level).r;
+		else
+			metallic_sample = global_textureGrad(minfo.metallic_texture, tex_coord, tex_coord_x, tex_coord_y).r;
+
+		metallic = clamp(metallic_sample * minfo.metalness_factor, 0, 1);
+	}
+
 	if (minfo.normals_texture != 0)
 	{
 		vec4 image2;
@@ -1067,12 +1098,14 @@ get_material(
 			normal = normalize(mix(geo_normal, normal, bump_scale));
 		}
 
-		metallic = clamp(image2.a * minfo.metalness_factor, 0, 1);
+		if (!have_metallic_tex)
+			metallic = clamp(image2.a * minfo.metalness_factor, 0, 1);
+
+		if (!have_roughness_tex)
+			roughness = image1.a;
 
 		if (minfo.roughness_override >= 0)
-			roughness = max(image1.a, minfo.roughness_override);
-		else
-			roughness = image1.a;
+			roughness = max(roughness, minfo.roughness_override);
 
 		roughness = clamp(roughness, 0, 1);
 
@@ -1093,6 +1126,14 @@ get_material(
 		{
 			roughness = AdjustRoughnessToksvig(roughness, normalMapLen, effective_mip);
 		}
+	}
+	else
+	{
+		// no normal map, so the block above did not run
+		if (minfo.roughness_override >= 0)
+			roughness = max(roughness, minfo.roughness_override);
+
+		roughness = clamp(roughness, 0, 1);
 	}
 
 	if (global_ubo.pt_roughness_override >= 0) roughness = global_ubo.pt_roughness_override;

@@ -319,6 +319,8 @@ enum AttributeIndex
 	MAT_SYNTH_EMISSIVE,
 	MAT_EMISSIVE_THRESHOLD,
 	MAT_SPECULAR_FACTOR,
+	MAT_TEXTURE_ROUGHNESS,
+	MAT_TEXTURE_METALLIC,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -344,6 +346,8 @@ static struct MaterialAttribute {
 	{MAT_SYNTH_EMISSIVE, "synth_emissive", ATTR_BOOL},
 	{MAT_EMISSIVE_THRESHOLD, "emissive_threshold", ATTR_INT},
 	{MAT_SPECULAR_FACTOR, "specular_factor", ATTR_FLOAT},
+	{MAT_TEXTURE_ROUGHNESS, "texture_roughness", ATTR_STRING},
+	{MAT_TEXTURE_METALLIC, "texture_metallic", ATTR_STRING},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -464,6 +468,13 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 		break;
 	case MAT_TEXTURE_EMISSIVE:
 		set_material_texture(mat, svalue, mat->filename_emissive, &mat->image_emissive, IF_SRGB, !sourceFile);
+		break;
+	case MAT_TEXTURE_ROUGHNESS:
+		// roughness and metallic are linear data, never sRGB
+		set_material_texture(mat, svalue, mat->filename_roughness, &mat->image_roughness, IF_NONE, !sourceFile);
+		break;
+	case MAT_TEXTURE_METALLIC:
+		set_material_texture(mat, svalue, mat->filename_metallic, &mat->image_metallic, IF_NONE, !sourceFile);
 		break;
 	case MAT_LIGHT_STYLES:
 		mat->light_styles = bvalue;
@@ -679,6 +690,12 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 
 		if (mat->filename_mask[0])
 			FS_FPrintf(file, "\ttexture_mask %s\n", mat->filename_mask);
+
+		if (mat->filename_roughness[0])
+			FS_FPrintf(file, "\ttexture_roughness %s\n", mat->filename_roughness);
+
+		if (mat->filename_metallic[0])
+			FS_FPrintf(file, "\ttexture_metallic %s\n", mat->filename_metallic);
 		
 		if (mat->bump_scale != 1.f)
 			FS_FPrintf(file, "\tbump_scale %f\n", mat->bump_scale);
@@ -820,6 +837,56 @@ static qboolean game_image_identical_to_base(const char* name)
 	return result;
 }
 
+/*
+=================
+MAT_InheritScalars
+
+Copies the layout-INDEPENDENT tuning of one material definition onto another
+material.
+
+This exists for the rerelease's MD5 models. Their meshes are re-unwrapped, so
+none of Q2RTX's hand-authored PBR *textures* can be reused - measured across
+seven models, the MD5 and MD2 texture coordinates for the same surface point
+disagree by ~0.6 of the UV range, which is the same as two unrelated layouts.
+What survives a re-unwrap is everything that is not a texture lookup: how bright
+the base is, how rough the surface is, how much its emissive counts. Without
+this an MD5 model renders at base_factor 1.0 against the classic model's 1.5 to
+2.5, i.e. visibly darker than the MD2 it replaces.
+
+Textures, and anything that names one, are deliberately NOT copied.
+=================
+*/
+void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
+{
+	char source_no_ext[MAX_QPATH];
+	const pbr_material_t* src;
+
+	if (!mat || !source_name || !*source_name)
+		return;
+
+	truncate_extension(source_name, source_no_ext);
+	Q_strlwr(source_no_ext);
+
+	src = find_material_sorted(source_no_ext, r_global_materials, num_global_materials);
+	if (!src)
+		return;
+
+	mat->bump_scale = src->bump_scale;
+	mat->roughness_override = src->roughness_override;
+	mat->metalness_factor = src->metalness_factor;
+	mat->emissive_factor = src->emissive_factor;
+	mat->specular_factor = src->specular_factor;
+	mat->base_factor = src->base_factor;
+	mat->light_styles = src->light_styles;
+	mat->bsp_radiance = src->bsp_radiance;
+	mat->default_radiance = src->default_radiance;
+	mat->emissive_threshold = src->emissive_threshold;
+
+	// the material kind (chrome, glass, ...) describes the surface, not its
+	// texture, so it carries over too
+	mat->flags = (mat->flags & ~MATERIAL_KIND_MASK) | (src->flags & MATERIAL_KIND_MASK);
+}
+
 pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 {
 	char mat_name_no_ext[MAX_QPATH];
@@ -904,6 +971,22 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 			}
 		}
 		
+		if (mat->filename_roughness[0]) {
+			load_material_image(&mat->image_roughness, mat->filename_roughness, mat, type, flags);
+			if (mat->image_roughness == R_NOTEXTURE) {
+				Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_roughness, mat_name_no_ext);
+				mat->image_roughness = NULL;
+			}
+		}
+
+		if (mat->filename_metallic[0]) {
+			load_material_image(&mat->image_metallic, mat->filename_metallic, mat, type, flags);
+			if (mat->image_metallic == R_NOTEXTURE) {
+				Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_metallic, mat_name_no_ext);
+				mat->image_metallic = NULL;
+			}
+		}
+
 		if (mat->filename_emissive[0]) {
 			load_material_image(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
 			if (mat->image_emissive == R_NOTEXTURE) {
@@ -942,12 +1025,51 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		else
 			Q_strlcpy(mat->filename_normals, mat->image_normals->filepath, sizeof(mat->filename_normals));
 
+		// RTX-Remix style sidecars: drop <name>_rough / <name>_metallic next to
+		// the base texture and they are picked up with no .mat entry at all
+		Q_snprintf(file_name, sizeof(file_name), "%s_rough.tga", mat_name_no_ext);
+		mat->image_roughness = IMG_Find(file_name, type, flags);
+		if (mat->image_roughness == R_NOTEXTURE)
+			mat->image_roughness = NULL;
+		else
+			Q_strlcpy(mat->filename_roughness, mat->image_roughness->filepath, sizeof(mat->filename_roughness));
+
+		Q_snprintf(file_name, sizeof(file_name), "%s_metallic.tga", mat_name_no_ext);
+		mat->image_metallic = IMG_Find(file_name, type, flags);
+		if (mat->image_metallic == R_NOTEXTURE)
+			mat->image_metallic = NULL;
+		else
+			Q_strlcpy(mat->filename_metallic, mat->image_metallic->filepath, sizeof(mat->filename_metallic));
+
 		Q_snprintf(file_name, sizeof(file_name), "%s_light.tga", mat_name_no_ext);
 		mat->image_emissive = IMG_Find(file_name, type, flags | IF_SRGB);
 		if (mat->image_emissive == R_NOTEXTURE)
 			mat->image_emissive = NULL;
 		else
 			Q_strlcpy(mat->filename_emissive, mat->image_emissive->filepath, sizeof(mat->filename_emissive));
+
+		// The rerelease calls its emissive maps "_glow" rather than "_light" and
+		// ships one beside nearly every md5/ skin.
+		//
+		// This is deliberately NOT a general fallback. 1571 _glow.png files
+		// exist under rerelease/ + baseq2/ and only 143 are under md5/; of the
+		// rest, 509 have no material definition and are mostly textures/e1u1
+		// wall lights. Accepting the suffix everywhere would silently turn all
+		// of them into light sources and relight every map - see
+		// [[q2rtx-material-defs]]: a material change is never neutral.
+		if (!mat->image_emissive && strstr(mat_name_no_ext, "/md5/"))
+		{
+			Q_snprintf(file_name, sizeof(file_name), "%s_glow.png", mat_name_no_ext);
+			mat->image_emissive = IMG_Find(file_name, type, flags | IF_SRGB);
+			if (mat->image_emissive == R_NOTEXTURE)
+				mat->image_emissive = NULL;
+			else
+			{
+				// a _glow map masks with alpha; Q2RTX masks with RGB
+				vkpt_fold_emissive_alpha(mat->image_emissive);
+				Q_strlcpy(mat->filename_emissive, mat->image_emissive->filepath, sizeof(mat->filename_emissive));
+			}
+		}
 
 		// If there is no normals/metalness image, assume that the material is a basic diffuse one.
 		if (!mat->image_normals)
@@ -986,6 +1108,8 @@ void MAT_UpdateRegistration(pbr_material_t * mat)
 	if (mat->image_base) mat->image_base->registration_sequence = registration_sequence;
 	if (mat->image_normals) mat->image_normals->registration_sequence = registration_sequence;
 	if (mat->image_emissive) mat->image_emissive->registration_sequence = registration_sequence;
+	if (mat->image_roughness) mat->image_roughness->registration_sequence = registration_sequence;
+	if (mat->image_metallic) mat->image_metallic->registration_sequence = registration_sequence;
 	if (mat->image_mask) mat->image_mask->registration_sequence = registration_sequence;
 }
 

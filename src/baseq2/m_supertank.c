@@ -54,6 +54,10 @@ void supertank_search(edict_t *self)
 
 
 void supertank_dead(edict_t *self);
+// RAFAEL - monster_boss5 is the supertank with a power shield. Rogue's own
+// value; nothing else on the supertank uses bit 3.
+#define SPAWNFLAG_SUPERTANK_POWERSHIELD     8
+
 void supertankRocket(edict_t *self);
 void supertankMachineGun(edict_t *self);
 void supertank_reattack1(edict_t *self);
@@ -492,7 +496,12 @@ void supertankRocket(edict_t *self)
     VectorSubtract(vec, start, dir);
     VectorNormalize(dir);
 
-    monster_fire_rocket(self, start, dir, 50, 500, flash_number);
+    // RAFAEL - the power-shielded supertank (monster_boss5) fires heat
+    // seekers instead of dumb rockets
+    if (self->spawnflags & SPAWNFLAG_SUPERTANK_POWERSHIELD)
+        monster_fire_heat(self, start, dir, 40, 500, flash_number, 0.075f);
+    else
+        monster_fire_rocket(self, start, dir, 50, 500, flash_number);
 }
 
 void supertankMachineGun(edict_t *self)
@@ -700,5 +709,32 @@ void SP_monster_supertank(edict_t *self)
     self->monsterinfo.currentmove = &supertank_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
 
+    // RAFAEL - monster_boss5. The map may override either value with the
+    // power_armor_type / power_armor_power keys, so only fill in what is unset.
+    if (self->spawnflags & SPAWNFLAG_SUPERTANK_POWERSHIELD) {
+        if (!self->monsterinfo.power_armor_type)
+            self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
+        if (!self->monsterinfo.power_armor_power)
+            self->monsterinfo.power_armor_power = 400;
+    }
+
     walkmonster_start(self);
+}
+
+/*QUAKED monster_boss5 (1 .5 0) (-64 -64 0) (64 64 72) Ambush Trigger_Spawn Sight
+RAFAEL - the supertank with a power shield and heat-seeking rockets. Same
+monster otherwise; the shield and the rocket type both hang off the spawnflag,
+and skin 2 is the darker shielded look.
+*/
+void SP_monster_boss5(edict_t *self)
+{
+    self->spawnflags |= SPAWNFLAG_SUPERTANK_POWERSHIELD;
+
+    SP_monster_supertank(self);
+
+    if (!self->inuse)
+        return;             // deathmatch: SP_monster_supertank freed it
+
+    gi.soundindex("weapons/railgr1a.wav");
+    self->s.skinnum = 2;
 }

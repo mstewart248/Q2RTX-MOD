@@ -65,6 +65,7 @@ cvar_t  *cl_changemapcmd;
 cvar_t  *cl_beginmapcmd;
 
 cvar_t  *cl_gibs;
+cvar_t  *cl_flares;
 #if USE_FPS
 cvar_t  *cl_updaterate;
 #endif
@@ -706,6 +707,7 @@ void CL_ClearState(void)
     CL_ClearEffects();
     CL_ClearTEnts();
     LOC_FreeLocations();
+    CL_FreeDynamicLights();
 
     // wipe the entire cl structure
     BSP_Free(cl.bsp);
@@ -1714,6 +1716,7 @@ void CL_Begin(void)
     CL_LoadState(LOAD_SOUNDS);
     CL_RegisterSounds();
     LOC_LoadLocations();
+    CL_LoadDynamicLights();
     CL_LoadState(LOAD_NONE);
     cls.state = ca_precached;
 
@@ -2693,6 +2696,7 @@ static void CL_InitLocal(void)
     CL_RegisterInput();
     CL_InitDemos();
     LOC_Init();
+    CL_InitDynamicLights();
     CL_InitAscii();
     CL_InitEffects();
     CL_InitTEnts();
@@ -2772,6 +2776,8 @@ static void CL_InitLocal(void)
     cl_ludicrous_gibs = Cvar_Get("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
 
     cl_gibs = Cvar_Get("cl_gibs", "1", 0);
+    // rerelease misc_flare coronas, off to compare against the rerelease
+    cl_flares = Cvar_Get("cl_flares", "1", 0);
     cl_gibs->changed = cl_gibs_changed;
 
 #if USE_FPS
