@@ -12,6 +12,7 @@ extern int actor_move_stand;
 extern int actor_move_taunt;
 extern int actor_move_walk;
 extern int berserk_move_attack_club;
+extern int berserk_move_attack_slam;
 extern int berserk_move_attack_spike;
 extern int berserk_move_death1;
 extern int berserk_move_death2;
@@ -366,6 +367,7 @@ extern void berserk_attack(void);
 extern void berserk_blocked(void);
 extern void berserk_die(void);
 extern void berserk_dodge(void);
+extern void berserk_jump_touch(void);
 extern void berserk_melee(void);
 extern void berserk_pain(void);
 extern void berserk_run(void);
@@ -910,6 +912,7 @@ const save_ptr_t save_ptrs[] = {
 { P_blocked, train_blocked },
 { P_blocked, turret_blocked },
 { P_touch, barrel_touch },
+{ P_touch, berserk_jump_touch },
 { P_touch, bfg_touch },
 { P_touch, blaster2_touch },
 { P_touch, blaster_touch },
@@ -1105,6 +1108,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &actor_move_taunt },
 { P_monsterinfo_currentmove, &actor_move_walk },
 { P_monsterinfo_currentmove, &berserk_move_attack_club },
+{ P_monsterinfo_currentmove, &berserk_move_attack_slam },
 { P_monsterinfo_currentmove, &berserk_move_attack_spike },
 { P_monsterinfo_currentmove, &berserk_move_death1 },
 { P_monsterinfo_currentmove, &berserk_move_death2 },

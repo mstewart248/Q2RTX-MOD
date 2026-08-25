@@ -1172,6 +1172,9 @@ typedef enum {
 	// of target_temp_entity, so every value below this one has to keep its
 	// standard numbering. DON'T RENUMBER!!!
 	TE_HYPERBLASTER,
+	// Rerelease: the berserk's leaping ground slam. Also fork-local, so it too
+	// must stay at the end - append below this, never above.
+	TE_BERSERK_SLAM,
 
     TE_NUM_ENTITIES
 } temp_event_t;

@@ -693,6 +693,7 @@ static void CL_ParseTEntPacket(void)
     case TE_HEATBEAM_STEAM:
     case TE_MOREBLOOD:
     case TE_ELECTRIC_SPARKS:
+    case TE_BERSERK_SLAM:
         MSG_ReadPos(te.pos1);
         MSG_ReadDir(te.dir);
         break;

@@ -1159,6 +1159,25 @@ void CL_ParseTEnt(void)
         }
         break;
 
+    case TE_BERSERK_SLAM: {
+        // Rerelease: the berserk's ground slam.  No dedicated model here, so
+        // it is built from stock pieces - a wide low fan of debris thrown up
+        // off the floor, the usual impact smoke, and a brief warm flash to
+        // light the burst.  te.dir is the ground normal (straight up).
+        cdlight_t *dl;
+
+        CL_ParticleEffect(te.pos1, te.dir, 0xe0, 120);
+        CL_SmokeAndFlash(te.pos1);
+
+        dl = CL_AllocDlight(0);
+        VectorCopy(te.pos1, dl->origin);
+        dl->radius = 200;
+        dl->die = cl.time + 200;
+        dl->decay = 400;
+        VectorSet(dl->color, 1.0f, 0.7f, 0.35f);
+        break;
+    }
+
     case TE_LASER_SPARKS:
         CL_ParticleEffect2(te.pos1, te.dir, te.color, te.count);
         break;

@@ -34,6 +34,11 @@ static int sound_punch;
 static int sound_sight;
 static int sound_search;
 
+// spawnflag 8: this berserk never leaps or jumps
+#define SPAWNFLAG_BERSERK_NOJUMPING 8
+static int sound_thud;
+static int sound_jump;
+
 void berserk_sight(edict_t *self, edict_t *other)
 {
     gi.sound(self, CHAN_VOICE, sound_sight, 1, ATTN_NORM, 0);
@@ -387,6 +392,8 @@ mframe_t berserk_frames_run_attack1 [] = {
 };
 mmove_t berserk_move_run_attack1 = {FRAME_r_att1, FRAME_r_att18, berserk_frames_run_attack1, berserk_run};
 
+extern mmove_t berserk_move_attack_slam;
+
 void berserk_attack(edict_t *self)
 {
     if (!self->enemy)
@@ -395,6 +402,13 @@ void berserk_attack(edict_t *self)
     if (self->monsterinfo.melee_debounce_framenum <= level.framenum &&
         realrange(self, self->enemy) < MELEE_DISTANCE) {
         berserk_melee(self);
+    } else if (!(self->spawnflags & SPAWNFLAG_BERSERK_NOJUMPING) &&
+               level.framenum > self->timestamp && (Q_rand() & 1) &&
+               realrange(self, self->enemy) > 150.0f) {
+        // the leaping ground slam.  Only worth doing from a distance, and on a
+        // long cooldown - otherwise the berserk just pogos at you
+        self->monsterinfo.currentmove = &berserk_move_attack_slam;
+        self->timestamp = level.framenum + 5 * BASE_FRAMERATE;
     } else if (self->monsterinfo.currentmove == &berserk_move_run1 &&
                realrange(self, self->enemy) <= BERSERK_RANGE_NEAR) {
         // pick up the run attack at the same point in the stride, so the
@@ -671,6 +685,284 @@ void berserk_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
 
 /*
 =================
+The rerelease berserk's LEAPING GROUND SLAM
+
+The rerelease replaced the berserk's old standing strike with a real jump: it
+launches itself at the player, falls under boosted gravity, and slams the ground
+where it lands, throwing everything nearby into the air.
+
+It runs on slam1-slam23, which id shipped in the ORIGINAL 1997 tris.md2 and never
+used - the same story as the soldier's runt frames - so this needs no
+M_RereleaseAnims() gating, only M_RereleaseGame().  Our classic
+berserk_move_attack_strike (att_c21-att_c34) is left untouched for plain baseq2.
+
+Dropped vs the rerelease: FL_KILL_VELOCITY (no such flag here; the slam zeroes
+velocity directly) and monsterinfo.unduck (berserk_duck_up does that job).
+=================
+*/
+
+// how far the slam reaches, and how hard it throws
+#define BERSERK_SLAM_DAMAGE     35
+#define BERSERK_SLAM_KICK       150.0f
+#define BERSERK_SLAM_RADIUS     275.0f
+
+void berserk_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+
+/*
+=================
+T_SlamRadiusDamage
+
+Like T_RadiusDamage, but it measures from the closest point on each victim's box
+rather than its centre, and it drives the damage from the impact POINT while
+keeping the push origin at the victim's feet - which is what launches them
+upward instead of sideways.
+=================
+*/
+static void closest_point_to_box(const vec3_t from, const vec3_t mins, const vec3_t maxs, vec3_t out)
+{
+    int i;
+
+    for (i = 0; i < 3; i++)
+        out[i] = (from[i] < mins[i]) ? mins[i] : (from[i] > maxs[i]) ? maxs[i] : from[i];
+}
+
+void T_SlamRadiusDamage(vec3_t point, edict_t *inflictor, edict_t *attacker,
+                        float damage, float kick, edict_t *ignore, float radius, int mod)
+{
+    float    points;
+    edict_t *ent = NULL;
+    vec3_t   boxmins, boxmaxs, closest, v, dir, hit_point;
+
+    while ((ent = findradius(ent, inflictor->s.origin, radius)) != NULL) {
+        if (ent == ignore)
+            continue;
+        if (!ent->takedamage)
+            continue;
+        if (!CanDamage(ent, inflictor))
+            continue;
+
+        VectorAdd(ent->s.origin, ent->mins, boxmins);
+        VectorAdd(ent->s.origin, ent->maxs, boxmaxs);
+        closest_point_to_box(point, boxmins, boxmaxs, closest);
+
+        VectorSubtract(closest, point, v);
+        points = damage - 0.5f * VectorLength(v);
+        if (ent == attacker)
+            points = points * 0.5f;
+        if (points < 1)
+            points = 1;
+
+        VectorSubtract(ent->s.origin, point, dir);
+        VectorNormalize(dir);
+
+        // keep the push origin at their feet so they always get knocked UP
+        VectorCopy(point, hit_point);
+        hit_point[2] = ent->absmin[2];
+
+        T_Damage(ent, inflictor, attacker, dir, hit_point, dir,
+                 (int)points, (int)kick, DAMAGE_RADIUS, mod);
+
+        if (ent->client && ent->velocity[2] < 270)
+            ent->velocity[2] = 270;
+    }
+}
+
+/*
+=================
+berserk_high_gravity
+
+Heavy on the way down, much heavier on the way up, so the leap is a short
+punchy arc instead of a floaty one.  Scaled against sv_gravity so the arc
+survives a map with non-standard gravity.
+=================
+*/
+static void berserk_high_gravity(edict_t *self)
+{
+    float g = sv_gravity->value > 0 ? sv_gravity->value : 800.0f;
+
+    if (self->velocity[2] < 0)
+        self->gravity = 2.25f * (800.0f / g);
+    else
+        self->gravity = 5.25f * (800.0f / g);
+}
+
+static void berserk_attack_slam(edict_t *self)
+{
+    vec3_t  f, r, offset, start;
+    trace_t tr;
+
+    gi.sound(self, CHAN_WEAPON, sound_thud, 1, ATTN_NORM, 0);
+
+    // find the ground just under the leading fist
+    AngleVectors(self->s.angles, f, r, NULL);
+    VectorSet(offset, 20.0f, -14.3f, -21.0f);
+    G_ProjectSource(self->s.origin, offset, f, r, start);
+    tr = gi.trace(self->s.origin, NULL, NULL, start, self, MASK_SOLID);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_BERSERK_SLAM);
+    gi.WritePosition(tr.endpos);
+    gi.WriteDir(vec3_origin);       // straight up
+    gi.multicast(tr.endpos, MULTICAST_PHS);
+
+    self->gravity = 1.0f;
+    VectorClear(self->velocity);
+
+    T_SlamRadiusDamage(tr.endpos, self, self, BERSERK_SLAM_DAMAGE, BERSERK_SLAM_KICK,
+                       self, BERSERK_SLAM_RADIUS, MOD_UNKNOWN);
+}
+
+void berserk_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    if (self->health <= 0) {
+        self->touch = NULL;
+        return;
+    }
+
+    // The takeoff frame is still scraping the floor it launched from, so a
+    // bare groundentity test slams instantly and the leap never happens.
+    // Only a berserk that is on its way DOWN has actually landed.
+    if (self->velocity[2] > 0)
+        return;
+
+    if (self->groundentity) {
+        self->s.frame = FRAME_slam18;
+        berserk_attack_slam(self);
+        self->touch = NULL;
+    }
+}
+
+/*
+=================
+berserk_jump_takeoff
+
+THE ARC IS SOLVED HERE, NOT COPIED.  The rerelease uses
+`fwd_speed = distance * 1.95` with a fixed 450 upward kick, but those constants
+only work at its 40Hz monster tick.  This tree runs monster frames at 10Hz, and
+one frame of the 5.25x RISING gravity removes 420 of that 450 straight away - so
+the berserk barely leaves the floor, re-grounds on the very next frame, and slams
+where it stood.  Measured: it covered 71 units of a 330 unit gap.
+
+So instead of trusting the magic numbers, pick a flight time from the distance
+and solve for the launch velocity that actually lands on the target.  Rising and
+falling gravity differ, which makes the arc asymmetric:
+
+    t_rise = vz / g_up                 apex = vz^2 / (2 * g_up)
+    t_fall = sqrt(2 * apex / g_down)   = vz / sqrt(g_up * g_down)
+    t_total = vz * (1/g_up + 1/sqrt(g_up * g_down))
+
+berserk_high_gravity scales its multiplier by (800 / sv_gravity), so the EFFECTIVE
+gravity is always 5.25*800 rising and 2.25*800 falling whatever the map sets.
+=================
+*/
+#define BERSERK_SLAM_GRAV_UP    (5.25f * 800.0f)
+#define BERSERK_SLAM_GRAV_DOWN  (2.25f * 800.0f)
+
+static void berserk_jump_takeoff(edict_t *self)
+{
+    vec3_t forward, dir, aim_point, to_target;
+    float  dist, flight_time, vz, fwd_speed, per_vz;
+
+    if (!self->enemy)
+        return;
+
+    // aim the leap where the player is GOING to be, not where they are.  The
+    // speed passed here only feeds the lead estimate; the real one is solved below.
+    PredictAim(self->enemy, self->s.origin, 800.0f, false, 0.0f, dir, aim_point);
+
+    self->s.angles[YAW] = vectoyaw(dir);
+    AngleVectors(self->s.angles, forward, NULL, NULL);
+
+    // horizontal gap to the spot we mean to come down on
+    VectorSubtract(aim_point, self->s.origin, to_target);
+    to_target[2] = 0;
+    dist = VectorLength(to_target);
+
+    // longer leaps get longer hang time, so the arc reads the same at any range
+    flight_time = dist / 700.0f;
+    if (flight_time < 0.45f)
+        flight_time = 0.45f;
+    else if (flight_time > 0.9f)
+        flight_time = 0.9f;
+
+    // Round the hang time UP to a whole monster frame.  The solve above is
+    // continuous, but the server integrates in 0.1s steps, so an arc of (say)
+    // 4.7 frames actually lands at 4 - dropping the berserk well short.
+    flight_time = ceilf(flight_time / FRAMETIME) * FRAMETIME;
+
+    // seconds of hang time per unit of upward velocity
+    per_vz = 1.0f / BERSERK_SLAM_GRAV_UP
+           + 1.0f / sqrtf(BERSERK_SLAM_GRAV_UP * BERSERK_SLAM_GRAV_DOWN);
+
+    vz = flight_time / per_vz;
+    fwd_speed = dist / flight_time;
+
+    self->s.origin[2] += 1;
+    VectorScale(forward, fwd_speed, self->velocity);
+    self->velocity[2] = vz;
+    self->groundentity = NULL;
+
+    // ducked while airborne so shots pass over the tucked body
+    self->monsterinfo.aiflags |= AI_DUCKED;
+    self->monsterinfo.attack_finished = level.framenum + 3 * BASE_FRAMERATE;
+    self->touch = berserk_jump_touch;
+
+    gi.sound(self, CHAN_WEAPON, sound_jump, 1, ATTN_NORM, 0);
+    berserk_high_gravity(self);
+}
+
+static void berserk_check_landing(edict_t *self)
+{
+    berserk_high_gravity(self);
+
+    if (self->groundentity && self->velocity[2] <= 0) {
+        self->monsterinfo.attack_finished = 0;
+        self->monsterinfo.aiflags &= ~AI_DUCKED;
+        self->s.frame = FRAME_slam18;
+        if (self->touch) {
+            berserk_attack_slam(self);
+            self->touch = NULL;
+        }
+        return;
+    }
+
+    // still airborne: hold on the tucked frames until we land, and give up
+    // after the 3 second watchdog so a leap into a pit cannot freeze the anim
+    if (level.framenum > self->monsterinfo.attack_finished)
+        self->monsterinfo.nextframe = FRAME_slam2;
+    else
+        self->monsterinfo.nextframe = FRAME_slam5;
+}
+
+mframe_t berserk_frames_attack_slam [] = {
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, berserk_jump_takeoff },
+    { ai_move,   0, berserk_high_gravity },
+    { ai_move,   0, berserk_high_gravity },
+    { ai_move,   0, berserk_check_landing },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL },
+    { ai_move,   0, NULL }
+};
+mmove_t berserk_move_attack_slam = {FRAME_slam1, FRAME_slam23, berserk_frames_attack_slam, berserk_run};
+
+/*
+=================
 berserk jumps - the rerelease/ROGUE blocked system
 
 monsterinfo.blocked is called from SV_NewChaseDir when the berserk has run out
@@ -681,8 +973,6 @@ refuses unless M_RereleaseAnims() is on.
 Dropped vs the rerelease: monster_done_dodge (no AI_DODGING flag in this tree).
 =================
 */
-#define SPAWNFLAG_BERSERK_NOJUMPING   8
-
 static void berserk_jump_now(edict_t *self)
 {
     vec3_t  forward, up;
@@ -779,6 +1069,11 @@ void SP_monster_berserk(edict_t *self)
     sound_idle  = gi.soundindex("berserk/beridle1.wav");
     sound_punch = gi.soundindex("berserk/attack.wav");
     sound_search = gi.soundindex("berserk/bersrch1.wav");
+    // only the rerelease berserk leaps, and berserk/jump.wav ships only there
+    if (M_RereleaseGame()) {
+        sound_thud = gi.soundindex("mutant/thud1.wav");
+        sound_jump = gi.soundindex("berserk/jump.wav");
+    }
     sound_sight = gi.soundindex("berserk/sight.wav");
 
     self->s.modelindex = gi.modelindex("models/monsters/berserk/tris.md2");
