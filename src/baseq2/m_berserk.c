@@ -393,6 +393,7 @@ mframe_t berserk_frames_run_attack1 [] = {
 mmove_t berserk_move_run_attack1 = {FRAME_r_att1, FRAME_r_att18, berserk_frames_run_attack1, berserk_run};
 
 extern mmove_t berserk_move_attack_slam;
+extern mmove_t berserk_move_jump_slam;
 
 void berserk_attack(edict_t *self)
 {
@@ -826,9 +827,15 @@ void berserk_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface
         return;
 
     if (self->groundentity) {
-        self->s.frame = FRAME_slam18;
         berserk_attack_slam(self);
         self->touch = NULL;
+
+        // This fires for the ledge drop too, where currentmove is the JUMP move -
+        // poking s.frame alone would leave the frame outside the running move's
+        // range, so switch to the slam and let it play its impact half.
+        self->monsterinfo.aiflags &= ~AI_DUCKED;
+        self->monsterinfo.currentmove = &berserk_move_attack_slam;
+        self->monsterinfo.nextframe = FRAME_slam18;
     }
 }
 
@@ -861,7 +868,7 @@ gravity is always 5.25*800 rising and 2.25*800 falling whatever the map sets.
 static void berserk_jump_takeoff(edict_t *self)
 {
     vec3_t forward, dir, aim_point, to_target;
-    float  dist, flight_time, vz, fwd_speed, per_vz;
+    float  dist, flight_time, nominal_time, vz, fwd_speed, per_vz, apex, drop;
 
     if (!self->enemy)
         return;
@@ -878,24 +885,45 @@ static void berserk_jump_takeoff(edict_t *self)
     to_target[2] = 0;
     dist = VectorLength(to_target);
 
-    // longer leaps get longer hang time, so the arc reads the same at any range
-    flight_time = dist / 700.0f;
-    if (flight_time < 0.45f)
-        flight_time = 0.45f;
-    else if (flight_time > 0.9f)
-        flight_time = 0.9f;
+    // longer leaps get a bigger kick, so the arc reads the same at any range
+    nominal_time = dist / 700.0f;
+    if (nominal_time < 0.45f)
+        nominal_time = 0.45f;
+    else if (nominal_time > 0.9f)
+        nominal_time = 0.9f;
 
-    // Round the hang time UP to a whole monster frame.  The solve above is
-    // continuous, but the server integrates in 0.1s steps, so an arc of (say)
-    // 4.7 frames actually lands at 4 - dropping the berserk well short.
-    flight_time = ceilf(flight_time / FRAMETIME) * FRAMETIME;
-
-    // seconds of hang time per unit of upward velocity
+    // seconds of hang time per unit of upward velocity, for a LEVEL landing
     per_vz = 1.0f / BERSERK_SLAM_GRAV_UP
            + 1.0f / sqrtf(BERSERK_SLAM_GRAV_UP * BERSERK_SLAM_GRAV_DOWN);
 
-    vz = flight_time / per_vz;
+    vz = nominal_time / per_vz;
+
+    // Now work out the REAL hang time.  Leaping off a ledge means falling the
+    // apex height PLUS the drop, which buys a lot of extra airtime - ignoring
+    // it made the berserk sail straight over a player standing below.
+    apex = (vz * vz) / (2.0f * BERSERK_SLAM_GRAV_UP);
+    drop = apex - (aim_point[2] - self->s.origin[2]);
+    if (drop < 0.0f)
+        drop = 0.0f;
+
+    flight_time = vz / BERSERK_SLAM_GRAV_UP
+                + sqrtf(2.0f * drop / BERSERK_SLAM_GRAV_DOWN);
+
+    // Round UP to a whole monster frame: the solve is continuous, but the
+    // server integrates in 0.1s steps, so a 4.7 frame arc lands at 4 and drops
+    // the berserk short.
+    flight_time = ceilf(flight_time / FRAMETIME) * FRAMETIME;
+
     fwd_speed = dist / flight_time;
+
+    // A drop from a ledge needs enough horizontal push to actually CLEAR the
+    // lip.  Solving purely for "land on the player" gives a very low forward
+    // speed when they are mostly below - measured 114 for an 80 unit gap with
+    // a 145 unit drop - and the berserk then arcs up and comes straight back
+    // down onto the ledge it launched from, slamming where it stood.  Prefer
+    // overshooting slightly to never leaving.
+    if (aim_point[2] < self->s.origin[2] - 32.0f && fwd_speed < 300.0f)
+        fwd_speed = 300.0f;
 
     self->s.origin[2] += 1;
     VectorScale(forward, fwd_speed, self->velocity);
@@ -1016,6 +1044,65 @@ mframe_t berserk_frames_jump [] = {
 };
 mmove_t berserk_move_jump = {FRAME_jump1, FRAME_jump9, berserk_frames_jump, berserk_run};
 
+/*
+=================
+berserk_move_jump_slam - drop off a ledge, then slam on impact
+
+Routing the ledge drop straight into berserk_move_attack_slam looked wrong: its
+berserk_check_landing holds nextframe on FRAME_slam5 for the WHOLE descent, and
+slam5 is a mid-slam pose, so the berserk falls frozen mid-swing.  The plain jump
+holds on jump7 instead, which is an actual falling pose and reads correctly.
+
+It also has to AIM: berserk_jump_now is a fixed little hop (forward*100, up*300),
+so the berserk landed at the foot of the ledge and then needed a SECOND leap to
+reach the player.  Use the ballistic berserk_jump_takeoff instead, which solves for
+the player's position including the drop.
+
+So fall on the jump frames, and hand over to the slam's impact half (slam18) the
+moment we touch down.  Same frames as berserk_move_jump; only the landing think
+differs, which is what makes the move its own identity - no extra state needed.
+=================
+*/
+static void berserk_jump_slam_land(edict_t *self)
+{
+    berserk_high_gravity(self);
+
+    if (self->groundentity == NULL) {
+        self->monsterinfo.nextframe = self->s.frame;
+
+        // the watchdog stops a drop into a pit holding the pose forever
+        if (monster_jump_finished(self))
+            self->monsterinfo.nextframe = self->s.frame + 1;
+        return;
+    }
+
+    self->monsterinfo.attack_finished = 0;
+    self->monsterinfo.aiflags &= ~AI_DUCKED;
+    self->gravity = 1.0f;
+
+    // berserk_jump_touch may have beaten us to it on contact
+    if (self->touch) {
+        berserk_attack_slam(self);
+        self->touch = NULL;
+    }
+
+    self->monsterinfo.currentmove = &berserk_move_attack_slam;
+    self->monsterinfo.nextframe = FRAME_slam18;
+}
+
+mframe_t berserk_frames_jump_slam [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, berserk_jump_takeoff },
+    { ai_move, 0, berserk_high_gravity },
+    { ai_move, 0, berserk_high_gravity },
+    { ai_move, 0, berserk_jump_slam_land },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+};
+mmove_t berserk_move_jump_slam = {FRAME_jump1, FRAME_jump9, berserk_frames_jump_slam, berserk_run};
+
 mframe_t berserk_frames_jump2 [] = {
     { ai_move, -8, NULL },
     { ai_move, -4, NULL },
@@ -1034,10 +1121,28 @@ void berserk_jump(edict_t *self, blocked_jump_result_t result)
     if (!self->enemy)
         return;
 
-    if (result == JUMP_JUMP_UP)
+    if (result == JUMP_JUMP_UP) {
         self->monsterinfo.currentmove = &berserk_move_jump2;
-    else
-        self->monsterinfo.currentmove = &berserk_move_jump;
+        return;
+    }
+
+    // Coming DOWN to the player: land it as a ground pound.  id has no explicit
+    // wiring for this - in the rerelease it emerges because berserk_attack picks
+    // the slam while the berserk is above you and the leap carries it down.
+    // Measured here that almost never gets the chance: over one ledge encounter
+    // berserk_attack ran twice, while blocked_checkjump fired 12 times, so the
+    // blocked hook wins the race and you get a plain hop.
+    //
+    // Drop on the JUMP frames and slam on impact - NOT berserk_move_attack_slam,
+    // which freezes mid-swing for the whole descent.
+    if (level.framenum > self->timestamp &&
+        !(self->spawnflags & SPAWNFLAG_BERSERK_NOJUMPING)) {
+        self->monsterinfo.currentmove = &berserk_move_jump_slam;
+        self->timestamp = level.framenum + 5 * BASE_FRAMERATE;
+        return;
+    }
+
+    self->monsterinfo.currentmove = &berserk_move_jump;
 }
 
 bool berserk_blocked(edict_t *self, float dist)

@@ -8558,8 +8558,8 @@ textures/e1u2/stripe2_8:
 textures/e1u2/support1_4:
 	texture_base materialDev/textures/e1u2/support1_4.tga
 	texture_normals materialDev/textures/e1u2/support1_4_n.tga
-	metalness_factor 0
-
+	metalness_factor 1
+	
 textures/e1u2/sym6_1:
 	texture_base materialDev/textures/e1u2/sym6_1.tga
 	texture_normals materialDev/textures/e1u2/sym6_1_n.tga
