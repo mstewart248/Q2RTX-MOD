@@ -44,6 +44,18 @@ void S_RawSamples(int samples, int rate, int width,
 
 void S_UnqueueRawSamples(void);
 
+// true while the raw sample queue has room for more; streaming decoders use
+// this to bound how much they decode per frame
+bool S_NeedRawSamples(void);
+
+// seconds of streamed audio queued but not yet heard, so a caller with its own
+// timeline can correct against the audio device's clock. 0 when there is no sound
+float S_GetRawStreamLatency(void);
+
+// diagnostics for a streamed source: playback starts (>1 means it ran dry) and
+// the queue low water mark
+void S_GetRawStreamStats(int *starts, int *min_queued, bool reset);
+
 float S_GetLinearVolume(float perceptual);
 
 typedef enum {

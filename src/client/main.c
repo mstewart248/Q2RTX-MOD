@@ -27,6 +27,10 @@ cvar_t  *cl_footsteps;
 cvar_t  *cl_timeout;
 cvar_t  *cl_predict;
 cvar_t  *cl_gunalpha;
+cvar_t  *cl_muzzleflash_models;
+cvar_t  *cl_muzzleflash_scale;
+cvar_t  *cl_muzzleflash_brightness;
+cvar_t  *cl_muzzleflash_offset;
 cvar_t  *cl_warn_on_fps_rounding;
 cvar_t  *cl_maxfps;
 cvar_t  *cl_async;
@@ -77,6 +81,8 @@ cvar_t  *gender_auto;
 cvar_t  *cl_vwep;
 
 cvar_t  *cl_cinematics;
+cvar_t  *cl_hd_cinematics;
+cvar_t  *cl_hd_cinematics_delay;
 
 //
 // userinfo
@@ -2717,6 +2723,21 @@ static void CL_InitLocal(void)
     // register our variables
     //
     cl_gunalpha = Cvar_Get("cl_gunalpha", "1", 0);
+    // Rerelease muzzle flashes: a starburst model at the muzzle rather than
+    // just a dynamic light. Set to 0 for the classic look.
+    cl_muzzleflash_models = Cvar_Get("cl_muzzleflash_models", "1", CVAR_ARCHIVE);
+    // the flash model is only ~2.3 units across; the rerelease draws it far
+    // bigger than that, so the default scales it up
+    cl_muzzleflash_scale = Cvar_Get("cl_muzzleflash_scale", "2", CVAR_ARCHIVE);
+    // The flash is drawn by the effects path, which multiplies the texture by
+    // prev_adapted_luminance * 500 - enough to saturate it to flat white and
+    // lose the soft taper the artwork has. Entity alpha is the one lever that
+    // scales that back down without touching the shader or the global UBO
+    // (whose cvar list is a multiple of four and cannot take a single new entry).
+    cl_muzzleflash_brightness = Cvar_Get("cl_muzzleflash_brightness", "0.1", CVAR_ARCHIVE);
+    // dev aid: "x y z" overrides the built-in muzzle offset for the weapon in
+    // hand, so one can be dialled in live instead of rebuilding each time
+    cl_muzzleflash_offset = Cvar_Get("cl_muzzleflash_offset", "", 0);
     cl_footsteps = Cvar_Get("cl_footsteps", "1", 0);
     cl_footsteps->changed = cl_footsteps_changed;
     cl_noskins = Cvar_Get("cl_noskins", "0", 0);
@@ -2803,6 +2824,10 @@ static void CL_InitLocal(void)
     cl_vwep->changed = cl_vwep_changed;
 
     cl_cinematics = Cvar_Get("cl_cinematics", "1", CVAR_ARCHIVE);
+    cl_hd_cinematics = Cvar_Get("cl_hd_cinematics", "1", CVAR_ARCHIVE);
+    // the audio device is heard later than we queue it, so the video is held
+    // back to meet it. 350ms was tuned by ear against the OpenAL backend
+    cl_hd_cinematics_delay = Cvar_Get("cl_hd_cinematics_delay", "350", CVAR_ARCHIVE);
 
     allow_download->changed = cl_allow_download_changed;
     cl_allow_download_changed(allow_download);

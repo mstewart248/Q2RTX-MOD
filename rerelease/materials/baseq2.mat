@@ -886,7 +886,8 @@ models/objects/explode/skin:
 
 models/objects/flash/skin:
 	texture_base models/objects/flash/skin.pcx
-	emissive_factor 0.1
+	texture_emissive models/objects/flash/skin_glow.png
+	emissive_factor 5
 	base_factor 2.5
 
 models/objects/gibs/arm/skin:

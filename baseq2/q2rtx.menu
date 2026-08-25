@@ -271,6 +271,9 @@ begin effects
     toggle "grenade explosions" cl_disable_explosions ~0
     toggle "rocket explosions" cl_disable_explosions ~1
     toggle "explosion sprites" cl_explosion_sprites
+    toggle --status "rerelease-style muzzle flash models on monsters and other players" "monster muzzle flashes" cl_muzzleflash_models
+    range --status "size of the muzzle flash models" "muzzle flash size" cl_muzzleflash_scale 0.5 8 0.5
+    range --status "how bright the muzzle flash renders" "muzzle flash brightness" cl_muzzleflash_brightness 0.05 1 0.05
     blank
     pairs "blaster color" cl_blaster_color "violet" 1 "original orange" 0
     blank
@@ -304,6 +307,7 @@ begin screen
     title "Screen Setup"
     blank
     toggle "cutscenes" cl_cinematics
+    toggle --status "1080p30 cutscenes from the rerelease; falls back to the original .cin when absent" "remastered cutscenes" cl_hd_cinematics
     blank
 	pairs "selected inventory item" scr_showitemname "do not show" 0 "show on change" 1 "always show" 2
     toggle "ping graph" scr_lag_draw

@@ -1368,6 +1368,10 @@ struct edict_s {
     edict_t     *teamchain;
     edict_t     *teammaster;
 
+    // rerelease: the parasite's proboscis barb, while one is out. Lives on the
+    // parasite; the barb itself points back with ->owner.
+    edict_t     *proboscus;
+
     edict_t     *mynoise;       // can go in client only
     edict_t     *mynoise2;
 

@@ -519,6 +519,10 @@ extern char        cl_cmdbuf_text[MAX_STRING_CHARS];
 // cvars
 //
 extern cvar_t    *cl_gunalpha;
+extern cvar_t    *cl_muzzleflash_models;
+extern cvar_t    *cl_muzzleflash_scale;
+extern cvar_t    *cl_muzzleflash_brightness;
+extern cvar_t    *cl_muzzleflash_offset;
 extern cvar_t    *cl_predict;
 extern cvar_t    *cl_footsteps;
 extern cvar_t    *cl_noskins;
@@ -784,6 +788,8 @@ typedef struct cl_sustain_s {
 } cl_sustain_t;
 
 void CL_SmokeAndFlash(const vec3_t origin);
+void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, float scale);
+void CL_ViewMuzzleFlash(void);
 
 void CL_RegisterTEntSounds(void);
 void CL_RegisterTEntModels(void);

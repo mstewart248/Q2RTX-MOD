@@ -1094,6 +1094,135 @@ void CL_AdjustGunPosition(vec3_t viewangles, vec3_t *gun_origin)
 CL_AddViewWeapon
 ==============
 */
+
+/*
+=================
+View-weapon muzzle flash
+
+The flash for the gun in your hands cannot simply be another entity tagged
+RF_WEAPONMODEL: vkpt's entity sort tests RF_WEAPONMODEL *before* MCLASS_FLASH
+(main.c ~2218), so it would be routed to the regular viewer-weapon pass and
+render as a flat opaque slab instead of the soft additive flash. So it is
+spawned as an ordinary world-space flash at the muzzle's world position, which
+reuses the exact rendering path already tuned for monsters.
+
+CL_MuzzleFlash only tells us that WE fired - it has no idea where the gun ended
+up on screen, since the view model's position depends on bob, kick, FOV and the
+wall-avoidance nudge. So it just raises a flag, and CL_AddViewWeapon consumes it
+once it has the final gun transform.
+
+The offsets below are CALIBRATED BY EYE. There is no table to copy: id's own
+rerelease code has no visual muzzle data. Its P_ProjectSource offsets are
+GAMEPLAY shot origins - machinegun, chaingun, shotgun and super shotgun are all
+{0,0,-8}, i.e. just below the eye for hitscan accuracy - and the flash placement
+itself lives in KEX's client, which is not in this repo.
+
+An earlier attempt derived these from each gun's forward-most vertex. It agreed
+to 1.5 units with the one real muzzle marker in the game (the MF placeholder in
+v_machn's md3) and was still wrong - that only proved two vertices shared a
+frame, not that it was the frame the view model is drawn in.
+
+Calibrating showed gun->origin sits essentially AT THE CAMERA, so the whole
+offset decides where the flash lands. Use cl_muzzleflash_offset "x y z" to dial
+a weapon in live and read the numbers back. Axes are forward / LEFT / up - the
+lateral term is applied against -right below, because model space here is
+Y-left (AnglesToAxis inverts axis[1]).
+=================
+*/
+typedef struct {
+    const char  *gun;
+    vec3_t      offset;
+} weapon_muzzle_t;
+
+// ORDER MATTERS: the lookup is a substring match, and "v_shotg" is a prefix of
+// "v_shotg2" - so the super shotgun MUST be listed before the shotgun or it
+// silently takes the shotgun's offset.
+static const weapon_muzzle_t cl_weapon_muzzles[] = {
+    { "v_blast",   {  40.0f, -13.0f, -10.0f } },   // blaster
+    { "v_shotg2",  {  40.0f, -15.0f, -10.0f } },   // super shotgun
+    { "v_shotg",   {  40.0f, -15.0f, -15.0f } },   // shotgun
+    { "v_machn",   {  40.0f, -15.0f, -10.0f } },   // machinegun
+    { "v_chain",   {  40.0f, -13.0f, -15.0f } },   // chaingun
+    { "v_hyperb",  {  40.0f, -10.0f, -10.0f } },   // hyperblaster
+};
+
+// Weapons deliberately absent from that table get NO muzzle flash, which is
+// the lookup's natural behaviour. The railgun and BFG are excluded on purpose -
+// neither should have one. The rocket and grenade launchers are out simply
+// because they have not been calibrated; add a row once one is measured.
+
+static bool cl_view_flash_pending;
+
+// called from CL_MuzzleFlash when the flash belongs to us, in first person
+void CL_ViewMuzzleFlash(void)
+{
+    cl_view_flash_pending = true;
+}
+
+static void CL_AddViewWeaponFlash(const entity_t *gun)
+{
+    const model_t   *model;
+    const vec3_t    *ofs = NULL;
+    vec3_t          forward, right, up, muzzle;
+    static vec3_t   tuned_storage;
+    int             i;
+
+    if (!cl_view_flash_pending)
+        return;
+    cl_view_flash_pending = false;      // consume it either way, never let it pile up
+
+    if (!cl_muzzleflash_models->integer)
+        return;
+
+    // DISABLED ON PURPOSE - Matt's call. The monster and third-person flashes
+    // look right, but the view-weapon one does not: the emissive path it now
+    // shares gives a hard texture_mask cutout rather than the soft taper, and
+    // that reads much worse at arm's length than it does across a room.
+    //
+    // Everything below is kept and still correct - the calibrated per-weapon
+    // offsets, the world-space spawn, the pending-flag handshake. Delete this
+    // return to bring it back.
+    //
+    // cl_muzzleflash_models therefore means "monster and other-player flashes";
+    // it does NOT gate anything for the gun in your hands.
+    return;
+
+    model = MOD_ForHandle(gun->model);
+    if (!model)
+        return;
+
+    for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
+        if (strstr(model->name, cl_weapon_muzzles[i].gun)) {
+            ofs = &cl_weapon_muzzles[i].offset;
+            break;
+        }
+    }
+    if (!ofs)
+        return;     // an unknown weapon - better no flash than one in mid-air
+
+    // cl_muzzleflash_offset overrides the table, for dialling a weapon in live:
+    //    cl_muzzleflash_offset "22 -5 -23"
+    // Set it empty again to go back to the table.
+    if (cl_muzzleflash_offset->string[0]) {
+        vec3_t tuned;
+        if (sscanf(cl_muzzleflash_offset->string, "%f %f %f",
+                   &tuned[0], &tuned[1], &tuned[2]) == 3)
+            ofs = (const vec3_t *)&tuned_storage, VectorCopy(tuned, tuned_storage);
+    }
+
+    // The gun's own axes, so the offset rides along with bob and kick.
+    // NOTE the minus on the lateral term: model space here is X forward,
+    // Y LEFT, Z up - AnglesToAxis (shared.h) inverts axis[1] - so a model
+    // coordinate must be applied against -right, not +right.
+    AngleVectors(gun->angles, forward, right, up);
+    VectorCopy(gun->origin, muzzle);
+    VectorMA(muzzle,  (*ofs)[0], forward, muzzle);
+    VectorMA(muzzle, -(*ofs)[1], right,   muzzle);
+    VectorMA(muzzle,  (*ofs)[2], up,      muzzle);
+
+    CL_MuzzleFlashModel(muzzle, gun->angles, 1.0f);
+}
+
 static void CL_AddViewWeapon(void)
 {
     player_state_t *ps, *ops;
@@ -1181,6 +1310,8 @@ static void CL_AddViewWeapon(void)
 		gun.scale = 0.3f;
 
     V_AddEntity(&gun);
+
+    CL_AddViewWeaponFlash(&gun);
 
 	// separate entity in non-rtx mode
     if (shell_flags && cls.ref_type != REF_TYPE_VKPT) {

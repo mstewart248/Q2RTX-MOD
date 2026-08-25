@@ -406,3 +406,89 @@ void S_UnqueueRawSamples()
     }
 #endif
 }
+
+/*
+===============================================================================
+S_NeedRawSamples
+
+True while the raw sample queue still has room. Streaming decoders call this to
+decide how much to decode on the current frame - without it they would run the
+whole track at once. The music streamer in ogg.c keeps its own variant of this
+test because it wants a much larger lookahead; this one is sized for cinematic
+audio, where a big lookahead would only loosen A/V sync.
+===============================================================================
+*/
+/*
+===============================================================================
+S_GetRawStreamLatency
+
+Seconds of streamed audio that have been queued but not heard yet. The audio
+device is the authoritative clock, so a caller that also has its own timeline -
+cinematic video - can subtract this from what it has submitted to learn what is
+actually being heard, and correct itself. Returns 0 when there is no sound, in
+which case the caller has nothing to sync to and should use its own clock.
+===============================================================================
+*/
+float S_GetRawStreamLatency(void)
+{
+#ifdef USE_OPENAL
+    if (s_started == SS_OAL)
+        return (float)AL_GetStreamLatency();
+#endif
+
+    if (s_started == SS_DMA && dma.speed > 0)
+    {
+        int unplayed = s_rawend - paintedtime;
+
+        if (unplayed < 0)
+            unplayed = 0;
+
+        return (float)unplayed / (float)dma.speed;
+    }
+
+    return 0.0f;
+}
+
+/*
+===============================================================================
+S_GetRawStreamStats
+
+Diagnostics for a streamed source: how many times playback had to be started
+(more than one means it ran dry) and the low water mark of the queue. Both are
+reset by the caller before a stream begins. DMA has no equivalent, so it
+reports a single start and no starvation.
+===============================================================================
+*/
+void S_GetRawStreamStats(int *starts, int *min_queued, bool reset)
+{
+#ifdef USE_OPENAL
+    if (s_started == SS_OAL)
+    {
+        if (starts)     *starts = s_stream_starts;
+        if (min_queued) *min_queued = s_stream_min_buffers;
+
+        if (reset)
+        {
+            s_stream_starts = 0;
+            s_stream_min_buffers = 0x7fffffff;
+        }
+        return;
+    }
+#endif
+
+    if (starts)     *starts = 1;
+    if (min_queued) *min_queued = -1;
+}
+
+bool S_NeedRawSamples(void)
+{
+#ifdef USE_OPENAL
+    if (s_started == SS_OAL)
+        return active_buffers < 32;     // ~0.7s of lookahead at 48 kHz
+#endif
+
+    if (s_started == SS_DMA)
+        return paintedtime + S_MAX_RAW_SAMPLES - 2048 > s_rawend;
+
+    return false;
+}

@@ -33,6 +33,58 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 int active_buffers = 0;
 bool streamPlaying = false;
+
+// Diagnostics for streamed audio. Every start after the first means the source
+// ran dry and OpenAL stopped it, which inserts a gap and leaves the stream
+// permanently behind - the one way cinematic audio can lose sync for real.
+int s_stream_starts = 0;
+int s_stream_min_buffers = 0x7fffffff;
+
+// Latency accounting for the streamed source: the total duration of audio that
+// has been queued but not yet heard. Cinematic video timing is corrected
+// against this, so it has to track real buffer durations rather than a count.
+#define MAX_STREAM_QUEUE    512
+static float    stream_queue[MAX_STREAM_QUEUE];
+static int      stream_q_head = 0;
+static int      stream_q_tail = 0;
+static double   stream_queued_sec = 0.0;
+
+static void AL_StreamPush(int samples, int rate)
+{
+    int next = (stream_q_head + 1) % MAX_STREAM_QUEUE;
+    float dur = (rate > 0) ? (float)samples / (float)rate : 0.0f;
+
+    if (next == stream_q_tail)
+        return;     // full: the estimate degrades, nothing breaks
+
+    stream_queue[stream_q_head] = dur;
+    stream_q_head = next;
+    stream_queued_sec += dur;
+}
+
+static void AL_StreamPop(void)
+{
+    if (stream_q_tail == stream_q_head)
+        return;
+
+    stream_queued_sec -= stream_queue[stream_q_tail];
+    if (stream_queued_sec < 0.0)
+        stream_queued_sec = 0.0;
+
+    stream_q_tail = (stream_q_tail + 1) % MAX_STREAM_QUEUE;
+}
+
+static void AL_StreamResetQueue(void)
+{
+    stream_q_head = stream_q_tail = 0;
+    stream_queued_sec = 0.0;
+}
+
+double AL_GetStreamLatency(void)
+{
+    return stream_queued_sec;
+}
+
 static ALuint s_srcnums[MAX_CHANNELS];
 static ALuint streamSource = 0;
 static int s_framecount;
@@ -82,6 +134,8 @@ AL_StreamDie(void)
 		qalDeleteBuffers(1, &buffer);
 		active_buffers--;
 	}
+
+	AL_StreamResetQueue();
 }
 
 /*
@@ -111,16 +165,21 @@ AL_StreamUpdate(void)
 			qalSourceUnqueueBuffers(streamSource, 1, &buffer);
 			qalDeleteBuffers(1, &buffer);
 			active_buffers--;
+			AL_StreamPop();
 		}
 	}
 
 	/* Start the streamSource playing if necessary */
 	qalGetSourcei(streamSource, AL_BUFFERS_QUEUED, &numBuffers);
 
+	if (numBuffers < s_stream_min_buffers)
+		s_stream_min_buffers = numBuffers;
+
 	if (!streamPlaying && numBuffers)
 	{
 		qalSourcePlay(streamSource);
 		streamPlaying = true;
+		s_stream_starts++;
 	}
 }
 
@@ -548,6 +607,7 @@ AL_RawSamples(int samples, int rate, int width, int channels,
 
 	/* Shove the data onto the streamSource */
 	qalSourceQueueBuffers(streamSource, 1, &buffer);
+	AL_StreamPush(samples, rate);
 
 	/* emulate behavior of S_RawSamples for s_rawend */
 	s_rawend += samples;

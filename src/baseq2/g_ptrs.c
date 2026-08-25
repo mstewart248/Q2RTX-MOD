@@ -265,10 +265,12 @@ extern int mutant_move_run;
 extern int mutant_move_stand;
 extern int mutant_move_start_walk;
 extern int mutant_move_walk;
+extern int parasite_move_break;
 extern int parasite_move_death;
 extern int parasite_move_drain;
 extern int parasite_move_end_fidget;
 extern int parasite_move_fidget;
+extern int parasite_move_fire_proboscis;
 extern int parasite_move_jump_down;
 extern int parasite_move_jump_up;
 extern int parasite_move_pain1;
@@ -666,6 +668,10 @@ extern void plat_hit_top(void);
 extern void player_die(void);
 extern void player_pain(void);
 extern void point_combat_touch(void);
+extern void proboscis_die(void);
+extern void proboscis_reset(void);
+extern void proboscis_think(void);
+extern void proboscis_touch(void);
 extern void rocket_touch(void);
 extern void rotating_blocked(void);
 extern void rotating_light_alarm(void);
@@ -870,6 +876,8 @@ const save_ptr_t save_ptrs[] = {
 { P_think, plat2_go_down },
 { P_think, plat2_go_up },
 { P_think, plat_go_down },
+{ P_think, proboscis_reset },
+{ P_think, proboscis_think },
 { P_think, rotating_light_alarm },
 { P_think, smart_water_go_up },
 { P_think, SP_CreateCoopSpots },
@@ -937,6 +945,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, path_corner_touch },
 { P_touch, plasma_touch },
 { P_touch, point_combat_touch },
+{ P_touch, proboscis_touch },
 { P_touch, rocket_touch },
 { P_touch, rotating_touch },
 { P_touch, target_actor_touch },
@@ -1077,6 +1086,7 @@ const save_ptr_t save_ptrs[] = {
 { P_die, mutant_die },
 { P_die, parasite_die },
 { P_die, player_die },
+{ P_die, proboscis_die },
 { P_die, rotating_light_killed },
 { P_die, soldier_die },
 { P_die, stalker_die },
@@ -1364,10 +1374,12 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &mutant_move_stand },
 { P_monsterinfo_currentmove, &mutant_move_start_walk },
 { P_monsterinfo_currentmove, &mutant_move_walk },
+{ P_monsterinfo_currentmove, &parasite_move_break },
 { P_monsterinfo_currentmove, &parasite_move_death },
 { P_monsterinfo_currentmove, &parasite_move_drain },
 { P_monsterinfo_currentmove, &parasite_move_end_fidget },
 { P_monsterinfo_currentmove, &parasite_move_fidget },
+{ P_monsterinfo_currentmove, &parasite_move_fire_proboscis },
 { P_monsterinfo_currentmove, &parasite_move_jump_down },
 { P_monsterinfo_currentmove, &parasite_move_jump_up },
 { P_monsterinfo_currentmove, &parasite_move_pain1 },

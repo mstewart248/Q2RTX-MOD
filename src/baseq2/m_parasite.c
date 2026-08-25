@@ -367,55 +367,469 @@ mframe_t parasite_frames_drain [] = {
 };
 mmove_t parasite_move_drain = {FRAME_drain01, FRAME_drain18, parasite_frames_drain, parasite_start_run};
 
-#if 0
-mframe_t parasite_frames_break [] = {
-    { ai_charge, 0,   NULL },
-    { ai_charge, -3,  NULL },
-    { ai_charge, 1,   NULL },
-    { ai_charge, 2,   NULL },
-    { ai_charge, -3,  NULL },
-    { ai_charge, 1,   NULL },
-    { ai_charge, 1,   NULL },
-    { ai_charge, 3,   NULL },
-    { ai_charge, 0,   NULL },
-    { ai_charge, -18, NULL },
-    { ai_charge, 3,   NULL },
-    { ai_charge, 9,   NULL },
-    { ai_charge, 6,   NULL },
-    { ai_charge, 0,   NULL },
-    { ai_charge, -18, NULL },
-    { ai_charge, 0,   NULL },
-    { ai_charge, 8,   NULL },
-    { ai_charge, 9,   NULL },
-    { ai_charge, 0,   NULL },
-    { ai_charge, -18, NULL },
-    { ai_charge, 0,   NULL },
-    { ai_charge, 0,   NULL },       // airborne
-    { ai_charge, 0,   NULL },       // airborne
-    { ai_charge, 0,   NULL },       // slides
-    { ai_charge, 0,   NULL },       // slides
-    { ai_charge, 0,   NULL },       // slides
-    { ai_charge, 0,   NULL },       // slides
-    { ai_charge, 4,   NULL },
-    { ai_charge, 11,  NULL },
-    { ai_charge, -2,  NULL },
-    { ai_charge, -5,  NULL },
-    { ai_charge, 1,   NULL }
-};
-mmove_t parasite_move_break = {FRAME_break01, FRAME_break32, parasite_frames_break, parasite_start_run};
-#endif
 /*
 ===
 Break Stuff Ends
 ===
 */
 
+/*
+=================
+The rerelease parasite's PROBOSCIS - a real projectile on a tether
+
+The classic parasite's drain is a hitscan: parasite_drain_attack traces to the
+enemy every frame and draws a beam if it connects.  The rerelease replaced it
+with a physical barb that flies out, sticks in whatever it hits, drains health
+back down the tether, and reels in - and if it hits a wall instead, the parasite
+plays a whole animation ripping itself free.
+
+Ported from src/rerelease/m_parasite.cpp.  It runs on FRAME_drain01-drain18 and
+FRAME_break01-break32, all of which exist in the CLASSIC parasite model, so no
+M_RereleaseAnims() gating is needed - but it changes the parasite's behaviour
+completely, so parasite_attack only picks it under M_RereleaseGame().
+
+TWO ADAPTATIONS, both deliberate:
+
+ 1. The tether is drawn with a per-frame TE_PARASITE_ATTACK rather than the
+    rerelease's persistent RF_BEAM segment entity.  Our client discards the
+    model on an RF_BEAM entity outright (`ent.model = 0` in CL_AddPacketEntities)
+    and draws the palette cylinder instead, whereas TE_PARASITE_ATTACK already
+    routes through CL_ParseBeam with cl_mod_parasite_segment - i.e. the real
+    segment model, stretched.  The classic drain already sent that TE every
+    frame, so this is the proven path in this tree and it needs no second entity.
+
+ 2. `tip->style` carries the state machine, exactly as the rerelease does:
+      0 = flying, 1 = stuck in something, 2 = retracting, 3 = spent.
+=================
+*/
+
+// how fast the barb flies, and how much harder it is yanked back
+#define PROBOSCIS_SPEED         1250.0f
+#define PROBOSCIS_RETRACT_MUL   2.0f
+
+void parasite_reel_in(edict_t *self);
+void proboscis_reset(edict_t *self);
+static void proboscis_retract(edict_t *self);
+extern mmove_t parasite_move_fire_proboscis;
+extern mmove_t parasite_move_break;
+
+// muzzle offsets, one per frame of break01.. and drain01.., so the tether
+// leaves the mouth rather than the model origin
+static const vec3_t parasite_break_offsets[] = {
+    {  7.0f,   0.0f,  7.0f }, {  6.3f,  14.5f,  4.0f }, {  8.5f,   0.0f,  5.6f },
+    {  5.0f, -15.25f, 4.0f }, {  9.5f,  -1.8f,  5.9f }, {  6.2f,  14.0f,  4.0f },
+    { 12.25f,  7.5f,  1.4f }, { 13.8f,   0.0f, -2.4f }, { 13.8f,   0.0f, -4.0f },
+    {  0.1f,   0.0f, -0.7f }, {  5.0f,   0.0f,  3.7f }, { 11.0f,   0.0f,  4.0f },
+    { 13.5f,   0.0f, -4.0f }, { 13.5f,   0.0f, -4.0f }, {  0.2f,   0.0f, -0.7f },
+    {  3.9f,   0.0f,  3.6f }, {  8.5f,   0.0f,  5.0f }, { 14.0f,   0.0f, -4.0f },
+    { 14.0f,   0.0f, -4.0f }, {  0.1f,   0.0f, -0.5f }
+};
+
+static const vec3_t parasite_drain_offsets[] = {
+    { -1.7f, 0.0f,  1.2f }, { -2.2f, 0.0f, -0.6f }, {  7.7f, 0.0f,  7.2f },
+    {  7.2f, 0.0f,  5.7f }, {  6.2f, 0.0f,  7.8f }, {  4.7f, 0.0f,  6.7f },
+    {  5.0f, 0.0f,  9.0f }, {  5.0f, 0.0f,  7.0f }, {  5.0f, 0.0f, 10.5f },
+    {  4.5f, 0.0f,  9.7f }, {  1.5f, 0.0f, 12.0f }, {  2.9f, 0.0f, 11.0f },
+    {  2.1f, 0.0f,  7.6f }
+};
+
+static void parasite_get_proboscis_start(edict_t *self, vec3_t start)
+{
+    vec3_t f, r, offset;
+    int    i;
+
+    AngleVectors(self->s.angles, f, r, NULL);
+
+    i = self->s.frame - FRAME_break01;
+    if (i >= 0 && i < (int)q_countof(parasite_break_offsets)) {
+        VectorCopy(parasite_break_offsets[i], offset);
+    } else {
+        i = self->s.frame - FRAME_drain01;
+        if (i >= 0 && i < (int)q_countof(parasite_drain_offsets))
+            VectorCopy(parasite_drain_offsets[i], offset);
+        else
+            VectorSet(offset, 8, 0, 6);
+    }
+
+    G_ProjectSource(self->s.origin, offset, f, r, start);
+}
+
+// Draw the tether.  cl_mod_parasite_segment is the real segment model, stretched
+// between the two points by CL_ParseBeam.
+static void proboscis_segment_draw(edict_t *parasite, vec3_t start, vec3_t end)
+{
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_PARASITE_ATTACK);
+    gi.WriteShort(parasite - g_edicts);
+    gi.WritePosition(start);
+    gi.WritePosition(end);
+    gi.multicast(parasite->s.origin, MULTICAST_PVS);
+}
+
+// hard reset; like we never existed
+void proboscis_reset(edict_t *self)
+{
+    if (self->owner)
+        self->owner->proboscus = NULL;
+    G_FreeEdict(self);
+}
+
+void proboscis_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
+{
+    // only a crusher can destroy the barb outright
+    if (meansOfDeath == MOD_CRUSH)
+        proboscis_reset(self);
+}
+
+static void proboscis_retract(edict_t *self)
+{
+    // tell the parasite to start reeling, if it is still in the drain animation
+    if (self->owner && self->owner->monsterinfo.currentmove == &parasite_move_fire_proboscis)
+        self->owner->monsterinfo.nextframe = FRAME_drain12;
+
+    self->movetype = MOVETYPE_NONE;
+    self->solid = SOLID_NOT;
+
+    // comes back harder than it went out
+    if (self->style != 2)
+        self->speed *= PROBOSCIS_RETRACT_MUL;
+    self->style = 2;
+    gi.linkentity(self);
+}
+
+void proboscis_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    vec3_t p, dir;
+
+    // owner isn't trying to probe any more, don't touch anything
+    if (!self->owner || self->owner->monsterinfo.currentmove != &parasite_move_fire_proboscis)
+        return;
+
+    if (other == self->owner)
+        return;
+
+    // hit what we want to succ
+    if (other->client || other == self->owner->enemy) {
+        VectorCopy(self->s.origin, p);
+
+        self->owner->monsterinfo.nextframe = FRAME_drain06;
+        self->movetype = MOVETYPE_NONE;
+        self->solid = SOLID_NOT;
+        self->style = 1;
+        // stick to this guy - remember where on him we landed
+        VectorSubtract(p, other->s.origin, self->move_origin);
+        self->enemy = other;
+        gi.sound(self, CHAN_WEAPON, sound_suck, 1, ATTN_NORM, 0);
+    } else if (other->svflags & (SVF_MONSTER | SVF_DEADMONSTER)) {
+        // another monster: a scratch, and pull straight back
+        proboscis_retract(self);
+    } else {
+        // hit the world; stick to it and rip free with the break animation
+        self->movetype = MOVETYPE_NONE;
+        self->solid = SOLID_NOT;
+        self->style = 1;
+        self->owner->monsterinfo.currentmove = &parasite_move_break;
+        self->owner->s.angles[YAW] = self->s.angles[YAW];
+    }
+
+    if (other->takedamage) {
+        VectorCopy(self->velocity, dir);
+        VectorNormalize(dir);
+        T_Damage(other, self, self->owner, dir, self->s.origin, vec3_origin,
+                 5, 0, 0, MOD_UNKNOWN);
+    }
+
+    gi.positioned_sound(self->s.origin, self->owner, CHAN_AUTO, sound_impact, 1, ATTN_NORM, 0);
+
+    self->nextthink = level.framenum + 1;
+    gi.linkentity(self);
+}
+
+void proboscis_think(edict_t *self)
+{
+    vec3_t start, dir;
+    float  dist;
+
+    self->nextthink = level.framenum + 1;
+
+    if (!self->owner || !self->owner->inuse) {
+        proboscis_reset(self);
+        return;
+    }
+
+    parasite_get_proboscis_start(self->owner, start);
+
+    // ---- retracting: keep pulling until we reach the parasite ----
+    if (self->style == 2) {
+        VectorSubtract(self->s.origin, start, dir);
+        dist = VectorNormalize(dir);
+
+        if (dist <= self->speed * 2 * FRAMETIME) {
+            // home; let the parasite know and go away next frame
+            self->style = 3;
+            self->think = proboscis_reset;
+            VectorCopy(start, self->s.origin);
+            gi.linkentity(self);
+            return;
+        }
+
+        VectorMA(self->s.origin, -(self->speed * FRAMETIME), dir, self->s.origin);
+        gi.linkentity(self);
+    }
+    // ---- stuck: drain, and check the victim is still there ----
+    else if (self->style == 1) {
+        if (!self->enemy) {
+            // stuck in a wall; nothing to do but wait for the break animation
+        } else if (!self->enemy->inuse || self->enemy->health <= 0 || !self->enemy->takedamage) {
+            proboscis_retract(self);
+        } else {
+            trace_t tr;
+
+            // ride along with whatever we are stuck in
+            VectorAdd(self->enemy->s.origin, self->move_origin, self->s.origin);
+
+            VectorSubtract(self->s.origin, start, dir);
+            VectorNormalize(dir);
+            vectoangles(dir, self->s.angles);
+
+            // did the world come between us?
+            tr = gi.trace(start, NULL, NULL, self->s.origin, NULL, MASK_SOLID);
+            if (tr.fraction != 1.0f) {
+                proboscis_retract(self);
+                VectorCopy(self->s.old_origin, self->s.origin);
+            } else if (level.framenum >= self->timestamp) {
+                // succ & drain
+                T_Damage(self->enemy, self, self->owner, dir, self->s.origin, vec3_origin,
+                         2, 0, DAMAGE_NO_KNOCKBACK, MOD_UNKNOWN);
+                self->owner->health = min(self->owner->max_health, self->owner->health + 2);
+                self->timestamp = level.framenum + 1;
+            }
+
+            gi.linkentity(self);
+        }
+    }
+    // ---- flying ----
+    else if (self->style == 0) {
+        edict_t *target = self->owner->enemy;
+
+        if (!target || !target->inuse || target->health <= 0) {
+            proboscis_retract(self);
+            return;
+        }
+
+        // if we are well past the target and still going, give up and reel in
+        // rather than sail off across the map
+        VectorSubtract(self->s.origin, target->s.origin, dir);
+        dist = VectorNormalize(dir);
+
+        if (dist > (self->speed * 2) / 15.0f) {
+            vec3_t from_owner;
+
+            VectorSubtract(self->s.origin, self->owner->s.origin, from_owner);
+            VectorNormalize(from_owner);
+
+            if (DotProduct(dir, from_owner) > 0)
+                proboscis_retract(self);
+        }
+    }
+
+    // the tether follows the barb wherever it is
+    if (self->inuse)
+        proboscis_segment_draw(self->owner, start, self->s.origin);
+}
+
+static void fire_proboscis(edict_t *self, vec3_t start, vec3_t dir, float speed)
+{
+    edict_t *tip;
+
+    tip = G_Spawn();
+    tip->classname = "proboscis";
+    vectoangles(dir, tip->s.angles);
+    tip->s.modelindex = gi.modelindex("models/monsters/parasite/tip/tris.md2");
+    tip->movetype = MOVETYPE_FLYMISSILE;
+    tip->owner = self;
+    self->proboscus = tip;
+    tip->clipmask = MASK_SHOT;
+    VectorCopy(start, tip->s.origin);
+    VectorCopy(start, tip->s.old_origin);
+    tip->speed = speed;
+    VectorScale(dir, speed, tip->velocity);
+    tip->solid = SOLID_BBOX;
+    VectorClear(tip->mins);
+    VectorClear(tip->maxs);
+    tip->takedamage = DAMAGE_YES;
+    tip->health = 1000;       // only MOD_CRUSH is meant to kill it
+    tip->flags |= FL_NO_KNOCKBACK;
+    tip->die = proboscis_die;
+    tip->touch = proboscis_touch;
+    tip->think = proboscis_think;
+    tip->nextthink = level.framenum + 1;
+    tip->svflags |= SVF_DEADMONSTER;    // do not block other monsters' movement
+
+    gi.linkentity(tip);
+}
+
+static void parasite_fire_proboscis(edict_t *self)
+{
+    vec3_t start, dir;
+
+    if (!self->enemy)
+        return;
+
+    // a barb still out there is abandoned rather than left dangling
+    if (self->proboscus && self->proboscus->style != 2)
+        proboscis_reset(self->proboscus);
+
+    parasite_get_proboscis_start(self, start);
+    PredictAim(self->enemy, start, PROBOSCIS_SPEED, false, crandom() * 0.03f, dir, NULL);
+
+    fire_proboscis(self, start, dir, PROBOSCIS_SPEED);
+}
+
+// hold on the drain frames while the barb is still out
+static void parasite_proboscis_wait(edict_t *self)
+{
+    if (self->s.frame == FRAME_drain04)
+        self->monsterinfo.nextframe = FRAME_drain05;
+    else
+        self->monsterinfo.nextframe = FRAME_drain04;
+}
+
+// hold on the reel-in frames until the barb is home
+static void parasite_proboscis_pull_wait(edict_t *self)
+{
+    // barb gone?
+    if (!self->proboscus || self->proboscus->style == 3) {
+        self->monsterinfo.nextframe = FRAME_drain14;
+        return;
+    }
+
+    if (self->s.frame == FRAME_drain12)
+        self->monsterinfo.nextframe = FRAME_drain13;
+    else
+        self->monsterinfo.nextframe = FRAME_drain12;
+
+    if (self->proboscus->style != 2)
+        proboscis_retract(self->proboscus);
+}
+
+// ai_charge, but it also keeps the tether drawn while the barb is out
+static void parasite_charge_proboscis(edict_t *self, float dist)
+{
+    if (self->s.frame >= FRAME_break01 && self->s.frame <= FRAME_break32)
+        ai_move(self, dist);
+    else
+        ai_charge(self, dist);
+}
+
+mframe_t parasite_frames_fire_proboscis [] = {
+    { parasite_charge_proboscis, 0,   parasite_launch },
+    { parasite_charge_proboscis, 0,   NULL },
+    { parasite_charge_proboscis, 15,  parasite_fire_proboscis },   // target hits
+    { parasite_charge_proboscis, 0,   parasite_proboscis_wait },   // drain
+    { parasite_charge_proboscis, 0,   parasite_proboscis_wait },   // drain
+    { parasite_charge_proboscis, 0,   NULL },
+    { parasite_charge_proboscis, 0,   NULL },
+    { parasite_charge_proboscis, -2,  NULL },
+    { parasite_charge_proboscis, -2,  NULL },
+    { parasite_charge_proboscis, -3,  NULL },
+    { parasite_charge_proboscis, -2,  NULL },
+    { parasite_charge_proboscis, 0,   parasite_proboscis_pull_wait },
+    { parasite_charge_proboscis, -1,  parasite_proboscis_pull_wait },
+    { parasite_charge_proboscis, 0,   parasite_reel_in },          // let go
+    { parasite_charge_proboscis, -2,  NULL },
+    { parasite_charge_proboscis, -2,  NULL },
+    { parasite_charge_proboscis, -3,  NULL },
+    { parasite_charge_proboscis, 0,   NULL }
+};
+mmove_t parasite_move_fire_proboscis = {FRAME_drain01, FRAME_drain18, parasite_frames_fire_proboscis, parasite_start_run};
+
+/*
+=================
+parasite_move_break - ripping the barb back out of a wall
+
+id shipped these frames in the original model and never used them; the classic
+code has the table sitting inside an #if 0.  The rerelease finally wires it up
+as what happens when the proboscis sticks in the world instead of in you.
+=================
+*/
+static void parasite_break_wait(edict_t *self)
+{
+    // barb gone?
+    if (self->proboscus && self->proboscus->style != 3)
+        self->monsterinfo.nextframe = FRAME_break19;
+    else if (Q_rand() & 1) {
+        // do not tear a chunk out of ourselves
+        parasite_reel_in(self);
+        self->monsterinfo.nextframe = FRAME_break31;
+    }
+}
+
+static void parasite_break_retract(edict_t *self)
+{
+    if (self->proboscus)
+        proboscis_retract(self->proboscus);
+}
+
+static void parasite_break_sound(edict_t *self)
+{
+    if (random() < 0.5f)
+        gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+    else
+        gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+
+    self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+}
+
+static void parasite_break_noise(edict_t *self)
+{
+    gi.sound(self, CHAN_VOICE, sound_search, 1, ATTN_NORM, 0);
+}
+
+mframe_t parasite_frames_break [] = {
+    { parasite_charge_proboscis, 0,   NULL },
+    { parasite_charge_proboscis, -3,  parasite_break_noise },
+    { parasite_charge_proboscis, 1,   NULL },
+    { parasite_charge_proboscis, 2,   NULL },
+    { parasite_charge_proboscis, -3,  NULL },
+    { parasite_charge_proboscis, 1,   NULL },
+    { parasite_charge_proboscis, 1,   NULL },
+    { parasite_charge_proboscis, 3,   NULL },
+    { parasite_charge_proboscis, 0,   parasite_break_noise },
+    { parasite_charge_proboscis, -18, NULL },
+    { parasite_charge_proboscis, 3,   NULL },
+    { parasite_charge_proboscis, 9,   NULL },
+    { parasite_charge_proboscis, 6,   NULL },
+    { parasite_charge_proboscis, 0,   NULL },
+    { parasite_charge_proboscis, -18, NULL },
+    { parasite_charge_proboscis, 0,   NULL },
+    { parasite_charge_proboscis, 8,   parasite_break_retract },
+    { parasite_charge_proboscis, 9,   NULL },
+    { parasite_charge_proboscis, 0,   parasite_break_wait },
+    { parasite_charge_proboscis, -18, parasite_break_sound },
+    { parasite_charge_proboscis, 0,   NULL },
+    { parasite_charge_proboscis, 0,   NULL },   // airborne
+    { parasite_charge_proboscis, 0,   NULL },   // airborne
+    { parasite_charge_proboscis, 0,   NULL },   // slides
+    { parasite_charge_proboscis, 0,   NULL },   // slides
+    { parasite_charge_proboscis, 0,   NULL },   // slides
+    { parasite_charge_proboscis, 0,   NULL },   // slides
+    { parasite_charge_proboscis, 4,   NULL },
+    { parasite_charge_proboscis, 11,  NULL },
+    { parasite_charge_proboscis, -2,  NULL },
+    { parasite_charge_proboscis, -5,  NULL },
+    { parasite_charge_proboscis, 1,   NULL }
+};
+mmove_t parasite_move_break = {FRAME_break01, FRAME_break32, parasite_frames_break, parasite_start_run};
+
 void parasite_attack(edict_t *self)
 {
-//  if (random() <= 0.2)
-//      self->monsterinfo.currentmove = &parasite_move_break;
-//  else
-    self->monsterinfo.currentmove = &parasite_move_drain;
+    // the rerelease fires a physical barb on a tether; the classic drain is
+    // a hitscan on the same frames
+    if (M_RereleaseGame())
+        self->monsterinfo.currentmove = &parasite_move_fire_proboscis;
+    else
+        self->monsterinfo.currentmove = &parasite_move_drain;
 }
 
 

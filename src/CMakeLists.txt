@@ -525,6 +525,8 @@ IF (TARGET client)
     TARGET_LINK_LIBRARIES(client stb)
     TARGET_LINK_LIBRARIES(client tinyobjloader)
 	TARGET_LINK_LIBRARIES(client OpenAL)
+    TARGET_LINK_LIBRARIES(client theoradec)
+    TARGET_LINK_LIBRARIES(client vorbis)
 ENDIF()
 
 SOURCE_GROUP("baseq2\\sources" FILES ${SRC_BASEQ2})

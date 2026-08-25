@@ -201,6 +201,14 @@ void CL_MuzzleFlash(void)
     dl->radius = 100 * (2 - mz.silenced) + (Q_rand() & 31);
     dl->die = cl.time + 33;
 
+    // Rerelease: the flash model, at the same place the dlight was just put.
+    // Our own gun in first person is handled separately - CL_AddViewWeapon is
+    // the only place that knows where the view model actually ended up.
+    if (mz.entity == cl.frame.clientNum + 1 && !cl.thirdPersonView)
+        CL_ViewMuzzleFlash();
+    else
+        CL_MuzzleFlashModel(dl->origin, pl->current.angles, 1.0f);
+
     volume = 1.0f - 0.8f * mz.silenced;
 
     switch (mz.weapon) {
@@ -406,6 +414,11 @@ void CL_MuzzleFlash2(void)
     VectorCopy(origin,  dl->origin);
     dl->radius = 200 + (Q_rand() & 31);
     dl->die = cl.time + 16;
+
+    // Rerelease: a starburst model at the muzzle. Monsters are the easy half -
+    // monster_flash_offset[] already gives the exact muzzle, which is what
+    // `origin` above is.
+    CL_MuzzleFlashModel(origin, ent->current.angles, 1.0f);
 
     switch (mz.weapon) {
     case MZ2_INFANTRY_MACHINEGUN_1:

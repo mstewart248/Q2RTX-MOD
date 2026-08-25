@@ -349,6 +349,110 @@ static int      scr_center_lines;
 
 /*
 ==============
+SCR_KeyForCommand
+
+Writes the display name of the first key bound to `command`. False if it is
+unbound.
+==============
+*/
+static bool SCR_KeyForCommand(const char *command, char *out, size_t outsize)
+{
+    // a couple of the rerelease's commands have no equivalent here; the
+    // equipment wheel prompt is really about opening the inventory
+    static const char *const aliases[][2] = {
+        { "+wheel",  "inven" },
+        { "+wheel1", "inven" },
+        { "+wheel2", "inven" },
+    };
+    const char *key;
+    int i;
+
+    for (i = 0; i < q_countof(aliases); i++) {
+        if (!Q_stricmp(command, aliases[i][0])) {
+            command = aliases[i][1];
+            break;
+        }
+    }
+
+    key = Key_GetBinding(command);
+    if (!*key)
+        return false;
+
+    // the K_* names are already upper case; a plain ascii key is not
+    Q_strlcpy(out, key, outsize);
+    for (i = 0; out[i]; i++)
+        out[i] = Q_toupper(out[i]);
+
+    return true;
+}
+
+/*
+==============
+SCR_ExpandBinds
+
+The rerelease prefixes some center prints with one or more
+"%bind:<command>:<purpose>%" groups - a prompt naming the key the player
+should press. The game library has already turned the purpose into display
+text; only the client knows the binding, so the key goes in here.
+
+The groups are stripped off the front and re-emitted underneath the message as
+"[KEY] purpose", which is where the rerelease HUD draws them. An unbound
+command keeps its purpose line without a key rather than losing the hint.
+==============
+*/
+static void SCR_ExpandBinds(const char *in, char *out, size_t outsize)
+{
+    char    hints[MAX_STRING_CHARS];
+    size_t  n = 0;
+
+    hints[0] = 0;
+
+    while (!strncmp(in, "%bind:", 6)) {
+        const char  *body = in + 6;
+        const char  *end = strchr(body, '%');
+        const char  *colon, *purpose;
+        char        command[64], key[32], one[MAX_STRING_CHARS];
+        bool        bound;
+        size_t      len;
+
+        if (!end)
+            break;
+
+        colon = memchr(body, ':', end - body);
+        len = (colon ? colon : end) - body;
+        if (len >= sizeof(command))
+            len = sizeof(command) - 1;
+        memcpy(command, body, len);
+        command[len] = 0;
+
+        purpose = colon ? colon + 1 : end;
+        bound = SCR_KeyForCommand(command, key, sizeof(key));
+
+        one[0] = 0;
+        if (bound && purpose < end)
+            Q_snprintf(one, sizeof(one), "\n[%s] %.*s", key, (int)(end - purpose), purpose);
+        else if (bound)
+            Q_snprintf(one, sizeof(one), "\nPress [%s]", key);
+        else if (purpose < end)
+            Q_snprintf(one, sizeof(one), "\n%.*s", (int)(end - purpose), purpose);
+
+        if (one[0] && n < sizeof(hints) - 1)
+            n += Q_strlcpy(hints + n, one, sizeof(hints) - n);
+        if (n >= sizeof(hints))
+            n = sizeof(hints) - 1;
+
+        in = end + 1;
+    }
+
+    Q_strlcpy(out, in, outsize);
+    if (hints[0]) {
+        Q_strlcat(out, "\n", outsize);      // blank line between text and hints
+        Q_strlcat(out, hints, outsize);
+    }
+}
+
+/*
+==============
 SCR_CenterPrint
 
 Called for important messages that should stay in the center of the screen
@@ -357,7 +461,11 @@ for a few moments
 */
 void SCR_CenterPrint(const char *str)
 {
+    char        expanded[MAX_STRING_CHARS];
     const char  *s;
+
+    SCR_ExpandBinds(str, expanded, sizeof(expanded));
+    str = expanded;
 
     scr_centertime_start = cls.realtime;
     if (!strcmp(scr_centerstring, str)) {

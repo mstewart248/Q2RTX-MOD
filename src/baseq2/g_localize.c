@@ -214,6 +214,105 @@ void L10N_Shutdown(void)
 
 /*
 =================
+L10N_Find
+
+Table lookup by an unterminated key of `len` characters, so a key embedded in
+a larger string can be looked up without copying it out first.
+=================
+*/
+static void L10N_Humanize(const char *key, char *out, size_t outsize);
+
+static const char *L10N_Find(const char *key, size_t len)
+{
+    int i;
+
+    for (i = 0; i < l10n_count; i++) {
+        if (!Q_strncasecmp(l10n_entries[i].key, key, len) && !l10n_entries[i].key[len])
+            return l10n_entries[i].value;
+    }
+
+    return NULL;
+}
+
+static void L10N_Append(char *dst, size_t dstsize, size_t *len, const char *src, size_t n)
+{
+    if (*len + n >= dstsize)
+        n = (*len + 1 < dstsize) ? dstsize - 1 - *len : 0;
+    memcpy(dst + *len, src, n);
+    *len += n;
+    dst[*len] = 0;
+}
+
+/*
+=================
+L10N_ExpandBinds
+
+A handful of strings open with one or more "%bind:<command>:<purpose>%" groups
+- a prompt naming the key the player should press. The purpose is itself a
+localized key ("%bind:+movedown:$m_crouch%Crouch here."), and the table only
+exists here in the game library, so it is resolved now. The group itself is
+left in place for the client, which is the only side that knows what the
+command is bound to.
+
+Only the leading groups are looked at, matching the rerelease, and only a
+purpose written as $key is touched - so the "{$}" placeholder the bot chat
+lines use is never mistaken for one.
+=================
+*/
+static void L10N_ExpandBinds(char *buf, size_t bufsize)
+{
+    char        work[MAX_STRING_CHARS];
+    char        human[MAX_QPATH];
+    const char  *p = buf;
+    size_t      w = 0;
+    bool        changed = false;
+
+    work[0] = 0;
+
+    while (!strncmp(p, "%bind:", 6)) {
+        const char  *body = p + 6;
+        const char  *end = strchr(body, '%');
+        const char  *colon, *text = NULL;
+
+        if (!end)
+            break;
+
+        colon = memchr(body, ':', end - body);
+        if (colon && colon[1] == '$') {
+            size_t klen = end - (colon + 2);
+
+            text = L10N_Find(colon + 2, klen);
+            if (!text && klen && klen < sizeof(human)) {
+                // no entry - read the key back as English, as L10N_Resolve does
+                memcpy(human, colon + 2, klen);
+                human[klen] = 0;
+                L10N_Humanize(human, human, sizeof(human));
+                text = human;
+            }
+        }
+
+        if (text) {
+            // everything through the ':' that opens the purpose
+            L10N_Append(work, sizeof(work), &w, p, colon + 1 - p);
+            L10N_Append(work, sizeof(work), &w, text, strlen(text));
+            changed = true;
+        } else {
+            L10N_Append(work, sizeof(work), &w, p, end - p);
+        }
+
+        L10N_Append(work, sizeof(work), &w, "%", 1);
+        p = end + 1;
+    }
+
+    if (!changed)
+        return;
+
+    L10N_Append(work, sizeof(work), &w, p, strlen(p));
+    Q_strlcpy(buf, work, bufsize);
+}
+
+/*
+=================
 L10N_Format
 
 Some localized strings carry a "{}" placeholder for a runtime value - the
@@ -293,7 +392,9 @@ static void L10N_Humanize(const char *key, char *out, size_t outsize)
         }
     }
 
-    Q_strlcpy(out, s, outsize);
+    // `out` may be `key` - the copy only ever moves characters down
+    memmove(out, s, min(strlen(s) + 1, outsize));
+    out[outsize - 1] = 0;
 
     // trailing "_<digits>" is a disambiguator, not part of the sentence
     n = strlen(out);
@@ -326,19 +427,18 @@ text into `out` and return it; otherwise return `value` unchanged.
 */
 const char *L10N_Resolve(const char *value, char *out, size_t outsize)
 {
-    const char *key;
-    int i;
+    const char *key, *text;
 
     if (!value || value[0] != '$' || !value[1])
         return value;
 
     key = value + 1;
 
-    for (i = 0; i < l10n_count; i++) {
-        if (!Q_stricmp(l10n_entries[i].key, key)) {
-            Q_strlcpy(out, l10n_entries[i].value, outsize);
-            return out;
-        }
+    text = L10N_Find(key, strlen(key));
+    if (text) {
+        Q_strlcpy(out, text, outsize);
+        L10N_ExpandBinds(out, outsize);
+        return out;
     }
 
     L10N_Humanize(key, out, outsize);

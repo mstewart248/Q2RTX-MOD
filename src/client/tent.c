@@ -41,6 +41,7 @@ qhandle_t   cl_sfx_disrexp;
 qhandle_t   cl_mod_explode;
 qhandle_t   cl_mod_smoke;
 qhandle_t   cl_mod_flash;
+qhandle_t   cl_mod_muzzleflash;
 qhandle_t   cl_mod_parasite_segment;
 qhandle_t   cl_mod_grapple_cable;
 qhandle_t   cl_mod_explo4;
@@ -103,6 +104,11 @@ void CL_RegisterTEntModels(void)
     cl_mod_explode = R_RegisterModel("models/objects/explode/tris.md2");
     cl_mod_smoke = R_RegisterModel("models/objects/smoke/tris.md2");
     cl_mod_flash = R_RegisterModel("models/objects/flash/tris.md2");
+    // The rerelease muzzle flash is a 12-point STARBURST fan, not the ball that
+    // models/objects/flash is. The geometry is identical across every weapon's
+    // flash/ model (19 verts, 48 tris) - only the skin differs - so one of them
+    // serves as the generic flash for monsters and other players.
+    cl_mod_muzzleflash = R_RegisterModel("models/weapons/v_machn/flash/tris.md2");
     cl_mod_parasite_segment = R_RegisterModel("models/monsters/parasite/segment/tris.md2");
     cl_mod_grapple_cable = R_RegisterModel("models/ctf/segment/tris.md2");
     cl_mod_explo4 = R_RegisterModel("models/objects/r_explode/tris.md2");
@@ -225,6 +231,67 @@ void CL_SmokeAndFlash(const vec3_t origin)
     ex->frames = 2;
     ex->start = cl.servertime - CL_FRAMETIME;
     ex->ent.model = cl_mod_flash;
+}
+
+/*
+=================
+CL_MuzzleFlashModel
+
+Rerelease muzzle flashes: a short-lived starburst model at the muzzle, instead of
+(well, as well as) the bare dynamic light the classic game shows.
+
+`origin` is the muzzle, `angles` the firer's orientation - the flash model is
+authored facing +X about its own origin, so it just takes the shooter's angles.
+ex_mflash was already declared in the explosion enum and allocated by nothing;
+it holds for its frames and frees without the alpha fade the other types apply,
+which is exactly the behaviour a muzzle flash wants.
+
+Gated on cl_muzzleflash_models so it can be turned off.
+=================
+*/
+void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, float scale)
+{
+    explosion_t *ex;
+
+    if (!cl_muzzleflash_models->integer)
+        return;
+
+    if (!cl_mod_muzzleflash)
+        return;
+
+    ex = CL_AllocExplosion();
+
+    // Lift the flash off the muzzle POINT. The model's middle vertex sits at its
+    // own origin, so centring it exactly on the muzzle buries that middle inside
+    // the barrel and the gun occludes it - which is the dark diamond that shows
+    // in the centre of the star. A couple of units along the barrel clears it.
+    {
+        vec3_t forward, muzzle;
+
+        AngleVectors(angles, forward, NULL, NULL);
+        VectorMA(origin, 3.0f, forward, muzzle);
+        VectorCopy(muzzle, ex->ent.origin);
+        VectorCopy(muzzle, ex->ent.oldorigin);
+    }
+    VectorCopy(angles, ex->ent.angles);
+    // Spin each flash a random amount about the barrel axis. The model is a
+    // starburst fan facing +X, so roll changes how it reads without moving it
+    // off the muzzle - otherwise every shot in a burst is the identical star
+    // and it looks like a static decal stuck to the gun.
+    ex->ent.angles[ROLL] = frand() * 360.0f;
+    ex->type = ex_mflash;
+    ex->ent.model = cl_mod_muzzleflash;
+    ex->ent.flags = RF_FULLBRIGHT | RF_NOSHADOW | RF_TRANSLUCENT;
+    // The effects shader does emission.a *= entity alpha, then multiplies the
+    // colour by that alpha - so this dims the flash without altering the shape
+    // of its falloff, letting the texture's own taper show instead of clipping.
+    ex->ent.alpha = Cvar_ClampValue(cl_muzzleflash_brightness, 0.01f, 1.0f);
+    ex->ent.scale = scale * Cvar_ClampValue(cl_muzzleflash_scale, 0.1f, 20.0f);
+    // a muzzle flash is gone almost immediately - two frames reads as a flicker
+    ex->frames = 2;
+    ex->start = cl.servertime - CL_FRAMETIME;
+    ex->baseframe = 0;
+    ex->light = 0;      // the callers already add their own dlight
 }
 
 #define LENGTH(a) ((sizeof (a)) / (sizeof(*(a))))
@@ -421,7 +488,20 @@ static void CL_AddExplosions(void)
                        ex->lightcolor[0], ex->lightcolor[1], ex->lightcolor[2]);
 		}
 
-        if (ex->type != ex_light) {
+        if (ex->type == ex_mflash) {
+            VectorCopy(ent->origin, ent->oldorigin);
+
+            // The flash models are a single frame. The generic advance below
+            // would ask for frame baseframe+f+1 and oldframe baseframe+f, and
+            // any attempt to keep the former in range drives the latter
+            // NEGATIVE - which reads garbage vertices and speckles the screen
+            // with coloured blocks. There is nothing to interpolate here.
+            ent->frame = 0;
+            ent->oldframe = 0;
+            ent->backlerp = 0.0f;
+
+            V_AddEntity(ent);
+        } else if (ex->type != ex_light) {
             VectorCopy(ent->origin, ent->oldorigin);
 
             if (f < 0)

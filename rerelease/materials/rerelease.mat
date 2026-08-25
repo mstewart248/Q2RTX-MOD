@@ -24509,3 +24509,18 @@ textures/zor_temp/zlight:
 	metalness_factor 0
 
 # --- END materialdev_export.py generated block ---
+
+# Rerelease muzzle flash. The star shape is in the skin ALPHA (only ~19% of the
+# texture is opaque). The model is classified MCLASS_FLASH by get_model_class(), so
+# it is drawn by the effects/explosion hit shader, which samples base_texture and
+# does emission.a *= alpha; rgb *= a - soft PER-TEXEL alpha, bright core fading at
+# the edges. Deliberately NO texture_mask: that path is a hard binary cutout and
+# renders a flat opaque star. Brightness there comes from prev_adapted_luminance,
+# not from emissive_factor.
+models/weapons/v_machn/flash/skin:
+	texture_base models/weapons/v_machn/flash/skin.tga
+	texture_emissive models/weapons/v_machn/flash/skin_glow.tga
+	texture_mask models/weapons/v_machn/flash/skin_mask.tga
+	emissive_factor 3
+	base_factor 1
+	metalness_factor 0

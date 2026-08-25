@@ -123,8 +123,13 @@ void AL_Update(void);
 void AL_RawSamples(int samples, int rate, int width, int channels, byte *data, float volume);
 void AL_UnqueueRawSamples(void);
 
+/* seconds of queued-but-unheard streamed audio (needed for cinematic A/V sync) */
+double AL_GetStreamLatency(void);
+
 /* number of buffers in flight (needed for ogg) */
 extern int active_buffers;
+extern int s_stream_starts;
+extern int s_stream_min_buffers;
 #endif
 
 //====================================================================

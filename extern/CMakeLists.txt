@@ -88,6 +88,81 @@ add_library(tinyobjloader INTERFACE)
 target_include_directories(tinyobjloader INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tinyobjloader-c)
 
 #
+# Ogg / Vorbis / Theora - the rerelease cutscenes (1080p30 Theora + Vorbis .ogv)
+#
+# The targets are declared by hand instead of add_subdirectory() for three
+# reasons: libtheora ships no CMakeLists at all (autotools + SCons only),
+# libvorbis does find_package(Ogg REQUIRED) which cannot resolve in a
+# subdirectory build, and we only want the decoders - no encoders, no installs,
+# no exports. The source lists come from each project's lib/Makefile.am.
+#
+if (IS_64_BIT)
+    # libogg. Only generated header is ogg/config_types.h; every platform we
+    # build for has stdint.h, so the sized types come from there.
+    set(INCLUDE_INTTYPES_H 0)
+    set(INCLUDE_STDINT_H 1)
+    set(INCLUDE_SYS_TYPES_H 0)
+    set(SIZE16 "int16_t")
+    set(USIZE16 "uint16_t")
+    set(SIZE32 "int32_t")
+    set(USIZE32 "uint32_t")
+    set(SIZE64 "int64_t")
+    set(USIZE64 "uint64_t")
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/ogg/include/ogg/config_types.h.in
+        ${CMAKE_CURRENT_BINARY_DIR}/ogg_include/ogg/config_types.h)
+
+    add_library(ogg STATIC
+        ogg/src/bitwise.c
+        ogg/src/framing.c)
+    target_include_directories(ogg PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/ogg/include
+        ${CMAKE_CURRENT_BINARY_DIR}/ogg_include)
+    set_target_properties(ogg PROPERTIES FOLDER extern)
+
+    # libvorbis. Full codec minus vorbisfile/vorbisenc: the .ogv demux is ours,
+    # so the stdio and encoder wrappers are dead weight.
+    add_library(vorbis STATIC
+        vorbis/lib/mdct.c       vorbis/lib/smallft.c    vorbis/lib/block.c
+        vorbis/lib/envelope.c   vorbis/lib/window.c     vorbis/lib/lsp.c
+        vorbis/lib/lpc.c        vorbis/lib/analysis.c   vorbis/lib/synthesis.c
+        vorbis/lib/psy.c        vorbis/lib/info.c       vorbis/lib/floor1.c
+        vorbis/lib/floor0.c     vorbis/lib/res0.c       vorbis/lib/mapping0.c
+        vorbis/lib/registry.c   vorbis/lib/codebook.c   vorbis/lib/sharedbook.c
+        vorbis/lib/lookup.c     vorbis/lib/bitrate.c)
+    target_include_directories(vorbis
+        PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/vorbis/include
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vorbis/lib)
+    target_link_libraries(vorbis PUBLIC ogg)
+    set_target_properties(vorbis PROPERTIES FOLDER extern)
+
+    # libtheoradec. decoder_sources from lib/Makefile.am, pure C: the x86 SIMD
+    # is GCC inline asm and the x86_vc/ variant is 32-bit __asm, neither of
+    # which MSVC accepts on x64, so OC_X86_ASM stays undefined. HAVE_CONFIG_H
+    # is likewise left undefined - it is the only thing that pulls config.h.
+    add_library(theoradec STATIC
+        theora/lib/apiwrapper.c     theora/lib/bitpack.c
+        theora/lib/decapiwrapper.c  theora/lib/decinfo.c
+        theora/lib/decode.c         theora/lib/dequant.c
+        theora/lib/fragment.c       theora/lib/huffdec.c
+        theora/lib/idct.c           theora/lib/info.c
+        theora/lib/internal.c       theora/lib/quant.c
+        theora/lib/state.c)
+    target_include_directories(theoradec
+        PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/theora/include
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/theora/lib)
+    target_link_libraries(theoradec PUBLIC ogg)
+    set_target_properties(theoradec PROPERTIES FOLDER extern)
+
+    if (MSVC)
+        # these are third party sources; do not fail our build on their warnings
+        target_compile_options(ogg       PRIVATE /wd4244 /wd4267)
+        target_compile_options(vorbis    PRIVATE /wd4244 /wd4267 /wd4305 /wd4996)
+        target_compile_options(theoradec PRIVATE /wd4244 /wd4267 /wd4305)
+    endif()
+endif()
+
+#
 # openal-soft (64-bit only, not needed for the 32-bit server)
 #
 
