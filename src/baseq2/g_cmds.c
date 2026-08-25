@@ -349,6 +349,50 @@ void Cmd_Noclip_f(edict_t *ent)
 
 /*
 ==================
+Cmd_SetPos_f
+
+argv(0) setpos, argv(1..3) x y z
+
+Testing aid, same family as spawnmonster: drop the player at a named spot so a
+specific piece of level geometry can be reached without playing up to it.
+==================
+*/
+void Cmd_SetPos_f(edict_t *ent)
+{
+    vec3_t  origin;
+    int     i;
+
+    if ((deathmatch->value || coop->value) && !sv_cheats->value) {
+        gi.cprintf(ent, PRINT_HIGH, "You must run the server with '+set cheats 1' to enable this command.\n");
+        return;
+    }
+
+    if (gi.argc() < 4) {
+        gi.cprintf(ent, PRINT_HIGH, "usage: setpos <x> <y> <z>\n");
+        return;
+    }
+
+    for (i = 0; i < 3; i++)
+        origin[i] = atof(gi.argv(i + 1));
+
+    VectorCopy(origin, ent->s.origin);
+    VectorClear(ent->velocity);
+    ent->s.origin[2] += 1;
+
+    // stop the client predicting its way back to where it was
+    ent->client->ps.pmove.origin[0] = origin[0] * 8;
+    ent->client->ps.pmove.origin[1] = origin[1] * 8;
+    ent->client->ps.pmove.origin[2] = origin[2] * 8;
+    ent->client->ps.pmove.pm_flags |= PMF_TIME_TELEPORT;
+    ent->client->ps.pmove.pm_time = 14;
+
+    gi.linkentity(ent);
+    gi.cprintf(ent, PRINT_HIGH, "setpos %.0f %.0f %.0f\n", origin[0], origin[1], origin[2]);
+}
+
+
+/*
+==================
 Cmd_SpawnMonster_f
 
 argv(0) spawnmonster, argv(1) classname
@@ -365,22 +409,36 @@ void Cmd_SpawnMonster_f(edict_t *ent)
     trace_t     tr;
     edict_t     *monster;
     const char  *classname;
+    float       dist;
 
     if ((deathmatch->value || coop->value) && !sv_cheats->value) {
         gi.cprintf(ent, PRINT_HIGH, "You must run the server with '+set cheats 1' to enable this command.\n");
         return;
     }
 
-    classname = gi.args();
+    classname = gi.argv(1);
     if (!classname || !*classname || strncmp(classname, "monster_", 8)) {
-        gi.cprintf(ent, PRINT_HIGH, "usage: spawnmonster <monster_classname>\n");
+        gi.cprintf(ent, PRINT_HIGH, "usage: spawnmonster <monster_classname> [distance]\n");
         return;
+    }
+
+    // Optional distance.  The default 256 is close enough that several
+    // rerelease behaviours can never trigger from a spawned monster - the
+    // infantry run-and-gun needs 330+ - which makes them untestable without
+    // walking to a real one.
+    dist = 256.0f;
+    if (gi.argc() > 2) {
+        dist = atof(gi.argv(2));
+        if (dist < 64.0f)
+            dist = 64.0f;
+        else if (dist > 2000.0f)
+            dist = 2000.0f;
     }
 
     AngleVectors(ent->client->v_angle, forward, NULL, NULL);
     forward[2] = 0;
     VectorNormalize(forward);
-    VectorMA(ent->s.origin, 256, forward, spot);
+    VectorMA(ent->s.origin, dist, forward, spot);
 
     // do not drop one inside a wall
     tr = gi.trace(ent->s.origin, NULL, NULL, spot, ent, MASK_SOLID);
@@ -964,6 +1022,8 @@ void ClientCommand(edict_t *ent)
         Cmd_Notarget_f(ent);
     else if (Q_stricmp(cmd, "noclip") == 0)
         Cmd_Noclip_f(ent);
+    else if (Q_stricmp(cmd, "setpos") == 0)
+        Cmd_SetPos_f(ent);
     else if (Q_stricmp(cmd, "spawnmonster") == 0)
         Cmd_SpawnMonster_f(ent);
     else if (Q_stricmp(cmd, "inven") == 0)

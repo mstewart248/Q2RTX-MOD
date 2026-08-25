@@ -495,4 +495,58 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FRAME_death609          473
 #define FRAME_death610          474
 
+// Frames the rerelease APPENDED to the soldier model.  The classic baseq2
+// tris.md2 stops at 475, so these are only valid behind M_RereleaseAnims().
+// Indices verified against src/rerelease/m_soldier.h.
+// stand201-240: the rerelease's second idle.
+#define FRAME_stand201          527
+#define FRAME_stand202          528
+#define FRAME_stand203          529
+#define FRAME_stand204          530
+#define FRAME_stand205          531
+#define FRAME_stand206          532
+#define FRAME_stand207          533
+#define FRAME_stand208          534
+#define FRAME_stand209          535
+#define FRAME_stand210          536
+#define FRAME_stand211          537
+#define FRAME_stand212          538
+#define FRAME_stand213          539
+#define FRAME_stand214          540
+#define FRAME_stand215          541
+#define FRAME_stand216          542
+#define FRAME_stand217          543
+#define FRAME_stand218          544
+#define FRAME_stand219          545
+#define FRAME_stand220          546
+#define FRAME_stand221          547
+#define FRAME_stand222          548
+#define FRAME_stand223          549
+#define FRAME_stand224          550
+#define FRAME_stand225          551
+#define FRAME_stand226          552
+#define FRAME_stand227          553
+#define FRAME_stand228          554
+#define FRAME_stand229          555
+#define FRAME_stand230          556
+#define FRAME_stand231          557
+#define FRAME_stand232          558
+#define FRAME_stand233          559
+#define FRAME_stand234          560
+#define FRAME_stand235          561
+#define FRAME_stand236          562
+#define FRAME_stand237          563
+#define FRAME_stand238          564
+#define FRAME_stand239          565
+#define FRAME_stand240          566
+
+#define FRAME_attak501          567
+#define FRAME_attak502          568
+#define FRAME_attak503          569
+#define FRAME_attak504          570
+#define FRAME_attak505          571
+#define FRAME_attak506          572
+#define FRAME_attak507          573
+#define FRAME_attak508          574
+
 #define MODEL_SCALE     1.200000

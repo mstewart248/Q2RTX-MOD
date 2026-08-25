@@ -595,6 +595,100 @@ End Death Stuff
 
 /*QUAKED monster_parasite (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
 */
+
+/*
+=================
+parasite jumps - the rerelease/ROGUE blocked system
+
+monsterinfo.blocked is called from SV_NewChaseDir when the parasite has run out
+of step directions.  jump_up hops onto a ledge, jump_down drops off one, and
+blocked_checkplat rides func_plats.  All of this runs on the APPENDED jump
+frames, so blocked_checkjump refuses unless M_RereleaseAnims() is on.
+=================
+*/
+#define SPAWNFLAG_PARASITE_NOJUMPING   8
+
+static void parasite_jump_down(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 100, forward, self->velocity);
+    VectorMA(self->velocity, 300, up, self->velocity);
+}
+
+static void parasite_jump_up(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 200, forward, self->velocity);
+    VectorMA(self->velocity, 450, up, self->velocity);
+}
+
+static void parasite_jump_wait_land(edict_t *self)
+{
+    if (self->groundentity == NULL) {
+        self->monsterinfo.nextframe = self->s.frame;
+
+        if (monster_jump_finished(self))
+            self->monsterinfo.nextframe = self->s.frame + 1;
+    } else {
+        self->monsterinfo.nextframe = self->s.frame + 1;
+    }
+}
+
+mframe_t parasite_frames_jump_up [] = {
+    { ai_move, -8, NULL },
+    { ai_move, -8, NULL },
+    { ai_move, -8, NULL },
+    { ai_move, -8, parasite_jump_up },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, parasite_jump_wait_land },
+    { ai_move, 0, NULL },
+};
+mmove_t parasite_move_jump_up = {FRAME_jump01, FRAME_jump08, parasite_frames_jump_up, parasite_run};
+
+mframe_t parasite_frames_jump_down [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, parasite_jump_down },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, parasite_jump_wait_land },
+    { ai_move, 0, NULL },
+};
+mmove_t parasite_move_jump_down = {FRAME_jump01, FRAME_jump08, parasite_frames_jump_down, parasite_run};
+
+void parasite_jump_updown(edict_t *self, blocked_jump_result_t result)
+{
+    if (!self->enemy)
+        return;
+
+    if (result == JUMP_JUMP_UP)
+        self->monsterinfo.currentmove = &parasite_move_jump_up;
+    else
+        self->monsterinfo.currentmove = &parasite_move_jump_down;
+}
+
+bool parasite_blocked(edict_t *self, float dist)
+{
+    blocked_jump_result_t result = blocked_checkjump(self, dist);
+
+    if (result != NO_JUMP) {
+        if (result != JUMP_TURN)
+            parasite_jump_updown(self, result);
+        return true;
+    }
+
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 void SP_monster_parasite(edict_t *self)
 {
     if (deathmatch->value) {
@@ -638,6 +732,16 @@ void SP_monster_parasite(edict_t *self)
 
     self->monsterinfo.currentmove = &parasite_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // ROGUE/rerelease: let the parasite jump ledges and ride plats.  The jump
+    // animations only exist on the rerelease model, so blocked_checkjump
+    // gates itself on M_RereleaseAnims(); the plat half needs no frames.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.blocked = parasite_blocked;
+        self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_PARASITE_NOJUMPING);
+        self->monsterinfo.drop_height = 256;
+        self->monsterinfo.jump_height = 68;
+    }
 
     walkmonster_start(self);
 }

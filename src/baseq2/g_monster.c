@@ -688,6 +688,50 @@ When a monster dies, it fires all of its targets with the current
 enemy as activator.
 ================
 */
+/*
+=================
+M_RereleaseAnims
+
+Whether the monster animation frames that the rerelease APPENDED to its models
+are safe to play.  The classic baseq2 tris.md2 stops short of them (infantry 207
+vs 264, soldier 475 vs 575, gunner 209 vs 799), and an out-of-range frame is
+clamped to 0 by the renderer, so a monster driven onto those frames with the
+classic model just freezes in its default pose.
+
+The frames exist only in the rerelease models, so gate on the client's
+cl_md5_models.  This is approximate by nature - it is a client rendering choice
+being read by server-side game code - so a dedicated server, where each client
+could answer differently and no refresh has registered the cvar at all, always
+says no.
+=================
+*/
+/*
+=================
+M_RereleaseGame
+
+True when we are running as the rerelease mod rather than plain baseq2.  Unlike
+M_RereleaseAnims() this is not about which models are loaded - it gates
+behavioural changes that would alter how the ORIGINAL game plays.
+=================
+*/
+bool M_RereleaseGame(void)
+{
+    static cvar_t *gamedir;
+
+    if (!gamedir)
+        gamedir = gi.cvar("game", "", CVAR_LATCH | CVAR_SERVERINFO);
+
+    return gamedir && !Q_stricmp(gamedir->string, "rerelease");
+}
+
+bool M_RereleaseAnims(void)
+{
+    if (dedicated && dedicated->value)
+        return false;
+
+    return cl_md5_models && cl_md5_models->value != 0;
+}
+
 void monster_death_use(edict_t *self)
 {
     self->flags &= ~(FL_FLY | FL_SWIM);

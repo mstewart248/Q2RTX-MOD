@@ -1076,6 +1076,24 @@ enum {
     MZ2_WIDOW2_BEAM_SWEEP_9, MZ2_WIDOW2_BEAM_SWEEP_10,
     MZ2_WIDOW2_BEAM_SWEEP_11,
 //ROGUE
+
+    // Rerelease: the soldier's PRONE muzzle flashes (soldier_move_attack5).
+    // Appended at the end on purpose - these indices go over the wire and are
+    // used to index monster_flash_offset[], so nothing may be inserted mid-list.
+    MZ2_SOLDIER_BLASTER_9, MZ2_SOLDIER_SHOTGUN_9, MZ2_SOLDIER_MACHINEGUN_9,
+
+    // Rerelease: the infantry's run-and-gun flashes.  14-21 are one per frame of
+    // run201-208 (infantry_move_attack4); 22 is the attak416 shot.
+    MZ2_INFANTRY_MACHINEGUN_14, MZ2_INFANTRY_MACHINEGUN_15,
+    MZ2_INFANTRY_MACHINEGUN_16, MZ2_INFANTRY_MACHINEGUN_17,
+    MZ2_INFANTRY_MACHINEGUN_18, MZ2_INFANTRY_MACHINEGUN_19,
+    MZ2_INFANTRY_MACHINEGUN_20, MZ2_INFANTRY_MACHINEGUN_21,
+    MZ2_INFANTRY_MACHINEGUN_22,
+
+    // Rerelease: the gunner's second, front-on grenade throw
+    // (gunner_move_attack_grenade2, on the appended attak305-324 frames).
+    MZ2_GUNNER_GRENADE2_1, MZ2_GUNNER_GRENADE2_2,
+    MZ2_GUNNER_GRENADE2_3, MZ2_GUNNER_GRENADE2_4,
 };
 
 extern const vec3_t monster_flash_offset[256];

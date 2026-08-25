@@ -8,7 +8,8 @@ pointers = [
     'moveinfo_endfunc', 'monsterinfo_currentmove', 'monsterinfo_stand',
     'monsterinfo_idle', 'monsterinfo_search', 'monsterinfo_walk',
     'monsterinfo_run', 'monsterinfo_dodge', 'monsterinfo_attack',
-    'monsterinfo_melee', 'monsterinfo_sight', 'monsterinfo_checkattack'
+    'monsterinfo_melee', 'monsterinfo_sight', 'monsterinfo_checkattack',
+    'monsterinfo_blocked'
 ]
 
 if __name__ == "__main__":

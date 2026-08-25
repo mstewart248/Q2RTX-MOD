@@ -421,6 +421,16 @@ void CL_MuzzleFlash2(void)
     case MZ2_INFANTRY_MACHINEGUN_11:
     case MZ2_INFANTRY_MACHINEGUN_12:
     case MZ2_INFANTRY_MACHINEGUN_13:
+    // rerelease: 14-21 are the run-and-gun frames, 22 is the attak416 shot
+    case MZ2_INFANTRY_MACHINEGUN_14:
+    case MZ2_INFANTRY_MACHINEGUN_15:
+    case MZ2_INFANTRY_MACHINEGUN_16:
+    case MZ2_INFANTRY_MACHINEGUN_17:
+    case MZ2_INFANTRY_MACHINEGUN_18:
+    case MZ2_INFANTRY_MACHINEGUN_19:
+    case MZ2_INFANTRY_MACHINEGUN_20:
+    case MZ2_INFANTRY_MACHINEGUN_21:
+    case MZ2_INFANTRY_MACHINEGUN_22:
         VectorSet(dl->color, 1, 1, 0);
         CL_ParticleEffect(origin, forward, 0, 40);
         CL_SmokeAndFlash(origin);
@@ -435,6 +445,7 @@ void CL_MuzzleFlash2(void)
     case MZ2_SOLDIER_MACHINEGUN_6:
     case MZ2_SOLDIER_MACHINEGUN_7:
     case MZ2_SOLDIER_MACHINEGUN_8:
+    case MZ2_SOLDIER_MACHINEGUN_9:   // rerelease prone shot
         VectorSet(dl->color, 1, 1, 0);
         CL_ParticleEffect(origin, forward, 0, 40);
         CL_SmokeAndFlash(origin);
@@ -490,6 +501,7 @@ void CL_MuzzleFlash2(void)
     case MZ2_SOLDIER_BLASTER_6:
     case MZ2_SOLDIER_BLASTER_7:
     case MZ2_SOLDIER_BLASTER_8:
+    case MZ2_SOLDIER_BLASTER_9:   // rerelease prone shot
     case MZ2_TURRET_BLASTER:
         VectorSet(dl->color, 1, 1, 0);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("soldier/solatck2.wav"), 1, ATTN_NORM, 0);
@@ -524,6 +536,7 @@ void CL_MuzzleFlash2(void)
     case MZ2_SOLDIER_SHOTGUN_6:
     case MZ2_SOLDIER_SHOTGUN_7:
     case MZ2_SOLDIER_SHOTGUN_8:
+    case MZ2_SOLDIER_SHOTGUN_9:   // rerelease prone shot
         VectorSet(dl->color, 1, 1, 0);
         CL_SmokeAndFlash(origin);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("soldier/solatck1.wav"), 1, ATTN_NORM, 0);
@@ -594,6 +607,10 @@ void CL_MuzzleFlash2(void)
     case MZ2_GUNNER_GRENADE_2:
     case MZ2_GUNNER_GRENADE_3:
     case MZ2_GUNNER_GRENADE_4:
+    case MZ2_GUNNER_GRENADE2_1:
+    case MZ2_GUNNER_GRENADE2_2:
+    case MZ2_GUNNER_GRENADE2_3:
+    case MZ2_GUNNER_GRENADE2_4:
         VectorSet(dl->color, 1, 0.5f, 0);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("gunner/gunatck3.wav"), 1, ATTN_NORM, 0);
         break;

@@ -21,7 +21,8 @@ typedef enum {
     P_monsterinfo_attack,
     P_monsterinfo_melee,
     P_monsterinfo_sight,
-    P_monsterinfo_checkattack
+    P_monsterinfo_checkattack,
+    P_monsterinfo_blocked
 } ptr_type_t;
 
 typedef struct {

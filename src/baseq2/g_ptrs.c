@@ -15,15 +15,21 @@ extern int berserk_move_attack_club;
 extern int berserk_move_attack_spike;
 extern int berserk_move_death1;
 extern int berserk_move_death2;
+extern int berserk_move_duck2;
+extern int berserk_move_jump2;
+extern int berserk_move_jump;
 extern int berserk_move_pain1;
 extern int berserk_move_pain2;
 extern int berserk_move_run1;
+extern int berserk_move_run_attack1;
 extern int berserk_move_stand;
 extern int berserk_move_stand_fidget;
 extern int berserk_move_walk;
+extern int boss2_move_attack_hb;
 extern int boss2_move_attack_mg;
 extern int boss2_move_attack_post_mg;
 extern int boss2_move_attack_pre_mg;
+extern int boss2_move_attack_rocket2;
 extern int boss2_move_attack_rocket;
 extern int boss2_move_death;
 extern int boss2_move_pain_heavy;
@@ -33,6 +39,8 @@ extern int boss2_move_stand;
 extern int boss2_move_walk;
 extern int brain_move_attack1;
 extern int brain_move_attack2;
+extern int brain_move_attack3;
+extern int brain_move_attack4;
 extern int brain_move_death1;
 extern int brain_move_death2;
 extern int brain_move_duck;
@@ -85,10 +93,13 @@ extern int flipper_move_stand;
 extern int flipper_move_start_run;
 extern int flipper_move_walk;
 extern int floater_move_attack1;
+extern int floater_move_attack1a;
 extern int floater_move_attack2;
 extern int floater_move_attack3;
+extern int floater_move_disguise;
 extern int floater_move_pain1;
 extern int floater_move_pain2;
+extern int floater_move_pop;
 extern int floater_move_run;
 extern int floater_move_stand1;
 extern int floater_move_stand2;
@@ -142,12 +153,15 @@ extern int gladiator_move_run;
 extern int gladiator_move_stand;
 extern int gladiator_move_walk;
 extern int gunner_move_attack_chain;
+extern int gunner_move_attack_grenade2;
 extern int gunner_move_attack_grenade;
 extern int gunner_move_death;
 extern int gunner_move_duck;
 extern int gunner_move_endfire_chain;
 extern int gunner_move_fidget;
 extern int gunner_move_fire_chain;
+extern int gunner_move_jump2;
+extern int gunner_move_jump;
 extern int gunner_move_pain1;
 extern int gunner_move_pain2;
 extern int gunner_move_pain3;
@@ -167,12 +181,18 @@ extern int hover_move_stand;
 extern int hover_move_start_attack;
 extern int hover_move_walk;
 extern int infantry_move_attack1;
+extern int infantry_move_attack1_classic;
 extern int infantry_move_attack2;
+extern int infantry_move_attack3;
+extern int infantry_move_attack4;
+extern int infantry_move_attack5;
 extern int infantry_move_death1;
 extern int infantry_move_death2;
 extern int infantry_move_death3;
 extern int infantry_move_duck;
 extern int infantry_move_fidget;
+extern int infantry_move_jump2;
+extern int infantry_move_jump;
 extern int infantry_move_pain1;
 extern int infantry_move_pain2;
 extern int infantry_move_run;
@@ -234,6 +254,8 @@ extern int mutant_move_death1;
 extern int mutant_move_death2;
 extern int mutant_move_idle;
 extern int mutant_move_jump;
+extern int mutant_move_jump_down;
+extern int mutant_move_jump_up;
 extern int mutant_move_pain1;
 extern int mutant_move_pain2;
 extern int mutant_move_pain3;
@@ -245,6 +267,8 @@ extern int parasite_move_death;
 extern int parasite_move_drain;
 extern int parasite_move_end_fidget;
 extern int parasite_move_fidget;
+extern int parasite_move_jump_down;
+extern int parasite_move_jump_up;
 extern int parasite_move_pain1;
 extern int parasite_move_run;
 extern int parasite_move_stand;
@@ -256,7 +280,9 @@ extern int soldier_move_attack1;
 extern int soldier_move_attack2;
 extern int soldier_move_attack3;
 extern int soldier_move_attack4;
+extern int soldier_move_attack5;
 extern int soldier_move_attack6;
+extern int soldier_move_blind;
 extern int soldier_move_death1;
 extern int soldier_move_death2;
 extern int soldier_move_death3;
@@ -270,8 +296,10 @@ extern int soldier_move_pain3;
 extern int soldier_move_pain4;
 extern int soldier_move_run;
 extern int soldier_move_stand1;
+extern int soldier_move_stand2;
 extern int soldier_move_stand3;
 extern int soldier_move_start_run;
+extern int soldier_move_trip;
 extern int soldier_move_walk1;
 extern int soldier_move_walk2;
 extern int stalker_move_death;
@@ -334,7 +362,10 @@ extern void AngleMove_Final(void);
 extern void barrel_delay(void);
 extern void barrel_explode(void);
 extern void barrel_touch(void);
+extern void berserk_attack(void);
+extern void berserk_blocked(void);
 extern void berserk_die(void);
+extern void berserk_dodge(void);
 extern void berserk_melee(void);
 extern void berserk_pain(void);
 extern void berserk_run(void);
@@ -357,6 +388,7 @@ extern void boss2_search(void);
 extern void boss2_stand(void);
 extern void boss2_walk(void);
 extern void BossExplode(void);
+extern void brain_attack(void);
 extern void brain_die(void);
 extern void brain_dodge(void);
 extern void brain_idle(void);
@@ -490,6 +522,7 @@ extern void gladiator_walk(void);
 extern void Grenade_Explode(void);
 extern void Grenade_Touch(void);
 extern void gunner_attack(void);
+extern void gunner_blocked(void);
 extern void gunner_die(void);
 extern void gunner_dodge(void);
 extern void gunner_pain(void);
@@ -512,6 +545,7 @@ extern void hurt_touch(void);
 extern void hurt_use(void);
 extern void hyper_blaster_touch(void);
 extern void infantry_attack(void);
+extern void infantry_blocked(void);
 extern void infantry_die(void);
 extern void infantry_dodge(void);
 extern void infantry_fidget(void);
@@ -590,6 +624,7 @@ extern void Move_Begin(void);
 extern void Move_Done(void);
 extern void Move_Final(void);
 extern void multi_wait(void);
+extern void mutant_blocked(void);
 extern void mutant_checkattack(void);
 extern void mutant_die(void);
 extern void mutant_idle(void);
@@ -603,6 +638,7 @@ extern void mutant_sight(void);
 extern void mutant_stand(void);
 extern void mutant_walk(void);
 extern void parasite_attack(void);
+extern void parasite_blocked(void);
 extern void parasite_die(void);
 extern void parasite_idle(void);
 extern void parasite_pain(void);
@@ -635,6 +671,7 @@ extern void rotating_use(void);
 extern void smart_water_blocked(void);
 extern void smart_water_go_up(void);
 extern void soldier_attack(void);
+extern void soldier_blind(void);
 extern void soldier_die(void);
 extern void soldier_dodge(void);
 extern void soldier_pain(void);
@@ -1071,16 +1108,22 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &berserk_move_attack_spike },
 { P_monsterinfo_currentmove, &berserk_move_death1 },
 { P_monsterinfo_currentmove, &berserk_move_death2 },
+{ P_monsterinfo_currentmove, &berserk_move_duck2 },
+{ P_monsterinfo_currentmove, &berserk_move_jump },
+{ P_monsterinfo_currentmove, &berserk_move_jump2 },
 { P_monsterinfo_currentmove, &berserk_move_pain1 },
 { P_monsterinfo_currentmove, &berserk_move_pain2 },
 { P_monsterinfo_currentmove, &berserk_move_run1 },
+{ P_monsterinfo_currentmove, &berserk_move_run_attack1 },
 { P_monsterinfo_currentmove, &berserk_move_stand },
 { P_monsterinfo_currentmove, &berserk_move_stand_fidget },
 { P_monsterinfo_currentmove, &berserk_move_walk },
+{ P_monsterinfo_currentmove, &boss2_move_attack_hb },
 { P_monsterinfo_currentmove, &boss2_move_attack_mg },
 { P_monsterinfo_currentmove, &boss2_move_attack_post_mg },
 { P_monsterinfo_currentmove, &boss2_move_attack_pre_mg },
 { P_monsterinfo_currentmove, &boss2_move_attack_rocket },
+{ P_monsterinfo_currentmove, &boss2_move_attack_rocket2 },
 { P_monsterinfo_currentmove, &boss2_move_death },
 { P_monsterinfo_currentmove, &boss2_move_pain_heavy },
 { P_monsterinfo_currentmove, &boss2_move_pain_light },
@@ -1089,6 +1132,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &boss2_move_walk },
 { P_monsterinfo_currentmove, &brain_move_attack1 },
 { P_monsterinfo_currentmove, &brain_move_attack2 },
+{ P_monsterinfo_currentmove, &brain_move_attack3 },
+{ P_monsterinfo_currentmove, &brain_move_attack4 },
 { P_monsterinfo_currentmove, &brain_move_death1 },
 { P_monsterinfo_currentmove, &brain_move_death2 },
 { P_monsterinfo_currentmove, &brain_move_duck },
@@ -1141,10 +1186,13 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &flipper_move_start_run },
 { P_monsterinfo_currentmove, &flipper_move_walk },
 { P_monsterinfo_currentmove, &floater_move_attack1 },
+{ P_monsterinfo_currentmove, &floater_move_attack1a },
 { P_monsterinfo_currentmove, &floater_move_attack2 },
 { P_monsterinfo_currentmove, &floater_move_attack3 },
+{ P_monsterinfo_currentmove, &floater_move_disguise },
 { P_monsterinfo_currentmove, &floater_move_pain1 },
 { P_monsterinfo_currentmove, &floater_move_pain2 },
+{ P_monsterinfo_currentmove, &floater_move_pop },
 { P_monsterinfo_currentmove, &floater_move_run },
 { P_monsterinfo_currentmove, &floater_move_stand1 },
 { P_monsterinfo_currentmove, &floater_move_stand2 },
@@ -1199,11 +1247,14 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &gladiator_move_walk },
 { P_monsterinfo_currentmove, &gunner_move_attack_chain },
 { P_monsterinfo_currentmove, &gunner_move_attack_grenade },
+{ P_monsterinfo_currentmove, &gunner_move_attack_grenade2 },
 { P_monsterinfo_currentmove, &gunner_move_death },
 { P_monsterinfo_currentmove, &gunner_move_duck },
 { P_monsterinfo_currentmove, &gunner_move_endfire_chain },
 { P_monsterinfo_currentmove, &gunner_move_fidget },
 { P_monsterinfo_currentmove, &gunner_move_fire_chain },
+{ P_monsterinfo_currentmove, &gunner_move_jump },
+{ P_monsterinfo_currentmove, &gunner_move_jump2 },
 { P_monsterinfo_currentmove, &gunner_move_pain1 },
 { P_monsterinfo_currentmove, &gunner_move_pain2 },
 { P_monsterinfo_currentmove, &gunner_move_pain3 },
@@ -1223,12 +1274,18 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &hover_move_start_attack },
 { P_monsterinfo_currentmove, &hover_move_walk },
 { P_monsterinfo_currentmove, &infantry_move_attack1 },
+{ P_monsterinfo_currentmove, &infantry_move_attack1_classic },
 { P_monsterinfo_currentmove, &infantry_move_attack2 },
+{ P_monsterinfo_currentmove, &infantry_move_attack3 },
+{ P_monsterinfo_currentmove, &infantry_move_attack4 },
+{ P_monsterinfo_currentmove, &infantry_move_attack5 },
 { P_monsterinfo_currentmove, &infantry_move_death1 },
 { P_monsterinfo_currentmove, &infantry_move_death2 },
 { P_monsterinfo_currentmove, &infantry_move_death3 },
 { P_monsterinfo_currentmove, &infantry_move_duck },
 { P_monsterinfo_currentmove, &infantry_move_fidget },
+{ P_monsterinfo_currentmove, &infantry_move_jump },
+{ P_monsterinfo_currentmove, &infantry_move_jump2 },
 { P_monsterinfo_currentmove, &infantry_move_pain1 },
 { P_monsterinfo_currentmove, &infantry_move_pain2 },
 { P_monsterinfo_currentmove, &infantry_move_run },
@@ -1290,6 +1347,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &mutant_move_death2 },
 { P_monsterinfo_currentmove, &mutant_move_idle },
 { P_monsterinfo_currentmove, &mutant_move_jump },
+{ P_monsterinfo_currentmove, &mutant_move_jump_down },
+{ P_monsterinfo_currentmove, &mutant_move_jump_up },
 { P_monsterinfo_currentmove, &mutant_move_pain1 },
 { P_monsterinfo_currentmove, &mutant_move_pain2 },
 { P_monsterinfo_currentmove, &mutant_move_pain3 },
@@ -1301,6 +1360,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &parasite_move_drain },
 { P_monsterinfo_currentmove, &parasite_move_end_fidget },
 { P_monsterinfo_currentmove, &parasite_move_fidget },
+{ P_monsterinfo_currentmove, &parasite_move_jump_down },
+{ P_monsterinfo_currentmove, &parasite_move_jump_up },
 { P_monsterinfo_currentmove, &parasite_move_pain1 },
 { P_monsterinfo_currentmove, &parasite_move_run },
 { P_monsterinfo_currentmove, &parasite_move_stand },
@@ -1312,7 +1373,9 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &soldier_move_attack2 },
 { P_monsterinfo_currentmove, &soldier_move_attack3 },
 { P_monsterinfo_currentmove, &soldier_move_attack4 },
+{ P_monsterinfo_currentmove, &soldier_move_attack5 },
 { P_monsterinfo_currentmove, &soldier_move_attack6 },
+{ P_monsterinfo_currentmove, &soldier_move_blind },
 { P_monsterinfo_currentmove, &soldier_move_death1 },
 { P_monsterinfo_currentmove, &soldier_move_death2 },
 { P_monsterinfo_currentmove, &soldier_move_death3 },
@@ -1326,8 +1389,10 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &soldier_move_pain4 },
 { P_monsterinfo_currentmove, &soldier_move_run },
 { P_monsterinfo_currentmove, &soldier_move_stand1 },
+{ P_monsterinfo_currentmove, &soldier_move_stand2 },
 { P_monsterinfo_currentmove, &soldier_move_stand3 },
 { P_monsterinfo_currentmove, &soldier_move_start_run },
+{ P_monsterinfo_currentmove, &soldier_move_trip },
 { P_monsterinfo_currentmove, &soldier_move_walk1 },
 { P_monsterinfo_currentmove, &soldier_move_walk2 },
 { P_monsterinfo_currentmove, &stalker_move_death },
@@ -1397,6 +1462,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_stand, medic_stand },
 { P_monsterinfo_stand, mutant_stand },
 { P_monsterinfo_stand, parasite_stand },
+{ P_monsterinfo_stand, soldier_blind },
 { P_monsterinfo_stand, soldier_stand },
 { P_monsterinfo_stand, stalker_stand },
 { P_monsterinfo_stand, supertank_stand },
@@ -1475,6 +1541,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_run, supertank_run },
 { P_monsterinfo_run, tank_run },
 { P_monsterinfo_run, turret_run },
+{ P_monsterinfo_dodge, berserk_dodge },
 { P_monsterinfo_dodge, brain_dodge },
 { P_monsterinfo_dodge, chick_dodge },
 { P_monsterinfo_dodge, gekk_dodge },
@@ -1484,7 +1551,9 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_dodge, soldier_dodge },
 { P_monsterinfo_dodge, stalker_dodge },
 { P_monsterinfo_attack, actor_attack },
+{ P_monsterinfo_attack, berserk_attack },
 { P_monsterinfo_attack, boss2_attack },
+{ P_monsterinfo_attack, brain_attack },
 { P_monsterinfo_attack, carrier_attack },
 { P_monsterinfo_attack, chick_attack },
 { P_monsterinfo_attack, floater_attack },
@@ -1543,5 +1612,10 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_checkattack, medic_checkattack },
 { P_monsterinfo_checkattack, mutant_checkattack },
 { P_monsterinfo_checkattack, turret_checkattack },
+{ P_monsterinfo_blocked, berserk_blocked },
+{ P_monsterinfo_blocked, gunner_blocked },
+{ P_monsterinfo_blocked, infantry_blocked },
+{ P_monsterinfo_blocked, mutant_blocked },
+{ P_monsterinfo_blocked, parasite_blocked },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

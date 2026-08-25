@@ -872,11 +872,26 @@ void    SelectSpawnPoint(edict_t *ent, vec3_t origin, vec3_t angles)
                 break;
         }
 
+        // No spawnpoint matched by name.  Vanilla only falls back when the
+        // requested name was EMPTY and calls gi.error otherwise - which kills
+        // the game on a perfectly good rerelease map: base2 exits with
+        // "eou1_.cin+*bunk1$start", but bunk1 only carries info_player_starts
+        // named "ware1"/"ware2" plus one unnamed.  The rerelease degrades
+        // instead (SelectSingleSpawnPoint in src/rerelease/p_client.cpp):
+        // prefer an untargeted start, then any start at all.
         if (!spot) {
-            if (!game.spawnpoint[0]) {
-                // there wasn't a spawnpoint without a target, so use any
-                spot = G_Find(spot, FOFS(classname), "info_player_start");
-            }
+            while ((spot = G_Find(spot, FOFS(classname), "info_player_start")) != NULL)
+                if (!spot->targetname)
+                    break;
+
+            if (!spot)
+                spot = G_Find(NULL, FOFS(classname), "info_player_start");
+
+            if (spot && game.spawnpoint[0])
+                gi.dprintf("Couldn't find spawn point %s, using %s instead\n",
+                           game.spawnpoint, vtos(spot->s.origin));
+
+            // only a map with no player start at all is genuinely unplayable
             if (!spot)
                 gi.error("Couldn't find spawn point %s", game.spawnpoint);
         }

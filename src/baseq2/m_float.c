@@ -51,6 +51,8 @@ void floater_idle(edict_t *self)
 void floater_dead(edict_t *self);
 void floater_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
 void floater_run(edict_t *self);
+extern mmove_t floater_move_disguise;
+extern mmove_t floater_move_pop;
 void floater_wham(edict_t *self);
 void floater_zap(edict_t *self);
 
@@ -203,11 +205,61 @@ mmove_t floater_move_stand2 = {FRAME_stand201, FRAME_stand252, floater_frames_st
 
 void floater_stand(edict_t *self)
 {
+    // a disguised floater must not stand up out of its disguise
+    if (self->monsterinfo.currentmove == &floater_move_disguise) {
+        self->monsterinfo.currentmove = &floater_move_disguise;
+        return;
+    }
+
     if (random() <= 0.5f)
         self->monsterinfo.currentmove = &floater_move_stand1;
     else
         self->monsterinfo.currentmove = &floater_move_stand2;
 }
+
+//
+// DISGUISE  (rerelease floater_move_disguise / floater_move_pop)
+//
+// With spawnflag 8 the floater sits motionless on a single frame, reading as
+// inert scenery, and only unfolds into action when it acquires a target.  All
+// of these frames already exist in the classic model, so no gating is needed.
+
+mframe_t floater_frames_disguise [] = {
+    { ai_stand, 0, NULL }
+};
+mmove_t floater_move_disguise = {FRAME_actvat01, FRAME_actvat01, floater_frames_disguise, NULL};
+
+// the unfolding.  No aifunc at all - it must not drift while it opens up.
+mframe_t floater_frames_pop [] = {
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL },
+    { NULL, 0, NULL }
+};
+mmove_t floater_move_pop = {FRAME_actvat05, FRAME_actvat31, floater_frames_pop, floater_run};
 
 mframe_t floater_frames_activate [] = {
     { ai_move,    0,  NULL },
@@ -260,6 +312,26 @@ mframe_t floater_frames_attack1 [] = {
     { ai_charge,  0,  NULL }            //                          -- LOOP Ends
 };
 mmove_t floater_move_attack1 = {FRAME_attak101, FRAME_attak114, floater_frames_attack1, floater_run};
+
+// Same animation as attack1, but advancing - the rerelease uses this one when it
+// decides to circle-strafe rather than hover in place.
+mframe_t floater_frames_attack1a [] = {
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, floater_fire_blaster },
+    { ai_charge, 10, floater_fire_blaster },
+    { ai_charge, 10, floater_fire_blaster },
+    { ai_charge, 10, floater_fire_blaster },
+    { ai_charge, 10, floater_fire_blaster },
+    { ai_charge, 10, floater_fire_blaster },
+    { ai_charge, 10, floater_fire_blaster },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL },
+    { ai_charge, 10, NULL }
+};
+mmove_t floater_move_attack1a = {FRAME_attak101, FRAME_attak114, floater_frames_attack1a, floater_run};
 
 mframe_t floater_frames_attack2 [] = {
     { ai_charge,  0,  NULL },           // Claws
@@ -498,6 +570,12 @@ mmove_t floater_move_run = {FRAME_stand101, FRAME_stand152, floater_frames_run, 
 
 void floater_run(edict_t *self)
 {
+    // acquiring a target is what makes a disguised floater unfold
+    if (self->monsterinfo.currentmove == &floater_move_disguise) {
+        self->monsterinfo.currentmove = &floater_move_pop;
+        return;
+    }
+
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         self->monsterinfo.currentmove = &floater_move_stand1;
     else
@@ -547,7 +625,15 @@ void floater_zap(edict_t *self)
 
 void floater_attack(edict_t *self)
 {
-    self->monsterinfo.currentmove = &floater_move_attack1;
+    if (random() <= 0.5f) {
+        self->monsterinfo.currentmove = &floater_move_attack1;
+    } else {
+        // circle strafe
+        if (random() <= 0.5f)
+            self->monsterinfo.lefty = !self->monsterinfo.lefty;
+        self->monsterinfo.attack_state = AS_SLIDING;
+        self->monsterinfo.currentmove = &floater_move_attack1a;
+    }
 }
 
 
@@ -568,6 +654,11 @@ void floater_pain(edict_t *self, edict_t *other, float kick, int damage)
         self->s.skinnum = 1;
 
     if (level.framenum < self->pain_debounce_framenum)
+        return;
+
+    // no pain anims while disguised or popping - it would break the reveal
+    if (self->monsterinfo.currentmove == &floater_move_disguise ||
+        self->monsterinfo.currentmove == &floater_move_pop)
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
@@ -667,7 +758,11 @@ void SP_monster_floater(edict_t *self)
 
     gi.linkentity(self);
 
-    if (random() <= 0.5f)
+    // SPAWNFLAG_FLOATER_DISGUISE (8): start folded up and inert, and only
+    // unfold when a target is acquired.  See floater_run().
+    if (self->spawnflags & 8)
+        self->monsterinfo.currentmove = &floater_move_disguise;
+    else if (random() <= 0.5f)
         self->monsterinfo.currentmove = &floater_move_stand1;
     else
         self->monsterinfo.currentmove = &floater_move_stand2;

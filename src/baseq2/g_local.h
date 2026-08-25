@@ -546,9 +546,17 @@ typedef struct {
     void        (*melee)(edict_t *self);
     void        (*sight)(edict_t *self, edict_t *other);
     bool        (*checkattack)(edict_t *self);
+    // ROGUE/rerelease: called from SV_NewChaseDir when the monster cannot step
+    // in any useful direction.  Returning true means it handled the block
+    // itself - by jumping, or by triggering a plat - and must not be moved or
+    // turned this frame.
+    bool        (*blocked)(edict_t *self, float dist);
 
     int         pause_framenum;
     int         attack_finished;
+    // rerelease: earliest frame a melee monster may swing again.  The berserk
+    // uses it so a run-attack swing does not chain straight into a standing one.
+    int         melee_debounce_framenum;
 
     vec3_t      saved_goal;
     int         search_framenum;
@@ -561,6 +569,15 @@ typedef struct {
 
     int         power_armor_type;
     int         power_armor_power;
+
+    // ROGUE/rerelease: the jump system.  drop_height / jump_height are how far
+    // down or up this monster will accept a jump for; 0 disables that
+    // direction.  jump_framenum is both the "do not try again yet" cooldown and
+    // the watchdog that ends a jump that never lands.
+    bool        can_jump;
+    float       drop_height;
+    float       jump_height;
+    int         jump_framenum;
 
     // ROGUE - runtime monster spawning (medic commander; carrier and widow use
     // the same machinery). `strength` is the slot cost, so a commander with 3
@@ -634,6 +651,8 @@ extern  int snd_fry;
 #define MOD_RIPPER          34
 #define MOD_BLUEBLASTER     35
 #define MOD_PHALANX         36
+// xatrix numbers this 36; 36 is already PHALANX here, so it takes the free 37
+#define MOD_BRAINTENTACLE   37
 #define MOD_GEKK            38
 // rogue's own numbering is kept so the two sources stay comparable
 #define MOD_TRAP            39
@@ -671,6 +690,7 @@ extern  cvar_t  *spectator_password;
 extern  cvar_t  *needpass;
 extern  cvar_t  *g_select_empty;
 extern  cvar_t  *dedicated;
+extern  cvar_t  *cl_md5_models;
 extern  cvar_t  *nomonsters;
 extern  cvar_t  *aimfix;
 
@@ -850,6 +870,31 @@ void swimmonster_start(edict_t *self);
 void flymonster_start(edict_t *self);
 void AttackFinished(edict_t *self, float time);
 void monster_death_use(edict_t *self);
+bool M_RereleaseAnims(void);
+bool M_RereleaseGame(void);
+
+// func_plat / func_door moveinfo.state.  These used to be private to g_func.c;
+// blocked_checkplat needs them too.
+#define STATE_TOP           0
+#define STATE_BOTTOM        1
+#define STATE_UP            2
+#define STATE_DOWN          3
+
+// ROGUE/rerelease jump-and-plat aids, used from monsterinfo.blocked handlers
+typedef enum {
+    NO_JUMP,
+    JUMP_TURN,
+    JUMP_JUMP_UP,
+    JUMP_JUMP_DOWN
+} blocked_jump_result_t;
+
+bool face_wall(edict_t *self);
+bool blocked_checkplat(edict_t *self, float dist);
+blocked_jump_result_t blocked_checkjump(edict_t *self, float dist);
+void monster_jump_start(edict_t *self);
+bool monster_jump_finished(edict_t *self);
+bool SV_movestep(edict_t *ent, vec3_t move, bool relink);
+bool ai_check_move(edict_t *self, float dist);
 void stationarymonster_start(edict_t *self);
 void stationarymonster_start_go(edict_t *self);
 void stationarymonster_triggered_start(edict_t *self);

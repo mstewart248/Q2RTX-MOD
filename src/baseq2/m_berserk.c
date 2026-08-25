@@ -237,13 +237,173 @@ mframe_t berserk_frames_attack_strike [] = {
 mmove_t berserk_move_attack_strike = {FRAME_att_c21, FRAME_att_c34, berserk_frames_attack_strike, berserk_run};
 
 
+extern mmove_t berserk_move_run_attack1;
+
 void berserk_melee(edict_t *self)
 {
+    // rerelease: a swing that just landed keeps the berserk from immediately
+    // starting another, and a run attack about to bring the club down is left
+    // alone rather than being restarted as a standing swing
+    if (M_RereleaseGame()) {
+        if (self->monsterinfo.melee_debounce_framenum > level.framenum)
+            return;
+        if (self->monsterinfo.currentmove == &berserk_move_run_attack1 &&
+            self->s.frame >= FRAME_r_att13) {
+            self->monsterinfo.attack_state = AS_STRAIGHT;
+            self->monsterinfo.attack_finished = 0;
+            return;
+        }
+    }
+
     if ((Q_rand() % 2) == 0)
         self->monsterinfo.currentmove = &berserk_move_attack_spike;
     else
         self->monsterinfo.currentmove = &berserk_move_attack_club;
 }
+
+/*
+=================
+The rerelease berserk - dive-dodge and running attack
+
+Two behaviours, both on frames the 1997 tris.md2 already has, so neither needs
+M_RereleaseAnims() gating.  They do change how the berserk plays, so the hookups
+in SP_monster_berserk sit behind M_RereleaseGame().
+
+  duck2 (fall2-18)   the berserk's only dodge: a rare forward dive.
+  run_attack1 (r_att1-18)  swings the club without breaking stride.
+
+Note that id's berserk_move_duck (duck1-10) is defined in m_berserk.cpp and never
+referenced - dead code, exactly like the hover start_attack2/end_attack2 pair.
+It is deliberately not ported.
+
+Dropped vs the rerelease: monster_footstep (no such sound here) and
+monster_done_dodge (this tree has no AI_DODGING flag; attack_state does the
+same job and is handled below).
+=================
+*/
+// the rerelease's RANGE_NEAR is a real distance; ours is an enum tag
+#define BERSERK_RANGE_NEAR  440.0f
+
+void berserk_duck_down(edict_t *self)
+{
+    if (self->monsterinfo.aiflags & AI_DUCKED)
+        return;
+    self->monsterinfo.aiflags |= AI_DUCKED;
+    self->maxs[2] -= 32;
+    self->takedamage = DAMAGE_YES;
+    gi.linkentity(self);
+}
+
+void berserk_duck_hold(edict_t *self)
+{
+    if (level.framenum >= self->monsterinfo.pause_framenum)
+        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+    else
+        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
+}
+
+void berserk_duck_up(edict_t *self)
+{
+    if (!(self->monsterinfo.aiflags & AI_DUCKED))
+        return;
+    self->monsterinfo.aiflags &= ~AI_DUCKED;
+    self->maxs[2] += 32;
+    self->takedamage = DAMAGE_AIM;
+    gi.linkentity(self);
+}
+
+mframe_t berserk_frames_duck2 [] = {
+    { ai_move, 21, berserk_duck_down },
+    { ai_move, 28, NULL },
+    { ai_move, 20, NULL },
+    { ai_move, 12, NULL },
+    { ai_move, 7,  NULL },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  berserk_duck_hold },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  berserk_duck_up },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  NULL },
+    { ai_move, 0,  NULL }
+};
+mmove_t berserk_move_duck2 = {FRAME_fall2, FRAME_fall18, berserk_frames_duck2, berserk_run};
+
+void berserk_dodge(edict_t *self, edict_t *attacker, float eta)
+{
+    // the berserk only dives forward, and very rarely
+    if (random() >= 0.05f)
+        return;
+
+    if (self->monsterinfo.aiflags & AI_DUCKED)
+        return;
+
+    if (!self->enemy)
+        self->enemy = attacker;
+
+    self->monsterinfo.pause_framenum = level.framenum + (eta + 0.5f) * BASE_FRAMERATE;
+    self->monsterinfo.currentmove = &berserk_move_duck2;
+}
+
+static void berserk_run_attack_speed(edict_t *self)
+{
+    // close enough to connect - jump straight to the swing
+    if (self->enemy && realrange(self, self->enemy) < MELEE_DISTANCE)
+        self->monsterinfo.nextframe = self->s.frame + 6;
+}
+
+static void berserk_run_swing(edict_t *self)
+{
+    berserk_swing(self);
+    self->monsterinfo.melee_debounce_framenum = level.framenum + 0.6f * BASE_FRAMERATE;
+
+    if (self->monsterinfo.attack_state == AS_SLIDING)
+        self->monsterinfo.attack_state = AS_STRAIGHT;
+}
+
+mframe_t berserk_frames_run_attack1 [] = {
+    { ai_run, 21, berserk_run_attack_speed },
+    { ai_run, 11, berserk_run_attack_speed },
+    { ai_run, 21, berserk_run_attack_speed },
+    { ai_run, 25, berserk_run_attack_speed },
+    { ai_run, 18, berserk_run_attack_speed },
+    { ai_run, 19, berserk_run_attack_speed },
+    { ai_run, 21, NULL },
+    { ai_run, 11, NULL },
+    { ai_run, 21, NULL },
+    { ai_run, 25, NULL },
+    { ai_run, 18, NULL },
+    { ai_run, 19, NULL },
+    { ai_run, 21, berserk_run_swing },
+    { ai_run, 11, NULL },
+    { ai_run, 21, NULL },
+    { ai_run, 25, NULL },
+    { ai_run, 18, NULL },
+    { ai_run, 19, berserk_attack_club }
+};
+mmove_t berserk_move_run_attack1 = {FRAME_r_att1, FRAME_r_att18, berserk_frames_run_attack1, berserk_run};
+
+void berserk_attack(edict_t *self)
+{
+    if (!self->enemy)
+        return;
+
+    if (self->monsterinfo.melee_debounce_framenum <= level.framenum &&
+        realrange(self, self->enemy) < MELEE_DISTANCE) {
+        berserk_melee(self);
+    } else if (self->monsterinfo.currentmove == &berserk_move_run1 &&
+               realrange(self, self->enemy) <= BERSERK_RANGE_NEAR) {
+        // pick up the run attack at the same point in the stride, so the
+        // switch from run1 to r_att1 does not pop
+        self->monsterinfo.currentmove = &berserk_move_run_attack1;
+        self->monsterinfo.nextframe = FRAME_r_att1 + (self->s.frame - FRAME_run1) + 1;
+    }
+}
+
 
 
 /*
@@ -508,6 +668,104 @@ void berserk_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
 
 /*QUAKED monster_berserk (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
 */
+
+/*
+=================
+berserk jumps - the rerelease/ROGUE blocked system
+
+monsterinfo.blocked is called from SV_NewChaseDir when the berserk has run out
+of step directions.  It jumps down off ledges and up onto them, and rides
+func_plats.  All of this runs on the APPENDED jump frames, so blocked_checkjump
+refuses unless M_RereleaseAnims() is on.
+
+Dropped vs the rerelease: monster_done_dodge (no AI_DODGING flag in this tree).
+=================
+*/
+#define SPAWNFLAG_BERSERK_NOJUMPING   8
+
+static void berserk_jump_now(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 100, forward, self->velocity);
+    VectorMA(self->velocity, 300, up, self->velocity);
+}
+
+static void berserk_jump2_now(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 150, forward, self->velocity);
+    VectorMA(self->velocity, 400, up, self->velocity);
+}
+
+static void berserk_jump_wait_land(edict_t *self)
+{
+    if (self->groundentity == NULL) {
+        self->monsterinfo.nextframe = self->s.frame;
+
+        if (monster_jump_finished(self))
+            self->monsterinfo.nextframe = self->s.frame + 1;
+    } else {
+        self->monsterinfo.nextframe = self->s.frame + 1;
+    }
+}
+
+mframe_t berserk_frames_jump [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, berserk_jump_now },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, berserk_jump_wait_land },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+};
+mmove_t berserk_move_jump = {FRAME_jump1, FRAME_jump9, berserk_frames_jump, berserk_run};
+
+mframe_t berserk_frames_jump2 [] = {
+    { ai_move, -8, NULL },
+    { ai_move, -4, NULL },
+    { ai_move, -4, NULL },
+    { ai_move, 0, berserk_jump2_now },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, berserk_jump_wait_land },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+};
+mmove_t berserk_move_jump2 = {FRAME_jump1, FRAME_jump9, berserk_frames_jump2, berserk_run};
+
+void berserk_jump(edict_t *self, blocked_jump_result_t result)
+{
+    if (!self->enemy)
+        return;
+
+    if (result == JUMP_JUMP_UP)
+        self->monsterinfo.currentmove = &berserk_move_jump2;
+    else
+        self->monsterinfo.currentmove = &berserk_move_jump;
+}
+
+bool berserk_blocked(edict_t *self, float dist)
+{
+    blocked_jump_result_t result = blocked_checkjump(self, dist);
+
+    if (result != NO_JUMP) {
+        if (result != JUMP_TURN)
+            berserk_jump(self, result);
+        return true;
+    }
+
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 void SP_monster_berserk(edict_t *self)
 {
     if (deathmatch->value) {
@@ -541,6 +799,12 @@ void SP_monster_berserk(edict_t *self)
     self->monsterinfo.run = berserk_run;
     self->monsterinfo.dodge = NULL;
     self->monsterinfo.attack = NULL;
+    // the rerelease berserk dive-dodges and attacks on the run; the classic
+    // one does neither
+    if (M_RereleaseGame()) {
+        self->monsterinfo.dodge = berserk_dodge;
+        self->monsterinfo.attack = berserk_attack;
+    }
     self->monsterinfo.melee = berserk_melee;
     self->monsterinfo.sight = berserk_sight;
     self->monsterinfo.search = berserk_search;
@@ -549,6 +813,16 @@ void SP_monster_berserk(edict_t *self)
     self->monsterinfo.scale = MODEL_SCALE;
 
     gi.linkentity(self);
+
+    // ROGUE/rerelease: let the berserk jump ledges and ride plats.  The jump
+    // animations only exist on the rerelease model, so blocked_checkjump
+    // gates itself on M_RereleaseAnims(); the plat half needs no frames.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.blocked = berserk_blocked;
+        self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_BERSERK_NOJUMPING);
+        self->monsterinfo.drop_height = 256;
+        self->monsterinfo.jump_height = 40;
+    }
 
     walkmonster_start(self);
 }

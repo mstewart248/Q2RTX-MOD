@@ -50,6 +50,71 @@ void boss2_attack_mg(edict_t *self);
 void boss2_reattack_mg(edict_t *self);
 void boss2_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
 
+// The N64 boss2 variant (spawnflag 8) swaps its machinegun for a hyperblaster
+// and its four-rocket volley for a single walking barrage.  mgu1m3 and mguboss
+// both spawn one, so this is live content, not N64-only trivia.
+#define BOSS2_ROCKET_SPEED  750
+
+void Boss2HyperBlaster(edict_t *self)
+{
+    vec3_t  forward, right, target;
+    vec3_t  start;
+    int     id;
+
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
+    id = (self->s.frame & 1) ? MZ2_BOSS2_MACHINEGUN_L2 : MZ2_BOSS2_MACHINEGUN_R2;
+
+    AngleVectors(self->s.angles, forward, right, NULL);
+    G_ProjectSource(self->s.origin, monster_flash_offset[id], forward, right, start);
+
+    VectorCopy(self->enemy->s.origin, target);
+    target[2] += self->enemy->viewheight;
+    VectorSubtract(target, start, forward);
+    VectorNormalize(forward);
+
+    // every 4th bolt carries the hyperblaster effect, as in the rerelease
+    monster_fire_blaster(self, start, forward, 2, 1000, id,
+                         (self->s.frame % 4) ? 0 : EF_HYPERBLASTER);
+}
+
+void Boss2Rocket64(edict_t *self)
+{
+    vec3_t  forward, right;
+    vec3_t  start;
+    vec3_t  dir;
+    vec3_t  vec;
+    float   time, dist;
+
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
+    AngleVectors(self->s.angles, forward, right, NULL);
+    G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_BOSS2_ROCKET_1], forward, right, start);
+
+    // walk the launch point sideways across four shots so the volley sweeps
+    start[2] += 10.0f;
+    VectorMA(start, -2.0f, right, start);
+    VectorMA(start, -(float)((self->count++ % 4) * 8), right, start);
+
+    if (self->enemy->client && random() < 0.9f) {
+        // lead a moving player
+        VectorSubtract(self->enemy->s.origin, start, dir);
+        dist = VectorLength(dir);
+        time = dist / BOSS2_ROCKET_SPEED;
+        VectorMA(self->enemy->s.origin, time - 0.3f, self->enemy->velocity, vec);
+    } else {
+        VectorCopy(self->enemy->s.origin, vec);
+        vec[2] -= 15;
+    }
+
+    VectorSubtract(vec, start, dir);
+    VectorNormalize(dir);
+
+    monster_fire_rocket(self, start, dir, 35, BOSS2_ROCKET_SPEED, MZ2_BOSS2_ROCKET_1);
+}
+
 void Boss2Rocket(edict_t *self)
 {
     vec3_t  forward, right;
@@ -315,6 +380,42 @@ mframe_t boss2_frames_attack_rocket [] = {
 };
 mmove_t boss2_move_attack_rocket = {FRAME_attack20, FRAME_attack40, boss2_frames_attack_rocket, boss2_run};
 
+// N64 variant: hyperblaster over the same attack10-15 frames as the machinegun
+mframe_t boss2_frames_attack_hb [] = {
+    { ai_charge, 2, Boss2HyperBlaster },
+    { ai_charge, 2, Boss2HyperBlaster },
+    { ai_charge, 2, Boss2HyperBlaster },
+    { ai_charge, 2, Boss2HyperBlaster },
+    { ai_charge, 2, Boss2HyperBlaster },
+    { ai_charge, 2, boss2_reattack_mg }
+};
+mmove_t boss2_move_attack_hb = {FRAME_attack10, FRAME_attack15, boss2_frames_attack_hb, NULL};
+
+// N64 variant: five single rockets spread over the volley animation
+mframe_t boss2_frames_attack_rocket2 [] = {
+    { ai_charge, 2, Boss2Rocket64 },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, Boss2Rocket64 },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, Boss2Rocket64 },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, Boss2Rocket64 },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, Boss2Rocket64 },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+    { ai_charge, 2, NULL },
+};
+mmove_t boss2_move_attack_rocket2 = {FRAME_attack20, FRAME_attack39, boss2_frames_attack_rocket2, boss2_run};
+
 mframe_t boss2_frames_pain_heavy [] = {
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
@@ -424,6 +525,22 @@ void boss2_attack(edict_t *self)
     VectorSubtract(self->enemy->s.origin, self->s.origin, vec);
     range = VectorLength(vec);
 
+    // SPAWNFLAG_BOSS2_N64 (8) - mgu1m3 and mguboss both spawn one.
+    // Each currentmove assignment below is deliberately written out in full:
+    // genptr.py scans for "->monsterinfo.currentmove = &X" line by line, so a
+    // ternary would make it record the condition variable and silently drop the
+    // real moves from the save pointer table.
+    if (self->spawnflags & 8) {
+        if (range <= 125) {
+            self->monsterinfo.currentmove = &boss2_move_attack_hb;
+        } else if (random() <= 0.6f) {
+            self->monsterinfo.currentmove = &boss2_move_attack_hb;
+        } else {
+            self->monsterinfo.currentmove = &boss2_move_attack_rocket2;
+        }
+        return;
+    }
+
     if (range <= 125) {
         self->monsterinfo.currentmove = &boss2_move_attack_pre_mg;
     } else {
@@ -436,7 +553,10 @@ void boss2_attack(edict_t *self)
 
 void boss2_attack_mg(edict_t *self)
 {
-    self->monsterinfo.currentmove = &boss2_move_attack_mg;
+    if (self->spawnflags & 8)
+        self->monsterinfo.currentmove = &boss2_move_attack_hb;
+    else
+        self->monsterinfo.currentmove = &boss2_move_attack_mg;
 }
 
 void boss2_reattack_mg(edict_t *self)

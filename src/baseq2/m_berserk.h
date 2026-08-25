@@ -264,4 +264,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FRAME_deathc7           242
 #define FRAME_deathc8           243
 
+// Frames the rerelease APPENDED to the berserk model.  These do NOT exist in
+// the classic baseq2 tris.md2 (244 frames); only use them behind
+// M_RereleaseAnims().  Indices read out of the rerelease tris.md2 frame names.
+#define FRAME_jump1             244
+#define FRAME_jump2             245
+#define FRAME_jump3             246
+#define FRAME_jump4             247
+#define FRAME_jump5             248
+#define FRAME_jump6             249
+#define FRAME_jump7             250
+#define FRAME_jump8             251
+#define FRAME_jump9             252
+
 #define MODEL_SCALE     1.000000

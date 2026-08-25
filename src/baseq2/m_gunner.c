@@ -548,21 +548,37 @@ void GunnerGrenade(edict_t *self)
     vec3_t  forward, right;
     vec3_t  aim;
     int     flash_number;
+    float   spread;
 
-    if (self->s.frame == FRAME_attak105)
+    // attak105/108/111/114 are the classic throw; attak309/312/315/318 are the
+    // same four shots in the rerelease's second, front-on throwing animation
+    if (self->s.frame == FRAME_attak105 || self->s.frame == FRAME_attak309) {
+        spread = -0.10f;
         flash_number = MZ2_GUNNER_GRENADE_1;
-    else if (self->s.frame == FRAME_attak108)
+    } else if (self->s.frame == FRAME_attak108 || self->s.frame == FRAME_attak312) {
+        spread = -0.05f;
         flash_number = MZ2_GUNNER_GRENADE_2;
-    else if (self->s.frame == FRAME_attak111)
+    } else if (self->s.frame == FRAME_attak111 || self->s.frame == FRAME_attak315) {
+        spread = 0.05f;
         flash_number = MZ2_GUNNER_GRENADE_3;
-    else // (self->s.frame == FRAME_attak114)
+    } else { // attak114, or attak318
+        spread = 0.10f;
         flash_number = MZ2_GUNNER_GRENADE_4;
+    }
+
+    // the second animation holds the launcher differently, so it has its own
+    // muzzle points - and id maps them in reverse order
+    if (self->s.frame >= FRAME_attak301 && self->s.frame <= FRAME_attak324)
+        flash_number = MZ2_GUNNER_GRENADE2_1 + (MZ2_GUNNER_GRENADE_4 - flash_number);
 
     AngleVectors(self->s.angles, forward, right, NULL);
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
-    //FIXME : do a spread -225 -75 75 225 degrees around forward
     VectorCopy(forward, aim);
+    // the classic code never implemented the fan its own comment asked for
+    // ("FIXME: do a spread ... around forward"); the rerelease does
+    if (M_RereleaseGame())
+        VectorMA(aim, spread, right, aim);
 
     monster_fire_grenade(self, start, aim, 50, 600, flash_number);
 }
@@ -636,15 +652,47 @@ mframe_t gunner_frames_attack_grenade [] = {
 };
 mmove_t gunner_move_attack_grenade = {FRAME_attak101, FRAME_attak121, gunner_frames_attack_grenade, gunner_run};
 
+// The rerelease's second grenade throw, on the APPENDED attak305-324 frames.
+// Same four-shot cadence as attack_grenade, thrown from a front-on pose.
+// Only reachable behind M_RereleaseAnims() - the classic model has no such frames.
+mframe_t gunner_frames_attack_grenade2 [] = {
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, GunnerGrenade },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, GunnerGrenade },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, GunnerGrenade },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, GunnerGrenade },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+};
+mmove_t gunner_move_attack_grenade2 = {FRAME_attak305, FRAME_attak324, gunner_frames_attack_grenade2, gunner_run};
+
 void gunner_attack(edict_t *self)
 {
     if (range(self, self->enemy) == RANGE_MELEE) {
         self->monsterinfo.currentmove = &gunner_move_attack_chain;
     } else {
-        if (random() <= 0.5f)
-            self->monsterinfo.currentmove = &gunner_move_attack_grenade;
-        else
+        if (random() <= 0.5f) {
+            // the rerelease picks between its two throwing animations 50/50
+            if (M_RereleaseAnims() && random() < 0.5f)
+                self->monsterinfo.currentmove = &gunner_move_attack_grenade2;
+            else
+                self->monsterinfo.currentmove = &gunner_move_attack_grenade;
+        } else {
             self->monsterinfo.currentmove = &gunner_move_attack_chain;
+        }
     }
 }
 
@@ -666,6 +714,108 @@ void gunner_refire_chain(edict_t *self)
 
 /*QUAKED monster_gunner (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
 */
+
+/*
+=================
+gunner jumps - the rerelease/ROGUE blocked system
+
+monsterinfo.blocked is called from SV_NewChaseDir when the gunner has run out
+of step directions.  It jumps down off ledges and up onto them, and rides
+func_plats.  All of this runs on the APPENDED jump frames, so blocked_checkjump
+refuses unless M_RereleaseAnims() is on.
+
+Dropped vs the rerelease: monster_done_dodge (no AI_DODGING flag in this tree).
+=================
+*/
+#define SPAWNFLAG_GUNNER_NOJUMPING   8
+
+static void gunner_jump_now(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 100, forward, self->velocity);
+    VectorMA(self->velocity, 300, up, self->velocity);
+}
+
+static void gunner_jump2_now(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 150, forward, self->velocity);
+    VectorMA(self->velocity, 400, up, self->velocity);
+}
+
+static void gunner_jump_wait_land(edict_t *self)
+{
+    if (self->groundentity == NULL) {
+        self->monsterinfo.nextframe = self->s.frame;
+
+        if (monster_jump_finished(self))
+            self->monsterinfo.nextframe = self->s.frame + 1;
+    } else {
+        self->monsterinfo.nextframe = self->s.frame + 1;
+    }
+}
+
+mframe_t gunner_frames_jump [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, gunner_jump_now },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, gunner_jump_wait_land },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+};
+mmove_t gunner_move_jump = {FRAME_jump01, FRAME_jump10, gunner_frames_jump, gunner_run};
+
+mframe_t gunner_frames_jump2 [] = {
+    { ai_move, -8, NULL },
+    { ai_move, -4, NULL },
+    { ai_move, -4, NULL },
+    { ai_move, 0, gunner_jump2_now },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, gunner_jump_wait_land },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+};
+mmove_t gunner_move_jump2 = {FRAME_jump01, FRAME_jump10, gunner_frames_jump2, gunner_run};
+
+void gunner_jump(edict_t *self, blocked_jump_result_t result)
+{
+    if (!self->enemy)
+        return;
+
+    if (result == JUMP_JUMP_UP)
+        self->monsterinfo.currentmove = &gunner_move_jump2;
+    else
+        self->monsterinfo.currentmove = &gunner_move_jump;
+}
+
+bool gunner_blocked(edict_t *self, float dist)
+{
+    blocked_jump_result_t result;
+
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    result = blocked_checkjump(self, dist);
+
+    if (result != NO_JUMP) {
+        if (result != JUMP_TURN)
+            gunner_jump(self, result);
+        return true;
+    }
+
+    return false;
+}
+
 void SP_monster_gunner(edict_t *self)
 {
     if (deathmatch->value) {
@@ -710,6 +860,16 @@ void SP_monster_gunner(edict_t *self)
 
     self->monsterinfo.currentmove = &gunner_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // ROGUE/rerelease: let the gunner jump ledges and ride plats.  The jump
+    // animations only exist on the rerelease model, so blocked_checkjump
+    // gates itself on M_RereleaseAnims(); the plat half needs no frames.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.blocked = gunner_blocked;
+        self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_GUNNER_NOJUMPING);
+        self->monsterinfo.drop_height = 192;
+        self->monsterinfo.jump_height = 40;
+    }
 
     walkmonster_start(self);
 }

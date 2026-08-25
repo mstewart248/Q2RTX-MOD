@@ -27,6 +27,14 @@ INFANTRY
 #include "m_infantry.h"
 
 void InfantryMachineGun(edict_t *self);
+void infantry_set_firetime(edict_t *self);
+void infantry_skip_cock(edict_t *self);
+extern mmove_t infantry_move_attack1;
+extern mmove_t infantry_move_attack4;
+
+// RANGE_NEAR * 0.75 in the rerelease, where their RANGE_NEAR is 440 units.  This
+// tree's RANGE_NEAR is an enum tag rather than a distance, so spell it out.
+#define RANGE_RUN_ATTACK    330.0f
 
 
 static int  sound_pain1;
@@ -252,8 +260,24 @@ void InfantryMachineGun(edict_t *self)
     vec3_t  vec;
     int     flash_number;
 
-    if (self->s.frame == FRAME_attak111) {
-        flash_number = MZ2_INFANTRY_MACHINEGUN_1;
+    // attack1 (rerelease timing) fires at attak103, attack3 at attak311, and the
+    // classic MD2 attack1 at attak111.  These never collide: the rerelease
+    // attack1 skips attak108-113 entirely, and attack3 lives on attak3xx.
+    bool is_run_attack = (self->s.frame >= FRAME_run201 && self->s.frame <= FRAME_run208);
+
+    if (is_run_attack || self->s.frame == FRAME_attak103 || self->s.frame == FRAME_attak311 ||
+        self->s.frame == FRAME_attak111 || self->s.frame == FRAME_attak416) {
+        if (is_run_attack)
+            // one flash per run frame.  NOTE: the rerelease writes this as
+            // MZ2_INFANTRY_MACHINEGUN_14 + (frame - MZ2_INFANTRY_MACHINEGUN_14),
+            // which only works because in THEIR enum that constant happens to
+            // equal FRAME_run201 (both 232).  Ours does not, so index off the
+            // frame explicitly.
+            flash_number = MZ2_INFANTRY_MACHINEGUN_14 + (self->s.frame - FRAME_run201);
+        else if (self->s.frame == FRAME_attak416)
+            flash_number = MZ2_INFANTRY_MACHINEGUN_22;
+        else
+            flash_number = MZ2_INFANTRY_MACHINEGUN_1;
         AngleVectors(self->s.angles, forward, right, NULL);
         G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
@@ -567,19 +591,126 @@ void infantry_cock_gun(edict_t *self)
     gi.sound(self, CHAN_WEAPON, sound_weapon_cock, 1, ATTN_NORM, 0);
     n = (Q_rand() & 15) + 3 + 7;
     self->monsterinfo.pause_framenum = level.framenum + n;
+
+    // gun cocked
+    self->count = 1;
+}
+
+// The rerelease fires early and then jumps the gun-cocking frames, so the
+// firing window has to be armed a frame BEFORE the shot rather than by
+// infantry_cock_gun.  0.7-2.0s in the rerelease, which is 7-20 frames here.
+void infantry_set_firetime(edict_t *self)
+{
+    self->monsterinfo.pause_framenum = level.framenum + 7 + (Q_rand() % 14);
+
+    // If the enemy is far enough away and there is somewhere to advance to,
+    // charge while firing instead of standing still.
+
+    if (M_RereleaseAnims() &&
+        !(self->monsterinfo.aiflags & AI_STAND_GROUND) && self->enemy &&
+        realrange(self, self->enemy) >= RANGE_RUN_ATTACK &&
+        ai_check_move(self, 8.0f)) {
+        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+        self->monsterinfo.currentmove = &infantry_move_attack4;
+    }
+}
+
+// attak108-attak113 are the cock-the-gun frames.  The rerelease skips them in
+// attack1 (it keeps the full cock+shoot version as its attack3) - playing them
+// is what made the infantry appear to reload while it was shooting.
+void infantry_skip_cock(edict_t *self)
+{
+    self->monsterinfo.nextframe = FRAME_attak114;
 }
 
 void infantry_fire(edict_t *self)
 {
     InfantryMachineGun(self);
 
-    if (level.framenum >= self->monsterinfo.pause_framenum)
+    // we fired, so we must cock again before firing
+    self->count = 0;
+
+    // The run-and-gun must NEVER hold its frame.  A standing attack holds on the
+    // firing frame for the whole burst, which is what makes it keep shooting -
+    // but doing that while charging freezes the run animation on its first frame.
+    // The rerelease branches on the active move here for exactly this reason: in
+    // attack4 the burst ends by decision instead of by holding.
+    if (self->monsterinfo.currentmove == &infantry_move_attack4) {
+        if (level.framenum >= self->monsterinfo.pause_framenum) {
+            // ran out of firing time
+            self->monsterinfo.currentmove = &infantry_move_attack1;
+            self->monsterinfo.nextframe = FRAME_attak114;
+        } else if ((self->monsterinfo.aiflags & AI_STAND_GROUND) ||
+                   (self->enemy && (realrange(self, self->enemy) < RANGE_RUN_ATTACK ||
+                                    !ai_check_move(self, 8.0f)))) {
+            // got too close, or ran out of room to advance
+            self->monsterinfo.currentmove = &infantry_move_attack1;
+            self->monsterinfo.nextframe = FRAME_attak103;
+            self->monsterinfo.attack_state = AS_STRAIGHT;
+        }
+        return;
+    }
+
+    if (level.framenum >= self->monsterinfo.pause_framenum) {
         self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
-    else
+
+        // attack5 holds on attak416 for the burst, then skips its recovery frames
+        if (self->s.frame == FRAME_attak416)
+            self->monsterinfo.nextframe = FRAME_attak420;
+    } else
         self->monsterinfo.aiflags |= AI_HOLD_FRAME;
 }
 
 mframe_t infantry_frames_attack1 [] = {
+    { ai_charge, 0,  NULL },
+    { ai_charge, 6,  infantry_set_firetime },
+    { ai_charge, 0,  infantry_fire },
+    { ai_charge, 0,  NULL },
+    { ai_charge, 1,  NULL },
+    { ai_charge, -7, NULL },
+    { ai_charge, -6, infantry_skip_cock },
+    // dead frames start - jumped by infantry_skip_cock above
+    { ai_charge, -1, NULL },
+    { ai_charge, 0,  infantry_cock_gun },
+    { ai_charge, 0,  NULL },
+    { ai_charge, 0,  NULL },
+    { ai_charge, 0,  NULL },
+    { ai_charge, 0,  NULL },
+    // dead frames end
+    { ai_charge, -1, NULL },
+    { ai_charge, -1, NULL }
+};
+mmove_t infantry_move_attack1 = {FRAME_attak101, FRAME_attak115, infantry_frames_attack1, infantry_run};
+
+// The full cock-then-shoot pass.  This MUST live on the rerelease's appended
+// attak301-315 and not on attak101-115: the rerelease RE-AUTHORED attak101-115,
+// so in that model the shot is at attak103 and attak104-113 is the cocking.
+// Running the classic table over attak1xx therefore fires in the middle of the
+// cocking animation, which is exactly the bug this was meant to fix.
+// Gated on M_RereleaseAnims() - the classic md2 has no attak3xx at all.
+mframe_t infantry_frames_attack3 [] = {
+    { ai_charge, 4,  NULL },
+    { ai_charge, -1, NULL },
+    { ai_charge, -1, NULL },
+    { ai_charge, 0,  infantry_cock_gun },
+    { ai_charge, -1, NULL },
+    { ai_charge, 1,  NULL },
+    { ai_charge, 1,  NULL },
+    { ai_charge, 2,  NULL },
+    { ai_charge, -2, NULL },
+    { ai_charge, -3, infantry_set_firetime },
+    { ai_charge, 1,  infantry_fire },
+    { ai_charge, 5,  NULL },
+    { ai_charge, -1, NULL },
+    { ai_charge, -2, NULL },
+    { ai_charge, -3, NULL }
+};
+mmove_t infantry_move_attack3 = {FRAME_attak301, FRAME_attak315, infantry_frames_attack3, infantry_run};
+
+// The original, pre-retiming attack1: cock at attak104, fire at attak111.  This
+// is the CORRECT reading of attak101-115 for the classic md2, whose animation
+// at those indices the rerelease replaced.  Used when M_RereleaseAnims() is off.
+mframe_t infantry_frames_attack1_classic [] = {
     { ai_charge, 4,  NULL },
     { ai_charge, -1, NULL },
     { ai_charge, -1, NULL },
@@ -596,7 +727,74 @@ mframe_t infantry_frames_attack1 [] = {
     { ai_charge, -2, NULL },
     { ai_charge, -3, NULL }
 };
-mmove_t infantry_move_attack1 = {FRAME_attak101, FRAME_attak115, infantry_frames_attack1, infantry_run};
+mmove_t infantry_move_attack1_classic = {FRAME_attak101, FRAME_attak115, infantry_frames_attack1_classic, infantry_run};
+
+//
+// RUN AND GUN  (rerelease infantry_move_attack4)
+//
+// The infantry keeps advancing while it fires, over the appended run201-208, and
+// drops back to a standing attack when it runs out of firing time or reaches an
+// edge.  Gated on M_RereleaseAnims() - the classic md2 has no run2xx frames.
+//
+// The rerelease's mmove_t carries a 4th field (0.5f) that halves the playback
+// rate; this tree's mmove_t has no such field, so the run cycle plays at normal
+// speed.
+
+void infantry_attack4_refire(edict_t *self)
+{
+    // infantry_fire() above owns the decision to break off the charge, so all
+    // this has to do is loop the run cycle when we are still in it.
+    infantry_fire(self);
+
+    if (self->monsterinfo.currentmove == &infantry_move_attack4)
+        self->monsterinfo.nextframe = FRAME_run201;
+}
+
+mframe_t infantry_frames_attack4 [] = {
+    { ai_charge, 16, infantry_fire },
+    { ai_charge, 16, infantry_fire },
+    { ai_charge, 13, infantry_fire },
+    { ai_charge, 10, infantry_fire },
+    { ai_charge, 16, infantry_fire },
+    { ai_charge, 16, infantry_fire },
+    { ai_charge, 16, infantry_fire },
+    { ai_charge, 16, infantry_attack4_refire }
+};
+mmove_t infantry_move_attack4 = {FRAME_run201, FRAME_run208, infantry_frames_attack4, infantry_run};
+
+// The infantry's SECOND standing firing pose (rerelease infantry_move_attack5).
+// Runs over the appended attak401-423 and is entered at attak405 - the first
+// four frames are deliberately skipped, which is why infantry_attack sets
+// nextframe when it picks this move.  Fires once, at attak416.
+//
+// The rerelease has a think on attak411 doing nextframe = s.frame + 1, which is
+// what M_MoveFrame does anyway, so it is not carried over as a no-op.
+mframe_t infantry_frames_attack5 [] = {
+    { ai_charge, 0, NULL },                     // attak401, skipped
+    { ai_charge, 0, NULL },                     // attak402, skipped
+    { ai_charge, 0, NULL },                     // attak403, skipped
+    { ai_charge, 0, NULL },                     // attak404, skipped
+    { ai_charge, 0, NULL },                     // attak405 - entry point
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, infantry_cock_gun },        // attak408
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, infantry_set_firetime },    // attak415
+    { ai_charge, 0, infantry_fire },            // attak416
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL }                      // attak423
+};
+mmove_t infantry_move_attack5 = {FRAME_attak401, FRAME_attak423, infantry_frames_attack5, infantry_run};
 
 
 void infantry_swing(edict_t *self)
@@ -629,13 +827,125 @@ void infantry_attack(edict_t *self)
 {
     if (range(self, self->enemy) == RANGE_MELEE)
         self->monsterinfo.currentmove = &infantry_move_attack2;
-    else
+    else if (!M_RereleaseAnims())
+        // classic md2: attak101-115 is the old cock-then-shoot animation, and
+        // attak3xx does not exist.  Behave exactly as the game always did.
+        self->monsterinfo.currentmove = &infantry_move_attack1_classic;
+    else if (self->count)
+        // gun is still cocked from an attack that got interrupted - skip
+        // straight to the shot, which is what the retimed attack1 does
         self->monsterinfo.currentmove = &infantry_move_attack1;
+    else if (random() <= 0.1f) {
+        // the second firing pose, which starts part-way into its animation
+        self->monsterinfo.currentmove = &infantry_move_attack5;
+        self->monsterinfo.nextframe = FRAME_attak405;
+    } else
+        self->monsterinfo.currentmove = &infantry_move_attack3;
 }
 
 
 /*QUAKED monster_infantry (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
 */
+
+/*
+=================
+infantry jumps - the rerelease/ROGUE blocked system
+
+monsterinfo.blocked is called from SV_NewChaseDir when the infantry has run out
+of step directions.  It jumps down off ledges and up onto them, and rides
+func_plats.  All of this runs on the APPENDED jump frames, so blocked_checkjump
+refuses unless M_RereleaseAnims() is on.
+
+Dropped vs the rerelease: monster_done_dodge (no AI_DODGING flag in this tree).
+=================
+*/
+#define SPAWNFLAG_INFANTRY_NOJUMPING   8
+
+static void infantry_jump_now(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 100, forward, self->velocity);
+    VectorMA(self->velocity, 300, up, self->velocity);
+}
+
+static void infantry_jump2_now(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 150, forward, self->velocity);
+    VectorMA(self->velocity, 400, up, self->velocity);
+}
+
+static void infantry_jump_wait_land(edict_t *self)
+{
+    if (self->groundentity == NULL) {
+        self->monsterinfo.nextframe = self->s.frame;
+
+        if (monster_jump_finished(self))
+            self->monsterinfo.nextframe = self->s.frame + 1;
+    } else {
+        self->monsterinfo.nextframe = self->s.frame + 1;
+    }
+}
+
+mframe_t infantry_frames_jump [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, infantry_jump_now },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, infantry_jump_wait_land },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+};
+mmove_t infantry_move_jump = {FRAME_jump01, FRAME_jump10, infantry_frames_jump, infantry_run};
+
+mframe_t infantry_frames_jump2 [] = {
+    { ai_move, -8, NULL },
+    { ai_move, -4, NULL },
+    { ai_move, -4, NULL },
+    { ai_move, 0, infantry_jump2_now },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, infantry_jump_wait_land },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+};
+mmove_t infantry_move_jump2 = {FRAME_jump01, FRAME_jump10, infantry_frames_jump2, infantry_run};
+
+void infantry_jump(edict_t *self, blocked_jump_result_t result)
+{
+    if (!self->enemy)
+        return;
+
+    if (result == JUMP_JUMP_UP)
+        self->monsterinfo.currentmove = &infantry_move_jump2;
+    else
+        self->monsterinfo.currentmove = &infantry_move_jump;
+}
+
+bool infantry_blocked(edict_t *self, float dist)
+{
+    blocked_jump_result_t result = blocked_checkjump(self, dist);
+
+    if (result != NO_JUMP) {
+        if (result != JUMP_TURN)
+            infantry_jump(self, result);
+        return true;
+    }
+
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 void SP_monster_infantry(edict_t *self)
 {
     if (deathmatch->value) {
@@ -684,6 +994,16 @@ void SP_monster_infantry(edict_t *self)
 
     self->monsterinfo.currentmove = &infantry_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // ROGUE/rerelease: let the infantry jump ledges and ride plats.  The jump
+    // animations only exist on the rerelease model, so blocked_checkjump
+    // gates itself on M_RereleaseAnims(); the plat half needs no frames.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.blocked = infantry_blocked;
+        self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_INFANTRY_NOJUMPING);
+        self->monsterinfo.drop_height = 192;
+        self->monsterinfo.jump_height = 40;
+    }
 
     walkmonster_start(self);
 }

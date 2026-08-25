@@ -38,6 +38,9 @@ static int  sound_death;
 static int  sound_death_ss;
 static int  sound_cock;
 
+void soldier_duck_up(edict_t *self);
+extern mmove_t soldier_move_trip;
+
 
 void soldier_idle(edict_t *self)
 {
@@ -140,6 +143,53 @@ mframe_t soldier_frames_stand3 [] = {
 };
 mmove_t soldier_move_stand3 = {FRAME_stand301, FRAME_stand339, soldier_frames_stand3, soldier_stand};
 
+// The rerelease's second idle, on the APPENDED stand201-240 frames.  The
+// classic tris.md2 stops at 475, so this move is only reachable behind
+// M_RereleaseAnims().  (Its monster_footstep calls have no equivalent here.)
+mframe_t soldier_frames_stand2 [] = {
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+    { ai_stand, 0, NULL },
+};
+mmove_t soldier_move_stand2 = {FRAME_stand201, FRAME_stand240, soldier_frames_stand2, soldier_stand};
+
 #if 0
 mframe_t soldier_frames_stand4 [] = {
     { ai_stand, 0, NULL },
@@ -205,7 +255,21 @@ mmove_t soldier_move_stand4 = {FRAME_stand401, FRAME_stand452, soldier_frames_st
 
 void soldier_stand(edict_t *self)
 {
-    if ((self->monsterinfo.currentmove == &soldier_move_stand3) || (random() < 0.8f))
+    float r = random();
+
+    if (M_RereleaseAnims()) {
+        // three idles instead of two, and the soldier only ever leaves stand1
+        // for one of the others - stand1 is where it always comes back to
+        if (self->monsterinfo.currentmove != &soldier_move_stand1 || r < 0.6f)
+            self->monsterinfo.currentmove = &soldier_move_stand1;
+        else if (r < 0.8f)
+            self->monsterinfo.currentmove = &soldier_move_stand2;
+        else
+            self->monsterinfo.currentmove = &soldier_move_stand3;
+        return;
+    }
+
+    if ((self->monsterinfo.currentmove == &soldier_move_stand3) || (r < 0.8f))
         self->monsterinfo.currentmove = &soldier_move_stand1;
     else
         self->monsterinfo.currentmove = &soldier_move_stand3;
@@ -398,8 +462,16 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
         self->s.skinnum |= 1;
 
     if (level.framenum < self->pain_debounce_framenum) {
-        if ((self->velocity[2] > 100) && ((self->monsterinfo.currentmove == &soldier_move_pain1) || (self->monsterinfo.currentmove == &soldier_move_pain2) || (self->monsterinfo.currentmove == &soldier_move_pain3)))
+        if ((self->velocity[2] > 100) && ((self->monsterinfo.currentmove == &soldier_move_pain1) || (self->monsterinfo.currentmove == &soldier_move_pain2) || (self->monsterinfo.currentmove == &soldier_move_pain3))) {
+            // PMM - clear the duck flag before abandoning the current move,
+            // or a soldier hurt mid-duck/mid-trip stays permanently shrunk.
+            // soldier_duck_up() is unguarded, so this must only run where the
+            // move really is being replaced - never on the nightmare path
+            // below, which leaves the move alone and still owes its own duck_up.
+            if (self->monsterinfo.aiflags & AI_DUCKED)
+                soldier_duck_up(self);
             self->monsterinfo.currentmove = &soldier_move_pain4;
+        }
         return;
     }
 
@@ -414,7 +486,31 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
         gi.sound(self, CHAN_VOICE, sound_pain_ss, 1, ATTN_NORM, 0);
 
     if (self->velocity[2] > 100) {
+            // PMM - clear the duck flag before abandoning the current move,
+            // or a soldier hurt mid-duck/mid-trip stays permanently shrunk.
+            // soldier_duck_up() is unguarded, so this must only run where the
+            // move really is being replaced - never on the nightmare path
+            // below, which leaves the move alone and still owes its own duck_up.
+            if (self->monsterinfo.aiflags & AI_DUCKED)
+                soldier_duck_up(self);
         self->monsterinfo.currentmove = &soldier_move_pain4;
+        return;
+    }
+
+    // Trip trigger.  The rerelease enters this from soldier_duck out of its
+    // attack6 run-and-gun, which this tree does not have.  It must NOT hang off
+    // soldier_dodge either: check_dodge() in g_weapon.c is only called from the
+    // projectile weapons, never from fire_lead, so hitscan fire would never
+    // trigger it and the trip would almost never be seen.  Taking pain while
+    // running fires for every weapon and is already debounced to 3 seconds by
+    // pain_debounce_framenum above.  It sits ABOVE the nightmare early-out on
+    // purpose: skill 3 skips pain ANIMATIONS, but the trip is a behaviour and
+    // should still happen there.
+
+    if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) &&
+        self->monsterinfo.currentmove != &soldier_move_trip &&
+        self->enemy && random() < 0.5f) {
+        self->monsterinfo.currentmove = &soldier_move_trip;
         return;
     }
 
@@ -422,6 +518,15 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
         return;     // no pain anims in nightmare
 
     r = random();
+
+    // PMM - clear the duck flag before abandoning the current move, or a
+    // soldier hurt mid-duck stays permanently shrunk.  soldier_duck_up() is
+    // unguarded, so this only runs where the move really is being replaced -
+    // never on the nightmare path above, which leaves the move alone and still
+    // owes its own duck_up.  The trip above does not need it either: it calls
+    // duck_down (guarded) and duck_up itself, so the pair still balances.
+    if (self->monsterinfo.aiflags & AI_DUCKED)
+        soldier_duck_up(self);
 
     if (r < 0.33f)
         self->monsterinfo.currentmove = &soldier_move_pain1;
@@ -436,9 +541,9 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
 // ATTACK
 //
 
-static int blaster_flash [] = {MZ2_SOLDIER_BLASTER_1, MZ2_SOLDIER_BLASTER_2, MZ2_SOLDIER_BLASTER_3, MZ2_SOLDIER_BLASTER_4, MZ2_SOLDIER_BLASTER_5, MZ2_SOLDIER_BLASTER_6, MZ2_SOLDIER_BLASTER_7, MZ2_SOLDIER_BLASTER_8};
-static int shotgun_flash [] = {MZ2_SOLDIER_SHOTGUN_1, MZ2_SOLDIER_SHOTGUN_2, MZ2_SOLDIER_SHOTGUN_3, MZ2_SOLDIER_SHOTGUN_4, MZ2_SOLDIER_SHOTGUN_5, MZ2_SOLDIER_SHOTGUN_6, MZ2_SOLDIER_SHOTGUN_7, MZ2_SOLDIER_SHOTGUN_8};
-static int machinegun_flash [] = {MZ2_SOLDIER_MACHINEGUN_1, MZ2_SOLDIER_MACHINEGUN_2, MZ2_SOLDIER_MACHINEGUN_3, MZ2_SOLDIER_MACHINEGUN_4, MZ2_SOLDIER_MACHINEGUN_5, MZ2_SOLDIER_MACHINEGUN_6, MZ2_SOLDIER_MACHINEGUN_7, MZ2_SOLDIER_MACHINEGUN_8};
+static int blaster_flash [] = {MZ2_SOLDIER_BLASTER_1, MZ2_SOLDIER_BLASTER_2, MZ2_SOLDIER_BLASTER_3, MZ2_SOLDIER_BLASTER_4, MZ2_SOLDIER_BLASTER_5, MZ2_SOLDIER_BLASTER_6, MZ2_SOLDIER_BLASTER_7, MZ2_SOLDIER_BLASTER_8, MZ2_SOLDIER_BLASTER_9};
+static int shotgun_flash [] = {MZ2_SOLDIER_SHOTGUN_1, MZ2_SOLDIER_SHOTGUN_2, MZ2_SOLDIER_SHOTGUN_3, MZ2_SOLDIER_SHOTGUN_4, MZ2_SOLDIER_SHOTGUN_5, MZ2_SOLDIER_SHOTGUN_6, MZ2_SOLDIER_SHOTGUN_7, MZ2_SOLDIER_SHOTGUN_8, MZ2_SOLDIER_SHOTGUN_9};
+static int machinegun_flash [] = {MZ2_SOLDIER_MACHINEGUN_1, MZ2_SOLDIER_MACHINEGUN_2, MZ2_SOLDIER_MACHINEGUN_3, MZ2_SOLDIER_MACHINEGUN_4, MZ2_SOLDIER_MACHINEGUN_5, MZ2_SOLDIER_MACHINEGUN_6, MZ2_SOLDIER_MACHINEGUN_7, MZ2_SOLDIER_MACHINEGUN_8, MZ2_SOLDIER_MACHINEGUN_9};
 
 /*
 =================
@@ -898,6 +1003,170 @@ mframe_t soldier_frames_duck [] = {
 };
 mmove_t soldier_move_duck = {FRAME_duck01, FRAME_duck05, soldier_frames_duck, soldier_run};
 
+//
+// PRONE SHOOTING  (rerelease soldier_move_attack5)
+//
+// The soldier drops onto its front partway through the trip and keeps firing
+// from the ground, then gets back up.  Uses the appended attak501-508, so it is
+// gated on M_RereleaseAnims().
+//
+// Dropped from the rerelease version: monster_footstep (no such sound here) and
+// the soldierh_* hyper-soldier hooks.  soldier_fire() also has no angle_limited
+// parameter in this tree - soldier_prone_shoot_ok()'s cone test below enforces
+// the same constraint, which is what that flag is for.
+
+// Can the soldier still see its enemy within the narrow cone it can cover while
+// lying down?  Once it cannot, it has to stand up rather than spin on the floor.
+static bool soldier_prone_shoot_ok(edict_t *self)
+{
+    vec3_t  fwd;
+    vec3_t  diff;
+
+    if (!self->enemy || !self->enemy->inuse)
+        return false;
+
+    AngleVectors(self->s.angles, fwd, NULL, NULL);
+
+    VectorSubtract(self->enemy->s.origin, self->s.origin, diff);
+    diff[2] = 0;
+    VectorNormalize(diff);
+
+    return DotProduct(fwd, diff) >= 0.80f;
+}
+
+void soldier_stand_up(edict_t *self)
+{
+    // rejoin the trip animation at its get-back-up half
+    self->monsterinfo.currentmove = &soldier_move_trip;
+    self->monsterinfo.nextframe = FRAME_runt08;
+}
+
+// ai_move that bails out of the prone pose the moment the shot is no longer on
+static void ai_soldier_move(edict_t *self, float dist)
+{
+    ai_move(self, dist);
+
+    if (!soldier_prone_shoot_ok(self))
+        soldier_stand_up(self);
+}
+
+void soldier_fire5(edict_t *self)
+{
+    soldier_fire(self, 8);
+}
+
+mframe_t soldier_frames_attack5 [] = {
+    { ai_move, 18, soldier_duck_down },
+    { ai_move, 11, NULL },
+    { ai_move, 0,  NULL },
+    { ai_soldier_move, 0, NULL },
+    { ai_soldier_move, 0, NULL },
+    { ai_soldier_move, 0, soldier_fire5 },
+    { ai_soldier_move, 0, NULL },
+    { ai_soldier_move, 0, NULL }
+};
+mmove_t soldier_move_attack5 = {FRAME_attak501, FRAME_attak508, soldier_frames_attack5, soldier_stand_up};
+
+// Called from the trip, one frame in: decide whether to go prone and shoot
+// instead of simply falling and getting back up.
+static void monster_check_prone(edict_t *self)
+{
+    if (!M_RereleaseAnims())
+        return;     // attak501-508 do not exist on the classic md2
+
+    if (!soldier_prone_shoot_ok(self))
+        return;     // not going to shoot at this angle
+
+    self->monsterinfo.currentmove = &soldier_move_attack5;
+}
+
+//
+// BLIND  (rerelease soldier_move_blind)
+//
+// Spawnflag 8 gives the soldier a different idle: it stands scanning, unaware,
+// on stand101-130.  These frames already exist in the classic model, so this
+// needs no gating.  Only the STAND handler is replaced - once it acquires a
+// target it runs and fights exactly like any other soldier.
+
+void soldier_blind(edict_t *self);
+
+mframe_t soldier_frames_blind [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL }
+};
+mmove_t soldier_move_blind = {FRAME_stand101, FRAME_stand130, soldier_frames_blind, soldier_blind};
+
+void soldier_blind(edict_t *self)
+{
+    self->monsterinfo.currentmove = &soldier_move_blind;
+}
+
+//
+// TRIP
+//
+// The soldier's runt01-runt19 frames are a trip-and-recover animation that id
+// shipped in the original tris.md2 and never used - nothing in the classic game
+// code references them.  The rerelease finally wires them up, which is why the
+// animation is already correct on the classic MD2 as well as the MD5 model and
+// needs no cl_md5_models gating.
+//
+// Ported from soldier_frames_trip in src/rerelease/m_soldier.cpp.  Two of its
+// think calls have no equivalent here: monster_footstep is a sound this tree
+// does not have, and monster_check_prone belongs to the prone-shooting system
+// (soldier_move_attack5, which needs the new attak501-508 frames) that is not
+// ported.  Everything else, including the duck down/up at the same frames, is
+// the rerelease's.
+mframe_t soldier_frames_trip [] = {
+    { ai_move, 10,  NULL },
+    { ai_move, 2,   monster_check_prone },
+    { ai_move, 18,  soldier_duck_down },
+    { ai_move, 11,  NULL },
+    { ai_move, 9,   NULL },
+    { ai_move, -11, NULL },
+    { ai_move, -2,  NULL },
+    { ai_move, 0,   NULL },
+    { ai_move, 6,   NULL },
+    { ai_move, -5,  NULL },
+    { ai_move, 0,   NULL },
+    { ai_move, 1,   NULL },
+    { ai_move, 0,   NULL },
+    { ai_move, 0,   soldier_duck_up },
+    { ai_move, 3,   NULL },
+    { ai_move, 2,   NULL },
+    { ai_move, -1,  NULL },
+    { ai_move, 2,   NULL },
+    { ai_move, 0,   NULL }
+};
+mmove_t soldier_move_trip = {FRAME_runt01, FRAME_runt19, soldier_frames_trip, soldier_run};
+
 void soldier_dodge(edict_t *self, edict_t *attacker, float eta)
 {
     float   r;
@@ -908,6 +1177,15 @@ void soldier_dodge(edict_t *self, edict_t *attacker, float eta)
 
     if (!self->enemy)
         self->enemy = attacker;
+
+    // Trip trigger #1, and the one PROVEN to fire in play.  Note this path has
+    // no skill gate, unlike soldier_pain which returns early on nightmare.
+    if (!(self->monsterinfo.aiflags & (AI_STAND_GROUND | AI_DUCKED)) &&
+        self->monsterinfo.currentmove != &soldier_move_trip &&
+        random() < 0.3f) {
+        self->monsterinfo.currentmove = &soldier_move_trip;
+        return;
+    }
 
     if (skill->value == 0) {
         self->monsterinfo.currentmove = &soldier_move_duck;
@@ -1391,6 +1669,10 @@ void SP_monster_soldier_x(edict_t *self)
     self->die = soldier_die;
 
     self->monsterinfo.stand = soldier_stand;
+
+    // SPAWNFLAG_SOLDIER_BLIND (8) - stands with the unaware idle instead
+    if (self->spawnflags & 8)
+        self->monsterinfo.stand = soldier_blind;
     self->monsterinfo.walk = soldier_walk;
     self->monsterinfo.run = soldier_run;
     self->monsterinfo.dodge = soldier_dodge;

@@ -41,6 +41,7 @@ static int  sound_search;
 static int  sound_melee1;
 static int  sound_melee2;
 static int  sound_melee3;
+static int  sound_laser_fly;
 
 
 void brain_sight(edict_t *self, edict_t *other)
@@ -492,6 +493,229 @@ void brain_melee(edict_t *self) {
 }
 
 
+/*
+=================
+The rerelease's ranged brain - RAFAEL's code, identical in xatrix
+
+attack3 is the old tentacle swipe (attak201-217) with a tongue grab woven into
+it; attack4 fires a laser from each eye across the walk cycle (walk101-111).
+Both animations exist in the 1997 tris.md2, so neither needs M_RereleaseAnims()
+gating - but giving every brain a ranged attack changes how plain baseq2 plays,
+so monsterinfo.attack is only hooked up under M_RereleaseGame().
+
+Spawnflag 8 suppresses the lasers, matching SPAWNFLAG_BRAIN_NO_LASERS.
+=================
+*/
+#define SPAWNFLAG_BRAIN_NO_LASERS   8
+
+// the rerelease's RANGE_NEAR is a real distance; ours is an enum tag
+#define BRAIN_RANGE_NEAR    440.0f
+
+static bool brain_tounge_attack_ok(const vec3_t start, const vec3_t end)
+{
+    vec3_t  dir, angles;
+
+    // check for max distance
+    VectorSubtract(start, end, dir);
+    if (VectorLength(dir) > 512)
+        return false;
+
+    // check for min/max pitch
+    vectoangles(dir, angles);
+    if (angles[0] < -180)
+        angles[0] += 360;
+    if (fabsf(angles[0]) > 30)
+        return false;
+
+    return true;
+}
+
+void brain_tounge_attack(edict_t *self)
+{
+    vec3_t  offset, start, f, r, end, dir;
+    trace_t tr;
+    int     damage;
+
+    if (!self->enemy)
+        return;
+
+    AngleVectors(self->s.angles, f, r, NULL);
+    VectorSet(offset, 24, 0, 16);
+    G_ProjectSource(self->s.origin, offset, f, r, start);
+
+    // try the enemy's centre, then the top of its head, then its feet
+    VectorCopy(self->enemy->s.origin, end);
+    if (!brain_tounge_attack_ok(start, end)) {
+        end[2] = self->enemy->s.origin[2] + self->enemy->maxs[2] - 8;
+        if (!brain_tounge_attack_ok(start, end)) {
+            end[2] = self->enemy->s.origin[2] + self->enemy->mins[2] + 8;
+            if (!brain_tounge_attack_ok(start, end))
+                return;
+        }
+    }
+    VectorCopy(self->enemy->s.origin, end);
+
+    tr = gi.trace(start, NULL, NULL, end, self, MASK_SHOT);
+    if (tr.ent != self->enemy)
+        return;
+
+    damage = 5;
+    gi.sound(self, CHAN_WEAPON, sound_tentacles_retract, 1, ATTN_NORM, 0);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_PARASITE_ATTACK);
+    gi.WriteShort(self - g_edicts);
+    gi.WritePosition(start);
+    gi.WritePosition(end);
+    gi.multicast(self->s.origin, MULTICAST_PVS);
+
+    VectorSubtract(start, end, dir);
+    T_Damage(self->enemy, self, self, dir, self->enemy->s.origin, vec3_origin,
+             damage, 0, DAMAGE_NO_KNOCKBACK, MOD_BRAINTENTACLE);
+
+    // pull the enemy in
+    self->s.origin[2] += 1;
+    AngleVectors(self->s.angles, f, NULL, NULL);
+    VectorScale(f, -1200, self->enemy->velocity);
+}
+
+// brain right eye centre, one entry per walk101-111 frame
+static const vec3_t brain_reye[11] = {
+    {   0.746700f,  0.238370f, 34.167690f },
+    {  -1.076390f,  0.238370f, 33.386372f },
+    {  -1.335500f,  5.334300f, 32.177170f },
+    {  -0.175360f,  8.846370f, 30.635479f },
+    {  -2.757590f,  7.804610f, 30.150860f },
+    {  -5.575090f,  5.152840f, 30.056160f },
+    {  -7.017550f,  3.262470f, 30.552521f },
+    {  -7.915740f,  0.638800f, 33.176189f },
+    {  -3.915390f,  8.285730f, 33.976349f },
+    {  -0.913540f, 10.933030f, 34.141811f },
+    {  -0.369900f,  8.923900f, 34.189079f }
+};
+
+// brain left eye centre
+static const vec3_t brain_leye[11] = {
+    {  -3.364710f,  0.327750f, 33.938381f },
+    {  -5.140450f,  0.493480f, 32.659851f },
+    {  -5.341980f,  5.646980f, 31.277901f },
+    {  -4.134480f,  9.277440f, 29.925621f },
+    {  -6.598340f,  6.815090f, 29.322620f },
+    {  -8.610840f,  2.529650f, 29.251591f },
+    {  -9.231360f,  0.093280f, 29.747959f },
+    { -11.004110f,  1.936930f, 32.395260f },
+    {  -7.878310f,  7.648190f, 33.148151f },
+    {  -4.947370f, 11.430050f, 33.313610f },
+    {  -4.332820f,  9.444570f, 33.526340f }
+};
+
+static void brain_eye_laser(edict_t *self, const vec3_t angles, const vec3_t eye)
+{
+    vec3_t   forward, right, up, start;
+    edict_t *ent;
+
+    AngleVectors(angles, forward, right, up);
+
+    VectorCopy(self->s.origin, start);
+    VectorMA(start, eye[0], right, start);
+    VectorMA(start, eye[1], forward, start);
+    VectorMA(start, eye[2], up, start);
+
+    ent = G_Spawn();
+    ent->classname = "brain_laserbeam";
+    VectorCopy(angles, ent->s.angles);
+    VectorCopy(start, ent->s.origin);
+    ent->enemy = self->enemy;
+    ent->owner = self;
+    ent->dmg = 1;
+    monster_dabeam(ent);
+}
+
+void brain_laserbeam(edict_t *self)
+{
+    vec3_t  dir, angles;
+    int     i;
+
+    if (!self->enemy)
+        return;
+
+    // the eye tables are indexed by walk-cycle frame; attack4 runs over exactly
+    // those frames, but clamp anyway so a stray call cannot read off the end
+    i = self->s.frame - FRAME_walk101;
+    if (i < 0 || i >= 11)
+        return;
+
+    if (random() > 0.8f)
+        gi.sound(self, CHAN_AUTO, sound_laser_fly, 1, ATTN_STATIC, 0);
+
+    VectorSubtract(self->enemy->s.origin, self->s.origin, dir);
+    vectoangles(dir, angles);
+
+    brain_eye_laser(self, angles, brain_reye[i]);
+    brain_eye_laser(self, angles, brain_leye[i]);
+}
+
+void brain_laserbeam_reattack(edict_t *self)
+{
+    if (random() < 0.5f)
+        if (visible(self, self->enemy))
+            if (self->enemy->health > 0)
+                self->s.frame = FRAME_walk101;
+}
+
+mframe_t brain_frames_attack3 [] =
+{
+    { ai_charge,  5,  NULL },
+    { ai_charge,  -4, NULL },
+    { ai_charge,  -4, NULL },
+    { ai_charge,  -3, NULL },
+    { ai_charge,  0,  brain_chest_open },
+    { ai_charge,  0,  brain_tounge_attack },
+    { ai_charge,  13, NULL },
+    { ai_charge,  0,  brain_tentacle_attack },
+    { ai_charge,  2,  NULL },
+    { ai_charge,  0,  brain_tounge_attack },
+    { ai_charge,  -9, brain_chest_closed },
+    { ai_charge,  0,  NULL },
+    { ai_charge,  4,  NULL },
+    { ai_charge,  3,  NULL },
+    { ai_charge,  2,  NULL },
+    { ai_charge,  -3, NULL },
+    { ai_charge,  -6, NULL }
+};
+mmove_t brain_move_attack3 = {FRAME_attak201, FRAME_attak217, brain_frames_attack3, brain_run};
+
+mframe_t brain_frames_attack4 [] =
+{
+    { ai_charge, 9,  brain_laserbeam },
+    { ai_charge, 2,  brain_laserbeam },
+    { ai_charge, 3,  brain_laserbeam },
+    { ai_charge, 3,  brain_laserbeam },
+    { ai_charge, 1,  brain_laserbeam },
+    { ai_charge, 0,  brain_laserbeam },
+    { ai_charge, 0,  brain_laserbeam },
+    { ai_charge, 10, brain_laserbeam },
+    { ai_charge, -4, brain_laserbeam },
+    { ai_charge, -1, brain_laserbeam },
+    { ai_charge, 2,  brain_laserbeam_reattack }
+};
+mmove_t brain_move_attack4 = {FRAME_walk101, FRAME_walk111, brain_frames_attack4, brain_run};
+
+void brain_attack(edict_t *self)
+{
+    if (!self->enemy)
+        return;
+
+    if (realrange(self, self->enemy) <= BRAIN_RANGE_NEAR) {
+        if (random() < 0.5f)
+            self->monsterinfo.currentmove = &brain_move_attack3;
+        else if (!(self->spawnflags & SPAWNFLAG_BRAIN_NO_LASERS))
+            self->monsterinfo.currentmove = &brain_move_attack4;
+    } else if (!(self->spawnflags & SPAWNFLAG_BRAIN_NO_LASERS)) {
+        self->monsterinfo.currentmove = &brain_move_attack4;
+    }
+}
+
 //
 // RUN
 //
@@ -714,6 +938,7 @@ void SP_monster_brain(edict_t *self) {
     sound_melee1 = gi.soundindex("brain/melee1.wav");
     sound_melee2 = gi.soundindex("brain/melee2.wav");
     sound_melee3 = gi.soundindex("brain/melee3.wav");
+    sound_laser_fly = gi.soundindex("misc/lasfly.wav");
 
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
@@ -732,7 +957,9 @@ void SP_monster_brain(edict_t *self) {
     self->monsterinfo.walk = brain_walk;
     self->monsterinfo.run = brain_run;
     self->monsterinfo.dodge = brain_dodge;
-//  self->monsterinfo.attack = brain_attack;
+    // the rerelease brain is a ranged monster; the classic one is melee-only
+    if (M_RereleaseGame())
+        self->monsterinfo.attack = brain_attack;
     self->monsterinfo.melee = brain_melee;
     self->monsterinfo.sight = brain_sight;
     self->monsterinfo.search = brain_search;

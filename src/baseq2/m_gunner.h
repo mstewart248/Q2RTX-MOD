@@ -229,4 +229,45 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FRAME_duck07            207
 #define FRAME_duck08            208
 
+// Frames the rerelease APPENDED to the gunner model.  The classic baseq2
+// tris.md2 stops at 209 (the rerelease has 799), so anything below is only
+// valid behind M_RereleaseAnims().  Indices read straight out of the
+// rerelease tris.md2 frame names.
+#define FRAME_jump01            209
+#define FRAME_jump02            210
+#define FRAME_jump03            211
+#define FRAME_jump04            212
+#define FRAME_jump05            213
+#define FRAME_jump06            214
+#define FRAME_jump07            215
+#define FRAME_jump08            216
+#define FRAME_jump09            217
+#define FRAME_jump10            218
+#define FRAME_shield01          219
+// shield02-06 = 220-224, unused so far
+#define FRAME_attak301          225
+#define FRAME_attak302          226
+#define FRAME_attak303          227
+#define FRAME_attak304          228
+#define FRAME_attak305          229
+#define FRAME_attak306          230
+#define FRAME_attak307          231
+#define FRAME_attak308          232
+#define FRAME_attak309          233
+#define FRAME_attak310          234
+#define FRAME_attak311          235
+#define FRAME_attak312          236
+#define FRAME_attak313          237
+#define FRAME_attak314          238
+#define FRAME_attak315          239
+#define FRAME_attak316          240
+#define FRAME_attak317          241
+#define FRAME_attak318          242
+#define FRAME_attak319          243
+#define FRAME_attak320          244
+#define FRAME_attak321          245
+#define FRAME_attak322          246
+#define FRAME_attak323          247
+#define FRAME_attak324          248
+
 #define MODEL_SCALE     1.150000

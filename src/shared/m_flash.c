@@ -233,4 +233,27 @@ const vec3_t monster_flash_offset[256] = {
     [MZ2_WIDOW2_BEAM_SWEEP_9] = { 66.14f, 9.79f, 91.44f },
     [MZ2_WIDOW2_BEAM_SWEEP_10] = { 62.77f, 18.91f, 91.65f },
     [MZ2_WIDOW2_BEAM_SWEEP_11] = { 58.29f, 27.11f, 92 },
+
+    // Rerelease prone flashes - all three share one offset, and the negative
+    // Z is what puts the flash down at ground level while the soldier is prone.
+    [MZ2_SOLDIER_BLASTER_9] = { 36.33f, 12.24f, -17.39f },
+    [MZ2_SOLDIER_SHOTGUN_9] = { 36.33f, 12.24f, -17.39f },
+    [MZ2_SOLDIER_MACHINEGUN_9] = { 36.33f, 12.24f, -17.39f },
+
+
+    // Rerelease infantry run-and-gun flashes
+    [MZ2_INFANTRY_MACHINEGUN_14] = { 34.f, 11.f, 13.f },
+    [MZ2_INFANTRY_MACHINEGUN_15] = { 28.f, 13.f, 10.5f },
+    [MZ2_INFANTRY_MACHINEGUN_16] = { 29.f, 13.f, 8.5f },
+    [MZ2_INFANTRY_MACHINEGUN_17] = { 30.f, 12.5f, 12.f },
+    [MZ2_INFANTRY_MACHINEGUN_18] = { 29.f, 12.5f, 14.7f },
+    [MZ2_INFANTRY_MACHINEGUN_19] = { 30.f, 6.5f, 12.f },
+    [MZ2_INFANTRY_MACHINEGUN_20] = { 29.f, 1.5f, 8.5f },
+    [MZ2_INFANTRY_MACHINEGUN_21] = { 29.f, 6.0f, 10.f },
+    [MZ2_INFANTRY_MACHINEGUN_22] = { 14.8f, 10.5f, 8.82f },
+
+    [MZ2_GUNNER_GRENADE2_1] = { 36.0f, -6.2f, 19.59f },
+    [MZ2_GUNNER_GRENADE2_2] = { 36.0f, -6.2f, 19.59f },
+    [MZ2_GUNNER_GRENADE2_3] = { 36.0f, -6.2f, 19.59f },
+    [MZ2_GUNNER_GRENADE2_4] = { 36.0f, -6.2f, 19.59f },
 };

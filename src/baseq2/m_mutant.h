@@ -169,4 +169,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FRAME_walk22            147
 #define FRAME_walk23            148
 
+// Frames the rerelease APPENDED to the mutant model.  These do NOT exist in
+// the classic baseq2 tris.md2 (149 frames); only use them behind
+// M_RereleaseAnims().  Indices read out of the rerelease tris.md2 frame names.
+#define FRAME_jump01            149
+#define FRAME_jump02            150
+#define FRAME_jump03            151
+#define FRAME_jump04            152
+#define FRAME_jump05            153
+
 #define MODEL_SCALE     1.000000

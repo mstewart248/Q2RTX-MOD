@@ -44,6 +44,7 @@ cvar_t  *maxspectators;
 cvar_t  *maxentities;
 cvar_t  *g_select_empty;
 cvar_t  *dedicated;
+cvar_t  *cl_md5_models;
 cvar_t  *nomonsters;
 cvar_t  *aimfix;
 
@@ -136,6 +137,11 @@ void InitGame(void)
 
     // noset vars
     dedicated = gi.cvar("dedicated", "0", CVAR_NOSET);
+
+    // Registered by the refresh in src/refresh/models.c, which shares this
+    // process in single player, so this picks up the live client value rather
+    // than creating a new cvar.  See M_RereleaseAnims().
+    cl_md5_models = gi.cvar("cl_md5_models", "1", 0);
 
     nomonsters = gi.cvar("nomonsters", "0", 0);
 	

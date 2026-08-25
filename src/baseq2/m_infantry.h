@@ -227,4 +227,66 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FRAME_attak207          205
 #define FRAME_attak208          206
 
+// Frames the rerelease APPENDED to the infantry model.  These do NOT exist in
+// the classic baseq2 tris.md2 (207 frames); only use them behind
+// M_RereleaseAnims().  Indices verified against src/rerelease/m_infantry.h.
+#define FRAME_jump01            207
+#define FRAME_jump02            208
+#define FRAME_jump03            209
+#define FRAME_jump04            210
+#define FRAME_jump05            211
+#define FRAME_jump06            212
+#define FRAME_jump07            213
+#define FRAME_jump08            214
+#define FRAME_jump09            215
+#define FRAME_jump10            216
+
+#define FRAME_attak301          217
+#define FRAME_attak302          218
+#define FRAME_attak303          219
+#define FRAME_attak304          220
+#define FRAME_attak305          221
+#define FRAME_attak306          222
+#define FRAME_attak307          223
+#define FRAME_attak308          224
+#define FRAME_attak309          225
+#define FRAME_attak310          226
+#define FRAME_attak311          227
+#define FRAME_attak312          228
+#define FRAME_attak313          229
+#define FRAME_attak314          230
+#define FRAME_attak315          231
+#define FRAME_run201            232
+#define FRAME_run202            233
+#define FRAME_run203            234
+#define FRAME_run204            235
+#define FRAME_run205            236
+#define FRAME_run206            237
+#define FRAME_run207            238
+#define FRAME_run208            239
+#define FRAME_attak401          240
+#define FRAME_attak402          241
+#define FRAME_attak403          242
+#define FRAME_attak404          243
+#define FRAME_attak405          244
+#define FRAME_attak406          245
+#define FRAME_attak407          246
+#define FRAME_attak408          247
+#define FRAME_attak409          248
+#define FRAME_attak410          249
+#define FRAME_attak411          250
+#define FRAME_attak412          251
+#define FRAME_attak413          252
+#define FRAME_attak414          253
+#define FRAME_attak415          254
+#define FRAME_attak416          255
+#define FRAME_attak417          256
+#define FRAME_attak418          257
+#define FRAME_attak419          258
+#define FRAME_attak420          259
+#define FRAME_attak421          260
+#define FRAME_attak422          261
+#define FRAME_attak423          262
+#define FRAME_attak424          263
+
 #define MODEL_SCALE     1.000000

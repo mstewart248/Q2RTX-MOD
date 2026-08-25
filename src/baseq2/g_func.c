@@ -53,11 +53,6 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define PLAT_LOW_TRIGGER    1
 
-#define STATE_TOP           0
-#define STATE_BOTTOM        1
-#define STATE_UP            2
-#define STATE_DOWN          3
-
 #define DOOR_START_OPEN     1
 #define DOOR_REVERSE        2
 #define DOOR_CRUSHER        4

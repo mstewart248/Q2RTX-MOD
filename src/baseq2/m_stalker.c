@@ -74,17 +74,10 @@ static void vectoangles2(vec3_t value1, vec3_t angles)
     angles[ROLL] = 0;
 }
 
-/* A jump that never lands would hold the animation forever, so the monster
-   gives up after three seconds. `timestamp` is a frame number in this tree. */
-static void monster_jump_start(edict_t *self)
-{
-    self->timestamp = level.framenum;
-}
-
-static bool monster_jump_finished(edict_t *self)
-{
-    return (level.framenum - self->timestamp) > 3 * BASE_FRAMERATE;
-}
+/* monster_jump_start / monster_jump_finished used to be private copies here.
+   They are now shared, in g_ai.c, because the rerelease jump system needs the
+   same pair - and the shared version also tops the monster's forward speed
+   back up mid-jump, which the local copy never did. */
 
 #define PI 3.14159
 #define RAD2DEG(x) (x * (float)180.0 / (float)PI)

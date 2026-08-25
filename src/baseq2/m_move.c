@@ -443,6 +443,15 @@ void SV_NewChaseDir(edict_t *actor, edict_t *enemy, float dist)
         && SV_StepDirection(actor, d[2], dist))
         return;
 
+    // ROGUE/rerelease: neither axis worked, so give the monster a chance to
+    // deal with the block itself - jump the gap, or ride a plat.  If it says
+    // it handled it, we must not move or turn it this frame.
+    if (actor->monsterinfo.blocked && actor->inuse && actor->health > 0 &&
+        !(actor->monsterinfo.aiflags & AI_TARGET_ANGER)) {
+        if (actor->monsterinfo.blocked(actor, dist))
+            return;
+    }
+
     /* there is no direct path to the player, so pick another direction */
 
     if (olddir != DI_NODIR && SV_StepDirection(actor, olddir, dist))

@@ -228,9 +228,15 @@ static const save_field_t entityfields[] = {
     P(monsterinfo.melee, P_monsterinfo_melee),
     P(monsterinfo.sight, P_monsterinfo_sight),
     P(monsterinfo.checkattack, P_monsterinfo_checkattack),
+    P(monsterinfo.blocked, P_monsterinfo_blocked),
 
     FT(monsterinfo.pause_framenum),
     FT(monsterinfo.attack_finished),
+    FT(monsterinfo.melee_debounce_framenum),
+    O(monsterinfo.can_jump),
+    F(monsterinfo.drop_height),
+    F(monsterinfo.jump_height),
+    FT(monsterinfo.jump_framenum),
 
     V(monsterinfo.saved_goal),
     FT(monsterinfo.search_framenum),
@@ -870,7 +876,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    27
+#define SAVE_VERSION    36
 
 /*
 ============
