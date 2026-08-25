@@ -458,6 +458,9 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
     float   r;
     int     n;
 
+    // pain replaces currentmove, so the burst never reaches its sound_end frame
+    self->s.sound = 0;
+
     if (self->health < (self->max_health / 2))
         self->s.skinnum |= 1;
 
@@ -952,13 +955,141 @@ mframe_t soldier_frames_attack6 [] = {
 };
 mmove_t soldier_move_attack6 = {FRAME_runs01, FRAME_runs14, soldier_frames_attack6, soldier_run};
 
+
+/*
+=================
+The rerelease's hyper-soldier burst fire
+
+The ripper / hypergun / lasergun soldiers (SP_monster_soldier_h, style == 1) are
+rapid-fire variants, but this tree fired them on the STANDARD soldier's cadence -
+one shot per attack cycle - because soldier_fire just branches to
+soldierh_fire_weapon inside the normal frame tables.  The rerelease gives them
+their own tables: the same frames, but two extra shots after the first and a
+looping weapon sound bracketing the burst.
+
+Same frame ranges as soldier_move_attack1/2 (attak101-112 and attak201-218), so
+these need no new frames and no M_RereleaseAnims() gating.  They do change how
+the xatrix variants play, so soldier_attack only picks them under
+M_RereleaseGame().
+
+Mapping notes vs src/rerelease/m_soldier.cpp:
+  - their `self->count` is the variant index; ours is `self->s.skinnum`
+    (<=1 blaster/ripper, 2-3 shotgun/hypergun, >=4 machinegun/lasergun).
+  - their `monsterinfo.weapon_sound` only ever feeds `ent->s.sound`
+    (g_monster.cpp ~405), and this tree has no such monsterinfo field, so set
+    `self->s.sound` directly - the idiom m_boss2.c and m_boss31.c already use.
+  - `soldier_fire` here takes no angle_limited parameter.
+=================
+*/
+static void soldierh_hyper_laser_sound_start(edict_t *self)
+{
+    // only the hypergun variant has a spin-up loop; ripper and lasergun do not
+    if (self->style == 1 && self->s.skinnum >= 2 && self->s.skinnum < 4)
+        self->s.sound = gi.soundindex("weapons/hyprbl1a.wav");
+}
+
+static void soldierh_hyper_laser_sound_end(edict_t *self)
+{
+    if (self->s.sound) {
+        if (self->s.skinnum >= 2 && self->s.skinnum < 4)
+            gi.sound(self, CHAN_AUTO, gi.soundindex("weapons/hyprbd1a.wav"), 1, ATTN_NORM, 0);
+
+        self->s.sound = 0;
+    }
+}
+
+static void soldierh_hyperripper1(edict_t *self)
+{
+    if (self->s.skinnum < 4)
+        soldier_fire(self, 0);
+}
+
+static void soldierh_hyperripper2(edict_t *self)
+{
+    if (self->s.skinnum < 4)
+        soldier_fire(self, 1);
+}
+
+static void soldierh_hyper_refire1(edict_t *self)
+{
+    if (!self->enemy)
+        return;
+
+    if (self->s.skinnum >= 2 && self->s.skinnum < 4)
+        if (random() < 0.7f && visible(self, self->enemy))
+            self->s.frame = FRAME_attak103;
+}
+
+static void soldierh_hyper_refire2(edict_t *self)
+{
+    if (!self->enemy)
+        return;
+
+    if (self->s.skinnum >= 2 && self->s.skinnum < 4)
+        if (random() < 0.7f && visible(self, self->enemy))
+            self->s.frame = FRAME_attak205;
+}
+
+mframe_t soldierh_frames_attack1 [] = {
+    { ai_charge, 0,  NULL },
+    { ai_charge, 0,  soldierh_hyper_laser_sound_start },
+    { ai_charge, 0,  soldier_fire1 },
+    { ai_charge, 0,  soldierh_hyperripper1 },
+    { ai_charge, 0,  soldierh_hyperripper1 },
+    { ai_charge, 0,  soldier_attack1_refire1 },
+    { ai_charge, 0,  soldierh_hyper_refire1 },
+    { ai_charge, 0,  soldier_cock },
+    { ai_charge, 0,  soldier_attack1_refire2 },
+    { ai_charge, 0,  soldierh_hyper_laser_sound_end },
+    { ai_charge, 0,  NULL },
+    { ai_charge, 0,  NULL }
+};
+mmove_t soldierh_move_attack1 = {FRAME_attak101, FRAME_attak112, soldierh_frames_attack1, soldier_run};
+
+mframe_t soldierh_frames_attack2 [] = {
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldierh_hyper_laser_sound_start },
+    { ai_charge, 0, soldier_fire2 },
+    { ai_charge, 0, soldierh_hyperripper2 },
+    { ai_charge, 0, soldierh_hyperripper2 },
+    { ai_charge, 0, soldier_attack2_refire1 },
+    { ai_charge, 0, soldierh_hyper_refire2 },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldier_cock },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldier_attack2_refire2 },
+    { ai_charge, 0, soldierh_hyper_laser_sound_end },
+    { ai_charge, 0, NULL },
+    { ai_charge, 0, NULL }
+};
+mmove_t soldierh_move_attack2 = {FRAME_attak201, FRAME_attak218, soldierh_frames_attack2, soldier_run};
+
 void soldier_attack(edict_t *self)
 {
+    // style 1 is the ripper / hypergun / lasergun family; the rerelease fires
+    // those in bursts off their own frame tables
+    bool hyper = M_RereleaseGame() && self->style == 1;
+
+    // NOTE: written as plain if/else on purpose.  genptr.py scrapes
+    // `->monsterinfo.currentmove = &name` with a regex and cannot see through a
+    // ternary - it silently harvests the CONDITION as a move name and drops the
+    // real ones, which breaks the link and corrupts the save pointer table.
     if (self->s.skinnum < 4) {
-        if (random() < 0.5f)
-            self->monsterinfo.currentmove = &soldier_move_attack1;
-        else
-            self->monsterinfo.currentmove = &soldier_move_attack2;
+        if (random() < 0.5f) {
+            if (hyper)
+                self->monsterinfo.currentmove = &soldierh_move_attack1;
+            else
+                self->monsterinfo.currentmove = &soldier_move_attack1;
+        } else {
+            if (hyper)
+                self->monsterinfo.currentmove = &soldierh_move_attack2;
+            else
+                self->monsterinfo.currentmove = &soldier_move_attack2;
+        }
     } else {
         self->monsterinfo.currentmove = &soldier_move_attack4;
     }
@@ -1486,6 +1617,10 @@ mmove_t soldier_move_death6 = {FRAME_death601, FRAME_death610, soldier_frames_de
 void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
+
+    // a hyper-soldier killed mid-burst would otherwise loop its spin-up sound
+    // forever - s.sound is sticky until something clears it
+    self->s.sound = 0;
 
 // check for gib
 

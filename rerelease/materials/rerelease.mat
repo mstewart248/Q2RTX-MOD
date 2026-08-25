@@ -232,11 +232,15 @@ models/objects/ammo/m_skin:
 models/objects/blaser/skin:
 	texture_base materialDev/models/objects/blaser/skin.tga
 	texture_normals materialDev/models/objects/blaser/skin_n.tga
+	texture_emissive materialDev/models/objects/blaser/skin.tga
+	emissive_factor 6
 	metalness_factor 0
 
 models/objects/boomrang/boo_post:
 	texture_base materialDev/models/objects/boomrang/boo_post.tga
 	texture_normals materialDev/models/objects/boomrang/boo_post_n.tga
+	texture_emissive materialDev/models/objects/boomrang/boo_post.tga
+	emissive_factor 6
 	metalness_factor 0
 
 models/objects/gekkgib/arm/arm:

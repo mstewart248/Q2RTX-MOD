@@ -19,6 +19,7 @@ extern int berserk_move_death2;
 extern int berserk_move_duck2;
 extern int berserk_move_jump2;
 extern int berserk_move_jump;
+extern int berserk_move_jump_slam;
 extern int berserk_move_pain1;
 extern int berserk_move_pain2;
 extern int berserk_move_run1;
@@ -303,6 +304,8 @@ extern int soldier_move_start_run;
 extern int soldier_move_trip;
 extern int soldier_move_walk1;
 extern int soldier_move_walk2;
+extern int soldierh_move_attack1;
+extern int soldierh_move_attack2;
 extern int stalker_move_death;
 extern int stalker_move_false_death;
 extern int stalker_move_false_death_end;
@@ -1115,6 +1118,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &berserk_move_duck2 },
 { P_monsterinfo_currentmove, &berserk_move_jump },
 { P_monsterinfo_currentmove, &berserk_move_jump2 },
+{ P_monsterinfo_currentmove, &berserk_move_jump_slam },
 { P_monsterinfo_currentmove, &berserk_move_pain1 },
 { P_monsterinfo_currentmove, &berserk_move_pain2 },
 { P_monsterinfo_currentmove, &berserk_move_run1 },
@@ -1399,6 +1403,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &soldier_move_trip },
 { P_monsterinfo_currentmove, &soldier_move_walk1 },
 { P_monsterinfo_currentmove, &soldier_move_walk2 },
+{ P_monsterinfo_currentmove, &soldierh_move_attack1 },
+{ P_monsterinfo_currentmove, &soldierh_move_attack2 },
 { P_monsterinfo_currentmove, &stalker_move_death },
 { P_monsterinfo_currentmove, &stalker_move_false_death },
 { P_monsterinfo_currentmove, &stalker_move_false_death_end },
