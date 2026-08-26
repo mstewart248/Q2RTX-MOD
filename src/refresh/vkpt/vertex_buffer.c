@@ -756,6 +756,7 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 
 	memcpy(lbo->cluster_debug_mask, cluster_debug_mask, MAX_LIGHT_LISTS / 8);
 	memcpy(lbo->sky_visibility, bsp_mesh->sky_visibility, MAX_LIGHT_LISTS / 8);
+	memcpy(lbo->sky_cluster_mask, bsp_mesh->sky_cluster_mask, MAX_LIGHT_LISTS / 8);
 
 	buffer_unmap(staging);
 	lbo = NULL;

@@ -101,6 +101,7 @@ SET(SRC_CLIENT
 	client/demo.c
 	client/download.c
 	client/dynamiclights.c
+	client/mapfog.c
 	client/effects.c
 	client/entities.c
 	client/gtv.c

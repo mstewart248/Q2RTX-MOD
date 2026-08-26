@@ -1219,6 +1219,11 @@ void barrel_explode(edict_t *self)
     float   spd;
     vec3_t  save;
 
+    // in the rerelease a barrel keeps taking damage while its fuse burns, so
+    // this is the first place takedamage can be cleared. Harmless on the
+    // classic path, where barrel_delay already cleared it.
+    self->takedamage = DAMAGE_NO;
+
     T_RadiusDamage(self, self->activator, self->dmg, NULL, self->dmg + 40, MOD_BARREL);
 
     VectorCopy(self->s.origin, save);
@@ -1292,12 +1297,92 @@ void barrel_explode(edict_t *self)
         BecomeExplosion1(self);
 }
 
+/*
+=================
+barrel_burn
+
+Rerelease only. The fuse: for BARREL_BURN_TIME the barrel smokes, sparks and
+whines, and only then detonates. Re-arming think/nextthink every frame is what
+lets barrel_delay swap the think out from under it - see the note there.
+=================
+*/
+// id's fuse is 750 ms. This tree's server tick is 100 ms (theirs is 25), so the
+// fuse can only be 700 or 800 - round UP, because 700 reads as too quick.
+#define BARREL_BURN_TIME    8   // 800 ms, id's 750 rounded to our tick
+
+// a hit this big skips the fuse entirely - rocket, rail, or another barrel.
+// id's comment: "because it feels good and powerful"
+#define BARREL_INSTANT_DMG  90
+
+void barrel_burn(edict_t *self)
+{
+    if (level.framenum >= self->timestamp) {
+        self->think = barrel_explode;
+    }
+
+    self->s.effects |= EF_BARREL_EXPLODING;
+    self->s.sound = gi.soundindex("weapons/bfg__l1a.wav");
+    self->nextthink = level.framenum + 1;
+}
+
 void barrel_delay(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
+    if (M_RereleaseGame()) {
+        // a barrel already counting down is "dead" but still solid, and
+        // takedamage stays on so it keeps receiving knockback - you can shoot a
+        // lit barrel toward something. T_Damage has already applied that push
+        // by the time we get here, so all this has to do is not re-arm.
+        if (self->think == barrel_burn || self->think == barrel_explode) {
+            return;
+        }
+
+        self->activator = attacker;
+
+        if (damage >= BARREL_INSTANT_DMG) {
+            self->think = barrel_explode;
+        } else {
+            self->timestamp = level.framenum + BARREL_BURN_TIME;
+            self->think = barrel_burn;
+        }
+
+        // nextthink is deliberately left alone: barrel_think has been running
+        // every frame since spawn, so the new think fires on the next one.
+        return;
+    }
+
     self->takedamage = DAMAGE_NO;
     self->nextthink = level.framenum + 2;
     self->think = barrel_explode;
     self->activator = attacker;
+}
+
+/*
+=================
+barrel_think / barrel_start
+
+Rerelease only. Barrels run a think every frame so world effects apply to them -
+a barrel dropped in lava cooks off on its own. Slime and drowning are opted out
+of explicitly; only lava is meant to kill one.
+=================
+*/
+void barrel_think(edict_t *self)
+{
+    // the think has to be re-armed first, because M_WorldEffects below can kill
+    // the barrel and override it with barrel_burn
+    self->think = barrel_think;
+    self->nextthink = level.framenum + 1;
+
+    M_CatagorizePosition(self);
+    self->flags |= FL_IMMUNE_SLIME;
+    self->air_finished_framenum = level.framenum + 100 * BASE_FRAMERATE;
+    M_WorldEffects(self);
+}
+
+void barrel_start(edict_t *self)
+{
+    M_droptofloor(self);
+    self->think = barrel_think;
+    self->nextthink = level.framenum + 1;
 }
 
 void SP_misc_explobox(edict_t *self)
@@ -1311,6 +1396,8 @@ void SP_misc_explobox(edict_t *self)
     gi.modelindex("models/objects/debris1/tris.md2");
     gi.modelindex("models/objects/debris2/tris.md2");
     gi.modelindex("models/objects/debris3/tris.md2");
+    if (M_RereleaseGame())
+        gi.soundindex("weapons/bfg__l1a.wav");
 
     self->solid = SOLID_BBOX;
     self->movetype = MOVETYPE_STEP;
@@ -1320,8 +1407,11 @@ void SP_misc_explobox(edict_t *self)
     VectorSet(self->mins, -16, -16, 0);
     VectorSet(self->maxs, 16, 16, 40);
 
+    // the rerelease dropped the barrel's mass from 400 to 50, which is most of
+    // why theirs get shoved around so much more easily by anything walking into
+    // one (see barrel_touch - the push is other->mass / self->mass)
     if (!self->mass)
-        self->mass = 400;
+        self->mass = M_RereleaseGame() ? 50 : 400;
     if (!self->health)
         self->health = 10;
     if (!self->dmg)
@@ -1333,7 +1423,12 @@ void SP_misc_explobox(edict_t *self)
 
     self->touch = barrel_touch;
 
-    self->think = M_droptofloor;
+    if (M_RereleaseGame()) {
+        // drop to the floor, then keep thinking forever so world effects apply
+        self->think = barrel_start;
+    } else {
+        self->think = M_droptofloor;
+    }
     self->nextthink = level.framenum + 2;
 
     gi.linkentity(self);

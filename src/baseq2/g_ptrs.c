@@ -365,8 +365,11 @@ extern void actor_walk(void);
 extern void AngleMove_Begin(void);
 extern void AngleMove_Done(void);
 extern void AngleMove_Final(void);
+extern void barrel_burn(void);
 extern void barrel_delay(void);
 extern void barrel_explode(void);
+extern void barrel_start(void);
+extern void barrel_think(void);
 extern void barrel_touch(void);
 extern void berserk_attack(void);
 extern void berserk_blocked(void);
@@ -824,7 +827,10 @@ const save_ptr_t save_ptrs[] = {
 { P_think, AngleMove_Begin },
 { P_think, AngleMove_Done },
 { P_think, AngleMove_Final },
+{ P_think, barrel_burn },
 { P_think, barrel_explode },
+{ P_think, barrel_start },
+{ P_think, barrel_think },
 { P_think, bfg_explode },
 { P_think, bfg_think },
 { P_think, BossExplode },

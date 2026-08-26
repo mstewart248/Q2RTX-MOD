@@ -1563,6 +1563,7 @@ static void
 compute_sky_visibility(bsp_mesh_t *wm, bsp_t *bsp)
 {
 	memset(wm->sky_visibility, 0, VIS_MAX_BYTES);
+	memset(wm->sky_cluster_mask, 0, VIS_MAX_BYTES);
 
 	if (wm->geom_sky.num_geometries == 0 && wm->geom_custom_sky.num_geometries == 0)
 		return; 
@@ -1573,6 +1574,10 @@ compute_sky_visibility(bsp_mesh_t *wm, bsp_t *bsp)
 
 	mark_clusters_with_sky(wm, &wm->geom_sky, clusters_with_sky);
 	mark_clusters_with_sky(wm, &wm->geom_custom_sky, clusters_with_sky);
+
+	// keep the strict version too - the volumetric fog needs "this cluster has
+	// sky in it", not "this cluster might be able to see sky from somewhere"
+	memcpy(wm->sky_cluster_mask, clusters_with_sky, VIS_MAX_BYTES);
 
 	for (uint32_t cluster = 0; cluster < numclusters; cluster++)
 	{

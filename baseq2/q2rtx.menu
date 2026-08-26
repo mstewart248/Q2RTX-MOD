@@ -155,6 +155,16 @@ begin video
             "security cameras" pt_cameras
         toggle "caustics" pt_caustics
         toggle "god rays" gr_enable
+        pairs --status "volumetric atmosphere from the map's own fog settings - rerelease maps only" \
+            "map fog" cl_fog "off" 0 "sunlight only" 1 "lit by map lights" 2
+        range --status "how thick the map fog renders; 1.0 is the map's authored value" \
+            "map fog density" cl_fog_scale 0 4 0.25
+        range --status "brightness of local lights scattered in the fog (lit by map lights)" \
+            "map fog light" pt_fog_light_scale 0 8 0.5
+        range --status "brightness of sky light scattered in the fog - lower this if outdoor areas fog up too much" \
+            "map fog sky" pt_fog_sky_scale 0 8 0.5
+        range --status "roll-off for light-dense maps - lower this if rooms full of lights fog up too much" \
+            "map fog light rolloff" pt_fog_light_knee 0.25 8 0.25
         toggle "bloom" bloom_enable
         blank
         pairs "ReStir Direct Illuminaton" pt_restir off 0 on 1

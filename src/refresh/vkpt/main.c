@@ -2844,6 +2844,110 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 
 	vkpt_fog_upload(ubo->fog_volumes);
 
+	// The rerelease's per-map atmospheric fog. Unlike fog_volumes above (which
+	// are hand-authored AABBs driven by the "fog" console command), this comes
+	// off the map's own worldspawn keys and drives the density of the medium the
+	// god-ray pass marches, so it scatters light instead of tinting pixels.
+	{
+		mapfog_params_t mf;
+		if (CL_GetMapFog(&mf)) {
+			ubo->fog_enable     = 1;
+			ubo->fog_density    = mf.density;
+			ubo->fog_hf_density = mf.hf_density;
+			ubo->fog_hf_falloff = mf.hf_falloff;
+			ubo->fog_hf_start_z = mf.hf_start_z;
+			ubo->fog_hf_end_z   = mf.hf_end_z;
+			ubo->fog_color_r    = mf.color[0];
+			ubo->fog_color_g    = mf.color[1];
+			ubo->fog_color_b    = mf.color[2];
+			ubo->fog_hf_start_r = mf.hf_start_color[0];
+			ubo->fog_hf_start_g = mf.hf_start_color[1];
+			ubo->fog_hf_start_b = mf.hf_start_color[2];
+			ubo->fog_hf_end_r   = mf.hf_end_color[0];
+			ubo->fog_hf_end_g   = mf.hf_end_color[1];
+			ubo->fog_hf_end_b   = mf.hf_end_color[2];
+			ubo->fog_mode       = mf.mode;
+		} else {
+			ubo->fog_enable = 0;
+			ubo->fog_mode   = 0;
+		}
+		// fog_num_model_lights is NOT set here - num_model_lights is not built
+		// until add_dlights() further down this frame. See there.
+		//
+		// The camera's own cluster. The fog march needs a light list per point
+		// along the ray, and the per-pixel cluster texture only gives it the one
+		// at the far END of the ray - which is why fog right in front of the
+		// player was being lit by lights in a distant room. Near the camera this
+		// is the correct list.
+		ubo->fog_camera_cluster = viewleaf ? viewleaf->cluster : -1;
+		ubo->fog_pad3 = 0;
+
+		// Trace real sky visibility per march point instead of relying on the
+		// per-cluster estimate below. The cluster masks cannot distinguish an open
+		// canyon floor from a cave with a sight line out; a ray can. Set to 0 to
+		// A/B against the old behaviour.
+		ubo->fog_sky_trace = Cvar_Get("pt_fog_sky_trace", "1", CVAR_ARCHIVE)->integer;
+
+		// Sky exposure, faded over time rather than switched.
+		//
+		// The fog samples one cluster - the camera's - for the whole ray, and
+		// "does this cluster contain sky" is a hard boolean. Walking from under
+		// a rock overhang into the open therefore made the sky fog appear in a
+		// single frame, which reads as a glitch. Easing it converts that pop
+		// into a short fade. It does NOT make the answer any more correct: the
+		// real fix is per-march-point sky visibility, which needs a froxel grid.
+		{
+			static unsigned prev_ms = 0;
+			static float    sky_fade = 0.f;
+
+			// NEITHER available mask answers "can this point see the sky", and
+			// they fail in OPPOSITE directions:
+			//
+			//   sky_cluster_mask - clusters that CONTAIN sky faces. Too strict:
+			//     standing in the open on a canyon floor, the sky brushes are
+			//     far overhead in a different cluster, so this reads 0 and the
+			//     fog vanishes even with open sky directly above.
+			//   sky_visibility  - union of the PVS of sky clusters, i.e. "could
+			//     POTENTIALLY see sky". Too permissive: caves connected to the
+			//     outdoors by any sight line read 1 and fill with sky fog.
+			//
+			// So take the strict one at full strength and the PVS one at a
+			// fraction of it, and expose that fraction. pt_fog_sky_pvs 0 is the
+			// strict behaviour, 1 is the permissive one, and in between trades
+			// one artifact against the other. This is a stopgap for a real
+			// visibility test - i.e. the froxel grid - not a solution.
+			float sky_target = 0.f;
+			if (viewleaf && viewleaf->cluster >= 0) {
+				int c = viewleaf->cluster;
+				const bsp_mesh_t *wm = &vkpt_refdef.bsp_mesh_world;
+				if (wm->sky_cluster_mask[c >> 3] & (1 << (c & 7)))
+					sky_target = 1.f;
+				else if (wm->sky_visibility[c >> 3] & (1 << (c & 7)))
+					sky_target = Cvar_Get("pt_fog_sky_pvs", "0.5", CVAR_ARCHIVE)->value;
+			}
+
+			unsigned now = Sys_Milliseconds();
+			float dt = (prev_ms && now > prev_ms) ? (now - prev_ms) * 0.001f : 0.f;
+			prev_ms = now;
+			if (dt > 0.25f) dt = 0.25f;     // a hitch or a level load must not snap it
+
+			// ~250 ms to cross most of the way
+			float rate = 1.f - expf(-dt / 0.1f);
+			sky_fade += (sky_target - sky_fade) * rate;
+
+			ubo->fog_sky_fade = sky_fade;
+		}
+
+		// The map's own skybox radiance, for the fog's sky term. This is the
+		// same value that is handed to the light buffer as sky_radiance, and it
+		// is computed from the actual skybox images - unlike
+		// sun_color_ubo.sky_color, which physical_sky.comp writes and is
+		// therefore ZERO on every map that ships its own skybox.
+		ubo->fog_sky_r = avg_envmap_color[0] * ubo->pt_env_scale;
+		ubo->fog_sky_g = avg_envmap_color[1] * ubo->pt_env_scale;
+		ubo->fog_sky_b = avg_envmap_color[2] * ubo->pt_env_scale;
+	}
+
 #define UBO_CVAR_DO(name, default_value) ubo->name = cvar_##name->value;
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
@@ -3126,6 +3230,13 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
 	prepare_ubo(fd, viewleaf, &ref_mode, sky_matrix, render_world, waterLevel);
 	ubo->prev_adapted_luminance = prev_adapted_luminance;
+
+	// Tell the fog march how many model lights this frame has. Model lights are
+	// packed contiguously after the static ones, so the range it reads is
+	// [num_static_lights, +fog_num_model_lights). This must come AFTER both
+	// add_dlights() (which builds the count) and prepare_ubo() (which would
+	// otherwise overwrite it), and before the UBO is uploaded to staging.
+	ubo->fog_num_model_lights = num_model_lights;
 
 	if (cvar_tm_blend_enable->integer)
 		Vector4Copy(fd->blend, ubo->fs_blend_color);
@@ -4212,6 +4323,43 @@ static float halton(int base, int index) {
 };
 
 // Autocompletion support for ray_tracing_api cvar
+
+/*
+=================
+vkpt_fog_debug
+
+Prints what the fog march is actually being fed. Exists because the pass can run
+- and cost frame time - while producing nothing visible, and the two reasons for
+that (no model lights, or a density/brightness of zero) are indistinguishable on
+screen. Run it in-game rather than launching an instrumented build.
+=================
+*/
+static void vkpt_fog_debug(void)
+{
+	mapfog_params_t mf;
+	bool have = CL_GetMapFog(&mf);
+
+	Com_Printf("map fog: %s\n", have ? "ACTIVE" : "off (cl_fog 0, or map has no fog keys)");
+	if (have) {
+		Com_Printf("  mode %d   density %g   heightfog %g  z %.0f..%.0f  falloff %g\n",
+			mf.mode, mf.density, mf.hf_density, mf.hf_end_z, mf.hf_start_z, mf.hf_falloff);
+		Com_Printf("  fog colour %.2f %.2f %.2f   hf %.2f %.2f %.2f -> %.2f %.2f %.2f\n",
+			mf.color[0], mf.color[1], mf.color[2],
+			mf.hf_end_color[0], mf.hf_end_color[1], mf.hf_end_color[2],
+			mf.hf_start_color[0], mf.hf_start_color[1], mf.hf_start_color[2]);
+	}
+	// cl_fog 2 scatters the CLUSTER light list, which is the static lights plus
+	// any model lights injected into it - not the model lights alone. A zero
+	// model-light count is normal and no longer means the fog has nothing to
+	// scatter; the static count is the one that matters.
+	Com_Printf("  static lights: %d   (emissive surfaces + sky - the main fog light source)\n",
+		vkpt_refdef.bsp_mesh_world.num_light_polys);
+	Com_Printf("  model lights last frame: %d   (dynamic: flares, muzzle flashes, dynamic_light)\n",
+		num_model_lights);
+	Com_Printf("  cluster light list nodes: %d\n", vkpt_refdef.bsp_mesh_world.num_cluster_lights);
+}
+
+
 static void ray_tracing_api_g(genctx_t *ctx)
 {
 	Prompt_AddMatch(ctx, "auto");
@@ -4392,6 +4540,7 @@ R_Init_RTX(bool total)
 	_VK(vkpt_initialize_all(VKPT_INIT_RELOAD_SHADER));
 	_VK(vkpt_initialize_all(VKPT_INIT_SWAPCHAIN_RECREATE));
 
+	Cmd_AddCommand("fog_debug", (xcommand_t)&vkpt_fog_debug);
 	Cmd_AddCommand("reload_shader", (xcommand_t)&vkpt_reload_shader);
 	Cmd_AddCommand("reload_textures", (xcommand_t)&vkpt_reload_textures);
 	Cmd_AddCommand("show_pvs", (xcommand_t)&vkpt_show_pvs);

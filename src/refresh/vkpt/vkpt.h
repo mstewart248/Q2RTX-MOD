@@ -417,6 +417,9 @@ typedef struct bsp_mesh_s {
 	int num_cameras;
 
 	byte sky_visibility[VIS_MAX_BYTES];
+	// clusters that actually CONTAIN sky geometry, as opposed to sky_visibility
+	// above which is the far more permissive union of their PVS
+	byte sky_cluster_mask[VIS_MAX_BYTES];
 
 	aabb_t* cluster_aabbs;
 } bsp_mesh_t;
@@ -673,6 +676,7 @@ VkResult vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf);
 VkResult vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce);
 VkResult vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays);
 VkResult vkpt_pt_update_descripter_set_bindings(int idx);
+VkAccelerationStructureKHR vkpt_pt_get_geometry_tlas(int idx);
 VkResult vkpt_pt_create_all_dynamic(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo* upload_info);
 
 VkResult vkpt_asvgf_initialize(void);

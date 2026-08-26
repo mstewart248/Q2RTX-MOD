@@ -901,6 +901,7 @@ void stationarymonster_triggered_start(edict_t *self);
 void stationarymonster_triggered_spawn(edict_t *self);
 void stationarymonster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activator);
 void M_CatagorizePosition(edict_t *ent);
+void M_WorldEffects(edict_t *ent);
 bool M_CheckAttack(edict_t *self);
 void M_FlyCheck(edict_t *self);
 void M_CheckGround(edict_t *ent);

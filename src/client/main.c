@@ -714,6 +714,7 @@ void CL_ClearState(void)
     CL_ClearTEnts();
     LOC_FreeLocations();
     CL_FreeDynamicLights();
+    CL_FreeMapFog();
 
     // wipe the entire cl structure
     BSP_Free(cl.bsp);
@@ -1723,6 +1724,7 @@ void CL_Begin(void)
     CL_RegisterSounds();
     LOC_LoadLocations();
     CL_LoadDynamicLights();
+    CL_LoadMapFog();
     CL_LoadState(LOAD_NONE);
     cls.state = ca_precached;
 
@@ -2703,6 +2705,7 @@ static void CL_InitLocal(void)
     CL_InitDemos();
     LOC_Init();
     CL_InitDynamicLights();
+    CL_InitMapFog();
     CL_InitAscii();
     CL_InitEffects();
     CL_InitTEnts();

@@ -102,6 +102,7 @@ BEGIN_SHADER_STRUCT( LightBuffer )
 	float light_styles[MAX_LIGHT_STYLES];
 	uint cluster_debug_mask[MAX_LIGHT_LISTS / 32];
 	uint sky_visibility[MAX_LIGHT_LISTS / 32];
+	uint sky_cluster_mask[MAX_LIGHT_LISTS / 32];
 }
 END_SHADER_STRUCT( LightBuffer )
 

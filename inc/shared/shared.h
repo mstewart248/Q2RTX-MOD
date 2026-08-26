@@ -859,6 +859,11 @@ typedef struct {
 #define EF_ROTATE           0x00000001      // rotate (bonus items)
 #define EF_GIB              0x00000002      // leave a trail
 #define EF_GIBSCALE         0x00000003
+// rerelease - a misc_explobox burning down its fuse. This was the last free bit
+// in the 32-bit effects field (EF_GIBSCALE is the ROTATE|GIB combination, not a
+// bit of its own). The rerelease has it at bit 35 of a 64-bit field; there is no
+// room for that here, so do not add another EF_ without widening the protocol.
+#define EF_BARREL_EXPLODING 0x00000004
 #define EF_BLASTER          0x00000008      // redlight + trail
 #define EF_ROCKET           0x00000010      // redlight + trail
 #define EF_GRENADE          0x00000020

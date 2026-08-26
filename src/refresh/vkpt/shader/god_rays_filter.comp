@@ -27,6 +27,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #extension GL_EXT_samplerless_texture_functions : enable
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_nonuniform_qualifier    : enable
+// not used in this shader, but god_rays_shared.h declares the fog's TLAS and
+// the type has to be known for the header to parse
+#extension GL_EXT_ray_query               : enable
 
 #define GOD_RAYS_DESC_SET_IDX 0
 #include "god_rays_shared.h"

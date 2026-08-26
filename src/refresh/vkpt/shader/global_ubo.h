@@ -144,6 +144,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* the shaders' view, and if the exe and .spv ever go out of sync (a failed link) that */ \
 	/* silently corrupts the tm_* tone-mapping values. Appending keeps that blast radius 0. */ \
 	UBO_CVAR_DO(pt_rr_white_noise, 0) /* hashed white noise instead of the tiled blue-noise texture, per DLSS-RR guide 3.5; 0 keeps the blue noise */ \
+	UBO_CVAR_DO(pt_fog_light_scale, 1.0) /* brightness of local lights scattered in map fog (cl_fog 2) */ \
+	UBO_CVAR_DO(pt_fog_sky_scale, 1.0) /* brightness of SKY light scattered in map fog (cl_fog 2) */ \
+	UBO_CVAR_DO(pt_fog_light_knee, 2.0) /* soft roll-off point for local-light fog; lower compresses bright, light-dense maps harder */ \
 
     
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
@@ -220,6 +223,43 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	GLOBAL_UBO_VAR_LIST_DO(float,           shadow_map_depth_scale) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           god_rays_intensity) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           god_rays_eccentricity) \
+	\
+	/* rerelease per-map fog from worldspawn - see src/client/mapfog.c. */ \
+	/* KEEP IN GROUPS OF EXACTLY FOUR SCALARS - see the note at the top. */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_enable) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_density) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_density) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_falloff) \
+	\
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_start_z) /* world Z, TOP of the band    */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_end_z)   /* world Z, BOTTOM of the band */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_color_r) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_color_g) \
+	\
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_color_b) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_start_r) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_start_g) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_start_b) \
+	\
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_end_r) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_end_g) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_end_b) \
+	/* model lights sit contiguously after the static ones in light_buffer, */ \
+	/* so the fog march reads [num_static_lights, +fog_num_model_lights).   */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_num_model_lights) \
+	\
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_mode) /* 0 off, 1 sun-only, 2 local lights */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_camera_cluster) /* -1 if outside the world */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_fade) /* 0..1 sky exposure, eased; see main.c */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_sky_trace) /* 1 = trace real sky visibility */ \
+	\
+	/* The MAP's skybox radiance. sun_color_ubo.sky_color is written only by  */ \
+	/* physical_sky.comp, so it is ZERO on every map using its own skybox -   */ \
+	/* which is all of them here. This comes from avg_envmap_color instead.   */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_r) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_g) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_b) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_pad3) \
 	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             pt_fullres_fields) /* see FIELD LAYOUT note above */ \
 	GLOBAL_UBO_VAR_LIST_DO(int,             pt_field_offset) /* x offset / width of one field */ \

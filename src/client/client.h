@@ -763,6 +763,10 @@ void V_AddLightStyle(int style, float value);
 // dynamiclights.c
 //
 void CL_InitDynamicLights(void);
+void CL_InitMapFog(void);
+void CL_LoadMapFog(void);
+void CL_FreeMapFog(void);
+bool CL_GetMapFog(mapfog_params_t *out);
 void CL_LoadDynamicLights(void);
 void CL_FreeDynamicLights(void);
 void CL_AddDynamicLightsToScene(void);
@@ -895,6 +899,7 @@ void CL_Nukeblast(cl_sustain_t *self);
 void CL_WidowSplash(void);
 void CL_IonripperTrail(const vec3_t start, const vec3_t end);
 void CL_TrapParticles(centity_t *ent, const vec3_t origin);
+void CL_BarrelBurnEffect(centity_t *ent, const vec3_t origin);
 void CL_ParticleEffect3(const vec3_t org, const vec3_t dir, int color, int count);
 void CL_ParticleSteamEffect2(cl_sustain_t *self);
 

@@ -938,6 +938,14 @@ static void CL_AddPacketEntities(void)
             V_AddEntity(&ent);
         }
 
+        // rerelease: a barrel burning down its fuse. Handled here rather than in
+        // the else-if chain below, which is for movement trails - this is a
+        // stationary emitter and must not compete with them.
+        if (effects & EF_BARREL_EXPLODING) {
+            CL_BarrelBurnEffect(cent, ent.origin);
+            V_AddLight(ent.origin, 100 + (Q_rand() % 60), 1.0f, 0.6f, 0.15f);
+        }
+
         // add automatic particle trails
         if (effects & ~EF_ROTATE) {
             if (effects & EF_ROCKET) {

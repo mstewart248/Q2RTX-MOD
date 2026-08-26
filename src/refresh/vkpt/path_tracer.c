@@ -264,6 +264,23 @@ vkpt_pt_init()
 	return VK_SUCCESS;
 }
 
+/*
+=================
+vkpt_pt_get_geometry_tlas
+
+The opaque-geometry TLAS for a frame. Exposed so the volumetric fog pass can
+trace its own sky-visibility rays: it is a COMPUTE shader, and the ray tracing
+descriptor set above declares its bindings with raygen/any-hit stage flags
+unless qvk.use_ray_query is set, so the fog binds this into its own descriptor
+set rather than borrowing that one.
+=================
+*/
+VkAccelerationStructureKHR
+vkpt_pt_get_geometry_tlas(int idx)
+{
+	return tlas_geometry[idx].accel;
+}
+
 VkResult
 vkpt_pt_update_descripter_set_bindings(int idx)
 {

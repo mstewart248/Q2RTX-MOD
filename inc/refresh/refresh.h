@@ -185,6 +185,24 @@ typedef struct ref_feedback_s {
 	float       adapted_luminance;
 } ref_feedback_t;
 
+// the rerelease's per-map atmospheric fog, read off worldspawn by the client in
+// src/client/mapfog.c. These are the map's own authored values; how thick they
+// actually render is cl_fog_scale, because KEX's density-to-extinction constant
+// is not derivable from anything we have.
+typedef struct {
+    int     mode;               // cl_fog: 1 = sun-lit medium, 2 = lit by local lights
+
+    float   density;            // plain distance fog
+    vec3_t  color;
+
+    float   hf_density;         // altitude-banded fog
+    float   hf_falloff;
+    float   hf_start_z;         // world Z of the TOP of the band
+    float   hf_end_z;           // world Z of the BOTTOM; always below start
+    vec3_t  hf_start_color;
+    vec3_t  hf_end_color;
+} mapfog_params_t;
+
 typedef struct refdef_s {
     int         x, y, width, height;// in virtual screen coordinates
     float       fov_x, fov_y;

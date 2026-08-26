@@ -911,6 +911,85 @@ void CL_ParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
     }
 }
 
+/*
+===============
+CL_BarrelBurnEffect
+
+Rerelease EF_BARREL_EXPLODING - a misc_explobox counting down its fuse. Smoke
+boiling off the lid plus sparks spitting out of it. The whole thing only lives
+for 750 ms, so it is emitted hard and throttled by wall time rather than by
+frame, which keeps it looking the same at 60 and at 240 fps.
+
+fly_stoptime is the throttle, reused the way CL_TrapParticles reuses it. A
+barrel is never a corpse, so it can never also want EF_FLIES.
+===============
+*/
+void CL_BarrelBurnEffect(centity_t *ent, const vec3_t origin)
+{
+    cparticle_t *p;
+    vec3_t      top;
+    int         i;
+
+    // ~20 Hz, independent of framerate
+    if (cl.time - ent->fly_stoptime < 50)
+        return;
+    ent->fly_stoptime = cl.time;
+
+    // the barrel's bbox is 0..40 in Z with the origin at its base
+    VectorCopy(origin, top);
+    top[2] += 34;
+
+    // smoke boiling off the lid - slow, rising, fading
+    for (i = 0; i < 4; i++) {
+        p = CL_AllocParticle();
+        if (!p)
+            return;
+
+        p->time = cl.time;
+        p->color = 4 + (Q_rand() & 7);
+        p->brightness = 0.5f;
+
+        p->org[0] = top[0] + crand() * 8;
+        p->org[1] = top[1] + crand() * 8;
+        p->org[2] = top[2] + crand() * 4;
+
+        p->vel[0] = crand() * 6;
+        p->vel[1] = crand() * 6;
+        p->vel[2] = 20 + frand() * 20;
+
+        VectorClear(p->accel);
+        p->accel[2] = 8;    // keeps the column drifting up as it fades
+
+        p->alpha = 0.7f;
+        p->alphavel = -1.0f / (0.6f + frand() * 0.4f);
+    }
+
+    // sparks spitting out of it - fast, ballistic, emissive
+    for (i = 0; i < 6; i++) {
+        p = CL_AllocParticle();
+        if (!p)
+            return;
+
+        p->time = cl.time;
+        p->color = 0xe0 + (Q_rand() & 7);
+        p->brightness = cvar_pt_particle_emissive->value;
+
+        p->org[0] = top[0] + crand() * 6;
+        p->org[1] = top[1] + crand() * 6;
+        p->org[2] = top[2] + crand() * 3;
+
+        p->vel[0] = crand() * 60;
+        p->vel[1] = crand() * 60;
+        p->vel[2] = 40 + frand() * 90;
+
+        p->accel[0] = p->accel[1] = 0;
+        p->accel[2] = -PARTICLE_GRAVITY;
+
+        p->alpha = 1.0f;
+        p->alphavel = -2.0f / (0.4f + frand() * 0.3f);
+    }
+}
+
 void CL_ParticleEffectWaterSplash(const vec3_t org, const vec3_t dir, int color, int count)
 {
     vec3_t oy;

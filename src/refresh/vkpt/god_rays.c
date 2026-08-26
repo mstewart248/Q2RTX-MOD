@@ -30,7 +30,9 @@ struct
 	VkDescriptorSetLayout descriptor_set_layout;
 
 	VkDescriptorPool descriptor_pool;
-	VkDescriptorSet descriptor_set;
+	// one per frame in flight: the TLAS handle is double-buffered, so the set
+	// that names it has to be too
+	VkDescriptorSet descriptor_set[MAX_FRAMES_IN_FLIGHT];
 
 	VkImageView shadow_image_view;
 	VkSampler shadow_sampler;
@@ -144,8 +146,32 @@ void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, i
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, god_rays.pipelines[0]);
 
+	// Point this frame's set at this frame's TLAS. Writing set[idx] here is safe
+	// because the frame fence guarantees the previous use of THAT set has
+	// completed - the sets are per frame in flight for exactly this reason.
+	{
+		VkAccelerationStructureKHR tlas = vkpt_pt_get_geometry_tlas(qvk.current_frame_index);
+		if (tlas != VK_NULL_HANDLE)
+		{
+			VkWriteDescriptorSetAccelerationStructureKHR as_info = {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+				.accelerationStructureCount = 1,
+				.pAccelerationStructures = &tlas
+			};
+			VkWriteDescriptorSet as_write = {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = &as_info,
+				.dstSet = god_rays.descriptor_set[qvk.current_frame_index],
+				.dstBinding = 1,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+			};
+			vkUpdateDescriptorSets(qvk.device, 1, &as_write, 0, NULL);
+		}
+	}
+
 	VkDescriptorSet desc_sets[] = {
-		god_rays.descriptor_set,
+		god_rays.descriptor_set[qvk.current_frame_index],
 		qvk.desc_set_vertex_buffer,
 		qvk.desc_set_ubo,
 		qvk_get_current_desc_set_textures(),
@@ -173,7 +199,7 @@ void vkpt_record_god_rays_filter_command_buffer(VkCommandBuffer command_buffer)
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, god_rays.pipelines[1]);
 
 	VkDescriptorSet desc_sets[] = {
-		god_rays.descriptor_set,
+		god_rays.descriptor_set[qvk.current_frame_index],
 		qvk.desc_set_vertex_buffer,
 		qvk.desc_set_ubo,
 		qvk_get_current_desc_set_textures(),
@@ -244,11 +270,21 @@ static void create_image_views(void)
 
 static void create_pipeline_layout(void)
 {
-	VkDescriptorSetLayoutBinding bindings[1] = { 0 };
+	VkDescriptorSetLayoutBinding bindings[2] = { 0 };
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[0].descriptorCount = 1;
 	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// The opaque-geometry TLAS, so the volumetric fog can trace real
+	// sky-visibility rays. It gets its own binding here, with a COMPUTE stage
+	// flag, rather than borrowing the path tracer's ray tracing descriptor set -
+	// that one declares raygen/any-hit stages unless qvk.use_ray_query is set,
+	// which would be invalid to bind to a compute pipeline.
+	bindings[1].binding = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+	bindings[1].descriptorCount = 1;
+	bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	
 	const VkDescriptorSetLayoutCreateInfo set_layout_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -321,26 +357,31 @@ static void create_pipelines(void)
 static void create_descriptor_set(void)
 {
 	const VkDescriptorPoolSize pool_sizes[] = {
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 }
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_FRAMES_IN_FLIGHT },
+		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_FRAMES_IN_FLIGHT }
 	};
 
 	const VkDescriptorPoolCreateInfo pool_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-		.maxSets = 1,
+		.maxSets = MAX_FRAMES_IN_FLIGHT,
 		.poolSizeCount = LENGTH(pool_sizes),
 		.pPoolSizes = pool_sizes
 	};
 
 	_VK(vkCreateDescriptorPool(qvk.device, &pool_create_info, NULL, &god_rays.descriptor_pool));
 
+	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		layouts[i] = god_rays.descriptor_set_layout;
+
 	const VkDescriptorSetAllocateInfo allocate_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.descriptorPool = god_rays.descriptor_pool,
-		.descriptorSetCount = 1,
-		.pSetLayouts = &god_rays.descriptor_set_layout
+		.descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+		.pSetLayouts = layouts
 	};
 
-	_VK(vkAllocateDescriptorSets(qvk.device, &allocate_info, &god_rays.descriptor_set));
+	_VK(vkAllocateDescriptorSets(qvk.device, &allocate_info, god_rays.descriptor_set));
 }
 
 
@@ -356,24 +397,39 @@ static void update_descriptor_set(void)
 		.sampler = god_rays.shadow_sampler
 	};
 	
-	VkWriteDescriptorSet writes[1] = {
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = god_rays.descriptor_set,
-			.descriptorCount = 1,
-			.dstBinding = 0,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.pImageInfo = &image_info
-		}
-	};
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		VkWriteDescriptorSet writes[1] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = god_rays.descriptor_set[i],
+				.descriptorCount = 1,
+				.dstBinding = 0,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &image_info
+			}
+		};
 
-	vkUpdateDescriptorSets(qvk.device, LENGTH(writes), writes, 0, NULL);
+		vkUpdateDescriptorSets(qvk.device, LENGTH(writes), writes, 0, NULL);
+	}
 }
 
 bool vkpt_god_rays_enabled(const sun_light_t* sun_light)
 {
+	if (physical_sky_space->integer)
+		return false;   // looks wrong in space - the rays appear outside the station too
+
+	// cl_fog 2: the volumetric is lit by the map's own local lights, so it has to
+	// run with no sun at all. NONE of the rerelease maps have a sun - their own
+	// skyboxes contain none and sky_use_map_skybox is on by default - so gating
+	// this pass on sun_light->visible made the fog dead code on every one of them.
+	{
+		mapfog_params_t mf;
+		if (CL_GetMapFog(&mf) && mf.mode >= 2)
+			return true;
+	}
+
 	return god_rays.enable->integer
 		&& god_rays.intensity->value > 0.f
-		&& sun_light->visible
-		&& !physical_sky_space->integer;  // god rays look weird in space because they also appear outside of the station
+		&& sun_light->visible;
 }
