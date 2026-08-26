@@ -844,23 +844,128 @@ fail:
 MD5_SkinPath
 
 The rerelease re-unwrapped its skeletal meshes and ships new artwork for them
-in the same md5/ directory, so a skin cannot be taken from the .md2 path as
-written. What the .md2 still owns is the skin LIST - its order is what
-entity->skinnum indexes - so each entry is redirected by basename into the
-md5/ directory that (base_path) already points at.
+in an md5/ directory, so a skin cannot be taken from the .md2 path as written.
+What the .md2 still owns is the skin LIST - its order is what entity->skinnum
+indexes - so each entry is redirected into the md5/ directory beside it.
+
+Which md5/ directory, though, is not always the model's own. A monster names a
+skin in its own folder, so the two coincide. The player's third-person weapons
+do not: players/male/md5/w_railgun.md5mesh takes its list from
+players/male/w_railgun.md2, whose skin is models/weapons/g_rail/skin.pcx - and
+that mesh is vertex-for-vertex the world railgun, so the artwork it wants is
+the world model's, in models/weapons/g_rail/md5/. Redirecting into the MODEL's
+directory instead looked for players/male/md5/skin.png, which does not exist,
+and every held weapon rendered white.
+
+So: try the skin's own md5/ directory first and fall back to the model's. The
+stem is carried across either way - g_blast's skin is base.pcx, not skin.pcx.
 =================
 */
-static void MD5_SkinPath(const char *base_path, const char *skin, char *buffer, size_t size)
+static bool MD5_SkinExists(const char *path)
+{
+	char probe[MAX_QPATH];
+	static const char *const exts[] = { "png", "tga", "jpg", "pcx" };
+
+	for (int i = 0; i < q_countof(exts); i++) {
+		Q_snprintf(probe, sizeof(probe), "%s.%s", path, exts[i]);
+		if (FS_FileExists(probe))
+			return true;
+	}
+	return false;
+}
+
+/*
+=================
+MD5_HeldWeaponSkin
+
+The last few player-held weapons cannot be resolved by path at all. Some ship
+no .md2 to take a skin list from (the rogue/xatrix guns were never in the 1997
+game); the shotgun and the default weapon do have one, but it names
+players/male/weapon.pcx - the low-detail texture the MD2 shared with the player
+body, which has no md5-era equivalent.
+
+Each of these meshes is vertex-for-vertex identical to a world weapon model
+(verified by comparing vertex counts, triangle counts and UVs), so the artwork
+they want is that model's. There is no rule that derives these names -
+w_disrupt's counterpart is g_dist, w_grapple's is g_flareg - so the mapping is
+written out. Keyed on basename, which is what makes it serve male, female and
+cyborg alike.
+=================
+*/
+static bool MD5_HeldWeaponSkin(const char *mod_name, char *buffer, size_t size)
+{
+	static const struct {
+		const char *model;
+		const char *skin;
+	} held[] = {
+		{ "weapon",      "models/weapons/g_shotg/md5/skin"      },
+		{ "w_shotgun",   "models/weapons/g_shotg/md5/skin"      },
+		{ "w_chainfist", "models/weapons/g_chainf/md5/skin"     },
+		{ "w_disrupt",   "models/weapons/g_dist/md5/skin"       },
+		{ "w_etfrifle",  "models/weapons/g_etf_rifle/md5/skin"  },
+		{ "w_grapple",   "models/weapons/g_flareg/md5/base"     },
+		{ "w_plasma",    "models/weapons/g_beamer/md5/skin"     },
+		{ "w_plauncher", "models/weapons/g_plaunch/md5/proxskin" },
+	};
+	const char *slash;
+	char name[MAX_QPATH];
+	char *dot;
+
+	// only ever applies to a model under players/<model>/md5/
+	if (strncmp(mod_name, "players/", 8) || !strstr(mod_name, "/md5/"))
+		return false;
+
+	slash = strrchr(mod_name, '/');
+	Q_strlcpy(name, slash ? slash + 1 : mod_name, sizeof(name));
+	dot = strrchr(name, '.');
+	if (dot)
+		*dot = 0;
+
+	for (int i = 0; i < q_countof(held); i++) {
+		if (Q_stricmp(name, held[i].model))
+			continue;
+		if (!MD5_SkinExists(held[i].skin))
+			break;
+		Q_snprintf(buffer, size, "%s.png", held[i].skin);
+		return true;
+	}
+	return false;
+}
+
+static void MD5_SkinPath(const char *base_path, const char *skin,
+                         const char *mod_name, char *buffer, size_t size)
 {
 	const char *slash = strrchr(skin, '/');
 	const char *stem = slash ? slash + 1 : skin;
 	char name[MAX_QPATH];
+	char candidate[MAX_QPATH];
 	char *dot;
 
 	Q_strlcpy(name, stem, sizeof(name));
 	dot = strrchr(name, '.');
 	if (dot)
 		*dot = 0;
+
+	// the md5/ directory belonging to the SKIN, which for a monster is the
+	// same one the model lives in and for a held weapon is not
+	if (slash) {
+		size_t dirlen = (size_t)(slash - skin);
+
+		if (dirlen < sizeof(candidate)) {
+			memcpy(candidate, skin, dirlen);
+			Q_snprintf(candidate + dirlen, sizeof(candidate) - dirlen,
+			           "/md5/%s", name);
+
+			if (MD5_SkinExists(candidate)) {
+				Q_snprintf(buffer, size, "%s.png", candidate);
+				return;
+			}
+		}
+	}
+
+	// a held weapon whose .md2 skin name points at nothing usable
+	if (MD5_HeldWeaponSkin(mod_name, buffer, size))
+		return;
 
 	// MAT_Find truncates the extension anyway; the material system is what
 	// decides which image file actually backs this name
@@ -923,7 +1028,7 @@ static int MD5_LoadSkinsFromMD2(const char *mod_name, const char *base_path, mal
 			break;
 
 		FS_NormalizePath(skinname);
-		MD5_SkinPath(base_path, skinname, skinpath, sizeof(skinpath));
+		MD5_SkinPath(base_path, skinname, mod_name, skinpath, sizeof(skinpath));
 
 		mesh->materials[numskins] = MAT_Find(skinpath, IT_SKIN, IF_NONE);
 		assert(mesh->materials[numskins]);
@@ -974,9 +1079,27 @@ int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const ch
 	numskins = MD5_LoadSkinsFromMD2(mod_name, base_path, &probe);
 	if (numskins == 0)
 	{
-		// no readable .md2 to take the list from; the rerelease always names
-		// the lone skin of such a model "skin"
-		Q_snprintf(default_skin, sizeof(default_skin), "%s/skin.png", base_path);
+		// No readable .md2 to take the list from. The rerelease usually names
+		// the lone skin of such a model "skin", but not always - the carried
+		// CTF flags are players/male/md5/flag1.md5mesh + flag1.png - so try
+		// the model's own name before falling back to that convention.
+		const char *slash = strrchr(mod_name, '/');
+		const char *stem = slash ? slash + 1 : mod_name;
+		char name[MAX_QPATH], probe_path[MAX_QPATH];
+		char *dot;
+
+		Q_strlcpy(name, stem, sizeof(name));
+		dot = strrchr(name, '.');
+		if (dot)
+			*dot = 0;
+
+		Q_snprintf(probe_path, sizeof(probe_path), "%s/%s", base_path, name);
+
+		if (MD5_SkinExists(probe_path))
+			Q_snprintf(default_skin, sizeof(default_skin), "%s.png", probe_path);
+		else if (!MD5_HeldWeaponSkin(mod_name, default_skin, sizeof(default_skin)))
+			Q_snprintf(default_skin, sizeof(default_skin), "%s/skin.png", base_path);
+
 		probe.materials[0] = MAT_Find(default_skin, IT_SKIN, IF_NONE);
 		numskins = 1;
 	}
