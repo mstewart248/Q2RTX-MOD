@@ -188,6 +188,9 @@ struct LightPolygon
 	float light_style_scale;
 	float prev_style_scale;
 	float type;
+	// DYNLIGHT_SPOT only: DYNLIGHT_SPOT_EMISSION_PROFILE_*, which says how
+	// positions[1].yz are to be read. See spotlight_falloff().
+	float spot_emission_profile;
 };
 
 // The buffers with primitive data, currently two of them: world and instanced.
@@ -482,6 +485,7 @@ get_light_polygon(uint index)
 	light.light_style_scale = p3.x;
 	light.prev_style_scale = p3.y;
 	light.type = p3.z;
+	light.spot_emission_profile = p3.w;
 	return light;
 }
 

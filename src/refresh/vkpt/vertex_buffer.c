@@ -634,7 +634,9 @@ copy_light(const light_poly_t* light, float* vblight, const float* sky_radiance)
 	vblight[12] = style_scale;
 	vblight[13] = prev_style;
 	vblight[14] = light->type;
-	vblight[15] = 0.f;
+	// Only the dynamic spot lights fill spot_emission_profile in; every other
+	// light type reaches here without it set.
+	vblight[15] = (light->type == DYNLIGHT_SPOT) ? (float)light->spot_emission_profile : 0.f;
 }
 
 extern char cluster_debug_mask[VIS_MAX_BYTES];

@@ -1779,23 +1779,6 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 		instance->material |= MATERIAL_FLAG_LIGHT;
 }
 
-static void add_dlight_spot(const dlight_t* light, DynLightData* dynlight_data)
-{
-	// Copy spot data
-	VectorCopy(light->spot.direction, dynlight_data->spot_direction);
-	switch(light->spot.emission_profile)
-	{
-	case DLIGHT_SPOT_EMISSION_PROFILE_FALLOFF:
-		dynlight_data->type |= DYNLIGHT_SPOT_EMISSION_PROFILE_FALLOFF << 16;
-		dynlight_data->spot_data = floatToHalf(light->spot.cos_total_width) | (floatToHalf(light->spot.cos_falloff_start) << 16);
-		break;
-	case DLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE:
-		dynlight_data->type |= DYNLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE << 16;
-		dynlight_data->spot_data = floatToHalf(light->spot.total_width) | (light->spot.texture << 16);
-		break;
-	}
-}
-
 static void
 add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, int* light_entity_ids)
 {
@@ -1832,8 +1815,23 @@ add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, 
 				light->type = DYNLIGHT_SPOT;
 				// Copy spot data
 				VectorCopy(dlight->spot.direction, light->positions + 6);
-				light->positions[4] = dlight->spot.cos_total_width;
-				light->positions[5] = dlight->spot.cos_falloff_start;
+				// The two emission profiles overlap in a union in dlight_t, so the
+				// cos_* fields hold garbage for a texture-profile light and must
+				// never be read for one. positions[4]/[5] mean whatever the profile
+				// recorded in spot_emission_profile says they mean; the shader reads
+				// them back the same way in spotlight_falloff().
+				light->spot_emission_profile = dlight->spot.emission_profile;
+				switch (dlight->spot.emission_profile) {
+				case DLIGHT_SPOT_EMISSION_PROFILE_FALLOFF:
+					light->positions[4] = dlight->spot.cos_total_width;
+					light->positions[5] = dlight->spot.cos_falloff_start;
+					break;
+				case DLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE:
+					// cone half-angle in radians, and the 1D profile texture index
+					light->positions[4] = dlight->spot.total_width;
+					light->positions[5] = (float)dlight->spot.texture;
+					break;
+				}
 				hash.model = 0xFD;
 				break;
 			}

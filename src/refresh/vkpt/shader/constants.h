@@ -143,7 +143,6 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define SHADER_MAX_ENTITIES                  8192
 #define SHADER_MAX_BSP_ENTITIES              8192
-#define MAX_LIGHT_SOURCES                    32
 #define MAX_LIGHT_STYLES                     64
 #define MAX_MODEL_LIGHTS                     16384
 

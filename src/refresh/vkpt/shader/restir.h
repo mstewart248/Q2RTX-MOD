@@ -160,7 +160,7 @@ get_unshadowed_path_contrib(
 		m = projected_sphere_area(light.positions, position, normal, view_direction, phong_exp, phong_scale, phong_weight);
 		break;
 	case DYNLIGHT_SPOT:
-		m = projected_spotlight_area(light.positions, position, normal, view_direction, phong_exp, phong_scale, phong_weight);
+		m = projected_spotlight_area(light.positions, light.spot_emission_profile, position, normal, view_direction, phong_exp, phong_scale, phong_weight);
 		break;
 	}
 
@@ -230,7 +230,7 @@ process_selected_light_restir(
 			pos_on_light_polygonal = sample_projected_sphere(position, light.positions, light_position, light_normal, polygonal_light_pdfw);
 			break;
 		case DYNLIGHT_SPOT:
-			pos_on_light_polygonal = sample_projected_spotlight(position, light.positions, light_position, light_normal, polygonal_light_pdfw);
+			pos_on_light_polygonal = sample_projected_spotlight(position, light.positions, light.spot_emission_profile, light_position, light_normal, polygonal_light_pdfw);
 			break;
 		}
 

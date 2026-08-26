@@ -119,6 +119,9 @@ typedef struct light_poly_s {
 	int style;
 	float emissive_factor;
 	int type;
+	// For DYNLIGHT_SPOT only: which emission profile positions[4] and positions[5]
+	// describe. See add_dlights() - the two profiles use those slots differently.
+	int spot_emission_profile;
 } light_poly_t;
 
 typedef struct model_s {
