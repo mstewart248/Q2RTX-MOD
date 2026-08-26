@@ -376,7 +376,7 @@ than the straight solution.
 void PredictAim(edict_t *target, vec3_t start, float bolt_speed, bool eye_height,
                 float offset, vec3_t aimdir, vec3_t aimpoint)
 {
-    vec3_t  dir, vec;
+    vec3_t  dir, vec, ndir, nvec;
     float   dist, time;
 
     if (!target || !target->inuse) {
@@ -390,11 +390,33 @@ void PredictAim(edict_t *target, vec3_t start, float bolt_speed, bool eye_height
         dir[2] += target->viewheight;
 
     dist = VectorLength(dir);
-    time = dist / bolt_speed;
+
+    // A hitscan attack passes bolt_speed 0 - it has no travel time to lead.
+    // Dividing anyway gives time == +infinity, and the VectorMA below then
+    // produces an infinite (or, against a stationary target, NaN) aim point:
+    // the shot goes off in a meaningless direction and hits nothing. The
+    // rerelease guards this in its own PredictAim; this copy predates that.
+    if (bolt_speed)
+        time = dist / bolt_speed;
+    else
+        time = 0;
 
     VectorMA(target->s.origin, time - offset, target->velocity, vec);
     if (eye_height)
         vec[2] += target->viewheight;
+
+    // "went backwards..." (the rerelease's own name for it): a fast enough
+    // target can lead the prediction to a point behind the shooter. Aim
+    // straight at them instead of firing away from them.
+    VectorCopy(dir, ndir);
+    VectorNormalize(ndir);
+    VectorSubtract(vec, start, nvec);
+    VectorNormalize(nvec);
+    if (DotProduct(ndir, nvec) < 0) {
+        VectorCopy(target->s.origin, vec);
+        if (eye_height)
+            vec[2] += target->viewheight;
+    }
 
     if (aimdir) {
         VectorSubtract(vec, start, aimdir);

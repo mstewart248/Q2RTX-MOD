@@ -163,6 +163,7 @@ static const save_field_t entityfields[] = {
     E(teammaster),
 
     E(proboscus),
+    E(beam),
     E(mynoise),
     E(mynoise2),
 
@@ -877,7 +878,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    43
+#define SAVE_VERSION    45
 
 /*
 ============

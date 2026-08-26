@@ -29,6 +29,7 @@ SET(SRC_BASEQ2
 	baseq2/g_utils.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c
+	baseq2/m_arachnid.c
 	baseq2/m_berserk.c
 	baseq2/m_boss2.c
 	baseq2/m_boss3.c
@@ -51,6 +52,7 @@ SET(SRC_BASEQ2
 	baseq2/m_move.c
 	baseq2/m_mutant.c
 	baseq2/m_parasite.c
+	baseq2/m_shambler.c
 	baseq2/m_soldier.c
 	baseq2/m_stalker.c
 	baseq2/m_supertank.c

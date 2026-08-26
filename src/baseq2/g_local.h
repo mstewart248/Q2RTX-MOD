@@ -886,6 +886,7 @@ void monster_fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage
 void monster_fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype);
 void monster_fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
+void monster_fire_hyper_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_dabeam(edict_t *self);
@@ -960,6 +961,14 @@ void ThrowGibACID(edict_t *self, char *gibname, int damage, int type);
 void ThrowHeadACID(edict_t *self, char *gibname, int damage, int type);
 void ThrowClientHead(edict_t *self, int damage);
 void ThrowGib(edict_t *self, char *gibname, int damage, int type);
+// The LUDICROUS_GIBS() set. Every call site is already inside a gate, but
+// without these declarations each one compiled implicitly - nothing was
+// checking the argument types, and MSVC warned C4013 in 17 monster files.
+void ThrowGibRail(edict_t *self, char *gibname, int damage, int type);
+void ThrowGibDisposible(edict_t *self, char *gibname, int damage, int type);
+void ThrowHeadDisposible(edict_t *self, char *gibname, int damage, int type);
+void ThrowGibNoExplode(edict_t *self, char *gibname, int damage, int type);
+qboolean InflictorGibExplosion(edict_t *inflictor, edict_t *self);
 void BecomeExplosion1(edict_t *self);
 
 #define CLOCK_MESSAGE_SIZE  16
@@ -1419,6 +1428,13 @@ struct edict_s {
     // rerelease: the parasite's proboscis barb, while one is out. Lives on the
     // parasite; the barb itself points back with ->owner.
     edict_t     *proboscus;
+
+    // rerelease: the shambler's lightning beam entity, while one is up.
+    // NOTE the client discards the MODEL on any RF_BEAM entity
+    // (src/client/entities.c sets ent.model = 0), so this draws as a plain
+    // coloured beam rather than the lightning model - the same limitation the
+    // parasite's proboscis hit.
+    edict_t     *beam;
 
     edict_t     *mynoise;       // can go in client only
     edict_t     *mynoise2;

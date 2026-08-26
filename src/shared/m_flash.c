@@ -274,4 +274,10 @@ const vec3_t monster_flash_offset[256] = {
     [MZ2_GUNCMDR_GRENADE_CROUCH_1] = { 8.0f, 40.0f, 18.0f },
     [MZ2_GUNCMDR_GRENADE_CROUCH_2] = { 29.0f, 16.0f, 19.0f },
     [MZ2_GUNCMDR_GRENADE_CROUCH_3] = { 4.7f, -30.0f, 20.0f },
+
+    // monster_arachnid, id's own offsets
+    [MZ2_ARACHNID_RAIL1]    = { 58.0f, 20.0f, 17.2f },
+    [MZ2_ARACHNID_RAIL2]    = { 64.0f, -22.0f, 24.0f },
+    [MZ2_ARACHNID_RAIL_UP1] = { 37.0f, 13.0f, 72.0f },
+    [MZ2_ARACHNID_RAIL_UP2] = { 58.0f, -25.0f, 72.0f },
 };

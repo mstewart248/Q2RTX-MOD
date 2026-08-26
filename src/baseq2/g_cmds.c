@@ -499,8 +499,15 @@ void Cmd_SpawnMonster_f(edict_t *ent)
 
     ED_CallSpawn(monster);
 
-    if (!monster->inuse) {
+    // ED_CallSpawn does NOT free the edict when the classname has no spawn
+    // function - it only prints - so `inuse` is still set on a name that does
+    // not exist. Testing for a real monster is what actually catches that:
+    // FoundTarget below reaches monsterinfo.run, which is NULL on an entity
+    // that never spawned, and a typo'd classname took the whole game down.
+    if (!monster->inuse || !monster->monsterinfo.run) {
         gi.cprintf(ent, PRINT_HIGH, "%s did not spawn\n", classname);
+        if (monster->inuse)
+            G_FreeEdict(monster);
         return;
     }
 

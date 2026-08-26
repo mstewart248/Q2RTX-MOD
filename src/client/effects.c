@@ -655,6 +655,11 @@ void CL_MuzzleFlash2(void)
     case MZ2_GLADIATOR_RAILGUN_1:
     case MZ2_CARRIER_RAILGUN:
     case MZ2_WIDOW_RAIL:
+    // rerelease: the arachnid's railgun, same blue-white as the others
+    case MZ2_ARACHNID_RAIL1:
+    case MZ2_ARACHNID_RAIL2:
+    case MZ2_ARACHNID_RAIL_UP1:
+    case MZ2_ARACHNID_RAIL_UP2:
         VectorSet(dl->color, 0.5f, 0.5f, 1.0f);
         break;
 

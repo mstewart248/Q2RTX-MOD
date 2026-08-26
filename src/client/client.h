@@ -856,6 +856,9 @@ void CL_BlasterParticles(const vec3_t org, const vec3_t dir);
 void CL_ExplosionParticles(const vec3_t org);
 void CL_BFGExplosionParticles(const vec3_t org);
 void CL_BlasterTrail(const vec3_t start, const vec3_t end);
+// "Hyoer" is the spelling in effects.c; declared as-is rather than renamed.
+void CL_HyoerBlasterTrail(vec3_t start, vec3_t end);
+void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags);
 void CL_OldRailTrail(void);
 void CL_BubbleTrail(const vec3_t start, const vec3_t end);
 void CL_FlagTrail(const vec3_t start, const vec3_t end, int color);

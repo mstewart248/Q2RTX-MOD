@@ -129,6 +129,7 @@ void SP_misc_eastertank(edict_t *self);
 void SP_misc_easterchick(edict_t *self);
 void SP_misc_easterchick2(edict_t *self);
 
+void SP_monster_arachnid(edict_t *self);
 void SP_monster_berserk(edict_t *self);
 void SP_monster_gladiator(edict_t *self);
 void SP_monster_gekk(edict_t *self);
@@ -137,6 +138,7 @@ void SP_monster_gunner(edict_t *self);
 void SP_monster_guncmdr(edict_t *self);
 void SP_monster_infantry(edict_t *self);
 void SP_monster_soldier_light(edict_t *self);
+void SP_monster_shambler(edict_t *self);
 void SP_monster_soldier(edict_t *self);
 void SP_monster_soldier_ss(edict_t *self);
 void SP_monster_soldier_ripper(edict_t *self);
@@ -292,6 +294,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"misc_easterchick", SP_misc_easterchick},
     {"misc_easterchick2", SP_misc_easterchick2},
 
+    {"monster_arachnid", SP_monster_arachnid},
     {"monster_berserk", SP_monster_berserk},
     {"monster_gladiator", SP_monster_gladiator},
     {"monster_gekk", SP_monster_gekk},
@@ -300,6 +303,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_guncmdr", SP_monster_guncmdr},
     {"monster_infantry", SP_monster_infantry},
     {"monster_soldier_light", SP_monster_soldier_light},
+    {"monster_shambler", SP_monster_shambler},
     {"monster_soldier", SP_monster_soldier},
     {"monster_soldier_ss", SP_monster_soldier_ss},
     {"monster_soldier_ripper", SP_monster_soldier_ripper},

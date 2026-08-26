@@ -11,6 +11,15 @@ extern int actor_move_run;
 extern int actor_move_stand;
 extern int actor_move_taunt;
 extern int actor_move_walk;
+extern int arachnid_attack1;
+extern int arachnid_attack_up1;
+extern int arachnid_melee;
+extern int arachnid_move_death;
+extern int arachnid_move_pain1;
+extern int arachnid_move_pain2;
+extern int arachnid_move_run;
+extern int arachnid_move_stand;
+extern int arachnid_move_walk;
 extern int berserk_move_attack_club;
 extern int berserk_move_attack_slam;
 extern int berserk_move_attack_spike;
@@ -313,6 +322,15 @@ extern int parasite_move_start_fidget;
 extern int parasite_move_start_run;
 extern int parasite_move_start_walk;
 extern int parasite_move_walk;
+extern int shambler_attack_magic;
+extern int shambler_attack_smash;
+extern int shambler_attack_swingl;
+extern int shambler_attack_swingr;
+extern int shambler_move_death;
+extern int shambler_move_pain;
+extern int shambler_move_run;
+extern int shambler_move_stand;
+extern int shambler_move_walk;
 extern int soldier_move_attack1;
 extern int soldier_move_attack2;
 extern int soldier_move_attack3;
@@ -398,6 +416,13 @@ extern void actor_walk(void);
 extern void AngleMove_Begin(void);
 extern void AngleMove_Done(void);
 extern void AngleMove_Final(void);
+extern void arachnid_attack(void);
+extern void arachnid_die(void);
+extern void arachnid_pain(void);
+extern void arachnid_run(void);
+extern void arachnid_sight(void);
+extern void arachnid_stand(void);
+extern void arachnid_walk(void);
 extern void barrel_burn(void);
 extern void barrel_delay(void);
 extern void barrel_explode(void);
@@ -720,6 +745,15 @@ extern void rotating_light_killed(void);
 extern void rotating_light_use(void);
 extern void rotating_touch(void);
 extern void rotating_use(void);
+extern void shambler_attack(void);
+extern void shambler_die(void);
+extern void shambler_idle(void);
+extern void shambler_melee(void);
+extern void shambler_pain(void);
+extern void shambler_run(void);
+extern void shambler_sight(void);
+extern void shambler_stand(void);
+extern void shambler_walk(void);
 extern void smart_water_blocked(void);
 extern void smart_water_go_up(void);
 extern void soldier_attack(void);
@@ -1079,6 +1113,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, use_target_story },
 { P_use, Use_Target_Tent },
 { P_pain, actor_pain },
+{ P_pain, arachnid_pain },
 { P_pain, berserk_pain },
 { P_pain, boss2_pain },
 { P_pain, brain_pain },
@@ -1100,12 +1135,14 @@ const save_ptr_t save_ptrs[] = {
 { P_pain, mutant_pain },
 { P_pain, parasite_pain },
 { P_pain, player_pain },
+{ P_pain, shambler_pain },
 { P_pain, soldier_pain },
 { P_pain, stalker_pain },
 { P_pain, supertank_pain },
 { P_pain, tank_pain },
 { P_pain, turret_pain },
 { P_die, actor_die },
+{ P_die, arachnid_die },
 { P_die, barrel_delay },
 { P_die, berserk_die },
 { P_die, body_die },
@@ -1138,6 +1175,7 @@ const save_ptr_t save_ptrs[] = {
 { P_die, player_die },
 { P_die, proboscis_die },
 { P_die, rotating_light_killed },
+{ P_die, shambler_die },
 { P_die, soldier_die },
 { P_die, stalker_die },
 { P_die, supertank_die },
@@ -1170,6 +1208,15 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &actor_move_stand },
 { P_monsterinfo_currentmove, &actor_move_taunt },
 { P_monsterinfo_currentmove, &actor_move_walk },
+{ P_monsterinfo_currentmove, &arachnid_attack1 },
+{ P_monsterinfo_currentmove, &arachnid_attack_up1 },
+{ P_monsterinfo_currentmove, &arachnid_melee },
+{ P_monsterinfo_currentmove, &arachnid_move_death },
+{ P_monsterinfo_currentmove, &arachnid_move_pain1 },
+{ P_monsterinfo_currentmove, &arachnid_move_pain2 },
+{ P_monsterinfo_currentmove, &arachnid_move_run },
+{ P_monsterinfo_currentmove, &arachnid_move_stand },
+{ P_monsterinfo_currentmove, &arachnid_move_walk },
 { P_monsterinfo_currentmove, &berserk_move_attack_club },
 { P_monsterinfo_currentmove, &berserk_move_attack_slam },
 { P_monsterinfo_currentmove, &berserk_move_attack_spike },
@@ -1472,6 +1519,15 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &parasite_move_start_run },
 { P_monsterinfo_currentmove, &parasite_move_start_walk },
 { P_monsterinfo_currentmove, &parasite_move_walk },
+{ P_monsterinfo_currentmove, &shambler_attack_magic },
+{ P_monsterinfo_currentmove, &shambler_attack_smash },
+{ P_monsterinfo_currentmove, &shambler_attack_swingl },
+{ P_monsterinfo_currentmove, &shambler_attack_swingr },
+{ P_monsterinfo_currentmove, &shambler_move_death },
+{ P_monsterinfo_currentmove, &shambler_move_pain },
+{ P_monsterinfo_currentmove, &shambler_move_run },
+{ P_monsterinfo_currentmove, &shambler_move_stand },
+{ P_monsterinfo_currentmove, &shambler_move_walk },
 { P_monsterinfo_currentmove, &soldier_move_attack1 },
 { P_monsterinfo_currentmove, &soldier_move_attack2 },
 { P_monsterinfo_currentmove, &soldier_move_attack3 },
@@ -1548,6 +1604,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &turret_move_seek },
 { P_monsterinfo_currentmove, &turret_move_stand },
 { P_monsterinfo_stand, actor_stand },
+{ P_monsterinfo_stand, arachnid_stand },
 { P_monsterinfo_stand, berserk_stand },
 { P_monsterinfo_stand, boss2_stand },
 { P_monsterinfo_stand, brain_stand },
@@ -1568,6 +1625,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_stand, medic_stand },
 { P_monsterinfo_stand, mutant_stand },
 { P_monsterinfo_stand, parasite_stand },
+{ P_monsterinfo_stand, shambler_stand },
 { P_monsterinfo_stand, soldier_blind },
 { P_monsterinfo_stand, soldier_stand },
 { P_monsterinfo_stand, stalker_stand },
@@ -1583,6 +1641,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_idle, medic_idle },
 { P_monsterinfo_idle, mutant_idle },
 { P_monsterinfo_idle, parasite_idle },
+{ P_monsterinfo_idle, shambler_idle },
 { P_monsterinfo_idle, stalker_idle },
 { P_monsterinfo_idle, tank_idle },
 { P_monsterinfo_search, berserk_search },
@@ -1599,6 +1658,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_search, supertank_search },
 { P_monsterinfo_search, turret_search },
 { P_monsterinfo_walk, actor_walk },
+{ P_monsterinfo_walk, arachnid_walk },
 { P_monsterinfo_walk, berserk_walk },
 { P_monsterinfo_walk, boss2_walk },
 { P_monsterinfo_walk, brain_walk },
@@ -1619,12 +1679,14 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_walk, medic_walk },
 { P_monsterinfo_walk, mutant_walk },
 { P_monsterinfo_walk, parasite_start_walk },
+{ P_monsterinfo_walk, shambler_walk },
 { P_monsterinfo_walk, soldier_walk },
 { P_monsterinfo_walk, stalker_walk },
 { P_monsterinfo_walk, supertank_walk },
 { P_monsterinfo_walk, tank_walk },
 { P_monsterinfo_walk, turret_walk },
 { P_monsterinfo_run, actor_run },
+{ P_monsterinfo_run, arachnid_run },
 { P_monsterinfo_run, berserk_run },
 { P_monsterinfo_run, boss2_run },
 { P_monsterinfo_run, brain_run },
@@ -1645,6 +1707,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_run, medic_run },
 { P_monsterinfo_run, mutant_run },
 { P_monsterinfo_run, parasite_start_run },
+{ P_monsterinfo_run, shambler_run },
 { P_monsterinfo_run, soldier_run },
 { P_monsterinfo_run, stalker_run },
 { P_monsterinfo_run, supertank_run },
@@ -1654,6 +1717,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_dodge, M_MonsterDodge },
 { P_monsterinfo_dodge, stalker_dodge },
 { P_monsterinfo_attack, actor_attack },
+{ P_monsterinfo_attack, arachnid_attack },
 { P_monsterinfo_attack, berserk_attack },
 { P_monsterinfo_attack, boss2_attack },
 { P_monsterinfo_attack, brain_attack },
@@ -1672,6 +1736,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_attack, medic_attack },
 { P_monsterinfo_attack, mutant_jump },
 { P_monsterinfo_attack, parasite_attack },
+{ P_monsterinfo_attack, shambler_attack },
 { P_monsterinfo_attack, soldier_attack },
 { P_monsterinfo_attack, stalker_attack_ranged },
 { P_monsterinfo_attack, supertank_attack },
@@ -1686,7 +1751,9 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_melee, gekk_melee },
 { P_monsterinfo_melee, gladiator_melee },
 { P_monsterinfo_melee, mutant_melee },
+{ P_monsterinfo_melee, shambler_melee },
 { P_monsterinfo_melee, stalker_attack_melee },
+{ P_monsterinfo_sight, arachnid_sight },
 { P_monsterinfo_sight, berserk_sight },
 { P_monsterinfo_sight, brain_sight },
 { P_monsterinfo_sight, carrier_sight },
@@ -1704,6 +1771,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sight, medic_sight },
 { P_monsterinfo_sight, mutant_sight },
 { P_monsterinfo_sight, parasite_sight },
+{ P_monsterinfo_sight, shambler_sight },
 { P_monsterinfo_sight, soldier_sight },
 { P_monsterinfo_sight, stalker_sight },
 { P_monsterinfo_sight, tank_sight },

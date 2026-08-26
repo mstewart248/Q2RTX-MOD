@@ -1110,6 +1110,10 @@ enum {
     MZ2_GUNCMDR_GRENADE_FRONT_3,
     MZ2_GUNCMDR_GRENADE_CROUCH_1, MZ2_GUNCMDR_GRENADE_CROUCH_2,
     MZ2_GUNCMDR_GRENADE_CROUCH_3,
+
+    // Rerelease: monster_arachnid's railgun, level and angled up. APPENDED.
+    MZ2_ARACHNID_RAIL1, MZ2_ARACHNID_RAIL2,
+    MZ2_ARACHNID_RAIL_UP1, MZ2_ARACHNID_RAIL_UP2,
 };
 
 extern const vec3_t monster_flash_offset[256];
