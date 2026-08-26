@@ -859,6 +859,121 @@ void SP_target_earthquake(edict_t *self)
     self->noise_index = gi.soundindex("world/quake.wav");
 }
 
+/*QUAKED target_steam (1 0 0) (-8 -8 -8) (8 8 8)
+A jet of particles along a line - steam, sparks, dripping water and so on.
+Ported from src/rerelease/rogue/g_rogue_newtarg.cpp.
+
+It emits only when USED, so every one of these needs something poking it: the
+rerelease maps drive them from trigger_multiple, trigger_relay and func_timer.
+
+"speed"     particle velocity, default 75. Also sets the width of the base -
+            faster is wider. Stored in `style`, because `speed` is reused.
+"count"     number of particles, default 32
+"sounds"    palette colour, default 8 (steam). The effect spans colour..colour+6.
+            224 sparks, 176 blue water, 80 brown water, 208 slime, 232 blood
+"wait"      seconds to run. Taken from the entity that used us when unset, so a
+            func_timer's own wait drives it.
+"target"    aim at this entity instead of using "angle"
+
+The client half of this already existed - TE_STEAM, CL_ParseSteam() and the
+cl_sustain system in src/client/tent.c - so this is game side only.
+*/
+void use_target_steam(edict_t *self, edict_t *other, edict_t *activator)
+{
+    // Matches the id original: an id used to tie the repeating (sustained)
+    // effect on the client to this emitter across frames. -1 means one-shot.
+    static int nextid;
+
+    vec3_t  point;
+
+    if (nextid > 20000)
+        nextid = nextid % 20000;
+    nextid++;
+
+    // Take the timing from whatever used us, unless the mapper set it. The
+    // guard means this is resolved once and then cached in self->wait.
+    if (!self->wait) {
+        if (other)
+            self->wait = other->wait * 1000;
+        else
+            self->wait = 1000;
+    }
+
+    // re-aim every time, in case the target moved
+    if (self->enemy) {
+        VectorAdd(self->enemy->absmin, self->enemy->absmax, point);
+        VectorScale(point, 0.5f, point);
+        VectorSubtract(point, self->s.origin, self->movedir);
+        VectorNormalize(self->movedir);
+    }
+
+    // (id computes a `point` offset along movedir here and then never uses it -
+    // it writes s.origin either way. Not reproduced.)
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_STEAM);
+    if (self->wait > 100)
+        gi.WriteShort(nextid);
+    else
+        gi.WriteShort(-1);          // one-shot puff, no sustain slot
+    gi.WriteByte(self->count);
+    gi.WritePosition(self->s.origin);
+    gi.WriteDir(self->movedir);
+    gi.WriteByte(self->sounds & 0xff);
+    gi.WriteShort((int)self->style);
+    if (self->wait > 100)
+        gi.WriteLong((int)self->wait);      // only the sustained form sends this
+    gi.multicast(self->s.origin, MULTICAST_PVS);
+}
+
+void target_steam_start(edict_t *self)
+{
+    edict_t *ent;
+
+    self->use = use_target_steam;
+
+    if (self->target) {
+        ent = G_Find(NULL, FOFS(targetname), self->target);
+        if (!ent)
+            gi.dprintf("%s: target %s not found\n", self->classname, self->target);
+        self->enemy = ent;
+    } else {
+        G_SetMovedir(self->s.angles, self->movedir);
+    }
+
+    if (!self->count)
+        self->count = 32;
+    if (!self->style)
+        self->style = 75;
+    if (!self->sounds)
+        self->sounds = 8;
+    if (self->wait)
+        self->wait *= 1000;     // the key is in seconds, the wire wants ms
+
+    // both go over the wire as a single byte
+    self->sounds &= 0xff;
+    self->count &= 0xff;
+
+    self->svflags = SVF_NOCLIENT;
+
+    gi.linkentity(self);
+}
+
+void SP_target_steam(edict_t *self)
+{
+    // "speed" is moved into style because the wire field is the particle
+    // velocity AND the width of the jet
+    self->style = (int)self->speed;
+
+    if (self->target) {
+        // defer, so the aim entity is guaranteed to have spawned
+        self->think = target_steam_start;
+        self->nextthink = level.framenum + 1 * BASE_FRAMERATE;
+    } else {
+        target_steam_start(self);
+    }
+}
+
 /*QUAKED target_anger (1 0 0) (-8 -8 -8) (8 8 8)
 Points the monster named by "target" at the entity named by "killtarget", making
 the latter a valid enemy even if it is not a monster. Ported from

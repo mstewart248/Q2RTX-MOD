@@ -479,6 +479,15 @@ void CL_MuzzleFlash2(void)
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("gunner/gunatck2.wav"), 1, ATTN_NORM, 0);
         break;
 
+    // rerelease: the gun commander's flechette chaingun. Its own sound, and no
+    // bullet puff - it fires darts, not bullets.
+    case MZ2_GUNCMDR_CHAINGUN_1:
+    case MZ2_GUNCMDR_CHAINGUN_2:
+        VectorSet(dl->color, 1, 1, 0);
+        CL_SmokeAndFlash(origin);
+        S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("guncmdr/gcdratck2.wav"), 1, ATTN_NORM, 0);
+        break;
+
     case MZ2_ACTOR_MACHINEGUN_1:
     case MZ2_SUPERTANK_MACHINEGUN_1:
     case MZ2_SUPERTANK_MACHINEGUN_2:
@@ -626,6 +635,21 @@ void CL_MuzzleFlash2(void)
     case MZ2_GUNNER_GRENADE2_4:
         VectorSet(dl->color, 1, 0.5f, 0);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("gunner/gunatck3.wav"), 1, ATTN_NORM, 0);
+        break;
+
+    // rerelease: the gun commander's three grenade throws - mortar (lobbed
+    // high), front (straight ahead) and crouch (fired from a duck).
+    case MZ2_GUNCMDR_GRENADE_MORTAR_1:
+    case MZ2_GUNCMDR_GRENADE_MORTAR_2:
+    case MZ2_GUNCMDR_GRENADE_MORTAR_3:
+    case MZ2_GUNCMDR_GRENADE_FRONT_1:
+    case MZ2_GUNCMDR_GRENADE_FRONT_2:
+    case MZ2_GUNCMDR_GRENADE_FRONT_3:
+    case MZ2_GUNCMDR_GRENADE_CROUCH_1:
+    case MZ2_GUNCMDR_GRENADE_CROUCH_2:
+    case MZ2_GUNCMDR_GRENADE_CROUCH_3:
+        VectorSet(dl->color, 1, 0.5f, 0);
+        S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("guncmdr/gcdratck3.wav"), 1, ATTN_NORM, 0);
         break;
 
     case MZ2_GLADIATOR_RAILGUN_1:

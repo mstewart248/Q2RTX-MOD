@@ -458,59 +458,101 @@ void gunner_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
 }
 
 
-void gunner_duck_down(edict_t *self)
-{
-    if (self->monsterinfo.aiflags & AI_DUCKED)
-        return;
-    self->monsterinfo.aiflags |= AI_DUCKED;
-    if (skill->value >= 2) {
-        if (random() > 0.5f)
-            GunnerGrenade(self);
-    }
 
-    self->maxs[2] -= 32;
-    self->takedamage = DAMAGE_YES;
-    self->monsterinfo.pause_framenum = level.framenum + 1 * BASE_FRAMERATE;
-    gi.linkentity(self);
-}
 
-void gunner_duck_hold(edict_t *self)
-{
-    if (level.framenum >= self->monsterinfo.pause_framenum)
-        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
-    else
-        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
-}
-
-void gunner_duck_up(edict_t *self)
-{
-    self->monsterinfo.aiflags &= ~AI_DUCKED;
-    self->maxs[2] += 32;
-    self->takedamage = DAMAGE_AIM;
-    gi.linkentity(self);
-}
 
 mframe_t gunner_frames_duck [] = {
-    { ai_move, 1,  gunner_duck_down },
+    { ai_move, 1,  monster_duck_down },
     { ai_move, 1,  NULL },
-    { ai_move, 1,  gunner_duck_hold },
+    { ai_move, 1,  monster_duck_hold },
     { ai_move, 0,  NULL },
     { ai_move, -1, NULL },
     { ai_move, -1, NULL },
-    { ai_move, 0,  gunner_duck_up },
+    { ai_move, 0,  monster_duck_up },
     { ai_move, -1, NULL }
 };
 mmove_t gunner_move_duck = {FRAME_duck01, FRAME_duck08, gunner_frames_duck, gunner_run};
 
-void gunner_dodge(edict_t *self, edict_t *attacker, float eta)
-{
-    if (random() > 0.25f)
-        return;
+// Defined further down this file; the dodge pair below tests against them.
+// Same forward-declaration need as the floater and soldier ports.
+extern mmove_t gunner_move_jump;
+extern mmove_t gunner_move_jump2;
+extern mmove_t gunner_move_attack_chain;
+extern mmove_t gunner_move_fire_chain;
+extern mmove_t gunner_move_attack_grenade;
+extern mmove_t gunner_move_attack_grenade2;
 
-    if (!self->enemy)
-        self->enemy = attacker;
+/*
+=================
+gunner_duck / gunner_sidestep
+
+The ROGUE/rerelease dodge pair, replacing the classic one-shot gunner_dodge.
+Both report whether they actually took the move, which is what lets
+M_MonsterDodge fall back from a sidestep to a duck.
+
+Neither will interrupt a jump or a firing sequence - a gunner that ducked
+mid-burst used to abandon the shot.
+=================
+*/
+bool gunner_duck(edict_t *self, float eta)
+{
+    if (self->monsterinfo.currentmove == &gunner_move_jump2 ||
+        self->monsterinfo.currentmove == &gunner_move_jump)
+        return false;
+
+    if (self->monsterinfo.currentmove == &gunner_move_attack_chain ||
+        self->monsterinfo.currentmove == &gunner_move_fire_chain ||
+        self->monsterinfo.currentmove == &gunner_move_attack_grenade ||
+        self->monsterinfo.currentmove == &gunner_move_attack_grenade2) {
+        // already shooting - stand back up rather than half-duck
+        monster_duck_up(self);
+        return false;
+    }
+
+    // the rerelease keeps id's "lob one on the way down" on any skill;
+    // the classic code gated it on skill 2
+    if (random() > 0.5f)
+        GunnerGrenade(self);
 
     self->monsterinfo.currentmove = &gunner_move_duck;
+    return true;
+}
+
+/*
+=================
+gunner_dodge
+
+KEPT ONLY FOR SAVEGAME COMPATIBILITY. g_ptrs_compat_v2.c is a frozen table used
+to load version-2 saves and it names this symbol, so it cannot be deleted. A
+save from before the dodge system was ported restores
+monsterinfo.dodge = gunner_dodge; forwarding keeps that monster behaving like a
+current one instead of silently losing its dodge.
+=================
+*/
+void gunner_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
+{
+    M_MonsterDodge(self, attacker, eta, tr, gravity);
+}
+
+bool gunner_sidestep(edict_t *self)
+{
+    if (self->monsterinfo.currentmove == &gunner_move_jump2 ||
+        self->monsterinfo.currentmove == &gunner_move_jump ||
+        self->monsterinfo.currentmove == &gunner_move_pain1)
+        return false;
+
+    if (self->monsterinfo.currentmove == &gunner_move_attack_chain ||
+        self->monsterinfo.currentmove == &gunner_move_fire_chain ||
+        self->monsterinfo.currentmove == &gunner_move_attack_grenade ||
+        self->monsterinfo.currentmove == &gunner_move_attack_grenade2)
+        return false;
+
+    // strafing happens on the run move; AS_SLIDING is what makes ai_run
+    // sidestep rather than close
+    if (self->monsterinfo.currentmove != &gunner_move_run)
+        self->monsterinfo.currentmove = &gunner_move_run;
+
+    return true;
 }
 
 
@@ -850,7 +892,10 @@ void SP_monster_gunner(edict_t *self)
     self->monsterinfo.stand = gunner_stand;
     self->monsterinfo.walk = gunner_walk;
     self->monsterinfo.run = gunner_run;
-    self->monsterinfo.dodge = gunner_dodge;
+    self->monsterinfo.dodge = M_MonsterDodge;
+    self->monsterinfo.duck = gunner_duck;
+    self->monsterinfo.unduck = monster_duck_up;
+    self->monsterinfo.sidestep = gunner_sidestep;
     self->monsterinfo.attack = gunner_attack;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = gunner_sight;

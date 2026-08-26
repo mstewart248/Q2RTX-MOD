@@ -289,69 +289,85 @@ same job and is handled below).
 // the rerelease's RANGE_NEAR is a real distance; ours is an enum tag
 #define BERSERK_RANGE_NEAR  440.0f
 
-void berserk_duck_down(edict_t *self)
-{
-    if (self->monsterinfo.aiflags & AI_DUCKED)
-        return;
-    self->monsterinfo.aiflags |= AI_DUCKED;
-    self->maxs[2] -= 32;
-    self->takedamage = DAMAGE_YES;
-    gi.linkentity(self);
-}
 
-void berserk_duck_hold(edict_t *self)
-{
-    if (level.framenum >= self->monsterinfo.pause_framenum)
-        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
-    else
-        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
-}
 
-void berserk_duck_up(edict_t *self)
-{
-    if (!(self->monsterinfo.aiflags & AI_DUCKED))
-        return;
-    self->monsterinfo.aiflags &= ~AI_DUCKED;
-    self->maxs[2] += 32;
-    self->takedamage = DAMAGE_AIM;
-    gi.linkentity(self);
-}
 
 mframe_t berserk_frames_duck2 [] = {
-    { ai_move, 21, berserk_duck_down },
+    { ai_move, 21, monster_duck_down },
     { ai_move, 28, NULL },
     { ai_move, 20, NULL },
     { ai_move, 12, NULL },
     { ai_move, 7,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  berserk_duck_hold },
+    { ai_move, 0,  monster_duck_hold },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  berserk_duck_up },
+    { ai_move, 0,  monster_duck_up },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL }
 };
 mmove_t berserk_move_duck2 = {FRAME_fall2, FRAME_fall18, berserk_frames_duck2, berserk_run};
 
-void berserk_dodge(edict_t *self, edict_t *attacker, float eta)
+// Defined further down; the dodge pair tests against them.
+extern mmove_t berserk_move_jump;
+extern mmove_t berserk_move_jump2;
+extern mmove_t berserk_move_attack_strike;
+extern mmove_t berserk_move_pain2;
+extern mmove_t berserk_move_run1;
+
+/*
+=================
+berserk_duck / berserk_sidestep
+
+The berserk's "duck" is the forward dive (berserk_move_duck2, on fall2-18), not
+a crouch - id's berserk_move_duck on duck1-10 is dead code, never referenced.
+Because it is a dive rather than a crouch it stays rare, keeping id's 5% roll.
+=================
+*/
+bool berserk_duck(edict_t *self, float eta)
 {
     // the berserk only dives forward, and very rarely
     if (random() >= 0.05f)
-        return;
+        return false;
 
-    if (self->monsterinfo.aiflags & AI_DUCKED)
-        return;
+    if (self->monsterinfo.currentmove == &berserk_move_jump ||
+        self->monsterinfo.currentmove == &berserk_move_jump2)
+        return false;
 
-    if (!self->enemy)
-        self->enemy = attacker;
-
-    self->monsterinfo.pause_framenum = level.framenum + (eta + 0.5f) * BASE_FRAMERATE;
+    self->monsterinfo.duck_wait_framenum = level.framenum + (eta + 0.5f) * BASE_FRAMERATE;
     self->monsterinfo.currentmove = &berserk_move_duck2;
+    return true;
+}
+
+bool berserk_sidestep(edict_t *self)
+{
+    if (self->monsterinfo.currentmove == &berserk_move_jump ||
+        self->monsterinfo.currentmove == &berserk_move_jump2 ||
+        self->monsterinfo.currentmove == &berserk_move_attack_strike ||
+        self->monsterinfo.currentmove == &berserk_move_pain2)
+        return false;
+
+    if (self->monsterinfo.currentmove != &berserk_move_run1)
+        self->monsterinfo.currentmove = &berserk_move_run1;
+
+    return true;
+}
+
+/*
+=================
+berserk_dodge
+
+KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c names this symbol.
+=================
+*/
+void berserk_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
+{
+    M_MonsterDodge(self, attacker, eta, tr, gravity);
 }
 
 static void berserk_run_attack_speed(edict_t *self)
@@ -698,7 +714,7 @@ M_RereleaseAnims() gating, only M_RereleaseGame().  Our classic
 berserk_move_attack_strike (att_c21-att_c34) is left untouched for plain baseq2.
 
 Dropped vs the rerelease: FL_KILL_VELOCITY (no such flag here; the slam zeroes
-velocity directly) and monsterinfo.unduck (berserk_duck_up does that job).
+velocity directly) and monsterinfo.unduck (monster_duck_up does that job now).
 =================
 */
 
@@ -1202,7 +1218,10 @@ void SP_monster_berserk(edict_t *self)
     // the rerelease berserk dive-dodges and attacks on the run; the classic
     // one does neither
     if (M_RereleaseGame()) {
-        self->monsterinfo.dodge = berserk_dodge;
+        self->monsterinfo.dodge = M_MonsterDodge;
+        self->monsterinfo.duck = berserk_duck;
+        self->monsterinfo.unduck = monster_duck_up;
+        self->monsterinfo.sidestep = berserk_sidestep;
         self->monsterinfo.attack = berserk_attack;
     }
     self->monsterinfo.melee = berserk_melee;

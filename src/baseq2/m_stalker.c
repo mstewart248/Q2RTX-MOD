@@ -1090,7 +1090,7 @@ mmove_t stalker_move_dodge_run = {
 };
 
 void
-stalker_dodge(edict_t *self, edict_t *attacker, float eta)
+stalker_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
 {
 	if (!self->groundentity || (self->health <= 0))
 	{

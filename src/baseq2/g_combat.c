@@ -274,7 +274,7 @@ static int CheckArmor(edict_t *ent, const vec3_t point, const vec3_t normal, int
     if (!client)
         return 0;
 
-    if (dflags & DAMAGE_NO_ARMOR)
+    if (dflags & (DAMAGE_NO_ARMOR | DAMAGE_NO_REG_ARMOR))
         return 0;
 
     index = ArmorIndex(ent);

@@ -174,6 +174,9 @@ typedef enum {
 // ROGUE. Rogue puts this at 0x80000, which is AI_SPAWNED_CARRIER here - see
 // the renumbering note above. Set on a kamikaze flyer heading for its target.
 #define AI_CHARGING             0x00800000
+// ROGUE/rerelease: mid-sidestep. AI_DUCKED (0x800) above is the crouch; this is
+// the strafe. Both are cleared by monster_done_dodge / monster_duck_up.
+#define AI_DODGING              0x01000000
 
 //monster attack state
 #define AS_STRAIGHT             1
@@ -541,7 +544,11 @@ typedef struct {
     void        (*search)(edict_t *self);
     void        (*walk)(edict_t *self);
     void        (*run)(edict_t *self);
-    void        (*dodge)(edict_t *self, edict_t *other, float eta);
+    // `tr` is the trace of the incoming shot (may be NULL) and `gravity` marks
+// an arcing projectile - you cannot duck under a grenade, so ducking is
+// suppressed for those. Both come from the rerelease; widened from the
+// classic 3-argument form when the duck/sidestep system was ported.
+    void        (*dodge)(edict_t *self, edict_t *other, float eta, trace_t *tr, bool gravity);
     void        (*attack)(edict_t *self);
     void        (*melee)(edict_t *self);
     void        (*sight)(edict_t *self, edict_t *other);
@@ -551,6 +558,24 @@ typedef struct {
     // itself - by jumping, or by triggering a plat - and must not be moved or
     // turned this frame.
     bool        (*blocked)(edict_t *self, float dist);
+
+    // ROGUE/rerelease DUCK + SIDESTEP system, driven by M_MonsterDodge().
+    // `duck` is asked to start a crouch and returns whether it took it;
+    // `unduck` stands back up; `sidestep` is the strafe-out-of-the-way move and
+    // likewise reports whether it started. A monster may implement either, both
+    // or neither - M_MonsterDodge checks which are present.
+    bool        (*duck)(edict_t *self, float eta);
+    void        (*unduck)(edict_t *self);
+    bool        (*sidestep)(edict_t *self);
+
+    // How tall this monster is when standing. monster_duck_down shrinks maxs[2]
+    // to base_height - 32 and monster_duck_up restores it, so it has to be
+    // captured at spawn before anything ducks.
+    float       base_height;
+
+    int         duck_wait_framenum;     // hold the crouch until this frame
+    int         next_duck_framenum;     // earliest frame it may duck again
+    int         dodge_framenum;         // earliest frame it may sidestep again
 
     int         pause_framenum;
     int         attack_finished;
@@ -658,6 +683,8 @@ extern  int snd_fry;
 #define MOD_TRAP            39
 #define MOD_CHAINFIST       40
 #define MOD_DISINTEGRATOR   41
+// rogue's own number; 42 happened to be free here so the two match
+#define MOD_ETF_RIFLE       42
 #define MOD_BLASTER2        43
 #define MOD_HEATBEAM        44
 #define MOD_TESLA           45
@@ -838,6 +865,9 @@ void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t
 #define DAMAGE_BULLET           0x00000010  // damage is from a bullet (used for ricochets)
 #define DAMAGE_NO_PROTECTION    0x00000020  // armor, shields, invulnerability, and godmode have no effect
 #define DAMAGE_DESTROY_ARMOR    0x00000040  // damage is done to armor *and* health (chainfist)
+// ROGUE - skips ORDINARY armor but power armor still applies. The mirror of
+// DAMAGE_NO_POWER_ARMOR. The ETF rifle's flechettes use it.
+#define DAMAGE_NO_REG_ARMOR     0x00000080
 #define DAMAGE_NO_POWER_ARMOR   0x00000100  // damage skips power armor (disruptor)
 
 #define DEFAULT_BULLET_HSPREAD  300
@@ -854,6 +884,7 @@ void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t
 void monster_fire_bullet(edict_t *self, vec3_t start, vec3_t dir, int damage, int kick, int hspread, int vspread, int flashtype);
 void monster_fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int count, int flashtype);
 void monster_fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
+void monster_fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype);
 void monster_fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
@@ -901,6 +932,21 @@ void stationarymonster_triggered_start(edict_t *self);
 void stationarymonster_triggered_spawn(edict_t *self);
 void stationarymonster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activator);
 void M_CatagorizePosition(edict_t *ent);
+int  ClipVelocity(vec3_t in, vec3_t normal, vec3_t out, float overbounce);   // g_phys.c
+void T_SlamRadiusDamage(vec3_t point, edict_t *inflictor, edict_t *attacker,
+                        float damage, float kick, edict_t *ignore, float radius, int mod);
+// ROGUE/rerelease monster aiming helpers, see g_monster.c
+void M_ProjectFlashSource(edict_t *self, const vec3_t offset, const vec3_t forward, const vec3_t right, vec3_t result);
+bool M_CheckClearShot(edict_t *self, const vec3_t offset, vec3_t start);
+bool M_CalculatePitchToFire(edict_t *self, const vec3_t target, const vec3_t start,
+                            vec3_t aim, float speed, float time_remaining,
+                            bool mortar, bool destroy_on_touch);
+// ROGUE/rerelease duck + sidestep, see g_monster.c
+void monster_done_dodge(edict_t *self);
+void monster_duck_down(edict_t *self);
+void monster_duck_hold(edict_t *self);
+void monster_duck_up(edict_t *self);
+void M_MonsterDodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity);
 void M_WorldEffects(edict_t *ent);
 bool M_CheckAttack(edict_t *self);
 void M_FlyCheck(edict_t *self);
@@ -957,6 +1003,7 @@ bool fire_hit(edict_t *self, vec3_t aim, int damage, int kick);
 void fire_bullet(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int mod);
 void fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int count, int mod);
 void fire_blaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
+void fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int kick);
 void fire_blaster2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
 void fire_ionripper(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_blueblaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);

@@ -56,6 +56,24 @@ void monster_fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, i
     gi.multicast(start, MULTICAST_PVS);
 }
 
+/*
+=================
+monster_fire_flechette
+
+ROGUE. The gun commander's chaingun. Kick is half the damage, matching the
+rerelease.
+=================
+*/
+void monster_fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype)
+{
+    fire_flechette(self, start, dir, damage, speed, damage / 2);
+
+    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteShort(self - g_edicts);
+    gi.WriteByte(flashtype);
+    gi.multicast(start, MULTICAST_PVS);
+}
+
 void monster_fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect)
 {
     fire_blaster2(self, start, dir, damage, speed, effect, false);
@@ -732,6 +750,360 @@ bool M_RereleaseAnims(void)
     return cl_md5_models && cl_md5_models->value != 0;
 }
 
+/*
+=================
+M_ProjectFlashSource
+
+Where a monster's muzzle actually is, honouring s.scale - the gun commander is
+the gunner at 1.25, so its flash offsets have to scale with it or every shot
+leaves the model in the wrong place.
+=================
+*/
+void M_ProjectFlashSource(edict_t *self, const vec3_t offset, const vec3_t forward, const vec3_t right, vec3_t result)
+{
+    // The rerelease scales the offset by s.scale here, because the gun
+    // commander is the gunner model at 1.25. THIS TREE HAS NO PER-ENTITY SCALE:
+    // entity_state_t carries none and the protocol does not send one (same
+    // limitation the flares hit). So the commander renders gunner-sized and the
+    // offsets need no scaling. If per-entity scale is ever added, scale here.
+    G_ProjectSource(self->s.origin, offset, forward, right, result);
+}
+
+/*
+=================
+M_CheckClearShot
+
+Would a shot fired from this muzzle offset actually reach the enemy, or is
+there geometry in the way? Lets a monster pick an attack it can land instead of
+firing into a wall.
+
+Aimed along ideal_yaw rather than the current angles, because the monster is
+usually still turning when the choice is made.
+=================
+*/
+bool M_CheckClearShot(edict_t *self, const vec3_t offset, vec3_t start)
+{
+    vec3_t  f, r, target, real_angles;
+    trace_t tr;
+
+    if (!self->enemy)
+        return false;
+
+    VectorSet(real_angles, self->s.angles[PITCH], self->ideal_yaw, 0);
+    AngleVectors(real_angles, f, r, NULL);
+    M_ProjectFlashSource(self, offset, f, r, start);
+
+    VectorCopy(self->enemy->s.origin, target);
+    target[2] += self->enemy->viewheight;
+
+    tr = gi.trace(start, NULL, NULL, target, self, MASK_SHOT);
+    if (tr.ent == self->enemy || (tr.ent && tr.ent->client) ||
+        (tr.fraction > 0.8f && !tr.startsolid))
+        return true;
+
+    // try the body as well as the eyes before giving up
+    VectorCopy(self->enemy->s.origin, target);
+    tr = gi.trace(start, NULL, NULL, target, self, MASK_SHOT);
+    if (tr.ent == self->enemy || (tr.ent && tr.ent->client) ||
+        (tr.fraction > 0.8f && !tr.startsolid))
+        return true;
+
+    return false;
+}
+
+/*
+=================
+M_CalculatePitchToFire
+
+Find a launch pitch whose ballistic arc lands near the target, by simulating the
+flight in 0.1s steps and bouncing off whatever it hits. Approximate by design -
+id's own comment calls it "very approximate".
+
+`aim` is both input (the flat direction) and output (the pitched direction).
+`mortar` restricts it to the steep pitches, which is what makes the commander
+lob over cover instead of throwing flat.
+
+Returns false when no pitch lands anywhere useful, which is the caller's cue to
+pick a different attack entirely.
+=================
+*/
+bool M_CalculatePitchToFire(edict_t *self, const vec3_t target, const vec3_t start,
+                            vec3_t aim, float speed, float time_remaining,
+                            bool mortar, bool destroy_on_touch)
+{
+    static const float pitches[] = { -80, -70, -60, -50, -40, -30, -20, -10, -5 };
+    const float sim_time = 0.1f;
+
+    float   best_pitch = 0;
+    float   best_dist = 1e30f;      // stands in for FLT_MAX; float.h is not included here
+    bool    found = false;
+    vec3_t  pitched_aim;
+    int     i;
+
+    vectoangles(aim, pitched_aim);
+
+    for (i = 0; i < q_countof(pitches); i++) {
+        vec3_t  fwd, velocity, origin, end, diff, clipped;
+        float   t;
+
+        if (mortar && pitches[i] >= -30.0f)
+            break;
+
+        pitched_aim[PITCH] = pitches[i];
+        AngleVectors(pitched_aim, fwd, NULL, NULL);
+
+        VectorScale(fwd, speed, velocity);
+        VectorCopy(start, origin);
+
+        for (t = time_remaining; t > 0.0f; t -= sim_time) {
+            trace_t tr;
+            float   dist;
+
+            velocity[2] -= sv_gravity->value * sim_time;
+
+            VectorMA(origin, sim_time, velocity, end);
+            tr = gi.trace(origin, NULL, NULL, end, NULL, MASK_SHOT);
+            VectorCopy(tr.endpos, origin);
+
+            if (tr.fraction < 1.0f) {
+                if (tr.surface && (tr.surface->flags & SURF_SKY))
+                    break;
+
+                VectorAdd(origin, tr.plane.normal, origin);
+                ClipVelocity(velocity, tr.plane.normal, clipped, 1.6f);
+                VectorCopy(clipped, velocity);
+
+                VectorSubtract(origin, target, diff);
+                dist = VectorLengthSquared(diff);
+
+                if (tr.ent == self->enemy || (tr.ent && tr.ent->client) ||
+                    (tr.plane.normal[2] >= 0.7f && dist < (128.0f * 128.0f) && dist < best_dist)) {
+                    best_pitch = pitches[i];
+                    best_dist = dist;
+                    found = true;
+                }
+
+                if (destroy_on_touch)
+                    break;
+            }
+        }
+    }
+
+    if (found) {
+        pitched_aim[PITCH] = best_pitch;
+        AngleVectors(pitched_aim, aim, NULL, NULL);
+        return true;
+    }
+
+    return false;
+}
+
+/*
+=================================================================
+
+  ROGUE / rerelease DUCK + SIDESTEP
+
+  Two ways for a monster to get out of the way of an incoming shot: crouch
+  under it (AI_DUCKED) or strafe aside (AI_DODGING). A monster opts in by
+  filling monsterinfo.duck/unduck (to crouch) and/or monsterinfo.sidestep (to
+  strafe); M_MonsterDodge is the shared dispatcher and is what
+  monsterinfo.dodge points at.
+
+  This tree previously had none of it - berserk, gunner and infantry all note
+  "dropped: monster_done_dodge (no AI_DODGING flag in this tree)". Those
+  behaviours can now be revisited.
+
+  TIME UNITS: the rerelease works in gtime_t seconds; everything here is in
+  server FRAMES, hence the *_framenum names. DUCK_INTERVAL is their 0.5s.
+
+=================================================================
+*/
+
+#define DUCK_INTERVAL   (int)(0.5f * BASE_FRAMERATE)
+
+// random frame count in [lo, hi] seconds
+static int random_frames(float lo, float hi)
+{
+    return (int)((lo + (hi - lo) * random()) * BASE_FRAMERATE);
+}
+
+/*
+=================
+monster_done_dodge
+
+Leave the sidestep state. Safe to call when not dodging.
+=================
+*/
+void monster_done_dodge(edict_t *self)
+{
+    self->monsterinfo.aiflags &= ~AI_DODGING;
+    if (self->monsterinfo.attack_state == AS_SLIDING)
+        self->monsterinfo.attack_state = AS_STRAIGHT;
+}
+
+void monster_duck_down(edict_t *self)
+{
+    self->monsterinfo.aiflags |= AI_DUCKED;
+
+    // base_height is captured at spawn in monster_start_go; without it a duck
+    // would shrink the monster relative to whatever maxs[2] happened to be.
+    self->maxs[2] = self->monsterinfo.base_height - 32;
+    self->takedamage = DAMAGE_YES;
+    self->monsterinfo.next_duck_framenum = level.framenum + DUCK_INTERVAL;
+    gi.linkentity(self);
+}
+
+/*
+=================
+monster_duck_hold
+
+Called from a crouch frame. Holds the animation on that frame until the duck
+expires - note AI_HOLD_FRAME stops MOVEMENT too, which is what is wanted here
+because a ducking monster should not slide along the floor.
+=================
+*/
+void monster_duck_hold(edict_t *self)
+{
+    if (level.framenum >= self->monsterinfo.duck_wait_framenum)
+        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+    else
+        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
+}
+
+void monster_duck_up(edict_t *self)
+{
+    if (!(self->monsterinfo.aiflags & AI_DUCKED))
+        return;
+
+    self->monsterinfo.aiflags &= ~AI_DUCKED;
+    self->maxs[2] = self->monsterinfo.base_height;
+    self->takedamage = DAMAGE_YES;
+
+    // finishing a duck cleanly halves the remaining cooldown
+    if (self->monsterinfo.next_duck_framenum > level.framenum)
+        self->monsterinfo.next_duck_framenum =
+            level.framenum + (self->monsterinfo.next_duck_framenum - level.framenum) / 2;
+
+    gi.linkentity(self);
+}
+
+/*
+=================
+M_MonsterDodge
+
+monsterinfo.dodge for every monster that implements duck or sidestep. `eta` is
+how long until the shot arrives, in seconds.
+
+The rerelease passes a trace and a gravity flag as well; this tree's dodge
+signature has neither, so the shot-height test that decides "duck under it" vs
+"step around it" cannot be made. Without it the choice is: sidestep when the
+monster can, otherwise duck. Monsters that only duck are unaffected.
+=================
+*/
+void M_MonsterDodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
+{
+    // You cannot duck under something that arcs down onto you, so a bouncing or
+    // tossed projectile disables the crouch and leaves only the sidestep.
+    bool ducker = (self->monsterinfo.duck && self->monsterinfo.unduck && !gravity);
+    bool dodger = (self->monsterinfo.sidestep != NULL);
+    float height;
+
+    if (!ducker && !dodger)
+        return;
+
+    if (!self->enemy)
+        return;
+
+    // one frame of warning is not enough to react to, and 2.5s is so far off
+    // that reacting now is pointless
+    if (eta < FRAMETIME || eta > 2.5f)
+        return;
+
+    // half the time, just take it
+    if (random() > 0.5f)
+        return;
+
+    // How high the shot is going to pass. The -1 is because absmax is
+    // s.origin + maxs + 1. A shot arriving BELOW this can be ducked under; one
+    // above it has to be stepped around.
+    if (ducker && tr) {
+        height = self->absmax[2] - 32 - 1;
+
+        // nothing to duck under, and no sidestep available
+        if (!dodger && (tr->endpos[2] <= height || (self->monsterinfo.aiflags & AI_DUCKED)))
+            return;
+    } else {
+        height = self->absmax[2];
+    }
+
+    if (dodger) {
+        // already mid-sidestep: let it finish
+        if (self->monsterinfo.aiflags & AI_DODGING)
+            return;
+
+        if (level.framenum < self->monsterinfo.dodge_framenum)
+            return;
+
+        // If we can duck and the shot is coming in low, prefer the duck - fall
+        // through to it rather than stepping into the shot's path.
+        if (!(!ducker || !tr || tr->endpos[2] <= height || (self->monsterinfo.aiflags & AI_DUCKED)))
+            goto try_duck;
+
+        // easy/normal sidestep less often
+        if (skill->value < 2 && random() > (skill->value < 1 ? 0.25f : 0.50f)) {
+            self->monsterinfo.dodge_framenum = level.framenum + random_frames(0.8f, 1.4f);
+            return;
+        }
+
+        // Step away from where the shot is going, not randomly, when we know.
+        if (tr) {
+            vec3_t right, diff;
+
+            AngleVectors(self->s.angles, NULL, right, NULL);
+            VectorSubtract(tr->endpos, self->s.origin, diff);
+            self->monsterinfo.lefty = (DotProduct(right, diff) < 0) ? 0 : 1;
+        } else {
+            self->monsterinfo.lefty = (random() < 0.5f);
+        }
+
+        if (self->monsterinfo.sidestep(self)) {
+            if (ducker && (self->monsterinfo.aiflags & AI_DUCKED))
+                self->monsterinfo.unduck(self);
+
+            self->monsterinfo.aiflags |= AI_DODGING;
+            self->monsterinfo.attack_state = AS_SLIDING;
+            self->monsterinfo.dodge_framenum = level.framenum + random_frames(0.4f, 2.0f);
+            return;
+        }
+    }
+
+try_duck:
+    // no sidestep available (or it declined) - crouch instead, but only once
+    // the shot is genuinely close
+    if (ducker && eta < 0.5f) {
+        if (level.framenum < self->monsterinfo.next_duck_framenum)
+            return;
+
+        monster_done_dodge(self);
+
+        if (self->monsterinfo.duck(self, eta)) {
+            if (self->monsterinfo.duck_wait_framenum < level.framenum)
+                self->monsterinfo.duck_wait_framenum =
+                    level.framenum + (int)(eta * BASE_FRAMERATE);
+
+            monster_duck_down(self);
+
+            // stay down longer on the easier skills
+            if (skill->value < 1)
+                self->monsterinfo.duck_wait_framenum += random_frames(0.5f, 1.0f);
+            else if (skill->value < 2)
+                self->monsterinfo.duck_wait_framenum += random_frames(0.1f, 0.35f);
+        }
+
+        self->monsterinfo.dodge_framenum = level.framenum + random_frames(0.2f, 0.7f);
+    }
+}
+
 void monster_death_use(edict_t *self)
 {
     self->flags &= ~(FL_FLY | FL_SWIM);
@@ -798,6 +1170,12 @@ bool monster_start(edict_t *self)
     // randomize what frame they start on
     if (self->monsterinfo.currentmove)
         self->s.frame = self->monsterinfo.currentmove->firstframe + (Q_rand() % (self->monsterinfo.currentmove->lastframe - self->monsterinfo.currentmove->firstframe + 1));
+
+    // ROGUE/rerelease duck system: remember how tall this monster stands, so
+    // monster_duck_down has something to shrink from and monster_duck_up has
+    // something to restore. Captured here, after the spawn function has set
+    // mins/maxs and before anything can duck.
+    self->monsterinfo.base_height = self->maxs[2];
 
     return true;
 }

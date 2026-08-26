@@ -591,41 +591,17 @@ void medic_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
 }
 
 
-void medic_duck_down(edict_t *self)
-{
-    if (self->monsterinfo.aiflags & AI_DUCKED)
-        return;
-    self->monsterinfo.aiflags |= AI_DUCKED;
-    self->maxs[2] -= 32;
-    self->takedamage = DAMAGE_YES;
-    self->monsterinfo.pause_framenum = level.framenum + 1 * BASE_FRAMERATE;
-    gi.linkentity(self);
-}
 
-void medic_duck_hold(edict_t *self)
-{
-    if (level.framenum >= self->monsterinfo.pause_framenum)
-        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
-    else
-        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
-}
 
-void medic_duck_up(edict_t *self)
-{
-    self->monsterinfo.aiflags &= ~AI_DUCKED;
-    self->maxs[2] += 32;
-    self->takedamage = DAMAGE_AIM;
-    gi.linkentity(self);
-}
 
 mframe_t medic_frames_duck [] = {
     { ai_move, -1,    NULL },
     { ai_move, -1,    NULL },
-    { ai_move, -1,    medic_duck_down },
-    { ai_move, -1,    medic_duck_hold },
+    { ai_move, -1,    monster_duck_down },
+    { ai_move, -1,    monster_duck_hold },
     { ai_move, -1,    NULL },
     { ai_move, -1,    NULL },
-    { ai_move, -1,    medic_duck_up },
+    { ai_move, -1,    monster_duck_up },
     { ai_move, -1,    NULL },
     { ai_move, -1,    NULL },
     { ai_move, -1,    NULL },
@@ -638,15 +614,60 @@ mframe_t medic_frames_duck [] = {
 };
 mmove_t medic_move_duck = {FRAME_duck1, FRAME_duck16, medic_frames_duck, medic_run};
 
-void medic_dodge(edict_t *self, edict_t *attacker, float eta)
-{
-    if (random() > 0.25f)
-        return;
+// Defined further down; the dodge pair tests against them.
+extern mmove_t medic_move_attackBlaster;
+extern mmove_t medic_move_attackCable;
+extern mmove_t medic_move_attackHyperBlaster;
 
-    if (!self->enemy)
-        self->enemy = attacker;
+/*
+=================
+medic_duck / medic_sidestep
+
+The ROGUE/rerelease dodge pair. Returning a bool is what lets
+M_MonsterDodge fall back from a sidestep to a duck. Neither interrupts a
+firing sequence - a monster that ducked mid-burst threw the shot away.
+=================
+*/
+bool medic_duck(edict_t *self, float eta)
+{
+    if (self->monsterinfo.currentmove == &medic_move_attackHyperBlaster ||
+        self->monsterinfo.currentmove == &medic_move_attackCable ||
+        self->monsterinfo.currentmove == &medic_move_attackBlaster) {
+        // already shooting - stand back up rather than half-duck
+        monster_duck_up(self);
+        return false;
+    }
 
     self->monsterinfo.currentmove = &medic_move_duck;
+    return true;
+}
+
+bool medic_sidestep(edict_t *self)
+{
+    if (self->monsterinfo.currentmove == &medic_move_attackHyperBlaster ||
+        self->monsterinfo.currentmove == &medic_move_attackCable ||
+        self->monsterinfo.currentmove == &medic_move_attackBlaster)
+        return false;
+
+    // strafing happens on the run move; AS_SLIDING is what makes
+    // ai_run sidestep rather than close
+    if (self->monsterinfo.currentmove != &medic_move_run)
+        self->monsterinfo.currentmove = &medic_move_run;
+
+    return true;
+}
+
+/*
+=================
+medic_dodge
+
+KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names this symbol, so it cannot be deleted.
+=================
+*/
+void medic_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
+{
+    M_MonsterDodge(self, attacker, eta, tr, gravity);
 }
 
 mframe_t medic_frames_attackHyperBlaster [] = {
@@ -1164,7 +1185,10 @@ void SP_monster_medic(edict_t *self)
     self->monsterinfo.stand = medic_stand;
     self->monsterinfo.walk = medic_walk;
     self->monsterinfo.run = medic_run;
-    self->monsterinfo.dodge = medic_dodge;
+    self->monsterinfo.dodge = M_MonsterDodge;
+    self->monsterinfo.duck = medic_duck;
+    self->monsterinfo.unduck = monster_duck_up;
+    self->monsterinfo.sidestep = medic_sidestep;
     self->monsterinfo.attack = medic_attack;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = medic_sight;

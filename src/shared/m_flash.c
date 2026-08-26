@@ -256,4 +256,22 @@ const vec3_t monster_flash_offset[256] = {
     [MZ2_GUNNER_GRENADE2_2] = { 36.0f, -6.2f, 19.59f },
     [MZ2_GUNNER_GRENADE2_3] = { 36.0f, -6.2f, 19.59f },
     [MZ2_GUNNER_GRENADE2_4] = { 36.0f, -6.2f, 19.59f },
+
+    // monster_guncmdr. These are id's own authored offsets from
+    // src/rerelease/m_flash.h, not calibrated by eye. Designated initialisers,
+    // so the order here does not matter - only the enum order does.
+    [MZ2_GUNCMDR_CHAINGUN_1] = { 25.0f, 11.0f, 21.0f },
+    [MZ2_GUNCMDR_CHAINGUN_2] = { 26.5f, 5.0f, 21.0f },
+
+    [MZ2_GUNCMDR_GRENADE_MORTAR_1] = { 27.0f, 6.5f, 4.0f },
+    [MZ2_GUNCMDR_GRENADE_MORTAR_2] = { 28.0f, 4.0f, 4.0f },
+    [MZ2_GUNCMDR_GRENADE_MORTAR_3] = { 27.0f, 1.7f, 4.0f },
+
+    [MZ2_GUNCMDR_GRENADE_FRONT_1] = { 21.7f, -1.5f, 22.5f },
+    [MZ2_GUNCMDR_GRENADE_FRONT_2] = { 22.0f, 0.0f, 20.5f },
+    [MZ2_GUNCMDR_GRENADE_FRONT_3] = { 22.5f, 3.7f, 20.5f },
+
+    [MZ2_GUNCMDR_GRENADE_CROUCH_1] = { 8.0f, 40.0f, 18.0f },
+    [MZ2_GUNCMDR_GRENADE_CROUCH_2] = { 29.0f, 16.0f, 19.0f },
+    [MZ2_GUNCMDR_GRENADE_CROUCH_3] = { 4.7f, -30.0f, 20.0f },
 };

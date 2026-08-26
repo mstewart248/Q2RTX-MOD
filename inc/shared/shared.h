@@ -1099,6 +1099,17 @@ enum {
     // (gunner_move_attack_grenade2, on the appended attak305-324 frames).
     MZ2_GUNNER_GRENADE2_1, MZ2_GUNNER_GRENADE2_2,
     MZ2_GUNNER_GRENADE2_3, MZ2_GUNNER_GRENADE2_4,
+
+    // Rerelease: monster_guncmdr. APPENDED, never inserted - these values go
+    // over the wire as a single byte and index monster_flash_offset[256], so
+    // inserting mid-list would silently repoint every flash after it.
+    MZ2_GUNCMDR_CHAINGUN_1, MZ2_GUNCMDR_CHAINGUN_2,
+    MZ2_GUNCMDR_GRENADE_MORTAR_1, MZ2_GUNCMDR_GRENADE_MORTAR_2,
+    MZ2_GUNCMDR_GRENADE_MORTAR_3,
+    MZ2_GUNCMDR_GRENADE_FRONT_1, MZ2_GUNCMDR_GRENADE_FRONT_2,
+    MZ2_GUNCMDR_GRENADE_FRONT_3,
+    MZ2_GUNCMDR_GRENADE_CROUCH_1, MZ2_GUNCMDR_GRENADE_CROUCH_2,
+    MZ2_GUNCMDR_GRENADE_CROUCH_3,
 };
 
 extern const vec3_t monster_flash_offset[256];

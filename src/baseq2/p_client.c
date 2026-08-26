@@ -336,6 +336,11 @@ void ClientObituary(edict_t *self, edict_t *inflictor, edict_t *attacker)
                 message = "was melted by";
                 message2 = "'s hyperblaster";
                 break;
+            // ROGUE - the ETF rifle, and the gun commander's chaingun
+            case MOD_ETF_RIFLE:
+                message = "was perforated by";
+                message2 = "'s flechettes";
+                break;
             case MOD_RAILGUN:
                 message = "was railed by";
                 break;

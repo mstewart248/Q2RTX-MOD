@@ -154,6 +154,8 @@ begin video
 		toggle --status "turn some monitors in the game into security camera views" \
             "security cameras" pt_cameras
         toggle "caustics" pt_caustics
+        range --status "how much light the sky casts on the world"             "sky light" pt_env_scale 0 3 0.1
+        range --status "how bright the skybox LOOKS - does not change the light it casts"             "sky brightness" pt_sky_brightness 0 2 0.1
         toggle "god rays" gr_enable
         pairs --status "volumetric atmosphere from the map's own fog settings - rerelease maps only" \
             "map fog" cl_fog "off" 0 "sunlight only" 1 "lit by map lights" 2

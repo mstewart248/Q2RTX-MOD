@@ -83,6 +83,7 @@ void SP_target_spawner(edict_t *ent);
 void SP_target_blaster(edict_t *ent);
 void SP_target_crosslevel_trigger(edict_t *ent);
 void SP_target_anger(edict_t *ent);
+void SP_target_steam(edict_t *self);
 void SP_trigger_health_relay(edict_t *ent);
 void SP_info_landmark(edict_t *ent);
 void SP_target_crosslevel_target(edict_t *ent);
@@ -133,6 +134,7 @@ void SP_monster_gladiator(edict_t *self);
 void SP_monster_gekk(edict_t *self);
 void SP_monster_gladb(edict_t *self);
 void SP_monster_gunner(edict_t *self);
+void SP_monster_guncmdr(edict_t *self);
 void SP_monster_infantry(edict_t *self);
 void SP_monster_soldier_light(edict_t *self);
 void SP_monster_soldier(edict_t *self);
@@ -242,6 +244,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"target_blaster", SP_target_blaster},
     {"target_crosslevel_trigger", SP_target_crosslevel_trigger},
     {"target_anger", SP_target_anger},
+    {"target_steam", SP_target_steam},
     {"trigger_health_relay", SP_trigger_health_relay},
     {"info_landmark", SP_info_landmark},
     {"target_crosslevel_target", SP_target_crosslevel_target},
@@ -294,6 +297,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_gekk", SP_monster_gekk},
     {"monster_gladb", SP_monster_gladb},
     {"monster_gunner", SP_monster_gunner},
+    {"monster_guncmdr", SP_monster_guncmdr},
     {"monster_infantry", SP_monster_infantry},
     {"monster_soldier_light", SP_monster_soldier_light},
     {"monster_soldier", SP_monster_soldier},

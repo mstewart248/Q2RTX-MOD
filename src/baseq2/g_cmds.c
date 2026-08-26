@@ -403,6 +403,51 @@ impossible to answer without playing to it; this answers it in one line. Cheat
 gated exactly like noclip.
 ==================
 */
+/*
+=================
+Cmd_FireTarget_f
+
+firetarget <targetname> - fires everything with that targetname, exactly as a
+trigger would. The MGU maps drive most of their scripted entities from triggers
+the player has to walk into, which makes them awkward to verify; this pokes one
+directly from wherever you are standing.
+
+The player is passed as both `other` and `activator`, which is what a
+trigger_multiple does, so entities that read either see what they expect.
+=================
+*/
+void Cmd_FireTarget_f(edict_t *ent)
+{
+    const char  *name;
+    edict_t     *t;
+    int         count = 0;
+
+    if ((deathmatch->value || coop->value) && !sv_cheats->value) {
+        gi.cprintf(ent, PRINT_HIGH, "You must run the server with '+set cheats 1' to enable this command.\n");
+        return;
+    }
+
+    name = gi.argv(1);
+    if (!name || !*name) {
+        gi.cprintf(ent, PRINT_HIGH, "usage: firetarget <targetname>\n");
+        return;
+    }
+
+    t = NULL;
+    while ((t = G_Find(t, FOFS(targetname), (char *)name))) {
+        if (!t->use)
+            continue;
+        t->use(t, ent, ent);
+        count++;
+        // t->use can free the entity, so G_Find must resume from a live one
+        if (!t->inuse)
+            break;
+    }
+
+    gi.cprintf(ent, PRINT_HIGH, "fired %d entit%s named %s\n",
+               count, count == 1 ? "y" : "ies", name);
+}
+
 void Cmd_SpawnMonster_f(edict_t *ent)
 {
     vec3_t      forward, spot;
@@ -1026,6 +1071,8 @@ void ClientCommand(edict_t *ent)
         Cmd_SetPos_f(ent);
     else if (Q_stricmp(cmd, "spawnmonster") == 0)
         Cmd_SpawnMonster_f(ent);
+    else if (Q_stricmp(cmd, "firetarget") == 0)
+        Cmd_FireTarget_f(ent);
     else if (Q_stricmp(cmd, "inven") == 0)
         Cmd_Inven_f(ent);
     else if (Q_stricmp(cmd, "invnext") == 0)

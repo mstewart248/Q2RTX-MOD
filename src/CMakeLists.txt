@@ -42,6 +42,7 @@ SET(SRC_BASEQ2
 	baseq2/m_flyer.c
 	baseq2/m_gekk.c
 	baseq2/m_gladiator.c
+	baseq2/m_guncmdr.c
 	baseq2/m_gunner.c
 	baseq2/m_hover.c
 	baseq2/m_infantry.c

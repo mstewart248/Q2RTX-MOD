@@ -691,7 +691,8 @@ main()
 		if(found_intersection(ray_payload_geometry))
 		{
 			vec3 env = env_map(direction, false);
-			env *= global_ubo.pt_env_scale;
+			// seen sky, in a reflection - same treatment as the primary ray
+			env *= global_ubo.pt_env_scale * global_ubo.pt_sky_brightness;
 			
 			transparent = alpha_blend(transparent, vec4(env * throughput, 1));
 		}

@@ -44,7 +44,10 @@ static void check_dodge(edict_t *self, vec3_t start, vec3_t dir, int speed)
     if ((tr.ent) && (tr.ent->svflags & SVF_MONSTER) && (tr.ent->health > 0) && (tr.ent->monsterinfo.dodge) && infront(tr.ent, self)) {
         VectorSubtract(tr.endpos, start, v);
         eta = (VectorLength(v) - tr.ent->maxs[0]) / speed;
-        tr.ent->monsterinfo.dodge(tr.ent, self, eta);
+        // Pass the trace so the monster can tell a shot it can duck under from
+        // one it has to step around. gravity is false here: every caller of
+        // check_dodge fires a straight projectile, not an arcing one.
+        tr.ent->monsterinfo.dodge(tr.ent, self, eta, &tr, false);
     }
 }
 
@@ -509,6 +512,90 @@ void blaster2_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *
     }
 
     G_FreeEdict(self);
+}
+
+/*
+=================
+fire_flechette
+
+ROGUE - the ETF rifle's dart, and the gun commander's chaingun round. Ported
+from src/rerelease/rogue/g_rogue_newweap.cpp.
+
+DAMAGE_NO_REG_ARMOR is the point of it: flechettes punch through ordinary armor
+but power armor still stops them.
+=================
+*/
+void flechette_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    if (other == self->owner)
+        return;
+
+    if (surf && (surf->flags & SURF_SKY)) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (self->owner && self->owner->client)
+        PlayerNoise(self->owner, self->s.origin, PNOISE_IMPACT);
+
+    if (other->takedamage) {
+        T_Damage(other, self, self->owner, self->velocity, self->s.origin,
+                 plane ? plane->normal : vec3_origin,
+                 self->dmg, (int)self->dmg_radius, DAMAGE_NO_REG_ARMOR, MOD_ETF_RIFLE);
+    } else {
+        gi.WriteByte(svc_temp_entity);
+        gi.WriteByte(TE_FLECHETTE);
+        gi.WritePosition(self->s.origin);
+        if (!plane)
+            gi.WriteDir(vec3_origin);
+        else
+            gi.WriteDir(plane->normal);
+        gi.multicast(self->s.origin, MULTICAST_PHS);
+    }
+
+    G_FreeEdict(self);
+}
+
+void fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int kick)
+{
+    edict_t *flechette;
+    trace_t tr;
+
+    VectorNormalize(dir);
+
+    flechette = G_Spawn();
+    VectorCopy(start, flechette->s.origin);
+    VectorCopy(start, flechette->s.old_origin);
+    vectoangles(dir, flechette->s.angles);
+    VectorScale(dir, speed, flechette->velocity);
+    flechette->svflags = SVF_DEADMONSTER;
+    flechette->movetype = MOVETYPE_FLYMISSILE;
+    flechette->clipmask = MASK_SHOT;
+    flechette->solid = SOLID_BBOX;
+    flechette->s.renderfx = RF_FULLBRIGHT;
+    VectorClear(flechette->mins);
+    VectorClear(flechette->maxs);
+    flechette->s.modelindex = gi.modelindex("models/proj/flechette/tris.md2");
+    flechette->owner = self;
+    flechette->touch = flechette_touch;
+    // the rerelease scales the lifetime by speed so a slow dart still reaches
+    // roughly as far as a fast one
+    flechette->nextthink = level.framenum + (int)((8000.0f / speed) * BASE_FRAMERATE);
+    flechette->think = G_FreeEdict;
+    flechette->dmg = damage;
+    flechette->dmg_radius = (float)kick;   // carries the kick to the touch
+    flechette->classname = "flechette";
+    gi.linkentity(flechette);
+
+    if (self->client)
+        check_dodge(self, flechette->s.origin, dir, speed);
+
+    // spawned inside geometry - resolve it now rather than letting it fly out
+    tr = gi.trace(self->s.origin, NULL, NULL, flechette->s.origin, flechette, MASK_SHOT);
+    if (tr.fraction < 1.0f) {
+        VectorMA(flechette->s.origin, -10, dir, flechette->s.origin);
+        flechette->touch(flechette, tr.ent, NULL, NULL);
+    }
 }
 
 void fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int effect, bool hyper)

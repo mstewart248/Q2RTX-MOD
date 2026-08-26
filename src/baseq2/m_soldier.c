@@ -38,7 +38,6 @@ static int  sound_death;
 static int  sound_death_ss;
 static int  sound_cock;
 
-void soldier_duck_up(edict_t *self);
 extern mmove_t soldier_move_trip;
 
 
@@ -468,11 +467,11 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
         if ((self->velocity[2] > 100) && ((self->monsterinfo.currentmove == &soldier_move_pain1) || (self->monsterinfo.currentmove == &soldier_move_pain2) || (self->monsterinfo.currentmove == &soldier_move_pain3))) {
             // PMM - clear the duck flag before abandoning the current move,
             // or a soldier hurt mid-duck/mid-trip stays permanently shrunk.
-            // soldier_duck_up() is unguarded, so this must only run where the
+            // monster_duck_up() is unguarded, so this must only run where the
             // move really is being replaced - never on the nightmare path
             // below, which leaves the move alone and still owes its own duck_up.
             if (self->monsterinfo.aiflags & AI_DUCKED)
-                soldier_duck_up(self);
+                monster_duck_up(self);
             self->monsterinfo.currentmove = &soldier_move_pain4;
         }
         return;
@@ -491,11 +490,11 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
     if (self->velocity[2] > 100) {
             // PMM - clear the duck flag before abandoning the current move,
             // or a soldier hurt mid-duck/mid-trip stays permanently shrunk.
-            // soldier_duck_up() is unguarded, so this must only run where the
+            // monster_duck_up() is unguarded, so this must only run where the
             // move really is being replaced - never on the nightmare path
             // below, which leaves the move alone and still owes its own duck_up.
             if (self->monsterinfo.aiflags & AI_DUCKED)
-                soldier_duck_up(self);
+                monster_duck_up(self);
         self->monsterinfo.currentmove = &soldier_move_pain4;
         return;
     }
@@ -523,13 +522,13 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
     r = random();
 
     // PMM - clear the duck flag before abandoning the current move, or a
-    // soldier hurt mid-duck stays permanently shrunk.  soldier_duck_up() is
+    // soldier hurt mid-duck stays permanently shrunk.  monster_duck_up() is
     // unguarded, so this only runs where the move really is being replaced -
     // never on the nightmare path above, which leaves the move alone and still
     // owes its own duck_up.  The trip above does not need it either: it calls
     // duck_down (guarded) and duck_up itself, so the pair still balances.
     if (self->monsterinfo.aiflags & AI_DUCKED)
-        soldier_duck_up(self);
+        monster_duck_up(self);
 
     if (r < 0.33f)
         self->monsterinfo.currentmove = &soldier_move_pain1;
@@ -821,28 +820,11 @@ mmove_t soldier_move_attack2 = {FRAME_attak201, FRAME_attak218, soldier_frames_a
 
 // ATTACK3 (duck and shoot)
 
-void soldier_duck_down(edict_t *self)
-{
-    if (self->monsterinfo.aiflags & AI_DUCKED)
-        return;
-    self->monsterinfo.aiflags |= AI_DUCKED;
-    self->maxs[2] -= 32;
-    self->takedamage = DAMAGE_YES;
-    self->monsterinfo.pause_framenum = level.framenum + 1 * BASE_FRAMERATE;
-    gi.linkentity(self);
-}
 
-void soldier_duck_up(edict_t *self)
-{
-    self->monsterinfo.aiflags &= ~AI_DUCKED;
-    self->maxs[2] += 32;
-    self->takedamage = DAMAGE_AIM;
-    gi.linkentity(self);
-}
 
 void soldier_fire3(edict_t *self)
 {
-    soldier_duck_down(self);
+    monster_duck_down(self);
     soldier_fire(self, 2);
 }
 
@@ -859,7 +841,7 @@ mframe_t soldier_frames_attack3 [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
     { ai_charge, 0, soldier_attack3_refire },
-    { ai_charge, 0, soldier_duck_up },
+    { ai_charge, 0, monster_duck_up },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL }
 };
@@ -1117,19 +1099,12 @@ void soldier_sight(edict_t *self, edict_t *other)
 // DUCK
 //
 
-void soldier_duck_hold(edict_t *self)
-{
-    if (level.framenum >= self->monsterinfo.pause_framenum)
-        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
-    else
-        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
-}
 
 mframe_t soldier_frames_duck [] = {
-    { ai_move, 5, soldier_duck_down },
-    { ai_move, -1, soldier_duck_hold },
+    { ai_move, 5, monster_duck_down },
+    { ai_move, -1, monster_duck_hold },
     { ai_move, 1,  NULL },
-    { ai_move, 0,  soldier_duck_up },
+    { ai_move, 0,  monster_duck_up },
     { ai_move, 5,  NULL }
 };
 mmove_t soldier_move_duck = {FRAME_duck01, FRAME_duck05, soldier_frames_duck, soldier_run};
@@ -1187,7 +1162,7 @@ void soldier_fire5(edict_t *self)
 }
 
 mframe_t soldier_frames_attack5 [] = {
-    { ai_move, 18, soldier_duck_down },
+    { ai_move, 18, monster_duck_down },
     { ai_move, 11, NULL },
     { ai_move, 0,  NULL },
     { ai_soldier_move, 0, NULL },
@@ -1278,7 +1253,7 @@ void soldier_blind(edict_t *self)
 mframe_t soldier_frames_trip [] = {
     { ai_move, 10,  NULL },
     { ai_move, 2,   monster_check_prone },
-    { ai_move, 18,  soldier_duck_down },
+    { ai_move, 18,  monster_duck_down },
     { ai_move, 11,  NULL },
     { ai_move, 9,   NULL },
     { ai_move, -11, NULL },
@@ -1289,7 +1264,7 @@ mframe_t soldier_frames_trip [] = {
     { ai_move, 0,   NULL },
     { ai_move, 1,   NULL },
     { ai_move, 0,   NULL },
-    { ai_move, 0,   soldier_duck_up },
+    { ai_move, 0,   monster_duck_up },
     { ai_move, 3,   NULL },
     { ai_move, 2,   NULL },
     { ai_move, -1,  NULL },
@@ -1298,51 +1273,73 @@ mframe_t soldier_frames_trip [] = {
 };
 mmove_t soldier_move_trip = {FRAME_runt01, FRAME_runt19, soldier_frames_trip, soldier_run};
 
-void soldier_dodge(edict_t *self, edict_t *attacker, float eta)
+/*
+=================
+soldier_duck / soldier_sidestep
+
+The soldier is the irregular one. Its duck is not a single crouch: mid-burst it
+trips instead, otherwise it picks between the plain duck and the crouched
+attack. Both paths end the looping hypergun sound, which would otherwise keep
+playing through the dodge.
+
+The classic soldier_dodge that this replaces also drove the trip, so the trip
+still has a route in - see soldier_duck below.
+=================
+*/
+bool soldier_duck(edict_t *self, float eta)
 {
-    float   r;
+    // whatever we were holding, we are moving now
+    self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
 
-    r = random();
-    if (r > 0.25f)
-        return;
-
-    if (!self->enemy)
-        self->enemy = attacker;
-
-    // Trip trigger #1, and the one PROVEN to fire in play.  Note this path has
-    // no skill gate, unlike soldier_pain which returns early on nightmare.
-    if (!(self->monsterinfo.aiflags & (AI_STAND_GROUND | AI_DUCKED)) &&
-        self->monsterinfo.currentmove != &soldier_move_trip &&
-        random() < 0.3f) {
+    if (self->monsterinfo.currentmove == &soldier_move_attack6) {
+        // caught mid prone-fire: trip rather than crouch
         self->monsterinfo.currentmove = &soldier_move_trip;
-        return;
-    }
-
-    if (skill->value == 0) {
+    } else if (self->dmg || random() < 0.5f) {
         self->monsterinfo.currentmove = &soldier_move_duck;
-        return;
+    } else {
+        self->monsterinfo.currentmove = &soldier_move_attack3;
     }
 
-    self->monsterinfo.pause_framenum = level.framenum + (eta + 0.3f) * BASE_FRAMERATE;
-    r = random();
+    soldierh_hyper_laser_sound_end(self);
+    return true;
+}
 
-    if (skill->value == 1) {
-        if (r > 0.33f)
-            self->monsterinfo.currentmove = &soldier_move_duck;
-        else
-            self->monsterinfo.currentmove = &soldier_move_attack3;
-        return;
+bool soldier_sidestep(edict_t *self)
+{
+    // don't sidestep out of a trip or the prone-recovery pain
+    if (self->monsterinfo.currentmove == &soldier_move_trip ||
+        self->monsterinfo.currentmove == &soldier_move_attack5 ||
+        self->monsterinfo.currentmove == &soldier_move_pain4)
+        return false;
+
+    // self->count <= 3 is the rerelease's "still has burst left" test: keep
+    // firing from the run rather than breaking off
+    if (self->count <= 3) {
+        if (self->monsterinfo.currentmove != &soldier_move_attack6) {
+            self->monsterinfo.currentmove = &soldier_move_attack6;
+            soldierh_hyper_laser_sound_end(self);
+        }
+    } else {
+        if (self->monsterinfo.currentmove != &soldier_move_start_run &&
+            self->monsterinfo.currentmove != &soldier_move_run) {
+            self->monsterinfo.currentmove = &soldier_move_start_run;
+            soldierh_hyper_laser_sound_end(self);
+        }
     }
 
-    if (skill->value >= 2) {
-        if (r > 0.66f)
-            self->monsterinfo.currentmove = &soldier_move_duck;
-        else
-            self->monsterinfo.currentmove = &soldier_move_attack3;
-        return;
-    }
+    return true;
+}
 
-    self->monsterinfo.currentmove = &soldier_move_attack3;
+/*
+=================
+soldier_dodge
+
+KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c names this symbol.
+=================
+*/
+void soldier_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
+{
+    M_MonsterDodge(self, attacker, eta, tr, gravity);
 }
 
 
@@ -1810,7 +1807,10 @@ void SP_monster_soldier_x(edict_t *self)
         self->monsterinfo.stand = soldier_blind;
     self->monsterinfo.walk = soldier_walk;
     self->monsterinfo.run = soldier_run;
-    self->monsterinfo.dodge = soldier_dodge;
+    self->monsterinfo.dodge = M_MonsterDodge;
+    self->monsterinfo.duck = soldier_duck;
+    self->monsterinfo.unduck = monster_duck_up;
+    self->monsterinfo.sidestep = soldier_sidestep;
     self->monsterinfo.attack = soldier_attack;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = soldier_sight;

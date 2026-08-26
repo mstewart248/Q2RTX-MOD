@@ -12079,9 +12079,11 @@ textures/e3u3/windowc1_1:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
-# textures/hodge/ho_crystal_02:
-# 	texture_base materialDev/textures/hodge/ho_crystal_02.tga
-# 	texture_normals materialDev/textures/hodge/ho_crystal_02_n.tga
+
+textures/hodge/ho_crystal_02:
+	texture_base materialDev/textures/hodge/ho_crystal_02.tga
+ 	texture_normals materialDev/textures/hodge/ho_crystal_02_n.tga
+	metalness_factor 0
 
 textures/hodge/ho_display_upload_01:
 	texture_base materialDev/textures/hodge/ho_display_upload_01.tga

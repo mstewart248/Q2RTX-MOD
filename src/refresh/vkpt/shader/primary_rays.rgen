@@ -211,7 +211,11 @@ main()
 	if(!found_intersection(ray_payload_geometry) || is_sky(triangle.material_id) && (global_ubo.pt_show_sky == 0))
 	{
 		vec3 env = env_map(ray.direction, false);	
-		env *= global_ubo.pt_env_scale;
+		// pt_sky_brightness dims the sky AS SEEN only. The light it casts comes
+		// from avg_envmap_color and the env_map() calls in the lighting paths,
+		// none of which pass through here, so turning this down darkens the
+		// skybox without darkening the world under it.
+		env *= global_ubo.pt_env_scale * global_ubo.pt_sky_brightness;
 		
 		vec4 transparent = alpha_blend(effects, vec4(env, 1));
 

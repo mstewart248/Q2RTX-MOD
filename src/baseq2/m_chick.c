@@ -474,53 +474,72 @@ void chick_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
 }
 
 
-void chick_duck_down(edict_t *self)
-{
-    if (self->monsterinfo.aiflags & AI_DUCKED)
-        return;
-    self->monsterinfo.aiflags |= AI_DUCKED;
-    self->maxs[2] -= 32;
-    self->takedamage = DAMAGE_YES;
-    self->monsterinfo.pause_framenum = level.framenum + 1 * BASE_FRAMERATE;
-    gi.linkentity(self);
-}
 
-void chick_duck_hold(edict_t *self)
-{
-    if (level.framenum >= self->monsterinfo.pause_framenum)
-        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
-    else
-        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
-}
 
-void chick_duck_up(edict_t *self)
-{
-    self->monsterinfo.aiflags &= ~AI_DUCKED;
-    self->maxs[2] += 32;
-    self->takedamage = DAMAGE_AIM;
-    gi.linkentity(self);
-}
 
 mframe_t chick_frames_duck [] = {
-    { ai_move, 0, chick_duck_down },
+    { ai_move, 0, monster_duck_down },
     { ai_move, 1, NULL },
-    { ai_move, 4, chick_duck_hold },
+    { ai_move, 4, monster_duck_hold },
     { ai_move, -4,  NULL },
-    { ai_move, -5,  chick_duck_up },
+    { ai_move, -5,  monster_duck_up },
     { ai_move, 3, NULL },
     { ai_move, 1,  NULL }
 };
 mmove_t chick_move_duck = {FRAME_duck01, FRAME_duck07, chick_frames_duck, chick_run};
 
-void chick_dodge(edict_t *self, edict_t *attacker, float eta)
-{
-    if (random() > 0.25f)
-        return;
+// Defined further down; the dodge pair tests against them.
+extern mmove_t chick_move_start_attack1;
+extern mmove_t chick_move_attack1;
+extern mmove_t chick_move_pain3;
 
-    if (!self->enemy)
-        self->enemy = attacker;
+/*
+=================
+chick_duck / chick_sidestep
+
+The ROGUE/rerelease dodge pair. Both report whether they took the move, which
+is what lets M_MonsterDodge fall back from a sidestep to a duck. Neither
+interrupts a firing sequence - a chick that ducked mid-rocket used to throw the
+shot away.
+=================
+*/
+bool chick_duck(edict_t *self, float eta)
+{
+    if (self->monsterinfo.currentmove == &chick_move_start_attack1 ||
+        self->monsterinfo.currentmove == &chick_move_attack1) {
+        monster_duck_up(self);
+        return false;
+    }
 
     self->monsterinfo.currentmove = &chick_move_duck;
+    return true;
+}
+
+bool chick_sidestep(edict_t *self)
+{
+    if (self->monsterinfo.currentmove == &chick_move_start_attack1 ||
+        self->monsterinfo.currentmove == &chick_move_attack1 ||
+        self->monsterinfo.currentmove == &chick_move_pain3)
+        return false;
+
+    if (self->monsterinfo.currentmove != &chick_move_run)
+        self->monsterinfo.currentmove = &chick_move_run;
+
+    return true;
+}
+
+/*
+=================
+chick_dodge
+
+KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c is a frozen table for
+version-2 saves and names this symbol, so it cannot be deleted. Forwarding keeps
+a monster restored from such a save behaving like a current one.
+=================
+*/
+void chick_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
+{
+    M_MonsterDodge(self, attacker, eta, tr, gravity);
 }
 
 void ChickSlash(edict_t *self)
@@ -742,7 +761,10 @@ void SP_monster_chick(edict_t *self)
     self->monsterinfo.stand = chick_stand;
     self->monsterinfo.walk = chick_walk;
     self->monsterinfo.run = chick_run;
-    self->monsterinfo.dodge = chick_dodge;
+    self->monsterinfo.dodge = M_MonsterDodge;
+    self->monsterinfo.duck = chick_duck;
+    self->monsterinfo.unduck = monster_duck_up;
+    self->monsterinfo.sidestep = chick_sidestep;
     self->monsterinfo.attack = chick_attack;
     self->monsterinfo.melee = chick_melee;
     self->monsterinfo.sight = chick_sight;

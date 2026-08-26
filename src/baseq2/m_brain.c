@@ -307,51 +307,48 @@ mmove_t brain_move_pain1 = {FRAME_pain101, FRAME_pain121, brain_frames_pain1, br
 // DUCK
 //
 
-void brain_duck_down(edict_t *self) {
-    if (self->monsterinfo.aiflags & AI_DUCKED)
-        return;
-    self->monsterinfo.aiflags |= AI_DUCKED;
-    self->maxs[2] -= 32;
-    self->takedamage = DAMAGE_YES;
-    gi.linkentity(self);
-}
 
-void brain_duck_hold(edict_t *self) {
-    if (level.framenum >= self->monsterinfo.pause_framenum)
-        self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
-    else
-        self->monsterinfo.aiflags |= AI_HOLD_FRAME;
-}
 
-void brain_duck_up(edict_t *self) {
-    self->monsterinfo.aiflags &= ~AI_DUCKED;
-    self->maxs[2] += 32;
-    self->takedamage = DAMAGE_AIM;
-    gi.linkentity(self);
-}
 
 mframe_t brain_frames_duck [] =
 {
     { ai_move,    0,  NULL },
-    { ai_move,    -2, brain_duck_down },
-    { ai_move,    17, brain_duck_hold },
+    { ai_move,    -2, monster_duck_down },
+    { ai_move,    17, monster_duck_hold },
     { ai_move,    -3, NULL },
-    { ai_move,    -1, brain_duck_up },
+    { ai_move,    -1, monster_duck_up },
     { ai_move,    -5, NULL },
     { ai_move,    -6, NULL },
     { ai_move,    -6, NULL }
 };
 mmove_t brain_move_duck = {FRAME_duck01, FRAME_duck08, brain_frames_duck, brain_run};
 
-void brain_dodge(edict_t *self, edict_t *attacker, float eta) {
-    if (random() > 0.25f)
-        return;
+/*
+=================
+brain_duck
 
-    if (!self->enemy)
-        self->enemy = attacker;
-
-    self->monsterinfo.pause_framenum = level.framenum + (eta + 0.5f) * BASE_FRAMERATE;
+The ROGUE/rerelease dodge pair. Returning a bool is what lets
+M_MonsterDodge fall back from a sidestep to a duck. Neither interrupts a
+firing sequence - a monster that ducked mid-burst threw the shot away.
+=================
+*/
+bool brain_duck(edict_t *self, float eta)
+{
     self->monsterinfo.currentmove = &brain_move_duck;
+    return true;
+}
+
+/*
+=================
+brain_dodge
+
+KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names this symbol, so it cannot be deleted.
+=================
+*/
+void brain_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
+{
+    M_MonsterDodge(self, attacker, eta, tr, gravity);
 }
 
 
@@ -956,7 +953,9 @@ void SP_monster_brain(edict_t *self) {
     self->monsterinfo.stand = brain_stand;
     self->monsterinfo.walk = brain_walk;
     self->monsterinfo.run = brain_run;
-    self->monsterinfo.dodge = brain_dodge;
+    self->monsterinfo.dodge = M_MonsterDodge;
+    self->monsterinfo.duck = brain_duck;
+    self->monsterinfo.unduck = monster_duck_up;
     // the rerelease brain is a ranged monster; the classic one is melee-only
     if (M_RereleaseGame())
         self->monsterinfo.attack = brain_attack;
