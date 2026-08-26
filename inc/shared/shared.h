@@ -1348,6 +1348,15 @@ typedef enum {
 #define CS_GENERAL          (CS_PLAYERSKINS+MAX_CLIENTS)
 #define MAX_CONFIGSTRINGS   (CS_GENERAL+MAX_GENERAL)
 
+// [rerelease] which switchable dynamic_lights are currently lit, as a hex
+// bitmask. The lights themselves are built on the CLIENT from the BSP entity
+// lump (src/client/dynamiclights.c) because they are static; only their on/off
+// state has to come from the game. Bit N is the Nth dynamic_light in the entity
+// lump carrying a "targetname" - both sides count them the same way, in lump
+// order. No map in scope has more than 4, so one word is ample.
+#define CS_DYNAMICLIGHTS        (CS_GENERAL + 0)
+#define MAX_SWITCHABLE_DLIGHTS  32
+
 // Some mods actually exploit CS_STATUSBAR to take space up to CS_AIRACCEL
 #define CS_SIZE(cs) \
     ((cs) >= CS_STATUSBAR && (cs) < CS_AIRACCEL ? \

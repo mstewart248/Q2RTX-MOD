@@ -385,6 +385,13 @@ typedef struct {
     int         exitintermission;
     // [rerelease] wipe the players' inventory on the way out of this level
     int         intermission_clear;
+    // [rerelease] target_camera has already placed the intermission view, so
+    // BeginIntermission must not move it to an info_player_intermission.
+    int         level_intermission_set;
+
+    // [rerelease] switchable dynamic_light state, published as CS_DYNAMICLIGHTS
+    int         dynamiclight_count;
+    int         dynamiclight_bits;
     int         next_auto_save;     // rerelease target_autosave rate limit
 
     // rerelease target_poi: where the current objective marker points. The
@@ -1461,6 +1468,10 @@ struct edict_s {
     int         light_level;
 
     int         style;          // also used as areaportal number
+
+    // [rerelease] target_camera / path_corner behaviour flags. id calls these
+    // "hackflags"; they come straight off the map and only the N64 maps set them.
+    int         hackflags;
 
     gitem_t     *item;          // for bonus items
 

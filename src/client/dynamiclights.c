@@ -55,6 +55,7 @@ typedef struct {
     float   intensity;      // shadowlightintensity, already folded with radius
     float   cone_angle;     // full cone angle in degrees
     int     style;
+    int     switch_index;   // bit in CS_DYNAMICLIGHTS, or -1 for always-on
     bool    is_spot;
 } cdynamiclight_t;
 
@@ -180,6 +181,7 @@ void CL_LoadDynamicLights(void)
     namedent_t  *named = NULL;
     int         num_named = 0, max_named = 0;
     int         num_lights = 0, skipped_off = 0, unresolved = 0;
+    int         num_switchable = 0;
 
     CL_FreeDynamicLights();
 
@@ -216,15 +218,23 @@ void CL_LoadDynamicLights(void)
     data = cl.bsp->entitystring;
     while (CL_ParseEntityBlock(&data, &ent)) {
         cdynamiclight_t *dl;
+        int             switch_index;
 
         if (strcmp(ent.classname, "dynamic_light") || !ent.has_origin)
             continue;
 
-        // bit 0 reads as start-off. Nothing on the client can switch one back
-        // on, so honouring it at least matches the state at map start.
-        if (ent.spawnflags & 1) {
-            skipped_off++;
-            continue;
+        // A light with a targetname is switched by a trigger, and spawnflag 1
+        // means it starts off. The game owns that state and publishes it as
+        // CS_DYNAMICLIGHTS; all this side has to do is agree on the bit index,
+        // which is position among targetnamed dynamic_lights in lump order.
+        // Counted BEFORE the reach test below so the two sides cannot drift.
+        switch_index = -1;
+        if (ent.targetname[0]) {
+            if (num_switchable < MAX_SWITCHABLE_DLIGHTS)
+                switch_index = num_switchable;
+            num_switchable++;
+            if (ent.spawnflags & 1)
+                skipped_off++;
         }
 
         // a light with no reach contributes nothing
@@ -235,6 +245,7 @@ void CL_LoadDynamicLights(void)
         VectorCopy(ent.origin, dl->origin);
         VectorCopy(ent.color, dl->color);
         dl->style = ent.style;
+        dl->switch_index = switch_index;
 
         // the maps are consistent about writing _color in 0..1, but a stray
         // 0..255 value would be blindingly wrong rather than subtly wrong
@@ -283,8 +294,8 @@ void CL_LoadDynamicLights(void)
 
     Z_Free(named);
 
-    Com_DPrintf("%s: %d dynamic_light (%d off at spawn, %d unresolved targets)\n",
-                cl.mapname, cl_num_dynamiclights, skipped_off, unresolved);
+    Com_DPrintf("%s: %d dynamic_light (%d switchable, %d off at spawn, %d unresolved targets)\n",
+                cl.mapname, cl_num_dynamiclights, num_switchable, skipped_off, unresolved);
 }
 
 void CL_FreeDynamicLights(void)
@@ -306,6 +317,7 @@ work to do here.
 void CL_AddDynamicLightsToScene(void)
 {
     float scale;
+    unsigned switched;
 
     if (!cl_num_dynamiclights || !cl_dynamic_lights->integer)
         return;
@@ -318,9 +330,18 @@ void CL_AddDynamicLightsToScene(void)
     if (scale == 0.0f)
         return;
 
+    // which switchable lights the game currently has lit. SP_dynamic_light
+    // publishes this at spawn, so it is only ever empty on a map with no
+    // switchable lights at all - and then nothing carries a switch_index.
+    switched = strtoul(cl.configstrings[CS_DYNAMICLIGHTS], NULL, 16);
+
     for (int i = 0; i < cl_num_dynamiclights; i++) {
         const cdynamiclight_t *dl = &cl_dynamiclights[i];
         float intensity = dl->intensity * scale;
+
+        // switched off by the game right now?
+        if (dl->switch_index >= 0 && !(switched & (1u << dl->switch_index)))
+            continue;
 
         if (dl->style)
             intensity *= CL_LightStyleValue(dl->style);

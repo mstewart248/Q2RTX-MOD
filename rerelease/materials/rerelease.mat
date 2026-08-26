@@ -18574,10 +18574,26 @@ textures/tomc/tc_tomb_door_256_a:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
-# textures/tomc/tc_tomb_light_64_a:
-# 	texture_base materialDev/textures/tomc/tc_tomb_light_64_a.tga
-# 	texture_normals materialDev/textures/tomc/tc_tomb_light_64_a_n.tga
-# 	metalness_factor 0
+# ENABLED. The warning above is real - an entry here does turn material_custom
+# off and stop bsp_mesh.c synthesizing the emissive - but 'synth_emissive 1'
+# below asks for that same synthesis explicitly, so the light survives.
+#
+# It is also self-retiring: MAT_RegisterMaterial only synthesizes when
+#     mat->synth_emissive && !mat->image_emissive
+# so the moment tc_tomb_light_64_a_light.tga exists the authored map is loaded
+# and the synthesized one is skipped. Drop the file in and it takes over, with
+# no edit needed here.
+#
+# Base extracted from rerelease/textures/tomc/tc_tomb_light_64_a.wal (32x32,
+# no animation, no transparent texels) against rerelease/pics/colormap.pcx.
+# materialDev/ is untracked, so no retail art is committed.
+textures/tomc/tc_tomb_light_64_a:
+	texture_base materialDev/textures/tomc/tc_tomb_light_64_a.tga
+	texture_normals materialDev/textures/tomc/tc_tomb_light_64_a_n.tga
+	texture_emissive materialDev/textures/tomc/tc_tomb_light_64_a_light.tga
+	metalness_factor 0
+	emissive_factor 10.0
+	is_light 1
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
@@ -18740,14 +18756,60 @@ textures/tomc/wood1_5:
 	texture_normals materialDev/textures/tomc/wood1_5_n.tga
 	metalness_factor 0
 
-# Commented out - the .mat parser truncates every line at the first '#'
-# (strchr(linebuf, '#')), so a texture whose NAME contains '#' cannot be expressed
-# here: the key parses as 'textures/tomf/' and the loader logs "expected key and
-# value". This entry only ever produced that parse error.
-# textures/tomf/#lava_tf1:
-# 	texture_base materialDev/textures/tomf/#lava_tf1.tga
-# 	texture_normals materialDev/textures/tomf/#lava_tf1_n.tga
-# 	metalness_factor 0
+# mgu6m3's lava, and the only texture in the shipped maps whose name contains a
+# '#'. That used to make this entry unexpressable - the parser truncated the line
+# at the first '#', so the key came out as 'textures/tomf/' and the loader logged
+# "expected key and value". MAT_ParseMaterialsFile now only treats a '#' as a
+# comment when it is the FIRST non-whitespace character on the line.
+#
+# Why it needs an entry at all: the faces are SURF_LIGHT with radiance 200-800,
+# so the automatic surface-light path in bsp_mesh.c would normally synthesize an
+# emissive for them - except they are also SURF_WARP (it is a liquid), and that
+# path is gated off for warp surfaces by pt_enable_surface_lights_warp, which
+# defaults to 0. Classic lava never hits this because baseq2.mat gives it an
+# authored texture_emissive.
+#
+# synth_emissive builds the emissive from the base texture's bright texels at
+# load time, so no artwork is overridden and no retail asset has to be shipped.
+# emissive_threshold is the cut: a texel emits when max(R,G,B) >= it, scaled by
+# its OWN luminance, so a low cut does not flatten the look - the crust glows
+# faintly while the veins stay hottest. Measured over the 128x128 wal against
+# rerelease/pics/colormap.pcx: the default 215 selects only 4.4% of texels (the
+# veins alone, which read as a black slab with orange cracks), 64 gets 85.6%,
+# and 16 gets 99.2%. Median max(R,G,B) is 115. Hence 16 - the whole surface hot.
+#
+# texture_base MUST be spelled out. Dropping it and letting the loader derive the
+# path from the material name leaves the surface untextured (a flat cream slab) -
+# the derivation does not resolve a name containing '#'.
+# TWO separate per-FACE things made the middle of the pool dark. Neither shows
+# up in 'mat print', which reads MATERIAL state - both live in the BSP faces.
+#
+# 1. light_styles 0 - THE BIG ONE. bsp_mesh.c packs a per-face lightstyle into
+#    the material id for any emissive material (get_surf_light_style, ~line 691)
+#    and the shader then does
+#        minfo.emissive_factor *= light_buffer.light_styles[light_style];
+#    13 of the centre lava faces carry styles (0, 32, 255, 255). Style 32 belongs
+#    to two 'kill_trigger' lights with spawnflags 1 (START_OFF), so SP_light
+#    publishes CS_LIGHTS+32 as "a" = 0 and those faces are multiplied to BLACK.
+#    Turning light_styles off stops the style being packed at all, so the lava
+#    ignores the switch and stays lit. Distance had nothing to do with it.
+#
+# 2. bsp_radiance 0 + default_radiance 0.8 - the smaller one. With bsp_radiance
+#    on, emission is the face's own radiance x pt_bsp_radiance_scale (0.001), and
+#    this map gives the lava three levels: 800 over most of it, 400 on a strip at
+#    z=960, and 200 on the centred slab at z=1200. 0.8 is what the radiance-800
+#    faces already emitted, so the bright lava is unchanged and the dim ones come
+#    up to match. Matt settled on 3.0 by eye. NOTE: it does not scale forever -
+#    at 6.0 the lava surface looks about the same and only the ROOM gets
+#    brighter, because auto-exposure adapts to the extra emission.
+textures/tomf/#lava_tf1:
+	texture_base textures/tomf/#lava_tf1.wal
+	synth_emissive 1
+	is_light 1
+	emissive_threshold 16
+	bsp_radiance 0
+	default_radiance 3.0
+	light_styles 0
 
 # Commented out - the .mat parser truncates every line at the first '#'
 # (strchr(linebuf, '#')), so a texture whose NAME contains '#' cannot be expressed

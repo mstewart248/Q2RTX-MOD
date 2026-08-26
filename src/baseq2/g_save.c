@@ -187,6 +187,7 @@ static const save_field_t entityfields[] = {
     I(light_level),
 
     I(style),
+    I(hackflags),
 
     T(item),
 
@@ -313,6 +314,9 @@ static const save_field_t levelfields[] = {
     L(changemap),
     I(exitintermission),
     I(intermission_clear),
+    I(level_intermission_set),
+    I(dynamiclight_count),
+    I(dynamiclight_bits),
     F(sky_rotate),
     I(sky_autorotate),
     V(intermission_origin),
@@ -878,7 +882,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    45
+#define SAVE_VERSION    46
 
 /*
 ============

@@ -514,6 +514,7 @@ extern void drop_make_touchable(void);
 extern void drop_temp_touch(void);
 extern void droppod_light_think(void);
 extern void droptofloor(void);
+extern void dynamic_light_use(void);
 extern void flare_think(void);
 extern void flare_touch(void);
 extern void flechette_touch(void);
@@ -798,6 +799,7 @@ extern void tank_stand(void);
 extern void tank_walk(void);
 extern void target_actor_touch(void);
 extern void target_anger_use(void);
+extern void target_camera_dummy_think(void);
 extern void target_crosslevel_target_think(void);
 extern void target_crossunit_target_think(void);
 extern void target_earthquake_think(void);
@@ -872,6 +874,7 @@ extern void turret_sight(void);
 extern void turret_stand(void);
 extern void turret_wake(void);
 extern void turret_walk(void);
+extern void update_target_camera(void);
 extern void Use_Areaportal(void);
 extern void Use_Boss3(void);
 extern void Use_Item(void);
@@ -881,6 +884,7 @@ extern void Use_Plat(void);
 extern void Use_Plat2(void);
 extern void use_target_autosave(void);
 extern void use_target_blaster(void);
+extern void use_target_camera(void);
 extern void use_target_changelevel(void);
 extern void use_target_explosion(void);
 extern void use_target_goal(void);
@@ -965,6 +969,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, stationarymonster_start_go },
 { P_think, stationarymonster_triggered_spawn },
 { P_think, swimmonster_start_go },
+{ P_think, target_camera_dummy_think },
 { P_think, target_crosslevel_target_think },
 { P_think, target_crossunit_target_think },
 { P_think, target_earthquake_think },
@@ -993,6 +998,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, turret_breach_think },
 { P_think, turret_driver_link },
 { P_think, turret_driver_think },
+{ P_think, update_target_camera },
 { P_think, walkmonster_start_go },
 { P_blocked, door_blocked },
 { P_blocked, door_secret_blocked },
@@ -1049,6 +1055,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, commander_body_use },
 { P_use, door_secret_use },
 { P_use, door_use },
+{ P_use, dynamic_light_use },
 { P_use, func_clock_use },
 { P_use, func_conveyor_use },
 { P_use, func_explosive_spawn },
@@ -1099,6 +1106,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, Use_Plat2 },
 { P_use, use_target_autosave },
 { P_use, use_target_blaster },
+{ P_use, use_target_camera },
 { P_use, use_target_changelevel },
 { P_use, use_target_explosion },
 { P_use, use_target_goal },

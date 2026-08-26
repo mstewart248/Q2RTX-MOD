@@ -924,16 +924,57 @@ void SP_target_light(edict_t *self)
     gi.linkentity(self);
 }
 
-/*QUAKED dynamic_light (0 1 0) (-8 -8 -8) (8 8 8)
-The rerelease's real-time light. It is handled entirely on the CLIENT, out of
+/*QUAKED dynamic_light (0 1 0) (-8 -8 -8) (8 8 8) START_OFF
+The rerelease's real-time light. The light itself is built on the CLIENT, out of
 the BSP entity lump - see src/client/dynamiclights.c - because the lights are
 static and the path tracer already has the light types they need.
 
-This spawn function exists only so the server stops reporting the classname as
-unimplemented once per entity (69 lines a map on mine1/mine2). The edict is
-freed either way; the light is not driven from here.
+Most of them are scenery and this function just frees the edict, which is enough
+to stop the server reporting the classname as unimplemented (69 lines a map on
+mine1/mine2).
+
+The ones with a "targetname" are different: a trigger switches them, and 11 of
+the 15 across the in-scope maps START OFF. The rerelease does this by toggling
+SVF_NOCLIENT on the light entity itself. We cannot - our lights are not entities
+- so the game keeps a bookkeeping edict and publishes the on/off state as a bit
+in CS_DYNAMICLIGHTS. Bit index is position among "targetname"ed dynamic_lights
+in ENTITY LUMP ORDER, which is also this spawn function's call order, and is how
+the client counts them too.
 */
+#define SPAWNFLAG_DYNAMIC_LIGHT_START_OFF   1
+
+static void dynamic_light_publish(void)
+{
+    gi.configstring(CS_DYNAMICLIGHTS, va("%x", level.dynamiclight_bits));
+}
+
+void dynamic_light_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    level.dynamiclight_bits ^= 1u << self->count;
+    dynamic_light_publish();
+}
+
 void SP_dynamic_light(edict_t *self)
 {
-    G_FreeEdict(self);
+    // scenery: the client already has it, and nothing will ever ask it to change
+    if (!self->targetname) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (level.dynamiclight_count >= MAX_SWITCHABLE_DLIGHTS) {
+        gi.dprintf("%s: more than %d switchable dynamic_light at %s\n",
+                   self->classname, MAX_SWITCHABLE_DLIGHTS, vtos(self->s.origin));
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->count = level.dynamiclight_count++;
+    self->use = dynamic_light_use;
+    self->svflags |= SVF_NOCLIENT;
+
+    if (!(self->spawnflags & SPAWNFLAG_DYNAMIC_LIGHT_START_OFF))
+        level.dynamiclight_bits |= 1u << self->count;
+
+    dynamic_light_publish();
 }

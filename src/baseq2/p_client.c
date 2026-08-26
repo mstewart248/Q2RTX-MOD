@@ -1589,8 +1589,14 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
 
     if (level.intermission_framenum) {
         client->ps.pmove.pm_type = PM_FREEZE;
-        // can exit intermission after five seconds
-        if (level.framenum > level.intermission_framenum + 5.0f * BASE_FRAMERATE
+        // can exit intermission after five seconds.
+        // [rerelease] the changemap test is what makes a target_camera safe: it
+        // holds the clients frozen in "intermission" for the whole fly-through,
+        // and changemap stays NULL until its killtarget finally runs
+        // BeginIntermission. Without this a button press part-way through the
+        // shot would call ExitLevel with nowhere to go.
+        if (level.changemap
+            && level.framenum > level.intermission_framenum + 5.0f * BASE_FRAMERATE
             && (ucmd->buttons & BUTTON_ANY))
             level.exitintermission = true;
         return;

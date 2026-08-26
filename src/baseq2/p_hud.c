@@ -115,6 +115,12 @@ void BeginIntermission(edict_t *targ)
 
     level.exitintermission = 0;
 
+    // [rerelease] a target_camera has already aimed the intermission view down
+    // its own path. Snapping it to an info_player_intermission here would throw
+    // the shot away on the frame the camera fires its killtarget.
+    if (level.level_intermission_set)
+        return;
+
     // find an intermission spot
     ent = G_Find(NULL, FOFS(classname), "info_player_intermission");
     if (!ent) {

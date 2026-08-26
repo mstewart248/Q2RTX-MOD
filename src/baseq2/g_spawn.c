@@ -187,6 +187,7 @@ void SP_monster_commander_body(edict_t *self);
 void SP_turret_breach(edict_t *self);
 void SP_turret_base(edict_t *self);
 void SP_turret_driver(edict_t *self);
+void SP_target_camera(edict_t *self);
 
 qboolean IsEntFuncTrain(const char** data);
 char* GetEntityValue(const char** data, const char* searchKey);
@@ -354,6 +355,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"turret_breach", SP_turret_breach},
     {"turret_base", SP_turret_base},
     {"turret_driver", SP_turret_driver},
+    {"target_camera", SP_target_camera},
 
     {NULL, NULL}
 };
@@ -403,6 +405,9 @@ static const spawn_field_t spawn_fields[] = {
     // is this tree's POWER_ARMOR_* numbering already, so a plain int works.
     {"power_armor_type", FOFS(monsterinfo.power_armor_type), F_INT},
     {"power_armor_power", FOFS(monsterinfo.power_armor_power), F_INT},
+
+    // rerelease target_camera / path_corner tweaks. No shipped map sets it.
+    {"hackflags", FOFS(hackflags), F_INT},
 
     {NULL}
 };

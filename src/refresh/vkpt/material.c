@@ -548,7 +548,20 @@ static uint32_t load_material_file(const char* file_name, pbr_material_t* dest, 
 	{
 		++lineno;
 		
-		{ char* t = strchr(linebuf, '#'); if (t) *t = 0; }   // remove comments
+		// Remove comments. A '#' only opens a comment when it is the first
+		// non-whitespace character on the line: the rerelease ships textures
+		// whose NAME contains '#' (textures/tomf/#lava_tf1), and truncating at
+		// any '#' made those impossible to express here - the key parsed as
+		// "textures/tomf/" and the loader reported "expected key and value".
+		// Checked before changing this: no .mat in the tree uses a trailing
+		// comment, so nothing relied on the old behaviour.
+		{
+			char* t = linebuf;
+			while (*t == ' ' || *t == '\t')
+				++t;
+			if (*t == '#')
+				*t = 0;
+		}
 		
 		size_t len = strlen(linebuf);
 

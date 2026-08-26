@@ -351,15 +351,21 @@ void Cmd_Noclip_f(edict_t *ent)
 ==================
 Cmd_SetPos_f
 
-argv(0) setpos, argv(1..3) x y z
+argv(0) setpos, argv(1..3) x y z, argv(4..5) OPTIONAL pitch yaw
 
 Testing aid, same family as spawnmonster: drop the player at a named spot so a
 specific piece of level geometry can be reached without playing up to it.
+
+The optional angles matter for scripted verification: without them a screenshot
+taken after a setpos faces whatever direction the player happened to be facing,
+which is not reproducible between runs. Pitch is the usual Quake convention -
+POSITIVE looks DOWN.
 ==================
 */
 void Cmd_SetPos_f(edict_t *ent)
 {
-    vec3_t  origin;
+    vec3_t  origin, angles;
+    bool    set_angles;
     int     i;
 
     if ((deathmatch->value || coop->value) && !sv_cheats->value) {
@@ -368,12 +374,19 @@ void Cmd_SetPos_f(edict_t *ent)
     }
 
     if (gi.argc() < 4) {
-        gi.cprintf(ent, PRINT_HIGH, "usage: setpos <x> <y> <z>\n");
+        gi.cprintf(ent, PRINT_HIGH, "usage: setpos <x> <y> <z> [pitch yaw]\n");
         return;
     }
 
     for (i = 0; i < 3; i++)
         origin[i] = atof(gi.argv(i + 1));
+
+    set_angles = gi.argc() >= 6;
+    VectorClear(angles);
+    if (set_angles) {
+        angles[PITCH] = atof(gi.argv(4));
+        angles[YAW] = atof(gi.argv(5));
+    }
 
     VectorCopy(origin, ent->s.origin);
     VectorClear(ent->velocity);
@@ -386,8 +399,26 @@ void Cmd_SetPos_f(edict_t *ent)
     ent->client->ps.pmove.pm_flags |= PMF_TIME_TELEPORT;
     ent->client->ps.pmove.pm_time = 14;
 
+    if (set_angles) {
+        // delta_angles is what the client adds to its own mouse input, so this
+        // is the only way to aim a client from the game side; PMF_TIME_TELEPORT
+        // above is what stops it snapping straight back.
+        for (i = 0; i < 3; i++)
+            ent->client->ps.pmove.delta_angles[i] =
+                ANGLE2SHORT(angles[i] - ent->client->resp.cmd_angles[i]);
+
+        VectorCopy(angles, ent->s.angles);
+        VectorCopy(angles, ent->client->ps.viewangles);
+        VectorCopy(angles, ent->client->v_angle);
+    }
+
     gi.linkentity(ent);
-    gi.cprintf(ent, PRINT_HIGH, "setpos %.0f %.0f %.0f\n", origin[0], origin[1], origin[2]);
+
+    if (set_angles)
+        gi.cprintf(ent, PRINT_HIGH, "setpos %.0f %.0f %.0f pitch %.0f yaw %.0f\n",
+                   origin[0], origin[1], origin[2], angles[PITCH], angles[YAW]);
+    else
+        gi.cprintf(ent, PRINT_HIGH, "setpos %.0f %.0f %.0f\n", origin[0], origin[1], origin[2]);
 }
 
 
