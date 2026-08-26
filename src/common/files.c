@@ -214,6 +214,10 @@ cvar_t              *fs_game;
 
 cvar_t              *fs_shareware;
 
+// 1 when the active game directory is the rerelease. The menu script keys the
+// campaign chooser off this - see the 'singleplayer' menu in q2rtx.menu.
+cvar_t              *fs_rerelease;
+
 #if USE_ZLIB
 // local stream used for all file loads
 static zipstream_t  fs_zipstream;
@@ -3673,6 +3677,9 @@ void FS_Shutdown(void)
     Cmd_Deregister(c_fs);
 }
 
+// the game directory the rerelease content is installed in
+#define REREL_GAME  "rerelease"
+
 // this is called when local server starts up and gets it's latched variables,
 // client receives a serverdata packet, or user changes the game by hand while
 // disconnected
@@ -3689,6 +3696,11 @@ static void fs_game_changed(cvar_t *self)
             Cvar_Reset(self);
         }
     }
+
+    // let the client know whether the rerelease is the active game. Set here
+    // rather than in the first time startup branch below, so that it follows a
+    // runtime gamedir switch too.
+    Cvar_Set("fs_rerelease", Q_stricmp(self->string, REREL_GAME) ? "0" : "1");
 
     // check for the first time startup
     if (!fs_base_searchpaths) {
@@ -3757,6 +3769,7 @@ void FS_Init(void)
 #endif
 
 	fs_shareware = Cvar_Get("fs_shareware", "0", CVAR_ROM);
+	fs_rerelease = Cvar_Get("fs_rerelease", "0", CVAR_ROM);
 
     // get the game cvar and start the filesystem
     fs_game = Cvar_Get("game", DEFGAME, CVAR_LATCH | CVAR_SERVERINFO);

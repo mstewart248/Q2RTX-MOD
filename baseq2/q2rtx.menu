@@ -411,13 +411,36 @@ begin singleplayer
     background #212F3CD0
     style --compact
     banner m_banner_game
-    action easy "skill 0; deathmatch 0; coop 0; maxclients 1; newgame"
-    action medium "skill 1; deathmatch 0; coop 0; maxclients 1; newgame"
-    action hard "skill 2; deathmatch 0; coop 0; maxclients 1; newgame"
-    action nightmare "skill 3; deathmatch 0; coop 0; maxclients 1; newgame"
+    // the classic campaign starts straight away. The rerelease ships two
+    // campaigns, so there the difficulty only sets skill and hands off to the
+    // 'campaign' menu below. fs_rerelease is set by the filesystem from the
+    // active game directory.
+    ifneq fs_rerelease 1
+        action easy "skill 0; deathmatch 0; coop 0; maxclients 1; newgame"
+        action medium "skill 1; deathmatch 0; coop 0; maxclients 1; newgame"
+        action hard "skill 2; deathmatch 0; coop 0; maxclients 1; newgame"
+        action nightmare "skill 3; deathmatch 0; coop 0; maxclients 1; newgame"
+    endif
+    ifeq fs_rerelease 1
+        action easy "skill 0; deathmatch 0; coop 0; maxclients 1; pushmenu campaign"
+        action medium "skill 1; deathmatch 0; coop 0; maxclients 1; pushmenu campaign"
+        action hard "skill 2; deathmatch 0; coop 0; maxclients 1; pushmenu campaign"
+        action nightmare "skill 3; deathmatch 0; coop 0; maxclients 1; pushmenu campaign"
+    endif
     blank
     action "load game..." pushmenu loadgame
     action "save game..." pushmenu savegame
+end
+
+// rerelease only, pushed after the difficulty is chosen. 'newgame' plays the
+// intro cinematic and starts base1; 'newgame_mg2' drops straight into the Call
+// of the Machine hub with no cinematic. Both aliases live in default.cfg.
+begin campaign
+    background #212F3CD0
+    style --compact
+    banner m_banner_game
+    action "quake ii" newgame
+    action "call of the machine" newgame_mg2
 end
 
 begin loadgame
