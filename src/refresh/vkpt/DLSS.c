@@ -624,29 +624,17 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);    
-    // DLSS_DEPTH is now a render-resolution single-channel image (RR guide 3.4.7 wants
-    // depth at input resolution), so describe it with sourceSize / R32_SFLOAT.
     NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
-    //NVSDK_NGX_Resource_VK rayLengthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
-    // DLSS_TRANSPARENT is allocated as R32G32B32A32_SFLOAT - it was being described to
-    // NGX as R16G16B16A16_SFLOAT.
-    //NVSDK_NGX_Resource_VK transparentResoruce = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
-    // DLSS_REFLECT_MOTION is allocated as R32G32_SFLOAT - it was being described to NGX
-    // as R16G16B16A16_SFLOAT.
     NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R32G32_SFLOAT, false);
     NVSDK_NGX_Resource_VK albedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specular = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK metallic = ToNGXResource(qvk.images[VKPT_IMG_DLSS_METALLIC], qvk.images_views[VKPT_IMG_DLSS_METALLIC], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK normal = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    //NVSDK_NGX_Resource_VK materialid = ToNGXResource(qvk.images[VKPT_IMG_DLSS_MATERIALID], qvk.images_views[VKPT_IMG_DLSS_MATERIALID], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    //NVSDK_NGX_Resource_VK emissive = ToNGXResource(qvk.images[VKPT_IMG_DLSS_EMISSIVE], qvk.images_views[VKPT_IMG_DLSS_EMISSIVE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    //NVSDK_NGX_Resource_VK indirectAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_INDIRECT_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK beforeTransparent = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    //NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     NVSDK_NGX_VK_GBuffer inBuffer = {
         .pInAttrib[NVSDK_NGX_GBUFFER_ALBEDO] = &albedo        
@@ -773,12 +761,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     const float jitterX = jitterOffset[0] * jitterSign;
     const float jitterY = jitterOffset[1] * jitterSign;
 
-    // Registered in InitDLSSCvars. Kept out of the global UBO entirely - only C code
-    // reads it, so it cannot disturb the UBO layout.
     const bool useDiffuseHitDist = (cvar_pt_dlss_diff_hitdist != NULL)
         && cvar_pt_dlss_diff_hitdist->integer != 0;
-
-
 
     if (!denoiseMode) {
         NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
@@ -793,15 +777,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .InMVScaleY = sourceSize.Height,
             .InColorSubrectBase = sourceOffset,
             .InDepthSubrectBase = sourceOffset,
-            .InMVSubrectBase = sourceOffset,
-            // .InTranslucencySubrectBase = sourceOffset,  // pairs with pInTransparencyMask, which is Unused/Reserved
-            // .InFrameTimeDeltaInMsec = timeDelta * 1000.0,  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
-            // .pInRayTracingHitDistance = &rayLengthResource,  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
-            // .pInTransparencyMask = &transparentResoruce,  // helpers_vk.h: Unused/Reserved for future use
-            // .pInMotionVectorsReflections = &reflectMotion,  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
-            //.InToneMapperType = NVSDK_NGX_TONEMAPPER_REINHARD,
-            // .GBufferSurface = inBuffer  // not consumed by DLSS Super Resolution (helpers_vk.h: research purposes only)
-
+            .InMVSubrectBase = sourceOffset
         };
 
         NVSDK_NGX_Result res = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, dlssObj.pDlssFeature, dlssObj.pParams, &evalParams);
@@ -826,37 +802,15 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .InColorSubrectBase = sourceOffset,
             .InDepthSubrectBase = sourceOffset,
             .InMVSubrectBase = sourceOffset,
-            // .InTranslucencySubrectBase = sourceOffset,  // no transparency layer is passed
-            // .InFrameTimeDeltaInMsec = timeDelta * 1000.0,  // no 3.4.x section in the RR guide - not a documented RR input
-            // .pInRayTracingHitDistance = &rayLengthResource,  // no 3.4.x section in the RR guide - not a documented RR input (only Specular Hit Distance, 3.4.9, is)
-            // pInMotionVectors3D deliberately not set: PT_MOTION is (screen-space UV
-            // delta, view-distance delta), a mixed-space vector, not a 3D motion vector.
             .pInMotionVectorsReflections = &reflectMotion,			
-            // .pInReflectedAlbedo = &reflectedAlbedo,  // no 3.4.x section in the RR guide - not a documented RR input
 			.pInNormals = &normal,
-			// Diffuse hit distance. The RR guide has no 3.4.x section for it, but that is
-			// not evidence it is ignored - the same was true of pInDisocclusionMask, and
-			// nvsdk_ngx_helpers_dlssd_vk.h does forward this one to NGX as
-			// NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance. It is the guide that sizes RR's
-			// diffuse spatial filter; without it RR over-blurs diffuse lighting, flattening
-			// local light falloff and bleeding bright areas into dark ones.
-			// pt_dlss_diff_hitdist 0 restores the old behaviour for A/B.
 			.pInDiffuseHitDistance = useDiffuseHitDist ? &diffuseLength : NULL,
 			.pInSpecularHitDistance = &specularLength,
 			.pInSpecularAlbedo = &specularAlbedo,
 			.pInDiffuseAlbedo = &albedo,
             .pInRoughness = &roughness,
-
-            // Color Before Transparency (RR guide 3.4.11). This is the documented cure for
-            // "ghosting or disappearing particles": a snapshot of the noisy colour before
-            // transparencies are composited on top, so RR can tell overlay pixels from the
-            // primary surface instead of denoising particles as if they were geometry.
-            // The guide requires the same image format as the colour input - both are
-            // R16G16B16A16_SFLOAT here. Already produced by checkerboard_interleave.comp.
             .pInColorBeforeTransparency = &beforeTransparent,
-            .InColorBeforeTransparencySubrectBase = sourceOffset,
-            // .GBufferSurface = inBuffer,  // no 3.4.x section in the RR guide - not a documented RR input
-            // .InToneMapperType = NVSDK_NGX_TONEMAPPER_ACES  // RR does not support tone mapper hints (RR guide 3.7)
+            .InColorBeforeTransparencySubrectBase = sourceOffset
         };
 
 		NVSDK_NGX_Result res = NGX_VULKAN_EVALUATE_DLSSD_EXT(cmd, dlssObj.pDlssFeature, dlssObj.pParams, &evalParams);

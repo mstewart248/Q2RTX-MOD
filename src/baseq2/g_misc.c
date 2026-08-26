@@ -18,6 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // g_misc.c
 
 #include "g_local.h"
+#include "m_player.h"    // mannequin gesture frames
 
 
 /*QUAKED func_group (0 0 0) ?
@@ -2268,6 +2269,233 @@ void SP_misc_teleporter_dest(edict_t *ent)
 //  ent->s.effects |= EF_FLIES;
     VectorSet(ent->mins, -32, -32, -24);
     VectorSet(ent->maxs, 32, 32, -16);
+    gi.linkentity(ent);
+}
+
+/*
+=================
+misc_player_mannequin
+
+A posed player model used as set dressing - the four in boss2 stand in a row
+holding weapons. Ported from src/rerelease/g_misc.cpp.
+
+It works by claiming one of the top client skin slots and writing a
+CS_PLAYERSKINS configstring for it, which is how the client is told to load a
+player model plus skin; s.modelindex 255 then makes the client resolve the
+entity through cl.clientinfo[s.skinnum], exactly as it does for real players.
+Only three are addressable (one per player model type), which is a limitation of
+id's own implementation, not of this port.
+
+Divergence: the rerelease scales these with "radius" (boss2 asks for .45 and 1).
+entity_state_t has no scale field here and the protocol sends none, so they
+stand at full player size - the same limitation misc_model and monster_guncmdr
+hit. The bbox is left unscaled to match what is drawn.
+=================
+*/
+#define GESTURE_FLIP_OFF        0
+#define GESTURE_SALUTE          1
+#define GESTURE_TAUNT           2
+#define GESTURE_WAVE            3
+#define GESTURE_POINT           4
+
+void misc_player_mannequin_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->monsterinfo.aiflags |= AI_TARGET_ANGER;
+    self->enemy = activator;
+
+    switch (self->count) {
+    case GESTURE_FLIP_OFF:
+        self->s.frame = FRAME_flip01;
+        self->monsterinfo.nextframe = FRAME_flip12;
+        break;
+    case GESTURE_SALUTE:
+        self->s.frame = FRAME_salute01;
+        self->monsterinfo.nextframe = FRAME_salute11;
+        break;
+    case GESTURE_TAUNT:
+        self->s.frame = FRAME_taunt01;
+        self->monsterinfo.nextframe = FRAME_taunt17;
+        break;
+    case GESTURE_WAVE:
+        self->s.frame = FRAME_wave01;
+        self->monsterinfo.nextframe = FRAME_wave11;
+        break;
+    case GESTURE_POINT:
+        self->s.frame = FRAME_point01;
+        self->monsterinfo.nextframe = FRAME_point12;
+        break;
+    }
+}
+
+void misc_player_mannequin_think(edict_t *self)
+{
+    // id gates the frame step to 10 Hz with a separate timer because their
+    // server thinks at 40 Hz. This one runs at BASE_FRAMERATE, which IS 10 Hz,
+    // so the think interval is the gate and no extra field is needed.
+    self->s.frame++;
+
+    if (!(self->monsterinfo.aiflags & AI_TARGET_ANGER)) {
+        if (self->s.frame > FRAME_stand40)
+            self->s.frame = FRAME_stand01;
+    } else if (self->s.frame > self->monsterinfo.nextframe) {
+        // gesture over, back to the idle loop
+        self->s.frame = FRAME_stand01;
+        self->monsterinfo.aiflags &= ~AI_TARGET_ANGER;
+        self->enemy = NULL;
+    }
+
+    if (self->enemy) {
+        vec3_t vec;
+
+        VectorSubtract(self->enemy->s.origin, self->s.origin, vec);
+        self->ideal_yaw = vectoyaw(vec);
+        M_ChangeYaw(self);
+    }
+
+    self->nextthink = level.framenum + 1;
+}
+
+static void SetupMannequinModel(edict_t *self, int model_type, const char *weapon, const char *skin)
+{
+    const char *model_name;
+    const char *default_skin;
+    char        buffer[MAX_QPATH];
+
+    switch (model_type) {
+    case 2:
+        self->s.skinnum = MAX_CLIENTS - 2;
+        model_name = "male";
+        default_skin = "rampage";
+        break;
+    case 3:
+        self->s.skinnum = MAX_CLIENTS - 3;
+        model_name = "cyborg";
+        default_skin = "oni911";
+        break;
+    case 1:
+    default:
+        self->s.skinnum = MAX_CLIENTS - 1;
+        model_name = "female";
+        default_skin = "venus";
+        break;
+    }
+
+    // no self->model: nothing reads it for a non-brush entity, and the client
+    // takes the player model from the configstring written below
+
+    Q_snprintf(buffer, sizeof(buffer), "players/%s/%s.md2", model_name,
+               weapon ? weapon : "w_hyperblaster");
+    self->s.modelindex2 = gi.modelindex(buffer);
+
+    // "name\model/skin" is the form the client parses in CL_LoadClientinfo
+    Q_snprintf(buffer, sizeof(buffer), "mannequin\\%s/%s", model_name,
+               skin ? skin : default_skin);
+    gi.configstring(CS_PLAYERSKINS + self->s.skinnum, buffer);
+}
+
+/*QUAKED misc_player_mannequin (1.0 1.0 0.0) (-32 -32 -32) (32 32 32)
+Creates a player mannequin that stands around.
+
+NOTE: this is currently very limited, and only allows one unique model
+from each of the three player model types.
+
+"distance"  which gesture to use when triggered (0 flip off, 1 salute,
+            2 taunt, 3 wave, 4 point)
+"height"    which player model to use (1 female, 2 male, 3 cyborg)
+"goals"     name of the weapon model to hold
+"image"     name of the player skin to use
+"radius"    how much to scale the model - NOT honoured here, see above
+*/
+void SP_misc_player_mannequin(edict_t *self)
+{
+    self->movetype = MOVETYPE_NONE;
+    self->solid = SOLID_BBOX;
+
+    if (!(st.keys_specified & SPAWNKEY_EFFECTS))
+        self->s.effects = 0;
+    if (!(st.keys_specified & SPAWNKEY_RENDERFX))
+        self->s.renderfx = RF_MINLIGHT;
+
+    VectorSet(self->mins, -16, -16, -24);
+    VectorSet(self->maxs, 16, 16, 32);
+    self->yaw_speed = 30;
+    self->ideal_yaw = 0;
+    self->s.modelindex = 255;   // resolved through cl.clientinfo[skinnum]
+    self->count = st.distance;
+
+    SetupMannequinModel(self, st.height, st.goals, st.image);
+
+    self->think = misc_player_mannequin_think;
+    self->nextthink = level.framenum + 1;
+
+    if (self->targetname)
+        self->use = misc_player_mannequin_use;
+
+    gi.linkentity(self);
+}
+
+/*QUAKED func_animation (0 .5 .8) ? START_ON
+A solid brush model like func_wall, except that triggering it toggles between
+its two bmodel_anim frame ranges rather than switching it on and off. Ported
+from src/rerelease/g_misc.cpp.
+
+START_ON    start in the alternate animation
+
+The animation itself is driven by G_RunBmodelAnimation in g_phys.c; without the
+bmodel_anim_* keys this entity has nothing to do, which is exactly what id does
+with it too.
+*/
+#define SPAWNFLAG_ANIMATION_START_ON    1
+
+void func_animation_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->bmodel_anim.alternate = !self->bmodel_anim.alternate;
+}
+
+void SP_func_animation(edict_t *self)
+{
+    if (!self->bmodel_anim.enabled) {
+        gi.dprintf("%s at %s has no animation data\n", self->classname, vtos(self->s.origin));
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->movetype = MOVETYPE_PUSH;
+    gi.setmodel(self, self->model);
+    self->solid = SOLID_BSP;
+
+    self->use = func_animation_use;
+    self->bmodel_anim.alternate = (self->spawnflags & SPAWNFLAG_ANIMATION_START_ON) != 0;
+
+    if (self->bmodel_anim.alternate)
+        self->s.frame = self->bmodel_anim.alt_start;
+    else
+        self->s.frame = self->bmodel_anim.start;
+
+    gi.linkentity(self);
+}
+
+/*QUAKED misc_model (1 0 0) (-8 -8 -8) (8 8 8)
+A static, non-solid decorative model. "model" is the path to the .md2, "frame"
+picks a pose. Ported from src/rerelease/g_misc.cpp, where the whole entity is
+setmodel + linkentity - the 6 in boss2 are shell boxes and gib meat used as set
+dressing, and without a spawn function they were dropped at load.
+
+The rerelease also honours "scale" on these (4 of the 6 boss2 ones set 1.45).
+entity_state_t has no scale field here and the protocol sends none, so they
+render at 1.0 - the same limitation misc_flare and monster_guncmdr hit.
+*/
+void SP_misc_model(edict_t *ent)
+{
+    if (!ent->model) {
+        gi.dprintf("%s without a model at %s\n", ent->classname, vtos(ent->s.origin));
+        G_FreeEdict(ent);
+        return;
+    }
+
+    ent->movetype = MOVETYPE_NONE;
+    ent->solid = SOLID_NOT;
+    gi.setmodel(ent, ent->model);
     gi.linkentity(ent);
 }
 

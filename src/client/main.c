@@ -57,6 +57,8 @@ cvar_t  *cl_disable_explosions;
 cvar_t  *cl_dlight_hacks;
 cvar_t  *cl_blaster_color;
 cvar_t  *cl_ludicrous_gibs;
+cvar_t  *cl_quick_weapon_switch;
+cvar_t  *cl_instant_weapon_switch;
 
 cvar_t  *cl_chat_notify;
 cvar_t  *cl_chat_sound;
@@ -2798,6 +2800,12 @@ static void CL_InitLocal(void)
     // apart. Registered here as well so the Options -> Effects toggle works at
     // the main menu, before any game library has been loaded.
     cl_ludicrous_gibs = Cvar_Get("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
+
+    // Twins of the game's weapon-switch cvars, registered here only so the
+    // Player Setup menu has something to read before a map is loaded. The game
+    // DLL owns the behaviour, and applies it only in `game rerelease`.
+    cl_quick_weapon_switch = Cvar_Get("g_quick_weapon_switch", "1", CVAR_ARCHIVE);
+    cl_instant_weapon_switch = Cvar_Get("g_instant_weapon_switch", "0", CVAR_ARCHIVE);
 
     cl_gibs = Cvar_Get("cl_gibs", "1", 0);
     // rerelease misc_flare coronas, off to compare against the rerelease

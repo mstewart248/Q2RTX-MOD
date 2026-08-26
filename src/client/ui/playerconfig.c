@@ -38,6 +38,7 @@ typedef struct m_player_s {
     menuSpinControl_t   skin;
 	menuSpinControl_t   hand;
     menuSpinControl_t   aimfix;
+    menuSpinControl_t   weapswitch;
     menuSpinControl_t   view;
 
     refdef_t    refdef;
@@ -52,6 +53,15 @@ typedef struct m_player_s {
 static m_player_t    m_player;
 
 extern cvar_t       *vid_rtx;
+
+// Maps onto the two rerelease cvars the game DLL reads. Only has an effect in
+// `game rerelease`; stock baseq2 always uses classic timing.
+static const char *weapon_switch_modes[] = {
+    "classic",
+    "fast",
+    "instant",
+    NULL
+};
 
 static const char *handedness[] = {
     "right",
@@ -210,6 +220,10 @@ static void Size(menuFrameWork_t *self)
 	m_player.aimfix.generic.x   = x;
     m_player.aimfix.generic.y   = y;
     y += MENU_SPACING;
+
+    m_player.weapswitch.generic.x   = x;
+    m_player.weapswitch.generic.y   = y;
+    y += MENU_SPACING;
     
 	m_player.view.generic.x     = x;
 	m_player.view.generic.y     = y;
@@ -248,6 +262,12 @@ static void Pop(menuFrameWork_t *self)
 	Cvar_SetEx("hand", va("%d", m_player.hand.curvalue), FROM_CONSOLE);
 
 	Cvar_SetEx("aimfix", va("%d", m_player.aimfix.curvalue), FROM_CONSOLE);
+
+    // one control, two cvars - id keeps them separate and so do we
+    Cvar_SetEx("g_quick_weapon_switch",
+               va("%d", m_player.weapswitch.curvalue == 1), FROM_CONSOLE);
+    Cvar_SetEx("g_instant_weapon_switch",
+               va("%d", m_player.weapswitch.curvalue == 2), FROM_CONSOLE);
 
 	Cvar_SetEx("cl_player_model", va("%d", m_player.view.curvalue), FROM_CONSOLE);
 }
@@ -308,6 +328,14 @@ static bool Push(menuFrameWork_t *self)
 
     m_player.aimfix.curvalue = Cvar_VariableInteger("aimfix");
     clamp(m_player.aimfix.curvalue, 0, 1);
+
+    // instant wins if both are set, matching how the game code tests them
+    if (Cvar_VariableInteger("g_instant_weapon_switch"))
+        m_player.weapswitch.curvalue = 2;
+    else if (Cvar_VariableInteger("g_quick_weapon_switch"))
+        m_player.weapswitch.curvalue = 1;
+    else
+        m_player.weapswitch.curvalue = 0;
 	
 	m_player.view.curvalue = Cvar_VariableInteger("cl_player_model");
 	clamp(m_player.view.curvalue, 0, 3);
@@ -408,6 +436,11 @@ void M_Menu_PlayerConfig(void)
     m_player.hand.generic.name = "handedness";
     m_player.hand.itemnames = (char **)handedness;
 
+    m_player.weapswitch.generic.type = MTYPE_SPINCONTROL;
+    m_player.weapswitch.generic.name = "weapon switch";
+    m_player.weapswitch.generic.status = "rerelease campaign only: fast raises and lowers weapons at double rate, instant skips the animation";
+    m_player.weapswitch.itemnames = (char**)weapon_switch_modes;
+
     m_player.aimfix.generic.type = MTYPE_SPINCONTROL;
     m_player.aimfix.generic.name = "aiming point";
     m_player.aimfix.itemnames = (char**)aiming_points;
@@ -421,6 +454,7 @@ void M_Menu_PlayerConfig(void)
     Menu_AddItem(&m_player.menu, &m_player.skin);
     Menu_AddItem(&m_player.menu, &m_player.hand);
     Menu_AddItem(&m_player.menu, &m_player.aimfix);
+    Menu_AddItem(&m_player.menu, &m_player.weapswitch);
 	Menu_AddItem(&m_player.menu, &m_player.view);
 
     List_Append(&ui_menus, &m_player.menu.entry);

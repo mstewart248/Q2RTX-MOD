@@ -437,6 +437,46 @@ typedef struct {
 } level_locals_t;
 
 
+// rerelease brush-model animation. The map gives a frame range, a rate in
+// milliseconds and a style, plus a second "alternate" set that an entity
+// switches to - a func_button runs the alternate range while held down, and
+// func_animation toggles between the two each time it is triggered.
+//
+// s.frame on a brush model selects a stage of the texture's animation chain
+// (the "+0name"/"+1name" convention), which the path tracer already honours -
+// see animate_material() in shader/vertex_buffer.h and mi->frame in
+// refresh/vkpt/main.c. So this is purely game-side.
+//
+// The rate is kept in milliseconds as authored and converted to server frames
+// at use, by BModelAnimFrames(). This tree runs at BASE_FRAMERATE (10 Hz), so
+// the finest rate representable is 100 ms: 20 of the shipped buttons ask for
+// 50 ms and run at half the intended speed. Everything else the maps use
+// (150/192/200/300/400/500/1000 ms) rounds to within a frame.
+typedef enum {
+    BMODEL_ANIM_FORWARDS = 0,
+    BMODEL_ANIM_BACKWARDS,
+    BMODEL_ANIM_RANDOM
+} bmodel_anim_style_t;
+
+typedef struct {
+    bool        enabled;        // set when the map supplied a frame range
+
+    int         start, end;
+    int         style;
+    int         speed;          // MILLISECONDS, exactly as the map authored it
+    int         nowrap;         // spawn-parsed, so int not bool (no F_BOOL)
+
+    int         alt_start, alt_end;
+    int         alt_style;
+    int         alt_speed;
+    int         alt_nowrap;     // ditto
+
+    // runtime
+    bool        alternate;              // which set is wanted
+    bool        currently_alternate;    // which set is running
+    int         next_framenum;
+} bmodel_anim_t;
+
 // spawn_temp_t is only used to hold entity field values that
 // can be set from the editor, but aren't actualy present
 // in edict_t during gameplay
@@ -472,6 +512,7 @@ typedef struct {
     char        *reinforcements;
     float       health_multiplier;
     char        *image;             // rerelease target_poi compass icon
+    char        *goals;             // rerelease misc_player_mannequin weapon
     float       radius;             // rerelease func_eye detection radius
     int         fade_start_dist;    // rerelease misc_flare
     int         fade_end_dist;
@@ -481,6 +522,8 @@ typedef struct {
 #define SPAWNKEY_SKYROTATE      2
 #define SPAWNKEY_SKYAUTOROTATE  4
 #define SPAWNKEY_SKYAXIS        8
+#define SPAWNKEY_EFFECTS        16
+#define SPAWNKEY_RENDERFX       32
 
 
 typedef struct {
@@ -762,6 +805,12 @@ extern  cvar_t  *sv_flaregun;
 // crashing.
 extern  cvar_t  *g_ludicrous_gibs;
 #define LUDICROUS_GIBS()    (g_ludicrous_gibs && g_ludicrous_gibs->value)
+
+// rerelease weapon handling. Both are id's own cvar names and defaults, but
+// they only take effect in the rerelease game - stock baseq2 keeps 1997
+// weapon timing. See WeaponSwitchQuick() / WeaponSwitchInstant() in p_weapon.c.
+extern  cvar_t  *g_quick_weapon_switch;
+extern  cvar_t  *g_instant_weapon_switch;
 
 #define world   (&g_edicts[0])
 
@@ -1472,6 +1521,10 @@ struct edict_s {
     // [rerelease] target_camera / path_corner behaviour flags. id calls these
     // "hackflags"; they come straight off the map and only the N64 maps set them.
     int         hackflags;
+
+    // rerelease brush-model animation (func_animation, and 52 animated
+    // func_buttons across 21 of the shipped maps)
+    bmodel_anim_t bmodel_anim;
 
     gitem_t     *item;          // for bonus items
 

@@ -189,6 +189,24 @@ static const save_field_t entityfields[] = {
     I(style),
     I(hackflags),
 
+    // rerelease brush-model animation. Without these a save/load leaves the
+    // animation stopped: enabled would come back false and G_RunEntity would
+    // stop calling the driver.
+    O(bmodel_anim.enabled),
+    I(bmodel_anim.start),
+    I(bmodel_anim.end),
+    I(bmodel_anim.style),
+    I(bmodel_anim.speed),
+    I(bmodel_anim.nowrap),
+    I(bmodel_anim.alt_start),
+    I(bmodel_anim.alt_end),
+    I(bmodel_anim.alt_style),
+    I(bmodel_anim.alt_speed),
+    I(bmodel_anim.alt_nowrap),
+    O(bmodel_anim.alternate),
+    O(bmodel_anim.currently_alternate),
+    I(bmodel_anim.next_framenum),
+
     T(item),
 
     V(moveinfo.start_origin),
@@ -882,7 +900,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    46
+#define SAVE_VERSION    47
 
 /*
 ============

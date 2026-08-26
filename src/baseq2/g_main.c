@@ -77,6 +77,8 @@ cvar_t  *sv_features;
 
 cvar_t  *sv_flaregun;
 cvar_t  *g_ludicrous_gibs;
+cvar_t  *g_quick_weapon_switch;
+cvar_t  *g_instant_weapon_switch;
 
 char* GetFuncTrainTargetList(const char* entities);
 char* GetValueFromList(const char* list);
@@ -200,6 +202,18 @@ void InitGame(void)
     // the same cvar (see cl_ludicrous_gibs' twin in cl_init) so it exists in
     // the menu before any map is loaded, and so the particle side can read it.
     g_ludicrous_gibs = gi.cvar("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
+
+    // Rerelease weapon switching. id's names and id's defaults: the rerelease
+    // raises and lowers weapons at 20 Hz rather than 10, which is why switching
+    // feels noticeably faster there, and it plays weapons/change.wav on the
+    // swap. BOTH ARE IGNORED OUTSIDE `game rerelease` - stock baseq2 plays with
+    // stock Q2RTX weapon timing no matter what these say. The client registers
+    // the same names (see cl_init) so the Player Setup menu can offer them
+    // before any map is loaded, exactly as g_ludicrous_gibs does.
+    // Divergence from id: NOT latched. Theirs are CVAR_LATCH; a menu toggle
+    // that only takes effect on the next map would just read as broken.
+    g_quick_weapon_switch = gi.cvar("g_quick_weapon_switch", "1", CVAR_ARCHIVE);
+    g_instant_weapon_switch = gi.cvar("g_instant_weapon_switch", "0", CVAR_ARCHIVE);
 
     // rerelease localized strings; safe to call more than once
     L10N_Init();

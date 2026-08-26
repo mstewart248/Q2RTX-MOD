@@ -124,6 +124,9 @@ void SP_misc_bigviper(edict_t *self);
 void SP_misc_strogg_ship(edict_t *self);
 void SP_misc_teleporter(edict_t *self);
 void SP_misc_teleporter_dest(edict_t *self);
+void SP_misc_model(edict_t *self);
+void SP_func_animation(edict_t *self);
+void SP_misc_player_mannequin(edict_t *self);
 void SP_misc_blackhole(edict_t *self);
 void SP_misc_eastertank(edict_t *self);
 void SP_misc_easterchick(edict_t *self);
@@ -187,6 +190,7 @@ void SP_monster_commander_body(edict_t *self);
 void SP_turret_breach(edict_t *self);
 void SP_turret_base(edict_t *self);
 void SP_turret_driver(edict_t *self);
+void SP_turret_invisible_brain(edict_t *self);
 void SP_target_camera(edict_t *self);
 
 qboolean IsEntFuncTrain(const char** data);
@@ -290,6 +294,9 @@ static const spawn_func_t spawn_funcs[] = {
     {"misc_strogg_ship", SP_misc_strogg_ship},
     {"misc_teleporter", SP_misc_teleporter},
     {"misc_teleporter_dest", SP_misc_teleporter_dest},
+    {"misc_model", SP_misc_model},
+    {"func_animation", SP_func_animation},
+    {"misc_player_mannequin", SP_misc_player_mannequin},
     {"misc_blackhole", SP_misc_blackhole},
     {"misc_eastertank", SP_misc_eastertank},
     {"misc_easterchick", SP_misc_easterchick},
@@ -355,6 +362,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"turret_breach", SP_turret_breach},
     {"turret_base", SP_turret_base},
     {"turret_driver", SP_turret_driver},
+    {"turret_invisible_brain", SP_turret_invisible_brain},
     {"target_camera", SP_target_camera},
 
     {NULL, NULL}
@@ -400,11 +408,29 @@ static const spawn_field_t spawn_fields[] = {
     {"origin", FOFS(s.origin), F_VECTOR},
     {"angles", FOFS(s.angles), F_VECTOR},
     {"angle", FOFS(s.angles), F_ANGLEHACK},
+    {"frame", FOFS(s.frame), F_INT},                  // misc_model pose
+    {"effects", FOFS(s.effects), F_INT},              // misc_player_mannequin
+    {"renderfx", FOFS(s.renderfx), F_INT},
 
     // rerelease - per-monster power armor. 1 is a screen and 2 a shield, which
     // is this tree's POWER_ARMOR_* numbering already, so a plain int works.
     {"power_armor_type", FOFS(monsterinfo.power_armor_type), F_INT},
     {"power_armor_power", FOFS(monsterinfo.power_armor_power), F_INT},
+
+    // rerelease brush-model animation. 52 func_buttons and 4 func_animations in
+    // the shipped maps set these; nothing read them, so those brush models
+    // animated on the stock EF_ANIM01 two-frame cycle instead of the authored
+    // range. bmodel_anim.enabled is set below, from the key's presence.
+    {"bmodel_anim_start", FOFS(bmodel_anim.start), F_INT},
+    {"bmodel_anim_end", FOFS(bmodel_anim.end), F_INT},
+    {"bmodel_anim_style", FOFS(bmodel_anim.style), F_INT},
+    {"bmodel_anim_speed", FOFS(bmodel_anim.speed), F_INT},
+    {"bmodel_anim_nowrap", FOFS(bmodel_anim.nowrap), F_INT},
+    {"bmodel_anim_alt_start", FOFS(bmodel_anim.alt_start), F_INT},
+    {"bmodel_anim_alt_end", FOFS(bmodel_anim.alt_end), F_INT},
+    {"bmodel_anim_alt_style", FOFS(bmodel_anim.alt_style), F_INT},
+    {"bmodel_anim_alt_speed", FOFS(bmodel_anim.alt_speed), F_INT},
+    {"bmodel_anim_alt_nowrap", FOFS(bmodel_anim.alt_nowrap), F_INT},
 
     // rerelease target_camera / path_corner tweaks. No shipped map sets it.
     {"hackflags", FOFS(hackflags), F_INT},
@@ -436,6 +462,7 @@ static const spawn_field_t temp_fields[] = {
     {"reinforcements", STOFS(reinforcements), F_LSTRING},
     {"health_multiplier", STOFS(health_multiplier), F_FLOAT},
     {"image", STOFS(image), F_LSTRING},
+    {"goals", STOFS(goals), F_LSTRING},   // mannequin held weapon
     {"radius", STOFS(radius), F_FLOAT},
     {"fade_start_dist", STOFS(fade_start_dist), F_INT},
     {"fade_end_dist", STOFS(fade_end_dist), F_INT},
@@ -692,6 +719,11 @@ void ED_ParseEdict(const char **data, edict_t *ent, const char* pathList, int* m
         if (key[0] == '_')
             continue;
 
+        // The rerelease decides bmodel animation is active purely from the
+        // presence of a frame-range key, so record it as the key goes past.
+        if (!Q_strcasecmp(key, "bmodel_anim_start") || !Q_strcasecmp(key, "bmodel_anim_end"))
+            ent->bmodel_anim.enabled = true;
+
         if (!ED_ParseField(spawn_fields, key, value, (byte *)ent)) {
             if (!ED_ParseField(temp_fields, key, value, (byte *)&st)) {
                 gi.dprintf("%s: %s is not a field\n", __func__, key);
@@ -705,6 +737,10 @@ void ED_ParseEdict(const char **data, edict_t *ent, const char* pathList, int* m
                     st.keys_specified |= SPAWNKEY_SKYAUTOROTATE;
                 else if (!Q_stricmp(key, "skyaxis"))
                     st.keys_specified |= SPAWNKEY_SKYAXIS;
+                else if (!Q_stricmp(key, "effects"))
+                    st.keys_specified |= SPAWNKEY_EFFECTS;
+                else if (!Q_stricmp(key, "renderfx"))
+                    st.keys_specified |= SPAWNKEY_RENDERFX;
             }
         }
     }
@@ -1368,6 +1404,9 @@ void SP_worldspawn(edict_t *ent)
 
     gi.soundindex("player/lava1.wav");
     gi.soundindex("player/lava2.wav");
+
+    if (M_RereleaseGame())
+        gi.soundindex("weapons/change.wav");    // rerelease weapon switch
 
     gi.soundindex("misc/pc_up.wav");
     gi.soundindex("misc/talk1.wav");

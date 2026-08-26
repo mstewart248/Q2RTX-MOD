@@ -176,6 +176,26 @@ The old weapon has been dropped all the way, so make the new one
 current
 ===============
 */
+/*
+=================
+WeaponSwitchQuick / WeaponSwitchInstant
+
+The rerelease runs the raise and lower animations at 20 Hz instead of 10
+(g_quick_weapon_switch, on by default) and can skip them entirely
+(g_instant_weapon_switch). Both are gated on the rerelease game: baseq2 is
+meant to play like stock Q2RTX, so the cvars do nothing there.
+=================
+*/
+static bool WeaponSwitchQuick(void)
+{
+    return M_RereleaseGame() && g_quick_weapon_switch && g_quick_weapon_switch->value;
+}
+
+static bool WeaponSwitchInstant(void)
+{
+    return M_RereleaseGame() && g_instant_weapon_switch && g_instant_weapon_switch->value;
+}
+
 void ChangeWeapon(edict_t *ent)
 {
     int i;
@@ -186,6 +206,14 @@ void ChangeWeapon(edict_t *ent)
         weapon_grenade_fire(ent, false);
         ent->client->grenade_framenum = 0;
     }
+
+    // rerelease weapon-change sound. Only the rerelease pak ships
+    // sound/weapons/change.wav, so this cannot be enabled for stock baseq2
+    // even if we wanted it. Read before the assignment below, which is what
+    // makes "did the weapon actually change" answerable.
+    if (M_RereleaseGame() && ent->client->pers.weapon && ent->client->newweapon
+        && ent->client->newweapon != ent->client->pers.weapon)
+        gi.sound(ent, CHAN_WEAPON, gi.soundindex("weapons/change.wav"), 1, ATTN_NORM, 0);
 
     ent->client->pers.lastweapon = ent->client->pers.weapon;
     ent->client->pers.weapon = ent->client->newweapon;
@@ -402,7 +430,7 @@ static void Weapon_Generic1(edict_t *ent, int FRAME_ACTIVATE_LAST, int FRAME_FIR
     }
 
     if (ent->client->weaponstate == WEAPON_ACTIVATING) {
-        if (ent->client->ps.gunframe == FRAME_ACTIVATE_LAST) {
+        if (ent->client->ps.gunframe == FRAME_ACTIVATE_LAST || WeaponSwitchInstant()) {
             ent->client->weaponstate = WEAPON_READY;
             ent->client->ps.gunframe = FRAME_IDLE_FIRST;
             return;
@@ -414,6 +442,12 @@ static void Weapon_Generic1(edict_t *ent, int FRAME_ACTIVATE_LAST, int FRAME_FIR
 
     if ((ent->client->newweapon) && (ent->client->weaponstate != WEAPON_FIRING)) {
         ent->client->weaponstate = WEAPON_DROPPING;
+
+        if (WeaponSwitchInstant()) {
+            ChangeWeapon(ent);
+            return;
+        }
+
         ent->client->ps.gunframe = FRAME_DEACTIVATE_FIRST;
 
         if ((FRAME_DEACTIVATE_LAST - FRAME_DEACTIVATE_FIRST) < 4) {
@@ -499,9 +533,31 @@ static void Weapon_Generic1(edict_t *ent, int FRAME_ACTIVATE_LAST, int FRAME_FIR
 // Weapon_Generic; hand-rolled Weapon_Grenade is the one holdout, as in xatrix.
 void Weapon_Generic(edict_t *ent, int FRAME_ACTIVATE_LAST, int FRAME_FIRE_LAST, int FRAME_IDLE_LAST, int FRAME_DEACTIVATE_LAST, int *pause_frames, int *fire_frames, void (*fire)(edict_t *ent))
 {
+    gitem_t *started_with = ent->client->pers.weapon;
+
     Weapon_Generic1(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames, fire_frames, fire);
 
-    if (is_quadfire)
+    if (is_quadfire) {
+        Weapon_Generic1(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames, fire_frames, fire);
+        return;
+    }
+
+    // Rerelease quick weapon switch. id halves the frame time to 50 ms because
+    // their server ticks at 40 Hz; this one ticks at 10, so the equivalent is
+    // to step the animation a second time in the same think. Same wall-clock
+    // duration, in 2-frame steps rather than 1-frame steps at double rate.
+    if (!WeaponSwitchQuick())
+        return;
+
+    // If the first step finished the lower animation it called ChangeWeapon,
+    // and every FRAME_* constant we were handed belongs to the weapon that has
+    // just been put away. Stepping again with them would animate the new
+    // weapon against the old one's frame numbers.
+    if (ent->client->pers.weapon != started_with)
+        return;
+
+    if (ent->client->weaponstate == WEAPON_ACTIVATING
+        || ent->client->weaponstate == WEAPON_DROPPING)
         Weapon_Generic1(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames, fire_frames, fire);
 }
 

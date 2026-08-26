@@ -940,6 +940,75 @@ void SV_Physics_Step(edict_t *ent)
 }
 
 //============================================================================
+// The maps author the animation rate in milliseconds; thinking happens on server
+// frames. Round to nearest rather than truncating - 192 ms is 2 frames, not 1 -
+// and never return 0, which would step the frame every single server tick.
+static int BModelAnimFrames(int msec)
+{
+    if (msec <= 0)
+        return 1;
+    return max(1, (msec + (1000 / BASE_FRAMERATE) / 2) / (1000 / BASE_FRAMERATE));
+}
+
+/*
+=============
+G_RunBmodelAnimation
+
+Steps a brush model's texture-animation frame. Ported from the function of the
+same name in src/rerelease/g_phys.cpp. See bmodel_anim_t in g_local.h for what
+the two frame ranges mean and why the rate is only accurate to 100 ms here.
+=============
+*/
+static void G_RunBmodelAnimation(edict_t *ent)
+{
+    bmodel_anim_t *anim = &ent->bmodel_anim;
+    int start, end, style, speed, nowrap;
+
+    // switching sets restarts the timer, so a button responds on the next frame
+    if (anim->currently_alternate != anim->alternate) {
+        anim->currently_alternate = anim->alternate;
+        anim->next_framenum = 0;
+    }
+
+    if (level.framenum < anim->next_framenum)
+        return;
+
+    start  = anim->alternate ? anim->alt_start : anim->start;
+    end    = anim->alternate ? anim->alt_end : anim->end;
+    style  = anim->alternate ? anim->alt_style : anim->style;
+    speed  = anim->alternate ? anim->alt_speed : anim->speed;
+    nowrap = anim->alternate ? anim->alt_nowrap : anim->nowrap;
+
+    anim->next_framenum = level.framenum + BModelAnimFrames(speed);
+
+    switch (style) {
+    case BMODEL_ANIM_BACKWARDS:
+        ent->s.frame += (end >= start) ? -1 : 1;
+        break;
+    case BMODEL_ANIM_RANDOM:
+        if (end >= start)
+            ent->s.frame = start + (Q_rand() % (end - start + 1));
+        else
+            ent->s.frame = end + (Q_rand() % (start - end + 1));
+        break;
+    case BMODEL_ANIM_FORWARDS:
+    default:
+        ent->s.frame += (end >= start) ? 1 : -1;
+        break;
+    }
+
+    if (nowrap) {
+        // cclamp orders the bounds itself, and clamp() ASSIGNS to its first
+        // argument - hence no "frame =" here.
+        cclamp(ent->s.frame, start, end);
+    } else {
+        if (ent->s.frame < start)
+            ent->s.frame = end;
+        else if (ent->s.frame > end)
+            ent->s.frame = start;
+    }
+}
+
 /*
 ================
 G_RunEntity
@@ -950,6 +1019,10 @@ void G_RunEntity(edict_t *ent)
 {
     if (ent->prethink)
         ent->prethink(ent);
+
+    // bmodel animation runs first so a custom entity can override the frame
+    if (ent->bmodel_anim.enabled)
+        G_RunBmodelAnimation(ent);
 
     switch ((int)ent->movetype) {
     case MOVETYPE_PUSH:

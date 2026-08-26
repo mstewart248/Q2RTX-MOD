@@ -414,3 +414,196 @@ void SP_turret_driver(edict_t *self)
 
     gi.linkentity(self);
 }
+
+/*
+=================
+turret_invisible_brain
+
+The rerelease's driverless turret controller - a scripted stand-in for
+turret_driver with no model, no health and no monster of its own. Ported from
+src/rerelease/g_turret.cpp.
+
+Two things make it different from turret_driver, and both are deliberate in id's
+source: it aims at the centre of the target's bounding box rather than at the
+origin plus viewheight, and it can be switched on and then off exactly once by
+whatever targets it.
+
+jail1's is the only one in the shipped maps: two trigger_relays fire
+"bigturret_brain", which then drives turret_breach "bigturret2" to shoot the
+info_notnull "bigturret_boom".
+=================
+*/
+#define SPAWNFLAG_TURRET_BRAIN_IGNORE_SIGHT     1
+
+void turret_brain_think(edict_t *self)
+{
+    vec3_t  target;
+    vec3_t  dir;
+    vec3_t  endpos;
+    trace_t trace;
+    int     reaction_time;
+
+    self->nextthink = level.framenum + 1;
+
+    if (self->enemy) {
+        if (!self->enemy->inuse)
+            self->enemy = NULL;
+        else if (self->enemy->takedamage && self->enemy->health <= 0)
+            self->enemy = NULL;
+    }
+
+    if (!self->enemy) {
+        if (!FindTarget(self))
+            return;
+        self->monsterinfo.trail_framenum = level.framenum;
+        self->monsterinfo.aiflags &= ~AI_LOST_SIGHT;
+    }
+
+    // aim at the middle of the bounding box, not the origin - the maps point
+    // these at an info_notnull sitting inside a brush
+    VectorAdd(self->enemy->absmax, self->enemy->absmin, endpos);
+    VectorScale(endpos, 0.5f, endpos);
+
+    if (!(self->spawnflags & SPAWNFLAG_TURRET_BRAIN_IGNORE_SIGHT)) {
+        trace = gi.trace(self->target_ent->s.origin, NULL, NULL, endpos,
+                         self->target_ent, MASK_SHOT);
+        if (trace.fraction == 1 || trace.ent == self->enemy) {
+            if (self->monsterinfo.aiflags & AI_LOST_SIGHT) {
+                self->monsterinfo.trail_framenum = level.framenum;
+                self->monsterinfo.aiflags &= ~AI_LOST_SIGHT;
+            }
+        } else {
+            self->monsterinfo.aiflags |= AI_LOST_SIGHT;
+            return;
+        }
+    }
+
+    // let the turret know where we want it to aim
+    VectorCopy(endpos, target);
+    VectorSubtract(target, self->target_ent->s.origin, dir);
+    vectoangles(dir, self->target_ent->move_angles);
+
+    // decide if we should shoot
+    if (level.framenum < self->monsterinfo.attack_finished)
+        return;
+
+    if (self->delay)
+        reaction_time = self->delay * BASE_FRAMERATE;
+    else
+        reaction_time = (3 - skill->value) * BASE_FRAMERATE;
+
+    if ((level.framenum - self->monsterinfo.trail_framenum) < reaction_time)
+        return;
+
+    self->monsterinfo.attack_finished = level.framenum + reaction_time + 1.0f * BASE_FRAMERATE;
+    //FIXME how do we really want to pass this along?
+    self->target_ent->spawnflags |= 65536;
+}
+
+void turret_brain_link(edict_t *self)
+{
+    vec3_t  vec;
+    edict_t *ent;
+
+    if (self->killtarget)
+        self->enemy = G_PickTarget(self->killtarget);
+
+    self->think = turret_brain_think;
+    self->nextthink = level.framenum + 1;
+
+    self->target_ent = G_PickTarget(self->target);
+    if (!self->target_ent) {
+        gi.dprintf("%s at %s has no target\n", self->classname, vtos(self->s.origin));
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->target_ent->owner = self;
+    self->target_ent->teammaster->owner = self;
+    VectorCopy(self->target_ent->s.angles, self->s.angles);
+
+    vec[0] = self->target_ent->s.origin[0] - self->s.origin[0];
+    vec[1] = self->target_ent->s.origin[1] - self->s.origin[1];
+    vec[2] = 0;
+    self->move_origin[0] = VectorLength(vec);
+
+    VectorSubtract(self->s.origin, self->target_ent->s.origin, vec);
+    vectoangles(vec, vec);
+    AnglesNormalize(vec);
+    self->move_origin[1] = vec[1];
+
+    self->move_origin[2] = self->s.origin[2] - self->target_ent->s.origin[2];
+
+    // add the driver to the end of the team chain, passing the activator along
+    // to the breach so that anything it kills is credited to the player
+    for (ent = self->target_ent->teammaster; ent->teamchain; ent = ent->teamchain)
+        ent->activator = self->activator;
+
+    ent->teamchain = self;
+    self->teammaster = self->target_ent->teammaster;
+    self->flags |= FL_TEAMSLAVE;
+}
+
+void turret_brain_deactivate(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->think = NULL;
+    self->nextthink = 0;
+}
+
+void turret_brain_activate(edict_t *self, edict_t *other, edict_t *activator)
+{
+    if (!self->enemy)
+        self->enemy = activator;
+
+    // wait at least 3 seconds before firing
+    if (self->wait)
+        self->monsterinfo.attack_finished = level.framenum + self->wait * BASE_FRAMERATE;
+    else
+        self->monsterinfo.attack_finished = level.framenum + 3.0f * BASE_FRAMERATE;
+
+    // it can only be turned on once and off once; after that it is inert
+    self->use = turret_brain_deactivate;
+
+    // id's note: the breach's rockets are owned by the brain, so anything they
+    // print or credit has to be handed the real activator
+    self->activator = activator;
+
+    self->think = turret_brain_link;
+    self->nextthink = level.framenum + 1;
+}
+
+/*QUAKED turret_invisible_brain (1 .5 0) (-16 -16 -16) (16 16 16) IGNORE_SIGHT
+Invisible brain to drive the turret.
+
+Does not search for targets. If targeted, can only be turned on once
+and then off once. After that they are completely disabled.
+
+"delay" the delay between firing (default ramps for skill level)
+"target" the turret breach
+"killtarget" the thing you want it to attack
+Target the brain if you want it activated later, instead of immediately. It will
+wait 3 seconds before firing to acquire the target.
+*/
+void SP_turret_invisible_brain(edict_t *self)
+{
+    if (!self->killtarget) {
+        gi.dprintf("%s with no killtarget at %s\n", self->classname, vtos(self->s.origin));
+        G_FreeEdict(self);
+        return;
+    }
+    if (!self->target) {
+        gi.dprintf("%s with no target at %s\n", self->classname, vtos(self->s.origin));
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (self->targetname) {
+        self->use = turret_brain_activate;
+    } else {
+        self->think = turret_brain_link;
+        self->nextthink = level.framenum + 1;
+    }
+
+    self->movetype = MOVETYPE_PUSH;
+    gi.linkentity(self);
+}

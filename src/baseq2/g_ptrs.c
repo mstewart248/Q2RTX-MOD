@@ -544,6 +544,7 @@ extern void flyer_sight(void);
 extern void flyer_stand(void);
 extern void flyer_walk(void);
 extern void flymonster_start_go(void);
+extern void func_animation_use(void);
 extern void func_clock_think(void);
 extern void func_clock_use(void);
 extern void func_conveyor_use(void);
@@ -682,6 +683,8 @@ extern void misc_easterchick_think(void);
 extern void misc_eastertank_think(void);
 extern void misc_flare_use(void);
 extern void misc_nuke_use(void);
+extern void misc_player_mannequin_think(void);
+extern void misc_player_mannequin_use(void);
 extern void misc_satellite_dish_think(void);
 extern void misc_satellite_dish_use(void);
 extern void misc_strogg_ship_use(void);
@@ -860,6 +863,10 @@ extern void trigger_teleport_use(void);
 extern void turret_activate(void);
 extern void turret_attack(void);
 extern void turret_blocked(void);
+extern void turret_brain_activate(void);
+extern void turret_brain_deactivate(void);
+extern void turret_brain_link(void);
+extern void turret_brain_think(void);
 extern void turret_breach_finish_init(void);
 extern void turret_breach_think(void);
 extern void turret_checkattack(void);
@@ -949,6 +956,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, misc_easterchick2_think },
 { P_think, misc_easterchick_think },
 { P_think, misc_eastertank_think },
+{ P_think, misc_player_mannequin_think },
 { P_think, misc_satellite_dish_think },
 { P_think, monster_think },
 { P_think, monster_triggered_spawn },
@@ -994,6 +1002,8 @@ const save_ptr_t save_ptrs[] = {
 { P_think, train_next },
 { P_think, Trap_Think },
 { P_think, trigger_elevator_init },
+{ P_think, turret_brain_link },
+{ P_think, turret_brain_think },
 { P_think, turret_breach_finish_init },
 { P_think, turret_breach_think },
 { P_think, turret_driver_link },
@@ -1056,6 +1066,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, door_secret_use },
 { P_use, door_use },
 { P_use, dynamic_light_use },
+{ P_use, func_animation_use },
 { P_use, func_clock_use },
 { P_use, func_conveyor_use },
 { P_use, func_explosive_spawn },
@@ -1068,6 +1079,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, misc_blackhole_use },
 { P_use, misc_flare_use },
 { P_use, misc_nuke_use },
+{ P_use, misc_player_mannequin_use },
 { P_use, misc_satellite_dish_use },
 { P_use, misc_strogg_ship_use },
 { P_use, misc_viper_bomb_use },
@@ -1097,6 +1109,8 @@ const save_ptr_t save_ptrs[] = {
 { P_use, trigger_relay_use },
 { P_use, trigger_teleport_use },
 { P_use, turret_activate },
+{ P_use, turret_brain_activate },
+{ P_use, turret_brain_deactivate },
 { P_use, Use_Areaportal },
 { P_use, Use_Boss3 },
 { P_use, Use_Item },
