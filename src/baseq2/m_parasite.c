@@ -865,6 +865,14 @@ void parasite_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dama
 {
     int     n;
 
+    // Kill the barb with its owner. proboscis_think only self-destructs when
+    // the owner has left the world, and a dead parasite is still a linked
+    // corpse edict - so without this the tip hangs in mid-air, keeps draining
+    // the player and keeps healing the body it is attached to.
+    // style 2 is already retracting; id lets that one reel home on its own.
+    if (self->proboscus && self->proboscus->style != 2)
+        proboscis_reset(self->proboscus);
+
 // check for gib
     if (self->health <= self->gib_health) {
         // Stock Quake II: one burst of gibs and the body is gone.
