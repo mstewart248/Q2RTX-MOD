@@ -19106,10 +19106,11 @@ textures/tomf/fuse1_3b:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
-# textures/tomf/glocrys_1c:
-# 	texture_base materialDev/textures/tomf/glocrys_1c.tga
-# 	texture_normals materialDev/textures/tomf/glocrys_1c_n.tga
-# 	metalness_factor 0
+
+textures/tomf/glocrys_1c:
+ 	texture_base textures/tomf/glocrys_1c.wal
+	kind WATER
+    base_factor 2.5
 
 textures/tomf/grnx2_3b:
 	texture_base materialDev/textures/tomf/grnx2_3b.tga
@@ -19506,7 +19507,7 @@ textures/tomf/tf_barrel5:
 textures/tomf/tf_blood01:
 	texture_base materialDev/textures/tomf/tf_blood01.tga
 	texture_normals materialDev/textures/tomf/tf_blood01_n.tga
-	metalness_factor 0
+	metalness_factor 0.35
 
 textures/tomf/tf_box01_base:
 	texture_base materialDev/textures/tomf/tf_box01_base.tga
