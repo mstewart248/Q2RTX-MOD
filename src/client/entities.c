@@ -538,7 +538,11 @@ static void CL_AddPacketEntities(void)
         // which let a flare's scale reach a func_door - create_entity_matrix()
         // then scaled the door about the world origin and threw it out of its
         // doorway, so it read as flickering out of existence.
-        ent.scale = 0.f;
+        //
+        // The rerelease's per-entity scale arrives in s1->scale (U_SCALE), so
+        // this doubles as the assignment for it: 0 means unscaled, and
+        // create_entity_matrix() already treats 0 as 1.0.
+        ent.scale = s1->scale;
 		
         effects = s1->effects;
         renderfx = s1->renderfx;	

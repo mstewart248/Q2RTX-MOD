@@ -544,6 +544,55 @@ void G_SetStats(edict_t *ent)
     // owns the on/off state that trigger_flashlight drives
     //
     ent->client->ps.stats[STAT_FLASHLIGHT] = (ent->flags & FL_FLASHLIGHT) ? 1 : 0;
+
+    //
+    // [rerelease] target_healthbar. Two bars packed a byte each into one stat:
+    // bit 7 says the bar is up, bits 0-6 are health remaining out of 127. The
+    // client draws them (SCR_DrawHealthBars) and can turn them off; the game
+    // publishes the numbers either way.
+    //
+    {
+        int stat = 0;
+        int i;
+
+        for (i = 0; i < MAX_HEALTH_BARS; i++) {
+            edict_t *bar = level.health_bar_entities[i];
+            int      value = 0;
+
+            if (!bar) {
+                // nothing here
+            } else if (bar->timestamp) {
+                // the monster is dead and the bar is lingering for "delay"
+                if (bar->timestamp < level.framenum)
+                    level.health_bar_entities[i] = NULL;
+                else
+                    value = 0x80;
+            } else if (!bar->enemy || !bar->enemy->inuse || bar->enemy->health <= 0) {
+                if (bar->delay > 0) {
+                    bar->timestamp = level.framenum + bar->delay * BASE_FRAMERATE;
+                    value = 0x80;
+                } else {
+                    level.health_bar_entities[i] = NULL;
+                }
+            } else if ((bar->spawnflags & 1) &&
+                       !gi.inPVS(ent->s.origin, bar->enemy->s.origin)) {
+                // PVS_ONLY: only while the player can see it
+            } else {
+                float remaining = (float)bar->enemy->health / bar->enemy->max_health;
+
+                if (remaining < 0)
+                    remaining = 0;
+                else if (remaining > 1)
+                    remaining = 1;
+
+                value = (int)(remaining * 0x7f) | 0x80;
+            }
+
+            stat |= (value & 0xff) << (i * 8);
+        }
+
+        ent->client->ps.stats[STAT_HEALTH_BARS] = (short)stat;
+    }
 }
 
 /*

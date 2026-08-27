@@ -68,11 +68,14 @@ bool fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
     float       range;
     vec3_t      dir;
 
-    //see if enemy is in range
+    //see if enemy is in range. M_RangeBetween measures between bounding boxes
+    // when either side is scaled, so a giant monster (mgu6m3's 5.5x Modir) can
+    // still land a melee swing - on the origin measure its own bbox is wider
+    // than aim[0] and every swing missed.
     VectorSubtract(self->enemy->s.origin, self->s.origin, dir);
-    range = VectorLength(dir);
-    if (range > aim[0])
+    if (M_RangeBetween(self, self->enemy) > aim[0])
         return false;
+    range = VectorLength(dir);
 
     if (aim[1] > self->mins[0] && aim[1] < self->maxs[0]) {
         // the hit is straight on so back the range up to the edge of their bbox

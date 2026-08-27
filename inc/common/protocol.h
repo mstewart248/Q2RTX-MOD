@@ -333,6 +333,11 @@ typedef enum {
 #define U_SKIN16        (1<<25)
 #define U_SOUND         (1<<26)
 #define U_SOLID         (1<<27)
+// [rerelease] per-entity uniform scale, one byte in 1/16 units. Bits 28-31 of
+// the fourth byte were the first ones free in this tree; the fourth byte is
+// already written whole whenever any of bits 24-31 is set, so nothing else
+// about the framing changes. Old demos never set it and parse unchanged.
+#define U_SCALE         (1<<28)
 
 // ==============================================================
 

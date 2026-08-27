@@ -1254,6 +1254,12 @@ typedef enum {
 // invented one did not match. 18..31 are unused.
 #define STAT_FLASHLIGHT         18      // rerelease trigger_flashlight, see V_AddEntities
 
+// [rerelease] target_healthbar. Two bars packed into one short, a byte each:
+// bit 7 = the bar is active, bits 0-6 = health remaining out of 127. The name
+// beside it comes from CS_HEALTH_BAR_NAME.
+#define STAT_HEALTH_BARS        19
+#define MAX_HEALTH_BARS         2
+
 // #define STAT_POI_ICON        18
 // #define STAT_POI_X           19
 // #define STAT_POI_Y           20
@@ -1357,6 +1363,10 @@ typedef enum {
 #define CS_DYNAMICLIGHTS        (CS_GENERAL + 0)
 #define MAX_SWITCHABLE_DLIGHTS  32
 
+// [rerelease] the display name of whatever target_healthbar is currently
+// showing, already run through the localization table by the game.
+#define CS_HEALTH_BAR_NAME      (CS_GENERAL + 1)
+
 // Some mods actually exploit CS_STATUSBAR to take space up to CS_AIRACCEL
 #define CS_SIZE(cs) \
     ((cs) >= CS_STATUSBAR && (cs) < CS_AIRACCEL ? \
@@ -1405,6 +1415,12 @@ typedef struct entity_state_s {
     int     event;          // impulse events -- muzzle flashes, footsteps, etc
                             // events only go out for a single frame, they
                             // are automatically cleared each frame
+
+    // [rerelease] uniform model scale. 0 means "unset", i.e. 1.0 - keeping the
+    // default at zero means a memset baseline still compares equal, which the
+    // delta compressor relies on. Quantized to 1/16 on the wire (U_SCALE), so
+    // the usable range is 0 .. 15.9375; mgu6m3's Modir is 5.5.
+    float   scale;
 } entity_state_t;
 
 //==============================================

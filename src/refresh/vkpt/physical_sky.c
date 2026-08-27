@@ -57,6 +57,36 @@ cvar_t *physical_sky_draw_clouds;
 cvar_t *physical_sky_space;
 cvar_t *physical_sky_brightness;
 
+// How much light the MAP'S OWN skybox casts on the world, as a multiple of the
+// look it has always had. The procedural sky keeps its own EV control in
+// physical_sky_brightness; an authored cube map has no sun position or
+// atmosphere for an EV stop to mean anything against, which is why the two are
+// separate. See vkpt_physical_sky_update_ubo.
+//
+// Only C reads it, so it deliberately gets no UBO slot of its own - it is
+// folded into pt_env_scale, which the shaders already read.
+static cvar_t *pt_sky_light_scale;
+
+// Read-only, published for the menu: 1 while the procedural sky is what gets
+// rendered, 0 while the map's own skybox is. See publish_sky_state.
+static cvar_t *sky_procedural_active;
+
+// The menu's single "sky type" control. The renderer's real inputs are
+// physical_sky - which procedural preset backs a map with no skybox of its own
+// - and sky_use_map_skybox, whether a map that ships one gets to use it. Those
+// two are not a menu's worth of choices on their own: "rerelease" is really a
+// statement about the second, and the other three are about the first. So the
+// menu drives this, and this drives those.
+static cvar_t *sky_type;
+
+#define SKY_TYPE_RERELEASE  0
+#define SKY_TYPE_ENVMAP     1
+#define SKY_TYPE_EARTH      2
+#define SKY_TYPE_STROGGOS   3
+
+// index into skyPresets, i.e. a physical_sky value - not a SKY_TYPE_
+#define SKY_STROGGOS_PRESET 2
+
 cvar_t *sky_scattering;
 cvar_t *sky_transmittance;
 cvar_t *sky_phase_g;
@@ -651,6 +681,57 @@ bool vkpt_physical_sky_uses_skybox(void)
 	return (GetSkyPreset(physical_sky->integer)->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX) != 0;
 }
 
+/*
+=================
+sky_type_changed
+
+Expands the menu's one choice into the two cvars the renderer actually reads.
+
+boss2 needs no special case here, which is the whole reason this works: it
+ships maps/boss2.cfg setting physical_sky_space, and vkpt_physical_sky_uses_skybox
+already declines a map's own skybox whenever the space sky is what gets
+composited - physical_sky_space.comp draws the environment map into the space
+sky itself, so the two would fight. So "rerelease" gets the map skybox
+everywhere it exists, and boss2 keeps the Q2RTX space sky.
+=================
+*/
+static void sky_type_changed(cvar_t *self)
+{
+	switch (self->integer) {
+	case SKY_TYPE_RERELEASE:
+		// every map that ships a skybox uses it; physical_sky is left alone
+		// and still backs the maps that do not. The space sky does not depend
+		// on it - see the Stroggos override in vkpt_evaluate_sun_light.
+		Cvar_SetInteger(sky_use_map_skybox, 1, FROM_CODE);
+		break;
+
+	case SKY_TYPE_ENVMAP:
+	case SKY_TYPE_EARTH:
+	case SKY_TYPE_STROGGOS:
+		// an explicit pick wins everywhere, so a map's own skybox must not
+		// override it
+		Cvar_SetInteger(sky_use_map_skybox, 0, FROM_CODE);
+		Cvar_SetInteger(physical_sky, self->integer - SKY_TYPE_ENVMAP, FROM_CODE);
+		break;
+
+	default:
+		Com_WPrintf("sky_type %d is out of range, expected 0..3\n", self->integer);
+		break;
+	}
+}
+
+// Publishes the answer above so the menu can grey out the controls that do not
+// apply to the sky currently in use. It depends on map_skybox_scope, which is a
+// property of the loaded map, so no combination of cvar values tells the UI
+// this on its own. Written only on a change - this is called every frame.
+static void publish_sky_state(void)
+{
+	int procedural = vkpt_physical_sky_uses_skybox() ? 0 : 1;
+
+	if (sky_procedural_active->integer != procedural)
+		Cvar_SetInteger(sky_procedural_active, procedural, FROM_CODE);
+}
+
 void
 vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float time)
 {
@@ -832,6 +913,21 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	// color before occlusion
 	vec3_t sunColor = { sun_color[0]->value, sun_color[1]->value, sun_color[2]->value };
+
+	// The space sky is always lit by Stroggos' star. physical_sky picks which
+	// procedural ATMOSPHERE gets rendered, and the space sky renders none - it
+	// composites the environment map with a planet instead - so the preset's
+	// sun would otherwise leak in and light the map with, say, Earth's near
+	// white sun. boss2 is the map this shows up on, and it is authored around
+	// the yellow Stroggos one.
+	if (physical_sky_space->integer)
+	{
+		const PhysicalSkyDesc_t *space = GetSkyPreset(SKY_STROGGOS_PRESET);
+
+		VectorCopy(space->sunColor, sunColor);
+		light->angular_size_rad = max(1.f, min(10.f, space->sunAngularDiameter)) * M_PI / 180.f;
+	}
+
 	VectorScale(sunColor, sun_brightness->value, light->color);
 
 	// potentially visible - can be overridden if readback data says it's occluded
@@ -852,8 +948,22 @@ vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light,
 {
     PhysicalSkyDesc_t const * skyDesc = GetSkyPreset(physical_sky->integer);
 
+	publish_sky_state();
+
 	if(physical_sky_space->integer)
 		ubo->pt_env_scale = 0.3f;
+	else if(vkpt_physical_sky_uses_skybox())
+	{
+		// The map ships its own skybox, so the procedural sky - and the EV
+		// stops of physical_sky_brightness with it - is not being rendered at
+		// all. Drive this from the video menu's own control instead.
+		//
+		// The base is what an authored skybox has always been given here:
+		// physical_sky_brightness defaults to 0, so this branch used to
+		// evaluate to exp2f(-2). Keeping that as the 1.0 point means the
+		// default look does not move.
+		ubo->pt_env_scale = 0.25f * max(0.f, pt_sky_light_scale->value);
+	}
 	else
 	{
 		const float min_brightness = -10.f;
@@ -1022,10 +1132,23 @@ void InitialiseSkyCVars()
 	physical_sky_brightness = Cvar_Get("physical_sky_brightness", "0", 0);
 	physical_sky_brightness->changed = physical_sky_cvar_changed;
 
+	// applied per frame in vkpt_physical_sky_update_ubo, so it needs no
+	// physical_sky_cvar_changed - nothing has to be re-rendered for it
+	pt_sky_light_scale = Cvar_Get("pt_sky_light_scale", "1", CVAR_ARCHIVE);
+
+	// engine state, not a setting - CVAR_ROM keeps a config from writing it
+	sky_procedural_active = Cvar_Get("sky_procedural_active", "1", CVAR_ROM);
+
 	// 0 = always use the procedural sky, 1 = show the map's own skybox on
 	// rerelease maps, 2 = show it in every game directory
 	sky_use_map_skybox = Cvar_Get("sky_use_map_skybox", "1", CVAR_ARCHIVE);
 	sky_use_map_skybox->changed = physical_sky_cvar_changed;
+
+	// Registered after the two it drives, then applied once, so the three are
+	// consistent no matter what order the config happened to set them in.
+	sky_type = Cvar_Get("sky_type", "0", CVAR_ARCHIVE);
+	sky_type->changed = sky_type_changed;
+	sky_type_changed(sky_type);
 }
 
 void UpdatePhysicalSkyCVars()

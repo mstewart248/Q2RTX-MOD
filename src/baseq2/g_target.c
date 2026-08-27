@@ -1363,3 +1363,93 @@ void SP_target_camera(edict_t *self)
     self->use = use_target_camera;
     self->svflags = SVF_NOCLIENT;
 }
+
+/*QUAKED target_healthbar (0 1 0) (-8 -8 -8) (8 8 8) PVS_ONLY
+
+[rerelease] Puts a named health bar on the HUD for a monster.
+
+"target"  the monster to watch
+"message" its display name (already localized by ED_NewString)
+"delay"   how long to keep the bar up after it dies
+
+20 of these ship in the MGU maps. mgu6m3's is the one that names Modir - the
+5.5x monster_shambler in the main chamber - and it is fired by a trigger_once at
+the chamber door.
+
+The bar itself is drawn by the client (SCR_DrawHealthBars) from STAT_HEALTH_BARS
+and CS_HEALTH_BAR_NAME, gated on scr_health_bars, so the player can turn it off
+without the game having to know.
+*/
+
+#define SPAWNFLAG_HEALTHBAR_PVS_ONLY    1
+
+void use_target_healthbar(edict_t *ent, edict_t *other, edict_t *activator)
+{
+    edict_t *target = G_PickTarget(ent->target);
+    int      i;
+
+    if (!target || !(target->svflags & SVF_MONSTER)) {
+        gi.dprintf("%s: target '%s' is not a monster\n", __func__,
+                   ent->target ? ent->target : "(none)");
+        G_FreeEdict(ent);
+        return;
+    }
+
+    for (i = 0; i < MAX_HEALTH_BARS; i++) {
+        if (level.health_bar_entities[i])
+            continue;
+
+        ent->enemy = target;
+        ent->timestamp = 0;
+        level.health_bar_entities[i] = ent;
+        gi.configstring(CS_HEALTH_BAR_NAME, ent->message ? ent->message : "");
+        return;
+    }
+
+    gi.dprintf("%s: too many health bars\n", __func__);
+    G_FreeEdict(ent);
+}
+
+// One-shot sanity check a frame after spawn: the target has to exist and has to
+// be a monster, and the map is the only place that can get that wrong.
+void check_target_healthbar(edict_t *ent)
+{
+    edict_t *target = G_PickTarget(ent->target);
+
+    if (!target || !(target->svflags & SVF_MONSTER)) {
+        if (target)
+            gi.dprintf("%s: target '%s' does not appear to be a monster\n",
+                       __func__, ent->target);
+        G_FreeEdict(ent);
+        return;
+    }
+
+    ent->nextthink = 0;
+}
+
+void SP_target_healthbar(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (!self->target || !*self->target) {
+        gi.dprintf("%s: no target\n", __func__);
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (!self->message) {
+        gi.dprintf("%s: no message\n", __func__);
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->svflags = SVF_NOCLIENT;
+    self->use = use_target_healthbar;
+    self->think = check_target_healthbar;
+    // the monsters spawn in the same pass as this entity, so the check cannot
+    // run until the next frame
+    self->nextthink = level.framenum + 1;
+}

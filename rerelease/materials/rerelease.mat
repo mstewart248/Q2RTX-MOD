@@ -18608,6 +18608,15 @@ textures/tomc/tc_tomb_light_64_a:
 # 	texture_normals materialDev/textures/tomc/tc_tomb_light_solid_a_n.tga
 # 	metalness_factor 0
 
+textures/tomc/tc_tomb_light_solid_a:
+	texture_base textures/tomc/tc_tomb_light_solid_a.wal
+	synth_emissive 1
+	is_light 1
+	emissive_threshold 16
+	bsp_radiance 0
+	default_radiance 0.5
+	light_styles 0
+
 textures/tomc/tc_tomb_panel_256_a:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_a.tga
 	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_a_n.tga
@@ -19155,7 +19164,6 @@ textures/tomf/ho_wall_panel_01d:
 textures/tomf/hvydoor1_1b:
 	texture_base materialDev/textures/tomf/hvydoor1_1b.tga
 	texture_normals materialDev/textures/tomf/hvydoor1_1b_n.tga
-	metalness_factor 0
 
 textures/tomf/hvydoor1_1c:
 	texture_base materialDev/textures/tomf/hvydoor1_1c.tga
@@ -19274,7 +19282,6 @@ textures/tomf/metl5b_3b:
 textures/tomf/metl5b_3c:
 	texture_base materialDev/textures/tomf/metl5b_3c.tga
 	texture_normals materialDev/textures/tomf/metl5b_3c_n.tga
-	metalness_factor 0
 
 textures/tomf/metl5b_3d:
 	texture_base materialDev/textures/tomf/metl5b_3d.tga
@@ -19289,7 +19296,6 @@ textures/tomf/metl5b_3e:
 textures/tomf/metl5b_3f:
 	texture_base materialDev/textures/tomf/metl5b_3f.tga
 	texture_normals materialDev/textures/tomf/metl5b_3f_n.tga
-	metalness_factor 0
 
 textures/tomf/metl5b_3g:
 	texture_base materialDev/textures/tomf/metl5b_3g.tga
@@ -19420,7 +19426,7 @@ textures/tomf/pow2_1b:
 textures/tomf/pow3_1b:
 	texture_base materialDev/textures/tomf/pow3_1b.tga
 	texture_normals materialDev/textures/tomf/pow3_1b_n.tga
-	metalness_factor 0
+	metalness_factor .75
 
 textures/tomf/pow4_2b:
 	texture_base materialDev/textures/tomf/pow4_2b.tga
@@ -20404,7 +20410,6 @@ textures/tomf/tf_nat2a:
 textures/tomf/tf_nat2b:
 	texture_base materialDev/textures/tomf/tf_nat2b.tga
 	texture_normals materialDev/textures/tomf/tf_nat2b_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_nat2c:
 	texture_base materialDev/textures/tomf/tf_nat2c.tga

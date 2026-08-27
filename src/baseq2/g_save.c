@@ -68,6 +68,7 @@ static const save_field_t entityfields[] = {
     I(s.solid),
     I(s.sound),
     I(s.event),
+    F(s.scale),
 
     // [...]
 
@@ -99,6 +100,7 @@ static const save_field_t entityfields[] = {
     L(team),
     L(pathtarget),
     L(deathtarget),
+    L(healthtarget),
     L(combattarget),
     E(target_ent),
 
@@ -333,6 +335,8 @@ static const save_field_t levelfields[] = {
     I(exitintermission),
     I(intermission_clear),
     I(level_intermission_set),
+    E(health_bar_entities[0]),
+    E(health_bar_entities[1]),
     I(dynamiclight_count),
     I(dynamiclight_bits),
     F(sky_rotate),
@@ -900,7 +904,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    47
+#define SAVE_VERSION    48
 
 /*
 ============

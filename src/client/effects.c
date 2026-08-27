@@ -360,7 +360,7 @@ void CL_MuzzleFlash(void)
 		VectorCopy(pl->current.origin, dl->origin);
 		dl->origin[2] += 16;
 		VectorSet(dl->color, 1.0f, 0.0f, 0.0f);              // pure red
-		dl->radius = 80 + (Q_rand() & 63);                   // 80 .. 143
+		dl->radius = 192 + (Q_rand() & 63);                   // 80 .. 143
 		// Shorter than the 100ms think interval so each pulse has a real
 		// off-phase, and jittered so the strobe never settles into a rhythm.
 		dl->die = cl.time + 35 + (Q_rand() & 31);            // 35 .. 66ms

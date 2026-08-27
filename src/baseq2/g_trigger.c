@@ -578,11 +578,27 @@ void hurt_use(edict_t *self, edict_t *other, edict_t *activator)
 }
 
 
+// [rerelease] spawnflags above the classic set. Only bits 32 and 64 are used by
+// the shipped maps, and 128 (CLIPPED) needs a gi.clip() this game API does not
+// have - see SP_trigger_hurt.
+#define SPAWNFLAG_HURT_NO_PLAYERS   32
+#define SPAWNFLAG_HURT_NO_MONSTERS  64
+#define SPAWNFLAG_HURT_CLIPPED      128
+
 void hurt_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
 {
     int     dflags;
 
     if (!other->takedamage)
+        return;
+
+    // [rerelease] NO_MONSTERS is what lets a boss wade through its own arena:
+    // all six of mgu6m3's lava trigger_hurts set it, and without it Modir walks
+    // into the lava and cooks itself a few seconds into the fight. No classic
+    // map sets a spawnflag this high, so these two tests are inert elsewhere.
+    if ((self->spawnflags & SPAWNFLAG_HURT_NO_MONSTERS) && (other->svflags & SVF_MONSTER))
+        return;
+    if ((self->spawnflags & SPAWNFLAG_HURT_NO_PLAYERS) && other->client)
         return;
 
     if (self->timestamp > level.framenum)
@@ -623,6 +639,10 @@ void SP_trigger_hurt(edict_t *self)
     if (self->spawnflags & 2)
         self->use = hurt_use;
 
+    // SPAWNFLAG_HURT_CLIPPED (128) makes the trigger test the brush hull rather
+    // than the bounding box. It needs gi.clip(), which this game API does not
+    // export, so the one instance that sets it (mgu5m1) behaves as an ordinary
+    // bbox trigger - a slightly larger hurt volume, not a missing one.
     gi.linkentity(self);
 }
 

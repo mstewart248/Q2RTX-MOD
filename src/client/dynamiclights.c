@@ -65,10 +65,59 @@ static int              cl_num_dynamiclights;
 static cvar_t   *cl_dynamic_lights;
 static cvar_t   *cl_dynamic_light_scale;
 static cvar_t   *cl_dynamic_light_cone;
+static cvar_t   *cl_dynamic_lights_exclude;
+
+// Whether the current map is on the exclusion list. Recomputed on map load and
+// whenever the list itself changes, so the cvar can be edited live.
+static bool     cl_dynamiclights_excluded;
 
 // the radius of the emitter itself, not of its reach; this is what softens the
 // shadow edge. V_AddLight uses 10 for an ordinary point light, so do the same.
 #define DLIGHT_EMITTER_RADIUS   10.0f
+
+/*
+=================
+CL_CheckDynamicLightExclusion
+
+[rerelease] `cl_dynamic_lights 2` - the default - means "on, except on the maps
+named in cl_dynamic_lights_exclude". mguhub is the reason it exists: it is the
+one map whose own lighting reads better without the dynamic_light set. Mode 1
+is unconditional, for A/B-ing an excluded map without editing the list.
+
+The list is whitespace- or comma-separated SHORT map names, the same form
+cl.mapname is in - "mguhub", not "maps/mguhub.bsp".
+=================
+*/
+#define DLIGHT_EXCLUDE_SEPARATORS   " \t\r\n,;"
+
+static void CL_CheckDynamicLightExclusion(void)
+{
+    const char *p;
+    size_t      maplen;
+
+    cl_dynamiclights_excluded = false;
+
+    if (!cl_dynamic_lights_exclude || !cl.mapname[0])
+        return;
+
+    maplen = strlen(cl.mapname);
+
+    for (p = cl_dynamic_lights_exclude->string; *p; ) {
+        size_t len;
+
+        p += strspn(p, DLIGHT_EXCLUDE_SEPARATORS);
+        if (!*p)
+            break;
+
+        len = strcspn(p, DLIGHT_EXCLUDE_SEPARATORS);
+        if (len == maplen && !Q_strncasecmp(p, cl.mapname, len)) {
+            cl_dynamiclights_excluded = true;
+            return;
+        }
+
+        p += len;
+    }
+}
 
 /*
 =================================================================
@@ -184,6 +233,12 @@ void CL_LoadDynamicLights(void)
     int         num_switchable = 0;
 
     CL_FreeDynamicLights();
+
+    // cl.mapname is set by now, so settle the cl_dynamic_lights 2 exclusion
+    // for this map once here rather than per frame
+    CL_CheckDynamicLightExclusion();
+    if (cl_dynamic_lights_exclude)
+        cl_dynamic_lights_exclude->modified = false;
 
     if (!cl.bsp || !cl.bsp->entitystring)
         return;
@@ -322,6 +377,17 @@ void CL_AddDynamicLightsToScene(void)
     if (!cl_num_dynamiclights || !cl_dynamic_lights->integer)
         return;
 
+    // mode 2: on everywhere except the maps in cl_dynamic_lights_exclude.
+    // Re-read the list when it changes so it can be edited without a map
+    // reload, which is the whole point of having it as a cvar.
+    if (cl_dynamic_lights_exclude->modified) {
+        cl_dynamic_lights_exclude->modified = false;
+        CL_CheckDynamicLightExclusion();
+    }
+
+    if (cl_dynamic_lights->integer >= 2 && cl_dynamiclights_excluded)
+        return;
+
     // the analytic light types only exist in the path tracer
     if (cls.ref_type != REF_TYPE_VKPT)
         return;
@@ -370,7 +436,15 @@ void CL_InitDynamicLights(void)
 {
     // The rerelease's dynamic_light entities. These are what actually light
     // its maps, so this defaults on.
-    cl_dynamic_lights = Cvar_Get("cl_dynamic_lights", "1", CVAR_ARCHIVE);
+    //
+    //   0  off
+    //   1  on everywhere
+    //   2  on except on the maps in cl_dynamic_lights_exclude (the default)
+    cl_dynamic_lights = Cvar_Get("cl_dynamic_lights", "2", CVAR_ARCHIVE);
+
+    // Maps that look better WITHOUT the dynamic_light set, for mode 2. Short
+    // map names, separated by spaces or commas.
+    cl_dynamic_lights_exclude = Cvar_Get("cl_dynamic_lights_exclude", "mguhub", CVAR_ARCHIVE);
 
     // Converts shadowlightintensity * shadowlightradius into the engine's
     // light units. There is no exact conversion - a KEX shadow light is

@@ -40,6 +40,7 @@ typedef struct {
     uint16_t    frame;
     uint8_t     sound;
     uint8_t     event;
+    uint8_t     scale;      // [rerelease] 1/16 units, 0 == unscaled
 } entity_packed_t;
 
 typedef struct {

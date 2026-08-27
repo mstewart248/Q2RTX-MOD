@@ -491,6 +491,16 @@ void MSG_PackEntity(entity_packed_t *out, const entity_state_t *in, bool short_a
     out->frame = in->frame;
     out->sound = in->sound;
     out->event = in->event;
+    // [rerelease] 1/16 units. 0 stays 0 so an unscaled entity still matches the
+    // zeroed baseline; anything the game does set is clamped into the byte.
+    // NOTE: this tree's clamp() ASSIGNS to its first argument, so it cannot be
+    // used on an expression here.
+    if (in->scale <= 0.f) {
+        out->scale = 0;
+    } else {
+        int q = (int)(in->scale * 16.f + 0.5f);
+        out->scale = (q < 1) ? 1 : (q > 255) ? 255 : q;
+    }
 }
 
 void MSG_WriteDeltaEntity(const entity_packed_t *from,
@@ -616,6 +626,9 @@ void MSG_WriteDeltaEntity(const entity_packed_t *from,
 
     if (to->sound != from->sound)
         bits |= U_SOUND;
+
+    if (to->scale != from->scale)
+        bits |= U_SCALE;
 
     if (to->renderfx & RF_FRAMELERP) {
         bits |= U_OLDORIGIN;
@@ -746,6 +759,8 @@ void MSG_WriteDeltaEntity(const entity_packed_t *from,
         else
             MSG_WriteShort(to->solid);
     }
+    if (bits & U_SCALE)
+        MSG_WriteByte(to->scale);
 }
 
 static inline int OFFSET2CHAR(float x)
@@ -1932,6 +1947,10 @@ void MSG_ParseDeltaEntity(const entity_state_t *from,
             to->solid = MSG_ReadWord();
         }
     }
+
+    if (bits & U_SCALE) {
+        to->scale = MSG_ReadByte() * (1.f / 16.f);
+    }
 }
 
 #endif // USE_CLIENT || USE_MVD_CLIENT
@@ -2426,6 +2445,7 @@ void MSG_ShowDeltaEntityBits(int bits)
     S(SOUND, "sound");
     S(EVENT, "event");
     S(SOLID, "solid");
+    S(SCALE, "scale");
 #undef S
 }
 

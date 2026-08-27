@@ -857,10 +857,23 @@ Jorg is just about dead, so set up to launch Makron out
 void MakronToss(edict_t *self)
 {
     edict_t *ent;
+    int     i;
 
     ent = G_Spawn();
     ent->nextthink = level.framenum + 0.8f * BASE_FRAMERATE;
     ent->think = MakronSpawn;
     ent->target = self->target;
     VectorCopy(self->s.origin, ent->s.origin);
+
+    // [rerelease] hand any target_healthbar watching Jorg over to the Makron
+    // that comes out of him, or the bar reads "dead" halfway through the fight.
+    // mgu1m5 and mgu5m3 both put a bar on this pair. The rerelease spawns the
+    // Makron here and hands over to a finished monster; this tree defers the
+    // spawn by 0.8s, so the placeholder is given full health for that gap -
+    // otherwise the bar sees health 0 and starts its death countdown.
+    ent->health = ent->max_health = 1;
+
+    for (i = 0; i < MAX_HEALTH_BARS; i++)
+        if (level.health_bar_entities[i] && level.health_bar_entities[i]->enemy == self)
+            level.health_bar_entities[i]->enemy = ent;
 }

@@ -67,8 +67,19 @@ color disabled #7f7f7f
 begin environment
     background #212F3CD0
     style --compact
-    pairs "sky type" physical_sky "original env.map" 0 earth 1 stroggos 2
-    range -f "%+.1f EV" "sun and sky brightness" physical_sky_brightness -10 2 0.1
+    pairs --status "rerelease: every map that ships a skybox uses it, except boss2 which keeps the Q2RTX space sky" \
+        "sky type" sky_type "rerelease" 0 "original env.map" 1 earth 2 stroggos 3
+    // EV stops only mean something against the procedural sky's own sun and
+    // atmosphere. When the map's own skybox is what gets rendered, its light is
+    // controlled from Video > sky light instead. sky_procedural_active is
+    // published by the renderer - it depends on the loaded map, not just cvars.
+    ifeq sky_procedural_active 1
+        range -f "%+.1f EV" "sun and sky brightness" physical_sky_brightness -10 2 0.1
+    endif
+    ifeq sky_procedural_active 0
+        action --status "this map draws its own skybox - its brightness lives in the video options" \
+            "sky brightness is in video options..." pushmenu video
+    endif
     pairs "time of day" sun_preset "custom" 0 "current time" 1 "12x current time" 2 "night" 3 "dawn" 4 "morning" 5 "noon" 6 "evening" 7 "dusk" 8
     bind "next time of day key" next_sun
     blank
@@ -154,9 +165,15 @@ begin video
 		toggle --status "turn some monitors in the game into security camera views" \
             "security cameras" pt_cameras
         toggle "caustics" pt_caustics
-        range --status "how much light the sky casts on the world"             "sky light" pt_env_scale 0 3 0.1
-        range --status "how bright the skybox LOOKS - does not change the light it casts"             "sky brightness" pt_sky_brightness 0 2 0.1
+        range --status "radiance of the map's own skybox - raises the light it casts, and the sky with it. Procedural skies use Environment > sun and sky brightness" \
+            "sky light" pt_sky_light_scale 0 3 0.1
+        range --status "how bright the skybox LOOKS - does not change the light it casts" \
+            "sky brightness" pt_sky_brightness 0 2 0.1
         toggle "god rays" gr_enable
+        pairs --status "the rerelease's own map lights. \"all maps\" ignores the cl_dynamic_lights_exclude list, which skips mguhub by default" \
+            "map lights" cl_dynamic_lights "off" 0 "all maps" 1 "all but excluded" 2
+        range --status "brightness of the rerelease's map lights" \
+            "map light scale" cl_dynamic_light_scale 0 2 0.1
         pairs --status "volumetric atmosphere from the map's own fog settings - rerelease maps only" \
             "map fog" cl_fog "off" 0 "sunlight only" 1 "lit by map lights" 2
         range --status "how thick the map fog renders; 1.0 is the map's authored value" \
@@ -322,6 +339,7 @@ begin screen
     toggle --status "1080p30 cutscenes from the rerelease; falls back to the original .cin when absent" "remastered cutscenes" cl_hd_cinematics
     blank
 	pairs "selected inventory item" scr_showitemname "do not show" 0 "show on change" 1 "always show" 2
+    toggle --status "show a named health bar for rerelease bosses such as Modir on mgu6m3" "boss health bars" scr_health_bars
     toggle "ping graph" scr_lag_draw
     values "demo bar" scr_demobar no yes verbose
     range -p -f "%.0f%%" "HUD opacity" scr_alpha 0 1

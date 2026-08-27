@@ -761,11 +761,16 @@ leaves the model in the wrong place.
 */
 void M_ProjectFlashSource(edict_t *self, const vec3_t offset, const vec3_t forward, const vec3_t right, vec3_t result)
 {
-    // The rerelease scales the offset by s.scale here, because the gun
-    // commander is the gunner model at 1.25. THIS TREE HAS NO PER-ENTITY SCALE:
-    // entity_state_t carries none and the protocol does not send one (same
-    // limitation the flares hit). So the commander renders gunner-sized and the
-    // offsets need no scaling. If per-entity scale is ever added, scale here.
+    // Scale the offset with the model, or a scaled monster's shots leave from
+    // where its muzzle would have been at 1x - for mgu6m3's 5.5x Modir that is
+    // somewhere inside its own shin.
+    if (self->s.scale > 0.f && self->s.scale != 1.f) {
+        vec3_t scaled;
+        VectorScale(offset, self->s.scale, scaled);
+        G_ProjectSource(self->s.origin, scaled, forward, right, result);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, offset, forward, right, result);
 }
 
@@ -1117,10 +1122,36 @@ void monster_death_use(edict_t *self)
     if (self->deathtarget)
         self->target = self->deathtarget;
 
-    if (!self->target)
+    if (self->target)
+        G_UseTargets(self, self->enemy);
+
+    // [rerelease] healthtarget fires on every pain hit AND once more on death
+    if (self->healthtarget) {
+        self->target = self->healthtarget;
+        G_UseTargets(self, self->enemy);
+    }
+}
+
+/*
+=================
+M_FireHealthTarget
+
+[rerelease] A monster with a "healthtarget" fires it every time it is hurt.
+id does this in M_ProcessPain, right after the pain callback; this tree calls
+pain straight out of T_Damage, so this is called from there instead.
+=================
+*/
+void M_FireHealthTarget(edict_t *self)
+{
+    char *saved;
+
+    if (!self->healthtarget)
         return;
 
+    saved = self->target;
+    self->target = self->healthtarget;
     G_UseTargets(self, self->enemy);
+    self->target = saved;
 }
 
 
@@ -1171,6 +1202,21 @@ bool monster_start(edict_t *self)
     if (self->monsterinfo.currentmove)
         self->s.frame = self->monsterinfo.currentmove->firstframe + (Q_rand() % (self->monsterinfo.currentmove->lastframe - self->monsterinfo.currentmove->firstframe + 1));
 
+    // [rerelease] per-entity model scale. The spawn function has just set
+    // mins/maxs, so this is where id grows the monster to match the model:
+    // the bounding box, the mass, and monsterinfo.scale, which is the per-frame
+    // movement distance multiplier. mgu6m3's Modir is a monster_shambler at
+    // 5.5, and without this it would be a normal-sized shambler wearing a giant
+    // model. Done BEFORE base_height is captured so a scaled monster ducks from
+    // its real height.
+    if (self->s.scale > 0.f && self->s.scale != 1.f) {
+        self->monsterinfo.scale *= self->s.scale;
+        VectorScale(self->mins, self->s.scale, self->mins);
+        VectorScale(self->maxs, self->s.scale, self->maxs);
+        self->mass = (int)(self->mass * self->s.scale);
+        gi.linkentity(self);
+    }
+
     // ROGUE/rerelease duck system: remember how tall this monster stands, so
     // monster_duck_down has something to shrink from and monster_duck_up has
     // something to restore. Captured here, after the spawn function has set
@@ -1186,6 +1232,14 @@ void monster_start_go(edict_t *self)
 
     if (self->health <= 0)
         return;
+
+    // [rerelease] a SCALED monster's eyes are not 25 units off the floor. The
+    // callers above have just set the classic fixed viewheight, so scale it
+    // here, where every start path passes. Left alone at 1x, because the
+    // rerelease's wider change (viewheight = maxs[2] - 8 for everything) would
+    // move every monster's sight line in the classic game too.
+    if (self->s.scale > 0.f && self->s.scale != 1.f)
+        self->viewheight = (int)(self->viewheight * self->s.scale);
 
     // check for target to combat_point and change to combattarget
     if (self->target) {

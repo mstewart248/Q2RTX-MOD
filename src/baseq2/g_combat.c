@@ -575,6 +575,10 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
             if (skill->value == 3)
                 targ->pain_debounce_framenum = level.framenum + 5 * BASE_FRAMERATE;
         }
+        // [rerelease] fire the health target on every hit, not just on pain
+        // frames - id does this in M_ProcessPain
+        if (take && targ->inuse)
+            M_FireHealthTarget(targ);
     } else if (client) {
         if (!(targ->flags & FL_GODMODE) && (take))
             targ->pain(targ, attacker, knockback, take);

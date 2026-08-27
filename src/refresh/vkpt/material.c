@@ -1216,13 +1216,130 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    emissive_threshold %d\n", mat->emissive_threshold);
 }
 
-// Re-read every .mat file from disk and rebuild the live materials from it, so
-// brightness and other values can be tuned in a text editor without restarting.
-// The definition tables (r_global_materials / r_map_materials) are safe to
-// repopulate directly, but the *active* materials in r_materials are pointed at
-// by meshes and texinfos, so they are invalidated the same way MAT_ChangeMap
-// does and then rebuilt by CL_PrepRefresh, which re-registers every model and
-// texture and so calls MAT_Find again.
+// Swap one of a live material's textures for the one the definition now names.
+// A name that has not changed keeps the image that is already loaded, so a
+// reload that only moves a number does no image work at all.
+static void material_reload_image(image_t** image, char* dest_name, const char* new_name,
+                                  pbr_material_t* mat, imageflags_t extra)
+{
+	if (!strcmp(dest_name, new_name))
+		return;
+
+	Q_strlcpy(dest_name, new_name, MAX_QPATH);
+
+	if (!new_name[0]) {
+		*image = NULL;
+		return;
+	}
+
+	load_material_image(image, new_name, mat, mat->image_type, mat->image_flags | extra);
+
+	if (*image == R_NOTEXTURE) {
+		Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", new_name, mat->name);
+		*image = NULL;
+	}
+}
+
+/*
+=================
+material_reapply_definition
+
+Re-applies a freshly parsed .mat definition onto a LIVE material, in place.
+
+The live material object must NOT be destroyed and re-created, which is what
+this command used to do. Two things point straight into r_materials and survive
+a reload:
+
+  - maliasmesh_t::materials holds pbr_material_t* written when the model was
+    parsed. MOD_Reference_RTX writes registration_sequence back through those
+    pointers for every model that is already cached, and CL_PrepRefresh takes
+    the cached path for all of them.
+  - the material index is baked into geometry that has already been uploaded.
+
+Resetting a live material therefore left every cached model pointing at a
+zeroed slot - which is the visible corruption - and re-registering through that
+pointer put registration_sequence back onto a material whose list node had just
+been cleared by the memset in MAT_Reset. The next reload then found a material
+that looked live but was not linked into r_materialsHash, called List_Remove on
+a node whose next/prev were NULL, and crashed. Every time, on the second
+reload, which is exactly what was reported.
+
+So: identity is kept - the address, the hash linkage, the material index, and
+any image whose name did not change. Only tuning and texture names are taken
+from the definition.
+=================
+*/
+static void material_reapply_definition(pbr_material_t* mat, const pbr_material_t* matdef)
+{
+	mat->bump_scale         = matdef->bump_scale;
+	mat->roughness_override = matdef->roughness_override;
+	mat->metalness_factor   = matdef->metalness_factor;
+	mat->emissive_factor    = matdef->emissive_factor;
+	mat->specular_factor    = matdef->specular_factor;
+	mat->base_factor        = matdef->base_factor;
+	mat->light_styles       = matdef->light_styles;
+	mat->bsp_radiance       = matdef->bsp_radiance;
+	mat->default_radiance   = matdef->default_radiance;
+	mat->num_frames         = matdef->num_frames;
+	mat->synth_emissive     = matdef->synth_emissive;
+
+	// keep 'mat which' truthful about where the values came from
+	Q_strlcpy(mat->source_matfile, matdef->source_matfile, sizeof(mat->source_matfile));
+	mat->source_line = matdef->source_line;
+
+	// everything except the index, which addresses geometry already uploaded.
+	// The per-surface runtime bits (WARP, FLOWING, ...) are re-applied by
+	// bsp_mesh_register_textures during the CL_PrepRefresh below.
+	mat->flags = (matdef->flags & ~MATERIAL_INDEX_MASK) | (mat->flags & MATERIAL_INDEX_MASK);
+
+	// A synthesized emissive is cached under a derived '*E' name keyed on the
+	// old threshold, so a changed threshold has to retire it - the same thing
+	// 'mat emissive_threshold <n>' does.
+	if (mat->emissive_threshold != matdef->emissive_threshold
+		&& mat->image_emissive && strstr(mat->image_emissive->name, "*E"))
+	{
+		mat->image_emissive->name[0] = 0;
+		mat->image_emissive = NULL;
+	}
+	mat->emissive_threshold = matdef->emissive_threshold;
+
+	material_reload_image(&mat->image_base, mat->filename_base,
+	                      matdef->filename_base, mat, IF_SRGB);
+	material_reload_image(&mat->image_normals, mat->filename_normals,
+	                      matdef->filename_normals, mat, IF_NONE);
+	material_reload_image(&mat->image_roughness, mat->filename_roughness,
+	                      matdef->filename_roughness, mat, IF_NONE);
+	material_reload_image(&mat->image_metallic, mat->filename_metallic,
+	                      matdef->filename_metallic, mat, IF_NONE);
+	material_reload_image(&mat->image_emissive, mat->filename_emissive,
+	                      matdef->filename_emissive, mat, IF_SRGB);
+	material_reload_image(&mat->image_mask, mat->filename_mask,
+	                      matdef->filename_mask, mat, IF_NONE);
+
+	if (mat->synth_emissive && !mat->image_emissive)
+	{
+		MAT_SynthesizeEmissive(mat);
+
+		// MAT_SynthesizeEmissive does not always produce one
+		if (mat->image_emissive)
+			IMG_Load(mat->image_emissive, mat->image_emissive->pix_data);
+	}
+
+	if (mat->image_normals)
+		mat->image_normals->flags |= IF_NORMAL_MAP;
+
+	if (mat->image_emissive && !mat->image_emissive->processing_complete)
+		vkpt_extract_emissive_texture_info(mat->image_emissive);
+
+	MAT_UpdateRegistration(mat);
+}
+
+// Re-read every .mat file from disk and push the new values onto the materials
+// that are already live, so brightness and other values can be tuned in a text
+// editor without restarting. The definition tables (r_global_materials /
+// r_map_materials) are safe to repopulate wholesale; the live materials in
+// r_materials are updated in place - see material_reapply_definition for why
+// they cannot simply be dropped and rebuilt.
 static void material_command_reload(void)
 {
 	load_global_materials();
@@ -1241,27 +1358,41 @@ static void material_command_reload(void)
 			Com_Printf("Loaded %d materials from %s\n", num_map_materials, file_name);
 	}
 
-	// Drop every live material so it is re-created from the new definitions.
-	int invalidated = 0;
+	int updated = 0, generated = 0;
 	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
 	{
 		pbr_material_t* mat = r_materials + i;
 
-		if (mat->registration_sequence)
-		{
-			List_Remove(&mat->entry);
-			MAT_Reset(mat);
-			++invalidated;
+		if (!mat->registration_sequence)
+			continue;
+
+		// a wall takes its map's override in preference to the global table,
+		// the same order MAT_Find uses
+		const pbr_material_t* matdef = NULL;
+		if (mat->image_type == IT_WALL)
+			matdef = find_material_sorted(mat->name, r_map_materials, num_map_materials);
+		if (!matdef)
+			matdef = find_material_sorted(mat->name, r_global_materials, num_global_materials);
+
+		if (!matdef) {
+			// nothing in any .mat names this one - it was generated from the
+			// texture and its sidecars, and there is nothing to re-apply
+			++generated;
+			continue;
 		}
+
+		material_reapply_definition(mat, matdef);
+		++updated;
 	}
 
-	// Rebuild: re-registers models and textures, which re-runs MAT_Find, and
-	// re-uploads geometry whose transparent/masked classification may have
-	// changed along with the materials.
+	// Some material changes reclassify a mesh as transparent or masked, which
+	// affects the static model BLAS, and emissive changes have to reach the
+	// light lists - both are rebuilt from here.
 	vkpt_vertex_buffer_invalidate_static_model_vbos(-1);
 	CL_PrepRefresh();
 
-	Com_Printf("Reloaded material definitions (%d live materials rebuilt).\n", invalidated);
+	Com_Printf("Reloaded material definitions (%d materials updated, %d auto-generated and left alone).\n",
+	           updated, generated);
 }
 
 static void material_command_help(void)

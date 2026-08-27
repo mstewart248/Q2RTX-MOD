@@ -479,6 +479,7 @@ extern void carrier_run(void);
 extern void carrier_sight(void);
 extern void carrier_stand(void);
 extern void carrier_walk(void);
+extern void check_target_healthbar(void);
 extern void chick_attack(void);
 extern void chick_die(void);
 extern void chick_melee(void);
@@ -895,6 +896,7 @@ extern void use_target_camera(void);
 extern void use_target_changelevel(void);
 extern void use_target_explosion(void);
 extern void use_target_goal(void);
+extern void use_target_healthbar(void);
 extern void Use_Target_Help(void);
 extern void use_target_music(void);
 extern void use_target_secret(void);
@@ -919,6 +921,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, bfg_think },
 { P_think, BossExplode },
 { P_think, button_return },
+{ P_think, check_target_healthbar },
 { P_think, commander_body_drop },
 { P_think, commander_body_think },
 { P_think, dabeam_hit },
@@ -1124,6 +1127,7 @@ const save_ptr_t save_ptrs[] = {
 { P_use, use_target_changelevel },
 { P_use, use_target_explosion },
 { P_use, use_target_goal },
+{ P_use, use_target_healthbar },
 { P_use, Use_Target_Help },
 { P_use, use_target_music },
 { P_use, use_target_secret },

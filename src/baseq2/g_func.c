@@ -62,6 +62,40 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define DOOR_Y_AXIS         128
 
 
+/*
+=================
+G_SetMoveinfoSounds
+
+[rerelease] A mover's three sounds, with the map allowed to override each one.
+109 func_doors, 5 func_buttons and 2 func_plats in the shipped maps carry
+noise_start / noise_middle / noise_end and were all playing the stock tech-door
+set instead - mgu6m3's stone doors are the loudest example, they want
+doors/stndr1.wav grinding and doors/stndr2.wav landing.
+
+The empty string is NOT the same as an absent key: mgu6m3 sets noise_start ""
+deliberately, so those doors start silently and only grind. id also treats a
+leading '0' or ' ' as "silent", which some maps use.
+=================
+*/
+static int G_GetMoveinfoSoundIndex(const char *default_value, const char *wanted_value)
+{
+    if (!wanted_value)
+        return default_value ? gi.soundindex(default_value) : 0;
+
+    if (!*wanted_value || *wanted_value == '0' || *wanted_value == ' ')
+        return 0;
+
+    return gi.soundindex(wanted_value);
+}
+
+void G_SetMoveinfoSounds(edict_t *self, const char *default_start,
+                         const char *default_mid, const char *default_end)
+{
+    self->moveinfo.sound_start  = G_GetMoveinfoSoundIndex(default_start, st.noise_start);
+    self->moveinfo.sound_middle = G_GetMoveinfoSoundIndex(default_mid, st.noise_middle);
+    self->moveinfo.sound_end    = G_GetMoveinfoSoundIndex(default_end, st.noise_end);
+}
+
 //
 // Support routines for movement (changes in origin using velocity)
 //
@@ -538,9 +572,7 @@ void SP_func_plat(edict_t *ent)
     VectorCopy(ent->pos2, ent->moveinfo.end_origin);
     VectorCopy(ent->s.angles, ent->moveinfo.end_angles);
 
-    ent->moveinfo.sound_start = gi.soundindex("plats/pt1_strt.wav");
-    ent->moveinfo.sound_middle = gi.soundindex("plats/pt1_mid.wav");
-    ent->moveinfo.sound_end = gi.soundindex("plats/pt1_end.wav");
+    G_SetMoveinfoSounds(ent, "plats/pt1_strt.wav", "plats/pt1_mid.wav", "plats/pt1_end.wav");
 }
 
 //====================================================================
@@ -745,7 +777,9 @@ void SP_func_button(edict_t *ent)
     gi.setmodel(ent, ent->model);
 
     if (ent->sounds != 1)
-        ent->moveinfo.sound_start = gi.soundindex("switches/butn2.wav");
+        G_SetMoveinfoSounds(ent, "switches/butn2.wav", NULL, NULL);
+    else
+        G_SetMoveinfoSounds(ent, NULL, NULL, NULL);
 
     if (!ent->speed)
         ent->speed = 40;
@@ -1203,11 +1237,10 @@ void SP_func_door(edict_t *ent)
 {
     vec3_t  abs_movedir;
 
-    if (ent->sounds != 1) {
-        ent->moveinfo.sound_start = gi.soundindex("doors/dr1_strt.wav");
-        ent->moveinfo.sound_middle = gi.soundindex("doors/dr1_mid.wav");
-        ent->moveinfo.sound_end = gi.soundindex("doors/dr1_end.wav");
-    }
+    if (ent->sounds != 1)
+        G_SetMoveinfoSounds(ent, "doors/dr1_strt.wav", "doors/dr1_mid.wav", "doors/dr1_end.wav");
+    else
+        G_SetMoveinfoSounds(ent, NULL, NULL, NULL);
 
     G_SetMovedir(ent->s.angles, ent->movedir);
     ent->movetype = MOVETYPE_PUSH;
@@ -1362,11 +1395,10 @@ void SP_func_door_rotating(edict_t *ent)
     if (!ent->dmg)
         ent->dmg = 2;
 
-    if (ent->sounds != 1) {
-        ent->moveinfo.sound_start = gi.soundindex("doors/dr1_strt.wav");
-        ent->moveinfo.sound_middle = gi.soundindex("doors/dr1_mid.wav");
-        ent->moveinfo.sound_end = gi.soundindex("doors/dr1_end.wav");
-    }
+    if (ent->sounds != 1)
+        G_SetMoveinfoSounds(ent, "doors/dr1_strt.wav", "doors/dr1_mid.wav", "doors/dr1_end.wav");
+    else
+        G_SetMoveinfoSounds(ent, NULL, NULL, NULL);
 
     // if it starts open, switch the positions
     if (ent->spawnflags & DOOR_START_OPEN) {
@@ -1455,16 +1487,12 @@ void SP_func_water(edict_t *self)
 
     switch (self->sounds) {
     default:
+        G_SetMoveinfoSounds(self, NULL, NULL, NULL);
         break;
 
     case 1: // water
-        self->moveinfo.sound_start = gi.soundindex("world/mov_watr.wav");
-        self->moveinfo.sound_end = gi.soundindex("world/stp_watr.wav");
-        break;
-
     case 2: // lava
-        self->moveinfo.sound_start = gi.soundindex("world/mov_watr.wav");
-        self->moveinfo.sound_end = gi.soundindex("world/stp_watr.wav");
+        G_SetMoveinfoSounds(self, "world/mov_watr.wav", NULL, "world/stp_watr.wav");
         break;
     }
 
@@ -2037,9 +2065,7 @@ void SP_func_door_secret(edict_t *ent)
     float   width;
     float   length;
 
-    ent->moveinfo.sound_start = gi.soundindex("doors/dr1_strt.wav");
-    ent->moveinfo.sound_middle = gi.soundindex("doors/dr1_mid.wav");
-    ent->moveinfo.sound_end = gi.soundindex("doors/dr1_end.wav");
+    G_SetMoveinfoSounds(ent, "doors/dr1_strt.wav", "doors/dr1_mid.wav", "doors/dr1_end.wav");
 
     ent->movetype = MOVETYPE_PUSH;
     ent->solid = SOLID_BSP;
@@ -2476,7 +2502,5 @@ void SP_func_plat2(edict_t *ent)
     VectorCopy(ent->pos2, ent->moveinfo.end_origin);
     VectorCopy(ent->s.angles, ent->moveinfo.end_angles);
 
-    ent->moveinfo.sound_start = gi.soundindex("plats/pt1_strt.wav");
-    ent->moveinfo.sound_middle = gi.soundindex("plats/pt1_mid.wav");
-    ent->moveinfo.sound_end = gi.soundindex("plats/pt1_end.wav");
+    G_SetMoveinfoSounds(ent, "plats/pt1_strt.wav", "plats/pt1_mid.wav", "plats/pt1_end.wav");
 }

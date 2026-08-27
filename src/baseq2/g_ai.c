@@ -242,13 +242,51 @@ returns the range catagorization of an entity reletive to self
 3   only triggered by damage
 =============
 */
-int range(edict_t *self, edict_t *other)
+/*
+=============
+M_RangeBetween
+
+How far apart two entities are, for the purposes of AI range checks.
+
+The rerelease measures between BOUNDING BOXES (distance_between_boxes); 1997
+Quake II measures between ORIGINS. For a stock-sized monster the two only differ
+by a few dozen units, and switching wholesale would move every monster's
+engagement distance in the game - so the origin measure stays.
+
+A SCALED monster is a different matter. mgu6m3's Modir is a monster_shambler at
+5.5, which makes its bounding box 176 units wide: a player standing against it
+is ~192 units from its origin, well past MELEE_DISTANCE (80), so on the origin
+measure it could never once reach melee range and would only ever cast
+lightning. For those, fall back to the rerelease's box distance.
+=============
+*/
+float M_RangeBetween(edict_t *self, edict_t *other)
 {
     vec3_t  v;
-    float   len;
+    int     i;
+
+    if (self->s.scale > 1.f || other->s.scale > 1.f) {
+        // gap along each axis, 0 where the boxes overlap
+        for (i = 0; i < 3; i++) {
+            if (self->absmin[i] > other->absmax[i])
+                v[i] = self->absmin[i] - other->absmax[i];
+            else if (other->absmin[i] > self->absmax[i])
+                v[i] = other->absmin[i] - self->absmax[i];
+            else
+                v[i] = 0;
+        }
+        return VectorLength(v);
+    }
 
     VectorSubtract(self->s.origin, other->s.origin, v);
-    len = VectorLength(v);
+    return VectorLength(v);
+}
+
+int range(edict_t *self, edict_t *other)
+{
+    float   len;
+
+    len = M_RangeBetween(self, other);
     if (len < MELEE_DISTANCE)
         return RANGE_MELEE;
     if (len < 500)
@@ -358,10 +396,7 @@ bool ai_check_move(edict_t *self, float dist)
 
 float realrange(edict_t *self, edict_t *other)
 {
-    vec3_t  dir;
-
-    VectorSubtract(self->s.origin, other->s.origin, dir);
-    return VectorLength(dir);
+    return M_RangeBetween(self, other);
 }
 
 /*

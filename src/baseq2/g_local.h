@@ -389,6 +389,11 @@ typedef struct {
     // BeginIntermission must not move it to an info_player_intermission.
     int         level_intermission_set;
 
+    // [rerelease] target_healthbar: which bars are currently up. Two, matching
+    // the rerelease; the entity itself holds the monster in ->enemy and, once
+    // the monster is dead, the "linger" deadline in ->timestamp.
+    edict_t     *health_bar_entities[MAX_HEALTH_BARS];
+
     // [rerelease] switchable dynamic_light state, published as CS_DYNAMICLIGHTS
     int         dynamiclight_count;
     int         dynamiclight_bits;
@@ -492,6 +497,14 @@ typedef struct {
     int         distance;
     int         height;
     char        *noise;
+    // [rerelease] per-entity move sounds for func_door / func_button /
+    // func_plat. An EMPTY string is meaningful and means "silent" - mgu6m3's
+    // stone doors set noise_start "" so only the grind and the thud play - so
+    // these must be told apart from the key being absent, which is why they are
+    // pointers and not copied strings.
+    char        *noise_start;
+    char        *noise_middle;
+    char        *noise_end;
     float       pausetime;
     char        *item;
     char        *gravity;
@@ -958,8 +971,14 @@ void swimmonster_start(edict_t *self);
 void flymonster_start(edict_t *self);
 void AttackFinished(edict_t *self, float time);
 void monster_death_use(edict_t *self);
+void M_FireHealthTarget(edict_t *self);
 bool M_RereleaseAnims(void);
 bool M_RereleaseGame(void);
+
+// [rerelease] a mover's three sounds, honouring the map's noise_start /
+// noise_middle / noise_end overrides. g_func.c.
+void G_SetMoveinfoSounds(edict_t *self, const char *default_start,
+                         const char *default_mid, const char *default_end);
 
 // func_plat / func_door moveinfo.state.  These used to be private to g_func.c;
 // blocked_checkplat needs them too.
@@ -975,6 +994,10 @@ typedef enum {
     JUMP_JUMP_UP,
     JUMP_JUMP_DOWN
 } blocked_jump_result_t;
+
+// [rerelease] AI range measurement; box-relative for SCALED entities, origin
+// relative otherwise. g_ai.c.
+float M_RangeBetween(edict_t *self, edict_t *other);
 
 bool face_wall(edict_t *self);
 bool blocked_checkplat(edict_t *self, float dist);
@@ -1418,6 +1441,9 @@ struct edict_s {
     char        *team;
     char        *pathtarget;
     char        *deathtarget;
+    // [rerelease] fired every time this monster is hurt, and once more when it
+    // dies. 18 bosses in the shipped maps carry it.
+    char        *healthtarget;
     char        *combattarget;
     edict_t     *target_ent;
 

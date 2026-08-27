@@ -192,6 +192,7 @@ void SP_turret_base(edict_t *self);
 void SP_turret_driver(edict_t *self);
 void SP_turret_invisible_brain(edict_t *self);
 void SP_target_camera(edict_t *self);
+void SP_target_healthbar(edict_t *self);
 
 qboolean IsEntFuncTrain(const char** data);
 char* GetEntityValue(const char** data, const char* searchKey);
@@ -364,6 +365,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"turret_driver", SP_turret_driver},
     {"turret_invisible_brain", SP_turret_invisible_brain},
     {"target_camera", SP_target_camera},
+    {"target_healthbar", SP_target_healthbar},
 
     {NULL, NULL}
 };
@@ -379,6 +381,7 @@ static const spawn_field_t spawn_fields[] = {
     {"targetname", FOFS(targetname), F_LSTRING},
     {"pathtarget", FOFS(pathtarget), F_LSTRING},
     {"deathtarget", FOFS(deathtarget), F_LSTRING},
+    {"healthtarget", FOFS(healthtarget), F_LSTRING},
     {"killtarget", FOFS(killtarget), F_LSTRING},
     {"combattarget", FOFS(combattarget), F_LSTRING},
     {"message", FOFS(message), F_LSTRING},
@@ -409,6 +412,13 @@ static const spawn_field_t spawn_fields[] = {
     {"angles", FOFS(s.angles), F_VECTOR},
     {"angle", FOFS(s.angles), F_ANGLEHACK},
     {"frame", FOFS(s.frame), F_INT},                  // misc_model pose
+
+    // rerelease per-entity model scale. 71 instances in the shipped maps, most
+    // of them monster_mutants, plus mgu6m3's Modir - a monster_shambler at 5.5.
+    // entity_state_t now carries it and the protocol sends it (U_SCALE), so it
+    // is a plain edict field like any other.
+    {"scale", FOFS(s.scale), F_FLOAT},
+
     {"effects", FOFS(s.effects), F_INT},              // misc_player_mannequin
     {"renderfx", FOFS(s.renderfx), F_INT},
 
@@ -444,6 +454,9 @@ static const spawn_field_t temp_fields[] = {
     {"distance", STOFS(distance), F_INT},
     {"height", STOFS(height), F_INT},
     {"noise", STOFS(noise), F_LSTRING},
+    {"noise_start", STOFS(noise_start), F_LSTRING},
+    {"noise_middle", STOFS(noise_middle), F_LSTRING},
+    {"noise_end", STOFS(noise_end), F_LSTRING},
     {"pausetime", STOFS(pausetime), F_FLOAT},
     {"item", STOFS(item), F_LSTRING},
 

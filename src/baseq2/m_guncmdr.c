@@ -364,11 +364,14 @@ mmove_t guncmdr_move_pain5 = { FRAME_c_pain501, FRAME_c_pain524, guncmdr_frames_
 
 void guncmdr_dead(edict_t *self)
 {
-    // The rerelease scales these by s.scale (the commander is the gunner at
-    // 1.25). This protocol carries no per-entity scale, so the corpse box is
-    // used unscaled - see M_ProjectFlashSource in g_monster.c.
+    // The commander is the gunner model at s.scale 1.25, so the corpse box
+    // scales with it, exactly as the rerelease does.
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, -8);
+    if (self->s.scale > 0.f) {
+        VectorScale(self->mins, self->s.scale, self->mins);
+        VectorScale(self->maxs, self->s.scale, self->maxs);
+    }
 
     // monster_dead() is a rerelease helper; this tree does the same work inline
     self->movetype = MOVETYPE_TOSS;
@@ -379,7 +382,7 @@ void guncmdr_dead(edict_t *self)
 
 static void guncmdr_shrink(edict_t *self)
 {
-    self->maxs[2] = -4;
+    self->maxs[2] = -4 * (self->s.scale > 0.f ? self->s.scale : 1.f);
 	self->svflags |= SVF_DEADMONSTER;
 	gi.linkentity(self);
 }
@@ -1484,8 +1487,11 @@ void SP_monster_guncmdr(edict_t *self)
 	gi.modelindex("models/monsters/gunner/gibs/gun.md2");
 	gi.modelindex("models/monsters/gunner/gibs/head.md2");
 
-    // The rerelease sets s.scale 1.25 here - the commander is a bigger gunner.
-    // This protocol carries no per-entity scale, so it renders gunner-sized.
+    // The commander is a bigger gunner: id sets s.scale 1.25 and monster_start
+    // grows the bbox, the mass and the movement distances to match. Unless the
+    // map overrides it, which is why this does not clobber a map-set scale.
+    if (self->s.scale <= 0.f)
+        self->s.scale = 1.25f;
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, 36);
     self->s.skinnum = 2;    // cskin, the commander skin

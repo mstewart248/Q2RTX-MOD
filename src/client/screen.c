@@ -60,6 +60,7 @@ static cvar_t   *scr_showpmove;
 #endif
 static cvar_t   *scr_showturtle;
 static cvar_t   *scr_showitemname;
+static cvar_t   *scr_health_bars;
 
 static cvar_t   *scr_draw2d;
 static cvar_t   *scr_lag_x;
@@ -1381,6 +1382,7 @@ void SCR_Init(void)
     scr_draw2d = Cvar_Get("scr_draw2d", "2", 0);
     scr_showturtle = Cvar_Get("scr_showturtle", "1", 0);
     scr_showitemname = Cvar_Get("scr_showitemname", "1", CVAR_ARCHIVE);
+    scr_health_bars = Cvar_Get("scr_health_bars", "1", CVAR_ARCHIVE);
     scr_lag_x = Cvar_Get("scr_lag_x", "-1", 0);
     scr_lag_y = Cvar_Get("scr_lag_y", "-1", 0);
     scr_lag_draw = Cvar_Get("scr_lag_draw", "0", 0);
@@ -1997,6 +1999,74 @@ static void SCR_DrawStats(void)
     SCR_ExecuteLayoutString(cl.configstrings[CS_STATUSBAR]);
 }
 
+/*
+==============
+SCR_DrawHealthBars
+
+[rerelease] target_healthbar. The game packs both bars into one short in
+STAT_HEALTH_BARS, a byte each - bit 7 says the bar is showing and bits 0-6 are
+the health remaining out of 127 - and puts the boss's (already localized) name
+in CS_HEALTH_BAR_NAME. Nothing about it is in the statusbar program, so it is
+drawn here rather than as a layout token, and scr_health_bars gates it.
+==============
+*/
+#define HEALTH_BAR_HEIGHT   4
+
+static void SCR_DrawHealthBars(void)
+{
+    int     stat, i, shown;
+    int     x, y, w;
+    const char *name;
+
+    if (!scr_health_bars->integer)
+        return;
+    if (scr_draw2d->integer <= 1)
+        return;
+
+    stat = cl.frame.ps.stats[STAT_HEALTH_BARS];
+    if (!stat)
+        return;
+
+    // nothing to draw unless at least one bar is flagged active
+    shown = 0;
+    for (i = 0; i < MAX_HEALTH_BARS; i++)
+        if ((stat >> (i * 8)) & 0x80)
+            shown++;
+    if (!shown)
+        return;
+
+    w = scr.hud_width / 2;
+    x = (scr.hud_width - w) / 2;
+    y = scr.hud_height / 8;
+
+    name = cl.configstrings[CS_HEALTH_BAR_NAME];
+    if (name[0]) {
+        SCR_DrawString(scr.hud_width / 2, y, UI_CENTER, name);
+        y += CHAR_HEIGHT + 2;
+    }
+
+    for (i = 0; i < MAX_HEALTH_BARS; i++) {
+        int  bar = (stat >> (i * 8)) & 0xff;
+        int  filled;
+
+        if (!(bar & 0x80))
+            continue;
+
+        filled = ((bar & 0x7f) * w) / 127;
+
+        // one pixel of black around the whole bar, then red for what is left
+        // and grey for what has been taken off
+        R_DrawFill32(x - 1, y - 1, w + 2, HEALTH_BAR_HEIGHT + 2, U32_BLACK);
+        if (filled > 0)
+            R_DrawFill32(x, y, filled, HEALTH_BAR_HEIGHT, U32_RED);
+        if (filled < w)
+            R_DrawFill32(x + filled, y, w - filled, HEALTH_BAR_HEIGHT,
+                         MakeColor(80, 80, 80, 255));
+
+        y += HEALTH_BAR_HEIGHT * 3;
+    }
+}
+
 static void SCR_DrawLayout(void)
 {
     if (scr_draw2d->integer == 3 && !Key_IsDown(K_F1))
@@ -2035,6 +2105,8 @@ static void SCR_Draw2D(void)
     R_SetAlpha(Cvar_ClampValue(scr_alpha, 0, 1));
 
     SCR_DrawStats();
+
+    SCR_DrawHealthBars();
 
     SCR_DrawLayout();
 
