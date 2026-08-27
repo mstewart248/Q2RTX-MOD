@@ -148,6 +148,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_sky_scale, 1.0) /* brightness of SKY light scattered in map fog (cl_fog 2) */ \
 	UBO_CVAR_DO(pt_fog_light_knee, 2.0) /* soft roll-off point for local-light fog; lower compresses bright, light-dense maps harder */ \
 	UBO_CVAR_DO(pt_sky_brightness, 1.0) /* brightness of the SKY AS SEEN; does NOT change how much light it casts */ \
+	UBO_CVAR_DO(pt_fog_density_max, 64.0) /* ceiling on map-fog density in getDensity; was a hard-coded 4.0, which no map reaches at cl_fog_scale 1 */ \
+	UBO_CVAR_DO(pt_fog_eccentricity, -1.0) /* map-fog scattering directionality, 0 = even in all directions .. 0.95 = tight shafts; -1 follows gr_eccentricity */ \
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *

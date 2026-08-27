@@ -87,6 +87,97 @@ static cvar_t *sky_type;
 // index into skyPresets, i.e. a physical_sky value - not a SKY_TYPE_
 #define SKY_STROGGOS_PRESET 2
 
+// [rerelease] Maps that render the procedural sky even in "rerelease" sky mode,
+// where a map that ships a skybox normally wins.
+//
+// mgu1m1 is why this exists, and it is the only entry. Its worldspawn names no
+// sky at all, so CS_SKY falls back to the stock unit1_ cube map and the map
+// looks as though it had authored one - and unit1_ is a blue Earth sky over a
+// map whose own _sunlight_color and heightfog are orange. The Stroggos
+// atmosphere with a fixed sun is what it wants.
+//
+// Doing this from maps/mgu1m1.cfg by pointing the "sky" command at a basename
+// that does not exist could not hold: the target_sky its drop pod fires on
+// landing re-issues CS_SKY*, CL_SetSky runs again, and the real skybox comes
+// straight back.
+//
+// Listed maps get the map's own skybox declined and the Stroggos preset
+// regardless of what physical_sky says. Nothing else changes - the sun still
+// follows whatever preset the player selected, see apply_map_sun.
+//
+// Whitespace- or comma-separated SHORT map names, the same form cl.mapname is in
+// - "mgu1m1", not "maps/mgu1m1.bsp". Matches cl_dynamic_lights_exclude.
+static cvar_t *sky_procedural_maps;
+
+// The sun a listed map STARTS with. Copied into sun_elevation / sun_azimuth
+// ONCE, on map load, and only while the sun preset is Custom - see apply_map_sun.
+//
+// Once only, because the player has to be able to move the sun afterwards and
+// have it stay moved; a per-frame override would fight the menu. Custom only,
+// because any other preset means the player asked for a time of day, and a map
+// is not entitled to overrule that.
+//
+// These are per-map, set from maps/<name>.cfg - which is exec'd at BSP load,
+// well before the first frame apply_map_sun can run on - and reset back to the
+// defaults below by maps/default.cfg. So a second override is two steps: add the
+// map to sky_procedural_maps, and give it a cfg with these two lines. A listed
+// map with no cfg of its own just gets the defaults.
+//
+// The defaults are mgu1m1's, set by eye with the sky held still. They are NOT
+// the map's own _sun_mangle "30 -70 0" - that is what its lightmap compiler was
+// aimed with, and it is not where this sun looks right.
+static cvar_t *sky_map_sun_elevation;
+static cvar_t *sky_map_sun_azimuth;
+
+#define SKY_MAP_LIST_SEPARATORS " \t\r\n,;"
+
+// Whether cl.mapname appears in a whitespace/comma separated list cvar.
+static bool sky_map_in_list(const cvar_t *list)
+{
+	const char *p;
+	size_t      maplen;
+
+	if (!list || !list->string[0] || !cl.mapname[0])
+		return false;
+
+	maplen = strlen(cl.mapname);
+
+	for (p = list->string; *p; ) {
+		size_t len;
+
+		p += strspn(p, SKY_MAP_LIST_SEPARATORS);
+		if (!*p)
+			break;
+
+		len = strcspn(p, SKY_MAP_LIST_SEPARATORS);
+		if (len == maplen && !Q_strncasecmp(p, cl.mapname, len))
+			return true;
+
+		p += len;
+	}
+
+	return false;
+}
+
+// Only meaningful in "rerelease" sky mode. An explicit sky_type pick already
+// declines every map's skybox and already says which atmosphere to render, so
+// overriding it here would make the menu lie.
+static bool sky_map_forces_procedural(void)
+{
+	return sky_type && sky_type->integer == SKY_TYPE_RERELEASE
+		&& sky_map_in_list(sky_procedural_maps);
+}
+
+// The preset that actually gets rendered, which is not always the one
+// physical_sky names. Every read of physical_sky->integer goes through this.
+static int effective_physical_sky(void)
+{
+	if (sky_map_forces_procedural())
+		return SKY_STROGGOS_PRESET;
+
+	return physical_sky->integer;
+}
+
 cvar_t *sky_scattering;
 cvar_t *sky_transmittance;
 cvar_t *sky_phase_g;
@@ -674,11 +765,14 @@ void vkpt_physical_sky_set_map_skybox(int scope)
 // the environment map with the procedurally rendered planet.
 bool vkpt_physical_sky_uses_skybox(void)
 {
+	// A map on sky_procedural_maps declines its own skybox, and
+	// effective_physical_sky has already replaced the preset with Stroggos, so
+	// neither test below can put the cube map back.
 	if (map_skybox_scope > 0 && sky_use_map_skybox->integer >= map_skybox_scope
-		&& !physical_sky_space->integer)
+		&& !physical_sky_space->integer && !sky_map_forces_procedural())
 		return true;
 
-	return (GetSkyPreset(physical_sky->integer)->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX) != 0;
+	return (GetSkyPreset(effective_physical_sky())->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX) != 0;
 }
 
 /*
@@ -720,6 +814,45 @@ static void sky_type_changed(cvar_t *self)
 	}
 }
 
+/*
+=================
+apply_map_sun
+
+Seeds sun_elevation / sun_azimuth from sky_map_sun_* when a map on
+sky_procedural_maps is loaded.
+
+Fires once per map, on the first frame the new name is visible, and only while
+the sun preset is Custom. So it sets a STARTING POINT, not an override: move the
+sun afterwards and it stays where you put it, and pick any time-of-day preset
+and this does not run at all - that preset is honoured exactly as on any other
+map.
+
+Keyed on the map name rather than on a load hook because that is the same thing
+sky_map_in_list already tests, so the two cannot disagree about which map is
+loaded.
+=================
+*/
+static void apply_map_sun(void)
+{
+	static char last_map[MAX_QPATH];
+
+	if (!strcmp(last_map, cl.mapname))
+		return;
+
+	Q_strlcpy(last_map, cl.mapname, sizeof(last_map));
+
+	if (!cl.mapname[0] || !sky_map_forces_procedural())
+		return;
+
+	// SUN_PRESET_NONE is the menu's "Custom". Read the cvar directly rather than
+	// active_sun_preset(), which substitutes a different preset in multiplayer.
+	if (sun_preset->integer != 0)
+		return;
+
+	Cvar_SetValue(sun_elevation, sky_map_sun_elevation->value, FROM_CODE);
+	Cvar_SetValue(sun_azimuth, sky_map_sun_azimuth->value, FROM_CODE);
+}
+
 // Publishes the answer above so the menu can grey out the controls that do not
 // apply to the sky currently in use. It depends on map_skybox_scope, which is a
 // property of the loaded map, so no combination of cvar values tells the UI
@@ -735,11 +868,15 @@ static void publish_sky_state(void)
 void
 vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float time)
 {
+	// Before anything reads sun_elevation / sun_azimuth, so a map that seeds them
+	// is already seeded on its first rendered frame.
+	apply_map_sun();
+
 	static uint16_t skyIndex = -1;
-	if (physical_sky->integer != skyIndex)
+	if (effective_physical_sky() != skyIndex)
 	{   // update cvars with presets if the user changed the sky
 		UpdatePhysicalSkyCVars();
-		skyIndex = physical_sky->integer;
+		skyIndex = effective_physical_sky();
 	}
 
 	PhysicalSkyDesc_t const * skyDesc = GetSkyPreset(skyIndex);
@@ -946,7 +1083,7 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 VkResult
 vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light, bool render_world)
 {
-    PhysicalSkyDesc_t const * skyDesc = GetSkyPreset(physical_sky->integer);
+    PhysicalSkyDesc_t const * skyDesc = GetSkyPreset(effective_physical_sky());
 
 	publish_sky_state();
 
@@ -1149,11 +1286,22 @@ void InitialiseSkyCVars()
 	sky_type = Cvar_Get("sky_type", "0", CVAR_ARCHIVE);
 	sky_type->changed = sky_type_changed;
 	sky_type_changed(sky_type);
+
+	// Maps that get the procedural sky even in "rerelease" sky mode, and the sun
+	// they start with. sky_procedural_maps needs physical_sky_cvar_changed
+	// because it decides which atmosphere is rendered; the two angles do not,
+	// since they only ever write sun_elevation / sun_azimuth, which carry their
+	// own callbacks.
+	sky_procedural_maps = Cvar_Get("sky_procedural_maps", "mgu1m1", CVAR_ARCHIVE);
+	sky_procedural_maps->changed = physical_sky_cvar_changed;
+
+	sky_map_sun_elevation = Cvar_Get("sky_map_sun_elevation", "55", CVAR_ARCHIVE);
+	sky_map_sun_azimuth = Cvar_Get("sky_map_sun_azimuth", "180", CVAR_ARCHIVE);
 }
 
 void UpdatePhysicalSkyCVars()
 {
-	PhysicalSkyDesc_t const * sky = GetSkyPreset(physical_sky->integer);
+	PhysicalSkyDesc_t const * sky = GetSkyPreset(effective_physical_sky());
 
 	// sun
 	for (int i = 0; i < 3; ++i)

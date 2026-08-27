@@ -375,11 +375,20 @@ get_direct_illumination_restir(
 
 	float samples = 1.;
 
+	// Candidates actually DRAWN, which is not always RESTIR_SAMPLING_M: the loop
+	// stops early once it walks off the end of a short light list. It has to be
+	// counted here rather than taken from update_reservoir's own r.M, because that
+	// one only counts candidates whose p_hat was > 0, and a drawn-but-zero
+	// candidate is still a drawn candidate as far as the estimator is concerned.
+	uint num_drawn = 0;
+
 #pragma unroll
 	for (uint i = 0, n_idx = list_start; i < RESTIR_SAMPLING_M; i++, n_idx += stride)
 	{
 		if (n_idx >= list_end)
 			break;
+
+		++num_drawn;
 
 		current_light_idx = n_idx != sun_idx ? light_buffer.light_list_lights[n_idx] : RESTIR_ENV_ID;
 
@@ -389,7 +398,25 @@ get_direct_illumination_restir(
 		if (p_hat > 0)update_reservoir(current_light_idx, p_hat * inv_pdf, rng2, p_hat, rng, reservoir);
 	}
 
-	reservoir.M = RESTIR_SAMPLING_M;
+	// RIS is unbiased only when W divides by the number of candidates DRAWN. This
+	// used to be a flat RESTIR_SAMPLING_M, which is correct only while the light
+	// list is at least that long.
+	//
+	// On a sparse list it silently threw the light away. Worked through for an
+	// outdoor cluster on a rerelease map, where the list is effectively just the
+	// sun, so list_size == 1:
+	//
+	//     partitions = ceil(1/16) = 1, stride = 1  -> the loop draws ONE candidate
+	//     w_sum      = p_hat * inv_pdf, inv_pdf = list_size = 1  -> w_sum = p_hat
+	//     W          = p_hat / (p_hat * 16)        =  0.0625
+	//
+	// i.e. the sun kept 6.25% of its energy, and the shortfall is list_size/16 for
+	// any list shorter than 16. That is why mgu1m1 rendered flat and shadowless
+	// with ReSTIR on and correct with it off, while base1 - whose clusters carry
+	// its sky area lights plus interior lights, so list_size >= 16 - looked fine
+	// either way. It is also why pt_restir_max_w had no effect: W was five orders
+	// of magnitude BELOW the clamp, not above it.
+	reservoir.M = max(num_drawn, 1u);
 
 	// Diagnostics for pt_restir 24 / 25: the fresh-candidate reservoir before any reuse.
 	// Gated on the debug range so this costs nothing during play - pt_restir is a uniform,
@@ -398,7 +425,7 @@ get_direct_illumination_restir(
 	{
 		dbg_w_fresh = reservoir.w_sum;
 		dbg_W_fresh = reservoir.p_hat > 0.0
-			? reservoir.w_sum / (reservoir.p_hat * float(RESTIR_SAMPLING_M))
+			? reservoir.w_sum / (reservoir.p_hat * float(reservoir.M))
 			: 0.0;
 	}
 

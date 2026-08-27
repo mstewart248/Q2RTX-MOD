@@ -116,6 +116,10 @@ typedef struct cmdreg_s {
     xcompleter_t    completer;
 } cmdreg_t;
 
+// Puts back every cvar a map's cfg changed with "mapcvar". Call on map load,
+// BEFORE exec'ing maps/default.cfg and maps/<mapname>.cfg.
+void Cmd_RestoreMapCvars(void);
+
 void Cmd_Init(void);
 
 bool Cmd_Exists(const char *cmd_name);

@@ -1899,7 +1899,93 @@ static void Cmd_Complete_f(void)
     Cmd_LinkCommand(cmd);
 }
 
+/*
+===============
+mapcvar
+
+"mapcvar <name> <value>" - set a cvar for the CURRENT MAP ONLY, remembering what
+it was so the next map load puts it back.
+
+This is what a per-map maps/<name>.cfg actually wants. The alternative already in
+the tree is to set the cvar in the map's cfg and "reset" it in maps/default.cfg,
+but reset restores the cvar's COMPILED-IN DEFAULT, not the player's value - so a
+player running cl_fog 2 everywhere would silently be dropped to cl_fog 0 by every
+map that touched it. mapcvar restores what they actually had.
+
+Restoring happens in Cmd_RestoreMapCvars, called on map load immediately before
+maps/default.cfg and maps/<name>.cfg are exec'd, so:
+
+  - a map whose cfg sets it        -> gets its value
+  - the next map, cfg silent       -> back to the player's value
+  - the same cvar set twice in one map's cfg -> latched once, at the value the
+    player had on entry, not at the intermediate one
+
+Only the FIRST mapcvar for a given cvar in a given map latches, which is what
+makes that last case work.
+===============
+*/
+#define MAX_MAP_CVARS 32
+
+typedef struct {
+    char name[64];
+    char saved[256];
+} map_cvar_t;
+
+static map_cvar_t  map_cvars[MAX_MAP_CVARS];
+static int         num_map_cvars;
+
+void Cmd_RestoreMapCvars(void)
+{
+    for (int i = 0; i < num_map_cvars; i++)
+        Cvar_SetEx(map_cvars[i].name, map_cvars[i].saved, FROM_CODE);
+
+    num_map_cvars = 0;
+}
+
+static void Cmd_MapCvar_f(void)
+{
+    const char *name, *value;
+    cvar_t     *var;
+    bool        latched = false;
+
+    if (Cmd_Argc() != 3) {
+        Com_Printf("Usage: mapcvar <name> <value>\n");
+        Com_Printf("Sets a cvar until the next map load, then restores it.\n");
+        return;
+    }
+
+    name  = Cmd_Argv(1);
+    value = Cmd_Argv(2);
+
+    var = Cvar_FindVar(name);
+    if (!var) {
+        Com_WPrintf("mapcvar: unknown cvar %s\n", name);
+        return;
+    }
+
+    // latch the entry value, once per map
+    for (int i = 0; i < num_map_cvars; i++) {
+        if (!Q_stricmp(map_cvars[i].name, name)) {
+            latched = true;
+            break;
+        }
+    }
+
+    if (!latched) {
+        if (num_map_cvars >= MAX_MAP_CVARS) {
+            Com_WPrintf("mapcvar: too many per-map cvars, %s will NOT be restored\n", name);
+        } else {
+            Q_strlcpy(map_cvars[num_map_cvars].name, name, sizeof(map_cvars[0].name));
+            Q_strlcpy(map_cvars[num_map_cvars].saved, var->string, sizeof(map_cvars[0].saved));
+            num_map_cvars++;
+        }
+    }
+
+    Cvar_SetEx(name, value, FROM_CODE);
+}
+
 static const cmdreg_t c_cmd[] = {
+    { "mapcvar", Cmd_MapCvar_f },
     { "cmdlist", Cmd_List_f },
     { "macrolist", Cmd_MacroList_f },
     { "exec", Cmd_Exec_f, Cmd_Exec_c },

@@ -1319,9 +1319,12 @@ void CL_ParseTEnt(void)
         }
         else
         {
-            // te.count is set to 1 on the first tick of the flare, 0 afterwards
+            // te.count is set to 1 on the first tick of the flare, 0 afterwards.
+            // Play it on CHAN_VOICE rather than CHAN_AUTO so that a repeat for
+            // the same flare replaces the old one instead of eating another of
+            // the 32 mix channels.
             if (te.count!=0)
-                S_StartSound(NULL, te.entity1, 0, cl_sfx_flare, 0.5, ATTN_NORM, 0);
+                S_StartSound(NULL, te.entity1, CHAN_VOICE, cl_sfx_flare, 0.5, ATTN_NORM, 0);
         }
         break;
 

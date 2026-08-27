@@ -1341,8 +1341,13 @@ void flare_sparks(edict_t *self)
 	gi.WriteByte(TE_FLARE);
 
     gi.WriteShort((int)(self - g_edicts));
-    // if this is the first tick of flare, set count to 1 to start the sound
-    gi.WriteByte( self->timestamp - level.framenum < (int)(14.75f * BASE_FRAMERATE) ? 0 : 1);
+    // count is 1 on the very first tick only - that byte is what starts the
+    // burn sound on the client. This used to be derived from the remaining
+    // lifetime, a test that only holds for the rerelease's 15 second flare;
+    // ours lives 60 seconds, so it stayed true for the first 45 and restarted
+    // the sound five times a second, starving all 32 sound channels.
+    gi.WriteByte(self->count ? 0 : 1);
+    self->count = 1;
 
     gi.WritePosition(self->s.origin);
 
@@ -1447,6 +1452,7 @@ void fire_flaregun(edict_t *self, vec3_t start, vec3_t aimdir,
 	flare->radius_dmg = damage;
 	flare->dmg_radius = damage_radius;
 	flare->classname = "flare";
+	flare->count = 0;           // see flare_sparks: 0 = sound not started yet
 	flare->timestamp = level.framenum + (int)(60.f * BASE_FRAMERATE); //live for 60 seconds 
 	gi.linkentity(flare);
 }

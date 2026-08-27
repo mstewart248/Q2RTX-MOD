@@ -188,7 +188,21 @@ void trigger_teleport_touch(edict_t* self, edict_t* other, cplane_t* plane, csur
 
     if (other->client)
     {
-        other->client->ps.pmove.pm_time = 160; // hold time
+        // pm_time is in units of 8 ms - pmove.c drops it by (cmd.msec >> 3) - so
+        // this was 160 * 8 = 1280 ms, not the 160 ms the comment intends. The
+        // shift is what misc_teleporter does with the same constant on the same
+        // comment (g_misc.c: "160 >> 3"), and it was simply missing here.
+        //
+        // It matters most on the MGU drop pods. PMF_TIME_TELEPORT freezes pmove
+        // outright - "teleport pause stays exactly in place", no gravity and no
+        // control - so the player sat motionless outside the pod for over a
+        // second after the camera cut, then got shoved as physics resumed all at
+        // once. 20 puts the release back on the same frame as the cut.
+        //
+        // Must stay >= 1: pmove only clears PMF_TIME_TELEPORT inside its
+        // "if (pm->s.pm_time)" block, so setting 0 here alongside the flag would
+        // freeze the player permanently.
+        other->client->ps.pmove.pm_time = 160 >> 3; // hold time, in 8 ms units
         other->client->ps.pmove.pm_flags |= PMF_TIME_TELEPORT;
 
         // draw the teleport splash at source and on the player

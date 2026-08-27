@@ -19120,7 +19120,6 @@ textures/tomf/grnx2_3b:
 textures/tomf/grnx2_3c:
 	texture_base materialDev/textures/tomf/grnx2_3c.tga
 	texture_normals materialDev/textures/tomf/grnx2_3c_n.tga
-	metalness_factor 0
 
 textures/tomf/grnx2_3d:
 	texture_base materialDev/textures/tomf/grnx2_3d.tga
@@ -19409,6 +19408,29 @@ textures/tomf/pmetal3_1b:
 # 	texture_normals materialDev/textures/tomf/pmetal3_1c_n.tga
 # 	metalness_factor 0
 
+# Also commented out, for the same reason as the stub above: this entry set
+# source_matfile, which killed the 46 SURF_LIGHT faces (value=50) that this
+# texture carries in mgu1m1 / mgu1m2 / mgu1m3.
+#
+# It also did nothing anyway. In get_material (path_tracer_rgen.h:1037) metallic
+# and roughness start at 0 and 1, and:
+#   - metalness_factor is only ever a MULTIPLIER on a sampled texel (the metallic
+#     map's .r, or the normal map's alpha). With neither map present metallic
+#     stays 0, so 'metalness_factor 1' multiplies nothing.
+#   - roughness_override is applied as max(roughness, override). With no roughness
+#     source roughness is 1, and max(1, 0.05) is 1, so the override can only ever
+#     make a surface ROUGHER, never smoother.
+#
+# The working route needs no .mat entry at all. material.c:1041 auto-detects
+# <name>_rough.tga / <name>_metallic.tga / <name>_n.tga sidecars, but ONLY in the
+# else-branch taken when a texture has no material definition - so the sidecars
+# and the surface light both depend on this block staying commented out.
+# See rerelease/textures/tomf/pmetal3_1c{,_n,_rough,_metallic}.tga.
+# textures/tomf/pmetal3_1c:
+# 	texture_base textures/tomf/pmetal3_1c.wal
+# 	metalness_factor 1
+# 	roughness_override 0.05
+
 textures/tomf/pmetal3_2b:
 	texture_base materialDev/textures/tomf/pmetal3_2b.tga
 	texture_normals materialDev/textures/tomf/pmetal3_2b_n.tga
@@ -19492,7 +19514,6 @@ textures/tomf/tf_barrel:
 textures/tomf/tf_barrel0:
 	texture_base materialDev/textures/tomf/tf_barrel0.tga
 	texture_normals materialDev/textures/tomf/tf_barrel0_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_barrel2:
 	texture_base materialDev/textures/tomf/tf_barrel2.tga
@@ -19522,7 +19543,6 @@ textures/tomf/tf_box01_side:
 textures/tomf/tf_box01_side2:
 	texture_base materialDev/textures/tomf/tf_box01_side2.tga
 	texture_normals materialDev/textures/tomf/tf_box01_side2_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_box01_top:
 	texture_base materialDev/textures/tomf/tf_box01_top.tga

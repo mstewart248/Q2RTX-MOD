@@ -421,7 +421,38 @@ float getDensity(vec3 p)
 	float density = getHeightFogDensity(p)
 	              + global_ubo.fog_density / FOG_DISTANCEFOG_REFERENCE;
 
-	return world_box * clamp(density, 0.0, 4.0);
+	// The ceiling is pt_fog_density_max. This was a hard-coded 4.0, and 4.0 turned
+	// out to be a wall you hit while the fog still looked too thin on the ground.
+	//
+	// Why the ground is the hard case: in-scatter accumulates as
+	// stepLength * density along the ray, and the march runs from the camera to
+	// the SURFACE. A ray into the sky crosses the whole world box - thousands of
+	// units - while a ray to the floor in front of you is a few dozen. The sky
+	// therefore fogs up one to two orders of magnitude sooner than the ground,
+	// and density is the only lever that closes that gap.
+	//
+	// The wall arrives sooner than cl_fog_scale suggests, because cl_fog_scale
+	// multiplies the map's authored density BEFORE the REFERENCE normalisation
+	// above. A map with only height fog saturates once
+	//
+	//     heightfog_density * cl_fog_scale / FOG_HEIGHTFOG_REFERENCE >= ceiling
+	//
+	// so mgu1m1 (heightfog_density 0.00025) hit the old 4.0 at the band floor by
+	// cl_fog_scale 400, and at EYE LEVEL - two thirds up its band, where the
+	// player actually stands - by about 1075. Past that, turning cl_fog_scale up
+	// did nothing at all.
+	//
+	// The new default is 64.0. That is safe for every shipped map because none of
+	// them comes close at the calibrated cl_fog_scale 1.0: the densest is mgu6m3
+	// at 0.412, and the next is q2dm4 at 0.134, so there is more than 150x of
+	// headroom before this clamp can alter a map's intended look. It only matters
+	// once cl_fog_scale is pushed well above 1.
+	//
+	// Raising it is cheap in time: getStep already bottoms out at its 1-unit
+	// minimum by density 1.0, so a higher ceiling costs no extra march steps. It
+	// is NOT free in brightness - in-scatter is linear in density with no
+	// meaningful extinction in open air, so this scales the fog glow directly.
+	return world_box * clamp(density, 0.0, max(0.0, global_ubo.pt_fog_density_max));
 }
 
 float getStep(float t, float density)
@@ -482,6 +513,29 @@ void main()
 	
 	float cosa = dot(direction, global_ubo.sun_direction);
 	float eccentricity = global_ubo.god_rays_eccentricity;
+
+	// Map fog gets its own directionality, separate from the classic god rays.
+	//
+	// At cl_fog 1 the sun term below is the ONLY in-scatter there is - the
+	// isotropic sky/local-light term is gated on fog_mode >= 2 - so the Henyey-
+	// Greenstein lobe about the sun direction is the whole appearance. At the
+	// gr_eccentricity default of 0.75 that lobe scatters 343x more looking into
+	// the sun than away from it, which reads as "the fog is only there when I
+	// look at the sun". Density cannot fix that: it multiplies both ends alike.
+	//
+	// gr_eccentricity is shared with the original campaign's god rays, where the
+	// tight 0.75 lobe is exactly what makes a shaft through a window read as a
+	// shaft. So this overrides it only where fog_enable says the map's own
+	// atmospheric fog is what is being marched, and -1 means "leave it alone".
+	//
+	// Lowering it is a trade, not a free win - it lifts the off-axis fog and
+	// lowers the on-axis peak at the same time. Relative to 0.75: 0.5 gives 6.6x
+	// the away-from-sun fog for 0.52x the into-sun peak, 0.3 gives 14.6x for
+	// 0.27x, and 0 is fully even at 45.7x for 0.13x. Put the overall strength
+	// back with cl_fog_scale, which is direction-independent.
+	if(global_ubo.fog_enable != 0 && global_ubo.pt_fog_eccentricity >= 0.0)
+		eccentricity = min(global_ubo.pt_fog_eccentricity, 0.95);
+
 	if(medium != MEDIUM_NONE)
 		eccentricity = 0.5;
 	float phase = ScatterPhase_HenyeyGreenstein(cosa, eccentricity);

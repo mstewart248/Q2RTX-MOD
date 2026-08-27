@@ -4942,6 +4942,11 @@ R_BeginRegistration_RTX(const char *name)
 
 	vkpt_fog_reset();
 
+	// Undo the previous map's "mapcvar" settings before this map's cfgs run, so a
+	// per-map override lasts exactly one map and leaves the player's own value
+	// behind when they move on.
+	Cmd_RestoreMapCvars();
+
 	Com_AddConfigFile("maps/default.cfg", 0);
 	Com_AddConfigFile(va("maps/%s.cfg", name), 0);
 

@@ -1092,6 +1092,21 @@ void SP_target_sky(edict_t *self)
         self->count |= 2;
         self->style = st.skyautorotate;
     }
+
+    // Map hack: mgu1m1's post-landing sky never stops.
+    //
+    // Every other MGU opener parks the sky and halts it - mgu2m1 70/auto 0,
+    // mgu3m1 0/auto 0, mgu4m1 180/auto 0, mgu5m1 127/auto 0, mgu6m1 -90/auto 0
+    // - so skyrotate becomes a fixed ORIENTATION rather than a speed (see
+    // prepare_sky_matrix, which multiplies by time only when autorotate is set).
+    // mgu1m1 alone says skyrotate 0.5 with skyautorotate 1, leaving the sky
+    // turning for the rest of the level. The 4 deg/sec tumble worldspawn asks
+    // for during the drop-pod descent is deliberate and is left alone; this is
+    // only about the state the pod hands over on landing.
+    if (!Q_stricmp(level.mapname, "mgu1m1")) {
+        self->count |= 2;   // force the halt to be published even if the key was absent
+        self->style = 0;
+    }
 }
 
 //==========================================================
