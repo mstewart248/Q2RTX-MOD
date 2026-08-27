@@ -86,6 +86,11 @@ Section "Engine Files (Required)" Section_Game
 	File "${SOURCE_DIR}\baseq2\blue_noise.pkz"
 	File "${SOURCE_DIR}\baseq2\q2rtx_media.pkz"
 
+	; the rerelease game dir's own media - the Q2RTX overrides texture set and
+	; the MD5 PBR maps. Built by setup\package_media.
+	SetOutPath "$INSTDIR\rerelease"
+	File "${SOURCE_DIR}\rerelease\q2rtx_media.pkz"
+
 	WriteUninstaller ${UNINSTALL_EXE}
 
 	WriteRegStr HKLM "${REG_KEY}" "DisplayName" "Quake II RTX"

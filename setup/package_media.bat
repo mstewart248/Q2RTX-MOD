@@ -12,3 +12,12 @@ SET SOURCES_ROGUE=maps
 IF EXIST %DEST% DEL %DEST%
 %SEVENZIP% a -tzip %DEST% %SOURCES_ROGUE%
 POPD
+
+REM The rerelease game dir. Only content authored or repacked in THIS repo -
+REM never anything extracted from the retail rerelease paks. overrides is the
+REM Q2RTX texture set the rerelease maps need, models the MD5 PBR sidecar maps.
+PUSHD ..\rerelease
+SET SOURCES_RERELEASE=overrides models maps materials
+IF EXIST %DEST% DEL %DEST%
+%SEVENZIP% a -tzip %DEST% %SOURCES_RERELEASE%
+POPD

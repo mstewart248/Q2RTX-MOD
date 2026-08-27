@@ -731,6 +731,13 @@ IF(CONFIG_LINUX_PACKAGING_SUPPORT)
         DESTINATION share/quake2rtx/baseq2
         COMPONENT shareware)
 
+    # The rerelease game dir's own media - the Q2RTX overrides texture set and
+    # the MD5 PBR maps, built by setup/package_media.cmake above.
+    INSTALL(FILES
+        "${CMAKE_SOURCE_DIR}/rerelease/q2rtx_media.pkz"
+        DESTINATION share/quake2rtx/rerelease
+        COMPONENT shareware)
+
     # Package shareware player model
     INSTALL(DIRECTORY
         "${CMAKE_SOURCE_DIR}/baseq2/shareware/players"
