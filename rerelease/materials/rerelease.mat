@@ -16736,7 +16736,7 @@ textures/pods/pn_2a:
 textures/pods/pn_3a:
 	texture_base materialDev/textures/pods/pn_3a.tga
 	texture_normals materialDev/textures/pods/pn_3a_n.tga
-	metalness_factor 0
+	base_factor 2.5
 
 textures/pods/pn_4b:
 	texture_base materialDev/textures/pods/pn_4b.tga
@@ -19098,6 +19098,12 @@ textures/tomf/fuse1_3b:
 # 	texture_normals materialDev/textures/tomf/glocrys_1b_n.tga
 # 	metalness_factor 0
 
+textures/tomf/glocrys_1b:
+	texture_base extures/tomf/glocrys_1b.wal
+	emissive_factor 2.0
+	is_light 1	
+	kind WATER	
+	
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
 # material has NO .mat entry at all: bsp_mesh.c does
@@ -19547,7 +19553,6 @@ textures/tomf/tf_box01_side2:
 textures/tomf/tf_box01_top:
 	texture_base materialDev/textures/tomf/tf_box01_top.tga
 	texture_normals materialDev/textures/tomf/tf_box01_top_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_box02_side:
 	texture_base materialDev/textures/tomf/tf_box02_side.tga
@@ -19557,27 +19562,23 @@ textures/tomf/tf_box02_side:
 textures/tomf/tf_box02_side2:
 	texture_base materialDev/textures/tomf/tf_box02_side2.tga
 	texture_normals materialDev/textures/tomf/tf_box02_side2_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_box02_top:
 	texture_base materialDev/textures/tomf/tf_box02_top.tga
 	texture_normals materialDev/textures/tomf/tf_box02_top_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_box03_base:
 	texture_base materialDev/textures/tomf/tf_box03_base.tga
 	texture_normals materialDev/textures/tomf/tf_box03_base_n.tga
-	metalness_factor 0
+	metalness_factor 1
 
 textures/tomf/tf_box03_side:
 	texture_base materialDev/textures/tomf/tf_box03_side.tga
 	texture_normals materialDev/textures/tomf/tf_box03_side_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_box03_side2:
 	texture_base materialDev/textures/tomf/tf_box03_side2.tga
 	texture_normals materialDev/textures/tomf/tf_box03_side2_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_box03_top:
 	texture_base materialDev/textures/tomf/tf_box03_top.tga
@@ -20421,7 +20422,6 @@ textures/tomf/tf_nat1h:
 textures/tomf/tf_nat2:
 	texture_base materialDev/textures/tomf/tf_nat2.tga
 	texture_normals materialDev/textures/tomf/tf_nat2_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_nat2a:
 	texture_base materialDev/textures/tomf/tf_nat2a.tga

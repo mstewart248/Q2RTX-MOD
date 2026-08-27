@@ -1609,6 +1609,7 @@ textures/e1u1/baselt_2:
 	texture_emissive overrides/baselt_2_light.tga
 	is_light 1
 	base_factor 2.5
+	emissive_factor 2.5
 
 textures/e1u1/baselt_3:
 	texture_base overrides/baselt_3.tga
@@ -1854,7 +1855,7 @@ textures/e1u1/btactmach1:
 	texture_base overrides/btactmach1.tga
 	texture_normals overrides/btactmach1_n.tga
 	texture_emissive overrides/btactmach1_light.tga
-	emissive_factor 0.1
+	emissive_factor 3
 	base_factor 2.5
 
 textures/e1u1/btactmach2:
@@ -9231,6 +9232,7 @@ textures/e2u3/ceil1_2:
 	bump_scale 0.5
 	is_light 1
 	base_factor 2.5
+	emissive_factor 8
 
 textures/e2u3/ceil1_22:
 	texture_base overrides/ceil1_22.tga
@@ -11523,6 +11525,9 @@ textures/e3u1/jaildr2_3:
 textures/e3u1/keysign1:
 	texture_base overrides/keysign1.tga
 	texture_normals overrides/keysign1_n.tga
+	texture_emissive overrides/keysign1_light.tga
+	is_light 1
+	emissive_factor 0.1
 	base_factor 2.5
 
 textures/e3u1/laserbut0:
@@ -12952,14 +12957,15 @@ textures/e3u3/c_met7_2:
 textures/e3u3/c_met8_2:
 	texture_base overrides/c_met8_2.tga
 	texture_normals overrides/c_met8_2_n.tga
-	base_factor 2.5
+	base_factor 2.5	
 
 textures/e3u3/ceil1_1:
 	texture_base overrides/ceil1_1.tga
 	texture_normals overrides/ceil1_1_n.tga
 	texture_emissive overrides/ceil1_1_light.tga
 	is_light 1
-	base_factor 2.5
+	base_factor 10.5
+	emissive_factor 5.0
 
 textures/e3u3/ceil1_13:
 	texture_base overrides/ceil1_13.tga
