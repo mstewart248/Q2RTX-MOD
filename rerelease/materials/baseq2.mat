@@ -984,9 +984,11 @@ models/objects/grenade2/skin:
 
 models/objects/laser/skin:
 	texture_base models/objects/laser/skin.pcx
-	emissive_factor 0.1
+	texture_emissive models/objects/laser/skin.pcx
+	emissive_factor 10.0
 	base_factor 2.5
 	specular_factor 0
+	is_light 1
 
 models/objects/minelite/light1/base:
 	texture_base models/objects/minelite/light1/base.pcx

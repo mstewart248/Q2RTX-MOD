@@ -298,8 +298,7 @@ mmove_t gladiator_move_pain_air = {FRAME_painup1, FRAME_painup7, gladiator_frame
 void gladiator_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum) {
         if ((self->velocity[2] > 100) && (self->monsterinfo.currentmove == &gladiator_move_pain))
@@ -522,8 +521,14 @@ void SP_monster_gladiator(edict_t *self)
 
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
-    VectorSet(self->mins, -32, -32, -24);
-    VectorSet(self->maxs, 32, 32, 64);
+    // [rerelease] 22 units shorter - the tallest single reduction id made to any monster
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, -32, -32, -24);
+        VectorSet(self->maxs, 32, 32, 42);
+    } else {
+        VectorSet(self->mins, -32, -32, -24);
+        VectorSet(self->maxs, 32, 32, 64);
+    }
 
     self->gib_health = -175;
 

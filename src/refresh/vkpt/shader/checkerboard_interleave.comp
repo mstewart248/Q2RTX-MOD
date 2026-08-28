@@ -258,11 +258,48 @@ void combine_fullres_fields(ivec2 opos)
 
     vec3 color;
     ivec2 p_primary;
+    // True when the primary guides describe the REFLECTED surface, so the reflection is
+    // no longer a secondary lobe that RR has to reproject separately - it is the surface.
+    bool reflection_is_primary = false;
 
     if(paths_split)
     {
         color = c_reflect.rgb + c_refract.rgb;
-        p_primary = p_refract;
+
+        // Which layer the DLSS guides describe (pt_dlss_guide_field).
+        //
+        // This path always took the refraction, on the reasoning that it is the
+        // see-through base surface. The cost of that shows on a window: RR is told the
+        // pixel is the wall behind the glass - its albedo, its normal, its roughness,
+        // usually near 1 - while the colour it is handed also carries a mirror-sharp
+        // reflection. RR then filters that reflection as if it were a rough-surface
+        // lobe, and it goes soft and dim. The classic checkerboard path never had this
+        // problem: it picks whichever field is BRIGHTER and hands DLSS that field's
+        // guides (see use_center_mv in the interleave below), so on a window where the
+        // reflection dominates it describes the reflection.
+        //
+        //   0 - refraction always (the behaviour this path shipped with)
+        //   1 - the brighter layer, matching the classic checkerboard interleave
+        //   2 - reflection always
+        //   3 - reflection on GLASS only, refraction on water, slime and the rest
+        //
+        // Mode 3 exists because glass and water want opposite answers. A pane of glass is
+        // a mirror with a little transmission, and describing it by its reflection is what
+        // keeps that reflection sharp. Water is the reverse - you are mostly looking
+        // through it, its normal is animated, and describing it by its reflection makes it
+        // swim in motion. reflect_refract.rgen marks the glass case with
+        // CHECKERBOARD_FLAG_GLASS, because by the time this pass runs the shading surface
+        // and its material id have been replaced by whatever the ray hit.
+        int guide_field = int(global_ubo.pt_dlss_guide_field);
+        bool split_was_glass = (checkerboard_flags & CHECKERBOARD_FLAG_GLASS) != 0;
+        if(guide_field == 2)
+            reflection_is_primary = true;
+        else if(guide_field == 3)
+            reflection_is_primary = split_was_glass;
+        else if(guide_field == 1)
+            reflection_is_primary = luminance(c_reflect.rgb) > luminance(c_refract.rgb);
+
+        p_primary = reflection_is_primary ? p_reflect : p_refract;
     }
     else
     {
@@ -311,6 +348,13 @@ void combine_fullres_fields(ivec2 opos)
     // mirrored image, as with chrome), so the primary motion vector is the correct
     // specular motion vector - handing DLSS a zero here would claim the reflection is
     // pinned to the screen.
+    //
+    // This needs no branch for pt_dlss_guide_field: when the reflection layer supplies
+    // the primary guides, p_primary IS p_reflect, and reflect_refract.rgen writes the
+    // same mirrored vector to both PT_MOTION and PT_REFLECT_MOTION on that field. The
+    // two expressions below are then the same value, which is also the right answer -
+    // the pixel is described as the reflected surface itself, so its specular motion
+    // and its primary motion coincide, exactly as for chrome.
     vec2 reflect_motion = paths_split
         ? imageLoad(IMG_PT_REFLECT_MOTION, p_reflect).xy
         : primary_motion.xy;

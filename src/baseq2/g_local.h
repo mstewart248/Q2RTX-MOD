@@ -35,6 +35,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // protocol bytes that can be directly added to messages
 #define svc_muzzleflash     1
 #define svc_muzzleflash2    2
+// Must match svc_ops_t in inc/common/protocol.h - the game writes these numbers
+// straight onto the wire and never sees the engine's enum.
+#define svc_muzzleflash3    25
 #define svc_temp_entity     3
 #define svc_layout          4
 #define svc_inventory       5
@@ -651,6 +654,22 @@ typedef struct {
     int         trail_framenum;
     vec3_t      last_sighting;
     int         attack_state;
+
+    // ROGUE/rerelease BLINDFIRE: shooting at where the enemy was last known to
+    // be, through a wall, rather than standing there doing nothing.  Only
+    // monsters that opt in with `blindfire` do it.
+    //
+    // blind_fire_target is the aim point - the last sighting, nudged slightly
+    // BACKWARDS along the enemy's velocity, because a player who ran out of
+    // sight is usually still moving the same way.
+    //
+    // blind_fire_delay ACCUMULATES: each blind shot pushes the next one further
+    // out, so a monster that never reacquires you gives up rather than shelling
+    // the wall forever.  It is reset to 0 every time the enemy is actually
+    // seen, and once it passes 20 seconds the monster stops trying.
+    bool        blindfire;
+    int         blind_fire_delay;       // in frames, added to trail_framenum
+    vec3_t      blind_fire_target;
     int         lefty;
     int         idle_framenum;
     int         linkcount;
@@ -998,6 +1017,8 @@ typedef enum {
 // [rerelease] AI range measurement; box-relative for SCALED entities, origin
 // relative otherwise. g_ai.c.
 float M_RangeBetween(edict_t *self, edict_t *other);
+void M_UpdateBlindFireTarget(edict_t *self);
+void M_SetDamageSkin(edict_t *self);
 
 bool face_wall(edict_t *self);
 bool blocked_checkplat(edict_t *self, float dist);

@@ -803,6 +803,12 @@ static void CL_ParseTEntPacket(void)
     }
 }
 
+// The game DLL writes svc_ numbers as bare integers (g_local.h), because it
+// never sees this enum.  If anything is ever INSERTED into svc_ops_t rather
+// than appended, that hard-coded 25 silently becomes a different message and
+// every monster muzzle flash desynchronises the packet.  Catch it here.
+typedef char svc_muzzleflash3_is_25[(svc_muzzleflash3 == 25) ? 1 : -1];
+
 static void CL_ParseMuzzleFlashPacket(int mask)
 {
     int entity, weapon;
@@ -815,6 +821,28 @@ static void CL_ParseMuzzleFlashPacket(int mask)
     mz.silenced = weapon & mask;
     mz.weapon = weapon & ~mask;
     mz.entity = entity;
+    mz.has_dir = false;
+}
+
+// [short entity] [short flashtype] [byte dir] - see svc_muzzleflash3.
+static void CL_ParseMuzzleFlash3Packet(void)
+{
+    int entity, weapon;
+
+    entity = MSG_ReadShort();
+    if (entity < 1 || entity >= MAX_EDICTS)
+        Com_Error(ERR_DROP, "%s: bad entity", __func__);
+
+    weapon = MSG_ReadShort();
+    if (weapon < 0 || weapon >= MAX_MUZZLEFLASHES)
+        Com_Error(ERR_DROP, "%s: bad flash id", __func__);
+
+    MSG_ReadDir(mz.dir);
+
+    mz.silenced = false;
+    mz.weapon = weapon;
+    mz.entity = entity;
+    mz.has_dir = true;
 }
 
 static void CL_ParseStartSoundPacket(void)
@@ -1334,6 +1362,11 @@ badbyte:
             CL_MuzzleFlash2();
             break;
 
+        case svc_muzzleflash3:
+            CL_ParseMuzzleFlash3Packet();
+            CL_MuzzleFlash2();
+            break;
+
         case svc_download:
             CL_ParseDownload(cmd);
             continue;
@@ -1481,6 +1514,10 @@ void CL_SeekDemoMessage(void)
         case svc_muzzleflash:
         case svc_muzzleflash2:
             CL_ParseMuzzleFlashPacket(0);
+            break;
+
+        case svc_muzzleflash3:
+            CL_ParseMuzzleFlash3Packet();
             break;
 
         case svc_frame:

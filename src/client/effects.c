@@ -393,6 +393,17 @@ void CL_MuzzleFlash(void)
 CL_MuzzleFlash2
 ==============
 */
+// Shifts every monster muzzle flash along its own forward axis.  These offsets
+// are calibrated by eye against the model, never derived, so this is the knob
+// for doing that calibration in game rather than through a rebuild each time.
+// 0 is id's own value.
+static cvar_t *cl_monster_flash_nudge;
+
+// Whether the flash is angled along the muzzle rather than along the monster's
+// body.  The two differ whenever a gun arm animates independently of the torso;
+// the medic's hyperblaster is the worst case, because its barrel sweeps.
+static cvar_t *cl_monster_flash_aim;
+
 void CL_MuzzleFlash2(void)
 {
     centity_t   *ent;
@@ -400,15 +411,30 @@ void CL_MuzzleFlash2(void)
     const vec_t *ofs;
     cdlight_t   *dl;
     vec3_t      forward, right;
+    float       fwd_ofs;
     char        soundname[MAX_QPATH];
 
     // locate the origin
     ent = &cl_entities[mz.entity];
     AngleVectors(ent->current.angles, forward, right, NULL);
     ofs = monster_flash_offset[mz.weapon];
-    origin[0] = ent->current.origin[0] + forward[0] * ofs[0] + right[0] * ofs[1];
-    origin[1] = ent->current.origin[1] + forward[1] * ofs[0] + right[1] * ofs[1];
-    origin[2] = ent->current.origin[2] + forward[2] * ofs[0] + right[2] * ofs[1] + ofs[2];
+
+    // The medic's hyperblaster muzzle sweeps with the spinning barrel, so the
+    // flash has to be placed from the firing FRAME rather than from a single
+    // offset - otherwise it hangs in the air while the gun swings under it.
+    if (mz.weapon == MZ2_MEDIC_HYPERBLASTER) {
+        int i = ent->current.frame - MEDIC_FRAME_ATTACK19;
+
+        if (i >= 0 && i < MEDIC_HYPERBLASTER_SHOTS)
+            ofs = medic_hyperblaster_offset[i];
+    }
+    // cl_monster_flash_nudge slides the flash along the muzzle's own forward
+    // axis, for calibrating these offsets in game rather than by rebuilding.
+    fwd_ofs = ofs[0] + cl_monster_flash_nudge->value;
+
+    origin[0] = ent->current.origin[0] + forward[0] * fwd_ofs + right[0] * ofs[1];
+    origin[1] = ent->current.origin[1] + forward[1] * fwd_ofs + right[1] * ofs[1];
+    origin[2] = ent->current.origin[2] + forward[2] * fwd_ofs + right[2] * ofs[1] + ofs[2];
 
     dl = CL_AllocDlight(mz.entity);
     VectorCopy(origin,  dl->origin);
@@ -418,7 +444,26 @@ void CL_MuzzleFlash2(void)
     // Rerelease: a starburst model at the muzzle. Monsters are the easy half -
     // monster_flash_offset[] already gives the exact muzzle, which is what
     // `origin` above is.
-    CL_MuzzleFlashModel(origin, ent->current.angles, 1.0f);
+    // The flash model is a fan facing +X, so it is only right when it points
+    // down the barrel.  ent->current.angles is the monster's BODY, which is a
+    // different thing the moment a gun arm animates independently of the torso
+    // - the medic's hyperblaster swings about 20 degrees across its burst, and
+    // any monster shooting up or down at you is aiming with its arm, not its
+    // feet.
+    //
+    // svc_muzzleflash3 carries the real fire direction, so use it. The body
+    // angles remain the fallback for the old message and for the player.
+    {
+        vec3_t flash_angles;
+
+        if (mz.has_dir && cl_monster_flash_aim->integer) {
+            vectoangles2(mz.dir, flash_angles);
+        } else {
+            VectorCopy(ent->current.angles, flash_angles);
+        }
+
+        CL_MuzzleFlashModel(origin, flash_angles, 1.0f);
+    }
 
     switch (mz.weapon) {
     case MZ2_INFANTRY_MACHINEGUN_1:
@@ -536,6 +581,7 @@ void CL_MuzzleFlash2(void)
         break;
 
     case MZ2_MEDIC_BLASTER_1:
+    case MZ2_MEDIC_HYPERBLASTER:
         VectorSet(dl->color, 1, 1, 0);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("medic/medatck1.wav"), 1, ATTN_NORM, 0);
         break;
@@ -858,15 +904,50 @@ CL_ParticleEffect
 Wall impact puffs
 ===============
 */
+/*
+===============
+CL_PerpendicularBasis
+
+Two unit vectors perpendicular to `dir` and to each other.
+
+This exists because both impact effects were building their spread basis wrong.
+CL_ParticleEffect used a raw world axis as one of the two spread vectors, so it
+was never perpendicular to dir (up to 0.95 parallel), and took an un-normalised
+cross product for the other, which collapses to 0.31 of unit length at some
+angles.  CL_BloodParticleEffect was worse: its two "perpendicular" vectors were
+just permutations of dir's own components, which for some directions are FULLY
+parallel to dir.
+
+The visible result was a spray whose width and lean changed depending on which
+way you happened to be facing - which is the directionality that was missing.
+
+Seeding from whichever axis dir is least aligned with keeps the cross product
+well conditioned: one component of a unit vector is always below 1/sqrt(3), so
+the seed is never closer than 54 degrees to dir.
+===============
+*/
+static void CL_PerpendicularBasis(const vec3_t dir, vec3_t ox, vec3_t oy)
+{
+    vec3_t seed;
+
+    if (fabsf(dir[0]) < 0.577f)
+        VectorSet(seed, 1.0f, 0.0f, 0.0f);
+    else if (fabsf(dir[1]) < 0.577f)
+        VectorSet(seed, 0.0f, 1.0f, 0.0f);
+    else
+        VectorSet(seed, 0.0f, 0.0f, 1.0f);
+
+    CrossProduct(seed, dir, ox);
+    VectorNormalize(ox);
+    CrossProduct(dir, ox, oy);
+    VectorNormalize(oy);
+}
+
 void CL_ParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
 {
-    vec3_t oy;
-    VectorSet(oy, 0.0f, 1.0f, 0.0f);
-    if (fabsf(DotProduct(oy, dir)) > 0.95f)
-        VectorSet(oy, 1.0f, 0.0f, 0.0f);
+    vec3_t ox, oy;
 
-    vec3_t ox;
-    CrossProduct(oy, dir, ox);
+    CL_PerpendicularBasis(dir, ox, oy);
 
     count *= cl_particle_num_factor->value;
     const int spark_count = count / 10;
@@ -1080,8 +1161,11 @@ void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int c
       .length = 350};
     R_AddDecal(&dec);
 
-    float a[3] = {dir[1], -dir[2], dir[0]};
-    float b[3] = {-dir[2], dir[0], dir[1]};
+    // a proper frame around the impact direction - see CL_PerpendicularBasis.
+    // These used to be permutations of dir's own components, which for some
+    // directions pointed straight along dir, collapsing the spray.
+    vec3_t a, b;
+    CL_PerpendicularBasis(dir, a, b);
 
     count *= cl_particle_num_factor->value;
 
@@ -2228,6 +2312,9 @@ void CL_ClearEffects(void)
 void CL_InitEffects(void)
 {
     int i, j;
+
+    cl_monster_flash_nudge = Cvar_Get("cl_monster_flash_nudge", "0", 0);
+    cl_monster_flash_aim = Cvar_Get("cl_monster_flash_aim", "1", 0);
 
     for (i = 0; i < NUMVERTEXNORMALS; i++)
         for (j = 0; j < 3; j++)

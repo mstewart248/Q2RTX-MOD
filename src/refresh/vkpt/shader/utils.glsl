@@ -503,10 +503,26 @@ lava_uv_warp(vec2 uv, float time)
     return uv.xy + sin(fract(uv.yx * 0.5 + time * 20 / 128) * 2 * M_PI) * 0.125;
 }
 
-// applies FLOWING and WARP modifiers to texture coordinates
-void perturb_tex_coord(uint material_id, float time, inout vec2 tex_coord)
+// applies FLOWING, the rerelease's N64 scroll, and WARP to texture coordinates
+void perturb_tex_coord(uint material_id, uint texture_flags, float time, inout vec2 tex_coord)
 {
-    if((material_id & MATERIAL_FLAG_FLOWING) != 0)
+    // The N64 scroll flags take priority over SURF_FLOWING when a face carries
+    // both (mgu4m2's glocrys_1c does), which is how GL_ScrollSpeed() resolves
+    // it in the rerelease-derived renderer: the axis test comes first there and
+    // the flowing/slow speed is simply overwritten.
+    if((texture_flags & (TEXTURE_FLAG_SCROLL_X | TEXTURE_FLAG_SCROLL_Y)) != 0)
+    {
+        float speed = TEXTURE_N64_SCROLL_SPEED;
+
+        if((texture_flags & TEXTURE_FLAG_SCROLL_FLIP) != 0)
+            speed = -speed;
+
+        if((texture_flags & TEXTURE_FLAG_SCROLL_Y) != 0)
+            tex_coord.y += time * speed;
+        else
+            tex_coord.x -= time * speed;
+    }
+    else if((material_id & MATERIAL_FLAG_FLOWING) != 0)
     {
         tex_coord.x -= time * 0.5;
     }

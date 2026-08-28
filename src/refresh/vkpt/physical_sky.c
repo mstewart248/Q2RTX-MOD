@@ -1292,7 +1292,7 @@ void InitialiseSkyCVars()
 	// because it decides which atmosphere is rendered; the two angles do not,
 	// since they only ever write sun_elevation / sun_azimuth, which carry their
 	// own callbacks.
-	sky_procedural_maps = Cvar_Get("sky_procedural_maps", "mgu1m1", CVAR_ARCHIVE);
+	sky_procedural_maps = Cvar_Get("sky_procedural_maps", "mgu1m1;mgu2m1", CVAR_ARCHIVE);
 	sky_procedural_maps->changed = physical_sky_cvar_changed;
 
 	sky_map_sun_elevation = Cvar_Get("sky_map_sun_elevation", "55", CVAR_ARCHIVE);

@@ -216,8 +216,7 @@ void infantry_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     int     n;
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -999,7 +998,8 @@ void SP_monster_infantry(edict_t *self)
     VectorSet(self->maxs, 16, 16, 32);
 
     self->health = 100;
-    self->gib_health = -40;
+    // [rerelease] harder to gib: -65 rather than -40
+    self->gib_health = M_RereleaseGame() ? -65 : -40;
     self->mass = 200;
 
     self->pain = infantry_pain;

@@ -30,9 +30,10 @@ void monster_fire_bullet(edict_t *self, vec3_t start, vec3_t dir, int damage, in
 {
     fire_bullet(self, start, dir, damage, kick, hspread, vspread, MOD_UNKNOWN);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -40,9 +41,10 @@ void monster_fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage
 {
     fire_shotgun(self, start, aimdir, damage, kick, hspread, vspread, count, MOD_UNKNOWN);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(aimdir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -50,9 +52,10 @@ void monster_fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, i
 {
     fire_blaster(self, start, dir, damage, speed, effect, false);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -68,9 +71,10 @@ void monster_fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage,
 {
     fire_flechette(self, start, dir, damage, speed, damage / 2);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -78,18 +82,20 @@ void monster_fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, 
 {
     fire_blaster2(self, start, dir, damage, speed, effect, false);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
 void monster_fire_hyper_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect)
 {
 	fire_blaster(self, start, dir, damage, speed, effect, true);
-	gi.WriteByte(svc_muzzleflash2);
+	gi.WriteByte(svc_muzzleflash3);
 	gi.WriteShort(self - g_edicts);
-	gi.WriteByte(flashtype);
+	gi.WriteShort(flashtype);
+	gi.WriteDir(dir);
 	gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -97,9 +103,10 @@ void monster_fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage,
 {
     fire_ionripper(self, start, dir, damage, speed, effect);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -107,9 +114,10 @@ void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damag
 {
     fire_blueblaster(self, start, dir, damage, speed, effect);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -204,9 +212,10 @@ void monster_fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage
 {
     fire_grenade(self, start, aimdir, damage, speed, 2.5f, damage + 40);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(aimdir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -215,9 +224,10 @@ void monster_fire_heat(edict_t *self, vec3_t start, vec3_t dir, int damage,
 {
     fire_heat(self, start, dir, damage, speed, damage, damage, turn_fraction);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -225,9 +235,10 @@ void monster_fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, in
 {
     fire_rocket(self, start, dir, damage, speed, damage + 20, damage);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -235,9 +246,10 @@ void monster_fire_railgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage
 {
     fire_rail(self, start, aimdir, damage, kick);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(aimdir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -245,9 +257,10 @@ void monster_fire_bfg(edict_t *self, vec3_t start, vec3_t aimdir, int damage, in
 {
     fire_bfg(self, start, aimdir, damage, speed, damage_radius);
 
-    gi.WriteByte(svc_muzzleflash2);
+    gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
-    gi.WriteByte(flashtype);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(aimdir);
     gi.multicast(start, MULTICAST_PVS);
 }
 
@@ -283,6 +296,36 @@ void M_FlyCheck(edict_t *self)
 
     self->think = M_FliesOn;
     self->nextthink = level.framenum + (5 + 10 * random()) * BASE_FRAMERATE;
+}
+
+/*
+=================
+M_SetDamageSkin
+
+[rerelease] monsterinfo.setskin, which all 22 monsters that define it implement
+identically: bit 0 of skinnum is the "bloodied" flag, SET below half health and
+CLEARED above it.
+
+The bit matters. Our pain handlers mostly wrote `skinnum = 1`, which does not
+flag the skin, it REPLACES it - so a monster whose variant lives in the higher
+bits reverts to the base monster's damaged skin as soon as it is hurt. That is a
+real bug on the chick: monster_chick_heat spawns with skinnum 2, ChickRocket
+tests `skinnum > 1` to decide between heat-seeking and plain rockets, so a
+damaged heat chick silently stopped firing homing rockets and rendered as an
+ordinary chick. The soldier, hover, medic and guncmdr already used |= here; the
+rest did not.
+
+Clearing the bit again is rerelease-only: the classic game never restores a
+damage skin, and a medic healing a monster back above half health is the case
+where the difference shows.
+=================
+*/
+void M_SetDamageSkin(edict_t *self)
+{
+    if (self->health < (self->max_health / 2))
+        self->s.skinnum |= 1;
+    else if (M_RereleaseGame())
+        self->s.skinnum &= ~1;
 }
 
 void AttackFinished(edict_t *self, float time)

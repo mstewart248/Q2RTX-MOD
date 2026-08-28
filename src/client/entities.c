@@ -1638,6 +1638,7 @@ void CL_AddEntities(void)
     CL_AddLightStyles();
 	CL_AddTestModel();
     CL_AddDynamicLightsToScene();
+    LE_AddLightsToScene();
     LOC_AddLocationsToScene();
 }
 

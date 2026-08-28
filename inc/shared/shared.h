@@ -703,6 +703,16 @@ COLLISION DETECTION
 
 #define SURF_ALPHATEST  0x02000000  // used by kmquake2
 
+// [Sam-KEX] Surface flags added by the Quake II rerelease (game.h surfflags_t).
+// These are per-face, not per-material: the same texture can be static on one
+// face and scrolling on another (see tomf/tf_blood01 in mgu1m1/2/3/5).
+#define SURF_N64_UV             0x10000000  // stretches texture UVs (x0.5 on both axes)
+#define SURF_N64_SCROLL_X       0x20000000  // texture scroll along the S axis
+#define SURF_N64_SCROLL_Y       0x40000000  // texture scroll along the T axis
+#define SURF_N64_SCROLL_FLIP    0x80000000  // flip the scroll direction
+
+#define SURF_N64_SCROLL_MASK    (SURF_N64_SCROLL_X | SURF_N64_SCROLL_Y | SURF_N64_SCROLL_FLIP)
+
 
 
 // content masks
@@ -1114,9 +1124,37 @@ enum {
     // Rerelease: monster_arachnid's railgun, level and angled up. APPENDED.
     MZ2_ARACHNID_RAIL1, MZ2_ARACHNID_RAIL2,
     MZ2_ARACHNID_RAIL_UP1, MZ2_ARACHNID_RAIL_UP2,
+
+    // Rerelease: the medic's HYPERBLASTER, which is a different muzzle from its
+    // blaster - the arm is in a different pose for the burst, about 9 units
+    // further back.  12 of the medic's 14 shots come out of here, so using the
+    // blaster offset for them puts the flash out in front of the model.
+    //
+    // id gives this twelve offsets that sweep around the spinning barrel, and
+    // its MEDIC_HYPERBLASTER1 and MEDIC_HYPERBLASTER2 tables are byte
+    // identical.  We take the mean of the twelve as a single id instead: the
+    // sweep spans about 4 units, and MZ2 ids are nearly exhausted (241 of 256,
+    // one wire byte, never insertable mid-list).  APPENDED.
+    MZ2_MEDIC_HYPERBLASTER,
 };
 
-extern const vec3_t monster_flash_offset[256];
+// Size of monster_flash_offset[], and the ceiling on MZ2_ ids.  svc_muzzleflash2
+// sent the id as one byte, which is why this is 256; svc_muzzleflash3 sends a
+// short, so this can be raised if the MZ2_ list ever needs it.
+#define MAX_MUZZLEFLASHES   256
+
+extern const vec3_t monster_flash_offset[MAX_MUZZLEFLASHES];
+
+// The medic's hyperblaster muzzle SWEEPS as the barrel spins, so one static
+// offset cannot follow it - the flash sits still while the gun moves.  id gives
+// the twelve shots twelve MZ2 ids; we carry one id and index this table by the
+// firing frame instead, because MZ2 ids are a single wire byte and nearly gone.
+//
+// Indexed by (s.frame - MEDIC_FRAME_ATTACK19), 0..11.  Both the game (shot
+// origin) and the client (flash + dlight) index it, which is why it lives here.
+#define MEDIC_FRAME_ATTACK19    195
+#define MEDIC_HYPERBLASTER_SHOTS 12
+extern const vec3_t medic_hyperblaster_offset[MEDIC_HYPERBLASTER_SHOTS];
 
 
 // temp entity events

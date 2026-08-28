@@ -715,6 +715,7 @@ void CL_ClearState(void)
     CL_ClearEffects();
     CL_ClearTEnts();
     LOC_FreeLocations();
+    LE_FreeLights();
     CL_FreeDynamicLights();
     CL_FreeMapFog();
 
@@ -1725,6 +1726,7 @@ void CL_Begin(void)
     CL_LoadState(LOAD_SOUNDS);
     CL_RegisterSounds();
     LOC_LoadLocations();
+    LE_LoadLights();
     CL_LoadDynamicLights();
     CL_LoadMapFog();
     CL_LoadState(LOAD_NONE);
@@ -2706,6 +2708,7 @@ static void CL_InitLocal(void)
     CL_RegisterInput();
     CL_InitDemos();
     LOC_Init();
+    LE_Init();
     CL_InitDynamicLights();
     CL_InitMapFog();
     CL_InitAscii();

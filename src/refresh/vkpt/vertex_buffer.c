@@ -856,6 +856,7 @@ stage_mesh_primitives(uint8_t* staging_data, int* p_write_ptr, float** p_vertex_
 
 			dst->emissive_and_alpha = 0x3c003c00; // (1.0f, 1.0f)
 			dst->cluster = -1;
+			dst->texture_flags = 0; // staging memory is not cleared; models never scroll
 
 			++write_ptr;
 		}

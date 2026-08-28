@@ -98,6 +98,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_restir_permutation, 1) /* ReSTIR permutation sampling, 0 or 1 */ \
 	UBO_CVAR_DO(pt_restir_pairwise, 0) /* ReSTIR spatial reuse weighting: 0 legacy count-weighted sum, 1 pairwise MIS */ \
 	UBO_CVAR_DO(pt_restir_boiling, 0) /* ReSTIR boiling filter threshold as a multiple of the local mean, 0 disables */ \
+	UBO_CVAR_DO(pt_restir_m_clamp, 32) /* ReSTIR temporal history length: how many samples a reused reservoir claims to carry. 32 was hard-coded; lower trades noise for less lag and streaking */ \
 	UBO_CVAR_DO(pt_restir_debug, 0) /* ReSTIR debug view, same numbering the pt_restir 10..26 views used, 0 disables */ \
 	UBO_CVAR_DO(pt_glass_secondary_stochastic, 0) /* secondary glass Fresnel: 0 most-probable path, 1 importance sampled, 2 clamped like reference mode */ \
 	UBO_CVAR_DO(pt_roughness_override, -1) /* overrides roughness of all materials if non-negative, [0..1] */ \
@@ -115,6 +116,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_dlss_mirror_guides, 1) /* chrome models (the viewer weapon) hand DLSS-RR the mirror's own normal/albedo/roughness instead of the reflected surface's; 0 restores the old behaviour */ \
 	UBO_CVAR_DO(pt_dlss_linear_z, 1) /* DLSS depth is view-space Z (matches the motion vectors, RR guide 3.4.7); 0 restores radial distance */ \
 	UBO_CVAR_DO(pt_dlss_sky_mv_jitter, 1) /* anchor sky/reflected-sky motion vectors at the jittered sample position like geometry; 0 restores the pixel-centre anchor */ \
+	UBO_CVAR_DO(pt_dlss_guide_field, 3) /* split-field glass/water: which layer the DLSS guides describe. 0 refraction (base surface), 1 whichever layer is brighter (what the classic checkerboard interleave does), 2 reflection, 3 reflection on GLASS only - water and slime keep the refraction */ \
 	UBO_CVAR_DO(pt_water_density, 0.5) /* scale for light extinction in water and other media, [0..inf) */ \
 	UBO_CVAR_DO(tm_debug, 0) /* switch to show the histogram (1) or tonemapping curve (2) */ \
 	UBO_CVAR_DO(tm_dyn_range_stops, 7.0) /* Effective display dynamic range in linear stops = log2((max+refl)/(darkest+refl)) (eqn. 6), (-inf..0) */ \
@@ -150,6 +152,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_sky_brightness, 1.0) /* brightness of the SKY AS SEEN; does NOT change how much light it casts */ \
 	UBO_CVAR_DO(pt_fog_density_max, 64.0) /* ceiling on map-fog density in getDensity; was a hard-coded 4.0, which no map reaches at cl_fog_scale 1 */ \
 	UBO_CVAR_DO(pt_fog_eccentricity, -1.0) /* map-fog scattering directionality, 0 = even in all directions .. 0.95 = tight shafts; -1 follows gr_eccentricity */ \
+	UBO_CVAR_DO(pt_fog_ambient, 0.0) /* fraction of the sun's radiance that lights map fog IN SHADOW, isotropically; 0 = the hard shadow-map cliff this always had */ \
+	UBO_CVAR_DO(pt_fog_extinction, 0.0) /* real extinction per unit density for map fog, so a long ray SATURATES instead of accumulating without bound; 0 = the legacy flat 0.0001 */ \
+	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ \
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *

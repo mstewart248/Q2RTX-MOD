@@ -136,6 +136,26 @@ typedef enum {
     svc_gamestate, // q2pro specific, means svc_playerupdate in r1q2
     svc_setting,
 
+    // Q2RTX: a monster muzzle flash that also carries the direction the shot
+    // was fired in, and a SHORT flash id instead of a byte.
+    //
+    // svc_muzzleflash2 tells the client only which monster and which muzzle,
+    // so the client had to orient the flash from the monster's BODY angles -
+    // wrong for any monster whose gun arm animates separately from its torso.
+    // The direction is the thing that was missing and could not be recovered.
+    //
+    // A NEW op rather than a wider svc_muzzleflash2 on purpose: an extra byte
+    // appended to an existing message desynchronises the rest of the packet if
+    // the reader does not expect it, which is a silent, spectacular failure if
+    // the exe and the game DLL are ever built out of step. An unknown op is a
+    // loud "illegible server message" instead.
+    //
+    // id hit the same 256-id ceiling and did the same thing - their game.h has
+    // svc_muzzleflash3 "muzzleflashes, but ushort id".
+    //
+    // [short entity] [short flashtype] [byte dir]
+    svc_muzzleflash3,
+
     svc_num_types
 } svc_ops_t;
 

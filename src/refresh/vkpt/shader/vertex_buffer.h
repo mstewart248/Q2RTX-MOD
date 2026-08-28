@@ -75,7 +75,7 @@ BEGIN_SHADER_STRUCT( VboPrimitive )
 	int cluster;
 
 	vec3 pos2;
-	uint unused;
+	uint texture_flags;   // TEXTURE_FLAG_* - per-face, unlike material_id
 
 	uvec3 normals;
 	uint instance;
@@ -256,6 +256,7 @@ struct Triangle
 	mat3x2 tex_coords;
 	mat3x3 tangents;
 	uint   material_id;
+	uint   texture_flags;
 	int    cluster;
 	uint   instance_index;
 	uint   instance_prim;
@@ -290,6 +291,7 @@ load_triangle(uint buffer_idx, uint prim_id)
 	t.tex_coords[2] = prim.uv2;
 
 	t.material_id = prim.material_id;
+	t.texture_flags = prim.texture_flags;
 	t.cluster = prim.cluster;
 	t.instance_index = prim.instance;
 	t.instance_prim = 0;
@@ -387,6 +389,7 @@ store_triangle(Triangle t, uint buffer_idx, uint prim_id)
 	prim.uv2 = t.tex_coords[2];
 
 	prim.material_id = t.material_id;
+	prim.texture_flags = t.texture_flags;
 	prim.cluster = t.cluster;
 	prim.instance = t.instance_index;
 	prim.emissive_and_alpha = packHalf2x16(vec2(t.emissive_factor, t.alpha));

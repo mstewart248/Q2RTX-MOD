@@ -29,6 +29,23 @@ static byte     is_silenced;
 void weapon_grenade_fire(edict_t *ent, bool held);
 
 
+/*
+=================
+WeaponAimFix
+
+Whether a shot fired from an offset muzzle gets re-aimed at whatever the
+crosshair is actually on.  The rerelease does this UNCONDITIONALLY - its
+P_ProjectSource always traces eye -> 8192 and points the shot at the hit - so
+there is no cvar to honour in that game and no menu choice to make.  Outside it
+this stays the archived aimfix cvar, default 0, so baseq2 keeps stock Q2RTX's
+classic close-range parallax miss.
+=================
+*/
+static bool WeaponAimFix(void)
+{
+    return M_RereleaseGame() || aimfix->integer;
+}
+
 static void P_ProjectSource(edict_t* ent, vec3_t point, vec3_t distance, vec3_t forward, vec3_t right, vec3_t result)
 {
     vec3_t  _distance;
@@ -42,15 +59,36 @@ static void P_ProjectSource(edict_t* ent, vec3_t point, vec3_t distance, vec3_t 
 
     // Aim fix from Yamagi Quake 2.
     // Now the projectile hits exactly where the scope is pointing.
-    if (aimfix->integer)
+    if (WeaponAimFix())
     {
         vec3_t start, end;
+        int    mask = MASK_SHOT;
+
         VectorSet(start, ent->s.origin[0], ent->s.origin[1], ent->s.origin[2] + (float)ent->viewheight);
         VectorMA(start, 8192, forward, end);
 
-        trace_t	tr = gi.trace(start, NULL, NULL, end, ent, MASK_SHOT);
+        // [rerelease] id keeps corpses out of the convergence trace, so a body
+        // on the floor cannot steal the aim point from the wall behind it.
+        if (M_RereleaseGame())
+            mask &= ~CONTENTS_DEADMONSTER;
+
+        trace_t	tr = gi.trace(start, NULL, NULL, end, ent, mask);
         if (tr.fraction < 1)
         {
+            // [rerelease] id: "if the point was a monster & close to us, use raw
+            // forward so railgun pierces properly".  Converging on something 20
+            // units away swings the shot far enough off axis to miss everything
+            // lined up behind it.
+            //
+            // id tests CONTENTS_MONSTER|CONTENTS_PLAYER.  This tree has no
+            // CONTENTS_PLAYER - the 1997 server gives players CONTENTS_MONSTER
+            // too - so ask the touched entity directly, which covers both and
+            // does not depend on what the box hull reports.
+            if (M_RereleaseGame() && tr.ent
+                && (tr.ent->client || (tr.ent->svflags & SVF_MONSTER))
+                && (tr.fraction * 8192.0f) < 128.0f)
+                return;
+
             VectorSubtract(tr.endpos, result, forward);
             VectorNormalize(forward);
         }
@@ -587,12 +625,38 @@ void weapon_grenade_fire(edict_t *ent, bool held)
     radius = damage + 40;
     damage *= damage_multiplier;
 
-    VectorSet(offset, 8, 8, ent->viewheight - 8);
-    AngleVectors(ent->client->v_angle, forward, right, NULL);
+    if (M_RereleaseGame()) {
+        vec3_t  angles;
+
+        // [rerelease] id: "kill sideways angle on grenades" and "limit upwards
+        // angle so you don't throw behind you".  PITCH is negative looking up,
+        // so max() is the upward clamp.
+        VectorCopy(ent->client->v_angle, angles);
+        if (angles[PITCH] < -62.5f)
+            angles[PITCH] = -62.5f;
+
+        VectorSet(offset, 2, 0, ent->viewheight - 14);
+        AngleVectors(angles, forward, right, NULL);
+    } else {
+        VectorSet(offset, 8, 8, ent->viewheight - 8);
+        AngleVectors(ent->client->v_angle, forward, right, NULL);
+    }
     P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
 
     timer = (ent->client->grenade_framenum - level.framenum) * FRAMETIME;
     speed = GRENADE_MINSPEED + (GRENADE_TIMER - timer) * ((GRENADE_MAXSPEED - GRENADE_MINSPEED) / GRENADE_TIMER);
+
+    // [rerelease] id clamps the charge, and a grenade let go by a corpse always
+    // drops at MINSPEED.  Without the clamp, holding past the fuse keeps
+    // scaling the throw past GRENADE_MAXSPEED - the rogue tesla below has
+    // carried this same guard since 1998.
+    if (M_RereleaseGame()) {
+        if (ent->health <= 0)
+            speed = GRENADE_MINSPEED;
+        else if (speed > GRENADE_MAXSPEED)
+            speed = GRENADE_MAXSPEED;
+    }
+
     fire_grenade2(ent, start, forward, damage, speed, timer, radius, held);
 
     if (!((int)dmflags->value & DF_INFINITE_AMMO))
@@ -724,8 +788,21 @@ void weapon_grenadelauncher_fire(edict_t *ent)
     radius = damage + 40;
     damage *= damage_multiplier;
 
-    VectorSet(offset, 8, 8, ent->viewheight - 8);
-    AngleVectors(ent->client->v_angle, forward, right, NULL);
+    if (M_RereleaseGame()) {
+        vec3_t  angles;
+
+        // [rerelease] same two changes as the hand grenade: centre line, and a
+        // 62.5 degree cap on how far up the launcher can be aimed.
+        VectorCopy(ent->client->v_angle, angles);
+        if (angles[PITCH] < -62.5f)
+            angles[PITCH] = -62.5f;
+
+        VectorSet(offset, 8, 0, ent->viewheight - 8);
+        AngleVectors(angles, forward, right, NULL);
+    } else {
+        VectorSet(offset, 8, 8, ent->viewheight - 8);
+        AngleVectors(ent->client->v_angle, forward, right, NULL);
+    }
     P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
 
     VectorScale(forward, -2, ent->client->kick_origin);
@@ -831,7 +908,12 @@ void Blaster_Fire(edict_t *ent, const vec3_t g_offset, int damage, bool hyper, i
     VectorScale(forward, -2, ent->client->kick_origin);
     ent->client->kick_angles[0] = -1;
 
-    fire_blaster(ent, start, forward, damage, 1000, effect, hyper);
+    // [rerelease] id: "let the regular blaster projectiles travel a bit faster
+    // because it is a completely useless gun".  The hyperblaster keeps 1000.
+    if (M_RereleaseGame() && !hyper)
+        fire_blaster(ent, start, forward, damage, 1500, effect, hyper);
+    else
+        fire_blaster(ent, start, forward, damage, 1000, effect, hyper);
 
     // send muzzle flash
     gi.WriteByte(svc_muzzleflash);
@@ -852,7 +934,9 @@ void Weapon_Blaster_Fire(edict_t *ent)
 {
     int     damage;
 
-    if (deathmatch->value)
+    // [rerelease] id: "give the blaster 15 across the board instead of just in
+    // dm".  The classic SP blaster does 10.
+    if (M_RereleaseGame() || deathmatch->value)
         damage = 15;
     else
         damage = 10;
@@ -982,19 +1066,39 @@ void Machinegun_Fire(edict_t *ent)
         ent->client->kick_angles[i] = crandom() * 0.7f;
     }
     ent->client->kick_origin[0] = crandom() * 0.35f;
-    ent->client->kick_angles[0] = ent->client->machinegun_shots * -1.5f;
 
-    // raise the gun as it is firing
-    if (!deathmatch->value) {
-        ent->client->machinegun_shots++;
-        if (ent->client->machinegun_shots > 9)
-            ent->client->machinegun_shots = 9;
+    // [rerelease] id COMMENTED OUT the climbing recoil - "disabled as this is a
+    // bit hard to do with high tickrate, but it also just sucks in general" -
+    // leaving pitch on the same +/-0.7 random jitter as the other two axes.
+    // This is not cosmetic here: the shot is aimed along v_angle + kick_angles,
+    // so the 1997 ramp walks the actual aim up to 13.5 degrees off target over
+    // nine shots, and only in single player.
+    if (M_RereleaseGame()) {
+        ent->client->kick_angles[0] = crandom() * 0.7f;
+    } else {
+        ent->client->kick_angles[0] = ent->client->machinegun_shots * -1.5f;
+
+        // raise the gun as it is firing
+        if (!deathmatch->value) {
+            ent->client->machinegun_shots++;
+            if (ent->client->machinegun_shots > 9)
+                ent->client->machinegun_shots = 9;
+        }
     }
 
     // get start / end positions
-    VectorAdd(ent->client->v_angle, ent->client->kick_angles, angles);
+    //
+    // [rerelease] id aims along the RAW v_angle and keeps the kick on the view
+    // only (its kick goes through P_AddWeaponKick).  Folding kick_angles into
+    // the aim is the 1997 behaviour that made the ramp above bite.
+    if (M_RereleaseGame())
+        VectorCopy(ent->client->v_angle, angles);
+    else
+        VectorAdd(ent->client->v_angle, ent->client->kick_angles, angles);
     AngleVectors(angles, forward, right, NULL);
-    VectorSet(offset, 0, 8, ent->viewheight - 8);
+    // [rerelease] "Paril: kill sideways angle on hitscan" - id fires the
+    // hitscan weapons from the centre line, not 8 units off to the hand side.
+    VectorSet(offset, 0, M_RereleaseGame() ? 0 : 8, ent->viewheight - 8);
     P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
     fire_bullet(ent, start, forward, damage, kick, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD, MOD_MACHINEGUN);
 
@@ -1161,7 +1265,8 @@ void weapon_shotgun_fire(edict_t *ent)
     VectorScale(forward, -2, ent->client->kick_origin);
     ent->client->kick_angles[0] = -2;
 
-    VectorSet(offset, 0, 8,  ent->viewheight - 8);
+    // [rerelease] "Paril: kill sideways angle on hitscan"
+    VectorSet(offset, 0, M_RereleaseGame() ? 0 : 8,  ent->viewheight - 8);
     P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
 
     damage *= damage_multiplier;
@@ -1208,7 +1313,8 @@ void weapon_supershotgun_fire(edict_t *ent)
     VectorScale(forward, -2, ent->client->kick_origin);
     ent->client->kick_angles[0] = -2;
 
-    VectorSet(offset, 0, 8,  ent->viewheight - 8);
+    // [rerelease] "Paril: kill sideways angle on hitscan"
+    VectorSet(offset, 0, M_RereleaseGame() ? 0 : 8,  ent->viewheight - 8);
     P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
 
     damage *= damage_multiplier;
@@ -1219,32 +1325,32 @@ void weapon_supershotgun_fire(edict_t *ent)
     v[ROLL]  = ent->client->v_angle[ROLL];
     AngleVectors(v, forward, NULL, NULL);
 
-    if (aimfix->integer)
+    if (WeaponAimFix())
     {
         AngleVectors(v, forward, right, NULL);
 
         VectorScale(forward, -2, ent->client->kick_origin);
         ent->client->kick_angles[0] = -2;
 
-        VectorSet(offset, 0, 8, ent->viewheight - 8);
+        VectorSet(offset, 0, M_RereleaseGame() ? 0 : 8, ent->viewheight - 8);
         P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
     }
-	
+
     fire_shotgun(ent, start, forward, damage, kick, DEFAULT_SHOTGUN_HSPREAD, DEFAULT_SHOTGUN_VSPREAD, DEFAULT_SSHOTGUN_COUNT / 2, MOD_SSHOTGUN);
     v[YAW]   = ent->client->v_angle[YAW] + 5;
     AngleVectors(v, forward, NULL, NULL);
 
-    if (aimfix->integer)
+    if (WeaponAimFix())
     {
         AngleVectors(v, forward, right, NULL);
 
         VectorScale(forward, -2, ent->client->kick_origin);
         ent->client->kick_angles[0] = -2;
 
-        VectorSet(offset, 0, 8, ent->viewheight - 8);
+        VectorSet(offset, 0, M_RereleaseGame() ? 0 : 8, ent->viewheight - 8);
         P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
     }
-	
+
     fire_shotgun(ent, start, forward, damage, kick, DEFAULT_SHOTGUN_HSPREAD, DEFAULT_SHOTGUN_VSPREAD, DEFAULT_SSHOTGUN_COUNT / 2, MOD_SSHOTGUN);
 
     // send muzzle flash
@@ -1286,7 +1392,9 @@ void weapon_railgun_fire(edict_t *ent)
     int         damage;
     int         kick;
 
-    if (deathmatch->value) {
+    // [rerelease] id deleted the SP/DM split and kept the lower pair
+    // everywhere, so the campaign railgun is 100/200, not 150/250.
+    if (M_RereleaseGame() || deathmatch->value) {
         // normal damage is too extreme in dm
         damage = 100;
         kick = 200;

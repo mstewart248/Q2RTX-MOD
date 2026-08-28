@@ -1021,7 +1021,7 @@ get_material(
 {
 	MaterialInfo minfo = get_material_info(triangle.material_id);
 
-	perturb_tex_coord(triangle.material_id, global_ubo.time, tex_coord);
+	perturb_tex_coord(triangle.material_id, triangle.texture_flags, global_ubo.time, tex_coord);
 
 	vec4 image1 = vec4(1);
 	if (minfo.base_texture != 0)

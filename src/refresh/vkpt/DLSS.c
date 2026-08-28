@@ -27,6 +27,7 @@ cvar_t* cvar_pt_dlss_split_fields = NULL;
 cvar_t* cvar_pt_dlss_bypass_denoiser = NULL;
 cvar_t* cvar_pt_dlss_field_res = NULL;
 cvar_t* cvar_pt_dlss_diff_hitdist = NULL;
+cvar_t* cvar_pt_dlss_reflected_albedo = NULL;
 qboolean recreateSwapChain = qfalse;
 qboolean dlssModeChanged = qfalse;
 extern cvar_t* scr_viewsize;
@@ -60,6 +61,15 @@ void InitDLSSCvars()
     // Registered here rather than lazily at eval time so it exists from startup and
     // shows up in cvarlist.
     cvar_pt_dlss_diff_hitdist = Cvar_Get("pt_dlss_diff_hitdist", "1", CVAR_ARCHIVE);
+
+    // Hand DLSS-RR the reflected albedo guide - the base colour of the surface seen IN
+    // the reflection, so RR can demodulate the reflected radiance before it filters and
+    // re-modulate afterwards, instead of blurring the reflected texture itself.
+    // IMG_PT_REFLECTED_ALBEDO has been written by reflect_refract.rgen, cleared every
+    // frame and carried all the way through the combine pass since the split-field work,
+    // but pInReflectedAlbedo was never set, so RR never saw it. Default 0 because it has
+    // not been judged by eye yet: turn it on for an A/B against a mirror or a window.
+    cvar_pt_dlss_reflected_albedo = Cvar_Get("pt_dlss_reflected_albedo", "0", CVAR_ARCHIVE);
 
     // Resolution of the reflection/refraction layers while split fields are active.
     //   1 - both layers at full internal render resolution
@@ -764,6 +774,10 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     const bool useDiffuseHitDist = (cvar_pt_dlss_diff_hitdist != NULL)
         && cvar_pt_dlss_diff_hitdist->integer != 0;
 
+    const bool useReflectedAlbedo = (cvar_pt_dlss_reflected_albedo != NULL)
+        && cvar_pt_dlss_reflected_albedo->integer != 0;
+    NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+
     if (!denoiseMode) {
         NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
             .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
@@ -809,6 +823,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 			.pInSpecularAlbedo = &specularAlbedo,
 			.pInDiffuseAlbedo = &albedo,
             .pInRoughness = &roughness,
+            .pInReflectedAlbedo = useReflectedAlbedo ? &reflectedAlbedo : NULL,
+            .InReflectedAlbedoSubrectBase = sourceOffset,
             .pInColorBeforeTransparency = &beforeTransparent,
             .InColorBeforeTransparencySubrectBase = sourceOffset
         };

@@ -272,8 +272,7 @@ mmove_t gunner_move_pain1 = {FRAME_pain101, FRAME_pain118, gunner_frames_pain1, 
 
 void gunner_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -294,6 +293,10 @@ void gunner_pain(edict_t *self, edict_t *other, float kick, int damage)
         self->monsterinfo.currentmove = &gunner_move_pain2;
     else
         self->monsterinfo.currentmove = &gunner_move_pain1;
+
+    // [rerelease] being hit ends a blind volley - it also means the gunner now
+    // has a much better idea where you are than the remembered position
+    self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
 }
 
 void gunner_dead(edict_t *self)
@@ -584,6 +587,26 @@ void GunnerFire(edict_t *self)
     monster_fire_bullet(self, start, aim, 3, 4, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD, flash_number);
 }
 
+/*
+=================
+gunner_blind_check
+
+[rerelease] Runs on the first frame of either grenade animation.  AI_MANUAL_STEERING
+is how gunner_attack signals "this volley is a blind one"; the generic AI has
+been told to leave ideal_yaw alone while it is set, so this is what actually
+points the gunner at the remembered position.
+=================
+*/
+void gunner_blind_check(edict_t *self)
+{
+    vec3_t  aim;
+
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+        VectorSubtract(self->monsterinfo.blind_fire_target, self->s.origin, aim);
+        self->ideal_yaw = vectoyaw(aim);
+    }
+}
+
 void GunnerGrenade(edict_t *self)
 {
     vec3_t  start;
@@ -591,6 +614,7 @@ void GunnerGrenade(edict_t *self)
     vec3_t  aim;
     int     flash_number;
     float   spread;
+    bool    blindfire = (self->monsterinfo.aiflags & AI_MANUAL_STEERING) != 0;
 
     // attak105/108/111/114 are the classic throw; attak309/312/315/318 are the
     // same four shots in the rerelease's second, front-on throwing animation
@@ -604,6 +628,8 @@ void GunnerGrenade(edict_t *self)
         spread = 0.05f;
         flash_number = MZ2_GUNNER_GRENADE_3;
     } else { // attak114, or attak318
+        // the last grenade of the volley ends the blind volley with it
+        self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
         spread = 0.10f;
         flash_number = MZ2_GUNNER_GRENADE_4;
     }
@@ -617,6 +643,20 @@ void GunnerGrenade(edict_t *self)
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
     VectorCopy(forward, aim);
+
+    // [rerelease] a blind volley lobs at the remembered position rather than
+    // straight ahead - the yaw is already there via gunner_blind_check, but the
+    // pitch has to come from the target or every blind grenade flies level
+    if (blindfire && !visible(self, self->enemy)) {
+        vec3_t  blind_aim;
+
+        if (VectorEmpty(self->monsterinfo.blind_fire_target))
+            return;
+
+        VectorSubtract(self->monsterinfo.blind_fire_target, start, blind_aim);
+        if (VectorNormalize(blind_aim) > 0.0f)
+            VectorCopy(blind_aim, aim);
+    }
     // the classic code never implemented the fan its own comment asked for
     // ("FIXME: do a spread ... around forward"); the rerelease does
     if (M_RereleaseGame())
@@ -670,7 +710,7 @@ mframe_t gunner_frames_endfire_chain [] = {
 mmove_t gunner_move_endfire_chain = {FRAME_attak224, FRAME_attak230, gunner_frames_endfire_chain, gunner_run};
 
 mframe_t gunner_frames_attack_grenade [] = {
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, gunner_blind_check },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
@@ -698,7 +738,7 @@ mmove_t gunner_move_attack_grenade = {FRAME_attak101, FRAME_attak121, gunner_fra
 // Same four-shot cadence as attack_grenade, thrown from a front-on pose.
 // Only reachable behind M_RereleaseAnims() - the classic model has no such frames.
 mframe_t gunner_frames_attack_grenade2 [] = {
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, gunner_blind_check },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
@@ -723,6 +763,46 @@ mmove_t gunner_move_attack_grenade2 = {FRAME_attak305, FRAME_attak324, gunner_fr
 
 void gunner_attack(edict_t *self)
 {
+    // [rerelease] Blind fire: M_CheckAttack put us in AS_BLIND because the
+    // enemy is out of sight but recently seen.  The chance ladder falls off
+    // with the accumulated delay, so the first blind shot after losing someone
+    // is a certainty and the fifth is a long shot.
+    if (M_RereleaseGame() && self->monsterinfo.attack_state == AS_BLIND) {
+        float   chance;
+
+        if (self->timestamp > level.framenum)
+            return;
+
+        if (self->monsterinfo.blind_fire_delay < 1.0f * BASE_FRAMERATE)
+            chance = 1.0f;
+        else if (self->monsterinfo.blind_fire_delay < 7.5f * BASE_FRAMERATE)
+            chance = 0.4f;
+        else
+            chance = 0.1f;
+
+        // minimum of 4.1 seconds, plus 0-3, before the next attempt
+        self->monsterinfo.blind_fire_delay += (4.1f + 3.0f * random()) * BASE_FRAMERATE;
+
+        // never shoot at the world origin
+        if (VectorEmpty(self->monsterinfo.blind_fire_target))
+            return;
+
+        if (random() > chance)
+            return;
+
+        // doubles as the "this volley is blind" signal to GunnerGrenade
+        self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
+
+        if (M_RereleaseAnims() && random() < 0.5f)
+            self->monsterinfo.currentmove = &gunner_move_attack_grenade2;
+        else
+            self->monsterinfo.currentmove = &gunner_move_attack_grenade;
+
+        self->monsterinfo.attack_finished = level.framenum + 2.0f * random() * BASE_FRAMERATE;
+        self->timestamp = level.framenum + (2.0f + random()) * BASE_FRAMERATE;
+        return;
+    }
+
     if (range(self, self->enemy) == RANGE_MELEE) {
         self->monsterinfo.currentmove = &gunner_move_attack_chain;
     } else {
@@ -879,8 +959,14 @@ void SP_monster_gunner(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/gunner/tris.md2");
-    VectorSet(self->mins, -16, -16, -24);
-    VectorSet(self->maxs, 16, 16, 32);
+    // [rerelease] 4 units TALLER - the one monster id grew rather than shrank
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, -16, -16, -24);
+        VectorSet(self->maxs, 16, 16, 36);
+    } else {
+        VectorSet(self->mins, -16, -16, -24);
+        VectorSet(self->maxs, 16, 16, 32);
+    }
 
     self->health = 175;
     self->gib_health = -70;
@@ -915,6 +1001,10 @@ void SP_monster_gunner(edict_t *self)
         self->monsterinfo.drop_height = 192;
         self->monsterinfo.jump_height = 40;
     }
+
+    // [rerelease] the gunner lobs grenades at your last known position rather
+    // than waiting for you to step back into the doorway
+    self->monsterinfo.blindfire = true;
 
     walkmonster_start(self);
 }

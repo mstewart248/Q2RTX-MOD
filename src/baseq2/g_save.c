@@ -266,6 +266,13 @@ static const save_field_t entityfields[] = {
     FT(monsterinfo.trail_framenum),
     V(monsterinfo.last_sighting),
     I(monsterinfo.attack_state),
+
+    // ROGUE/rerelease blindfire.  blind_fire_delay is a DURATION in frames, not
+    // an absolute frame number, so it takes I() rather than FT() - FT rebases
+    // against level time on load, which would corrupt a relative value.
+    O(monsterinfo.blindfire),
+    I(monsterinfo.blind_fire_delay),
+    V(monsterinfo.blind_fire_target),
     I(monsterinfo.lefty),
     FT(monsterinfo.idle_framenum),
     I(monsterinfo.linkcount),
@@ -904,7 +911,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    48
+#define SAVE_VERSION    52
 
 /*
 ============

@@ -49,6 +49,7 @@ void main()
 	ivec2 i_position = ivec2(gl_GlobalInvocationID.xy);
 	vec4 result = vec4(0.0);
 	vec4 fallbackResult = vec4(0.0);
+	float fallbackCount = 0;
 	float weightSum = 0;
 	float referenceViewDepth = texelFetch(TEX_PT_VIEW_DEPTH_A, i_position.xy, 0).r;
 	ivec2 lowResOrigin = ivec2(i_position.xy) >> 1;
@@ -79,6 +80,7 @@ void main()
 
 			result.rgba += color.rgba * weight;
 			fallbackResult.rgba += color.rgba;
+			fallbackCount += 1;
 			weightSum += weight;
 		}
 	}
@@ -91,7 +93,14 @@ void main()
 	else
 	{
 		// No relevant low-res pixels found - use non-bilateral spatial blur
-		result.rgba = fallbackResult.rgba / 16.0;
+		result.rgb = fallbackResult.rgb / 16.0;
+
+		// Alpha is a TRANSMITTANCE, not an amount of added light, so it has to be
+		// a true mean of the taps that were actually read. The 16.0 above is a
+		// deliberate under-weighting of a 5x5 neighbourhood - fine for a quantity
+		// that is only ever added, wrong for one that multiplies the image, where
+		// it would leave a dark blotch wherever this branch is taken.
+		result.a = (fallbackCount > 0) ? (fallbackResult.a / fallbackCount) : 1.0;
 	}
 
 	vec4 originalColor = imageLoad(IMG_PT_TRANSPARENT, ivec2(gl_GlobalInvocationID.xy));
@@ -102,7 +111,27 @@ void main()
 	// consider any light sources but the sun, nor it considers indirect 
 	// illumination, but the extinction (out-scatter) of light along the view ray 
 	// is still calculated.
-	vec3 composition = originalColor.rgb + result.rgb;
+	//
+	// That objection is exactly right for the classic sun-only god rays, and it
+	// is why this stays additive by default. It stops applying once the map's own
+	// medium is being marched with real extinction (pt_fog_extinction > 0): there
+	// the in-scatter IS the medium's radiance, computed per step from the map's
+	// fog colour and its own lights, so multiplying the background by the
+	// transmittance is what the additive term is the other half of. Without it
+	// the fog can only ever brighten - it never hides anything - which is why a
+	// long ray runs away instead of settling at the fog's colour, and why one
+	// cl_fog_scale could not serve both an enclosed room and an open vista.
+	//
+	// pt_fog_opacity trades between the two: 0 is the historical purely additive
+	// look, 1 is a full alpha blend.
+	float transmittance = 1.0;
+	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_extinction > 0.0)
+	{
+		transmittance = mix(1.0, clamp(result.a, 0.0, 1.0),
+		                    clamp(global_ubo.pt_fog_opacity, 0.0, 1.0));
+	}
+
+	vec3 composition = originalColor.rgb * transmittance + result.rgb;
 	
 	imageStore(IMG_PT_TRANSPARENT, ivec2(gl_GlobalInvocationID.xy), vec4(composition.rgb, originalColor.a));
 }

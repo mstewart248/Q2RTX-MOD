@@ -62,6 +62,7 @@ get_iqm_triangle(uint model_id, uint prim_id, int matrix_offset)
 	t.tex_coords[2] = prim.uv2;
 
 	t.material_id = prim.material_id;
+	t.texture_flags = prim.texture_flags;
 	t.cluster = prim.cluster;
 	t.instance_index = 0;
 	t.instance_prim = 0;
@@ -196,6 +197,7 @@ main()
 			}
 
 			t.material_id = t_a_curr.material_id;
+			t.texture_flags = t_a_curr.texture_flags;
 			t.emissive_factor = t_a_curr.emissive_factor;
 			t.alpha = t_a_curr.alpha;
 		}

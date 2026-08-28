@@ -313,6 +313,30 @@ mframe_t medic_frames_pain1 [] = {
 };
 mmove_t medic_move_pain1 = {FRAME_paina1, FRAME_paina8, medic_frames_pain1, medic_run};
 
+/*
+=================
+the rerelease's retimed medic
+
+id trimmed almost every medic animation at one or both ends: the flinches are
+shorter, the crouch drops and stands sooner, and the blaster attack starts three
+frames in.  The medic is the same monster with the dead frames cut out of it,
+which is most of why the rerelease's feels so much sharper.
+
+None of these need M_RereleaseAnims() - every range is a SUBSET of a range the
+1997 model already has, so the classic md2 plays them all.  They sit alongside
+the classic tables and are chosen at the point of use, the same way the infantry
+keeps attack1 and attack1_classic.
+=================
+*/
+mframe_t medic_frames_pain1_rr [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL }
+};
+mmove_t medic_move_pain1_rr = {FRAME_paina2, FRAME_paina6, medic_frames_pain1_rr, medic_run};
+
 mframe_t medic_frames_pain2 [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
@@ -332,6 +356,22 @@ mframe_t medic_frames_pain2 [] = {
 };
 mmove_t medic_move_pain2 = {FRAME_painb1, FRAME_painb15, medic_frames_pain2, medic_run};
 
+mframe_t medic_frames_pain2_rr [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL }
+};
+mmove_t medic_move_pain2_rr = {FRAME_painb2, FRAME_painb13, medic_frames_pain2_rr, medic_run};
+
 void medic_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     // the pain skin is the low bit: 0 -> 1 for the medic, 2 -> 3 for the
@@ -348,10 +388,16 @@ void medic_pain(edict_t *self, edict_t *other, float kick, int damage)
         return;     // no pain anims in nightmare
 
     if (random() < 0.5f) {
-        self->monsterinfo.currentmove = &medic_move_pain1;
+        if (M_RereleaseGame())
+            self->monsterinfo.currentmove = &medic_move_pain1_rr;
+        else
+            self->monsterinfo.currentmove = &medic_move_pain1;
         gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_pain1 : sound_pain1, 1, ATTN_NORM, 0);
     } else {
-        self->monsterinfo.currentmove = &medic_move_pain2;
+        if (M_RereleaseGame())
+            self->monsterinfo.currentmove = &medic_move_pain2_rr;
+        else
+            self->monsterinfo.currentmove = &medic_move_pain2;
         gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_pain2 : sound_pain2, 1, ATTN_NORM, 0);
     }
 }
@@ -382,10 +428,28 @@ void medic_fire_blaster(edict_t *self)
     else
         effect = 0;
 
-    flash = MEDIC_IS_COMMANDER(self) ? MZ2_MEDIC_BLASTER_2 : MZ2_MEDIC_BLASTER_1;
+    // [rerelease] The blaster and the hyperblaster come out of different
+    // muzzles - the arm sits about 9 units further back for the burst - and the
+    // burst is 12 of the medic's 14 shots, so firing it from the blaster offset
+    // puts the flash out in front of the model.  The two blaster shots are the
+    // ones on attack9 and attack12; everything else is the hyperblaster.
+    if (M_RereleaseGame() && self->s.frame != FRAME_attack9
+        && self->s.frame != FRAME_attack12)
+        flash = MZ2_MEDIC_HYPERBLASTER;
+    else
+        flash = MEDIC_IS_COMMANDER(self) ? MZ2_MEDIC_BLASTER_2 : MZ2_MEDIC_BLASTER_1;
 
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[flash], forward, right, start);
+
+    if (flash == MZ2_MEDIC_HYPERBLASTER) {
+        // the barrel is turning, so the muzzle moves shot to shot
+        int i = self->s.frame - FRAME_attack19;
+
+        clamp(i, 0, MEDIC_HYPERBLASTER_SHOTS - 1);
+        G_ProjectSource(self->s.origin, medic_hyperblaster_offset[i], forward, right, start);
+    } else {
+        G_ProjectSource(self->s.origin, monster_flash_offset[flash], forward, right, start);
+    }
 
     VectorCopy(self->enemy->s.origin, end);
     end[2] += self->enemy->viewheight;
@@ -448,6 +512,55 @@ mframe_t medic_frames_death [] = {
     { ai_move, 0, NULL }
 };
 mmove_t medic_move_death = {FRAME_death1, FRAME_death30, medic_frames_death, medic_dead};
+
+/*
+=================
+medic_shrink
+
+[rerelease] Flattens the body partway through the death animation and marks it a
+dead monster there, rather than only at the very end, so a medic dying in a
+doorway stops blocking it while the rest of the animation plays.
+=================
+*/
+static void medic_shrink(edict_t *self)
+{
+    self->maxs[2] = -2;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
+mframe_t medic_frames_death_rr [] = {
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, -18, NULL },
+    { ai_move, -10, medic_shrink },
+    { ai_move, -6, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL },
+    { ai_move, 0, NULL }
+};
+mmove_t medic_move_death_rr = {FRAME_death2, FRAME_death30, medic_frames_death_rr, medic_dead};
 
 void medic_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
@@ -587,7 +700,10 @@ void medic_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_YES;
 
-    self->monsterinfo.currentmove = &medic_move_death;
+    if (M_RereleaseGame())
+        self->monsterinfo.currentmove = &medic_move_death_rr;
+    else
+        self->monsterinfo.currentmove = &medic_move_death;
 }
 
 
@@ -614,10 +730,31 @@ mframe_t medic_frames_duck [] = {
 };
 mmove_t medic_move_duck = {FRAME_duck1, FRAME_duck16, medic_frames_duck, medic_run};
 
+// [rerelease] the crouch drops one frame earlier and holds until the very last
+// frame - id's own comment on the removed entry is "PMM - duck up used to be here"
+mframe_t medic_frames_duck_rr [] = {
+    { ai_move, -1, NULL },
+    { ai_move, -1, monster_duck_down },
+    { ai_move, -1, monster_duck_hold },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, NULL },
+    { ai_move, -1, monster_duck_up }
+};
+mmove_t medic_move_duck_rr = {FRAME_duck2, FRAME_duck14, medic_frames_duck_rr, medic_run};
+
 // Defined further down; the dodge pair tests against them.
 extern mmove_t medic_move_attackBlaster;
+extern mmove_t medic_move_attackBlaster_rr;
 extern mmove_t medic_move_attackCable;
 extern mmove_t medic_move_attackHyperBlaster;
+extern mmove_t medic_move_attackHyperBlaster_rr;
 
 /*
 =================
@@ -628,25 +765,35 @@ M_MonsterDodge fall back from a sidestep to a duck. Neither interrupts a
 firing sequence - a monster that ducked mid-burst threw the shot away.
 =================
 */
+static bool medic_is_attacking(edict_t *self)
+{
+    const mmove_t *move = self->monsterinfo.currentmove;
+
+    return move == &medic_move_attackHyperBlaster
+        || move == &medic_move_attackHyperBlaster_rr
+        || move == &medic_move_attackCable
+        || move == &medic_move_attackBlaster
+        || move == &medic_move_attackBlaster_rr;
+}
+
 bool medic_duck(edict_t *self, float eta)
 {
-    if (self->monsterinfo.currentmove == &medic_move_attackHyperBlaster ||
-        self->monsterinfo.currentmove == &medic_move_attackCable ||
-        self->monsterinfo.currentmove == &medic_move_attackBlaster) {
+    if (medic_is_attacking(self)) {
         // already shooting - stand back up rather than half-duck
         monster_duck_up(self);
         return false;
     }
 
-    self->monsterinfo.currentmove = &medic_move_duck;
+    if (M_RereleaseGame())
+        self->monsterinfo.currentmove = &medic_move_duck_rr;
+    else
+        self->monsterinfo.currentmove = &medic_move_duck;
     return true;
 }
 
 bool medic_sidestep(edict_t *self)
 {
-    if (self->monsterinfo.currentmove == &medic_move_attackHyperBlaster ||
-        self->monsterinfo.currentmove == &medic_move_attackCable ||
-        self->monsterinfo.currentmove == &medic_move_attackBlaster)
+    if (medic_is_attacking(self))
         return false;
 
     // strafing happens on the run move; AS_SLIDING is what makes
@@ -690,12 +837,60 @@ mframe_t medic_frames_attackHyperBlaster [] = {
 };
 mmove_t medic_move_attackHyperBlaster = {FRAME_attack15, FRAME_attack30, medic_frames_attackHyperBlaster, medic_run};
 
+// [rerelease] the same twelve shots, but the animation runs four frames further
+// so it settles out of the burst instead of cutting off - id's comment on the
+// tail is "end on 36 as intended"
+mframe_t medic_frames_attackHyperBlaster_rr [] = {
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 2,   NULL },
+    { ai_charge, 3,   NULL }
+};
+mmove_t medic_move_attackHyperBlaster_rr = {FRAME_attack15, FRAME_attack34, medic_frames_attackHyperBlaster_rr, medic_run};
+
+/*
+=================
+medic_quick_attack
+
+[rerelease] Half the time the medic skips the rest of the blaster wind-up and
+snaps straight into the middle of the hyperblaster burst.  This is the single
+biggest reason the rerelease medic feels aggressive: the classic one always
+plays eight lead-in frames before its first shot.
+=================
+*/
+static void medic_quick_attack(edict_t *self)
+{
+    if (random() < 0.5f) {
+        self->monsterinfo.currentmove = &medic_move_attackHyperBlaster_rr;
+        self->monsterinfo.nextframe = FRAME_attack16;
+    }
+}
+
 
 void medic_continue(edict_t *self)
 {
-    if (visible(self, self->enemy))
-        if (random() <= 0.95f)
+    if (visible(self, self->enemy) && random() <= 0.95f) {
+        if (M_RereleaseGame())
+            self->monsterinfo.currentmove = &medic_move_attackHyperBlaster_rr;
+        else
             self->monsterinfo.currentmove = &medic_move_attackHyperBlaster;
+    }
 }
 
 
@@ -716,6 +911,24 @@ mframe_t medic_frames_attackBlaster [] = {
     { ai_charge, 0,   medic_continue }  // Change to medic_continue... Else, go to frame 32
 };
 mmove_t medic_move_attackBlaster = {FRAME_attack1, FRAME_attack14, medic_frames_attackBlaster, medic_run};
+
+// [rerelease] two fewer lead-in frames, and the first shot lands on the seventh
+// entry rather than the ninth
+mframe_t medic_frames_attackBlaster_rr [] = {
+    { ai_charge, 5,   NULL },
+    { ai_charge, 3,   NULL },
+    { ai_charge, 2,   NULL },
+    { ai_charge, 0,   medic_quick_attack },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   medic_fire_blaster },
+    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   medic_continue }
+};
+mmove_t medic_move_attackBlaster_rr = {FRAME_attack3, FRAME_attack14, medic_frames_attackBlaster_rr, medic_run};
 
 
 void medic_hook_launch(edict_t *self)
@@ -848,6 +1061,7 @@ mframe_t medic_frames_attackCable [] = {
     { ai_move, 1.3,   NULL }
 };
 mmove_t medic_move_attackCable = {FRAME_attack33, FRAME_attack60, medic_frames_attackCable, medic_run};
+
 
 
 
@@ -1084,6 +1298,8 @@ void medic_attack(edict_t *self)
         if (MEDIC_IS_COMMANDER(self) && r > 0.2f && M_SlotsLeft(self) > 0 &&
             range(self, self->enemy) > RANGE_MELEE)
             self->monsterinfo.currentmove = &medic_move_callReinforcements;
+        else if (M_RereleaseGame())
+            self->monsterinfo.currentmove = &medic_move_attackBlaster_rr;
         else
             self->monsterinfo.currentmove = &medic_move_attackBlaster;
     }

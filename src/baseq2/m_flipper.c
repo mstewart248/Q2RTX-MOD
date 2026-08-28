@@ -214,8 +214,7 @@ void flipper_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     int     n;
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -237,8 +236,14 @@ void flipper_pain(edict_t *self, edict_t *other, float kick, int damage)
 
 void flipper_dead(edict_t *self)
 {
-    VectorSet(self->mins, -16, -16, -24);
-    VectorSet(self->maxs, 16, 16, -8);
+    // [rerelease] a corpse box centred on the body rather than sunk below it
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, -16, -16, -8);
+        VectorSet(self->maxs, 16, 16, 8);
+    } else {
+        VectorSet(self->mins, -16, -16, -24);
+        VectorSet(self->maxs, 16, 16, -8);
+    }
     self->movetype = MOVETYPE_TOSS;
     self->svflags |= SVF_DEADMONSTER;
     self->nextthink = 0;
@@ -376,8 +381,14 @@ void SP_monster_flipper(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/flipper/tris.md2");
-    VectorSet(self->mins, -16, -16, 0);
-    VectorSet(self->maxs, 16, 16, 32);
+    // [rerelease] half the height, and sitting 8 units lower
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, -16, -16, -8);
+        VectorSet(self->maxs, 16, 16, 20);
+    } else {
+        VectorSet(self->mins, -16, -16, 0);
+        VectorSet(self->maxs, 16, 16, 32);
+    }
 
     self->health = 50;
     self->gib_health = -30;

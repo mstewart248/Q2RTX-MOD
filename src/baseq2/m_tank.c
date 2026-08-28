@@ -280,6 +280,9 @@ void tank_pain(edict_t *self, edict_t *other, float kick, int damage)
     if (level.framenum < self->pain_debounce_framenum)
         return;
 
+    // [rerelease] being hit ends a blind volley
+    self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+
     if (damage <= 30)
         if (random() > 0.2f)
             return;
@@ -365,8 +368,16 @@ void TankRocket(edict_t *self)
     AngleVectors(self->s.angles, forward, right, NULL);
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
-    VectorCopy(self->enemy->s.origin, vec);
-    vec[2] += self->enemy->viewheight;
+    // [rerelease] blindfire aims at where the enemy was last seen
+    if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_MANUAL_STEERING)) {
+        if (VectorEmpty(self->monsterinfo.blind_fire_target))
+            return;
+        VectorCopy(self->monsterinfo.blind_fire_target, vec);
+    } else {
+        VectorCopy(self->enemy->s.origin, vec);
+        vec[2] += self->enemy->viewheight;
+    }
+
     VectorSubtract(vec, start, dir);
     VectorNormalize(dir);
 
@@ -612,6 +623,14 @@ mmove_t tank_move_attack_chain = {FRAME_attak401, FRAME_attak429, tank_frames_at
 
 void tank_refire_rocket(edict_t *self)
 {
+    // [rerelease] a blind volley is a single rocket - the refire below needs a
+    // visibility test the tank cannot pass while blindfiring
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+        self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+        self->monsterinfo.currentmove = &tank_move_attack_post_rocket;
+        return;
+    }
+
     // Only on hard or nightmare
     if (skill->value >= 2)
         if (self->enemy->health > 0)
@@ -633,6 +652,37 @@ void tank_attack(edict_t *self)
     vec3_t  vec;
     float   range;
     float   r;
+
+    // [rerelease] blind fire - see gunner_attack.  The tank only takes the shot
+    // if the launcher itself has a clear line; it is a big monster and the
+    // rocket comes off a long way from its centre.
+    if (M_RereleaseGame() && self->monsterinfo.attack_state == AS_BLIND) {
+        float   chance;
+        vec3_t  ignored;
+
+        if (self->monsterinfo.blind_fire_delay < 1.0f * BASE_FRAMERATE)
+            chance = 1.0f;
+        else if (self->monsterinfo.blind_fire_delay < 7.5f * BASE_FRAMERATE)
+            chance = 0.4f;
+        else
+            chance = 0.1f;
+
+        self->monsterinfo.blind_fire_delay += (5.2f + 3.0f * random()) * BASE_FRAMERATE;
+
+        if (VectorEmpty(self->monsterinfo.blind_fire_target))
+            return;
+
+        if (random() > chance)
+            return;
+
+        if (!M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_ROCKET_1], ignored))
+            return;
+
+        self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
+        self->monsterinfo.currentmove = &tank_move_attack_fire_rocket;
+        self->monsterinfo.attack_finished = level.framenum + 2.0f * random() * BASE_FRAMERATE;
+        return;
+    }
 
     if (self->enemy->health < 0) {
         self->monsterinfo.currentmove = &tank_move_attack_strike;
@@ -895,8 +945,14 @@ void SP_monster_tank(edict_t *self)
 	}
 
     self->s.modelindex = gi.modelindex("models/monsters/tank/tris.md2");
-    VectorSet(self->mins, -32, -32, -16);
-    VectorSet(self->maxs, 32, 32, 72);
+    // [rerelease] 8 units shorter; applies to the tank commander too, which shares this spawn
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, -32, -32, -16);
+        VectorSet(self->maxs, 32, 32, 64);
+    } else {
+        VectorSet(self->mins, -32, -32, -16);
+        VectorSet(self->maxs, 32, 32, 72);
+    }
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
 
@@ -942,6 +998,15 @@ void SP_monster_tank(edict_t *self)
 
     self->monsterinfo.currentmove = &tank_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // [rerelease] id replaced the hardcoded "they spray too much" classname
+    // list in T_Damage with this flag, so these have to carry it or they would
+    // start infighting the moment the flag test goes live.  Harmless when the
+    // game is not rerelease: the reader in g_combat.c is gated.
+    self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
+
+    // [rerelease] the tank shells the corridor you disappeared down
+    self->monsterinfo.blindfire = true;
 
     walkmonster_start(self);
 

@@ -283,13 +283,19 @@ extern int makron_move_sight;
 extern int makron_move_stand;
 extern int makron_move_walk;
 extern int medic_move_attackBlaster;
+extern int medic_move_attackBlaster_rr;
 extern int medic_move_attackCable;
 extern int medic_move_attackHyperBlaster;
+extern int medic_move_attackHyperBlaster_rr;
 extern int medic_move_callReinforcements;
 extern int medic_move_death;
+extern int medic_move_death_rr;
 extern int medic_move_duck;
+extern int medic_move_duck_rr;
 extern int medic_move_pain1;
+extern int medic_move_pain1_rr;
 extern int medic_move_pain2;
+extern int medic_move_pain2_rr;
 extern int medic_move_run;
 extern int medic_move_stand;
 extern int medic_move_walk;
@@ -1506,13 +1512,19 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &makron_move_stand },
 { P_monsterinfo_currentmove, &makron_move_walk },
 { P_monsterinfo_currentmove, &medic_move_attackBlaster },
+{ P_monsterinfo_currentmove, &medic_move_attackBlaster_rr },
 { P_monsterinfo_currentmove, &medic_move_attackCable },
 { P_monsterinfo_currentmove, &medic_move_attackHyperBlaster },
+{ P_monsterinfo_currentmove, &medic_move_attackHyperBlaster_rr },
 { P_monsterinfo_currentmove, &medic_move_callReinforcements },
 { P_monsterinfo_currentmove, &medic_move_death },
+{ P_monsterinfo_currentmove, &medic_move_death_rr },
 { P_monsterinfo_currentmove, &medic_move_duck },
+{ P_monsterinfo_currentmove, &medic_move_duck_rr },
 { P_monsterinfo_currentmove, &medic_move_pain1 },
+{ P_monsterinfo_currentmove, &medic_move_pain1_rr },
 { P_monsterinfo_currentmove, &medic_move_pain2 },
+{ P_monsterinfo_currentmove, &medic_move_pain2_rr },
 { P_monsterinfo_currentmove, &medic_move_run },
 { P_monsterinfo_currentmove, &medic_move_stand },
 { P_monsterinfo_currentmove, &medic_move_walk },

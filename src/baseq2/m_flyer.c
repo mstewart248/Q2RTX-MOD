@@ -517,8 +517,7 @@ void flyer_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     int     n;
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -596,8 +595,14 @@ void SP_monster_flyer(edict_t *self)
     gi.soundindex("flyer/flyatck3.wav");
 
     self->s.modelindex = gi.modelindex("models/monsters/flyer/tris.md2");
-    VectorSet(self->mins, -16, -16, -24);
-    VectorSet(self->maxs, 16, 16, 32);
+    // [rerelease] id's own comment: "PMM - shortened to 16 from 32".  Our tree already gave this shorter box to the kamikaze variant only; the rerelease gives it to every flyer
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, -16, -16, -24);
+        VectorSet(self->maxs, 16, 16, 16);
+    } else {
+        VectorSet(self->mins, -16, -16, -24);
+        VectorSet(self->maxs, 16, 16, 32);
+    }
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
 

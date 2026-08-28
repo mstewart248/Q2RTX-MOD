@@ -79,6 +79,13 @@ typedef struct {
 	float       start;
 	int         baseframe;
 	int         frametime; /* in milliseconds */
+
+	// Impact smoke drifts back out along the surface normal instead of
+	// hanging exactly where the bullet landed. Zero for every other
+	// explosion type. spawn_origin is kept because ent.origin is what gets
+	// advanced, so the drift has to integrate from a fixed point.
+	vec3_t      vel;
+	vec3_t      spawn_origin;
 } explosion_t;
 
 extern explosion_t  cl_explosions[MAX_EXPLOSIONS];
@@ -704,6 +711,11 @@ typedef struct {
     int entity;
     int weapon;
     bool silenced;
+    // svc_muzzleflash3 only: the direction the shot was actually fired in.
+    // Without it the flash can only be oriented from the monster's BODY, which
+    // is wrong for every monster whose gun arm animates separately.
+    bool has_dir;
+    vec3_t dir;
 } mz_params_t;
 
 typedef struct {
@@ -792,6 +804,7 @@ typedef struct cl_sustain_s {
 } cl_sustain_t;
 
 void CL_SmokeAndFlash(const vec3_t origin);
+void CL_ImpactSmokeAndFlash(const vec3_t origin, const vec3_t dir);
 void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, float scale);
 void CL_ViewMuzzleFlash(void);
 
@@ -919,6 +932,15 @@ void CL_EmitDemoSnapshot(void);
 void CL_FirstDemoFrame(void);
 void CL_Stop_f(void);
 demoInfo_t *CL_GetDemoInfo(const char *path, demoInfo_t *info);
+
+
+//
+// lightedit.c
+//
+void LE_Init(void);
+void LE_LoadLights(void);
+void LE_FreeLights(void);
+void LE_AddLightsToScene(void);
 
 
 //

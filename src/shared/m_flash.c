@@ -22,7 +22,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // this file is included in both the game dll and quake2,
 // the game needs it to source shot locations, the client
 // needs it to position muzzle flashes
-const vec3_t monster_flash_offset[256] = {
+const vec3_t monster_flash_offset[MAX_MUZZLEFLASHES] = {
     [MZ2_TANK_BLASTER_1] = { 20.7f, -18.5f, 28.7f },
     [MZ2_TANK_BLASTER_2] = { 16.6f, -21.5f, 30.1f },
     [MZ2_TANK_BLASTER_3] = { 11.8f, -23.9f, 32.1f },
@@ -82,7 +82,11 @@ const vec3_t monster_flash_offset[256] = {
     [MZ2_CHICK_ROCKET_1] = { 24.8f, -9, 39 },
     [MZ2_FLYER_BLASTER_1] = { 12.1f, 13.4f, -14.5f },
     [MZ2_FLYER_BLASTER_2] = { 12.1f, -7.4f, -14.5f },
-    [MZ2_MEDIC_BLASTER_1] = { 12.1f, 5.4f, 16.5f },
+    // [rerelease] id moved this one a long way forward.  The 1997 value
+    // { 12.1, 5.4, 16.5 } - which rogue shipped too - puts the flash roughly 32
+    // units BEHIND the end of the medic's gun arm, i.e. inside its chest, and
+    // that is where both the muzzle flash and the shot origin came from.
+    [MZ2_MEDIC_BLASTER_1] = { 44.0f, 3.0f, 14.4f },
     [MZ2_GLADIATOR_RAILGUN_1] = { 30, 18, 28 },
     [MZ2_HOVER_BLASTER_1] = { 32.5f, -0.8f, 10 },
     [MZ2_ACTOR_MACHINEGUN_1] = { 18.4f, 7.4f, 9.6f },
@@ -168,7 +172,12 @@ const vec3_t monster_flash_offset[256] = {
     [MZ2_TURRET_BLASTER] = { 16, 0, 0 },
     [MZ2_STALKER_BLASTER] = { 24, 0, 6 },
     [MZ2_DAEDALUS_BLASTER] = { 32.5f, -0.8f, 10 },
-    [MZ2_MEDIC_BLASTER_2] = { 12.1f, 5.4f, 16.5f },
+    // the commander's, same correction
+    [MZ2_MEDIC_BLASTER_2] = { 44.0f, 3.0f, 14.4f },
+
+    // The mean of the sweep below, used only if a frame ever lands outside the
+    // burst.  The real per-shot positions are in medic_hyperblaster_offset[].
+    [MZ2_MEDIC_HYPERBLASTER] = { 35.5f, 5.7f, 15.0f },
     [MZ2_CARRIER_RAILGUN] = { 32, 0, 6 },
     [MZ2_WIDOW_DISRUPTOR] = { 57.72f, 14.5f, 88.81f },
     [MZ2_WIDOW_BLASTER] = { 56, 32, 32 },
@@ -280,4 +289,23 @@ const vec3_t monster_flash_offset[256] = {
     [MZ2_ARACHNID_RAIL2]    = { 64.0f, -22.0f, 24.0f },
     [MZ2_ARACHNID_RAIL_UP1] = { 37.0f, 13.0f, 72.0f },
     [MZ2_ARACHNID_RAIL_UP2] = { 58.0f, -25.0f, 72.0f },
+};
+
+// id's MZ2_MEDIC_HYPERBLASTER1_1-12, verbatim.  Its HYPERBLASTER1 and
+// HYPERBLASTER2 tables are byte identical, so this serves medic and commander.
+// The Y sweep runs 12.5 -> -1.9 -> 11.0, which is the barrel turning; that
+// motion is the whole point of the table.
+const vec3_t medic_hyperblaster_offset[MEDIC_HYPERBLASTER_SHOTS] = {
+    { 34.0f, 12.5f, 15.0f },
+    { 33.4f, 11.2f, 15.0f },
+    { 36.6f,  7.4f, 15.0f },
+    { 35.0f,  4.1f, 15.0f },
+    { 37.6f,  1.0f, 15.0f },
+    { 35.7f, -1.9f, 15.0f },
+    { 37.6f, -0.5f, 15.0f },
+    { 35.2f,  2.8f, 15.0f },
+    { 37.5f,  3.8f, 15.0f },
+    { 34.5f,  6.9f, 15.0f },
+    { 33.7f,  9.9f, 15.0f },
+    { 35.5f, 11.0f, 15.0f }
 };

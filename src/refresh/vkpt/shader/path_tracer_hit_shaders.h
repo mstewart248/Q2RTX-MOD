@@ -74,7 +74,7 @@ bool pt_logic_masked(int primitiveID, int instanceID, int geometryIndex, uint in
 	
 	vec2 tex_coord = triangle.tex_coords * vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
 
-	perturb_tex_coord(triangle.material_id, global_ubo.time, tex_coord);	
+	perturb_tex_coord(triangle.material_id, triangle.texture_flags, global_ubo.time, tex_coord);	
 
 	vec4 mask_value = global_textureLod(minfo.mask_texture, tex_coord, /* mip_level = */ 0);
 

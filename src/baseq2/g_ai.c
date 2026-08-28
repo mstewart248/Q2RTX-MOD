@@ -509,6 +509,7 @@ void FoundTarget(edict_t *self)
     self->show_hostile = level.framenum + 1 * BASE_FRAMERATE;   // wake up other monsters
 
     VectorCopy(self->enemy->s.origin, self->monsterinfo.last_sighting);
+    M_UpdateBlindFireTarget(self);
     self->monsterinfo.trail_framenum = level.framenum;
 
     if (!self->combattarget) {
@@ -720,6 +721,27 @@ bool FacingIdeal(edict_t *self)
 }
 
 
+/*
+=============
+M_UpdateBlindFireTarget
+
+[rerelease] Remember where to shoot if the enemy goes out of sight.  id aims at
+the last sighting nudged BACKWARDS along the enemy's velocity - a player who has
+just broken line of sight is usually still moving the same way, so the point
+they were last seen at is already behind them, and aiming there is the shot most
+likely to catch them.  Seeing the enemy also clears the accumulated delay.
+=============
+*/
+void M_UpdateBlindFireTarget(edict_t *self)
+{
+    if (!self->monsterinfo.blindfire || !self->enemy)
+        return;
+
+    VectorMA(self->monsterinfo.last_sighting, -0.1f, self->enemy->velocity,
+             self->monsterinfo.blind_fire_target);
+    self->monsterinfo.blind_fire_delay = 0;
+}
+
 //=============================================================================
 
 bool M_CheckAttack(edict_t *self)
@@ -738,8 +760,38 @@ bool M_CheckAttack(edict_t *self)
         tr = gi.trace(spot1, NULL, NULL, spot2, self, CONTENTS_SOLID | CONTENTS_MONSTER | CONTENTS_SLIME | CONTENTS_LAVA | CONTENTS_WINDOW);
 
         // do we have a clear shot?
-        if (tr.ent != self->enemy)
+        if (tr.ent != self->enemy) {
+            // [rerelease] No clear shot.  A blindfire monster that has lost
+            // sight of the enemy - and is not merely blocked by another
+            // monster - shoots at where it last saw them instead of standing
+            // there.  Everything else just gives up, as it always did.
+            if (M_RereleaseGame() && self->monsterinfo.blindfire &&
+                tr.ent && !(tr.ent->svflags & SVF_MONSTER) &&
+                !visible(self, self->enemy) &&
+                self->monsterinfo.blind_fire_delay <= 20 * BASE_FRAMERATE) {
+                if (level.framenum < self->monsterinfo.attack_finished)
+                    return false;
+
+                // not yet time for the next attempt
+                if (level.framenum < self->monsterinfo.trail_framenum +
+                                     self->monsterinfo.blind_fire_delay)
+                    return false;
+
+                // never blind fire into another monster
+                tr = gi.trace(spot1, NULL, NULL, self->monsterinfo.blind_fire_target,
+                              self, CONTENTS_MONSTER);
+                if (tr.allsolid || tr.startsolid ||
+                    (tr.fraction < 1.0f && tr.ent != self->enemy))
+                    return false;
+
+                gi.dprintf("BLINDFIRE %s delay=%d%s", self->classname,
+                           self->monsterinfo.blind_fire_delay, "\n");
+                self->monsterinfo.attack_state = AS_BLIND;
+                return true;
+            }
+
             return false;
+        }
     }
 
     // melee attack
@@ -840,7 +892,11 @@ Turn and close until within an angle to launch a melee attack
 */
 void ai_run_melee(edict_t *self)
 {
-    self->ideal_yaw = enemy_yaw;
+    // [rerelease] AI_MANUAL_STEERING means the monster is aiming somewhere of
+    // its own choosing - blindfire at a remembered position, most often - so
+    // the generic "turn to face the enemy" must not overwrite ideal_yaw.
+    if (!M_RereleaseGame() || !(self->monsterinfo.aiflags & AI_MANUAL_STEERING))
+        self->ideal_yaw = enemy_yaw;
     M_ChangeYaw(self);
 
     if (FacingIdeal(self)) {
@@ -859,7 +915,11 @@ Turn in place until within an angle to launch a missile attack
 */
 void ai_run_missile(edict_t *self)
 {
-    self->ideal_yaw = enemy_yaw;
+    // [rerelease] AI_MANUAL_STEERING means the monster is aiming somewhere of
+    // its own choosing - blindfire at a remembered position, most often - so
+    // the generic "turn to face the enemy" must not overwrite ideal_yaw.
+    if (!M_RereleaseGame() || !(self->monsterinfo.aiflags & AI_MANUAL_STEERING))
+        self->ideal_yaw = enemy_yaw;
     M_ChangeYaw(self);
 
     if (FacingIdeal(self)) {
@@ -885,7 +945,11 @@ void ai_run_slide(edict_t *self, float distance)
 {
     float   ofs;
 
-    self->ideal_yaw = enemy_yaw;
+    // [rerelease] AI_MANUAL_STEERING means the monster is aiming somewhere of
+    // its own choosing - blindfire at a remembered position, most often - so
+    // the generic "turn to face the enemy" must not overwrite ideal_yaw.
+    if (!M_RereleaseGame() || !(self->monsterinfo.aiflags & AI_MANUAL_STEERING))
+        self->ideal_yaw = enemy_yaw;
     M_ChangeYaw(self);
 
     if (self->monsterinfo.lefty)
@@ -988,6 +1052,7 @@ bool ai_checkattack(edict_t *self, float dist)
     if (enemy_vis) {
         self->monsterinfo.search_framenum = level.framenum + 5 * BASE_FRAMERATE;
         VectorCopy(self->enemy->s.origin, self->monsterinfo.last_sighting);
+        M_UpdateBlindFireTarget(self);
     }
 
 // look for other coop players here
@@ -1082,6 +1147,7 @@ void ai_run(edict_t *self, float dist)
         M_MoveToGoal(self, dist);
         self->monsterinfo.aiflags &= ~AI_LOST_SIGHT;
         VectorCopy(self->enemy->s.origin, self->monsterinfo.last_sighting);
+        M_UpdateBlindFireTarget(self);
         self->monsterinfo.trail_framenum = level.framenum;
         return;
     }

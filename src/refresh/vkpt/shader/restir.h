@@ -106,7 +106,16 @@ void
 unpack_reservoir(uvec4 packed, uint light_idx, out Reservoir r)
 {
 	r.y = light_idx;
-	r.M = light_idx == RESTIR_INVALID_ID ? 0 : (global_ubo.pt_restir != 3 ? RESTIR_M_CLAMP : RESTIR_M_VC_CLAMP);
+	// A reused reservoir carries no real sample count - it CLAIMS this one, and that
+	// claim is its entire temporal weight: it is streamed against this frame's fresh
+	// candidates with weight M, so at 32 the history outweighs the current frame 32:1 and
+	// the lighting lags by roughly that many frames. Combined with permutation sampling
+	// moving the fetch a few pixels every frame, 32 frames of history also diffuses the
+	// light spatially - which is what "streaking along the direction of motion" is.
+	// Now pt_restir_m_clamp so it can be traded against the noise a shorter history buys;
+	// RESTIR_M_CLAMP remains the default and the documented original value.
+	uint m_clamp = uint(max(1.0, global_ubo.pt_restir_m_clamp));
+	r.M = light_idx == RESTIR_INVALID_ID ? 0 : (global_ubo.pt_restir != 3 ? m_clamp : uint(RESTIR_M_VC_CLAMP));
 	vec2 val = unpackHalf2x16(packed.x);
 	r.W = val.x;
 	if (isnan(r.W) || isinf(r.W) || r.y == RESTIR_INVALID_ID) r.W = 0.0;

@@ -745,8 +745,7 @@ void brain_run(edict_t *self) {
 void brain_pain(edict_t *self, edict_t *other, float kick, int damage) {
     float   r;
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;

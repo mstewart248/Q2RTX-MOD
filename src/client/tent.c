@@ -235,6 +235,48 @@ void CL_SmokeAndFlash(const vec3_t origin)
 
 /*
 =================
+CL_ImpactSmokeAndFlash
+
+The same puff, but for a bullet striking a surface rather than leaving a muzzle.
+
+The plain version drops the smoke exactly on the impact point with no
+orientation and no motion, so it reads as a decal painted on the wall rather
+than as something the wall threw off.  This one starts it just proud of the
+surface and drifts it back along the impact normal, which is the directionality
+the rerelease's impacts have.  `dir` is already unit length - MSG_ReadDir
+decodes it out of the byte direction table.
+=================
+*/
+void CL_ImpactSmokeAndFlash(const vec3_t origin, const vec3_t dir)
+{
+    explosion_t *ex;
+    vec3_t      org;
+
+    // lift it out of the wall so the sprite is not half buried in it
+    VectorMA(origin, 2.0f, dir, org);
+
+    ex = CL_AllocExplosion();
+    VectorCopy(org, ex->ent.origin);
+    VectorCopy(org, ex->spawn_origin);
+    VectorScale(dir, 18.0f, ex->vel);
+    ex->type = ex_misc;
+    ex->frames = 4;
+    ex->ent.flags = RF_TRANSLUCENT | RF_NOSHADOW;
+    ex->start = cl.servertime - CL_FRAMETIME;
+    ex->ent.model = cl_mod_smoke;
+
+    // the flash is the strike itself, so it stays where it happened
+    ex = CL_AllocExplosion();
+    VectorCopy(org, ex->ent.origin);
+    ex->type = ex_flash;
+    ex->ent.flags = RF_FULLBRIGHT;
+    ex->frames = 2;
+    ex->start = cl.servertime - CL_FRAMETIME;
+    ex->ent.model = cl_mod_flash;
+}
+
+/*
+=================
 CL_MuzzleFlashModel
 
 Rerelease muzzle flashes: a short-lived starburst model at the muzzle, instead of
@@ -416,6 +458,11 @@ static void CL_AddExplosions(void)
         f = floor(frac);
 
         ent = &ex->ent;
+
+        // impact smoke drifts off the surface it came from
+        if (ex->vel[0] || ex->vel[1] || ex->vel[2])
+            VectorMA(ex->spawn_origin, (cl.time - ex->start) * 0.001f,
+                     ex->vel, ent->origin);
 
         switch (ex->type) {
         case ex_mflash:
@@ -1193,7 +1240,7 @@ void CL_ParseTEnt(void)
             CL_ParticleEffect(te.pos1, te.dir, 0xe0, 6);
 
         if (te.type != TE_SPARKS) {
-            CL_SmokeAndFlash(te.pos1);
+            CL_ImpactSmokeAndFlash(te.pos1, te.dir);
 
             // impact sound
             r = Q_rand() & 15;
@@ -1218,7 +1265,7 @@ void CL_ParseTEnt(void)
 
     case TE_SHOTGUN:            // bullet hitting wall
         CL_ParticleEffect(te.pos1, te.dir, 0, 20);
-        CL_SmokeAndFlash(te.pos1);
+        CL_ImpactSmokeAndFlash(te.pos1, te.dir);
         break;
 
     case TE_SPLASH:         // bullet hitting water
@@ -1247,7 +1294,7 @@ void CL_ParseTEnt(void)
         cdlight_t *dl;
 
         CL_ParticleEffect(te.pos1, te.dir, 0xe0, 120);
-        CL_SmokeAndFlash(te.pos1);
+        CL_ImpactSmokeAndFlash(te.pos1, te.dir);
 
         dl = CL_AllocDlight(0);
         VectorCopy(te.pos1, dl->origin);

@@ -168,6 +168,22 @@ create_poly(
 		sc[0] = 1.0f / (float)texinfo->material->original_width;
 		sc[1] = 1.0f / (float)texinfo->material->original_height;
 	}
+
+	// [Sam-KEX] Rerelease surface flags.  SURF_N64_UV stretches the texture to
+	// twice its size on the face; the scroll flags are per-face, so they travel
+	// with the primitive instead of with the material.
+	if (texinfo->c.flags & SURF_N64_UV) {
+		sc[0] *= 0.5f;
+		sc[1] *= 0.5f;
+	}
+
+	uint32_t texture_flags = 0;
+	if (texinfo->c.flags & SURF_N64_SCROLL_X)
+		texture_flags |= TEXTURE_FLAG_SCROLL_X;
+	if (texinfo->c.flags & SURF_N64_SCROLL_Y)
+		texture_flags |= TEXTURE_FLAG_SCROLL_Y;
+	if (texinfo->c.flags & SURF_N64_SCROLL_FLIP)
+		texture_flags |= TEXTURE_FLAG_SCROLL_FLIP;
 	
 	for (int i = 0; i < surf->numsurfedges; i++) {
 		msurfedge_t *src_surfedge = surf->firstsurfedge + i;
@@ -314,6 +330,7 @@ create_poly(
 		}
 
 		primitives_out->material_id = material_id;
+		primitives_out->texture_flags = texture_flags;
 		primitives_out->emissive_and_alpha = emissive_and_alpha;
 		primitives_out->instance = 0;
 		

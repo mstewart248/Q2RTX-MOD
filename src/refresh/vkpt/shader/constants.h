@@ -81,6 +81,23 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MATERIAL_FLAG_SHELL_GREEN    0x00080000
 #define MATERIAL_FLAG_SHELL_BLUE     0x00040000
 
+// Per-primitive texture flags, stored in VboPrimitive::texture_flags.
+//
+// These mirror the rerelease's SURF_N64_SCROLL_* surface flags.  They cannot
+// live in material_id the way MATERIAL_FLAG_FLOWING does, for two reasons:
+// they are a property of the BSP face rather than of the texture (the same
+// material scrolls on one face and sits still on another), and material_id has
+// exactly one spare bit left while these need three.
+#define TEXTURE_FLAG_SCROLL_X        0x00000001
+#define TEXTURE_FLAG_SCROLL_Y        0x00000002
+#define TEXTURE_FLAG_SCROLL_FLIP     0x00000004
+
+// Scroll rate in texture widths per second, for the N64 scroll flags above.
+// Matches GL_ScrollSpeed() in the rerelease-derived q2repro renderer, which
+// uses 1.6 for plain SURF_FLOWING, 0.5 for SURF_FLOWING on a warped surface,
+// and this value whenever either N64 scroll axis is set.
+#define TEXTURE_N64_SCROLL_SPEED     0.78125
+
 #define MATERIAL_LIGHT_STYLE_MASK    0x0003f000
 #define MATERIAL_LIGHT_STYLE_SHIFT   12
 #define MATERIAL_INDEX_MASK          0x00000fff
@@ -99,6 +116,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // surface's motion vector and depth (MATERIAL_KIND_CHROME_MODEL). The DLSS-RR guide
 // buffers must then describe the mirror itself, not what it reflects.
 #define CHECKERBOARD_FLAG_MIRROR_MODEL 16
+// Also not a checkerboard flag. Signals that the surface this pixel's two light paths
+// split at was GLASS - not water, slime or a translucent model. The combine pass needs
+// to tell them apart for pt_dlss_guide_field: a pane of glass is a mirror with a little
+// transmission, and handing DLSS-RR the reflection's G-buffer is what keeps that
+// reflection sharp, but water is the opposite - you are mostly looking THROUGH it, and
+// describing it by its reflection makes it swim in motion. The material kind cannot be
+// recovered downstream, because reflect_refract.rgen has by then replaced the shading
+// surface (and its material id) with whatever the ray hit.
+#define CHECKERBOARD_FLAG_GLASS      32
 
 // pt_fullres_fields - reflection/refraction field layout. See the FIELD LAYOUT note
 // in global_ubo.h.

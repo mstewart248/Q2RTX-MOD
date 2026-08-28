@@ -261,8 +261,7 @@ mmove_t parasite_move_pain1 = {FRAME_pain101, FRAME_pain111, parasite_frames_pai
 
 void parasite_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;

@@ -253,13 +253,15 @@ void chick_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     float   r;
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+    // [rerelease] being hit ends a blind volley
+    self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
 
     r = random();
     if (r < 0.33f)
@@ -562,6 +564,38 @@ void ChickRocket(edict_t *self)
     AngleVectors(self->s.angles, forward, right, NULL);
     G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_CHICK_ROCKET_1], forward, right, start);
 
+    // [rerelease] blindfire: aim at the remembered position instead of the
+    // enemy, and refuse the shot if it would go straight into a wall.  id's own
+    // comment is that she avoids about 80% of her blindfires by hitting things,
+    // so it tries two lateral nudges before giving up - her rocket launcher
+    // sits well off her centre line.
+    if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_MANUAL_STEERING)) {
+        static const float  offsets[3] = { 0.0f, -10.0f, 10.0f };
+
+        if (VectorEmpty(self->monsterinfo.blind_fire_target))
+            return;
+
+        for (int i = 0; i < 3; i++) {
+            trace_t tr;
+
+            VectorMA(self->monsterinfo.blind_fire_target, offsets[i], right, vec);
+            VectorSubtract(vec, start, dir);
+            VectorNormalize(dir);
+
+            tr = gi.trace(start, NULL, NULL, vec, self, MASK_SHOT);
+            if (tr.startsolid || tr.allsolid || tr.fraction < 0.5f)
+                continue;
+
+            if (self->s.skinnum > 1)
+                monster_fire_heat(self, start, dir, 50, 500, MZ2_CHICK_ROCKET_1, 0.075f);
+            else
+                monster_fire_rocket(self, start, dir, 50, 500, MZ2_CHICK_ROCKET_1);
+            return;
+        }
+
+        return;     // no angle worked - hold the shot
+    }
+
     VectorCopy(self->enemy->s.origin, vec);
     vec[2] += self->enemy->viewheight;
     VectorSubtract(vec, start, dir);
@@ -579,6 +613,15 @@ void ChickRocket(edict_t *self)
 void Chick_PreAttack1(edict_t *self)
 {
     gi.sound(self, CHAN_VOICE, sound_missile_prelaunch, 1, ATTN_NORM, 0);
+
+    // [rerelease] the first frame of the launch animation is where a blind
+    // volley picks its heading
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+        vec3_t  aim;
+
+        VectorSubtract(self->monsterinfo.blind_fire_target, self->s.origin, aim);
+        self->ideal_yaw = vectoyaw(aim);
+    }
 }
 
 void ChickReload(edict_t *self)
@@ -635,6 +678,14 @@ mmove_t chick_move_end_attack1 = {FRAME_attak128, FRAME_attak132, chick_frames_e
 
 void chick_rerocket(edict_t *self)
 {
+    // [rerelease] a blind volley is a single rocket - refiring would need a
+    // visibility check she cannot pass, so end the attack here
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+        self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+        self->monsterinfo.currentmove = &chick_move_end_attack1;
+        return;
+    }
+
     if (self->enemy->health > 0) {
         if (range(self, self->enemy) > RANGE_MELEE)
             if (visible(self, self->enemy))
@@ -712,6 +763,33 @@ void chick_melee(edict_t *self)
 
 void chick_attack(edict_t *self)
 {
+    // [rerelease] blind fire - see gunner_attack for the shape.  Her cooldown
+    // is longer than his (5.5-6.5s against his 4.1-7.1) because a rocket is a
+    // lot more punishing to eat from a corridor you cannot see down.
+    if (M_RereleaseGame() && self->monsterinfo.attack_state == AS_BLIND) {
+        float   chance;
+
+        if (self->monsterinfo.blind_fire_delay < 1.0f * BASE_FRAMERATE)
+            chance = 1.0f;
+        else if (self->monsterinfo.blind_fire_delay < 7.5f * BASE_FRAMERATE)
+            chance = 0.4f;
+        else
+            chance = 0.1f;
+
+        self->monsterinfo.blind_fire_delay += (5.5f + random()) * BASE_FRAMERATE;
+
+        if (VectorEmpty(self->monsterinfo.blind_fire_target))
+            return;
+
+        if (random() > chance)
+            return;
+
+        self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
+        self->monsterinfo.currentmove = &chick_move_start_attack1;
+        self->monsterinfo.attack_finished = level.framenum + 2.0f * random() * BASE_FRAMERATE;
+        return;
+    }
+
     self->monsterinfo.currentmove = &chick_move_start_attack1;
 }
 
@@ -773,6 +851,9 @@ void SP_monster_chick(edict_t *self)
 
     self->monsterinfo.currentmove = &chick_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // [rerelease] she will put a rocket down the corridor you vanished into
+    self->monsterinfo.blindfire = true;
 
     walkmonster_start(self);
 }

@@ -539,10 +539,7 @@ stalker_pain(edict_t *self, edict_t *other /* unused */, float kick, int damage)
 		return;
 	}
 
-	if (self->health < (self->max_health / 2))
-	{
-		self->s.skinnum = 1;
-	}
+	M_SetDamageSkin(self);
 
 	if (skill->value == 3)
 	{

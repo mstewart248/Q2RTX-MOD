@@ -981,9 +981,10 @@ void GunnerCmdrGrenade(edict_t *self)
             fire_ionripper(self, start, v, 15, 800, EF_IONRIPPER);
         }
 
-        gi.WriteByte(svc_muzzleflash2);
+        gi.WriteByte(svc_muzzleflash3);
         gi.WriteShort(self - g_edicts);
-        gi.WriteByte(flash_number);
+        gi.WriteShort(flash_number);
+        gi.WriteDir(aim);
         gi.multicast(start, MULTICAST_PVS);
     } else {
         speed = mortar ? MORTAR_SPEED : GRENADE_SPEED;

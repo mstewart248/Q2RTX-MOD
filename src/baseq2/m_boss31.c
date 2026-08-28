@@ -399,8 +399,7 @@ void jorg_attack1(edict_t *self)
 void jorg_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     self->s.sound = 0;
 
@@ -696,6 +695,12 @@ void SP_monster_jorg(edict_t *self)
 
     self->monsterinfo.currentmove = &jorg_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // [rerelease] id replaced the hardcoded "they spray too much" classname
+    // list in T_Damage with this flag, so these have to carry it or they would
+    // start infighting the moment the flag test goes live.  Harmless when the
+    // game is not rerelease: the reader in g_combat.c is gated.
+    self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
 
     walkmonster_start(self);
 }

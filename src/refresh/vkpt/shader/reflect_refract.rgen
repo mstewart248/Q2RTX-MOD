@@ -162,6 +162,12 @@ main()
 	// Different from primary_is_weapon - this carries over through reflections and refractions
 	int checkerboard_weapon_flag = checkerboard_flags & CHECKERBOARD_FLAG_WEAPON;
 	int checkerboard_mirror_flag = 0;
+	// Carried over through further bounces like the weapon flag, and set the moment a
+	// glass surface is entered. Tells the combine pass that the split at this pixel was
+	// glass rather than water or slime - see CHECKERBOARD_FLAG_GLASS in constants.h.
+	int checkerboard_glass_flag = checkerboard_flags & CHECKERBOARD_FLAG_GLASS;
+	if(primary_is_glass)
+		checkerboard_glass_flag = CHECKERBOARD_FLAG_GLASS;
 	checkerboard_flags &= CHECKERBOARD_FLAG_FIELD_MASK;
 
 	// Whether this pixel's two fields had already diverged before this bounce.
@@ -705,7 +711,7 @@ main()
 		imageStore(IMG_PT_METALLIC_A, ipos, vec4(0));
 		imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
 		imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position + direction * PRIMARY_RAY_T_MAX, uintBitsToFloat(material_id)));
-		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag)));
+		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag | checkerboard_glass_flag)));
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(-PRIMARY_RAY_T_MAX));
 		imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, PRIMARY_RAY_T_MAX));
 
@@ -1028,7 +1034,7 @@ main()
 
 	imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(encode_normal(geo_normal)));
 	imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position.xyz, uintBitsToFloat(material_id)));
-	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag)));
+	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag | checkerboard_glass_flag)));
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, optical_path_length));
 	imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
 	imageStore(IMG_PT_CLUSTER_A, ipos, uvec4(cluster_idx));

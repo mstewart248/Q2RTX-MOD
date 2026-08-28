@@ -238,6 +238,10 @@ float getSkyVisibility(vec3 p)
 // where a local light only reaches a few.
 #define FOG_SKY_SOLID_ANGLE 3.14159
 
+// 1 / (4 pi). Anywhere the fog scatters light that has no preferred direction -
+// the local-light term below, and the ambient-in-shadow term in the march.
+#define FOG_ISOTROPIC_PHASE 0.0796
+
 // In-scatter at a point from the map's own lights.
 //
 // This reads the BSP CLUSTER LIGHT LIST, not a raw index range, and that choice
@@ -473,9 +477,14 @@ void main()
 	// surfaces and the sky.
 	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 2);
 
+	// Whether the map's medium is given real, density-proportional extinction
+	// this frame - see the note at extinction_factors below. Applies to BOTH fog
+	// modes; the runaway it fixes is a property of the march, not of what lights it.
+	bool fog_medium = (global_ubo.fog_enable != 0) && (global_ubo.pt_fog_extinction > 0.0);
+
 	if(luminance(sun_color) == 0 && !fog_lights)
 	{
-		imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), vec4(0));
+		imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), vec4(0, 0, 0, 1));
 		return;
 	}
 		
@@ -552,7 +561,7 @@ void main()
 	{	
 		if (tIn > distance)
 		{
-			imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), vec4(0));
+			imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), vec4(0, 0, 0, 1));
 			return;
 		}
 
@@ -561,17 +570,53 @@ void main()
 	}
 	else
 	{
-		imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), vec4(0));
+		imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), vec4(0, 0, 0, 1));
 		return;
 	}
 
 	vec3 currentPos = original_pos + direction * offset;
 	float density = getDensity(currentPos);
 
-	vec3 extinction_factors = (medium == MEDIUM_NONE) ? vec3(0.0001) : get_extinction_factors(medium);
+	// EXTINCTION - the reason no single cl_fog_scale can serve both a small
+	// chamber and an open vista.
+	//
+	// Air was a flat vec3(0.0001) here no matter how dense the map's fog
+	// actually is, and god_rays_filter.comp composites the result purely
+	// ADDITIVELY. Between them the medium never saturates: in-scatter is a raw
+	// sum of stepLength * density * L over the march, so it grows LINEARLY with
+	// how far the ray travels and has no upper bound at all. A 3000-unit canyon
+	// accumulates roughly ten times what a 300-unit chamber does at identical
+	// density and identical lighting. That is the "150 out by the rail carts,
+	// 500 at the start" split on mgu1m1, and the density curve cannot close it
+	// because the two areas differ by RAY LENGTH, which no density term sees.
+	//
+	// Real fog does not behave that way. It saturates: past a few optical depths
+	// you see the medium's own colour and nothing more, however much further it
+	// extends. Tying extinction to the actual density restores that - throughput
+	// decays by exp(-stepLength * density * sigma) at the bottom of the march
+	// loop, so the in-scatter it multiplies rolls off towards L_medium * (1 - T)
+	// instead of running away. The vista then clamps at the map's own authored
+	// fog colour, which frees cl_fog_scale to be raised until the enclosed areas
+	// read properly without the open ones blowing out.
+	//
+	// 0 keeps the legacy flat 0.0001 byte for byte, so nothing moves until this
+	// is set. Choose it from the range at which geometry should disappear: unity
+	// optical depth at distance R under density d is sigma = 1 / (d * R).
+	vec3 extinction_factors;
+	if (medium != MEDIUM_NONE)
+		extinction_factors = get_extinction_factors(medium);
+	else if (fog_medium)
+		extinction_factors = vec3(global_ubo.pt_fog_extinction);
+	else
+		extinction_factors = vec3(0.0001);
 
 	vec3 throughput = throughput_distance.xyz;
 	vec3 inscatter = vec3(0);
+
+	// How much of what is BEHIND the fog survives it. Tracked separately from
+	// `throughput`, which starts at the path tracer's own value rather than at 1,
+	// and handed to god_rays_filter.comp in the alpha channel.
+	float fog_transmittance = 1.0;
 
 	// Local lights are accumulated separately because the sun contribution below
 	// is multiplied by sun_color at the end, and these must not be.
@@ -623,7 +668,7 @@ void main()
 			// Isotropic, not Henyey-Greenstein: HG here is oriented about the SUN
 			// direction, which means nothing for a lamp off to one side. Fog lit
 			// by a nearby point light scatters essentially evenly.
-			const float isotropic_phase = 0.0796;   // 1 / (4 pi)
+			const float isotropic_phase = FOG_ISOTROPIC_PHASE;
 
 			float r = rand(ivec2(pixelPos.xy) + ivec2(step_index * 17, step_index * 31));
 
@@ -636,7 +681,35 @@ void main()
 		float distanceToWater;
 		float shadow = GetShadow(currentPos + shadowBias, distanceToWater);
 
-		vec3 differentialInscatter = (shadow * phase * stepLength * density) * throughput;
+		// AMBIENT IN SHADOW.
+		//
+		// `shadow` is a binary shadow-map lookup, so at cl_fog 1 - where the sun
+		// term is the ONLY term - a march point the sun cannot reach contributes
+		// exactly zero. That is the cliff behind "mgu1m1 needs cl_fog_scale 500
+		// at the start and 150 out by the rail carts": the enclosed start is
+		// almost wholly in the sun's shadow, so nearly every step there is
+		// multiplied by zero and the only way to get any fog at all is to crank
+		// the scale until a handful of lit steps carry the whole look.
+		// Multiplying zero by a larger number does not produce fog.
+		//
+		// Fog in shadow is not black in reality - it is lit by the sky and by
+		// multiple scattering, which is the same quantity these maps' authors
+		// wrote into worldspawn as _sunlight2 (mgu1m1: 300, a dull red-violet).
+		// This puts that floor back as a fraction of the sun's radiance,
+		// scattered ISOTROPICALLY rather than through the sun-oriented
+		// Henyey-Greenstein lobe, because skylight has no preferred direction -
+		// and so it does not fight gr_eccentricity / pt_fog_eccentricity, which
+		// stay in charge of how tight the sunlit shafts are.
+		//
+		// This is what actually lets one cl_fog_scale cover both areas. With a
+		// floor under the shadowed volume the two differ only by ray length and
+		// by height in the fog band, and the extinction above handles the first.
+		// 0 restores the hard cliff exactly.
+		float scatter = shadow * phase;
+		if (global_ubo.pt_fog_ambient > 0.0)
+			scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
+
+		vec3 differentialInscatter = (scatter * stepLength * density) * throughput;
 		if(medium != MEDIUM_NONE)
 		{
 			differentialInscatter *= exp(-extinction_factors * distanceToWater);
@@ -652,6 +725,19 @@ void main()
 
 		inscatter += differentialInscatter;
 		throughput *= exp(-(stepLength * density) * extinction_factors);
+
+		if (fog_medium)
+		{
+			fog_transmittance *= exp(-(stepLength * density) * global_ubo.pt_fog_extinction);
+
+			// Once the medium is this opaque nothing further along the ray can be
+			// seen, and `throughput` has decayed by the same factor, so every
+			// remaining step contributes nothing. Worth an explicit break: at the
+			// large cl_fog_scale values these maps need, getStep is already pinned
+			// at its 1-unit minimum, so a vista ray is thousands of steps.
+			if (fog_transmittance < 0.003)
+				break;
+		}
 	}
 
 	vec3 inscatterColor = inscatter * sun_color_ubo.sun_color * global_ubo.god_rays_intensity * 0.0001;
@@ -683,7 +769,12 @@ void main()
 	else
 		prevColor = vec4(0);
 
-	vec4 outputColor = vec4(inscatterColor + prevColor.rgb, 1);
+	// Alpha carries the medium's transmittance to god_rays_filter.comp, which
+	// uses it to fade what is behind the fog. Nothing read this channel before.
+	// A later pass multiplies into what the first wrote, because it continues the
+	// same view ray on through a reflection or a refraction.
+	float prev_transmittance = (push.pass_index != 0) ? prevColor.a : 1.0;
+	vec4 outputColor = vec4(inscatterColor + prevColor.rgb, prev_transmittance * fog_transmittance);
 
 	imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy), outputColor);
 }

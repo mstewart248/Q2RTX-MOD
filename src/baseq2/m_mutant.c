@@ -45,6 +45,8 @@ static int  sound_thud;
 // SOUNDS
 //
 
+#define SPAWNFLAG_MUTANT_NOJUMPING   8
+
 void mutant_step(edict_t *self)
 {
     int     n;
@@ -245,15 +247,41 @@ void mutant_run(edict_t *self)
 // MELEE
 //
 
+/*
+=================
+mutant_swipe_damage
+
+[rerelease] 5..15 rather than the classic 10..14.  A miss also starts a 1.5
+second melee debounce, which is the pivot the whole rerelease mutant turns on:
+having whiffed, it stops trying to swipe and is allowed to jump away and come
+back in, instead of standing in your face swinging.
+=================
+*/
+static int mutant_swipe_damage(void)
+{
+    if (M_RereleaseGame())
+        return 5 + (Q_rand() % 10);
+
+    return 10 + (Q_rand() % 5);
+}
+
+static void mutant_swipe_missed(edict_t *self)
+{
+    gi.sound(self, CHAN_WEAPON, sound_swing, 1, ATTN_NORM, 0);
+
+    if (M_RereleaseGame())
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
+}
+
 void mutant_hit_left(edict_t *self)
 {
     vec3_t  aim;
 
     VectorSet(aim, MELEE_DISTANCE, self->mins[0], 8);
-    if (fire_hit(self, aim, (10 + (Q_rand() % 5)), 100))
+    if (fire_hit(self, aim, mutant_swipe_damage(), 100))
         gi.sound(self, CHAN_WEAPON, sound_hit, 1, ATTN_NORM, 0);
     else
-        gi.sound(self, CHAN_WEAPON, sound_swing, 1, ATTN_NORM, 0);
+        mutant_swipe_missed(self);
 }
 
 void mutant_hit_right(edict_t *self)
@@ -261,16 +289,25 @@ void mutant_hit_right(edict_t *self)
     vec3_t  aim;
 
     VectorSet(aim, MELEE_DISTANCE, self->maxs[0], 8);
-    if (fire_hit(self, aim, (10 + (Q_rand() % 5)), 100))
+    if (fire_hit(self, aim, mutant_swipe_damage(), 100))
         gi.sound(self, CHAN_WEAPON, sound_hit2, 1, ATTN_NORM, 0);
     else
-        gi.sound(self, CHAN_WEAPON, sound_swing, 1, ATTN_NORM, 0);
+        mutant_swipe_missed(self);
 }
 
 void mutant_check_refire(edict_t *self)
 {
     if (!self->enemy || !self->enemy->inuse || self->enemy->health <= 0)
         return;
+
+    // [rerelease] refires on any skill at 50%, not only on nightmare, but only
+    // while it has not just whiffed - the debounce is what lets it disengage
+    if (M_RereleaseGame()) {
+        if (self->monsterinfo.melee_debounce_framenum <= level.framenum
+            && (random() < 0.5f || range(self, self->enemy) == RANGE_MELEE))
+            self->monsterinfo.nextframe = FRAME_attack09;
+        return;
+    }
 
     if (((skill->value == 3) && (random() < 0.5f)) || (range(self, self->enemy) == RANGE_MELEE))
         self->monsterinfo.nextframe = FRAME_attack09;
@@ -304,7 +341,10 @@ void mutant_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_
         return;
     }
 
-    if (other->takedamage) {
+    // [rerelease] self->style is a one-shot latch armed at takeoff, so a single
+    // leap can only body-slam once.  Ours used to be able to damage on every
+    // touch for the whole flight.
+    if (other->takedamage && (!M_RereleaseGame() || self->style == 1)) {
         if (VectorLength(self->velocity) > 400) {
             vec3_t  point;
             vec3_t  normal;
@@ -315,6 +355,7 @@ void mutant_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_
             VectorMA(self->s.origin, self->maxs[0], normal, point);
             damage = 40 + 10 * random();
             T_Damage(other, self, self, self->velocity, point, normal, damage, damage, 0, MOD_UNKNOWN);
+            self->style = 0;
         }
     }
 
@@ -336,8 +377,19 @@ void mutant_jump_takeoff(edict_t *self)
     gi.sound(self, CHAN_VOICE, sound_sight, 1, ATTN_NORM, 0);
     AngleVectors(self->s.angles, forward, NULL, NULL);
     self->s.origin[2] += 1;
-    VectorScale(forward, 600, self->velocity);
-    self->velocity[2] = 250;
+
+    // [rerelease] a shorter, flatter pounce - 400/150 against the classic
+    // 600/250.  Paired with the 265 unit cap in mutant_check_jump this turns
+    // the leap into a gap-closer instead of a room-crossing charge.
+    if (M_RereleaseGame()) {
+        VectorScale(forward, 400, self->velocity);
+        self->velocity[2] = 150;
+        self->style = 1;
+    } else {
+        VectorScale(forward, 600, self->velocity);
+        self->velocity[2] = 250;
+    }
+
     self->groundentity = NULL;
     self->monsterinfo.aiflags |= AI_DUCKED;
     self->monsterinfo.attack_finished = level.framenum + 3 * BASE_FRAMERATE;
@@ -346,8 +398,32 @@ void mutant_jump_takeoff(edict_t *self)
 
 void mutant_check_landing(edict_t *self)
 {
+    // [rerelease] clears the blocked-system jump state; ours never did, so a
+    // pounce left jump_framenum armed
+    if (M_RereleaseGame())
+        monster_jump_finished(self);
+
     if (self->groundentity) {
         gi.sound(self, CHAN_WEAPON, sound_thud, 1, ATTN_NORM, 0);
+
+        // [rerelease] a real cooldown after landing, and a swipe if the leap
+        // actually arrived.  Ours zeroed attack_finished, which let the mutant
+        // re-roll a jump on the very next think - this is the biggest single
+        // reason ours pounces over and over where the rerelease's runs at you.
+        if (M_RereleaseGame()) {
+            self->monsterinfo.attack_finished = level.framenum +
+                (0.5f + random()) * BASE_FRAMERATE;
+            self->monsterinfo.aiflags &= ~AI_DUCKED;
+
+            // id tests range_to <= RANGE_MELEE * 2, a 40 unit gap between
+            // boxes.  MELEE_DISTANCE (80) is that same reach on this tree's
+            // origin-to-origin measure - see M_RangeBetween in g_ai.c.
+            if (self->enemy && realrange(self, self->enemy) <= MELEE_DISTANCE)
+                self->monsterinfo.melee(self);
+
+            return;
+        }
+
         self->monsterinfo.attack_finished = 0;
         self->monsterinfo.aiflags &= ~AI_DUCKED;
         return;
@@ -383,26 +459,70 @@ void mutant_jump(edict_t *self)
 
 bool mutant_check_melee(edict_t *self)
 {
-    if (range(self, self->enemy) == RANGE_MELEE)
-        return true;
-    return false;
+    if (range(self, self->enemy) != RANGE_MELEE)
+        return false;
+
+    // [rerelease] a mutant that just whiffed does not keep swinging - it backs
+    // off and lets mutant_check_jump take over
+    if (M_RereleaseGame() && self->monsterinfo.melee_debounce_framenum > level.framenum)
+        return false;
+
+    return true;
 }
 
+/*
+=================
+mutant_check_jump
+
+[rerelease] Rewritten by id, and the difference is the whole reason our mutants
+pounce down a corridor where the rerelease's run down it.
+
+Classic: any distance over 100 units, 10% per check, no cooldown at all.  With
+mutant_check_landing zeroing attack_finished, a mutant that lands still out of
+reach re-rolls immediately - so at any range it eventually leaps, over and over,
+and a doorway it cannot fit through becomes a loop.
+
+Rerelease: capped at 265 units ("only use it to close distance gaps"), 50% but
+gated behind attack_finished, and the two 1997 height tests replaced by a single
+"can we even reach standing height" check.  The under-100 bail is also now
+conditional on the melee debounce, so a mutant that has just whiffed IS allowed
+to jump back out of a fight it is losing.
+=================
+*/
 bool mutant_check_jump(edict_t *self)
 {
     vec3_t  v;
     float   distance;
+    bool    rerelease = M_RereleaseGame();
 
-    if (self->absmin[2] > (self->enemy->absmin[2] + 0.75f * self->enemy->size[2]))
-        return false;
+    if (rerelease) {
+        // no way we could reach standing height
+        if (self->absmin[2] + 125 < self->enemy->absmin[2])
+            return false;
+    } else {
+        if (self->absmin[2] > (self->enemy->absmin[2] + 0.75f * self->enemy->size[2]))
+            return false;
 
-    if (self->absmax[2] < (self->enemy->absmin[2] + 0.25f * self->enemy->size[2]))
-        return false;
+        if (self->absmax[2] < (self->enemy->absmin[2] + 0.25f * self->enemy->size[2]))
+            return false;
+    }
 
     v[0] = self->s.origin[0] - self->enemy->s.origin[0];
     v[1] = self->s.origin[1] - self->enemy->s.origin[1];
     v[2] = 0;
     distance = VectorLength(v);
+
+    if (rerelease) {
+        // already on top of the enemy, and not trying to escape a melee
+        if (distance < 100 && self->monsterinfo.melee_debounce_framenum <= level.framenum)
+            return false;
+
+        // only use it to close distance gaps
+        if (distance > 265)
+            return false;
+
+        return self->monsterinfo.attack_finished < level.framenum && random() < 0.5f;
+    }
 
     if (distance < 100)
         return false;
@@ -424,7 +544,10 @@ bool mutant_checkattack(edict_t *self)
         return true;
     }
 
-    if (mutant_check_jump(self)) {
+    // [rerelease] the NoJumping spawnflag suppresses the pounce as well as the
+    // blocked-system ledge jumps; ours only ever checked it for the latter
+    if ((!M_RereleaseGame() || !(self->spawnflags & SPAWNFLAG_MUTANT_NOJUMPING))
+        && mutant_check_jump(self)) {
         self->monsterinfo.attack_state = AS_MISSILE;
         // FIXME play a jump sound here
         return true;
@@ -476,8 +599,7 @@ void mutant_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     float   r;
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -505,10 +627,32 @@ void mutant_pain(edict_t *self, edict_t *other, float kick, int damage)
 // DEATH
 //
 
+/*
+=================
+mutant_shrink
+
+[rerelease] Flattens the corpse mid-death-animation and marks it a dead monster
+right there, so the body stops blocking the doorway it fell in while the rest of
+the animation plays out.  Ours only did this at the very end, in mutant_dead.
+=================
+*/
+static void mutant_shrink(edict_t *self)
+{
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 void mutant_dead(edict_t *self)
 {
-    VectorSet(self->mins, -16, -16, -24);
-    VectorSet(self->maxs, 16, 16, -8);
+    // [rerelease] a longer, flatter corpse box that matches the sprawled pose
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, 0, -48, -24);
+        VectorSet(self->maxs, 64, 16, -8);
+    } else {
+        VectorSet(self->mins, -16, -16, -24);
+        VectorSet(self->maxs, 16, 16, -8);
+    }
     self->movetype = MOVETYPE_TOSS;
     self->svflags |= SVF_DEADMONSTER;
     gi.linkentity(self);
@@ -522,7 +666,7 @@ mframe_t mutant_frames_death1 [] = {
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move,    0,  mutant_shrink },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL }
@@ -534,7 +678,7 @@ mframe_t mutant_frames_death2 [] = {
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move,    0,  mutant_shrink },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
@@ -696,7 +840,6 @@ blocked_checkplat rides func_plats.  All of this runs on the APPENDED jump
 frames, so blocked_checkjump refuses unless M_RereleaseAnims() is on.
 =================
 */
-#define SPAWNFLAG_MUTANT_NOJUMPING   8
 
 static void mutant_jump_down(edict_t *self)
 {
@@ -793,8 +936,18 @@ void SP_monster_mutant(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/mutant/tris.md2");
-    VectorSet(self->mins, -32, -32, -24);
-    VectorSet(self->maxs, 32, 32, 48);
+    // [rerelease] id shrank the mutant a lot: 36 units wide and 54 tall,
+    // against the classic 64 wide and 72 tall.  This is why ours snags on a
+    // half-open door where the rerelease's runs straight through - the classic
+    // box simply does not fit through the gap.  The QUAKED comment in id's own
+    // m_mutant.cpp still says the old size; the code is what ships.
+    if (M_RereleaseGame()) {
+        VectorSet(self->mins, -18, -18, -24);
+        VectorSet(self->maxs, 18, 18, 30);
+    } else {
+        VectorSet(self->mins, -32, -32, -24);
+        VectorSet(self->maxs, 32, 32, 48);
+    }
 
     self->health = 300;
     self->gib_health = -120;

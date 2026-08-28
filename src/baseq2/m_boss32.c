@@ -538,8 +538,7 @@ void MakronHyperblaster(edict_t *self)
 void makron_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum = 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -816,6 +815,12 @@ void SP_monster_makron(edict_t *self)
 //  self->monsterinfo.currentmove = &makron_move_stand;
     self->monsterinfo.currentmove = &makron_move_sight;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // [rerelease] id replaced the hardcoded "they spray too much" classname
+    // list in T_Damage with this flag, so these have to carry it or they would
+    // start infighting the moment the flag test goes live.  Harmless when the
+    // game is not rerelease: the reader in g_combat.c is gated.
+    self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
 
     walkmonster_start(self);
 }

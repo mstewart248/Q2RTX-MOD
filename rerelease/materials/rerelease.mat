@@ -1346,7 +1346,9 @@ textures/e1u1/+0cgrate6_1:
 textures/e1u1/+0cgrate7_1:
 	texture_base materialDev/textures/e1u1/+0cgrate7_1.tga
 	texture_normals materialDev/textures/e1u1/+0cgrate7_1_n.tga
-	metalness_factor 0
+	texture_emissive materialDev/textures/e1u1/+0cgrate7_1_light.tga
+	emissive_factor 1.0
+	is_light 1
 
 textures/e1u1/+1cgrate6_1:
 	texture_base materialDev/textures/e1u1/+1cgrate6_1.tga
@@ -1356,7 +1358,6 @@ textures/e1u1/+1cgrate6_1:
 textures/e1u1/+1cgrate7_1:
 	texture_base materialDev/textures/e1u1/+1cgrate7_1.tga
 	texture_normals materialDev/textures/e1u1/+1cgrate7_1_n.tga
-	metalness_factor 0
 
 # Commented out - this texture already has a curated entry in baseq2.mat that makes
 # it emissive (texture_emissive + emissive_factor + base_factor: the shootable button
@@ -16741,7 +16742,6 @@ textures/pods/pn_3a:
 textures/pods/pn_4b:
 	texture_base materialDev/textures/pods/pn_4b.tga
 	texture_normals materialDev/textures/pods/pn_4b_n.tga
-	metalness_factor 0
 
 textures/pods/pn_5b:
 	texture_base materialDev/textures/pods/pn_5b.tga
@@ -18614,7 +18614,7 @@ textures/tomc/tc_tomb_light_solid_a:
 	is_light 1
 	emissive_threshold 16
 	bsp_radiance 0
-	default_radiance 0.5
+	default_radiance 0.25
 	light_styles 0
 
 textures/tomc/tc_tomb_panel_256_a:
@@ -19002,7 +19002,6 @@ textures/tomf/am_flag01:
 textures/tomf/arvnt1_3c:
 	texture_base materialDev/textures/tomf/arvnt1_3c.tga
 	texture_normals materialDev/textures/tomf/arvnt1_3c_n.tga
-	metalness_factor 0
 
 textures/tomf/baslt3_1b:
 	texture_base materialDev/textures/tomf/baslt3_1b.tga
@@ -19121,7 +19120,6 @@ textures/tomf/glocrys_1c:
 textures/tomf/grnx2_3b:
 	texture_base materialDev/textures/tomf/grnx2_3b.tga
 	texture_normals materialDev/textures/tomf/grnx2_3b_n.tga
-	metalness_factor 0
 
 textures/tomf/grnx2_3c:
 	texture_base materialDev/textures/tomf/grnx2_3c.tga
@@ -19135,7 +19133,6 @@ textures/tomf/grnx2_3d:
 textures/tomf/grnx2_3e:
 	texture_base materialDev/textures/tomf/grnx2_3e.tga
 	texture_normals materialDev/textures/tomf/grnx2_3e_n.tga
-	metalness_factor 0
 
 textures/tomf/grnx2_3f:
 	texture_base materialDev/textures/tomf/grnx2_3f.tga
@@ -19278,7 +19275,6 @@ textures/tomf/metal36_dr:
 textures/tomf/metal36_dr1:
 	texture_base materialDev/textures/tomf/metal36_dr1.tga
 	texture_normals materialDev/textures/tomf/metal36_dr1_n.tga
-	metalness_factor 0
 
 textures/tomf/metl5b_3b:
 	texture_base materialDev/textures/tomf/metl5b_3b.tga
@@ -19515,7 +19511,6 @@ textures/tomf/tf_accord2:
 textures/tomf/tf_barrel:
 	texture_base materialDev/textures/tomf/tf_barrel.tga
 	texture_normals materialDev/textures/tomf/tf_barrel_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_barrel0:
 	texture_base materialDev/textures/tomf/tf_barrel0.tga
@@ -19524,12 +19519,10 @@ textures/tomf/tf_barrel0:
 textures/tomf/tf_barrel2:
 	texture_base materialDev/textures/tomf/tf_barrel2.tga
 	texture_normals materialDev/textures/tomf/tf_barrel2_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_barrel5:
 	texture_base materialDev/textures/tomf/tf_barrel5.tga
 	texture_normals materialDev/textures/tomf/tf_barrel5_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_blood01:
 	texture_base materialDev/textures/tomf/tf_blood01.tga
@@ -19544,7 +19537,6 @@ textures/tomf/tf_box01_base:
 textures/tomf/tf_box01_side:
 	texture_base materialDev/textures/tomf/tf_box01_side.tga
 	texture_normals materialDev/textures/tomf/tf_box01_side_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_box01_side2:
 	texture_base materialDev/textures/tomf/tf_box01_side2.tga
@@ -20357,7 +20349,6 @@ textures/tomf/tf_metwall2_02:
 textures/tomf/tf_metwall4_02:
 	texture_base materialDev/textures/tomf/tf_metwall4_02.tga
 	texture_normals materialDev/textures/tomf/tf_metwall4_02_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_metwall4_02b:
 	texture_base materialDev/textures/tomf/tf_metwall4_02b.tga

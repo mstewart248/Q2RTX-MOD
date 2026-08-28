@@ -340,14 +340,23 @@ void M_ReactToDamage(edict_t *targ, edict_t *attacker)
         return;
     }
 
-    // it's the same base (walk/swim/fly) type and a different classname and it's not a tank
-    // (they spray too much), get mad at them
+    // It's the same base (walk/swim/fly) type and a different classname, so get
+    // mad at them - unless the shooter is one of the ones that sprays too much
+    // to hold responsible.
+    //
+    // [rerelease] id replaced the hardcoded classname list with AI_IGNORE_SHOTS,
+    // which is both cleaner and wider: it also covers boss2, the carrier, the
+    // medic commander, the shambler and the turret, and it is checked in BOTH
+    // directions, so a flagged monster is neither blamed nor provoked.
     if (((targ->flags & (FL_FLY | FL_SWIM)) == (attacker->flags & (FL_FLY | FL_SWIM))) &&
         (strcmp(targ->classname, attacker->classname) != 0) &&
-        (strcmp(attacker->classname, "monster_tank") != 0) &&
-        (strcmp(attacker->classname, "monster_supertank") != 0) &&
-        (strcmp(attacker->classname, "monster_makron") != 0) &&
-        (strcmp(attacker->classname, "monster_jorg") != 0)) {
+        (M_RereleaseGame()
+         ? (!(attacker->monsterinfo.aiflags & AI_IGNORE_SHOTS) &&
+            !(targ->monsterinfo.aiflags & AI_IGNORE_SHOTS))
+         : ((strcmp(attacker->classname, "monster_tank") != 0) &&
+            (strcmp(attacker->classname, "monster_supertank") != 0) &&
+            (strcmp(attacker->classname, "monster_makron") != 0) &&
+            (strcmp(attacker->classname, "monster_jorg") != 0)))) {
         if (targ->enemy && targ->enemy->client)
             targ->oldenemy = targ->enemy;
         targ->enemy = attacker;

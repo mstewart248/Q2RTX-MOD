@@ -1003,7 +1003,12 @@ dispatch_rays(VkCommandBuffer cmd_buf, pipeline_index_t pipeline_index, pt_push_
 		};
 
 		VkStridedDeviceAddressRegionKHR callable = {
-			.deviceAddress = VK_NULL_HANDLE,
+			// Not VK_NULL_HANDLE: deviceAddress is a VkDeviceAddress (uint64_t), not a
+			// handle. Vulkan-Headers 1.2.162 defined VK_NULL_HANDLE as a bare 0 so this
+			// compiled silently; from 1.3 on it is ((void*)0) in C, and assigning a
+			// pointer to an integer field warns. There is no callable shader group here,
+			// and an unused region is spelled as a zero address.
+			.deviceAddress = 0,
 			.stride = 0,
 			.size = 0
 		};
