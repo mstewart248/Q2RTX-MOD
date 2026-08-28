@@ -310,10 +310,30 @@ mmove_t brain_move_pain1 = {FRAME_pain101, FRAME_pain121, brain_frames_pain1, br
 
 
 
+/*
+=================
+brain_duck_down
+
+The brain is the one classic monster whose duck_down set no hold timer: id left
+that to brain_dodge, which had already written (eta + 0.5) seconds.  The shared
+monster_duck_down defaults to the flat one second the other five used, so put
+the brain's own value back over it.
+=================
+*/
+static void brain_duck_down(edict_t *self)
+{
+    int hold = self->monsterinfo.duck_wait_framenum;
+
+    monster_duck_down(self);
+
+    if (!M_RereleaseGame())
+        self->monsterinfo.duck_wait_framenum = hold;
+}
+
 mframe_t brain_frames_duck [] =
 {
     { ai_move,    0,  NULL },
-    { ai_move,    -2, monster_duck_down },
+    { ai_move,    -2, brain_duck_down },
     { ai_move,    17, monster_duck_hold },
     { ai_move,    -3, NULL },
     { ai_move,    -1, monster_duck_up },
@@ -342,13 +362,32 @@ bool brain_duck(edict_t *self, float eta)
 =================
 brain_dodge
 
-KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c is a frozen table
-for version-2 saves and names this symbol, so it cannot be deleted.
+monsterinfo.dodge for every brain, in both games.  The rerelease hands over to
+M_MonsterDodge and its duck pair; the ORIGINAL game gets id's 1997
+dodge back verbatim - a flat 25% chance of a plain crouch.
+
+(This symbol also has to keep existing: g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names it.)
 =================
 */
 void brain_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
 {
-    M_MonsterDodge(self, attacker, eta, tr, gravity);
+    if (M_RereleaseGame()) {
+        M_MonsterDodge(self, attacker, eta, tr, gravity);
+        return;
+    }
+
+    if (random() > 0.25f)
+        return;
+
+    if (!self->enemy)
+        self->enemy = attacker;
+
+    // id wrote this to pause_framenum, which its own brain_duck_hold read.
+    // The shared monster_duck_hold reads duck_wait_framenum, so set both.
+    self->monsterinfo.pause_framenum = level.framenum + (eta + 0.5f) * BASE_FRAMERATE;
+    self->monsterinfo.duck_wait_framenum = self->monsterinfo.pause_framenum;
+    self->monsterinfo.currentmove = &brain_move_duck;
 }
 
 
@@ -952,9 +991,14 @@ void SP_monster_brain(edict_t *self) {
     self->monsterinfo.stand = brain_stand;
     self->monsterinfo.walk = brain_walk;
     self->monsterinfo.run = brain_run;
-    self->monsterinfo.dodge = M_MonsterDodge;
-    self->monsterinfo.duck = brain_duck;
-    self->monsterinfo.unduck = monster_duck_up;
+    // brain_dodge is the classic dodge in baseq2 and forwards to M_MonsterDodge
+    // in the rerelease.  duck/unduck are what M_MonsterDodge drives, so the
+    // original game must not advertise them at all.
+    self->monsterinfo.dodge = brain_dodge;
+    if (M_RereleaseGame()) {
+        self->monsterinfo.duck = brain_duck;
+        self->monsterinfo.unduck = monster_duck_up;
+    }
     // the rerelease brain is a ranged monster; the classic one is melee-only
     if (M_RereleaseGame())
         self->monsterinfo.attack = brain_attack;

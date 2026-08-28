@@ -261,6 +261,13 @@ void CL_RunRefresh(void)
     }
 
     if (cvar_modified & CVAR_REFRESH) {
+        // A renderer restart tears down and rebuilds the Vulkan device, the swapchain
+        // and the DLSS feature, so name the cvar that asked for it. Three of these were
+        // happening before the menu even appeared.
+        for (cvar_t *c = cvar_vars; c; c = c->next) {
+            if ((c->flags & CVAR_REFRESH) && c->modified)
+                Com_Printf("vid_restart: triggered by %s = \"%s\"\n", c->name, c->string);
+        }
         CL_RestartRefresh(true);
         cvar_modified &= ~CVAR_REFRESH;
     } else if (cvar_modified & CVAR_FILES) {

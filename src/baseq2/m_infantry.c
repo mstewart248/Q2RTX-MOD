@@ -597,13 +597,28 @@ bool infantry_sidestep(edict_t *self)
 =================
 infantry_dodge
 
-KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c is a frozen table
-for version-2 saves and names this symbol, so it cannot be deleted.
+monsterinfo.dodge for every infantry, in both games.  The rerelease hands over
+to M_MonsterDodge and its duck + sidestep pair; the ORIGINAL game gets id's
+1997 dodge back verbatim - a flat 25% chance of a plain crouch, nothing else.
+
+(This symbol also has to keep existing: g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names it.)
 =================
 */
 void infantry_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
 {
-    M_MonsterDodge(self, attacker, eta, tr, gravity);
+    if (M_RereleaseGame()) {
+        M_MonsterDodge(self, attacker, eta, tr, gravity);
+        return;
+    }
+
+    if (random() > 0.25f)
+        return;
+
+    if (!self->enemy)
+        self->enemy = attacker;
+
+    self->monsterinfo.currentmove = &infantry_move_duck;
 }
 
 
@@ -1008,10 +1023,15 @@ void SP_monster_infantry(edict_t *self)
     self->monsterinfo.stand = infantry_stand;
     self->monsterinfo.walk = infantry_walk;
     self->monsterinfo.run = infantry_run;
-    self->monsterinfo.dodge = M_MonsterDodge;
-    self->monsterinfo.duck = infantry_duck;
-    self->monsterinfo.unduck = monster_duck_up;
-    self->monsterinfo.sidestep = infantry_sidestep;
+    // infantry_dodge is the classic dodge in baseq2 and forwards to
+    // M_MonsterDodge in the rerelease.  duck/sidestep are what M_MonsterDodge
+    // drives, so the original game must not advertise them at all.
+    self->monsterinfo.dodge = infantry_dodge;
+    if (M_RereleaseGame()) {
+        self->monsterinfo.duck = infantry_duck;
+        self->monsterinfo.unduck = monster_duck_up;
+        self->monsterinfo.sidestep = infantry_sidestep;
+    }
     self->monsterinfo.attack = infantry_attack;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = infantry_sight;

@@ -2754,11 +2754,13 @@ static void CL_InitLocal(void)
     cl_predict->changed = cl_predict_changed;
     cl_kickangles = Cvar_Get("cl_kickangles", "1", CVAR_CHEAT);
     cl_warn_on_fps_rounding = Cvar_Get("cl_warn_on_fps_rounding", "1", 0);
-    cl_maxfps = Cvar_Get("cl_maxfps", "62", 0);
+    // Archived: these are frame-pacing settings a user tunes once, and they were being
+    // silently reset to the defaults on every launch.
+    cl_maxfps = Cvar_Get("cl_maxfps", "62", CVAR_ARCHIVE);
     cl_maxfps->changed = cl_maxfps_changed;
-    cl_async = Cvar_Get("cl_async", "1", 0);
+    cl_async = Cvar_Get("cl_async", "1", CVAR_ARCHIVE);
     cl_async->changed = cl_sync_changed;
-    r_maxfps = Cvar_Get("r_maxfps", "0", 0);
+    r_maxfps = Cvar_Get("r_maxfps", "0", CVAR_ARCHIVE);
     r_maxfps->changed = cl_maxfps_changed;
     cl_autopause = Cvar_Get("cl_autopause", "1", 0);
     cl_rollhack = Cvar_Get("cl_rollhack", "1", 0);

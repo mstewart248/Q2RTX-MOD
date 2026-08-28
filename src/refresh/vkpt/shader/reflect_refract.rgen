@@ -162,9 +162,8 @@ main()
 	// Different from primary_is_weapon - this carries over through reflections and refractions
 	int checkerboard_weapon_flag = checkerboard_flags & CHECKERBOARD_FLAG_WEAPON;
 	int checkerboard_mirror_flag = 0;
-	// Carried over through further bounces like the weapon flag, and set the moment a
-	// glass surface is entered. Tells the combine pass that the split at this pixel was
-	// glass rather than water or slime - see CHECKERBOARD_FLAG_GLASS in constants.h.
+	// Carried through further bounces like the weapon flag. Tells the combine pass the
+	// split here was glass, not water or slime.
 	int checkerboard_glass_flag = checkerboard_flags & CHECKERBOARD_FLAG_GLASS;
 	if(primary_is_glass)
 		checkerboard_glass_flag = CHECKERBOARD_FLAG_GLASS;

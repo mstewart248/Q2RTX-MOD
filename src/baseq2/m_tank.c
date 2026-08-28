@@ -1006,7 +1006,7 @@ void SP_monster_tank(edict_t *self)
     self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
 
     // [rerelease] the tank shells the corridor you disappeared down
-    self->monsterinfo.blindfire = true;
+    self->monsterinfo.blindfire = M_RereleaseGame();
 
     walkmonster_start(self);
 

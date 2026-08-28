@@ -62,13 +62,10 @@ void InitDLSSCvars()
     // shows up in cvarlist.
     cvar_pt_dlss_diff_hitdist = Cvar_Get("pt_dlss_diff_hitdist", "1", CVAR_ARCHIVE);
 
-    // Hand DLSS-RR the reflected albedo guide - the base colour of the surface seen IN
-    // the reflection, so RR can demodulate the reflected radiance before it filters and
-    // re-modulate afterwards, instead of blurring the reflected texture itself.
-    // IMG_PT_REFLECTED_ALBEDO has been written by reflect_refract.rgen, cleared every
-    // frame and carried all the way through the combine pass since the split-field work,
-    // but pInReflectedAlbedo was never set, so RR never saw it. Default 0 because it has
-    // not been judged by eye yet: turn it on for an A/B against a mirror or a window.
+    // Reflected albedo guide - the base colour of the surface seen IN the reflection, so
+    // RR can demodulate before filtering instead of blurring the reflected texture.
+    // IMG_PT_REFLECTED_ALBEDO was written and cleared all along but never handed over.
+    // Default 0: not judged by eye yet.
     cvar_pt_dlss_reflected_albedo = Cvar_Get("pt_dlss_reflected_albedo", "0", CVAR_ARCHIVE);
 
     // Resolution of the reflection/refraction layers while split fields are active.

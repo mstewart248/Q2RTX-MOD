@@ -525,12 +525,14 @@ void boss2_attack(edict_t *self)
     VectorSubtract(self->enemy->s.origin, self->s.origin, vec);
     range = VectorLength(vec);
 
-    // SPAWNFLAG_BOSS2_N64 (8) - mgu1m3 and mguboss both spawn one.
+    // SPAWNFLAG_BOSS2_N64 (8) - mgu1m3 and mguboss both spawn one.  Both are
+    // rerelease maps, and bit 8 means nothing to the original game's boss2, so
+    // gate it: a baseq2 map that happens to set it keeps the classic Hornet.
     // Each currentmove assignment below is deliberately written out in full:
     // genptr.py scans for "->monsterinfo.currentmove = &X" line by line, so a
     // ternary would make it record the condition variable and silently drop the
     // real moves from the save pointer table.
-    if (self->spawnflags & 8) {
+    if (M_RereleaseGame() && (self->spawnflags & 8)) {
         if (range <= 125) {
             self->monsterinfo.currentmove = &boss2_move_attack_hb;
         } else if (random() <= 0.6f) {
@@ -553,7 +555,7 @@ void boss2_attack(edict_t *self)
 
 void boss2_attack_mg(edict_t *self)
 {
-    if (self->spawnflags & 8)
+    if (M_RereleaseGame() && (self->spawnflags & 8))
         self->monsterinfo.currentmove = &boss2_move_attack_hb;
     else
         self->monsterinfo.currentmove = &boss2_move_attack_mg;

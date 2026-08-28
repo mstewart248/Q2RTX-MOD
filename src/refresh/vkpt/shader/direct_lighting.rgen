@@ -131,16 +131,10 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	
 	//Do temporal
 	// A field pixel spans 2 screen pixels horizontally when checkerboarded, 1 when the
-	// fields are full-resolution layers, and the motion vector is in full-screen
-	// normalized units either way. The hard-coded inv_width * 2 / prev_width * 0.5 pair
-	// therefore applied only HALF the horizontal motion in split-field mode: the
-	// reprojected pixel landed halfway between where the surface was and where it is,
-	// the depth and normal tests below rejected the reservoir, and ReSTIR lost its
-	// temporal history on every horizontal camera turn - leaving 16 RIS candidates and
-	// one shadow ray to carry the frame. Reflections show it worst, because a mirrored
-	// image moves across the screen faster than the surface carrying it.
-	// asvgf_temporal.comp and asvgf_gradient_reproject.comp already carry this same
-	// correction; this shader and asvgf_gradient_img.comp were missed.
+	// fields are full-resolution layers; the motion vector is full-screen normalized
+	// either way. The old hard-coded inv_width * 2 applied only HALF the horizontal
+	// motion in split-field mode, so the depth test rejected the reservoir and ReSTIR
+	// lost its history on every horizontal turn. Same fix as asvgf_temporal.comp.
 	float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
 	ivec2 pos_prev = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy) * vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height));
 
@@ -498,8 +492,8 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	float dbg_w_sum = r.w_sum;
 
 	//Normalize reservoir
-	// Must match the M that unpack_reservoir will fabricate for this reservoir next
-	// frame, or the stored w_sum is rescaled to a history length the reader does not use.
+	// Must match the M unpack_reservoir fabricates next frame, or the stored w_sum is
+	// rescaled to a history length the reader does not use.
 	float m_clamp = global_ubo.pt_restir != 3 ? max(1.0, global_ubo.pt_restir_m_clamp) : float(RESTIR_M_VC_CLAMP);
 	r.w_sum = (m_clamp * r.w_sum) / r.M;
 

@@ -808,13 +808,28 @@ bool medic_sidestep(edict_t *self)
 =================
 medic_dodge
 
-KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c is a frozen table
-for version-2 saves and names this symbol, so it cannot be deleted.
+monsterinfo.dodge for every medic, in both games.  The rerelease hands over to
+M_MonsterDodge and its duck + sidestep pair; the ORIGINAL game gets id's 1997
+dodge back verbatim - a flat 25% chance of a plain crouch.
+
+(This symbol also has to keep existing: g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names it.)
 =================
 */
 void medic_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
 {
-    M_MonsterDodge(self, attacker, eta, tr, gravity);
+    if (M_RereleaseGame()) {
+        M_MonsterDodge(self, attacker, eta, tr, gravity);
+        return;
+    }
+
+    if (random() > 0.25f)
+        return;
+
+    if (!self->enemy)
+        self->enemy = attacker;
+
+    self->monsterinfo.currentmove = &medic_move_duck;
 }
 
 mframe_t medic_frames_attackHyperBlaster [] = {
@@ -1401,10 +1416,15 @@ void SP_monster_medic(edict_t *self)
     self->monsterinfo.stand = medic_stand;
     self->monsterinfo.walk = medic_walk;
     self->monsterinfo.run = medic_run;
-    self->monsterinfo.dodge = M_MonsterDodge;
-    self->monsterinfo.duck = medic_duck;
-    self->monsterinfo.unduck = monster_duck_up;
-    self->monsterinfo.sidestep = medic_sidestep;
+    // medic_dodge is the classic dodge in baseq2 and forwards to M_MonsterDodge
+    // in the rerelease.  duck/sidestep are what M_MonsterDodge drives, so the
+    // original game must not advertise them at all.
+    self->monsterinfo.dodge = medic_dodge;
+    if (M_RereleaseGame()) {
+        self->monsterinfo.duck = medic_duck;
+        self->monsterinfo.unduck = monster_duck_up;
+        self->monsterinfo.sidestep = medic_sidestep;
+    }
     self->monsterinfo.attack = medic_attack;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = medic_sight;

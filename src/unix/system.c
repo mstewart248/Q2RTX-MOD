@@ -185,6 +185,13 @@ unsigned Sys_Milliseconds(void)
     return ts.tv_sec * 1000UL + ts.tv_nsec / 1000000UL;
 }
 
+uint64_t Sys_Microseconds(void)
+{
+    struct timespec ts;
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
 /*
 =================
 Sys_Quit

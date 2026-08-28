@@ -464,8 +464,27 @@ void gunner_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
 
 
 
+/*
+=================
+gunner_duck_down
+
+id's gunner lobbed a grenade on the way down, on skill 2+ only, from inside its
+own gunner_duck_down.  The rerelease moved that to gunner_duck() and does it on
+any skill, so only the classic path still needs it here - and only when the
+duck is actually starting, which is what id's early-out on AI_DUCKED gave it.
+=================
+*/
+static void gunner_duck_down(edict_t *self)
+{
+    if (!M_RereleaseGame() && !(self->monsterinfo.aiflags & AI_DUCKED) &&
+        skill->value >= 2 && random() > 0.5f)
+        GunnerGrenade(self);
+
+    monster_duck_down(self);
+}
+
 mframe_t gunner_frames_duck [] = {
-    { ai_move, 1,  monster_duck_down },
+    { ai_move, 1,  gunner_duck_down },
     { ai_move, 1,  NULL },
     { ai_move, 1,  monster_duck_hold },
     { ai_move, 0,  NULL },
@@ -512,8 +531,8 @@ bool gunner_duck(edict_t *self, float eta)
         return false;
     }
 
-    // the rerelease keeps id's "lob one on the way down" on any skill;
-    // the classic code gated it on skill 2
+    // the rerelease keeps id's "lob one on the way down" on any skill; the
+    // classic code gated it on skill 2 and does it from gunner_duck_down
     if (random() > 0.5f)
         GunnerGrenade(self);
 
@@ -525,16 +544,28 @@ bool gunner_duck(edict_t *self, float eta)
 =================
 gunner_dodge
 
-KEPT ONLY FOR SAVEGAME COMPATIBILITY. g_ptrs_compat_v2.c is a frozen table used
-to load version-2 saves and it names this symbol, so it cannot be deleted. A
-save from before the dodge system was ported restores
-monsterinfo.dodge = gunner_dodge; forwarding keeps that monster behaving like a
-current one instead of silently losing its dodge.
+monsterinfo.dodge for every gunner, in both games.  The rerelease hands over to
+M_MonsterDodge and its duck + sidestep pair; the ORIGINAL game gets id's 1997
+dodge back verbatim - a flat 25% chance of a plain crouch.
+
+(This symbol also has to keep existing: g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names it.)
 =================
 */
 void gunner_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
 {
-    M_MonsterDodge(self, attacker, eta, tr, gravity);
+    if (M_RereleaseGame()) {
+        M_MonsterDodge(self, attacker, eta, tr, gravity);
+        return;
+    }
+
+    if (random() > 0.25f)
+        return;
+
+    if (!self->enemy)
+        self->enemy = attacker;
+
+    self->monsterinfo.currentmove = &gunner_move_duck;
 }
 
 bool gunner_sidestep(edict_t *self)
@@ -978,10 +1009,15 @@ void SP_monster_gunner(edict_t *self)
     self->monsterinfo.stand = gunner_stand;
     self->monsterinfo.walk = gunner_walk;
     self->monsterinfo.run = gunner_run;
-    self->monsterinfo.dodge = M_MonsterDodge;
-    self->monsterinfo.duck = gunner_duck;
-    self->monsterinfo.unduck = monster_duck_up;
-    self->monsterinfo.sidestep = gunner_sidestep;
+    // gunner_dodge is the classic dodge in baseq2 and forwards to M_MonsterDodge
+    // in the rerelease.  duck/sidestep are what M_MonsterDodge drives, so the
+    // original game must not advertise them at all.
+    self->monsterinfo.dodge = gunner_dodge;
+    if (M_RereleaseGame()) {
+        self->monsterinfo.duck = gunner_duck;
+        self->monsterinfo.unduck = monster_duck_up;
+        self->monsterinfo.sidestep = gunner_sidestep;
+    }
     self->monsterinfo.attack = gunner_attack;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = gunner_sight;
@@ -1004,7 +1040,7 @@ void SP_monster_gunner(edict_t *self)
 
     // [rerelease] the gunner lobs grenades at your last known position rather
     // than waiting for you to step back into the doorway
-    self->monsterinfo.blindfire = true;
+    self->monsterinfo.blindfire = M_RereleaseGame();
 
     walkmonster_start(self);
 }

@@ -509,7 +509,8 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
     // purpose: skill 3 skips pain ANIMATIONS, but the trip is a behaviour and
     // should still happen there.
 
-    if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) &&
+    if (M_RereleaseGame() &&
+        !(self->monsterinfo.aiflags & AI_STAND_GROUND) &&
         self->monsterinfo.currentmove != &soldier_move_trip &&
         self->enemy && random() < 0.5f) {
         self->monsterinfo.currentmove = &soldier_move_trip;
@@ -1334,12 +1335,61 @@ bool soldier_sidestep(edict_t *self)
 =================
 soldier_dodge
 
-KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c names this symbol.
+monsterinfo.dodge for every soldier, in both games.
+
+The rerelease hands straight over to M_MonsterDodge, which drives the duck +
+sidestep pair above.  The ORIGINAL game gets id's 1997 dodge back verbatim -
+a flat 25% chance, then a skill-weighted pick between the plain crouch and the
+crouched return fire.  Anything else changes how baseq2 plays.
+
+(This symbol also has to keep existing: g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names it.)
 =================
 */
 void soldier_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
 {
-    M_MonsterDodge(self, attacker, eta, tr, gravity);
+    float   r;
+
+    if (M_RereleaseGame()) {
+        M_MonsterDodge(self, attacker, eta, tr, gravity);
+        return;
+    }
+
+    r = random();
+    if (r > 0.25f)
+        return;
+
+    if (!self->enemy)
+        self->enemy = attacker;
+
+    if (skill->value == 0) {
+        self->monsterinfo.currentmove = &soldier_move_duck;
+        return;
+    }
+
+    // id wrote this to pause_framenum, which its own soldier_duck_hold read.
+    // The shared monster_duck_hold reads duck_wait_framenum, so set both.
+    self->monsterinfo.pause_framenum = level.framenum + (eta + 0.3f) * BASE_FRAMERATE;
+    self->monsterinfo.duck_wait_framenum = self->monsterinfo.pause_framenum;
+    r = random();
+
+    if (skill->value == 1) {
+        if (r > 0.33f)
+            self->monsterinfo.currentmove = &soldier_move_duck;
+        else
+            self->monsterinfo.currentmove = &soldier_move_attack3;
+        return;
+    }
+
+    if (skill->value >= 2) {
+        if (r > 0.66f)
+            self->monsterinfo.currentmove = &soldier_move_duck;
+        else
+            self->monsterinfo.currentmove = &soldier_move_attack3;
+        return;
+    }
+
+    self->monsterinfo.currentmove = &soldier_move_attack3;
 }
 
 
@@ -1802,15 +1852,22 @@ void SP_monster_soldier_x(edict_t *self)
 
     self->monsterinfo.stand = soldier_stand;
 
-    // SPAWNFLAG_SOLDIER_BLIND (8) - stands with the unaware idle instead
-    if (self->spawnflags & 8)
+    // SPAWNFLAG_SOLDIER_BLIND (8) - stands with the unaware idle instead.
+    // Rerelease-only: bit 8 is unused by the original game's soldiers, and a
+    // baseq2 map that happens to set it must keep the normal idle.
+    if (M_RereleaseGame() && (self->spawnflags & 8))
         self->monsterinfo.stand = soldier_blind;
     self->monsterinfo.walk = soldier_walk;
     self->monsterinfo.run = soldier_run;
-    self->monsterinfo.dodge = M_MonsterDodge;
-    self->monsterinfo.duck = soldier_duck;
-    self->monsterinfo.unduck = monster_duck_up;
-    self->monsterinfo.sidestep = soldier_sidestep;
+    // soldier_dodge is the classic dodge in baseq2 and forwards to
+    // M_MonsterDodge in the rerelease.  duck/sidestep are what M_MonsterDodge
+    // drives, so the original game must not advertise them at all.
+    self->monsterinfo.dodge = soldier_dodge;
+    if (M_RereleaseGame()) {
+        self->monsterinfo.duck = soldier_duck;
+        self->monsterinfo.unduck = monster_duck_up;
+        self->monsterinfo.sidestep = soldier_sidestep;
+    }
     self->monsterinfo.attack = soldier_attack;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = soldier_sight;

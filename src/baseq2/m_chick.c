@@ -534,14 +534,28 @@ bool chick_sidestep(edict_t *self)
 =================
 chick_dodge
 
-KEPT ONLY FOR SAVEGAME COMPATIBILITY - g_ptrs_compat_v2.c is a frozen table for
-version-2 saves and names this symbol, so it cannot be deleted. Forwarding keeps
-a monster restored from such a save behaving like a current one.
+monsterinfo.dodge for every chick, in both games.  The rerelease hands over to
+M_MonsterDodge and its duck + sidestep pair; the ORIGINAL game gets id's 1997
+dodge back verbatim - a flat 25% chance of a plain crouch.
+
+(This symbol also has to keep existing: g_ptrs_compat_v2.c is a frozen table
+for version-2 saves and names it.)
 =================
 */
 void chick_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity)
 {
-    M_MonsterDodge(self, attacker, eta, tr, gravity);
+    if (M_RereleaseGame()) {
+        M_MonsterDodge(self, attacker, eta, tr, gravity);
+        return;
+    }
+
+    if (random() > 0.25f)
+        return;
+
+    if (!self->enemy)
+        self->enemy = attacker;
+
+    self->monsterinfo.currentmove = &chick_move_duck;
 }
 
 void ChickSlash(edict_t *self)
@@ -839,10 +853,15 @@ void SP_monster_chick(edict_t *self)
     self->monsterinfo.stand = chick_stand;
     self->monsterinfo.walk = chick_walk;
     self->monsterinfo.run = chick_run;
-    self->monsterinfo.dodge = M_MonsterDodge;
-    self->monsterinfo.duck = chick_duck;
-    self->monsterinfo.unduck = monster_duck_up;
-    self->monsterinfo.sidestep = chick_sidestep;
+    // chick_dodge is the classic dodge in baseq2 and forwards to M_MonsterDodge
+    // in the rerelease.  duck/sidestep are what M_MonsterDodge drives, so the
+    // original game must not advertise them at all.
+    self->monsterinfo.dodge = chick_dodge;
+    if (M_RereleaseGame()) {
+        self->monsterinfo.duck = chick_duck;
+        self->monsterinfo.unduck = monster_duck_up;
+        self->monsterinfo.sidestep = chick_sidestep;
+    }
     self->monsterinfo.attack = chick_attack;
     self->monsterinfo.melee = chick_melee;
     self->monsterinfo.sight = chick_sight;
@@ -853,7 +872,7 @@ void SP_monster_chick(edict_t *self)
     self->monsterinfo.scale = MODEL_SCALE;
 
     // [rerelease] she will put a rocket down the corridor you vanished into
-    self->monsterinfo.blindfire = true;
+    self->monsterinfo.blindfire = M_RereleaseGame();
 
     walkmonster_start(self);
 }

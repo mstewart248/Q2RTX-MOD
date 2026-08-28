@@ -759,11 +759,18 @@ vs 264, soldier 475 vs 575, gunner 209 vs 799), and an out-of-range frame is
 clamped to 0 by the renderer, so a monster driven onto those frames with the
 classic model just freezes in its default pose.
 
-The frames exist only in the rerelease models, so gate on the client's
-cl_md5_models.  This is approximate by nature - it is a client rendering choice
-being read by server-side game code - so a dedicated server, where each client
-could answer differently and no refresh has registered the cvar at all, always
-says no.
+The frames ship ONLY with the rerelease game data, so the first and hardest
+requirement is M_RereleaseGame().  Without it cl_md5_models - which defaults to
+1 - answered yes in plain baseq2 too, and every monster gated on this drove
+itself onto frames the 1997 tris.md2 does not have.  That is what made the
+soldier and the infantry play the wrong animation or stop animating altogether
+in the ORIGINAL game.
+
+Given the rerelease game, cl_md5_models then decides whether the md5 models are
+the ones actually loaded.  That half is approximate by nature - it is a client
+rendering choice being read by server-side game code - so a dedicated server,
+where each client could answer differently and no refresh has registered the
+cvar at all, always says no.
 =================
 */
 /*
@@ -787,6 +794,11 @@ bool M_RereleaseGame(void)
 
 bool M_RereleaseAnims(void)
 {
+    // the appended frames only exist in the rerelease's own models, so plain
+    // baseq2 must never be driven onto them whatever the client is rendering
+    if (!M_RereleaseGame())
+        return false;
+
     if (dedicated && dedicated->value)
         return false;
 
@@ -991,6 +1003,25 @@ void monster_done_dodge(edict_t *self)
 
 void monster_duck_down(edict_t *self)
 {
+    // The classic dodge (see the *_dodge functions, still used whenever the
+    // game is not the rerelease) has no M_MonsterDodge in front of it to set
+    // the hold up, so it reproduces the 1997 *_duck_down here: refuse to
+    // re-duck, and hold the crouch for a flat one second.  pause_framenum is
+    // written as well because that is the field id clobbered, and the classic
+    // infantry's firing window reads it.
+    //
+    // The soldier, infantry, gunner, chick and medic all did exactly this.  The
+    // BRAIN is the exception - its duck_down set no timer at all and left the
+    // hold to whatever brain_dodge had put there - so it wraps this call in
+    // brain_duck_down() to put its own value back.
+    if (!M_RereleaseGame()) {
+        if (self->monsterinfo.aiflags & AI_DUCKED)
+            return;
+
+        self->monsterinfo.duck_wait_framenum = level.framenum + 1 * BASE_FRAMERATE;
+        self->monsterinfo.pause_framenum = self->monsterinfo.duck_wait_framenum;
+    }
+
     self->monsterinfo.aiflags |= AI_DUCKED;
 
     // base_height is captured at spawn in monster_start_go; without it a duck

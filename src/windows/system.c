@@ -1057,6 +1057,13 @@ unsigned Sys_Milliseconds(void)
     return tm.QuadPart * 1000ULL / timer_freq.QuadPart;
 }
 
+uint64_t Sys_Microseconds(void)
+{
+    LARGE_INTEGER tm;
+    QueryPerformanceCounter(&tm);
+    return (uint64_t)tm.QuadPart * 1000000ULL / (uint64_t)timer_freq.QuadPart;
+}
+
 void Sys_AddDefaultConfig(void)
 {
 }

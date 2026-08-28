@@ -37,6 +37,32 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "physical_sky.h"
 #include "conversion.h"
 #include "../../client/client.h"
+
+#ifdef _WIN32
+// VK_EXT_full_screen_exclusive is Win32-only, so its declarations live in
+// vulkan_win32.h, which needs windows.h. Kept local to this file - vkpt.h must not drag
+// windows.h through the whole renderer. NOMINMAX matters: shared.h has its own min/max.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#define VK_USE_PLATFORM_WIN32_KHR
+#include <vulkan/vulkan_win32.h>
+#include <SDL_syswm.h>
+
+static PFN_vkAcquireFullScreenExclusiveModeEXT qvkAcquireFullScreenExclusiveModeEXT = NULL;
+
+// The monitor exclusive fullscreen should take over, via the SDL window's HWND.
+static HMONITOR vkpt_get_window_monitor(void)
+{
+	SDL_SysWMinfo wm_info;
+	SDL_VERSION(&wm_info.version);
+	if (!qvk.window || !SDL_GetWindowWMInfo(qvk.window, &wm_info))
+		return NULL;
+	if (wm_info.subsystem != SDL_SYSWM_WINDOWS)
+		return NULL;
+	return MonitorFromWindow(wm_info.info.win.window, MONITOR_DEFAULTTONEAREST);
+}
+#endif
 #include "../../client/ui/ui.h"
 #include "server/server.h"
 
@@ -57,6 +83,9 @@ cvar_t *cvar_profiler_scale = NULL;
 cvar_t *cvar_hdr = NULL;
 cvar_t *cvar_vsync = NULL;
 cvar_t *cvar_swapchain_images = NULL;
+cvar_t *cvar_vsync_mailbox = NULL;
+cvar_t *cvar_present_stats = NULL;
+cvar_t *cvar_fullscreen_exclusive = NULL;
 cvar_t *cvar_pt_caustics = NULL;
 cvar_t *cvar_pt_enable_nodraw = NULL;
 cvar_t *cvar_pt_enable_surface_lights = NULL;
@@ -196,6 +225,8 @@ typedef struct picked_surface_format_s {
 
 void debug_output(const char* format, ...);
 static void recreate_swapchain(void);
+// Why the most recent swapchain (re)create happened, for the Swapchain: log line.
+static const char *swapchain_reason = "initial create";
 
 static void viewsize_changed(cvar_t *self)
 {
@@ -466,6 +497,8 @@ const char *vk_validation_layers[] = {
 const char *vk_requested_instance_extensions[] = {
 	VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
 	VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
+	// Required by VK_EXT_full_screen_exclusive.
+	VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
 #ifdef VKPT_DEVICE_GROUPS
 	VK_KHR_DEVICE_GROUP_CREATION_EXTENSION_NAME,
 #endif
@@ -699,10 +732,20 @@ create_swapchain(void)
 		}
 	}
 
+	bool mailbox_mode_available = false;
+	for (int i = 0; i < num_present_modes; i++) {
+		if (avail_present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+			mailbox_mode_available = true;
+			break;
+		}
+	}
+
 	qvk.surf_vsync = (cvar_vsync->integer != 0);
+	qvk.surf_vsync_mailbox = (cvar_vsync_mailbox->integer != 0);
 
 	if (qvk.surf_vsync) {
-		qvk.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+		qvk.present_mode = (qvk.surf_vsync_mailbox && mailbox_mode_available)
+			? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
 	} else if (immediate_mode_available) {
 		qvk.present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 	} else {
@@ -734,7 +777,14 @@ create_swapchain(void)
 	   that re-rolls the phase against vblank.
 
 	   minImageCount + 1 gives one image of slack, so the app can build the next
-	   frame while the previous one waits to be scanned out. */
+	   frame while the previous one waits to be scanned out.
+
+	   The image COUNT is not the bug, measured 2026-08-28: starting at 2 is bad,
+	   switching to 4 is bad, switching back to 2 is good - and the log shows identical
+	   swapchain parameters in the bad and good states. What fixes it is the RECREATE,
+	   not what is recreated, which is also why toggling fullscreen has always cleared
+	   it. Whatever is wrong is state that survives the initial create and is reset by
+	   any subsequent one. Do not spend time tuning this number. */
 	uint32_t num_images;
 	if (cvar_swapchain_images->integer > 0)
 		num_images = cvar_swapchain_images->integer;
@@ -747,13 +797,42 @@ create_swapchain(void)
 
 	qvk.surf_num_images = num_images;
 
-	Com_Printf("Swapchain: %u images (min %u, max %u), present mode %s\n",
+	Com_Printf("Swapchain: %u images (min %u, max %u), %ux%u, present mode %s [%s]\n",
 		num_images, surf_capabilities.minImageCount, surf_capabilities.maxImageCount,
+		qvk.extent_unscaled.width, qvk.extent_unscaled.height,
 		qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO (vsync)" :
-		qvk.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "MAILBOX");
+		qvk.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "MAILBOX",
+		swapchain_reason);
+
+	// Ask for exclusive fullscreen. SDL_WINDOW_FULLSCREEN only sets the display mode -
+	// with Vulkan the swapchain is still an ordinary windowed one to the compositor, and
+	// whether it gets independent flip or gets composited is DWM's choice, made afresh on
+	// every swapchain creation. This is the only way to claim the flip outright.
+	qvk.surf_fse_acquired = false;
+	bool want_fse = qvk.supports_fse
+		&& cvar_fullscreen_exclusive->integer != 0
+		&& vid_fullscreen->integer != 0;
+
+#ifdef _WIN32
+	VkSurfaceFullScreenExclusiveWin32InfoEXT fse_win32 = {
+		.sType    = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT,
+		.hmonitor = vkpt_get_window_monitor(),
+	};
+	if (!fse_win32.hmonitor)
+		want_fse = false;
+#endif
+
+	VkSurfaceFullScreenExclusiveInfoEXT fse_info = {
+		.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT,
+#ifdef _WIN32
+		.pNext = &fse_win32,
+#endif
+		.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT,
+	};
 
 	VkSwapchainCreateInfoKHR swpch_create_info = {
 		.sType                 = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+		.pNext                 = want_fse ? &fse_info : NULL,
 		.surface               = qvk.surface,
 		.minImageCount         = num_images,
 		.imageFormat           = qvk.surf_format.format,
@@ -777,6 +856,16 @@ create_swapchain(void)
 	if(vkCreateSwapchainKHR(qvk.device, &swpch_create_info, NULL, &qvk.swap_chain) != VK_SUCCESS) {
 		Com_EPrintf("error creating swapchain\n");
 		return 1;
+	}
+
+	// APPLICATION_CONTROLLED only makes the mode available - it has to be taken. Failing
+	// is not fatal: the swapchain still works, we just did not get the flip.
+	if (want_fse && qvkAcquireFullScreenExclusiveModeEXT)
+	{
+		VkResult fse_res = qvkAcquireFullScreenExclusiveModeEXT(qvk.device, qvk.swap_chain);
+		qvk.surf_fse_acquired = (fse_res == VK_SUCCESS);
+		Com_Printf("Full-screen exclusive: %s\n",
+			qvk.surf_fse_acquired ? "acquired" : qvk_result_to_string(fse_res));
 	}
 
 	vkGetSwapchainImagesKHR(qvk.device, qvk.swap_chain, &qvk.num_swap_chain_images, NULL);
@@ -1131,6 +1220,9 @@ init_vulkan(void)
 					picked_driver_ray_query = driver_properties.driverID;
 				}
 			}
+
+			if (!strcmp(ext_properties[j].extensionName, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME))
+				qvk.supports_fse = true;
 		}
 	}
 
@@ -1427,6 +1519,7 @@ init_vulkan(void)
 	uint32_t max_extension_count = LENGTH(vk_requested_device_extensions_common);
 	max_extension_count += max(LENGTH(vk_requested_device_extensions_ray_pipeline), LENGTH(vk_requested_device_extensions_ray_query));
 	max_extension_count += LENGTH(vk_requested_device_extensions_debug);
+	max_extension_count += 1; /* VK_EXT_full_screen_exclusive */
 
 	const char** device_extensions = alloca(sizeof(char*) * max_extension_count);
 	uint32_t device_extension_count = 0;
@@ -1455,6 +1548,16 @@ init_vulkan(void)
 			vk_requested_device_extensions_debug, LENGTH(vk_requested_device_extensions_debug));
 	}
 
+	// Full-screen exclusive. Without it a Vulkan swapchain on Windows is an ordinary
+	// windowed one as far as the compositor is concerned, whatever SDL did with the
+	// display mode, and whether it gets independent flip is entirely DWM's choice.
+	if (qvk.supports_fse)
+	{
+		static const char* fse_ext[] = { VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			fse_ext, LENGTH(fse_ext));
+	}
+
 	dev_create_info.enabledExtensionCount = device_extension_count;
 	dev_create_info.ppEnabledExtensionNames = device_extensions;
 
@@ -1474,6 +1577,12 @@ init_vulkan(void)
 #define VK_EXTENSION_DO(a) \
 	q##a = (PFN_##a) vkGetDeviceProcAddr(qvk.device, #a); \
 	if(!q##a) { Com_EPrintf("warning: could not load function %s\n", #a); }
+
+#ifdef _WIN32
+	if (qvk.supports_fse)
+		qvkAcquireFullScreenExclusiveModeEXT = (PFN_vkAcquireFullScreenExclusiveModeEXT)
+			vkGetDeviceProcAddr(qvk.device, "vkAcquireFullScreenExclusiveModeEXT");
+#endif
 
 	LIST_EXTENSIONS_ACCEL_STRUCT
 
@@ -3741,6 +3850,105 @@ static void temporal_cvar_changed(cvar_t *self)
 	vkpt_dlss_request_history_reset();
 }
 
+// vid_present_stats accumulators. There are only two places this thread can block per
+// frame - our own GPU fence and the presentation engine - and splitting them tells a
+// GPU-bound frame apart from a present stall, which a utilisation overlay cannot.
+static uint64_t present_stats_fence_us = 0;
+static uint64_t present_stats_acquire_us = 0;
+static uint64_t present_stats_last_us = 0;
+static uint64_t present_stats_prev_frame_us = 0;
+static uint64_t present_stats_worst_us = 0;
+static uint64_t present_stats_worst_fence_us = 0;
+static uint64_t present_stats_worst_acquire_us = 0;
+static double   present_stats_worst_gpu_ms = 0;
+static uint64_t present_stats_prev_fence_total = 0;
+static uint64_t present_stats_prev_acquire_total = 0;
+static uint32_t present_stats_frames = 0;
+static uint32_t present_stats_long_frames = 0;
+
+static void report_present_stats(void)
+{
+	uint64_t now = Sys_Microseconds();
+	if (present_stats_last_us == 0)
+	{
+		// Discard whatever the two accumulators picked up before the window opened -
+		// they are unsigned, and subtracting them from a shorter window underflows into
+		// a nonsense "cpu" figure.
+		present_stats_last_us = now;
+		present_stats_prev_frame_us = now;
+		present_stats_fence_us = 0;
+		present_stats_acquire_us = 0;
+		present_stats_prev_fence_total = 0;
+		present_stats_prev_acquire_total = 0;
+		present_stats_frames = 0;
+		return;
+	}
+
+	// A 5% tail is invisible in a mean, and a missed vblank is exactly a tail event, so
+	// track the worst frame in the window and how many ran long. "long" is relative to
+	// the median-ish frame, so it needs no assumption about the refresh rate.
+	uint64_t this_frame_us = now - present_stats_prev_frame_us;
+	present_stats_prev_frame_us = now;
+	if (this_frame_us > present_stats_worst_us)
+	{
+		// Keep the worst frame's own split, not just its duration. That is what says
+		// WHERE a long frame went: low fence means the time was spent outside the
+		// renderer entirely (CPU), high fence with normal GPU means we waited an extra
+		// vblank, high fence with high GPU means the GPU genuinely spiked.
+		present_stats_worst_us = this_frame_us;
+		present_stats_worst_fence_us = present_stats_fence_us - present_stats_prev_fence_total;
+		present_stats_worst_acquire_us = present_stats_acquire_us - present_stats_prev_acquire_total;
+		present_stats_worst_gpu_ms = vkpt_get_profiler_result(PROFILER_FRAME_TIME);
+	}
+	present_stats_prev_fence_total = present_stats_fence_us;
+	present_stats_prev_acquire_total = present_stats_acquire_us;
+
+	++present_stats_frames;
+	uint64_t window_us = now - present_stats_last_us;
+	if (window_us < 1000000)
+	{
+		// Count frames that took at least 1.5x the running average so far.
+		uint64_t avg_so_far = window_us / present_stats_frames;
+		if (avg_so_far > 0 && this_frame_us * 2 > avg_so_far * 3)
+			++present_stats_long_frames;
+		return;
+	}
+
+	// GPU ms comes from the timestamp profiler, which is recorded unconditionally -
+	// cvar_profiler only gates drawing it. It is the number the fence wait cannot give
+	// us: under FIFO, vkAcquireNextImageKHR returns an index immediately and defers the
+	// vblank wait to the image_available semaphore, which the GPU waits on, so the wait
+	// for vsync lands inside the fence time and not in acquire. GPU well below fence
+	// means we are waiting for the display, not for our own work.
+	double secs = (double)window_us / 1000000.0;
+	Com_Printf("present: %.1f fps | avg %.2f (fence %.2f, acq %.2f, cpu %.2f) GPU %.2f | %u long, worst %.2f (fence %.2f, acq %.2f, cpu %.2f, GPU %.2f) | %s, %u images\n",
+		present_stats_frames / secs,
+		(double)window_us / 1000.0 / present_stats_frames,
+		(double)present_stats_fence_us / 1000.0 / present_stats_frames,
+		(double)present_stats_acquire_us / 1000.0 / present_stats_frames,
+		(double)(window_us - present_stats_fence_us - present_stats_acquire_us) / 1000.0 / present_stats_frames,
+		vkpt_get_profiler_result(PROFILER_FRAME_TIME),
+		present_stats_long_frames,
+		(double)present_stats_worst_us / 1000.0,
+		(double)present_stats_worst_fence_us / 1000.0,
+		(double)present_stats_worst_acquire_us / 1000.0,
+		(double)(present_stats_worst_us - present_stats_worst_fence_us - present_stats_worst_acquire_us) / 1000.0,
+		present_stats_worst_gpu_ms,
+		qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" :
+		qvk.present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "IMMEDIATE",
+		qvk.surf_num_images);
+
+	present_stats_fence_us = 0;
+	present_stats_acquire_us = 0;
+	present_stats_worst_us = 0;
+	present_stats_worst_fence_us = 0;
+	present_stats_worst_acquire_us = 0;
+	present_stats_worst_gpu_ms = 0;
+	present_stats_frames = 0;
+	present_stats_long_frames = 0;
+	present_stats_last_us = now;
+}
+
 static void
 recreate_swapchain(void)
 {
@@ -3879,7 +4087,13 @@ R_BeginFrame_RTX(void)
 
 	qvk.current_frame_index = qvk.frame_counter % MAX_FRAMES_IN_FLIGHT;
 
+	const bool present_stats = (cvar_present_stats && cvar_present_stats->integer != 0);
+	uint64_t t_block_begin = present_stats ? Sys_Microseconds() : 0;
+
 	VkResult res_fence = vkWaitForFences(qvk.device, 1, qvk.fences_frame_sync + qvk.current_frame_index, VK_TRUE, ~((uint64_t) 0));
+
+	if (present_stats)
+		present_stats_fence_us += Sys_Microseconds() - t_block_begin;
 	
 	if (res_fence == VK_ERROR_DEVICE_LOST)
 	{
@@ -3896,6 +4110,7 @@ R_BeginFrame_RTX(void)
 		// see if we're un-minimized again
 		if (surf_capabilities.currentExtent.width != 0 && surf_capabilities.currentExtent.height != 0)
 		{
+			swapchain_reason = "un-minimized";
 			recreate_swapchain();
 		}
 	}
@@ -3912,8 +4127,15 @@ R_BeginFrame_RTX(void)
 	VkExtent2D extent_screen_images = get_screen_image_extent();
 
 	if(!extents_equal(extent_screen_images, qvk.extent_screen_images) || (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync)
+	   || (!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox)
 	   || (cvar_swapchain_images->integer > 0 && (uint32_t)cvar_swapchain_images->integer != qvk.surf_num_images))
 	{
+		swapchain_reason =
+			!extents_equal(extent_screen_images, qvk.extent_screen_images) ? "screen image extent changed" :
+			(!!cvar_hdr->integer != qvk.surf_is_hdr) ? "vid_hdr changed" :
+			(!!cvar_vsync->integer != qvk.surf_vsync) ? "vid_vsync changed" :
+			(!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox) ? "vid_vsync_mailbox changed" :
+			"vid_swapchain_images changed";
 		qvk.extent_screen_images = extent_screen_images;
 		recreate_swapchain();
 	}
@@ -3933,12 +4155,22 @@ retry:;
 		.deviceMask = (1 << qvk.device_count) - 1,
 	};
 
+	if (present_stats) t_block_begin = Sys_Microseconds();
 	VkResult res_swapchain = vkAcquireNextImage2KHR(qvk.device, &acquire_info, &qvk.current_swap_chain_image_index);
 #else
+	if (present_stats) t_block_begin = Sys_Microseconds();
 	VkResult res_swapchain = vkAcquireNextImageKHR(qvk.device, qvk.swap_chain, ~((uint64_t) 0),
 		qvk.semaphores[qvk.current_frame_index][0].image_available, VK_NULL_HANDLE, &qvk.current_swap_chain_image_index);
 #endif
-	if(res_swapchain == VK_ERROR_OUT_OF_DATE_KHR || res_swapchain == VK_SUBOPTIMAL_KHR) {
+	if (present_stats)
+	{
+		present_stats_acquire_us += Sys_Microseconds() - t_block_begin;
+		report_present_stats();
+	}
+	if(res_swapchain == VK_ERROR_OUT_OF_DATE_KHR || res_swapchain == VK_SUBOPTIMAL_KHR
+	   || res_swapchain == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+		swapchain_reason = (res_swapchain == VK_ERROR_OUT_OF_DATE_KHR) ? "acquire: OUT_OF_DATE" :
+			(res_swapchain == VK_SUBOPTIMAL_KHR) ? "acquire: SUBOPTIMAL" : "acquire: FSE MODE LOST";
 		recreate_swapchain();
 		goto retry;
 	}
@@ -4115,7 +4347,12 @@ R_EndFrame_RTX(void)
 #endif
 
 	VkResult res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
-	if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR || DLSSChanged()) {
+	if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR
+	   || res_present == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT || DLSSChanged()) {
+		swapchain_reason = (res_present == VK_ERROR_OUT_OF_DATE_KHR) ? "present: OUT_OF_DATE" :
+			(res_present == VK_SUBOPTIMAL_KHR) ? "present: SUBOPTIMAL" :
+			(res_present == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) ? "present: FSE MODE LOST" :
+			"DLSS settings changed";
 		DLSSSwapChainRecreated();
 		recreate_swapchain();
 	}
@@ -4389,6 +4626,20 @@ R_Init_RTX(bool total)
 	   4 adds another frame of queue depth at the cost of latency. Changing it
 	   recreates the swapchain, so it can be A/B tested without a restart. */
 	cvar_swapchain_images = Cvar_Get("vid_swapchain_images", "0", CVAR_ARCHIVE);
+	/* With vsync on, use MAILBOX instead of FIFO. Both are tear-free, but FIFO blocks
+	   the acquire and MAILBOX does not - so if the stall is the compositor holding
+	   presents, this is immune to it. Note MAILBOX does NOT cap the frame rate, so
+	   vid_vsync stops limiting fps; pair it with r_maxfps. Recreates the swapchain. */
+	cvar_vsync_mailbox = Cvar_Get("vid_vsync_mailbox", "0", CVAR_ARCHIVE);
+	/* Log, once per second, the milliseconds this thread spent blocked in the only two
+	   places it can block per frame: our own GPU fence, and the presentation engine,
+	   plus GPU ms and the worst frame in the window. Archived, because the fault it
+	   exists to catch is intermittent and you cannot switch this on after the fact. */
+	cvar_present_stats = Cvar_Get("vid_present_stats", "0", CVAR_ARCHIVE);
+	/* Take exclusive fullscreen via VK_EXT_full_screen_exclusive when vid_fullscreen is
+	   on. Only applies at swapchain creation, so it needs a vid_restart or a fullscreen
+	   toggle to take effect. 0 restores asking DWM nicely. */
+	cvar_fullscreen_exclusive = Cvar_Get("vid_fullscreen_exclusive", "1", CVAR_ARCHIVE);
 	cvar_hdr = Cvar_Get("vid_hdr", "0", CVAR_ARCHIVE);
 	cvar_pt_caustics = Cvar_Get("pt_caustics", "1", CVAR_ARCHIVE);
 	cvar_pt_enable_nodraw = Cvar_Get("pt_enable_nodraw", "0", 0);
@@ -4565,8 +4816,14 @@ void
 R_Shutdown_RTX(bool total)
 {
 	vkpt_freecam_reset();
-	DLSSDeconstructor();
+
+	// Idle FIRST. DLSSDeconstructor releases the NGX feature and everything NGX
+	// allocated behind it, and this ran before the wait - so on a vid_restart it could
+	// free resources the GPU was still executing against. That is a race, which is the
+	// shape of a crash that only shows up after enough resolution or fullscreen
+	// switches.
 	vkDeviceWaitIdle(qvk.device);
+	DLSSDeconstructor();
 
 	// Persist current DRS scale
 	if (drs_current_scale != 0)

@@ -634,10 +634,17 @@ mutant_shrink
 [rerelease] Flattens the corpse mid-death-animation and marks it a dead monster
 right there, so the body stops blocking the doorway it fell in while the rest of
 the animation plays out.  Ours only did this at the very end, in mutant_dead.
+
+It sits in the CLASSIC death tables, which is why the gate is in here rather
+than at the call site: baseq2 must keep id's full-height corpse until
+mutant_dead shrinks it.
 =================
 */
 static void mutant_shrink(edict_t *self)
 {
+    if (!M_RereleaseGame())
+        return;
+
     self->maxs[2] = 0;
     self->svflags |= SVF_DEADMONSTER;
     gi.linkentity(self);

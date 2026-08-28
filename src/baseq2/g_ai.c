@@ -784,8 +784,6 @@ bool M_CheckAttack(edict_t *self)
                     (tr.fraction < 1.0f && tr.ent != self->enemy))
                     return false;
 
-                gi.dprintf("BLINDFIRE %s delay=%d%s", self->classname,
-                           self->monsterinfo.blind_fire_delay, "\n");
                 self->monsterinfo.attack_state = AS_BLIND;
                 return true;
             }

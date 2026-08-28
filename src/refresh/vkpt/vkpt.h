@@ -187,6 +187,9 @@ typedef struct QVK_s {
 	VkSurfaceFormatKHR          surf_format;
 	bool                        surf_is_hdr;
 	bool                        surf_vsync;
+	bool                        surf_vsync_mailbox;
+	bool                        supports_fse;       /* VK_EXT_full_screen_exclusive present */
+	bool                        surf_fse_acquired;  /* we currently hold exclusive fullscreen */
 	uint32_t                    surf_num_images;    /* images actually requested */
 	VkPresentModeKHR            present_mode;
 	VkExtent2D                  extent_screen_images;
@@ -319,6 +322,10 @@ extern QVK_t qvk;
 #define LIST_EXTENSIONS_INSTANCE \
 	VK_EXTENSION_DO(vkCmdBeginDebugUtilsLabelEXT) \
 	VK_EXTENSION_DO(vkCmdEndDebugUtilsLabelEXT)
+
+// VK_EXT_full_screen_exclusive is Win32-only and lives in vulkan_win32.h, which this
+// header deliberately does not pull in - it would drag windows.h through the whole
+// renderer. It is loaded and used entirely inside main.c.
 
 #define VK_EXTENSION_DO(a) extern PFN_##a q##a;
 LIST_EXTENSIONS_ACCEL_STRUCT

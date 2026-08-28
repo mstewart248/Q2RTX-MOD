@@ -116,14 +116,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // surface's motion vector and depth (MATERIAL_KIND_CHROME_MODEL). The DLSS-RR guide
 // buffers must then describe the mirror itself, not what it reflects.
 #define CHECKERBOARD_FLAG_MIRROR_MODEL 16
-// Also not a checkerboard flag. Signals that the surface this pixel's two light paths
-// split at was GLASS - not water, slime or a translucent model. The combine pass needs
-// to tell them apart for pt_dlss_guide_field: a pane of glass is a mirror with a little
-// transmission, and handing DLSS-RR the reflection's G-buffer is what keeps that
-// reflection sharp, but water is the opposite - you are mostly looking THROUGH it, and
-// describing it by its reflection makes it swim in motion. The material kind cannot be
-// recovered downstream, because reflect_refract.rgen has by then replaced the shading
-// surface (and its material id) with whatever the ray hit.
+// Also not a checkerboard flag. The split at this pixel was GLASS, not water or slime.
+// pt_dlss_guide_field needs to tell them apart, and the material kind cannot be
+// recovered downstream - reflect_refract.rgen has replaced the shading surface by then.
 #define CHECKERBOARD_FLAG_GLASS      32
 
 // pt_fullres_fields - reflection/refraction field layout. See the FIELD LAYOUT note

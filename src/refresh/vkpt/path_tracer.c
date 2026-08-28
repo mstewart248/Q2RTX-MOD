@@ -91,6 +91,8 @@ static VkPipeline            rt_pipelines[PIPELINE_COUNT];
 cvar_t*                      cvar_pt_enable_particles = NULL;
 cvar_t*                      cvar_pt_enable_beams = NULL;
 cvar_t*                      cvar_pt_enable_sprites = NULL;
+cvar_t*                      cvar_pt_tlas_fast_trace = NULL;
+cvar_t*                      cvar_pt_blas_fast_trace = NULL;
 
 extern cvar_t *cvar_pt_caustics;
 extern cvar_t *cvar_pt_reflect_refract;
@@ -260,6 +262,14 @@ vkpt_pt_init()
 	cvar_pt_enable_particles = Cvar_Get("pt_enable_particles", "1", 0);
 	cvar_pt_enable_beams = Cvar_Get("pt_enable_beams", "1", 0);
 	cvar_pt_enable_sprites= Cvar_Get("pt_enable_sprites", "1", 0);
+
+	// 1 = PREFER_FAST_TRACE, 0 = PREFER_FAST_BUILD (the 2019 default for both).
+	// Measured on a 5070 Ti at the base1 spawn: TLAS -0.30 ms, so on. Dynamic BLAS came
+	// out slightly slower - they rebuild every frame - so off; don't "fix" the asymmetry.
+	// Static world/model BLAS are always FAST_TRACE (vertex_buffer.c). Safe to change
+	// live: fast_build is in accel_match_info_t, so the structure gets recreated.
+	cvar_pt_tlas_fast_trace = Cvar_Get("pt_tlas_fast_trace", "1", 0);
+	cvar_pt_blas_fast_trace = Cvar_Get("pt_blas_fast_trace", "0", 0);
 
 	return VK_SUCCESS;
 }
@@ -677,47 +687,49 @@ vkpt_pt_create_all_dynamic(
 {
 	scratch_buf_ptr = 0;
 
+	const bool dyn_fast_build = !(cvar_pt_blas_fast_trace && cvar_pt_blas_fast_trace->integer);
+
 	uint64_t offset_vertex_base = 0;
 	uint64_t offset_vertex = offset_vertex_base;
 	uint64_t offset_index = 0;
 	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
-		upload_info->opaque_prim_count * 3, 0, blas_dynamic + idx, true, true);
+		upload_info->opaque_prim_count * 3, 0, blas_dynamic + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->transparent_prim_offset * sizeof(prim_positions_t);
 	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
-		upload_info->transparent_prim_count * 3, 0, blas_transparent_models + idx, true, true);
+		upload_info->transparent_prim_count * 3, 0, blas_transparent_models + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->masked_prim_offset * sizeof(prim_positions_t);
 	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
-		upload_info->masked_prim_count * 3, 0, blas_masked_models + idx, true, true);
+		upload_info->masked_prim_count * 3, 0, blas_masked_models + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->viewer_model_prim_offset * sizeof(prim_positions_t);
 	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
-		upload_info->viewer_model_prim_count * 3, 0, blas_viewer_models + idx, true, true);
+		upload_info->viewer_model_prim_count * 3, 0, blas_viewer_models + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->viewer_weapon_prim_offset * sizeof(prim_positions_t);
 	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
-		upload_info->viewer_weapon_prim_count * 3, 0, blas_viewer_weapon + idx, true, true);
+		upload_info->viewer_weapon_prim_count * 3, 0, blas_viewer_weapon + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->explosions_prim_offset * sizeof(prim_positions_t);
 	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
-		upload_info->explosions_prim_count * 3, 0, blas_explosions + idx, true, true);
+		upload_info->explosions_prim_count * 3, 0, blas_explosions + idx, true, dyn_fast_build);
 
 	BufferResource_t* buffer_vertex = NULL;
 	BufferResource_t* buffer_index = NULL;
 	uint32_t num_vertices = 0;
 	uint32_t num_indices = 0;
 	vkpt_get_transparency_buffers(VKPT_TRANSPARENCY_PARTICLES, &buffer_vertex, &offset_vertex, &buffer_index, &offset_index, &num_vertices, &num_indices);
-	vkpt_pt_create_accel_bottom(cmd_buf, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_particles + idx, true, true);
+	vkpt_pt_create_accel_bottom(cmd_buf, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_particles + idx, true, dyn_fast_build);
 
 	BufferResource_t *buffer_aabb = NULL;
 	uint64_t offset_aabb = 0;
 	uint32_t num_aabbs = 0;
 	vkpt_get_beam_aabb_buffer(&buffer_aabb, &offset_aabb, &num_aabbs);
-	vkpt_pt_create_accel_bottom_aabb(cmd_buf, buffer_aabb, offset_aabb, num_aabbs, blas_beams + idx, true, true);
+	vkpt_pt_create_accel_bottom_aabb(cmd_buf, buffer_aabb, offset_aabb, num_aabbs, blas_beams + idx, true, dyn_fast_build);
 	
 	vkpt_get_transparency_buffers(VKPT_TRANSPARENCY_SPRITES, &buffer_vertex, &offset_vertex, &buffer_index, &offset_index, &num_vertices, &num_indices);
-	vkpt_pt_create_accel_bottom(cmd_buf, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_sprites + idx, true, true);
+	vkpt_pt_create_accel_bottom(cmd_buf, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_sprites + idx, true, dyn_fast_build);
 
 	MEM_BARRIER_BUILD_ACCEL(cmd_buf);
 	scratch_buf_ptr = 0;
@@ -806,9 +818,12 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 	};
 
 	// Find size to build on the device
+	const bool tlas_fast_build = !(cvar_pt_tlas_fast_trace && cvar_pt_tlas_fast_trace->integer);
+
 	VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {
 		.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-		.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
+		.flags = tlas_fast_build ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
+		                         : VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
 		.geometryCount = 1,
 		.pGeometries = &topASGeometry,
 		.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
@@ -820,7 +835,10 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 	qvkGetAccelerationStructureBuildSizesKHR(qvk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &num_instances, &sizeInfo);
 	assert(sizeInfo.accelerationStructureSize < SIZE_SCRATCH_BUFFER);
 
-	if (!accel_matches_top_level(&as->match, true, num_instances))
+	// The accel == NULL test is load-bearing: with fast_build 0 a zeroed match compares
+	// equal, so tlas_effects with 0 instances (a level still loading) was judged current
+	// and built into a NULL destination. The hard-coded `true` used to mask that.
+	if (!accel_matches_top_level(&as->match, tlas_fast_build, num_instances) || as->accel == VK_NULL_HANDLE)
 	{
 		destroy_accel_struct(as);
 
@@ -841,7 +859,7 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 		// Create the acceleration structure
 		qvkCreateAccelerationStructureKHR(qvk.device, &createInfo, NULL, &as->accel);
 
-		as->match.fast_build = true;
+		as->match.fast_build = tlas_fast_build;
 		as->match.index_count = 0;
 		as->match.vertex_count = 0;
 		as->match.aabb_count = 0;
@@ -1003,11 +1021,8 @@ dispatch_rays(VkCommandBuffer cmd_buf, pipeline_index_t pipeline_index, pt_push_
 		};
 
 		VkStridedDeviceAddressRegionKHR callable = {
-			// Not VK_NULL_HANDLE: deviceAddress is a VkDeviceAddress (uint64_t), not a
-			// handle. Vulkan-Headers 1.2.162 defined VK_NULL_HANDLE as a bare 0 so this
-			// compiled silently; from 1.3 on it is ((void*)0) in C, and assigning a
-			// pointer to an integer field warns. There is no callable shader group here,
-			// and an unused region is spelled as a zero address.
+			// Not VK_NULL_HANDLE - a uint64 address, not a handle. It was a bare 0 in
+			// headers 1.2.162 and is ((void*)0) from 1.3 on.
 			.deviceAddress = 0,
 			.stride = 0,
 			.size = 0

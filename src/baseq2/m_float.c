@@ -625,15 +625,20 @@ void floater_zap(edict_t *self)
 
 void floater_attack(edict_t *self)
 {
-    if (random() <= 0.5f) {
-        self->monsterinfo.currentmove = &floater_move_attack1;
-    } else {
+    // [rerelease] half the time it advances and circle-strafes instead of
+    // hovering in place.  attack1a is the same attak101-114 range, so this is
+    // purely a behaviour change - id's floater only ever hovered, so baseq2
+    // keeps the single attack.
+    if (M_RereleaseGame() && random() > 0.5f) {
         // circle strafe
         if (random() <= 0.5f)
             self->monsterinfo.lefty = !self->monsterinfo.lefty;
         self->monsterinfo.attack_state = AS_SLIDING;
         self->monsterinfo.currentmove = &floater_move_attack1a;
+        return;
     }
+
+    self->monsterinfo.currentmove = &floater_move_attack1;
 }
 
 
@@ -758,8 +763,10 @@ void SP_monster_floater(edict_t *self)
     gi.linkentity(self);
 
     // SPAWNFLAG_FLOATER_DISGUISE (8): start folded up and inert, and only
-    // unfold when a target is acquired.  See floater_run().
-    if (self->spawnflags & 8)
+    // unfold when a target is acquired.  See floater_run().  Rerelease-only:
+    // bit 8 means nothing to the original game's floaters, and a baseq2 map
+    // that happens to set it must still get an ordinary floater.
+    if (M_RereleaseGame() && (self->spawnflags & 8))
         self->monsterinfo.currentmove = &floater_move_disguise;
     else if (random() <= 0.5f)
         self->monsterinfo.currentmove = &floater_move_stand1;

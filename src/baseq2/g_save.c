@@ -911,7 +911,10 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
-#define SAVE_VERSION    52
+// 53: the six classic *_dodge functions are hooked up again for baseq2, which
+// adds them to save_ptrs[] - and that table is indexed POSITIONALLY, so every
+// entry after the insertion point shifts and version-52 saves cannot be read.
+#define SAVE_VERSION    53
 
 /*
 ============

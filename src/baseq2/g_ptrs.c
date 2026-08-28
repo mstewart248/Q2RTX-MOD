@@ -463,6 +463,7 @@ extern void boss2_walk(void);
 extern void BossExplode(void);
 extern void brain_attack(void);
 extern void brain_die(void);
+extern void brain_dodge(void);
 extern void brain_idle(void);
 extern void brain_melee(void);
 extern void brain_pain(void);
@@ -488,6 +489,7 @@ extern void carrier_walk(void);
 extern void check_target_healthbar(void);
 extern void chick_attack(void);
 extern void chick_die(void);
+extern void chick_dodge(void);
 extern void chick_melee(void);
 extern void chick_pain(void);
 extern void chick_run(void);
@@ -608,6 +610,7 @@ extern void guncmdr_walk(void);
 extern void gunner_attack(void);
 extern void gunner_blocked(void);
 extern void gunner_die(void);
+extern void gunner_dodge(void);
 extern void gunner_pain(void);
 extern void gunner_run(void);
 extern void gunner_search(void);
@@ -630,6 +633,7 @@ extern void hyper_blaster_touch(void);
 extern void infantry_attack(void);
 extern void infantry_blocked(void);
 extern void infantry_die(void);
+extern void infantry_dodge(void);
 extern void infantry_fidget(void);
 extern void infantry_pain(void);
 extern void infantry_run(void);
@@ -673,6 +677,7 @@ extern void MakronSpawn(void);
 extern void medic_attack(void);
 extern void medic_checkattack(void);
 extern void medic_die(void);
+extern void medic_dodge(void);
 extern void medic_idle(void);
 extern void medic_pain(void);
 extern void medic_run(void);
@@ -770,6 +775,7 @@ extern void smart_water_go_up(void);
 extern void soldier_attack(void);
 extern void soldier_blind(void);
 extern void soldier_die(void);
+extern void soldier_dodge(void);
 extern void soldier_pain(void);
 extern void soldier_run(void);
 extern void soldier_sight(void);
@@ -1751,8 +1757,14 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_run, supertank_run },
 { P_monsterinfo_run, tank_run },
 { P_monsterinfo_run, turret_run },
+{ P_monsterinfo_dodge, brain_dodge },
+{ P_monsterinfo_dodge, chick_dodge },
 { P_monsterinfo_dodge, gekk_dodge },
+{ P_monsterinfo_dodge, gunner_dodge },
+{ P_monsterinfo_dodge, infantry_dodge },
 { P_monsterinfo_dodge, M_MonsterDodge },
+{ P_monsterinfo_dodge, medic_dodge },
+{ P_monsterinfo_dodge, soldier_dodge },
 { P_monsterinfo_dodge, stalker_dodge },
 { P_monsterinfo_attack, actor_attack },
 { P_monsterinfo_attack, arachnid_attack },
