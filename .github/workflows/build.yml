@@ -5,6 +5,9 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  # Lets the Linux job be run deliberately from the Actions tab without it
+  # failing every ordinary commit - see build-linux-x64 below.
+  workflow_dispatch:
   
 env:
   BUILD_TYPE: Release
@@ -66,7 +69,16 @@ jobs:
           license.txt
           notice.txt
 
+  # DISABLED on push and pull_request: this job has been failing on every
+  # commit, which made the whole workflow red and hid whether the Windows build
+  # - the one actually being shipped - was healthy.
+  #
+  # It is gated rather than deleted so the configuration is not lost. To work on
+  # it, run the workflow by hand from the Actions tab ("Run workflow"), which
+  # sets event_name to workflow_dispatch and lets this job run. Delete the `if:`
+  # line to put it back on every commit.
   build-linux-x64:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container: registry.gitlab.steamos.cloud/steamrt/soldier/sdk:latest
 

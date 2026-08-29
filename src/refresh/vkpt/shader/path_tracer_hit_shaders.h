@@ -263,6 +263,18 @@ bool hit_sphere(in vec3 o, in vec3 d, in float radius, out vec2 t)
 #define LIGHTNING_BOUNDS   2.2
 #define LIGHTNING_CORE     0.55
 #define LIGHTNING_STEPS    12
+// How fast the crackle travels. One knob for the whole effect - the per-octave
+// rates below keep their ratios, which is what stops the pattern visibly
+// repeating, so scale them together rather than editing them individually.
+//
+// Worth knowing what this buys, because the first two values here were far too
+// slow to read as lightning. The octaves run at 4.1 / 6.1 / 9.0 rad/s BEFORE
+// this multiplier - so at 1.0 the finest detail is a 1.4 Hz wallow, and even at
+// 2.2 it was only 3.2 Hz. At 11.0 they land at roughly 7 / 11 / 16 Hz, which is
+// where the eye stops tracking individual waves and just sees it crackle.
+// (60 Hz display, so ~16 Hz is still well inside Nyquist - going much past
+// ~25 Hz would start to strobe rather than flicker.)
+#define LIGHTNING_SPEED    11.0
 
 /*
   THREE octaves, not one. A single sine at high amplitude does not read as
@@ -276,6 +288,8 @@ bool hit_sphere(in vec3 o, in vec3 d, in float radius, out vec2 t)
 */
 vec2 lightning_offset(float z, float radius, float t)
 {
+	t *= LIGHTNING_SPEED;
+
 	float s = z * 0.09;
 	vec2 a = vec2(sin(s * 1.00 + t * 4.1), cos(s * 1.13 - t * 3.3));
 	vec2 b = vec2(sin(s * 2.70 - t * 6.1), cos(s * 3.10 + t * 5.2));
