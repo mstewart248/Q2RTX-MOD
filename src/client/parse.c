@@ -744,6 +744,7 @@ static void CL_ParseTEntPacket(void)
     case TE_MEDIC_CABLE_ATTACK:
     case TE_HEATBEAM:
     case TE_MONSTER_HEATBEAM:
+    case TE_LIGHTNING_BEAM:
         te.entity1 = MSG_ReadShort();
         MSG_ReadPos(te.pos1);
         MSG_ReadPos(te.pos2);

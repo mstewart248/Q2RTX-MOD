@@ -410,6 +410,16 @@ static void write_beam_geometry(const entity_t* entities, int entity_num)
 			continue;
 		const float beam_radius = cvar_pt_beam_width->value * beam->frame * 0.5;
 
+		/* [rerelease] RF_BEAM | RF_GLOW is their RF_BEAM_LIGHTNING: draw a
+		   lightning bolt rather than a straight laser. The beam info block below
+		   is exactly three uvec4 with no field to spare, and a radius is never
+		   legitimately negative - so the sign bit carries the flag and the
+		   shader takes abs(). A bolt wanders inside its cylinder, so the bolt
+		   itself stays thin while the volume it may wander in grows; see
+		   LIGHTNING_BOUNDS in path_tracer_hit_shaders.h. */
+		const bool beam_is_lightning = (beam->flags & RF_GLOW) != 0;
+		const float beam_aabb_radius = beam_is_lightning ? beam_radius * 2.5f : beam_radius;
+
 		cast_u32_to_f32_color(beam->skinnum, &beam->rgba, beam_colors, hdr_factor);
 		beam_colors[3] = beam->alpha;
 		beam_colors += 4;
@@ -430,8 +440,9 @@ static void write_beam_geometry(const entity_t* entities, int entity_num)
 				beam_aabb_min[i] = end[i];
 				beam_aabb_max[i] = begin[i];
 			}
-			beam_aabb_min[i] -= beam_radius; // bit of an overestimation for 'tilted' beams
-			beam_aabb_max[i] += beam_radius;
+			// must cover the wander, or the bolt is clipped at the box edge
+			beam_aabb_min[i] -= beam_aabb_radius; // bit of an overestimation for 'tilted' beams
+			beam_aabb_max[i] += beam_aabb_radius;
 		}
 		aabb_positions->minX = beam_aabb_min[0];
 		aabb_positions->minY = beam_aabb_min[1];
@@ -478,7 +489,7 @@ static void write_beam_geometry(const entity_t* entities, int entity_num)
 		packHalf4x16(beam_infos + 4, world_to_beam);
 		packHalf4x16(beam_infos + 6, world_to_beam + 4);
 		packHalf4x16(beam_infos + 8, world_to_beam + 8);
-		*(float *)(beam_infos + 10) = beam_radius;
+		*(float *)(beam_infos + 10) = beam_is_lightning ? -beam_radius : beam_radius;
 		*(float *)(beam_infos + 11) = VectorLength(to_end);
 		beam_infos += TR_BEAM_INTERSECT_SIZE / sizeof(uint32_t);
 	}

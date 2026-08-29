@@ -251,6 +251,38 @@ bool hit_sphere(in vec3 o, in vec3 d, in float radius, out vec2 t)
 	return solve_quadratic(a, b, c, t);
 }
 
+/*
+  A lightning beam is a thin bolt that wanders inside a fatter cylinder rather
+  than a straight tube. Two sine pairs at different rates give a rope that never
+  visibly repeats, and scrolling them ALONG the bolt (rather than just phasing in
+  place) is what reads as energy travelling down it.
+
+  LIGHTNING_BOUNDS is how much wider than the bolt the test cylinder has to be to
+  contain that wander - it must not exceed the AABB padding in transparency.c.
+*/
+#define LIGHTNING_BOUNDS   2.2
+#define LIGHTNING_CORE     0.55
+#define LIGHTNING_STEPS    12
+
+/*
+  THREE octaves, not one. A single sine at high amplitude does not read as
+  lightning - it reads as a rope or a snake, which is what the first attempt at
+  this looked like. What sells it is a modest overall displacement carrying
+  progressively finer, faster detail, so the eye sees crackle rather than a
+  smooth curve.
+
+  Amplitude is deliberately under half the beam radius: the retail beam wanders
+  by about its own thickness, not several times it.
+*/
+vec2 lightning_offset(float z, float radius, float t)
+{
+	float s = z * 0.09;
+	vec2 a = vec2(sin(s * 1.00 + t * 4.1), cos(s * 1.13 - t * 3.3));
+	vec2 b = vec2(sin(s * 2.70 - t * 6.1), cos(s * 3.10 + t * 5.2));
+	vec2 c = vec2(sin(s * 6.30 + t * 9.0), cos(s * 7.10 - t * 8.0));
+	return (a * 0.55 + b * 0.30 + c * 0.15) * radius * 0.45;
+}
+
 bool pt_logic_beam_intersection(int beam_index,
 	vec3 worldRayOrigin, vec3 worldRayDirection,
 	float rayTmin, float rayTmax, out vec2 beam_fade_and_thickness, out float tShapeHit)
@@ -267,15 +299,22 @@ bool pt_logic_beam_intersection(int beam_index,
 									unpackHalf4x16(beam_info[1].zw),
 									unpackHalf4x16(beam_info[2].xy),
 									uintBitsToFloat(beam_info[0]));
-	const float beam_radius = uintBitsToFloat(beam_info[2].z);
-	const float beam_length = uintBitsToFloat(beam_info[2].w);
+	// Negative radius is the "this is lightning" flag - see transparency.c.
+	const float beam_radius_raw = uintBitsToFloat(beam_info[2].z);
+	const bool  beam_lightning  = beam_radius_raw < 0.0;
+	const float beam_radius     = abs(beam_radius_raw);
+	const float beam_length     = uintBitsToFloat(beam_info[2].w);
+
+	// the bolt wanders, so test against the volume it can wander in
+	const float test_radius = beam_lightning ? beam_radius * LIGHTNING_BOUNDS
+	                                         : beam_radius;
 
 	// Ray origin, direction in "beam space"
 	const vec3 o = (world_to_beam * vec4(worldRayOrigin, 1)).xyz;
 	const vec3 d = (world_to_beam * vec4(worldRayDirection, 0)).xyz;
 
 	vec2 t;
-	if(!hit_cylinder(o, d, beam_radius, t)) 
+	if(!hit_cylinder(o, d, test_radius, t)) 
 		return false;
 
 	// The intersection Z values (ie "height on beam")
@@ -287,7 +326,7 @@ bool pt_logic_beam_intersection(int beam_index,
 	if(any(hit_below_0))
 	{
 		vec2 t_sphere;
-		if(!hit_sphere(o, d, beam_radius, t_sphere))
+		if(!hit_sphere(o, d, test_radius, t_sphere))
 			return false;
 
 		if(hit_below_0.x) t.x = max(t.x, t_sphere.x);
@@ -298,7 +337,7 @@ bool pt_logic_beam_intersection(int beam_index,
 	if(any(hit_above_end))
 	{
 		vec2 t_sphere;
-		if(!hit_sphere(o - vec3(0, 0, beam_length), d, beam_radius, t_sphere))
+		if(!hit_sphere(o - vec3(0, 0, beam_length), d, test_radius, t_sphere))
 			return false;
 
 		if(hit_above_end.x) t.x = max(t.x, t_sphere.x);
@@ -338,9 +377,41 @@ bool pt_logic_beam_intersection(int beam_index,
 	const float dist_head = distance(c_ray, c_beam);
 	const float dist = mix(dist_side, dist_head, abs(d.z));
 
-	float fade = 1.0 - dist / beam_radius;
+	float fade;
 	float thickness = t.y - t.x;
-	fade *= clamp(thickness / (2 * beam_radius), 0, 1);
+
+	if (beam_lightning)
+	{
+		/* Measure to the DISPLACED centre line, which is what bends the beam.
+		   c_ray CANNOT be reused for this: it is the point on the ray closest to
+		   the STRAIGHT axis, which is not the point closest to a curve that has
+		   been pushed sideways - using it made the bolt break up into sparse
+		   speckle instead of a line. So walk the ray's span inside the cylinder
+		   and keep the closest approach to the curve. */
+		const float core = beam_radius * LIGHTNING_CORE;
+		const float t_lo = max(t.x, rayTmin);
+		const float t_hi = min(t.y, rayTmax);
+
+		float closest = 1e9;
+		for (int si = 0; si < LIGHTNING_STEPS; si++)
+		{
+			const float f = (float(si) + 0.5) / float(LIGHTNING_STEPS);
+			const vec3 p = o + d * mix(t_lo, t_hi, f);
+			const float z = clamp(p.z, 0, beam_length);
+			const vec2 off = lightning_offset(z, beam_radius, global_ubo.time);
+			closest = min(closest, distance(p, vec3(off, z)));
+		}
+
+		fade = 1.0 - closest / core;
+
+		// depth fade should behave like the thin bolt, not the wide test volume
+		thickness = 2 * core;
+	}
+	else
+	{
+		fade = 1.0 - dist / beam_radius;
+		fade *= clamp(thickness / (2 * beam_radius), 0, 1);
+	}
 
 	beam_fade_and_thickness = vec2(fade, thickness);
 	return true;

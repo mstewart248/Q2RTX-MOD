@@ -1233,6 +1233,11 @@ typedef enum {
 	// Rerelease: the berserk's leaping ground slam. Also fork-local, so it too
 	// must stay at the end - append below this, never above.
 	TE_BERSERK_SLAM,
+	// Rerelease: the shambler's charge-up arc. TE_LIGHTNING draws the same
+	// model but fires cl_sfx_lightning every time it is parsed, and this one is
+	// re-sent every frame of the wind-up - so it needs a silent twin. Same
+	// packet shape as TE_PARASITE_ATTACK. Fork-local: append below, never above.
+	TE_LIGHTNING_BEAM,
 
     TE_NUM_ENTITIES
 } temp_event_t;

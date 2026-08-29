@@ -75,6 +75,28 @@ void tank_idle(edict_t *self)
 // stand
 //
 
+/*
+=================
+tank_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void tank_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 mframe_t tank_frames_stand [] = {
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
@@ -758,7 +780,7 @@ mframe_t tank_frames_death1 [] = {
     { ai_move, -6,  NULL },
     { ai_move, -4,  NULL },
     { ai_move, -5,  NULL },
-    { ai_move, -7,  NULL },
+    { ai_move, -7, tank_shrink },
     { ai_move, -15, tank_thud },
     { ai_move, -5,  NULL },
     { ai_move, 0,   NULL },

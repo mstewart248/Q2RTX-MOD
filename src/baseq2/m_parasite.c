@@ -81,6 +81,28 @@ void parasite_search(edict_t *self)
 }
 
 
+/*
+=================
+parasite_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void parasite_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 mframe_t parasite_frames_start_fidget [] = {
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
@@ -165,11 +187,11 @@ void parasite_stand(edict_t *self)
 mframe_t parasite_frames_run [] = {
     { ai_run, 30, NULL },
     { ai_run, 30, NULL },
-    { ai_run, 22, NULL },
-    { ai_run, 19, NULL },
+    { ai_run, 22, monster_footstep },
+    { ai_run, 19, monster_footstep },
     { ai_run, 24, NULL },
-    { ai_run, 28, NULL },
-    { ai_run, 25, NULL }
+    { ai_run, 28, monster_footstep },
+    { ai_run, 25, monster_footstep }
 };
 mmove_t parasite_move_run = {FRAME_run03, FRAME_run09, parasite_frames_run, NULL};
 
@@ -209,11 +231,11 @@ void parasite_run(edict_t *self)
 mframe_t parasite_frames_walk [] = {
     { ai_walk, 30, NULL },
     { ai_walk, 30, NULL },
-    { ai_walk, 22, NULL },
-    { ai_walk, 19, NULL },
+    { ai_walk, 22, monster_footstep },
+    { ai_walk, 19, monster_footstep },
     { ai_walk, 24, NULL },
-    { ai_walk, 28, NULL },
-    { ai_walk, 25, NULL }
+    { ai_walk, 28, monster_footstep },
+    { ai_walk, 25, monster_footstep }
 };
 mmove_t parasite_move_walk = {FRAME_run03, FRAME_run09, parasite_frames_walk, parasite_walk};
 
@@ -853,8 +875,8 @@ mframe_t parasite_frames_death [] = {
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
+    { ai_move, 0, parasite_shrink },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL }
 };

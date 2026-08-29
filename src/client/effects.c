@@ -952,13 +952,32 @@ void CL_ParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
     count *= cl_particle_num_factor->value;
     const int spark_count = count / 10;
 
-    const float dirt_horizontal_spread = 2.0f;
-    const float dirt_vertical_spread = 1.0f;
+    // Each particle's spray DIRECTION is derived from where it is spawned
+    // relative to the impact point - see the VectorSubtract further down - so
+    // these two numbers are the cone: how far a particle may sit sideways
+    // against how hard it is pushed out along the surface normal.
+    //
+    // The sideways spread used to be twice the outward push, which put the
+    // average particle 44 degrees off the normal and the widest ones at 70 -
+    // near enough a disc lying flat against the wall rather than debris coming
+    // out of it, which is why the impacts read the same whichever way the
+    // normal pointed. Leading with the outward push instead narrows that to 24
+    // degrees average / 48 worst case (measured over 200k samples), and as a
+    // bonus spawns every particle at least 2 units clear of the surface rather
+    // than 1, so fewer are born inside the wall.
+    //
+    // Sparks go from 27/54 to 16/35 by the same change.
+    const float dirt_horizontal_spread = 1.6f;
+    const float dirt_normal_push = 2.0f;
+    const float dirt_normal_push_rand = 1.5f;
     const float dirt_base_velocity = 40.0f;
     const float dirt_rand_velocity = 70.0f;
 
+    // Sparks come off tighter and faster than the dirt, so they read as
+    // ricochets leaving the surface rather than as more debris.
     const float spark_horizontal_spread = 1.0f;
-    const float spark_vertical_spread = 1.0f;
+    const float spark_normal_push = 2.0f;
+    const float spark_normal_push_rand = 1.5f;
     const float spark_base_velocity = 50.0f;
     const float spark_rand_velocity = 130.0f;
 
@@ -976,7 +995,7 @@ void CL_ParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
         VectorCopy(org, origin);
         VectorMA(origin, dirt_horizontal_spread * crand(), ox, origin);
         VectorMA(origin, dirt_horizontal_spread * crand(), oy, origin);
-        VectorMA(origin, dirt_vertical_spread * frand() + 1.0f, dir, origin);
+        VectorMA(origin, dirt_normal_push + dirt_normal_push_rand * frand(), dir, origin);
         VectorCopy(origin, p->org);
 
         vec3_t velocity;
@@ -1005,7 +1024,7 @@ void CL_ParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
         VectorCopy(org, origin);
         VectorMA(origin, spark_horizontal_spread * crand(), ox, origin);
         VectorMA(origin, spark_horizontal_spread * crand(), oy, origin);
-        VectorMA(origin, spark_vertical_spread * frand() + 1.0f, dir, origin);
+        VectorMA(origin, spark_normal_push + spark_normal_push_rand * frand(), dir, origin);
         VectorCopy(origin, p->org);
 
         vec3_t velocity;
@@ -1149,9 +1168,8 @@ void CL_ParticleEffectWaterSplash(const vec3_t org, const vec3_t dir, int color,
 
 void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
 {
-    int         i, j;
+    int         i;
     cparticle_t *p;
-    float       d;
 
     // add decal:
     decal_t dec = {
@@ -1169,6 +1187,34 @@ void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int c
 
     count *= cl_particle_num_factor->value;
 
+    // `dir` is the surface normal, so it points back out of the wound towards
+    // whoever fired - which is the way blood should leave the body.
+    //
+    // This used to PLACE the particles along that vector instead of throwing
+    // them along it: `d = (Q_rand() & 31) * 10.0f` strung them out over 310
+    // units - ten times the 31 the original game used - and gave them a
+    // velocity of only `10*dir + crand()*20`, which is no coherent motion at
+    // all. Forty particles smeared down a 310 unit line puts one or two in
+    // view near the wound and buries the rest in whatever is behind the
+    // monster, which is exactly the "barely any particles, and they do not
+    // spray" that this looked like.
+    //
+    // So: spawn them all AT the wound inside a cone, and give them real
+    // outward speed. Same construction as CL_ParticleEffect above - the offset
+    // from the impact point is what defines each particle's direction - just
+    // wider and slower, because blood spatters where debris ricochets.
+    //
+    // Speed is deliberately modest. The spray leaves the wound towards the
+    // shooter, so anything much faster than this crosses the gap and sails
+    // past the camera - and a particle a few units from the eye is drawn as a
+    // screen-filling red blob. 35-110 units/sec over a ~0.7 s life keeps the
+    // spray on and around the body, which is where it should be.
+    const float blood_spread = 2.2f;
+    const float blood_push = 2.0f;
+    const float blood_push_rand = 1.5f;
+    const float blood_base_velocity = 35.0f;
+    const float blood_rand_velocity = 75.0f;
+
     for (i = 0; i < count; i++) {
         p = CL_AllocParticle();
         if (!p)
@@ -1180,20 +1226,21 @@ void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int c
         // ludicrous gibs make blood self-lit enough to glow in the path tracer
         p->brightness = cl_ludicrous_gibs->integer ? 10.0f : 0.5f;
 
-        d = (Q_rand() & 31) * 10.0f;
-        for (j = 0; j < 3; j++) {
-            p->org[j] = org[j] + ((int)(Q_rand() & 7) - 4) + d * (dir[j]
-              + a[j] * 0.5f*((Q_rand() & 31) / 32.0f - .5f)
-              + b[j] * 0.5f*((Q_rand() & 31) / 32.0f - .5f));
+        vec3_t origin;
+        VectorCopy(org, origin);
+        VectorMA(origin, blood_spread * crand(), a, origin);
+        VectorMA(origin, blood_spread * crand(), b, origin);
+        VectorMA(origin, blood_push + blood_push_rand * frand(), dir, origin);
+        VectorCopy(origin, p->org);
 
-            p->vel[j] = 10.0f*dir[j] + crand() * 20;
-        }
-        // fake gravity
-        p->org[2] -= d*d * .001f;
+        vec3_t velocity;
+        VectorSubtract(origin, org, velocity);
+        VectorNormalize(velocity);
+        VectorScale(velocity, blood_base_velocity + frand() * blood_rand_velocity, p->vel);
 
         p->accel[0] = p->accel[1] = 0;
         p->accel[2] = -PARTICLE_GRAVITY;
-        p->alpha = 0.5f;
+        p->alpha = 1.0f;
 
         p->alphavel = -1.0f / (0.5f + frand() * 0.3f);
     }

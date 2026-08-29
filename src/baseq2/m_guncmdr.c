@@ -187,26 +187,26 @@ void guncmdr_stand(edict_t *self)
 }
 
 mframe_t guncmdr_frames_walk[] = {
-	{ ai_walk, 1.5f, NULL },
+	{ ai_walk, 1.5f, monster_footstep },
 	{ ai_walk, 2.5f, NULL },
 	{ ai_walk, 3.0f, NULL },
 	{ ai_walk, 2.5f, NULL },
 	{ ai_walk, 2.3f, NULL },
 	{ ai_walk, 3.0f, NULL },
-	{ ai_walk, 2.8f, NULL },
+	{ ai_walk, 2.8f, monster_footstep },
 	{ ai_walk, 3.6f, NULL },
 	{ ai_walk, 2.8f, NULL },
 	{ ai_walk, 2.5f, NULL },
 
 	{ ai_walk, 2.3f, NULL },
 	{ ai_walk, 4.3f, NULL },
-	{ ai_walk, 3.0f, NULL },
+	{ ai_walk, 3.0f, monster_footstep },
 	{ ai_walk, 1.5f, NULL },
 	{ ai_walk, 2.5f, NULL },
 	{ ai_walk, 3.3f, NULL },
 	{ ai_walk, 2.8f, NULL },
 	{ ai_walk, 3.0f, NULL },
-	{ ai_walk, 2.0f, NULL },
+	{ ai_walk, 2.0f, monster_footstep },
 	{ ai_walk, 2.0f, NULL },
 
 	{ ai_walk, 3.3f, NULL },
@@ -223,10 +223,10 @@ void guncmdr_walk(edict_t *self)
 
 mframe_t guncmdr_frames_run[] = {
 	{ ai_run, 15.f, monster_done_dodge },
-	{ ai_run, 16.f, NULL },
+	{ ai_run, 16.f, monster_footstep },
 	{ ai_run, 20.f, NULL },
 	{ ai_run, 18.f, NULL },
-	{ ai_run, 24.f, NULL },
+	{ ai_run, 24.f, monster_footstep },
 	{ ai_run, 13.5f, NULL }
 };
 
@@ -675,8 +675,8 @@ mframe_t guncmdr_frames_death5[] = {
 	{ ai_move, -14.f, NULL },
 	{ ai_move, -2.7f, NULL },
 	{ ai_move, -2.5f, NULL },
-	{ ai_move, -4.6f, NULL },
-	{ ai_move, -4.0f, NULL },
+	{ ai_move, -4.6f, monster_footstep },
+	{ ai_move, -4.0f, monster_footstep },
 	{ ai_move, -1.5f, NULL },
 	{ ai_move, 2.3f, NULL },
 	{ ai_move, 2.5f, NULL },
@@ -688,7 +688,7 @@ mframe_t guncmdr_frames_death5[] = {
 	{ ai_move, 0, NULL },
 	{ ai_move, 0, NULL },
 	{ ai_move, 3.5f, NULL },
-	{ ai_move, 12.9f, NULL },
+	{ ai_move, 12.9f, monster_footstep },
 	{ ai_move, 3.8f, NULL },
 	{ ai_move, 0, NULL },
 	{ ai_move, 0, NULL },
@@ -701,7 +701,7 @@ mframe_t guncmdr_frames_death5[] = {
 	{ ai_move, 3.4f, NULL },
 	{ ai_move, 5.7f, NULL },
 	{ ai_move, 11.2f, NULL },
-	{ ai_move, 0, NULL }
+	{ ai_move, 0, monster_footstep }
 };
 mmove_t guncmdr_move_death5 = { FRAME_c_death501, FRAME_c_death528, guncmdr_frames_death5, guncmdr_dead };
 

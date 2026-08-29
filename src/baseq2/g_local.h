@@ -991,7 +991,12 @@ void flymonster_start(edict_t *self);
 void AttackFinished(edict_t *self, float time);
 void monster_death_use(edict_t *self);
 void M_FireHealthTarget(edict_t *self);
+// [rerelease] target_laser: draw as a lightning bolt, not a straight laser.
+// Added long after the original colour flags and overrides them.
+#define SPAWNFLAG_LASER_LIGHTNING   0x10000
+
 bool M_RereleaseAnims(void);
+void monster_footstep(edict_t *self);
 bool M_RereleaseGame(void);
 
 // [rerelease] a mover's three sounds, honouring the map's noise_start /

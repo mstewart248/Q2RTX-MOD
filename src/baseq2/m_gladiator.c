@@ -60,6 +60,28 @@ void gladiator_cleaver_swing(edict_t *self)
     gi.sound(self, CHAN_WEAPON, sound_cleaver_swing, 1, ATTN_NORM, 0);
 }
 
+/*
+=================
+gladiator_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void gladiator_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 mframe_t gladiator_frames_stand [] = {
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
@@ -82,7 +104,7 @@ mframe_t gladiator_frames_walk [] = {
     { ai_walk, 7,  NULL },
     { ai_walk, 6,  NULL },
     { ai_walk, 5,  NULL },
-    { ai_walk, 2,  NULL },
+    { ai_walk, 2, monster_footstep },
     { ai_walk, 0,  NULL },
     { ai_walk, 2,  NULL },
     { ai_walk, 8,  NULL },
@@ -90,7 +112,7 @@ mframe_t gladiator_frames_walk [] = {
     { ai_walk, 8,  NULL },
     { ai_walk, 5,  NULL },
     { ai_walk, 5,  NULL },
-    { ai_walk, 2,  NULL },
+    { ai_walk, 2, monster_footstep },
     { ai_walk, 2,  NULL },
     { ai_walk, 1,  NULL },
     { ai_walk, 8,  NULL }
@@ -106,10 +128,10 @@ void gladiator_walk(edict_t *self)
 mframe_t gladiator_frames_run [] = {
     { ai_run, 23, NULL },
     { ai_run, 14, NULL },
-    { ai_run, 14, NULL },
+    { ai_run, 14, monster_footstep },
     { ai_run, 21, NULL },
     { ai_run, 12, NULL },
-    { ai_run, 13, NULL }
+    { ai_run, 13, monster_footstep }
 };
 mmove_t gladiator_move_run = {FRAME_run1, FRAME_run6, gladiator_frames_run, NULL};
 
@@ -184,7 +206,7 @@ mframe_t gladiator_frames_attack_gun [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, monster_footstep },
     { ai_charge, 0, NULL }
 };
 mmove_t gladiator_move_attack_gun = {FRAME_attack1, FRAME_attack9, gladiator_frames_attack_gun, gladiator_run};
@@ -338,8 +360,8 @@ mframe_t gladiator_frames_death [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
+    { ai_move, 0, gladiator_shrink },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },

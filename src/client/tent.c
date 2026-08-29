@@ -252,13 +252,18 @@ void CL_ImpactSmokeAndFlash(const vec3_t origin, const vec3_t dir)
     explosion_t *ex;
     vec3_t      org;
 
-    // lift it out of the wall so the sprite is not half buried in it
-    VectorMA(origin, 2.0f, dir, org);
+    // Lift it clear of the wall so the sprite is not half buried in it.
+    VectorMA(origin, 4.0f, dir, org);
 
     ex = CL_AllocExplosion();
     VectorCopy(org, ex->ent.origin);
     VectorCopy(org, ex->spawn_origin);
-    VectorScale(dir, 18.0f, ex->vel);
+    // The puff only lives about 300 ms, so at the 18 units/sec this started
+    // out at it travelled barely five units over its whole life - well under
+    // its own size, which is why it looked identical to the undirected puff it
+    // replaced. 60 units/sec moves it about one model width off the surface,
+    // which is what actually reads as the wall throwing it off.
+    VectorScale(dir, 60.0f, ex->vel);
     ex->type = ex_misc;
     ex->frames = 4;
     ex->ent.flags = RF_TRANSLUCENT | RF_NOSHADOW;
@@ -1226,8 +1231,10 @@ void CL_ParseTEnt(void)
     case TE_BLOOD:          // bullet hitting flesh
         if (!(cl_disable_particles->integer & NOPART_BLOOD))
         {
-            // CL_ParticleEffect(te.pos1, te.dir, 0xe8, 60);
-            CL_BloodParticleEffect(te.pos1, te.dir, 0xe8, 40);
+            // 60 is the count the original game used for TE_BLOOD. This tree
+            // had it at 40, which mattered less while most of the spray was
+            // being flung out of sight - see CL_BloodParticleEffect.
+            CL_BloodParticleEffect(te.pos1, te.dir, 0xe8, 60);
         }
         break;
 
@@ -1487,6 +1494,14 @@ void CL_ParseTEnt(void)
         VectorClear(te.offset);
         te.entity2 = 0;
         CL_ParseBeam(cl_mod_parasite_segment);
+        break;
+
+    // The lightning model with no sound - see the enum. Held beams re-send
+    // every frame, and TE_LIGHTNING's sound would then machine-gun.
+    case TE_LIGHTNING_BEAM:
+        VectorClear(te.offset);
+        te.entity2 = 0;
+        CL_ParseBeam(cl_mod_lightning);
         break;
 
     case TE_BOSSTPORT:          // boss teleporting to station

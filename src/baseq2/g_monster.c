@@ -300,6 +300,32 @@ void M_FlyCheck(edict_t *self)
 
 /*
 =================
+monster_footstep
+
+[rerelease] A foot-plant sound on the frames where a monster's foot actually
+lands. id added ~185 of these calls across eleven monsters, and they are most of
+why the rerelease's monsters feel like they have weight.
+
+The whole feature costs one event write here: EV_FOOTSTEP already exists in this
+tree and the client already plays it (cl_sfx_footsteps, gated on the client's
+own cl_footsteps) - it was simply never emitted by anything but the player.
+
+Gated on M_RereleaseGame(): the 1997 monsters are silent on the move, and these
+calls sit in frame tables that BOTH games play.
+=================
+*/
+void monster_footstep(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    // no sound in mid-air - the rerelease's own test
+    if (self->groundentity)
+        self->s.event = EV_FOOTSTEP;
+}
+
+/*
+=================
 M_SetDamageSkin
 
 [rerelease] monsterinfo.setskin, which all 22 monsters that define it implement

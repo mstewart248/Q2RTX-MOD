@@ -511,8 +511,17 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
         }
         else if ((targ->svflags & SVF_MONSTER) || (client))
         {
-            // SpawnDamage(TE_BLOOD, point, normal, take);
-            SpawnDamage(TE_BLOOD, point, dir, take);
+            // NORMAL, not dir.  This was briefly changed to `dir` to give the
+            // spray some directionality and that was simply wrong: `dir` is the
+            // bullet's direction of travel, so the blood was thrown THROUGH the
+            // monster and out the far side - and CL_BloodParticleEffect scatters
+            // it up to 310 units, which buried the whole spray in whatever was
+            // behind the target.  That is why the blood looked like it had
+            // disappeared.  `normal` is the surface normal, pointing back out
+            // towards the shooter, and is what the rerelease passes too
+            // (src/rerelease/g_combat.cpp: SpawnDamage(TE_BLOOD, point, normal,
+            // take)).
+            SpawnDamage(TE_BLOOD, point, normal, take);
         }
         else
             SpawnDamage(te_sparks, point, normal, take);

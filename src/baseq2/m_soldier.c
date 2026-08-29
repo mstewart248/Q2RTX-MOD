@@ -60,6 +60,41 @@ void soldier_cock(edict_t *self)
 
 void soldier_stand(edict_t *self);
 
+/*
+=================
+soldier_death_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void soldier_death_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
+/*
+=================
+soldier_done_dodge_footstep
+
+Their run table pairs these in a C++ lambda; an mframe_t here holds one think.
+=================
+*/
+static void soldier_done_dodge_footstep(edict_t *self)
+{
+    monster_done_dodge(self);
+    monster_footstep(self);
+}
+
 mframe_t soldier_frames_stand1 [] = {
     { ai_stand, 0, soldier_idle },
     { ai_stand, 0, NULL },
@@ -159,6 +194,7 @@ mframe_t soldier_frames_stand2 [] = {
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
+    { ai_stand, 0, monster_footstep },
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
@@ -184,8 +220,7 @@ mframe_t soldier_frames_stand2 [] = {
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
-    { ai_stand, 0, NULL },
-    { ai_stand, 0, NULL },
+    { ai_stand, 0, monster_footstep },
 };
 mmove_t soldier_move_stand2 = {FRAME_stand201, FRAME_stand240, soldier_frames_stand2, soldier_stand};
 
@@ -289,12 +324,12 @@ mframe_t soldier_frames_walk1 [] = {
     { ai_walk, 3,  NULL },
     { ai_walk, 6,  NULL },
     { ai_walk, 2,  NULL },
-    { ai_walk, 2,  NULL },
+    { ai_walk, 2, monster_footstep },
     { ai_walk, 2,  NULL },
     { ai_walk, 1,  NULL },
     { ai_walk, 6,  NULL },
     { ai_walk, 5,  NULL },
-    { ai_walk, 3,  NULL },
+    { ai_walk, 3, monster_footstep },
     { ai_walk, -1, soldier_walk1_random },
     { ai_walk, 0,  NULL },
     { ai_walk, 0,  NULL },
@@ -323,12 +358,12 @@ mframe_t soldier_frames_walk1 [] = {
 mmove_t soldier_move_walk1 = {FRAME_walk101, FRAME_walk133, soldier_frames_walk1, NULL};
 
 mframe_t soldier_frames_walk2 [] = {
-    { ai_walk, 4,  NULL },
+    { ai_walk, 4, monster_footstep },
     { ai_walk, 4,  NULL },
     { ai_walk, 9,  NULL },
     { ai_walk, 8,  NULL },
     { ai_walk, 5,  NULL },
-    { ai_walk, 1,  NULL },
+    { ai_walk, 1, monster_footstep },
     { ai_walk, 3,  NULL },
     { ai_walk, 7,  NULL },
     { ai_walk, 6,  NULL },
@@ -359,11 +394,11 @@ mmove_t soldier_move_start_run = {FRAME_run01, FRAME_run02, soldier_frames_start
 
 mframe_t soldier_frames_run [] = {
     { ai_run, 10, NULL },
-    { ai_run, 11, NULL },
+    { ai_run, 11, soldier_done_dodge_footstep },
     { ai_run, 11, NULL },
     { ai_run, 16, NULL },
-    { ai_run, 10, NULL },
-    { ai_run, 15, NULL }
+    { ai_run, 10, monster_footstep },
+    { ai_run, 15, monster_done_dodge }
 };
 mmove_t soldier_move_run = {FRAME_run03, FRAME_run08, soldier_frames_run, NULL};
 
@@ -411,7 +446,7 @@ mmove_t soldier_move_pain2 = {FRAME_pain201, FRAME_pain207, soldier_frames_pain2
 mframe_t soldier_frames_pain3 [] = {
     { ai_move, -8, NULL },
     { ai_move, 10, NULL },
-    { ai_move, -4, NULL },
+    { ai_move, -4, monster_footstep },
     { ai_move, -1, NULL },
     { ai_move, -3, NULL },
     { ai_move, 0,  NULL },
@@ -426,7 +461,7 @@ mframe_t soldier_frames_pain3 [] = {
     { ai_move, 2,  NULL },
     { ai_move, 4,  NULL },
     { ai_move, 3,  NULL },
-    { ai_move, 2,  NULL }
+    { ai_move, 2, monster_footstep }
 };
 mmove_t soldier_move_pain3 = {FRAME_pain301, FRAME_pain318, soldier_frames_pain3, soldier_run};
 
@@ -890,8 +925,8 @@ void soldier_attack5_refire(edict_t *self)
 
 mframe_t soldier_frames_attack5 [] = {
     { ai_charge, 8, NULL },
-    { ai_charge, 8, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 8, monster_footstep },
+    { ai_charge, 0, monster_footstep },
     { ai_charge, 0, NULL },
     { ai_charge, 0, soldier_fire5 },
     { ai_charge, 0, NULL },
@@ -1255,19 +1290,19 @@ mframe_t soldier_frames_trip [] = {
     { ai_move, 10,  NULL },
     { ai_move, 2,   monster_check_prone },
     { ai_move, 18,  monster_duck_down },
-    { ai_move, 11,  NULL },
+    { ai_move, 11, monster_footstep },
     { ai_move, 9,   NULL },
-    { ai_move, -11, NULL },
+    { ai_move, -11, monster_footstep },
     { ai_move, -2,  NULL },
     { ai_move, 0,   NULL },
     { ai_move, 6,   NULL },
     { ai_move, -5,  NULL },
     { ai_move, 0,   NULL },
     { ai_move, 1,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0,   monster_duck_up },
     { ai_move, 3,   NULL },
-    { ai_move, 2,   NULL },
+    { ai_move, 2, monster_footstep },
     { ai_move, -1,  NULL },
     { ai_move, 2,   NULL },
     { ai_move, 0,   NULL }
@@ -1421,7 +1456,7 @@ mframe_t soldier_frames_death1 [] = {
     { ai_move, 0,   NULL },
     { ai_move, -10, NULL },
     { ai_move, -10, NULL },
-    { ai_move, -10, NULL },
+    { ai_move, -10, soldier_death_shrink },
     { ai_move, -5,  NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
@@ -1464,7 +1499,7 @@ mframe_t soldier_frames_death2 [] = {
     { ai_move, -5,  NULL },
     { ai_move, -5,  NULL },
     { ai_move, -5,  NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0, soldier_death_shrink },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
@@ -1506,7 +1541,7 @@ mframe_t soldier_frames_death3 [] = {
     { ai_move, -5,  NULL },
     { ai_move, -5,  NULL },
     { ai_move, -5,  NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0, soldier_death_shrink },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
@@ -1570,7 +1605,7 @@ mframe_t soldier_frames_death4 [] = {
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0, soldier_death_shrink },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
@@ -1623,7 +1658,7 @@ mframe_t soldier_frames_death5 [] = {
     { ai_move, -5,  NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0, soldier_death_shrink },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
@@ -1653,7 +1688,7 @@ mframe_t soldier_frames_death6 [] = {
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0, soldier_death_shrink },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },

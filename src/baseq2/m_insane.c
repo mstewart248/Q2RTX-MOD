@@ -260,13 +260,13 @@ mframe_t insane_frames_walk_normal [] = {
     { ai_walk,    1.7,    NULL },
     { ai_walk,    2.3,    NULL },
     { ai_walk,    2.4,    NULL },
-    { ai_walk,    2.2,    NULL },
+    { ai_walk, 2.2, monster_footstep },
     { ai_walk,    4.2,    NULL },
     { ai_walk,    5.6,    NULL },
     { ai_walk,    3.3,    NULL },
     { ai_walk,    2.4,    NULL },
     { ai_walk,    0.9,    NULL },
-    { ai_walk,    0,      NULL }
+    { ai_walk, 0, monster_footstep }
 };
 mmove_t insane_move_walk_normal = {FRAME_walk27, FRAME_walk39, insane_frames_walk_normal, insane_walk};
 mmove_t insane_move_run_normal = {FRAME_walk27, FRAME_walk39, insane_frames_walk_normal, insane_run};
@@ -277,26 +277,26 @@ mframe_t insane_frames_walk_insane [] = {
     { ai_walk,    3.6,    NULL },       // 3
     { ai_walk,    2.9,    NULL },       // 4
     { ai_walk,    2.2,    NULL },       // 5
-    { ai_walk,    2.6,    NULL },       // 6
+    { ai_walk, 2.6, monster_footstep },       // 6
     { ai_walk,    0,      NULL },       // 7
     { ai_walk,    0.7,    NULL },       // 8
     { ai_walk,    4.8,    NULL },       // 9
     { ai_walk,    5.3,    NULL },       // 10
     { ai_walk,    1.1,    NULL },       // 11
-    { ai_walk,    2,      NULL },       // 12
+    { ai_walk, 2, monster_footstep },       // 12
     { ai_walk,    0.5,    NULL },       // 13
     { ai_walk,    0,      NULL },       // 14
     { ai_walk,    0,      NULL },       // 15
     { ai_walk,    4.9,    NULL },       // 16
     { ai_walk,    6.7,    NULL },       // 17
     { ai_walk,    3.8,    NULL },       // 18
-    { ai_walk,    2,      NULL },       // 19
+    { ai_walk, 2, monster_footstep },       // 19
     { ai_walk,    0.2,    NULL },       // 20
     { ai_walk,    0,      NULL },       // 21
     { ai_walk,    3.4,    NULL },       // 22
     { ai_walk,    6.4,    NULL },       // 23
     { ai_walk,    5,      NULL },       // 24
-    { ai_walk,    1.8,    NULL },       // 25
+    { ai_walk, 1.8, monster_footstep },       // 25
     { ai_walk,    0,      NULL }        // 26
 };
 mmove_t insane_move_walk_insane = {FRAME_walk1, FRAME_walk26, insane_frames_walk_insane, insane_walk};
@@ -307,13 +307,13 @@ mframe_t insane_frames_stand_pain [] = {
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
-    { ai_move,    0,      NULL },
-    { ai_move,    0,      NULL }
+    { ai_move, 0, monster_footstep }
 };
 mmove_t insane_move_stand_pain = {FRAME_st_pain2, FRAME_st_pain12, insane_frames_stand_pain, insane_run};
 
@@ -322,15 +322,15 @@ mframe_t insane_frames_stand_death [] = {
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move,    0,      NULL },
-    { ai_move,    0,      NULL },
-    { ai_move,    0,      NULL },
-    { ai_move,    0,      NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
     { ai_move,    0,      NULL },
@@ -343,11 +343,11 @@ mframe_t insane_frames_crawl [] = {
     { ai_walk,    1.5,    NULL },
     { ai_walk,    2.1,    NULL },
     { ai_walk,    3.6,    NULL },
-    { ai_walk,    2,      NULL },
+    { ai_walk, 2, monster_footstep },
     { ai_walk,    0.9,    NULL },
     { ai_walk,    3,      NULL },
     { ai_walk,    3.4,    NULL },
-    { ai_walk,    2.4,    NULL }
+    { ai_walk, 2.4, monster_footstep }
 };
 mmove_t insane_move_crawl = {FRAME_crawl1, FRAME_crawl9, insane_frames_crawl, NULL};
 mmove_t insane_move_runcrawl = {FRAME_crawl1, FRAME_crawl9, insane_frames_crawl, NULL};

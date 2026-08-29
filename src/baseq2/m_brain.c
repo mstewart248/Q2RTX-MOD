@@ -63,6 +63,28 @@ void brain_dead(edict_t *self);
 // STAND
 //
 
+/*
+=================
+brain_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void brain_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 mframe_t brain_frames_stand [] = {
     { ai_stand,   0,  NULL },
     { ai_stand,   0,  NULL },
@@ -159,13 +181,13 @@ mframe_t brain_frames_walk1 [] = {
     { ai_walk,    7,  NULL },
     { ai_walk,    2,  NULL },
     { ai_walk,    3,  NULL },
-    { ai_walk,    3,  NULL },
+    { ai_walk, 3, monster_footstep },
     { ai_walk,    1,  NULL },
     { ai_walk,    0,  NULL },
     { ai_walk,    0,  NULL },
     { ai_walk,    9,  NULL },
     { ai_walk,    -4, NULL },
-    { ai_walk,    -1, NULL },
+    { ai_walk, -1, monster_footstep },
     { ai_walk,    2,  NULL }
 };
 mmove_t brain_move_walk1 = {FRAME_walk101, FRAME_walk111, brain_frames_walk1, NULL};
@@ -280,7 +302,7 @@ mframe_t brain_frames_pain1 [] =
 {
     { ai_move,    -6, NULL },
     { ai_move,    -2, NULL },
-    { ai_move,    -6, NULL },
+    { ai_move, -6, monster_footstep },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
@@ -297,7 +319,7 @@ mframe_t brain_frames_pain1 [] =
     { ai_move,    1,  NULL },
     { ai_move,    7,  NULL },
     { ai_move,    0,  NULL },
-    { ai_move,    3,  NULL },
+    { ai_move, 3, monster_footstep },
     { ai_move,    -1, NULL }
 };
 mmove_t brain_move_pain1 = {FRAME_pain101, FRAME_pain121, brain_frames_pain1, brain_run};
@@ -394,8 +416,8 @@ void brain_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool 
 mframe_t brain_frames_death2 [] =
 {
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move, 0, monster_footstep },
+    { ai_move, 0, brain_shrink },
     { ai_move,    9,  NULL },
     { ai_move,    0,  NULL }
 };
@@ -458,7 +480,7 @@ mframe_t brain_frames_attack1 [] =
     { ai_charge,  8,  NULL },
     { ai_charge,  3,  NULL },
     { ai_charge,  5,  NULL },
-    { ai_charge,  0,  NULL },
+    { ai_charge, 0, monster_footstep },
     { ai_charge,  -3, brain_swing_right },
     { ai_charge,  0,  NULL },
     { ai_charge,  -5, NULL },
@@ -472,7 +494,7 @@ mframe_t brain_frames_attack1 [] =
     { ai_charge,  -1, NULL },
     { ai_charge,  -3, NULL },
     { ai_charge,  2,  NULL },
-    { ai_charge,  -11, NULL }
+    { ai_charge, -11, monster_footstep }
 };
 mmove_t brain_move_attack1 = {FRAME_attak101, FRAME_attak118, brain_frames_attack1, brain_run};
 

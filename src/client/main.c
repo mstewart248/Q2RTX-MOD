@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // cl_main.c  -- client main loop
 
 #include "client.h"
+#include "client/sound/vorbis.h"
 
 cvar_t  *rcon_address;
 
@@ -2368,6 +2369,8 @@ void CL_RestartFilesystem(bool total)
 
     if (!cl_running->integer) {
         FS_Restart(total);
+        // the music folder just moved with the gamedir
+        OGG_RestartTrackList();
         return;
     }
 
@@ -2394,6 +2397,10 @@ void CL_RestartFilesystem(bool total)
 
         FS_Restart(total);
 
+        // Rebuild the music track list before CL_PrepRefresh() below re-issues
+        // CS_CDTRACK, or the map would ask the OLD gamedir's list for its track.
+        OGG_RestartTrackList();
+
         R_Init(false);
 
         SCR_RegisterMedia();
@@ -2401,6 +2408,7 @@ void CL_RestartFilesystem(bool total)
         UI_Init();
     } else {
         FS_Restart(total);
+        OGG_RestartTrackList();
     }
 
     if (cls_state == ca_disconnected) {

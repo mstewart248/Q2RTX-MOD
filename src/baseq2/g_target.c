@@ -656,6 +656,24 @@ void target_laser_start(edict_t *self)
     self->s.renderfx |= RF_BEAM | RF_TRANSLUCENT;
     self->s.modelindex = 1;         // must be non-zero
 
+    /*
+     * [rerelease] SPAWNFLAG_LASER_LIGHTNING (0x10000). id added this well after
+     * the original six colour flags, and it OVERRIDES them: it forces the blue
+     * ramp and asks the renderer for a lightning bolt instead of a straight
+     * laser (their RF_BEAM_LIGHTNING is literally RF_BEAM | RF_GLOW).
+     *
+     * mgu6m3's kill beam - the one that ends the Modir fight - carries
+     * spawnflags 65602 = LIGHTNING | FAT | RED. Without this branch the RED
+     * flag won, which is why that beam came out as a flat red tube here and is
+     * blue in the retail game. The colour block below is now guarded on skinnum
+     * being unset, exactly as theirs is, so LIGHTNING wins over RED.
+     */
+    if (self->spawnflags & SPAWNFLAG_LASER_LIGHTNING) {
+        self->s.renderfx |= RF_GLOW;    // RF_BEAM | RF_GLOW == their lightning
+        if (!self->s.skinnum)
+            self->s.skinnum = 0xf3f3f1f1;   // their default lightning colour
+    }
+
     // set the beam diameter
     if (self->spawnflags & 64)
         self->s.frame = 16;
@@ -663,16 +681,18 @@ void target_laser_start(edict_t *self)
         self->s.frame = 4;
 
     // set the color
-    if (self->spawnflags & 2)
-        self->s.skinnum = 0xf2f2f0f0;
-    else if (self->spawnflags & 4)
-        self->s.skinnum = 0xd0d1d2d3;
-    else if (self->spawnflags & 8)
-        self->s.skinnum = 0xf3f3f1f1;
-    else if (self->spawnflags & 16)
-        self->s.skinnum = 0xdcdddedf;
-    else if (self->spawnflags & 32)
-        self->s.skinnum = 0xe0e1e2e3;
+    if (!self->s.skinnum) {
+        if (self->spawnflags & 2)
+            self->s.skinnum = 0xf2f2f0f0;   // red
+        else if (self->spawnflags & 4)
+            self->s.skinnum = 0xd0d1d2d3;   // green
+        else if (self->spawnflags & 8)
+            self->s.skinnum = 0xf3f3f1f1;   // blue
+        else if (self->spawnflags & 16)
+            self->s.skinnum = 0xdcdddedf;   // yellow
+        else if (self->spawnflags & 32)
+            self->s.skinnum = 0xe0e1e2e3;   // orange
+    }
 
     if (!self->enemy) {
         if (self->target) {

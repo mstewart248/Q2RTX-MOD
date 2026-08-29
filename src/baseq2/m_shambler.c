@@ -57,37 +57,58 @@ static const vec3_t lightning_right_hand[] = {
 	{ 27, -11, 83 }
 };
 
+/*
+=================
+shambler_lightning_update
+
+The arc that crackles between the shambler's hands while it winds up, drawn
+fresh each frame between the two hand positions for the frame it is on.
+
+THIS IS A TEMP ENTITY, NOT AN RF_BEAM ENTITY, and that is deliberate. The
+rerelease spawns a persistent entity carrying the lightning model with
+RF_BEAM set, but an RF_BEAM entity is not drawn as its model here -
+CL_AddPacketEntities sets `ent.model = 0` for beams and the path tracer draws a
+plain coloured cylinder in its place, sized by s.frame and coloured by s.skinnum
+(and skipped entirely when s.frame is 0). A cylinder is not a lightning bolt at
+any colour, which is exactly what the first attempt at this produced.
+
+CL_ParseBeam DOES use the model, so going through a temp entity gets the real
+jagged cl_mod_lightning - the same reasoning, and the same fix, as the parasite's
+proboscis tether. TE_LIGHTNING_BEAM is the silent twin of TE_LIGHTNING; the
+sounded one would fire cl_sfx_lightning on every frame of the wind-up.
+
+A beam lives 200 ms client-side and the monster frames are 100 ms, so re-sending
+each frame keeps it continuous, and it simply expires if the shambler dies
+mid-charge - no entity to leak or free.
+=================
+*/
 static void shambler_lightning_update(edict_t *self)
 {
-    edict_t *lightning = self->beam;
-    vec3_t  f, r;
+    vec3_t  f, r, left, right;
+    int     i;
 
-    if (!lightning)
-        return;
-
-	if (self->s.frame >= FRAME_magic01 + q_countof(lightning_left_hand))
-	{
-		G_FreeEdict(lightning);
-		self->beam = NULL;
-		return;
-	}
+    i = self->s.frame - FRAME_magic01;
+    if (i < 0 || i >= (int)q_countof(lightning_left_hand))
+        return;     // past the charge-up frames: the arc is gone
 
     AngleVectors(self->s.angles, f, r, NULL);
-    M_ProjectFlashSource(self, lightning_left_hand[self->s.frame - FRAME_magic01], f, r, lightning->s.origin);
-    M_ProjectFlashSource(self, lightning_right_hand[self->s.frame - FRAME_magic01], f, r, lightning->s.old_origin);
-	gi.linkentity(lightning);
+    M_ProjectFlashSource(self, lightning_left_hand[i], f, r, left);
+    M_ProjectFlashSource(self, lightning_right_hand[i], f, r, right);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_LIGHTNING_BEAM);
+    gi.WriteShort(self - g_edicts);
+    gi.WritePosition(left);
+    gi.WritePosition(right);
+    gi.multicast(left, MULTICAST_PVS);
 }
 
 void shambler_windup(edict_t* self)
 {
 	gi.sound(self, CHAN_WEAPON, sound_windup, 1, ATTN_NORM, 0);
 
-    edict_t *lightning;
-
-    self->beam = lightning = G_Spawn();
-	lightning->s.modelindex = gi.modelindex("models/proj/lightning/tris.md2");
-	lightning->s.renderfx |= RF_BEAM;
-	lightning->owner = self;
+    // No beam entity: the arc is a temp entity re-sent per frame, so that it
+    // draws as the real lightning model. See shambler_lightning_update.
 	shambler_lightning_update(self);
 }
 
@@ -342,18 +363,31 @@ void ShamblerCastLightning(edict_t* self)
     // gi.WriteEntity does not exist in this tree; TE_LIGHTNING reads two entity
     // numbers as shorts, which is what WriteShort sends.
     //
-    // ORDER MATTERS AND IT IS DESTINATION-FIRST. The rerelease writes
-    // (source, dest, start, endpos); this tree's client is the stock rogue one,
-    // which reads (dest, source, DEST POINT, SOURCE POINT) - see the tesla in
-    // g_weapon.c, the only other TE_LIGHTNING here, and CL_AddBeams in
-    // src/client/tent.c, which marches from pos1 to pos2 with the model turned
-    // 180 degrees. Writing the rerelease's order draws the bolt backwards.
+    // SOURCE FIRST - the order the rerelease uses. An earlier version of this
+    // copied the rogue tesla in g_weapon.c, which writes the entity it HIT
+    // first, and that is a live bug the tesla only gets away with because a
+    // player-laid tesla shoots monsters: `CL_ParseBeam` stores the first entity
+    // as `b->entity`, and `CL_AddBeams` then does
+    //
+    //     if (b->entity == cl.frame.clientNum + 1)
+    //         VectorAdd(cl.playerEntityOrigin, b->offset, org);
+    //
+    // i.e. any beam whose FIRST entity is the local player is re-anchored to
+    // the player. The shambler exists to shoot the player, so every bolt it
+    // landed was redrawn from the player's own origin to the shambler's hand -
+    // a short bolt hanging off the muzzle, or a jagged line across its chest,
+    // never a bolt travelling from the monster to you.
+    //
+    // Writing (source, dest, start, endpos) makes `b->entity` the shambler,
+    // which is never clientNum + 1, so the beam is drawn where it was aimed.
+    // The 180 degree flip CL_AddBeams applies to cl_mod_lightning is a model
+    // axis correction and applies either way round.
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(TE_LIGHTNING);
-    gi.WriteShort(tr.ent ? tr.ent - g_edicts : 0);  // destination entity
     gi.WriteShort(self - g_edicts);                 // source entity
-    gi.WritePosition(tr.endpos);                    // destination point
+    gi.WriteShort(0);                               // destination entity (world)
     gi.WritePosition(start);                        // source point
+    gi.WritePosition(tr.endpos);                    // destination point
     gi.multicast(start, MULTICAST_PVS);
 
     fire_bullet(self, start, dir, 8 + (Q_rand() % 5), 15, 0, 0, MOD_TESLA);
@@ -558,13 +592,10 @@ void shambler_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dama
 {
     int n;
 
-    if (self->beam) {
-        G_FreeEdict(self->beam);
-        self->beam = NULL;
-    }
-
-    // id also frees a `beam2` here, but nothing in their source ever SETS it -
-    // the shambler only uses one beam. Not reproduced.
+    // id frees its wind-up beam entity here (and a `beam2` that nothing in
+    // their source ever sets). There is no entity to free in this port - the
+    // arc is a per-frame temp entity, so it simply stops being re-sent and
+    // expires on its own. See shambler_lightning_update.
 
 	// check for gib
     if (self->health <= self->gib_health) {

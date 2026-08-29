@@ -61,6 +61,28 @@ void gunner_refire_chain(edict_t *self);
 
 void gunner_stand(edict_t *self);
 
+/*
+=================
+gunner_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void gunner_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = -4;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 mframe_t gunner_frames_fidget [] = {
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
@@ -174,14 +196,14 @@ mframe_t gunner_frames_walk [] = {
     { ai_walk, 4, NULL },
     { ai_walk, 5, NULL },
     { ai_walk, 7, NULL },
-    { ai_walk, 2, NULL },
+    { ai_walk, 2, monster_footstep },
     { ai_walk, 6, NULL },
     { ai_walk, 4, NULL },
     { ai_walk, 2, NULL },
     { ai_walk, 7, NULL },
     { ai_walk, 5, NULL },
     { ai_walk, 7, NULL },
-    { ai_walk, 4, NULL }
+    { ai_walk, 4, monster_footstep }
 };
 mmove_t gunner_move_walk = {FRAME_walk07, FRAME_walk19, gunner_frames_walk, NULL};
 
@@ -192,11 +214,11 @@ void gunner_walk(edict_t *self)
 
 mframe_t gunner_frames_run [] = {
     { ai_run, 26, NULL },
+    { ai_run, 9, monster_footstep },
     { ai_run, 9,  NULL },
-    { ai_run, 9,  NULL },
-    { ai_run, 9,  NULL },
+    { ai_run, 9, monster_done_dodge },
     { ai_run, 15, NULL },
-    { ai_run, 10, NULL },
+    { ai_run, 10, monster_footstep },
     { ai_run, 13, NULL },
     { ai_run, 6,  NULL }
 };
@@ -239,12 +261,12 @@ mmove_t gunner_move_pain3 = {FRAME_pain301, FRAME_pain305, gunner_frames_pain3, 
 mframe_t gunner_frames_pain2 [] = {
     { ai_move, -2, NULL },
     { ai_move, 11, NULL },
-    { ai_move, 6,  NULL },
+    { ai_move, 6, monster_footstep },
     { ai_move, 2,  NULL },
     { ai_move, -1, NULL },
     { ai_move, -7, NULL },
     { ai_move, -2, NULL },
-    { ai_move, -7, NULL }
+    { ai_move, -7, monster_footstep }
 };
 mmove_t gunner_move_pain2 = {FRAME_pain201, FRAME_pain208, gunner_frames_pain2, gunner_run};
 
@@ -253,7 +275,7 @@ mframe_t gunner_frames_pain1 [] = {
     { ai_move, 0,  NULL },
     { ai_move, -5, NULL },
     { ai_move, 3,  NULL },
-    { ai_move, -1, NULL },
+    { ai_move, -1, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
@@ -261,12 +283,12 @@ mframe_t gunner_frames_pain1 [] = {
     { ai_move, 1,  NULL },
     { ai_move, 1,  NULL },
     { ai_move, 2,  NULL },
-    { ai_move, 1,  NULL },
+    { ai_move, 1, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, -2, NULL },
     { ai_move, -2, NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL }
+    { ai_move, 0, monster_footstep }
 };
 mmove_t gunner_move_pain1 = {FRAME_pain101, FRAME_pain118, gunner_frames_pain1, gunner_run};
 
@@ -312,13 +334,13 @@ void gunner_dead(edict_t *self)
 mframe_t gunner_frames_death [] = {
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
-    { ai_move, -7, NULL },
+    { ai_move, 0, monster_footstep },
+    { ai_move, -7, gunner_shrink },
     { ai_move, -3, NULL },
     { ai_move, -5, NULL },
     { ai_move, 8,  NULL },
     { ai_move, 6,  NULL },
-    { ai_move, 0,  NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL }
 };
@@ -736,7 +758,7 @@ mframe_t gunner_frames_endfire_chain [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL }
+    { ai_charge, 0, monster_footstep }
 };
 mmove_t gunner_move_endfire_chain = {FRAME_attak224, FRAME_attak230, gunner_frames_endfire_chain, gunner_run};
 

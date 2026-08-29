@@ -284,6 +284,37 @@ OGG_InitTrackList(void)
 }
 
 /*
+ * Rebuild the track list because the GAME DIRECTORY changed.
+ *
+ * OGG_ScanTrackList() resolves every path against fs_gamedir, but the list was
+ * only ever built once, from S_Init(). That is too early: `q2rtx +game
+ * rerelease` - what rerelease.bat runs - boots in baseq2, scans baseq2/music,
+ * and only THEN restarts the filesystem into rerelease. So the rerelease played
+ * baseq2's twenty tracks for the whole session: every map asking for 2..21 got
+ * the 1997 recording instead of the remaster, and the sixteen tracks the
+ * rerelease adds (64..79) were absent, so OGG_WrapTrack() folded them onto
+ * whatever was in range - track 67, which eleven maps use, came out as track 7.
+ *
+ * Called from CL_RestartFilesystem(), the one place the gamedir actually moves.
+ */
+void
+OGG_RestartTrackList(void)
+{
+	if (!ogg_started)
+	{
+		return;
+	}
+
+	/* Whatever is playing came out of the OLD gamedir and its path string is
+	   about to be freed, so stop before rescanning. The caller reloads the map
+	   afterwards, which re-issues CS_CDTRACK against the new list. */
+	OGG_Stop();
+	ogg_curfile = -1;
+
+	OGG_InitTrackList();
+}
+
+/*
  * Fold a requested track number onto one we actually have.
  *
  * Anything we do have is returned untouched, so normal playback is unaffected.

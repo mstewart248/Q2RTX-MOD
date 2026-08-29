@@ -59,6 +59,28 @@ void ChickMoan(edict_t *self)
         gi.sound(self, CHAN_VOICE, sound_idle2, 1, ATTN_IDLE, 0);
 }
 
+/*
+=================
+chick_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void chick_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 12;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 mframe_t chick_frames_fidget [] = {
     { ai_stand, 0,  NULL },
     { ai_stand, 0,  NULL },
@@ -144,9 +166,9 @@ void chick_stand(edict_t *self)
 mframe_t chick_frames_start_run [] = {
     { ai_run, 1,  NULL },
     { ai_run, 0,  NULL },
-    { ai_run, 0,   NULL },
+    { ai_run, 0, monster_footstep },
     { ai_run, -1, NULL },
-    { ai_run, -1, NULL },
+    { ai_run, -1, monster_footstep },
     { ai_run, 0,  NULL },
     { ai_run, 1,  NULL },
     { ai_run, 3,  NULL },
@@ -157,12 +179,12 @@ mmove_t chick_move_start_run = {FRAME_walk01, FRAME_walk10, chick_frames_start_r
 
 mframe_t chick_frames_run [] = {
     { ai_run, 6,  NULL },
-    { ai_run, 8,  NULL },
+    { ai_run, 8, monster_footstep },
     { ai_run, 13, NULL },
-    { ai_run, 5,  NULL },
+    { ai_run, 5, monster_done_dodge },
     { ai_run, 7,  NULL },
     { ai_run, 4,  NULL },
-    { ai_run, 11, NULL },
+    { ai_run, 11, monster_footstep },
     { ai_run, 5,  NULL },
     { ai_run, 9,  NULL },
     { ai_run, 7,  NULL }
@@ -173,12 +195,12 @@ mmove_t chick_move_run = {FRAME_walk11, FRAME_walk20, chick_frames_run, NULL};
 
 mframe_t chick_frames_walk [] = {
     { ai_walk, 6,  NULL },
-    { ai_walk, 8,  NULL },
+    { ai_walk, 8, monster_footstep },
     { ai_walk, 13, NULL },
     { ai_walk, 5,  NULL },
     { ai_walk, 7,  NULL },
     { ai_walk, 4,  NULL },
-    { ai_walk, 11, NULL },
+    { ai_walk, 11, monster_footstep },
     { ai_walk, 5,  NULL },
     { ai_walk, 9,  NULL },
     { ai_walk, 7,  NULL }
@@ -226,11 +248,11 @@ mmove_t chick_move_pain2 = {FRAME_pain201, FRAME_pain205, chick_frames_pain2, ch
 
 mframe_t chick_frames_pain3 [] = {
     { ai_move, 0,     NULL },
-    { ai_move, 0,     NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, -6,    NULL },
-    { ai_move, 3,     NULL },
+    { ai_move, 3, monster_footstep },
     { ai_move, 11,    NULL },
-    { ai_move, 3,     NULL },
+    { ai_move, 3, monster_footstep },
     { ai_move, 0,     NULL },
     { ai_move, 0,     NULL },
     { ai_move, 4,     NULL },
@@ -245,7 +267,7 @@ mframe_t chick_frames_pain3 [] = {
     { ai_move, -5,    NULL },
     { ai_move, -2,    NULL },
     { ai_move, -8,    NULL },
-    { ai_move, 2,     NULL }
+    { ai_move, 2, monster_footstep }
 };
 mmove_t chick_move_pain3 = {FRAME_pain301, FRAME_pain321, chick_frames_pain3, chick_run};
 
@@ -296,41 +318,41 @@ mframe_t chick_frames_death2 [] = {
     { ai_move, -6, NULL },
     { ai_move, 0,  NULL },
     { ai_move, -1,  NULL },
-    { ai_move, -5, NULL },
+    { ai_move, -5, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, -1,  NULL },
     { ai_move, -2,  NULL },
     { ai_move, 1,  NULL },
     { ai_move, 10, NULL },
     { ai_move, 2,  NULL },
-    { ai_move, 3,  NULL },
+    { ai_move, 3, monster_footstep },
     { ai_move, 1,  NULL },
     { ai_move, 2, NULL },
     { ai_move, 0,  NULL },
     { ai_move, 3,  NULL },
     { ai_move, 3,  NULL },
-    { ai_move, 1,  NULL },
+    { ai_move, 1, monster_footstep },
     { ai_move, -3,  NULL },
     { ai_move, -5, NULL },
     { ai_move, 4, NULL },
-    { ai_move, 15, NULL },
-    { ai_move, 14, NULL },
+    { ai_move, 15, chick_shrink },
+    { ai_move, 14, monster_footstep },
     { ai_move, 1, NULL }
 };
 mmove_t chick_move_death2 = {FRAME_death201, FRAME_death223, chick_frames_death2, chick_dead};
 
 mframe_t chick_frames_death1 [] = {
     { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, -7, NULL },
-    { ai_move, 4,  NULL },
-    { ai_move, 11, NULL },
+    { ai_move, 4, monster_footstep },
+    { ai_move, 11, chick_shrink },
+    { ai_move, 0,  NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0,  NULL }
 
 };
@@ -653,7 +675,7 @@ mframe_t chick_frames_start_attack1 [] = {
     { ai_charge, -3,  NULL },
     { ai_charge, 3,   NULL },
     { ai_charge, 5,   NULL },
-    { ai_charge, 7,   NULL },
+    { ai_charge, 7, monster_footstep },
     { ai_charge, 0,   NULL },
     { ai_charge, 0,   NULL },
     { ai_charge, 0,   NULL },
@@ -686,7 +708,7 @@ mframe_t chick_frames_end_attack1 [] = {
     { ai_charge, 0,   NULL },
     { ai_charge, -6,  NULL },
     { ai_charge, -4,  NULL },
-    { ai_charge, -2,  NULL }
+    { ai_charge, -2, monster_footstep }
 };
 mmove_t chick_move_end_attack1 = {FRAME_attak128, FRAME_attak132, chick_frames_end_attack1, chick_run};
 
@@ -719,7 +741,7 @@ void chick_attack1(edict_t *self)
 mframe_t chick_frames_slash [] = {
     { ai_charge, 1,   NULL },
     { ai_charge, 7,   ChickSlash },
-    { ai_charge, -7,  NULL },
+    { ai_charge, -7, monster_footstep },
     { ai_charge, 1,   NULL },
     { ai_charge, -1,  NULL },
     { ai_charge, 1,   NULL },
@@ -733,7 +755,7 @@ mframe_t chick_frames_end_slash [] = {
     { ai_charge, -6,  NULL },
     { ai_charge, -1,  NULL },
     { ai_charge, -6,  NULL },
-    { ai_charge, 0,   NULL }
+    { ai_charge, 0, monster_footstep }
 };
 mmove_t chick_move_end_slash = {FRAME_attak213, FRAME_attak216, chick_frames_end_slash, chick_run};
 

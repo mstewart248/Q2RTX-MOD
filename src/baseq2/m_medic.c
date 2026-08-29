@@ -247,13 +247,13 @@ void medic_stand(edict_t *self)
 
 mframe_t medic_frames_walk [] = {
     { ai_walk, 6.2,   NULL },
-    { ai_walk, 18.1,  NULL },
+    { ai_walk, 18.1, monster_footstep },
     { ai_walk, 1,     NULL },
     { ai_walk, 9,     NULL },
     { ai_walk, 10,    NULL },
     { ai_walk, 9,     NULL },
     { ai_walk, 11,    NULL },
-    { ai_walk, 11.6,  NULL },
+    { ai_walk, 11.6, monster_footstep },
     { ai_walk, 2,     NULL },
     { ai_walk, 9.9,   NULL },
     { ai_walk, 14,    NULL },
@@ -269,9 +269,9 @@ void medic_walk(edict_t *self)
 
 mframe_t medic_frames_run [] = {
     { ai_run, 18,     NULL },
-    { ai_run, 22.5,   NULL },
-    { ai_run, 25.4,   NULL },
-    { ai_run, 23.4,   NULL },
+    { ai_run, 22.5, monster_footstep },
+    { ai_run, 25.4, monster_done_dodge },
+    { ai_run, 23.4, monster_footstep },
     { ai_run, 24,     NULL },
     { ai_run, 35.6,   NULL }
 
@@ -1281,7 +1281,7 @@ mframe_t medic_frames_callReinforcements [] = {
     { ai_charge, 5,     NULL },
     { ai_charge, 6,     NULL },
     { ai_charge, 4,     NULL },                  // 40
-    { ai_charge, 0,     NULL },
+    { ai_charge, 0, monster_footstep },
     { ai_move,   0,     medic_start_spawn },     // 42
     { ai_move,   0,     NULL },                  // 43 - 43..47 are skipped
     { ai_move,   0,     NULL },
@@ -1295,7 +1295,7 @@ mframe_t medic_frames_callReinforcements [] = {
     { ai_move,   -15,   medic_finish_spawn },    // 52
     { ai_move,   -1.5f, NULL },
     { ai_move,   -1.2f, NULL },
-    { ai_move,   -3,    NULL }
+    { ai_move, -3, monster_footstep }
 };
 mmove_t medic_move_callReinforcements = {FRAME_attack33, FRAME_attack55, medic_frames_callReinforcements, medic_run};
 

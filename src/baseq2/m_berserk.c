@@ -51,6 +51,28 @@ void berserk_search(edict_t *self)
 
 
 void berserk_fidget(edict_t *self);
+/*
+=================
+berserk_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void berserk_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 mframe_t berserk_frames_stand [] = {
     { ai_stand, 0, berserk_fidget },
     { ai_stand, 0, NULL },
@@ -149,10 +171,10 @@ void()  berserk_runb12  =[  $r_att12 ,  berserk_runb7   ] {{ ai_run(19);};
 
 mframe_t berserk_frames_run1 [] = {
     { ai_run, 21, NULL },
-    { ai_run, 11, NULL },
+    { ai_run, 11, monster_footstep },
     { ai_run, 21, NULL },
-    { ai_run, 25, NULL },
-    { ai_run, 18, NULL },
+    { ai_run, 25, monster_done_dodge },
+    { ai_run, 18, monster_footstep },
     { ai_run, 19, NULL }
 };
 mmove_t berserk_move_run1 = {FRAME_run1, FRAME_run6, berserk_frames_run1, NULL};
@@ -202,7 +224,7 @@ void berserk_attack_club(edict_t *self)
 mframe_t berserk_frames_attack_club [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, monster_footstep },
     { ai_charge, 0, NULL },
     { ai_charge, 0, berserk_swing },
     { ai_charge, 0, NULL },
@@ -296,20 +318,20 @@ mframe_t berserk_frames_duck2 [] = {
     { ai_move, 21, monster_duck_down },
     { ai_move, 28, NULL },
     { ai_move, 20, NULL },
-    { ai_move, 12, NULL },
+    { ai_move, 12, monster_footstep },
     { ai_move, 7,  NULL },
-    { ai_move, 0,  NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, 0,  monster_duck_hold },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0,  monster_duck_up },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, 0,  NULL }
+    { ai_move, 0, monster_footstep }
 };
 mmove_t berserk_move_duck2 = {FRAME_fall2, FRAME_fall18, berserk_frames_duck2, berserk_run};
 
@@ -473,6 +495,7 @@ mframe_t berserk_frames_pain2 [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
@@ -481,14 +504,13 @@ mframe_t berserk_frames_pain2 [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 0, NULL }
+    { ai_move, 0, monster_footstep }
 };
 mmove_t berserk_move_pain2 = {FRAME_painb1, FRAME_painb20, berserk_frames_pain2, berserk_run};
 
@@ -528,9 +550,9 @@ mframe_t berserk_frames_death1 [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
+    { ai_move, 0, berserk_shrink },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
@@ -546,8 +568,8 @@ mframe_t berserk_frames_death2 [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
+    { ai_move, 0, berserk_shrink },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL }
@@ -818,7 +840,20 @@ static void berserk_attack_slam(edict_t *self)
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(TE_BERSERK_SLAM);
     gi.WritePosition(tr.endpos);
-    gi.WriteDir(vec3_origin);       // straight up
+
+    // STRAIGHT UP, and it has to be written as a real vector. This used to pass
+    // vec3_origin with a comment claiming it meant "straight up" - it does not.
+    // MSG_WriteDir runs the vector through DirToByte, which scores it against
+    // the 162 entry normal table; the zero vector beats nothing, so it falls
+    // out as index 0 = {-0.526, 0, 0.851} - a normal leaning 32 degrees off
+    // vertical towards world -X.
+    //
+    // The client reads this back as the GROUND NORMAL and drives both the
+    // debris fan and the smoke puff off it (see TE_BERSERK_SLAM in tent.c), so
+    // every ground pound threw its debris off at the same fixed tilt no matter
+    // which way the berserk faced or what it landed on. The rerelease writes
+    // { 0, 0, 1 } here.
+    gi.WriteDir(tv(0.0f, 0.0f, 1.0f));
     gi.multicast(tr.endpos, MULTICAST_PHS);
 
     self->gravity = 1.0f;
@@ -983,6 +1018,9 @@ mframe_t berserk_frames_attack_slam [] = {
     { ai_move,   0, berserk_high_gravity },
     { ai_move,   0, berserk_high_gravity },
     { ai_move,   0, berserk_check_landing },
+    { ai_move, 0, monster_footstep },
+    { ai_move,   0, NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move,   0, NULL },
     { ai_move,   0, NULL },
     { ai_move,   0, NULL },
@@ -997,10 +1035,7 @@ mframe_t berserk_frames_attack_slam [] = {
     { ai_move,   0, NULL },
     { ai_move,   0, NULL },
     { ai_move,   0, NULL },
-    { ai_move,   0, NULL },
-    { ai_move,   0, NULL },
-    { ai_move,   0, NULL },
-    { ai_move,   0, NULL }
+    { ai_move, 0, monster_footstep }
 };
 mmove_t berserk_move_attack_slam = {FRAME_slam1, FRAME_slam23, berserk_frames_attack_slam, berserk_run};
 

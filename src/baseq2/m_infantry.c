@@ -51,6 +51,43 @@ static int  sound_search;
 static int  sound_idle;
 
 
+/*
+=================
+infantry_shrink
+
+[rerelease] Flatten the corpse partway through the death animation, and mark it
+a dead monster there, instead of waiting for the animation to finish. A body
+that falls in a doorway stops blocking it while the rest of the death plays.
+
+Gated: this sits in a death table BOTH games play, and the original game keeps
+its full-height corpse until the dead-frame handler runs.
+=================
+*/
+static void infantry_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
+/*
+=================
+infantry_shrink_footstep
+
+The rerelease writes these two together as a C++ lambda in the frame table
+(`[](edict_t *self) { infantry_shrink(self); monster_footstep(self); }`). An
+mframe_t here holds a single think, so the pair gets a named wrapper.
+=================
+*/
+static void infantry_shrink_footstep(edict_t *self)
+{
+    infantry_shrink(self);
+    monster_footstep(self);
+}
+
 mframe_t infantry_frames_stand [] = {
     { ai_stand, 0, NULL },
     { ai_stand, 0, NULL },
@@ -89,7 +126,7 @@ mframe_t infantry_frames_fidget [] = {
     { ai_stand, 1,  NULL },
     { ai_stand, 3,  NULL },
     { ai_stand, 6,  NULL },
-    { ai_stand, 3,  NULL },
+    { ai_stand, 3, monster_footstep },
     { ai_stand, 0,  NULL },
     { ai_stand, 0,  NULL },
     { ai_stand, 0,  NULL },
@@ -131,7 +168,7 @@ mframe_t infantry_frames_fidget [] = {
     { ai_stand, -3, NULL },
     { ai_stand, -2, NULL },
     { ai_stand, -3, NULL },
-    { ai_stand, -3, NULL },
+    { ai_stand, -3, monster_footstep },
     { ai_stand, -2, NULL }
 };
 mmove_t infantry_move_fidget = {FRAME_stand01, FRAME_stand49, infantry_frames_fidget, infantry_stand};
@@ -143,13 +180,13 @@ void infantry_fidget(edict_t *self)
 }
 
 mframe_t infantry_frames_walk [] = {
-    { ai_walk, 5,  NULL },
+    { ai_walk, 5, monster_footstep },
     { ai_walk, 4,  NULL },
     { ai_walk, 4,  NULL },
     { ai_walk, 5,  NULL },
     { ai_walk, 4,  NULL },
     { ai_walk, 5,  NULL },
-    { ai_walk, 6,  NULL },
+    { ai_walk, 6, monster_footstep },
     { ai_walk, 4,  NULL },
     { ai_walk, 4,  NULL },
     { ai_walk, 4,  NULL },
@@ -165,11 +202,11 @@ void infantry_walk(edict_t *self)
 
 mframe_t infantry_frames_run [] = {
     { ai_run, 10, NULL },
-    { ai_run, 20, NULL },
+    { ai_run, 20, monster_footstep },
     { ai_run, 5,  NULL },
-    { ai_run, 7,  NULL },
+    { ai_run, 7, monster_done_dodge },
     { ai_run, 30, NULL },
-    { ai_run, 35, NULL },
+    { ai_run, 35, monster_footstep },
     { ai_run, 2,  NULL },
     { ai_run, 6,  NULL }
 };
@@ -189,12 +226,12 @@ mframe_t infantry_frames_pain1 [] = {
     { ai_move, -2, NULL },
     { ai_move, -1, NULL },
     { ai_move, -2, NULL },
-    { ai_move, -1, NULL },
+    { ai_move, -1, monster_footstep },
     { ai_move, 1,  NULL },
     { ai_move, -1, NULL },
     { ai_move, 1,  NULL },
     { ai_move, 6,  NULL },
-    { ai_move, 2,  NULL }
+    { ai_move, 2, monster_footstep }
 };
 mmove_t infantry_move_pain1 = {FRAME_pain101, FRAME_pain110, infantry_frames_pain1, infantry_run};
 
@@ -203,12 +240,12 @@ mframe_t infantry_frames_pain2 [] = {
     { ai_move, -3, NULL },
     { ai_move, 0,  NULL },
     { ai_move, -1, NULL },
-    { ai_move, -2, NULL },
+    { ai_move, -2, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 2,  NULL },
     { ai_move, 5,  NULL },
-    { ai_move, 2,  NULL }
+    { ai_move, 2, monster_footstep }
 };
 mmove_t infantry_move_pain2 = {FRAME_pain201, FRAME_pain210, infantry_frames_pain2, infantry_run};
 
@@ -333,7 +370,7 @@ mframe_t infantry_frames_death1 [] = {
     { ai_move, -2, NULL },
     { ai_move, 2,  NULL },
     { ai_move, 2,  NULL },
-    { ai_move, 9,  NULL },
+    { ai_move, 9, infantry_shrink_footstep },
     { ai_move, 9,  NULL },
     { ai_move, 5,  NULL },
     { ai_move, -3, NULL },
@@ -365,7 +402,7 @@ mframe_t infantry_frames_death2 [] = {
     { ai_move, -10, InfantryMachineGun },
     { ai_move, -7,  InfantryMachineGun },
     { ai_move, -8,  InfantryMachineGun },
-    { ai_move, -6,  NULL },
+    { ai_move, -6, infantry_shrink_footstep },
     { ai_move, 4,   NULL },
     { ai_move, 0,   NULL }
 };
@@ -374,7 +411,7 @@ mmove_t infantry_move_death2 = {FRAME_death201, FRAME_death225, infantry_frames_
 mframe_t infantry_frames_death3 [] = {
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0, infantry_shrink_footstep },
     { ai_move, -6,  NULL },
     { ai_move, -11, NULL },
     { ai_move, -3,  NULL },
@@ -853,7 +890,7 @@ mframe_t infantry_frames_attack2 [] = {
     { ai_charge, 3, NULL },
     { ai_charge, 6, NULL },
     { ai_charge, 0, infantry_swing },
-    { ai_charge, 8, NULL },
+    { ai_charge, 8, monster_footstep },
     { ai_charge, 5, NULL },
     { ai_charge, 8, infantry_smack },
     { ai_charge, 6, NULL },

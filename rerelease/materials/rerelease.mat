@@ -18653,7 +18653,6 @@ textures/tomc/tc_tomb_panel_256_d:
 textures/tomc/tc_tomb_panel_256_f:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_f.tga
 	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_f_n.tga
-	metalness_factor 0
 
 textures/tomc/tc_tomb_panel_256_g:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_g.tga
@@ -18693,7 +18692,6 @@ textures/tomc/tc_tomb_tile_256_a:
 textures/tomc/tc_tomb_trim_256_a:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_256_a.tga
 	texture_normals materialDev/textures/tomc/tc_tomb_trim_256_a_n.tga
-	metalness_factor 0
 
 textures/tomc/tc_tomb_trim_32_a:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_32_a.tga
@@ -18718,7 +18716,6 @@ textures/tomc/tc_tomb_trim_32_d:
 textures/tomc/tc_tomb_trim_32_e:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_32_e.tga
 	texture_normals materialDev/textures/tomc/tc_tomb_trim_32_e_n.tga
-	metalness_factor 0
 
 textures/tomc/tc_tomb_trim_64_a:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_64_a.tga
