@@ -302,6 +302,33 @@ void combine_fullres_fields(ivec2 opos)
     imageStore(IMG_FLAT_MOTION,             opos, primary_motion);
     imageStore(IMG_DLSS_3DMOTION_VECTOR,    opos, primary_motion);
     imageStore(IMG_DLSS_DEPTH,              opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT,    p_primary));
+    /* DLSS FRAME GENERATION WANTS INVERSE DEPTH, NOT LINEAR DEPTH.
+
+       nvsdk_ngx_defs_dlssg.h states that DLSS-G linearizes the depth buffer ITSELF:
+         DepthInverted false -> lin_depth = 1 / (1 - depth)
+         DepthInverted true  -> lin_depth = 1 / depth
+       and every depth heuristic it exposes (MinRelativeLinearDepthObjectSeparation 40,
+       LinearizedDepth_NearFarPartition 600) is a threshold in THAT space.
+
+       IMG_DLSS_DEPTH holds raw linear view depth in Quake units, roughly 1..4000, because
+       super resolution and ray reconstruction are created with
+       NVSDK_NGX_DLSS_Depth_Type_Linear and need it that way. Feeding the same buffer to
+       frame generation put the whole scene through 1/(1-depth): a divide by zero at
+       exactly 1 unit from the camera, a sign flip across it, and everything else squashed
+       into a narrow band of tiny NEGATIVE numbers. No two surfaces are ever 40 apart in
+       that space, so the heuristics deciding what is a contiguous surface, and what must
+       not scatter motion into the near plane, were inoperative.
+
+       Reflections and refractions took the worst of it: reflect_refract.rgen replaces the
+       depth on those pixels with the VIRTUAL distance of the reflected or refracted
+       surface, so they are exactly the pixels that swing hardest across the singularity -
+       which is why the artifacts concentrated on glass.
+
+       Writing 1/|d| and setting depthInverted makes DLSS-G compute lin_depth = |d|, the
+       linear view distance IN QUAKE UNITS: positive, monotonic, no singularity, and the
+       SDK's tuned 40 / 600 defaults land at sane world scales (40 units is about a
+       doorframe, 600 about a large room). */
+    imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, p_primary).x), 0.01)));
     imageStore(IMG_DLSS_ALBEDO,             opos, imageLoad(IMG_PT_ALBEDO,              p_primary));
     imageStore(IMG_DLSS_SPECULAR,           opos, imageLoad(IMG_PT_SPECULAR,            p_primary));
     imageStore(IMG_DLSS_ROUGHNESS,          opos, imageLoad(IMG_PT_ROUGHNESS,           p_primary));
@@ -424,6 +451,7 @@ void main()
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
+    imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos).x), 0.01)));
         imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthSecondVec.x), 0, 0, 0));
         imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, ipos));
         imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos));
@@ -455,6 +483,7 @@ void main()
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
         imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
+    imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)).x), 0.01)));
         imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(rayLengthVec.x, 0, 0 , 0));   
         imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos + ivec2(other_side_offset, 0)));

@@ -118,6 +118,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_FG_OUTPUT3,           78, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
 	IMG_DO(DLSS_FG_OUTPUT4,           79, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
 	IMG_DO(DLSS_FG_OUTPUT5,           80, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_DEPTH,             81, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 
 
 /* Multi Frame Generation writes ONE image per generated frame, and every one of them
@@ -125,7 +126,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    supported generated frame. DLSS-G reports MultiFrameCountMax = 5 on this card, i.e.
    up to 6x. These are unscaled (post-upscale) rgba16f, so the set of five costs about
    83 MB at 1080p and 332 MB at 4K. DLSSG_MAX_GENERATED_FRAMES in DLSS.h must match. */
-#define NUM_IMAGES_BASE     81
+/* DLSS_FG_DEPTH: frame generation needs a DIFFERENT depth space than super resolution
+   and ray reconstruction, so it gets its own image instead of sharing DLSS_DEPTH. The
+   why is at the FG depth store in checkerboard_interleave.comp. */
+#define NUM_IMAGES_BASE     82
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \

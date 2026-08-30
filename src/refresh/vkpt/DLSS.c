@@ -21,6 +21,8 @@
 #include "DLSS.h"
 #include "DLSSG.h"
 #include "reflex.h"
+#include <float.h>
+#include <math.h>
 
 DLSS dlssObj;
 cvar_t* cvar_pt_dlss = NULL;
@@ -1156,6 +1158,17 @@ void InitDLSSGCvars()
        frame with FG active has run, otherwise typing it in the console gets
        "unknown command". 0 disables the cap. */
     Cvar_Get("pt_dlss_fg_min_base", "30", CVAR_ARCHIVE);
+
+    /* Depth-space controls. pt_dlss_fg_depthmode 0 restores the old shared linear
+       depth buffer, which is the A/B for the glass-artifact fix; the other three are
+       DLSS-G's own depth heuristics, in Quake world units once depthmode is 1. */
+    Cvar_Get("pt_dlss_fg_depthmode", "1", 0);
+    Cvar_Get("pt_dlss_fg_depth_scale", "1.0", 0);
+    Cvar_Get("pt_dlss_fg_depth_partition", "600.0", 0);
+    Cvar_Get("pt_dlss_fg_depth_separation", "40.0", 0);
+    Cvar_Get("pt_dlss_fg_mvinvalid", "0", 0);
+    Cvar_Get("pt_dlss_fg_cambasis", "1", 0);
+    Cvar_Get("pt_dlss_fg_camfwd_sign", "0", 0);   /* 0 = resolve automatically */
 }
 
 unsigned int DLSSGMaxMultiplier()
@@ -1415,14 +1428,103 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
     mat4_transpose(mClipToPrev, clipToPrev);
     mat4_transpose(mPrevToClip, prevToClip);
 
+    /* THE WORLD-SPACE CAMERA FRAME, WHICH USED TO BE ALL ZEROS.
+
+       NVSDK_NGX_DLSSG_Opt_Eval_Params carries cameraPos / cameraUp / cameraRight /
+       cameraFwd and nothing here ever filled them in, so "= {}" handed DLSS-G a camera
+       sitting at the world origin with a zero-length orientation basis. Taken from the
+       INVERSE VIEW matrix rather than from the refdef's view angles, so they are the same
+       camera the V and P matrices describe by construction - a second, independently
+       derived frame would be one more convention to get wrong.
+
+       Column-major, translation in elements 12..14 (the layout the whole tree uses), so
+       column 0 is right, column 1 is up, column 2 is BACKWARD for the usual right-handed
+       view matrix that looks down -Z. pt_dlss_fg_camfwd_sign flips that if this tree's
+       convention turns out to be the other one; pt_dlss_fg_cambasis 0 restores the old
+       all-zero behaviour for an A/B. */
+    float fgCamPos[3] = { 0.0f, 0.0f, 0.0f };
+    float fgCamRight[3] = { 0.0f, 0.0f, 0.0f };
+    float fgCamUp[3] = { 0.0f, 0.0f, 0.0f };
+    float fgCamFwd[3] = { 0.0f, 0.0f, 0.0f };
+
+    if (Cvar_Get("pt_dlss_fg_cambasis", "1", 0)->integer) {
+        const float *iv = &(*ubo->invV)[0];
+
+        /* THE FORWARD SIGN IS RESOLVED AGAINST THE REFDEF, NOT GUESSED.
+
+           Column 2 of the inverse view matrix is the world-space direction of view-space
+           +Z, and whether that is forward or backward is a convention this tree does not
+           state anywhere. The evidence points both ways: primary_rays.rgen stores
+           view_pos_curr.z as a DEPTH interchangeable with a positive radial distance,
+           which says +Z is forward - but reflect_refract.rgen wraps the same quantity in
+           abs(), which would be pointless if it were always positive.
+
+           So do not pick. The refdef's view angles give the true world-space forward
+           independently; dot the two and flip if they disagree. Costs one dot product per
+           frame and cannot be wrong. pt_dlss_fg_camfwd_sign overrides it (-1 / 1) if the
+           automatic choice ever needs to be forced. */
+        float fwdSign = 1.0f;
+        const int fwdOverride = Cvar_Get("pt_dlss_fg_camfwd_sign", "0", 0)->integer;
+        if (fwdOverride != 0) {
+            fwdSign = (fwdOverride < 0) ? -1.0f : 1.0f;
+        } else if (vkpt_refdef.fd) {
+            vec3_t ref_fwd, ref_right, ref_up;
+            AngleVectors(vkpt_refdef.fd->viewangles, ref_fwd, ref_right, ref_up);
+            const float d = ref_fwd[0] * iv[8] + ref_fwd[1] * iv[9] + ref_fwd[2] * iv[10];
+            if (d < 0.0f)
+                fwdSign = -1.0f;
+        }
+
+        for (int i = 0; i < 3; i++) {
+            fgCamRight[i] = iv[0 + i];
+            fgCamUp[i]    = iv[4 + i];
+            fgCamFwd[i]   = iv[8 + i] * fwdSign;
+            fgCamPos[i]   = iv[12 + i];
+        }
+
+        /* One-shot, so the resolved convention is on the record rather than inferred
+           from how the picture looks. */
+        {
+            static int announced = 0;
+            if (!announced) {
+                announced = 1;
+                Com_Printf("DLSS-G: camera basis from invV, forward sign %+.0f "
+                    "(pos %.1f %.1f %.1f, fwd %.2f %.2f %.2f)\n", fwdSign,
+                    iv[12], iv[13], iv[14],
+                    iv[8] * fwdSign, iv[9] * fwdSign, iv[10] * fwdSign);
+            }
+        }
+
+        /* Normalize: a view matrix carrying any scale would otherwise hand NGX a basis
+           that is not unit length, and these are direction inputs. */
+        float *axes[3] = { fgCamRight, fgCamUp, fgCamFwd };
+        for (int a = 0; a < 3; a++) {
+            float len = sqrtf(axes[a][0] * axes[a][0]
+                            + axes[a][1] * axes[a][1]
+                            + axes[a][2] * axes[a][2]);
+            if (len > 1e-6f) {
+                for (int i = 0; i < 3; i++)
+                    axes[a][i] /= len;
+            }
+        }
+    }
+
     NVSDK_NGX_Dimensions outSize = { outWidth, outHeight };
     NVSDK_NGX_Dimensions renderSize = {
         qvk.extent_render.width,
         qvk.extent_render.height
     };
 
+    /* Frame generation reads its OWN depth image, in inverse-depth space. See the block
+       comment at the FG depth store in checkerboard_interleave.comp. pt_dlss_fg_depthmode 0
+       goes back to the shared linear DLSS_DEPTH buffer that super resolution uses, which is
+       what produced the glass artifacts. */
+    const int fgDepthMode = Cvar_Get("pt_dlss_fg_depthmode", "1", 0)->integer;
+    const int fgDepthImage = fgDepthMode ? VKPT_IMG_DLSS_FG_DEPTH : VKPT_IMG_DLSS_DEPTH;
+
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_FG_DEPTH]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
 
     NVSDK_NGX_Resource_VK backbuffer = ToNGXResource(
@@ -1430,7 +1532,7 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
         outSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     NVSDK_NGX_Resource_VK depth = ToNGXResource(
-        qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH],
+        qvk.images[fgDepthImage], qvk.images_views[fgDepthImage],
         renderSize, VK_FORMAT_R32_SFLOAT, false);
 
     NVSDK_NGX_Resource_VK mvecs = ToNGXResource(
@@ -1502,6 +1604,11 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
         .mvecScaleX = fgMvecScaleX * (float)fgMvecSign,
         .mvecScaleY = fgMvecScaleY * (float)fgMvecSign,
 
+        .cameraPos = { fgCamPos[0], fgCamPos[1], fgCamPos[2] },
+        .cameraUp = { fgCamUp[0], fgCamUp[1], fgCamUp[2] },
+        .cameraRight = { fgCamRight[0], fgCamRight[1], fgCamRight[2] },
+        .cameraFwd = { fgCamFwd[0], fgCamFwd[1], fgCamFwd[2] },
+
         .cameraNear = vkpt_refdef.z_near,
         .cameraFar = vkpt_refdef.z_far,
         .cameraFOV = fovYRadians,
@@ -1566,11 +1673,27 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
              pt_dlss_fg_depthinv  1 for reversed-Z depth. VKPT_IMG_DLSS_DEPTH is linear view
                                   depth, so 0 should be right - but it has never been tested
                                   against 1, and getting it wrong breaks disocclusion. */
-        .depthInverted = Cvar_Get("pt_dlss_fg_depthinv", "0", 0)->integer ? 1 : 0,
+        /* 1 with the FG depth image, because it holds 1/|d| - DLSS-G then computes
+           lin_depth = |d|, the linear view distance in Quake units. 0 only makes sense
+           alongside pt_dlss_fg_depthmode 0. */
+        .depthInverted = fgDepthMode
+            ? 1
+            : (Cvar_Get("pt_dlss_fg_depthinv", "0", 0)->integer ? 1 : 0),
 
         .cameraMotionIncluded = Cvar_Get("pt_dlss_fg_cammotion", "1", 0)->integer ? 1 : 0,
         .reset = resetAccum ? 1 : 0,
         .notRenderingGameFrames = qvk.frame_menu_mode ? 1 : 0,
+
+        .linearizedDepthScale =
+            Cvar_Get("pt_dlss_fg_depth_scale", "1.0", 0)->value,
+        .linearizedDepthNearFarPartition =
+            Cvar_Get("pt_dlss_fg_depth_partition", "600.0", 0)->value,
+        .minRelativeLinearDepthObjectSeparation =
+            Cvar_Get("pt_dlss_fg_depth_separation", "40.0", 0)->value,
+
+        /* FLT_MIN, never 0 - see the comment in DLSSG.cpp. */
+        .motionVectorsInvalidValue =
+            Cvar_Get("pt_dlss_fg_mvinvalid", "0", 0)->integer ? 0.0f : FLT_MIN,
 
         .multiFrameCount = generatedFrames,
         .multiFrameIndex = genIndex,

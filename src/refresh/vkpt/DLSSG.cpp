@@ -119,6 +119,13 @@ extern "C" unsigned int DLSSG_EvaluateFeature(VkCommandBuffer cmd,
     opt.cameraPinholeOffset[0] = 0.0f;
     opt.cameraPinholeOffset[1] = 0.0f;
 
+    for (int i = 0; i < 3; i++) {
+        opt.cameraPos[i]   = in->cameraPos[i];
+        opt.cameraUp[i]    = in->cameraUp[i];
+        opt.cameraRight[i] = in->cameraRight[i];
+        opt.cameraFwd[i]   = in->cameraFwd[i];
+    }
+
     opt.cameraNear = in->cameraNear;
     opt.cameraFar = in->cameraFar;
     opt.cameraFOV = in->cameraFOV;
@@ -132,7 +139,13 @@ extern "C" unsigned int DLSSG_EvaluateFeature(VkCommandBuffer cmd,
     opt.notRenderingGameFrames = in->notRenderingGameFrames ? true : false;
     opt.orthoProjection = false;
 
-    opt.motionVectorsInvalidValue = 0.0f;
+    // NOT 0.0f. This field names the value that means "invalid" in the motion vector
+    // buffer, and a pixel that did not move has motion exactly (0,0) - so 0.0 declared
+    // every STATIC pixel's motion vector invalid and pushed DLSS-G onto optical flow
+    // for most of the screen. Streamline's default is FLT_MIN, a value no real vector
+    // takes. The field has no default member initializer in nvsdk_ngx_params_dlssg.h,
+    // so "= {}" zeroed it and the explicit 0.0f merely restated the zero.
+    opt.motionVectorsInvalidValue = in->motionVectorsInvalidValue;
     opt.motionVectorsDilated = false;
     opt.menuDetectionEnabled = false;
 
@@ -143,7 +156,15 @@ extern "C" unsigned int DLSSG_EvaluateFeature(VkCommandBuffer cmd,
     opt.depthSubrectBase = { 0, 0 };
     opt.depthSubrectSize = { in->renderWidth, in->renderHeight };
 
-    opt.minRelativeLinearDepthObjectSeparation = 40.0f;   // header default, set explicitly
+    opt.minRelativeLinearDepthObjectSeparation = in->minRelativeLinearDepthObjectSeparation;
+
+    // Raw NGX parameters - these two are NOT members of Opt_Eval_Params, they are set
+    // on pParams directly. See the comment block above
+    // NVSDK_NGX_DLSSG_Parameter_LinearizedDepth_Scale in nvsdk_ngx_defs_dlssg.h.
+    NVSDK_NGX_Parameter_SetF(pParams, NVSDK_NGX_DLSSG_Parameter_LinearizedDepth_Scale,
+                             in->linearizedDepthScale);
+    NVSDK_NGX_Parameter_SetF(pParams, NVSDK_NGX_DLSSG_Parameter_LinearizedDepth_NearFarPartition,
+                             in->linearizedDepthNearFarPartition);
 
     return (unsigned int)NGX_VK_EVALUATE_DLSSG(cmd, pHandle, pParams, &evalParams, &opt);
 }

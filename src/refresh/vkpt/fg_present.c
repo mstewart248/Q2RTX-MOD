@@ -606,6 +606,40 @@ void FGPresent_Shutdown(void)
     if (fg_queue_drained) { SDL_DestroyCond(fg_queue_drained);  fg_queue_drained = NULL; }
     if (fg_queue_mutex)   { SDL_DestroyMutex(fg_queue_mutex);   fg_queue_mutex = NULL; }
     /* fg_vkqueue_mutex is NOT destroyed - see fg_get_vkqueue_mutex(). */
+
+    /* THE DEVICE-LIFETIME OBJECTS MUST GO TOO, AND THE STATICS MUST BE RESET.
+
+       fg_timeline and fg_ready_fence belong to qvk.device. A DLSS quality-mode change
+       calls viewsize_changed(), which does Cvar_SetByVar(vid_rtx, "0") then "1" - a full
+       renderer restart that destroys and recreates the device. Leaving these handles
+       populated meant FGPresent_TimelineAvailable() saw a non-null fg_timeline on the way
+       back up, returned early WITHOUT recreating it, and the present thread then signalled
+       and host-waited a semaphore belonging to a destroyed device. The readiness gate that
+       decides when a frame is presentable was therefore meaningless, and presents fired
+       against images that were not ready - which reads on screen as everything flashing
+       and the wrong frames being shown.
+
+       This only became reachable when pt_dlss_fg_timeline started defaulting to 1; with
+       the old default of 0 the semaphore was never created, so the stale handle never
+       existed. Resetting the flags matters as much as destroying the objects:
+       fg_timeline_failed would otherwise latch a failure from a dead device forever, and
+       fg_timeline_next has to restart at 0 alongside a freshly created semaphore. */
+    if (qvk.device != VK_NULL_HANDLE) {
+        /* The frame submit that signals fg_timeline may still be in flight, and
+           destroying a semaphore with a pending operation is a use-after-free. The
+           present thread is already joined above, so nothing else is touching a
+           queue and this wait cannot race the way vkDeviceWaitIdle otherwise can. */
+        vkDeviceWaitIdle(qvk.device);
+
+        if (fg_timeline != VK_NULL_HANDLE)
+            vkDestroySemaphore(qvk.device, fg_timeline, NULL);
+        if (fg_ready_fence != VK_NULL_HANDLE)
+            vkDestroyFence(qvk.device, fg_ready_fence, NULL);
+    }
+    fg_timeline = VK_NULL_HANDLE;
+    fg_timeline_next = 0;
+    fg_timeline_failed = false;
+    fg_ready_fence = VK_NULL_HANDLE;
 }
 
 bool FGPresent_Enqueue(VkSwapchainKHR swapchain, uint32_t image_index,

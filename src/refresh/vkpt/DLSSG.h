@@ -75,6 +75,15 @@ typedef struct DLSSG_EvalInputs {
     float mvecScaleX;
     float mvecScaleY;
 
+    // WORLD-SPACE CAMERA FRAME. These were never set and NGX's "= {}" left DLSS-G with a
+    // camera at the world origin and an all-zero orientation basis, which is not a valid
+    // frame at all. Extracted from the inverse view matrix so they cannot disagree with
+    // the V/P pair handed over alongside them.
+    float cameraPos[3];
+    float cameraUp[3];
+    float cameraRight[3];
+    float cameraFwd[3];
+
     float cameraNear;
     float cameraFar;
     float cameraFOV;          // radians
@@ -94,6 +103,19 @@ typedef struct DLSSG_EvalInputs {
     int cameraMotionIncluded;
     int reset;                // no usable history this frame
     int notRenderingGameFrames;
+
+    // DEPTH-SPACE TUNING. DLSS-G linearizes the depth buffer itself
+    // (lin_depth = 1/depth when depthInverted), and these three are thresholds and a
+    // scale IN THAT LINEARIZED SPACE. With the FG depth image holding 1/|d| they are in
+    // Quake world units, so the SDK defaults are meaningful here; they are cvars anyway
+    // because Quake's world scale is not what NVIDIA tuned against.
+    float linearizedDepthScale;             // SDK default 1.0
+    float linearizedDepthNearFarPartition;  // SDK default 600.0
+    float minRelativeLinearDepthObjectSeparation;   // SDK default 40.0
+
+    // Which value in the motion vector buffer means "invalid". MUST NOT be 0.0 - a pixel
+    // that did not move has motion exactly (0,0), so 0.0 marks every static pixel invalid.
+    float motionVectorsInvalidValue;
 
     // Multi Frame Generation. multiFrameCount is the number of GENERATED frames per
     // real frame pair (1 = 2x, 3 = 4x, 5 = 6x); multiFrameIndex is which one of them
