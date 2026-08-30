@@ -161,7 +161,15 @@ qboolean DLSSCreated() {
     return dlssObj.created;
 }
 
+/* Set when a DLSS feature could not be created at all. Makes DLSSEnabled() report false so
+   the renderer takes its ordinary non-DLSS path instead of calling into a feature that does
+   not exist. Cleared in viewsize_changed(), i.e. whenever the user picks a mode. */
+qboolean dlssRuntimeFailed = qfalse;
+
 qboolean DLSSEnabled() {
+    if (dlssRuntimeFailed) {
+        return qfalse;
+    }
     if (cvar_pt_dlss->integer != 0) {
         return qtrue;
     }
@@ -542,10 +550,27 @@ void SaveDLSSFeatureValues(struct DLSSRenderResolution resObject)
 
 qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution resObject) {
     if (!dlssObj.isInitalized || dlssObj.pParams == NULL) {
+        /* Both early returns here used to be silent, so a failure to CREATE and a refusal
+           to TRY were indistinguishable in the log - and the caller turned either one into
+           the same fatal error. Name them. */
+        Com_EPrintf("DLSS: not creating a feature - NGX %s\n",
+            !dlssObj.isInitalized ? "is not initialized" : "has no parameter block");
         return qfalse;
     }
 
-    if (AreSameDLSSFeatureValues(resObject)) {
+    /* THE FEATURE HANDLE MUST BE CHECKED, NOT JUST THE CACHED RESOLUTION.
+
+       AreSameDLSSFeatureValues() compares the requested resolution against values saved by
+       the last successful create, and those values are file-scope state that SURVIVES a
+       renderer restart. pDlssFeature does not - it dies with the device. So after a
+       vid_restart that came back to a resolution the cache already knew, this returned
+       "already valid" for a feature that no longer existed, DLSSApply() found a NULL handle
+       and killed the game with a fatal error.
+
+       Same shape as the FG timeline semaphore surviving a restart: device-lifetime objects
+       and the static state describing them have to agree, and the handle is the one that
+       tells the truth. */
+    if (dlssObj.pDlssFeature != NULL && AreSameDLSSFeatureValues(resObject)) {
         return qtrue;
     }
 
@@ -691,7 +716,25 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 
     if (dlssObj.pDlssFeature == NULL)
     {
-        Com_Error(ERR_FATAL, "Internal error of Nvidia DLSS: NGX_VULKAN_CREATE_DLSS_EXT has failed.");
+        /* NOT FATAL. This used to be Com_Error(ERR_FATAL, ...), so any transient failure to
+           produce a DLSS feature killed the game outright - and the reproducible one was a
+           vid_restart, which a DLSS quality-mode change performs every single time
+           (viewsize_changed() toggles vid_rtx). Losing upscaling is a degraded picture;
+           losing the process is a crash. Switch DLSS off, say why, and keep running. The
+           renderer targets are rebuilt because DLSSEnabled() feeds extent_taa_images.
+
+           dlssRuntimeFailed is cleared whenever the user changes pt_dlss, so this is a
+           fallback rather than a latch - re-picking a mode retries the creation. */
+        static qboolean warned = qfalse;
+        if (!warned) {
+            warned = qtrue;
+            Com_EPrintf("DLSS: no feature could be created, so DLSS is switching itself "
+                "off rather than aborting. Re-select a DLSS mode to retry. See the "
+                "reason above and DLSSTemp/nvngx*.log.\n");
+        }
+        dlssRuntimeFailed = qtrue;
+        recreateSwapChain = qtrue;
+        return;
     }
 
     //qvk.images[]
@@ -1032,6 +1075,9 @@ char* GetFolderPath()
 void viewsize_changed(cvar_t* self) {
 
     recreateSwapChain = qtrue;
+
+    /* The user picked a mode, so retry creation even if a previous attempt gave up. */
+    dlssRuntimeFailed = qfalse;
 
     switch (self->integer) {
     case -1:

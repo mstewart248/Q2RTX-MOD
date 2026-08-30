@@ -265,11 +265,23 @@ void CL_RunRefresh(void)
         // and the DLSS feature, so name the cvar that asked for it. Three of these were
         // happening before the menu even appeared.
         for (cvar_t *c = cvar_vars; c; c = c->next) {
-            if ((c->flags & CVAR_REFRESH) && c->modified)
+            if ((c->flags & CVAR_REFRESH) && c->modified) {
                 Com_Printf("vid_restart: triggered by %s = \"%s\"\n", c->name, c->string);
+                /* CLEAR IT. Only the global cvar_modified bit was ever cleared, so the
+                   per-cvar flags set during startup stayed set forever and every later
+                   restart re-reported the same six cvars - ray_tracing_api, sli,
+                   vid_display, vid_hwgamma, vid_rtx, vk_validation - whichever one had
+                   actually changed. That made the diagnostic useless for finding out what
+                   asked for a restart, which is the only reason it exists. */
+                c->modified = false;
+            }
         }
         CL_RestartRefresh(true);
-        cvar_modified &= ~CVAR_REFRESH;
+        /* A full refresh restart already re-registers files, so clearing only CVAR_REFRESH
+           left CVAR_FILES pending and cost a SECOND complete renderer restart on the very
+           next frame. Every restart is a chance to hit a device-lifetime bug, so the
+           cheapest fix for restart crashes is to stop doing redundant restarts. */
+        cvar_modified &= ~(CVAR_REFRESH | CVAR_FILES);
     } else if (cvar_modified & CVAR_FILES) {
         CL_RestartRefresh(false);
         cvar_modified &= ~CVAR_FILES;
