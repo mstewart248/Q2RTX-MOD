@@ -609,8 +609,8 @@ vkpt_draw_clear_stretch_pics()
 	return VK_SUCCESS;
 }
 
-VkResult
-vkpt_draw_submit_stretch_pics(VkCommandBuffer cmd_buf)
+static VkResult
+draw_stretch_pics_into_current_image(VkCommandBuffer cmd_buf, bool keep_queue)
 {
 	if (num_stretch_pics == 0)
 		return VK_SUCCESS;
@@ -649,8 +649,21 @@ vkpt_draw_submit_stretch_pics(VkCommandBuffer cmd_buf)
 	vkCmdDraw(cmd_buf, 4, num_stretch_pics, 0, 0);
 	vkCmdEndRenderPass(cmd_buf);
 
-	num_stretch_pics = 0;
+	if (!keep_queue)
+		num_stretch_pics = 0;
 	return VK_SUCCESS;
+}
+
+VkResult
+vkpt_draw_submit_stretch_pics(VkCommandBuffer cmd_buf)
+{
+	return draw_stretch_pics_into_current_image(cmd_buf, false);
+}
+
+VkResult
+vkpt_draw_submit_stretch_pics_keep(VkCommandBuffer cmd_buf)
+{
+	return draw_stretch_pics_into_current_image(cmd_buf, true);
 }
 
 VkResult

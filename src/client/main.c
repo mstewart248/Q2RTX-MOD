@@ -2328,6 +2328,14 @@ int CL_GetResolutionScale(void)
 	return cl.refdef.feedback.resolution_scale;
 }
 
+// Presents per rendered frame: 1 normally, or the DLSS-G multiplier when frame
+// generation is running. A renderer that never sets it reads 0, hence the fallback.
+int CL_GetPresentedFramesPerRender(void)
+{
+	int per = cl.refdef.feedback.presented_frames;
+	return per > 0 ? per : 1;
+}
+
 /*
 ===============
 CL_WriteConfig
@@ -3226,6 +3234,13 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
 
     main_extra += msec;
     cls.realtime += msec;
+
+    /* NVIDIA Reflex. This blocks until the driver judges the frame should start, which
+       is what stops the CPU queueing frames ahead of the GPU. It MUST come before
+       CL_ProcessEvents(), because that is where IN_Frame() samples input - sleeping
+       after input sampling would add latency instead of removing it. */
+    if (R_LatencySleep)
+        R_LatencySleep();
 
     CL_ProcessEvents();
 

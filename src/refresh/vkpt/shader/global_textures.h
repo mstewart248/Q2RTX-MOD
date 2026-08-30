@@ -113,8 +113,19 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_BLOOM_HBLUR,          73, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
 	IMG_DO(DLSS_BLOOM_VBLUR,          74, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
 	IMG_DO(PT_COMPOSITE_TRANSPARENT,  75, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_FG_OUTPUT,            76, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT2,           77, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT3,           78, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT4,           79, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT5,           80, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
 
-#define NUM_IMAGES_BASE     76
+
+/* Multi Frame Generation writes ONE image per generated frame, and every one of them
+   must stay live until it has been presented, so there is one output image per
+   supported generated frame. DLSS-G reports MultiFrameCountMax = 5 on this card, i.e.
+   up to 6x. These are unscaled (post-upscale) rgba16f, so the set of five costs about
+   83 MB at 1080p and 332 MB at 4K. DLSSG_MAX_GENERATED_FRAMES in DLSS.h must match. */
+#define NUM_IMAGES_BASE     81
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \

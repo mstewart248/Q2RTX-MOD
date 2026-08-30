@@ -19,6 +19,8 @@
 // SOFTWARE.
 
 #include "DLSS.h"
+#include "DLSSG.h"
+#include "reflex.h"
 
 DLSS dlssObj;
 cvar_t* cvar_pt_dlss = NULL;
@@ -210,6 +212,103 @@ float GetDLSSMultResolutionScale() {
     }
 }
 
+// Spike: does this driver expose DLSS Frame Generation to us?
+// Reads the SAME capability params as the SR/RR checks, already populated by the
+// NVSDK_NGX_VULKAN_Init_with_ProjectID call in TryInit(). Purely diagnostic:
+// creates no feature and changes no behaviour.
+//
+// NOTE: only nvsdk_ngx_defs_dlssg.h is included (see DLSS.h). The DLSS-G
+// *helper* headers (nvsdk_ngx_params_dlssg.h / nvsdk_ngx_helpers_dlssg_vk.h)
+// use C++ default member initializers and will not compile as C.
+static void ReportOneFrameGenFeature(const char* label,
+                                     const char* keyAvailable,
+                                     const char* keyInitResult,
+                                     const char* keyNeedsDriver,
+                                     const char* keyMajor,
+                                     const char* keyMinor)
+{
+    float available = 0.0f;
+    NVSDK_NGX_Result res = NVSDK_NGX_Parameter_GetF(dlssObj.pParams, keyAvailable, &available);
+
+    if (NVSDK_NGX_FAILED(res)) {
+        Com_Printf("DLSS-G: %s -> query failed, NGX does not know this key (res=0x%08x)\n",
+                   label, (unsigned)res);
+        return;
+    }
+
+    Com_Printf("DLSS-G: %s available = %s\n", label, available ? "YES" : "no");
+
+    float needsUpdatedDriver = 0.0f;
+    float minMajor = 0.0f;
+    float minMinor = 0.0f;
+
+    if (NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetF(dlssObj.pParams, keyNeedsDriver, &needsUpdatedDriver))
+        && NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetF(dlssObj.pParams, keyMajor, &minMajor))
+        && NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetF(dlssObj.pParams, keyMinor, &minMinor)))
+    {
+        Com_Printf("DLSS-G: %s min driver = %d.%d%s\n", label,
+                   (int)minMajor, (int)minMinor,
+                   needsUpdatedDriver ? "  (DRIVER TOO OLD)" : "");
+    }
+    else {
+        Com_Printf("DLSS-G: %s min driver not reported\n", label);
+    }
+
+    if (!available) {
+        NVSDK_NGX_Result featureInitResult = NVSDK_NGX_Result_Fail;
+        if (NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetI(dlssObj.pParams, keyInitResult, (int*)&featureInitResult))) {
+            Com_Printf("DLSS-G: %s FeatureInitResult = 0x%08x\n", label, (unsigned)featureInitResult);
+        }
+    }
+}
+
+/* Number of GENERATED frames this device supports: 1 = 2x only, 3 = up to 4x.
+   Filled in by ReportFrameGenSupport() at startup and read by the FG cvar clamp. */
+unsigned int dlssgMaxGeneratedFrames = 1;
+
+void ReportFrameGenSupport()
+{
+    if (!dlssObj.isInitalized || dlssObj.pParams == NULL) {
+        Com_Printf("DLSS-G: NGX not initialised, cannot query frame generation\n");
+        return;
+    }
+
+    ReportOneFrameGenFeature("FrameGeneration",
+        NVSDK_NGX_Parameter_FrameGeneration_Available,
+        NVSDK_NGX_Parameter_FrameGeneration_FeatureInitResult,
+        NVSDK_NGX_Parameter_FrameGeneration_NeedsUpdatedDriver,
+        NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMajor,
+        NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMinor);
+
+    ReportOneFrameGenFeature("FrameInterpolation",
+        NVSDK_NGX_Parameter_FrameInterpolation_Available,
+        NVSDK_NGX_Parameter_FrameInterpolation_FeatureInitResult,
+        NVSDK_NGX_Parameter_FrameInterpolation_NeedsUpdatedDriver,
+        NVSDK_NGX_Parameter_FrameInterpolation_MinDriverVersionMajor,
+        NVSDK_NGX_Parameter_FrameInterpolation_MinDriverVersionMinor);
+
+    /* Multi Frame Generation capability. MultiFrameCountMax is the number of GENERATED
+       frames the driver will allow, so the user-facing multiplier is that plus one:
+       1 -> 2x, 2 -> 3x, 3 -> 4x. The SDK says "If 1 or not set, multiframe is not
+       supported", and an unsupported key leaves the out-param untouched, so seed it. */
+    unsigned int maxGenerated = 1;
+    NVSDK_NGX_Result resMFG = NVSDK_NGX_Parameter_GetUI(dlssObj.pParams,
+        NVSDK_NGX_DLSSG_Parameter_MultiFrameCountMax, &maxGenerated);
+
+    if (NVSDK_NGX_SUCCEED(resMFG)) {
+        if (maxGenerated < 1)
+            maxGenerated = 1;
+        dlssgMaxGeneratedFrames = maxGenerated;
+        Com_Printf("DLSS-G: MultiFrameCountMax = %u generated frame(s) -> up to %ux\n",
+            maxGenerated, maxGenerated + 1);
+    }
+    else {
+        dlssgMaxGeneratedFrames = 1;
+        Com_Printf("DLSS-G: MultiFrameCountMax -> query failed (res=0x%x), assuming 2x only\n",
+            (unsigned int)resMFG);
+    }
+}
+
 qboolean DLSSConstructor(VkInstance _instance, VkDevice _device, VkPhysicalDevice _physDevice, const char* _pAppGuid, qboolean _enableDebug)  {
 
     if (dlssObj.isInitalized) {
@@ -221,6 +320,8 @@ qboolean DLSSConstructor(VkInstance _instance, VkDevice _device, VkPhysicalDevic
     dlssObj.pDlssFeature = NULL;
    
     dlssObj.isInitalized = TryInit(_instance,  _physDevice, _pAppGuid, _enableDebug);
+
+    ReportFrameGenSupport();
 
     if (!CheckSupport()) {
         return qfalse;
@@ -341,7 +442,14 @@ qboolean CheckSupport() {
 
 void DLSSDeconstructor() {
     if (dlssObj.isInitalized) {
-        vkDeviceWaitIdle(dlssObj.device);
+        vkpt_device_wait_idle();
+
+        /* The frame generation feature shares dlssObj.pParams and the NGX instance, so
+           it MUST be released before NGX is shut down. Leaving it alive here leaked the
+           handle across a vid_restart and left NGX in a state where the next
+           NGX_VULKAN_CREATE_DLSS_EXT failed outright ("Internal error of Nvidia DLSS").
+           A vid_restart is easy to hit: several CVAR_REFRESH cvars trigger one. */
+        DestroyDLSSGFeature();
 
         if (dlssObj.pDlssFeature != NULL) {
             DestroyDLSSFeature();
@@ -360,7 +468,7 @@ void DLSSDeconstructor() {
 void DestroyDLSSFeature() {
     Q_assert(dlssObj.pDlssFeature != NULL);
 
-    vkDeviceWaitIdle(dlssObj.device);
+    vkpt_device_wait_idle();
 
     NVSDK_NGX_Result res = NVSDK_NGX_VULKAN_ReleaseFeature(dlssObj.pDlssFeature);
     dlssObj.pDlssFeature = NULL;
@@ -994,4 +1102,489 @@ const wchar_t* GetWC(const char* c)
     return wc;
 }
 
+/* ------------------------------------------------------------------ */
+/* DLSS Frame Generation (DLSS-G)                                       */
+/*                                                                      */
+/* Prototype: creates and evaluates the feature and writes the          */
+/* interpolated frame into VKPT_IMG_DLSS_FG_OUTPUT. It does NOT yet     */
+/* pace or present that frame - `pt_dlss_fg_show 1` simply blits the    */
+/* interpolated image instead of the real one so the output can be      */
+/* judged by eye. Real frame generation needs a second, timed present;  */
+/* see the notes in R_EndFrame_RTX.                                     */
+/* ------------------------------------------------------------------ */
 
+static NVSDK_NGX_Handle* dlssgFeature = NULL;
+static uint32_t dlssgWidth = 0;
+static uint32_t dlssgHeight = 0;
+/* The RENDER extent the feature was created for. Tracked separately from the output
+   extent because changing the DLSS mode (Quality -> DLAA, say) changes the render
+   resolution while the output resolution stays put. The feature is created with
+   DynamicResolutionScaling = false, so continuing to feed it depth and motion vectors
+   at a different size than it was promised faults inside NGX. */
+static uint32_t dlssgRenderWidth = 0;
+static uint32_t dlssgRenderHeight = 0;
+/* One hard failure is enough - without this a failing create is retried every
+   frame, which spams the log and stalls on vkDeviceWaitIdle each time. */
+static qboolean dlssgFailed = qfalse;
+
+static cvar_t* cvar_pt_dlss_fg = NULL;
+static cvar_t* cvar_pt_dlss_fg_show = NULL;
+/* Multiplier applied to VKPT_IMG_PT_DLSS_MOTION before DLSS-G reads it.
+   0 (the default) means "use the render extent", which is what the Super Resolution
+   path does - see the note where it is used. Any other value is used literally, so the
+   old behaviour is `pt_dlss_fg_mvscale 1`. */
+static cvar_t* cvar_pt_dlss_fg_mvscale = NULL;
+
+void InitDLSSGCvars()
+{
+    /* 0 = off. Otherwise the MULTIPLIER: 2 = 2x (one generated frame), up to
+       6 = 6x on hardware that allows it. 1 is accepted as a synonym for 2 so the
+       original on/off meaning of this cvar keeps working. */
+    cvar_pt_dlss_fg = Cvar_Get("pt_dlss_fg", "0", CVAR_ARCHIVE);
+
+    /* Debug view: blit the INTERPOLATED frame to the swapchain instead of the real
+       one. This is not frame generation - it shows what the interpolator produces so
+       its quality can be judged before the present-pacing work is done. Expect the
+       image to sit roughly half a frame behind the real one. */
+    cvar_pt_dlss_fg_show = Cvar_Get("pt_dlss_fg_show", "0", 0);
+
+    cvar_pt_dlss_fg_mvscale = Cvar_Get("pt_dlss_fg_mvscale", "0", CVAR_ARCHIVE);
+
+    /* The lowest RENDER rate a multiplier is allowed to leave. The render rate is
+       what the game samples input at, and it is pinned at refresh / multiplier -
+       see DLSSGDisplayMaxMultiplier(). Registered here so it exists before any
+       frame with FG active has run, otherwise typing it in the console gets
+       "unknown command". 0 disables the cap. */
+    Cvar_Get("pt_dlss_fg_min_base", "30", CVAR_ARCHIVE);
+}
+
+unsigned int DLSSGMaxMultiplier()
+{
+    /* dlssgMaxGeneratedFrames is what the driver reported; the images only exist for
+       DLSSG_MAX_GENERATED_FRAMES of them. */
+    unsigned int generated = dlssgMaxGeneratedFrames;
+    if (generated > DLSSG_MAX_GENERATED_FRAMES)
+        generated = DLSSG_MAX_GENERATED_FRAMES;
+    if (generated < 1)
+        generated = 1;
+    return generated + 1;
+}
+
+/* THE DISPLAY, NOT THE DRIVER, SETS THE USEFUL MULTIPLIER.
+
+   The present schedule spaces every rendered frame's group over `multiplier` refresh
+   intervals (main.c: slot = the vblank period, group = slot * total), so the presented
+   rate saturates at the refresh rate and the RENDER rate is pinned at refresh /
+   multiplier. Reflex_FGRenderRateCap() says the same thing from the other side. The game
+   samples input once per RENDERED frame, so on a fixed 60 Hz panel:
+
+     2x -> 30 rendered / 60 presented   - 30 Hz input, and the display is already full
+     4x -> 15 rendered / 60 presented   - 15 Hz input, SAME 60 on screen
+     6x -> 10 rendered / 60 presented   - 10 Hz input, SAME 60 on screen
+
+   Above 2x there is no headroom left to sell: every extra generated frame is paid for by
+   dividing the input rate, and DLSS-G has to bridge a wider gap from a slower base, so
+   the interpolation gets worse too. Matt measured exactly this - "above 2x the input
+   framerate goes down and the smoothness gets worse". MFG 3x-6x is for 120/144/240 Hz
+   panels, where the extra presents have somewhere to go.
+
+   So cap the multiplier at refresh / pt_dlss_fg_min_base. 60 Hz -> 2x, 120 Hz -> 4x,
+   144 Hz -> 4x, 240 Hz -> 6x (the driver max). pt_dlss_fg_min_base 0 disables the cap for
+   anyone who wants to see it for themselves.
+
+   THE REFRESH READING IS LATCHED, and that is not fussiness. DLSSGMultiplier() feeds
+   desired_swapchain_images() and the per-frame swapchain-recreate check, so a multiplier
+   that flickers between two values recreates the swapchain every single frame. A reading
+   of 0 (no window yet, display index lost) must therefore never lower the cap - keep the
+   last valid one. */
+static unsigned int DLSSGDisplayMaxMultiplier(void)
+{
+    static cvar_t *cvar_min_base = NULL;
+    static int cached_refresh_hz = 0;   /* last VALID reading; never cleared */
+
+    if (cvar_min_base == NULL)
+        cvar_min_base = Cvar_Get("pt_dlss_fg_min_base", "30", CVAR_ARCHIVE);
+
+    if (cvar_min_base->integer <= 0)
+        return 0;               /* cap disabled */
+
+    int refresh_hz = Reflex_DisplayRefreshHz();
+    if (refresh_hz > 0)
+        cached_refresh_hz = refresh_hz;
+    if (cached_refresh_hz <= 0)
+        return 0;               /* nothing known yet - do not cap on a guess */
+
+    unsigned int allowed = (unsigned int)(cached_refresh_hz / cvar_min_base->integer);
+    if (allowed < 2)
+        allowed = 2;            /* 2x is always on the table */
+    return allowed;
+}
+
+unsigned int DLSSGMultiplier()
+{
+    if (!DLSSGEnabled())
+        return 0;
+
+    int requested = cvar_pt_dlss_fg->integer;
+    if (requested <= 1)
+        requested = 2;          /* 1 kept as a synonym for 2x */
+
+    unsigned int maxMult = DLSSGMaxMultiplier();
+    if ((unsigned int)requested > maxMult)
+        requested = (int)maxMult;
+
+    unsigned int displayMax = DLSSGDisplayMaxMultiplier();
+    if (displayMax > 0 && (unsigned int)requested > displayMax) {
+        static int announced_for = 0;
+        if (announced_for != cvar_pt_dlss_fg->integer) {
+            announced_for = cvar_pt_dlss_fg->integer;
+            Com_Printf("DLSS-G: %dx requested but this display can only show %u distinct "
+                "frames per rendered frame, so %ux is the most it can use. Above that the "
+                "presented rate is unchanged and only the render rate - and with it the "
+                "input rate - goes down. Running %ux. Set pt_dlss_fg_min_base 0 to "
+                "override.\n",
+                cvar_pt_dlss_fg->integer, displayMax, displayMax, displayMax);
+        }
+        requested = (int)displayMax;
+    }
+
+    return (unsigned int)requested;
+}
+
+static unsigned int dlssgFrameBudget = 0;   /* 0 = no limit */
+
+void DLSSGSetFrameBudget(unsigned int maxGeneratedFrames)
+{
+    dlssgFrameBudget = maxGeneratedFrames;
+}
+
+unsigned int DLSSGGeneratedFrames()
+{
+    unsigned int mult = DLSSGMultiplier();
+    unsigned int generated = mult ? mult - 1 : 0;
+
+    /* Generating frames the display cannot show is worse than not generating them: each
+       one costs an Evaluate and a present, and the display then samples the group at
+       whatever phase it happens to be in. See the budget note in main.c. */
+    if (dlssgFrameBudget && generated > dlssgFrameBudget)
+        generated = dlssgFrameBudget;
+
+    return generated;
+}
+
+qboolean DLSSGEnabled()
+{
+    if (dlssgFailed || cvar_pt_dlss_fg == NULL)
+        return qfalse;
+
+    /* The backbuffer we hand DLSS-G is VKPT_IMG_DLSS_OUTPUT, so frame generation only
+       makes sense while DLSS itself is producing that image. */
+    return DLSSEnabled() && cvar_pt_dlss_fg->integer != 0;
+}
+
+qboolean DLSSGFeatureReady()
+{
+    return dlssgFeature != NULL ? qtrue : qfalse;
+}
+
+qboolean DLSSGShowInterpolated()
+{
+    return dlssgFeature != NULL
+        && cvar_pt_dlss_fg_show != NULL
+        && cvar_pt_dlss_fg_show->integer != 0;
+}
+
+/* Output image for generated frame `generatedIndex` (1-based). One image per generated
+   frame, because they all have to stay live until each has been presented. */
+static int DLSSGOutputImageIndex(unsigned int generatedIndex)
+{
+    switch (generatedIndex) {
+    case 2:  return VKPT_IMG_DLSS_FG_OUTPUT2;
+    case 3:  return VKPT_IMG_DLSS_FG_OUTPUT3;
+    case 4:  return VKPT_IMG_DLSS_FG_OUTPUT4;
+    case 5:  return VKPT_IMG_DLSS_FG_OUTPUT5;
+    default: return VKPT_IMG_DLSS_FG_OUTPUT;
+    }
+}
+
+VkImage GetDLSSGImage(unsigned int generatedIndex)
+{
+    return qvk.images[DLSSGOutputImageIndex(generatedIndex)];
+}
+
+void DestroyDLSSGFeature()
+{
+    dlssgWidth = 0;
+    dlssgHeight = 0;
+    dlssgRenderWidth = 0;
+    dlssgRenderHeight = 0;
+
+    if (dlssgFeature != NULL) {
+        vkpt_device_wait_idle();
+
+        NVSDK_NGX_Result res = NVSDK_NGX_VULKAN_ReleaseFeature(dlssgFeature);
+        if (NVSDK_NGX_FAILED(res)) {
+            Com_EPrintf("DLSS-G: ReleaseFeature failed: 0x%08x\n", (unsigned int)res);
+        }
+        dlssgFeature = NULL;
+    }
+
+    dlssgWidth = 0;
+    dlssgHeight = 0;
+}
+
+static qboolean ValidateDLSSGFeature(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+                                     uint32_t renderWidth, uint32_t renderHeight)
+{
+    if (!dlssObj.isInitalized || dlssObj.pParams == NULL)
+        return qfalse;
+
+    if (dlssgFeature != NULL
+        && dlssgWidth == width && dlssgHeight == height
+        && dlssgRenderWidth == renderWidth && dlssgRenderHeight == renderHeight)
+        return qtrue;
+
+    if (dlssgFeature != NULL)
+        DestroyDLSSGFeature();
+
+    /* The "native backbuffer format" is the format of the colour we hand over, which
+       is VKPT_IMG_DLSS_OUTPUT - rgba16f, not the swapchain format, because the
+       swapchain image is not written until the final blit. */
+    unsigned int res = DLSSG_CreateFeature(cmd, dlssObj.pParams, width, height,
+                                           renderWidth, renderHeight,
+                                           VK_FORMAT_R16G16B16A16_SFLOAT, &dlssgFeature);
+
+    if (res != (unsigned int)NVSDK_NGX_Result_Success) {
+        Com_EPrintf("DLSS-G: feature create failed: 0x%08x - see DLSSTemp/nvngx_dlssg*.log\n", res);
+        dlssgFeature = NULL;
+        dlssgFailed = qtrue;
+        return qfalse;
+    }
+
+    dlssgWidth = width;
+    dlssgHeight = height;
+    dlssgRenderWidth = renderWidth;
+    dlssgRenderHeight = renderHeight;
+    Com_Printf("DLSS-G: frame generation feature created at %ux%u (render %ux%u)\n",
+        width, height, renderWidth, renderHeight);
+    return qtrue;
+}
+
+/* Q2RTX stores 4x4 matrices column-major (the translation lives in elements 12..14,
+   see the viewport_proj literal in main.c). NGX documents its matrices as
+   float[4][4] without stating the order; NVIDIA's own samples feed row-major.
+   THIS IS THE FIRST THING TO FLIP if the interpolated frame looks structurally
+   wrong while depth and motion vectors are visibly fine. */
+static void mat4_transpose(float* dst, const float* src)
+{
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            dst[r * 4 + c] = src[c * 4 + r];
+        }
+    }
+}
+
+void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
+{
+    if (!DLSSGEnabled())
+        return;
+
+    const uint32_t outWidth = qvk.extent_unscaled.width;
+    const uint32_t outHeight = qvk.extent_unscaled.height;
+
+    if (!ValidateDLSSGFeature(cmd, outWidth, outHeight,
+                              qvk.extent_render.width, qvk.extent_render.height))
+        return;
+
+    QVKUniformBuffer_t* ubo = &vkpt_refdef.uniform_buffer;
+
+    /* clipToPrevClip / prevClipToClip are built from the view-projection pair rather
+       than from V/P separately, because the UBO carries V_prev and P_prev but no
+       inverse of V_prev. */
+    mat4_t VP, VP_prev, invVP, invVP_prev, clipToPrev, prevToClip;
+    mult_matrix_matrix(VP, *ubo->P, *ubo->V);
+    mult_matrix_matrix(VP_prev, *ubo->P_prev, *ubo->V_prev);
+    inverse(VP, invVP);
+    inverse(VP_prev, invVP_prev);
+    mult_matrix_matrix(clipToPrev, VP_prev, invVP);
+    mult_matrix_matrix(prevToClip, VP, invVP_prev);
+
+    float mViewToClip[16], mClipToView[16], mClipToPrev[16], mPrevToClip[16];
+    mat4_transpose(mViewToClip, *ubo->P);
+    mat4_transpose(mClipToView, *ubo->invP);
+    mat4_transpose(mClipToPrev, clipToPrev);
+    mat4_transpose(mPrevToClip, prevToClip);
+
+    NVSDK_NGX_Dimensions outSize = { outWidth, outHeight };
+    NVSDK_NGX_Dimensions renderSize = {
+        qvk.extent_render.width,
+        qvk.extent_render.height
+    };
+
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
+
+    NVSDK_NGX_Resource_VK backbuffer = ToNGXResource(
+        qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT],
+        outSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+
+    NVSDK_NGX_Resource_VK depth = ToNGXResource(
+        qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH],
+        renderSize, VK_FORMAT_R32_SFLOAT, false);
+
+    NVSDK_NGX_Resource_VK mvecs = ToNGXResource(
+        qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION],
+        renderSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+
+    float fovYRadians = 0.0f;
+    float aspect = (outHeight > 0) ? ((float)outWidth / (float)outHeight) : 1.0f;
+    if (vkpt_refdef.fd) {
+        fovYRadians = vkpt_refdef.fd->fov_y * (float)M_PI / 180.0f;
+    }
+
+    float fgJitterSign = (float)Cvar_Get("pt_dlss_jitter_sign", "-1", CVAR_ARCHIVE)->integer;
+    if (fgJitterSign != 1.0f && fgJitterSign != -1.0f)
+        fgJitterSign = 1.0f;
+
+    float fgMvecScaleX = (float)renderSize.Width;
+    float fgMvecScaleY = (float)renderSize.Height;
+    if (cvar_pt_dlss_fg_mvscale && cvar_pt_dlss_fg_mvscale->value != 0.0f) {
+        fgMvecScaleX = cvar_pt_dlss_fg_mvscale->value;
+        fgMvecScaleY = cvar_pt_dlss_fg_mvscale->value;
+    }
+
+    /* DLSS-G uses this to tell that real frames are advancing. The SDK marks it
+       optional, but it costs nothing and removes a guess. */
+    const int fgMvecSign = Cvar_Get("pt_dlss_fg_mvsign", "1", 0)->integer < 0 ? -1 : 1;
+
+    NVSDK_NGX_Parameter_SetULL(dlssObj.pParams,
+        NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, (unsigned long long)qvk.frame_counter);
+
+    /* Multi Frame Generation: Evaluate runs once per generated frame, each writing its
+       own output image, with multiFrameIndex counting 1..multiFrameCount. */
+    const unsigned int generatedFrames = DLSSGGeneratedFrames();
+
+    for (unsigned int genIndex = 1; genIndex <= generatedFrames; genIndex++)
+    {
+    const int outImg = DLSSGOutputImageIndex(genIndex);
+    BARRIER_COMPUTE(cmd, qvk.images[outImg]);
+
+    NVSDK_NGX_Resource_VK outputInterp = ToNGXResource(
+        qvk.images[outImg], qvk.images_views[outImg],
+        outSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);
+
+    DLSSG_EvalInputs in = {
+        .pBackbuffer = &backbuffer,
+        .pDepth = &depth,
+        .pMotionVectors = &mvecs,
+        .pOutputInterpolated = &outputInterp,
+
+        .renderWidth = renderSize.Width,
+        .renderHeight = renderSize.Height,
+
+        /* MEASURED THE HARD WAY. The Super Resolution path passes
+           InMVScaleX/Y = the render extent (DLSS.c:894), which means
+           VKPT_IMG_PT_DLSS_MOTION holds NORMALIZED motion and the scale is what turns
+           it into pixels. DLSS-G's mvecScale is the same kind of multiplier, so it
+           needs the render extent too.
+
+           This was 1.0 at first, on the theory that DLSS-G wanted vectors already in
+           [-1,1]. That made the applied motion ~3000x too small, so every interpolated
+           frame came out a near-copy of one endpoint: the presented frame rate doubled
+           while the motion still stepped at the render rate, which looks SLOWER than
+           frame generation switched off, and only a very fast camera produced enough
+           motion to show any warping at all. Matt spotted it as "the movement doesn't
+           look smooth" while the counter read double.
+
+           pt_dlss_fg_mvscale overrides it so the convention stays testable rather than
+           re-derived: 0 = render extent, anything else is used literally. */
+        .mvecScaleX = fgMvecScaleX * (float)fgMvecSign,
+        .mvecScaleY = fgMvecScaleY * (float)fgMvecSign,
+
+        .cameraNear = vkpt_refdef.z_near,
+        .cameraFar = vkpt_refdef.z_far,
+        .cameraFOV = fovYRadians,
+        .cameraAspectRatio = aspect,
+
+        /* SAME SIGN CONVENTION AS SUPER RESOLUTION. DLSSApply() multiplies the jitter
+           by pt_dlss_jitter_sign (default -1) before handing it over, because Q2RTX never
+           jitters a projection matrix - primary_rays.rgen samples at
+           (pixel_centre + sub_pixel_jitter), and sampling toward +j puts scene content at
+           -j, so the equivalent projection jitter is negated. This path was passing the
+           RAW offset, i.e. the opposite sign to the one super resolution uses.
+
+           A wrong-signed jitter displaces content by a sub-pixel amount that flips every
+           frame. Invisible when the camera is still; reads as judder as soon as it turns,
+           which is exactly how it showed up. */
+        .jitterOffsetX = ubo->sub_pixel_jitter[0] * fgJitterSign,
+        .jitterOffsetY = ubo->sub_pixel_jitter[1] * fgJitterSign,
+
+        .pCameraViewToClip = mViewToClip,
+        .pClipToCameraView = mClipToView,
+        .pClipToPrevClip = mClipToPrev,
+        .pPrevClipToClip = mPrevToClip,
+
+        /* VKPT_IMG_DLSS_OUTPUT is linear HDR - tone mapping happens after this point. */
+        /* NOT "is our colour buffer linear HDR" - the SDK comment on this field says
+           "full HDR (RENDERING TO AN HDR MONITOR)". It describes the OUTPUT path, not the
+           format of the buffer we hand over, and we were passing 1 on an SDR swapchain.
+
+           The cost was visible and constant: dumped side by side, the generated frame had
+           the same geometry and view as the real one but its highlights were crushed - a
+           blown-out white window came back dull amber, the strip light came back orange -
+           while the mid-tones lifted (mean 86 vs 62 in sRGB). Every generated frame
+           therefore looked wrong in any scene with a bright light in it, which at 2x is
+           every other frame presented, and reads as constant artifacting.
+
+           Note the SR path a few hundred lines up passes NVSDK_NGX_DLSS_Feature_Flags_IsHDR
+           unconditionally and that is CORRECT - for Super Resolution the flag means the
+           INPUT is HDR linear. Same word, different question. Do not "make them consistent". */
+        .colorBuffersHDR = qvk.surf_is_hdr ? 1 : 0,
+
+        /* VKPT_IMG_DLSS_DEPTH is LINEAR view depth, not a reversed hardware depth
+           buffer - the SR/RR features are created with
+           NVSDK_NGX_DLSS_Depth_Type_Linear. DLSS-G has no equivalent "depth type"
+           parameter, so if the interpolation misbehaves around depth discontinuities
+           this is a prime suspect. */
+        /* A/B KNOBS FOR THE INPUT CONVENTIONS.
+
+           The compare instrument measures the generated frame sitting ~100% of a frame
+           step from the real one when it should be ~50%, i.e. on top of an endpoint
+           rather than between the two. Neither split fields nor mvecScale changed it, so
+           what remains is a convention mismatch in what we hand DLSS-G. These are all
+           per-frame Opt_Eval fields, so they take effect immediately - no feature
+           recreation, no rebuild, sweepable in one session.
+
+             pt_dlss_fg_mvsign    -1 flips the motion vector direction. The guide says the
+                                  buffer must describe motion from the CURRENT frame to the
+                                  PREVIOUS one; Q2RTX's DLSS motion may run the other way,
+                                  and a sign error moves everything backwards, which
+                                  interpolation resolves toward an endpoint.
+             pt_dlss_fg_cammotion 0 says camera motion is NOT already baked into the mvecs,
+                                  so DLSS-G derives it from the matrices instead.
+             pt_dlss_fg_depthinv  1 for reversed-Z depth. VKPT_IMG_DLSS_DEPTH is linear view
+                                  depth, so 0 should be right - but it has never been tested
+                                  against 1, and getting it wrong breaks disocclusion. */
+        .depthInverted = Cvar_Get("pt_dlss_fg_depthinv", "0", 0)->integer ? 1 : 0,
+
+        .cameraMotionIncluded = Cvar_Get("pt_dlss_fg_cammotion", "1", 0)->integer ? 1 : 0,
+        .reset = resetAccum ? 1 : 0,
+        .notRenderingGameFrames = qvk.frame_menu_mode ? 1 : 0,
+
+        .multiFrameCount = generatedFrames,
+        .multiFrameIndex = genIndex,
+    };
+
+    unsigned int res = DLSSG_EvaluateFeature(cmd, dlssgFeature, dlssObj.pParams, &in);
+
+    if (res != (unsigned int)NVSDK_NGX_Result_Success) {
+        Com_EPrintf("DLSS-G: evaluate failed on generated frame %u/%u: 0x%08x"
+                    " - see DLSSTemp/nvngx_dlssg*.log\n", genIndex, generatedFrames, res);
+        /* Evaluate failures are usually structural (bad resource, wrong size), not
+           transient, so stop rather than repeat the message every frame. */
+        dlssgFailed = qtrue;
+        return;
+    }
+    }
+}

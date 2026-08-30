@@ -852,6 +852,7 @@ static void SCR_DrawObjects(void)
 
 extern int CL_GetFps(void);
 extern int CL_GetResolutionScale(void);
+extern int CL_GetPresentedFramesPerRender(void);
 
 static void SCR_DrawFPS(void)
 {
@@ -861,11 +862,24 @@ static void SCR_DrawFPS(void)
 	int fps = R_FPS;
 	int scale = CL_GetResolutionScale();
 
+	/* R_FPS counts RENDERED frames. With frame generation each of those becomes
+	   several presents, so report both: what the engine renders, and what the display
+	   actually receives. Without this the counter shows half (or a sixth) of the
+	   presented rate and frame generation looks like it is doing nothing. */
+	int per_render = CL_GetPresentedFramesPerRender();
+
 	char buffer[MAX_QPATH];
 	if (scr_fps->integer == 2 && cls.ref_type == REF_TYPE_VKPT)
 		Q_snprintf(buffer, MAX_QPATH, "%d FPS at %3d%%", fps, scale);
 	else
 		Q_snprintf(buffer, MAX_QPATH, "%d FPS", fps);
+
+	if (per_render > 1 && cls.ref_type == REF_TYPE_VKPT) {
+		char fg_buffer[MAX_QPATH];
+		Q_snprintf(fg_buffer, MAX_QPATH, "%s -> %d presented (%dx FG)",
+			buffer, fps * per_render, per_render);
+		memcpy(buffer, fg_buffer, sizeof(buffer));
+	}
 
 	int x = scr.hud_width - 2;
 	int y = 1;

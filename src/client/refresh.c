@@ -439,6 +439,7 @@ void(*R_ModeChanged)(int width, int height, int flags, int rowbytes, void *pixel
 void(*R_AddDecal)(decal_t *d) = NULL;
 bool(*R_InterceptKey)(unsigned key, bool down) = NULL;
 bool(*R_IsHDR)(void) = NULL;
+void(*R_LatencySleep)(void) = NULL;
 
 void(*IMG_Unload)(image_t *image) = NULL;
 void(*IMG_Load)(image_t *image, byte *pic) = NULL;

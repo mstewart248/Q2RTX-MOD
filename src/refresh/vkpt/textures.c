@@ -179,7 +179,7 @@ destroy_envmap(void)
 VkResult
 vkpt_textures_upload_envmap(int w, int h, byte *data)
 {
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	destroy_envmap();
 	
@@ -321,7 +321,7 @@ vkpt_textures_upload_envmap(int w, int h, byte *data)
 	vkUpdateDescriptorSets(qvk.device, 1, &s, 0, NULL);
 	}
 
-	vkQueueWaitIdle(qvk.queue_graphics);
+	vkpt_queue_wait_idle(qvk.queue_graphics);
 
 	buffer_destroy(&buf_img_upload);
 
@@ -498,7 +498,7 @@ load_blue_noise(void)
 	s.dstSet = qvk.desc_set_textures_odd;
 	vkUpdateDescriptorSets(qvk.device, 1, &s, 0, NULL);
 
-	vkQueueWaitIdle(qvk.queue_graphics);
+	vkpt_queue_wait_idle(qvk.queue_graphics);
 
 	buffer_destroy(&buf_img_upload);
 
@@ -1174,7 +1174,7 @@ void create_invalid_texture(void)
 
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
 
-	vkQueueWaitIdle(qvk.queue_graphics);
+	vkpt_queue_wait_idle(qvk.queue_graphics);
 }
 
 void destroy_invalid_texture(void)
@@ -2416,7 +2416,7 @@ LIST_IMAGES_A_B
 	
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
 
-	vkQueueWaitIdle(qvk.queue_graphics);
+	vkpt_queue_wait_idle(qvk.queue_graphics);
 
 	return VK_SUCCESS;
 }

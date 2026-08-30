@@ -24,6 +24,7 @@
 #include <nvsdk_ngx_helpers_vk.h>
 #include <nvsdk_ngx_helpers.h>
 #include <nvsdk_ngx_helpers_dlssd_vk.h>
+#include <nvsdk_ngx_defs_dlssg.h>
 
 
 #include "shared/shared.h"
@@ -63,6 +64,7 @@ void InitDLSSCvars();
 qboolean DLSSEnabled();
 float GetDLSSResolutionScale();
 qboolean CheckSupport();
+void ReportFrameGenSupport();
 char* GetFolderPath();
 void DLSSPrintCallback(const char* message, NVSDK_NGX_Logging_Level loggingLevel, NVSDK_NGX_Feature sourceComponent);
 qboolean DLSSConstructor(VkInstance _instance, VkDevice _device, VkPhysicalDevice _physDevice, const char* _pAppGuid, qboolean _enableDebug);
@@ -92,6 +94,32 @@ int DLSSModeDenoise();
 float GetDLSSMultResolutionScale();
 qboolean DLSSChanged();
 void DLSSSwapChainRecreated();
+
+/* DLSS Frame Generation (DLSS-G). See the driver block at the end of DLSS.c. */
+
+void InitDLSSGCvars();
+qboolean DLSSGEnabled();
+/* Effective multiplier: 0 when off, otherwise 2..(driver max + 1). Already clamped to
+   what the driver reported in DLSSG.MultiFrameCountMax, so callers can trust it. */
+unsigned int DLSSGMultiplier();
+/* Generated (interpolated) frames per real frame = multiplier - 1, or 0 when off. */
+unsigned int DLSSGGeneratedFrames();
+
+/* Per-frame ceiling on the number of GENERATED frames, set from how many presents the
+   display can actually show in one render interval. 0 = no limit (use the multiplier the
+   user asked for). Set it BEFORE DLSSGApply so the evaluate loop, the swapchain acquire
+   and the present schedule all agree on the count. */
+void DLSSGSetFrameBudget(unsigned int maxGeneratedFrames);
+/* Highest multiplier this device supports, for the menu to bound its choices. */
+unsigned int DLSSGMaxMultiplier();
+qboolean DLSSGShowInterpolated();
+/* True once the DLSS-G feature actually exists, i.e. an interpolated image has been
+   produced and is safe to present. False on the first FG frame and after a failure. */
+qboolean DLSSGFeatureReady();
+/* Interpolated output for generated frame `generatedIndex`, counting from 1. */
+VkImage GetDLSSGImage(unsigned int generatedIndex);
+void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum);
+void DestroyDLSSGFeature();
 
 struct DLSS {	
 	VkDevice device;

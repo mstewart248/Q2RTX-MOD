@@ -242,7 +242,7 @@ vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh)
 {
 	assert(bsp_mesh);
 
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	// Destroy the world buffer from the previous map.
 	buffer_destroy(&qvk.buf_world);
@@ -379,7 +379,7 @@ vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh)
 
 	vkpt_submit_command_buffer(cmd_buf, qvk.queue_graphics, (1 << qvk.device_count) - 1, 0, NULL, NULL, NULL, 0, NULL, NULL, NULL);
 
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	buffer_destroy(&staging_buffer);
 
@@ -902,7 +902,7 @@ stage_mesh_primitives(uint8_t* staging_data, int* p_write_ptr, float** p_vertex_
 
 void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index)
 {
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	pbr_material_t* mat = MAT_ForIndex(material_index);
 
@@ -1152,7 +1152,7 @@ vkpt_vertex_buffer_upload_models()
 		}
 
 		vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
-		vkQueueWaitIdle(qvk.queue_graphics);
+		vkpt_queue_wait_idle(qvk.queue_graphics);
 
 		for (int i = 0; i < MAX_MODELS; i++)
 		{
@@ -1220,7 +1220,7 @@ void vkpt_vertex_buffer_ensure_primbuf_size(uint32_t prim_count)
 	if (prim_count <= current_primbuf_size)
 		return;
 	
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	destroy_primbuf();
 

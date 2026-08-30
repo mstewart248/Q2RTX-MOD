@@ -158,9 +158,19 @@ typedef struct cmd_buf_group_s {
 #endif
 } cmd_buf_group_t;
 
+/* Maximum generated (interpolated) frames per real frame, i.e. up to 6x. Must match
+   the number of DLSS_FG_OUTPUT* images in shader/global_textures.h. Defined here
+   rather than in DLSS.h because DLSS.h includes this header, not the other way. */
+#define DLSSG_MAX_GENERATED_FRAMES 5
+
 typedef struct semaphore_group_s {
 	VkSemaphore image_available;
 	VkSemaphore render_finished;
+	/* Frame generation acquires one EXTRA swapchain image per generated frame, so an Nx
+	   multiplier acquires N images beyond the one R_BeginFrame already took. Each
+	   acquire needs its own binary semaphore. Used on GPU 0 only, and only while
+	   pt_dlss_fg is on; the matching presents wait on qvk.semaphores_present[image]. */
+	VkSemaphore image_available_fg[DLSSG_MAX_GENERATED_FRAMES];
 	VkSemaphore transfer_finished;
 	VkSemaphore trace_finished;
 	bool trace_signaled;
@@ -180,6 +190,14 @@ typedef struct QVK_s {
 	VkDevice                    device;
 	VkQueue                     queue_graphics;
 	VkQueue                     queue_transfer;
+	/* A SECOND queue from the graphics family, used ONLY by the frame-generation
+	   present thread. vkQueuePresentKHR is a queue operation: on a single queue it is
+	   processed in submission order, so a present issued after the next frame's render
+	   submit cannot flip until that render has finished on the GPU. That is what made
+	   every present in a frame-generation group flip together in a burst. Equal to
+	   queue_graphics when the family exposes only one queue. */
+	VkQueue                     queue_present;
+	bool                        queue_present_dedicated;
 	int32_t                     queue_idx_graphics;
 	int32_t                     queue_idx_transfer;
 	VkSurfaceKHR                surface;
@@ -232,6 +250,19 @@ typedef struct QVK_s {
 	SDL_Window                  *window;
 	uint32_t                    num_sdl2_extensions;
 	const char                  **sdl2_extensions;
+
+/* Present-wait semaphores, one PER SWAPCHAIN IMAGE (not per frame in flight).
+   A present's wait semaphore stays in use until the presentation engine is done with
+   that image, which is not bounded by the frame-in-flight fence, so keying them by
+   frame index lets a submit re-signal one that a pending present still owns -
+   VUID-vkQueueSubmit-pSignalSemaphores-00067. Keying by image index makes the
+   semaphore's lifetime match the thing it actually guards. */
+	VkSemaphore                 *semaphores_present;
+
+	/* NVIDIA Reflex (VK_NV_low_latency2) and the present-id extension it correlates
+	   timings with. Both optional; see reflex.c. */
+	bool                        supports_low_latency;
+	bool                        supports_present_id;
 
 	uint32_t                    current_swap_chain_image_index;
 	uint32_t                    current_frame_index;
@@ -579,6 +610,19 @@ void vkpt_init_light_textures(void);
 VkCommandBuffer vkpt_begin_command_buffer(cmd_buf_group_t* group);
 void vkpt_free_command_buffers(cmd_buf_group_t* group);
 void vkpt_reset_command_buffers(cmd_buf_group_t* group);
+/* vkQueueWaitIdle with the swapchain/queue lock held. A VkQueue needs external
+   synchronisation and the frame generation present thread presents on the graphics
+   queue, so every queue operation - including the wait-idles scattered through texture
+   and geometry upload - has to be serialised against it. */
+VkResult vkpt_queue_wait_idle(VkQueue queue);
+
+/* vkDeviceWaitIdle with the same lock held. vkDeviceWaitIdle is equivalent to waiting
+   on EVERY queue, so it carries the same external-synchronisation requirement as
+   vkQueueWaitIdle and races the frame generation present thread without it. This was
+   the source of the "VkQueue is simultaneously used" reports that clustered around
+   swapchain recreation, which is where most of these calls live. */
+void vkpt_device_wait_idle(void);
+
 void vkpt_wait_idle(VkQueue queue, cmd_buf_group_t* group);
 
 void vkpt_submit_command_buffer(
@@ -632,6 +676,10 @@ VkResult vkpt_draw_destroy(void);
 VkResult vkpt_draw_destroy_pipelines(void);
 VkResult vkpt_draw_create_pipelines(void);
 VkResult vkpt_draw_submit_stretch_pics(VkCommandBuffer cmd_buf);
+/* Same, but leaves the queued pics in place so the HUD can be drawn a second time
+   into another swapchain image. Frame generation needs the HUD on BOTH the real and
+   the interpolated frame, otherwise it flickers at half the presented rate. */
+VkResult vkpt_draw_submit_stretch_pics_keep(VkCommandBuffer cmd_buf);
 VkResult vkpt_final_blit_simple(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent);
 VkResult vkpt_final_blit_simpleDLSS(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent);
 VkResult vkpt_final_blit_filtered(VkCommandBuffer cmd_buf);

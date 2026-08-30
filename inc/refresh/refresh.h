@@ -177,6 +177,11 @@ typedef struct ref_feedback_s {
 	int         num_light_polys;
 	int         resolution_scale;
 
+	/* Presents performed for the last rendered frame: 1 normally, or the frame
+	   generation multiplier (2..6) when DLSS-G is running. The FPS readout counts
+	   RENDERED frames, so it needs this to report what reached the display. */
+	int         presented_frames;
+
 	char        view_material[MAX_QPATH];
 	char        view_material_override[MAX_QPATH];
     int         view_material_index;
@@ -359,6 +364,12 @@ extern void    (*R_AddDecal)(decal_t *d);
 
 extern bool    (*R_InterceptKey)(unsigned key, bool down);
 extern bool    (*R_IsHDR)(void);
+
+// NVIDIA Reflex: blocks until the driver judges this frame should begin. Called at the
+// top of the client frame, BEFORE input is sampled - that ordering is what turns it
+// into a latency reduction rather than just a frame limiter. NULL on renderers that
+// do not implement it.
+extern void    (*R_LatencySleep)(void);
 
 #if REF_GL
 void R_RegisterFunctionsGL(void);

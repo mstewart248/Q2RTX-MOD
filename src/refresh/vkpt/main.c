@@ -62,12 +62,38 @@ static HMONITOR vkpt_get_window_monitor(void)
 		return NULL;
 	return MonitorFromWindow(wm_info.info.win.window, MONITOR_DEFAULTTONEAREST);
 }
+
+/* The GDI display name ("\\.\DISPLAY1" and friends) of the monitor the window is on.
+   FGPresent_VBlankStart() needs it to open the adapter for the scanout clock.
+
+   This replaced a DwmGetCompositionTimingInfo version. DWM's composition clock is only
+   the display's clock while DWM is the one flipping: with exclusive fullscreen acquired
+   the compositor is bypassed and those timestamps describe nothing the screen is doing,
+   which is how snapping to them cost 4 fps in fullscreen. The adapter's own vblank event
+   is valid either way. */
+static bool vkpt_get_window_gdi_device(char *out, size_t out_size)
+{
+	HMONITOR mon = vkpt_get_window_monitor();
+	if (!mon)
+		return false;
+
+	MONITORINFOEXA mi;
+	memset(&mi, 0, sizeof(mi));
+	mi.cbSize = sizeof(mi);
+	if (!GetMonitorInfoA(mon, (MONITORINFO *)&mi))
+		return false;
+
+	Q_strlcpy(out, mi.szDevice, out_size);
+	return out[0] != 0;
+}
 #endif
 #include "../../client/ui/ui.h"
 #include "server/server.h"
 
 #include "shader/vertex_buffer.h"
 #include "DLSS.h"
+#include "fg_present.h"
+#include "reflex.h"
 #include <vulkan/vulkan.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -342,10 +368,39 @@ static VkExtent2D get_screen_image_extent(void)
 // resolution change carried stale history into the new scene. Set on any event that
 // invalidates temporal history, consumed once by the next DLSS evaluation.
 static bool dlss_reset_history = true;
+// Same idea for frame generation: DLSS-G keeps its own history of the previous
+// backbuffer, so it needs telling when that history is meaningless.
+static bool dlssg_reset_history = true;
+
+/* Smoothed interval between RENDERED frames, in microseconds, with the presentation
+   stall already subtracted - i.e. what the GPU can actually do, not the cadence the
+   pacer imposed. File scope because the frame-budget decision below needs last frame's
+   value before the schedule recomputes it. */
+static double fg_render_interval_us = 0.0;
+
+/* The RAW frame interval, stall included - i.e. actual wall-clock time per rendered frame.
+   Kept separate from fg_render_interval_us because the two answer different questions and
+   conflating them is what left presents 9.9 ms late even after the lead was raised: the
+   SLOT wants the stall removed (how fast could we go), the LEAD wants it left in (how long
+   until this frame's GPU work is actually finished). The corrected figure is always the
+   smaller of the two, so using it for the lead under-anchors the group by exactly the
+   stall - and every present in it then falls due before the GPU is done. */
+static double fg_frame_interval_us = 0.0;
+
+/* What each swapchain image was last WRITTEN as, recorded at blit time and reported by the
+   dump. The index log says the real frame is enqueued against a different image every group,
+   and the dump says every image holds generated content; both cannot be true, so stop
+   correlating them by hand and have the code state which write happened last. */
+#define FG_ROLE_NONE 0
+#define FG_ROLE_GEN  1
+#define FG_ROLE_REAL 2
+static uint8_t fg_image_role[16];
+static unsigned int fg_dump_run = 0;
 
 void vkpt_dlss_request_history_reset(void)
 {
 	dlss_reset_history = true;
+	dlssg_reset_history = true;
 }
 
 void vkpt_reset_accumulation()
@@ -357,7 +412,7 @@ void vkpt_reset_accumulation()
 VkResult
 vkpt_initialize_all(VkptInitFlags_t init_flags)
 {
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	qvk.extent_render = get_render_extent();
 	qvk.extent_screen_images = get_screen_image_extent();	
@@ -410,7 +465,7 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 VkResult
 vkpt_destroy_all(VkptInitFlags_t destroy_flags)
 {
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	for(int i = LENGTH(vkpt_initialization) - 1; i >= 0; i--) {
 		VkptInit_t *init = vkpt_initialization + i;
@@ -506,6 +561,10 @@ const char *vk_requested_instance_extensions[] = {
 
 const char *vk_requested_device_extensions_common[] = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+	// DLSS Frame Generation needs vkCmdPushDescriptorSetKHR. Without this the FG
+	// snippet logs "Failed to load VK device function: vkCmdPushDescriptorSetKHR"
+	// at NGX init, and create/evaluate fail later.
+	VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
 #ifdef VKPT_DEVICE_GROUPS
 	VK_KHR_DEVICE_GROUP_EXTENSION_NAME,
 	VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
@@ -674,6 +733,656 @@ static bool pick_surface_format_sdr(picked_surface_format_t* picked_fmt, const V
 	return false;
 }
 
+
+/* The image count the app is ASKING for, or 0 for "no explicit request, use
+   minImageCount + 1". Recorded at create time so the per-frame recreate check can
+   compare request against request. Comparing a request against the CLAMPED result
+   in qvk.surf_num_images would recreate the swapchain every single frame whenever
+   the request cannot be honoured exactly - which the FG floor above makes easy to
+   hit, since vid_swapchain_images is pinned to 2 in both q2config.cfg files. */
+/* ARE THE GENERATED FRAMES ACTUALLY DIFFERENT IMAGES?
+
+   Every diagnostic up to here answered "which swapchain image reached the display", never
+   "is there anything new in it". pt_dlss_fg_debug paints over the content, so it cannot
+   tell a working 2x from one presenting the same picture twice - and both look identical
+   on a counter. The two symptoms that pacing has never explained, NO TEARING on real
+   content and motion pinned to the base rate, are exactly what duplicated frames look
+   like: a tear between two identical images is invisible.
+
+   So compare the pixels. A small centre region of VKPT_IMG_DLSS_OUTPUT (the real frame
+   DLSS-G is given) and of each DLSS_FG_OUTPUT is copied back and the fraction of differing
+   16-bit components reported, with the real-vs-PREVIOUS-real figure alongside as the scale
+   of genuine frame-to-frame change.
+
+     gen-vs-real ~= 0%          -> generation is returning a copy. Pacing cannot fix that.
+     gen-vs-real  <  real-vs-prev -> plausible: an interpolated frame sits BETWEEN them,
+                                     so it should differ from the real frame by less than
+                                     a whole frame of motion, and by clearly more than 0.
+
+   Debug path, so it takes the cheap route: idle the device, one throwaway command buffer,
+   read back, print. Once a second while pt_dlss_fg_compare is on. */
+
+#define FG_CMP_W 256
+#define FG_CMP_H 144
+#define FG_CMP_BYTES (FG_CMP_W * FG_CMP_H * 8)   /* rgba16f */
+
+static bool fg_cmp_read_region(VkImage image, void *out)
+{
+	static BufferResource_t staging;
+	static bool staging_ready = false;
+
+	if (!staging_ready) {
+		if (buffer_create(&staging, FG_CMP_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+			!= VK_SUCCESS)
+			return false;
+		staging_ready = true;
+	}
+
+	VkExtent2D ext = GetDLSSExtent();
+	if (ext.width < FG_CMP_W || ext.height < FG_CMP_H)
+		return false;
+
+	vkpt_device_wait_idle();
+
+	VkCommandBuffer cmd = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+	VkImageSubresourceRange range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0, .levelCount = 1,
+		.baseArrayLayer = 0, .layerCount = 1,
+	};
+
+	IMAGE_BARRIER(cmd,
+		.image = image, .subresourceRange = range,
+		.srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+	VkBufferImageCopy copy = {
+		.bufferOffset = 0,
+		.bufferRowLength = 0,
+		.bufferImageHeight = 0,
+		.imageSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+		},
+		.imageOffset = { (int32_t)(ext.width - FG_CMP_W) / 2,
+		                 (int32_t)(ext.height - FG_CMP_H) / 2, 0 },
+		.imageExtent = { FG_CMP_W, FG_CMP_H, 1 },
+	};
+	vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		staging.buffer, 1, &copy);
+
+	IMAGE_BARRIER(cmd,
+		.image = image, .subresourceRange = range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .dstAccessMask = 0,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL);
+
+	vkpt_submit_command_buffer_simple(cmd, qvk.queue_graphics, false);
+	vkpt_device_wait_idle();
+
+	void *mapped = buffer_map(&staging);
+	if (!mapped)
+		return false;
+	memcpy(out, mapped, FG_CMP_BYTES);
+	buffer_unmap(&staging);
+	return true;
+}
+
+/* rgba16f -> float. Needed because the first version of this compared RAW BITS, which
+   saturated uselessly: every reading came back ~75.00%, i.e. all three colour components
+   of every pixel differed and only alpha matched. In a path-traced image essentially no
+   pixel is ever bit-identical to another frame, so "do the bits differ" cannot tell a
+   real interpolation from a near-copy with denoiser noise on top. Magnitude can. */
+static float fg_half_to_float(uint16_t h)
+{
+	uint32_t sign = (uint32_t)(h >> 15) & 1u;
+	uint32_t exp  = (uint32_t)(h >> 10) & 0x1Fu;
+	uint32_t mant = (uint32_t)h & 0x3FFu;
+	uint32_t bits;
+
+	if (exp == 0) {
+		if (mant == 0) {
+			bits = sign << 31;
+		} else {
+			exp = 127 - 15 + 1;
+			while (!(mant & 0x400u)) { mant <<= 1; exp--; }
+			mant &= 0x3FFu;
+			bits = (sign << 31) | (exp << 23) | (mant << 13);
+		}
+	} else if (exp == 31) {
+		bits = (sign << 31) | 0x7F800000u | (mant << 13);
+	} else {
+		bits = (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13);
+	}
+
+	float out;
+	memcpy(&out, &bits, sizeof(out));
+	return out;
+}
+
+/* Mean pixel VALUE over RGB. The difference alone cannot tell "these images hold
+   different content" from "my reader is looking at the wrong memory": a steady gen-vs-real
+   difference of 12.5 against a 0.07 frame step is far too large to be interpolation error,
+   yet both images go through the same blit to an 8-bit swapchain, where anything near 12
+   would clamp to solid white - and the screen is not white. One of those two facts has to
+   give, and the means say which. */
+static double fg_cmp_mean_value(const uint16_t *a)
+{
+	const size_t pixels = FG_CMP_W * FG_CMP_H;
+	double sum = 0.0;
+	size_t counted = 0;
+
+	for (size_t p = 0; p < pixels; p++) {
+		for (int ch = 0; ch < 3; ch++) {
+			float f = fg_half_to_float(a[p * 4 + ch]);
+			if (!isfinite(f))
+				continue;
+			sum += (double)f;
+			counted++;
+		}
+	}
+
+	return counted ? sum / (double)counted : 0.0;
+}
+
+/* Mean absolute difference over the RGB components. Alpha is skipped - it is a constant
+   1.0 and including it just dilutes the number by a quarter. */
+static double fg_cmp_mean_abs_diff(const uint16_t *a, const uint16_t *b)
+{
+	const size_t pixels = FG_CMP_W * FG_CMP_H;
+	double sum = 0.0;
+	size_t counted = 0;
+
+	for (size_t p = 0; p < pixels; p++) {
+		for (int ch = 0; ch < 3; ch++) {
+			float fa = fg_half_to_float(a[p * 4 + ch]);
+			float fb = fg_half_to_float(b[p * 4 + ch]);
+			if (!isfinite(fa) || !isfinite(fb))
+				continue;
+			sum += fabs((double)fa - (double)fb);
+			counted++;
+		}
+	}
+
+	return counted ? sum / (double)counted : 0.0;
+}
+
+/* WRITE THE ACTUAL IMAGES OUT. `pt_dlss_fg_dump 1`, one shot.
+
+   Statistics took this as far as they can: with a static camera the generated frame is 26%
+   darker than the real one and differs from it by more than its own mean value, which says
+   "different content" without saying what. Two PNGs answer in a glance what another metric
+   would take another round to argue about.
+
+   Written as linear -> sRGB, matching what the swapchain blit does: the vkCmdBlitImage
+   target is a _SRGB format, so the encode happens on write and these float images are
+   LINEAR display-referred. A mean of 0.03 linear is about 0.19 sRGB, which is an ordinary
+   dark Quake scene rather than the near-black the raw number suggests. */
+extern int stbi_write_png(char const *filename, int w, int h, int comp,
+                          const void *data, int stride_in_bytes);
+
+static void fg_dump_write_png(const char *name, const uint16_t *src, int w, int h)
+{
+	byte *rgb = Z_Malloc((size_t)w * h * 3);
+	if (!rgb)
+		return;
+
+	for (int i = 0; i < w * h; i++) {
+		for (int ch = 0; ch < 3; ch++) {
+			float v = fg_half_to_float(src[(size_t)i * 4 + ch]);
+			if (!isfinite(v) || v < 0.0f) v = 0.0f;
+			if (v > 1.0f) v = 1.0f;
+			/* sRGB encode, the same curve the _SRGB blit target applies. */
+			float e = (v <= 0.0031308f) ? (v * 12.92f)
+			                            : (1.055f * powf(v, 1.0f / 2.4f) - 0.055f);
+			rgb[(size_t)i * 3 + ch] = (byte)(e * 255.0f + 0.5f);
+		}
+	}
+
+	if (stbi_write_png(name, w, h, 3, rgb, w * 3))
+		Com_Printf("DLSS-G: wrote %s (%dx%d)\n", name, w, h);
+	else
+		Com_EPrintf("DLSS-G: failed to write %s\n", name);
+
+	Z_Free(rgb);
+}
+
+static bool fg_dump_read_full(VkImage image, uint16_t *out, VkExtent2D ext,
+                              BufferResource_t *staging)
+{
+	vkpt_device_wait_idle();
+
+	VkCommandBuffer cmd = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+	VkImageSubresourceRange range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0, .levelCount = 1,
+		.baseArrayLayer = 0, .layerCount = 1,
+	};
+
+	IMAGE_BARRIER(cmd,
+		.image = image, .subresourceRange = range,
+		.srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+	VkBufferImageCopy copy = {
+		.bufferOffset = 0,
+		.bufferRowLength = 0,
+		.bufferImageHeight = 0,
+		.imageSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+		},
+		.imageOffset = { 0, 0, 0 },
+		.imageExtent = { ext.width, ext.height, 1 },
+	};
+	vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		staging->buffer, 1, &copy);
+
+	IMAGE_BARRIER(cmd,
+		.image = image, .subresourceRange = range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .dstAccessMask = 0,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL);
+
+	vkpt_submit_command_buffer_simple(cmd, qvk.queue_graphics, false);
+	vkpt_device_wait_idle();
+
+	void *mapped = buffer_map(staging);
+	if (!mapped)
+		return false;
+	memcpy(out, mapped, (size_t)ext.width * ext.height * 8);
+	buffer_unmap(staging);
+	return true;
+}
+
+/* GROUND TRUTH: the swapchain image itself, i.e. exactly what was put on the screen.
+
+   Added because Matt reported that fgdump_real.png does NOT look like the game - the
+   generated frame looked closer. That contradicts the assumption the other two dumps rest
+   on, namely that VKPT_IMG_DLSS_OUTPUT converted linear->sRGB is what the display shows.
+   The swapchain is a _SRGB format so vkCmdBlitImage applies exactly that encode, and the
+   two should match. One of those steps is wrong and this says which, without guessing:
+   whatever is in here IS what was displayed.
+
+   Read at dump time it holds the PREVIOUS frame's presented content, which is fine - the
+   question is what the game looks like, not which frame. Already 8-bit encoded, so it is
+   copied straight out with no transfer applied. */
+/* EVERY swapchain image, not just the current one.
+
+   The single-image version was NOT ground truth, and reading it as such inverted the
+   whole diagnosis: at 2x the generated frame is blitted into the image acquired in
+   BeginFrame, so `qvk.current_swap_chain_image_index` at dump time names an image that
+   last held a GENERATED frame. It matching the generated dump proved nothing.
+
+   Dumping all of them does answer it, because both kinds are in there: if some look like
+   the real frame and some like the generated one, both are reaching the screen. If they
+   ALL look generated, real frames are never presented - which is what Matt has said from
+   the start. */
+static void fg_dump_swapchain_image(uint32_t index)
+{
+	VkExtent2D ext = qvk.extent_unscaled;
+	VkDeviceSize bytes = (VkDeviceSize)ext.width * ext.height * 4;
+
+	BufferResource_t staging;
+	if (buffer_create(&staging, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		!= VK_SUCCESS)
+		return;
+
+	VkImage img = qvk.swap_chain_images[index];
+
+	vkpt_device_wait_idle();
+	VkCommandBuffer cmd = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+	VkImageSubresourceRange range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0, .levelCount = 1,
+		.baseArrayLayer = 0, .layerCount = 1,
+	};
+
+	IMAGE_BARRIER(cmd,
+		.image = img, .subresourceRange = range,
+		.srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+	VkBufferImageCopy copy = {
+		.bufferOffset = 0, .bufferRowLength = 0, .bufferImageHeight = 0,
+		.imageSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
+		},
+		.imageOffset = { 0, 0, 0 },
+		.imageExtent = { ext.width, ext.height, 1 },
+	};
+	vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		staging.buffer, 1, &copy);
+
+	IMAGE_BARRIER(cmd,
+		.image = img, .subresourceRange = range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .dstAccessMask = 0,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+	vkpt_submit_command_buffer_simple(cmd, qvk.queue_graphics, false);
+	vkpt_device_wait_idle();
+
+	byte *src = buffer_map(&staging);
+	if (src) {
+		byte *rgb = Z_Malloc((size_t)ext.width * ext.height * 3);
+		if (rgb) {
+			bool bgr = (qvk.surf_format.format == VK_FORMAT_B8G8R8A8_SRGB
+			         || qvk.surf_format.format == VK_FORMAT_B8G8R8A8_UNORM);
+			for (size_t i = 0; i < (size_t)ext.width * ext.height; i++) {
+				byte a = src[i * 4 + 0];
+				byte b = src[i * 4 + 1];
+				byte c = src[i * 4 + 2];
+				rgb[i * 3 + 0] = bgr ? c : a;
+				rgb[i * 3 + 1] = b;
+				rgb[i * 3 + 2] = bgr ? a : c;
+			}
+			char name[64];
+			Q_snprintf(name, sizeof(name), "fgdump%u_swap%u.png", fg_dump_run, index);
+			if (stbi_write_png(name, ext.width, ext.height, 3,
+					rgb, ext.width * 3))
+				Com_Printf("DLSS-G: wrote %s (%dx%d) last written as %s%s", name,
+					ext.width, ext.height,
+					index >= LENGTH(fg_image_role) ? "?" :
+					fg_image_role[index] == FG_ROLE_GEN ? "GENERATED" :
+					fg_image_role[index] == FG_ROLE_REAL ? "REAL" : "never",
+					index == qvk.current_swap_chain_image_index ? " [current]\n" : "\n");
+			Z_Free(rgb);
+		}
+		buffer_unmap(&staging);
+	}
+
+	buffer_destroy(&staging);
+}
+
+static void fg_debug_dump_frames(unsigned int generated_count)
+{
+	static cvar_t *cv_dump = NULL;
+	if (!cv_dump) cv_dump = Cvar_Get("pt_dlss_fg_dump", "0", 0);
+	if (!cv_dump->integer)
+		return;
+
+	Cvar_Set("pt_dlss_fg_dump", "0");   /* one shot */
+
+	/* Each run gets its own prefix. The first control run was destroyed by the run
+	   after it, which is exactly the comparison it existed to make. */
+	fg_dump_run++;
+
+	for (uint32_t i = 0; i < qvk.num_swap_chain_images; i++)
+		fg_dump_swapchain_image(i);
+
+	VkExtent2D ext = GetDLSSExtent();
+	VkDeviceSize bytes = (VkDeviceSize)ext.width * ext.height * 8;
+
+	BufferResource_t staging;
+	if (buffer_create(&staging, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		!= VK_SUCCESS) {
+		Com_EPrintf("DLSS-G: dump staging buffer (%llu bytes) failed\n",
+			(unsigned long long)bytes);
+		return;
+	}
+
+	uint16_t *pixels = Z_Malloc((size_t)bytes);
+	if (pixels) {
+		if (fg_dump_read_full(qvk.images[VKPT_IMG_DLSS_OUTPUT], pixels, ext, &staging))
+			{
+				char rname[64];
+				Q_snprintf(rname, sizeof(rname), "fgdump%u_real.png", fg_dump_run);
+				fg_dump_write_png(rname, pixels, ext.width, ext.height);
+			}
+
+		for (unsigned int i = 1; i <= generated_count; i++) {
+			char name[64];
+			Q_snprintf(name, sizeof(name), "fgdump%u_gen%u.png", fg_dump_run, i);
+			if (fg_dump_read_full(GetDLSSGImage(i), pixels, ext, &staging))
+				fg_dump_write_png(name, pixels, ext.width, ext.height);
+		}
+		Z_Free(pixels);
+	}
+
+	buffer_destroy(&staging);
+}
+
+static void fg_debug_compare_frames(unsigned int generated_count)
+{
+	static cvar_t *cv_cmp = NULL;
+	if (!cv_cmp) cv_cmp = Cvar_Get("pt_dlss_fg_compare", "0", 0);
+	if (!cv_cmp->integer || generated_count == 0)
+		return;
+
+	static uint16_t *real_now = NULL, *real_prev = NULL, *gen = NULL;
+	if (!real_now) {
+		real_now  = Z_Malloc(FG_CMP_BYTES);
+		real_prev = Z_Malloc(FG_CMP_BYTES);
+		gen       = Z_Malloc(FG_CMP_BYTES);
+		if (!real_now || !real_prev || !gen)
+			return;
+	}
+
+	/* TWO CONSECUTIVE FRAMES, not two samples a second apart.
+
+	   The first version stored the previous SAMPLE as the reference, so "real-vs-prev"
+	   described a second of motion rather than one frame, and the numbers were unusable
+	   as a scale - sometimes far larger than a frame step, sometimes smaller if the view
+	   had come back around. The gen1 > gen2 ordering was still meaningful because those
+	   share one reference, but at 2x there is no ordering to check, which is exactly the
+	   case that needed answering.
+
+	   So arm on the trigger frame, capture the real image, and do the real work on the
+	   NEXT frame - whose generated images interpolate between precisely those two. */
+	static bool     armed = false;
+	static uint64_t last_us = 0;
+	uint64_t now = Sys_Microseconds();
+
+	if (!armed) {
+		if (last_us != 0 && now - last_us < 1000000)
+			return;
+		if (fg_cmp_read_region(qvk.images[VKPT_IMG_DLSS_OUTPUT], real_prev))
+			armed = true;
+		return;
+	}
+
+	armed = false;
+	last_us = now;
+
+	if (!fg_cmp_read_region(qvk.images[VKPT_IMG_DLSS_OUTPUT], real_now))
+		return;
+
+	double step = fg_cmp_mean_abs_diff(real_now, real_prev);
+
+	char line[512];
+	int off = Q_snprintf(line, sizeof(line),
+		"DLSS-G compare: frame step %.5f, real mean %.4f |", step,
+		fg_cmp_mean_value(real_now));
+
+	for (unsigned int i = 1; i <= generated_count; i++) {
+		if (!fg_cmp_read_region(GetDLSSGImage(i), gen))
+			continue;
+
+		double d = fg_cmp_mean_abs_diff(gen, real_now);
+
+		/* As a FRACTION of one frame step, which is the interpretable number: a frame
+		   generated at phase k/(N+1) should sit that far back from the real frame, so
+		   2x wants ~50%, and 3x wants ~67% then ~33%. Near 0% is a copy of the real
+		   frame; near or above 100% is not an in-between frame at all. */
+		off += Q_snprintf(line + off, sizeof(line) - off,
+			" gen%u mean %.4f diff %.5f (%.0f%%)",
+			i, fg_cmp_mean_value(gen), d, step > 0.0 ? d * 100.0 / step : 0.0);
+	}
+
+	Com_Printf("%s\n", line);
+}
+
+/* Debug: paint the CURRENT swapchain image a solid colour. Used by pt_dlss_fg_debug to
+   answer "are the generated frames actually reaching the display?" without argument - if
+   they are, the screen strobes; if the picture looks normal, they never arrive. One
+   colour per generated frame index, so at 4x/6x you can also see how many get through.
+   vkpt_final_blit_simple leaves the swapchain image in PRESENT_SRC_KHR, so bounce it
+   through TRANSFER_DST and put it back. */
+static void
+fg_debug_paint_current_swapchain_image(VkCommandBuffer cmd_buf, unsigned int gen_index)
+{
+	static const VkClearColorValue colours[] = {
+		{ { 1.0f, 0.0f, 0.0f, 1.0f } },   // red
+		{ { 0.0f, 1.0f, 0.0f, 1.0f } },   // green
+		{ { 0.0f, 0.0f, 1.0f, 1.0f } },   // blue
+		{ { 1.0f, 1.0f, 0.0f, 1.0f } },   // yellow
+		{ { 1.0f, 0.0f, 1.0f, 1.0f } },   // magenta
+	};
+
+	VkImageSubresourceRange range = {
+		.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel   = 0,
+		.levelCount     = 1,
+		.baseArrayLayer = 0,
+		.layerCount     = 1,
+	};
+
+	VkImage img = qvk.swap_chain_images[qvk.current_swap_chain_image_index];
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = img,
+		.subresourceRange = range,
+		.srcAccessMask = 0,
+		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+	);
+
+	vkCmdClearColorImage(cmd_buf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		&colours[gen_index % LENGTH(colours)], 1, &range);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = img,
+		.subresourceRange = range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = 0,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+	);
+}
+
+/* Acquire an image with the swapchain lock held, WITHOUT holding it while blocked.
+
+   VkSwapchainKHR needs external synchronisation and the frame generation present thread
+   uses it too, so the acquire has to be inside the lock. But a blocking acquire inside
+   the lock deadlocks: the images it is waiting for are released by presents that need the
+   same lock. So poll with a short timeout and drop the lock between attempts. */
+static VkResult
+acquire_next_image_locked(VkSemaphore semaphore, uint32_t *out_index)
+{
+	for (;;) {
+		VkResult res;
+
+		FGPresent_SwapchainLock();
+#ifdef VKPT_DEVICE_GROUPS
+		VkAcquireNextImageInfoKHR acquire_info = {
+			.sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR,
+			.swapchain = qvk.swap_chain,
+			.timeout = 1000000, /* 1 ms */
+			.semaphore = semaphore,
+			.fence = VK_NULL_HANDLE,
+			.deviceMask = (1 << qvk.device_count) - 1,
+		};
+		res = vkAcquireNextImage2KHR(qvk.device, &acquire_info, out_index);
+#else
+		res = vkAcquireNextImageKHR(qvk.device, qvk.swap_chain, 1000000,
+			semaphore, VK_NULL_HANDLE, out_index);
+#endif
+		FGPresent_SwapchainUnlock();
+
+		/* Nothing was acquired and the semaphore was not signalled, so retrying is safe.
+		   Yield so the present thread can actually release an image. */
+		if (res == VK_TIMEOUT || res == VK_NOT_READY) {
+			SDL_Delay(0);
+			continue;
+		}
+
+		return res;
+	}
+}
+
+void vkpt_device_wait_idle(void)
+{
+	FGPresent_SwapchainLock();
+	vkDeviceWaitIdle(qvk.device);
+	FGPresent_SwapchainUnlock();
+}
+
+VkResult vkpt_queue_wait_idle(VkQueue queue)
+{
+	FGPresent_SwapchainLock();
+	VkResult res = vkQueueWaitIdle(queue);
+	FGPresent_SwapchainUnlock();
+	return res;
+}
+
+static uint32_t swapchain_requested_images = 0;
+
+
+/* Whether the swapchain in use had its vsync overridden by frame generation.
+   Recorded at create time: toggling FG while vid_vsync is on changes the present
+   mode, and the image-count comparison alone will not notice if the count happens
+   to be unchanged (an explicit vid_swapchain_images above the FG floor). */
+static bool swapchain_fg_forced_no_vsync = false;
+
+/* True when frame generation should override vid_vsync. Kept as a function so the
+   create path and the per-frame recreate check cannot disagree. */
+static bool
+fg_wants_no_vsync(void)
+{
+	cvar_t *forced = Cvar_Get("pt_dlss_fg_force_novsync", "0", CVAR_ARCHIVE);
+	return forced->integer != 0 && DLSSGMultiplier() > 1 && cvar_vsync->integer != 0;
+}
+
+static uint32_t
+desired_swapchain_images(void)
+{
+	uint32_t n = (cvar_swapchain_images->integer > 0)
+		? (uint32_t)cvar_swapchain_images->integer : 0;
+
+
+/* Frame generation presents once per generated frame plus once for the real one,
+	   i.e. exactly `multiplier` presents per rendered frame, so a 2-image swapchain
+	   cannot work. Ideally MAX_FRAMES_IN_FLIGHT frames each hold a full set plus one
+	   being scanned out. At high multipliers that exceeds maxImageCount (8 here) and
+	   gets clamped below - which is fine: the acquire then blocks until the
+	   presentation engine releases an image, and that backpressure IS the pacing. It
+	   cannot deadlock, because the previous frame's presents are already queued and
+	   complete independently of this one. */
+	unsigned int mult = DLSSGMultiplier();
+	if (mult > 1)
+	{
+		/* MEASURED: do NOT tighten this to mult + 1 on a latency theory. Under FIFO each
+		   extra image is another queued present, so fewer images LOOKS like it should cut
+		   latency - it does the opposite here. 3 images at 2x measured 395 ms against
+		   52 ms at 5: the acquire starves, and the polling loop in
+		   acquire_next_image_locked() then burns the frame waiting. Tried 2026-08-29. */
+		/* One full group MORE than the frames in flight. With the floor at
+		   MAX_FRAMES_IN_FLIGHT * mult + 1 the acquire limit leaves max_pending = 1 at
+		   2x, so the main thread blocks until the group has almost drained: measured
+		   38.7 ms of stall in a 40 ms frame, settling at 25 rendered / 50 presented on
+		   a 60 Hz display that should take 30 / 60. Once the present schedule decides
+		   when frames go out, extra images cost nothing in latency - the queue depth is
+		   bounded by the schedule, not by the image count - and they stop the acquire
+		   starving. (Do NOT read this as a licence to tighten it: 3 images at 2x
+		   measured 395 ms per frame, see the note above.) */
+		n = max(n, (uint32_t)(MAX_FRAMES_IN_FLIGHT * mult + mult + 1));
+	}
+
+	return n;
+}
+
 VkResult
 create_swapchain(void)
 {
@@ -743,13 +1452,43 @@ create_swapchain(void)
 	qvk.surf_vsync = (cvar_vsync->integer != 0);
 	qvk.surf_vsync_mailbox = (cvar_vsync_mailbox->integer != 0);
 
-	if (qvk.surf_vsync) {
+	/* Frame generation used to force a non-vsync present mode here, because back when
+	   presents were issued from the main thread FIFO divided the render rate by the
+	   multiplier. THAT REASONING IS OBSOLETE: presents now go through the present
+	   thread, so FIFO paces them to vblank without touching the render loop, and it
+	   is the only way to get tear-free, refresh-aligned output on a fixed-refresh
+	   panel. An unaligned present rate (83/s into 60Hz, say) beats against the
+	   display and reads as "same motion, worse pacing".
+	
+	   vid_vsync is therefore respected again. pt_dlss_fg_force_novsync 1 restores the
+	   old override for comparison. NOTE: under FIFO the presented rate is capped at
+	   the refresh rate, so pick a multiplier with rendered * multiplier <= refresh -
+	   beyond that the queue backs up and the acquire throttles rendering. */
+	static cvar_t *cvar_fg_force_novsync = NULL;
+	if (!cvar_fg_force_novsync)
+		cvar_fg_force_novsync = Cvar_Get("pt_dlss_fg_force_novsync", "0", CVAR_ARCHIVE);
+
+	bool fg_forces_no_vsync = cvar_fg_force_novsync->integer != 0
+		&& fg_wants_no_vsync()
+		&& (immediate_mode_available || mailbox_mode_available);
+	swapchain_fg_forced_no_vsync = fg_forces_no_vsync;
+
+	if (qvk.surf_vsync && !fg_forces_no_vsync) {
 		qvk.present_mode = (qvk.surf_vsync_mailbox && mailbox_mode_available)
 			? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
 	} else if (immediate_mode_available) {
 		qvk.present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 	} else {
 		qvk.present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+	}
+
+	if (fg_forces_no_vsync) {
+		static bool fg_vsync_warned = false;
+		if (!fg_vsync_warned) {
+			fg_vsync_warned = true;
+			Com_Printf("DLSS-G: vid_vsync is on; overriding to a non-vsync present mode."
+				" Frame generation cannot help under FIFO.\n");
+		}
 	}
 
 	if(surf_capabilities.currentExtent.width != ~0u) {
@@ -784,10 +1523,17 @@ create_swapchain(void)
 	   swapchain parameters in the bad and good states. What fixes it is the RECREATE,
 	   not what is recreated, which is also why toggling fullscreen has always cleared
 	   it. Whatever is wrong is state that survives the initial create and is reset by
-	   any subsequent one. Do not spend time tuning this number. */
+	   any subsequent one. Do not spend time tuning this number FOR THE STALL.
+
+	   Frame generation is a separate matter: it genuinely needs more than 2, because
+	   it presents twice per rendered frame. desired_swapchain_images() floors the
+	   count at DLSSG_MIN_SWAPCHAIN_IMAGES whenever pt_dlss_fg is on, overriding the
+	   vid_swapchain_images cvar (which both q2config.cfg files pin to 2). */
+	swapchain_requested_images = desired_swapchain_images();
+
 	uint32_t num_images;
-	if (cvar_swapchain_images->integer > 0)
-		num_images = cvar_swapchain_images->integer;
+	if (swapchain_requested_images > 0)
+		num_images = swapchain_requested_images;
 	else
 		num_images = surf_capabilities.minImageCount + 1;
 
@@ -830,9 +1576,40 @@ create_swapchain(void)
 		.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT,
 	};
 
+	/* Reflex latency tracking is opted into per swapchain, at creation. Chained ahead
+	   of the full-screen-exclusive info so both can be present. */
+	/* THE SWAPCHAIN OPT-IN FOLLOWS pt_reflex NOW, AND THAT MATTERS.
+	
+	   latencyModeEnable was hardcoded VK_TRUE whenever VK_NV_low_latency2 existed, so
+	   pt_reflex 0 only skipped the sleep call - the swapchain stayed opted into
+	   NVIDIA's low-latency frame pacing and there was no way to switch Reflex off
+	   from inside the game.
+	
+	   That is the leading suspect for the engine NEVER tearing with vid_vsync 0:
+	   IMMEDIATE, exclusive fullscreen acquired, 100 fps into a 60 Hz panel, frame
+	   generation off - and no tear line at any rate. Matt confirmed other titles DO
+	   tear on the same display, so it is this engine, not the screen. Present mode
+	   selection is verified correct (IMMEDIATE is queried for support before use),
+	   which leaves the driver-side pacing this flag turns on.
+	
+	   pt_reflex 0 + vid_restart now genuinely removes Reflex from the swapchain. */
+	cvar_t *cvar_reflex_mode = Cvar_Get("pt_reflex", "1", CVAR_ARCHIVE);
+	const bool want_latency_mode = qvk.supports_low_latency
+	                            && cvar_reflex_mode->integer != 0;
+
+	VkSwapchainLatencyCreateInfoNV latency_info = {
+		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV,
+		.pNext = want_fse ? &fse_info : NULL,
+		.latencyModeEnable = VK_TRUE,
+	};
+
+	const void* swpch_pnext = want_fse ? (const void*)&fse_info : NULL;
+	if (want_latency_mode)
+		swpch_pnext = &latency_info;
+
 	VkSwapchainCreateInfoKHR swpch_create_info = {
 		.sType                 = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-		.pNext                 = want_fse ? &fse_info : NULL,
+		.pNext                 = swpch_pnext,
 		.surface               = qvk.surface,
 		.minImageCount         = num_images,
 		.imageFormat           = qvk.surf_format.format,
@@ -868,10 +1645,25 @@ create_swapchain(void)
 			qvk.surf_fse_acquired ? "acquired" : qvk_result_to_string(fse_res));
 	}
 
+	/* Frame generation phase-locks its presents to this. Started here rather than at
+	   renderer init because it is per-MONITOR, and the window may not have been on this
+	   one before. Starting twice is a no-op. */
+#ifdef _WIN32
+	{
+		char gdi_device[64];
+		if (vkpt_get_window_gdi_device(gdi_device, sizeof(gdi_device)))
+			FGPresent_VBlankStart(gdi_device);
+	}
+#endif
+
 	vkGetSwapchainImagesKHR(qvk.device, qvk.swap_chain, &qvk.num_swap_chain_images, NULL);
 	assert(qvk.num_swap_chain_images);
 	qvk.swap_chain_images = malloc(qvk.num_swap_chain_images * sizeof(*qvk.swap_chain_images));
 	vkGetSwapchainImagesKHR(qvk.device, qvk.swap_chain, &qvk.num_swap_chain_images, qvk.swap_chain_images);
+
+	/* The Reflex sleep mode is a property of the swapchain, so it has to be re-applied
+	   to each new one. */
+	Reflex_OnSwapchainCreated(qvk.swap_chain);
 
 	qvk.swap_chain_image_views = malloc(qvk.num_swap_chain_images * sizeof(*qvk.swap_chain_image_views));
 	for(int i = 0; i < qvk.num_swap_chain_images; i++) {
@@ -909,6 +1701,14 @@ create_swapchain(void)
 			qvk.num_swap_chain_images = 0;
 			return 1;
 		}
+	}
+
+	/* One present-wait semaphore per swapchain image - see the field comment in vkpt.h. */
+	qvk.semaphores_present = malloc(qvk.num_swap_chain_images * sizeof(*qvk.semaphores_present));
+	for (int i = 0; i < qvk.num_swap_chain_images; i++) {
+		VkSemaphoreCreateInfo sem_info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+		_VK(vkCreateSemaphore(qvk.device, &sem_info, NULL, qvk.semaphores_present + i));
+		ATTACH_LABEL_VARIABLE(qvk.semaphores_present[i], SEMAPHORE);
 	}
 
 	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
@@ -963,11 +1763,15 @@ create_command_pool_and_fences(void)
 		
 			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->image_available));
 			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->render_finished));
+			for (int fg = 0; fg < DLSSG_MAX_GENERATED_FRAMES; fg++)
+				_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->image_available_fg[fg]));
 			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->transfer_finished));
 			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->trace_finished));
 
 			ATTACH_LABEL_VARIABLE(group->image_available, SEMAPHORE);
 			ATTACH_LABEL_VARIABLE(group->render_finished, SEMAPHORE);
+			for (int fg = 0; fg < DLSSG_MAX_GENERATED_FRAMES; fg++)
+				ATTACH_LABEL_VARIABLE(group->image_available_fg[fg], SEMAPHORE);
 			ATTACH_LABEL_VARIABLE(group->transfer_finished, SEMAPHORE);
 			ATTACH_LABEL_VARIABLE(group->trace_finished, SEMAPHORE);
 
@@ -1223,6 +2027,12 @@ init_vulkan(void)
 
 			if (!strcmp(ext_properties[j].extensionName, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME))
 				qvk.supports_fse = true;
+
+			if (!strcmp(ext_properties[j].extensionName, VK_NV_LOW_LATENCY_2_EXTENSION_NAME))
+				qvk.supports_low_latency = true;
+
+			if (!strcmp(ext_properties[j].extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME))
+				qvk.supports_present_id = true;
 		}
 	}
 
@@ -1363,6 +2173,7 @@ init_vulkan(void)
 
 	qvk.queue_idx_graphics = -1;
 	qvk.queue_idx_transfer = -1;
+	uint32_t graphics_family_queue_count = 0;
 
 	for(int i = 0; i < num_queue_families; i++) {
 		if(!queue_families[i].queueCount)
@@ -1378,6 +2189,7 @@ init_vulkan(void)
 			if(!present_support)
 				continue;
 			qvk.queue_idx_graphics = i;
+			graphics_family_queue_count = queue_families[i].queueCount;
 		}
 		if(supports_transfer && (qvk.queue_idx_transfer < 0 || qvk.queue_idx_graphics == qvk.queue_idx_transfer)) {
 			qvk.queue_idx_transfer = i;
@@ -1393,11 +2205,25 @@ init_vulkan(void)
 	int num_create_queues = 0;
 	VkDeviceQueueCreateInfo queue_create_info[3];
 
+	/* A DEDICATED PRESENT QUEUE, when the graphics family has a second queue.
+
+	   vkQueuePresentKHR is a queue operation and a single queue processes its
+	   submissions in order, so a present issued on the graphics queue AFTER the next
+	   frame's render submit cannot reach the display until that render has completed on
+	   the GPU. With frame generation that put a whole rendered frame's worth of GPU work
+	   between the present call and the flip and made every present of a group flip in one
+	   burst - PresentMon measured display changes 0.11 ms apart with a 33 ms gap, i.e.
+	   half the presented frames never visible. The present thread therefore gets a queue
+	   of its own; the render submits it must not queue behind stay on queue_graphics.
+	   Same queue family, so swapchain images need no ownership transfer. */
+	const bool want_present_queue = graphics_family_queue_count >= 2;
+	static const float graphics_queue_priorities[2] = { 1.0f, 1.0f };
+
 	{
 		VkDeviceQueueCreateInfo q = {
 			.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-			.queueCount       = 1,
-			.pQueuePriorities = &queue_priorities,
+			.queueCount       = want_present_queue ? 2 : 1,
+			.pQueuePriorities = want_present_queue ? graphics_queue_priorities : &queue_priorities,
 			.queueFamilyIndex = qvk.queue_idx_graphics,
 		};
 
@@ -1447,6 +2273,15 @@ init_vulkan(void)
 		.samplerFilterMinmax = VK_TRUE,
 		.bufferDeviceAddress = VK_TRUE,
 		.bufferDeviceAddressMultiDevice = qvk.device_count > 1 ? VK_TRUE : VK_FALSE,
+		/* vkLatencySleepNV signals a TIMELINE semaphore, so Reflex cannot work without
+		   this. It is core in 1.2 and universally supported on anything that has the
+		   low latency extension. */
+		.timelineSemaphore = VK_TRUE,
+	};
+
+	VkPhysicalDevicePresentIdFeaturesKHR device_features_present_id = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
+		.presentId = VK_TRUE,
 	};
 	VkPhysicalDeviceFeatures2 device_features = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
@@ -1520,6 +2355,7 @@ init_vulkan(void)
 	max_extension_count += max(LENGTH(vk_requested_device_extensions_ray_pipeline), LENGTH(vk_requested_device_extensions_ray_query));
 	max_extension_count += LENGTH(vk_requested_device_extensions_debug);
 	max_extension_count += 1; /* VK_EXT_full_screen_exclusive */
+	max_extension_count += 2; /* VK_NV_low_latency2, VK_KHR_present_id */
 
 	const char** device_extensions = alloca(sizeof(char*) * max_extension_count);
 	uint32_t device_extension_count = 0;
@@ -1558,6 +2394,33 @@ init_vulkan(void)
 			fse_ext, LENGTH(fse_ext));
 	}
 
+	// NVIDIA Reflex. Modern Reflex is a plain Vulkan extension - no SDK, no DLL, no
+	// Streamline interposer. It only became reachable when the Vulkan headers moved off
+	// 1.2.162, which predates the extension.
+	if (qvk.supports_low_latency)
+	{
+		static const char* ll_ext[] = { VK_NV_LOW_LATENCY_2_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			ll_ext, LENGTH(ll_ext));
+	}
+
+	// Lets the driver tie a present back to the Reflex markers for that frame.
+	if (qvk.supports_present_id)
+	{
+		static const char* pid_ext[] = { VK_KHR_PRESENT_ID_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			pid_ext, LENGTH(pid_ext));
+	}
+
+	/* Chain the present-id feature in only when the extension is actually enabled -
+	   passing a feature struct for an unrequested extension is invalid usage. The
+	   Reflex extension itself has no feature struct to enable. */
+	if (qvk.supports_present_id)
+	{
+		device_features_present_id.pNext = (void*)device_features.pNext;
+		device_features.pNext = &device_features_present_id;
+	}
+
 	dev_create_info.enabledExtensionCount = device_extension_count;
 	dev_create_info.ppEnabledExtensionNames = device_extensions;
 
@@ -1573,6 +2436,20 @@ init_vulkan(void)
 	
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_graphics, 0, &qvk.queue_graphics);
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_transfer, 0, &qvk.queue_transfer);
+
+	qvk.queue_present = qvk.queue_graphics;
+	qvk.queue_present_dedicated = false;
+	if (want_present_queue) {
+		VkQueue present_queue = VK_NULL_HANDLE;
+		vkGetDeviceQueue(qvk.device, qvk.queue_idx_graphics, 1, &present_queue);
+		if (present_queue != VK_NULL_HANDLE && present_queue != qvk.queue_graphics) {
+			qvk.queue_present = present_queue;
+			qvk.queue_present_dedicated = true;
+		}
+	}
+	Com_Printf("Present queue: %s\n", qvk.queue_present_dedicated
+		? "dedicated (graphics family, queue 1)"
+		: "shared with graphics - frame generation will flip in bursts");
 
 #define VK_EXTENSION_DO(a) \
 	q##a = (PFN_##a) vkGetDeviceProcAddr(qvk.device, #a); \
@@ -1710,6 +2587,13 @@ destroy_swapchain(void)
 	free(qvk.swap_chain_images);
 	qvk.swap_chain_images = NULL;
 
+	if (qvk.semaphores_present) {
+		for (int i = 0; i < qvk.num_swap_chain_images; i++)
+			vkDestroySemaphore(qvk.device, qvk.semaphores_present[i], NULL);
+		free(qvk.semaphores_present);
+		qvk.semaphores_present = NULL;
+	}
+
 	qvk.num_swap_chain_images = 0;
 
 	vkDestroySwapchainKHR(qvk.device, qvk.swap_chain, NULL);
@@ -1721,7 +2605,7 @@ destroy_swapchain(void)
 int
 destroy_vulkan(void)
 {
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	destroy_swapchain();
 	vkDestroySurfaceKHR(qvk.instance, qvk.surface,    NULL);
@@ -1734,6 +2618,8 @@ destroy_vulkan(void)
 
 			vkDestroySemaphore(qvk.device, group->image_available, NULL);
 			vkDestroySemaphore(qvk.device, group->render_finished, NULL);
+			for (int fg = 0; fg < DLSSG_MAX_GENERATED_FRAMES; fg++)
+				vkDestroySemaphore(qvk.device, group->image_available_fg[fg], NULL);
 			vkDestroySemaphore(qvk.device, group->transfer_finished, NULL);
 			vkDestroySemaphore(qvk.device, group->trace_finished, NULL);
 		}
@@ -3952,7 +4838,20 @@ static void report_present_stats(void)
 static void
 recreate_swapchain(void)
 {
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
+
+	/* vkpt_destroy_all() below destroys and rebuilds EVERY vkpt image, including the
+	   colour, depth, motion-vector and DLSS_FG_OUTPUT* images that DLSS-G was created
+	   against. The feature has to go with them: keeping it alive across a rebuild left
+	   it referring to freed resources, and the next create - triggered by a DLSS mode
+	   change, which alters the render extent without touching the output extent -
+	   crashed inside nvngx with an access violation. Destroying it here means it is
+	   rebuilt lazily by ValidateDLSSGFeature() on the next frame that needs it. */
+	/* A queued present still refers to the swapchain we are about to destroy. */
+	FGPresent_Drain();
+
+	DestroyDLSSGFeature();
+
 	vkpt_dlss_request_history_reset();
 	vkpt_destroy_all(VKPT_INIT_SWAPCHAIN_RECREATE);
 	destroy_swapchain();
@@ -4128,14 +5027,16 @@ R_BeginFrame_RTX(void)
 
 	if(!extents_equal(extent_screen_images, qvk.extent_screen_images) || (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync)
 	   || (!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox)
-	   || (cvar_swapchain_images->integer > 0 && (uint32_t)cvar_swapchain_images->integer != qvk.surf_num_images))
+	   || (desired_swapchain_images() != swapchain_requested_images)
+	   || (fg_wants_no_vsync() != swapchain_fg_forced_no_vsync))
 	{
 		swapchain_reason =
 			!extents_equal(extent_screen_images, qvk.extent_screen_images) ? "screen image extent changed" :
 			(!!cvar_hdr->integer != qvk.surf_is_hdr) ? "vid_hdr changed" :
 			(!!cvar_vsync->integer != qvk.surf_vsync) ? "vid_vsync changed" :
 			(!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox) ? "vid_vsync_mailbox changed" :
-			"vid_swapchain_images changed";
+			(desired_swapchain_images() != swapchain_requested_images)
+			? "swapchain image count changed" : "frame generation vsync override changed";
 		qvk.extent_screen_images = extent_screen_images;
 		recreate_swapchain();
 	}
@@ -4156,11 +5057,14 @@ retry:;
 	};
 
 	if (present_stats) t_block_begin = Sys_Microseconds();
-	VkResult res_swapchain = vkAcquireNextImage2KHR(qvk.device, &acquire_info, &qvk.current_swap_chain_image_index);
+	VkResult res_swapchain = acquire_next_image_locked(
+		qvk.semaphores[qvk.current_frame_index][0].image_available,
+		&qvk.current_swap_chain_image_index);
 #else
 	if (present_stats) t_block_begin = Sys_Microseconds();
-	VkResult res_swapchain = vkAcquireNextImageKHR(qvk.device, qvk.swap_chain, ~((uint64_t) 0),
-		qvk.semaphores[qvk.current_frame_index][0].image_available, VK_NULL_HANDLE, &qvk.current_swap_chain_image_index);
+	VkResult res_swapchain = acquire_next_image_locked(
+		qvk.semaphores[qvk.current_frame_index][0].image_available,
+		&qvk.current_swap_chain_image_index);
 #endif
 	if (present_stats)
 	{
@@ -4179,7 +5083,7 @@ retry:;
 	}
 
 	if (qvk.wait_for_idle_frames) {
-		vkDeviceWaitIdle(qvk.device);
+		vkpt_device_wait_idle();
 		qvk.wait_for_idle_frames--;
 	}
 
@@ -4230,7 +5134,31 @@ R_EndFrame_RTX(void)
 	if(cvar_tm_debug->integer)
 		vkpt_tone_mapping_draw_debug();
 
+	/* Simulation is over by the time the frame is being submitted; the render submit
+	   span starts here and closes after vkQueueSubmit. */
+	Reflex_SetMarker(VK_LATENCY_MARKER_SIMULATION_END_NV);
+	Reflex_SetMarker(VK_LATENCY_MARKER_RENDERSUBMIT_START_NV);
+
 	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+	/* Swapchain images holding the interpolated frames, filled in by the frame
+	   generation path below. fg_generated_count stays 0 when FG is off or fell back
+	   to the ordinary single present. */
+	uint32_t fg_interp_image_index[DLSSG_MAX_GENERATED_FRAMES];
+	unsigned int fg_generated_count = 0;
+
+	/* Microseconds this frame spent BLOCKED on the presentation path: waiting for the
+	   present queue to drain, and waiting for a swapchain image to come free. This is
+	   NOT render work - it is the pacer holding the render loop back - and it has to be
+	   subtracted out before the frame interval is used to schedule the next group. See
+	   the RUNAWAY note further down for why that subtraction is load-bearing. */
+	uint64_t fg_stall_us = 0;
+
+	/* The swapchain image holding the REAL frame. It is now the image R_BeginFrame
+	   acquired, blitted BEFORE DLSSGApply - see the note at that blit. */
+	uint32_t fg_real_image_index = 0;
+	bool fg_real_blitted = false;
+
 
 	if (frame_ready)
 	{
@@ -4259,7 +5187,285 @@ R_EndFrame_RTX(void)
 			END_PERF_MARKER(cmd_buf, PROFILER_TONE_MAPPING);
 
 			
-			vkpt_final_blit_simple(cmd_buf, GetDLSSImage(), GetDLSSExtent());
+			// Frame generation runs here, on the FINAL pre-HUD image: DLSS output after
+			// bloom and tone mapping, and before vkpt_draw_submit_stretch_pics() paints
+			// the HUD into the swapchain. That ordering is what makes VKPT_IMG_DLSS_OUTPUT
+			// a usable HUD-less colour buffer.
+			//
+			// NOTE: this only PRODUCES the interpolated frame. Presenting it needs a
+			// second, timed vkQueuePresentKHR roughly halfway between two real frames,
+			// which does not exist yet - there is exactly one present per rendered frame
+			// further down. Until then "pt_dlss_fg_show 1" displays the interpolated
+			// image in place of the real one so it can be judged by eye.
+			if (DLSSGEnabled()) {
+				/* HOW MANY GENERATED FRAMES CAN THIS DISPLAY ACTUALLY SHOW?
+
+				   A fixed-refresh display shows at most one frame per refresh interval. Presenting
+				   more than that does not raise the frame rate the eye receives - the display just
+				   samples the group at whatever phase it drifts into, and because the group repeats
+				   once per RENDERED frame, the motion you perceive collapses back to the base rate.
+				   That is what 4x at a 35 fps base looks like on a 60Hz panel: 140 presents/s that
+				   read as 35, plus the interpolation artifacts and latency of 4x. pt_dlss_fg_debug
+				   shows it directly - one colour holds, then drifts, rather than cycling evenly.
+
+				   So cap the generated frames at what fits: round(render interval / refresh
+				   interval) presents per group. base 15 -> 4x, base 20 -> 3x, base 30 -> 2x, which
+				   is the multiplier table that was previously left to the player to get right.
+
+				   This is deliberately NOT a swapchain change - desired_swapchain_images() keys off
+				   DLSSGMultiplier(), which stays at what the user asked for, so the image count is
+				   unchanged and nothing recreates. Under FIFO the interval is already
+				   multiplier x refresh, so the budget equals the multiplier and this is a no-op.
+
+				   Floored at 1 generated frame: if FG is on the player gets at least 2x rather than
+				   having it silently switch itself off, which would oscillate around the boundary. */
+				{
+					static cvar_t *cv_adapt = NULL;
+					if (!cv_adapt) cv_adapt = Cvar_Get("pt_dlss_fg_adapt", "0", CVAR_ARCHIVE);
+				   /* DEFAULT 0 - THIS SERVO DOES NOT CONVERGE, do not switch it back on
+				      without reading this.
+
+				      The budget is computed from the render interval, but CHANGING the
+				      budget changes the render interval - each extra generated frame is
+				      another Evaluate and another present. So the control input moves the
+				      measured variable and it oscillates. A deadband and a one-second dwell
+				      only slowed it down: Matt's log still shows 2x/3x alternating once a
+				      second, 81 changes in 89 seconds, saturating the dwell.
+
+				      A group whose size keeps changing cannot be paced, so this was doing
+				      more harm than the mismatch it was meant to correct. The multiplier
+				      table further down this file is guidance for the PLAYER; picking it
+				      automatically needs a measurement that does not depend on the choice
+				      (GPU time with FG excluded, say), which does not exist here yet. */
+
+					unsigned int budget = 0;   /* 0 = no limit */
+				int hz = Reflex_DisplayRefreshHz();
+				if (cv_adapt->integer && hz > 0 && fg_render_interval_us > 0.0) {
+					double refresh_us = 1000000.0 / (double)hz;
+					double ratio = fg_render_interval_us / refresh_us;   /* presents that fit */
+
+					/* HYSTERESIS IS NOT OPTIONAL HERE.
+
+					   The first version of this rounded `ratio` every frame, and with the
+					   interval sitting near a boundary it flapped 2x <-> 3x on ALTERNATE
+					   FRAMES - 44 multiplier changes in one short session in Matt's log.
+					   A group whose SIZE changes every frame cannot be paced: the slot
+					   count, the group duration and the swapchain acquire all move
+					   together, so the schedule never settles and the debug colours read
+					   as noise. It was almost certainly the worst of the three problems
+					   and it was one I introduced.
+
+					   So: a deadband wide enough that ordinary interval jitter cannot
+					   cross it, one step at a time, and at most one change a second. */
+					static int      cur_presents   = 0;
+					static uint64_t last_change_us = 0;
+					uint64_t now_cmp = Sys_Microseconds();
+
+					if (cur_presents == 0) {
+						/* First look: go straight to the right answer rather than
+						   climbing to it one step per second. */
+						cur_presents = (int)(ratio + 0.5);
+						if (cur_presents < 2) cur_presents = 2;
+						last_change_us = now_cmp;
+					}
+					else {
+						int want = cur_presents;
+						if (ratio > (double)cur_presents + 0.35)
+							want = cur_presents + 1;
+						else if (ratio < (double)cur_presents - 0.35)
+							want = cur_presents - 1;
+						if (want < 2)
+							want = 2;
+
+						if (want != cur_presents && now_cmp - last_change_us > 1000000) {
+							cur_presents = want;
+							last_change_us = now_cmp;
+						}
+					}
+
+					budget = (unsigned int)(cur_presents - 1);
+				}
+				DLSSGSetFrameBudget(budget);
+				}
+
+				/* Reads the PREVIOUS frame's finished images, before this frame overwrites
+				   them. pt_dlss_fg_compare 1, once a second. */
+				fg_debug_compare_frames(DLSSGGeneratedFrames());
+
+				/* RETAIN THE REAL FRAME BEFORE EVALUATE, NOT AFTER.
+				
+				   The real frame used to be blitted from VKPT_IMG_DLSS_OUTPUT *after* DLSSGApply,
+				   and that image is the backbuffer handed to DLSS-G. NVIDIA's guide is explicit
+				   that manual retention is only safe if the architecture GUARANTEES the buffer is
+				   not overwritten, and nothing here guaranteed it. Measured: all 7 swapchain images
+				   held GENERATED content (0.14-0.87 from the generated image, 10.2 from the real
+				   one) even though the present layer named a different image for the real frame
+				   every group. No real frame ever reached the screen - which is why there was no
+				   tearing with vsync off and why motion stayed at the base rate however well the
+				   presents were paced. Matt called this from the symptoms long before it was
+				   measured.
+				
+				   So take the copy FIRST, into the image R_BeginFrame already acquired. The
+				   generated frames go into the extra images instead - the same number of acquires
+				   either way, and the present order (generated first, real last) is set by the
+				   enqueue, not by which image plays which role. Correct regardless of whether
+				   DLSS-G actually clobbers the backbuffer: it is the ordering the SDK asks for. */
+				if (DLSSGFeatureReady() && !DLSSGShowInterpolated()
+				    && DLSSGGeneratedFrames() > 0 && qvk.device_count == 1)
+				{
+					fg_real_image_index = qvk.current_swap_chain_image_index;
+					vkpt_final_blit_simple(cmd_buf, GetDLSSImage(), GetDLSSExtent());
+					if (fg_real_image_index < LENGTH(fg_image_role))
+						fg_image_role[fg_real_image_index] = FG_ROLE_REAL;
+					fg_real_blitted = true;
+				}
+
+				DLSSGApply(cmd_buf, dlssg_reset_history ? qtrue : qfalse);
+				dlssg_reset_history = false;
+			}
+
+			/* Real frame generation: present every interpolated frame, THEN the real one.
+			   The interpolated frames represent moments between the previous real frame and
+			   this one, so they all go out first, in index order.
+			
+			   An Nx multiplier needs N swapchain images: the one R_BeginFrame already took
+			   holds generated frame 1, and N-1 more are acquired here along with one for the
+			   real frame. Acquiring at this point rather than up front matters: by now the
+			   frame is known to be presentable, so no path acquires an image and then fails
+			   to present it, which would starve the swapchain. If any acquire fails we fall
+			   back to the ordinary single present - nothing has been retargeted yet, and the
+			   images acquired so far are still presented, just without interpolation. */
+			unsigned int fg_want = DLSSGGeneratedFrames();
+			if (fg_want > 0 && DLSSGFeatureReady() && !DLSSGShowInterpolated()
+			    && qvk.device_count == 1)
+			{
+				/* fg_want extra images: fg_want-1 for the remaining generated frames, plus
+				   one for the real frame, which is always the last one acquired. */
+				/* Vulkan only permits numImages - minImageCount + 1 images to be acquired at
+				   once, and a queued present still holds its image. Wait for just enough of the
+				   backlog to clear that this group fits, rather than draining completely - a
+				   full drain would collapse the one-frame scheduling lead below, which is what
+				   lets the GPU finish a frame before its first present falls due. */
+				{
+					/* Under FIFO every queued present costs a whole refresh interval of latency, so
+					   let the previous group finish completely before starting the next: the driver
+					   then never holds more than one group and latency stops accumulating with the
+					   swapchain image count. This also throttles the render rate to refresh /
+					   multiplier, which under FIFO is what it would settle at anyway.
+					
+					   Outside FIFO nothing is waiting on vblank, so only the acquire limit matters
+					   and a deeper queue is free throughput. */
+					unsigned int hold_limit = (qvk.surf_num_images > 2)
+						? (unsigned int)qvk.surf_num_images - 2u : 1u;
+					unsigned int group = fg_want + 1u;
+					unsigned int max_pending = (hold_limit > group) ? hold_limit - group : 0u;
+
+					/* Deliberately NOT 0 under FIFO. Waiting for the entire group to drain couples
+					   the main thread's frame time to the group duration, which is the other half of
+					   the runaway described above. The acquire limit alone is enough. */
+
+					uint64_t stall_begin_us = Sys_Microseconds();
+					FGPresent_WaitUntilPending(max_pending);
+					fg_stall_us += Sys_Microseconds() - stall_begin_us;
+				}
+
+				uint32_t fg_extra[DLSSG_MAX_GENERATED_FRAMES];
+				unsigned int fg_acquired = 0;
+				bool fg_acquire_ok = true;
+
+				uint64_t acquire_begin_us = Sys_Microseconds();
+				for (unsigned int i = 0; i < fg_want; i++) {
+					VkResult res_fg = acquire_next_image_locked(
+						qvk.semaphores[qvk.current_frame_index][0].image_available_fg[i],
+						&fg_extra[i]);
+
+					if (res_fg != VK_SUCCESS && res_fg != VK_SUBOPTIMAL_KHR) {
+						static bool fg_acquire_warned = false;
+						if (!fg_acquire_warned) {
+							fg_acquire_warned = true;
+							Com_WPrintf("DLSS-G: swapchain acquire %u/%u failed (%d),"
+								" falling back to single present\n", i + 1, fg_want, res_fg);
+						}
+						fg_acquire_ok = false;
+						break;
+					}
+					fg_acquired++;
+				}
+				fg_stall_us += Sys_Microseconds() - acquire_begin_us;
+
+				/* A short acquire is not fatal: with fg_acquired extra images we can still show
+				   fg_acquired generated frames plus the real one, using the images we did get.
+				   DLSS-G already produced all fg_want of them; the surplus is simply not shown
+				   this frame. Only fg_acquired == 0 falls all the way back to a single present.
+				   Doing it this way means every image acquired above is written and presented,
+				   so none can be orphaned. */
+				(void)fg_acquire_ok;
+				unsigned int fg_show = fg_acquired;
+
+				if (fg_show > 0) {
+					/* Generated frame 1 goes into the image R_BeginFrame acquired; the rest go
+					   into fg_extra[0 .. fg_show-2]. fg_extra[fg_show-1] takes the real frame. */
+					/* Every generated frame goes into an extra image now; the real frame already
+					   owns the one R_BeginFrame acquired. Same number of acquires as before. */
+					for (unsigned int i = 0; i < fg_show; i++)
+						fg_interp_image_index[i] = fg_extra[i];
+
+					/* Each interpolated frame + the HUD. _keep leaves the queued pics in place
+					   so the same HUD can be drawn again into every later image; without it the
+					   HUD would only appear on the first presented frame of each group. */
+					for (unsigned int i = 0; i < fg_show; i++) {
+						qvk.current_swap_chain_image_index = fg_interp_image_index[i];
+						vkpt_final_blit_simple(cmd_buf, GetDLSSGImage(i + 1), GetDLSSExtent());
+						if (qvk.current_swap_chain_image_index < LENGTH(fg_image_role))
+							fg_image_role[qvk.current_swap_chain_image_index] = FG_ROLE_GEN;
+
+						{
+							static cvar_t *cv_fgdbg = NULL;
+							if (!cv_fgdbg) cv_fgdbg = Cvar_Get("pt_dlss_fg_debug", "0", 0);
+							if (cv_fgdbg->integer)
+								fg_debug_paint_current_swapchain_image(cmd_buf, i);
+						}
+
+						vkpt_draw_submit_stretch_pics_keep(cmd_buf);
+					}
+
+					fg_generated_count = fg_show;
+
+					/* One-shot: proves frame generation actually engaged at the requested
+					   multiplier rather than silently falling back. */
+					static unsigned int fg_announced_mult = 0;
+					if (fg_announced_mult != fg_show + 1) {
+						fg_announced_mult = fg_show + 1;
+						Com_Printf("DLSS-G: %ux ACTIVE - %u generated + 1 real = %u presents"
+							" per rendered frame, %u swapchain images\n",
+							fg_show + 1, fg_show, fg_show + 1, qvk.surf_num_images);
+					}
+
+					/* Everything from here on - the real blit below and the HUD pass after the
+					   branch - targets the last acquired image instead. */
+					qvk.current_swap_chain_image_index = fg_real_image_index;
+				}
+			}
+
+			/* THE CONTROL. Runs whether or not frame generation is on, because the whole
+			   "no real frame reaches the swapchain" finding rests on VKPT_IMG_DLSS_OUTPUT
+			   being the real frame, and that has never been verified. With pt_dlss_fg 0 there
+			   is no generated content anywhere, so every swapchain image MUST match it. If it
+			   does, the reference is sound and the FG path corrupts the copy. If it does not,
+			   the reference is the wrong image and every conclusion drawn from it is void -
+			   including that one. Matt said the real dump did not look like the game, and that
+			   was set aside too readily. */
+			fg_debug_dump_frames(DLSSGEnabled() ? DLSSGGeneratedFrames() : 0);
+
+			if (DLSSGShowInterpolated())
+				vkpt_final_blit_simple(cmd_buf, GetDLSSGImage(1), GetDLSSExtent());
+			else if (!fg_real_blitted)
+				{
+				/* Only when frame generation did not already take the copy above. */
+				vkpt_final_blit_simple(cmd_buf, GetDLSSImage(), GetDLSSExtent());
+				if (qvk.current_swap_chain_image_index < LENGTH(fg_image_role))
+					fg_image_role[qvk.current_swap_chain_image_index] = FG_ROLE_REAL;
+			}
 		}
 		else
 		{
@@ -4279,30 +5485,92 @@ R_EndFrame_RTX(void)
 
 	vkpt_draw_submit_stretch_pics(cmd_buf);
 
-	VkSemaphore wait_semaphores[] = { qvk.semaphores[qvk.current_frame_index][0].image_available };
-	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	uint32_t wait_device_indices[] = { 0 };
+	/* Room for one extra entry each: the second acquire to wait on, and the second
+	   present to signal. A binary semaphore can only be waited on once, so the two
+	   presents cannot share render_finished. */
+	enum { FG_SEM_SLOTS = DLSSG_MAX_GENERATED_FRAMES + 1 };
+	VkSemaphore wait_semaphores[FG_SEM_SLOTS];
+	VkPipelineStageFlags wait_stages[FG_SEM_SLOTS];
+	uint32_t wait_device_indices[FG_SEM_SLOTS];
+	for (int i = 0; i < FG_SEM_SLOTS; i++) {
+		wait_semaphores[i] = VK_NULL_HANDLE;
+		wait_stages[i] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		wait_device_indices[i] = 0;
+	}
+	wait_semaphores[0] = qvk.semaphores[qvk.current_frame_index][0].image_available;
+	int wait_semaphore_count = 1;
 
-	VkSemaphore signal_semaphores[VKPT_MAX_GPUS];
-	uint32_t signal_device_indices[VKPT_MAX_GPUS];
-	for (int gpu = 0; gpu < qvk.device_count; gpu++)
+	/* Single GPU presents wait on the per-IMAGE semaphores; the multi-GPU device-group
+	   path keeps its per-GPU render_finished semaphores untouched. */
+	bool per_image_present_sems = (qvk.device_count == 1 && qvk.semaphores_present != NULL);
+
+	VkSemaphore signal_semaphores[VKPT_MAX_GPUS + DLSSG_MAX_GENERATED_FRAMES];
+	uint32_t signal_device_indices[VKPT_MAX_GPUS + DLSSG_MAX_GENERATED_FRAMES];
+	int signal_semaphore_count;
+
+	/* With frame generation the present thread establishes readiness through a TIMELINE
+	   semaphore and presents with no wait semaphore, so these binary per-image present
+	   semaphores must NOT be signalled - nothing would ever wait on them. See
+	   fg_present.h: signalling them is what made every present in a group become
+	   presentable at the same instant and flip in pairs. */
+	const bool fg_thread_presents = (fg_generated_count > 0)
+	                             && FGPresent_TimelineAvailable();
+
+	if (fg_thread_presents)
 	{
-		signal_semaphores[gpu] = qvk.semaphores[qvk.current_frame_index][gpu].render_finished;
-		signal_device_indices[gpu] = gpu;
+		signal_semaphore_count = 0;
+	}
+	else if (per_image_present_sems)
+	{
+		signal_semaphores[0] = qvk.semaphores_present[qvk.current_swap_chain_image_index];
+		signal_device_indices[0] = 0;
+		signal_semaphore_count = 1;
+	}
+	else
+	{
+		for (int gpu = 0; gpu < qvk.device_count; gpu++)
+		{
+			signal_semaphores[gpu] = qvk.semaphores[qvk.current_frame_index][gpu].render_finished;
+			signal_device_indices[gpu] = gpu;
+		}
+		signal_semaphore_count = qvk.device_count;
+	}
+
+	/* One extra acquire to wait on, and one extra present to signal, per generated
+	   frame. Each interpolated frame lives in its own swapchain image and so gets
+	   that image's own present semaphore; frame generation only ever runs on the
+	   single-GPU path, so per_image_present_sems is necessarily true here. */
+	for (unsigned int i = 0; i < fg_generated_count; i++)
+	{
+		wait_semaphores[wait_semaphore_count] = qvk.semaphores[qvk.current_frame_index][0].image_available_fg[i];
+		wait_semaphore_count++;
+
+		if (!fg_thread_presents)
+		{
+			signal_semaphores[signal_semaphore_count] = qvk.semaphores_present[fg_interp_image_index[i]];
+			signal_device_indices[signal_semaphore_count] = 0;
+			signal_semaphore_count++;
+		}
 	}
 
 	vkpt_submit_command_buffer(
 		cmd_buf,
 		qvk.queue_graphics,
 		(1 << qvk.device_count) - 1,
-		LENGTH(wait_semaphores), wait_semaphores, wait_stages, wait_device_indices,
-		qvk.device_count, signal_semaphores, signal_device_indices,
+		wait_semaphore_count, wait_semaphores, wait_stages, wait_device_indices,
+		signal_semaphore_count, signal_semaphores, signal_device_indices,
 		qvk.fences_frame_sync[qvk.current_frame_index]);
+
+	/* Right after the frame submit, so it completes when the frame's work does. */
+	uint64_t fg_timeline_value = fg_thread_presents
+	                           ? FGPresent_SignalTimeline(qvk.queue_graphics) : 0;
+
+	Reflex_SetMarker(VK_LATENCY_MARKER_RENDERSUBMIT_END_NV);
 
 
 #ifdef VKPT_IMAGE_DUMPS
 	if (cvar_dump_image->integer) {
-		_VK(vkQueueWaitIdle(qvk.queue_graphics));
+		_VK(vkpt_queue_wait_idle(qvk.queue_graphics));
 
 		VkImageSubresource subresource = {
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4322,10 +5590,23 @@ R_EndFrame_RTX(void)
 	}
 #endif
 
+	/* Tag the present with this frame's Reflex id so the driver can tie it back to
+	   the markers above. Harmless when Reflex is off. */
+	uint64_t reflex_present_id = Reflex_CurrentPresentID();
+	VkPresentIdKHR present_id_info = {
+		.sType          = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+		.swapchainCount = 1,
+		.pPresentIds    = &reflex_present_id,
+	};
+
 	VkPresentInfoKHR present_info = {
 		.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-		.waitSemaphoreCount = qvk.device_count,
-		.pWaitSemaphores    = signal_semaphores,
+		.pNext              = (Reflex_PresentIdAvailable() && reflex_present_id)
+			? &present_id_info : NULL,
+		.waitSemaphoreCount = per_image_present_sems ? 1 : (uint32_t)qvk.device_count,
+		.pWaitSemaphores    = per_image_present_sems
+			? &qvk.semaphores_present[qvk.current_swap_chain_image_index]
+			: signal_semaphores,
 		.swapchainCount     = 1,
 		.pSwapchains        = &qvk.swap_chain,
 		.pImageIndices      = &qvk.current_swap_chain_image_index,
@@ -4346,7 +5627,339 @@ R_EndFrame_RTX(void)
 	}
 #endif
 
-	VkResult res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
+	/* The interpolated frame goes out FIRST. Both presents wait on the same submit, so
+	   the only thing establishing their order is the order of these two calls.
+	
+	   No explicit sleep between them: under FIFO the presentation engine already spaces
+	   consecutive presents one refresh interval apart, which is exactly the pacing FG
+	   wants as long as the renderer keeps up with half the refresh rate. Pacing only
+	   needs solving explicitly for the non-FIFO modes and for the case where it does
+	   not - see the notes on present pacing. */
+	/* ---- Frame generation: hand the whole group to the present thread ----
+	
+	   The group is [generated 1 .. generated N, real], spread evenly across one frame
+	   interval. Issuing them inline does not work: measured, all six of a 6x group
+	   landed within ~300us of a 5000us frame, so the display only ever scanned out the
+	   last one and every generated frame was discarded unseen.
+	
+	   The schedule is kept in absolute time and simply advanced by one interval per
+	   group, so it self-corrects: if the renderer falls behind, the deadlines are
+	   already in the past and everything goes out immediately. */
+	bool fg_presented_by_thread = false;
+
+	if (fg_generated_count > 0)
+	{
+		static uint64_t fg_sched_next_us = 0;
+		static uint64_t fg_prev_group_us = 0;
+
+		uint64_t now_us = Sys_Microseconds();
+
+		/* Smoothed interval between rendered frames, with absurd deltas ignored so a
+		   level load or a breakpoint does not poison the average.
+		
+		   SUBTRACT THE STALL - this is the fix for "the base rate never recovers".
+		
+		   The raw group-to-group delta is NOT the render capability: the main thread is
+		   deliberately held back by FGPresent_WaitUntilPending() and by the swapchain
+		   acquire, both of which are paced by this very schedule. Feeding that delta back
+		   in makes the loop self-referential - the group duration sets the frame time and
+		   the frame time sets the group duration - so it is a fixed point at ANY rate. It
+		   can only ever ratchet DOWN (a hitch widens the interval permanently) and has no
+		   term at all that responds to the GPU getting faster. That is why switching to a
+		   lighter DLSS mode did not raise the frame rate: nothing in the schedule could
+		   observe the extra headroom.
+		
+		   `dt - fg_stall_us` is what the frame actually needed with the pacer removed, so
+		   the interval converges on what the GPU can really do and the schedule opens up
+		   to match. */
+		if (fg_prev_group_us != 0) {
+			double raw = (double)(now_us - fg_prev_group_us);
+			double dt  = raw - (double)fg_stall_us;
+			if (raw > 100.0 && raw < 250000.0)
+				fg_frame_interval_us = (fg_frame_interval_us > 0.0)
+					? fg_frame_interval_us * 0.85 + raw * 0.15 : raw;
+			if (dt > 100.0 && dt < 250000.0)
+				fg_render_interval_us = (fg_render_interval_us > 0.0)
+					? fg_render_interval_us * 0.85 + dt * 0.15 : dt;
+		}
+		fg_prev_group_us = now_us;
+
+		unsigned int total = fg_generated_count + 1;
+		double interval = (fg_render_interval_us > 0.0) ? fg_render_interval_us : 16666.0;
+
+		/* ORDER MATTERS HERE, and getting it wrong is what produced 14.2 ms present gaps
+		   on a 16.67 ms display. The slot, the group duration and the floor all have to be
+		   settled BEFORE the anchor, because the anchor's re-anchor window and the floor
+		   are both expressed in terms of them. Previously the anchor was computed first
+		   from `interval`, which at 30 fps with a 30 ms stall is about 3 ms, so the window
+		   collapsed and the group was re-anchored every single frame. */
+
+		/* ---- 1. the slot: how far apart consecutive presents should be ---- */
+		double slot = interval / (double)total;
+
+		int refresh_hz = Reflex_DisplayRefreshHz();
+		if (refresh_hz > 0) {
+			double refresh_slot = 1000000.0 / (double)refresh_hz;
+
+			if (qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR) {
+				/* FIFO retires one present per vblank, so the presented rate is the
+				   refresh rate whatever we ask for. Pin the slot to it rather than derive
+				   it from our own frame rate, and no feedback path is left to run away.
+				   Asking for less is actively harmful: the present thread would block
+				   inside vkQueuePresentKHR holding the swapchain lock. */
+				slot = refresh_slot;
+			}
+			else if (refresh_slot < slot) {
+				/* Never stretch a group wider than the display can resolve. */
+				slot = refresh_slot;
+			}
+		}
+
+		/* ---- 2. the display's own clock, which overrides both ---- */
+		static cvar_t *cv_vblank = NULL;
+		if (!cv_vblank) cv_vblank = Cvar_Get("pt_dlss_fg_vblank", "1", CVAR_ARCHIVE);
+		static cvar_t *cv_vboffset = NULL;
+		if (!cv_vboffset) cv_vboffset = Cvar_Get("pt_dlss_fg_vblank_offset", "500", 0);
+
+		uint64_t vb_us = 0;
+		double   vb_period_us = 0.0;
+		bool     phase_locked = cv_vblank->integer
+			&& qvk.present_mode != VK_PRESENT_MODE_FIFO_KHR
+			&& FGPresent_VBlankInfo(&vb_us, &vb_period_us)
+			&& vb_period_us >= 4000.0 && vb_period_us <= 100000.0;
+
+		if (phase_locked)
+			slot = vb_period_us;
+
+		double group_us = slot * (double)total;
+
+		/* ---- 3. the anchor ---- */
+		static cvar_t *cv_lead = NULL;
+		if (!cv_lead) cv_lead = Cvar_Get("pt_dlss_fg_lead", "1.0", 0);   /* NOT archived.
+
+			   Every present waits on a semaphore for GPU work submitted moments earlier.
+			   With no lead the deadlines are all in the PAST by the time that work
+			   finishes, so they steer nothing: the group unblocks together and the display
+			   shows one frame per RENDERED frame - the base rate, with no tearing, because
+			   there is effectively one flip per refresh. An earlier sweep chose 0 on a
+			   latency measurement taken before any of this worked, i.e. it optimised
+			   latency while the pacing was broken. The lead IS one frame of latency and it
+			   is what frame generation inherently costs. */
+		double lead = cv_lead->value;
+		if (lead < 0.0) lead = 0.0;
+		if (lead > 2.0) lead = 2.0;
+
+		/* The lead must cover submit -> this frame's GPU work finished, and neither EMA is
+		   that number. The stall-corrected interval is too short by the stall; the RAW
+		   interval is too long AND is positive feedback (it contains the stall, and more
+		   lead makes more stall - it ran away to 4 fps). So take the work time and add the
+		   lateness the present thread measures: too little lead shows up as lateness and
+		   lengthens the lead, enough lead drives it to zero. Negative feedback, converges. */
+		/* USE THE GPU'S OWN CLOCK. The lead must cover submit -> this frame's GPU work
+		   finished, and every proxy tried for it has failed in a different direction:
+		
+		     - stall-corrected interval: too SHORT. It measures the main thread's
+		       unblocked CPU time, which at 4K is ~4 ms while the GPU needs ~35.
+		     - raw frame interval: too LONG and POSITIVE FEEDBACK - it contains the
+		       stall, more lead makes more stall, and it ran away to 4 fps.
+		     - corrected + measured lateness: converges to HALF the correction. Classic
+		       proportional offset - the fixed point is lateness = (GPU - corrected)/2,
+		       which with GPU 35 and corrected 4 predicts ~15.5 ms and Matt's log showed
+		       17.3. Right shape, no integral term, so the error never closes.
+		
+		   PROFILER_FRAME_TIME is the actual GPU frame time from the timestamp queries.
+		   It is measured on the GPU and does not depend on when we present, so there is
+		   no loop to run away and no offset to leave behind. The lateness EMA stays as a
+		   small additive trim for whatever the timestamps do not cover (submit latency,
+		   queue handoff); with the base right it should sit near zero. */
+		double gpu_us = vkpt_get_profiler_result(PROFILER_FRAME_TIME) * 1000.0;
+		double lead_interval;
+		if (gpu_us > 100.0 && gpu_us < 200000.0)
+			lead_interval = gpu_us + FGPresent_MeanLatenessUs();
+		else
+			lead_interval = interval + FGPresent_MeanLatenessUs();
+		if (lead_interval < interval)
+			lead_interval = interval;
+
+		/* The re-anchor window is in GROUP durations, not in `interval`. With the stall
+		   subtracted, `interval` can be a few milliseconds while the group spans a whole
+		   33 ms, and a window that small re-anchors every frame - which throws away the
+		   absolute schedule and leaves the floor below doing all the spacing. */
+		uint64_t base_us = fg_sched_next_us;
+		uint64_t anchor_us = now_us + (uint64_t)(lead_interval * lead);
+		if (base_us < now_us || base_us > anchor_us + (uint64_t)(group_us * 2.0))
+			base_us = anchor_us;
+
+		/* ---- 4. snap onto a real vblank ---- */
+		if (phase_locked) {
+			int64_t period = (int64_t)vb_period_us;
+			int64_t offset = cv_vboffset->integer;
+			int64_t delta  = (int64_t)base_us - (int64_t)vb_us - offset;
+			int64_t k = (delta > 0) ? ((delta + period - 1) / period) : 0;
+			uint64_t snapped = vb_us + (uint64_t)(k * period) + (uint64_t)offset;
+
+			/* Bounded, because this is a timestamp from outside the process: a stale or
+			   unrelated clock must only ever cost alignment, never the frame rate. A
+			   deadline far in the future holds swapchain images the acquire then spins on,
+			   which is this engine's documented route to hundreds of ms per frame. */
+			if (snapped >= base_us && snapped <= base_us + (uint64_t)period)
+				base_us = snapped;
+			else
+				phase_locked = false;
+
+			static bool vb_announced = false;
+			if (!vb_announced) {
+				vb_announced = true;
+				Com_Printf("DLSS-G: vblank phase lock ON - period %.2f ms (%.1f Hz), "
+					"offset %d us, snap %s\n",
+					vb_period_us / 1000.0, 1000000.0 / vb_period_us,
+					cv_vboffset->integer, phase_locked ? "accepted" : "REJECTED");
+			}
+		}
+
+		/* ---- 5. the floor ---- */
+		/* THE FLOOR MUST NOT BE SHORTER THAN A REFRESH WHEN PHASE-LOCKED.
+
+		   At 0.85 of a slot it was 14.2 ms against a 16.67 ms display, and it was the
+		   BINDING constraint - the measured gaps were 14235, 14221, 14225 us, not the
+		   vblank spacing. 14.2 does not divide into 16.67, so the presents walked through
+		   the refresh phase continuously: stretches where the display latched the same
+		   slot of every group (motion at the base rate) broken by moments where it caught
+		   both (a split second of real 60). That is exactly what Matt kept describing.
+
+		   Once the deadlines are vblank-aligned the floor only has to stop genuine
+		   bunching, so a full period is right: metering at the floor then still lands one
+		   present per refresh instead of sliding between them. */
+		uint64_t min_gap_us = phase_locked
+			? (uint64_t)vb_period_us
+			: (uint64_t)(slot * 0.85);
+
+		/* TRIED AND REVERTED: letting FIFO do the pacing by presenting the whole group
+		   immediately (base = now, no slot, no floor). It DOES cut latency hard - 70 ms
+		   to 33 ms measured - because FIFO already spaces presents one vblank apart, so
+		   the wall-clock schedule looks like pure duplicated delay.
+		
+		   But it is not duplicated: under FIFO vkQueuePresentKHR BLOCKS once the queue
+		   is full, and the present thread holds the swapchain lock while it blocks, which
+		   stalls the main thread's acquire and submit. Issuing the group back to back
+		   fills the queue immediately and the render loop hitches - smoothness went away
+		   even as the latency number improved. Spacing the presents keeps the thread out
+		   of that blocking path.
+		
+		   Latency is bounded by the queue-depth limit below instead.
+		   pt_dlss_fg_fifo_pacing 1 re-enables the experiment. */
+		static cvar_t *cv_fifo_pacing = NULL;
+		if (!cv_fifo_pacing)
+			cv_fifo_pacing = Cvar_Get("pt_dlss_fg_fifo_pacing", "0", 0);   /* NOT archived */
+
+		if (qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR && cv_fifo_pacing->integer) {
+			base_us = now_us;
+			slot = 0.0;
+			min_gap_us = 0;
+		}
+
+		/* WHICH IMAGE GETS WHAT. All seven swapchain images came back holding GENERATED
+		   frames, none holding a real one, while the retarget
+		   (qvk.current_swap_chain_image_index = fg_extra[fg_show - 1]) and the real blit
+		   after it both read correctly. So print the indices as actually enqueued and
+		   stop inferring: if the real frame names an image that a dump then shows holding
+		   generated content, the blit is not landing where the present says it is. */
+		{
+			static cvar_t *cv_idx = NULL;
+			if (!cv_idx) cv_idx = Cvar_Get("pt_dlss_fg_indices", "0", 0);
+			if (cv_idx->integer > 0) {
+				Cvar_SetInteger(cv_idx, cv_idx->integer - 1, FROM_CODE);
+				char line[192];
+				int off = Q_snprintf(line, sizeof(line), "DLSS-G images: generated");
+				for (unsigned int i = 0; i < fg_generated_count; i++)
+					off += Q_snprintf(line + off, sizeof(line) - off, " %u",
+						fg_interp_image_index[i]);
+				Q_snprintf(line + off, sizeof(line) - off, ", real %u (of %u images)",
+					qvk.current_swap_chain_image_index, qvk.surf_num_images);
+				Com_Printf("%s\n", line);
+			}
+		}
+
+		fg_presented_by_thread = true;
+
+		for (unsigned int i = 0; i < fg_generated_count; i++) {
+			uint64_t target_us = base_us + (uint64_t)(slot * (double)i);
+
+			if (!FGPresent_Enqueue(qvk.swap_chain, fg_interp_image_index[i],
+				qvk.semaphores_present[fg_interp_image_index[i]], target_us, min_gap_us, 0,
+				qvk.frame_counter, fg_timeline_value))
+			{
+				/* Queue full or no thread: present inline rather than drop the frame,
+				   which would leave its semaphore signalled and its image never
+				   released back to the swapchain. */
+				/* With the timeline path on, this frame's submit signals NO binary
+				   present semaphore, so waiting on one here would stall the
+				   presentation engine forever. Establish readiness on the host the
+				   same way the present thread does. */
+				bool ready = fg_timeline_value != 0
+					&& FGPresent_WaitTimeline(fg_timeline_value);
+				VkPresentInfoKHR fallback = {
+					.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+					.waitSemaphoreCount = ready ? 0 : 1,
+					.pWaitSemaphores    = ready ? NULL
+						: &qvk.semaphores_present[fg_interp_image_index[i]],
+					.swapchainCount     = 1,
+					.pSwapchains        = &qvk.swap_chain,
+					.pImageIndices      = &fg_interp_image_index[i],
+					.pResults           = NULL,
+				};
+				FGPresent_SwapchainLock();
+				Reflex_NotifyOutOfBandPresent(qvk.queue_present);
+				vkQueuePresentKHR(qvk.queue_present, &fallback);
+				FGPresent_SwapchainUnlock();
+			}
+		}
+
+		/* The real frame is the LAST of the group in time - the generated frames sit
+		   between the previous real frame and this one. */
+		uint64_t real_target_us = base_us + (uint64_t)(slot * (double)fg_generated_count);
+		if (!FGPresent_Enqueue(qvk.swap_chain, qvk.current_swap_chain_image_index,
+			qvk.semaphores_present[qvk.current_swap_chain_image_index], real_target_us,
+			min_gap_us, Reflex_CurrentPresentID(), qvk.frame_counter, fg_timeline_value))
+		{
+			fg_presented_by_thread = false;   // fall through to the inline present below
+		}
+
+		/* Advance by the GROUP DURATION (total x slot), not by the measured render
+		   interval. `slot` is clamped to the display refresh above, so the group rate is
+		   then anchored to the display and NOT to our own frame rate - which is the
+		   whole point of the clamp. Advancing by `interval` here left the group rate
+		   tied to the render rate, and since the render rate is in turn limited by how
+		   fast we present, the loop closed again one level up: 2x settled at 22 rendered
+		   / 44 presented on a 60Hz display that could take 30 / 60, and stayed there. */
+		fg_sched_next_us = base_us + (uint64_t)(slot * (double)total);
+	}
+
+	/* Tell the client how many presents this rendered frame produced, so the FPS
+	   readout can report presented frames as well as rendered ones. */
+	if (vkpt_refdef.fd)
+		vkpt_refdef.fd->feedback.presented_frames = (int)(fg_generated_count + 1);
+
+	/* When the present thread owns this frame's group the real present is already
+	   queued with the rest of it; issuing it again here would present the image
+	   twice and wait on an already-consumed semaphore. Collect the thread's most
+	   recent failure instead, one frame late, which is soon enough to recreate. */
+	VkResult res_present;
+	if (fg_presented_by_thread) {
+		res_present = FGPresent_TakeLastResult();
+	} else {
+		/* Same hazard as the generated-frame fallback above: when the frame submit went
+		   out with no binary present semaphore, this present must not wait on one. */
+		if (fg_timeline_value != 0 && FGPresent_WaitTimeline(fg_timeline_value)) {
+			present_info.waitSemaphoreCount = 0;
+			present_info.pWaitSemaphores    = NULL;
+		}
+		Reflex_SetMarker(VK_LATENCY_MARKER_PRESENT_START_NV);
+		FGPresent_SwapchainLock();
+		res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
+		FGPresent_SwapchainUnlock();
+		Reflex_SetMarker(VK_LATENCY_MARKER_PRESENT_END_NV);
+	}
 	if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR
 	   || res_present == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT || DLSSChanged()) {
 		swapchain_reason = (res_present == VK_ERROR_OUT_OF_DATE_KHR) ? "present: OUT_OF_DATE" :
@@ -4356,6 +5969,37 @@ R_EndFrame_RTX(void)
 		DLSSSwapChainRecreated();
 		recreate_swapchain();
 	}
+	/* Rendered-vs-presented rate, so "frame generation looks like the base rate" can be
+	   answered with a number: if the rendered rate collapses when FG is switched on,
+	   the interpolation is costing exactly the frames it produces. */
+	{
+		static cvar_t *cv_stats = NULL;
+		if (!cv_stats) cv_stats = Cvar_Get("pt_dlss_fg_stats", "0", 0);
+		if (cv_stats->integer) {
+			static uint64_t win_start_us = 0;
+			static unsigned int win_frames = 0;
+			static unsigned int win_presents = 0;
+			static uint64_t win_stall_us = 0;
+			uint64_t t = Sys_Microseconds();
+			if (win_start_us == 0) win_start_us = t;
+			win_frames++;
+			win_presents += fg_generated_count + 1;
+			win_stall_us += fg_stall_us;
+			if (t - win_start_us >= 2000000) {
+				double secs = (double)(t - win_start_us) / 1000000.0;
+				/* `stall` is how much of each frame the PACER held the render loop back.
+				   A large stall with a low rendered/s means the schedule, not the GPU, is
+				   the limit - under FIFO that is expected (refresh / multiplier), under
+				   IMMEDIATE it is a bug. */
+				Com_Printf("DLSS-G rate: %.1f rendered/s, %.1f presented/s (x%.2f), stall %.1f ms/frame\n",
+					win_frames / secs, win_presents / secs,
+					win_frames ? (double)win_presents / (double)win_frames : 1.0,
+					win_frames ? (double)win_stall_us / (double)win_frames / 1000.0 : 0.0);
+				win_start_us = t; win_frames = 0; win_presents = 0; win_stall_us = 0;
+			}
+		}
+	}
+
 	qvk.frame_counter++;
 }
 
@@ -4613,6 +6257,36 @@ R_Init_RTX(bool total)
 		return REF_TYPE_NONE;
 	}
 
+	/* Paces the presents when frame generation is on. Idle and harmless otherwise. */
+	/* REGISTER THE FRAME-GENERATION DEBUG CVARS UP FRONT.
+	
+	   They were all created lazily by Cvar_Get inside the render loop, which meant
+	   they did not exist until a frame with FG active had run - and the console is
+	   open exactly when that is not happening, so typing one got "unknown command".
+	   That cost a test run with pt_dlss_fg_stats and another with pt_dlss_fg_indices.
+	   The lazy Cvar_Get calls downstream simply fetch these instead. Any new FG debug
+	   cvar belongs in this list too. */
+	Cvar_Get("pt_dlss_fg_stats", "0", 0);
+	Cvar_Get("pt_dlss_fg_debug", "0", 0);
+	Cvar_Get("pt_dlss_fg_compare", "0", 0);
+	Cvar_Get("pt_dlss_fg_dump", "0", 0);
+	Cvar_Get("pt_dlss_fg_indices", "0", 0);
+	Cvar_Get("pt_dlss_fg_lead", "1.0", 0);
+	Cvar_Get("pt_dlss_fg_vblank_offset", "500", 0);
+	Cvar_Get("pt_dlss_fg_fifo_pacing", "0", 0);
+	Cvar_Get("pt_dlss_fg_timeline", "1", 0);
+	Cvar_Get("pt_dlss_fg_queue", "1", 0);
+	Cvar_Get("pt_dlss_fg_ready_wait", "0", 0);
+	/* These three live in DLSS.c and were created inside DLSSGApply, which does not
+	   run while the console is open - so they could never be typed. Third time this
+	   trap has cost a test run. */
+	Cvar_Get("pt_dlss_fg_mvsign", "1", 0);
+	Cvar_Get("pt_dlss_fg_cammotion", "1", 0);
+	Cvar_Get("pt_dlss_fg_depthinv", "0", 0);
+	Cvar_Get("pt_dlss_fg_mvscale", "0", CVAR_ARCHIVE);
+
+	FGPresent_Init();
+
 	extern SDL_Window *sdl_window;
 	qvk.window = sdl_window;
 
@@ -4727,6 +6401,7 @@ R_Init_RTX(bool total)
 	drs_init();
 	vkpt_fsr_init_cvars();
 	InitDLSSCvars();
+	InitDLSSGCvars();
 
 	// Minimum NVIDIA driver version - this is a cvar in case something changes in the future,
 	// and the current test no longer works.
@@ -4785,6 +6460,10 @@ R_Init_RTX(bool total)
 
 	vkpt_load_shader_modules();
 
+	/* AFTER init_vulkan: this needs the device to exist and the extension scan to have
+	   run, so it cannot sit up beside FGPresent_Init(). */
+	Reflex_Init();
+
 	_VK(vkpt_initialize_all(VKPT_INIT_DEFAULT));
 	_VK(vkpt_initialize_all(VKPT_INIT_RELOAD_SHADER));
 	_VK(vkpt_initialize_all(VKPT_INIT_SWAPCHAIN_RECREATE));
@@ -4822,7 +6501,12 @@ R_Shutdown_RTX(bool total)
 	// free resources the GPU was still executing against. That is a race, which is the
 	// shape of a crash that only shows up after enough resolution or fullscreen
 	// switches.
-	vkDeviceWaitIdle(qvk.device);
+	/* Stop the present thread before anything it might touch is torn down: it holds
+	   the swapchain handle and calls into the queue. */
+	FGPresent_Shutdown();
+
+	vkpt_device_wait_idle();
+	Reflex_Shutdown();
 	DLSSDeconstructor();
 
 	// Persist current DRS scale
@@ -5192,7 +6876,7 @@ R_BeginRegistration_RTX(const char *name)
 	registration_sequence++;
 	LOG_FUNC();
 	Com_Printf("loading %s\n", name);
-	vkDeviceWaitIdle(qvk.device);
+	vkpt_device_wait_idle();
 
 	// New level - DLSS must not reproject from the previous one.
 	vkpt_dlss_request_history_reset();
@@ -5375,7 +7059,7 @@ void vkpt_reset_command_buffers(cmd_buf_group_t* group)
 
 void vkpt_wait_idle(VkQueue queue, cmd_buf_group_t* group)
 {
-	vkQueueWaitIdle(queue);
+	vkpt_queue_wait_idle(queue);
 	vkpt_reset_command_buffers(group);
 }
 
@@ -5394,8 +7078,20 @@ void vkpt_submit_command_buffer(
 {
 	_VK(vkEndCommandBuffer(cmd_buf));
 
+	/* Ties this submission to the frame's Reflex presentID. WITHOUT this the driver
+	   cannot match GPU work to a frame, so gpuRenderStart/End come back as zero and
+	   the reported end-to-end latency is only the CPU span - which reads as an
+	   impossibly good sub-millisecond number. */
+	uint64_t reflex_submit_present_id = Reflex_CurrentPresentID();
+	VkLatencySubmissionPresentIdNV reflex_submit_id = {
+		.sType     = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV,
+		.presentID = reflex_submit_present_id,
+	};
+
 	VkSubmitInfo submit_info = {
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.pNext = (Reflex_Available() && reflex_submit_present_id)
+			? &reflex_submit_id : NULL,
 		.waitSemaphoreCount = wait_semaphore_count,
 		.pWaitSemaphores = wait_semaphores,
 		.pWaitDstStageMask = wait_stages,
@@ -5418,11 +7114,16 @@ void vkpt_submit_command_buffer(
 	};
 
 	if (qvk.device_count > 1) {
+		device_group_submit_info.pNext = submit_info.pNext;
 		submit_info.pNext = &device_group_submit_info;
 	}
 #endif
 
+	/* The present thread calls vkQueuePresentKHR on this same queue, and the two
+	   need external synchronisation. */
+	FGPresent_SwapchainLock();
 	_VK(vkQueueSubmit(queue, 1, &submit_info, fence));
+	FGPresent_SwapchainUnlock();
 
 #ifdef USE_DEBUG
 	cmd_buf_group_t* groups[] = { &qvk.cmd_buffers_graphics, &qvk.cmd_buffers_transfer };
@@ -5504,6 +7205,7 @@ void R_RegisterFunctionsRTX()
 	R_AddDecal = R_AddDecal_RTX;
 	R_InterceptKey = R_InterceptKey_RTX;
 	R_IsHDR = R_IsHDR_RTX;
+	R_LatencySleep = Reflex_SleepAndBeginFrame;
 	IMG_Load = IMG_Load_RTX;
 	IMG_Unload = IMG_Unload_RTX;
 	IMG_ReadPixels = IMG_ReadPixels_RTX;

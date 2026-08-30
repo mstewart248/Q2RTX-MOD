@@ -304,6 +304,11 @@ SET(SRC_VKPT
 	refresh/vkpt/god_rays.c
 	refresh/vkpt/conversion.c
 	refresh/vkpt/DLSS.c
+	refresh/vkpt/DLSSG.cpp
+	refresh/vkpt/fg_present.c
+	refresh/vkpt/fg_present.h
+	refresh/vkpt/reflex.c
+	refresh/vkpt/reflex.h
 )
 
 SET(HEADERS_VKPT
@@ -318,6 +323,7 @@ SET(HEADERS_VKPT
 	refresh/vkpt/precomputed_sky.h
 	refresh/vkpt/conversion.h
 	refresh/vkpt/DLSS.h
+	refresh/vkpt/DLSSG.h
 )
 
 set(SRC_SHADERS

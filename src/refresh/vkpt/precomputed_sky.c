@@ -272,7 +272,7 @@ VkResult UploadImage(void* FirstPixel, size_t total_size, unsigned int Width, un
 	s.dstSet = qvk.desc_set_textures_odd;
 	vkUpdateDescriptorSets(qvk.device, 1, &s, 0, NULL);
 
-	vkQueueWaitIdle(qvk.queue_graphics);
+	vkpt_queue_wait_idle(qvk.queue_graphics);
 
 	buffer_destroy(&buf_img_upload);
 
@@ -833,7 +833,7 @@ struct ShadowmapGeometry FillVertexAndIndexBuffers(const char* FileName, unsigne
 
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
 
-	vkQueueWaitIdle(qvk.queue_graphics);
+	vkpt_queue_wait_idle(qvk.queue_graphics);
 	buffer_destroy(&upload_buffer);
 
 done:

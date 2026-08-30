@@ -258,7 +258,7 @@ destroyEnvTexture(void)
 static VkResult
 initializeEnvTexture(int width, int height)
 {
-    vkDeviceWaitIdle(qvk.device);
+    vkpt_device_wait_idle();
     destroyEnvTexture();
 
     const int num_images = 6;
@@ -890,7 +890,7 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	if (skyIndex != current_preset)
 	{
-		vkQueueWaitIdle(qvk.queue_graphics);
+		vkpt_queue_wait_idle(qvk.queue_graphics);
 		SkyLoadScatterParameters(skyDesc->preset);
 		current_preset = skyIndex;
 	}
