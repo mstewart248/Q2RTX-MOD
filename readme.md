@@ -31,6 +31,7 @@ DLSS implementation has been updated to use the latest DLSS SDK. So this project
 
 **Quake II RTX** introduces the following features:
   - DLSS with Ray Reconstruction
+  - DLSS Frame Generation
   - ReStir DI
   - Rerelease Map Support
   - Rerelease MD5 Models
