@@ -326,6 +326,38 @@ void monster_footstep(edict_t *self)
 
 /*
 =================
+monster_fly_setup
+
+[rerelease] Opt a flying monster into SV_alternate_flystep - the velocity-driven
+hover model in m_move.c, which is what makes rerelease flyers circle and bank
+instead of tracking in on rails.
+
+`accel` is the rerelease's own literal, and theirs is a speed change per ENGINE
+TICK.  Their engine runs at 20 or 40hz (p_weapon.cpp:459 gates the quick weapon
+switch on exactly those two values, and g_monster.cpp:596 divides authored frame
+distances by tick_rate/10) where this tree's monsters think at 10hz, so the
+number has to be scaled up or a flyer takes four times as long to get going.
+FLY_TICK_SCALE is that factor; callers keep the rerelease's own numbers so the
+port stays readable against their source.  fly_speed needs no scale - a speed in
+units per second is the same at any tick rate.
+
+Callers gate on M_RereleaseGame() themselves; every one of them has other
+rerelease-only fields to set alongside this.
+=================
+*/
+#define FLY_TICK_SCALE  4.0f    // their 40hz tick against this tree's 10hz think
+
+void monster_fly_setup(edict_t *self, float speed, float accel, float min_dist, float max_dist)
+{
+    self->monsterinfo.aiflags |= AI_ALTERNATE_FLY;
+    self->monsterinfo.fly_speed = speed;
+    self->monsterinfo.fly_acceleration = accel * FLY_TICK_SCALE;
+    self->monsterinfo.fly_min_distance = min_dist;
+    self->monsterinfo.fly_max_distance = max_dist;
+}
+
+/*
+=================
 M_SetDamageSkin
 
 [rerelease] monsterinfo.setskin, which all 22 monsters that define it implement

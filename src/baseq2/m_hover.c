@@ -78,6 +78,7 @@ void hover_search(edict_t *self)
 void hover_run(edict_t *self);
 void hover_stand(edict_t *self);
 void hover_dead(edict_t *self);
+void hover_deadthink(edict_t *self);
 void hover_attack(edict_t *self);
 void hover_reattack(edict_t *self);
 void hover_fire_blaster(edict_t *self);
@@ -359,17 +360,51 @@ mframe_t hover_frames_run [] = {
 };
 mmove_t hover_move_run = {FRAME_forwrd01, FRAME_forwrd35, hover_frames_run, NULL};
 
+/*
+=================
+hover_dying
+
+[rerelease] The icarus comes apart on the way down rather than staying whole
+until it lands: roughly every other death frame throws an explosion and a
+handful of meat or metal.  Once it hits the floor it hands straight over to
+hover_deadthink, so a body that lands early does not keep shedding gibs.
+=================
+*/
+void hover_dying(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    if (self->groundentity) {
+        hover_deadthink(self);
+        return;
+    }
+
+    if (Q_rand() & 1)
+        return;
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_PLAIN_EXPLOSION);
+    gi.WritePosition(self->s.origin);
+    gi.multicast(self->s.origin, MULTICAST_PHS);
+
+    if (Q_rand() & 1)
+        ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", 120, GIB_ORGANIC);
+    else
+        ThrowGib(self, "models/objects/gibs/sm_metal/tris.md2", 120, GIB_METALLIC);
+}
+
 mframe_t hover_frames_death1 [] = {
     { ai_move,    0,  NULL },
+    { ai_move,    0,  hover_dying },
     { ai_move,    0,  NULL },
+    { ai_move,    0,  hover_dying },
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    -10, NULL },
+    { ai_move,    0,  hover_dying },
+    { ai_move,    -10, hover_dying },
     { ai_move,    3,  NULL },
-    { ai_move,    5,  NULL },
-    { ai_move,    4,  NULL },
+    { ai_move,    5,  hover_dying },
+    { ai_move,    4,  hover_dying },
     { ai_move,    7,  NULL }
 };
 mmove_t hover_move_death1 = {FRAME_death101, FRAME_death111, hover_frames_death1, hover_dead};
@@ -830,6 +865,13 @@ void SP_monster_hover(edict_t *self)
 
     self->monsterinfo.currentmove = &hover_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
+
+    // [rerelease] the alternate fly system.  Icarus prefers to keep its
+    // distance and flies slower than the flyer, so it never pins.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.fly_thrusters = false;
+        monster_fly_setup(self, 120.0f, 20.0f, 150.0f, 350.0f);
+    }
 
     flymonster_start(self);
 

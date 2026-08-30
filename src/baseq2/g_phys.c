@@ -873,8 +873,12 @@ void SV_Physics_Step(edict_t *ent)
                     SV_AddGravity(ent);
             }
 
-    // friction for flying monsters that have been given vertical velocity
-    if ((ent->flags & FL_FLY) && (ent->velocity[2] != 0)) {
+    // friction for flying monsters that have been given vertical velocity.
+    // [rerelease] AI_ALTERNATE_FLY monsters drive their own velocity in
+    // SV_alternate_flystep and must not have it damped back out from under
+    // them - the same exemption their g_phys.cpp:785/798/812 makes.
+    if ((ent->flags & FL_FLY) && (ent->velocity[2] != 0) &&
+        !(ent->monsterinfo.aiflags & AI_ALTERNATE_FLY)) {
         speed = fabsf(ent->velocity[2]);
         control = speed < sv_stopspeed ? sv_stopspeed : speed;
         friction = sv_friction / 3;
@@ -886,7 +890,8 @@ void SV_Physics_Step(edict_t *ent)
     }
 
     // friction for flying monsters that have been given vertical velocity
-    if ((ent->flags & FL_SWIM) && (ent->velocity[2] != 0)) {
+    if ((ent->flags & FL_SWIM) && (ent->velocity[2] != 0) &&
+        !(ent->monsterinfo.aiflags & AI_ALTERNATE_FLY)) {
         speed = fabsf(ent->velocity[2]);
         control = speed < sv_stopspeed ? sv_stopspeed : speed;
         newspeed = speed - (FRAMETIME * control * sv_waterfriction * ent->waterlevel);
@@ -899,7 +904,8 @@ void SV_Physics_Step(edict_t *ent)
     if (ent->velocity[2] || ent->velocity[1] || ent->velocity[0]) {
         // apply friction
         // let dead monsters who aren't completely onground slide
-        if ((wasonground) || (ent->flags & (FL_SWIM | FL_FLY)))
+        if (((wasonground) || (ent->flags & (FL_SWIM | FL_FLY))) &&
+            !(ent->monsterinfo.aiflags & AI_ALTERNATE_FLY))
             if (!(ent->health <= 0.0f && !M_CheckBottom(ent))) {
                 vel = ent->velocity;
                 speed = sqrtf(vel[0] * vel[0] + vel[1] * vel[1]);

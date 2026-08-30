@@ -775,5 +775,13 @@ void SP_monster_floater(edict_t *self)
 
     self->monsterinfo.scale = MODEL_SCALE;
 
+    // [rerelease] the alternate fly system.  Not a buzzard - the floater keeps
+    // to a level band around its enemy - and its own comment says the
+    // technician gets in closer because it has two melee attacks.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.fly_thrusters = false;
+        monster_fly_setup(self, 100.0f, 10.0f, 20.0f, 200.0f);
+    }
+
     flymonster_start(self);
 }

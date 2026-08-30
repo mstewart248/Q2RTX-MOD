@@ -261,6 +261,23 @@ static const save_field_t entityfields[] = {
     F(monsterinfo.jump_height),
     FT(monsterinfo.jump_framenum),
 
+    // [rerelease] the alternate fly system.  fly_position_time and
+    // fly_recovery_framenum are absolute frame numbers, so FT(); the rest are
+    // plain state.  fly_ideal_position is relative to the enemy unless
+    // fly_pinned, in which case it is a world point - either way a vector.
+    F(monsterinfo.fly_max_distance),
+    F(monsterinfo.fly_min_distance),
+    F(monsterinfo.fly_acceleration),
+    F(monsterinfo.fly_speed),
+    V(monsterinfo.fly_ideal_position),
+    FT(monsterinfo.fly_position_time),
+    O(monsterinfo.fly_buzzard),
+    O(monsterinfo.fly_above),
+    O(monsterinfo.fly_pinned),
+    O(monsterinfo.fly_thrusters),
+    FT(monsterinfo.fly_recovery_framenum),
+    V(monsterinfo.fly_recovery_dir),
+
     V(monsterinfo.saved_goal),
     FT(monsterinfo.search_framenum),
     FT(monsterinfo.trail_framenum),
@@ -914,7 +931,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // 53: the six classic *_dodge functions are hooked up again for baseq2, which
 // adds them to save_ptrs[] - and that table is indexed POSITIONALLY, so every
 // entry after the insertion point shifts and version-52 saves cannot be read.
-#define SAVE_VERSION    53
+#define SAVE_VERSION    54
 
 /*
 ============

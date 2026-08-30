@@ -1665,7 +1665,7 @@ plain lerp when the two are almost parallel, where the sine denominator goes to
 zero and the two agree anyway.
 =================
 */
-static void VectorSlerp(vec3_t from, vec3_t to, float frac, vec3_t out)
+void VectorSlerp(vec3_t from, vec3_t to, float frac, vec3_t out)
 {
     float   dot, theta, sin_theta, a, b;
     vec3_t  scaled;

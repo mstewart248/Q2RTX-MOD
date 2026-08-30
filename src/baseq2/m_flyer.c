@@ -45,6 +45,8 @@ void flyer_melee(edict_t *self);
 void flyer_setstart(edict_t *self);
 void flyer_stand(edict_t *self);
 void flyer_nextmove(edict_t *self);
+void flyer_kamikaze_check(edict_t *self);
+bool flyer_blocked(edict_t *self, float dist);
 
 
 void flyer_sight(edict_t *self, edict_t *other)
@@ -474,9 +476,111 @@ void flyer_loop_melee(edict_t *self)
 
 
 
+/*
+=================
+flyer_set_fly_parameters
+
+[rerelease] The flyer has two flight modes.  Cruising, it hangs 45-200 units out
+and circles.  Going for a slice it lights the thrusters: no orbit offset at all,
+faster, and SV_alternate_flystep stops slowing it down on approach - which is
+what turns the melee into a fly-BY rather than a hover-and-poke.
+=================
+*/
+static void flyer_set_fly_parameters(edict_t *self, bool melee)
+{
+    if (melee) {
+        // engage thrusters for a slice
+        self->monsterinfo.fly_pinned = false;
+        self->monsterinfo.fly_thrusters = true;
+        self->monsterinfo.fly_position_time = 0;
+        monster_fly_setup(self, 210.0f, 20.0f, 0.0f, 10.0f);
+    } else {
+        self->monsterinfo.fly_thrusters = false;
+        monster_fly_setup(self, 165.0f, 15.0f, 45.0f, 200.0f);
+    }
+}
+
 void flyer_attack(edict_t *self)
 {
-    self->monsterinfo.currentmove = &flyer_move_attack2;
+    float   range;
+
+    if (!M_RereleaseGame()) {
+        self->monsterinfo.currentmove = &flyer_move_attack2;
+        return;
+    }
+
+    // the kamikaze variant has mass 100 and does not attack - it just flies in
+    if (self->mass > 50) {
+        flyer_run(self);
+        return;
+    }
+
+    range = realrange(self, self->enemy);
+    self->monsterinfo.attack_state = AS_STRAIGHT;
+
+    // the closer it already is, the likelier it commits to the slice
+    if (self->enemy && visible(self, self->enemy) && range <= 225.0f &&
+        random() > (range / 225.0f) * 0.35f) {
+        self->monsterinfo.currentmove = &flyer_move_start_melee;
+        flyer_set_fly_parameters(self, true);
+    } else {
+        self->monsterinfo.currentmove = &flyer_move_attack2;
+    }
+
+    // [Paril-KEX] sometimes pin ourselves down, a pseudo stand-ground.  A
+    // pinned flyer treats fly_ideal_position as a WORLD point instead of an
+    // offset from the enemy, so it holds station and shoots instead of
+    // orbiting.  fly_position_time unpins it again.
+    if (!self->monsterinfo.fly_pinned && (Q_rand() & 1) &&
+        self->enemy && visible(self, self->enemy)) {
+        self->monsterinfo.fly_pinned = true;
+        // enough time left to finish attack2/3
+        self->monsterinfo.fly_position_time += 1.7f * BASE_FRAMERATE;
+
+        if (Q_rand() & 1)
+            // pin to roughly where we are now
+            VectorMA(self->s.origin, random(), self->velocity,
+                     self->monsterinfo.fly_ideal_position);
+        else
+            // make the relative offset absolute
+            VectorAdd(self->monsterinfo.fly_ideal_position, self->enemy->s.origin,
+                      self->monsterinfo.fly_ideal_position);
+    }
+}
+
+/*
+=================
+flyer_touch
+
+[rerelease] Two flyers that collide bounce apart at 500 units/sec and drop out
+of thruster mode, with a one-second debounce so they do not ping-pong.  Without
+this a pack converging on the same hover point piles into one another.
+=================
+*/
+void flyer_touch(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    vec3_t  dir;
+
+    if (!(other->monsterinfo.aiflags & AI_ALTERNATE_FLY) || !(other->flags & FL_FLY))
+        return;
+
+    if (ent->monsterinfo.duck_wait_framenum >= level.framenum)
+        return;
+
+    ent->monsterinfo.duck_wait_framenum = level.framenum + 1 * BASE_FRAMERATE;
+    ent->monsterinfo.fly_thrusters = false;
+
+    VectorSubtract(ent->s.origin, other->s.origin, dir);
+    VectorNormalize(dir);
+    VectorScale(dir, 500.0f, ent->velocity);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_SPLASH);
+    gi.WriteByte(32);
+    gi.WritePosition(ent->s.origin);
+    gi.WriteDir(dir);
+    gi.WriteByte(SPLASH_SPARKS);
+    gi.multicast(ent->s.origin, MULTICAST_PVS);
 }
 
 void flyer_setstart(edict_t *self)
@@ -627,6 +731,16 @@ void SP_monster_flyer(edict_t *self)
     self->monsterinfo.currentmove = &flyer_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
 
+    // [rerelease] the alternate fly system.  fly_buzzard lets it orbit the
+    // whole sphere around its enemy rather than a level band, which is the
+    // above-and-below weaving the rerelease flyer does.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.fly_buzzard = true;
+        flyer_set_fly_parameters(self, false);
+        self->touch = flyer_touch;
+        self->monsterinfo.blocked = flyer_blocked;
+    }
+
     flymonster_start(self);
 }
 
@@ -686,6 +800,32 @@ void flyer_kamikaze_explode(edict_t *self)
     flyer_die(self, NULL, NULL, 0, dir);
 }
 
+/*
+=================
+flyer_blocked
+
+monsterinfo.blocked.  Only the kamikaze has anything to do here: if it cannot
+get past whatever is in the way, that is close enough - it detonates rather than
+milling about.  A normal flyer returns false and takes the default handling.
+=================
+*/
+bool flyer_blocked(edict_t *self, float dist)
+{
+    // kamikaze = 100, normal = 50
+    if (self->mass != 100)
+        return false;
+
+    flyer_kamikaze_check(self);
+
+    // if that did not blow us up - i.e. the player is what blocked us - then
+    // finish the job by hand
+    if (self->inuse)
+        T_Damage(self, self, self, vec3_origin, self->s.origin, vec3_origin,
+                 9999, 100, 0, MOD_UNKNOWN);
+
+    return true;
+}
+
 void flyer_kamikaze_check(edict_t *self)
 {
     // the blocked handling can free us before we get here
@@ -738,6 +878,17 @@ void SP_monster_kamikaze(edict_t *self)
     VectorSet(self->maxs, 16, 16, 16);
     self->s.effects |= EF_ROCKET;
     self->mass = 100;
+
+    // [rerelease] the kamikaze is explicitly NOT an alternate flyer - it goes
+    // straight at its target and detonates, and it must not bounce off the
+    // other flyers the carrier spawned alongside it.  SP_monster_flyer above
+    // opted it in because EF_ROCKET is not set until here, so undo that.
+    // flyer_blocked stays: it is the half that is FOR the kamikaze.
+    self->monsterinfo.aiflags &= ~AI_ALTERNATE_FLY;
+    self->monsterinfo.fly_buzzard = false;
+    self->monsterinfo.fly_thrusters = false;
+    self->touch = NULL;
+    self->yaw_speed = 5;
 
     gi.linkentity(self);
 }

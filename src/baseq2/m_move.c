@@ -112,6 +112,309 @@ realcheck:
 
 
 /*
+==============================================================================
+
+THE ALTERNATE FLY SYSTEM  (rerelease SV_alternate_flystep, m_move.cpp:213)
+
+id's flying monsters do not fly - SV_movestep below teleports the bbox to a new
+origin each frame and clamps its height against the enemy's, so a flyer tracks
+in on rails and a floater bobs on a string.  The rerelease gives them a real
+velocity model instead: pick a point to hover at RELATIVE to the enemy, steer
+towards it by SLERPING the current heading (so the turn rate is constant no
+matter how far off it starts), accelerate up to fly_speed, and slow down on
+arrival so it does not overshoot.  That, and nothing else, is why rerelease
+flyers circle and bank.
+
+It runs INSTEAD of the classic path, gated on AI_ALTERNATE_FLY, and it writes
+ent->velocity rather than ent->s.origin - so SV_Physics_Step must leave that
+velocity alone for these monsters, and ai_run/ai_charge/ai_walk must keep
+calling it even on a frame whose dist is 0.  Both of those are done.
+
+WHAT IS NOT PORTED, and why:
+  - every AI_PATHING / nav_path branch.  Those read a NAV MESH the rerelease's
+    engine builds and this one has no equivalent for.  The AI_COMBAT_POINT,
+    AI_SOUND_TARGET and AI_LOST_SIGHT cases, which share those code paths, ARE
+    kept - they only need a goal position.
+  - AI_HINT_PATH, which does not exist in this tree.
+  - their isnan() debug-break guards.  Kept as plain early-outs instead.
+
+THE RATE SCALE.  fly_acceleration is a speed change PER CALL, and the rerelease
+calls its aifunc every engine tick while this tree runs at 10hz.  Their engine
+is 20 or 40hz - p_weapon.cpp:459 gates the quick weapon switch on
+`gi.tick_rate == 20 || gi.tick_rate == 40`, and g_monster.cpp:596 divides frame
+distances by `tick_rate / 10`, which is what pins the authored values to a 10hz
+base.  monster_fly_setup() therefore scales the acceleration on the way in and
+the per-monster numbers below stay literally comparable to the rerelease's.
+fly_speed needs no scale: a speed is a speed.
+
+==============================================================================
+*/
+
+// How far out to hover, and in which direction.  A zero vector means "go right
+// for the centre" - used when there is nothing to orbit.
+static void G_IdealHoverPosition(edict_t *ent, vec3_t out)
+{
+    float   theta, phi, dist;
+
+    if ((!ent->enemy && !(ent->monsterinfo.aiflags & AI_MEDIC)) ||
+        (ent->monsterinfo.aiflags & (AI_COMBAT_POINT | AI_SOUND_TARGET))) {
+        VectorClear(out);
+        return;
+    }
+
+    // pick a random direction on a sphere; phi decides which band of it
+    theta = random() * 2 * M_PI;
+
+    if (ent->monsterinfo.fly_above)
+        phi = acosf(0.7f + random() * 0.3f);            // top cap only
+    else if (ent->monsterinfo.fly_buzzard || (ent->monsterinfo.aiflags & AI_MEDIC))
+        phi = acosf(random());                          // whole upper half
+    else
+        phi = acosf(crandom() * 0.06f);                 // a level band
+
+    out[0] = sinf(phi) * cosf(theta);
+    out[1] = sinf(phi) * sinf(theta);
+    out[2] = cosf(phi);
+
+    dist = ent->monsterinfo.fly_min_distance +
+           random() * (ent->monsterinfo.fly_max_distance - ent->monsterinfo.fly_min_distance);
+    VectorScale(out, dist, out);
+}
+
+// Can the monster see `end` from `start`, AND fit through the box sweep from
+// `starta` to `startb`?  Used to decide which way to shift around a block.
+static bool SV_flystep_testvisposition(vec3_t start, vec3_t end, vec3_t starta, vec3_t startb, edict_t *ent)
+{
+    trace_t tr;
+
+    tr = gi.trace(start, NULL, NULL, end, ent, MASK_SOLID | CONTENTS_MONSTERCLIP);
+    if (tr.fraction != 1.0f)
+        return false;
+
+    tr = gi.trace(starta, ent->mins, ent->maxs, startb, ent, MASK_SOLID | CONTENTS_MONSTERCLIP);
+    return tr.fraction == 1.0f;
+}
+
+static bool SV_alternate_flystep(edict_t *ent, vec3_t move, bool relink)
+{
+    vec3_t      towards_origin, towards_velocity;
+    vec3_t      dir, wanted_pos, wanted_dir, dest_diff, final_dir;
+    vec3_t      aim_fwd, aim_rgt, aim_up, yaw_angles;
+    vec3_t      probe, mins8, maxs8;
+    float       current_speed, dist_to_wanted, turn_factor, speed_factor;
+    float       accel, wanted_speed;
+    bool        bad_movement_direction;
+    trace_t     tr;
+
+    // swimming monsters just follow their velocity while out of the water
+    if ((ent->flags & FL_SWIM) && ent->waterlevel < 3)
+        return true;
+
+    // time to pick somewhere new to hover?  Also re-picked the moment a pinned
+    // monster loses sight of its enemy, since a pinned position is absolute and
+    // would otherwise hold it behind a wall.
+    if (ent->monsterinfo.fly_position_time <= level.framenum ||
+        (ent->enemy && ent->monsterinfo.fly_pinned && !visible(ent, ent->enemy))) {
+        ent->monsterinfo.fly_pinned = false;
+        ent->monsterinfo.fly_position_time =
+            level.framenum + (3.0f + 7.0f * random()) * BASE_FRAMERATE;
+        G_IdealHoverPosition(ent, ent->monsterinfo.fly_ideal_position);
+    }
+
+    VectorCopy(ent->velocity, dir);
+    current_speed = VectorNormalize(dir);
+    VectorClear(towards_velocity);
+
+    if (ent->enemy && !(ent->monsterinfo.aiflags & (AI_COMBAT_POINT | AI_SOUND_TARGET | AI_LOST_SIGHT))) {
+        VectorCopy(ent->enemy->s.origin, towards_origin);
+        VectorCopy(ent->enemy->velocity, towards_velocity);
+    } else if (ent->goalentity) {
+        VectorCopy(ent->goalentity->s.origin, towards_origin);
+    } else {
+        // whatever we were going towards probably died.  Coast to a stop.
+        if (current_speed) {
+            current_speed = max(0.0f, current_speed - ent->monsterinfo.fly_acceleration);
+            VectorScale(dir, current_speed, ent->velocity);
+        }
+        return true;
+    }
+
+    if (ent->monsterinfo.fly_pinned)
+        VectorCopy(ent->monsterinfo.fly_ideal_position, wanted_pos);
+    else if (ent->monsterinfo.aiflags & (AI_COMBAT_POINT | AI_SOUND_TARGET | AI_LOST_SIGHT))
+        VectorCopy(towards_origin, wanted_pos);
+    else {
+        // lead the enemy by a quarter second, then offset by the hover point
+        VectorMA(towards_origin, 0.25f, towards_velocity, wanted_pos);
+        VectorAdd(wanted_pos, ent->monsterinfo.fly_ideal_position, wanted_pos);
+    }
+
+    // find a place we can fit in on the way out from the enemy
+    VectorSet(mins8, -8, -8, -8);
+    VectorSet(maxs8, 8, 8, 8);
+    tr = gi.trace(towards_origin, mins8, maxs8, wanted_pos, ent, MASK_SOLID | CONTENTS_MONSTERCLIP);
+    if (!tr.allsolid)
+        VectorCopy(tr.endpos, wanted_pos);
+
+    VectorSubtract(wanted_pos, ent->s.origin, dest_diff);
+
+    // already at the right height within our own bbox: do not fight over it
+    if (dest_diff[2] > ent->mins[2] && dest_diff[2] < ent->maxs[2])
+        dest_diff[2] = 0;
+
+    VectorCopy(dest_diff, wanted_dir);
+    dist_to_wanted = VectorNormalize(wanted_dir);
+
+    // face the enemy, not the hover point - that is what keeps it shooting at
+    // you while it circles
+    if (!(ent->monsterinfo.aiflags & AI_MANUAL_STEERING)) {
+        VectorSubtract(towards_origin, ent->s.origin, probe);
+        ent->ideal_yaw = vectoyaw(probe);
+    }
+
+    VectorSet(yaw_angles, 0, ent->s.angles[YAW], 0);
+    AngleVectors(yaw_angles, aim_fwd, aim_rgt, aim_up);
+
+    // blocked from moving that way from here?
+    VectorMA(ent->s.origin, ent->monsterinfo.fly_acceleration, wanted_dir, probe);
+    tr = gi.trace(ent->s.origin, ent->mins, ent->maxs, probe, ent, MASK_SOLID | CONTENTS_MONSTERCLIP);
+
+    // a fairly close block, so shift more dramatically than the slerp would
+    if (tr.fraction < 0.25f) {
+        vec3_t  a, b;
+        bool    bottom_visible, top_visible;
+
+        VectorCopy(ent->s.origin, a);
+        a[2] += ent->mins[2];
+        VectorCopy(ent->s.origin, b);
+        b[2] += ent->mins[2] - ent->monsterinfo.fly_acceleration;
+        bottom_visible = SV_flystep_testvisposition(a, wanted_pos, ent->s.origin, b, ent);
+
+        VectorCopy(ent->s.origin, a);
+        a[2] += ent->maxs[2];
+        VectorCopy(ent->s.origin, b);
+        b[2] += ent->maxs[2] + ent->monsterinfo.fly_acceleration;
+        top_visible = SV_flystep_testvisposition(a, wanted_pos, ent->s.origin, b, ent);
+
+        if (bottom_visible == top_visible) {
+            // up and down are the same, so try left and right
+            bool    left_visible, right_visible;
+
+            VectorMA(ent->s.origin, ent->maxs[0], aim_fwd, a);
+            VectorMA(a, -ent->maxs[1], aim_rgt, b);
+            left_visible = gi.trace(b, NULL, NULL, wanted_pos, ent, MASK_SOLID | CONTENTS_MONSTERCLIP).fraction == 1.0f;
+            VectorMA(a, ent->maxs[1], aim_rgt, b);
+            right_visible = gi.trace(b, NULL, NULL, wanted_pos, ent, MASK_SOLID | CONTENTS_MONSTERCLIP).fraction == 1.0f;
+
+            if (left_visible != right_visible) {
+                if (right_visible)
+                    VectorAdd(wanted_dir, aim_rgt, wanted_dir);
+                else
+                    VectorSubtract(wanted_dir, aim_rgt, wanted_dir);
+            } else {
+                // probably stuck; push straight off the surface
+                VectorCopy(tr.plane.normal, wanted_dir);
+            }
+        } else if (top_visible) {
+            VectorAdd(wanted_dir, aim_up, wanted_dir);
+        } else {
+            VectorSubtract(wanted_dir, aim_up, wanted_dir);
+        }
+
+        VectorNormalize(wanted_dir);
+    }
+
+    // The closer to a standstill, the more the heading may change; pushed past
+    // top speed it should not turn at all.  turn_factor is how much of the
+    // OLD heading is kept, so bigger means a wider turn.
+    if (((ent->monsterinfo.fly_thrusters && !ent->monsterinfo.fly_pinned) ||
+         (ent->monsterinfo.aiflags & (AI_COMBAT_POINT | AI_LOST_SIGHT))) &&
+        DotProduct(dir, wanted_dir) > 0.0f)
+        turn_factor = 0.45f;
+    else
+        turn_factor = min(1.0f, 0.84f + (0.08f * (current_speed / ent->monsterinfo.fly_speed)));
+
+    if (current_speed)
+        VectorCopy(dir, final_dir);
+    else
+        VectorCopy(wanted_dir, final_dir);
+
+    // swimming monsters don't leave water voluntarily and flying monsters
+    // don't enter it, though both will try to get back out
+    bad_movement_direction = false;
+    VectorMA(ent->s.origin, current_speed, wanted_dir, probe);
+
+    if (ent->flags & FL_SWIM)
+        bad_movement_direction = !(gi.pointcontents(probe) & MASK_WATER);
+    else if ((ent->flags & FL_FLY) && ent->waterlevel < 3)
+        bad_movement_direction = (gi.pointcontents(probe) & MASK_WATER) != 0;
+
+    if (bad_movement_direction) {
+        if (ent->monsterinfo.fly_recovery_framenum < level.framenum) {
+            VectorSet(ent->monsterinfo.fly_recovery_dir, crandom(), crandom(), crandom());
+            VectorNormalize(ent->monsterinfo.fly_recovery_dir);
+            ent->monsterinfo.fly_recovery_framenum = level.framenum + 1 * BASE_FRAMERATE;
+        }
+
+        VectorCopy(ent->monsterinfo.fly_recovery_dir, wanted_dir);
+    }
+
+    if (current_speed && turn_factor > 0)
+        VectorSlerp(dir, wanted_dir, 1.0f - turn_factor, final_dir);
+
+    // slow down on approach so we don't fly past the hover point
+    if (!ent->enemy || (ent->monsterinfo.fly_thrusters && !ent->monsterinfo.fly_pinned) ||
+        (ent->monsterinfo.aiflags & (AI_COMBAT_POINT | AI_LOST_SIGHT)))
+        speed_factor = 1.0f;
+    else if (DotProduct(aim_fwd, wanted_dir) < -0.25f && current_speed)
+        speed_factor = 0.0f;
+    else
+        speed_factor = min(1.0f, dist_to_wanted / ent->monsterinfo.fly_speed);
+
+    if (bad_movement_direction)
+        speed_factor = -speed_factor;
+
+    accel = ent->monsterinfo.fly_acceleration;
+
+    // flying away from where we want to be: reverse thrusters
+    if (DotProduct(final_dir, wanted_dir) < 0.25f)
+        accel *= 2.0f;
+
+    wanted_speed = ent->monsterinfo.fly_speed * speed_factor;
+
+    // a blindfiring or otherwise manually steered monster holds still
+    if (ent->monsterinfo.aiflags & AI_MANUAL_STEERING)
+        wanted_speed = 0;
+
+    if (current_speed > wanted_speed)
+        current_speed = max(wanted_speed, current_speed - accel);
+    else if (current_speed < wanted_speed)
+        current_speed = min(wanted_speed, current_speed + accel);
+
+    VectorScale(final_dir, current_speed, ent->velocity);
+
+    // buzzards bank to face the way they are orbiting
+    if (ent->enemy && (ent->monsterinfo.fly_buzzard || (ent->monsterinfo.aiflags & AI_MEDIC))) {
+        vec3_t  d, ang;
+
+        VectorSubtract(ent->s.origin, towards_origin, d);
+        VectorNormalize(d);
+        vectoangles(d, ang);
+        ent->s.angles[PITCH] = LerpAngle(ent->s.angles[PITCH], -ang[PITCH], FRAMETIME * 4.0f);
+    } else {
+        ent->s.angles[PITCH] = 0;
+    }
+
+    if (relink) {
+        gi.linkentity(ent);
+        G_TouchTriggers(ent);
+    }
+
+    return true;
+}
+
+
+/*
 =============
 SV_movestep
 
@@ -139,6 +442,11 @@ bool SV_movestep(edict_t *ent, vec3_t move, bool relink)
 
 // flying monsters don't step up
     if (ent->flags & (FL_SWIM | FL_FLY)) {
+        // [rerelease] the velocity-driven hover model, if this monster opted in
+        if ((ent->monsterinfo.aiflags & AI_ALTERNATE_FLY) &&
+            SV_alternate_flystep(ent, move, relink))
+            return true;
+
         // try one move with vertical motion, then one without
         for (i = 0 ; i < 2 ; i++) {
             VectorAdd(ent->s.origin, move, neworg);

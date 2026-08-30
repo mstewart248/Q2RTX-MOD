@@ -180,6 +180,9 @@ typedef enum {
 // ROGUE/rerelease: mid-sidestep. AI_DUCKED (0x800) above is the crouch; this is
 // the strafe. Both are cleared by monster_done_dodge / monster_duck_up.
 #define AI_DODGING              0x01000000
+// [rerelease] this monster flies on SV_alternate_flystep, a velocity-driven
+// hover model, instead of id's teleport-the-bbox flystep. See m_move.c.
+#define AI_ALTERNATE_FLY        0x02000000
 
 //monster attack state
 #define AS_STRAIGHT             1
@@ -696,6 +699,49 @@ typedef struct {
     int         monster_slots;
     int         monster_used;
     edict_t     *commander;         // who summoned me
+
+    /*
+    [rerelease] THE ALTERNATE FLY SYSTEM (flyer, floater, hover).
+
+    id's flying monsters do not really fly: SV_movestep walks the bbox to a new
+    origin and clamps its height against the enemy, so they slide about on
+    rails.  The rerelease replaces that with a velocity model - the monster
+    picks a point to hover at RELATIVE to its enemy, accelerates towards it,
+    turns by slerping its heading, and slows as it arrives.  That is what makes
+    them circle and bank instead of tracking straight in.
+
+    All of these are only read when AI_ALTERNATE_FLY is set.
+
+      fly_speed             top speed, units/sec.  Rate-independent.
+      fly_acceleration      speed change per THINK.  See monster_fly_setup:
+                            the rerelease's numbers are per engine tick and it
+                            runs at 20 or 40hz (p_weapon.cpp gates the quick
+                            weapon switch on exactly those), where this tree is
+                            10hz, so they are scaled on the way in.
+      fly_min/max_distance  how far out the hover point is picked.
+      fly_ideal_position    that point.  Relative to the enemy unless pinned.
+      fly_position_time     re-pick the hover point once past this frame.
+      fly_buzzard           orbit anywhere on the sphere, not just the level
+                            band around the enemy.  fly_above is the top half.
+      fly_pinned            fly_ideal_position is a WORLD point, not relative -
+                            the flyer's dive-and-hold.
+      fly_thrusters         head straight in at full speed and turn harder;
+                            the melee approach.
+      fly_recovery_*        a random escape heading, held for a second, used
+                            when the wanted direction leads into water.
+    */
+    float       fly_max_distance;
+    float       fly_min_distance;
+    float       fly_acceleration;
+    float       fly_speed;
+    vec3_t      fly_ideal_position;
+    int         fly_position_time;      // framenum
+    bool        fly_buzzard;
+    bool        fly_above;
+    bool        fly_pinned;
+    bool        fly_thrusters;
+    int         fly_recovery_framenum;
+    vec3_t      fly_recovery_dir;
 } monsterinfo_t;
 
 
@@ -1032,6 +1078,13 @@ void monster_jump_start(edict_t *self);
 bool monster_jump_finished(edict_t *self);
 bool SV_movestep(edict_t *ent, vec3_t move, bool relink);
 bool ai_check_move(edict_t *self, float dist);
+// spherical interpolation, both unit length; falls back to a lerp when the two
+// are almost parallel.  Lives in g_weapon.c beside the heat-seeker that needed
+// it first; the alternate fly system steers with it too.
+void VectorSlerp(vec3_t from, vec3_t to, float frac, vec3_t out);
+// [rerelease] opt this monster into SV_alternate_flystep.  accel is the
+// rerelease's own per-tick number and is scaled to this tree's 10hz here.
+void monster_fly_setup(edict_t *self, float speed, float accel, float min_dist, float max_dist);
 void stationarymonster_start(edict_t *self);
 void stationarymonster_start_go(edict_t *self);
 void stationarymonster_triggered_start(edict_t *self);

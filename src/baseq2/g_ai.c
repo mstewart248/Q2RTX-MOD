@@ -101,7 +101,10 @@ void ai_stand(edict_t *self, float dist)
 {
     vec3_t  v;
 
-    if (dist)
+    // [rerelease] AI_ALTERNATE_FLY drives velocity in SV_alternate_flystep
+    // rather than stepping the origin, so it has to run even on a frame
+    // whose dist is 0 - otherwise a hovering flyer freezes in mid-air.
+    if (dist || (self->monsterinfo.aiflags & AI_ALTERNATE_FLY))
         M_walkmove(self, self->s.angles[YAW], dist);
 
     if (self->monsterinfo.aiflags & AI_STAND_GROUND) {
@@ -180,7 +183,7 @@ void ai_charge(edict_t *self, float dist)
     self->ideal_yaw = vectoyaw(v);
     M_ChangeYaw(self);
 
-    if (dist)
+    if (dist || (self->monsterinfo.aiflags & AI_ALTERNATE_FLY))
         M_walkmove(self, self->s.angles[YAW], dist);
 }
 
@@ -195,7 +198,7 @@ Distance is for slight position adjustments needed by the animations
 */
 void ai_turn(edict_t *self, float dist)
 {
-    if (dist)
+    if (dist || (self->monsterinfo.aiflags & AI_ALTERNATE_FLY))
         M_walkmove(self, self->s.angles[YAW], dist);
 
     if (FindTarget(self))
@@ -740,6 +743,8 @@ void M_UpdateBlindFireTarget(edict_t *self)
     VectorMA(self->monsterinfo.last_sighting, -0.1f, self->enemy->velocity,
              self->monsterinfo.blind_fire_target);
     self->monsterinfo.blind_fire_delay = 0;
+    // [Paril-KEX] for alternate fly, pick a new hover position immediately
+    self->monsterinfo.fly_position_time = 0;
 }
 
 //=============================================================================

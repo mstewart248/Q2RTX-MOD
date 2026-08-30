@@ -544,6 +544,7 @@ extern void floater_sight(void);
 extern void floater_stand(void);
 extern void floater_walk(void);
 extern void flyer_attack(void);
+extern void flyer_blocked(void);
 extern void flyer_die(void);
 extern void flyer_idle(void);
 extern void flyer_melee(void);
@@ -551,6 +552,7 @@ extern void flyer_pain(void);
 extern void flyer_run(void);
 extern void flyer_sight(void);
 extern void flyer_stand(void);
+extern void flyer_touch(void);
 extern void flyer_walk(void);
 extern void flymonster_start_go(void);
 extern void func_animation_use(void);
@@ -774,6 +776,7 @@ extern void smart_water_blocked(void);
 extern void smart_water_go_up(void);
 extern void soldier_attack(void);
 extern void soldier_blind(void);
+extern void soldier_blocked(void);
 extern void soldier_die(void);
 extern void soldier_dodge(void);
 extern void soldier_pain(void);
@@ -1043,6 +1046,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, drop_temp_touch },
 { P_touch, flare_touch },
 { P_touch, flechette_touch },
+{ P_touch, flyer_touch },
 { P_touch, func_object_touch },
 { P_touch, gekk_jump_touch },
 { P_touch, gib_touch },
@@ -1836,10 +1840,12 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_checkattack, mutant_checkattack },
 { P_monsterinfo_checkattack, turret_checkattack },
 { P_monsterinfo_blocked, berserk_blocked },
+{ P_monsterinfo_blocked, flyer_blocked },
 { P_monsterinfo_blocked, guncmdr_blocked },
 { P_monsterinfo_blocked, gunner_blocked },
 { P_monsterinfo_blocked, infantry_blocked },
 { P_monsterinfo_blocked, mutant_blocked },
 { P_monsterinfo_blocked, parasite_blocked },
+{ P_monsterinfo_blocked, soldier_blocked },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

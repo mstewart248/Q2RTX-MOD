@@ -40,6 +40,34 @@ static int  sound_cock;
 
 extern mmove_t soldier_move_trip;
 
+/*
+=================
+Mapping this file onto src/rerelease/m_soldier.cpp
+
+  their `self->count`      ours is `self->s.skinnum`.  They set count from the
+                           skin at spawn (count = skinnum for the stock family,
+                           skinnum - 6 for soldierh); this tree gives soldierh
+                           skins 0/2/4 and marks the family with style == 1, so
+                           skinnum is already on their count's scale.
+                           <=1 blaster/ripper, 2-3 shotgun/hypergun,
+                           >=4 machinegun/lasergun.
+  their `s.skinnum >= 6`   ours is `self->style == 1` (the soldierh family).
+  their `range_to()`       ours is `realrange()` - both are box distance - and
+                           their RANGE_* are DISTANCES in units where this
+                           tree's are enum tags for range().  Hence the two
+                           SOLDIER_RANGE_* below, matching their g_local.h:2213.
+  their `radius_dmg`       the force-a-refire flag.  Free here: this tree's
+                           soldierh_laserbeam takes its flash index as an
+                           argument instead of parking it in radius_dmg, which
+                           is what their soldierh_laser_update does.
+  their `self->dmg`        set by the shotgun shot, cleared by soldier_cock:
+                           "this soldier still has a spent shell in the pipe".
+                           soldier_duck already READ it in this tree; nothing
+                           ever set it, so that branch was dead.
+=================
+*/
+#define SOLDIER_RANGE_MELEE 20.0f
+#define SOLDIER_RANGE_NEAR  440.0f
 
 void soldier_idle(edict_t *self)
 {
@@ -53,6 +81,22 @@ void soldier_cock(edict_t *self)
         gi.sound(self, CHAN_WEAPON, sound_cock, 1, ATTN_IDLE, 0);
     else
         gi.sound(self, CHAN_WEAPON, sound_cock, 1, ATTN_NORM, 0);
+
+    // the shell is out, so the shotgun checks stop forcing a refire
+    self->dmg = 0;
+}
+
+// AI_CHARGING marks a monster closing on its enemy rather than holding
+// position.  The run-and-shoot sets it on its first frame and both of its
+// refire checks clear it again.
+void soldier_start_charge(edict_t *self)
+{
+    self->monsterinfo.aiflags |= AI_CHARGING;
+}
+
+void soldier_stop_charge(edict_t *self)
+{
+    self->monsterinfo.aiflags &= ~AI_CHARGING;
 }
 
 
@@ -737,6 +781,11 @@ void soldier_fire(edict_t *self, int flash_number)
 		}
     } else if (self->s.skinnum <= 3) {
         monster_fire_shotgun(self, start, aim, 2, 1, DEFAULT_SHOTGUN_HSPREAD, DEFAULT_SHOTGUN_VSPREAD, DEFAULT_SHOTGUN_COUNT, flash_index);
+        // [Paril-KEX] this soldier must cock before it can fire again.  Every
+        // reader of self->dmg is rerelease-only, but keep the write gated so a
+        // baseq2 soldier's dmg field stays exactly as the 1997 game left it.
+        if (M_RereleaseGame())
+            self->dmg = 1;
     } else {
         if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME))
             self->monsterinfo.pause_framenum = level.framenum + (3 + Q_rand() % 8);
@@ -759,6 +808,35 @@ void soldier_fire1(edict_t *self)
 
 void soldier_attack1_refire1(edict_t *self)
 {
+    if (M_RereleaseGame()) {
+        // [Paril-KEX] a blaster soldier that has run its burst skips straight
+        // to the tail of the animation
+        if (self->s.skinnum <= 0)
+            self->monsterinfo.nextframe = FRAME_attak110;
+
+        // PMM - blindfire: one shot only, then drop the manual aim
+        if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+            self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+            return;
+        }
+
+        if (!self->enemy)
+            return;
+
+        if (self->s.skinnum > 1)
+            return;
+
+        if (self->enemy->health <= 0)
+            return;
+
+        if (((random() < 0.5f) && visible(self, self->enemy)) ||
+            (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE))
+            self->monsterinfo.nextframe = FRAME_attak102;
+        else
+            self->monsterinfo.nextframe = FRAME_attak110;
+        return;
+    }
+
     if (self->s.skinnum > 1)
         return;
 
@@ -773,6 +851,25 @@ void soldier_attack1_refire1(edict_t *self)
 
 void soldier_attack1_refire2(edict_t *self)
 {
+    if (M_RereleaseGame()) {
+        if (!self->enemy)
+            return;
+
+        if (self->s.skinnum < 2)
+            return;
+
+        if (self->enemy->health <= 0)
+            return;
+
+        // radius_dmg is the forced refire the shotgun check below asked for
+        if (((self->radius_dmg || random() < 0.5f) && visible(self, self->enemy)) ||
+            (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE)) {
+            self->monsterinfo.nextframe = FRAME_attak102;
+            self->radius_dmg = 0;
+        }
+        return;
+    }
+
     if (self->s.skinnum < 2)
         return;
 
@@ -783,9 +880,44 @@ void soldier_attack1_refire2(edict_t *self)
         self->monsterinfo.nextframe = FRAME_attak102;
 }
 
+/*
+=================
+The shotgun checks, and soldier_blind_check
+
+Both of these sit in frame tables the ORIGINAL game plays too, and both are
+self-gating rather than wrapped in M_RereleaseGame():
+
+  the shotgun checks act only when self->dmg is set, and only the rerelease
+  branch of soldier_fire ever sets it;
+  soldier_blind_check acts only under AI_MANUAL_STEERING, which only the
+  rerelease's blindfire raises.
+
+A shotgun soldier that fired but has not cocked jumps forward to the cocking
+half of the animation and sets radius_dmg so the refire that follows is forced -
+that is what makes the shotgun guard fire in pairs instead of one shot a cycle.
+=================
+*/
+static void soldier_attack1_shotgun_check(edict_t *self)
+{
+    if (self->dmg) {
+        self->monsterinfo.nextframe = FRAME_attak106;
+        self->radius_dmg = 1;
+    }
+}
+
+static void soldier_blind_check(edict_t *self)
+{
+    vec3_t  aim;
+
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+        VectorSubtract(self->monsterinfo.blind_fire_target, self->s.origin, aim);
+        self->ideal_yaw = vectoyaw(aim);
+    }
+}
+
 mframe_t soldier_frames_attack1 [] = {
-    { ai_charge, 0,  NULL },
-    { ai_charge, 0,  NULL },
+    { ai_charge, 0,  soldier_blind_check },
+    { ai_charge, 0,  soldier_attack1_shotgun_check },
     { ai_charge, 0,  soldier_fire1 },
     { ai_charge, 0,  NULL },
     { ai_charge, 0,  NULL },
@@ -808,6 +940,25 @@ void soldier_fire2(edict_t *self)
 
 void soldier_attack2_refire1(edict_t *self)
 {
+    if (M_RereleaseGame()) {
+        if (self->s.skinnum <= 0)
+            self->monsterinfo.nextframe = FRAME_attak216;
+
+        if (!self->enemy)
+            return;
+
+        if (self->s.skinnum > 1)
+            return;
+
+        if (self->enemy->health <= 0)
+            return;
+
+        if (((random() < 0.5f) && visible(self, self->enemy)) ||
+            (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE))
+            self->monsterinfo.nextframe = FRAME_attak204;
+        return;
+    }
+
     if (self->s.skinnum > 1)
         return;
 
@@ -822,6 +973,27 @@ void soldier_attack2_refire1(edict_t *self)
 
 void soldier_attack2_refire2(edict_t *self)
 {
+    if (M_RereleaseGame()) {
+        if (!self->enemy)
+            return;
+
+        if (self->s.skinnum < 2)
+            return;
+
+        if (self->enemy->health <= 0)
+            return;
+
+        // the lasergun soldier (style 1, skin >= 4) is excluded from the
+        // melee-range clause: it is already firing a continuous beam
+        if (((self->radius_dmg || random() < 0.5f) && visible(self, self->enemy)) ||
+            ((self->style == 0 || self->s.skinnum < 4) &&
+             (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE))) {
+            self->monsterinfo.nextframe = FRAME_attak204;
+            self->radius_dmg = 0;
+        }
+        return;
+    }
+
     if (self->s.skinnum < 2)
         return;
 
@@ -832,10 +1004,18 @@ void soldier_attack2_refire2(edict_t *self)
         self->monsterinfo.nextframe = FRAME_attak204;
 }
 
+static void soldier_attack2_shotgun_check(edict_t *self)
+{
+    if (self->dmg) {
+        self->monsterinfo.nextframe = FRAME_attak210;
+        self->radius_dmg = 1;
+    }
+}
+
 mframe_t soldier_frames_attack2 [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldier_attack2_shotgun_check },
     { ai_charge, 0, NULL },
     { ai_charge, 0, soldier_fire2 },
     { ai_charge, 0, NULL },
@@ -858,27 +1038,62 @@ mmove_t soldier_move_attack2 = {FRAME_attak201, FRAME_attak218, soldier_frames_a
 
 
 
+// declared here because the crouched and run-and-shoot attacks below use them,
+// and the soldierh burst block that defines them sits further down the file
+static void soldierh_hyper_laser_sound_start(edict_t *self);
+static void soldierh_hyper_laser_sound_end(edict_t *self);
+static void soldierh_hyperripper3(edict_t *self);
+static void soldierh_hyperripper8(edict_t *self);
+
+// The rerelease ducks on the FIRST frame of the crouched attack, two frames
+// earlier than id did, and so drops the duck out of soldier_fire3.  Doing that
+// unconditionally would change how the original game's soldier crouches, so the
+// two halves gate against each other.
+static void soldier_attack3_duck(edict_t *self)
+{
+    if (M_RereleaseGame())
+        monster_duck_down(self);
+}
+
 void soldier_fire3(edict_t *self)
 {
-    monster_duck_down(self);
+    if (!M_RereleaseGame())
+        monster_duck_down(self);
     soldier_fire(self, 2);
 }
 
 void soldier_attack3_refire(edict_t *self)
 {
+    if (M_RereleaseGame()) {
+        // a shotgun soldier caught mid-cock holds the crouch instead of
+        // popping back up with a spent shell
+        if (self->dmg) {
+            monster_duck_hold(self);
+            return;
+        }
+
+        // they read the DUCK timer here.  id had only one field
+        // (monsterinfo.pausetime, this tree's pause_framenum) and shared it
+        // with the machinegun's firing window, which is why the classic branch
+        // below must keep reading that one.
+        if ((level.framenum + 0.4f * BASE_FRAMERATE) < self->monsterinfo.duck_wait_framenum)
+            self->monsterinfo.nextframe = FRAME_attak303;
+        return;
+    }
+
     if ((level.framenum + 0.4f * BASE_FRAMERATE) < self->monsterinfo.pause_framenum)
         self->monsterinfo.nextframe = FRAME_attak303;
 }
 
 mframe_t soldier_frames_attack3 [] = {
-    { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldier_attack3_duck },
+    { ai_charge, 0, soldierh_hyper_laser_sound_start },
     { ai_charge, 0, soldier_fire3 },
-    { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldierh_hyperripper3 },
+    { ai_charge, 0, soldierh_hyperripper3 },
     { ai_charge, 0, soldier_attack3_refire },
     { ai_charge, 0, monster_duck_up },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldierh_hyper_laser_sound_end },
     { ai_charge, 0, NULL }
 };
 mmove_t soldier_move_attack3 = {FRAME_attak301, FRAME_attak309, soldier_frames_attack3, soldier_run};
@@ -898,9 +1113,9 @@ void soldier_fire4(edict_t *self)
 
 mframe_t soldier_frames_attack4 [] = {
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldierh_hyper_laser_sound_start },
     { ai_charge, 0, soldier_fire4 },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, soldierh_hyper_laser_sound_end },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL }
 };
@@ -955,21 +1170,155 @@ void soldier_attack6_refire(edict_t *self)
         self->monsterinfo.nextframe = FRAME_runs03;
 }
 
+/*
+=================
+The rerelease's run-and-shoot
+
+Three changes to a move id shipped but barely used:
+
+  it runs on ai_run, not ai_charge, so the soldier actually navigates towards
+  its enemy while firing instead of sliding straight at it.  ai_soldier_charge
+  below is the per-slot switch - the frame table cannot be gated any other way,
+  and duplicating it would mean every `currentmove == &soldier_move_attack6`
+  test in this file had to check two moves.
+
+  the tail refire splits in two.  refire1 is the blaster soldier's (skin <= 1)
+  and refire2 the rest's; both clear the dodge and charge bits first, and both
+  break off into a plain run when the enemy is dead, too close, or out of
+  sight - "don't endlessly run into walls".
+
+  the shotgun check at slot 1 jumps to the cocking half, exactly as attack1 and
+  attack2 do.
+
+Dropped: their MMOVE_T's 5th field (0.65f) is `sidestep_scale`, and this tree's
+mmove_t has no such field - it only scales sidestep distance, not run speed.
+=================
+*/
+static void ai_soldier_charge(edict_t *self, float dist)
+{
+    if (M_RereleaseGame())
+        ai_run(self, dist);
+    else
+        ai_charge(self, dist);
+}
+
+void soldier_attack6_refire1(edict_t *self)
+{
+    // PMM - make sure dodge & charge bits are cleared
+    monster_done_dodge(self);
+    soldier_stop_charge(self);
+
+    if (!self->enemy)
+        return;
+
+    if (self->s.skinnum > 1)
+        return;
+
+    if (self->enemy->health <= 0 ||
+        realrange(self, self->enemy) < SOLDIER_RANGE_NEAR ||
+        !visible(self, self->enemy)) {
+        soldier_run(self);
+        return;
+    }
+
+    if (random() < 0.25f)
+        self->monsterinfo.nextframe = FRAME_runs03;
+    else
+        soldier_run(self);
+}
+
+void soldier_attack6_refire2(edict_t *self)
+{
+    // PMM - make sure dodge & charge bits are cleared
+    monster_done_dodge(self);
+    soldier_stop_charge(self);
+
+    if (!self->enemy || self->s.skinnum <= 0)
+        return;
+
+    if (self->enemy->health <= 0 ||
+        (!self->radius_dmg && realrange(self, self->enemy) < SOLDIER_RANGE_NEAR) ||
+        !visible(self, self->enemy)) {
+        soldierh_hyper_laser_sound_end(self);
+        return;
+    }
+
+    if (self->radius_dmg || random() < 0.25f) {
+        self->monsterinfo.nextframe = FRAME_runs03;
+        self->radius_dmg = 0;
+    }
+}
+
+static void soldier_attack6_shotgun_check(edict_t *self)
+{
+    if (self->dmg) {
+        self->monsterinfo.nextframe = FRAME_runs09;
+        self->radius_dmg = 1;
+    }
+}
+
+/*
+The four slots below carry a rerelease call in a table the original game plays
+too, and unlike the shotgun/blindfire/soldierh checks they are not self-gating -
+a bare soldier_cock here would fire a sound the 1997 soldier never made, and
+refire1 would break the classic run-and-shoot off into a plain run.  Slot 13
+holds id's single refire and the rerelease's second one, which is the pair that
+cannot share a wrapper.
+*/
+static void soldier_attack6_start_charge(edict_t *self)
+{
+    if (M_RereleaseGame())
+        soldier_start_charge(self);
+}
+
+static void soldier_attack6_do_refire1(edict_t *self)
+{
+    if (M_RereleaseGame())
+        soldier_attack6_refire1(self);
+}
+
+static void soldier_attack6_cock(edict_t *self)
+{
+    if (M_RereleaseGame())
+        soldier_cock(self);
+}
+
+static void soldier_attack6_refire_tail(edict_t *self)
+{
+    if (M_RereleaseGame())
+        soldier_attack6_refire2(self);
+    else
+        soldier_attack6_refire(self);
+}
+
+// their slots 3 and 4 pack two calls each into one C++ lambda
+static void soldier_fire8_footstep(edict_t *self)
+{
+    soldier_fire8(self);
+    monster_footstep(self);
+}
+
+static void soldierh_hyperripper8_done_dodge(edict_t *self)
+{
+    soldierh_hyperripper8(self);
+    monster_done_dodge(self);
+}
+
 mframe_t soldier_frames_attack6 [] = {
-    { ai_charge, 10, NULL },
-    { ai_charge,  4, NULL },
-    { ai_charge, 12, NULL },
-    { ai_charge, 11, soldier_fire8 },
-    { ai_charge, 13, NULL },
-    { ai_charge, 18, NULL },
-    { ai_charge, 15, NULL },
-    { ai_charge, 14, NULL },
-    { ai_charge, 11, NULL },
-    { ai_charge,  8, NULL },
-    { ai_charge, 11, NULL },
-    { ai_charge, 12, NULL },
-    { ai_charge, 12, NULL },
-    { ai_charge, 17, soldier_attack6_refire }
+    { ai_soldier_charge, 10, soldier_attack6_start_charge },
+    { ai_soldier_charge,  4, soldier_attack6_shotgun_check },
+    { ai_soldier_charge, 12, soldierh_hyper_laser_sound_start },
+    { ai_soldier_charge, 11, soldier_fire8_footstep },
+    { ai_soldier_charge, 13, soldierh_hyperripper8_done_dodge },
+    { ai_soldier_charge, 18, soldierh_hyperripper8 },
+    { ai_soldier_charge, 15, monster_footstep },
+    { ai_soldier_charge, 14, soldier_attack6_do_refire1 },
+    { ai_soldier_charge, 11, NULL },
+    { ai_soldier_charge,  8, monster_footstep },
+    { ai_soldier_charge, 11, soldier_attack6_cock },
+    { ai_soldier_charge, 12, NULL },
+    { ai_soldier_charge, 12, monster_footstep },
+    { ai_soldier_charge, 17, soldier_attack6_refire_tail }
 };
 mmove_t soldier_move_attack6 = {FRAME_runs01, FRAME_runs14, soldier_frames_attack6, soldier_run};
 
@@ -1028,6 +1377,32 @@ static void soldierh_hyperripper2(edict_t *self)
         soldier_fire(self, 1);
 }
 
+/*
+The remaining three burst shots.  hyperripper1/2 above ride the soldierh-only
+attack1/attack2 tables and so only need the skin test, but 3, 5 and 8 sit in the
+crouched attack, the prone attack and the run-and-shoot - tables the stock
+soldier plays as well.  The rerelease's test there is `s.skinnum >= 6 &&
+count < 4`, i.e. "is soldierh AND is not the lasergun", which is style == 1 and
+skinnum < 4 here.
+*/
+static void soldierh_hyperripper3(edict_t *self)
+{
+    if (self->style == 1 && self->s.skinnum < 4)
+        soldier_fire(self, 2);
+}
+
+static void soldierh_hyperripper5(edict_t *self)
+{
+    if (self->style == 1 && self->s.skinnum < 4)
+        soldier_fire(self, 8);
+}
+
+static void soldierh_hyperripper8(edict_t *self)
+{
+    if (self->style == 1 && self->s.skinnum < 4)
+        soldier_fire(self, 7);
+}
+
 static void soldierh_hyper_refire1(edict_t *self)
 {
     if (!self->enemy)
@@ -1049,7 +1424,7 @@ static void soldierh_hyper_refire2(edict_t *self)
 }
 
 mframe_t soldierh_frames_attack1 [] = {
-    { ai_charge, 0,  NULL },
+    { ai_charge, 0,  soldier_blind_check },
     { ai_charge, 0,  soldierh_hyper_laser_sound_start },
     { ai_charge, 0,  soldier_fire1 },
     { ai_charge, 0,  soldierh_hyperripper1 },
@@ -1091,24 +1466,98 @@ void soldier_attack(edict_t *self)
     // style 1 is the ripper / hypergun / lasergun family; the rerelease fires
     // those in bursts off their own frame tables
     bool hyper = M_RereleaseGame() && self->style == 1;
+    vec3_t  ignored;    // M_CheckClearShot's out-parameter; the shot start
 
     // NOTE: written as plain if/else on purpose.  genptr.py scrapes
     // `->monsterinfo.currentmove = &name` with a regex and cannot see through a
     // ternary - it silently harvests the CONDITION as a move name and drops the
     // real ones, which breaks the link and corrupts the save pointer table.
+    if (!M_RereleaseGame()) {
+        if (self->s.skinnum < 4) {
+            if (random() < 0.5f)
+                self->monsterinfo.currentmove = &soldier_move_attack1;
+            else
+                self->monsterinfo.currentmove = &soldier_move_attack2;
+        } else {
+            self->monsterinfo.currentmove = &soldier_move_attack4;
+        }
+        return;
+    }
+
+    monster_done_dodge(self);
+
+    // PMM - blindfire.  M_CheckAttack put us in AS_BLIND because the enemy is
+    // out of sight but recently seen; the chance ladder falls off with the
+    // accumulated delay.  Blind shots always use attack1 - soldier_blind_check
+    // on its first frame is what steers the aim at blind_fire_target.
+    if (self->monsterinfo.attack_state == AS_BLIND) {
+        float   chance;
+
+        if (self->monsterinfo.blind_fire_delay < 1.0f * BASE_FRAMERATE)
+            chance = 1.0f;
+        else if (self->monsterinfo.blind_fire_delay < 7.5f * BASE_FRAMERATE)
+            chance = 0.4f;
+        else
+            chance = 0.1f;
+
+        // minimum of 4.1 seconds, plus 0-3, after the shots are done
+        self->monsterinfo.blind_fire_delay += (4.1f + 3.0f * random()) * BASE_FRAMERATE;
+
+        // don't shoot at the origin
+        if (VectorEmpty(self->monsterinfo.blind_fire_target))
+            return;
+
+        if (random() > chance)
+            return;
+
+        // AI_MANUAL_STEERING signals both manual steering and blindfire
+        self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
+
+        if (hyper)
+            self->monsterinfo.currentmove = &soldierh_move_attack1;
+        else
+            self->monsterinfo.currentmove = &soldier_move_attack1;
+
+        self->monsterinfo.attack_finished =
+            level.framenum + (1.5f + random()) * BASE_FRAMERATE;
+        return;
+    }
+
+    // PMM - run TOWARDS the player and shoot rather than stopping to shoot.
+    // Not limited by M_CheckClearShot: at this range it does not matter.
+    if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) && random() < 0.25f &&
+        self->s.skinnum <= 3 &&
+        realrange(self, self->enemy) >= (SOLDIER_RANGE_NEAR * 0.5f)) {
+        self->monsterinfo.currentmove = &soldier_move_attack6;
+        return;
+    }
+
     if (self->s.skinnum < 4) {
-        if (random() < 0.5f) {
+        bool    attack1_possible;
+        bool    attack2_possible;
+
+        // [Paril-KEX] the shotgun guard only uses attack2 up close - attack1
+        // is its long pose and the spread makes it useless there
+        if (self->style == 0 && self->s.skinnum >= 2 && self->s.skinnum <= 3 &&
+            realrange(self, self->enemy) <= (SOLDIER_RANGE_NEAR * 0.65f))
+            attack1_possible = false;
+        else
+            attack1_possible = M_CheckClearShot(self, monster_flash_offset[MZ2_SOLDIER_BLASTER_1], ignored);
+
+        attack2_possible = M_CheckClearShot(self, monster_flash_offset[MZ2_SOLDIER_BLASTER_2], ignored);
+
+        if (attack1_possible && (!attack2_possible || random() < 0.5f)) {
             if (hyper)
                 self->monsterinfo.currentmove = &soldierh_move_attack1;
             else
                 self->monsterinfo.currentmove = &soldier_move_attack1;
-        } else {
+        } else if (attack2_possible) {
             if (hyper)
                 self->monsterinfo.currentmove = &soldierh_move_attack2;
             else
                 self->monsterinfo.currentmove = &soldier_move_attack2;
         }
-    } else {
+    } else if (M_CheckClearShot(self, monster_flash_offset[MZ2_SOLDIER_MACHINEGUN_4], ignored)) {
         self->monsterinfo.currentmove = &soldier_move_attack4;
     }
 }
@@ -1120,14 +1569,34 @@ void soldier_attack(edict_t *self)
 
 void soldier_sight(edict_t *self, edict_t *other)
 {
+    vec3_t  ignored;    // M_CheckClearShot's out-parameter
+
     if (random() < 0.5f)
         gi.sound(self, CHAN_VOICE, sound_sight1, 1, ATTN_NORM, 0);
     else
         gi.sound(self, CHAN_VOICE, sound_sight2, 1, ATTN_NORM, 0);
 
-    if ((skill->value > 0) && (range(self, self->enemy) >= RANGE_MID)) {
-        if (random() > 0.5f)
-            self->monsterinfo.currentmove = &soldier_move_attack6;
+    if (!M_RereleaseGame()) {
+        if ((skill->value > 0) && (range(self, self->enemy) >= RANGE_MID)) {
+            if (random() > 0.5f)
+                self->monsterinfo.currentmove = &soldier_move_attack6;
+        }
+        return;
+    }
+
+    // [Paril-KEX] the rerelease drops the skill test and adds a visibility one -
+    // don't break into a run-and-shoot at something you cannot see.  The
+    // soldierh family always takes it; the stock soldier one time in four.
+    if (self->enemy && realrange(self, self->enemy) >= SOLDIER_RANGE_NEAR &&
+        visible(self, self->enemy)) {
+        if (self->style == 1 || random() > 0.75f) {
+            // legacy bug fix: no run-and-shoot for the machinegun and lasergun
+            // soldiers, whose animation for it reads wrong
+            if (self->s.skinnum < 4)
+                self->monsterinfo.currentmove = &soldier_move_attack6;
+            else if (M_CheckClearShot(self, monster_flash_offset[MZ2_SOLDIER_MACHINEGUN_4], ignored))
+                self->monsterinfo.currentmove = &soldier_move_attack4;
+        }
     }
 }
 
@@ -1178,6 +1647,8 @@ static bool soldier_prone_shoot_ok(edict_t *self)
 
 void soldier_stand_up(edict_t *self)
 {
+    soldierh_hyper_laser_sound_end(self);
+
     // rejoin the trip animation at its get-back-up half
     self->monsterinfo.currentmove = &soldier_move_trip;
     self->monsterinfo.nextframe = FRAME_runt08;
@@ -1199,13 +1670,13 @@ void soldier_fire5(edict_t *self)
 
 mframe_t soldier_frames_attack5 [] = {
     { ai_move, 18, monster_duck_down },
-    { ai_move, 11, NULL },
-    { ai_move, 0,  NULL },
+    { ai_move, 11, monster_footstep },
+    { ai_move, 0,  monster_footstep },
     { ai_soldier_move, 0, NULL },
-    { ai_soldier_move, 0, NULL },
+    { ai_soldier_move, 0, soldierh_hyper_laser_sound_start },
     { ai_soldier_move, 0, soldier_fire5 },
-    { ai_soldier_move, 0, NULL },
-    { ai_soldier_move, 0, NULL }
+    { ai_soldier_move, 0, soldierh_hyperripper5 },
+    { ai_soldier_move, 0, soldierh_hyperripper5 }
 };
 mmove_t soldier_move_attack5 = {FRAME_attak501, FRAME_attak508, soldier_frames_attack5, soldier_stand_up};
 
@@ -1215,6 +1686,10 @@ static void monster_check_prone(edict_t *self)
 {
     if (!M_RereleaseAnims())
         return;     // attak501-508 do not exist on the classic md2
+
+    // a shotgun guard waiting to cock cannot fire from the ground either
+    if (self->style == 0 && self->s.skinnum >= 2 && self->s.skinnum <= 3 && self->dmg)
+        return;
 
     if (!soldier_prone_shoot_ok(self))
         return;     // not going to shoot at this angle
@@ -1233,7 +1708,7 @@ static void monster_check_prone(edict_t *self)
 void soldier_blind(edict_t *self);
 
 mframe_t soldier_frames_blind [] = {
-    { ai_move, 0, NULL },
+    { ai_move, 0, soldier_idle },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
@@ -1348,9 +1823,12 @@ bool soldier_sidestep(edict_t *self)
         self->monsterinfo.currentmove == &soldier_move_pain4)
         return false;
 
-    // self->count <= 3 is the rerelease's "still has burst left" test: keep
-    // firing from the run rather than breaking off
-    if (self->count <= 3) {
+    // their `self->count <= 3` is "not the machinegun/lasergun": keep firing
+    // from the run rather than breaking off.  This read self->count directly,
+    // which no soldier in this tree ever sets - so it was always 0, always
+    // true, and the machinegun soldier run-and-shot too.  count maps to
+    // s.skinnum here; see the header comment.
+    if (self->s.skinnum <= 3) {
         if (self->monsterinfo.currentmove != &soldier_move_attack6) {
             self->monsterinfo.currentmove = &soldier_move_attack6;
             soldierh_hyper_laser_sound_end(self);
@@ -1432,9 +1910,31 @@ void soldier_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, boo
 // DEATH
 //
 
+/*
+=================
+soldier_blocked
+
+monsterinfo.blocked.  The soldier has no jump animations, so unlike the gunner
+this is the plat half only - it rides a moving platform instead of walking into
+its edge.  Nothing while it is already dodging or ducked.
+=================
+*/
+bool soldier_blocked(edict_t *self, float dist)
+{
+    if ((self->monsterinfo.aiflags & AI_DODGING) || (self->monsterinfo.aiflags & AI_DUCKED))
+        return false;
+
+    return blocked_checkplat(self, dist);
+}
+
 void soldier_fire6(edict_t *self)
 {
     soldier_fire(self, 5);
+
+    // a shotgun soldier shot in the middle of its death fires once and then
+    // skips the rest of the reload it can no longer finish
+    if (M_RereleaseGame() && self->dmg)
+        self->monsterinfo.nextframe = FRAME_death126;
 }
 
 void soldier_fire7(edict_t *self)
@@ -1902,6 +2402,11 @@ void SP_monster_soldier_x(edict_t *self)
         self->monsterinfo.duck = soldier_duck;
         self->monsterinfo.unduck = monster_duck_up;
         self->monsterinfo.sidestep = soldier_sidestep;
+        self->monsterinfo.blocked = soldier_blocked;
+        // PMM - shoot at where you last saw them through a wall.  attack1 is
+        // the blind volley; soldier_blind_check on its first frame does the
+        // aiming.  Named `blindfire` after the rerelease's own opt-in field.
+        self->monsterinfo.blindfire = true;
     }
     self->monsterinfo.attack = soldier_attack;
     self->monsterinfo.melee = NULL;

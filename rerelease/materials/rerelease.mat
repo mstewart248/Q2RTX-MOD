@@ -19456,6 +19456,7 @@ textures/tomf/reflt3_1b:
  	texture_normals materialDev/textures/tomf/reflt3_1b_n.tga
  	texture_emissive materialDev/textures/tomf/reflt3_1b_light.tga
  	emissive_factor 10.0
+	is_light 1
 
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
@@ -24558,6 +24559,7 @@ textures/white:
  	texture_emissive materialDev/textures/white_light.tga
  	emissive_factor 3.0
  	metalness_factor 0
+	is_light 1
 
 textures/zor_temp/door2:
 	texture_base materialDev/textures/zor_temp/door2.tga
