@@ -1,0 +1,330 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/*
+==============================================================================
+
+FROXEL SCATTER - fill one cell of the view-frustum volume.
+
+One thread per froxel.  Works out the cell's world position, evaluates the same
+medium god_rays.comp marches through (fog_medium.glsl, shared verbatim), and
+writes the in-scattered radiance and the extinction coefficient.
+
+This is the pass that makes the volumetric affordable.  The march in
+god_rays.comp evaluates the map's lights and a sky-visibility ray at EVERY step
+of EVERY pixel; here each cell is evaluated once, and there are ~40x fewer cells
+than there are pixel-steps.  It is also what lets the result be reused across
+frames - a froxel is a fixed point in view space, so last frame's volume can be
+reprojected into this one, and that temporal blend is what removes the noise
+that one-sample-per-step could never lose.
+
+WHAT THIS DOES NOT FIX.  The local-light term still uses the CAMERA's cluster
+for every cell, exactly as the march did, so the pop when the player crosses a
+cluster boundary is unchanged.  Doing better needs a point-to-cluster lookup on
+the GPU, and there is none: clusters reach the shaders only as
+`triangle.cluster` off a ray hit (primary_rays.rgen), because the BSP node and
+leaf arrays are never uploaded.  That is a separate piece of work, not something
+the grid provides for free.
+
+==============================================================================
+*/
+
+#version 460
+#extension GL_EXT_samplerless_texture_functions : enable
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+#extension GL_EXT_ray_query               : enable
+
+#include "constants.h"
+#include "utils.glsl"
+
+#define GOD_RAYS_DESC_SET_IDX 0
+#include "god_rays_shared.h"
+
+#define GLOBAL_UBO_DESC_SET_IDX 2
+#include "global_ubo.h"
+
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#define VERTEX_READONLY 1
+#include "vertex_buffer.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 3
+#include "global_textures.h"
+
+#include "froxel_shared.h"
+
+// fog_medium.glsl needs a rand(ivec2); the march seeds it per pixel, this pass
+// seeds it per cell so neighbouring froxels take different light subsets and
+// the spatial blur in the integrate pass has something to average.
+float rand(ivec2 pos)
+{
+	int texnum = global_ubo.current_frame_idx & (NUM_BLUE_NOISE_TEX - 1);
+	ivec2 texpos = pos & ivec2(BLUE_NOISE_RES - 1);
+	return texelFetch(TEX_BLUE_NOISE, ivec3(texpos, texnum), 0).r;
+}
+
+// GetShadow is used by the sun term; the march's copy lives in god_rays.comp,
+// so this pass carries its own. Identical body.
+float GetShadow(vec3 worldPos, out float distanceToWater)
+{
+	vec4 uvzShadow = global_ubo.shadow_map_VP * vec4(worldPos, 1);
+	uvzShadow.x = uvzShadow.x * 0.5 + 0.5;
+	uvzShadow.y = 0.5 - 0.5 * uvzShadow.y;
+
+	float depthOpaque = textureLod(TEX_SHADOW_MAP, vec3(uvzShadow.xy, 0), 0).x;
+	float depthWater  = textureLod(TEX_SHADOW_MAP, vec3(uvzShadow.xy, 1), 0).x;
+
+	distanceToWater = max(0, uvzShadow.z - depthWater) * global_ubo.shadow_map_depth_scale;
+
+	return depthOpaque > uvzShadow.z ? 1 : 0;
+}
+
+const float PI = 3.1415926535;
+
+#define NORMALIZE_PHASE_FUNCTIONS 1
+
+float ScatterPhase_HenyeyGreenstein(float cosa, float g)
+{
+	float g_sqr = g * g;
+	float num = (1 - abs(g));
+	float denom = sqrt(max(1 - 2 * g * cosa + g_sqr, 0));
+	float frac = num / denom;
+	float scale = g_sqr + (1 - g_sqr) / (4 * PI);
+	return scale * (frac * frac * frac);
+}
+
+float vmin(vec3 v) { return min(v.x, min(v.y, v.z)); }
+float vmax(vec3 v) { return max(v.x, max(v.y, v.z)); }
+
+#include "fog_medium.glsl"
+
+// Bindings 0 and 1 on this set are the shadow map and the fog TLAS, declared
+// by god_rays_shared.h above; the froxel volumes start at 2. See god_rays.c.
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 2, rgba16f) uniform image3D IMG_FROXEL_SCATTER;
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 3) uniform sampler3D TEX_FROXEL_HISTORY;
+
+/*
+Froxel centre -> world position.
+
+x and y are NDC across the screen; z is the exponential depth slice.  The jitter
+moves the sample point inside its own cell every frame, so what the temporal
+blend below accumulates is a stratified estimate of the cell rather than the
+same corner over and over.  Without it the volume converges to a grid of point
+samples and the banding stays.
+*/
+vec3 froxel_to_world(ivec3 cell, vec3 jitter)
+{
+	vec2 ndc = ((vec2(cell.xy) + jitter.xy) / vec2(FROXEL_GRID_X, FROXEL_GRID_Y)) * 2.0 - 1.0;
+
+	float view_depth = FROXEL_SLICE_TO_DEPTH(float(cell.z) + jitter.z);
+
+	// unproject: take a point on the near plane and push it out to view_depth.
+	// invP maps clip -> view; the perspective divide leaves a direction whose z
+	// is -1 in this projection's convention, so scaling by view_depth lands the
+	// point at exactly that depth rather than at that distance.
+	vec4 view_h = global_ubo.invP * vec4(ndc, 0.0, 1.0);
+	vec3 view_dir = view_h.xyz / view_h.w;
+	view_dir /= max(abs(view_dir.z), 1e-6);
+
+	vec3 view_pos = view_dir * view_depth;
+
+	return (global_ubo.invV * vec4(view_pos, 1.0)).xyz;
+}
+
+/*
+World position -> the UVW that samples the PREVIOUS frame's volume.
+
+Returns false when the point falls outside last frame's frustum or in front of
+its near plane, which is the case that must not be blended - reading a clamped
+edge texel there smears the volume sideways whenever the player turns.
+*/
+bool world_to_prev_froxel_uvw(vec3 world_pos, out vec3 uvw)
+{
+	uvw = vec3(0);
+
+	vec4 view_prev = global_ubo.V_prev * vec4(world_pos, 1.0);
+	float depth_prev = -view_prev.z;
+
+	if (depth_prev < FROXEL_NEAR || depth_prev > FROXEL_FAR)
+		return false;
+
+	vec4 clip_prev = global_ubo.P_prev * view_prev;
+	if (clip_prev.w <= 0.0)
+		return false;
+
+	vec2 ndc = clip_prev.xy / clip_prev.w;
+	if (any(greaterThan(abs(ndc), vec2(1.0))))
+		return false;
+
+	uvw.xy = ndc * 0.5 + 0.5;
+	uvw.z = FROXEL_DEPTH_TO_SLICE(depth_prev) / float(FROXEL_GRID_Z);
+
+	return true;
+}
+
+layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
+void main()
+{
+	ivec3 cell = ivec3(gl_GlobalInvocationID.xy, 0);
+
+	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y)
+		return;
+
+	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 2);
+	vec3 sun_color = sun_color_ubo.sun_color;
+
+	// Same bail as the march: nothing to scatter means an empty volume rather
+	// than a wasted pass. The integrate pass reads what this writes, so the
+	// cells still have to be cleared.
+	bool have_light = (luminance(sun_color) != 0) || fog_lights;
+
+	// One blue-noise value per column, offset per slice below. Sampling the
+	// texture once and stepping it is much cheaper than a fetch per slice, and
+	// the sequence only has to decorrelate neighbours.
+	float base_rand = rand(cell.xy);
+
+	// A whole column is walked by one thread so the jitter and the history
+	// lookup can share setup, and because the integrate pass wants the same
+	// access pattern.
+	for (int z = 0; z < FROXEL_GRID_Z; z++)
+	{
+		cell.z = z;
+
+		if (!have_light)
+		{
+			imageStore(IMG_FROXEL_SCATTER, cell, vec4(0));
+			continue;
+		}
+
+		float r1 = fract(base_rand + float(z) * 0.6180339887);
+		float r2 = fract(base_rand + float(z) * 0.3247179572);
+		float r3 = fract(base_rand + float(z) * 0.7548776662);
+
+		vec3 world_pos = froxel_to_world(cell, vec3(r1, r2, r3));
+
+		float density = getDensity(world_pos);
+
+		vec4 result = vec4(0);
+
+		if (density > 0)
+		{
+			vec3 albedo = getFogColor(world_pos);
+
+			// The view direction at this cell, for the sun's phase function.
+			vec3 to_cell = world_pos - global_ubo.cam_pos.xyz;
+			float cell_dist = length(to_cell);
+			vec3 view_dir = (cell_dist > 1e-4) ? to_cell / cell_dist : vec3(0, 0, 1);
+
+			float eccentricity = global_ubo.god_rays_eccentricity;
+			if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_eccentricity >= 0.0)
+				eccentricity = global_ubo.pt_fog_eccentricity;
+
+			float cosa = dot(view_dir, global_ubo.sun_direction);
+			float phase = ScatterPhase_HenyeyGreenstein(cosa, eccentricity);
+
+			// --- the sun, through the shadow map ---
+			float distanceToWater;
+			float shadow = GetShadow(world_pos - global_ubo.sun_direction * 20, distanceToWater);
+
+			float scatter = shadow * phase;
+			if (global_ubo.pt_fog_ambient > 0.0)
+				scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
+
+			/*
+			THE TWO TERMS CARRY DIFFERENT SCALES, and they are not
+			interchangeable - getting this wrong is what a first attempt did,
+			and the result was not subtly off, it was a black screen with one
+			blown-out patch (the tone mapper adapting to the over-bright fog).
+
+			god_rays.comp applies both at the very END of its march, after the
+			accumulation, which is easy to miss when reading the loop alone:
+
+			  sun    * sun_color * god_rays_intensity * 0.0001   (:385)
+			  lights * pt_fog_light_scale * 0.005               (:402)
+
+			The 0.0001 exists because sun_color is of order 1e4; the 0.005
+			because a light-buffer entry is radiance * triangle area, which is
+			larger again. They differ by more than two orders of magnitude, so
+			the terms have to be scaled separately and only then summed.
+			*/
+			vec3 inscatter = scatter * sun_color
+			               * global_ubo.god_rays_intensity * 0.0001;
+
+			// --- the map's own lights and the sky ---
+			if (fog_lights)
+			{
+				uint cluster = (global_ubo.fog_camera_cluster < 0)
+				             ? ~0u : uint(global_ubo.fog_camera_cluster);
+
+				inscatter += FOG_ISOTROPIC_PHASE
+				           * getClusterLightInscatter(cluster, world_pos, r1)
+				           * global_ubo.pt_fog_light_scale * 0.005;
+			}
+
+			// Radiance per unit length, so the integrate pass only has to
+			// multiply by the slice thickness. albedo is the medium's own
+			// scattering colour and belongs on both terms.
+			//
+			// NOT ported from the march: its per-step multiply by the path
+			// tracer's own `throughput`. That is a per-PIXEL quantity and a
+			// froxel has no pixel, so the grid assumes 1 - correct for a
+			// primary ray, and an over-estimate for fog seen through glass or
+			// water. Those are exactly the cases the march still handles, since
+			// it keeps running for the reflection/refraction passes.
+			result.rgb = inscatter * albedo * density;
+
+			// Extinction per unit length. pt_fog_extinction 0 keeps the legacy
+			// flat value, the same escape hatch the march has.
+			float sigma = (global_ubo.pt_fog_extinction > 0.0)
+			            ? global_ubo.pt_fog_extinction : 0.0001;
+			result.a = density * sigma;
+		}
+
+		// --- TEMPORAL REUSE ---
+		//
+		// This is where the noise goes. One frame of this volume is a single
+		// stochastic light sample per cell and looks like static; blending a
+		// fixed fraction of last frame's answer turns it into an exponential
+		// moving average over ~10 frames, which is what makes the fog read as
+		// smooth without any spatial blur wide enough to soften the shafts.
+		//
+		// Rejection is on the frustum test alone - deliberately. The usual
+		// extra guard is a neighbourhood clamp against this frame's own
+		// samples, but with one sample per cell there is no neighbourhood worth
+		// clamping to, and clamping to a noisy estimate reintroduces the noise
+		// it was meant to remove. What that costs is a ghost trail behind a
+		// moving light, which is bounded by the blend weight and is the same
+		// trade the ASVGF passes make.
+		if (global_ubo.pt_fog_froxel_history > 0.0)
+		{
+			vec3 uvw;
+			if (world_to_prev_froxel_uvw(world_pos, uvw))
+			{
+				vec4 history = textureLod(TEX_FROXEL_HISTORY, uvw, 0);
+
+				// A history texel that has never been written is exactly zero;
+				// blending towards it would darken a newly visible cell for
+				// several frames, so only accept one that carries something.
+				if (history.a > 0.0 || dot(history.rgb, vec3(1.0)) > 0.0)
+					result = mix(result, history, global_ubo.pt_fog_froxel_history);
+			}
+		}
+
+		imageStore(IMG_FROXEL_SCATTER, cell, result);
+	}
+}

@@ -1086,7 +1086,6 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAY_LENGTH]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS]);
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_METALLIC]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO]);
 
 
@@ -1160,11 +1159,8 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_SPECULAR]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO]);
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_SPECULAR]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS]);
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_METALLIC]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_NORMAL]);
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_MATERIALID]);
 
 	if (cvar_pt_restir->value != 0) {
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_A + frame_idx]);

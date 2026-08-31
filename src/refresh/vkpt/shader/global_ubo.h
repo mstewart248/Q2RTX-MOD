@@ -154,7 +154,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_eccentricity, -1.0) /* map-fog scattering directionality, 0 = even in all directions .. 0.95 = tight shafts; -1 follows gr_eccentricity */ \
 	UBO_CVAR_DO(pt_fog_ambient, 0.0) /* fraction of the sun's radiance that lights map fog IN SHADOW, isotropically; 0 = the hard shadow-map cliff this always had */ \
 	UBO_CVAR_DO(pt_fog_extinction, 0.0) /* real extinction per unit density for map fog, so a long ray SATURATES instead of accumulating without bound; 0 = the legacy flat 0.0001 */ \
-	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ \
+	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ 	UBO_CVAR_DO(pt_fog_froxel, 0.0) /* 1 = evaluate map fog in the froxel grid (cheap, temporally reused); 0 = the old per-pixel march in god_rays.comp */ 	UBO_CVAR_DO(pt_fog_froxel_history, 0.9) /* how much of the PREVIOUS frame's froxel volume to keep; this is what removes the noise. 0 disables temporal reuse */ \
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *

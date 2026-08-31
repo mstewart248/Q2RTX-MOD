@@ -754,19 +754,12 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_TAA_OUTPUT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_RAY_LENGTH]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
-    //BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_TRANSPARENT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_MOTION]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_REFLECT_MOTION]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_ALBEDO]);
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_SPECULAR]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_ROUGHNESS]);
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_METALLIC]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_NORMAL]);
-    //BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_MATERIALID]);
-    //BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_EMISSIVE]);
-    //BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE]);
@@ -787,9 +780,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
     NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R32G32_SFLOAT, false);
     NVSDK_NGX_Resource_VK albedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK specular = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK metallic = ToNGXResource(qvk.images[VKPT_IMG_DLSS_METALLIC], qvk.images_views[VKPT_IMG_DLSS_METALLIC], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK normal = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK beforeTransparent = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
@@ -802,96 +793,71 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 
     switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
         case 1:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
-            break;
-        case 2:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_3DMOTION_VECTOR], qvk.images_views[VKPT_IMG_DLSS_3DMOTION_VECTOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 3:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R32G32_SFLOAT, false);
             break;
-        case 4:
+        case 2:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 5:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 6:
+        case 3:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 7:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_METALLIC], qvk.images_views[VKPT_IMG_DLSS_METALLIC], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 8:
+        case 4:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 9:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_MATERIALID], qvk.images_views[VKPT_IMG_DLSS_MATERIALID], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 10:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_EMISSIVE], qvk.images_views[VKPT_IMG_DLSS_EMISSIVE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 11:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_INDIRECT_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 12:
+        case 5:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 13:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
-            break;
-        case 14:
+        case 6:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
             break;
-        case 15:
+        case 7:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 16:
+        case 8:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 17:
+        case 9:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 18:
+        case 10:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 19:
+        case 11:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_TRANSPARENT], qvk.images_views[VKPT_IMG_PT_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 20:
+        case 12:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_MOTION], qvk.images_views[VKPT_IMG_PT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 21:
+        case 13:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 22:
+        case 14:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_ASVGF_HIST_COLOR_HF], qvk.images_views[VKPT_IMG_ASVGF_HIST_COLOR_HF], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 23:
+        case 15:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_SHADING_POSITION], qvk.images_views[VKPT_IMG_PT_SHADING_POSITION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 24:
+        case 16:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_COLOR], qvk.images_views[VKPT_IMG_FLAT_COLOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 25:
+        case 17:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_MOTION], qvk.images_views[VKPT_IMG_FLAT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 26:
+        case 18:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 27:
+        case 19:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_THROUGHPUT], qvk.images_views[VKPT_IMG_PT_THROUGHPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 28:
+        case 20:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_BOUNCE_THROUGHPUT], qvk.images_views[VKPT_IMG_PT_BOUNCE_THROUGHPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 29:
+        case 21:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_HQ_COLOR_INTERLEAVED], qvk.images_views[VKPT_IMG_HQ_COLOR_INTERLEAVED], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-        case 30:
+        case 22:
             unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
             break;
-
     }
 
 

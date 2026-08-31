@@ -269,10 +269,7 @@ main()
 		imageStore(IMG_PT_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
 		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
 		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(1.0));
-		imageStore(IMG_PT_METALLIC, ipos, vec4(0.0));
 		imageStore(IMG_PT_NORMAL, ipos, vec4(-direction, 0));
-		imageStore(IMG_PT_MATERIALID, ipos, vec4(0, 0, 0, 0));
-		imageStore(IMG_PT_EMISSIVE, ipos, vec4(0));
 		return;
 	}
 
@@ -381,7 +378,6 @@ main()
     	primary_specular_factor);
 
 	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
-	imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
 
 	vec3 primary_albedo, primary_base_reflectivity;
 	get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
@@ -487,15 +483,6 @@ main()
 		}
 	}
 
-	if(is_water(material_id) || is_glass(material_id)) {
-		if(primary_albedo[0] > 0 || primary_albedo[1] > 0 || primary_albedo[2] > 0) {
-			imageStore(IMG_PT_COMPOSITE_TRANSPARENT, ipos, vec4(primary_albedo, 0));
-		}
-		else {
-			imageStore(IMG_PT_COMPOSITE_TRANSPARENT, ipos, vec4(primary_base_reflectivity, 0));
-		}
-	}
-
 	if(is_water(material_id) || is_slime(material_id))
 	{
 		normal = get_water_normal(material_id, geo_normal, triangle.tangents[0], position, false);
@@ -535,7 +522,6 @@ main()
 	imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(primary_base_color, primary_specular_factor));	
 	imageStore(IMG_PT_METALLIC_A, ipos, vec4(primary_metallic, primary_roughness, 0, 0));
 	imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(1, 1, 1, distance_curr));
-	imageStore(IMG_PT_EMISSIVE, ipos, vec4(primary_emissive, 0));
 
 	// Debug visualization of the PVS (Potentially Visible Set)
 	if(triangle.cluster >= 0 && global_ubo.cluster_debug_index >= 0)

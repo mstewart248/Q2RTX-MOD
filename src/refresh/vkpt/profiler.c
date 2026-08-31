@@ -25,6 +25,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 extern cvar_t *cvar_profiler_scale;
 extern cvar_t *cvar_pt_reflect_refract;
+extern cvar_t *cvar_pt_fog_froxel;
 extern cvar_t *cvar_flt_fsr_enable;
 extern cvar_t *cvar_profiler_samples;
 
@@ -343,6 +344,12 @@ draw_profiler(int enable_asvgf)
 	PROFILER_DO(PROFILER_GOD_RAYS, 1);
 	PROFILER_DO(PROFILER_GOD_RAYS_REFLECT_REFRACT, 1);
 	PROFILER_DO(PROFILER_GOD_RAYS_FILTER, 1);
+	if (cvar_pt_fog_froxel && cvar_pt_fog_froxel->integer)
+	{
+		PROFILER_DO(PROFILER_FOG_FROXEL, 1);
+		PROFILER_DO(PROFILER_FOG_FROXEL_SCATTER, 2);
+		PROFILER_DO(PROFILER_FOG_FROXEL_INTEGRATE, 2);
+	}
 	if (enable_asvgf)
 	{
 		PROFILER_DO(PROFILER_ASVGF_FULL, 1);

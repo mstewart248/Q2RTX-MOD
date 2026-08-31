@@ -1,0 +1,110 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/*
+==============================================================================
+
+FROXEL INTEGRATE - turn per-cell scattering into a lookup table.
+
+One thread per screen COLUMN of the volume; each walks its 64 slices front to
+back and accumulates.  After this pass, cell (x,y,z) holds:
+
+    rgb  total in-scattered radiance between the eye and the FAR face of slice z
+    a    transmittance from the eye to that same face
+
+so a consumer needs a single 3D texture fetch at its own depth instead of a
+march.  That is the whole point of the grid: the expensive work happened in
+froxel_scatter.comp, and what is left is a prefix sum.
+
+The analytic integration below is the standard one for a homogeneous slab, and
+it matters.  Naively accumulating `scatter * thickness * transmittance` is a
+left Riemann sum, and the slices here are exponentially distributed - the far
+ones are hundreds of units thick - so that sum badly over-counts wherever the
+medium is thick enough to absorb within a single slice.  In practice it reads as
+distant fog that is far too bright.  Integrating the slab exactly removes the
+dependence on slice thickness entirely.
+
+==============================================================================
+*/
+
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+// god_rays_shared.h declares the fog TLAS; this pass never traces, but the type
+// has to be known for the header to parse - the same note god_rays_filter.comp
+// carries.
+#extension GL_EXT_ray_query : enable
+
+#define GOD_RAYS_DESC_SET_IDX 0
+#include "god_rays_shared.h"
+
+#define GLOBAL_UBO_DESC_SET_IDX 2
+#include "global_ubo.h"
+
+#include "froxel_shared.h"
+
+// 0 and 1 on this set are the shadow map and the fog TLAS (god_rays_shared.h).
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 2, rgba16f) uniform image3D IMG_FROXEL_SCATTER;
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 4, rgba16f) uniform image3D IMG_FROXEL_INTEGRATED;
+
+layout(local_size_x = FROXEL_INT_GROUP_X, local_size_y = FROXEL_INT_GROUP_Y, local_size_z = 1) in;
+void main()
+{
+	ivec2 column = ivec2(gl_GlobalInvocationID.xy);
+
+	if (column.x >= FROXEL_GRID_X || column.y >= FROXEL_GRID_Y)
+		return;
+
+	vec3 accum_inscatter = vec3(0);
+	float transmittance = 1.0;
+
+	float near_depth = FROXEL_NEAR;
+
+	for (int z = 0; z < FROXEL_GRID_Z; z++)
+	{
+		ivec3 cell = ivec3(column, z);
+
+		vec4 slice = imageLoad(IMG_FROXEL_SCATTER, cell);
+
+		float far_depth = FROXEL_SLICE_TO_DEPTH(float(z) + 1.0);
+		float thickness = max(far_depth - near_depth, 0.0);
+		near_depth = far_depth;
+
+		vec3 scatter = slice.rgb;      // radiance per unit length
+		float sigma = max(slice.a, 0.0);   // extinction per unit length
+
+		if (sigma > 1e-7)
+		{
+			// Exact integral of scatter * exp(-sigma * t) over [0, thickness],
+			// which is scatter/sigma * (1 - exp(-sigma * thickness)). This is
+			// the term that stops thick far slices from over-contributing.
+			float slice_transmittance = exp(-sigma * thickness);
+			vec3 slice_inscatter = (scatter / sigma) * (1.0 - slice_transmittance);
+
+			accum_inscatter += slice_inscatter * transmittance;
+			transmittance *= slice_transmittance;
+		}
+		else
+		{
+			// No meaningful extinction: the exponential collapses to the
+			// straight product, and dividing by sigma above would blow up.
+			accum_inscatter += scatter * thickness * transmittance;
+		}
+
+		imageStore(IMG_FROXEL_INTEGRATED, cell, vec4(accum_inscatter, transmittance));
+	}
+}

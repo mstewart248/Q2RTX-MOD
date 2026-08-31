@@ -251,6 +251,13 @@ typedef struct picked_surface_format_s {
 
 void debug_output(const char* format, ...);
 static void recreate_swapchain(void);
+
+/* Which optional screen-image groups the CURRENT set of images was allocated for.
+   vkpt_create_images() only allocates the groups the configuration uses, so turning
+   A-SVGF, FSR or photo mode back on has to rebuild them - otherwise the pass that was
+   just re-enabled writes into the 1x1 placeholders. ~0u forces the first comparison to
+   miss, which is right: nothing is allocated yet. */
+static uint32_t screen_image_profile_current = ~0u;
 // Why the most recent swapchain (re)create happened, for the Swapchain: log line.
 static const char *swapchain_reason = "initial create";
 
@@ -4331,32 +4338,10 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 			);
 
-		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_SPECULAR], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
-
-		IMAGE_BARRIER(trace_cmd_buf,
-			.image = qvk.images[VKPT_IMG_PT_SPECULAR],
-			.subresourceRange = subresource_range_reflect,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
-
 		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
 
 		IMAGE_BARRIER(trace_cmd_buf,
 			.image = qvk.images[VKPT_IMG_PT_ROUGHNESS],
-			.subresourceRange = subresource_range_reflect,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
-
-		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_METALLIC], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
-
-		IMAGE_BARRIER(trace_cmd_buf,
-			.image = qvk.images[VKPT_IMG_PT_METALLIC],
 			.subresourceRange = subresource_range_reflect,
 			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
 			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
@@ -4378,40 +4363,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 
 
-		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_MATERIALID], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
 
-		IMAGE_BARRIER(trace_cmd_buf,
-			.image = qvk.images[VKPT_IMG_PT_MATERIALID],
-			.subresourceRange = subresource_range_reflect,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
-
-
-		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_EMISSIVE], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
-
-		IMAGE_BARRIER(trace_cmd_buf,
-			.image = qvk.images[VKPT_IMG_PT_EMISSIVE],
-			.subresourceRange = subresource_range_reflect,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
-
-
-		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_INDIRECT_ALBEDO], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
-
-		IMAGE_BARRIER(trace_cmd_buf,
-			.image = qvk.images[VKPT_IMG_PT_INDIRECT_ALBEDO],
-			.subresourceRange = subresource_range_reflect,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
 
 
 		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_SPECULAR_ALBEDO], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
@@ -4483,17 +4435,6 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 			);
 		
-
-		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_COMPOSITE_TRANSPARENT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
-
-		IMAGE_BARRIER(trace_cmd_buf,
-			.image = qvk.images[VKPT_IMG_PT_COMPOSITE_TRANSPARENT],
-			.subresourceRange = subresource_range_reflect,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
 
 		_VK(vkpt_profiler_query(trace_cmd_buf, PROFILER_FRAME_TIME, PROFILER_START));
 
@@ -4587,6 +4528,16 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS);
 			vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 0);
 			END_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS);
+		}
+
+		// [froxel grid] the map fog's cheap path. Runs after the march - which
+		// still produces the sun shafts - and before the filter, which is what
+		// reads the integrated volume this writes.
+		if (god_rays_enabled && vkpt_froxel_enabled())
+		{
+			BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_FOG_FROXEL);
+			vkpt_record_froxel_command_buffer(trace_cmd_buf);
+			END_PERF_MARKER(trace_cmd_buf, PROFILER_FOG_FROXEL);
 		}
 
 		if (ref_mode.reflect_refract > 0)
@@ -5024,20 +4975,24 @@ R_BeginFrame_RTX(void)
 	qvk.gpu_slice_width = (get_pt_packed_width() + qvk.device_count - 1) / qvk.device_count;
 	
 	VkExtent2D extent_screen_images = get_screen_image_extent();
+	uint32_t screen_image_profile = vkpt_screen_image_profile();
 
 	if(!extents_equal(extent_screen_images, qvk.extent_screen_images) || (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync)
 	   || (!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox)
+	   || (screen_image_profile != screen_image_profile_current)
 	   || (desired_swapchain_images() != swapchain_requested_images)
 	   || (fg_wants_no_vsync() != swapchain_fg_forced_no_vsync))
 	{
 		swapchain_reason =
 			!extents_equal(extent_screen_images, qvk.extent_screen_images) ? "screen image extent changed" :
+			(screen_image_profile != screen_image_profile_current) ? "screen image profile changed" :
 			(!!cvar_hdr->integer != qvk.surf_is_hdr) ? "vid_hdr changed" :
 			(!!cvar_vsync->integer != qvk.surf_vsync) ? "vid_vsync changed" :
 			(!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox) ? "vid_vsync_mailbox changed" :
 			(desired_swapchain_images() != swapchain_requested_images)
 			? "swapchain image count changed" : "frame generation vsync override changed";
 		qvk.extent_screen_images = extent_screen_images;
+		screen_image_profile_current = screen_image_profile;
 		recreate_swapchain();
 	}
 
@@ -6018,138 +5973,113 @@ VkImage GetDLSSImage() {
 	switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
 	
 	case 1:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAY_LENGTH];
-		break;
-	case 2:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_3DMOTION_VECTOR];
-		break;
-	case 3:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION];
 		break;
-	case 4:
+	case 2:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_ALBEDO];
 		break;
-	case 5:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_SPECULAR];
-		break;
-	case 6:
+	case 3:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_ROUGHNESS];
 		break;
-	case 7:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_METALLIC];
-		break;
-	case 8:
+	case 4:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_NORMAL];
 		break;
-	case 9:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_MATERIALID];
-		break;
-	case 10:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_EMISSIVE];
-		break;
-	case 11:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO];
-		break;
-	case 12:
+	case 5:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO];
 		break;
-	case 13:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_TRANSPARENT];
-		break;
-	case 14:
+	case 6:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_DEPTH];
 		break;
-	case 15:
+	case 7:
 		DisplayImage = qvk.images[VKPT_IMG_PT_DLSS_MOTION];
 		break;
-	case 16:
+	case 8:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT];
 		break;
-	case 17:
+	case 9:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE];
 		break;
-	case 18:
+	case 10:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR];
 		break;
-	case 19:
+	case 11:
 		DisplayImage = qvk.images[VKPT_IMG_PT_TRANSPARENT];
 		break;
-	case 20:
+	case 12:
 		DisplayImage = qvk.images[VKPT_IMG_PT_MOTION];
 		break;
-	case 21:
+	case 13:
 		DisplayImage = qvk.images[VKPT_IMG_PT_DLSS_MOTION];
 		break;
-	case 22:
+	case 14:
 		DisplayImage = qvk.images[VKPT_IMG_ASVGF_HIST_COLOR_HF];
 		break;
-	case 23:
+	case 15:
 		DisplayImage = qvk.images[VKPT_IMG_PT_SHADING_POSITION];
 		break;
-	case 24:
+	case 16:
 		DisplayImage = qvk.images[VKPT_IMG_FLAT_COLOR];
 		break;
-	case 25:
+	case 17:
 		DisplayImage = qvk.images[VKPT_IMG_FLAT_MOTION];
 		break;
-	case 26:
+	case 18:
 		DisplayImage = qvk.images[VKPT_IMG_TAA_OUTPUT];
 		break;
-	case 27:
+	case 19:
 		DisplayImage = qvk.images[VKPT_IMG_PT_THROUGHPUT];
 		break;
-	case 28:
+	case 20:
 		DisplayImage = qvk.images[VKPT_IMG_PT_BOUNCE_THROUGHPUT];
 		break;
-	case 29:
+	case 21:
 		DisplayImage = qvk.images[VKPT_IMG_HQ_COLOR_INTERLEAVED];
 		break;
-	case 30:
+	case 22:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO];
 		break;
-	case 31:
+	case 23:
 		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_LF_SH];
 		break;
-	case 32:
+	case 24:
 		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_HF];
 		break;
-	case 33:
+	case 25:
 		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_SPEC];
 		break;
-	case 34:
+	case 26:
 		DisplayImage = qvk.images[VKPT_IMG_PT_GEO_NORMAL2];
 		break;
-	case 35:
+	case 27:
 		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_PRIM_B];
 		break;
-	case 36:
+	case 28:
 		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_PRIM_A];
 		break;
-	case 37:
+	case 29:
 		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_BARY_B];
 		break;
-	case 38:
+	case 30:
 		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_BARY_A];
 		break;
-	case 39:
+	case 31:
 		DisplayImage = qvk.images[VKPT_IMG_PT_BASE_COLOR_B];
 		break;
-	case 40:
+	case 32:
 		DisplayImage = qvk.images[VKPT_IMG_PT_BASE_COLOR_A];
 		break;
-	case 41:
+	case 33:
 		DisplayImage = qvk.images[VKPT_IMG_PT_METALLIC_B];
 		break;
-	case 42:
+	case 34:
 		DisplayImage = qvk.images[VKPT_IMG_PT_METALLIC_A];
 		break;
-	case 43:
+	case 35:
 		DisplayImage = qvk.images[VKPT_IMG_PT_VIEW_DEPTH_B];
 		break;
-	case 44:
+	case 36:
 		DisplayImage = qvk.images[VKPT_IMG_PT_VIEW_DEPTH_A];
 		break;
-
 	default:
 		DisplayImage = qvk.images[VKPT_IMG_DLSS_OUTPUT];
 		break;

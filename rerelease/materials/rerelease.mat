@@ -12252,12 +12252,10 @@ textures/hodge/ho_panel_01_a:
 textures/hodge/ho_rock_black_01:
 	texture_base materialDev/textures/hodge/ho_rock_black_01.tga
 	texture_normals materialDev/textures/hodge/ho_rock_black_01_n.tga
-	metalness_factor 0
 
 textures/hodge/ho_rock_black_02:
 	texture_base materialDev/textures/hodge/ho_rock_black_02.tga
 	texture_normals materialDev/textures/hodge/ho_rock_black_02_n.tga
-	metalness_factor 0
 
 textures/hodge/ho_rock_black_03:
 	texture_base materialDev/textures/hodge/ho_rock_black_03.tga
@@ -20347,7 +20345,6 @@ textures/tomf/tf_metwall4_02:
 textures/tomf/tf_metwall4_02b:
 	texture_base materialDev/textures/tomf/tf_metwall4_02b.tga
 	texture_normals materialDev/textures/tomf/tf_metwall4_02b_n.tga
-	metalness_factor 0
 
 textures/tomf/tf_metwall4_04:
 	texture_base materialDev/textures/tomf/tf_metwall4_04.tga

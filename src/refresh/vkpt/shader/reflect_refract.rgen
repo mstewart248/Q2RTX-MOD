@@ -406,8 +406,6 @@ main()
 				imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
 				imageStore(IMG_PT_ALBEDO, ipos, vec4(mirror_albedo, 0));
 				imageStore(IMG_PT_ROUGHNESS, ipos, vec4(mirror_roughness));
-				imageStore(IMG_PT_METALLIC, ipos, vec4(mirror_metallic));
-				imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
 				imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(
 					mirror_base_reflectivity, square(mirror_roughness), dot(normal, view_direction.xyz)), 0));
 
@@ -730,11 +728,8 @@ main()
 			imageStore(IMG_PT_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
 			imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
 			imageStore(IMG_PT_ROUGHNESS, ipos, vec4(1.0));
-			imageStore(IMG_PT_METALLIC, ipos, vec4(0.0));
 			imageStore(IMG_PT_NORMAL, ipos, vec4(-direction, 0));
-			imageStore(IMG_PT_MATERIALID, ipos, vec4(0, 0, 0, 0));
 		}
-		imageStore(IMG_PT_EMISSIVE, ipos, vec4(0));
 
 		// Motion vector for the virtual sky image. The reflected/refracted sky sits at
 		// infinity, so it must not carry the primary surface's parallax - that is what

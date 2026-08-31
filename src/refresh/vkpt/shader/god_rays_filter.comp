@@ -40,6 +40,40 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define GLOBAL_TEXTURES_DESC_SET_IDX 3
 #include "global_textures.h"
 
+#include "froxel_shared.h"
+
+// The integrated froxel volume, written by froxel_integrate.comp this frame.
+// rgb is in-scattered radiance from the eye to the far face of a slice, a is
+// transmittance over that same span - so one fetch replaces the whole march.
+//
+// Bound TWICE, deliberately: as a storage image (the binding integrate writes)
+// and as a sampled image here, because a storage image can only be read
+// unfiltered. The grid is 160x88, so a nearest fetch spreads one cell across a
+// ~12x12 block of screen pixels and the fog arrives in visible lumps.
+// Interpolating is what makes a grid this coarse read as fog.
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 5) uniform sampler3D TEX_FROXEL_INTEGRATED;
+
+/*
+Read the volume at this pixel's own depth.
+
+Trilinear, and the Z coordinate is the EXPONENTIAL slice index turned back into
+a 0..1 texture coordinate - not the raw depth. Feeding depth in linearly would
+sample the wrong slice everywhere except at the two ends, because the slice
+distribution is a power law.
+*/
+vec4 sample_froxel(vec2 screen_uv, float view_depth)
+{
+	// Past the far plane the medium has long since saturated, so the last slice
+	// is the right answer rather than an extrapolation.
+	float slice = clamp(FROXEL_DEPTH_TO_SLICE(max(view_depth, FROXEL_NEAR)),
+	                    0.0, float(FROXEL_GRID_Z) - 0.5);
+
+	vec3 uvw = vec3(clamp(screen_uv, vec2(0.0), vec2(1.0)),
+	                slice / float(FROXEL_GRID_Z));
+
+	return textureLod(TEX_FROXEL_INTEGRATED, uvw, 0);
+}
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 void main()
 {
@@ -101,6 +135,22 @@ void main()
 		// that is only ever added, wrong for one that multiplies the image, where
 		// it would leave a dark blotch wherever this branch is taken.
 		result.a = (fallbackCount > 0) ? (fallbackResult.a / fallbackCount) : 1.0;
+	}
+
+	// THE FROXEL PATH.  When the grid is running, everything above - the
+	// half-res march and its bilateral upsample - was not what produced the map
+	// fog, so its result is replaced outright rather than added to.  The sun
+	// shafts still come from the march, which is why this only takes over when
+	// the map's own fog is what is being rendered (pt_fog_froxel, and fog_mode
+	// >= 2 on the C side).
+	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_froxel > 0.0)
+	{
+		float view_depth = abs(texelFetch(TEX_PT_VIEW_DEPTH_A, i_position.xy, 0).r);
+
+		vec2 screen_uv = (vec2(i_position) + 0.5)
+		               / vec2(global_ubo.current_gpu_slice_width, global_ubo.height);
+
+		result = sample_froxel(screen_uv, view_depth);
 	}
 
 	vec4 originalColor = imageLoad(IMG_PT_TRANSPARENT, ivec2(gl_GlobalInvocationID.xy));

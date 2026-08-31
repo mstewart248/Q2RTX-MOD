@@ -300,7 +300,6 @@ void combine_fullres_fields(ivec2 opos)
     vec4 primary_motion = imageLoad(IMG_PT_MOTION, p_primary);
 
     imageStore(IMG_FLAT_MOTION,             opos, primary_motion);
-    imageStore(IMG_DLSS_3DMOTION_VECTOR,    opos, primary_motion);
     imageStore(IMG_DLSS_DEPTH,              opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT,    p_primary));
     /* DLSS FRAME GENERATION WANTS INVERSE DEPTH, NOT LINEAR DEPTH.
 
@@ -330,13 +329,8 @@ void combine_fullres_fields(ivec2 opos)
        doorframe, 600 about a large room). */
     imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, p_primary).x), 0.01)));
     imageStore(IMG_DLSS_ALBEDO,             opos, imageLoad(IMG_PT_ALBEDO,              p_primary));
-    imageStore(IMG_DLSS_SPECULAR,           opos, imageLoad(IMG_PT_SPECULAR,            p_primary));
     imageStore(IMG_DLSS_ROUGHNESS,          opos, imageLoad(IMG_PT_ROUGHNESS,           p_primary));
-    imageStore(IMG_DLSS_METALLIC,           opos, imageLoad(IMG_PT_METALLIC,            p_primary));
     imageStore(IMG_DLSS_NORMAL,             opos, imageLoad(IMG_PT_NORMAL,              p_primary));
-    imageStore(IMG_DLSS_MATERIALID,         opos, imageLoad(IMG_PT_MATERIALID,          p_primary));
-    imageStore(IMG_DLSS_EMISSIVE,           opos, imageLoad(IMG_PT_EMISSIVE,            p_primary));
-    imageStore(IMG_DLSS_INDIRECT_ALBEDO,    opos, imageLoad(IMG_PT_INDIRECT_ALBEDO,     p_primary));
     imageStore(IMG_DLSS_SPECULAR_ALBEDO,    opos, imageLoad(IMG_PT_SPECULAR_ALBEDO,     p_primary));
     // Colour before the transparency overlay. Like the main colour, the two layers are
     // summed for split pixels and averaged otherwise, so that this guide stays consistent
@@ -345,11 +339,8 @@ void combine_fullres_fields(ivec2 opos)
         ? imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_reflect).rgb + imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_refract).rgb
         : imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_reflect).rgb;
     imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, vec4(before_transparent, 0));
-    imageStore(IMG_DLSS_TRANSPARENT,        opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, p_primary));
 
-    float ray_length      = imageLoad(IMG_PT_RAY_LENGTH,        p_primary).x;
     float diffuse_length  = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, p_primary).x;
-    imageStore(IMG_DLSS_RAY_LENGTH,        opos, vec4(ray_length, 0, 0, 0));
     imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuse_length));
 
     // --- Reflection layer: what DLSS-RR uses to reproject reflections ----------------
@@ -442,26 +433,17 @@ void main()
     imageStore(IMG_FLAT_COLOR, opos, color);
 
     if(use_center_mv) {
-        vec4 rayLengthSecondVec = imageLoad(IMG_PT_RAY_LENGTH, ipos);
 
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, multResolutionScale(imageLoad(IMG_PT_REFLECT_MOTION, ipos)));
         imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos).xy, 0, 0));
         //vec2 reflect_mv = load_reflect_motion(ipos, other_side_offset);
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
-        imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
     imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos).x), 0.01)));
-        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(ConvertDistance(rayLengthSecondVec.x), 0, 0, 0));
-        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, ipos));
         imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos));
-        imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos));
         imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos));
-        imageStore(IMG_DLSS_METALLIC, opos, imageLoad(IMG_PT_METALLIC, ipos));
         imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos));
-        imageStore(IMG_DLSS_MATERIALID, opos, imageLoad(IMG_PT_MATERIALID, ipos));
-        imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE, ipos));
-        imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, ipos));
         imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos));
         imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos));
         imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos));
@@ -475,25 +457,16 @@ void main()
 
     }        
     else {
-        vec4 rayLengthVec = imageLoad(IMG_PT_RAY_LENGTH, ipos + ivec2(other_side_offset, 0));
 
         imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0)).xy, 0, 0));
         //vec2 reflect_mv = load_reflect_motion(ipos + ivec2(other_side_offset, 0), other_side_offset);
         //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
-        imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
     imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)).x), 0.01)));
-        imageStore(IMG_DLSS_RAY_LENGTH, opos, vec4(rayLengthVec.x, 0, 0 , 0));   
-        imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_COMPOSITE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos + ivec2(other_side_offset, 0)));        
         imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_METALLIC, opos, imageLoad(IMG_PT_METALLIC, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_MATERIALID, opos, imageLoad(IMG_PT_MATERIALID, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
         imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos + ivec2(other_side_offset, 0)));

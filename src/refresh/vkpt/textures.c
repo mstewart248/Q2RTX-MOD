@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "vkpt.h"
 #include "vk_util.h"
+#include "DLSS.h"
 #include "refresh/images.h"
 #include "device_memory_allocator.h"
 
@@ -2072,6 +2073,103 @@ static VkDeviceSize available_video_memory(void)
 	return mem;
 }
 
+/*
+=================
+vkpt_screen_image_profile
+
+Which optional screen-image groups this configuration will actually use.  Built
+only from cvars, never from per-frame state, because the images are rebuilt when
+this value changes and a rebuild tears down the swapchain - photo mode, which is
+entered by PAUSING, must not be able to trigger one mid-frame.  That is why the
+accumulation group keys off pt_accumulation_rendering (the cvar that permits photo
+mode) rather than is_accumulation_rendering_active() (whether it is running now).
+=================
+*/
+extern cvar_t *cvar_flt_enable;
+extern cvar_t *cvar_pt_accumulation_rendering;
+
+uint32_t vkpt_screen_image_profile(void)
+{
+	uint32_t profile = 0;
+
+	/* Mirrors evaluate_reference_mode(): enable_denoiser is flt_enable, forced false
+	   when DLSS Ray Reconstruction is doing the denoising instead. */
+	if (cvar_flt_enable && cvar_flt_enable->integer != 0 && !DLSSBypassDenoiser())
+		profile |= SCREEN_IMG_GROUP_ASVGF_FILTER;
+
+	if (vkpt_fsr_is_enabled())
+		profile |= SCREEN_IMG_GROUP_FSR;
+
+	if (cvar_pt_accumulation_rendering && cvar_pt_accumulation_rendering->integer > 0)
+		profile |= SCREEN_IMG_GROUP_ACCUM;
+
+	return profile;
+}
+
+/*
+=================
+image_is_active
+
+False for an image nothing will write this session.  Being wrong here is a silent
+renderer bug, so the rule used to pick these was mechanical: an image qualifies only
+if EVERY shader that names it - as IMG_ or as TEX_ - belongs to a pass that is
+skipped with the group.
+
+Two traps that this list already accounts for:
+
+ - The A/B pairs are swapped between bindings every frame by LIST_IMAGES_A_B /
+   LIST_IMAGES_B_A, so a shader that only ever says _A still touches BOTH physical
+   images on alternate frames.  A pair is therefore kept or dropped together.
+ - ASVGF_RNG_SEED_A/B look like denoiser state and are read by the ray generation
+   shaders every frame; ASVGF_COLOR is read by compositing.comp, and ASVGF_TAA_A/B by
+   asvgf_taau.comp, all of which run whether or not the denoiser does.  None of the
+   five is in this list.
+=================
+*/
+static bool image_is_active(int index, uint32_t profile)
+{
+	switch (index)
+	{
+	case VKPT_IMG_ASVGF_HIST_COLOR_HF:
+	case VKPT_IMG_ASVGF_ATROUS_PING_LF_SH:
+	case VKPT_IMG_ASVGF_ATROUS_PONG_LF_SH:
+	case VKPT_IMG_ASVGF_ATROUS_PING_LF_COCG:
+	case VKPT_IMG_ASVGF_ATROUS_PONG_LF_COCG:
+	case VKPT_IMG_ASVGF_ATROUS_PING_HF:
+	case VKPT_IMG_ASVGF_ATROUS_PONG_HF:
+	case VKPT_IMG_ASVGF_ATROUS_PING_SPEC:
+	case VKPT_IMG_ASVGF_ATROUS_PONG_SPEC:
+	case VKPT_IMG_ASVGF_ATROUS_PING_MOMENTS:
+	case VKPT_IMG_ASVGF_ATROUS_PONG_MOMENTS:
+	case VKPT_IMG_ASVGF_GRAD_LF_PING:
+	case VKPT_IMG_ASVGF_GRAD_LF_PONG:
+	case VKPT_IMG_ASVGF_GRAD_HF_SPEC_PING:
+	case VKPT_IMG_ASVGF_GRAD_HF_SPEC_PONG:
+	case VKPT_IMG_ASVGF_FILTERED_SPEC_A:
+	case VKPT_IMG_ASVGF_FILTERED_SPEC_B:
+	case VKPT_IMG_ASVGF_HIST_MOMENTS_HF_A:
+	case VKPT_IMG_ASVGF_HIST_MOMENTS_HF_B:
+	case VKPT_IMG_ASVGF_HIST_COLOR_LF_SH_A:
+	case VKPT_IMG_ASVGF_HIST_COLOR_LF_SH_B:
+	case VKPT_IMG_ASVGF_HIST_COLOR_LF_COCG_A:
+	case VKPT_IMG_ASVGF_HIST_COLOR_LF_COCG_B:
+	case VKPT_IMG_ASVGF_GRAD_SMPL_POS_A:
+	case VKPT_IMG_ASVGF_GRAD_SMPL_POS_B:
+		return (profile & SCREEN_IMG_GROUP_ASVGF_FILTER) != 0;
+
+	case VKPT_IMG_FSR_EASU_OUTPUT:
+	case VKPT_IMG_FSR_RCAS_OUTPUT:
+		return (profile & SCREEN_IMG_GROUP_FSR) != 0;
+
+	/* Only asvgf_taau.comp's temporal_blend_factor > 0 branch, i.e. photo mode. */
+	case VKPT_IMG_HQ_COLOR_INTERLEAVED:
+		return (profile & SCREEN_IMG_GROUP_ACCUM) != 0;
+
+	default:
+		return true;
+	}
+}
+
 VkResult
 vkpt_create_images()
 {
@@ -2117,9 +2215,29 @@ LIST_IMAGES_A_B
 #endif
 
 	size_t total_size = 0;
+	size_t skipped_size = 0;
+	int    skipped_count = 0;
+	const uint32_t image_profile = vkpt_screen_image_profile();
 
 	for(int i = 0; i < NUM_VKPT_IMAGES; i++)
 	{
+		if (!image_is_active(i, image_profile))
+		{
+			/* Create it once at full size purely to ask the driver what it would have
+			   cost, so the log can report the saving rather than an estimate that does
+			   not account for tiling padding.  Init-time only, and immediately freed. */
+			VkImage probe;
+			VkMemoryRequirements probe_req;
+			_VK(vkCreateImage(qvk.device, images_create_info + i, NULL, &probe));
+			vkGetImageMemoryRequirements(qvk.device, probe, &probe_req);
+			vkDestroyImage(qvk.device, probe, NULL);
+			skipped_size += align(probe_req.size, probe_req.alignment);
+			skipped_count++;
+
+			images_create_info[i].extent.width  = 1;
+			images_create_info[i].extent.height = 1;
+		}
+
 		_VK(vkCreateImage(qvk.device, images_create_info + i, NULL, qvk.images + i));
 		ATTACH_LABEL_VARIABLE(qvk.images[i], IMAGE);
 
@@ -2198,7 +2316,21 @@ LIST_IMAGES_A_B
 	}
 	else
 	{
-		Com_DPrintf("Screen-space image memory: %.2f MB\n", (float)total_size / megabyte);
+		/* Always printed, not Com_DPrintf: that is compiled out in release, so the
+		   only report of this figure was the over-half-of-VRAM warning above. That
+		   left it invisible on exactly the machines where it is still large but not
+		   yet alarming, and gave no way to measure a reduction in it. */
+		Com_Printf("Screen-space image memory: %.2f MB of %.2f MB video memory\n",
+		           (float)total_size / megabyte, (float)video_memory_size / megabyte);
+	}
+
+	if (skipped_count > 0)
+	{
+		Com_Printf("Screen-space images: %d not allocated (%.2f MB saved) -%s%s%s\n",
+		           skipped_count, (float)skipped_size / megabyte,
+		           (image_profile & SCREEN_IMG_GROUP_ASVGF_FILTER) ? "" : " A-SVGF",
+		           (image_profile & SCREEN_IMG_GROUP_FSR) ? "" : " FSR",
+		           (image_profile & SCREEN_IMG_GROUP_ACCUM) ? "" : " photo-mode");
 	}
 
 	/* attach labels to images */

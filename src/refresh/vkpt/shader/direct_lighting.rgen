@@ -660,14 +660,11 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	// Everything below describes the reflected surface, so it must not overwrite them.
 	bool mirror_model_guides = (int(view_direction.w) & CHECKERBOARD_FLAG_MIRROR_MODEL) != 0;
 
-	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
 	if(!mirror_model_guides)
 	{
 		imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
-		imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
 		imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
 		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
-		imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
 
 		// Specular albedo takes the specular reflectance (F0), not the diffuse albedo -
 		// see the Specular Albedo Calculation appendix of the RR integration guide.
@@ -767,14 +764,11 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 	// Everything below describes the reflected surface, so it must not overwrite them.
 	bool mirror_model_guides = (int(view_direction.w) & CHECKERBOARD_FLAG_MIRROR_MODEL) != 0;
 
-	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
 	if(!mirror_model_guides)
 	{
 		imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
 		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(primary_roughness));
-		imageStore(IMG_PT_METALLIC, ipos, vec4(primary_metallic));
 		imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
-		imageStore(IMG_PT_MATERIALID, ipos, vec4(material_id, 0, 0, 0));
 	}
 	
 	

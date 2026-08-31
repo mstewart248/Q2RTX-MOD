@@ -109,7 +109,6 @@ indirect_lighting(
     vec3 primary_albedo, primary_base_reflectivity;
     get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
 
-	imageStore(IMG_PT_INDIRECT_ALBEDO, ipos, vec4(primary_albedo, 0));
 
 	bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
 

@@ -95,6 +95,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_CHECKERBOARD_INTERLEAVE_COMP)           \
 	SHADER_MODULE_DO(QVK_MOD_GOD_RAYS_COMP)                          \
 	SHADER_MODULE_DO(QVK_MOD_GOD_RAYS_FILTER_COMP)                   \
+	SHADER_MODULE_DO(QVK_MOD_FROXEL_SCATTER_COMP)                    \
+	SHADER_MODULE_DO(QVK_MOD_FROXEL_INTEGRATE_COMP)                  \
 	SHADER_MODULE_DO(QVK_MOD_SHADOW_MAP_VERT)                        \
 	SHADER_MODULE_DO(QVK_MOD_COMPOSITING_COMP)                       \
 	SHADER_MODULE_DO(QVK_MOD_FSR_EASU_FP16_COMP)                     \
@@ -546,6 +548,17 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_GOD_RAYS,                   1) \
 	PROFILER_DO(PROFILER_GOD_RAYS_REFLECT_REFRACT,   1) \
 	PROFILER_DO(PROFILER_GOD_RAYS_FILTER,            1) \
+	/* The map-fog volumetric (cl_fog 2). Without these the fog cost is \
+	   INVISIBLE - it is buried inside PROFILER_GOD_RAYS above, which also \
+	   carries the sun shafts, so there is no way to tell the two apart, or \
+	   to show the froxel grid is cheaper than the march it replaced. \
+	   FOG_FROXEL is the whole grid; the two sub-entries split it between \
+	   the per-cell lighting and the prefix sum over the slices. \
+	   NB every line here carries its own backslash - line splicing happens \
+	   BEFORE comment removal, so an un-continued line ends the macro. */ \
+	PROFILER_DO(PROFILER_FOG_FROXEL,                 1) \
+	PROFILER_DO(PROFILER_FOG_FROXEL_SCATTER,         2) \
+	PROFILER_DO(PROFILER_FOG_FROXEL_INTEGRATE,       2) \
 	PROFILER_DO(PROFILER_SHADOW_MAP,                 1) \
 	PROFILER_DO(PROFILER_COMPOSITING,                1) \
 
@@ -750,6 +763,22 @@ VkResult vkpt_fsr_destroy(void);
 VkResult vkpt_fsr_create_pipelines(void);
 VkResult vkpt_fsr_destroy_pipelines(void);
 bool vkpt_fsr_is_enabled(void);
+
+/* WHICH SCREEN IMAGES ARE WORTH ALLOCATING THIS SESSION.
+
+   Every image in LIST_IMAGES used to be allocated at full size whether or not
+   anything would ever write it, which at 4K with split fields cost about 2 GB for
+   subsystems that were switched off - the A-SVGF chain alone is 25 images, and
+   pt_dlss_bypass_denoiser 1 means it never runs at all.
+
+   An inactive image is still CREATED, so every descriptor stays valid and no shader
+   or barrier needs a special case; it is just created 1x1. The groups below are the
+   ones whose passes are skipped wholesale, and the profile is compared each frame in
+   R_RenderFrame_RTX so that turning a subsystem back on rebuilds the images. */
+#define SCREEN_IMG_GROUP_ASVGF_FILTER  (1u << 0)
+#define SCREEN_IMG_GROUP_FSR           (1u << 1)
+#define SCREEN_IMG_GROUP_ACCUM         (1u << 2)
+uint32_t vkpt_screen_image_profile(void);
 bool vkpt_fsr_needs_upscale(void);
 void vkpt_fsr_update_ubo(QVKUniformBuffer_t *ubo);
 VkResult vkpt_fsr_do(VkCommandBuffer cmd_buf);
@@ -833,6 +862,13 @@ VkResult vkpt_god_rays_noop(void);
 bool vkpt_god_rays_enabled(const sun_light_t* sun_light);
 void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass);
 void vkpt_record_god_rays_filter_command_buffer(VkCommandBuffer command_buffer);
+// [froxel grid] the two map-fog volume passes, and whether they replace the
+// per-pixel march this frame. See god_rays.c.
+void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer);
+bool vkpt_froxel_enabled(void);
+// allocates the froxel volumes on the first frame they are wanted, so the
+// grid costs no VRAM at all while pt_fog_froxel is off (which is the default)
+void vkpt_froxel_ensure(void);
 void vkpt_god_rays_prepare_ubo(
 	QVKUniformBuffer_t * ubo, 
 	const aabb_t* world_aabb,
