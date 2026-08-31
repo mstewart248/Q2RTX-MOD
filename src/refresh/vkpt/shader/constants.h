@@ -120,6 +120,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // pt_dlss_guide_field needs to tell them apart, and the material kind cannot be
 // recovered downstream - reflect_refract.rgen has replaced the shading surface by then.
 #define CHECKERBOARD_FLAG_GLASS      32
+// Also not a checkerboard flag. The path from the camera to this pixel's surface has
+// already been folded by something other than a straight-through refraction - a mirror
+// reflection, a chrome model, a security camera, total internal reflection. Once that
+// has happened, the "apparent position" motion vector in reflect_refract.rgen is no
+// longer meaningful: it is a FIRST-ORDER construction that projects the hit position
+// straight to the screen, and after a fold the pixel does not see that point there.
+// Set at the bounce that folds the path, carried through every later bounce.
+#define CHECKERBOARD_FLAG_MIRRORED   64
 
 // pt_fullres_fields - reflection/refraction field layout. See the FIELD LAYOUT note
 // in global_ubo.h.

@@ -1123,6 +1123,16 @@ vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_CLUSTER_A + frame_idx]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DEPTH_A + frame_idx]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_NORMAL_A + frame_idx]);
+	/* These are written by reflect_refract.rgen and read again by the NEXT bounce of the
+	   same shader, so they need the same treatment as the rest of the list. GEO_NORMAL is
+	   the reflection plane the apparent-position motion vector is folded across, and
+	   VIEW_DEPTH_SPLIT is what checkerboard_interleave.comp turns into the DLSS and DLSS-G
+	   depth buffers - a stale read of either lands directly in what DLSS is handed. */
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_GEO_NORMAL_A + frame_idx]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VISBUF_PRIM_A + frame_idx]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VISBUF_BARY_A + frame_idx]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DEPTH_SPLIT]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_MOTION]);
 
 	return VK_SUCCESS;
 }

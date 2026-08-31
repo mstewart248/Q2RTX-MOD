@@ -167,6 +167,12 @@ main()
 	int checkerboard_glass_flag = checkerboard_flags & CHECKERBOARD_FLAG_GLASS;
 	if(primary_is_glass)
 		checkerboard_glass_flag = CHECKERBOARD_FLAG_GLASS;
+	// Carried like the two above. Says an EARLIER bounce already folded this pixel's
+	// path, so the apparent-position motion vector written near the bottom of this
+	// shader is no longer valid - see CHECKERBOARD_FLAG_MIRRORED in constants.h and the
+	// FIRST-ORDER note at that write.
+	int checkerboard_mirrored_flag = checkerboard_flags & CHECKERBOARD_FLAG_MIRRORED;
+	bool path_already_folded = checkerboard_mirrored_flag != 0;
 	checkerboard_flags &= CHECKERBOARD_FLAG_FIELD_MASK;
 
 	// Whether this pixel's two fields had already diverged before this bounce.
@@ -631,6 +637,19 @@ main()
 		}
 	}
 
+	// The material dispatch above has settled what this bounce does. Anything other than
+	// a straight-through refraction FOLDS the path: a mirror reflection, a chrome model,
+	// a security camera view, total internal reflection. From the next bounce onward the
+	// apparent-position motion vector is a first-order construction on a path that is no
+	// longer first-order, so mark the pixel here and let every later bounce see it.
+	//
+	// primary_is_transparent is the see-through wall material - it passes the ray through
+	// with a 1.005 IOR nudge and leaves do_refraction at its false initialiser, so it has
+	// to be named explicitly or it would read as a reflection.
+	bool bounce_folds_path = !(do_refraction || primary_is_transparent);
+	if(bounce_folds_path)
+		checkerboard_mirrored_flag = CHECKERBOARD_FLAG_MIRRORED;
+
 	int reflection_cull_mask = REFLECTION_RAY_CULL_MASK;
 	if(global_ubo.first_person_model != 0 && include_player_model)
 		reflection_cull_mask |= AS_FLAG_VIEWER_MODELS;
@@ -708,7 +727,7 @@ main()
 		imageStore(IMG_PT_METALLIC_A, ipos, vec4(0));
 		imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
 		imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position + direction * PRIMARY_RAY_T_MAX, uintBitsToFloat(material_id)));
-		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag | checkerboard_glass_flag)));
+		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag | checkerboard_glass_flag | checkerboard_mirrored_flag)));
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(-PRIMARY_RAY_T_MAX));
 		imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, PRIMARY_RAY_T_MAX));
 
@@ -803,7 +822,40 @@ main()
 		tex_coord_y *= pow(2.0, global_ubo.pt_texture_lod_bias);
 	}
 
-	if(correct_motion_vector == 1 && spec_bounce_index == 0 || correct_motion_vector == 2)
+	/* THE APPARENT-POSITION MOTION VECTOR IS FIRST-ORDER. DO NOT RUN IT ON A FOLDED PATH.
+
+	   What the block below builds is "where would this surface be on screen if the
+	   primary surface were a flat mirror (or a flat pane) seen directly from the camera":
+	   it folds the hit position across ONE plane, or for refraction uses it unchanged,
+	   and projects that straight through global_ubo.P.
+
+	   That construction is only meaningful while the path from the camera to this hit has
+	   been bent at most once. As soon as an earlier bounce has folded it - a reflection,
+	   a chrome model, a security camera, total internal reflection - the projected point
+	   is not where this pixel sees the surface. It can be anywhere at all, INCLUDING
+	   BEHIND THE CAMERA, and projection_view_to_screen does clip_pos.xyz / clip_pos.w
+	   with no check; the caller ignores the bool it returns. Near w == 0 the screen
+	   position is effectively unbounded.
+
+	   IMG_PT_MOTION is rgba16f. "Unbounded" therefore lands as +/-Inf, and that Inf is
+	   carried by asvgf_taau into IMG_PT_DLSS_MOTION, which is the buffer DLSS frame
+	   generation warps with. One Inf motion vector smears its source pixel across a wide
+	   region of the generated frame, which is why the artifact was never confined to the
+	   glass that produced it - it lands on whatever geometry the smear crosses.
+
+	   Reflection was already held to spec_bounce_index == 0. Refraction was not, so it
+	   ran at every bounce, and this whole failure only exists at pt_reflect_refract > 1:
+	   at 1 there is no second bounce to fold anything. That matches the symptom exactly.
+
+	   pt_dlss_mv_bounce_guard 0 restores the old behaviour for A/B. */
+	bool mv_guard = global_ubo.pt_dlss_mv_bounce_guard != 0;
+	bool apply_apparent_mv =
+		   (correct_motion_vector == 1 && spec_bounce_index == 0)
+		|| (correct_motion_vector == 2 && !(mv_guard && path_already_folded));
+
+	bool apparent_mv_written = false;
+
+	if(apply_apparent_mv)
 	{			
 		vec3 ref_pos_curr, ref_pos_prev;
 		vec3 ref_geo_normal;
@@ -839,25 +891,46 @@ main()
 		motion.z = -motion.z;
 		distance_curr = -distance_curr;
 
-		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
-		imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
+		/* SECOND LINE OF DEFENCE, and the one that also covers the first bounce.
+		   A grazing mirror can put its apparent position on or behind the camera plane at
+		   bounce 0 too, so the guard above is not enough on its own. Screen-space motion
+		   is measured in normalized screen units here: 1.0 is the whole screen, and
+		   anything past a few screens is not a motion vector, it is a division by a
+		   near-zero w. NaN and Inf both fail lessThan, so this doubles as the finite
+		   check - no isnan/isinf needed.
 
-		// DLSS depth: the apparent distance of the reflected/refracted surface, which is
-		// what the motion vector above was built from. Positive - the sign flip on
-		// PT_VIEW_DEPTH_A is an internal marker for the Q2RTX filters, not depth data.
-		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
-			(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
-				? abs(ref_view_pos_curr.z) : abs(distance_curr)));
+		   Falling through leaves the primary surface's motion vector and depth in place,
+		   which is what the branch below already does for surfaces whose correction was
+		   declined (bumpy glass). A slightly wrong motion vector reprojects a reflection
+		   softly; an Inf one destroys a region of the generated frame. */
+		bool mv_sane = all(lessThan(abs(motion.xy), vec2(4.0)))
+			&& abs(motion.z) < 1e6
+			&& abs(distance_curr) < 1e6;
 
-		if(!do_refraction) {
-			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy, motion.z, fwidth_depth));
+		if(mv_sane || !mv_guard)
+		{
+			imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
+			imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
+
+			// DLSS depth: the apparent distance of the reflected/refracted surface, which
+			// is what the motion vector above was built from. Positive - the sign flip on
+			// PT_VIEW_DEPTH_A is an internal marker for the Q2RTX filters, not depth data.
+			imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
+				(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+					? abs(ref_view_pos_curr.z) : abs(distance_curr)));
+
+			if(!do_refraction) {
+				imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy, motion.z, fwidth_depth));
+			}
+			else {
+				imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(0.0, 0.0, 0.0, 0.0));
+			}
+
+			apparent_mv_written = true;
 		}
-		else {
-			imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(0.0, 0.0, 0.0, 0.0));
-		}
-		
 	}
-	else if(spec_bounce_index == 0)
+
+	if(!apparent_mv_written && spec_bounce_index == 0)
 	{
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, -imageLoad(IMG_PT_VIEW_DEPTH_A, ipos));
 		
@@ -1028,7 +1101,7 @@ main()
 
 	imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(encode_normal(geo_normal)));
 	imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position.xyz, uintBitsToFloat(material_id)));
-	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag | checkerboard_glass_flag)));
+	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag | checkerboard_glass_flag | checkerboard_mirrored_flag)));
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, optical_path_length));
 	imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
 	imageStore(IMG_PT_CLUSTER_A, ipos, uvec4(cluster_idx));
