@@ -133,13 +133,48 @@ vec3 froxel_to_world(ivec3 cell, vec3 jitter)
 
 	float view_depth = FROXEL_SLICE_TO_DEPTH(float(cell.z) + jitter.z);
 
-	// unproject: take a point on the near plane and push it out to view_depth.
-	// invP maps clip -> view; the perspective divide leaves a direction whose z
-	// is -1 in this projection's convention, so scaling by view_depth lands the
-	// point at exactly that depth rather than at that distance.
+	/* Unproject to a view-space ray, then push it out to view_depth.
+
+	   TWO SIGN FACTS ABOUT THIS TREE, both settled by reading matrix.c rather
+	   than by convention:
+
+	   1. QUAKE II RTX'S VIEW SPACE IS +Z FORWARD.  create_view_matrix() puts
+	      viewaxis[0] - the FORWARD axis - in the matrix's z row, so
+	      view.z = dot(forward, world - vieworg), positive in front of the eye.
+	      create_projection_matrix() sets matrix[11] = 1, so clip.w = view.z,
+	      positive in front as well.
+
+	   2. invP STILL HANDS BACK A POINT WITH NEGATIVE z HERE.  The projection's
+	      z row is vestigial in a path tracer - projection.glsl only ever uses
+	      clip.xy/clip.w and computes distance separately - and solving
+	      clip.z == 0 against it gives view.z = -2fn/(f+n), which is negative.
+
+	   So the unprojected point really does come back behind the camera, and the
+	   old `view_dir /= max(abs(view_dir.z), 1e-6)` did NOT correct for that:
+	   dividing by the MAGNITUDE leaves z at -1, so every froxel in the grid was
+	   placed behind the eye AND mirrored in x and y (dividing by a negative
+	   number flips the x/y signs too).  The whole volume sampled the medium at
+	   positions reflected through the camera - wrong densities, wrong shadow-map
+	   texels, wrong distances to every light.
+
+	   Negating the whole vector is the correct repair and preserves the NDC it
+	   was built from: ndc.x = (P00*vx + P20*vz)/vz is a ratio of linear terms,
+	   so it is invariant under scaling by ANY non-zero factor, negative included.
+
+	   The ray is then NORMALIZED rather than scaled to z == 1, which makes this
+	   grid's z axis a RADIAL distance.  That is deliberate: god_rays_filter.comp
+	   looks the volume up with PT_VIEW_DEPTH_A, and primary_rays.rgen writes that
+	   from projection_view_to_screen(), whose `distance` output is
+	   length(view_pos) - radial, not planar.  Building the grid on planar depth
+	   while reading it back with a radial one sampled the wrong slice everywhere
+	   except dead centre, by up to ~1.4x out at the screen corners. */
 	vec4 view_h = global_ubo.invP * vec4(ndc, 0.0, 1.0);
 	vec3 view_dir = view_h.xyz / view_h.w;
-	view_dir /= max(abs(view_dir.z), 1e-6);
+
+	if (view_dir.z < 0.0)
+		view_dir = -view_dir;
+
+	view_dir = normalize(view_dir);
 
 	vec3 view_pos = view_dir * view_depth;
 
@@ -158,14 +193,35 @@ bool world_to_prev_froxel_uvw(vec3 world_pos, out vec3 uvw)
 	uvw = vec3(0);
 
 	vec4 view_prev = global_ubo.V_prev * vec4(world_pos, 1.0);
-	float depth_prev = -view_prev.z;
+
+	/* THIS IS WHY THE TEMPORAL REUSE HAS NEVER ONCE RUN.
+
+	   This read `float depth_prev = -view_prev.z;`.  View space here is +Z
+	   FORWARD (see the block in froxel_to_world above), so view_prev.z is
+	   POSITIVE for anything in front of last frame's camera and the negation
+	   made depth_prev negative for every such point.  The very next test is
+	   `depth_prev < FROXEL_NEAR`, and a negative number is always less than 4,
+	   so this function returned false on 100% of the cells it was ever asked
+	   about - not "most", all of them.
+
+	   The consequence is worth stating plainly, because it makes an earlier
+	   measurement untrustworthy: with the lookup always failing, the mix() at
+	   the call site never executes, so pt_fog_froxel_history 0 and 0.9 produce
+	   BIT-IDENTICAL output.  Any previously recorded difference between those
+	   two settings cannot have come from the history blend, and the "the
+	   temporal blend is masking a ~100x magnitude error" reading was built on
+	   it.  Re-measure the magnitude now that reprojection actually happens.
+
+	   Radial, to match froxel_to_world and god_rays_filter.comp's lookup. */
+	if (view_prev.z <= 0.0)
+		return false;
+
+	float depth_prev = length(view_prev.xyz);
 
 	if (depth_prev < FROXEL_NEAR || depth_prev > FROXEL_FAR)
 		return false;
 
 	vec4 clip_prev = global_ubo.P_prev * view_prev;
-	if (clip_prev.w <= 0.0)
-		return false;
 
 	vec2 ndc = clip_prev.xy / clip_prev.w;
 	if (any(greaterThan(abs(ndc), vec2(1.0))))

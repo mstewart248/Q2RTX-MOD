@@ -148,7 +148,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_rr_white_noise, 0) /* hashed white noise instead of the tiled blue-noise texture, per DLSS-RR guide 3.5; 0 keeps the blue noise */ \
 	UBO_CVAR_DO(pt_fog_light_scale, 1.0) /* brightness of local lights scattered in map fog (cl_fog 2) */ \
 	UBO_CVAR_DO(pt_fog_sky_scale, 1.0) /* brightness of SKY light scattered in map fog (cl_fog 2) */ \
-	UBO_CVAR_DO(pt_fog_light_knee, 2.0) /* soft roll-off point for local-light fog; lower compresses bright, light-dense maps harder */ \
+	UBO_CVAR_DO(pt_fog_light_knee, 2.0) /* soft roll-off on the SUMMED local-light total; SATURATES AT THIS VALUE, so it crushes the bright-core-to-dim-wash contrast that makes a light read as a glowing cloud. 0 disables it, and 0 is the right starting point for tuning localised glow. NOT a distance falloff - that is pt_fog_light_falloff */ \
+	UBO_CVAR_DO(pt_fog_light_falloff, 2.0) /* distance exponent for a light's fog glow. 2 = inverse square, exactly the old behaviour; 3-4 pulls the glow in tight around the fixture instead of washing the whole room */ \
+	UBO_CVAR_DO(pt_fog_light_pivot, 128.0) /* world radius inside which a light keeps plain inverse-square brightness; pt_fog_light_falloff only steepens the decay BEYOND this, so the near field can never brighten however high the exponent goes */ \
+	UBO_CVAR_DO(pt_fog_light_radius, 0.0) /* hard cutoff in world units past which a light adds no fog glow at all, windowed so it eases to zero rather than clipping a visible edge; 0 = no cutoff */ \
 	UBO_CVAR_DO(pt_sky_brightness, 1.0) /* brightness of the SKY AS SEEN; does NOT change how much light it casts */ \
 	UBO_CVAR_DO(pt_fog_density_max, 64.0) /* ceiling on map-fog density in getDensity; was a hard-coded 4.0, which no map reaches at cl_fog_scale 1 */ \
 	UBO_CVAR_DO(pt_fog_eccentricity, -1.0) /* map-fog scattering directionality, 0 = even in all directions .. 0.95 = tight shafts; -1 follows gr_eccentricity */ \

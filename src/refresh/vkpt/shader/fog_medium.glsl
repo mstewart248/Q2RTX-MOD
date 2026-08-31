@@ -211,11 +211,42 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 	// precisely a canyon floor in mgu5m1: standing under open sky with nothing
 	// emissive in the cluster, and the fog vanished. Sky exposure has nothing to
 	// do with how many light polys a cluster happens to contain.
+	/* WHICH SKY THE FOG IS ALLOWED TO SEE. Getting this wrong is what put a
+	   blazing orange slab in a NIGHT-lit map.
+
+	   fog_sky_* is `avg_envmap_color * pt_env_scale`, the average of the MAP's
+	   skybox images, computed once at map load in R_SetSky_RTX. It is the right
+	   answer only when the map actually ships a skybox.
+
+	   When the PHYSICAL sky is in use there is no skybox to average, and
+	   R_SetSky_RTX falls back to a 1x1 magenta cube whose average works out to
+	   (1.0, 1.0, 0.0) - full-intensity yellow. The fog then lit itself with that
+	   constant no matter what time of day the physical sky was set to, so a
+	   night sky produced the same searing sky-fog as noon. Tinted by the map's
+	   own fog colour it comes out orange, which is exactly the flat slab Matt
+	   photographed pouring through an opening in an otherwise dark room.
+
+	   sun_color_ubo.sky_color is what physical_sky.comp accumulates from the sky
+	   it actually rendered, so it tracks sun_elevation / the presets. It is zero
+	   on maps that ship their own skybox, which is why the two cases have to be
+	   told apart rather than one used for both.
+
+	   ENVIRONMENT_NONE means no world sky at all - contributing the fallback
+	   there was never anything but a bug. */
 	vec3 sky_term = vec3(0);
 	float sky_vis = getSkyVisibility(p);
 	if (sky_vis > 0.0)
 	{
-		sky_term = vec3(global_ubo.fog_sky_r, global_ubo.fog_sky_g, global_ubo.fog_sky_b)
+		vec3 sky_radiance = vec3(0);
+
+		if (global_ubo.environment_type == ENVIRONMENT_DYNAMIC)
+			sky_radiance = sun_color_ubo.sky_color;
+		else if (global_ubo.environment_type == ENVIRONMENT_STATIC)
+			sky_radiance = vec3(global_ubo.fog_sky_r,
+			                    global_ubo.fog_sky_g,
+			                    global_ubo.fog_sky_b);
+
+		sky_term = sky_radiance
 		         * FOG_SKY_SOLID_ANGLE * global_ubo.pt_fog_sky_scale
 		         * sky_vis;
 	}
@@ -299,7 +330,85 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 		// drive the fog negative, so flip it back.
 		vec3 color = abs(light.color);
 
-		sum += color * area * light.light_style_scale / dist2;
+		/* HOW FAST A LIGHT'S FOG GLOW FALLS OFF WITH DISTANCE.
+
+		   This was a bare 1/dist2 - physically correct for a point emitter, and
+		   the reason the fog reads as a uniform wash rather than as a pool of
+		   glow around each fixture. Inverse square never reaches zero, and once
+		   the triangle AREA is folded in (a ceiling panel is hundreds of square
+		   units) a light on the far side of a room still contributes real
+		   brightness. Nothing here is shadowed either, so there is no occlusion
+		   to cut it off. The net effect is that every light in the cluster lifts
+		   the whole room's fog by roughly the same amount.
+
+		   pt_fog_light_knee does NOT help with this. It is a compressor on the
+		   SUMMED total (below), so it dims the wash and the glow together and
+		   cannot change the spatial shape at all - which is why reaching for it
+		   as a "falloff" control appears to do nothing.
+
+		   Two knobs, both no-ops at their defaults:
+
+		   pt_fog_light_falloff  the distance exponent. 2 = inverse square, i.e.
+		                         exactly what this always did. 3 or 4 pulls the
+		                         glow in tight around the source.
+		   pt_fog_light_pivot    the distance at which brightness does NOT move
+		                         as the exponent changes. Without it, raising the
+		                         exponent dims everything at every distance and
+		                         pt_fog_light_scale has to be re-tuned to
+		                         compensate; with it the exponent is a pure
+		                         reshape - brighter than before inside the pivot,
+		                         dimmer outside, unchanged at it.
+		   pt_fog_light_radius   hard cutoff in world units, 0 = off. Uses the
+		                         windowed inverse square (1 - (d/r)^4)^2, which
+		                         leaves the near field alone and eases to exactly
+		                         zero at r instead of clipping - a hard clip puts
+		                         a visible edge in the fog where the window ends.
+
+		   dist2 is already floored at 64 above, so a high exponent cannot blow
+		   up when the camera stands inside a fixture. */
+		/* THE EXPONENT ONLY EVER STEEPENS THE FAR FIELD. It must NEVER brighten
+		   the near field, and the first version of this did exactly that.
+
+		   That version normalised the whole curve about the pivot:
+		     atten = pow(pivot2/dist2, falloff*0.5) / pivot2
+		   which is unchanged AT the pivot but grows without bound inside it.
+		   dist2 is floored at 64 (8 units) and the pivot defaults to 128, so at
+		   the floor pivot2/dist2 = 256 and the near field went up by 256^((f-2)/2):
+		   256x at falloff 4, 4 billion at falloff 10. Raising the knob therefore
+		   made the fog BRIGHTER and blobbier - Matt: "when you set it to 10 it
+		   starts to look more foggy" - and by 50 the term overflowed to Inf,
+		   which is what the "little black squares hovering around the light"
+		   were: NaN cells in the volume.
+
+		   The fix is to multiply the physical inverse square by a factor that is
+		   exactly 1 inside the pivot and only ever shrinks outside it. The near
+		   field then keeps its correct brightness at every setting, and the knob
+		   does one thing only: decide how fast the glow dies with distance.
+		   That is what "fall off with the brightness of the light" asks for. */
+		float fog_falloff = clamp(global_ubo.pt_fog_light_falloff, 0.0, 64.0);
+
+		float atten = 1.0 / dist2;
+
+		if (abs(fog_falloff - 2.0) > 1e-4)
+		{
+			float pivot2 = max(global_ubo.pt_fog_light_pivot
+			                 * global_ubo.pt_fog_light_pivot, 1.0);
+
+			// min(...) pins this to 1 within the pivot, so the extra decay only
+			// ever applies beyond it. At falloff 2 the exponent is 0 and the
+			// factor is 1, i.e. identical to plain inverse square.
+			atten *= pow(min(pivot2 / dist2, 1.0), (fog_falloff - 2.0) * 0.5);
+		}
+
+		float fog_radius = global_ubo.pt_fog_light_radius;
+		if (fog_radius > 0.0)
+		{
+			float x = dist2 / (fog_radius * fog_radius);
+			float w = clamp(1.0 - x * x, 0.0, 1.0);
+			atten *= w * w;
+		}
+
+		sum += color * area * light.light_style_scale * atten;
 	}
 
 	// scale back up for the lights this step did not look at
@@ -315,8 +424,26 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 	// above it, so a sparse map is left alone while a light-dense one is
 	// compressed. Physically it is a fudge; perceptually it is what the eye
 	// expects, and it is the same shape a tone curve applies.
-	float knee = max(global_ubo.pt_fog_light_knee, 0.001);
-	result = result / (1.0 + result / knee);
+	/* THE KNEE IS WHAT STOPS THE GLOW EVER LOOKING TIGHT. Read this before
+	   reaching for pt_fog_light_falloff again.
+
+	   x/(1+x/knee) SATURATES AT knee. At the 2.0 default, a march point sitting
+	   in a bright fixture with a raw sum of 1000 comes out at 1.996, while a dim
+	   corner with a raw sum of 0.5 comes out at 0.4. A physical contrast of
+	   2000:1 is delivered as 5:1. The compressor squashes precisely the range
+	   that makes a light read as a glowing cloud with darkness around it, and
+	   leaves the faint room-wide wash almost untouched - so no amount of
+	   distance shaping can produce a tight pool while it is on hard.
+
+	   It was added for a real reason: base1 is packed with emissive surfaces and
+	   went "way too foggy" at the setting mgu5m1 needed. But that is a
+	   per-map BRIGHTNESS problem, and pt_fog_light_scale is the knob for it.
+
+	   0 disables the compressor entirely - the honest linear answer, and the
+	   right starting point for anyone tuning for localised glow. */
+	float knee = global_ubo.pt_fog_light_knee;
+	if (knee > 0.0)
+		result = result / (1.0 + result / knee);
 
 	// The sky is added OUTSIDE the knee - the knee exists to compress a room
 	// crowded with emissive surfaces, and the sky is a single ambient term that
