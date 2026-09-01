@@ -160,7 +160,11 @@ void CL_InitMapFog(void)
     // The calibration knob. 1.0 means "the map's authored value, taken raw".
     // KEX's density-to-extinction constant is inside a closed renderer and
     // cannot be derived, so this is matched against retail by eye.
-    cl_fog_scale = Cvar_Get("cl_fog_scale", "1.0", CVAR_ARCHIVE);
+    //
+    // 2 rather than 1: Matt's calibration, 2026-08-31, once the sky brushes
+    // stopped being counted as area lights in the fog. The authored densities
+    // read thin on their own at the light levels these maps actually use.
+    cl_fog_scale = Cvar_Get("cl_fog_scale", "2", CVAR_ARCHIVE);
 }
 
 /*

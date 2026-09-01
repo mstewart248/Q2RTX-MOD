@@ -1136,6 +1136,12 @@ enum {
     // sweep spans about 4 units, and MZ2 ids are nearly exhausted (241 of 256,
     // one wire byte, never insertable mid-list).  APPENDED.
     MZ2_MEDIC_HYPERBLASTER,
+
+    // Rerelease: the supertank's GRENADE launcher, its third attack (attak4).
+    // The 1997 code never used the attak4_* frames even though the md2 has
+    // them, so this needed no new animation - only the two muzzles.  APPENDED.
+    MZ2_SUPERTANK_GRENADE_1,
+    MZ2_SUPERTANK_GRENADE_2,
 };
 
 // Size of monster_flash_offset[], and the ceiling on MZ2_ ids.  svc_muzzleflash2

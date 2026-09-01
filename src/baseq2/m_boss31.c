@@ -323,7 +323,7 @@ mframe_t jorg_frames_death1 [] = {
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move,    0,  jorg_death_hit },
     { ai_move,    0,  MakronToss },
     { ai_move,    0,  BossExplode }     // 50
 };

@@ -708,12 +708,17 @@ static void soldierh_fire_weapon(edict_t *self, int flash_index)
     } else if (self->s.skinnum <= 3) {
         monster_fire_blueblaster(self, start, aim, 1, 600, MZ_BLUEHYPERBLASTER, EF_BLUEHYPERBLASTER);
     } else {
-        if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME))
-            self->monsterinfo.pause_framenum = level.framenum + (3 + Q_rand() % 8);
+        if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME)) {
+            self->monsterinfo.fire_framenum = level.framenum + (3 + Q_rand() % 8);
+            // classic keeps the 1997 aliasing so soldier_attack3_refire below
+            // reads exactly what stock Q2RTX left it
+            if (!M_RereleaseGame())
+                self->monsterinfo.pause_framenum = self->monsterinfo.fire_framenum;
+        }
 
         soldierh_laserbeam(self, flash_index);
 
-        if (level.framenum >= self->monsterinfo.pause_framenum)
+        if (level.framenum >= self->monsterinfo.fire_framenum)
             self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
         else
             self->monsterinfo.aiflags |= AI_HOLD_FRAME;
@@ -787,12 +792,17 @@ void soldier_fire(edict_t *self, int flash_number)
         if (M_RereleaseGame())
             self->dmg = 1;
     } else {
-        if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME))
-            self->monsterinfo.pause_framenum = level.framenum + (3 + Q_rand() % 8);
+        if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME)) {
+            self->monsterinfo.fire_framenum = level.framenum + (3 + Q_rand() % 8);
+            // classic keeps the 1997 aliasing so soldier_attack3_refire below
+            // reads exactly what stock Q2RTX left it
+            if (!M_RereleaseGame())
+                self->monsterinfo.pause_framenum = self->monsterinfo.fire_framenum;
+        }
 
         monster_fire_bullet(self, start, aim, 2, 4, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD, flash_index);
 
-        if (level.framenum >= self->monsterinfo.pause_framenum)
+        if (level.framenum >= self->monsterinfo.fire_framenum)
             self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
         else
             self->monsterinfo.aiflags |= AI_HOLD_FRAME;
@@ -1072,10 +1082,14 @@ void soldier_attack3_refire(edict_t *self)
             return;
         }
 
-        // they read the DUCK timer here.  id had only one field
+        // they read the DUCK timer here.  The 1997 code had only ONE field
         // (monsterinfo.pausetime, this tree's pause_framenum) and shared it
-        // with the machinegun's firing window, which is why the classic branch
-        // below must keep reading that one.
+        // between the duck hold and the machinegun's firing window - so which
+        // of the two this actually read depended on the soldier's SKIN, since
+        // only the machinegun branch of soldier_fire ever wrote it.  That
+        // accident is stock behaviour, so the classic branch below still reads
+        // the shared field; the rerelease reads the two apart
+        // (duck_wait_framenum here, fire_framenum in soldier_fire).
         if ((level.framenum + 0.4f * BASE_FRAMERATE) < self->monsterinfo.duck_wait_framenum)
             self->monsterinfo.nextframe = FRAME_attak303;
         return;

@@ -56,6 +56,18 @@ static int  commander_sound_spawn;
 
 #define MEDIC_IS_COMMANDER(self)    ((self)->mass > 400)
 
+// [rerelease] healing distances and the retry clock.  MEDIC_MIN_DISTANCE stops
+// a medic resurrecting a corpse it is standing on top of (the revived monster
+// would spawn inside it); MEDIC_MAX_HEAL_DISTANCE is the search radius for a
+// medic that is holding its ground rather than roaming.
+#define MEDIC_MIN_DISTANCE          32.0f
+#define MEDIC_MAX_HEAL_DISTANCE     400.0f
+#define MEDIC_TRY_TIME              (10 * BASE_FRAMERATE)
+
+// declared per-file in this tree, the same way g_turret.c declares FindTarget
+bool FindTarget(edict_t *self);
+void HuntTarget(edict_t *self);
+
 // where the summoned monsters appear, relative to the commander's facing
 static const vec3_t reinforcement_position[MAX_REINFORCEMENTS] = {
     {  80,   0, 0 },
@@ -73,25 +85,130 @@ static const char *medic_default_reinforcements =
     "monster_infantry 3;monster_gunner 4;monster_medic 5;monster_gladiator 6";
 
 
+/*
+=================
+cleanupHealTarget / cleanupHeal / abortHeal
+
+[rerelease] The medic's GIVING-UP path, and the reason a medic that cannot
+reach its patient used to stand there working its arm forever: this tree's
+medic_cable_attack simply `return`s on every failure, so the whole 19-frame
+cable animation plays, achieves nothing, and medic_run then re-picks the SAME
+unreachable corpse - which nothing has marked - on the very next think.
+
+abortHeal is the missing exit.  `mark` records this medic in the corpse's
+badMedic1/2 so this medic never targets it again; `gib` destroys a patient the
+medic is standing on top of rather than resurrecting it inside itself.
+=================
+*/
+void cleanupHealTarget(edict_t *ent)
+{
+    ent->monsterinfo.healer = NULL;
+    ent->takedamage = DAMAGE_YES;
+    ent->monsterinfo.aiflags &= ~AI_RESURRECTING;
+    M_SetEffects(ent);
+}
+
+static void cleanupHeal(edict_t *self, bool change_frame)
+{
+    // clean up target, if we have one and it's legit
+    if (self->enemy && self->enemy->inuse)
+        cleanupHealTarget(self->enemy);
+
+    if (self->oldenemy && self->oldenemy->inuse && self->oldenemy->health > 0) {
+        self->enemy = self->oldenemy;
+        HuntTarget(self);
+    } else {
+        self->enemy = self->goalentity = NULL;
+        self->oldenemy = NULL;
+        if (!FindTarget(self)) {
+            // no valid enemy, so stop acting
+            self->monsterinfo.pause_framenum = INT_MAX;
+            self->monsterinfo.stand(self);
+            return;
+        }
+    }
+
+    if (change_frame)
+        self->monsterinfo.nextframe = FRAME_attack52;
+}
+
+void abortHeal(edict_t *self, bool change_frame, bool gib, bool mark)
+{
+    int             hurt;
+    static const vec3_t pain_normal = { 0, 0, 1 };
+
+    if (self->enemy)
+        cleanupHealTarget(self->enemy);
+
+    if (mark && self->enemy && self->enemy->inuse) {
+        // if the first badMedic slot already holds a live medic, use the second
+        if (self->enemy->monsterinfo.badMedic1 &&
+            self->enemy->monsterinfo.badMedic1->inuse &&
+            self->enemy->monsterinfo.badMedic1->classname &&
+            !strncmp(self->enemy->monsterinfo.badMedic1->classname, "monster_medic", 13))
+            self->enemy->monsterinfo.badMedic2 = self;
+        else
+            self->enemy->monsterinfo.badMedic1 = self;
+    }
+
+    if (gib && self->enemy && self->enemy->inuse) {
+        if (self->enemy->gib_health)
+            hurt = -self->enemy->gib_health;
+        else
+            hurt = 500;
+
+        T_Damage(self->enemy, self, self, vec3_origin, self->enemy->s.origin,
+                 (float *)pain_normal, hurt, 0, 0, MOD_UNKNOWN);
+    }
+
+    cleanupHeal(self, change_frame);
+
+    self->monsterinfo.aiflags &= ~AI_MEDIC;
+    self->monsterinfo.medicTries = 0;
+}
+
 edict_t *medic_FindDeadMonster(edict_t *self)
 {
     edict_t *ent = NULL;
     edict_t *best = NULL;
+    float   radius = 1024;
 
-    while ((ent = findradius(ent, self->s.origin, 1024)) != NULL) {
+    // [rerelease] a medic holding its ground only looks as far as its cable
+    // actually reaches, instead of walking off a ledge after a distant corpse
+    if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_STAND_GROUND))
+        radius = MEDIC_MAX_HEAL_DISTANCE;
+
+    while ((ent = findradius(ent, self->s.origin, radius)) != NULL) {
         if (ent == self)
             continue;
         if (!(ent->svflags & SVF_MONSTER))
             continue;
         if (ent->monsterinfo.aiflags & AI_GOOD_GUY)
             continue;
-        if (ent->owner)
-            continue;
+        // [rerelease] the claim is monsterinfo.healer, not the overloaded
+        // `owner`.  Ignore a stale claim from a healer that is dead, gone, or
+        // no longer in medic mode - rogue's own comment admits this is
+        // papering over a bug elsewhere, and it is still true here.
+        if (ent->monsterinfo.healer) {
+            edict_t *h = ent->monsterinfo.healer;
+            if (h->inuse && h->health > 0 && (h->svflags & SVF_MONSTER) &&
+                (h->monsterinfo.aiflags & AI_MEDIC))
+                continue;
+        }
+        if (M_RereleaseGame()) {
+            // check to make sure we haven't bailed on this guy already
+            if (ent->monsterinfo.badMedic1 == self || ent->monsterinfo.badMedic2 == self)
+                continue;
+        }
         if (ent->health > 0)
             continue;
         if (ent->nextthink)
             continue;
         if (!visible(self, ent))
+            continue;
+        // [rerelease] don't resurrect someone right on top of us - the revived
+        // monster would spawn inside the medic
+        if (M_RereleaseGame() && realrange(self, ent) <= MEDIC_MIN_DISTANCE)
             continue;
         if (!best) {
             best = ent;
@@ -102,6 +219,9 @@ edict_t *medic_FindDeadMonster(edict_t *self)
         best = ent;
     }
 
+    if (best)
+        self->timestamp = level.framenum + MEDIC_TRY_TIME;
+
     return best;
 }
 
@@ -111,10 +231,18 @@ void medic_idle(edict_t *self)
 
     gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_idle1 : sound_idle1, 1, ATTN_IDLE, 0);
 
+    // [rerelease] id guards this with !oldenemy and SAVES the current enemy.
+    // Rogue's version does neither, so an idling medic that spots a corpse
+    // overwrites its live enemy with no way back to it.
+    if (M_RereleaseGame() && self->oldenemy)
+        return;
+
     ent = medic_FindDeadMonster(self);
     if (ent) {
+        if (M_RereleaseGame())
+            self->oldenemy = self->enemy;
         self->enemy = ent;
-        self->enemy->owner = self;
+        self->enemy->monsterinfo.healer = self;
         self->monsterinfo.aiflags |= AI_MEDIC;
         FoundTarget(self);
     }
@@ -131,7 +259,7 @@ void medic_search(edict_t *self)
         if (ent) {
             self->oldenemy = self->enemy;
             self->enemy = ent;
-            self->enemy->owner = self;
+            self->enemy->monsterinfo.healer = self;
             self->monsterinfo.aiflags |= AI_MEDIC;
             FoundTarget(self);
         }
@@ -287,7 +415,7 @@ void medic_run(edict_t *self)
         if (ent) {
             self->oldenemy = self->enemy;
             self->enemy = ent;
-            self->enemy->owner = self;
+            self->enemy->monsterinfo.healer = self;
             self->monsterinfo.aiflags |= AI_MEDIC;
             FoundTarget(self);
             return;
@@ -567,8 +695,8 @@ void medic_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
     int     n;
 
     // if we had a pending patient, free him up for another medic
-    if ((self->enemy) && (self->enemy->owner == self))
-        self->enemy->owner = NULL;
+    if ((self->enemy) && (self->enemy->monsterinfo.healer == self))
+        cleanupHealTarget(self->enemy);
 
 // check for gib
     if (self->health <= self->gib_health) {
@@ -973,8 +1101,16 @@ void medic_cable_attack(edict_t *self)
     vec3_t  dir, angles;
     float   distance;
 
-    if (!self->enemy->inuse)
+    // [rerelease] EVERY failure below used to be a bare `return`, so a medic
+    // whose patient it cannot reach played all 19 cable frames, healed nobody,
+    // and medic_run then re-picked the same corpse - forever, because nothing
+    // marked it.  That is the medic stuck in a corner working its arm.  id
+    // aborts instead, and gives up for good on the second try.
+    if (!self->enemy->inuse) {
+        if (M_RereleaseGame())
+            abortHeal(self, false, false, false);
         return;
+    }
 
     AngleVectors(self->s.angles, f, r, NULL);
     VectorCopy(medic_cable_offsets[self->s.frame - FRAME_attack42], offset);
@@ -983,38 +1119,119 @@ void medic_cable_attack(edict_t *self)
     // check for max distance
     VectorSubtract(start, self->enemy->s.origin, dir);
     distance = VectorLength(dir);
-    if (distance > 256)
+    if (distance > 256) {
+        if (M_RereleaseGame())
+            abortHeal(self, false, false, false);
         return;
+    }
+
+    // [rerelease] too close to resurrect - the patient would come back inside
+    // the medic, so gib it instead
+    if (M_RereleaseGame() && distance < MEDIC_MIN_DISTANCE) {
+        abortHeal(self, true, true, false);
+        return;
+    }
 
     // check for min/max pitch
     vectoangles(dir, angles);
     if (angles[0] < -180)
         angles[0] += 360;
-    if (fabsf(angles[0]) > 45)
+    if (fabsf(angles[0]) > 45) {
+        if (M_RereleaseGame())
+            abortHeal(self, true, false, false);
         return;
+    }
 
     tr = gi.trace(start, NULL, NULL, self->enemy->s.origin, self, MASK_SHOT);
-    if (tr.fraction != 1.0f && tr.ent != self->enemy)
+    if (tr.fraction != 1.0f && tr.ent != self->enemy) {
+        if (M_RereleaseGame()) {
+            if (tr.ent == g_edicts) {
+                // blocked by level geometry: retreat and re-approach once,
+                // then write this medic off the patient for good
+                if (self->monsterinfo.medicTries > 1) {
+                    abortHeal(self, true, false, true);
+                    return;
+                }
+                self->monsterinfo.medicTries++;
+                cleanupHeal(self, true);
+                return;
+            }
+            abortHeal(self, true, false, false);
+        }
         return;
+    }
 
     if (self->s.frame == FRAME_attack43) {
         gi.sound(self->enemy, CHAN_AUTO, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_hit : sound_hook_hit, 1, ATTN_NORM, 0);
         self->enemy->monsterinfo.aiflags |= AI_RESURRECTING;
     } else if (self->s.frame == FRAME_attack50) {
+        reinforcement_t saved_reinf[MAX_REINFORCEMENT_TYPES];
+        int     saved_num_reinf = 0, saved_slots = 0, saved_used = 0;
+        int     saved_gib_health = 0;
+
         self->enemy->spawnflags = 0;
-        self->enemy->monsterinfo.aiflags = 0;
+        // [rerelease] id keeps the SPAWNED flags across a resurrection.  Zeroing
+        // aiflags outright loses the marker that says a commander summoned this
+        // monster, so a revived escort starts counting toward the level total.
+        if (M_RereleaseGame())
+            self->enemy->monsterinfo.aiflags &= AI_SPAWNED_MASK;
+        else
+            self->enemy->monsterinfo.aiflags = 0;
         self->enemy->target = NULL;
         self->enemy->targetname = NULL;
         self->enemy->combattarget = NULL;
         self->enemy->deathtarget = NULL;
+
+        if (M_RereleaseGame()) {
+            // ED_CallSpawn re-reads the SPAWN TEMP, and `st` is only cleared
+            // while the map is being parsed - mid-game it still holds whatever
+            // the last parsed entity left behind.  Resurrecting a medic
+            // commander would therefore re-parse a stale `reinforcements`
+            // string, so clear it and put the monster's real summon list back
+            // afterwards.  Same reasoning as id's `st = {}` here.
+            memcpy(saved_reinf, self->enemy->monsterinfo.reinforcements, sizeof(saved_reinf));
+            saved_num_reinf   = self->enemy->monsterinfo.num_reinforcements;
+            saved_slots       = self->enemy->monsterinfo.monster_slots;
+            saved_used        = self->enemy->monsterinfo.monster_used;
+            saved_gib_health  = self->enemy->gib_health;
+
+            memset(&st, 0, sizeof(st));
+        }
+
         self->enemy->owner = self;
         ED_CallSpawn(self->enemy);
         self->enemy->owner = NULL;
+
+        if (M_RereleaseGame()) {
+            memcpy(self->enemy->monsterinfo.reinforcements, saved_reinf, sizeof(saved_reinf));
+            self->enemy->monsterinfo.num_reinforcements = saved_num_reinf;
+            self->enemy->monsterinfo.monster_slots      = saved_slots;
+            self->enemy->monsterinfo.monster_used       = saved_used;
+
+            // a body that has already been killed once gibs twice as easily
+            self->enemy->gib_health = saved_gib_health / 2;
+
+            // and must not be counted as a fresh kill
+            self->enemy->monsterinfo.aiflags |= AI_DO_NOT_COUNT;
+        }
         if (self->enemy->think) {
             self->enemy->nextthink = level.framenum;
             self->enemy->think(self->enemy);
         }
         self->enemy->monsterinfo.aiflags |= AI_RESURRECTING;
+
+        // [rerelease] the patient is a live monster again, so release every
+        // trace of the heal: the claim, the give-up marks (a medic that once
+        // bailed on the CORPSE may legitimately heal this new body later),
+        // this medic's try counter, and the corpse flies.
+        if (M_RereleaseGame()) {
+            self->enemy->monsterinfo.healer = NULL;
+            self->enemy->monsterinfo.badMedic1 = NULL;
+            self->enemy->monsterinfo.badMedic2 = NULL;
+            self->enemy->s.effects &= ~EF_FLIES;
+            self->monsterinfo.medicTries = 0;
+        }
+
         if (self->oldenemy && self->oldenemy->client) {
             self->enemy->enemy = self->oldenemy;
             FoundTarget(self->enemy);
@@ -1323,6 +1540,32 @@ void medic_attack(edict_t *self)
 bool medic_checkattack(edict_t *self)
 {
     if (self->monsterinfo.aiflags & AI_MEDIC) {
+        // [rerelease] THE TIMEOUT.  Rogue's version below attacks
+        // unconditionally - no distance test and no clock - so a medic locked
+        // onto a corpse it can never reach plays the cable animation forever,
+        // from any range, and nothing ever breaks the lock.  id gives up after
+        // MEDIC_TRY_TIME and marks the patient so this medic drops it for good.
+        if (M_RereleaseGame()) {
+            // if our target went away
+            if (!self->enemy || !self->enemy->inuse) {
+                abortHeal(self, true, false, false);
+                return false;
+            }
+
+            // if we ran out of time, give up
+            if (self->timestamp < level.framenum) {
+                abortHeal(self, true, false, true);
+                self->timestamp = 0;
+                return false;
+            }
+
+            // out of cable range - keep closing rather than flailing
+            if (realrange(self, self->enemy) >= MEDIC_MAX_HEAL_DISTANCE + 10) {
+                self->monsterinfo.attack_state = AS_STRAIGHT;
+                return false;
+            }
+        }
+
         medic_attack(self);
         return true;
     }

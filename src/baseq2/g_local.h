@@ -689,6 +689,37 @@ typedef struct {
     float       jump_height;
     int         jump_framenum;
 
+    // [rerelease] the anti-wedge state in SV_movestep.  When a step barely
+    // moves the monster, it re-aims ideal_yaw along the plane it hit and takes
+    // the frame instead of failing; bump_framenum stops that firing every
+    // frame, and bad_move_framenum marks "this direction is no good for a bit".
+    //
+    // These are NOT nav-mesh fields, whatever their names suggest - they live
+    // entirely inside SV_movestep and need no pathing data at all.
+    int         bump_framenum;
+    int         bad_move_framenum;
+    int         random_change_framenum;
+
+    // [rerelease] the medic healing bookkeeping.  `healer` is the medic that
+    // has claimed this corpse - rogue overloaded `owner` for that, which in
+    // this tree is also the projectile owner and the ED_CallSpawn parent, so
+    // id gave it a dedicated field and so do we.
+    //
+    // badMedic1/2 are medics that have GIVEN UP on this monster.  Without them
+    // a medic that cannot reach a corpse re-targets the same corpse forever.
+    // medicTries is the per-medic attempt counter behind that.
+    edict_t     *healer;
+    edict_t     *badMedic1;
+    edict_t     *badMedic2;
+    int         medicTries;
+
+    // [rerelease] `fire_wait` - how long a monster HOLDS ITS TRIGGER DOWN.
+    // This tree used to fold it into pause_framenum, which is also the
+    // ai_stand pause AND (via monster_duck_down) the duck hold, so an infantry
+    // that dodged mid-burst had its firing window overwritten by the duck
+    // timer.  id keeps all three apart and so do we now.
+    int         fire_framenum;
+
     // ROGUE - runtime monster spawning (medic commander; carrier and widow use
     // the same machinery). `strength` is the slot cost, so a commander with 3
     // slots can summon three light soldiers or one gladiator.
@@ -1091,6 +1122,13 @@ void stationarymonster_triggered_start(edict_t *self);
 void stationarymonster_triggered_spawn(edict_t *self);
 void stationarymonster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activator);
 void M_CatagorizePosition(edict_t *ent);
+void M_SetEffects(edict_t *ent);
+
+// [rerelease] the medic's heal bookkeeping - m_medic.c.  cleanupHealTarget
+// releases a patient (clears the healer claim, restores takedamage and drops
+// AI_RESURRECTING); abortHeal is the medic's own give-up path.
+void cleanupHealTarget(edict_t *ent);
+void abortHeal(edict_t *self, bool change_frame, bool gib, bool mark);
 int  ClipVelocity(vec3_t in, vec3_t normal, vec3_t out, float overbounce);   // g_phys.c
 void T_SlamRadiusDamage(vec3_t point, edict_t *inflictor, edict_t *attacker,
                         float damage, float kick, edict_t *ignore, float radius, int mod);

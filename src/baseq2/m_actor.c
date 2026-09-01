@@ -348,7 +348,7 @@ void actor_fire(edict_t *self)
 {
     actorMachineGun(self);
 
-    if (level.framenum >= self->monsterinfo.pause_framenum)
+    if (level.framenum >= self->monsterinfo.fire_framenum)
         self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
     else
         self->monsterinfo.aiflags |= AI_HOLD_FRAME;
@@ -368,7 +368,9 @@ void actor_attack(edict_t *self)
 
     self->monsterinfo.currentmove = &actor_move_attack;
     n = (Q_rand() & 15) + 3 + 7;
-    self->monsterinfo.pause_framenum = level.framenum + n;
+    self->monsterinfo.fire_framenum = level.framenum + n;
+    if (!M_RereleaseGame())
+        self->monsterinfo.pause_framenum = self->monsterinfo.fire_framenum;
 }
 
 

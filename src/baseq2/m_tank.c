@@ -440,6 +440,27 @@ void TankMachineGun(edict_t *self)
 }
 
 
+/*
+=================
+tank_blind_check
+
+[rerelease] The steering half of blindfire.  TankBlaster and TankRocket already
+AIM at monsterinfo.blind_fire_target, but without this the tank's body never
+turns to face it - ai_charge keeps steering at the (unseen) enemy, so the tank
+shoots sideways at a wall it is not looking at.  Runs on the wind-up frame of
+each attack, while AI_MANUAL_STEERING holds the generic AI off the yaw.
+=================
+*/
+static void tank_blind_check(edict_t *self)
+{
+    vec3_t  aim;
+
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+        VectorSubtract(self->monsterinfo.blind_fire_target, self->s.origin, aim);
+        self->ideal_yaw = vectoyaw2(aim);
+    }
+}
+
 mframe_t tank_frames_attack_blast [] = {
     { ai_charge, 0,   NULL },
     { ai_charge, 0,   NULL },
@@ -448,7 +469,7 @@ mframe_t tank_frames_attack_blast [] = {
     { ai_charge, -1,  NULL },
     { ai_charge, -2,  NULL },
     { ai_charge, -1,  NULL },
-    { ai_charge, -1,  NULL },
+    { ai_charge, -1,  tank_blind_check },
     { ai_charge, 0,   NULL },
     { ai_charge, 0,   TankBlaster },    // 10
     { ai_charge, 0,   NULL },
@@ -569,7 +590,7 @@ mframe_t tank_frames_attack_pre_rocket [] = {
 mmove_t tank_move_attack_pre_rocket = {FRAME_attak301, FRAME_attak321, tank_frames_attack_pre_rocket, tank_doattack_rocket};
 
 mframe_t tank_frames_attack_fire_rocket [] = {
-    { ai_charge, -3, NULL },            // Loop Start   22
+    { ai_charge, -3, tank_blind_check },// Loop Start   22
     { ai_charge, 0,  NULL },
     { ai_charge, 0,  TankRocket },      // 24
     { ai_charge, 0,  NULL },
@@ -948,6 +969,24 @@ void tank_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, 
 
 /*QUAKED monster_tank (1 .5 0) (-32 -32 -16) (32 32 72) Ambush Trigger_Spawn Sight
 */
+/*
+=================
+tank_blocked
+
+[rerelease/ROGUE] monsterinfo.blocked, called from SV_NewChaseDir when the
+tank has run out of step directions.  Plats only - the tank has no jump
+animations, so blocked_checkjump has nothing to play and is not consulted.
+Same shape as soldier_blocked.
+=================
+*/
+bool tank_blocked(edict_t *self, float dist)
+{
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 /*QUAKED monster_tank_commander (1 .5 0) (-32 -32 -16) (32 32 72) Ambush Trigger_Spawn Sight
 */
 void SP_monster_tank(edict_t *self)
@@ -1015,6 +1054,10 @@ void SP_monster_tank(edict_t *self)
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = tank_sight;
     self->monsterinfo.idle = tank_idle;
+
+    // [rerelease] let it ride func_plats instead of milling about
+    if (M_RereleaseGame())
+        self->monsterinfo.blocked = tank_blocked;
 
     gi.linkentity(self);
 

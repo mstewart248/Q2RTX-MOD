@@ -185,8 +185,18 @@ begin video
             "map fog light" pt_fog_light_scale 0 8 0.5
         range --status "brightness of sky light scattered in the fog - lower this if outdoor areas fog up too much" \
             "map fog sky" pt_fog_sky_scale 0 8 0.5
-        range --status "roll-off for light-dense maps - lower this if rooms full of lights fog up too much" \
-            "map fog light rolloff" pt_fog_light_knee 0.25 8 0.25
+        range --status "roll-off for light-dense maps. 0 = OFF, which is what lets fog pool brightly around a light instead of flattening to an even haze" \
+            "map fog light rolloff" pt_fog_light_knee 0 8 0.25
+        range --status "how fast a light's fog glow dies with distance - 2 is inverse square, raise it to pull the glow in tight around each fixture" \
+            "map fog light falloff" pt_fog_light_falloff 1 12 0.5
+        range --status "world radius inside which a light keeps normal brightness; the falloff above only steepens beyond this" \
+            "map fog light pivot" pt_fog_light_pivot 32 512 32
+        pairs --status "trace an occlusion ray per light so fog is not lit through walls and roofs - best with map fog grid on" \
+            "map fog light shadows" pt_fog_light_shadow "off" 0 "on" 1
+        range --status "world units of overhead clearance over which sky light fades into the fog - softens hard slab edges" \
+            "map fog sky soften" pt_fog_sky_soften 0 2048 128
+        range --status "lights sampled per fog step - raise to reduce fog noise, costs frame time" \
+            "map fog light samples" pt_fog_light_samples 4 64 4
         toggle "bloom" bloom_enable
         blank
         pairs "ReStir Direct Illuminaton" pt_restir off 0 on 1

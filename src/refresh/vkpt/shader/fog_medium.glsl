@@ -160,17 +160,53 @@ float getSkyVisibility(vec3 p)
 	if (global_ubo.fog_sky_trace == 0)
 		return global_ubo.fog_sky_fade;   // fall back to the CPU cluster estimate
 
+	/* BINARY VISIBILITY IS WHAT MAKES THIS LOOK WRONG, and it causes two
+	   separate complaints that turn out to be the same defect.
+
+	   Returning a hard 0 or 1 means a march point either gets the WHOLE sky term
+	   or none of it. Outdoors that paints the open air above a roof at full
+	   strength and the volume under the roof at zero, with the boundary tracing
+	   the building's silhouette - the blocky rectangular patches of fog hanging
+	   over a base with no light anywhere near them.
+
+	   It is also the froxel grid's noise. A cell's sample point is JITTERED
+	   inside the cell every frame; when that jitter carries it across the
+	   visibility boundary the term flips between full sky and nothing, and the
+	   temporal blend turns that flicker into mottling. The grid looks noisier
+	   than the march here not because the grid is worse but because it samples
+	   the same step function more coarsely.
+
+	   pt_fog_sky_soften > 0 replaces the step with a ramp: take the CLOSEST hit
+	   rather than any hit, and fade the sky in over that many world units of
+	   clearance. A point just under a ceiling gets nothing, a point in a tall
+	   shaft gets most of the sky, open air gets all of it. It is not a real
+	   hemisphere integral - it is one ray - but it is continuous, so it has no
+	   hard edge to alias against and no step for the jitter to flip across,
+	   which removes the added noise rather than trading it.
+
+	   Note the flags: the closest hit needs the TERMINATE-ON-FIRST-HIT flag
+	   GONE, because with it committed t is whatever was found first, not the
+	   nearest. 0 keeps the original any-hit binary test, which is cheaper. */
+	float soften = global_ubo.pt_fog_sky_soften;
+
 	rayQueryEXT rq;
 	rayQueryInitializeEXT(rq, FOG_TLAS,
-		gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+		(soften > 0.0) ? gl_RayFlagsOpaqueEXT
+		               : (gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT),
 		AS_FLAG_OPAQUE,
 		p, 1.0, vec3(0, 0, 1), 65536.0);
 
-	rayQueryProceedEXT(rq);
+	while (rayQueryProceedEXT(rq)) {}
 
 	bool blocked = (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT);
 
-	return blocked ? 0.0 : 1.0;
+	if (!blocked)
+		return 1.0;
+
+	if (soften <= 0.0)
+		return 0.0;
+
+	return clamp(rayQueryGetIntersectionTEXT(rq, true) / soften, 0.0, 1.0);
 }
 
 // Hemisphere solid angle for the sky term. Kept separate from the local-light
@@ -261,7 +297,11 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 	if (count == 0)
 		return sky_term;
 
-	uint taken  = min(count, uint(FOG_LIGHT_SAMPLES));
+	/* HOW MANY OF THE CLUSTER'S LIGHTS THIS STEP LOOKS AT.
+	   Raising this is the direct trade of frame time for fog noise, and it
+	   matters far more once pt_fog_light_falloff is steep - see the variance
+	   note at the count/taken rescale below. */
+	uint taken  = min(count, uint(max(global_ubo.pt_fog_light_samples, 1.0)));
 	uint stride = max(1u, count / taken);
 	uint offset = uint(rand01 * float(count)) % count;
 
@@ -313,6 +353,50 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 				continue;
 		}
 
+		/* IS THE LIGHT ACTUALLY VISIBLE FROM THIS POINT?
+
+		   Until this existed, nothing in this function tested occlusion. The
+		   comment at the top of the function says so plainly - "These samples
+		   are unshadowed" - and the PVS/cluster restriction was the only thing
+		   keeping it in check. But PVS is per-CLUSTER: inside the camera's own
+		   cluster a fixture lights fog straight through walls, floors and roofs.
+
+		   That is why fog appears above the top of a base structure with no light
+		   anywhere near it, and it is the reason a glow could never be made to
+		   pool: pt_fog_light_falloff shapes the light with DISTANCE, and the
+		   offending fixture is genuinely close - it is just on the other side of
+		   the roof. No distance curve can express "and not through that".
+
+		   Placed AFTER the cheap rejections (model light, back-facing) on
+		   purpose, so a ray is only ever spent on a light that would otherwise
+		   contribute. t_max stops short of the emitter so the ray cannot hit the
+		   emissive surface it is aiming at.
+
+		   COST. One ray per sampled light per evaluation point. In the FROXEL
+		   GRID that is ~901k cells x pt_fog_light_samples, and the temporal
+		   history smooths what is left, which is what the grid is for. In the
+		   per-pixel MARCH it is that many rays per step of every half-res pixel -
+		   tens of millions - so expect it to be very expensive there. Default
+		   off; turn it on with pt_fog_froxel 1. */
+		if (global_ubo.pt_fog_light_shadow != 0)
+		{
+			float sdist = sqrt(dist2);
+			if (sdist > 2.0)
+			{
+				rayQueryEXT shadow_rq;
+				rayQueryInitializeEXT(shadow_rq, FOG_TLAS,
+					gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+					AS_FLAG_OPAQUE,
+					p, 1.0, d / sdist, max(sdist - 4.0, 1.0));
+
+				rayQueryProceedEXT(shadow_rq);
+
+				if (rayQueryGetIntersectionTypeEXT(shadow_rq, true)
+				    != gl_RayQueryCommittedIntersectionNoneEXT)
+					continue;
+			}
+		}
+
 		// AREA MATTERS, and leaving it out is why emissive surfaces did not light
 		// the fog. light.color is RADIANCE - per unit area, per steradian - so a
 		// big ceiling panel and a tiny one carry the SAME colour and differ only
@@ -325,10 +409,39 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 		                light.positions[2] - light.positions[0]);
 		float area = 0.5 * length(cr);
 
-		// copy_light() stores SKY lights as a NEGATIVE colour (it packs
-		// -sky_radiance * 0.5). Taken literally that subtracts light and can
-		// drive the fog negative, so flip it back.
-		vec3 color = abs(light.color);
+		/* SKY POLYGONS ARE NOT AREA LIGHTS HERE - THIS FUNCTION ALREADY HAS A SKY
+		   TERM, AND COUNTING THEM TWICE IS THE "FOG IN THE SKY" BUG.
+
+		   copy_light() MARKS a sky polygon by storing its colour NEGATIVE
+		   (`-sky_radiance * 0.5`, vertex_buffer.c). The old line here was
+		   `vec3 color = abs(light.color);` - which does not honour the marker,
+		   it ERASES it, turning every sky brush face in the cluster into a
+		   perfectly ordinary bright area light.
+
+		   That is ruinous for fog specifically, because `area` is folded into
+		   the sum below and a sky brush face is enormous - thousands of square
+		   units against a light fixture's tens. So the sky brushes dominated the
+		   local-light sum near the top of a map, which is exactly where they
+		   are, and produced glowing fog above the rooftops with no fixture
+		   anywhere near it.
+
+		   Every symptom follows from this and none of it responded to the knobs:
+		     - pt_fog_sky_scale did nothing, because that scales sky_term, and
+		       this was arriving through the LOCAL LIGHT path instead;
+		     - pt_fog_light_scale killed it, because that scales this sum;
+		     - pt_fog_light_shadow did not help, because a sky brush genuinely IS
+		       visible from open air - the occlusion test was answering honestly;
+		     - setting the physical sky to NIGHT did not dim it, because
+		       sky_radiance comes from avg_envmap_color, which is fixed at map
+		       load from the skybox images and knows nothing about time of day.
+
+		   The sky's contribution to fog belongs to sky_term at the top of this
+		   function, which has its own visibility trace and its own scale. Skip
+		   the marked polygons here and it is accounted for exactly once. */
+		if (any(lessThan(light.color, vec3(0.0))))
+			continue;
+
+		vec3 color = light.color;
 
 		/* HOW FAST A LIGHT'S FOG GLOW FALLS OFF WITH DISTANCE.
 
@@ -411,7 +524,23 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 		sum += color * area * light.light_style_scale * atten;
 	}
 
-	// scale back up for the lights this step did not look at
+	/* Scale back up for the lights this step did not look at.
+
+	   THIS IS UNBIASED BUT HIGH VARIANCE, AND A STEEP FALLOFF MAKES IT WORSE -
+	   which is the mottled, blotchy look in the fog, and why turning
+	   pt_fog_light_falloff up can make the fog noisier rather than cleaner.
+
+	   Two things stack up. `count` is the WHOLE cluster list, including the
+	   model lights the loop skips (base1 carries 37 of them), so many of the
+	   samples contribute nothing yet the survivors are still multiplied by
+	   count/taken. And a steep falloff means almost all the energy sits in the
+	   handful of lights nearest the point, so whether the strided subset happens
+	   to catch one swings the answer by the full rescale factor.
+
+	   The estimator is still correct in expectation - it is the per-step
+	   variance that shows. pt_fog_light_samples buys it down directly; the
+	   froxel grid's temporal history (pt_fog_froxel 1) averages it across frames
+	   instead, which is the cheaper answer and is what that grid is for. */
 	vec3 result = sum * (float(count) / float(taken));
 
 	// SOFT KNEE on the local-light total.

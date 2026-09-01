@@ -683,6 +683,14 @@ void CL_MuzzleFlash2(void)
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("gunner/gunatck3.wav"), 1, ATTN_NORM, 0);
         break;
 
+    // rerelease: the supertank's third attack, a two-shoulder grenade launcher.
+    // It keeps the supertank's own weapon voice rather than the gunner's.
+    case MZ2_SUPERTANK_GRENADE_1:
+    case MZ2_SUPERTANK_GRENADE_2:
+        VectorSet(dl->color, 1, 0.5f, 0);
+        S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("tank/rocket.wav"), 1, ATTN_NORM, 0);
+        break;
+
     // rerelease: the gun commander's three grenade throws - mortar (lobbed
     // high), front (straight ahead) and crouch (fired from a duck).
     case MZ2_GUNCMDR_GRENADE_MORTAR_1:

@@ -149,10 +149,17 @@ void GaldiatorMelee(edict_t *self)
     vec3_t  aim;
 
     VectorSet(aim, MELEE_DISTANCE, self->mins[0], -4);
-    if (fire_hit(self, aim, (20 + (Q_rand() % 5)), 300))
+    if (fire_hit(self, aim, (20 + (Q_rand() % 5)), 300)) {
         gi.sound(self, CHAN_AUTO, sound_cleaver_hit, 1, ATTN_NORM, 0);
-    else
+    } else {
         gi.sound(self, CHAN_AUTO, sound_cleaver_miss, 1, ATTN_NORM, 0);
+        // [rerelease] a whiffed cleaver backs the gladiator off its melee for
+        // 1.5s.  gladiator_attack reads this to skip its close-range safe zone,
+        // so instead of standing in your face swinging at nothing it steps back
+        // to the RAILGUN.  (The function name keeps id's 1997 "Galdiator" typo.)
+        if (M_RereleaseGame())
+            self->monsterinfo.melee_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
+    }
 }
 
 mframe_t gladiator_frames_attack_melee [] = {
@@ -279,8 +286,19 @@ void gladiator_attack(edict_t *self)
     // a small safe zone
     VectorSubtract(self->s.origin, self->enemy->s.origin, v);
     range = VectorLength(v);
-    if (range <= (MELEE_DISTANCE + 32))
+    if (M_RereleaseGame()) {
+        vec3_t start;
+
+        // ...which a gladiator that just WHIFFED its cleaver ignores, so it
+        // reaches for the railgun rather than swinging at nothing
+        if (range <= (MELEE_DISTANCE + 32) &&
+            self->monsterinfo.melee_debounce_framenum <= level.framenum)
+            return;
+        if (!M_CheckClearShot(self, monster_flash_offset[MZ2_GLADIATOR_RAILGUN_1], start))
+            return;
+    } else if (range <= (MELEE_DISTANCE + 32)) {
         return;
+    }
 
     // charge up the railgun
     VectorCopy(self->enemy->s.origin, self->pos1);  //save for aiming the shot
@@ -519,6 +537,24 @@ void gladiator_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dam
 }
 
 
+/*
+=================
+gladiator_blocked
+
+[rerelease/ROGUE] monsterinfo.blocked, called from SV_NewChaseDir when the
+gladiator has run out of step directions.  Plats only - the gladiator has no jump
+animations, so blocked_checkjump has nothing to play and is not consulted.
+Same shape as soldier_blocked.
+=================
+*/
+bool gladiator_blocked(edict_t *self, float dist)
+{
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 /*QUAKED monster_gladiator (1 .5 0) (-32 -32 -24) (32 32 64) Ambush Trigger_Spawn Sight
 */
 void SP_monster_gladiator(edict_t *self)
@@ -580,6 +616,10 @@ void SP_monster_gladiator(edict_t *self)
     self->monsterinfo.sight = gladiator_sight;
     self->monsterinfo.idle = gladiator_idle;
     self->monsterinfo.search = gladiator_search;
+
+    // [rerelease] let it ride func_plats instead of milling about
+    if (M_RereleaseGame())
+        self->monsterinfo.blocked = gladiator_blocked;
 
     gi.linkentity(self);
     self->monsterinfo.currentmove = &gladiator_move_stand;

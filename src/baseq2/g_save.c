@@ -261,6 +261,19 @@ static const save_field_t entityfields[] = {
     F(monsterinfo.jump_height),
     FT(monsterinfo.jump_framenum),
 
+    // [rerelease] SV_movestep's anti-wedge state.  All three are absolute
+    // frame numbers, so FT().
+    FT(monsterinfo.bump_framenum),
+    FT(monsterinfo.bad_move_framenum),
+    FT(monsterinfo.random_change_framenum),
+
+    // [rerelease] medic healing bookkeeping.  All three are edict references.
+    E(monsterinfo.healer),
+    E(monsterinfo.badMedic1),
+    E(monsterinfo.badMedic2),
+    I(monsterinfo.medicTries),
+    FT(monsterinfo.fire_framenum),
+
     // [rerelease] the alternate fly system.  fly_position_time and
     // fly_recovery_framenum are absolute frame numbers, so FT(); the rest are
     // plain state.  fly_ideal_position is relative to the enemy unless
@@ -931,7 +944,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // 53: the six classic *_dodge functions are hooked up again for baseq2, which
 // adds them to save_ptrs[] - and that table is indexed POSITIONALLY, so every
 // entry after the insertion point shifts and version-52 saves cannot be read.
-#define SAVE_VERSION    54
+#define SAVE_VERSION    57
 
 /*
 ============

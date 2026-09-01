@@ -665,7 +665,9 @@ void infantry_cock_gun(edict_t *self)
 
     gi.sound(self, CHAN_WEAPON, sound_weapon_cock, 1, ATTN_NORM, 0);
     n = (Q_rand() & 15) + 3 + 7;
-    self->monsterinfo.pause_framenum = level.framenum + n;
+    self->monsterinfo.fire_framenum = level.framenum + n;
+    if (!M_RereleaseGame())
+        self->monsterinfo.pause_framenum = self->monsterinfo.fire_framenum;
 
     // gun cocked
     self->count = 1;
@@ -676,7 +678,9 @@ void infantry_cock_gun(edict_t *self)
 // infantry_cock_gun.  0.7-2.0s in the rerelease, which is 7-20 frames here.
 void infantry_set_firetime(edict_t *self)
 {
-    self->monsterinfo.pause_framenum = level.framenum + 7 + (Q_rand() % 14);
+    self->monsterinfo.fire_framenum = level.framenum + 7 + (Q_rand() % 14);
+    if (!M_RereleaseGame())
+        self->monsterinfo.pause_framenum = self->monsterinfo.fire_framenum;
 
     // If the enemy is far enough away and there is somewhere to advance to,
     // charge while firing instead of standing still.
@@ -711,7 +715,7 @@ void infantry_fire(edict_t *self)
     // The rerelease branches on the active move here for exactly this reason: in
     // attack4 the burst ends by decision instead of by holding.
     if (self->monsterinfo.currentmove == &infantry_move_attack4) {
-        if (level.framenum >= self->monsterinfo.pause_framenum) {
+        if (level.framenum >= self->monsterinfo.fire_framenum) {
             // ran out of firing time
             self->monsterinfo.currentmove = &infantry_move_attack1;
             self->monsterinfo.nextframe = FRAME_attak114;
@@ -726,7 +730,7 @@ void infantry_fire(edict_t *self)
         return;
     }
 
-    if (level.framenum >= self->monsterinfo.pause_framenum) {
+    if (level.framenum >= self->monsterinfo.fire_framenum) {
         self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
 
         // attack5 holds on attak416 for the burst, then skips its recovery frames

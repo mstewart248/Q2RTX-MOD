@@ -323,11 +323,56 @@ mframe_t supertank_frames_backward[] = {
 };
 mmove_t supertank_move_backward = {FRAME_backwd_1, FRAME_backwd_18, supertank_frames_backward, NULL};
 
+/*
+=================
+supertankGrenade
+
+[rerelease] The supertank's THIRD attack, and one this tree never had at all.
+The attak4_* frames are in the 1997 md2 already, AND this tree already
+carried supertank_frames_attack4 as a stub of six empty ai_move slots that
+nothing ever selected - id defined the animation and never wrote the code.
+So this needs no new animation and no new move, only the thinks and the two
+shoulder muzzles (MZ2_SUPERTANK_GRENADE_1/2, appended to the MZ2 list).
+
+It lobs, so it is the answer to an enemy standing ABOVE the supertank, which
+neither the chaingun nor the rockets can reach.  The speed sweep asks for the
+flattest arc between 500 and 900 that actually lands on the predicted point.
+=================
+*/
+static void supertankGrenade(edict_t *self)
+{
+    vec3_t  forward, right, start, aim, aim_point;
+    int     flash_number;
+    float   speed;
+
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
+    if (self->s.frame == FRAME_attak4_1)
+        flash_number = MZ2_SUPERTANK_GRENADE_1;
+    else
+        flash_number = MZ2_SUPERTANK_GRENADE_2;
+
+    AngleVectors(self->s.angles, forward, right, NULL);
+    M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+
+    PredictAim(self->enemy, start, 0, false, crandom() * 0.1f, forward, aim_point);
+
+    for (speed = 500.0f; speed < 1000.0f; speed += 100.0f) {
+        VectorCopy(forward, aim);
+        if (!M_CalculatePitchToFire(self, aim_point, start, aim, speed, 2.5f, true, false))
+            continue;
+
+        monster_fire_grenade(self, start, aim, 50, speed, flash_number);
+        break;
+    }
+}
+
 mframe_t supertank_frames_attack4[] = {
+    { ai_move,    0,  supertankGrenade },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move,    0,  supertankGrenade },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL }
 };
@@ -546,6 +591,31 @@ void supertank_attack(edict_t *self)
 
     // Attack 1 == Chaingun
     // Attack 2 == Rocket Launcher
+    // Attack 3 == Grenade Launcher  [rerelease]
+
+    if (M_RereleaseGame()) {
+        vec3_t  scratch;
+        bool    chaingun_good = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_MACHINEGUN_1], scratch);
+        bool    rocket_good   = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_ROCKET_1], scratch);
+        bool    grenade_good  = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_GRENADE_1], scratch);
+
+        // the grenade is the lobbing answer to an enemy standing ABOVE us,
+        // which is why vec[2] > 120 forces it over the flat-firing weapons
+        if (chaingun_good && (!rocket_good || range <= 540 || random() < 0.3f)) {
+            if (grenade_good && (range >= 350 || vec[2] > 120.0f || random() < 0.2f))
+                self->monsterinfo.currentmove = &supertank_move_attack4;
+            else
+                self->monsterinfo.currentmove = &supertank_move_attack1;
+        } else if (rocket_good) {
+            if (grenade_good && (vec[2] > 120.0f || random() < 0.2f))
+                self->monsterinfo.currentmove = &supertank_move_attack4;
+            else
+                self->monsterinfo.currentmove = &supertank_move_attack2;
+        } else if (grenade_good) {
+            self->monsterinfo.currentmove = &supertank_move_attack4;
+        }
+        return;
+    }
 
     if (range <= 160) {
         self->monsterinfo.currentmove = &supertank_move_attack1;
@@ -663,6 +733,24 @@ void supertank_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dam
 // monster_supertank
 //
 
+/*
+=================
+supertank_blocked
+
+[rerelease/ROGUE] monsterinfo.blocked, called from SV_NewChaseDir when the
+supertank has run out of step directions.  Plats only - the supertank has no jump
+animations, so blocked_checkjump has nothing to play and is not consulted.
+Same shape as soldier_blocked.
+=================
+*/
+bool supertank_blocked(edict_t *self, float dist)
+{
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 /*QUAKED monster_supertank (1 .5 0) (-64 -64 0) (64 64 72) Ambush Trigger_Spawn Sight
 */
 void SP_monster_supertank(edict_t *self)
@@ -702,6 +790,10 @@ void SP_monster_supertank(edict_t *self)
     self->monsterinfo.search = supertank_search;
     self->monsterinfo.melee = NULL;
     self->monsterinfo.sight = NULL;
+
+    // [rerelease] let it ride func_plats instead of milling about
+    if (M_RereleaseGame())
+        self->monsterinfo.blocked = supertank_blocked;
 
     gi.linkentity(self);
 

@@ -178,6 +178,10 @@ const vec3_t monster_flash_offset[MAX_MUZZLEFLASHES] = {
     // The mean of the sweep below, used only if a frame ever lands outside the
     // burst.  The real per-shot positions are in medic_hyperblaster_offset[].
     [MZ2_MEDIC_HYPERBLASTER] = { 35.5f, 5.7f, 15.0f },
+
+    // Rerelease: the supertank's two grenade muzzles, one per shoulder.
+    [MZ2_SUPERTANK_GRENADE_1] = { 31.31f, -37.0f, 54.32f },
+    [MZ2_SUPERTANK_GRENADE_2] = { 31.31f,  37.0f, 54.32f },
     [MZ2_CARRIER_RAILGUN] = { 32, 0, 6 },
     [MZ2_WIDOW_DISRUPTOR] = { 57.72f, 14.5f, 88.81f },
     [MZ2_WIDOW_BLASTER] = { 56, 32, 32 },

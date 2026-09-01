@@ -415,6 +415,209 @@ static bool SV_alternate_flystep(edict_t *ent, vec3_t move, bool relink)
 
 
 /*
+=================
+M_WaterLevelAt
+
+M_CatagorizePosition only ever reads an entity's OWN origin, and the rerelease
+ground step needs to know what it would be standing in at a position it has not
+moved to yet.  Same probe heights, taken at an arbitrary point.
+=================
+*/
+static void M_WaterLevelAt(edict_t *ent, const vec3_t org, int *level, int *type)
+{
+    vec3_t  point;
+    int     cont;
+
+    *level = 0;
+    *type = 0;
+
+    point[0] = org[0];
+    point[1] = org[1];
+    point[2] = org[2] + ent->mins[2] + 1;
+    cont = gi.pointcontents(point);
+    if (!(cont & MASK_WATER))
+        return;
+
+    *type = cont;
+    *level = 1;
+
+    point[2] += 26;
+    if (!(gi.pointcontents(point) & MASK_WATER))
+        return;
+
+    *level = 2;
+
+    point[2] += 22;
+    if (gi.pointcontents(point) & MASK_WATER)
+        *level = 3;
+}
+
+/*
+=================
+SV_movestep_rerelease
+
+id rewrote the ground half of SV_movestep; this is m_move.cpp:613 onwards, minus
+the tesla/bad-area block (rogue-only) and the nav-mesh pieces.  Four changes
+matter, and all four show up as a monster that will not go where it obviously
+should:
+
+  1. TWO forward traces, not one - one from a step-height above the start (what
+     the classic does) and one flat forward - and it takes whichever got
+     further.  The classic single raised trace fails wherever something is
+     overhead, a half-open door or a low frame, even though the monster would
+     walk straight through at floor level.
+
+  2. `stepsize += 0.75f`.  A stair of exactly STEPSIZE is a coin flip in float
+     without it.
+
+  3. THE BUMP-SLIDE RETRY.  If the step barely moved the monster, re-aim
+     ideal_yaw along the plane it hit and take the frame anyway.  Without this a
+     monster wedged on a corner keeps choosing the same blocked heading and
+     grinds in place - the single biggest cause of "stuck where it shouldn't
+     be".  Throttled by bump_framenum so it cannot fire every frame.
+
+  4. WATER.  The classic refuses to enter water at all from dry land, so a
+     monster balks at an ankle-deep puddle.  id wades to the waist and refuses
+     only slime, lava, and anything deeper.
+
+Deliberately NOT ported: `RF_STAIR_STEP` (this tree's client has no stair
+smoothing to feed), `G_Impact`, and the CheckForBadArea tesla handling.
+=================
+*/
+static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
+{
+    vec3_t      oldorg, start_up, end_up, end_fwd, end, dir, forward, yawang;
+    trace_t     up_trace, fwd_trace, trace;
+    trace_t     *chosen;
+    float       stepsize, new_yaw, moved, wanted;
+    int         steps;
+    int         end_level, end_type;
+
+    VectorCopy(ent->s.origin, oldorg);
+
+    // push down from a step height above the wished position
+    if (!(ent->monsterinfo.aiflags & AI_NOSTEP))
+        stepsize = STEPSIZE;
+    else
+        stepsize = 1;
+    stepsize += 0.75f;
+
+    // (1) the raised trace: lift by one stepsize against gravity, then forward
+    VectorMA(oldorg, -stepsize, ent->gravityVector, start_up);
+    up_trace = gi.trace(oldorg, ent->mins, ent->maxs, start_up, ent, MASK_MONSTERSOLID);
+    VectorCopy(up_trace.endpos, start_up);
+
+    VectorAdd(start_up, move, end_up);
+    up_trace = gi.trace(start_up, ent->mins, ent->maxs, end_up, ent, MASK_MONSTERSOLID);
+
+    if (up_trace.startsolid) {
+        VectorMA(start_up, -stepsize, ent->gravityVector, start_up);
+        up_trace = gi.trace(start_up, ent->mins, ent->maxs, end_up, ent, MASK_MONSTERSOLID);
+    }
+
+    // ...and the flat one from where we actually are
+    VectorAdd(oldorg, move, end_fwd);
+    fwd_trace = gi.trace(oldorg, ent->mins, ent->maxs, end_fwd, ent, MASK_MONSTERSOLID);
+    // (id retries this one on startsolid, but its retry nudges `start_up` and
+    // re-runs the identical trace, so it is a no-op.  Not reproduced.)
+
+    // pick the one that went farther
+    if (up_trace.fraction > fwd_trace.fraction) {
+        chosen = &up_trace;
+        steps = 2;
+    } else {
+        chosen = &fwd_trace;
+        steps = 1;
+    }
+
+    if (chosen->startsolid || chosen->allsolid)
+        return false;
+
+    // step us back down
+    VectorMA(chosen->endpos, steps * stepsize, ent->gravityVector, end);
+    trace = gi.trace(chosen->endpos, ent->mins, ent->maxs, end, ent, MASK_MONSTERSOLID);
+
+    // (4) monsters are fine stepping into water up to the waist, but will not
+    // walk into anything deeper, or into slime or lava
+    if (ent->waterlevel <= 2) {
+        M_WaterLevelAt(ent, trace.endpos, &end_level, &end_type);
+        if ((end_type & (CONTENTS_SLIME | CONTENTS_LAVA)) || end_level > 2)
+            return false;
+    }
+
+    if (trace.fraction == 1) {
+        // if monster had the ground pulled out, go ahead and fall
+        if (ent->flags & FL_PARTIALGROUND) {
+            VectorAdd(ent->s.origin, move, ent->s.origin);
+            if (relink) {
+                gi.linkentity(ent);
+                G_TouchTriggers(ent);
+            }
+            ent->groundentity = NULL;
+            return true;
+        }
+
+        return false;       // walked off an edge
+    }
+
+    // (3) if we did not actually get anywhere, slide along whatever we hit
+    // rather than reporting failure and letting SV_NewChaseDir mill about
+    moved = Distance(trace.endpos, oldorg);
+    wanted = VectorLength(move);
+
+    if (moved < wanted * 0.05f) {
+        ent->monsterinfo.bad_move_framenum = level.framenum + BASE_FRAMERATE;
+
+        if (ent->monsterinfo.bump_framenum < level.framenum && chosen->fraction < 1.0f) {
+            // adjust ideal_yaw to move against the object we hit and try again
+            VectorSet(yawang, 0, ent->ideal_yaw, 0);
+            AngleVectors(yawang, forward, NULL, NULL);
+            ClipVelocity(forward, chosen->plane.normal, dir, 1.0f);
+            new_yaw = vectoyaw2(dir);
+
+            if (DotProduct(dir, dir) > 0.1f && ent->ideal_yaw != new_yaw) {
+                ent->ideal_yaw = new_yaw;
+                ent->monsterinfo.random_change_framenum = level.framenum + 1;
+                ent->monsterinfo.bump_framenum = level.framenum + 2;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+// check point traces down for dangling corners
+    VectorCopy(trace.endpos, ent->s.origin);
+
+    if (!M_CheckBottom(ent)) {
+        if (ent->flags & FL_PARTIALGROUND) {
+            // entity had floor mostly pulled out from underneath it
+            // and is trying to correct
+            if (relink) {
+                gi.linkentity(ent);
+                G_TouchTriggers(ent);
+            }
+            return true;
+        }
+        VectorCopy(oldorg, ent->s.origin);
+        return false;
+    }
+
+    if (ent->flags & FL_PARTIALGROUND)
+        ent->flags &= ~FL_PARTIALGROUND;
+
+    ent->groundentity = trace.ent;
+    ent->groundentity_linkcount = trace.ent->linkcount;
+
+// the move is ok
+    if (relink) {
+        gi.linkentity(ent);
+        G_TouchTriggers(ent);
+    }
+    return true;
+}
+
+/*
 =============
 SV_movestep
 
@@ -512,6 +715,11 @@ bool SV_movestep(edict_t *ent, vec3_t move, bool relink)
 
         return false;
     }
+
+    // [rerelease] id rewrote the ground step; see SV_movestep_rerelease above.
+    // Per the scope rule, classic Q2RTX keeps the 1997 body below.
+    if (M_RereleaseGame())
+        return SV_movestep_rerelease(ent, move, relink);
 
 // push down from a step height above the wished position
     if (!(ent->monsterinfo.aiflags & AI_NOSTEP))
@@ -778,7 +986,16 @@ void SV_NewChaseDir(edict_t *actor, edict_t *enemy, float dist)
     if (turnaround != DI_NODIR && SV_StepDirection(actor, turnaround, dist))
         return;
 
-    actor->ideal_yaw = olddir;      // can't move
+    // [rerelease] Every direction failed.  The 1997 code parks ideal_yaw back
+    // on `olddir` - the direction that just failed - so the next frame runs
+    // this whole search again from the same heading and fails the same way,
+    // forever.  That is the classic "monster jitters against a corner and
+    // never leaves" deadlock.  id picks a random yaw instead, which costs one
+    // wandering frame and breaks the cycle.
+    if (M_RereleaseGame())
+        actor->ideal_yaw = frand() * 360.0f;
+    else
+        actor->ideal_yaw = olddir;      // can't move
 
 // if a bridge was pulled out from underneath a monster, it may not have
 // a valid standing position at all

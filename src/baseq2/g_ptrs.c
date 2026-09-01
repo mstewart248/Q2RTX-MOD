@@ -383,6 +383,7 @@ extern int stalker_move_swing_r;
 extern int stalker_move_walk;
 extern int supertank_move_attack1;
 extern int supertank_move_attack2;
+extern int supertank_move_attack4;
 extern int supertank_move_death;
 extern int supertank_move_end_attack1;
 extern int supertank_move_forward;
@@ -589,6 +590,7 @@ extern void gib_die(void);
 extern void gib_think(void);
 extern void gib_touch(void);
 extern void gladiator_attack(void);
+extern void gladiator_blocked(void);
 extern void gladiator_die(void);
 extern void gladiator_idle(void);
 extern void gladiator_melee(void);
@@ -801,6 +803,7 @@ extern void stationarymonster_start_go(void);
 extern void stationarymonster_triggered_spawn(void);
 extern void stationarymonster_triggered_spawn_use(void);
 extern void supertank_attack(void);
+extern void supertank_blocked(void);
 extern void supertank_die(void);
 extern void supertank_pain(void);
 extern void supertank_run(void);
@@ -809,6 +812,7 @@ extern void supertank_stand(void);
 extern void supertank_walk(void);
 extern void swimmonster_start_go(void);
 extern void tank_attack(void);
+extern void tank_blocked(void);
 extern void tank_die(void);
 extern void tank_idle(void);
 extern void tank_pain(void);
@@ -1622,6 +1626,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &stalker_move_walk },
 { P_monsterinfo_currentmove, &supertank_move_attack1 },
 { P_monsterinfo_currentmove, &supertank_move_attack2 },
+{ P_monsterinfo_currentmove, &supertank_move_attack4 },
 { P_monsterinfo_currentmove, &supertank_move_death },
 { P_monsterinfo_currentmove, &supertank_move_end_attack1 },
 { P_monsterinfo_currentmove, &supertank_move_forward },
@@ -1841,11 +1846,14 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_checkattack, turret_checkattack },
 { P_monsterinfo_blocked, berserk_blocked },
 { P_monsterinfo_blocked, flyer_blocked },
+{ P_monsterinfo_blocked, gladiator_blocked },
 { P_monsterinfo_blocked, guncmdr_blocked },
 { P_monsterinfo_blocked, gunner_blocked },
 { P_monsterinfo_blocked, infantry_blocked },
 { P_monsterinfo_blocked, mutant_blocked },
 { P_monsterinfo_blocked, parasite_blocked },
 { P_monsterinfo_blocked, soldier_blocked },
+{ P_monsterinfo_blocked, supertank_blocked },
+{ P_monsterinfo_blocked, tank_blocked },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);
