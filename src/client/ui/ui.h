@@ -88,11 +88,45 @@ typedef enum {
      (item)->type != MTYPE_STATIC && \
      !((item)->flags & (QMF_GRAYED | QMF_HIDDEN | QMF_DISABLED)))
 
+/* CONDITIONS ON A MENU ITEM - ifeq / ifneq / ifge / ifle in the .menu file.
+
+   TWO THINGS THIS USED TO NOT DO, and both were load-bearing once the video
+   menu was split up:
+
+   1. NESTING. There was a single condition slot per menu and Parse_If refused a
+      second one, so an item could carry exactly one test. But the whole RTX half
+      of the video menu already sits inside `ifeq vid_rtx 1`, which meant nothing
+      inside it could be given a condition of its own - there was no way to say
+      "DLSS Ray Reconstruction, but only when DLSS is actually on" without
+      dropping out of the vid_rtx block and thereby showing the item under
+      OpenGL. Conditions now form a STACK and an item stores every condition that
+      was open when it was declared, ANDed together.
+
+   2. COMPARISON. Only == and != existed, so an ordered cvar could not express a
+      range. cl_fog modes 2 and 3 share most of their settings, and "show this
+      for mode 2 AND mode 3" needs >=, not a pair of duplicated menu entries.
+
+   MENU_MAX_CONDITIONS is the nesting depth. 4 is far more than the menus use
+   (the deepest is 2) and costs a few bytes per item. */
+#define MENU_MAX_CONDITIONS 4
+
+typedef enum {
+	MENU_COND_EQ,    // ifeq  - show when cvar == value
+	MENU_COND_NEQ,   // ifneq - show when cvar != value
+	MENU_COND_GE,    // ifge  - show when cvar >= value
+	MENU_COND_LE     // ifle  - show when cvar <= value
+} menuCondOp_t;
+
 typedef struct menuCondition_s {
 	cvar_t *cvar;
 	int value;
-	bool equals;
+	menuCondOp_t op;
 } menuCondition_t;
+
+typedef struct menuConditionSet_s {
+	menuCondition_t conditions[MENU_MAX_CONDITIONS];
+	int count;
+} menuConditionSet_t;
 
 typedef struct menuFrameWork_s {
     list_t  entry;
@@ -125,7 +159,7 @@ typedef struct menuFrameWork_s {
 	qhandle_t footer;
 	vrect_t footer_rc;
 
-	menuCondition_t current_condition;
+	menuConditionSet_t current_conditions;
 
     bool (*push)(struct menuFrameWork_s *);
     void (*pop)(struct menuFrameWork_s *);
@@ -151,7 +185,7 @@ typedef struct menuCommon_s {
     int flags;
     int uiFlags;
 
-	menuCondition_t condition;
+	menuConditionSet_t conditions;
 
     menuSound_t (*activate)(struct menuCommon_s *);
     menuSound_t (*change)(struct menuCommon_s *);

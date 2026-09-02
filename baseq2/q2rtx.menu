@@ -76,9 +76,15 @@ begin environment
     ifeq sky_procedural_active 1
         range -f "%+.1f EV" "sun and sky brightness" physical_sky_brightness -10 2 0.1
     endif
+    // This map draws its own skybox rather than the procedural sky, so the EV
+    // stops above mean nothing and these two are what control it. They used to
+    // live in the video menu with a signpost here pointing at them, which put
+    // the two halves of one decision in two different places.
     ifeq sky_procedural_active 0
-        action --status "this map draws its own skybox - its brightness lives in the video options" \
-            "sky brightness is in video options..." pushmenu video
+        range --status "radiance of the map's own skybox - raises the light it casts into the level, and the sky with it" \
+            "sky light" pt_sky_light_scale 0 3 0.1
+        range --status "how bright the skybox LOOKS - does not change the light it casts" \
+            "sky brightness" pt_sky_brightness 0 2 0.1
     endif
     pairs "time of day" sun_preset "custom" 0 "current time" 1 "12x current time" 2 "night" 3 "dawn" 4 "morning" 5 "noon" 6 "evening" 7 "dusk" 8
     bind "next time of day key" next_sun
@@ -156,8 +162,31 @@ begin video
 		range "texture LOD bias" pt_texture_lod_bias -2 2 0.5
         pairs "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
         pairs "DLSS 2.0" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
-        pairs "DLSS Ray-Reconstruction" pt_dlss_dldn off 0 on 1
+        // Ray Reconstruction REPLACES DLSS's denoiser, so it is meaningless without
+        // DLSS itself. This is a NESTED condition inside `ifeq vid_rtx 1`; see
+        // menuConditionSet_t in ui.h.
+        //
+        // FRAME GENERATION IS IN HERE FOR A DIFFERENT AND WEAKER REASON, and it is
+        // worth knowing which. DLSS-G is an INDEPENDENT feature - NVIDIA supports it
+        // over DLAA or native, and nothing about interpolating frames needs super
+        // resolution or ray reconstruction. It is gated here only because THIS
+        // renderer has not been wired for it yet: DLSSGEnabled() requires
+        // DLSSEnabled() because the backbuffer handed to DLSS-G is
+        // VKPT_IMG_DLSS_OUTPUT, and with DLSS off the finished frame goes to
+        // VKPT_IMG_TAA_OUTPUT instead (bloom.c branches on the same test). So at
+        // pt_dlss 0 the control would be visible and do nothing, and hiding it is
+        // the honest reading of the code as it stands.
+        //
+        // Note DLAA is pt_dlss 5, which passes this test - so FG with no upscaling
+        // already works. Decoupling it properly means pointing DLSS-G at
+        // TAA_OUTPUT when DLSS is off, in DLSSGEnabled(), DLSS.c:1635, bloom.c:334
+        // and the present path in main.c. Deferred deliberately; when it lands,
+        // move the endif below back to just after Ray-Reconstruction.
+        ifneq pt_dlss 0
+        pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser below OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had." \
+            "DLSS Ray-Reconstruction" pt_dlss_dldn off 0 on 1
         pairs --status "generates extra frames between rendered ones. Needs DLSS on. Pick the multiplier so base framerate x multiplier is about your refresh rate - so a HEAVIER scene wants a HIGHER multiplier, not a lower one (60Hz: 2x at 30fps base, 3x at 20, 4x at 15, 6x at 10). Check the base rate with pt_dlss_fg_stats 1. With vsync ON the presented rate is capped at refresh instead, and 2x is all that helps. Turn Reflex on with this." "DLSS Frame Generation" pt_dlss_fg off 0 2x 2 3x 3 4x 4 5x 5 6x 6
+        endif
         pairs --status "NVIDIA Reflex. Stops the CPU queueing frames ahead of the GPU, which is where most input lag comes from. Measured here: 16ms down to 3ms without frame generation. Leave it on. Boost also holds GPU clocks up - more power, marginal gain." "NVIDIA Reflex" pt_reflex off 0 on 1 "on + boost" 2
         range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off." "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
         pairs "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 BeforeTransparent 16 RayLengthDiffuse 17 raylengthSpecular 18 transparent 19 PT_MOTION 20 DLSS_MOTION 21 ASVGF_HIST_COLOR_HF 22 ShadingPosition 23 FlatColor 24 FlatMotion 25 TAA_Output 26 PT_THROUGHPUT 27 BOUNCE_THROUGHPUT 28 HQ_COLOR_INTERLEAVED 29 Reflected_Albedo 30 COLOR_LF 31 COLOR_HF 32 COLOR_SPEC 33 GEO_NORMAL 34 VISBUF_B 35 VISBUF_A 36 VISBUF_BARY_B 37 VISBUF_BARY_A 38 BASECOLOR_B 39 BASECOLOR_A 40 METALLIC_B 41 METALLIC_A 42 DEPTH_B 43 DEPTH_A 44
@@ -168,35 +197,11 @@ begin video
 		toggle --status "turn some monitors in the game into security camera views" \
             "security cameras" pt_cameras
         toggle "caustics" pt_caustics
-        range --status "radiance of the map's own skybox - raises the light it casts, and the sky with it. Procedural skies use Environment > sun and sky brightness" \
-            "sky light" pt_sky_light_scale 0 3 0.1
-        range --status "how bright the skybox LOOKS - does not change the light it casts" \
-            "sky brightness" pt_sky_brightness 0 2 0.1
         toggle "god rays" gr_enable
         pairs --status "the rerelease's own map lights. \"all maps\" ignores the cl_dynamic_lights_exclude list, which skips mguhub by default" \
             "map lights" cl_dynamic_lights "off" 0 "all maps" 1 "all but excluded" 2
         range --status "brightness of the rerelease's map lights" \
             "map light scale" cl_dynamic_light_scale 0 2 0.1
-        pairs --status "volumetric atmosphere from the map's own fog settings - rerelease maps only. "volumetric lighting" samples every light properly with real occlusion, and ignores the light falloff/pivot/rolloff settings below" \
-            "map fog" cl_fog "off" 0 "sunlight only" 1 "lit by map lights" 2 "volumetric lighting" 3
-        range --status "how thick the map fog renders; 1.0 is the map's authored value" \
-            "map fog density" cl_fog_scale 0 4 0.25
-        range --status "brightness of local lights scattered in the fog (lit by map lights)" \
-            "map fog light" pt_fog_light_scale 0 8 0.5
-        range --status "brightness of sky light scattered in the fog - lower this if outdoor areas fog up too much" \
-            "map fog sky" pt_fog_sky_scale 0 8 0.5
-        range --status "roll-off for light-dense maps. 0 = OFF, which is what lets fog pool brightly around a light instead of flattening to an even haze" \
-            "map fog light rolloff" pt_fog_light_knee 0 8 0.25
-        range --status "how fast a light's fog glow dies with distance - 2 is inverse square, raise it to pull the glow in tight around each fixture" \
-            "map fog light falloff" pt_fog_light_falloff 1 12 0.5
-        range --status "world radius inside which a light keeps normal brightness; the falloff above only steepens beyond this" \
-            "map fog light pivot" pt_fog_light_pivot 32 512 32
-        pairs --status "trace an occlusion ray per light so fog is not lit through walls and roofs - best with map fog grid on" \
-            "map fog light shadows" pt_fog_light_shadow "off" 0 "on" 1
-        range --status "world units of overhead clearance over which sky light fades into the fog - softens hard slab edges" \
-            "map fog sky soften" pt_fog_sky_soften 0 2048 128
-        range --status "lights sampled per fog step - raise to reduce fog noise, costs frame time" \
-            "map fog light samples" pt_fog_light_samples 4 64 4
         toggle "bloom" bloom_enable
         blank
         pairs "ReStir Direct Illuminaton" pt_restir off 0 on 1
@@ -326,7 +331,106 @@ begin effects
         toggle "classic railgun" cl_classic_railgun
         blank
     endif
+    ifeq vid_rtx 1
+        action --align "map fog and volumetrics..." pushmenu fog
+    endif
     action --align "railgun trail setup..." pushmenu railtrail
+end
+
+/*
+THE FOG MENU SHOWS ONLY WHAT THE SELECTED MODE ACTUALLY READS.
+
+The four cl_fog modes are genuinely different integrators, not four strengths of
+one effect, and they do not share their settings:
+
+  1 sunlight only     the classic god-ray march; no map lights at all
+  2 lit by map lights the hand-rolled falloff model - knee, falloff, pivot. Every
+                      one of those knobs exists to patch a consequence of not
+                      doing the light integral properly.
+  3 volumetric        samples each light properly with its own occlusion ray, so
+                      inverse square falls out of the pdf. It IGNORES knee,
+                      falloff, pivot and radius entirely.
+
+Showing all of them at once meant most of the list did nothing at any given
+moment, and mode 3 in particular listed four controls it silently discards.
+The `ifge cl_fog 2` blocks cover the settings modes 2 and 3 share -
+that comparison is the reason ifge was added.
+*/
+begin fog
+    background #212F3CD0
+    style --compact
+    title "Map Fog and Volumetrics"
+    blank
+    pairs --status "volumetric atmosphere from the map's own fog settings - rerelease maps only. volumetric lighting samples every light properly with real occlusion" \
+        "map fog" cl_fog "off" 0 "sunlight only" 1 "lit by map lights" 2 "volumetric lighting" 3
+
+    ifge cl_fog 1
+        blank
+        range --status "how thick the map fog renders; 1.0 is the map's authored value" \
+            "fog density" cl_fog_scale 0 4 0.25
+        range --status "how directional the scattering is. 0 scatters evenly; higher values concentrate light into tight shafts along the view. -1 follows the god ray setting" \
+            "fog directionality" pt_fog_eccentricity -1 0.95 0.05
+        range --status "real extinction, so a long view SATURATES at the fog colour instead of getting brighter without limit. 0 keeps the legacy flat value" \
+            "fog extinction" pt_fog_extinction 0 0.01 0.0005
+        range --status "how much the fog DIMS what is behind it. Only does anything with extinction above 0" \
+            "fog opacity" pt_fog_opacity 0 1 0.05
+        range --status "fraction of the sun's light that reaches fog IN SHADOW, scattered evenly. 0 is a hard shadow cliff - raise it if shadowed areas have no fog at all" \
+            "fog ambient in shadow" pt_fog_ambient 0 1 0.05
+    endif
+
+    ifge cl_fog 2
+        blank
+        range --status "brightness of SKY light scattered in the fog - lower this if outdoor areas fog up too much" \
+            "sky light in fog" pt_fog_sky_scale 0 8 0.5
+        range --status "world units of overhead clearance over which sky light fades in. 0 is a hard yes/no test, which gives crisp shafts under an opening but blocky slabs in the open" \
+            "sky edge softness" pt_fog_sky_soften 0 2048 128
+        range --status "lights considered per fog sample. In mode 3 this ranks candidates rather than tracing them all, so it is much cheaper than it looks" \
+            "lights sampled" pt_fog_light_samples 4 64 4
+    endif
+
+    ifeq cl_fog 2
+        blank
+        range --status "brightness of local lights scattered in the fog" \
+            "local light brightness" pt_fog_light_scale 0 8 0.5
+        range --status "roll-off for light-dense maps. 0 = OFF, which is what lets fog pool brightly around a light instead of flattening to an even haze" \
+            "light rolloff" pt_fog_light_knee 0 8 0.25
+        range --status "how fast a light's fog glow dies with distance - 2 is inverse square, raise it to pull the glow in tight around each fixture" \
+            "light falloff" pt_fog_light_falloff 1 12 0.5
+        range --status "world radius inside which a light keeps normal brightness; the falloff above only steepens beyond this" \
+            "light pivot" pt_fog_light_pivot 32 512 32
+        pairs --status "trace an occlusion ray per light so fog is not lit through walls and roofs" \
+            "light shadows" pt_fog_light_shadow "off" 0 "on" 1
+    endif
+
+    ifeq cl_fog 3
+        blank
+        range --status "overall brightness of the volumetric lighting. Mode 3 has its own knob because it has no roll-off compressing the total, so it sits at a different level from mode 2" \
+            "volumetric brightness" pt_fog_vol_scale 0 8 0.25
+        range --status "ceiling on a single sample's brightness - stops a cell that landed right next to a small light from blowing out into a solid block. 0 disables it" \
+            "firefly clamp" pt_fog_firefly 0 100 5
+        blank
+        pairs --status "evaluate the fog once per cell of a grid and reuse it across frames, instead of marching every pixel. Much cheaper and much smoother" \
+            "froxel grid" pt_fog_froxel "off - per pixel march" 0 "on - grid" 1
+        ifeq pt_fog_froxel 1
+            range --status "how much of the previous frame's grid to keep. This is what removes most of the noise; too high and moving lights trail" \
+                "grid temporal blend" pt_fog_froxel_history 0 0.99 0.01
+            range --status "blur radius over the grid, in cells. THE NOISE KNOB THAT COSTS NO RAYS - each cell is one light sample with a yes/no shadow ray, and averaging neighbours is what smooths that. Higher softens the shafts" \
+                "grid smoothing" pt_fog_froxel_filter 0 3 1
+        endif
+        blank
+        range --status "how much fog EMISSIVE SURFACES make - the map's own light fixtures, which are most of its light" \
+            "fog from emissive surfaces" pt_fog_scale_emissive 0 8 0.25
+        range --status "how much fog DYNAMIC lights make - weapon fire, muzzle flashes, flares, the flashlight and placed lights" \
+            "fog from dynamic lights" pt_fog_scale_dynamic 0 8 0.25
+        range --status "how much fog lights on MODELS make" \
+            "fog from model lights" pt_fog_scale_model 0 8 0.25
+    endif
+
+    ifge cl_fog 2
+        blank
+        pairs --status "diagnostic: show only one half of the fog's lighting, so each can be judged on its own" \
+            "isolate" pt_fog_isolate "off - everything" 0 "sky light only" 1 "local lights only" 2
+    endif
 end
 
 begin crosshair

@@ -1788,7 +1788,7 @@ void Menu_AddItem(menuFrameWork_t *menu, void *item)
 
     menu->items[menu->nitems++] = item;
     ((menuCommon_t *)item)->parent = menu;
-	((menuCommon_t *)item)->condition = menu->current_condition;
+	((menuCommon_t *)item)->conditions = menu->current_conditions;
 }
 
 static void UI_ClearBounds(int mins[2], int maxs[2])
@@ -1833,13 +1833,35 @@ bool Menu_UpdateConditions(menuFrameWork_t *menu)
 
 	for (int i = 0; i < menu->nitems; i++) {
 		menuCommon_t *item = (menuCommon_t *)menu->items[i];
-		menuCondition_t *condition = &item->condition;
+		menuConditionSet_t *set = &item->conditions;
 
-		if (condition->cvar)
+		if (set->count > 0)
 		{
-			bool equals = condition->cvar->integer == condition->value;
+			/* EVERY open condition has to pass - they are ANDed. An item inside
+			   `ifeq vid_rtx 1` and then `ifneq pt_dlss 0` is shown only under the
+			   ray tracer AND with DLSS actually enabled; either failing hides it. */
+			bool show = true;
+
+			for (int c = 0; c < set->count && show; c++)
+			{
+				menuCondition_t *cond = &set->conditions[c];
+
+				if (!cond->cvar)
+					continue;
+
+				int v = cond->cvar->integer;
+
+				switch (cond->op)
+				{
+				case MENU_COND_EQ:  show = (v == cond->value); break;
+				case MENU_COND_NEQ: show = (v != cond->value); break;
+				case MENU_COND_GE:  show = (v >= cond->value); break;
+				case MENU_COND_LE:  show = (v <= cond->value); break;
+				}
+			}
+
 			bool was_hidden = (item->flags & QMF_HIDDEN) != 0;
-			bool hide = (equals != condition->equals);
+			bool hide = !show;
 
 			if (hide)
 				item->flags |= QMF_HIDDEN;

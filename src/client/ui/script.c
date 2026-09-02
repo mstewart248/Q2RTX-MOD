@@ -650,22 +650,40 @@ static void Parse_Footer(menuFrameWork_t *menu)
 	}
 }
 
-static void Parse_If(menuFrameWork_t *menu, bool equals)
+/* Push one condition. Conditions NEST: every item declared from here to the
+   matching endif carries this test AND every test already open, so the RTX-only
+   part of a menu can be narrowed further without leaking items into the
+   non-RTX case. See the note on menuConditionSet_t in ui.h. */
+static void Parse_If(menuFrameWork_t *menu, menuCondOp_t op)
 {
 	if (Cmd_Argc() != 3) {
 		Com_Printf("Usage: %s <cvar> <value>]\n", Cmd_Argv(0));
 		return;
 	}
 
-	if (menu->current_condition.cvar)
+	menuConditionSet_t *set = &menu->current_conditions;
+
+	if (set->count >= MENU_MAX_CONDITIONS)
 	{
-		Com_Printf("Nested ifeq or ifneq are not supported\n");
+		Com_Printf("%s: conditions nested more than %d deep\n",
+		           Cmd_Argv(0), MENU_MAX_CONDITIONS);
 		return;
 	}
 
-	menu->current_condition.cvar = Cvar_WeakGet(Cmd_Argv(1));
-	menu->current_condition.value = atoi(Cmd_Argv(2));
-	menu->current_condition.equals = equals;
+	menuCondition_t *cond = &set->conditions[set->count++];
+
+	cond->cvar = Cvar_WeakGet(Cmd_Argv(1));
+	cond->value = atoi(Cmd_Argv(2));
+	cond->op = op;
+}
+
+// endif closes the INNERMOST open condition, not all of them.
+static void Parse_Endif(menuFrameWork_t *menu)
+{
+	if (menu->current_conditions.count > 0)
+		--menu->current_conditions.count;
+	else
+		Com_Printf("endif without a matching ifeq/ifneq/ifge/ifle\n");
 }
 
 static bool Parse_File(const char *path, int depth)
@@ -700,7 +718,7 @@ static bool Parse_File(const char *path, int depth)
             cmd = Cmd_Argv(0);
             if (menu) {
                 if (!strcmp(cmd, "end")) {
-					menu->current_condition.cvar = NULL;
+					menu->current_conditions.count = 0;
                     if (menu->nitems) {
                         List_Append(&ui_menus, &menu->entry);
                     } else {
@@ -748,11 +766,15 @@ static bool Parse_File(const char *path, int depth)
                 } else if (!strcmp(cmd, "blank")) {
                     Parse_Blank(menu);
 				} else if (!strcmp(cmd, "ifeq")) {
-					Parse_If(menu, true);
+					Parse_If(menu, MENU_COND_EQ);
 				} else if (!strcmp(cmd, "ifneq")) {
-					Parse_If(menu, false);
+					Parse_If(menu, MENU_COND_NEQ);
+				} else if (!strcmp(cmd, "ifge")) {
+					Parse_If(menu, MENU_COND_GE);
+				} else if (!strcmp(cmd, "ifle")) {
+					Parse_If(menu, MENU_COND_LE);
 				} else if (!strcmp(cmd, "endif")) {
-					menu->current_condition.cvar = NULL;
+					Parse_Endif(menu);
                 } else {
                     Com_WPrintf("Unknown keyword '%s'\n", cmd);
                 }
