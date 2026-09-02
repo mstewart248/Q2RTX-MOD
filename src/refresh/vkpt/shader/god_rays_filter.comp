@@ -63,13 +63,25 @@ distribution is a power law.
 */
 vec4 sample_froxel(vec2 screen_uv, float view_depth)
 {
-	// Past the far plane the medium has long since saturated, so the last slice
-	// is the right answer rather than an extrapolation.
+	// Past the far plane there is nothing more in the volume, so the last slice
+	// is all there is. FROXEL_FAR now matches PRIMARY_RAY_T_MAX, so this only
+	// bites for a depth written by something other than the primary rays.
 	float slice = clamp(FROXEL_DEPTH_TO_SLICE(max(view_depth, FROXEL_NEAR)),
 	                    0.0, float(FROXEL_GRID_Z) - 0.5);
 
+	/* HALF A TEXEL BACK, because of what a texel of the INTEGRATED volume means.
+
+	   froxel_integrate writes into texel z the light accumulated from the eye to
+	   the FAR FACE of slice z - that is, out to slice coordinate z + 1. So the
+	   accumulation "up to slice coordinate s" lives in texel s - 1, whose centre
+	   is at (s - 1 + 0.5) / GRID_Z = (s - 0.5) / GRID_Z.
+
+	   Sampling at s / GRID_Z instead read half a texel too far and returned the
+	   fog for a point slightly BEHIND the surface being shaded - a small,
+	   systematic over-accumulation that grows with slice thickness, so it was
+	   worst exactly where the slices are thickest, out in the distance. */
 	vec3 uvw = vec3(clamp(screen_uv, vec2(0.0), vec2(1.0)),
-	                slice / float(FROXEL_GRID_Z));
+	                max(slice - 0.5, 0.0) / float(FROXEL_GRID_Z));
 
 	return textureLod(TEX_FROXEL_INTEGRATED, uvw, 0);
 }
@@ -147,8 +159,38 @@ void main()
 	{
 		float view_depth = abs(texelFetch(TEX_PT_VIEW_DEPTH_A, i_position.xy, 0).r);
 
-		vec2 screen_uv = (vec2(i_position) + 0.5)
-		               / vec2(global_ubo.current_gpu_slice_width, global_ubo.height);
+		/* THE LOOKUP MUST BE RELATIVE TO THE FIELD, NOT TO THE PACKED IMAGE.
+		   This is the bug that made the froxel grid put fog in the wrong place
+		   from the day it was written, and it is why it looked broken while the
+		   per-pixel march looked correct.
+
+		   The path-tracer screen images hold TWO FIELDS PACKED SIDE BY SIDE,
+		   field 1 starting at x == pt_field_offset - see the FIELD LAYOUT note
+		   in global_ubo.h. In the pt_fullres_fields 1 mode that DLSS selects,
+		   EACH FIELD IS A FULL WIDTH x HEIGHT LAYER OF THE WHOLE SCREEN, so a
+		   pixel's x within its own field is what corresponds to a screen
+		   position - its x within the packed image is not.
+
+		   Dividing by current_gpu_slice_width therefore squeezed the whole
+		   screen into HALF the volume's u range: field 0 sampled the volume's
+		   left half stretched across the entire picture and field 1 the right
+		   half, so the fog from the right of the frustum never appeared at all
+		   and everything else landed at roughly double its correct horizontal
+		   offset from the centre. That reads exactly as "the fog is in the
+		   middle and there is none around the lights".
+
+		   The march has never had this problem because it works per pixel from
+		   TEX_PT_VIEW_DIRECTION, which is already correct within each field.
+
+		   field_left is the one computed above for the bilateral taps, so this
+		   uses the same field split the rest of the pass does. pt_field_offset
+		   is the field WIDTH, and it is the right divisor in the checkerboard
+		   mode too: a checkerboard half also spans the full screen, just at half
+		   the horizontal sample density. */
+		int field_width = max(global_ubo.pt_field_offset, 1);
+
+		vec2 screen_uv = (vec2(i_position - ivec2(field_left, 0)) + 0.5)
+		               / vec2(float(field_width), float(global_ubo.height));
 
 		result = sample_froxel(screen_uv, view_depth);
 	}

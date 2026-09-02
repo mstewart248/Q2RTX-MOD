@@ -45,6 +45,12 @@ one.
 #ifndef FOG_MEDIUM_GLSL_
 #define FOG_MEDIUM_GLSL_
 
+// Drawing a point on a light, and its solid-angle pdf, for all three light
+// types. This is the normal-free half of light_lists.h, split out precisely so
+// a volume can use it - see the header comment there. It replaced a local copy
+// of spotlight_falloff that had been made here for want of it.
+#include "light_sampling.h"
+
 // How thick the rerelease's authored densities render, relative to the flat
 // medium this pass used before. Their heightfog_density runs 0.0001..0.0024 and
 // their fog_density 0.01..0.05, so both are normalised into roughly 0..1 here
@@ -132,6 +138,25 @@ float getHeightFogDensity(vec3 p)
 // bilateral filter plus the denoiser absorb the resulting noise.
 #define FOG_LIGHT_SAMPLES 8
 
+/* DIAGNOSTIC TAPS for pt_fog_froxel_debug. Written by the medium as it goes and
+   read by nothing else, so they cost a register and no bandwidth.
+
+   fog_debug_sky_term used to be declared further down, next to
+   getVolumeLightInscatter, which meant ONLY MODE 3 ever wrote it - so
+   pt_fog_froxel_debug 4 read solid black under cl_fog 2 whether or not the sky
+   term was actually there. A diagnostic that returns the "it is broken" answer
+   for a configuration it does not measure is worse than no diagnostic, because
+   the reading is indistinguishable from the real fault it was built to find.
+   Both in-scatter functions write it now.
+
+   fog_debug_sky_vis is the RAW visibility, before any radiance, scale or albedo
+   touches it. That is the one number that separates "the grid's cells cannot see
+   the sky at all" from "they can, and the term is being lost somewhere
+   downstream of getSkyVisibility" - which is the fork the whole investigation is
+   stuck on. */
+vec3  fog_debug_sky_term = vec3(0);
+float fog_debug_sky_vis  = 0.0;
+
 /*
 =================
 getSkyVisibility
@@ -158,7 +183,11 @@ which is what the per-cluster version could not do at all.
 float getSkyVisibility(vec3 p)
 {
 	if (global_ubo.fog_sky_trace == 0)
-		return global_ubo.fog_sky_fade;   // fall back to the CPU cluster estimate
+	{
+		// fall back to the CPU cluster estimate
+		fog_debug_sky_vis = global_ubo.fog_sky_fade;
+		return fog_debug_sky_vis;
+	}
 
 	/* BINARY VISIBILITY IS WHAT MAKES THIS LOOK WRONG, and it causes two
 	   separate complaints that turn out to be the same defect.
@@ -201,12 +230,13 @@ float getSkyVisibility(vec3 p)
 	bool blocked = (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT);
 
 	if (!blocked)
-		return 1.0;
+		fog_debug_sky_vis = 1.0;
+	else if (soften <= 0.0)
+		fog_debug_sky_vis = 0.0;
+	else
+		fog_debug_sky_vis = clamp(rayQueryGetIntersectionTEXT(rq, true) / soften, 0.0, 1.0);
 
-	if (soften <= 0.0)
-		return 0.0;
-
-	return clamp(rayQueryGetIntersectionTEXT(rq, true) / soften, 0.0, 1.0);
+	return fog_debug_sky_vis;
 }
 
 // Hemisphere solid angle for the sky term. Kept separate from the local-light
@@ -231,14 +261,46 @@ float getSkyVisibility(vec3 p)
 // into the visibility lists), so both now contribute.
 //
 // It is also PVS-culled, which is what stops one bright light washing the whole
-// level. These samples are unshadowed - a shadow ray per light per march step is
-// not affordable - so without the PVS restriction a single flare lit fog through
-// every wall in the map.
+// level. That mattered more when these samples were unshadowed: without the PVS
+// restriction a single flare lit fog through every wall in the map. It is still
+// the cheap first cut, but pt_fog_light_shadow now traces real occlusion, which
+// is what PVS could never do - PVS is per-CLUSTER, so inside the camera's own
+// cluster a fixture lit fog straight through walls, floors and roofs.
+//
+// EVERY light type in the port is evaluated here: emissive surfaces
+// (DYNLIGHT_POLYGON), and the dlights - weapon fire, muzzle flashes, flares,
+// target_light, the flashlight, the rerelease dynamic_light entities and the
+// lights placed with `light place` - as DYNLIGHT_SPHERE / DYNLIGHT_SPOT. The
+// three geometries are unified into a solid angle in the loop below; see the
+// long note there, and note that a SPHERE's positions[] are NOT vertices.
+//
+// How much each one fogs is its volumetric_scale, resolved on the CPU in
+// copy_light() from an explicit per-light value, then the material's, then the
+// pt_fog_scale_* default for its class. That is RTX Remix's per-light
+// volumetricRadianceScale, and it is the knob that replaced the blunt
+// "model lights contribute nothing" rule this used to have.
 //
 // The cluster is the one at the surface the ray ends on, not at each march
 // point. That is an approximation, but it is the right region's light set and it
 // costs one texture fetch instead of a per-step BSP walk.
-vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
+/* sky_p is where the SKY VISIBILITY RAY starts, and it is deliberately separate
+   from p, where the LIGHTING is evaluated.
+
+   The froxel grid jitters its sample point inside the cell every frame to
+   stratify the lighting integral - which light is chosen, where on it the sample
+   lands, whether the shadow ray is blocked. Those are integrals and they need
+   the jitter. getSkyVisibility is NOT an integral: it is a single ray straight
+   up, a point query with a binary answer. Jittering it buys no variance
+   reduction at all and costs the distant fog, because a far froxel spans
+   hundreds of units laterally, so the up-ray clears an opening one frame and
+   hits rock the next. The cell's sky term becomes a coin flip that the temporal
+   blend cannot hold, while the light term - whose visibility ray goes to a
+   nearby chosen light - stays stable. That is exactly why the fog loss was
+   reported as affecting the sky light and nothing else.
+
+   The march passes the same point for both, since it has no cell to jitter
+   within. */
+vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, float rand01)
 {
 	// THE SKY TERM IS COMPUTED FIRST, and deliberately so. It used to sit at the
 	// bottom of this function, after two early returns - one for an invalid
@@ -270,7 +332,7 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 	   ENVIRONMENT_NONE means no world sky at all - contributing the fallback
 	   there was never anything but a bug. */
 	vec3 sky_term = vec3(0);
-	float sky_vis = getSkyVisibility(p);
+	float sky_vis = getSkyVisibility(sky_p);
 	if (sky_vis > 0.0)
 	{
 		vec3 sky_radiance = vec3(0);
@@ -286,6 +348,24 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 		         * FOG_SKY_SOLID_ANGLE * global_ubo.pt_fog_sky_scale
 		         * sky_vis;
 	}
+
+	// The caller applies FOG_ISOTROPIC_PHASE to the whole return value in this
+	// mode, where mode 3 folds it into its own sky_term - so scale by it here to
+	// make the tap read the same quantity in both modes and keep debug 4
+	// comparable across a cl_fog 2 / 3 A/B.
+	fog_debug_sky_term = sky_term * FOG_ISOTROPIC_PHASE;
+
+	// Same isolation as mode 3 - see the note there. Kept in both in-scatter
+	// functions so the cvar means the same thing on the march and on the grid,
+	// which is what makes cl_fog 2 usable as the reference it is supposed to be.
+	int fog_isolate = int(global_ubo.pt_fog_isolate);
+	if (fog_isolate == 2)
+	{
+		sky_term = vec3(0);
+		fog_debug_sky_term = sky_term;
+	}
+	else if (fog_isolate == 1)
+		return sky_term;
 
 	if (cluster_idx == ~0u)
 		return sky_term;
@@ -314,43 +394,164 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 		if (light_idx == ~0u)
 			continue;
 
-		// STATIC LIGHTS ONLY - emissive surfaces and the sky.
-		//
-		// Model lights are packed after the static ones, so this index test
-		// drops them. They are the map's invisible dynamic_light point lights
-		// (plus muzzle flashes and thrown flares), and they were the one thing
-		// still washing the whole level: a point light has no real extent, so
-		// the area term cannot damp it the way it damps a surface, and nothing
-		// here is shadowed, so a single bright one lit fog through the entire
-		// map. An emissive surface behaves because it has genuine geometry and
-		// area. base1 carries 37 dynamic_lights, which is why it was the worst
-		// case.
-		if (light_idx >= uint(global_ubo.num_static_lights))
-			continue;
-
 		LightPolygon light = get_light_polygon(light_idx);
 
-		// emissive triangle; its centroid is close enough for a volumetric
-		vec3 lp = (light.positions[0] + light.positions[1] + light.positions[2]) / 3.0;
+		/* THE SKY IS SKIPPED FIRST, because everything below reads light.color
+		   and the sky's is a MARKER, not a colour.
+
+		   copy_light() marks a sky polygon by storing its colour NEGATIVE
+		   (`-sky_radiance * 0.5`, vertex_buffer.c). The old line further down
+		   was `vec3 color = abs(light.color);` - which does not honour the
+		   marker, it ERASES it, turning every sky brush face in the cluster
+		   into a perfectly ordinary bright area light.
+
+		   That is ruinous for fog specifically, because `area` is folded into
+		   the sum below and a sky brush face is enormous - thousands of square
+		   units against a light fixture's tens. So the sky brushes dominated
+		   the local-light sum near the top of a map, which is exactly where
+		   they are, and produced glowing fog above the rooftops with no fixture
+		   anywhere near it.
+
+		   Every symptom followed from this and none of it responded to the
+		   knobs:
+		     - pt_fog_sky_scale did nothing, because that scales sky_term, and
+		       this was arriving through the LOCAL LIGHT path instead;
+		     - pt_fog_light_scale killed it, because that scales this sum;
+		     - pt_fog_light_shadow did not help, because a sky brush genuinely IS
+		       visible from open air - the occlusion test was answering honestly;
+		     - setting the physical sky to NIGHT did not dim it, because
+		       sky_radiance comes from avg_envmap_color, which is fixed at map
+		       load from the skybox images and knows nothing about time of day.
+
+		   The sky's contribution to fog belongs to sky_term at the top of this
+		   function, which has its own visibility trace and its own scale.
+		   Skipping the marked polygons here accounts for it exactly once. */
+		if (any(lessThan(light.color, vec3(0.0))))
+			continue;
+
+		/* EVERY LIGHT IN THE PORT REACHES HERE NOW, AND THAT IS THE CHANGE.
+
+		   This used to be `if (light_idx >= num_static_lights) continue;`, which
+		   dropped every MODEL light - and model lights are not a minor category.
+		   They are, in this tree: weapon fire and muzzle flashes (EF_BLASTER and
+		   friends, V_AddLight, always on regardless of cl_dynamic_lights),
+		   misc_flare, target_light, the flashlight, beams and lasers, emissive
+		   surfaces on md2/md5 models, the rerelease dynamic_light entities, and
+		   the lights placed by hand with `light place`. So a placed light lit
+		   the room and made no fog at all, which is exactly the symptom that
+		   started this.
+
+		   The original reason for the skip was real: a point light has no extent
+		   for the area term to damp, and NOTHING here was shadowed, so one
+		   bright dlight lit fog through the whole map. Both halves of that have
+		   since gone - pt_fog_light_shadow traces occlusion, and each light now
+		   contributes its own true solid angle rather than a triangle's area.
+		   What is left is the per-light volumetric scale, which is the honest
+		   control: a light that should not fog gets 0, by class default or
+		   individually.
+
+		   THE THREE LIGHT TYPES DO NOT SHARE A GEOMETRY, and treating them as if
+		   they did is what would go wrong if the index test were simply deleted.
+		   A DYNLIGHT_SPHERE stores its ORIGIN in positions[0] and its RADIUS in
+		   positions[1].x - positions[1] and [2] are not vertices at all - so the
+		   triangle centroid and the cross-product area below are meaningless for
+		   one, and the cross product of a radius and a direction vector is
+		   garbage of an arbitrary magnitude.
+
+		   All three are put in the same currency: a SOLID ANGLE, expressed as
+		   `emit_area / dist2`, which is what the polygon path always computed
+		   (`area / dist2`) and is therefore bit-identical for the emissive
+		   surfaces that were already working. */
+		float vol_scale = light.volumetric_scale;
+
+		// resolved on the CPU in copy_light(), so 0 here really does mean "this
+		// light lights the room and makes no fog" - skip it before spending a ray
+		if (vol_scale <= 0.0)
+			continue;
+
+		uint light_type = uint(light.type);
+
+		vec3  lp;                  // the emitter's centre
+		float emit_area;           // area whose ratio to dist2 is the solid angle
+		float emit_profile = 1.0;  // the emitter's own directional falloff
+
+		if (light_type == DYNLIGHT_POLYGON)
+		{
+			// emissive triangle; its centroid is close enough for a volumetric
+			lp = (light.positions[0] + light.positions[1] + light.positions[2]) / 3.0;
+		}
+		else
+		{
+			// sphere and spot both store origin in [0] and radius in [1].x
+			lp = light.positions[0];
+		}
 
 		vec3 d = lp - p;
 		float dist2 = max(dot(d, d), 64.0);   // clamp so standing in a light does not blow up
 
-		// A SURFACE ONLY EMITS INTO ITS FRONT HEMISPHERE. Without this test a
-		// light fixture mounted on a wall lit the fog on BOTH sides of that
-		// wall, which - since none of these samples are shadowed - is the main
-		// way light was still leaking into places it has no business being. It
-		// is the cheapest occlusion there is: one dot product, no ray.
-		vec3 cr_n = cross(light.positions[1] - light.positions[0],
-		                  light.positions[2] - light.positions[0]);
-		float cr_len = length(cr_n);
-		if (cr_len > 0)
+		if (light_type == DYNLIGHT_POLYGON)
 		{
-			// light_polys are wound so the normal faces AWAY from the emitting
-			// side, which is why this tests for the negative half-space
-			float facing = dot(cr_n / cr_len, normalize(-d));
-			if (facing <= 0)
-				continue;
+			// AREA MATTERS, and leaving it out is why emissive surfaces did not
+			// light the fog. light.color is RADIANCE - per unit area, per
+			// steradian - so a big ceiling panel and a tiny one carry the SAME
+			// colour and differ only in size. Using colour/dist2 alone therefore
+			// made every emissive surface contribute as if it were a pinpoint,
+			// which is a huge underestimate, while dlight-derived lights (whose
+			// colour already encodes intensity/25, a power-like quantity) drowned
+			// them out completely. Power goes as radiance * area, so fold the
+			// triangle's area in.
+			vec3 cr = cross(light.positions[1] - light.positions[0],
+			                light.positions[2] - light.positions[0]);
+			float cr_len = length(cr);
+
+			emit_area = 0.5 * cr_len;
+
+			// A SURFACE ONLY EMITS INTO ITS FRONT HEMISPHERE. Without this test a
+			// light fixture mounted on a wall lit the fog on BOTH sides of that
+			// wall, which - since none of these samples are shadowed - is the main
+			// way light was still leaking into places it has no business being. It
+			// is the cheapest occlusion there is: one dot product, no ray.
+			//
+			// Sphere lights get no equivalent because they genuinely do emit in
+			// every direction, and a spot light's direction is handled by its
+			// emission profile instead.
+			if (cr_len > 0)
+			{
+				// light_polys are wound so the normal faces AWAY from the emitting
+				// side, which is why this tests for the negative half-space
+				float facing = dot(cr / cr_len, normalize(-d));
+				if (facing <= 0)
+					continue;
+			}
+		}
+		else
+		{
+			// The projected disc of the emitter sphere. pi*r^2/dist2 is the
+			// small-angle solid angle it subtends, which is the same quantity
+			// area/dist2 is for the triangle above - so the two types are
+			// directly comparable and one pt_fog_light_scale serves both.
+			//
+			// The exact form is 2*pi*(1 - sqrt(1 - (r/d)^2)), which this
+			// approximates. They agree to within a percent for anything more
+			// than a couple of radii away, and closer than that dist2's own
+			// 64-unit floor is already the dominant approximation.
+			float emit_radius = light.positions[1].x;
+			emit_area = M_PI * emit_radius * emit_radius;
+
+			if (light_type == DYNLIGHT_SPOT)
+			{
+				// cosine of the angle between the spot's axis and the direction
+				// out towards this point in the fog
+				float cos_theta = dot(normalize(-d), light.positions[2]);
+
+				emit_profile = spotlight_falloff(light.positions,
+				                                     light.spot_emission_profile,
+				                                     cos_theta);
+
+				// outside the cone entirely - no ray, no further work
+				if (emit_profile <= 0.0)
+					continue;
+			}
 		}
 
 		/* IS THE LIGHT ACTUALLY VISIBLE FROM THIS POINT?
@@ -396,50 +597,6 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 					continue;
 			}
 		}
-
-		// AREA MATTERS, and leaving it out is why emissive surfaces did not light
-		// the fog. light.color is RADIANCE - per unit area, per steradian - so a
-		// big ceiling panel and a tiny one carry the SAME colour and differ only
-		// in size. Using colour/dist2 alone therefore made every emissive surface
-		// contribute as if it were a pinpoint, which is a huge underestimate,
-		// while dlight-derived lights (whose colour already encodes
-		// intensity/25, a power-like quantity) drowned them out completely.
-		// Power goes as radiance * area, so fold the triangle's area in.
-		vec3 cr = cross(light.positions[1] - light.positions[0],
-		                light.positions[2] - light.positions[0]);
-		float area = 0.5 * length(cr);
-
-		/* SKY POLYGONS ARE NOT AREA LIGHTS HERE - THIS FUNCTION ALREADY HAS A SKY
-		   TERM, AND COUNTING THEM TWICE IS THE "FOG IN THE SKY" BUG.
-
-		   copy_light() MARKS a sky polygon by storing its colour NEGATIVE
-		   (`-sky_radiance * 0.5`, vertex_buffer.c). The old line here was
-		   `vec3 color = abs(light.color);` - which does not honour the marker,
-		   it ERASES it, turning every sky brush face in the cluster into a
-		   perfectly ordinary bright area light.
-
-		   That is ruinous for fog specifically, because `area` is folded into
-		   the sum below and a sky brush face is enormous - thousands of square
-		   units against a light fixture's tens. So the sky brushes dominated the
-		   local-light sum near the top of a map, which is exactly where they
-		   are, and produced glowing fog above the rooftops with no fixture
-		   anywhere near it.
-
-		   Every symptom follows from this and none of it responded to the knobs:
-		     - pt_fog_sky_scale did nothing, because that scales sky_term, and
-		       this was arriving through the LOCAL LIGHT path instead;
-		     - pt_fog_light_scale killed it, because that scales this sum;
-		     - pt_fog_light_shadow did not help, because a sky brush genuinely IS
-		       visible from open air - the occlusion test was answering honestly;
-		     - setting the physical sky to NIGHT did not dim it, because
-		       sky_radiance comes from avg_envmap_color, which is fixed at map
-		       load from the skybox images and knows nothing about time of day.
-
-		   The sky's contribution to fog belongs to sky_term at the top of this
-		   function, which has its own visibility trace and its own scale. Skip
-		   the marked polygons here and it is accounted for exactly once. */
-		if (any(lessThan(light.color, vec3(0.0))))
-			continue;
 
 		vec3 color = light.color;
 
@@ -521,7 +678,13 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 			atten *= w * w;
 		}
 
-		sum += color * area * light.light_style_scale * atten;
+		// emit_area/dist2 is the solid angle, whatever the light's type;
+		// emit_profile is 1 for everything but a spot light; light_style_scale is
+		// what makes a strobing emissive strobe in the fog too; vol_scale is the
+		// per-light volumetric scale, already resolved against its class default
+		// on the CPU.
+		sum += color * emit_area * emit_profile
+		     * light.light_style_scale * vol_scale * atten;
 	}
 
 	/* Scale back up for the lights this step did not look at.
@@ -530,12 +693,16 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 	   which is the mottled, blotchy look in the fog, and why turning
 	   pt_fog_light_falloff up can make the fog noisier rather than cleaner.
 
-	   Two things stack up. `count` is the WHOLE cluster list, including the
-	   model lights the loop skips (base1 carries 37 of them), so many of the
-	   samples contribute nothing yet the survivors are still multiplied by
-	   count/taken. And a steep falloff means almost all the energy sits in the
-	   handful of lights nearest the point, so whether the strided subset happens
-	   to catch one swings the answer by the full rescale factor.
+	   A steep falloff means almost all the energy sits in the handful of lights
+	   nearest the point, so whether the strided subset happens to catch one
+	   swings the answer by the full rescale factor.
+
+	   The other half of this used to be that `count` was the WHOLE cluster list
+	   while the loop skipped every model light in it (base1 carries 37), so many
+	   samples contributed nothing yet the survivors were still multiplied by
+	   count/taken. That is GONE - every light in the list is now evaluated - so
+	   the estimator wastes a sample only on a light whose volumetric_scale is 0
+	   or which is genuinely occluded.
 
 	   The estimator is still correct in expectation - it is the per-step
 	   variance that shows. pt_fog_light_samples buys it down directly; the
@@ -579,6 +746,411 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, float rand01)
 	// has nothing to do with how many of those there are. Computed at the top of
 	// this function so the early returns above cannot skip it.
 	return result + sky_term;
+}
+
+/*
+=================
+A SMALL RNG FOR THE RIS CANDIDATE LOOP.
+
+The blue noise the callers hand in is only three values, and resampled
+importance sampling below needs two per candidate.  Blue noise is worth having
+for the sample placed ON the chosen light - that one lands in the image - but
+for deciding which candidates to look at, any decorrelated sequence does, and an
+LCG costs no texture fetches.
+=================
+*/
+uint fog_rng_state;
+
+// fog_debug_sky_term is declared up beside getSkyVisibility now, so that the
+// mode-2 path writes it as well - see the note there.
+
+float fog_rand()
+{
+	fog_rng_state = fog_rng_state * 1664525u + 1013904223u;
+	return float(fog_rng_state >> 8u) * (1.0 / 16777216.0);
+}
+
+/*
+=================
+volume_light_estimate
+
+A RAY-FREE guess at how much a light will contribute at p, used only to decide
+which light is worth spending the one visibility ray on.  It does not have to be
+accurate - RIS divides it back out - but the closer it tracks the real
+contribution the lower the variance, and ANY LARGE FACTOR LEFT OUT OF IT SHOWS UP
+AS NOISE THAT MORE CANDIDATES CANNOT REMOVE.
+
+THE PHASE FUNCTION IS IN HERE FOR EXACTLY THAT REASON, and leaving it out was a
+real bug rather than an approximation.  gr_eccentricity defaults to 0.75 and
+pt_fog_eccentricity -1 follows it, and Henyey-Greenstein at g = 0.75 returns
+0.597 for a light straight ahead against 0.00174 for one straight behind - a
+factor of 343.  With that missing, RIS ranked a light the viewer is facing away
+from identically to one they are looking at, picked it just as often, and then
+the real evaluation multiplied it by ~1/343.  The correction W is what makes
+this unbiased, so the picture was right on average and simply very noisy - and
+raising pt_fog_light_samples did nothing at all, because more candidates drawn
+against the wrong target is still the wrong target.  That is precisely the
+symptom that was reported.
+
+The emitter's own cosine is folded in for the same reason; it was previously
+only a binary front/back test.
+
+What remains outside it is VISIBILITY, which cannot be known without the ray
+this function exists to place.  That is the noise the spatial filter and the
+temporal history are left to deal with.
+=================
+*/
+float volume_light_estimate(LightPolygon light, vec3 p, vec3 view_dir, float g)
+{
+	// sky brushes are marked with a negative colour and belong to sky_term
+	if (any(lessThan(light.color, vec3(0.0))))
+		return 0.0;
+
+	float vol_scale = light.volumetric_scale;
+	if (vol_scale <= 0.0)
+		return 0.0;
+
+	uint light_type = uint(light.type);
+
+	vec3  lp;
+	float emit_area;
+	float emit_profile = 1.0;
+
+	if (light_type == DYNLIGHT_POLYGON)
+	{
+		lp = (light.positions[0] + light.positions[1] + light.positions[2]) / 3.0;
+
+		vec3 cr = cross(light.positions[1] - light.positions[0],
+		                light.positions[2] - light.positions[0]);
+		float cr_len = length(cr);
+		emit_area = 0.5 * cr_len;
+
+		if (cr_len > 0.0)
+		{
+			/* THE DIRECTION HERE MUST BE p -> LIGHT, AND IT USED TO BE THE
+			   OPPOSITE. That one sign made EVERY emissive surface in the map
+			   contribute exactly ZERO fog, at any volumetric_scale,
+			   default_radiance, emissive_factor or pt_fog_scale_emissive.
+
+			   The convention is light_lists.h:281, which is what the path tracer
+			   itself shades surfaces with:
+
+			       vec3 L = normalize(position_light - p);      // p -> light
+			       float LdotNL = max(0, -dot(light_normal, L));
+
+			   getVolumeLightInscatter already matched that exactly. This function
+			   did not: it used normalize(p - lp), which is LIGHT -> p, so
+			   cos_emit came out as the exact NEGATION of the real evaluation's
+			   profile.
+
+			   The two therefore accept DISJOINT sets of triangles. However a
+			   light poly is wound, one of the two rejects it: either the estimate
+			   returns 0 and the light never becomes a RIS candidate at all, or it
+			   is picked and then getVolumeLightInscatter hits `profile <= 0` and
+			   returns sky_term. Emissive surfaces are DYNLIGHT_POLYGON and are ~95%
+			   of a map's light, so this silently removed almost all of it from the
+			   volumetrics while leaving surface lighting untouched - and the fog
+			   still looked alive because sphere and spot lights have no cosine
+			   test in this branch, so every `light place` light and every muzzle
+			   flash still worked. That is exactly the reported asymmetry.
+
+			   sqrt() to match the softening the real evaluation applies. */
+			float cos_emit = -dot(cr / cr_len, normalize(lp - p));
+			if (cos_emit <= 0.0)
+				return 0.0;
+			emit_profile *= sqrt(cos_emit);
+		}
+	}
+	else
+	{
+		// sphere and spot: positions[0] is the ORIGIN, positions[1].x the RADIUS
+		lp = light.positions[0];
+		float emit_radius = light.positions[1].x;
+		emit_area = M_PI * emit_radius * emit_radius;
+
+		if (light_type == DYNLIGHT_SPOT)
+		{
+			emit_profile = spotlight_falloff(light.positions, light.spot_emission_profile,
+			                                 dot(normalize(p - lp), light.positions[2]));
+			if (emit_profile <= 0.0)
+				return 0.0;
+		}
+	}
+
+	vec3 d = lp - p;
+	float dist2 = max(dot(d, d), 64.0);
+
+	// The phase function about THIS light's direction - the factor whose absence
+	// made more candidates pointless. See the note above.
+	float phase = ScatterPhase_HenyeyGreenstein(dot(view_dir, normalize(d)), g);
+
+	return luminance(light.color) * emit_area * emit_profile * phase
+	     * vol_scale * light.light_style_scale / dist2;
+}
+
+/*
+=================
+getVolumeLightInscatter  -  cl_fog 3
+
+In-scatter at a point, evaluated the way the path tracer evaluates a surface.
+
+WHY THIS EXISTS ALONGSIDE getClusterLightInscatter, RATHER THAN REPLACING IT.
+That function computes light by hand: emitter centroid, triangle area, a bare
+1/dist2, then pt_fog_light_falloff / _pivot / _radius to reshape the curve and
+pt_fog_light_knee to compress the total. Every one of those knobs exists to
+patch a consequence of not doing the integral properly, and together they make
+the fog impossible to tune. It is kept untouched so cl_fog 2 renders exactly as
+it always has.
+
+This one draws an actual point ON one light and divides by that sample's
+solid-angle pdf, which is what light_lists.h has always done for surfaces:
+
+    contribution = radiance * (1 / pdfw) * emitter_profile * phase * visibility
+
+1/pdfw carries the emitter's true solid angle from p. Inverse-square falls out
+of it for free, and correctly for all three light types. So there is no falloff
+exponent to set, no pivot, no cutoff radius, and because the values are bounded
+by real occlusion instead of accumulating without limit, no knee. cl_fog 3
+ignores all five.
+
+RESAMPLED IMPORTANCE SAMPLING, and why the first version without it looked like
+coloured blobs. That version took a STRIDED SUBSET of the cluster's lights,
+evaluated all of them, and multiplied by count/taken to make up for the ones it
+skipped. On a lava map the cluster holds hundreds of lights, so that rescale is
+a factor of ~25 applied to whichever handful the stride happened to land on -
+and neighbouring froxels landing on different handfuls differ by the whole
+factor. In the froxel grid one sample is shared by every pixel in the cell, so
+the disagreement is not fine noise that a filter removes, it is a solid block of
+the wrong brightness. That is the blotchiness, and no amount of temporal
+accumulation fixes it because the error is correlated across the cell.
+
+RIS replaces the uniform subset with a weighted draw: look at M candidates
+cheaply (volume_light_estimate, no rays), keep ONE with probability proportional
+to its estimated contribution, and correct with the reservoir weight. The
+survivor is nearly always a light that actually matters, so the variance
+collapses - and only ONE visibility ray is traced per point instead of one per
+candidate, which makes this CHEAPER than the version it replaces as well as
+quieter. This is what RTX Remix's initialRISSampleCount does.
+
+THE VISIBILITY RAY IS NOT OPTIONAL HERE, and deliberately does not honour
+pt_fog_light_shadow. Occlusion is what makes light pool in a volume instead of
+washing it; without it no amount of tuning produces the look this mode is for.
+The cvar defaults to 0 in several shipped map cfgs (mgu5m1 among them), so
+respecting it would silently cripple this mode on exactly the maps most likely
+to be used to judge it.
+
+`rnd` is three blue-noise values; yz place the sample on the chosen light.
+`seed` seeds the candidate loop's own RNG.
+=================
+*/
+vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir, vec3 rnd, uint seed)
+{
+	// The sky is ambient and has no preferred direction, so it keeps the
+	// isotropic phase rather than the medium's. Computed first for the same
+	// reason as in getClusterLightInscatter: an open area with no emissive
+	// surfaces in its cluster must still see the sky.
+	vec3 sky_term = vec3(0);
+	float sky_vis = getSkyVisibility(sky_p);
+	if (sky_vis > 0.0)
+	{
+		vec3 sky_radiance = vec3(0);
+
+		if (global_ubo.environment_type == ENVIRONMENT_DYNAMIC)
+			sky_radiance = sun_color_ubo.sky_color;
+		else if (global_ubo.environment_type == ENVIRONMENT_STATIC)
+			sky_radiance = vec3(global_ubo.fog_sky_r,
+			                    global_ubo.fog_sky_g,
+			                    global_ubo.fog_sky_b);
+
+		sky_term = sky_radiance
+		         * FOG_SKY_SOLID_ANGLE * global_ubo.pt_fog_sky_scale
+		         * sky_vis * FOG_ISOTROPIC_PHASE;
+	}
+
+	fog_debug_sky_term = sky_term;
+
+	/* pt_fog_isolate splits the two halves of the fog's lighting so each can be
+	   watched on its own, fully composited. Zeroing the sky here rather than at
+	   the end matters for 2: the sky term is ADDED to the light total at the
+	   bottom of this function, so a caller cannot subtract it back out.
+	   Returning early for 1 also skips the whole RIS loop and its rays. */
+	int fog_isolate = int(global_ubo.pt_fog_isolate);
+	if (fog_isolate == 2)
+	{
+		sky_term = vec3(0);
+		fog_debug_sky_term = sky_term;
+	}
+	else if (fog_isolate == 1)
+		return sky_term;
+
+	if (cluster_idx == ~0u)
+		return sky_term;
+
+	uint list_start = light_buffer.light_list_offsets[cluster_idx];
+	uint list_end   = light_buffer.light_list_offsets[cluster_idx + 1];
+
+	uint count = list_end - list_start;
+	if (count == 0)
+		return sky_term;
+
+	/* The medium's directionality, needed BEFORE the candidate loop because the
+	   RIS target function uses it.
+
+	   CLAMPED, and the clamp is not cosmetic. ScatterPhase_HenyeyGreenstein
+	   computes num/denom with num = 1 - abs(g) and
+	   denom = sqrt(1 - 2*g*cosa + g*g); at g = 1 looking straight at the light
+	   both are ZERO and the phase is 0/0 = NaN. A NaN reaches the froxel volume,
+	   the temporal history blends it with itself forever, and the tone mapper
+	   adapts to a frame containing NaN by going black - which does not clear
+	   when the cvar is put back, only on a restart. god_rays.comp already
+	   clamped its own copy to 0.95 for the sun term; this one did not.
+
+	   Negative g (back-scattering) is legal and useful, so the clamp is
+	   two-sided rather than a max(). */
+	float g = global_ubo.god_rays_eccentricity;
+	if (global_ubo.pt_fog_eccentricity >= 0.0)
+		g = global_ubo.pt_fog_eccentricity;
+	g = clamp(g, -0.95, 0.95);
+
+	fog_rng_state = seed;
+	fog_rand();   // one step off the seed, so neighbouring seeds do not correlate
+
+	// --- RIS: pick one light out of M candidates, weighted by estimate ---
+
+	uint M = uint(clamp(global_ubo.pt_fog_light_samples, 1.0, 32.0));
+
+	float wsum = 0.0;             // sum of the candidates' estimates
+	uint  chosen_idx = ~0u;
+	float chosen_estimate = 0.0;
+
+	for (uint i = 0; i < M; i++)
+	{
+		uint n_idx = list_start + (uint(fog_rand() * float(count)) % count);
+		uint light_idx = light_buffer.light_list_lights[n_idx];
+		if (light_idx == ~0u)
+			continue;
+
+		LightPolygon cand = get_light_polygon(light_idx);
+
+		float estimate = volume_light_estimate(cand, p, view_dir, g);
+		if (estimate <= 0.0)
+			continue;
+
+		wsum += estimate;
+
+		// keep this one with probability estimate/wsum - the standard streaming
+		// reservoir update, so every candidate ends up held in proportion to its
+		// weight after a single pass
+		if (fog_rand() * wsum <= estimate)
+		{
+			chosen_idx = light_idx;
+			chosen_estimate = estimate;
+		}
+	}
+
+	if (chosen_idx == ~0u || chosen_estimate <= 0.0)
+		return sky_term;
+
+	/* The reservoir weight.
+
+	   Candidates were drawn UNIFORMLY from the cluster list, so each had source
+	   pdf 1/count and weight w_i = estimate_i * count. The RIS estimator is
+
+	       f(x) / p_hat(x) * (1/M) * sum(w_i)
+
+	   which is f(x) * W with W as below. p_hat is volume_light_estimate, which
+	   need not match f at all - the ratio is what makes this unbiased. */
+	float W = (wsum * float(count)) / (float(M) * chosen_estimate);
+
+	LightPolygon light = get_light_polygon(chosen_idx);
+
+	// Draw a point on the emitter and get the pdf of having drawn it, measured
+	// in solid angle from p. These are the same functions the path tracer
+	// samples surfaces with, and none of them needs a normal at the receiving
+	// end - which is exactly why a volume can use them.
+	vec3  pos_light;
+	vec3  light_normal;
+	float pdfw = 0.0;
+
+	switch (uint(light.type))
+	{
+	case DYNLIGHT_POLYGON:
+		pos_light = sample_projected_triangle(p, light.positions, rnd.yz, light_normal, pdfw);
+		break;
+	case DYNLIGHT_SPHERE:
+		pos_light = sample_projected_sphere(p, light.positions, rnd.yz, light_normal, pdfw);
+		break;
+	case DYNLIGHT_SPOT:
+		pos_light = sample_projected_spotlight(p, light.positions, light.spot_emission_profile,
+		                                       rnd.yz, light_normal, pdfw);
+		break;
+	default:
+		return sky_term;
+	}
+
+	if (pdfw <= 0.0)
+		return sky_term;
+
+	vec3 d = pos_light - p;
+	float dist = length(d);
+	if (dist < 1e-4)
+		return sky_term;
+
+	vec3 L = d / dist;
+
+	// The emitter's own cosine. sqrt() of it is light_lists.h's convention for
+	// softening a surface's emission profile, kept so a light casts the same
+	// relative brightness into the fog as onto a wall.
+	float profile = sqrt(max(0.0, -dot(light_normal, L)));
+	if (profile <= 0.0)
+		return sky_term;
+
+	// Occlusion. One ray, on the light RIS decided was worth it. See the header
+	// note: not gated on pt_fog_light_shadow. t_max stops short of the sampled
+	// point so the ray cannot hit the emissive surface it is aiming at.
+	{
+		rayQueryEXT shadow_rq;
+		rayQueryInitializeEXT(shadow_rq, FOG_TLAS,
+			gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+			AS_FLAG_OPAQUE,
+			p, 0.05, L, max(dist - 1.0, 0.01));
+
+		rayQueryProceedEXT(shadow_rq);
+
+		if (rayQueryGetIntersectionTypeEXT(shadow_rq, true)
+		    != gl_RayQueryCommittedIntersectionNoneEXT)
+			return sky_term;
+	}
+
+	// The phase function is applied PER LIGHT, about that light's own direction,
+	// which is the whole reason a volumetric looks different when you face a
+	// lamp than when it is behind you. g was settled before the candidate loop,
+	// because the RIS target function needs the same value.
+	float phase = ScatterPhase_HenyeyGreenstein(dot(view_dir, L), g);
+
+	vec3 contribution = light.color
+	                  * (profile * phase * light.volumetric_scale
+	                     * light.light_style_scale * W / pdfw);
+
+	/* FIREFLY CLAMP.
+
+	   RIS removes most of the variance but not the tail: a froxel that happens
+	   to sit very close to a small emitter gets a tiny pdfw and therefore an
+	   enormous contribution, and in the grid that one sample is shared by every
+	   pixel of the cell. Clamping the sample's luminance - rather than dropping
+	   it - keeps the light present but stops one cell blowing out.
+
+	   This is biased on purpose, and it is what RTX Remix's
+	   froxelFireflyFilteringLuminanceThreshold does. 0 disables it. */
+	float firefly = global_ubo.pt_fog_firefly;
+	if (firefly > 0.0)
+	{
+		float lum = luminance(contribution);
+		if (lum > firefly)
+			contribution *= firefly / lum;
+	}
+
+	return contribution + sky_term;
 }
 
 // The scattering albedo at a point: the map's height-fog gradient, lerped by

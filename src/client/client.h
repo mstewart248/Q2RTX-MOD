@@ -768,6 +768,9 @@ void V_AddEntity(entity_t *ent);
 void V_AddParticle(particle_t *p);
 void V_AddLight(const vec3_t org, float intensity, float r, float g, float b);
 void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float b, float radius);
+// per-light volumetric scale for the light most recently added; negative puts it
+// back on the class default. See V_SetLightVolumetricScale in view.c.
+void V_SetLightVolumetricScale(float scale);
 void V_AddSpotLight(const vec3_t org, const vec3_t dir, float intensity, float r, float g, float b, float width_angle, float falloff_angle);
 void V_AddLightStyle(int style, float value);
 

@@ -70,6 +70,12 @@ typedef struct pbr_material_s {
 	imagetype_t image_type;
 	bool synth_emissive;
 	int emissive_threshold;
+	// How much light from surfaces using this material scatters into the
+	// volumetric medium, relative to how much it lights other surfaces - RTX
+	// Remix's per-light volumetricRadianceScale, expressed per material because
+	// that is the only per-fixture handle a Quake II map gives us.
+	// LIGHT_VOLUMETRIC_SCALE_UNSET (-1) = fall back to pt_fog_scale_emissive.
+	float volumetric_scale;
 } pbr_material_t;
 
 extern pbr_material_t r_materials[MAX_PBR_MATERIALS];

@@ -227,7 +227,7 @@ void CL_MuzzleFlash(void)
     case MZ_MACHINEGUN:
         //DL_COLOR(1, .5, 0);
         VectorSet(dl->color, 1, .7, .2);
-        dl->radius = 50;
+        dl->radius = 100;
         Q_snprintf(soundname, sizeof(soundname), "weapons/machgf%ib.wav", (Q_rand() % 5) + 1);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound(soundname), volume, ATTN_NORM, 0);
         break;

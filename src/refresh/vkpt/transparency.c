@@ -590,6 +590,7 @@ bool vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int ma
 		light->material = NULL;
 		light->style = 0;
 		light->type = DYNLIGHT_POLYGON;
+		light->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 
 		VectorCopy(color, light->color);
 

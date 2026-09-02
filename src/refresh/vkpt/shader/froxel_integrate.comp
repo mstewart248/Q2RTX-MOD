@@ -61,12 +61,133 @@ dependence on slice thickness entirely.
 layout(set = GOD_RAYS_DESC_SET_IDX, binding = 2, rgba16f) uniform image3D IMG_FROXEL_SCATTER;
 layout(set = GOD_RAYS_DESC_SET_IDX, binding = 4, rgba16f) uniform image3D IMG_FROXEL_INTEGRATED;
 
+/*
+=================
+load_scatter
+
+One cell of the scatter volume, optionally with a 3x3 blur across the SLICE.
+
+WHY THIS IS HERE AND NOT A PASS OF ITS OWN. RTX Remix runs a dedicated
+volume_filter between its integrate and preintegrate steps. The same work fits
+inside this pass for free: it already walks every cell exactly once, so the
+filter costs eight extra imageLoads per cell and needs no third volume, no
+second dispatch and no extra barrier.
+
+WHY IT IS NEEDED AT ALL. Every cell of the scatter volume is ONE light sample
+with ONE binary visibility ray. RIS makes the chosen light a good one, but
+visibility stays all-or-nothing and cannot be importance-sampled away: a cell
+whose light happened to be occluded is black next to a cell whose light was not.
+That disagreement is the remaining blotchiness, and no number of RIS candidates
+touches it - it is the one factor the target function cannot include, because
+knowing it is what the ray is for.
+
+BLURRING WITHIN A SLICE IS GEOMETRICALLY SOUND. Every cell of a given z sits at
+the same view depth, so neighbours are genuinely adjacent in the medium and there
+is no depth discontinuity to smear across - unlike a screen-space blur, which is
+why this can be a plain Gaussian with no bilateral weighting.
+
+IT NOW BLURS ALONG Z TOO, which an earlier version refused to do on the grounds
+that the far slices are hundreds of units thick. That reasoning had the wrong
+measure: what matters is the RATIO, and the slices are exponentially spaced at a
+constant ratio of about 1.13, so one slice either way is always the same ~13% of
+depth whether it is 2 units or 900. Physically the medium varies smoothly over
+that, and refusing the third axis threw away two thirds of the samples the
+neighbourhood could offer. 27 taps rather than 9, for a ~1.7x cut in noise at no
+extra ray cost - and the noise that remains is dominated by the two BINARY rays
+per cell (the light's visibility and getSkyVisibility), which is exactly the kind
+of all-or-nothing error a wider neighbourhood averages out.
+
+The kernel is the separable 1-2-1 binomial in all three axes. Edges clamp, which
+double-weights the border cells; in x and y they are off the edge of the screen
+anyway, and in z they are the near and far planes.
+=================
+*/
+vec4 load_scatter(ivec2 column, int z)
+{
+	// Undo the store-time pre-multiply, so the integration below works in the
+	// medium's true per-unit-length units - the exp(-sigma * thickness) needs the
+	// real extinction, not a scaled one. See froxel_shared.h.
+	// Undo the store-time pre-multiply, so the integration below works in the
+	// medium's true per-unit-length units - the exp(-sigma * thickness) needs the
+	// real extinction, not a scaled one. See froxel_shared.h.
+	int radius = int(global_ubo.pt_fog_froxel_filter);
+
+	if (radius <= 0)
+		return imageLoad(IMG_FROXEL_SCATTER, ivec3(column, z))
+		     * FROXEL_STORAGE_INV_SCALE;
+
+	/* THE RADIUS IS THE MAIN NOISE KNOB THAT COSTS NO RAYS, which is what makes
+	   it the right one to reach for first.
+
+	   Every cell of the scatter volume is ONE light sample carrying TWO BINARY
+	   rays - the chosen light's visibility and getSkyVisibility. Binary is the
+	   one factor RIS cannot importance-sample away, because knowing it is what
+	   the ray is for, so raising pt_fog_light_samples cannot touch it. What DOES
+	   average it out is looking at more neighbours, and a neighbour is an
+	   imageLoad, not a ray - so widening this is close to free next to anything
+	   that traces.
+
+	     0  off, one cell
+	     1  3x3x3, 27 taps   - the long-standing behaviour and the default
+	     2  5x5x5, 125 taps
+	     3  7x7x7, 343 taps
+
+	   Clamped at 3 because the tap count is cubic and past that the cost stops
+	   being incidental. Raising it trades fog DETAIL for smoothness: the shafts
+	   and the pools of glow around a fixture get softer, which is exactly the
+	   structure the per-point sky trace exists to produce, so this is a taste
+	   knob and not a free win.
+
+	   The weight is the separable triangular kernel w(d) = radius + 1 - |d|,
+	   which at radius 1 is 2,1 - i.e. bit-identical to the 1-2-1 binomial this
+	   replaced, so the default renders exactly as before. */
+	radius = min(radius, 3);
+
+	vec4 sum = vec4(0);
+	float wsum = 0.0;
+
+	for (int dz = -radius; dz <= radius; dz++)
+	{
+		for (int dy = -radius; dy <= radius; dy++)
+		{
+			for (int dx = -radius; dx <= radius; dx++)
+			{
+				ivec3 c = clamp(ivec3(column, z) + ivec3(dx, dy, dz),
+				                ivec3(0),
+				                ivec3(FROXEL_GRID_X - 1, FROXEL_GRID_Y - 1, FROXEL_GRID_Z - 1));
+
+				float w = float(radius + 1 - abs(dx))
+				        * float(radius + 1 - abs(dy))
+				        * float(radius + 1 - abs(dz));
+
+				sum += imageLoad(IMG_FROXEL_SCATTER, c) * w;
+				wsum += w;
+			}
+		}
+	}
+
+	return (sum / wsum) * FROXEL_STORAGE_INV_SCALE;
+}
+
 layout(local_size_x = FROXEL_INT_GROUP_X, local_size_y = FROXEL_INT_GROUP_Y, local_size_z = 1) in;
 void main()
 {
 	ivec2 column = ivec2(gl_GlobalInvocationID.xy);
 
 	if (column.x >= FROXEL_GRID_X || column.y >= FROXEL_GRID_Y)
+		return;
+
+	/* While a debug view is up, froxel_scatter has ALREADY written the diagnostic
+	   straight into the integrated volume, and this pass must not overwrite it.
+
+	   This pass used to do the display itself, by copying the scatter volume
+	   through unaccumulated. That forced every debug view to stage its value in
+	   the SCATTER volume - which is also the temporal HISTORY - so the views were
+	   corrupting the very thing they were built to measure, and view 6 (the
+	   history fetch) fed on its own output and went black regardless of the truth.
+	   Bailing out here is what lets the scatter pass keep writing the genuine
+	   result while a view is on screen. */
+	if (global_ubo.pt_fog_froxel_debug > 0.0)
 		return;
 
 	vec3 accum_inscatter = vec3(0);
@@ -78,7 +199,7 @@ void main()
 	{
 		ivec3 cell = ivec3(column, z);
 
-		vec4 slice = imageLoad(IMG_FROXEL_SCATTER, cell);
+		vec4 slice = load_scatter(column, z);
 
 		float far_depth = FROXEL_SLICE_TO_DEPTH(float(z) + 1.0);
 		float thickness = max(far_depth - near_depth, 0.0);

@@ -41,6 +41,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   shadowlightconeangle          51%  full cone angle in degrees, 10..120
 //   _color                        42%  linear rgb, already 0..1
 //   shadowlightstyle               9%  classic light style index
+//   volumetric_scale                -  NOT an id key, ours. How much this
+//                                      light scatters into the fog relative
+//                                      to how much it lights surfaces, i.e.
+//                                      RTX Remix's per-light volumetric-
+//                                      RadianceScale. Absent leaves the light
+//                                      on the pt_fog_scale_dynamic default.
 //   shadowlightresolution         51%  shadow map size - meaningless to a path
 //                                      tracer, ignored
 //   shadowlightstart/endfadedistance    a renderer LOD, ignored (see below)
@@ -57,6 +63,7 @@ typedef struct {
     int     style;
     int     switch_index;   // bit in CS_DYNAMICLIGHTS, or -1 for always-on
     bool    is_spot;
+    float   vol_scale;      // LIGHT_VOLUMETRIC_SCALE_UNSET = class default
 } cdynamiclight_t;
 
 static cdynamiclight_t  *cl_dynamiclights;
@@ -140,6 +147,7 @@ typedef struct {
     float   radius;
     float   intensity;
     float   cone_angle;
+    float   vol_scale;
     float   angle;
     int     style;
     int     spawnflags;
@@ -163,6 +171,9 @@ static bool CL_ParseEntityBlock(const char **data, entkeys_t *out)
 
     memset(out, 0, sizeof(*out));
     out->intensity = 1.0f;
+    // 0 is a real volumetric scale ("lights the room, makes no fog"), so the
+    // memset above cannot stand in for "the map did not say"
+    out->vol_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
     VectorSet(out->color, 1.0f, 1.0f, 1.0f);
 
     token = COM_Parse(data);
@@ -205,6 +216,8 @@ static bool CL_ParseEntityBlock(const char **data, entkeys_t *out)
             out->has_cone = true;
         } else if (!strcmp(key, "shadowlightstyle"))
             out->style = atoi(token);
+        else if (!strcmp(key, "volumetric_scale"))
+            out->vol_scale = atof(token);
         else if (!strcmp(key, "spawnflags"))
             out->spawnflags = atoi(token);
         else if (!strcmp(key, "angle")) {
@@ -301,6 +314,7 @@ void CL_LoadDynamicLights(void)
         VectorCopy(ent.color, dl->color);
         dl->style = ent.style;
         dl->switch_index = switch_index;
+        dl->vol_scale = ent.vol_scale;
 
         // the maps are consistent about writing _color in 0..1, but a stray
         // 0..255 value would be blindingly wrong rather than subtly wrong
@@ -429,6 +443,10 @@ void CL_AddDynamicLightsToScene(void)
                              dl->color[0], dl->color[1], dl->color[2],
                              DLIGHT_EMITTER_RADIUS);
         }
+
+        // retunes the light just added; the sentinel puts it back on the
+        // pt_fog_scale_dynamic class default, which is the normal case
+        V_SetLightVolumetricScale(dl->vol_scale);
     }
 }
 

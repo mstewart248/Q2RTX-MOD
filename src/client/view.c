@@ -123,6 +123,11 @@ void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float
     dl->color[1] = g;
     dl->color[2] = b;
 	dl->radius = radius;
+	/* The memset above zeroes this, and 0 is a legitimate "contributes nothing
+	   to the fog", so the "nobody said" sentinel has to be written explicitly.
+	   Callers that DO have an opinion - the light editor, the dynamic_light
+	   entity parser - call V_SetLightVolumetricScale() straight after. */
+	dl->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 
 	if (cl_show_lights->integer && r_numparticles < MAX_PARTICLES)
 	{
@@ -155,6 +160,7 @@ static dlight_t* add_spot_light_common(const vec3_t org, const vec3_t dir, float
     dl->color[2] = b;
     dl->radius = 1.0f;
     dl->light_type = DLIGHT_SPOT;
+    dl->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
     VectorCopy(dir, dl->spot.direction);
 
     // what would make sense for cl_show_lights here?
@@ -187,6 +193,29 @@ void V_AddSpotLightTexEmission(const vec3_t org, const vec3_t dir, float intensi
 void V_AddLight(const vec3_t org, float intensity, float r, float g, float b)
 {
 	V_AddSphereLight(org, intensity, r, g, b, 10.f);
+}
+
+/*
+=====================
+V_SetLightVolumetricScale
+
+Give the light that was just added an explicit volumetric scale, overriding the
+class default that copy_light() would otherwise pick for it.  Applies to the
+most recently added dlight, so it is called immediately after V_AddSphereLight /
+V_AddSpotLight - which is how the light editor and the dynamic_light entity
+parser attach a per-light value without every V_Add* variant growing a parameter
+that almost no caller has an opinion about.
+
+A negative value puts the light back on its class default.
+=====================
+*/
+void V_SetLightVolumetricScale(float scale)
+{
+	if (r_numdlights <= 0)
+		return;
+
+	r_dlights[r_numdlights - 1].volumetric_scale = (scale < 0.f)
+		? LIGHT_VOLUMETRIC_SCALE_UNSET : scale;
 }
 
 void V_Flashlight(void)

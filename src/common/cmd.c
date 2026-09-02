@@ -1934,6 +1934,52 @@ typedef struct {
 static map_cvar_t  map_cvars[MAX_MAP_CVARS];
 static int         num_map_cvars;
 
+/*
+=================
+Cmd_GetMapCvarSaved
+
+The value the PLAYER had before the current map overrode it, or NULL if this
+cvar is not currently under a per-map override.
+
+Cvar_WriteVariables uses this so an archived cvar is persisted at the player's
+own value rather than the map's temporary one.  Without it a per-map override
+leaks permanently: q2config.cfg is rewritten on quit (and when the menu closes),
+so quitting while stood on a map that ran "mapcvar cl_fog 2" would bake cl_fog 2
+in as the player's setting, and from the next launch onward it really would
+follow them to every other map.
+=================
+*/
+const char *Cmd_GetMapCvarSaved(const char *name)
+{
+    for (int i = 0; i < num_map_cvars; i++)
+        if (!Q_stricmp(map_cvars[i].name, name))
+            return map_cvars[i].saved;
+
+    return NULL;
+}
+
+/*
+=================
+Cmd_ClearMapCvarOverride
+
+The player has just set this cvar themselves, from the menu or the console, so
+they now OWN it: the map's override is forgotten, the new value is theirs to
+keep, and the next map load must not put the old one back.
+
+Called from Cvar_SetByVar for every set that did not come FROM_CODE - which is
+what "mapcvar" itself uses, so a map's own set never clears its own latch.
+=================
+*/
+void Cmd_ClearMapCvarOverride(const char *name)
+{
+    for (int i = 0; i < num_map_cvars; i++) {
+        if (!Q_stricmp(map_cvars[i].name, name)) {
+            map_cvars[i] = map_cvars[--num_map_cvars];
+            return;
+        }
+    }
+}
+
 void Cmd_RestoreMapCvars(void)
 {
     for (int i = 0; i < num_map_cvars; i++)

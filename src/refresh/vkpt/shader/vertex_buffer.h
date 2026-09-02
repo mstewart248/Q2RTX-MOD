@@ -31,7 +31,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MAX_IQM_MATRICES        32768
 
 #define MAX_LIGHT_POLYS         8192
-#define LIGHT_POLY_VEC4S        4
+// 4 until the per-light volumetric scale arrived; p0..p3 were completely full
+// (positions in xyz, colour in the three w's, then style/prev-style/type/spot
+// profile), so there was no spare lane to steal and a fifth vec4 is the honest
+// answer. Costs MAX_LIGHT_POLYS * 16 bytes = 128 KB of the light buffer.
+#define LIGHT_POLY_VEC4S        5
 // 7th uint carries the dedicated roughness/metallic texture indices
 #define MATERIAL_UINTS          7
 
@@ -191,6 +195,12 @@ struct LightPolygon
 	// DYNLIGHT_SPOT only: DYNLIGHT_SPOT_EMISSION_PROFILE_*, which says how
 	// positions[1].yz are to be read. See spotlight_falloff().
 	float spot_emission_profile;
+	// How much this light scatters into the volumetric medium, relative to how
+	// much it lights surfaces - RTX Remix's per-light volumetricRadianceScale.
+	// Already resolved on the CPU (copy_light), so it is never the "unset"
+	// sentinel by the time a shader sees it: 1.0 means "same as the surface
+	// lighting", 0 means "this light makes no fog at all".
+	float volumetric_scale;
 };
 
 // The buffers with primitive data, currently two of them: world and instanced.
@@ -481,6 +491,7 @@ get_light_polygon(uint index)
 	vec4 p1 = light_buffer.light_polys[index * LIGHT_POLY_VEC4S + 1];
 	vec4 p2 = light_buffer.light_polys[index * LIGHT_POLY_VEC4S + 2];
 	vec4 p3 = light_buffer.light_polys[index * LIGHT_POLY_VEC4S + 3];
+	vec4 p4 = light_buffer.light_polys[index * LIGHT_POLY_VEC4S + 4];
 
 	LightPolygon light;
 	light.positions = mat3x3(p0.xyz, p1.xyz, p2.xyz);
@@ -489,6 +500,7 @@ get_light_polygon(uint index)
 	light.prev_style_scale = p3.y;
 	light.type = p3.z;
 	light.spot_emission_profile = p3.w;
+	light.volumetric_scale = p4.x;
 	return light;
 }
 

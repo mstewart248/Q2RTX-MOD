@@ -118,6 +118,23 @@ float vmax(vec3 v) { return max(v.x, max(v.y, v.z)); }
 layout(set = GOD_RAYS_DESC_SET_IDX, binding = 2, rgba16f) uniform image3D IMG_FROXEL_SCATTER;
 layout(set = GOD_RAYS_DESC_SET_IDX, binding = 3) uniform sampler3D TEX_FROXEL_HISTORY;
 
+/* THE DEBUG VIEWS MUST NOT WRITE INTO IMG_FROXEL_SCATTER, BECAUSE THAT VOLUME IS
+   THE HISTORY. Every debug view used to store its diagnostic there and skip the
+   real result, so the next frame's temporal fetch read the DIAGNOSTIC back as
+   its history. For view 6 - which exists to display that fetch - this is a
+   feedback loop that collapses to black within a frame or two whatever the truth
+   is, so the view reports the fault it was built to detect even on a healthy
+   volume. It also means any earlier reading of view 2 (the accept/reject state)
+   was taken against a history full of debug data, not real history, and cannot
+   be trusted.
+
+   So the diagnostic goes to the INTEGRATED volume instead - the one
+   god_rays_filter samples for display - and the scatter volume always receives
+   the genuine result, leaving the history chain intact while a view is up.
+   froxel_integrate skips its pass entirely when a debug view is active so it
+   does not overwrite what this wrote. */
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 4, rgba16f) uniform image3D IMG_FROXEL_DEBUG_OUT;
+
 /*
 Froxel centre -> world position.
 
@@ -230,6 +247,27 @@ bool world_to_prev_froxel_uvw(vec3 world_pos, out vec3 uvw)
 	uvw.xy = ndc * 0.5 + 0.5;
 	uvw.z = FROXEL_DEPTH_TO_SLICE(depth_prev) / float(FROXEL_GRID_Z);
 
+	/* OPTIONALLY SNAP TO THE NEAREST TEXEL CENTRE - see pt_fog_froxel_history_snap
+	   in global_ubo.h for why this is not a rounding nicety.
+
+	   TEX_FROXEL_HISTORY is trilinear, so an off-centre coordinate returns a
+	   BLEND of eight cells. Composed with the 0.95 blend once per frame that is a
+	   diffusion, not a resample: it spreads the volume's signal and decays its
+	   peaks, and it leaks mass into the empty cells on the far side of a hard
+	   visibility boundary. The cell-centre lookup already removes it while the
+	   camera is still; this removes it while the camera moves as well, by turning
+	   the fetch back into a single-texel read.
+
+	   Snapping in uvw space rather than clamping the cell index: multiply up by
+	   the grid dimension, floor, and put the coordinate back at +0.5 of that
+	   texel, which is exactly where a trilinear fetch returns one texel and
+	   nothing else. */
+	if (global_ubo.pt_fog_froxel_history_snap > 0.0)
+	{
+		vec3 dims = vec3(FROXEL_GRID_X, FROXEL_GRID_Y, FROXEL_GRID_Z);
+		uvw = (floor(uvw * dims) + 0.5) / dims;
+	}
+
 	return true;
 }
 
@@ -273,13 +311,85 @@ void main()
 
 		vec3 world_pos = froxel_to_world(cell, vec3(r1, r2, r3));
 
-		float density = getDensity(world_pos);
+		/* THE HISTORY IS LOOKED UP AT THE CELL CENTRE, NEVER AT THE JITTERED
+		   SAMPLE POINT, and that distinction is the difference between fog that
+		   holds and fog that fades away while you watch it.
+
+		   The jitter exists so that what the temporal blend accumulates is a
+		   stratified estimate of the cell rather than the same corner forever -
+		   it belongs to THIS frame's sample. But the previous version also
+		   reprojected the jittered position to find the history, and the history
+		   sampler is TRILINEAR. With the camera perfectly still, that read
+		   landed a random fraction of a texel away from the cell it belonged to
+		   and therefore returned a BLEND of the cell and its neighbours.
+
+		   Iterate that: result = 0.03*current + 0.97*blur(previous). An
+		   exponential moving average converges to the mean of `current` and can
+		   never decay to zero - but an EMA composed with a blur every frame is a
+		   DIFFUSION. The glow spreads outwards a little each frame and its peak
+		   falls, so a bright light showed a correct volumetric on the first
+		   frames and then dissolved over about a second. Raising
+		   pt_fog_froxel_history made it worse, not better, because it runs the
+		   diffusion for more iterations.
+
+		   The cell centre round-trips EXACTLY when the camera has not moved:
+		   froxel_to_world(cell, 0.5) maps back to ndc (cell + 0.5)/dims and to
+		   slice coordinate z + 0.5, which are precisely the texel centres, so
+		   the trilinear fetch returns that one texel and nothing else. When the
+		   camera does move, resampling is genuine and correct. */
+		vec3 world_pos_history = froxel_to_world(cell, vec3(0.5));
+
+		/* THE MEDIUM IS EVALUATED AT THE CELL CENTRE, NOT AT THE JITTERED POINT,
+		   and this is what makes distant fog survive the temporal blend.
+
+		   The jitter exists to stratify the LIGHTING estimate - which light is
+		   chosen, where on it the sample lands, whether the visibility ray is
+		   blocked. Those are integrals that need Monte Carlo. `density` is not:
+		   it is a smooth analytic function of position, so sampling it randomly
+		   buys nothing and costs enormously.
+
+		   What it costs is FAR CELLS. Slices are exponentially spaced, so a far
+		   froxel spans hundreds of world units while a near one spans a couple.
+		   The map's fog is a HEIGHT BAND near the floor, and getDensity returns 0
+		   above it - so a far cell's jittered point lands inside the band one
+		   frame and above it the next, and `density` flickers between a real
+		   value and zero. `result` is proportional to it, so the cell's estimate
+		   becomes a coin flip that the exponential blend cannot hold: between
+		   hits the history decays 0.95^n, and for a cell that hits rarely that is
+		   effectively zero by the time the next one arrives.
+
+		   That is precisely the reported symptom - fog close to the player,
+		   nothing further out - and it is why pt_fog_sky_soften changed nothing:
+		   the flicker was never in sky visibility, it was in the medium itself.
+
+		   The centre round-trips exactly and does not move while the camera is
+		   still, so density becomes deterministic per cell and the only remaining
+		   variance is the lighting, which is what the blend is there to average.
+		   world_pos (jittered) is still what the lighting is evaluated at. */
+		float density = getDensity(world_pos_history);
+
+		/* RESET THE DIAGNOSTIC GLOBALS PER CELL. fog_debug_sky_term and
+		   fog_debug_sky_vis are written inside the in-scatter functions, and a
+		   cell with density <= 0 never calls them - so without this they keep
+		   whatever an EARLIER z of the same column left behind, and view 4 paints
+		   a stale neighbour's sky term over cells that contribute nothing.
+
+		   That is how view 4 came to read "bright sky term everywhere" while view
+		   9 read magenta ("no raw fog here at all") over the same pixels. Both
+		   were reporting honestly; one of them was reporting about a different
+		   cell. A global written by a callee and read after a conditional call is
+		   a stale-value trap, and in a loop it is a silent one. */
+		fog_debug_sky_term = vec3(0);
+		fog_debug_sky_vis  = 0.0;
 
 		vec4 result = vec4(0);
 
 		if (density > 0)
 		{
-			vec3 albedo = getFogColor(world_pos);
+			// Cell centre for the same reason as density: the fog colour is a
+			// smooth height gradient, and sampling it at the jittered point makes
+			// a far cell's albedo swing across the whole band every frame.
+			vec3 albedo = getFogColor(world_pos_history);
 
 			// The view direction at this cell, for the sun's phase function.
 			vec3 to_cell = world_pos - global_ubo.cam_pos.xyz;
@@ -327,9 +437,55 @@ void main()
 				uint cluster = (global_ubo.fog_camera_cluster < 0)
 				             ? ~0u : uint(global_ubo.fog_camera_cluster);
 
-				inscatter += FOG_ISOTROPIC_PHASE
-				           * getClusterLightInscatter(cluster, world_pos, r1)
-				           * global_ubo.pt_fog_light_scale * 0.005;
+				if (global_ubo.fog_mode >= 3)
+				{
+					// cl_fog 3: a real light sample per light, with its own
+					// occlusion ray and its own phase about that light's
+					// direction - so the phase cannot be hoisted out the way the
+					// isotropic approximation below does it.
+					//
+					// This is the case the grid was built for. The march pays
+					// these rays per STEP of every pixel; here it is once per
+					// CELL, which is roughly a fortieth of the work, and the
+					// temporal history averages the sampling noise away.
+					/* r2 and r3 CANNOT be used to place a point on an area
+					   light, even though they are perfectly good for picking
+					   which light. They come from ONE blue-noise fetch stepped
+					   by two different golden-ratio increments, so for a fixed
+					   slice the pair (r2, r3) is a deterministic function of
+					   the single value base_rand: as it varies across the
+					   screen the pair traces a LINE through the unit square
+					   rather than filling it. Feeding that to
+					   sample_projected_triangle would sample every light along
+					   one diagonal of its surface and show up as structure, not
+					   as noise a filter can remove.
+
+					   Two independent fetches instead. The offsets are
+					   arbitrary and just have to land somewhere uncorrelated in
+					   the blue-noise texture; z is folded in so the samples
+					   also decorrelate down the column. */
+					vec3 light_rnd = vec3(r1,
+						rand(cell.xy + ivec2(z * 29 + 101, z * 17 + 53)),
+						rand(cell.xy + ivec2(z * 41 + 197, z * 23 + 149)));
+
+					uint seed = uint(cell.x) * 73856093u
+					          ^ uint(cell.y) * 19349663u
+					          ^ uint(cell.z) * 83492791u
+					          ^ uint(global_ubo.current_frame_idx) * 2654435761u;
+
+					// pt_fog_vol_scale, not pt_fog_light_scale: mode 3 has no
+					// knee crushing the total, so it sits at a different level
+					// entirely and sharing one cvar would mean retuning mode 2
+					// every time the two are compared.
+					inscatter += getVolumeLightInscatter(cluster, world_pos, world_pos_history, view_dir, light_rnd, seed)
+					           * global_ubo.pt_fog_vol_scale * 0.005;
+				}
+				else
+				{
+					inscatter += FOG_ISOTROPIC_PHASE
+					           * getClusterLightInscatter(cluster, world_pos, world_pos_history, r1)
+					           * global_ubo.pt_fog_light_scale * 0.005;
+				}
 			}
 
 			// Radiance per unit length, so the integrate pass only has to
@@ -351,6 +507,124 @@ void main()
 			result.a = density * sigma;
 		}
 
+		/* --- DEBUG VIEWS ---
+
+		   pt_fog_froxel_debug replaces the cell's contents with something that
+		   answers a specific question, and froxel_integrate stops prefix-summing
+		   so what reaches the screen is the ONE CELL at that pixel's depth
+		   rather than an accumulation along the whole ray.
+
+		     1  this frame's raw in-scatter, with no temporal blend and no
+		        spatial filter - the true per-frame noise, before anything hides
+		        it. Use it to judge whether a change reduced the noise or only
+		        smoothed it afterwards.
+
+		     2  what the temporal reuse did, as a flat colour:
+		          GREEN  history found and blended
+		          RED    reprojection landed inside last frame's frustum but the
+		                 history there was empty or non-finite, so it was refused
+		          BLUE   reprojection failed - the cell was not visible last
+		                 frame, so this frame's value is used raw
+		        At a STATIONARY camera this should be solid green. Any red or
+		        blue flicker is the temporal reuse dropping out, and where it
+		        flickers says which test is rejecting it.
+
+		     3  the depth slice as a ramp, to confirm the volume's z mapping
+		        lines up with the geometry. */
+		int debug = int(global_ubo.pt_fog_froxel_debug);
+
+		// The diagnostic colour for this cell. Written to IMG_FROXEL_DEBUG_OUT at
+		// the very end, never to IMG_FROXEL_SCATTER - see the note on the binding.
+		vec3 dbg = vec3(0);
+
+		/* THE RADIANCE-VALUED VIEWS NEED A GAIN AND THE FLAG-VALUED ONES DO NOT,
+		   which is why views 2, 3 and 5 displayed while 1, 4 and 6 read as black.
+
+		   2/3/5 write a flag or a 0..1 ratio scaled by a hand-picked ~0.02, chosen
+		   to sit where the tone mapper can show it. 1/4/6 write the medium's own
+		   radiance, and that is a PER UNIT LENGTH quantity: froxel_integrate
+		   multiplies it by the slice thickness - tens to hundreds of world units -
+		   and accumulates it over 64 slices before any of it reaches the image. So
+		   a single cell's raw value is around three orders of magnitude below the
+		   composited fog, and displaying it unscaled shows nothing on a screen
+		   calibrated for the composited result.
+
+		   Estimated rather than measured: composited fog lands near 0.05, a view
+		   ray through it runs ~1000 units, so the per-unit-length value is ~5e-5,
+		   and 500 lifts that to the ~0.02 the working views use. If 1 and 6 are
+		   still too dark, this constant is the thing to raise.
+
+		   For the 1-versus-6 comparison the absolute level does not matter at all -
+		   both get the SAME gain, and the question is only whether they agree. */
+		const float FOG_DEBUG_RADIANCE_GAIN = 500.0;
+
+		if (debug == 1)
+		{
+			// This frame's raw in-scatter, captured BEFORE the temporal blend
+			// below touches it - the true per-frame noise.
+			dbg = result.rgb * FOG_DEBUG_RADIANCE_GAIN;
+		}
+
+		if (debug == 4)
+		{
+			/* The SKY term on its own, scaled exactly as the real path scales it.
+			   Answers "is the sky lighting the fog at all, or is it being lost
+			   somewhere" without any argument about exposure - if this is black
+			   where sky is visible overhead, the term is genuinely absent; if it
+			   is not black, the sky IS in the volume and what is wrong is
+			   brightness or compositing, not the sky evaluation.
+
+			   The brightness knob has to be the one THIS MODE actually applies,
+			   or the view lies by exactly the ratio between the two cvars: mode 3
+			   scales the in-scatter by pt_fog_vol_scale and mode 2 by
+			   pt_fog_light_scale, and they sit at deliberately different levels
+			   because mode 2 has a knee compressing its total and mode 3 has
+			   none. Reading the mode-3 cvar while rendering mode 2 is how a
+			   correct sky term shows up as black. */
+			float debug_scale = (global_ubo.fog_mode >= 3)
+			                  ? global_ubo.pt_fog_vol_scale
+			                  : global_ubo.pt_fog_light_scale;
+
+			dbg = fog_debug_sky_term * debug_scale * 0.005
+			    * getFogColor(world_pos) * density * FOG_DEBUG_RADIANCE_GAIN;
+		}
+
+		if (debug == 5)
+		{
+			/* RAW SKY VISIBILITY - getSkyVisibility's own answer for this cell,
+			   as greyscale, with nothing else multiplied into it: no radiance, no
+			   pt_fog_sky_scale, no albedo, no density, no phase.
+
+			   This is the view that splits the remaining question in two, and the
+			   two answers point at completely different code:
+
+			     BLACK where the march clearly has sky fog - the grid's cells
+			     genuinely cannot see the sky. The fault is then in WHERE the
+			     cells are or what they trace against: froxel_to_world, or the
+			     TLAS this pass is handed, and NOT in any of the sky radiance,
+			     scale or compositing code.
+
+			     GREY/WHITE in the same places - the cells see the sky perfectly
+			     well and the term is being destroyed after getSkyVisibility
+			     returns, which puts the fault downstream: the radiance branch on
+			     environment_type, the integration, or the lookup in
+			     god_rays_filter.
+
+			   Independent of exposure and of every fog cvar, so it cannot be
+			   argued with the way a brightness reading can. Scaled to sit in the
+			   same range the other debug views use so the tone mapper does not
+			   swing between them. */
+			dbg = vec3(fog_debug_sky_vis) * 0.02;
+		}
+
+		if (debug == 3)
+		{
+			float t = float(z) / float(FROXEL_GRID_Z - 1);
+			dbg = vec3(t, 1.0 - t, 0.0) * 0.05;
+		}
+
+		int history_state = 2;   // blue: not visible last frame
+
 		// --- TEMPORAL REUSE ---
 		//
 		// This is where the noise goes. One frame of this volume is a single
@@ -366,21 +640,356 @@ void main()
 		// it was meant to remove. What that costs is a ghost trail behind a
 		// moving light, which is bounded by the blend weight and is the same
 		// trade the ASVGF passes make.
+		/* What the history fetch actually returned, kept for debug view 6.
+		   Compared against view 1 (this frame's raw scatter) it answers the one
+		   question the algebra cannot: the round trip
+		   world_to_prev_froxel_uvw(froxel_to_world(cell, 0.5)) is EXACT on paper
+		   at a stationary camera - it lands on (cell + 0.5)/GRID in all three
+		   axes - so a converged EMA should reproduce the raw value and the blend
+		   should be invisible. It is not. Either the read is not returning what
+		   was written, or it is not reading the volume that was written. */
+		vec4 debug_history = vec4(0);
+
+		// This frame's estimate BEFORE the blend overwrites `result`. View 9
+		// compares against it, and taking it after the mix would compare the
+		// history against a value the history is already 95% of - which reads as
+		// a perfect match no matter how broken the temporal path is.
+		vec3 debug_raw_rgb = result.rgb;
+
 		if (global_ubo.pt_fog_froxel_history > 0.0)
 		{
 			vec3 uvw;
-			if (world_to_prev_froxel_uvw(world_pos, uvw))
+			if (world_to_prev_froxel_uvw(world_pos_history, uvw))
 			{
-				vec4 history = textureLod(TEX_FROXEL_HISTORY, uvw, 0);
+				history_state = 1;   // red: in frustum, but nothing usable there
 
-				// A history texel that has never been written is exactly zero;
-				// blending towards it would darken a newly visible cell for
-				// several frames, so only accept one that carries something.
-				if (history.a > 0.0 || dot(history.rgb, vec3(1.0)) > 0.0)
-					result = mix(result, history, global_ubo.pt_fog_froxel_history);
+				/* Stored PRE-MULTIPLIED by FROXEL_STORAGE_SCALE - see the long
+				   note in froxel_shared.h. Undone here, at the fetch, so that
+				   everything downstream of this line - the finite test, the
+				   non-empty guard, the mix(), every debug view and all the
+				   algebra in the comments - keeps working in the medium's true
+				   per-unit-length units. The scaling exists only to survive the
+				   trip through the fp16 image. */
+				vec4 history = textureLod(TEX_FROXEL_HISTORY, uvw, 0)
+				             * FROXEL_STORAGE_INV_SCALE;
+				debug_history = history;
+
+				/* A history texel that has never been written is exactly zero;
+				   blending towards it would darken a newly visible cell for
+				   several frames, so only accept one that carries something.
+
+				   The finite test is the other half of the guard below, and it
+				   is what makes a bad frame RECOVERABLE. A single NaN written
+				   into this volume used to be permanent: mix(x, NaN, w) is NaN,
+				   so the cell re-poisoned itself every frame, the tone mapper
+				   adapted to a frame containing NaN by going black, and putting
+				   the offending cvar back did not help - only restarting the
+				   game cleared it. Refusing to blend a non-finite history means
+				   the volume heals itself in one frame instead. */
+				bool history_ok = all(lessThan(abs(history), vec4(1e30)))
+				               && !any(isnan(history));
+
+				if (history_ok && (history.a > 0.0 || dot(history.rgb, vec3(1.0)) > 0.0))
+				{
+					history_state = 0;   // green: blended
+
+					/* THE WEIGHT MUST STAY STRICTLY BELOW 1, and this clamp is a
+					   correctness guard rather than a taste limit.
+
+					   For any w < 1 the recurrence h = (1-w)*raw + w*h has exactly
+					   ONE fixed point, h == raw, so the blend can only ever slow
+					   the volume down - it cannot change what it converges to, and
+					   a converged volume is indistinguishable from the raw one.
+
+					   At w == 1.0 that collapses: result = history exactly, the
+					   current frame contributes NOTHING, and every value becomes a
+					   fixed point. The volume then freezes at whatever it happened
+					   to hold - in practice the near-zero it starts from, since a
+					   cleared volume is only escaped by the raw term this weight
+					   has just switched off. The fog then appears ONLY while the
+					   camera turns, because rotation fails the reprojection test
+					   and the raw value is used unblended, and vanishes again the
+					   moment the camera settles.
+
+					   0.99 still averages over ~100 frames, far more smoothing
+					   than is useful, so nothing legitimate is lost by refusing
+					   the last hundredth. */
+					float w = clamp(global_ubo.pt_fog_froxel_history, 0.0, 0.99);
+
+					result = mix(result, history, w);
+				}
 			}
 		}
 
-		imageStore(IMG_FROXEL_SCATTER, cell, result);
+		if (debug == 2)
+		{
+			vec3 c = (history_state == 0) ? vec3(0, 1, 0)
+			       : (history_state == 1) ? vec3(1, 0, 0)
+			                              : vec3(0, 0, 1);
+			dbg = c * 0.02;
+		}
+
+		if (debug == 6)
+		{
+			/* THE HISTORY VALUE THAT WAS ACTUALLY FETCHED, on the same scale as
+			   view 1 so the two can be flipped between directly.
+
+			   Read views 1 and 6 back to back at a STATIONARY camera. They must
+			   agree once the blend has converged, because an exponential moving
+			   average converges to the mean of its input and the reprojection
+			   round trip is exact when the camera has not moved.
+
+			     6 MATCHES 1  - the history path is faithful and the fog loss is
+			                    downstream of it, in the integrate pass or the
+			                    lookup, not in the temporal reuse.
+			     6 MUCH DARKER - the fetch is not returning what was written.
+			                    That is the ping-pong (set i samples the volume
+			                    it is writing, or one nothing wrote), a layout or
+			                    barrier problem between the write and the read,
+			                    or the sampler pulling in its TRANSPARENT_BLACK
+			                    border.
+			     6 BLACK       - nothing was fetched at all; cross-check with
+			                    view 2, which says whether the fetch was even
+			                    attempted and whether it was accepted.
+
+			   Captured before the finite/non-zero guard rejects anything, so this
+			   shows the raw fetch rather than what the blend chose to use. */
+			dbg = debug_history.rgb * FOG_DEBUG_RADIANCE_GAIN;
+		}
+
+		if (debug == 7)
+		{
+			/* THE SAME HISTORY TEXEL, FETCHED DIRECTLY BY INTEGER INDEX - no
+			   reprojection, no matrices, no filtering, no sampler. Read against
+			   view 6 (the reprojected, filtered fetch) this isolates the two
+			   halves of the history path from each other, which views 1 and 6
+			   cannot do on their own.
+
+			   Views 1 and 6 compare the RAW value against the FETCHED value, and
+			   in the collapsed state a dark 6 is equally consistent with a lossy
+			   fetch and with a volume that has already decayed - symptom and
+			   cause look identical. This view breaks that tie, because both 6 and
+			   7 read the SAME volume and differ only in HOW:
+
+			     7 BRIGHT (like 1) while 6 is dark - the texel holds the right
+			       value and the REPROJECTED FETCH is losing it. The fault is in
+			       world_to_prev_froxel_uvw or the sampler: a coordinate landing
+			       off the texel centre, or the CLAMP_TO_BORDER edge pulling in
+			       transparent black.
+
+			     7 AND 6 BOTH DARK - the texel genuinely holds almost nothing, so
+			       the fetch is faithful and the loss is upstream in the WRITE:
+			       the ping-pong handing this pass a volume nothing wrote, or the
+			       missing barrier between frame N-1's write and this read.
+
+			   Note the fixed-point argument that makes this worth measuring: with
+			   a faithful fetch the ONLY fixed point of result = mix(raw, history,
+			   0.95) is history == raw, so a history that sits stably at a
+			   fraction of raw is proof of a loss somewhere in the loop - it is
+			   not "still converging". */
+			dbg = texelFetch(TEX_FROXEL_HISTORY, cell, 0).rgb * FOG_DEBUG_RADIANCE_GAIN;
+		}
+
+		if (debug == 8)
+		{
+			/* THIS PASS'S OWN VOLUME, as it stands before being overwritten - so
+			   the value written TWO frames ago, where view 7 shows the other
+			   volume's value from ONE frame ago.
+
+			   Read 7 and 8 together to test the PING-PONG itself, which is the
+			   only remaining way the write and the read can disagree:
+
+			     7 DARK, 8 BRIGHT - the two volumes hold different things, so set i
+			       is not reading what set 1-i wrote. That is a parity or
+			       descriptor error, and it is the one failure the fixed-point
+			       argument cannot rule out.
+
+			     BOTH DARK - the writes themselves are genuinely dark, the
+			       ping-pong is sound, and the collapse is in the blend
+			       arithmetic - which for any weight below 1 should be impossible,
+			       leaving the weight itself as the culprit. */
+			dbg = imageLoad(IMG_FROXEL_SCATTER, cell).rgb * FOG_DEBUG_RADIANCE_GAIN;
+		}
+
+		if (debug == 9)
+		{
+			/* THE RATIO history/raw, AS COLOUR BANDS - the measurement views 6, 7
+			   and 8 cannot give, because "both look black" is not a number and two
+			   values three orders of magnitude apart both render as black.
+
+			   This is the quantity the whole fixed-point argument is about. With
+			   w = 0.95 (confirmed) and the history accepted (view 2 is green), the
+			   stored value must climb to the raw value within ~100 frames, so this
+			   view must settle at GREEN within about two seconds of standing
+			   still. What it settles at instead says which assumption is false:
+
+			     GREEN (~1)     healthy and converged. The temporal path is fine
+			                    and the fog loss is somewhere else entirely.
+			     YELLOW         converging - watch it climb. If it climbs and then
+			                    the fog looks right, the blend is merely slow.
+			     RED (~0.05)    PINNED at one blend step. 0.05 is exactly the
+			                    weight of the raw term, so this means the history
+			                    contributes nothing and the volume is being reset
+			                    to a single frame's contribution every frame -
+			                    i.e. what is written is not what is read back,
+			                    despite 7 and 8 agreeing.
+			     BLACK (<0.02)  the history really is absent, and view 2 being
+			                    green would then be inconsistent with it - which
+			                    would mean the value passes the > 0 test while
+			                    being far below anything that can affect the mix.
+
+			   Luminance rather than per-channel, so a colour shift in the medium
+			   cannot be mistaken for a magnitude change. */
+			float lum_raw  = luminance(max(debug_raw_rgb, vec3(0.0)));
+			float lum_hist = luminance(max(debug_history.rgb, vec3(0.0)));
+
+			/* "No raw value" and "ratio near zero" MUST NOT SHARE A COLOUR. The
+			   first version painted both black, and the first reading came back
+			   black across almost the whole screen - which was unreadable,
+			   because the two mean opposite things:
+
+			     no raw    - this cell contributes no fog THIS FRAME anyway, so
+			                 the temporal path is irrelevant here and the black is
+			                 saying nothing about the bug. Expected across most of
+			                 a cave, where most of the frustum is inside rock and
+			                 sees neither sky nor any light.
+			     ratio ~0  - the cell DOES have fog and the history for it is
+			                 empty. That is the fault.
+
+			   MAGENTA for the first, so it can be told from the red/black end of
+			   the scale at a glance. */
+			vec3 band;
+			if (lum_raw <= 1e-12)
+				band = vec3(1.0, 0.0, 1.0);        // magenta: no raw fog here at all
+			else
+			{
+				float r = lum_hist / lum_raw;
+				band = (r < 0.02)  ? vec3(0.15, 0.0, 0.0)   // near-black red: history empty
+				     : (r < 0.20)  ? vec3(1.0, 0.0, 0.0)
+				     : (r < 0.80)  ? vec3(1.0, 1.0, 0.0)
+				     : (r < 1.25)  ? vec3(0.0, 1.0, 0.0)
+				                   : vec3(0.0, 0.0, 1.0);
+			}
+
+			dbg = band * 0.02;
+		}
+
+		/* --- VIEWS 10 AND 11: THE ROUND-TRIP SELF TEST ---
+
+		   EVERY OTHER VIEW MEASURES THE FOG. These two measure the PLUMBING, by
+		   throwing the fog away and putting a KNOWN VALUE through the volume
+		   instead.
+
+		   Why it had to come to this. pt_fog_froxel_history 0 is confirmed to fix
+		   the sky fog, so the raw per-cell estimate is right and the whole fault
+		   is in the temporal path. But snapping the history lookup to the texel
+		   centre changed nothing, which rules out the fetch coordinate, the
+		   trilinear filter and the transparent-black border. And the algebra of
+		   what is left says the bug is impossible: for any w < 1 the recurrence
+		   h = (1-w)*raw + w*h has exactly ONE fixed point, h == raw, so a
+		   stationary camera must converge to the raw value within about a second
+		   whatever w is. It does not. Therefore the value that comes back out of
+		   the volume is not the value that went in - and that is a statement about
+		   the volume, not about the fog, so it should be measured with something
+		   that has nothing to do with the fog.
+
+		   HOW IT WORKS. Every cell is overwritten, just before the store, with a
+		   known checkerboard of 1.0 and 0.25 - so the scatter volume contains
+		   nothing but the pattern, and what these views display is the history
+		   FETCHED from it one frame later. The expected answer is exactly the
+		   pattern, and any departure from it is the plumbing, measured as a ratio
+		   rather than guessed from brightness.
+
+		   1.0 and 0.25 are chosen to sit in the middle of fp16's NORMAL range.
+		   That is deliberate: it takes precision out of the experiment entirely,
+		   so these views separate "the volume cannot carry the number" from "the
+		   number is too small for the format" - two faults that look identical
+		   when the stored value is 4e-6.
+
+		   The checkerboard is over cell.x^cell.y^cell.z, so it also catches a read
+		   that lands on the WRONG cell: a correct fetch reproduces the pattern, a
+		   filtered one averages it to flat grey, an off-by-one one inverts it.
+
+		     10  the fetched value, as greyscale. At a stationary camera this must
+		         be a crisp froxel-resolution checkerboard. Flat grey means the
+		         fetch is averaging neighbours; black means the volume is not
+		         holding what was written at all.
+
+		     11  THE VERDICT, as colour bands on |fetched - expected| / expected:
+		           GREEN    under 1%   - the round trip is faithful, and the fault
+		                                is then magnitude or precision, NOT plumbing
+		           YELLOW   under 10%
+		           RED      under 50%
+		           MAGENTA  50% or worse, or nothing came back at all
+		         This is the one to read. 10 is for seeing what shape the error has
+		         once 11 says there is one. */
+		float rt_expected = ((((cell.x ^ cell.y) ^ cell.z) & 1) == 0) ? 1.0 : 0.25;
+
+		if (debug == 10)
+		{
+			// Scaled to sit where the other views sit, so the tone mapper does
+			// not swing between them. Expected: 0.02 / 0.005 checkerboard.
+			dbg = vec3(debug_history.r) * 0.02;
+		}
+
+		if (debug == 11)
+		{
+			// history_state 0 is the only case where a value was actually
+			// blended. 1 (in frustum, refused) and 2 (out of frustum) both mean
+			// nothing came back, which at a stationary camera is itself the fault.
+			vec3 band;
+
+			if (history_state != 0)
+				band = vec3(1.0, 0.0, 1.0);   // magenta: no history returned
+			else
+			{
+				float err = abs(debug_history.r - rt_expected) / rt_expected;
+
+				band = (err < 0.01) ? vec3(0.0, 1.0, 0.0)
+				     : (err < 0.10) ? vec3(1.0, 1.0, 0.0)
+				     : (err < 0.50) ? vec3(1.0, 0.0, 0.0)
+				                    : vec3(1.0, 0.0, 1.0);
+			}
+
+			dbg = band * 0.02;
+		}
+
+		/* VIEWS 10 AND 11 REPLACE THE VOLUME'S CONTENTS WITH THEIR TEST PATTERN.
+
+		   This is the one place a debug view is allowed to write into the volume
+		   it is measuring, and only because the measurement IS the write: the
+		   point is to put a known number in and see what comes back out. It
+		   destroys the fog for as long as either view is up, which is expected -
+		   turn the view off and the volume refills in about a second.
+
+		   Every other view leaves the genuine result alone, for the reason
+		   recorded on the IMG_FROXEL_DEBUG_OUT binding: the scatter volume IS the
+		   temporal history, so a diagnostic written into it becomes the next
+		   frame's history and the view feeds on its own output. */
+		if (debug == 10 || debug == 11)
+			result = vec4(rt_expected);
+
+		// Never store a non-finite cell. Cheap, and it stops any future arithmetic
+		// mistake anywhere in the medium from turning into a black screen that
+		// survives changing the setting that caused it.
+		if (any(isnan(result)) || any(isinf(result)))
+			result = vec4(0);
+
+		/* The REAL result, always - including while a debug view is up, so the
+		   history chain the views are measuring stays intact.
+
+		   PRE-MULTIPLIED, because the medium's per-unit-length radiance is around
+		   5e-5 and fp16's smallest NORMAL is 6.1e-5: stored raw, every cell of
+		   this volume sat in the subnormals with about six bits of mantissa, and
+		   the temporal blend's 5%-of-the-difference update rounded away to
+		   nothing and stalled. froxel_shared.h has the full account. Clamped so a
+		   scaled store can never reach Inf, which in this volume used to be
+		   permanent - the blend fed it back to itself every frame. */
+		imageStore(IMG_FROXEL_SCATTER, cell,
+		           clamp(result * FROXEL_STORAGE_SCALE,
+		                 vec4(0.0), vec4(FROXEL_STORAGE_MAX)));
+
+		if (debug > 0)
+			imageStore(IMG_FROXEL_DEBUG_OUT, cell, vec4(dbg, 1.0));
 	}
 }

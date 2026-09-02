@@ -1578,7 +1578,9 @@ textures/e1u1/ceil1_17:
  	texture_base materialDev/textures/e1u1/ceil1_17.tga
  	texture_normals materialDev/textures/e1u1/ceil1_17_n.tga
  	texture_emissive materialDev/textures/e1u1/ceil1_17_light.tga
- 	emissive_factor 5.0
+ 	emissive_factor 1.0
+	default_radiance 10.0
+	volumetric_scale 10.0
 	is_light 1
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
@@ -19454,6 +19456,7 @@ textures/tomf/reflt3_1b:
  	texture_normals materialDev/textures/tomf/reflt3_1b_n.tga
  	texture_emissive materialDev/textures/tomf/reflt3_1b_light.tga
  	emissive_factor 10.0
+	volumetric_scale 10.0
 	is_light 1
 
 

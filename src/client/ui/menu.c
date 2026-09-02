@@ -1812,6 +1812,48 @@ static void UI_AddRectToBounds(const vrect_t *rc, int mins[2], int maxs[2])
     }
 }
 
+/*
+=================
+Menu_UpdateConditions
+
+Show or hide every item carrying an ifeq/ifneq condition, according to its cvar
+RIGHT NOW.  Returns true if anything actually changed visibility, because the
+caller then has to re-run the layout - a hidden item takes no vertical space.
+
+Split out of Menu_Init so the conditions can be re-evaluated while the menu is
+open.  Evaluating them only on open meant a menu whose contents depend on one of
+its own spin controls - the fog mode picking which fog options are relevant, say -
+did not update until you backed out and came in again, which reads as the setting
+having done nothing.
+=================
+*/
+bool Menu_UpdateConditions(menuFrameWork_t *menu)
+{
+    bool changed = false;
+
+	for (int i = 0; i < menu->nitems; i++) {
+		menuCommon_t *item = (menuCommon_t *)menu->items[i];
+		menuCondition_t *condition = &item->condition;
+
+		if (condition->cvar)
+		{
+			bool equals = condition->cvar->integer == condition->value;
+			bool was_hidden = (item->flags & QMF_HIDDEN) != 0;
+			bool hide = (equals != condition->equals);
+
+			if (hide)
+				item->flags |= QMF_HIDDEN;
+			else
+				item->flags &= ~QMF_HIDDEN;
+
+			if (hide != was_hidden)
+				changed = true;
+		}
+	}
+
+    return changed;
+}
+
 void Menu_Init(menuFrameWork_t *menu)
 {
     void *item;
@@ -1822,19 +1864,7 @@ void Menu_Init(menuFrameWork_t *menu)
     menu->y1 = 0;
     menu->y2 = uis.height;
 
-	for (i = 0; i < menu->nitems; i++) {
-		item = menu->items[i];
-
-		menuCondition_t *condition = &((menuCommon_t*)item)->condition;
-		if (condition->cvar)
-		{
-			bool equals = condition->cvar->integer == condition->value;
-			if (equals == condition->equals)
-				((menuCommon_t *)item)->flags &= ~QMF_HIDDEN;
-			else
-				((menuCommon_t *)item)->flags |= QMF_HIDDEN;
-		}
-	}
+	Menu_UpdateConditions(menu);
 
     if (!menu->size) {
         menu->size = Menu_Size;
@@ -2295,6 +2325,24 @@ void Menu_Draw(menuFrameWork_t *menu)
     }
 }
 
+/*
+=================
+Menu_AfterValueChange
+
+A spin control just moved, so any item whose ifeq/ifneq condition names the cvar
+it writes may have to appear or disappear.  Re-laying out is only done when the
+visibility actually changed, so the ordinary case - a control nothing is
+conditioned on - costs one pass over the item list and nothing else.
+=================
+*/
+static menuSound_t Menu_AfterValueChange(menuFrameWork_t *s, menuSound_t sound)
+{
+    if (sound != QMS_NOTHANDLED && Menu_UpdateConditions(s) && s->size)
+        s->size(s);
+
+    return sound;
+}
+
 menuSound_t Menu_SelectItem(menuFrameWork_t *s)
 {
     menuCommon_t *item;
@@ -2312,7 +2360,7 @@ menuSound_t Menu_SelectItem(menuFrameWork_t *s)
     case MTYPE_VALUES:
     case MTYPE_STRINGS:
     case MTYPE_TOGGLE:
-        return SpinControl_DoEnter((menuSpinControl_t *)item);
+        return Menu_AfterValueChange(s, SpinControl_DoEnter((menuSpinControl_t *)item));
     case MTYPE_KEYBIND:
         return Keybind_DoEnter((menuKeybind_t *)item);
     case MTYPE_FIELD:
@@ -2344,7 +2392,7 @@ menuSound_t Menu_SlideItem(menuFrameWork_t *s, int dir)
     case MTYPE_VALUES:
     case MTYPE_STRINGS:
     case MTYPE_TOGGLE:
-        return SpinControl_DoSlide((menuSpinControl_t *)item, dir);
+        return Menu_AfterValueChange(s, SpinControl_DoSlide((menuSpinControl_t *)item, dir));
     default:
         return QMS_NOTHANDLED;
     }

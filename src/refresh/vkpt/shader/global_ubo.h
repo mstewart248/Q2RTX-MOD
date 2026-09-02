@@ -160,7 +160,74 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_eccentricity, -1.0) /* map-fog scattering directionality, 0 = even in all directions .. 0.95 = tight shafts; -1 follows gr_eccentricity */ \
 	UBO_CVAR_DO(pt_fog_ambient, 0.0) /* fraction of the sun's radiance that lights map fog IN SHADOW, isotropically; 0 = the hard shadow-map cliff this always had */ \
 	UBO_CVAR_DO(pt_fog_extinction, 0.0) /* real extinction per unit density for map fog, so a long ray SATURATES instead of accumulating without bound; 0 = the legacy flat 0.0001 */ \
-	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ 	UBO_CVAR_DO(pt_fog_froxel, 0.0) /* 1 = evaluate map fog in the froxel grid (cheap, temporally reused); 0 = the old per-pixel march in god_rays.comp */ 	UBO_CVAR_DO(pt_fog_froxel_history, 0.9) /* how much of the PREVIOUS frame's froxel volume to keep; this is what removes the noise. 0 disables temporal reuse */ \
+	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ 	UBO_CVAR_DO(pt_fog_froxel, 0.0) /* 1 = evaluate map fog in the froxel grid (cheap, temporally reused); 0 = the old per-pixel march in god_rays.comp */ 	UBO_CVAR_DO(pt_fog_froxel_history, 0.95) /* how much of the PREVIOUS frame's froxel volume to keep; this is what removes the noise. 0 disables temporal reuse */ \
+	/* cl_fog 3 only. Its own brightness knob rather than sharing pt_fog_light_scale, because mode 3 has no knee compressing the total and so sits at a completely different level - one cvar could not calibrate both, and switching modes to compare would retune the other every time. */ \
+	UBO_CVAR_DO(pt_fog_vol_scale, 1.0) \
+	/* cl_fog 3 only. Ceiling on one light sample's luminance, which is what stops a froxel cell that landed very close to a small emitter from blowing out into a solid bright block. Biased on purpose; RTX Remix calls this froxelFireflyFilteringLuminanceThreshold. LOWER THIS FIRST if the fog looks blotchy. 0 disables it. */ \
+	UBO_CVAR_DO(pt_fog_firefly, 20.0) \
+	/* 3x3 blur across each froxel SLICE, applied in the integrate pass. Every cell is one light sample with one BINARY visibility ray, and that all-or-nothing term is the one thing RIS cannot importance-sample away - this is what smooths it. Blurring within a slice is sound because every cell of a given z sits at the same view depth. RTX Remix does the same thing in a pass of its own. 0 = off. */ \
+	/* RADIUS of the spatial blur over the froxel scatter volume, applied in the
+	   integrate pass. 0 = off, 1 = 3x3x3 (27 taps, the default and identical to
+	   the 1-2-1 binomial this used to be), 2 = 5x5x5 (125), 3 = 7x7x7 (343),
+	   clamped there.
+
+	   THE ONE NOISE KNOB THAT COSTS NO RAYS. Each cell is a single light sample
+	   with TWO BINARY visibility rays, and binary is precisely what RIS cannot
+	   importance-sample away - so pt_fog_light_samples cannot reach this noise
+	   and more neighbours can. A tap is an imageLoad, not a trace.
+
+	   It trades DETAIL for smoothness - the shafts and the pooled glow under a
+	   fixture soften as it goes up - so it is a taste knob, not a free win. */ \
+	UBO_CVAR_DO(pt_fog_froxel_filter, 1.0) \
+	/* Froxel debug views, cl_fog 3 with pt_fog_froxel 1. 1 = this frame raw in-scatter with no temporal blend and no spatial filter (the true noise). 2 = what the temporal reuse did - GREEN blended, RED reprojected into last frame but found nothing usable, BLUE not visible last frame. At a STATIONARY camera this should be solid green; flicker means the reuse is dropping out. 3 = the depth slice as a ramp. 4 = the SKY term alone, scaled exactly as the real path scales it - if this is black where sky is visible overhead the term is genuinely absent, if it is not black the sky IS in the volume and the problem is brightness or compositing. 10/11 = THE ROUND-TRIP SELF TEST: both throw the fog away and push a known 1.0/0.25 checkerboard through the volume instead, so they measure the PLUMBING rather than the medium - 10 shows the value fetched back a frame later as greyscale (must be a crisp checkerboard at a stationary camera), 11 is the verdict on |fetched - expected|/expected as GREEN under 1% / YELLOW under 10% / RED under 50% / MAGENTA worse or nothing returned. Read 11 first: GREEN means the history path is faithful and the fault is magnitude or precision, not plumbing. The test values sit in fp16's NORMAL range on purpose, which is what separates those two. 0 = off. */ \
+	UBO_CVAR_DO(pt_fog_froxel_debug, 0.0) \
+	/* ISOLATE ONE HALF OF THE FOG'S LIGHTING, fully composited. 0 = both,
+	   1 = the SKY term only, 2 = the local lights only.
+
+	   This is not a debug view and that is the point. Every pt_fog_froxel_debug
+	   view stops the integrate pass, so what reaches the screen is the ONE cell
+	   at that pixel's own surface depth - which for a wall 500 units away is the
+	   cell AT the wall, in rock or in shadow, not the forty cells of open lit air
+	   in front of it that actually make the fog. The composited fog is the SUM
+	   along the ray, so every one of those views shows the least informative cell
+	   in the column, and that is why they all read black over most of the screen.
+
+	   This runs the WHOLE pipeline - density, history, spatial filter,
+	   integration, the god_rays_filter lookup - with one of the two lighting
+	   terms zeroed at source. So it composites at real scale, needs no exposure
+	   argument, and it is the only way to watch the sky's own fog appear and
+	   disappear as the camera moves.
+
+	   It applies in fog_medium.glsl, so it is honoured by BOTH in-scatter
+	   functions: cl_fog 2 and cl_fog 3, march and grid alike. That makes
+	   `pt_fog_isolate 1` plus `pt_fog_froxel 0` vs `1` a direct A/B of the two
+	   integrators on nothing but the sky term - the comparison the sky-fog bug
+	   needs and the one no debug view could give. */ \
+	UBO_CVAR_DO(pt_fog_isolate, 0.0) \
+	/* Snap the froxel history lookup to the nearest texel CENTRE instead of
+	   letting the trilinear sampler interpolate. 0 = interpolate (the old
+	   behaviour), 1 = snap.
+
+	   WHY THIS EXISTS. The history is already looked up at the CELL CENTRE
+	   rather than at the jittered sample point, because a filtered fetch at a
+	   jittered coordinate composed with the blend every frame is a DIFFUSION -
+	   result = 0.05*raw + 0.95*blur(result) - which spreads a glow outwards and
+	   decays its peak, and raising the history weight makes it worse. That is
+	   the bug that made a bright light's volumetric dissolve over a second.
+
+	   But the cell centre only round-trips EXACTLY while the camera is still.
+	   The moment it moves, world_to_prev_froxel_uvw returns a coordinate that is
+	   a fraction of a texel off centre, the trilinear fetch blends eight texels
+	   again, and the diffusion is back - for exactly as long as the player keeps
+	   moving. It hurts the SKY term far more than the light term because the sky
+	   term has a HARD binary boundary with empty cells on the other side (rock,
+	   or above the fog band), so most of what the blur pulls in is zero, while a
+	   local light's glow is a smooth blob whose neighbours all carry signal.
+
+	   Snapping makes the reprojection a permutation rather than a filter: no
+	   mass spreads and none leaks into empty cells. It costs some temporal
+	   aliasing while turning, which is the trade to judge. */ \
+	UBO_CVAR_DO(pt_fog_froxel_history_snap, 0.0)
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *

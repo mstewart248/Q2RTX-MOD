@@ -27,8 +27,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // judged, retuned and deleted while looking at the room it lights, with no map
 // compile in between.
 //
-//   light place <r> <g> <b> <brightness> [radius]   put one in front of the camera
-//   light edit  <r> <g> <b> <brightness> [radius]   retarget the one under the crosshair
+//   light place <r> <g> <b> <brightness> [radius] [volscale]
+//                                                   put one in front of the camera
+//   light edit  <r> <g> <b> <brightness> [radius] [volscale]
+//                                                   retarget the one under the crosshair
+//   light vol   <scale|default>                     just the volumetric scale of the
+//                                                   one under the crosshair
 //   light print                                     the one under the crosshair, or all
 //   light delete                                    remove the one under the crosshair
 //   light debug_on / light debug_off                show the lights as colored spheres
@@ -38,6 +42,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // and is the size of the emitter sphere, which is what softens the shadow
 // edge; it also sets the size of the debug marker and of the crosshair pick
 // target, so what is on screen in debug mode is exactly what gets picked.
+//
+// volscale is the light's VOLUMETRIC SCALE - how much it scatters into the
+// fog relative to how much it lights surfaces, which is RTX Remix's per-light
+// volumetricRadianceScale. 1 is "the same as its surface lighting", 0 is "lights
+// the room but makes no fog at all", and above 1 is a light that is mostly there
+// for its beam. Omitting it - or `light vol default` - leaves the light on the
+// pt_fog_scale_dynamic class default, and that is what the file stores: the
+// column is only written for lights that were actually given one, so raising the
+// cvar still moves every light that never had an opinion.
 //
 // The file is <gamedir>/maps/lights/<mapname>.cfg, rewritten in full after
 // every change - edit and delete need a rewrite anyway, so append would only
@@ -61,6 +74,7 @@ typedef struct {
     byte    rgb[3];         // 0..255, exactly as typed
     byte    brightness;     // 0..255, exactly as typed
     float   radius;         // world units - emitter size, marker size, pick size
+    float   vol_scale;      // LIGHT_VOLUMETRIC_SCALE_UNSET = use the class default
 } editlight_t;
 
 static editlight_t  *le_lights;
@@ -93,6 +107,20 @@ static float LE_ParseRadius(const char *s)
     float r = s ? atof(s) : 0.0f;
 
     return r > 0.0f ? r : LIGHT_DEFAULT_RADIUS;
+}
+
+// A typed volumetric scale. Absent, or the word "default", means the light has
+// no opinion and should follow pt_fog_scale_dynamic. 0 is a real value here -
+// "lights the room, makes no fog" - so it must not be confused with absent,
+// which is why this is not just atof().
+static float LE_ParseVolScale(const char *s)
+{
+    if (!s || !*s || !strcmp(s, "default") || !strcmp(s, "-"))
+        return LIGHT_VOLUMETRIC_SCALE_UNSET;
+
+    float v = atof(s);
+
+    return v >= 0.0f ? v : LIGHT_VOLUMETRIC_SCALE_UNSET;
 }
 
 /*
@@ -180,7 +208,7 @@ void LE_LoadLights(void)
         argc = Cmd_Argc();
 
         if (argc) {
-            // x y z  r g b  brightness  [radius]
+            // x y z  r g b  brightness  [radius]  [volscale]
             if (argc < 7) {
                 Com_WPrintf("Line %d is incomplete in %s\n", line, path);
             } else if (le_num_lights == MAX_EDIT_LIGHTS) {
@@ -197,6 +225,9 @@ void LE_LoadLights(void)
 
                 l->brightness = LE_ParseByte(Cmd_Argv(6));
                 l->radius = LE_ParseRadius(argc > 7 ? Cmd_Argv(7) : NULL);
+                // absent in every file written before the volumetric scale
+                // existed, and those lights correctly come back as "unset"
+                l->vol_scale = LE_ParseVolScale(argc > 8 ? Cmd_Argv(8) : NULL);
             }
         }
 
@@ -238,15 +269,25 @@ static void LE_WriteLights(void)
         return;
 
     FS_FPrintf(f, "// placed lights for %s - written by \"light place\"\n", cl.mapname);
-    FS_FPrintf(f, "// x y z   r g b   brightness   radius\n");
+    FS_FPrintf(f, "// x y z   r g b   brightness   radius   [volumetric scale]\n");
 
     for (int i = 0; i < le_num_lights; i++) {
         const editlight_t *l = &le_lights[i];
 
-        FS_FPrintf(f, "%.1f %.1f %.1f   %d %d %d   %d   %.1f\n",
-                   l->origin[0], l->origin[1], l->origin[2],
-                   l->rgb[0], l->rgb[1], l->rgb[2],
-                   l->brightness, l->radius);
+        // the volumetric column is written ONLY for a light that was given
+        // one. Writing the resolved value for every light would silently bake
+        // today's pt_fog_scale_dynamic into the file and detach the whole map
+        // from that cvar the first time anything here is edited.
+        if (l->vol_scale >= 0.0f)
+            FS_FPrintf(f, "%.1f %.1f %.1f   %d %d %d   %d   %.1f   %.3f\n",
+                       l->origin[0], l->origin[1], l->origin[2],
+                       l->rgb[0], l->rgb[1], l->rgb[2],
+                       l->brightness, l->radius, l->vol_scale);
+        else
+            FS_FPrintf(f, "%.1f %.1f %.1f   %d %d %d   %d   %.1f\n",
+                       l->origin[0], l->origin[1], l->origin[2],
+                       l->rgb[0], l->rgb[1], l->rgb[2],
+                       l->brightness, l->radius);
     }
 
     if (FS_CloseFile(f))
@@ -303,23 +344,30 @@ static editlight_t *LE_PickLight(void)
 
 static void LE_PrintLight(const editlight_t *l)
 {
-    Com_Printf("light %d: at %.0f %.0f %.0f   rgb %d %d %d   brightness %d   radius %.1f\n",
+    char vol[32];
+
+    if (l->vol_scale >= 0.0f)
+        Q_snprintf(vol, sizeof(vol), "%.3f", l->vol_scale);
+    else
+        Q_strlcpy(vol, "default", sizeof(vol));
+
+    Com_Printf("light %d: at %.0f %.0f %.0f   rgb %d %d %d   brightness %d   radius %.1f   vol %s\n",
                (int)(l - le_lights), l->origin[0], l->origin[1], l->origin[2],
-               l->rgb[0], l->rgb[1], l->rgb[2], l->brightness, l->radius);
+               l->rgb[0], l->rgb[1], l->rgb[2], l->brightness, l->radius, vol);
 }
 
 /*
 =================
 LE_ParseValues
 
-The shared argument list of "place" and "edit": four 0..255 bytes and an
-optional radius.
+The shared argument list of "place" and "edit": four 0..255 bytes, an optional
+radius and an optional volumetric scale.
 =================
 */
 static bool LE_ParseValues(editlight_t *out, int first)
 {
     if (Cmd_Argc() < first + 4) {
-        Com_Printf("Usage: %s %s <r> <g> <b> <brightness> [radius]\n",
+        Com_Printf("Usage: %s %s <r> <g> <b> <brightness> [radius] [volscale]\n",
                    Cmd_Argv(0), Cmd_Argv(1));
         return false;
     }
@@ -329,6 +377,7 @@ static bool LE_ParseValues(editlight_t *out, int first)
 
     out->brightness = LE_ParseByte(Cmd_Argv(first + 3));
     out->radius = LE_ParseRadius(Cmd_Argc() > first + 4 ? Cmd_Argv(first + 4) : NULL);
+    out->vol_scale = LE_ParseVolScale(Cmd_Argc() > first + 5 ? Cmd_Argv(first + 5) : NULL);
 
     return true;
 }
@@ -396,6 +445,7 @@ static void LE_Edit_f(void)
     memcpy(l->rgb, values.rgb, sizeof(l->rgb));
     l->brightness = values.brightness;
     l->radius = values.radius;
+    l->vol_scale = values.vol_scale;
 
     LE_PrintLight(l);
     LE_WriteLights();
@@ -425,6 +475,36 @@ static void LE_Print_f(void)
         LE_PrintLight(&le_lights[i]);
 }
 
+/*
+=================
+LE_Vol_f
+
+Retune only the volumetric scale of the light under the crosshair. "light edit"
+can do this too, but only by retyping the colour and brightness, and this is the
+value most likely to be swept back and forth while looking at the room.
+=================
+*/
+static void LE_Vol_f(void)
+{
+    editlight_t *l = LE_PickLight();
+
+    if (!l) {
+        Com_Printf("No light under the crosshair.\n");
+        return;
+    }
+
+    if (Cmd_Argc() < 3) {
+        Com_Printf("Usage: %s vol <scale|default>\n", Cmd_Argv(0));
+        LE_PrintLight(l);
+        return;
+    }
+
+    l->vol_scale = LE_ParseVolScale(Cmd_Argv(2));
+
+    LE_PrintLight(l);
+    LE_WriteLights();
+}
+
 static void LE_Delete_f(void)
 {
     editlight_t *l = LE_PickLight();
@@ -449,7 +529,7 @@ static void LE_Light_f(void)
     const char *cmd = Cmd_Argv(1);
 
     if (!*cmd) {
-        Com_Printf("Usage: %s <place|edit|print|delete|debug_on|debug_off|reload>\n",
+        Com_Printf("Usage: %s <place|edit|vol|print|delete|debug_on|debug_off|reload>\n",
                    Cmd_Argv(0));
         return;
     }
@@ -474,6 +554,8 @@ static void LE_Light_f(void)
         LE_Place_f();
     else if (!strcmp(cmd, "edit"))
         LE_Edit_f();
+    else if (!strcmp(cmd, "vol"))
+        LE_Vol_f();
     else if (!strcmp(cmd, "print"))
         LE_Print_f();
     else if (!strcmp(cmd, "delete"))
@@ -576,6 +658,11 @@ void LE_AddLightsToScene(void)
             continue;
 
         V_AddSphereLight(l->origin, intensity, color[0], color[1], color[2], l->radius);
+
+        // has to follow the add - it retunes the light just pushed. A light
+        // still on LIGHT_VOLUMETRIC_SCALE_UNSET goes back to the class default,
+        // which is exactly what passing the sentinel straight through does.
+        V_SetLightVolumetricScale(l->vol_scale);
     }
 }
 

@@ -342,6 +342,9 @@ void        UI_LoadScript(void);
 menuFrameWork_t *UI_FindMenu(const char *name);
 
 void        Menu_Init(menuFrameWork_t *menu);
+// re-applies every ifeq/ifneq condition; true if any item changed visibility,
+// in which case the caller must re-run the layout
+bool        Menu_UpdateConditions(menuFrameWork_t *menu);
 void        Menu_Size(menuFrameWork_t *menu);
 void        Menu_Draw(menuFrameWork_t *menu);
 void        Menu_AddItem(menuFrameWork_t *menu, void *item);

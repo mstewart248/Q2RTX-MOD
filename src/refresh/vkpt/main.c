@@ -2807,6 +2807,10 @@ add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, 
 			light->positions[3] = dlight->radius;
 			light->material = NULL;
 			light->style = 0;
+			// carried from the dlight_t, so a `light place ... <volscale>` or a
+			// dynamic_light entity key reaches the light buffer intact. Left at
+			// the unset sentinel by V_AddSphereLight for everything else.
+			light->volumetric_scale = dlight->volumetric_scale;
 
 			switch (dlight->light_type) {
 			case DLIGHT_SPHERE:
@@ -2884,6 +2888,7 @@ static void instance_model_lights(int num_light_polys, const light_poly_t* light
 		dst_light->material = src_light->material;
 		dst_light->style = src_light->style;
 		dst_light->type = DYNLIGHT_POLYGON;
+		dst_light->volumetric_scale = src_light->volumetric_scale;
 
 		hash.mesh = nlight; //More a light index than a mesh
 		light_entity_ids[entity_frame_num][num_model_lights] = *(uint32_t*)&hash;

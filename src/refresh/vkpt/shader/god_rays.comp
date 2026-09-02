@@ -307,16 +307,38 @@ void main()
 			uint step_cluster = (global_ubo.fog_camera_cluster < 0)
 			                  ? ~0u : uint(global_ubo.fog_camera_cluster);
 
-			// Isotropic, not Henyey-Greenstein: HG here is oriented about the SUN
-			// direction, which means nothing for a lamp off to one side. Fog lit
-			// by a nearby point light scatters essentially evenly.
-			const float isotropic_phase = FOG_ISOTROPIC_PHASE;
-
 			float r = rand(ivec2(pixelPos.xy) + ivec2(step_index * 17, step_index * 31));
 
-			localInscatter += (isotropic_phase * stepLength * density) * throughput
-			                * getFogColor(currentPos)
-			                * getClusterLightInscatter(step_cluster, currentPos, r);
+			if (global_ubo.fog_mode >= 3)
+			{
+				// cl_fog 3 samples each light properly and applies the phase
+				// function PER LIGHT, about that light's own direction, so the
+				// phase cannot be hoisted out of the loop the way the isotropic
+				// approximation below is. It also does its own occlusion.
+				vec3 rnd = vec3(r,
+					rand(ivec2(pixelPos.xy) + ivec2(step_index * 53 + 7, step_index * 11 + 3)),
+					rand(ivec2(pixelPos.xy) + ivec2(step_index * 23 + 5, step_index * 41 + 9)));
+
+				uint seed = uint(pixelPos.x) * 73856093u
+				          ^ uint(pixelPos.y) * 19349663u
+				          ^ uint(step_index) * 83492791u
+				          ^ uint(global_ubo.current_frame_idx) * 2654435761u;
+
+				localInscatter += (stepLength * density) * throughput
+				                * getFogColor(currentPos)
+				                * getVolumeLightInscatter(step_cluster, currentPos, currentPos, direction, rnd, seed);
+			}
+			else
+			{
+				// Isotropic, not Henyey-Greenstein: HG here is oriented about the SUN
+				// direction, which means nothing for a lamp off to one side. Fog lit
+				// by a nearby point light scatters essentially evenly.
+				const float isotropic_phase = FOG_ISOTROPIC_PHASE;
+
+				localInscatter += (isotropic_phase * stepLength * density) * throughput
+				                * getFogColor(currentPos)
+				                * getClusterLightInscatter(step_cluster, currentPos, currentPos, r);
+			}
 		}
 
 		const vec3 shadowBias = -global_ubo.sun_direction * 20;
@@ -399,7 +421,17 @@ void main()
 	// buffer's radiance*area units in the same range as the sun term; the knob
 	// for taste is pt_fog_light_scale.
 	if (fog_lights)
-		inscatterColor += localInscatter * global_ubo.pt_fog_light_scale * 0.005;
+	{
+		// cl_fog 3 gets its own brightness knob. It has no knee compressing the
+		// total, so it sits at a completely different level from mode 2 and one
+		// cvar could not calibrate both - switching modes to compare them would
+		// otherwise retune the other every time.
+		float local_scale = (global_ubo.fog_mode >= 3)
+		                  ? global_ubo.pt_fog_vol_scale
+		                  : global_ubo.pt_fog_light_scale;
+
+		inscatterColor += localInscatter * local_scale * 0.005;
+	}
 
 	if(medium != MEDIUM_NONE)
 		inscatterColor *= global_ubo.pt_water_density * 30;

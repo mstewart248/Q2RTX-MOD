@@ -122,6 +122,13 @@ typedef struct light_poly_s {
 	// For DYNLIGHT_SPOT only: which emission profile positions[4] and positions[5]
 	// describe. See add_dlights() - the two profiles use those slots differently.
 	int spot_emission_profile;
+	// How much this light scatters into the volumetric medium, relative to how
+	// much it lights surfaces. RTX Remix's per-light volumetricRadianceScale.
+	// LIGHT_VOLUMETRIC_SCALE_UNSET means "nobody said", and copy_light() then
+	// picks the default for this light's class (emissive surface / sky / dynamic).
+	// EVERY site that creates a light_poly_t must set this - the struct is not
+	// zero-initialised on any of the paths that build one on the stack.
+	float volumetric_scale;
 } light_poly_t;
 
 typedef struct model_s {

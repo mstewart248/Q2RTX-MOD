@@ -979,6 +979,11 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 		light.material = texinfo->material;
 		light.style = light_style;
 		light.type = DYNLIGHT_POLYGON;
+		// Nobody has named a volumetric scale for this light, so copy_light()
+		// will pick the default for its class. light_poly_t is built on the
+		// stack here and is NOT zero-initialised, so this has to be explicit -
+		// every site that creates one carries the same line.
+		light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 
 		if(!get_triangle_off_center(light.positions, light.off_center, NULL, 1.f))
 			continue;
@@ -1135,6 +1140,7 @@ collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, int model
 				light->style = light_style;
 				light->type = DYNLIGHT_POLYGON;
 				light->emissive_factor = emissive_factor;
+				light->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 				VectorCopy(instance_positions[0], light->positions + 0);
 				VectorCopy(instance_positions[i1], light->positions + 3);
 				VectorCopy(instance_positions[i2], light->positions + 6);
@@ -1350,6 +1356,7 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 
 			light.style = 0;
 			light.type = DYNLIGHT_POLYGON;
+			light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 
 			if (!get_triangle_off_center(light.positions, light.off_center, NULL, 1.f))
 				continue;
@@ -1849,6 +1856,7 @@ bsp_mesh_create_custom_sky_prims(uint32_t* prim_ctr, bsp_mesh_t* wm, const bsp_t
 		light->style = 0;
 		light->cluster = cluster;
 		light->type = DYNLIGHT_POLYGON;
+		light->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 
 		++*prim_ctr;
 

@@ -919,13 +919,38 @@ static void berserk_jump_takeoff(edict_t *self)
 {
     vec3_t forward, dir, aim_point, to_target;
     float  dist, flight_time, nominal_time, vz, fwd_speed, per_vz, apex, drop;
+    float  lead_speed;
 
     if (!self->enemy)
         return;
 
-    // aim the leap where the player is GOING to be, not where they are.  The
-    // speed passed here only feeds the lead estimate; the real one is solved below.
-    PredictAim(self->enemy, self->s.origin, 800.0f, false, 0.0f, dir, aim_point);
+    // Aim the leap where the player is GOING to be, not where they are.
+    //
+    // PredictAim turns the speed it is handed into a LEAD TIME of dist/speed,
+    // so that speed has to be the one the leap actually travels at.  This used
+    // to pass a flat 800, which leads by dist/800 - but the arc below is
+    // clamped to at least 0.45s of hang time, and runs to 0.9s and beyond off
+    // a ledge.  At a typical 200 unit leap that is a 0.25s lead against a
+    // 0.45s flight: the berserk under-leads by about half and lands squarely
+    // where a moving player just WAS.  id sidesteps this by making its speed
+    // proportional to range (length * 1.95), which is a constant 0.51s lead.
+    //
+    // Solve it the same way the real arc is solved: take the raw gap, run it
+    // through the same clamped hang-time curve, and hand PredictAim the speed
+    // that curve implies.
+    VectorSubtract(self->enemy->s.origin, self->s.origin, to_target);
+    to_target[2] = 0;
+    dist = VectorLength(to_target);
+
+    nominal_time = dist / 700.0f;
+    if (nominal_time < 0.45f)
+        nominal_time = 0.45f;
+    else if (nominal_time > 0.9f)
+        nominal_time = 0.9f;
+
+    lead_speed = (dist > 1.0f) ? (dist / nominal_time) : 800.0f;
+
+    PredictAim(self->enemy, self->s.origin, lead_speed, false, 0.0f, dir, aim_point);
 
     self->s.angles[YAW] = vectoyaw(dir);
     AngleVectors(self->s.angles, forward, NULL, NULL);

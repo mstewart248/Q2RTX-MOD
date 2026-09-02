@@ -140,6 +140,9 @@ static void extract_model_lights(model_t* model)
 				light->cluster = -1;
 
 				light->material = mat;
+				// this array is allocated zeroed, and 0 is a legitimate "no fog from
+				// this light" - so the unset sentinel has to be written, not assumed
+				light->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 
 				VectorCopy(mat->image_emissive->light_color, light->color);
 

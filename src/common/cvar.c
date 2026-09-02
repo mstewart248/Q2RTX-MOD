@@ -346,6 +346,12 @@ void Cvar_SetByVar(cvar_t *var, const char *value, from_t from)
         value = "";
     }
     if (!strcmp(value, var->string)) {
+        // Even a no-op set is the player claiming this cvar: typing the value
+        // the map already chose still means "this is mine now", and without
+        // this the override would survive and be restored out from under them
+        // on the next map.
+        if (from == FROM_MENU || from == FROM_CONSOLE)
+            Cmd_ClearMapCvarOverride(var->name);
         set_back_cvar(var);
         return; // not changed
     }
@@ -388,6 +394,14 @@ void Cvar_SetByVar(cvar_t *var, const char *value, from_t from)
             return;
         }
     }
+
+    // The player changing this themselves, from the menu or the console, takes
+    // it back off the current map: the new value is theirs, it archives
+    // normally, and the next map load must not restore the old one.  Placed
+    // here so a set that was rejected above does not count.  "mapcvar" sets
+    // FROM_CODE, so a map never clears its own latch.
+    if (from == FROM_MENU || from == FROM_CONSOLE)
+        Cmd_ClearMapCvarOverride(var->name);
 
     // free latched string, if any
     if (var->latched_string) {
@@ -777,6 +791,15 @@ void Cvar_WriteVariables(qhandle_t f, int mask, bool modified)
             continue;
 
         s = var->latched_string ? var->latched_string : var->string;
+
+        // A cvar the CURRENT MAP has overridden with "mapcvar" must persist at
+        // the player's own value, not the map's - otherwise the override is
+        // baked into the config the moment this is written and stops being
+        // per-map at all.  See Cmd_GetMapCvarSaved.
+        const char *map_saved = Cmd_GetMapCvarSaved(var->name);
+        if (map_saved)
+            s = (char *)map_saved;
+
         if (modified && !strcmp(s, var->default_string))
             continue;
 

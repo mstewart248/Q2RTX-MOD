@@ -193,6 +193,8 @@ static void MAT_Reset(pbr_material_t * mat)
 	mat->flags = MATERIAL_KIND_REGULAR;
 	mat->num_frames = 1;
 	mat->emissive_threshold = cvar_pt_surface_lights_threshold->integer;
+	// negative means "not stated", so the class default in vertex_buffer.c wins
+	mat->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 }
 
 //
@@ -321,6 +323,7 @@ enum AttributeIndex
 	MAT_SPECULAR_FACTOR,
 	MAT_TEXTURE_ROUGHNESS,
 	MAT_TEXTURE_METALLIC,
+	MAT_VOLUMETRIC_SCALE,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -348,6 +351,7 @@ static struct MaterialAttribute {
 	{MAT_SPECULAR_FACTOR, "specular_factor", ATTR_FLOAT},
 	{MAT_TEXTURE_ROUGHNESS, "texture_roughness", ATTR_STRING},
 	{MAT_TEXTURE_METALLIC, "texture_metallic", ATTR_STRING},
+	{MAT_VOLUMETRIC_SCALE, "volumetric_scale", ATTR_FLOAT},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -436,6 +440,7 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	switch (t->index)
 	{
 	case MAT_BUMP_SCALE: mat->bump_scale = fvalue; break;
+	case MAT_VOLUMETRIC_SCALE: mat->volumetric_scale = fvalue; break;
 	case MAT_ROUGHNESS_OVERRIDE: mat->roughness_override = fvalue; break;
 	case MAT_METALNESS_FACTOR: mat->metalness_factor = fvalue; break;
 	case MAT_EMISSIVE_FACTOR: mat->emissive_factor = fvalue; break;
@@ -745,6 +750,11 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		if (mat->default_radiance != 1.f)
 			FS_FPrintf(file, "\tdefault_radiance %f\n", mat->default_radiance);
 
+		// only written when it was explicitly stated, so a `mat save` cannot
+		// silently bake the current class default into every material
+		if (mat->volumetric_scale >= 0.f)
+			FS_FPrintf(file, "\tvolumetric_scale %f\n", mat->volumetric_scale);
+
 		if (mat->synth_emissive)
 			FS_FPrintf(file, "\tsynth_emissive 1\n");
 
@@ -894,6 +904,7 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	mat->bsp_radiance = src->bsp_radiance;
 	mat->default_radiance = src->default_radiance;
 	mat->emissive_threshold = src->emissive_threshold;
+	mat->volumetric_scale = src->volumetric_scale;
 
 	// the material kind (chrome, glass, ...) describes the surface, not its
 	// texture, so it carries over too
@@ -1214,6 +1225,10 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    default_radiance %f\n", mat->default_radiance);
 	Com_Printf("    synth_emissive %d\n", mat->synth_emissive ? 1 : 0);
 	Com_Printf("    emissive_threshold %d\n", mat->emissive_threshold);
+	if (mat->volumetric_scale >= 0.f)
+		Com_Printf("    volumetric_scale %f\n", mat->volumetric_scale);
+	else
+		Com_Printf("    volumetric_scale (class default)\n");
 }
 
 // Swap one of a live material's textures for the one the definition now names.
@@ -1282,6 +1297,7 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->default_radiance   = matdef->default_radiance;
 	mat->num_frames         = matdef->num_frames;
 	mat->synth_emissive     = matdef->synth_emissive;
+	mat->volumetric_scale   = matdef->volumetric_scale;
 
 	// keep 'mat which' truthful about where the values came from
 	Q_strlcpy(mat->source_matfile, matdef->source_matfile, sizeof(mat->source_matfile));

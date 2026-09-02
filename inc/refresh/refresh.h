@@ -107,6 +107,15 @@ typedef enum dlight_spot_emission_profile_e
     DLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE
 } dlight_spot_emission_profile;
 
+// "no explicit volumetric scale", i.e. fall back to the per-class cvar default
+// in copy_light(). Negative so that 0 keeps its literal meaning of "this light
+// lights the room and adds no fog glow at all".
+//
+// Lives here rather than beside light_poly_t in models.h because both the
+// client (view.c, lightedit.c, dynamiclights.c) and the renderer need it, and
+// refresh.h is the header they have in common.
+#define LIGHT_VOLUMETRIC_SCALE_UNSET (-1.f)
+
 typedef struct dlight_s {
     vec3_t  origin;
 #if USE_REF == REF_GL
@@ -115,6 +124,11 @@ typedef struct dlight_s {
     vec3_t  color;
     float   intensity;
 	float   radius;
+
+    // Per-light volumetric scale, carried through add_dlights() onto the
+    // light_poly_t. LIGHT_VOLUMETRIC_SCALE_UNSET (-1) = use the class default;
+    // V_AddSphereLight sets that, so a caller only touches this to override.
+    float   volumetric_scale;
 
     // VKPT light types support
     dlight_type light_type;

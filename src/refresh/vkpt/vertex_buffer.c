@@ -34,6 +34,66 @@ static BufferResource_t null_buffer;
 // Cvar that controls the initial animated primitive buffer size at startup.
 // The buffer can grow later if necessary, but that causes stutter.
 static cvar_t* cvar_pt_primbuf = NULL;
+
+/*
+THE PER-LIGHT VOLUMETRIC SCALE DEFAULTS - one per class of light source.
+
+RTX Remix gives every light a volumetricRadianceScale (default 1.0) so an artist
+can say "this fixture makes a lot of fog, that one makes none" without touching
+its surface lighting.  Nothing in Quake II's data carries such a number, so a
+light that has not been given one explicitly falls back to the default for its
+CLASS, and these are the four classes this port actually has.  Enumerated once
+here because the classes are not obvious from the light buffer:
+
+  emissive   every triangle of a BSP or model face whose material is is_light -
+             which, with cl_dynamic_lights 0, is nearly all of a map's lighting.
+             Overridable per material with `volumetric_scale` in a .mat file.
+  sky        the sky brushes.  copy_light marks these by storing the colour
+             NEGATIVE, and the fog counts them through its own sky term with its
+             own visibility trace, so the default here is 0 - see the "fog in the
+             sky" note in fog_medium.glsl before raising it.
+  dynamic    DYNLIGHT_SPHERE / DYNLIGHT_SPOT, i.e. every dlight_t: weapon fire
+             and muzzle flashes (V_AddLight, always on), misc_flare, target_light,
+             the flashlight, the rerelease dynamic_light entities (which
+             cl_dynamic_lights gates) and the lights placed with `light place`.
+             Individually overridable - see lightedit.c and dynamiclights.c.
+  model      DYNLIGHT_POLYGON lights that are not world geometry: emissive
+             surfaces on md2/md5 models, and the beam/laser cylinder lights.
+
+All four are plain (non-archived) cvars, so changing a default here really does
+change behaviour for an existing install.
+*/
+static cvar_t* cvar_pt_fog_scale_emissive = NULL;
+static cvar_t* cvar_pt_fog_scale_sky      = NULL;
+static cvar_t* cvar_pt_fog_scale_dynamic  = NULL;
+static cvar_t* cvar_pt_fog_scale_model    = NULL;
+
+// Resolve a light's volumetric scale: an explicit value wins, otherwise the
+// material's, otherwise the class default.  Called once per light per frame.
+static float
+resolve_volumetric_scale(const light_poly_t* light)
+{
+	// set explicitly on this light - `light place ... <volscale>`, a
+	// dynamic_light entity key, or anything else that filled it in
+	if (light->volumetric_scale >= 0.f)
+		return light->volumetric_scale;
+
+	// the sky's contribution is accounted for by the fog's own sky term
+	if (light->color[0] < 0.f)
+		return cvar_pt_fog_scale_sky ? cvar_pt_fog_scale_sky->value : 0.f;
+
+	// a material may name one for every surface that uses that texture
+	if (light->material && light->material->volumetric_scale >= 0.f)
+		return light->material->volumetric_scale;
+
+	if (light->type == DYNLIGHT_SPHERE || light->type == DYNLIGHT_SPOT)
+		return cvar_pt_fog_scale_dynamic ? cvar_pt_fog_scale_dynamic->value : 1.f;
+
+	if (light->material)
+		return cvar_pt_fog_scale_emissive ? cvar_pt_fog_scale_emissive->value : 1.f;
+
+	return cvar_pt_fog_scale_model ? cvar_pt_fog_scale_model->value : 1.f;
+}
 static uint32_t current_primbuf_size = 0;
 
 // Clamps and default setting for the animated primitive buffer size
@@ -637,6 +697,14 @@ copy_light(const light_poly_t* light, float* vblight, const float* sky_radiance)
 	// Only the dynamic spot lights fill spot_emission_profile in; every other
 	// light type reaches here without it set.
 	vblight[15] = (light->type == DYNLIGHT_SPOT) ? (float)light->spot_emission_profile : 0.f;
+
+	// The fifth vec4. Only x is used so far; the rest is there because the
+	// buffer is vec4-strided, and is the obvious place for the next per-light
+	// property that comes along.
+	vblight[16] = resolve_volumetric_scale(light);
+	vblight[17] = 0.f;
+	vblight[18] = 0.f;
+	vblight[19] = 0.f;
 }
 
 extern char cluster_debug_mask[VIS_MAX_BYTES];
@@ -1238,6 +1306,12 @@ vkpt_vertex_buffer_create()
 	char primbuf_initial_value[16];
 	Q_snprintf(primbuf_initial_value, sizeof(primbuf_initial_value), "%d", PRIMBUF_SIZE_DEFAULT);
 	cvar_pt_primbuf = Cvar_Get("pt_primbuf", primbuf_initial_value, CVAR_ARCHIVE);
+
+	// see the block comment on these at the top of the file
+	cvar_pt_fog_scale_emissive = Cvar_Get("pt_fog_scale_emissive", "1.0", 0);
+	cvar_pt_fog_scale_sky      = Cvar_Get("pt_fog_scale_sky",      "0.0", 0);
+	cvar_pt_fog_scale_dynamic  = Cvar_Get("pt_fog_scale_dynamic",  "1.0", 0);
+	cvar_pt_fog_scale_model    = Cvar_Get("pt_fog_scale_model",    "1.0", 0);
 
 	VkDescriptorSetLayoutBinding vbo_layout_bindings[] = {
 		{
