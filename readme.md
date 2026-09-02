@@ -29,12 +29,14 @@ DLSS implementation has been updated to use the latest DLSS SDK. So this project
 
 ## Features
 
+
 **Quake II RTX** introduces the following features:
   - DLSS with Ray Reconstruction
   - DLSS Frame Generation
   - ReStir DI
   - Rerelease Map Support
   - Rerelease MD5 Models
+  - Volumetric Fog
   - Caustics approximation and coloring of light that passes through tinted glass
   - Cutting-edge denoising technology
   - Cylindrical projection mode
@@ -53,7 +55,11 @@ DLSS implementation has been updated to use the latest DLSS SDK. So this project
   - Sunlight with direct and indirect illumination
   - Volumetric lighting (god-rays)
 
-You can download functional builds of the game from [GitHub Releases](https://github.com/NVIDIA/Q2RTX/releases).
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake073.png)
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake073.png)
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake117.png)
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake118.png)
+You can download functional builds of the game from [GitHub Builds](https://github.com/mstewart248/Q2RTX-MOD/actions).
 
 Latest development builds can be found in the [Actions](https://github.com/NVIDIA/Q2RTX/actions/workflows/build.yml) tab.
 To run a development build, download the artifact, extract it and put `q2rtx_media.pkz`, `blue_noise.pkz` and the `pak*.pak` files from the original game into `baseq2/`.
