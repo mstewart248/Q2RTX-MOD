@@ -50,6 +50,7 @@ extern "C" unsigned int DLSSG_CreateFeature(VkCommandBuffer cmd,
                                             unsigned int renderWidth,
                                             unsigned int renderHeight,
                                             VkFormat backbufferFormat,
+                                            unsigned int multiFrameCount,
                                             NVSDK_NGX_Handle** ppOutHandle)
 {
     NVSDK_NGX_DLSSG_Create_Params createParams = {};
@@ -65,6 +66,25 @@ extern "C" unsigned int DLSSG_CreateFeature(VkCommandBuffer cmd,
     // Height instead"). Setting the DLSS-G specific pair here takes precedence.
     NVSDK_NGX_Parameter_SetUI(pParams, NVSDK_NGX_DLSSG_Parameter_Width, width);
     NVSDK_NGX_Parameter_SetUI(pParams, NVSDK_NGX_DLSSG_Parameter_Height, height);
+
+    /* MULTI FRAME GENERATION HAS TO BE DECLARED AT CREATE TIME, NOT ONLY PER EVALUATE.
+       MEASURED 2026-09-02: with MultiFrameCount/MultiFrameIndex set only in the
+       Opt_Eval params, every generated frame came back IDENTICAL - byte-identical in
+       two captures - and every one of them sat at fractional position ~0.50 between the
+       two real frames. 0.50 is the 2x answer. Three evenly spaced frames would read
+       0.25 / 0.50 / 0.75, and if the three Evaluates had merely raced on the parameter
+       they would all read 0.75 (the last index written). Landing exactly on the 2x
+       midpoint means the feature was created as a 2x feature and ignored the
+       per-Evaluate index entirely.
+       That is why 2x always looked right and 3x/4x read as "hold, hold, hold, JUMP".
+       DLSS-G does read NGX parameters at create time beyond the create struct - the
+       runtime log prints UserInterfaceRecompositionEnabled being parsed there - and
+       NVSDK_NGX_DLSSG_Create_Params has no field for this, so the parameter block is
+       the only route.
+       Because it is create-time, the feature MUST be recreated when the multiplier
+       changes; ValidateDLSSGFeature tracks it alongside the extents for that reason. */
+    NVSDK_NGX_Parameter_SetUI(pParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount,
+                              multiFrameCount ? multiFrameCount : 1);
 
     // Only one physical device.
     const unsigned int creationNodeMask = 1;
@@ -165,6 +185,15 @@ extern "C" unsigned int DLSSG_EvaluateFeature(VkCommandBuffer cmd,
                              in->linearizedDepthScale);
     NVSDK_NGX_Parameter_SetF(pParams, NVSDK_NGX_DLSSG_Parameter_LinearizedDepth_NearFarPartition,
                              in->linearizedDepthNearFarPartition);
+
+    /* Undocumented parameters - see the note in DLSSG.h. Set by literal string because
+       they exist in the runtime's string table but in no SDK header we have; NGX
+       parameters are string-keyed, so this is the same mechanism the macros use. A name
+       the runtime does not know is ignored, which is why an unset default is safe. */
+    if (in->indicatorLevel)
+        NVSDK_NGX_Parameter_SetUI(pParams, "DLSSG.IndicatorLevel", in->indicatorLevel);
+    if (in->streamlineMode)
+        NVSDK_NGX_Parameter_SetUI(pParams, "DLSSG.StreamlineMode", in->streamlineMode);
 
     return (unsigned int)NGX_VK_EVALUATE_DLSSG(cmd, pHandle, pParams, &evalParams, &opt);
 }

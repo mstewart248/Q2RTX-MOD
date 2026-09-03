@@ -46,6 +46,9 @@ extern "C" {
 // size of the depth and motion-vector buffers, which differ whenever DLSS is upscaling.
 // Getting the render pair wrong is not cosmetic: the feature is created with
 // DynamicResolutionScaling = false, so DLSS-G treats them as a fixed promise.
+// multiFrameCount is the number of GENERATED frames per real frame pair (1 = 2x,
+// 2 = 3x, 3 = 4x). It is passed at CREATE time as well as per-Evaluate: see the note
+// in DLSSG_CreateFeature for why the per-Evaluate value alone is not enough.
 unsigned int DLSSG_CreateFeature(VkCommandBuffer cmd,
                                  struct NVSDK_NGX_Parameter* pParams,
                                  unsigned int width,
@@ -53,6 +56,7 @@ unsigned int DLSSG_CreateFeature(VkCommandBuffer cmd,
                                  unsigned int renderWidth,
                                  unsigned int renderHeight,
                                  VkFormat backbufferFormat,
+                                 unsigned int multiFrameCount,
                                  struct NVSDK_NGX_Handle** ppOutHandle);
 
 // Inputs for one frame generation evaluation.
@@ -123,6 +127,28 @@ typedef struct DLSSG_EvalInputs {
     // each writing its own output image.
     unsigned int multiFrameCount;
     unsigned int multiFrameIndex;
+
+    // UNDOCUMENTED PARAMETERS, TAKEN FROM THE RUNTIME'S OWN STRING TABLE.
+    //
+    // nvngx_dlssg.dll 310.7.128 accepts a number of DLSSG.* parameters that appear in
+    // no public SDK header. Found by dumping the DLL's strings after dxvk-remix turned
+    // out to set three parameters (EnableInterp, IsRecording, CmdQueue) that this DLL
+    // does NOT contain - Remix targets an older NGX, so its approach does not transfer.
+    //
+    // indicatorLevel  -> "DLSSG.IndicatorLevel". NVIDIA's on-screen DLSS-G state
+    //                    readout. The dev-build DLL draws the same thing, but only onto
+    //                    generated frames (we pass no pOutputRealFrame), so it strobes.
+    //                    0 = off.
+    // streamlineMode  -> "DLSSG.StreamlineMode". The runtime knows whether Streamline is
+    //                    driving it, and every title that gets working multi-frame
+    //                    generation goes through Streamline while we drive NGX directly.
+    //                    That is the one structural difference we have not been able to
+    //                    account for. 0 = leave unset (current behaviour).
+    //
+    // Both are EXPERIMENTS. Zero means "do not set the parameter at all", so the default
+    // path is byte-identical to before.
+    unsigned int indicatorLevel;
+    unsigned int streamlineMode;
 } DLSSG_EvalInputs;
 
 // Returns the NVSDK_NGX_Result as an unsigned; 0 on success.

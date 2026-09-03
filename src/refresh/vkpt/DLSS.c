@@ -1229,6 +1229,11 @@ static uint32_t dlssgHeight = 0;
    at a different size than it was promised faults inside NGX. */
 static uint32_t dlssgRenderWidth = 0;
 static uint32_t dlssgRenderHeight = 0;
+/* Generated frames per real frame the feature was CREATED for (1 = 2x, 3 = 4x). Held
+   with the extents because it is a create-time property, not just an Evaluate input -
+   see DLSSG_CreateFeature. Must be reset with them, or a stale value lets a 2x feature
+   survive a switch to 4x. */
+static uint32_t dlssgMultiFrameCount = 0;
 /* One hard failure is enough - without this a failing create is retried every
    frame, which spams the log and stalls on vkDeviceWaitIdle each time. */
 static qboolean dlssgFailed = qfalse;
@@ -1322,6 +1327,32 @@ static unsigned int DLSSGDisplayMaxMultiplier(void)
     if (cvar_min_base == NULL)
         cvar_min_base = Cvar_Get("pt_dlss_fg_min_base", "30", CVAR_ARCHIVE);
 
+    /* THIS CAP IS A FIFO ARGUMENT AND ONLY APPLIES WITH VSYNC ON.
+
+       Everything in the comment above is true only because VBLANK makes the presented
+       rate saturate at the refresh rate; only then is an extra generated frame paid for
+       by dividing the render rate. With vsync OFF the present mode is IMMEDIATE, nothing
+       saturates, and 4x on a 30 fps base genuinely presents 120/s WITH TEARING - which is
+       what the player asked for when they turned vsync off. Applied unconditionally this
+       silently rewrites a requested 3x or 4x to 2x under exactly the conditions where its
+       premise does not hold, and the symptom is "frame generation does nothing and the
+       screen never tears".
+
+       READ THE CVARS, NOT qvk.present_mode. This function feeds DLSSGMultiplier(), which
+       feeds desired_swapchain_images(), so reading back a value that the swapchain create
+       produced would make the image count depend on its own result.
+
+       And do NOT call fg_wants_no_vsync() to test the override: it asks
+       DLSSGMultiplier() > 1, which calls this function, so it recurses forever. */
+    {
+        cvar_t *vsync = Cvar_WeakGet("vid_vsync");
+        cvar_t *force_novsync = Cvar_WeakGet("pt_dlss_fg_force_novsync");
+        bool vsync_on = vsync && vsync->integer != 0
+            && !(force_novsync && force_novsync->integer != 0);
+        if (!vsync_on)
+            return 0;           /* no cap - the presented rate really is base x multiplier */
+    }
+
     if (cvar_min_base->integer <= 0)
         return 0;               /* cap disabled */
 
@@ -1346,9 +1377,24 @@ unsigned int DLSSGMultiplier()
     if (requested <= 1)
         requested = 2;          /* 1 kept as a synonym for 2x */
 
+    /* THE DRIVER CAP USED TO BE SILENT, and it produces a symptom identical to the
+       display cap: "I picked 4x and it runs 2x". DLSSGMaxMultiplier() clamps to
+       dlssgMaxGeneratedFrames + 1, which falls back to 1 (so 2x) whenever the NGX
+       MultiFrameCountMax query fails - on a perfectly capable card. With it printing
+       nothing there were three indistinguishable causes (display cap, driver cap,
+       swapchain acquire shortfall) and the log could not tell them apart. Announce it
+       once per requested value, the same way the display clamp does. */
     unsigned int maxMult = DLSSGMaxMultiplier();
-    if ((unsigned int)requested > maxMult)
+    if ((unsigned int)requested > maxMult) {
+        static int driver_announced_for = 0;
+        if (driver_announced_for != cvar_pt_dlss_fg->integer) {
+            driver_announced_for = cvar_pt_dlss_fg->integer;
+            Com_Printf("DLSS-G: %dx requested but the driver reports a maximum of %ux "
+                "(MultiFrameCountMax). Running %ux.\n",
+                cvar_pt_dlss_fg->integer, maxMult, maxMult);
+        }
         requested = (int)maxMult;
+    }
 
     unsigned int displayMax = DLSSGDisplayMaxMultiplier();
     if (displayMax > 0 && (unsigned int)requested > displayMax) {
@@ -1435,6 +1481,7 @@ void DestroyDLSSGFeature()
     dlssgHeight = 0;
     dlssgRenderWidth = 0;
     dlssgRenderHeight = 0;
+    dlssgMultiFrameCount = 0;
 
     if (dlssgFeature != NULL) {
         vkpt_device_wait_idle();
@@ -1451,14 +1498,22 @@ void DestroyDLSSGFeature()
 }
 
 static qboolean ValidateDLSSGFeature(VkCommandBuffer cmd, uint32_t width, uint32_t height,
-                                     uint32_t renderWidth, uint32_t renderHeight)
+                                     uint32_t renderWidth, uint32_t renderHeight,
+                                     uint32_t multiFrameCount)
 {
     if (!dlssObj.isInitalized || dlssObj.pParams == NULL)
         return qfalse;
 
+    /* multiFrameCount joins the extents as a CREATE-TIME property. It is not just a
+       per-Evaluate parameter - see the long note in DLSSG_CreateFeature - so changing
+       the multiplier has to tear the feature down and build a new one, exactly like a
+       resolution change does. Leaving it out of this comparison would keep a 2x feature
+       alive after the player selected 4x, which is the state that was measured on
+       2026-09-02: three generated frames, all identical, all at the 2x midpoint. */
     if (dlssgFeature != NULL
         && dlssgWidth == width && dlssgHeight == height
-        && dlssgRenderWidth == renderWidth && dlssgRenderHeight == renderHeight)
+        && dlssgRenderWidth == renderWidth && dlssgRenderHeight == renderHeight
+        && dlssgMultiFrameCount == multiFrameCount)
         return qtrue;
 
     if (dlssgFeature != NULL)
@@ -1469,7 +1524,8 @@ static qboolean ValidateDLSSGFeature(VkCommandBuffer cmd, uint32_t width, uint32
        swapchain image is not written until the final blit. */
     unsigned int res = DLSSG_CreateFeature(cmd, dlssObj.pParams, width, height,
                                            renderWidth, renderHeight,
-                                           VK_FORMAT_R16G16B16A16_SFLOAT, &dlssgFeature);
+                                           VK_FORMAT_R16G16B16A16_SFLOAT,
+                                           multiFrameCount, &dlssgFeature);
 
     if (res != (unsigned int)NVSDK_NGX_Result_Success) {
         Com_EPrintf("DLSS-G: feature create failed: 0x%08x - see DLSSTemp/nvngx_dlssg*.log\n", res);
@@ -1482,8 +1538,13 @@ static qboolean ValidateDLSSGFeature(VkCommandBuffer cmd, uint32_t width, uint32
     dlssgHeight = height;
     dlssgRenderWidth = renderWidth;
     dlssgRenderHeight = renderHeight;
-    Com_Printf("DLSS-G: frame generation feature created at %ux%u (render %ux%u)\n",
-        width, height, renderWidth, renderHeight);
+    dlssgMultiFrameCount = multiFrameCount;
+    /* The multi-frame count is in this line deliberately: a feature created with 1 when
+       the player asked for 4x is the exact failure this was, and it was invisible in the
+       log for weeks because the line only mentioned the extents. */
+    Com_Printf("DLSS-G: frame generation feature created at %ux%u (render %ux%u), "
+        "%u generated frame(s) per real frame (%ux)\n",
+        width, height, renderWidth, renderHeight, multiFrameCount, multiFrameCount + 1);
     return qtrue;
 }
 
@@ -1509,8 +1570,13 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
     const uint32_t outWidth = qvk.extent_unscaled.width;
     const uint32_t outHeight = qvk.extent_unscaled.height;
 
+    /* Same value the Evaluate loop below counts up to, read once so the feature is
+       created for exactly the multiplier this frame is about to ask it for. */
+    const unsigned int fgGeneratedFrames = DLSSGGeneratedFrames();
+
     if (!ValidateDLSSGFeature(cmd, outWidth, outHeight,
-                              qvk.extent_render.width, qvk.extent_render.height))
+                              qvk.extent_render.width, qvk.extent_render.height,
+                              fgGeneratedFrames))
         return;
 
     QVKUniformBuffer_t* ubo = &vkpt_refdef.uniform_buffer;
@@ -1671,10 +1737,40 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
        own output image, with multiFrameIndex counting 1..multiFrameCount. */
     const unsigned int generatedFrames = DLSSGGeneratedFrames();
 
+    /* ONE SUBMIT PER EVALUATE, instead of batching all N into the caller's buffer.
+
+       This is the last structural difference between this integration and the ones that
+       work. MEASURED: at 3x and 4x every generated frame comes back at the SAME phase -
+       the midpoint - and in two dumps the images were byte-identical, while the runtime's
+       own on-screen indicator correctly reports "4x". So MultiFrameCount is received and
+       MultiFrameIndex is not being acted on.
+
+       The guide (page 25) describes the sequence as evaluate -> present -> evaluate the
+       next: "After the EvaluateFeature call for the first generated frame COMPLETES,
+       present this frame immediately... Call EvaluateFeature again for each subsequent
+       generated frame." dxvk-remix, which does multi-frame on NGX-direct in Vulkan with
+       no Streamline, likewise puts its frame-generation work out per frame rather than
+       batching. We record all N Evaluates into one command buffer and submit once, so if
+       the runtime's per-index state advances on SUBMISSION rather than on the recorded
+       call, all N read the same state and produce the same image. That fits every
+       observation, including the indicator reporting the right multiplier.
+
+       pt_dlss_fg_split_eval 0 keeps the old batched behaviour byte-for-byte. */
+    static cvar_t *cv_split_eval = NULL;
+    if (!cv_split_eval)
+        cv_split_eval = Cvar_Get("pt_dlss_fg_split_eval", "0", 0);
+    const bool splitEval = cv_split_eval->integer != 0 && generatedFrames > 1;
+
     for (unsigned int genIndex = 1; genIndex <= generatedFrames; genIndex++)
     {
+    /* Each Evaluate gets its own command buffer and its own submit. The caller's `cmd`
+       is left untouched and is still submitted later with the blits that read these
+       images, so ordering on the queue stays correct: our submits land first. */
+    VkCommandBuffer evalCmd = cmd;
+    if (splitEval)
+        evalCmd = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
     const int outImg = DLSSGOutputImageIndex(genIndex);
-    BARRIER_COMPUTE(cmd, qvk.images[outImg]);
+    BARRIER_COMPUTE(evalCmd, qvk.images[outImg]);
 
     NVSDK_NGX_Resource_VK outputInterp = ToNGXResource(
         qvk.images[outImg], qvk.images_views[outImg],
@@ -1801,17 +1897,36 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
 
         .multiFrameCount = generatedFrames,
         .multiFrameIndex = genIndex,
+
+        /* Undocumented, experimental - see DLSSG.h. Both default 0 = parameter not set,
+           so leaving them alone reproduces the previous behaviour exactly.
+             pt_dlss_fg_indicator 1..3  NVIDIA's on-screen DLSS-G state readout
+             pt_dlss_fg_slmode 1        claim Streamline is driving, which is the one
+                                        structural difference between this integration
+                                        and every title where MFG demonstrably works */
+        .indicatorLevel = (unsigned int)Cvar_Get("pt_dlss_fg_indicator", "0", 0)->integer,
+        .streamlineMode = (unsigned int)Cvar_Get("pt_dlss_fg_slmode", "0", 0)->integer,
     };
 
-    unsigned int res = DLSSG_EvaluateFeature(cmd, dlssgFeature, dlssObj.pParams, &in);
+    unsigned int res = DLSSG_EvaluateFeature(evalCmd, dlssgFeature, dlssObj.pParams, &in);
 
     if (res != (unsigned int)NVSDK_NGX_Result_Success) {
         Com_EPrintf("DLSS-G: evaluate failed on generated frame %u/%u: 0x%08x"
                     " - see DLSSTemp/nvngx_dlssg*.log\n", genIndex, generatedFrames, res);
         /* Evaluate failures are usually structural (bad resource, wrong size), not
            transient, so stop rather than repeat the message every frame. */
+        /* Submit anyway before bailing: the buffer was begun by us and the driver will
+           complain about an abandoned recording otherwise. */
+        if (splitEval)
+            vkpt_submit_command_buffer_simple(evalCmd, qvk.queue_graphics, false);
         dlssgFailed = qtrue;
         return;
     }
+
+    /* THE SUBMIT THAT IS THE WHOLE POINT. Each Evaluate becomes its own submission so
+       the runtime sees N distinct pieces of work rather than one batched buffer.
+       `all_gpus` is false: frame generation already requires device_count == 1. */
+    if (splitEval)
+        vkpt_submit_command_buffer_simple(evalCmd, qvk.queue_graphics, false);
     }
 }

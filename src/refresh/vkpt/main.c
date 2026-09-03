@@ -1207,24 +1207,48 @@ static void fg_debug_compare_frames(unsigned int generated_count)
 
 	double step = fg_cmp_mean_abs_diff(real_now, real_prev);
 
+	/* DO NOT GATE ON MOTION. An earlier version rejected samples with step < 0.002 and
+	   printed "move the camera" at a player who was moving the whole time - because these
+	   are HDR LINEAR means of a small region, where the image mean itself is only ~0.006,
+	   so an ordinary frame of motion measures 0.0002-0.006 in absolute terms. The
+	   threshold was set from those numbers without noticing what scale they were on.
+
+	   The gate was also unnecessary. It existed because the OLD readout divided by `step`,
+	   which is what produced 8091% when step collapsed. `pos` below is self-normalising -
+	   it divides by (a+b), not by step - so a small step costs precision, not validity.
+	   Print the step so its size is visible, and flag the samples that are genuinely too
+	   quiet to trust rather than discarding them. */
 	char line[512];
 	int off = Q_snprintf(line, sizeof(line),
-		"DLSS-G compare: frame step %.5f, real mean %.4f |", step,
-		fg_cmp_mean_value(real_now));
+		"DLSS-G compare: frame step %.5f%s |", step,
+		(step < 0.0002) ? " (very low motion, noisy)" : "");
 
 	for (unsigned int i = 1; i <= generated_count; i++) {
 		if (!fg_cmp_read_region(GetDLSSGImage(i), gen))
 			continue;
 
-		double d = fg_cmp_mean_abs_diff(gen, real_now);
+		/* WHERE THIS GENERATED FRAME SITS BETWEEN THE TWO REAL ONES.
 
-		/* As a FRACTION of one frame step, which is the interpretable number: a frame
-		   generated at phase k/(N+1) should sit that far back from the real frame, so
-		   2x wants ~50%, and 3x wants ~67% then ~33%. Near 0% is a copy of the real
-		   frame; near or above 100% is not an in-between frame at all. */
+		   pos = d(prevReal,gen) / (d(prevReal,gen) + d(gen,real)). Self-normalising, so
+		   unlike the old "fraction of a frame step" it does not blow up when the motion
+		   is small, and it is directly comparable between multipliers.
+
+		   Generated frame k of N should sit at k/(N+1):
+		     2x -> 50
+		     3x -> 33, 67
+		     4x -> 25, 50, 75
+
+		   MEASURED 2026-09-02, before the create-time MultiFrameCount fix: 4x reported
+		   50/50/50 - three copies of the 2x midpoint - which is what "hold, hold, hold,
+		   JUMP" looks like from inside. This line is the number that says whether that
+		   is fixed, and it is why the metric changed from the old ratio. */
+		double a = fg_cmp_mean_abs_diff(real_prev, gen);
+		double b = fg_cmp_mean_abs_diff(gen, real_now);
+		double pos = (a + b) > 0.0 ? (a * 100.0 / (a + b)) : 0.0;
+
 		off += Q_snprintf(line + off, sizeof(line) - off,
-			" gen%u mean %.4f diff %.5f (%.0f%%)",
-			i, fg_cmp_mean_value(gen), d, step > 0.0 ? d * 100.0 / step : 0.0);
+			" gen%u pos %.0f%% (want %.0f%%)",
+			i, pos, (double)i * 100.0 / (double)(generated_count + 1));
 	}
 
 	Com_Printf("%s\n", line);
@@ -6209,6 +6233,14 @@ R_Init_RTX(bool total)
 	Cvar_Get("pt_dlss_fg_lead", "1.0", 0);
 	Cvar_Get("pt_dlss_fg_vblank_offset", "500", 0);
 	Cvar_Get("pt_dlss_fg_fifo_pacing", "0", 0);
+	/* Undocumented DLSSG.* parameters, read from the runtime's string table rather than
+	   any header - see the note in DLSSG.h. Created here for the reason above: they are
+	   fetched inside the Evaluate loop, so without this they do not exist until a frame
+	   with FG active has already run. Made that exact mistake again after the comment
+	   above says not to. */
+	Cvar_Get("pt_dlss_fg_indicator", "0", 0);
+	Cvar_Get("pt_dlss_fg_slmode", "0", 0);
+	Cvar_Get("pt_dlss_fg_split_eval", "0", 0);
 	Cvar_Get("pt_dlss_fg_timeline", "1", 0);
 	Cvar_Get("pt_dlss_fg_queue", "1", 0);
 	Cvar_Get("pt_dlss_fg_ready_wait", "0", 0);

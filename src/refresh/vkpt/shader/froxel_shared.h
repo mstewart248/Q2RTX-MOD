@@ -79,10 +79,22 @@ the intuitive move and it does not work:
 
 Raise Z first, and reach for pt_fog_froxel_filter (a wider blur, no extra rays)
 before either.
+
+Z WAS 64 AND IS NOW 128, which halves the variance along every view ray for twice
+the scatter cost (3 volumes x 160x88x128 x 8 bytes = 43 MB, up from 21.6).
+
+AND ONE OF THE TWO RAYS PER CELL IS PURE WASTE AT THIS POINT, which is the obvious
+place to win that cost back. getSkyVisibility traces straight up from the CELL
+CENTRE - not from the jittered sample point, since that was fixed - so for a given
+cell it is a DETERMINISTIC function with no frame-to-frame variance at all. It is
+not a Monte Carlo estimate and it never needed averaging; Matt's observation that
+"the sky is never noisy" is exactly this. Re-tracing it every frame at a
+stationary camera recomputes a constant. Caching it per cell and refreshing only
+when the camera moves would give back most of what this Z doubling costs.
 */
 #define FROXEL_GRID_X       160
 #define FROXEL_GRID_Y       88
-#define FROXEL_GRID_Z       64
+#define FROXEL_GRID_Z       128
 
 // Thread group for the scatter pass: one thread per froxel.  8x8x1 keeps a
 // group inside one screen tile so neighbouring threads hit the same cluster
