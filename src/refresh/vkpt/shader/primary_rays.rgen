@@ -251,6 +251,10 @@ main()
 		imageStore(IMG_PT_NORMAL_A, ipos, uvec4(0));
 		imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(0));
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(PRIMARY_RAY_T_MAX));
+		// A copy of the primary depth that reflect_refract will not overwrite - see
+		// the note at PT_PRIMARY_DIST in global_textures.h. Written in both branches
+		// of this shader, so it is valid for every pixel including the sky.
+		imageStore(IMG_PT_PRIMARY_DIST, ipos, vec4(PRIMARY_RAY_T_MAX));
 		imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(1, 1, 1, PRIMARY_RAY_T_MAX));
 		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, 0));
 		imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(global_ubo.cam_pos.xyz + direction * PRIMARY_RAY_T_MAX, 0));
@@ -335,7 +339,10 @@ main()
 	motion.xy = screen_pos_prev - screen_pos_curr;
 	motion.z = distance_prev - distance_curr;
 
-	imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));	
+	imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
+	// The copy reflect_refract will not overwrite - see PT_PRIMARY_DIST in
+	// global_textures.h.
+	imageStore(IMG_PT_PRIMARY_DIST, ipos, vec4(distance_curr));
 	imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
 	// DLSS depth. RR is created with NVSDK_NGX_DLSS_Depth_Type_Linear, and guide 3.4.7
 	// asks for "the same depth data used to generate motion vector data". The motion

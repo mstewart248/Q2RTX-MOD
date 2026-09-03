@@ -2559,6 +2559,52 @@ fail2:
 }
 #endif
 
+// the game directory the rerelease content is installed in
+#define REREL_GAME  "rerelease"
+
+// Picks the loader by looking inside the container rather than trusting its
+// extension. The rerelease ships two of them and neither uses one of our names:
+// its data is baseq2/pak0.pak (a plain PACK) and Q2Game.kpf (a plain zip). The
+// extension stays the tiebreaker for anything we cannot identify, so a zip with
+// junk prepended - which load_zip_file handles, since it searches for the
+// end-of-central-directory record - still loads off its .pkz/.kpf name.
+static pack_t *load_pack_file(const char *packfile)
+{
+#if USE_ZLIB
+    byte    ident[4];
+    FILE    *fp;
+    size_t  got = 0;
+    size_t  len = strlen(packfile);
+
+    fp = fopen(packfile, "rb");
+    if (fp) {
+        got = fread(ident, 1, sizeof(ident), fp);
+        fclose(fp);
+    }
+
+    if (got == sizeof(ident)) {
+        if (ident[0] == 'P' && ident[1] == 'A' && ident[2] == 'C' && ident[3] == 'K')
+            return load_pak_file(packfile);
+        if (ident[0] == 'P' && ident[1] == 'K' && ident[2] == 3 && ident[3] == 4)
+            return load_zip_file(packfile);
+    }
+
+    if (len > 4 && (!Q_stricmp(packfile + len - 4, ".pkz") ||
+                    !Q_stricmp(packfile + len - 4, ".kpf")))
+        return load_zip_file(packfile);
+#endif
+    return load_pak_file(packfile);
+}
+
+// True if `dir` is the rerelease game directory, i.e. its last component is
+// REREL_GAME. Only that directory gets the nested mount in add_game_dir.
+static bool is_rerelease_dir(const char *dir)
+{
+    const char *p = strrchr(dir, '/');
+
+    return !Q_stricmp(p ? p + 1 : dir, REREL_GAME);
+}
+
 // this is complicated as we need pakXX.pak loaded first,
 // sorted in numerical order, then the rest of the paks in
 // alphabetical order, e.g. pak0.pak, pak2.pak, pak17.pak, abc.pak...
@@ -2589,17 +2635,81 @@ alphacmp:
     return Q_stricmp(s1, s2);
 }
 
+// Loads every pack file in `dir` and pushes them onto the head of the search
+// path, pakXX.pak first in numerical order and the rest alphabetically.
+// Returns how many were added.
+static int add_pack_files(unsigned mode, const char *dir)
+{
+    searchpath_t    *search;
+    pack_t          *pack;
+    listfiles_t     list;
+    char            path[MAX_OSPATH];
+    size_t          len;
+    int             i, count = 0;
+
+    memset(&list, 0, sizeof(list));
+#if USE_ZLIB
+    // .kpf is the rerelease's own pack extension; it holds a plain zip.
+    list.filter = ".pak;.pkz;.kpf";
+#else
+    list.filter = ".pak";
+#endif
+    Sys_ListFiles_r(&list, dir, 0);
+
+    qsort(list.files, list.count, sizeof(list.files[0]), pakcmp);
+
+    for (i = 0; i < list.count; i++) {
+        len = Q_concat(path, sizeof(path), dir, "/", list.files[i]);
+        if (len >= sizeof(path)) {
+            Com_EPrintf("%s: refusing oversize path\n", __func__);
+            continue;
+        }
+        pack = load_pack_file(path);
+        if (!pack) {
+            Com_EPrintf("Couldn't load %s: %s\n", path, Com_GetLastError());
+            continue;
+        }
+        search = FS_Malloc(sizeof(searchpath_t));
+        search->mode = mode;
+        search->filename[0] = 0;
+        search->pack = pack_get(pack);
+        search->next = fs_searchpaths;
+        fs_searchpaths = search;
+        count++;
+    }
+
+    for (i = 0; i < list.count; i++) {
+        Z_Free(list.files[i]);
+    }
+
+    return count;
+}
+
+// Pushes the directory itself onto the head of the search path. Whatever goes
+// on last wins, so a loose file always beats the same name inside a pack that
+// was added before it - that is what keeps rerelease/overrides, /materials and
+// our own loose textures in front of anything of the same name in a mounted pak.
+static void add_dir_path(unsigned mode, const char *dir)
+{
+    searchpath_t    *search;
+    size_t          len = strlen(dir);
+
+    search = FS_Malloc(sizeof(searchpath_t) + len);
+    search->mode = mode;
+    search->pack = NULL;
+    memcpy(search->filename, dir, len + 1);
+    search->next = fs_searchpaths;
+    fs_searchpaths = search;
+}
+
 // sets fs_gamedir, adds the directory to the head of the path,
 // then loads and adds pak*.pak, then anything else in alphabethical order.
 static void q_printf(2, 3) add_game_dir(unsigned mode, const char *fmt, ...)
 {
     va_list         argptr;
-    searchpath_t    *search;
-    pack_t          *pack;
-    listfiles_t     list;
-    int             i;
-    char            path[MAX_OSPATH];
+    char            nested[MAX_OSPATH];
     size_t          len;
+    int             count = 0;
 
     va_start(argptr, fmt);
     len = Q_vsnprintf(fs_gamedir, sizeof(fs_gamedir), fmt, argptr);
@@ -2614,59 +2724,30 @@ static void q_printf(2, 3) add_game_dir(unsigned mode, const char *fmt, ...)
     FS_ReplaceSeparators(fs_gamedir, '/');
 #endif
 
-    // add any pack files
-    memset(&list, 0, sizeof(list));
-#if USE_ZLIB
-    list.filter = ".pak;.pkz";
-#else
-    list.filter = ".pak";
-#endif
-    Sys_ListFiles_r(&list, fs_gamedir, 0);
+    // The rerelease keeps its assets one level down, in <install>/rerelease/
+    // baseq2 (pak0.pak, plus loose music/ and video/), with Q2Game.kpf sitting
+    // beside it at the top. Mount that subdirectory too, so a user can drop the
+    // rerelease folder from their Quake II install in verbatim instead of
+    // extracting the pak by hand. It goes on the path *before* the gamedir
+    // proper, which puts it underneath: our loose files and our own paks still
+    // win every lookup they take part in.
+    if ((mode & FS_PATH_GAME) && is_rerelease_dir(fs_gamedir) &&
+        Q_concat(nested, sizeof(nested), fs_gamedir, "/" BASEGAME) < sizeof(nested) &&
+        Sys_IsDir(nested)) {
+        add_pack_files(mode, nested);
+        add_dir_path(mode, nested);
+    }
+
+    count = add_pack_files(mode, fs_gamedir);
 
     // Can't exit early for game directory
-    if (!(mode & FS_PATH_GAME) && !list.count) {
+    if (!(mode & FS_PATH_GAME) && !count) {
         return;
     }
 
-    qsort(list.files, list.count, sizeof(list.files[0]), pakcmp);
-
-    for (i = 0; i < list.count; i++) {
-        len = Q_concat(path, sizeof(path), fs_gamedir, "/", list.files[i]);
-        if (len >= sizeof(path)) {
-            Com_EPrintf("%s: refusing oversize path\n", __func__);
-            continue;
-        }
-#if USE_ZLIB
-        // FIXME: guess packfile type by contents instead?
-        if (len > 4 && !Q_stricmp(path + len - 4, ".pkz"))
-            pack = load_zip_file(path);
-        else
-#endif
-            pack = load_pak_file(path);
-        if (!pack) {
-            Com_EPrintf("Couldn't load %s: %s\n", path, Com_GetLastError());
-            continue;
-        }
-        search = FS_Malloc(sizeof(searchpath_t));
-        search->mode = mode;
-        search->filename[0] = 0;
-        search->pack = pack_get(pack);
-        search->next = fs_searchpaths;
-        fs_searchpaths = search;
-    }
-    
-    for (i = 0; i < list.count; i++) {
-        Z_Free(list.files[i]);
-    }
-
-	// add the directory to the search path
-	// the directory has priority over the pak files
-	search = FS_Malloc(sizeof(searchpath_t) + len);
-	search->mode = mode;
-	search->pack = NULL;
-	memcpy(search->filename, fs_gamedir, len + 1);
-	search->next = fs_searchpaths;
-	fs_searchpaths = search;
+    // add the directory to the search path
+    // the directory has priority over the pak files
+    add_dir_path(mode, fs_gamedir);
 }
 
 /*
@@ -3676,9 +3757,6 @@ void FS_Shutdown(void)
 
     Cmd_Deregister(c_fs);
 }
-
-// the game directory the rerelease content is installed in
-#define REREL_GAME  "rerelease"
 
 // this is called when local server starts up and gets it's latched variables,
 // client receives a serverdata packet, or user changes the game by hand while

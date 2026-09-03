@@ -95,6 +95,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_CHECKERBOARD_INTERLEAVE_COMP)           \
 	SHADER_MODULE_DO(QVK_MOD_GOD_RAYS_COMP)                          \
 	SHADER_MODULE_DO(QVK_MOD_GOD_RAYS_FILTER_COMP)                   \
+	SHADER_MODULE_DO(QVK_MOD_FROXEL_RESERVOIR_COMP)                  \
+	SHADER_MODULE_DO(QVK_MOD_FROXEL_SPATIAL_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_FROXEL_SCATTER_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_FROXEL_INTEGRATE_COMP)                  \
 	SHADER_MODULE_DO(QVK_MOD_SHADOW_MAP_VERT)                        \
@@ -557,6 +559,8 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	   NB every line here carries its own backslash - line splicing happens \
 	   BEFORE comment removal, so an un-continued line ends the macro. */ \
 	PROFILER_DO(PROFILER_FOG_FROXEL,                 1) \
+	PROFILER_DO(PROFILER_FOG_FROXEL_RESERVOIR,       2) \
+	PROFILER_DO(PROFILER_FOG_FROXEL_SPATIAL,         2) \
 	PROFILER_DO(PROFILER_FOG_FROXEL_SCATTER,         2) \
 	PROFILER_DO(PROFILER_FOG_FROXEL_INTEGRATE,       2) \
 	PROFILER_DO(PROFILER_SHADOW_MAP,                 1) \

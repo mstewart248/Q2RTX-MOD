@@ -1,0 +1,325 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/*
+==============================================================================
+
+FROXEL SPATIAL REUSE - stage 2 of ReSTIR for the fog grid.
+
+WHY THIS EXISTS, AND WHY IT IS NOT ANOTHER BLUR.
+
+pt_fog_froxel_filter already reduces the grid's noise, and it costs no rays,
+which makes it the obvious knob to reach for. What it does is average RESULTS
+over a neighbourhood - it is a blur, and it softens whatever it is given,
+including the hard-edged shafts where sky light reaches through an opening.
+Those shafts are the thing the volumetric is FOR. So every step of noise
+reduction taken that way is paid for in the feature that motivated the system.
+
+Reservoir reuse averages SAMPLES instead. A neighbouring froxel drew its own M
+candidates from the same light list; that draw is evidence about which light
+matters around here, and it can be borrowed without borrowing the neighbour's
+ANSWER. The estimate stays a point estimate at this cell - its own visibility
+ray, its own point on the light, its own phase function - so nothing is smeared
+across cell boundaries, and the shafts keep their edges. What improves is the
+probability that the one light this cell spends its ray on is the one that
+mattered.
+
+WHAT IT COSTS. Not rays: this pass traces nothing at all. K reservoir loads, and
+about 2K evaluations of volume_light_estimate, which is pure arithmetic over the
+light buffer. The whole grid's ray budget is unchanged - one sky ray and one
+visibility ray per cell, both still spent in froxel_scatter.comp.
+
+--------------------------------------------------------------------------
+THE SAMPLE SPACE IS DISCRETE, SO THERE IS NO JACOBIAN.
+
+Surface ReSTIR carries a Jacobian when a neighbour's sample is reinterpreted at
+a different shading point, because the sample is a POINT on a light and the
+solid angle it subtends changes with the receiver. This grid does not have that
+problem: a reservoir holds a light INDEX and nothing else. The point on the
+light is drawn afterwards, per cell, from that cell's own blue noise. Reusing
+"light 47" at a neighbouring froxel is exact - a different member of the same
+discrete set, with no reparameterization to correct for.
+
+That is why this is a short shader rather than a long one, and it is the single
+biggest reason the froxel case is easier than the surface case.
+
+--------------------------------------------------------------------------
+UNBIASED FIRST. The MIS weights are the part that goes quietly wrong.
+
+Combining reservoirs naively - stream them in and divide by the total M - is
+biased whenever a sample one cell could have produced is one another cell could
+NOT. The usual demonstration is a light that is inside a spot cone at cell A and
+outside it at cell B: B never had any chance of drawing it, so counting B's M in
+the denominator dilutes a sample B could not have contributed, and the estimator
+comes out systematically dark near every such boundary.
+
+The bias correction (Bitterli et al. 2020, the Z form) is to divide not by the
+total M but by the M of only those cells that COULD have produced the sample
+that won:
+
+    Z = sum over participating cells j of  M_j  where  p_hat_j(y) > 0
+    W = wsum / (Z * p_hat_here(y))
+
+That is what fog_target exists for: it evaluates the target function of a given
+light at an ARBITRARY point, so this pass can ask "what would light y have been
+worth at my neighbour's own sample point" - a question the old code had no way
+to express, because the target was only ever computed where it was used.
+
+Two things make the test exact rather than approximate here:
+
+  * Every cell samples the SAME light list. getClusterLightInscatter and
+    getVolumeLightInscatter both use the CAMERA's cluster for every point in the
+    volume, not a per-point cluster (see the long note in fog_medium.glsl about
+    why - a per-pixel cluster put visible seams across the fog). So the
+    candidate domain is identical everywhere and the only way p_hat_j(y) can be
+    zero is a genuine geometric one: back-facing emitter, outside a spot cone,
+    or beyond a cutoff radius. Exactly the cases Z is for.
+
+  * The target function EXCLUDES visibility, so p_hat_j is cheap and, more
+    importantly, well defined at a cell that never traced a ray towards y.
+
+VISIBILITY IS NEVER REUSED. This pass borrows a neighbour's choice of light and
+nothing else; the shadow ray is traced afterwards, in froxel_scatter.comp, at
+this cell, on the sample that won here. That is the difference between the
+unbiased version and the cheap one. RTX Remix runs a separate visibility pass
+for the same reason. The cheap version - trusting the neighbour's shadow result
+- is what pt_fog_restir_reuse_vis would be, and it is deliberately not built
+yet: the agreement was to land this unbiased and then measure what the shortcut
+saves.
+
+==============================================================================
+*/
+
+#version 460
+#extension GL_EXT_samplerless_texture_functions : enable
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+#extension GL_EXT_ray_query               : enable
+
+#include "constants.h"
+#include "utils.glsl"
+
+#define GOD_RAYS_DESC_SET_IDX 0
+#include "god_rays_shared.h"
+
+#define GLOBAL_UBO_DESC_SET_IDX 2
+#include "global_ubo.h"
+
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#define VERTEX_READONLY 1
+#include "vertex_buffer.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 3
+#include "global_textures.h"
+
+#include "froxel_shared.h"
+
+float rand(ivec2 pos)
+{
+	int texnum = global_ubo.current_frame_idx & (NUM_BLUE_NOISE_TEX - 1);
+	ivec2 texpos = pos & ivec2(BLUE_NOISE_RES - 1);
+	return texelFetch(TEX_BLUE_NOISE, ivec3(texpos, texnum), 0).r;
+}
+
+const float PI = 3.1415926535;
+
+#define NORMALIZE_PHASE_FUNCTIONS 1
+
+float ScatterPhase_HenyeyGreenstein(float cosa, float g)
+{
+	float g_sqr = g * g;
+	float num = (1 - abs(g));
+	float denom = sqrt(max(1 - 2 * g * cosa + g_sqr, 0));
+	float frac = num / denom;
+	float scale = g_sqr + (1 - g_sqr) / (4 * PI);
+	return scale * (frac * frac * frac);
+}
+
+float vmin(vec3 v) { return min(v.x, min(v.y, v.z)); }
+float vmax(vec3 v) { return max(v.x, max(v.y, v.z)); }
+
+#include "fog_medium.glsl"
+
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 6, rgba32f) uniform readonly  image3D IMG_FROXEL_RESERVOIR_INITIAL;
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 7, rgba32f) uniform writeonly image3D IMG_FROXEL_RESERVOIR_FINAL;
+
+#include "froxel_sample.glsl"
+
+// How many neighbours to pull in, and how far away they may be. Clamped rather
+// than trusted: the tap loop is a fixed cost per cell and MAX_TAPS bounds the
+// register pressure of the Z loop below, which has to keep each tap's cell
+// index and M until the winner is known.
+#define FROXEL_RESTIR_MAX_TAPS 8
+
+layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
+void main()
+{
+	ivec3 cell = ivec3(gl_GlobalInvocationID.xy, 0);
+
+	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y)
+		return;
+
+	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 3);
+
+	float g = fog_eccentricity();
+
+	int taps = int(clamp(global_ubo.pt_fog_restir_taps, 0.0, float(FROXEL_RESTIR_MAX_TAPS)));
+
+	// Radius of the neighbourhood, in CELLS. Separate in z because the axes are
+	// not comparable: x and y are screen directions where a cell is a few
+	// arcminutes wide, while z is exponential depth where one step is a fixed
+	// 6.3% of the distance. A z radius of 1 is already a bigger world-space
+	// stride than an xy radius of 3 out in the distance.
+	float radius_xy = max(global_ubo.pt_fog_restir_radius, 0.0);
+	int   radius_z  = int(clamp(global_ubo.pt_fog_restir_radius_z, 0.0, 8.0));
+
+	float base_rand = rand(cell.xy);
+
+	for (int z = 0; z < FROXEL_GRID_Z; z++)
+	{
+		cell.z = z;
+
+		vec4 own = imageLoad(IMG_FROXEL_RESERVOIR_INITIAL, cell);
+
+		// Nothing to reuse into: an unlit cell stays unlit, and passing it
+		// through unchanged keeps this pass a pure no-op wherever the reservoir
+		// pass already decided there was no integral to estimate.
+		if (!fog_lights || taps == 0 || own.z <= 0.0)
+		{
+			imageStore(IMG_FROXEL_RESERVOIR_FINAL, cell, own);
+			continue;
+		}
+
+		FroxelCellSample fs = froxel_cell_sample(cell, base_rand);
+
+		/* THE COMBINED RESERVOIR, seeded with this cell's own.
+
+		   The stream weight of a reservoir is p_hat_here(y) * W * M. For the own
+		   reservoir p_hat_here IS the stored p_hat - it was evaluated at this
+		   very point - so that product reconstructs its wsum exactly, which is
+		   why .w is stored at all. */
+		uint  best_y     = (own.x < 0.0) ? ~0u : uint(own.x);
+		float best_p_hat = own.w;
+		float wsum       = own.w * own.y * own.z;
+		float M_total    = own.z;
+
+		// A stream RNG that must not correlate with the candidate loop's, or the
+		// same cells would keep choosing the same neighbours frame after frame
+		// and the reuse would stop being an average over anything.
+		fog_rng_state = fs.seed ^ 0x9e3779b9u;
+		fog_rand();
+
+		// Remember which cells took part, so the bias correction below can ask
+		// each of them the one question that makes this unbiased.
+		ivec3 tap_cell[FROXEL_RESTIR_MAX_TAPS];
+		float tap_M[FROXEL_RESTIR_MAX_TAPS];
+		int   num_taps = 0;
+
+		for (int t = 0; t < taps; t++)
+		{
+			// Uniform in a disc rather than in a square: a square neighbourhood
+			// reuses the diagonals 1.4x further away than the axes, which shows
+			// up as a faint cross through bright fog once the radius is large.
+			float ang = fog_rand() * 2.0 * PI;
+			float rad = sqrt(fog_rand()) * radius_xy;
+
+			ivec3 nc = ivec3(
+				cell.x + int(round(cos(ang) * rad)),
+				cell.y + int(round(sin(ang) * rad)),
+				cell.z + ((radius_z > 0) ? (int(fog_rand() * float(2 * radius_z + 1)) - radius_z) : 0));
+
+			if (nc.x < 0 || nc.x >= FROXEL_GRID_X) continue;
+			if (nc.y < 0 || nc.y >= FROXEL_GRID_Y) continue;
+			if (nc.z < 0 || nc.z >= FROXEL_GRID_Z) continue;
+			if (nc == cell) continue;
+
+			vec4 nres = imageLoad(IMG_FROXEL_RESERVOIR_INITIAL, nc);
+
+			// M == 0 means that cell never sampled the integral - outside the fog
+			// band, or the grid is off. It is not a participating cell, so it is
+			// not recorded and contributes to neither wsum nor Z.
+			if (nres.z <= 0.0)
+				continue;
+
+			tap_cell[num_taps] = nc;
+			tap_M[num_taps]    = nres.z;
+			num_taps++;
+
+			M_total += nres.z;
+
+			uint ny = (nres.x < 0.0) ? ~0u : uint(nres.x);
+			if (ny == ~0u || !(nres.y > 0.0))
+				continue;   // a valid draw that found nothing: counts in M, weighs 0
+
+			/* The neighbour's sample, valued HERE. This is the whole of the
+			   reuse: its light index, this cell's geometry. */
+			float p_hat_here = fog_target(ny, fs.p, fs.view_dir, g);
+			if (!(p_hat_here > 0.0))
+				continue;
+
+			float w = p_hat_here * nres.y * nres.z;
+
+			wsum += w;
+
+			if (fog_rand() * wsum <= w)
+			{
+				best_y     = ny;
+				best_p_hat = p_hat_here;
+			}
+		}
+
+		/* THE BIAS CORRECTION.
+
+		   Z is the number of candidate draws that could have produced the sample
+		   that won, NOT the number that were made. Dividing by M_total instead
+		   is the naive combine, and it darkens the fog systematically wherever
+		   the participating cells disagree about whether a light is even
+		   reachable - the edge of a spot cone, the plane of an emissive surface,
+		   the cutoff radius. Those are edges the eye is drawn to, so the error
+		   lands exactly where it is most visible.
+
+		   Each tap is asked at ITS OWN sample point, which is why
+		   froxel_cell_sample had to be shared between the passes rather than
+		   re-derived here. */
+		float Z = 0.0;
+
+		if (best_y != ~0u)
+		{
+			if (fog_target(best_y, fs.p, fs.view_dir, g) > 0.0)
+				Z += own.z;
+
+			for (int t = 0; t < num_taps; t++)
+			{
+				ivec3 nc = tap_cell[t];
+
+				FroxelCellSample ns = froxel_cell_sample(nc, rand(nc.xy));
+
+				if (fog_target(best_y, ns.p, ns.view_dir, g) > 0.0)
+					Z += tap_M[t];
+			}
+		}
+
+		float W = (Z > 0.0 && best_p_hat > 0.0) ? (wsum / (Z * best_p_hat)) : 0.0;
+
+		imageStore(IMG_FROXEL_RESERVOIR_FINAL, cell, vec4(
+			(best_y == ~0u) ? -1.0 : float(best_y),
+			W,
+			M_total,
+			best_p_hat));
+	}
+}

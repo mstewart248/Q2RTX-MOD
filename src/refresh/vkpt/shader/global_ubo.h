@@ -161,6 +161,18 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_ambient, 0.0) /* fraction of the sun's radiance that lights map fog IN SHADOW, isotropically; 0 = the hard shadow-map cliff this always had */ \
 	UBO_CVAR_DO(pt_fog_extinction, 0.0) /* real extinction per unit density for map fog, so a long ray SATURATES instead of accumulating without bound; 0 = the legacy flat 0.0001 */ \
 	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ 	UBO_CVAR_DO(pt_fog_froxel, 0.0) /* 1 = evaluate map fog in the froxel grid (cheap, temporally reused); 0 = the old per-pixel march in god_rays.comp */ 	UBO_CVAR_DO(pt_fog_froxel_history, 0.95) /* how much of the PREVIOUS frame's froxel volume to keep; this is what removes the noise. 0 disables temporal reuse */ \
+	/* What REFLECTION and REFRACTION pixels get for map fog. A negative PT_VIEW_DEPTH_A is reflect_refract's marker for such a pixel, and its magnitude is the UNFOLDED camera->mirror->object path length (PRIMARY_RAY_T_MAX for a reflected sky), so handing that straight to the view-aligned grid asks for a full-length column measured along the CAMERA ray - which is why reflections of a green sky came out orange on mgu5m1. 0 = grid, but stopped at the reflecting surface (smooth; no fog within the reflected image, which the grid cannot see at any price). 1 = the march's two-pass result (complete, but the march is the per-pixel estimator with no temporal history, so the fog inside reflections is NOISY). 2 = the old full-length column, kept only to reproduce the orange bug. See god_rays_filter.comp. */ \
+	UBO_CVAR_DO(pt_fog_froxel_reflect, 0.0) \
+	/* Frame rate at which pt_fog_froxel_history means exactly what it says. That weight is applied ONCE PER FRAME, so on its own its time constant is measured in frames - 0.95 averages over ~20 of them, a third of a second at 60fps and a full second at 20 - and the fog therefore converges at whatever rate the machine runs at. The scatter pass rescales it to w^(dt*this) so the TIME constant is what stays fixed. 0 disables the correction and restores the raw per-frame weight. */ \
+	UBO_CVAR_DO(pt_fog_froxel_history_hz, 60.0) \
+	/* SPATIAL RESERVOIR REUSE (ReSTIR) for the froxel grid, cl_fog 3 only. 1 = a cell may borrow which LIGHT its neighbours' candidate draws picked, then still traces its own visibility ray on the winner. It costs NO extra rays - the reservoir and spatial passes trace nothing - and unlike pt_fog_froxel_filter it does not blur, so it cuts noise without softening the sky shafts. Defaults OFF; the grid renders exactly as before at 0. */ \
+	UBO_CVAR_DO(pt_fog_restir, 0.0) \
+	/* How many neighbouring reservoirs each cell pulls in, 0..8. 0 makes the spatial pass a pass-through and is equivalent to pt_fog_restir 0 except for the memory. Cost is linear in this; quality saturates quickly because the taps are correlated through their shared light list. */ \
+	UBO_CVAR_DO(pt_fog_restir_taps, 3.0) \
+	/* Radius of the reuse neighbourhood in CELLS across the screen. Too large and the taps stop being about the same region of the map, which costs variance rather than saving it - the estimator stays unbiased either way. */ \
+	UBO_CVAR_DO(pt_fog_restir_radius, 3.0) \
+	/* Radius of the reuse neighbourhood along DEPTH, in slices, 0..8. Kept separate from the screen radius because the axes are not comparable: slices are exponentially spaced, so one z step is a fixed 6.3% of the distance and out in the distance is a far bigger world-space stride than several cells of x or y. */ \
+	UBO_CVAR_DO(pt_fog_restir_radius_z, 1.0) \
 	/* cl_fog 3 only. Its own brightness knob rather than sharing pt_fog_light_scale, because mode 3 has no knee compressing the total and so sits at a completely different level - one cvar could not calibrate both, and switching modes to compare would retune the other every time. */ \
 	UBO_CVAR_DO(pt_fog_vol_scale, 1.0) \
 	/* cl_fog 3 only. Ceiling on one light sample's luminance, which is what stops a froxel cell that landed very close to a small emitter from blowing out into a solid bright block. Biased on purpose; RTX Remix calls this froxelFireflyFilteringLuminanceThreshold. LOWER THIS FIRST if the fog looks blotchy. 0 disables it. */ \
@@ -339,7 +351,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_r) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_g) \
 	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_b) \
-	GLOBAL_UBO_VAR_LIST_DO(int,             fog_pad3) \
+	/* Seconds of the frame just rendered, for the froxel grid's temporal blend. */ \
+	/* pt_fog_froxel_history is a PER-FRAME weight, so without this its time    */ \
+	/* constant is measured in frames and the fog converges at whatever rate    */ \
+	/* the machine happens to be running at - see froxel_scatter.comp.          */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_frame_time) \
 	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             pt_fullres_fields) /* see FIELD LAYOUT note above */ \
 	GLOBAL_UBO_VAR_LIST_DO(int,             pt_field_offset) /* x offset / width of one field */ \

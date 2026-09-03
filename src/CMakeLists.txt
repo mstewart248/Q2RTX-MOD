@@ -330,6 +330,8 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/animate_materials.comp
 	refresh/vkpt/shader/god_rays_filter.comp
 	refresh/vkpt/shader/god_rays.comp
+	refresh/vkpt/shader/froxel_reservoir.comp
+	refresh/vkpt/shader/froxel_spatial.comp
 	refresh/vkpt/shader/froxel_scatter.comp
 	refresh/vkpt/shader/froxel_integrate.comp
 	refresh/vkpt/shader/bloom_composite.comp

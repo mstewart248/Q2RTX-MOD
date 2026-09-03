@@ -55,7 +55,7 @@ typedef struct {
 
 struct
 {
-	VkPipeline pipelines[4];
+	VkPipeline pipelines[6];
 	VkPipelineLayout pipeline_layout;
 	VkDescriptorSetLayout descriptor_set_layout;
 
@@ -69,6 +69,20 @@ struct
 
 	froxel_volume_t froxel_scatter[MAX_FRAMES_IN_FLIGHT];
 	froxel_volume_t froxel_integrated;
+
+	/* THE RESERVOIR PAIR - ReSTIR's working set, and there have to be two.
+
+	   froxel_reservoir.comp writes [0]; froxel_spatial.comp reads every
+	   neighbour out of [0] while writing its own answer to [1]; the scatter pass
+	   then reads [1]. Doing the middle step in place is a data race whose result
+	   depends on dispatch order - some of a cell's neighbours would already have
+	   been overwritten with THEIR combined value, so the reuse would compound
+	   across the grid in whatever order the hardware happened to schedule.
+
+	   Unlike the scatter pair these are NOT ping-ponged by frame: nothing here
+	   crosses a frame boundary, so both are written and consumed inside one. */
+	froxel_volume_t froxel_reservoir[2];
+
 	VkSampler froxel_sampler;
 	bool froxel_initialized;
 
@@ -80,11 +94,18 @@ struct
 // read by profiler.c to decide whether to show the fog rows
 cvar_t* cvar_pt_fog_froxel = NULL;
 
+// Gates the two extra dispatches on the C side. The shaders read the same cvar
+// out of the UBO; this copy exists so the passes can be skipped entirely rather
+// than dispatched to do nothing.
+static cvar_t* cvar_pt_fog_restir = NULL;
+
 enum {
 	GOD_RAYS_PIPELINE_TRACE = 0,
 	GOD_RAYS_PIPELINE_FILTER,
 	GOD_RAYS_PIPELINE_FROXEL_SCATTER,
 	GOD_RAYS_PIPELINE_FROXEL_INTEGRATE,
+	GOD_RAYS_PIPELINE_FROXEL_RESERVOIR,
+	GOD_RAYS_PIPELINE_FROXEL_SPATIAL,
 };
 
 static void create_froxel_volumes(void);
@@ -109,6 +130,10 @@ VkResult vkpt_initialize_god_rays(void)
 	// calibrated against the march - see the note in froxel_scatter.comp.
 	// Same treatment cl_fog itself got: land it, default it off, tune in play.
 	cvar_pt_fog_froxel = Cvar_Get("pt_fog_froxel", "0", CVAR_ARCHIVE);
+
+	// Must match the UBO_CVAR_DO default in global_ubo.h - the shaders read that
+	// copy, this one only decides whether to dispatch the two extra passes.
+	cvar_pt_fog_restir = Cvar_Get("pt_fog_restir", "0", CVAR_ARCHIVE);
 
 	god_rays.intensity = Cvar_Get("gr_intensity", "2.0", 0);
 	god_rays.eccentricity = Cvar_Get("gr_eccentricity", "0.75", 0);
@@ -297,25 +322,67 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout,
 		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &pass);
 
+	uint32_t group_num_x = (FROXEL_GRID_X + FROXEL_GROUP_X - 1) / FROXEL_GROUP_X;
+	uint32_t group_num_y = (FROXEL_GRID_Y + FROXEL_GROUP_Y - 1) / FROXEL_GROUP_Y;
+
+	VkMemoryBarrier mem_barrier = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+	};
+
+	/* --- ReSTIR, when it is on: choose the light before shading it ---
+
+	   Two dispatches, neither of which traces a ray. The first draws each cell's
+	   RIS candidates; the second lets a cell borrow which light its neighbours
+	   drew. Both must complete for the whole grid before the next one starts -
+	   spatial reuse reads cells other threads wrote - which is what the barriers
+	   between them are for, and why this could not simply be more code inside
+	   the scatter pass.
+
+	   Skipped entirely at pt_fog_restir 0, and then the scatter pass takes its
+	   own candidates exactly as it always has. The volumes still exist (the
+	   descriptor has to be valid) but nothing reads or writes them. */
+	if (cvar_pt_fog_restir && cvar_pt_fog_restir->integer)
+	{
+		BEGIN_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_RESERVOIR);
+
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+			god_rays.pipelines[GOD_RAYS_PIPELINE_FROXEL_RESERVOIR]);
+
+		vkCmdDispatch(command_buffer, group_num_x, group_num_y, 1);
+
+		END_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_RESERVOIR);
+
+		vkCmdPipelineBarrier(command_buffer,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 1, &mem_barrier, 0, NULL, 0, NULL);
+
+		BEGIN_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_SPATIAL);
+
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+			god_rays.pipelines[GOD_RAYS_PIPELINE_FROXEL_SPATIAL]);
+
+		vkCmdDispatch(command_buffer, group_num_x, group_num_y, 1);
+
+		END_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_SPATIAL);
+
+		vkCmdPipelineBarrier(command_buffer,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 1, &mem_barrier, 0, NULL, 0, NULL);
+	}
+
 	// --- scatter: one thread per column of the volume, walking z ---
 	BEGIN_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_SCATTER);
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 		god_rays.pipelines[GOD_RAYS_PIPELINE_FROXEL_SCATTER]);
 
-	uint32_t group_num_x = (FROXEL_GRID_X + FROXEL_GROUP_X - 1) / FROXEL_GROUP_X;
-	uint32_t group_num_y = (FROXEL_GRID_Y + FROXEL_GROUP_Y - 1) / FROXEL_GROUP_Y;
-
 	vkCmdDispatch(command_buffer, group_num_x, group_num_y, 1);
 
 	END_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_SCATTER);
 
 	// the integrate pass reads every cell the scatter pass just wrote
-	VkMemoryBarrier mem_barrier = {
-		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
-	};
 	vkCmdPipelineBarrier(command_buffer,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		0, 1, &mem_barrier, 0, NULL, 0, NULL);
@@ -443,7 +510,7 @@ static void create_image_views(void)
 
 static void create_pipeline_layout(void)
 {
-	VkDescriptorSetLayoutBinding bindings[6] = { 0 };
+	VkDescriptorSetLayoutBinding bindings[8] = { 0 };
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[0].descriptorCount = 1;
@@ -489,7 +556,24 @@ static void create_pipeline_layout(void)
 	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[5].descriptorCount = 1;
 	bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-	
+
+	/* The ReSTIR reservoir pair. 6 is what froxel_reservoir.comp writes and
+	   froxel_spatial.comp reads its neighbours from; 7 is what the spatial pass
+	   writes and froxel_scatter.comp shades from.
+
+	   Plain storage images, no sampler, because every access is a point load of
+	   one cell. Interpolating a reservoir would be meaningless - .x is a light
+	   INDEX, and the average of light 12 and light 46 is light 29. */
+	bindings[6].binding = 6;
+	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[6].descriptorCount = 1;
+	bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	bindings[7].binding = 7;
+	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[7].descriptorCount = 1;
+	bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
 	const VkDescriptorSetLayoutCreateInfo set_layout_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.bindingCount = LENGTH(bindings),
@@ -555,7 +639,21 @@ static void create_pipelines(void)
 		.pName = "main"
 	};
 
-	const VkComputePipelineCreateInfo pipeline_create_infos[4] = {
+	const VkPipelineShaderStageCreateInfo froxel_reservoir_shader = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+		.module = qvk.shader_modules[QVK_MOD_FROXEL_RESERVOIR_COMP],
+		.pName = "main"
+	};
+
+	const VkPipelineShaderStageCreateInfo froxel_spatial_shader = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+		.module = qvk.shader_modules[QVK_MOD_FROXEL_SPATIAL_COMP],
+		.pName = "main"
+	};
+
+	const VkComputePipelineCreateInfo pipeline_create_infos[6] = {
 		{
 			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 			.stage = shader,
@@ -576,6 +674,19 @@ static void create_pipelines(void)
 			.stage = froxel_integrate_shader,
 			.layout = god_rays.pipeline_layout
 		},
+		// The two ReSTIR passes. Order here must match the GOD_RAYS_PIPELINE_*
+		// enum, which appends them after the four that already existed so no
+		// index moves.
+		{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = froxel_reservoir_shader,
+			.layout = god_rays.pipeline_layout
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = froxel_spatial_shader,
+			.layout = god_rays.pipeline_layout
+		},
 	};
 
 	_VK(vkCreateComputePipelines(qvk.device, VK_NULL_HANDLE, LENGTH(pipeline_create_infos), pipeline_create_infos,
@@ -589,8 +700,9 @@ static void create_descriptor_set(void)
 		// integrated volume the filter reads
 		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_FRAMES_IN_FLIGHT * 3 },
 		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_FRAMES_IN_FLIGHT },
-		// the scatter volume this frame writes, and the integrated volume
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAMES_IN_FLIGHT * 2 }
+		// the scatter volume this frame writes, the integrated volume, and the
+		// two ReSTIR reservoirs
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAMES_IN_FLIGHT * 4 }
 	};
 
 	const VkDescriptorPoolCreateInfo pool_create_info = {
@@ -631,7 +743,7 @@ static void update_descriptor_set(void)
 	
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		VkWriteDescriptorSet writes[5] = {
+		VkWriteDescriptorSet writes[7] = {
 			{
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 				.dstSet = god_rays.descriptor_set[i],
@@ -651,6 +763,7 @@ static void update_descriptor_set(void)
 		VkDescriptorImageInfo froxel_history_info;
 		VkDescriptorImageInfo froxel_integrated_info;
 		VkDescriptorImageInfo froxel_sampled_info;
+		VkDescriptorImageInfo froxel_reservoir_info[2];
 
 		if (god_rays.froxel_initialized)
 		{
@@ -705,6 +818,32 @@ static void update_descriptor_set(void)
 				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				.pImageInfo = &froxel_sampled_info
 			};
+
+			/* The reservoirs are written UNCONDITIONALLY, not only when ReSTIR
+			   is switched on, and that is a Vulkan requirement rather than
+			   tidiness: froxel_scatter.comp declares binding 7 and references it
+			   inside a branch, and a descriptor that a shader statically uses
+			   must be valid even when the branch is never taken. Leaving them
+			   unwritten is undefined behaviour that happens to work until a
+			   driver decides otherwise. So the volumes are created with the rest
+			   of the grid and these two writes always happen; pt_fog_restir only
+			   decides whether the passes that fill them are dispatched. */
+			for (int r = 0; r < 2; r++)
+			{
+				froxel_reservoir_info[r] = (VkDescriptorImageInfo) {
+					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.imageView = god_rays.froxel_reservoir[r].view
+				};
+
+				writes[num_writes++] = (VkWriteDescriptorSet) {
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.dstSet = god_rays.descriptor_set[i],
+					.descriptorCount = 1,
+					.dstBinding = 6 + r,
+					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+					.pImageInfo = &froxel_reservoir_info[r]
+				};
+			}
 		}
 
 		vkUpdateDescriptorSets(qvk.device, num_writes, writes, 0, NULL);
@@ -729,9 +868,12 @@ static void create_froxel_volumes(void)
 	if (god_rays.froxel_initialized)
 		return;
 
-	VkImage* image_slots[MAX_FRAMES_IN_FLIGHT + 1];
-	VkImageView* views[MAX_FRAMES_IN_FLIGHT + 1];
-	VkDeviceMemory* memories[MAX_FRAMES_IN_FLIGHT + 1];
+	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT + 1 + 2 };
+
+	VkImage* image_slots[MAX_FROXEL_VOLUMES];
+	VkImageView* views[MAX_FROXEL_VOLUMES];
+	VkDeviceMemory* memories[MAX_FROXEL_VOLUMES];
+	VkFormat formats[MAX_FROXEL_VOLUMES];
 	int num_volumes = 0;
 	VkDeviceSize total_bytes = 0;
 
@@ -740,19 +882,42 @@ static void create_froxel_volumes(void)
 		image_slots[num_volumes] = &god_rays.froxel_scatter[i].image;
 		views[num_volumes] = &god_rays.froxel_scatter[i].view;
 		memories[num_volumes] = &god_rays.froxel_scatter[i].memory;
+		formats[num_volumes] = VK_FORMAT_R16G16B16A16_SFLOAT;
 		num_volumes++;
 	}
 	image_slots[num_volumes] = &god_rays.froxel_integrated.image;
 	views[num_volumes] = &god_rays.froxel_integrated.view;
 	memories[num_volumes] = &god_rays.froxel_integrated.memory;
+	formats[num_volumes] = VK_FORMAT_R16G16B16A16_SFLOAT;
 	num_volumes++;
+
+	/* THE RESERVOIRS ARE RGBA32F, AND HALVING THAT WOULD BREAK THEM.
+
+	   .x holds a light INDEX and fp16 represents integers exactly only to 2048;
+	   a map with more lights than that in one cluster list would start choosing
+	   the wrong light, silently and only on that map. .y holds the RIS weight W,
+	   whose entire job is to be large exactly when the target function was
+	   small, so it has the widest dynamic range of anything in the grid.
+
+	   The scatter volume gets away with fp16 only because FROXEL_STORAGE_SCALE
+	   was added to drag it out of the subnormals after that cost a long hunt;
+	   there is no equivalent trick available here, because the four channels do
+	   not share a scale. */
+	for (int r = 0; r < 2; r++)
+	{
+		image_slots[num_volumes] = &god_rays.froxel_reservoir[r].image;
+		views[num_volumes] = &god_rays.froxel_reservoir[r].view;
+		memories[num_volumes] = &god_rays.froxel_reservoir[r].memory;
+		formats[num_volumes] = VK_FORMAT_R32G32B32A32_SFLOAT;
+		num_volumes++;
+	}
 
 	for (int i = 0; i < num_volumes; i++)
 	{
 		VkImageCreateInfo img_info = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.imageType = VK_IMAGE_TYPE_3D,
-			.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+			.format = formats[i],
 			.extent = { FROXEL_GRID_X, FROXEL_GRID_Y, FROXEL_GRID_Z },
 			.mipLevels = 1,
 			.arrayLayers = 1,
@@ -785,7 +950,7 @@ static void create_froxel_volumes(void)
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 			.image = *image_slots[i],
 			.viewType = VK_IMAGE_VIEW_TYPE_3D,
-			.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+			.format = formats[i],
 			.subresourceRange = {
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 				.baseMipLevel = 0,
@@ -848,9 +1013,11 @@ static void create_froxel_volumes(void)
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
 	vkpt_wait_idle(qvk.queue_graphics, &qvk.cmd_buffers_graphics);
 
-	// Say what this cost.  The arithmetic says 3 x 160x88x64 x RGBA16F = 20.6
-	// MB, but a 3D image in OPTIMAL tiling is padded, so print what the driver
-	// actually charged rather than what the maths predicts.
+	// Say what this cost.  A 3D image in OPTIMAL tiling is padded, so print what
+	// the driver actually charged rather than what the maths predicts. The two
+	// RGBA32F reservoirs are the larger half of this now - they are allocated
+	// whether or not pt_fog_restir is on, because the scatter pass names one of
+	// them in a descriptor either way.
 	Com_Printf("froxel grid: %d volumes of %dx%dx%d, %.1f MB of VRAM\n",
 		num_volumes, FROXEL_GRID_X, FROXEL_GRID_Y, FROXEL_GRID_Z,
 		(double)total_bytes / (1024.0 * 1024.0));
@@ -912,10 +1079,18 @@ static void destroy_froxel_volumes(void)
 	vkDestroyImage(qvk.device, god_rays.froxel_integrated.image, NULL);
 	vkFreeMemory(qvk.device, god_rays.froxel_integrated.memory, NULL);
 
+	for (int r = 0; r < 2; r++)
+	{
+		vkDestroyImageView(qvk.device, god_rays.froxel_reservoir[r].view, NULL);
+		vkDestroyImage(qvk.device, god_rays.froxel_reservoir[r].image, NULL);
+		vkFreeMemory(qvk.device, god_rays.froxel_reservoir[r].memory, NULL);
+	}
+
 	vkDestroySampler(qvk.device, god_rays.froxel_sampler, NULL);
 
 	memset(god_rays.froxel_scatter, 0, sizeof(god_rays.froxel_scatter));
 	memset(&god_rays.froxel_integrated, 0, sizeof(god_rays.froxel_integrated));
+	memset(god_rays.froxel_reservoir, 0, sizeof(god_rays.froxel_reservoir));
 	god_rays.froxel_sampler = VK_NULL_HANDLE;
 	god_rays.froxel_initialized = false;
 }

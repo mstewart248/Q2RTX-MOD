@@ -105,7 +105,24 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_FG_OUTPUT4,           65, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
 	IMG_DO(DLSS_FG_OUTPUT5,           66, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
 	IMG_DO(DLSS_FG_DEPTH,             67, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_PRIMARY_DIST,           68, R16_SFLOAT,          r32f,    IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 
+
+/* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
+   REACH IT.
+
+   PT_VIEW_DEPTH_A starts out holding exactly this, and then reflect_refract.rgen
+   overwrites it with the APPARENT depth of the reflected image - the unfolded
+   camera->mirror->object path length, negated as its "this pixel came through a
+   mirror" marker. By the time the fog's filter pass runs, the distance from the eye
+   to the REFLECTING SURFACE is gone, and that is the only part of a reflection's
+   path a view-frustum-aligned froxel grid can answer for at all.
+
+   Written once, by primary_rays.rgen, and read once, by god_rays_filter.comp.
+   R16_SFLOAT declared as r32f, which is PT_VIEW_DEPTH_A's own pairing verbatim -
+   this image holds the same number that one starts out holding, so it matches it
+   exactly rather than introducing a second convention for one field. About 3 MB at
+   1440p. */
 
 /* Multi Frame Generation writes ONE image per generated frame, and every one of them
    must stay live until it has been presented, so there is one output image per
@@ -115,7 +132,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 /* DLSS_FG_DEPTH: frame generation needs a DIFFERENT depth space than super resolution
    and ray reconstruction, so it gets its own image instead of sharing DLSS_DEPTH. The
    why is at the FG depth store in checkerboard_interleave.comp. */
-#define NUM_IMAGES_BASE     68
+#define NUM_IMAGES_BASE     69
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \

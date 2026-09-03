@@ -3909,7 +3909,8 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		// player was being lit by lights in a distant room. Near the camera this
 		// is the correct list.
 		ubo->fog_camera_cluster = viewleaf ? viewleaf->cluster : -1;
-		ubo->fog_pad3 = 0;
+		// fog_frame_time is NOT set here - prepare_ubo does not have the frame
+		// delta. It is filled in by the caller, next to fog_num_model_lights.
 
 		// Trace real sky visibility per march point instead of relying on the
 		// per-cluster estimate below. The cluster masks cannot distinguish an open
@@ -4266,6 +4267,12 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	// add_dlights() (which builds the count) and prepare_ubo() (which would
 	// otherwise overwrite it), and before the UBO is uploaded to staging.
 	ubo->fog_num_model_lights = num_model_lights;
+
+	// How long the frame just rendered took, for the froxel grid's temporal
+	// blend. Same fallback the tone mapper uses below: fd->time stops advancing
+	// while the game is paused, and a blend weight derived from a zero delta
+	// would freeze the volume at whatever it happened to be holding.
+	ubo->fog_frame_time = (frame_time > 0.f) ? frame_time : frame_wallclock_time;
 
 	if (cvar_tm_blend_enable->integer)
 		Vector4Copy(fd->blend, ubo->fs_blend_color);
@@ -5170,7 +5177,46 @@ R_EndFrame_RTX(void)
 			}
 			END_PERF_MARKER(cmd_buf, PROFILER_TONE_MAPPING);
 
-			
+			/* THE BARRIER FRAME GENERATION NEEDS ON THE IMAGE IT IS ABOUT TO READ,
+			   AND IT MUST NOT BE A SIDE EFFECT OF TONE MAPPING BEING ENABLED.
+
+			   Everything below consumes VKPT_IMG_DLSS_OUTPUT, which DLSS wrote
+			   earlier in this same command buffer. The only thing that used to
+			   separate that write from these reads was a pair of BARRIER_COMPUTEs
+			   INSIDE vkpt_tone_mapping_record_cmd_buffer (tone_mapping.c, around
+			   the histogram dispatch and again at the end of the function) - so
+			   with tm_enable 0 the whole call is skipped and both barriers go with
+			   it. Frame generation then interpolates from a colour image that is
+			   still being written, which is exactly the "violent warping, every
+			   other frame" that tm_enable 1 appears to cure. It cures nothing; it
+			   just puts the barrier back by accident.
+
+			   Emitting it here, at the consumer, is the fix: it is correct whether
+			   or not tone mapping ran, and it is idempotent when tone mapping did
+			   run (a redundant execution barrier on an image already synchronised
+			   costs nothing measurable and cannot be wrong).
+
+			   Sized as write -> read on the whole image, GENERAL to GENERAL, which
+			   is the same shape tone_mapping.c's own BARRIER_COMPUTE has. */
+			{
+				VkImageSubresourceRange subresource_range = {
+					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel   = 0,
+					.levelCount     = 1,
+					.baseArrayLayer = 0,
+					.layerCount     = 1
+				};
+
+				IMAGE_BARRIER(cmd_buf,
+					.image            = qvk.images[VKPT_IMG_DLSS_OUTPUT],
+					.subresourceRange = subresource_range,
+					.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT,
+					.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
+					.oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
+					.newLayout        = VK_IMAGE_LAYOUT_GENERAL);
+			}
+
+
 			// Frame generation runs here, on the FINAL pre-HUD image: DLSS output after
 			// bloom and tone mapping, and before vkpt_draw_submit_stretch_pics() paints
 			// the HUD into the swapchain. That ordering is what makes VKPT_IMG_DLSS_OUTPUT

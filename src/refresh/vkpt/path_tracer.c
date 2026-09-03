@@ -115,6 +115,40 @@ typedef struct {
 	int bounce;
 } pt_push_constants_t;
 
+/* WHICH STAGE ACTUALLY CONSUMES AN ACCELERATION STRUCTURE ON THIS DEVICE.
+
+   This was a hard VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, and on a
+   RAY QUERY device that is not merely imprecise - it is an INVALID stage bit.
+   The validation layer says so on every frame:
+
+     vkCmdPipelineBarrier(): dstStageMask includes
+     VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR when the device does not
+     have rayTracing feature enabled
+
+   When qvk.use_ray_query is set, this renderer does not create ray tracing
+   PIPELINES at all: every trace is a rayQueryEXT inside a COMPUTE shader. So the
+   barrier that is supposed to separate "the acceleration structure has just been
+   built" from "shaders are about to trace against it" named a stage that cannot
+   execute here, and did not name the compute stage that actually reads it.
+
+   A barrier whose destination stage is invalid is undefined behaviour, and the
+   plausible driver behaviours - drop the stage, or drop the barrier - both leave
+   ray queries free to run against an acceleration structure that is still being
+   written. That is a timing-dependent, intermittent, whole-frame fault, and it is
+   the leading suspect for fog that vanishes and returns (getSkyVisibility and the
+   fog's shadow rays are ray queries; if they answer wrongly the sky term AND the
+   light term both go, which matches "it is not just the sky fog, it is ALL the
+   fog") and for frame generation warping.
+
+   NOT a blind widening: the compute stage is added because that is where the
+   consumers genuinely are, and the ray tracing stage is kept only on devices
+   where it is legal, so a real ray-tracing-pipeline device is unchanged. */
+#define ACCEL_STRUCT_READ_STAGES \
+	(qvk.use_ray_query \
+		? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT \
+		: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR \
+		                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
+
 #define MEM_BARRIER_BUILD_ACCEL(cmd_buf, ...) \
 	do { \
 		VkMemoryBarrier mem_barrier = {  \
@@ -126,7 +160,7 @@ typedef struct {
 		};  \
 	 \
 		vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, \
-				VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1, \
+				ACCEL_STRUCT_READ_STAGES, 0, 1, \
 				&mem_barrier, 0, 0, 0, 0); \
 	} while(0)
 

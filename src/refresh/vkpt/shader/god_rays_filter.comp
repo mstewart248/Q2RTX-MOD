@@ -155,9 +155,77 @@ void main()
 	// shafts still come from the march, which is why this only takes over when
 	// the map's own fog is what is being rendered (pt_fog_froxel, and fog_mode
 	// >= 2 on the C side).
-	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_froxel > 0.0)
+	float raw_view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, i_position.xy, 0).r;
+
+	/* A NEGATIVE VIEW DEPTH MEANS THIS PIXEL WENT THROUGH A REFLECTION OR A
+	   REFRACTION, AND THE GRID CANNOT ANSWER FOR IT.
+
+	   The sign is reflect_refract.rgen's marker (see the "Use negative depth for
+	   reflections and refractions" note there), and the MAGNITUDE it leaves
+	   behind is the APPARENT distance of the reflected image - the unfolded
+	   camera -> mirror -> object path length, not the distance to the mirror. A
+	   reflection that hits the sky stores the extreme case, -PRIMARY_RAY_T_MAX.
+
+	   Taking abs() of that and handing it to sample_froxel asks the grid for the
+	   fog accumulated over that whole distance ALONG THE CAMERA RAY, which runs
+	   straight through the mirror and out the far side of the level. Every
+	   reflective pixel therefore received a full-length fog column measured
+	   through whatever the medium looks like at the CAMERA's altitude, and a
+	   reflected-sky pixel received the longest column the volume can produce -
+	   the same one a real sky pixel gets, no matter how close the water is.
+
+	   On a map whose height fog is coloured by altitude that is not a subtle
+	   error: mgu5m1 has heightfog_end_color 0.64 0.08 0.08 at the band floor and
+	   a yellow-green start colour 1200 units above it, so a column integrated at
+	   eye level saturates to roughly (0.53, 0.35, 0.10). That is why the
+	   reflections of a green sky came out ORANGE.
+
+	   WHAT TO DO INSTEAD IS A THREE-WAY CHOICE, because no option is free.
+
+	   The march does not have the bug: it is already two-pass, running once
+	   BEFORE reflect_refract with the true primary distance and again after it
+	   (pass_index 1) along the reflected leg, accumulating both into
+	   GODRAYS_INTERMEDIATE. But the march is the PER-PIXEL estimator - one
+	   stochastic light sample per step, no temporal history, no reservoir - and
+	   handing these pixels back to it makes the fog inside a reflection visibly
+	   NOISY. It always was; the grid was painting over it with a smooth, wrong
+	   answer, which is why the noise only appeared once the colour was fixed.
+
+	   The middle option is the one that is both smooth and honest: ask the grid
+	   for the column from the eye to the REFLECTING SURFACE and stop there. That
+	   part of the path is genuinely inside the view frustum, so the grid is the
+	   right instrument for it and the answer carries the full temporal history.
+	   What is lost is the fog INSIDE the reflected image - the reflected leg
+	   leaves the frustum immediately and a view-aligned volume has nothing to say
+	   about it at any price. In practice that reads as a reflection that is a
+	   little too clear, which is a far smaller error than either a wrong colour
+	   or a crawling one.
+
+	   It needs the distance to the mirror, which reflect_refract has already
+	   overwritten by now - hence PT_PRIMARY_DIST, written by primary_rays.rgen
+	   before any of that happens. See global_textures.h.
+
+	     pt_fog_froxel_reflect 0  grid, stopped at the reflecting surface (default)
+	                              - smooth, no fog within the reflected image
+	     pt_fog_froxel_reflect 1  the march's two-pass result - complete, and noisy
+	     pt_fog_froxel_reflect 2  the old full-length column - smooth and wrong,
+	                              kept only so the orange bug can be reproduced */
+	bool is_reflection = raw_view_depth < 0.0;
+	int  reflect_mode  = int(global_ubo.pt_fog_froxel_reflect);
+
+	// mode 1 is the only one that declines the grid and keeps the marched result
+	bool froxel_pixel = !is_reflection || reflect_mode != 1;
+
+	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_froxel > 0.0 && froxel_pixel)
 	{
-		float view_depth = abs(texelFetch(TEX_PT_VIEW_DEPTH_A, i_position.xy, 0).r);
+		float view_depth = abs(raw_view_depth);
+
+		// Stop the column at the mirror rather than running it out to the
+		// unfolded path length. Not clamped against view_depth - for a reflected
+		// SKY pixel the apparent depth is PRIMARY_RAY_T_MAX and the primary
+		// distance is the only meaningful number of the two.
+		if (is_reflection && reflect_mode == 0)
+			view_depth = texelFetch(TEX_PT_PRIMARY_DIST, i_position.xy, 0).r;
 
 		/* THE LOOKUP MUST BE RELATIVE TO THE FIELD, NOT TO THE PACKED IMAGE.
 		   This is the bug that made the froxel grid put fog in the wrong place

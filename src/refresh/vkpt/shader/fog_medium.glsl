@@ -771,6 +771,32 @@ float fog_rand()
 }
 
 /*
+The medium's directionality. Needed BEFORE the candidate loop because the RIS
+target function uses it, and needed identically in every pass that evaluates
+that target - the reservoir, spatial and scatter passes all call this rather
+than each rolling their own, because a g that differs between them would make
+the MIS weights answer about a different integrand than the one being sampled.
+
+CLAMPED, and the clamp is not cosmetic. ScatterPhase_HenyeyGreenstein computes
+num/denom with num = 1 - abs(g) and denom = sqrt(1 - 2*g*cosa + g*g); at g = 1
+looking straight at the light both are ZERO and the phase is 0/0 = NaN. A NaN
+reaches the froxel volume, the temporal history blends it with itself forever,
+and the tone mapper adapts to a frame containing NaN by going black - which does
+not clear when the cvar is put back, only on a restart. god_rays.comp already
+clamped its own copy to 0.95 for the sun term; this one did not.
+
+Negative g (back-scattering) is legal and useful, so the clamp is two-sided
+rather than a max().
+*/
+float fog_eccentricity()
+{
+	float g = global_ubo.god_rays_eccentricity;
+	if (global_ubo.pt_fog_eccentricity >= 0.0)
+		g = global_ubo.pt_fog_eccentricity;
+	return clamp(g, -0.95, 0.95);
+}
+
+/*
 =================
 volume_light_estimate
 
@@ -943,7 +969,14 @@ to be used to judge it.
 `seed` seeds the candidate loop's own RNG.
 =================
 */
-vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir, vec3 rnd, uint seed)
+/* THE SKY HALF, ON ITS OWN.
+
+   Split out of getVolumeLightInscatter so the ReSTIR passes can compose the two
+   halves in a different order: the reservoir and spatial passes decide WHICH
+   light without tracing anything at all, and the scatter pass then adds this to
+   whatever they chose. Still one sky ray per cell either way - the split
+   duplicates no work, it only moves where the pieces are called from. */
+vec3 fog_sky_inscatter(vec3 sky_p)
 {
 	// The sky is ambient and has no preferred direction, so it keeps the
 	// isotropic phase rather than the medium's. Computed first for the same
@@ -970,47 +1003,117 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 	fog_debug_sky_term = sky_term;
 
 	/* pt_fog_isolate splits the two halves of the fog's lighting so each can be
-	   watched on its own, fully composited. Zeroing the sky here rather than at
-	   the end matters for 2: the sky term is ADDED to the light total at the
-	   bottom of this function, so a caller cannot subtract it back out.
-	   Returning early for 1 also skips the whole RIS loop and its rays. */
-	int fog_isolate = int(global_ubo.pt_fog_isolate);
-	if (fog_isolate == 2)
+	   watched on its own, fully composited. Zeroing the sky HERE rather than at
+	   the end matters for 2: the sky term is ADDED to the light total by every
+	   caller, so a caller cannot subtract it back out.
+
+	   Isolate 1 - "sky only" - is NOT handled here, because it is a statement
+	   about the LIGHT half (skip it, and the rays it costs) and this function no
+	   longer owns that half. Each caller applies it. */
+	if (int(global_ubo.pt_fog_isolate) == 2)
 	{
 		sky_term = vec3(0);
 		fog_debug_sky_term = sky_term;
 	}
-	else if (fog_isolate == 1)
-		return sky_term;
+
+	return sky_term;
+}
+
+/*
+=================
+THE RIS RESERVOIR
+
+Everything about "which of the cluster's lights is worth the one visibility ray"
+in a form that can be STORED and shared between froxels, which is what spatial
+reservoir reuse needs.
+
+  y      the chosen light's index, ~0u when the reservoir holds no sample
+  wsum   sum of the candidates' weights, w_i = p_hat_i / pdf_i
+  M      how many candidate DRAWS this reservoir represents - including draws
+         that scored zero, because the estimator's denominator counts attempts,
+         not successes
+  p_hat  the target function of y evaluated at the point that built this
+         reservoir, kept so a neighbour can reconstruct wsum = p_hat * W * M
+         without re-deriving it
+
+THE SAMPLE SPACE IS DISCRETE, AND THAT IS WHY THIS IS CHEAP TO SHARE. A
+reservoir holds a light INDEX, not a point on that light - the point is drawn
+afterwards, per cell, from that cell's own blue noise. Surface ReSTIR has to
+carry a Jacobian when a neighbour's sample is reinterpreted from a different
+shading point, because the sample lives in a continuous solid-angle domain that
+changes shape. An index does not: reusing "light 47" at a neighbouring froxel is
+exact, with no reparameterization and therefore no Jacobian at all.
+=================
+*/
+struct FogReservoir
+{
+	uint  y;
+	float wsum;
+	float M;
+	float p_hat;
+};
+
+FogReservoir fog_reservoir_empty()
+{
+	FogReservoir r;
+	r.y     = ~0u;
+	r.wsum  = 0.0;
+	r.M     = 0.0;
+	r.p_hat = 0.0;
+	return r;
+}
+
+/* The RIS weight: what the chosen sample's true contribution must be multiplied
+   by for the estimator to be unbiased. Zero for a reservoir that never found a
+   non-zero candidate, which is a legitimate outcome and not an error. */
+float fog_reservoir_W(FogReservoir r)
+{
+	return (r.M > 0.0 && r.p_hat > 0.0) ? (r.wsum / (r.M * r.p_hat)) : 0.0;
+}
+
+/* The target function of a given light at an ARBITRARY point.
+
+   Spatial reuse needs exactly this and the existing code did not expose it: the
+   MIS bias correction has to ask "what would light y have been worth at my
+   neighbour's own sample point", which means evaluating the target somewhere
+   other than where the reservoir was built. */
+float fog_target(uint light_idx, vec3 p, vec3 view_dir, float g)
+{
+	if (light_idx == ~0u)
+		return 0.0;
+
+	return volume_light_estimate(get_light_polygon(light_idx), p, view_dir, g);
+}
+
+/*
+=================
+fog_ris_initial
+
+The candidate loop, unchanged in behaviour and now callable on its own so a pass
+with no rays in it can do this work.
+
+ONE DIFFERENCE FROM THE CODE THIS REPLACES, AND IT IS NUMERICALLY INERT: the
+candidates' source pdf (1/count, uniform over the cluster list) is divided out
+HERE, inside wsum, instead of being multiplied back in at the W line. Both give
+W = wsum*count/(M*p_hat) exactly; the reservoir's selection test is a ratio of
+two weights and is untouched by scaling both. The point of moving it is that
+wsum then means the same thing in every reservoir, which is what makes two of
+them addable - a neighbour has no way to know the count its source cell used.
+=================
+*/
+FogReservoir fog_ris_initial(uint cluster_idx, vec3 p, vec3 view_dir, float g, uint seed)
+{
+	FogReservoir r = fog_reservoir_empty();
 
 	if (cluster_idx == ~0u)
-		return sky_term;
+		return r;
 
 	uint list_start = light_buffer.light_list_offsets[cluster_idx];
 	uint list_end   = light_buffer.light_list_offsets[cluster_idx + 1];
 
 	uint count = list_end - list_start;
 	if (count == 0)
-		return sky_term;
-
-	/* The medium's directionality, needed BEFORE the candidate loop because the
-	   RIS target function uses it.
-
-	   CLAMPED, and the clamp is not cosmetic. ScatterPhase_HenyeyGreenstein
-	   computes num/denom with num = 1 - abs(g) and
-	   denom = sqrt(1 - 2*g*cosa + g*g); at g = 1 looking straight at the light
-	   both are ZERO and the phase is 0/0 = NaN. A NaN reaches the froxel volume,
-	   the temporal history blends it with itself forever, and the tone mapper
-	   adapts to a frame containing NaN by going black - which does not clear
-	   when the cvar is put back, only on a restart. god_rays.comp already
-	   clamped its own copy to 0.95 for the sun term; this one did not.
-
-	   Negative g (back-scattering) is legal and useful, so the clamp is
-	   two-sided rather than a max(). */
-	float g = global_ubo.god_rays_eccentricity;
-	if (global_ubo.pt_fog_eccentricity >= 0.0)
-		g = global_ubo.pt_fog_eccentricity;
-	g = clamp(g, -0.95, 0.95);
+		return r;
 
 	fog_rng_state = seed;
 	fog_rand();   // one step off the seed, so neighbouring seeds do not correlate
@@ -1019,9 +1122,11 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 
 	uint M = uint(clamp(global_ubo.pt_fog_light_samples, 1.0, 32.0));
 
-	float wsum = 0.0;             // sum of the candidates' estimates
-	uint  chosen_idx = ~0u;
-	float chosen_estimate = 0.0;
+	// The DRAW count, set before the loop. A candidate that scores zero still
+	// consumed a draw, and leaving it out of the denominator would bias the
+	// estimator upwards by exactly the fraction of the list that contributes
+	// nothing - which on a big map is most of it.
+	r.M = float(M);
 
 	for (uint i = 0; i < M; i++)
 	{
@@ -1036,31 +1141,48 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 		if (estimate <= 0.0)
 			continue;
 
-		wsum += estimate;
+		/* Candidates are drawn UNIFORMLY from the cluster list, so each has
+		   source pdf 1/count and weight w_i = estimate_i * count. The RIS
+		   estimator is
 
-		// keep this one with probability estimate/wsum - the standard streaming
+		       f(x) / p_hat(x) * (1/M) * sum(w_i)
+
+		   which is f(x) * W with W = wsum / (M * p_hat). p_hat is
+		   volume_light_estimate, which need not match f at all - the ratio is
+		   what makes this unbiased. */
+		float w = estimate * float(count);
+
+		r.wsum += w;
+
+		// keep this one with probability w/wsum - the standard streaming
 		// reservoir update, so every candidate ends up held in proportion to its
 		// weight after a single pass
-		if (fog_rand() * wsum <= estimate)
+		if (fog_rand() * r.wsum <= w)
 		{
-			chosen_idx = light_idx;
-			chosen_estimate = estimate;
+			r.y     = light_idx;
+			r.p_hat = estimate;
 		}
 	}
 
-	if (chosen_idx == ~0u || chosen_estimate <= 0.0)
-		return sky_term;
+	return r;
+}
 
-	/* The reservoir weight.
+/*
+=================
+fog_shade_chosen
 
-	   Candidates were drawn UNIFORMLY from the cluster list, so each had source
-	   pdf 1/count and weight w_i = estimate_i * count. The RIS estimator is
+Everything downstream of "which light": draw a point on it, spend the one
+visibility ray, apply the phase function and the firefly clamp.
 
-	       f(x) / p_hat(x) * (1/M) * sum(w_i)
-
-	   which is f(x) * W with W as below. p_hat is volume_light_estimate, which
-	   need not match f at all - the ratio is what makes this unbiased. */
-	float W = (wsum * float(count)) / (float(M) * chosen_estimate);
+Split from the candidate loop so that the ReSTIR passes - which choose the light
+without tracing anything - can hand their answer straight to it. The light half
+only; the sky is fog_sky_inscatter's and the caller adds the two.
+=================
+*/
+vec3 fog_shade_chosen(vec3 p, vec3 view_dir, float g, vec3 rnd, uint chosen_idx, float W)
+{
+	if (chosen_idx == ~0u || !(W > 0.0))
+		return vec3(0);
 
 	LightPolygon light = get_light_polygon(chosen_idx);
 
@@ -1085,16 +1207,16 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 		                                       rnd.yz, light_normal, pdfw);
 		break;
 	default:
-		return sky_term;
+		return vec3(0);
 	}
 
 	if (pdfw <= 0.0)
-		return sky_term;
+		return vec3(0);
 
 	vec3 d = pos_light - p;
 	float dist = length(d);
 	if (dist < 1e-4)
-		return sky_term;
+		return vec3(0);
 
 	vec3 L = d / dist;
 
@@ -1103,7 +1225,7 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 	// relative brightness into the fog as onto a wall.
 	float profile = sqrt(max(0.0, -dot(light_normal, L)));
 	if (profile <= 0.0)
-		return sky_term;
+		return vec3(0);
 
 	// Occlusion. One ray, on the light RIS decided was worth it. See the header
 	// note: not gated on pt_fog_light_shadow. t_max stops short of the sampled
@@ -1119,7 +1241,7 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 
 		if (rayQueryGetIntersectionTypeEXT(shadow_rq, true)
 		    != gl_RayQueryCommittedIntersectionNoneEXT)
-			return sky_term;
+			return vec3(0);
 	}
 
 	// The phase function is applied PER LIGHT, about that light's own direction,
@@ -1150,7 +1272,35 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 			contribution *= firefly / lum;
 	}
 
-	return contribution + sky_term;
+	return contribution;
+}
+
+/*
+=================
+getVolumeLightInscatter  -  the whole of cl_fog 3 for one point.
+
+A composition of the three pieces above rather than one body, so that the froxel
+passes can take the same pieces apart and put a spatial reuse step in the
+middle. Unchanged in behaviour and unchanged in cost: one sky ray, one candidate
+loop, one visibility ray, in that order.
+
+This is still what the per-pixel march (pt_fog_froxel 0) calls, and what the
+grid calls when pt_fog_restir is off.
+=================
+*/
+vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir, vec3 rnd, uint seed)
+{
+	vec3 sky_term = fog_sky_inscatter(sky_p);
+
+	// "sky only" - skips the candidate loop and the visibility ray with it
+	if (int(global_ubo.pt_fog_isolate) == 1)
+		return sky_term;
+
+	float g = fog_eccentricity();
+
+	FogReservoir r = fog_ris_initial(cluster_idx, p, view_dir, g, seed);
+
+	return fog_shade_chosen(p, view_dir, g, rnd, r.y, fog_reservoir_W(r)) + sky_term;
 }
 
 // The scattering albedo at a point: the map's height-fog gradient, lerped by

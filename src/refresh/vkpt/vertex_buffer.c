@@ -292,8 +292,14 @@ static void build_model_blas(VkCommandBuffer cmd_buf, model_geometry_t* info, si
 		.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
 	};
 
+	/* Same invalid-stage bug as MEM_BARRIER_BUILD_ACCEL in path_tracer.c - see the
+	   long note there. On a ray QUERY device VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+	   is not a legal stage, and the consumers are compute shaders. */
 	vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1,
+		qvk.use_ray_query
+			? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+			: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+			                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT), 0, 1,
 		&barrier, 0, 0, 0, 0);
 }
 
@@ -386,9 +392,26 @@ vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh)
 	};
 	vkCmdCopyBuffer(cmd_buf, staging_buffer.buffer, qvk.buf_world.buffer, 1, &copyRegion);
 	
+	/* AN ACCELERATION STRUCTURE BUILD READS ITS VERTEX AND INDEX DATA AS
+	   SHADER_READ, NOT AS ACCELERATION_STRUCTURE_READ.
+
+	   ACCELERATION_STRUCTURE_READ covers reading the STRUCTURE; the geometry it is
+	   built FROM is an ordinary shader read at the build stage. With only the
+	   former, the copy above is not ordered against the build that consumes it,
+	   and validation reports it every time:
+
+	     vkCmdBuildAccelerationStructuresKHR(): READ_AFTER_WRITE hazard detected.
+	     ... reads vertex data VkBuffer [qvk.buf_world.buffer], which was
+	     previously written by vkCmdCopyBuffer ... it must allow
+	     VK_ACCESS_2_SHADER_READ_BIT accesses at
+	     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
+
+	   Same family as the invalid dstStageMask fixed in path_tracer.c: a barrier
+	   that looks present and does not cover the access it was written for. */
 	BUFFER_BARRIER(cmd_buf,
 		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-		.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+		.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
+		               | VK_ACCESS_SHADER_READ_BIT,
 		.buffer = qvk.buf_world.buffer,
 		.offset = 0,
 		.size = VK_WHOLE_SIZE,
@@ -1190,15 +1213,32 @@ vkpt_vertex_buffer_upload_models()
 
 				vkCmdCopyBuffer(cmd_buf, vbo->staging_buffer.buffer, vbo->buffer.buffer, 1, &copyRegion);
 
-				if (vbo->is_static)
-				{
-					BUFFER_BARRIER(cmd_buf,
-						.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-						.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-						.buffer = vbo->buffer.buffer,
-						.offset = 0,
-						.size = VK_WHOLE_SIZE);
-				}
+				/* THE BARRIER IS UNCONDITIONAL NOW, AND IT USED TO BE INSIDE
+				   `if (vbo->is_static)`.
+
+				   The three build_model_blas calls below are NOT conditional, so a
+				   non-static model went straight from the vkCmdCopyBuffer above
+				   into an acceleration structure build with no synchronisation of
+				   any kind between them. Validation reports exactly that:
+
+				     vkCmdBuildAccelerationStructuresKHR(): READ_AFTER_WRITE hazard
+				     ... reads vertex data ... previously written by vkCmdCopyBuffer
+
+				   `is_static` is a statement about how often the geometry changes,
+				   which has no bearing on whether this frame's copy has landed
+				   before this frame's build reads it - if anything the dynamic case
+				   needs it MORE, because it is the one that copies every frame.
+
+				   SHADER_READ is in the mask because an AS build reads its input
+				   geometry as an ordinary shader read at the build stage;
+				   ACCELERATION_STRUCTURE_READ covers reading the STRUCTURE, not the
+				   vertices it is built from. */
+				BUFFER_BARRIER(cmd_buf,
+					.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+					.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_READ_BIT,
+					.buffer = vbo->buffer.buffer,
+					.offset = 0,
+					.size = VK_WHOLE_SIZE);
 
 				build_model_blas(cmd_buf, &vbo->geom_opaque, vbo->vertex_data_offset, &vbo->buffer);
 				build_model_blas(cmd_buf, &vbo->geom_transparent, vbo->vertex_data_offset, &vbo->buffer);

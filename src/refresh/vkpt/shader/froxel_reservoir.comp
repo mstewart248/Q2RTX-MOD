@@ -1,0 +1,171 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/*
+==============================================================================
+
+FROXEL RESERVOIR - stage 1 of ReSTIR for the fog grid.
+
+Draws each cell's RIS candidates and writes the surviving reservoir.  That is
+all it does, and in particular IT TRACES NOTHING: the candidate loop is
+volume_light_estimate, which is deliberately ray-free.  So the whole of this
+pass is arithmetic over the cluster's light list, and the grid's ray budget is
+unchanged by adding it - still one sky ray and one visibility ray per cell, both
+spent in froxel_scatter.comp.
+
+WHY IT IS A PASS OF ITS OWN, rather than part of the scatter pass.  Spatial
+reuse has to read its neighbours' reservoirs, and a neighbour's reservoir does
+not exist until that neighbour's thread has run.  Splitting the choosing from
+the shading puts a barrier between them, which is the only way one cell can see
+another's answer.
+
+WHAT IS NOT HERE.  No temporal reservoir reuse.  The grid already carries a
+temporal exponential blend on the RADIANCE (froxel_scatter.comp), which is a
+different and complementary thing: the radiance blend averages results across
+frames, reservoir reuse would share the light CHOICE across frames.  Adding the
+second would raise M without bound and needs its own clamp and its own age
+tracking, so it is left for later - this pass exists to make the SPATIAL half
+work first, which is what was agreed.
+
+==============================================================================
+*/
+
+#version 460
+#extension GL_EXT_samplerless_texture_functions : enable
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+#extension GL_EXT_ray_query               : enable
+
+#include "constants.h"
+#include "utils.glsl"
+
+#define GOD_RAYS_DESC_SET_IDX 0
+#include "god_rays_shared.h"
+
+#define GLOBAL_UBO_DESC_SET_IDX 2
+#include "global_ubo.h"
+
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#define VERTEX_READONLY 1
+#include "vertex_buffer.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 3
+#include "global_textures.h"
+
+#include "froxel_shared.h"
+
+// fog_medium.glsl needs a rand(ivec2); seeded per cell exactly as the scatter
+// pass seeds it, because froxel_cell_sample below has to reproduce that pass's
+// jitter bit for bit.
+float rand(ivec2 pos)
+{
+	int texnum = global_ubo.current_frame_idx & (NUM_BLUE_NOISE_TEX - 1);
+	ivec2 texpos = pos & ivec2(BLUE_NOISE_RES - 1);
+	return texelFetch(TEX_BLUE_NOISE, ivec3(texpos, texnum), 0).r;
+}
+
+// No GetShadow here, deliberately. The scatter pass carries one for the SUN,
+// through the shadow map; this pass evaluates only volume_light_estimate, which
+// is ray-free and shadow-free by design, so a copy would be dead code that
+// happens to compile.
+const float PI = 3.1415926535;
+
+#define NORMALIZE_PHASE_FUNCTIONS 1
+
+float ScatterPhase_HenyeyGreenstein(float cosa, float g)
+{
+	float g_sqr = g * g;
+	float num = (1 - abs(g));
+	float denom = sqrt(max(1 - 2 * g * cosa + g_sqr, 0));
+	float frac = num / denom;
+	float scale = g_sqr + (1 - g_sqr) / (4 * PI);
+	return scale * (frac * frac * frac);
+}
+
+float vmin(vec3 v) { return min(v.x, min(v.y, v.z)); }
+float vmax(vec3 v) { return max(v.x, max(v.y, v.z)); }
+
+#include "fog_medium.glsl"
+
+// The reservoir this pass produces. froxel_spatial.comp reads it.
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 6, rgba32f) uniform writeonly image3D IMG_FROXEL_RESERVOIR_INITIAL;
+
+#include "froxel_sample.glsl"
+
+layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
+void main()
+{
+	ivec3 cell = ivec3(gl_GlobalInvocationID.xy, 0);
+
+	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y)
+		return;
+
+	// Only cl_fog 3 has a reservoir at all - mode 2's estimator is the strided
+	// subset in getClusterLightInscatter, which has no sample to share.
+	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 3);
+
+	uint cluster = (global_ubo.fog_camera_cluster < 0)
+	             ? ~0u : uint(global_ubo.fog_camera_cluster);
+
+	float g = fog_eccentricity();
+
+	float base_rand = rand(cell.xy);
+
+	for (int z = 0; z < FROXEL_GRID_Z; z++)
+	{
+		cell.z = z;
+
+		// The volume is not cleared between frames, so every cell must be
+		// written every frame or the spatial pass reads a stale neighbour.
+		if (!fog_lights)
+		{
+			imageStore(IMG_FROXEL_RESERVOIR_INITIAL, cell, FROXEL_RESERVOIR_EMPTY);
+			continue;
+		}
+
+		FroxelCellSample fs = froxel_cell_sample(cell, base_rand);
+
+		/* GATED ON DENSITY, exactly as the scatter pass is.
+
+		   A cell outside the fog band scatters nothing whatever light reaches
+		   it, so drawing candidates there would be pure cost. Writing an EMPTY
+		   reservoir is the honest answer and the spatial pass handles it
+		   correctly for free: an empty reservoir carries M = 0, contributes
+		   nothing to the combined weight AND nothing to the MIS denominator, so
+		   it is simply not one of the participating cells. That is the right
+		   semantics, not an approximation - the cell genuinely did not sample
+		   the light integral.
+
+		   Evaluated at the CELL CENTRE for the same reason the scatter pass
+		   does: density is a smooth analytic function and jittering it makes a
+		   far cell flicker in and out of the band. */
+		if (getDensity(fs.p_centre) <= 0.0)
+		{
+			imageStore(IMG_FROXEL_RESERVOIR_INITIAL, cell, FROXEL_RESERVOIR_EMPTY);
+			continue;
+		}
+
+		FogReservoir r = fog_ris_initial(cluster, fs.p, fs.view_dir, g, fs.seed);
+
+		imageStore(IMG_FROXEL_RESERVOIR_INITIAL, cell, vec4(
+			(r.y == ~0u) ? -1.0 : float(r.y),
+			fog_reservoir_W(r),
+			r.M,
+			r.p_hat));
+	}
+}

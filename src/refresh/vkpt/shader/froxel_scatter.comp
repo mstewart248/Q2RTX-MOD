@@ -135,68 +135,12 @@ layout(set = GOD_RAYS_DESC_SET_IDX, binding = 3) uniform sampler3D TEX_FROXEL_HI
    does not overwrite what this wrote. */
 layout(set = GOD_RAYS_DESC_SET_IDX, binding = 4, rgba16f) uniform image3D IMG_FROXEL_DEBUG_OUT;
 
-/*
-Froxel centre -> world position.
+// The reservoir the spatial pass settled on for this cell, when pt_fog_restir is
+// on. Read only - this pass never writes a reservoir. See froxel_sample.glsl for
+// the layout and froxel_spatial.comp for what put it there.
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 7, rgba32f) uniform readonly image3D IMG_FROXEL_RESERVOIR_FINAL;
 
-x and y are NDC across the screen; z is the exponential depth slice.  The jitter
-moves the sample point inside its own cell every frame, so what the temporal
-blend below accumulates is a stratified estimate of the cell rather than the
-same corner over and over.  Without it the volume converges to a grid of point
-samples and the banding stays.
-*/
-vec3 froxel_to_world(ivec3 cell, vec3 jitter)
-{
-	vec2 ndc = ((vec2(cell.xy) + jitter.xy) / vec2(FROXEL_GRID_X, FROXEL_GRID_Y)) * 2.0 - 1.0;
-
-	float view_depth = FROXEL_SLICE_TO_DEPTH(float(cell.z) + jitter.z);
-
-	/* Unproject to a view-space ray, then push it out to view_depth.
-
-	   TWO SIGN FACTS ABOUT THIS TREE, both settled by reading matrix.c rather
-	   than by convention:
-
-	   1. QUAKE II RTX'S VIEW SPACE IS +Z FORWARD.  create_view_matrix() puts
-	      viewaxis[0] - the FORWARD axis - in the matrix's z row, so
-	      view.z = dot(forward, world - vieworg), positive in front of the eye.
-	      create_projection_matrix() sets matrix[11] = 1, so clip.w = view.z,
-	      positive in front as well.
-
-	   2. invP STILL HANDS BACK A POINT WITH NEGATIVE z HERE.  The projection's
-	      z row is vestigial in a path tracer - projection.glsl only ever uses
-	      clip.xy/clip.w and computes distance separately - and solving
-	      clip.z == 0 against it gives view.z = -2fn/(f+n), which is negative.
-
-	   So the unprojected point really does come back behind the camera, and the
-	   old `view_dir /= max(abs(view_dir.z), 1e-6)` did NOT correct for that:
-	   dividing by the MAGNITUDE leaves z at -1, so every froxel in the grid was
-	   placed behind the eye AND mirrored in x and y (dividing by a negative
-	   number flips the x/y signs too).  The whole volume sampled the medium at
-	   positions reflected through the camera - wrong densities, wrong shadow-map
-	   texels, wrong distances to every light.
-
-	   Negating the whole vector is the correct repair and preserves the NDC it
-	   was built from: ndc.x = (P00*vx + P20*vz)/vz is a ratio of linear terms,
-	   so it is invariant under scaling by ANY non-zero factor, negative included.
-
-	   The ray is then NORMALIZED rather than scaled to z == 1, which makes this
-	   grid's z axis a RADIAL distance.  That is deliberate: god_rays_filter.comp
-	   looks the volume up with PT_VIEW_DEPTH_A, and primary_rays.rgen writes that
-	   from projection_view_to_screen(), whose `distance` output is
-	   length(view_pos) - radial, not planar.  Building the grid on planar depth
-	   while reading it back with a radial one sampled the wrong slice everywhere
-	   except dead centre, by up to ~1.4x out at the screen corners. */
-	vec4 view_h = global_ubo.invP * vec4(ndc, 0.0, 1.0);
-	vec3 view_dir = view_h.xyz / view_h.w;
-
-	if (view_dir.z < 0.0)
-		view_dir = -view_dir;
-
-	view_dir = normalize(view_dir);
-
-	vec3 view_pos = view_dir * view_depth;
-
-	return (global_ubo.invV * vec4(view_pos, 1.0)).xyz;
-}
+#include "froxel_sample.glsl"
 
 /*
 World position -> the UVW that samples the PREVIOUS frame's volume.
@@ -305,11 +249,17 @@ void main()
 			continue;
 		}
 
-		float r1 = fract(base_rand + float(z) * 0.6180339887);
-		float r2 = fract(base_rand + float(z) * 0.3247179572);
-		float r3 = fract(base_rand + float(z) * 0.7548776662);
+		/* Where this cell sits and where it takes its sample. Derived in
+		   froxel_sample.glsl rather than here, because the reservoir and spatial
+		   passes have to reproduce it EXACTLY - ReSTIR's bias correction
+		   evaluates a neighbour's target function at that neighbour's own
+		   jittered point, so two passes disagreeing about where a cell sampled
+		   would silently stop the estimator being unbiased. */
+		FroxelCellSample fs = froxel_cell_sample(cell, base_rand);
 
-		vec3 world_pos = froxel_to_world(cell, vec3(r1, r2, r3));
+		float r1 = fs.light_rnd.x;
+
+		vec3 world_pos = fs.p;
 
 		/* THE HISTORY IS LOOKED UP AT THE CELL CENTRE, NEVER AT THE JITTERED
 		   SAMPLE POINT, and that distinction is the difference between fog that
@@ -337,7 +287,7 @@ void main()
 		   slice coordinate z + 0.5, which are precisely the texel centres, so
 		   the trilinear fetch returns that one texel and nothing else. When the
 		   camera does move, resampling is genuine and correct. */
-		vec3 world_pos_history = froxel_to_world(cell, vec3(0.5));
+		vec3 world_pos_history = fs.p_centre;
 
 		/* THE MEDIUM IS EVALUATED AT THE CELL CENTRE, NOT AT THE JITTERED POINT,
 		   and this is what makes distant fog survive the temporal blend.
@@ -392,9 +342,7 @@ void main()
 			vec3 albedo = getFogColor(world_pos_history);
 
 			// The view direction at this cell, for the sun's phase function.
-			vec3 to_cell = world_pos - global_ubo.cam_pos.xyz;
-			float cell_dist = length(to_cell);
-			vec3 view_dir = (cell_dist > 1e-4) ? to_cell / cell_dist : vec3(0, 0, 1);
+			vec3 view_dir = fs.view_dir;
 
 			float eccentricity = global_ubo.god_rays_eccentricity;
 			if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_eccentricity >= 0.0)
@@ -448,37 +396,55 @@ void main()
 					// these rays per STEP of every pixel; here it is once per
 					// CELL, which is roughly a fortieth of the work, and the
 					// temporal history averages the sampling noise away.
-					/* r2 and r3 CANNOT be used to place a point on an area
-					   light, even though they are perfectly good for picking
-					   which light. They come from ONE blue-noise fetch stepped
-					   by two different golden-ratio increments, so for a fixed
-					   slice the pair (r2, r3) is a deterministic function of
-					   the single value base_rand: as it varies across the
-					   screen the pair traces a LINE through the unit square
-					   rather than filling it. Feeding that to
-					   sample_projected_triangle would sample every light along
-					   one diagonal of its surface and show up as structure, not
-					   as noise a filter can remove.
+					vec3 light_rnd = fs.light_rnd;
+					uint seed = fs.seed;
 
-					   Two independent fetches instead. The offsets are
-					   arbitrary and just have to land somewhere uncorrelated in
-					   the blue-noise texture; z is folded in so the samples
-					   also decorrelate down the column. */
-					vec3 light_rnd = vec3(r1,
-						rand(cell.xy + ivec2(z * 29 + 101, z * 17 + 53)),
-						rand(cell.xy + ivec2(z * 41 + 197, z * 23 + 149)));
+					/* WHERE THE LIGHT COMES FROM: this cell's own candidate
+					   loop, or the one the spatial pass settled on.
 
-					uint seed = uint(cell.x) * 73856093u
-					          ^ uint(cell.y) * 19349663u
-					          ^ uint(cell.z) * 83492791u
-					          ^ uint(global_ubo.current_frame_idx) * 2654435761u;
+					   With pt_fog_restir off this is exactly what it has
+					   always been - RIS over M candidates drawn here, one
+					   visibility ray on the winner.
+
+					   With it on, the choosing has already happened: the
+					   reservoir pass drew this cell's candidates and the
+					   spatial pass combined them with a few neighbours', so
+					   what arrives here is a light index and the weight that
+					   makes using it unbiased. THE RAY BUDGET IS IDENTICAL
+					   either way - one sky ray and one visibility ray per
+					   cell - because neither of those passes traces anything.
+					   ReSTIR buys variance, not rays, and pays in bandwidth.
+
+					   The visibility ray is still traced HERE, on the sample
+					   the spatial pass chose, and that is what keeps the
+					   result unbiased: a neighbour's shadow result is never
+					   reused, only its choice of light. */
+					vec3 vol_inscatter;
+
+					if (global_ubo.pt_fog_restir > 0.0)
+					{
+						vec4 res = imageLoad(IMG_FROXEL_RESERVOIR_FINAL, cell);
+
+						uint  y = (res.x < 0.0) ? ~0u : uint(res.x);
+						float W = res.y;
+
+						vol_inscatter = fog_sky_inscatter(world_pos_history);
+
+						if (int(global_ubo.pt_fog_isolate) != 1)
+							vol_inscatter += fog_shade_chosen(world_pos, view_dir,
+								fog_eccentricity(), light_rnd, y, W);
+					}
+					else
+					{
+						vol_inscatter = getVolumeLightInscatter(cluster, world_pos,
+							world_pos_history, view_dir, light_rnd, seed);
+					}
 
 					// pt_fog_vol_scale, not pt_fog_light_scale: mode 3 has no
 					// knee crushing the total, so it sits at a different level
 					// entirely and sharing one cvar would mean retuning mode 2
 					// every time the two are compared.
-					inscatter += getVolumeLightInscatter(cluster, world_pos, world_pos_history, view_dir, light_rnd, seed)
-					           * global_ubo.pt_fog_vol_scale * 0.005;
+					inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005;
 				}
 				else
 				{
@@ -715,6 +681,85 @@ void main()
 					   than is useful, so nothing legitimate is lost by refusing
 					   the last hundredth. */
 					float w = clamp(global_ubo.pt_fog_froxel_history, 0.0, 0.99);
+
+					/* THE WEIGHT IS PER FRAME, SO WITHOUT THIS THE FOG CONVERGES
+					   AT WHATEVER RATE THE MACHINE HAPPENS TO RUN AT.
+
+					   An exponential moving average with a fixed per-frame weight
+					   has a time constant measured in FRAMES: at w = 0.95 it
+					   averages over about 20 of them, which is a third of a second
+					   at 60 fps and a full second at 20. So the same cvar produces
+					   a different LOOK on a fast machine and a slow one, and on one
+					   machine it changes whenever the frame rate does.
+
+					   That is the "if the framerate is starved the sky fog does not
+					   always render, or fades out in bands" report. The volume is
+					   simply still climbing towards its fixed point when it is
+					   displayed. It reads as BANDS rather than as noise because the
+					   grid is only 160x88x128 and is sampled trilinearly - cells
+					   that have not converged to the same value yet are smoothed
+					   into each other, so what shows up is a soft gradient across a
+					   row or a slice, not per-pixel static.
+
+					   DLSS frame generation makes it worse in a specific and
+					   avoidable way: FG doubles the DISPLAYED rate while HALVING
+					   the rate this pass runs at, so every un-converged state of
+					   the volume is on screen for twice as long as the frame that
+					   produced it. The volumetric term has no motion vector of its
+					   own for FG to interpolate either, but that is a separate
+					   problem - this one is just arithmetic.
+
+					   The fix is to hold the TIME constant fixed instead of the
+					   frame constant. Surviving fraction per second is w^rate, so
+					   to keep that equal at any dt the per-frame weight has to be
+
+					       w' = w ^ (dt / dt_ref)
+
+					   which is the identity that makes the two agree at the
+					   reference rate and compensates exactly either side of it. At
+					   30 fps it becomes 0.95^2 = 0.9025 - forgetting twice as fast
+					   per frame, at half as many frames, for the same one-third of
+					   a second.
+
+					   pt_fog_froxel_history_hz is that reference rate, and 0
+					   disables the correction and restores the raw per-frame weight
+					   for A/B. The dt <= 0 guard matters: a paused frame or the
+					   very first one gives pow(w, 0) == 1, which is exactly the
+					   frozen-volume failure the clamp above exists to prevent.
+
+					   THE CORRECTION IS ONE-SIDED - min(), not the bare pow - AND
+					   THAT IS NOT A ROUNDING NICETY.
+
+					   Above the reference rate the identity wants to RAISE w: fewer
+					   milliseconds per frame, so keep more history per frame. Doing
+					   that is actively harmful here, because this volume's history
+					   round trip LOSES a few percent per frame even at a dead-still
+					   camera, and raising w amplifies that loss. With a survival
+					   fraction k per round trip the blend settles at
+
+					       h = (1 - w) * raw / (1 - w * k)
+
+					   so at the measured k of about 0.9 the fog holds ~35% of its
+					   true value at w = 0.95 and only ~20% at w = 0.985 - which is
+					   what an uncapped 100+ fps turns 0.95 into. Measured standing
+					   still on mgu5m1: 49% of the fog lost with this correction
+					   off, 62% with it on. The leak is there either way (it
+					   reproduces on the commit before any of this existed) - the
+					   correction was making it worse.
+
+					   Below the reference rate the identity LOWERS w, and that
+					   direction is both the one that was asked for - "the fog does
+					   not always render when the framerate is starved" - and the
+					   safe one, since a smaller w reduces the amplification too.
+
+					   So: speed the blend up when frames are slow, never slow it
+					   down when they are fast. THE LEAK ITSELF IS A SEPARATE,
+					   PRE-EXISTING BUG AND THIS DOES NOT FIX IT. */
+					float ref_hz = global_ubo.pt_fog_froxel_history_hz;
+					float dt     = global_ubo.fog_frame_time;
+
+					if (ref_hz > 0.0 && dt > 0.0)
+						w = clamp(min(w, pow(w, dt * ref_hz)), 0.0, 0.99);
 
 					result = mix(result, history, w);
 				}

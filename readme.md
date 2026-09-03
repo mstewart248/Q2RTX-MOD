@@ -64,6 +64,36 @@ You can download functional builds of the game from [GitHub Builds](https://gith
 Latest development builds can be found in the [Actions](https://github.com/NVIDIA/Q2RTX/actions/workflows/build.yml) tab.
 To run a development build, download the artifact, extract it and put `q2rtx_media.pkz`, `blue_noise.pkz` and the `pak*.pak` files from the original game into `baseq2/`.
 
+## Playing the rerelease campaign
+
+The rerelease content is loaded from the `rerelease` game directory, and you no
+longer have to unpack anything to get it there. Copy the whole `rerelease`
+folder out of your *Quake II* (2023 rerelease) install and merge it into this
+one, so it sits alongside `baseq2`:
+
+```
+Q2RTX/
+  baseq2/            <- original Quake II pak files, as usual
+  rerelease/         <- copied from <Quake II install>/rerelease
+    Q2Game.kpf         (localisation, read straight from the archive)
+    baseq2/
+      pak0.pak         (all rerelease maps, models, textures and sounds)
+      music/
+      video/
+```
+
+On Steam the source folder is
+`steamapps/common/Quake 2/rerelease`; the `.exe` and `.dll` files it contains
+are ignored and can be left in place or deleted. Then launch with
+`+set game rerelease`, or pick the rerelease campaign from the menu.
+
+Unpacking `pak0.pak` by hand still works exactly as before, and loose files
+always take priority over the archives, so anything this project ships in
+`rerelease/overrides`, `rerelease/materials`, `rerelease/textures` or
+`rerelease/models` continues to override the shipped data either way. Run
+`path` in the console to see the resulting search order, and
+`whereis <file>` to check which archive or directory a given file came from.
+
 ## Additional Information
 
   * [Announcement Article](https://www.nvidia.com/en-us/geforce/news/quake-ii-rtx-ray-tracing-vulkan-vkray-geforce-rtx/)
