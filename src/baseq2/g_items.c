@@ -974,6 +974,7 @@ void droptofloor(edict_t *ent)
     trace_t     tr;
     vec3_t      dest;
     float       *v;
+    vec3_t      fixed;
 
     v = tv(-15, -15, -15);
     VectorCopy(v, ent->mins);
@@ -995,11 +996,23 @@ void droptofloor(edict_t *ent)
     if (tr.startsolid) {
         // A trigger-spawned item stays hidden until something reveals it, so mappers
         // park it inside scenery on purpose. Deleting it there breaks the map: mgu2m3
-        // would lose the yellow key that opens its exit. Leave it where the map put
-        // it. (The rerelease instead nudges it clear with G_FixStuckObject, which is
-        // not ported here.)
+        // would lose the yellow key that opens its exit. Leave it where the map put it.
         if (ent->spawnflags & ITEM_TRIGGER_SPAWN)
             goto placed;
+
+        // Otherwise do what the rerelease does and nudge it out of whatever it is
+        // buried in, rather than deleting it. The mask matches the rerelease's
+        // G_GetClipMask for an item mid-droptofloor (MASK_SHOT, minus DEADMONSTER,
+        // minus MONSTER|PLAYER because solid is SOLID_TRIGGER) == MASK_SOLID, so an
+        // item this cannot place is one the rerelease deletes too. mgu5m1 keeps two
+        // item_health_small it used to lose this way.
+        VectorCopy(ent->s.origin, fixed);
+        if (G_FixStuckObject(ent, fixed, MASK_SOLID) != STUCK_NO_GOOD_POSITION) {
+            gi.dprintf("droptofloor: fixed stuck %s at %s\n", ent->classname, vtos(ent->s.origin));
+            VectorCopy(fixed, ent->s.origin);
+            goto placed;
+        }
+
         gi.dprintf("droptofloor: %s startsolid at %s\n", ent->classname, vtos(ent->s.origin));
         G_FreeEdict(ent);
         return;

@@ -1470,6 +1470,13 @@ typedef struct entity_state_s {
     // delta compressor relies on. Quantized to 1/16 on the wire (U_SCALE), so
     // the usable range is 0 .. 15.9375; mgu6m3's Modir is 5.5.
     float   scale;
+
+    // [rerelease] per-entity alpha scalar, same 0-means-unset convention as
+    // scale above (0 renders fully opaque, not fully invisible). Quantized to
+    // 1/255 on the wire (U_ALPHA). The client turns anything in 0 < a < 1 into
+    // RF_TRANSLUCENT + entity_t.alpha, which both back ends already honour for
+    // brush models as well as meshes.
+    float   alpha;
 } entity_state_t;
 
 //==============================================

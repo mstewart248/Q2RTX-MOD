@@ -991,6 +991,16 @@ void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
 // g_utils.c
 //
 bool    KillBox(edict_t *ent);
+
+// [Paril-KEX] G_FixStuckObject: nudge an object spawned inside solid back out.
+// Ported from G_FixStuckObject_Generic in src/rerelease/p_move.cpp.
+typedef enum {
+    STUCK_NO_GOOD_POSITION,
+    STUCK_FIXED,
+    STUCK_GOOD_POSITION
+} stuck_result_t;
+
+stuck_result_t G_FixStuckObject(edict_t *self, vec3_t check, int mask);
 void    G_ProjectSource(const vec3_t point, const vec3_t distance, const vec3_t forward, const vec3_t right, vec3_t result);
 edict_t *G_Find(edict_t *from, int fieldofs, char *match);
 edict_t *findradius(edict_t *from, vec3_t org, float rad);
@@ -1561,6 +1571,10 @@ struct edict_s {
     // [rerelease] fired every time this monster is hurt, and once more when it
     // dies. 18 bosses in the shipped maps carry it.
     char        *healthtarget;
+    // [rerelease] handed to the item this monster drops on death (the "item"
+    // key), so picking that item up fires it. NOT the name of the item to drop
+    // - see monster_death_use().
+    char        *itemtarget;
     char        *combattarget;
     edict_t     *target_ent;
 

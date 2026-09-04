@@ -67,59 +67,62 @@ color disabled #7f7f7f
 begin environment
     background #212F3CD0
     style --compact
-    pairs --status "rerelease: every map that ships a skybox uses it, except boss2 which keeps the Q2RTX space sky" \
+    pairs --status "rerelease: every map that ships a skybox uses it, except boss2 which keeps the Q2RTX space sky (sky_type)" \
         "sky type" sky_type "rerelease" 0 "original env.map" 1 earth 2 stroggos 3
     // EV stops only mean something against the procedural sky's own sun and
     // atmosphere. When the map's own skybox is what gets rendered, its light is
     // controlled from Video > sky light instead. sky_procedural_active is
     // published by the renderer - it depends on the loaded map, not just cvars.
     ifeq sky_procedural_active 1
-        range -f "%+.1f EV" "sun and sky brightness" physical_sky_brightness -10 2 0.1
+        range -f "%+.1f EV" --status "brightness of the PHYSICAL sky and its sun - raises the light it casts, and the sky with it. A map that draws its own skybox is controlled by the map sky settings shown here instead (physical_sky_brightness)" \
+            "physical sky brightness" physical_sky_brightness -10 2 0.1
+        range --status "how bright the PHYSICAL sky LOOKS - does not change the light it casts. Separate from map sky brightness on purpose: a value tuned to stop a map's skybox blowing out has no business dimming a procedural atmosphere (pt_physical_sky_brightness)" \
+            "physical sky appearance" pt_physical_sky_brightness 0 2 0.05
     endif
     // This map draws its own skybox rather than the procedural sky, so the EV
     // stops above mean nothing and these two are what control it. They used to
     // live in the video menu with a signpost here pointing at them, which put
     // the two halves of one decision in two different places.
     ifeq sky_procedural_active 0
-        range --status "radiance of the map's own skybox - raises the light it casts into the level, and the sky with it" \
-            "sky light" pt_sky_light_scale 0 3 0.1
-        range --status "how bright the skybox LOOKS - does not change the light it casts" \
-            "sky brightness" pt_sky_brightness 0 2 0.1
+        range --status "radiance of the MAP's own skybox - raises the light it casts into the level, and the sky with it (pt_sky_light_scale)" \
+            "map sky light" pt_sky_light_scale 0 3 0.1
+        range --status "how bright the MAP's skybox LOOKS - does not change the light it casts (pt_sky_brightness)" \
+            "map sky brightness" pt_sky_brightness 0 2 0.1
     endif
-    pairs "time of day" sun_preset "custom" 0 "current time" 1 "12x current time" 2 "night" 3 "dawn" 4 "morning" 5 "noon" 6 "evening" 7 "dusk" 8
+    pairs --status "physical sky only - a map drawing its own skybox has no sun to move (sun_preset)" "time of day" sun_preset "custom" 0 "current time" 1 "12x current time" 2 "night" 3 "dawn" 4 "morning" 5 "noon" 6 "evening" 7 "dusk" 8
     bind "next time of day key" next_sun
     blank
-    range -f "%.0f deg" --status "only effective in custom time of day mode" "sun elevation" sun_elevation -20 90 1
-    range -f "%.0f deg" --status "only effective in custom time of day mode" "sun azimuth" sun_azimuth -20 380 5
-    pairs --status "only effective in custom time of day mode" "control sun with gamepad" sun_gamepad off 0 "left stick" 1 "right stick" 2
+    range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_elevation)" "physical sky sun elevation" sun_elevation -20 90 1
+    range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_azimuth)" "physical sky sun azimuth" sun_azimuth -20 380 5
+    pairs --status "only effective in custom time of day mode (sun_gamepad)" "control sun with gamepad" sun_gamepad off 0 "left stick" 1 "right stick" 2
     blank
-    toggle "clouds" physical_sky_draw_clouds
+    toggle --status "physical sky only (physical_sky_draw_clouds)" "physical sky clouds" physical_sky_draw_clouds
     blank
-    range -f "%.1f deg" --status "latitude to compute the sun position in automatic mode" "latitude" sun_latitude -90 90 2
+    range -f "%.1f deg" --status "physical sky only - latitude used to compute the sun position in automatic mode (sun_latitude)" "physical sky latitude" sun_latitude -90 90 2
     blank
 end
 
 begin resolution
     background #212F3CD0
     style --compact
-	toggle "dynamic resolution scaling" drs_enable
+	toggle --status "(drs_enable)" "dynamic resolution scaling" drs_enable
 	blank
-	range -f "%.0f FPS" --status "only effective in dynamic mode" "target frames per second" drs_target 30 250 1
-	range -f "%.0f%%" --status "only effective in dynamic mode" "minimum scale" drs_minscale 25 100 5
-	range -f "%.0f%%" --status "only effective in dynamic mode" "maximum scale" drs_maxscale 50 150 5
+	range -f "%.0f FPS" --status "only effective in dynamic mode (drs_target)" "target frames per second" drs_target 30 250 1
+	range -f "%.0f%%" --status "only effective in dynamic mode (drs_minscale)" "minimum scale" drs_minscale 25 100 5
+	range -f "%.0f%%" --status "only effective in dynamic mode (drs_maxscale)" "maximum scale" drs_maxscale 50 150 5
 	blank
-    range -f "%.0f%%" "fixed resolution scale" viewsize 25 200 5
+    range --status "(viewsize)" -f "%.0f%%" "fixed resolution scale" viewsize 25 200 5
 end
 
 begin hdr
     background #212F3CD0
     style --compact
     title "HDR Settings"
-    toggle "Enable HDR" vid_hdr
+    toggle --status "(vid_hdr)" "Enable HDR" vid_hdr
     blank
-    range -f "%.0f nits" "peak brightness" tm_hdr_peak_nits 100 2000 10
-    range -f "%.0f nits" "UI brightness" ui_hdr_nits 100 2000 10
-    range -f "%.0f%%" "Saturation adjustment" tm_hdr_saturation_scale 0 200 5
+    range --status "(tm_hdr_peak_nits)" -f "%.0f nits" "peak brightness" tm_hdr_peak_nits 100 2000 10
+    range --status "(ui_hdr_nits)" -f "%.0f nits" "UI brightness" ui_hdr_nits 100 2000 10
+    range --status "(tm_hdr_saturation_scale)" -f "%.0f%%" "Saturation adjustment" tm_hdr_saturation_scale 0 200 5
 end
 
 begin photomode
@@ -127,16 +130,16 @@ begin photomode
     style --compact
     title "Photo Mode Settings"
     blank
-    pairs "enable photo mode" pt_accumulation_rendering no 0 yes 1 "yes, hide GUI immediately" 2
+    pairs --status "(pt_accumulation_rendering)" "enable photo mode" pt_accumulation_rendering no 0 yes 1 "yes, hide GUI immediately" 2
     bind "activation key" pause
-    toggle "show pause plaque" scr_showpause
+    toggle --status "(scr_showpause)" "show pause plaque" scr_showpause
     blank
-    range -f "%.0f" "number of frames to accumulate" pt_accumulation_rendering_framenum 100 8000 100
+    range --status "(pt_accumulation_rendering_framenum)" -f "%.0f" "number of frames to accumulate" pt_accumulation_rendering_framenum 100 8000 100
     blank
-    toggle "free camera" pt_freecam
-    toggle "depth of field" pt_dof
-    pairs "camera aperture shape" pt_aperture_type circle 0 triangle 3 square 4 pentagon 5 hexagon 6 heptagon 7 octagon 8
-    range -p -f "%.0f%%" "aperture rotation" pt_aperture_angle 0 1 0.1
+    toggle --status "(pt_freecam)" "free camera" pt_freecam
+    toggle --status "(pt_dof)" "depth of field" pt_dof
+    pairs --status "(pt_aperture_type)" "camera aperture shape" pt_aperture_type circle 0 triangle 3 square 4 pentagon 5 hexagon 6 heptagon 7 octagon 8
+    range --status "(pt_aperture_angle)" -p -f "%.0f%%" "aperture rotation" pt_aperture_angle 0 1 0.1
 end
 
 begin video
@@ -144,24 +147,24 @@ begin video
     background #212F3CD0
     style --compact
     banner m_banner_video
-	pairs "renderer" vid_rtx opengl 0 rtx 1
-    values -s "use LEFT and RIGHT keys to select" "video mode" vid_fullscreen windowed $$vid_modelist
-    values "aspect ratio" cl_adjustfov 4:3 auto
-    pairs "full screen display" vid_display $vid_displaylist
-    toggle "vertical sync" vid_vsync
-    pairs "FPS counter" scr_fps "off" 0 "show FPS" 1 "show FPS and resolution scale" 2
-    range -f "%.0f deg" "field of view" fov 60 120 5
+	pairs --status "(vid_rtx)" "renderer" vid_rtx opengl 0 rtx 1
+    values -s "use LEFT and RIGHT keys to select (vid_fullscreen)" "video mode" vid_fullscreen windowed $$vid_modelist
+    values --status "(cl_adjustfov)" "aspect ratio" cl_adjustfov 4:3 auto
+    pairs --status "(vid_display)" "full screen display" vid_display $vid_displaylist
+    toggle --status "(vid_vsync)" "vertical sync" vid_vsync
+    pairs --status "(scr_fps)" "FPS counter" scr_fps "off" 0 "show FPS" 1 "show FPS and resolution scale" 2
+    range --status "(fov)" -f "%.0f deg" "field of view" fov 60 120 5
     blank
 
     ifeq vid_rtx 1
         action "resolution scaling options..." pushmenu resolution
         action "HDR options..." pushmenu hdr
         blank
-        range -f "%+.1f EV" "exposure bias (brightness)" tm_exposure_bias -5 0 0.1
-        range -p -f "%.0f%%" "contrast" tm_reinhard 0 1 0.1
-		range "texture LOD bias" pt_texture_lod_bias -2 2 0.5
-        pairs "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
-        pairs "DLSS 2.0" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
+        range --status "(tm_exposure_bias)" -f "%+.1f EV" "exposure bias (brightness)" tm_exposure_bias -5 0 0.1
+        range --status "(tm_reinhard)" -p -f "%.0f%%" "contrast" tm_reinhard 0 1 0.1
+		range --status "(pt_texture_lod_bias)" "texture LOD bias" pt_texture_lod_bias -2 2 0.5
+        pairs --status "(flt_taa)" "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
+        pairs --status "(pt_dlss)" "DLSS 2.0" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
         // Ray Reconstruction REPLACES DLSS's denoiser, so it is meaningless without
         // DLSS itself. This is a NESTED condition inside `ifeq vid_rtx 1`; see
         // menuConditionSet_t in ui.h.
@@ -183,58 +186,58 @@ begin video
         // and the present path in main.c. Deferred deliberately; when it lands,
         // move the endif below back to just after Ray-Reconstruction.
         ifneq pt_dlss 0
-        pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser below OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had." \
+        pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser below OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had. (pt_dlss_dldn)" \
             "DLSS Ray-Reconstruction" pt_dlss_dldn off 0 on 1
-        pairs --status "generates extra frames between rendered ones. Needs DLSS on. Pick the multiplier so base framerate x multiplier is about your refresh rate - so a HEAVIER scene wants a HIGHER multiplier, not a lower one (60Hz: 2x at 30fps base, 3x at 20, 4x at 15, 6x at 10). Check the base rate with pt_dlss_fg_stats 1. With vsync ON the presented rate is capped at refresh instead, and 2x is all that helps. Turn Reflex on with this." "DLSS Frame Generation" pt_dlss_fg off 0 2x 2 3x 3 4x 4 5x 5 6x 6
+        pairs --status "generates extra frames between rendered ones. Needs DLSS on. Pick the multiplier so base framerate x multiplier is about your refresh rate - so a HEAVIER scene wants a HIGHER multiplier, not a lower one (60Hz: 2x at 30fps base, 3x at 20, 4x at 15, 6x at 10). Check the base rate with pt_dlss_fg_stats 1. With vsync ON the presented rate is capped at refresh instead, and 2x is all that helps. Turn Reflex on with this. (pt_dlss_fg)" "DLSS Frame Generation" pt_dlss_fg off 0 2x 2 3x 3 4x 4 5x 5 6x 6
         endif
-        pairs --status "NVIDIA Reflex. Stops the CPU queueing frames ahead of the GPU, which is where most input lag comes from. Measured here: 16ms down to 3ms without frame generation. Leave it on. Boost also holds GPU clocks up - more power, marginal gain." "NVIDIA Reflex" pt_reflex off 0 on 1 "on + boost" 2
-        range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off." "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
-        pairs "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 BeforeTransparent 16 RayLengthDiffuse 17 raylengthSpecular 18 transparent 19 PT_MOTION 20 DLSS_MOTION 21 ASVGF_HIST_COLOR_HF 22 ShadingPosition 23 FlatColor 24 FlatMotion 25 TAA_Output 26 PT_THROUGHPUT 27 BOUNCE_THROUGHPUT 28 HQ_COLOR_INTERLEAVED 29 Reflected_Albedo 30 COLOR_LF 31 COLOR_HF 32 COLOR_SPEC 33 GEO_NORMAL 34 VISBUF_B 35 VISBUF_A 36 VISBUF_BARY_B 37 VISBUF_BARY_A 38 BASECOLOR_B 39 BASECOLOR_A 40 METALLIC_B 41 METALLIC_A 42 DEPTH_B 43 DEPTH_A 44
-        toggle "AMD FSR 1.0" flt_fsr_enable
-        range --status "lower is sharper" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01        
-        pairs "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2
-        pairs "reflection/refraction depth" pt_reflect_refract off 0 1 1 2 2 4 4 8 8
-		toggle --status "turn some monitors in the game into security camera views" \
+        pairs --status "NVIDIA Reflex. Stops the CPU queueing frames ahead of the GPU, which is where most input lag comes from. Measured here: 16ms down to 3ms without frame generation. Leave it on. Boost also holds GPU clocks up - more power, marginal gain. (pt_reflex)" "NVIDIA Reflex" pt_reflex off 0 on 1 "on + boost" 2
+        range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off. (pt_reflex_fps_max)" "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
+        pairs --status "(pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 BeforeTransparent 16 RayLengthDiffuse 17 raylengthSpecular 18 transparent 19 PT_MOTION 20 DLSS_MOTION 21 ASVGF_HIST_COLOR_HF 22 ShadingPosition 23 FlatColor 24 FlatMotion 25 TAA_Output 26 PT_THROUGHPUT 27 BOUNCE_THROUGHPUT 28 HQ_COLOR_INTERLEAVED 29 Reflected_Albedo 30 COLOR_LF 31 COLOR_HF 32 COLOR_SPEC 33 GEO_NORMAL 34 VISBUF_B 35 VISBUF_A 36 VISBUF_BARY_B 37 VISBUF_BARY_A 38 BASECOLOR_B 39 BASECOLOR_A 40 METALLIC_B 41 METALLIC_A 42 DEPTH_B 43 DEPTH_A 44
+        toggle --status "(flt_fsr_enable)" "AMD FSR 1.0" flt_fsr_enable
+        range --status "lower is sharper (flt_fsr_sharpness)" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01        
+        pairs --status "(pt_num_bounce_rays)" "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2
+        pairs --status "(pt_reflect_refract)" "reflection/refraction depth" pt_reflect_refract off 0 1 1 2 2 4 4 8 8
+		toggle --status "turn some monitors in the game into security camera views (pt_cameras)" \
             "security cameras" pt_cameras
-        toggle "caustics" pt_caustics
-        toggle "god rays" gr_enable
-        pairs --status "the rerelease's own map lights. \"all maps\" ignores the cl_dynamic_lights_exclude list, which skips mguhub by default" \
-            "map lights" cl_dynamic_lights "off" 0 "all maps" 1 "all but excluded" 2
-        range --status "brightness of the rerelease's map lights" \
+        toggle --status "(pt_caustics)" "caustics" pt_caustics
+        toggle --status "(gr_enable)" "god rays" gr_enable
+        pairs --status "light the map's own dynamic_lights that have NOT been adopted in the light editor. Off is normal; the other two are for comparing against the map's intended lighting (cl_dynamic_lights)" \
+            "unadopted map lights" cl_dynamic_lights "off" 0 "all maps" 1 "all but excluded" 2
+        range --status "brightness of the UNADOPTED map lights only. Adopted ones use their own brightness (cl_dynamic_light_scale)" \
             "map light scale" cl_dynamic_light_scale 0 2 0.1
-        toggle "bloom" bloom_enable
+        toggle --status "(bloom_enable)" "bloom" bloom_enable
         blank
-        pairs "ReStir Direct Illuminaton" pt_restir off 0 on 1
-        toggle "denoiser" flt_enable
-        toggle "textures" flt_fixed_albedo ~1
-        pairs "texture filtering" pt_nearest "anisotropic" 0 "mixed" 1 "nearest (noisy)" 2
-        pairs --status "experimental feature - simulates reflection and refraction effects in thick glass" \
+        pairs --status "(pt_restir)" "ReStir Direct Illuminaton" pt_restir off 0 on 1
+        toggle --status "(flt_enable)" "denoiser" flt_enable
+        toggle --status "(flt_fixed_albedo)" "textures" flt_fixed_albedo ~1
+        pairs --status "(pt_nearest)" "texture filtering" pt_nearest "anisotropic" 0 "mixed" 1 "nearest (noisy)" 2
+        pairs --status "experimental feature - simulates reflection and refraction effects in thick glass (pt_thick_glass)" \
             "thick glass refraction" pt_thick_glass "disabled" 0 "photo mode only" 1 "enabled" 2
-        pairs projection pt_projection perspective 0 cylindrical 1
+        pairs --status "(pt_projection)" projection pt_projection perspective 0 cylindrical 1
         blank
-		pairs "multi-gpu support" sli "disabled" 0 "when available" 1
-        pairs "ray tracing API" ray_tracing_api "automatic selection" "auto" "prefer KHR_ray_query" "query"  "prefer KHR_ray_tracing_pipeline" "pipeline"
-        toggle "GPU profiler" profiler
+		pairs --status "(sli)" "multi-gpu support" sli "disabled" 0 "when available" 1
+        pairs --status "(ray_tracing_api)" "ray tracing API" ray_tracing_api "automatic selection" "auto" "prefer KHR_ray_query" "query"  "prefer KHR_ray_tracing_pipeline" "pipeline"
+        toggle --status "(profiler)" "GPU profiler" profiler
     endif
 
     ifneq vid_rtx 1
-        pairs "anti-aliasing" gl_multisamples no 0 "2x MSAA" 2 "4x MSAA" 4 "8x MSAA" 8
-        range "texture gamma" vid_gamma 1.3 0.3
-        toggle "hardware gamma" vid_hwgamma
-        range "texture quality" gl_picmip 3 0 -1
-        pairs "texture filter" gl_texturemode \
+        pairs --status "(gl_multisamples)" "anti-aliasing" gl_multisamples no 0 "2x MSAA" 2 "4x MSAA" 4 "8x MSAA" 8
+        range --status "(vid_gamma)" "texture gamma" vid_gamma 1.3 0.3
+        toggle --status "(vid_hwgamma)" "hardware gamma" vid_hwgamma
+        range --status "(gl_picmip)" "texture quality" gl_picmip 3 0 -1
+        pairs --status "(gl_texturemode)" "texture filter" gl_texturemode \
             nearest GL_NEAREST \
             linear GL_LINEAR \
             bilinear GL_LINEAR_MIPMAP_NEAREST \
             trilinear GL_LINEAR_MIPMAP_LINEAR
-        pairs "anisotropic filter" gl_anisotropy no 1 2x 2 4x 4 8x 8 16x 16
-        range "texture saturation" gl_saturation 0 1
-        pairs "texture intensity" intensity 1x 1 2x 2 3x 3
-        range "lightmap saturation" gl_coloredlightmaps 0 1
-        range "lightmap brightness" gl_brightness 0 0.3
-        values "rendering backend" gl_shaders legacy shaders
+        pairs --status "(gl_anisotropy)" "anisotropic filter" gl_anisotropy no 1 2x 2 4x 4 8x 8 16x 16
+        range --status "(gl_saturation)" "texture saturation" gl_saturation 0 1
+        pairs --status "(intensity)" "texture intensity" intensity 1x 1 2x 2 3x 3
+        range --status "(gl_coloredlightmaps)" "lightmap saturation" gl_coloredlightmaps 0 1
+        range --status "(gl_brightness)" "lightmap brightness" gl_brightness 0 0.3
+        values --status "(gl_shaders)" "rendering backend" gl_shaders legacy shaders
         blank
-        toggle "use new textures and models" gl_use_hd_assets
+        toggle --status "(gl_use_hd_assets)" "use new textures and models" gl_use_hd_assets
     endif
 end
 
@@ -269,15 +272,15 @@ begin sound
     style --compact
     title "Sound Setup"
     blank
-    range -p -f "%.0f%%" "master volume" s_volume 0 1 0.05
-    range -p -f "%.0f%%" "music volume" ogg_volume 0 1 0.05
-    toggle "enable music" ogg_enable
-    toggle "shuffle tracks" ogg_shuffle
+    range --status "(s_volume)" -p -f "%.0f%%" "master volume" s_volume 0 1 0.05
+    range --status "(ogg_volume)" -p -f "%.0f%%" "music volume" ogg_volume 0 1 0.05
+    toggle --status "(ogg_enable)" "enable music" ogg_enable
+    toggle --status "(ogg_shuffle)" "shuffle tracks" ogg_shuffle
     blank
-    values "ambient sounds" s_ambient "no" "yes" "only player's own"
-    values "chat beep" cl_chat_sound "disabled" "default" "alternative"
+    values --status "(s_ambient)" "ambient sounds" s_ambient "no" "yes" "only player's own"
+    values --status "(cl_chat_sound)" "chat beep" cl_chat_sound "disabled" "default" "alternative"
     blank
-    values "sound engine" s_enable "no sound" "software" "OpenAL"
+    values --status "(s_enable)" "sound engine" s_enable "no sound" "software" "OpenAL"
 end
 
 begin railtrail
@@ -285,15 +288,15 @@ begin railtrail
     style --compact
     title "Railgun Trail Setup"
     blank
-    values "rail trail type" cl_railtrail_type \
+    values --status "(cl_railtrail_type)" "rail trail type" cl_railtrail_type \
         "default" "core only" "core and spiral"
-    range -f "%.1f s" "rail trail duration" cl_railtrail_time 0.1 3.0 0.1
-    range "core width" cl_railcore_width 1 6 1
-    range "spiral radius" cl_railspiral_radius 1 6 1
-    pairs "core color" cl_railcore_color \
+    range --status "(cl_railtrail_time)" -f "%.1f s" "rail trail duration" cl_railtrail_time 0.1 3.0 0.1
+    range --status "(cl_railcore_width)" "core width" cl_railcore_width 1 6 1
+    range --status "(cl_railspiral_radius)" "spiral radius" cl_railspiral_radius 1 6 1
+    pairs --status "(cl_railcore_color)" "core color" cl_railcore_color \
         black black red red green green yellow yellow \
         blue blue cyan cyan magenta magenta white white
-    pairs "spiral color" cl_railspiral_color \
+    pairs --status "(cl_railspiral_color)" "spiral color" cl_railspiral_color \
         black black red red green green yellow yellow \
         blue blue cyan cyan magenta magenta white white
 end
@@ -304,31 +307,31 @@ begin effects
     title "Effects Setup"
     blank
     ifneq vid_rtx 1
-        values "dynamic lighting" gl_dynamic "no" "yes" "only switchable"
-        values "entity cel-shading" gl_celshading no 1x 2x 3x
-        toggle "entity glowing" cl_noglow ~
-        toggle "ground shadows" gl_shadows
-        toggle "screen blending" gl_polyblend
+        values --status "(gl_dynamic)" "dynamic lighting" gl_dynamic "no" "yes" "only switchable"
+        values --status "(gl_celshading)" "entity cel-shading" gl_celshading no 1x 2x 3x
+        toggle --status "(cl_noglow)" "entity glowing" cl_noglow ~
+        toggle --status "(gl_shadows)" "ground shadows" gl_shadows
+        toggle --status "(gl_polyblend)" "screen blending" gl_polyblend
     endif
     ifeq vid_rtx 1
-        toggle "screen blending" tm_blend_enable
-        range -p -f "%.0f%%" "screen blending center strength" tm_blend_scale_center 0 1
-        range -p -f "%.0f%%" "screen blending border strength" tm_blend_scale_border 0 1
+        toggle --status "(tm_blend_enable)" "screen blending" tm_blend_enable
+        range --status "(tm_blend_scale_center)" -p -f "%.0f%%" "screen blending center strength" tm_blend_scale_center 0 1
+        range --status "(tm_blend_scale_border)" -p -f "%.0f%%" "screen blending border strength" tm_blend_scale_border 0 1
     endif
-    toggle "grenade explosions" cl_disable_explosions ~0
-    toggle "rocket explosions" cl_disable_explosions ~1
-    toggle "explosion sprites" cl_explosion_sprites
-    toggle --status "rerelease-style muzzle flash models on monsters and other players" "monster muzzle flashes" cl_muzzleflash_models
-    range --status "size of the muzzle flash models" "muzzle flash size" cl_muzzleflash_scale 0.5 8 0.5
-    range --status "how bright the muzzle flash renders" "muzzle flash brightness" cl_muzzleflash_brightness 0.05 1 0.05
+    toggle --status "(cl_disable_explosions)" "grenade explosions" cl_disable_explosions ~0
+    toggle --status "(cl_disable_explosions)" "rocket explosions" cl_disable_explosions ~1
+    toggle --status "(cl_explosion_sprites)" "explosion sprites" cl_explosion_sprites
+    toggle --status "rerelease-style muzzle flash models on monsters and other players (cl_muzzleflash_models)" "monster muzzle flashes" cl_muzzleflash_models
+    range --status "size of the muzzle flash models (cl_muzzleflash_scale)" "muzzle flash size" cl_muzzleflash_scale 0.5 8 0.5
+    range --status "how bright the muzzle flash renders (cl_muzzleflash_brightness)" "muzzle flash brightness" cl_muzzleflash_brightness 0.05 1 0.05
     blank
-    pairs "blaster color" cl_blaster_color "violet" 1 "original orange" 0
+    pairs --status "(cl_blaster_color)" "blaster color" cl_blaster_color "violet" 1 "original orange" 0
     blank
-    pairs "ludicrous gibs" g_ludicrous_gibs "off - classic quake ii" 0 "on" 1
+    pairs --status "(g_ludicrous_gibs)" "ludicrous gibs" g_ludicrous_gibs "off - classic quake ii" 0 "on" 1
     blank
     ifeq vid_rtx 1
-        toggle "md5 models" cl_md5_models
-        toggle "classic railgun" cl_classic_railgun
+        toggle --status "(cl_md5_models)" "md5 models" cl_md5_models
+        toggle --status "(cl_classic_railgun)" "classic railgun" cl_classic_railgun
         blank
     endif
     ifeq vid_rtx 1
@@ -361,74 +364,78 @@ begin fog
     style --compact
     title "Map Fog and Volumetrics"
     blank
-    pairs --status "volumetric atmosphere from the map's own fog settings - rerelease maps only. volumetric lighting samples every light properly with real occlusion" \
+    pairs --status "volumetric atmosphere from the map's own fog settings - rerelease maps only. volumetric lighting samples every light properly with real occlusion (cl_fog)" \
         "map fog" cl_fog "off" 0 "sunlight only" 1 "lit by map lights" 2 "volumetric lighting" 3
 
     ifge cl_fog 1
         blank
-        range --status "how thick the map fog renders; 1.0 is the map's authored value" \
+        range --status "how thick the map fog renders; 1.0 is the map's authored value. This is the SKY and SUN fog density and it applies in EVERY mode, volumetric included - that mode's local lights have their own density below (cl_fog_scale)" \
             "fog density" cl_fog_scale 0 4 0.25
-        range --status "how directional the scattering is. 0 scatters evenly; higher values concentrate light into tight shafts along the view. -1 follows the god ray setting" \
+        range --status "how directional the scattering is. 0 scatters evenly; higher values concentrate light into tight shafts along the view. -1 follows the god ray setting (pt_fog_eccentricity)" \
             "fog directionality" pt_fog_eccentricity -1 0.95 0.05
-        range --status "real extinction, so a long view SATURATES at the fog colour instead of getting brighter without limit. 0 keeps the legacy flat value" \
+        range --status "real extinction, so a long view SATURATES at the fog colour instead of getting brighter without limit. 0 keeps the legacy flat value (pt_fog_extinction)" \
             "fog extinction" pt_fog_extinction 0 0.01 0.0005
-        range --status "how much the fog DIMS what is behind it. Only does anything with extinction above 0" \
+        range --status "how much the fog DIMS what is behind it. Only does anything with extinction above 0 (pt_fog_opacity)" \
             "fog opacity" pt_fog_opacity 0 1 0.05
-        range --status "fraction of the sun's light that reaches fog IN SHADOW, scattered evenly. 0 is a hard shadow cliff - raise it if shadowed areas have no fog at all" \
+        range --status "fraction of the sun's light that reaches fog IN SHADOW, scattered evenly. 0 is a hard shadow cliff - raise it if shadowed areas have no fog at all (pt_fog_ambient)" \
             "fog ambient in shadow" pt_fog_ambient 0 1 0.05
     endif
 
     ifge cl_fog 2
         blank
-        range --status "brightness of SKY light scattered in the fog - lower this if outdoor areas fog up too much" \
+        range --status "brightness of SKY light scattered in the fog - lower this if outdoor areas fog up too much. The colour comes from whichever sky is actually being rendered: the physical sky's own radiance, or the map skybox's average (pt_fog_sky_scale)" \
             "sky light in fog" pt_fog_sky_scale 0 8 0.5
-        range --status "world units of overhead clearance over which sky light fades in. 0 is a hard yes/no test, which gives crisp shafts under an opening but blocky slabs in the open" \
+        range --status "world units of overhead clearance over which sky light fades in. 0 is a hard yes/no test, which gives crisp shafts under an opening but blocky slabs in the open (pt_fog_sky_soften)" \
             "sky edge softness" pt_fog_sky_soften 0 2048 128
-        range --status "lights considered per fog sample. In mode 3 this ranks candidates rather than tracing them all, so it is much cheaper than it looks" \
+        range --status "lights considered per fog sample. In mode 3 this ranks candidates rather than tracing them all, so it is much cheaper than it looks (pt_fog_light_samples)" \
             "lights sampled" pt_fog_light_samples 4 64 4
     endif
 
     ifeq cl_fog 2
         blank
-        range --status "brightness of local lights scattered in the fog" \
+        range --status "brightness of local lights scattered in the fog (pt_fog_light_scale)" \
             "local light brightness" pt_fog_light_scale 0 8 0.5
-        range --status "roll-off for light-dense maps. 0 = OFF, which is what lets fog pool brightly around a light instead of flattening to an even haze" \
+        range --status "roll-off for light-dense maps. 0 = OFF, which is what lets fog pool brightly around a light instead of flattening to an even haze (pt_fog_light_knee)" \
             "light rolloff" pt_fog_light_knee 0 8 0.25
-        range --status "how fast a light's fog glow dies with distance - 2 is inverse square, raise it to pull the glow in tight around each fixture" \
+        range --status "how fast a light's fog glow dies with distance - 2 is inverse square, raise it to pull the glow in tight around each fixture (pt_fog_light_falloff)" \
             "light falloff" pt_fog_light_falloff 1 12 0.5
-        range --status "world radius inside which a light keeps normal brightness; the falloff above only steepens beyond this" \
+        range --status "world radius inside which a light keeps normal brightness; the falloff above only steepens beyond this (pt_fog_light_pivot)" \
             "light pivot" pt_fog_light_pivot 32 512 32
-        pairs --status "trace an occlusion ray per light so fog is not lit through walls and roofs" \
+        pairs --status "trace an occlusion ray per light so fog is not lit through walls and roofs (pt_fog_light_shadow)" \
             "light shadows" pt_fog_light_shadow "off" 0 "on" 1
     endif
 
     ifeq cl_fog 3
         blank
-        range --status "overall brightness of the volumetric lighting. Mode 3 has its own knob because it has no roll-off compressing the total, so it sits at a different level from mode 2" \
+        range --status "density of the LOCAL LIGHT half only. The sky and sun fog stays on fog density above, in every mode - the two apply at the same time. Sunlight-only mode needs a huge number because its shadow cliff zeroes most of the volume (mgu1m1 uses 250), which is far too dense for the volumetric half. -1 matches the fog density above (cl_volumetric_fog_density)" \
+            "volumetric fog density" cl_volumetric_fog_density -1 8 0.25
+        pairs --status "PHYSICAL SKY ONLY. Mode 3's own sky term is occluded by a TRACED RAY, which is what clips the fog crisply under overhangs. The cl_fog 1 sun term is occluded by the SHADOW MAP instead, so it gives the sun's directionality but not that clipping (pt_fog_sky_sun_only)" \
+            "physical sky fog" pt_fog_sky_sun_only "mode 3 sky term (traced)" 0 "cl_fog 1 sun term (shadow map)" 1
+        range --status "overall brightness of the volumetric lighting. Mode 3 has its own knob because it has no roll-off compressing the total, so it sits at a different level from mode 2 (pt_fog_vol_scale)" \
             "volumetric brightness" pt_fog_vol_scale 0 8 0.25
-        range --status "ceiling on a single sample's brightness - stops a cell that landed right next to a small light from blowing out into a solid block. 0 disables it" \
+        range --status "ceiling on a single sample's brightness - stops a cell that landed right next to a small light from blowing out into a solid block. 0 disables it (pt_fog_firefly)" \
             "firefly clamp" pt_fog_firefly 0 100 5
         blank
-        pairs --status "evaluate the fog once per cell of a grid and reuse it across frames, instead of marching every pixel. Much cheaper and much smoother" \
+        pairs --status "evaluate the fog once per cell of a grid and reuse it across frames, instead of marching every pixel. Much cheaper and much smoother (pt_fog_froxel)" \
             "froxel grid" pt_fog_froxel "off - per pixel march" 0 "on - grid" 1
         ifeq pt_fog_froxel 1
-            range --status "how much of the previous frame's grid to keep. This is what removes most of the noise; too high and moving lights trail" \
+            range --status "how much of the previous frame's grid to keep. This is what removes most of the noise; too high and moving lights trail (pt_fog_froxel_history)" \
                 "grid temporal blend" pt_fog_froxel_history 0 0.99 0.01
-            range --status "blur radius over the grid, in cells. THE NOISE KNOB THAT COSTS NO RAYS - each cell is one light sample with a yes/no shadow ray, and averaging neighbours is what smooths that. Higher softens the shafts" \
+            range --status "blur radius over the grid, in cells. THE NOISE KNOB THAT COSTS NO RAYS - each cell is one light sample with a yes/no shadow ray, and averaging neighbours is what smooths that. Higher softens the shafts (pt_fog_froxel_filter)" \
                 "grid smoothing" pt_fog_froxel_filter 0 3 1
         endif
         blank
-        range --status "how much fog EMISSIVE SURFACES make - the map's own light fixtures, which are most of its light" \
+        range --status "how much fog EMISSIVE SURFACES make - the map's own light fixtures, which are most of its light (pt_fog_scale_emissive)" \
             "fog from emissive surfaces" pt_fog_scale_emissive 0 8 0.25
-        range --status "how much fog DYNAMIC lights make - weapon fire, muzzle flashes, flares, the flashlight and placed lights" \
+        range --status "how much fog DYNAMIC lights make - weapon fire, muzzle flashes, flares, the flashlight and placed lights (pt_fog_scale_dynamic)" \
             "fog from dynamic lights" pt_fog_scale_dynamic 0 8 0.25
-        range --status "how much fog lights on MODELS make" \
+        range --status "how much fog lights on MODELS make (pt_fog_scale_model)" \
             "fog from model lights" pt_fog_scale_model 0 8 0.25
     endif
 
     ifge cl_fog 2
         blank
-        pairs --status "diagnostic: show only one half of the fog's lighting, so each can be judged on its own" \
+        pairs --status "diagnostic: show only one half of the fog's lighting, so each can be judged on its own (pt_fog_isolate)" \
             "isolate" pt_fog_isolate "off - everything" 0 "sky light only" 1 "local lights only" 2
     endif
 end
@@ -438,13 +445,13 @@ begin crosshair
     style --compact
     title "Crosshair Setup"
     blank
-    values "crosshair type" crosshair none cross dot angle
-    pairs "crosshair scale" ch_scale 0.5x 0.5 1x 1 2x 2
-    toggle "color by health" ch_health
-    range -p -f "%.0f%%" "red channel" ch_red 0 1
-    range -p -f "%.0f%%" "green channel" ch_green 0 1
-    range -p -f "%.0f%%" "blue channel" ch_blue 0 1
-    range -p -f "%.0f%%" "alpha channel" ch_alpha 0 1
+    values --status "(crosshair)" "crosshair type" crosshair none cross dot angle
+    pairs --status "(ch_scale)" "crosshair scale" ch_scale 0.5x 0.5 1x 1 2x 2
+    toggle --status "(ch_health)" "color by health" ch_health
+    range --status "(ch_red)" -p -f "%.0f%%" "red channel" ch_red 0 1
+    range --status "(ch_green)" -p -f "%.0f%%" "green channel" ch_green 0 1
+    range --status "(ch_blue)" -p -f "%.0f%%" "blue channel" ch_blue 0 1
+    range --status "(ch_alpha)" -p -f "%.0f%%" "alpha channel" ch_alpha 0 1
 end
 
 begin screen
@@ -452,18 +459,18 @@ begin screen
     style --compact
     title "Screen Setup"
     blank
-    toggle "cutscenes" cl_cinematics
-    toggle --status "1080p30 cutscenes from the rerelease; falls back to the original .cin when absent" "remastered cutscenes" cl_hd_cinematics
+    toggle --status "(cl_cinematics)" "cutscenes" cl_cinematics
+    toggle --status "1080p30 cutscenes from the rerelease; falls back to the original .cin when absent (cl_hd_cinematics)" "remastered cutscenes" cl_hd_cinematics
     blank
-	pairs "selected inventory item" scr_showitemname "do not show" 0 "show on change" 1 "always show" 2
-    toggle --status "show a named health bar for rerelease bosses such as Modir on mgu6m3" "boss health bars" scr_health_bars
-    toggle "ping graph" scr_lag_draw
-    values "demo bar" scr_demobar no yes verbose
-    range -p -f "%.0f%%" "HUD opacity" scr_alpha 0 1
-    range -p -f "%.0f%%" "console opacity" con_alpha 0 1
-    pairs "HUD scale" scr_scale auto 0 1x 1 2x 2 4x 4
-    pairs "console scale" con_scale auto 0 1x 1 2x 2 4x 4
-    pairs "menu scale" ui_scale auto 0 1x 1 2x 2 4x 4
+	pairs --status "(scr_showitemname)" "selected inventory item" scr_showitemname "do not show" 0 "show on change" 1 "always show" 2
+    toggle --status "show a named health bar for rerelease bosses such as Modir on mgu6m3 (scr_health_bars)" "boss health bars" scr_health_bars
+    toggle --status "(scr_lag_draw)" "ping graph" scr_lag_draw
+    values --status "(scr_demobar)" "demo bar" scr_demobar no yes verbose
+    range --status "(scr_alpha)" -p -f "%.0f%%" "HUD opacity" scr_alpha 0 1
+    range --status "(con_alpha)" -p -f "%.0f%%" "console opacity" con_alpha 0 1
+    pairs --status "(scr_scale)" "HUD scale" scr_scale auto 0 1x 1 2x 2 4x 4
+    pairs --status "(con_scale)" "console scale" con_scale auto 0 1x 1 2x 2 4x 4
+    pairs --status "(ui_scale)" "menu scale" ui_scale auto 0 1x 1 2x 2 4x 4
     blank
     action --align "crosshair setup..." pushmenu crosshair
 end
@@ -473,15 +480,15 @@ begin downloads
     style --compact
     title "Download Options"
     blank
-    toggle "allow downloading" allow_download
-    toggle "maps" allow_download_maps
-    toggle "player models/skins" allow_download_players
-    toggle "models" allow_download_models
-    toggle "sounds" allow_download_sounds
-    toggle "textures" allow_download_textures
-    toggle "pics" allow_download_pics
+    toggle --status "(allow_download)" "allow downloading" allow_download
+    toggle --status "(allow_download_maps)" "maps" allow_download_maps
+    toggle --status "(allow_download_players)" "player models/skins" allow_download_players
+    toggle --status "(allow_download_models)" "models" allow_download_models
+    toggle --status "(allow_download_sounds)" "sounds" allow_download_sounds
+    toggle --status "(allow_download_textures)" "textures" allow_download_textures
+    toggle --status "(allow_download_pics)" "pics" allow_download_pics
     blank
-    toggle "HTTP downloads" cl_http_downloads
+    toggle --status "(cl_http_downloads)" "HTTP downloads" cl_http_downloads
 end
 
 begin gameflags
@@ -489,18 +496,18 @@ begin gameflags
     style --compact
     title "Deathmatch Flags"
     blank
-    toggle "falling damage" dmflags ~3
-    toggle "weapons stay" dmflags 2
-    toggle "instant powerups" dmflags 4
-    toggle "allow powerups" dmflags ~1
-    toggle "allow health" dmflags ~0
-    toggle "allow armor" dmflags ~11
-    toggle "spawn farthest" dmflags 9
-    toggle "same map" dmflags 5
-    toggle "force respawn" dmflags 10
-    toggle "infinite ammo" dmflags 13
-    toggle "fixed FOV" dmflags 15
-    toggle "quad drop" dmflags 14
+    toggle --status "(dmflags)" "falling damage" dmflags ~3
+    toggle --status "(dmflags)" "weapons stay" dmflags 2
+    toggle --status "(dmflags)" "instant powerups" dmflags 4
+    toggle --status "(dmflags)" "allow powerups" dmflags ~1
+    toggle --status "(dmflags)" "allow health" dmflags ~0
+    toggle --status "(dmflags)" "allow armor" dmflags ~11
+    toggle --status "(dmflags)" "spawn farthest" dmflags 9
+    toggle --status "(dmflags)" "same map" dmflags 5
+    toggle --status "(dmflags)" "force respawn" dmflags 10
+    toggle --status "(dmflags)" "infinite ammo" dmflags 13
+    toggle --status "(dmflags)" "fixed FOV" dmflags 15
+    toggle --status "(dmflags)" "quad drop" dmflags 14
 end
 
 begin startserver
@@ -508,8 +515,8 @@ begin startserver
     style --compact
     //title "Start Server"
     banner m_banner_start_server
-    strings "initial map" _ui_nextserver $$com_maplist
-    values "rules" coop deathmatch cooperative
+    strings --status "(_ui_nextserver)" "initial map" _ui_nextserver $$com_maplist
+    values --status "(coop)" "rules" coop deathmatch cooperative
     field --integer --status "0 - no time limit" --width 3 "time limit" timelimit
     field --integer --status "0 - no frag limit" --width 3 "frag limit" fraglimit
     field --integer --width 3 "max players" maxclients
@@ -682,12 +689,12 @@ begin input
     title "Input Setup"
     blank
     field --numeric --width 8 "mouse sensitivity" sensitivity
-    toggle "invert mouse" m_invert
-    toggle "adjust sensitivity with FOV" m_autosens
-    toggle "filter mouse input" m_filter
-    toggle "free look" freelook
+    toggle --status "(m_invert)" "invert mouse" m_invert
+    toggle --status "(m_autosens)" "adjust sensitivity with FOV" m_autosens
+    toggle --status "(m_filter)" "filter mouse input" m_filter
+    toggle --status "(freelook)" "free look" freelook
     blank
-    toggle "always run" cl_run
+    toggle --status "(cl_run)" "always run" cl_run
 end
 
 begin keys

@@ -1727,8 +1727,10 @@ void CL_Begin(void)
     CL_LoadState(LOAD_SOUNDS);
     CL_RegisterSounds();
     LOC_LoadLocations();
-    LE_LoadLights();
+    // the candidates have to exist before the light editor reads its file:
+    // an adopted map light is stored by origin and resolved against them.
     CL_LoadDynamicLights();
+    LE_LoadLights();
     CL_LoadMapFog();
     CL_LoadState(LOAD_NONE);
     cls.state = ca_precached;

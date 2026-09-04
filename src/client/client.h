@@ -777,6 +777,37 @@ void V_AddLightStyle(int style, float value);
 //
 // dynamiclights.c
 //
+
+// One rerelease dynamic_light entity, parsed out of the BSP entity lump.
+//
+// These no longer light the map on their own. They are DORMANT: a black debug
+// sphere marking a position, and a set of values for the light editor to
+// inherit from. `light replace` in lightedit.c creates a real light that stands
+// in for one of these, at which point `replaced` goes true here and this entity
+// stops emitting for good - the replacement is drawn instead.
+typedef struct {
+    vec3_t  origin;
+    vec3_t  color;
+    vec3_t  direction;
+    float   intensity;      // shadowlightintensity, already folded with radius
+    float   cone_angle;     // full cone angle in degrees
+    int     style;
+    int     switch_index;   // bit in CS_DYNAMICLIGHTS, or -1 for always-on
+    bool    is_spot;
+    float   vol_scale;      // LIGHT_VOLUMETRIC_SCALE_UNSET = class default
+
+    // [light editor] a replacement light stands in for this entity. Owned by
+    // lightedit.c, which is also what clears it.
+    bool    replaced;
+} cdynamiclight_t;
+
+int CL_NumDynamicLights(void);
+cdynamiclight_t *CL_GetDynamicLight(int index);
+
+// Whether the game currently has this light switched on. A replacement light
+// inherits its entity's switchability, so lightedit.c needs to ask.
+bool CL_DynamicLightSwitchedOn(const cdynamiclight_t *dl);
+
 void CL_InitDynamicLights(void);
 void CL_InitMapFog(void);
 void CL_LoadMapFog(void);

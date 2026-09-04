@@ -479,6 +479,61 @@ void Cmd_FireTarget_f(edict_t *ent)
                count, count == 1 ? "y" : "ies", name);
 }
 
+/*
+=================
+Cmd_KillMonsters_f
+
+killmonsters [radius] - kills every live monster within radius (default 1024) by
+dealing lethal damage, so the whole death path runs: T_Damage ->
+monster_death_use -> the item drop, deathtarget, healthtarget and killtarget.
+
+Same family as spawnmonster/setpos/firetarget. It exists because that path is
+otherwise hard to reach on purpose: several of these monsters stand behind a
+level's worth of geometry, and shooting one from a scripted cfg is unreliable -
+a monster standing point blank but off-crosshair eats every railgun shot, and a
+walking one leaves the room before the script fires. That cost several
+verification runs on rhangar1's gladiator, which is the only monster in the
+shipped maps that pairs "item" with "itemtarget".
+
+Damage is MOD_TELEFRAG with DAMAGE_NO_PROTECTION so power armor, a shield or the
+monster's own resistances cannot absorb it.
+=================
+*/
+void Cmd_KillMonsters_f(edict_t *ent)
+{
+    edict_t *t = NULL;
+    float   radius;
+    int     count = 0;
+
+    if ((deathmatch->value || coop->value) && !sv_cheats->value) {
+        gi.cprintf(ent, PRINT_HIGH, "You must run the server with '+set cheats 1' to enable this command.\n");
+        return;
+    }
+
+    radius = (gi.argc() > 1) ? atof(gi.argv(1)) : 1024.0f;
+    if (radius <= 0)
+        radius = 1024.0f;
+
+    while ((t = findradius(t, ent->s.origin, radius))) {
+        if (!(t->svflags & SVF_MONSTER))
+            continue;
+        if (t->health <= 0 || t->deadflag == DEAD_DEAD)
+            continue;
+
+        T_Damage(t, ent, ent, vec3_origin, t->s.origin, vec3_origin,
+                 t->health + t->max_health, 0, DAMAGE_NO_PROTECTION, MOD_TELEFRAG);
+        count++;
+
+        // T_Damage can free the entity, and findradius walks the edict array
+        // from the one it is handed, so it has to resume from a live entity
+        if (!t->inuse)
+            break;
+    }
+
+    gi.cprintf(ent, PRINT_HIGH, "killed %d monster%s within %.0f units\n",
+               count, count == 1 ? "" : "s", radius);
+}
+
 void Cmd_SpawnMonster_f(edict_t *ent)
 {
     vec3_t      forward, spot;
@@ -1111,6 +1166,8 @@ void ClientCommand(edict_t *ent)
         Cmd_SpawnMonster_f(ent);
     else if (Q_stricmp(cmd, "firetarget") == 0)
         Cmd_FireTarget_f(ent);
+    else if (Q_stricmp(cmd, "killmonsters") == 0)
+        Cmd_KillMonsters_f(ent);
     else if (Q_stricmp(cmd, "inven") == 0)
         Cmd_Inven_f(ent);
     else if (Q_stricmp(cmd, "invnext") == 0)

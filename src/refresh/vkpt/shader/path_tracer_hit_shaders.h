@@ -92,7 +92,20 @@ vec4 pt_logic_particle(int primitiveID, vec2 bary)
 	{
 		const int particle_index = primitiveID / 2;
 		vec4 color = texelFetch(particle_color_buffer, particle_index);
-		color.a *= factor;
+
+		/* CLAMPED, so an alpha ABOVE 1 means "solid disc with a soft rim".
+
+		   `factor` is a radial falloff that only reaches 1 at the exact centre,
+		   so a particle submitted at alpha 1 is a translucent blob rather than a
+		   disc - right for smoke and sparks, useless for a debug marker you are
+		   trying to SEE against a dark room. Submitting alpha 4 makes the
+		   falloff saturate out to ~87% of the radius instead.
+
+		   The clamp is what makes that safe: alpha_blend_premultiplied computes
+		   bottom.rgb * (1 - top.a), so an unclamped alpha above 1 goes NEGATIVE
+		   and subtracts light from whatever is behind it. Every ordinary
+		   particle submits alpha <= 1, where this is exactly a no-op. */
+		color.a = clamp(color.a * factor, 0.0, 1.0);
 		color.rgb *= color.a;
 
 		color.rgb *= global_ubo.prev_adapted_luminance * global_ubo.pt_particle_brightness;

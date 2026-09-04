@@ -41,6 +41,7 @@ typedef struct {
     uint8_t     sound;
     uint8_t     event;
     uint8_t     scale;      // [rerelease] 1/16 units, 0 == unscaled
+    uint8_t     alpha;      // [rerelease] 1/255 units, 0 == opaque
 } entity_packed_t;
 
 typedef struct {

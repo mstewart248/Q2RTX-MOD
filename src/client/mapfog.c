@@ -80,6 +80,11 @@ static mapfog_t cl_mapfog;
 static cvar_t   *cl_fog;
 static cvar_t   *cl_fog_scale;
 
+// [cl_fog 3] The density that mode 3 uses, separate from cl_fog_scale because
+// the two modes need wildly different numbers for the same map. See the note at
+// its registration in CL_InitMapFog.
+static cvar_t   *cl_volumetric_fog_density;
+
 /*
 =================
 CL_ParseWorldspawnFog
@@ -165,6 +170,22 @@ void CL_InitMapFog(void)
     // stopped being counted as area lights in the fog. The authored densities
     // read thin on their own at the light levels these maps actually use.
     cl_fog_scale = Cvar_Get("cl_fog_scale", "2", CVAR_ARCHIVE);
+
+    /* THE SAME MAP NEEDS A DIFFERENT DENSITY IN MODE 1 AND MODE 3, and the
+       difference is not a matter of taste - it falls out of how each mode is lit.
+
+       cl_fog 1's only term is the sun through a HARD shadow cliff
+       (pt_fog_ambient defaults to 0), so most of the volume is multiplied by
+       ZERO and the scale has to be enormous for the handful of lit steps to
+       carry the look: mgu1m1 ships mapcvar cl_fog_scale 250. Switch that map to
+       cl_fog 3 and nothing is zeroed any more - every step is lit by something -
+       so the same 250 over-amplifies the whole volume, and faint sun leakage in
+       dim interiors becomes visible haze. Matt hit exactly that on mgu1m1.
+
+       -1 means "no opinion, use cl_fog_scale", which is what every map that has
+       not been split yet wants. So this changes NOTHING until it is set, and a
+       map cfg can then carry both numbers and switch modes without a retune. */
+    cl_volumetric_fog_density = Cvar_Get("cl_volumetric_fog_density", "-1", CVAR_ARCHIVE);
 }
 
 /*
@@ -213,9 +234,25 @@ bool CL_GetMapFog(mapfog_params_t *out)
     if (!cl_mapfog.valid || !cl_fog || !cl_fog->integer)
         return false;
 
+    /* cl_fog_scale is the SKY/SUN density and it applies in EVERY mode - a
+       first version of this switched the whole density over to
+       cl_volumetric_fog_density in mode 3, which meant one knob drove both
+       halves and the other did nothing. That is not the split: mode 3 renders
+       BOTH the sun term (which is cl_fog 1's fog, and wants cl_fog_scale) and
+       the local-light term (which wants its own, much lower number) at the same
+       time, so the two densities have to coexist rather than take turns. */
     scale = cl_fog_scale ? cl_fog_scale->value : 1.0f;
+
     if (scale <= 0.0f)
         return false;
+
+    /* The volumetric half is expressed as a RATIO against that, because the
+       densities handed to the renderer carry the map's height-fog profile and
+       only their magnitude should move. Negative means "no opinion, match the
+       sky density", which is the default and leaves every existing map alone. */
+    out->vol_density_ratio = 1.0f;
+    if (cl_volumetric_fog_density && cl_volumetric_fog_density->value >= 0.0f)
+        out->vol_density_ratio = cl_volumetric_fog_density->value / scale;
 
     out->mode       = cl_fog->integer;
     out->density    = cl_mapfog.density * scale;

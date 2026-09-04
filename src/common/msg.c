@@ -501,6 +501,15 @@ void MSG_PackEntity(entity_packed_t *out, const entity_state_t *in, bool short_a
         int q = (int)(in->scale * 16.f + 0.5f);
         out->scale = (q < 1) ? 1 : (q > 255) ? 255 : q;
     }
+    // [rerelease] 1/255 units, same 0-means-default convention as scale. An
+    // alpha of 1 packs to 255, which the client treats as opaque anyway, so a
+    // game that sets alpha = 1 explicitly costs a byte and changes nothing.
+    if (in->alpha <= 0.f) {
+        out->alpha = 0;
+    } else {
+        int q = (int)(in->alpha * 255.f + 0.5f);
+        out->alpha = (q < 1) ? 1 : (q > 255) ? 255 : q;
+    }
 }
 
 void MSG_WriteDeltaEntity(const entity_packed_t *from,
@@ -629,6 +638,9 @@ void MSG_WriteDeltaEntity(const entity_packed_t *from,
 
     if (to->scale != from->scale)
         bits |= U_SCALE;
+
+    if (to->alpha != from->alpha)
+        bits |= U_ALPHA;
 
     if (to->renderfx & RF_FRAMELERP) {
         bits |= U_OLDORIGIN;
@@ -761,6 +773,8 @@ void MSG_WriteDeltaEntity(const entity_packed_t *from,
     }
     if (bits & U_SCALE)
         MSG_WriteByte(to->scale);
+    if (bits & U_ALPHA)
+        MSG_WriteByte(to->alpha);
 }
 
 static inline int OFFSET2CHAR(float x)
@@ -1951,6 +1965,10 @@ void MSG_ParseDeltaEntity(const entity_state_t *from,
     if (bits & U_SCALE) {
         to->scale = MSG_ReadByte() * (1.f / 16.f);
     }
+
+    if (bits & U_ALPHA) {
+        to->alpha = MSG_ReadByte() * (1.f / 255.f);
+    }
 }
 
 #endif // USE_CLIENT || USE_MVD_CLIENT
@@ -2446,6 +2464,7 @@ void MSG_ShowDeltaEntityBits(int bits)
     S(EVENT, "event");
     S(SOLID, "solid");
     S(SCALE, "scale");
+    S(ALPHA, "alpha");
 #undef S
 }
 

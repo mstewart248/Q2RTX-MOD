@@ -3896,9 +3896,11 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			ubo->fog_hf_end_g   = mf.hf_end_color[1];
 			ubo->fog_hf_end_b   = mf.hf_end_color[2];
 			ubo->fog_mode       = mf.mode;
+			ubo->fog_vol_density_ratio = mf.vol_density_ratio;
 		} else {
 			ubo->fog_enable = 0;
 			ubo->fog_mode   = 0;
+			ubo->fog_vol_density_ratio = 1.0f;
 		}
 		// fog_num_model_lights is NOT set here - num_model_lights is not built
 		// until add_dlights() further down this frame. See there.

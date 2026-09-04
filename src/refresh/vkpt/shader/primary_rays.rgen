@@ -215,7 +215,23 @@ main()
 		// from avg_envmap_color and the env_map() calls in the lighting paths,
 		// none of which pass through here, so turning this down darkens the
 		// skybox without darkening the world under it.
-		env *= global_ubo.pt_env_scale * global_ubo.pt_sky_brightness;
+		//
+		// It is a MAP SKYBOX control - the menu calls it "map sky brightness"
+		// and only offers it while a map's own skybox is being rendered - so it
+		// must not dim the PHYSICAL sky. It used to apply to both, and that is
+		// what made a procedural sky render flat GREY while still casting full
+		// light: at Matt's pt_sky_brightness 0.005 the sky was drawn at 1/200th
+		// of its real brightness, and physical_sky_brightness appeared to do
+		// nothing to it because that control drives pt_env_scale, which was
+		// simply being multiplied by 0.005 afterwards.
+		//
+		// For a real atmosphere "how it looks" and "how much light it casts"
+		// ARE the same quantity, and pt_env_scale (an EV control) is it.
+		env *= global_ubo.pt_env_scale;
+		if (global_ubo.environment_type == ENVIRONMENT_STATIC)
+			env *= global_ubo.pt_sky_brightness;
+		else
+			env *= global_ubo.pt_physical_sky_brightness;
 		
 		vec4 transparent = alpha_blend(effects, vec4(env, 1));
 

@@ -358,6 +358,9 @@ typedef enum {
 // already written whole whenever any of bits 24-31 is set, so nothing else
 // about the framing changes. Old demos never set it and parse unchanged.
 #define U_SCALE         (1<<28)
+// [rerelease] per-entity alpha, one byte in 1/255 units. Same story as U_SCALE
+// above; bits 30 and 31 are still free.
+#define U_ALPHA         (1<<29)
 
 // ==============================================================
 

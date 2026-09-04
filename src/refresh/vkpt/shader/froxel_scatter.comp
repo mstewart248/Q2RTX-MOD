@@ -351,33 +351,59 @@ void main()
 			float cosa = dot(view_dir, global_ubo.sun_direction);
 			float phase = ScatterPhase_HenyeyGreenstein(cosa, eccentricity);
 
-			// --- the sun, through the shadow map ---
-			float distanceToWater;
-			float shadow = GetShadow(world_pos - global_ubo.sun_direction * 20, distanceToWater);
+			/* --- the sun, through the shadow map ---
 
-			float scatter = shadow * phase;
-			if (global_ubo.pt_fog_ambient > 0.0)
-				scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
+			   SKIPPED when the march is carrying the sun instead
+			   (fog_sun_is_the_sky). Not merely to avoid counting it twice - that
+			   is the POINT of the split.
 
-			/*
-			THE TWO TERMS CARRY DIFFERENT SCALES, and they are not
-			interchangeable - getting this wrong is what a first attempt did,
-			and the result was not subtly off, it was a black screen with one
-			blown-out patch (the tone mapper adapting to the over-bright fog).
+			   A froxel cell is a box, the volume is only FROXEL_GRID_Z slices
+			   deep, and pt_fog_froxel_filter blurs 3x3x3 across neighbouring
+			   cells with no idea where the walls are. That is fine for local
+			   lights, whose falloff is smooth and local. It is WRONG for a
+			   shadow-mapped sun, whose defining feature is a hard edge at
+			   geometry: a lit cell outside a roof bleeds into the shadowed cells
+			   underneath, and sun fog appears indoors. Matt hit exactly that, and
+			   the tell was that pt_fog_froxel 0 made it vanish - the march is
+			   per-PIXEL and per-STEP and has no neighbour to bleed from.
 
-			god_rays.comp applies both at the very END of its march, after the
-			accumulation, which is easy to miss when reading the loop alone:
+			   So the sun goes to the march and the local lights stay here, which
+			   is the split he asked for: "we use cl_fog 1 for the sky fog and the
+			   froxel grid for all other lights as normal". god_rays.comp drops
+			   its local half to match and god_rays_filter.comp ADDS the two
+			   instead of replacing - all three keyed off the one predicate, or
+			   the sun is counted twice or not at all.
 
-			  sun    * sun_color * god_rays_intensity * 0.0001   (:385)
-			  lights * pt_fog_light_scale * 0.005               (:402)
+			   THE TWO TERMS CARRY DIFFERENT SCALES, and they are not
+			   interchangeable - getting this wrong is what a first attempt did,
+			   and the result was not subtly off, it was a black screen with one
+			   blown-out patch (the tone mapper adapting to the over-bright fog).
 
-			The 0.0001 exists because sun_color is of order 1e4; the 0.005
-			because a light-buffer entry is radiance * triangle area, which is
-			larger again. They differ by more than two orders of magnitude, so
-			the terms have to be scaled separately and only then summed.
-			*/
-			vec3 inscatter = scatter * sun_color
-			               * global_ubo.god_rays_intensity * 0.0001;
+			   god_rays.comp applies both at the very END of its march, after the
+			   accumulation, which is easy to miss when reading the loop alone:
+
+			     sun    * sun_color * god_rays_intensity * 0.0001
+			     lights * pt_fog_light_scale * 0.005
+
+			   The 0.0001 exists because sun_color is of order 1e4; the 0.005
+			   because a light-buffer entry is radiance * triangle area, which is
+			   larger again. They differ by more than two orders of magnitude, so
+			   the terms have to be scaled separately and only then summed. */
+			vec3 inscatter = vec3(0);
+
+			if (!fog_sun_is_the_sky())
+			{
+				float distanceToWater;
+				float shadow = GetShadow(world_pos - global_ubo.sun_direction * 20,
+				                         distanceToWater);
+
+				float scatter = shadow * phase;
+				if (global_ubo.pt_fog_ambient > 0.0)
+					scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
+
+				inscatter = scatter * sun_color
+				          * global_ubo.god_rays_intensity * 0.0001;
+			}
 
 			// --- the map's own lights and the sky ---
 			if (fog_lights)
@@ -444,13 +470,17 @@ void main()
 					// knee crushing the total, so it sits at a different level
 					// entirely and sharing one cvar would mean retuning mode 2
 					// every time the two are compared.
-					inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005;
+					inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005
+					           * global_ubo.fog_vol_density_ratio;
 				}
 				else
 				{
+					// see the note on fog_vol_density_ratio in god_rays.comp - the
+					// local half gets its own density, the sun term keeps the sky's
 					inscatter += FOG_ISOTROPIC_PHASE
 					           * getClusterLightInscatter(cluster, world_pos, world_pos_history, r1)
-					           * global_ubo.pt_fog_light_scale * 0.005;
+					           * global_ubo.pt_fog_light_scale * 0.005
+					           * global_ubo.fog_vol_density_ratio;
 				}
 			}
 

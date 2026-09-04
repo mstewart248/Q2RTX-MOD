@@ -260,7 +260,36 @@ void main()
 		vec2 screen_uv = (vec2(i_position - ivec2(field_left, 0)) + 0.5)
 		               / vec2(float(field_width), float(global_ubo.height));
 
-		result = sample_froxel(screen_uv, view_depth);
+		vec4 grid = sample_froxel(screen_uv, view_depth);
+
+		/* REPLACE, OR ADD.
+
+		   Replacing is the normal case: the grid computed everything and the
+		   march above was thrown away. A map SKYBOX always takes this path, so
+		   cl_fog 3 there is unchanged.
+
+		   Under fog_sun_is_the_sky() the two shaders have SPLIT the work -
+		   froxel_scatter.comp skipped its sun term and god_rays.comp dropped its
+		   local half - so each holds exactly one half of the same integral and
+		   they sum. Adding is only correct BECAUSE of those two skips; an
+		   earlier version added here without them and double-counted the sun,
+		   which showed up as fog in dim interiors while outdoor shafts still
+		   clipped correctly (both copies agreed about the shadow map and simply
+		   summed to 2x). If this is ever reworked, check all three sites.
+
+		   Transmittance is neither summed nor multiplied: it is one property of
+		   one path and both estimators measure that same path. The grid's is the
+		   one to keep - it carries the temporal history, where the march's is a
+		   single per-pixel sample. */
+		if (fog_sun_is_the_sky())
+		{
+			result.rgb += grid.rgb;
+			result.a = grid.a;
+		}
+		else
+		{
+			result = grid;
+		}
 	}
 
 	vec4 originalColor = imageLoad(IMG_PT_TRANSPARENT, ivec2(gl_GlobalInvocationID.xy));

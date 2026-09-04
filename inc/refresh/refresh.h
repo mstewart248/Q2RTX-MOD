@@ -220,6 +220,14 @@ typedef struct {
     float   hf_end_z;           // world Z of the BOTTOM; always below start
     vec3_t  hf_start_color;
     vec3_t  hf_end_color;
+
+    // How much denser (or thinner) the VOLUMETRIC half is than the sky/sun half.
+    // The densities above are scaled by cl_fog_scale and drive the sun term in
+    // EVERY mode; this ratio is applied on top of them, to the local-light term
+    // only, so cl_fog 3 can carry its own density without disturbing the sky
+    // fog. 1.0 means the two match, which is what cl_volumetric_fog_density -1
+    // (its default) produces.
+    float   vol_density_ratio;
 } mapfog_params_t;
 
 typedef struct refdef_s {

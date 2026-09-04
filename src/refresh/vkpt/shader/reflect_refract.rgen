@@ -713,8 +713,15 @@ main()
 		if(found_intersection(ray_payload_geometry))
 		{
 			vec3 env = env_map(direction, false);
-			// seen sky, in a reflection - same treatment as the primary ray
-			env *= global_ubo.pt_env_scale * global_ubo.pt_sky_brightness;
+			// seen sky, in a reflection - same treatment as the primary ray,
+			// including pt_sky_brightness being a MAP SKYBOX control only. A
+			// reflection of the physical sky has to match the sky itself or
+			// water and glass show a different sky from the one overhead.
+			env *= global_ubo.pt_env_scale;
+			if (global_ubo.environment_type == ENVIRONMENT_STATIC)
+				env *= global_ubo.pt_sky_brightness;
+			else
+				env *= global_ubo.pt_physical_sky_brightness;
 			
 			transparent = alpha_blend(transparent, vec4(env * throughput, 1));
 		}

@@ -539,3 +539,159 @@ bool KillBox(edict_t *ent)
 
     return true;        // all clear
 }
+
+/*
+=================
+G_FixStuckObject
+
+[Paril-KEX] generic code to detect and fix an object spawned inside solid.
+Ported from G_FixStuckObject_Generic in src/rerelease/p_move.cpp. The rerelease
+takes a trace lambda; here the only caller needs the server trace against a
+single edict, so the edict and clip mask are passed directly.
+
+Returns STUCK_GOOD_POSITION if `check` was never solid, STUCK_FIXED (with
+`check` moved to the nearest free spot) or STUCK_NO_GOOD_POSITION. The caller
+decides whether to commit the new origin.
+=================
+*/
+stuck_result_t G_FixStuckObject(edict_t *self, vec3_t check, int mask)
+{
+    // the six faces of our own box, and which of our own extents form the
+    // flattened probe box for each one
+    static const struct {
+        int8_t normal[3];
+        int8_t mins[3], maxs[3];
+    } side_checks[6] = {
+        { {  0,  0,  1 }, { -1, -1,  0 }, {  1,  1,  0 } },
+        { {  0,  0, -1 }, { -1, -1,  0 }, {  1,  1,  0 } },
+        { {  1,  0,  0 }, {  0, -1, -1 }, {  0,  1,  1 } },
+        { { -1,  0,  0 }, {  0, -1, -1 }, {  0,  1,  1 } },
+        { {  0,  1,  0 }, { -1,  0, -1 }, {  1,  0,  1 } },
+        { {  0, -1,  0 }, { -1,  0, -1 }, {  1,  0,  1 } },
+    };
+
+    vec3_t  best_origin;
+    float   best_distance = 0;
+    bool    found = false;
+    trace_t tr;
+    int     sn, n, e;
+
+    tr = gi.trace(check, self->mins, self->maxs, check, self, mask);
+    if (!tr.startsolid)
+        return STUCK_GOOD_POSITION;
+
+    for (sn = 0; sn < 6; sn++) {
+        const int8_t *normal = side_checks[sn].normal;
+        vec3_t  start, mins, maxs;
+        vec3_t  opposite_start, end, delta, new_origin;
+        const int8_t *other_normal;
+        int     needed_epsilon_fix = -1;
+        int     needed_epsilon_dir = 0;
+        float   dist;
+
+        VectorCopy(check, start);
+        VectorClear(mins);
+        VectorClear(maxs);
+
+        for (n = 0; n < 3; n++) {
+            if (normal[n] < 0)
+                start[n] += self->mins[n];
+            else if (normal[n] > 0)
+                start[n] += self->maxs[n];
+
+            if (side_checks[sn].mins[n] == -1)
+                mins[n] = self->mins[n];
+            else if (side_checks[sn].mins[n] == 1)
+                mins[n] = self->maxs[n];
+
+            if (side_checks[sn].maxs[n] == -1)
+                maxs[n] = self->mins[n];
+            else if (side_checks[sn].maxs[n] == 1)
+                maxs[n] = self->maxs[n];
+        }
+
+        tr = gi.trace(start, mins, maxs, start, self, mask);
+
+        // the probe is flush against a plane; nudge it a unit along one of the
+        // two axes it spans and try again
+        if (tr.startsolid) {
+            for (e = 0; e < 3; e++) {
+                vec3_t ep_start;
+
+                if (normal[e] != 0)
+                    continue;
+
+                VectorCopy(start, ep_start);
+                ep_start[e] += 1;
+                tr = gi.trace(ep_start, mins, maxs, ep_start, self, mask);
+                if (!tr.startsolid) {
+                    VectorCopy(ep_start, start);
+                    needed_epsilon_fix = e;
+                    needed_epsilon_dir = 1;
+                    break;
+                }
+
+                ep_start[e] -= 2;
+                tr = gi.trace(ep_start, mins, maxs, ep_start, self, mask);
+                if (!tr.startsolid) {
+                    VectorCopy(ep_start, start);
+                    needed_epsilon_fix = e;
+                    needed_epsilon_dir = -1;
+                    break;
+                }
+            }
+        }
+
+        // no good
+        if (tr.startsolid)
+            continue;
+
+        // this side is free; trace from it back to the opposite face to find
+        // out how much clearance there is
+        other_normal = side_checks[sn ^ 1].normal;
+        VectorCopy(check, opposite_start);
+        for (n = 0; n < 3; n++) {
+            if (other_normal[n] < 0)
+                opposite_start[n] += self->mins[n];
+            else if (other_normal[n] > 0)
+                opposite_start[n] += self->maxs[n];
+        }
+
+        if (needed_epsilon_fix >= 0)
+            opposite_start[needed_epsilon_fix] += needed_epsilon_dir;
+
+        tr = gi.trace(start, mins, maxs, opposite_start, self, mask);
+        if (tr.startsolid)
+            continue;
+
+        VectorCopy(tr.endpos, end);
+
+        // push very slightly away from the wall
+        end[0] += normal[0] * 0.125f;
+        end[1] += normal[1] * 0.125f;
+        end[2] += normal[2] * 0.125f;
+
+        VectorSubtract(end, opposite_start, delta);
+        VectorAdd(check, delta, new_origin);
+
+        if (needed_epsilon_fix >= 0)
+            new_origin[needed_epsilon_fix] += needed_epsilon_dir;
+
+        tr = gi.trace(new_origin, self->mins, self->maxs, new_origin, self, mask);
+        if (tr.startsolid)
+            continue;
+
+        dist = DotProduct(delta, delta);
+        if (!found || dist < best_distance) {
+            VectorCopy(new_origin, best_origin);
+            best_distance = dist;
+            found = true;
+        }
+    }
+
+    if (!found)
+        return STUCK_NO_GOOD_POSITION;
+
+    VectorCopy(best_origin, check);
+    return STUCK_FIXED;
+}

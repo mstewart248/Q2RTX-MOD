@@ -382,6 +382,7 @@ static const spawn_field_t spawn_fields[] = {
     {"pathtarget", FOFS(pathtarget), F_LSTRING},
     {"deathtarget", FOFS(deathtarget), F_LSTRING},
     {"healthtarget", FOFS(healthtarget), F_LSTRING},
+    {"itemtarget", FOFS(itemtarget), F_LSTRING},
     {"killtarget", FOFS(killtarget), F_LSTRING},
     {"combattarget", FOFS(combattarget), F_LSTRING},
     {"message", FOFS(message), F_LSTRING},
@@ -418,6 +419,13 @@ static const spawn_field_t spawn_fields[] = {
     // entity_state_t now carries it and the protocol sends it (U_SCALE), so it
     // is a plain edict field like any other.
     {"scale", FOFS(s.scale), F_FLOAT},
+
+    // rerelease per-entity alpha, the same deal as the field above:
+    // FIELD_AUTO_NAMED("alpha", s.alpha) in src/rerelease/g_spawn.cpp:716, with
+    // 0 meaning "default" rather than invisible. 13 instances in the shipped
+    // maps, all func_doors at 0.5 - mgu5m1's red_field and mgu5m3's twelve
+    // final_laser barriers, meant to read as translucent energy fields.
+    {"alpha", FOFS(s.alpha), F_FLOAT},
 
     {"effects", FOFS(s.effects), F_INT},              // misc_player_mannequin
     {"renderfx", FOFS(s.renderfx), F_INT},

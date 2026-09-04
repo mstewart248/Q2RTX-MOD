@@ -1247,7 +1247,19 @@ void monster_death_use(edict_t *self)
     self->monsterinfo.aiflags &= AI_GOOD_GUY;
 
     if (self->item) {
-        Drop_Item(self, self->item);
+        edict_t *dropped = Drop_Item(self, self->item);
+
+        // [rerelease] "itemtarget" fires when the DROPPED item is picked up, not
+        // on death, so it hands its name to the item as a target. Only
+        // rhangar1's monster_gladiator actually pairs the two keys - it drops
+        // key_airstrike_target and points at the target_poi "poi_turret".
+        // mgu5m1 and mgu5m3 each carry an itemtarget with no "item" key at all,
+        // which does nothing here exactly as it does nothing in the rerelease.
+        if (self->itemtarget) {
+            dropped->target = self->itemtarget;
+            self->itemtarget = NULL;
+        }
+
         self->item = NULL;
     }
 

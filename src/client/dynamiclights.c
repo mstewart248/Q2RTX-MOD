@@ -54,20 +54,26 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "client.h"
 
-typedef struct {
-    vec3_t  origin;
-    vec3_t  color;
-    vec3_t  direction;
-    float   intensity;      // shadowlightintensity, already folded with radius
-    float   cone_angle;     // full cone angle in degrees
-    int     style;
-    int     switch_index;   // bit in CS_DYNAMICLIGHTS, or -1 for always-on
-    bool    is_spot;
-    float   vol_scale;      // LIGHT_VOLUMETRIC_SCALE_UNSET = class default
-} cdynamiclight_t;
+// cdynamiclight_t lives in client.h now, because the light editor adopts these
+// and has to see them. Read the comment on the typedef there first.
 
 static cdynamiclight_t  *cl_dynamiclights;
 static int              cl_num_dynamiclights;
+
+// Read-only-ish access for lightedit.c. It writes only the ov_* fields and
+// `adopted`; everything else is this file's, parsed from the BSP.
+int CL_NumDynamicLights(void)
+{
+    return cl_num_dynamiclights;
+}
+
+cdynamiclight_t *CL_GetDynamicLight(int index)
+{
+    if (index < 0 || index >= cl_num_dynamiclights)
+        return NULL;
+
+    return &cl_dynamiclights[index];
+}
 
 static cvar_t   *cl_dynamic_lights;
 static cvar_t   *cl_dynamic_light_scale;
@@ -386,9 +392,13 @@ work to do here.
 void CL_AddDynamicLightsToScene(void)
 {
     float scale;
-    unsigned switched;
+    bool emit_unadopted;
 
-    if (!cl_num_dynamiclights || !cl_dynamic_lights->integer)
+    if (!cl_num_dynamiclights)
+        return;
+
+    // the analytic light types only exist in the path tracer
+    if (cls.ref_type != REF_TYPE_VKPT)
         return;
 
     // mode 2: on everywhere except the maps in cl_dynamic_lights_exclude.
@@ -399,28 +409,30 @@ void CL_AddDynamicLightsToScene(void)
         CL_CheckDynamicLightExclusion();
     }
 
-    if (cl_dynamic_lights->integer >= 2 && cl_dynamiclights_excluded)
-        return;
-
-    // the analytic light types only exist in the path tracer
-    if (cls.ref_type != REF_TYPE_VKPT)
-        return;
-
     scale = max(0.0f, cl_dynamic_light_scale->value);
-    if (scale == 0.0f)
-        return;
 
-    // which switchable lights the game currently has lit. SP_dynamic_light
-    // publishes this at spawn, so it is only ever empty on a map with no
-    // switchable lights at all - and then nothing carries a switch_index.
-    switched = strtoul(cl.configstrings[CS_DYNAMICLIGHTS], NULL, 16);
+    // A dynamic_light no longer lights the map just by existing. It emits ONLY
+    // when cl_dynamic_lights is explicitly turned on, which now exists to A/B
+    // against the map's intended lighting rather than as the normal path - the
+    // normal path is replacing the ones you want in the light editor, and a
+    // replacement is drawn by lightedit.c instead of this.
+    emit_unadopted = cl_dynamic_lights->integer && scale > 0.0f;
+    if (cl_dynamic_lights->integer >= 2 && cl_dynamiclights_excluded)
+        emit_unadopted = false;
+
+    if (!emit_unadopted)
+        return;
 
     for (int i = 0; i < cl_num_dynamiclights; i++) {
         const cdynamiclight_t *dl = &cl_dynamiclights[i];
         float intensity = dl->intensity * scale;
 
-        // switched off by the game right now?
-        if (dl->switch_index >= 0 && !(switched & (1u << dl->switch_index)))
+        // a replaced entity is dead for good - the light editor draws a real
+        // light in its place, and emitting here too would double it
+        if (dl->replaced)
+            continue;
+
+        if (!CL_DynamicLightSwitchedOn(dl))
             continue;
 
         if (dl->style)
@@ -450,15 +462,44 @@ void CL_AddDynamicLightsToScene(void)
     }
 }
 
+/*
+=================
+CL_DynamicLightSwitchedOn
+
+Whether the game currently has this light lit. The bits arrive in
+CS_DYNAMICLIGHTS, published by SP_dynamic_light, and the index is position among
+targetnamed dynamic_lights in lump order. A light with no targetname is
+always on.
+=================
+*/
+bool CL_DynamicLightSwitchedOn(const cdynamiclight_t *dl)
+{
+    unsigned switched;
+
+    if (dl->switch_index < 0)
+        return true;
+
+    switched = strtoul(cl.configstrings[CS_DYNAMICLIGHTS], NULL, 16);
+
+    return (switched & (1u << dl->switch_index)) != 0;
+}
+
 void CL_InitDynamicLights(void)
 {
-    // The rerelease's dynamic_light entities. These are what actually light
-    // its maps, so this defaults on.
+    // Whether UNADOPTED dynamic_light entities light the map. This now
+    // defaults OFF: a dynamic_light is a candidate for the light editor, not
+    // lighting in its own right, so the cvar exists to A/B against the map's
+    // intended lighting rather than as the normal path.
     //
-    //   0  off
+    //   0  off - candidates only (the default)
     //   1  on everywhere
-    //   2  on except on the maps in cl_dynamic_lights_exclude (the default)
-    cl_dynamic_lights = Cvar_Get("cl_dynamic_lights", "2", CVAR_ARCHIVE);
+    //   2  on except on the maps in cl_dynamic_lights_exclude
+    //
+    // Replacement lights ignore this entirely; lightedit.c draws those.
+    // NOTE this is CVAR_ARCHIVE, so the default alone changes nothing for an
+    // existing install - the seta line in each q2config.cfg wins and both were
+    // edited to 0 alongside this.
+    cl_dynamic_lights = Cvar_Get("cl_dynamic_lights", "0", CVAR_ARCHIVE);
 
     // Maps that look better WITHOUT the dynamic_light set, for mode 2. Short
     // map names, separated by spaces or commas.

@@ -239,7 +239,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	   Snapping makes the reprojection a permutation rather than a filter: no
 	   mass spreads and none leaks into empty cells. It costs some temporal
 	   aliasing while turning, which is the trade to judge. */ \
-	UBO_CVAR_DO(pt_fog_froxel_history_snap, 0.0)
+	UBO_CVAR_DO(pt_fog_froxel_history_snap, 0.0) \
+	UBO_CVAR_DO(pt_fog_sky_sun_only, 1) /* under the PHYSICAL sky, let cl_fog 1's sun term carry the sky's contribution to the fog on its own, instead of cl_fog 3 also adding its ambient sky term. NOTE the sun term is occluded by the SHADOW MAP while mode 3's sky term uses a traced ray, so this trades the crisp clipping under overhangs for the sun's directionality - which is why it defaults OFF. Appended at the END of the cvar list on purpose; see the alignment note at the top of this file */ \
+	UBO_CVAR_DO(pt_physical_sky_brightness, 1.0) /* how bright the PHYSICAL sky LOOKS, independent of the light it casts. The map-skybox equivalent is pt_sky_brightness, and the two are deliberately separate cvars: a value tuned to stop a map's skybox blowing out (Matt runs 0.005 for mgu5m1) has no business dimming a procedural atmosphere. 1 = show it at exactly the brightness it casts, which is the physically honest default */
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *
@@ -356,6 +358,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* constant is measured in frames and the fog converges at whatever rate    */ \
 	/* the machine happens to be running at - see froxel_scatter.comp.          */ \
 	GLOBAL_UBO_VAR_LIST_DO(float,           fog_frame_time) \
+	\
+	/* cl_volumetric_fog_density / cl_fog_scale - how much denser the LOCAL   */ \
+	/* LIGHT half of the fog is than the sky/sun half. The densities above    */ \
+	/* already carry cl_fog_scale and drive the sun term in every mode; this  */ \
+	/* multiplies the local term only, so cl_fog 3 gets its own density while */ \
+	/* the sky fog stays on cl_fog_scale. 1 = the two match.                  */ \
+	/* Padded to a full four scalars - see the alignment note at the top.     */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_vol_density_ratio) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_pad0) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_pad1) \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_pad2) \
 	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             pt_fullres_fields) /* see FIELD LAYOUT note above */ \
 	GLOBAL_UBO_VAR_LIST_DO(int,             pt_field_offset) /* x offset / width of one field */ \
@@ -489,6 +502,37 @@ layout(set = GLOBAL_UBO_DESC_SET_IDX, binding = GLOBAL_UBO_BINDING_IDX, std140) 
 layout(set = GLOBAL_UBO_DESC_SET_IDX, binding = GLOBAL_INSTANCE_BUFFER_BINDING_IDX) readonly buffer InstanceSSBO {
 	InstanceBuffer instance_buffer;
 };
+
+/*
+=================
+fog_sun_is_the_sky
+
+Whether the SKY's contribution to the map fog is left to cl_fog 1's sun term
+instead of cl_fog 3's own ambient sky term. PHYSICAL SKY ONLY - a map drawing its
+own skybox has no sun, so there would be nothing to leave it to, and cl_fog 3
+there is unchanged.
+
+WHAT THIS DOES, and what it deliberately does NOT do.
+
+The froxel grid and the march BOTH already compute the sun term - shadow map,
+Henyey-Greenstein phase about the sun direction, god_rays_intensity * 0.0001.
+That term IS cl_fog 1's fog. So "use cl_fog 1's sky fog" needs nothing added and
+nothing composited: the sun is already there in both estimators.
+
+All this does is stop cl_fog 3 ALSO adding its ambient, isotropic, unshadowed sky
+term on top of it - `fog_sky_inscatter` in fog_medium.glsl returns 0. One site.
+
+An earlier version also cleared fog_lights in god_rays.comp and made
+god_rays_filter.comp ADD the march to the grid rather than replacing it. That
+DOUBLE-COUNTED THE SUN and is reverted; see the note at the assignment in
+god_rays_filter.comp before trying it again.
+=================
+*/
+bool fog_sun_is_the_sky()
+{
+	return global_ubo.pt_fog_sky_sun_only != 0
+	    && global_ubo.environment_type == ENVIRONMENT_DYNAMIC;
+}
 
 #endif
 

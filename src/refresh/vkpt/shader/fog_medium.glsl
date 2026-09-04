@@ -978,6 +978,37 @@ to be used to judge it.
    duplicates no work, it only moves where the pieces are called from. */
 vec3 fog_sky_inscatter(vec3 sky_p)
 {
+	/* UNDER THE PHYSICAL SKY, THE SUN TERM IS THE SKY FOG - exactly as cl_fog 1
+	   does it, which is what Matt asked for.
+
+	   The two skies are not the same kind of thing. A map SKYBOX is a picture:
+	   it has no sun, `sun_light->visible` is false, and the god-rays sun term
+	   contributes nothing - so mode 3's ambient sky term below is the only sky
+	   light the fog can get, and it is what makes mode 3 look right there. The
+	   PHYSICAL sky is a rendered atmosphere WITH a real sun, so the sun term in
+	   god_rays.comp is already producing shafts through openings, shadowed by
+	   the shadow map and shaped by pt_fog_eccentricity. Adding an unshadowed,
+	   isotropic ambient term on top of those does not add sky light so much as
+	   wash the shafts out - and the ambient half has no directionality to lose,
+	   so it survives as a flat slab while the shafts drown.
+
+	   So: physical sky -> the sun term alone, i.e. cl_fog 1's sky fog. Map
+	   skybox -> unchanged, because mode 3 already works there.
+
+	   The sun term is NOT gated by fog_mode - it runs for every mode in
+	   god_rays.comp - so nothing has to be turned on for this to leave the sky
+	   lit. This only STOPS the second contribution.
+
+	   NOTE this function is reached only from mode 3 (getVolumeLightInscatter
+	   and the ReSTIR scatter path). Mode 2 has its own inline sky block in
+	   getClusterLightInscatter and is deliberately untouched: it stays the
+	   unchanged A/B reference it was built to be. */
+	if (fog_sun_is_the_sky())
+	{
+		fog_debug_sky_term = vec3(0);
+		return vec3(0);
+	}
+
 	// The sky is ambient and has no preferred direction, so it keeps the
 	// isotropic phase rather than the medium's. Computed first for the same
 	// reason as in getClusterLightInscatter: an open area with no emissive

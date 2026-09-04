@@ -843,6 +843,17 @@ static void CL_AddPacketEntities(void)
                 ent.alpha = 0.3f;
         }
 
+        // [rerelease] per-entity alpha (U_ALPHA). 0 is "unset", so an entity
+        // that never touches it stays opaque; 1 is opaque too, which is what
+        // the rerelease's fades reset to. Only the range between the two needs
+        // RF_TRANSLUCENT, and it is set last on purpose so an explicit alpha
+        // wins over the effects-driven values above. mgu5m1's red_field and
+        // mgu5m3's twelve final_laser func_doors are the map-driven users.
+        if (s1->alpha > 0.f && s1->alpha < 1.f) {
+            ent.flags |= RF_TRANSLUCENT;
+            ent.alpha = s1->alpha;
+        }
+
         ent.flags |= base_entity_flags;
 
 		// in rtx mode, the base entity has the renderfx for shells

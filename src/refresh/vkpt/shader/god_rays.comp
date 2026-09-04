@@ -119,6 +119,21 @@ void main()
 	// surfaces and the sky.
 	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 2);
 
+	/* WHEN THE MARCH IS CARRYING THE SUN, IT MUST DROP THE LOCAL HALF.
+
+	   Normally the froxel grid REPLACES this march outright, so whatever is
+	   computed here is thrown away and costs only time. Under
+	   fog_sun_is_the_sky() the filter ADDS the two instead - the march supplies
+	   the sun, because a shadow-mapped hard edge survives a per-pixel march and
+	   does NOT survive the grid's 3x3x3 cross-cell blur (see the long note in
+	   froxel_scatter.comp). The grid keeps the local lights, so this copy of
+	   them would be summed on top of the grid's.
+
+	   Only when the grid is actually running: at pt_fog_froxel 0 the march is
+	   the whole renderer and has to keep both halves. */
+	if (fog_lights && global_ubo.pt_fog_froxel > 0.0 && fog_sun_is_the_sky())
+		fog_lights = false;
+
 	// Whether the map's medium is given real, density-proportional extinction
 	// this frame - see the note at extinction_factors below. Applies to BOTH fog
 	// modes; the runaway it fixes is a property of the march, not of what lights it.
@@ -430,7 +445,12 @@ void main()
 		                  ? global_ubo.pt_fog_vol_scale
 		                  : global_ubo.pt_fog_light_scale;
 
-		inscatterColor += localInscatter * local_scale * 0.005;
+		// fog_vol_density_ratio is cl_volumetric_fog_density / cl_fog_scale. The
+		// density folded into localInscatter during the march was the SKY/SUN
+		// one, so this is what gives the local-light half its own density
+		// without touching the sun term above. 1 when the two match.
+		inscatterColor += localInscatter * local_scale * 0.005
+		                * global_ubo.fog_vol_density_ratio;
 	}
 
 	if(medium != MEDIUM_NONE)

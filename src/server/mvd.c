@@ -697,6 +697,7 @@ static void copy_entity_state(entity_packed_t *dst, const entity_packed_t *src, 
     dst->solid = src->solid;
     dst->sound = src->sound;
     dst->scale = src->scale;
+    dst->alpha = src->alpha;
     dst->event = 0;
 }
 

@@ -69,6 +69,7 @@ static const save_field_t entityfields[] = {
     I(s.sound),
     I(s.event),
     F(s.scale),
+    F(s.alpha),
 
     // [...]
 
@@ -101,6 +102,7 @@ static const save_field_t entityfields[] = {
     L(pathtarget),
     L(deathtarget),
     L(healthtarget),
+    L(itemtarget),
     L(combattarget),
     E(target_ent),
 
@@ -944,7 +946,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // 53: the six classic *_dodge functions are hooked up again for baseq2, which
 // adds them to save_ptrs[] - and that table is indexed POSITIONALLY, so every
 // entry after the insertion point shifts and version-52 saves cannot be read.
-#define SAVE_VERSION    57
+#define SAVE_VERSION    58
 
 /*
 ============
