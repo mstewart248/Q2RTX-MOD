@@ -897,7 +897,10 @@ cparticle_t *CL_AllocParticle(void)
     if (!free_particles)
         return NULL;
     p = free_particles;
-    p->particleType = 0;
+    p->particleType = PARTICLE_TYPE_NORMAL;
+    p->is_blood_sphere = false;
+    p->radius = 0.f;
+    p->seed = 0.f;
     free_particles = p->next;
     p->next = active_particles;
     active_particles = p;
@@ -1174,6 +1177,30 @@ void CL_ParticleEffectWaterSplash(const vec3_t org, const vec3_t dir, int color,
     }
 }
 
+/*
+===============
+CL_MakeBloodSphere
+
+Turn a particle that has already been given its position, velocity and life into
+a shaded sphere droplet.  Only the PRESENTATION changes - every spawn site keeps
+its own tuned cone, speed and lifetime, so flipping cl_blood_spheres compares
+like with like.
+
+Read at SPAWN rather than at draw time, so toggling the cvar mid-fight leaves the
+droplets already in the air alone instead of making them change form in place.
+===============
+*/
+void CL_MakeBloodSphere(cparticle_t *p, float scale)
+{
+    if (!cl_blood_spheres->integer)
+        return;
+
+    p->is_blood_sphere = true;
+    p->radius = cl_blood_sphere_radius->value * scale * (0.7f + frand() * 0.6f);
+    p->seed = frand() * 64.f;
+    VectorCopy(p->org, p->prev_org);
+}
+
 void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
 {
     int         i;
@@ -1251,6 +1278,8 @@ void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int c
         p->alpha = 1.0f;
 
         p->alphavel = -1.0f / (0.5f + frand() * 0.3f);
+
+        CL_MakeBloodSphere(p, 1.0f);
     }
 }
 
@@ -1735,6 +1764,10 @@ void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, i
                     p->accel[j] = 0;
                 }
                 p->vel[2] -= PARTICLE_GRAVITY;
+
+                // Gib blood is a DRIP, not a wound spray - smaller than the
+                // droplets CL_BloodParticleEffect throws.
+                CL_MakeBloodSphere(p, 0.6f);
             } else if (flags & EF_GREENGIB) {
                 p->alpha = 1.0f;
                 p->alphavel = -1.0f / (1 + frand() * 0.4f);
@@ -1748,6 +1781,8 @@ void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, i
                     p->accel[j] = 0;
                 }
                 p->vel[2] -= PARTICLE_GRAVITY;
+
+                CL_MakeBloodSphere(p, 0.6f);
             } else {
                 p->alpha = 1.0f;
                 p->alphavel = -1.0f / (1 + frand() * 0.2f);
@@ -1810,7 +1845,7 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 		// drop less particles as it flies
 	
 		p = CL_AllocParticle();
-        p->particleType = 1;
+        p->particleType = PARTICLE_TYPE_SHORT_LIVED;
 		if (!p)
 			return;
 		VectorClear(p->accel);
@@ -1830,6 +1865,8 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 				p->accel[j] = 0;
 			}
 			p->vel[2] -= PARTICLE_GRAVITY;
+
+			CL_MakeBloodSphere(p, 0.6f);
 		}
 		else if (flags & EF_GREENGIB) {
 			p->alpha = 1.0;
@@ -1844,6 +1881,8 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 				p->accel[j] = 0;
 			}
 			p->vel[2] -= PARTICLE_GRAVITY;
+
+			CL_MakeBloodSphere(p, 0.6f);
 		}
 		else {
 			p->alpha = 1.0;
@@ -2304,7 +2343,7 @@ void CL_AddParticles(void)
                 continue;
             }
 
-            if (p->particleType == 1 && time > 2 /* && p->org[2] < cl.refdef.vieworg[2]*/) {
+            if (p->particleType == PARTICLE_TYPE_SHORT_LIVED && time > 2 /* && p->org[2] < cl.refdef.vieworg[2]*/) {
                 p->next = free_particles;
                 free_particles = p;
                 continue;
@@ -2312,10 +2351,6 @@ void CL_AddParticles(void)
         } else {
             alpha = p->alpha;
         }
-
-        if (r_numparticles >= MAX_PARTICLES)
-            break;
-        part = &r_particles[r_numparticles++];
 
         p->next = NULL;
         if (!tail)
@@ -2331,15 +2366,37 @@ void CL_AddParticles(void)
 
         time2 = time * time;
 
-        part->origin[0] = p->org[0] + p->vel[0] * time + p->accel[0] * time2;
-        part->origin[1] = p->org[1] + p->vel[1] * time + p->accel[1] * time2;
-        part->origin[2] = p->org[2] + p->vel[2] * time + p->accel[2] * time2;
+        vec3_t origin;
+        origin[0] = p->org[0] + p->vel[0] * time + p->accel[0] * time2;
+        origin[1] = p->org[1] + p->vel[1] * time + p->accel[1] * time2;
+        origin[2] = p->org[2] + p->vel[2] * time + p->accel[2] * time2;
 
-        part->rgba = p->rgba;
-        part->color = color;
-		part->brightness = p->brightness;
-        part->alpha = alpha;
-		part->radius = 0.f;
+        if (p->is_blood_sphere) {
+            // Sphere geometry rather than a quad. The droplet stays on the
+            // active list either way, so it still ages and frees normally.
+            blood_sphere_t *b = V_AddBloodSphere();
+            if (b) {
+                VectorCopy(origin, b->origin);
+                VectorCopy(p->prev_org, b->prev_origin);
+                b->radius = p->radius;
+                b->color = color;
+                b->rgba = p->rgba;
+                b->seed = p->seed;
+            }
+            VectorCopy(origin, p->prev_org);
+        } else {
+            if (r_numparticles >= MAX_PARTICLES)
+                break;
+            part = &r_particles[r_numparticles++];
+
+            VectorCopy(origin, part->origin);
+
+            part->rgba = p->rgba;
+            part->color = color;
+            part->brightness = p->brightness;
+            part->alpha = alpha;
+            part->radius = 0.f;
+        }
 
         if (p->alphavel == INSTANT_PARTICLE) {
             p->alphavel = 0.0f;

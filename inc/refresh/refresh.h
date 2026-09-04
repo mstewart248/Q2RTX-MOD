@@ -166,6 +166,29 @@ typedef struct particle_s {
 	float   radius;
 } particle_t;
 
+// A blood droplet drawn as real, shaded SPHERE GEOMETRY in the path tracer's
+// geometry TLAS, instead of as a camera-facing quad in the effects pass.
+//
+// The difference is not cosmetic. Ordinary particles go through
+// pt_logic_particle(), which is not a shading pass at all - it fetches a colour,
+// applies a radial falloff and alpha-composites the result over the traced
+// image. Nothing there has a normal or a BRDF, so a particle can never be lit,
+// never casts a shadow and never appears in a reflection. These do all three.
+//
+// Behind cl_blood_spheres; built in src/refresh/vkpt/blood.c.
+// A blood burst is 60 droplets, so this is roughly eight overlapping bursts.
+// It is also what sizes the renderer's staging memory, at 80 triangles each.
+#define MAX_BLOOD_SPHERES 512
+
+typedef struct blood_sphere_s {
+    vec3_t  origin;
+    vec3_t  prev_origin;        // last frame's origin - this IS the motion vector
+    float   radius;
+    int     color;              // palette index, -1 => use rgba
+    color_t rgba;
+    float   seed;               // per-droplet phase for the animated surface ripple
+} blood_sphere_t;
+
 typedef struct lightstyle_s {
     float           white;          // highest of RGB
     vec3_t          rgb;            // 0.0 - 2.0
@@ -251,6 +274,9 @@ typedef struct refdef_s {
 
     int         num_particles;
     particle_t  *particles;
+
+    int             num_blood_spheres;
+    blood_sphere_t  *blood_spheres;
 
     int         decal_beg;
     int         decal_end;

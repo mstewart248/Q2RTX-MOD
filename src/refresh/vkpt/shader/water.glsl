@@ -68,6 +68,50 @@ vec3 get_water_normal(uint material_id, vec3 geo_normal, vec3 tangent, vec3 posi
 	return n;
 }
 
+/*
+An animated, wet-looking surface for a blood droplet, built out of the same
+water normal map get_water_normal() uses.
+
+It is NOT get_water_normal() with a different scale, and the reason matters.
+That function projects the WORLD POSITION into a basis built from the surface
+normal, at 0.006 units per texel - wave features about 150 units across. A
+droplet is one or two units wide, so it samples what is effectively a single
+texel: a constant tilt, not a rippling surface. Worse, a droplet that MOVES
+slides through a field that is fixed in the world, so the pattern crawls across
+it rather than travelling with it.
+
+A sphere has a property that removes both problems: the geometric normal IS the
+direction from the droplet's centre to the surface point. Sampling off that
+direction gives a pattern fixed to the droplet's own surface, needs no UVs and
+no tangents, and stays centred for free as the droplet flies. Three projections
+summed - the standard triplanar trick - avoid the seam a single one would leave.
+
+`seed` is a per-droplet phase, so that a burst of sixty does not read as sixty
+copies of one object.
+*/
+vec3 get_blood_normal(vec3 geo_normal, float seed)
+{
+	float t = global_ubo.time * global_ubo.pt_blood_normal_speed;
+	float s = global_ubo.pt_blood_normal_scale;
+
+	vec2 uv1 = geo_normal.xy * s + vec2(seed)       + t * vec2( 0.05,  0.07);
+	vec2 uv2 = geo_normal.yz * s + vec2(seed * 1.7) + t * vec2(-0.06,  0.04);
+	vec2 uv3 = geo_normal.zx * s + vec2(seed * 2.3) + t * vec2( 0.03, -0.05);
+
+	vec2 a = global_textureLod(global_ubo.water_normal_texture, uv1, 0).xy * 2 - vec2(1);
+	vec2 b = global_textureLod(global_ubo.water_normal_texture, uv2, 0).xy * 2 - vec2(1);
+	vec2 c = global_textureLod(global_ubo.water_normal_texture, uv3, 0).xy * 2 - vec2(1);
+
+	vec2 perturb = (a + b + c) * global_ubo.pt_blood_normal_strength;
+
+	// Tangent space in the layout construct_ONB_frisvad returns: column 1 is the
+	// normal, so the sampled normal's "up" component belongs in .y.
+	vec3 n = normalize(vec3(perturb.x, 1.0, perturb.y));
+
+	mat3 basis = construct_ONB_frisvad(geo_normal);
+	return normalize(basis * n);
+}
+
 vec3 get_extinction_factors(int medium)
 {
 	vec3 factors = vec3(0);

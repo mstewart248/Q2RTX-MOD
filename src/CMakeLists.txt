@@ -277,6 +277,7 @@ SET(HEADERS_WINDOWS
 SET(SRC_VKPT
 	refresh/vkpt/asvgf.c
 	refresh/vkpt/bloom.c
+	refresh/vkpt/blood.c
 	refresh/vkpt/bsp_mesh.c
 	refresh/vkpt/draw.c
 	refresh/vkpt/fog.c

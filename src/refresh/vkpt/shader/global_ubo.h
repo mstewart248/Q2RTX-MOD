@@ -241,7 +241,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	   aliasing while turning, which is the trade to judge. */ \
 	UBO_CVAR_DO(pt_fog_froxel_history_snap, 0.0) \
 	UBO_CVAR_DO(pt_fog_sky_sun_only, 1) /* under the PHYSICAL sky, let cl_fog 1's sun term carry the sky's contribution to the fog on its own, instead of cl_fog 3 also adding its ambient sky term. NOTE the sun term is occluded by the SHADOW MAP while mode 3's sky term uses a traced ray, so this trades the crisp clipping under overhangs for the sun's directionality - which is why it defaults OFF. Appended at the END of the cvar list on purpose; see the alignment note at the top of this file */ \
-	UBO_CVAR_DO(pt_physical_sky_brightness, 1.0) /* how bright the PHYSICAL sky LOOKS, independent of the light it casts. The map-skybox equivalent is pt_sky_brightness, and the two are deliberately separate cvars: a value tuned to stop a map's skybox blowing out (Matt runs 0.005 for mgu5m1) has no business dimming a procedural atmosphere. 1 = show it at exactly the brightness it casts, which is the physically honest default */
+	UBO_CVAR_DO(pt_physical_sky_brightness, 1.0) /* how bright the PHYSICAL sky LOOKS, independent of the light it casts. The map-skybox equivalent is pt_sky_brightness, and the two are deliberately separate cvars: a value tuned to stop a map's skybox blowing out (Matt runs 0.005 for mgu5m1) has no business dimming a procedural atmosphere. 1 = show it at exactly the brightness it casts, which is the physically honest default */ \
+	/* Appearance of the cl_blood_spheres droplets. Blood is a glossy DIELECTRIC, so metallic stays 0 and the wet look comes from a low roughness against a high specular factor - NOT from the chrome path, which would make it a mirror ball and cost a second traced ray at half resolution. */ \
+	UBO_CVAR_DO(pt_blood_roughness, 0.06) /* surface roughness of a blood droplet. Below ~0.02 the highlight becomes a point the denoiser cannot hold on to; above ~0.2 the droplet stops reading as wet */ \
+	UBO_CVAR_DO(pt_blood_specular, 1.6) /* specular factor of a blood droplet, above 1 on purpose - a droplet is small and its highlight is the whole effect */ \
+	UBO_CVAR_DO(pt_blood_normal_strength, 0.35) /* how hard the animated ripple perturbs the sphere's normal. 0 = a perfectly smooth ball */ \
+	UBO_CVAR_DO(pt_blood_normal_scale, 1.4) /* ripple features per droplet, in normal-map tiles across the sphere's direction cube. Small numbers = a few big wobbles, large = a fine seethe */ \
+	UBO_CVAR_DO(pt_blood_normal_speed, 1.0) /* how fast the ripple animates */
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *

@@ -58,6 +58,8 @@ cvar_t  *cl_disable_explosions;
 cvar_t  *cl_dlight_hacks;
 cvar_t  *cl_blaster_color;
 cvar_t  *cl_ludicrous_gibs;
+cvar_t  *cl_blood_spheres;
+cvar_t  *cl_blood_sphere_radius;
 cvar_t  *cl_quick_weapon_switch;
 cvar_t  *cl_instant_weapon_switch;
 
@@ -2823,6 +2825,12 @@ static void CL_InitLocal(void)
     // apart. Registered here as well so the Options -> Effects toggle works at
     // the main menu, before any game library has been loaded.
     cl_ludicrous_gibs = Cvar_Get("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
+
+    // Draw blood as shaded, path-traced spheres instead of the flat particle
+    // quads. Read once at SPAWN, so flipping it mid-fight leaves the droplets
+    // already in the air alone rather than making them change form in place.
+    cl_blood_spheres = Cvar_Get("cl_blood_spheres", "0", CVAR_ARCHIVE);
+    cl_blood_sphere_radius = Cvar_Get("cl_blood_sphere_radius", "1.2", CVAR_ARCHIVE);
 
     // Twins of the game's weapon-switch cvars, registered here only so the
     // Player Setup menu has something to read before a map is loaded. The game

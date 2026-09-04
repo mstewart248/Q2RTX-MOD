@@ -566,6 +566,8 @@ extern cvar_t    *cl_explosion_frametime;
 extern cvar_t    *cl_dlight_hacks;
 extern cvar_t    *cl_blaster_color;
 extern cvar_t    *cl_ludicrous_gibs;
+extern cvar_t    *cl_blood_spheres;
+extern cvar_t    *cl_blood_sphere_radius;
 
 extern cvar_t    *cl_chat_notify;
 extern cvar_t    *cl_chat_sound;
@@ -766,6 +768,7 @@ void V_Shutdown(void);
 void V_RenderView(void);
 void V_AddEntity(entity_t *ent);
 void V_AddParticle(particle_t *p);
+blood_sphere_t *V_AddBloodSphere(void);
 void V_AddLight(const vec3_t org, float intensity, float r, float g, float b);
 void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float b, float radius);
 // per-light volumetric scale for the light most recently added; negative puts it
@@ -879,7 +882,34 @@ typedef struct cparticle_s {
     color_t rgba;
 	float   brightness;
     int     particleType;
+
+    // Draw this one as shaded sphere geometry instead of a camera-facing quad.
+    //
+    // A FLAG OF ITS OWN, not another particleType value: the ludicrous-gibs
+    // blood trail is already PARTICLE_TYPE_SHORT_LIVED and is also blood, so the
+    // two properties have to coexist. Folding "is a sphere" into the type enum
+    // costs that trail either its 2-second cull or its spheres, depending which
+    // assignment wins - which is exactly why gibs had no spheres at first.
+    bool    is_blood_sphere;
+
+    // is_blood_sphere only. The droplet's motion is analytic (see
+    // CL_AddParticles), so there is no integrated state to read a previous
+    // position out of - and a shaded sphere needs one every frame or it ghosts
+    // under DLSS-RR. Keeping last frame's emitted origin here is exact at any
+    // frame rate and costs one vec3.
+    vec3_t  prev_org;
+    float   radius;
+    float   seed;       // per-droplet phase for the animated surface ripple
 } cparticle_t;
+
+// cparticle_t::particleType
+#define PARTICLE_TYPE_NORMAL        0
+#define PARTICLE_TYPE_SHORT_LIVED   1   // culled after 2 seconds regardless of alpha
+
+// Promote a freshly allocated particle to a blood droplet, if the feature is on.
+// `scale` sizes it against cl_blood_sphere_radius: 1.0 for wound spray, smaller
+// for the drips off a flying gib.
+void CL_MakeBloodSphere(cparticle_t *p, float scale);
 
 typedef struct cdlight_s {
     int     key;        // so entities can reuse same entry

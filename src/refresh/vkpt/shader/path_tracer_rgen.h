@@ -223,6 +223,12 @@ is_water(uint material)
 }
 
 bool
+is_blood(uint material)
+{
+	return (material & MATERIAL_KIND_MASK) == MATERIAL_KIND_BLOOD;
+}
+
+bool
 is_slime(uint material)
 {
 	return (material & MATERIAL_KIND_MASK) == MATERIAL_KIND_SLIME;
@@ -1019,6 +1025,25 @@ get_material(
 	out vec3 emissive,
 	out float specular_factor)
 {
+	// Blood droplets (cl_blood_spheres) are procedurally generated geometry with
+	// no material entry, no albedo texture and no UV unwrap - which is exactly
+	// why get_blood_normal() is driven by the geometric normal rather than by a
+	// tangent basis. Their per-droplet colour rides in the otherwise dead UV
+	// slots; see write_blood_geometry() in blood.c for the packing. Intercepted
+	// here, ahead of every texture fetch below.
+	if (is_blood(triangle.material_id))
+	{
+		base_color = clamp(vec3(triangle.tex_coords[0].x,
+		                        triangle.tex_coords[0].y,
+		                        triangle.tex_coords[1].x), vec3(0), vec3(1));
+		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y);
+		metallic = 0;
+		roughness = clamp(global_ubo.pt_blood_roughness, 0.0, 1.0);
+		emissive = vec3(0);
+		specular_factor = global_ubo.pt_blood_specular;
+		return;
+	}
+
 	MaterialInfo minfo = get_material_info(triangle.material_id);
 
 	perturb_tex_coord(triangle.material_id, triangle.texture_flags, global_ubo.time, tex_coord);

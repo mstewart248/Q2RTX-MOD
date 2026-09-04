@@ -457,6 +457,8 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 	{
 		if (!initialize_transparency())
 			return VK_RESULT_MAX_ENUM;
+
+		vkpt_blood_initialize();
 	}
 
 	vkpt_textures_prefetch();
@@ -492,6 +494,7 @@ vkpt_destroy_all(VkptInitFlags_t destroy_flags)
 	if ((VKPT_INIT_DEFAULT & destroy_flags) == destroy_flags)
 	{
 		destroy_transparency();
+		vkpt_blood_destroy();
 		vkpt_light_buffers_destroy();
 	}
 
@@ -2693,6 +2696,7 @@ destroy_vulkan(void)
 
 static int entity_frame_num = 0;
 static uint32_t model_entity_ids[2][MAX_MODEL_INSTANCES];
+static int blood_model_instance_idx = -1;
 static int model_entity_id_count[2];
 static int light_entity_ids[2][MAX_MODEL_LIGHTS];
 static int light_entity_id_count[2];
@@ -3345,6 +3349,39 @@ prepare_entities(EntityUploadInfo* upload_info)
 	}
 
 	upload_info->explosions_prim_count = num_instanced_prim - upload_info->explosions_prim_offset;
+
+	// Reserve the blood-droplet section at the end of the instanced buffers. Only
+	// the SPACE is claimed here - the primitives themselves are written later, in
+	// vkpt_blood_update, because they come from a host copy rather than from
+	// instance_geometry.comp. num_prims therefore has to cover the reservation, or
+	// vkpt_vertex_buffer_ensure_primbuf_size would size the buffer to the models
+	// alone and the copy would run off the end of it.
+	//
+	// The reservation is this frame's ACTUAL droplet count rounded up to whole
+	// spheres, not the 512-droplet maximum, so a map with no blood pays nothing.
+	upload_info->blood_prim_offset = num_instanced_prim;
+	upload_info->blood_prim_count = 0;    // filled in by vkpt_blood_update
+	num_instanced_prim += (int)vkpt_blood_prim_count(vkpt_refdef.fd->num_blood_spheres);
+
+	// One ModelInstance backs the whole blood section, purely so that
+	// load_and_transform_triangle can recover a primitive index from
+	// render_prim_offset. It is deliberately allocated PAST model_entity_id_count,
+	// which is set below: it carries no entity hash, so it must not take part in
+	// the current-to-previous instance matching.
+	blood_model_instance_idx = model_instance_idx;
+	if (blood_model_instance_idx < MAX_MODEL_INSTANCES)
+	{
+		ModelInstance* bmi = instance_buffer->model_instances + blood_model_instance_idx;
+		memset(bmi, 0, sizeof(*bmi));
+		bmi->render_buffer_idx = VERTEX_BUFFER_INSTANCED;
+		bmi->render_prim_offset = upload_info->blood_prim_offset;
+		bmi->cluster = -1;
+		bmi->alpha = 1.f;
+	}
+	else
+	{
+		blood_model_instance_idx = -1;
+	}
 
 	upload_info->num_instances = instance_idx;
 	upload_info->num_prims  = num_instanced_prim;
@@ -4520,6 +4557,14 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			vkpt_physical_sky_record_cmd_buffer(trace_cmd_buf);
 		}
 		END_PERF_MARKER(trace_cmd_buf, PROFILER_UPDATE_ENVIRONMENT);
+
+		// Blood droplets. Writes its own section of the instanced buffers by host
+		// copy and emits its own barrier, so it is independent of the compute pass
+		// below; it only has to land before vkpt_pt_create_all_dynamic builds the
+		// BLAS over it.
+		vkpt_blood_update(trace_cmd_buf, fd->blood_spheres, fd->num_blood_spheres,
+			bsp_world_model, fd->vieworg, blood_model_instance_idx,
+			upload_info.blood_prim_offset, &upload_info.blood_prim_count);
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_INSTANCE_GEOMETRY);
 		vkpt_instance_geometry(trace_cmd_buf, upload_info.num_instances, update_world_animations);

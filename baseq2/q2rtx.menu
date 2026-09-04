@@ -336,8 +336,56 @@ begin effects
     endif
     ifeq vid_rtx 1
         action --align "map fog and volumetrics..." pushmenu fog
+        action --align "blood droplets..." pushmenu blood
     endif
     action --align "railgun trail setup..." pushmenu railtrail
+end
+
+/*
+THE BLOOD MENU.
+
+Only shown under vid_rtx, because these droplets are path-traced geometry: they
+are real spheres in the geometry acceleration structure rather than the flat
+camera-facing quads the particle system draws, which is what lets them take
+light, cast shadows and show up in reflections.  There is nothing for the GL
+renderer to do with any of it.
+
+Everything below the toggle is nested behind it for the same reason the fog menu
+nests: with the effect off, none of these controls does anything, and a list of
+inert sliders is worse than a short list.
+*/
+begin blood
+    background #212F3CD0
+    style --compact
+    title "Blood Droplets"
+    blank
+    toggle --status "draw blood as shaded, path-traced spheres instead of flat particle sprites - they take light, cast shadows and appear in reflections. Read when a droplet SPAWNS, so toggling it leaves blood already in the air alone (cl_blood_spheres)" \
+        "blood droplets" cl_blood_spheres
+
+    ifeq cl_blood_spheres 1
+        blank
+        range --status "size of a droplet in world units, before the per-droplet random variation (cl_blood_sphere_radius)" \
+            "droplet size" cl_blood_sphere_radius 0.2 4 0.2
+        blank
+        range --status "surface roughness. Low values give the tight highlight that reads as WET; much above 0.2 and a droplet stops looking like liquid (pt_blood_roughness)" \
+            "wetness" pt_blood_roughness 0.01 0.4 0.01
+        range --status "strength of the specular highlight. Above 1 on purpose - a droplet is small and its highlight is most of what you see of it (pt_blood_specular)" \
+            "highlight strength" pt_blood_specular 0 4 0.1
+        blank
+        range --status "how hard the animated water-normal ripple perturbs the surface. 0 is a perfectly smooth ball (pt_blood_normal_strength)" \
+            "ripple strength" pt_blood_normal_strength 0 1 0.05
+        range --status "size of the ripple features on a droplet. Low values give a few big wobbles, high values a fine seethe (pt_blood_normal_scale)" \
+            "ripple detail" pt_blood_normal_scale 0.2 6 0.2
+        range --status "how fast the ripple animates (pt_blood_normal_speed)" \
+            "ripple speed" pt_blood_normal_speed 0 4 0.25
+        blank
+        pairs --status "triangles per droplet up close. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading (pt_blood_tess)" \
+            "droplet detail" pt_blood_tess "low - 20 triangles" 0 "medium - 80" 1 "high - 320" 2
+        range --status "droplets closer than this get the full detail above. Every expense scales with triangle count, so this is the knob that keeps a faceful of blood affordable (pt_blood_lod_near)" \
+            "full detail within" pt_blood_lod_near 32 1024 32
+        range --status "droplets past this distance drop to the lowest detail, where their outline is a couple of pixels anyway (pt_blood_lod_far)" \
+            "lowest detail beyond" pt_blood_lod_far 64 2048 64
+    endif
 end
 
 /*

@@ -58,6 +58,9 @@ entity_t    r_entities[MAX_ENTITIES];
 int         r_numparticles;
 particle_t  r_particles[MAX_PARTICLES];
 
+int             r_numbloodspheres;
+blood_sphere_t  r_bloodspheres[MAX_BLOOD_SPHERES];
+
 lightstyle_t    r_lightstyles[MAX_LIGHTSTYLES];
 
 /*
@@ -72,6 +75,7 @@ static void V_ClearScene(void)
     r_numdlights = 0;
     r_numentities = 0;
     r_numparticles = 0;
+    r_numbloodspheres = 0;
 }
 
 
@@ -101,6 +105,23 @@ void V_AddParticle(particle_t *p)
     if (r_numparticles >= MAX_PARTICLES)
         return;
     r_particles[r_numparticles++] = *p;
+}
+
+/*
+=====================
+V_AddBloodSphere
+
+Returns the slot to fill in, or NULL when the scene is full. Unlike
+V_AddParticle this hands back a pointer rather than taking a copy, because the
+caller builds the droplet straight from the simulated particle and there is no
+second copy of it to pass in.
+=====================
+*/
+blood_sphere_t *V_AddBloodSphere(void)
+{
+    if (r_numbloodspheres >= MAX_BLOOD_SPHERES)
+        return NULL;
+    return &r_bloodspheres[r_numbloodspheres++];
 }
 
 /*
@@ -584,8 +605,10 @@ void V_RenderView(int waterLevel)
 
         if (!cl_add_entities->integer)
             r_numentities = 0;
-        if (!cl_add_particles->integer)
+        if (!cl_add_particles->integer) {
             r_numparticles = 0;
+            r_numbloodspheres = 0;
+        }
         if (!cl_add_lights->integer)
             r_numdlights = 0;
         if (!cl_add_blend->integer)
@@ -595,6 +618,8 @@ void V_RenderView(int waterLevel)
         cl.refdef.entities = r_entities;
         cl.refdef.num_particles = r_numparticles;
         cl.refdef.particles = r_particles;
+        cl.refdef.num_blood_spheres = r_numbloodspheres;
+        cl.refdef.blood_spheres = r_bloodspheres;
         cl.refdef.num_dlights = r_numdlights;
         cl.refdef.dlights = r_dlights;
         cl.refdef.lightstyles = r_lightstyles;

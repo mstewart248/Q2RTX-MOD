@@ -595,6 +595,10 @@ typedef struct EntityUploadInfo
 	uint32_t viewer_weapon_prim_count;
 	uint32_t explosions_prim_offset;
 	uint32_t explosions_prim_count;
+	// cl_blood_spheres. One more section of the instanced buffers, filled from
+	// the CPU rather than by instance_geometry.comp - see blood.c.
+	uint32_t blood_prim_offset;
+	uint32_t blood_prim_count;
 	bool weapon_left_handed;
 } EntityUploadInfo;
 
@@ -853,6 +857,20 @@ VkBufferView get_transparency_beam_color_buffer_view(void);
 VkBufferView get_transparency_sprite_info_buffer_view(void);
 VkBufferView get_transparency_beam_intersect_buffer_view(void);
 void get_transparency_counts(int* particle_num, int* beam_num, int* sprite_num);
+
+// Blood droplets as shaded sphere geometry - blood.c
+VkResult vkpt_blood_initialize(void);
+VkResult vkpt_blood_destroy(void);
+uint32_t vkpt_blood_prim_count(int num_spheres);
+void vkpt_blood_update(
+	VkCommandBuffer cmd_buf,
+	const blood_sphere_t* spheres,
+	int num_spheres,
+	bsp_t* bsp,
+	const vec3_t cam_pos,
+	int model_instance_index,
+	uint32_t prim_offset,
+	uint32_t* prim_count_out);
 void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, entity_t* entities, int num_entites, float adapted_luminance, int* light_entity_ids, int* num_light_entities);
 bool vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, vec3_t begin, vec3_t end, vec3_t color, float radius, entity_hash_t hash, int* light_entity_ids);
 bool get_triangle_off_center(const float* positions, float* center, float* anti_center, float offset);

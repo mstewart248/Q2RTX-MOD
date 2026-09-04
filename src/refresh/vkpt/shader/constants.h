@@ -70,6 +70,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MATERIAL_KIND_CAMERA         0xc0000000
 #define MATERIAL_KIND_CHROME_MODEL   0xd0000000
 #define MATERIAL_KIND_TRANSP_MODEL   0xe0000000 // Transparent models. No distortion, just "see through".
+// Blood droplets drawn as sphere geometry (cl_blood_spheres). The LAST free
+// value in the 4-bit kind field. Deliberately NOT in IS_REFLECT_REFRACT_KIND:
+// blood is a glossy DIELECTRIC, not a mirror, so it wants the ordinary shading
+// path at a low roughness, not a second traced ray. get_material() intercepts it
+// before any texture lookup - these primitives carry no albedo texture and no
+// meaningful UVs, only a per-droplet colour packed into the UV slots.
+#define MATERIAL_KIND_BLOOD          0xf0000000
 
 #define MATERIAL_FLAG_LIGHT          0x08000000
 #define MATERIAL_FLAG_HANDEDNESS     0x02000000
