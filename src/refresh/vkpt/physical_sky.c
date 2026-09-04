@@ -85,29 +85,97 @@ static cvar_t *sky_type;
 #define SKY_TYPE_STROGGOS   3
 
 // index into skyPresets, i.e. a physical_sky value - not a SKY_TYPE_
+#define SKY_EARTH_PRESET    1
 #define SKY_STROGGOS_PRESET 2
 
-// [rerelease] Maps that render the procedural sky even in "rerelease" sky mode,
-// where a map that ships a skybox normally wins.
+// WHY A CVAR AND NOT THE "sky" COMMAND. Pointing a map cfg's "sky" command at a
+// basename that does not exist cannot hold: the target_sky a map's drop pod
+// fires on landing re-issues CS_SKY*, CL_SetSky runs again, and the real skybox
+// comes straight back. A cvar the renderer consults every frame does hold.
 //
-// mgu1m1 is why this exists, and it is the only entry. Its worldspawn names no
-// sky at all, so CS_SKY falls back to the stock unit1_ cube map and the map
-// looks as though it had authored one - and unit1_ is a blue Earth sky over a
-// map whose own _sunlight_color and heightfog are orange. The Stroggos
-// atmosphere with a fixed sun is what it wants.
+// mgu1m1 is the case this was built for. Its worldspawn names no sky at all, so
+// CS_SKY falls back to the stock unit1_ cube map and the map looks as though it
+// had authored one - and unit1_ is a blue Earth sky over a map whose own
+// _sunlight_color and heightfog are orange.
 //
-// Doing this from maps/mgu1m1.cfg by pointing the "sky" command at a basename
-// that does not exist could not hold: the target_sky its drop pod fires on
-// landing re-issues CS_SKY*, CL_SetSky runs again, and the real skybox comes
-// straight back.
+// A map that asks gets its own skybox declined and the named preset regardless
+// of what physical_sky says. Nothing else changes - the sun still follows
+// whatever preset the player selected, see apply_map_sun.
 //
-// Listed maps get the map's own skybox declined and the Stroggos preset
-// regardless of what physical_sky says. Nothing else changes - the sun still
-// follows whatever preset the player selected, see apply_map_sun.
+// [rerelease] Which procedural sky THIS MAP wants, set from its own
+// maps/<name>.cfg:
 //
-// Whitespace- or comma-separated SHORT map names, the same form cl.mapname is in
-// - "mgu1m1", not "maps/mgu1m1.bsp". Matches cl_dynamic_lights_exclude.
-static cvar_t *sky_procedural_maps;
+//     mapcvar use_procedural_sky stroggos
+//     mapcvar use_procedural_sky earth
+//     mapcvar use_procedural_sky space
+//
+// Empty (the default) means the map has no opinion and the ordinary rules apply.
+//
+// This replaces a global sky_procedural_maps list of map names. A list was the
+// wrong shape for the job: it lived in one central cvar that every map had to be
+// added to, it could only ever say "procedural" rather than WHICH sky, and being
+// CVAR_ARCHIVE it accumulated in the player's config. Per-map data belongs in the
+// per-map cfg, and `mapcvar` already restores it when the map is left - see
+// Cmd_RestoreMapCvars in R_BeginRegistration_RTX.
+//
+// NOT archived, deliberately: it describes a map, not a preference, and an
+// archived copy would leak one map's sky into the next session.
+static cvar_t *use_procedural_sky;
+
+// What use_procedural_sky asks for.
+#define MAP_SKY_NONE      (-1)
+
+// Returns a physical_sky preset index, or MAP_SKY_NONE when the map has no
+// opinion. `out_space` additionally reports the space sky, which is a separate
+// axis from the preset - it is composited over the Stroggos atmosphere.
+static int map_procedural_sky(bool *out_space)
+{
+	if (out_space)
+		*out_space = false;
+
+	if (!use_procedural_sky || !use_procedural_sky->string[0])
+		return MAP_SKY_NONE;
+
+	const char *s = use_procedural_sky->string;
+
+	if (!Q_stricmp(s, "0") || !Q_stricmp(s, "none") || !Q_stricmp(s, "off"))
+		return MAP_SKY_NONE;
+
+	if (!Q_stricmp(s, "earth"))
+		return SKY_EARTH_PRESET;
+
+	if (!Q_stricmp(s, "stroggos"))
+		return SKY_STROGGOS_PRESET;
+
+	if (!Q_stricmp(s, "space")) {
+		if (out_space)
+			*out_space = true;
+		return SKY_STROGGOS_PRESET;
+	}
+
+	// Warn once per distinct value rather than every frame - this is read from
+	// the render path.
+	static char complained[64];
+	if (strcmp(complained, s)) {
+		Q_strlcpy(complained, s, sizeof(complained));
+		Com_WPrintf("use_procedural_sky \"%s\" not understood; "
+			"expected earth, stroggos, space or none\n", s);
+	}
+
+	return MAP_SKY_NONE;
+}
+
+// Whether the loaded map has asked for the space sky. Kept separate from the
+// physical_sky_space cvar rather than writing into it: sky_type_changed already
+// sets one cvar from another and that behind-the-back write once produced a
+// fake bug report, so a map's request is READ where it matters instead.
+bool vkpt_physical_sky_space_enabled(void)
+{
+	bool space = false;
+	map_procedural_sky(&space);
+
+	return space || (physical_sky_space && physical_sky_space->integer > 0);
+}
 
 // The sun a listed map STARTS with. Copied into sun_elevation / sun_azimuth
 // ONCE, on map load, and only while the sun preset is Custom - see apply_map_sun.
@@ -120,8 +188,8 @@ static cvar_t *sky_procedural_maps;
 // These are per-map, set from maps/<name>.cfg - which is exec'd at BSP load,
 // well before the first frame apply_map_sun can run on - and reset back to the
 // defaults below by maps/default.cfg. So a second override is two steps: add the
-// map to sky_procedural_maps, and give it a cfg with these two lines. A listed
-// map with no cfg of its own just gets the defaults.
+// map's cfg carries "mapcvar use_procedural_sky <sky>" alongside these two
+// lines. A map that names a sky but no sun just gets the defaults.
 //
 // The defaults are mgu1m1's, set by eye with the sky held still. They are NOT
 // the map's own _sun_mangle "30 -70 0" - that is what its lightmap compiler was
@@ -129,35 +197,6 @@ static cvar_t *sky_procedural_maps;
 static cvar_t *sky_map_sun_elevation;
 static cvar_t *sky_map_sun_azimuth;
 
-#define SKY_MAP_LIST_SEPARATORS " \t\r\n,;"
-
-// Whether cl.mapname appears in a whitespace/comma separated list cvar.
-static bool sky_map_in_list(const cvar_t *list)
-{
-	const char *p;
-	size_t      maplen;
-
-	if (!list || !list->string[0] || !cl.mapname[0])
-		return false;
-
-	maplen = strlen(cl.mapname);
-
-	for (p = list->string; *p; ) {
-		size_t len;
-
-		p += strspn(p, SKY_MAP_LIST_SEPARATORS);
-		if (!*p)
-			break;
-
-		len = strcspn(p, SKY_MAP_LIST_SEPARATORS);
-		if (len == maplen && !Q_strncasecmp(p, cl.mapname, len))
-			return true;
-
-		p += len;
-	}
-
-	return false;
-}
 
 // Only meaningful in "rerelease" sky mode. An explicit sky_type pick already
 // declines every map's skybox and already says which atmosphere to render, so
@@ -165,7 +204,7 @@ static bool sky_map_in_list(const cvar_t *list)
 static bool sky_map_forces_procedural(void)
 {
 	return sky_type && sky_type->integer == SKY_TYPE_RERELEASE
-		&& sky_map_in_list(sky_procedural_maps);
+		&& map_procedural_sky(NULL) != MAP_SKY_NONE;
 }
 
 // The preset that actually gets rendered, which is not always the one
@@ -173,7 +212,7 @@ static bool sky_map_forces_procedural(void)
 static int effective_physical_sky(void)
 {
 	if (sky_map_forces_procedural())
-		return SKY_STROGGOS_PRESET;
+		return map_procedural_sky(NULL);
 
 	return physical_sky->integer;
 }
@@ -475,7 +514,7 @@ vkpt_physical_sky_beginRegistration()
 VkResult 
 vkpt_physical_sky_endRegistration()
 {
-    if (physical_sky_space->integer > 0)
+    if (vkpt_physical_sky_space_enabled())
     {
         image_t const * albedo_map = IMG_Find("env/planet_albedo.tga", IT_SKIN, IF_SRGB);
         if (albedo_map != R_NOTEXTURE) {
@@ -614,7 +653,7 @@ vkpt_physical_sky_record_cmd_buffer(VkCommandBuffer cmd_buf)
             SkyGetDescriptorSet()
         };
 
-        if (physical_sky_space->integer > 0) {
+        if (vkpt_physical_sky_space_enabled()) {
             vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_physical_sky_space);
         } else {
             vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_physical_sky);
@@ -765,11 +804,11 @@ void vkpt_physical_sky_set_map_skybox(int scope)
 // the environment map with the procedurally rendered planet.
 bool vkpt_physical_sky_uses_skybox(void)
 {
-	// A map on sky_procedural_maps declines its own skybox, and
+	// A map that named a sky declines its own skybox, and
 	// effective_physical_sky has already replaced the preset with Stroggos, so
 	// neither test below can put the cube map back.
 	if (map_skybox_scope > 0 && sky_use_map_skybox->integer >= map_skybox_scope
-		&& !physical_sky_space->integer && !sky_map_forces_procedural())
+		&& !vkpt_physical_sky_space_enabled() && !sky_map_forces_procedural())
 		return true;
 
 	return (GetSkyPreset(effective_physical_sky())->flags & PHYSICAL_SKY_FLAG_USE_SKYBOX) != 0;
@@ -819,7 +858,7 @@ static void sky_type_changed(cvar_t *self)
 apply_map_sun
 
 Seeds sun_elevation / sun_azimuth from sky_map_sun_* when a map on
-sky_procedural_maps is loaded.
+use_procedural_sky is loaded.
 
 Fires once per map, on the first frame the new name is visible, and only while
 the sun preset is Custom. So it sets a STARTING POINT, not an override: move the
@@ -827,9 +866,8 @@ sun afterwards and it stays where you put it, and pick any time-of-day preset
 and this does not run at all - that preset is honoured exactly as on any other
 map.
 
-Keyed on the map name rather than on a load hook because that is the same thing
-sky_map_in_list already tests, so the two cannot disagree about which map is
-loaded.
+Keyed on the map name rather than on a load hook, so it cannot disagree with
+sky_map_forces_procedural about which map is loaded.
 =================
 */
 static void apply_map_sun(void)
@@ -1288,12 +1326,12 @@ void InitialiseSkyCVars()
 	sky_type_changed(sky_type);
 
 	// Maps that get the procedural sky even in "rerelease" sky mode, and the sun
-	// they start with. sky_procedural_maps needs physical_sky_cvar_changed
+	// they start with. use_procedural_sky needs physical_sky_cvar_changed
 	// because it decides which atmosphere is rendered; the two angles do not,
 	// since they only ever write sun_elevation / sun_azimuth, which carry their
 	// own callbacks.
-	sky_procedural_maps = Cvar_Get("sky_procedural_maps", "mgu1m1;mgu2m1", CVAR_ARCHIVE);
-	sky_procedural_maps->changed = physical_sky_cvar_changed;
+	use_procedural_sky = Cvar_Get("use_procedural_sky", "", 0);
+	use_procedural_sky->changed = physical_sky_cvar_changed;
 
 	sky_map_sun_elevation = Cvar_Get("sky_map_sun_elevation", "55", CVAR_ARCHIVE);
 	sky_map_sun_azimuth = Cvar_Get("sky_map_sun_azimuth", "180", CVAR_ARCHIVE);

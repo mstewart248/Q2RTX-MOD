@@ -182,6 +182,7 @@ static struct {
 	uint32_t          stride;           // primitives reserved per droplet slot
 	uint32_t          dirty_lo;         // primitive range rewritten this frame
 	uint32_t          dirty_hi;
+	bool              dirty_slot[MAX_BLOOD_SPHERES];
 	uint32_t          last_prim_count;  // for detecting a frame that changed nothing
 	uint32_t          last_prim_offset; // where the blood section sat last frame
 	bool              have_last_offset;
@@ -857,6 +858,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	// changed needs to travel.
 	blood.dirty_lo = UINT32_MAX;
 	blood.dirty_hi = 0;
+	memset(blood.dirty_slot, 0, sizeof(blood.dirty_slot));
 
 	for (int s = 0; s < num_spheres; s++)
 	{
@@ -919,6 +921,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 		blood.dirty_lo = min(blood.dirty_lo, prim_index);
 		blood.dirty_hi = max(blood.dirty_hi, prim_index + (uint32_t)faces);
+		blood.dirty_slot[sphere->slot] = true;
 
 		vec3_t color;
 		cast_u32_to_f32_color(sphere->color, &sphere->rgba, color, 1.0f);
@@ -1107,6 +1110,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 		blood.dirty_lo = min(blood.dirty_lo, (uint32_t)i * stride);
 		blood.dirty_hi = max(blood.dirty_hi, (uint32_t)(i + 1) * stride);
+		blood.dirty_slot[i] = true;
 	}
 
 	// Everything past the used range is simply not covered by the build.
@@ -1237,47 +1241,107 @@ void vkpt_blood_update(
 	const bool partial = blood.clean_frames >= MAX_FRAMES_IN_FLIGHT
 		&& blood.dirty_lo < blood.dirty_hi;
 
-	uint32_t up_lo = 0;
-	uint32_t up_hi = prim_count;
+	// Which primitive runs to upload.
+	//
+	// A single lo..hi span is not enough. The droplets that change are the ones
+	// still in the air, and their slots are scattered through a range otherwise
+	// full of settled splats - so one span covering them covers nearly
+	// everything, and a dozen moving droplets dragged the whole 12 MB across the
+	// bus every frame. Merging only the slots that actually changed turns that
+	// into a few kilobytes.
+	#define BLOOD_MAX_COPY_REGIONS 64
 
-	if (partial)
+	VkBufferCopy regions_prim[BLOOD_MAX_COPY_REGIONS];
+	VkBufferCopy regions_pos[BLOOD_MAX_COPY_REGIONS];
+	uint32_t num_regions = 0;
+	size_t up_prim_bytes = 0;
+	size_t up_pos_bytes = 0;
+
+	// blood.stride, not the generation function's local - this is a different
+	// scope.
+	const uint32_t stride = blood.stride;
+	const uint32_t slot_limit = stride ? min((uint32_t)MAX_BLOOD_SPHERES, prim_count / stride) : 0;
+
+	if (!partial)
 	{
-		up_lo = blood.dirty_lo;
-		up_hi = min(blood.dirty_hi, prim_count);
+		// First frames after a change of shape, or after the section moved: the
+		// staging buffers have not all seen the full range, so send all of it.
+		if (prim_count > 0)
+		{
+			regions_prim[0] = (VkBufferCopy){ 0, (VkDeviceSize)prim_offset * sizeof(VboPrimitive),
+				sizeof(VboPrimitive) * prim_count };
+			regions_pos[0] = (VkBufferCopy){ 0, (VkDeviceSize)prim_offset * sizeof(prim_positions_t),
+				sizeof(prim_positions_t) * prim_count };
+			num_regions = 1;
+			up_prim_bytes = regions_prim[0].size;
+			up_pos_bytes = regions_pos[0].size;
+		}
+	}
+	else
+	{
+		for (uint32_t i = 0; i < slot_limit && num_regions < BLOOD_MAX_COPY_REGIONS; )
+		{
+			if (!blood.dirty_slot[i]) { i++; continue; }
+
+			uint32_t run_start = i;
+			while (i < slot_limit && blood.dirty_slot[i])
+				i++;
+
+			const uint32_t lo = run_start * stride;
+			const uint32_t n = (i - run_start) * stride;
+
+			regions_prim[num_regions] = (VkBufferCopy){
+				(VkDeviceSize)lo * sizeof(VboPrimitive),
+				(VkDeviceSize)(prim_offset + lo) * sizeof(VboPrimitive),
+				sizeof(VboPrimitive) * n };
+
+			regions_pos[num_regions] = (VkBufferCopy){
+				(VkDeviceSize)lo * sizeof(prim_positions_t),
+				(VkDeviceSize)(prim_offset + lo) * sizeof(prim_positions_t),
+				sizeof(prim_positions_t) * n };
+
+			up_prim_bytes += regions_prim[num_regions].size;
+			up_pos_bytes += regions_pos[num_regions].size;
+			num_regions++;
+		}
+
+		// Too fragmented to describe in the region budget - fall back to the one
+		// span that certainly covers everything.
+		if (num_regions == BLOOD_MAX_COPY_REGIONS && blood.dirty_hi > blood.dirty_lo)
+		{
+			const uint32_t lo = blood.dirty_lo;
+			const uint32_t n = min(blood.dirty_hi, prim_count) - lo;
+
+			regions_prim[0] = (VkBufferCopy){ (VkDeviceSize)lo * sizeof(VboPrimitive),
+				(VkDeviceSize)(prim_offset + lo) * sizeof(VboPrimitive), sizeof(VboPrimitive) * n };
+			regions_pos[0] = (VkBufferCopy){ (VkDeviceSize)lo * sizeof(prim_positions_t),
+				(VkDeviceSize)(prim_offset + lo) * sizeof(prim_positions_t), sizeof(prim_positions_t) * n };
+			num_regions = 1;
+			up_prim_bytes = regions_prim[0].size;
+			up_pos_bytes = regions_pos[0].size;
+		}
 	}
 
-	const size_t up_prim_bytes = (up_hi > up_lo) ? sizeof(VboPrimitive) * (up_hi - up_lo) : 0;
-	const size_t up_pos_bytes = (up_hi > up_lo) ? sizeof(prim_positions_t) * (up_hi - up_lo) : 0;
-
 	const uint64_t copy_t0 = Sys_Microseconds();
-	if (!skip_upload && up_prim_bytes)
+	if (!skip_upload)
 	{
-		memcpy((VboPrimitive*)blood.mapped_prim[blood.frame_index] + up_lo,
-			blood.prim_shadow + up_lo, up_prim_bytes);
-		memcpy((prim_positions_t*)blood.mapped_pos[blood.frame_index] + up_lo,
-			blood.pos_shadow + up_lo, up_pos_bytes);
+		for (uint32_t r = 0; r < num_regions; r++)
+		{
+			memcpy((char*)blood.mapped_prim[blood.frame_index] + regions_prim[r].srcOffset,
+				(const char*)blood.prim_shadow + regions_prim[r].srcOffset, regions_prim[r].size);
+			memcpy((char*)blood.mapped_pos[blood.frame_index] + regions_pos[r].srcOffset,
+				(const char*)blood.pos_shadow + regions_pos[r].srcOffset, regions_pos[r].size);
+		}
 	}
 	const uint64_t copy_usec = Sys_Microseconds() - copy_t0;
 
-	VkBufferCopy copy_prim = {
-		.srcOffset = (VkDeviceSize)up_lo * sizeof(VboPrimitive),
-		.dstOffset = (VkDeviceSize)(prim_offset + up_lo) * sizeof(VboPrimitive),
-		.size = up_prim_bytes
-	};
-
-	VkBufferCopy copy_pos = {
-		.srcOffset = (VkDeviceSize)up_lo * sizeof(prim_positions_t),
-		.dstOffset = (VkDeviceSize)(prim_offset + up_lo) * sizeof(prim_positions_t),
-		.size = up_pos_bytes
-	};
-
-	if (!skip_upload && up_prim_bytes)
+	if (!skip_upload && num_regions)
 	{
 		vkCmdCopyBuffer(cmd_buf, blood.staging_prim[blood.frame_index].buffer,
-			qvk.buf_primitive_instanced.buffer, 1, &copy_prim);
+			qvk.buf_primitive_instanced.buffer, num_regions, regions_prim);
 
 		vkCmdCopyBuffer(cmd_buf, blood.staging_pos[blood.frame_index].buffer,
-			qvk.buf_positions_instanced.buffer, 1, &copy_pos);
+			qvk.buf_positions_instanced.buffer, num_regions, regions_pos);
 	}
 
 	// These are transfer writes into buffers that the BLAS build reads as vertex
@@ -1301,6 +1365,18 @@ void vkpt_blood_update(
 		: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
 		                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
+	// One barrier per buffer covering first..last region, rather than one per
+	// region: the ranges are disjoint but a single span over them is still far
+	// tighter than the whole buffer, and costs one barrier instead of sixty.
+	VkDeviceSize barrier_prim_size = 0, barrier_pos_size = 0;
+	if (num_regions)
+	{
+		const VkBufferCopy* lastp = &regions_prim[num_regions - 1];
+		const VkBufferCopy* lastq = &regions_pos[num_regions - 1];
+		barrier_prim_size = (lastp->dstOffset + lastp->size) - regions_prim[0].dstOffset;
+		barrier_pos_size = (lastq->dstOffset + lastq->size) - regions_pos[0].dstOffset;
+	}
+
 	VkBufferMemoryBarrier barriers[2] = {
 		{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
@@ -1309,8 +1385,8 @@ void vkpt_blood_update(
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.buffer = qvk.buf_primitive_instanced.buffer,
-			.offset = copy_prim.dstOffset,
-			.size = up_prim_bytes,
+			.offset = regions_prim[0].dstOffset,
+			.size = barrier_prim_size,
 		},
 		{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
@@ -1319,12 +1395,12 @@ void vkpt_blood_update(
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.buffer = qvk.buf_positions_instanced.buffer,
-			.offset = copy_pos.dstOffset,
-			.size = up_pos_bytes,
+			.offset = regions_pos[0].dstOffset,
+			.size = barrier_pos_size,
 		}
 	};
 
-	if (!skip_upload && up_prim_bytes)
+	if (!skip_upload && num_regions)
 	{
 		vkCmdPipelineBarrier(cmd_buf,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,

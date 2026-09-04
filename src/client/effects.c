@@ -890,6 +890,7 @@ static cvar_t *cl_blood_sound = NULL;
 static cvar_t *cl_blood_sound_volume = NULL;
 static cvar_t *cl_blood_sound_gap = NULL;
 static cvar_t *cl_blood_sound_dist = NULL;
+static cvar_t *cl_blood_permanent = NULL;
 
 // The wet-impact sounds, registered once per level by CL_RegisterTEntSounds.
 // NUM_BLOOD_SFX is declared alongside the extern in client.h.
@@ -912,6 +913,65 @@ use, and a sparse high slot would drag that range out behind it.
 */
 static bool blood_slot_used[MAX_BLOOD_SPHERES];
 static bool blood_slot_seen[MAX_BLOOD_SPHERES];
+
+/*
+The splats currently on a surface, rebuilt every frame in CL_AddParticles.
+
+Pooling needs to ask "is there already a splat where this droplet just landed?",
+and CL_RetireOldestSplat needs to ask "which splat has been here longest?" -
+neither of which the particle list itself can answer during the update, because
+CL_AddParticles relinks that list as it walks it and only the part already
+processed is reachable. A flat array of the stuck ones, rebuilt each frame, is
+both correct and faster to scan.
+*/
+static cparticle_t *blood_splats[MAX_PARTICLES];
+static int          num_blood_splats;
+
+/*
+===============
+CL_RetireOldestSplat
+
+Frees the longest-standing splat so a new droplet can take its place.
+
+This is what keeps cl_blood_permanent bounded. Without it, permanent blood simply
+stops appearing once the budget is full - which reads as the effect breaking, and
+is what the old over-budget path did. Recycling instead means the floor always
+shows the most recent fighting.
+
+Uses the splat list that CL_AddParticles rebuilds each frame. Its entries stay
+valid until the next pass, and particles are only ever freed inside that pass, so
+there is nothing stale to trip over here.
+===============
+*/
+static void CL_RetireOldestSplat(void)
+{
+    cparticle_t *oldest = NULL;
+
+    for (int i = 0; i < num_blood_splats; i++) {
+        cparticle_t *p = blood_splats[i];
+        if (!p->is_blood_sphere)
+            continue;
+        if (!oldest || p->time < oldest->time)
+            oldest = p;
+    }
+
+    if (!oldest)
+        return;
+
+    if (oldest->blood_slot >= 0 && oldest->blood_slot < MAX_BLOOD_SPHERES) {
+        blood_slot_used[oldest->blood_slot] = false;
+        oldest->blood_slot = -1;
+    }
+
+    // Drop it from the effect and let the ordinary faded-out branch collect the
+    // particle - that runs above the relink, which is the only safe place.
+    oldest->is_blood_sphere = false;
+    oldest->alpha = 0.0f;
+    oldest->alphavel = 0.0f;
+
+    if (num_blood_live > 0)
+        num_blood_live--;
+}
 
 static int CL_AllocBloodSlot(void)
 {
@@ -1044,6 +1104,26 @@ void FX_Init(void)
     // attenuation would make it inaudible anyway, but it would still take a
     // voice and still count against the gap above, silencing a nearer impact.
     cl_blood_sound_dist = Cvar_Get("cl_blood_sound_dist", "1200", CVAR_ARCHIVE);
+
+    // ONE SWITCH for the whole "leave the mess alone" idea - blood here, and
+    // gibs, heads and debris in the game library, which registers the same name.
+    // Deliberately NOT g_ludicrous_gibs: that also multiplies the gib count and
+    // gives every gib a non-diminishing blood trail, which with path-traced
+    // droplets is one to two orders of magnitude more blood.
+    //
+    // Landed blood never fades.
+    //
+    // Worth having for two reasons. It looks better - blood does not evaporate -
+    // and it is FASTER, which is the counterintuitive part. A settled splat is
+    // free: its geometry is cached and its upload is skipped entirely. All the
+    // cost is in landing and in fading, and fading is the worse of the two
+    // because a shrinking splat changes every frame and so misses the cache
+    // every frame, right when a whole floor of them expires together.
+    //
+    // Nothing is unbounded: once cl_blood_max splats exist, the OLDEST is
+    // retired to make room, so the count is capped and the newest blood is
+    // always the blood you keep.
+    cl_blood_permanent = Cvar_Get("g_no_janitor", "1", CVAR_ARCHIVE);
     cl_blood_stats = Cvar_Get("cl_blood_stats", "0", 0);
 }
 
@@ -1409,8 +1489,8 @@ list holds hundreds, and every entry is a candidate.
 A splat that sticks this frame is registered immediately, so a burst that lands
 together still merges within the same frame.
 */
-static cparticle_t *blood_splats[MAX_PARTICLES];
-static int          num_blood_splats;
+// blood_splats / num_blood_splats are declared further up, beside the slot pool -
+// CL_RetireOldestSplat needs them and runs before this point in the file.
 
 /*
 ===============
@@ -1584,9 +1664,14 @@ static void CL_BloodStick(cparticle_t *p, const vec3_t point, const vec3_t norma
 
     // A splat should outlast the spray that made it.  Restart the fade so the
     // remaining life is measured from the impact rather than from the shot.
+    //
+    // p->time is still stamped when permanent, because it is what
+    // CL_RetireOldestSplat sorts on to decide which splat to recycle.
     p->time = cl.time;
     p->alpha = 1.0f;
-    p->alphavel = -1.0f / max(0.1f, cl_blood_splat_life->value);
+    p->alphavel = cl_blood_permanent->integer
+        ? 0.0f
+        : -1.0f / max(0.1f, cl_blood_splat_life->value);
 }
 
 // Returns true when the droplet merged into an existing pool and should be
@@ -1693,6 +1778,11 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale)
     // sixty droplets between two frames and the measured count would not move
     // until the next one - so the budget has to tighten as the burst is created,
     // not a frame later.
+    // Full? Make room by dropping the oldest splat rather than refusing, so
+    // permanent blood keeps turning over instead of simply stopping.
+    if (num_blood_live >= cl_blood_max->integer)
+        CL_RetireOldestSplat();
+
     if (num_blood_live >= cl_blood_max->integer) {
         // Over budget. Retire the particle rather than leaving it as an ordinary
         // one: returning early used to hand it back to the legacy quad path, so
@@ -1707,6 +1797,12 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale)
     }
 
     p->blood_slot = CL_AllocBloodSlot();
+
+    if (p->blood_slot < 0) {
+        CL_RetireOldestSplat();
+        p->blood_slot = CL_AllocBloodSlot();
+    }
+
     if (p->blood_slot < 0) {
         // No geometry slot free. Same treatment as being over budget: retire it
         // rather than let it fall back to the legacy quad.

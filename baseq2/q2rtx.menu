@@ -390,8 +390,16 @@ begin blood
             "collide with the world" cl_blood_collision
 
         ifeq cl_blood_collision 1
-            range --status "how long a splat stays on the surface after it lands, in seconds. Airborne droplets keep their own much shorter life (cl_blood_splat_life)" \
-                "splat lifetime" cl_blood_splat_life 1 30 1
+            toggle --status "landed blood never fades. Also FASTER, not just better looking - a settled splat costs nothing, while a fading one changes every frame and is rebuilt every frame. Capped by the droplet budget: once full, the oldest splat is recycled (g_no_janitor)" \
+                "no janitor" g_no_janitor
+
+            ifeq g_no_janitor 0
+                range --status "how long a splat stays on the surface after it lands, in seconds. Airborne droplets keep their own much shorter life (cl_blood_splat_life)" \
+                    "splat lifetime" cl_blood_splat_life 1 30 1
+            endif
+
+            range --status "how many blood droplets and splats may exist at once. With no janitor on, this is what bounds the floor - the oldest splat is recycled once it is reached (cl_blood_max)" \
+                "droplet budget" cl_blood_max 64 512 32
             range --status "height of a landed puddle as a fraction of its width. Low values lie flat on the floor; high values sit up off it like a bead (cl_blood_flatten)" \
                 "puddle height" cl_blood_flatten 0.04 1 0.02
             range --status "width of a landed puddle, as a multiple of the droplet that made it. Independent of the height above - neither drags the other with it (cl_blood_splat_size)" \

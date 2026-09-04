@@ -113,11 +113,21 @@ void gib_think(edict_t *self)
     self->nextthink = level.framenum + 1;
 
     if (self->s.frame == 10) {
-        if (LUDICROUS_GIBS()) {
-            // ludicrous gibs never expire - they stay where they land for the
+        if (KEEP_GIBS()) {
+            // Ludicrous gibs never expire - they stay where they land for the
             // rest of the level. This is why MAX_EDICTS is 8192 in this fork.
-            self->think = gib_think;
-            self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+            //
+            // STOP THINKING ENTIRELY. This used to reschedule gib_think, which
+            // looks harmless but is not: the very next call increments s.frame
+            // past 10, so the test above never matches again and the tail of
+            // this function sets nextthink to framenum + 1 forever. Every
+            // permanent gib in the level then ran a think EVERY FRAME, for the
+            // rest of the level, incrementing a frame number that also goes out
+            // over the wire in its entity state.
+            //
+            // A settled gib has nothing left to do, so it should cost nothing.
+            self->think = NULL;
+            self->nextthink = 0;
         } else {
             self->think = G_FreeEdict;
             self->nextthink = level.framenum + (8 + random() * 10) * BASE_FRAMERATE;
@@ -206,8 +216,11 @@ void ThrowGib(edict_t *self, char *gibname, int damage, int type)
         gib->avelocity[1] = random() * 600;
         gib->avelocity[2] = random() * 600;
 
-        gib->think = G_FreeEdict;
-        gib->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+        // Left alone entirely when the janitor is off - see KEEP_GIBS().
+        if (!KEEP_GIBS()) {
+            gib->think = G_FreeEdict;
+            gib->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+        }
     }
 
     gi.linkentity(gib);
@@ -354,8 +367,11 @@ void ThrowGibDisposible(edict_t *self, char *gibname, int damage, int type)
 	gib->avelocity[0] = random() * 600;
 	gib->avelocity[1] = random() * 800;
 	gib->avelocity[2] = random() * 600;
-	gib->think = G_FreeEdict;
-	gib->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+	// Left alone entirely when the janitor is off - see KEEP_GIBS().
+	if (!KEEP_GIBS()) {
+	    gib->think = G_FreeEdict;
+	    gib->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+	}
 	gi.linkentity(gib);
 }
 
@@ -445,8 +461,11 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type)
     // which mixes units: nextthink is a FRAME NUMBER here, while level.time is
     // seconds. At 10 fps that worked out to roughly a second and a half, so
     // heads blinked out almost immediately.
-    self->think = G_FreeEdict;
-    self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+    // Left alone entirely when the janitor is off - see KEEP_GIBS().
+    if (!KEEP_GIBS()) {
+        self->think = G_FreeEdict;
+        self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+    }
 
     gi.linkentity(self);
     if (gib)
@@ -488,8 +507,11 @@ void ThrowHeadDisposible(edict_t *self, char *gibname, int damage, int type)
 	VectorMA(self->velocity, vscale, vd, self->velocity);
 	ClipGibVelocity(self);
 	self->avelocity[YAW] = crandom() * 600;
-	self->think = G_FreeEdict;
-	self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+	// Left alone entirely when the janitor is off - see KEEP_GIBS().
+	if (!KEEP_GIBS()) {
+	    self->think = G_FreeEdict;
+	    self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+	}
 	gi.linkentity(self);
 }
 
@@ -546,8 +568,11 @@ void ThrowGibACID(edict_t *self, char *gibname, int damage, int type)
         gib->avelocity[1] = random() * 600;
         gib->avelocity[2] = random() * 600;
 
-        gib->think = G_FreeEdict;
-        gib->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+        // Left alone entirely when the janitor is off - see KEEP_GIBS().
+        if (!KEEP_GIBS()) {
+            gib->think = G_FreeEdict;
+            gib->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+        }
     }
 
     gi.linkentity(gib);
@@ -591,8 +616,11 @@ void ThrowHeadACID(edict_t *self, char *gibname, int damage, int type)
     self->avelocity[YAW] = crandom() * 600;
 
     // same lifetime rule as ThrowHead
-    self->think = G_FreeEdict;
-    self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+    // Left alone entirely when the janitor is off - see KEEP_GIBS().
+    if (!KEEP_GIBS()) {
+        self->think = G_FreeEdict;
+        self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
+    }
 
     gi.linkentity(self);
 }
@@ -665,11 +693,13 @@ void ThrowDebris(edict_t *self, char *modelname, float speed, vec3_t origin)
     chunk->avelocity[0] = random() * 600;
     chunk->avelocity[1] = random() * 600;
     chunk->avelocity[2] = random() * 600;
-    // Ludicrous gibs leave debris lying around for the rest of the level,
-    // same as the gibs themselves.
-    if (!LUDICROUS_GIBS()) {
-        chunk->think = G_FreeEdict;
-        chunk->nextthink = level.framenum + (5 + random() * 5) * BASE_FRAMERATE;
+    // Debris lies around for the rest of the level, same as the gibs themselves.
+    if (!KEEP_GIBS()) {
+        // Left alone entirely when the janitor is off - see KEEP_GIBS().
+        if (!KEEP_GIBS()) {
+            chunk->think = G_FreeEdict;
+            chunk->nextthink = level.framenum + (5 + random() * 5) * BASE_FRAMERATE;
+        }
     }
     chunk->s.frame = 0;
     chunk->flags = 0;

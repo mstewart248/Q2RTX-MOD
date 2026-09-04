@@ -2826,6 +2826,12 @@ static void CL_InitLocal(void)
     // the main menu, before any game library has been loaded.
     cl_ludicrous_gibs = Cvar_Get("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
 
+    // Leave gibs, debris and blood where they land. The game DLL registers the
+    // same name in InitGame - one name, one object - and this copy exists so the
+    // Effects menu can offer it at the main menu, before any game library is
+    // loaded. See KEEP_GIBS() in g_local.h.
+    Cvar_Get("g_no_janitor", "1", CVAR_ARCHIVE);
+
     // Draw blood as shaded, path-traced spheres instead of the flat particle
     // quads. Read once at SPAWN, so flipping it mid-fight leaves the droplets
     // already in the air alone rather than making them change form in place.

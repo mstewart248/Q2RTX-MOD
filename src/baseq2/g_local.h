@@ -913,7 +913,21 @@ extern  cvar_t  *sv_flaregun;
 // InitGame (or a stray call from a tool build) reads as "off" rather than
 // crashing.
 extern  cvar_t  *g_ludicrous_gibs;
+extern  cvar_t  *g_no_janitor;
 #define LUDICROUS_GIBS()    (g_ludicrous_gibs && g_ludicrous_gibs->value)
+
+// Do gibs, heads and debris stay where they land for the rest of the level?
+//
+// SEPARATE FROM LUDICROUS_GIBS ON PURPOSE. That cvar bundles four unrelated
+// things: permanence, double scatter, several times the chunk count, and - the
+// expensive one - a non-diminishing blood trail on every gib, which with the
+// path-traced blood droplets is one to two orders of magnitude more blood than
+// the classic trail. Wanting the mess to stay put is not the same as wanting ten
+// times as much of it, and until now there was no way to ask for only the first.
+//
+// g_no_janitor grants permanence alone. Ludicrous gibs still implies it, so that
+// setting behaves exactly as it always did.
+#define KEEP_GIBS()         (LUDICROUS_GIBS() || (g_no_janitor && g_no_janitor->value))
 
 // rerelease weapon handling. Both are id's own cvar names and defaults, but
 // they only take effect in the rerelease game - stock baseq2 keeps 1997
