@@ -68,6 +68,11 @@ void CL_RegisterTEntSounds(void)
     int     i;
     char    name[MAX_QPATH];
 
+    for (i = 0; i < NUM_BLOOD_SFX; i++) {
+        Q_snprintf(name, sizeof(name), "blood/mk1-0033%d.wav", 2 + i);
+        cl_sfx_blood_splat[i] = S_RegisterSound(name);
+    }
+
     cl_sfx_ric1 = S_RegisterSound("world/ric1.wav");
     cl_sfx_ric2 = S_RegisterSound("world/ric2.wav");
     cl_sfx_ric3 = S_RegisterSound("world/ric3.wav");

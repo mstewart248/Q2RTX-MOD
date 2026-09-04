@@ -89,9 +89,20 @@ summed - the standard triplanar trick - avoid the seam a single one would leave.
 `seed` is a per-droplet phase, so that a burst of sixty does not read as sixty
 copies of one object.
 */
-vec3 get_blood_normal(vec3 geo_normal, float seed)
+vec3 get_blood_normal(vec3 geo_normal, float seed, bool frozen)
 {
-	float t = global_ubo.time * global_ubo.pt_blood_normal_speed;
+	// A droplet in flight has a live surface - it is a falling bead of liquid,
+	// and the moving ripple is what sells that. A LANDED one does not: blood on
+	// the floor has stopped moving, and animating its surface is both wrong to
+	// look at and expensive in a way that does not show up as shader time. A
+	// surface whose normals change every frame invalidates the denoiser's and
+	// DLSS's history for every pixel covering it, so a floorful of animated
+	// splats is a floorful of permanently unconverged specular. Freezing it
+	// costs nothing and lets those pixels settle.
+	//
+	// `seed` still varies per droplet, so frozen splats do not all share one
+	// pattern - they simply each keep their own.
+	float t = frozen ? 0.0 : global_ubo.time * global_ubo.pt_blood_normal_speed;
 	float s = global_ubo.pt_blood_normal_scale;
 
 	vec2 uv1 = geo_normal.xy * s + vec2(seed)       + t * vec2( 0.05,  0.07);

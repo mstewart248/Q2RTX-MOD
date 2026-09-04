@@ -768,7 +768,14 @@ void V_Shutdown(void);
 void V_RenderView(void);
 void V_AddEntity(entity_t *ent);
 void V_AddParticle(particle_t *p);
+// Zero-sized trace against the world and the solid bmodel entities. predict.c.
+trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask);
 blood_sphere_t *V_AddBloodSphere(void);
+
+// Wet impact sounds for landing blood - registered in CL_RegisterTEntSounds,
+// played from CL_BloodStick.
+#define NUM_BLOOD_SFX 3
+extern qhandle_t cl_sfx_blood_splat[NUM_BLOOD_SFX];
 void V_AddLight(const vec3_t org, float intensity, float r, float g, float b);
 void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float b, float radius);
 // per-light volumetric scale for the light most recently added; negative puts it
@@ -892,6 +899,10 @@ typedef struct cparticle_s {
     // assignment wins - which is exactly why gibs had no spheres at first.
     bool    is_blood_sphere;
 
+    // Stable geometry slot for the renderer, held for this droplet's whole life
+    // and released when it dies. -1 when this is not a blood sphere.
+    int     blood_slot;
+
     // is_blood_sphere only. The droplet's motion is analytic (see
     // CL_AddParticles), so there is no integrated state to read a previous
     // position out of - and a shaded sphere needs one every frame or it ghosts
@@ -900,7 +911,21 @@ typedef struct cparticle_s {
     vec3_t  prev_org;
     float   radius;
     float   seed;       // per-droplet phase for the animated surface ripple
+
+    // Collision simulation (cl_blood_collision).  A blood sphere is the one
+    // particle in this system that is NOT analytic: ordinary particles compute
+    // their position as org + vel*t + accel*t^2 from their spawn time, which has
+    // no way to express "stopped when it hit a wall".  So these integrate step by
+    // step instead, and org/vel are live state rather than initial conditions.
+    int     blood_state;        // BLOOD_AIRBORNE / BLOOD_STUCK
+    vec3_t  blood_normal;       // surface normal while stuck
+    float   blood_flatten;      // 1 = round; drops toward the splat target on impact
+    vec3_t  blood_tangent;      // impact direction in the surface plane
+    float   blood_stretch;      // elongation along blood_tangent; 1 = round
 } cparticle_t;
+
+#define BLOOD_AIRBORNE  0
+#define BLOOD_STUCK     1
 
 // cparticle_t::particleType
 #define PARTICLE_TYPE_NORMAL        0
@@ -908,7 +933,7 @@ typedef struct cparticle_s {
 
 // Promote a freshly allocated particle to a blood droplet, if the feature is on.
 // `scale` sizes it against cl_blood_sphere_radius: 1.0 for wound spray, smaller
-// for the drips off a flying gib.
+// for the drips off a flying gib.  Call it AFTER setting org and vel.
 void CL_MakeBloodSphere(cparticle_t *p, float scale);
 
 typedef struct cdlight_s {

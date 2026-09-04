@@ -181,12 +181,38 @@ typedef struct particle_s {
 #define MAX_BLOOD_SPHERES 512
 
 typedef struct blood_sphere_s {
+    // WHERE THIS DROPLET'S GEOMETRY LIVES, and it is stable for the droplet's
+    // whole life. The renderer writes every droplet at slot * stride in the blood
+    // section, so a droplet that has not changed still finds its own vertices
+    // exactly where it left them and can skip regenerating entirely.
+    //
+    // A packed array cannot do this. CL_AllocParticle PREPENDS, so every new
+    // droplet shifted every existing one by one array position, moved all their
+    // geometry, and invalidated the whole cache - which is why the cost appeared
+    // precisely while blood was landing and vanished the moment it stopped.
+    int     slot;
+
     vec3_t  origin;
     vec3_t  prev_origin;        // last frame's origin - this IS the motion vector
     float   radius;
     int     color;              // palette index, -1 => use rgba
     color_t rgba;
     float   seed;               // per-droplet phase for the animated surface ripple
+
+    // Splat shape.  A droplet in flight is a sphere (flatten 1, normal unused);
+    // one that has hit something is an ellipsoid squashed along the surface
+    // normal, which is what makes it read as stuck to the wall rather than
+    // resting against it.  The renderer derives the tangential spread from
+    // flatten, so a splat keeps roughly the volume the droplet had.
+    vec3_t  normal;
+    float   flatten;            // 1 = sphere; smaller = flatter against `normal`
+
+    // Directionality. `tangent` is the impact direction projected into the
+    // surface, and `stretch` elongates the splat along it - which is what turns
+    // a round dot into a mark that shows which way the blood was travelling.
+    // stretch 1 (or a zero tangent) is the round splat.
+    vec3_t  tangent;
+    float   stretch;
 } blood_sphere_t;
 
 typedef struct lightstyle_s {

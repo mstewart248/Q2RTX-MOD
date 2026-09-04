@@ -110,6 +110,41 @@ static void CL_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const v
 
 
 /*
+====================
+CL_TracePoint
+
+A zero-sized trace against the world AND the solid bmodel entities, for client
+effects that need to know where they hit something.  Blood droplets use it.
+
+Exposed here rather than reimplemented in effects.c because the entity half is
+CL_ClipMoveToEntities above, which is static: a world-only CM_BoxTrace would let
+droplets pass straight through every door, platform and lift in the map.
+
+Returns a trace with fraction 1 and no plane when there is no collision world
+yet, so callers do not have to special-case a map that is still loading.
+====================
+*/
+trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask)
+{
+    trace_t t;
+
+    if (!cl.bsp || !cl.bsp->nodes) {
+        memset(&t, 0, sizeof(t));
+        t.fraction = 1.0f;
+        VectorCopy(end, t.endpos);
+        return t;
+    }
+
+    CM_BoxTrace(&t, start, end, vec3_origin, vec3_origin, cl.bsp->nodes, contentmask);
+    if (t.fraction < 1.0f)
+        t.ent = (struct edict_s *)1;
+
+    CL_ClipMoveToEntities(start, vec3_origin, vec3_origin, end, &t);
+
+    return t;
+}
+
+/*
 ================
 CL_PMTrace
 ================

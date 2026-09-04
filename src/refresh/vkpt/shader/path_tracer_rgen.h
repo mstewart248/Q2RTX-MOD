@@ -1036,7 +1036,9 @@ get_material(
 		base_color = clamp(vec3(triangle.tex_coords[0].x,
 		                        triangle.tex_coords[0].y,
 		                        triangle.tex_coords[1].x), vec3(0), vec3(1));
-		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y);
+		// uv2.x carries "this droplet has landed" - see write_blood_geometry.
+		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y,
+		                          triangle.tex_coords[2].x > 0.5);
 		metallic = 0;
 		roughness = clamp(global_ubo.pt_blood_roughness, 0.0, 1.0);
 		emissive = vec3(0);
