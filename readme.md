@@ -56,7 +56,7 @@ DLSS implementation has been updated to use the latest DLSS SDK. So this project
   - Volumetric lighting (god-rays)
 
 ![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake073.png)
-![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake073.png)
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake071.png)
 ![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake117.png)
 ![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake118.png)
 You can download functional builds of the game from [GitHub Builds](https://github.com/mstewart248/Q2RTX-MOD/actions).
