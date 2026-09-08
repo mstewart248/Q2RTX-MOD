@@ -44,3 +44,18 @@ baseq2/**/*.txt
 !baseq2/*.txt
 !baseq2/maps/sky/*.txt
 !baseq2/pics/flashlight_profile.png
+
+# SHIPPED GAME DATA - these must survive the blanket extension rules above.
+#
+# The extension list is repo-wide, so `git add` on an art directory silently
+# drops a handful of files and reports success. rerelease/overrides/ staged 2839
+# of its 2845 files that way; the six that vanished were all .png (baselt_a/b,
+# reflt1_9/10, reflt3_9/10) and the release build shipped without them.
+#
+# The CI job in .github/workflows/build.yml uploads baseq2/ and rerelease/
+# straight out of the checkout, so anything not committed is simply absent from
+# the produced build. Untracked here means missing in the release.
+#
+# After staging any asset directory, diff it:
+#   comm -13 <(git ls-files -- <dir> | sort) <(find <dir> -type f | sort)
+!rerelease/overrides/**

@@ -55,6 +55,47 @@ jobs:
     - name: Build Dedicated Server for Win32
       run: cmake --build ${{github.workspace}}/build-win32 --config ${{env.BUILD_TYPE}}
 
+
+    # THE SHIPPED MEDIA, WITHOUT WHICH THE ARTIFACT DOES NOT RUN.
+    #
+    # The Upload step below takes baseq2/ and rerelease/ straight out of the
+    # checkout, so anything not committed is simply absent from the build. Two
+    # required files can never be committed:
+    #
+    #   baseq2/q2rtx_media.pkz   862 MB - over GitHub's 100 MB per-file limit
+    #   baseq2/blue_noise.pkz     97 MB - under it, but LFS-sized and metered
+    #
+    # They cannot be rebuilt from this repo either: baseq2/env, models,
+    # overrides, sprites and textures are all empty here, so that pkz is the only
+    # copy of the content. And they never change - both are stock 2020 files.
+    #
+    # So they live as assets on a Release in this repo, which allows 2 GB per
+    # file, does not count against repo size, and is not metered like LFS.
+    #
+    # ONE-TIME SETUP, if this step fails with "release not found":
+    #   gh release create shipped-media --title "Shipped media" --notes "Static game data for CI builds" \
+    #      baseq2/q2rtx_media.pkz baseq2/blue_noise.pkz
+    - name: Fetch shipped media
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release download shipped-media --repo ${{ github.repository }} --pattern '*.pkz' --dir baseq2 --clobber
+
+    # Fail here rather than uploading a build that looks fine and cannot start.
+    - name: Verify shipped media
+      shell: bash
+      run: |
+        missing=0
+        for f in baseq2/q2rtx_media.pkz baseq2/blue_noise.pkz; do
+          if [ -s "$f" ]; then
+            echo "ok   $f ($(du -h "$f" | cut -f1))"
+          else
+            echo "MISSING $f"; missing=1
+          fi
+        done
+        test -d baseq2/shader_vkpt || { echo "MISSING baseq2/shader_vkpt"; missing=1; }
+        exit $missing
+
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
