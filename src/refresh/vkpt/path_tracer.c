@@ -955,8 +955,12 @@ vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo
 	// whole point of them. FORCE_OPAQUE because a droplet is solid: the ray stops
 	// on it, which is what buys the shadows and the presence in reflections that a
 	// translucent particle quad can never have.
+	// AS_FLAG_BLOOD, not AS_FLAG_OPAQUE: the four cull masks in path_tracer_rgen.h
+	// all carry it, so nothing about how blood is lit, shadowed or reflected
+	// changes - but the fog march's per-step rays cull on AS_FLAG_OPAQUE alone and
+	// now skip the droplets. See constants.h.
 	append_blas(g_instances, &g_num_instances, &blas_blood[idx], VERTEX_BUFFER_INSTANCED, upload_info->blood_prim_offset,
-		AS_FLAG_OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, SBTO_OPAQUE);
+		AS_FLAG_BLOOD, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, SBTO_OPAQUE);
 
 	uint32_t num_instances_geometry = g_num_instances;
 

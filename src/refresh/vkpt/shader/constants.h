@@ -193,6 +193,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define AS_FLAG_VIEWER_WEAPON   (1 << 3)
 #define AS_FLAG_SKY             (1 << 4)
 #define AS_FLAG_CUSTOM_SKY      (1 << 5)
+// Blood droplets. They are opaque geometry in every way that matters - they are
+// lit, they cast shadows and they show up in reflections - but they get a bit of
+// their own so the FOG MARCH can leave them out.
+//
+// god_rays.comp steps along every pixel's ray and fires a sky-visibility ray, and
+// at cl_fog 3 a shadow ray, FROM EVERY STEP. Those queries cull on AS_FLAG_OPAQUE
+// (fog_medium.glsl), so with blood in that set a floorful of droplets is
+// traversed by tens of thousands of rays per pixel to decide whether a 1.2-unit
+// sphere shades the fog - which it does not, in any sense worth paying for.
+//
+// Anything that should still SEE blood adds this bit; the four ray cull masks in
+// path_tracer_rgen.h are the complete list, and every other ray path in the tree
+// derives from them.
+#define AS_FLAG_BLOOD           (1 << 6)
 
 // Effects TLAS flags
 #define AS_FLAG_EFFECTS         (1 << 0)

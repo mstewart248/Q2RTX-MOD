@@ -176,9 +176,17 @@ typedef struct particle_s {
 // never casts a shadow and never appears in a reflection. These do all three.
 //
 // Behind cl_blood_spheres; built in src/refresh/vkpt/blood.c.
-// A blood burst is 60 droplets, so this is roughly eight overlapping bursts.
-// It is also what sizes the renderer's staging memory, at 80 triangles each.
-#define MAX_BLOOD_SPHERES 512
+// A CEILING, not the budget. The budget is cl_blood_max, which is what sizes the
+// staging memory (see vkpt_blood_slot_capacity) - so raising this alone costs
+// nothing at all.
+//
+// It has to be a ceiling rather than the budget because g_no_janitor changed what
+// the budget means. While splats faded after cl_blood_splat_life, 512 was a
+// ROLLING WINDOW that emptied itself, and a big fight could paint all of it. With
+// permanence nothing ever expires, so the same number became a lifetime total:
+// the floor fills once, stays full, and from then on there is only ever room for
+// the most recent monster. Permanence did not add blood, it froze the budget.
+#define MAX_BLOOD_SPHERES 4096
 
 typedef struct blood_sphere_s {
     // WHERE THIS DROPLET'S GEOMETRY LIVES, and it is stable for the droplet's

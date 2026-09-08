@@ -76,7 +76,7 @@ CL_ClipMoveToEntities
 
 ====================
 */
-static void CL_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr)
+static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr, bool bmodels_only)
 {
     int         i;
     trace_t     trace;
@@ -94,6 +94,12 @@ static void CL_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const v
                 continue;
             headnode = cmodel->headnode;
         } else {
+            // A non-bmodel entity has no real collision geometry here, only the
+            // axial box the server packed into entity_state_t::solid. That is
+            // fine for movement and useless for anything that has to LOOK right
+            // where it touches - see CL_TracePoint.
+            if (bmodels_only)
+                continue;
             headnode = CM_HeadnodeForBox(ent->mins, ent->maxs);
         }
 
@@ -108,6 +114,11 @@ static void CL_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const v
     }
 }
 
+static void CL_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr)
+{
+    CL_ClipMoveToEntities_(start, mins, maxs, end, tr, false);
+}
+
 
 /*
 ====================
@@ -120,11 +131,20 @@ Exposed here rather than reimplemented in effects.c because the entity half is
 CL_ClipMoveToEntities above, which is static: a world-only CM_BoxTrace would let
 droplets pass straight through every door, platform and lift in the map.
 
+clip_bbox_entities decides whether the axial boxes of monsters, corpses, players
+and barrels count as surfaces.  THEY ARE NOT SHAPES ANYTHING MAY BE PLACED ON.
+entity_state_t::solid carries one packed axis-aligned box per entity - a soldier,
+its corpse and a crate are all a rectangular prism to this trace - so a decal
+parked at the contact point sits on an invisible slab, typically a good ten units
+clear of the body that is drawn inside it.  That is the "blood floating on top of
+models" artifact.  A trace that only has to STOP something (prediction, movement)
+is happy with the box; a trace whose result is going to be DRAWN is not.
+
 Returns a trace with fraction 1 and no plane when there is no collision world
 yet, so callers do not have to special-case a map that is still loading.
 ====================
 */
-trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask)
+trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, bool clip_bbox_entities)
 {
     trace_t t;
 
@@ -139,9 +159,29 @@ trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask)
     if (t.fraction < 1.0f)
         t.ent = (struct edict_s *)1;
 
-    CL_ClipMoveToEntities(start, vec3_origin, vec3_origin, end, &t);
+    CL_ClipMoveToEntities_(start, vec3_origin, vec3_origin, end, &t, !clip_bbox_entities);
 
     return t;
+}
+
+/*
+====================
+CL_TraceHitEntity
+
+The centity_t a CL_TracePoint result landed on, or NULL for the world.  Both
+"nothing was hit" and "the world was hit" come back as NULL - CM_BoxTrace has no
+entity to name, so predict.c stamps the sentinel 1 in that case.
+
+The cast is safe because CL_ClipMoveToEntities_ is the only thing that ever puts
+a real pointer in trace_t::ent here, and it always puts a centity_t there.
+====================
+*/
+centity_t *CL_TraceHitEntity(const trace_t *tr)
+{
+    if (!tr->ent || tr->ent == (struct edict_s *)1)
+        return NULL;
+
+    return (centity_t *)tr->ent;
 }
 
 /*

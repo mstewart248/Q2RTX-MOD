@@ -169,6 +169,16 @@ void CL_InitMapFog(void)
     // 2 rather than 1: Matt's calibration, 2026-08-31, once the sky brushes
     // stopped being counted as area lights in the fog. The authored densities
     // read thin on their own at the light levels these maps actually use.
+    /* CAUTION: this is an APPEARANCE calibration that also, silently, sets the
+       cost of the god rays pass. The densities below are written pre-scaled, and
+       getStep() in fog_medium.glsl picks the march step from that scaled value -
+       so raising cl_fog_scale shortens the step, and past a certain point pins it
+       at 1 unit and multiplies the pass cost by up to twenty.
+
+       On a cl_fog 3 map with its own cl_volumetric_fog_density the scale is
+       divided back out of the image (vol_density_ratio below), so it can cost
+       that twenty times over for a picture that does not change at all. Set it
+       PER MAP with mapcvar, never globally, and read the note on getStep. */
     cl_fog_scale = Cvar_Get("cl_fog_scale", "2", CVAR_ARCHIVE);
 
     /* THE SAME MAP NEEDS A DIFFERENT DENSITY IN MODE 1 AND MODE 3, and the

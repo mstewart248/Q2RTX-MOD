@@ -62,10 +62,13 @@ uniform accelerationStructureEXT topLevelAS[TLAS_COUNT];
 #define RNG_RESTIR_SPATIAL_X(bounce)	  		(4 + 10 + 12 * bounce)
 #define RNG_RESTIR_SPATIAL_Y(bounce)	  		(4 + 11 + 12 * bounce)
 
-#define PRIMARY_RAY_CULL_MASK        (AS_FLAG_OPAQUE | AS_FLAG_TRANSPARENT | AS_FLAG_VIEWER_WEAPON | AS_FLAG_SKY)
-#define REFLECTION_RAY_CULL_MASK     (AS_FLAG_OPAQUE | AS_FLAG_SKY)
-#define BOUNCE_RAY_CULL_MASK         (AS_FLAG_OPAQUE | AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY)
-#define SHADOW_RAY_CULL_MASK         (AS_FLAG_OPAQUE)
+// AS_FLAG_BLOOD is in all four: a droplet is visible, reflective, bounces light
+// and casts a shadow exactly like any other opaque geometry. It is a separate bit
+// only so the fog march can skip it - see constants.h.
+#define PRIMARY_RAY_CULL_MASK        (AS_FLAG_OPAQUE | AS_FLAG_TRANSPARENT | AS_FLAG_VIEWER_WEAPON | AS_FLAG_SKY | AS_FLAG_BLOOD)
+#define REFLECTION_RAY_CULL_MASK     (AS_FLAG_OPAQUE | AS_FLAG_SKY | AS_FLAG_BLOOD)
+#define BOUNCE_RAY_CULL_MASK         (AS_FLAG_OPAQUE | AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY | AS_FLAG_BLOOD)
+#define SHADOW_RAY_CULL_MASK         (AS_FLAG_OPAQUE | AS_FLAG_BLOOD)
 
 /* no BRDF sampling in last bounce */
 #define NUM_RNG_PER_FRAME (RNG_NEE_STATIC_DYNAMIC(1) + 1)

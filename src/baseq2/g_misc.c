@@ -457,12 +457,31 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type)
 
     self->avelocity[YAW] = crandom() * 600;
 
-    // 10-20 seconds. This was `level.time + 10 + random() * 10` in both modes,
-    // which mixes units: nextthink is a FRAME NUMBER here, while level.time is
-    // seconds. At 10 fps that worked out to roughly a second and a half, so
-    // heads blinked out almost immediately.
-    // Left alone entirely when the janitor is off - see KEEP_GIBS().
-    if (!KEEP_GIBS()) {
+    // THE HEAD IS THE MONSTER'S OWN EDICT, and that is why this cannot simply be
+    // skipped when the gibs are kept.
+    //
+    // ThrowHead does not spawn anything - it reuses `self`, changing the model
+    // and the movetype. Everything else about the monster is still attached, and
+    // `think` is still `monster_think` with `nextthink` still scheduled. The
+    // assignment below was the only thing overwriting it, so leaving it out left
+    // a severed head running the full monster AI: advancing its currentmove,
+    // stepping around the level, and - if it was gibbed mid-attack - firing at
+    // the player, from a head.  Reported exactly that way.
+    //
+    // It was not a bug before KEEP_GIBS() existed, because both paths used to
+    // assign think. ThrowClientHead has always cleared it explicitly, which is
+    // the pattern; ThrowGib and friends are safe only because they act on a
+    // freshly G_Spawn'd edict whose think is already NULL.
+    //
+    // 10-20 seconds for the disposable path. This was
+    // `level.time + 10 + random() * 10` in both modes, which mixes units:
+    // nextthink is a FRAME NUMBER here, while level.time is seconds. At 10 fps
+    // that worked out to roughly a second and a half, so heads blinked out
+    // almost immediately.
+    if (KEEP_GIBS()) {
+        self->think = NULL;
+        self->nextthink = 0;
+    } else {
         self->think = G_FreeEdict;
         self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
     }
@@ -507,8 +526,12 @@ void ThrowHeadDisposible(edict_t *self, char *gibname, int damage, int type)
 	VectorMA(self->velocity, vscale, vd, self->velocity);
 	ClipGibVelocity(self);
 	self->avelocity[YAW] = crandom() * 600;
-	// Left alone entirely when the janitor is off - see KEEP_GIBS().
-	if (!KEEP_GIBS()) {
+	// Reuses the monster's own edict, so the kept path must STOP IT THINKING
+	// rather than merely skip the free timer - see the note in ThrowHead.
+	if (KEEP_GIBS()) {
+	    self->think = NULL;
+	    self->nextthink = 0;
+	} else {
 	    self->think = G_FreeEdict;
 	    self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
 	}
@@ -615,9 +638,12 @@ void ThrowHeadACID(edict_t *self, char *gibname, int damage, int type)
 
     self->avelocity[YAW] = crandom() * 600;
 
-    // same lifetime rule as ThrowHead
-    // Left alone entirely when the janitor is off - see KEEP_GIBS().
-    if (!KEEP_GIBS()) {
+    // Same rule as ThrowHead, and for the same reason: this is the monster's own
+    // edict, so the kept path has to stop it thinking, not just skip the free.
+    if (KEEP_GIBS()) {
+        self->think = NULL;
+        self->nextthink = 0;
+    } else {
         self->think = G_FreeEdict;
         self->nextthink = level.framenum + (10 + random() * 10) * BASE_FRAMERATE;
     }
@@ -694,12 +720,12 @@ void ThrowDebris(edict_t *self, char *modelname, float speed, vec3_t origin)
     chunk->avelocity[1] = random() * 600;
     chunk->avelocity[2] = random() * 600;
     // Debris lies around for the rest of the level, same as the gibs themselves.
+    // chunk is freshly G_Spawn'd, so its think is already NULL and there is
+    // nothing to clear on the kept path - unlike the heads, which reuse the
+    // monster's edict. See the note in ThrowHead.
     if (!KEEP_GIBS()) {
-        // Left alone entirely when the janitor is off - see KEEP_GIBS().
-        if (!KEEP_GIBS()) {
-            chunk->think = G_FreeEdict;
-            chunk->nextthink = level.framenum + (5 + random() * 5) * BASE_FRAMERATE;
-        }
+        chunk->think = G_FreeEdict;
+        chunk->nextthink = level.framenum + (5 + random() * 5) * BASE_FRAMERATE;
     }
     chunk->s.frame = 0;
     chunk->flags = 0;

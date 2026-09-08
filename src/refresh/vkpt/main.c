@@ -7275,6 +7275,7 @@ void R_RegisterFunctionsRTX()
 	MOD_LoadIQM = MOD_LoadIQM_RTX;
 	MOD_LoadMD5 = MOD_LoadMD5_RTX;
 	MOD_Reference = MOD_Reference_RTX;
+	MOD_TraceMesh = MOD_TraceMesh_RTX;
 }
 
 // vim: shiftwidth=4 noexpandtab tabstop=4 cindent

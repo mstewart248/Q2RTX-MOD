@@ -991,6 +991,10 @@ int MOD_LoadMD3_RTX(model_t* model, const void* rawdata, size_t length, const ch
 int MOD_LoadIQM_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 void MOD_Reference_RTX(model_t *model);
+// Ray against an alias model's real triangles - see inc/refresh/models.h.
+bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
+                       const vec3_t start, const vec3_t end,
+                       float *out_frac, vec3_t out_normal);
 
 #endif  /*__VKPT_H__*/
 

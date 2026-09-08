@@ -43,6 +43,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "format/md3.h"
 #include "format/sp2.h"
 #include "material.h"
+#include "format/iqm.h"
 #include <assert.h>
 
 #if MAX_ALIAS_VERTS > TESS_MAX_VERTICES
@@ -1185,6 +1186,392 @@ void MOD_Reference_RTX(model_t *model)
 
 	model->registration_sequence = registration_sequence;
 	model_vertex_data[model - r_models].registration_sequence = registration_sequence;
+}
+
+/*
+===============================================================================
+
+MOD_TraceMesh - a ray against an alias model's real triangles
+
+Why this exists at all is in inc/refresh/models.h: the collision world only has
+one axis-aligned box per entity, and a box is fine for stopping something and
+useless for placing something.  Blood droplets are the caller.
+
+Three things make it affordable:
+
+  THE POSE CACHE.  Posing a model is per-vertex work and a burst of blood is
+  sixty rays against the same body in the same frame.  So a pose is built once -
+  every vertex position and normal in model space, plus one AABB per triangle -
+  and keyed on (model, frame).  Snapping to the discrete frame rather than the
+  renderer's interpolated one is what makes that key stand still: a corpse holds
+  one frame forever and never rebuilds, and a walking monster rebuilds at the
+  animation rate rather than the frame rate.
+
+  THE PER-TRIANGLE AABB.  A droplet moves a few units per frame, so its segment's
+  own bounding box is tiny and misses ~99% of the triangles outright.  Six
+  compares to reject beats forty flops of Moller-Trumbore by enough to turn a
+  1200-triangle monster from ~20us per ray into ~3us.
+
+  FRONT FACES ONLY.  A droplet that starts inside a body - a wound spawns them on
+  the skin and the spray cone points every way - leaves through the far side
+  instead of sticking to the inside of the mesh where nobody would ever see it.
+
+===============================================================================
+*/
+
+// Big enough for everything in the game: the largest monster here is the tank at
+// 2160 triangles / 1821 vertices. A model over the limit simply gets no mesh
+// trace, which degrades to the old behaviour for that model rather than failing.
+#define MOD_TRACE_MAX_VERTS     8192
+#define MOD_TRACE_MAX_TRIS      8192
+
+// Three, because the realistic worst case is a couple of bodies being shot at
+// once. A fourth would only ever be paid for.
+#define MOD_TRACE_CACHE_SLOTS   3
+
+typedef struct {
+    const model_t *model;
+    int         registration;   // model->registration_sequence, so a level
+                                // change cannot match a recycled r_models slot
+    int         frame;
+    int         serial;         // LRU stamp
+    bool        valid;
+
+    int         numverts;
+    int         numtris;
+    vec3_t      positions[MOD_TRACE_MAX_VERTS];
+    vec3_t      normals[MOD_TRACE_MAX_VERTS];
+    // Per triangle: its three vertex indices into the arrays above, and the
+    // bounding box that rejects it.
+    int         tris[MOD_TRACE_MAX_TRIS][3];
+    vec3_t      tri_mins[MOD_TRACE_MAX_TRIS];
+    vec3_t      tri_maxs[MOD_TRACE_MAX_TRIS];
+} mod_trace_pose_cache_t;
+
+static mod_trace_pose_cache_t *mod_trace_cache;
+static int mod_trace_serial;
+
+// Skin one vertex or normal by the IQM blend matrices, matching get_triangle()
+// in instance_geometry.comp: a mat3x4 applied as a row vector, weights summed
+// and divided rather than assumed to be normalised.  w is 1 for a position and
+// 0 for a direction.
+static void mod_trace_skin(const float *pose_matrices, uint32_t indices, uint32_t weights,
+                           const vec3_t in, float w, vec3_t out)
+{
+    float acc[12] = { 0 };
+    float weight_sum = 0.f;
+
+    for (int i = 0; i < 4; i++) {
+        const uint32_t bone = (indices >> (i * 8)) & 0xff;
+        const float weight = (float)((weights >> (i * 8)) & 0xff);
+
+        if (weight <= 0.f)
+            continue;
+
+        const float *m = pose_matrices + bone * 12;
+        for (int j = 0; j < 12; j++)
+            acc[j] += m[j] * weight;
+
+        weight_sum += weight;
+    }
+
+    if (weight_sum <= 0.f) {
+        VectorCopy(in, out);
+        return;
+    }
+
+    const float rcp = 1.f / weight_sum;
+    const vec3_t p = { in[0] * rcp, in[1] * rcp, in[2] * rcp };
+    const float pw = w * rcp;
+
+    for (int j = 0; j < 3; j++)
+        out[j] = acc[j * 4 + 0] * p[0] + acc[j * 4 + 1] * p[1]
+               + acc[j * 4 + 2] * p[2] + acc[j * 4 + 3] * pw;
+}
+
+static bool mod_trace_build_pose(mod_trace_pose_cache_t *slot, const model_t *model, int frame)
+{
+    float pose_matrices[IQM_MAX_JOINTS * 12];
+    const bool skinned = model->iqmData && model->iqmData->num_poses;
+
+    slot->valid = false;
+    slot->model = model;
+    slot->registration = model->registration_sequence;
+    slot->frame = frame;
+    slot->numverts = 0;
+    slot->numtris = 0;
+
+    if (skinned) {
+        entity_t e;
+
+        if (model->iqmData->num_poses > IQM_MAX_JOINTS)
+            return false;
+
+        // R_ComputeIQMTransforms reads exactly these three fields.
+        memset(&e, 0, sizeof(e));
+        e.frame = frame;
+        e.oldframe = frame;
+        e.backlerp = 0.f;
+
+        if (!R_ComputeIQMTransforms(model->iqmData, &e, pose_matrices))
+            return false;
+    }
+
+    for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++) {
+        const maliasmesh_t *mesh = &model->meshes[mesh_idx];
+        const int base = slot->numverts;
+
+        if (!mesh->positions || !mesh->normals || !mesh->indices)
+            return false;
+
+        if (base + mesh->numverts > MOD_TRACE_MAX_VERTS)
+            return false;
+
+        if (slot->numtris + mesh->numtris > MOD_TRACE_MAX_TRIS)
+            return false;
+
+        if (skinned) {
+            if (!mesh->blend_indices || !mesh->blend_weights)
+                return false;
+
+            for (int i = 0; i < mesh->numverts; i++) {
+                mod_trace_skin(pose_matrices, mesh->blend_indices[i], mesh->blend_weights[i],
+                               mesh->positions[i], 1.f, slot->positions[base + i]);
+                mod_trace_skin(pose_matrices, mesh->blend_indices[i], mesh->blend_weights[i],
+                               mesh->normals[i], 0.f, slot->normals[base + i]);
+                VectorNormalize(slot->normals[base + i]);
+            }
+        } else {
+            // MD2 and MD3 store every frame's vertices back to back.
+            const int off = frame * mesh->numverts;
+
+            for (int i = 0; i < mesh->numverts; i++) {
+                VectorCopy(mesh->positions[off + i], slot->positions[base + i]);
+                VectorCopy(mesh->normals[off + i], slot->normals[base + i]);
+            }
+        }
+
+        slot->numverts += mesh->numverts;
+
+        for (int i = 0; i < mesh->numtris; i++) {
+            const int t = slot->numtris + i;
+            int j;
+
+            for (j = 0; j < 3; j++) {
+                const int idx = mesh->indices[i * 3 + j];
+
+                if (idx < 0 || idx >= mesh->numverts)
+                    return false;
+
+                slot->tris[t][j] = base + idx;
+            }
+
+            ClearBounds(slot->tri_mins[t], slot->tri_maxs[t]);
+            for (j = 0; j < 3; j++)
+                AddPointToBounds(slot->positions[slot->tris[t][j]],
+                                 slot->tri_mins[t], slot->tri_maxs[t]);
+        }
+
+        slot->numtris += mesh->numtris;
+    }
+
+    slot->valid = true;
+    return true;
+}
+
+static mod_trace_pose_cache_t *mod_trace_get_pose(const model_t *model, int frame)
+{
+    mod_trace_pose_cache_t *slot = NULL;
+    int oldest = INT_MAX;
+
+    if (!mod_trace_cache) {
+        mod_trace_cache = Z_Mallocz(sizeof(mod_trace_pose_cache_t) * MOD_TRACE_CACHE_SLOTS);
+        if (!mod_trace_cache)
+            return NULL;
+    }
+
+    for (int i = 0; i < MOD_TRACE_CACHE_SLOTS; i++) {
+        mod_trace_pose_cache_t *c = &mod_trace_cache[i];
+
+        if (c->model == model && c->frame == frame
+            && c->registration == model->registration_sequence) {
+            c->serial = ++mod_trace_serial;
+            return c->valid ? c : NULL;
+        }
+
+        if (c->serial < oldest) {
+            oldest = c->serial;
+            slot = c;
+        }
+    }
+
+    slot->serial = ++mod_trace_serial;
+
+    if (!mod_trace_build_pose(slot, model, frame))
+        return NULL;    // stays in the slot, so the failure is not re-derived
+
+    return slot;
+}
+
+// Moller-Trumbore against a segment, with dir spanning the whole segment so the
+// hit parameter comes out directly as a fraction in [0, 1].
+static bool mod_trace_triangle(const vec3_t start, const vec3_t dir,
+                               const vec3_t v0, const vec3_t v1, const vec3_t v2,
+                               float *out_t, float *out_u, float *out_v)
+{
+    vec3_t e1, e2, pv, tv, qv;
+    float det, inv_det, u, v, t;
+
+    VectorSubtract(v1, v0, e1);
+    VectorSubtract(v2, v0, e2);
+    CrossProduct(dir, e2, pv);
+
+    det = DotProduct(e1, pv);
+    if (fabsf(det) < 1e-9f)
+        return false;   // parallel, or a degenerate triangle
+
+    inv_det = 1.f / det;
+
+    VectorSubtract(start, v0, tv);
+    u = DotProduct(tv, pv) * inv_det;
+    if (u < 0.f || u > 1.f)
+        return false;
+
+    CrossProduct(tv, e1, qv);
+    v = DotProduct(dir, qv) * inv_det;
+    if (v < 0.f || u + v > 1.f)
+        return false;
+
+    t = DotProduct(e2, qv) * inv_det;
+    if (t < 0.f || t > 1.f)
+        return false;
+
+    *out_t = t;
+    *out_u = u;
+    *out_v = v;
+    return true;
+}
+
+bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
+                       const vec3_t start, const vec3_t end,
+                       float *out_frac, vec3_t out_normal)
+{
+    mod_trace_pose_cache_t *c;
+    vec3_t axis[3], local_start, local_end, dir, seg_mins, seg_maxs, normal;
+    float scale, rcp_scale, best = 1.f;
+    int best_tri = -1;
+    float best_u = 0.f, best_v = 0.f;
+    bool rotated;
+
+    if (!model || model->type != MOD_ALIAS || model->nummeshes <= 0)
+        return false;
+
+    int frame = pose->frame;
+    if (model->iqmData && model->iqmData->num_frames)
+        frame = (int)((unsigned)frame % model->iqmData->num_frames);
+    else if (model->numframes > 0)
+        frame = (int)((unsigned)frame % (unsigned)model->numframes);
+    else
+        return false;
+
+    c = mod_trace_get_pose(model, frame);
+    if (!c)
+        return false;
+
+    // World -> model space. The inverse of create_entity_matrix, which builds
+    // its columns from AnglesToAxis and scales all three the same, so the
+    // inverse rotation is RotatePoint against the same axis and the inverse
+    // scale is one reciprocal.
+    scale = (pose->scale != 0.f) ? pose->scale : 1.f;
+    if (scale <= 0.f)
+        return false;
+    rcp_scale = 1.f / scale;
+
+    VectorSubtract(start, pose->origin, local_start);
+    VectorSubtract(end, pose->origin, local_end);
+
+    rotated = !VectorEmpty(pose->angles);
+    if (rotated) {
+        AnglesToAxis(pose->angles, axis);
+        RotatePoint(local_start, axis);
+        RotatePoint(local_end, axis);
+    }
+
+    VectorScale(local_start, rcp_scale, local_start);
+    VectorScale(local_end, rcp_scale, local_end);
+    VectorSubtract(local_end, local_start, dir);
+
+    for (int i = 0; i < 3; i++) {
+        seg_mins[i] = min(local_start[i], local_end[i]);
+        seg_maxs[i] = max(local_start[i], local_end[i]);
+    }
+
+    for (int t = 0; t < c->numtris; t++) {
+        const int *tri = c->tris[t];
+        float hit_t, hit_u, hit_v;
+
+        // The cheap reject, and the reason this is affordable at all.
+        if (c->tri_maxs[t][0] < seg_mins[0] || c->tri_mins[t][0] > seg_maxs[0] ||
+            c->tri_maxs[t][1] < seg_mins[1] || c->tri_mins[t][1] > seg_maxs[1] ||
+            c->tri_maxs[t][2] < seg_mins[2] || c->tri_mins[t][2] > seg_maxs[2])
+            continue;
+
+        if (!mod_trace_triangle(local_start, dir,
+                                c->positions[tri[0]], c->positions[tri[1]], c->positions[tri[2]],
+                                &hit_t, &hit_u, &hit_v))
+            continue;
+
+        if (hit_t >= best)
+            continue;
+
+        // Front faces only: a droplet that started inside the body leaves
+        // through the far side rather than sticking to the inside of the skin.
+        VectorAdd(c->normals[tri[0]], c->normals[tri[1]], normal);
+        VectorAdd(normal, c->normals[tri[2]], normal);
+        if (DotProduct(dir, normal) >= 0.f)
+            continue;
+
+        best = hit_t;
+        best_tri = t;
+        best_u = hit_u;
+        best_v = hit_v;
+    }
+
+    if (best_tri < 0)
+        return false;
+
+    // The interpolated normal, so a splat lies along a curved body rather than
+    // faceting with the triangle it happened to land on.
+    {
+        const int *tri = c->tris[best_tri];
+        const float w0 = 1.f - best_u - best_v;
+
+        VectorScale(c->normals[tri[0]], w0, normal);
+        VectorMA(normal, best_u, c->normals[tri[1]], normal);
+        VectorMA(normal, best_v, c->normals[tri[2]], normal);
+
+        if (VectorNormalize(normal) < 0.5f) {
+            // Degenerate interpolation - fall back to the face.
+            vec3_t e1, e2;
+            VectorSubtract(c->positions[tri[1]], c->positions[tri[0]], e1);
+            VectorSubtract(c->positions[tri[2]], c->positions[tri[0]], e2);
+            CrossProduct(e1, e2, normal);
+            if (VectorNormalize(normal) == 0.f)
+                return false;
+            if (DotProduct(dir, normal) > 0.f)
+                VectorInverse(normal);
+        }
+    }
+
+    // Model -> world. Uniform scale, so the normal needs the rotation only.
+    if (rotated) {
+        TransposeAxis(axis);
+        RotatePoint(normal, axis);
+    }
+
+    VectorCopy(normal, out_normal);
+    *out_frac = best;
+    return true;
 }
 
 // vim: shiftwidth=4 noexpandtab tabstop=4 cindent

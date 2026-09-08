@@ -179,6 +179,7 @@ static struct {
 	int               sphere_count;     // droplets actually written
 	int               splat_count;      // of those, how many took the splat path
 	int               cache_hits;       // droplets whose geometry was reused as-is
+	int               cache_moves;      // droplets whose geometry was only TRANSLATED
 	uint32_t          stride;           // primitives reserved per droplet slot
 	uint32_t          dirty_lo;         // primitive range rewritten this frame
 	uint32_t          dirty_hi;
@@ -475,10 +476,30 @@ and 320 faces it is 27 MB of shadow plus 54 MB of staging. Allocated on first
 blood, not at startup, so a player who never turns this on pays nothing.
 ================
 */
+/*
+The number of slots the buffers cover, and the ONE definition of it.
+
+MAX_BLOOD_SPHERES is only a ceiling now. The real capacity is cl_blood_max, and
+three things have to agree on it or droplets go silently missing: ensure_buffers
+sizes the memory from it, vkpt_blood_prim_count reserves address space from it,
+and CL_AllocBloodSlot must never hand out a slot beyond it.
+
+They used to disagree - the reservation was MAX_BLOOD_SPHERES while the buffers
+were cl_blood_max - which was harmless only because the two constants happened to
+be equal. Raising the ceiling without this would have produced droplets that
+allocate a slot, generate geometry, and then fail the blood.max_prims bounds check
+at the write and simply never appear.
+*/
+static int vkpt_blood_slot_capacity(void)
+{
+	const int wanted = Cvar_Get("cl_blood_max", "512", CVAR_ARCHIVE)->integer;
+
+	return max(1, min(wanted, MAX_BLOOD_SPHERES));
+}
+
 static bool ensure_buffers(void)
 {
-	const int max_droplets = max(1, cvar_pt_blood_spheres->integer
-		? Cvar_Get("cl_blood_max", "512", CVAR_ARCHIVE)->integer : 1);
+	const int max_droplets = cvar_pt_blood_spheres->integer ? vkpt_blood_slot_capacity() : 1;
 	const int subdiv = max(0, min(cvar_pt_blood_tess->integer, BLOOD_SPHERE_MAX_SUBDIV));
 	const int worst_faces = max(BLOOD_SPHERE_FACES(subdiv), BLOOD_PUDDLE_FACES(subdiv));
 
@@ -622,7 +643,11 @@ uint32_t vkpt_blood_prim_count(int num_spheres)
 	// known until vkpt_blood_update picks it.
 	const int worst = max(BLOOD_SPHERE_FACES(subdiv), BLOOD_PUDDLE_FACES(subdiv));
 
-	return (uint32_t)MAX_BLOOD_SPHERES * (uint32_t)worst;
+	// The SLOT SPACE, which is cl_blood_max - not this frame's droplet count, and
+	// not MAX_BLOOD_SPHERES. Slots live as long as their droplet and are handed
+	// out lowest-first, so the highest occupied slot has nothing to do with how
+	// many are currently alive; and it must match what ensure_buffers allocated.
+	return (uint32_t)vkpt_blood_slot_capacity() * (uint32_t)worst;
 }
 
 // Face count for a droplet at a given LOD. A landed droplet is a puddle mesh and
@@ -841,6 +866,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	blood.sphere_count = 0;
 	blood.splat_count = 0;
 	blood.cache_hits = 0;
+	blood.cache_moves = 0;
 
 	const uint32_t stride = blood.stride;
 
@@ -911,6 +937,88 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		{
 			blood.cache_hits++;
 			continue;
+		}
+
+		/*
+		THE SAME MESH, MOVED - the case that costs everything while blood is
+		running down a wall.
+
+		A droplet that is sliding changes its ORIGIN and nothing else: same
+		normal, same radius, same flatten, same stretch, same seed, same LOD. Its
+		geometry is therefore last frame's geometry translated, and every
+		expensive thing below is already correct in the shadow buffer. Rebuilding
+		it recomputed, per vertex per frame: vertex_wobble (three harmonics, so
+		trig), the inverse-scale normal transform, a VectorNormalize and an
+		encode_normal - for a mesh identical apart from where it sits.
+
+		That is what "the splats cost a lot while they are dripping" was. A
+		SETTLED splat has always been free, because it hits the exact-match test
+		above; a MOVING one paid full price every frame, and moving is precisely
+		when there are a lot of them at once.
+
+		The test is a memcmp of the whole struct with the two position fields
+		masked out, rather than a field-by-field compare, for the same reason the
+		exact test above is a memcmp: a field added to blood_sphere_t later is
+		then automatically part of the check instead of silently escaping it.
+
+		Positions accumulate here rather than being rebuilt from the template, so
+		they drift by up to half an ulp per frame. At world coordinates of a few
+		thousand that is ~1e-4 units per frame against a droplet radius of 1.2,
+		and a droplet parks within a second or two - it cannot reach anything
+		visible.
+		*/
+		if (cache->valid && cache->level == level)
+		{
+			blood_sphere_t probe = *sphere;
+			VectorCopy(cache->sphere.origin, probe.origin);
+			VectorCopy(cache->sphere.prev_origin, probe.prev_origin);
+
+			if (memcmp(&cache->sphere, &probe, sizeof(blood_sphere_t)) == 0)
+			{
+				vec3_t move;
+				VectorSubtract(sphere->origin, cache->sphere.origin, move);
+
+				// The motion vector and the cluster are the only two things that
+				// genuinely change with position, and both are per DROPLET, not
+				// per vertex.
+				vec3_t mv_delta;
+				VectorSubtract(sphere->prev_origin, sphere->origin, mv_delta);
+				const uint32_t mv_xy = (uint32_t)floatToHalf(mv_delta[0])
+				                     | ((uint32_t)floatToHalf(mv_delta[1]) << 16);
+				const uint32_t mv_zw = (uint32_t)floatToHalf(mv_delta[2]);
+				const int moved_cluster = bsp
+					? BSP_PointLeaf(bsp->nodes, sphere->origin)->cluster : -1;
+
+				for (int f = 0; f < faces; f++)
+				{
+					const uint32_t wi = prim_index + (uint32_t)f;
+					VboPrimitive* prim = blood.prim_shadow + wi;
+					float (*pos)[3] = blood.pos_shadow[wi];
+
+					for (int i = 0; i < 3; i++)
+						VectorAdd(pos[i], move, pos[i]);
+
+					VectorCopy(pos[0], prim->pos0);
+					VectorCopy(pos[1], prim->pos1);
+					VectorCopy(pos[2], prim->pos2);
+
+					prim->cluster = moved_cluster;
+
+					prim->custom0[0] = mv_xy; prim->custom0[1] = mv_zw;
+					prim->custom1[0] = mv_xy; prim->custom1[1] = mv_zw;
+					prim->custom2[0] = mv_xy; prim->custom2[1] = mv_zw;
+				}
+
+				cache->sphere = *sphere;
+				cache->prim_offset = prim_index;
+
+				blood.dirty_lo = min(blood.dirty_lo, prim_index);
+				blood.dirty_hi = max(blood.dirty_hi, prim_index + (uint32_t)faces);
+				blood.dirty_slot[sphere->slot] = true;
+
+				blood.cache_moves++;
+				continue;
+			}
 		}
 
 		cache->valid = true;
@@ -1415,8 +1523,8 @@ void vkpt_blood_update(
 		if (now - last_report > 1000)
 		{
 			last_report = now;
-			Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB\n",
-				blood.sphere_count, blood.splat_count, blood.cache_hits, prim_count,
+			Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB\n",
+				blood.sphere_count, blood.splat_count, blood.cache_hits, blood.cache_moves, prim_count,
 				blood.sphere_count ? (float)prim_count / blood.sphere_count : 0.f,
 				gen_usec / 1000.f, copy_usec / 1000.f, skip_upload ? " (skipped)" : "",
 				(float)(up_prim_bytes + up_pos_bytes) / (1024.f * 1024.f));

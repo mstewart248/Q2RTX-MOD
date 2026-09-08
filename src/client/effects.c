@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // cl_fx.c -- entity effects parsing and management
 
 #include "client.h"
+#include "refresh/models.h"
 
 static void CL_LogoutEffect(const vec3_t org, int type);
 
@@ -891,6 +892,10 @@ static cvar_t *cl_blood_sound_volume = NULL;
 static cvar_t *cl_blood_sound_gap = NULL;
 static cvar_t *cl_blood_sound_dist = NULL;
 static cvar_t *cl_blood_permanent = NULL;
+static cvar_t *cl_blood_model_collision = NULL;
+static cvar_t *cl_blood_flesh_damp = NULL;
+static cvar_t *cl_blood_flesh_run = NULL;
+static cvar_t *cl_blood_flesh_cling = NULL;
 
 // The wet-impact sounds, registered once per level by CL_RegisterTEntSounds.
 // NUM_BLOOD_SFX is declared alongside the extern in client.h.
@@ -928,6 +933,20 @@ static cparticle_t *blood_splats[MAX_PARTICLES];
 static int          num_blood_splats;
 
 /*
+The droplets still in the AIR, rebuilt the same way and for one reason: they have
+to be retired BEFORE any splat is.
+
+Both count against cl_blood_max, but they are not worth the same. A splat is the
+thing the player is looking at and the whole point of g_no_janitor; a droplet in
+flight is on screen for under a second and nobody can tell which one went. Retiring
+splats to make room for droplets - which is what this did at first - spends the
+permanent blood to buy the temporary kind, so a fight quietly eats the floor it
+just painted. That is "even with no janitor on, the splats disappear fast".
+*/
+static cparticle_t *blood_airborne[MAX_PARTICLES];
+static int          num_blood_airborne;
+
+/*
 ===============
 CL_RetireOldestSplat
 
@@ -943,17 +962,30 @@ valid until the next pass, and particles are only ever freed inside that pass, s
 there is nothing stale to trip over here.
 ===============
 */
-static void CL_RetireOldestSplat(void)
+static cparticle_t *CL_OldestBlood(cparticle_t *const *list, int count)
 {
     cparticle_t *oldest = NULL;
 
-    for (int i = 0; i < num_blood_splats; i++) {
-        cparticle_t *p = blood_splats[i];
+    for (int i = 0; i < count; i++) {
+        cparticle_t *p = list[i];
         if (!p->is_blood_sphere)
             continue;
         if (!oldest || p->time < oldest->time)
             oldest = p;
     }
+
+    return oldest;
+}
+
+static void CL_RetireOldestSplat(void)
+{
+    // AIRBORNE FIRST. See the note on blood_airborne: a droplet in flight is
+    // worth far less than a splat on the floor, and spending the floor to keep
+    // the spray is exactly backwards.
+    cparticle_t *oldest = CL_OldestBlood(blood_airborne, num_blood_airborne);
+
+    if (!oldest)
+        oldest = CL_OldestBlood(blood_splats, num_blood_splats);
 
     if (!oldest)
         return;
@@ -975,7 +1007,14 @@ static void CL_RetireOldestSplat(void)
 
 static int CL_AllocBloodSlot(void)
 {
-    for (int i = 0; i < MAX_BLOOD_SPHERES; i++) {
+    // cl_blood_max, NOT MAX_BLOOD_SPHERES. That is only a ceiling now; the
+    // renderer sizes its buffers from cl_blood_max (vkpt_blood_slot_capacity in
+    // blood.c computes exactly this), and a slot past what they cover fails the
+    // bounds check at the write, so the droplet allocates, generates geometry and
+    // then silently never draws. The two expressions must stay identical.
+    const int capacity = max(1, min(cl_blood_max->integer, MAX_BLOOD_SPHERES));
+
+    for (int i = 0; i < capacity; i++) {
         if (!blood_slot_used[i]) {
             blood_slot_used[i] = true;
             return i;
@@ -988,8 +1027,11 @@ static int CL_AllocBloodSlot(void)
 static int blood_traces;
 static cvar_t *cl_blood_stats = NULL;
 
+static void CL_BloodTrace_f(void);
+
 void FX_Init(void)
 {
+    Cmd_AddCommand("bloodtrace", CL_BloodTrace_f);
     cvar_pt_particle_emissive = Cvar_Get("pt_particle_emissive", "10.0", 0);
 	cl_particle_num_factor = Cvar_Get("cl_particle_num_factor", "1", 0);
 
@@ -997,6 +1039,22 @@ void FX_Init(void)
     // the simulation can be A/B'd against plain ballistic droplets without also
     // switching the whole effect back to flat particle sprites.
     cl_blood_collision = Cvar_Get("cl_blood_collision", "1", CVAR_ARCHIVE);
+    // Test droplets against monster and corpse GEOMETRY rather than against
+    // the axial box the server packs for them. Off, blood passes straight
+    // through bodies and lands on the floor; the one thing it must never do
+    // is stop on the box, which is nowhere near the surface being drawn.
+    // See CL_TracePoint and CL_BloodTraceModels.
+    cl_blood_model_collision = Cvar_Get("cl_blood_model_collision", "1", CVAR_ARCHIVE);
+    // How a droplet leaves a body it has hit - see CL_BloodRunOffModel.
+    // damp is the fraction of the along-the-surface speed it keeps; run is
+    // the minimum speed it is given downhill, which is what gets it off a
+    // shoulder or the flat of a back instead of sitting there.
+    cl_blood_flesh_damp = Cvar_Get("cl_blood_flesh_damp", "0.35", CVAR_ARCHIVE);
+    cl_blood_flesh_run = Cvar_Get("cl_blood_flesh_run", "70", CVAR_ARCHIVE);
+    // Without cling a droplet leaving a chest just falls away from it and
+    // reads as dripping past the body rather than running down it. A gentle
+    // pull into the surface keeps it in contact so it follows the shape.
+    cl_blood_flesh_cling = Cvar_Get("cl_blood_flesh_cling", "25", CVAR_ARCHIVE);
     cl_blood_splat_life = Cvar_Get("cl_blood_splat_life", "8", CVAR_ARCHIVE);
     cl_blood_slide = Cvar_Get("cl_blood_slide", "2.5", CVAR_ARCHIVE);
     // Thickness of a splat along the surface normal. Note the coupling: the
@@ -1049,7 +1107,11 @@ void FX_Init(void)
     //
     // Over budget, blood stays an ordinary particle instead - so the spray still
     // looks right, it just stops adding geometry.
-    // 512 matches the renderer's own MAX_BLOOD_SPHERES, so this is a SAFETY
+    // This is the real budget AND what sizes the renderer's buffers, so raising
+    // it costs memory: cl_blood_max * worst_faces * (128 + 36) bytes of shadow,
+    // and twice that again in staging. At pt_blood_tess 2 that is 320 faces, so
+    // 512 is about 81 MB and 2048 about 324 MB; pt_blood_tess 1 is 80 faces and
+    // divides all of it by four. MAX_BLOOD_SPHERES is only the ceiling. SAFETY
     // VALVE rather than a limiter - a settled firefight sits around 250. It is
     // here because persistence removed what used to bound droplet count (they
     // faded in under a second; now they live until they land), and a measured
@@ -1153,6 +1215,8 @@ cparticle_t *CL_AllocParticle(void)
     p->blood_state = BLOOD_AIRBORNE;
     p->blood_flatten = 1.f;
     p->blood_stretch = 1.f;
+    p->blood_ent = -1;
+    p->blood_ent_id = 0;
     p->radius = 0.f;
     p->seed = 0.f;
     free_particles = p->next;
@@ -1505,9 +1569,14 @@ Adding radii instead makes a couple of hits balloon into a pond.
 
 The normal test keeps a splat on the floor from swallowing one on the wall it
 meets at the skirting.
+
+ent is the entity the landing droplet hit, or -1 for the world, and it has to
+match the splat being merged into. Two splats a few units apart right now are not
+a few units apart once one of them rides a door away, so merging across that
+boundary would put the combined blood on whichever surface won.
 ===============
 */
-static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t normal)
+static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t normal, int ent)
 {
     if (!cl_blood_pool->integer)
         return false;
@@ -1518,6 +1587,9 @@ static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t no
         cparticle_t *other = blood_splats[i];
 
         if (other->radius >= max_radius)
+            continue;
+
+        if (other->blood_ent != ent)
             continue;
 
         // Same surface, roughly: within about 25 degrees.
@@ -1674,6 +1746,441 @@ static void CL_BloodStick(cparticle_t *p, const vec3_t point, const vec3_t norma
         : -1.0f / max(0.1f, cl_blood_splat_life->value);
 }
 
+/*
+===============
+Riding a brush model
+
+A splat's org is a WORLD position, and nothing in the simulation re-derives it
+once the droplet has parked - the stuck branch returns early the moment the
+droplet stops sliding, which is the whole point of parking (a splat that moves
+misses the renderer's geometry cache and pays a full per-vertex rebuild every
+frame).  So a splat on a door is a world position that the door then drives out
+from under, leaving the blood hanging in the air where the door used to be.
+
+Same artifact as the bounding-box one, different cause: there the surface was
+never where it was drawn, here it stops being where it was drawn.
+
+A rigid transform - one origin, one set of angles - is the complete truth for a
+brush model, so for doors, lifts and platforms this is exact.  For a body it is
+an approximation: the blood rides the monster's origin and yaw but not its
+animation, so a splat on a walking soldier holds still against a skin that keeps
+moving under it.  Cheap and wrong by a few units beats free and wrong by ten.
+
+THE POSE USED TO ATTACH AND THE POSE USED TO DRAW ARE NOT ALWAYS THE SAME ONE.
+CL_TracePoint runs against current.origin/current.angles, the unlerped server
+state, while create_entity_matrix draws the model at the pose interpolated with
+cl.lerpfrac; MOD_TraceMesh below is handed the render pose because that is where
+the triangles it tests are actually drawn.  So the caller passes in the pose its
+contact point belongs to, and the world position is always rebuilt against the
+RENDER pose - which is what puts the splat on the surface the player can see
+rather than a whole server frame of door travel away from it.
+===============
+*/
+
+// The pose the renderer will draw this entity at, matching the origin and angle
+// interpolation in CL_AddPacketEntities.  False when the entity is not in the
+// current server frame at all, i.e. it has been freed.
+static bool CL_BloodEntityRenderPose(int entnum, int entid, vec3_t origin, vec3_t angles)
+{
+    const centity_t *cent;
+
+    if (entnum < 0 || entnum >= MAX_EDICTS)
+        return false;
+
+    cent = &cl_entities[entnum];
+
+    // Gone from the frame, or the slot has been recycled for a different
+    // entity since the droplet landed.
+    if (cent->serverframe != cl.frame.number || cent->id != entid)
+        return false;
+
+    // Only brush models are ever ridden. A body's pose is not a rigid transform -
+    // it animates - so riding one is what put splats in mid-air when the death
+    // animation moved out from under them. Bodies get CL_BloodRunOffModel now.
+    if (cent->current.solid != PACKED_BSP)
+        return false;
+
+    LerpVector(cent->prev.origin, cent->current.origin, cl.lerpfrac, origin);
+    LerpAngles(cent->prev.angles, cent->current.angles, cl.lerpfrac, angles);
+    return true;
+}
+
+// Record the contact in the entity's own frame of reference.  origin/angles are
+// the pose point and normal were measured against - see the note above about
+// which trace produces which.
+static void CL_BloodAttachToEntity(cparticle_t *p, const centity_t *cent,
+                                   const vec3_t origin, const vec3_t angles,
+                                   const vec3_t point, const vec3_t normal)
+{
+    vec3_t axis[3];
+
+    p->blood_ent = (int)(cent - cl_entities);
+    p->blood_ent_id = cent->id;
+
+    VectorSubtract(point, origin, p->blood_local_org);
+    VectorCopy(normal, p->blood_local_normal);
+
+    if (!VectorEmpty(angles)) {
+        AnglesToAxis(angles, axis);
+        RotatePoint(p->blood_local_org, axis);
+        RotatePoint(p->blood_local_normal, axis);
+    }
+}
+
+static inline void CL_BloodDetachFromEntity(cparticle_t *p)
+{
+    p->blood_ent = -1;
+    p->blood_ent_id = 0;
+}
+
+// Put a riding splat back where its surface has moved to.  Returns false when
+// the entity is gone, which drops the droplet back into free fall rather than
+// leaving it stranded in mid-air.
+static bool CL_BloodRideEntity(cparticle_t *p)
+{
+    vec3_t origin, angles, axis[3];
+
+    if (p->blood_ent < 0)
+        return true;
+
+    if (!CL_BloodEntityRenderPose(p->blood_ent, p->blood_ent_id, origin, angles)) {
+        CL_BloodDetachFromEntity(p);
+        return false;
+    }
+
+    VectorCopy(p->blood_local_org, p->org);
+    VectorCopy(p->blood_local_normal, p->blood_normal);
+
+    if (!VectorEmpty(angles)) {
+        AnglesToAxis(angles, axis);
+        TransposeAxis(axis);
+        RotatePoint(p->org, axis);
+        RotatePoint(p->blood_normal, axis);
+    }
+
+    VectorAdd(p->org, origin, p->org);
+    return true;
+}
+
+// Whether a riding splat is allowed to run downhill this frame.
+//
+// Never on a body: what it is stuck to is model geometry, and model geometry is
+// not in the collision world at all, so the slide's re-trace probe finds nothing
+// and every splat on the corpse detaches at once.
+//
+// On a brush model, only while it is standing still.  The probe runs against the
+// collision pose while the droplet sits at the render pose, and on a moving door
+// those are up to a full server frame of travel apart - same missed probe, same
+// mass detach.  A door only moves for a second or two at a time, so riding
+// rigidly through the motion and resuming the run afterwards costs nothing
+// anyone can see.
+static bool CL_BloodMaySlide(const cparticle_t *p)
+{
+    const centity_t *cent;
+
+    if (p->blood_ent < 0)
+        return true;
+
+    cent = &cl_entities[p->blood_ent];
+
+    if (cent->current.solid != PACKED_BSP)
+        return false;
+
+    return VectorCompare(cent->prev.origin, cent->current.origin)
+        && VectorCompare(cent->prev.angles, cent->current.angles);
+}
+
+/*
+===============
+CL_BloodTraceModels
+
+The other half of the bounding-box problem.  CL_TracePoint has been told to
+ignore the boxes of monsters, corpses, players and crates, so without this a
+droplet flies through a body as if it were not there.  With it, the droplet is
+tested against the model's ACTUAL triangles and lands on the surface that is
+drawn - which is the only version of blood-on-a-body that does not float.
+
+Costs are kept off the common path three ways: nothing happens unless the step
+crosses an entity's box in the first place, MOD_TraceMesh caches the posed model
+and rejects almost every triangle on a bounding box, and a hard per-frame budget
+bounds the worst case a burst can produce.  Returns the closest hit that beats
+`best`, which starts as the world trace's fraction so the world always wins a tie.
+===============
+*/
+
+// Monsters routinely reach outside the axial box the server packs for them - an
+// arm, a wing, a gladiator's gun - so the box is widened before it is used to
+// decide whether the mesh is worth testing.  Too small silently loses hits at the
+// edges; too large only buys mesh traces that then miss.
+#define BLOOD_MODEL_BOX_MARGIN  24.0f
+
+// Mesh traces allowed per client frame.  One wound throws sixty droplets and a
+// mesh trace is thousands of times a box test, so this is the backstop that
+// keeps a bad case bad rather than catastrophic. Hit only while blood is flying
+// through several bodies at once, and losing a hit means a droplet passes
+// through - the behaviour with the feature off, not a glitch.
+#define BLOOD_MODEL_TRACE_BUDGET 384
+
+static int blood_model_traces, blood_model_hits;
+
+static bool CL_BloodTraceModels(const vec3_t start, const vec3_t end,
+                                float *best, vec3_t out_normal, centity_t **out_ent)
+{
+    vec3_t seg_mins, seg_maxs;
+    bool found = false;
+
+    if (!cl_blood_model_collision->integer || !MOD_TraceMesh)
+        return false;
+
+    for (int i = 0; i < 3; i++) {
+        seg_mins[i] = min(start[i], end[i]) - BLOOD_MODEL_BOX_MARGIN;
+        seg_maxs[i] = max(start[i], end[i]) + BLOOD_MODEL_BOX_MARGIN;
+    }
+
+    for (int i = 0; i < cl.numSolidEntities; i++) {
+        centity_t *cent = cl.solidEntities[i];
+        const model_t *model;
+        mod_pose_t pose;
+        vec3_t normal;
+        float frac;
+        int j;
+
+        if (cent->current.solid == PACKED_BSP)
+            continue;   // real geometry already; CL_TracePoint has it
+
+        for (j = 0; j < 3; j++) {
+            if (cent->current.origin[j] + cent->maxs[j] < seg_mins[j])
+                break;
+            if (cent->current.origin[j] + cent->mins[j] > seg_maxs[j])
+                break;
+        }
+        if (j < 3)
+            continue;
+
+        // modelindex 255 is not an index at all - it means "look the model up in
+        // the clientinfo for this player's chosen skin", and cl.model_draw[255]
+        // is somebody else's model entirely. Other players therefore get no mesh
+        // trace and blood passes through them, which is the safe half of the
+        // trade; resolving it would mean duplicating the clientinfo fallback
+        // chain out of CL_AddPacketEntities.
+        if (cent->current.modelindex <= 0 || cent->current.modelindex >= 255)
+            continue;
+
+        model = MOD_ForHandle(cl.model_draw[cent->current.modelindex]);
+        if (!model || model->type != MOD_ALIAS)
+            continue;
+
+        if (blood_model_traces >= BLOOD_MODEL_TRACE_BUDGET)
+            return found;
+
+        blood_model_traces++;
+
+        // The RENDER pose, not the collision one: these are the triangles the
+        // player can see, so the hit has to be where they are drawn.
+        LerpVector(cent->prev.origin, cent->current.origin, cl.lerpfrac, pose.origin);
+        LerpAngles(cent->prev.angles, cent->current.angles, cl.lerpfrac, pose.angles);
+        pose.scale = cent->current.scale;
+        pose.frame = cent->current.frame;
+
+        if (!MOD_TraceMesh(model, &pose, start, end, &frac, normal))
+            continue;
+
+        if (frac >= *best)
+            continue;
+
+        *best = frac;
+        VectorCopy(normal, out_normal);
+        *out_ent = cent;
+        if (!found)
+            blood_model_hits++;
+        found = true;
+    }
+
+    return found;
+}
+
+
+/*
+===============
+CL_BloodTrace_f
+
+Console command `bloodtrace`: fire one ray down the crosshair and print what the
+box trace and the mesh trace each say about it.
+
+This exists because the two failure modes of CL_BloodTraceModels look identical
+from the outside - a mesh trace that is silently wrong and a burst of blood that
+simply never crosses a body both show up as zero splats riding an entity.  Aim at
+a monster and this separates them in one line: a working mesh trace reports a
+fraction slightly LARGER than the box trace's (the box is bigger than the body)
+and a normal pointing back at the camera.
+===============
+*/
+static void CL_BloodTrace_f(void)
+{
+    if (cls.state != ca_active) {
+        Com_Printf("bloodtrace: not connected" "\n");
+        return;
+    }
+
+    if (!MOD_TraceMesh) {
+        Com_Printf("bloodtrace: no mesh trace in this renderer" "\n");
+        return;
+    }
+
+    Com_Printf("bloodtrace: %d solid entities" "\n", cl.numSolidEntities);
+
+    for (int i = 0; i < cl.numSolidEntities; i++) {
+        centity_t *cent = cl.solidEntities[i];
+        const model_t *model;
+        mod_pose_t pose;
+        vec3_t start, end, dir, normal, point;
+        float frac, len;
+
+        if (cent->current.solid == PACKED_BSP) {
+            Com_Printf("  ent %3d: brush model" "\n", (int)(cent - cl_entities));
+            continue;
+        }
+
+        if (cent->current.modelindex <= 0 || cent->current.modelindex >= 255) {
+            Com_Printf("  ent %3d: modelindex %d - skipped" "\n",
+                (int)(cent - cl_entities), cent->current.modelindex);
+            continue;
+        }
+
+        model = MOD_ForHandle(cl.model_draw[cent->current.modelindex]);
+        if (!model || model->type != MOD_ALIAS) {
+            Com_Printf("  ent %3d: no alias model" "\n", (int)(cent - cl_entities));
+            continue;
+        }
+
+        // Straight at the entity origin and well past it, so the aim cannot be
+        // what fails.
+        VectorCopy(cl.refdef.vieworg, start);
+        VectorSubtract(cent->current.origin, start, dir);
+        len = VectorNormalize(dir);
+        VectorMA(start, len + 128.0f, dir, end);
+
+        LerpVector(cent->prev.origin, cent->current.origin, cl.lerpfrac, pose.origin);
+        LerpAngles(cent->prev.angles, cent->current.angles, cl.lerpfrac, pose.angles);
+        pose.scale = cent->current.scale;
+        pose.frame = cent->current.frame;
+
+        if (MOD_TraceMesh(model, &pose, start, end, &frac, normal)) {
+            LerpVector(start, end, frac, point);
+            Com_Printf("  ent %3d: %s frame %d dist %.1f -> HIT at %.1f units, "
+                       "%.1f %.1f %.1f nrm %.2f %.2f %.2f" "\n",
+                (int)(cent - cl_entities), model->name, cent->current.frame, len,
+                frac * (len + 128.0f), point[0], point[1], point[2],
+                normal[0], normal[1], normal[2]);
+        } else {
+            Com_Printf("  ent %3d: %s frame %d dist %.1f org %.0f %.0f %.0f -> MISS" "\n",
+                (int)(cent - cl_entities), model->name, cent->current.frame, len,
+                cent->current.origin[0], cent->current.origin[1], cent->current.origin[2]);
+        }
+    }
+}
+
+
+/*
+===============
+CL_BloodRunOffModel
+
+BLOOD NEVER STICKS TO A BODY.  It arrives, loses everything it had going into the
+flesh, and runs down the outside until it drops off onto the floor.
+
+That is not a stylistic choice, it is the only thing that works.  A splat is a
+static piece of geometry and a body is not a static surface: a monster's death
+animation alone moves its skin several feet over about two seconds, so a splat
+placed on the shoulder of a standing soldier is hanging in mid-air by the time the
+corpse has finished falling.  Riding the entity's origin and angles does not fix
+it either - during a death the origin barely moves and the SKIN does all the
+travelling.  Following the animation properly would mean storing a triangle and
+barycentric coordinates and re-posing the splat every frame, which is both a lot
+of machinery and a guarantee of missing the renderer's geometry cache for as long
+as the body is moving.
+
+Running off costs none of that and is what blood does anyway.  The droplet stays
+AIRBORNE throughout, so if the body animates out from under it, it simply falls -
+there is no state left behind to strand.
+
+The minimum run speed is the part that is easy to leave out and then wonder about:
+gravity projected into a surface is ZERO on anything facing straight up, so a
+droplet landing squarely on a shoulder or the flat of a back has nothing to move
+it and hovers there until its air life expires - the same artifact by another
+route.  Steepest descent gives it a direction, and on a genuinely flat face the
+direction it arrived from does.
+===============
+*/
+
+// How far off the surface a running droplet is held. Enough that the next step's
+// trace does not start inside the triangle it just hit, small enough that the
+// droplet still reads as touching the body.
+#define BLOOD_FLESH_CLEARANCE   0.5f
+
+static void CL_BloodRunOffModel(cparticle_t *p, const vec3_t point, const vec3_t normal)
+{
+    vec3_t vel, dir;
+    float into, speed, len;
+    bool have_dir = true;
+
+    VectorMA(point, BLOOD_FLESH_CLEARANCE, normal, p->org);
+
+    // Everything heading into the body is absorbed; what is left is damped,
+    // because flesh is not a bouncy surface.
+    into = DotProduct(p->vel, normal);
+    VectorMA(p->vel, -into, normal, vel);
+    VectorScale(vel, max(0.f, cl_blood_flesh_damp->value), vel);
+
+    // Downhill along this surface. Zero length means the face points straight up.
+    VectorSet(dir, 0.f, 0.f, -1.f);
+    into = DotProduct(dir, normal);
+    VectorMA(dir, -into, normal, dir);
+    len = VectorNormalize(dir);
+
+    if (len < 0.1f) {
+        // Flat. Carry on the way it was already going, in the surface plane.
+        VectorCopy(vel, dir);
+        if (VectorNormalize(dir) < 0.01f) {
+            // Arrived dead square with nothing to inherit. Any direction in the
+            // plane will do; the seed keeps a burst from leaving in lockstep.
+            vec3_t any = { cosf(p->seed * 6.283f), sinf(p->seed * 6.283f), 0.f };
+            into = DotProduct(any, normal);
+            VectorMA(any, -into, normal, dir);
+            if (VectorNormalize(dir) < 0.01f)
+                have_dir = false;   // degenerate normal; let gravity do it
+        }
+    }
+
+    if (have_dir) {
+        speed = DotProduct(vel, dir);
+        if (speed < cl_blood_flesh_run->value)
+            VectorMA(vel, cl_blood_flesh_run->value - speed, dir, vel);
+    }
+
+    // Hold it against the surface, so it follows the body's shape instead of
+    // separating at the first vertical face and falling past it. It is re-traced
+    // every step, so being pulled a little into the body is corrected rather than
+    // accumulated - and in the worst case the droplet ends up inside, where the
+    // front-face-only test sends it straight out the far side.
+    VectorMA(vel, -cl_blood_flesh_cling->value, normal, vel);
+
+    VectorCopy(vel, p->vel);
+
+    // Still in flight, and DELIBERATELY NOT re-clocked.
+    //
+    // Restarting time/alpha here - which is what this did at first - makes a
+    // droplet in continuous contact with a body immortal: it re-hits every frame,
+    // resets its own age every frame, and holds a slot out of cl_blood_max
+    // forever while never being old enough to retire. A handful of those loitering
+    // on a corpse is enough to squeeze the real splats out of the budget.
+    //
+    // Nothing needs the reset anyway. cl_blood_air_life is measured from spawn and
+    // defaults to 15 seconds, while running down even a berserk takes well under
+    // one; and CL_BloodStick restarts the clock properly when it finally lands,
+    // which is where the splat's own life should be measured from.
+    p->blood_state = BLOOD_AIRBORNE;
+}
+
 // Returns true when the droplet merged into an existing pool and should be
 // retired - the blood it carried is now part of that splat.
 static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
@@ -1682,6 +2189,28 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     vec3_t  end;
 
     if (p->blood_state == BLOOD_STUCK) {
+        // Follow the surface first, so everything below works from where the
+        // droplet actually is this frame.
+        if (p->blood_ent >= 0) {
+            if (!CL_BloodRideEntity(p)) {
+                // The door it was on has gone. Fall.
+                p->blood_state = BLOOD_AIRBORNE;
+                p->blood_flatten = 1.0f;
+                p->blood_stretch = 1.0f;
+                VectorClear(p->blood_tangent);
+                VectorClear(p->vel);
+                p->time = cl.time;
+                p->alpha = 1.0f;
+                p->alphavel = -1.0f / max(0.1f, cl_blood_air_life->value);
+                return false;
+            }
+
+            if (!CL_BloodMaySlide(p)) {
+                VectorClear(p->vel);
+                return false;
+            }
+        }
+
         // Gravity, projected into the plane of the surface.  On a floor this
         // cancels to nothing; on a wall it is a downward run; on a slope it is
         // the component that makes a droplet track downhill.
@@ -1707,13 +2236,26 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         VectorMA(end, -2.0f, p->blood_normal, probe_end);
 
         blood_traces++;
-        tr = CL_TracePoint(probe_start, probe_end, MASK_SOLID);
+        tr = CL_TracePoint(probe_start, probe_end, MASK_SOLID, false);
 
         if (tr.fraction < 1.0f && !tr.allsolid) {
+            centity_t *hit = CL_TraceHitEntity(&tr);
+
             VectorCopy(tr.plane.normal, p->blood_normal);
             VectorMA(tr.endpos, BLOOD_SURFACE_OFFSET, p->blood_normal, p->org);
+
+            // It may have slid from the world onto a door, or the other way.
+            // Only a brush model can be reached from here - CL_TracePoint has
+            // the boxes turned off - so its collision pose is the right frame to
+            // measure the local coordinates in.
+            if (hit)
+                CL_BloodAttachToEntity(p, hit, hit->current.origin, hit->current.angles,
+                                       p->org, p->blood_normal);
+            else
+                CL_BloodDetachFromEntity(p);
         } else {
             // Ran off the end of the surface - fall again.
+            CL_BloodDetachFromEntity(p);
             p->blood_state = BLOOD_AIRBORNE;
             p->blood_flatten = 1.0f;
             p->blood_stretch = 1.0f;
@@ -1734,8 +2276,12 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     p->vel[2] -= cl_blood_gravity->value * dt;
     VectorMA(p->org, dt, p->vel, end);
 
+    // Bounding boxes are deliberately NOT in this trace - see CL_TracePoint. The
+    // world and the brush models have real geometry and are handled here; bodies
+    // have only a box, and get their real triangles from CL_BloodTraceModels
+    // below instead.
     blood_traces++;
-    tr = CL_TracePoint(p->org, end, MASK_SOLID);
+    tr = CL_TracePoint(p->org, end, MASK_SOLID, false);
 
     if (tr.allsolid || tr.startsolid) {
         // Spawned inside geometry - a wound right against a wall. Leave it where
@@ -1744,11 +2290,58 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         return false;
     }
 
-    if (tr.fraction < 1.0f) {
-        if (CL_BloodPoolInto(p, tr.endpos, tr.plane.normal))
+    centity_t *hit = CL_TraceHitEntity(&tr);
+    vec3_t hit_point, hit_normal, pose_origin, pose_angles;
+    float frac = tr.fraction;
+
+    VectorCopy(tr.plane.normal, hit_normal);
+    VectorClear(pose_origin);
+    VectorClear(pose_angles);
+
+    // A brush model hit: CL_TracePoint ran against the unlerped server state, so
+    // that is the frame this contact point has to be measured in.
+    if (hit) {
+        VectorCopy(hit->current.origin, pose_origin);
+        VectorCopy(hit->current.angles, pose_angles);
+    }
+
+    // A body's real triangles, if any are closer than what the world trace found.
+    // Closer is the whole test: a monster standing against a wall still catches
+    // its own blood, and a droplet that has already stopped at the wall behind it
+    // is not dragged back onto the body.
+    {
+        centity_t *model_ent = NULL;
+
+        if (CL_BloodTraceModels(p->org, end, &frac, hit_normal, &model_ent)) {
+            // A BODY IS NOT A SURFACE TO PARK ON. Run down it and keep falling -
+            // see CL_BloodRunOffModel. Nothing is attached and nothing is stuck,
+            // so there is no state to strand when the animation moves on.
+            LerpVector(p->org, end, frac, hit_point);
+            CL_BloodRunOffModel(p, hit_point, hit_normal);
+            return false;
+        }
+    }
+
+    if (frac < 1.0f) {
+        LerpVector(p->org, end, frac, hit_point);
+
+        if (CL_BloodPoolInto(p, hit_point, hit_normal,
+                             hit ? (int)(hit - cl_entities) : -1))
             return true;
 
-        CL_BloodStick(p, tr.endpos, tr.plane.normal);
+        CL_BloodStick(p, hit_point, hit_normal);
+
+        // Only a brush model can be reached here - a door, lift or platform,
+        // whose pose IS a rigid transform, so riding it is exact.
+        if (hit) {
+            CL_BloodAttachToEntity(p, hit, pose_origin, pose_angles, hit_point, hit_normal);
+            // Snap straight to the render pose, so its first drawn frame is
+            // already on the surface rather than a server frame behind it.
+            CL_BloodRideEntity(p);
+            VectorMA(p->org, BLOOD_SURFACE_OFFSET, p->blood_normal, p->org);
+        } else {
+            CL_BloodDetachFromEntity(p);
+        }
     } else {
         VectorCopy(end, p->org);
     }
@@ -1817,6 +2410,8 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale)
     p->blood_state = BLOOD_AIRBORNE;
     p->blood_flatten = 1.0f;
     p->blood_stretch = 1.0f;
+    p->blood_ent = -1;
+    p->blood_ent_id = 0;
     VectorClear(p->blood_normal);
     VectorClear(p->blood_tangent);
 
@@ -2982,6 +3577,7 @@ void CL_AddParticles(void)
     blood_dt = max(0.f, min(blood_dt, 0.05f));
 
     num_blood_splats = 0;
+    num_blood_airborne = 0;
 
     // Slots still in use are marked as the list is walked; whatever is left
     // unmarked at the end belonged to a droplet that has died. Reclaiming them
@@ -2992,7 +3588,7 @@ void CL_AddParticles(void)
     // Free-list health, reported by cl_blood_stats. The particle pool is shared
     // with every other effect in the game, so a leak here starves the blaster
     // and the trails long before it is obvious that blood is the cause.
-    int blood_air = 0, blood_stuck = 0, num_free = 0, num_active = 0;
+    int blood_air = 0, blood_stuck = 0, blood_riding = 0, num_free = 0, num_active = 0;
 
     // Time actually spent in the droplet simulation, and traces issued.
     //
@@ -3001,9 +3597,11 @@ void CL_AddParticles(void)
     // per-droplet CL_TracePoint - a BSP trace plus a loop over every solid
     // entity, per droplet, per client frame - only happens in a real frame.
     static uint64_t blood_sim_usec_acc;
-    static int      blood_trace_acc, blood_sim_frames;
+    static int      blood_trace_acc, blood_model_trace_acc, blood_model_hit_acc, blood_sim_frames;
     uint64_t blood_sim_usec = 0;
     blood_traces = 0;
+    blood_model_traces = 0;
+    blood_model_hits = 0;
     for (cparticle_t *f = free_particles; f; f = f->next)
         num_free++;
 
@@ -3094,10 +3692,14 @@ void CL_AddParticles(void)
             // the live position, so the analytic formula below does not apply.
             if (p->blood_state == BLOOD_STUCK) {
                 blood_stuck++;
+                if (p->blood_ent >= 0)
+                    blood_riding++;    // on a body or a brush model
                 if (num_blood_splats < MAX_PARTICLES)
                     blood_splats[num_blood_splats++] = p;
             } else {
                 blood_air++;
+                if (num_blood_airborne < MAX_PARTICLES)
+                    blood_airborne[num_blood_airborne++] = p;
             }
 
             VectorCopy(p->org, origin);
@@ -3173,18 +3775,22 @@ void CL_AddParticles(void)
 
     blood_sim_usec_acc += blood_sim_usec;
     blood_trace_acc += blood_traces;
+    blood_model_trace_acc += blood_model_traces;
+    blood_model_hit_acc += blood_model_hits;
     blood_sim_frames++;
 
     if (cl_blood_stats->integer) {
         static int last_report;
         if (cl.time - last_report > 1000 || cl.time < last_report) {
             last_report = cl.time;
-            Com_Printf("blood: %d airborne, %d stuck | sim %.2f ms/frame, %d traces/frame | particles %d active, %d free\n",
-                blood_air, blood_stuck,
+            Com_Printf("blood: %d airborne, %d stuck (%d riding) | sim %.2f ms/frame, %d traces/frame, %d mesh/frame (%d hits/s) | particles %d active, %d free\n",
+                blood_air, blood_stuck, blood_riding,
                 blood_sim_frames ? (float)blood_sim_usec_acc / blood_sim_frames / 1000.f : 0.f,
                 blood_sim_frames ? blood_trace_acc / blood_sim_frames : 0,
+                blood_sim_frames ? blood_model_trace_acc / blood_sim_frames : 0,
+                blood_model_hit_acc,
                 num_active, num_free);
-            blood_sim_usec_acc = 0; blood_trace_acc = 0; blood_sim_frames = 0;
+            blood_sim_usec_acc = 0; blood_trace_acc = 0; blood_model_trace_acc = 0; blood_model_hit_acc = 0; blood_sim_frames = 0;
         }
     }
 }

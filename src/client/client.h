@@ -769,7 +769,11 @@ void V_RenderView(void);
 void V_AddEntity(entity_t *ent);
 void V_AddParticle(particle_t *p);
 // Zero-sized trace against the world and the solid bmodel entities. predict.c.
-trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask);
+// clip_bbox_entities adds the axial boxes of monsters, corpses and the like -
+// see CL_TracePoint for why anything that DRAWS its hit point wants them out.
+trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, bool clip_bbox_entities);
+// Which entity a CL_TracePoint result hit, or NULL for the world.
+centity_t *CL_TraceHitEntity(const trace_t *tr);
 blood_sphere_t *V_AddBloodSphere(void);
 
 // Wet impact sounds for landing blood - registered in CL_RegisterTEntSounds,
@@ -922,6 +926,20 @@ typedef struct cparticle_s {
     float   blood_flatten;      // 1 = round; drops toward the splat target on impact
     vec3_t  blood_tangent;      // impact direction in the surface plane
     float   blood_stretch;      // elongation along blood_tangent; 1 = round
+
+    // The brush model this splat is riding, or -1 for the world.  A door, lift
+    // or platform carries its blood with it; without this a splat is a world
+    // position that the surface under it simply drives away from, which reads as
+    // exactly the same "floating in mid-air" artifact that bounding boxes give.
+    //
+    // Only BRUSH models are ever adopted.  A rigid transform is the whole truth
+    // for one of those, and the local coordinates below stay valid forever.
+    // blood_ent_id is centity_t::id at the moment of contact, so a recycled
+    // entity slot detaches the splat instead of teleporting it somewhere new.
+    int     blood_ent;
+    int     blood_ent_id;
+    vec3_t  blood_local_org;    // contact point in the entity's own frame
+    vec3_t  blood_local_normal; // and its surface normal, likewise
 } cparticle_t;
 
 #define BLOOD_AIRBORNE  0

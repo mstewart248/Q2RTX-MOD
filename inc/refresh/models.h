@@ -187,6 +187,44 @@ void MOD_Shutdown(void);
 model_t *MOD_ForHandle(qhandle_t h);
 qhandle_t R_RegisterModel(const char *name);
 
+/*
+Tracing a ray against an alias model's actual triangles.
+
+The collision world knows nothing about model geometry: entity_state_t::solid
+carries one packed axis-aligned box, so to every trace in the engine a soldier,
+its corpse and a crate are the same rectangular prism.  That is fine for anything
+that only has to STOP something, and useless for anything that has to be DRAWN
+where it touches - a blood splat parked at a box contact hangs in mid-air a good
+ten units clear of the body inside it.
+
+This is the escape hatch, and it is deliberately NOT part of the collision
+system: it reads per-frame renderer data, it costs orders of magnitude more than
+a box test, and it is only worth paying for the handful of rays whose result the
+player is going to look at.
+
+A function pointer because maliasmesh_t is defined per backend and both backends
+link into the same binary; MOD_LoadMD2 below is the same pattern.  NULL when the
+active renderer has no implementation, so every caller must check.
+*/
+// The pose to test against.  Deliberately the DISCRETE current frame, with no
+// oldframe/backlerp: the renderer's own interpolation moves every vertex every
+// frame, which would defeat the pose cache behind this and rebuild a whole
+// monster's geometry per ray.  Snapping to the current frame costs at most half
+// an animation frame of placement error on a body that is moving anyway, and
+// costs nothing at all on the case that matters most - a corpse, whose frame is
+// frozen the moment it lands.
+typedef struct {
+    vec3_t  origin;
+    vec3_t  angles;
+    float   scale;      // 0 means 1, as everywhere else
+    int     frame;
+} mod_pose_t;
+
+typedef bool (*mod_trace_mesh_t)(const model_t *model, const mod_pose_t *pose,
+                                 const vec3_t start, const vec3_t end,
+                                 float *out_frac, vec3_t out_normal);
+extern mod_trace_mesh_t MOD_TraceMesh;
+
 struct dmd2header_s;
 int MOD_ValidateMD2(struct dmd2header_s *header, size_t length);
 

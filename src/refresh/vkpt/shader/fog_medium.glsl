@@ -1409,9 +1409,47 @@ float getDensity(vec3 p)
 	return world_box * clamp(density, 0.0, max(0.0, global_ubo.pt_fog_density_max));
 }
 
+/*
+=================
+getStep
+
+How far the fog march advances per sample, and - because the march is the whole
+cost of the god rays pass - the single biggest lever on what that pass costs.
+
+READ THIS BEFORE TUNING cl_fog_scale.
+
+`density` arrives here ALREADY MULTIPLIED BY cl_fog_scale (mapfog.c writes
+fog_density and fog_hf_density pre-scaled), so an appearance calibration also
+decides how finely this integral is sampled. Those are unrelated jobs sharing one
+number, and the one it does silently is frame time: past density 1.27 this hits
+its 1-unit floor and the step count stops falling, so every further increase is
+pure cost.
+
+It is worse than merely coupled on a cl_fog 3 map that sets its own
+cl_volumetric_fog_density. There, fog_vol_density_ratio is
+cl_volumetric_fog_density / cl_fog_scale, and god_rays.comp multiplies the local
+term by it at the end - so cl_fog_scale goes into the march via `density` and
+comes straight back out of the image. Raising it changes the picture NOT AT ALL
+and multiplies the step count by up to twenty.
+
+That is not hypothetical. mgu5m1 has no physical sky, so cl_fog_scale does
+nothing it can see; it inherited a global cl_fog_scale 1000 left over from tuning
+a different map, and ran this pass at 66 ms for a byte-identical image.
+`mapcvar cl_fog_scale 4` gave all of it back with no visual change at all.
+
+pt_fog_step is the honest knob for the cost, defaulting to 1.0 so it changes
+nothing until it is set. RAISING IT DOES NOT DIM THE FOG: the march is a Riemann
+sum - every accumulation is stepLength-weighted (god_rays.comp:391) and
+throughput decays by exp(-stepLength * density * sigma) (:406) - so halving the
+sample count doubles each sample's weight and the integral is preserved. What
+coarsens is the sharpness of shadow-shaft edges and the jitter noise, which the
+god rays filter already smooths. Try `mapcvar pt_fog_step 8` on a map and watch
+the god rays line before deciding a map needs 1-unit steps.
+=================
+*/
 float getStep(float t, float density)
 {
-	return max(1, mix(20, 5, density));
+	return max(1, mix(20, 5, density)) * max(0.01, global_ubo.pt_fog_step);
 }
 
 #endif // FOG_MEDIUM_GLSL_

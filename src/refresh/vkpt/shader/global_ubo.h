@@ -247,7 +247,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_blood_specular, 1.6) /* specular factor of a blood droplet, above 1 on purpose - a droplet is small and its highlight is the whole effect */ \
 	UBO_CVAR_DO(pt_blood_normal_strength, 0.35) /* how hard the animated ripple perturbs the sphere's normal. 0 = a perfectly smooth ball */ \
 	UBO_CVAR_DO(pt_blood_normal_scale, 1.4) /* ripple features per droplet, in normal-map tiles across the sphere's direction cube. Small numbers = a few big wobbles, large = a fine seethe */ \
-	UBO_CVAR_DO(pt_blood_normal_speed, 1.0) /* how fast the ripple animates */
+	UBO_CVAR_DO(pt_blood_normal_speed, 1.0) /* how fast the ripple animates */ 	UBO_CVAR_DO(pt_fog_step, 1.0) /* multiplies the fog march's step length. 1 = unchanged. THE COST KNOB - see getStep in fog_medium.glsl, and read it before touching cl_fog_scale */
 
 /* FIELD LAYOUT of the path-tracer screen images (pt_fullres_fields / pt_field_offset).
  *
