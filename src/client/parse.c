@@ -544,6 +544,14 @@ static void CL_ParseServerData(void)
         fs_game->flags |= CVAR_ROM;
     }
 
+    // Which entrance the player came through is a LOCAL server fact: SV_SpawnServer
+    // sets map_spawnpoint from the "$" half of the map command.  A demo or a remote
+    // server never tells us, and leaving the last local value standing would let
+    // maps/<map>@<spawnpoint>.cfg fire on a map the player walked into some other
+    // way - so clear it rather than inherit it.
+    if (cls.demo.playback || !sv_running->integer)
+        Cvar_FullSet("map_spawnpoint", "", CVAR_ROM, FROM_CODE);
+
     // parse player entity number
     cl.clientNum = MSG_ReadShort();
 

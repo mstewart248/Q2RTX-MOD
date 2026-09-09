@@ -877,6 +877,18 @@ this an MD5 model renders at base_factor 1.0 against the classic model's 1.5 to
 2.5, i.e. visibly darker than the MD2 it replaces.
 
 Textures, and anything that names one, are deliberately NOT copied.
+
+EXCEPT that roughness_override and specular_factor are not really tuning when
+the classic material has no PBR maps to tune. Every one of the 140 .mat entries
+carrying "roughness_override 1" pairs it with "specular_factor 0", and it means
+"this MD2 has no roughness map, render it fully diffuse" - the MD2 UVs cannot
+address one, so there was never anything else to say. Inheriting that pair onto
+an MD5 material that DOES have its own _rough.tga sidecar pins
+roughness = max(sampled, 1) = 1 in get_material() and zeroes the specular lobe,
+which silently discarded all 55 baked MD5 roughness maps in the tree: the image
+loaded, bound, and sampled, and the result was thrown away. So skip those two
+when this material brought its own roughness map. A material with no sidecar
+inherits exactly as before.
 =================
 */
 void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
@@ -894,11 +906,23 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	if (!src)
 		return;
 
+	// MAT_Find has already run the sidecar lookup, so these are set by now
+	const bool has_own_roughness = (mat->image_roughness != NULL);
+	const bool has_own_metallic = (mat->image_metallic != NULL);
+
 	mat->bump_scale = src->bump_scale;
-	mat->roughness_override = src->roughness_override;
-	mat->metalness_factor = src->metalness_factor;
+	if (!has_own_roughness) {
+		mat->roughness_override = src->roughness_override;
+		mat->specular_factor = src->specular_factor;
+	}
+	// same trap on the metallic side: get_material() computes
+	// metallic = sampled * metalness_factor, so inheriting the classic
+	// "metalness_factor 0" (1911 .mat entries say it, meaning "the MD2 has no
+	// metallic map, ignore the normal map's alpha") multiplies an MD5's own
+	// baked _metallic.tga away to nothing. Affects 6 of the 72 MD5 sidecars.
+	if (!has_own_metallic)
+		mat->metalness_factor = src->metalness_factor;
 	mat->emissive_factor = src->emissive_factor;
-	mat->specular_factor = src->specular_factor;
 	mat->base_factor = src->base_factor;
 	mat->light_styles = src->light_styles;
 	mat->bsp_radiance = src->bsp_radiance;

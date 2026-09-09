@@ -255,6 +255,24 @@ static const save_field_t entityfields[] = {
     P(monsterinfo.checkattack, P_monsterinfo_checkattack),
     P(monsterinfo.blocked, P_monsterinfo_blocked),
 
+    // ROGUE/rerelease duck + sidestep.  These were missing, and the omission
+    // left monsters UNSHOOTABLE after a load.  monsterinfo.base_height is only
+    // ever captured in monster_start, which does not run again on a ReadLevel,
+    // so it came back 0 - and then the first duck frame of any ordinary move
+    // (the soldier's trip and prone attack, the guncmdr's and gunner's crouched
+    // attacks, ...) set maxs[2] = base_height - 32 = -32, BELOW mins[2], giving
+    // a degenerate box no trace can hit, and monster_duck_up then restored
+    // maxs[2] to 0 - an ankle-high box under a full-height model.  The three
+    // function pointers went with it: without them M_MonsterDodge sees no
+    // ducker and no dodger, so a loaded game also lost dodging entirely.
+    P(monsterinfo.duck, P_monsterinfo_duck),
+    P(monsterinfo.unduck, P_monsterinfo_unduck),
+    P(monsterinfo.sidestep, P_monsterinfo_sidestep),
+    F(monsterinfo.base_height),
+    FT(monsterinfo.duck_wait_framenum),
+    FT(monsterinfo.next_duck_framenum),
+    FT(monsterinfo.dodge_framenum),
+
     FT(monsterinfo.pause_framenum),
     FT(monsterinfo.attack_finished),
     FT(monsterinfo.melee_debounce_framenum),
@@ -313,6 +331,16 @@ static const save_field_t entityfields[] = {
     V(offset),
     I(monsterinfo.power_armor_type),
     I(monsterinfo.power_armor_power),
+
+    // Four more that this table was missing, found by diffing edict_s against
+    // it.  death_count is how far the ludicrous-gibs escalation has got, so a
+    // load used to hand a half-torn corpse back at stage 0; plat2flags and
+    // last_move_time are a func_plat2's whole state; monsterFireHyperBlaster
+    // picks the hyper-soldier's weapon.
+    I(plat2flags),
+    F(last_move_time),
+    I(monsterFireHyperBlaster),
+    I(death_count),
 
     // ROGUE - runtime monster spawning. The reinforcement table is a fixed
     // array of structs, so each member gets its own positional entry; a
@@ -946,7 +974,12 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // 53: the six classic *_dodge functions are hooked up again for baseq2, which
 // adds them to save_ptrs[] - and that table is indexed POSITIONALLY, so every
 // entry after the insertion point shifts and version-52 saves cannot be read.
-#define SAVE_VERSION    58
+//
+// 59: monsterinfo's duck/unduck/sidestep + base_height + the three duck/dodge
+// timers, and four stray edict fields, join entityfields.  The new save_ptrs[]
+// entries are APPENDED, so no existing index moves, but the entity field list
+// itself is positional too and a version-58 save would be read misaligned.
+#define SAVE_VERSION    59
 
 /*
 ============

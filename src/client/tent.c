@@ -68,10 +68,16 @@ void CL_RegisterTEntSounds(void)
     int     i;
     char    name[MAX_QPATH];
 
+    // mk1-00332 and mk1-00333 are the impacts; mk1-00334 is the pooling sound.
+    // Splitting them is the whole of Matt's sound-design note: the wet slap of
+    // blood arriving and the softer sound of it joining a puddle are different
+    // events, and one of the two was not audible at all.
     for (i = 0; i < NUM_BLOOD_SFX; i++) {
         Q_snprintf(name, sizeof(name), "blood/mk1-0033%d.wav", 2 + i);
         cl_sfx_blood_splat[i] = S_RegisterSound(name);
     }
+
+    cl_sfx_blood_pool = S_RegisterSound("blood/mk1-00334.wav");
 
     cl_sfx_ric1 = S_RegisterSound("world/ric1.wav");
     cl_sfx_ric2 = S_RegisterSound("world/ric2.wav");

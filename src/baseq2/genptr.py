@@ -9,7 +9,10 @@ pointers = [
     'monsterinfo_idle', 'monsterinfo_search', 'monsterinfo_walk',
     'monsterinfo_run', 'monsterinfo_dodge', 'monsterinfo_attack',
     'monsterinfo_melee', 'monsterinfo_sight', 'monsterinfo_checkattack',
-    'monsterinfo_blocked'
+    'monsterinfo_blocked',
+    # ROGUE/rerelease duck + sidestep.  Appended, because this list's order is
+    # the order of the generated save_ptrs[] table.
+    'monsterinfo_duck', 'monsterinfo_unduck', 'monsterinfo_sidestep'
 ]
 
 if __name__ == "__main__":

@@ -439,11 +439,13 @@ extern void barrel_touch(void);
 extern void berserk_attack(void);
 extern void berserk_blocked(void);
 extern void berserk_die(void);
+extern void berserk_duck(void);
 extern void berserk_jump_touch(void);
 extern void berserk_melee(void);
 extern void berserk_pain(void);
 extern void berserk_run(void);
 extern void berserk_search(void);
+extern void berserk_sidestep(void);
 extern void berserk_sight(void);
 extern void berserk_stand(void);
 extern void berserk_walk(void);
@@ -465,6 +467,7 @@ extern void BossExplode(void);
 extern void brain_attack(void);
 extern void brain_die(void);
 extern void brain_dodge(void);
+extern void brain_duck(void);
 extern void brain_idle(void);
 extern void brain_melee(void);
 extern void brain_pain(void);
@@ -491,9 +494,11 @@ extern void check_target_healthbar(void);
 extern void chick_attack(void);
 extern void chick_die(void);
 extern void chick_dodge(void);
+extern void chick_duck(void);
 extern void chick_melee(void);
 extern void chick_pain(void);
 extern void chick_run(void);
+extern void chick_sidestep(void);
 extern void chick_sight(void);
 extern void chick_stand(void);
 extern void chick_walk(void);
@@ -605,9 +610,11 @@ extern void Grenade_Touch(void);
 extern void guncmdr_attack(void);
 extern void guncmdr_blocked(void);
 extern void guncmdr_die(void);
+extern void guncmdr_duck(void);
 extern void guncmdr_pain(void);
 extern void guncmdr_run(void);
 extern void guncmdr_search(void);
+extern void guncmdr_sidestep(void);
 extern void guncmdr_sight(void);
 extern void guncmdr_stand(void);
 extern void guncmdr_walk(void);
@@ -615,9 +622,11 @@ extern void gunner_attack(void);
 extern void gunner_blocked(void);
 extern void gunner_die(void);
 extern void gunner_dodge(void);
+extern void gunner_duck(void);
 extern void gunner_pain(void);
 extern void gunner_run(void);
 extern void gunner_search(void);
+extern void gunner_sidestep(void);
 extern void gunner_sight(void);
 extern void gunner_stand(void);
 extern void gunner_walk(void);
@@ -638,9 +647,11 @@ extern void infantry_attack(void);
 extern void infantry_blocked(void);
 extern void infantry_die(void);
 extern void infantry_dodge(void);
+extern void infantry_duck(void);
 extern void infantry_fidget(void);
 extern void infantry_pain(void);
 extern void infantry_run(void);
+extern void infantry_sidestep(void);
 extern void infantry_sight(void);
 extern void infantry_stand(void);
 extern void infantry_walk(void);
@@ -682,10 +693,12 @@ extern void medic_attack(void);
 extern void medic_checkattack(void);
 extern void medic_die(void);
 extern void medic_dodge(void);
+extern void medic_duck(void);
 extern void medic_idle(void);
 extern void medic_pain(void);
 extern void medic_run(void);
 extern void medic_search(void);
+extern void medic_sidestep(void);
 extern void medic_sight(void);
 extern void medic_stand(void);
 extern void medic_walk(void);
@@ -709,6 +722,7 @@ extern void misc_viper_bomb_touch(void);
 extern void misc_viper_bomb_use(void);
 extern void misc_viper_missile_use(void);
 extern void misc_viper_use(void);
+extern void monster_duck_up(void);
 extern void monster_think(void);
 extern void monster_triggered_spawn(void);
 extern void monster_triggered_spawn_use(void);
@@ -781,8 +795,10 @@ extern void soldier_blind(void);
 extern void soldier_blocked(void);
 extern void soldier_die(void);
 extern void soldier_dodge(void);
+extern void soldier_duck(void);
 extern void soldier_pain(void);
 extern void soldier_run(void);
+extern void soldier_sidestep(void);
 extern void soldier_sight(void);
 extern void soldier_stand(void);
 extern void soldier_walk(void);
@@ -1855,5 +1871,21 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_blocked, soldier_blocked },
 { P_monsterinfo_blocked, supertank_blocked },
 { P_monsterinfo_blocked, tank_blocked },
+{ P_monsterinfo_duck, berserk_duck },
+{ P_monsterinfo_duck, brain_duck },
+{ P_monsterinfo_duck, chick_duck },
+{ P_monsterinfo_duck, guncmdr_duck },
+{ P_monsterinfo_duck, gunner_duck },
+{ P_monsterinfo_duck, infantry_duck },
+{ P_monsterinfo_duck, medic_duck },
+{ P_monsterinfo_duck, soldier_duck },
+{ P_monsterinfo_unduck, monster_duck_up },
+{ P_monsterinfo_sidestep, berserk_sidestep },
+{ P_monsterinfo_sidestep, chick_sidestep },
+{ P_monsterinfo_sidestep, guncmdr_sidestep },
+{ P_monsterinfo_sidestep, gunner_sidestep },
+{ P_monsterinfo_sidestep, infantry_sidestep },
+{ P_monsterinfo_sidestep, medic_sidestep },
+{ P_monsterinfo_sidestep, soldier_sidestep },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

@@ -882,24 +882,62 @@ static cvar_t *cl_blood_air_life = NULL;
 static cvar_t *cl_blood_pool = NULL;
 static cvar_t *cl_blood_pool_max = NULL;
 static cvar_t *cl_blood_pool_dist = NULL;
+static cvar_t *cl_blood_pool_gain = NULL;
+static cvar_t *cl_blood_streak_len = NULL;
+static cvar_t *cl_blood_streak_wall = NULL;
 static cvar_t *cl_blood_stretch = NULL;
 static cvar_t *cl_blood_splash = NULL;
 static cvar_t *cl_blood_max = NULL;
+static cvar_t *cl_blood_air_reserve = NULL;
 static cvar_t *cl_blood_gravity = NULL;
 static cvar_t *cl_blood_speed = NULL;
 static cvar_t *cl_blood_sound = NULL;
 static cvar_t *cl_blood_sound_volume = NULL;
 static cvar_t *cl_blood_sound_gap = NULL;
+static cvar_t *cl_blood_sound_pool_gap = NULL;
+static cvar_t *cl_blood_sound_skip = NULL;
 static cvar_t *cl_blood_sound_dist = NULL;
 static cvar_t *cl_blood_permanent = NULL;
 static cvar_t *cl_blood_model_collision = NULL;
 static cvar_t *cl_blood_flesh_damp = NULL;
 static cvar_t *cl_blood_flesh_run = NULL;
 static cvar_t *cl_blood_flesh_cling = NULL;
+// Splats that overhang an edge - see CL_BloodProbeRim and CL_BloodSlideOffEdge.
+static cvar_t *cl_blood_edge = NULL;
+static cvar_t *cl_blood_edge_budget = NULL;
+static cvar_t *cl_blood_edge_slide = NULL;
+static cvar_t *cl_blood_edge_push = NULL;
+static cvar_t *cl_blood_edge_tries = NULL;
+// Reshaping a pool that is on the move - see CL_BloodReshapeSlide.
+static cvar_t *cl_blood_slide_turn = NULL;
+static cvar_t *cl_blood_slide_stretch = NULL;
+static cvar_t *cl_blood_slide_len = NULL;
+static cvar_t *cl_blood_slide_relax = NULL;
+
+/*
+===============
+CL_BloodClearSlide
+
+Back to "has not run anywhere yet".
+
+FOUR callers reset this state - a fresh particle, a landing, losing the surface
+it was riding, and running off the end of one - and they all have to agree.  A
+splat that carries a live settle timer into a life where it means something else
+gathers a mark that was never drawn out.
+===============
+*/
+static inline void CL_BloodClearSlide(cparticle_t *p)
+{
+    p->blood_slide_dist = 0.f;
+    p->blood_settling = false;
+    p->blood_settle = 0.f;
+    p->blood_stretch_run = 1.f;
+}
 
 // The wet-impact sounds, registered once per level by CL_RegisterTEntSounds.
 // NUM_BLOOD_SFX is declared alongside the extern in client.h.
 qhandle_t cl_sfx_blood_splat[NUM_BLOOD_SFX];
+qhandle_t cl_sfx_blood_pool;
 
 // Blood droplets alive at the end of the last CL_AddParticles, and the budget
 // CL_MakeBloodSphere checks against. See the comment there.
@@ -923,7 +961,7 @@ static bool blood_slot_seen[MAX_BLOOD_SPHERES];
 The splats currently on a surface, rebuilt every frame in CL_AddParticles.
 
 Pooling needs to ask "is there already a splat where this droplet just landed?",
-and CL_RetireOldestSplat needs to ask "which splat has been here longest?" -
+and CL_RetireBlood needs to ask "which splat has been here longest?" -
 neither of which the particle list itself can answer during the update, because
 CL_AddParticles relinks that list as it walks it and only the part already
 processed is reachable. A flat array of the stuck ones, rebuilt each frame, is
@@ -948,9 +986,12 @@ static int          num_blood_airborne;
 
 /*
 ===============
-CL_RetireOldestSplat
+CL_RetireBlood
 
-Frees the longest-standing splat so a new droplet can take its place.
+Frees whichever piece of blood is worth least, so a new droplet can take its
+place. That is the oldest splat when the floor is the greedy one, and the
+NEWEST airborne droplet when the spray is - see the block comment in the body,
+which is where the reasoning lives.
 
 This is what keeps cl_blood_permanent bounded. Without it, permanent blood simply
 stops appearing once the budget is full - which reads as the effect breaking, and
@@ -962,30 +1003,90 @@ valid until the next pass, and particles are only ever freed inside that pass, s
 there is nothing stale to trip over here.
 ===============
 */
-static cparticle_t *CL_OldestBlood(cparticle_t *const *list, int count)
+static cparticle_t *CL_PickBlood(cparticle_t *const *list, int count, bool newest, int *live)
 {
-    cparticle_t *oldest = NULL;
+    cparticle_t *best = NULL;
+    int n = 0;
 
     for (int i = 0; i < count; i++) {
         cparticle_t *p = list[i];
+
+        // Already retired this frame. The lists are rebuilt once per frame in
+        // CL_AddParticles, but a single burst spawns sixty droplets between two
+        // frames, so a list is walked many times before it is refreshed and the
+        // entries retired by earlier calls are still in it.
         if (!p->is_blood_sphere)
             continue;
-        if (!oldest || p->time < oldest->time)
-            oldest = p;
+
+        n++;
+
+        if (!best || (newest ? (p->time > best->time) : (p->time < best->time)))
+            best = p;
     }
 
-    return oldest;
+    // Counted in the same pass rather than trusting num_blood_airborne, which is
+    // last frame's number and does not fall as this function retires droplets -
+    // over one burst that would keep the caller reading a spray that is already
+    // back inside its share.
+    if (live)
+        *live = n;
+
+    return best;
 }
 
-static void CL_RetireOldestSplat(void)
+static void CL_RetireBlood(void)
 {
-    // AIRBORNE FIRST. See the note on blood_airborne: a droplet in flight is
-    // worth far less than a splat on the floor, and spending the floor to keep
-    // the spray is exactly backwards.
-    cparticle_t *oldest = CL_OldestBlood(blood_airborne, num_blood_airborne);
+    /*
+    WHICH DROPLET IS WORTH LEAST, and the two ways of getting it wrong.
+
+    THE FIRST, which this got right: never spend a splat to buy a droplet in
+    flight. A splat is the floor the player is looking at; a droplet in the air
+    is gone in under a second. See the note on blood_airborne.
+
+    THE SECOND, which it did not: WITHIN the spray, the oldest droplet is the
+    one that has been flying longest, which is the one about to LAND. Retiring
+    oldest-first therefore kills droplets in precisely the order they would have
+    become splats, and once the budget is full that is a treadmill the spray can
+    never get off - the landing rate falls to nearly nothing however much blood
+    is thrown. Matt found it with the machine gun: sixty droplets per hit at ten
+    hits a second is ~600/s against 240 free slots, so the budget stood full and
+    "barely any of the blood splats make it to the ground, they seem to
+    disappear in mid air". Every other weapon fires in discrete shots with gaps,
+    the pool drains between them, and nothing is ever retired.
+
+    So the value ordering inside the spray is the reverse of the floor's: the
+    YOUNGEST droplet is the expendable one. It was created this instant and has
+    fifty-nine identical siblings from the same wound, and dropping it is
+    invisible - where dropping its oldest sibling deletes a splat that was about
+    to exist.
+
+    AND THE SPRAY NEEDS A SHARE OF ITS OWN. Splats keep their slot when they
+    land, so with permanence on the floor grows into the whole budget and leaves
+    the spray with only what is spare. cl_blood_air_reserve fixes a share for
+    it; over that share the spray is the greedy one and sheds its newest, under
+    it the floor is, and the floor turns over oldest-first as it always did.
+    That is self-balancing: retirement only ever runs at saturation, and at
+    saturation exactly one of the two is over its share.
+    */
+    const int budget = max(1, min(cl_blood_max->integer, MAX_BLOOD_SPHERES));
+
+    int reserve = (int)(budget * cl_blood_air_reserve->value);
+    reserve = max(0, min(reserve, budget));
+
+    int air_live = 0;
+    cparticle_t *youngest_air = CL_PickBlood(blood_airborne, num_blood_airborne, true, &air_live);
+
+    cparticle_t *oldest = NULL;
+
+    if (air_live > reserve)
+        oldest = youngest_air;
 
     if (!oldest)
-        oldest = CL_OldestBlood(blood_splats, num_blood_splats);
+        oldest = CL_PickBlood(blood_splats, num_blood_splats, false, NULL);
+
+    // No floor to recycle - the spray owns the whole budget, so it pays.
+    if (!oldest)
+        oldest = youngest_air;
 
     if (!oldest)
         return;
@@ -1025,6 +1126,27 @@ static int CL_AllocBloodSlot(void)
 
 // Traces issued by the droplet simulation this frame - the suspected cost.
 static int blood_traces;
+// Rim probes issued this frame, counted apart from the per-step traces above
+// because they are budgeted separately and a spike in one says nothing about
+// the other. See cl_blood_edge_budget.
+static int blood_edge_traces;
+static int blood_edge_probes;
+// Pools shoved off an edge this frame - see CL_BloodSlideOffEdge.
+static int blood_edge_slides;
+// Runs that finished settling this frame, and how many of those found blood to
+// merge into when they asked - see CL_BloodSettleAtRest.
+static int blood_settles;
+static int blood_rest_pools;
+// EVERY successful merge this frame, by any of the three routes. This is also
+// exactly the rate the pooling sound plays at once cl_blood_sound_pool_gap is 0,
+// which is what makes it the number to tune that setting against.
+static int blood_pools;
+// Merges REFUSED only because the target was already at cl_blood_pool_max -
+// i.e. pairs that were touching, on the same surface, and would otherwise have
+// joined. Counted because "why did those not pool together" has two possible
+// answers and this is the one that separates them: too far apart reads as a
+// zero here, a saturated pool does not.
+static int blood_pool_full;
 static cvar_t *cl_blood_stats = NULL;
 
 static void CL_BloodTrace_f(void);
@@ -1078,7 +1200,19 @@ void FX_Init(void)
     // Pooling: a droplet landing on an existing splat merges into it instead of
     // adding another overlapping disc.
     cl_blood_pool = Cvar_Get("cl_blood_pool", "1", CVAR_ARCHIVE);
-    cl_blood_pool_max = Cvar_Get("cl_blood_pool_max", "4", CVAR_ARCHIVE);
+    // MEASURED, not guessed: with this at 4 a run down base1's rocky ramp
+    // reported up to 140 merges per second REFUSED for no reason other than the
+    // target already being at the cap - pairs that were touching, on the same
+    // surface, and would otherwise have joined (the "full/s" figure on the blood
+    // stats line). That is what leaves a hillside as a row of separate marks
+    // instead of one pool at the bottom, because a saturated pool absorbs
+    // nothing and every later droplet has to start a splat of its own beside it.
+    //
+    // Areas add in quadrature, so the cap is a multiple of one droplet's WIDTH:
+    // 4 saturates after 16 droplets, which one wound exceeds on its own. 8 takes
+    // 64 and is a proper puddle - about 29 units across at the default radius
+    // and splat size.
+    cl_blood_pool_max = Cvar_Get("cl_blood_pool_max", "8", CVAR_ARCHIVE);
     // In DROPLET widths (see the reach calculation - it is not scaled by the
     // splat spread). This is the knob that decides whether a floor reads as many
     // separate marks or a few large pools, and it interacts with gravity: real
@@ -1087,6 +1221,91 @@ void FX_Init(void)
     // Below about 1.0 nothing pools at all - a measured burst lands its droplets
     // ~8 units apart against a ~4 unit reach, and 120 splats became 118.
     cl_blood_pool_dist = Cvar_Get("cl_blood_pool_dist", "2.0", CVAR_ARCHIVE);
+
+    // DIMINISHING RETURNS on a merge: the fraction of the absorbed droplet's
+    // AREA the pool actually gains. Areas add in quadrature, so at 1.0 a pool is
+    // exactly as wide as the blood in it - which is correct and, past a certain
+    // size, not what anyone wants to look at. Matt, testing at pool_max 24:
+    // "when the blood drops pool up maybe each additional contribution should
+    // not make the puddle quite as large as it gets."
+    //
+    // At 0.5 a pool needs twice the droplets to reach any given width, so the
+    // early droplets still visibly grow it and the hundredth one barely moves
+    // it. Independent of cl_blood_pool_max, which is still the hard ceiling.
+    cl_blood_pool_gain = Cvar_Get("cl_blood_pool_gain", "0.5", CVAR_ARCHIVE);
+
+    // LONGEST a mark may be drawn ON A FLOOR, tip to tip, in world units - see
+    // CL_BloodStretchLimit. 0 removes the limit and leaves only
+    // cl_blood_slide_stretch, which is what this used to be.
+    cl_blood_streak_len = Cvar_Get("cl_blood_streak_len", "16", CVAR_ARCHIVE);
+
+    // How much further a mark may be drawn on a VERTICAL surface than on a flat
+    // one, as a multiple. Matt: "the blood streaks should be able to grow longer
+    // as they slide down a wall but once they hit the floor they should be less
+    // long and more circular."
+    //
+    // Scales BOTH ceilings in CL_BloodStretchLimit - the length and the shape -
+    // so that raising it cannot be silently defeated by whichever of the two
+    // happened to bind first. Deliberately a multiplier rather than a second
+    // pair of absolute values: it means a wall inherits any tuning done to the
+    // floor numbers instead of drifting away from them.
+    cl_blood_streak_wall = Cvar_Get("cl_blood_streak_wall", "4", CVAR_ARCHIVE);
+
+    // A SPLAT IS A DISC AND IT LANDS WHERE ITS CENTRE LANDS, so one that lands
+    // near a ledge draws its far half out over the drop. cl_blood_edge measures
+    // how far the surface really reaches around the rim; a pool hanging well over
+    // the side is shoved off it, and whatever stays has its outline clipped to
+    // the edge. Off, both revert to the old behaviour exactly.
+    cl_blood_edge = Cvar_Get("cl_blood_edge", "1", CVAR_ARCHIVE);
+    // Splats measured per frame. THE COST CONTROL for the whole thing: measuring
+    // is eight to twenty-four point traces and happens once in a splat's life,
+    // but a single wound lands sixty droplets between two frames, so doing them
+    // all at the moment they stick would put the entire bill in one frame. Spread
+    // over frames instead, a burst is fully measured in well under a second and
+    // no frame pays more than this. Measured at the default: a burst that put 512
+    // droplets in the air peaked at 268 probes and 2144 traces per SECOND, next
+    // to 265 traces per FRAME for the droplet steps that were already happening.
+    cl_blood_edge_budget = Cvar_Get("cl_blood_edge_budget", "8", CVAR_ARCHIVE);
+    // How much of a pool has to be over thin air before the whole thing lets go
+    // and slides off, as a fraction of its rim. Around a quarter is "clearly
+    // hanging off the side"; at 0 anything that overhangs at all leaves, and at 1
+    // nothing ever does and every overhang is handled by clipping alone.
+    cl_blood_edge_slide = Cvar_Get("cl_blood_edge_slide", "0.25", CVAR_ARCHIVE);
+    // The shove it leaves with, in units/sec along the surface. It is a slide, not
+    // a jump - it has to be enough to carry the pool past its own rim against
+    // cl_blood_slide drag, and no more.
+    cl_blood_edge_push = Cvar_Get("cl_blood_edge_push", "60", CVAR_ARCHIVE);
+    cl_blood_edge_tries = Cvar_Get("cl_blood_edge_tries", "3", CVAR_ARCHIVE);
+
+    // A MARK POINTS THE WAY THE BLOOD WENT, and blood that keeps going has a new
+    // way. These reshape a pool while it is sliding: turn is how fast the long
+    // axis swings round to the direction of travel (a smoothing RATE, not an
+    // angular speed - it is the reciprocal of a time constant, so 4 re-aims a
+    // pool over about a quarter of a second); stretch is how far a run may draw
+    // one out; len is the distance over which it gets most of the way there.
+    //
+    // TURN IS A COST KNOB AS WELL AS A LOOK KNOB, which is not obvious. Every
+    // committed step of the axis is one full per-vertex mesh rebuild (see
+    // CL_BloodReshapeSlide), and how many steps a 90 degree turn takes is fixed
+    // by BLOOD_SLIDE_TURN_STEP - so turn decides how many FRAMES those rebuilds
+    // are spread over, not how many there are. At 12 the whole turn lands inside
+    // about five frames, i.e. a rebuild per frame per splat, and a burst that
+    // puts fifty splats on a wall re-aims all of them at once. 4 spreads the same
+    // steps over ~15 frames. It also just looks better: a pool leaning round as
+    // it begins to run instead of snapping to its new direction.
+    cl_blood_slide_turn = Cvar_Get("cl_blood_slide_turn", "4", CVAR_ARCHIVE);
+    cl_blood_slide_stretch = Cvar_Get("cl_blood_slide_stretch", "3.5", CVAR_ARCHIVE);
+    cl_blood_slide_len = Cvar_Get("cl_blood_slide_len", "24", CVAR_ARCHIVE);
+
+    // SECONDS A POOL TAKES TO GATHER BACK UP once its run stops - see
+    // CL_BloodSettleAtRest. A streak is what blood on the MOVE looks like; what
+    // is left at the bottom of a slope is a pool, and nothing used to turn one
+    // back into the other, so a hillside of droplets ended up as a fan of
+    // identical needles lying on the flat.
+    //
+    // 0 keeps the old behaviour exactly: the streak the run drew is frozen where
+    // it stopped.
+    cl_blood_slide_relax = Cvar_Get("cl_blood_slide_relax", "1.2", CVAR_ARCHIVE);
 
     // Elongation of a splat along the direction the droplet was travelling.
     cl_blood_stretch = Cvar_Get("cl_blood_stretch", "2.0", CVAR_ARCHIVE);
@@ -1117,6 +1336,18 @@ void FX_Init(void)
     // faded in under a second; now they live until they land), and a measured
     // burst had 1617 in the air mid-gib. Lower it if a fight ever needs bounding.
     cl_blood_max = Cvar_Get("cl_blood_max", "512", CVAR_ARCHIVE);
+
+    // What share of cl_blood_max the SPRAY may hold - see CL_RetireBlood.
+    //
+    // Without a share of its own the floor takes the whole budget as it fills,
+    // and a sustained weapon is left with whatever happens to be spare. Matt's
+    // machine gun ran into exactly that: ~1808 parked splats out of 2048 left
+    // 240 slots for a stream needing about 390, so the budget stood permanently
+    // full and every new droplet retired one already in flight.
+    //
+    // A fraction rather than a count, so it tracks cl_blood_max. 0 restores the
+    // old behaviour of giving the spray no reserved room at all.
+    cl_blood_air_reserve = Cvar_Get("cl_blood_air_reserve", "0.25", CVAR_ARCHIVE);
 
     // Gravity on a simulated droplet, in units/sec^2.
     //
@@ -1161,6 +1392,30 @@ void FX_Init(void)
     // into a single wet splat, and a sustained fight into an irregular patter,
     // which is what it should sound like.
     cl_blood_sound_gap = Cvar_Get("cl_blood_sound_gap", "90", CVAR_ARCHIVE);
+
+    // One impact heard in every N that are close enough to hear - a THINNING on
+    // top of the gap above, which is a rate limit. Matt: "the blood splats
+    // should only play sounds for every other splat for the 332 and 333
+    // sounds". 1 restores every-impact behaviour.
+    cl_blood_sound_skip = Cvar_Get("cl_blood_sound_skip", "2", CVAR_ARCHIVE);
+
+    // The POOLING sound's own gap. Matt asked for "every blood drop that starts
+    // to pool up", i.e. 0, and MEASUREMENT SAYS THAT CANNOT BE ONE VOICE PER
+    // EVENT: four soldiers gibbed in base1 peaked at 668 MERGES IN ONE SECOND
+    // (the "merges/s" figure on the blood stats line, which is exactly this
+    // sound's rate). 668 voices does not thin the blood audio, it drops the
+    // gunfire and the monsters - a failure that reads as a bug somewhere else
+    // entirely, which is the expensive kind.
+    //
+    // So 40 ms: still a fast wet crackle during a burst, every isolated droplet
+    // still heard on its own, and bounded at 25/s. 0 is one command away and
+    // gives the literal behaviour for anyone who wants to hear it.
+    //
+    // Still the OPPOSITE treatment to the impacts, which is the point: an impact
+    // is a loud transient and fifty at once is mush, while the pooling sound is
+    // quieter and wetter and reads as texture when it overlaps. Hence 40 here
+    // against 90 plus every-other-splat there.
+    cl_blood_sound_pool_gap = Cvar_Get("cl_blood_sound_pool_gap", "40", CVAR_ARCHIVE);
 
     // Beyond this many units a landing droplet makes no sound at all. Distance
     // attenuation would make it inaudible anyway, but it would still take a
@@ -1219,6 +1474,12 @@ cparticle_t *CL_AllocParticle(void)
     p->blood_ent_id = 0;
     p->radius = 0.f;
     p->seed = 0.f;
+    p->blood_rim = BLOOD_RIM_FULL;
+    p->blood_rim_dirty = false;
+    p->blood_edge_tries = 0;
+    p->blood_stretch_base = 1.f;
+    CL_BloodClearSlide(p);
+    VectorClear(p->blood_slide_axis);
     free_particles = p->next;
     p->next = active_particles;
     active_particles = p;
@@ -1554,7 +1815,77 @@ A splat that sticks this frame is registered immediately, so a burst that lands
 together still merges within the same frame.
 */
 // blood_splats / num_blood_splats are declared further up, beside the slot pool -
-// CL_RetireOldestSplat needs them and runs before this point in the file.
+// CL_RetireBlood needs them and runs before this point in the file.
+
+// Defined below, beside the impact sound it deliberately does not share a timer
+// with. Declared here because the merge is the one place that knows a droplet
+// joined a puddle, and there are three paths into it.
+static void CL_BloodPoolSound(const vec3_t point);
+
+/*
+===============
+CL_BloodStretchLimit
+
+The longest elongation a mark of this SIZE may hold, from cl_blood_streak_len -
+the length of the mark in world units, tip to tip.
+
+A streak is thin because it is a thin film being dragged along.  A pool is not:
+once enough blood has gathered in one place it spreads under its own weight and
+reads as a puddle however it got there.  Matt, testing at cl_blood_pool_max 24:
+"when the pools get past a certain length they should settle more circular ... it
+should slide down the surface and be long but when it pools up past a certain
+point it should become more circular."
+
+That is also what was making big pools FLICKER, which he identified himself: "the
+flicker looks like because the blood pool is so stretched out it's on both
+surfaces."  A pool at radius 28.8 draws a 43-unit rim, and at the 3.5 stretch cap
+that is a 300-unit sliver - long enough to lie across a surface junction with
+half of itself buried in one plane and half hanging past it.  The rim clip is
+supposed to fit a mark to the ground it settles in, and it still does; what it
+cannot do is make sense of a shape that is an order of magnitude larger than the
+surface it is on.
+
+EXPRESSING THE LIMIT AS A LENGTH IN UNITS, rather than as a multiple of the
+droplet, is what makes this one rule instead of two.  The drawn half-length is
+spread * stretch and spread grows with the pool, so a single absolute cap lets a
+lone droplet streak out to the full cl_blood_slide_stretch, forces anything that
+has pooled up to sit round, and ramps smoothly between - with no second knob to
+keep in step with the first.  Note that it can only ever remove ELONGATION: a
+round pool's own diameter is 2 * spread, so the cap never shrinks a circular
+pool, it only stops a big one from being a needle.
+===============
+*/
+static float CL_BloodStretchLimit(const cparticle_t *p)
+{
+    // HOW MUCH OF GRAVITY ACTS ALONG THIS SURFACE, which is the one number the
+    // whole rule needs. On a vertical wall it is all of it and the run keeps
+    // being drawn out for as long as the blood keeps moving; on a floor it is
+    // none of it, nothing pulls the film anywhere, and what is there spreads.
+    // A ceiling is 0 for the same reason a floor is, which is correct.
+    //
+    // This is the same quantity that drives the slide itself - the in-plane
+    // component of gravity in the stuck branch - so the shape a mark is allowed
+    // to hold and the force that gave it that shape now come from one place.
+    float slope = 0.f;
+
+    if (DotProduct(p->blood_normal, p->blood_normal) > 0.5f) {
+        const float nz = min(1.f, fabsf(p->blood_normal[2]));
+        slope = sqrtf(max(0.f, 1.f - nz * nz));
+    }
+
+    // 1 on a floor, cl_blood_streak_wall on a vertical face.
+    const float reach = 1.f + (max(1.f, cl_blood_streak_wall->value) - 1.f) * slope;
+
+    const float cap = max(1.f, cl_blood_slide_stretch->value) * reach;
+    const float len = cl_blood_streak_len->value * reach;
+
+    if (cl_blood_streak_len->value <= 0.f)
+        return cap;             // no length limit; the old behaviour exactly
+
+    const float spread = max(0.01f, p->radius * max(0.1f, cl_blood_splat_size->value));
+
+    return max(1.f, min(cap, len / (2.f * spread)));
+}
 
 /*
 ===============
@@ -1586,7 +1917,11 @@ static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t no
     for (int i = 0; i < num_blood_splats; i++) {
         cparticle_t *other = blood_splats[i];
 
-        if (other->radius >= max_radius)
+        // ITSELF. A landing droplet is airborne and is not on this list, but a
+        // SLIDING one is - it is a stuck splat that happens to be moving - and
+        // without this it merges into itself, doubles its own area and is then
+        // retired for having been absorbed by the splat it still is.
+        if (other == p)
             continue;
 
         if (other->blood_ent != ent)
@@ -1620,13 +1955,55 @@ static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t no
         if (DotProduct(delta, delta) > reach * reach)
             continue;
 
-        other->radius = sqrtf(other->radius * other->radius + p->radius * p->radius);
+        // SATURATED. Tested last rather than first, so that this counter means
+        // "these two were touching and did not join" rather than "these two
+        // were never candidates" - the difference between a pooling reach that
+        // is too small and a pool that is simply full. Costs one distance test
+        // per already-full pool in reach.
+        if (other->radius >= max_radius) {
+            blood_pool_full++;
+            continue;
+        }
+
+        // DIMINISHING RETURNS - see cl_blood_pool_gain. Areas add in quadrature,
+        // and the gain is the fraction of the incoming droplet's area the pool
+        // actually keeps, so a pool needs 1/gain times the droplets to reach any
+        // given width. The early ones still grow it visibly; the hundredth one
+        // barely moves it.
+        const float gain = max(0.f, min(cl_blood_pool_gain->value, 1.f));
+
+        other->radius = sqrtf(other->radius * other->radius +
+                              gain * p->radius * p->radius);
         if (other->radius > max_radius)
             other->radius = max_radius;
+
+        // IT IS A BIGGER POOL NOW, so it may be longer than that size is allowed
+        // to be - see CL_BloodStretchLimit. Applied here rather than left to the
+        // settle because the disc widens on this frame regardless: the mesh is
+        // being rebuilt either way, and a pool that has grown round while still
+        // drawn as a sliver is precisely the artifact the limit exists for.
+        const float limit = CL_BloodStretchLimit(other);
+        if (other->blood_stretch > limit)
+            other->blood_stretch = limit;
+        if (other->blood_stretch_base > limit)
+            other->blood_stretch_base = limit;
+
+        // The pool just got wider, so its rim is somewhere new and the reach
+        // measured for the old one no longer describes it. This is the ONLY thing
+        // that invalidates a parked splat's rim - which is what keeps the probe
+        // off the per-frame path.
+        other->blood_rim_dirty = true;
 
         // A pool that is still being fed should not age out mid-fight.
         other->time = cl.time;
         other->alpha = 1.0f;
+
+        // Blood joining blood. Sounded here rather than at the three call sites
+        // so that every way of pooling up is covered by one line: a droplet
+        // landing in a puddle, a pool sliding into one, and a run coming to rest
+        // against one.
+        blood_pools++;
+        CL_BloodPoolSound(point);
 
         return true;
     }
@@ -1642,36 +2019,124 @@ One wet splat for a droplet that has just landed, rate limited hard - see
 cl_blood_sound_gap for why that matters more than anything else here.
 ===============
 */
-static void CL_BloodImpactSound(const vec3_t point)
+// The rate limit and the distance cull, shared by both blood sounds. `last_time`
+// is the CALLER'S, deliberately: an impact and a droplet joining a puddle are
+// different events and must not suppress each other, but each on its own still
+// obeys the one gap - see the design constraint below.
+// Close enough to be worth a voice at all?
+//
+// TESTED BEFORE BOTH THE THINNING AND THE RATE LIMIT, deliberately. A splat
+// across the level that could never be heard must not consume the one slot in
+// the window or one of the every-other-splat turns, because then the near impact
+// that actually matters is the one that gets dropped. That is the whole reason
+// cl_blood_sound_dist exists, and both filters below have to sit behind it.
+static bool CL_BloodSoundAudible(const vec3_t point)
 {
-    static int last_time;
+    if (!cl_blood_sound->integer)
+        return false;
 
-    if (!cl_blood_sound->integer || !cl_sfx_blood_splat[0])
-        return;
+    const float max_dist = cl_blood_sound_dist->value;
 
-    // cl.time can jump backwards on a map change or a demo seek, which would
-    // otherwise latch the gap shut until the clock caught up again.
-    if (cl.time < last_time)
-        last_time = 0;
-
-    if (cl.time - last_time < cl_blood_sound_gap->integer)
-        return;
+    if (max_dist <= 0.f)
+        return true;
 
     vec3_t delta;
     VectorSubtract(point, listener_origin, delta);
 
-    const float max_dist = cl_blood_sound_dist->value;
-    if (max_dist > 0.f && VectorLength(delta) > max_dist)
-        return;
+    return VectorLength(delta) <= max_dist;
+}
 
-    last_time = cl.time;
+// The rate limit. `last_time` is the CALLER'S, and so is the gap: an impact and a
+// droplet joining a puddle are different events and must not suppress each other,
+// and they no longer even want the same interval.
+static bool CL_BloodSoundReady(int *last_time, int gap)
+{
+    // cl.time can jump backwards on a map change or a demo seek, which would
+    // otherwise latch the gap shut until the clock caught up again.
+    if (cl.time < *last_time)
+        *last_time = 0;
 
-    const int i = Q_rand() % NUM_BLOOD_SFX;
+    if (gap > 0 && cl.time - *last_time < gap)
+        return false;
 
+    *last_time = cl.time;
+    return true;
+}
+
+static void CL_BloodPlaySoundAt(const vec3_t point, qhandle_t sfx)
+{
     // entnum 0 with a world origin: a positioned sound that belongs to no
     // entity, so it will not cut off a sound another entity is playing.
-    S_StartSound(point, 0, CHAN_AUTO, cl_sfx_blood_splat[i],
+    S_StartSound(point, 0, CHAN_AUTO, sfx,
         cl_blood_sound_volume->value, ATTN_NORM, 0);
+}
+
+static void CL_BloodImpactSound(const vec3_t point)
+{
+    static int last_time;
+    static unsigned audible;
+
+    if (!cl_sfx_blood_splat[0] || !CL_BloodSoundAudible(point))
+        return;
+
+    // EVERY OTHER SPLAT - cl_blood_sound_skip. Counted, not timed, and that is
+    // the point of adding it next to a gap that already exists: the gap decides
+    // how many impacts CAN be heard per second, while this decides how sparse
+    // the ones that are heard feel. Matt asked for the impacts to thin out; the
+    // gap stays underneath as the thing that stops sixty droplets in two frames
+    // from becoming sixty voices.
+    const int skip = max(1, cl_blood_sound_skip->integer);
+
+    if ((audible++ % (unsigned)skip) != 0)
+        return;
+
+    if (!CL_BloodSoundReady(&last_time, cl_blood_sound_gap->integer))
+        return;
+
+    CL_BloodPlaySoundAt(point, cl_sfx_blood_splat[Q_rand() % NUM_BLOOD_SFX]);
+}
+
+/*
+===============
+CL_BloodPoolSound
+
+Blood joining blood that is already on the surface.
+
+THIS EVENT WAS SILENT, and it is the commonest one in the system once pooling is
+on: a droplet that merges returns from CL_SimulateBloodSphere early and never
+reaches CL_BloodStick, so it never reached the impact sound either. Every droplet
+that landed on bare floor was heard and every one that landed in a puddle was not,
+which is the opposite of what a listener expects.
+
+Its own timer, not the impact's. Sharing one would mean whichever event happened
+first in a 90 ms window silenced the other, and during a burst that is a coin
+toss deciding which half of the sound design you hear.
+
+NO SKIP, and a much shorter gap than the impacts get - the opposite treatment, on
+purpose. An impact is a loud transient and fifty at once is mush; the pooling
+sound is quieter and wetter and reads as texture when it overlaps. So the impacts
+are thinned to every other splat at 90 ms and this is left dense at 40.
+
+NOT 0, THOUGH, AND THE MEASUREMENT IS WHY. Matt asked for every droplet that
+pools up to be heard. Four soldiers gibbed in base1 peaked at 668 MERGES IN ONE
+SECOND - the "merges/s" figure on the blood stats line, which IS this sound's
+rate. 668 voices does not make the blood loud, it drops the gunfire and the
+monsters, and a mixer starved by blood is a fault that presents as a bug in
+something else. cl_blood_sound_pool_gap 0 is there for anyone who wants the
+literal version.
+===============
+*/
+static void CL_BloodPoolSound(const vec3_t point)
+{
+    static int last_time;
+
+    if (!cl_sfx_blood_pool || !CL_BloodSoundAudible(point))
+        return;
+
+    if (!CL_BloodSoundReady(&last_time, cl_blood_sound_pool_gap->integer))
+        return;
+
+    CL_BloodPlaySoundAt(point, cl_sfx_blood_pool);
 }
 
 static void CL_BloodStick(cparticle_t *p, const vec3_t point, const vec3_t normal)
@@ -1734,16 +2199,291 @@ static void CL_BloodStick(cparticle_t *p, const vec3_t point, const vec3_t norma
 
     p->blood_flatten = max(0.05f, min(cl_blood_flatten->value, 1.0f));
 
+    // The elongation it landed with. Anything the slide adds on top of this is
+    // what trails behind the pool rather than growing around it, so the impact
+    // smear stays centred on the point of contact where it belongs.
+    p->blood_stretch_base = p->blood_stretch;
+    CL_BloodClearSlide(p);
+    VectorCopy(p->blood_tangent, p->blood_slide_axis);
+
+    // It now has an outline, and the outline may be hanging over a drop. Queued
+    // rather than measured here: sixty droplets land between two frames, and
+    // measuring all of them at once is the one way to make this expensive.
+    //
+    // The shove budget is refilled on every landing, so a pool that slid off a
+    // crate gets a fresh set of tries wherever it lands. It is a bound on how
+    // many times ONE resting place may be argued with, not a lifetime total.
+    p->blood_rim = BLOOD_RIM_FULL;
+    p->blood_rim_dirty = true;
+    p->blood_edge_tries = max(0, cl_blood_edge_tries->integer);
+
     // A splat should outlast the spray that made it.  Restart the fade so the
     // remaining life is measured from the impact rather than from the shot.
     //
     // p->time is still stamped when permanent, because it is what
-    // CL_RetireOldestSplat sorts on to decide which splat to recycle.
+    // CL_RetireBlood sorts on to decide which splat to recycle.
     p->time = cl.time;
     p->alpha = 1.0f;
     p->alphavel = cl_blood_permanent->integer
         ? 0.0f
         : -1.0f / max(0.1f, cl_blood_splat_life->value);
+}
+
+/*
+===============
+OVERHANGING POOLS - measuring the edge, and sliding off it
+
+A landing droplet is a POINT to the collision trace and a DISC to the renderer,
+and that difference is the whole bug: the trace answers "did it hit the crate",
+which it did, while the disc it turns into reaches several units further out than
+the point it hit at.  Land one near the lip of a crate and half the puddle is
+drawn over thin air.
+
+Nothing in the simulation can notice, either.  A parked splat returns early from
+CL_SimulateBloodSphere - that early return is the reason a floor of settled blood
+costs nothing - so it never asks another question about the world after the frame
+it landed on.
+
+CL_BloodProbeRim asks that question once.  Eight directions around the rim, each
+walked inward until the surface is found under it, giving a reach per direction
+that the renderer clips the outline to.  Two things make it affordable, and both
+matter:
+
+  - IT IS MEASURED ONCE.  A splat's rim cannot change unless the splat does, and
+    the only thing that changes a parked splat is pooling growing its radius -
+    which re-queues it.  This is not a per-frame test and must never become one.
+
+  - IT IS AMORTISED.  One wound lands sixty droplets across two frames.  Probing
+    at the moment of impact would put sixty splats' worth of traces in one of
+    them, which is precisely the shape of every CPU spike this system has had.
+    cl_blood_edge_budget splats are probed per frame instead, so a burst is fully
+    measured in a fraction of a second and no frame carries more than the budget.
+
+The answer is quantized to four levels, and that is not laziness either: it feeds
+the renderer's geometry cache, and anything that varies continuously there
+rebuilds the mesh every frame.  Same rule that the fade shrink had to learn.
+
+And where the surface runs out is which way the pool goes over the side, which is
+the other half.  A pool with enough of itself over thin air does not stay and does
+not shed droplets: THE WHOLE THING LETS GO.
+
+CL_BloodSlideOffEdge does that in three lines of actual work, because every part
+of the journey already exists.  It shoves the splat along the surface, toward the
+side with no floor under it, and leaves it STUCK.  From there the stuck branch of
+CL_SimulateBloodSphere carries it: it steps, probes forward, and when the probe
+finds nothing it detaches and falls - "ran off the end of the surface", written
+long before any of this.  It then hits the face below, sticks to it, and gravity
+projected into that plane runs it down to the floor, which is the same code that
+already makes blood run down a wall.
+
+There was a version of this that shed small droplets off the lip instead and left
+the pool where it was.  It is not what a pool of blood on a ledge does, and Matt
+said so: the pool slides down the surface and lands on the floor.  The shove is
+the whole feature; everything after it was already here.
+===============
+*/
+
+// How far above and below the surface a rim probe reaches. Big enough to find a
+// floor that is not perfectly flat under the splat, small enough that it cannot
+// find a different floor a step down - which would report the overhang as solid.
+#define BLOOD_RIM_LIFT      2.0f
+
+/*
+The two in-plane axes a splat is drawn against, at their drawn lengths.
+
+A DUPLICATE OF splat_basis() IN blood.c, deliberately, and it has to stay one:
+the rim reach is measured in the renderer's own parameter space - the angle a
+template vertex sits at - or the eight numbers would clip the wrong parts of the
+outline. If either construction changes, both do. The client cannot call into the
+renderer's copy; blood.c is not linked against effects.c, which is the same
+reason the slot capacity is computed twice.
+*/
+static void CL_BloodSplatAxes(const cparticle_t *p, vec3_t out_t1, vec3_t out_t2)
+{
+    float stretch = p->blood_stretch;
+    // See splat_basis: only the IMPACT's share of the elongation narrows the
+    // cross axis. Must match, or the eight reaches clip the wrong parts of the
+    // outline.
+    float narrow = p->blood_stretch_base;
+    bool have_dir = DotProduct(p->blood_tangent, p->blood_tangent) > 0.5f;
+
+    if (have_dir) {
+        VectorMA(p->blood_tangent, -DotProduct(p->blood_tangent, p->blood_normal),
+                 p->blood_normal, out_t1);
+        have_dir = VectorNormalize(out_t1) > 0.1f;
+    }
+
+    if (!have_dir) {
+        vec3_t seed;
+        if (fabsf(p->blood_normal[0]) < 0.577f)      VectorSet(seed, 1.f, 0.f, 0.f);
+        else if (fabsf(p->blood_normal[1]) < 0.577f) VectorSet(seed, 0.f, 1.f, 0.f);
+        else                                         VectorSet(seed, 0.f, 0.f, 1.f);
+
+        CrossProduct(seed, p->blood_normal, out_t1);
+        VectorNormalize(out_t1);
+        stretch = 1.f;
+        narrow = 1.f;
+    }
+
+    CrossProduct(p->blood_normal, out_t1, out_t2);
+    VectorNormalize(out_t2);
+
+    const float spread = p->radius * max(0.1f, cl_blood_splat_size->value);
+    stretch = max(1.f, stretch);
+    narrow = max(1.f, min(narrow, stretch));
+
+    VectorScale(out_t1, spread * stretch, out_t1);
+    VectorScale(out_t2, spread / narrow, out_t2);
+}
+
+// How far out the surface reaches along one rim direction, in nibble units.
+// Walked from the outside in, so the common answer - fully supported - costs a
+// single trace and the expensive answers are the rare ones.
+static int CL_BloodRimReach(const cparticle_t *p, const vec3_t rim)
+{
+    static const float levels[] = { 1.5f, 1.0f, 0.5f };
+    static const int   reach[]  = { 15, 10, 5 };
+
+    for (int i = 0; i < 3; i++) {
+        vec3_t at, start, end;
+
+        VectorMA(p->org, levels[i], rim, at);
+        VectorMA(at,  BLOOD_RIM_LIFT, p->blood_normal, start);
+        VectorMA(at, -BLOOD_RIM_LIFT, p->blood_normal, end);
+
+        blood_edge_traces++;
+        trace_t tr = CL_TracePoint(start, end, MASK_SOLID, false);
+
+        // startsolid counts as SUPPORTED. The probe began inside the wall this
+        // floor runs into, which is material meeting the splat, not a drop - and
+        // treating it as a hole would carve a bite out of every splat that landed
+        // against a skirting.
+        if (tr.startsolid || tr.allsolid || tr.fraction < 1.0f)
+            return reach[i];
+    }
+
+    return 0;
+}
+
+static void CL_BloodProbeRim(cparticle_t *p)
+{
+    vec3_t t1, t2;
+    uint32_t rim = 0;
+
+    p->blood_rim_dirty = false;
+
+    if (!cl_blood_edge->integer) {
+        p->blood_rim = BLOOD_RIM_FULL;
+        return;
+    }
+
+    blood_edge_probes++;
+    CL_BloodSplatAxes(p, t1, t2);
+
+    for (int i = 0; i < BLOOD_RIM_SAMPLES; i++) {
+        const float a = (float)i / BLOOD_RIM_SAMPLES * 6.2831853f;
+        vec3_t dir;
+
+        VectorScale(t1, cosf(a), dir);
+        VectorMA(dir, sinf(a), t2, dir);
+
+        rim |= (uint32_t)CL_BloodRimReach(p, dir) << (i * 4);
+    }
+
+    p->blood_rim = rim;
+}
+
+/*
+===============
+CL_BloodOverhang
+
+How much of the pool has no floor under it, as a fraction of its rim, and which
+way that is.
+
+A COUNT OF UNSUPPORTED SAMPLES WOULD BE THE WRONG MEASURE: a direction that
+reaches two thirds of the way out is barely overhanging and one that reaches
+nothing at all is completely off the side, and treating those as the same thing
+either shoves pools that should stay or leaves pools that should go. The reach is
+already a number, so each sample contributes what it actually lost.
+
+The direction is the sum of the unsupported sample directions weighted the same
+way, which for a pool on a lip points squarely out over the drop and for one in a
+corner - overhanging two opposite ways at once, if such a thing is measured -
+cancels toward nothing and correctly declines to shove it anywhere.
+===============
+*/
+static float CL_BloodOverhang(const cparticle_t *p, vec3_t out_dir)
+{
+    vec3_t t1, t2;
+    float lost = 0.f;
+
+    VectorClear(out_dir);
+
+    if (p->blood_rim == BLOOD_RIM_FULL)
+        return 0.f;
+
+    CL_BloodSplatAxes(p, t1, t2);
+
+    for (int i = 0; i < BLOOD_RIM_SAMPLES; i++) {
+        const int n = (int)((p->blood_rim >> (i * 4)) & 15u);
+
+        // 10 is the rim itself. Short of that is blood with no floor under it;
+        // beyond it is only the outward lobes pt_blood_wobble adds, which are not
+        // worth moving a pool over.
+        if (n >= 10)
+            continue;
+
+        const float w = (10.f - (float)n) / 10.f;
+        const float a = (float)i / BLOOD_RIM_SAMPLES * 6.2831853f;
+        vec3_t dir;
+
+        VectorScale(t1, cosf(a), dir);
+        VectorMA(dir, sinf(a), t2, dir);
+        VectorNormalize(dir);
+
+        VectorMA(out_dir, w, dir, out_dir);
+        lost += w;
+    }
+
+    return lost / (float)BLOOD_RIM_SAMPLES;
+}
+
+/*
+===============
+CL_BloodSlideOffEdge
+
+Shoves an overhanging pool toward the side with no floor under it and leaves it
+STUCK, which is the whole of the feature - see the block above for why everything
+after the shove is code that was already here.
+
+Left stuck rather than made airborne on purpose. Airborne would be a pool
+teleporting into a droplet in mid-air over the lip, and worse, a droplet released
+a hundredth of a unit above the floor it was sitting on falls into that same floor
+on its first step and re-sticks where it started, over and over. Sliding is
+already the motion that carries a droplet along a surface and off the end of it.
+===============
+*/
+static void CL_BloodSlideOffEdge(cparticle_t *p, const vec3_t dir)
+{
+    vec3_t along;
+    float into;
+
+    // Flatten the shove into the surface. The sample directions are already in
+    // the plane, but their weighted sum need not be exactly - and a component
+    // into the wall would be absorbed while one out of it would launch the pool.
+    into = DotProduct(dir, p->blood_normal);
+    VectorMA(dir, -into, p->blood_normal, along);
+
+    if (VectorNormalize(along) < 0.01f)
+        return;                 // overhanging every way at once; nowhere to go
+
+    VectorScale(along, max(1.f, cl_blood_edge_push->value), p->vel);
+
+    // It is a pool that has started to move, so it stops being clipped: the reach
+    // it was clipped to described where it used to be. It draws whole while it
+    // travels and is re-measured wherever it comes to rest.
+    p->blood_rim = BLOOD_RIM_FULL;
+    p->blood_edge_tries--;
 }
 
 /*
@@ -2181,6 +2921,251 @@ static void CL_BloodRunOffModel(cparticle_t *p, const vec3_t point, const vec3_t
     p->blood_state = BLOOD_AIRBORNE;
 }
 
+/*
+===============
+CL_BloodReshapeSlide
+
+Turns a moving pool's long axis toward the direction it is actually travelling,
+and draws it out as it goes.
+
+The bug this fixes: CL_BloodStick captured blood_tangent from the impact and
+NOTHING EVER TOUCHED IT AGAIN.  The stuck branch updates org and blood_normal as a
+droplet runs downhill - it will carry a splat around a corner onto a whole
+different plane - but the elongation stayed pointing wherever the droplet happened
+to be flying when it first landed.  Matt saw it directly: pools landing smeared
+along X, then sliding away along Y still smeared along X.
+
+A directional mark means "the blood went that way".  That is true of an impact and
+it is true of a run, so the same field has to answer for both.
+
+TWO SEPARATE QUANTIZERS, AND THEY ARE THE REASON THIS IS AFFORDABLE.  Everything
+here writes into blood_sphere_t, which the renderer caches on by memcmp of the
+whole struct.  A sliding splat already misses the exact-match tier because its
+origin moves, but it still hits the translate-only tier - "same mesh, moved" -
+which rewrites two per-droplet values and leaves every vertex alone.  Changing the
+tangent or the stretch every frame drops it out of that tier too and pays the full
+per-vertex rebuild (splat_basis, an inverse-scale normal transform, a normalize and
+an encode_normal PER VERTEX) for the whole slide.  That is the same mistake the
+fade shrink made, and the general rule this system keeps re-learning: anything
+feeding a content-keyed cache must change in STEPS, not continuously.
+
+  - The AXIS is turned smoothly in blood_slide_axis, which is not in the struct,
+    and committed to blood_tangent only when the two have diverged by more than
+    BLOOD_SLIDE_TURN_STEP.  Thresholding the smoothed value against itself would
+    not work - a small per-frame step never exceeds its own threshold and the
+    axis would never move at all.
+  - The STRETCH is floored to BLOOD_SLIDE_STRETCH_STEP steps and only ever
+    raised, so it cannot chatter across a boundary.
+
+A long slide therefore costs on the order of a dozen rebuilds instead of one per
+frame.
+===============
+*/
+
+// ~13 degrees of divergence before a new long axis is committed, and eighths of
+// a unit of stretch. Both are cache granularity, not looks - deliberately NOT
+// cvars, because an archived tuning knob silently overrode the menu once already
+// (see pt_blood_splat_tess).
+#define BLOOD_SLIDE_TURN_STEP       0.974f      // cos(13 degrees)
+#define BLOOD_SLIDE_STRETCH_STEP    8.0f
+
+static void CL_BloodReshapeSlide(cparticle_t *p, float dt, float speed)
+{
+    vec3_t dir;
+    float into;
+
+    // The direction of travel, in the surface plane. vel is already in the plane
+    // when gravity put it there, but a droplet that has just turned a corner is
+    // carrying a velocity measured against the plane it came from.
+    VectorCopy(p->vel, dir);
+    into = DotProduct(dir, p->blood_normal);
+    VectorMA(dir, -into, p->blood_normal, dir);
+
+    if (VectorNormalize(dir) < 0.01f)
+        return;
+
+    if (DotProduct(p->blood_slide_axis, p->blood_slide_axis) < 0.5f) {
+        // Landed square, so it has no axis yet - it was a round dot. The
+        // direction it is leaving in is the only one it has ever had.
+        VectorCopy(dir, p->blood_slide_axis);
+    } else if (DotProduct(p->blood_slide_axis, dir) < -0.9f) {
+        // Reversing. The ellipse is symmetric, so at 180 degrees the shape is
+        // identical either way and only the trail flips - but interpolating
+        // through it passes through zero length and a degenerate basis, so snap.
+        // Reached by a pool shoved back the way it came off an edge.
+        VectorCopy(dir, p->blood_slide_axis);
+    } else {
+        const float f = min(1.f, max(0.f, cl_blood_slide_turn->value) * dt);
+        vec3_t want;
+
+        VectorScale(p->blood_slide_axis, 1.f - f, want);
+        VectorMA(want, f, dir, want);
+
+        if (VectorNormalize(want) > 0.01f)
+            VectorCopy(want, p->blood_slide_axis);
+    }
+
+    // Commit the axis only once it has actually gone somewhere.
+    if (DotProduct(p->blood_tangent, p->blood_tangent) < 0.5f ||
+        DotProduct(p->blood_tangent, p->blood_slide_axis) < BLOOD_SLIDE_TURN_STEP)
+        VectorCopy(p->blood_slide_axis, p->blood_tangent);
+
+    // Draw it out with distance run, not with time: a pool creeping to a halt
+    // should stop lengthening as it stops moving, and an exponential approach on
+    // distance gives that for free while never quite reaching the cap.
+    p->blood_slide_dist += speed * dt;
+
+    // NOT cl_blood_slide_stretch directly: how long this mark may be drawn
+    // depends on how big it is AND on how steep the surface under it is. See
+    // CL_BloodStretchLimit.
+    const float cap = CL_BloodStretchLimit(p);
+
+    // A RUN THAT HAS REACHED THE FLOOR HAS TO GIVE THE LENGTH BACK ON ARRIVAL.
+    //
+    // The growth below is raise-only, which is right while the ceiling is fixed
+    // and wrong the moment a droplet slides off a wall onto a floor: the ceiling
+    // collapses by cl_blood_streak_wall and nothing here would lower the mark,
+    // so a 50-unit wall streak would lie on the floor at full length until it
+    // parked and the settle got to it a second later. Matt asked for it to
+    // shorten when it hits the floor, and this is where it hits the floor - the
+    // stuck branch re-attaches to the new plane, so blood_normal is already the
+    // floor's by the time this runs.
+    //
+    // CEILINGED to the same eighths the growth is FLOORED to, so it steps rather
+    // than sliding: this feeds a memcmp-keyed geometry cache, and a surface that
+    // flattens out gradually would otherwise pay a full per-vertex rebuild every
+    // frame the whole way down. Monotone downward, so it terminates.
+    if (p->blood_stretch > cap) {
+        const float q = max(1.f, ceilf(cap * BLOOD_SLIDE_STRETCH_STEP) /
+                                 BLOOD_SLIDE_STRETCH_STEP);
+
+        if (q < p->blood_stretch)
+            p->blood_stretch = q;
+
+        // The impact smear came from a surface it may no longer be on, and the
+        // settle relaxes TO this value - leaving it above the ceiling would have
+        // the settle refuse to finish the job the clamp just started.
+        if (p->blood_stretch_base > q)
+            p->blood_stretch_base = q;
+    }
+
+    if (cap > p->blood_stretch_base) {
+        const float len = max(1.f, cl_blood_slide_len->value);
+        const float target = p->blood_stretch_base +
+            (cap - p->blood_stretch_base) * (1.f - expf(-p->blood_slide_dist / len));
+        const float q = floorf(target * BLOOD_SLIDE_STRETCH_STEP) / BLOOD_SLIDE_STRETCH_STEP;
+
+        // Raised only. A stretch that could also fall would chatter back and
+        // forth across a step boundary and rebuild the mesh on every crossing.
+        if (q > p->blood_stretch)
+            p->blood_stretch = q;
+    }
+}
+
+// How far a sliding pool travels between checks for another pool to merge into.
+// The check scans every stuck splat and cl_blood_max can be 2048, so running it
+// per sliding droplet per frame is real work for an answer that cannot change in
+// a fraction of a unit.
+#define BLOOD_SLIDE_POOL_STEP   2.0f
+
+/*
+===============
+CL_BloodSettleAtRest
+
+A pool that has stopped running gathers back up, and then asks once whether it
+has come to rest against blood that is already lying there.
+
+THE BUG THIS FIXES.  Matt, screenshot: droplets ran down a rocky ramp onto the
+floor and stayed on it as a fan of eight identical needles - "they should have
+all pooled together at the bottom of the hill and stopped looking so stretched
+out."  Two separate omissions, both of them "nothing happens when the motion
+ends":
+
+  - CL_BloodReshapeSlide draws the mark out with distance run and RAISES ONLY.
+    That is right while the blood is moving: a run leaves a streak.  It is wrong
+    the instant it stops, and nothing ever handed the length back, so every
+    splat froze at whatever it had reached - the cap, for anything that ran more
+    than a couple of body lengths.
+  - The merge is gated on DISTANCE TRAVELLED (BLOOD_SLIDE_POOL_STEP), so a splat
+    that comes to rest a unit away from another one never asks again.  Arriving
+    beside blood and arriving on top of it are the same event to a viewer, and
+    only the second one pooled.
+
+The length is given back over cl_blood_slide_relax seconds rather than dropped,
+because a pool snapping from a streak to a disc in one frame reads as a bug of
+its own, and because the geometry rebuild wants spreading over frames anyway.
+
+WHY THE CONTINUOUS STATE IS A SEPARATE FIELD.  blood_stretch is quantized and
+feeds a memcmp-keyed cache, so decaying it in place cannot work: subtracting a
+frame's worth and re-quantizing lands back on the value it started from, so it
+would never move at all.  That is the same trap blood_slide_axis has a comment
+about, and this is the same answer - decay blood_stretch_run, which nothing
+caches, and commit to blood_stretch in steps.
+
+Reached ONLY from the parked branch, and only while blood_slide_dist is nonzero,
+which is true just between the end of a run and the end of the settle.  A floor
+of splats that never moved costs the one compare it always did.
+===============
+*/
+
+// Eighths of a unit of stretch, ceilinged so the value only ever falls - the
+// mirror of BLOOD_SLIDE_STRETCH_STEP, and a #define for the same reason.
+#define BLOOD_SETTLE_STEP   8.0f
+
+static bool CL_BloodSettleAtRest(cparticle_t *p, float dt)
+{
+    const float base = max(1.f, p->blood_stretch_base);
+    const float relax = max(0.f, cl_blood_slide_relax->value);
+
+    if (!p->blood_settling) {
+        p->blood_settling = true;
+        p->blood_settle = relax;
+        p->blood_stretch_run = p->blood_stretch;
+    }
+
+    p->blood_settle = max(0.f, p->blood_settle - dt);
+
+    if (p->blood_settle > 0.f) {
+        // Linear in time, not exponential: this has to actually ARRIVE, and an
+        // asymptote leaves a permanent sliver of the streak behind.
+        const float want = base + (p->blood_stretch_run - base) *
+            (p->blood_settle / max(0.001f, relax));
+        const float q = ceilf(want * BLOOD_SETTLE_STEP) / BLOOD_SETTLE_STEP;
+
+        // Lowered only, for the same reason the growth is raised only.
+        if (q < p->blood_stretch)
+            p->blood_stretch = q;
+
+        return false;
+    }
+
+    // Settled. Back to the shape it landed with - the impact smear is a
+    // permanent feature of the mark, the run's share of the length is not.
+    p->blood_stretch = base;
+    CL_BloodClearSlide(p);
+
+    // Its OUTLINE just changed, and the rim reach is measured in that outline's
+    // own parameter space (CL_BloodSplatAxes scales by the stretch), so whatever
+    // was probed while it was still a streak describes a shape it no longer has.
+    // Re-measure. Costs nothing extra in the common case: the slide had already
+    // invalidated the rim, so this replaces a queued probe rather than adding
+    // one, and it is now queued for the shape that will actually be drawn.
+    p->blood_rim = BLOOD_RIM_FULL;
+    p->blood_rim_dirty = true;
+
+    blood_settles++;
+
+    // AND NOW ASK, ONCE. This is the merge the distance gate cannot reach: a
+    // splat that ran to a halt beside blood already on the floor. Its shape has
+    // finished changing, so this is also the only moment at which the answer is
+    // about the pool it has actually become.
+    if (!CL_BloodPoolInto(p, p->org, p->blood_normal, p->blood_ent))
+        return false;
+
+    blood_rest_pools++;
+    return true;
+}
+
 // Returns true when the droplet merged into an existing pool and should be
 // retired - the blood it carried is now part of that splat.
 static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
@@ -2197,6 +3182,9 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
                 p->blood_state = BLOOD_AIRBORNE;
                 p->blood_flatten = 1.0f;
                 p->blood_stretch = 1.0f;
+                p->blood_stretch_base = 1.0f;
+                CL_BloodClearSlide(p);
+                VectorClear(p->blood_slide_axis);
                 VectorClear(p->blood_tangent);
                 VectorClear(p->vel);
                 p->time = cl.time;
@@ -2221,10 +3209,28 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         VectorMA(p->vel, dt, accel, p->vel);
         VectorScale(p->vel, max(0.f, 1.f - cl_blood_slide->value * dt), p->vel);
 
-        if (VectorLength(p->vel) < BLOOD_SLIDE_EPSILON) {
+        const float speed = VectorLength(p->vel);
+
+        if (speed < BLOOD_SLIDE_EPSILON) {
             VectorClear(p->vel);
-            return false;   // parked - nothing to trace
+
+            // Parked - nothing to trace. But a pool that has just STOPPED
+            // running still has the streak its run drew and a neighbour it may
+            // have come to rest against; see CL_BloodSettleAtRest.
+            //
+            // blood_slide_dist is nonzero only between the end of the run and
+            // the end of the settle, and CL_BloodClearSlide zeroes it there, so
+            // a splat that never moved - which is nearly all of them - takes
+            // exactly the early return it always took.
+            if (p->blood_slide_dist > 0.f)
+                return CL_BloodSettleAtRest(p, dt);
+
+            return false;
         }
+
+        // It is moving, so its mark points somewhere new - and gets longer.
+        const float slide_dist_before = p->blood_slide_dist;
+        CL_BloodReshapeSlide(p, dt, speed);
 
         VectorMA(p->org, dt, p->vel, end);
 
@@ -2244,6 +3250,13 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
             VectorCopy(tr.plane.normal, p->blood_normal);
             VectorMA(tr.endpos, BLOOD_SURFACE_OFFSET, p->blood_normal, p->org);
 
+            // It has moved, and may have turned a corner onto a different plane,
+            // so whatever reach was measured where it used to be is stale. It
+            // will be re-probed once it parks; until then it draws unclipped,
+            // which is what a sliding droplet did before any of this.
+            p->blood_rim = BLOOD_RIM_FULL;
+            p->blood_rim_dirty = true;
+
             // It may have slid from the world onto a door, or the other way.
             // Only a brush model can be reached from here - CL_TracePoint has
             // the boxes turned off - so its collision pose is the right frame to
@@ -2253,12 +3266,32 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
                                        p->org, p->blood_normal);
             else
                 CL_BloodDetachFromEntity(p);
+
+            // ARRIVED AT ANOTHER POOL? Merge into it. Blood running down a wall
+            // that reaches blood already lying there does not slide over it, and
+            // this is the same CL_BloodPoolInto that a landing droplet uses - the
+            // areas add, the target grows, and this droplet is retired.
+            //
+            // Gated on DISTANCE TRAVELLED rather than run every frame: the scan
+            // is over every stuck splat and cl_blood_max can be 2048, so a frame
+            // with fifty sliding droplets would be a hundred thousand distance
+            // tests for an answer that cannot change in a fraction of a unit.
+            // Crossing a step boundary is free to detect - the distance is being
+            // accumulated for the stretch anyway.
+            if (cl_blood_pool->integer &&
+                floorf(slide_dist_before / BLOOD_SLIDE_POOL_STEP) !=
+                floorf(p->blood_slide_dist / BLOOD_SLIDE_POOL_STEP) &&
+                CL_BloodPoolInto(p, tr.endpos, p->blood_normal, p->blood_ent))
+                return true;
         } else {
             // Ran off the end of the surface - fall again.
             CL_BloodDetachFromEntity(p);
             p->blood_state = BLOOD_AIRBORNE;
             p->blood_flatten = 1.0f;
             p->blood_stretch = 1.0f;
+            p->blood_stretch_base = 1.0f;
+            CL_BloodClearSlide(p);
+            VectorClear(p->blood_slide_axis);
             VectorClear(p->blood_tangent);
             VectorCopy(end, p->org);
 
@@ -2371,10 +3404,12 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale)
     // sixty droplets between two frames and the measured count would not move
     // until the next one - so the budget has to tighten as the burst is created,
     // not a frame later.
-    // Full? Make room by dropping the oldest splat rather than refusing, so
-    // permanent blood keeps turning over instead of simply stopping.
+    // Full? Make room by retiring the least valuable blood rather than refusing,
+    // so permanent blood keeps turning over instead of simply stopping. Which
+    // one that is depends on whether the floor or the spray is over its share -
+    // CL_RetireBlood decides.
     if (num_blood_live >= cl_blood_max->integer)
-        CL_RetireOldestSplat();
+        CL_RetireBlood();
 
     if (num_blood_live >= cl_blood_max->integer) {
         // Over budget. Retire the particle rather than leaving it as an ordinary
@@ -2392,7 +3427,7 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale)
     p->blood_slot = CL_AllocBloodSlot();
 
     if (p->blood_slot < 0) {
-        CL_RetireOldestSplat();
+        CL_RetireBlood();
         p->blood_slot = CL_AllocBloodSlot();
     }
 
@@ -3590,6 +4625,11 @@ void CL_AddParticles(void)
     // and the trails long before it is obvious that blood is the cause.
     int blood_air = 0, blood_stuck = 0, blood_riding = 0, num_free = 0, num_active = 0;
 
+    // Rim measurements left in this frame's budget. Bounded per frame because a
+    // burst lands sixty droplets at once; a pool can only be shoved off an edge
+    // on a frame it was measured on, so this bounds both halves at once.
+    int blood_edge_left = max(0, cl_blood_edge_budget->integer);
+
     // Time actually spent in the droplet simulation, and traces issued.
     //
     // This is the half timerefresh CANNOT see: it renders 128 frames without
@@ -3598,10 +4638,20 @@ void CL_AddParticles(void)
     // entity, per droplet, per client frame - only happens in a real frame.
     static uint64_t blood_sim_usec_acc;
     static int      blood_trace_acc, blood_model_trace_acc, blood_model_hit_acc, blood_sim_frames;
+    static int      blood_edge_trace_acc, blood_edge_probe_acc, blood_edge_slide_acc;
+    static int      blood_settle_acc, blood_rest_pool_acc, blood_pool_full_acc;
+    static int      blood_pool_acc;
     uint64_t blood_sim_usec = 0;
     blood_traces = 0;
     blood_model_traces = 0;
     blood_model_hits = 0;
+    blood_edge_traces = 0;
+    blood_edge_probes = 0;
+    blood_edge_slides = 0;
+    blood_settles = 0;
+    blood_rest_pools = 0;
+    blood_pool_full = 0;
+    blood_pools = 0;
     for (cparticle_t *f = free_particles; f; f = f->next)
         num_free++;
 
@@ -3696,6 +4746,35 @@ void CL_AddParticles(void)
                     blood_riding++;    // on a body or a brush model
                 if (num_blood_splats < MAX_PARTICLES)
                     blood_splats[num_blood_splats++] = p;
+
+                // Measure how far the surface reaches under this splat, at most
+                // cl_blood_edge_budget of them per frame. The budget is the whole
+                // reason this is safe: a wound lands sixty droplets between two
+                // frames and measuring them all where they stick would put every
+                // one of those traces in a single frame.
+                //
+                // PARKED ONLY. A droplet still running down a wall is measured
+                // where it is not going to stay, so it would be re-queued next
+                // frame and spend a slice of the budget every frame for the whole
+                // run - starving the splats that have actually settled.
+                if (p->blood_rim_dirty && blood_edge_left > 0 &&
+                    DotProduct(p->vel, p->vel) < 1e-4f) {
+                    CL_BloodProbeRim(p);
+                    blood_edge_left--;
+
+                    // Enough of it hanging over thin air? The WHOLE POOL lets go.
+                    // The shove is all that happens here; the slide, the fall off
+                    // the lip, the run down the face below and the splat at the
+                    // bottom are all paths a droplet already took before this
+                    // existed. See CL_BloodSlideOffEdge.
+                    if (p->blood_rim != BLOOD_RIM_FULL && p->blood_edge_tries > 0) {
+                        vec3_t off;
+                        if (CL_BloodOverhang(p, off) > cl_blood_edge_slide->value) {
+                            CL_BloodSlideOffEdge(p, off);
+                            blood_edge_slides++;
+                        }
+                    }
+                }
             } else {
                 blood_air++;
                 if (num_blood_airborne < MAX_PARTICLES)
@@ -3725,6 +4804,13 @@ void CL_AddParticles(void)
                 VectorCopy(p->blood_normal, b->normal);
                 b->stretch = p->blood_stretch;
                 VectorCopy(p->blood_tangent, b->tangent);
+                b->rim_support = p->blood_rim;
+
+                // Only the length the SLIDE added trails. Clamped at zero because
+                // the detach branches reset the stretch to 1 without knowing what
+                // the base was, and a negative trail would shift the mesh forward
+                // of its own contact point.
+                b->stretch_trail = max(0.f, p->blood_stretch - p->blood_stretch_base);
 
                 // Shrink away over the last of the life instead of vanishing.
                 // Blood spheres do not use alpha for anything else - they are
@@ -3777,20 +4863,36 @@ void CL_AddParticles(void)
     blood_trace_acc += blood_traces;
     blood_model_trace_acc += blood_model_traces;
     blood_model_hit_acc += blood_model_hits;
+    blood_edge_trace_acc += blood_edge_traces;
+    blood_edge_probe_acc += blood_edge_probes;
+    blood_edge_slide_acc += blood_edge_slides;
+    blood_settle_acc += blood_settles;
+    blood_rest_pool_acc += blood_rest_pools;
+    blood_pool_full_acc += blood_pool_full;
+    blood_pool_acc += blood_pools;
     blood_sim_frames++;
 
     if (cl_blood_stats->integer) {
         static int last_report;
         if (cl.time - last_report > 1000 || cl.time < last_report) {
             last_report = cl.time;
-            Com_Printf("blood: %d airborne, %d stuck (%d riding) | sim %.2f ms/frame, %d traces/frame, %d mesh/frame (%d hits/s) | particles %d active, %d free\n",
+            // Edge numbers are per SECOND, not per frame: measurements are
+            // amortised across frames on purpose, so a per-frame figure would
+            // round to zero and say nothing about what the sweep is costing.
+            Com_Printf("blood: %d airborne, %d stuck (%d riding) | sim %.2f ms/frame, %d traces/frame, %d mesh/frame (%d hits/s) | edge %d probes/s, %d traces/s, %d slid off/s | rest %d settled/s, %d pooled/s, %d full/s | %d merges/s | particles %d active, %d free\n",
                 blood_air, blood_stuck, blood_riding,
                 blood_sim_frames ? (float)blood_sim_usec_acc / blood_sim_frames / 1000.f : 0.f,
                 blood_sim_frames ? blood_trace_acc / blood_sim_frames : 0,
                 blood_sim_frames ? blood_model_trace_acc / blood_sim_frames : 0,
                 blood_model_hit_acc,
+                blood_edge_probe_acc, blood_edge_trace_acc, blood_edge_slide_acc,
+                blood_settle_acc, blood_rest_pool_acc, blood_pool_full_acc,
+                blood_pool_acc,
                 num_active, num_free);
             blood_sim_usec_acc = 0; blood_trace_acc = 0; blood_model_trace_acc = 0; blood_model_hit_acc = 0; blood_sim_frames = 0;
+            blood_edge_trace_acc = 0; blood_edge_probe_acc = 0; blood_edge_slide_acc = 0;
+            blood_settle_acc = 0; blood_rest_pool_acc = 0; blood_pool_full_acc = 0;
+            blood_pool_acc = 0;
         }
     }
 }

@@ -717,6 +717,7 @@ void vkpt_append_model_geometry(model_geometry_t* info, uint32_t num_prims, uint
 VkResult vkpt_vertex_buffer_create(void);
 VkResult vkpt_vertex_buffer_destroy(void);
 void vkpt_vertex_buffer_ensure_primbuf_size(uint32_t prim_count);
+uint32_t vkpt_primbuf_generation(void);
 VkResult vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh);
 void vkpt_vertex_buffer_cleanup_bsp_mesh(bsp_mesh_t *bsp_mesh);
 VkResult vkpt_vertex_buffer_create_pipelines(void);

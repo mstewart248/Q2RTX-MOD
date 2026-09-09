@@ -1280,9 +1280,21 @@ vkpt_vertex_buffer_upload_models()
 	return VK_SUCCESS;
 }
 
+// Bumped every time the instanced buffers are recreated. ensure_primbuf_size
+// DESTROYS and recreates them without preserving a byte, so anything that caches
+// what it has already uploaded into them has to notice - see vkpt_blood_update.
+static uint32_t primbuf_generation = 0;
+
+uint32_t vkpt_primbuf_generation(void)
+{
+	return primbuf_generation;
+}
+
 void create_primbuf(void)
 {
 	int primbuf_size = Cvar_ClampInteger(cvar_pt_primbuf, PRIMBUF_SIZE_MIN, PRIMBUF_SIZE_MAX);
+
+	primbuf_generation++;
 
 	buffer_create(&qvk.buf_primitive_instanced, sizeof(VboPrimitive) * primbuf_size,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,

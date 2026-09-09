@@ -132,6 +132,37 @@ static blood_face_t   puddle_template[BLOOD_PUDDLE_MAX_FACES];
 static uint32_t       puddle_tangents[BLOOD_PUDDLE_MAX_FACES][3];
 static int            puddle_lod_offset[BLOOD_SPHERE_MAX_SUBDIV + 1];
 
+/*
+THE PUDDLE TEMPLATE AS UNIQUE VERTICES, WHICH IS WHERE THE REBUILD COST WENT.
+
+blood_face_t stores three corners per face, so a vertex shared by six faces is
+stored six times - and every one of those copies used to be transformed
+separately. Per copy that is vertex_wobble (a sqrtf, an atan2f and up to four
+sinf), then the inverse-scale normal transform, a VectorNormalize and an
+encode_normal. A level-2 puddle is 256 faces, so 768 corner transforms for 162
+distinct vertices: the same six transcendentals computed nearly five times over.
+
+Measured on Matt's log, a rebuilt droplet cost ~41 us against ~2 us for one that
+merely moved, and 61 rebuilds a frame were ~2.5 ms of a 4.4 ms gen.
+
+vertex_wobble is already documented as A FUNCTION OF THE ANGLE ALONE, precisely
+so that shared vertices cannot disagree and tear the mesh open along an edge.
+That is exactly the property that makes computing it once per vertex legitimate:
+the deduplicated result is BIT-IDENTICAL to the per-corner one, not an
+approximation of it.
+
+Vertices are deduplicated on POSITION AND NORMAL TOGETHER. A puddle's flat base
+shares its rim positions with the dome while facing the opposite way, so
+position alone would weld the crease flat.
+*/
+#define BLOOD_PUDDLE_MAX_VERTS (BLOOD_PUDDLE_MAX_FACES * 3)
+
+static vec3_t         puddle_vert_pos[BLOOD_PUDDLE_MAX_VERTS];
+static vec3_t         puddle_vert_nrm[BLOOD_PUDDLE_MAX_VERTS];
+static uint16_t       puddle_face_vid[BLOOD_PUDDLE_MAX_FACES][3]; // relative to the level's base
+static int            puddle_vert_offset[BLOOD_SPHERE_MAX_SUBDIV + 1];
+static int            puddle_vert_count[BLOOD_SPHERE_MAX_SUBDIV + 1];
+
 static bool           templates_built = false;
 
 // Per-droplet LOD level chosen by choose_lods(), reused by write_blood_geometry
@@ -162,6 +193,31 @@ typedef struct {
 	int            level;       // and at which tessellation
 	bool           valid;       // holds a droplet's geometry
 	bool           blanked;     // holds degenerate filler for an empty slot
+
+	/*
+	WHAT THE DEVICE HOLDS, which is a different question from what the shadow
+	buffer holds, and the three fields below are the whole answer.
+
+	`faces` is how many primitives at the head of the slot are real geometry.
+	The rest of the slot's stride is zero in the shadow buffer - see BLANK THE
+	REST OF THE SLOT - so it never needs to travel twice.
+
+	`dev_span` is how far into the slot the DEVICE has content. Past it, the
+	device is known to be zero, which is what makes it safe to upload only
+	`faces` primitives for a droplet whose mesh did not grow. When a droplet
+	shrinks (a 256-face puddle replacing a 320-face sphere), dev_span is still
+	the old 320 and the upload covers the difference, blanking the leftovers on
+	the device as well as in the shadow copy.
+
+	`dev_pending` is simply "the device is out of date for this slot". It is
+	STICKY: a slot that could not be uploaded this frame - because the section's
+	primitive range does not reach it yet - keeps the flag and is uploaded when
+	it does. That is what replaced the old clean_frames counter, which forced a
+	full-range copy for several frames after anything structural changed.
+	*/
+	uint16_t       faces;
+	uint16_t       dev_span;
+	bool           dev_pending;
 } blood_cache_entry_t;
 
 static blood_cache_entry_t blood_cache[MAX_BLOOD_SPHERES];
@@ -181,13 +237,13 @@ static struct {
 	int               cache_hits;       // droplets whose geometry was reused as-is
 	int               cache_moves;      // droplets whose geometry was only TRANSLATED
 	uint32_t          stride;           // primitives reserved per droplet slot
-	uint32_t          dirty_lo;         // primitive range rewritten this frame
-	uint32_t          dirty_hi;
-	bool              dirty_slot[MAX_BLOOD_SPHERES];
-	uint32_t          last_prim_count;  // for detecting a frame that changed nothing
+	bool              dirty_slot[MAX_BLOOD_SPHERES];  // slots rewritten this frame
 	uint32_t          last_prim_offset; // where the blood section sat last frame
 	bool              have_last_offset;
-	int               clean_frames;     // consecutive unchanged frames
+	uint32_t          primbuf_generation; // which incarnation of the instanced buffers
+	bool              epoch_reset;      // the device's copy of the section is void
+	uint32_t          last_regions;     // copy regions used, for pt_blood_stats
+	bool              last_epoch;
 	int               model_instance_index;
 	bool              buffers_ready;
 } blood;
@@ -202,6 +258,7 @@ static cvar_t* cvar_pt_blood_tess = NULL;
 static cvar_t* cvar_pt_blood_stats = NULL;
 static cvar_t* cvar_pt_blood_lod_near = NULL;
 static cvar_t* cvar_pt_blood_lod_far = NULL;
+static cvar_t* cvar_pt_blood_lod_air = NULL;
 static cvar_t* cvar_pt_blood_puddle_sink = NULL;
 static cvar_t* cvar_pt_blood_wobble = NULL;
 
@@ -332,6 +389,75 @@ static void build_puddle_templates(void)
 		}
 
 		assert(n - puddle_lod_offset[level] == BLOOD_PUDDLE_FACES(level));
+
+		// Deduplicate this level's corners into unique vertices. Exact float
+		// compare on purpose: the corners come from the same expressions, so
+		// shared ones are bit-identical, and a tolerance would risk welding two
+		// vertices that are genuinely distinct at the smallest LOD.
+		const int vbase = (level == 0) ? 0
+			: puddle_vert_offset[level - 1] + puddle_vert_count[level - 1];
+
+		puddle_vert_offset[level] = vbase;
+
+		int nverts = 0;
+
+		for (int f = puddle_lod_offset[level]; f < n; f++)
+		{
+			for (int i = 0; i < 3; i++)
+			{
+				const float* p = puddle_template[f].pos[i];
+				const float* q = puddle_template[f].nrm[i];
+
+				int found = -1;
+				for (int v = 0; v < nverts; v++)
+				{
+					if (VectorCompare(puddle_vert_pos[vbase + v], p)
+						&& VectorCompare(puddle_vert_nrm[vbase + v], q))
+					{
+						found = v;
+						break;
+					}
+				}
+
+				if (found < 0)
+				{
+					assert(vbase + nverts < BLOOD_PUDDLE_MAX_VERTS);
+					VectorCopy(p, puddle_vert_pos[vbase + nverts]);
+					VectorCopy(q, puddle_vert_nrm[vbase + nverts]);
+					found = nverts++;
+				}
+
+				puddle_face_vid[f][i] = (uint16_t)found;
+			}
+		}
+
+		puddle_vert_count[level] = nverts;
+
+		// SELF-CHECK, because "bit-identical" is the entire claim being made.
+		//
+		// The wobble and the transforms below are the same expressions whichever
+		// way the mesh is walked, so the deduplicated build differs from the
+		// per-corner one only if an INDEX is wrong - an off-by-one in the level
+		// base being the obvious way. Verify the mapping once, at startup, rather
+		// than discovering it as torn puddles: every corner must resolve to a
+		// vertex holding exactly the position and normal that corner had.
+		for (int f = puddle_lod_offset[level]; f < n; f++)
+		{
+			for (int i = 0; i < 3; i++)
+			{
+				const int v = vbase + puddle_face_vid[f][i];
+
+				if (!VectorCompare(puddle_vert_pos[v], puddle_template[f].pos[i])
+					|| !VectorCompare(puddle_vert_nrm[v], puddle_template[f].nrm[i]))
+				{
+					Com_EPrintf("blood: puddle vertex table is wrong at level %d, "
+						"face %d corner %d - splats will render torn\n", level, f, i);
+					break;
+				}
+			}
+		}
+
+		assert(vbase + nverts <= BLOOD_PUDDLE_MAX_VERTS);
 	}
 
 	// Tangents. Nothing samples a tangent-space map on this material, so any
@@ -542,6 +668,10 @@ static bool ensure_buffers(void)
 	blood.max_prims = needed;
 	blood.buffers_ready = true;
 
+	// New buffers, a new stride, and a shadow copy full of zeros: nothing the
+	// device holds for the old layout means anything now.
+	blood.epoch_reset = true;
+
 	// The shadow buffer is the cache's backing store, so a reallocation throws
 	// away everything it was vouching for.
 	memset(blood_cache, 0, sizeof(blood_cache));
@@ -588,6 +718,10 @@ VkResult vkpt_blood_initialize(void)
 	// disable the LOD and tessellate everything at full rate.
 	cvar_pt_blood_lod_near = Cvar_Get("pt_blood_lod_near", "160", CVAR_ARCHIVE);
 	cvar_pt_blood_lod_far = Cvar_Get("pt_blood_lod_far", "500", CVAR_ARCHIVE);
+
+	// Tessellation levels to drop for a droplet still in FLIGHT. 0 restores the
+	// old behaviour exactly - see the note in choose_lods.
+	cvar_pt_blood_lod_air = Cvar_Get("pt_blood_lod_air", "1", CVAR_ARCHIVE);
 
 	// How far a puddle's flat base is sunk below the surface, as a fraction of
 	// its own height. Its only job is to bury the rim - the one hard edge in the
@@ -684,7 +818,7 @@ anything face-local would give one physical vertex a different offset per face
 and tear the mesh open along every edge.
 ================
 */
-static inline float vertex_wobble(const vec3_t v, float seed, float amount, int segs)
+static inline float vertex_wobble(const vec3_t v, float seed, float amount, int segs, uint32_t rim)
 {
 	const float r = sqrtf(v[0] * v[0] + v[1] * v[1]);
 
@@ -702,7 +836,44 @@ static inline float vertex_wobble(const vec3_t v, float seed, float amount, int 
 	if (segs >= 32)
 		n += sinf(theta * 8.f + seed * 7.9f) * 0.10f;
 
-	return 1.f + n * amount;
+	float w = 1.f + n * amount;
+
+	// CLIP TO WHERE THE SURFACE ACTUALLY REACHES, when it does not reach all the
+	// way round.  A splat lands wherever its CENTRE lands, so one that landed near
+	// the lip of a crate draws its far half over thin air.  The client measured
+	// how far the floor goes in eight directions once, when the droplet parked
+	// (cparticle_t::blood_rim), and this is the whole of what is done with it.
+	//
+	// The early-out is the point: BLOOD_RIM_FULL covers the great majority of
+	// splats, and those generate byte-identical geometry to before this existed.
+	if (rim != BLOOD_RIM_FULL)
+	{
+		// Read the two neighbouring samples and blend between them.  A FUNCTION
+		// OF THE ANGLE ALONE, exactly like the wobble above and for exactly the
+		// same reason: a puddle's vertices are shared between faces that each
+		// store their own copy, so anything keyed on the face or the vertex slot
+		// gives one physical vertex two different answers and tears the mesh open
+		// along every edge.
+		float u = theta * ((float)BLOOD_RIM_SAMPLES / (2.f * (float)M_PI));
+		if (u < 0.f)
+			u += (float)BLOOD_RIM_SAMPLES;
+
+		const int i0 = (int)u & (BLOOD_RIM_SAMPLES - 1);
+		const int i1 = (i0 + 1) & (BLOOD_RIM_SAMPLES - 1);
+
+		const float r0 = (float)((rim >> (i0 * 4)) & 15u) * (1.f / BLOOD_RIM_SCALE);
+		const float r1 = (float)((rim >> (i1 * 4)) & 15u) * (1.f / BLOOD_RIM_SCALE);
+
+		// Smoothstepped, not linear: with only eight samples a linear blend
+		// leaves a crease pointing at every one of them, and a clipped puddle
+		// reads as an octagon rather than as blood stopping at an edge.
+		float f = u - floorf(u);
+		f = f * f * (3.f - 2.f * f);
+
+		w = min(w, r0 + (r1 - r0) * f);
+	}
+
+	return w;
 }
 
 static inline bool is_splat_sphere(const blood_sphere_t* sphere)
@@ -726,13 +897,24 @@ one along its normal, scaled so the droplet squashes against the wall.
 1/sqrt(flatten) so the ellipsoid keeps roughly the volume the sphere had - a
 splat should read as the same droplet spread out, not as a differently sized one.
 
+`narrow` IS NOT `stretch`, AND THAT DISTINCTION IS THE WHOLE POINT OF IT.  The
+cross axis used to be divided by the full stretch, which makes the aspect ratio
+the SQUARE of it - so a pool that had run its length out to the 3.5 cap was drawn
+12:1, and a hillside of them read as a fan of red needles rather than as blood.
+Narrowing is right for the part of the elongation an IMPACT put there: a droplet
+thrown sideways spreads along its travel and covers about the area it would have
+covered landing square.  It is wrong for the part a RUN put there.  Blood running
+down a surface keeps roughly the width of the droplet feeding it and gains
+LENGTH; it does not get thinner as it goes.  So only the impact's share divides
+the cross axis, and a pure run is drawn at its stretch, not its stretch squared.
+
 Seeding the cross product from whichever axis the normal is least aligned with
 keeps it well conditioned; one component of a unit vector is always below
 1/sqrt(3), so the seed is never closer than 54 degrees to the normal.
 ================
 */
 static void splat_basis(const vec3_t normal, const vec3_t tangent, float radius,
-                        float flatten, float stretch,
+                        float flatten, float stretch, float narrow,
                         vec3_t out_t1, vec3_t out_t2, vec3_t out_n)
 {
     // The first tangent axis is the direction the droplet was travelling, when
@@ -761,6 +943,7 @@ static void splat_basis(const vec3_t normal, const vec3_t tangent, float radius,
         CrossProduct(seed, normal, out_t1);
         VectorNormalize(out_t1);
         stretch = 1.f;
+        narrow = 1.f;
     }
 
     CrossProduct(normal, out_t1, out_t2);
@@ -773,11 +956,13 @@ static void splat_basis(const vec3_t normal, const vec3_t tangent, float radius,
     // puddle's width is now its own quantity, and flatten only sets its height.
     const float spread = radius * max(0.1f, global_blood_splat_size);
 
-    // Elongate along the travel direction and narrow across it by the same
-    // factor, so a directional mark covers the same area as the round splat it
-    // replaces - a smear, not a bigger splat.
+    // Elongate along the travel direction, and narrow across it by the IMPACT's
+    // share of that elongation only - see the note on `narrow` above. An impact
+    // smear covers the same area as the round splat it replaces; a run gets
+    // longer without getting thinner.
     stretch = max(1.f, stretch);
-    const float inv = 1.f / stretch;
+    narrow = max(1.f, min(narrow, stretch));
+    const float inv = 1.f / narrow;
 
     VectorScale(out_t1, spread * stretch, out_t1);
     VectorScale(out_t2, spread * inv, out_t2);
@@ -823,6 +1008,34 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 		if (dist_sq < near_sq)      level = max_level;
 		else if (dist_sq < far_sq)  level = max_level - 1;
 		else                        level = max_level - 2;
+
+		/*
+		A DROPLET IN FLIGHT DOES NOT NEED A SETTLED SPLAT'S TESSELLATION.
+
+		These are the two populations, and they are not alike. On Matt's log the
+		droplets counted as `moved` were, frame for frame, the AIRBORNE ones -
+		136 airborne against 139 moved, then 963 against 915 - because a droplet
+		in flight changes its origin every frame while a settled splat does not.
+		So the flying half is what pays the translate cost AND what fills the
+		upload: 963 droplets at 320 faces is ~50 MB of shadow writes and the same
+		again over the bus, every frame of a firefight.
+
+		Cutting one level takes an in-flight sphere from 320 faces to 80, and it
+		buys back four times that cost on exactly the population that spikes.
+
+		This does NOT contradict the note below about splats. That says a
+		FLATTENED splat wants more tessellation than a sphere, because its
+		silhouette is the rim of a disc where an icosphere has only about
+		sqrt(faces) segments. An airborne droplet is not flattened - it is a
+		round ball whose outline an 80-face icosphere already resolves, and it is
+		moving fast enough that nobody is studying its edge. Splats are untouched
+		by this and still get no reduction at all.
+
+		Landing forces a rebuild anyway (sphere mesh to puddle mesh), so the
+		level change that comes with it costs nothing extra.
+		*/
+		if (!is_splat_sphere(spheres + s))
+			level -= max(0, cvar_pt_blood_lod_air->integer);
 
 		// NOTE: splats deliberately get NO tessellation reduction, and there was
 		// once a pt_blood_splat_tess cvar that applied one. Both halves of the
@@ -878,12 +1091,10 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 	int highest_slot = -1;
 
-	// The primitive range actually rewritten this frame. Uploading the whole used
+	// Which slots were actually rewritten this frame. Uploading the whole used
 	// range every frame meant pushing 25 MB over PCIe to change a few slots -
-	// with stable slots almost everything is untouched, so only the span that
-	// changed needs to travel.
-	blood.dirty_lo = UINT32_MAX;
-	blood.dirty_hi = 0;
+	// with stable slots almost everything is untouched, so only the slots that
+	// changed need to travel.
 	memset(blood.dirty_slot, 0, sizeof(blood.dirty_slot));
 
 	for (int s = 0; s < num_spheres; s++)
@@ -1011,9 +1222,8 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 				cache->sphere = *sphere;
 				cache->prim_offset = prim_index;
+				cache->faces = (uint16_t)faces;
 
-				blood.dirty_lo = min(blood.dirty_lo, prim_index);
-				blood.dirty_hi = max(blood.dirty_hi, prim_index + (uint32_t)faces);
 				blood.dirty_slot[sphere->slot] = true;
 
 				blood.cache_moves++;
@@ -1026,9 +1236,8 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		cache->prim_offset = prim_index;
 		cache->level = level;
 		cache->sphere = *sphere;
+		cache->faces = (uint16_t)faces;
 
-		blood.dirty_lo = min(blood.dirty_lo, prim_index);
-		blood.dirty_hi = max(blood.dirty_hi, prim_index + (uint32_t)faces);
 		blood.dirty_slot[sphere->slot] = true;
 
 		vec3_t color;
@@ -1056,8 +1265,11 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 		if (is_splat)
 		{
+			// stretch - stretch_trail is the elongation the IMPACT left, which
+			// is the only part that narrows the splat across its travel.
 			splat_basis(sphere->normal, sphere->tangent, sphere->radius,
-				sphere->flatten, sphere->stretch, ax_t1, ax_t2, ax_n);
+				sphere->flatten, sphere->stretch,
+				sphere->stretch - sphere->stretch_trail, ax_t1, ax_t2, ax_n);
 
 			// Inverse-transpose of the scale, in the same frame. The basis is
 			// orthonormal before scaling, so this is just the reciprocal of each
@@ -1083,6 +1295,68 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		if (is_splat)
 			VectorMA(mesh_origin, -cvar_pt_blood_puddle_sink->value, ax_n, mesh_origin);
 
+		// THE TRAIL HANGS BEHIND, NOT AROUND.
+		//
+		// splat_basis scales the ellipse symmetrically about the origin, so the
+		// length a pool picks up while sliding would grow forward as much as back -
+		// the leading edge running out ahead of the droplet, which reads as a
+		// stretched blob being carried rather than a smear being drawn.
+		//
+		// ax_t1 is spread*stretch long, so scaling it by trail/stretch gives a
+		// vector of exactly spread*trail: the length that was ADDED. Shifting back
+		// by it leaves the leading edge where a round splat's was and puts every
+		// bit of the growth behind. The impact smear is not included in `trail`
+		// and stays centred on the point of contact.
+		if (is_splat && sphere->stretch_trail > 0.f)
+		{
+			const float s = max(1.f, sphere->stretch);
+			VectorMA(mesh_origin, -sphere->stretch_trail / s, ax_t1, mesh_origin);
+		}
+
+		// ONCE PER UNIQUE VERTEX, NOT ONCE PER CORNER - see the block comment on
+		// puddle_vert_pos. The face loop below is then a pure gather, and the
+		// bytes it produces are identical to transforming every corner.
+		//
+		// Only the splat path needs this. A droplet in flight is a uniformly
+		// scaled sphere: its position is one VectorMA and its normals come
+		// straight from the template, so a corner costs about what a table lookup
+		// would.
+		static vec3_t   vert_pos[BLOOD_PUDDLE_MAX_VERTS];
+		static uint32_t vert_nrm[BLOOD_PUDDLE_MAX_VERTS];
+
+		const uint16_t (*face_vid)[3] = puddle_face_vid + puddle_lod_offset[level];
+
+		if (is_splat)
+		{
+			const int vbase = puddle_vert_offset[level];
+			const int vcount = puddle_vert_count[level];
+
+			for (int v = 0; v < vcount; v++)
+			{
+				const float* t = puddle_vert_pos[vbase + v];
+
+				// Push the vertex in or out radially. Only the two in-plane
+				// axes are scaled, so the puddle stays exactly as tall and
+				// exactly as flat on the floor - it is the OUTLINE that goes
+				// irregular, which is the part that reads as a splash. The
+				// apex has zero radius and so cannot move, which keeps the
+				// dome centred over its own base.
+				const float w = vertex_wobble(t, sphere->seed, wobble,
+					puddle_segments[level], sphere->rim_support);
+
+				for (int a = 0; a < 3; a++)
+					vert_pos[v][a] = mesh_origin[a]
+					               + ax_t1[a] * t[0] * w + ax_t2[a] * t[1] * w + ax_n[a] * t[2];
+
+				const float* tn = puddle_vert_nrm[vbase + v];
+				vec3_t nv;
+				for (int a = 0; a < 3; a++)
+					nv[a] = inv_t1[a] * tn[0] + inv_t2[a] * tn[1] + inv_n[a] * tn[2];
+				VectorNormalize(nv);
+				vert_nrm[v] = encode_normal(nv);
+			}
+		}
+
 		uint32_t write_index = prim_index;
 
 		for (int f = 0; f < faces; f++)
@@ -1093,25 +1367,9 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			for (int i = 0; i < 3; i++)
 			{
 				if (is_splat)
-				{
-					const float* t = tmpl[f].pos[i];
-
-					// Push the vertex in or out radially. Only the two in-plane
-					// axes are scaled, so the puddle stays exactly as tall and
-					// exactly as flat on the floor - it is the OUTLINE that goes
-					// irregular, which is the part that reads as a splash. The
-					// apex has zero radius and so cannot move, which keeps the
-					// dome centred over its own base.
-					const float w = vertex_wobble(t, sphere->seed, wobble, puddle_segments[level]);
-
-					for (int a = 0; a < 3; a++)
-						pos[i][a] = mesh_origin[a]
-						          + ax_t1[a] * t[0] * w + ax_t2[a] * t[1] * w + ax_n[a] * t[2];
-				}
+					VectorCopy(vert_pos[face_vid[f][i]], pos[i]);
 				else
-				{
 					VectorMA(sphere->origin, sphere->radius, tmpl[f].pos[i], pos[i]);
-				}
 			}
 
 			VectorCopy(pos[0], prim->pos0);
@@ -1124,15 +1382,9 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 			if (is_splat)
 			{
-				for (int i = 0; i < 3; i++)
-				{
-					const float* t = tmpl[f].nrm[i];
-					vec3_t n;
-					for (int a = 0; a < 3; a++)
-						n[a] = inv_t1[a] * t[0] + inv_t2[a] * t[1] + inv_n[a] * t[2];
-					VectorNormalize(n);
-					prim->normals[i] = encode_normal(n);
-				}
+				prim->normals[0] = vert_nrm[face_vid[f][0]];
+				prim->normals[1] = vert_nrm[face_vid[f][1]];
+				prim->normals[2] = vert_nrm[face_vid[f][2]];
 			}
 			else
 			{
@@ -1193,9 +1445,10 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * count);
 		}
 
-		// The dirty span has to cover the blanked tail as well, or the stale
-		// primitives are cleared in the shadow copy and left alive on the GPU.
-		blood.dirty_hi = max(blood.dirty_hi, prim_index + stride);
+		// The stale primitives past the new mesh are cleared in the shadow copy
+		// above, and blood_cache_entry_t::dev_span is what gets them cleared on
+		// the GPU too: the upload covers max(faces, dev_span), so a droplet whose
+		// mesh shrank sends the difference exactly once.
 	}
 
 	// Blank any slot inside the used range that no longer holds a droplet.
@@ -1215,9 +1468,8 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 		blood_cache[i].valid = false;
 		blood_cache[i].blanked = true;
+		blood_cache[i].faces = 0;
 
-		blood.dirty_lo = min(blood.dirty_lo, (uint32_t)i * stride);
-		blood.dirty_hi = max(blood.dirty_hi, (uint32_t)(i + 1) * stride);
 		blood.dirty_slot[i] = true;
 	}
 
@@ -1259,8 +1511,15 @@ void vkpt_blood_update(
 	// slots. Every blood primitive names that instance, so there is nothing safe
 	// to draw - drop the frame's droplets rather than index the UBO array out of
 	// bounds.
+	//
+	// A frame that reserves nothing also ENDS THE EPOCH. The section's address is
+	// not tracked across a frame it does not occupy, and whatever the device
+	// holds for it belongs to a model by the time blood comes back.
 	if (num_spheres <= 0 || model_instance_index < 0 || !cvar_pt_blood_spheres->integer)
+	{
+		blood.have_last_offset = false;
 		return;
+	}
 
 	if (!templates_built)
 		build_sphere_templates();
@@ -1280,10 +1539,16 @@ void vkpt_blood_update(
 	// capping the uncommon one.
 	uint32_t needed = choose_lods(spheres, num_spheres, cam_pos);
 	if (needed == 0)
+	{
+		blood.have_last_offset = false;
 		return;
+	}
 
 	if (!ensure_buffers())
+	{
+		blood.have_last_offset = false;
 		return;
+	}
 
 	if (needed > blood.max_prims)
 	{
@@ -1301,134 +1566,214 @@ void vkpt_blood_update(
 	const uint64_t gen_usec = Sys_Microseconds() - gen_t0;
 
 	if (prim_count == 0)
+	{
+		blood.have_last_offset = false;
 		return;
+	}
 
-	const size_t prim_bytes = sizeof(VboPrimitive) * prim_count;
-	const size_t pos_bytes = sizeof(prim_positions_t) * prim_count;
+	// prim_count is (highest_slot + 1) * stride, and a slot ABOVE the current
+	// capacity can outlive a lowered cl_blood_max - the droplet holding it keeps
+	// its slot while the buffers shrink underneath it. Everything below sizes a
+	// copy, and now a vkCmdFillBuffer, from this number, so clamp it to what was
+	// actually allocated and reserved. The tail simply does not draw, which is
+	// already what the per-write bounds check in write_blood_geometry implies.
+	if (prim_count > blood.max_prims)
+		prim_count = blood.max_prims;
 
-	// Nothing changed AND every staging buffer has already been given this exact
-	// content? Then the device buffer still holds it too, and the whole upload is
-	// dead work - several megabytes over PCIe every frame to write bytes that are
-	// already there. A settled floor of splats hits this every frame.
-	//
-	// It is safe because the per-droplet cache validates the PRIM OFFSET as well
-	// as the contents: if the blood section moved within the instanced buffer,
-	// every droplet misses, clean_frames resets, and the copy happens.
-	// THE SECTION CAN MOVE. blood_prim_offset is recomputed every frame, after
-	// every model section, so it shifts whenever the world gains or loses an
-	// animated entity. The per-slot cache only tracks a droplet's offset WITHIN
-	// the section, so it cannot see that - and skipping the upload after a move
-	// leaves every droplet's geometry sitting at the section's old address,
-	// which by then belongs to a model. That is a two-way corruption: garbage
-	// where the blood used to be, and a model's vertices read as blood.
-	//
-	// A move invalidates every byte already uploaded, so it forces a full copy.
-	const bool section_moved = !blood.have_last_offset || prim_offset != blood.last_prim_offset;
+	/*
+	WHAT HAS TO TRAVEL, AND WHY IT IS NOT A SINGLE SPAN
 
+	The shadow buffer is authoritative; the device holds a copy of it at
+	prim_offset. Keeping the two in step is per SLOT, and the cost of getting it
+	wrong is enormous: a full section is cl_blood_max * stride primitives, 102 MB
+	at 2048 slots and pt_blood_tess 2, and the CPU memcpy into write-combined
+	staging runs at single-digit GB/s - measured 6-7 ms, invisible to any GPU
+	profiler. Matt saw exactly that as a hitch when blood spawned or landed.
+
+	Three things used to force the whole 102 MB across:
+
+	  1. More than 64 dirty slots fell back to ONE span from the lowest dirty
+	     slot to the highest. Moving droplets are scattered through a floor of
+	     settled ones, so that span is nearly the whole buffer - 128 moving
+	     droplets uploaded 94 MB to change 6 MB. There is no region budget now:
+	     one region per dirty slot, at most one per slot, so the array cannot
+	     overflow and no fallback is needed.
+
+	  2. A change in the section's primitive COUNT reset a "clean frames"
+	     counter, and until it recovered every frame sent the full range. It
+	     never needed to: a slot that comes into range is either a droplet the
+	     cache missed or a slot the blank loop cleared, and both mark themselves
+	     dirty. dev_pending is sticky, so nothing can be lost by uploading late.
+
+	  3. The section MOVING, which really does invalidate every byte - and used
+	     to happen whenever an entity appeared or vanished. The base is pinned in
+	     prepare_entities now, so this is rare; when it does happen the section is
+	     zeroed on the GPU with vkCmdFillBuffer and only real geometry is sent,
+	     rather than pushing a stride's worth of zeros per slot over the bus.
+
+	The old comment here claimed a partial upload was only safe once both staging
+	buffers had seen the full range. That was never true: the memcpy below fills
+	exactly the source ranges the GPU copy reads, in the same frame, so whatever
+	else is stale in this frame's staging buffer is never read.
+	*/
+	const uint32_t stride = blood.stride;
+
+	// prim_count is (highest_slot + 1) * stride, but clamp against the buffer as
+	// well - a slot handed out past the current cl_blood_max would otherwise
+	// describe a copy that runs off the end of it.
+	uint32_t slot_limit = 0;
+	if (stride)
+	{
+		slot_limit = min(prim_count, blood.max_prims) / stride;
+		slot_limit = min(slot_limit, (uint32_t)MAX_BLOOD_SPHERES);
+	}
+
+	// AN EPOCH is a run of frames over which the section keeps the same address
+	// in the same pair of instanced buffers. Inside one, the device's copy of an
+	// untouched slot is still good. Across one it is not, and neither is anything
+	// dev_span remembers - and note that vkpt_vertex_buffer_ensure_primbuf_size
+	// DESTROYS and recreates those buffers, which is why the generation counter
+	// is part of the test rather than just the offset.
+	const uint32_t primbuf_gen = vkpt_primbuf_generation();
+
+	const bool epoch_reset = blood.epoch_reset
+		|| !blood.have_last_offset
+		|| prim_offset != blood.last_prim_offset
+		|| primbuf_gen != blood.primbuf_generation;
+
+	blood.epoch_reset = false;
 	blood.last_prim_offset = prim_offset;
 	blood.have_last_offset = true;
+	blood.primbuf_generation = primbuf_gen;
 
-	// "Clean" here means the whole range has been uploaded at least once since
-	// the last change of shape, which is what makes a partial upload safe.
-	if (prim_count == blood.last_prim_count && !section_moved)
-		blood.clean_frames++;
+	if (epoch_reset)
+	{
+		// Zero the section on the GPU instead of sending zeros through staging.
+		// After this every slot needs only its real faces uploaded, and a slot
+		// holding nothing needs no upload at all.
+		vkCmdFillBuffer(cmd_buf, qvk.buf_primitive_instanced.buffer,
+			(VkDeviceSize)prim_offset * sizeof(VboPrimitive),
+			(VkDeviceSize)prim_count * sizeof(VboPrimitive), 0);
+
+		vkCmdFillBuffer(cmd_buf, qvk.buf_positions_instanced.buffer,
+			(VkDeviceSize)prim_offset * sizeof(prim_positions_t),
+			(VkDeviceSize)prim_count * sizeof(prim_positions_t), 0);
+
+		for (uint32_t i = 0; i < MAX_BLOOD_SPHERES; i++)
+		{
+			blood_cache[i].dev_pending = true;
+
+			// Past the filled range the device holds bytes that belong to
+			// somebody else, so assume the worst for those slots until one is
+			// written across its whole stride.
+			blood_cache[i].dev_span = (i < slot_limit) ? 0 : (uint16_t)stride;
+		}
+
+		// The fill and the copies below write the same memory, so they have to be
+		// ordered against each other. Transfer to transfer, and only these two
+		// buffers - not a pipeline drain.
+		VkBufferMemoryBarrier fill_barriers[2] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.buffer = qvk.buf_primitive_instanced.buffer,
+				.offset = (VkDeviceSize)prim_offset * sizeof(VboPrimitive),
+				.size = (VkDeviceSize)prim_count * sizeof(VboPrimitive),
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.buffer = qvk.buf_positions_instanced.buffer,
+				.offset = (VkDeviceSize)prim_offset * sizeof(prim_positions_t),
+				.size = (VkDeviceSize)prim_count * sizeof(prim_positions_t),
+			}
+		};
+
+		vkCmdPipelineBarrier(cmd_buf,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0, 0, NULL, 2, fill_barriers, 0, NULL);
+	}
 	else
-		blood.clean_frames = 0;
+	{
+		// The whole array, not just the slots in range: dev_pending is sticky, so
+		// a slot the section does not reach yet keeps its flag for the frame it
+		// does.
+		for (uint32_t i = 0; i < MAX_BLOOD_SPHERES; i++)
+		{
+			if (blood.dirty_slot[i])
+				blood_cache[i].dev_pending = true;
+		}
+	}
 
-	const bool nothing_changed = (blood.cache_hits == blood.sphere_count)
-		&& (blood.dirty_lo >= blood.dirty_hi)
-		&& !section_moved;
-
-	blood.last_prim_count = prim_count;
-
-	const bool skip_upload = nothing_changed && blood.clean_frames > MAX_FRAMES_IN_FLIGHT;
-
-	// A staging buffer is only current for the frames since it last received a
-	// full copy, so a partial upload is valid only once BOTH have seen the whole
-	// range. Until then, copy everything.
-	const bool partial = blood.clean_frames >= MAX_FRAMES_IN_FLIGHT
-		&& blood.dirty_lo < blood.dirty_hi;
-
-	// Which primitive runs to upload.
-	//
-	// A single lo..hi span is not enough. The droplets that change are the ones
-	// still in the air, and their slots are scattered through a range otherwise
-	// full of settled splats - so one span covering them covers nearly
-	// everything, and a dozen moving droplets dragged the whole 12 MB across the
-	// bus every frame. Merging only the slots that actually changed turns that
-	// into a few kilobytes.
-	#define BLOOD_MAX_COPY_REGIONS 64
-
-	VkBufferCopy regions_prim[BLOOD_MAX_COPY_REGIONS];
-	VkBufferCopy regions_pos[BLOOD_MAX_COPY_REGIONS];
+	// One region per dirty slot. File scope rather than stack: 4096 slots is
+	// 200 KB of VkBufferCopy across the two.
+	static VkBufferCopy regions_prim[MAX_BLOOD_SPHERES];
+	static VkBufferCopy regions_pos[MAX_BLOOD_SPHERES];
 	uint32_t num_regions = 0;
 	size_t up_prim_bytes = 0;
 	size_t up_pos_bytes = 0;
 
-	// blood.stride, not the generation function's local - this is a different
-	// scope.
-	const uint32_t stride = blood.stride;
-	const uint32_t slot_limit = stride ? min((uint32_t)MAX_BLOOD_SPHERES, prim_count / stride) : 0;
-
-	if (!partial)
+	for (uint32_t i = 0; i < slot_limit; i++)
 	{
-		// First frames after a change of shape, or after the section moved: the
-		// staging buffers have not all seen the full range, so send all of it.
-		if (prim_count > 0)
+		blood_cache_entry_t* c = blood_cache + i;
+
+		if (!c->dev_pending)
+			continue;
+
+		// This slot's real geometry, plus however much of the device's older
+		// content sticks out past it. Everything beyond that is already zero on
+		// both sides.
+		uint32_t n = max((uint32_t)c->faces, (uint32_t)c->dev_span);
+		n = min(n, stride);
+
+		c->dev_pending = false;
+		c->dev_span = c->faces;
+
+		if (n == 0)
+			continue;
+
+		const uint32_t lo = i * stride;
+
+		// Neighbouring slots that both need their whole stride are one copy
+		// rather than two - which is the common shape on an epoch frame.
+		if (num_regions
+			&& regions_prim[num_regions - 1].srcOffset + regions_prim[num_regions - 1].size
+			   == (VkDeviceSize)lo * sizeof(VboPrimitive))
 		{
-			regions_prim[0] = (VkBufferCopy){ 0, (VkDeviceSize)prim_offset * sizeof(VboPrimitive),
-				sizeof(VboPrimitive) * prim_count };
-			regions_pos[0] = (VkBufferCopy){ 0, (VkDeviceSize)prim_offset * sizeof(prim_positions_t),
-				sizeof(prim_positions_t) * prim_count };
-			num_regions = 1;
-			up_prim_bytes = regions_prim[0].size;
-			up_pos_bytes = regions_pos[0].size;
+			regions_prim[num_regions - 1].size += (VkDeviceSize)n * sizeof(VboPrimitive);
+			regions_pos[num_regions - 1].size += (VkDeviceSize)n * sizeof(prim_positions_t);
 		}
-	}
-	else
-	{
-		for (uint32_t i = 0; i < slot_limit && num_regions < BLOOD_MAX_COPY_REGIONS; )
+		else
 		{
-			if (!blood.dirty_slot[i]) { i++; continue; }
-
-			uint32_t run_start = i;
-			while (i < slot_limit && blood.dirty_slot[i])
-				i++;
-
-			const uint32_t lo = run_start * stride;
-			const uint32_t n = (i - run_start) * stride;
-
 			regions_prim[num_regions] = (VkBufferCopy){
 				(VkDeviceSize)lo * sizeof(VboPrimitive),
 				(VkDeviceSize)(prim_offset + lo) * sizeof(VboPrimitive),
-				sizeof(VboPrimitive) * n };
+				(VkDeviceSize)n * sizeof(VboPrimitive) };
 
 			regions_pos[num_regions] = (VkBufferCopy){
 				(VkDeviceSize)lo * sizeof(prim_positions_t),
 				(VkDeviceSize)(prim_offset + lo) * sizeof(prim_positions_t),
-				sizeof(prim_positions_t) * n };
+				(VkDeviceSize)n * sizeof(prim_positions_t) };
 
-			up_prim_bytes += regions_prim[num_regions].size;
-			up_pos_bytes += regions_pos[num_regions].size;
 			num_regions++;
 		}
 
-		// Too fragmented to describe in the region budget - fall back to the one
-		// span that certainly covers everything.
-		if (num_regions == BLOOD_MAX_COPY_REGIONS && blood.dirty_hi > blood.dirty_lo)
-		{
-			const uint32_t lo = blood.dirty_lo;
-			const uint32_t n = min(blood.dirty_hi, prim_count) - lo;
-
-			regions_prim[0] = (VkBufferCopy){ (VkDeviceSize)lo * sizeof(VboPrimitive),
-				(VkDeviceSize)(prim_offset + lo) * sizeof(VboPrimitive), sizeof(VboPrimitive) * n };
-			regions_pos[0] = (VkBufferCopy){ (VkDeviceSize)lo * sizeof(prim_positions_t),
-				(VkDeviceSize)(prim_offset + lo) * sizeof(prim_positions_t), sizeof(prim_positions_t) * n };
-			num_regions = 1;
-			up_prim_bytes = regions_prim[0].size;
-			up_pos_bytes = regions_pos[0].size;
-		}
+		up_prim_bytes += (size_t)n * sizeof(VboPrimitive);
+		up_pos_bytes += (size_t)n * sizeof(prim_positions_t);
 	}
+
+	// Nothing dirty is the common case for a settled floor, and then the whole
+	// upload is dead work - the device still holds exactly this.
+	const bool skip_upload = (num_regions == 0);
+
+	blood.last_regions = num_regions;
+	blood.last_epoch = epoch_reset;
 
 	const uint64_t copy_t0 = Sys_Microseconds();
 	if (!skip_upload)
@@ -1473,16 +1818,37 @@ void vkpt_blood_update(
 		: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
 		                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
-	// One barrier per buffer covering first..last region, rather than one per
-	// region: the ranges are disjoint but a single span over them is still far
-	// tighter than the whole buffer, and costs one barrier instead of sixty.
-	VkDeviceSize barrier_prim_size = 0, barrier_pos_size = 0;
-	if (num_regions)
+	// THE RANGE COVERED IS THE RANGE THAT WAS WRITTEN, and on an epoch frame that
+	// is the whole section: the fill wrote the parts no copy region touches, and
+	// the BLAS build reads those too - as the degenerate triangles that keep dead
+	// slots from drawing. Covering only the copy regions there would leave the
+	// fill unsynchronised, which is the exact shape of bug that has cost this
+	// renderer whole-frame faults before.
+	VkDeviceSize barrier_prim_offset = 0, barrier_prim_size = 0;
+	VkDeviceSize barrier_pos_offset = 0, barrier_pos_size = 0;
+	bool need_barrier = false;
+
+	if (epoch_reset)
 	{
+		barrier_prim_offset = (VkDeviceSize)prim_offset * sizeof(VboPrimitive);
+		barrier_prim_size = (VkDeviceSize)prim_count * sizeof(VboPrimitive);
+		barrier_pos_offset = (VkDeviceSize)prim_offset * sizeof(prim_positions_t);
+		barrier_pos_size = (VkDeviceSize)prim_count * sizeof(prim_positions_t);
+		need_barrier = true;
+	}
+	else if (!skip_upload && num_regions)
+	{
+		// One barrier per buffer covering first..last region, rather than one per
+		// region: the ranges are disjoint but a single span over them is still far
+		// tighter than the whole buffer, and costs one barrier instead of hundreds.
 		const VkBufferCopy* lastp = &regions_prim[num_regions - 1];
 		const VkBufferCopy* lastq = &regions_pos[num_regions - 1];
-		barrier_prim_size = (lastp->dstOffset + lastp->size) - regions_prim[0].dstOffset;
-		barrier_pos_size = (lastq->dstOffset + lastq->size) - regions_pos[0].dstOffset;
+
+		barrier_prim_offset = regions_prim[0].dstOffset;
+		barrier_prim_size = (lastp->dstOffset + lastp->size) - barrier_prim_offset;
+		barrier_pos_offset = regions_pos[0].dstOffset;
+		barrier_pos_size = (lastq->dstOffset + lastq->size) - barrier_pos_offset;
+		need_barrier = true;
 	}
 
 	VkBufferMemoryBarrier barriers[2] = {
@@ -1493,7 +1859,7 @@ void vkpt_blood_update(
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.buffer = qvk.buf_primitive_instanced.buffer,
-			.offset = regions_prim[0].dstOffset,
+			.offset = barrier_prim_offset,
 			.size = barrier_prim_size,
 		},
 		{
@@ -1503,12 +1869,12 @@ void vkpt_blood_update(
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.buffer = qvk.buf_positions_instanced.buffer,
-			.offset = regions_pos[0].dstOffset,
+			.offset = barrier_pos_offset,
 			.size = barrier_pos_size,
 		}
 	};
 
-	if (!skip_upload && num_regions)
+	if (need_barrier)
 	{
 		vkCmdPipelineBarrier(cmd_buf,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1523,11 +1889,12 @@ void vkpt_blood_update(
 		if (now - last_report > 1000)
 		{
 			last_report = now;
-			Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB\n",
+			Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions%s\n",
 				blood.sphere_count, blood.splat_count, blood.cache_hits, blood.cache_moves, prim_count,
 				blood.sphere_count ? (float)prim_count / blood.sphere_count : 0.f,
 				gen_usec / 1000.f, copy_usec / 1000.f, skip_upload ? " (skipped)" : "",
-				(float)(up_prim_bytes + up_pos_bytes) / (1024.f * 1024.f));
+				(float)(up_prim_bytes + up_pos_bytes) / (1024.f * 1024.f),
+				blood.last_regions, blood.last_epoch ? " EPOCH" : "");
 		}
 	}
 

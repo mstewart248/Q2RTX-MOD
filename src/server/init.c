@@ -191,6 +191,22 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     Q_strlcpy(sv.name, cmd->server, sizeof(sv.name));
     Q_strlcpy(sv.mapcmd, cmd->buffer, sizeof(sv.mapcmd));
 
+    // Publish the spawnpoint so a per-map cfg can vary by which entrance the
+    // player arrived through.  A target_changelevel spells its destination
+    // "base2$base3b", and by id's own convention that spawnpoint names the
+    // level you came FROM - base2 has "base1" and "base3b" starts, base3 has
+    // "base2a" and "base2b".  R_BeginRegistration reads this to exec
+    // maps/<map>@<spawnpoint>.cfg on top of maps/<map>.cfg; see the comment
+    // there.  Empty when the map was started directly ("map base2", a new
+    // game), which is exactly when only the plain cfg should apply.
+    //
+    // This survives a savegame load: sv.mapcmd is written to server.ssv and
+    // read back through SV_ParseMapCmd, so cmd->spawnpoint is right here too.
+    // CVAR_ROM keeps the player from setting it by hand and FROM_CODE is what
+    // gets past that; it is deliberately NOT archived - it describes where the
+    // player is, not anything they chose.
+    Cvar_FullSet("map_spawnpoint", cmd->spawnpoint ? cmd->spawnpoint : "", CVAR_ROM, FROM_CODE);
+
     if (Cvar_VariableInteger("deathmatch")) {
         sprintf(sv.configstrings[CS_AIRACCEL], "%d", sv_airaccelerate->integer);
     } else {

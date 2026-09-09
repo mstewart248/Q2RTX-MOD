@@ -49,6 +49,13 @@ cmdbuf_t        cmd_buffer;
 // points to the buffer current command is executed from
 cmdbuf_t        *cmd_current;
 
+// Whether the current "spawnpoint" section applies - see Cmd_Spawnpoint_f.
+// Cleared while the lines being executed are inside a section that was ruled
+// out.  Cbuf_Execute sets it back when the buffer runs dry, which both scopes a
+// cfg's sections to that cfg and makes an unterminated one impossible to wedge
+// the console with.
+static bool cmd_spawnpoint_section = true;
+
 /*
 ============
 Cmd_Wait_f
@@ -178,6 +185,12 @@ void Cbuf_Execute(cmdbuf_t *buf)
     }
 
     buf->aliasCount = 0;        // don't allow infinite alias loops
+
+    // The buffer has run dry, so whatever cfg opened a "spawnpoint" section is
+    // done with; the next thing through here is unrelated - a line the player
+    // typed, most likely.  A "wait" leaves text behind and so does NOT land
+    // here, which is what lets a section span one.
+    cmd_spawnpoint_section = true;
 }
 
 /*
@@ -1545,6 +1558,11 @@ void Cmd_ExecuteCommand(cmdbuf_t *buf)
 
     cmd_current = buf;
 
+    // Inside a "spawnpoint" section that does not match the entrance the player
+    // used, nothing runs but the section markers themselves.  See Cmd_Spawnpoint_f.
+    if (!cmd_spawnpoint_section && Q_stricmp(cmd_argv[0], "spawnpoint"))
+        return;
+
     // check functions
     cmd = Cmd_Find(cmd_argv[0]);
     if (cmd) {
@@ -2030,8 +2048,115 @@ static void Cmd_MapCvar_f(void)
     Cvar_SetEx(name, value, FROM_CODE);
 }
 
+/*
+===============
+spawnpoint
+
+"spawnpoint <name> [name...]" divides a map's cfg into SECTIONS, one per
+entrance.  Everything below the line runs only when the player arrived through
+one of the named spawnpoints; the next "spawnpoint" line starts a new section
+and "spawnpoint any" goes back to unconditional.  A cfg that never says
+"spawnpoint" is unaffected.
+
+A target_changelevel names its destination "base2$base3b", and by id's own
+convention the half after the $ is the level you came FROM - so base2.cfg can
+read:
+
+    mapcvar cl_fog 3                    // shared by every entrance
+    mapcvar sky_map_sun_elevation -5    // and the default look
+    mapcvar sky_map_sun_azimuth 285
+
+    spawnpoint base1                    // walked in from base1
+    mapcvar sky_map_sun_azimuth 300
+
+    spawnpoint base3b                   // came back up out of base3
+    mapcvar sky_map_sun_elevation -20
+    mapcvar sky_map_sun_azimuth 340
+
+Note that a cvar touched in ONE section only is left alone in the others - it
+keeps whatever the player had - so anything a section overrides wants a default
+above the first section, as sky_map_sun_azimuth has here.
+
+Names:
+    <name>      the spawnpoint exactly - base3b.  The map's own spelling works
+                too, but must be QUOTED, "base2$base3b", or $base3b is read as
+                a cvar; the map half is ignored either way
+    <prefix>*   every spawnpoint starting with it, so "base3*" catches base3a
+                and base3b both
+    none        arrived with no spawnpoint at all - a new game, or "map base2"
+    any  / *    end the sections, back to unconditional
+
+The name is printed at map load ("spawnpoint \"base3b\"") so it never has to be
+guessed at; "spawnpoint" on its own prints the current one too.
+
+Where the value comes from: SV_SpawnServer publishes the read-only cvar
+map_spawnpoint, and CL_ParseServerData clears it for a demo or a remote server,
+which cannot tell us.  It survives a savegame load, because the whole map
+command is written to server.ssv.
+===============
+*/
+static void Cmd_Spawnpoint_f(void)
+{
+    const char *here = Cvar_VariableString("map_spawnpoint");
+    int         argc = Cmd_Argc();
+
+    if (argc < 2) {
+        if (*here)
+            Com_Printf("Arrived through spawnpoint \"%s\".\n", here);
+        else
+            Com_Printf("No spawnpoint - this map was started directly.\n");
+        Com_Printf("Usage: spawnpoint <name|prefix*|none|any> [name...]\n");
+        Com_Printf("In a map cfg, gates every line below it on the entrance used.\n");
+        return;
+    }
+
+    cmd_spawnpoint_section = false;
+
+    for (int i = 1; i < argc; i++) {
+        const char *want = Cmd_Argv(i);
+        const char *dollar = strchr(want, '$');
+        size_t      len;
+
+        // "base2$base3b" is how the map itself spells it; take the half that
+        // names the entrance and ignore the map, which we are already in.
+        if (dollar)
+            want = dollar + 1;
+
+        if (!strcmp(want, "*") || !Q_stricmp(want, "any")) {
+            cmd_spawnpoint_section = true;      // sections end here
+            break;
+        }
+
+        if (!Q_stricmp(want, "none")) {
+            if (!*here) {
+                cmd_spawnpoint_section = true;
+                break;
+            }
+            continue;
+        }
+
+        if (!*here)
+            continue;               // nothing below can match a real name
+
+        len = strlen(want);
+        if (len && want[len - 1] == '*') {
+            if (!Q_strncasecmp(want, here, len - 1)) {
+                cmd_spawnpoint_section = true;
+                break;
+            }
+            continue;
+        }
+
+        if (!Q_stricmp(want, here)) {
+            cmd_spawnpoint_section = true;
+            break;
+        }
+    }
+}
+
 static const cmdreg_t c_cmd[] = {
     { "mapcvar", Cmd_MapCvar_f },
+    { "spawnpoint", Cmd_Spawnpoint_f },
     { "cmdlist", Cmd_List_f },
     { "macrolist", Cmd_MacroList_f },
     { "exec", Cmd_Exec_f, Cmd_Exec_c },

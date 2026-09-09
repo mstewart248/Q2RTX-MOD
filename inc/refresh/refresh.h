@@ -221,7 +221,39 @@ typedef struct blood_sphere_s {
     // stretch 1 (or a zero tangent) is the round splat.
     vec3_t  tangent;
     float   stretch;
+
+    // How much of `stretch` the pool picked up by SLIDING rather than by landing,
+    // in the same units.  The renderer shifts the mesh back along `tangent` by
+    // exactly that much, so the length a pool gains while running downhill trails
+    // BEHIND it instead of growing forward as well - a smear being drawn rather
+    // than a stretched blob being carried.
+    //
+    // The impact smear is deliberately not counted here: it belongs to the moment
+    // of contact and stays centred on it.  0 for everything that never slid,
+    // which is the great majority of splats, and they are byte-identical to
+    // before this field existed.
+    float   stretch_trail;
+
+    // Rim clipping - eight nibbles giving how far the surface reaches in eight
+    // directions around the splat, in tenths of the nominal rim radius.  See
+    // cparticle_t::blood_rim for how it is measured; here it only trims the
+    // outline, so a splat that landed at the edge of a ledge stops AT the edge
+    // instead of hanging its far half out over the drop.
+    //
+    // 0xffffffff (BLOOD_RIM_FULL) takes the untouched path, so every splat away
+    // from an edge generates byte-identical geometry to before this existed.  It
+    // is quantized for the same reason the fade is: it feeds the geometry cache,
+    // and anything that varies continuously there rebuilds the mesh every frame.
+    uint32_t rim_support;
 } blood_sphere_t;
+
+// The rim encoding, shared because the client measures it and the renderer
+// consumes it. Eight directions around the splat, each a reach in TENTHS of the
+// nominal rim radius - so 10 is exactly the rim, 15 covers the outward lobes
+// pt_blood_wobble adds, and 0 is "no surface at all this way".
+#define BLOOD_RIM_SAMPLES   8
+#define BLOOD_RIM_FULL      0xffffffffu
+#define BLOOD_RIM_SCALE     10.0f
 
 typedef struct lightstyle_s {
     float           white;          // highest of RGB

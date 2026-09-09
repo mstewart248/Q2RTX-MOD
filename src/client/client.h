@@ -777,9 +777,17 @@ centity_t *CL_TraceHitEntity(const trace_t *tr);
 blood_sphere_t *V_AddBloodSphere(void);
 
 // Wet impact sounds for landing blood - registered in CL_RegisterTEntSounds,
-// played from CL_BloodStick.
-#define NUM_BLOOD_SFX 3
+// played from CL_BloodStick.  One of these is picked at random per impact.
+#define NUM_BLOOD_SFX 2
 extern qhandle_t cl_sfx_blood_splat[NUM_BLOOD_SFX];
+
+// The POOLING sound, played from CL_BloodPoolInto when a droplet is absorbed
+// into blood that is already there instead of leaving a mark of its own.
+//
+// That event used to be SILENT, and it is the most common one there is once
+// pooling is on: a merging droplet returns early and never reaches
+// CL_BloodStick, so it never reached the impact sound either.
+extern qhandle_t cl_sfx_blood_pool;
 void V_AddLight(const vec3_t org, float intensity, float r, float g, float b);
 void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float b, float radius);
 // per-light volumetric scale for the light most recently added; negative puts it
@@ -924,8 +932,42 @@ typedef struct cparticle_s {
     int     blood_state;        // BLOOD_AIRBORNE / BLOOD_STUCK
     vec3_t  blood_normal;       // surface normal while stuck
     float   blood_flatten;      // 1 = round; drops toward the splat target on impact
-    vec3_t  blood_tangent;      // impact direction in the surface plane
+    vec3_t  blood_tangent;      // long axis in the surface plane
     float   blood_stretch;      // elongation along blood_tangent; 1 = round
+
+    // RESHAPING WHILE IT SLIDES.  blood_tangent starts as the impact direction,
+    // and for a splat that never moves again that is the whole story.  But a pool
+    // that lands smeared along X and then runs downhill along Y kept its X smear
+    // the whole way, because nothing touched the tangent after the landing frame.
+    // A mark's direction is the direction the blood went, and blood that keeps
+    // going has a new one.  See CL_BloodReshapeSlide.
+    //
+    // blood_slide_axis is the desired axis, turned smoothly every frame; it is
+    // NOT in blood_sphere_t, so moving it costs nothing.  blood_tangent is
+    // committed from it only once the two differ enough to matter, because that
+    // one IS in blood_sphere_t and the renderer caches on the whole struct.
+    vec3_t  blood_slide_axis;
+    float   blood_stretch_base; // the elongation it landed with
+    float   blood_slide_dist;   // how far it has travelled since landing
+
+    // SETTLING: a pool that has stopped running is not finished.
+    //
+    // A run draws the mark out along the direction of travel, which is right
+    // while the blood is moving and wrong the moment it stops - what is left at
+    // the bottom of a slope is a POOL, not a streak.  So the length the run
+    // added is handed back over cl_blood_slide_relax seconds, and at the end of
+    // that the splat asks ONCE whether it has come to rest against blood that is
+    // already lying there.
+    //
+    // All three are deliberately OUTSIDE blood_sphere_t: the renderer caches
+    // geometry on a memcmp of that struct, so a value that moves every frame
+    // pays a full per-vertex rebuild every frame.  blood_stretch is the
+    // quantized value the renderer sees; these are the continuous state it is
+    // derived from - the same split blood_slide_axis needs, and for the same
+    // reason.  Thresholding a smoothed value against ITSELF never fires.
+    bool    blood_settling;     // armed once, on the frame the run stopped
+    float   blood_settle;       // seconds of settling left
+    float   blood_stretch_run;  // the elongation the run ended with
 
     // The brush model this splat is riding, or -1 for the world.  A door, lift
     // or platform carries its blood with it; without this a splat is a world
@@ -940,10 +982,41 @@ typedef struct cparticle_s {
     int     blood_ent_id;
     vec3_t  blood_local_org;    // contact point in the entity's own frame
     vec3_t  blood_local_normal; // and its surface normal, likewise
+
+    // HOW FAR THE SURFACE ACTUALLY REACHES, in eight directions around the rim.
+    //
+    // A splat is a DISC and it lands wherever its CENTRE lands, so one that lands
+    // near a ledge draws half of itself out over the drop.  The collision trace
+    // cannot see that: it answers "did the droplet hit something", which it did.
+    //
+    // Eight radial probes measure the surface's extent once the droplet has
+    // stopped.  The renderer clips the outline to it, and the unsupported side is
+    // where drips are released from.  Eight nibbles, each the reach in TENTHS of
+    // the nominal rim radius - so 10 is exactly the rim and 15 covers the outward
+    // lobes pt_blood_wobble can add.  BLOOD_RIM_FULL is "supported all the way
+    // round", which is the great majority of splats and takes exactly the path
+    // the mesh always took.
+    //
+    // Measured ONCE, amortised across frames, and again only if pooling grows the
+    // splat - never per frame.  See CL_BloodProbeRim.
+    uint32_t blood_rim;
+    bool     blood_rim_dirty;   // queued for (re)probing
+
+    // Shoves left before an overhanging pool gives up trying to leave.  One
+    // shove usually carries it off the lip; a pool parked in a corner can be
+    // measured as overhanging in a direction that does not actually get it
+    // anywhere, and without a bound it would re-measure and re-shove itself for
+    // the rest of the level.  Out of tries it simply stays, clipped to the edge,
+    // which is still not floating.
+    int      blood_edge_tries;
 } cparticle_t;
 
 #define BLOOD_AIRBORNE  0
 #define BLOOD_STUCK     1
+
+// BLOOD_RIM_SAMPLES / BLOOD_RIM_FULL / BLOOD_RIM_SCALE live in refresh.h, beside
+// blood_sphere_t - the client measures the reach and the renderer consumes it, so
+// the encoding has to be one definition seen by both.
 
 // cparticle_t::particleType
 #define PARTICLE_TYPE_NORMAL        0

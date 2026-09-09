@@ -417,6 +417,10 @@ begin blood
                 "impact volume" cl_blood_sound_volume 0 1 0.05
             range --status "shortest gap between two impact sounds, in milliseconds. Low values turn a heavy fight into a continuous wet crackle; high values give one splat per burst (cl_blood_sound_gap)" \
                 "impact spacing" cl_blood_sound_gap 20 500 10
+            range --status "how many splats close enough to hear go by for each impact sound played. A thinning on top of the spacing above: the spacing decides how many impacts CAN be heard, this decides how sparse the ones you do hear feel. 1 plays one for every splat (cl_blood_sound_skip)" \
+                "impact every Nth splat" cl_blood_sound_skip 1 8 1
+            range --status "shortest gap between two POOLING sounds, in milliseconds - the softer sound of a droplet joining a puddle. Much denser than the impact spacing on purpose, since this one reads as texture when it overlaps. 0 plays one per droplet, but a measured burst merged 668 times in a second, and 668 voices drop the gunfire rather than making the blood loud (cl_blood_sound_pool_gap)" \
+                "pooling spacing" cl_blood_sound_pool_gap 0 500 10
         endif
             range --status "drag on a droplet running down a wall. Low values let it run a long way before stopping, high values stop it near the impact (cl_blood_slide)" \
                 "run-down drag" cl_blood_slide 0 10 0.5
@@ -426,6 +430,19 @@ begin blood
             range --status "how far a splat elongates along the direction the droplet was travelling. 1 is a round dot; higher values leave a directional smear on glancing impacts, and none on head-on ones (cl_blood_stretch)" \
                 "splatter directionality" cl_blood_stretch 1 5 0.25
             blank
+            range --status "how fast a pool that is on the move swings its smear round to the direction it is now travelling. A mark points the way the blood went, and blood still running has a new way. 0 freezes the smear at the impact angle, which is what it used to do (cl_blood_slide_turn)" \
+                "smear follows the slide" cl_blood_slide_turn 0 40 2
+            range --status "how far a long run may draw a pool out, as a multiple of its width. The extra length trails BEHIND the pool, so it reads as a smear being drawn rather than a blob being carried. Set to 1 to keep the landing shape (cl_blood_slide_stretch)" \
+                "run-down streak length" cl_blood_slide_stretch 1 8 0.25
+            range --status "distance a pool has to travel to get most of the way to that streak length, in units. Short values streak a pool out almost at once; long ones need a proper run down a wall (cl_blood_slide_len)" \
+                "streak builds over" cl_blood_slide_len 4 128 4
+            range --status "seconds a pool takes to gather back up once it stops moving. A streak is what blood on the MOVE looks like; what is left at the bottom of a slope is a POOL, and it also asks once, when it has finished gathering, whether it has come to rest against blood already lying there. 0 freezes the streak where it stopped (cl_blood_slide_relax)" \
+                "pool gathers when it stops" cl_blood_slide_relax 0 6 0.2
+            range --status "longest a mark may ever be drawn, tip to tip, in units. A single droplet is free to streak out to the full run-down length, but a pool that has gathered up is forced round - a big pool drawn as a long sliver lies across surface junctions and flickers. 0 removes the limit (cl_blood_streak_len)" \
+                "longest streak" cl_blood_streak_len 0 64 4
+            range --status "how much further a mark may be drawn on a vertical wall than on a flat floor, as a multiple. Gravity acts entirely ALONG a wall, so a run there keeps being drawn out; on a floor none of it does, nothing pulls the film anywhere and the blood spreads instead. 1 treats every surface the same (cl_blood_streak_wall)" \
+                "wall streaks run" cl_blood_streak_wall 1 12 0.5
+            blank
             toggle --status "a droplet landing on an existing splat merges into it and grows it, instead of stacking another overlapping disc in the same place (cl_blood_pool)" \
                 "pool together" cl_blood_pool
 
@@ -433,7 +450,23 @@ begin blood
                 range --status "how far apart two splats can be and still merge, as a multiple of their width. Around 2 gathers a spray into pools; 1 needs them to physically overlap and almost nothing merges (cl_blood_pool_dist)" \
                     "pooling reach" cl_blood_pool_dist 0.5 4 0.25
                 range --status "largest a pool may grow, as a multiple of one droplet. Once a pool reaches it, further droplets start new splats beside it instead (cl_blood_pool_max)" \
-                    "largest pool" cl_blood_pool_max 1 12 0.5
+                    "largest pool" cl_blood_pool_max 1 24 0.5
+                range --status "how much of each absorbed droplet a pool actually gains, as a fraction of its area. At 1 a pool is exactly as wide as the blood in it; lower values mean the first droplets still grow it visibly and the hundredth one barely moves it (cl_blood_pool_gain)" \
+                    "each drop adds" cl_blood_pool_gain 0.1 1 0.05
+            endif
+
+            toggle --status "a splat lands where its CENTRE lands, so one that lands near a ledge draws its far half out over the drop. This measures how far the surface really reaches around the puddle: a pool hanging well over the side slides off it, and whatever stays has its outline clipped to the edge (cl_blood_edge)" \
+                "blood knows about edges" cl_blood_edge
+
+            ifeq cl_blood_edge 1
+                range --status "how much of a pool has to be over thin air before the whole thing lets go and slides off, as a fraction of its rim. A quarter is clearly hanging off the side; at 1 nothing ever slides and every overhang is handled by clipping the outline alone (cl_blood_edge_slide)" \
+                    "slides off when this much overhangs" cl_blood_edge_slide 0 1 0.05
+                range --status "the shove a pool leaves with, along the surface. It is a slide, not a jump - enough to carry the pool past its own rim against the run-down drag, and no more. Everything after that is gravity (cl_blood_edge_push)" \
+                    "slide-off speed" cl_blood_edge_push 10 200 10
+                range --status "how many times one resting place may be argued with. A pool in a corner can measure as overhanging in a direction that gets it nowhere; out of tries it simply stays, clipped to the edge (cl_blood_edge_tries)" \
+                    "slide-off attempts" cl_blood_edge_tries 0 8 1
+                range --status "how many puddles are measured per frame. Measuring happens once in a puddle life, but one wound lands sixty droplets between two frames - spreading the work is what keeps this off the frame time. Raise it if puddles clip or slide a moment late (cl_blood_edge_budget)" \
+                    "edges measured per frame" cl_blood_edge_budget 1 64 1
             endif
         endif
     endif

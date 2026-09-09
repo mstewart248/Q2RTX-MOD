@@ -1059,8 +1059,41 @@ void monster_done_dodge(edict_t *self)
         self->monsterinfo.attack_state = AS_STRAIGHT;
 }
 
+/*
+=================
+M_BaseHeight
+
+The standing maxs[2] monster_duck_down shrinks from and monster_duck_up
+restores.  monster_start captures it at spawn, and it is saved - but a monster
+whose base_height is somehow 0 (an old save, or any future start path that
+misses the capture) would otherwise duck to maxs[2] = -32, BELOW mins[2].  That
+is a degenerate bounding box: nothing can trace against it, so the monster is
+invisible to every bullet while still drawing at full height.  Recover instead,
+and only ever return a height above the monster's own mins.
+=================
+*/
+static float M_BaseHeight(edict_t *self)
+{
+    if (self->monsterinfo.base_height > self->mins[2])
+        return self->monsterinfo.base_height;
+
+    // Not usable.  If the monster is standing at the time, its current maxs[2]
+    // IS the standing height; if it is already ducked, all that is left is the
+    // classic 32 above the origin.
+    if (!(self->monsterinfo.aiflags & AI_DUCKED) && self->maxs[2] > self->mins[2])
+        self->monsterinfo.base_height = self->maxs[2];
+    else
+        self->monsterinfo.base_height = 32;
+
+    return self->monsterinfo.base_height;
+}
+
 void monster_duck_down(edict_t *self)
 {
+    // Read the standing height BEFORE anything sets AI_DUCKED - M_BaseHeight's
+    // recovery path needs to know whether the monster is standing right now.
+    float crouch = M_BaseHeight(self) - 32;
+
     // The classic dodge (see the *_dodge functions, still used whenever the
     // game is not the rerelease) has no M_MonsterDodge in front of it to set
     // the hold up, so it reproduces the 1997 *_duck_down here: refuse to
@@ -1080,11 +1113,14 @@ void monster_duck_down(edict_t *self)
         self->monsterinfo.pause_framenum = self->monsterinfo.duck_wait_framenum;
     }
 
+    // A crouch may never take maxs[2] to or below mins[2]: that is a degenerate
+    // box and the monster stops being hittable altogether.
+    if (crouch < self->mins[2] + 1)
+        crouch = self->mins[2] + 1;
+
     self->monsterinfo.aiflags |= AI_DUCKED;
 
-    // base_height is captured at spawn in monster_start_go; without it a duck
-    // would shrink the monster relative to whatever maxs[2] happened to be.
-    self->maxs[2] = self->monsterinfo.base_height - 32;
+    self->maxs[2] = crouch;
     self->takedamage = DAMAGE_YES;
     self->monsterinfo.next_duck_framenum = level.framenum + DUCK_INTERVAL;
     gi.linkentity(self);
@@ -1112,8 +1148,8 @@ void monster_duck_up(edict_t *self)
     if (!(self->monsterinfo.aiflags & AI_DUCKED))
         return;
 
+    self->maxs[2] = M_BaseHeight(self);
     self->monsterinfo.aiflags &= ~AI_DUCKED;
-    self->maxs[2] = self->monsterinfo.base_height;
     self->takedamage = DAMAGE_YES;
 
     // finishing a duck cleanly halves the remaining cooldown

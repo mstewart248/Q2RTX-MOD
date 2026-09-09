@@ -2697,6 +2697,11 @@ destroy_vulkan(void)
 static int entity_frame_num = 0;
 static uint32_t model_entity_ids[2][MAX_MODEL_INSTANCES];
 static int blood_model_instance_idx = -1;
+
+// Where the blood section starts in the instanced buffers. A HIGH-WATER MARK of
+// the model primitives, not simply "after the models" - see the block comment at
+// the reservation in prepare_entities.
+static uint32_t blood_prim_base = 0;
 static int model_entity_id_count[2];
 static int light_entity_ids[2][MAX_MODEL_LIGHTS];
 static int light_entity_id_count[2];
@@ -3359,9 +3364,39 @@ prepare_entities(EntityUploadInfo* upload_info)
 	//
 	// The reservation is this frame's ACTUAL droplet count rounded up to whole
 	// spheres, not the 512-droplet maximum, so a map with no blood pays nothing.
-	upload_info->blood_prim_offset = num_instanced_prim;
+	//
+	// THE BASE IS PINNED, AND THAT IS A PERFORMANCE FIX, NOT TIDINESS.
+	//
+	// It used to sit immediately after the models, which moves it whenever the
+	// set of visible entities changes - a gib spawning, a corpse being freed, the
+	// weapon model coming out. Moving it invalidates every byte the device holds
+	// for the blood section, because those bytes now belong to a model, so
+	// vkpt_blood_update has to send the whole section again: ~100 MB of memcpy
+	// into write-combined staging, measured at 6-7 ms. In a firefight that fires
+	// on most frames, which is exactly the hitch Matt saw when blood spawned or
+	// landed.
+	//
+	// So the base only ever moves when the models genuinely need more room than
+	// they have ever needed since the last map load, and then it moves in
+	// 4096-primitive steps. The gap between the models and the base is covered by
+	// no BLAS and read by nothing: every section names its own offset and count,
+	// and num_prims below only sizes the buffer.
+	const uint32_t blood_prims = vkpt_blood_prim_count(vkpt_refdef.fd->num_blood_spheres);
+
+	if (blood_prims)
+	{
+		if ((uint32_t)num_instanced_prim > blood_prim_base)
+			blood_prim_base = (uint32_t)Q_align(num_instanced_prim, 4096);
+
+		upload_info->blood_prim_offset = blood_prim_base;
+		num_instanced_prim = (int)(blood_prim_base + blood_prims);
+	}
+	else
+	{
+		upload_info->blood_prim_offset = num_instanced_prim;
+	}
+
 	upload_info->blood_prim_count = 0;    // filled in by vkpt_blood_update
-	num_instanced_prim += (int)vkpt_blood_prim_count(vkpt_refdef.fd->num_blood_spheres);
 
 	// One ModelInstance backs the whole blood section, purely so that
 	// load_and_transform_triangle can recover a primitive index from
@@ -6938,6 +6973,11 @@ R_BeginRegistration_RTX(const char *name)
 	Com_Printf("loading %s\n", name);
 	vkpt_device_wait_idle();
 
+	// The blood section's base tracks this map's peak model primitive count, so
+	// it must not inherit the last one's - a big map followed by a small one
+	// would otherwise leave the gap open for the rest of the session.
+	blood_prim_base = 0;
+
 	// New level - DLSS must not reproject from the previous one.
 	vkpt_dlss_request_history_reset();
 
@@ -6947,6 +6987,14 @@ R_BeginRegistration_RTX(const char *name)
 	// per-map override lasts exactly one map and leaves the player's own value
 	// behind when they move on.
 	Cmd_RestoreMapCvars();
+
+	// Name the entrance the player used before the map's cfg runs: that cfg can
+	// gate sections of itself on it with the "spawnpoint" command, and the names
+	// are not guessable - base3's way back into base2 is "base3b", not "base3".
+	// Silent when there is none, which means a new game or a direct "map".
+	const char *spawnpoint = Cvar_VariableString("map_spawnpoint");
+	if (*spawnpoint)
+		Com_Printf("spawnpoint \"%s\"\n", spawnpoint);
 
 	Com_AddConfigFile("maps/default.cfg", 0);
 	Com_AddConfigFile(va("maps/%s.cfg", name), 0);
