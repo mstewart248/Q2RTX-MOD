@@ -553,6 +553,100 @@ static void MD5_LoadScale(iqm_model_t *iqmData, const char *mesh_name,
 /*
 =================================================================
 
+  MD5_WeldSeamNormals
+
+  A .md5mesh stores one vertex per (position, texcoord) pair, so every
+  point a texture seam runs through appears two or more times, each copy
+  with its own vertex normal.  Accumulating face normals per vertex INDEX
+  therefore gives each copy only the faces on its own side of the cut, and
+  the model lights with a hard crease along every UV boundary - on the
+  rerelease soldier that is 46% of the vertices, up to 81 degrees apart,
+  and the worst of it is on the helmet.
+
+  Nothing downstream can undo it: tangents are supposed to split at a seam
+  and the shader interpolates whatever normals it is handed.  So weld the
+  accumulated (still unnormalized) normals by bind position first.  The
+  duplicates are exact copies of the same weight list, so they land on
+  bit-identical positions; the quantization below only exists so that an
+  exporter emitting near-duplicates still welds.
+
+=================================================================
+*/
+
+#define MD5_WELD_GRID   1024.0f     // weld tolerance is one part in this
+
+typedef struct {
+    int32_t     key[3];
+    int         vert;
+} md5_weld_entry_t;
+
+static void MD5_WeldSeamNormals(iqm_model_t *iqmData, int total_verts)
+{
+    md5_weld_entry_t    *table;
+    int                 *head;
+    uint32_t            size = 16;
+
+    while (size < (uint32_t)total_verts * 2)
+        size <<= 1;
+
+    table = Z_Mallocz(sizeof(*table) * size);
+    head = Z_Mallocz(sizeof(*head) * total_verts);
+
+    for (uint32_t i = 0; i < size; i++)
+        table[i].vert = -1;
+
+    // first pass: find the representative vertex of each point in space and
+    // fold every duplicate's normal into it
+    for (int i = 0; i < total_verts; i++) {
+        const float *pos = iqmData->positions + i * 3;
+        int32_t key[3];
+        uint32_t h = 2166136261u;
+
+        for (int k = 0; k < 3; k++) {
+            key[k] = (int32_t)floorf(pos[k] * MD5_WELD_GRID + 0.5f);
+            h = (h ^ (uint32_t)key[k]) * 16777619u;
+        }
+
+        for (uint32_t probe = h & (size - 1); ; probe = (probe + 1) & (size - 1)) {
+            md5_weld_entry_t *e = &table[probe];
+
+            if (e->vert < 0) {
+                e->key[0] = key[0];
+                e->key[1] = key[1];
+                e->key[2] = key[2];
+                e->vert = i;
+                head[i] = i;
+                break;
+            }
+            if (e->key[0] == key[0] && e->key[1] == key[1] && e->key[2] == key[2]) {
+                float *dst = iqmData->normals + e->vert * 3;
+
+                head[i] = e->vert;
+                VectorAdd(dst, iqmData->normals + i * 3, dst);
+                break;
+            }
+        }
+    }
+
+    // second pass: hand the welded normal back to every duplicate.  A single
+    // forward walk is enough because a representative is always the lowest
+    // index of its group, so it is already normalized when a duplicate reads it
+    for (int i = 0; i < total_verts; i++) {
+        float *dst = iqmData->normals + i * 3;
+
+        if (head[i] == i)
+            VectorNormalize(dst);
+        else
+            VectorCopy(iqmData->normals + head[i] * 3, dst);
+    }
+
+    Z_Free(table);
+    Z_Free(head);
+}
+
+/*
+=================================================================
+
   MOD_LoadMD5_Base
 
   Fills model->iqmData.  The caller owns the hunk and is responsible
@@ -894,8 +988,10 @@ int MOD_LoadMD5_Base(model_t *model, const void *rawdata, size_t length, const c
             first_triangle += mesh->num_tris;
         }
 
-        for (int i = 0; i < total_verts; i++)
-            VectorNormalize(iqmData->normals + i * 3);
+        // the accumulation above is per vertex INDEX, and a texture seam
+        // splits one point into several of those, so this is where the
+        // smoothing actually happens
+        MD5_WeldSeamNormals(iqmData, total_verts);
     }
 
     model->iqmData = iqmData;
