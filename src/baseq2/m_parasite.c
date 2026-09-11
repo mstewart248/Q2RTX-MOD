@@ -43,6 +43,7 @@ static int  sound_search;
 void parasite_stand(edict_t *self);
 void parasite_start_run(edict_t *self);
 void parasite_run(edict_t *self);
+static void proboscis_retract(edict_t *self);   // parasite_run/_pain let go with it
 void parasite_walk(edict_t *self);
 void parasite_start_walk(edict_t *self);
 void parasite_end_fidget(edict_t *self);
@@ -221,6 +222,15 @@ void parasite_start_run(edict_t *self)
 
 void parasite_run(edict_t *self)
 {
+    // [rerelease] Going back to running means the attack is over, so the barb
+    // comes home.  This is the catch-all that stops one being left stuck: the
+    // drain animation reels its own barb in, but anything that interrupts that
+    // animation - pain, a new enemy, losing the enemy - lands here instead, and
+    // without this the tip stays in the player draining forever.
+    // style 2 is already retracting; let that one finish on its own.
+    if (self->proboscus && self->proboscus->style != 2)
+        proboscis_retract(self->proboscus);
+
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         self->monsterinfo.currentmove = &parasite_move_stand;
     else
@@ -266,16 +276,25 @@ void parasite_walk(edict_t *self)
 }
 
 
+// [rerelease] Cut a frame out of the flinch, so the parasite is back on you
+// sooner.  Gated: pain101-111 is a table BOTH games play and the original runs
+// it whole.
+static void parasite_pain_skip(edict_t *self)
+{
+    if (M_RereleaseGame())
+        self->monsterinfo.nextframe = FRAME_pain105;
+}
+
 mframe_t parasite_frames_pain1 [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
+    { ai_move, 0, parasite_pain_skip },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 6, NULL },
+    { ai_move, 6, monster_footstep },
     { ai_move, 16, NULL },
-    { ai_move, -6, NULL },
+    { ai_move, -6, monster_footstep },
     { ai_move, -7, NULL },
     { ai_move, 0, NULL }
 };
@@ -287,6 +306,19 @@ void parasite_pain(edict_t *self, edict_t *other, float kick, int damage)
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
+
+    // [rerelease] Hurting it makes it let go.  Note this is OUTSIDE the
+    // nightmare gate below: even with no pain animation the barb still comes
+    // out, which is the only way to break a drain on skill 3.
+    if (self->proboscus && self->proboscus->style != 2) {
+        proboscis_retract(self->proboscus);
+        // proboscis_retract asks a parasite that is still in the drain
+        // animation to skip ahead to FRAME_drain12.  We are about to leave that
+        // animation entirely, and M_MoveFrame ignores an out-of-range nextframe
+        // WITHOUT clearing it - so it would sit there and fire on the NEXT
+        // attack, skipping the launch and going straight to the reel-in.
+        self->monsterinfo.nextframe = 0;
+    }
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 
@@ -428,6 +460,11 @@ TWO ADAPTATIONS, both deliberate:
 #define PROBOSCIS_SPEED         1250.0f
 #define PROBOSCIS_RETRACT_MUL   2.0f
 
+// models/monsters/parasite/segment/tris.md2 spans x -16..+16 - it is CENTRED on
+// its origin - and CL_AddBeams places one copy AT each point it steps along.
+// See proboscis_segment_draw for why that matters here.
+#define PROBOSCIS_SEGMENT_HALF  16.0f
+
 void parasite_reel_in(edict_t *self);
 void proboscis_reset(edict_t *self);
 static void proboscis_retract(edict_t *self);
@@ -473,16 +510,50 @@ static void parasite_get_proboscis_start(edict_t *self, vec3_t start)
     }
 
     G_ProjectSource(self->s.origin, offset, f, r, start);
+    gi.dprintf("PARDBG start frame %d org %.1f %.1f %.1f yaw %.1f off %.1f %.1f %.1f -> %.1f %.1f %.1f\n",
+               self->s.frame, self->s.origin[0], self->s.origin[1], self->s.origin[2],
+               self->s.angles[YAW], offset[0], offset[1], offset[2],
+               start[0], start[1], start[2]);
 }
 
 // Draw the tether.  cl_mod_parasite_segment is the real segment model, stretched
 // between the two points by CL_ParseBeam.
+/*
+=================
+proboscis_segment_draw
+
+The tether is a chain of segment models laid down by CL_AddBeams, and that
+function places each 32-unit copy CENTRED on the point it steps along - so a
+beam sent as start->end is really drawn from `start - 16` to `end - 14` measured
+along its own axis.
+
+The CLASSIC drain hides that: `parasite_drain_attack` launches from offset
+(24, 0, 6) and the model's snout only reaches x 22-30, so the overhanging half
+lands just clear of the nose.  The rerelease's authored emergence points are
+much closer in - `parasite_drain_offsets` runs from x -2.2 to +7.7, because
+THEIR renderer draws an RF_BEAM that BEGINS at that point instead of straddling
+it.  Feed those numbers to the tiling loop unchanged and the first copy hangs 16
+units out of the parasite's back; when it fires at something below it, that is
+straight up out of its shoulders, which is what Matt saw.
+
+So advance the point we put on the wire by half a segment.  The chain then
+begins where the animation says the proboscis leaves the mouth.  Clamped so a
+barb closer than half a segment does not push the start past its own end.
+=================
+*/
 static void proboscis_segment_draw(edict_t *parasite, vec3_t start, vec3_t end)
 {
+    vec3_t dir, org;
+    float  dist;
+
+    VectorSubtract(end, start, dir);
+    dist = VectorNormalize(dir);
+    VectorMA(start, min(PROBOSCIS_SEGMENT_HALF, dist), dir, org);
+
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(TE_PARASITE_ATTACK);
     gi.WriteShort(parasite - g_edicts);
-    gi.WritePosition(start);
+    gi.WritePosition(org);
     gi.WritePosition(end);
     gi.multicast(parasite->s.origin, MULTICAST_PVS);
 }
@@ -540,6 +611,11 @@ void proboscis_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t 
         // stick to this guy - remember where on him we landed
         VectorSubtract(p, other->s.origin, self->move_origin);
         self->enemy = other;
+        // [rerelease] a buried barb fades out, so it reads as being IN the
+        // victim rather than stuck on the outside of him.  This needed the
+        // per-entity alpha that U_ALPHA added; older notes here say the field
+        // does not exist in this tree and are out of date.
+        self->s.alpha = 0.35f;
         gi.sound(self, CHAN_WEAPON, sound_suck, 1, ATTN_NORM, 0);
     } else if (other->svflags & (SVF_MONSTER | SVF_DEADMONSTER)) {
         // another monster: a scratch, and pull straight back
@@ -1180,6 +1256,7 @@ void SP_monster_parasite(edict_t *self)
     // animations only exist on the rerelease model, so blocked_checkjump
     // gates itself on M_RereleaseAnims(); the plat half needs no frames.
     if (M_RereleaseGame()) {
+        self->yaw_speed = 30;   // theirs; monster_start would otherwise leave 20
         self->monsterinfo.blocked = parasite_blocked;
         self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_PARASITE_NOJUMPING);
         self->monsterinfo.drop_height = 256;

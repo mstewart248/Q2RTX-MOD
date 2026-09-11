@@ -70,6 +70,13 @@ typedef struct pbr_material_s {
 	imagetype_t image_type;
 	bool synth_emissive;
 	int emissive_threshold;
+	// One bit per .mat attribute (enum AttributeIndex in material.c) that this
+	// definition stated ITSELF, as opposed to inheriting it or auto-detecting
+	// it. Two things read it: the sidecar auto-detection in MAT_Find, which
+	// only fills a texture slot the definition left unsaid, and
+	// MAT_InheritScalars, which never overwrites a value the definition spelled
+	// out.
+	uint32_t specified_fields;
 	// How much light from surfaces using this material scatters into the
 	// volumetric medium, relative to how much it lights other surfaces - RTX
 	// Remix's per-light volumetricRadianceScale, expressed per material because
