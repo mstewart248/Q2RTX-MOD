@@ -624,6 +624,16 @@ void InitClientPersistant(gclient_t *client)
 		}
 	}
 
+    // [rerelease] the compass is not placed in any map - the rerelease hands it
+    // to you outside deathmatch and it lives on the item wheel. Gated on
+    // M_RereleaseGame() so the original campaign is untouched.
+    if (M_RereleaseGame() && !deathmatch->value) {
+        gitem_t *item_compass = FindItem("Compass");
+
+        if (item_compass)
+            client->pers.inventory[ITEM_INDEX(item_compass)] = 1;
+    }
+
     client->pers.health         = 100;
     client->pers.max_health     = 100;
 

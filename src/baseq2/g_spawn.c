@@ -1146,6 +1146,11 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     int* mapVersion = &mapVersionStorage;
     char* pathList = GetEmptyString(256);
 
+    // the navmesh is TAG_LEVEL, so it is freed with the rest of the level and
+    // has to be reloaded here for every map - including on a savegame load,
+    // which runs through this same path
+    Nav_Load(mapname);
+
     *mapVersion = 0;
     skill_level = floor(skill->value);
     if (skill_level < 0)

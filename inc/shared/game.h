@@ -183,6 +183,19 @@ typedef struct {
     void (*AddCommandString)(const char *text);
 
     void (*DebugGraph)(float value, int color);
+
+    // [Q2RTX] Read a file through the engine's SEARCH PATH, so the game can get
+    // at data that lives inside a pak. g_localize.c and g_save.c use plain
+    // fopen, which only ever sees loose files - fine for a savegame it wrote
+    // itself, useless for shipped data. The navmeshes are the first thing that
+    // genuinely needs this: most people supply the remaster as pak0.pak rather
+    // than an extracted tree.
+    //
+    // Returns the length and sets *buffer, or returns < 0 and sets *buffer to
+    // NULL. Free with FreeFile. APPENDED to the struct so every existing entry
+    // keeps its offset.
+    int (*LoadFile)(const char *path, void **buffer);
+    void (*FreeFile)(void *buffer);
 } game_import_t;
 
 //

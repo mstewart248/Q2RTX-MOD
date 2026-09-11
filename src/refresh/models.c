@@ -228,7 +228,22 @@ get_model_class(const char *name)
 		return MCLASS_EXPLOSION;
 	else if (!strcmp(name, "models/objects/r_explode/tris.md2"))
 		return MCLASS_EXPLOSION;
-	else if (!strcmp(name, "models/objects/flash/tris.md2"))
+	// A SUFFIX, not an exact name: the rerelease muzzle flashes live at
+	// models/weapons/v_<gun>/flash/tris.md2 and have to land here too.
+	//
+	// This class routes a model to the effects TLAS, whose hit shader
+	// (pt_logic_explosion) samples base_texture and does
+	//     emission.a *= alpha;  emission.rgb *= emission.a;
+	// i.e. SOFT PER-TEXEL alpha - a bright core tapering out at the edges.
+	// That taper is the entire look of a muzzle flash and it is why the flash
+	// is here rather than on MCLASS_REGULAR. The regular path can sample
+	// texture_emissive, but its only transparency is texture_mask, a hard
+	// binary >= 0.5 cutout that renders a flat opaque star - tolerable across
+	// a room, wrong at arm's length in front of your own gun.
+	//
+	// The flashes therefore carry NO emissive map on purpose. They do not need
+	// one: every weapon that fires already spawns its own dynamic light.
+	else if (strstr(name, "/flash/tris.md2"))
 		return MCLASS_FLASH;
 	else if (!strcmp(name, "models/objects/smoke/tris.md2"))
 		return MCLASS_SMOKE;

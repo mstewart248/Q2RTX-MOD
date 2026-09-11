@@ -682,6 +682,8 @@ snd_params_t    snd;
 
 static void CL_ParseTEntPacket(void)
 {
+    int i;
+
     te.type = MSG_ReadByte();
 
     switch (te.type) {
@@ -775,6 +777,22 @@ static void CL_ParseTEntPacket(void)
     case TE_FLASHLIGHT:
         MSG_ReadPos(te.pos1);
         te.entity1 = MSG_ReadShort();
+        break;
+
+    // the compass objective marker: where, which icon, and how long for
+    case TE_POI:
+        MSG_ReadPos(te.pos1);
+        te.count = MSG_ReadShort();
+        te.time = MSG_ReadShort();
+        break;
+
+    // the compass breadcrumb trail - a count then that many positions
+    case TE_POI_PATH:
+        te.count = MSG_ReadByte();
+        if (te.count > MAX_POI_PATH)
+            te.count = MAX_POI_PATH;
+        for (i = 0; i < te.count; i++)
+            MSG_ReadPos(te.path[i]);
         break;
 
     case TE_FORCEWALL:

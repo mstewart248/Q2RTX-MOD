@@ -168,6 +168,86 @@ void target_poi_use(edict_t *ent, edict_t *other, edict_t *activator)
     }
 }
 
+/*
+=================
+Use_Compass
+
+The rerelease compass. target_poi above already tracks where the current
+objective is (level.valid_poi / level.current_poi); this points the player at
+it.
+
+The rerelease ALSO lays a trail of breadcrumb markers along a navmesh path to
+the objective (svc_help_path + PathRequest in g_items.cpp's Compass_Update).
+**That half is not ported and cannot be without a navigation mesh** - this tree
+has no path system at all, which is the same reason target_poi's "nearest"
+test falls back to straight-line distance. What you get is the objective
+marker itself, which is the part that actually tells you where to go.
+
+Not consumed on use, like the flashlight.
+=================
+*/
+void Use_Compass(edict_t *ent, gitem_t *item)
+{
+    if (!level.valid_poi) {
+        gi.cprintf(ent, PRINT_HIGH, "No objective marker on this map.\n");
+        return;
+    }
+
+    // a DYNAMIC poi recomputes its position when used, so give it the chance
+    if (level.current_dynamic_poi && level.current_dynamic_poi->use)
+        level.current_dynamic_poi->use(level.current_dynamic_poi, ent, ent);
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_POI);
+    gi.WritePosition(level.current_poi);
+    gi.WriteShort(level.current_poi_image);
+    gi.WriteShort(100);     // tenths of a second, so 10 s
+    gi.unicast(ent, true);
+
+    // [Q2RTX] The breadcrumb trail. The rerelease walks a navmesh path to the
+    // objective and drops a marker at each step; we have the same navmesh now
+    // (g_nav.c), so lay the trail here.
+    //
+    // Sent as ONE packet rather than the rerelease's one-marker-every-200ms
+    // dribble - there is no gameplay reason for the drip, and a single unicast
+    // cannot get out of step with the player moving. The path is subsampled to
+    // at most POI_PATH_MAX points so a long route still fits in one message.
+    //
+    // No navmesh (or no route) simply means no trail; the objective marker
+    // above is unaffected.
+    if (Nav_Loaded()) {
+        static int  path[512];
+        int         n;
+
+        n = Nav_PathToPoint(ent->s.origin, level.current_poi,
+                            path, q_countof(path));
+        if (n > 1) {
+            int step = (n + POI_PATH_MAX - 1) / POI_PATH_MAX;
+            int sent = 0, i;
+            vec3_t  pts[POI_PATH_MAX];
+
+            if (step < 1)
+                step = 1;
+
+            for (i = 0; i < n && sent < POI_PATH_MAX; i += step) {
+                if (Nav_NodeOrigin(path[i], pts[sent]))
+                    sent++;
+            }
+
+            if (sent > 1) {
+                gi.WriteByte(svc_temp_entity);
+                gi.WriteByte(TE_POI_PATH);
+                gi.WriteByte(sent);
+                for (i = 0; i < sent; i++)
+                    gi.WritePosition(pts[i]);
+                gi.unicast(ent, true);
+            }
+        }
+    }
+
+    gi.sound(ent, CHAN_ITEM, gi.soundindex("misc/help_marker.wav"), 1, ATTN_NORM, 0);
+}
+
 void target_poi_setup(edict_t *self)
 {
     if (self->team) {

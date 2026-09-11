@@ -1249,6 +1249,17 @@ typedef enum {
 	// re-sent every frame of the wind-up - so it needs a silent twin. Same
 	// packet shape as TE_PARASITE_ATTACK. Fork-local: append below, never above.
 	TE_LIGHTNING_BEAM,
+	// Rerelease: the compass objective marker (item_compass -> target_poi).
+	// UNICAST to the player who used the compass rather than multicast, which
+	// is why it carries no entity number. Fork-local: append below, never
+	// above. Packet is [position][short image][short lifetime in tenths].
+	TE_POI,
+	// Rerelease: the compass breadcrumb trail, one packet carrying the whole
+	// path. The rerelease dribbles these out one marker every 200 ms over its
+	// own svc_help_path; a single unicast is simpler and there is no gameplay
+	// reason for the drip. Packet is [byte count][count * position].
+	// Fork-local: append below, never above.
+	TE_POI_PATH,
 
     TE_NUM_ENTITIES
 } temp_event_t;

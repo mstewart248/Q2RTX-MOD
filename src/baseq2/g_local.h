@@ -1355,6 +1355,37 @@ void blacklight_think(edict_t *self);
 void trigger_disguise_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 void trigger_disguise_use(edict_t *self, edict_t *other, edict_t *activator);
 
+// NAVIGATION MESH (g_nav.c). The rerelease's own navmeshes, loaded per level.
+// Nothing here is wired into monster AI yet - see Nav_FindPath's callers.
+void Nav_Load(const char *mapname);
+void Nav_Free(void);
+bool Nav_Loaded(void);
+int  Nav_NearestNode(const vec3_t point, float max_dist);
+int  Nav_FindPath(int from, int to, int *out, int max_out);
+int  Nav_PathToPoint(const vec3_t from, const vec3_t to, int *out, int max_out);
+
+// What a mover can do, so a route is not planned over a jump it cannot make.
+// NULL caps anywhere below means "no limits".
+typedef struct {
+    float   jump_height;    // tallest climb it will take; 0 = cannot climb
+    float   drop_height;    // longest drop it will take; 0 = cannot drop
+} nav_caps_t;
+
+int  Nav_FindPathCaps(int from, int to, const nav_caps_t *caps, int *out, int max_out);
+int  Nav_PathToPointCaps(const vec3_t from, const vec3_t to, const nav_caps_t *caps,
+                         int *out, int max_out);
+bool Nav_NodeOrigin(int node, vec3_t out);
+void Cmd_Nav_f(edict_t *ent);
+bool Nav_MonsterPursue(edict_t *self);
+void Nav_ClearPursuit(void);
+extern int hint_paths_present;
+
+// Rerelease compass (g_rerelease.c) - points at level.current_poi.
+void Use_Compass(edict_t *ent, gitem_t *item);
+// how many breadcrumb points one TE_POI_PATH carries; a longer route is
+// subsampled down to this rather than split across packets
+#define POI_PATH_MAX    16
+
 // ROGUE POWERUPS (g_rogue_items.c).
 void Use_IR(edict_t *ent, gitem_t *item);
 void Use_Invisibility(edict_t *ent, gitem_t *item);

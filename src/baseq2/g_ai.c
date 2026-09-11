@@ -1228,6 +1228,17 @@ void ai_run(edict_t *self, float dist)
             return;
     }
 
+    // [Q2RTX] No hint path took us anywhere. If this map has a navmesh, use it
+    // to pick the next corner to head for rather than milling about at the last
+    // place we saw the player. This only STEERS the pursuit below by writing
+    // last_sighting - see Nav_MonsterPursue - and it never runs on a map that
+    // has authored hint_paths.
+    if (Nav_MonsterPursue(self)) {
+        self->monsterinfo.aiflags |= AI_LOST_SIGHT;
+        // we have a plan, so do not let the hint search fire again next frame
+        self->monsterinfo.trail_framenum = level.framenum;
+    }
+
     // coop will change to another enemy if visible
     if (coop->value) {
         // FIXME: insane guys get mad with this, which causes crashes!

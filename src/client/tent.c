@@ -63,6 +63,31 @@ qhandle_t   cl_mod_explo4_big;
 
 extern cvar_t* cvar_pt_particle_emissive;
 
+// [Q2RTX] Draw YOUR OWN plasma beam from the world muzzle instead of deriving
+// it from the view. DEFAULT 0 - this was tried and it REGRESSES FIRST PERSON in
+// two separate ways, both of which Matt spotted immediately:
+//
+//  1. THE BEAM MISSES THE CROSSHAIR. The other-player branch computes `dist`
+//     from the UNCORRECTED start and only then slides `org` down and forward.
+//     The beam is drawn from the moved origin along the old direction, so it
+//     runs parallel to the real shot and passes about 7 units under the impact.
+//
+//  2. THE SPARKLE PARTICLES COLLAPSE ONTO THE BEAM. CL_Heatbeam builds its
+//     rings in the VIEW basis (cl.v_right / cl.v_up) at a radius of only 1.5
+//     units. The view path forces the beam direction to be cl.v_forward, so
+//     those rings are exactly perpendicular to the beam and read as circles
+//     around it. Point the beam anywhere else and the rings tilt, flatten
+//     against the beam and stop looking like a spiral.
+//
+// Both are properties of the VIEW path being view-aligned by construction, so
+// no amount of tuning the world-muzzle path fixes them - see the beam section
+// of [[q2rtx-compass-and-beam-view]] for what a real fix needs.
+//
+// 1 draws from the world muzzle, which is where the third-person model's gun
+// actually is. Kept for experimenting with the mirror problem.
+static cvar_t   *cl_beam_thirdperson;
+
+
 /*
 =================
 CL_RegisterTEntSounds
@@ -125,7 +150,11 @@ void CL_RegisterTEntModels(void)
     // models/objects/flash is. The geometry is identical across every weapon's
     // flash/ model (19 verts, 48 tris) - only the skin differs - so one of them
     // serves as the generic flash for monsters and other players.
+    // The GENERIC flash, for monsters, other players, and the two weapons whose
+    // own flash/ folder is missing from the pak. Every weapon that has one gets
+    // its own graphic instead - see cl_weapon_muzzles[] in entities.c.
     cl_mod_muzzleflash = R_RegisterModel("models/weapons/v_machn/flash/tris.md2");
+    CL_RegisterViewMuzzleFlashes();
     cl_mod_parasite_segment = R_RegisterModel("models/monsters/parasite/segment/tris.md2");
     cl_mod_grapple_cable = R_RegisterModel("models/ctf/segment/tris.md2");
     cl_mod_explo4 = R_RegisterModel("models/objects/r_explode/tris.md2");
@@ -310,17 +339,51 @@ ex_mflash was already declared in the explosion enum and allocated by nothing;
 it holds for its frames and frees without the alpha fade the other types apply,
 which is exactly the behaviour a muzzle flash wants.
 
+`first_person` picks WHICH PAIR OF CVARS to use, and it has to exist. A flash
+on a monster across the room and the flash on the gun in your hands are the
+same model on the same code path, but they are not the same picture:
+
+  - Size. This is a world-space model, so a shared scale means the view flash
+    is drawn at 1/50th the distance of the monster one. Matt's tuned value of
+    10 for monsters put a 22-unit disc on the end of his own barrel.
+  - Brightness. The effects shader multiplies emission by
+    `prev_adapted_luminance * 500`, so entity alpha near 1.0 is far past white.
+    On a monster that clips to a hot spark a few pixels across and reads fine.
+    Filling half the screen it clips to a FLAT ORANGE BLOB - measured at 68% of
+    its pixels pinned at R=255 - and clipping is what destroys the texture's
+    alpha taper. The taper is the whole look, so up close the flash has to sit
+    UNDER the clipping point, which means an alpha around 0.06, not 1.0.
+
+One knob cannot satisfy both, and trying to make it was the bug: see
+cl_muzzleflash_view_size / cl_muzzleflash_view_brightness in main.c.
+
 Gated on cl_muzzleflash_models so it can be turned off.
 =================
 */
-void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, float scale)
+void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, bool first_person)
+{
+    CL_MuzzleFlashModel2(origin, angles, first_person, 0);
+}
+
+void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
+                          bool first_person, qhandle_t model)
 {
     explosion_t *ex;
+    cvar_t      *scale_cvar  = first_person ? cl_muzzleflash_view_size
+                                            : cl_muzzleflash_scale;
+    cvar_t      *bright_cvar = first_person ? cl_muzzleflash_view_brightness
+                                            : cl_muzzleflash_brightness;
 
     if (!cl_muzzleflash_models->integer)
         return;
 
-    if (!cl_mod_muzzleflash)
+    // `model` is this weapon's own flash graphic; 0 means the caller has none
+    // and wants the generic star (monsters, and the two weapons whose flash/
+    // folder is missing from the pak).
+    if (!model)
+        model = cl_mod_muzzleflash;
+
+    if (!model)
         return;
 
     ex = CL_AllocExplosion();
@@ -344,16 +407,35 @@ void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, float scale)
     // and it looks like a static decal stuck to the gun.
     ex->ent.angles[ROLL] = frand() * 360.0f;
     ex->type = ex_mflash;
-    ex->ent.model = cl_mod_muzzleflash;
+    ex->ent.model = model;
     ex->ent.flags = RF_FULLBRIGHT | RF_NOSHADOW | RF_TRANSLUCENT;
     // The effects shader does emission.a *= entity alpha, then multiplies the
     // colour by that alpha - so this dims the flash without altering the shape
     // of its falloff, letting the texture's own taper show instead of clipping.
-    ex->ent.alpha = Cvar_ClampValue(cl_muzzleflash_brightness, 0.01f, 1.0f);
-    ex->ent.scale = scale * Cvar_ClampValue(cl_muzzleflash_scale, 0.1f, 20.0f);
-    // a muzzle flash is gone almost immediately - two frames reads as a flicker
+    //
+    // NOTE the floor of 0.001 rather than 0.01: the first-person flash needs to
+    // sit an order of magnitude below the monster one to stay under the x500
+    // amplifier, and the old floor was above the value it actually wants.
+    ex->ent.alpha = Cvar_ClampValue(bright_cvar, 0.001f, 1.0f);
+    ex->ent.scale = Cvar_ClampValue(scale_cvar, 0.1f, 20.0f);
+    /* HOW LONG THE FLASH LASTS, and why it needs saying.
+
+       The explosion clock runs on BASE_FRAMETIME, i.e. one `frame` is 100 ms,
+       and the flash was `frames = 2` with `start` already backdated by one
+       frame - so it lived almost exactly 100 ms. The machinegun fires every
+       100 ms. The flash was therefore being replaced at the very moment it
+       expired and read as PERMANENTLY ON rather than as a flicker, which is
+       the opposite of what the rerelease looks like.
+
+       So the lifetime is set explicitly in milliseconds via ex->frametime
+       (the same field cl_explosion_frametime uses) and `start` is now the
+       real current time rather than a backdated one. With frames = 2 the
+       explosion is freed once `cl.time - start >= frametime`, so the lifetime
+       IS cl_muzzleflash_time, and anything under the 100 ms fire interval
+       gives a visible gap between shots. */
     ex->frames = 2;
-    ex->start = cl.servertime - CL_FRAMETIME;
+    ex->frametime = Cvar_ClampValue(cl_muzzleflash_time, 10, 200);
+    ex->start = cl.time;
     ex->baseframe = 0;
     ex->light = 0;      // the callers already add their own dlight
 }
@@ -410,6 +492,17 @@ static light_curve_t ex_flare_light[] = {
 	{ { 1.2f,       0.75f,      0.15f     }, 10.f,  5.00f },
 };
 
+// [Q2RTX] The ETF rifle's flechette impact. It shares the ex_blaster explosion
+// type, so without this it borrowed the blaster's warm white light and lit the
+// wall yellow - which, next to the pale blue shards and the blue skin2 impact
+// puff, looked like a different weapon had fired. Same shape and brightness as
+// ex_blaster_light, just carrying the darts' colour.
+static light_curve_t ex_flechette_light[] = {
+	{ { 0.35f,      0.62f,      1.00f     },  5.f, 15.00f },
+	{ { 0.30f,      0.55f,      0.90f     }, 15.f, 15.00f },
+	{ { 0.02f,      0.03f,      0.04f     },  5.f, 15.00f },
+};
+
 static void CL_AddExplosionLight(explosion_t *ex, float phase)
 {
 	int curve_size;
@@ -426,7 +519,12 @@ static void CL_AddExplosionLight(explosion_t *ex, float phase)
 		curve_size = LENGTH(ex_poly_light);
 		break;
 	case ex_blaster:
-		if (cl_blaster_color->integer) {
+		// TE_FLECHETTE and TE_FLARE both ride ex_blaster; tent_type is what
+		// tells them apart once the explosion is allocated.
+		if (ex->ent.tent_type == TE_FLECHETTE) {
+			curve = ex_flechette_light;
+			curve_size = LENGTH(ex_flechette_light);
+		} else if (cl_blaster_color->integer) {
 			curve = ex_blaster_light;
 			curve_size = LENGTH(ex_blaster_light);
 		} else {
@@ -874,7 +972,7 @@ static void CL_AddPlayerBeams(void)
             continue;
 
         // if coming from the player, update the start position
-        if (b->entity == cl.frame.clientNum + 1) {
+        if (b->entity == cl.frame.clientNum + 1 && !cl_beam_thirdperson->integer) {
             // set up gun position
             ps = CL_KEYPS;
             ops = CL_OLDKEYPS;
@@ -901,11 +999,27 @@ static void CL_AddPlayerBeams(void)
             if (info_hand->integer == 2)
                 VectorMA(org, -1, cl.v_up, org);
 
-            // FIXME: use cl.refdef.viewangles?
-            vectoangles2(dist, angles);
-
-            // if it's the heatbeam, draw the particle effect
+            // The SPARKLE keeps the view-aligned direction above, and it has
+            // to: CL_Heatbeam builds its rings in the view basis (cl.v_right /
+            // cl.v_up) at a radius of only 1.5 units, so they read as circles
+            // around the beam only while the beam runs along v_forward. Point
+            // it anywhere else and they tilt and flatten onto it.
             CL_Heatbeam(org, dist);
+
+            // [Q2RTX] ...but the BEAM ITSELF aims at the real impact point.
+            //
+            // The direction built above is v_forward plus the muzzle offset,
+            // which is NOT a line from the muzzle to where the shot actually
+            // landed - the offset tilts it down ~3 units and right ~2, so the
+            // drawn beam ended just under the impact sparks and read as
+            // shooting low. The server's endpoint is the truth: it traced from
+            // the eye along v_forward, so b->end IS the crosshair.
+            //
+            // Decoupling the two is the whole fix - the particles stay
+            // view-aligned and the beam connects muzzle to impact.
+            VectorSubtract(b->end, org, dist);
+
+            vectoangles2(dist, angles);
 
             framenum = 1;
         } else {
@@ -931,6 +1045,11 @@ static void CL_AddPlayerBeams(void)
                 // if it's a monster, do the particle effect
                 CL_MonsterPlasma_Shell(b->start);
             }
+
+            // the heatbeam sparkle belongs to the gun, not to the view, so it
+            // follows the beam down this path too
+            if (b->entity == cl.frame.clientNum + 1)
+                CL_Heatbeam(org, dist);
 
             framenum = 2;
         }
@@ -1253,6 +1372,7 @@ void CL_ParseTEnt(void)
 {
     explosion_t *ex;
     int r;
+    int i;
 
     switch (te.type) {
     case TE_BLOOD:          // bullet hitting flesh
@@ -1585,6 +1705,25 @@ void CL_ParseTEnt(void)
         CL_Flashlight(te.entity1, te.pos1);
         break;
 
+    case TE_POI_PATH:
+        cl.poi_path_count = te.count;
+        for (i = 0; i < te.count && i < MAX_POI_PATH; i++)
+            VectorCopy(te.path[i], cl.poi_path[i]);
+        break;
+
+    case TE_POI:
+        VectorCopy(te.pos1, cl.poi_origin);
+        // a fresh objective invalidates any trail we were still drawing; the
+        // TE_POI_PATH that belongs to it arrives in the same message
+        cl.poi_path_count = 0;
+        // the image is a CS_IMAGES index, so it is already a registered pic
+        if (te.count > 0 && te.count < MAX_IMAGES)
+            cl.poi_pic = cl.image_precache[te.count];
+        else
+            cl.poi_pic = 0;
+        cl.poi_time = cl.time + te.time * 100;
+        break;
+
     case TE_FORCEWALL:
         CL_ForceWall(te.pos1, te.pos2, te.color);
         break;
@@ -1694,6 +1833,7 @@ void CL_ClearTEnts(void)
 
 void CL_InitTEnts(void)
 {
+    cl_beam_thirdperson = Cvar_Get("cl_beam_thirdperson", "0", CVAR_ARCHIVE);
     cl_railtrail_type = Cvar_Get("cl_railtrail_type", "0", 0);
     cl_railtrail_time = Cvar_Get("cl_railtrail_time", "1.0", 0);
     cl_railtrail_time->changed = cl_timeout_changed;

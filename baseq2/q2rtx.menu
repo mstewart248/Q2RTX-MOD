@@ -321,9 +321,12 @@ begin effects
     toggle --status "(cl_disable_explosions)" "grenade explosions" cl_disable_explosions ~0
     toggle --status "(cl_disable_explosions)" "rocket explosions" cl_disable_explosions ~1
     toggle --status "(cl_explosion_sprites)" "explosion sprites" cl_explosion_sprites
-    toggle --status "rerelease-style muzzle flash models on monsters and other players (cl_muzzleflash_models)" "monster muzzle flashes" cl_muzzleflash_models
-    range --status "size of the muzzle flash models (cl_muzzleflash_scale)" "muzzle flash size" cl_muzzleflash_scale 0.5 8 0.5
-    range --status "how bright the muzzle flash renders (cl_muzzleflash_brightness)" "muzzle flash brightness" cl_muzzleflash_brightness 0.05 1 0.05
+    toggle --status "rerelease-style muzzle flash models, on your own weapon and on monsters (cl_muzzleflash_models)" "muzzle flash models" cl_muzzleflash_models
+    range --status "size of the flash on monsters and other players (cl_muzzleflash_scale)" "muzzle flash size" cl_muzzleflash_scale 0.5 12 0.5
+    range --status "how bright the flash renders on monsters and other players (cl_muzzleflash_brightness)" "muzzle flash brightness" cl_muzzleflash_brightness 0.05 1 0.05
+    range --status "size of the flash on your own weapon (cl_muzzleflash_view_size)" "first person flash size" cl_muzzleflash_view_size 1 12 0.5
+    range --status "brightness of the flash on your own weapon - above ~0.1 it clips and loses its soft edge (cl_muzzleflash_view_brightness)" "first person flash brightness" cl_muzzleflash_view_brightness 0.01 0.3 0.01
+    range --status "how long a muzzle flash stays up in milliseconds - at 100 the machinegun never gets a gap between shots (cl_muzzleflash_time)" "muzzle flash duration" cl_muzzleflash_time 10 150 10
     blank
     pairs --status "(cl_blaster_color)" "blaster color" cl_blaster_color "violet" 1 "original orange" 0
     blank

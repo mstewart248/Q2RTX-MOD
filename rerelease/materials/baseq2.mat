@@ -881,10 +881,29 @@ models/objects/dmspot/skin2:
 
 models/objects/explode/skin:
 	texture_base models/objects/explode/skin.pcx
+	texture_emissive models/objects/explode/skin_glow.png
 	emissive_factor 3.0
 	base_factor 2.5
-	synth_emissive 1
-	emissive_threshold 32
+
+# The explode model carries three skins and the game picks one with
+# ent.skinnum: 0 yellow (explosions, the blaster), 1 green (blaster2), 2 blue
+# (the ETF rifle's flechette). Only skin 0 was ever extracted here, so the two
+# below fell back to it and every impact flashed yellow.
+#
+# These now use the authored *_glow.png maps that ship beside them rather than
+# synth_emissive - a real glow map is always the better answer, and it is what
+# models/objects/flash/skin already does. Tune live with the `mat` command.
+models/objects/explode/rskin:
+	texture_base models/objects/explode/rskin.pcx
+	texture_emissive models/objects/explode/rskin_glow.png
+	emissive_factor 3.0
+	base_factor 2.5
+
+models/objects/explode/skin2:
+	texture_base models/objects/explode/skin2.pcx
+	texture_emissive models/objects/explode/skin2_glow.png
+	emissive_factor 2.5
+	base_factor 2.5
 
 models/objects/flash/skin:
 	texture_base models/objects/flash/skin.pcx

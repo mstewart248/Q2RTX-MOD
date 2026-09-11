@@ -208,7 +208,7 @@ void CL_MuzzleFlash(void)
     if (mz.entity == cl.frame.clientNum + 1 && !cl.thirdPersonView)
         CL_ViewMuzzleFlash();
     else
-        CL_MuzzleFlashModel(dl->origin, pl->current.angles, 1.0f);
+        CL_MuzzleFlashModel(dl->origin, pl->current.angles, false);
 
     volume = 1.0f - 0.8f * mz.silenced;
 
@@ -308,7 +308,12 @@ void CL_MuzzleFlash(void)
         break;
 
     case MZ_ETF_RIFLE:
-        VectorSet(dl->color, 0.9f, 0.7f, 0);
+        // [Q2RTX] rogue lit this flash YELLOW (0.9, 0.7, 0), which is what it
+        // still is in the original. The ETF fires pale blue flechettes and its
+        // impact puff is blue (explode skin2), so a yellow muzzle flash ten
+        // times a second read as a different weapon firing. Matched to the
+        // darts instead.
+        VectorSet(dl->color, 0.35f, 0.62f, 1.0f);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/nail1.wav"), volume, ATTN_NORM, 0);
         break;
     case MZ_PROX:
@@ -467,7 +472,7 @@ void CL_MuzzleFlash2(void)
             VectorCopy(ent->current.angles, flash_angles);
         }
 
-        CL_MuzzleFlashModel(origin, flash_angles, 1.0f);
+        CL_MuzzleFlashModel(origin, flash_angles, false);
     }
 
     switch (mz.weapon) {

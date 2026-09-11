@@ -512,6 +512,19 @@ get_num_miplevels(int w, int h)
 	return 1 + log2(max(w, h));
 }
 
+/* A full mip chain costs 10 vkCmdBlitImage plus 20 barriers for a 1080p image, and a
+   third again as much device memory. That is worth paying once for a wall texture and
+   never for one that is replaced every frame and only ever sampled 1:1 - which is what
+   a video frame is. IF_NO_MIPMAPS opts an image out. */
+static int
+image_num_miplevels(const image_t *q_img)
+{
+	if (q_img->flags & IF_NO_MIPMAPS)
+		return 1;
+
+	return get_num_miplevels(q_img->upload_width, q_img->upload_height);
+}
+
 
 /*
 ================
@@ -1653,7 +1666,7 @@ vkpt_textures_end_registration()
 
 		img_info.extent.width = q_img->upload_width;
 		img_info.extent.height = q_img->upload_height;
-		img_info.mipLevels = get_num_miplevels(q_img->upload_width, q_img->upload_height);
+		img_info.mipLevels = image_num_miplevels(q_img);
 		img_info.format = get_image_format(q_img);
 		if (!q_img->is_srgb)
 			img_info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
@@ -1708,7 +1721,7 @@ vkpt_textures_end_registration()
 
 		image_t* q_img = r_images + i;
 		
-		int num_mip_levels = get_num_miplevels(q_img->upload_width, q_img->upload_height);
+		int num_mip_levels = image_num_miplevels(q_img);
 
 		img_view_info.image = tex_images[i];
 		img_view_info.subresourceRange.levelCount = num_mip_levels;
@@ -1744,7 +1757,7 @@ vkpt_textures_end_registration()
 		if (tex_upload_frames[i] != qvk.current_frame_index + 1)
 			continue;
 		
-		int num_mip_levels = get_num_miplevels(q_img->upload_width, q_img->upload_height);
+		int num_mip_levels = image_num_miplevels(q_img);
 
 		VkMemoryRequirements mem_req;
 		vkGetImageMemoryRequirements(qvk.device, tex_images[i], &mem_req);
@@ -1853,7 +1866,7 @@ vkpt_textures_end_registration()
 				(q_img->upload_height + 15) / 16, 1);
 		}
 
-		int num_mip_levels = get_num_miplevels(q_img->upload_width, q_img->upload_height);
+		int num_mip_levels = image_num_miplevels(q_img);
 
 		int wd = q_img->upload_width;
 		int ht = q_img->upload_height;
@@ -1918,14 +1931,32 @@ vkpt_textures_end_registration()
 
 		subresource_range.baseMipLevel = num_mip_levels - 1;
 
-		IMAGE_BARRIER(cmd_buf,
-			.image = tex_images[i],
-			.subresourceRange = subresource_range,
-			.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
+		if (num_mip_levels == 1)
+		{
+			/* With no mip chain the loop above never ran, so mip 0 is still in the
+			   GENERAL layout phase 3 left it in - claiming TRANSFER_DST_OPTIMAL here
+			   would be a lie about the current layout. All that is needed is to make
+			   the copy (or the normalize) visible to shader reads. */
+			IMAGE_BARRIER(cmd_buf,
+				.image = tex_images[i],
+				.subresourceRange = subresource_range,
+				.srcAccessMask = normalize ? VK_ACCESS_SHADER_WRITE_BIT : VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+				);
+		}
+		else
+		{
+			IMAGE_BARRIER(cmd_buf,
+				.image = tex_images[i],
+				.subresourceRange = subresource_range,
+				.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+				);
+		}
 	}
 	
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
@@ -1948,6 +1979,9 @@ vkpt_textures_end_registration()
 
 	return VK_SUCCESS;
 }
+
+// scratch for the batched descriptor write below; too large to sit on the stack
+static VkDescriptorImageInfo descriptor_image_infos[MAX_RIMAGES];
 
 void vkpt_textures_update_descriptor_set()
 {
@@ -1982,34 +2016,38 @@ void vkpt_textures_update_descriptor_set()
 			sampler = (cvar_pt_bilerp_pics->integer == 0) ? qvk.tex_sampler_nearest : qvk.tex_sampler_linear_clamp;
 		} 
 
-		VkDescriptorImageInfo img_info = {
-			.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-			.imageView   = image_view,
-			.sampler     = sampler,
-		};
+		VkDescriptorImageInfo *img_info = descriptor_image_infos + i;
+
+		img_info->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		img_info->imageView   = image_view;
+		img_info->sampler     = sampler;
 
 		if (i >= VKPT_IMG_BLOOM_HBLUR &&
 			i <= VKPT_IMG_BLOOM_VBLUR) {
-			img_info.sampler = qvk.tex_sampler_linear_clamp;
+			img_info->sampler = qvk.tex_sampler_linear_clamp;
 		}
 
 		if (i >= VKPT_IMG_DLSS_BLOOM_HBLUR &&
 			i <= VKPT_IMG_DLSS_BLOOM_VBLUR) {
-			img_info.sampler = qvk.tex_sampler_linear_clamp;
+			img_info->sampler = qvk.tex_sampler_linear_clamp;
 		}
-
-		VkWriteDescriptorSet descriptor_set_write = {
-			.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet          = qvk_get_current_desc_set_textures(),
-			.dstBinding      = GLOBAL_TEXTURES_TEX_ARR_BINDING_IDX,
-			.dstArrayElement = i,
-			.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,
-			.pImageInfo      = &img_info,
-		};
-
-		vkUpdateDescriptorSets(qvk.device, 1, &descriptor_set_write, 0, NULL);
 	}
+
+	/* The whole binding is one descriptor array, so this is a single write of
+	   MAX_RIMAGES elements rather than MAX_RIMAGES writes of one. It used to be the
+	   latter, which costs 2048 driver calls every time the set is dirtied - barely
+	   noticeable on a map load, but a cinematic dirties it on EVERY frame. */
+	VkWriteDescriptorSet descriptor_set_write = {
+		.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet          = qvk_get_current_desc_set_textures(),
+		.dstBinding      = GLOBAL_TEXTURES_TEX_ARR_BINDING_IDX,
+		.dstArrayElement = 0,
+		.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.descriptorCount = MAX_RIMAGES,
+		.pImageInfo      = descriptor_image_infos,
+	};
+
+	vkUpdateDescriptorSets(qvk.device, 1, &descriptor_set_write, 0, NULL);
 }
 
 static VkResult

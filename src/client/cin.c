@@ -59,6 +59,7 @@ typedef struct
 
     int     start_time; // cls.realtime for first cinematic frame
     int     frame_index;
+    int     last_present_time;  // cls.realtime of the last frame actually shown
 
     // .cin is always 14 fps; the rerelease .ogv carry their own rate (30/1)
     int     fps_num;
@@ -67,6 +68,53 @@ typedef struct
 
 static cinematics_t cin = { 0 };
 
+/* How much of a backlog SCR_RunCinematic is allowed to decode-and-discard in one
+   client frame. Theora decode of 1080p measures ~136 fps here, so 8 frames is
+   roughly a 60 ms spike in the worst case - noticeable once, and far better than
+   the alternative of never catching up at all. */
+#define CIN_MAX_CATCHUP_FRAMES      8
+
+/* Past this the client was not running rather than running slowly (minimised, or
+   stalled on a load), and chewing through the backlog is wasted work - 10 seconds
+   at 30 fps. */
+#define CIN_MAX_CATCHUP_BACKLOG     300
+
+/* A 30 fps video must never hold a single frame for this long. If it does, some
+   clock has been pinned - see the note in OGV_SyncToAudio for the way that actually
+   happened - and the right response is to force the picture forward rather than let
+   it sit there. This is a backstop, not the fix: the causes are fixed above, and
+   "cl_hd_cinematics_stats 1" reports whenever it fires so a new one cannot hide. */
+#define CIN_STALL_WATCHDOG_MS       500
+
+/* Playback health, printed once a second while "cl_hd_cinematics_stats" is set.
+   The cvar is read by name rather than registered so this costs nothing when it is
+   not in use; "set cl_hd_cinematics_stats 1" at the console is enough to turn it on.
+   Skips are the number that matters: a few at a scene change are normal, a steady
+   stream means the per-frame cost is over budget. */
+typedef struct
+{
+    int         presented;
+    int         skipped;
+    int         paused;         // frames held because the console or menu was up
+    int         calls;          // times the client ran this in the window
+    int         last_frame;      // the frame number the pacing last asked for
+    int         last_clock_ms;   // realtime - start_time - av_delay
+    int         stalls;          // times the watchdog had to force the picture on
+    int         window_start;   // cls.realtime
+    uint64_t    decode_us;
+    uint64_t    convert_us;
+    uint64_t    worst_us;
+} cin_stats_t;
+
+static cin_stats_t cin_stats;
+
+static bool CIN_StatsEnabled(void)
+{
+    return Cvar_VariableValue("cl_hd_cinematics_stats") != 0;
+}
+
+static void CIN_StatsReport(void);    // defined with the OGV backend below
+
 // the Theora backend lives further down the file; the cinematic lifecycle
 // functions above it need these
 static bool      OGV_IsActive(void);
@@ -74,6 +122,7 @@ static void      OGV_Shutdown(void);
 static void      OGV_PumpAudio(void);
 static void      OGV_SyncToAudio(void);
 static qhandle_t OGV_ReadNextFrame(void);
+static bool      OGV_SkipNextFrame(void);
 
 /*
 ==================
@@ -434,7 +483,8 @@ qhandle_t SCR_ReadNextFrame(void)
     cin.frame_index++;
 
     const char* image_name = va("%s[%d]", cin.file_name, cin.frame_index);
-    return R_RegisterRawImage(image_name, cin.width, cin.height, (byte*)rgba, IT_SPRITE, IF_SRGB);
+    return R_RegisterRawImage(image_name, cin.width, cin.height, (byte*)rgba, IT_SPRITE,
+                              IF_SRGB | IF_NO_MIPMAPS);
 }
 
 
@@ -447,6 +497,7 @@ SCR_RunCinematic
 void SCR_RunCinematic(void)
 {
     int		frame;
+    const uint64_t run_t0 = Sys_Microseconds();
 
     if (cin.start_time <= 0)
         return;
@@ -454,13 +505,38 @@ void SCR_RunCinematic(void)
     if (cin.frame_index == -1)
         return; // static image
 
+    cin_stats.calls++;
+    CIN_StatsReport();
+
     // frame duration in milliseconds: 1000 * den / num
     const int frame_ms = 1000 * cin.fps_den / cin.fps_num;
+
+    // The audio device is heard later than we queue it, so the picture can run
+    // slightly ahead of the sound. How much depends on the sound hardware, so
+    // it is a tunable rather than a constant: cl_hd_cinematics_delay holds the
+    // video back by that many milliseconds. Only applies to .ogv playback.
+    int av_delay = 0;
+    if (OGV_IsActive())
+    {
+        av_delay = (int)Cvar_VariableValue("cl_hd_cinematics_delay");
+        av_delay = av_delay < 0 ? 0 : (av_delay > 2000 ? 2000 : av_delay);
+    }
+
+    /* Any rebase of start_time has to subtract av_delay, because the frame number
+       is computed with it subtracted. Leaving it out - which is what this used to
+       do - makes the recomputed frame number come out av_delay's worth of frames
+       LOWER than the frame we are actually on, so playback then stalls for the
+       whole of cl_hd_cinematics_delay before the next frame is drawn. At the
+       shipped default of 350 ms that added a third of a second of frozen picture
+       to every hitch, and to every unpause. */
+#define CIN_REBASE_START_TIME() \
+    (cin.start_time = cls.realtime - av_delay - cin.frame_index * frame_ms)
 
     if (cls.key_dest != KEY_GAME)
     {
         // pause if menu or console is up
-        cin.start_time = cls.realtime - cin.frame_index * frame_ms;
+        cin_stats.paused++;
+        CIN_REBASE_START_TIME();
 
         S_UnqueueRawSamples();
 
@@ -475,29 +551,65 @@ void SCR_RunCinematic(void)
         OGV_SyncToAudio();
     }
 
-    // The audio device is heard later than we queue it, so the picture can run
-    // slightly ahead of the sound. How much depends on the sound hardware, so
-    // it is a tunable rather than a constant: cl_hd_cinematics_delay holds the
-    // video back by that many milliseconds. Only applies to .ogv playback.
-    int av_delay = 0;
-    if (OGV_IsActive())
-    {
-        av_delay = (int)Cvar_VariableValue("cl_hd_cinematics_delay");
-        av_delay = av_delay < 0 ? 0 : (av_delay > 2000 ? 2000 : av_delay);
-    }
-
     frame = (int)((int64_t)(cls.realtime - cin.start_time - av_delay) * cin.fps_num
                   / (1000 * cin.fps_den));
+    cin_stats.last_frame = frame;
+    cin_stats.last_clock_ms = cls.realtime - cin.start_time - av_delay;
+
     if (frame <= cin.frame_index)
-        return;
+    {
+        /* Nothing is due yet, which is normal - but if it stays that way the video
+           has stopped. Anything that pins the clock produces exactly this, so rather
+           than trust that every cause has been found, force the picture on. */
+        if (cls.realtime - cin.last_present_time < CIN_STALL_WATCHDOG_MS)
+            return;
+
+        cin_stats.stalls++;
+        CIN_REBASE_START_TIME();
+    }
+
     if (frame > cin.frame_index + 1)
     {
-        // Com_Printf("Dropped frame: %i > %i\n", frame, cin.frame_index + 1);
-        cin.start_time = cls.realtime - cin.frame_index * frame_ms;
+        /* We are behind. This used to rebase start_time and then decode a single
+           frame, which does not catch up at all - it just declares the later time
+           to be correct. The audio is paced by queue backpressure, so it keeps
+           running at real time regardless, and the picture slid into permanent slow
+           motion, drifting further from the sound with every hitch. OGV_SyncToAudio
+           then slewed start_time back the other way and the two fought. That is what
+           turned a momentary stall into sustained lag.
+
+           A frame can instead be decoded and discarded, which skips the colour
+           conversion and the texture upload - the expensive part by a wide margin.
+           So absorb a bounded slice of the backlog here and leave the clock alone.
+           Whatever is left is still visible on the next client frame and gets
+           skipped then, so a hitch clears over a few frames instead of never, and
+           the video timeline is never falsified. The bound is what stops a large
+           backlog from becoming one enormous frame. */
+        const int behind = frame - cin.frame_index - 1;
+
+        if (OGV_IsActive() && behind <= CIN_MAX_CATCHUP_BACKLOG
+            && Cvar_VariableValue("cl_hd_cinematics_catchup") != 0)
+        {
+            int skip = min(behind, CIN_MAX_CATCHUP_FRAMES);
+
+            while (skip-- > 0 && OGV_SkipNextFrame())
+                ;
+        }
+        else
+        {
+            /* .cin has no cheap skip, and a backlog this large means the client was
+               not running at all - minimised, or stalled on a load - rather than
+               merely slow. Decoding through it would be pointless work. */
+            CIN_REBASE_START_TIME();
+        }
     }
+
+#undef CIN_REBASE_START_TIME
 
     R_UnregisterImage(cl.image_precache[0]);
     cl.image_precache[0] = OGV_IsActive() ? OGV_ReadNextFrame() : SCR_ReadNextFrame();
+
+    cin.last_present_time = cls.realtime;
 
     if (!cl.image_precache[0])
     {
@@ -507,6 +619,10 @@ void SCR_RunCinematic(void)
         cin.start_time = 0;
         return;
     }
+
+    const uint64_t run_us = Sys_Microseconds() - run_t0;
+    if (run_us > cin_stats.worst_us)
+        cin_stats.worst_us = run_us;
 }
 
 /*
@@ -551,13 +667,52 @@ typedef struct
     // audio_samples*1000/rate to see the two clocks drift apart
     int                 audio_samples;
     int                 start_realtime; // cin.start_time is cleared before shutdown
+    double              last_heard;     // audio content position at the previous sync
 
     bool                eof;
 } ogv_t;
 
 static ogv_t ogv;
 
-#define OGV_READ_CHUNK      65536
+static void CIN_StatsReport(void)
+{
+    if (!CIN_StatsEnabled())
+        return;
+
+    if (!cin_stats.window_start)
+        cin_stats.window_start = cls.realtime;
+
+    const int elapsed = cls.realtime - cin_stats.window_start;
+    if (elapsed < 1000)
+        return;
+
+    /* Where the two content timelines actually are, which is the only honest read
+       on sync - see the note on OGV_SyncToAudio. */
+    const int video_ms = cin.frame_index * 1000 * cin.fps_den / cin.fps_num;
+    const int audio_ms = (ogv.have_audio && ogv.vi.rate > 0)
+        ? (int)((double)ogv.audio_samples * 1000.0 / (double)ogv.vi.rate
+                - S_GetRawStreamLatency() * 1000.0)
+        : video_ms;
+
+    Com_Printf("cin: %d shown, %d skipped, %d paused of %d calls (active %d) in %d ms | "
+               "decode %.1f ms/f, convert %.1f ms/f, worst %.1f ms | a/v %+d ms | "
+               "want %d have %d clock %d lat %.0f ms samples %d eof %d stalls %d\n",
+               cin_stats.presented, cin_stats.skipped, cin_stats.paused,
+               cin_stats.calls, (int)cls.active, elapsed,
+               cin_stats.presented ? cin_stats.decode_us / 1000.0 / cin_stats.presented : 0.0,
+               cin_stats.presented ? cin_stats.convert_us / 1000.0 / cin_stats.presented : 0.0,
+               cin_stats.worst_us / 1000.0,
+               audio_ms - video_ms,
+               cin_stats.last_frame, cin.frame_index, cin_stats.last_clock_ms,
+               S_GetRawStreamLatency() * 1000.0, ogv.audio_samples, (int)ogv.eof,
+               cin_stats.stalls);
+
+    memset(&cin_stats, 0, sizeof(cin_stats));
+    cin_stats.window_start = cls.realtime;
+}
+
+#define OGV_READ_CHUNK      262144        // bytes handed to libogg per read
+#define OGV_STDIO_BUFFER    (1 << 20)     // stdio read-ahead buffer on the .ogv
 #define OGV_AUDIO_CHUNK     1024    // samples per S_RawSamples call
 #define OGV_MAX_CHANNELS    8
 
@@ -694,6 +849,12 @@ static bool OGV_Open(const char *path)
         Com_WPrintf("Couldn't open remastered cinematic \"%s\".\n", path);
         return false;
     }
+
+    /* These are 100-320 MB files streamed off whatever drive the retail install
+       lives on, which is often not the fast one. The default stdio buffer is a few
+       KB, so give it a megabyte: it costs nothing, cuts the read syscalls by an
+       order of magnitude and gives the OS a far better read-ahead hint. */
+    setvbuf(ogv.file, NULL, _IOFBF, OGV_STDIO_BUFFER);
 
     ogv.active = true;
     ogv.start_realtime = cls.realtime;
@@ -919,6 +1080,31 @@ static void OGV_SyncToAudio(void)
     if (heard <= 0.0)
         return;     // still priming, nothing audible has played yet
 
+    /* The audio is only a usable clock while it is actually advancing. When the
+       file runs out - or any time the stream stalls - "heard" stops moving while
+       cls.realtime does not, so the error below grows positive and the slew drags
+       start_time forward in lockstep with realtime. The video clock then stops
+       advancing at all and the picture freezes for good.
+
+       That is not hypothetical, it is what happened at the end of every .ogv:
+       measured on eou1_, start_time locked to realtime with the video one frame
+       from the end and sat there indefinitely, 0 frames shown per second against
+       62 client frames. Because the last frame was never requested,
+       OGV_ReadNextFrame never reached the end of the stream, so
+       SCR_FinishCinematic never ran and "nextserver" was never sent - leaving the
+       cutscene hanging on its final frame until the player pressed a key, which
+       is the only other thing that ends one (keys.c:717).
+
+       This is not an attempt to improve A/V sync, which this function cannot do
+       (see the note above); it is about not letting it stop playback. */
+    if (ogv.eof || heard <= ogv.last_heard)
+    {
+        ogv.last_heard = heard;
+        return;
+    }
+
+    ogv.last_heard = heard;
+
     const int implied_start = cls.realtime - (int)(heard * 1000.0);
     const int error = implied_start - cin.start_time;
 
@@ -940,11 +1126,12 @@ hands it back as an image handle, matching what the .cin path returns. 0 means
 the video is over.
 ==================
 */
-static qhandle_t OGV_ReadNextFrame(void)
+static bool OGV_DecodeNextFrame(void)
 {
     ogg_packet      op;
     ogg_int64_t     granulepos = -1;
-    th_ycbcr_buffer ycbcr;
+    const uint64_t  t0 = Sys_Microseconds();
+    bool            ok = false;
 
     // find the next video packet, reading more of the file as needed
     for (;;)
@@ -952,13 +1139,50 @@ static qhandle_t OGV_ReadNextFrame(void)
         if (ogg_stream_packetout(&ogv.v_stream, &op) > 0)
         {
             if (th_decode_packetin(ogv.td, &op, &granulepos) == 0)
+            {
+                ok = true;
                 break;
+            }
             continue;   // dropped/duplicate packet, keep looking
         }
 
         if (!OGV_PumpPage())
-            return 0;
+            break;      // end of file
     }
+
+    cin_stats.decode_us += Sys_Microseconds() - t0;
+    return ok;
+}
+
+/*
+==================
+OGV_SkipNextFrame
+
+Decodes a frame and throws it away. Theora frames reference each other, so a
+frame that is not going to be shown still has to be decoded - but the decode is
+the cheap half. The colour conversion and the texture upload, which are what
+this skips, are several times more expensive.
+
+This is what lets SCR_RunCinematic catch up after a hitch instead of sliding
+into slow motion; see the comment there.
+==================
+*/
+static bool OGV_SkipNextFrame(void)
+{
+    if (!OGV_DecodeNextFrame())
+        return false;
+
+    cin.frame_index++;
+    cin_stats.skipped++;
+    return true;
+}
+
+static qhandle_t OGV_ReadNextFrame(void)
+{
+    th_ycbcr_buffer ycbcr;
+
+    if (!OGV_DecodeNextFrame())
+        return 0;
 
     if (th_decode_ycbcr_out(ogv.td, ycbcr) != 0)
         return 0;
@@ -970,6 +1194,7 @@ static qhandle_t OGV_ReadNextFrame(void)
 
     const int w = ogv.width;
     const int h = ogv.height;
+    const uint64_t convert_t0 = Sys_Microseconds();
 
     uint32_t *rgba = Z_Malloc(w * h * 4);
 
@@ -997,10 +1222,22 @@ static qhandle_t OGV_ReadNextFrame(void)
         }
     }
 
+    cin_stats.convert_us += Sys_Microseconds() - convert_t0;
+    cin_stats.presented++;
+
     cin.frame_index++;
 
     const char *image_name = va("%s[%d]", cin.file_name, cin.frame_index);
-    return R_RegisterRawImage(image_name, w, h, (byte *)rgba, IT_SPRITE, IF_SRGB);
+    /* IF_NO_MIPMAPS: this image is drawn 1:1 and thrown away next frame, so the 11
+       level mip chain the texture uploader would otherwise build for it is 10
+       vkCmdBlitImage plus 20 barriers of pure waste, every frame, plus a third
+       again as much device memory to allocate and free. Set
+       "cl_hd_cinematics_mipmaps 1" to get the old behaviour back for comparison. */
+    imageflags_t flags = IF_SRGB;
+    if (Cvar_VariableValue("cl_hd_cinematics_mipmaps") == 0)
+        flags |= IF_NO_MIPMAPS;
+
+    return R_RegisterRawImage(image_name, w, h, (byte *)rgba, IT_SPRITE, flags);
 }
 
 // the game directory the remastered cutscenes are shipped in
@@ -1071,6 +1308,7 @@ void SCR_PlayCinematic(const char *name)
 
     cin.frame_index = 0;
     cin.start_time = 0;
+    cin.last_present_time = cls.realtime;
 
     if (!COM_CompareExtension(name, ".pcx"))
     {
@@ -1117,6 +1355,9 @@ void SCR_PlayCinematic(const char *name)
             {
                 OGV_PumpAudio();
                 cin.start_time = cls.realtime;
+                cin.last_present_time = cls.realtime;
+                Com_Printf("cin: %s, %dx%d @ %d/%d fps\n", ogv_path,
+                           cin.width, cin.height, cin.fps_num, cin.fps_den);
                 goto started;
             }
 

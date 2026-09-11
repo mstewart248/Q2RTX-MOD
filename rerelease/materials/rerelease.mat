@@ -24632,11 +24632,75 @@ textures/zor_temp/zlight:
 # the edges. Deliberately NO texture_mask: that path is a hard binary cutout and
 # renders a flat opaque star. Brightness there comes from prev_adapted_luminance,
 # not from emissive_factor.
+#
+# Deliberately NO texture_emissive either. An emissive map is only sampled by
+# the MCLASS_REGULAR path, and moving the flash there to get one is what cost
+# it the soft falloff above - the two are on rival code paths and you cannot
+# have both. It is not a loss: every weapon that fires already spawns its own
+# dynamic light, so the flash has nothing left to light.
+# EVERY weapon needs its own entry here, not just the machinegun. A missing
+# entry is NOT neutral - it hands the skin to the automatic override/emissive
+# path, which can synthesise an emissive map and flag the material as a light.
+# That would make some weapons' flashes light the room and others not, purely
+# by which ones someone remembered to list. All twelve are therefore spelled
+# out identically: base texture only.
 models/weapons/v_machn/flash/skin:
 	texture_base models/weapons/v_machn/flash/skin.tga
-	texture_emissive models/weapons/v_machn/flash/skin_glow.tga
-	texture_mask models/weapons/v_machn/flash/skin_mask.tga
-	emissive_factor 3
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_beamer/flash/skin:
+	texture_base models/weapons/v_beamer/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_bfg/flash/skin:
+	texture_base models/weapons/v_bfg/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_blast/flash/skin:
+	texture_base models/weapons/v_blast/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_boomer/flash/skin:
+	texture_base models/weapons/v_boomer/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_dist/flash/skin:
+	texture_base models/weapons/v_dist/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_etf_rifle/flash/skin:
+	texture_base models/weapons/v_etf_rifle/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_launch/flash/skin:
+	texture_base models/weapons/v_launch/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_rail/flash/skin:
+	texture_base models/weapons/v_rail/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_rocket/flash/skin:
+	texture_base models/weapons/v_rocket/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_shotg/flash/skin:
+	texture_base models/weapons/v_shotg/flash/skin.tga
+	base_factor 1
+	metalness_factor 0
+
+models/weapons/v_shotg2/flash/skin:
+	texture_base models/weapons/v_shotg2/flash/skin.tga
 	base_factor 1
 	metalness_factor 0
 

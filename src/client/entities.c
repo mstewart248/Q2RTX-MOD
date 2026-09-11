@@ -216,8 +216,15 @@ static void parse_entity_event(int number)
         CL_TeleportParticles(cent->current.origin);
         break;
     case EV_FOOTSTEP:
-        if (cl_footsteps->integer)
-            S_StartSound(NULL, number, CHAN_BODY, cl_sfx_footsteps[Q_rand() & 3], 1, ATTN_NORM, 0);
+        if (cl_footsteps->integer) {
+            // what you are standing on picks the sound; 0 means we could not
+            // tell, and the generic set is used
+            qhandle_t sfx = CL_FootstepSound(cent->current.origin);
+
+            if (!sfx)
+                sfx = cl_sfx_footsteps[Q_rand() & 3];
+            S_StartSound(NULL, number, CHAN_BODY, sfx, 1, ATTN_NORM, 0);
+        }
         break;
     case EV_FALLSHORT:
         S_StartSound(NULL, number, CHAN_AUTO, S_RegisterSound("player/land1.wav"), 1, ATTN_NORM, 0);
@@ -1244,62 +1251,176 @@ Y-left (AnglesToAxis inverts axis[1]).
 =================
 */
 typedef struct {
-    const char  *gun;
-    vec3_t      offset;
+    const char  *gun;        // substring match against the view model's name
+    vec3_t      offset;      // forward / LEFT / up, calibrated by eye
+    const char  *flash_dir;  // which weapon's flash/ folder to draw; NULL = none
+    qhandle_t   flash;       // resolved at precache; 0 = fall back to the star
 } weapon_muzzle_t;
 
+// EVERY WEAPON HAS ITS OWN FLASH GRAPHIC and they are not interchangeable.
+// The geometry is the same disc for all of them (19 verts, 48 tris; the rocket
+// launcher is the one exception with two), so the SHAPE lives entirely in the
+// skin - and the skins are wildly different. Measured alpha coverage runs from
+// 13.6% for the beamer to 70.8% for the rocket launcher: the machinegun's 25.6%
+// is a four-point star, while the blaster's 67.7% is a soft round ball. Drawing
+// one skin for all of them is visibly wrong, which is what we did until now.
+//
+// `flash_dir` is which weapon's flash/ folder to draw, because it is NOT always
+// the weapon's own. Verified against the remaster's pak0.pak: only twelve
+// weapons ship a flash/ folder, and **the chaingun and the hyperblaster are not
+// among them** - so the rerelease cannot be drawing a per-weapon flash for
+// those two either, and it borrows. The hyperblaster borrows the BLASTER's
+// round ball (Matt's call, and it matches the rerelease exactly); the chaingun
+// borrows the machinegun's star, which is the same family of weapon.
+//
+// The generic models/objects/flash was checked as the fallback and REJECTED:
+// it is a four-frame sprite sheet with fully opaque alpha, nothing like the
+// soft ball the rerelease draws.
+//
+// NULL would mean "no flash asset at all", falling back to the generic star.
+//
 // ORDER MATTERS: the lookup is a substring match, and "v_shotg" is a prefix of
 // "v_shotg2" - so the super shotgun MUST be listed before the shotgun or it
 // silently takes the shotgun's offset.
-static const weapon_muzzle_t cl_weapon_muzzles[] = {
-    { "v_blast",   {  40.0f, -13.0f, -10.0f } },   // blaster
-    { "v_shotg2",  {  40.0f, -15.0f, -10.0f } },   // super shotgun
-    { "v_shotg",   {  40.0f, -15.0f, -15.0f } },   // shotgun
-    { "v_machn",   {  40.0f, -15.0f, -10.0f } },   // machinegun
-    { "v_chain",   {  40.0f, -13.0f, -15.0f } },   // chaingun
-    { "v_hyperb",  {  40.0f, -10.0f, -10.0f } },   // hyperblaster
+static weapon_muzzle_t cl_weapon_muzzles[] = {
+    { "v_blast",   {  40.0f, -13.0f, -10.0f }, "v_blast"  },   // blaster - a soft ball
+    { "v_shotg2",  {  40.0f, -15.0f, -10.0f }, "v_shotg2" },   // super shotgun
+    { "v_shotg",   {  40.0f, -15.0f, -15.0f }, "v_shotg"  },   // shotgun
+    { "v_machn",   {  40.0f, -15.0f, -10.0f }, "v_machn"  },   // machinegun - a star
+    { "v_chain",   {  40.0f, -13.0f, -15.0f }, "v_machn"  },   // chaingun - borrows the star
+    { "v_hyperb",  {  40.0f, -10.0f, -10.0f }, "v_blast"  },   // hyperblaster - borrows the ball
 };
+
+/*
+=================
+CL_MuzzleOffset_f
+
+Dial the per-weapon muzzle offsets live, because they CANNOT be derived. Three
+separate attempts to compute them from the models failed - there is no muzzle
+data in the pak, the kpf, or id's source, and the proof it is underivable is
+that the machinegun and super shotgun want the SAME offset while their model
+muzzles are 12 units apart. They are eye-calibrated numbers and nothing else.
+
+    muzzleoffset                 list every weapon, ready to paste back
+    muzzleoffset <x> <y> <z>     set the weapon currently in your hands
+
+Axes are forward / LEFT / up. Changes take effect on the next shot and live in
+memory only - they are NOT saved, which is deliberate: the listing is meant to
+be pasted into cl_weapon_muzzles[] so the numbers end up in source rather than
+in a config nobody can find later.
+=================
+*/
+void CL_MuzzleOffset_f(void)
+{
+    const model_t   *model;
+    player_state_t  *ps;
+    int             i, argc = Cmd_Argc();
+
+    if (argc != 1 && argc != 4) {
+        Com_Printf("Usage: muzzleoffset [x y z]   (forward / left / up)\n");
+        return;
+    }
+
+    if (argc == 1) {
+        Com_Printf("muzzle offsets, in cl_weapon_muzzles[] order:\n");
+        for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
+            const weapon_muzzle_t *w = &cl_weapon_muzzles[i];
+            Com_Printf("    { \"%s\",%*s{ %6.1ff, %6.1ff, %6.1ff }, \"%s\" },\n",
+                       w->gun, (int)(9 - strlen(w->gun)), "",
+                       w->offset[0], w->offset[1], w->offset[2],
+                       w->flash_dir ? w->flash_dir : "");
+        }
+        return;
+    }
+
+    // which weapon is in hand right now
+    ps = CL_KEYPS;
+    model = MOD_ForHandle(cl.model_draw[ps->gunindex]);
+    if (!model) {
+        Com_Printf("No view weapon to set an offset for.\n");
+        return;
+    }
+
+    for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
+        if (strstr(model->name, cl_weapon_muzzles[i].gun)) {
+            cl_weapon_muzzles[i].offset[0] = atof(Cmd_Argv(1));
+            cl_weapon_muzzles[i].offset[1] = atof(Cmd_Argv(2));
+            cl_weapon_muzzles[i].offset[2] = atof(Cmd_Argv(3));
+            Com_Printf("%s muzzle offset now %.1f %.1f %.1f - "
+                       "type muzzleoffset with no arguments to list them all.\n",
+                       cl_weapon_muzzles[i].gun,
+                       cl_weapon_muzzles[i].offset[0],
+                       cl_weapon_muzzles[i].offset[1],
+                       cl_weapon_muzzles[i].offset[2]);
+            return;
+        }
+    }
+
+    Com_Printf("'%s' has no muzzle flash entry.\n", model->name);
+}
+
+/*
+=================
+CL_RegisterViewMuzzleFlashes
+
+Precache the per-weapon flash models, from CL_RegisterTEntModels. They have to
+be registered there rather than looked up when the shot is fired: handles are
+invalidated by R_EndRegistration at every map load, and registering mid-game
+would stall on the first shot with each weapon while the model loads.
+=================
+*/
+void CL_RegisterViewMuzzleFlashes(void)
+{
+    int i;
+
+    for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
+        char path[MAX_QPATH];
+
+        cl_weapon_muzzles[i].flash = 0;
+        if (!cl_weapon_muzzles[i].flash_dir)
+            continue;
+
+        Q_snprintf(path, sizeof(path), "models/weapons/%s/flash/tris.md2",
+                   cl_weapon_muzzles[i].flash_dir);
+        cl_weapon_muzzles[i].flash = R_RegisterModel(path);
+    }
+}
 
 // Weapons deliberately absent from that table get NO muzzle flash, which is
 // the lookup's natural behaviour. The railgun and BFG are excluded on purpose -
 // neither should have one. The rocket and grenade launchers are out simply
 // because they have not been calibrated; add a row once one is measured.
 
-static bool cl_view_flash_pending;
+// A TIME, not a bool. CL_AddViewWeapon has several early returns - the gun
+// hidden (hand 2), the player model disabled, no gun model yet - and on any of
+// them CL_AddViewWeaponFlash is never reached, so a plain flag would sit set
+// until the gun came back and then pop a flash in mid-air. Stamping the time
+// lets a flash nobody could draw expire on its own. 0 = nothing pending.
+static int  cl_view_flash_time;
+
+#define VIEW_FLASH_WINDOW   100     // ms; a flash older than this is stale
 
 // called from CL_MuzzleFlash when the flash belongs to us, in first person
 void CL_ViewMuzzleFlash(void)
 {
-    cl_view_flash_pending = true;
+    cl_view_flash_time = cl.time;
 }
 
 static void CL_AddViewWeaponFlash(const entity_t *gun)
 {
     const model_t   *model;
     const vec3_t    *ofs = NULL;
+    qhandle_t       flash = 0;
     vec3_t          forward, right, up, muzzle;
     static vec3_t   tuned_storage;
     int             i;
 
-    if (!cl_view_flash_pending)
+    if (!cl_view_flash_time || cl.time - cl_view_flash_time > VIEW_FLASH_WINDOW)
         return;
-    cl_view_flash_pending = false;      // consume it either way, never let it pile up
+    cl_view_flash_time = 0;             // consume it either way, never let it pile up
 
     if (!cl_muzzleflash_models->integer)
         return;
-
-    // DISABLED ON PURPOSE - Matt's call. The monster and third-person flashes
-    // look right, but the view-weapon one does not: the emissive path it now
-    // shares gives a hard texture_mask cutout rather than the soft taper, and
-    // that reads much worse at arm's length than it does across a room.
-    //
-    // Everything below is kept and still correct - the calibrated per-weapon
-    // offsets, the world-space spawn, the pending-flag handshake. Delete this
-    // return to bring it back.
-    //
-    // cl_muzzleflash_models therefore means "monster and other-player flashes";
-    // it does NOT gate anything for the gun in your hands.
-    return;
 
     model = MOD_ForHandle(gun->model);
     if (!model)
@@ -1308,6 +1429,7 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
     for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
         if (strstr(model->name, cl_weapon_muzzles[i].gun)) {
             ofs = &cl_weapon_muzzles[i].offset;
+            flash = cl_weapon_muzzles[i].flash;      // 0 = fall back to the star
             break;
         }
     }
@@ -1334,7 +1456,11 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
     VectorMA(muzzle, -(*ofs)[1], right,   muzzle);
     VectorMA(muzzle,  (*ofs)[2], up,      muzzle);
 
-    CL_MuzzleFlashModel(muzzle, gun->angles, 1.0f);
+    // true = use the first-person size and brightness, which are separate
+    // cvars for the reasons set out at CL_MuzzleFlashModel. `flash` is this
+    // weapon's own graphic, which is the difference between a blaster ball and
+    // a machinegun star.
+    CL_MuzzleFlashModel2(muzzle, gun->angles, true, flash);
 }
 
 static void CL_AddViewWeapon(void)

@@ -30,6 +30,7 @@ SET(SRC_BASEQ2
 	baseq2/g_rogue.c
 	baseq2/g_sphere.c
 	baseq2/g_rogue_items.c
+	baseq2/g_nav.c
 	baseq2/g_xatrix.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c
@@ -116,6 +117,7 @@ SET(SRC_CLIENT
 	client/mapfog.c
 	client/effects.c
 	client/entities.c
+	client/footsteps.c
 	client/gtv.c
 	client/input.c
 	client/keys.c

@@ -1229,6 +1229,8 @@ void ClientCommand(edict_t *ent)
         Cmd_FireTarget_f(ent);
     else if (Q_stricmp(cmd, "killmonsters") == 0)
         Cmd_KillMonsters_f(ent);
+    else if (Q_stricmp(cmd, "nav") == 0)
+        Cmd_Nav_f(ent);
     else if (Q_stricmp(cmd, "inven") == 0)
         Cmd_Inven_f(ent);
     else if (Q_stricmp(cmd, "invnext") == 0)

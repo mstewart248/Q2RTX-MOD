@@ -697,6 +697,24 @@ static qboolean PF_AreasConnected(int area1, int area2)
     return CM_AreasConnected(&sv.cm, area1, area2);
 }
 
+/*
+=================
+PF_LoadFile / PF_FreeFile
+
+Search-path file access for the game DLL - the only way it can read anything
+that is inside a pak rather than loose on disk.
+=================
+*/
+static int PF_LoadFile(const char *path, void **buffer)
+{
+    return FS_LoadFile(path, buffer);
+}
+
+static void PF_FreeFile(void *buffer)
+{
+    FS_FreeFile(buffer);
+}
+
 static void *PF_TagMalloc(unsigned size, unsigned tag)
 {
     Q_assert(tag + TAG_MAX > tag);
@@ -847,6 +865,9 @@ void SV_InitGameProgs(void)
     import.WritePosition = MSG_WritePos;
     import.WriteDir = MSG_WriteDir;
     import.WriteAngle = MSG_WriteAngle;
+
+    import.LoadFile = PF_LoadFile;
+    import.FreeFile = PF_FreeFile;
 
     import.TagMalloc = PF_TagMalloc;
     import.TagFree = Z_Free;

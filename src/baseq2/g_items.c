@@ -2401,6 +2401,38 @@ gitem_t itemlist[] = {
         /* precache */ ""
     },
 
+    /*QUAKED item_compass (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Compass (rerelease). Use it and the current objective marker
+    (level.current_poi, maintained by target_poi) is drawn on screen, clamped
+    to the screen edge when it is behind you.
+
+    Not consumed. The rerelease's breadcrumb trail along a navmesh path is NOT
+    ported - see Use_Compass in g_rerelease.c.
+
+    No world model: the rerelease gives it to you rather than placing it, and
+    it is on the item wheel instead.
+    */
+    {
+        "item_compass",
+        Pickup_Powerup,
+        Use_Compass,
+        NULL,
+        NULL,
+        "items/pkup.wav",
+        NULL, 0,
+        NULL,
+        /* icon */      "p_compass",
+        /* pickup */    "Compass",
+        /* width */     2,
+        0,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "misc/help_marker.wav"
+    },
+
     /*QUAKED item_invisibility (.3 .3 1) (-16 -16 -16) (16 16 16)
     Cloak (rogue). 30 seconds of being translucent and untargetable - FindTarget
     refuses to see you at all while it is up. Blinks over the last 3 seconds.

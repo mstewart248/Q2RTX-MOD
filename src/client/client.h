@@ -115,6 +115,10 @@ typedef struct centity_s {
 
 extern centity_t    cl_entities[MAX_EDICTS];
 
+// compass breadcrumb points the client will hold; must match POI_PATH_MAX
+// in the game DLL, which is what fills the packet
+#define MAX_POI_PATH    16
+
 #define MAX_CLIENTWEAPONMODELS        20        // PGM -- upped from 16 to fit the chainfist vwep
 
 typedef struct clientinfo_s {
@@ -318,6 +322,16 @@ typedef struct client_state_s {
 
     char    weaponModels[MAX_CLIENTWEAPONMODELS][MAX_QPATH];
     int     numWeaponModels;
+
+    // [rerelease] the compass objective marker, set by TE_POI. poi_time is
+    // when it stops being drawn (cl.time based), 0 = nothing to draw.
+    vec3_t      poi_origin;
+    qhandle_t   poi_pic;
+    int         poi_time;
+
+    // the breadcrumb trail that goes with it, shares poi_time
+    vec3_t      poi_path[MAX_POI_PATH];
+    int         poi_path_count;
 } client_state_t;
 
 extern    client_state_t    cl;
@@ -528,10 +542,18 @@ extern char        cl_cmdbuf_text[MAX_STRING_CHARS];
 extern cvar_t    *cl_gunalpha;
 extern cvar_t    *cl_muzzleflash_models;
 extern cvar_t    *cl_muzzleflash_scale;
+extern cvar_t    *cl_muzzleflash_view_size;
+extern cvar_t    *cl_muzzleflash_view_brightness;
+extern cvar_t    *cl_muzzleflash_time;
 extern cvar_t    *cl_muzzleflash_brightness;
 extern cvar_t    *cl_muzzleflash_offset;
 extern cvar_t    *cl_predict;
 extern cvar_t    *cl_footsteps;
+// Surface-dependent footsteps (footsteps.c). 0 restores the four generic
+// player/stepN.wav sounds.
+extern cvar_t    *cl_footstep_materials;
+qhandle_t CL_FootstepSound(const vec3_t origin);
+void CL_ClearFootstepCache(void);
 extern cvar_t    *cl_noskins;
 extern cvar_t    *cl_kickangles;
 extern cvar_t    *cl_rollhack;
@@ -701,6 +723,7 @@ void CL_SendCmd(void);
 
 typedef struct {
     int type;
+    vec3_t path[MAX_POI_PATH];
     vec3_t pos1;
     vec3_t pos2;
     vec3_t offset;
@@ -864,7 +887,12 @@ typedef struct cl_sustain_s {
 
 void CL_SmokeAndFlash(const vec3_t origin);
 void CL_ImpactSmokeAndFlash(const vec3_t origin, const vec3_t dir);
-void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, float scale);
+void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, bool first_person);
+// as above, but with this weapon's own flash graphic; model 0 = the generic star
+void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
+                          bool first_person, qhandle_t model);
+void CL_RegisterViewMuzzleFlashes(void);
+void CL_MuzzleOffset_f(void);
 void CL_ViewMuzzleFlash(void);
 
 void CL_RegisterTEntSounds(void);

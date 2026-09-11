@@ -30,6 +30,9 @@ cvar_t  *cl_predict;
 cvar_t  *cl_gunalpha;
 cvar_t  *cl_muzzleflash_models;
 cvar_t  *cl_muzzleflash_scale;
+cvar_t  *cl_muzzleflash_view_size;
+cvar_t  *cl_muzzleflash_view_brightness;
+cvar_t  *cl_muzzleflash_time;
 cvar_t  *cl_muzzleflash_brightness;
 cvar_t  *cl_muzzleflash_offset;
 cvar_t  *cl_warn_on_fps_rounding;
@@ -91,6 +94,9 @@ cvar_t  *cl_vwep;
 cvar_t  *cl_cinematics;
 cvar_t  *cl_hd_cinematics;
 cvar_t  *cl_hd_cinematics_delay;
+cvar_t  *cl_hd_cinematics_catchup;
+cvar_t  *cl_hd_cinematics_mipmaps;
+cvar_t  *cl_hd_cinematics_stats;
 
 //
 // userinfo
@@ -720,6 +726,7 @@ void CL_ClearState(void)
     S_StopAllSounds();
     CL_ClearEffects();
     CL_ClearTEnts();
+    CL_ClearFootstepCache();
     LOC_FreeLocations();
     LE_FreeLights();
     CL_FreeDynamicLights();
@@ -2689,6 +2696,7 @@ static const cmdreg_t c_client[] = {
     { "unignoretext", CL_UnIgnoreText_f },
     { "ignorenick", CL_IgnoreNick_f, CL_IgnoreNick_c },
     { "unignorenick", CL_UnIgnoreNick_f, CL_UnIgnoreNick_c },
+    { "muzzleoffset", CL_MuzzleOffset_f },
     { "dumpclients", CL_DumpClients_f },
     { "dumpstatusbar", CL_DumpStatusbar_f },
     { "dumplayout", CL_DumpLayout_f },
@@ -2765,11 +2773,39 @@ static void CL_InitLocal(void)
     // scales that back down without touching the shader or the global UBO
     // (whose cvar list is a multiple of four and cannot take a single new entry).
     cl_muzzleflash_brightness = Cvar_Get("cl_muzzleflash_brightness", "0.1", CVAR_ARCHIVE);
+
+    /* The gun in YOUR hands gets its own size and brightness, and it has to.
+       The two cvars above are shared by every flash in the world, and the view
+       flash is the same world-space model drawn at 1/50th the distance:
+
+         - Size. It sits ~40 units from the camera, not 2000. A monster value
+           of 10 puts a 22-unit disc on the end of your own barrel.
+         - Brightness. Entity alpha feeds an emission term the shader then
+           multiplies by prev_adapted_luminance * 500. Clipped, that term loses
+           the texture's alpha gradient, and the gradient IS the soft taper -
+           at alpha 1.0, 68% of the flash's pixels measured hard against
+           R=255, i.e. a flat orange blob with a hard edge. Small and far away
+           that clipping is a hot spark and looks right; filling half the
+           screen it looks like a bug. 0.06 keeps the core hot while leaving
+           the arms below the clip point, so the taper survives.
+
+       These deliberately do NOT inherit the monster values - making the view
+       flash a multiple of them is what produced the blob. */
+    cl_muzzleflash_view_size = Cvar_Get("cl_muzzleflash_view_size", "4", CVAR_ARCHIVE);
+    cl_muzzleflash_view_brightness = Cvar_Get("cl_muzzleflash_view_brightness", "0.03", CVAR_ARCHIVE);
+    /* How long a flash stays up, in milliseconds, for every flash in the world.
+       The machinegun fires every 100 ms, so anything at or above that leaves no
+       gap between shots and the flash reads as permanently on instead of as a
+       flicker - which is exactly what it used to do, because the explosion
+       clock's frame is 100 ms and the flash was one frame long. 50 gives an
+       even on/off at the machinegun's rate. */
+    cl_muzzleflash_time = Cvar_Get("cl_muzzleflash_time", "50", CVAR_ARCHIVE);
     // dev aid: "x y z" overrides the built-in muzzle offset for the weapon in
     // hand, so one can be dialled in live instead of rebuilding each time
     cl_muzzleflash_offset = Cvar_Get("cl_muzzleflash_offset", "", 0);
     cl_footsteps = Cvar_Get("cl_footsteps", "1", 0);
     cl_footsteps->changed = cl_footsteps_changed;
+    cl_footstep_materials = Cvar_Get("cl_footstep_materials", "1", CVAR_ARCHIVE);
     cl_noskins = Cvar_Get("cl_noskins", "0", 0);
     cl_noskins->changed = cl_noskins_changed;
     cl_predict = Cvar_Get("cl_predict", "1", 0);
@@ -2897,6 +2933,16 @@ static void CL_InitLocal(void)
     // the audio device is heard later than we queue it, so the video is held
     // back to meet it. 350ms was tuned by ear against the OpenAL backend
     cl_hd_cinematics_delay = Cvar_Get("cl_hd_cinematics_delay", "350", CVAR_ARCHIVE);
+
+    /* Playback health knobs. Deliberately NOT archived: they are here to diagnose a
+       stutter and to A/B the fixes for it, and nothing should carry them into a
+       fresh install. See the comments in cin.c.
+         catchup 0 - restore the old behaviour of never skipping a late frame
+         mipmaps 1 - restore the old full mip chain on every video frame
+         stats   1 - print playback health once a second */
+    cl_hd_cinematics_catchup = Cvar_Get("cl_hd_cinematics_catchup", "1", 0);
+    cl_hd_cinematics_mipmaps = Cvar_Get("cl_hd_cinematics_mipmaps", "0", 0);
+    cl_hd_cinematics_stats = Cvar_Get("cl_hd_cinematics_stats", "0", 0);
 
     allow_download->changed = cl_allow_download_changed;
     cl_allow_download_changed(allow_download);

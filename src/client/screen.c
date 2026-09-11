@@ -2363,6 +2363,137 @@ static void SCR_DrawLoading(void)
     R_SetScale(1.0f);
 }
 
+/*
+=================
+SCR_ProjectPoint
+
+World point -> hud coordinates. Returns false if the point is behind the
+camera and `clamp_edge` is not set; with it, a point behind you is pushed hard
+off the edge so the caller's clamp turns it into a direction indicator.
+=================
+*/
+static bool SCR_ProjectPoint(const vec3_t world, bool clamp_edge,
+                             float *out_x, float *out_y, float *out_dist)
+{
+    vec3_t  dir;
+    float   fwd, right, up, tx, ty;
+
+    VectorSubtract(world, cl.refdef.vieworg, dir);
+    *out_dist = VectorLength(dir);
+    if (*out_dist < 1)
+        return false;
+
+    fwd   = DotProduct(dir, cl.v_forward);
+    right = DotProduct(dir, cl.v_right);
+    up    = DotProduct(dir, cl.v_up);
+
+    if (fwd > 1) {
+        tx = right / fwd / tanf(DEG2RAD(cl.refdef.fov_x) * 0.5f);
+        ty = -up / fwd / tanf(DEG2RAD(cl.refdef.fov_y) * 0.5f);
+    } else {
+        float len;
+
+        if (!clamp_edge)
+            return false;       // behind us and nobody wants an arrow
+
+        len = sqrtf(right * right + up * up);
+        if (len < 0.001f)
+            return false;
+        tx = (right / len) * 100.0f;
+        ty = (-up / len) * 100.0f;
+    }
+
+    *out_x = scr.hud_width / 2 + tx * (scr.hud_width / 2);
+    *out_y = scr.hud_height / 2 + ty * (scr.hud_height / 2);
+    return true;
+}
+
+/*
+=================
+SCR_DrawCompassTrail
+
+The breadcrumb path to the objective, drawn small and only where it is
+actually in front of you - unlike the objective marker itself, a trail point
+clamped to the screen edge would just be noise.
+=================
+*/
+static void SCR_DrawCompassTrail(void)
+{
+    int i, w, h;
+
+    if (!cl.poi_path_count || !cl.poi_pic)
+        return;
+
+    R_GetPicSize(&w, &h, cl.poi_pic);
+    if (w <= 0 || h <= 0)
+        return;
+
+    // the trail markers are deliberately a third the size of the objective
+    w = max(4, w / 3);
+    h = max(4, h / 3);
+
+    for (i = 0; i < cl.poi_path_count && i < MAX_POI_PATH; i++) {
+        float sx, sy, dist;
+
+        if (!SCR_ProjectPoint(cl.poi_path[i], false, &sx, &sy, &dist))
+            continue;
+        if (sx < 0 || sy < 0 || sx > scr.hud_width || sy > scr.hud_height)
+            continue;
+
+        R_DrawStretchPic((int)sx - w / 2, (int)sy - h / 2, w, h, cl.poi_pic);
+    }
+}
+
+/*
+=================
+SCR_DrawCompassPOI
+
+The rerelease compass marker. cl.poi_* is set by TE_POI when the player uses
+item_compass, and lasts until cl.poi_time.
+
+The marker is a world point drawn in screen space: project it through the view
+basis, and when it is behind you or off the edge, clamp it to the border so it
+still reads as "the objective is that way". Distance in metres-ish (Quake units
+/ 32) goes under it, which is what tells you whether you are getting closer.
+
+Deliberately NOT a depth-tested 3D sprite: the objective is usually through a
+wall, and the whole point is to see it anyway.
+=================
+*/
+static void SCR_DrawCompassPOI(void)
+{
+    float   sx, sy, dist;
+    int     w, h, margin;
+    char    buf[16];
+
+    if (!cl.poi_time || cl.time >= cl.poi_time)
+        return;
+
+    if (!cl.poi_pic)
+        return;
+
+    if (!SCR_ProjectPoint(cl.poi_origin, true, &sx, &sy, &dist))
+        return;
+
+    R_GetPicSize(&w, &h, cl.poi_pic);
+    if (w <= 0 || h <= 0) {
+        w = 16;
+        h = 16;
+    }
+
+    margin = max(w, h);
+
+    // clamp() is the in-place macro in shared.h, not a returning function
+    clamp(sx, (float)margin, (float)(scr.hud_width - margin));
+    clamp(sy, (float)margin, (float)(scr.hud_height - margin));
+
+    R_DrawStretchPic((int)sx - w / 2, (int)sy - h / 2, w, h, cl.poi_pic);
+
+    Q_snprintf(buf, sizeof(buf), "%d", (int)(dist / 32.0f));
+    SCR_DrawString((int)sx - (int)strlen(buf) * CHAR_WIDTH / 2,
+                   (int)sy + h / 2 + 2, UI_DROPSHADOW, buf);
+}
+
 static void SCR_DrawCrosshair(void)
 {
     int x, y;
@@ -2497,6 +2628,9 @@ static void SCR_Draw2D(void)
     R_SetAlpha(Cvar_ClampValue(scr_alpha, 0, 1));
 
     SCR_DrawStats();
+
+    SCR_DrawCompassTrail();
+    SCR_DrawCompassPOI();
 
     SCR_DrawHealthBars();
 
