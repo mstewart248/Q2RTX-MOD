@@ -174,7 +174,7 @@ static void FindChunk(uint32_t search)
 static bool GetWavinfo(void)
 {
     int format;
-    int samples, width;
+    int samples, width, src_width;
     uint32_t chunk;
 
 // find "RIFF" chunk
@@ -221,9 +221,21 @@ static bool GetWavinfo(void)
     switch (width) {
     case 8:
         s_info.width = 1;
+        src_width = 1;
         break;
     case 16:
         s_info.width = 2;
+        src_width = 2;
+        break;
+    case 24:
+        // The remaster ships some sounds as 24-bit - 20 of the 69 footstep
+        // sounds among them, which is the whole of the grass, carpet, snow,
+        // splash and tile sets. The mixer handles only 8 and 16, so narrow to
+        // 16 once the data chunk is found rather than rejecting the file.
+        // Rejecting it was silent in a release build, because Com_DPrintf is
+        // compiled out, so the sound simply never played.
+        s_info.width = 2;
+        src_width = 3;
         break;
     default:
         Com_DPrintf("%s has bad width\n", s_info.name);
@@ -266,7 +278,7 @@ static bool GetWavinfo(void)
         return false;
     }
 
-    samples = iff_chunk_len / s_info.width;
+    samples = iff_chunk_len / src_width;
     if (!samples) {
         Com_DPrintf("%s has zero length\n", s_info.name);
         return false;
@@ -282,6 +294,18 @@ static bool GetWavinfo(void)
     }
 
     s_info.data = data_p;
+
+    // 24-bit source: keep the top two bytes of each little-endian sample. The
+    // destination always trails the source, so this compacts safely in place.
+    if (src_width == 3) {
+        byte    *in = data_p, *out = data_p;
+        int     i;
+
+        for (i = 0; i < samples; i++, in += 3, out += 2) {
+            out[0] = in[1];
+            out[1] = in[2];
+        }
+    }
 
     return true;
 }

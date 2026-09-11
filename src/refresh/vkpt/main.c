@@ -2760,6 +2760,15 @@ static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_
 	if (model->model_class == MCLASS_PLAYER_BEAM)
 		material_id |= MATERIAL_FLAG_PLAYER_BEAM;
 
+	// [Q2RTX] Effects that belong to one view only - the first-person muzzle
+	// flash, and the world-space copy of it that exists purely for mirrors.
+	// See the RF_FIRST_PERSON_FX comment in shared.h for why these cannot just
+	// use RF_WEAPONMODEL / RF_VIEWERMODEL the way the beam does.
+	if (entity->flags & RF_FIRST_PERSON_FX)
+		material_id |= MATERIAL_FLAG_FX_FIRST_PERSON;
+	if (entity->flags & RF_REFLECTION_FX)
+		material_id |= MATERIAL_FLAG_FX_REFLECTION;
+
 	if (is_viewer_weapon)
 		material_id |= MATERIAL_FLAG_WEAPON;
 

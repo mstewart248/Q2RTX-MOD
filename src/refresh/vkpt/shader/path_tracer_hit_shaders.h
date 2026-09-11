@@ -197,7 +197,7 @@ vec4 pt_logic_sprite(int primitiveID, vec2 bary)
 	return color;
 }
 
-vec4 pt_logic_explosion(int primitiveID, int instanceID, uint instanceCustomIndex, vec3 worldRayDirection, vec2 bary)
+vec4 pt_logic_explosion(int primitiveID, int instanceID, uint instanceCustomIndex, vec3 worldRayDirection, vec2 bary, bool reflection_ray)
 {
 	// NOTE: The explosions use a different primitive addressing scheme from the other geometry.
 	// This is because the other geometry lives in the geometry TLAS, and the explosions are in the effects TLAS,
@@ -206,6 +206,22 @@ vec4 pt_logic_explosion(int primitiveID, int instanceID, uint instanceCustomInde
 	const uint primitive_id = primitiveID + instanceCustomIndex;
 	const uint buffer_idx = VERTEX_BUFFER_INSTANCED;
 	const Triangle triangle = load_triangle(buffer_idx, primitive_id);
+
+	// [Q2RTX] An effect that belongs to the other view contributes nothing.
+	// The first-person muzzle flash is drawn at the VIEW muzzle, which is up at
+	// eye level - in a mirror that reads as a flash coming out of your model's
+	// face. Its world-space twin is drawn at the third-person gun and is the one
+	// mirrors should see. See MATERIAL_FLAG_FX_* in constants.h.
+	if (reflection_ray)
+	{
+		if ((triangle.material_id & MATERIAL_FLAG_FX_FIRST_PERSON) != 0)
+			return vec4(0);
+	}
+	else
+	{
+		if ((triangle.material_id & MATERIAL_FLAG_FX_REFLECTION) != 0)
+			return vec4(0);
+	}
 
 	const vec3 barycentric = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
 	const vec2 tex_coord = triangle.tex_coords * barycentric;

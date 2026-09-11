@@ -1460,7 +1460,7 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
     // cvars for the reasons set out at CL_MuzzleFlashModel. `flash` is this
     // weapon's own graphic, which is the difference between a blaster ball and
     // a machinegun star.
-    CL_MuzzleFlashModel2(muzzle, gun->angles, true, flash);
+    CL_MuzzleFlashModel2(muzzle, gun->angles, RF_FIRST_PERSON_FX, flash);
 }
 
 static void CL_AddViewWeapon(void)

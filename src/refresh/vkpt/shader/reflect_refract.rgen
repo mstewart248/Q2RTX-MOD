@@ -702,7 +702,7 @@ main()
 		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
 	}
 
-	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false);
+	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false, /* reflection_ray = */ true);
 	transparent = alpha_blend_premultiplied(transparent, effects * vec4(throughput, 1));
 
 	if(!found_intersection(ray_payload_geometry) || is_sky(triangle.material_id))

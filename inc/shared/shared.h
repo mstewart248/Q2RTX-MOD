@@ -933,6 +933,18 @@ typedef struct {
 
 // rerelease. Bits 20 and 21 were the first free ones; the full 32 bits of
 // renderfx already go over the wire (U_RENDERFX8|U_RENDERFX16 in msg.c).
+// [Q2RTX] Which VIEW an effect belongs to. Both are for entities that render
+// through the EFFECTS path (explosions, muzzle flashes) - those are sorted by
+// model_class, so the RF_WEAPONMODEL / RF_VIEWERMODEL trick the beam uses is
+// unavailable to them: vkpt's entity sort tests those two BEFORE MCLASS_FLASH
+// and would route the flash into the regular model pass, where it renders as a
+// flat opaque slab instead of a soft additive flash. See entities.c.
+//
+// Instead these mark the primitive's material, and the effects ray skips the
+// ones that do not belong to the view being drawn.
+#define RF_FIRST_PERSON_FX  0x00080000      // primary rays only - not in mirrors
+#define RF_REFLECTION_FX    0x00400000      // mirrors only - not in primary rays
+
 #define RF_CUSTOM_LIGHT     0x00100000      // target_light: s.frame is the radius, s.skinnum the packed RGBA
 #define RF_FLARE            0x00200000      // misc_flare: see SP_misc_flare for the rest of the state
 

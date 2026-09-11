@@ -83,9 +83,23 @@ extern cvar_t* cvar_pt_particle_emissive;
 // no amount of tuning the world-muzzle path fixes them - see the beam section
 // of [[q2rtx-compass-and-beam-view]] for what a real fix needs.
 //
-// 1 draws from the world muzzle, which is where the third-person model's gun
-// actually is. Kept for experimenting with the mirror problem.
+// 1 forces the world-muzzle chain to be used for the first-person view too.
+// Kept for experimenting; the two-chain path below means you should not need
+// it - your own beam now gets BOTH, each restricted to where it belongs.
 static cvar_t   *cl_beam_thirdperson;
+
+// [Q2RTX] How far to drop the WORLD beam below the server's muzzle, in units.
+//
+// The server fires from eye level - P_ProjectSource with offset
+// {7, 2, viewheight - 3}, so about 19 units above the player origin - but the
+// third-person model carries its gun down at chest height. Without this the
+// beam leaves the model's head.
+//
+// This replaces the old hardcoded correction, which built its basis from
+// `angles[YAW] + 180` and therefore moved the start FORWARD 7 instead of back -
+// on top of the server start already being 7 forward, which is why the beam
+// floated a foot or so in front of everyone's chest.
+static cvar_t   *cl_beam_muzzle_drop;
 
 
 /*
@@ -360,15 +374,16 @@ cl_muzzleflash_view_size / cl_muzzleflash_view_brightness in main.c.
 Gated on cl_muzzleflash_models so it can be turned off.
 =================
 */
-void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, bool first_person)
+void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, int view_fx)
 {
-    CL_MuzzleFlashModel2(origin, angles, first_person, 0);
+    CL_MuzzleFlashModel2(origin, angles, view_fx, 0);
 }
 
 void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
-                          bool first_person, qhandle_t model)
+                          int view_fx, qhandle_t model)
 {
     explosion_t *ex;
+    bool        first_person = (view_fx == RF_FIRST_PERSON_FX);
     cvar_t      *scale_cvar  = first_person ? cl_muzzleflash_view_size
                                             : cl_muzzleflash_scale;
     cvar_t      *bright_cvar = first_person ? cl_muzzleflash_view_brightness
@@ -409,6 +424,15 @@ void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
     ex->type = ex_mflash;
     ex->ent.model = model;
     ex->ent.flags = RF_FULLBRIGHT | RF_NOSHADOW | RF_TRANSLUCENT;
+    // [Q2RTX] Which view this flash belongs to. The first-person one is drawn
+    // at the VIEW muzzle, up at eye level, so in a mirror it comes out of your
+    // model's face; the world-space twin spawned alongside it sits on the
+    // third-person gun and is the one a mirror should see. These cannot use
+    // RF_WEAPONMODEL / RF_VIEWERMODEL - the entity sort tests those before
+    // MCLASS_FLASH and the flash would render as a flat slab. See shared.h.
+    // view_fx is 0 for an ordinary world flash (a monster, another player),
+    // which belongs in BOTH views. Only your own gun spawns a split pair.
+    ex->ent.flags |= view_fx;
     // The effects shader does emission.a *= entity alpha, then multiplies the
     // colour by that alpha - so this dims the flash without altering the shape
     // of its falloff, letting the texture's own taper show instead of clipping.
@@ -938,6 +962,54 @@ static void CL_AddBeams(void)
     }
 }
 
+
+/*
+=================
+CL_EmitBeamChain
+
+Lay one chain of beam segments from `org` along `dist` (which it normalises).
+`extra_flags` is how the two chains of your own beam are kept apart - see
+CL_AddPlayerBeams.
+=================
+*/
+static void CL_EmitBeamChain(qhandle_t model, const vec3_t org_in,
+                             const vec3_t dist_in, const vec3_t angles,
+                             int framenum, int extra_flags)
+{
+    entity_t    ent;
+    vec3_t      org, dist;
+    float       d, len, steps, model_length;
+    int         j;
+
+    VectorCopy(org_in, org);
+    VectorCopy(dist_in, dist);
+
+    d = VectorNormalize(dist);
+    model_length = 32.0f;
+    steps = ceilf(d / model_length);
+    if (steps < 2)
+        steps = 2;
+    len = (d - model_length) / (steps - 1);
+
+    memset(&ent, 0, sizeof(ent));
+    ent.model = model;
+    ent.frame = framenum;
+    ent.flags = RF_FULLBRIGHT | extra_flags;
+    ent.angles[0] = -angles[0];
+    ent.angles[1] = angles[1] + 180.0f;
+    ent.angles[2] = cl.time % 360;
+
+    while (d > 0) {
+        VectorCopy(org, ent.origin);
+
+        V_AddEntity(&ent);
+
+        for (j = 0; j < 3; j++)
+            org[j] += dist[j] * len;
+        d -= model_length;
+    }
+}
+
 /*
 =================
 CL_AddPlayerBeams
@@ -955,8 +1027,8 @@ static void CL_AddPlayerBeams(void)
     vec3_t      angles;
     float       len, steps;
     int         framenum;
-    float       model_length;
     float       hand_multiplier;
+    bool        view_chain;
     player_state_t  *ps, *ops;
 
     if (info_hand->integer == 2)
@@ -971,8 +1043,19 @@ static void CL_AddPlayerBeams(void)
         if (!b->model || b->endtime < cl.time)
             continue;
 
-        // if coming from the player, update the start position
-        if (b->entity == cl.frame.clientNum + 1 && !cl_beam_thirdperson->integer) {
+        // Your own beam in first person needs TWO chains. The view-derived one
+        // is the only thing that looks right down the barrel - it is aligned to
+        // v_forward, which is what makes the sparkle rings circle it - but it
+        // sits at eye level, so in a mirror it comes out of your face. The
+        // world chain is the opposite. Each is restricted to where it belongs
+        // by its render flag; see the emit calls below.
+        //
+        // In third person (chase cam) there is no view weapon to match, so the
+        // world chain is used for everything.
+        view_chain = (b->entity == cl.frame.clientNum + 1) &&
+                     !cl.thirdPersonView && !cl_beam_thirdperson->integer;
+
+        if (view_chain) {
             // set up gun position
             ps = CL_KEYPS;
             ops = CL_OLDKEYPS;
@@ -1029,63 +1112,55 @@ static void CL_AddPlayerBeams(void)
             VectorSubtract(b->end, org, dist);
             vectoangles2(dist, angles);
 
-            // if it's a non-origin offset, it's a player, so use the hardcoded player offset
+            // A PLAYER's beam - anyone's, including your own reflection - leaves
+            // the gun the third-person model is holding, which is well below
+            // the eye the server fired from. Drop it to gun height and re-aim.
+            //
+            // The old correction here did this with a basis built from
+            // angles[YAW] + 180 and ended up moving the start FORWARD, which is
+            // what put the beam out in front of everybody's chest.
             if (!VectorEmpty(b->offset)) {
-                vec3_t  tmp, f, r, u;
-
-                tmp[0] = angles[0];
-                tmp[1] = angles[1] + 180.0f;
-                tmp[2] = 0;
-                AngleVectors(tmp, f, r, u);
-
-                VectorMA(org, -b->offset[0] + 1, r, org);
-                VectorMA(org, -b->offset[1], f, org);
-                VectorMA(org, -b->offset[2] - 10, u, org);
+                org[2] -= cl_beam_muzzle_drop->value;
+                VectorSubtract(b->end, org, dist);
+                vectoangles2(dist, angles);
             } else {
                 // if it's a monster, do the particle effect
                 CL_MonsterPlasma_Shell(b->start);
             }
 
-            // the heatbeam sparkle belongs to the gun, not to the view, so it
-            // follows the beam down this path too
-            if (b->entity == cl.frame.clientNum + 1)
-                CL_Heatbeam(org, dist);
-
             framenum = 2;
         }
 
-        // add new entities for the beams
-        d = VectorNormalize(dist);
-        model_length = 32.0f;
-        steps = ceil(d / model_length);
-        len = (d - model_length) / (steps - 1);
-
-        // [Q2RTX] Do NOT slide the start of your own beam forward from here.
+        // [Q2RTX] Do NOT slide the start of a beam forward to avoid the gun.
         // The first 32-unit segment sits right against the near plane and is
         // drawn hugely magnified, which looks like a bright blob over the gun -
         // but that magnified segment IS what makes the beam read as coming out
         // of the barrel, and the original draws it too. A forward nudge was
         // tried (cl_beam_offset, 12 units) and it moved the visible start off
-        // the muzzle into mid-air; that is much worse. If the near segment is
-        // too hot, dim the material (models/proj/beam/skin emissive_factor),
-        // do not move the geometry.
+        // the muzzle into mid-air; that is much worse. The gun is kept on top
+        // by MATERIAL_FLAG_PLAYER_BEAM in primary_rays.rgen instead.
+        //
+        // RF_WEAPONMODEL on the view chain is what keeps it OUT OF MIRRORS:
+        // reflect_refract.rgen includes AS_FLAG_VIEWER_MODELS and excludes
+        // AS_FLAG_VIEWER_WEAPON whenever cl_player_model is FIRST_PERSON, which
+        // is the default - the same rule that already hides your gun, and shows
+        // your body, in a mirror.
+        CL_EmitBeamChain(b->model, org, dist, angles, framenum,
+                         view_chain ? RF_WEAPONMODEL : 0);
 
-        memset(&ent, 0, sizeof(ent));
-        ent.model = b->model;
-        ent.frame = framenum;
-        ent.flags = RF_FULLBRIGHT;
-        ent.angles[0] = -angles[0];
-        ent.angles[1] = angles[1] + 180.0f;
-        ent.angles[2] = cl.time % 360;
+        // ...and the matching world chain, which only a mirror (or another
+        // player) ever sees. RF_VIEWERMODEL is the exact complement: primary
+        // rays drop it, reflections keep it.
+        if (view_chain) {
+            vec3_t  world_org, world_dist, world_angles;
 
-        while (d > 0) {
-            VectorCopy(org, ent.origin);
+            VectorCopy(b->start, world_org);
+            world_org[2] -= cl_beam_muzzle_drop->value;
+            VectorSubtract(b->end, world_org, world_dist);
+            vectoangles2(world_dist, world_angles);
 
-            V_AddEntity(&ent);
-
-            for (j = 0; j < 3; j++)
-                org[j] += dist[j] * len;
-            d -= model_length;
+            CL_EmitBeamChain(b->model, world_org, world_dist, world_angles,
+                             2, RF_VIEWERMODEL);
         }
     }
 }
@@ -1834,6 +1909,7 @@ void CL_ClearTEnts(void)
 void CL_InitTEnts(void)
 {
     cl_beam_thirdperson = Cvar_Get("cl_beam_thirdperson", "0", CVAR_ARCHIVE);
+    cl_beam_muzzle_drop = Cvar_Get("cl_beam_muzzle_drop", "10", CVAR_ARCHIVE);
     cl_railtrail_type = Cvar_Get("cl_railtrail_type", "0", 0);
     cl_railtrail_time = Cvar_Get("cl_railtrail_time", "1.0", 0);
     cl_railtrail_time->changed = cl_timeout_changed;

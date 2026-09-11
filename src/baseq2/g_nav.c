@@ -98,8 +98,19 @@ Nav_Free
 void Nav_Free(void)
 {
     Nav_ClearPursuit();
-    if (nav.nodes)
-        gi.TagFree(nav.nodes);
+
+    // Deliberately NO gi.TagFree here. The mesh is one TAG_LEVEL block, and
+    // TAG_LEVEL is reclaimed wholesale by the gi.FreeTags(TAG_LEVEL) that
+    // SpawnEntities runs on every map load - so by the time anyone calls this,
+    // the memory is already gone and freeing it again trips
+    // "Z_Free: assertion `z->magic == Z_MAGIC' failed" (gi.TagFree IS Z_Free,
+    // see import.TagFree in src/server/game.c).
+    //
+    // This function therefore only FORGETS the mesh, which makes it safe to
+    // call at any point in the level cycle - the property that keeps this class
+    // of bug from coming back. The one cost is that a mesh discarded by the
+    // validation below leaks until that level's own FreeTags, which is bounded,
+    // rare, and genuinely reclaimed.
     memset(&nav, 0, sizeof(nav));
 }
 

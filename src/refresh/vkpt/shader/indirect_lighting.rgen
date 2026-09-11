@@ -301,7 +301,9 @@ indirect_lighting(
 		if (found_intersection(ray_payload_geometry))
 			bounce_ray.t_max = ray_payload_geometry.hit_distance;
 
-		vec4 transparency = trace_effects_ray(bounce_ray, /* skip_procedural = */ true);
+		// a bounce is not a mirror image of the viewer, so it keeps the
+		// first-person effects and drops the reflection-only twins
+		vec4 transparency = trace_effects_ray(bounce_ray, /* skip_procedural = */ true, /* reflection_ray = */ false);
 		bounce_contrib += transparency.rgb * transparency.a * bounce_throughput * (1.0 - direct_specular_weight);
 	}
 

@@ -30,6 +30,12 @@ cvar_t  *cl_predict;
 cvar_t  *cl_gunalpha;
 cvar_t  *cl_muzzleflash_models;
 cvar_t  *cl_muzzleflash_scale;
+// Where YOUR player model holds its gun, for the mirror-only muzzle flash.
+// Relative to the model as drawn - which is already slid 15 units back from
+// the entity origin, see CL_MuzzleFlash. Tune by looking in a mirror.
+cvar_t  *cl_muzzleflash_world_fwd;
+cvar_t  *cl_muzzleflash_world_right;
+cvar_t  *cl_muzzleflash_world_up;
 cvar_t  *cl_muzzleflash_view_size;
 cvar_t  *cl_muzzleflash_view_brightness;
 cvar_t  *cl_muzzleflash_time;
@@ -2767,6 +2773,10 @@ static void CL_InitLocal(void)
     // the flash model is only ~2.3 units across; the rerelease draws it far
     // bigger than that, so the default scales it up
     cl_muzzleflash_scale = Cvar_Get("cl_muzzleflash_scale", "2", CVAR_ARCHIVE);
+    // 22 is Matt's measured value, looking at his own model in a mirror
+    cl_muzzleflash_world_fwd   = Cvar_Get("cl_muzzleflash_world_fwd", "22", CVAR_ARCHIVE);
+    cl_muzzleflash_world_right = Cvar_Get("cl_muzzleflash_world_right", "8", CVAR_ARCHIVE);
+    cl_muzzleflash_world_up    = Cvar_Get("cl_muzzleflash_world_up", "8", CVAR_ARCHIVE);
     // The flash is drawn by the effects path, which multiplies the texture by
     // prev_adapted_luminance * 500 - enough to saturate it to flat white and
     // lose the soft taper the artwork has. Entity alpha is the one lever that
@@ -2806,6 +2816,7 @@ static void CL_InitLocal(void)
     cl_footsteps = Cvar_Get("cl_footsteps", "1", 0);
     cl_footsteps->changed = cl_footsteps_changed;
     cl_footstep_materials = Cvar_Get("cl_footstep_materials", "1", CVAR_ARCHIVE);
+    CL_InitFootsteps();
     cl_noskins = Cvar_Get("cl_noskins", "0", 0);
     cl_noskins->changed = cl_noskins_changed;
     cl_predict = Cvar_Get("cl_predict", "1", 0);

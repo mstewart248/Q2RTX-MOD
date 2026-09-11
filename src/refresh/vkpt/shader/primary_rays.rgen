@@ -208,15 +208,40 @@ main()
 		if ((triangle.material_id & MATERIAL_FLAG_PLAYER_BEAM) != 0)
 		{
 			RayPayloadGeometry beam_hit = ray_payload_geometry;
-		
-			// ray.t_max is still PRIMARY_RAY_T_MAX here, so this sees the weapon
-			// at any depth. The clamp to the hit distance happens just below.
-			trace_geometry_ray(ray, true, AS_FLAG_VIEWER_WEAPON);
-		
-			if (found_intersection(ray_payload_geometry))
-				triangle = get_hit_triangle(ray_payload_geometry);
-			else
-				ray_payload_geometry = beam_hit; // no weapon behind it - keep the beam
+			Ray weapon_ray = ray;
+			bool found_gun = false;
+
+			// THE BEAM IS NOW IN THIS SAME BLAS. Your own view beam is flagged
+			// RF_WEAPONMODEL so that mirrors drop it, which puts it in
+			// AS_FLAG_VIEWER_WEAPON alongside the gun - so a plain re-trace
+			// would just hit the beam again and the gun would never win.
+			//
+			// March past beam surfaces instead: each miss-as-beam pushes t_min
+			// beyond that hit and traces again. A ray crosses at most a couple
+			// of 32-unit segments before it reaches the gun, so the cap is
+			// small; running out simply keeps the beam, which is the old
+			// behaviour.
+			for (int i = 0; i < 4; i++)
+			{
+				trace_geometry_ray(weapon_ray, true, AS_FLAG_VIEWER_WEAPON);
+
+				if (!found_intersection(ray_payload_geometry))
+					break;
+
+				Triangle hit = get_hit_triangle(ray_payload_geometry);
+
+				if ((hit.material_id & MATERIAL_FLAG_PLAYER_BEAM) == 0)
+				{
+					triangle = hit;     // the gun - it wins
+					found_gun = true;
+					break;
+				}
+
+				weapon_ray.t_min = ray_payload_geometry.hit_distance + 0.01;
+			}
+
+			if (!found_gun)
+				ray_payload_geometry = beam_hit; // nothing but beam - keep it
 		}
 
 		ray.t_max = ray_payload_geometry.hit_distance;
@@ -232,7 +257,7 @@ main()
 		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
 	}
 
-	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false);
+	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false, /* reflection_ray = */ false);
 
 	direction = ray.direction;
 

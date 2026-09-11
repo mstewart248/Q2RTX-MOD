@@ -111,6 +111,10 @@ void ShutdownGame(void)
 {
     gi.dprintf("==== ShutdownGame ====\n");
 
+    // forget the navmesh before its TAG_LEVEL memory goes away, so a restart
+    // does not find Nav_Loaded() true with dangling pointers behind it
+    Nav_Free();
+
     gi.FreeTags(TAG_LEVEL);
     gi.FreeTags(TAG_GAME);
 }

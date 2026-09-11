@@ -153,6 +153,11 @@ struct RayPayloadGeometry {
 };
 
 struct RayPayloadEffects {
+   // [Q2RTX] non-zero when this is a reflection ray, so the explosion any-hit
+   // shader can drop first-person-only effects. The ray-query path passes the
+   // same thing as a plain argument; this field exists for the pipeline path,
+   // where the any-hit shader has no other way to know.
+   uint reflection_ray;
    uvec2 transparency; // half4x16
    uint distances; // half2x16 - min and max
    uvec4 fog1; // half8x16: .xy = color.rgba; .z = t_min, t_max; .w = density: a and b for (a*t + b)

@@ -1146,11 +1146,6 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     int* mapVersion = &mapVersionStorage;
     char* pathList = GetEmptyString(256);
 
-    // the navmesh is TAG_LEVEL, so it is freed with the rest of the level and
-    // has to be reloaded here for every map - including on a savegame load,
-    // which runs through this same path
-    Nav_Load(mapname);
-
     *mapVersion = 0;
     skill_level = floor(skill->value);
     if (skill_level < 0)
@@ -1163,6 +1158,18 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     SaveClientData();
 
     gi.FreeTags(TAG_LEVEL);
+
+    // The navmesh is TAG_LEVEL, so it is freed with the rest of the level and
+    // has to be reloaded for every map - including on a savegame load, which
+    // runs through this same path.
+    //
+    // THIS MUST STAY BELOW gi.FreeTags(TAG_LEVEL). It used to be the first
+    // statement in this function, which meant the block it had just allocated
+    // was destroyed moments later by that FreeTags: every path query for the
+    // whole level then read and WROTE freed heap (the A* scratch arrays are
+    // part of the same block), and the next map load double-freed the stale
+    // pointer outright.
+    Nav_Load(mapname);
 
     memset(&level, 0, sizeof(level));
     memset(g_edicts, 0, game.maxentities * sizeof(g_edicts[0]));

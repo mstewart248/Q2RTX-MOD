@@ -407,7 +407,7 @@ void find_fog_volumes(inout RayPayloadEffects rp, Ray ray)
 }
 
 vec4
-trace_effects_ray(Ray ray, bool skip_procedural)
+trace_effects_ray(Ray ray, bool skip_procedural, bool reflection_ray)
 {
 	uint rayFlags = 0;
 	if (skip_procedural)
@@ -415,6 +415,7 @@ trace_effects_ray(Ray ray, bool skip_procedural)
 
 	uint instance_mask = AS_FLAG_EFFECTS;
 
+	ray_payload_effects.reflection_ray = reflection_ray ? 1 : 0;
 	ray_payload_effects.transparency = uvec2(0);
 	ray_payload_effects.distances = 0;
 	ray_payload_effects.fog1 = uvec4(0);
@@ -475,7 +476,7 @@ trace_effects_ray(Ray ray, bool skip_procedural)
 				break;
 
 			case SBTO_EXPLOSION: // explosions
-				transparent = pt_logic_explosion(primitiveID, instanceID, instanceCustomIndex, ray.direction, bary);
+				transparent = pt_logic_explosion(primitiveID, instanceID, instanceCustomIndex, ray.direction, bary, reflection_ray);
 				break;
 
 			case SBTO_SPRITE: // sprites

@@ -548,12 +548,16 @@ extern cvar_t    *cl_muzzleflash_time;
 extern cvar_t    *cl_muzzleflash_brightness;
 extern cvar_t    *cl_muzzleflash_offset;
 extern cvar_t    *cl_predict;
+extern cvar_t    *cl_muzzleflash_world_fwd;
+extern cvar_t    *cl_muzzleflash_world_right;
+extern cvar_t    *cl_muzzleflash_world_up;
 extern cvar_t    *cl_footsteps;
 // Surface-dependent footsteps (footsteps.c). 0 restores the four generic
 // player/stepN.wav sounds.
 extern cvar_t    *cl_footstep_materials;
 qhandle_t CL_FootstepSound(const vec3_t origin);
 void CL_ClearFootstepCache(void);
+void CL_InitFootsteps(void);
 extern cvar_t    *cl_noskins;
 extern cvar_t    *cl_kickangles;
 extern cvar_t    *cl_rollhack;
@@ -887,10 +891,12 @@ typedef struct cl_sustain_s {
 
 void CL_SmokeAndFlash(const vec3_t origin);
 void CL_ImpactSmokeAndFlash(const vec3_t origin, const vec3_t dir);
-void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, bool first_person);
+// view_fx: 0 for a flash both views should see, or RF_FIRST_PERSON_FX /
+// RF_REFLECTION_FX for one half of your own gun's split pair.
+void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, int view_fx);
 // as above, but with this weapon's own flash graphic; model 0 = the generic star
 void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
-                          bool first_person, qhandle_t model);
+                          int view_fx, qhandle_t model);
 void CL_RegisterViewMuzzleFlashes(void);
 void CL_MuzzleOffset_f(void);
 void CL_ViewMuzzleFlash(void);

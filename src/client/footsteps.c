@@ -53,6 +53,7 @@ static footstep_cache_t     fs_cache[FS_MAX_CACHE];
 static int                  fs_num_cached;
 
 cvar_t *cl_footstep_materials;
+cvar_t *cl_footstep_debug;
 
 /*
 =================
@@ -176,6 +177,7 @@ caller use the default set.
 */
 qhandle_t CL_FootstepSound(const vec3_t origin)
 {
+    const mtexinfo_t    *texinfo;
     footstep_material_t *mat;
     trace_t trace;
     vec3_t  end;
@@ -194,13 +196,131 @@ qhandle_t CL_FootstepSound(const vec3_t origin)
 
     CM_BoxTrace(&trace, origin, end, vec3_origin, vec3_origin, cl.bsp->nodes, MASK_SOLID);
 
-    if (trace.fraction == 1.0f || !trace.surface || !trace.surface->name[0])
+    if (trace.fraction == 1.0f || !trace.surface)
         return 0;
 
-    n = CL_FootstepMaterialForTexture(trace.surface->name);
+    // csurface_t::name is only 16 bytes, so anything longer - "e1u1/+0cgrate1_1",
+    // "hodge/HO_Foliage_01" - arrives cut to 15 characters and matches no .mat.
+    // The csurface_t is the first member of the mtexinfo_t it points into (see
+    // the "name len probs" note in bsp.h) and that keeps the full 32-byte name,
+    // so recover it rather than looking up the truncated one.
+    texinfo = (const mtexinfo_t *)trace.surface;
+
+    if (!texinfo->name[0])
+        return 0;
+
+    n = CL_FootstepMaterialForTexture(texinfo->name);
+
+    if (cl_footstep_debug->integer) {
+        Com_Printf("footstep: frac %.2f \"%s\" -> %s\n", trace.fraction, texinfo->name,
+                   n < 0 ? "NO MATERIAL (generic)" : fs_materials[n].word);
+    }
+
     if (n < 0)
         return 0;
 
     mat = &fs_materials[n];
     return mat->sounds[Q_rand() % mat->count];
+}
+
+/*
+=================
+CL_Footsteps_f
+
+Diagnostic. "All my footsteps sound the same" has several possible causes that
+are indistinguishable by ear - the cvar off, no .mat on the search path, the
+trace missing the floor, the sound set failing to register - so report all of
+them for the map that is loaded and the surface under your feet.
+=================
+*/
+static void CL_Footsteps_f(void)
+{
+    const mtexinfo_t *texinfo;
+    char    path[MAX_QPATH];
+    trace_t trace;
+    vec3_t  start, end;
+    byte    *data;
+    int     i, j, n, resolved = 0, nomat = 0;
+
+    Com_Printf("cl_footsteps %d, cl_footstep_materials %d\n",
+               cl_footsteps->integer, cl_footstep_materials->integer);
+
+    if (!cl.bsp || !cl.bsp->nodes) {
+        Com_Printf("no bsp loaded\n");
+        return;
+    }
+
+    Com_Printf("map %s, %d texinfos\n", cl.bsp->name, cl.bsp->numtexinfo);
+
+    // the trace exactly as CL_FootstepSound does it, from where you stand
+    VectorCopy(cl.playerEntityOrigin, start);
+    VectorCopy(start, end);
+    end[2] -= 64;
+
+    CM_BoxTrace(&trace, start, end, vec3_origin, vec3_origin, cl.bsp->nodes, MASK_SOLID);
+
+    Com_Printf("trace from %.0f %.0f %.0f: fraction %.3f\n",
+               start[0], start[1], start[2], trace.fraction);
+
+    if (trace.fraction == 1.0f) {
+        Com_Printf("  hit NOTHING - no surface within 64 units below you\n");
+    } else if (!trace.surface) {
+        Com_Printf("  hit something with a NULL surface\n");
+    } else {
+        texinfo = (const mtexinfo_t *)trace.surface;
+        Com_Printf("  csurface name \"%s\" (cut to 15 chars)\n", trace.surface->name);
+        Com_Printf("  texinfo  name \"%s\" (full)\n", texinfo->name);
+        n = CL_FootstepMaterialForTexture(texinfo->name);
+        if (n < 0) {
+            Q_snprintf(path, sizeof(path), "textures/%s.mat", texinfo->name);
+            Com_Printf("  NO MATERIAL: %s not on the search path\n", path);
+        } else {
+            Com_Printf("  material \"%s\", %d sounds registered\n",
+                       fs_materials[n].word, fs_materials[n].count);
+        }
+    }
+
+    // how much of this map resolves through the real filesystem
+    for (i = 0; i < cl.bsp->numtexinfo; i++) {
+        texinfo = &cl.bsp->texinfo[i];
+
+        for (j = 0; j < i; j++) {
+            if (!Q_stricmp(cl.bsp->texinfo[j].name, texinfo->name))
+                break;
+        }
+        if (j < i)
+            continue;               // this name is already counted
+
+        Q_snprintf(path, sizeof(path), "textures/%s.mat", texinfo->name);
+        data = NULL;
+        FS_LoadFile(path, (void **)&data);
+        if (data) {
+            resolved++;
+            FS_FreeFile(data);
+        } else {
+            if (nomat < 10)
+                Com_Printf("  no .mat: %s\n", texinfo->name);
+            nomat++;
+        }
+    }
+
+    Com_Printf("%d distinct textures: %d with a .mat, %d without\n",
+               resolved + nomat, resolved, nomat);
+
+    Com_Printf("material sets registered this map: %d\n", fs_num_materials);
+    for (i = 0; i < fs_num_materials; i++)
+        Com_Printf("  %-10s %d sounds\n", fs_materials[i].word, fs_materials[i].count);
+}
+
+/*
+=================
+CL_InitFootsteps
+=================
+*/
+void CL_InitFootsteps(void)
+{
+    // dev aid: print the surface and material for every footstep as it plays
+    cl_footstep_debug = Cvar_Get("cl_footstep_debug", "0", 0);
+
+    Cmd_AddCommand("footsteps", CL_Footsteps_f);
 }

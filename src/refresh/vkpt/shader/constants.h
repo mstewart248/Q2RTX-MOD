@@ -110,6 +110,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // A flag bit was the only room left - the 4-bit kind field is full, since
 // MATERIAL_KIND_BLOOD took its last value.
 #define MATERIAL_FLAG_PLAYER_BEAM    0x02000000
+
+// [Q2RTX] IN THE EFFECTS TLAS ONLY, these two bits mean something else.
+//
+// Explosions and muzzle flashes live in the effects TLAS and never in the
+// geometry TLAS; beams and models live in the geometry TLAS and never in the
+// effects one. The two sets can therefore never collide, so the bits above are
+// reused here rather than spending the last of the material word:
+//
+//   MATERIAL_FLAG_PLAYER_BEAM  -> this effect is FIRST PERSON ONLY
+//   MATERIAL_FLAG_WEAPON       -> this effect is REFLECTION ONLY
+//
+// pt_logic_explosion drops whichever does not belong to the ray being traced.
+#define MATERIAL_FLAG_FX_FIRST_PERSON   MATERIAL_FLAG_PLAYER_BEAM
+#define MATERIAL_FLAG_FX_REFLECTION     MATERIAL_FLAG_WEAPON
 #define MATERIAL_FLAG_WEAPON         0x01000000
 #define MATERIAL_FLAG_WARP           0x00800000
 #define MATERIAL_FLAG_FLOWING        0x00400000
