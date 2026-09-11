@@ -701,6 +701,56 @@ static void S_Spatialize(channel_t *ch)
 
 /*
 =================
+S_DistMult
+
+An ATTN_ value as the falloff slope the mixers actually use. THE ONE COPY of this
+mapping - both S_IssuePlaysound and S_AttenuationRange go through it, because a
+caller that wants to know how far its own sound carries has to agree with the
+mixer exactly or it culls in the wrong place.
+
+Note the `== ATTN_STATIC` rather than `>=`: the 0.001 scale applies at that single
+value, so the slope DOUBLES discontinuously at 3 and then folds back - attenuation
+4 attenuates LESS than 3. That is the original behaviour and callers pass the
+named constants, so it is preserved rather than smoothed. It is also why values
+above ATTN_STATIC are not worth offering to anyone.
+=================
+*/
+float S_DistMult(float attenuation)
+{
+    if (attenuation == ATTN_STATIC)
+        return attenuation * 0.001f;
+
+    return attenuation * 0.0005f;
+}
+
+/*
+=================
+S_AttenuationRange
+
+How far a sound started at this attenuation carries, in units, or 0 if it carries
+forever.
+
+Quake II's falloff is LINEAR, not inverse-square: gain is
+1 - dist_mult * (dist - SOUND_FULLVOLUME) in S_SpatializeOrigin, and
+AL_LINEAR_DISTANCE_CLAMPED with a matching AL_ROLLOFF_FACTOR in al.c. So there is
+a finite distance at which a sound goes EXACTLY silent rather than merely quiet,
+and this returns it - ATTN_NORM 2080 units, ATTN_IDLE 1080, ATTN_STATIC 413.
+
+Worth having for a caller that rate limits or thins its own sounds: past this
+range a sound cannot be heard at all, so letting one through spends a voice and a
+slot in that caller's budget on nothing. See CL_BloodSoundRange.
+=================
+*/
+float S_AttenuationRange(float attenuation)
+{
+    if (attenuation <= 0.f)
+        return 0.f;             // ATTN_NONE - full volume the entire level
+
+    return SOUND_FULLVOLUME + 1.f / S_DistMult(attenuation);
+}
+
+/*
+=================
 S_AllocPlaysound
 =================
 */
@@ -771,10 +821,7 @@ void S_IssuePlaysound(playsound_t *ps)
     }
 
     // spatialize
-    if (ps->attenuation == ATTN_STATIC)
-        ch->dist_mult = ps->attenuation * 0.001f;
-    else
-        ch->dist_mult = ps->attenuation * 0.0005f;
+    ch->dist_mult = S_DistMult(ps->attenuation);
     ch->master_vol = ps->volume;
     ch->entnum = ps->entnum;
     ch->entchannel = ps->entchannel;

@@ -157,7 +157,7 @@ static void G_IdealHoverPosition(edict_t *ent, vec3_t out)
     float   theta, phi, dist;
 
     if ((!ent->enemy && !(ent->monsterinfo.aiflags & AI_MEDIC)) ||
-        (ent->monsterinfo.aiflags & (AI_COMBAT_POINT | AI_SOUND_TARGET))) {
+        (ent->monsterinfo.aiflags & (AI_COMBAT_POINT | AI_SOUND_TARGET | AI_HINT_PATH))) {
         VectorClear(out);
         return;
     }

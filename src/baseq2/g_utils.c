@@ -27,6 +27,51 @@ void G_ProjectSource(const vec3_t point, const vec3_t distance, const vec3_t for
     result[2] = point[2] + forward[2] * distance[0] + right[2] * distance[1] + distance[2];
 }
 
+/*
+=============
+G_ProjectSource2
+
+As G_ProjectSource, but the Z component is projected along a real UP vector
+instead of being added straight to world Z. rogue's widow needs it: her two
+stalker spawn points and her two beam-out effects sit on a body that pitches,
+and an offset applied on world Z lands in the wrong place the moment she is
+not level.
+=============
+*/
+void G_ProjectSource2(const vec3_t point, const vec3_t distance, const vec3_t forward,
+                      const vec3_t right, const vec3_t up, vec3_t result)
+{
+    result[0] = point[0] + forward[0] * distance[0] + right[0] * distance[1] + up[0] * distance[2];
+    result[1] = point[1] + forward[1] * distance[0] + right[1] * distance[1] + up[1] * distance[2];
+    result[2] = point[2] + forward[2] * distance[0] + right[2] * distance[1] + up[2] * distance[2];
+}
+
+/*
+=============
+CountPlayers
+
+How many clients are actually in the game. rogue's widow scales her stalker
+budget by it in coop.
+=============
+*/
+int CountPlayers(void)
+{
+    edict_t *ent;
+    int     count = 0;
+    int     i;
+
+    for (i = 1; i <= game.maxclients; i++) {
+        ent = &g_edicts[i];
+        if (!ent->inuse)
+            continue;
+        if (!ent->client)
+            continue;
+        count++;
+    }
+
+    return count;
+}
+
 
 /*
 =============

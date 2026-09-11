@@ -343,13 +343,44 @@ void CL_TrackerTrail(const vec3_t start, const vec3_t end, int particleColor)
     }
 }
 
-void CL_Tracker_Shell(const vec3_t origin)
+/*
+===============
+CL_Tracker_Shell
+
+The black shell the disruptor encases its victim in.
+
+[Q2RTX] rogue centred this on the entity's ORIGIN at a FIXED radius of 40.
+Both are wrong for anything that is not player sized: a Quake II monster's
+origin sits at its feet, so a 40-unit sphere is half buried in the floor, and
+40 units is inside a gladiator while being far outside a flyer. It never read
+as "encased".
+
+It now takes the victim's real centre and radius, so the shell wraps whatever
+body it is given. The particle COUNT scales with the radius, or a big monster
+would be a handful of dots scattered over a large sphere.
+
+The particles are colour 0 - BLACK - and that is correct. pt_logic_particle
+blends premultiplied, so a black particle darkens what is behind it; do not
+"fix" them to a visible colour.
+===============
+*/
+void CL_Tracker_Shell(const vec3_t centre, float radius)
 {
     vec3_t          dir;
-    int             i;
+    int             i, count;
     cparticle_t     *p;
 
-    for (i = 0; i < 300; i++) {
+    if (radius < 8.0f)
+        radius = 8.0f;
+
+    // 300 was tuned for a ~40 unit sphere; hold that density as it grows
+    count = (int)(300.0f * (radius / 40.0f));
+    if (count < 150)
+        count = 150;
+    else if (count > 1200)
+        count = 1200;
+
+    for (i = 0; i < count; i++) {
         p = CL_AllocParticle();
         if (!p)
             return;
@@ -360,13 +391,14 @@ void CL_Tracker_Shell(const vec3_t origin)
         p->alpha = 1.0f;
         p->alphavel = INSTANT_PARTICLE;
         p->color = 0;
+        p->brightness = 1.0f;
 
         dir[0] = crand();
         dir[1] = crand();
         dir[2] = crand();
         VectorNormalize(dir);
 
-        VectorMA(origin, 40, dir, p->org);
+        VectorMA(centre, radius, dir, p->org);
     }
 }
 

@@ -216,16 +216,28 @@ static struct MaterialKind {
 	{"INVISIBLE", MATERIAL_KIND_INVISIBLE},
 	{"SCREEN", MATERIAL_KIND_SCREEN},
 	{"CAMERA", MATERIAL_KIND_CAMERA},
+	// These three existed as kinds the renderer understands but had no name
+	// here, so a .mat could not ask for them - and getMaterialKind used to
+	// answer REGULAR for a name it did not know, so asking silently got you
+	// a plain opaque surface with no diagnostic at all.
+	{"TRANSPARENT", MATERIAL_KIND_TRANSPARENT},
+	{"TRANSP_MODEL", MATERIAL_KIND_TRANSP_MODEL},
+	{"CHROME_MODEL", MATERIAL_KIND_CHROME_MODEL},
 };
 
 static int nMaterialKinds = sizeof(materialKinds) / sizeof(struct MaterialKind);
 
+// Returns MATERIAL_KIND_UNKNOWN_NAME for a name that is not in the table.
+// It used to return MATERIAL_KIND_REGULAR, which is non-zero, so the caller's
+// "unknown material kind" branch was unreachable and every misspelt or
+// unregistered kind quietly became an ordinary opaque surface.
+#define MATERIAL_KIND_UNKNOWN_NAME 0xffffffffu
 static uint32_t getMaterialKind(const char * kindname)
 {
 	for (int i = 0; i < nMaterialKinds; ++i)
 		if (Q_stricmp(kindname, materialKinds[i].name) == 0)
 			return materialKinds[i].flag;
-	return MATERIAL_KIND_REGULAR;
+	return MATERIAL_KIND_UNKNOWN_NAME;
 }
 
 static const char * getMaterialKindName(uint32_t flag)
@@ -324,6 +336,7 @@ enum AttributeIndex
 	MAT_TEXTURE_ROUGHNESS,
 	MAT_TEXTURE_METALLIC,
 	MAT_VOLUMETRIC_SCALE,
+	MAT_CURVED_WATER,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -352,6 +365,7 @@ static struct MaterialAttribute {
 	{MAT_TEXTURE_ROUGHNESS, "texture_roughness", ATTR_STRING},
 	{MAT_TEXTURE_METALLIC, "texture_metallic", ATTR_STRING},
 	{MAT_VOLUMETRIC_SCALE, "volumetric_scale", ATTR_FLOAT},
+	{MAT_CURVED_WATER, "curved_water", ATTR_BOOL},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -446,7 +460,7 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case MAT_EMISSIVE_FACTOR: mat->emissive_factor = fvalue; break;
 	case MAT_KIND: {
 		uint32_t kind = getMaterialKind(svalue);
-		if (kind != 0)
+		if (kind != MATERIAL_KIND_UNKNOWN_NAME)
 			mat->flags = MAT_SetKind(mat->flags, kind);
 		else
 		{
@@ -460,6 +474,15 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	} break;
 	case MAT_IS_LIGHT:
 		mat->flags = bvalue == true ? mat->flags | MATERIAL_FLAG_LIGHT : mat->flags & ~(MATERIAL_FLAG_LIGHT);
+		if (reload_flags) *reload_flags |= RELOAD_MAP;
+		break;
+	// Says this WATER/SLIME surface is a closed shape rather than a flat brush
+	// face, so ALL of it takes the force-field (GLASS) path rather than only
+	// the part whose normals face sideways - which is both uniform and the
+	// only way a water surface shows its own texture.
+	// See MATERIAL_FLAG_CURVED_WATER in shader/constants.h.
+	case MAT_CURVED_WATER:
+		mat->flags = bvalue == true ? mat->flags | MATERIAL_FLAG_CURVED_WATER : mat->flags & ~(MATERIAL_FLAG_CURVED_WATER);
 		if (reload_flags) *reload_flags |= RELOAD_MAP;
 		break;
 	case MAT_BASE_FACTOR:
@@ -740,6 +763,9 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		
 		if (mat->flags & MATERIAL_FLAG_LIGHT)
 			FS_FPrintf(file, "\tis_light 1\n");
+
+		if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
+			FS_FPrintf(file, "\tcurved_water 1\n");
 		
 		if (!mat->light_styles)
 			FS_FPrintf(file, "\tlight_styles 0\n");
@@ -931,8 +957,10 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	mat->volumetric_scale = src->volumetric_scale;
 
 	// the material kind (chrome, glass, ...) describes the surface, not its
-	// texture, so it carries over too
-	mat->flags = (mat->flags & ~MATERIAL_KIND_MASK) | (src->flags & MATERIAL_KIND_MASK);
+	// texture, so it carries over too - and so does the curved-water bit, which
+	// is a statement about that same geometry
+	mat->flags = (mat->flags & ~(MATERIAL_KIND_MASK | MATERIAL_FLAG_CURVED_WATER))
+	           | (src->flags & (MATERIAL_KIND_MASK | MATERIAL_FLAG_CURVED_WATER));
 }
 
 pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
@@ -1241,6 +1269,8 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    emissive_factor %f\n", mat->emissive_factor);
 	Com_Printf("    specular_factor %f\n", mat->specular_factor);
 	Com_Printf("    base_factor %f\n", mat->base_factor);
+	if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
+		Com_Printf("    curved_water 1\n");
 	const char * kind = getMaterialKindName(mat->flags);
 	Com_Printf("    kind %s\n", kind ? kind : "");
 	Com_Printf("    is_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) != 0);

@@ -223,24 +223,6 @@ create_poly(
 	}
 #endif
 	
-	if (bsp->basisvectors)
-	{
-		// Check the handedness using the basis of the first vertex
-		
-		const vec3_t* normal = bsp->basisvectors + bases->normal;
-		const vec3_t* tangent = bsp->basisvectors + bases->tangent;
-		const vec3_t* bitangent = bsp->basisvectors + bases->bitangent;
-		
-		vec3_t cross;
-		CrossProduct(*normal, *tangent, cross);
-		float dot = DotProduct(cross, *bitangent);
-
-		if (dot < 0.0f)
-		{
-			material_id |= MATERIAL_FLAG_HANDEDNESS;
-		}
-	}
-
 	int num_vertices = surf->numsurfedges;
 
 	bool is_sky = MAT_IsKind(material_id, MATERIAL_KIND_SKY);
@@ -1483,11 +1465,6 @@ compute_world_tangents(bsp_t* bsp, bsp_mesh_t* wm)
 			(dt1[1] * dP0[1] - dt0[1] * dP1[1]) * r,
 			(dt1[1] * dP0[2] - dt0[1] * dP1[2]) * r };
 
-		vec3_t tdir = {
-			(dt0[0] * dP1[0] - dt1[0] * dP0[0]) * r,
-			(dt0[0] * dP1[1] - dt1[0] * dP0[1]) * r,
-			(dt0[0] * dP1[2] - dt1[0] * dP0[2]) * r };
-
 		vec3_t normal;
 		CrossProduct(dP0, dP1, normal);
 		VectorNormalize(normal);
@@ -1509,14 +1486,6 @@ compute_world_tangents(bsp_t* bsp, bsp_mesh_t* wm)
 		prim->tangents[1] = encoded_tangent;
 		prim->tangents[2] = encoded_tangent;
 
-		vec3_t cross;
-		CrossProduct(normal, t, cross);
-		float dot = DotProduct(cross, tdir);
-
-		if (dot < 0.0f)
-		{
-			prim->material_id |= MATERIAL_FLAG_HANDEDNESS;
-		}
 	}
 }
 

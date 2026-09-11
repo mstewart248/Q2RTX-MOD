@@ -48,7 +48,11 @@ typedef enum
 	MCLASS_FLASH,
 	MCLASS_SMOKE,
     MCLASS_STATIC_LIGHT,
-    MCLASS_FLARE
+    MCLASS_FLARE,
+    // rogue's plasma / heat beam. The class exists only so the material can be
+    // tagged MATERIAL_FLAG_PLAYER_BEAM and lose the primary-ray depth test to
+    // the view weapon - see primary_rays.rgen.
+    MCLASS_PLAYER_BEAM
 } model_class_t;
 
 typedef struct

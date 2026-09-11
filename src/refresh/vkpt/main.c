@@ -2753,6 +2753,13 @@ static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_
 		material_id |= MATERIAL_FLAG_LIGHT;
 	}
 
+	// rogue's plasma beam. Tagged so primary_rays.rgen can let the view weapon
+	// win the primary-ray depth test against it - the beam's first segment
+	// starts at the muzzle and runs straight through the gun. See
+	// MATERIAL_FLAG_PLAYER_BEAM.
+	if (model->model_class == MCLASS_PLAYER_BEAM)
+		material_id |= MATERIAL_FLAG_PLAYER_BEAM;
+
 	if (is_viewer_weapon)
 		material_id |= MATERIAL_FLAG_WEAPON;
 
@@ -2768,9 +2775,6 @@ static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_
 		if (entity->flags & RF_SHELL_BLUE)
 			material_id |= MATERIAL_FLAG_SHELL_BLUE;
 	}
-
-	if (mesh->handedness)
-		material_id |= MATERIAL_FLAG_HANDEDNESS;
 
 	return material_id;
 }

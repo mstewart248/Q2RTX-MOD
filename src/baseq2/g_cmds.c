@@ -590,7 +590,12 @@ void Cmd_SpawnMonster_f(edict_t *ent)
     // not exist. Testing for a real monster is what actually catches that:
     // FoundTarget below reaches monsterinfo.run, which is NULL on an entity
     // that never spawned, and a typo'd classname took the whole game down.
-    if (!monster->inuse || !monster->monsterinfo.run) {
+    //
+    // `run` alone is too strict: monster_tank_stand is a set-piece with no AI
+    // at all - no run, no attacks, just a think that cycles its idle frames -
+    // so it is a real spawn that this test would otherwise reject. A typo'd
+    // classname sets NEITHER, which is what keeps the check honest.
+    if (!monster->inuse || (!monster->monsterinfo.run && !monster->think)) {
         gi.cprintf(ent, PRINT_HIGH, "%s did not spawn\n", classname);
         if (monster->inuse)
             G_FreeEdict(monster);
@@ -611,9 +616,13 @@ void Cmd_SpawnMonster_f(edict_t *ent)
         return;
     }
 
-    // it has to be told about us or it just stands there
-    monster->enemy = ent;
-    FoundTarget(monster);
+    // it has to be told about us or it just stands there.  An AI-less
+    // set-piece (monster_tank_stand) has no run to hand the enemy to, and
+    // FoundTarget would dereference it.
+    if (monster->monsterinfo.run) {
+        monster->enemy = ent;
+        FoundTarget(monster);
+    }
 
     gi.cprintf(ent, PRINT_HIGH, "spawned %s at %s\n", classname, vtos(spot));
 }
@@ -740,6 +749,52 @@ void Cmd_InvUse_f(edict_t *ent)
 
 /*
 =================
+G_CycleWeapon
+
+Step dir places along the weapon order built by InitWeaponCycle() and raise the
+first gun we are actually carrying.
+
+Two things differ from the 1997 cycle.  The order is the rerelease's rather
+than this tree's itemlist order, and weapnext runs FORWARD along it - the
+original walks the item list backwards for weapnext, so "next" moves toward the
+blaster.  Both are rerelease behaviour, so both are gated on M_RereleaseGame().
+
+Returns false only when there is no cycle to walk, which leaves the caller on
+the original scan.
+=================
+*/
+static bool G_CycleWeapon(edict_t *ent, int dir)
+{
+    gclient_t   *cl = ent->client;
+    int         i, pos, index;
+    gitem_t     *it;
+
+    if (!weapon_cycle_count || !cl->pers.weapon)
+        return false;
+
+    pos = weapon_cycle_pos[ITEM_INDEX(cl->pers.weapon)];
+    if (pos < 0)
+        return false;
+
+    for (i = 1; i <= weapon_cycle_count; i++) {
+        int next = ((pos + dir * i) % weapon_cycle_count + weapon_cycle_count) % weapon_cycle_count;
+
+        index = weapon_cycle[next];
+        if (!cl->pers.inventory[index])
+            continue;
+        it = &itemlist[index];
+        if (!it->use)
+            continue;
+        it->use(ent, it);
+        if (cl->pers.weapon == it || cl->newweapon == it)
+            break;
+    }
+
+    return true;
+}
+
+/*
+=================
 Cmd_WeapPrev_f
 =================
 */
@@ -753,6 +808,9 @@ void Cmd_WeapPrev_f(edict_t *ent)
     cl = ent->client;
 
     if (!cl->pers.weapon)
+        return;
+
+    if (M_RereleaseGame() && G_CycleWeapon(ent, -1))
         return;
 
     selected_weapon = ITEM_INDEX(cl->pers.weapon);
@@ -788,6 +846,9 @@ void Cmd_WeapNext_f(edict_t *ent)
     cl = ent->client;
 
     if (!cl->pers.weapon)
+        return;
+
+    if (M_RereleaseGame() && G_CycleWeapon(ent, 1))
         return;
 
     selected_weapon = ITEM_INDEX(cl->pers.weapon);

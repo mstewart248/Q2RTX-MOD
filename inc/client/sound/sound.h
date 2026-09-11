@@ -76,4 +76,10 @@ extern  vec3_t  listener_right;
 extern  vec3_t  listener_up;
 extern  int     listener_entnum;
 
+// Attenuation as the mixers' own linear falloff. S_AttenuationRange gives the
+// distance at which a sound of that attenuation goes exactly silent, or 0 if it
+// never does - see the definitions in sound/main.c.
+float S_DistMult(float attenuation);
+float S_AttenuationRange(float attenuation);
+
 #endif // SOUND_H

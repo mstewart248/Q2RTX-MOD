@@ -94,6 +94,24 @@ extern int chick_move_start_attack1;
 extern int chick_move_start_run;
 extern int chick_move_start_slash;
 extern int chick_move_walk;
+extern int fixbot_move_attack2;
+extern int fixbot_move_forward;
+extern int fixbot_move_landing;
+extern int fixbot_move_laserattack;
+extern int fixbot_move_pain3;
+extern int fixbot_move_paina;
+extern int fixbot_move_painb;
+extern int fixbot_move_roamgoal;
+extern int fixbot_move_run;
+extern int fixbot_move_stand2;
+extern int fixbot_move_stand;
+extern int fixbot_move_start_attack;
+extern int fixbot_move_takeoff;
+extern int fixbot_move_turn;
+extern int fixbot_move_walk;
+extern int fixbot_move_weld;
+extern int fixbot_move_weld_end;
+extern int fixbot_move_weld_start;
 extern int flipper_move_attack;
 extern int flipper_move_death;
 extern int flipper_move_pain1;
@@ -163,6 +181,18 @@ extern int gladiator_move_pain_air;
 extern int gladiator_move_run;
 extern int gladiator_move_stand;
 extern int gladiator_move_walk;
+extern int guardian_move_atk1_in;
+extern int guardian_move_atk1_out;
+extern int guardian_move_atk1_spin;
+extern int guardian_move_atk2_fire;
+extern int guardian_move_atk2_in;
+extern int guardian_move_atk2_out;
+extern int guardian_move_death;
+extern int guardian_move_kick;
+extern int guardian_move_pain1;
+extern int guardian_move_run;
+extern int guardian_move_stand;
+extern int guardian_move_walk;
 extern int guncmdr_move_attack_chain;
 extern int guncmdr_move_attack_grenade_back;
 extern int guncmdr_move_attack_grenade_back_dodge_left;
@@ -413,6 +443,37 @@ extern int turret_move_ready_gun;
 extern int turret_move_run;
 extern int turret_move_seek;
 extern int turret_move_stand;
+extern int widow2_move_attack_beam;
+extern int widow2_move_attack_disrupt;
+extern int widow2_move_attack_post_beam;
+extern int widow2_move_attack_pre_beam;
+extern int widow2_move_dead;
+extern int widow2_move_death;
+extern int widow2_move_pain;
+extern int widow2_move_really_dead;
+extern int widow2_move_run;
+extern int widow2_move_spawn;
+extern int widow2_move_stand;
+extern int widow2_move_tongs;
+extern int widow2_move_walk;
+extern int widow_move_attack_blaster;
+extern int widow_move_attack_kick;
+extern int widow_move_attack_post_blaster;
+extern int widow_move_attack_post_blaster_l;
+extern int widow_move_attack_post_blaster_r;
+extern int widow_move_attack_pre_blaster;
+extern int widow_move_attack_pre_rail;
+extern int widow_move_attack_rail;
+extern int widow_move_attack_rail_l;
+extern int widow_move_attack_rail_r;
+extern int widow_move_death;
+extern int widow_move_pain_heavy;
+extern int widow_move_pain_light;
+extern int widow_move_run;
+extern int widow_move_run_attack;
+extern int widow_move_spawn;
+extern int widow_move_stand;
+extern int widow_move_walk;
 extern void actor_attack(void);
 extern void actor_die(void);
 extern void actor_pain(void);
@@ -420,6 +481,7 @@ extern void actor_run(void);
 extern void actor_stand(void);
 extern void actor_use(void);
 extern void actor_walk(void);
+extern void amb4_think(void);
 extern void AngleMove_Begin(void);
 extern void AngleMove_Done(void);
 extern void AngleMove_Final(void);
@@ -452,9 +514,11 @@ extern void berserk_walk(void);
 extern void bfg_explode(void);
 extern void bfg_think(void);
 extern void bfg_touch(void);
+extern void blacklight_think(void);
 extern void blaster2_touch(void);
 extern void blaster_touch(void);
 extern void body_die(void);
+extern void body_think(void);
 extern void boss2_attack(void);
 extern void Boss2_CheckAttack(void);
 extern void boss2_die(void);
@@ -464,6 +528,7 @@ extern void boss2_search(void);
 extern void boss2_stand(void);
 extern void boss2_walk(void);
 extern void BossExplode(void);
+extern void bot_goal_check(void);
 extern void brain_attack(void);
 extern void brain_die(void);
 extern void brain_dodge(void);
@@ -507,6 +572,8 @@ extern void commander_body_think(void);
 extern void commander_body_use(void);
 extern void dabeam_hit(void);
 extern void debris_die(void);
+extern void defender_pain(void);
+extern void defender_think(void);
 extern void door_blocked(void);
 extern void door_go_down(void);
 extern void door_hit_bottom(void);
@@ -524,12 +591,21 @@ extern void door_secret_move6(void);
 extern void door_secret_use(void);
 extern void door_touch(void);
 extern void door_use(void);
+extern void doppleganger_die(void);
+extern void doppleganger_pain(void);
+extern void doppleganger_timeout(void);
 extern void DoRespawn(void);
 extern void drop_make_touchable(void);
 extern void drop_temp_touch(void);
 extern void droppod_light_think(void);
 extern void droptofloor(void);
 extern void dynamic_light_use(void);
+extern void fixbot_attack(void);
+extern void fixbot_die(void);
+extern void fixbot_pain(void);
+extern void fixbot_run(void);
+extern void fixbot_stand(void);
+extern void fixbot_walk(void);
 extern void flare_think(void);
 extern void flare_touch(void);
 extern void flechette_touch(void);
@@ -607,6 +683,12 @@ extern void gladiator_stand(void);
 extern void gladiator_walk(void);
 extern void Grenade_Explode(void);
 extern void Grenade_Touch(void);
+extern void guardian_attack(void);
+extern void guardian_die(void);
+extern void guardian_pain(void);
+extern void guardian_run(void);
+extern void guardian_stand(void);
+extern void guardian_walk(void);
 extern void guncmdr_attack(void);
 extern void guncmdr_blocked(void);
 extern void guncmdr_die(void);
@@ -631,6 +713,7 @@ extern void gunner_sight(void);
 extern void gunner_stand(void);
 extern void gunner_walk(void);
 extern void heat_think(void);
+extern void hint_path_touch(void);
 extern void hover_deadthink(void);
 extern void hover_die(void);
 extern void hover_pain(void);
@@ -640,6 +723,9 @@ extern void hover_sight(void);
 extern void hover_stand(void);
 extern void hover_start_attack(void);
 extern void hover_walk(void);
+extern void hunter_pain(void);
+extern void hunter_think(void);
+extern void hunter_touch(void);
 extern void hurt_touch(void);
 extern void hurt_use(void);
 extern void hyper_blaster_touch(void);
@@ -689,6 +775,8 @@ extern void makron_stand(void);
 extern void makron_torso_think(void);
 extern void makron_walk(void);
 extern void MakronSpawn(void);
+extern void mal_laser_think(void);
+extern void mal_laser_think2(void);
 extern void medic_attack(void);
 extern void medic_checkattack(void);
 extern void medic_die(void);
@@ -744,6 +832,13 @@ extern void mutant_search(void);
 extern void mutant_sight(void);
 extern void mutant_stand(void);
 extern void mutant_walk(void);
+extern void nuke_bounce(void);
+extern void nuke_die(void);
+extern void Nuke_Quake(void);
+extern void Nuke_Think(void);
+extern void object_repair_dead(void);
+extern void object_repair_fx(void);
+extern void object_repair_sparks(void);
 extern void parasite_attack(void);
 extern void parasite_blocked(void);
 extern void parasite_die(void);
@@ -772,6 +867,13 @@ extern void proboscis_die(void);
 extern void proboscis_reset(void);
 extern void proboscis_think(void);
 extern void proboscis_touch(void);
+extern void prox_die(void);
+extern void Prox_Explode(void);
+extern void Prox_Field_Touch(void);
+extern void prox_land(void);
+extern void prox_open(void);
+extern void prox_seek(void);
+extern void Prox_Think(void);
 extern void rocket_touch(void);
 extern void rotating_blocked(void);
 extern void rotating_light_alarm(void);
@@ -805,6 +907,8 @@ extern void soldier_walk(void);
 extern void SP_CreateCoopSpots(void);
 extern void SP_FixCoopSpots(void);
 extern void spawngrow_think(void);
+extern void sphere_explode(void);
+extern void sphere_if_idle_die(void);
 extern void stalker_attack_melee(void);
 extern void stalker_attack_ranged(void);
 extern void stalker_die(void);
@@ -844,6 +948,7 @@ extern void target_crossunit_target_think(void);
 extern void target_earthquake_think(void);
 extern void target_earthquake_use(void);
 extern void target_explosion_explode(void);
+extern void target_killplayers_use(void);
 extern void target_laser_start(void);
 extern void target_laser_think(void);
 extern void target_laser_use(void);
@@ -851,6 +956,7 @@ extern void target_light_flicker_think(void);
 extern void target_light_use(void);
 extern void target_lightramp_think(void);
 extern void target_lightramp_use(void);
+extern void target_mal_laser_use(void);
 extern void target_poi_setup(void);
 extern void target_poi_use(void);
 extern void target_steam_start(void);
@@ -868,6 +974,7 @@ extern void Think_Boss3Stand(void);
 extern void Think_CalcMoveSpeed(void);
 extern void Think_Delay(void);
 extern void Think_SpawnDoorTrigger(void);
+extern void Think_TankStand(void);
 extern void Touch_DoorTrigger(void);
 extern void Touch_Item(void);
 extern void Touch_Multi(void);
@@ -884,6 +991,8 @@ extern void Trap_Think(void);
 extern void trigger_counter_use(void);
 extern void trigger_crosslevel_trigger_use(void);
 extern void trigger_crossunit_trigger_use(void);
+extern void trigger_disguise_touch(void);
+extern void trigger_disguise_use(void);
 extern void trigger_elevator_init(void);
 extern void trigger_elevator_use(void);
 extern void trigger_enable(void);
@@ -942,9 +1051,36 @@ extern void use_target_splash(void);
 extern void use_target_steam(void);
 extern void use_target_story(void);
 extern void Use_Target_Tent(void);
+extern void vengeance_pain(void);
+extern void vengeance_think(void);
+extern void vengeance_touch(void);
 extern void walkmonster_start_go(void);
+extern void widow2_attack(void);
+extern void Widow2_CheckAttack(void);
+extern void widow2_die(void);
+extern void widow2_melee(void);
+extern void widow2_pain(void);
+extern void widow2_run(void);
+extern void widow2_search(void);
+extern void widow2_stand(void);
+extern void widow2_walk(void);
+extern void widow_attack(void);
+extern void widow_blocked(void);
+extern void Widow_CheckAttack(void);
+extern void widow_die(void);
+extern void widow_gib_touch(void);
+extern void widow_melee(void);
+extern void widow_pain(void);
+extern void widow_run(void);
+extern void widow_search(void);
+extern void widow_sight(void);
+extern void widow_stand(void);
+extern void widow_walk(void);
+extern void WidowExplode(void);
+extern void widowlegs_think(void);
 const save_ptr_t save_ptrs[] = {
 { P_prethink, misc_viper_bomb_prethink },
+{ P_think, amb4_think },
 { P_think, AngleMove_Begin },
 { P_think, AngleMove_Done },
 { P_think, AngleMove_Final },
@@ -954,16 +1090,21 @@ const save_ptr_t save_ptrs[] = {
 { P_think, barrel_think },
 { P_think, bfg_explode },
 { P_think, bfg_think },
+{ P_think, blacklight_think },
+{ P_think, body_think },
 { P_think, BossExplode },
+{ P_think, bot_goal_check },
 { P_think, button_return },
 { P_think, check_target_healthbar },
 { P_think, commander_body_drop },
 { P_think, commander_body_think },
 { P_think, dabeam_hit },
+{ P_think, defender_think },
 { P_think, door_go_down },
 { P_think, door_secret_move2 },
 { P_think, door_secret_move4 },
 { P_think, door_secret_move6 },
+{ P_think, doppleganger_timeout },
 { P_think, DoRespawn },
 { P_think, drop_make_touchable },
 { P_think, droppod_light_think },
@@ -981,6 +1122,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, Grenade_Explode },
 { P_think, heat_think },
 { P_think, hover_deadthink },
+{ P_think, hunter_think },
 { P_think, ionripper_sparks },
 { P_think, lavaball_fly },
 { P_think, M_droptofloor },
@@ -988,6 +1130,8 @@ const save_ptr_t save_ptrs[] = {
 { P_think, M_FliesOn },
 { P_think, makron_torso_think },
 { P_think, MakronSpawn },
+{ P_think, mal_laser_think },
+{ P_think, mal_laser_think2 },
 { P_think, MegaHealth_think },
 { P_think, misc_banner_think },
 { P_think, misc_blackhole_think },
@@ -1002,11 +1146,20 @@ const save_ptr_t save_ptrs[] = {
 { P_think, Move_Done },
 { P_think, Move_Final },
 { P_think, multi_wait },
+{ P_think, Nuke_Quake },
+{ P_think, Nuke_Think },
+{ P_think, object_repair_dead },
+{ P_think, object_repair_fx },
+{ P_think, object_repair_sparks },
 { P_think, plat2_go_down },
 { P_think, plat2_go_up },
 { P_think, plat_go_down },
 { P_think, proboscis_reset },
 { P_think, proboscis_think },
+{ P_think, Prox_Explode },
+{ P_think, prox_open },
+{ P_think, prox_seek },
+{ P_think, Prox_Think },
 { P_think, rotating_light_alarm },
 { P_think, smart_water_go_up },
 { P_think, SP_CreateCoopSpots },
@@ -1035,6 +1188,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, Think_CalcMoveSpeed },
 { P_think, Think_Delay },
 { P_think, Think_SpawnDoorTrigger },
+{ P_think, Think_TankStand },
 { P_think, tracker_fly },
 { P_think, tracker_pain_daemon_think },
 { P_think, train_next },
@@ -1047,7 +1201,10 @@ const save_ptr_t save_ptrs[] = {
 { P_think, turret_driver_link },
 { P_think, turret_driver_think },
 { P_think, update_target_camera },
+{ P_think, vengeance_think },
 { P_think, walkmonster_start_go },
+{ P_think, WidowExplode },
+{ P_think, widowlegs_think },
 { P_blocked, door_blocked },
 { P_blocked, door_secret_blocked },
 { P_blocked, plat2_blocked },
@@ -1071,6 +1228,8 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, gekk_jump_touch },
 { P_touch, gib_touch },
 { P_touch, Grenade_Touch },
+{ P_touch, hint_path_touch },
+{ P_touch, hunter_touch },
 { P_touch, hurt_touch },
 { P_touch, hyper_blaster_touch },
 { P_touch, ionripper_touch },
@@ -1078,10 +1237,13 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, loogie_touch },
 { P_touch, misc_viper_bomb_touch },
 { P_touch, mutant_jump_touch },
+{ P_touch, nuke_bounce },
 { P_touch, path_corner_touch },
 { P_touch, plasma_touch },
 { P_touch, point_combat_touch },
 { P_touch, proboscis_touch },
+{ P_touch, Prox_Field_Touch },
+{ P_touch, prox_land },
 { P_touch, rocket_touch },
 { P_touch, rotating_touch },
 { P_touch, target_actor_touch },
@@ -1094,11 +1256,14 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, Touch_Plat_Center },
 { P_touch, Touch_Plat_Center2 },
 { P_touch, tracker_touch },
+{ P_touch, trigger_disguise_touch },
 { P_touch, trigger_flashlight_touch },
 { P_touch, trigger_gravity_touch },
 { P_touch, trigger_monsterjump_touch },
 { P_touch, trigger_push_touch },
 { P_touch, trigger_teleport_touch },
+{ P_touch, vengeance_touch },
+{ P_touch, widow_gib_touch },
 { P_use, actor_use },
 { P_use, button_use },
 { P_use, commander_body_use },
@@ -1132,15 +1297,18 @@ const save_ptr_t save_ptrs[] = {
 { P_use, stationarymonster_triggered_spawn_use },
 { P_use, target_anger_use },
 { P_use, target_earthquake_use },
+{ P_use, target_killplayers_use },
 { P_use, target_laser_use },
 { P_use, target_light_use },
 { P_use, target_lightramp_use },
+{ P_use, target_mal_laser_use },
 { P_use, target_poi_use },
 { P_use, target_string_use },
 { P_use, train_use },
 { P_use, trigger_counter_use },
 { P_use, trigger_crosslevel_trigger_use },
 { P_use, trigger_crossunit_trigger_use },
+{ P_use, trigger_disguise_use },
 { P_use, trigger_elevator_use },
 { P_use, trigger_enable },
 { P_use, trigger_health_relay_use },
@@ -1181,14 +1349,19 @@ const save_ptr_t save_ptrs[] = {
 { P_pain, brain_pain },
 { P_pain, carrier_pain },
 { P_pain, chick_pain },
+{ P_pain, defender_pain },
+{ P_pain, doppleganger_pain },
+{ P_pain, fixbot_pain },
 { P_pain, flipper_pain },
 { P_pain, floater_pain },
 { P_pain, flyer_pain },
 { P_pain, gekk_pain },
 { P_pain, gladiator_pain },
+{ P_pain, guardian_pain },
 { P_pain, guncmdr_pain },
 { P_pain, gunner_pain },
 { P_pain, hover_pain },
+{ P_pain, hunter_pain },
 { P_pain, infantry_pain },
 { P_pain, insane_pain },
 { P_pain, jorg_pain },
@@ -1203,6 +1376,9 @@ const save_ptr_t save_ptrs[] = {
 { P_pain, supertank_pain },
 { P_pain, tank_pain },
 { P_pain, turret_pain },
+{ P_pain, vengeance_pain },
+{ P_pain, widow2_pain },
+{ P_pain, widow_pain },
 { P_die, actor_die },
 { P_die, arachnid_die },
 { P_die, barrel_delay },
@@ -1216,6 +1392,8 @@ const save_ptr_t save_ptrs[] = {
 { P_die, debris_die },
 { P_die, door_killed },
 { P_die, door_secret_die },
+{ P_die, doppleganger_die },
+{ P_die, fixbot_die },
 { P_die, flipper_die },
 { P_die, floater_die },
 { P_die, flyer_die },
@@ -1223,6 +1401,7 @@ const save_ptr_t save_ptrs[] = {
 { P_die, gekk_die },
 { P_die, gib_die },
 { P_die, gladiator_die },
+{ P_die, guardian_die },
 { P_die, guncmdr_die },
 { P_die, gunner_die },
 { P_die, hover_die },
@@ -1233,18 +1412,24 @@ const save_ptr_t save_ptrs[] = {
 { P_die, medic_die },
 { P_die, misc_deadsoldier_die },
 { P_die, mutant_die },
+{ P_die, nuke_die },
 { P_die, parasite_die },
 { P_die, player_die },
 { P_die, proboscis_die },
+{ P_die, prox_die },
 { P_die, rotating_light_killed },
 { P_die, shambler_die },
 { P_die, soldier_die },
+{ P_die, sphere_explode },
+{ P_die, sphere_if_idle_die },
 { P_die, stalker_die },
 { P_die, supertank_die },
 { P_die, tank_die },
 { P_die, tesla_die },
 { P_die, turret_die },
 { P_die, turret_driver_die },
+{ P_die, widow2_die },
+{ P_die, widow_die },
 { P_moveinfo_endfunc, button_done },
 { P_moveinfo_endfunc, button_wait },
 { P_moveinfo_endfunc, door_hit_bottom },
@@ -1353,6 +1538,24 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &chick_move_start_run },
 { P_monsterinfo_currentmove, &chick_move_start_slash },
 { P_monsterinfo_currentmove, &chick_move_walk },
+{ P_monsterinfo_currentmove, &fixbot_move_attack2 },
+{ P_monsterinfo_currentmove, &fixbot_move_forward },
+{ P_monsterinfo_currentmove, &fixbot_move_landing },
+{ P_monsterinfo_currentmove, &fixbot_move_laserattack },
+{ P_monsterinfo_currentmove, &fixbot_move_pain3 },
+{ P_monsterinfo_currentmove, &fixbot_move_paina },
+{ P_monsterinfo_currentmove, &fixbot_move_painb },
+{ P_monsterinfo_currentmove, &fixbot_move_roamgoal },
+{ P_monsterinfo_currentmove, &fixbot_move_run },
+{ P_monsterinfo_currentmove, &fixbot_move_stand },
+{ P_monsterinfo_currentmove, &fixbot_move_stand2 },
+{ P_monsterinfo_currentmove, &fixbot_move_start_attack },
+{ P_monsterinfo_currentmove, &fixbot_move_takeoff },
+{ P_monsterinfo_currentmove, &fixbot_move_turn },
+{ P_monsterinfo_currentmove, &fixbot_move_walk },
+{ P_monsterinfo_currentmove, &fixbot_move_weld },
+{ P_monsterinfo_currentmove, &fixbot_move_weld_end },
+{ P_monsterinfo_currentmove, &fixbot_move_weld_start },
 { P_monsterinfo_currentmove, &flipper_move_attack },
 { P_monsterinfo_currentmove, &flipper_move_death },
 { P_monsterinfo_currentmove, &flipper_move_pain1 },
@@ -1422,6 +1625,18 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &gladiator_move_run },
 { P_monsterinfo_currentmove, &gladiator_move_stand },
 { P_monsterinfo_currentmove, &gladiator_move_walk },
+{ P_monsterinfo_currentmove, &guardian_move_atk1_in },
+{ P_monsterinfo_currentmove, &guardian_move_atk1_out },
+{ P_monsterinfo_currentmove, &guardian_move_atk1_spin },
+{ P_monsterinfo_currentmove, &guardian_move_atk2_fire },
+{ P_monsterinfo_currentmove, &guardian_move_atk2_in },
+{ P_monsterinfo_currentmove, &guardian_move_atk2_out },
+{ P_monsterinfo_currentmove, &guardian_move_death },
+{ P_monsterinfo_currentmove, &guardian_move_kick },
+{ P_monsterinfo_currentmove, &guardian_move_pain1 },
+{ P_monsterinfo_currentmove, &guardian_move_run },
+{ P_monsterinfo_currentmove, &guardian_move_stand },
+{ P_monsterinfo_currentmove, &guardian_move_walk },
 { P_monsterinfo_currentmove, &guncmdr_move_attack_chain },
 { P_monsterinfo_currentmove, &guncmdr_move_attack_grenade_back },
 { P_monsterinfo_currentmove, &guncmdr_move_attack_grenade_back_dodge_left },
@@ -1672,6 +1887,37 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &turret_move_run },
 { P_monsterinfo_currentmove, &turret_move_seek },
 { P_monsterinfo_currentmove, &turret_move_stand },
+{ P_monsterinfo_currentmove, &widow2_move_attack_beam },
+{ P_monsterinfo_currentmove, &widow2_move_attack_disrupt },
+{ P_monsterinfo_currentmove, &widow2_move_attack_post_beam },
+{ P_monsterinfo_currentmove, &widow2_move_attack_pre_beam },
+{ P_monsterinfo_currentmove, &widow2_move_dead },
+{ P_monsterinfo_currentmove, &widow2_move_death },
+{ P_monsterinfo_currentmove, &widow2_move_pain },
+{ P_monsterinfo_currentmove, &widow2_move_really_dead },
+{ P_monsterinfo_currentmove, &widow2_move_run },
+{ P_monsterinfo_currentmove, &widow2_move_spawn },
+{ P_monsterinfo_currentmove, &widow2_move_stand },
+{ P_monsterinfo_currentmove, &widow2_move_tongs },
+{ P_monsterinfo_currentmove, &widow2_move_walk },
+{ P_monsterinfo_currentmove, &widow_move_attack_blaster },
+{ P_monsterinfo_currentmove, &widow_move_attack_kick },
+{ P_monsterinfo_currentmove, &widow_move_attack_post_blaster },
+{ P_monsterinfo_currentmove, &widow_move_attack_post_blaster_l },
+{ P_monsterinfo_currentmove, &widow_move_attack_post_blaster_r },
+{ P_monsterinfo_currentmove, &widow_move_attack_pre_blaster },
+{ P_monsterinfo_currentmove, &widow_move_attack_pre_rail },
+{ P_monsterinfo_currentmove, &widow_move_attack_rail },
+{ P_monsterinfo_currentmove, &widow_move_attack_rail_l },
+{ P_monsterinfo_currentmove, &widow_move_attack_rail_r },
+{ P_monsterinfo_currentmove, &widow_move_death },
+{ P_monsterinfo_currentmove, &widow_move_pain_heavy },
+{ P_monsterinfo_currentmove, &widow_move_pain_light },
+{ P_monsterinfo_currentmove, &widow_move_run },
+{ P_monsterinfo_currentmove, &widow_move_run_attack },
+{ P_monsterinfo_currentmove, &widow_move_spawn },
+{ P_monsterinfo_currentmove, &widow_move_stand },
+{ P_monsterinfo_currentmove, &widow_move_walk },
 { P_monsterinfo_stand, actor_stand },
 { P_monsterinfo_stand, arachnid_stand },
 { P_monsterinfo_stand, berserk_stand },
@@ -1679,11 +1925,13 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_stand, brain_stand },
 { P_monsterinfo_stand, carrier_stand },
 { P_monsterinfo_stand, chick_stand },
+{ P_monsterinfo_stand, fixbot_stand },
 { P_monsterinfo_stand, flipper_stand },
 { P_monsterinfo_stand, floater_stand },
 { P_monsterinfo_stand, flyer_stand },
 { P_monsterinfo_stand, gekk_stand },
 { P_monsterinfo_stand, gladiator_stand },
+{ P_monsterinfo_stand, guardian_stand },
 { P_monsterinfo_stand, guncmdr_stand },
 { P_monsterinfo_stand, gunner_stand },
 { P_monsterinfo_stand, hover_stand },
@@ -1701,6 +1949,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_stand, supertank_stand },
 { P_monsterinfo_stand, tank_stand },
 { P_monsterinfo_stand, turret_stand },
+{ P_monsterinfo_stand, widow2_stand },
+{ P_monsterinfo_stand, widow_stand },
 { P_monsterinfo_idle, brain_idle },
 { P_monsterinfo_idle, floater_idle },
 { P_monsterinfo_idle, flyer_idle },
@@ -1726,6 +1976,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_search, mutant_search },
 { P_monsterinfo_search, supertank_search },
 { P_monsterinfo_search, turret_search },
+{ P_monsterinfo_search, widow2_search },
+{ P_monsterinfo_search, widow_search },
 { P_monsterinfo_walk, actor_walk },
 { P_monsterinfo_walk, arachnid_walk },
 { P_monsterinfo_walk, berserk_walk },
@@ -1733,11 +1985,13 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_walk, brain_walk },
 { P_monsterinfo_walk, carrier_walk },
 { P_monsterinfo_walk, chick_walk },
+{ P_monsterinfo_walk, fixbot_walk },
 { P_monsterinfo_walk, flipper_walk },
 { P_monsterinfo_walk, floater_walk },
 { P_monsterinfo_walk, flyer_walk },
 { P_monsterinfo_walk, gekk_walk },
 { P_monsterinfo_walk, gladiator_walk },
+{ P_monsterinfo_walk, guardian_walk },
 { P_monsterinfo_walk, guncmdr_walk },
 { P_monsterinfo_walk, gunner_walk },
 { P_monsterinfo_walk, hover_walk },
@@ -1754,6 +2008,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_walk, supertank_walk },
 { P_monsterinfo_walk, tank_walk },
 { P_monsterinfo_walk, turret_walk },
+{ P_monsterinfo_walk, widow2_walk },
+{ P_monsterinfo_walk, widow_walk },
 { P_monsterinfo_run, actor_run },
 { P_monsterinfo_run, arachnid_run },
 { P_monsterinfo_run, berserk_run },
@@ -1761,11 +2017,13 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_run, brain_run },
 { P_monsterinfo_run, carrier_run },
 { P_monsterinfo_run, chick_run },
+{ P_monsterinfo_run, fixbot_run },
 { P_monsterinfo_run, flipper_start_run },
 { P_monsterinfo_run, floater_run },
 { P_monsterinfo_run, flyer_run },
 { P_monsterinfo_run, gekk_run_start },
 { P_monsterinfo_run, gladiator_run },
+{ P_monsterinfo_run, guardian_run },
 { P_monsterinfo_run, guncmdr_run },
 { P_monsterinfo_run, gunner_run },
 { P_monsterinfo_run, hover_run },
@@ -1782,6 +2040,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_run, supertank_run },
 { P_monsterinfo_run, tank_run },
 { P_monsterinfo_run, turret_run },
+{ P_monsterinfo_run, widow2_run },
+{ P_monsterinfo_run, widow_run },
 { P_monsterinfo_dodge, brain_dodge },
 { P_monsterinfo_dodge, chick_dodge },
 { P_monsterinfo_dodge, gekk_dodge },
@@ -1798,10 +2058,12 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_attack, brain_attack },
 { P_monsterinfo_attack, carrier_attack },
 { P_monsterinfo_attack, chick_attack },
+{ P_monsterinfo_attack, fixbot_attack },
 { P_monsterinfo_attack, floater_attack },
 { P_monsterinfo_attack, flyer_attack },
 { P_monsterinfo_attack, gekk_attack },
 { P_monsterinfo_attack, gladiator_attack },
+{ P_monsterinfo_attack, guardian_attack },
 { P_monsterinfo_attack, guncmdr_attack },
 { P_monsterinfo_attack, gunner_attack },
 { P_monsterinfo_attack, hover_start_attack },
@@ -1817,6 +2079,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_attack, supertank_attack },
 { P_monsterinfo_attack, tank_attack },
 { P_monsterinfo_attack, turret_attack },
+{ P_monsterinfo_attack, widow2_attack },
+{ P_monsterinfo_attack, widow_attack },
 { P_monsterinfo_melee, berserk_melee },
 { P_monsterinfo_melee, brain_melee },
 { P_monsterinfo_melee, chick_melee },
@@ -1828,6 +2092,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_melee, mutant_melee },
 { P_monsterinfo_melee, shambler_melee },
 { P_monsterinfo_melee, stalker_attack_melee },
+{ P_monsterinfo_melee, widow2_melee },
+{ P_monsterinfo_melee, widow_melee },
 { P_monsterinfo_sight, arachnid_sight },
 { P_monsterinfo_sight, berserk_sight },
 { P_monsterinfo_sight, brain_sight },
@@ -1851,6 +2117,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sight, stalker_sight },
 { P_monsterinfo_sight, tank_sight },
 { P_monsterinfo_sight, turret_sight },
+{ P_monsterinfo_sight, widow_sight },
 { P_monsterinfo_checkattack, Boss2_CheckAttack },
 { P_monsterinfo_checkattack, Carrier_CheckAttack },
 { P_monsterinfo_checkattack, gekk_checkattack },
@@ -1860,6 +2127,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_checkattack, medic_checkattack },
 { P_monsterinfo_checkattack, mutant_checkattack },
 { P_monsterinfo_checkattack, turret_checkattack },
+{ P_monsterinfo_checkattack, Widow2_CheckAttack },
+{ P_monsterinfo_checkattack, Widow_CheckAttack },
 { P_monsterinfo_blocked, berserk_blocked },
 { P_monsterinfo_blocked, flyer_blocked },
 { P_monsterinfo_blocked, gladiator_blocked },
@@ -1871,6 +2140,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_blocked, soldier_blocked },
 { P_monsterinfo_blocked, supertank_blocked },
 { P_monsterinfo_blocked, tank_blocked },
+{ P_monsterinfo_blocked, widow_blocked },
 { P_monsterinfo_duck, berserk_duck },
 { P_monsterinfo_duck, brain_duck },
 { P_monsterinfo_duck, chick_duck },

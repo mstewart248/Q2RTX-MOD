@@ -616,6 +616,67 @@ void G_CheckChaseStats(edict_t *ent)
 
 /*
 ===============
+G_SendInventory
+
+The client's weapon bar reads cl.inventory[], and the 1997 game only ever fills
+that in when the player opens the inventory screen - so every count on the bar
+would be whatever it was the last time you pressed Tab.
+
+Push it whenever it has really changed: at once when an item appears or runs
+out, and otherwise no more than five times a second.  Half a second of lag on a
+number you only see while the bar is up is invisible, and the current weapon's
+own ammo is live in STAT_AMMO regardless.
+===============
+*/
+#define INVENTORY_RESEND_FRAMES 5
+
+static int      inventory_sent[MAX_CLIENTS][MAX_ITEMS];
+static int      inventory_sent_frame[MAX_CLIENTS];
+
+void G_ResetInventoryTracking(edict_t *ent)
+{
+    int     n = ent->client - game.clients;
+
+    memset(inventory_sent[n], 0, sizeof(inventory_sent[n]));
+    inventory_sent_frame[n] = -INVENTORY_RESEND_FRAMES;
+}
+
+void G_SendInventory(edict_t *ent)
+{
+    int     n = ent->client - game.clients;
+    int     *sent = inventory_sent[n];
+    int     i;
+    bool    changed = false, urgent = false;
+
+    for (i = 0; i < MAX_ITEMS; i++) {
+        int have = ent->client->pers.inventory[i];
+
+        if (sent[i] == have)
+            continue;
+        changed = true;
+        if (!sent[i] || !have) {
+            urgent = true;      // picked something up, or ran it out
+            break;
+        }
+    }
+
+    if (!changed)
+        return;
+    if (!urgent && level.framenum - inventory_sent_frame[n] < INVENTORY_RESEND_FRAMES)
+        return;
+
+    for (i = 0; i < MAX_ITEMS; i++)
+        sent[i] = ent->client->pers.inventory[i];
+    inventory_sent_frame[n] = level.framenum;
+
+    gi.WriteByte(svc_inventory);
+    for (i = 0; i < MAX_ITEMS; i++)
+        gi.WriteShort(ent->client->pers.inventory[i]);
+    gi.unicast(ent, true);
+}
+
+/*
+===============
 G_SetSpectatorStats
 ===============
 */

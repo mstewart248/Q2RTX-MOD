@@ -127,6 +127,22 @@ void SP_info_player_deathmatch(edict_t *self)
 potential spawning position for coop games
 */
 
+/*QUAKED info_player_coop_lava (1 0 1) (-16 -16 -24) (16 16 32)
+ROGUE - a coop spawn point placed on the safe side of the lava in rmine2.
+26 instances, all in that one map. Coop only, like info_player_coop.
+*/
+void SP_info_player_coop_lava(edict_t *self)
+{
+    if (!coop->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    // the rerelease unsticks these; G_FixStuckObject is already ported here
+    if (gi.trace(self->s.origin, self->mins, self->maxs, self->s.origin, self, MASK_SOLID).startsolid)
+        G_FixStuckObject(self, self->s.origin, MASK_SOLID);
+}
+
 void SP_info_player_coop(edict_t *self)
 {
     if (!coop->value) {
@@ -621,6 +637,8 @@ void InitClientPersistant(gclient_t *client)
     client->pers.max_tesla      = 5;
     client->pers.max_disruptor  = 100;
     client->pers.max_trap       = 5;
+    client->pers.max_flechettes = 200;
+    client->pers.max_prox       = 50;
 
     client->pers.connected = true;
 }
@@ -1126,6 +1144,10 @@ void PutClientInServer(edict_t *ent)
     int     i;
     client_persistant_t saved;
     client_respawn_t    resp;
+
+    // the client's inventory copy is cleared with its state on every
+    // level load, so forget what we think it already has
+    G_ResetInventoryTracking(ent);
 
     // find a spawn point
     // do it before setting health back up, so farthest

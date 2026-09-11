@@ -633,6 +633,62 @@ qboolean InflictorGibExplosion(edict_t* inflictor, edict_t* self) {
 T_RadiusDamage
 ============
 */
+/*
+============
+T_RadiusNukeDamage
+
+Rogue's A-M bomb blast. Unlike T_RadiusDamage this does NOT trace for line of
+sight - a nuke goes through walls - and it has two zones: everything inside
+`radius` takes a flat 10000 (i.e. dies), and out to twice that the damage
+falls off linearly.
+
+The rerelease follows this with a second pass that sets client->nuke_time for
+the screen white-out. That is not ported - see the header of the nuke section
+in g_rogue_items.c.
+============
+*/
+void T_RadiusNukeDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t *ignore, float radius, int mod)
+{
+    float    points;
+    edict_t *ent = NULL;
+    vec3_t   v;
+    vec3_t   dir;
+    float    len;
+    float    killzone, killzone2;
+
+    killzone = radius;
+    killzone2 = radius * 2.0f;
+
+    while ((ent = findradius(ent, inflictor->s.origin, killzone2)) != NULL) {
+        if (ent == ignore)
+            continue;
+        if (!ent->takedamage)
+            continue;
+        if (!ent->inuse)
+            continue;
+        if (!(ent->client || (ent->svflags & SVF_MONSTER) || (ent->svflags & SVF_DAMAGEABLE)))
+            continue;
+
+        VectorAdd(ent->mins, ent->maxs, v);
+        VectorMA(ent->s.origin, 0.5f, v, v);
+        VectorSubtract(inflictor->s.origin, v, v);
+        len = VectorLength(v);
+
+        if (len <= killzone)
+            points = 10000;
+        else if (len <= killzone2)
+            points = (damage / killzone) * (killzone2 - len);
+        else
+            points = 0;
+
+        if (points > 0) {
+            VectorSubtract(ent->s.origin, inflictor->s.origin, dir);
+            T_Damage(ent, inflictor, attacker, dir, inflictor->s.origin, vec3_origin,
+                     (int)points, (int)points, DAMAGE_RADIUS, mod);
+        }
+    }
+}
+
 void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t *ignore, float radius, int mod)
 {
     float   points;

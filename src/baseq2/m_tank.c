@@ -1078,3 +1078,69 @@ void SP_monster_tank(edict_t *self)
     if (strcmp(self->classname, "monster_tank_commander") == 0)
         self->s.skinnum = 2;
 }
+
+/* =======================================================================
+ *
+ * monster_tank_stand - the N64 set-piece tank.
+ *
+ * Not a monster in any meaningful sense: it has no AI, no health and no
+ * attacks. It stands cycling its idle animation until something targets it,
+ * and Use_Boss3 (m_boss3.c) then teleports it away in a puff, exactly as the
+ * Makron's stand-in does. The rerelease's own comment is "N64 edition!".
+ *
+ * It reuses the ordinary tank md2 on skin 2 (cskin.pcx, the commander's grey)
+ * and is scaled to 1.5 by default, which needs the per-entity U_SCALE support
+ * this tree already has - a map may override it with a `scale` key.
+ *
+ * =======================================================================
+ */
+
+void Use_Boss3(edict_t *ent, edict_t *other, edict_t *activator);
+
+void Think_TankStand(edict_t *self)
+{
+    if (self->s.frame == FRAME_stand30)
+        self->s.frame = FRAME_stand01;
+    else
+        self->s.frame++;
+
+    /* the rerelease's 10_hz - one server frame here */
+    self->nextthink = level.framenum + 1;
+}
+
+/*
+ * QUAKED monster_tank_stand (1 .5 0) (-32 -32 0) (32 32 90)
+ *
+ * Just stands and cycles in one place until targeted, then teleports away.
+ * N64 edition!
+ */
+void SP_monster_tank_stand(edict_t *self)
+{
+    if (deathmatch->value) {
+        G_FreeEdict(self);
+        return;
+    }
+
+    self->movetype = MOVETYPE_STEP;
+    self->solid = SOLID_BBOX;
+    self->model = "models/monsters/tank/tris.md2";
+    self->s.modelindex = gi.modelindex(self->model);
+    self->s.frame = FRAME_stand01;
+    self->s.skinnum = 2;
+
+    gi.soundindex("misc/bigtele.wav");
+
+    VectorSet(self->mins, -32, -32, -16);
+    VectorSet(self->maxs, 32, 32, 64);
+
+    if (!self->s.scale)
+        self->s.scale = 1.5f;
+
+    VectorScale(self->mins, self->s.scale, self->mins);
+    VectorScale(self->maxs, self->s.scale, self->maxs);
+
+    self->use = Use_Boss3;
+    self->think = Think_TankStand;
+    self->nextthink = level.framenum + 1;
+    gi.linkentity(self);
+}

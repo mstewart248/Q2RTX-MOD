@@ -236,6 +236,8 @@ get_model_class(const char *name)
         return MCLASS_STATIC_LIGHT;
     else if (!strcmp(name, "models/objects/flare/tris.md2"))
         return MCLASS_FLARE;
+    else if (!strcmp(name, "models/proj/beam/tris.md2"))
+        return MCLASS_PLAYER_BEAM;
 	else
 		return MCLASS_REGULAR;
 }

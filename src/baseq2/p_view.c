@@ -430,6 +430,15 @@ void SV_CalcBlend(edict_t *ent)
     else
         ent->client->ps.rdflags &= ~RDF_UNDERWATER;
 
+    // ROGUE IR goggles - the renderer picks RDF_IRGOGGLES up and lights
+    // monsters through the dark. Blinks out over the last three seconds.
+    if (ent->client->ir_framenum > level.framenum &&
+        (ent->client->ir_framenum - level.framenum > 30 ||
+         ((ent->client->ir_framenum - level.framenum) & 4)))
+        ent->client->ps.rdflags |= RDF_IRGOGGLES;
+    else
+        ent->client->ps.rdflags &= ~RDF_IRGOGGLES;
+
     if (contents & (CONTENTS_SOLID | CONTENTS_LAVA))
         SV_AddBlend(1.0f, 0.3f, 0.0f, 0.6f, ent->client->ps.blend);
     else if (contents & CONTENTS_SLIME)
@@ -766,6 +775,14 @@ void G_SetClientEffects(edict_t *ent)
             ent->s.effects |= EF_PENT;
     }
 
+    // ROGUE cloak. Blinks in the last three seconds the way the other
+    // powerups do, so you get a warning before it drops.
+    if (ent->client->invisible_framenum > level.framenum) {
+        remaining = ent->client->invisible_framenum - level.framenum;
+        if (remaining > 30 || (remaining & 4))
+            ent->s.renderfx |= RF_TRANSLUCENT;
+    }
+
     // show cheaters!!!
     if (ent->flags & FL_GODMODE) {
         ent->s.effects |= EF_COLOR_SHELL;
@@ -1050,5 +1067,8 @@ void ClientEndServerFrame(edict_t *ent)
         DeathmatchScoreboardMessage(ent, ent->enemy);
         gi.unicast(ent, false);
     }
+
+    // keep the client's copy of the inventory usable by the weapon bar
+    G_SendInventory(ent);
 }
 

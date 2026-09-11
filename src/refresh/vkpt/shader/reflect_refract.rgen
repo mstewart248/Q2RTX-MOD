@@ -1000,7 +1000,20 @@ main()
 	{
 		normal = get_water_normal(material_id, geo_normal, triangle.tangents[0], position, false);
 
-		if(abs(geo_normal.z) < 0.1)  // hack to detect actual water vs. vertical force fields
+		// "A vertical water surface is a force field" - and a force field is
+		// rendered as GLASS, which is the branch that does
+		// `throughput *= primary_base_color`.  THAT is what lets a force field
+		// show its own texture tinting whatever is behind it; plain water never
+		// multiplies by the albedo, so it only ever refracts.
+		//
+		// On a closed shape the normal test is meaningless - a sphere passes
+		// through every orientation, so only the narrow band facing sideways
+		// became glass and the model wore a hard stripe round its equator where
+		// the textured part met the untextured caps.  MATERIAL_FLAG_CURVED_WATER
+		// forces the whole surface down the force-field path, which is both
+		// uniform AND the look that was wanted.  Note the water normal above is
+		// applied either way, so the warp survives the switch to glass.
+		if(abs(geo_normal.z) < 0.1 || (material_id & MATERIAL_FLAG_CURVED_WATER) != 0)
 			material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_GLASS;
 	}
 
@@ -1037,7 +1050,24 @@ main()
 		}
 	}
 
-	if (triangle.alpha < 1.0)
+	// Water and slime are ALREADY see-through - reflect_refract.rgen traces a
+	// refraction ray through them - and the generic translucency split below
+	// swaps the material kind to TRANSP_MODEL on one of the two checkerboard
+	// fields, which drops that field off the refraction path.  The result is
+	// that ANY alpha under 1 loses half the refraction and reads as a hard
+	// change rather than a fade, so entity alpha on a refractive surface is
+	// skipped outright.
+	//
+	// There is no meaningful place to put it instead: for a refracted pixel
+	// reflect_refract OVERWRITES IMG_PT_BASE_COLOR_A with the surface BEHIND
+	// the water, and the tint comes from the hardcoded MEDIUM_WATER extinction
+	// in water.glsl, not from the material.  A WATER surface therefore never
+	// shows its own albedo at all, which is also why base_factor does nothing
+	// on one.  A model that needs a visible texture AND working alpha wants
+	// kind TRANSP_MODEL, not kind WATER.
+	bool alpha_is_refractive = is_water(material_id) || is_slime(material_id);
+
+	if (triangle.alpha < 1.0 && !alpha_is_refractive)
 	{
 		// Translucent objects.
 		if (bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) == 1)

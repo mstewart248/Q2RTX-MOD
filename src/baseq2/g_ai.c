@@ -610,8 +610,22 @@ bool FindTarget(edict_t *self)
     if (client == self->enemy)
         return true;    // JDC false;
 
+    // ROGUE - hintpath coop fix. In coop a monster on a hint path would be
+    // yanked off it by every noise any player made, and never get anywhere.
+    if ((self->monsterinfo.aiflags & AI_HINT_PATH) && coop->value)
+        heardit = false;
+
     if (client->client) {
         if (client->flags & FL_NOTARGET)
+            return false;
+        // ROGUE cloak - you simply are not there as far as a monster is
+        // concerned. The rerelease has a short fade window after you activate
+        // it or fire; that is not ported, so this is straight on/off.
+        if (client->client->invisible_framenum > level.framenum)
+            return false;
+        // ROGUE trigger_disguise - same idea, but set by a map trigger rather
+        // than an item, and it lasts until another trigger clears it.
+        if (client->flags & FL_DISGUISED)
             return false;
     } else if (client->svflags & SVF_MONSTER) {
         if (!client->enemy)
@@ -696,7 +710,12 @@ bool FindTarget(edict_t *self)
 //
 // got one
 //
-    FoundTarget(self);
+    // ROGUE - if we got an enemy while walking a hint path we have to bail
+    // out of it first; hintpath_stop calls FoundTarget for us.
+    if (self->monsterinfo.aiflags & AI_HINT_PATH)
+        hintpath_stop(self);
+    else
+        FoundTarget(self);
 
     if (!(self->monsterinfo.aiflags & AI_SOUND_TARGET) && (self->monsterinfo.sight))
         self->monsterinfo.sight(self, self->enemy);
@@ -1122,6 +1141,49 @@ void ai_run(edict_t *self, float dist)
         return;
     }
 
+    // ROGUE - if we are currently walking a hint path, that is ALL we do:
+    // steer at the next node and watch for the enemy coming back into view.
+    // g_rogue.c owns the chain itself; this is just the per-frame half.
+    if (self->monsterinfo.aiflags & AI_HINT_PATH) {
+        edict_t *realEnemy;
+        bool     gotcha = false;
+
+        // determine direction to our destination hintpath.
+        M_MoveToGoal(self, dist);
+        if (!self->inuse)
+            return;
+
+        // first off, make sure we're looking for the player, not a noise he made
+        if (!self->enemy || !self->enemy->inuse) {
+            self->enemy = NULL;
+            hintpath_stop(self);
+            return;
+        }
+
+        if (strcmp(self->enemy->classname, "player_noise") != 0) {
+            realEnemy = self->enemy;
+        } else if (self->enemy->owner) {
+            realEnemy = self->enemy->owner;
+        } else {
+            // uh oh, can't figure out enemy, bail
+            self->enemy = NULL;
+            hintpath_stop(self);
+            return;
+        }
+
+        if (visible(self, realEnemy))
+            gotcha = true;
+        else if (coop->value)
+            // let FindTarget bump us out of hint paths, if appropriate
+            FindTarget(self);
+
+        // if we see the player, stop following hintpaths and hunt normally
+        if (gotcha)
+            hintpath_stop(self);
+
+        return;
+    }
+
     if (self->monsterinfo.aiflags & AI_SOUND_TARGET) {
         VectorSubtract(self->s.origin, self->enemy->s.origin, v);
         if (VectorLength(v) < 64) {
@@ -1153,6 +1215,17 @@ void ai_run(edict_t *self, float dist)
         M_UpdateBlindFireTarget(self);
         self->monsterinfo.trail_framenum = level.framenum;
         return;
+    }
+
+    // ROGUE - if we have been looking (unsuccessfully) for the player for
+    // five seconds, and have not checked for a hint path in the last ten,
+    // go and look for one. Both throttles matter: the search walks every
+    // hint_path on the map and traces to each of them twice.
+    if (level.framenum >= self->monsterinfo.trail_framenum + 5 * BASE_FRAMERATE &&
+        level.framenum >= self->monsterinfo.last_hint_framenum + 10 * BASE_FRAMERATE) {
+        self->monsterinfo.last_hint_framenum = level.framenum;
+        if (monsterlost_checkhint(self))
+            return;
     }
 
     // coop will change to another enemy if visible

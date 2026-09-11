@@ -1517,6 +1517,368 @@ void fire_player_melee(edict_t *self, vec3_t start, vec3_t aim, int reach,
 }
 
 /*
+======================================================================
+
+PROX MINE (rogue's prox launcher)
+
+Ported from rerelease/rogue/g_rogue_newweap.cpp 84-500. A grenade that sticks
+where it lands, opens, then watches a 96-unit trigger field and detonates on
+anything that walks in. Prox mines set each other off, which is the whole
+point of laying a field of them.
+
+Timing here is FRAMENUM based (level.framenum + seconds * BASE_FRAMERATE), not
+the rerelease's gtime_t. `timestamp` holds the in-flight time-to-live and
+`wait` the armed one, exactly as the original splits them.
+
+Rerelease-isms dropped, following the precedent already set at the top of
+g_xatrix.c for the trap:
+
+  * FL_TRAP / FL_DODGE / SVF_PROJECTILE - none exist here. FL_DODGE only lets
+    monsters sidestep the mine in flight, and SVF_PROJECTILE only tunes player
+    clipping in deathmatch.
+  * MODELINDEX_WORLD - its only use is a branch reachable solely when
+    other == world, whose modelindex IS the world's, so the branch could never
+    fire. Dropped rather than reproduced.
+  * g_dm_strong_mines / G_ShouldPlayersCollide - deathmatch tuning knobs with
+    no equivalent here. The damage-multiplier switch below still gives
+    quad-boosted mines their shorter fuse.
+
+FL_DAMAGEABLE has no equivalent either, but SVF_DAMAGEABLE does the same job in
+this tree, so prox_land tests that instead.
+
+Like the trap, the mine IGNORES PLAYERS OUTSIDE DEATHMATCH - that gate is in
+the rerelease and is what stops your own minefield killing you in the campaign.
+
+======================================================================
+*/
+
+#define PROX_TIME_TO_LIVE   45.0f   // seconds; 45, 30, 15, 10 by damage tier
+#define PROX_TIME_DELAY     0.5f
+#define PROX_BOUND_SIZE     96
+#define PROX_DAMAGE_RADIUS  192
+#define PROX_HEALTH         20
+#define PROX_DAMAGE         90
+
+void Prox_Explode(edict_t *ent)
+{
+    vec3_t  origin;
+    edict_t *owner;
+
+    // free the trigger field - the field's owner is the prox, not the player
+    if (ent->teamchain && ent->teamchain->owner == ent)
+        G_FreeEdict(ent->teamchain);
+
+    owner = ent;
+    if (ent->teammaster) {
+        owner = ent->teammaster;
+        PlayerNoise(owner, ent->s.origin, PNOISE_IMPACT);
+    }
+
+    if (ent->dmg > PROX_DAMAGE)
+        gi.sound(ent, CHAN_ITEM, gi.soundindex("items/damage3.wav"), 1, ATTN_NORM, 0);
+
+    ent->takedamage = DAMAGE_NO;
+    T_RadiusDamage(ent, owner, (float)ent->dmg, ent, PROX_DAMAGE_RADIUS, MOD_PROX);
+
+    VectorMA(ent->s.origin, -0.02f, ent->velocity, origin);
+    gi.WriteByte(svc_temp_entity);
+    if (ent->groundentity)
+        gi.WriteByte(TE_GRENADE_EXPLOSION);
+    else
+        gi.WriteByte(TE_ROCKET_EXPLOSION);
+    gi.WritePosition(origin);
+    gi.multicast(ent->s.origin, MULTICAST_PHS);
+
+    G_FreeEdict(ent);
+}
+
+void prox_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
+{
+    // a mine set off by ANOTHER mine waits a frame, so a field chain-reacts
+    // instead of every mine resolving inside the same call
+    if (!inflictor->classname || strcmp(inflictor->classname, "prox_mine")) {
+        self->takedamage = DAMAGE_NO;
+        Prox_Explode(self);
+    } else {
+        self->takedamage = DAMAGE_NO;
+        self->think = Prox_Explode;
+        self->nextthink = level.framenum + 1;
+    }
+}
+
+void Prox_Field_Touch(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    edict_t *prox;
+
+    if (!(other->svflags & SVF_MONSTER) && !other->client)
+        return;
+
+    prox = ent->owner;
+
+    if (CheckTeamDamage(prox->teammaster, other))
+        return;
+
+    // outside deathmatch the mine is a monster trap only
+    if (!deathmatch->value && other->client)
+        return;
+
+    if (other == prox)
+        return;
+
+    if (prox->think == Prox_Explode)    // already going off
+        return;
+
+    if (prox->teamchain == ent) {
+        gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/proxwarn.wav"), 1, ATTN_NORM, 0);
+        prox->think = Prox_Explode;
+        prox->nextthink = level.framenum + PROX_TIME_DELAY * BASE_FRAMERATE;
+        return;
+    }
+
+    ent->solid = SOLID_NOT;
+    G_FreeEdict(ent);
+}
+
+void prox_seek(edict_t *ent)
+{
+    if (level.framenum > ent->wait) {
+        Prox_Explode(ent);
+    } else {
+        ent->s.frame++;
+        if (ent->s.frame > 13)
+            ent->s.frame = 9;
+        ent->think = prox_seek;
+        ent->nextthink = level.framenum + 1;
+    }
+}
+
+void prox_open(edict_t *ent)
+{
+    edict_t *search = NULL;
+
+    if (ent->s.frame == 9) {    // end of the opening animation
+        // clearing the owner here rather than on landing is deliberate: it
+        // lets the thrower get clear of a mine fired point blank into a wall
+        ent->s.sound = 0;
+
+        if (deathmatch->value)
+            ent->owner = NULL;
+
+        if (ent->teamchain)
+            ent->teamchain->touch = Prox_Field_Touch;
+
+        while ((search = findradius(search, ent->s.origin, PROX_DAMAGE_RADIUS + 10)) != NULL) {
+            if (!search->classname)
+                continue;
+            if (search == ent)
+                continue;
+            if (CheckTeamDamage(search, ent->teammaster))
+                continue;
+            if (!visible(search, ent))
+                continue;
+
+            if (((search->svflags & SVF_MONSTER) ||
+                 (deathmatch->value && (search->client || !strcmp(search->classname, "prox_mine")))) &&
+                search->health > 0) {
+                gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/proxwarn.wav"), 1, ATTN_NORM, 0);
+                Prox_Explode(ent);
+                return;
+            }
+
+            if (deathmatch->value &&
+                (!strncmp(search->classname, "info_player_", 12) ||
+                 !strcmp(search->classname, "misc_teleporter_dest") ||
+                 !strncmp(search->classname, "item_flag_", 10))) {
+                gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/proxwarn.wav"), 1, ATTN_NORM, 0);
+                Prox_Explode(ent);
+                return;
+            }
+        }
+
+        // a quad-boosted mine burns out faster
+        switch (ent->dmg / PROX_DAMAGE) {
+        case 2:  ent->wait = level.framenum + 30.0f * BASE_FRAMERATE; break;
+        case 4:  ent->wait = level.framenum + 15.0f * BASE_FRAMERATE; break;
+        case 8:  ent->wait = level.framenum + 10.0f * BASE_FRAMERATE; break;
+        default: ent->wait = level.framenum + PROX_TIME_TO_LIVE * BASE_FRAMERATE; break;
+        }
+
+        ent->think = prox_seek;
+        ent->nextthink = level.framenum + 0.2f * BASE_FRAMERATE;
+    } else {
+        if (ent->s.frame == 0)
+            gi.sound(ent, CHAN_VOICE, gi.soundindex("weapons/proxopen.wav"), 1, ATTN_NORM, 0);
+        ent->s.frame++;
+        ent->think = prox_open;
+        ent->nextthink = level.framenum + 1;
+    }
+}
+
+void prox_land(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    edict_t     *field;
+    vec3_t      dir;
+    vec3_t      forward, right, up;
+    vec3_t      land_point;
+    vec3_t      out;
+    int         movetype = MOVETYPE_NONE;
+    int         stick_ok = 0;
+    float       backoff, change;
+    int         i;
+
+    if (surf && (surf->flags & SURF_SKY)) {
+        G_FreeEdict(ent);
+        return;
+    }
+
+    if (plane) {
+        VectorMA(ent->s.origin, -10.0f, plane->normal, land_point);
+        if (gi.pointcontents(land_point) & (CONTENTS_SLIME | CONTENTS_LAVA)) {
+            Prox_Explode(ent);
+            return;
+        }
+    }
+
+    if (!plane || (other->svflags & SVF_MONSTER) || other->client ||
+        (other->svflags & SVF_DAMAGEABLE)) {
+        if (other != ent->teammaster)
+            Prox_Explode(ent);
+        return;
+    } else if (other != world) {
+        // can we stop on this entity? (ClipVelocity, lifted from g_phys)
+        if (other->movetype == MOVETYPE_PUSH && plane->normal[2] > 0.7f)
+            stick_ok = 1;
+
+        backoff = DotProduct(ent->velocity, plane->normal) * 1.5f;
+        for (i = 0; i < 3; i++) {
+            change = plane->normal[i] * backoff;
+            out[i] = ent->velocity[i] - change;
+            if (out[i] > -0.1f && out[i] < 0.1f)
+                out[i] = 0;
+        }
+
+        if (out[2] > 60)
+            return;
+
+        movetype = MOVETYPE_BOUNCE;
+
+        if (stick_ok) {
+            VectorClear(ent->velocity);
+            VectorClear(ent->avelocity);
+        } else {
+            // nothing to grip - a mine landing on top of a mover just pops
+            if (plane->normal[2] > 0.7f) {
+                Prox_Explode(ent);
+                return;
+            }
+            return;
+        }
+    }
+
+    if (gi.pointcontents(ent->s.origin) & (CONTENTS_LAVA | CONTENTS_SLIME)) {
+        Prox_Explode(ent);
+        return;
+    }
+
+    vectoangles(plane->normal, dir);
+    AngleVectors(dir, forward, right, up);
+
+    field = G_Spawn();
+    VectorCopy(ent->s.origin, field->s.origin);
+    VectorSet(field->mins, -PROX_BOUND_SIZE, -PROX_BOUND_SIZE, -PROX_BOUND_SIZE);
+    VectorSet(field->maxs,  PROX_BOUND_SIZE,  PROX_BOUND_SIZE,  PROX_BOUND_SIZE);
+    field->movetype = MOVETYPE_NONE;
+    field->solid = SOLID_TRIGGER;
+    field->owner = ent;
+    field->classname = "prox_field";
+    field->teammaster = ent;
+    gi.linkentity(field);
+
+    VectorClear(ent->velocity);
+    VectorClear(ent->avelocity);
+
+    // stand it up off the surface it stuck to
+    dir[PITCH] += 90;
+    VectorCopy(dir, ent->s.angles);
+    ent->takedamage = DAMAGE_AIM;
+    ent->movetype = movetype;
+    ent->die = prox_die;
+    ent->teamchain = field;
+    ent->health = PROX_HEALTH;
+    ent->nextthink = level.framenum;
+    ent->think = prox_open;
+    ent->touch = NULL;
+    ent->solid = SOLID_BBOX;
+
+    gi.linkentity(ent);
+}
+
+void Prox_Think(edict_t *self)
+{
+    vec3_t  dir;
+
+    if (self->timestamp <= level.framenum) {
+        Prox_Explode(self);
+        return;
+    }
+
+    // point the mine along its arc while it flies
+    VectorCopy(self->velocity, dir);
+    VectorNormalize(dir);
+    vectoangles(dir, self->s.angles);
+    self->s.angles[PITCH] -= 90;
+    self->nextthink = level.framenum + 1;
+}
+
+void fire_prox(edict_t *self, vec3_t start, vec3_t aimdir, int prox_damage_multiplier, int speed)
+{
+    edict_t *prox;
+    vec3_t  dir;
+    vec3_t  forward, right, up;
+    float   scale;
+
+    vectoangles(aimdir, dir);
+    AngleVectors(dir, forward, right, up);
+
+    prox = G_Spawn();
+    VectorCopy(start, prox->s.origin);
+    VectorScale(aimdir, speed, prox->velocity);
+    scale = 200 + crandom() * 10.0f;
+    VectorMA(prox->velocity, scale, up, prox->velocity);
+    scale = crandom() * 10.0f;
+    VectorMA(prox->velocity, scale, right, prox->velocity);
+
+    VectorCopy(dir, prox->s.angles);
+    prox->s.angles[PITCH] -= 90;
+    prox->movetype = MOVETYPE_BOUNCE;
+    prox->solid = SOLID_BBOX;
+    prox->s.effects |= EF_GRENADE;
+    prox->flags |= FL_MECHANICAL;
+    prox->clipmask = MASK_SHOT | CONTENTS_LAVA | CONTENTS_SLIME;
+    prox->s.renderfx |= RF_IR_VISIBLE;
+    VectorSet(prox->mins, -6, -6, -6);
+    VectorSet(prox->maxs, 6, 6, 6);
+    prox->s.modelindex = gi.modelindex("models/weapons/g_prox/tris.md2");
+    prox->owner = self;
+    prox->teammaster = self;
+    prox->touch = prox_land;
+    prox->think = Prox_Think;
+    prox->nextthink = level.framenum;
+    prox->dmg = PROX_DAMAGE * prox_damage_multiplier;
+    prox->classname = "prox_mine";
+    prox->svflags |= SVF_DAMAGEABLE;
+
+    switch (prox_damage_multiplier) {
+    case 2:  prox->timestamp = level.framenum + 30.0f * BASE_FRAMERATE; break;
+    case 4:  prox->timestamp = level.framenum + 15.0f * BASE_FRAMERATE; break;
+    case 8:  prox->timestamp = level.framenum + 10.0f * BASE_FRAMERATE; break;
+    default: prox->timestamp = level.framenum + PROX_TIME_TO_LIVE * BASE_FRAMERATE; break;
+    }
+
+    gi.linkentity(prox);
+}
+
+/*
 =================
 fire_beams / fire_heatbeam
 
@@ -2119,6 +2481,48 @@ void tracker_pain_daemon_think(edict_t *self)
     }
 
     if (self->enemy->health > 0) {
+        // ROGUE/rerelease only shove the victim ONCE, on impact, and let the
+        // resulting velocity carry it. That reads as a real throw there; here
+        // a monster recovers from it almost immediately - SV_movestep drives
+        // the body by ORIGIN on the monster's own 10hz think, so the next
+        // think largely walks the knockback off - and Matt's report was that
+        // the target "moves back a little bit but it's not the same".
+        //
+        // So the shell keeps pushing for as long as it lasts, along the
+        // direction the bolt was travelling, which is what the effect looks
+        // like it should do. g_tracker_drag 0 restores the single-impulse
+        // behaviour exactly.
+        //
+        // Monsters only. The impact knockback already applies to players and
+        // a sustained shove would be fighting them for control of their own
+        // movement for half a second.
+        if ((self->enemy->svflags & SVF_MONSTER) && !self->enemy->client
+            && g_tracker_drag->value > 0
+            && VectorLength(self->movedir) > 0) {
+            vec3_t push;
+
+            // MOVING THE ORIGIN, NOT THE VELOCITY, AND THAT IS DELIBERATE.
+            // Adding to velocity does nothing here: measured on a gladiator,
+            // the victim's origin did not shift by a single unit over the
+            // whole half second while its velocity read a steady 89 - a
+            // MOVETYPE_STEP monster is driven by SV_movestep from its own
+            // think, which walks the shove off before SV_Physics_Step can
+            // integrate it. That is why rogue's impact knockback only ever
+            // nudges a monster here and reads nothing like the rerelease.
+            //
+            // SV_PushEntity traces the move with the monster's own bounding
+            // box, so it stops at walls instead of shoving anyone through
+            // one, and links the entity for us.
+            VectorScale(self->movedir, g_tracker_drag->value * FRAMETIME, push);
+            push[2] += g_tracker_lift->value * FRAMETIME;
+
+            SV_PushEntity(self->enemy, push);
+
+            // the daemon can outlive the victim being freed by an impact
+            if (!self->inuse || !self->enemy->inuse)
+                return;
+        }
+
         T_Damage(self->enemy, self, self->owner, vec3_origin, self->enemy->s.origin,
                  pain_normal, self->dmg, 0, TRACKER_DAMAGE_FLAGS, MOD_TRACKER);
 
@@ -2149,7 +2553,7 @@ void tracker_pain_daemon_think(edict_t *self)
     }
 }
 
-static void tracker_pain_daemon_spawn(edict_t *owner, edict_t *enemy, int damage)
+static void tracker_pain_daemon_spawn(edict_t *owner, edict_t *enemy, int damage, const vec3_t dir)
 {
     edict_t *daemon;
 
@@ -2164,6 +2568,11 @@ static void tracker_pain_daemon_spawn(edict_t *owner, edict_t *enemy, int damage
     daemon->owner = owner;
     daemon->enemy = enemy;
     daemon->dmg = damage;
+    // the way the bolt was going, so the shell can keep shoving that way
+    if (dir) {
+        VectorCopy(dir, daemon->movedir);
+        VectorNormalize(daemon->movedir);
+    }
 }
 
 static void tracker_explode(edict_t *self, cplane_t *plane)
@@ -2204,7 +2613,7 @@ void tracker_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *s
                 damagetime = ((float)self->dmg) * FRAMETIME;
                 damagetime = damagetime / TRACKER_DAMAGE_TIME;
 
-                tracker_pain_daemon_spawn(self->owner, other, (int)damagetime);
+                tracker_pain_daemon_spawn(self->owner, other, (int)damagetime, self->velocity);
             } else {    // lots of damage (almost autogib) for dead bodies
                 T_Damage(other, self, self->owner, self->velocity, self->s.origin,
                          plane ? plane->normal : vec3_origin, self->dmg * 4, self->dmg * 3,
@@ -2440,6 +2849,14 @@ void Trap_Think(edict_t *ent)
         if (target == ent)
             continue;
         if (!(target->svflags & SVF_MONSTER) && !target->client)
+            continue;
+        // [Q2RTX] rerelease parity: OUTSIDE DEATHMATCH THE TRAP IGNORES PLAYERS.
+        // Ours pulled the thrower in, which is what the original xatrix code
+        // does and what this tree inherited; the rerelease added this gate
+        // (`if (!deathmatch->integer && target->client) continue;` in
+        // xatrix/g_xatrix_weapon.cpp Trap_Think) so the trap is a monster
+        // grinder in single player and only a player hazard in deathmatch.
+        if (!deathmatch->value && target->client)
             continue;
         if (target->health <= 0)
             continue;

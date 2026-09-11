@@ -83,6 +83,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FL_POWER_ARMOR          0x00001000  // power armor (if any) is active
 #define FL_MECHANICAL           0x00002000  // ROGUE - bleeds sparks, not blood
 #define FL_FLASHLIGHT           0x00400000  // rerelease - player flashlight is on
+#define FL_DISGUISED            0x00800000  // ROGUE - trigger_disguise; monsters do not acquire you
 #define FL_RESPAWN              0x80000000  // used for item respawning
 
 
@@ -123,7 +124,9 @@ typedef enum {
     AMMO_MAGSLUG,
     AMMO_TESLA,
     AMMO_DISRUPTOR,
-    AMMO_TRAP
+    AMMO_TRAP,
+    AMMO_FLECHETTES,
+    AMMO_PROX
 } ammo_t;
 
 
@@ -183,6 +186,19 @@ typedef enum {
 // [rerelease] this monster flies on SV_alternate_flystep, a velocity-driven
 // hover model, instead of id's teleport-the-bbox flystep. See m_move.c.
 #define AI_ALTERNATE_FLY        0x02000000
+
+// ROGUE: not a real AI state - the widow uses it purely as a one-shot
+// message from her blocked handler to her attack chooser, meaning "you got
+// stuck, strongly prefer spawning stalkers". Set and cleared in the same
+// pair of calls, never persistent.
+#define AI_BLOCKED              0x04000000
+
+// ROGUE/rerelease: this monster has lost the player and is walking a chain of
+// hint_path nodes to try to get back to them. It is a full override of ai_run
+// - while it is set the monster steers at monsterinfo.goal_hint and ignores
+// its enemy - so every flag that also wants to pick a goal is cleared when it
+// goes on. See g_rogue.c.
+#define AI_HINT_PATH            0x08000000
 
 //monster attack state
 #define AS_STRAIGHT             1
@@ -306,6 +322,8 @@ typedef struct {
 #define WEAP_CHAINFIST          15
 #define WEAP_DISRUPTOR          16
 #define WEAP_PLASMA             17
+#define WEAP_ETFRIFLE           18
+#define WEAP_PROXLAUNCHER       19
 
 typedef struct gitem_s {
     char        *classname; // spawning name
@@ -680,6 +698,14 @@ typedef struct {
     int         power_armor_type;
     int         power_armor_power;
 
+    // ROGUE: the widow MIRRORS the player's powerups onto herself, so that
+    // picking up a quad in her arena does not trivialise the fight - on the
+    // harder skills she quads (or doubles) her own damage for the same
+    // window, and takes a power shield with it. Framenums, 0 = inactive.
+    int         quad_framenum;
+    int         double_framenum;
+    int         invincible_framenum;
+
     // ROGUE/rerelease: the jump system.  drop_height / jump_height are how far
     // down or up this monster will accept a jump for; 0 disables that
     // direction.  jump_framenum is both the "do not try again yet" cooldown and
@@ -773,6 +799,14 @@ typedef struct {
     bool        fly_thrusters;
     int         fly_recovery_framenum;
     vec3_t      fly_recovery_dir;
+
+    // ROGUE hint paths (g_rogue.c).  goal_hint is the node on the chain that
+    // the monster is ultimately trying to reach - the one nearest its enemy -
+    // as opposed to movetarget, which is only the next node along.
+    // last_hint_framenum throttles the search, which walks every hint_path on
+    // the map and is far too expensive to run every frame.
+    edict_t     *goal_hint;
+    int         last_hint_framenum;
 } monsterinfo_t;
 
 
@@ -847,7 +881,15 @@ extern  int snd_fry;
 #define MOD_BLASTER2        43
 #define MOD_HEATBEAM        44
 #define MOD_TESLA           45
+#define MOD_PROX            46
+#define MOD_NUKE            47
+#define MOD_VENGEANCE_SPHERE 48
+#define MOD_HUNTER_SPHERE   49
+#define MOD_DEFENDER_SPHERE 50
 #define MOD_TRACKER         51
+#define MOD_DOPPLE_EXPLODE  53
+#define MOD_DOPPLE_VENGEANCE 54
+#define MOD_DOPPLE_HUNTER   55
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -887,6 +929,12 @@ extern  cvar_t  *sv_maxvelocity;
 
 extern  cvar_t  *gun_x, *gun_y, *gun_z;
 extern  cvar_t  *sv_rollspeed;
+// ROGUE disruptor: how hard the shell keeps shoving its victim away each
+// think while the bubble lasts. 0 restores rogue's single impact impulse.
+extern  cvar_t  *g_tracker_drag;
+extern  cvar_t  *g_tracker_lift;
+// g_phys.c - traced move of one entity by `push`, honouring geometry.
+trace_t SV_PushEntity(edict_t *ent, vec3_t push);
 extern  cvar_t  *sv_rollangle;
 
 extern  cvar_t  *run_pitch;
@@ -986,6 +1034,9 @@ void Cmd_Score_f(edict_t *ent);
 //
 void PrecacheItem(gitem_t *it);
 void InitItems(void);
+extern int weapon_cycle[MAX_ITEMS];
+extern int weapon_cycle_pos[MAX_ITEMS];
+extern int weapon_cycle_count;
 void SetItemNames(void);
 gitem_t *FindItem(char *pickup_name);
 gitem_t *FindItemByClassname(char *classname);
@@ -1016,6 +1067,8 @@ typedef enum {
 
 stuck_result_t G_FixStuckObject(edict_t *self, vec3_t check, int mask);
 void    G_ProjectSource(const vec3_t point, const vec3_t distance, const vec3_t forward, const vec3_t right, vec3_t result);
+void    G_ProjectSource2(const vec3_t point, const vec3_t distance, const vec3_t forward, const vec3_t right, const vec3_t up, vec3_t result);
+int     CountPlayers(void);
 edict_t *G_Find(edict_t *from, int fieldofs, char *match);
 edict_t *findradius(edict_t *from, vec3_t org, float rad);
 edict_t *G_PickTarget(char *targetname);
@@ -1045,6 +1098,14 @@ bool OnSameTeam(edict_t *ent1, edict_t *ent2);
 bool CanDamage(edict_t *targ, edict_t *inflictor);
 void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t dir, vec3_t point, const vec3_t normal, int damage, int knockback, int dflags, int mod);
 void T_RadiusDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t *ignore, float radius, int mod);
+// rogue's A-M bomb blast: no line-of-sight trace, and a flat-kill inner zone.
+void T_RadiusNukeDamage(edict_t *inflictor, edict_t *attacker, float damage, edict_t *ignore, float radius, int mod);
+// Defined in g_combat.c and used there without a prototype until the prox mine
+// needed it. It returns BOOL - without this declaration a caller in another
+// translation unit assumes int and reads a full register, so the byte-wide
+// return comes back with garbage in the high bits and the test can go true at
+// random. That would have made prox mines refuse to arm.
+bool CheckTeamDamage(edict_t *targ, edict_t *attacker);
 
 // damage flags
 #define DAMAGE_RADIUS           0x00000001  // damage was indirect
@@ -1083,6 +1144,8 @@ void dabeam_hit(edict_t *self);
 void monster_fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int flashtype);
 void monster_fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype);
 void monster_fire_railgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int flashtype);
+void monster_fire_heatbeam(edict_t *self, vec3_t start, vec3_t dir, vec3_t offset, int damage, int kick, int flashtype);
+void monster_fire_tracker(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, edict_t *enemy, int flashtype);
 void monster_fire_bfg(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int kick, float damage_radius, int flashtype);
 void M_droptofloor(edict_t *ent);
 void monster_think(edict_t *self);
@@ -1214,6 +1277,13 @@ void ai_charge(edict_t *self, float dist);
 int range(edict_t *self, edict_t *other);
 
 void FoundTarget(edict_t *self);
+void HuntTarget(edict_t *self);
+
+// ROGUE hint paths - g_rogue.c
+extern int hint_paths_present;
+bool monsterlost_checkhint(edict_t *self);
+void hintpath_stop(edict_t *self);
+void InitHintPaths(void);
 bool infront(edict_t *self, edict_t *other);
 bool inback(edict_t *self, edict_t *other);
 bool below(edict_t *self, edict_t *other);
@@ -1233,6 +1303,81 @@ void fire_bullet(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kic
 void fire_shotgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int hspread, int vspread, int count, int mod);
 void fire_blaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
 void fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int kick);
+
+// rogue's ETF rifle. fire_flechette already existed here for the gun commander,
+// so the gun itself is only the item plus this think.
+void Weapon_ETF_Rifle(edict_t *ent);
+
+// ROGUE POWER SPHERES (g_sphere.c). The spawnflags double as the sphere's
+// type and the HUD reads them back off the entity, so they live in the
+// entity's spawnflags rather than a field of their own. DOPPLEGANGER sits far
+// away from the type bits so it can be ORed onto any of them.
+#define SPHERE_DEFENDER         0x0001
+#define SPHERE_HUNTER           0x0002
+#define SPHERE_VENGEANCE        0x0004
+#define SPHERE_DOPPLEGANGER     0x10000
+#define SPHERE_TYPE             (SPHERE_DEFENDER | SPHERE_HUNTER | SPHERE_VENGEANCE)
+
+// All of these must stay NON-static so genptr.py can reach them for the
+// savegame pointer table.
+void sphere_think_explode(edict_t *self);
+void sphere_explode(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+void sphere_if_idle_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+void vengeance_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+void hunter_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+void hunter_pain(edict_t *self, edict_t *other, float kick, int damage);
+void defender_pain(edict_t *self, edict_t *other, float kick, int damage);
+void vengeance_pain(edict_t *self, edict_t *other, float kick, int damage);
+void defender_think(edict_t *self);
+void hunter_think(edict_t *self);
+void vengeance_think(edict_t *self);
+edict_t *Sphere_Spawn(edict_t *owner, int spawnflags);
+void Own_Sphere(edict_t *self, edict_t *sphere);
+void Defender_Launch(edict_t *self);
+void Hunter_Launch(edict_t *self);
+void Vengeance_Launch(edict_t *self);
+void Use_Defender(edict_t *ent, gitem_t *item);
+void Use_Hunter(edict_t *ent, gitem_t *item);
+void Use_Vengeance(edict_t *ent, gitem_t *item);
+
+// ROGUE DOPPELGANGER (g_rogue_items.c). Non-static for genptr.py.
+void doppleganger_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+void doppleganger_pain(edict_t *self, edict_t *other, float kick, int damage);
+void doppleganger_timeout(edict_t *self);
+void body_think(edict_t *self);
+void fire_doppleganger(edict_t *ent, vec3_t start, vec3_t aimdir);
+void Use_Doppleganger(edict_t *ent, gitem_t *item);
+bool Pickup_Doppleganger(edict_t *ent, edict_t *other);
+
+// ROGUE ONE-OFF ENTITIES (g_rogue.c). Non-static for genptr.py.
+void target_killplayers_use(edict_t *self, edict_t *other, edict_t *activator);
+void blacklight_think(edict_t *self);
+void trigger_disguise_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
+void trigger_disguise_use(edict_t *self, edict_t *other, edict_t *activator);
+
+// ROGUE POWERUPS (g_rogue_items.c).
+void Use_IR(edict_t *ent, gitem_t *item);
+void Use_Invisibility(edict_t *ent, gitem_t *item);
+
+// ROGUE A-M BOMB (g_rogue_items.c). Non-static for genptr.py.
+void Nuke_Quake(edict_t *self);
+void nuke_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+void Nuke_Think(edict_t *ent);
+void nuke_bounce(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf);
+void fire_nuke(edict_t *self, vec3_t start, vec3_t aimdir, int speed, int damage_modifier);
+void Use_Nuke(edict_t *ent, gitem_t *item);
+
+// rogue's prox launcher. The mine's whole lifecycle lives in g_weapon.c; these
+// must stay NON-static so genptr.py can reach them for the savegame table.
+void fire_prox(edict_t *self, vec3_t start, vec3_t aimdir, int prox_damage_multiplier, int speed);
+void Prox_Explode(edict_t *ent);
+void prox_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+void Prox_Field_Touch(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf);
+void prox_seek(edict_t *ent);
+void prox_open(edict_t *ent);
+void prox_land(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf);
+void Prox_Think(edict_t *self);
+void Weapon_ProxLauncher(edict_t *ent);
 void fire_blaster2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, bool hyper);
 void fire_ionripper(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
 void fire_blueblaster(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect);
@@ -1338,6 +1483,8 @@ void MoveClientToIntermission(edict_t *client);
 void G_SetStats(edict_t *ent);
 void G_SetSpectatorStats(edict_t *ent);
 void G_CheckChaseStats(edict_t *ent);
+void G_SendInventory(edict_t *ent);
+void G_ResetInventoryTracking(edict_t *ent);
 void ValidateSelectedItem(edict_t *ent);
 void DeathmatchScoreboardMessage(edict_t *client, edict_t *killer);
 
@@ -1413,6 +1560,8 @@ typedef struct {
     int         max_tesla;
     int         max_disruptor;
     int         max_trap;
+    int         max_flechettes;
+    int         max_prox;
 
     gitem_t     *weapon;
     gitem_t     *lastweapon;
@@ -1509,6 +1658,9 @@ struct gclient_s {
     int         invincible_framenum;
     int         breather_framenum;
     int         enviro_framenum;
+    // ROGUE powerups. Framenums, 0 = inactive, same convention as the rest.
+    int         ir_framenum;            // IR goggles: RDF_IRGOGGLES + a red tint
+    int         invisible_framenum;     // Cloak: translucent, and monsters lose you
 
     bool        grenade_blew_up;
     int         grenade_framenum;
@@ -1525,6 +1677,11 @@ struct gclient_s {
 
     edict_t     *chase_target;      // player we are chasing
     bool        update_chase;       // need to update chase info?
+
+    // ROGUE - the one power sphere this player currently has out. Only one is
+    // allowed at a time, so the item use functions check this before spawning
+    // another, and the sphere clears it when it explodes.
+    edict_t     *owned_sphere;
 };
 
 
@@ -1716,5 +1873,15 @@ struct edict_s {
     // the inverted path when gravityVector[2] > 0 - so an entity that never
     // touches it behaves exactly as it did before.
     vec3_t      gravityVector;
+
+    // ROGUE hint paths.  hint_chain is the permanent map-order link built once
+    // by InitHintPaths; the other two are scratch lists that
+    // monsterlost_checkhint rebuilds on every call, one filtered by what the
+    // MONSTER can see and one by what its ENEMY can see.  hint_chain_id says
+    // which of the map's chains this node belongs to.
+    edict_t     *hint_chain;
+    edict_t     *monster_hint_chain;
+    edict_t     *target_hint_chain;
+    int         hint_chain_id;
 };
 

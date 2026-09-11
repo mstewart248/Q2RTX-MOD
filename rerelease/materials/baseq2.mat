@@ -881,8 +881,10 @@ models/objects/dmspot/skin2:
 
 models/objects/explode/skin:
 	texture_base models/objects/explode/skin.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/flash/skin:
 	texture_base models/objects/flash/skin.pcx
@@ -1018,45 +1020,59 @@ models/objects/minelite/light2/skin:
 
 models/objects/r_explode/skin1:
 	texture_base models/objects/r_explode/skin1.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
 	specular_factor 0
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/r_explode/skin2:
 	texture_base models/objects/r_explode/skin2.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
 	specular_factor 0
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/r_explode/skin3:
 	texture_base models/objects/r_explode/skin3.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
 	specular_factor 0
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/r_explode/skin4:
 	texture_base models/objects/r_explode/skin4.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
 	specular_factor 0
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/r_explode/skin5:
 	texture_base models/objects/r_explode/skin5.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
 	specular_factor 0
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/r_explode/skin6:
 	texture_base models/objects/r_explode/skin6.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
 	specular_factor 0
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/r_explode/skin7:
 	texture_base models/objects/r_explode/skin7.pcx
-	emissive_factor 0.1
+	emissive_factor 3.0
 	base_factor 2.5
 	specular_factor 0
+	synth_emissive 1
+	emissive_threshold 32
 
 models/objects/rocket/skin:
 	texture_base models/objects/rocket/skin.pcx

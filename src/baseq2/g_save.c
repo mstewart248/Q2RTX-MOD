@@ -328,9 +328,25 @@ static const save_field_t entityfields[] = {
     I(monsterinfo.linkcount),
 
     V(gravityVector),
+
+    // ROGUE hint paths. hint_chain and hint_chain_id are rebuilt by
+    // InitHintPaths on load anyway, but the two scratch chains are live
+    // state during a search and cost nothing to carry.
+    E(hint_chain),
+    E(monster_hint_chain),
+    E(target_hint_chain),
+    I(hint_chain_id),
     V(offset),
     I(monsterinfo.power_armor_type),
     I(monsterinfo.power_armor_power),
+
+    // ROGUE: the widow's mirrored powerup timers. Without these in the table
+    // ReadLevel memsets them to 0, which is the same class of bug that made
+    // monsterinfo.base_height come back zero and left loaded monsters
+    // unshootable - see the savegame notes.
+    I(monsterinfo.quad_framenum),
+    I(monsterinfo.double_framenum),
+    I(monsterinfo.invincible_framenum),
 
     // Four more that this table was missing, found by diffing edict_s against
     // it.  death_count is how far the ludicrous-gibs escalation has got, so a
@@ -383,6 +399,12 @@ static const save_field_t entityfields[] = {
     I(monsterinfo.monster_slots),
     I(monsterinfo.monster_used),
     E(monsterinfo.commander),
+
+    // ROGUE hint paths. Without goal_hint a monster reloaded mid-path
+    // walks to the next node and then stops dead, because
+    // hint_path_touch cannot tell which way along the chain it was going.
+    E(monsterinfo.goal_hint),
+    FT(monsterinfo.last_hint_framenum),
 
     {0}
 #undef _OFS
@@ -490,6 +512,8 @@ static const save_field_t clientfields[] = {
     I(pers.max_tesla),
     I(pers.max_disruptor),
     I(pers.max_trap),
+    I(pers.max_flechettes),
+    I(pers.max_prox),
 
     T(pers.weapon),
     T(pers.lastweapon),
@@ -510,6 +534,11 @@ static const save_field_t clientfields[] = {
     I(ammo_index),
 
     T(newweapon),
+
+    // ROGUE power sphere. An EDICT pointer, so it needs the edict fixup rather
+    // than a plain copy - ReadLevel memsets every edict and a raw pointer would
+    // come back pointing into the dead process.
+    E(owned_sphere),
 
     I(damage_armor),
     I(damage_parmor),
@@ -556,6 +585,9 @@ static const save_field_t clientfields[] = {
     FT(invincible_framenum),
     FT(breather_framenum),
     FT(enviro_framenum),
+    // ROGUE powerups - absolute framenums, so FT()
+    FT(ir_framenum),
+    FT(invisible_framenum),
 
     O(grenade_blew_up),
     FT(grenade_framenum),
@@ -979,7 +1011,13 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // timers, and four stray edict fields, join entityfields.  The new save_ptrs[]
 // entries are APPENDED, so no existing index moves, but the entity field list
 // itself is positional too and a version-58 save would be read misaligned.
-#define SAVE_VERSION    59
+// 62: the missing rogue weapons and items are being added to itemlist[], and
+// they go in NEXT TO THEIR RELATIVES rather than at the end, because itemlist
+// order is what drives the weapon cycle. gclient_t::pers.inventory is saved as
+// a flat array indexed by ITEM_INDEX (= item - itemlist), so every insertion
+// shifts the index of everything after it and a version-61 save would restore
+// the wrong items. One bump covers the whole batch.
+#define SAVE_VERSION    62
 
 /*
 ============
@@ -1240,5 +1278,12 @@ void ReadLevel(const char *filename)
             }
         }
     }
+
+    // ROGUE - rebuild the hint path index. The per-node links above are saved
+    // fields and come back on their own, but hint_path_start[],
+    // num_hint_paths and hint_paths_present are file-static in g_rogue.c and
+    // do not. Without this a loaded rogue map has hint_paths_present == 0 and
+    // the whole system silently switches itself off.
+    InitHintPaths();
 }
 

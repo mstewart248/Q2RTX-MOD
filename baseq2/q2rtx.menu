@@ -421,6 +421,8 @@ begin blood
                 "impact every Nth splat" cl_blood_sound_skip 1 8 1
             range --status "shortest gap between two POOLING sounds, in milliseconds - the softer sound of a droplet joining a puddle. Much denser than the impact spacing on purpose, since this one reads as texture when it overlaps. 0 plays one per droplet, but a measured burst merged 668 times in a second, and 668 voices drop the gunfire rather than making the blood loud (cl_blood_sound_pool_gap)" \
                 "pooling spacing" cl_blood_sound_pool_gap 0 500 10
+            range --status "how quickly a blood sound fades with distance. Quake II's falloff is LINEAR, not inverse-square, so it reaches exact silence at a fixed range and low settings are nearly flat: 1 is audible to 2080 units, 2 to 1080, and 3 - the engine's short-range setting - to 413, which is the only one with a real gradient across the distances blood actually lands at. Distant splats are culled wherever this reaches silence, so raising it also stops far-off blood from using up the spacing above (cl_blood_sound_attn)" \
+                "distance falloff" cl_blood_sound_attn 1 3 0.5
         endif
             range --status "drag on a droplet running down a wall. Low values let it run a long way before stopping, high values stop it near the impact (cl_blood_slide)" \
                 "run-down drag" cl_blood_slide 0 10 0.5
@@ -708,13 +710,18 @@ end
 
 // rerelease only, pushed after the difficulty is chosen. 'newgame' plays the
 // intro cinematic and starts base1; 'newgame_mg2' drops straight into the Call
-// of the Machine hub with no cinematic. Both aliases live in default.cfg.
+// of the Machine hub with no cinematic. newgame_xatrix and newgame_rogue are
+// the two classic expansions - The Reckoning (xin.cin + xswamp) and Ground
+// Zero (rintro.cin + rmine1). ALL FOUR aliases live in rerelease/default.cfg;
+// the expansion pair was already defined there before the menu offered them.
 begin campaign
     background #212F3CD0
     style --compact
     banner m_banner_game
     action "quake ii" newgame
     action "call of the machine" newgame_mg2
+    action "the reckoning" newgame_xatrix
+    action "ground zero" newgame_rogue
 end
 
 begin loadgame

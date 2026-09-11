@@ -227,15 +227,17 @@ void trigger_teleport_touch(edict_t* self, edict_t* other, cplane_t* plane, csur
 
     gi.linkentity(other);
 
-    // [Paril-KEX] move sphere, if we own it
-    //if (other->client && other->client->owned_sphere)
-    //{
-    //    edict_t* sphere = other->client->owned_sphere;
-    //    sphere->s.origin = other->s.origin;
-    //    sphere->s.origin[2] = other->absmax[2];
-    //    sphere->s.angles[YAW] = other->s.angles[YAW];
-    //    gi.linkentity(sphere);
-    //}
+    // [Paril-KEX] drag our power sphere through the teleporter with us. Without
+    // this it keeps flying at the old exit and blows up on its timeout. Left
+    // commented until g_sphere.c existed to give owned_sphere a value.
+    if (other->client && other->client->owned_sphere) {
+        edict_t *sphere = other->client->owned_sphere;
+
+        VectorCopy(other->s.origin, sphere->s.origin);
+        sphere->s.origin[2] = other->absmax[2];
+        sphere->s.angles[YAW] = other->s.angles[YAW];
+        gi.linkentity(sphere);
+    }
 }
 
 void trigger_teleport_use(edict_t* self, edict_t* other, edict_t* activator) 

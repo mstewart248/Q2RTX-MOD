@@ -27,6 +27,10 @@ SET(SRC_BASEQ2
 	baseq2/g_trigger.c
 	baseq2/g_turret.c
 	baseq2/g_utils.c
+	baseq2/g_rogue.c
+	baseq2/g_sphere.c
+	baseq2/g_rogue_items.c
+	baseq2/g_xatrix.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c
 	baseq2/m_arachnid.c
@@ -38,11 +42,13 @@ SET(SRC_BASEQ2
 	baseq2/m_brain.c
 	baseq2/m_carrier.c
 	baseq2/m_chick.c
+	baseq2/m_fixbot.c
 	baseq2/m_flipper.c
 	baseq2/m_float.c
 	baseq2/m_flyer.c
 	baseq2/m_gekk.c
 	baseq2/m_gladiator.c
+	baseq2/m_guardian.c
 	baseq2/m_guncmdr.c
 	baseq2/m_gunner.c
 	baseq2/m_hover.c
@@ -57,6 +63,8 @@ SET(SRC_BASEQ2
 	baseq2/m_stalker.c
 	baseq2/m_supertank.c
 	baseq2/m_turret.c
+	baseq2/m_widow.c
+	baseq2/m_widow2.c
 	baseq2/m_tank.c
 	baseq2/p_client.c
 	baseq2/p_hud.c

@@ -311,6 +311,10 @@ void CL_MuzzleFlash(void)
         VectorSet(dl->color, 0.9f, 0.7f, 0);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/nail1.wav"), volume, ATTN_NORM, 0);
         break;
+    case MZ_PROX:
+        VectorSet(dl->color, 1, 1, 0);
+        S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/proxlr1a.wav"), volume, ATTN_NORM, 0);
+        break;
     case MZ_SHOTGUN2:
         VectorSet(dl->color, 1, 1, 0);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/shotg2.wav"), volume, ATTN_NORM, 0);
@@ -897,6 +901,7 @@ static cvar_t *cl_blood_sound_gap = NULL;
 static cvar_t *cl_blood_sound_pool_gap = NULL;
 static cvar_t *cl_blood_sound_skip = NULL;
 static cvar_t *cl_blood_sound_dist = NULL;
+static cvar_t *cl_blood_sound_attn = NULL;
 static cvar_t *cl_blood_permanent = NULL;
 static cvar_t *cl_blood_model_collision = NULL;
 static cvar_t *cl_blood_flesh_damp = NULL;
@@ -1420,7 +1425,36 @@ void FX_Init(void)
     // Beyond this many units a landing droplet makes no sound at all. Distance
     // attenuation would make it inaudible anyway, but it would still take a
     // voice and still count against the gap above, silencing a nearer impact.
+    //
+    // NOT the only cull any more: CL_BloodSoundRange takes the tighter of this
+    // and the distance the attenuation below actually reaches silence at, so
+    // this value binding is now the exception rather than the rule.
     cl_blood_sound_dist = Cvar_Get("cl_blood_sound_dist", "1200", CVAR_ARCHIVE);
+
+    // HOW FAST THE SPLAT FALLS OFF WITH DISTANCE, as a Quake II ATTN_ value.
+    //
+    // This was ATTN_NORM, and ATTN_NORM is far too long-range for a droplet.
+    // Both mixers use the same LINEAR law - AL_LINEAR_DISTANCE_CLAMPED in
+    // sound/al.c and the identical arithmetic by hand in S_SpatializeOrigin -
+    // which is gain = 1 - dist_mult * (dist - SOUND_FULLVOLUME), reaching zero
+    // at 80 + 1/dist_mult units and NOT the inverse-square curve the phrase
+    // "falls off with distance" suggests. At ATTN_NORM that zero is 2080 units,
+    // so across the 80-600 units where blood actually lands the gain only moves
+    // 1.0 -> 0.74. A 2.6 dB spread over the entire plausible range is why the
+    // sound read as coming from nowhere even though it was already positioned
+    // correctly at the impact point.
+    //
+    // ATTN_STATIC (3) puts the zero at 413 units instead, which is a real
+    // gradient over the distances involved. Lower it toward 1 for the old
+    // near-flat behaviour, and note ATTN_NONE (0) means no attenuation AND no
+    // stereo placement in both mixers - the "off" setting, not a quiet one.
+    //
+    // A float, and clamped to (0, 3] on purpose: S_IssuePlaysound tests
+    // `attenuation == ATTN_STATIC` EXACTLY and only then uses the 0.001 scale
+    // instead of 0.0005, so the mapping doubles discontinuously at 3 and then
+    // FOLDS BACK - attn 4 attenuates LESS than attn 3. Values above 3 are a
+    // footgun, so they are not offered.
+    cl_blood_sound_attn = Cvar_Get("cl_blood_sound_attn", "3", CVAR_ARCHIVE);
 
     // ONE SWITCH for the whole "leave the mess alone" idea - blood here, and
     // gibs, heads and debris in the game library, which registers the same name.
@@ -2030,12 +2064,51 @@ cl_blood_sound_gap for why that matters more than anything else here.
 // the window or one of the every-other-splat turns, because then the near impact
 // that actually matters is the one that gets dropped. That is the whole reason
 // cl_blood_sound_dist exists, and both filters below have to sit behind it.
+// cl_blood_sound_attn, clamped to the range where the engine's own attn ->
+// dist_mult mapping is still monotonic. See the cvar for why 3 is the ceiling.
+static float CL_BloodSoundAttn(void)
+{
+    const float attn = cl_blood_sound_attn->value;
+
+    if (attn <= 0.f)
+        return 0.f;             // ATTN_NONE - no falloff and no stereo placement
+
+    return min(attn, (float)ATTN_STATIC);
+}
+
+// How far away a droplet can be and still be worth a voice, in units. 0 means
+// unbounded.
+//
+// THE TIGHTER OF TWO LIMITS, and the attenuation's own is usually the tighter
+// one. Quake II's falloff is linear, so a sound does not merely get quiet with
+// distance, it goes EXACTLY silent at a distance S_AttenuationRange can name -
+// and past that point letting a droplet through would spend a voice and a slot
+// in cl_blood_sound_gap's window on nothing, which is the very failure
+// cl_blood_sound_dist was added to prevent.
+//
+// That cull was a flat 1200 while ATTN_NORM stayed audible out to 2080, so it
+// used to cut the sound off while it was still at 44% volume - an audible
+// pop-out rather than a fade. Deriving the range from the attenuation means the
+// cull now lands where the sound has already faded to nothing, whatever
+// cl_blood_sound_attn is set to, and cl_blood_sound_dist is left as a way to ask
+// for something tighter still.
+static float CL_BloodSoundRange(void)
+{
+    float range = max(0.f, cl_blood_sound_dist->value);
+    const float silent_at = S_AttenuationRange(CL_BloodSoundAttn());
+
+    if (silent_at > 0.f && (range <= 0.f || silent_at < range))
+        range = silent_at;
+
+    return range;
+}
+
 static bool CL_BloodSoundAudible(const vec3_t point)
 {
     if (!cl_blood_sound->integer)
         return false;
 
-    const float max_dist = cl_blood_sound_dist->value;
+    const float max_dist = CL_BloodSoundRange();
 
     if (max_dist <= 0.f)
         return true;
@@ -2067,8 +2140,11 @@ static void CL_BloodPlaySoundAt(const vec3_t point, qhandle_t sfx)
 {
     // entnum 0 with a world origin: a positioned sound that belongs to no
     // entity, so it will not cut off a sound another entity is playing.
+    // cl_blood_sound_attn, not ATTN_NORM - a droplet is a small quiet event and
+    // ATTN_NORM's linear falloff does not reach silence until 2080 units, which
+    // is nearly flat across the distances blood lands at. See the cvar.
     S_StartSound(point, 0, CHAN_AUTO, sfx,
-        cl_blood_sound_volume->value, ATTN_NORM, 0);
+        cl_blood_sound_volume->value, CL_BloodSoundAttn(), 0);
 }
 
 static void CL_BloodImpactSound(const vec3_t point)

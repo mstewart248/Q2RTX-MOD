@@ -90,6 +90,17 @@ void SP_target_crosslevel_target(edict_t *ent);
 void SP_target_crossunit_trigger(edict_t *ent);
 void SP_target_crossunit_target(edict_t *ent);
 void SP_target_laser(edict_t *self);
+void SP_object_repair(edict_t *self);
+void SP_target_mal_laser(edict_t *self);
+void SP_misc_transport(edict_t *self);
+void SP_misc_amb4(edict_t *self);
+void SP_hint_path(edict_t *self);
+// ROGUE one-offs (g_rogue.c), plus the coop spawn point in p_client.c
+void SP_target_killplayers(edict_t *self);
+void SP_target_blacklight(edict_t *self);
+void SP_target_orb(edict_t *self);
+void SP_trigger_disguise(edict_t *self);
+void SP_info_player_coop_lava(edict_t *self);
 void SP_target_help(edict_t *ent);
 void SP_target_actor(edict_t *ent);
 void SP_target_lightramp(edict_t *self);
@@ -135,8 +146,10 @@ void SP_misc_easterchick2(edict_t *self);
 void SP_monster_arachnid(edict_t *self);
 void SP_monster_berserk(edict_t *self);
 void SP_monster_gladiator(edict_t *self);
+void SP_monster_fixbot(edict_t *self);
 void SP_monster_gekk(edict_t *self);
 void SP_monster_gladb(edict_t *self);
+void SP_monster_guardian(edict_t *self);
 void SP_monster_gunner(edict_t *self);
 void SP_monster_guncmdr(edict_t *self);
 void SP_monster_infantry(edict_t *self);
@@ -170,6 +183,9 @@ void SP_misc_flare(edict_t *self);
 void SP_target_light(edict_t *self);
 void SP_dynamic_light(edict_t *self);
 void SP_monster_tank(edict_t *self);
+void SP_monster_tank_stand(edict_t *self);
+void SP_monster_widow(edict_t *self);
+void SP_monster_widow2(edict_t *self);
 void SP_monster_medic(edict_t *self);
 void SP_monster_flipper(edict_t *self);
 void SP_monster_chick(edict_t *self);
@@ -259,6 +275,24 @@ static const spawn_func_t spawn_funcs[] = {
     {"target_crossunit_trigger", SP_target_crossunit_trigger},
     {"target_crossunit_target", SP_target_crossunit_target},
     {"target_laser", SP_target_laser},
+    // xatrix's repairable object. The MAPS spell it func_object_repair
+    // (xcompnd1 places 6); "object_repair" is kept as an alias because
+    // that is what the QUAKED comment in the original source says.
+    {"func_object_repair", SP_object_repair},
+    {"object_repair", SP_object_repair},
+    {"target_mal_laser", SP_target_mal_laser},
+    {"misc_transport", SP_misc_transport},
+    {"misc_amb4", SP_misc_amb4},
+    // rogue monster navigation waypoints - 830 of them across Ground
+    // Zero. See g_rogue.c.
+    {"hint_path", SP_hint_path},
+
+    // ROGUE one-offs, all in g_rogue.c except the coop spawn point
+    {"target_killplayers", SP_target_killplayers},
+    {"target_blacklight", SP_target_blacklight},
+    {"target_orb", SP_target_orb},
+    {"trigger_disguise", SP_trigger_disguise},
+    {"info_player_coop_lava", SP_info_player_coop_lava},
     {"target_help", SP_target_help},
     {"target_actor", SP_target_actor},
     {"target_lightramp", SP_target_lightramp},
@@ -306,8 +340,10 @@ static const spawn_func_t spawn_funcs[] = {
     {"monster_arachnid", SP_monster_arachnid},
     {"monster_berserk", SP_monster_berserk},
     {"monster_gladiator", SP_monster_gladiator},
+    {"monster_fixbot", SP_monster_fixbot},
     {"monster_gekk", SP_monster_gekk},
     {"monster_gladb", SP_monster_gladb},
+    {"monster_guardian", SP_monster_guardian},
     {"monster_gunner", SP_monster_gunner},
     {"monster_guncmdr", SP_monster_guncmdr},
     {"monster_infantry", SP_monster_infantry},
@@ -340,6 +376,9 @@ static const spawn_func_t spawn_funcs[] = {
     {"target_light", SP_target_light},
     {"dynamic_light", SP_dynamic_light},
     {"monster_tank", SP_monster_tank},
+    {"monster_tank_stand", SP_monster_tank_stand},
+    {"monster_widow", SP_monster_widow},
+    {"monster_widow2", SP_monster_widow2},
     {"monster_tank_commander", SP_monster_tank},
     {"monster_medic", SP_monster_medic},
     {"monster_medic_commander", SP_monster_medic},   // ROGUE - same spawn function
@@ -494,6 +533,29 @@ static const spawn_field_t temp_fields[] = {
 
 /*
 ===============
+Item classname ALIASES
+
+The same gun is spelled differently by different maps: rogue called the plasma
+beam weapon_plasmabeam (mgu5m2, mguboss) and the rerelease calls it
+weapon_heatbeam (mgu3m2), and rogue's ETF rifle is weapon_nailgun in some of
+its own maps.
+
+These MUST be resolved to one item rather than answered with a second itemlist
+row. A duplicate row is a genuinely different gitem_t, so the player ends up
+carrying the weapon twice: it appears twice when cycling weapons, and the two
+copies do not share pickup state. That is exactly the bug this replaces.
+===============
+*/
+static const struct {
+    const char *from;
+    const char *to;
+} item_classname_aliases[] = {
+    { "weapon_heatbeam", "weapon_plasmabeam" },
+    { "weapon_nailgun",  "weapon_etf_rifle"  },
+};
+
+/*
+===============
 ED_CallSpawn
 
 Finds the spawn function for the entity and calls it
@@ -503,6 +565,7 @@ void ED_CallSpawn(edict_t *ent)
 {
     const spawn_func_t *s;
     gitem_t *item;
+    const char *lookup;
     int     i;
 
     if (!ent->classname) {
@@ -510,11 +573,19 @@ void ED_CallSpawn(edict_t *ent)
         return;
     }
 
+    lookup = ent->classname;
+    for (i = 0; i < q_countof(item_classname_aliases); i++) {
+        if (!strcmp(item_classname_aliases[i].from, lookup)) {
+            lookup = item_classname_aliases[i].to;
+            break;
+        }
+    }
+
     // check item spawn functions
     for (i = 0, item = itemlist ; i < game.num_items ; i++, item++) {
         if (!item->classname)
             continue;
-        if (!strcmp(item->classname, ent->classname)) {
+        if (!strcmp(item->classname, lookup)) {
             // found it
             SpawnItem(ent, item);
             return;
@@ -1180,6 +1251,12 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
 
     G_FindTeams();
 
+    // rogue hint paths have to be chained AFTER everything has spawned,
+    // since the chain is followed through target/targetname. On a map
+    // with no hint_path this clears hint_paths_present and the whole
+    // system costs nothing from then on.
+    InitHintPaths();
+
     PlayerTrail_Init();
 }
 
@@ -1456,9 +1533,22 @@ void SP_worldspawn(edict_t *ent)
     gi.soundindex("*pain100_1.wav");
     gi.soundindex("*pain100_2.wav");
 
-    // sexed models
-    // THIS ORDER MUST MATCH THE DEFINES IN g_local.h
-    // you can add more, max 15
+    // sexed models - the third-person ("vwep") weapon on the player model.
+    //
+    // THIS ORDER MUST MATCH THE WEAP_* DEFINES IN g_local.h. The client builds
+    // its list by scanning the config strings for names starting with '#'
+    // (CL_RegisterVWepModels), so an item's `weapmodel` is simply this
+    // registration order, 1-based. gitem_t->weapmodel indexes THAT list.
+    //
+    // A weapon whose index is past the end of the list is silently clamped to
+    // 0 in CL_AddPacketEntities - i.e. it wears the DEFAULT weapon model - so
+    // every mission-pack gun from the flare gun onwards used to show the wrong
+    // model in third person and in mirrors. There is no compile-time or
+    // runtime check tying these two lists together: if you add a WEAP_ define,
+    // ADD A LINE HERE IN THE SAME POSITION.
+    //
+    // The limit is MAX_CLIENTWEAPONMODELS (client.h, currently 20 => indices
+    // 0..19), and this list uses 19 of them.
     gi.modelindex("#w_blaster.md2");
     gi.modelindex("#w_shotgun.md2");
     gi.modelindex("#w_sshotgun.md2");
@@ -1470,6 +1560,17 @@ void SP_worldspawn(edict_t *ent)
     gi.modelindex("#w_hyperblaster.md2");
     gi.modelindex("#w_railgun.md2");
     gi.modelindex("#w_bfg.md2");
+    // WEAP_FLAREGUN (12). No vwep model exists for it in any pak, but the slot
+    // has to be held or every index after it shifts. It resolves to nothing and
+    // the client falls back to the default model for this one gun.
+    gi.modelindex("#w_flaregun.md2");
+    gi.modelindex("#w_ripper.md2");         // WEAP_BOOMER (13)
+    gi.modelindex("#w_phalanx.md2");        // WEAP_PHALANX (14)
+    gi.modelindex("#w_chainfist.md2");      // WEAP_CHAINFIST (15)
+    gi.modelindex("#w_disrupt.md2");        // WEAP_DISRUPTOR (16)
+    gi.modelindex("#w_plasma.md2");         // WEAP_PLASMA (17)
+    gi.modelindex("#w_etfrifle.md2");       // WEAP_ETFRIFLE (18)
+    gi.modelindex("#w_plauncher.md2");      // WEAP_PROXLAUNCHER (19)
 
     //-------------------
 

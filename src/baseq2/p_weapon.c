@@ -1835,6 +1835,170 @@ void Weapon_ChainFist(edict_t *ent)
 /*
 ======================================================================
 
+PROX LAUNCHER (rogue)
+
+Lobs a prox mine. fire_prox and the mine's whole lifecycle are in g_weapon.c.
+
+The pitch is clamped to -62.5 so that aiming straight up does not lob the mine
+out behind you - that clamp is a rerelease fix, not rogue behaviour, and it is
+worth keeping because the arc here is the same.
+
+======================================================================
+*/
+
+void weapon_prox_fire(edict_t *ent)
+{
+    vec3_t  start;
+    vec3_t  forward, right, up;
+    vec3_t  offset;
+    vec3_t  v;
+
+    VectorCopy(ent->client->v_angle, v);
+    if (v[PITCH] < -62.5f)
+        v[PITCH] = -62.5f;
+
+    AngleVectors(v, forward, right, up);
+
+    VectorScale(forward, -2, ent->client->kick_origin);
+    ent->client->kick_angles[0] = -1;
+
+    VectorSet(offset, 8, 0, ent->viewheight - 8);
+    P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
+
+    fire_prox(ent, start, forward, damage_multiplier, 600);
+
+    // Weapon_Generic1 does NOT advance the frame while gunframe is listed in
+    // fire_frames - the fire function owns its own stepping. Without this the
+    // launcher sits on frame 6 and lobs a mine every think, i.e. 10 a second
+    // until they detonate in your face. Repeating weapons like the ETF rifle
+    // set the frame explicitly instead; a single-shot one just steps past.
+    ent->client->ps.gunframe++;
+
+    gi.WriteByte(svc_muzzleflash);
+    gi.WriteShort(ent - g_edicts);
+    gi.WriteByte(MZ_PROX | is_silenced);
+    gi.multicast(ent->s.origin, MULTICAST_PVS);
+
+    PlayerNoise(ent, start, PNOISE_WEAPON);
+
+    if (!((int)dmflags->value & DF_INFINITE_AMMO))
+        ent->client->pers.inventory[ent->client->ammo_index] -= ent->client->pers.weapon->quantity;
+}
+
+void Weapon_ProxLauncher(edict_t *ent)
+{
+    static int  pause_frames[] = {34, 51, 59, 0};
+    static int  fire_frames[]  = {6, 0};
+
+    Weapon_Generic(ent, 5, 16, 59, 64, pause_frames, fire_frames, weapon_prox_fire);
+}
+
+/*
+======================================================================
+
+ETF RIFLE (rogue)
+
+Fires flechettes. `fire_flechette` already existed in this tree because the
+gun commander shoots them, so the gun is the item plus these two functions.
+
+The 6<->7 gunframe ping-pong is done HERE rather than by Weapon_Generic:
+Weapon_Generic1 does not advance the frame on a frame listed in fire_frames,
+so a repeating weapon owns its own frame stepping. That is the same contract
+the hyperblaster uses, and it is why the button test below has to set the
+frame to 8 (FRAME_FIRE_LAST + 1) to break out of the firing loop - without it
+the weapon would fire forever after one press.
+
+The rerelease calls this weapon_nailgun on some maps; that spelling is already
+resolved onto weapon_etf_rifle by item_classname_aliases[] in g_spawn.c.
+
+Damage 10 and speed 1150 are the RERELEASE values. Rogue shipped 750; per the
+scope rule the rerelease game gets rerelease behaviour.
+
+MZ_ETF_RIFLE_2 does not exist in this tree - the rerelease added it to
+alternate the flash between the two barrels. Both frames use MZ_ETF_RIFLE.
+
+======================================================================
+*/
+
+void weapon_etf_rifle_fire(edict_t *ent)
+{
+    vec3_t  start;
+    vec3_t  forward, right, up;
+    vec3_t  offset;
+    vec3_t  v;
+    int     damage = 10;
+    int     kick = 3;
+    int     i;
+
+    // Releasing the trigger leaves the fire frames, which lets Weapon_Generic
+    // walk the gun back to idle.
+    if (!(ent->client->buttons & BUTTON_ATTACK)) {
+        ent->client->ps.gunframe = 8;
+        return;
+    }
+
+    if (ent->client->ps.gunframe == 6)
+        ent->client->ps.gunframe = 7;
+    else
+        ent->client->ps.gunframe = 6;
+
+    if (ent->client->pers.inventory[ent->client->ammo_index] < ent->client->pers.weapon->quantity) {
+        ent->client->ps.gunframe = 8;
+        NoAmmoWeaponChange(ent);
+        return;
+    }
+
+    damage *= damage_multiplier;
+    kick *= damage_multiplier;
+
+    for (i = 0; i < 3; i++) {
+        ent->client->kick_origin[i] = crandom() * 0.85f;
+        ent->client->kick_angles[i] = crandom() * 0.85f;
+    }
+
+    // the two barrels sit a couple of units apart
+    if (ent->client->ps.gunframe == 6)
+        VectorSet(offset, 15, 8, -8);
+    else
+        VectorSet(offset, 15, 6, -8);
+
+    VectorAdd(ent->client->v_angle, ent->client->kick_angles, v);
+    AngleVectors(v, forward, right, up);
+    P_ProjectSource(ent, ent->s.origin, offset, forward, right, start);
+
+    fire_flechette(ent, start, forward, damage, 1150, kick);
+
+    gi.WriteByte(svc_muzzleflash);
+    gi.WriteShort(ent - g_edicts);
+    gi.WriteByte(MZ_ETF_RIFLE | is_silenced);
+    gi.multicast(ent->s.origin, MULTICAST_PVS);
+
+    PlayerNoise(ent, start, PNOISE_WEAPON);
+
+    if (!((int)dmflags->value & DF_INFINITE_AMMO))
+        ent->client->pers.inventory[ent->client->ammo_index] -= ent->client->pers.weapon->quantity;
+
+    ent->client->anim_priority = ANIM_ATTACK;
+    if (ent->client->ps.pmove.pm_flags & PMF_DUCKED) {
+        ent->s.frame = FRAME_crattak1 - (int)(random() + 0.25f);
+        ent->client->anim_end = FRAME_crattak9;
+    } else {
+        ent->s.frame = FRAME_attack1 - (int)(random() + 0.25f);
+        ent->client->anim_end = FRAME_attack8;
+    }
+}
+
+void Weapon_ETF_Rifle(edict_t *ent)
+{
+    static int  pause_frames[] = {18, 28, 0};
+    static int  fire_frames[]  = {6, 7, 0};
+
+    Weapon_Generic(ent, 4, 7, 37, 41, pause_frames, fire_frames, weapon_etf_rifle_fire);
+}
+
+/*
+======================================================================
+
 PLASMA BEAM / HEATBEAM (rogue)
 
 Registered under both classnames: rogue calls it weapon_plasmabeam, the

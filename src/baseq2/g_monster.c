@@ -146,7 +146,11 @@ void dabeam_hit(edict_t *self)
         if (!tr.ent)
             break;
 
-        if (tr.ent->takedamage && !(tr.ent->flags & FL_IMMUNE_LASER) && tr.ent != self->owner)
+        // A beam with dmg <= 0 is a HEALING beam - the fixbot's repair laser,
+        // which rogue marks with damage -1. It is drawn and traced exactly the
+        // same way, it just must not hurt what it is pointed at.
+        if (self->dmg > 0 && tr.ent->takedamage &&
+            !(tr.ent->flags & FL_IMMUNE_LASER) && tr.ent != self->owner)
             T_Damage(tr.ent, self, self->owner, self->movedir, tr.endpos,
                      vec3_origin, self->dmg, skill->value, DAMAGE_ENERGY, MOD_TARGET_LASER);
 
@@ -250,6 +254,48 @@ void monster_fire_railgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage
     gi.WriteShort(self - g_edicts);
     gi.WriteShort(flashtype);
     gi.WriteDir(aimdir);
+    gi.multicast(start, MULTICAST_PVS);
+}
+
+/*
+=================
+monster_fire_heatbeam
+
+rogue's plasma beam, fired by a monster. The widow's second stage sweeps it
+across the room. `fire_heatbeam`'s last argument is the monster flag, which
+widens the beam and makes it forgiving about aim - see g_weapon.c.
+=================
+*/
+void monster_fire_heatbeam(edict_t *self, vec3_t start, vec3_t dir, vec3_t offset,
+                           int damage, int kick, int flashtype)
+{
+    fire_heatbeam(self, start, dir, offset, damage, kick, true);
+
+    gi.WriteByte(svc_muzzleflash3);
+    gi.WriteShort(self - g_edicts);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
+    gi.multicast(start, MULTICAST_PVS);
+}
+
+/*
+=================
+monster_fire_tracker
+
+The disruptor bolt, fired by a monster. Passing an `enemy` makes it home;
+passing NULL sends it straight, which is what the widow does at long range
+after leading the shot with PredictAim.
+=================
+*/
+void monster_fire_tracker(edict_t *self, vec3_t start, vec3_t dir, int damage,
+                          int speed, edict_t *enemy, int flashtype)
+{
+    fire_tracker(self, start, dir, damage, speed, enemy);
+
+    gi.WriteByte(svc_muzzleflash3);
+    gi.WriteShort(self - g_edicts);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(dir);
     gi.multicast(start, MULTICAST_PVS);
 }
 

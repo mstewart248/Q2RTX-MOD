@@ -188,8 +188,38 @@ main()
 
 	if (found_intersection(ray_payload_geometry))
 	{
-		ray.t_max = ray_payload_geometry.hit_distance;
 	 	triangle = get_hit_triangle(ray_payload_geometry);	
+
+		// [Q2RTX] Draw the view weapon OVER your own plasma beam.
+		//
+		// CL_AddPlayerBeams starts the beam AT the muzzle, so its first 32-unit
+		// segment begins ~7 units from the eye and passes straight through the
+		// v_ model. A path tracer keeps the nearest hit, so the beam painted a
+		// bright cone across the gun. The GL renderer never had this problem:
+		// RF_DEPTHHACK crunches the weapon's depth range so the gun always wins,
+		// and that is what the rerelease shows.
+		//
+		// Do it for the beam ALONE rather than giving the weapon global priority,
+		// which would also punch the gun through walls - something this renderer
+		// deliberately does not do. Only pixels whose nearest hit is already a
+		// beam segment pay for the extra ray and the second triangle fetch, and
+		// the viewer-weapon BLAS holds one model. Monster beams carry the same
+		// flag, which is consistent: nothing belongs in front of your barrel.
+		if ((triangle.material_id & MATERIAL_FLAG_PLAYER_BEAM) != 0)
+		{
+			RayPayloadGeometry beam_hit = ray_payload_geometry;
+		
+			// ray.t_max is still PRIMARY_RAY_T_MAX here, so this sees the weapon
+			// at any depth. The clamp to the hit distance happens just below.
+			trace_geometry_ray(ray, true, AS_FLAG_VIEWER_WEAPON);
+		
+			if (found_intersection(ray_payload_geometry))
+				triangle = get_hit_triangle(ray_payload_geometry);
+			else
+				ray_payload_geometry = beam_hit; // no weapon behind it - keep the beam
+		}
+
+		ray.t_max = ray_payload_geometry.hit_distance;
 		
 		
 		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
@@ -487,7 +517,24 @@ main()
 		}
 	}
 
-	if (triangle.alpha < 1.0)
+	// Water and slime are ALREADY see-through - reflect_refract.rgen traces a
+	// refraction ray through them - and the generic translucency split below
+	// swaps the material kind to TRANSP_MODEL on one of the two checkerboard
+	// fields, which drops that field off the refraction path.  The result is
+	// that ANY alpha under 1 loses half the refraction and reads as a hard
+	// change rather than a fade, so entity alpha on a refractive surface is
+	// skipped outright.
+	//
+	// There is no meaningful place to put it instead: for a refracted pixel
+	// reflect_refract OVERWRITES IMG_PT_BASE_COLOR_A with the surface BEHIND
+	// the water, and the tint comes from the hardcoded MEDIUM_WATER extinction
+	// in water.glsl, not from the material.  A WATER surface therefore never
+	// shows its own albedo at all, which is also why base_factor does nothing
+	// on one.  A model that needs a visible texture AND working alpha wants
+	// kind TRANSP_MODEL, not kind WATER.
+	bool alpha_is_refractive = is_water(material_id) || is_slime(material_id);
+
+	if (triangle.alpha < 1.0 && !alpha_is_refractive)
 	{
 		// Translucent objects: split the path.
 		throughput *= split_weight;
@@ -510,7 +557,20 @@ main()
 	{
 		normal = get_water_normal(material_id, geo_normal, triangle.tangents[0], position, false);
 
-		if(abs(geo_normal.z) < 0.1)  // hack to detect actual water vs. vertical force fields
+		// "A vertical water surface is a force field" - and a force field is
+		// rendered as GLASS, which is the branch that does
+		// `throughput *= primary_base_color`.  THAT is what lets a force field
+		// show its own texture tinting whatever is behind it; plain water never
+		// multiplies by the albedo, so it only ever refracts.
+		//
+		// On a closed shape the normal test is meaningless - a sphere passes
+		// through every orientation, so only the narrow band facing sideways
+		// became glass and the model wore a hard stripe round its equator where
+		// the textured part met the untextured caps.  MATERIAL_FLAG_CURVED_WATER
+		// forces the whole surface down the force-field path, which is both
+		// uniform AND the look that was wanted.  Note the water normal above is
+		// applied either way, so the warp survives the switch to glass.
+		if(abs(geo_normal.z) < 0.1 || (material_id & MATERIAL_FLAG_CURVED_WATER) != 0)
 			material_id = (material_id & ~MATERIAL_KIND_MASK) | MATERIAL_KIND_GLASS;
 
 		

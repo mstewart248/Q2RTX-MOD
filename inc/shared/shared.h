@@ -985,7 +985,7 @@ enum {
 
 //ROGUE
     MZ_ETF_RIFLE = 30,
-    MZ_UNUSED,
+    MZ_PROX,            // 31 - was MZ_UNUSED; this is the slot rogue gives it
     MZ_SHOTGUN2,
     MZ_HEATBEAM,
     MZ_BLASTER2,
@@ -1142,6 +1142,11 @@ enum {
     // them, so this needed no new animation - only the two muzzles.  APPENDED.
     MZ2_SUPERTANK_GRENADE_1,
     MZ2_SUPERTANK_GRENADE_2,
+
+    // Rerelease: monster_guardian's hyperblaster arm.  Its two damage beams
+    // are monster_dabeam() entities and carry no MZ2 id of their own, so the
+    // guardian needs exactly this one.  APPENDED.
+    MZ2_GUARDIAN_BLASTER,
 };
 
 // Size of monster_flash_offset[], and the ceiling on MZ2_ ids.  svc_muzzleflash2

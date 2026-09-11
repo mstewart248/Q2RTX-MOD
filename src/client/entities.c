@@ -23,6 +23,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "baseq2/g_local.h"
 
 extern qhandle_t cl_mod_powerscreen;
+extern qhandle_t cl_mod_tracker_shell;
 extern qhandle_t cl_mod_laser;
 extern qhandle_t cl_mod_dmspot;
 extern qhandle_t cl_sfx_footsteps[4];
@@ -462,6 +463,13 @@ INTERPOLATE BETWEEN FRAMES TO GET RENDERING PARMS
 #define RESERVED_ENTITIY_GUN 1
 #define RESERVED_ENTITIY_TESTMODEL 2
 #define RESERVED_ENTITIY_COUNT 3
+// A client-side effect entity that shadows a packet entity needs an id of
+// its own, well clear of the packet ids (which are cent->id +
+// RESERVED_ENTITIY_COUNT, counting up from 1 as entities are created).
+#define RESERVED_ENTITIY_TRACKER_SHELL 0x20000000
+// Half-extent of models/items/spawngro frame 2 (grow03), measured off the
+// md2: x[-35.6,36.0] y[-35.7,35.6] z[-34.2,33.6].
+#define TRACKER_SHELL_MODEL_RADIUS 36.03f
 
 static int adjust_shell_fx(int renderfx)
 {
@@ -796,8 +804,11 @@ static void CL_AddPacketEntities(void)
                 V_AddLight(ent.origin, 225, 0.1f, 0.1f, 1.0f);
             else if (effects & EF_TAGTRAIL)
                 V_AddLight(ent.origin, 225, 1.0f, 1.0f, 0.0f);
+            // [Q2RTX] no negative light here either - see the note further
+            // down at the EF_TRACKERTRAIL trail branch. A light with negative
+            // radiance removes energy from the whole room in a path tracer.
             else if (effects & EF_TRACKERTRAIL)
-                V_AddLight(ent.origin, 225, -1.0f, -1.0f, -1.0f);
+                (void)0;
 
 			if (!cl.thirdPersonView)
 			{
@@ -836,11 +847,33 @@ static void CL_AddPacketEntities(void)
         }
 
         if (effects & EF_SPHERETRANS) {
+            // [Q2RTX] The monster-spawn sphere and friends. A MODEL has no
+            // BSP surface flags, so unlike the map's force fields - which are
+            // transparent because the brush carries SURF_TRANS66 - the only
+            // opacity lever here is this entity alpha, exposed as a cvar so it
+            // can be tuned by eye at runtime.
+            //
+            // This only does anything if the model's material is a kind that
+            // honours alpha, and the spawngro materials are NOT: they are
+            // `kind WATER` + `curved_water`, which the renderer sends down the
+            // GLASS path so the shell refracts and shows its own texture.
+            // Alpha on a model is broken in its own right too - the split
+            // rewrites the kind to TRANSP_MODEL, which is_transparent() does
+            // not match, so the see-through field is never traced and the
+            // model only darkens. Tune the shell with base_factor in
+            // rerelease/materials/rerelease.mat instead.
+            //
+            // There used to be a x2 here for EF_TRACKERTRAIL (the disruptor
+            // shell). With the clamp below that made every value from 0.5 up
+            // fully opaque, i.e. half the slider did nothing - tuning noise
+            // from when alpha was not being honoured at all. The cvar now means
+            // what it says on both effects.
             ent.flags |= RF_TRANSLUCENT;
-            if (effects & EF_TRACKERTRAIL)
-                ent.alpha = 0.6f;
-            else
-                ent.alpha = 0.3f;
+            ent.alpha = cl_spheretrans_alpha->value;
+            if (ent.alpha < 0.02f)
+                ent.alpha = 0.02f;
+            else if (ent.alpha > 1.0f)
+                ent.alpha = 1.0f;
         }
 
         // [rerelease] per-entity alpha (U_ALPHA). 0 is "unset", so an entity
@@ -1029,17 +1062,75 @@ static void CL_AddPacketEntities(void)
             } else if (effects & EF_TAGTRAIL) {
                 CL_TagTrail(cent->lerp_origin, ent.origin, 220);
                 V_AddLight(ent.origin, 225, 1.0f, 1.0f, 0.0f);
+            // [Q2RTX] THE DISRUPTOR'S THREE NEGATIVE LIGHTS ARE GONE.
+            //
+            // rogue asked for V_AddLight(..., -1, -1, -1) here - a light with
+            // NEGATIVE radiance. Under the software renderer that just
+            // subtracted from a lightmap and darkened a small patch. A path
+            // tracer has no such notion: the negative light is fed to
+            // V_AddSphereLight as a real emitter and removes energy from
+            // everything it reaches, so firing the disruptor blacked out half
+            // the room. That is what made the effect look broken.
+            //
+            // The darkening is supposed to come from the SHELL PARTICLES, and
+            // those already work: CL_Tracker_Shell spawns colour 0 (black) and
+            // pt_logic_particle blends premultiplied, so a black particle
+            // correctly darkens what is behind it.
             } else if (effects & EF_TRACKERTRAIL) {
-                if (effects & EF_TRACKER) {
-                    float intensity = 50 + (500 * (sin(cl.time / 500.0f) + 1.0f));
-                    V_AddLight(ent.origin, intensity, -1.0f, -1.0f, -1.0f);
-                } else {
-                    CL_Tracker_Shell(cent->lerp_origin);
-                    V_AddLight(ent.origin, 155, -1.0f, -1.0f, -1.0f);
+                if (!(effects & EF_TRACKER)) {
+                    // Wrap the shell around the BODY, not the origin. A
+                    // monster's origin is at its feet, so the old fixed
+                    // 40-unit sphere centred there sat half in the floor.
+                    // cent->mins/maxs come from the packed solid, so this
+                    // fits a flyer and a gladiator alike; if the box is
+                    // empty (never sent), fall back to rogue's constant.
+                    vec3_t  centre, size;
+                    float   radius = 40.0f;
+
+                    VectorCopy(cent->lerp_origin, centre);
+
+                    VectorSubtract(cent->maxs, cent->mins, size);
+                    if (size[0] > 0 || size[1] > 0 || size[2] > 0) {
+                        centre[0] += (cent->mins[0] + cent->maxs[0]) * 0.5f;
+                        centre[1] += (cent->mins[1] + cent->maxs[1]) * 0.5f;
+                        centre[2] += (cent->mins[2] + cent->maxs[2]) * 0.5f;
+                        radius = 0.5f * max(size[0], max(size[1], size[2]));
+                    }
+
+                    if (cl_tracker_bubble->integer && cl_mod_tracker_shell) {
+                        // The spawngro sphere instead of rogue's particle
+                        // cloud. Its material is the force-field recipe
+                        // (kind WATER + curved_water), so the shell refracts
+                        // the room and shows its own skin over it.
+                        //
+                        // A SEPARATE entity_t, zeroed here: `ent` is memset
+                        // once before the packet loop, so writing a model or
+                        // a scale into it would leak onto later entities in
+                        // the same frame - the misc_flare bug noted above.
+                        entity_t shell;
+
+                        memset(&shell, 0, sizeof(shell));
+                        shell.model = cl_mod_tracker_shell;
+                        VectorCopy(centre, shell.origin);
+                        VectorCopy(centre, shell.oldorigin);
+                        // frame 2 is grow03, the fully inflated sphere. The
+                        // grow animation belongs to the spawn effect, not here.
+                        shell.frame = shell.oldframe = 2;
+                        shell.backlerp = 0.0f;
+                        shell.scale = (radius * cl_tracker_bubble_scale->value)
+                                    / TRACKER_SHELL_MODEL_RADIUS;
+                        // Its own id, or it would fight the victim it is
+                        // wrapped around for a slot in the renderer's temporal
+                        // history and ghost.
+                        shell.id = RESERVED_ENTITIY_TRACKER_SHELL + cent->id;
+
+                        V_AddEntity(&shell);
+                    } else {
+                        CL_Tracker_Shell(centre, radius);
+                    }
                 }
             } else if (effects & EF_TRACKER) {
                 CL_TrackerTrail(cent->lerp_origin, ent.origin, 0);
-                V_AddLight(ent.origin, 200, -1, -1, -1);
             } else if (effects & EF_GREENGIB) {
                 CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
             } else if (effects & EF_IONRIPPER) {

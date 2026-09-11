@@ -566,6 +566,9 @@ extern cvar_t    *cl_explosion_frametime;
 extern cvar_t    *cl_dlight_hacks;
 extern cvar_t    *cl_blaster_color;
 extern cvar_t    *cl_ludicrous_gibs;
+extern cvar_t    *cl_spheretrans_alpha;
+extern cvar_t    *cl_tracker_bubble;
+extern cvar_t    *cl_tracker_bubble_scale;
 extern cvar_t    *cl_blood_spheres;
 extern cvar_t    *cl_blood_sphere_radius;
 
@@ -1086,7 +1089,7 @@ void CL_ParticleSteamEffect(const vec3_t org, const vec3_t dir, int color, int c
 void CL_TrackerTrail(const vec3_t start, const vec3_t end, int particleColor);
 void CL_TagTrail(const vec3_t start, const vec3_t end, int color);
 void CL_ColorFlash(const vec3_t pos, int ent, int intensity, float r, float g, float b);
-void CL_Tracker_Shell(const vec3_t origin);
+void CL_Tracker_Shell(const vec3_t centre, float radius);
 void CL_MonsterPlasma_Shell(const vec3_t origin);
 void CL_ColorExplosionParticles(const vec3_t org, int color, int run);
 void CL_ParticleSmokeEffect(const vec3_t org, const vec3_t dir, int color, int count, int magnitude);

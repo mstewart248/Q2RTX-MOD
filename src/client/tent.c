@@ -39,6 +39,11 @@ qhandle_t   cl_sfx_lightning;
 qhandle_t   cl_sfx_disrexp;
 
 qhandle_t   cl_mod_explode;
+// The disruptor's shell around a tracked victim. rogue drew that as a
+// cloud of black particles; this is the same sphere the monster-spawn
+// effect uses, scaled to the victim and rendered through the spawngro
+// material. See CL_AddPacketEntities' EF_TRACKERTRAIL branch.
+qhandle_t   cl_mod_tracker_shell;
 qhandle_t   cl_mod_smoke;
 qhandle_t   cl_mod_flash;
 qhandle_t   cl_mod_muzzleflash;
@@ -113,6 +118,7 @@ CL_RegisterTEntModels
 void CL_RegisterTEntModels(void)
 {
     cl_mod_explode = R_RegisterModel("models/objects/explode/tris.md2");
+    cl_mod_tracker_shell = R_RegisterModel("models/items/spawngro/tris.md2");
     cl_mod_smoke = R_RegisterModel("models/objects/smoke/tris.md2");
     cl_mod_flash = R_RegisterModel("models/objects/flash/tris.md2");
     // The rerelease muzzle flash is a 12-point STARBURST fan, not the ball that
@@ -935,6 +941,16 @@ static void CL_AddPlayerBeams(void)
         steps = ceil(d / model_length);
         len = (d - model_length) / (steps - 1);
 
+        // [Q2RTX] Do NOT slide the start of your own beam forward from here.
+        // The first 32-unit segment sits right against the near plane and is
+        // drawn hugely magnified, which looks like a bright blob over the gun -
+        // but that magnified segment IS what makes the beam read as coming out
+        // of the barrel, and the original draws it too. A forward nudge was
+        // tried (cl_beam_offset, 12 units) and it moved the visible start off
+        // the muzzle into mid-air; that is much worse. If the near segment is
+        // too hot, dim the material (models/proj/beam/skin emissive_factor),
+        // do not move the geometry.
+
         memset(&ent, 0, sizeof(ent));
         ent.model = b->model;
         ent.frame = framenum;
@@ -1618,7 +1634,11 @@ void CL_ParseTEnt(void)
         break;
 
     case TE_TRACKER_EXPLOSION:
-        CL_ColorFlash(te.pos1, 0, 150, -1, -1, -1);
+        // [Q2RTX] rogue flashed a NEGATIVE dlight here (-1,-1,-1, radius 150,
+        // 100 ms). The disruptor fires about ten times a second, so under the
+        // path tracer that was a near-continuous energy-removing light sitting
+        // on the victim - it blacked out half the room. The dark look comes
+        // from CL_ColorExplosionParticles and the tracker shell instead.
         CL_ColorExplosionParticles(te.pos1, 0, 1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_disrexp, 1, ATTN_NORM, 0);
         break;

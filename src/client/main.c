@@ -58,6 +58,9 @@ cvar_t  *cl_disable_explosions;
 cvar_t  *cl_dlight_hacks;
 cvar_t  *cl_blaster_color;
 cvar_t  *cl_ludicrous_gibs;
+cvar_t  *cl_spheretrans_alpha;
+cvar_t  *cl_tracker_bubble;
+cvar_t  *cl_tracker_bubble_scale;
 cvar_t  *cl_blood_spheres;
 cvar_t  *cl_blood_sphere_radius;
 cvar_t  *cl_quick_weapon_switch;
@@ -2707,7 +2710,6 @@ static const cmdreg_t c_client[] = {
     { "drop" }, { "info" }, { "prog" },
     { "give" }, { "god" }, { "notarget" }, { "noclip" },
     { "invuse" }, { "invprev" }, { "invnext" }, { "invdrop" },
-    { "weapnext" }, { "weapprev" },
 
     { NULL }
 };
@@ -2825,6 +2827,25 @@ static void CL_InitLocal(void)
     // apart. Registered here as well so the Options -> Effects toggle works at
     // the main menu, before any game library has been loaded.
     cl_ludicrous_gibs = Cvar_Get("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
+    // [Q2RTX] Opacity of EF_SPHERETRANS models (the monster-spawn sphere).
+    //
+    // LEAVE THIS AT 1 for anything whose material is "kind WATER".
+    // reflect_refract.rgen (~1039) does:
+    //     if (triangle.alpha < 1.0)
+    //         material_id = ... | transparency_kind;
+    // so ANY alpha below 1 strips MATERIAL_KIND_WATER off the model and
+    // swaps in TRANSP_MODEL - you lose the refraction and get a flat,
+    // opaque base texture. That is why this reads as binary: 1 is the
+    // see-through water look, anything less is solid.
+    //
+    // To show MORE of the sphere's own skin, raise base_factor on the
+    // material instead:  mat models/items/spawngro2/skin base_factor <n>
+    cl_spheretrans_alpha = Cvar_Get("cl_spheretrans_alpha", "1", CVAR_ARCHIVE);
+    // 1 = the disruptor wraps its victim in the spawngro sphere; 0 = rogue's
+    // original cloud of black particles.
+    cl_tracker_bubble = Cvar_Get("cl_tracker_bubble", "1", CVAR_ARCHIVE);
+    // How much bigger than the victim's own bounding sphere the shell sits.
+    cl_tracker_bubble_scale = Cvar_Get("cl_tracker_bubble_scale", "1.15", CVAR_ARCHIVE);
 
     // Leave gibs, debris and blood where they land. The game DLL registers the
     // same name in InitGame - one name, one object - and this copy exists so the

@@ -1114,9 +1114,34 @@ get_material(
 		if (dot(triangle.tangents[0], triangle.tangents[0]) > 0)
 		{
 			vec3 tangent = normalize(triangle.tangents * bary);
+
+			// The bitangent's sign belongs to THIS triangle's UV winding, not to
+			// the mesh.  A mirrored UV island winds the opposite way from its
+			// neighbours, so shading it with the mesh-wide MATERIAL_FLAG_HANDEDNESS
+			// bit (one bool per mesh, taken from whichever triangle happened to be
+			// first - see compute_missing_model_tangents in vkpt/models.c) inverts
+			// local_normal.y across the whole island and leaves a hard lighting
+			// seam along its boundary.  62 of the 136 rerelease md5 models have at
+			// least one mirrored island; the soldier's runs down the centre of his
+			// helmet.  Everything needed to get it right per triangle is already in
+			// the Triangle, so derive it here and ignore the flag.
+			//
+			// The 3D winding term is what makes this independent of whether a
+			// loader reversed its index order relative to the shading normal, so
+			// BSP, MD2 and MD5 geometry all land on the same answer.  A degenerate
+			// triangle gives 0 and is left unflipped, matching the CPU code that
+			// skipped those when accumulating the tangent.
+			vec2 duv0 = triangle.tex_coords[1] - triangle.tex_coords[0];
+			vec2 duv1 = triangle.tex_coords[2] - triangle.tex_coords[0];
+			vec3 dp0  = triangle.positions[1] - triangle.positions[0];
+			vec3 dp1  = triangle.positions[2] - triangle.positions[0];
+
+			float uv_winding = duv0.x * duv1.y - duv1.x * duv0.y;
+			float tri_facing = dot(cross(dp0, dp1), geo_normal);
+
 			vec3 bitangent = cross(geo_normal, tangent);
 
-			if ((triangle.material_id & MATERIAL_FLAG_HANDEDNESS) != 0)
+			if (uv_winding * tri_facing < 0)
 				bitangent = -bitangent;
 
 			normal = tangent * local_normal.x + bitangent * local_normal.y + geo_normal * local_normal.z;

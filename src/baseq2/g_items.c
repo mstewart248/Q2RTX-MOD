@@ -415,6 +415,23 @@ void Use_QuadFire(edict_t *ent, gitem_t *item)
 
 //======================================================================
 
+/*
+=================
+Use_Flashlight
+
+The Reckoning's item_flashlight (xswamp). The flashlight ITSELF already
+existed here - FL_FLASHLIGHT, STAT_FLASHLIGHT and V_Flashlight() came in
+with trigger_flashlight - so the item only has to toggle it.
+
+Unlike every other powerup this is NOT consumed: you keep the torch and
+switch it on and off, so the inventory count is deliberately left alone.
+=================
+*/
+void Use_Flashlight(edict_t *ent, gitem_t *item)
+{
+    P_ToggleFlashlight(ent, !(ent->flags & FL_FLASHLIGHT));
+}
+
 void Use_Breather(edict_t *ent, gitem_t *item)
 {
     ent->client->pers.inventory[ITEM_INDEX(item)]--;
@@ -548,6 +565,10 @@ bool Add_Ammo(edict_t *ent, gitem_t *item, int count)
         max = ent->client->pers.max_disruptor;
     else if (item->tag == AMMO_TRAP)
         max = ent->client->pers.max_trap;
+    else if (item->tag == AMMO_FLECHETTES)
+        max = ent->client->pers.max_flechettes;
+    else if (item->tag == AMMO_PROX)
+        max = ent->client->pers.max_prox;
     else
         return false;
 
@@ -1791,6 +1812,35 @@ gitem_t itemlist[] = {
         /* precache */ "items/protect.wav items/protect2.wav items/protect4.wav"
     },
 
+    /*QUAKED item_flashlight (.3 .3 1) (-16 -16 -16) (16 16 16)
+    The Reckoning's torch. One instance, in xswamp. Toggles FL_FLASHLIGHT,
+    which this tree already had from trigger_flashlight; it is not consumed.
+
+    NOTE the world model: models/items/flashlight/ ships an md5 here and NO
+    tris.md2, which works because the loader tries <dir>/md5/tris.md5mesh
+    first and MD5_LoneSkinInDir resolves the lone skin.png.
+    */
+    {
+        "item_flashlight",
+        Pickup_Powerup,
+        Use_Flashlight,
+        NULL,
+        NULL,
+        "items/pkup.wav",
+        "models/items/flashlight/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_torch",
+        /* pickup */    "Flashlight",
+        /* width */     2,
+        0,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "items/flashlight_on.wav items/flashlight_off.wav"
+    },
+
     /*QUAKED item_silencer (.3 .3 1) (-16 -16 -16) (16 16 16)
     */
     {
@@ -2303,39 +2353,313 @@ gitem_t itemlist[] = {
         /* precache */ "models/weapons/v_tesla2/tris.md2 weapons/teslaopen.wav weapons/hgrenb1a.wav weapons/hgrenb2a.wav models/weapons/g_tesla/tris.md2"
     },
 
-    /*QUAKED weapon_plasmabeam (.3 .3 1) (-16 -16 -16) (16 16 16)
-    Plasma Beam. Rogue's name for it; the rerelease calls the same gun
-    weapon_heatbeam and the MGU maps use both spellings, so both are registered
-    below against the same code.
+    /*QUAKED ammo_flechettes (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Flechettes - the ETF Rifle's ammo. 44 instances across the Ground Zero maps.
     */
     {
-        "weapon_plasmabeam",
+        "ammo_flechettes",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "misc/am_pkup.wav",
+        "models/ammo/am_flechette/tris.md2", 0,
+        NULL,
+        /* icon */      "a_flechettes",
+        /* pickup */    "Flechettes",
+        /* width */     3,
+        50,
+        NULL,
+        IT_AMMO,
+        0,
+        NULL,
+        AMMO_FLECHETTES,
+        /* precache */ ""
+    },
+
+    /*QUAKED ammo_prox (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Prox mines - the Prox Launcher's ammo. 87 instances across Ground Zero.
+    */
+    {
+        "ammo_prox",
+        Pickup_Ammo,
+        NULL,
+        Drop_Ammo,
+        NULL,
+        "misc/am_pkup.wav",
+        "models/ammo/am_prox/tris.md2", 0,
+        NULL,
+        /* icon */      "a_prox",
+        /* pickup */    "Prox",
+        /* width */     3,
+        5,
+        NULL,
+        IT_AMMO,
+        0,
+        NULL,
+        AMMO_PROX,
+        /* precache */ ""
+    },
+
+    /*QUAKED item_invisibility (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Cloak (rogue). 30 seconds of being translucent and untargetable - FindTarget
+    refuses to see you at all while it is up. Blinks over the last 3 seconds.
+
+    The rerelease also has a short window after activating, and after firing,
+    where a monster CAN still see you (invisibility_fade_time). That is not
+    ported; this is rogue's straight on/off behaviour.
+    */
+    {
+        "item_invisibility",
+        Pickup_Powerup,
+        Use_Invisibility,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/cloaker/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_cloaker",
+        /* pickup */    "Cloak",
+        /* width */     2,
+        300,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "items/protect.wav"
+    },
+
+    /*QUAKED item_ir_goggles (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Infrared goggles (rogue). 60 seconds of RDF_IRGOGGLES - monsters light up
+    through the dark - with a red tint on the view. 6 instances across the
+    Ground Zero maps.
+    */
+    {
+        "item_ir_goggles",
+        Pickup_Powerup,
+        Use_IR,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/goggles/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_ir",
+        /* pickup */    "IR Goggles",
+        /* width */     2,
+        60,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "misc/ir_start.wav"
+    },
+
+    /*QUAKED ammo_nuke (.3 .3 1) (-16 -16 -16) (16 16 16)
+    A-M Bomb (rogue). Drop it and run: 4 seconds of beeping, 6 of flashing and
+    screaming, then 10000 damage inside 512 units, falling off to 1024, through
+    walls - followed by a 3 second earthquake. Shootable once it starts
+    flashing, and one bomb will set off another.
+
+    It is filed under ammo_* because that is the classname the maps use, but it
+    behaves as a usable item, not as ammo for anything.
+    */
+    {
+        "ammo_nuke",
+        Pickup_Powerup,
+        Use_Nuke,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/weapons/g_nuke/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_nuke",
+        /* pickup */    "A-M Bomb",
+        /* width */     2,
+        180,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "weapons/nukewarn2.wav world/rumble.wav weapons/grenlx1a.wav weapons/hgrenb1a.wav weapons/hgrenb2a.wav items/damage3.wav"
+    },
+
+    /*QUAKED item_doppleganger (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Doppelganger (rogue). Drops a decoy copy of you; whoever shoots it gets a
+    hunter sphere (over 768 units away) or a vengeance sphere (closer) sent
+    after them, plus a 160-damage blast.
+
+    DEATHMATCH ONLY, as upstream - Pickup_Doppleganger refuses it in the
+    campaign even though two Ground Zero maps place one. See g_rogue_items.c.
+    */
+    {
+        "item_doppleganger",
+        Pickup_Doppleganger,
+        Use_Doppleganger,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/dopple/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_doppleganger",
+        /* pickup */    "Doppleganger",
+        /* width */     2,
+        90,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "models/objects/dopplebase/tris.md2 models/items/spawngro/tris.md2 medic_commander/monsterspawn1.wav"
+    },
+
+    /*QUAKED item_sphere_vengeance (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Vengeance sphere (rogue). Orbits your head doing nothing until you drop
+    below 25 health, then hunts down whoever did it. See g_sphere.c.
+    */
+    {
+        "item_sphere_vengeance",
+        Pickup_Powerup,
+        Use_Vengeance,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/vengnce/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_vengeance",
+        /* pickup */    "vengeance sphere",
+        /* width */     2,
+        60,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "spheres/v_idle.wav"
+    },
+
+    /*QUAKED item_sphere_hunter (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Hunter sphere (rogue). Idles until its owner dies, then vore-balls the
+    killer. The rerelease's "Sam Raimi cam" (riding the sphere) is deliberately
+    not ported - see the header of g_sphere.c.
+    */
+    {
+        "item_sphere_hunter",
+        Pickup_Powerup,
+        Use_Hunter,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/hunter/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_hunter",
+        /* pickup */    "hunter sphere",
+        /* width */     2,
+        120,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "spheres/h_idle.wav spheres/h_active.wav spheres/h_lurk.wav"
+    },
+
+    /*QUAKED item_sphere_defender (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Defender sphere (rogue). Orbits your head and shoots blaster bolts at
+    anything that hurts you. 4 instances across the Ground Zero maps.
+    */
+    {
+        "item_sphere_defender",
+        Pickup_Powerup,
+        Use_Defender,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/defender/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "p_defender",
+        /* pickup */    "defender sphere",
+        /* width */     2,
+        60,
+        NULL,
+        IT_POWERUP,
+        0,
+        NULL,
+        0,
+        /* precache */ "spheres/d_idle.wav models/items/shell/tris.md2"
+    },
+
+    /*QUAKED weapon_proxlauncher (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Prox Launcher (rogue). Lobs proximity mines that stick where they land,
+    open, and detonate on anything that walks into a 96-unit field. Mines set
+    each other off, so a laid field chain-reacts.
+
+    12 instances across the Ground Zero maps. Outside deathmatch the mines
+    ignore players, so you cannot walk into your own field.
+    */
+    {
+        "weapon_proxlauncher",
         Pickup_Weapon,
         Use_Weapon,
         Drop_Weapon,
-        Weapon_Heatbeam,
+        Weapon_ProxLauncher,
         "misc/w_pkup.wav",
-        "models/weapons/g_beamer/tris.md2", EF_ROTATE,
-        "models/weapons/v_beamer/tris.md2",
-        /* icon */      "w_heatbeam",
-        /* pickup */    "Plasma Beam",
+        "models/weapons/g_plaunch/tris.md2", EF_ROTATE,
+        "models/weapons/v_plaunch/tris.md2",
+        /* icon */      "w_proxlaunch",
+        /* pickup */    "Prox Launcher",
         0,
-        2,
-        "Cells",
+        1,
+        "Prox",
         IT_WEAPON,
-        WEAP_PLASMA,
+        WEAP_PROXLAUNCHER,
         NULL,
         0,
-        /* precache */ "models/weapons/v_beamer2/tris.md2 weapons/bfg__l1a.wav"
+        /* precache */ "weapons/proxlr1a.wav weapons/proxopen.wav weapons/proxwarn.wav models/weapons/g_prox/tris.md2"
     },
 
-    /*QUAKED weapon_heatbeam (.3 .3 1) (-16 -16 -16) (16 16 16)
-    The rerelease spelling of weapon_plasmabeam - mgu3m2 places it under this
-    name. Same weapon, same models; a second itemlist row is the cheapest way to
-    answer both classnames, since spawning goes through FindItemByClassname.
+    /*QUAKED weapon_etf_rifle (.3 .3 1) (-16 -16 -16) (16 16 16)
+    ETF Rifle (rogue). Fires flechettes at 1150 ups, one per shot.
+
+    Some rogue maps spell this weapon_nailgun; that spelling is resolved onto
+    this one item by item_classname_aliases[] in g_spawn.c. Do NOT add a second
+    itemlist row for it - see the Plasma Beam comment below for what that costs.
     */
     {
-        "weapon_heatbeam",
+        "weapon_etf_rifle",
+        Pickup_Weapon,
+        Use_Weapon,
+        Drop_Weapon,
+        Weapon_ETF_Rifle,
+        "misc/w_pkup.wav",
+        "models/weapons/g_etf_rifle/tris.md2", EF_ROTATE,
+        "models/weapons/v_etf_rifle/tris.md2",
+        /* icon */      "w_etf_rifle",
+        /* pickup */    "ETF Rifle",
+        0,
+        1,
+        "Flechettes",
+        IT_WEAPON,
+        WEAP_ETFRIFLE,
+        NULL,
+        0,
+        /* precache */ "weapons/nail1.wav models/proj/flechette/tris.md2"
+    },
+
+    /*QUAKED weapon_plasmabeam (.3 .3 1) (-16 -16 -16) (16 16 16)
+    Plasma Beam. Rogue's name for it; the rerelease calls the same gun
+    weapon_heatbeam, and the MGU maps use BOTH spellings - mgu5m2 and mguboss
+    say plasmabeam, mgu3m2 says heatbeam.
+
+    There USED to be a second itemlist row for weapon_heatbeam. Do not put it
+    back. A second row is a different gitem_t, so the player carried the gun
+    twice and it appeared twice when cycling weapons. The alternate spelling is
+    resolved onto this one item by item_classname_aliases[] in g_spawn.c.
+    */
+    {
+        "weapon_plasmabeam",
         Pickup_Weapon,
         Use_Weapon,
         Drop_Weapon,
@@ -2647,9 +2971,91 @@ void SP_item_health_mega(edict_t *self)
 }
 
 
+/*
+===============
+InitWeaponCycle
+
+The rerelease orders both its weapon cycle and its weapon bar by item_id_t
+(src/rerelease/g_local.h), a hand-authored order that has nothing to do with
+where a gun happens to sit in this tree's itemlist.  Resolve that order once
+into itemlist indices: Cmd_WeapNext_f and Cmd_WeapPrev_f walk it in the
+rerelease game, and the client's weapon bar draws the same sequence - see
+wb_slots[] in src/client/screen.c, which must be kept in step with this.
+
+Anything flagged IT_WEAPON that is not named below is appended in itemlist
+order, so a gun added later can never silently fall out of the cycle.
+===============
+*/
+static const char *const rerelease_weapon_order[] = {
+    "weapon_blaster",
+    "weapon_chainfist",
+    "weapon_shotgun",
+    "weapon_supershotgun",
+    "weapon_machinegun",
+    "weapon_etf_rifle",
+    "weapon_chaingun",
+    "ammo_grenades",
+    "ammo_trap",
+    "ammo_tesla",
+    "weapon_grenadelauncher",
+    // the rerelease has no flare gun of its own; it launches a grenade, so it
+    // sits with the other grenade weapons
+    "weapon_flaregun",
+    "weapon_proxlauncher",
+    "weapon_rocketlauncher",
+    "weapon_hyperblaster",
+    "weapon_boomer",
+    "weapon_plasmabeam",
+    "weapon_railgun",
+    "weapon_phalanx",
+    "weapon_bfg",
+    "weapon_disintegrator",
+};
+
+int weapon_cycle[MAX_ITEMS];        // itemlist indices, in weapon bar order
+int weapon_cycle_pos[MAX_ITEMS];    // itemlist index -> its place, -1 if not a weapon
+int weapon_cycle_count;
+
+static void InitWeaponCycle(void)
+{
+    int     i, j;
+
+    for (i = 0; i < MAX_ITEMS; i++)
+        weapon_cycle_pos[i] = -1;
+    weapon_cycle_count = 0;
+
+    for (i = 0; i < (int)q_countof(rerelease_weapon_order); i++) {
+        for (j = 0; j < game.num_items; j++) {
+            if (!itemlist[j].classname)
+                continue;   // index 0 is the placeholder row
+            if (strcmp(itemlist[j].classname, rerelease_weapon_order[i]))
+                continue;
+            if (!(itemlist[j].flags & IT_WEAPON))
+                break;
+            weapon_cycle_pos[j] = weapon_cycle_count;
+            weapon_cycle[weapon_cycle_count++] = j;
+            break;
+        }
+    }
+
+    for (j = 0; j < game.num_items; j++) {
+        if (!itemlist[j].classname)
+            continue;
+        if (!(itemlist[j].flags & IT_WEAPON))
+            continue;
+        if (weapon_cycle_pos[j] >= 0)
+            continue;
+        gi.dprintf("InitWeaponCycle: %s is missing from rerelease_weapon_order[]\n",
+                   itemlist[j].classname);
+        weapon_cycle_pos[j] = weapon_cycle_count;
+        weapon_cycle[weapon_cycle_count++] = j;
+    }
+}
+
 void InitItems(void)
 {
     game.num_items = sizeof(itemlist) / sizeof(itemlist[0]) - 1;
+    InitWeaponCycle();
 }
 
 

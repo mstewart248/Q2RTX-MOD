@@ -54,6 +54,8 @@ cvar_t  *sv_maxvelocity;
 cvar_t  *sv_gravity;
 
 cvar_t  *sv_rollspeed;
+cvar_t  *g_tracker_drag;
+cvar_t  *g_tracker_lift;
 cvar_t  *sv_rollangle;
 cvar_t  *gun_x;
 cvar_t  *gun_y;
@@ -134,6 +136,11 @@ void InitGame(void)
 
     //FIXME: sv_ prefix is wrong for these
     sv_rollspeed = gi.cvar("sv_rollspeed", "200", 0);
+    // ROGUE disruptor drag - see tracker_pain_daemon_think in g_weapon.c
+    // units per SECOND of sustained backwards drag while the shell lasts,
+    // and how much of that is upward. 0 drag restores rogue's single impulse.
+    g_tracker_drag = gi.cvar("g_tracker_drag", "220", 0);
+    g_tracker_lift = gi.cvar("g_tracker_lift", "70", 0);
     sv_rollangle = gi.cvar("sv_rollangle", "2", 0);
     sv_maxvelocity = gi.cvar("sv_maxvelocity", "2000", 0);
     sv_gravity = gi.cvar("sv_gravity", "800", 0);

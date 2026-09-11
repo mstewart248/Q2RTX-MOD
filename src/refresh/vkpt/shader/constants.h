@@ -79,7 +79,37 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MATERIAL_KIND_BLOOD          0xf0000000
 
 #define MATERIAL_FLAG_LIGHT          0x08000000
-#define MATERIAL_FLAG_HANDEDNESS     0x02000000
+// Marks a WATER/SLIME material as a CLOSED SHAPE rather than a flat brush face,
+// and sends all of it down the force-field path in primary_rays.rgen and
+// reflect_refract.rgen instead of only the part facing sideways.
+//
+// Those shaders treat a near-vertical water surface as a force field and render
+// it as GLASS.  That matters for more than naming: the glass refraction branch
+// does `throughput *= primary_base_color`, so a force field SHOWS ITS OWN
+// TEXTURE tinting what is behind it, while plain water only refracts and never
+// multiplies by the albedo.
+//
+// The normal test is meaningless on a sphere - it passes through every
+// orientation - so without this only the narrow band where |n.z| < 0.1 came out
+// glass, and the model wore a hard stripe round its equator where the textured
+// band met the untextured caps.  Set from a .mat with `curved_water 1`.
+#define MATERIAL_FLAG_CURVED_WATER   0x04000000
+// Marks rogue's plasma / heat beam (models/proj/beam, MCLASS_PLAYER_BEAM).
+//
+// CL_AddPlayerBeams starts the beam AT the muzzle, so its first 32-unit segment
+// begins ~7 units from the eye and physically intersects the view weapon. A path
+// tracer keeps the nearest hit, so the beam painted a bright cone across the gun.
+// The GL renderer never had this problem - it draws RF_DEPTHHACK weapons with a
+// crunched depth range, so the gun always wins, which is what the rerelease
+// shows. primary_rays.rgen uses this flag to reproduce that for the beam alone.
+//
+// RECLAIMED 2026-09-10 from MATERIAL_FLAG_HANDEDNESS, whose note here already
+// named it "the next bit to reclaim": nothing had read handedness since
+// path_tracer_rgen.h started deriving it per triangle from the UV winding, and
+// its three dead CPU write sites (bsp_mesh.c x2, main.c) went with this change.
+// A flag bit was the only room left - the 4-bit kind field is full, since
+// MATERIAL_KIND_BLOOD took its last value.
+#define MATERIAL_FLAG_PLAYER_BEAM    0x02000000
 #define MATERIAL_FLAG_WEAPON         0x01000000
 #define MATERIAL_FLAG_WARP           0x00800000
 #define MATERIAL_FLAG_FLOWING        0x00400000

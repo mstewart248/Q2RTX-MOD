@@ -261,6 +261,10 @@ static void compute_missing_model_tangents(model_t* model)
 			VectorNormalize(*tangent);
 		}
 
+		// Kept for the material flag in the vertex buffer, but the path tracer
+		// no longer reads it: one bool cannot describe a mesh with mirrored UV
+		// islands, so get_material() in path_tracer_rgen.h now derives the
+		// bitangent sign per triangle from the UV winding.
 		mesh->handedness = (handedness < 0);
 	}
 }
@@ -978,6 +982,75 @@ static void MD5_SkinPath(const char *base_path, const char *skin,
 
 /*
 =================
+MD5_LoneSkinInDir
+
+Last resort when no .md2 skin list is readable and neither the model's own
+stem nor the "skin" convention names an existing image.
+
+monster_fixbot is why this exists. Its md5 dir holds exactly one skin and it
+is called droid.png - the name comes from the .md2's skin list, and the retail
+pak the .md2 lives in is not mounted here, so that list is unavailable. The
+model then fell back to md5/skin.png, which does not exist, and rendered pure
+white. Every other monster happens to call its lone skin "skin", which is why
+only this one showed the fault.
+
+A directory with exactly ONE candidate image has no ambiguity to resolve, so
+take it. Sidecars (_n / _rough / _metallic / _glow) are not candidates. If
+there is more than one, do nothing and let the caller fall through to the
+convention - guessing between skins would be worse than the old behaviour.
+=================
+*/
+static bool MD5_LoneSkinInDir(const char *base_path, char *buffer, size_t size)
+{
+	static const char *const sidecars[] = { "_n", "_rough", "_metallic", "_glow" };
+	void **list;
+	int  num_files = 0;
+	int  found = 0;
+	char stem[MAX_QPATH];
+
+	list = FS_ListFiles(base_path, ".png;.tga;.jpg;.pcx", 0, &num_files);
+	if (!list)
+		return false;
+
+	for (int i = 0; i < num_files; i++) {
+		const char *file_name = list[i];
+		char name[MAX_QPATH];
+		char *dot;
+		bool is_sidecar = false;
+
+		Q_strlcpy(name, file_name, sizeof(name));
+		dot = strrchr(name, '.');
+		if (dot)
+			*dot = 0;
+
+		for (int s = 0; s < q_countof(sidecars); s++) {
+			size_t nlen = strlen(name), slen = strlen(sidecars[s]);
+			if (nlen > slen && !Q_stricmp(name + nlen - slen, sidecars[s])) {
+				is_sidecar = true;
+				break;
+			}
+		}
+		if (is_sidecar)
+			continue;
+
+		found++;
+		if (found > 1)
+			break;
+
+		Q_strlcpy(stem, name, sizeof(stem));
+	}
+
+	FS_FreeList(list);
+
+	if (found != 1)
+		return false;
+
+	Q_snprintf(buffer, size, "%s/%s.png", base_path, stem);
+	return true;
+}
+
+/*
+=================
 MD5_LoadSkinsFromMD2
 
 Reads the classic model's skin list so that skinnum keeps selecting the same
@@ -1101,7 +1174,8 @@ int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const ch
 
 		if (MD5_SkinExists(probe_path))
 			Q_snprintf(default_skin, sizeof(default_skin), "%s.png", probe_path);
-		else if (!MD5_HeldWeaponSkin(mod_name, default_skin, sizeof(default_skin)))
+		else if (!MD5_HeldWeaponSkin(mod_name, default_skin, sizeof(default_skin))
+		         && !MD5_LoneSkinInDir(base_path, default_skin, sizeof(default_skin)))
 			Q_snprintf(default_skin, sizeof(default_skin), "%s/skin.png", base_path);
 
 		probe.materials[0] = MAT_Find(default_skin, IT_SKIN, IF_NONE);

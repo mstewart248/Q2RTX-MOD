@@ -182,6 +182,11 @@ const vec3_t monster_flash_offset[MAX_MUZZLEFLASHES] = {
     // Rerelease: the supertank's two grenade muzzles, one per shoulder.
     [MZ2_SUPERTANK_GRENADE_1] = { 31.31f, -37.0f, 54.32f },
     [MZ2_SUPERTANK_GRENADE_2] = { 31.31f,  37.0f, 54.32f },
+
+    // Rerelease: monster_guardian's hyperblaster arm, held high and out to the
+    // right.  id's own value, verbatim.
+    [MZ2_GUARDIAN_BLASTER] = { 88.0f, 50.0f, 60.0f },
+
     [MZ2_CARRIER_RAILGUN] = { 32, 0, 6 },
     [MZ2_WIDOW_DISRUPTOR] = { 57.72f, 14.5f, 88.81f },
     [MZ2_WIDOW_BLASTER] = { 56, 32, 32 },

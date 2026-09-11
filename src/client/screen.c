@@ -62,6 +62,10 @@ static cvar_t   *scr_showturtle;
 static cvar_t   *scr_showitemname;
 static cvar_t   *scr_health_bars;
 
+static cvar_t   *cl_weaponbar;
+static cvar_t   *cl_weaponbar_time;
+static cvar_t   *cl_weaponbar_hold;
+
 static cvar_t   *scr_draw2d;
 static cvar_t   *scr_lag_x;
 static cvar_t   *scr_lag_y;
@@ -1340,6 +1344,11 @@ static void scr_scale_changed(cvar_t *self)
     scr.hud_scale = R_ClampScale(self);
 }
 
+// the weapon bar itself is further down, next to the inventory screen
+static void SCR_WeaponBarInit(void);
+static void SCR_WeapNext_f(void);
+static void SCR_WeapPrev_f(void);
+
 static const cmdreg_t scr_cmds[] = {
     { "timerefresh", SCR_TimeRefresh_f },
     { "sizeup", SCR_SizeUp_f },
@@ -1348,6 +1357,8 @@ static const cmdreg_t scr_cmds[] = {
     { "draw", SCR_Draw_f, SCR_Draw_c },
     { "undraw", SCR_UnDraw_f, SCR_UnDraw_c },
     { "clearchathud", SCR_ClearChatHUD_f },
+    { "weapnext", SCR_WeapNext_f },
+    { "weapprev", SCR_WeapPrev_f },
     { NULL }
 };
 
@@ -1397,6 +1408,10 @@ void SCR_Init(void)
     scr_showturtle = Cvar_Get("scr_showturtle", "1", 0);
     scr_showitemname = Cvar_Get("scr_showitemname", "1", CVAR_ARCHIVE);
     scr_health_bars = Cvar_Get("scr_health_bars", "1", CVAR_ARCHIVE);
+    cl_weaponbar = Cvar_Get("cl_weaponbar", "1", CVAR_ARCHIVE);
+    cl_weaponbar_time = Cvar_Get("cl_weaponbar_time", "0.4", CVAR_ARCHIVE);
+    cl_weaponbar_hold = Cvar_Get("cl_weaponbar_hold", "0.8", CVAR_ARCHIVE);
+    SCR_WeaponBarInit();
     scr_lag_x = Cvar_Get("scr_lag_x", "-1", 0);
     scr_lag_y = Cvar_Get("scr_lag_y", "-1", 0);
     scr_lag_draw = Cvar_Get("scr_lag_draw", "0", 0);
@@ -1530,6 +1545,369 @@ static void HUD_DrawNumber(int x, int y, int color, int width, int value)
         ptr++;
         l--;
     }
+}
+
+/*
+===============================================================================
+
+WEAPON BAR
+
+The rerelease's weapon bar.  The mouse wheel slides a highlight along the guns
+you are carrying WITHOUT switching, and the one you land on is raised a moment
+after you stop scrolling - so you can run the whole list without cycling
+through every weapon on the way.
+
+It lives entirely on the client, because the highlight has to follow the wheel
+with no server round trip, and everything it needs is already on this side:
+the counts arrive as svc_inventory, the item names as CS_ITEMS, and the gun in
+your hands is ps.gunindex.  The switch itself is an ordinary "use <item>" sent
+once the selection settles.
+
+The slot order below is the rerelease's item_id_t order (src/rerelease/
+g_local.h), which is what its bar is sorted by, and it is used ONLY in the
+rerelease game - where g_items.c's rerelease_weapon_order[] walks the same
+sequence, so the bar and a plain weapnext agree.  Every other game keeps this
+tree's own itemlist order, wb_classic_order[] below, and the 1997 backwards
+weapnext with it: the bar must never reorder the original game's weapon cycle.
+
+A weapon this game does not have simply never resolves and is skipped.
+
+===============================================================================
+*/
+
+typedef struct {
+    const char  *item;      // CS_ITEMS pickup name
+    const char  *icon;      // pic name, minus the extension
+    const char  *view;      // CS_MODELS path, which is how ps.gunindex names it
+    const char  *ammo;      // CS_ITEMS pickup name of its ammo, NULL for none
+} wbslot_t;
+
+static const wbslot_t wb_slots[] = {
+    { "Blaster",          "w_blaster",       "models/weapons/v_blast/tris.md2",     NULL },
+    { "Chainfist",        "w_chainfist",     "models/weapons/v_chainf/tris.md2",    NULL },
+    { "Shotgun",          "w_shotgun",       "models/weapons/v_shotg/tris.md2",     "Shells" },
+    { "Super Shotgun",    "w_sshotgun",      "models/weapons/v_shotg2/tris.md2",    "Shells" },
+    { "Machinegun",       "w_machinegun",    "models/weapons/v_machn/tris.md2",     "Bullets" },
+    { "ETF Rifle",        "w_etf_rifle",     "models/weapons/v_etf_rifle/tris.md2", "Flechettes" },
+    { "Chaingun",         "w_chaingun",      "models/weapons/v_chain/tris.md2",     "Bullets" },
+    { "Grenades",         "a_grenades",      "models/weapons/v_handgr/tris.md2",    "Grenades" },
+    { "Trap",             "a_trap",          "models/weapons/v_trap/tris.md2",      "Trap" },
+    { "Tesla",            "a_tesla",         "models/weapons/v_tesla/tris.md2",     "Tesla" },
+    { "Grenade Launcher", "w_glauncher",     "models/weapons/v_launch/tris.md2",    "Grenades" },
+    // no flare gun: it is not on the rerelease's bar, and its "w_flareg" icon
+    // was never authored anywhere.  It is still an item, so "use Flare Gun"
+    // and the inventory screen still reach it.
+    { "Prox Launcher",    "w_proxlaunch",    "models/weapons/v_plaunch/tris.md2",   "Prox" },
+    { "Rocket Launcher",  "w_rlauncher",     "models/weapons/v_rocket/tris.md2",    "Rockets" },
+    { "HyperBlaster",     "w_hyperblaster",  "models/weapons/v_hyperb/tris.md2",    "Cells" },
+    { "Ionripper",        "w_ripper",        "models/weapons/v_boomer/tris.md2",    "Cells" },
+    { "Plasma Beam",      "w_heatbeam",      "models/weapons/v_beamer/tris.md2",    "Cells" },
+    { "Railgun",          "w_railgun",       "models/weapons/v_rail/tris.md2",      "Slugs" },
+    { "Phalanx",          "w_phallanx",      "models/weapons/v_shotx/tris.md2",     "Mag Slug" },
+    { "BFG10K",           "w_bfg",           "models/weapons/v_bfg/tris.md2",       "Cells" },
+    { "Disruptor",        "w_disintegrator", "models/weapons/v_dist/tris.md2",      "Rounds" },
+};
+
+// The same weapons in this tree's own itemlist order, which is the order a
+// weapnext walks outside the rerelease game.  Listed by pickup name so it can
+// only ever name a weapon wb_slots[] also has.
+static const char *const wb_classic_order[] = {
+    "Blaster", "Shotgun", "Super Shotgun", "Machinegun", "Chaingun",
+    "Grenades", "Grenade Launcher", "Rocket Launcher", "HyperBlaster",
+    "Railgun", "BFG10K", "Trap", "Disruptor", "Tesla", "Prox Launcher",
+    "ETF Rifle", "Plasma Beam", "Chainfist", "Ionripper", "Phalanx",
+};
+
+#define WB_NUM_SLOTS    ((int)q_countof(wb_slots))
+
+// the two lists have to hold the same weapons
+typedef char wb_orders_agree[q_countof(wb_classic_order) == q_countof(wb_slots) ? 1 : -1];
+
+// the w_* pics are 24x24; the bar draws them a little larger, the way the
+// rerelease sits its own row over the status bar
+#define WB_ICON_SIZE    32
+
+static struct {
+    int         item[WB_NUM_SLOTS];     // CS_ITEMS index, -1 if this game has no such item
+    int         ammo[WB_NUM_SLOTS];     // CS_ITEMS index of its ammo, -1 for none
+    qhandle_t   pic[WB_NUM_SLOTS];
+    int         order[WB_NUM_SLOTS];    // wb_slots[] indices, in cycle order
+    int         place[WB_NUM_SLOTS];    // wb_slots[] index -> where it sits in order[]
+    int         dir;                    // which way along order[] weapnext runs
+    int         selected;               // slot the highlight is on, -1 when idle
+    unsigned    input_time;             // cls.realtime of the last wheel step
+    bool        committed;              // the "use" has already gone out
+} wb;
+
+static int SCR_WeaponBarFindItem(const char *name)
+{
+    int     i;
+
+    if (!name)
+        return -1;
+
+    for (i = 0; i < MAX_ITEMS; i++)
+        if (!strcmp(cl.configstrings[CS_ITEMS + i], name))
+            return i;
+
+    return -1;
+}
+
+// Resolved fresh every time the bar wakes up rather than cached against the
+// map load, so it can never be left pointing at the previous level's item
+// numbering.  Twenty-odd names against 256 configstrings, once per scroll.
+static void SCR_WeaponBarResolve(void)
+{
+    int     i, j;
+
+    for (i = 0; i < WB_NUM_SLOTS; i++) {
+        wb.item[i] = SCR_WeaponBarFindItem(wb_slots[i].item);
+        wb.ammo[i] = SCR_WeaponBarFindItem(wb_slots[i].ammo);
+        wb.pic[i] = wb.item[i] >= 0 ? R_RegisterPic2(wb_slots[i].icon) : 0;
+        wb.order[i] = i;
+
+        // No icon, no slot.  baseq2 carries none of the rogue or xatrix art,
+        // so a cheated-in Disruptor there would otherwise sit on the bar as an
+        // empty cell with an ammo count floating over it.  Dropping the item
+        // index takes the slot out of the draw, the step and the seed at once;
+        // the weapon is still an item, so "use" and the inventory reach it.
+        if (!wb.pic[i])
+            wb.item[i] = -1;
+    }
+
+    // The rerelease sorts its bar by item_id_t and runs weapnext FORWARD along
+    // it; the 1997 game walks its item list backwards, so "next" moves toward
+    // the blaster.  Match whichever game we are connected to - this is the
+    // same test M_RereleaseGame() makes on the other side.
+    if (!Q_stricmp(cl.gamedir, "rerelease")) {
+        wb.dir = 1;
+    } else {
+        wb.dir = -1;
+        for (i = 0; i < WB_NUM_SLOTS; i++)
+            for (j = 0; j < WB_NUM_SLOTS; j++)
+                if (!strcmp(wb_slots[j].item, wb_classic_order[i])) {
+                    wb.order[i] = j;
+                    break;
+                }
+    }
+
+    for (i = 0; i < WB_NUM_SLOTS; i++)
+        wb.place[wb.order[i]] = i;
+}
+
+// The gun in our hands, named by its view model.  No stat needed: the server
+// already tells us which model the player state is holding, and the view model
+// is unique per weapon.
+static int SCR_WeaponBarHeld(void)
+{
+    const char  *model;
+    int         i;
+
+    if (cl.frame.ps.gunindex <= 0)
+        return -1;
+
+    model = cl.configstrings[CS_MODELS + cl.frame.ps.gunindex];
+    for (i = 0; i < WB_NUM_SLOTS; i++)
+        if (!strcmp(model, wb_slots[i].view))
+            return i;
+
+    return -1;
+}
+
+static bool SCR_WeaponBarCarried(int slot)
+{
+    return wb.item[slot] >= 0 && cl.inventory[wb.item[slot]] > 0;
+}
+
+// Returns false when the bar cannot take the input - not in a game, dead, or
+// holding something it does not know about - so the caller can hand the
+// command to the server instead.
+static bool SCR_WeaponBarStep(int dir)
+{
+    int     i, from;
+
+    if (cls.state != ca_active || cls.demo.playback)
+        return false;
+    if (cl.frame.ps.stats[STAT_HEALTH] <= 0)
+        return false;
+
+    // a new selection starts from whatever we are actually holding
+    if (wb.selected < 0 || wb.committed) {
+        SCR_WeaponBarResolve();
+        wb.selected = SCR_WeaponBarHeld();
+        wb.committed = false;
+        if (wb.selected < 0 || wb.item[wb.selected] < 0)
+            return false;
+    }
+
+    dir *= wb.dir;
+    from = wb.place[wb.selected];
+    for (i = 1; i <= WB_NUM_SLOTS; i++) {
+        int next = wb.order[((from + dir * i) % WB_NUM_SLOTS + WB_NUM_SLOTS) % WB_NUM_SLOTS];
+        if (SCR_WeaponBarCarried(next)) {
+            wb.selected = next;
+            break;
+        }
+    }
+
+    wb.input_time = cls.realtime;
+    return true;
+}
+
+// Raise the highlighted weapon once the wheel has been still long enough, then
+// leave the bar up a moment more so you can see what you landed on.
+static void SCR_WeaponBarThink(void)
+{
+    unsigned    settle, hold;
+
+    if (wb.selected < 0)
+        return;
+
+    if (cls.state != ca_active) {
+        wb.selected = -1;
+        return;
+    }
+
+    settle = cl_weaponbar_time->value * 1000;
+    hold = cl_weaponbar_hold->value * 1000;
+
+    if (!wb.committed && cls.realtime - wb.input_time >= settle) {
+        wb.committed = true;
+        if (wb.selected != SCR_WeaponBarHeld())
+            CL_ClientCommand(va("use %s", wb_slots[wb.selected].item));
+    }
+
+    if (cls.realtime - wb.input_time >= settle + hold)
+        wb.selected = -1;
+}
+
+// the HUD digits, scaled to sit above an icon three abreast
+static void SCR_WeaponBarNumber(int cx, int y, int color, int value, int dw, int dh)
+{
+    char    num[8];
+    int     i, l, x;
+
+    l = Q_scnprintf(num, sizeof(num), "%i", value);
+    if (l > 4)
+        l = 4;
+
+    x = cx - l * dw / 2;
+    for (i = 0; i < l; i++) {
+        R_DrawStretchPic(x, y, dw, dh, scr.sb_pics[color][num[i] - '0']);
+        x += dw;
+    }
+}
+
+static void SCR_WeaponBarOutline(int x, int y, int w, int h, uint32_t color)
+{
+    R_DrawFill32(x, y, w, 1, color);
+    R_DrawFill32(x, y + h - 1, w, 1, color);
+    R_DrawFill32(x, y + 1, 1, h - 2, color);
+    R_DrawFill32(x + w - 1, y + 1, 1, h - 2, color);
+}
+
+static void SCR_DrawWeaponBar(void)
+{
+    int         list[WB_NUM_SLOTS];
+    int         i, count, slot_w, icon_sz, digit_w, digit_h, x, icon_y, name_y;
+    unsigned    settle, elapsed;
+    float       alpha, base;
+
+    if (wb.selected < 0)
+        return;
+
+    count = 0;
+    for (i = 0; i < WB_NUM_SLOTS; i++)
+        if (SCR_WeaponBarCarried(wb.order[i]))
+            list[count++] = wb.order[i];
+    if (!count)
+        return;
+
+    // fade out over the hold, once the weapon has actually been raised
+    settle = cl_weaponbar_time->value * 1000;
+    elapsed = cls.realtime - wb.input_time;
+    alpha = 1.0f;
+    if (elapsed > settle) {
+        unsigned hold = cl_weaponbar_hold->value * 1000;
+        if (hold)
+            alpha = 1.0f - (float)(elapsed - settle) / hold;
+    }
+    alpha = max(0.0f, min(1.0f, alpha));
+    if (alpha <= 0.0f)
+        return;
+
+    base = Cvar_ClampValue(scr_alpha, 0, 1);
+    R_SetAlpha(alpha * base);
+
+    // the icon sets the pitch and the count is scaled to fit three digits
+    // across it; with every weapon carried the row still has to cross the HUD,
+    // so give up icon size before it runs off the edge
+    slot_w = WB_ICON_SIZE + 8;
+    if (count * slot_w > scr.hud_width - 16)
+        slot_w = (scr.hud_width - 16) / count;
+    icon_sz = min(WB_ICON_SIZE, slot_w - 4);
+    icon_sz = max(icon_sz, 8);
+    digit_w = max(icon_sz * 5 / 16, 4);
+    digit_h = max(icon_sz * 9 / 16, 6);
+
+    icon_y = scr.hud_height - 84;
+    name_y = icon_y - digit_h - CHAR_HEIGHT - 6;
+    x = (scr.hud_width - count * slot_w) / 2;
+
+    HUD_DrawCenterString(scr.hud_width / 2, name_y,
+                         cl.configstrings[CS_ITEMS + wb.item[wb.selected]]);
+
+    for (i = 0; i < count; i++, x += slot_w) {
+        int slot = list[i];
+        int cx = x + slot_w / 2;
+        int ammo = wb.ammo[slot] >= 0 ? cl.inventory[wb.ammo[slot]] : -1;
+
+        if (slot == wb.selected)
+            SCR_WeaponBarOutline(cx - slot_w / 2, icon_y - 2, slot_w, icon_sz + 4,
+                                 MakeColor(255, 255, 0, (int)(alpha * 255)));
+
+        if (ammo >= 0)
+            SCR_WeaponBarNumber(cx, icon_y - digit_h - 2, ammo ? 0 : 1, ammo,
+                                digit_w, digit_h);
+
+        if (!ammo)
+            R_SetAlpha(alpha * 0.5f * base);
+
+        R_DrawStretchPic(cx - icon_sz / 2, icon_y, icon_sz, icon_sz, wb.pic[slot]);
+
+        if (!ammo)
+            R_SetAlpha(alpha * base);
+    }
+
+    R_SetAlpha(base);
+}
+
+static void SCR_WeaponBarInit(void)
+{
+    wb.selected = -1;
+}
+
+static void SCR_WeaponBarCmd(int dir)
+{
+    if (cl_weaponbar->integer && SCR_WeaponBarStep(dir))
+        return;
+
+    // the bar cannot take it - let the game cycle weapons the old way
+    if (!CL_ForwardToServer())
+        Com_Printf("Can't \"%s\", not connected\n", Cmd_Argv(0));
+}
+
+// Forward along the bar, which is the way the rerelease runs it.  The 1997
+// game walks its item list backwards for weapnext; matching that here would
+// send the highlight left when the wheel says next.
+static void SCR_WeapNext_f(void)
+{
+    SCR_WeaponBarCmd(1);
+}
+
+static void SCR_WeapPrev_f(void)
+{
+    SCR_WeaponBarCmd(-1);
 }
 
 #define DISPLAY_ITEMS   17
@@ -2126,6 +2504,8 @@ static void SCR_Draw2D(void)
 
     SCR_DrawInventory();
 
+    SCR_DrawWeaponBar();
+
     SCR_DrawCenterString();
 
     SCR_DrawNet();
@@ -2239,6 +2619,8 @@ void SCR_UpdateScreen(int waterLevel)
     }
 
     recursive++;
+
+    SCR_WeaponBarThink();
 
     R_BeginFrame();
 
