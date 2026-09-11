@@ -342,6 +342,58 @@ void CL_ImpactSmokeAndFlash(const vec3_t origin, const vec3_t dir)
 
 /*
 =================
+CL_SetupMuzzleFlashEntity
+
+Everything about how a muzzle flash LOOKS, in one place, so the two ways one
+reaches the screen cannot drift apart: the world flash spawned as an explosion
+(monsters, other players, and your own gun's reflection copy), and the
+first-person flash, which is rebuilt from the live gun transform every frame by
+CL_AddViewWeaponFlash instead of being spawned and left behind.
+
+`roll` is the spin about the barrel axis. It is passed in rather than rolled
+here because the view flash has to keep the SAME roll for its whole life - the
+model is a starburst fan facing +X, so a fresh random roll every frame would
+make it strobe instead of sit still.
+=================
+*/
+void CL_SetupMuzzleFlashEntity(entity_t *ent, const vec3_t origin,
+                               const vec3_t angles, float roll,
+                               int view_fx, qhandle_t model)
+{
+    vec3_t  forward, muzzle;
+    bool    first_person = (view_fx == RF_FIRST_PERSON_FX);
+    cvar_t  *scale_cvar  = first_person ? cl_muzzleflash_view_size
+                                        : cl_muzzleflash_scale;
+    cvar_t  *bright_cvar = first_person ? cl_muzzleflash_view_brightness
+                                        : cl_muzzleflash_brightness;
+
+    memset(ent, 0, sizeof(*ent));
+
+    // Lift the flash off the muzzle POINT. The model's middle vertex sits at its
+    // own origin, so centring it exactly on the muzzle buries that middle inside
+    // the barrel and the gun occludes it - which is the dark diamond that shows
+    // in the centre of the star. A couple of units along the barrel clears it.
+    AngleVectors(angles, forward, NULL, NULL);
+    VectorMA(origin, 3.0f, forward, muzzle);
+    VectorCopy(muzzle, ent->origin);
+    VectorCopy(muzzle, ent->oldorigin);
+
+    VectorCopy(angles, ent->angles);
+    ent->angles[ROLL] = roll;
+
+    ent->model = model;
+    ent->flags = RF_FULLBRIGHT | RF_NOSHADOW | RF_TRANSLUCENT | view_fx;
+    ent->alpha = Cvar_ClampValue(bright_cvar, 0.001f, 1.0f);
+    ent->scale = Cvar_ClampValue(scale_cvar, 0.1f, 20.0f);
+
+    // the flash models are a single frame; there is nothing to interpolate
+    ent->frame = 0;
+    ent->oldframe = 0;
+    ent->backlerp = 0.0f;
+}
+
+/*
+=================
 CL_MuzzleFlashModel
 
 Rerelease muzzle flashes: a short-lived starburst model at the muzzle, instead of
@@ -383,12 +435,6 @@ void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
                           int view_fx, qhandle_t model)
 {
     explosion_t *ex;
-    bool        first_person = (view_fx == RF_FIRST_PERSON_FX);
-    cvar_t      *scale_cvar  = first_person ? cl_muzzleflash_view_size
-                                            : cl_muzzleflash_scale;
-    cvar_t      *bright_cvar = first_person ? cl_muzzleflash_view_brightness
-                                            : cl_muzzleflash_brightness;
-
     if (!cl_muzzleflash_models->integer)
         return;
 
@@ -403,45 +449,9 @@ void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
 
     ex = CL_AllocExplosion();
 
-    // Lift the flash off the muzzle POINT. The model's middle vertex sits at its
-    // own origin, so centring it exactly on the muzzle buries that middle inside
-    // the barrel and the gun occludes it - which is the dark diamond that shows
-    // in the centre of the star. A couple of units along the barrel clears it.
-    {
-        vec3_t forward, muzzle;
-
-        AngleVectors(angles, forward, NULL, NULL);
-        VectorMA(origin, 3.0f, forward, muzzle);
-        VectorCopy(muzzle, ex->ent.origin);
-        VectorCopy(muzzle, ex->ent.oldorigin);
-    }
-    VectorCopy(angles, ex->ent.angles);
-    // Spin each flash a random amount about the barrel axis. The model is a
-    // starburst fan facing +X, so roll changes how it reads without moving it
-    // off the muzzle - otherwise every shot in a burst is the identical star
-    // and it looks like a static decal stuck to the gun.
-    ex->ent.angles[ROLL] = frand() * 360.0f;
+    CL_SetupMuzzleFlashEntity(&ex->ent, origin, angles, frand() * 360.0f,
+                              view_fx, model);
     ex->type = ex_mflash;
-    ex->ent.model = model;
-    ex->ent.flags = RF_FULLBRIGHT | RF_NOSHADOW | RF_TRANSLUCENT;
-    // [Q2RTX] Which view this flash belongs to. The first-person one is drawn
-    // at the VIEW muzzle, up at eye level, so in a mirror it comes out of your
-    // model's face; the world-space twin spawned alongside it sits on the
-    // third-person gun and is the one a mirror should see. These cannot use
-    // RF_WEAPONMODEL / RF_VIEWERMODEL - the entity sort tests those before
-    // MCLASS_FLASH and the flash would render as a flat slab. See shared.h.
-    // view_fx is 0 for an ordinary world flash (a monster, another player),
-    // which belongs in BOTH views. Only your own gun spawns a split pair.
-    ex->ent.flags |= view_fx;
-    // The effects shader does emission.a *= entity alpha, then multiplies the
-    // colour by that alpha - so this dims the flash without altering the shape
-    // of its falloff, letting the texture's own taper show instead of clipping.
-    //
-    // NOTE the floor of 0.001 rather than 0.01: the first-person flash needs to
-    // sit an order of magnitude below the monster one to stay under the x500
-    // amplifier, and the old floor was above the value it actually wants.
-    ex->ent.alpha = Cvar_ClampValue(bright_cvar, 0.001f, 1.0f);
-    ex->ent.scale = Cvar_ClampValue(scale_cvar, 0.1f, 20.0f);
     /* HOW LONG THE FLASH LASTS, and why it needs saying.
 
        The explosion clock runs on BASE_FRAMETIME, i.e. one `frame` is 100 ms,

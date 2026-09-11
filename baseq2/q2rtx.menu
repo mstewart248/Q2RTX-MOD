@@ -327,6 +327,7 @@ begin effects
     range --status "size of the flash on your own weapon (cl_muzzleflash_view_size)" "first person flash size" cl_muzzleflash_view_size 1 12 0.5
     range --status "brightness of the flash on your own weapon - above ~0.1 it clips and loses its soft edge (cl_muzzleflash_view_brightness)" "first person flash brightness" cl_muzzleflash_view_brightness 0.01 0.3 0.01
     range --status "how long a muzzle flash stays up in milliseconds - at 100 the machinegun never gets a gap between shots (cl_muzzleflash_time)" "muzzle flash duration" cl_muzzleflash_time 10 150 10
+    toggle --status "let the muzzle flash light the room as a real area light, on top of the dynamic light it already casts - costs ~48 short-lived lights per shot (cl_muzzleflash_light)" "muzzle flash casts light" cl_muzzleflash_light
     blank
     pairs --status "(cl_blaster_color)" "blaster color" cl_blaster_color "violet" 1 "original orange" 0
     blank
@@ -429,6 +430,8 @@ begin blood
         endif
             range --status "drag on a droplet running down a wall. Low values let it run a long way before stopping, high values stop it near the impact (cl_blood_slide)" \
                 "run-down drag" cl_blood_slide 0 10 0.5
+            range --status "fastest blood is allowed to run, in units per second. Drag alone settles a run at gravity divided by the drag above - about 320 u/s down a vertical wall, which crosses a room-height wall in a fifth of a second. Blood does not do that: a film running under gravity is limited by its own thickness. The shape of the mark is unchanged - it is drawn out by distance run and not by time - so a slower run simply takes longer to leave the same streak. 0 removes the cap (cl_blood_slide_speed)" \
+                "fastest run-down" cl_blood_slide_speed 0 320 4
             range --status "how long a droplet may stay in the air before giving up. This is a backstop for blood thrown somewhere it can never land - droplets do NOT fade in flight, they persist until they hit something (cl_blood_air_life)" \
                 "max time in the air" cl_blood_air_life 1 60 1
             blank
@@ -441,6 +444,8 @@ begin blood
                 "run-down streak length" cl_blood_slide_stretch 1 8 0.25
             range --status "distance a pool has to travel to get most of the way to that streak length, in units. Short values streak a pool out almost at once; long ones need a proper run down a wall (cl_blood_slide_len)" \
                 "streak builds over" cl_blood_slide_len 4 128 4
+            range --status "distance over which a running mark NARROWS across its travel, in units - the companion to the length above. A run is fed by the blood moving through it, so what it leaves behind is about as wide as that stream, not as wide as the blot it is draining: a hand-width smear that starts running down a wall pulls into a rivulet rather than sliding down at full width. 0 keeps the width it landed with all the way down (cl_blood_slide_narrow)" \
+                "streak narrows over" cl_blood_slide_narrow 0 128 4
             range --status "seconds a pool takes to gather back up once it stops moving. A streak is what blood on the MOVE looks like; what is left at the bottom of a slope is a POOL, and it also asks once, when it has finished gathering, whether it has come to rest against blood already lying there. 0 freezes the streak where it stopped (cl_blood_slide_relax)" \
                 "pool gathers when it stops" cl_blood_slide_relax 0 6 0.2
             range --status "longest a mark may ever be drawn, tip to tip, in units. A single droplet is free to streak out to the full run-down length, but a pool that has gathered up is forced round - a big pool drawn as a long sliver lies across surface junctions and flickers. 0 removes the limit (cl_blood_streak_len)" \
@@ -472,6 +477,8 @@ begin blood
                     "slide-off attempts" cl_blood_edge_tries 0 8 1
                 range --status "how many puddles are measured per frame. Measuring happens once in a puddle life, but one wound lands sixty droplets between two frames - spreading the work is what keeps this off the frame time. Raise it if puddles clip or slide a moment late (cl_blood_edge_budget)" \
                     "edges measured per frame" cl_blood_edge_budget 1 64 1
+                range --status "how far a pool that has run into a wall may spread ALONG the foot of it, as a multiple of the width it would have had in open floor. Blood stops at a wall rather than drawing out through it, and the blood that cannot go through has to go somewhere - sideways along the wall is where. 1 leaves the pool simply clipped, which is still not clipping through (cl_blood_wall_spread)" \
+                    "pools spread along walls" cl_blood_wall_spread 1 4 0.1
             endif
         endif
     endif

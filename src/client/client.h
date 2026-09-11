@@ -545,6 +545,7 @@ extern cvar_t    *cl_muzzleflash_scale;
 extern cvar_t    *cl_muzzleflash_view_size;
 extern cvar_t    *cl_muzzleflash_view_brightness;
 extern cvar_t    *cl_muzzleflash_time;
+extern cvar_t    *cl_muzzleflash_light;
 extern cvar_t    *cl_muzzleflash_brightness;
 extern cvar_t    *cl_muzzleflash_offset;
 extern cvar_t    *cl_predict;
@@ -898,6 +899,11 @@ void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, int view_fx);
 void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
                           int view_fx, qhandle_t model);
 void CL_RegisterViewMuzzleFlashes(void);
+void CL_SetupMuzzleFlashEntity(entity_t *ent, const vec3_t origin,
+                               const vec3_t angles, float roll,
+                               int view_fx, qhandle_t model);
+// the generic starburst, for monsters and for weapons with no flash/ of their own
+extern qhandle_t cl_mod_muzzleflash;
 void CL_MuzzleOffset_f(void);
 void CL_ViewMuzzleFlash(void);
 
@@ -971,6 +977,7 @@ typedef struct cparticle_s {
     float   blood_flatten;      // 1 = round; drops toward the splat target on impact
     vec3_t  blood_tangent;      // long axis in the surface plane
     float   blood_stretch;      // elongation along blood_tangent; 1 = round
+    float   blood_cross;        // half-extent ACROSS it, same units; 1 = one droplet
 
     // RESHAPING WHILE IT SLIDES.  blood_tangent starts as the impact direction,
     // and for a splat that never moves again that is the whole story.  But a pool
@@ -985,7 +992,10 @@ typedef struct cparticle_s {
     // one IS in blood_sphere_t and the renderer caches on the whole struct.
     vec3_t  blood_slide_axis;
     float   blood_stretch_base; // the elongation it landed with
+    float   blood_cross_base;   // and the cross extent, in the CURRENT frame
+    float   blood_cross_run;    // the cross extent the narrowing is decaying from
     float   blood_slide_dist;   // how far it has travelled since landing
+    float   blood_narrow_dist;  // distance run since blood_cross_run was captured
 
     // SETTLING: a pool that has stopped running is not finished.
     //
@@ -1002,9 +1012,35 @@ typedef struct cparticle_s {
     // quantized value the renderer sees; these are the continuous state it is
     // derived from - the same split blood_slide_axis needs, and for the same
     // reason.  Thresholding a smoothed value against ITSELF never fires.
+    // A RUN THAT HAS REACHED THE FOOT OF A SURFACE HANDS ITS BLOOD OVER, it
+    // does not teleport.
+    //
+    // The probe that keeps a running splat attached goes solid at the inside of
+    // a wall/floor corner, so a run arriving at the bottom of a wall took the
+    // "ran off the end of the surface" branch - which resets the stretch, the
+    // tangent and the flatten, i.e. COLLAPSES THE WHOLE STREAK TO A SPHERE in
+    // one frame, and re-lands it as a single round floor splat. Matt, playing:
+    // "as soon as a part of the splat hits the floor the whole thing disappears
+    // to a splat on the floor... it should be a tiny floor puddle and expand to
+    // the normal size it would be if it hit the floor as the rest of the splat
+    // makes it to the floor."
+    //
+    // So the mark stays where it is and DRAINS: its area is delivered to a pool
+    // at the foot over cl_blood_drain seconds, in quanta, growing the pool as it
+    // goes. The streak shrinks to match, and because the trail is anchored at
+    // the leading edge it contracts toward the foot of the run - into the pool
+    // it is feeding - for free.
+    bool    blood_arrived;      // reached the foot; no longer slides
+    float   blood_drain;        // seconds of handing-over left
+    float   blood_drain_total;  // area (radius squared) it arrived with
+    float   blood_drain_done;   // area delivered so far
+    vec3_t  blood_feed_org;     // where the pool is forming
+    vec3_t  blood_feed_normal;
+
     bool    blood_settling;     // armed once, on the frame the run stopped
     float   blood_settle;       // seconds of settling left
     float   blood_stretch_run;  // the elongation the run ended with
+    float   blood_cross_rest;   // and the cross extent it ended with
 
     // The brush model this splat is riding, or -1 for the world.  A door, lift
     // or platform carries its blood with it; without this a splat is a world
@@ -1038,6 +1074,27 @@ typedef struct cparticle_s {
     // splat - never per frame.  See CL_BloodProbeRim.
     uint32_t blood_rim;
     bool     blood_rim_dirty;   // queued for (re)probing
+
+    // WHICH OF THOSE EIGHT WERE STOPPED BY MATERIAL RATHER THAN BY A DROP, one
+    // bit per sample.  The distinction is the whole reason it exists: both come
+    // back as a short reach and the outline is clipped to either, but a pool
+    // that runs into a wall must NOT be shoved through it the way an overhanging
+    // one is shoved off a ledge.  CL_BloodOverhang skips these samples; a pool
+    // blocked all the way round is simply a pool that has found its shape.
+    //
+    // Not in blood_sphere_t - the renderer only ever needs the combined reach.
+    uint32_t blood_block;
+
+    // A pool spreads ALONG a wall it has run into, once, per resting place.  The
+    // flag is the bound: growing along the wall moves the outline, which re-queues
+    // the probe, which would otherwise find the new blocked directions and grow it
+    // again for the rest of the level.
+    bool     blood_wall_spread;
+
+    // Distance run when the rim was last measured.  A sliding splat is re-probed
+    // on a DISTANCE step rather than per frame - see the probe site in
+    // CL_AddParticles for why per frame is not an option.
+    float    blood_rim_dist;
 
     // Shoves left before an overhanging pool gives up trying to leave.  One
     // shove usually carries it off the lip; a pool parked in a corner can be

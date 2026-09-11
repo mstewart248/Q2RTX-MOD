@@ -24646,61 +24646,85 @@ textures/zor_temp/zlight:
 # out identically: base texture only.
 models/weapons/v_machn/flash/skin:
 	texture_base models/weapons/v_machn/flash/skin.tga
+	texture_emissive models/weapons/v_machn/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_beamer/flash/skin:
 	texture_base models/weapons/v_beamer/flash/skin.tga
+	texture_emissive models/weapons/v_beamer/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_bfg/flash/skin:
 	texture_base models/weapons/v_bfg/flash/skin.tga
+	texture_emissive models/weapons/v_bfg/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_blast/flash/skin:
 	texture_base models/weapons/v_blast/flash/skin.tga
+	texture_emissive models/weapons/v_blast/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_boomer/flash/skin:
 	texture_base models/weapons/v_boomer/flash/skin.tga
+	texture_emissive models/weapons/v_boomer/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_dist/flash/skin:
 	texture_base models/weapons/v_dist/flash/skin.tga
+	texture_emissive models/weapons/v_dist/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_etf_rifle/flash/skin:
 	texture_base models/weapons/v_etf_rifle/flash/skin.tga
+	texture_emissive models/weapons/v_etf_rifle/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_launch/flash/skin:
 	texture_base models/weapons/v_launch/flash/skin.tga
+	texture_emissive models/weapons/v_launch/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_rail/flash/skin:
 	texture_base models/weapons/v_rail/flash/skin.tga
+	texture_emissive models/weapons/v_rail/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_rocket/flash/skin:
 	texture_base models/weapons/v_rocket/flash/skin.tga
+	texture_emissive models/weapons/v_rocket/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_shotg/flash/skin:
 	texture_base models/weapons/v_shotg/flash/skin.tga
+	texture_emissive models/weapons/v_shotg/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 
 models/weapons/v_shotg2/flash/skin:
 	texture_base models/weapons/v_shotg2/flash/skin.tga
+	texture_emissive models/weapons/v_shotg2/flash/skin.tga
+	is_light 1
 	base_factor 1
 	metalness_factor 0
 

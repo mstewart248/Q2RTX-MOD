@@ -1956,11 +1956,17 @@ void weapon_etf_rifle_fire(edict_t *ent)
         ent->client->kick_angles[i] = crandom() * 0.85f;
     }
 
-    // the two barrels sit a couple of units apart
+    // The two barrels sit a couple of units apart.
+    //
+    // offset[2] MUST carry ent->viewheight: this tree's P_ProjectSource
+    // projects from the raw point it is handed (ent->s.origin, the player's
+    // centre), while the rerelease's projects from origin + viewheight. So the
+    // rerelease's literal -8 means "8 below the EYE" and copying it verbatim
+    // spawned the flechettes ~30 units low, out of the player's waist.
     if (ent->client->ps.gunframe == 6)
-        VectorSet(offset, 15, 8, -8);
+        VectorSet(offset, 15, 8, ent->viewheight - 8);
     else
-        VectorSet(offset, 15, 6, -8);
+        VectorSet(offset, 15, 6, ent->viewheight - 8);
 
     VectorAdd(ent->client->v_angle, ent->client->kick_angles, v);
     AngleVectors(v, forward, right, up);

@@ -3284,7 +3284,20 @@ prepare_entities(EntityUploadInfo* upload_info)
 					masked_model_indices[masked_model_num++] = i;
 			}
 
-			if (model->num_light_polys > 0)
+			// A muzzle flash can be a real AREA LIGHT, not just an additive
+			// overlay, if its material carries is_light + an emissive map.
+			// That is independent of how the flash is DRAWN - the effects hit
+			// shader samples base_texture only and never reads the emissive -
+			// so this cannot affect the soft alpha falloff.
+			//
+			// It is off by default because it is not free and not obviously
+			// wanted: light extraction makes ONE LIGHT POLY PER TRIANGLE, and
+			// these flash models are 48 triangles (24 of them redundant
+			// back-facing duplicates), so every shot adds ~48 short-lived area
+			// lights - on top of the dynamic light CL_MuzzleFlash already
+			// spawns at the same spot.
+			if (model->num_light_polys > 0 &&
+			    (model->model_class != MCLASS_FLASH || cl_muzzleflash_light->integer))
 			{
 				float transform[16];
 				const bool is_viewer_weapon = (entity->flags & RF_WEAPONMODEL) != 0;

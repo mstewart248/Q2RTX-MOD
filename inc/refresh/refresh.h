@@ -222,6 +222,24 @@ typedef struct blood_sphere_s {
     vec3_t  tangent;
     float   stretch;
 
+    // The half-extent ACROSS `tangent`, as a multiple of the same spread that
+    // `stretch` multiplies.  1 is the droplet's own width.
+    //
+    // THIS USED TO BE DERIVED (`stretch - stretch_trail`, the impact's share of
+    // the elongation) AND IT COULD NOT STAY THAT WAY.  A derived cross axis is
+    // never more than the droplet's own width, so the mark could never be WIDER
+    // across its travel than along it - and that is exactly the shape a
+    // horizontal smear has the moment it starts running down a wall.  With the
+    // two extents independent the slide can DEFORM the mark, drawing it out
+    // downhill while it narrows across; before, all it could do was pivot a
+    // fixed ellipse onto the new axis, which reads as a needle swinging round
+    // rather than as blood running.
+    //
+    // See CL_BloodReshapeSlide: the re-expression at each committed turn is
+    // AREA-PRESERVING, so a 2:1 bar turned ninety degrees becomes a round mark
+    // of the same size rather than a 2:1 bar facing the other way.
+    float   cross;
+
     // How much of `stretch` the pool picked up by SLIDING rather than by landing,
     // in the same units.  The renderer shifts the mesh back along `tangent` by
     // exactly that much, so the length a pool gains while running downhill trails

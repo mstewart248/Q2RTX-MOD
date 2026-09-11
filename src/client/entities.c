@@ -1282,14 +1282,102 @@ typedef struct {
 // ORDER MATTERS: the lookup is a substring match, and "v_shotg" is a prefix of
 // "v_shotg2" - so the super shotgun MUST be listed before the shotgun or it
 // silently takes the shotgun's offset.
+// Calibrated by Matt in game 2026-09-11, with the flash finally at a sane size -
+// the earlier numbers were dialled against a flash so oversized it covered the
+// muzzle wherever its centre sat, which hid how far off they were.
 static weapon_muzzle_t cl_weapon_muzzles[] = {
-    { "v_blast",   {  40.0f, -13.0f, -10.0f }, "v_blast"  },   // blaster - a soft ball
-    { "v_shotg2",  {  40.0f, -15.0f, -10.0f }, "v_shotg2" },   // super shotgun
-    { "v_shotg",   {  40.0f, -15.0f, -15.0f }, "v_shotg"  },   // shotgun
-    { "v_machn",   {  40.0f, -15.0f, -10.0f }, "v_machn"  },   // machinegun - a star
-    { "v_chain",   {  40.0f, -13.0f, -15.0f }, "v_machn"  },   // chaingun - borrows the star
-    { "v_hyperb",  {  40.0f, -10.0f, -10.0f }, "v_blast"  },   // hyperblaster - borrows the ball
+    { "v_blast",   {  40.0f, -10.0f, -10.0f }, "v_blast"  },   // blaster - a soft ball
+    { "v_shotg2",  {  40.0f, -13.0f, -10.0f }, "v_shotg2" },   // super shotgun
+    { "v_shotg",   {  37.0f, -13.0f, -13.0f }, "v_shotg"  },   // shotgun
+    { "v_machn",   {  37.0f, -13.0f, -10.0f }, "v_machn"  },   // machinegun - a star
+    { "v_chain",   {  40.0f, -12.0f, -14.0f }, "v_machn"  },   // chaingun - borrows the star
+    { "v_hyperb",  {  43.0f,  -9.0f, -10.0f }, "v_blast"  },   // hyperblaster - borrows the ball
 };
+
+#define MUZZLE_OFFSET_FILE  "muzzleoffsets"
+
+/*
+=================
+CL_SaveMuzzleOffsets / CL_LoadMuzzleOffsets
+
+The offsets are eye-calibrated, so they are worth real time to produce and must
+survive quitting the game. They are NOT stored as cvars: that would put six more
+entries into q2config.cfg, which on this project is exactly where per-map and
+per-weapon values have leaked and followed people between games before. A file
+of our own, parsed by hand, is the same thing the "light" command does.
+
+The format is one weapon per line, "<key> forward left up", so it can also be
+hand-edited. Comments are stripped here rather than by the tokenizer, which has
+no idea what a comment is.
+=================
+*/
+static void CL_SaveMuzzleOffsets(void)
+{
+    char        buffer[MAX_OSPATH];
+    qhandle_t   f;
+    int         i;
+
+    f = FS_EasyOpenFile(buffer, sizeof(buffer), FS_MODE_WRITE | FS_FLAG_TEXT,
+                        "", MUZZLE_OFFSET_FILE, ".cfg");
+    if (!f) {
+        Com_EPrintf("Couldn't write the muzzle offsets.\n");
+        return;
+    }
+
+    FS_FPrintf(f, "// muzzle flash offsets, written by the \"muzzleoffset\" command\n");
+    FS_FPrintf(f, "// weapon      forward     left       up\n");
+
+    for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
+        const weapon_muzzle_t *w = &cl_weapon_muzzles[i];
+
+        FS_FPrintf(f, "%-12s %8.1f %8.1f %8.1f\n",
+                   w->gun, w->offset[0], w->offset[1], w->offset[2]);
+    }
+
+    FS_CloseFile(f);
+}
+
+static void CL_LoadMuzzleOffsets(void)
+{
+    char    *buffer, *s, *p;
+    int     ret;
+
+    ret = FS_LoadFile(MUZZLE_OFFSET_FILE ".cfg", (void **)&buffer);
+    if (!buffer) {
+        // not having one yet is the normal case, not an error
+        if (ret != Q_ERR(ENOENT))
+            Com_EPrintf("Couldn't load %s.cfg: %s\n",
+                        MUZZLE_OFFSET_FILE, Q_ErrorString(ret));
+        return;
+    }
+
+    s = buffer;
+    while (*s) {
+        char    name[64];
+        vec3_t  v;
+        int     i;
+
+        p = strchr(s, '\n');
+        if (p)
+            *p = 0;
+
+        if (sscanf(s, "%63s %f %f %f", name, &v[0], &v[1], &v[2]) == 4 &&
+            name[0] != '/') {
+            for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
+                if (!strcmp(name, cl_weapon_muzzles[i].gun)) {
+                    VectorCopy(v, cl_weapon_muzzles[i].offset);
+                    break;
+                }
+            }
+        }
+
+        if (!p)
+            break;
+        s = p + 1;
+    }
+
+    FS_FreeFile(buffer);
+}
 
 /*
 =================
@@ -1304,10 +1392,11 @@ muzzles are 12 units apart. They are eye-calibrated numbers and nothing else.
     muzzleoffset                 list every weapon, ready to paste back
     muzzleoffset <x> <y> <z>     set the weapon currently in your hands
 
-Axes are forward / LEFT / up. Changes take effect on the next shot and live in
-memory only - they are NOT saved, which is deliberate: the listing is meant to
-be pasted into cl_weapon_muzzles[] so the numbers end up in source rather than
-in a config nobody can find later.
+Axes are forward / LEFT / up, and changes take effect on the next shot. Every
+set is written straight to muzzleoffsets.cfg and read back at startup, so a
+tuning session survives quitting the game. The listing is still the way to get
+the numbers into cl_weapon_muzzles[] permanently - the file is for keeping work
+in progress, the table is for shipping it.
 =================
 */
 void CL_MuzzleOffset_f(void)
@@ -1322,6 +1411,10 @@ void CL_MuzzleOffset_f(void)
     }
 
     if (argc == 1) {
+        if (cl_muzzleflash_offset->string[0])
+            Com_Printf("WARNING: cl_muzzleflash_offset is set to \"%s\", which "
+                       "overrides EVERY weapon below. Clear it to see these.\n",
+                       cl_muzzleflash_offset->string);
         Com_Printf("muzzle offsets, in cl_weapon_muzzles[] order:\n");
         for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
             const weapon_muzzle_t *w = &cl_weapon_muzzles[i];
@@ -1346,8 +1439,18 @@ void CL_MuzzleOffset_f(void)
             cl_weapon_muzzles[i].offset[0] = atof(Cmd_Argv(1));
             cl_weapon_muzzles[i].offset[1] = atof(Cmd_Argv(2));
             cl_weapon_muzzles[i].offset[2] = atof(Cmd_Argv(3));
-            Com_Printf("%s muzzle offset now %.1f %.1f %.1f - "
-                       "type muzzleoffset with no arguments to list them all.\n",
+            // The old global dev cvar would override what we just set, for
+            // this and every other weapon, which reads as the command being
+            // broken. It is superseded by this command, so drop it.
+            if (cl_muzzleflash_offset->string[0]) {
+                Cvar_Set("cl_muzzleflash_offset", "");
+                Com_Printf("(cleared cl_muzzleflash_offset, which was "
+                           "overriding every weapon)\n");
+            }
+
+            CL_SaveMuzzleOffsets();
+            Com_Printf("%s muzzle offset now %.1f %.1f %.1f - saved. "
+                       "Type muzzleoffset with no arguments to list them all.\n",
                        cl_weapon_muzzles[i].gun,
                        cl_weapon_muzzles[i].offset[0],
                        cl_weapon_muzzles[i].offset[1],
@@ -1371,7 +1474,15 @@ would stall on the first shot with each weapon while the model loads.
 */
 void CL_RegisterViewMuzzleFlashes(void)
 {
+    static bool loaded;
     int i;
+
+    // Once per run, not once per map: this must not stomp offsets that are
+    // being dialled in during the session.
+    if (!loaded) {
+        loaded = true;
+        CL_LoadMuzzleOffsets();
+    }
 
     for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
         char path[MAX_QPATH];
@@ -1397,6 +1508,7 @@ void CL_RegisterViewMuzzleFlashes(void)
 // until the gun came back and then pop a flash in mid-air. Stamping the time
 // lets a flash nobody could draw expire on its own. 0 = nothing pending.
 static int  cl_view_flash_time;
+static float cl_view_flash_roll;
 
 #define VIEW_FLASH_WINDOW   100     // ms; a flash older than this is stale
 
@@ -1404,6 +1516,9 @@ static int  cl_view_flash_time;
 void CL_ViewMuzzleFlash(void)
 {
     cl_view_flash_time = cl.time;
+    // one roll for the whole life of this flash - re-rolling every frame would
+    // make the starburst spin instead of sit on the barrel
+    cl_view_flash_roll = frand() * 360.0f;
 }
 
 static void CL_AddViewWeaponFlash(const entity_t *gun)
@@ -1415,9 +1530,25 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
     static vec3_t   tuned_storage;
     int             i;
 
-    if (!cl_view_flash_time || cl.time - cl_view_flash_time > VIEW_FLASH_WINDOW)
+    /* THE FLASH HAS TO FOLLOW THE GUN, so this runs EVERY frame of its life
+       rather than spawning something once.
+
+       It used to allocate an ordinary world-space explosion at the muzzle and
+       leave it there. But the gun is drawn relative to the camera and keeps
+       moving: running forward at Quake II's 300 units/sec carries it 15 units
+       in the flash's 50 ms, against a muzzle offset of only ~37-40 units. The
+       barrel overtook the flash and it surfaced BEHIND the gun.
+
+       Rebuilding it here from the gun transform we were just handed keeps the
+       two in sync by construction - there is no stored position to go stale,
+       and it does not matter whether CL_AddExplosions runs before or after the
+       view weapon. It is also why this is not an explosion any more: the view
+       flash is the one effect whose position is not a fact about the world. */
+    if (!cl_view_flash_time ||
+        cl.time - cl_view_flash_time >= Cvar_ClampValue(cl_muzzleflash_time, 10, 200)) {
+        cl_view_flash_time = 0;
         return;
-    cl_view_flash_time = 0;             // consume it either way, never let it pile up
+    }
 
     if (!cl_muzzleflash_models->integer)
         return;
@@ -1456,11 +1587,19 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
     VectorMA(muzzle, -(*ofs)[1], right,   muzzle);
     VectorMA(muzzle,  (*ofs)[2], up,      muzzle);
 
-    // true = use the first-person size and brightness, which are separate
-    // cvars for the reasons set out at CL_MuzzleFlashModel. `flash` is this
-    // weapon's own graphic, which is the difference between a blaster ball and
-    // a machinegun star.
-    CL_MuzzleFlashModel2(muzzle, gun->angles, RF_FIRST_PERSON_FX, flash);
+    // RF_FIRST_PERSON_FX keeps this copy out of reflections - the world twin
+    // spawned on the player model is the one a mirror should see. `flash` is
+    // this weapon's own graphic, which is the difference between a blaster
+    // ball and a machinegun star; 0 falls back to the generic star.
+    if (!flash)
+        flash = cl_mod_muzzleflash;
+    if (flash) {
+        entity_t ent;
+
+        CL_SetupMuzzleFlashEntity(&ent, muzzle, gun->angles, cl_view_flash_roll,
+                                  RF_FIRST_PERSON_FX, flash);
+        V_AddEntity(&ent);
+    }
 }
 
 static void CL_AddViewWeapon(void)

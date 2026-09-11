@@ -897,16 +897,21 @@ one along its normal, scaled so the droplet squashes against the wall.
 1/sqrt(flatten) so the ellipsoid keeps roughly the volume the sphere had - a
 splat should read as the same droplet spread out, not as a differently sized one.
 
-`narrow` IS NOT `stretch`, AND THAT DISTINCTION IS THE WHOLE POINT OF IT.  The
-cross axis used to be divided by the full stretch, which makes the aspect ratio
-the SQUARE of it - so a pool that had run its length out to the 3.5 cap was drawn
-12:1, and a hillside of them read as a fan of red needles rather than as blood.
-Narrowing is right for the part of the elongation an IMPACT put there: a droplet
-thrown sideways spreads along its travel and covers about the area it would have
-covered landing square.  It is wrong for the part a RUN put there.  Blood running
-down a surface keeps roughly the width of the droplet feeding it and gains
-LENGTH; it does not get thinner as it goes.  So only the impact's share divides
-the cross axis, and a pure run is drawn at its stretch, not its stretch squared.
+`cross` IS AN INDEPENDENT EXTENT, NOT A FUNCTION OF `stretch`, AND THAT IS THE
+WHOLE POINT OF IT.  Two earlier versions derived it and both were wrong in a way
+that showed:
+
+  - Dividing the cross axis by the full stretch makes the aspect ratio the SQUARE
+    of it, so a pool that had run out to the 3.5 cap was drawn 12:1 and a
+    hillside of them read as a fan of red needles rather than as blood.
+  - Dividing it by the IMPACT's share only fixed that, but left the cross axis
+    permanently at or below the droplet's own width.  A mark can then never be
+    wider across its travel than along it, so a horizontal smear that starts
+    running down a wall has no shape to become except a vertical smear of the
+    same proportions - it PIVOTS instead of deforming.
+
+The client now carries both extents and reshapes them (CL_BloodReshapeSlide), so
+all this has to do is scale by them.  Both are in units of `spread`.
 
 Seeding the cross product from whichever axis the normal is least aligned with
 keeps it well conditioned; one component of a unit vector is always below
@@ -914,7 +919,7 @@ keeps it well conditioned; one component of a unit vector is always below
 ================
 */
 static void splat_basis(const vec3_t normal, const vec3_t tangent, float radius,
-                        float flatten, float stretch, float narrow,
+                        float flatten, float stretch, float cross,
                         vec3_t out_t1, vec3_t out_t2, vec3_t out_n)
 {
     // The first tangent axis is the direction the droplet was travelling, when
@@ -943,7 +948,7 @@ static void splat_basis(const vec3_t normal, const vec3_t tangent, float radius,
         CrossProduct(seed, normal, out_t1);
         VectorNormalize(out_t1);
         stretch = 1.f;
-        narrow = 1.f;
+        cross = 1.f;
     }
 
     CrossProduct(normal, out_t1, out_t2);
@@ -956,16 +961,16 @@ static void splat_basis(const vec3_t normal, const vec3_t tangent, float radius,
     // puddle's width is now its own quantity, and flatten only sets its height.
     const float spread = radius * max(0.1f, global_blood_splat_size);
 
-    // Elongate along the travel direction, and narrow across it by the IMPACT's
-    // share of that elongation only - see the note on `narrow` above. An impact
-    // smear covers the same area as the round splat it replaces; a run gets
-    // longer without getting thinner.
+    // Both extents come straight from the client. `stretch` is floored at the
+    // droplet's own width because the tangent is the LONG axis by construction;
+    // `cross` is free to sit either side of it, which is what lets a mark be
+    // wider across its travel than along it while it is turning into a run.
+    // Only the degenerate values are excluded.
     stretch = max(1.f, stretch);
-    narrow = max(1.f, min(narrow, stretch));
-    const float inv = 1.f / narrow;
+    cross = max(0.05f, min(cross, 16.f));
 
     VectorScale(out_t1, spread * stretch, out_t1);
-    VectorScale(out_t2, spread * inv, out_t2);
+    VectorScale(out_t2, spread * cross, out_t2);
     VectorScale(normal, radius * flatten, out_n);
 }
 
@@ -1265,11 +1270,9 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 		if (is_splat)
 		{
-			// stretch - stretch_trail is the elongation the IMPACT left, which
-			// is the only part that narrows the splat across its travel.
 			splat_basis(sphere->normal, sphere->tangent, sphere->radius,
-				sphere->flatten, sphere->stretch,
-				sphere->stretch - sphere->stretch_trail, ax_t1, ax_t2, ax_n);
+				sphere->flatten, sphere->stretch, sphere->cross,
+				ax_t1, ax_t2, ax_n);
 
 			// Inverse-transpose of the scale, in the same frame. The basis is
 			// orthonormal before scaling, so this is just the reciprocal of each

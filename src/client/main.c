@@ -39,6 +39,7 @@ cvar_t  *cl_muzzleflash_world_up;
 cvar_t  *cl_muzzleflash_view_size;
 cvar_t  *cl_muzzleflash_view_brightness;
 cvar_t  *cl_muzzleflash_time;
+cvar_t  *cl_muzzleflash_light;
 cvar_t  *cl_muzzleflash_brightness;
 cvar_t  *cl_muzzleflash_offset;
 cvar_t  *cl_warn_on_fps_rounding;
@@ -2810,6 +2811,18 @@ static void CL_InitLocal(void)
        clock's frame is 100 ms and the flash was one frame long. 50 gives an
        even on/off at the machinegun's rate. */
     cl_muzzleflash_time = Cvar_Get("cl_muzzleflash_time", "50", CVAR_ARCHIVE);
+    /* Let the flash be a real AREA LIGHT that illuminates the room, on top of
+       being an additive overlay. This is the "emissive" behaviour, and it is
+       genuinely independent of the soft falloff: the effects hit shader draws
+       the flash from base_texture alone and never reads the emissive map, so
+       turning this on cannot change the flash's own appearance.
+
+       OFF by default, for two honest reasons. Light extraction makes ONE LIGHT
+       POLY PER TRIANGLE and these models are 48 triangles - 24 of them
+       redundant back-facing duplicates - so each shot adds ~48 short-lived
+       area lights. And CL_MuzzleFlash already spawns a dynamic light at the
+       same point, so this doubles up rather than replacing it. */
+    cl_muzzleflash_light = Cvar_Get("cl_muzzleflash_light", "0", CVAR_ARCHIVE);
     // dev aid: "x y z" overrides the built-in muzzle offset for the weapon in
     // hand, so one can be dialled in live instead of rebuilding each time
     cl_muzzleflash_offset = Cvar_Get("cl_muzzleflash_offset", "", 0);
