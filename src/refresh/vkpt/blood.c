@@ -778,7 +778,7 @@ VkResult vkpt_blood_initialize(void)
 	// into an existing cvar, which is how CVAR_ARCHIVE reaches a UBO cvar at
 	// all. Same "fetch a cvar someone else owns" pattern that
 	// vkpt_blood_slot_capacity uses for cl_blood_max.
-	cvar_pt_blood_splat_alpha = Cvar_Get("pt_blood_splat_alpha", "1.0", CVAR_ARCHIVE);
+	cvar_pt_blood_splat_alpha = Cvar_Get("pt_blood_splat_alpha", "0.95", CVAR_ARCHIVE);
 
 	return VK_SUCCESS;
 }
