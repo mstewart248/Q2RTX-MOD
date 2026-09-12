@@ -255,6 +255,36 @@ is_transparent(uint material)
 	return (material & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT;
 }
 
+/*
+A TRANSLUCENT SPLAT MUST NOT SHADOW WHAT YOU ARE LOOKING THROUGH IT AT.
+
+This is the trap in the whole idea, and it is invisible until you look for it. A
+landed splat lies flush ON the surface - its base is sunk below the floor plane
+so the rim feathers in - so the thing "behind" it is the floor directly beneath
+it, at almost the same point. That floor point's shadow rays go straight back up
+into the puddle, which is AS_FLAG_BLOOD, FORCE_OPAQUE and in the shadow mask. So
+without this the transparency reveals a floor in the splat's own shadow: a black
+hole with a red rim, which is worse than the solid splat it replaced.
+
+Water and glass avoid it by not being in the shadow mask at all, and that is the
+precedent followed here. Nothing is really lost: a splat's shadow falls entirely
+underneath itself and a droplet in flight is 1.2 units across, so blood's
+contribution to shadowing was never visible in the first place.
+
+All or nothing, because the mask is per-INSTANCE and every droplet shares one
+BLAS - so this only takes effect once splat transparency is actually turned on.
+*/
+int
+shadow_ray_cull_mask()
+{
+	int mask = SHADOW_RAY_CULL_MASK;
+
+	if (global_ubo.pt_blood_splat_alpha < 0.999)
+		mask &= ~AS_FLAG_BLOOD;
+
+	return mask;
+}
+
 bool
 is_chrome(uint material)
 {
@@ -1041,8 +1071,42 @@ get_material(
 		                        triangle.tex_coords[0].y,
 		                        triangle.tex_coords[1].x), vec3(0), vec3(1));
 		// uv2.x carries "this droplet has landed" - see write_blood_geometry.
-		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y,
-		                          triangle.tex_coords[2].x > 0.5);
+		bool blood_landed = triangle.tex_coords[2].x > 0.5;
+
+		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y, blood_landed);
+
+		/*
+		A LANDED SPLAT IS A FILM, NOT A BEAD, AND IT IS THE ONE THAT MUST GO DARK.
+
+		A droplet in flight is a lit sphere of blood and reads correctly as
+		bright red; blood lying on a floor is a thin absorbing layer over a
+		surface, and drawing it at the same saturated red is what makes a pool
+		read as spilled paint. Only the landed branch is touched, so the spray
+		keeps the look it has.
+
+		The thickness is not stored anywhere - it is measured. For a splat,
+		triangle.tangents carries the SURFACE PLANE NORMAL rather than a tangent
+		(blood never reaches the tangent-space code; see the note in blood.c),
+		and the puddle's dome runs from a rim whose normal lies in that plane to
+		a body whose normal is along it. dot() of the two is therefore 0 at the
+		feather edge and ~1 over the pool, with no new vertex channel, no
+		interpolation of our own and no second ray.
+
+		The dome's normals are steepened by the inverse of cl_blood_flatten, so
+		that dot saturates within the outermost band of the disc - which is why
+		pt_blood_thin_power exists and defaults above 1. It is what sets how far
+		the dark edge reaches in, and it is the knob to reach for first.
+		*/
+		if (blood_landed)
+		{
+			float thickness = clamp(dot(geo_normal, triangle.tangents[0]), 0.0, 1.0);
+			thickness = pow(thickness, max(0.01, global_ubo.pt_blood_thin_power));
+
+			base_color *= mix(global_ubo.pt_blood_thin_dark,
+			                  global_ubo.pt_blood_splat_dark,
+			                  thickness);
+		}
+
 		metallic = 0;
 		roughness = clamp(global_ubo.pt_blood_roughness, 0.0, 1.0);
 		emissive = vec3(0);

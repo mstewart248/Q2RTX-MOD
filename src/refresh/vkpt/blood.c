@@ -109,11 +109,34 @@ the floor instead of ending in a visible lip.
 
 Built once per LOD, like the spheres. Segments and rings per level below; face
 count is segments * 2 * rings.
-*/
-#define BLOOD_PUDDLE_MAX_FACES (8*2*2 + 16*2*3 + 32*2*4)
 
-static const int puddle_segments[BLOOD_SPHERE_MAX_SUBDIV + 1] = { 8, 16, 32 };
-static const int puddle_rings[BLOOD_SPHERE_MAX_SUBDIV + 1]    = { 2,  3,  4 };
+SEGMENTS ARE THE SILHOUETTE, RINGS ARE ONLY THE DOME PROFILE - AND THE BUDGET
+WAS ALREADY PAID FOR.
+
+A slot is `worst_faces = max(sphere, puddle)` primitives wide (see
+ensure_buffers), and at the top LOD the sphere is 320 while the puddle was 256 -
+so 64 primitives per slot were reserved and never written. Spending the whole
+320 on the puddle costs nothing at all: the same buffers are allocated and the
+memory table is unchanged.
+
+Where to spend it is not a toss-up. A landed splat's silhouette is the RIM of a
+disc, so the faceting is exactly `segments`, and pooling makes that worse
+without touching the mesh: at cl_blood_pool_max 24 a pool is a ~48-unit disc
+drawn with the same 32 segments a 2-unit droplet gets, i.e. a 4.7-unit straight
+chord. Rings only subdivide a dome that is cl_blood_flatten (0.16) tall and
+smooth-shaded, so they move the outline only at a grazing view. 80 segments x 2
+rings is 320 faces: two and a half times the rim resolution for the same
+primitive count.
+
+Level 1 now also carries all four wobble harmonics (they gate at 32 segments),
+so an LOD step between 1 and 2 resolves the SAME outline more finely instead of
+drawing a differently shaped one. Level 0 still drops the highest harmonic, but
+nothing reaches level 0 until it is small on screen.
+*/
+#define BLOOD_PUDDLE_MAX_FACES (16*2*2 + 32*2*2 + 80*2*2)
+
+static const int puddle_segments[BLOOD_SPHERE_MAX_SUBDIV + 1] = { 16, 32, 80 };
+static const int puddle_rings[BLOOD_SPHERE_MAX_SUBDIV + 1]    = {  2,  2,  2 };
 
 #define BLOOD_PUDDLE_FACES(level) (puddle_segments[level] * 2 * puddle_rings[level])
 
@@ -261,6 +284,8 @@ static cvar_t* cvar_pt_blood_lod_far = NULL;
 static cvar_t* cvar_pt_blood_lod_air = NULL;
 static cvar_t* cvar_pt_blood_puddle_sink = NULL;
 static cvar_t* cvar_pt_blood_wobble = NULL;
+static cvar_t* cvar_pt_blood_wobble_max = NULL;
+static cvar_t* cvar_pt_blood_splat_alpha = NULL;
 
 // cl_blood_splat_size, read once per frame - splat_basis is called per droplet
 // and the client owns the cvar.
@@ -712,6 +737,9 @@ VkResult vkpt_blood_initialize(void)
 	Cvar_Get("pt_blood_normal_strength", "0.35", CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_normal_scale",    "1.4",  CVAR_ARCHIVE);
 	Cvar_Get("pt_blood_normal_speed",    "1.0",  CVAR_ARCHIVE);
+	Cvar_Get("pt_blood_splat_dark",      "0.55", CVAR_ARCHIVE);
+	Cvar_Get("pt_blood_thin_dark",       "0.12", CVAR_ARCHIVE);
+	Cvar_Get("pt_blood_thin_power",      "2.0",  CVAR_ARCHIVE);
 
 	// Distance LOD. Inside _near a droplet gets the full pt_blood_tess; past
 	// _far it drops two levels; between them, one. Set _near very large to
@@ -734,6 +762,23 @@ VkResult vkpt_blood_initialize(void)
 	// a rim that wanders even slightly reads as something that splashed. Applied
 	// once, at generation, and then cached with the rest of the geometry.
 	cvar_pt_blood_wobble = Cvar_Get("pt_blood_wobble", "0.3", CVAR_ARCHIVE);
+
+	// Largest wobble lobe in WORLD UNITS, whatever the pool's radius.
+	// pt_blood_wobble is a fraction of the radius, which is the right unit for a
+	// droplet and the wrong one for a pool: at cl_blood_pool_max 24 a 0.3
+	// fraction is a plus or minus 7-unit lobe, and three of those is an amoeba
+	// rather than a splash. 0 restores the uncapped behaviour.
+	cvar_pt_blood_wobble_max = Cvar_Get("pt_blood_wobble_max", "3.5", CVAR_ARCHIVE);
+
+	// Opacity of a LANDED splat, written into each primitive's alpha below.
+	//
+	// Registered in the UBO cvar list, not here - the shader needs it too, to
+	// drop blood out of the shadow mask. The name and default must match that
+	// registration exactly; the flags do not, and must not - Cvar_Get ORs them
+	// into an existing cvar, which is how CVAR_ARCHIVE reaches a UBO cvar at
+	// all. Same "fetch a cvar someone else owns" pattern that
+	// vkpt_blood_slot_capacity uses for cl_blood_max.
+	cvar_pt_blood_splat_alpha = Cvar_Get("pt_blood_splat_alpha", "1.0", CVAR_ARCHIVE);
 
 	return VK_SUCCESS;
 }
@@ -812,6 +857,10 @@ Harmonics above segments/2 cannot be represented by the ring's vertices and
 alias straight back into the per-vertex jaggedness this exists to remove, so the
 higher terms are dropped on the coarser LODs.
 
+`amount` ARRIVES ALREADY CAPPED IN WORLD UNITS - see write_blood_geometry. It is
+a fraction of the radius here, which is right for a droplet and wrong for a pool
+that has absorbed twenty of them.
+
 Keyed on position (via the angle), never on the face or vertex slot: the puddle's
 vertices are shared between neighbouring faces, which store their own copies, so
 anything face-local would give one physical vertex a different offset per face
@@ -835,6 +884,13 @@ static inline float vertex_wobble(const vec3_t v, float seed, float amount, int 
 		n += sinf(theta * 5.f + seed * 5.3f) * 0.17f;
 	if (segs >= 32)
 		n += sinf(theta * 8.f + seed * 7.9f) * 0.10f;
+	// A fifth term, affordable only now that the top LOD has 80 segments. It is
+	// what keeps a POOL from reading as a smooth amoeba: the amplitude cap in
+	// write_blood_geometry holds the lobes to a fixed size in world units as a
+	// pool grows, and without a higher harmonic to take over, a large outline
+	// capped that way is simply a circle.
+	if (segs >= 64)
+		n += sinf(theta * 13.f + seed * 11.3f) * 0.06f;
 
 	float w = 1.f + n * amount;
 
@@ -1001,6 +1057,49 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 	const float near_sq = near_dist * near_dist;
 	const float far_sq = far_dist * far_dist;
 
+	/*
+	THE LEVEL IS A SCREEN SIZE, NOT A DISTANCE - and that is the whole of "a big
+	pool should have more polygons".
+
+	Distance alone answers the wrong question. Pooling merges by AREA and
+	cl_blood_pool_max lets one splat reach twenty-odd droplet radii, so two marks
+	at the same distance can differ by a factor of twenty in how much screen they
+	cover while being handed the same 32-segment rim. Projected size is the
+	quantity a tessellation level is actually for, and it costs one multiply more
+	than the distance test did.
+
+	The existing cvars keep their exact meaning. Both thresholds are re-expressed
+	as the angular size of a REFERENCE droplet (cl_blood_sphere_radius) at that
+	distance, so a droplet of that size still changes level at precisely
+	pt_blood_lod_near and pt_blood_lod_far. A pool twenty times wider changes
+	level twenty times further away, and a spray of small ones drops a level
+	sooner than it used to - which is where the extra primitives come from.
+
+	The comparison stays squared: `extent^2 > threshold^2 * dist^2` is the same
+	test as `extent/dist > threshold` with no division and no square root.
+	*/
+	const float ref_radius = max(0.05f,
+		Cvar_Get("cl_blood_sphere_radius", "1.2", CVAR_ARCHIVE)->value);
+	const float ref_sq = ref_radius * ref_radius;
+
+	const float near_thr_sq = ref_sq / near_sq;
+	const float far_thr_sq = ref_sq / far_sq;
+
+	/*
+	HYSTERESIS, AND IT IS LOAD-BEARING RATHER THAN COSMETIC.
+
+	The level is part of the geometry cache's key, so a splat parked on a
+	threshold would rebuild every vertex every frame - the same failure the fade
+	shrink and the slide turn both had, arriving by a third route. A pool GROWS
+	through its threshold as it absorbs droplets, so this is not a rare case.
+
+	Widening whichever band a droplet is already in by 25% of its metric costs
+	one compare and makes oscillation impossible: leaving a band needs a quarter
+	more (or less) projected size than entering it did. Squared, because
+	everything here is.
+	*/
+	const float hyst_sq = 1.25f * 1.25f;
+
 	uint32_t total = 0;
 
 	for (int s = 0; s < num_spheres; s++)
@@ -1009,10 +1108,67 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 		VectorSubtract(spheres[s].origin, cam_pos, delta);
 		const float dist_sq = DotProduct(delta, delta);
 
+		/*
+		The drawn half-width, which for a splat is not its radius. splat_basis
+		scales the two in-plane axes by `spread * stretch` and `spread * cross`,
+		spread being radius * cl_blood_splat_size - so a mark that has run down a
+		wall is several times wider than the droplet that made it, and the
+		segments are distributed by ANGLE, which puts the longest chords on the
+		long axis. The larger extent is therefore the one that decides the
+		faceting.
+		*/
+		const bool is_splat = is_splat_sphere(spheres + s);
+
+		float extent = spheres[s].radius;
+
+		if (is_splat)
+		{
+			const float spread = spheres[s].radius * max(0.1f, global_blood_splat_size);
+			extent = spread * max(1.f, max(spheres[s].stretch, spheres[s].cross));
+		}
+
+		const float extent_sq = extent * extent;
+
+		// The band the droplet is currently in is the one that gets widened.
+		// An invalid cache entry means a brand new droplet, which has no band to
+		// be kept in and simply takes the raw answer.
+		const blood_cache_entry_t* prev = (spheres[s].slot >= 0 && spheres[s].slot < MAX_BLOOD_SPHERES)
+			? blood_cache + spheres[s].slot : NULL;
+
+		float near_thr = near_thr_sq;
+		float far_thr = far_thr_sq;
+
+		/*
+		SPLATS ONLY, and that is not a shortcut - it is the pt_blood_lod_air
+		interaction.
+
+		The cached level is the level a droplet was BUILT at, and for an airborne
+		one that is already one step below the raw answer (the bias a few lines
+		down). Feeding it back in as "the band I am in" would then bias the
+		threshold a second time, every frame, and settle the spray a level lower
+		than asked for.
+
+		Nothing is lost by leaving it out. Hysteresis exists to stop a droplet
+		parked on a threshold from missing the geometry cache every frame, and an
+		airborne droplet misses it every frame regardless - its origin moves.
+		*/
+		if (is_splat && prev && prev->valid)
+		{
+			if (prev->level >= max_level)
+				near_thr /= hyst_sq;
+			else if (prev->level == max_level - 1)
+			{
+				near_thr *= hyst_sq;
+				far_thr /= hyst_sq;
+			}
+			else
+				far_thr *= hyst_sq;
+		}
+
 		int level;
-		if (dist_sq < near_sq)      level = max_level;
-		else if (dist_sq < far_sq)  level = max_level - 1;
-		else                        level = max_level - 2;
+		if (extent_sq > near_thr * dist_sq)     level = max_level;
+		else if (extent_sq > far_thr * dist_sq) level = max_level - 1;
+		else                                    level = max_level - 2;
 
 		/*
 		A DROPLET IN FLIGHT DOES NOT NEED A SETTLED SPLAT'S TESSELLATION.
@@ -1039,7 +1195,7 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 		Landing forces a rebuild anyway (sphere mesh to puddle mesh), so the
 		level change that comes with it costs nothing extra.
 		*/
-		if (!is_splat_sphere(spheres + s))
+		if (!is_splat)
 			level -= max(0, cvar_pt_blood_lod_air->integer);
 
 		// NOTE: splats deliberately get NO tessellation reduction, and there was
@@ -1101,6 +1257,46 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	// with stable slots almost everything is untouched, so only the slots that
 	// changed need to travel.
 	memset(blood.dirty_slot, 0, sizeof(blood.dirty_slot));
+
+	/*
+	A SHAPE CVAR CHANGED, SO EVERY CACHED SPLAT IS NOW WRONG.
+
+	The geometry cache keys on blood_sphere_t and nothing else, which is exactly
+	right for droplets and blind to the cvars that shape them. A settled floor
+	hits the exact-match test every frame, so dragging the irregularity or the
+	sink slider used to change nothing at all until the blood moved - the new
+	value reached only droplets that happened to be rebuilding. That reads as a
+	dead slider, and it is the first thing anyone does with a new knob.
+
+	Clearing `valid` alone is the correct invalidation, and deliberately not the
+	memset ensure_buffers does: the bytes on the device are at the right
+	ADDRESSES and only their content is stale, so dev_span and faces must
+	survive or a droplet whose mesh shrinks will not blank its tail on the GPU.
+
+	Costs one full regeneration on the frame the slider moves, which is the
+	1.7 ms this cache was built to remove - paid once, while tuning.
+	*/
+	{
+		const float look_now[5] = {
+			cvar_pt_blood_wobble->value,
+			cvar_pt_blood_wobble_max->value,
+			cvar_pt_blood_puddle_sink->value,
+			global_blood_splat_size,
+			cvar_pt_blood_splat_alpha->value,
+		};
+
+		static float look_was[5];
+		static bool  look_seen = false;
+
+		if (!look_seen || memcmp(look_now, look_was, sizeof(look_now)) != 0)
+		{
+			memcpy(look_was, look_now, sizeof(look_now));
+			look_seen = true;
+
+			for (int i = 0; i < MAX_BLOOD_SPHERES; i++)
+				blood_cache[i].valid = false;
+		}
+	}
 
 	for (int s = 0; s < num_spheres; s++)
 	{
@@ -1288,10 +1484,63 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			VectorScale(ax_n,  1.f / (len_n * len_n), inv_n);
 		}
 
+		/*
+		THE SURFACE PLANE NORMAL, CARRIED IN THE TANGENT SLOT.
+
+		get_material() reads it to work out how THICK the puddle is at a shading
+		point, which is what drives the rim darkening: on a dome whose normals
+		have been steepened by the flatten, dot(shading normal, plane normal)
+		runs from 0 at the rim - where the surface faces sideways and the film is
+		a feather edge - to 1 over the body of the pool. No new vertex channel
+		and no interpolation of our own: it is one encode_normal per droplet, and
+		load_triangle already decodes tangents for every hit.
+
+		Safe because a blood surface never reaches the tangent-space code.
+		get_material intercepts is_blood() ahead of every texture fetch and
+		returns before the normal-map block, and the only other reader of
+		triangle.tangents is get_water_normal, which blood is not. The puddle
+		template's own tangents are left built and simply unused on this path.
+		*/
+		const uint32_t splat_plane_nrm = is_splat ? encode_normal(sphere->normal) : 0;
+
+		// Landed splats can be translucent; droplets in flight never are.
+		const float splat_alpha = is_splat
+			? max(0.05f, min(cvar_pt_blood_splat_alpha->value, 1.f)) : 1.f;
+		const uint32_t splat_alpha_half = (uint32_t)floatToHalf(splat_alpha);
+
 		// A puddle's z runs from 0 at its base to 1 at its apex, where a sphere's
 		// spans the centre, so the two want different anchors: the puddle sits ON
 		// the contact point, sunk just far enough to bury its rim.
-		const float wobble = is_splat ? max(0.f, min(cvar_pt_blood_wobble->value, 0.9f)) : 0.f;
+		float wobble = is_splat ? max(0.f, min(cvar_pt_blood_wobble->value, 0.9f)) : 0.f;
+
+		/*
+		CAP THE LOBES IN WORLD UNITS.
+
+		pt_blood_wobble is a FRACTION of the outline's radius, which is the
+		correct unit for a droplet and badly wrong for a pool. At
+		cl_blood_pool_max 24 the drawn half-width reaches ~36 units, so the
+		shipped 0.3 pushes the rim in and out by eleven of them - three lobes
+		that size is an amoeba, and no amount of extra tessellation fixes it
+		because the shape itself is wrong.
+
+		Capping the amplitude rather than the fraction keeps a lone droplet
+		exactly as irregular as it was (it never reaches the cap) and holds a
+		pool's lobes to the size of a splash while it grows. The 13th harmonic
+		added to vertex_wobble at 64 segments is the other half of this: a large
+		outline with small lobes needs MORE of them, or it reads as a circle.
+
+		Cache-safe by construction - every input is either a cvar or a field of
+		blood_sphere_t that is already quantized, so this cannot make a parked
+		splat's geometry change from one frame to the next.
+		*/
+		if (is_splat && cvar_pt_blood_wobble_max->value > 0.f)
+		{
+			const float spread = sphere->radius * max(0.1f, global_blood_splat_size);
+			const float half_width = spread * max(1.f, max(sphere->stretch, sphere->cross));
+
+			if (half_width > 1e-3f)
+				wobble = min(wobble, cvar_pt_blood_wobble_max->value / half_width);
+		}
 
 		vec3_t mesh_origin;
 		VectorCopy(sphere->origin, mesh_origin);
@@ -1396,9 +1645,18 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 				prim->normals[2] = tmpl_normals[f][2];
 			}
 
-			prim->tangents[0] = tmpl_tangents[f][0];
-			prim->tangents[1] = tmpl_tangents[f][1];
-			prim->tangents[2] = tmpl_tangents[f][2];
+			if (is_splat)
+			{
+				prim->tangents[0] = splat_plane_nrm;
+				prim->tangents[1] = splat_plane_nrm;
+				prim->tangents[2] = splat_plane_nrm;
+			}
+			else
+			{
+				prim->tangents[0] = tmpl_tangents[f][0];
+				prim->tangents[1] = tmpl_tangents[f][1];
+				prim->tangents[2] = tmpl_tangents[f][2];
+			}
 
 			// One ModelInstance backs the whole blood section. It exists only so
 			// load_and_transform_triangle() can subtract render_prim_offset and
@@ -1406,7 +1664,14 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			// it, because the positions above are already in world space.
 			prim->instance = (uint32_t)blood.model_instance_index;
 
-			prim->emissive_and_alpha = 0x3c003c00;  // (1.0, 1.0) as two halves
+			// Two halves: emissive_factor in the LOW 16 bits, alpha in the
+			// HIGH ones - unpackHalf2x16 puts .x in the low half and
+			// load_triangle reads alpha from .y. 0x3c00 is 1.0.
+			//
+			// Only a LANDED splat is ever less than solid. A droplet in flight
+			// is a body of liquid and reads correctly opaque, and making the
+			// spray translucent would mean tracing through sixty of them.
+			prim->emissive_and_alpha = 0x3c00u | (splat_alpha_half << 16);
 
 			prim->uv0[0] = color[0];
 			prim->uv0[1] = color[1];
@@ -1534,8 +1799,9 @@ void vkpt_blood_update(
 		global_blood_splat_size = sz->value;
 	}
 
-	// Pick each droplet's tessellation from its distance to the camera, and size
-	// the buffers to what that actually needs rather than to the worst case. The
+	// Pick each droplet's tessellation from how much SCREEN it covers - its
+	// drawn extent against its distance, not distance alone - and size the
+	// buffers to what that actually needs rather than to the worst case. The
 	// worst case - every droplet at full tessellation - is 512 * 320 primitives,
 	// around 80 MB of staging and shadow memory that a typical frame nowhere near
 	// uses. Growing to the high-water mark keeps the common case cheap without

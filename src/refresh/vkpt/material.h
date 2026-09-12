@@ -77,6 +77,11 @@ typedef struct pbr_material_s {
 	// MAT_InheritScalars, which never overwrites a value the definition spelled
 	// out.
 	uint32_t specified_fields;
+	// The material whose layout-independent tuning this one inherits, recorded
+	// by MAT_InheritScalars - for an md5 skin, the classic .md2 skin it
+	// replaces. Kept because 'mat reload' has to re-apply that inheritance and
+	// no .mat file records it.
+	char inherit_source[MAX_QPATH];
 	// How much light from surfaces using this material scatters into the
 	// volumetric medium, relative to how much it lights other surfaces - RTX
 	// Remix's per-light volumetricRadianceScale, expressed per material because

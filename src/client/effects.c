@@ -927,6 +927,7 @@ static cvar_t *cl_blood_splat_life = NULL;
 static cvar_t *cl_blood_slide = NULL;
 static cvar_t *cl_blood_flatten = NULL;
 static cvar_t *cl_blood_splat_size = NULL;
+static cvar_t *cl_blood_color = NULL;
 static cvar_t *cl_blood_air_life = NULL;
 static cvar_t *cl_blood_pool = NULL;
 static cvar_t *cl_blood_pool_max = NULL;
@@ -1288,6 +1289,11 @@ void FX_Init(void)
     // Width of a landed puddle, as a multiple of the droplet's own radius.
     cl_blood_splat_size = Cvar_Get("cl_blood_splat_size", "1.5", CVAR_ARCHIVE);
 
+    // Force every blood sphere to one colour. 0 leaves whatever the effect that
+    // spawned it asked for, which is red for TE_BLOOD and green for
+    // TE_GREENBLOOD. See CL_ApplyBloodColor.
+    cl_blood_color = Cvar_Get("cl_blood_color", "0", CVAR_ARCHIVE);
+
     // How long a droplet may stay in the air before giving up. NOT a fade: a
     // droplet in flight keeps full size and simply waits until it hits
     // something. This exists only so that blood thrown into a void, or out of a
@@ -1487,9 +1493,13 @@ void FX_Init(void)
     // looks right, it just stops adding geometry.
     // This is the real budget AND what sizes the renderer's buffers, so raising
     // it costs memory: cl_blood_max * worst_faces * (128 + 36) bytes of shadow,
-    // and twice that again in staging. At pt_blood_tess 2 that is 320 faces, so
-    // 512 is about 81 MB and 2048 about 324 MB; pt_blood_tess 1 is 80 faces and
-    // divides all of it by four. MAX_BLOOD_SPHERES is only the ceiling. SAFETY
+    // and twice that again in staging. worst_faces is the LARGER of the sphere
+    // and the puddle at that tessellation, and since the puddle was widened to
+    // fill the slot the two are equal at the top level: pt_blood_tess 2 is 320
+    // faces either way, so 512 is about 81 MB and 2048 about 324 MB.
+    // pt_blood_tess 1 is 128 (the puddle, against the sphere's 80) and divides
+    // all of it by 2.5 rather than by the 4 it used to. MAX_BLOOD_SPHERES is
+    // only the ceiling. SAFETY
     // VALVE rather than a limiter - a settled firefight sits around 250. It is
     // here because persistence removed what used to bound droplet count (they
     // faded in under a second; now they live until they land), and a measured
@@ -4529,6 +4539,66 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
 
 /*
 ===============
+CL_ApplyBloodColor
+
+cl_blood_color: 0 leaves the colour the effect asked for - red for TE_BLOOD,
+green for TE_GREENBLOOD - and anything else forces one.
+
+APPLIED AT THE SINGLE POINT WHERE A PARTICLE BECOMES A BLOOD SPHERE, which is
+why it is one function and not a change at every spawn site. The spray, the
+diminishing gib trail and the non-diminishing one all pass through there and all
+pick different palette ranges of their own; recolouring at the source would mean
+finding each of them, and would risk catching an ordinary particle that happens
+to share a palette index with blood.
+
+THE JITTER IS NOT DECORATION. Every blood spawn site picks its colour as a
+palette BASE plus a few random low bits - `0xe8 + (Q_rand() & 7)` - so a burst
+carries a spread of shades. Forcing a single RGB throws that away and sixty
+droplets become sixty copies of one object, which is the same mistake the wobble
+made when it used one seed for a whole splat. The spread here is in the same
+direction for all three channels, so it reads as light and dark droplets rather
+than as a rainbow.
+
+Per-droplet colour reaches the renderer in the otherwise dead uv slots (see
+write_blood_geometry in blood.c), so this costs nothing beyond the particle it
+is written to - no material, no texture, no extra geometry.
+===============
+*/
+static void CL_ApplyBloodColor(cparticle_t *p)
+{
+    // Straight RGB rather than palette indices. Quake II's palette has a run of
+    // reds and a run of greens and nothing usable for the rest, so picking
+    // indices for blue or purple would mean guessing at ranges that are not
+    // there. color -1 means "use rgba", which cast_u32_to_f32_color already
+    // honours on the renderer side.
+    static const byte blood_tint[][3] = {
+        { 232,  36,  28 },   // 1 red - matches the 0xe8 range TE_BLOOD uses
+        {  46, 200,  54 },   // 2 green
+        {  48,  96, 236 },   // 3 blue
+        { 236, 206,  44 },   // 4 yellow
+        { 158,  52, 220 },   // 5 purple
+        {  30,  28,  26 },   // 6 black - oil, for anything mechanical
+    };
+    const int num_tints = (int)(sizeof(blood_tint) / sizeof(blood_tint[0]));
+
+    const int mode = cl_blood_color->integer;
+
+    if (mode <= 0)
+        return;
+
+    const byte *tint = blood_tint[min(mode, num_tints) - 1];
+
+    const int jitter = (int)(Q_rand() & 31) - 12;
+
+    for (int i = 0; i < 3; i++)
+        p->rgba.u8[i] = (byte)max(0, min(255, (int)tint[i] + jitter));
+
+    p->rgba.u8[3] = 255;
+    p->color = -1;
+}
+
+/*
+===============
 CL_MakeBloodSphere
 
 Turn a particle that has already been given its position, velocity and life into
@@ -4587,6 +4657,7 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale)
     num_blood_live++;
 
     p->is_blood_sphere = true;
+    CL_ApplyBloodColor(p);
     p->blood_state = BLOOD_AIRBORNE;
     p->blood_flatten = 1.0f;
     p->blood_stretch = 1.0f;

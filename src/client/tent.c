@@ -1765,7 +1765,17 @@ void CL_ParseTEnt(void)
         break;
 
     case TE_GREENBLOOD:
-        CL_ParticleEffect2(te.pos1, te.dir, 0xdf, 30);
+        // Same treatment as TE_BLOOD: green blood is blood, and sending it down
+        // CL_ParticleEffect2 left it as flat sprites while red blood was shaded
+        // sphere geometry. 30 is the count the original game used here.
+        //
+        // Note this fires rarely, if ever: the only sender in the tree is
+        // g_weapon.c's food cube, and it does `s.effects |= TE_GREENBLOOD`,
+        // mixing a temp-entity id into the EF_ flag word. That is verbatim from
+        // xatrix and is left alone on purpose - the classic expansions are held
+        // to what they shipped.
+        if (!(cl_disable_particles->integer & NOPART_BLOOD))
+            CL_BloodParticleEffect(te.pos1, te.dir, 0xdf, 30);
         break;
 
     case TE_TUNNEL_SPARKS:

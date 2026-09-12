@@ -476,7 +476,23 @@ main()
 	uint material_id = triangle.material_id;
 	// will be used in case of transparency, to retain difference between TRANSPARENT and TRANSP_MODEL
 	// default to TRANSP_MODEL so transparency on other material kind works (needed for eg gunalpha)
-	uint transparency_kind = (material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT ? MATERIAL_KIND_TRANSPARENT : MATERIAL_KIND_TRANSP_MODEL;
+	// Blood joins TRANSPARENT rather than TRANSP_MODEL deliberately.
+	//
+	// TRANSP_MODEL IS A DEAD END IN THIS TREE: is_transparent() was narrowed to
+	// TRANSPARENT alone in ff3ec4ef, and IS_REFLECT_REFRACT_KIND never listed
+	// TRANSP_MODEL - so reflect_refract.rgen early-outs on it and the field that
+	// is supposed to go THROUGH the surface shades the surface again instead.
+	// Both fields then land on the same colour and alpha nets out to nothing.
+	// (That is worth chasing separately: it is also why per-entity alpha does
+	// nothing. Widening those two tests is the fix, and it touches every alpha'd
+	// model in the game, which is exactly why it is not being done from here.)
+	//
+	// TRANSPARENT is live, tested, and carries only a 1.005-index-of-refraction
+	// distortion that on a film a fraction of a unit thick is imperceptible -
+	// and rides the blood's own rippled normal, so what little there is reads as
+	// the wet surface it is.
+	uint transparency_kind = ((material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT || is_blood(material_id))
+		? MATERIAL_KIND_TRANSPARENT : MATERIAL_KIND_TRANSP_MODEL;
 
 	
 

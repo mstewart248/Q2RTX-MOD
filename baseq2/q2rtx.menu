@@ -382,12 +382,15 @@ begin blood
             "ripple detail" pt_blood_normal_scale 0.2 6 0.2
         range --status "how fast the ripple animates (pt_blood_normal_speed)" \
             "ripple speed" pt_blood_normal_speed 0 4 0.25
+
+        pairs --status "force every droplet to one colour. \"as the game sends it\" leaves red blood red and the few green-blood effects green. Each droplet still gets its own light or dark shade, so a burst does not read as sixty copies of one object. Affects blood in the air as well as on the ground - the darkness settings further down apply to landed blood only (cl_blood_color)" \
+            "blood colour" cl_blood_color "as the game sends it" 0 "red" 1 "green" 2 "blue" 3 "yellow" 4 "purple" 5 "black - oil" 6
         blank
-        pairs --status "triangles per droplet up close. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading (pt_blood_tess)" \
-            "droplet detail" pt_blood_tess "low - 20 triangles" 0 "medium - 80" 1 "high - 320" 2
-        range --status "droplets closer than this get the full detail above. Every expense scales with triangle count, so this is the knob that keeps a faceful of blood affordable (pt_blood_lod_near)" \
+        pairs --status "triangles per droplet up close, as airborne bead / landed puddle. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading - and for a splat the outline is the RIM of a disc, which is why a puddle gets the larger share (pt_blood_tess)" \
+            "droplet detail" pt_blood_tess "low - 20 / 64 triangles" 0 "medium - 80 / 128" 1 "high - 320 / 320" 2
+        range --status "a droplet of the standard size closer than this gets the full detail above. The level is picked from how much SCREEN a mark covers, not from distance alone, so a pool that has merged twenty droplets holds its detail twenty times further away and a small one drops a level sooner. Every expense scales with triangle count, so this is the knob that keeps a faceful of blood affordable (pt_blood_lod_near)" \
             "full detail within" pt_blood_lod_near 32 1024 32
-        range --status "droplets past this distance drop to the lowest detail, where their outline is a couple of pixels anyway (pt_blood_lod_far)" \
+        range --status "a droplet of the standard size past this distance drops to the lowest detail, where its outline is a couple of pixels anyway. Scaled by size like the setting above (pt_blood_lod_far)" \
             "lowest detail beyond" pt_blood_lod_far 64 2048 64
         blank
         toggle --status "droplets collide with walls, floors, doors and platforms, splat where they land and run down under gravity. Off makes them fall straight through the world (cl_blood_collision)" \
@@ -412,6 +415,16 @@ begin blood
                 "puddle sink" pt_blood_puddle_sink 0 1 0.05
             range --status "how irregular a landed puddle outline is. A perfect ellipse reads as a squashed ball however well it is lit; a wandering rim reads as something that splashed (pt_blood_wobble)" \
                 "puddle irregularity" pt_blood_wobble 0 0.9 0.05
+            range --status "largest wobble lobe in WORLD UNITS, whatever the puddle's size. The setting above is a FRACTION of the radius, which is the right unit for a droplet and the wrong one for a pool that has absorbed twenty of them - at a high pooling limit it pushes the rim in and out by several units and the pool reads as an amoeba. This holds the lobes to the size of a splash as a pool grows, while a lone droplet never reaches it. 0 removes the limit (pt_blood_wobble_max)" \
+                "largest wobble" pt_blood_wobble_max 0 12 0.5
+            range --status "how dark landed blood is drawn, against the droplet that made it. Blood in the air is a lit bead and reads correctly bright; blood on a floor is a thin absorbing film over a surface, and drawing it the same saturated red is most of what makes a pool look like spilled paint. Airborne droplets are not affected. 1 is the old behaviour (pt_blood_splat_dark)" \
+                "landed blood darkness" pt_blood_splat_dark 0.05 1 0.05
+            range --status "how dark the feather edge of a puddle is, where the film is thinnest. Well below the setting above on purpose - a hard bright rim is the other half of what reads as a decal (pt_blood_thin_dark)" \
+                "edge darkness" pt_blood_thin_dark 0 1 0.02
+            range --status "how far the dark edge reaches in from the rim. The puddle's dome is squashed by the height setting, so the thickness it is measured from saturates quickly and values above 1 are what give the edge a visible width (pt_blood_thin_power)" \
+                "dark edge width" pt_blood_thin_power 0.5 6 0.25
+            range --status "how solid landed blood is. Below 1 the surface underneath is traced through the splat, so the floor's own texture and lighting show through it. Droplets in the AIR stay solid whatever this says - a bead in flight is a body of liquid, and seeing through a spray would mean tracing through sixty of them. Landed blood stops casting shadows below 1, which it has to: a splat lies flush on the floor, so the floor you would see through it is the floor it is shadowing (pt_blood_splat_alpha)" \
+                "landed blood opacity" pt_blood_splat_alpha 0.2 1 0.05
         blank
         toggle --status "a wet impact when blood lands on something. Heavily rate limited - a single wound throws sixty droplets, so this is one splat per burst rather than sixty (cl_blood_sound)" \
             "impact sound" cl_blood_sound

@@ -909,7 +909,10 @@ at all still render with its normal and PBR maps.
 
 It also runs for a definition that does not name a texture_base, i.e. one that
 only tunes scalars (see MAT_Find), so a slot is only ever filled when the
-definition did not state it. That keeps an explicit texture_normals - and an
+definition did not state it. A NULL (name) means the caller already has the
+base image and wants only the sidecars re-detected - 'mat reload' does that,
+because IMG_Find needs the name WITH its extension and only the registration
+path still has it. That keeps an explicit texture_normals - and an
 explicit "texture_normals 0", which means "this material has none" - winning
 over whatever happens to be lying beside the texture.
 =================
@@ -919,7 +922,7 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 {
 	char file_name[MAX_QPATH];
 
-	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_BASE))
+	if (name && !MAT_SPECIFIED(mat, MAT_TEXTURE_BASE))
 	{
 		mat->image_base = IMG_Find(name, type, flags | IF_SRGB);
 		mat->original_width = mat->image_base->width;
@@ -1048,6 +1051,10 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 
 	truncate_extension(source_name, source_no_ext);
 	Q_strlwr(source_no_ext);
+
+	// remembered so that 'mat reload' can re-apply this - see
+	// material_reapply_definition. Safe when source_name IS inherit_source.
+	Q_strlcpy(mat->inherit_source, source_no_ext, sizeof(mat->inherit_source));
 
 	src = find_material_sorted(source_no_ext, r_global_materials, num_global_materials);
 	if (!src)
@@ -1343,6 +1350,8 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    texture_normals %s\n", mat->filename_normals);
 	Com_Printf("    texture_emissive %s\n", mat->filename_emissive);
 	Com_Printf("    texture_mask %s\n", mat->filename_mask);
+	Com_Printf("    texture_roughness %s\n", mat->filename_roughness);
+	Com_Printf("    texture_metallic %s\n", mat->filename_metallic);
 	Com_Printf("    bump_scale %f\n", mat->bump_scale);
 	Com_Printf("    roughness_override %f\n", mat->roughness_override);
 	Com_Printf("    metalness_factor %f\n", mat->metalness_factor);
@@ -1432,6 +1441,9 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->num_frames         = matdef->num_frames;
 	mat->synth_emissive     = matdef->synth_emissive;
 	mat->volumetric_scale   = matdef->volumetric_scale;
+	// what the definition states ITSELF, which is what the auto-detection and
+	// the inheritance below are gated on
+	mat->specified_fields   = matdef->specified_fields;
 
 	// keep 'mat which' truthful about where the values came from
 	Q_strlcpy(mat->source_matfile, matdef->source_matfile, sizeof(mat->source_matfile));
@@ -1453,18 +1465,43 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	}
 	mat->emissive_threshold = matdef->emissive_threshold;
 
-	material_reload_image(&mat->image_base, mat->filename_base,
-	                      matdef->filename_base, mat, IF_SRGB);
-	material_reload_image(&mat->image_normals, mat->filename_normals,
-	                      matdef->filename_normals, mat, IF_NONE);
-	material_reload_image(&mat->image_roughness, mat->filename_roughness,
-	                      matdef->filename_roughness, mat, IF_NONE);
-	material_reload_image(&mat->image_metallic, mat->filename_metallic,
-	                      matdef->filename_metallic, mat, IF_NONE);
-	material_reload_image(&mat->image_emissive, mat->filename_emissive,
-	                      matdef->filename_emissive, mat, IF_SRGB);
-	material_reload_image(&mat->image_mask, mat->filename_mask,
-	                      matdef->filename_mask, mat, IF_NONE);
+	// Textures follow the same dichotomy MAT_Find draws. An entry that names a
+	// texture_base describes EVERY texture, so a name it no longer carries has
+	// to clear that slot. A TUNING-ONLY entry names none of them: its slots were
+	// auto-detected from the sidecars beside the texture, and writing the
+	// definition's empty strings over them threw away the base, normal, _rough,
+	// _metallic and _glow maps - i.e. 'mat reload' rendered the model white for
+	// exactly the reason MAT_Find used to, one layer up. That is why adding
+	// 'specular_factor 3' to an md5 skin still looked broken after MAT_Find was
+	// fixed: the model only goes white once the .mat has been reloaded, which is
+	// how the value is tuned in the first place.
+	const bool describes_textures = MAT_SPECIFIED(matdef, MAT_TEXTURE_BASE);
+
+#define RELOAD_TEXTURE(attr, image, filename, extra) \
+	if (describes_textures || MAT_SPECIFIED(matdef, attr)) \
+		material_reload_image(&mat->image, mat->filename, matdef->filename, mat, extra)
+
+	RELOAD_TEXTURE(MAT_TEXTURE_BASE,      image_base,      filename_base,      IF_SRGB);
+	RELOAD_TEXTURE(MAT_TEXTURE_NORMALS,   image_normals,   filename_normals,   IF_NONE);
+	RELOAD_TEXTURE(MAT_TEXTURE_ROUGHNESS, image_roughness, filename_roughness, IF_NONE);
+	RELOAD_TEXTURE(MAT_TEXTURE_METALLIC,  image_metallic,  filename_metallic,  IF_NONE);
+	RELOAD_TEXTURE(MAT_TEXTURE_EMISSIVE,  image_emissive,  filename_emissive,  IF_SRGB);
+	RELOAD_TEXTURE(MAT_TEXTURE_MASK,      image_mask,      filename_mask,      IF_NONE);
+
+#undef RELOAD_TEXTURE
+
+	if (!describes_textures)
+	{
+		// re-detect the slots the definition left unsaid, as a cold load would
+		autodetect_material_textures(mat, NULL, mat->name, mat->image_type,
+		                             mat->image_flags & ~IF_SRC_MASK);
+
+		// and re-apply the classic material's tuning, which no .mat file records -
+		// without this a reload drops an md5 skin from the inherited base_factor
+		// of 1.5-2.5 back to the 1.0 default and the model visibly darkens
+		if (mat->inherit_source[0])
+			MAT_InheritScalars(mat, mat->inherit_source);
+	}
 
 	if (mat->synth_emissive && !mat->image_emissive)
 	{
@@ -1551,7 +1588,7 @@ static void material_command_help(void)
 	Com_Printf("usage: mat <command> <arguments...>\n");
 	Com_Printf("available commands:\n");
 	Com_Printf("    help: print this message\n");
-	Com_Printf("    print: print the current material, i.e. one at the crosshair\n");
+	Com_Printf("    print [name]: print the material at the crosshair, or the named one\n");
 	Com_Printf("    which: tell where the current material is defined\n");
 	Com_Printf("    reload: re-read all .mat files from disk and rebuild\n");
 	Com_Printf("    save <filename> <options>: save the active materials to a file\n");
@@ -1610,6 +1647,26 @@ static void material_command(void)
 	if (strcmp(key, "reload") == 0)
 	{
 		material_command_reload();
+		return;
+	}
+
+	// 'print <name>' addresses a live material directly. The crosshair cannot
+	// reach a skin that is not on screen - a monster variant this map does not
+	// spawn, say - and that is exactly when one needs checking, because a
+	// tuning-only .mat entry is invisible in 'mat save' by design.
+	if (strcmp(key, "print") == 0 && Cmd_Argc() >= 3)
+	{
+		char name_no_ext[MAX_QPATH];
+		truncate_extension(Cmd_Argv(2), name_no_ext);
+		Q_strlwr(name_no_ext);
+
+		pbr_material_t* named = find_material(name_no_ext,
+			Com_HashString(name_no_ext, RMATERIALS_HASH), r_materials, MAX_PBR_MATERIALS);
+
+		if (named)
+			MAT_Print(named);
+		else
+			Com_Printf("No material named '%s' is loaded\n", name_no_ext);
 		return;
 	}
 

@@ -218,7 +218,7 @@ indirect_lighting(
 	bounce_ray.origin -= view_direction.xyz * 0.01;
 
 	int bounce_cull_mask = BOUNCE_RAY_CULL_MASK;
-	int shadow_cull_mask = SHADOW_RAY_CULL_MASK;
+	int shadow_cull_mask = shadow_ray_cull_mask();
 
 	if(global_ubo.first_person_model != 0 && !primary_is_weapon)
 	{

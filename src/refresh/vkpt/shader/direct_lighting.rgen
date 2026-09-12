@@ -101,7 +101,7 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 		use_shadow_rays = (ipos.x & 1) == 0 && (ipos.y & 1) == 0;
 	}
 
-	int shadow_cull_mask = SHADOW_RAY_CULL_MASK;
+	int shadow_cull_mask = shadow_ray_cull_mask();
 
 	if(global_ubo.first_person_model != 0 && !primary_is_weapon)
 		shadow_cull_mask |= AS_FLAG_VIEWER_MODELS;
@@ -714,7 +714,7 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 	bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
 	int primary_medium = int((material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT);
 
-	int shadow_cull_mask = SHADOW_RAY_CULL_MASK;
+	int shadow_cull_mask = shadow_ray_cull_mask();
 
 	if(global_ubo.first_person_model != 0 && !primary_is_weapon)
 		shadow_cull_mask |= AS_FLAG_VIEWER_MODELS;
