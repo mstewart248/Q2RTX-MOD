@@ -337,6 +337,30 @@ typedef struct {
     float   vol_density_ratio;
 } mapfog_params_t;
 
+/* THE RENDERER-SIDE ACCESSOR FOR THE ABOVE, DECLARED HERE ON PURPOSE.
+
+   It is defined in src/client/mapfog.c and was declared ONLY in
+   src/client/client.h, which the refresh modules do not include. god_rays.c
+   calls it at three sites and therefore called it with NO PROTOTYPE, which MSVC
+   reported as:
+
+     god_rays.c(460): warning C4013: 'CL_GetMapFog' undefined;
+                      assuming extern returning int
+
+   That is not cosmetic. The function returns `bool`, which the Microsoft x64
+   ABI passes in AL with THE UPPER 24 BITS OF EAX UNDEFINED. An unprototyped
+   caller assumes `int` and tests the whole of EAX, so a `false` can read as
+   true (or a `true` be corrupted) depending on whatever last used that
+   register. The result is a BOOLEAN that flips for reasons unrelated to the
+   fog - and vkpt_froxel_enabled() is exactly such a boolean, gating ONLY the
+   froxel grid: when it reads false the grid's passes are skipped and
+   god_rays_filter reads a stale/empty integrated volume, i.e. ALL the map fog
+   disappears at once while the per-pixel march stays correct.
+
+   Declaring it next to the struct it fills gives every refresh TU the real
+   signature. client.h keeps its identical declaration; the two agree. */
+bool CL_GetMapFog(mapfog_params_t *out);
+
 typedef struct refdef_s {
     int         x, y, width, height;// in virtual screen coordinates
     float       fov_x, fov_y;

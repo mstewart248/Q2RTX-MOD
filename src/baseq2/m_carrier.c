@@ -52,6 +52,14 @@ static int sound_death;
 static int sound_sight;
 static int sound_rail;
 static int sound_spawn;
+/* [rerelease] the chaingun spools audibly: a spin-up, a loop while it fires
+   and a spin-down when the burst ends. None of the three were here. */
+static int sound_cg_up;
+static int sound_cg_loop;
+static int sound_cg_down;
+/* the carrier's engine hum, which the chaingun loop borrows s.sound from and
+   must hand back - zeroing s.sound instead would silence the engine for good */
+static int sound_engine;
 
 vec3_t flyer_mins = {-16, -16, -24};
 vec3_t flyer_maxs = {16, 16, 16};
@@ -644,8 +652,25 @@ mmove_t carrier_move_run = {
    	NULL
 };
 
+/* [rerelease] spin the barrels up and start the loop. This tree drives looping
+   monster sounds off s.sound rather than monsterinfo.weapon_sound; the loop is
+   stopped again by carrier_reattack_mg when the burst ends, and by
+   carrier_die. */
+void CarrierSpool(edict_t *self)
+{
+	CarrierCoopCheck(self);
+
+	if (!M_RereleaseGame())
+	{
+		return;
+	}
+
+	gi.sound(self, CHAN_BODY, sound_cg_up, 1, 0.5f, 0);
+	self->s.sound = sound_cg_loop;
+}
+
 mframe_t carrier_frames_attack_pre_mg[] = {
-	{ai_charge, 4, CarrierCoopCheck},
+	{ai_charge, 4, CarrierSpool},
 	{ai_charge, 4, CarrierCoopCheck},
 	{ai_charge, 4, CarrierCoopCheck},
 	{ai_charge, 4, CarrierCoopCheck},
@@ -1073,12 +1098,58 @@ carrier_attack_mg(edict_t *self)
 {
 	CarrierCoopCheck(self);
 	self->monsterinfo.currentmove = &carrier_move_attack_mg;
+
+	/* [rerelease] how long this burst is allowed to run. carrier_reattack_mg
+	   extends it on a good roll and stops when it expires, instead of rogue's
+	   flat coin-flip. melee_debounce_framenum is free on the carrier - it has
+	   no melee at all - which is why the rerelease reuses it here. */
+	if (M_RereleaseGame())
+	{
+		self->monsterinfo.melee_debounce_framenum =
+			level.framenum + (1.2f + 0.8f * random()) * BASE_FRAMERATE;
+	}
 }
 
 void
 carrier_reattack_mg(edict_t *self)
 {
+	/* [rerelease] the reattack frame FIRES as well as deciding. Rogue only
+	   shot on the two frames before it, so this tree's carrier was putting out
+	   two rounds per three-frame loop where the rerelease puts out three. */
+	if (M_RereleaseGame())
+	{
+		CarrierMachineGun(self);
+	}
+
 	CarrierCoopCheck(self);
+
+	if (M_RereleaseGame())
+	{
+		/* keep the barrels turning while we can still see them and the burst
+		   has time left on it; the spawn decision belongs to carrier_attack in
+		   the rerelease, not to the middle of a burst */
+		if (visible(self, self->enemy) && infront(self, self->enemy))
+		{
+			if (random() < 0.6f)
+			{
+				self->monsterinfo.melee_debounce_framenum +=
+					(0.25f + 0.25f * random()) * BASE_FRAMERATE;
+				self->monsterinfo.currentmove = &carrier_move_attack_mg;
+				return;
+			}
+			else if (self->monsterinfo.melee_debounce_framenum > level.framenum)
+			{
+				self->monsterinfo.currentmove = &carrier_move_attack_mg;
+				return;
+			}
+		}
+
+		self->monsterinfo.currentmove = &carrier_move_attack_post_mg;
+		/* hand s.sound back to the engine hum, do not silence it */
+		self->s.sound = sound_engine;
+		gi.sound(self, CHAN_BODY, sound_cg_down, 1, 0.5f, 0);
+		return;
+	}
 
 	if (infront(self, self->enemy))
 	{
@@ -1197,6 +1268,9 @@ carrier_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /*
 	self->deadflag = DEAD_DEAD;
 	self->takedamage = DAMAGE_NO;
 	self->count = 0;
+	/* engine hum and any chaingun loop both stop here - dying mid-burst would
+	   otherwise leave the loop running on the corpse forever */
+	self->s.sound = 0;
 	self->monsterinfo.currentmove = &carrier_move_death;
 }
 
@@ -1371,8 +1445,12 @@ SP_monster_carrier(edict_t *self)
 	sound_rail = gi.soundindex("gladiator/railgun.wav");
 	sound_sight = gi.soundindex("carrier/sight.wav");
 	sound_spawn = gi.soundindex("medic_commander/monsterspawn1.wav");
+	sound_cg_up = gi.soundindex("weapons/chngnu1a.wav");
+	sound_cg_loop = gi.soundindex("weapons/chngnl1a.wav");
+	sound_cg_down = gi.soundindex("weapons/chngnd1a.wav");
 
-	self->s.sound = gi.soundindex("bosshovr/bhvengn1.wav");
+	sound_engine = gi.soundindex("bosshovr/bhvengn1.wav");
+	self->s.sound = sound_engine;
 
 	self->movetype = MOVETYPE_STEP;
 	self->solid = SOLID_BBOX;
@@ -1413,6 +1491,14 @@ SP_monster_carrier(edict_t *self)
 	self->monsterinfo.scale = MODEL_SCALE;
 
 	CarrierPrecache();
+
+	/* [rerelease] the carrier hangs well back and ABOVE its enemy - fly_above
+	   is what keeps it off the floor while it drops flyers. */
+	if (M_RereleaseGame())
+	{
+		self->monsterinfo.fly_above = true;
+		monster_fly_setup(self, 50.0f, 5.0f, 1000.0f, 1000.0f);
+	}
 
 	flymonster_start(self);
 

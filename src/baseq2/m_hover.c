@@ -579,9 +579,9 @@ void hover_pain(edict_t *self, edict_t *other, float kick, int damage)
     bool    daed;
 
     // the pain skin is the low bit, so this reads 0 -> 1 for the icarus and
-    // 2 -> 3 for the daedalus
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum |= 1;
+    // 2 -> 3 for the daedalus. M_SetDamageSkin also clears it again if a
+    // medic heals us back over half health.
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -868,6 +868,13 @@ void SP_monster_hover(edict_t *self)
 
     // [rerelease] the alternate fly system.  Icarus prefers to keep its
     // distance and flies slower than the flyer, so it never pins.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.fly_thrusters = false;
+        monster_fly_setup(self, 120.0f, 20.0f, 150.0f, 350.0f);
+    }
+
+    // [rerelease] SV_alternate_flystep steering. The Icarus keeps its
+    // distance and is slower than the flyer, so it never pins.
     if (M_RereleaseGame()) {
         self->monsterinfo.fly_thrusters = false;
         monster_fly_setup(self, 120.0f, 20.0f, 150.0f, 350.0f);

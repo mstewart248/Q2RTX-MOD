@@ -44,6 +44,18 @@ void insane_shake(edict_t *self)
 
 void insane_moan(edict_t *self)
 {
+    // [rerelease] "don't moan every second" - the moan is hung on several
+    // frames of the crawl and stand loops, so untimed it fires continuously
+    // and a room full of them is a wall of noise. attack_finished is unused on
+    // this monster, so it doubles as the throttle exactly as the rerelease
+    // does.
+    if (M_RereleaseGame()) {
+        if (self->monsterinfo.attack_finished > level.framenum)
+            return;
+        self->monsterinfo.attack_finished =
+            level.framenum + (1.0f + 2.0f * random()) * BASE_FRAMERATE;
+    }
+
     gi.sound(self, CHAN_VOICE, sound_moan, 1, ATTN_IDLE, 0);
 }
 

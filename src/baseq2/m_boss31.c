@@ -701,6 +701,8 @@ void SP_monster_jorg(edict_t *self)
     // start infighting the moment the flag test goes live.  Harmless when the
     // game is not rerelease: the reader in g_combat.c is gated.
     self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
+    // Jorg is only half the fight - see AI_DOUBLE_TROUBLE
+    self->monsterinfo.aiflags |= AI_DOUBLE_TROUBLE;
 
     walkmonster_start(self);
 }

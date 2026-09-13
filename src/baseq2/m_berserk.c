@@ -1295,6 +1295,8 @@ void SP_monster_berserk(edict_t *self)
     // ROGUE/rerelease: let the berserk jump ledges and ride plats.  The jump
     // animations only exist on the rerelease model, so blocked_checkjump
     // gates itself on M_RereleaseAnims(); the plat half needs no frames.
+    self->monsterinfo.combat_style = COMBAT_MELEE;
+
     if (M_RereleaseGame()) {
         self->monsterinfo.blocked = berserk_blocked;
         self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_BERSERK_NOJUMPING);

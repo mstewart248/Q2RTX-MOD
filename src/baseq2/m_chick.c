@@ -836,6 +836,16 @@ void chick_sight(edict_t *self, edict_t *other)
 
 /*QUAKED monster_chick (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
 */
+// [rerelease] the chick has no jump animations, so its blocked handler only
+// rides plats - blocked_checkjump is deliberately not called here.
+bool chick_blocked(edict_t *self, float dist)
+{
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 void SP_monster_chick(edict_t *self)
 {
     if (deathmatch->value) {
@@ -883,6 +893,7 @@ void SP_monster_chick(edict_t *self)
         self->monsterinfo.duck = chick_duck;
         self->monsterinfo.unduck = monster_duck_up;
         self->monsterinfo.sidestep = chick_sidestep;
+        self->monsterinfo.blocked = chick_blocked;
     }
     self->monsterinfo.attack = chick_attack;
     self->monsterinfo.melee = chick_melee;

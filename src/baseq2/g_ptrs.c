@@ -156,6 +156,8 @@ extern int gekk_move_death3;
 extern int gekk_move_death4;
 extern int gekk_move_idle2;
 extern int gekk_move_idle;
+extern int gekk_move_jump_down;
+extern int gekk_move_jump_up;
 extern int gekk_move_lduck;
 extern int gekk_move_leapatk2;
 extern int gekk_move_leapatk;
@@ -557,6 +559,7 @@ extern void carrier_stand(void);
 extern void carrier_walk(void);
 extern void check_target_healthbar(void);
 extern void chick_attack(void);
+extern void chick_blocked(void);
 extern void chick_die(void);
 extern void chick_dodge(void);
 extern void chick_duck(void);
@@ -655,6 +658,7 @@ extern void func_train_find(void);
 extern void func_wall_use(void);
 extern void G_FreeEdict(void);
 extern void gekk_attack(void);
+extern void gekk_blocked(void);
 extern void gekk_checkattack(void);
 extern void gekk_die(void);
 extern void gekk_dodge(void);
@@ -778,6 +782,7 @@ extern void MakronSpawn(void);
 extern void mal_laser_think(void);
 extern void mal_laser_think2(void);
 extern void medic_attack(void);
+extern void medic_blocked(void);
 extern void medic_checkattack(void);
 extern void medic_die(void);
 extern void medic_dodge(void);
@@ -911,10 +916,12 @@ extern void sphere_explode(void);
 extern void sphere_if_idle_die(void);
 extern void stalker_attack_melee(void);
 extern void stalker_attack_ranged(void);
+extern void stalker_blocked(void);
 extern void stalker_die(void);
 extern void stalker_dodge(void);
 extern void stalker_idle(void);
 extern void stalker_pain(void);
+extern void stalker_physics_change(void);
 extern void stalker_run(void);
 extern void stalker_sight(void);
 extern void stalker_stand(void);
@@ -1600,6 +1607,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &gekk_move_death4 },
 { P_monsterinfo_currentmove, &gekk_move_idle },
 { P_monsterinfo_currentmove, &gekk_move_idle2 },
+{ P_monsterinfo_currentmove, &gekk_move_jump_down },
+{ P_monsterinfo_currentmove, &gekk_move_jump_up },
 { P_monsterinfo_currentmove, &gekk_move_lduck },
 { P_monsterinfo_currentmove, &gekk_move_leapatk },
 { P_monsterinfo_currentmove, &gekk_move_leapatk2 },
@@ -2130,14 +2139,18 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_checkattack, Widow2_CheckAttack },
 { P_monsterinfo_checkattack, Widow_CheckAttack },
 { P_monsterinfo_blocked, berserk_blocked },
+{ P_monsterinfo_blocked, chick_blocked },
 { P_monsterinfo_blocked, flyer_blocked },
+{ P_monsterinfo_blocked, gekk_blocked },
 { P_monsterinfo_blocked, gladiator_blocked },
 { P_monsterinfo_blocked, guncmdr_blocked },
 { P_monsterinfo_blocked, gunner_blocked },
 { P_monsterinfo_blocked, infantry_blocked },
+{ P_monsterinfo_blocked, medic_blocked },
 { P_monsterinfo_blocked, mutant_blocked },
 { P_monsterinfo_blocked, parasite_blocked },
 { P_monsterinfo_blocked, soldier_blocked },
+{ P_monsterinfo_blocked, stalker_blocked },
 { P_monsterinfo_blocked, supertank_blocked },
 { P_monsterinfo_blocked, tank_blocked },
 { P_monsterinfo_blocked, widow_blocked },
@@ -2157,5 +2170,6 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sidestep, infantry_sidestep },
 { P_monsterinfo_sidestep, medic_sidestep },
 { P_monsterinfo_sidestep, soldier_sidestep },
+{ P_monsterinfo_physics_change, stalker_physics_change },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

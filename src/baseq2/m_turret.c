@@ -48,6 +48,11 @@ static void vectoangles2(vec3_t value1, vec3_t angles)
 #define SPAWN_WALL_UNIT 0x0080
 
 #define TURRET_BULLET_DAMAGE 4
+/* [rerelease] the machinegun turret no longer plinks one round per pass: it
+   spins up, holds the frame and lays down a burst at 10hz for ~2s. Per-bullet
+   damage halves to match, so the two numbers must always move together. */
+#define TURRET_BULLET_DAMAGE_RR 2
+#define TURRET_BLASTER_DAMAGE_RR 8
 #define TURRET_HEAT_DAMAGE 4
 
 extern bool FindTarget(edict_t *self);
@@ -553,20 +558,54 @@ TurretFire(edict_t *self)
 		{
 			if (self->spawnflags & SPAWN_BLASTER)
 			{
-				monster_fire_blaster(self, start, dir, 20, rocketSpeed,
-						MZ2_TURRET_BLASTER, EF_BLASTER);
+				monster_fire_blaster(self, start, dir,
+						M_RereleaseGame() ? TURRET_BLASTER_DAMAGE_RR : 20,
+						rocketSpeed, MZ2_TURRET_BLASTER, EF_BLASTER);
 			}
 			else if (self->spawnflags & SPAWN_MACHINEGUN)
 			{
-				monster_fire_bullet(self, start, dir, TURRET_BULLET_DAMAGE,
-						0, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD,
-						MZ2_TURRET_MACHINEGUN);
+				if (!M_RereleaseGame())
+				{
+					monster_fire_bullet(self, start, dir, TURRET_BULLET_DAMAGE,
+							0, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD,
+							MZ2_TURRET_MACHINEGUN);
+				}
+				else if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME))
+				{
+					/* [rerelease] start of a burst: freeze on this frame, spin
+					   the barrels up, and wait a second before the first round */
+					self->monsterinfo.aiflags |= AI_HOLD_FRAME;
+					self->monsterinfo.duck_wait_framenum = level.framenum +
+							(2.0f + random() * skill->value) * BASE_FRAMERATE;
+					self->monsterinfo.next_duck_framenum = level.framenum + 1 * BASE_FRAMERATE;
+					gi.sound(self, CHAN_VOICE,
+							gi.soundindex("weapons/chngnu1a.wav"), 1, ATTN_NORM, 0);
+				}
+				else
+				{
+					if (self->monsterinfo.next_duck_framenum < level.framenum &&
+						self->monsterinfo.melee_debounce_framenum <= level.framenum)
+					{
+						monster_fire_bullet(self, start, dir, TURRET_BULLET_DAMAGE_RR,
+								0, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD,
+								MZ2_TURRET_MACHINEGUN);
+						/* 10hz - one round per game frame in this tree */
+						self->monsterinfo.melee_debounce_framenum = level.framenum + 1;
+					}
+
+					if (self->monsterinfo.duck_wait_framenum < level.framenum)
+					{
+						self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+					}
+				}
 			}
 			else if (self->spawnflags & SPAWN_ROCKET)
 			{
 				if (dist * trace.fraction > 72)
 				{
-					monster_fire_rocket(self, start, dir, 50, rocketSpeed, MZ2_TURRET_ROCKET);
+					monster_fire_rocket(self, start, dir,
+							M_RereleaseGame() ? 40 : 50,
+							rocketSpeed, MZ2_TURRET_ROCKET);
 				}
 			}
 		}
@@ -959,6 +998,14 @@ SP_monster_turret(edict_t *self)
 	self->health = 240;
 	self->gib_health = -100;
 	self->mass = 250;
+
+	/* [rerelease] turrets wear 50 points of combat armour - the only monster
+	   in the game that wears any ordinary armour at all */
+	if (M_RereleaseGame())
+	{
+		self->monsterinfo.armor_type = ITEM_INDEX(FindItem("Combat Armor"));
+		self->monsterinfo.armor_power = 50;
+	}
 	self->yaw_speed = 45;
 
 	self->flags |= FL_MECHANICAL;

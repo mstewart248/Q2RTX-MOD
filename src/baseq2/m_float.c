@@ -591,7 +591,9 @@ void floater_wham(edict_t *self)
 {
     static  vec3_t  aim = {MELEE_DISTANCE, 0, 0};
     gi.sound(self, CHAN_WEAPON, sound_attack3, 1, ATTN_NORM, 0);
-    fire_hit(self, aim, 5 + Q_rand() % 6, -50);
+    // [rerelease] a missed wham keeps the floater out of melee for 3s
+    if (!fire_hit(self, aim, 5 + Q_rand() % 6, -50))
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 }
 
 void floater_zap(edict_t *self)
@@ -778,6 +780,13 @@ void SP_monster_floater(edict_t *self)
     // [rerelease] the alternate fly system.  Not a buzzard - the floater keeps
     // to a level band around its enemy - and its own comment says the
     // technician gets in closer because it has two melee attacks.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.fly_thrusters = false;
+        monster_fly_setup(self, 100.0f, 10.0f, 20.0f, 200.0f);
+    }
+
+    // [rerelease] the technician closes further in than the Icarus because
+    // it has two melee attacks.
     if (M_RereleaseGame()) {
         self->monsterinfo.fly_thrusters = false;
         monster_fly_setup(self, 100.0f, 10.0f, 20.0f, 200.0f);

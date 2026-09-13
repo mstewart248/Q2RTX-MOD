@@ -271,13 +271,16 @@ static int CheckArmor(edict_t *ent, const vec3_t point, const vec3_t normal, int
 
     client = ent->client;
 
-    if (!client)
+    // [rerelease] a monster may wear ordinary armour too - only the turret
+    // does, but the accounting is the player's, just held in monsterinfo
+    // instead of an inventory slot.
+    if (!client && !(M_RereleaseGame() && ent->monsterinfo.armor_power > 0))
         return 0;
 
     if (dflags & (DAMAGE_NO_ARMOR | DAMAGE_NO_REG_ARMOR))
         return 0;
 
-    index = ArmorIndex(ent);
+    index = client ? ArmorIndex(ent) : ent->monsterinfo.armor_type;
     if (!index)
         return 0;
 
@@ -287,13 +290,25 @@ static int CheckArmor(edict_t *ent, const vec3_t point, const vec3_t normal, int
         save = ceil(((gitem_armor_t *)armor->info)->energy_protection * damage);
     else
         save = ceil(((gitem_armor_t *)armor->info)->normal_protection * damage);
-    if (save >= client->pers.inventory[index])
-        save = client->pers.inventory[index];
+
+    if (client) {
+        if (save >= client->pers.inventory[index])
+            save = client->pers.inventory[index];
+    } else if (save >= ent->monsterinfo.armor_power) {
+        save = ent->monsterinfo.armor_power;
+    }
 
     if (!save)
         return 0;
 
-    client->pers.inventory[index] -= save;
+    if (client) {
+        client->pers.inventory[index] -= save;
+    } else {
+        ent->monsterinfo.armor_power -= save;
+        if (!ent->monsterinfo.armor_power)
+            ent->monsterinfo.armor_type = 0;
+    }
+
     SpawnDamage(te_sparks, point, normal, save);
 
     return save;

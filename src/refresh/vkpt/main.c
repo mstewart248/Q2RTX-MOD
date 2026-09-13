@@ -3648,6 +3648,73 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 
 		*sun_visible = readback.sun_luminance > 0.f;
 		*adapted_luminance = readback.adapted_luminance;
+
+		/* TEMPORARY fog-fade diagnostic - pt_fog_log 1. GENERATION 2.
+
+		   The shader stores RAW IEEE BITS, so bit-cast them back rather than
+		   dividing a clamped integer. Generation 1's encoding could not tell a
+		   negative value, a NaN and its own "expect <= 0" sentinel apart - all
+		   three printed as 0.000000 - which is what made sessions 9-10 read this
+		   as "a += b has no effect". Print the sign and the class explicitly. */
+		if (Cvar_Get("pt_fog_log", "0", 0)->integer)
+		{
+			union { uint32_t u; float f; } pre, vol, post, expect, scale, ratio, sunlum;
+			pre.u    = readback.dbg_pre_b;
+			vol.u    = readback.dbg_vol_b;
+			post.u   = readback.dbg_post_b;
+			expect.u = readback.dbg_expect_b;
+			scale.u  = readback.dbg_scale_b;
+			ratio.u  = readback.dbg_ratio_b;
+			sunlum.u = readback.dbg_sunlum_b;
+
+			/* post == expect is the invariant under test. Compare the BITS: a
+			   float compare would call NaN != NaN and report a mismatch that is
+			   really an equality. */
+			const char *cls = (post.u & 0x7f800000u) != 0x7f800000u ? "num"
+			                : (post.u & 0x007fffffu) ? "NaN" : "Inf";
+
+			Com_Printf("FOGCELL post=%+.9g [%08x %s%s] expect=%+.9g [%08x] match=%d | pre=%+.9g vol=%+.9g scale=%.6f ratio=%.6f sunlum=%+.9g frame=%u\n",
+				post.f, post.u, (post.u >> 31) ? "-" : "+", cls,
+				expect.f, expect.u, post.u == expect.u,
+				pre.f, vol.f, scale.f, ratio.f, sunlum.f,
+				readback.dbg_frame);
+
+			/* Grid-wide deltas. n MUST be 1410835 every frame - see vertex_buffer.h. */
+			{
+				static uint32_t p_cells, p_zero, p_neg, p_bad;
+				static uint32_t p_tiny, p_sum, p_sky, p_lit;
+				static uint32_t p_restir, p_centre, p_lt7;
+				static uint32_t p_pad;
+				const uint32_t d_cells = readback.dbg_n_cells - p_cells;
+				const uint32_t d_zero  = readback.dbg_n_zero  - p_zero;
+				const uint32_t d_neg   = readback.dbg_n_neg   - p_neg;
+				const uint32_t d_bad   = readback.dbg_n_bad   - p_bad;
+				p_cells = readback.dbg_n_cells; p_zero = readback.dbg_n_zero;
+				p_neg   = readback.dbg_n_neg;   p_bad  = readback.dbg_n_bad;
+				const uint32_t d_tiny = readback.dbg_n_tiny  - p_tiny;
+				const uint32_t d_sum  = readback.dbg_sum_q   - p_sum;
+				const uint32_t d_sky  = readback.dbg_sum_sky - p_sky;
+				const uint32_t d_lit  = readback.dbg_sum_lit - p_lit;
+				p_tiny = readback.dbg_n_tiny;  p_sum = readback.dbg_sum_q;
+				p_sky  = readback.dbg_sum_sky; p_lit = readback.dbg_sum_lit;
+				const uint32_t d_restir = readback.dbg_n_restir - p_restir;
+				const uint32_t d_centre = readback.dbg_n_centre - p_centre;
+				const uint32_t d_lt7    = readback.dbg_n_lt7    - p_lt7;
+				p_restir = readback.dbg_n_restir; p_centre = readback.dbg_n_centre;
+				p_lt7    = readback.dbg_n_lt7;
+				const uint32_t d_pad = readback.dbg_n_pad - p_pad;
+				p_pad = readback.dbg_n_pad;
+				Com_Printf("FOGGRID n=%u zero=%u neg=%u bad=%u tiny=%u sum=%u sky=%u lit=%u restir=%u centre=%u lt7=%u pad=%u\n",
+					d_cells, d_zero, d_neg, d_bad, d_tiny, d_sum, d_sky, d_lit,
+					d_restir, d_centre, d_lt7, d_pad);
+			}
+		}
+
+
+
+
+
+
 	}
 }
 
@@ -4009,6 +4076,100 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		// player was being lit by lights in a distant room. Near the camera this
 		// is the correct list.
 		ubo->fog_camera_cluster = viewleaf ? viewleaf->cluster : -1;
+		/* TEMPORARY DIAGNOSTIC for the fog fade - pt_fog_log 1. Remove when done.
+		   Prints the per-frame inputs that could flip the whole fog term, at full
+		   precision, so a bimodal one shows up against the luminance series. */
+		if (Cvar_Get("pt_fog_log", "0", 0)->integer)
+		{
+			/* V_prev must EQUAL V at a stationary camera - it is last frame's V,
+			   copied at the top of this function. P carries the DLSS sub-pixel
+			   jitter, so dP is expected to be small but non-zero. These two numbers
+			   are what world_to_prev_froxel_uvw reprojects with, and a dV that is
+			   ever non-zero here would explain the froxel history being lost. */
+			/* mat4 is `float[4][4]` (shader_structs.h), so ubo->V[k] is a ROW
+			   POINTER - subtracting those gives a pointer difference, not a value
+			   one. It compiles silently and prints a constant (32, the float
+			   distance V->V_prev). Flatten to float* first. */
+			const float *pV = (const float *)ubo->V, *pVp = (const float *)ubo->V_prev;
+			const float *pP = (const float *)ubo->P, *pPp = (const float *)ubo->P_prev;
+			float dV = 0.f, dP = 0.f;
+			for (int k = 0; k < 16; k++)
+			{
+				dV = max(dV, fabsf(pV[k] - pVp[k]));
+				dP = max(dP, fabsf(pP[k] - pPp[k]));
+			}
+			Com_Printf("FOGLOG cluster=%d org=%.4f %.4f %.4f dV=%.8f dP=%.8f enable=%d mode=%d\n",
+				ubo->fog_camera_cluster, fd->vieworg[0], fd->vieworg[1], fd->vieworg[2],
+				dV, dP, ubo->fog_enable, ubo->fog_mode);
+
+			/* EVERY FOG UBO SCALAR, REPORTED ONLY WHEN IT CHANGES.
+
+			   The recorded claim that "every CPU-side fog input is identical on
+			   both kinds of frame" was only ever checked for cluster, origin,
+			   dV/dP, enable and mode. It never covered the fog COLOUR, the
+			   height-fog band, fog_sky_fade, fog_sky_r/g/b, environment_type or
+			   the scale cvars - and `result.rgb = inscatter * albedo * density`
+			   plus the sky term's radiance are built entirely out of those.
+
+			   Printing them all every frame buries the signal, so snapshot them
+			   and print only what MOVED. A field that flips in long blocks will
+			   name itself against the collapse flag. fog_frame_time is excluded:
+			   it legitimately changes every frame. */
+			{
+				static float prev[40];
+				static int   have_prev = 0;
+				const struct { const char *name; float v; } cur[] = {
+					{ "enable",        (float)ubo->fog_enable },
+					{ "mode",          (float)ubo->fog_mode },
+					{ "env_type",      (float)ubo->environment_type },
+					{ "density",       ubo->fog_density },
+					{ "hf_density",    ubo->fog_hf_density },
+					{ "hf_falloff",    ubo->fog_hf_falloff },
+					{ "hf_start_z",    ubo->fog_hf_start_z },
+					{ "hf_end_z",      ubo->fog_hf_end_z },
+					{ "color_r",       ubo->fog_color_r },
+					{ "color_g",       ubo->fog_color_g },
+					{ "color_b",       ubo->fog_color_b },
+					{ "hf_start_r",    ubo->fog_hf_start_r },
+					{ "hf_start_g",    ubo->fog_hf_start_g },
+					{ "hf_start_b",    ubo->fog_hf_start_b },
+					{ "hf_end_r",      ubo->fog_hf_end_r },
+					{ "hf_end_g",      ubo->fog_hf_end_g },
+					{ "hf_end_b",      ubo->fog_hf_end_b },
+					{ "sky_fade",      ubo->fog_sky_fade },
+					{ "sky_trace",     (float)ubo->fog_sky_trace },
+					{ "sky_r",         ubo->fog_sky_r },
+					{ "sky_g",         ubo->fog_sky_g },
+					{ "sky_b",         ubo->fog_sky_b },
+					{ "vol_ratio",     ubo->fog_vol_density_ratio },
+					{ "num_model_lt",  (float)ubo->fog_num_model_lights },
+					{ "cluster",       (float)ubo->fog_camera_cluster },
+					{ "pt_sky_scale",  ubo->pt_fog_sky_scale },
+					{ "pt_vol_scale",  ubo->pt_fog_vol_scale },
+					{ "pt_brightness", ubo->pt_fog_brightness },
+					{ "god_intensity", ubo->god_rays_intensity },
+				};
+				const int n = (int)(sizeof(cur) / sizeof(cur[0]));
+				char line[1024];
+				int len = 0;
+
+				for (int k = 0; k < n; k++)
+				{
+					if (have_prev && prev[k] == cur[k].v)
+						continue;
+					len += Q_snprintf(line + len, sizeof(line) - len, " %s=%.6f",
+						cur[k].name, cur[k].v);
+					if (len >= (int)sizeof(line) - 64)
+						break;
+				}
+				for (int k = 0; k < n; k++)
+					prev[k] = cur[k].v;
+
+				if (len > 0)
+					Com_Printf("FOGDIFF%s\n", line);
+				have_prev = 1;
+			}
+		}
 		// fog_frame_time is NOT set here - prepare_ubo does not have the frame
 		// delta. It is filled in by the caller, next to fog_num_model_lights.
 
@@ -4319,7 +4480,17 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	{
 		vkpt_evaluate_sun_light(&sun_light, sky_matrix, fd->time);
 
-		if (!vkpt_physical_sky_needs_update())
+		/* THE SUN'S VISIBILITY IS A THRESHOLDED READBACK OF THE PREVIOUS FRAME,
+		   which makes this a feedback loop: sun_visible_prev is
+		   `readback.sun_luminance > 0` taken from the frame before last. Gating the
+		   sun light on it means the sun's own contribution decides whether the sun
+		   is lit next frame, and near the threshold that has no fixed point - it
+		   limit-cycles, with a period set by the readback latency.
+
+		   pt_sun_vis_feedback 0 breaks the loop (trust this frame's own evaluation)
+		   so the fog oscillation can be A/B'd against it. 1 = the old behaviour. */
+		if (!vkpt_physical_sky_needs_update()
+		    && Cvar_Get("pt_sun_vis_feedback", "1", CVAR_ARCHIVE)->integer)
 			sun_light.visible = sun_light.visible && sun_visible_prev;
 	}
 
@@ -4806,6 +4977,40 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		
 
 		{
+			/* MAKE THE SHADER WRITES VISIBLE TO THE COPY.
+
+			   buf_readback is written by compute and ray-tracing shaders
+			   (tone mapping, the path tracer, the froxel passes) and then read
+			   here by a TRANSFER.  Submission order gives execution order, but
+			   it does NOT give memory VISIBILITY: without a barrier whose
+			   dstAccessMask is TRANSFER_READ, the copy may observe some of
+			   those writes and not others.
+
+			   That is not theoretical.  It produces a TORN SNAPSHOT - one
+			   frame's copy holding a mixture of dwords from different frames -
+			   and it is why every generation of fog-fade probe built on this
+			   buffer produced arithmetically impossible results: counters
+			   written by adjacent instructions in one shader block disagreeing
+			   with each other, an unconditional atomicAdd at the top of a block
+			   advancing by a full dispatch while a structurally identical one
+			   nine lines later read 0.  Any aggregate measured through this
+			   buffer before this barrier existed has to be re-taken. */
+			VkBufferMemoryBarrier readback_barrier = {
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.buffer = qvk.buf_readback.buffer,
+				.offset = 0,
+				.size = VK_WHOLE_SIZE
+			};
+
+			vkCmdPipelineBarrier(post_cmd_buf,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, 0, NULL, 1, &readback_barrier, 0, NULL);
+
 			VkBufferCopy copyRegion = { 0, 0, sizeof(ReadbackBuffer) };
 			vkCmdCopyBuffer(post_cmd_buf, qvk.buf_readback.buffer, qvk.buf_readback_staging[qvk.current_frame_index].buffer, 1, &copyRegion);
 		}

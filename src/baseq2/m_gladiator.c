@@ -404,6 +404,9 @@ void gladiator_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dam
 {
     int     n;
 
+    // the gun stops humming when its owner does
+    self->s.sound = 0;
+
 // check for gib
     if (self->health <= self->gib_health) {
         // Stock Quake II: one burst of gibs and the body is gone.
@@ -598,10 +601,19 @@ void SP_monster_gladiator(edict_t *self)
         self->mass = 350;
         self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
         self->monsterinfo.power_armor_power = 250;
+        // [rerelease] the plasma gun idles audibly. The rerelease keeps this in
+        // monsterinfo.weapon_sound and lets M_SetEffects re-assert it; this
+        // tree drives looping monster sounds straight off s.sound, so it is set
+        // once here and cleared when the gladiator dies.
+        if (M_RereleaseGame())
+            self->s.sound = gi.soundindex("weapons/phaloop.wav");
     } else {
         self->s.modelindex = gi.modelindex("models/monsters/gladiatr/tris.md2");
         self->health = 400;
         self->mass = 400;
+        // [rerelease] the railgun hums the whole time it is carried
+        if (M_RereleaseGame())
+            self->s.sound = gi.soundindex("weapons/rg_hum.wav");
     }
 
     self->pain = gladiator_pain;

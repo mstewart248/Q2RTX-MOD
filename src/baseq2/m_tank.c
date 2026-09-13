@@ -293,8 +293,7 @@ mmove_t tank_move_pain3 = {FRAME_pain301, FRAME_pain316, tank_frames_pain3, tank
 
 void tank_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum |= 1;
+    M_SetDamageSkin(self);
 
     if (damage <= 10)
         return;
@@ -702,6 +701,7 @@ void tank_attack(edict_t *self)
     if (M_RereleaseGame() && self->monsterinfo.attack_state == AS_BLIND) {
         float   chance;
         vec3_t  ignored;
+        bool    rocket_visible, blaster_visible, use_rocket;
 
         if (self->monsterinfo.blind_fire_delay < 1.0f * BASE_FRAMERATE)
             chance = 1.0f;
@@ -718,12 +718,34 @@ void tank_attack(edict_t *self)
         if (random() > chance)
             return;
 
-        if (!M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_ROCKET_1], ignored))
+        // [rerelease] the tank has TWO blind-fire weapons and checks both.
+        // Only testing the rocket made it give up whenever the launcher was
+        // blocked but the blaster - which sits elsewhere on the model - had a
+        // clear line, so it blind-fired far less than the rerelease's does.
+        rocket_visible = M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_ROCKET_1], ignored);
+        blaster_visible = M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_BLASTER_1], ignored);
+
+        if (!rocket_visible && !blaster_visible)
             return;
 
+        if (rocket_visible && blaster_visible)
+            use_rocket = (Q_rand() & 1);
+        else
+            use_rocket = rocket_visible;
+
+        // turn on manual steering to signal both manual steering and blindfire
         self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
-        self->monsterinfo.currentmove = &tank_move_attack_fire_rocket;
-        self->monsterinfo.attack_finished = level.framenum + 2.0f * random() * BASE_FRAMERATE;
+
+        if (use_rocket) {
+            self->monsterinfo.currentmove = &tank_move_attack_fire_rocket;
+        } else {
+            self->monsterinfo.currentmove = &tank_move_attack_blast;
+            self->monsterinfo.nextframe = FRAME_attak108;
+        }
+
+        self->monsterinfo.attack_finished = level.framenum + (3.0f + 2.0f * random()) * BASE_FRAMERATE;
+        // [rerelease] no pain for a while, so the volley actually lands
+        self->pain_debounce_framenum = level.framenum + 5 * BASE_FRAMERATE;
         return;
     }
 

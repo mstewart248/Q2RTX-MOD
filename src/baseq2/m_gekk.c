@@ -110,7 +110,11 @@ static bool gekk_swims(edict_t *self)
 
 static bool gekk_check_melee(edict_t *self)
 {
-    if (!self->enemy || self->enemy->health <= 0)
+    // [rerelease] a swing that misses buys the player 1.5s before the gekk
+    // may claw again. Xatrix had no debounce, so a gekk that whiffed simply
+    // stood there swinging instead of repositioning.
+    if (!self->enemy || self->enemy->health <= 0 ||
+        self->monsterinfo.melee_debounce_framenum > level.framenum)
         return false;
 
     if (range(self, self->enemy) == RANGE_MELEE)
@@ -124,10 +128,11 @@ static bool gekk_check_jump(edict_t *self)
     vec3_t  v;
     float   distance;
 
-    if (self->absmin[2] > (self->enemy->absmin[2] + 0.75f * self->enemy->size[2]))
-        return false;
-
-    if (self->absmax[2] < (self->enemy->absmin[2] + 0.25f * self->enemy->size[2]))
+    // [rerelease] one test, not the generic two: don't jump if there is no
+    // way we can reach standing height. Xatrix's pair of band tests refused
+    // the jump whenever the gekk was much above OR below its enemy, which on
+    // the rerelease maps is most of the time.
+    if (self->absmin[2] + 125 < self->enemy->absmin[2])
         return false;
 
     v[0] = self->s.origin[0] - self->enemy->s.origin[0];
@@ -158,9 +163,9 @@ static bool gekk_check_jump_close(edict_t *self)
     distance = VectorLength(v);
 
     if (distance < 100) {
-        if (self->s.origin[2] < self->enemy->s.origin[2])
-            return true;
-        return false;
+        // [rerelease] only refuse when our head is below their feet
+        if (self->absmax[2] <= self->enemy->absmin[2])
+            return false;
     }
 
     return true;
@@ -176,14 +181,29 @@ bool gekk_checkattack(edict_t *self)
         return true;
     }
 
-    if (gekk_check_jump(self)) {
-        self->monsterinfo.attack_state = AS_MISSILE;
-        return true;
-    }
+    // [rerelease] KEEP RUNNING. gekk_attack()'s charge branch sets
+    // currentmove to gekk_move_run_start and stamps attack_finished; ai_run_missile
+    // then drops attack_state to AS_STRAIGHT. Without this guard the very next
+    // frame lands back in here, gekk_check_jump_close() says yes at any close
+    // range, and the charge is replaced by another attack roll before the gekk
+    // has taken a step - so it only ever appeared to spit or leap, never to run
+    // the player down. This is the whole of the rerelease's aggression.
+    if (self->monsterinfo.attack_state == AS_STRAIGHT &&
+        self->monsterinfo.attack_finished > level.framenum)
+        return false;
 
-    if (gekk_check_jump_close(self) && !self->waterlevel) {
-        self->monsterinfo.attack_state = AS_MISSILE;
-        return true;
+    // [rerelease] both jump tests are behind a visibility check
+    if (visible(self, self->enemy)) {
+        if (gekk_check_jump(self)) {
+            self->monsterinfo.attack_state = AS_MISSILE;
+            return true;
+        }
+
+        // a swimming gekk lunges from gekk_attack() instead
+        if (gekk_check_jump_close(self) && !(self->flags & FL_SWIM)) {
+            self->monsterinfo.attack_state = AS_MISSILE;
+            return true;
+        }
     }
 
     return false;
@@ -334,6 +354,9 @@ mmove_t gekk_move_standunderwater = {FRAME_amb_01, FRAME_amb_04, gekk_frames_sta
 
 void gekk_swim_loop(edict_t *self)
 {
+    // [rerelease] steer with SV_alternate_flystep for as long as we are
+    // swimming; water_to_land and gekk_attack take it away again
+    self->monsterinfo.aiflags |= AI_ALTERNATE_FLY;
     self->flags |= FL_SWIM;
     self->monsterinfo.currentmove = &gekk_move_swim_loop;
 }
@@ -567,22 +590,32 @@ void gekk_hit_left(edict_t *self)
 {
     vec3_t  aim;
 
+    if (!self->enemy)
+        return;
+
     VectorSet(aim, MELEE_DISTANCE, self->mins[0], 8);
-    if (fire_hit(self, aim, (15 + (rand() % 5)), 100))
+    if (fire_hit(self, aim, (5 + (rand() % 5)), 100)) {
         gi.sound(self, CHAN_WEAPON, sound_hit, 1, ATTN_NORM, 0);
-    else
+    } else {
         gi.sound(self, CHAN_WEAPON, sound_swing, 1, ATTN_NORM, 0);
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
+    }
 }
 
 void gekk_hit_right(edict_t *self)
 {
     vec3_t  aim;
 
+    if (!self->enemy)
+        return;
+
     VectorSet(aim, MELEE_DISTANCE, self->maxs[0], 8);
-    if (fire_hit(self, aim, (15 + (rand() % 5)), 100))
+    if (fire_hit(self, aim, (5 + (rand() % 5)), 100)) {
         gi.sound(self, CHAN_WEAPON, sound_hit2, 1, ATTN_NORM, 0);
-    else
+    } else {
         gi.sound(self, CHAN_WEAPON, sound_swing, 1, ATTN_NORM, 0);
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
+    }
 }
 
 void gekk_check_refire(edict_t *self)
@@ -590,13 +623,15 @@ void gekk_check_refire(edict_t *self)
     if (!self->enemy || !self->enemy->inuse || self->enemy->health <= 0)
         return;
 
-    if (random() < (skill->value * 0.1f)) {
-        if (range(self, self->enemy) == RANGE_MELEE) {
-            if (self->s.frame == FRAME_clawatk3_09)
-                self->monsterinfo.currentmove = &gekk_move_attack2;
-            else if (self->s.frame == FRAME_clawatk5_09)
-                self->monsterinfo.currentmove = &gekk_move_attack1;
-        }
+    // [rerelease] chain straight into the other claw whenever the enemy is
+    // still in reach. Xatrix rolled against skill here, so on easy the gekk
+    // threw a single swing and backed off.
+    if (range(self, self->enemy) == RANGE_MELEE &&
+        self->monsterinfo.melee_debounce_framenum <= level.framenum) {
+        if (self->s.frame == FRAME_clawatk3_09)
+            self->monsterinfo.currentmove = &gekk_move_attack2;
+        else if (self->s.frame == FRAME_clawatk5_09)
+            self->monsterinfo.currentmove = &gekk_move_attack1;
     }
 }
 
@@ -930,6 +965,8 @@ void gekk_stop_skid(edict_t *self)
 
 void gekk_check_landing(edict_t *self)
 {
+    vec3_t  forward;
+
     if (self->groundentity) {
         gi.sound(self, CHAN_WEAPON, sound_thud, 1, ATTN_NORM, 0);
         self->monsterinfo.attack_finished = 0;
@@ -937,6 +974,12 @@ void gekk_check_landing(edict_t *self)
         VectorClear(self->velocity);
         return;
     }
+
+    // [rerelease] let a mid-air gekk "pull" itself up onto a ledge rather
+    // than sliding back down the face of it
+    AngleVectors(self->s.angles, forward, NULL, NULL);
+    if (DotProduct(forward, self->velocity) < 200)
+        VectorMA(self->velocity, 200, forward, self->velocity);
 
     if (level.framenum > self->monsterinfo.attack_finished)
         self->monsterinfo.nextframe = FRAME_leapatk_11;
@@ -961,6 +1004,7 @@ void gekk_attack(edict_t *self)
             return;
 
         self->flags &= ~FL_SWIM;
+        self->monsterinfo.aiflags &= ~AI_ALTERNATE_FLY;
         self->monsterinfo.currentmove = &gekk_move_leapatk;
         self->monsterinfo.nextframe = FRAME_leapatk_05;
         return;
@@ -1324,6 +1368,7 @@ void gekk_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool g
 
 void water_to_land(edict_t *self)
 {
+    self->monsterinfo.aiflags &= ~AI_ALTERNATE_FLY;
     self->flags &= ~FL_SWIM;
     self->yaw_speed = 20;
     self->viewheight = 25;
@@ -1337,6 +1382,7 @@ void water_to_land(edict_t *self)
 
 void land_to_water(edict_t *self)
 {
+    self->monsterinfo.aiflags |= AI_ALTERNATE_FLY;
     self->flags |= FL_SWIM;
     self->yaw_speed = 10;
     self->viewheight = 10;
@@ -1346,6 +1392,86 @@ void land_to_water(edict_t *self)
     VectorSet(self->mins, -18, -18, -24);
     VectorSet(self->maxs, 18, 18, 16);
     gi.linkentity(self);
+}
+
+// ROGUE/rerelease: getting over a ledge that is in the way. These reuse the
+// leap animation's frames - there is no separate jump model - and are driven
+// only from gekk_blocked, never from the attack chooser.
+void gekk_jump_down(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 100, forward, self->velocity);
+    VectorMA(self->velocity, 300, up, self->velocity);
+}
+
+void gekk_jump_up(edict_t *self)
+{
+    vec3_t  forward, up;
+
+    AngleVectors(self->s.angles, forward, NULL, up);
+    VectorMA(self->velocity, 200, forward, self->velocity);
+    VectorMA(self->velocity, 450, up, self->velocity);
+}
+
+void gekk_jump_wait_land(edict_t *self)
+{
+    if (!monster_jump_finished(self) && self->groundentity == NULL)
+        self->monsterinfo.nextframe = self->s.frame;
+    else
+        self->monsterinfo.nextframe = self->s.frame + 1;
+}
+
+mframe_t gekk_frames_jump_up [] = {
+    {ai_move, -8, gekk_jump_up},
+    {ai_move, -8, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, gekk_jump_wait_land},
+    {ai_move, 0, NULL}
+};
+mmove_t gekk_move_jump_up = {FRAME_leapatk_04, FRAME_leapatk_11, gekk_frames_jump_up, gekk_run};
+
+mframe_t gekk_frames_jump_down [] = {
+    {ai_move, 0, gekk_jump_down},
+    {ai_move, 0, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, NULL},
+    {ai_move, 0, gekk_jump_wait_land},
+    {ai_move, 0, NULL}
+};
+mmove_t gekk_move_jump_down = {FRAME_leapatk_04, FRAME_leapatk_11, gekk_frames_jump_down, gekk_run};
+
+void gekk_jump_updown(edict_t *self, blocked_jump_result_t result)
+{
+    if (!self->enemy)
+        return;
+
+    if (result == JUMP_JUMP_UP)
+        self->monsterinfo.currentmove = &gekk_move_jump_up;
+    else
+        self->monsterinfo.currentmove = &gekk_move_jump_down;
+}
+
+bool gekk_blocked(edict_t *self, float dist)
+{
+    blocked_jump_result_t result = blocked_checkjump(self, dist);
+
+    if (result != NO_JUMP) {
+        if (result != JUMP_TURN)
+            gekk_jump_updown(self, result);
+        return true;
+    }
+
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
 }
 
 /*QUAKED monster_gekk (1 .5 0) (-18 -18 -24) (18 18 24) Ambush Trigger_Spawn Sight Chant NoJumping NoSwim
@@ -1408,6 +1534,7 @@ void SP_monster_gekk(edict_t *self)
     self->monsterinfo.search = gekk_search;
     self->monsterinfo.idle = gekk_idle;
     self->monsterinfo.checkattack = gekk_checkattack;
+    self->monsterinfo.blocked = gekk_blocked;
 
     gi.linkentity(self);
 
@@ -1415,6 +1542,22 @@ void SP_monster_gekk(edict_t *self)
     self->monsterinfo.scale = MODEL_SCALE;
 
     walkmonster_start(self);
+
+    // [rerelease] swim steering values. monster_fly_setup also raises
+    // AI_ALTERNATE_FLY, which is wrong on land - the gekk only steers this way
+    // while it is actually in the water, so clear it again here and let
+    // gekk_swim_loop/land_to_water raise it.
+    monster_fly_setup(self, 150.0f, 25.0f, 10.0f, 10.0f);
+    self->monsterinfo.fly_thrusters = false;
+    self->monsterinfo.aiflags &= ~AI_ALTERNATE_FLY;
+
+    // [rerelease] navigation caps. g_nav.c plans a route with
+    // jump_height = can_jump ? jump_height : 0, so leaving these at zero
+    // routes the gekk as something that cannot climb anything at all - it
+    // simply has nowhere to go and looks passive.
+    self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_GEKK_NOJUMPING);
+    self->monsterinfo.drop_height = 256;
+    self->monsterinfo.jump_height = 68;
 
     if (self->spawnflags & SPAWNFLAG_GEKK_CHANT)
         self->monsterinfo.currentmove = &gekk_move_chant;

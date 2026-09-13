@@ -568,7 +568,12 @@ void G_SetStats(edict_t *ent)
                 else
                     value = 0x80;
             } else if (!bar->enemy || !bar->enemy->inuse || bar->enemy->health <= 0) {
-                if (bar->delay > 0) {
+                // [rerelease] hack for Makron: Jorg dying does not end the
+                // fight, so hold the bar rather than dropping it - Makron is
+                // about to take it over.
+                if (bar->enemy && (bar->enemy->monsterinfo.aiflags & AI_DOUBLE_TROUBLE)) {
+                    value = 0x80;
+                } else if (bar->delay > 0) {
                     bar->timestamp = level.framenum + bar->delay * BASE_FRAMERATE;
                     value = 0x80;
                 } else {

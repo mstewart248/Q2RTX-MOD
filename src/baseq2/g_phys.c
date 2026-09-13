@@ -941,6 +941,12 @@ void SV_Physics_Step(edict_t *ent)
                     gi.sound(ent, 0, gi.soundindex("world/land.wav"), 1, 1, 0);
     }
 
+    // [rerelease] ground contact changed - let a monster with its own gravity
+    // put itself the right way up (the stalker, leaving a ceiling)
+    if ((ent->svflags & SVF_MONSTER) && wasonground != !!ent->groundentity &&
+        ent->monsterinfo.physics_change)
+        ent->monsterinfo.physics_change(ent);
+
 // regular thinking
     SV_RunThink(ent);
 }

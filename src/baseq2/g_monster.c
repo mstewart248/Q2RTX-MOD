@@ -1443,6 +1443,17 @@ bool monster_start(edict_t *self)
         gi.linkentity(self);
     }
 
+    // [rerelease] set the pathing style if the spawn function did not. A
+    // monster with a melee attack and no ranged one has to close the distance
+    // or it is harmless, so it gets the navmesh even in plain sight;
+    // everything else is MIXED, which paths only from mid range out.
+    if (self->monsterinfo.combat_style == COMBAT_UNKNOWN) {
+        if (!self->monsterinfo.attack && self->monsterinfo.melee)
+            self->monsterinfo.combat_style = COMBAT_MELEE;
+        else
+            self->monsterinfo.combat_style = COMBAT_MIXED;
+    }
+
     // ROGUE/rerelease duck system: remember how tall this monster stands, so
     // monster_duck_down has something to shrink from and monster_duck_up has
     // something to restore. Captured here, after the spawn function has set

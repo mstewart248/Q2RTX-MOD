@@ -330,12 +330,53 @@ void main()
 		   cell. A global written by a callee and read after a conditional call is
 		   a stale-value trap, and in a loop it is a silent one. */
 		fog_debug_sky_term = vec3(0);
+		fog_debug_light_term = vec3(0);
+		fog_debug_sky_path = 0.0;
+		fog_debug_sky_entered = 0.0;
+		fog_debug_sky_traced  = 0.0;
 		fog_debug_sky_vis  = 0.0;
 
 		vec4 result = vec4(0);
 
-		if (density > 0)
+		/* DID THE GATE'S BODY ACTUALLY RUN?  A LOCAL - not a global, not a
+		   callee - set as the first statement inside the block, so nothing
+		   between the test and the write can interfere. Debug view 24. */
+		float dbg_in_gate = 0.0;
+
+		/* THE GATE CONDITION, EVALUATED ONCE INTO A BOOL.
+
+		   Measured (view 25, three channels in one statement, one run, both
+		   states): `density > 0` paints TRUE - twice, agreeing to 0.05% - while
+		   a local set as the first statement inside the branch it guards paints
+		   FALSE. The condition is true and the branch is not taken.
+
+		   `density` cannot be denormal: `decay` is clamped to [0.75, 1.5] so
+		   the height term never underflows, and `fog_density / 2.0` = 0.023 is
+		   an additive floor. spirv-dis shows the emitted code is exactly the
+		   source, with one OpStore to the variable in the whole function. So
+		   this is below SPIR-V - driver codegen in a loop body of ~1160 lines
+		   run 128 times, which is where spills happen.
+
+		   Storing the comparison in a bool gives the branch a single value to
+		   read instead of re-deriving it at the branch site. Semantically
+		   identical, zero cost, and if the fade survives it the branch itself
+		   is exonerated and the fault is inside the block. */
+		/* The gate condition, evaluated once into a bool.
+
+		   Two forms have been measured on the REAL fog, four runs each:
+		     `density > 0`  (varying branch)  -> 0/286/401/380 collapsed
+		     `density >= 0` (always true)     -> 681 collapsed on run 1
+		   So the branch is NOT the fault, and neither is its condition.
+
+		   That also retires `dbg_in_gate` as evidence: it is set INSIDE the
+		   block, so it is subject to whatever zeroes everything else produced
+		   there. It never showed "the body did not run" - it showed the same
+		   symptom one more time. See the fog-fade memory, session 11p. */
+		bool cell_has_density = (density > 0.0);
+
+		if (cell_has_density)
 		{
+			dbg_in_gate = 1.0;
 			// Cell centre for the same reason as density: the fog colour is a
 			// smooth height gradient, and sampling it at the jittered point makes
 			// a far cell's albedo swing across the whole band every frame.
@@ -446,6 +487,16 @@ void main()
 					   result unbiased: a neighbour's shadow result is never
 					   reused, only its choice of light. */
 					vec3 vol_inscatter;
+					/* THE LIGHT HALF AS A COLOUR, for debug view 14 - the sibling
+					   view 4 never had. Captured here rather than reconstructed
+					   with pt_fog_isolate through view 1, because view 1 carries
+					   `albedo * density` and an isolate A/B through it cannot
+					   separate a dead half from a dead multiplier. */
+					/* LOCALS, declared inside the z-loop so they reset per cell by
+					   construction - a shader global here reports the previous
+					   cell's value for every cell that skipped the branch, which is
+					   probe defect 3 in the fog-fade memory. */
+					float dbg_sky = 0.0, dbg_lit = 0.0;
 
 					if (global_ubo.pt_fog_restir > 0.0)
 					{
@@ -454,11 +505,16 @@ void main()
 						uint  y = (res.x < 0.0) ? ~0u : uint(res.x);
 						float W = res.y;
 
+						atomicAdd(readback.dbg_n_restir, 1u);
 						vol_inscatter = fog_sky_inscatter(world_pos_history);
+						dbg_sky = luminance(vol_inscatter);
 
 						if (int(global_ubo.pt_fog_isolate) != 1)
 							vol_inscatter += fog_shade_chosen(world_pos, view_dir,
 								fog_eccentricity(), light_rnd, y, W);
+
+						dbg_lit = luminance(vol_inscatter) - dbg_sky;
+						fog_debug_light_term = vol_inscatter - fog_debug_sky_term;
 					}
 					else
 					{
@@ -470,8 +526,60 @@ void main()
 					// knee crushing the total, so it sits at a different level
 					// entirely and sharing one cvar would mean retuning mode 2
 					// every time the two are compared.
+					/* TEMPORARY probe, GENERATION 2 - raw IEEE bits, see vertex_buffer.h.
+					   Generation 1 clamped to [0, 4e9], which maps a negative value, a
+					   NaN and the "expect <= 0" sentinel all onto the same printed 0. */
+					float dbg_pre = luminance(inscatter);
+					float dbg_vol = luminance(vol_inscatter);
+
 					inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005
 					           * global_ubo.fog_vol_density_ratio;
+
+					float dbg_post = luminance(inscatter);
+
+					/* Grid-wide, monotonic, one block, shared normaliser. */
+					atomicAdd(readback.dbg_n_cells, 1u);
+					if (dbg_post == 0.0)                        atomicAdd(readback.dbg_n_zero, 1u);
+					if (dbg_post <  0.0)                        atomicAdd(readback.dbg_n_neg,  1u);
+					if (isnan(dbg_post) || isinf(dbg_post))     atomicAdd(readback.dbg_n_bad,  1u);
+					if (dbg_post > 0.0 && dbg_post < 1e-9)      atomicAdd(readback.dbg_n_tiny, 1u);
+					if (dbg_post > 0.0 && dbg_post < 1e-7)      atomicAdd(readback.dbg_n_lt7,  1u);
+					atomicAdd(readback.dbg_sum_q,   uint(clamp(dbg_post * 1e7, 0.0, 1e6)));
+					atomicAdd(readback.dbg_sum_sky, uint(clamp(dbg_sky  * 1e4, 0.0, 1e6)));
+					atomicAdd(readback.dbg_sum_lit, uint(clamp(dbg_lit  * 1e4, 0.0, 1e6)));
+					/* THE SEPARATOR.  On collapsed frames n and restir advance by a full
+					   dispatch while EVERY other counter in this block reads 0 - and
+					   those zeros are mutually impossible (sum = 0 needs post < 1e-7,
+					   lt7 = 0 needs post >= 1e-7), so at least one atomic here is not
+					   executing as written.  n and restir are the only two that are
+					   UNCONDITIONAL WITH A CONSTANT OPERAND.  This is a third one, at
+					   the very END of the block:
+					     pad == n  -> the block runs to completion and the anomaly is
+					                  in the values / the conditional atomics
+					     pad == 0  -> execution does not reach the end of the block
+					   Either way it splits "the fog went dark" from "the probe did
+					   not run", which nothing measured so far can do. */
+					atomicAdd(readback.dbg_n_pad, 1u);
+
+					/* ONE cell, plain stores, no arithmetic that can lose information. */
+					if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+					    && z == FROXEL_GRID_Z / 2)
+					{
+						atomicAdd(readback.dbg_n_centre, 1u);
+
+						float dbg_expect = dbg_pre + dbg_vol * global_ubo.pt_fog_vol_scale
+						                 * 0.005 * global_ubo.fog_vol_density_ratio;
+
+						readback.dbg_pre_b    = floatBitsToUint(dbg_pre);
+						readback.dbg_vol_b    = floatBitsToUint(dbg_vol);
+						readback.dbg_post_b   = floatBitsToUint(dbg_post);
+						readback.dbg_frame    = global_ubo.current_frame_idx;
+
+						readback.dbg_expect_b = floatBitsToUint(dbg_expect);
+						readback.dbg_scale_b  = floatBitsToUint(global_ubo.pt_fog_vol_scale);
+						readback.dbg_ratio_b  = floatBitsToUint(global_ubo.fog_vol_density_ratio);
+						readback.dbg_sunlum_b = floatBitsToUint(luminance(sun_color));
+					}
 				}
 				else
 				{
@@ -527,6 +635,15 @@ void main()
 
 		     3  the depth slice as a ramp, to confirm the volume's z mapping
 		        lines up with the geometry. */
+		/* NOTE: read from the UBO, every `if (debug == N)` below is opaque to
+		   the compiler, so ~800 lines of debug chain are emitted inside a
+		   z-loop body run 128 times even when the feature is off.
+
+		   That was tested as a cause of the fog fade and is NOT one: forcing
+		   `const int debug = 0`, which lets the driver delete the whole chain
+		   before register allocation, still reproduced at 452 collapsed frames
+		   (baseline 286-681). Left as-is; if it is ever worth reclaiming the
+		   registers, do it for performance, not for the fade. */
 		int debug = int(global_ubo.pt_fog_froxel_debug);
 
 		// The diagnostic colour for this cell. Written to IMG_FROXEL_DEBUG_OUT at
@@ -618,6 +735,268 @@ void main()
 			float t = float(z) / float(FROXEL_GRID_Z - 1);
 			dbg = vec3(t, 1.0 - t, 0.0) * 0.05;
 		}
+
+		/* 12 and 13: THE TWO MULTIPLIERS VIEW 1 ALREADY INCLUDES.
+
+		   result.rgb = inscatter * albedo * density, and view 1 displays
+		   result.rgb - so a collapse in albedo or density looks exactly like a
+		   collapse of the lighting, and it survives isolating either half with
+		   pt_fog_isolate and survives removing the sky ray with
+		   pt_fog_sky_trace 0. Both of those have now been measured collapsing,
+		   which is what makes these two the remaining shared suspects.
+
+		   View 3 does NOT clear them: it only proves `density > 0` kept the gate
+		   open, not that density kept its VALUE. A density that fell a thousand
+		   times and stayed positive passes view 3 and empties view 1.
+
+		   Flag-valued scaling (0.02-ish on screen) like views 2/3/5, so the tone
+		   mapper does not swing between views. */
+		/* 14: THE LIGHT HALF ALONE, scaled EXACTLY as view 4 scales the sky
+		   half, so the two views are directly comparable and neither can lie
+		   by the ratio between two cvars. Both carry albedo and density, which
+		   views 13 and 12 have separately measured FLAT through the collapse. */
+		if (debug == 14)
+		{
+			float debug_scale = (global_ubo.fog_mode >= 3)
+			                  ? global_ubo.pt_fog_vol_scale
+			                  : global_ubo.pt_fog_light_scale;
+
+			dbg = fog_debug_light_term * debug_scale * 0.005
+			    * getFogColor(world_pos) * density * FOG_DEBUG_RADIANCE_GAIN;
+		}
+
+		/* 15: WHERE THE CELL ACTUALLY IS, as a smooth linear ramp.
+
+		   This is the one shared input left. Views 12 (density) and 13 (albedo)
+		   are both dominated by Z - the height-fog band and the world-box
+		   falloff - so a LATERAL shift of the sample points leaves both of them
+		   flat while completely changing what the sky ray hits and which lights
+		   are in range, which would kill both halves at once. That is exactly
+		   the measured signature, and nothing else measured so far survives.
+
+		   Uses the same normalisation getDensity does, so it is linear in x, y
+		   and z with no wrapping: red carries x, green y, blue z, and any shift
+		   moves the channel means. A `fract()` pattern would alias and could
+		   hide a shift entirely. */
+		/* 16: WHAT the sky ray hits, not whether it hits.
+
+		   Every non-ray input is now measured constant (views 3/12/13/15,
+		   FOGDIFF, FOGTLAS), so the collapse is in the ray query RESULT. View 5
+		   already shows the binary answer going to ~0 grid-wide; this shows the
+		   DISTANCE, which says what is doing the blocking:
+
+		     tiny t   -> something degenerate sitting on the cell - a bad
+		                 instance transform, or a zero-extent AABB at the origin
+		     plausible t -> real geometry, and the fault is in the instance set
+		                 or the AS_FLAG_OPAQUE cull mask, not the ray
+
+		   Its own query, independent of getSkyVisibility: closest hit, so
+		   TERMINATE-ON-FIRST-HIT must be OFF or committed t is whatever was
+		   found first rather than the nearest. Purely diagnostic - nothing
+		   downstream reads it. Ramped over 1024 world units. A miss paints
+		   full scale, so "bright" here means the ray escaped. */
+		/* 22: THE CONTRADICTION IN ONE IMAGE.
+
+		   View 19 (entered) and view 12 (density) disagree: density is
+		   unchanged, every gate reads correct (view 21), yet the call is not
+		   entered. Those are three SEPARATE runs of three views, so the
+		   disagreement could be between runs rather than within a frame.
+
+		   This paints both in one image, same cells, same frame, same shot:
+		     red   = fog_sky_inscatter was entered
+		     green = density > 0, i.e. the gate the call sits behind
+		   If red goes dark while green stays lit IN THE SAME IMAGE, the
+		   contradiction is real and local. If they darken together, the gate is
+		   closing after all and view 12's flat `density` reading was measuring
+		   the wrong thing - the VALUE rather than the per-cell TEST. */
+		/* 26: HOW BIG IS `density`?  Denormal check.
+
+		   View 25 proved `density > 0` is stable and TRUE while the branch it
+		   guards is not taken. A DENORMAL density explains exactly that: it
+		   compares > 0 in a full-precision register and == 0 in a
+		   flush-to-zero one, so the same value can pass the painted test and
+		   fail the branch. This tree has a recorded fp16-subnormal bug in the
+		   scatter volume already, so the failure mode is not hypothetical.
+
+		   And getDensity CAN produce one here: the height term is
+		   exp(-fog_hf_falloff * height), and at the measured hf_falloff 0.0264
+		   a cell ~3400 units up gives exp(-90) ~ 8e-40 - below fp32's smallest
+		   NORMAL value (1.18e-38). The froxel grid's slices are exponentially
+		   spaced, so the far/high cells that reach those heights are exactly
+		   the ones spanning the most screen depth.
+
+		     red   = density >= 1e-30   (comfortably normal)
+		     green = 0 < density < 1e-30 (denormal//near-denormal)
+		     blue  = bit pattern is exactly zero
+
+		   Bits, not a comparison, for blue: `density == 0` is itself subject to
+		   the flush being tested. */
+		if (debug == 26)
+			dbg = vec3((density >= 1e-30) ? 1.0 : 0.0,
+			           (density > 0.0 && density < 1e-30) ? 1.0 : 0.0,
+			           (floatBitsToUint(density) == 0u) ? 1.0 : 0.0) * 0.05;
+
+		/* 25: IS THE COMPARISON ITSELF SELF-CONSISTENT?
+
+		   View 24 paints `density > 0` (red) against `dbg_in_gate` (green) and
+		   they diverge 14x on collapsed frames - but by construction they
+		   CANNOT differ: both are per-cell, both outside the gate, one
+		   statement, and spirv-dis confirms the emitted code loads the same
+		   %density_0 for the test and stores %float_1 into %dbg_in_gate as the
+		   first instruction inside the branch it guards.
+
+		   So one of the two is lying, and this says which:
+		     red   = density > 0   (evaluated here)
+		     green = density > 0   (evaluated again, same statement)
+		     blue  = dbg_in_gate
+
+		   R != G  -> the comparison is not stable, i.e. codegen/driver, and
+		              every view built on a branch is suspect
+		   R == G, both != B -> the comparison is fine and the BRANCH is not
+		              taken, which is the fault itself
+		   R == G == B -> view 24 was an artefact of how its channels composite
+		              and the whole gate line of reasoning is dead */
+		if (debug == 25)
+			dbg = vec3((density > 0) ? 1.0 : 0.0,
+			           (density > 0) ? 1.0 : 0.0,
+			           dbg_in_gate) * 0.05;
+
+		/* 24: THE GATE'S CONDITION AND ITS BODY, IN ONE STATEMENT.
+
+		   Re-sorting all 15 views by WHEN their value is produced (not by
+		   storage class) gives a perfect split: everything computed BEFORE
+		   `if (density > 0)` is flat, everything that only gets a value INSIDE
+		   it collapses - view 1's `result` included, since it is declared
+		   before and assigned inside. One unified cause fits every view: the
+		   block does not execute.
+
+		   View 22 appeared to refute that by painting `density > 0` as true,
+		   but that is the CONDITION, evaluated again down here. This paints the
+		   condition against a LOCAL set as the first statement INSIDE the body:
+
+		     red   = density > 0        (the test, re-evaluated)
+		     green = dbg_in_gate        (the body actually ran)
+
+		   Both locals, one statement, same cells, same frame. Red lit with
+		   green dark is the block being skipped while its condition reads true.
+		   Note green is also the honest control for red: if they track each
+		   other, the gate is fine and the fault is past it. */
+		if (debug == 24)
+			dbg = vec3((density > 0) ? 1.0 : 0.0, dbg_in_gate, 0.0) * 0.05;
+
+		/* 23: IS fog_mode 3 OR 2?  The last test standing.
+
+		   View 22 measured, in ONE invocation: density > 0 TRUE, fog_lights
+		   TRUE, fog_sky_inscatter NOT entered. The only test between them is
+		   `fog_mode >= 3`, and fog_lights already requires `fog_mode >= 2` - so
+		   mode being exactly 2 explains every channel of view 22 at once, and
+		   sends the fog down getClusterLightInscatter, which never calls
+		   fog_sky_inscatter and is scaled by pt_fog_light_scale with a knee
+		   rather than pt_fog_vol_scale. A different, dimmer regime.
+
+		   View 21 appeared to rule this out, but its "normal" side was a SINGLE
+		   shot in an 87%-collapsed run - one likely-misclassified boundary
+		   frame. Binary channels this time, no ramp to misread:
+		     red = mode is exactly 3, green = mode is exactly 2, blue = entered */
+		if (debug == 23)
+			dbg = vec3((global_ubo.fog_mode == 3) ? 1.0 : 0.0,
+			           (global_ubo.fog_mode == 2) ? 1.0 : 0.0,
+			           fog_debug_sky_entered) * 0.05;
+
+		if (debug == 22)
+			dbg = vec3(fog_debug_sky_entered,
+			           (density > 0) ? 1.0 : 0.0,
+			           /* THE LAST LINK. `fog_lights` is computed ONCE at the top
+			              of main(), BEFORE the z-loop, from fog_enable and
+			              fog_mode. View 21 painted those two UBO FIELDS as
+			              sampled later in the debug chain and found them
+			              correct - but it never painted the bool actually used
+			              in the gate. Measured: density > 0 is TRUE and the
+			              call is NOT entered in the same invocation, and
+			              fog_lights is the only test left between them. */
+			           fog_lights ? 1.0 : 0.0) * 0.05;
+
+		/* 21: THE SHADER'S OWN VIEW OF THE GATES ABOVE THE CALL.
+
+		   View 19 says fog_sky_inscatter is not ENTERED on collapsed frames,
+		   while view 12 says `density` is unchanged and FOGDIFF says the CPU
+		   writes fog_enable=1 / fog_mode=3 on every frame. The gate chain is
+		     density > 0  ->  fog_lights  ->  fog_mode >= 3  ->  pt_fog_restir
+		   and both sides of the last one call fog_sky_inscatter, so the only
+		   way in is that one of the first three is false in the SHADER.
+
+		   View 18 proved the shader and the CPU agree about fog_sky_trace - but
+		   that is not the field that gates this. These are:
+		     red   = fog_enable
+		     green = fog_mode / 4      (3 -> 0.75)
+		     blue  = pt_fog_restir
+		   Read with `tools/fogcorr.py <run> --rgb`. */
+		if (debug == 21)
+			dbg = vec3(float(global_ubo.fog_enable),
+			           float(global_ubo.fog_mode) * 0.25,
+			           global_ubo.pt_fog_restir) * 0.05;
+
+		/* 19 / 20: the two binary flags - see fog_medium.glsl. 19 is "was
+		   fog_sky_inscatter entered", 20 is "did the sky ray actually run".
+		   Together they say whether the call site is skipped, an early return
+		   is taken inside, or the ray ran and its answer is being lost. */
+		if (debug == 19)
+			dbg = vec3(fog_debug_sky_entered) * 0.05;
+
+		if (debug == 20)
+			dbg = vec3(fog_debug_sky_traced) * 0.05;
+
+		/* 18: THE SHADER'S OWN VIEW OF THE TWO UBO FIELDS THAT GATE THE SKY RAY.
+
+		   View 17 says that on collapsed frames essentially every cell takes
+		   getSkyVisibility's `fog_sky_trace == 0` early return - the one that
+		   hands back fog_sky_fade, which is 0.0 on this map - while the CPU
+		   writes fog_sky_trace = 1 on every frame (FOGDIFF, one line per run).
+		   If the shader really is reading 0 there, the CPU and the shader
+		   disagree about the UBO, and THAT is the bug rather than anything in
+		   the fog maths.
+
+		   red = fog_sky_trace, green = fog_sky_fade. Read with
+		   `tools/fogcorr.py <run> --rgb`; a luminance mean would blend the two.
+		   Deliberately does not touch the ray, the grid or the lighting. */
+		if (debug == 18)
+			dbg = vec3(float(global_ubo.fog_sky_trace),
+			           global_ubo.fog_sky_fade, 0.0) * 0.05;
+
+		/* 17: WHICH PATH getSkyVisibility took, as a ramp - 0 never called,
+		   1 the fog_sky_trace==0 early return, 2 escaped, 3 blocked. This is
+		   the one thing view 5 cannot say. */
+		if (debug == 17)
+			dbg = vec3(fog_debug_sky_path / 3.0) * 0.05;
+
+		if (debug == 16)
+		{
+			rayQueryEXT dbg_rq;
+			rayQueryInitializeEXT(dbg_rq, FOG_TLAS, gl_RayFlagsOpaqueEXT,
+				AS_FLAG_OPAQUE, world_pos_history, 1.0, vec3(0, 0, 1), 65536.0);
+
+			while (rayQueryProceedEXT(dbg_rq)) {}
+
+			float t = (rayQueryGetIntersectionTypeEXT(dbg_rq, true)
+			           != gl_RayQueryCommittedIntersectionNoneEXT)
+			        ? rayQueryGetIntersectionTEXT(dbg_rq, true)
+			        : 65536.0;
+
+			dbg = vec3(clamp(t / 1024.0, 0.0, 1.0)) * 0.05;
+		}
+
+		if (debug == 15)
+		{
+			vec3 t = (world_pos_history - global_ubo.world_center.xyz)
+			       * global_ubo.world_half_size_inv.xyz;
+			dbg = (t * 0.5 + 0.5) * 0.05;
+		}
+
+		if (debug == 12)
+			dbg = vec3(density) * 0.02;
+
+		if (debug == 13)
+			dbg = getFogColor(world_pos_history) * 0.02;
 
 		int history_state = 2;   // blue: not visible last frame
 

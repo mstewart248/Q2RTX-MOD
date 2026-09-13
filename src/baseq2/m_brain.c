@@ -461,6 +461,9 @@ void brain_hit_right(edict_t *self) {
     VectorSet(aim, MELEE_DISTANCE, self->maxs[0], 8);
     if (fire_hit(self, aim, (15 + (Q_rand() % 5)), 40))
         gi.sound(self, CHAN_WEAPON, sound_melee3, 1, ATTN_NORM, 0);
+    else
+        // [rerelease] a whiff locks the brain out of melee for 3s
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 }
 
 void brain_swing_left(edict_t *self) {
@@ -473,6 +476,8 @@ void brain_hit_left(edict_t *self) {
     VectorSet(aim, MELEE_DISTANCE, self->mins[0], 8);
     if (fire_hit(self, aim, (15 + (Q_rand() % 5)), 40))
         gi.sound(self, CHAN_WEAPON, sound_melee3, 1, ATTN_NORM, 0);
+    else
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 }
 
 mframe_t brain_frames_attack1 [] =
@@ -510,6 +515,8 @@ void brain_tentacle_attack(edict_t *self) {
     VectorSet(aim, MELEE_DISTANCE, 0, 8);
     if (fire_hit(self, aim, (10 + (Q_rand() % 5)), -600) && skill->value > 0)
         self->spawnflags |= 65536;
+    else
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
     gi.sound(self, CHAN_WEAPON, sound_tentacles_retract, 1, ATTN_NORM, 0);
 }
 
@@ -826,6 +833,13 @@ void brain_pain(edict_t *self, edict_t *other, float kick, int damage) {
         gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
         self->monsterinfo.currentmove = &brain_move_pain3;
     }
+
+    // PMM - clear the duck flag. The pain move has just replaced whatever the
+    // duck was running, so without this a brain hit mid-duck stays logically
+    // ducked forever - and a monster whose bounding box never comes back up is
+    // the same failure as the savegame one in m_monster's base_height notes.
+    if (self->monsterinfo.aiflags & AI_DUCKED)
+        monster_duck_up(self);
 }
 
 void brain_dead(edict_t *self) {

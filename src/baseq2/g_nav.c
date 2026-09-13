@@ -558,9 +558,12 @@ static int  nav_next_path[MAX_EDICTS];
 #define NAV_REPATH_DELAY    (1 * BASE_FRAMERATE)
 #define NAV_WAYPOINT_REACHED 48.0f
 
+void Nav_ClearCombat(void);
+
 void Nav_ClearPursuit(void)
 {
     memset(nav_next_path, 0, sizeof(nav_next_path));
+    Nav_ClearCombat();
 }
 
 /*
@@ -631,6 +634,121 @@ bool Nav_MonsterPursue(edict_t *self)
         return false;
 
     VectorCopy(waypoint, self->monsterinfo.last_sighting);
+    return true;
+}
+
+
+/*
+=================
+Nav_CombatWaypoint
+
+[rerelease] The navmesh while the enemy is IN SIGHT, which is the half this
+tree never had - Nav_MonsterPursue above only runs once a monster has lost
+track of you, so every monster here behaved like the rerelease's COMBAT_RANGED
+no matter what it was. A berserk that cannot see a way around a railing would
+just mill about in front of it.
+
+monsterinfo.combat_style decides who gets it: a melee-only monster has to close
+the distance or it is harmless, a mixed one closes to mid range, and a ranged
+one is left alone to stand and shoot (returning false here puts it straight
+back on the classic movement, which is what the rerelease does too).
+
+Returns the point to walk at.  The answer is cached per edict between
+recomputes, because pathing every monster every frame is far too expensive and
+because the monster needs something to keep walking towards in between.
+=================
+*/
+static vec3_t   nav_combat_goal[MAX_EDICTS];
+static int      nav_combat_until[MAX_EDICTS];
+static int      nav_combat_next[MAX_EDICTS];
+
+#define NAV_COMBAT_GOAL_LIFETIME    (3 * BASE_FRAMERATE)
+
+void Nav_ClearCombat(void)
+{
+    memset(nav_combat_until, 0, sizeof(nav_combat_until));
+    memset(nav_combat_next, 0, sizeof(nav_combat_next));
+}
+
+bool Nav_CombatWaypoint(edict_t *self, vec3_t out)
+{
+    static int  path[256];
+    nav_caps_t  caps;
+    vec3_t      waypoint;
+    float       zdiff, standing;
+    int         n, i, num;
+
+    if (!Nav_Loaded() || hint_paths_present)
+        return false;
+
+    if (!self->enemy || !self->enemy->inuse || self->enemy->health <= 0)
+        return false;
+
+    // something else is already steering this monster
+    if (self->monsterinfo.aiflags & (AI_HINT_PATH | AI_COMBAT_POINT |
+                                     AI_SOUND_TARGET | AI_TARGET_ANGER))
+        return false;
+
+    // the mesh describes walkable floor
+    if (self->flags & (FL_FLY | FL_SWIM))
+        return false;
+
+    // this function is ONLY the in-sight half; the rest is Nav_MonsterPursue
+    if (!visible(self, self->enemy))
+        return false;
+
+    // how far off our own eyeline the enemy has to be before a flat walk
+    // towards them stops being good enough
+    standing = max(self->maxs[2], -self->mins[2]);
+    zdiff = fabsf(self->s.origin[2] - self->enemy->s.origin[2]);
+
+    switch (self->monsterinfo.combat_style) {
+    case COMBAT_MELEE:
+        // path close, then let ordinary Quake movement finish the job
+        if (realrange(self, self->enemy) <= 240.0f && zdiff <= standing)
+            return false;
+        break;
+    case COMBAT_MIXED:
+        // most mixed attacks are short ranged, so aim for mid range
+        if (realrange(self, self->enemy) <= 440.0f && zdiff <= standing * 2.0f)
+            return false;
+        break;
+    default:
+        // COMBAT_RANGED, or a style we never derived: shoot where you stand
+        return false;
+    }
+
+    n = self->s.number;
+    if (n < 0 || n >= MAX_EDICTS)
+        return false;
+
+    if (level.framenum >= nav_combat_next[n]) {
+        nav_combat_next[n] = level.framenum + NAV_REPATH_DELAY;
+
+        caps.jump_height = self->monsterinfo.can_jump ? self->monsterinfo.jump_height : 0;
+        caps.drop_height = self->monsterinfo.drop_height;
+
+        num = Nav_PathToPointCaps(self->s.origin, self->enemy->s.origin, &caps,
+                                  path, q_countof(path));
+        if (num >= 2) {
+            // skip any node we are effectively standing on already
+            for (i = 0; i < num; i++) {
+                if (!Nav_NodeOrigin(path[i], waypoint))
+                    break;
+                if (Distance(waypoint, self->s.origin) > NAV_WAYPOINT_REACHED)
+                    break;
+            }
+            if (i < num && Nav_NodeOrigin(path[i], waypoint)) {
+                VectorCopy(waypoint, nav_combat_goal[n]);
+                nav_combat_until[n] = level.framenum + NAV_COMBAT_GOAL_LIFETIME;
+            }
+        }
+    }
+
+    if (level.framenum > nav_combat_until[n])
+        return false;
+
+    VectorCopy(nav_combat_goal[n], out);
     return true;
 }
 

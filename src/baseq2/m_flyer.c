@@ -421,7 +421,9 @@ void flyer_slash_left(edict_t *self)
     vec3_t  aim;
 
     VectorSet(aim, MELEE_DISTANCE, self->mins[0], 0);
-    fire_hit(self, aim, 5, 0);
+    // [rerelease] a missed slash costs 1.5s of melee
+    if (!fire_hit(self, aim, 5, 0))
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
     gi.sound(self, CHAN_WEAPON, sound_slash, 1, ATTN_NORM, 0);
 }
 
@@ -430,7 +432,8 @@ void flyer_slash_right(edict_t *self)
     vec3_t  aim;
 
     VectorSet(aim, MELEE_DISTANCE, self->maxs[0], 0);
-    fire_hit(self, aim, 5, 0);
+    if (!fire_hit(self, aim, 5, 0))
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
     gi.sound(self, CHAN_WEAPON, sound_slash, 1, ATTN_NORM, 0);
 }
 
@@ -608,13 +611,21 @@ void flyer_melee(edict_t *self)
 
 void flyer_check_melee(edict_t *self)
 {
-    if (range(self, self->enemy) == RANGE_MELEE)
-        if (random() <= 0.8f)
+    if (range(self, self->enemy) == RANGE_MELEE) {
+        if (M_RereleaseGame()) {
+            // [rerelease] keep clawing unless a slash just missed. The classic
+            // game rolled a flat 80% instead, which is kept for it.
+            if (self->monsterinfo.melee_debounce_framenum <= level.framenum) {
+                self->monsterinfo.currentmove = &flyer_move_loop_melee;
+                return;
+            }
+        } else if (random() <= 0.8f) {
             self->monsterinfo.currentmove = &flyer_move_loop_melee;
-        else
-            self->monsterinfo.currentmove = &flyer_move_end_melee;
-    else
-        self->monsterinfo.currentmove = &flyer_move_end_melee;
+            return;
+        }
+    }
+
+    self->monsterinfo.currentmove = &flyer_move_end_melee;
 }
 
 void flyer_pain(edict_t *self, edict_t *other, float kick, int damage)

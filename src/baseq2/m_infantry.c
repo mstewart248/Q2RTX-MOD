@@ -888,6 +888,10 @@ void infantry_smack(edict_t *self)
     VectorSet(aim, MELEE_DISTANCE, 0, 0);
     if (fire_hit(self, aim, (5 + (Q_rand() % 5)), 50))
         gi.sound(self, CHAN_WEAPON, sound_punch_hit, 1, ATTN_NORM, 0);
+    else
+        // [rerelease] a missed punch sends the infantry back to the machinegun
+        // for 1.5s instead of punching at thin air
+        self->monsterinfo.melee_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
 }
 
 mframe_t infantry_frames_attack2 [] = {
@@ -904,7 +908,9 @@ mmove_t infantry_move_attack2 = {FRAME_attak201, FRAME_attak208, infantry_frames
 
 void infantry_attack(edict_t *self)
 {
-    if (range(self, self->enemy) == RANGE_MELEE)
+    if (range(self, self->enemy) == RANGE_MELEE &&
+        (!M_RereleaseGame() ||
+         self->monsterinfo.melee_debounce_framenum <= level.framenum))
         self->monsterinfo.currentmove = &infantry_move_attack2;
     else if (!M_RereleaseAnims())
         // classic md2: attak101-115 is the old cock-then-shoot animation, and
@@ -1088,6 +1094,7 @@ void SP_monster_infantry(edict_t *self)
     // gates itself on M_RereleaseAnims(); the plat half needs no frames.
     if (M_RereleaseGame()) {
         self->monsterinfo.blocked = infantry_blocked;
+        self->monsterinfo.combat_style = COMBAT_MIXED;
         self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_INFANTRY_NOJUMPING);
         self->monsterinfo.drop_height = 192;
         self->monsterinfo.jump_height = 40;

@@ -138,6 +138,74 @@ BEGIN_SHADER_STRUCT( ReadbackBuffer )
 
 	vec3 hdr_color;
 	float adapted_luminance;
+
+	/* TEMPORARY fog-fade probe, GENERATION 2. uint only, two groups of four.
+
+	   GENERATION 1 IS RETRACTED. It stored every float as
+	   `uint(clamp(x * 1e9, 0.0, 4e9))` and the self-ratio as
+	   `uint(clamp(r * 1e6, 0.0, 4e9)) + 1u` with r = -1.0 as the "expect <= 0"
+	   sentinel. clamp() sends BOTH a negative value and that sentinel to exactly
+	   0, so "post = 0" and "selfratio = 0.000000" - the result sessions 9-10 read
+	   as proof that `inscatter += vol * 0.005` does nothing - are equally
+	   consistent with inscatter being NEGATIVE, or with a NaN (NaN > 0.0 is false,
+	   so it takes the sentinel branch too). The encoding cannot tell the three
+	   apart. That is the sixth probe defect to imitate this fault.
+
+	   So: store the RAW IEEE BITS. No scaling, no clamping, no quantisation, no
+	   sentinel - sign, zero, subnormal, Inf and NaN all survive exactly, and the
+	   CPU bit-casts them back. Plain stores from one designated cell, which is the
+	   lightest probe available and still reproduced at 744 frames/run. */
+	uint dbg_pre_b;    /* floatBitsToUint(luminance(inscatter))     BEFORE the += */
+	uint dbg_vol_b;    /* floatBitsToUint(luminance(vol_inscatter))               */
+	uint dbg_post_b;   /* floatBitsToUint(luminance(inscatter))     AFTER  the += */
+	uint dbg_frame;    /* frame tag, same store - stale tag = the cell never ran  */
+
+	uint dbg_expect_b; /* floatBitsToUint(pre + vol*scale*0.005*ratio)            */
+	uint dbg_scale_b;  /* floatBitsToUint(global_ubo.pt_fog_vol_scale)            */
+	uint dbg_ratio_b;  /* floatBitsToUint(global_ubo.fog_vol_density_ratio)       */
+	uint dbg_sunlum_b; /* floatBitsToUint(luminance(sun_color)) - the only term
+	                      that writes inscatter before this line, so if pre is
+	                      negative this is where it came from */
+
+	/* GRID-WIDE CLASSIFIER, same site, MONOTONIC - the CPU takes deltas.
+	   The single cell above says what ONE cell did; these say what the whole grid
+	   did, and they are what decides whether a run manifested at all (no
+	   screenshots needed: the collapse is "every cell contributes zero").
+	   dbg_n_cells is the shared normaliser - it MUST delta to 1410835 at this
+	   site, and a probe whose normaliser is wrong is a broken probe, not a
+	   finding. Four atomics, one block: the weight memory records as reproducing
+	   best (607-863 collapsed frames/run; 8 suppresses it). */
+	uint dbg_n_cells;  /* cells reaching the accumulation                      */
+	uint dbg_n_zero;   /* ... with post == 0.0 exactly                         */
+	uint dbg_n_neg;    /* ... with post <  0.0   - invisible to a clamped probe */
+	uint dbg_n_bad;    /* ... with post NaN/Inf  - invisible to a clamped probe */
+
+	/* GRID-WIDE TOTALS, same site, same normaliser, monotonic (CPU deltas).
+	   The counters above say how many cells are zero; these say how much light
+	   the grid actually produced, which is what the screen shows.  Scales are
+	   chosen so the PER-FRAME DELTA cannot exceed 2^32 - the halves are ~1.8e2x
+	   larger than post, so they get 1e4 where post gets 1e7:
+	     post  3e-5   * 1e7 =  3e2 per cell * 1.41e6 = 4.2e8  OK
+	     halves 5.6e-3 * 1e4 = 5.6e1 per cell * 1.41e6 = 7.9e7 OK
+	   Getting this wrong wraps the delta and fakes a collapse. */
+	uint dbg_sum_q;    /* sum of luminance(inscatter) after the +=  * 1e7 */
+	uint dbg_sum_sky;  /* sum of the SKY half of vol_inscatter      * 1e4 */
+	uint dbg_sum_lit;  /* sum of the LIGHT half of vol_inscatter    * 1e4 */
+	uint dbg_n_tiny;   /* cells with 0 < post < 1e-9 - a collapse that is not
+	                      an exact zero would hide from dbg_n_zero entirely */
+
+	/* WHICH CODE RAN.  dbg_sum_sky / dbg_sum_lit are captured from locals that
+	   are only ASSIGNED inside the ReSTIR branch - so "sky = 0 and lit = 0" is
+	   equally consistent with the fog collapsing and with the ELSE branch
+	   running and leaving those locals at their initial 0.0.  Likewise the
+	   single-cell store's frame tag stops advancing on collapsed frames, which
+	   says the centre cell never reached it.  These two counters separate
+	   "the fog went dark" from "different code ran", which no counter so far
+	   can do.  (Session 10's own NEXT list asked for exactly this.) */
+	uint dbg_n_restir; /* cells that took the pt_fog_restir branch  */
+	uint dbg_n_centre; /* times the designated centre cell was hit  */
+	uint dbg_n_lt7;    /* cells with 0 < post < 1e-7 - pins the magnitude claim */
+	uint dbg_n_pad;    /* keep the group a multiple of four         */
 }
 END_SHADER_STRUCT( ReadbackBuffer )
 

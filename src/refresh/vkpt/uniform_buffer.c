@@ -165,6 +165,40 @@ vkpt_uniform_buffer_copy_from_staging(VkCommandBuffer command_buffer)
 {
 	BufferResource_t* ubo = host_uniform_buffers + qvk.current_frame_index;
 
+	/* WAIT FOR THE PREVIOUS FRAME'S SHADERS TO STOP READING THE UBO.
+
+	   The staging buffers are per frame in flight, but `device_uniform_buffer`
+	   - the one every shader actually reads - is a SINGLE buffer that every
+	   frame copies into. The barrier after the copy below orders
+	   TRANSFER_WRITE -> UNIFORM_READ, i.e. this frame's copy before this
+	   frame's reads. Nothing orders the other direction: the PREVIOUS frame's
+	   reads before this frame's WRITE.
+
+	   The frame fence only proves the frame MAX_FRAMES_IN_FLIGHT (2) ago
+	   finished, so frame N-1 can still be executing when frame N's copy is
+	   submitted - a write-after-read hazard on the uniform buffer, and one
+	   whose likelihood rises with how far the CPU runs ahead of the GPU. That
+	   is a frame-rate dependence, and the fog fade is measured to be exactly
+	   that: 32-62% of frames collapse uncapped, 0% at r_maxfps 60 or 30.
+
+	   WAR needs only an execution dependency - no cache flush - so the access
+	   masks are 0 and the stage masks do the work. Kept to the shader stages
+	   that read the UBO rather than ALL_COMMANDS, because a heavier barrier
+	   costs frame rate, and LOWERING THE FRAME RATE WOULD SUPPRESS THE FADE ON
+	   ITS OWN and fake a fix. Check the logged frame count stays ~730.
+
+	   pt_fog_ubo_war 0 disables it for A/B. */
+	if (Cvar_Get("pt_fog_ubo_war", "1", 0)->integer)
+	{
+		vkCmdPipelineBarrier(command_buffer,
+			qvk.use_ray_query
+				? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+				: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+				                       | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR),
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0, 0, NULL, 0, NULL, 0, NULL);
+	}
+
 	VkBufferCopy copy = { 0 };
 	copy.size = align(sizeof(QVKUniformBuffer_t), ubo_alignment) + sizeof(InstanceBuffer);
 	vkCmdCopyBuffer(command_buffer, ubo->buffer, device_uniform_buffer.buffer, 1, &copy);

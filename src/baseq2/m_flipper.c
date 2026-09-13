@@ -408,5 +408,11 @@ void SP_monster_flipper(edict_t *self)
     self->monsterinfo.currentmove = &flipper_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
 
+    // [rerelease] melee only, so it swims right up against you.
+    if (M_RereleaseGame()) {
+        self->monsterinfo.fly_thrusters = false;
+        monster_fly_setup(self, 110.0f, 30.0f, 10.0f, 10.0f);
+    }
+
     swimmonster_start(self);
 }

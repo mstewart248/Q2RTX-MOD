@@ -1032,6 +1032,7 @@ M_MoveToGoal
 void M_MoveToGoal(edict_t *ent, float dist)
 {
     edict_t     *goal;
+    vec3_t      waypoint;
 
     goal = ent->goalentity;
 
@@ -1041,6 +1042,21 @@ void M_MoveToGoal(edict_t *ent, float dist)
 // if the next step hits the enemy, return immediately
     if (ent->enemy &&  SV_CloseEnough(ent, ent->enemy, dist))
         return;
+
+    // [rerelease] Try the navmesh before the classic corner-follower, for a
+    // monster whose combat_style says it needs to close the distance. A
+    // monster in the middle of an attack is left alone - the rerelease gates
+    // this the same way, on attack_state < AS_MISSILE.
+    if (M_RereleaseGame() && ent->monsterinfo.attack_state < AS_MISSILE &&
+        Nav_CombatWaypoint(ent, waypoint)) {
+        vec3_t  delta;
+
+        VectorSubtract(waypoint, ent->s.origin, delta);
+        if (SV_StepDirection(ent, vectoyaw(delta), dist))
+            return;
+        // the mesh said go that way and the world disagreed; fall through to
+        // the classic movement rather than standing still
+    }
 
 // bump around...
     if ((Q_rand() & 3) == 1 || !SV_StepDirection(ent, ent->ideal_yaw, dist)) {

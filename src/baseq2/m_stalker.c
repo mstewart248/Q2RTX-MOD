@@ -724,6 +724,11 @@ stalker_swing_attack(edict_t *self)
 			gi.sound(self, CHAN_WEAPON, sound_punch_hit1, 1, ATTN_NORM, 0);
 		}
 	}
+	else
+	{
+		// [rerelease] a missed swipe costs 0.8s of melee
+		self->monsterinfo.melee_debounce_framenum = level.framenum + 0.8f * BASE_FRAMERATE;
+	}
 }
 
 mframe_t stalker_frames_swing_l[] = {
@@ -1220,6 +1225,96 @@ stalker_jump(edict_t *self)
 	}
 }
 
+/* [rerelease] "quick patch-job to fix stalkers endlessly floating up into the
+   sky" - a stalker that leaves the ceiling still has gravityVector[2] > 0, so
+   gravity keeps pulling it UP and it never comes down. Flip it back the moment
+   it loses ground contact. */
+void stalker_physics_change(edict_t *self)
+{
+	if (STALKER_ON_CEILING(self) && !self->groundentity)
+	{
+		self->gravityVector[2] = -1;
+		self->s.angles[2] += 180.0f;
+
+		if (self->s.angles[2] > 360.0f)
+		{
+			self->s.angles[2] -= 360.0f;
+		}
+	}
+}
+
+/* [rerelease] pick the ledge animation from what blocked_checkjump found,
+   rather than from where the enemy happens to be standing (which is what
+   stalker_jump above does for the dodge path). */
+void stalker_jump_updown(edict_t *self, blocked_jump_result_t result)
+{
+	if (!self->enemy)
+	{
+		return;
+	}
+
+	if (result == JUMP_JUMP_UP)
+	{
+		self->monsterinfo.currentmove = &stalker_move_jump_up;
+	}
+	else
+	{
+		self->monsterinfo.currentmove = &stalker_move_jump_down;
+	}
+}
+
+bool stalker_blocked(edict_t *self, float dist)
+{
+	blocked_jump_result_t result;
+
+	if (!has_valid_enemy(self))
+	{
+		return false;
+	}
+
+	if (!STALKER_ON_CEILING(self))
+	{
+		result = blocked_checkjump(self, dist);
+
+		if (result != NO_JUMP)
+		{
+			if (result != JUMP_TURN)
+			{
+				stalker_jump_updown(self, result);
+			}
+			return true;
+		}
+
+		if (blocked_checkplat(self, dist))
+		{
+			return true;
+		}
+
+		/* occasionally just pounce the obstruction instead */
+		if (visible(self, self->enemy) && random() < 0.1f)
+		{
+			stalker_do_pounce(self, self->enemy->s.origin);
+			return true;
+		}
+	}
+	else if (stalker_ok_to_transition(self))
+	{
+		/* drop off the ceiling to get around it */
+		self->gravityVector[2] = -1;
+		self->s.angles[2] += 180.0f;
+
+		if (self->s.angles[2] > 360.0f)
+		{
+			self->s.angles[2] -= 360.0f;
+		}
+
+		self->groundentity = NULL;
+		return true;
+	}
+
+	return false;
+}
+
 void
 stalker_dead(edict_t *self)
 {
@@ -1359,14 +1454,23 @@ SP_monster_stalker(edict_t *self)
 	   it walks on the ceiling. 32 of the 46 stalkers in the in-scope maps set
 	   this, so it is the common case, not an exotic one.
 
-	   The rerelease also has SPAWNFLAG_STALKER_NOJUMPING (16) driving
-	   monsterinfo.can_jump. No map sets it - checked across all 142 - so the
-	   jump gate is not ported. */
+	   SPAWNFLAG_STALKER_NOJUMPING (16) drives monsterinfo.can_jump. No map in
+	   the in-scope set sets it - checked across all 142 - but the flag is
+	   honoured anyway, because can_jump also gates the nav caps below. */
 	if (self->spawnflags & 8)
 	{
 		self->s.angles[2] = 180;
 		self->gravityVector[2] = 1;
 	}
+
+	/* [rerelease] navigation caps - g_nav.c uses
+	   jump_height = can_jump ? jump_height : 0, so an unset can_jump routes
+	   the stalker as unable to climb. */
+	self->monsterinfo.blocked = stalker_blocked;
+	self->monsterinfo.physics_change = stalker_physics_change;
+	self->monsterinfo.can_jump = !(self->spawnflags & 16);
+	self->monsterinfo.drop_height = 256;
+	self->monsterinfo.jump_height = 68;
 
 	walkmonster_start(self);
 }

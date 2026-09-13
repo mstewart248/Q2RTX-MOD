@@ -68,7 +68,23 @@ struct
 	VkSampler shadow_sampler;
 
 	froxel_volume_t froxel_scatter[MAX_FRAMES_IN_FLIGHT];
-	froxel_volume_t froxel_integrated;
+	/* PER FRAME IN FLIGHT, and it was a SINGLE volume until 2026-09-12.
+
+	   The integrate pass WRITES this and god_rays_filter READS it, every frame,
+	   whatever pt_fog_froxel_history is set to. The barriers inside
+	   vkpt_record_froxel_command_buffer order those two correctly WITHIN a frame
+	   - which is why synchronization validation is clean - but they say nothing
+	   across frames, and MAX_FRAMES_IN_FLIGHT is 2. With one shared volume,
+	   frame N+1's integrate pass could overwrite it while frame N's filter was
+	   still sampling it, so the filter read a half-integrated volume and the
+	   grid's whole contribution vanished for that frame.
+
+	   That matches the measured fault exactly: GRID ONLY (the per-pixel march
+	   never touches this volume and measured flat at 1.1% in the same run),
+	   survives pt_fog_froxel_history 0, intermittent, and an all-or-nothing loss
+	   rather than a dimming. froxel_scatter was already per-frame and
+	   froxel_reservoir already [2]; this one was the odd one out. */
+	froxel_volume_t froxel_integrated[MAX_FRAMES_IN_FLIGHT];
 
 	/* THE RESERVOIR PAIR - ReSTIR's working set, and there have to be two.
 
@@ -219,6 +235,37 @@ vkpt_god_rays_noop(void)
 	return VK_SUCCESS;
 }
 
+/* THE ACCESS MASKS MUST NAME READS, AND THE OLD ONES NAMED ONLY WRITES.
+   IMAGE_BARRIER already passes ALL_COMMANDS for both STAGE masks, so the
+   EXECUTION dependency was never the problem - the god-rays dispatch genuinely
+   could not start before the primary-ray pass finished. What was missing is the
+   MEMORY dependency: srcAccessMask SHADER_WRITE makes the previous pass's
+   writes AVAILABLE, but a dstAccessMask of SHADER_WRITE only makes them
+   visible to later WRITES. Every image this macro guards is then READ by the
+   next shader, and those reads were never covered - so they may be served from
+   a stale per-SM cache.
+
+   All three are read downstream:
+     PT_GODRAYS_THROUGHPUT_DIST          read by god_rays.comp
+     ASVGF_COLOR (GODRAYS_INTERMEDIATE)  written here, read by the filter
+     PT_TRANSPARENT                      read and written by the filter
+
+   The first is why this is a WHOLE-FOG fault and not a per-light or sky-only
+   one: .w is the march DISTANCE and .xyz the throughput, so both bound every
+   term - sun, sky, placed, emissive and model lights alike. A stale read of a
+   short distance removes all of it at once, which is exactly 'the whole fog
+   system fades in and out'. Being a cache-visibility race it is also
+   intermittent, sensitive to WHERE you stand (occupancy and cache residency
+   follow the scene), and only CORRELATED with low framerates, not caused by
+   them.
+
+   The froxel passes below already do this correctly with a VkMemoryBarrier
+   (SHADER_WRITE -> SHADER_READ). This macro is the ORIGINAL god-rays code and
+   predates them, which is why the fault is as old as the fog itself.
+
+   READ is named on BOTH sides: dst so the next shader's reads see the writes,
+   src so a pass that WRITES an image an earlier pass READ is ordered too
+   (write-after-read). */
 #define BARRIER_COMPUTE(cmd_buf, img) \
 	do { \
 		VkImageSubresourceRange subresource_range = { \
@@ -231,8 +278,8 @@ vkpt_god_rays_noop(void)
 		IMAGE_BARRIER(cmd_buf, \
 				.image            = img, \
 				.subresourceRange = subresource_range, \
-				.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT, \
-				.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT, \
+				.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, \
+				.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, \
 				.oldLayout        = VK_IMAGE_LAYOUT_GENERAL, \
 				.newLayout        = VK_IMAGE_LAYOUT_GENERAL, \
 		); \
@@ -250,8 +297,42 @@ void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, i
 	// completed - the sets are per frame in flight for exactly this reason.
 	{
 		VkAccelerationStructureKHR tlas = vkpt_pt_get_geometry_tlas(qvk.current_frame_index);
-		if (tlas != VK_NULL_HANDLE)
+
+		/* TEMPORARY, pt_fog_log 1. The `if` below is the never-excluded
+		   candidate for the fog fade: on a frame where the handle is null the
+		   descriptor SILENTLY KEEPS whatever TLAS was written the last time
+		   this frame index was used, and the fog's ray queries then trace a
+		   stale structure. getSkyVisibility is measured to return ~0 across the
+		   whole grid on collapsed frames, which is exactly what a wrong TLAS
+		   would do - it kills the sky term and every light's shadow test at
+		   once. Print the handle per frame and correlate. */
+		if (Cvar_Get("pt_fog_log", "0", 0)->integer)
+			Com_Printf("FOGTLAS idx=%d handle=%llu null=%d\n",
+				qvk.current_frame_index, (unsigned long long)(uintptr_t)tlas,
+				tlas == VK_NULL_HANDLE);
+
+		/* ONLY WRITE THE DESCRIPTOR WHEN THE HANDLE ACTUALLY CHANGES.
+
+		   This is a vkUpdateDescriptorSets on god_rays.descriptor_set[idx] at
+		   RECORD time, and the comment above argues the frame fence makes that
+		   safe. Updating a descriptor set while a submitted command buffer may
+		   still be reading it is undefined behaviour, and the symptom would be
+		   exactly what is measured here: the fog's ray queries returning wrong
+		   answers for whole blocks of frames while the path tracer - which
+		   reaches the same TLAS through its OWN set - is unaffected.
+
+		   FOGTLAS logging shows the handle is STABLE: two values, one per frame
+		   index, never null across 1460 frames. So this write is redundant on
+		   every frame after the first two, and skipping it removes the hazard
+		   without changing what the shader traces. If the fade survives this,
+		   the descriptor update was not the cause and the guard below can stay
+		   as a cheap correctness improvement anyway. */
+		static VkAccelerationStructureKHR last_written[MAX_FRAMES_IN_FLIGHT];
+
+		if (tlas != VK_NULL_HANDLE && last_written[qvk.current_frame_index] != tlas)
 		{
+			last_written[qvk.current_frame_index] = tlas;
+
 			VkWriteDescriptorSetAccelerationStructureKHR as_info = {
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
 				.accelerationStructureCount = 1,
@@ -778,11 +859,11 @@ static void update_descriptor_set(void)
 			};
 			froxel_integrated_info = (VkDescriptorImageInfo) {
 				.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.imageView = god_rays.froxel_integrated.view
+				.imageView = god_rays.froxel_integrated[i].view
 			};
 			froxel_sampled_info = (VkDescriptorImageInfo) {
 				.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.imageView = god_rays.froxel_integrated.view,
+				.imageView = god_rays.froxel_integrated[i].view,
 				.sampler = god_rays.froxel_sampler
 			};
 
@@ -868,7 +949,7 @@ static void create_froxel_volumes(void)
 	if (god_rays.froxel_initialized)
 		return;
 
-	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT + 1 + 2 };
+	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT * 2 + 2 };
 
 	VkImage* image_slots[MAX_FROXEL_VOLUMES];
 	VkImageView* views[MAX_FROXEL_VOLUMES];
@@ -885,11 +966,14 @@ static void create_froxel_volumes(void)
 		formats[num_volumes] = VK_FORMAT_R16G16B16A16_SFLOAT;
 		num_volumes++;
 	}
-	image_slots[num_volumes] = &god_rays.froxel_integrated.image;
-	views[num_volumes] = &god_rays.froxel_integrated.view;
-	memories[num_volumes] = &god_rays.froxel_integrated.memory;
-	formats[num_volumes] = VK_FORMAT_R16G16B16A16_SFLOAT;
-	num_volumes++;
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		image_slots[num_volumes] = &god_rays.froxel_integrated[i].image;
+		views[num_volumes] = &god_rays.froxel_integrated[i].view;
+		memories[num_volumes] = &god_rays.froxel_integrated[i].memory;
+		formats[num_volumes] = VK_FORMAT_R16G16B16A16_SFLOAT;
+		num_volumes++;
+	}
 
 	/* THE RESERVOIRS ARE RGBA32F, AND HALVING THAT WOULD BREAK THEM.
 
@@ -1075,9 +1159,12 @@ static void destroy_froxel_volumes(void)
 		vkFreeMemory(qvk.device, god_rays.froxel_scatter[i].memory, NULL);
 	}
 
-	vkDestroyImageView(qvk.device, god_rays.froxel_integrated.view, NULL);
-	vkDestroyImage(qvk.device, god_rays.froxel_integrated.image, NULL);
-	vkFreeMemory(qvk.device, god_rays.froxel_integrated.memory, NULL);
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		vkDestroyImageView(qvk.device, god_rays.froxel_integrated[i].view, NULL);
+		vkDestroyImage(qvk.device, god_rays.froxel_integrated[i].image, NULL);
+		vkFreeMemory(qvk.device, god_rays.froxel_integrated[i].memory, NULL);
+	}
 
 	for (int r = 0; r < 2; r++)
 	{
@@ -1089,7 +1176,7 @@ static void destroy_froxel_volumes(void)
 	vkDestroySampler(qvk.device, god_rays.froxel_sampler, NULL);
 
 	memset(god_rays.froxel_scatter, 0, sizeof(god_rays.froxel_scatter));
-	memset(&god_rays.froxel_integrated, 0, sizeof(god_rays.froxel_integrated));
+	memset(god_rays.froxel_integrated, 0, sizeof(god_rays.froxel_integrated));
 	memset(god_rays.froxel_reservoir, 0, sizeof(god_rays.froxel_reservoir));
 	god_rays.froxel_sampler = VK_NULL_HANDLE;
 	god_rays.froxel_initialized = false;

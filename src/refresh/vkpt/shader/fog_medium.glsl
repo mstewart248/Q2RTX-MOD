@@ -155,6 +155,30 @@ float getHeightFogDensity(vec3 p)
    downstream of getSkyVisibility" - which is the fork the whole investigation is
    stuck on. */
 vec3  fog_debug_sky_term = vec3(0);
+vec3  fog_debug_light_term = vec3(0);   /* the LIGHT half, for debug view 14 */
+/* WHICH RETURN PATH getSkyVisibility TOOK, for debug view 17.
+   0 = never called at all, 1 = the fog_sky_trace==0 early return (which hands
+   back fog_sky_fade, and that is 0.0 on xswamp), 2 = ray escaped, 3 = ray
+   blocked. View 5 shows the VALUE and cannot tell "returned 0" from "never ran
+   and the per-cell reset is still showing" - which matters, because an
+   independent query (view 16) answers IDENTICALLY on collapsed frames. */
+float fog_debug_sky_path = 0.0;
+
+/* TWO BINARY FLAGS, replacing what view 17 packs into one ramp.
+
+   View 17 encodes four states (never called / early return / escaped /
+   blocked) as a single luminance, and reading a state off a ramp is the same
+   class of mistake as the clamped sentinel that cost sessions 7-10: several
+   distinct causes map onto one number. These are 0 or 1 and nothing else.
+
+     entered = fog_sky_inscatter was entered at all
+     traced  = the sky ray actually ran
+
+   Their COMBINATION is what disambiguates: entered=0 means the call site is
+   being skipped; entered=1,traced=0 means an early return inside; both 1 means
+   the ray ran and the fault is in what happens to its answer. */
+float fog_debug_sky_entered = 0.0;
+float fog_debug_sky_traced  = 0.0;
 float fog_debug_sky_vis  = 0.0;
 
 /*
@@ -182,6 +206,8 @@ which is what the per-cluster version could not do at all.
 */
 float getSkyVisibility(vec3 p)
 {
+	fog_debug_sky_path = 1.0;
+
 	if (global_ubo.fog_sky_trace == 0)
 	{
 		// fall back to the CPU cluster estimate
@@ -227,7 +253,11 @@ float getSkyVisibility(vec3 p)
 
 	while (rayQueryProceedEXT(rq)) {}
 
+	fog_debug_sky_traced = 1.0;
+
 	bool blocked = (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT);
+
+	fog_debug_sky_path = blocked ? 3.0 : 2.0;
 
 	if (!blocked)
 		fog_debug_sky_vis = 1.0;
@@ -978,6 +1008,8 @@ to be used to judge it.
    duplicates no work, it only moves where the pieces are called from. */
 vec3 fog_sky_inscatter(vec3 sky_p)
 {
+	fog_debug_sky_entered = 1.0;
+
 	/* UNDER THE PHYSICAL SKY, THE SUN TERM IS THE SKY FOG - exactly as cl_fog 1
 	   does it, which is what Matt asked for.
 
@@ -1261,6 +1293,7 @@ vec3 fog_shade_chosen(vec3 p, vec3 view_dir, float g, vec3 rnd, uint chosen_idx,
 	// Occlusion. One ray, on the light RIS decided was worth it. See the header
 	// note: not gated on pt_fog_light_shadow. t_max stops short of the sampled
 	// point so the ray cannot hit the emissive surface it is aiming at.
+
 	{
 		rayQueryEXT shadow_rq;
 		rayQueryInitializeEXT(shadow_rq, FOG_TLAS,

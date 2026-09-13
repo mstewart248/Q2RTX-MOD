@@ -268,6 +268,7 @@ static const save_field_t entityfields[] = {
     P(monsterinfo.duck, P_monsterinfo_duck),
     P(monsterinfo.unduck, P_monsterinfo_unduck),
     P(monsterinfo.sidestep, P_monsterinfo_sidestep),
+    P(monsterinfo.physics_change, P_monsterinfo_physics_change),
     F(monsterinfo.base_height),
     FT(monsterinfo.duck_wait_framenum),
     FT(monsterinfo.next_duck_framenum),
@@ -276,6 +277,9 @@ static const save_field_t entityfields[] = {
     FT(monsterinfo.pause_framenum),
     FT(monsterinfo.attack_finished),
     FT(monsterinfo.melee_debounce_framenum),
+    I(monsterinfo.combat_style),
+    I(monsterinfo.armor_type),
+    I(monsterinfo.armor_power),
     O(monsterinfo.can_jump),
     F(monsterinfo.drop_height),
     F(monsterinfo.jump_height),
@@ -1017,7 +1021,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // a flat array indexed by ITEM_INDEX (= item - itemlist), so every insertion
 // shifts the index of everything after it and a version-61 save would restore
 // the wrong items. One bump covers the whole batch.
-#define SAVE_VERSION    62
+#define SAVE_VERSION    63
 
 /*
 ============

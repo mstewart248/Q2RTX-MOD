@@ -29,7 +29,10 @@ typedef enum {
     // table in g_ptrs_compat_v2.c is written against, does not move.
     P_monsterinfo_duck,
     P_monsterinfo_unduck,
-    P_monsterinfo_sidestep
+    P_monsterinfo_sidestep,
+
+    // [rerelease] stalker gravity righting.  Appended for the same reason.
+    P_monsterinfo_physics_change
 } ptr_type_t;
 
 typedef struct {

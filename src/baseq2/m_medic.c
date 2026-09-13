@@ -503,9 +503,8 @@ mmove_t medic_move_pain2_rr = {FRAME_painb2, FRAME_painb13, medic_frames_pain2_r
 void medic_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     // the pain skin is the low bit: 0 -> 1 for the medic, 2 -> 3 for the
-    // commander
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum |= 1;
+    // commander. M_SetDamageSkin also clears it again on a heal.
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -1527,8 +1526,17 @@ void medic_attack(edict_t *self)
         else
             self->monsterinfo.currentmove = &medic_move_attackCable;
     } else {
-        if (MEDIC_IS_COMMANDER(self) && r > 0.2f && M_SlotsLeft(self) > 0 &&
-            range(self, self->enemy) > RANGE_MELEE)
+        // [rerelease] "give a LARGE bias to spawning things when we have
+        // room" - the commander waits until MOST of its slots are free and
+        // then summons a wave, rather than trickling one out whenever a single
+        // slot frees up. 150 units, not RANGE_MELEE, is the rerelease's own
+        // standoff distance for this.
+        if (MEDIC_IS_COMMANDER(self) && r > 0.2f &&
+            (M_RereleaseGame()
+                 ? (M_SlotsLeft(self) > self->monsterinfo.monster_slots * 0.8f &&
+                    realrange(self, self->enemy) > 150)
+                 : (M_SlotsLeft(self) > 0 &&
+                    range(self, self->enemy) > RANGE_MELEE)))
             self->monsterinfo.currentmove = &medic_move_callReinforcements;
         else if (M_RereleaseGame())
             self->monsterinfo.currentmove = &medic_move_attackBlaster_rr;
@@ -1580,6 +1588,15 @@ bool medic_checkattack(edict_t *self)
 The medic commander summons reinforcements. The map's `reinforcements` key sets
 what it can call and how much of its slot budget each one costs.
 */
+// [rerelease] plats only - the medic has no jump animations either.
+bool medic_blocked(edict_t *self, float dist)
+{
+    if (blocked_checkplat(self, dist))
+        return true;
+
+    return false;
+}
+
 void SP_monster_medic(edict_t *self)
 {
     bool    commander;
@@ -1667,6 +1684,7 @@ void SP_monster_medic(edict_t *self)
         self->monsterinfo.duck = medic_duck;
         self->monsterinfo.unduck = monster_duck_up;
         self->monsterinfo.sidestep = medic_sidestep;
+        self->monsterinfo.blocked = medic_blocked;
     }
     self->monsterinfo.attack = medic_attack;
     self->monsterinfo.melee = NULL;

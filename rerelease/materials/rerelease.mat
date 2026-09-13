@@ -308,6 +308,9 @@ models/objects/gekkgib/torso/torso:
 models/objects/loogy/loogy_05:
 	texture_base materialDev/models/objects/loogy/loogy_05.tga
 	texture_normals materialDev/models/objects/loogy/loogy_05_n.tga
+	texture_emissive materialDev/models/objects/loogy/loogy_05.tga
+	emissive_factor .1
+	default_radiance 10.0
 	metalness_factor 0
 
 models/objects/r_explode2/skin1:
@@ -1043,7 +1046,6 @@ textures/dark_1/0text_43:
 textures/dark_1/0text_44:
 	texture_base materialDev/textures/dark_1/0text_44.tga
 	texture_normals materialDev/textures/dark_1/0text_44_n.tga
-	metalness_factor 0
 
 textures/dark_1/0text_45:
 	texture_base materialDev/textures/dark_1/0text_45.tga

@@ -12,7 +12,9 @@ pointers = [
     'monsterinfo_blocked',
     # ROGUE/rerelease duck + sidestep.  Appended, because this list's order is
     # the order of the generated save_ptrs[] table.
-    'monsterinfo_duck', 'monsterinfo_unduck', 'monsterinfo_sidestep'
+    'monsterinfo_duck', 'monsterinfo_unduck', 'monsterinfo_sidestep',
+    # [rerelease] stalker gravity righting.  Appended for the same reason.
+    'monsterinfo_physics_change'
 ]
 
 if __name__ == "__main__":
@@ -20,7 +22,11 @@ if __name__ == "__main__":
         print('Usage: genptr.py <file> [...]')
         sys.exit(1)
 
-    exprs = '|'.join(p.replace('_', '\\.') for p in pointers if not p == 'moveinfo_endfunc')
+    # NOTE: only the FIRST underscore separates the struct from the field.
+    # Replacing every one turned monsterinfo_physics_change into a pattern
+    # matching nothing, silently dropping the pointer from save_ptrs[] - a
+    # savegame then restores that callback as NULL.
+    exprs = '|'.join(p.replace('_', '\\.', 1) for p in pointers if not p == 'moveinfo_endfunc')
     regex = re.compile(r'->\s*(%s)\s*=\s*&?\s*(\w+)' % exprs, re.ASCII)
     regex2 = re.compile(r'\b(?:Angle)?Move_Calc\s*\(.+,\s*(\w+)\s*\)', re.ASCII)
 

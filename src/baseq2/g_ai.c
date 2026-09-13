@@ -818,6 +818,21 @@ bool M_CheckAttack(edict_t *self)
 
     // melee attack
     if (enemy_range == RANGE_MELEE) {
+        if (M_RereleaseGame()) {
+            // [rerelease] a monster that just whiffed a swing is locked out of
+            // melee until melee_debounce_framenum and shoots instead of
+            // standing there flailing. The per-monster melee functions stamp
+            // it on a miss; without this read the whole mechanism is dead,
+            // which is what it was here. No easy-mode roll - the rerelease
+            // does not have one.
+            if (self->monsterinfo.melee &&
+                self->monsterinfo.melee_debounce_framenum <= level.framenum)
+                self->monsterinfo.attack_state = AS_MELEE;
+            else
+                self->monsterinfo.attack_state = AS_MISSILE;
+            return true;
+        }
+
         // don't always melee in easy mode
         if (skill->value == 0 && (Q_rand() & 3))
             return false;
@@ -828,9 +843,21 @@ bool M_CheckAttack(edict_t *self)
         return true;
     }
 
+    // [rerelease] we were in melee a moment ago but the enemy has moved out of
+    // reach - leave the melee state rather than chasing in it
+    if (M_RereleaseGame() &&
+        self->monsterinfo.attack_state == AS_MELEE &&
+        self->monsterinfo.melee_debounce_framenum > level.framenum)
+        self->monsterinfo.attack_state = AS_MISSILE;
+
 // missile attack
-    if (!self->monsterinfo.attack)
+    if (!self->monsterinfo.attack) {
+        // [rerelease/ROGUE] melee-only monsters must not be left in a state
+        // that suppresses strafing
+        if (M_RereleaseGame())
+            self->monsterinfo.attack_state = AS_STRAIGHT;
         return false;
+    }
 
     if (level.framenum < self->monsterinfo.attack_finished)
         return false;
@@ -945,7 +972,23 @@ void ai_run_missile(edict_t *self)
     M_ChangeYaw(self);
 
     if (FacingIdeal(self)) {
-        self->monsterinfo.attack(self);
+        // [rerelease] a melee-only monster (the flipper) has no attack at all,
+        // and M_CheckAttack can now hand it AS_MISSILE when its melee is
+        // debounced out. Calling through a NULL attack would crash.
+        if (self->monsterinfo.attack) {
+            self->monsterinfo.attack(self);
+
+            // [rerelease] EVERY attack costs 1-2 seconds before the monster
+            // may pick another one. This is the pacing that makes a rerelease
+            // monster alternate "attack" with a stretch of running at you
+            // instead of re-rolling an attack on the next 10hz tick, and
+            // several per-monster behaviours read it back - notably the gekk's
+            // "keep running" guard, which has no window without this stamp.
+            // It deliberately OVERWRITES whatever attack() just set.
+            if (M_RereleaseGame())
+                self->monsterinfo.attack_finished =
+                    level.framenum + (1.0f + random()) * BASE_FRAMERATE;
+        }
 
         // ROGUE - AS_BLIND has to be cleared here too, or the monster never
         // leaves it

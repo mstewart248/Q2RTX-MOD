@@ -984,6 +984,7 @@ void SP_monster_mutant(edict_t *self)
     // gates itself on M_RereleaseAnims(); the plat half needs no frames.
     if (M_RereleaseGame()) {
         self->monsterinfo.blocked = mutant_blocked;
+        self->monsterinfo.combat_style = COMBAT_MELEE;
         self->monsterinfo.can_jump = !(self->spawnflags & SPAWNFLAG_MUTANT_NOJUMPING);
         self->monsterinfo.drop_height = 256;
         self->monsterinfo.jump_height = 68;

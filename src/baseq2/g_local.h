@@ -136,6 +136,14 @@ typedef enum {
 #define DEAD_DEAD               2
 #define DEAD_RESPAWNABLE        3
 
+// [rerelease] pathing style - see monsterinfo_t::combat_style
+typedef enum {
+    COMBAT_UNKNOWN,
+    COMBAT_MELEE,       // must get up close or it has no attack at all
+    COMBAT_MIXED,       // has both; closes to mid range
+    COMBAT_RANGED       // don't bother pathing if we can see the player
+} combat_style_t;
+
 //range
 #define RANGE_MELEE             0
 #define RANGE_NEAR              1
@@ -199,6 +207,11 @@ typedef enum {
 // its enemy - so every flag that also wants to pick a goal is cleared when it
 // goes on. See g_rogue.c.
 #define AI_HINT_PATH            0x08000000
+// [rerelease] "hack for Makron": this monster's death is not the end of the
+// fight, so a target_health_bar watching it must hold its bar instead of
+// clearing it. Jorg dies and Makron climbs out of the wreck - without this the
+// boss bar blinks out between the two halves.
+#define AI_DOUBLE_TROUBLE       0x10000000
 
 //monster attack state
 #define AS_STRAIGHT             1
@@ -807,6 +820,26 @@ typedef struct {
     // the map and is far too expensive to run every frame.
     edict_t     *goal_hint;
     int         last_hint_framenum;
+
+    // [rerelease] ORDINARY armour worn by a monster, as opposed to the power
+    // screen/shield in power_armor_*. Exactly one monster in the rerelease has
+    // any - the turret, with 50 combat - and CheckArmor() spends it the same
+    // way it spends a player's.
+    int         armor_type;     // an armour item index, 0 for none
+    int         armor_power;
+
+    // [rerelease] called when the monster's ground contact changes, so a
+    // monster with unusual gravity can right itself. Only the stalker needs
+    // it: one that leaves the ceiling keeps its inverted gravity and floats
+    // away upwards forever.
+    void        (*physics_change)(edict_t *self);
+
+    // [rerelease] how this monster wants to be PATHED, not how it fights.
+    // g_nav.c reads it to decide whether to run the navmesh while the enemy
+    // is in plain sight: a melee monster has to close the distance or it can
+    // do nothing at all, while a ranged one is happy to stand and shoot.
+    // Derived in monster_start() when a spawn function leaves it UNKNOWN.
+    combat_style_t combat_style;
 } monsterinfo_t;
 
 
@@ -1378,6 +1411,10 @@ bool Nav_NodeOrigin(int node, vec3_t out);
 void Cmd_Nav_f(edict_t *ent);
 bool Nav_MonsterPursue(edict_t *self);
 void Nav_ClearPursuit(void);
+// [rerelease] the in-sight half of navmesh pursuit, gated on combat_style.
+// Fills out with the next point to walk at; see g_nav.c.
+bool Nav_CombatWaypoint(edict_t *self, vec3_t out);
+void Nav_ClearCombat(void);
 extern int hint_paths_present;
 
 // Rerelease compass (g_rerelease.c) - points at level.current_poi.

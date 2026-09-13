@@ -539,8 +539,7 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
     // pain replaces currentmove, so the burst never reaches its sound_end frame
     self->s.sound = 0;
 
-    if (self->health < (self->max_health / 2))
-        self->s.skinnum |= 1;
+    M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum) {
         if ((self->velocity[2] > 100) && ((self->monsterinfo.currentmove == &soldier_move_pain1) || (self->monsterinfo.currentmove == &soldier_move_pain2) || (self->monsterinfo.currentmove == &soldier_move_pain3))) {
