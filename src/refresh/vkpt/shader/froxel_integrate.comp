@@ -199,7 +199,28 @@ void main()
 	{
 		ivec3 cell = ivec3(column, z);
 
-		vec4 slice = load_scatter(column, z);
+		/* BISECTION, STAGE 5 (pt_fog_const_src 5): feed the accumulation a
+		   CONSTANT instead of reading the scatter volume.
+
+		   Stage 3 + `pt_fog_froxel_filter 0` leaves every input to this loop
+		   constant - the stored value is a constant, `thickness` comes from
+		   FROXEL_SLICE_TO_DEPTH which is pure compile-time constants, and
+		   `sigma` is the stored alpha - yet it still collapsed, while stage 2
+		   (a constant written straight to the INTEGRATED volume) was flat. The
+		   only thing between those two points is this imageLoad.
+
+		     FLAT -> the accumulation is fine and the SCATTER VOLUME is not
+		       returning what was stored: the store, or something clobbering the
+		       volume between the two dispatches.
+		     STILL COLLAPSES -> the loop itself varies, which the constants
+		       above say is impossible - so it would mean the dispatch is not
+		       running over all cells.
+
+		   Only VARIATION matters here, not the absolute level, so the exact
+		   constant is unimportant. */
+		vec4 slice = (global_ubo.pt_fog_const_src == 5.0)
+		           ? vec4(vec3(1.5e-5), 0.0)
+		           : load_scatter(column, z);
 
 		float far_depth = FROXEL_SLICE_TO_DEPTH(float(z) + 1.0);
 		float thickness = max(far_depth - near_depth, 0.0);
@@ -226,6 +247,29 @@ void main()
 			accum_inscatter += scatter * thickness * transmittance;
 		}
 
-		imageStore(IMG_FROXEL_INTEGRATED, cell, vec4(accum_inscatter, transmittance));
+		/* BISECTION, STAGE 2 (pt_fog_const_src 2): write a constant INTEGRATED
+		   volume, ignoring everything the scatter pass produced.
+
+		   Stage 1 (const_src 1, in froxel_scatter.comp) proved the fog still
+		   collapses with a source term that cannot vary, and disabling the
+		   temporal blend on top of that changed nothing - so the fault is after
+		   `result.rgb`, in the store / this pass / god_rays_filter / the
+		   composite. This splits that remainder:
+
+		     STILL COLLAPSES -> the fault is DOWNSTREAM of here: the filter's
+		       per-pixel lookup of the integrated volume, or the composite.
+		     FLAT -> the fault is UPSTREAM of here: the scatter volume's store,
+		       or this pass's read of it.
+
+		   The constant is the accumulated value's own magnitude, not the
+		   per-cell one - accum_inscatter is summed over the column and scaled
+		   by slice thickness, so it is orders larger than a cell's inscatter.
+		   Taken from a healthy frame rather than guessed: getting this wrong
+		   saturates the tone mapper and turns the test into exposure noise,
+		   which is exactly what a 600x-too-bright constant did at stage 1. */
+		if (global_ubo.pt_fog_const_src == 2.0)
+			imageStore(IMG_FROXEL_INTEGRATED, cell, vec4(vec3(0.05), 1.0));
+		else
+			imageStore(IMG_FROXEL_INTEGRATED, cell, vec4(accum_inscatter, transmittance));
 	}
 }

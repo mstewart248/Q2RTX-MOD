@@ -1031,7 +1031,6 @@ textures/dark_1/0text_40:
 textures/dark_1/0text_41:
 	texture_base materialDev/textures/dark_1/0text_41.tga
 	texture_normals materialDev/textures/dark_1/0text_41_n.tga
-	metalness_factor 0
 
 textures/dark_1/0text_42:
 	texture_base materialDev/textures/dark_1/0text_42.tga

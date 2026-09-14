@@ -989,18 +989,28 @@ void gekk_check_landing(edict_t *self)
 
 // The rerelease's dispatcher, not Xatrix's gekk_jump. This is the only one
 // that honours NOJUMPING, which mgu4m2 sets on eight of its gekks.
+// [rerelease] The rerelease's RANGE_* are DISTANCES (20/440/940), not this
+// tree's RANGE_* enum tiers (0/1/2/3). gekk_attack compares against them
+// directly, so using range()'s enum here silently moved the far/near split from
+// 940 units to 500: everything from 500 to 940 - most of ordinary combat range -
+// took the FAR branch and could only spit or charge, when the rerelease takes
+// the NEAR branch, which is the one that holds the LEAP. That is exactly the
+// "only jumps when you are already close, otherwise sits and spits" report.
+#define GEKK_RANGE_NEAR 440.0f
+#define GEKK_RANGE_MID  940.0f
+
 void gekk_attack(edict_t *self)
 {
-    int r;
+    float   r;
 
     if (!self->enemy)
         return;
 
-    r = range(self, self->enemy);
+    r = realrange(self, self->enemy);
 
     if (self->flags & FL_SWIM) {
         // stay in the water while the enemy is still in it
-        if (self->enemy->waterlevel >= 2 && r <= RANGE_NEAR)
+        if (self->enemy->waterlevel >= 2 && r <= GEKK_RANGE_NEAR)
             return;
 
         self->flags &= ~FL_SWIM;
@@ -1010,7 +1020,7 @@ void gekk_attack(edict_t *self)
         return;
     }
 
-    if (r >= RANGE_MID) {
+    if (r >= GEKK_RANGE_MID) {
         if (random() > 0.5f) {
             self->monsterinfo.currentmove = &gekk_move_spit;
         } else {
@@ -1027,6 +1037,17 @@ void gekk_attack(edict_t *self)
             self->monsterinfo.currentmove = &gekk_move_leapatk;
         }
     }
+
+    // The charge guard in gekk_checkattack only holds while attack_finished is
+    // in the future, and the SPIT branches above stamp nothing. In the
+    // rerelease that does not matter, because ai_run_missile stamps 1-2s after
+    // every attack() - but that stamp is gated on M_RereleaseGame(), and this
+    // gekk also spawns in The Reckoning, which can be played from the baseq2
+    // game dir. Stamp it ourselves there so the gekk charges the same either
+    // way instead of re-rolling an attack on the very next frame.
+    if (!M_RereleaseGame() && self->monsterinfo.attack_finished <= level.framenum)
+        self->monsterinfo.attack_finished =
+            level.framenum + (1.0f + random()) * BASE_FRAMERATE;
 }
 
 mframe_t gekk_frames_pain [] = {

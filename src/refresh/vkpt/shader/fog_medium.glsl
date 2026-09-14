@@ -1400,6 +1400,23 @@ float getDensity(vec3 p)
 	vec3 bounds = clamp(3.0 - 2.0 * abs((p - global_ubo.world_center.xyz) * global_ubo.world_half_size_inv.xyz), vec3(0), vec3(1));
 	float world_box = bounds.x * bounds.y * bounds.z;
 
+	/* BISECTION, STAGE 9 (pt_fog_const_src 9): force world_box to 1.
+
+	   Stage 8 (density forced constant) was FLAT, so `density` is the variable,
+	   and FOGDIFF proves every CPU input to getDensity is bit-constant
+	   (world_center, world_half_size_inv, fog_density, hf_*, density_max).
+	   That leaves either `p` itself or the shader's READ of those fields.
+
+	   world_box is a product of three clamp(...,0,1) terms, so if ANY axis
+	   leaves range it is EXACTLY zero and the fog vanishes whole - the measured
+	   symptom. This isolates it from the height-fog term:
+
+	     FLAT -> world_box was zeroing, i.e. `p` or world_center/half_size_inv.
+	     STILL COLLAPSES -> the height-fog term (which depends on p.z and the
+	       hf_* fields). */
+	if (global_ubo.pt_fog_const_src == 9.0)
+		world_box = 1.0;
+
 	// Without a map fog definition this is the original flat medium, so god rays
 	// on the classic campaign are completely unchanged.
 	if (global_ubo.fog_enable == 0)

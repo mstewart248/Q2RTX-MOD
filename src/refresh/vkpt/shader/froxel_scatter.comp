@@ -49,6 +49,12 @@ the grid provides for free.
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_nonuniform_qualifier    : enable
 #extension GL_EXT_ray_query               : enable
+/* Shader printf, for the fog-fade investigation. Needs the validation layer's
+   printf feature (`vk_validation 1` + `vk_shader_printf 1`) and the device's
+   VK_KHR_shader_non_semantic_info, which this tree already requests. Output
+   arrives through vk_debug_callback at INFO severity, so it lands in
+   console.log beside FOGGRID. Harmless when the layer is off. */
+#extension GL_EXT_debug_printf            : enable
 
 #include "constants.h"
 #include "utils.glsl"
@@ -229,7 +235,27 @@ void main()
 	// Same bail as the march: nothing to scatter means an empty volume rather
 	// than a wasted pass. The integrate pass reads what this writes, so the
 	// cells still have to be cleared.
-	bool have_light = (luminance(sun_color) != 0) || fog_lights;
+	/* BISECTION, STAGE 6 (pt_fog_const_src 6): force have_light TRUE.
+
+	   `if (!have_light) { imageStore(IMG_FROXEL_SCATTER, cell, vec4(0)); continue; }`
+	   sits at the TOP of the z-loop, above every constant the earlier stages
+	   substituted. If it fires for a frame, EVERY cell stores zero and the fog
+	   vanishes - and that fits the whole bisection:
+
+	     stage 1 (const at result.rgb)      COLLAPSED - the constant is below the continue
+	     stage 3 (const, pre-blend store)   COLLAPSED - same
+	     stage 2 (const INTEGRATED volume)  FLAT      - bypasses the volume
+	     stage 5 (const into the loop)      FLAT      - bypasses the volume
+
+	   It has never been measurable, for the same circular reason `dbg_in_gate`
+	   was: a cell that `continue`s never reaches the debug chain, so no view can
+	   report on it. Forcing it true is the only way to ask.
+
+	   `fog_lights` is `(fog_enable != 0) && (fog_mode >= 2)` and `sun_color`
+	   comes from sun_color_ubo - a SINGLE device buffer, like the UBO. */
+	bool have_light = (global_ubo.pt_fog_const_src == 6.0)
+	                ? true
+	                : ((luminance(sun_color) != 0) || fog_lights);
 
 	// One blue-noise value per column, offset per slice below. Sampling the
 	// texture once and stepping it is much cheaper than a fetch per slice, and
@@ -242,6 +268,158 @@ void main()
 	for (int z = 0; z < FROXEL_GRID_Z; z++)
 	{
 		cell.z = z;
+
+		/* BISECTION, STAGE 7 (pt_fog_const_src 7): write a constant to EVERY
+		   cell at the very top of the loop, bypassing the whole scatter shader
+		   - have_light, the density gate, the lighting, the blend, the store's
+		   own clamp path. Nothing below this line runs.
+
+		   This is the last split. Stage 5 (constant fed to the accumulation,
+		   volume never read) was FLAT; stage 3 (constant stored, volume read
+		   back) COLLAPSED. So the round trip through IMG_FROXEL_SCATTER loses
+		   the value. Either the scatter shader is not writing every cell on
+		   some frames, or the volume/barrier is at fault:
+
+		     FLAT -> the write and the read are sound, and something in the
+		       shader ABOVE the store zeroes cells on collapsed frames.
+		     STILL COLLAPSES -> the store, the volume, or the scatter->integrate
+		       barrier - i.e. not the fog logic at all. */
+		/* BISECTION, STAGE 12 (pt_fog_const_src 12): stage 7 PLUS dummy work.
+
+		   THE META-TEST. Every stage that went "flat" also made the shader do
+		   LESS work - skip the loop body, skip the volume read, skip the
+		   accumulation, or fold the medium into a constant. Stage 11 was the
+		   first flat-candidate that PRESERVED the per-cell work, and it
+		   collapsed. So the bisection may have been measuring WORKLOAD, not
+		   values - which would fit the frame-rate dependence (r_maxfps 60 gives
+		   0/720) and the long-standing "probe weight decides reproduction".
+
+		   This is stage 7 - which is FLAT and does almost nothing - with a
+		   dummy loop whose result feeds the stored value, so it cannot be
+		   optimised away:
+
+		     COLLAPSES -> it is WORK/TIMING. The whole value-bisection of
+		       session 13 is void as a localisation, and the fault is not a
+		       wrong value anywhere in the fog.
+		     STILL FLAT -> work is not sufficient, the value-bisection stands,
+		       and stage 11 needs another explanation.
+
+		   The iteration count is deliberately comparable to the real path's
+		   cost rather than token. */
+		/* BISECTION, STAGE 15 (pt_fog_const_src 15): the inert path PLUS the
+		   LIGHTING CALLS, results discarded, still storing a constant.
+
+		   The complement of stage 14. Stages 7/12/13/14 skip the lighting calls
+		   and are FLAT; stages 1/3/6/9/11 all still CALL them (computing
+		   `inscatter`) even though `result.rgb` ignores the answer, and all
+		   COLLAPSE. So the collapse appears to need these calls to EXECUTE
+		   while not depending on what they RETURN - i.e. a side effect: the ray
+		   queries against FOG_TLAS, the cluster light-list reads out of
+		   `buf_light`, or the reservoir imageLoad.
+
+		     COLLAPSES -> confirmed, and the next split is inside these two:
+		       rays vs light buffer vs reservoir.
+		     FLAT -> the split is not simply "the lighting calls", and something
+		       about the full straight-line path matters instead.
+
+		   `buf_light` is the standout suspect: a SINGLE device buffer uploaded
+		   every frame by a bare vkCmdCopyBuffer with NO barriers, protected
+		   only by a CONDITIONAL cross-queue semaphore wait (see session 12b). */
+		if (global_ubo.pt_fog_const_src == 15.0)
+		{
+			FroxelCellSample fs15 = froxel_cell_sample(cell, base_rand);
+			uint cluster15 = (global_ubo.fog_camera_cluster < 0)
+			               ? ~0u : uint(global_ubo.fog_camera_cluster);
+
+			vec3 li15 = getVolumeLightInscatter(cluster15, fs15.p, fs15.p_centre,
+			                                    fs15.view_dir, fs15.light_rnd, fs15.seed);
+
+			imageStore(IMG_FROXEL_SCATTER, cell,
+			           vec4(vec3(1.5e-5 + li15.x * 1e-30) * FROXEL_STORAGE_SCALE, 0.0));
+			continue;
+		}
+
+		/* BISECTION, STAGE 14 (pt_fog_const_src 14): the inert path PLUS the
+		   real sample + medium evaluation, still storing a constant.
+
+		   Stage 7 (nothing), 12 (+ALU) and 13 (+history reads) are all FLAT;
+		   stages 1/3/6/9/11 - which execute the whole path - all COLLAPSE. So
+		   running the real code is what matters, not the values it produces and
+		   not raw work. This adds back the first half of that path:
+		   froxel_cell_sample (the blue-noise fetch and froxel_to_world) plus
+		   getDensity and getFogColor.
+
+		     COLLAPSES -> the sample/medium half is enough; the lighting calls
+		       and their ray queries are not needed.
+		     FLAT -> it is the LIGHTING half - fog_sky_inscatter /
+		       fog_shade_chosen, their ray queries, the light buffer and the
+		       reservoir image.
+
+		   The results feed the stored value scaled to nothing, so they cannot
+		   be optimised away and the picture is unchanged. */
+		if (global_ubo.pt_fog_const_src == 14.0)
+		{
+			FroxelCellSample fs14 = froxel_cell_sample(cell, base_rand);
+			float d14 = getDensity(fs14.p_centre);
+			vec3  a14 = getFogColor(fs14.p_centre);
+
+			imageStore(IMG_FROXEL_SCATTER, cell,
+			           vec4(vec3(1.5e-5 + (d14 + a14.x + fs14.p.x) * 1e-30)
+			                * FROXEL_STORAGE_SCALE, 0.0));
+			continue;
+		}
+
+		/* BISECTION, STAGE 13 (pt_fog_const_src 13): stage 7 + dummy MEMORY
+		   traffic against the HISTORY volume.
+
+		   Stage 12 (stage 7 + 64 sin() per cell) stayed FLAT, so raw ALU work
+		   is not the trigger. What the collapsing stages do and stage 7/12 skip
+		   is MEMORY traffic - the blue-noise fetch, the shadow map, the light
+		   buffer, the reservoir image, the ray queries, and TEX_FROXEL_HISTORY.
+
+		   The history volume is the interesting one: it is the only resource
+		   the fog touches that is SHARED ACROSS FRAMES. frame N samples
+		   froxel_scatter[(N+1)%2] while frame N+1 WRITES that same slot, with
+		   only the 2-frames-back fence between them. Reading it here, from an
+		   otherwise-inert path, asks whether merely touching it is enough:
+
+		     COLLAPSES -> the cross-frame access is the trigger, and the fix is
+		       a third volume (write N%3, read (N+2)%3) so adjacent frames never
+		       share a slot.
+		     STILL FLAT -> not the history either; move on to the other reads.
+
+		   The fetch feeds the stored value so it cannot be optimised away, but
+		   is scaled to nothing so the picture is unchanged. */
+		if (global_ubo.pt_fog_const_src == 13.0)
+		{
+			vec4 h = vec4(0);
+			for (int k = 0; k < 4; k++)
+				h += textureLod(TEX_FROXEL_HISTORY,
+				                vec3(vec2(cell.xy) / vec2(FROXEL_GRID_X, FROXEL_GRID_Y),
+				                     (float(cell.z) + float(k)) / float(FROXEL_GRID_Z)), 0);
+
+			imageStore(IMG_FROXEL_SCATTER, cell,
+			           vec4(vec3(1.5e-5 + h.x * 1e-30) * FROXEL_STORAGE_SCALE, 0.0));
+			continue;
+		}
+
+		if (global_ubo.pt_fog_const_src == 12.0)
+		{
+			float busy = 0.0;
+			for (int k = 0; k < 64; k++)
+				busy += sin(float(k) + float(cell.x + cell.y + cell.z) * 0.001);
+
+			imageStore(IMG_FROXEL_SCATTER, cell,
+			           vec4(vec3(1.5e-5 + busy * 1e-30) * FROXEL_STORAGE_SCALE, 0.0));
+			continue;
+		}
+
+		if (global_ubo.pt_fog_const_src == 7.0)
+		{
+			imageStore(IMG_FROXEL_SCATTER, cell,
+			           vec4(vec3(1.5e-5) * FROXEL_STORAGE_SCALE, 0.0));
+			continue;
+		}
 
 		if (!have_light)
 		{
@@ -289,6 +467,51 @@ void main()
 		   camera does move, resampling is genuine and correct. */
 		vec3 world_pos_history = fs.p_centre;
 
+		/* BISECTION, STAGE 10 (pt_fog_const_src 10): force the cell position
+		   used by the MEDIUM to a fixed point.
+
+		   Stage 8 (density constant) FLAT; stage 9 (world_box = 1) STILL
+		   COLLAPSED. With world_box 1 the distance-fog floor
+		   (fog_density / 2 = 0.023) means density CANNOT be zero, and the
+		   lighting is already constant - so the only variables left are
+		   getHeightFogDensity(p) and getFogColor(p), and BOTH depend on p.z.
+
+		   `p` here is fs.p_centre, the cell centre from froxel_cell_sample,
+		   derived from the inverse view-projection. Pinning it isolates the
+		   position from everything else:
+
+		     FLAT -> the cell's WORLD POSITION is the variable, which points at
+		       froxel_cell_sample / the view matrices rather than the fog.
+		     STILL COLLAPSES -> neither the medium nor the position; look again
+		       at what else the z-loop touches.
+
+		   A point inside the fog band, so the medium evaluates to something
+		   representative rather than zero. */
+		if (global_ubo.pt_fog_const_src == 10.0)
+			world_pos_history = vec3(904.0, 1300.0, -400.0);
+
+		/* BISECTION, STAGE 11 (pt_fog_const_src 11): a position that varies PER
+		   CELL but not PER FRAME.
+
+		   Stage 10 pinned the position to a single point and went flat - but a
+		   single constant also lets the compiler fold getDensity/getFogColor
+		   into constants and delete the medium evaluation entirely, so "flat"
+		   there could be codegen rather than isolation. This keeps the per-cell
+		   variation (the medium is still evaluated per cell, same shape, same
+		   work) while removing any dependence on the frame:
+
+		     FLAT -> the position's FRAME-dependence is the variable, and stage
+		       10 was real.
+		     COLLAPSES -> stage 10's flatness was a constant-folding artefact
+		       and the position is exonerated.
+
+		   Derived from `cell` alone and scaled to span the map's fog band
+		   (hf_end_z -825 .. hf_start_z -438, world_cz 96) so density lands in a
+		   representative range rather than clamping. */
+		if (global_ubo.pt_fog_const_src == 11.0)
+			world_pos_history = vec3(904.0, 1300.0, -825.0)
+			                  + vec3(cell) * vec3(11.0, 20.0, 3.0);
+
 		/* THE MEDIUM IS EVALUATED AT THE CELL CENTRE, NOT AT THE JITTERED POINT,
 		   and this is what makes distant fog survive the temporal blend.
 
@@ -316,7 +539,28 @@ void main()
 		   still, so density becomes deterministic per cell and the only remaining
 		   variance is the lighting, which is what the blend is there to average.
 		   world_pos (jittered) is still what the lighting is evaluated at. */
-		float density = getDensity(world_pos_history);
+		/* BISECTION, STAGE 8 (pt_fog_const_src 8): force `density` constant.
+
+		   Stage 7 (constant to every cell at the top of the loop) was FLAT, so
+		   the store, the volume, the barrier, integrate, the filter and the
+		   composite are all sound. The fault is above the store, in what stage
+		   7 skips: froxel_cell_sample, getDensity, or the `density > 0` gate.
+
+		   The gate is the sharp suspect. `result.rgb` is assigned INSIDE it, so
+		   if it closes, `result` stays vec4(0) and that zero is stored - and
+		   the constants of stages 1 and 3 never execute, which is exactly why
+		   those collapsed while 2, 5 and 7 stayed flat.
+
+		   The earlier "always-true gate" test could NOT detect this: with
+		   density 0, `const * albedo * 0` is still 0, so forcing the branch
+		   open was a mathematical no-op for the output. Forcing the VALUE is
+		   the test that distinguishes.
+
+		   1.0 is mid-range for this map (hf_density 0.0042 plus the 0.023
+		   distance floor, times world_box). */
+		float density = (global_ubo.pt_fog_const_src == 8.0)
+		              ? 1.0
+		              : getDensity(world_pos_history);
 
 		/* RESET THE DIAGNOSTIC GLOBALS PER CELL. fog_debug_sky_term and
 		   fog_debug_sky_vis are written inside the in-scatter functions, and a
@@ -337,6 +581,8 @@ void main()
 		fog_debug_sky_vis  = 0.0;
 
 		vec4 result = vec4(0);
+		/* STAGE 3 capture - see the store at the end of the loop. */
+		vec4 result_preblend = vec4(0);
 
 		/* DID THE GATE'S BODY ACTUALLY RUN?  A LOCAL - not a global, not a
 		   callee - set as the first statement inside the block, so nothing
@@ -602,13 +848,61 @@ void main()
 			// primary ray, and an over-estimate for fog seen through glass or
 			// water. Those are exactly the cases the march still handles, since
 			// it keeps running for the reflection/refraction passes.
-			result.rgb = inscatter * albedo * density;
+			/* BISECTION TEST (pt_fog_const_src 1): replace the LIGHTING with a
+			   constant, keeping albedo and density - both measured unchanged
+			   through the collapse (views 13 and 12).
+
+			   Everything upstream of this line has been excluded one piece at a
+			   time and the fade always survived. This asks the question the
+			   other way round: if the source term cannot vary, does the fog
+			   still collapse?
+
+			     STILL COLLAPSES -> the fault is DOWNSTREAM of the scatter
+			       computation - the volume store, froxel_integrate, the
+			       god_rays_filter lookup or the composite - and every
+			       measurement of the lighting has been looking in the wrong
+			       place.
+			     STABLE -> the fault really is in the lighting, and the
+			       remaining suspects are the two in-scatter functions.
+
+			   THE CONSTANT MUST MATCH THE REAL MAGNITUDE. A healthy cell's
+			   `inscatter` measures ~3.4e-5 (FOGCELL probes). The first attempt
+			   used 0.02 - about 600x too bright - which saturated the image at
+			   ~180 luminance and made auto-exposure thrash: 70-91% "swing" that
+			   was pure exposure, nothing to do with the fade. Use the measured
+			   value so the tone mapper sees a comparable picture. */
+			/* DIRECT read-out of the real quantities, one cell only.
+
+			   Every earlier instrument was indirect and has been caught
+			   lying: the ReadbackBuffer is not a coherent snapshot, the debug
+			   views depend on their nesting and on constant folding. This
+			   prints from the invocation that computed the values, with no
+			   readback buffer and no image path in between.
+
+			   ONE CELL. 1.8M invocations printing would overflow the layer's
+			   staging buffer, and an overflow TRUNCATES silently - which looks
+			   exactly like "the shader did not print". */
+			if (global_ubo.pt_fog_printf != 0.0
+			    && cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+			    && z == FROXEL_GRID_Z / 2)
+			{
+				debugPrintfEXT("FOGP f=%u dens=%f alb=%f insc=%f pz=%f",
+				               global_ubo.current_frame_idx, density, albedo.x,
+				               luminance(inscatter), world_pos_history.z);
+			}
+
+			result.rgb = (global_ubo.pt_fog_const_src != 0.0)
+			           ? vec3(3.4e-5) * albedo * density
+			           : inscatter * albedo * density;
 
 			// Extinction per unit length. pt_fog_extinction 0 keeps the legacy
 			// flat value, the same escape hatch the march has.
 			float sigma = (global_ubo.pt_fog_extinction > 0.0)
 			            ? global_ubo.pt_fog_extinction : 0.0001;
 			result.a = density * sigma;
+
+			/* Snapshot BEFORE the temporal blend, for pt_fog_const_src 3. */
+			result_preblend = result;
 		}
 
 		/* --- DEBUG VIEWS ---
@@ -1439,8 +1733,26 @@ void main()
 		   nothing and stalled. froxel_shared.h has the full account. Clamped so a
 		   scaled store can never reach Inf, which in this volume used to be
 		   permanent - the blend fed it back to itself every frame. */
+		/* BISECTION, STAGE 3 (pt_fog_const_src 3): store the PRE-BLEND value,
+		   bypassing the temporal blend entirely. The constant lighting from
+		   stage 1 is already active (that branch triggers on != 0), so this is
+		   "constant source AND no blend, at the store".
+
+		   Stage 1 (constant at `result.rgb`) still collapsed; stage 2 (constant
+		   INTEGRATED volume) was flat - so the fault is between them. This
+		   splits that band at the store:
+
+		     FLAT -> it is the temporal blend path. Note `pt_fog_froxel_history 0`
+		       does NOT clear this: it gates only the mix(), while the history
+		       FETCH still runs, so that cvar never tested what it appeared to.
+		     STILL COLLAPSES -> it is the store itself or froxel_integrate's read
+		       of this volume - which is where the cross-frame WAR lives: frame N
+		       reads scatter[(N+1)%2] as history while frame N+1 WRITES that same
+		       slot, with only the 2-frames-back fence between them. */
+		vec4 store_val = (global_ubo.pt_fog_const_src == 3.0) ? result_preblend : result;
+
 		imageStore(IMG_FROXEL_SCATTER, cell,
-		           clamp(result * FROXEL_STORAGE_SCALE,
+		           clamp(store_val * FROXEL_STORAGE_SCALE,
 		                 vec4(0.0), vec4(FROXEL_STORAGE_MAX)));
 
 		if (debug > 0)

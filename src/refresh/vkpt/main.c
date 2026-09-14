@@ -1897,6 +1897,39 @@ init_vulkan(void)
 	{
 		inst_create_info.ppEnabledLayerNames = vk_validation_layers;
 		inst_create_info.enabledLayerCount = LENGTH(vk_validation_layers);
+
+		/* ENABLE debugPrintfEXT. The device already requests
+		   VK_KHR_shader_non_semantic_info, and the messenger above now listens
+		   on INFO, so this is the last piece: the validation layer only
+		   interprets debugPrintfEXT when the feature is switched on.
+
+		   GPU-assisted validation and printf share machinery and conflict, so
+		   the core checks are DISABLED here - this instance is for reading
+		   shader prints, not for validating. Flip back to plain
+		   `vk_validation 1` for sync/validation work.
+
+		   The buffer size cvar matters: prints are staged in a device buffer
+		   and silently TRUNCATED when it fills, which looks exactly like "the
+		   shader did not print". Keep prints gated to one cell. */
+		static const VkValidationFeatureEnableEXT printf_enables[] = {
+			VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT
+		};
+		static const VkValidationFeatureDisableEXT printf_disables[] = {
+			VK_VALIDATION_FEATURE_DISABLE_CORE_CHECKS_EXT
+		};
+		static VkValidationFeaturesEXT validation_features = {
+			.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+			.enabledValidationFeatureCount = LENGTH(printf_enables),
+			.pEnabledValidationFeatures = printf_enables,
+			.disabledValidationFeatureCount = LENGTH(printf_disables),
+			.pDisabledValidationFeatures = printf_disables
+		};
+
+		if (Cvar_Get("vk_shader_printf", "0", 0)->integer)
+		{
+			validation_features.pNext = inst_create_info.pNext;
+			inst_create_info.pNext = &validation_features;
+		}
 	
 		qvk.enable_validation = true;
 	}
@@ -1933,9 +1966,13 @@ init_vulkan(void)
 	/* setup debug callback */
 	VkDebugUtilsMessengerCreateInfoEXT dbg_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+		/* INFO is included because debugPrintfEXT output arrives at INFO
+		   severity - without it the shader prints are produced and silently
+		   dropped. It is noisy, which is why it is gated on vk_validation. */
 		.messageSeverity =
 			VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-			| VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+			| VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
+			| VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
 		.messageType =
 			  VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
 			| VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
@@ -3600,6 +3637,18 @@ VkDescriptorSet qvk_get_current_desc_set_textures()
 	return (qvk.frame_counter & 1) ? qvk.desc_set_textures_odd : qvk.desc_set_textures_even;
 }
 
+/* Checksum of a 4x4 matrix for the FOGDIFF log. mode 0 = plain sum, 1 = sum of
+   absolute values (a sign flip cancels in the plain sum). Note `mat4` here is
+   float[4][4], so the caller must flatten - see the row-pointer trap in the
+   fog-fade memory. */
+static float ubo_mat_sum(const float *m, int absolute)
+{
+	float acc = 0.f;
+	for (int k = 0; k < 16; k++)
+		acc += absolute ? fabsf(m[k]) : m[k];
+	return acc;
+}
+
 static void
 process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_visible, float* adapted_luminance)
 {
@@ -4148,6 +4197,33 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 					{ "pt_vol_scale",  ubo->pt_fog_vol_scale },
 					{ "pt_brightness", ubo->pt_fog_brightness },
 					{ "god_intensity", ubo->god_rays_intensity },
+					/* getDensity's OWN inputs - never logged before, and the
+					   bisection now points straight at getDensity. world_box is
+					   clamp(3 - 2*|(p - world_center) * world_half_size_inv|)
+					   multiplied over three axes, so if ANY of these six moves
+					   out of range the product is exactly zero and the fog
+					   vanishes whole - which is the measured symptom. */
+					{ "world_cx",      ubo->world_center[0] },
+					{ "world_cy",      ubo->world_center[1] },
+					{ "world_cz",      ubo->world_center[2] },
+					{ "world_hsi_x",   ubo->world_half_size_inv[0] },
+					{ "world_hsi_y",   ubo->world_half_size_inv[1] },
+					{ "world_hsi_z",   ubo->world_half_size_inv[2] },
+					{ "pt_density_max", ubo->pt_fog_density_max },
+					/* invP IS WHAT PLACES EVERY FROXEL. froxel_to_world
+					   unprojects the cell's NDC through global_ubo.invP, so if
+					   this moves, every cell's world position moves - and the
+					   bisection has just shown (stage 10) that pinning the cell
+					   position makes the fog perfectly stable.
+
+					   Logged as checksums rather than 32 fields. `sum` catches
+					   any change; `absum` catches a sign flip that `sum` would
+					   cancel. invV is included because froxel_to_world uses it
+					   to reach world space. */
+					{ "invP_sum",    ubo_mat_sum((const float *)ubo->invP, 0) },
+					{ "invP_absum",  ubo_mat_sum((const float *)ubo->invP, 1) },
+					{ "invV_sum",    ubo_mat_sum((const float *)ubo->invV, 0) },
+					{ "invV_absum",  ubo_mat_sum((const float *)ubo->invV, 1) },
 				};
 				const int n = (int)(sizeof(cur) / sizeof(cur[0]));
 				char line[1024];
