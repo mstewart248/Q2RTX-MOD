@@ -267,6 +267,8 @@ typedef struct QVK_s {
 	   timings with. Both optional; see reflex.c. */
 	bool                        supports_low_latency;
 	bool                        supports_present_id;
+	bool                        supports_device_fault;   /* VK_EXT_device_fault */
+	bool                        supports_checkpoints;    /* VK_NV_device_diagnostic_checkpoints */
 
 	uint32_t                    current_swap_chain_image_index;
 	uint32_t                    current_frame_index;
@@ -358,6 +360,35 @@ extern QVK_t qvk;
 	VK_EXTENSION_DO(vkCmdBeginDebugUtilsLabelEXT) \
 	VK_EXTENSION_DO(vkCmdEndDebugUtilsLabelEXT)
 
+/* POST-MORTEM FOR A GPU FAULT.
+
+   VK_ERROR_DEVICE_LOST is the only thing the engine ever learns about a
+   shader that touches memory it does not own: the driver kills the context
+   and every call after that fails. On NVIDIA it shows up in the Windows
+   system log as nvlddmkm event 153 with NO event 4101 - an engine error
+   recovery rather than a display-driver hang - and because the handler calls
+   exit(1) rather than raising, the crash handler never runs and no
+   Q2RTX_CrashReport is written. From the outside the process simply vanishes,
+   which is why "it crashed" and "there is no crash report" are both true.
+
+   These two extensions turn that into an answer:
+
+     VK_EXT_device_fault reports the faulting address, its precision and the
+       vendor description, and stays queryable AFTER the device is lost.
+     VK_NV_device_diagnostic_checkpoints reports how far the queue actually
+       got - one marker per profiled pass, written by begin_perf_marker - so
+       the faulting pass is the one still at TOP_OF_PIPE while everything
+       before it reached BOTTOM_OF_PIPE.
+
+   Both are diagnostic-only. The checkpoint costs one command-stream token per
+   pass and neither does any work until the device is already gone. */
+#define LIST_EXTENSIONS_DEVICE_FAULT \
+	VK_EXTENSION_DO(vkGetDeviceFaultInfoEXT)
+
+#define LIST_EXTENSIONS_CHECKPOINTS \
+	VK_EXTENSION_DO(vkCmdSetCheckpointNV) \
+	VK_EXTENSION_DO(vkGetQueueCheckpointDataNV)
+
 // VK_EXT_full_screen_exclusive is Win32-only and lives in vulkan_win32.h, which this
 // header deliberately does not pull in - it would drag windows.h through the whole
 // renderer. It is loaded and used entirely inside main.c.
@@ -367,7 +398,18 @@ LIST_EXTENSIONS_ACCEL_STRUCT
 LIST_EXTENSIONS_RAY_PIPELINE
 LIST_EXTENSIONS_DEBUG
 LIST_EXTENSIONS_INSTANCE
+LIST_EXTENSIONS_DEVICE_FAULT
+LIST_EXTENSIONS_CHECKPOINTS
 #undef VK_EXTENSION_DO
+
+/* Dumps everything the driver will still tell us about a lost device and does
+   not return - see the comment on LIST_EXTENSIONS_DEVICE_FAULT. `context`
+   names the call that reported the loss. */
+void vkpt_report_device_lost(const char* context);
+
+/* Counts recorded froxel dispatches - see the comment on its definition in
+   god_rays.c. Printed as a per-frame delta in the FOGGRID line. */
+extern uint32_t vkpt_froxel_dispatch_count;
 
 #define MAX_SKY_CLUSTERS 1024
 
@@ -953,6 +995,12 @@ static inline void begin_perf_marker(VkCommandBuffer command_buffer, int index, 
 
 	if (qvkCmdBeginDebugUtilsLabelEXT != NULL)
 		qvkCmdBeginDebugUtilsLabelEXT(command_buffer, &label);
+
+	/* `name` is the #name of the BEGIN_PERF_MARKER macro, a string literal with
+	   static storage. The driver hands this very pointer back after the device
+	   is lost, so it has to outlive the command buffer - a literal does. */
+	if (qvkCmdSetCheckpointNV != NULL)
+		qvkCmdSetCheckpointNV(command_buffer, name);
 }
 
 static inline void end_perf_marker(VkCommandBuffer command_buffer, int index)

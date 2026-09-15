@@ -221,6 +221,440 @@ bool world_to_prev_froxel_uvw(vec3 world_pos, out vec3 uvw)
 	return true;
 }
 
+/*
+=================
+froxel_cell_scatter
+
+The body of `if (cell_has_density)`, lifted out of main's z-loop verbatim.
+
+WHY IT IS A FUNCTION (2026-09-14, session 3).  This is a codegen experiment,
+not a cleanup. The collapse is a value-dependent branch inside this block that
+loses control flow outright - the witness AFTER the `if` stops executing too
+(fogtmp/xswamp_branchop2.log, 76984 of 76984 collapsed frames). That is below
+SPIR-V, and the shader had grown to ~1957 lines with a ~1560-line loop body run
+128 times, which is where register allocation and control-flow lowering are
+under the most pressure.
+
+Moving the block behind a call is semantically neutral - nothing here reads or
+writes anything but its parameters and the readback buffer, and the block never
+did `continue`, `break` or `return`, so the loop is unaffected - while forcing
+the driver to structure the same arithmetic completely differently. If the
+collapse survives this, codegen pressure inside one enormous basic block is not
+the mechanism and the driver bug should be filed as written up in
+fogtmp/BASELINE.md. If it disappears, the report gets a much smaller repro.
+
+Parameters are the loop locals the block read, in the order they are declared
+in main. The mutable ones are `inout` rather than `out` on purpose: `out` is
+uninitialised on entry in GLSL, and main initialises all three before the gate,
+so `inout` keeps the semantics bit-identical without having to prove that every
+path writes before it reads.
+=================
+*/
+void froxel_cell_scatter(
+	ivec3 cell, int z,
+	float density, vec3 world_pos, vec3 world_pos_history,
+	vec3 sun_color, bool fog_lights, float r1,
+	FroxelCellSample fs,
+	inout vec4 result, inout vec4 result_preblend,
+	inout float dbg_in_gate,
+	inout float dbg_last_post, inout float dbg_last_vol,
+	inout float dbg_last_in, inout float dbg_last_skyvis, inout float dbg_last_sky)
+{
+	dbg_in_gate = 1.0;
+	/* SENTINEL AT DEPTH 2.  dbg_last_post is assigned three conditions
+	   deeper (fog_lights, fog_mode >= 3, ReSTIR); this one says whether
+	   the DENSITY gate itself was taken, and it is stored after the loop
+	   at a site whose writes are known to land. */
+#if FOG_DEBUG_PROBES   /* depth-2 sentinel */
+	if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+	    && z == FROXEL_GRID_Z / 2)
+		dbg_last_in = 1.0;
+#endif
+	// Cell centre for the same reason as density: the fog colour is a
+	// smooth height gradient, and sampling it at the jittered point makes
+	// a far cell's albedo swing across the whole band every frame.
+	vec3 albedo = getFogColor(world_pos_history);
+
+	// The view direction at this cell, for the sun's phase function.
+	vec3 view_dir = fs.view_dir;
+
+	float eccentricity = global_ubo.god_rays_eccentricity;
+	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_eccentricity >= 0.0)
+		eccentricity = global_ubo.pt_fog_eccentricity;
+
+	float cosa = dot(view_dir, global_ubo.sun_direction);
+	float phase = ScatterPhase_HenyeyGreenstein(cosa, eccentricity);
+
+	/* --- the sun, through the shadow map ---
+
+	   SKIPPED when the march is carrying the sun instead
+	   (fog_sun_is_the_sky). Not merely to avoid counting it twice - that
+	   is the POINT of the split.
+
+	   A froxel cell is a box, the volume is only FROXEL_GRID_Z slices
+	   deep, and pt_fog_froxel_filter blurs 3x3x3 across neighbouring
+	   cells with no idea where the walls are. That is fine for local
+	   lights, whose falloff is smooth and local. It is WRONG for a
+	   shadow-mapped sun, whose defining feature is a hard edge at
+	   geometry: a lit cell outside a roof bleeds into the shadowed cells
+	   underneath, and sun fog appears indoors. Matt hit exactly that, and
+	   the tell was that pt_fog_froxel 0 made it vanish - the march is
+	   per-PIXEL and per-STEP and has no neighbour to bleed from.
+
+	   So the sun goes to the march and the local lights stay here, which
+	   is the split he asked for: "we use cl_fog 1 for the sky fog and the
+	   froxel grid for all other lights as normal". god_rays.comp drops
+	   its local half to match and god_rays_filter.comp ADDS the two
+	   instead of replacing - all three keyed off the one predicate, or
+	   the sun is counted twice or not at all.
+
+	   THE TWO TERMS CARRY DIFFERENT SCALES, and they are not
+	   interchangeable - getting this wrong is what a first attempt did,
+	   and the result was not subtly off, it was a black screen with one
+	   blown-out patch (the tone mapper adapting to the over-bright fog).
+
+	   god_rays.comp applies both at the very END of its march, after the
+	   accumulation, which is easy to miss when reading the loop alone:
+
+	     sun    * sun_color * god_rays_intensity * 0.0001
+	     lights * pt_fog_light_scale * 0.005
+
+	   The 0.0001 exists because sun_color is of order 1e4; the 0.005
+	   because a light-buffer entry is radiance * triangle area, which is
+	   larger again. They differ by more than two orders of magnitude, so
+	   the terms have to be scaled separately and only then summed. */
+	vec3 inscatter = vec3(0);
+
+	if (!fog_sun_is_the_sky())
+	{
+		float distanceToWater;
+		float shadow = GetShadow(world_pos - global_ubo.sun_direction * 20,
+		                         distanceToWater);
+
+		float scatter = shadow * phase;
+		if (global_ubo.pt_fog_ambient > 0.0)
+			scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
+
+		inscatter = scatter * sun_color
+		          * global_ubo.god_rays_intensity * 0.0001;
+	}
+
+	// --- the map's own lights and the sky ---
+	if (fog_lights)
+	{
+		uint cluster = (global_ubo.fog_camera_cluster < 0)
+		             ? ~0u : uint(global_ubo.fog_camera_cluster);
+
+		if (global_ubo.fog_mode >= 3)
+		{
+			// cl_fog 3: a real light sample per light, with its own
+			// occlusion ray and its own phase about that light's
+			// direction - so the phase cannot be hoisted out the way the
+			// isotropic approximation below does it.
+			//
+			// This is the case the grid was built for. The march pays
+			// these rays per STEP of every pixel; here it is once per
+			// CELL, which is roughly a fortieth of the work, and the
+			// temporal history averages the sampling noise away.
+			vec3 light_rnd = fs.light_rnd;
+			uint seed = fs.seed;
+
+			/* WHERE THE LIGHT COMES FROM: this cell's own candidate
+			   loop, or the one the spatial pass settled on.
+
+			   With pt_fog_restir off this is exactly what it has
+			   always been - RIS over M candidates drawn here, one
+			   visibility ray on the winner.
+
+			   With it on, the choosing has already happened: the
+			   reservoir pass drew this cell's candidates and the
+			   spatial pass combined them with a few neighbours', so
+			   what arrives here is a light index and the weight that
+			   makes using it unbiased. THE RAY BUDGET IS IDENTICAL
+			   either way - one sky ray and one visibility ray per
+			   cell - because neither of those passes traces anything.
+			   ReSTIR buys variance, not rays, and pays in bandwidth.
+
+			   The visibility ray is still traced HERE, on the sample
+			   the spatial pass chose, and that is what keeps the
+			   result unbiased: a neighbour's shadow result is never
+			   reused, only its choice of light. */
+			vec3 vol_inscatter;
+			/* THE LIGHT HALF AS A COLOUR, for debug view 14 - the sibling
+			   view 4 never had. Captured here rather than reconstructed
+			   with pt_fog_isolate through view 1, because view 1 carries
+			   `albedo * density` and an isolate A/B through it cannot
+			   separate a dead half from a dead multiplier. */
+			/* LOCALS, declared inside the z-loop so they reset per cell by
+			   construction - a shader global here reports the previous
+			   cell's value for every cell that skipped the branch, which is
+			   probe defect 3 in the fog-fade memory. */
+			float dbg_sky = 0.0, dbg_lit = 0.0;
+
+			if (global_ubo.pt_fog_restir > 0.0)
+			{
+				vec4 res = imageLoad(IMG_FROXEL_RESERVOIR_FINAL, cell);
+
+				uint  y = (res.x < 0.0) ? ~0u : uint(res.x);
+				float W = res.y;
+
+				/* DEPENDENCY-CHAIN BISECTION (2026-09-14).  The pad/lt7 result says the
+				   cut is at the FIRST INSTRUCTION THAT CONSUMES vol_inscatter: every
+				   atomic that does not depend on it lands, every one that does is
+				   missing.  neg / bad / tiny are repurposed as three unconditional
+				   probes along that chain.  Each adds VALUE + 1u, so a zero delta means
+				   "this instruction did not execute" and can never mean "the value was
+				   zero" - which is probe defect 6, and it has faked this bug once. */
+
+#if FOG_DEBUG_PROBES   /* restir-path marker */
+				atomicAdd(readback.dbg_n_restir, 1u);
+#endif
+				vol_inscatter = fog_sky_inscatter(world_pos_history);
+				dbg_sky = luminance(vol_inscatter);
+
+#if FOG_DEBUG_PROBES   /* RAW per-cell capture, no quantisation */
+				if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+				    && z == FROXEL_GRID_Z / 2)
+				{
+					dbg_last_skyvis = fog_debug_sky_vis;
+					dbg_last_sky    = dbg_sky;
+				}
+#endif
+
+				if (int(global_ubo.pt_fog_isolate) != 1)
+					vol_inscatter += fog_shade_chosen(world_pos, view_dir,
+						fog_eccentricity(), light_rnd, y, W);
+
+				dbg_lit = luminance(vol_inscatter) - dbg_sky;
+				fog_debug_light_term = vol_inscatter - fog_debug_sky_term;
+			}
+			else
+			{
+				vol_inscatter = getVolumeLightInscatter(cluster, world_pos,
+					world_pos_history, view_dir, light_rnd, seed);
+			}
+
+			// pt_fog_vol_scale, not pt_fog_light_scale: mode 3 has no
+			// knee crushing the total, so it sits at a different level
+			// entirely and sharing one cvar would mean retuning mode 2
+			// every time the two are compared.
+			/* TEMPORARY probe, GENERATION 2 - raw IEEE bits, see vertex_buffer.h.
+			   Generation 1 clamped to [0, 4e9], which maps a negative value, a
+			   NaN and the "expect <= 0" sentinel all onto the same printed 0. */
+			float dbg_pre = luminance(inscatter);
+			/* STAGE 2 OF THE BISECTION.  Stage 1 put the cut between atomicAdd(n_cells)
+			   and the first instruction that touches dbg_post, so these three probes
+			   straddle the three expressions in between.  All are unconditional and all
+			   add VALUE + 1u, so a zero delta means "did not execute". */
+			float dbg_vol = luminance(vol_inscatter);
+
+			inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005
+			           * global_ubo.fog_vol_density_ratio;
+
+			float dbg_post = luminance(inscatter);
+#if FOG_DEBUG_PROBES   /* carry dbg_post/dbg_vol out of the block */
+			if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+			    && z == FROXEL_GRID_Z / 2)
+			{
+				dbg_last_post = dbg_post;
+				dbg_last_vol  = dbg_vol;
+			}
+#endif
+
+			/* Grid-wide, monotonic, one block, shared normaliser. */
+			/* EXPERIMENT (2026-09-14): pad MOVED UP, adjacent to n_cells.
+			   Both are unconditional atomicAdd(.., 1u) in the same block, so on
+			   a collapsed frame they must agree.  Previously pad was the LAST
+			   atomic in the block and read 0 while n_cells read a full dispatch.
+			   If pad now reads FULL, the anomaly follows POSITION in the block.
+			   If pad still reads 0, it follows the FIELD OFFSET (108 vs 64) and
+			   the tail of ReadbackBuffer is simply not reaching the CPU. */
+			/* THE ORDERED CHAIN (2026-09-14).  Everything so far says a SUFFIX of this
+			   block's atomics never reaches memory while the shader itself runs to the
+			   end of main (proved by the per-column start/end markers, both 14080 on a
+			   collapsed frame).  The one remaining escape is that atomics to different
+			   addresses may be REORDERED by the compiler, so "later" was never really
+			   later.  This closes it: each add consumes the previous add's RETURN
+			   VALUE, which is a true data dependency, so the five are issued in this
+			   order and each adds exactly 1.  They must all read equal.  Any prefix
+			   reading full with a suffix reading 0 is a LOST WRITE, not a value. */
+#if FOG_DEBUG_PROBES
+			/* ==========================================================
+			   THE ACCUMULATION, MEASURED WHOLE (2026-09-14, consolidated)
+			
+			       inscatter += vol_inscatter * pt_fog_vol_scale * 0.005
+			                  * fog_vol_density_ratio;
+			
+			   post = pre + vol * k. Both factors of k are CPU-side UBO values
+			   and are measured constant across a collapse (FOGENV), so the
+			   collapse has to be in pre or in vol - and vol = sky + lit.
+			   All five are captured here, in one build, so a single log can be
+			   read across the transition without comparing runs.
+			
+			   EVERY SUM IS PAIRED WITH A COUNT OF THE CELLS THAT FED IT.
+			   uint(clamp(v * 1eN, ..)) truncates, so a sum of exactly 0 is
+			   equally consistent with "the quantity vanished" and "it fell
+			   below one quantum" - the ambiguity that made several earlier
+			   readings unfalsifiable. The counts test v > 0, which has no
+			   quantum at all:
+			
+			     sum == 0 and count == 0  - the quantity really is zero
+			     sum == 0 and count == n  - it is positive but under the quantum,
+			                                i.e. dimmed rather than switched off
+			
+			   Scales are set from the measured healthy magnitudes so the
+			   per-frame delta cannot overflow a uint32 (n is ~1.45e6 cells):
+			     post ~1e-6 * 1e9 = 1e3/cell -> 1.5e9   ok, 3 decades of room
+			     sky  ~4e-4 * 1e6 = 4e2/cell -> 5.7e8   ok
+			     vol, lit, pre share those scales for comparability.
+			   ========================================================== */
+			atomicAdd(readback.dbg_n_cells, 1u);
+			atomicAdd(readback.dbg_n_pad,   1u);
+
+			/* The five clamped sums that stood here are RETIRED. Each saturated at
+			   1e6 per cell and was accumulated over 1.46e6 cells, so a saturating
+			   frame overflowed a uint32 about 341 times and the result was wrap
+			   residue - unreadable, and indistinguishable from a real value. The
+			   histogram below carries the same information without either failure. */
+
+			/* POSITIVE-CELL COUNTS for the four that can be dimmed away, plus
+			   the one sign test: dbg_lit is a DIFFERENCE and is the only term
+			   here that can legitimately come back negative. */
+			/* WHAT KILLS THE REST OF THE BLOCK: A BRANCH, OR ANYTHING AT ALL?
+			
+			   Two clean-build captures disagree, and the difference between them is
+			   the KIND of statement that precedes the survivors:
+			
+			     xswamp_twin2  pad, cells, +1, then three atomicAdds whose OPERAND is
+			                   computed from dbg_post, then a bare +1 last.
+			                   Every one of them read a full dispatch when collapsed.
+			     xswamp_discrim  pad, cells, then three IF statements branching on
+			                   dbg_post, then five bare +1.
+			                   Everything after pad/cells read 0 when collapsed.
+			
+			   So a value-dependent OPERAND appears harmless and a value-dependent
+			   BRANCH appears fatal to everything downstream. This puts both in one
+			   block, in that order, each followed by a bare +1 witness:
+			
+			     after_op full, after_br 0  - a branch on the value kills the remainder
+			     both full                  - neither kills; discrim measured something else
+			     both 0                     - it is position, not the branch
+			
+			   first is the control: a bare +1 before anything value-dependent. It must
+			   read n on every frame or the whole block is void. */
+			atomicAdd(readback.dbg_n_zero, 1u);                                    /* first   */
+			atomicAdd(readback.dbg_n_centre, uint(clamp(dbg_post * 1e7, 0.0, 1e5))); /* op    */
+			atomicAdd(readback.dbg_slice_q, 1u);                                   /* after_op */
+			if (dbg_post == dbg_post) atomicAdd(readback.dbg_n_lt7, 1u);           /* branch  */
+			atomicAdd(readback.dbg_slice_n, 1u);                                   /* after_br */
+			atomicAdd(readback.dbg_sum_q, 1u);                                     /* last    */
+#endif
+			/* EXPERIMENT: lt7 is now UNCONDITIONAL too - a third +1 counter, at a
+			   third offset (104), so the four of them bracket the struct. */
+			/* THE SEPARATOR.  On collapsed frames n and restir advance by a full
+			   dispatch while EVERY other counter in this block reads 0 - and
+			   those zeros are mutually impossible (sum = 0 needs post < 1e-7,
+			   lt7 = 0 needs post >= 1e-7), so at least one atomic here is not
+			   executing as written.  n and restir are the only two that are
+			   UNCONDITIONAL WITH A CONSTANT OPERAND.  This is a third one, at
+			   the very END of the block:
+			     pad == n  -> the block runs to completion and the anomaly is
+			                  in the values / the conditional atomics
+			     pad == 0  -> execution does not reach the end of the block
+			   Either way it splits "the fog went dark" from "the probe did
+			   not run", which nothing measured so far can do. */
+
+			/* ONE cell, plain stores, no arithmetic that can lose information. */
+#if FOG_DEBUG_PROBES   /* centre-cell plain stores */
+			if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+			    && z == FROXEL_GRID_Z / 2)
+			{
+					/* The float stores that used to live here wrote the same readback
+				   fields as the end-of-column block below, so whichever ran last
+				   won and the reading depended on the thing being measured. The
+				   counter above is kept: it still says whether this depth was
+				   reached. The values now come out of the loop in locals. */
+			}
+#endif
+		}
+		else
+		{
+			// see the note on fog_vol_density_ratio in god_rays.comp - the
+			// local half gets its own density, the sun term keeps the sky's
+			inscatter += FOG_ISOTROPIC_PHASE
+			           * getClusterLightInscatter(cluster, world_pos, world_pos_history, r1)
+			           * global_ubo.pt_fog_light_scale * 0.005
+			           * global_ubo.fog_vol_density_ratio;
+		}
+	}
+
+	// Radiance per unit length, so the integrate pass only has to
+	// multiply by the slice thickness. albedo is the medium's own
+	// scattering colour and belongs on both terms.
+	//
+	// NOT ported from the march: its per-step multiply by the path
+	// tracer's own `throughput`. That is a per-PIXEL quantity and a
+	// froxel has no pixel, so the grid assumes 1 - correct for a
+	// primary ray, and an over-estimate for fog seen through glass or
+	// water. Those are exactly the cases the march still handles, since
+	// it keeps running for the reflection/refraction passes.
+	/* BISECTION TEST (pt_fog_const_src 1): replace the LIGHTING with a
+	   constant, keeping albedo and density - both measured unchanged
+	   through the collapse (views 13 and 12).
+
+	   Everything upstream of this line has been excluded one piece at a
+	   time and the fade always survived. This asks the question the
+	   other way round: if the source term cannot vary, does the fog
+	   still collapse?
+
+	     STILL COLLAPSES -> the fault is DOWNSTREAM of the scatter
+	       computation - the volume store, froxel_integrate, the
+	       god_rays_filter lookup or the composite - and every
+	       measurement of the lighting has been looking in the wrong
+	       place.
+	     STABLE -> the fault really is in the lighting, and the
+	       remaining suspects are the two in-scatter functions.
+
+	   THE CONSTANT MUST MATCH THE REAL MAGNITUDE. A healthy cell's
+	   `inscatter` measures ~3.4e-5 (FOGCELL probes). The first attempt
+	   used 0.02 - about 600x too bright - which saturated the image at
+	   ~180 luminance and made auto-exposure thrash: 70-91% "swing" that
+	   was pure exposure, nothing to do with the fade. Use the measured
+	   value so the tone mapper sees a comparable picture. */
+	/* DIRECT read-out of the real quantities, one cell only.
+
+	   Every earlier instrument was indirect and has been caught
+	   lying: the ReadbackBuffer is not a coherent snapshot, the debug
+	   views depend on their nesting and on constant folding. This
+	   prints from the invocation that computed the values, with no
+	   readback buffer and no image path in between.
+
+	   ONE CELL. 1.8M invocations printing would overflow the layer's
+	   staging buffer, and an overflow TRUNCATES silently - which looks
+	   exactly like "the shader did not print". */
+	if (global_ubo.pt_fog_printf != 0.0
+	    && cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+	    && z == FROXEL_GRID_Z / 2)
+	{
+		debugPrintfEXT("FOGP f=%u dens=%f alb=%f insc=%f pz=%f",
+		               global_ubo.current_frame_idx, density, albedo.x,
+		               luminance(inscatter), world_pos_history.z);
+	}
+
+	result.rgb = (global_ubo.pt_fog_const_src != 0.0)
+	           ? vec3(3.4e-5) * albedo * density
+	           : inscatter * albedo * density;
+
+	// Extinction per unit length. pt_fog_extinction 0 keeps the legacy
+	// flat value, the same escape hatch the march has.
+	float sigma = (global_ubo.pt_fog_extinction > 0.0)
+	            ? global_ubo.pt_fog_extinction : 0.0001;
+	result.a = density * sigma;
+
+	/* Snapshot BEFORE the temporal blend, for pt_fog_const_src 3. */
+	result_preblend = result;
+}
+
 layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
 void main()
 {
@@ -228,6 +662,21 @@ void main()
 
 	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y)
 		return;
+
+	/* DISPATCH MARKERS (2026-09-14).  dbg_n_lt7 counts columns that ENTER
+	   main, dbg_sum_lit counts columns that REACH THE END of it.  Both are
+	   one atomic per COLUMN, not per cell, so they cost ~1% of the probe
+	   weight that has suppressed this bug before.  On a collapsed frame the
+	   per-cell counters stop partway through the block; these two say whether
+	   the invocations that produced them ever reached the end of the shader.
+	     start == end == 14080 -> every column ran to completion, and the
+	       missing per-cell atomics cannot be explained by execution at all
+	     start == 14080, end == 0 -> the waves die inside the z-loop */
+/* The per-column start/end-of-main markers lived here and at the end of
+   main. Both read 14080 - every column, in both states - on a clean
+   build, so execution is not what fails and they have no question left
+   to answer. Their fields now carry magnitudes; see the consolidated
+   block at the accumulation. */
 
 	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 2);
 	vec3 sun_color = sun_color_ubo.sun_color;
@@ -261,6 +710,21 @@ void main()
 	// texture once and stepping it is much cheaper than a fetch per slice, and
 	// the sequence only has to decorrelate neighbours.
 	float base_rand = rand(cell.xy);
+
+	/* CARRY VALUES OUT OF THE BLOCK (2026-09-14).  Proven: on a collapsed frame
+	   every write issued from inside `if (cell_has_density)` is discarded while
+	   writes from the top of the loop body land and the frame tag advances.
+	   That leaves one question - did the block COMPUTE and only its stores were
+	   lost, or did it never really run?  These locals are written inside the
+	   block and stored AFTER the loop, at a site whose writes are known to
+	   land.  -1 means the block never assigned them. */
+#if FOG_DEBUG_PROBES   /* sentinels carried out of the z-loop */
+	float dbg_last_post = -1.0, dbg_last_vol = -1.0, dbg_last_dens = -1.0;
+	float dbg_last_gate = -1.0;  /* the BOOL the branch tests, not the value */
+	float dbg_last_in = -1.0;    /* set just INSIDE the density gate, depth 2 */
+	float dbg_last_skyvis = -1.0; /* getSkyVisibility() at the centre cell   */
+	float dbg_last_sky    = -1.0; /* luminance of the sky term there         */
+#endif
 
 	// A whole column is walked by one thread so the jitter and the history
 	// lookup can share setup, and because the integrate pass wants the same
@@ -620,289 +1084,51 @@ void main()
 		   symptom one more time. See the fog-fade memory, session 11p. */
 		bool cell_has_density = (density > 0.0);
 
+		/* THE GATE SET (2026-09-14).  The dispatch-marker run proved every column
+		   reaches the end of main on a collapsed frame, and that n_cells still
+		   counts a full 1.41M - yet dbg_n_centre, whose condition is PURE CELL
+		   POSITION, does not fire.  A position-only test cannot depend on a value,
+		   so the only way both are true is that a DIFFERENT SET of cells passes
+		   the gate.  These three measure that set directly, upstream of everything
+		   the collapse touches:
+		     neg  - the centre CELL reaching the top of the loop body (position only)
+		     bad  - cells that pass the density gate, counted outside the block
+		     tiny - sum of density, + 1 per cell so a zero delta means "did not run"
+		*/
+		/* THE ONE FACT NO "the values changed" STORY CAN EXPLAIN is that
+		   dbg_n_centre, whose condition is PURE CELL POSITION, stops firing on a
+		   collapsed frame while the cell demonstrably reaches the top of this loop
+		   body.  Only one value-based escape is left: the centre cell falling out
+		   of the density gate.  This asks, for that one cell, one atomic, no
+		   measurable weight:
+		     2 - the centre cell reached here AND passed the gate
+		     1 - it reached here and the gate was shut
+		     0 - it never got here
+		   The two plain stores move the frame tag and the density OUTSIDE the
+		   block, so FOGCELL finally reports something on a collapsed frame - every
+		   field it has ever printed is written from inside the block, which is why
+		   its tag freezes exactly when the answer would be interesting. */
+#if FOG_DEBUG_PROBES   /* gate-set probe + frame tag */
+		if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+		    && z == FROXEL_GRID_Z / 2)
+		{
+			readback.dbg_scale_b = floatBitsToUint(density);
+			dbg_last_dens = density;
+			dbg_last_gate = cell_has_density ? 1.0 : 0.0;
+			readback.dbg_frame   = global_ubo.current_frame_idx;
+		}
+#endif
+
 		if (cell_has_density)
 		{
-			dbg_in_gate = 1.0;
-			// Cell centre for the same reason as density: the fog colour is a
-			// smooth height gradient, and sampling it at the jittered point makes
-			// a far cell's albedo swing across the whole band every frame.
-			vec3 albedo = getFogColor(world_pos_history);
-
-			// The view direction at this cell, for the sun's phase function.
-			vec3 view_dir = fs.view_dir;
-
-			float eccentricity = global_ubo.god_rays_eccentricity;
-			if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_eccentricity >= 0.0)
-				eccentricity = global_ubo.pt_fog_eccentricity;
-
-			float cosa = dot(view_dir, global_ubo.sun_direction);
-			float phase = ScatterPhase_HenyeyGreenstein(cosa, eccentricity);
-
-			/* --- the sun, through the shadow map ---
-
-			   SKIPPED when the march is carrying the sun instead
-			   (fog_sun_is_the_sky). Not merely to avoid counting it twice - that
-			   is the POINT of the split.
-
-			   A froxel cell is a box, the volume is only FROXEL_GRID_Z slices
-			   deep, and pt_fog_froxel_filter blurs 3x3x3 across neighbouring
-			   cells with no idea where the walls are. That is fine for local
-			   lights, whose falloff is smooth and local. It is WRONG for a
-			   shadow-mapped sun, whose defining feature is a hard edge at
-			   geometry: a lit cell outside a roof bleeds into the shadowed cells
-			   underneath, and sun fog appears indoors. Matt hit exactly that, and
-			   the tell was that pt_fog_froxel 0 made it vanish - the march is
-			   per-PIXEL and per-STEP and has no neighbour to bleed from.
-
-			   So the sun goes to the march and the local lights stay here, which
-			   is the split he asked for: "we use cl_fog 1 for the sky fog and the
-			   froxel grid for all other lights as normal". god_rays.comp drops
-			   its local half to match and god_rays_filter.comp ADDS the two
-			   instead of replacing - all three keyed off the one predicate, or
-			   the sun is counted twice or not at all.
-
-			   THE TWO TERMS CARRY DIFFERENT SCALES, and they are not
-			   interchangeable - getting this wrong is what a first attempt did,
-			   and the result was not subtly off, it was a black screen with one
-			   blown-out patch (the tone mapper adapting to the over-bright fog).
-
-			   god_rays.comp applies both at the very END of its march, after the
-			   accumulation, which is easy to miss when reading the loop alone:
-
-			     sun    * sun_color * god_rays_intensity * 0.0001
-			     lights * pt_fog_light_scale * 0.005
-
-			   The 0.0001 exists because sun_color is of order 1e4; the 0.005
-			   because a light-buffer entry is radiance * triangle area, which is
-			   larger again. They differ by more than two orders of magnitude, so
-			   the terms have to be scaled separately and only then summed. */
-			vec3 inscatter = vec3(0);
-
-			if (!fog_sun_is_the_sky())
-			{
-				float distanceToWater;
-				float shadow = GetShadow(world_pos - global_ubo.sun_direction * 20,
-				                         distanceToWater);
-
-				float scatter = shadow * phase;
-				if (global_ubo.pt_fog_ambient > 0.0)
-					scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
-
-				inscatter = scatter * sun_color
-				          * global_ubo.god_rays_intensity * 0.0001;
-			}
-
-			// --- the map's own lights and the sky ---
-			if (fog_lights)
-			{
-				uint cluster = (global_ubo.fog_camera_cluster < 0)
-				             ? ~0u : uint(global_ubo.fog_camera_cluster);
-
-				if (global_ubo.fog_mode >= 3)
-				{
-					// cl_fog 3: a real light sample per light, with its own
-					// occlusion ray and its own phase about that light's
-					// direction - so the phase cannot be hoisted out the way the
-					// isotropic approximation below does it.
-					//
-					// This is the case the grid was built for. The march pays
-					// these rays per STEP of every pixel; here it is once per
-					// CELL, which is roughly a fortieth of the work, and the
-					// temporal history averages the sampling noise away.
-					vec3 light_rnd = fs.light_rnd;
-					uint seed = fs.seed;
-
-					/* WHERE THE LIGHT COMES FROM: this cell's own candidate
-					   loop, or the one the spatial pass settled on.
-
-					   With pt_fog_restir off this is exactly what it has
-					   always been - RIS over M candidates drawn here, one
-					   visibility ray on the winner.
-
-					   With it on, the choosing has already happened: the
-					   reservoir pass drew this cell's candidates and the
-					   spatial pass combined them with a few neighbours', so
-					   what arrives here is a light index and the weight that
-					   makes using it unbiased. THE RAY BUDGET IS IDENTICAL
-					   either way - one sky ray and one visibility ray per
-					   cell - because neither of those passes traces anything.
-					   ReSTIR buys variance, not rays, and pays in bandwidth.
-
-					   The visibility ray is still traced HERE, on the sample
-					   the spatial pass chose, and that is what keeps the
-					   result unbiased: a neighbour's shadow result is never
-					   reused, only its choice of light. */
-					vec3 vol_inscatter;
-					/* THE LIGHT HALF AS A COLOUR, for debug view 14 - the sibling
-					   view 4 never had. Captured here rather than reconstructed
-					   with pt_fog_isolate through view 1, because view 1 carries
-					   `albedo * density` and an isolate A/B through it cannot
-					   separate a dead half from a dead multiplier. */
-					/* LOCALS, declared inside the z-loop so they reset per cell by
-					   construction - a shader global here reports the previous
-					   cell's value for every cell that skipped the branch, which is
-					   probe defect 3 in the fog-fade memory. */
-					float dbg_sky = 0.0, dbg_lit = 0.0;
-
-					if (global_ubo.pt_fog_restir > 0.0)
-					{
-						vec4 res = imageLoad(IMG_FROXEL_RESERVOIR_FINAL, cell);
-
-						uint  y = (res.x < 0.0) ? ~0u : uint(res.x);
-						float W = res.y;
-
-						atomicAdd(readback.dbg_n_restir, 1u);
-						vol_inscatter = fog_sky_inscatter(world_pos_history);
-						dbg_sky = luminance(vol_inscatter);
-
-						if (int(global_ubo.pt_fog_isolate) != 1)
-							vol_inscatter += fog_shade_chosen(world_pos, view_dir,
-								fog_eccentricity(), light_rnd, y, W);
-
-						dbg_lit = luminance(vol_inscatter) - dbg_sky;
-						fog_debug_light_term = vol_inscatter - fog_debug_sky_term;
-					}
-					else
-					{
-						vol_inscatter = getVolumeLightInscatter(cluster, world_pos,
-							world_pos_history, view_dir, light_rnd, seed);
-					}
-
-					// pt_fog_vol_scale, not pt_fog_light_scale: mode 3 has no
-					// knee crushing the total, so it sits at a different level
-					// entirely and sharing one cvar would mean retuning mode 2
-					// every time the two are compared.
-					/* TEMPORARY probe, GENERATION 2 - raw IEEE bits, see vertex_buffer.h.
-					   Generation 1 clamped to [0, 4e9], which maps a negative value, a
-					   NaN and the "expect <= 0" sentinel all onto the same printed 0. */
-					float dbg_pre = luminance(inscatter);
-					float dbg_vol = luminance(vol_inscatter);
-
-					inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005
-					           * global_ubo.fog_vol_density_ratio;
-
-					float dbg_post = luminance(inscatter);
-
-					/* Grid-wide, monotonic, one block, shared normaliser. */
-					atomicAdd(readback.dbg_n_cells, 1u);
-					if (dbg_post == 0.0)                        atomicAdd(readback.dbg_n_zero, 1u);
-					if (dbg_post <  0.0)                        atomicAdd(readback.dbg_n_neg,  1u);
-					if (isnan(dbg_post) || isinf(dbg_post))     atomicAdd(readback.dbg_n_bad,  1u);
-					if (dbg_post > 0.0 && dbg_post < 1e-9)      atomicAdd(readback.dbg_n_tiny, 1u);
-					if (dbg_post > 0.0 && dbg_post < 1e-7)      atomicAdd(readback.dbg_n_lt7,  1u);
-					atomicAdd(readback.dbg_sum_q,   uint(clamp(dbg_post * 1e7, 0.0, 1e6)));
-					atomicAdd(readback.dbg_sum_sky, uint(clamp(dbg_sky  * 1e4, 0.0, 1e6)));
-					atomicAdd(readback.dbg_sum_lit, uint(clamp(dbg_lit  * 1e4, 0.0, 1e6)));
-					/* THE SEPARATOR.  On collapsed frames n and restir advance by a full
-					   dispatch while EVERY other counter in this block reads 0 - and
-					   those zeros are mutually impossible (sum = 0 needs post < 1e-7,
-					   lt7 = 0 needs post >= 1e-7), so at least one atomic here is not
-					   executing as written.  n and restir are the only two that are
-					   UNCONDITIONAL WITH A CONSTANT OPERAND.  This is a third one, at
-					   the very END of the block:
-					     pad == n  -> the block runs to completion and the anomaly is
-					                  in the values / the conditional atomics
-					     pad == 0  -> execution does not reach the end of the block
-					   Either way it splits "the fog went dark" from "the probe did
-					   not run", which nothing measured so far can do. */
-					atomicAdd(readback.dbg_n_pad, 1u);
-
-					/* ONE cell, plain stores, no arithmetic that can lose information. */
-					if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
-					    && z == FROXEL_GRID_Z / 2)
-					{
-						atomicAdd(readback.dbg_n_centre, 1u);
-
-						float dbg_expect = dbg_pre + dbg_vol * global_ubo.pt_fog_vol_scale
-						                 * 0.005 * global_ubo.fog_vol_density_ratio;
-
-						readback.dbg_pre_b    = floatBitsToUint(dbg_pre);
-						readback.dbg_vol_b    = floatBitsToUint(dbg_vol);
-						readback.dbg_post_b   = floatBitsToUint(dbg_post);
-						readback.dbg_frame    = global_ubo.current_frame_idx;
-
-						readback.dbg_expect_b = floatBitsToUint(dbg_expect);
-						readback.dbg_scale_b  = floatBitsToUint(global_ubo.pt_fog_vol_scale);
-						readback.dbg_ratio_b  = floatBitsToUint(global_ubo.fog_vol_density_ratio);
-						readback.dbg_sunlum_b = floatBitsToUint(luminance(sun_color));
-					}
-				}
-				else
-				{
-					// see the note on fog_vol_density_ratio in god_rays.comp - the
-					// local half gets its own density, the sun term keeps the sky's
-					inscatter += FOG_ISOTROPIC_PHASE
-					           * getClusterLightInscatter(cluster, world_pos, world_pos_history, r1)
-					           * global_ubo.pt_fog_light_scale * 0.005
-					           * global_ubo.fog_vol_density_ratio;
-				}
-			}
-
-			// Radiance per unit length, so the integrate pass only has to
-			// multiply by the slice thickness. albedo is the medium's own
-			// scattering colour and belongs on both terms.
-			//
-			// NOT ported from the march: its per-step multiply by the path
-			// tracer's own `throughput`. That is a per-PIXEL quantity and a
-			// froxel has no pixel, so the grid assumes 1 - correct for a
-			// primary ray, and an over-estimate for fog seen through glass or
-			// water. Those are exactly the cases the march still handles, since
-			// it keeps running for the reflection/refraction passes.
-			/* BISECTION TEST (pt_fog_const_src 1): replace the LIGHTING with a
-			   constant, keeping albedo and density - both measured unchanged
-			   through the collapse (views 13 and 12).
-
-			   Everything upstream of this line has been excluded one piece at a
-			   time and the fade always survived. This asks the question the
-			   other way round: if the source term cannot vary, does the fog
-			   still collapse?
-
-			     STILL COLLAPSES -> the fault is DOWNSTREAM of the scatter
-			       computation - the volume store, froxel_integrate, the
-			       god_rays_filter lookup or the composite - and every
-			       measurement of the lighting has been looking in the wrong
-			       place.
-			     STABLE -> the fault really is in the lighting, and the
-			       remaining suspects are the two in-scatter functions.
-
-			   THE CONSTANT MUST MATCH THE REAL MAGNITUDE. A healthy cell's
-			   `inscatter` measures ~3.4e-5 (FOGCELL probes). The first attempt
-			   used 0.02 - about 600x too bright - which saturated the image at
-			   ~180 luminance and made auto-exposure thrash: 70-91% "swing" that
-			   was pure exposure, nothing to do with the fade. Use the measured
-			   value so the tone mapper sees a comparable picture. */
-			/* DIRECT read-out of the real quantities, one cell only.
-
-			   Every earlier instrument was indirect and has been caught
-			   lying: the ReadbackBuffer is not a coherent snapshot, the debug
-			   views depend on their nesting and on constant folding. This
-			   prints from the invocation that computed the values, with no
-			   readback buffer and no image path in between.
-
-			   ONE CELL. 1.8M invocations printing would overflow the layer's
-			   staging buffer, and an overflow TRUNCATES silently - which looks
-			   exactly like "the shader did not print". */
-			if (global_ubo.pt_fog_printf != 0.0
-			    && cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
-			    && z == FROXEL_GRID_Z / 2)
-			{
-				debugPrintfEXT("FOGP f=%u dens=%f alb=%f insc=%f pz=%f",
-				               global_ubo.current_frame_idx, density, albedo.x,
-				               luminance(inscatter), world_pos_history.z);
-			}
-
-			result.rgb = (global_ubo.pt_fog_const_src != 0.0)
-			           ? vec3(3.4e-5) * albedo * density
-			           : inscatter * albedo * density;
-
-			// Extinction per unit length. pt_fog_extinction 0 keeps the legacy
-			// flat value, the same escape hatch the march has.
-			float sigma = (global_ubo.pt_fog_extinction > 0.0)
-			            ? global_ubo.pt_fog_extinction : 0.0001;
-			result.a = density * sigma;
-
-			/* Snapshot BEFORE the temporal blend, for pt_fog_const_src 3. */
-			result_preblend = result;
+			/* The body now lives in froxel_cell_scatter(), above main. See the
+			   comment there: it is a codegen experiment against the collapse,
+			   and the lift is verbatim. */
+			froxel_cell_scatter(cell, z, density, world_pos, world_pos_history,
+			                    sun_color, fog_lights, r1, fs,
+			                    result, result_preblend, dbg_in_gate,
+			                    dbg_last_post, dbg_last_vol, dbg_last_in,
+			                    dbg_last_skyvis, dbg_last_sky);
 		}
 
 		/* --- DEBUG VIEWS ---
@@ -938,7 +1164,11 @@ void main()
 		   before register allocation, still reproduced at 452 collapsed frames
 		   (baseline 286-681). Left as-is; if it is ever worth reclaiming the
 		   registers, do it for performance, not for the fade. */
+#if FOG_DEBUG_PROBES
 		int debug = int(global_ubo.pt_fog_froxel_debug);
+#else
+		const int debug = 0;
+#endif
 
 		// The diagnostic colour for this cell. Written to IMG_FROXEL_DEBUG_OUT at
 		// the very end, never to IMG_FROXEL_SCATTER - see the note on the binding.
@@ -1758,4 +1988,19 @@ void main()
 		if (debug > 0)
 			imageStore(IMG_FROXEL_DEBUG_OUT, cell, vec4(dbg, 1.0));
 	}
+
+#if FOG_DEBUG_PROBES   /* centre-column sentinels, stored after the loop */
+	if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2)
+	{
+		/* dens/gate/in/skyvis/sky - see the header comment on this file.
+		   One writer per field, so a -1 means the sentinel was never
+		   assigned and can never mean "another site got here first". */
+		readback.dbg_pre_b    = floatBitsToUint(dbg_last_dens);
+		readback.dbg_expect_b = floatBitsToUint(dbg_last_gate);
+		readback.dbg_ratio_b  = floatBitsToUint(dbg_last_in);
+		readback.dbg_vol_b    = floatBitsToUint(dbg_last_skyvis);
+		readback.dbg_post_b   = floatBitsToUint(dbg_last_sky);
+		readback.dbg_sunlum_b = floatBitsToUint(dbg_last_post);
+	}
+#endif
 }

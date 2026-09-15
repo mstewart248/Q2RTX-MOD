@@ -593,6 +593,14 @@ static void make_screenshot(const char *name, const char *ext,
         return;
     }
 
+    /* TEMPORARY fog-fade diagnostic (pt_fog_log 1).  The screenshot command
+       writes nothing to the console, so there has never been a way to say
+       WHICH frame state a shot was taken in.  This line lands in console.log
+       between FOGGRID lines, so the classifier can be validated against the
+       actual picture - the one check this investigation has never done. */
+    if (Cvar_Get("pt_fog_log", "0", 0)->integer)
+        Com_Printf("FOGSHOT %s\n", buffer);
+
     if (r_screenshot_message->integer && async)
         Com_Printf("Taking async screenshot...\n");
 

@@ -85,6 +85,7 @@ typedef struct {
     int             *came_from;
     byte            *closed;
     int             *open;
+    byte            *in_open;
     int             open_count;
 } nav_mesh_t;
 
@@ -206,7 +207,7 @@ void Nav_Load(const char *mapname)
         nav.num_nodes * sizeof(vec3_t) +
         nav.num_links * sizeof(nav_link_t) +
         nav.num_traversals * sizeof(nav_traversal_t) +
-        nav.num_nodes * (sizeof(float) * 2 + sizeof(int) * 2 + 1), TAG_LEVEL);
+        nav.num_nodes * (sizeof(float) * 2 + sizeof(int) * 2 + 2), TAG_LEVEL);
 
     nav.nodes = (nav_node_t *)block;
     block += nav.num_nodes * sizeof(nav_node_t);
@@ -225,6 +226,8 @@ void Nav_Load(const char *mapname)
     nav.open = (int *)block;
     block += nav.num_nodes * sizeof(int);
     nav.closed = (byte *)block;
+    block += nav.num_nodes;
+    nav.in_open = (byte *)block;
 
     p = raw + 24;
     for (i = 0; i < nav.num_nodes; i++, p += 8) {
@@ -416,11 +419,13 @@ int Nav_FindPathCaps(int from, int to, const nav_caps_t *caps,
         nav.f_score[i] = FLT_MAX;
         nav.came_from[i] = -1;
         nav.closed[i] = 0;
+        nav.in_open[i] = 0;
     }
 
     nav.g_score[from] = 0;
     nav.f_score[from] = Distance(nav.origins[from], nav.origins[to]);
     nav.open[0] = from;
+    nav.in_open[from] = 1;
     nav.open_count = 1;
 
     while (nav.open_count) {
@@ -432,6 +437,7 @@ int Nav_FindPathCaps(int from, int to, const nav_caps_t *caps,
 
         current = nav.open[best];
         nav.open[best] = nav.open[--nav.open_count];
+        nav.in_open[current] = 0;
 
         if (current == to) {
             // walk the parents back, then reverse in place
@@ -472,11 +478,12 @@ int Nav_FindPathCaps(int from, int to, const nav_caps_t *caps,
             nav.g_score[n] = tentative;
             nav.f_score[n] = tentative + Distance(nav.origins[n], nav.origins[to]);
 
-            for (i = 0; i < nav.open_count; i++)
-                if (nav.open[i] == n)
-                    break;
-            if (i == nav.open_count && nav.open_count < nav.num_nodes)
+            // membership is a flag, not a scan: with ~100 links per node the
+            // old linear search over the open set was most of the query cost
+            if (!nav.in_open[n] && nav.open_count < nav.num_nodes) {
+                nav.in_open[n] = 1;
                 nav.open[nav.open_count++] = n;
+            }
         }
     }
 
@@ -544,45 +551,335 @@ and already verified working. The navmesh only runs where a map has none -
 which is the other ~130 maps, where a monster that loses you currently just
 mills around its last sighting.
 
-NOT SAVED. The throttle below is a file-static keyed by entity number, so a
+NOT SAVED. The plan cache below is a file-static keyed by entity number, so a
 savegame load simply re-paths on the next think. That is the whole reason
 there are no new monsterinfo fields and no SAVE_VERSION bump for this.
+
+THREE THINGS THE FIRST CUT OF THIS GOT WRONG, all of which showed up as
+monsters grinding along walls on mgu5m1 - a map with two mutants, a navmesh,
+and, the reason it is affected at all, zero hint_paths:
+
+  * "am I standing on this node" was a plain 3D distance against a 48 unit
+    budget. Nodes sit ON the floor and a monster's origin is a couple of feet
+    above them, so ~23 units of that budget is gone before the monster has
+    moved anywhere, and node spacing on a real mesh is ~100 units. Measured
+    over every link on mgu5m1, a monster part way along a link was further
+    than 48 units from the nearest node 36% of the time - and the skip loop
+    then handed back path[0], the node the monster had SNAPPED to, which is
+    routinely BEHIND it. The monster was being told to walk backwards.
+    Reach is now horizontal with a separate vertical window, and the route
+    always advances at least one node past the snap.
+
+  * the route was followed node centre to node centre, which makes a monster
+    zig-zag down a corridor it could cross in a straight line. It is string
+    pulled now: aim at the furthest node ahead a body sized trace can reach.
+
+  * the plan was rebuilt on a fixed 1 Hz timer and `last_sighting` was left to
+    the player-trail code in between, so the goal flipped between a navmesh
+    corner and a trail breadcrumb twice a second and the monster visibly
+    dithered. The plan is cached per entity and re-driven every frame; it is
+    only rebuilt when it actually goes stale.
 
 ==============================================================================
 */
 
-// next frame each entity may recompute. A* over ~1000 nodes is cheap but not
-// free, and a monster does not need a new plan every frame.
-static int  nav_next_path[MAX_EDICTS];
+#define NAV_MAX_PATH        128
 
-#define NAV_REPATH_DELAY    (1 * BASE_FRAMERATE)
-#define NAV_WAYPOINT_REACHED 48.0f
+// Earliest we may run A* again for the same monster. The plan is only rebuilt
+// when it goes stale at all, so this is a floor on the rate, not a schedule.
+#define NAV_REPATH_DELAY    (BASE_FRAMERATE / 5)
 
-void Nav_ClearCombat(void);
+// ...and a longer backoff when there was no route, so a monster that cannot
+// reach the player does not run A* over and over to find that out.
+#define NAV_REPATH_FAILED   (2 * BASE_FRAMERATE)
+
+#define NAV_PLAN_LIFETIME   (3 * BASE_FRAMERATE)
+
+// HORIZONTAL reach. See the note above about the vertical half of this.
+#define NAV_WAYPOINT_REACHED    64.0f
+
+// how far the enemy may move before the plan is worth rebuilding
+#define NAV_GOAL_SLOP       192.0f
+
+// how many nodes ahead the string pull will look
+#define NAV_LOOKAHEAD       6
+
+// how many snap candidates to try before settling for the outright nearest
+#define NAV_SNAP_TRIES      8
+
+typedef struct {
+    vec3_t  waypoint;       // the point to walk at
+    vec3_t  planned_for;    // enemy origin this plan was built around
+    int     expire;         // framenum the plan goes stale on its own
+    int     next_repath;    // earliest framenum we may A* again
+    bool    valid;
+} nav_plan_t;
+
+static nav_plan_t   nav_plan[MAX_EDICTS];
+
+void Nav_ClearCombat(void)
+{
+    memset(nav_plan, 0, sizeof(nav_plan));
+}
 
 void Nav_ClearPursuit(void)
 {
-    memset(nav_next_path, 0, sizeof(nav_next_path));
     Nav_ClearCombat();
 }
 
 /*
 =================
-Nav_MonsterPursue
+Nav_Reached
 
-Returns true if it set a fresh waypoint into last_sighting. False means "not
-applicable, carry on with the classic pursuit" - which is also what happens on
-every frame between recomputes, so the monster keeps walking to the waypoint
-already chosen.
+Is `self` close enough to `point` to count as having arrived?
+
+Deliberately NOT a 3D distance. A navmesh node sits on the floor; a monster's
+origin sits -mins[2] above the floor it is standing on. Measured in 3D a
+monster standing perfectly on a node is already ~23 units away from it, which
+eats most of any sane budget and makes "arrived" fire far too rarely. So the
+test is horizontal, with a vertical window that only asks whether this is the
+same floor.
 =================
 */
-bool Nav_MonsterPursue(edict_t *self)
+static bool Nav_Reached(const edict_t *self, const vec3_t point)
 {
-    static int  path[256];
-    nav_caps_t  caps;
-    vec3_t      waypoint;
-    int         n, i, num;
+    vec3_t  d;
 
+    VectorSubtract(point, self->s.origin, d);
+
+    // above our head, or more than a jump below our feet: a different storey
+    if (d[2] > self->maxs[2] || d[2] < self->mins[2] - 64.0f)
+        return false;
+
+    d[2] = 0;
+    return VectorLength(d) <= NAV_WAYPOINT_REACHED;
+}
+
+/*
+=================
+Nav_BodyReaches
+
+Could something the size of `self` get from where it is to `point` in a
+straight line? The node is on the floor, so the trace aims at where the
+monster's own origin would be if it stood there - otherwise every trace
+scrapes along the ground and fails.
+
+Used two ways: to string pull a route, and to decide whether a route is needed
+at all. Both only ever make the monster MORE willing to walk straight, so a
+false negative here costs nothing worse than an extra navmesh corner.
+=================
+*/
+static bool Nav_BodyReaches(edict_t *self, const vec3_t point)
+{
+    vec3_t  target;
+    trace_t tr;
+
+    VectorSet(target, point[0], point[1], point[2] - self->mins[2]);
+
+    tr = gi.trace(self->s.origin, self->mins, self->maxs, target, self,
+                  MASK_PLAYERSOLID);
+
+    return tr.fraction == 1.0f;
+}
+
+/*
+=================
+Nav_NearestReachable
+
+The nearest node that `ent` could actually join, rather than merely the
+nearest node.
+
+NAV_MAX_SNAP is 512 units, which is generous enough to pick a node through a
+wall, on the storey below, or across a pit. A route that starts or ends in the
+wrong room is worse than no route at all - the monster walks a path it can
+never join, which looks exactly like running into a wall - so the closest
+handful of candidates get a body sized trace and the first one that is really
+reachable wins. Falling back to the outright nearest keeps the old behaviour
+when nothing traces clear, which is no worse than before.
+
+`ent` NULL means a point sized probe with no ignore entity - what the goal end
+and the compass use.
+=================
+*/
+static int Nav_NearestReachable(const vec3_t point, edict_t *ent, float max_dist)
+{
+    float   best[NAV_SNAP_TRIES];
+    int     cand[NAV_SNAP_TRIES];
+    int     count = 0;
+    float   limit = max_dist * max_dist;
+    int     i, j;
+
+    if (!Nav_Loaded())
+        return -1;
+
+    for (i = 0; i < nav.num_nodes; i++) {
+        vec3_t  d;
+        float   len;
+
+        VectorSubtract(nav.origins[i], point, d);
+        len = DotProduct(d, d);
+        if (len > limit)
+            continue;
+
+        // keep the NAV_SNAP_TRIES closest, nearest first
+        if (count == NAV_SNAP_TRIES && len >= best[count - 1])
+            continue;
+        if (count < NAV_SNAP_TRIES)
+            count++;
+        for (j = count - 1; j > 0 && best[j - 1] > len; j--) {
+            best[j] = best[j - 1];
+            cand[j] = cand[j - 1];
+        }
+        best[j] = len;
+        cand[j] = i;
+    }
+
+    if (!count)
+        return -1;
+
+    for (i = 0; i < count; i++) {
+        vec3_t  target, mins, maxs;
+        trace_t tr;
+
+        VectorCopy(nav.origins[cand[i]], target);
+        if (ent) {
+            VectorCopy(ent->mins, mins);
+            VectorCopy(ent->maxs, maxs);
+            target[2] -= ent->mins[2];
+        } else {
+            VectorClear(mins);
+            VectorClear(maxs);
+            target[2] += 24;
+        }
+
+        tr = gi.trace(point, mins, maxs, target, ent, MASK_PLAYERSOLID);
+        if (tr.fraction == 1.0f)
+            return cand[i];
+    }
+
+    return cand[0];
+}
+
+/*
+=================
+Nav_Replan
+
+Rebuild this monster's route to `goal` and pick the point to walk at. Returns
+false when there is no usable route, which puts the caller straight back on
+the classic movement.
+=================
+*/
+static bool Nav_Replan(edict_t *self, const vec3_t goal, nav_plan_t *plan)
+{
+    static int  path[NAV_MAX_PATH];
+    nav_caps_t  caps;
+    vec3_t      node, best;
+    int         from, to, num, i, start, limit;
+
+    // route only over moves this monster can actually make. A monster with no
+    // jump at all is limited to plain floor, which is correct - it should go
+    // the long way round rather than get stuck at a ledge.
+    caps.jump_height = self->monsterinfo.can_jump ? self->monsterinfo.jump_height : 0;
+    caps.drop_height = self->monsterinfo.drop_height;
+
+    from = Nav_NearestReachable(self->s.origin, self, NAV_MAX_SNAP);
+    to   = Nav_NearestReachable(goal, NULL, NAV_MAX_SNAP);
+    if (from < 0 || to < 0)
+        return false;
+
+    num = Nav_FindPathCaps(from, to, &caps, path, q_countof(path));
+    if (num < 2)
+        return false;
+
+    // Skip every node we have already reached, and then one more: path[0] is
+    // the node we SNAPPED to, not a node we have arrived at, and aiming at it
+    // is how a monster ends up walking away from its own goal.
+    start = 1;
+    for (i = 0; i < num; i++) {
+        if (!Nav_NodeOrigin(path[i], node))
+            return false;
+        if (Nav_Reached(self, node))
+            start = i + 1;
+    }
+    if (start >= num)
+        return false;       // the whole route is behind us; we are there
+
+    if (!Nav_NodeOrigin(path[start], best))
+        return false;
+
+    // string pull: the furthest node ahead we could walk straight to
+    limit = min(num, start + NAV_LOOKAHEAD);
+    for (i = start + 1; i < limit; i++) {
+        if (!Nav_NodeOrigin(path[i], node))
+            break;
+        if (!Nav_BodyReaches(self, node))
+            break;
+        VectorCopy(node, best);
+    }
+
+    VectorCopy(best, plan->waypoint);
+    VectorCopy(goal, plan->planned_for);
+    plan->expire = level.framenum + NAV_PLAN_LIFETIME;
+    plan->valid = true;
+    return true;
+}
+
+/*
+=================
+Nav_Waypoint
+
+The cached plan, rebuilt only when it has gone stale. The cache is what lets
+the monster be steered EVERY frame - which in turn is what stops the player
+trail from grabbing the goal back in between recomputes.
+=================
+*/
+static bool Nav_Waypoint(edict_t *self, const vec3_t goal, vec3_t out)
+{
+    nav_plan_t  *plan = &nav_plan[self->s.number];
+    bool        stale;
+
+    // A savegame load restores level.framenum without going anywhere near this
+    // cache (Nav_Load only runs from SpawnEntities), so the clock can jump
+    // BACKWARDS underneath a plan and leave it looking valid for minutes. A
+    // deadline further out than a plan is ever given means exactly that.
+    if (plan->expire > level.framenum + NAV_PLAN_LIFETIME ||
+        plan->next_repath > level.framenum + NAV_REPATH_FAILED) {
+        plan->valid = false;
+        plan->expire = 0;
+        plan->next_repath = 0;
+    }
+
+    stale = !plan->valid
+         || level.framenum >= plan->expire
+         || Nav_Reached(self, plan->waypoint)
+         || Distance(goal, plan->planned_for) > NAV_GOAL_SLOP;
+
+    if (stale && level.framenum >= plan->next_repath) {
+        if (Nav_Replan(self, goal, plan)) {
+            plan->next_repath = level.framenum + NAV_REPATH_DELAY;
+        } else {
+            plan->valid = false;
+            plan->next_repath = level.framenum + NAV_REPATH_FAILED;
+        }
+    }
+
+    if (!plan->valid || level.framenum >= plan->expire)
+        return false;
+
+    VectorCopy(plan->waypoint, out);
+    return true;
+}
+
+/*
+=================
+Nav_Eligible
+
+The checks both entry points share: is there a mesh, is this monster ours to
+steer, and is it something the mesh even describes.
+=================
+*/
+static bool Nav_Eligible(edict_t *self)
+{
     if (!Nav_Loaded())
         return false;
 
@@ -602,41 +899,38 @@ bool Nav_MonsterPursue(edict_t *self)
     if (self->flags & (FL_FLY | FL_SWIM))
         return false;
 
-    n = self->s.number;
-    if (n < 0 || n >= MAX_EDICTS)
+    if (self->s.number < 1 || self->s.number >= MAX_EDICTS)
         return false;
 
-    if (level.framenum < nav_next_path[n])
+    return true;
+}
+
+/*
+=================
+Nav_MonsterPursue
+
+Returns true if it set a fresh waypoint into last_sighting. False means "not
+applicable, carry on with the classic pursuit".
+
+Unlike the first cut this returns true on EVERY frame it is steering, not only
+on the frames it recomputes. ai_run reads that as "the navmesh owns the goal",
+which is what keeps the player-trail code from overwriting the waypoint
+between recomputes.
+=================
+*/
+bool Nav_MonsterPursue(edict_t *self)
+{
+    vec3_t  waypoint;
+
+    if (!Nav_Eligible(self))
         return false;
 
-    nav_next_path[n] = level.framenum + NAV_REPATH_DELAY;
-
-    // route only over moves this monster can actually make. A monster with no
-    // jump at all is limited to plain floor, which is correct - it should go
-    // the long way round rather than get stuck at a ledge.
-    caps.jump_height = self->monsterinfo.can_jump ? self->monsterinfo.jump_height : 0;
-    caps.drop_height = self->monsterinfo.drop_height;
-
-    num = Nav_PathToPointCaps(self->s.origin, self->enemy->s.origin, &caps,
-                              path, q_countof(path));
-    if (num < 2)
-        return false;
-
-    // walk forward past any node we are effectively standing on, so we aim at
-    // somewhere we actually have to travel to
-    for (i = 0; i < num; i++) {
-        if (!Nav_NodeOrigin(path[i], waypoint))
-            return false;
-        if (Distance(waypoint, self->s.origin) > NAV_WAYPOINT_REACHED)
-            break;
-    }
-    if (i == num)
+    if (!Nav_Waypoint(self, self->enemy->s.origin, waypoint))
         return false;
 
     VectorCopy(waypoint, self->monsterinfo.last_sighting);
     return true;
 }
-
 
 /*
 =================
@@ -653,44 +947,18 @@ the distance or it is harmless, a mixed one closes to mid range, and a ranged
 one is left alone to stand and shoot (returning false here puts it straight
 back on the classic movement, which is what the rerelease does too).
 
-Returns the point to walk at.  The answer is cached per edict between
-recomputes, because pathing every monster every frame is far too expensive and
-because the monster needs something to keep walking towards in between.
+Returns the point to walk at.
 =================
 */
-static vec3_t   nav_combat_goal[MAX_EDICTS];
-static int      nav_combat_until[MAX_EDICTS];
-static int      nav_combat_next[MAX_EDICTS];
-
-#define NAV_COMBAT_GOAL_LIFETIME    (3 * BASE_FRAMERATE)
-
-void Nav_ClearCombat(void)
-{
-    memset(nav_combat_until, 0, sizeof(nav_combat_until));
-    memset(nav_combat_next, 0, sizeof(nav_combat_next));
-}
-
 bool Nav_CombatWaypoint(edict_t *self, vec3_t out)
 {
-    static int  path[256];
-    nav_caps_t  caps;
-    vec3_t      waypoint;
-    float       zdiff, standing;
-    int         n, i, num;
+    float   zdiff, standing;
+    trace_t tr;
 
-    if (!Nav_Loaded() || hint_paths_present)
+    if (!Nav_Eligible(self))
         return false;
 
-    if (!self->enemy || !self->enemy->inuse || self->enemy->health <= 0)
-        return false;
-
-    // something else is already steering this monster
-    if (self->monsterinfo.aiflags & (AI_HINT_PATH | AI_COMBAT_POINT |
-                                     AI_SOUND_TARGET | AI_TARGET_ANGER))
-        return false;
-
-    // the mesh describes walkable floor
-    if (self->flags & (FL_FLY | FL_SWIM))
+    if (self->enemy->health <= 0)
         return false;
 
     // this function is ONLY the in-sight half; the rest is Nav_MonsterPursue
@@ -718,39 +986,22 @@ bool Nav_CombatWaypoint(edict_t *self, vec3_t out)
         return false;
     }
 
-    n = self->s.number;
-    if (n < 0 || n >= MAX_EDICTS)
+    // If the monster can just walk straight at the enemy, let it. `visible`
+    // above is an EYE LINE trace and says nothing about whether a body fits or
+    // where the floor goes, so on its own it is not grounds for handing the
+    // monster over to the mesh - and steering at a node centre while the way
+    // ahead is wide open is precisely what made monsters veer into walls with
+    // the player in plain sight. The mesh is for when the direct route is
+    // actually blocked.
+    tr = gi.trace(self->s.origin, self->mins, self->maxs, self->enemy->s.origin,
+                  self, MASK_PLAYERSOLID);
+    if (tr.fraction == 1.0f || tr.ent == self->enemy)
         return false;
 
-    if (level.framenum >= nav_combat_next[n]) {
-        nav_combat_next[n] = level.framenum + NAV_REPATH_DELAY;
-
-        caps.jump_height = self->monsterinfo.can_jump ? self->monsterinfo.jump_height : 0;
-        caps.drop_height = self->monsterinfo.drop_height;
-
-        num = Nav_PathToPointCaps(self->s.origin, self->enemy->s.origin, &caps,
-                                  path, q_countof(path));
-        if (num >= 2) {
-            // skip any node we are effectively standing on already
-            for (i = 0; i < num; i++) {
-                if (!Nav_NodeOrigin(path[i], waypoint))
-                    break;
-                if (Distance(waypoint, self->s.origin) > NAV_WAYPOINT_REACHED)
-                    break;
-            }
-            if (i < num && Nav_NodeOrigin(path[i], waypoint)) {
-                VectorCopy(waypoint, nav_combat_goal[n]);
-                nav_combat_until[n] = level.framenum + NAV_COMBAT_GOAL_LIFETIME;
-            }
-        }
-    }
-
-    if (level.framenum > nav_combat_until[n])
-        return false;
-
-    VectorCopy(nav_combat_goal[n], out);
-    return true;
+    return Nav_Waypoint(self, self->enemy->s.origin, out);
 }
+
+
 
 /*
 =================

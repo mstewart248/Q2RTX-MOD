@@ -535,7 +535,16 @@ model_t *MOD_ForHandle(qhandle_t h)
         return NULL;
     }
 
-    Q_assert(h > 0 && h <= r_numModels);
+    /* Say WHICH handle, and what the valid range was. The bare Q_assert printed
+       only the expression, which is the one thing you already know when you are
+       staring at the log - it left no way to tell a stale handle from a previous
+       map (small h, plausible) from an out-of-bounds array read somewhere in the
+       caller (huge or negative h, which is what an unclamped model index off the
+       wire produces). */
+    if (!(h > 0 && h <= r_numModels))
+        Com_Error(ERR_FATAL, "%s: bad model handle %d (r_numModels = %d)",
+                  __func__, h, r_numModels);
+
     model = &r_models[h - 1];
     if (!model->type) {
         return NULL;

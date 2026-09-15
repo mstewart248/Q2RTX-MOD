@@ -1399,6 +1399,34 @@ the numbers into cl_weapon_muzzles[] permanently - the file is for keeping work
 in progress, the table is for shipping it.
 =================
 */
+/*
+=================
+CL_GunModel
+
+ps->gunindex comes off the wire as a 16-bit word - see the PS_WEAPONINDEX branch
+of MSG_ParseDeltaPlayerstate, which reads it with MSG_ReadWord and clamps
+nothing - but cl.model_draw has MAX_MODELS (512) entries. Any index above that
+reads PAST the array and returns whatever field of client_state_t follows it,
+reinterpreted as a qhandle_t. MOD_ForHandle then dies on a handle that
+corresponds to no model anywhere in the map, which is why the failure names the
+model system and points nowhere near the actual bug.
+
+Rejected rather than clamped on purpose: an out-of-range gunindex means the
+client and server disagree about the model list, and quietly drawing model 511
+instead would turn a desync into a rendering oddity nobody traces back.
+=================
+*/
+static qhandle_t CL_GunModel(int gunindex)
+{
+    if (gunindex < 0 || gunindex >= MAX_MODELS) {
+        Com_WPrintf("%s: gunindex %d out of range [0, %d)\n",
+                    __func__, gunindex, MAX_MODELS);
+        return 0;
+    }
+
+    return cl.model_draw[gunindex];
+}
+
 void CL_MuzzleOffset_f(void)
 {
     const model_t   *model;
@@ -1428,7 +1456,7 @@ void CL_MuzzleOffset_f(void)
 
     // which weapon is in hand right now
     ps = CL_KEYPS;
-    model = MOD_ForHandle(cl.model_draw[ps->gunindex]);
+    model = MOD_ForHandle(CL_GunModel(ps->gunindex));
     if (!model) {
         Com_Printf("No view weapon to set an offset for.\n");
         return;
@@ -1626,7 +1654,7 @@ static void CL_AddViewWeapon(void)
     if (gun_model) {
         gun.model = gun_model;  // development tool
     } else {
-        gun.model = cl.model_draw[ps->gunindex];
+        gun.model = CL_GunModel(ps->gunindex);
     }
     if (!gun.model) {
         return;

@@ -206,6 +206,26 @@ BEGIN_SHADER_STRUCT( ReadbackBuffer )
 	uint dbg_n_centre; /* times the designated centre cell was hit  */
 	uint dbg_n_lt7;    /* cells with 0 < post < 1e-7 - pins the magnitude claim */
 	uint dbg_n_pad;    /* keep the group a multiple of four         */
+
+	/* ONE SLICE, AT A HUNDRED TIMES THE RESOLUTION OF dbg_sum_q.
+
+	   Every aggregate above accumulates uint(clamp(v * 1eN, ...)), an integer
+	   truncation, so each one has a quantum below which it reads exactly zero.
+	   dbg_sum_q's is 1e-7, and a healthy cell carries only ~100 of its quanta -
+	   so a hundredfold DIMMING and a true zero produce the identical reading of
+	   0, and every capture in this investigation has been unable to tell them
+	   apart.
+
+	   Restricting to the z = FROXEL_GRID_Z/2 slice is what buys the resolution
+	   back: 14080 cells instead of 1.45M, so the sum can be scaled by 1e9
+	   instead of 1e7 and still sit ~30x inside a uint32. A healthy cell reads
+	   about 10^4 here, which leaves four decades of headroom below it before
+	   this counter, too, bottoms out.
+
+	   n is the cell count for the same slice, so q/n is a mean that does not
+	   need the grid geometry to interpret. */
+	uint dbg_slice_q;  /* sum over the centre z slice of post * 1e9 */
+	uint dbg_slice_n;  /* cells contributing to it                  */
 }
 END_SHADER_STRUCT( ReadbackBuffer )
 

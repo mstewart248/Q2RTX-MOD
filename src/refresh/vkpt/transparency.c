@@ -885,6 +885,7 @@ static void upload_geometry(VkCommandBuffer command_buffer)
 		transparency.transfer_barriers[i].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
 		transparency.transfer_barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		transparency.transfer_barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		transparency.transfer_barriers[i].offset = 0;
 	}
 
 	transparency.transfer_barriers[0].buffer = transparency.vertex_buffer.buffer;
@@ -899,6 +900,80 @@ static void upload_geometry(VkCommandBuffer command_buffer)
 	transparency.transfer_barriers[4].size = beam_aabbs.size;
 	transparency.transfer_barriers[5].buffer = transparency.beam_intersect_buffer.buffer;
 	transparency.transfer_barriers[5].size = beam_intersect.size;
+
+	/* AND NOW ACTUALLY SUBMIT THEM.
+
+	   THIS ARRAY WAS FILLED IN AND THROWN AWAY. Every field above was computed
+	   correctly, every frame, and no vkCmdPipelineBarrier anywhere in the
+	   engine ever consumed it - `transfer_barriers` appeared nowhere else in
+	   the tree. Upstream emitted it in update_particle_blas() (315a7b78); that
+	   function is gone from this fork and the barrier went with it, leaving the
+	   copies above completely unordered against the acceleration-structure
+	   build that reads them.
+
+	   The window is real and it is in the SAME command buffer: main.c calls
+	   update_transparency(trace_cmd_buf) and then, thirty lines later,
+	   vkpt_pt_create_all_dynamic(trace_cmd_buf), which builds the particle,
+	   beam and sprite BLASes over exactly these buffers. Synchronisation
+	   validation names both accesses:
+
+	     vkCmdBuildAccelerationStructuresKHR(): READ_AFTER_WRITE hazard detected.
+	     ... reads vertex data, which was previously written by vkCmdCopyBuffer.
+	     ... a read (VK_ACCESS_2_SHADER_READ_BIT) at
+	     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR does not
+	     conflict with a prior write (VK_ACCESS_2_TRANSFER_WRITE_BIT) at
+	     VK_PIPELINE_STAGE_2_COPY_BIT.
+
+	   WHY THIS IS A CRASH AND NOT A GLITCH. A BLAS built from vertex or AABB
+	   data that has not landed is a MALFORMED acceleration structure, and
+	   traversing one is undefined. robustBufferAccess does not help: it clamps
+	   out-of-range reads of a bound buffer, and says nothing about a structure
+	   whose internal nodes were built from garbage. That is one of the three
+	   categories named in the note on vkpt_report_device_lost, and it is the
+	   kind of fault that surfaces as a wild READ_INVALID in whatever pass
+	   happens to traverse next rather than at the build itself.
+
+	   THE DESTINATION STAGE IS THE BUILD, NOT TRANSFER. Upstream's barrier was
+	   TRANSFER -> TRANSFER, which does not cover the build's read either; it
+	   merely happened to be a heavier hammer than none. An AS build reads its
+	   input geometry as an ordinary SHADER_READ at
+	   ACCELERATION_STRUCTURE_BUILD, which is the same distinction spelled out
+	   at the buf_world barrier in vertex_buffer.c. The shader stages stay in
+	   the mask because the path tracer reads these same buffers directly when
+	   it shades what it hit, and RAY_TRACING_SHADER_BIT_KHR is invalid on a
+	   ray-query device - the rule ACCEL_STRUCT_READ_STAGES follows in
+	   path_tracer.c and blood.c.
+
+	   A ZERO-SIZE BUFFER BARRIER IS INVALID, so the degenerate ones are skipped
+	   rather than emitted - the point of 315a7b78, kept here. Note the array is
+	   six long and upstream's stack copy was four; sizing it from the source
+	   array is what stops a quiet overrun the day a seventh buffer is added. */
+	{
+		VkBufferMemoryBarrier barriers[LENGTH(transparency.transfer_barriers)];
+		uint32_t barrier_count = 0;
+
+		for (size_t i = 0; i < LENGTH(transparency.transfer_barriers); i++)
+		{
+			if (!transparency.transfer_barriers[i].size)
+				continue;
+
+			barriers[barrier_count] = transparency.transfer_barriers[i];
+			barrier_count++;
+		}
+
+		if (barrier_count)
+		{
+			const VkPipelineStageFlags shader_read_stages = qvk.use_ray_query
+				? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+				: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+				                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+			vkCmdPipelineBarrier(command_buffer,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | shader_read_stages,
+				0, 0, NULL, barrier_count, barriers, 0, NULL);
+		}
+	}
 }
 
 

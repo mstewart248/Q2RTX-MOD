@@ -290,16 +290,35 @@ static void build_model_blas(VkCommandBuffer cmd_buf, model_geometry_t* info, si
 		.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR
 					   | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
 		.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
+					   | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR
 	};
 
 	/* Same invalid-stage bug as MEM_BARRIER_BUILD_ACCEL in path_tracer.c - see the
 	   long note there. On a ray QUERY device VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
-	   is not a legal stage, and the consumers are compute shaders. */
+	   is not a legal stage, and the consumers are compute shaders.
+
+	   AND THE SAME SCRATCH HAZARD, which is what actually bites here. This
+	   function is called in a row - five times for the BSP geometries, then once
+	   per model - and every one of those builds draws scratch from the shared
+	   allocation. A barrier that only publishes the finished structure to READERS
+	   does not order the NEXT BUILD's scratch writes against this one's, so
+	   consecutive calls corrupt each other's intermediate nodes. Validation
+	   reports it at map load, once per build:
+
+	     vkCmdBuildAccelerationStructuresKHR(): WRITE_AFTER_WRITE hazard detected.
+	     ... writes to scratch buffer ..., previously written by another
+	     vkCmdBuildAccelerationStructuresKHR command.
+
+	   Widening the destination to the BUILD stage and the WRITE access is what
+	   closes it. Keep this in step with MEM_BARRIER_BUILD_ACCEL - they are the
+	   same barrier written out twice, and fixing only one leaves the load path
+	   or the frame path broken depending on which was missed. */
 	vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-		qvk.use_ray_query
+		(qvk.use_ray_query
 			? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
 			: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
-			                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT), 0, 1,
+			                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
+		| VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1,
 		&barrier, 0, 0, 0, 0);
 }
 
@@ -505,12 +524,79 @@ void vkpt_vertex_buffer_cleanup_bsp_mesh(bsp_mesh_t* bsp_mesh)
 	}
 }
 
+/*
+=================
+barrier_before_shared_upload
+
+PER-FRAME STAGING BUFFER, SINGLE SHARED DESTINATION.
+
+Both of the uploads below follow the same shape: the staging buffer is indexed
+by current_frame_index, but the destination is one buffer that every frame
+overwrites. MAX_FRAMES_IN_FLIGHT is 2, so frame N+1 reaches the copy while frame
+N's trace submission is still reading the same bytes. The frame fence only
+proves the frame TWO back has finished, and the transfer submission waits on no
+semaphore of its own, so nothing ordered the write against either the previous
+write or the previous frame's reads. Validation reports the write-vs-write half
+across submissions:
+
+  vkQueueSubmit(): WRITE_AFTER_WRITE hazard detected.
+  vkCmdCopyBuffer[PROFILER_UPLOAD_LIGHTS] ... writes to VkBuffer ..., which was
+  previously written by another vkCmdCopyBuffer[PROFILER_UPLOAD_LIGHTS] command.
+
+The read-vs-write half is the one that shows. For the light buffer that is every
+light sample in the path tracer AND in the fog, so a frame can shade half
+against the lights it was built with and half against the next frame's. For the
+IQM matrices it is worse than cosmetic: they are consumed by
+vkpt_instance_geometry, which writes the instanced position buffer that the
+dynamic BLASes are then built over, so a torn matrix buffer becomes wrong vertex
+positions inside an acceleration structure.
+
+A barrier is sufficient rather than a semaphore because the engine picks a
+transfer queue in the GRAPHICS family whenever it can (see the queue selection
+in main.c) and a pipeline barrier orders against all prior commands on the same
+queue, earlier submissions included. When the families genuinely differ the
+reader stages are dropped: naming a graphics or compute stage in a command
+buffer on a transfer-only queue is illegal, and that case has the semaphore it
+already has.
+=================
+*/
+static void
+barrier_before_shared_upload(VkCommandBuffer cmd_buf, VkBuffer buffer, VkDeviceSize size)
+{
+	const bool transfer_is_graphics = (qvk.queue_idx_transfer == qvk.queue_idx_graphics);
+
+	const VkPipelineStageFlags reader_stages = !transfer_is_graphics ? 0
+		: (qvk.use_ray_query
+			? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+			: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+			                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT));
+
+	VkBufferMemoryBarrier before_copy = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+		               | (transfer_is_graphics ? VK_ACCESS_SHADER_READ_BIT : 0),
+		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.buffer = buffer,
+		.offset = 0,
+		.size = size,
+	};
+
+	vkCmdPipelineBarrier(cmd_buf,
+		VK_PIPELINE_STAGE_TRANSFER_BIT | reader_stages,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		0, 0, NULL, 1, &before_copy, 0, NULL);
+}
+
 VkResult
 vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf)
 {
 	BufferResource_t* staging = qvk.buf_light_staging + qvk.current_frame_index;
 
 	assert(!staging->is_mapped);
+
+	barrier_before_shared_upload(cmd_buf, qvk.buf_light.buffer, sizeof(LightBuffer));
 
 	VkBufferCopy copyRegion = {
 		.size = sizeof(LightBuffer),
@@ -532,6 +618,10 @@ vkpt_iqm_matrix_buffer_upload_staging(VkCommandBuffer cmd_buf)
 	BufferResource_t* staging = qvk.buf_iqm_matrices_staging + qvk.current_frame_index;
 
 	assert(!staging->is_mapped);
+
+	/* Same per-frame-staging / shared-destination race as the light buffer, and
+	   with a sharper consequence - see barrier_before_shared_upload. */
+	barrier_before_shared_upload(cmd_buf, qvk.buf_iqm_matrices.buffer, sizeof(IqmMatrixBuffer));
 
 	VkBufferCopy copyRegion = {
 		.size = sizeof(IqmMatrixBuffer),

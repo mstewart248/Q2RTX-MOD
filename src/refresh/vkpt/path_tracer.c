@@ -150,18 +150,56 @@ typedef struct {
 		: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR \
 		                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
 
+/* THIS BARRIER HAS TWO JOBS, AND IT USED TO DO ONLY ONE.
+
+   The obvious one is publishing: a finished acceleration structure has to
+   become visible to whatever traces it, which is the ACCELERATION_STRUCTURE_READ
+   half and ACCEL_STRUCT_READ_STAGES above.
+
+   The other one is the SCRATCH BUFFER. Every build in this file takes its
+   scratch from one shared allocation through the `scratch_buf_ptr` bump
+   allocator, and that pointer is RESET TO ZERO at the top and bottom of
+   vkpt_pt_create_all_dynamic and again for the top level. Within one batch the
+   bump keeps the regions disjoint, but across a reset the next batch's builds
+   write the same scratch bytes the previous batch's builds were still writing.
+   Nothing ordered those two against each other, because a barrier whose
+   destination is only READ at the TRACE stages says nothing to a later BUILD.
+
+   Synchronisation validation names it exactly:
+
+     vkCmdBuildAccelerationStructuresKHR(): WRITE_AFTER_WRITE hazard detected.
+     ... writes to scratch buffer ..., which was previously written by another
+     vkCmdBuildAccelerationStructuresKHR command. The current synchronization
+     allows VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR accesses at
+     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, but to prevent this hazard, it must
+     allow VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR accesses at
+     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR.
+
+   Two builders sharing scratch corrupt each other's intermediate nodes, and the
+   result is a structurally invalid BVH that traverses into nonsense - the
+   "acceleration-structure traversal over malformed geometry" case called out in
+   the note on vkpt_report_device_lost, which robustBufferAccess does not cover
+   and which surfaces as a wild READ_INVALID in whatever pass traces next rather
+   than at the build that caused it.
+
+   So the destination side now names the BUILD stage and the WRITE access as
+   well. This does not serialise the builds inside a batch - they are already
+   separated by the bump allocator and no barrier sits between them - it only
+   orders one batch against the next, which is one barrier per frame. */
 #define MEM_BARRIER_BUILD_ACCEL(cmd_buf, ...) \
 	do { \
 		VkMemoryBarrier mem_barrier = {  \
 			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,  \
 			.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR \
 						   | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR, \
-			.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR, \
+			.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR \
+						   | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, \
 			__VA_ARGS__  \
 		};  \
 	 \
 		vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, \
-				ACCEL_STRUCT_READ_STAGES, 0, 1, \
+				ACCEL_STRUCT_READ_STAGES \
+				| VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, \
 				&mem_barrier, 0, 0, 0, 0); \
 	} while(0)
 
@@ -883,6 +921,15 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 	// and built into a NULL destination. The hard-coded `true` used to mask that.
 	if (!accel_matches_top_level(&as->match, tlas_fast_build, num_instances) || as->accel == VK_NULL_HANDLE)
 	{
+		/* TLASREUSE, pt_fog_log 1. Prints the handle destroyed here beside the
+		   one created immediately after. When those two are EQUAL, the driver
+		   has recycled the handle value across a destroy/create - which is the
+		   exact condition that made the old `last_written[] != tlas` guard in
+		   god_rays.c skip its descriptor update and leave the fog tracing a
+		   freed acceleration structure. Kept as a diagnostic because "a handle
+		   is not an identity" is easy to re-introduce and hard to see. */
+		const VkAccelerationStructureKHR destroyed = as->accel;
+
 		destroy_accel_struct(as);
 
 		// Create the buffer for the acceleration structure
@@ -901,6 +948,12 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 
 		// Create the acceleration structure
 		qvkCreateAccelerationStructureKHR(qvk.device, &createInfo, NULL, &as->accel);
+
+		if (destroyed != VK_NULL_HANDLE && Cvar_Get("pt_fog_log", "0", 0)->integer)
+			Com_Printf("TLASREUSE destroyed=%llu created=%llu same=%d instances=%u\n",
+				(unsigned long long)(uintptr_t)destroyed,
+				(unsigned long long)(uintptr_t)as->accel,
+				destroyed == as->accel, num_instances);
 
 		as->match.fast_build = tlas_fast_build;
 		as->match.index_count = 0;

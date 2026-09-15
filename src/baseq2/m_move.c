@@ -1050,12 +1050,22 @@ void M_MoveToGoal(edict_t *ent, float dist)
     if (M_RereleaseGame() && ent->monsterinfo.attack_state < AS_MISSILE &&
         Nav_CombatWaypoint(ent, waypoint)) {
         vec3_t  delta;
+        float   saved_yaw = ent->ideal_yaw;
 
         VectorSubtract(waypoint, ent->s.origin, delta);
+        delta[2] = 0;
         if (SV_StepDirection(ent, vectoyaw(delta), dist))
             return;
-        // the mesh said go that way and the world disagreed; fall through to
-        // the classic movement rather than standing still
+
+        // The mesh said go that way and the world disagreed, so fall through
+        // to the classic movement rather than standing still - but put
+        // ideal_yaw back first.  SV_StepDirection writes it even when the step
+        // FAILS, and leaving it aimed at whatever just blocked us poisons the
+        // fallback twice over: the retry below re-tries the yaw that just
+        // failed, and SV_NewChaseDir derives its forbidden `turnaround` from
+        // it, which is exactly the direction - back the way we came - that
+        // would get the monster out of the corner it is stuck in.
+        ent->ideal_yaw = saved_yaw;
     }
 
 // bump around...

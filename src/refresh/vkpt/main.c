@@ -553,6 +553,8 @@ LIST_EXTENSIONS_ACCEL_STRUCT
 LIST_EXTENSIONS_RAY_PIPELINE
 LIST_EXTENSIONS_DEBUG
 LIST_EXTENSIONS_INSTANCE
+LIST_EXTENSIONS_DEVICE_FAULT
+LIST_EXTENSIONS_CHECKPOINTS
 #undef VK_EXTENSION_DO
 
 const char *vk_validation_layers[] = {
@@ -1911,26 +1913,78 @@ init_vulkan(void)
 		   The buffer size cvar matters: prints are staged in a device buffer
 		   and silently TRUNCATED when it fills, which looks exactly like "the
 		   shader did not print". Keep prints gated to one cell. */
-		static const VkValidationFeatureEnableEXT printf_enables[] = {
-			VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT
-		};
-		static const VkValidationFeatureDisableEXT printf_disables[] = {
-			VK_VALIDATION_FEATURE_DISABLE_CORE_CHECKS_EXT
-		};
+		/* THE TWO CHECKS THAT FIND MEMORY AND ORDERING FAULTS, both off by
+		   default because each costs a large multiple of the frame time.
+
+		     vk_sync_validation 1   every read/write hazard between passes,
+		                            submissions and frames, including the ones
+		                            a pipeline barrier is missing. This is the
+		                            one that adjudicates the cross-frame
+		                            history hazard described in
+		                            vkpt_record_froxel_command_buffer: the
+		                            scatter pass samples the volume the
+		                            ADJACENT frame writes, and every barrier in
+		                            that function is intra-frame. If that race
+		                            is real, this names it with both accesses.
+
+		     vk_gpu_av 1            GPU-assisted validation: instruments every
+		                            shader to bounds-check descriptor and
+		                            buffer access on the device. This is what
+		                            catches an out-of-bounds access that
+		                            robustBufferAccess would otherwise clamp
+		                            silently, and it reports the shader and the
+		                            instruction rather than an address.
+
+		   Neither is a substitute for the other. Sync validation sees ordering
+		   and no memory contents; GPU-AV sees accesses and no ordering. A fault
+		   that neither reports is genuinely outside what the layer can model,
+		   which is when a driver bug becomes the residual explanation rather
+		   than the first guess.
+
+		   GPU-AV and debugPrintfEXT share the same instrumentation machinery
+		   and conflict, so printf wins when both are asked for - it is the more
+		   specific request. Sync validation composes with either. */
+		static VkValidationFeatureEnableEXT  feature_enables[4];
+		static VkValidationFeatureDisableEXT feature_disables[4];
 		static VkValidationFeaturesEXT validation_features = {
 			.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-			.enabledValidationFeatureCount = LENGTH(printf_enables),
-			.pEnabledValidationFeatures = printf_enables,
-			.disabledValidationFeatureCount = LENGTH(printf_disables),
-			.pDisabledValidationFeatures = printf_disables
+			.pEnabledValidationFeatures = feature_enables,
+			.pDisabledValidationFeatures = feature_disables
 		};
+		uint32_t num_enables = 0, num_disables = 0;
 
-		if (Cvar_Get("vk_shader_printf", "0", 0)->integer)
+		const bool want_printf = Cvar_Get("vk_shader_printf", "0", 0)->integer != 0;
+		const bool want_sync   = Cvar_Get("vk_sync_validation", "0", 0)->integer != 0;
+		const bool want_gpu_av = Cvar_Get("vk_gpu_av", "0", 0)->integer != 0;
+
+		if (want_printf)
 		{
+			feature_enables[num_enables++]   = VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT;
+			feature_disables[num_disables++] = VK_VALIDATION_FEATURE_DISABLE_CORE_CHECKS_EXT;
+
+			if (want_gpu_av)
+				Com_WPrintf("vk_gpu_av ignored: it conflicts with vk_shader_printf.\n");
+		}
+		else if (want_gpu_av)
+		{
+			feature_enables[num_enables++] = VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT;
+			feature_enables[num_enables++] = VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_RESERVE_BINDING_SLOT_EXT;
+		}
+
+		if (want_sync)
+			feature_enables[num_enables++] = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+
+		if (num_enables || num_disables)
+		{
+			validation_features.enabledValidationFeatureCount  = num_enables;
+			validation_features.disabledValidationFeatureCount = num_disables;
 			validation_features.pNext = inst_create_info.pNext;
 			inst_create_info.pNext = &validation_features;
+
+			Com_Printf("Vulkan validation: printf=%d sync=%d gpu_av=%d\n",
+				(int)want_printf, (int)want_sync, (int)(want_gpu_av && !want_printf));
 		}
-	
+
 		qvk.enable_validation = true;
 	}
 
@@ -2104,6 +2158,34 @@ init_vulkan(void)
 
 			if (!strcmp(ext_properties[j].extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME))
 				qvk.supports_present_id = true;
+
+			/* vk_gpu_diag - HOW MUCH GPU-FAULT INSTRUMENTATION TO ASK FOR.
+
+			   Gated because the instrumentation is not free of side effects, and
+			   the first session under it did not reproduce the fault it was added
+			   to catch. Enabling VK_EXT_device_fault makes the driver track
+			   faults, which can move allocations; a checkpoint is a token in the
+			   command stream between passes, which perturbs scheduling. Either
+			   can hide a race, and this bug already looks race-shaped - it is
+			   suppressed by the same things that suppress the fog fade.
+
+			     0 - neither. Byte-for-byte the behaviour before any of this, for
+			         reproducing the crash.
+			     1 - device fault only. No command-stream change at all, so the
+			         frame is scheduled exactly as at 0, but a lost device still
+			         reports its address. Try this FIRST when 2 will not crash.
+			     2 - both, so a fault also names the pass that was in flight.
+
+			   CVAR_REFRESH: both are requested at device creation, so a change
+			   needs a vid_restart. */
+			const int gpu_diag = Cvar_Get("vk_gpu_diag", "2",
+				CVAR_REFRESH | CVAR_ARCHIVE)->integer;
+
+			if (gpu_diag >= 1 && !strcmp(ext_properties[j].extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME))
+				qvk.supports_device_fault = true;
+
+			if (gpu_diag >= 2 && !strcmp(ext_properties[j].extensionName, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME))
+				qvk.supports_checkpoints = true;
 		}
 	}
 
@@ -2350,6 +2432,10 @@ init_vulkan(void)
 		.timelineSemaphore = VK_TRUE,
 	};
 
+	VkPhysicalDeviceFaultFeaturesEXT device_features_fault = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+		.deviceFault = VK_TRUE,
+	};
 	VkPhysicalDevicePresentIdFeaturesKHR device_features_present_id = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
 		.presentId = VK_TRUE,
@@ -2427,6 +2513,7 @@ init_vulkan(void)
 	max_extension_count += LENGTH(vk_requested_device_extensions_debug);
 	max_extension_count += 1; /* VK_EXT_full_screen_exclusive */
 	max_extension_count += 2; /* VK_NV_low_latency2, VK_KHR_present_id */
+	max_extension_count += 2; /* VK_EXT_device_fault, VK_NV_device_diagnostic_checkpoints */
 
 	const char** device_extensions = alloca(sizeof(char*) * max_extension_count);
 	uint32_t device_extension_count = 0;
@@ -2481,6 +2568,27 @@ init_vulkan(void)
 		static const char* pid_ext[] = { VK_KHR_PRESENT_ID_EXTENSION_NAME };
 		append_string_list(device_extensions, &device_extension_count, max_extension_count,
 			pid_ext, LENGTH(pid_ext));
+	}
+
+	/* GPU-FAULT POST-MORTEM. Requested whenever the driver offers them, because
+	   the whole point is to have them already on the frame that dies - a fault
+	   that only reproduces once an hour is not one you get to opt into
+	   afterwards. See LIST_EXTENSIONS_DEVICE_FAULT in vkpt.h. */
+	if (qvk.supports_device_fault)
+	{
+		static const char* fault_ext[] = { VK_EXT_DEVICE_FAULT_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			fault_ext, LENGTH(fault_ext));
+		
+		device_features_fault.pNext = (void*)device_features.pNext;
+		device_features.pNext = &device_features_fault;
+	}
+
+	if (qvk.supports_checkpoints)
+	{
+		static const char* cp_ext[] = { VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			cp_ext, LENGTH(cp_ext));
 	}
 
 	/* Chain the present-id feature in only when the extension is actually enabled -
@@ -2542,6 +2650,16 @@ init_vulkan(void)
 	if(qvk.enable_validation)
 	{
 		LIST_EXTENSIONS_DEBUG
+	}
+
+	if (qvk.supports_device_fault)
+	{
+		LIST_EXTENSIONS_DEVICE_FAULT
+	}
+
+	if (qvk.supports_checkpoints)
+	{
+		LIST_EXTENSIONS_CHECKPOINTS
 	}
 
 #undef VK_EXTENSION_DO
@@ -2724,6 +2842,8 @@ destroy_vulkan(void)
 	LIST_EXTENSIONS_RAY_PIPELINE
 	LIST_EXTENSIONS_DEBUG
 	LIST_EXTENSIONS_INSTANCE
+	LIST_EXTENSIONS_DEVICE_FAULT
+	LIST_EXTENSIONS_CHECKPOINTS
 #undef VK_EXTENSION_DO
 
 	return 0;
@@ -3641,6 +3761,16 @@ VkDescriptorSet qvk_get_current_desc_set_textures()
    absolute values (a sign flip cancels in the plain sum). Note `mat4` here is
    float[4][4], so the caller must flatten - see the row-pointer trap in the
    fog-fade memory. */
+/* The PREVIOUS frame-in-flight index.
+
+   `(idx - 1) % MAX_FRAMES_IN_FLIGHT` on an UNSIGNED idx only gives the right
+   answer because 2 divides UINT32_MAX + 1: at idx 0 it computes
+   UINT32_MAX % 2 == 1, which is correct for 2 frames in flight. At 3 the same
+   expression yields UINT32_MAX % 3 == 0 - the CURRENT index, not the previous -
+   so the transfer submission would wait on its own frame's semaphore. Adding
+   the modulus before the subtraction is correct for any count. */
+#define PREV_FRAME_INDEX(idx) 	(((idx) + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT)
+
 static float ubo_mat_sum(const float *m, int absolute)
 {
 	float acc = 0.f;
@@ -3722,11 +3852,23 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 			const char *cls = (post.u & 0x7f800000u) != 0x7f800000u ? "num"
 			                : (post.u & 0x007fffffu) ? "NaN" : "Inf";
 
-			Com_Printf("FOGCELL post=%+.9g [%08x %s%s] expect=%+.9g [%08x] match=%d | pre=%+.9g vol=%+.9g scale=%.6f ratio=%.6f sunlum=%+.9g frame=%u\n",
-				post.f, post.u, (post.u >> 31) ? "-" : "+", cls,
-				expect.f, expect.u, post.u == expect.u,
-				pre.f, vol.f, scale.f, ratio.f, sunlum.f,
-				readback.dbg_frame);
+			/* RAW floats for the centre cell, one writer per field. Read as a
+			   chain from the gate's input to the sky term it produces:
+
+			     dens   density at (80,44,64)
+			     gate   cell_has_density, the bool the branch tests
+			     in     reached the first line inside that branch (-1 = never)
+			     skyvis getSkyVisibility() there, the ray query's raw answer
+			     sky    luminance of the sky term, BEFORE any quantisation
+
+			   `sky` is the one that matters. Every grid-wide counter truncates
+			   to an integer quantum, so sum_sky reads exactly 0 for a ~6x
+			   reduction just as it does for a true zero. This float separates
+			   them, and nothing else in the capture can. */
+			Com_Printf("FOGCELL dens=%+.9g gate=%+.1f in=%+.1f | skyvis=%+.9g sky=%+.9g [%08x %s] | post=%+.9g frame=%u\n",
+				pre.f, expect.f, ratio.f,
+				vol.f, post.f, post.u, cls,
+				sunlum.f, readback.dbg_frame);
 
 			/* Grid-wide deltas. n MUST be 1410835 every frame - see vertex_buffer.h. */
 			{
@@ -3753,9 +3895,60 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 				p_lt7    = readback.dbg_n_lt7;
 				const uint32_t d_pad = readback.dbg_n_pad - p_pad;
 				p_pad = readback.dbg_n_pad;
-				Com_Printf("FOGGRID n=%u zero=%u neg=%u bad=%u tiny=%u sum=%u sky=%u lit=%u restir=%u centre=%u lt7=%u pad=%u\n",
-					d_cells, d_zero, d_neg, d_bad, d_tiny, d_sum, d_sky, d_lit,
-					d_restir, d_centre, d_lt7, d_pad);
+
+				/* sliceq/slicen - the centre z slice at 1e9, and its cell count.
+				   mean is q/n in raw units of 1e-9, i.e. the average post luminance
+				   on that slice. This is the reading that says whether a frame with
+				   sum=0 has fog that is GONE or merely far dimmer than sum_q can
+				   resolve - a distinction nothing else in this capture can make. */
+				static uint32_t p_sq, p_sn;
+				const uint32_t d_sq = readback.dbg_slice_q - p_sq;
+				const uint32_t d_sn = readback.dbg_slice_n - p_sn;
+				p_sq = readback.dbg_slice_q; p_sn = readback.dbg_slice_n;
+
+				/* disp - froxel dispatches RECORDED on the cpu since the last
+				   line. tag - the frame index the shader stamped into the
+				   buffer we just read. Together they say which half of the
+				   apparatus is moving, which differencing GPU counters against
+				   each other cannot:
+
+				     disp=1 tag advancing   - everything is working; a zero
+				       counter really means the shader computed zero.
+				     disp=1 tag FROZEN      - the pass is being recorded every
+				       frame but nothing it writes is reaching the readback.
+				       Every counter reads 0 for the same reason, and none of
+				       them is evidence about the fog.
+				     disp=0                 - the pass was gated off, so the
+				       fog is missing because it was never computed.
+
+				   fc/fi are qvk.frame_counter and current_frame_index, to pair
+				   the copy with the read: the staging buffer sampled here was
+				   filled MAX_FRAMES_IN_FLIGHT frames ago, so a tag that lags by
+				   exactly that much is correct and not a freeze. */
+				static uint32_t p_disp;
+				const uint32_t d_disp = vkpt_froxel_dispatch_count - p_disp;
+				p_disp = vkpt_froxel_dispatch_count;
+
+				/* Every magnitude is printed beside the COUNT of cells that fed
+				   it, which is what makes a q of 0 readable at all:
+				     c == 0  the quantity is genuinely zero
+				     c == n  it is positive everywhere but under the sum's
+				             quantum, i.e. dimmed rather than switched off
+				   scat and int are the two INDEPENDENT collapse detectors - the
+				   scatter pass's own post total, and the integrate pass reading
+				   the finished volume back out. They should agree; if they ever
+				   disagree the fault is between the two passes, not in either. */
+				Com_Printf("FOGGRID n=%-9u pad=%-9u | first=%-9u op=%-10u after_op=%-9u | branch=%-9u after_br=%-9u last=%-9u | int=%-10u | tag=%u\n",
+					/* Argument count is checked against the format: 10 specifiers, 10 values.
+					   An earlier version of this line printed five unconditional counters
+					   through four slots, which silently shifted every argument after them -
+					   the integrate cross-check ended up in the tag column and looked broken
+					   when it was fine. Keep these aligned. */
+					d_cells, d_pad,
+					d_zero, d_centre, d_sq,
+					d_lt7, d_sn, d_sum,
+					d_neg,
+					readback.dbg_frame);
 			}
 		}
 
@@ -4147,6 +4340,57 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 				dV = max(dV, fabsf(pV[k] - pVp[k]));
 				dP = max(dP, fabsf(pP[k] - pPp[k]));
 			}
+			/* env/sunonly - THE TWO INPUTS TO fog_sun_is_the_sky().
+
+			   fog_sky_inscatter() returns EXACTLY vec3(0) when both are set
+			   (fog_medium.glsl:1038), which takes the whole sky term out of the
+			   fog in one frame and leaves the scatter volume to drain through its
+			   own history feedback - an instant source cut seen as a gradual fade.
+
+			   Worth printing on THIS map in particular: xswamp is listed in
+			   sky_procedural_maps, so it starts on the dynamic sky, but its own
+			   cfg notes that the drop pod's target_sky re-issues CS_SKY* and puts
+			   the map's skybox back. If environment_type is moving between
+			   DYNAMIC and STATIC while the player stands still, that alone flips
+			   the fog's sky term on and off, and no shader is misbehaving. */
+			/* EVERY REMAINING FACTOR IN THE FOG'S SKY TERM.
+
+			   sky_term = sky_radiance * FOG_SKY_SOLID_ANGLE * pt_fog_sky_scale
+			              * sky_vis * FOG_ISOTROPIC_PHASE     (fog_medium.glsl:1061)
+
+			   The grid-wide sum of sky_vis has been measured across a collapse
+			   and moves by 0.31%, while the sky term itself goes to EXACTLY
+			   zero - so the ray query is not what is failing and one of the
+			   scalars below has to be going to zero with it. env=1
+			   (ENVIRONMENT_STATIC) selects fog_sky_r/g/b as sky_radiance, and
+			   those come from avg_envmap_color, which is recomputed every time
+			   the sky is registered - and this map's drop pod re-issues CS_SKY*
+			   through a target_sky. isolate is here because
+			   pt_fog_isolate == 2 zeroes sky_term outright at :1076. */
+			Com_Printf("FOGENV env=%d sunonly=%.3f sky_rgb=%.6f %.6f %.6f "
+			           "skyscale=%.4f envscale=%.4f isolate=%.1f fade=%.4f "
+			           "volscale=%.6f ratio=%.6f\n",
+				(int)ubo->environment_type, ubo->pt_fog_sky_sun_only,
+				ubo->fog_sky_r, ubo->fog_sky_g, ubo->fog_sky_b,
+				ubo->pt_fog_sky_scale, ubo->pt_env_scale,
+				ubo->pt_fog_isolate, ubo->fog_sky_fade,
+				/* THE TWO FACTORS THE SKY TERM IS MULTIPLIED BY.
+
+				       inscatter += vol_inscatter * pt_fog_vol_scale * 0.005
+				                  * fog_vol_density_ratio;
+
+				   dbg_sum_sky - the sum of luminance(vol_inscatter) taken
+				   immediately before this line - is bit-identical on collapsed
+				   and healthy frames (5681844 either way), while post
+				   afterwards falls below 1e-8 everywhere. vol_inscatter is
+				   therefore right and the multiplier is not, and both of its
+				   factors are written here on the CPU rather than computed on
+				   the GPU. fog_vol_density_ratio in particular is
+				   cl_volumetric_fog_density / cl_fog_scale out of
+				   CL_GetMapFog, and this map's cfg sets that cvar to the
+				   mangled literal "2pt.0". */
+				ubo->pt_fog_vol_scale, ubo->fog_vol_density_ratio);
+
 			Com_Printf("FOGLOG cluster=%d org=%.4f %.4f %.4f dV=%.8f dP=%.8f enable=%d mode=%d\n",
 				ubo->fog_camera_cluster, fd->vieworg[0], fd->vieworg[1], fd->vieworg[2],
 				dV, dP, ubo->fog_enable, ubo->fog_mode);
@@ -4663,7 +4907,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	VkPipelineStageFlags wait_stages[VKPT_MAX_GPUS];
 	uint32_t device_indices[VKPT_MAX_GPUS];
 	uint32_t all_device_mask = (1 << qvk.device_count) - 1;
-	bool* prev_trace_signaled = &qvk.semaphores[(qvk.current_frame_index - 1) % MAX_FRAMES_IN_FLIGHT][0].trace_signaled;
+	bool* prev_trace_signaled = &qvk.semaphores[PREV_FRAME_INDEX(qvk.current_frame_index)][0].trace_signaled;
 	bool* curr_trace_signaled = &qvk.semaphores[qvk.current_frame_index][0].trace_signaled;
 
 	{
@@ -4832,7 +5076,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			device_indices[gpu] = gpu;
 			transfer_semaphores[gpu] = qvk.semaphores[qvk.current_frame_index][gpu].transfer_finished;
 			trace_semaphores[gpu] = qvk.semaphores[qvk.current_frame_index][gpu].trace_finished;
-			prev_trace_semaphores[gpu] = qvk.semaphores[(qvk.current_frame_index - 1) % MAX_FRAMES_IN_FLIGHT][gpu].trace_finished;
+			prev_trace_semaphores[gpu] = qvk.semaphores[PREV_FRAME_INDEX(qvk.current_frame_index)][gpu].trace_finished;
 			wait_stages[gpu] = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		}
 
@@ -5082,8 +5326,34 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 				.size = VK_WHOLE_SIZE
 			};
 
+			/* AN ILLEGAL STAGE FLAG, AND IT IS ON THE READBACK PATH.
+
+			   This named VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+			   unconditionally. On a ray QUERY device - which is what this
+			   machine runs, and what qvk.use_ray_query selects - the ray
+			   tracing pipeline feature is not enabled and that stage is not a
+			   legal value:
+
+			     vkCmdPipelineBarrier(): srcStageMask includes
+			     VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR when the device
+			     does not have rayTracingPipeline enabled.
+
+			   A barrier with an illegal stage is undefined, which matters here
+			   more than anywhere else in the frame: this is the barrier that
+			   orders the shaders' writes to buf_readback against the copy into
+			   the staging buffer that the CPU reads. Every FOGGRID, FOGCELL and
+			   probe reading in this investigation arrives through that copy. An
+			   unordered readback returns whatever happens to be in memory, which
+			   looks exactly like "the counters froze" or "the values are stale"
+			   - both of which this investigation has chased at length.
+
+			   Same rule as ACCEL_STRUCT_READ_STAGES in path_tracer.c: keep the
+			   ray tracing stage only where it is legal. */
 			vkCmdPipelineBarrier(post_cmd_buf,
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+				qvk.use_ray_query
+					? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+					: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+					                       | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR),
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
 				0, 0, NULL, 1, &readback_barrier, 0, NULL);
 
@@ -5355,6 +5625,166 @@ static void drs_process(void)
 	drs_effective_scale = drs_current_scale;
 }
 
+/*
+=================
+vkpt_report_device_lost
+
+Everything the driver will still answer once the context is dead. Called from
+every site that can see VK_ERROR_DEVICE_LOST; it prints and then exits, which
+is what the code did before, only now it says why first.
+
+Read the output back to front:
+
+  The CHECKPOINTS are the passes the queue reached. A marker reported at
+  BOTTOM_OF_PIPE has finished; one at TOP_OF_PIPE has been fetched but not
+  retired. The fault is in the pass on that boundary - usually the first
+  TOP_OF_PIPE entry. An empty list means the fault happened before any
+  profiled pass, which for this engine means the transfer submission or the
+  acceleration-structure build.
+
+  The ADDRESS RECORDS are what the memory unit was actually doing.
+  READ_INVALID / WRITE_INVALID with a plausible-looking address is a shader
+  running off the end of a buffer; EXECUTE_INVALID is a jump into unmapped
+  memory, which on this hardware usually means a corrupt shader binding table
+  or acceleration structure rather than a bad index.
+
+NOTE ON robustBufferAccess: the device already enables it, so an ordinary
+out-of-range index into a bound storage buffer is CLAMPED, not faulted. What
+robustness does NOT cover - and therefore what a fault here is most likely to
+be - is buffer-device-address arithmetic (bufferDeviceAddress is enabled),
+acceleration-structure traversal over malformed geometry, and descriptors
+that point at freed memory.
+=================
+*/
+void vkpt_report_device_lost(const char* context)
+{
+	Com_EPrintf("================= DEVICE LOST =================" "\n");
+	Com_EPrintf("Reported by: %s" "\n", context);
+
+	if (qvk.supports_checkpoints && qvkGetQueueCheckpointDataNV)
+	{
+		const struct { const char* name; VkQueue queue; } queues[] = {
+			{ "graphics", qvk.queue_graphics },
+			{ "transfer", qvk.queue_transfer },
+			{ "present",  qvk.queue_present  },
+		};
+
+		for (int q = 0; q < (int)LENGTH(queues); q++)
+		{
+			if (!queues[q].queue)
+				continue;
+
+			/* The present queue is often the graphics queue; asking twice is harmless. */
+			uint32_t count = 0;
+			qvkGetQueueCheckpointDataNV(queues[q].queue, &count, NULL);
+			if (!count)
+				continue;
+
+			VkCheckpointDataNV* data = alloca(sizeof(VkCheckpointDataNV) * count);
+			memset(data, 0, sizeof(VkCheckpointDataNV) * count);
+			for (uint32_t i = 0; i < count; i++)
+				data[i].sType = VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV;
+			qvkGetQueueCheckpointDataNV(queues[q].queue, &count, data);
+
+			Com_EPrintf("Checkpoints on the %s queue (%u):" "\n", queues[q].name, count);
+			for (uint32_t i = 0; i < count; i++)
+			{
+				const char* stage = "?";
+				if (data[i].stage & VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT) stage = "finished";
+				else if (data[i].stage & VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) stage = "IN FLIGHT";
+
+				Com_EPrintf("  %-10s %s" "\n", stage,
+					data[i].pCheckpointMarker ? (const char*)data[i].pCheckpointMarker : "(null)");
+			}
+		}
+	}
+	else
+	{
+		Com_EPrintf("No checkpoint data: VK_NV_device_diagnostic_checkpoints unavailable." "\n");
+	}
+
+	if (qvk.supports_device_fault && qvkGetDeviceFaultInfoEXT)
+	{
+		VkDeviceFaultCountsEXT counts = { .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT };
+		VkResult res = qvkGetDeviceFaultInfoEXT(qvk.device, &counts, NULL);
+
+		if (res == VK_SUCCESS || res == VK_INCOMPLETE)
+		{
+			/* The vendor binary blob is for NVIDIA's own tools and is not something we
+			   can print, so ask for none of it - a zero size is how the extension says
+			   "skip it". */
+			counts.vendorBinarySize = 0;
+
+			VkDeviceFaultInfoEXT info = { .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT };
+			if (counts.addressInfoCount)
+			{
+				info.pAddressInfos = alloca(sizeof(VkDeviceFaultAddressInfoEXT) * counts.addressInfoCount);
+				memset(info.pAddressInfos, 0, sizeof(VkDeviceFaultAddressInfoEXT) * counts.addressInfoCount);
+			}
+			if (counts.vendorInfoCount)
+			{
+				info.pVendorInfos = alloca(sizeof(VkDeviceFaultVendorInfoEXT) * counts.vendorInfoCount);
+				memset(info.pVendorInfos, 0, sizeof(VkDeviceFaultVendorInfoEXT) * counts.vendorInfoCount);
+			}
+
+			res = qvkGetDeviceFaultInfoEXT(qvk.device, &counts, &info);
+			if (res == VK_SUCCESS || res == VK_INCOMPLETE)
+			{
+				Com_EPrintf("Fault: %s" "\n", info.description);
+
+				for (uint32_t i = 0; i < counts.addressInfoCount; i++)
+				{
+					const VkDeviceFaultAddressInfoEXT* a = &info.pAddressInfos[i];
+					const char* kind;
+					switch (a->addressType)
+					{
+					case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT:           kind = "READ_INVALID"; break;
+					case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT:          kind = "WRITE_INVALID"; break;
+					case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT:        kind = "EXECUTE_INVALID"; break;
+					case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: kind = "IP_UNKNOWN"; break;
+					case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: kind = "IP_INVALID"; break;
+					case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT:   kind = "IP_FAULT"; break;
+					default:                                                      kind = "NONE"; break;
+					}
+
+					/* The address is only known to within addressPrecision, which is a power
+					   of two - the fault is somewhere in [addr & ~(p-1), that + p). */
+					Com_EPrintf("  %-15s addr 0x%016llx  +/- 0x%llx" "\n", kind,
+						(unsigned long long)a->reportedAddress,
+						(unsigned long long)a->addressPrecision);
+				}
+
+				for (uint32_t i = 0; i < counts.vendorInfoCount; i++)
+				{
+					const VkDeviceFaultVendorInfoEXT* v = &info.pVendorInfos[i];
+					Com_EPrintf("  vendor: %s (fault 0x%llx, code 0x%llx)" "\n", v->description,
+						(unsigned long long)v->vendorFaultCode,
+						(unsigned long long)v->vendorFaultData);
+				}
+
+				if (!counts.addressInfoCount && !counts.vendorInfoCount)
+					Com_EPrintf("  (the driver recorded no address or vendor records)" "\n");
+			}
+			else
+				Com_EPrintf("vkGetDeviceFaultInfoEXT failed: %s" "\n", qvk_result_to_string(res));
+		}
+		else
+			Com_EPrintf("vkGetDeviceFaultInfoEXT failed: %s" "\n", qvk_result_to_string(res));
+	}
+	else
+	{
+		Com_EPrintf("No fault info: VK_EXT_device_fault unavailable." "\n");
+	}
+
+	Com_EPrintf("===============================================" "\n");
+
+	/* Everything above went through Com_EPrintf, which reaches logs/console.log the
+	   same way the old bare "Device lost!" did - that line survived every one of
+	   these, so there is nothing here that needs flushing first. (Com_FlushLogs is
+	   the SIGHUP log-rotation hook and is #ifndef _WIN32 anyway.) */
+	exit(1);
+}
+
 void
 R_BeginFrame_RTX(void)
 {
@@ -5373,8 +5803,7 @@ R_BeginFrame_RTX(void)
 	if (res_fence == VK_ERROR_DEVICE_LOST)
 	{
 		// TODO implement a good error box or vid_restart or something
-		Com_EPrintf("Device lost!\n");
-		exit(1);
+		vkpt_report_device_lost("vkWaitForFences on the frame-sync fence");
 	}
 
 	if (!qvk.swap_chain)
@@ -5474,14 +5903,46 @@ retry:;
 
 	// Process the profiler queries - always enabled to support DRS
 	{
-		VkCommandBuffer reset_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics); 		
-		VkCommandBuffer reset_cmd_buf_transfer = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
+		/* RECORD, THEN SUBMIT. THIS USED TO SUBMIT FIRST AND RECORD AFTERWARDS.
+
+		   The original order was:
+
+		     reset_cmd_buf          = begin(graphics)
+		     reset_cmd_buf_transfer = begin(transfer)
+		     submit(reset_cmd_buf)                    <- ended and submitted here
+		     vkpt_reset_query_pool(reset_cmd_buf_transfer)
+		     vkpt_profiler_next_frame(reset_cmd_buf)  <- recorded into it AFTER
+
+		   so every command `vkpt_profiler_next_frame` emits went into a command
+		   buffer that had already been ended and submitted. That is undefined
+		   behaviour, and validation reports the cascade it causes:
+
+		     vkCmdWriteTimestamp() / vkCmdPipelineBarrier() /
+		     vkCmdBindDescriptorSets() / vkCmdSetCheckpointNV(): was called in
+		     VkCommandBuffer ... which is now in an invalid state (instead of
+		     recording)
+
+		   `vkCmdSetCheckpointNV` in that list is worth noting on its own: the
+		   checkpoints are what vkpt_report_device_lost reads to say which pass
+		   faulted, so the crash diagnostic was itself being recorded into an
+		   invalid buffer.
+
+		   The transfer command buffer is gone. It was never submitted, so the
+		   query-pool reset it carried never executed at all - which is why
+		   vkGetQueryPoolResults kept reporting "query not reset" - and
+		   vkCmdResetQueryPool is not legal there anyway: the pool must come from
+		   a family supporting graphics or compute, and this device picks a
+		   DEDICATED transfer family (see the queue selection in
+		   create_query_pool's neighbours). Doing the reset on the graphics
+		   buffer is both legal and actually runs. */
+		VkCommandBuffer reset_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+		vkpt_reset_query_pool(reset_cmd_buf);
+		_VK(vkpt_profiler_next_frame(reset_cmd_buf, qfalse));
 
 		vkpt_submit_command_buffer_simple(reset_cmd_buf, qvk.queue_graphics, true);
-		vkpt_reset_query_pool(reset_cmd_buf_transfer);
-		_VK(vkpt_profiler_next_frame(reset_cmd_buf, qfalse));	
-		
-		
+
+
 	}
 
 	vkpt_textures_destroy_unused();

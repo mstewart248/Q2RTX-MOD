@@ -88,15 +88,45 @@ create_render_pass(void)
 		.pDepthStencilAttachment = &depth_attachment_ref,
 	};
 
+	/* THIS PASS HAS NO COLOUR ATTACHMENT, AND THIS DEPENDENCY USED TO DESCRIBE ONE.
+
+	   Every mask here named COLOR_ATTACHMENT_OUTPUT and COLOR_ATTACHMENT_READ /
+	   WRITE, on a render pass whose only attachment is D32_SFLOAT depth - the
+	   original carried `srcAccessMask = 0, XXX verify` and the rest of it was
+	   never verified either. A dependency that names an access the pass never
+	   performs synchronises nothing.
+
+	   What the pass actually does first is the loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR
+	   on the depth aspect, which is a DEPTH_STENCIL_ATTACHMENT_WRITE at
+	   EARLY_FRAGMENT_TESTS, and it has to be ordered against the layout
+	   transition into the subpass - the attachment arrives in
+	   DEPTH_STENCIL_ATTACHMENT_OPTIMAL (from the IMAGE_BARRIER in
+	   vkpt_shadow_map_render) and the subpass wants
+	   DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL, so there is a real transition
+	   here. Validation states it outright:
+
+	     vkCmdBeginRenderPass(): WRITE_AFTER_WRITE hazard detected: attachment
+	     loadOp access is not synchronized with the attachment layout transition
+	     ... clears the depth aspect of attachment 0 ... The current
+	     synchronization allows COLOR_ATTACHMENT_READ|COLOR_ATTACHMENT_WRITE at
+	     COLOR_ATTACHMENT_OUTPUT, but to prevent this hazard it must allow
+	     DEPTH_STENCIL_ATTACHMENT_WRITE at EARLY_FRAGMENT_TESTS.
+
+	   The source side is the previous frame's depth write, which retires at
+	   LATE_FRAGMENT_TESTS. Both fragment-test stages are named on the
+	   destination because the depth attachment is written across both, and
+	   pairing only the early one would leave the late writes of a subsequent
+	   pass unordered against this clear. */
 	VkSubpassDependency dependencies[] = {
 		{
 			.srcSubpass    = VK_SUBPASS_EXTERNAL,
 			.dstSubpass    = 0, /* index for own subpass */
-			.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			.srcAccessMask = 0, /* XXX verify */
-			.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
-			               | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			.srcStageMask  = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			.dstStageMask  = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+			               | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+			               | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 		},
 	};
 

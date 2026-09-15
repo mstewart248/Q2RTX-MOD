@@ -1948,10 +1948,34 @@ vkpt_textures_end_registration()
 		}
 		else
 		{
+			/* THE LAST MIP IS A BLIT DESTINATION, NOT A BLIT SOURCE.
+
+			   Every level the loop above finished with was transitioned out of
+			   TRANSFER_SRC_OPTIMAL after being READ as the source of the next
+			   blit, and TRANSFER_READ is the right source access for those. The
+			   bottom level is the one the loop never reads: it is written by the
+			   final vkCmdBlitImage and left in TRANSFER_DST_OPTIMAL, which the
+			   oldLayout here already says.
+
+			   Naming TRANSFER_READ meant this layout transition was not ordered
+			   against the write that produced the contents it transitions, and
+			   validation reported exactly that:
+
+			     vkCmdPipelineBarrier(): WRITE_AFTER_WRITE hazard detected ...
+			     performs image layout transition ... previously written by
+			     vkCmdBlitImage ... prior write (VK_ACCESS_2_TRANSFER_WRITE_BIT)
+			     at VK_PIPELINE_STAGE_2_BLIT_BIT.
+
+			   A layout transition is itself a write, so the hazard is real: the
+			   transition may reorganise the image while the blit's own write is
+			   still in flight, and the visible result is a corrupt bottom mip on
+			   whichever textures lose the race. ALL_COMMANDS in the stage mask
+			   does not save it - the stage mask says WHEN, the access mask says
+			   WHAT, and an access that is not named is not waited for. */
 			IMAGE_BARRIER(cmd_buf,
 				.image = tex_images[i],
 				.subresourceRange = subresource_range,
-				.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
 				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
 				.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -2564,11 +2588,23 @@ LIST_IMAGES_A_B
 
 	}
 
+	/* dstAccessMask is 0, not HOST_READ. VK_ACCESS_HOST_READ_BIT is only valid
+	   with VK_PIPELINE_STAGE_HOST_BIT, which ALL_COMMANDS (what IMAGE_BARRIER
+	   uses) does NOT include, so validation rejects the pairing:
+
+	     pImageMemoryBarriers[0].dstAccessMask (VK_ACCESS_2_HOST_READ_BIT) is
+	     not supported by stage mask (VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
+
+	   Nothing is lost by dropping it. This is the INITIAL transition of a
+	   freshly created image out of VK_IMAGE_LAYOUT_UNDEFINED, which discards
+	   contents by definition - there is no prior write for a destination access
+	   mask to make visible. The screenshot's actual host read is ordered by the
+	   fence it waits on after the copy, not by this. */
 	IMAGE_BARRIER(cmd_buf,
 		.image = qvk.screenshot_image,
 		.subresourceRange = subresource_range,
 		.srcAccessMask = 0,
-		.dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+		.dstAccessMask = 0,
 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 		);
@@ -2578,7 +2614,7 @@ LIST_IMAGES_A_B
 		.image = qvk.dump_image,
 		.subresourceRange = subresource_range,
 		.srcAccessMask = 0,
-		.dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+		.dstAccessMask = 0,   /* see the note on the screenshot image above */
 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 	);

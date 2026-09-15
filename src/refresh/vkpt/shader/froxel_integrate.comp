@@ -55,6 +55,12 @@ dependence on slice thickness entirely.
 #define GLOBAL_UBO_DESC_SET_IDX 2
 #include "global_ubo.h"
 
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "utils.glsl"
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#define VERTEX_READONLY 1
+#include "vertex_buffer.h"
+
 #include "froxel_shared.h"
 
 // 0 and 1 on this set are the shadow map and the fog TLAS (god_rays_shared.h).
@@ -191,6 +197,7 @@ void main()
 		return;
 
 	vec3 accum_inscatter = vec3(0);
+	float dbg_scat_sum = 0.0;   /* what this pass READS out of the scatter volume */
 	float transmittance = 1.0;
 
 	float near_depth = FROXEL_NEAR;
@@ -227,6 +234,7 @@ void main()
 		near_depth = far_depth;
 
 		vec3 scatter = slice.rgb;      // radiance per unit length
+		dbg_scat_sum += luminance(scatter);
 		float sigma = max(slice.a, 0.0);   // extinction per unit length
 
 		if (sigma > 1e-7)
@@ -272,4 +280,17 @@ void main()
 		else
 			imageStore(IMG_FROXEL_INTEGRATED, cell, vec4(accum_inscatter, transmittance));
 	}
+
+	/* WHERE THE FOG IS LOST (2026-09-14).  froxel_scatter is proven to run to
+	   the end of main on a collapsed frame while a suffix of its writes never
+	   lands.  These two say whether the volume THIS pass reads is empty on the
+	   same frames - one atomic per COLUMN, so ~1% of per-cell probe weight.
+	     neg - sum over the column of what load_scatter returned
+	     bad - the integrated result this column stores
+	   Both add VALUE + 1u, so a zero delta means "did not run", never
+	   "the value was zero". */
+#if FOG_DEBUG_INTEGRATE_PROBES   /* what the integrate pass reads back */
+	atomicAdd(readback.dbg_n_neg, uint(clamp(dbg_scat_sum * 1e9, 0.0, 1e5)) + 1u);
+	atomicAdd(readback.dbg_n_bad, uint(clamp(luminance(accum_inscatter) * 1e5, 0.0, 1e5)) + 1u);
+#endif
 }

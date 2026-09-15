@@ -311,28 +311,69 @@ void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, i
 				qvk.current_frame_index, (unsigned long long)(uintptr_t)tlas,
 				tlas == VK_NULL_HANDLE);
 
-		/* ONLY WRITE THE DESCRIPTOR WHEN THE HANDLE ACTUALLY CHANGES.
+		/* ALWAYS WRITE THE DESCRIPTOR. THE "ONLY WHEN THE HANDLE CHANGES" GUARD
+		   THAT USED TO BE HERE CAUSED TWO GPU CRASHES (2026-09-15).
 
-		   This is a vkUpdateDescriptorSets on god_rays.descriptor_set[idx] at
-		   RECORD time, and the comment above argues the frame fence makes that
-		   safe. Updating a descriptor set while a submitted command buffer may
-		   still be reading it is undefined behaviour, and the symptom would be
-		   exactly what is measured here: the fog's ray queries returning wrong
-		   answers for whole blocks of frames while the path tracer - which
-		   reaches the same TLAS through its OWN set - is unaffected.
+		   The guard was `static VkAccelerationStructureKHR last_written[]` plus
+		   `if (last_written[idx] != tlas)`, on the reasoning that FOGTLAS logging
+		   showed the handle stable for 1460 frames, so the write was redundant.
+		   The handle IS stable - while you stay on one map.
 
-		   FOGTLAS logging shows the handle is STABLE: two values, one per frame
-		   index, never null across 1460 frames. So this write is redundant on
-		   every frame after the first two, and skipping it removes the hazard
-		   without changing what the shader traces. If the fade survives this,
-		   the descriptor update was not the cause and the guard below can stay
-		   as a cheap correctness improvement anyway. */
-		static VkAccelerationStructureKHR last_written[MAX_FRAMES_IN_FLIGHT];
+		   A VULKAN HANDLE IS NOT AN IDENTITY. `build_tlas` (path_tracer.c) calls
+		   `destroy_accel_struct(as)` and then `qvkCreateAccelerationStructureKHR`
+		   every time the instance count stops matching, which on a map change is
+		   guaranteed. Destroying an object and immediately creating another of
+		   the same type very often returns THE SAME HANDLE VALUE - the driver is
+		   free to recycle it, and does. When that happened the guard compared
+		   equal, skipped the update, and left this descriptor set pointing at the
+		   acceleration structure that had just been freed. The fog's ray queries
+		   then traversed freed memory.
 
-		if (tlas != VK_NULL_HANDLE && last_written[qvk.current_frame_index] != tlas)
+		   That is the third of the three categories named in the note on
+		   vkpt_report_device_lost - "descriptors that point at freed memory" -
+		   and it is the one robustBufferAccess cannot help with. Both device-lost
+		   records we have land in the froxel fog path IMMEDIATELY after a map
+		   change (fogtmp/crash_20260915_0818.log, base1->base2;
+		   fogtmp/crash2_baseq2_1047.log, 35 log lines after "loading xswamp"),
+		   with IP_FAULT plus a wild READ_INVALID. This pass is the only consumer
+		   of this descriptor set that traces anything.
+
+		   Writing every frame is safe for exactly the reason given just above:
+		   the sets are per frame in flight and the frame fence guarantees the
+		   previous use of set[idx] has completed. It costs one
+		   vkUpdateDescriptorSets per frame, which is nothing next to the pass it
+		   sets up - and unlike the guard it cannot go stale, because it does not
+		   try to infer identity from a handle value at all.
+
+		   If a cheap guard is ever wanted back, compare something that actually
+		   identifies the structure - a generation counter bumped by build_tlas
+		   when it recreates - never the handle.
+
+		   PASS 0 ONLY, AND THAT IS LOAD-BEARING. This function is recorded TWICE
+		   into the SAME command buffer: pass 0 (PROFILER_GOD_RAYS) and, when
+		   reflect_refract is on, pass 1 (PROFILER_GOD_RAYS_REFLECT_REFRACT),
+		   with the froxel pass binding the same set in between. Updating a
+		   descriptor set that is already bound to a RECORDING command buffer
+		   invalidates that command buffer, and everything recorded afterwards is
+		   undefined:
+
+		     vkCmdBindDescriptorSets(): ... command buffer ... is now in an
+		     invalid state ... because the following objects bound to the command
+		     buffer were invalidated: VkDescriptorSet ... was destroyed or
+		     updated without UPDATE_AFTER_BIND
+
+		   The old handle guard hid that by accident - by pass 1 the handle
+		   matched what pass 0 had just written, so it skipped. Removing the
+		   guard without this condition made it fire on every pass 1 of every
+		   frame, which is a far worse bug than the one being fixed (measured:
+		   0 -> 100 invalidations per run).
+
+		   Pass 0 precedes every bind of this set in the command buffer, and it
+		   is recorded whenever pass 1 is - both sit under the same
+		   `if (god_rays_enabled)` in main.c - so the descriptor is still written
+		   exactly once per frame and always before use. */
+		if (pass == 0 && tlas != VK_NULL_HANDLE)
 		{
-			last_written[qvk.current_frame_index] = tlas;
-
 			VkWriteDescriptorSetAccelerationStructureKHR as_info = {
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
 				.accelerationStructureCount = 1,
@@ -387,8 +428,26 @@ the one that wrote it, which is the same argument that makes the per-frame
 descriptor sets safe.
 =================
 */
+/* HOW MANY TIMES THE SCATTER/INTEGRATE DISPATCHES HAVE BEEN RECORDED.
+
+   Incremented on the CPU, next to the vkCmdDispatch calls, and printed as a
+   delta beside the GPU counters in FOGGRID. It exists to settle a question no
+   GPU-side probe can answer about itself: whether a frame with no counter
+   movement is a frame where the pass DID NOT RUN, or one where it ran and its
+   writes did not reach the readback.
+
+   Worth having because the captured runs (fogtmp/run1-3.log) show the whole
+   ReadbackBuffer frozen - the FOGCELL frame tag reads 706 on all 732 logged
+   frames, with every float bit-identical - while FOGLOG shows the gate open
+   (enable=1 mode=3) and the camera stationary the entire time. Every reading
+   taken by differencing counters across those frames is therefore measuring
+   nothing, and this says which half of the apparatus stopped. */
+uint32_t vkpt_froxel_dispatch_count = 0;
+
 void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 {
+	vkpt_froxel_dispatch_count++;
+
 	VkDescriptorSet desc_sets[] = {
 		god_rays.descriptor_set[qvk.current_frame_index],
 		qvk.desc_set_vertex_buffer,
@@ -402,6 +461,41 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 	int pass = 0;
 	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout,
 		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &pass);
+
+	/* ORDER THIS FRAME'S HISTORY READ AFTER THE PREVIOUS FRAME'S SCATTER WRITE.
+
+	   The scatter pass samples TEX_FROXEL_HISTORY = froxel_scatter[(i+1) % 2],
+	   which is precisely the volume the ADJACENT frame writes as
+	   IMG_FROXEL_SCATTER = froxel_scatter[i]. Every barrier in this function is
+	   INTRA-frame (reservoir -> spatial -> scatter -> integrate -> filter), the
+	   submission carrying this pass waits on no semaphore, and the frame fence
+	   only proves the frame TWO back has finished. So frame N's history read and
+	   frame N-1's scatter write are unordered, and they overlap more the further
+	   the CPU runs ahead.
+
+	   That matches the evidence: everything that suppresses the fade adds
+	   synchronisation or reduces CPU run-ahead (r_maxfps, the validation layer,
+	   NSight's injection - the last at full GPU speed), while nothing in the
+	   fog's logic touches it.
+
+	   A pipeline barrier orders against ALL prior commands on the queue,
+	   including earlier submissions, so one barrier here closes it. Costs one
+	   barrier per frame - check the measured fps has not moved, because a slower
+	   frame rate suppresses the fade on its own and would fake a fix.
+
+	   pt_fog_xframe_barrier 0 disables it for A/B. */
+	if (Cvar_Get("pt_fog_xframe_barrier", "1", 0)->integer)
+	{
+		VkMemoryBarrier xframe = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+		};
+		vkCmdPipelineBarrier(command_buffer,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 1, &xframe, 0, NULL, 0, NULL);
+	}
 
 	uint32_t group_num_x = (FROXEL_GRID_X + FROXEL_GROUP_X - 1) / FROXEL_GROUP_X;
 	uint32_t group_num_y = (FROXEL_GRID_Y + FROXEL_GROUP_Y - 1) / FROXEL_GROUP_Y;

@@ -226,3 +226,35 @@ froxel_integrate.comp (which unscales on load) so the two cannot drift apart.
 #define FROXEL_STORAGE_MAX       60000.0
 
 #endif // FROXEL_SHARED_H_
+
+/* FOG_DEBUG_PROBES - the fog-fade instrumentation.
+
+   1 keeps every readback probe the investigation has added to the froxel
+   passes: the per-column start/end markers, the gate-set counters, the
+   ordered atomic chain, the centre-cell sentinels, and the runtime debug
+   view chain that keeps ~820 lines of the z-loop body alive.
+
+   0 removes all of them. Nothing wrapped by this switch takes part in the
+   fog arithmetic - every guarded statement is a write to the readback
+   buffer or a local that only feeds one - so the rendered result is the
+   same either way, and what changes is only how much the driver has to
+   compile and how many registers stay live across 128 loop iterations.
+
+   It exists because the probes are now a suspect in what they measure. The
+   collapse is a branch whose condition is true and whose body does not run
+   (froxel_scatter.comp:670-688), which is below SPIR-V, and instrumentation
+   is what has grown this shader to 1866 lines. Note the one datum already
+   against that theory: `const int debug = 0` alone, which deletes the view
+   chain, still collapsed at 452 frames. This switch tests the rest. */
+#ifndef FOG_DEBUG_PROBES
+#define FOG_DEBUG_PROBES 1
+#endif
+
+/* The integrate pass keeps its own switch, defaulting ON. Its two atomics are
+   one per COLUMN with no locals carried through a loop, so they are a
+   thousandth of the weight of the scatter probes - and they read the scatter
+   VOLUME rather than the scatter shader, which makes them the collapse
+   detector to use while FOG_DEBUG_PROBES is 0. */
+#ifndef FOG_DEBUG_INTEGRATE_PROBES
+#define FOG_DEBUG_INTEGRATE_PROBES 1
+#endif

@@ -1171,6 +1171,7 @@ void ai_run(edict_t *self, float dist)
     edict_t     *tempgoal;
     edict_t     *save;
     bool        new;
+    bool        nav_steering = false;
     edict_t     *marker;
     float       d1, d2;
     trace_t     tr;
@@ -1271,17 +1272,6 @@ void ai_run(edict_t *self, float dist)
             return;
     }
 
-    // [Q2RTX] No hint path took us anywhere. If this map has a navmesh, use it
-    // to pick the next corner to head for rather than milling about at the last
-    // place we saw the player. This only STEERS the pursuit below by writing
-    // last_sighting - see Nav_MonsterPursue - and it never runs on a map that
-    // has authored hint_paths.
-    if (Nav_MonsterPursue(self)) {
-        self->monsterinfo.aiflags |= AI_LOST_SIGHT;
-        // we have a plan, so do not let the hint search fire again next frame
-        self->monsterinfo.trail_framenum = level.framenum;
-    }
-
     // coop will change to another enemy if visible
     if (coop->value) {
         // FIXME: insane guys get mad with this, which causes crashes!
@@ -1341,10 +1331,51 @@ void ai_run(edict_t *self, float dist)
         }
     }
 
+    // [Q2RTX] No hint path took us anywhere. If this map has a navmesh, use it
+    // to pick the next corner to head for rather than milling about at the last
+    // place we saw the player. This only STEERS the pursuit by writing
+    // last_sighting - see Nav_MonsterPursue - and it never runs on a map that
+    // has authored hint_paths.
+    //
+    // It has to run HERE, after the player-trail code above has picked its
+    // goal, for two reasons that both showed up as monsters grinding along
+    // walls:
+    //
+    //   - running it earlier and setting AI_LOST_SIGHT meant the `new` block
+    //     above never fired, so `new` stayed false and the course correction
+    //     at the bottom of this function - the only obstacle test in the whole
+    //     pursuit - was skipped for every navmesh waypoint ever set.
+    //   - the trail code would then overwrite last_sighting on the very next
+    //     frame, so the monster's goal alternated between a navmesh corner and
+    //     a stale breadcrumb and it just dithered on the spot.
+    {
+        vec3_t  was;
+
+        VectorCopy(self->monsterinfo.last_sighting, was);
+
+        if (Nav_MonsterPursue(self)) {
+            // the mesh owns the goal now; the trail must not take it back
+            self->monsterinfo.aiflags &= ~(AI_PURSUE_NEXT | AI_PURSUE_TEMP |
+                                           AI_PURSUIT_LAST_SEEN);
+            // we have a plan, so do not let the hint search fire again next frame
+            self->monsterinfo.trail_framenum = level.framenum;
+            nav_steering = true;
+
+            // only re-run the course correction when the aim point actually
+            // moved - it costs three traces, and a waypoint we are already
+            // walking cleanly towards does not need re-checking every frame
+            if (!VectorCompare(was, self->monsterinfo.last_sighting))
+                new = true;
+        }
+    }
+
     VectorSubtract(self->s.origin, self->monsterinfo.last_sighting, v);
     d1 = VectorLength(v);
     if (d1 <= dist) {
-        self->monsterinfo.aiflags |= AI_PURSUE_NEXT;
+        // arriving at a navmesh waypoint is the mesh's business, not the
+        // trail's; letting this set AI_PURSUE_NEXT would hand the goal back
+        if (!nav_steering)
+            self->monsterinfo.aiflags |= AI_PURSUE_NEXT;
         dist = d1;
     }
 
