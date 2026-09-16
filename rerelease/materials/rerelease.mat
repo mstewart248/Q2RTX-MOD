@@ -1031,7 +1031,8 @@ textures/dark_1/0text_40:
 textures/dark_1/0text_41:
 	texture_base materialDev/textures/dark_1/0text_41.tga
 	texture_normals materialDev/textures/dark_1/0text_41_n.tga
-
+	texture_roughness materialDev/textures/dark_1/0text_41_rough.tga
+	texture_metallic materialDev/textures/dark_1/0text_41_metallic.tga
 textures/dark_1/0text_42:
 	texture_base materialDev/textures/dark_1/0text_42.tga
 	texture_normals materialDev/textures/dark_1/0text_42_n.tga
@@ -1076,18 +1077,36 @@ textures/dark_1/0text_52:
 	texture_normals materialDev/textures/dark_1/0text_52_n.tga
 	metalness_factor 0
 
-# Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
-# so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
-# material has NO .mat entry at all: bsp_mesh.c does
+# This texture carries SURF_LIGHT in the BSP, so Q2RTX used to synthesize an emissive
+# material for it. That synthesis only happens when the material has NO .mat entry at
+# all: bsp_mesh.c does
 #     bool material_custom = !mat->source_matfile[0];
 #     synth_surface_material &= (pt_enable_surface_lights >= 2) || material_custom;
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
-# turns material_custom off and silently kills the light. A stub is only safe for a
-# texture that is not a BSP surface light.
-# textures/dark_1/0text_59:
-# 	texture_base materialDev/textures/dark_1/0text_59.tga
-# 	texture_normals materialDev/textures/dark_1/0text_59_n.tga
-# 	metalness_factor 0
+# turns material_custom off and would silently kill the light. The two extra lines below
+# ask for the same synthesis explicitly so that this entry stays neutral:
+#   synth_emissive 1   - MAT_Find calls MAT_SynthesizeEmissive itself, building the same
+#                        fake emissive image from the base texture at the same
+#                        pt_surface_lights_threshold. Without it collect_light_polys
+#                        skips the surface (no emissive image) and the light goes out.
+#   default_radiance 0 - the synthesis path in bsp_mesh.c zeroes this after synthesizing.
+#                        Matching it matters because two maps use this texture and only
+#                        one flags it as a light:
+#                          xswamp.bsp   flags 0x1 (SURF_LIGHT), radiance 25 -> bsp_radiance
+#                                       wins, emissive = 25 * pt_bsp_radiance_scale, unchanged.
+#                          badlands.bsp flags 0x0 -> falls back to default_radiance. Left at
+#                                       the 1.0 default this would light a surface that was
+#                                       never emissive; at 0 compute_emissive returns 0 and
+#                                       collect_light_polys skips it, as before.
+# metalness_factor 0 is not optional either: autodetect_material_textures only zeroes
+# metalness/specular when the material has no normal map, and this one now has one.
+textures/dark_1/0text_59:
+	texture_base materialDev/textures/dark_1/0text_59.tga
+	texture_normals materialDev/textures/dark_1/0text_59_n.tga
+	texture_emissive materialDev/textures/dark_1/0text_59_light.tga
+	emissive_factor 100
+	default_radiance 10
+	volumetric_scale 10
 
 textures/dark_1/0text_60:
 	texture_base materialDev/textures/dark_1/0text_60.tga
@@ -1102,7 +1121,6 @@ textures/dark_1/0text_61:
 textures/dark_1/0text_65:
 	texture_base materialDev/textures/dark_1/0text_65.tga
 	texture_normals materialDev/textures/dark_1/0text_65_n.tga
-	metalness_factor 0
 
 textures/dark_1/0text_66:
 	texture_base materialDev/textures/dark_1/0text_66.tga
@@ -1167,7 +1185,7 @@ textures/dark_1/0text_97:
 textures/dark_1/0text_98:
 	texture_base materialDev/textures/dark_1/0text_98.tga
 	texture_normals materialDev/textures/dark_1/0text_98_n.tga
-	metalness_factor 0
+	metalness_factor 1
 
 textures/dark_1/0text_99:
 	texture_base materialDev/textures/dark_1/0text_99.tga

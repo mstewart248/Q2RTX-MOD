@@ -188,13 +188,33 @@ vkpt_uniform_buffer_copy_from_staging(VkCommandBuffer command_buffer)
 	   ITS OWN and fake a fix. Check the logged frame count stays ~730.
 
 	   pt_fog_ubo_war 0 disables it for A/B. */
+	/* THE FRAGMENT STAGE BELONGS IN THIS MASK AND WAS MISSING.
+
+	   "the shader stages that read the UBO" was taken to mean compute (plus ray
+	   tracing where legal). It is not the whole set: `final_blit_lanczos.frag`
+	   includes global_ubo.h and reads device_uniform_buffer from a FRAGMENT
+	   shader. It is also the LAST pass of the frame, which makes it the reader
+	   most likely to still be in flight when the next frame's copy is submitted
+	   - exactly the overlap that running the GPU flat out maximises.
+
+	   With only COMPUTE named, that read was never ordered against the
+	   following frame's TRANSFER_WRITE, so the write-after-read this barrier
+	   exists to prevent was still wide open for one reader - and the one with
+	   the worst timing.
+
+	   Still not ALL_COMMANDS: the added stage is the one shader stage that
+	   demonstrably reads this buffer, so the barrier stays cheap. The warning
+	   above stands and must be honoured when reading any result from this -
+	   CHECK THE ACHIEVED FRAME RATE. A change that fixes the fade by slowing
+	   the card down has not fixed anything. */
 	if (Cvar_Get("pt_fog_ubo_war", "1", 0)->integer)
 	{
 		vkCmdPipelineBarrier(command_buffer,
-			qvk.use_ray_query
+			(qvk.use_ray_query
 				? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
 				: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-				                       | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR),
+				                       | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR))
+			| VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			0, 0, NULL, 0, NULL, 0, NULL);
 	}

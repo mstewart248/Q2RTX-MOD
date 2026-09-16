@@ -950,6 +950,7 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 		qvkCreateAccelerationStructureKHR(qvk.device, &createInfo, NULL, &as->accel);
 
 		if (destroyed != VK_NULL_HANDLE && Cvar_Get("pt_fog_log", "0", 0)->integer)
+			if (Cvar_Get("pt_fog_log", "0", 0)->integer == 1)
 			Com_Printf("TLASREUSE destroyed=%llu created=%llu same=%d instances=%u\n",
 				(unsigned long long)(uintptr_t)destroyed,
 				(unsigned long long)(uintptr_t)as->accel,

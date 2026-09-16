@@ -3865,6 +3865,7 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 			   to an integer quantum, so sum_sky reads exactly 0 for a ~6x
 			   reduction just as it does for a true zero. This float separates
 			   them, and nothing else in the capture can. */
+			if (Cvar_Get("pt_fog_log", "0", 0)->integer == 1)
 			Com_Printf("FOGCELL dens=%+.9g gate=%+.1f in=%+.1f | skyvis=%+.9g sky=%+.9g [%08x %s] | post=%+.9g frame=%u\n",
 				pre.f, expect.f, ratio.f,
 				vol.f, post.f, post.u, cls,
@@ -3938,6 +3939,69 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 				   scatter pass's own post total, and the integrate pass reading
 				   the finished volume back out. They should agree; if they ever
 				   disagree the fault is between the two passes, not in either. */
+				/* pt_fog_log 2 - QUIET MODE. THE INSTRUMENT WAS SUPPRESSING THE BUG.
+
+				   `pt_fog_log 1` emits FOGGRID, FOGCELL, FOGLOG and FOGENV every
+				   frame. At 200 fps that is close to a thousand Com_Printf calls
+				   a second, each formatting and writing through the log file, and
+				   it costs enough CPU time to stop the GPU being driven flat out.
+				   Since the fade is measured to happen ONLY when the card runs
+				   flat out, turning the telemetry on turns the bug off:
+
+				     Matt, saturated, no logging      - fog fades, plainly visible
+				     Matt, same command + pt_fog_log 1 - no visible fade at all
+
+				   Every capture in this investigation was taken at level 1. So
+				   none of them recorded a session where the fog was actually
+				   fading, and the 85-88% "collapsed" the counters reported in all
+				   of them is something OTHER than the visible fade. That is the
+				   same conclusion the debug-view A/B reached from the other side,
+				   and it is why the branchop2 signature and the picture disagree.
+
+				   Level 2 classifies on the CPU every frame - the deltas above are
+				   already computed, so this is a few comparisons and no I/O - and
+				   prints only when the state CHANGES, plus one summary a second.
+				   That is roughly three orders of magnitude less output while
+				   keeping full fidelity on exactly the thing worth seeing, the
+				   transitions.
+
+				   USE LEVEL 2 FOR ANYTHING THAT NEEDS THE BUG TO BE HAPPENING.
+				   Level 1 remains for a slow, fully instrumented look where
+				   suppressing the fade does not matter. */
+				const int fog_log_level = Cvar_Get("pt_fog_log", "0", 0)->integer;
+
+				const bool full = (d_zero == d_cells && d_sq == d_cells);
+				const bool collapsed = full && d_lt7 == 0 && d_sn == 0 && d_sum == 0;
+				const bool healthy   = full && d_lt7 == d_cells && d_sn == d_cells;
+
+				if (fog_log_level >= 2)
+				{
+					static int last_state = -1;   /* -1 unknown, 0 healthy, 1 collapsed, 2 neither */
+					static unsigned last_summary_ms;
+					static uint32_t n_frames, n_collapsed;
+
+					const int state = collapsed ? 1 : (healthy ? 0 : 2);
+					n_frames++;
+					if (state == 1) n_collapsed++;
+
+					const unsigned now = Sys_Milliseconds();
+					if (state != last_state)
+					{
+						Com_Printf("FOGSTATE %-9s frame=%u n=%u int=%u\n",
+							state == 1 ? "COLLAPSED" : state == 0 ? "healthy" : "neither",
+							readback.dbg_frame, d_cells, d_neg);
+						last_state = state;
+					}
+					if (now - last_summary_ms >= 1000)
+					{
+						last_summary_ms = now;
+						Com_Printf("FOGRATE %u frames, %u collapsed (%.1f%%)\n",
+							n_frames, n_collapsed,
+							n_frames ? 100.0f * (float)n_collapsed / (float)n_frames : 0.0f);
+						n_frames = n_collapsed = 0;
+					}
+				}
+				else
 				Com_Printf("FOGGRID n=%-9u pad=%-9u | first=%-9u op=%-10u after_op=%-9u | branch=%-9u after_br=%-9u last=%-9u | int=%-10u | tag=%u\n",
 					/* Argument count is checked against the format: 10 specifiers, 10 values.
 					   An earlier version of this line printed five unconditional counters
@@ -4367,6 +4431,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			   the sky is registered - and this map's drop pod re-issues CS_SKY*
 			   through a target_sky. isolate is here because
 			   pt_fog_isolate == 2 zeroes sky_term outright at :1076. */
+			if (Cvar_Get("pt_fog_log", "0", 0)->integer == 1)
 			Com_Printf("FOGENV env=%d sunonly=%.3f sky_rgb=%.6f %.6f %.6f "
 			           "skyscale=%.4f envscale=%.4f isolate=%.1f fade=%.4f "
 			           "volscale=%.6f ratio=%.6f\n",
@@ -4391,6 +4456,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 				   mangled literal "2pt.0". */
 				ubo->pt_fog_vol_scale, ubo->fog_vol_density_ratio);
 
+			if (Cvar_Get("pt_fog_log", "0", 0)->integer == 1)
 			Com_Printf("FOGLOG cluster=%d org=%.4f %.4f %.4f dV=%.8f dP=%.8f enable=%d mode=%d\n",
 				ubo->fog_camera_cluster, fd->vieworg[0], fd->vieworg[1], fd->vieworg[2],
 				dV, dP, ubo->fog_enable, ubo->fog_mode);

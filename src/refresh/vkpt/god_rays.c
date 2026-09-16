@@ -307,6 +307,7 @@ void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, i
 		   would do - it kills the sky term and every light's shadow test at
 		   once. Print the handle per frame and correlate. */
 		if (Cvar_Get("pt_fog_log", "0", 0)->integer)
+			if (Cvar_Get("pt_fog_log", "0", 0)->integer == 1)
 			Com_Printf("FOGTLAS idx=%d handle=%llu null=%d\n",
 				qvk.current_frame_index, (unsigned long long)(uintptr_t)tlas,
 				tlas == VK_NULL_HANDLE);
@@ -486,10 +487,28 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 	   pt_fog_xframe_barrier 0 disables it for A/B. */
 	if (Cvar_Get("pt_fog_xframe_barrier", "1", 0)->integer)
 	{
+		/* BOTH DIRECTIONS. THIS USED TO BE WRITE -> READ ONLY, WHICH IS THE
+		   OPPOSITE OF THE HAZARD IT WAS WRITTEN FOR.
+
+		   The volumes alternate by frame index:
+
+		     frame N   writes froxel_scatter[N%2],     reads [(N+1)%2] as history
+		     frame N+1 writes froxel_scatter[(N+1)%2], reads [N%2]     as history
+
+		   so frame N+1 WRITES the volume frame N is still READING. That is a
+		   WRITE-AFTER-READ, and ordering it needs src = SHADER_READ,
+		   dst = SHADER_WRITE. The original named src = SHADER_WRITE,
+		   dst = SHADER_READ - a read-after-write - which is a real dependency
+		   but not this one, and it is why turning the cvar on and off measured
+		   nothing.
+
+		   Naming all four combinations costs nothing here (one barrier per
+		   frame, no cache flush implied for the WAR half) and covers RAW, WAR
+		   and WAW between adjacent frames' froxel work. */
 		VkMemoryBarrier xframe = {
 			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-			.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+			.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
 		};
 		vkCmdPipelineBarrier(command_buffer,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
