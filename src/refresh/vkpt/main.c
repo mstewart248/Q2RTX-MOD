@@ -5261,6 +5261,51 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		END_PERF_MARKER(trace_cmd_buf, PROFILER_BVH_UPDATE);
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_SHADOW_MAP);
+
+		/* ORDER THE PREVIOUS FRAME'S READS OF THE SHADOW MAP BEFORE THIS FRAME
+		   REDRAWS IT.  pt_fog_smap_war, 1 = on.
+
+		   THERE IS ONE SHADOW MAP.  shadow_map.c declares `static VkImage
+		   img_smap;` - a single image, not one per frame in flight - and
+		   god_rays.c writes that same view into BOTH froxel descriptor sets.
+		   Every frame's froxel scatter pass samples it, and every frame's
+		   shadow pass redraws it as a DEPTH ATTACHMENT.
+
+		   The frame fence only proves the frame MAX_FRAMES_IN_FLIGHT (2) back
+		   has finished, so frame N's froxel READ and frame N+1's shadow WRITE
+		   are unordered, and they overlap more the harder the GPU is driven.
+		   That is a write-after-read hazard, and its shape matches the fade
+		   exactly: a froxel that samples a half-redrawn shadow map reads as
+		   OCCLUDED, its sun term goes to zero, and on a physical-sky map the
+		   sun term IS the fog's sky light - fog_sky_inscatter returns vec3(0)
+		   outright when fog_sun_is_the_sky().
+
+		   pt_fog_xframe_barrier does NOT cover this. It is COMPUTE -> COMPUTE,
+		   and a depth-attachment write is neither, so it cannot order these two
+		   however wide its access masks are.
+
+		   WAR needs only an execution dependency - no cache flush - so the
+		   access masks are zero and the stage masks do the work. Source is the
+		   stages that SAMPLE the map (compute, plus ray tracing where the
+		   pipeline path is in use); destination is the depth output that
+		   rewrites it.
+
+		   CHECK THE ACHIEVED FRAME RATE when reading any result from this. A
+		   barrier that costs frame rate suppresses the fade on its own, because
+		   the fade only happens when the card runs flat out - so a slower run
+		   that looks fixed has not been fixed. Valid arms sit at 190-220 fps. */
+		if (Cvar_Get("pt_fog_smap_war", "1", 0)->integer)
+		{
+			vkCmdPipelineBarrier(trace_cmd_buf,
+				(qvk.use_ray_query
+					? (VkPipelineStageFlags)VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+					: (VkPipelineStageFlags)(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+					                       | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR)),
+				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+				| VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+				0, 0, NULL, 0, NULL, 0, NULL);
+		}
+
 		if (god_rays_enabled)
 		{
 			vkpt_shadow_map_render(trace_cmd_buf, shadowmap_view_proj,

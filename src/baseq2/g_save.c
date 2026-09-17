@@ -1199,6 +1199,15 @@ void ReadLevel(const char *filename)
     int     i;
     edict_t *ent;
 
+    // The navmesh that SpawnEntities just loaded is TAG_LEVEL and is about to
+    // go away with the rest of it, so forget it BEFORE the FreeTags below.
+    // Without this, nav.num_nodes stays set while nav.origins, nav.links and
+    // the A* scratch arrays dangle into freed heap - Nav_Loaded() keeps
+    // returning true and the first monster to path reads (and, via the scratch
+    // arrays, writes) memory the zone has handed back. It is reloaded further
+    // down, once level.mapname has come back off the save file.
+    Nav_Free();
+
     // free any dynamic memory allocated by loading the level
     // base state
     gi.FreeTags(TAG_LEVEL);
@@ -1228,6 +1237,12 @@ void ReadLevel(const char *filename)
 
     // load the level locals
     read_fields(&ctx, levelfields, &level);
+
+    // level.mapname is restored now, so the navmesh freed above can come back.
+    // This has to be after read_fields and before anything can path - note
+    // SV_CheckForSavegame runs 2 (load) or 100 (revisited level) game frames
+    // the moment we return, with monsters thinking in every one of them.
+    Nav_Load(level.mapname);
 
     // load all the entities
     while (1) {

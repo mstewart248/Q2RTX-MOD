@@ -187,6 +187,10 @@ void Nav_Load(const char *mapname)
 
     if (nav.num_nodes <= 0 || nav.num_links < 0 || nav.num_traversals < 0) {
         gi.dprintf("Nav: %s has nonsense counts\n", path);
+        // the counts are already stored, so clear them back out - bailing
+        // here with num_nodes > 0 and the pointers still NULL leaves
+        // Nav_Loaded() true and the next query dereferencing NULL
+        Nav_Free();
         goto done;
     }
 
@@ -198,6 +202,7 @@ void Nav_Load(const char *mapname)
     if ((size_t)len < need) {
         gi.dprintf("Nav: %s is truncated (%d bytes, need %u)\n",
                    path, len, (unsigned)need);
+        Nav_Free();     // as above - counts set, pointers still NULL
         goto done;
     }
 
