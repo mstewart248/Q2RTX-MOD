@@ -37,7 +37,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // answer. Costs MAX_LIGHT_POLYS * 16 bytes = 128 KB of the light buffer.
 #define LIGHT_POLY_VEC4S        5
 // 7th uint carries the dedicated roughness/metallic texture indices
-#define MATERIAL_UINTS          7
+/* Raised from 7 for dlss_guide_field. There are three spare bits beside
+   next_frame in data[4] (MAX_PBR_MATERIALS is 8192, so next_frame needs 13 of
+   the top 16) and the value would have fitted there, but a named word costs
+   32KB across the whole table and leaves the next per-material knob somewhere
+   obvious to go. */
+#define MATERIAL_UINTS          8
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      8192
@@ -271,6 +276,10 @@ struct MaterialInfo
 	float light_style_scale;
 	uint num_frames;
 	uint next_frame;
+	/* Which split field supplies this surface's DLSS-RR guide buffers,
+	   overriding pt_dlss_guide_field, in the cvar's own 0..3 numbering.
+	   -1 means the material said nothing - see CHECKERBOARD_FLAG_GUIDE_SET. */
+	int dlss_guide_field;
 };
 
 struct LightPolygon
@@ -521,6 +530,7 @@ get_material_info(uint material_id)
 	data[4] = light_buffer.material_table[material_index * MATERIAL_UINTS + 4];
 	data[5] = light_buffer.material_table[material_index * MATERIAL_UINTS + 5];
 	data[6] = light_buffer.material_table[material_index * MATERIAL_UINTS + 6];
+	data[7] = light_buffer.material_table[material_index * MATERIAL_UINTS + 7];
 
 	MaterialInfo minfo;
 	minfo.base_texture = data[0] & 0xffff;
@@ -537,6 +547,9 @@ get_material_info(uint material_id)
 	minfo.base_factor = unpackHalf2x16(data[5]).y;
 	minfo.num_frames = data[4] & 0xffff;
 	minfo.next_frame = (data[4] >> 16) & (MAX_PBR_MATERIALS - 1);
+	// Stored as value+1 so that zero - which is what an unregistered material's
+	// cleared table row holds - reads as "nothing stated".
+	minfo.dlss_guide_field = int(data[7] & 7) - 1;
 
 	// Apply the light style for non-camera materials.
 	// Camera materials use the same bits to store the camera ID.

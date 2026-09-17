@@ -718,13 +718,28 @@ void main()
 	   lost, or did it never really run?  These locals are written inside the
 	   block and stored AFTER the loop, at a site whose writes are known to
 	   land.  -1 means the block never assigned them. */
-#if FOG_DEBUG_PROBES   /* sentinels carried out of the z-loop */
+	/* NOT GUARDED BY FOG_DEBUG_PROBES, AND THAT IS THE FIX RATHER THAN AN
+	   OVERSIGHT. These six are passed by `inout` to froxel_cell_scatter on
+	   every call, and that call site is unconditional - so wrapping the
+	   DECLARATIONS in the switch made FOG_DEBUG_PROBES 0 fail to compile:
+
+	     froxel_scatter.comp:1196: 'dbg_last_post' : undeclared identifier
+
+	   The switch has therefore NEVER been built, in either state, despite
+	   froxel_shared.h documenting it as the way to remove the probes and
+	   despite the probes being a named suspect in what they measure. A
+	   compile-time switch nobody has compiled is not a switch.
+
+	   Leaving them declared costs nothing when the switch is off: every
+	   write to them is inside a guarded block, so they stay at -1 and the
+	   whole chain dead-code-eliminates. What the switch is for - the 1.4
+	   million atomicAdds per dispatch and the ~820 lines of readback held
+	   live across 128 loop iterations - goes away exactly as intended. */
 	float dbg_last_post = -1.0, dbg_last_vol = -1.0, dbg_last_dens = -1.0;
 	float dbg_last_gate = -1.0;  /* the BOOL the branch tests, not the value */
 	float dbg_last_in = -1.0;    /* set just INSIDE the density gate, depth 2 */
 	float dbg_last_skyvis = -1.0; /* getSkyVisibility() at the centre cell   */
 	float dbg_last_sky    = -1.0; /* luminance of the sky term there         */
-#endif
 
 	// A whole column is walked by one thread so the jitter and the history
 	// lookup can share setup, and because the integrate pass wants the same
@@ -1022,9 +1037,75 @@ void main()
 
 		   1.0 is mid-range for this map (hf_density 0.0042 plus the 0.023
 		   distance floor, times world_box). */
+		/* BISECTION, STAGE 16 (pt_fog_const_src 16): pin ONLY the point the
+		   DENSITY is evaluated at, and nothing else.
+
+		   STAGES 10 AND 11 ARE NOT CLEAN AND THEIR RESULTS MUST NOT BE READ AS
+		   WRITTEN. Both of them assign to `world_pos_history`, and that variable
+		   does DOUBLE DUTY: it is the point the medium is evaluated at, and it is
+		   also the point the temporal reprojection looks the history up with -
+
+		       if (world_to_prev_froxel_uvw(world_pos_history, uvw))
+
+		   Stage 10 pins it to ONE point, so every cell in the grid reprojects to
+		   the same history texel. Stage 11 sets it to a lattice derived from
+		   `cell` that has no relation to where the cell actually is in the
+		   frustum, so cells fetch history from arbitrary places or fail the
+		   frustum test outright. Neither arm measures the medium; both measure a
+		   deliberately broken temporal lookup, which is enough on its own to
+		   explain 10 going flat (a degenerate but CONSISTENT fetch) and 11
+		   collapsing (an incoherent one).
+
+		   This stage changes the density argument alone. `world_pos_history`
+		   keeps its real value, so the reprojection, the history blend and
+		   getFogColor are all untouched, and the ONLY thing removed is the frame
+		   dependence of where density is sampled.
+
+		     FLAT            -> the density evaluation POINT is the variable.
+		     STILL COLLAPSES -> it is not, and since stage 8 (density = 1.0) is
+		       flat, the difference between 8 and 16 is the density's VALUE rather
+		       than its position - which would mean stage 8 was flat because 1.0
+		       is ~200x the real density and saturates the medium, not because it
+		       is constant. That would be a false negative and stage 8 would have
+		       to be re-run at a representative magnitude.
+
+		   Same lattice stage 11 uses, so the density field has a comparable
+		   spread across the band rather than clamping. */
+		vec3 density_pos = (global_ubo.pt_fog_const_src == 16.0)
+		                 ? vec3(904.0, 1300.0, -825.0) + vec3(cell) * vec3(11.0, 20.0, 3.0)
+		                 : world_pos_history;
+
+		/* BISECTION, STAGE 17: stage 8, but at a REPRESENTATIVE MAGNITUDE.
+
+		   Stage 8 forces density to 1.0, which is roughly 200x what getDensity
+		   actually returns on this map, and it came back flat. Stage 16 then
+		   showed that a density which is CONSTANT PER CELL still collapses -
+		   so constancy is not what made stage 8 flat, and the remaining
+		   difference between them is the value itself. A medium 200x too thick
+		   saturates, and a proportional fade in a saturated picture does not
+		   show. That would make stage 8 a FALSE NEGATIVE.
+
+		   0.25 is derived from the measurements, not guessed. In-scatter is
+		   linear in density here (pt_fog_extinction defaults to 0), and the
+		   harness gives the two points needed to solve for it: a collapsed
+		   frame sits at mean luma 0.070 with no fog at all, stage 8 sits at
+		   0.306 with density 1.0, and a healthy control frame sits at 0.130.
+		   So the fog contributes 0.236 at density 1.0 and 0.060 in reality,
+		   and 0.060/0.236 = 0.25.
+
+		   THE CHECK IS BUILT IN: if this arm's first shot does not land near
+		   0.13, the magnitude match failed and the arm says nothing.
+
+		     FLAT            -> stage 8 was real, a constant density really
+		       does stop the fade, and stage 16 needs re-examining.
+		     STILL COLLAPSES -> stage 8 was saturation. getDensity is fully
+		       exonerated, and so is every other arm that went flat while
+		       running brighter than the control. */
 		float density = (global_ubo.pt_fog_const_src == 8.0)
 		              ? 1.0
-		              : getDensity(world_pos_history);
+		              : (global_ubo.pt_fog_const_src == 17.0)
+		                ? global_ubo.pt_fog_const_density
+		                : getDensity(density_pos);
 
 		/* RESET THE DIAGNOSTIC GLOBALS PER CELL. fog_debug_sky_term and
 		   fog_debug_sky_vis are written inside the in-scatter functions, and a
@@ -1694,6 +1775,85 @@ void main()
 					if (ref_hz > 0.0 && dt > 0.0)
 						w = clamp(min(w, pow(w, dt * ref_hz)), 0.0, 0.99);
 
+					/* HOLD A CELL THAT WAS NOT MEASURED THIS FRAME, instead of
+					   blending it toward zero - pt_fog_history_hold.
+
+					   THIS IS THE CASE THE WHOLE BLEND GETS WRONG, and it is
+					   invisible in the algebra everything in BASELINE.md has been
+					   reasoning with. `result` is initialised to vec4(0) at the top
+					   of the z-loop and is written ONLY inside `if (cell_has_density)`.
+					   The blend, however, runs OUTSIDE that gate. So on any frame the
+					   gate is shut for a cell:
+
+					       result = mix(vec4(0), history, 0.95) = 0.95 * history
+
+					   That is not an average, it is a GEOMETRIC DECAY. 0.95^n reaches
+					   0.6% in 100 frames - half a second at 216 fps - and the volume
+					   then sits at zero, which is a fade with an onset that sticks and
+					   recovers only when something weights the raw term back up. The
+					   fixed-point argument does not apply, because raw is not the
+					   measurement here: NOTHING was measured, and the shader is
+					   nonetheless asserting `there is no fog in this cell` with 5%
+					   confidence per frame on the strength of a branch it did not take.
+
+					   It is also why pt_fog_history_clamp measured nothing at any value
+					   from 0 to 8: the floor is `raw / ratio`, and when the gate is shut
+					   raw is 0, so the floor is 0 and max() is a no-op. That test was
+					   blind to precisely the mechanism it most needed to see.
+
+					   Remix has no equivalent failure because it accumulates by a
+					   per-froxel AGE rather than a constant weight: a froxel with no new
+					   sample contributes no new sample, and its stored radiance is left
+					   alone. There is no path there that multiplies a froxel's history
+					   by a constant below 1 in the absence of a measurement.
+
+					   w = 1.0 makes `result = history` exactly - the freeze the clamp
+					   above warns about, and here it is the correct behaviour rather
+					   than a bug: it applies ONLY to cells the gate shut out, and the
+					   instant the gate reopens w returns to its normal value and the
+					   cell converges as usual. Nothing is permanently frozen.
+
+					   THE COST, stated plainly: a cell whose density genuinely went to
+					   zero - the camera moved and it is now inside rock - keeps its last
+					   value instead of clearing, so stale fog can linger where it should
+					   drain. That is why this is a cvar and not yet the default. The
+					   real fix is difference 1 in BASELINE.md's Remix comparison - an
+					   age channel, which distinguishes `no measurement yet` from `no fog
+					   here` and can expire a held cell. This tests whether that is worth
+					   building, for one line and no extra storage. */
+					if (global_ubo.pt_fog_history_hold > 0.0 && !cell_has_density)
+						w = 1.0;
+
+					/* THE FLOOR UNDER THE HISTORY - pt_fog_history_clamp, see
+					   global_ubo.h for the full argument.
+
+					   The fixed-point argument this whole file leans on - that
+					   for any w < 1 the only fixed point is h == raw - is only
+					   true when the round trip is lossless. It is not, and the
+					   loss is amplified by 1/(1-w): at the measured k of ~0.9
+					   the volume settles at 35% of raw and cannot climb out,
+					   because every frame it reads back its own deficit.
+
+					   max(), not clamp(): this only stops the history sitting
+					   FAR BELOW this frame's estimate. It never pulls a cell
+					   down, so a cell whose light sample legitimately missed
+					   this frame (raw == 0, floor == 0) is left alone and the
+					   noise averaging the blend exists for is untouched.
+
+					   Alpha rides along on purpose. result.a is the extinction
+					   per unit length, and it goes through this same blend -
+					   which Remix's volumetrics never does, since its
+					   attenuationCoefficient is a constant in the constant
+					   buffer applied analytically. A decayed alpha here sends
+					   froxel_integrate down its sigma <= 1e-7 branch with
+					   transmittance pinned at 1.0, so the medium stops
+					   absorbing as well as stops glowing. */
+					float hclamp = global_ubo.pt_fog_history_clamp;
+
+					if (hclamp > 1.0)
+						history = max(history,
+						              max(result, vec4(0.0)) * (1.0 / hclamp));
+
 					result = mix(result, history, w);
 				}
 			}
@@ -1860,7 +2020,11 @@ void main()
 
 		   Why it had to come to this. pt_fog_froxel_history 0 is confirmed to fix
 		   the sky fog, so the raw per-cell estimate is right and the whole fault
-		   is in the temporal path. But snapping the history lookup to the texel
+		   is in the temporal path. That cvar now gates the FETCH as well as
+		   the mix - the block at the call site opens with it - so it really is a
+		   clean test of the temporal path. BASELINE.md's note that it "gates only
+		   the mix(), the history FETCH still runs, so it has never tested what it
+		   appeared to" described an older shape of this code and no longer holds. But snapping the history lookup to the texel
 		   centre changed nothing, which rules out the fetch coordinate, the
 		   trilinear filter and the transparent-black border. And the algebra of
 		   what is left says the bug is impossible: for any w < 1 the recurrence
@@ -1979,6 +2143,151 @@ void main()
 		       of this volume - which is where the cross-frame WAR lives: frame N
 		       reads scatter[(N+1)%2] as history while frame N+1 WRITES that same
 		       slot, with only the 2-frames-back fence between them. */
+		/* --- VIEWS 30 AND 31: IS THE FROXEL'S POSITION FRAME-DEPENDENT? ---
+
+		   The bisection has arrived at a contradiction. Measured by the picture
+		   (fogtmp/auto, single player, stationary camera, ~200 fps):
+
+		     const_src 1 (constant lighting, real density)  30.4%  FADES
+		     const_src 8 (constant lighting, density 1.0)   97.0%  FLAT
+
+		   One line apart, so the fade is getDensity. Stage 9 says it is not
+		   world_box, and stages 10 and 11 - which pin the cell position - go
+		   flat. So the variable is `p`.
+
+		   But p = froxel_cell_sample(cell).p_centre = froxel_to_world(cell,
+		   vec3(0.5)), which is a pure function of `cell`, global_ubo.invP and
+		   global_ubo.invV. The camera provably does not move - the level-
+		   normalised structural difference of a pinned-position run stays on its
+		   own noise floor for 100 s. A function of constants cannot vary.
+
+		   THESE TWO VIEWS SETTLE IT BY LOOKING, and they are unusually clean
+		   tests because NEITHER HAS ANY STOCHASTIC COMPONENT. Every other view
+		   in this shader paints a Monte Carlo estimate, so two frames of it
+		   differ by sampling noise and only a large change is legible. A
+		   position is not sampled: if `p` is constant these images are IDENTICAL
+		   frame to frame, and any difference at all is the fault.
+
+		   fract(x / 64.0) rather than a plain scale, for two reasons. It keeps
+		   the argument to fract() small enough that fp32 still has mantissa
+		   there - painting fract(x * 1000.0) at world coordinates near 900 would
+		   be evaluating fract() on ~9e5, where the ULP is already 0.06 and the
+		   result is deterministic but meaningless. And it turns the picture into
+		   64-unit STRIPES, so a shift of a few units moves them visibly rather
+		   than changing a level by less than one 8-bit step after tone mapping.
+
+		     30  the cell's own world position, striped. Compare two shots: if
+		         they differ, `p` really is frame-dependent and the fault is in
+		         froxel_to_world or in what it reads.
+		     31  the camera position taken straight out of global_ubo.invV's
+		         translation column, striped the same way. This one is FLAT
+		         ACROSS THE WHOLE SCREEN - every cell paints the same colour -
+		         so its mean luminance is a direct, noise-free readout of one UBO
+		         field. If 30 changes and 31 changes with it, the shader is
+		         reading a view matrix that differs from the one the CPU wrote,
+		         and the fault is the uniform buffer. If 30 changes while 31 does
+		         not, the matrices are fine and froxel_to_world is producing
+		         different answers from identical inputs. */
+		if (debug == 30)
+			dbg = fract(world_pos_history / 64.0) * 0.02;
+
+		if (debug == 31)
+			dbg = fract(global_ubo.invV[3].xyz / 64.0) * 0.02;
+
+		/* --- VIEWS 32 AND 33: THE MEDIUM AT A FIXED WORLD POINT ---
+
+		   WHY THESE ARE THE RIGHT PROBES NOW. The clean bisection landed here:
+
+		     const_src  1  constant lighting, real density        30.4%  FADES
+		     const_src  8  constant lighting, density = 1.0       97.0%  FLAT
+		     const_src  9  world_box forced to 1                  30.7%  FADES
+		     const_src 10  position pinned to ONE point           98.3%  FLAT
+		     const_src 11  position per-cell, frame-INdependent   44.4%  FADES
+
+		   10 against 11 is the fork stage 11 was written to resolve, and it fell
+		   the other way from what stage 10 suggested: a single constant position
+		   lets the compiler fold getDensity and getFogColor away entirely, so 10
+		   was codegen, not isolation. 11 keeps the per-cell evaluation and only
+		   removes the FRAME dependence - and it still collapses.
+
+		   THE POSITION IS THEREFORE EXONERATED, which the two probes above agree
+		   with independently: view 30's mean moves by 0.5% over 100 s and view
+		   31's by 0.25%, i.e. neither the froxel positions nor the view matrix
+		   the shader reads is drifting.
+
+		   What that leaves is stark. Under const_src 11 the cell's result is
+
+		       const * getFogColor(p') * getDensity(p')
+
+		   with p' a fixed function of `cell`. Both functions read NOTHING but
+		   their argument and global_ubo. So if the output varies, the shader is
+		   reading uniform-buffer fields that differ from the ones the CPU wrote -
+		   and FOGDIFF has already shown the CPU side is bit-constant for the
+		   whole run.
+
+		   HOW THESE MEASURE IT. Both evaluate the medium at ONE hard-coded world
+		   point, the same for every cell, so the debug volume is uniform and the
+		   screen is a FLAT FIELD. That makes them immune to the two things that
+		   blunt every other view here: there is no Monte Carlo component, and
+		   there is no per-pixel depth lookup that could sample a different froxel
+		   from one frame to the next. The mean luminance of the frame IS the
+		   value, read off directly.
+
+		   Three channels at three gains, because the magnitude is not known in
+		   advance and one scale would either clip or sit invisibly near zero:
+		   red is the coarse level, green resolves 1/64 of it, blue 1/1024. A
+		   change too small to move red will swing blue right around.
+
+		     32  getDensity at the point - the height-fog scalars, the distance
+		         fog floor, the density ceiling and the world box, all at once.
+		     33  getFogColor at the same point - the other half of the product,
+		         reading a different set of UBO fields. Read together they say
+		         whether ONE field is moving or a whole region of the buffer is. */
+		/* VIEW 34: THE DENSITY FIELD ITSELF, per cell, as a smooth ramp.
+
+		   This is the payoff view. The brightness-matched control settles it
+		   that getDensity is what varies:
+
+		     control          first shot luma 0.1295   falls to 54%
+		     const density    first shot luma 0.1379   FLAT, 100.0-100.9%
+		       (pt_fog_const_src 17, pt_fog_const_density 0.007 - within 6% of
+		        the control's brightness, so saturation cannot be hiding a fade)
+
+		   and the probes say the inputs are all steady: view 30's mean moves
+		   0.5% over 100 s, view 31's 0.25%, view 32 (getDensity at ONE fixed
+		   world point) 2%. A pure function of steady inputs that is not
+		   steady has to be varying somewhere view 32 does not look - so look
+		   everywhere instead of at one point.
+
+		   A SMOOTH ramp rather than fract() stripes on purpose. Stripes make
+		   the view hypersensitive to the per-pixel depth lookup picking a
+		   neighbouring froxel, which is what made view 30's raw pixel diff
+		   unreadable (1-6% of pixels differing by up to 181 while its MEAN
+		   barely moved). getDensity is smooth in space, so a ramp changes
+		   negligibly under that jitter and any real change stands out.
+
+		   Gain 32 puts the map's ~0.007-0.03 range across the visible span.
+		   Compare a healthy shot against a collapsed one: whatever region of
+		   the density field goes dark is the bug, located. */
+		if (debug == 34)
+			dbg = vec3(clamp(getDensity(world_pos_history) * 32.0, 0.0, 1.0)) * 0.02;
+
+		if (debug == 32 || debug == 33)
+		{
+			/* Inside the map's fog band on xswamp (hf_end_z -825, hf_start_z
+			   -438), so the band arithmetic runs rather than taking an early
+			   return - the same point stage 11 builds from. */
+			const vec3 probe_p = vec3(904.0, 1300.0, -700.0);
+
+			float v = (debug == 32)
+			        ? getDensity(probe_p)
+			        : luminance(getFogColor(probe_p));
+
+			dbg = vec3(clamp(v * 8.0, 0.0, 1.0),
+			           fract(v * 64.0),
+			           fract(v * 1024.0)) * 0.02;
+		}
+
 		vec4 store_val = (global_ubo.pt_fog_const_src == 3.0) ? result_preblend : result;
 
 		imageStore(IMG_FROXEL_SCATTER, cell,

@@ -195,6 +195,8 @@ static void MAT_Reset(pbr_material_t * mat)
 	mat->emissive_threshold = cvar_pt_surface_lights_threshold->integer;
 	// negative means "not stated", so the class default in vertex_buffer.c wins
 	mat->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+	// negative means "not stated", so pt_dlss_guide_field decides
+	mat->dlss_guide_field = -1;
 }
 
 //
@@ -337,6 +339,7 @@ enum AttributeIndex
 	MAT_TEXTURE_METALLIC,
 	MAT_VOLUMETRIC_SCALE,
 	MAT_CURVED_WATER,
+	MAT_DLSS_GUIDE_FIELD,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -366,6 +369,7 @@ static struct MaterialAttribute {
 	{MAT_TEXTURE_METALLIC, "texture_metallic", ATTR_STRING},
 	{MAT_VOLUMETRIC_SCALE, "volumetric_scale", ATTR_FLOAT},
 	{MAT_CURVED_WATER, "curved_water", ATTR_BOOL},
+	{MAT_DLSS_GUIDE_FIELD, "dlss_guide_field", ATTR_INT},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -493,6 +497,22 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case MAT_CURVED_WATER:
 		mat->flags = bvalue == true ? mat->flags | MATERIAL_FLAG_CURVED_WATER : mat->flags & ~(MATERIAL_FLAG_CURVED_WATER);
 		if (reload_flags) *reload_flags |= RELOAD_MAP;
+		break;
+	// Overrides pt_dlss_guide_field for surfaces using this material. Only
+	// consulted where the renderer splits a pixel into a reflection and a
+	// refraction field - glass, water, slime, chrome - and ignored everywhere
+	// else. Same numbering as the cvar, so whichever value looked right in the
+	// console is the value to write here.
+	case MAT_DLSS_GUIDE_FIELD:
+		if (ivalue < 0 || ivalue > 3)
+		{
+			if (sourceFile)
+				Com_EPrintf("%s:%d: dlss_guide_field must be 0..3, got %d\n", sourceFile, lineno, ivalue);
+			else
+				Com_EPrintf("dlss_guide_field must be 0..3, got %d\n", ivalue);
+			return Q_ERR_FAILURE;
+		}
+		mat->dlss_guide_field = ivalue;
 		break;
 	case MAT_BASE_FACTOR:
 		mat->base_factor = fvalue;
@@ -793,6 +813,10 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		if (mat->volumetric_scale >= 0.f)
 			FS_FPrintf(file, "\tvolumetric_scale %f\n", mat->volumetric_scale);
 
+		// likewise only written when stated - the default is "let the cvar decide"
+		if (mat->dlss_guide_field >= 0)
+			FS_FPrintf(file, "\tdlss_guide_field %d\n", mat->dlss_guide_field);
+
 		if (mat->synth_emissive)
 			FS_FPrintf(file, "\tsynth_emissive 1\n");
 
@@ -1089,6 +1113,7 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	INHERIT(MAT_DEFAULT_RADIANCE, default_radiance);
 	INHERIT(MAT_EMISSIVE_THRESHOLD, emissive_threshold);
 	INHERIT(MAT_VOLUMETRIC_SCALE, volumetric_scale);
+	INHERIT(MAT_DLSS_GUIDE_FIELD, dlss_guide_field);
 
 #undef INHERIT
 
@@ -1372,6 +1397,10 @@ void MAT_Print(pbr_material_t const * mat)
 		Com_Printf("    volumetric_scale %f\n", mat->volumetric_scale);
 	else
 		Com_Printf("    volumetric_scale (class default)\n");
+	if (mat->dlss_guide_field >= 0)
+		Com_Printf("    dlss_guide_field %d\n", mat->dlss_guide_field);
+	else
+		Com_Printf("    dlss_guide_field (pt_dlss_guide_field)\n");
 }
 
 // Swap one of a live material's textures for the one the definition now names.
@@ -1441,6 +1470,7 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->num_frames         = matdef->num_frames;
 	mat->synth_emissive     = matdef->synth_emissive;
 	mat->volumetric_scale   = matdef->volumetric_scale;
+	mat->dlss_guide_field   = matdef->dlss_guide_field;
 	// what the definition states ITSELF, which is what the auto-detection and
 	// the inheritance below are gated on
 	mat->specified_fields   = matdef->specified_fields;

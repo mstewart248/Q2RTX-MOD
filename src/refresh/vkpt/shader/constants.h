@@ -180,6 +180,29 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // Set at the bounce that folds the path, carried through every later bounce.
 #define CHECKERBOARD_FLAG_MIRRORED   64
 
+// Also not a checkerboard flag. A PER-MATERIAL override of pt_dlss_guide_field,
+// carried from reflect_refract.rgen (which is the last place the material is
+// known) to the combine pass (which is where the guide buffers are chosen).
+//
+// pt_dlss_guide_field is a single global answer to a question that is really
+// per-surface: does this pane of glass read as a MIRROR, whose reflection is
+// the thing you look at, or as a WINDOW, which you look through? Mode 3 answers
+// "mirror" for all glass, which is right for most of it and wrong for a clear
+// window - RR is then told the pixel is the reflected surface while the colour
+// is mostly the room behind, and it filters the view through the glass into
+// mush. Nothing downstream can tell the two apart, so the material says which.
+//
+// GUIDE_SET means the material stated a value; the two bits above it hold it,
+// using the same 0..3 numbering as the cvar so both feed one branch.
+#define CHECKERBOARD_FLAG_GUIDE_SET   128
+#define CHECKERBOARD_FLAG_GUIDE_SHIFT 8
+#define CHECKERBOARD_FLAG_GUIDE_MASK  768   /* bits 8-9 */
+
+// The value a material stores for the above, as packed into the material table.
+// 0 means the material said nothing and pt_dlss_guide_field decides; otherwise
+// the guide field is this minus one. Three bits, so it fits beside next_frame.
+#define MATERIAL_GUIDE_FIELD_UNSET    0
+
 // pt_fullres_fields - reflection/refraction field layout. See the FIELD LAYOUT note
 // in global_ubo.h.
 #define PT_FIELDS_CHECKERBOARD    0

@@ -33,10 +33,22 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "path_tracer_rgen.h"
 #include "projection.glsl"
+#include "water_warp.glsl"
 
 Ray
 get_primary_ray(vec2 screen_pos)
 {
+	// The underwater ripple. Applied here rather than as a post-process so that
+	// it happens at native sampling rate, before any upscaler, and so that a
+	// pixel pushed past the edge of the frustum traces the world that is really
+	// there instead of a clamped screen edge - see water_warp.glsl. It is a
+	// no-op above the waterline.
+	//
+	// The derivative rays below go through this same function, so they pick up
+	// the warp's local stretch and the texture LOD and ray cone widen and
+	// narrow with it instead of staying flat.
+	screen_pos = underwater_warp(screen_pos, false);
+
 	vec3 view_dir = projection_screen_to_view(screen_pos, 1, false);
 	view_dir = normalize((global_ubo.invV * vec4(view_dir, 0)).xyz);
 
@@ -313,6 +325,12 @@ main()
 		vec2 prev_screen_pos;
 		float prev_distance;
 		projection_view_to_screen(prev_view_dir, prev_screen_pos, prev_distance, true);
+		// Back from screen position to the PIXEL that held this direction last
+		// frame. projection_view_to_screen knows nothing about the warp, and a
+		// motion vector has to be expressed in the space TAA and DLSS index with,
+		// which is pixels. Uses the PREVIOUS frame's warp, so a ripple moving
+		// under a still camera reports the motion it actually has.
+		prev_screen_pos = underwater_unwarp(prev_screen_pos, true);
 		vec2 curr_screen_pos = (global_ubo.pt_dlss_sky_mv_jitter != 0)
 			? inUV
 			: pixel_center / vec2(get_image_size());
@@ -405,7 +423,20 @@ main()
 	vec3 view_pos_curr = (global_ubo.V * vec4(pos_ws_curr, 1)).xyz;
 	projection_view_to_screen(view_pos_curr, screen_pos_curr, distance_curr, false);
 	projection_view_to_screen((global_ubo.V_prev * vec4(pos_ws_prev, 1)).xyz, screen_pos_prev, distance_prev, true);
-	
+
+	// Undo the underwater warp on BOTH endpoints before differencing them. The
+	// projection returns where a surface sits on the WARPED screen; the motion
+	// vector has to say which pixel held it, and those two differ by an offset
+	// that is itself travelling. Unwarping one end only - or neither - leaves
+	// the whole image displaced from its own history by a few pixels of moving
+	// sine, which A-SVGF and DLSS would resolve as smear across the entire
+	// frame rather than as the ripple it is.
+	//
+	// Symmetric treatment also means a static camera under a static warp
+	// cancels to exactly zero, so nothing pays for the effect while it is off.
+	screen_pos_curr = underwater_unwarp(screen_pos_curr, false);
+	screen_pos_prev = underwater_unwarp(screen_pos_prev, true);
+
 	vec3 motion;
 	motion.xy = screen_pos_prev - screen_pos_curr;
 	motion.z = distance_prev - distance_curr;

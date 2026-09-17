@@ -88,6 +88,19 @@ typedef struct pbr_material_s {
 	// that is the only per-fixture handle a Quake II map gives us.
 	// LIGHT_VOLUMETRIC_SCALE_UNSET (-1) = fall back to pt_fog_scale_emissive.
 	float volumetric_scale;
+	// Which of the two split reflection/refraction fields supplies this
+	// surface's DLSS-RR guide buffers, overriding pt_dlss_guide_field, in that
+	// cvar's own numbering: 0 refraction, 1 brighter layer, 2 reflection,
+	// 3 reflection-on-glass. -1 means the material said nothing and the cvar
+	// decides, which is every material that does not name it.
+	//
+	// It exists because the cvar answers per RENDERER what is really a question
+	// per SURFACE: whether a pane of glass reads as a mirror you look AT or a
+	// window you look THROUGH. Its default of 3 says "mirror" for all glass,
+	// which turns a clear window into mush - RR is told the pixel is the
+	// reflected surface while the colour is mostly the room behind it.
+	// See CHECKERBOARD_FLAG_GUIDE_SET in shader/constants.h.
+	int dlss_guide_field;
 } pbr_material_t;
 
 extern pbr_material_t r_materials[MAX_PBR_MATERIALS];

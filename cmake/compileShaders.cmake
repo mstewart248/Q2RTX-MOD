@@ -22,7 +22,8 @@ set(SHADER_SOURCE_DEPENDENCIES
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/tone_mapping_utils.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/utils.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/vertex_buffer.h
-    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/water.glsl)
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/water.glsl
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/water_warp.glsl)
 
 if(TARGET glslangValidator)
     set(GLSLANG_COMPILER "$<TARGET_FILE:glslangValidator>")

@@ -420,17 +420,56 @@ static channel_t *AL_FindLoopingSound(int entnum, sfx_t *sfx)
     return NULL;
 }
 
+// Looping ambient sounds get one OpenAL source per emitter, so a map that fills
+// a room with copies of a single speaker gets one source per copy, each at gain
+// 1.0. xsewer1 is the pathological case: 122 of its 212 target_speakers play
+// world/amb14.wav, spaced 128-192 units apart, and SOUND_LOOPATTENUATE carries
+// each one 413 units (S_AttenuationRange), so 20-30 of them are audible at once
+// from anywhere in the level. The sample-offset sync at the bottom of this
+// function keeps copies of one sfx phase locked, which means they sum
+// COHERENTLY - 25 aligned copies is +28 dB - and that clips the device mixer
+// flat, burying gunfire, monsters and the music stream. They also consumed all
+// 32 channels, so gameplay sounds could not get a voice in the first place.
+//
+// The DMA mixer never had this problem: S_AddLoopSounds merges every emitter of
+// one sfx into a single channel and clamps the summed volume to full. Do the
+// same thing here, but keep the sound positional - give a voice to the nearest
+// few emitters and scale their shared gain so the group sums to the clamped
+// total rather than to N times it. A map with one emitter per sfx (i.e. almost
+// every other map) lands on scale 1.0 and behaves exactly as before.
+#define AL_LOOP_SOURCES_PER_SFX 4   // positional spread kept per distinct sfx
+#define AL_LOOP_CHANNEL_RESERVE 8   // voices ambience may never take from gameplay
+
+// The linear gain OpenAL will apply to a loop source at this entity, matching
+// the AL_LINEAR_DISTANCE_CLAMPED reference distance and rolloff that
+// AL_PlayChannel programs - and S_SpatializeOrigin on the DMA side.
+static float AL_LoopGain(int entnum)
+{
+    vec3_t  origin;
+    float   gain;
+
+    CL_GetEntitySoundOrigin(entnum, origin);
+    VectorSubtract(origin, listener_origin, origin);
+
+    gain = 1.0f - (VectorLength(origin) - SOUND_FULLVOLUME) * SOUND_LOOPATTENUATE;
+    return min(max(gain, 0.0f), 1.0f);
+}
+
 static void AL_AddLoopSounds(void)
 {
-    int         i;
+    int         i, j, k;
     int         sounds[MAX_EDICTS];
+    int         soundnum;
     channel_t   *ch, *ch2;
     sfx_t       *sfx;
     sfxcache_t  *sc;
     int         num;
     entity_state_t  *ent;
-    vec3_t      origin;
-    float       dist;
+    int         best_ent[AL_LOOP_SOURCES_PER_SFX];
+    float       best_gain[AL_LOOP_SOURCES_PER_SFX];
+    int         numbest;
+    float       gain, total, kept, scale;
+    int         loopchannels, maxloopchannels;
 
     if (cls.state != ca_active || sv_paused->integer || !s_ambient->integer) {
         return;
@@ -438,58 +477,108 @@ static void AL_AddLoopSounds(void)
 
     S_BuildSoundList(sounds);
 
+    loopchannels = 0;
+    maxloopchannels = max(1, s_numchannels - AL_LOOP_CHANNEL_RESERVE);
+
     for (i = 0; i < cl.frame.numEntities; i++) {
         if (!sounds[i])
             continue;
 
-        sfx = S_SfxForHandle(cl.sound_precache[sounds[i]]);
+        soundnum = sounds[i];
+
+        sfx = S_SfxForHandle(cl.sound_precache[soundnum]);
         if (!sfx)
             continue;       // bad sound effect
         sc = sfx->cache;
         if (!sc)
             continue;
 
-        num = (cl.frame.firstEntity + i) & PARSE_ENTITIES_MASK;
-        ent = &cl.entityStates[num];
+        // find every emitter of this sfx in the frame. `total` is what the
+        // group as a whole is allowed to sum to; only the loudest few of them
+        // actually get a voice.
+        numbest = 0;
+        total = 0.0f;
 
-        ch = AL_FindLoopingSound(ent->number, sfx);
-        if (ch) {
-            ch->autoframe = s_framecount;
-            ch->end = paintedtime + sc->length;
-            continue;
+        for (j = i; j < cl.frame.numEntities; j++) {
+            if (sounds[j] != soundnum)
+                continue;
+            sounds[j] = 0;      // don't check this again later
+
+            num = (cl.frame.firstEntity + j) & PARSE_ENTITIES_MASK;
+            ent = &cl.entityStates[num];
+
+            gain = AL_LoopGain(ent->number);
+            if (gain <= 0.0f)
+                continue;       // completely attenuated
+            total += gain;
+
+            // insertion sort into the loudest AL_LOOP_SOURCES_PER_SFX
+            if (numbest < AL_LOOP_SOURCES_PER_SFX)
+                numbest++;
+            else if (gain <= best_gain[numbest - 1])
+                continue;       // quieter than everything already kept
+
+            for (k = numbest - 1; k > 0 && best_gain[k - 1] < gain; k--) {
+                best_gain[k] = best_gain[k - 1];
+                best_ent[k] = best_ent[k - 1];
+            }
+            best_gain[k] = gain;
+            best_ent[k] = ent->number;
         }
 
-        // check attenuation before playing the sound
-        CL_GetEntitySoundOrigin(ent->number, origin);
-        VectorSubtract(origin, listener_origin, origin);
-        dist = VectorNormalize(origin);
-        dist = (dist - SOUND_FULLVOLUME) * SOUND_LOOPATTENUATE;
-        if(dist >= 1.f)
-            continue; // completely attenuated
-        
-        // allocate a channel
-        ch = S_PickChannel(0, 0);
-        if (!ch)
-            continue;
+        if (!numbest)
+            continue;           // not audible
 
-        ch2 = AL_FindLoopingSound(0, sfx);
+        kept = 0.0f;
+        for (k = 0; k < numbest; k++)
+            kept += best_gain[k];
 
-        ch->autosound = true;   // remove next frame
-        ch->autoframe = s_framecount;
-        ch->sfx = sfx;
-        ch->entnum = ent->number;
-        ch->master_vol = 1;
-        ch->dist_mult = SOUND_LOOPATTENUATE;
-        ch->end = paintedtime + sc->length;
+        // OpenAL multiplies AL_GAIN by the distance attenuation and the sources
+        // are phase locked, so the group sums to scale * kept. Solve for the
+        // scale that lands that on the clamped total.
+        scale = min(total, 1.0f) / kept;
 
-        AL_PlayChannel(ch);
+        for (k = 0; k < numbest; k++) {
+            ch = AL_FindLoopingSound(best_ent[k], sfx);
+            if (ch) {
+                ch->autoframe = s_framecount;
+                ch->end = paintedtime + sc->length;
+                if (ch->master_vol != scale) {
+                    ch->master_vol = scale;
+                    qalSourcef(ch->srcnum, AL_GAIN, scale);
+                }
+                loopchannels++;
+                continue;
+            }
 
-        // attempt to synchronize with existing sounds of the same type
-        if (ch2) {
-            ALint offset;
+            if (loopchannels >= maxloopchannels)
+                break;          // leave the rest of the voices for gameplay
 
-            qalGetSourcei(ch2->srcnum, AL_SAMPLE_OFFSET, &offset);
-            qalSourcei(ch->srcnum, AL_SAMPLE_OFFSET, offset);
+            // allocate a channel
+            ch = S_PickChannel(0, 0);
+            if (!ch)
+                break;
+
+            ch2 = AL_FindLoopingSound(0, sfx);
+
+            ch->autosound = true;   // remove next frame
+            ch->autoframe = s_framecount;
+            ch->sfx = sfx;
+            ch->entnum = best_ent[k];
+            ch->master_vol = scale;
+            ch->dist_mult = SOUND_LOOPATTENUATE;
+            ch->end = paintedtime + sc->length;
+
+            AL_PlayChannel(ch);
+            loopchannels++;
+
+            // attempt to synchronize with existing sounds of the same type
+            if (ch2) {
+                ALint offset;
+
+                qalGetSourcei(ch2->srcnum, AL_SAMPLE_OFFSET, &offset);
+                qalSourcei(ch->srcnum, AL_SAMPLE_OFFSET, offset);
+            }
         }
     }
 }

@@ -160,6 +160,29 @@ void main()
     float blend_color_scale = mix(global_ubo.tm_blend_scale_center, global_ubo.tm_blend_scale_border,
                                   smoothstep(0, 1, blend_factor));
 
+    // The liquid tint is not a flash. Every other blend the game sends is an
+    // EVENT - a hit, a pickup, a powerup expiring - and the centre-to-border
+    // ramp above is what makes those read as something happening at the edge of
+    // vision rather than a filter over the picture. The water tint is on for as
+    // long as you are in the water, so the same ramp stops being a flash and
+    // becomes a permanent dark ring around everything you are trying to see.
+    //
+    // These two are tm_blend_enable and the centre/border ramp, scoped to the
+    // submerged case alone, so the vignette can come off underwater and stay on
+    // everywhere else.
+    //
+    // Caveat worth knowing: the GAME sums the liquid tint and any damage flash
+    // into a single fs_blend_color before the renderer is handed it, so there is
+    // nothing here to separate. A hit taken while swimming is treated as water.
+    if(global_ubo.medium != MEDIUM_NONE)
+    {
+        if(global_ubo.tm_blend_water_enable == 0)
+            blend_color_scale = 0;
+        else
+            blend_color_scale = mix(global_ubo.tm_blend_scale_border, blend_color_scale,
+                                    clamp(global_ubo.tm_blend_water_vignette, 0, 1));
+    }
+
     input_color = mix(input_color, blend_color.rgb, blend_color.a * clamp(blend_color_scale, 0, 1));
 
     const float lum = max(luminance(input_color), exp2(min_log_luminance));

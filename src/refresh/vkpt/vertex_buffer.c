@@ -935,6 +935,13 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		mat_data[4] |= (material->next_frame & 0xffff) << 16;
 		mat_data[5] = floatToHalf(material->specular_factor);
 		mat_data[5] |= floatToHalf(material->base_factor) << 16;
+
+		// Stored as value+1, so the cleared row of an unregistered material
+		// (memset above) reads back as "the material said nothing" rather than
+		// as guide field 0. MAT_DLSS_GUIDE_FIELD has already rejected anything
+		// outside 0..3, so three bits is the whole range.
+		if (material->dlss_guide_field >= 0)
+			mat_data[7] = (uint32_t)(material->dlss_guide_field + 1) & 7;
 	}
 
 	memcpy(lbo->cluster_debug_mask, cluster_debug_mask, MAX_LIGHT_LISTS / 8);

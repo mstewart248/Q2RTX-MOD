@@ -317,6 +317,46 @@ begin effects
         toggle --status "(tm_blend_enable)" "screen blending" tm_blend_enable
         range --status "(tm_blend_scale_center)" -p -f "%.0f%%" "screen blending center strength" tm_blend_scale_center 0 1
         range --status "(tm_blend_scale_border)" -p -f "%.0f%%" "screen blending border strength" tm_blend_scale_border 0 1
+        blank
+        /* The liquid tint is the one blend that is not an EVENT. Everything else
+           the game sends - a hit, a pickup, a powerup running out - is a flash, and
+           the border ramp above is what makes those read as something happening at
+           the edge of vision. The water tint is on for as long as you are in the
+           water, so the same ramp becomes a permanent dark ring instead. */
+        toggle --status "full-screen blending while your head is under water, slime or lava. This is tm_blend_enable scoped to the submerged case alone - turn it off and the liquid tint goes away while everything on dry land is untouched (tm_blend_water_enable)" \
+            "screen blending underwater" tm_blend_water_enable
+
+        ifeq tm_blend_water_enable 1
+            range --status "how much of the centre-to-border vignette survives underwater. 0 spreads the tint evenly over the screen; 1 gives it the same dark ring every other blend gets. The game merges a damage flash into the liquid tint before the renderer sees it, so a hit taken while swimming follows this too (tm_blend_water_vignette)" \
+                -p -f "%.0f%%" "underwater vignette" tm_blend_water_vignette 0 1 0.05
+        endif
+
+    endif
+
+    /* Only under vid_rtx: the warp is a perturbation of the CAMERA RAYS in
+       primary_rays.rgen, so there is nothing for the GL renderer to do with it.
+       Nested behind its own toggle for the same reason the fog and blood menus
+       nest - with the effect off, none of these does anything. */
+    ifeq vid_rtx 1
+        blank
+        toggle --status "warp the view while you are underwater, the way the original game does. Here it bends the camera rays instead of resampling the finished frame, so it costs no sharpness through DLSS, has real geometry to bend in from off the edge of the screen, and never touches the HUD (pt_water_warp)" \
+            "underwater warp" pt_water_warp
+
+        ifeq pt_water_warp 1
+            range --status "how far the ripple pushes the view, as a fraction of SCREEN HEIGHT so it stays square on any aspect ratio. The original software renderer uses 1.5% (pt_water_warp_amp)" \
+                -p -f "%.1f%%" "warp strength" pt_water_warp_amp 0 0.03 0.001
+            range --status "how many ripples fit across the screen. Low values give a few broad swells, high values a fine chop (pt_water_warp_freq)" \
+                "warp detail" pt_water_warp_freq 0.4 6 0.2
+            range --status "how fast the ripple rolls across the view, in cycles per second. The original runs at about 0.16 - a slow lazy roll rather than a shimmer (pt_water_warp_speed)" \
+                "warp speed" pt_water_warp_speed 0 2 0.05
+            range --status "how quickly the warp eases in and out as you break the surface, per second - higher is snappier. It is eased rather than switched because turning it on in one frame moves every pixel at once, which flashes (pt_water_warp_fade)" \
+                "warp fade speed" pt_water_warp_fade 1 20 1
+            blank
+            range --status "a slow breathing zoom on top of the ripple - the FOV-wobble half of the original effect. Off by default (pt_water_warp_zoom)" \
+                -p -f "%.2f%%" "underwater zoom pulse" pt_water_warp_zoom 0 0.05 0.0025
+            range --status "how fast that zoom pulse breathes, in cycles per second (pt_water_warp_zoom_speed)" \
+                "zoom pulse speed" pt_water_warp_zoom_speed 0.05 1 0.05
+        endif
     endif
     toggle --status "(cl_disable_explosions)" "grenade explosions" cl_disable_explosions ~0
     toggle --status "(cl_disable_explosions)" "rocket explosions" cl_disable_explosions ~1

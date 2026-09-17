@@ -255,7 +255,15 @@ main()
                 {
                     float variance_scale = global_ubo.flt_taa_variance;
 
-                    if(checkerboard_flags == (CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION))
+                    // An EXACT comparison, so it is false the moment any of the
+                    // non-field flags is present - which is why glass, weapons and
+                    // mirrored paths never widened the clamp here. Left as it was,
+                    // but the per-material guide-field bits are masked out first:
+                    // they are metadata for the combine pass, and letting them land
+                    // in this test would silently change TAA behaviour on any
+                    // material that names dlss_guide_field.
+                    const int cb_guide_bits = CHECKERBOARD_FLAG_GUIDE_SET | CHECKERBOARD_FLAG_GUIDE_MASK;
+                    if((checkerboard_flags & ~cb_guide_bits) == (CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION))
                         variance_scale *= 2;
 
                     vec3 sigma = sqrt(max(vec3(0), mom2 - mom1 * mom1));

@@ -274,7 +274,12 @@ void combine_fullres_fields(ivec2 opos)
         // opposite answers here: water is mostly seen THROUGH and swims in motion.
         //   0 refraction always  1 brighter layer  2 reflection always
         //   3 reflection on GLASS only - water/slime keep the refraction
-        int guide_field = int(global_ubo.pt_dlss_guide_field);
+        // A material may answer this for itself - see CHECKERBOARD_FLAG_GUIDE_SET.
+        // The cvar is a single global answer to a per-surface question, and gets it
+        // wrong on any pane of glass that is a window rather than a mirror.
+        int guide_field = (checkerboard_flags & CHECKERBOARD_FLAG_GUIDE_SET) != 0
+            ? (checkerboard_flags & CHECKERBOARD_FLAG_GUIDE_MASK) >> CHECKERBOARD_FLAG_GUIDE_SHIFT
+            : int(global_ubo.pt_dlss_guide_field);
         bool split_was_glass = (checkerboard_flags & CHECKERBOARD_FLAG_GLASS) != 0;
         if(guide_field == 2)
             reflection_is_primary = true;

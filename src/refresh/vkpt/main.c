@@ -4388,10 +4388,26 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		if (Cvar_Get("pt_fog_log", "0", 0)->integer)
 		{
 			/* V_prev must EQUAL V at a stationary camera - it is last frame's V,
-			   copied at the top of this function. P carries the DLSS sub-pixel
-			   jitter, so dP is expected to be small but non-zero. These two numbers
-			   are what world_to_prev_froxel_uvw reprojects with, and a dV that is
-			   ever non-zero here would explain the froxel history being lost. */
+			   copied at the top of this function. dP MUST BE EXACTLY ZERO TOO, and
+			   the note that used to stand here - "P carries the DLSS sub-pixel
+			   jitter, so dP is expected to be small but non-zero" - IS WRONG. P is
+			   built from create_projection_matrix and the viewport adjustment and
+			   nothing else; sub_pixel_jitter is applied PER RAY in
+			   primary_rays.rgen and in asvgf_taau, and is never multiplied into
+			   this matrix. So a non-zero dP at a fixed camera and viewport is a
+			   fault, not the expected noise floor, and reading it as "small but
+			   expected" would hide exactly the reprojection drift this diagnostic
+			   exists to catch.
+
+			   (Remix makes the same point from the other side: its volumetrics
+			   reprojects with explicitly NON-JITTERED matrices, because it
+			   accumulates and filters the volume itself and a jittered history
+			   lookup is pure blur. Ours is already jitter-free - that lead is
+			   dead, and this comment is what was keeping it alive.)
+
+			   These two numbers are what world_to_prev_froxel_uvw reprojects
+			   with, and either being non-zero at a stationary camera would
+			   explain the froxel history being lost. */
 			/* mat4 is `float[4][4]` (shader_structs.h), so ubo->V[k] is a ROW
 			   POINTER - subtracting those gives a pointer difference, not a value
 			   one. It compiles silently and prints a constant (32, the float
@@ -4930,6 +4946,56 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	// while the game is paused, and a blend weight derived from a zero delta
 	// would freeze the volume at whatever it happened to be holding.
 	ubo->fog_frame_time = (frame_time > 0.f) ? frame_time : frame_wallclock_time;
+
+	// THE UNDERWATER SCREEN WARP - strength only; the warp itself lives in
+	// water_warp.glsl and is applied to the primary ray in primary_rays.rgen.
+	//
+	// What goes to the shader is an EASED 0..1, not the boolean `medium`. The
+	// warp displaces every pixel's sample position, so switching it on in one
+	// frame moves the entire image at once: A-SVGF would survive it, but DLSS
+	// gets a frame whose motion vectors describe a jump nothing predicted, and
+	// breaking the surface flashes. A sixth of a second of ramp instead reads as
+	// the water closing over the lens, and the _prev pair below keeps the motion
+	// vectors honest while the ramp is running.
+	//
+	// prepare_ubo has already set `medium` from the view leaf's contents plus
+	// waterLevel, which is the same condition the original games' RDF_UNDERWATER
+	// is set on - so this follows the game, not the renderer's own guess.
+	{
+		static float warp_strength = 0.f;
+		static float warp_time = -1.f;
+
+		const float prev_strength = warp_strength;
+		const float prev_time = warp_time;
+
+		// A jump in game time is a level load, a demo seek or a long hitch:
+		// there is no history to interpolate from, so snap and say so.
+		const bool continuous = (warp_time >= 0.f) && (fabsf(ubo->time - warp_time) < 1.f);
+
+		const float target = (ubo->pt_water_warp > 0.f && ubo->medium != MEDIUM_NONE) ? 1.f : 0.f;
+		const float dt = ubo->fog_frame_time;
+
+		if (continuous && ubo->pt_water_warp_fade > 0.f && dt > 0.f)
+		{
+			// Exponential ease. Written against dt rather than per frame so the
+			// ramp takes the same 1/rate seconds at 30fps and at 300.
+			warp_strength += (target - warp_strength) * (1.f - expf(-ubo->pt_water_warp_fade * dt));
+		}
+		else
+			warp_strength = target;
+
+		// Settle exactly. The shader early-outs on strength <= 0, and an
+		// asymptote that never quite reaches zero would keep every pixel paying
+		// for a pair of sines for the rest of the map.
+		if (fabsf(warp_strength - target) < 1e-3f)
+			warp_strength = target;
+
+		ubo->water_warp = warp_strength;
+		ubo->water_warp_prev = continuous ? prev_strength : warp_strength;
+		ubo->time_prev = continuous ? prev_time : ubo->time;
+
+		warp_time = ubo->time;
+	}
 
 	if (cvar_tm_blend_enable->integer)
 		Vector4Copy(fd->blend, ubo->fs_blend_color);
