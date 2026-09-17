@@ -150,16 +150,21 @@ OGG_ScanTrackList(void)
 
 	ogg_maxfileindex = 0;
 
-	const char* potMusicDirs[4] = {0};
+	const char* potMusicDirs[5] = {0};
 	char fullMusicDir[MAX_QPATH] = {0};
 	cvar_t* gameCvar = Cvar_Get("game", "", CVAR_LATCH | CVAR_SERVERINFO);
 
 	Q_snprintf(fullMusicDir, sizeof(fullMusicDir), "%s/" BASEGAME "/music/", sys_basedir->string);
 
 	potMusicDirs[0] = "music/"; // $mod/music/
-	potMusicDirs[1] = "../music/"; // global music dir (GOG)
-	potMusicDirs[2] = "../" BASEGAME "/music/"; // baseq2/music/
-	potMusicDirs[3] = fullMusicDir; // e.g. "/usr/share/games/xatrix/music"
+	// The 2023 remaster keeps its soundtrack one level down, in
+	// rerelease/baseq2/music/, so a verbatim copy of its rerelease folder
+	// has no music/ at the top at all and used to come up silent. Second in
+	// line, so an extracted rerelease/music/ still wins.
+	potMusicDirs[1] = BASEGAME "/music/"; // <gamedir>/baseq2/music/ (rerelease layout)
+	potMusicDirs[2] = "../music/"; // global music dir (GOG)
+	potMusicDirs[3] = "../" BASEGAME "/music/"; // baseq2/music/
+	potMusicDirs[4] = fullMusicDir; // e.g. "/usr/share/games/xatrix/music"
 
 	enum GameType gameType = other;
 

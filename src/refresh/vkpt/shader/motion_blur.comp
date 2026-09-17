@@ -1,0 +1,393 @@
+/*
+Copyright (C) 2025 Matt Stewart
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/* ============================================================================
+   SCREEN-SPACE MOTION BLUR, driven by the path tracer's own motion vectors.
+
+   This is the same construction RTX Remix uses in its post-effect chain
+   (rtx.postfx.enableMotionBlur and friends): a shutter is open for some
+   fraction of the frame, so every pixel gathers the colour along the path its
+   surface swept across the screen during that time. Remix's knobs map onto
+   this shader's push constants one for one -
+
+     exposureFraction                    -> strength
+     blurDiameterFraction                -> max_blur_px (computed host side)
+     motionBlurSampleCount               -> num_samples
+     motionBlurDynamicDeduction          -> dynamic_deduction
+     motionBlurJitterStrength            -> jitter
+     motionBlurMinimumVelocityThreshold  -> min_velocity_px
+
+   WHY THIS RUNS WHERE IT RUNS. The pass sits immediately after the temporal
+   resolve (TAA/TAAU, or DLSS) and before bloom and tone mapping. Three
+   reasons, in order of how much they matter:
+
+     1. The image is resolved. Blurring the raw path-traced frame would smear
+        sampling noise into streaks and hand the denoiser a moving target.
+     2. Bloom runs after, so a streaked highlight blooms along its streak,
+        which is what a real shutter does to a moving light.
+     3. The colour is still linear HDR. Averaging in display space darkens
+        every streak that crosses a bright edge; averaging in linear does not.
+
+   OCCLUSION. A gather-style blur has to decide, for each tap, whether that
+   tap's surface could actually have swept over the pixel being written. Taking
+   a plain box average does not, and it produces the two classic artifacts: a
+   fast foreground object drags a halo of background with it, and a static
+   object standing in front of a blurred one gets its silhouette eaten. The
+   weighting below is McGuire's reconstruction filter - a foreground term and a
+   background term, each gated by a soft depth comparison - which is the
+   cheapest formulation that gets both cases right.
+   ============================================================================ */
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+#include "utils.glsl"
+#include "projection.glsl"
+#include "water_warp.glsl"
+
+layout(push_constant) uniform MotionBlurPushConstants {
+	/* The region we actually write, in pixels. Not the same as the allocated
+	   size of the image: at render scales below 100% the colour image is
+	   larger than the picture inside it. */
+	ivec2 output_extent;
+	/* Allocated size of the colour image, which is what a UV is relative to. */
+	ivec2 image_extent;
+	/* Valid region of VKPT_IMG_PT_DLSS_MOTION. Equal to output_extent without
+	   DLSS; equal to the render extent with it, because motion blur then runs
+	   after the upscale while the motion field is still at render resolution. */
+	ivec2 motion_extent;
+	/* Valid region of VKPT_IMG_DLSS_DEPTH, which is always render resolution. */
+	ivec2 render_extent;
+
+	/* Shutter open time as a fraction of the frame. 0.5 means the surface
+	   sweeps half of its per-frame screen displacement while the shutter is
+	   open, and the gather spans that displacement centred on the pixel. */
+	float strength;
+	/* Hard ceiling on the gather length in pixels. Without it a teleport or a
+	   disocclusion produces a screen-long smear, and the cost is unbounded. */
+	float max_blur_px;
+	/* How much of the OBJECT-induced share of a pixel's motion is discarded.
+	   0 blurs everything by its true screen motion. 1 leaves only pixels whose
+	   motion is entirely camera-induced blurred at full length. See the note
+	   at the computation below for why this is a scale on the total rather
+	   than a substitution of the camera-only vector. */
+	float dynamic_deduction;
+	/* Per-pixel offset applied to the tap positions, in units of one tap
+	   spacing. Turns the banding a fixed tap pattern produces into noise that
+	   the eye reads as grain. */
+	float jitter;
+	/* Below this many pixels of motion the pass writes the pixel through
+	   untouched. Stops a still image from being softened by sub-pixel drift. */
+	float min_velocity_px;
+	/* Depth difference, in world units, over which the foreground/background
+	   classification fades from certain to even. */
+	float soft_z_extent;
+
+	int num_samples;
+	int frame_idx;
+	/* 0: the colour source is VKPT_IMG_TAA_OUTPUT. 1: VKPT_IMG_DLSS_OUTPUT. */
+	int dlss_target;
+} pc;
+
+/* Interleaved gradient noise (Jimenez). One dot product and a fract,
+   decorrelated across neighbouring pixels, and advancing it per frame lets the
+   temporal sequence average out on screen rather than sitting still as a
+   pattern. */
+float
+interleaved_gradient_noise(ivec2 ipos, int frame)
+{
+	vec2 p = vec2(ipos) + 5.588238 * float(frame & 63);
+	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+/* 1 where `a` is in front of `b`, 0 where it is well behind, and a linear ramp
+   between. Both arguments are positive distances, so smaller is nearer. */
+float
+soft_depth_compare(float a, float b)
+{
+	return clamp(1.0 - (a - b) / max(pc.soft_z_extent, 1e-3), 0.0, 1.0);
+}
+
+/* 1 when a surface whose blur is `len` pixels long reaches `dist` pixels away
+   from where it was sampled, falling linearly to 0 at the end of that reach. */
+float
+reach_cone(float dist, float len)
+{
+	return clamp(1.0 - dist / max(len, 1e-4), 0.0, 1.0);
+}
+
+/* Motion for one pixel of the output, in output pixels, pointing the way the
+   surface travelled: current position minus previous. The stored vector is the
+   other way round (previous minus current, in screen UV) because that is what
+   a reprojection wants, so this negates it.
+
+   Guarded for non-finite values on purpose. reflect_refract.rgen can leave an
+   unbounded motion vector on a mirror pixel, and rgba16f stores that as Inf;
+   one Inf here would turn into a NaN tap position and a black pixel. */
+vec2
+load_motion_px(vec2 uv)
+{
+	ivec2 mpos = ivec2(uv * vec2(pc.motion_extent));
+	mpos = clamp(mpos, ivec2(0), pc.motion_extent - ivec2(1));
+
+	vec2 motion_uv = texelFetch(TEX_PT_DLSS_MOTION, mpos, 0).xy;
+
+	if (any(isnan(motion_uv)) || any(isinf(motion_uv)))
+		return vec2(0);
+
+	return -motion_uv * vec2(pc.output_extent);
+}
+
+/* The depth the interleave pass left at this pixel, as stored - which is
+   view-space Z when pt_dlss_linear_z is set and the projection has a matrix at
+   all, radial distance otherwise. Either way it is a positive world-unit
+   distance that grows with range, which is all the occlusion test below needs:
+   it only ever compares two of these against each other, and the two
+   conventions differ by 1/cos(angle off the view axis) - a factor that is
+   essentially identical for two pixels a blur's width apart.
+
+   Only camera_only_motion_px, which has to rebuild an actual world position,
+   pays for the conversion. Doing it per tap instead would put a matrix
+   multiply and a normalize on every sample of every pixel to change a number
+   that is then thrown away in a comparison. */
+float
+load_stored_depth(vec2 uv)
+{
+	ivec2 rpos = ivec2(uv * vec2(pc.render_extent));
+	rpos = clamp(rpos, ivec2(0), pc.render_extent - ivec2(1));
+
+	float stored = texelFetch(TEX_DLSS_DEPTH, rpos, 0).x;
+
+	if (isnan(stored) || isinf(stored))
+		return PRIMARY_RAY_T_MAX;
+
+	/* reflect_refract.rgen negates the depth on a mirror pixel to mark it, and
+	   the magnitude is still the apparent distance of what is being shown. */
+	return abs(stored);
+}
+
+/* The same depth, turned into a true radial distance along the pixel's own ray
+   so it can be unprojected. `view_dir` must be the normalized view-space
+   direction that pixel was traced along. */
+float
+load_view_distance(vec2 uv, vec3 view_dir)
+{
+	float stored = load_stored_depth(uv);
+
+	if (global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+		return stored / max(view_dir.z, 1e-3);
+
+	return stored;
+}
+
+/* The motion this pixel would have if its surface were bolted to the world -
+   i.e. the part of its screen motion the CAMERA is responsible for. Computed
+   the same way primary_rays.rgen computes the real thing, so the two are
+   directly comparable: unproject with the current camera, carry the world
+   point to the previous camera, reproject, and unwarp both endpoints. */
+vec2
+camera_only_motion_px(vec2 uv)
+{
+	/* The ray was traced through the WARPED screen position, so that is the
+	   direction this pixel's surface actually lies along. Underwater this
+	   differs from the pixel centre by a few pixels of travelling sine; on dry
+	   land underwater_warp_offset returns zero without doing any work. */
+	vec2 uv_warped = uv + underwater_warp_offset(uv, false);
+
+	vec3 view_dir = normalize(projection_screen_to_view(uv_warped, 1.0, false));
+	float distance_curr = load_view_distance(uv, view_dir);
+
+	/* Sky and anything past the far plane has no meaningful world position and
+	   would reproject to nonsense. It also has no object motion by definition,
+	   so reporting "all of this is the camera" is both cheap and correct. */
+	if (distance_curr >= PRIMARY_RAY_T_MAX)
+		return load_motion_px(uv);
+
+	vec3 view_pos_curr = view_dir * distance_curr;
+	vec3 world_pos = (global_ubo.invV * vec4(view_pos_curr, 1)).xyz;
+	vec3 view_pos_prev = (global_ubo.V_prev * vec4(world_pos, 1)).xyz;
+
+	vec2 screen_prev;
+	float distance_prev;
+	projection_view_to_screen(view_pos_prev, screen_prev, distance_prev, true);
+
+	screen_prev = underwater_unwarp(screen_prev, true);
+
+	if (any(isnan(screen_prev)) || any(isinf(screen_prev)))
+		return vec2(0);
+
+	/* uv is already the unwarped current position: the ray went out through
+	   uv_warped, so unwarping where it landed brings us back to here. */
+	return (uv - screen_prev) * vec2(pc.output_extent);
+}
+
+vec4
+load_color(vec2 pos_px)
+{
+	/* Clamp inside the written region before converting to a UV. The image can
+	   be larger than that region, and the sampler repeats, so an unclamped tap
+	   at the edge would wrap to the opposite side of the screen. */
+	pos_px = clamp(pos_px, vec2(0.5), vec2(pc.output_extent) - vec2(0.5));
+
+	vec2 uv = pos_px / vec2(pc.image_extent);
+
+	return (pc.dlss_target != 0)
+		? textureLod(TEX_DLSS_OUTPUT, uv, 0)
+		: textureLod(TEX_TAA_OUTPUT, uv, 0);
+}
+
+void
+main()
+{
+	ivec2 ipos = ivec2(gl_GlobalInvocationID);
+
+	if (any(greaterThanEqual(ipos, pc.output_extent)))
+		return;
+
+	vec2 center_px = vec2(ipos) + vec2(0.5);
+	vec2 uv = center_px / vec2(pc.output_extent);
+
+	vec4 center_color = load_color(center_px);
+
+	/* A non-finite pixel cannot be averaged with anything without poisoning
+	   its neighbours, so it is passed through for the next pass to deal with
+	   exactly as it would have been without this one. */
+	if (any(isnan(center_color)) || any(isinf(center_color)))
+	{
+		imageStore(IMG_MOTION_BLUR, ipos, center_color);
+		return;
+	}
+
+	vec2 velocity = load_motion_px(uv);
+
+	/* DYNAMIC DEDUCTION - a scale on the true motion, never a substitution.
+
+	   The obvious implementation, blur along the camera-only vector plus a
+	   fraction of the object part, is wrong in the one place it matters most:
+	   the first-person weapon. The weapon is welded to the camera, so its
+	   screen motion is ~0 while the camera-only motion at those pixels is
+	   whatever the camera just did. Substituting would blur a weapon that did
+	   not move on screen, and blur it hardest exactly when the player flicks.
+
+	   What the knob is actually for is the opposite case - an enemy crossing a
+	   still camera - and what it wants there is less blur, not different blur.
+	   So it measures how much of the pixel's motion is object-induced and
+	   shortens the gather by that share. A pixel carried purely by the camera
+	   is untouched at any setting, and the weapon, whose total motion is
+	   already zero, stays sharp because there is nothing to scale. */
+	if (pc.dynamic_deduction > 0.0)
+	{
+		vec2 camera_velocity = camera_only_motion_px(uv);
+		vec2 object_velocity = velocity - camera_velocity;
+
+		float total_len = length(velocity);
+		float object_share = clamp(length(object_velocity) / max(total_len, 1e-4), 0.0, 1.0);
+
+		velocity *= 1.0 - object_share * pc.dynamic_deduction;
+	}
+
+	/* The shutter. `velocity` is a whole frame of travel; only the fraction the
+	   shutter was open contributes, and the gather straddles the pixel so the
+	   blur is centred on where the surface is now. */
+	velocity *= pc.strength;
+
+	float blur_len = length(velocity);
+
+	if (blur_len > pc.max_blur_px)
+	{
+		velocity *= pc.max_blur_px / blur_len;
+		blur_len = pc.max_blur_px;
+	}
+
+	if (blur_len < pc.min_velocity_px)
+	{
+		imageStore(IMG_MOTION_BLUR, ipos, center_color);
+		return;
+	}
+
+	float center_depth = load_stored_depth(uv);
+
+	int num_samples = max(pc.num_samples, 2);
+
+	/* Offset every tap by the same fraction of a tap spacing. The taps stay
+	   evenly spread - this shifts the whole comb rather than scattering it -
+	   which keeps the gather an unbiased estimate of the swept segment while
+	   breaking the ghost-images-at-fixed-spacing look of an unjittered one. */
+	float noise = interleaved_gradient_noise(ipos, pc.frame_idx);
+	float offset = (noise - 0.5) * clamp(pc.jitter, 0.0, 1.0);
+
+	/* The centre tap is the pixel itself: it is the one sample guaranteed to
+	   belong to this surface, so it anchors the result when every other tap is
+	   rejected by the occlusion test. */
+	vec3 sum = center_color.rgb;
+	float weight_sum = 1.0;
+
+	for (int i = 0; i < num_samples; i++)
+	{
+		/* t spans [-0.5, 0.5]: half the gather runs back along the path the
+		   surface came from, half runs on ahead of it. */
+		float t = (float(i) + 0.5 + offset) / float(num_samples) - 0.5;
+
+		vec2 tap_px = center_px + velocity * t;
+		vec2 tap_uv = clamp(tap_px / vec2(pc.output_extent), vec2(0.0), vec2(1.0));
+
+		/* Distance from the pixel to the tap, which is what both reach tests
+		   are measured against. */
+		float dist = abs(t) * blur_len;
+
+		float tap_depth = load_stored_depth(tap_uv);
+
+		/* Capped the same way the centre pixel's own blur was. Without this
+		   the cap bounds how far we REACH but not how far a tap is allowed to
+		   reach towards us, so a single pixel carrying a teleport-sized motion
+		   vector would still pull itself over everything nearby. */
+		float tap_len = min(length(load_motion_px(tap_uv)) * pc.strength, pc.max_blur_px);
+
+		/* Foreground: the tap's surface is nearer than ours, so it passed in
+		   front of us, and it contributes as far as its own blur reaches. */
+		float foreground = soft_depth_compare(tap_depth, center_depth) * reach_cone(dist, tap_len);
+
+		/* Background: we are nearer, so our own motion uncovers what is behind
+		   us, and it contributes as far as OUR blur reaches. */
+		float background = soft_depth_compare(center_depth, tap_depth) * reach_cone(dist, blur_len);
+
+		float weight = foreground + background;
+
+		if (weight <= 0.0)
+			continue;
+
+		vec4 tap_color = load_color(tap_px);
+
+		if (any(isnan(tap_color)) || any(isinf(tap_color)))
+			continue;
+
+		sum += tap_color.rgb * weight;
+		weight_sum += weight;
+	}
+
+	imageStore(IMG_MOTION_BLUR, ipos, vec4(sum / weight_sum, center_color.a));
+}

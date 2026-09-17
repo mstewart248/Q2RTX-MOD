@@ -1280,12 +1280,27 @@ static bool SCR_ResolveRemasteredCinematic(const char *name, char *path, size_t 
         && os_access(path, F_OK) == 0)
         return true;
 
-    // let the classic campaign use the remastered videos too
-    if (strcmp(game, REMASTER_GAME)
-        && Q_snprintf(path, size, "%s/"REMASTER_GAME"/video/%s.ogv",
-                      sys_basedir->string, base) < size
+    // The remaster keeps them one level down, in rerelease/baseq2/video/, next
+    // to its pak0.pak. Someone who copies their rerelease folder across
+    // verbatim - which is what the readme tells them to do - has no video/ at
+    // the top at all, and every cutscene silently fell back to the 1997 .cin.
+    if (Q_snprintf(path, size, "%s/%s/"BASEGAME"/video/%s.ogv",
+                   sys_basedir->string, game, base) < size
         && os_access(path, F_OK) == 0)
         return true;
+
+    // let the classic campaign use the remastered videos too
+    if (strcmp(game, REMASTER_GAME)) {
+        if (Q_snprintf(path, size, "%s/"REMASTER_GAME"/video/%s.ogv",
+                       sys_basedir->string, base) < size
+            && os_access(path, F_OK) == 0)
+            return true;
+
+        if (Q_snprintf(path, size, "%s/"REMASTER_GAME"/"BASEGAME"/video/%s.ogv",
+                       sys_basedir->string, base) < size
+            && os_access(path, F_OK) == 0)
+            return true;
+    }
 
     return false;
 }

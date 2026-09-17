@@ -255,6 +255,11 @@ void froxel_cell_scatter(
 	float density, vec3 world_pos, vec3 world_pos_history,
 	vec3 sun_color, bool fog_lights, float r1,
 	FroxelCellSample fs,
+	/* THE SKY HALF, ALREADY EVALUATED BY main IN WAVE-UNIFORM CONTROL FLOW.
+	   See the hoist comment at the call site. The nest below must not CALL
+	   fog_sky_inscatter - that is the construct that fails under load - it
+	   may only consume the value. */
+	vec3 sky_term,
 	inout vec4 result, inout vec4 result_preblend,
 	inout float dbg_in_gate,
 	inout float dbg_last_post, inout float dbg_last_vol,
@@ -409,7 +414,10 @@ void froxel_cell_scatter(
 #if FOG_DEBUG_PROBES   /* restir-path marker */
 				atomicAdd(readback.dbg_n_restir, 1u);
 #endif
-				vol_inscatter = fog_sky_inscatter(world_pos_history);
+				/* WAS: vol_inscatter = fog_sky_inscatter(world_pos_history);
+				   Hoisted to main - this is the call that measured 5% executed
+				   while its three guards measured 100% true. */
+				vol_inscatter = sky_term;
 				dbg_sky = luminance(vol_inscatter);
 
 #if FOG_DEBUG_PROBES   /* RAW per-cell capture, no quantisation */
@@ -430,8 +438,10 @@ void froxel_cell_scatter(
 			}
 			else
 			{
-				vol_inscatter = getVolumeLightInscatter(cluster, world_pos,
-					world_pos_history, view_dir, light_rnd, seed);
+				/* WAS: getVolumeLightInscatter(..., world_pos_history, ...), whose
+				   FIRST statement was fog_sky_inscatter(sky_p). Same reason. */
+				vol_inscatter = getVolumeLightInscatterWithSky(cluster, world_pos,
+					view_dir, light_rnd, seed, sky_term);
 			}
 
 			// pt_fog_vol_scale, not pt_fog_light_scale: mode 3 has no
@@ -1200,13 +1210,63 @@ void main()
 		}
 #endif
 
+		/* THE HOIST TEST - pt_fog_hoist_sky. See global_ubo.h.
+
+		   View 38 measured, in ONE frame of a valid saturated run (228 fps,
+		   81.8% collapsed): the density gate TRUE for 100% of cells, the entry
+		   condition `fog_lights && fog_mode >= 3` TRUE for 100% of cells, and
+		   fog_sky_inscatter ENTERED for only 5.3%. Once that condition holds,
+		   BOTH branches below reach the call unconditionally - the ReSTIR arm
+		   calls it directly and getVolumeLightInscatter calls it as its FIRST
+		   statement - so a true condition whose body does not run is not
+		   reachable in straight-line code.
+
+		   This calls the SAME function on the SAME argument from here, outside
+		   the density gate and outside the nest, and records separately whether
+		   it ran. The result is discarded: only the fact of execution is the
+		   measurement.
+
+		   fog_debug_sky_entered is saved and restored around it so the hoisted
+		   call cannot forge the nested call's flag - without that, view 39's
+		   blue channel would read 100% whether or not the nested call ever ran,
+		   and the test would prove nothing. */
+		float dbg_hoist_entered = 0.0;
+
+		/* THE HOIST IS NOW THE SHIPPING PATH, NOT A TEST.  (2026-09-17)
+
+		   The experiment this replaces proved the restructure was required, so
+		   the restructure is done rather than left behind a cvar. The sky half is
+		   evaluated HERE - outside the density gate and outside the
+		   fog_lights / fog_mode nest - and only its RESULT is carried into the
+		   divergent branch, which now contains no call at all.
+
+		   THE GUARD IS DISPATCH-UNIFORM AND THAT IS THE POINT. fog_lights and
+		   fog_mode read nothing but the UBO, so every invocation in the dispatch
+		   agrees on this `if` and no wave diverges on it. That is the property the
+		   measurement says matters; it is not the same thing as the per-cell
+		   density gate, which stays where it is. Keeping the guard also keeps the
+		   cost of modes 0-2 exactly what it was - the sky ray is only paid where
+		   the sky term is actually consumed.
+
+		   fog_debug_sky_entered is deliberately NOT cleared afterwards now: with
+		   the call hoisted it is the honest record of the only sky evaluation this
+		   cell gets, and debug views 19/38/39 should read it as such. Blue at 100%
+		   on view 39 is now the expected reading and confirms the fix is live. */
+		vec3 cell_sky_term = vec3(0);
+
+		if (fog_lights && global_ubo.fog_mode >= 3)
+		{
+			cell_sky_term = fog_sky_inscatter(world_pos_history);
+			dbg_hoist_entered = fog_debug_sky_entered;
+		}
+
 		if (cell_has_density)
 		{
 			/* The body now lives in froxel_cell_scatter(), above main. See the
 			   comment there: it is a codegen experiment against the collapse,
 			   and the lift is verbatim. */
 			froxel_cell_scatter(cell, z, density, world_pos, world_pos_history,
-			                    sun_color, fog_lights, r1, fs,
+			                    sun_color, fog_lights, r1, fs, cell_sky_term,
 			                    result, result_preblend, dbg_in_gate,
 			                    dbg_last_post, dbg_last_vol, dbg_last_in,
 			                    dbg_last_skyvis, dbg_last_sky);
@@ -1574,6 +1634,169 @@ void main()
 		if (debug == 17)
 			dbg = vec3(fog_debug_sky_path / 3.0) * 0.05;
 
+		/* VIEW 35: THE SKY PATH AS A HUE, BECAUSE VIEW 17 IS UNREADABLE.
+
+		   View 17 paints the path number as a GREY LEVEL, and grey levels cannot
+		   be compared between two screenshots of this engine: the tone mapper
+		   auto-exposes, so a view that gets darker is silently brightened back
+		   up and a view that gets brighter is pulled down. Scoring view 17 by
+		   mean luminance measured the EXPOSURE as much as the value - it read a
+		   4x drop, which would mean a LOWER path number, while the only
+		   candidates for that are excluded: fog_sun_is_the_sky() is false all
+		   run (sun_only reads 0), and fog_sky_trace comes straight off a cvar
+		   that nothing writes.
+
+		   A HUE survives auto-exposure. Exposure scales all three channels by
+		   the same factor, so the RATIO between channels is invariant, and
+		   'is it red or green' can be read off a screenshot no matter what the
+		   tone mapper did to it.
+
+		     MAGENTA  path 0 - getSkyVisibility was never called
+		     BLUE     path 1 - the fog_sky_trace==0 early return
+		     GREEN    path 2 - the ray ESCAPED. This is the healthy answer.
+		     RED      path 3 - the ray was BLOCKED.
+
+		   Read it by comparing the red:green ratio of a healthy shot against a
+		   collapsed one. Green -> red is a ray that used to escape and now hits
+		   something, which points at the TLAS the query runs against rather than
+		   at anything in the fog. Green -> magenta would mean the call is being
+		   skipped after all and the two exclusions above are wrong. */
+		/* VIEW 36: fog_sun_is_the_sky() AND ITS TWO INPUTS, AS THE SHADER SEES
+		   THEM. This is the last statement standing.
+
+		   The chain is now pinned to one line. View 23's blue channel is
+		   fog_debug_sky_entered and it reads constant all run, so
+		   fog_sky_inscatter IS entered on collapsed frames. View 35 reads
+		   MAGENTA on those same frames, i.e. sky path 0 - getSkyVisibility never
+		   called. Between those two points fog_medium.glsl has exactly one
+		   statement:
+
+		       if (fog_sun_is_the_sky()) { fog_debug_sky_term = vec3(0);
+		                                   return vec3(0); }
+
+		   So it returns true when the fog is collapsed and false when it is not.
+		   Its definition reads two UBO fields and nothing else:
+
+		       pt_fog_sky_sun_only != 0 && environment_type == ENVIRONMENT_DYNAMIC
+
+		   AND THE CPU SAYS NEITHER MOVES. The FOGMODE probe in main.c watches
+		   ubo->pt_fog_sky_sun_only and ubo->environment_type and printed exactly
+		   one transition, at frame 11 during the map load, then silence for the
+		   whole run while the fog collapsed.
+
+		   So either the shader reads something the CPU did not write, or the CPU
+		   probe is looking at the wrong moment - note it sits at ~line 4400 while
+		   the UBO_CVAR_DO copy that fills pt_fog_sky_sun_only runs at ~4628,
+		   LATER in the same function, so it reads the previous frame's value.
+		   This view settles it from the shader's own side.
+
+		   HUES, not levels, because the tone mapper auto-exposes and a grey-level
+		   view cannot be compared between two screenshots - that is what made
+		   view 17 unreadable and sent this chase down a wrong turn.
+
+		     RED    pt_fog_sky_sun_only != 0
+		     GREEN  environment_type == ENVIRONMENT_DYNAMIC
+		     BLUE   fog_sun_is_the_sky(), i.e. both of the above
+
+		   Healthy frames must show NO blue. Whichever of red or green turns on
+		   as blue appears is the field that is wrong, and it is a UBO field, so
+		   the fault is in what reaches the shader rather than anywhere in the
+		   fog's own arithmetic. */
+		/* VIEW 37: WHY THE DENSITY GATE CLOSES. Linear, three binary channels.
+
+		   View 23 run with tm_enable 0 shows fog_mode==3 staying TRUE (red
+		   100%) while fog_sky_inscatter ENTERED collapses (blue 100% -> 2.7%).
+		   The debug views are painted OUTSIDE `if (cell_has_density)`, so the
+		   mode channels report for every cell while the entered channel only
+		   lights for cells that actually went through the lighting. So this is
+		   the DENSITY GATE closing for ~97% of cells, not fog_enable flipping.
+
+		   getDensity returns world_box * clamp(hf + fog_density/REF, 0,
+		   max(0, pt_fog_density_max)), with an early `return world_box` when
+		   fog_enable is 0. const_src 9 forces world_box to 1 and still fades,
+		   so the zero is in the clamp - either the sum going to 0 or the
+		   CEILING pt_fog_density_max going to 0, which would zero the product
+		   no matter how much density there is.
+
+		     RED    the cell passed the density gate
+		     GREEN  fog_enable != 0
+		     BLUE   pt_fog_density_max > 0
+
+		   Run it with tm_enable 0 and bloom_enable 0 - a tone-mapped debug
+		   view cannot be compared between two screenshots, which is what made
+		   views 17, 23 and 36 unreadable on the first pass. */
+		/* VIEW 38: THE WHOLE ENTRY CONDITION, IN ONE FRAME.
+
+		   Views 23 and 37 disagree, and they were taken in different runs.
+		   37 (valid, 82% collapsed) says the density gate passes 100% of cells
+		   and fog_enable is on; 23 (valid, 79% collapsed) says
+		   fog_sky_inscatter ENTERED falls to 2.2% while fog_mode==3 stays
+		   true. Those cannot both hold: fog_lights is (fog_enable != 0) &&
+		   (fog_mode >= 2), getVolumeLightInscatter calls fog_sky_inscatter as
+		   its FIRST statement, and the ReSTIR branch calls it directly - so a
+		   cell that passes the gate with enable on and mode 3 must enter it.
+
+		   Cross-run comparison is the weak link. This paints all three in the
+		   SAME frame so they cannot be reconciled away by run-to-run variance.
+
+		     RED    cell_has_density (the gate)
+		     GREEN  fog_lights && fog_mode >= 3 (the entry condition)
+		     BLUE   fog_debug_sky_entered (what actually happened)
+
+		   Whichever channel turns off first is the real cut. Red on with green
+		   off means fog_lights, i.e. fog_enable or fog_mode as the SHADER sees
+		   them. Green on with blue off would mean the call is guarded by
+		   something not in this expression at all. Run with tm_enable 0. */
+		/* VIEW 39: THE HOISTED CALL AGAINST THE NESTED ONE, SAME CELL, SAME
+		   FRAME, SAME FUNCTION, SAME ARGUMENT.
+
+		     RED    the entry condition, fog_lights && fog_mode >= 3
+		     GREEN  the HOISTED call ran   (outside the gate and the nest)
+		     BLUE   the NESTED call ran    (inside both)
+
+		   Needs pt_fog_hoist_sky 1, and tm_enable 0 / bloom_enable 0 so the tone
+		   mapper cannot move the levels between shots.
+
+		     GREEN 100%, BLUE ~5%  -> the function is fine and the BRANCH is not.
+		       The fault is control flow, the repro is these four lines, and no
+		       amount of work on the fog's arithmetic will touch it.
+		     BOTH ~5%              -> the call fails wherever it is made, so it is
+		       the callee or something it touches, and view 38's reading needs
+		       another explanation.
+		     BOTH 100%             -> the nested call is running after all and
+		       view 38's blue channel was measuring something else. */
+		if (debug == 39)
+			dbg = vec3((fog_lights && global_ubo.fog_mode >= 3) ? 1.0 : 0.0,
+			           dbg_hoist_entered,
+			           fog_debug_sky_entered) * 0.02;
+
+		if (debug == 38)
+			dbg = vec3(cell_has_density ? 1.0 : 0.0,
+			           (fog_lights && global_ubo.fog_mode >= 3) ? 1.0 : 0.0,
+			           fog_debug_sky_entered) * 0.02;
+
+		if (debug == 37)
+			dbg = vec3(cell_has_density ? 1.0 : 0.0,
+			           (global_ubo.fog_enable != 0) ? 1.0 : 0.0,
+			           (global_ubo.pt_fog_density_max > 0.0) ? 1.0 : 0.0) * 0.02;
+
+		if (debug == 36)
+			dbg = vec3((global_ubo.pt_fog_sky_sun_only != 0) ? 1.0 : 0.0,
+			           (global_ubo.environment_type == ENVIRONMENT_DYNAMIC) ? 1.0 : 0.0,
+			           fog_sun_is_the_sky() ? 1.0 : 0.0) * 0.02;
+
+		if (debug == 35)
+		{
+			int sp = int(fog_debug_sky_path + 0.5);
+
+			vec3 hue = (sp == 3) ? vec3(1.0, 0.0, 0.0)
+			         : (sp == 2) ? vec3(0.0, 1.0, 0.0)
+			         : (sp == 1) ? vec3(0.0, 0.0, 1.0)
+			                     : vec3(1.0, 0.0, 1.0);
+
+			dbg = hue * 0.02;
+		}
+
 		if (debug == 16)
 		{
 			rayQueryEXT dbg_rq;
@@ -1854,7 +2077,39 @@ void main()
 						history = max(history,
 						              max(result, vec4(0.0)) * (1.0 / hclamp));
 
+					/* EXTINCTION DOES NOT GO THROUGH THE BLEND.  (2026-09-17)
+
+					   The comment above has described this as a defect for a
+					   while; this is the fix. result.a is `density * sigma`,
+					   where density is getDensity(world_pos_history) - the
+					   UNJITTERED cell centre, the same point albedo is sampled
+					   at and for the same stated reason - and sigma is a UBO
+					   constant. So alpha is fully deterministic per cell per
+					   frame and carries no stochastic content whatsoever. The
+					   EMA exists to average sampling noise; on a channel with no
+					   noise it can only add lag and accumulate round-trip loss.
+
+					   And that loss is not small. The blend's fixed point is
+					   h = (1-w)*raw / (1 - w*k) for a round trip that returns
+					   k*h instead of h, which at w = 0.95 amplifies any loss by
+					   1/(1-w) = 20x. Alpha is the channel that can least afford
+					   it: once decayed it sends froxel_integrate down its
+					   sigma <= 1e-7 branch with transmittance pinned at 1.0, so
+					   the medium stops absorbing as well as stops glowing - and
+					   the dark state is a stable fixed point, which is exactly
+					   the onset-then-stuck shape the fade has.
+
+					   This is difference 3 of 3 against RTX Remix, whose
+					   attenuationCoefficient is a constant in the constant
+					   buffer applied analytically and never accumulated.
+
+					   Radiance still blends exactly as before - that half IS one
+					   stochastic light sample per cell and needs the average. */
+					float analytic_sigma = result.a;
+
 					result = mix(result, history, w);
+
+					result.a = analytic_sigma;
 				}
 			}
 		}

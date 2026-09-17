@@ -226,6 +226,8 @@ VkptInit_t vkpt_initialization[] = {
 	{ "asvgf|",   vkpt_asvgf_create_pipelines,         vkpt_asvgf_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "bloom",    vkpt_bloom_initialize,               vkpt_bloom_destroy,                   VKPT_INIT_DEFAULT,            0 },
 	{ "bloom|",   vkpt_bloom_create_pipelines,         vkpt_bloom_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
+	{ "mblur",    vkpt_motion_blur_initialize,         vkpt_motion_blur_destroy,             VKPT_INIT_DEFAULT,            0 },
+	{ "mblur|",   vkpt_motion_blur_create_pipelines,   vkpt_motion_blur_destroy_pipelines,   VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "tonemap",  vkpt_tone_mapping_initialize,        vkpt_tone_mapping_destroy,            VKPT_INIT_DEFAULT,            0 },
 	{ "tonemap|", vkpt_tone_mapping_create_pipelines,  vkpt_tone_mapping_destroy_pipelines,  VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "fsr",      vkpt_fsr_initialize,                 vkpt_fsr_destroy,                     VKPT_INIT_DEFAULT,            0 },
@@ -1317,6 +1319,33 @@ fg_debug_paint_current_swapchain_image(VkCommandBuffer cmd_buf, unsigned int gen
 static VkResult
 acquire_next_image_locked(VkSemaphore semaphore, uint32_t *out_index)
 {
+	/* DO NOT POLL WHEN NOTHING CAN RELEASE THE LOCK.  (2026-09-17)
+
+	   Under FIFO the present queue is FULL at steady state - that is precisely how
+	   FIFO throttles the app to the refresh rate - so this acquire has to WAIT on
+	   every frame. The comment at report_present_stats() describing the acquire as
+	   returning immediately and deferring the wait to the image_available semaphore
+	   only holds while a free image is left; once the queue fills it does not.
+
+	   Waiting by polling a 1 ms timeout and then calling SDL_Delay(0) quantises the
+	   frame start to the poll granularity plus whatever the Windows scheduler does
+	   with a zero-length sleep. That is easily enough to miss a vblank and eat a
+	   whole extra refresh, which is a 33 ms frame among 16 ms frames. MEASURED:
+	   54 fps on a 60 Hz panel with ~10 ms of GPU work at 50% render scale - an
+	   enormous headroom that FIFO could not convert into a locked 60, while
+	   r_maxfps 60 with vsync OFF paced perfectly at the same GPU load.
+
+	   The polling exists to avoid deadlocking against the frame-generation present
+	   thread, which releases images and needs this same lock. But that thread only
+	   takes the lock when it has presents QUEUED, and only frame generation enqueues
+	   any. With FG off nothing is ever queued, so a long wait here cannot deadlock.
+
+	   It stays a TIMEOUT rather than an infinite wait, so the lock is always released
+	   eventually even if that reasoning is ever wrong - the loop simply retries. */
+	const uint64_t acquire_timeout = (DLSSGMultiplier() > 1)
+		? 1000000ull    /* 1 ms  - keep polling while the present thread is live */
+		: 50000000ull;  /* 50 ms - effectively blocking, with an escape hatch */
+
 	for (;;) {
 		VkResult res;
 
@@ -1325,14 +1354,14 @@ acquire_next_image_locked(VkSemaphore semaphore, uint32_t *out_index)
 		VkAcquireNextImageInfoKHR acquire_info = {
 			.sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR,
 			.swapchain = qvk.swap_chain,
-			.timeout = 1000000, /* 1 ms */
+			.timeout = acquire_timeout,
 			.semaphore = semaphore,
 			.fence = VK_NULL_HANDLE,
 			.deviceMask = (1 << qvk.device_count) - 1,
 		};
 		res = vkAcquireNextImage2KHR(qvk.device, &acquire_info, out_index);
 #else
-		res = vkAcquireNextImageKHR(qvk.device, qvk.swap_chain, 1000000,
+		res = vkAcquireNextImageKHR(qvk.device, qvk.swap_chain, acquire_timeout,
 			semaphore, VK_NULL_HANDLE, out_index);
 #endif
 		FGPresent_SwapchainUnlock();
@@ -4350,7 +4379,82 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	// god-ray pass marches, so it scatters light instead of tinting pixels.
 	{
 		mapfog_params_t mf;
-		if (CL_GetMapFog(&mf)) {
+		bool got_mapfog = CL_GetMapFog(&mf);
+
+		/* FOGMODE - print ONLY when the map fog's enable/mode CHANGES.
+
+		   THIS IS THE PROBE THAT SHOULD HAVE EXISTED ON DAY ONE. The froxel
+		   debug views localised the fade to getSkyVisibility not being CALLED
+		   at all (view 17 drops toward path 0, rather than rising to path 3
+		   "blocked"), and the only test that can stop it being called is
+		   `fog_mode >= 3` inside fog_sky_inscatter. fog_mode has exactly two
+		   writers, right here: mf.mode when CL_GetMapFog succeeds, and 0 when
+		   it FAILS.
+
+		   CL_GetMapFog fails on `!cl_mapfog.valid || !cl_fog || !cl_fog->integer`,
+		   so any of those flipping mid-game takes the fog out of mode 3, sends
+		   it down getClusterLightInscatter instead - which never calls
+		   fog_sky_inscatter and is scaled by pt_fog_light_scale with a knee
+		   rather than pt_fog_vol_scale - and ALSO sets fog_enable 0, which makes
+		   getDensity return the bare world_box. A different, dimmer regime, on a
+		   map whose fog is sky-driven. That is the fade.
+
+		   Printed on CHANGE only, so it costs nothing and cannot perturb what it
+		   measures - which matters here more than usual, because pt_fog_log 1
+		   prints every frame and that alone slows the client enough to suppress
+		   the fade entirely. Gated on pt_fog_log >= 1 so it rides along with the
+		   quiet mode the harness already uses. */
+		{
+			static bool  fm_init = false;
+			static bool  fm_got = false;
+			static int   fm_mode = -1;
+			static int   fm_clfog = -1;
+			static int   fm_envt = -1;
+			static int   fm_sunonly = -1;
+			cvar_t *fm_cv = Cvar_Get("cl_fog", "0", 0);
+			int fm_now = fm_cv ? fm_cv->integer : -1;
+			int fm_m = got_mapfog ? mf.mode : 0;
+
+			/* AND THE TWO INPUTS TO fog_sun_is_the_sky(), which is the EARLIER
+			   exit and the one the picture now points at.
+
+			       bool fog_sun_is_the_sky()
+			       {
+			           return global_ubo.pt_fog_sky_sun_only != 0
+			               && global_ubo.environment_type == ENVIRONMENT_DYNAMIC;
+			       }
+
+			   When it is true, fog_sky_inscatter returns vec3(0) at its very
+			   first statement - BEFORE getSkyVisibility is ever called. That is
+			   exactly what debug view 17 shows happening: the sky path drops
+			   toward 0 ("never called") rather than rising to 3 ("ray blocked"),
+			   so the ray is not coming back wrong, it is not being traced.
+
+			   environment_type is written in physical_sky.c from `!render_world`
+			   and `light->use_physical_sky`, both of which should be constant
+			   during play - so if this moves, that is the bug, and it is on the
+			   CPU rather than anywhere in the GPU fog path. */
+			int fm_env = (int)ubo->environment_type;
+			int fm_sun = (int)ubo->pt_fog_sky_sun_only;
+
+			if (!fm_init || fm_got != got_mapfog || fm_mode != fm_m
+			    || fm_clfog != fm_now || fm_envt != fm_env || fm_sunonly != fm_sun) {
+				if (fm_init && Cvar_Get("pt_fog_log", "0", 0)->integer)
+					Com_Printf("FOGMODE frame=%d CL_GetMapFog=%d mode=%d cl_fog=%d "
+					           "env_type=%d sun_only=%d (was %d/%d/%d/%d/%d)\n",
+					           (int)qvk.frame_counter, (int)got_mapfog, fm_m, fm_now,
+					           fm_env, fm_sun,
+					           (int)fm_got, fm_mode, fm_clfog, fm_envt, fm_sunonly);
+				fm_init = true;
+				fm_got = got_mapfog;
+				fm_mode = fm_m;
+				fm_clfog = fm_now;
+				fm_envt = fm_env;
+				fm_sunonly = fm_sun;
+			}
+		}
+
+		if (got_mapfog) {
 			ubo->fog_enable     = 1;
 			ubo->fog_density    = mf.density;
 			ubo->fog_hf_density = mf.hf_density;
@@ -5006,6 +5110,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 	vkpt_physical_sky_update_ubo(ubo, &sun_light, render_world);
 	vkpt_bloom_update(ubo, frame_time, ubo->medium != MEDIUM_NONE, qvk.frame_menu_mode);
+	vkpt_motion_blur_update(frame_time);
 
 	if(update_world_animations)
 		bsp_mesh_animate_light_polys(&vkpt_refdef.bsp_mesh_world);
@@ -5229,6 +5334,49 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		// Copy the UBO contents from the staging buffer.
 		// Actual contents are uploaded to the staging UBO below, right before executing the command buffer.
+		/* NO OVERLAP BETWEEN FRAMES AT ALL - pt_fog_frame_serialize, default 0.
+
+		   THIS IS A DIAGNOSTIC, NOT A FIX, and it is a yes/no on everything that
+		   is left. Every arm in fogtmp/BASELINE.md now agrees the fade happens
+		   only when the card is driven flat out: 204 fps fades to 56%, r_maxfps
+		   60 retains 89%, vsync-capped retains 100%. A fault that appears only
+		   when consecutive frames OVERLAP, in code whose inputs are all provably
+		   steady, is a cross-frame hazard - frame N reading a resource that frame
+		   N+1 is already rewriting, with only the MAX_FRAMES_IN_FLIGHT-deep fence
+		   between them.
+
+		   Rather than guess which resource, remove the overlap. An
+		   ALL_COMMANDS -> ALL_COMMANDS execution dependency at the very top of
+		   the frame's first command buffer orders EVERY command of every earlier
+		   submission before ANY command of this one. Whatever the resource is -
+		   the froxel history volumes, the physical sky image, buf_light, the fog
+		   TLAS, the uniform buffer, something not yet suspected - it is covered.
+
+		     FADE GONE  -> it IS a cross-frame hazard, and the remaining work is
+		       bisecting WHICH resource by making them per-frame one at a time.
+		       That is a search with a known end.
+		     STILL FADES -> the entire cross-frame theory is dead, including the
+		       shadow-map hazard and the history ping-pong, and the fault is
+		       intra-frame nondeterminism instead. That would be worth knowing
+		       after six days of assuming otherwise.
+
+		   THE CONFOUND, AND IT IS THE WHOLE RISK: serialising costs frame rate,
+		   and a lower frame rate suppresses the fade ON ITS OWN. A result from
+		   this is only readable if the achieved frame rate STAYS IN THE 190-220
+		   band the valid arms sit in. If it drops, the run says nothing and the
+		   test has to be done by making resources per-frame instead. The harness
+		   prints steady-state fps for exactly this reason - read it first.
+
+		   An execution dependency only, no access masks: this is about ORDER, and
+		   the real barriers that flush caches are all still in place. */
+		if (Cvar_Get("pt_fog_frame_serialize", "0", 0)->integer)
+		{
+			vkCmdPipelineBarrier(trace_cmd_buf,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				0, 0, NULL, 0, NULL, 0, NULL);
+		}
+
 		vkpt_uniform_buffer_copy_from_staging(trace_cmd_buf);
 
 		// put a profiler query without a marker for the frame begin/end - because markers do not 
@@ -5420,6 +5568,21 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		vkpt_interleave(post_cmd_buf);
 
 		vkpt_taa(post_cmd_buf);
+
+		/* MOTION BLUR, between the temporal resolve and bloom.
+
+		   The image has to be resolved first - blurring the raw traced frame
+		   would smear sampling noise into streaks - and bloom has to come
+		   after, so that a streaked highlight blooms along its streak the way
+		   a real shutter makes it. Same two-site structure as bloom itself:
+		   this arm handles TAA_OUTPUT, and the DLSS arm further down handles
+		   DLSS_OUTPUT after the upscale has run. */
+		if (!DLSSEnabled() && vkpt_motion_blur_is_enabled())
+		{
+			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_MOTION_BLUR);
+			vkpt_motion_blur_record_cmd_buffer(post_cmd_buf);
+			END_PERF_MARKER(post_cmd_buf, PROFILER_MOTION_BLUR);
+		}
 
 		if (!DLSSEnabled()) {
 			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
@@ -6189,6 +6352,20 @@ R_EndFrame_RTX(void)
 			vkpt_final_blit_simple(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.extent_taa_output);
 		}
 		else if (DLSSEnabled()) {
+
+			/* The DLSS arm of the motion blur pass - see the note at the other
+			   one, after vkpt_taa. Running after the upscale rather than
+			   before it is deliberate: blurring at render resolution and then
+			   upscaling hands DLSS a frame whose edges have already been
+			   smeared, which is exactly the input its sharpening is built to
+			   fight. The motion field is still at render resolution here and
+			   the shader samples it proportionally. */
+			if (vkpt_motion_blur_is_enabled())
+			{
+				BEGIN_PERF_MARKER(cmd_buf, PROFILER_MOTION_BLUR);
+				vkpt_motion_blur_record_cmd_buffer(cmd_buf);
+				END_PERF_MARKER(cmd_buf, PROFILER_MOTION_BLUR);
+			}
 
 			BEGIN_PERF_MARKER(cmd_buf, PROFILER_BLOOM);
 			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
@@ -7440,6 +7617,7 @@ R_Init_RTX(bool total)
 
 	drs_init();
 	vkpt_fsr_init_cvars();
+	vkpt_motion_blur_init_cvars();
 	InitDLSSCvars();
 	InitDLSSGCvars();
 

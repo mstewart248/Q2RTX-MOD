@@ -3593,6 +3593,7 @@ textures/e1u1/wndow1_2:
 	texture_normals overrides/wndow1_2_n.tga
 	kind GLASS
 	base_factor 2.5
+	dlss_guide_field 0
 
 textures/e1u1/wplat1_2:
 	texture_base overrides/wplat1_2.tga

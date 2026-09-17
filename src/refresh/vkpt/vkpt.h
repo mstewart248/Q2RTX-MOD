@@ -86,6 +86,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_BLOOM_BLUR_COMP)                        \
 	SHADER_MODULE_DO(QVK_MOD_BLOOM_COMPOSITE_COMP)                   \
 	SHADER_MODULE_DO(QVK_MOD_BLOOM_DOWNSCALE_COMP)                   \
+	SHADER_MODULE_DO(QVK_MOD_MOTION_BLUR_COMP)                       \
 	SHADER_MODULE_DO(QVK_MOD_TONE_MAPPING_HISTOGRAM_COMP)            \
 	SHADER_MODULE_DO(QVK_MOD_TONE_MAPPING_CURVE_COMP)                \
 	SHADER_MODULE_DO(QVK_MOD_TONE_MAPPING_APPLY_COMP)                \
@@ -583,6 +584,7 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_INTERLEAVE,                 1) \
 	PROFILER_DO(PROFILER_ASVGF_TAA,                  2) \
 	PROFILER_DO(PROFILER_BLOOM,                      1) \
+	PROFILER_DO(PROFILER_MOTION_BLUR,                1) \
 	PROFILER_DO(PROFILER_TONE_MAPPING,               1) \
 	PROFILER_DO(PROFILER_FSR,                        1) \
 	PROFILER_DO(PROFILER_FSR_EASU,                   2) \
@@ -842,6 +844,16 @@ VkResult vkpt_bloom_destroy_pipelines(void);
 void vkpt_bloom_reset(void);
 void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode);
 VkResult vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf);
+
+/* Screen-space motion blur - see motion_blur.c and shader/motion_blur.comp. */
+VkResult vkpt_motion_blur_initialize(void);
+VkResult vkpt_motion_blur_destroy(void);
+VkResult vkpt_motion_blur_create_pipelines(void);
+VkResult vkpt_motion_blur_destroy_pipelines(void);
+void vkpt_motion_blur_init_cvars(void);
+bool vkpt_motion_blur_is_enabled(void);
+void vkpt_motion_blur_update(float frame_time);
+VkResult vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf);
 
 VkResult vkpt_tone_mapping_initialize(void);
 VkResult vkpt_tone_mapping_destroy(void);

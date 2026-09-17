@@ -945,7 +945,9 @@ static cvar_t *cl_blood_sound = NULL;
 static cvar_t *cl_blood_sound_volume = NULL;
 static cvar_t *cl_blood_sound_gap = NULL;
 static cvar_t *cl_blood_sound_pool_gap = NULL;
+static cvar_t *cl_blood_sound_any_gap = NULL;
 static cvar_t *cl_blood_sound_skip = NULL;
+static cvar_t *cl_blood_sound_pool_skip = NULL;
 static cvar_t *cl_blood_sound_dist = NULL;
 static cvar_t *cl_blood_sound_attn = NULL;
 static cvar_t *cl_blood_permanent = NULL;
@@ -1562,11 +1564,34 @@ void FX_Init(void)
     // which is what it should sound like.
     cl_blood_sound_gap = Cvar_Get("cl_blood_sound_gap", "90", CVAR_ARCHIVE);
 
-    // One impact heard in every N that are close enough to hear - a THINNING on
-    // top of the gap above, which is a rate limit. Matt: "the blood splats
-    // should only play sounds for every other splat for the 332 and 333
-    // sounds". 1 restores every-impact behaviour.
+    // One LANDING sound heard in every N that clear the gap above - a THINNING
+    // on top of that rate limit. Matt: "the blood splats should only play sounds
+    // for every other splat for the 332 and 333 sounds". 1 restores every-splat
+    // behaviour.
+    //
+    // A DIVIDER ON THE SOUND, NOT ON THE DROPLETS, and that distinction is the
+    // whole reason this setting used to do nothing you could hear. It counted
+    // droplets and ran BEFORE the gap: sixty of them land inside one window the
+    // gap was only ever going to let a single sound out of, so thinning sixty to
+    // eight still left that same one sound. Counted after the gap instead, the
+    // two multiply - 8 here against 90 ms above is a landing sound no oftener
+    // than every 720 ms.
     cl_blood_sound_skip = Cvar_Get("cl_blood_sound_skip", "2", CVAR_ARCHIVE);
+
+    // The POOLING sound's own thinning, the companion to the one above.
+    //
+    // TWO SETTINGS AND NOT ONE, because the two sounds do not happen at anything
+    // like the same rate and a single factor cannot thin both to taste. A
+    // droplet only makes the landing sound if it hits a DRY surface; one that
+    // lands on blood already there merges instead, and makes this sound. So the
+    // first shots of a fight are landings and everything after them is merges -
+    // which is why winding the landing skip up to 16 barely changed what a
+    // firefight sounded like. This is the one with the volume in it.
+    //
+    // 1 by default, leaving the gaps to do the work; the range reaches 32
+    // because a measured burst merged 668 times in a second, and one in thirty
+    // of that is still twenty-odd sounds.
+    cl_blood_sound_pool_skip = Cvar_Get("cl_blood_sound_pool_skip", "1", CVAR_ARCHIVE);
 
     // The POOLING sound's own gap. Matt asked for "every blood drop that starts
     // to pool up", i.e. 0, and MEASUREMENT SAYS THAT CANNOT BE ONE VOICE PER
@@ -1585,6 +1610,24 @@ void FX_Init(void)
     // quieter and wetter and reads as texture when it overlaps. Hence 40 here
     // against 90 plus every-other-splat there.
     cl_blood_sound_pool_gap = Cvar_Get("cl_blood_sound_pool_gap", "40", CVAR_ARCHIVE);
+
+    // THE FLOOR UNDER BOTH SOUNDS AT ONCE, in milliseconds.
+    //
+    // The two gaps above are per sound and deliberately independent, so that an
+    // impact and a droplet pooling up cannot silence each other inside one
+    // window. The cost of that independence is that the two rates ADD: at the
+    // defaults above it is 11 impacts and 25 pooling sounds a second, and 36 wet
+    // voices a second is not a patter, it is a wall.
+    //
+    // It is also why raising cl_blood_sound_gap on its own does not quieten a
+    // fight the way it looks like it should - it only ever thinned one of the
+    // two streams, and the denser one was the other one. This gap counts EVERY
+    // blood sound whatever kind it is, so it is the one to reach for when the
+    // answer is simply "fewer".
+    //
+    // Checked LAST, after a sound has already earned its own window, so it only
+    // removes the overlap between the two streams rather than reordering them.
+    cl_blood_sound_any_gap = Cvar_Get("cl_blood_sound_any_gap", "60", CVAR_ARCHIVE);
 
     // Beyond this many units a landing droplet makes no sound at all. Distance
     // attenuation would make it inaudible anyway, but it would still take a
@@ -2352,6 +2395,29 @@ static bool CL_BloodSoundReady(int *last_time, int gap)
     return true;
 }
 
+// ONE IN EVERY N. Each sound passes its own factor and its own tally, because
+// landings and merges do not happen at anything like the same rate - see
+// cl_blood_sound_pool_skip for why one shared factor could not thin both.
+//
+// `heard` counts what has ALREADY cleared that sound's gap, which is what makes
+// this a divider on the sound rather than on the droplets.
+static bool CL_BloodSoundSkipped(unsigned *heard, int skip)
+{
+    skip = max(1, skip);
+
+    return ((*heard)++ % (unsigned)skip) != 0;
+}
+
+// The gap that both blood sounds share - see cl_blood_sound_any_gap for why one
+// exists on top of the two per-sound gaps. Committed only when it passes, so a
+// sound that this rejects does not also push the floor forward.
+static bool CL_BloodSoundFloorReady(void)
+{
+    static int last_time;
+
+    return CL_BloodSoundReady(&last_time, cl_blood_sound_any_gap->integer);
+}
+
 static void CL_BloodPlaySoundAt(const vec3_t point, qhandle_t sfx)
 {
     // entnum 0 with a world origin: a positioned sound that belongs to no
@@ -2377,12 +2443,16 @@ static void CL_BloodImpactSound(const vec3_t point)
     // the ones that are heard feel. Matt asked for the impacts to thin out; the
     // gap stays underneath as the thing that stops sixty droplets in two frames
     // from becoming sixty voices.
-    const int skip = max(1, cl_blood_sound_skip->integer);
-
-    if ((audible++ % (unsigned)skip) != 0)
+    //
+    // Gap first, then the thinning - see CL_BloodSoundSkipped for why that order
+    // is the whole difference between this setting working and doing nothing.
+    if (!CL_BloodSoundReady(&last_time, cl_blood_sound_gap->integer))
         return;
 
-    if (!CL_BloodSoundReady(&last_time, cl_blood_sound_gap->integer))
+    if (CL_BloodSoundSkipped(&audible, cl_blood_sound_skip->integer))
+        return;
+
+    if (!CL_BloodSoundFloorReady())
         return;
 
     CL_BloodPlaySoundAt(point, cl_sfx_blood_splat[Q_rand() % NUM_BLOOD_SFX]);
@@ -2402,10 +2472,13 @@ which is the opposite of what a listener expects.
 
 Its own timer, not the impact's. Sharing one would mean whichever event happened
 first in a 90 ms window silenced the other, and during a burst that is a coin
-toss deciding which half of the sound design you hear.
+toss deciding which half of the sound design you hear. Both do answer to
+cl_blood_sound_any_gap afterwards, which is a ceiling on the pair of them rather
+than a timer either one can latch shut against the other - see the cvar.
 
-NO SKIP, and a much shorter gap than the impacts get - the opposite treatment, on
-purpose. An impact is a loud transient and fifty at once is mush; the pooling
+A MUCH SHORTER GAP than the impacts get - the opposite treatment, on purpose.
+It has a thinning of its own as well, cl_blood_sound_pool_skip, separate from the
+impacts' because the two rates are nothing alike. An impact is a loud transient and fifty at once is mush; the pooling
 sound is quieter and wetter and reads as texture when it overlaps. So the impacts
 are thinned to every other splat at 90 ms and this is left dense at 40.
 
@@ -2421,11 +2494,22 @@ literal version.
 static void CL_BloodPoolSound(const vec3_t point)
 {
     static int last_time;
+    static unsigned heard;
 
     if (!cl_sfx_blood_pool || !CL_BloodSoundAudible(point))
         return;
 
     if (!CL_BloodSoundReady(&last_time, cl_blood_sound_pool_gap->integer))
+        return;
+
+    // ITS OWN THINNING, on its own counter and its own factor. The landing
+    // skip used to be the only one there was, and it left the commonest blood
+    // sound in the game entirely untouched - so turning it all the way up barely
+    // changed what a fight sounded like. See cl_blood_sound_pool_skip.
+    if (CL_BloodSoundSkipped(&heard, cl_blood_sound_pool_skip->integer))
+        return;
+
+    if (!CL_BloodSoundFloorReady())
         return;
 
     CL_BloodPlaySoundAt(point, cl_sfx_blood_pool);

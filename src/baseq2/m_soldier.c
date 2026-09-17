@@ -724,7 +724,24 @@ static void soldierh_fire_weapon(edict_t *self, int flash_index)
     }
 }
 
-void soldier_fire(edict_t *self, int flash_number)
+/*
+=================
+soldier_fire
+
+`angle_limited` is the rerelease/PMM guard that the run-and-shoot (attack6) and
+the prone shot (attack5) fire with.  Both of those animations keep MOVING the
+soldier while the trigger frames come up, so the body can be most of the way
+through a turn - or running past - at the moment it shoots.  The aim vector
+below is built straight at the enemy and ignores where the model is pointing,
+so without this the soldier snaps off a perfectly accurate shot sideways out of
+its own shoulder.  Over ~60 degrees off its own forward it holds the frame and
+waits for the yaw to catch up instead.
+
+Every other attack fires from ai_charge frames, which have already turned the
+soldier onto the target, and passes false - the same split id's source makes.
+=================
+*/
+void soldier_fire(edict_t *self, int flash_number, bool angle_limited)
 {
     vec3_t  start;
     vec3_t  forward, right, up;
@@ -755,9 +772,38 @@ void soldier_fire(edict_t *self, int flash_number)
     if (flash_number == 5 || flash_number == 6) {
         VectorCopy(forward, aim);
     } else {
+        // the dead-soldier shots above are the only ones that do not need an
+        // enemy; everything else reads its origin, and a monster can lose its
+        // enemy between picking the attack and reaching the trigger frame
+        if (!self->enemy || !self->enemy->inuse) {
+            self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+            return;
+        }
+
         VectorCopy(self->enemy->s.origin, end);
         end[2] += self->enemy->viewheight;
         VectorSubtract(end, start, aim);
+
+        // Gated with the rest of this file's rerelease behaviour.  It is only
+        // in rerelease mode that attack6 runs on ai_run (see ai_soldier_charge)
+        // and attack5 exists at all; the classic game plays both on ai_charge,
+        // which has already turned the soldier onto its enemy before the
+        // trigger frame, so the cone would never do anything but risk changing
+        // 1997 timing.
+        if (angle_limited && M_RereleaseGame()) {
+            vec3_t aim_norm;
+
+            VectorCopy(aim, aim_norm);
+            VectorNormalize(aim_norm);
+            if (DotProduct(aim_norm, forward) < 0.5f) {   // ~60 degrees off
+                if (level.framenum >= self->monsterinfo.fire_framenum)
+                    self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+                else
+                    self->monsterinfo.aiflags |= AI_HOLD_FRAME;
+                return;
+            }
+        }
+
         vectoangles(aim, dir);
         AngleVectors(dir, forward, right, up);
 
@@ -812,7 +858,7 @@ void soldier_fire(edict_t *self, int flash_number)
 
 void soldier_fire1(edict_t *self)
 {
-    soldier_fire(self, 0);
+    soldier_fire(self, 0, false);
 }
 
 void soldier_attack1_refire1(edict_t *self)
@@ -944,7 +990,7 @@ mmove_t soldier_move_attack1 = {FRAME_attak101, FRAME_attak112, soldier_frames_a
 
 void soldier_fire2(edict_t *self)
 {
-    soldier_fire(self, 1);
+    soldier_fire(self, 1, false);
 }
 
 void soldier_attack2_refire1(edict_t *self)
@@ -1068,7 +1114,7 @@ void soldier_fire3(edict_t *self)
 {
     if (!M_RereleaseGame())
         monster_duck_down(self);
-    soldier_fire(self, 2);
+    soldier_fire(self, 2, false);
 }
 
 void soldier_attack3_refire(edict_t *self)
@@ -1115,7 +1161,7 @@ mmove_t soldier_move_attack3 = {FRAME_attak301, FRAME_attak309, soldier_frames_a
 
 void soldier_fire4(edict_t *self)
 {
-    soldier_fire(self, 3);
+    soldier_fire(self, 3, false);
 //
 //  if (self->enemy->health <= 0)
 //      return;
@@ -1139,7 +1185,7 @@ mmove_t soldier_move_attack4 = {FRAME_attak401, FRAME_attak406, soldier_frames_a
 
 void soldier_fire5(edict_t *self)
 {
-    soldier_fire(self, 4);
+    soldier_fire(self, 4, false);
 }
 
 void soldier_attack5_refire(edict_t *self)
@@ -1168,7 +1214,7 @@ mmove_t soldier_move_attack5 = {FRAME_attak501, FRAME_attak508, soldier_frames_a
 
 void soldier_fire8(edict_t *self)
 {
-    soldier_fire(self, 7);
+    soldier_fire(self, 7, true);
 }
 
 void soldier_attack6_refire(edict_t *self)
@@ -1381,13 +1427,13 @@ static void soldierh_hyper_laser_sound_end(edict_t *self)
 static void soldierh_hyperripper1(edict_t *self)
 {
     if (self->s.skinnum < 4)
-        soldier_fire(self, 0);
+        soldier_fire(self, 0, false);
 }
 
 static void soldierh_hyperripper2(edict_t *self)
 {
     if (self->s.skinnum < 4)
-        soldier_fire(self, 1);
+        soldier_fire(self, 1, false);
 }
 
 /*
@@ -1401,19 +1447,19 @@ skinnum < 4 here.
 static void soldierh_hyperripper3(edict_t *self)
 {
     if (self->style == 1 && self->s.skinnum < 4)
-        soldier_fire(self, 2);
+        soldier_fire(self, 2, false);
 }
 
 static void soldierh_hyperripper5(edict_t *self)
 {
     if (self->style == 1 && self->s.skinnum < 4)
-        soldier_fire(self, 8);
+        soldier_fire(self, 8, true);
 }
 
 static void soldierh_hyperripper8(edict_t *self)
 {
     if (self->style == 1 && self->s.skinnum < 4)
-        soldier_fire(self, 7);
+        soldier_fire(self, 7, true);
 }
 
 static void soldierh_hyper_refire1(edict_t *self)
@@ -1678,7 +1724,7 @@ static void ai_soldier_move(edict_t *self, float dist)
 
 void soldier_fire5(edict_t *self)
 {
-    soldier_fire(self, 8);
+    soldier_fire(self, 8, true);
 }
 
 mframe_t soldier_frames_attack5 [] = {
@@ -1942,7 +1988,7 @@ bool soldier_blocked(edict_t *self, float dist)
 
 void soldier_fire6(edict_t *self)
 {
-    soldier_fire(self, 5);
+    soldier_fire(self, 5, false);
 
     // a shotgun soldier shot in the middle of its death fires once and then
     // skips the rest of the reload it can no longer finish
@@ -1952,7 +1998,7 @@ void soldier_fire6(edict_t *self)
 
 void soldier_fire7(edict_t *self)
 {
-    soldier_fire(self, 6);
+    soldier_fire(self, 6, false);
 }
 
 void soldier_dead(edict_t *self)

@@ -136,10 +136,17 @@ static void L10N_ParseBuffer(char *buf)
 =================
 L10N_Init
 
-Called once per game init. The game library has no filesystem in its import
-table, but it is an ordinary DLL and g_save.c already uses stdio, so the file
-is read directly. Paths are tried relative to the working directory, which is
-the install root.
+Called once per game init.
+
+Read through gi.LoadFile, NOT fopen. This file ships inside the rerelease's own
+archive, and most people supply the remaster as pak0.pak / Q2Game.kpf rather
+than an extracted tree - a direct read only ever sees loose files, so every one
+of those installs silently fell back to reconstructing the text out of the keys.
+The engine resolves the name against the whole search path, which also means a
+loose localization/ under rerelease/ still wins, exactly as it did before.
+
+The stdio walk below is kept as a fallback for an engine that predates the
+LoadFile import, and behaves as it always did.
 =================
 */
 void L10N_Init(void)
@@ -154,6 +161,32 @@ void L10N_Init(void)
     if (l10n_loaded)
         return;
     l10n_loaded = true;
+
+    if (gi.LoadFile) {
+        byte *raw = NULL;
+        int   got = gi.LoadFile(LOCFILE, (void **)&raw);
+
+        if (raw && got > 0 && got <= 4 * 1024 * 1024) {
+            l10n_filebuf = malloc(got + 1);
+            if (l10n_filebuf) {
+                memcpy(l10n_filebuf, raw, got);
+                l10n_filebuf[got] = 0;
+                L10N_ParseBuffer(l10n_filebuf);
+            }
+        }
+
+        if (raw && gi.FreeFile)
+            gi.FreeFile(raw);
+
+        if (l10n_count) {
+            gi.dprintf("Localization: %d strings from %s\n", l10n_count, LOCFILE);
+            return;
+        }
+
+        // nothing usable - drop the empty buffer and try the loose paths
+        free(l10n_filebuf);
+        l10n_filebuf = NULL;
+    }
 
     gamedir = gi.cvar("game", "", 0)->string;
 

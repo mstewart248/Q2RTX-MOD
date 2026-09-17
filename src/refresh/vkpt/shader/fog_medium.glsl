@@ -1352,10 +1352,24 @@ This is still what the per-pixel march (pt_fog_froxel 0) calls, and what the
 grid calls when pt_fog_restir is off.
 =================
 */
-vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir, vec3 rnd, uint seed)
-{
-	vec3 sky_term = fog_sky_inscatter(sky_p);
+/* THE SKY TERM AS A PARAMETER RATHER THAN A CALL  (2026-09-17)
 
+   Same body, same arithmetic, same ray budget - the one difference is that the
+   caller has already evaluated the sky half and passes it in.
+
+   This exists because of the measurement in fogtmp/BASELINE.md: called from
+   inside `if (cell_has_density) if (fog_lights) if (fog_mode >= 3)`, with all
+   three guards measured TRUE in that frame, fog_sky_inscatter executed for only
+   ~5% of cells on a saturated GPU; called unconditionally from outside that
+   nest it executed for 100%. The froxel scatter pass therefore hoists the call
+   out of the nest and uses this entry point, so the sky half is evaluated in
+   wave-uniform control flow and only its RESULT crosses the divergent branch.
+
+   getVolumeLightInscatter below is unchanged for every other caller - notably
+   the per-pixel march (pt_fog_froxel 0), which has never shown the fault. */
+vec3 getVolumeLightInscatterWithSky(uint cluster_idx, vec3 p, vec3 view_dir,
+                                    vec3 rnd, uint seed, vec3 sky_term)
+{
 	// "sky only" - skips the candidate loop and the visibility ray with it
 	if (int(global_ubo.pt_fog_isolate) == 1)
 		return sky_term;
@@ -1365,6 +1379,12 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 	FogReservoir r = fog_ris_initial(cluster_idx, p, view_dir, g, seed);
 
 	return fog_shade_chosen(p, view_dir, g, rnd, r.y, fog_reservoir_W(r)) + sky_term;
+}
+
+vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir, vec3 rnd, uint seed)
+{
+	return getVolumeLightInscatterWithSky(cluster_idx, p, view_dir, rnd, seed,
+	                                      fog_sky_inscatter(sky_p));
 }
 
 // The scattering albedo at a point: the map's height-fog gradient, lerped by

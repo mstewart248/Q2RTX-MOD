@@ -355,10 +355,26 @@ retry:
 
     trace = gi.trace(start, ent->mins, ent->maxs, end, ent, mask);
 
-    VectorCopy(trace.endpos, ent->s.origin);
+    // An entity that begins the move completely buried in solid comes back
+    // allsolid.  `map_allsolid_bug` defaults to 1 to reproduce 1997 Q2, and that
+    // path deliberately leaves fraction at 1 with endpos == end - so taking the
+    // result at face value TELEPORTS the entity the whole way, straight through
+    // the world, and it will do it again next frame from further in.  Under
+    // SV_Physics_Toss that is the corpse-falls-forever bug: nothing ever clips
+    // it, gravity keeps stacking onto the velocity, and the origin wraps the
+    // network encoding's +/-4096 range so the body appears to drop out of the
+    // sky over and over for the rest of the map.
+    //
+    // SV_FlyMove has always tested allsolid (see SV_Physics_Step, which is why
+    // this never bit a monster while it was still alive); the toss path never
+    // did.  Refuse the move and let the caller decide what being stuck means.
+    if (trace.allsolid)
+        VectorCopy(start, ent->s.origin);
+    else
+        VectorCopy(trace.endpos, ent->s.origin);
     gi.linkentity(ent);
 
-    if (trace.fraction != 1.0f) {
+    if (!trace.allsolid && trace.fraction != 1.0f) {
         SV_Impact(ent, &trace);
 
         // if the pushed entity went away and the pusher is still there
@@ -717,6 +733,41 @@ void SV_Physics_Toss(edict_t *ent)
 // move origin
     VectorScale(ent->velocity, FRAMETIME, move);
     trace = SV_PushEntity(ent, move);
+
+    // Buried in solid and going nowhere.  SV_PushEntity has already refused the
+    // move; treat whatever we are inside as the ground so gravity stops piling
+    // onto the velocity, exactly as the rerelease does ("don't build up velocity
+    // if we're stuck").  Without this a corpse that ends its death animation
+    // even slightly inside the floor sinks forever - see the note in
+    // SV_PushEntity for why the trace does not stop it.
+    if (trace.allsolid) {
+        if (trace.ent) {
+            ent->groundentity = trace.ent;
+            ent->groundentity_linkcount = trace.ent->linkcount;
+        }
+        VectorClear(ent->velocity);
+        VectorClear(ent->avelocity);
+        gi.linkentity(ent);
+    }
+
+    // Belt and braces for the other way a body can be lost: falling out through
+    // a leak instead of into a brush.  A BSP cannot describe anything past
+    // +/-4096, and the network origin is a 1/8-unit short, so once an entity is
+    // below that it can never be clipped or drawn where it really is - it just
+    // wraps around and appears to fall from the ceiling again.  Nothing the
+    // player should ever see, so retire it.  Clients are never touched: a player
+    // who falls out of the level is the map's own kill trigger's business.
+    // Debris only - MOVETYPE_TOSS/BOUNCE/EXPLODE are the corpses, gibs and
+    // dropped items.  Projectiles are left alone deliberately: several of them
+    // are pointed AT by their owner (the parasite keeps self->proboscus), and
+    // freeing one out from under that pointer would be a worse bug than the
+    // one being fixed.
+    if (ent->s.origin[2] < -4096 && !ent->client &&
+        (ent->movetype == MOVETYPE_TOSS || ent->movetype == MOVETYPE_BOUNCE ||
+         ent->movetype == MOVETYPE_EXPLODE)) {
+        G_FreeEdict(ent);
+        return;
+    }
 	
 	vec3_t res;
 
@@ -738,7 +789,7 @@ void SV_Physics_Toss(edict_t *ent)
     if (!ent->inuse)
         return;
 
-    if (trace.fraction < 1) {
+    if (trace.fraction < 1 && !trace.allsolid) {
         if (ent->movetype == MOVETYPE_WALLBOUNCE)
             backoff = 2.0f;
         else if (ent->movetype == MOVETYPE_BOUNCE)

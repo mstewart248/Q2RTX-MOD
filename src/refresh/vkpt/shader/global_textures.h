@@ -35,6 +35,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define IMG_WIDTH_TAA  (qvk.extent_taa_images.width)
 #define IMG_HEIGHT_TAA  (qvk.extent_taa_images.height)
 
+/* Big enough for whichever image the post-effect chain is working on. Without
+   DLSS that is TAA_OUTPUT, sized IMG_WIDTH_TAA; with it, DLSS_OUTPUT, sized
+   IMG_WIDTH_UNSCALED - and with DLSS on, extent_taa_images is the RENDER
+   extent, so neither one dominates the other. One image at the max of the two
+   serves both paths and is allocated once. */
+#define IMG_WIDTH_POSTFX  (max(qvk.extent_taa_images.width,  qvk.extent_unscaled.width))
+#define IMG_HEIGHT_POSTFX (max(qvk.extent_taa_images.height, qvk.extent_unscaled.height))
+
 /* These are images that are to be used as render targets and buffers, but not textures. */
 #define LIST_IMAGES \
 	IMG_DO(PT_MOTION,                  0, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
@@ -106,6 +114,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_FG_OUTPUT5,           66, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
 	IMG_DO(DLSS_FG_DEPTH,             67, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(PT_PRIMARY_DIST,           68, R16_SFLOAT,          r32f,    IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(MOTION_BLUR,               69, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_POSTFX,    IMG_HEIGHT_POSTFX) \
 
 
 /* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
@@ -132,7 +141,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 /* DLSS_FG_DEPTH: frame generation needs a DIFFERENT depth space than super resolution
    and ray reconstruction, so it gets its own image instead of sharing DLSS_DEPTH. The
    why is at the FG depth store in checkerboard_interleave.comp. */
-#define NUM_IMAGES_BASE     69
+/* MOTION_BLUR: scratch for the motion blur pass. A gather blur reads a
+   neighbourhood of the image it is blurring, so it cannot write back into that
+   image - every pixel would race against taps its neighbours are still taking.
+   The pass writes here and the result is copied over the colour image
+   afterwards, which is also what lets the blur be skipped for a frame without
+   leaving a stale image anywhere. Same format as both possible sources so the
+   copy is a straight blit. */
+#define NUM_IMAGES_BASE     70
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \

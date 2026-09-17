@@ -368,6 +368,12 @@ draw_profiler(int enable_asvgf)
 		PROFILER_DO(PROFILER_MGPU_TRANSFERS, 1);
 	}
 	PROFILER_DO(PROFILER_INTERLEAVE, 1);
+	// Only listed while it is actually running - an unconditional row would
+	// read 0.00 for everyone who has motion blur off, which is most people.
+	if (vkpt_motion_blur_is_enabled())
+	{
+		PROFILER_DO(PROFILER_MOTION_BLUR, 1);
+	}
 	PROFILER_DO(PROFILER_BLOOM, 1);
 	PROFILER_DO(PROFILER_TONE_MAPPING, 2);
 	if(cvar_flt_fsr_enable->integer != 0)

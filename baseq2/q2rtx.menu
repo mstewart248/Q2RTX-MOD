@@ -164,7 +164,7 @@ begin video
         range --status "(tm_reinhard)" -p -f "%.0f%%" "contrast" tm_reinhard 0 1 0.1
 		range --status "(pt_texture_lod_bias)" "texture LOD bias" pt_texture_lod_bias -2 2 0.5
         pairs --status "(flt_taa)" "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
-        pairs --status "(pt_dlss)" "DLSS 2.0" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
+        pairs --status "(pt_dlss)" "DLSS Super Resolution" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
         // Ray Reconstruction REPLACES DLSS's denoiser, so it is meaningless without
         // DLSS itself. This is a NESTED condition inside `ifeq vid_rtx 1`; see
         // menuConditionSet_t in ui.h.
@@ -206,6 +206,21 @@ begin video
         range --status "brightness of the UNADOPTED map lights only. Adopted ones use their own brightness (cl_dynamic_light_scale)" \
             "map light scale" cl_dynamic_light_scale 0 2 0.1
         toggle --status "(bloom_enable)" "bloom" bloom_enable
+        // MOTION BLUR. The sliders are nested inside the toggle so the page
+        // does not carry four dead rows for everyone who leaves it off - see
+        // menuConditionSet_t in ui.h for how the nesting works.
+        toggle --status "smears each pixel along the path its surface swept across the screen, using the path tracer's own motion vectors. Runs after the denoiser and before bloom, so a moving light streaks and then blooms along the streak (pt_motion_blur)" \
+            "motion blur" pt_motion_blur
+        ifneq pt_motion_blur 0
+        range --status "how long the shutter stays open, as a fraction of one frame. 100% smears a surface across its entire per-frame movement. Above about 70% reads as smeared rather than fast (pt_motion_blur_strength)" \
+            -p -f "%.0f%%" "motion blur strength" pt_motion_blur_strength 0 1 0.05
+        range --status "samples taken along the blur. The cost knob: below 8 a fast pan shows the samples as separate ghosts, above 24 nothing visibly improves (pt_motion_blur_samples)" \
+            -f "%.0f" "motion blur quality" pt_motion_blur_samples 4 32 2
+        range --status "how much LESS a moving object blurs than the world around it. 0 blurs everything by its true screen motion, which is the honest answer and also makes a strafing enemy hardest to track. Costs a little to evaluate - 0 skips that work entirely (pt_motion_blur_dynamic)" \
+            -p -f "%.0f%%" "hold moving objects sharp" pt_motion_blur_dynamic 0 1 0.05
+        range --status "longest blur allowed, as a fraction of screen height. A safety rail, not a quality setting: a teleport or a respawn produces a screen-long motion vector, and this stops that one frame becoming a full-screen smear (pt_motion_blur_max)" \
+            -p -f "%.0f%%" "maximum blur length" pt_motion_blur_max 0.01 0.25 0.01
+        endif
         blank
         pairs --status "(pt_restir)" "ReStir Direct Illuminaton" pt_restir off 0 on 1
         toggle --status "(flt_enable)" "denoiser" flt_enable
@@ -397,143 +412,233 @@ renderer to do with any of it.
 Everything below the toggle is nested behind it for the same reason the fog menu
 nests: with the effect off, none of these controls does anything, and a list of
 inert sliders is worse than a short list.
+
+AND IT IS A HUB, not a page. There are sixty-odd settings here and they ran off
+the bottom of the screen, where a setting might as well not exist. So this page
+carries only the two switches that decide whether any of the rest applies - blood
+droplets at all, and whether they collide with the world - and hands out the rest
+by what part of a droplet's life they govern: what it looks like in the air, the
+mark it leaves when it lands, what that mark does while it is still moving, what
+happens when it meets blood already there, and what you hear. A setting lives on
+exactly one of those pages.
 */
 begin blood
     background #212F3CD0
     style --compact
-    title "Blood Droplets"
+    title "Blood"
     blank
     toggle --status "draw blood as shaded, path-traced spheres instead of flat particle sprites - they take light, cast shadows and appear in reflections. Read when a droplet SPAWNS, so toggling it leaves blood already in the air alone (cl_blood_spheres)" \
-        "blood droplets" cl_blood_spheres
+            "blood droplets" cl_blood_spheres
 
     ifeq cl_blood_spheres 1
         blank
-        range --status "size of a droplet in world units, before the per-droplet random variation (cl_blood_sphere_radius)" \
-            "droplet size" cl_blood_sphere_radius 0.2 4 0.2
-        blank
-        range --status "surface roughness. Low values give the tight highlight that reads as WET; much above 0.2 and a droplet stops looking like liquid (pt_blood_roughness)" \
-            "wetness" pt_blood_roughness 0.01 0.4 0.01
-        range --status "strength of the specular highlight. Above 1 on purpose - a droplet is small and its highlight is most of what you see of it (pt_blood_specular)" \
-            "highlight strength" pt_blood_specular 0 4 0.1
-        blank
-        range --status "how hard the animated water-normal ripple perturbs the surface. 0 is a perfectly smooth ball (pt_blood_normal_strength)" \
-            "ripple strength" pt_blood_normal_strength 0 1 0.05
-        range --status "size of the ripple features on a droplet. Low values give a few big wobbles, high values a fine seethe (pt_blood_normal_scale)" \
-            "ripple detail" pt_blood_normal_scale 0.2 6 0.2
-        range --status "how fast the ripple animates (pt_blood_normal_speed)" \
-            "ripple speed" pt_blood_normal_speed 0 4 0.25
-
-        pairs --status "force every droplet to one colour. \"as the game sends it\" leaves red blood red and the few green-blood effects green. Each droplet still gets its own light or dark shade, so a burst does not read as sixty copies of one object. Affects blood in the air as well as on the ground - the darkness settings further down apply to landed blood only (cl_blood_color)" \
-            "blood colour" cl_blood_color "as the game sends it" 0 "red" 1 "green" 2 "blue" 3 "yellow" 4 "purple" 5 "black - oil" 6
-        blank
-        pairs --status "triangles per droplet up close, as airborne bead / landed puddle. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading - and for a splat the outline is the RIM of a disc, which is why a puddle gets the larger share (pt_blood_tess)" \
-            "droplet detail" pt_blood_tess "low - 20 / 64 triangles" 0 "medium - 80 / 128" 1 "high - 320 / 320" 2
-        range --status "a droplet of the standard size closer than this gets the full detail above. The level is picked from how much SCREEN a mark covers, not from distance alone, so a pool that has merged twenty droplets holds its detail twenty times further away and a small one drops a level sooner. Every expense scales with triangle count, so this is the knob that keeps a faceful of blood affordable (pt_blood_lod_near)" \
-            "full detail within" pt_blood_lod_near 32 1024 32
-        range --status "a droplet of the standard size past this distance drops to the lowest detail, where its outline is a couple of pixels anyway. Scaled by size like the setting above (pt_blood_lod_far)" \
-            "lowest detail beyond" pt_blood_lod_far 64 2048 64
-        blank
-        toggle --status "droplets collide with walls, floors, doors and platforms, splat where they land and run down under gravity. Off makes them fall straight through the world (cl_blood_collision)" \
+        toggle --status "droplets collide with walls, floors, doors and platforms, splat where they land and run down under gravity. Off makes them fall straight through the world - and with nothing to land on there are no splats, no runs, no pools and no sounds, which is why the pages below come and go with it (cl_blood_collision)" \
             "collide with the world" cl_blood_collision
+        blank
+        action --align "droplet look and detail..." pushmenu blood_droplets
 
         ifeq cl_blood_collision 1
-            toggle --status "landed blood never fades. Also FASTER, not just better looking - a settled splat costs nothing, while a fading one changes every frame and is rebuilt every frame. Capped by the droplet budget: once full, the oldest splat is recycled (g_no_janitor)" \
-                "no janitor" g_no_janitor
+            action --align "splats and puddles..." pushmenu blood_splats
+            action --align "runs and streaks..." pushmenu blood_runs
+            action --align "pooling and edges..." pushmenu blood_pooling
+            action --align "blood sound effects..." pushmenu blood_sound
+        endif
+    endif
+end
 
-            ifeq g_no_janitor 0
-                range --status "how long a splat stays on the surface after it lands, in seconds. Airborne droplets keep their own much shorter life (cl_blood_splat_life)" \
-                    "splat lifetime" cl_blood_splat_life 1 30 1
-            endif
+/*
+DROPLET LOOK - what a bead of blood IS, before it has landed on anything.
+Everything here is read while the droplet is in flight or drawn wherever it
+ended up, so none of it depends on collision being on.
+*/
+begin blood_droplets
+    background #212F3CD0
+    style --compact
+    title "Blood Droplets"
+    blank
+    range --status "size of a droplet in world units, before the per-droplet random variation (cl_blood_sphere_radius)" \
+        "droplet size" cl_blood_sphere_radius 0.2 4 0.2
+    blank
+    range --status "surface roughness. Low values give the tight highlight that reads as WET; much above 0.2 and a droplet stops looking like liquid (pt_blood_roughness)" \
+        "wetness" pt_blood_roughness 0.01 0.4 0.01
+    range --status "strength of the specular highlight. Above 1 on purpose - a droplet is small and its highlight is most of what you see of it (pt_blood_specular)" \
+        "highlight strength" pt_blood_specular 0 4 0.1
+    blank
+    range --status "how hard the animated water-normal ripple perturbs the surface. 0 is a perfectly smooth ball (pt_blood_normal_strength)" \
+        "ripple strength" pt_blood_normal_strength 0 1 0.05
+    range --status "size of the ripple features on a droplet. Low values give a few big wobbles, high values a fine seethe (pt_blood_normal_scale)" \
+        "ripple detail" pt_blood_normal_scale 0.2 6 0.2
+    range --status "how fast the ripple animates (pt_blood_normal_speed)" \
+        "ripple speed" pt_blood_normal_speed 0 4 0.25
 
-            range --status "how many blood droplets and splats may exist at once. With no janitor on, this is what bounds the floor - the oldest splat is recycled once it is reached (cl_blood_max)" \
-                "droplet budget" cl_blood_max 64 512 32
-            range --status "height of a landed puddle as a fraction of its width. Low values lie flat on the floor; high values sit up off it like a bead (cl_blood_flatten)" \
-                "puddle height" cl_blood_flatten 0.04 1 0.02
-            range --status "width of a landed puddle, as a multiple of the droplet that made it. Independent of the height above - neither drags the other with it (cl_blood_splat_size)" \
-                "puddle width" cl_blood_splat_size 0.5 5 0.25
-            range --status "how far a puddle is sunk into the surface, as a fraction of its height. Its job is to bury the puddle rim so it feathers into the floor instead of ending in a visible lip (pt_blood_puddle_sink)" \
-                "puddle sink" pt_blood_puddle_sink 0 1 0.05
-            range --status "how irregular a landed puddle outline is. A perfect ellipse reads as a squashed ball however well it is lit; a wandering rim reads as something that splashed (pt_blood_wobble)" \
-                "puddle irregularity" pt_blood_wobble 0 0.9 0.05
-            range --status "largest wobble lobe in WORLD UNITS, whatever the puddle's size. The setting above is a FRACTION of the radius, which is the right unit for a droplet and the wrong one for a pool that has absorbed twenty of them - at a high pooling limit it pushes the rim in and out by several units and the pool reads as an amoeba. This holds the lobes to the size of a splash as a pool grows, while a lone droplet never reaches it. 0 removes the limit (pt_blood_wobble_max)" \
-                "largest wobble" pt_blood_wobble_max 0 12 0.5
-            range --status "how dark landed blood is drawn, against the droplet that made it. Blood in the air is a lit bead and reads correctly bright; blood on a floor is a thin absorbing film over a surface, and drawing it the same saturated red is most of what makes a pool look like spilled paint. Airborne droplets are not affected. 1 is the old behaviour (pt_blood_splat_dark)" \
-                "landed blood darkness" pt_blood_splat_dark 0.05 1 0.05
-            range --status "how dark the feather edge of a puddle is, where the film is thinnest. Well below the setting above on purpose - a hard bright rim is the other half of what reads as a decal (pt_blood_thin_dark)" \
-                "edge darkness" pt_blood_thin_dark 0 1 0.02
-            range --status "how far the dark edge reaches in from the rim. The puddle's dome is squashed by the height setting, so the thickness it is measured from saturates quickly and values above 1 are what give the edge a visible width (pt_blood_thin_power)" \
-                "dark edge width" pt_blood_thin_power 0.5 6 0.25
-            range --status "how solid landed blood is. Below 1 the surface underneath is traced through the splat, so the floor's own texture and lighting show through it. Droplets in the AIR stay solid whatever this says - a bead in flight is a body of liquid, and seeing through a spray would mean tracing through sixty of them. Landed blood stops casting shadows below 1, which it has to: a splat lies flush on the floor, so the floor you would see through it is the floor it is shadowing (pt_blood_splat_alpha)" \
-                "landed blood opacity" pt_blood_splat_alpha 0.2 1 0.05
+    pairs --status "force every droplet to one colour. \"as the game sends it\" leaves red blood red and the few green-blood effects green. Each droplet still gets its own light or dark shade, so a burst does not read as sixty copies of one object. Affects blood in the air as well as on the ground - the darkness settings further down apply to landed blood only (cl_blood_color)" \
+        "blood colour" cl_blood_color "as the game sends it" 0 "red" 1 "green" 2 "blue" 3 "yellow" 4 "purple" 5 "black - oil" 6
+    blank
+    pairs --status "triangles per droplet up close, as airborne bead / landed puddle. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading - and for a splat the outline is the RIM of a disc, which is why a puddle gets the larger share (pt_blood_tess)" \
+        "droplet detail" pt_blood_tess "low - 20 / 64 triangles" 0 "medium - 80 / 128" 1 "high - 320 / 320" 2
+    range --status "a droplet of the standard size closer than this gets the full detail above. The level is picked from how much SCREEN a mark covers, not from distance alone, so a pool that has merged twenty droplets holds its detail twenty times further away and a small one drops a level sooner. Every expense scales with triangle count, so this is the knob that keeps a faceful of blood affordable (pt_blood_lod_near)" \
+        "full detail within" pt_blood_lod_near 32 1024 32
+    range --status "a droplet of the standard size past this distance drops to the lowest detail, where its outline is a couple of pixels anyway. Scaled by size like the setting above (pt_blood_lod_far)" \
+        "lowest detail beyond" pt_blood_lod_far 64 2048 64
+    blank
+    range --status "how long a droplet may stay in the air before giving up. This is a backstop for blood thrown somewhere it can never land - droplets do NOT fade in flight, they persist until they hit something (cl_blood_air_life)" \
+        "max time in the air" cl_blood_air_life 1 60 1
+end
+
+/*
+SPLATS AND PUDDLES - the mark a droplet leaves once it has landed, and how long
+it is allowed to stay there. The shape controls here are the LANDING shape; what
+a mark does afterwards, once it starts moving, is the runs page.
+*/
+begin blood_splats
+    background #212F3CD0
+    style --compact
+    title "Blood Splats and Puddles"
+    blank
+    toggle --status "landed blood never fades. Also FASTER, not just better looking - a settled splat costs nothing, while a fading one changes every frame and is rebuilt every frame. Capped by the droplet budget: once full, the oldest splat is recycled (g_no_janitor)" \
+        "no janitor" g_no_janitor
+
+    ifeq g_no_janitor 0
+        range --status "how long a splat stays on the surface after it lands, in seconds. Airborne droplets keep their own much shorter life (cl_blood_splat_life)" \
+            "splat lifetime" cl_blood_splat_life 1 30 1
+    endif
+
+    range --status "how many blood droplets and splats may exist at once. With no janitor on, this is what bounds the floor - the oldest splat is recycled once it is reached (cl_blood_max)" \
+        "droplet budget" cl_blood_max 64 512 32
+    range --status "height of a landed puddle as a fraction of its width. Low values lie flat on the floor; high values sit up off it like a bead (cl_blood_flatten)" \
+        "puddle height" cl_blood_flatten 0.04 1 0.02
+    range --status "width of a landed puddle, as a multiple of the droplet that made it. Independent of the height above - neither drags the other with it (cl_blood_splat_size)" \
+        "puddle width" cl_blood_splat_size 0.5 5 0.25
+    range --status "how far a puddle is sunk into the surface, as a fraction of its height. Its job is to bury the puddle rim so it feathers into the floor instead of ending in a visible lip (pt_blood_puddle_sink)" \
+        "puddle sink" pt_blood_puddle_sink 0 1 0.05
+    range --status "how irregular a landed puddle outline is. A perfect ellipse reads as a squashed ball however well it is lit; a wandering rim reads as something that splashed (pt_blood_wobble)" \
+        "puddle irregularity" pt_blood_wobble 0 0.9 0.05
+    range --status "largest wobble lobe in WORLD UNITS, whatever the puddle's size. The setting above is a FRACTION of the radius, which is the right unit for a droplet and the wrong one for a pool that has absorbed twenty of them - at a high pooling limit it pushes the rim in and out by several units and the pool reads as an amoeba. This holds the lobes to the size of a splash as a pool grows, while a lone droplet never reaches it. 0 removes the limit (pt_blood_wobble_max)" \
+        "largest wobble" pt_blood_wobble_max 0 12 0.5
+    range --status "how dark landed blood is drawn, against the droplet that made it. Blood in the air is a lit bead and reads correctly bright; blood on a floor is a thin absorbing film over a surface, and drawing it the same saturated red is most of what makes a pool look like spilled paint. Airborne droplets are not affected. 1 is the old behaviour (pt_blood_splat_dark)" \
+        "landed blood darkness" pt_blood_splat_dark 0.05 1 0.05
+    range --status "how dark the feather edge of a puddle is, where the film is thinnest. Well below the setting above on purpose - a hard bright rim is the other half of what reads as a decal (pt_blood_thin_dark)" \
+        "edge darkness" pt_blood_thin_dark 0 1 0.02
+    range --status "how far the dark edge reaches in from the rim. The puddle's dome is squashed by the height setting, so the thickness it is measured from saturates quickly and values above 1 are what give the edge a visible width (pt_blood_thin_power)" \
+        "dark edge width" pt_blood_thin_power 0.5 6 0.25
+    range --status "how solid landed blood is. Below 1 the surface underneath is traced through the splat, so the floor's own texture and lighting show through it. Droplets in the AIR stay solid whatever this says - a bead in flight is a body of liquid, and seeing through a spray would mean tracing through sixty of them. Landed blood stops casting shadows below 1, which it has to: a splat lies flush on the floor, so the floor you would see through it is the floor it is shadowing (pt_blood_splat_alpha)" \
+        "landed blood opacity" pt_blood_splat_alpha 0.2 1 0.05
+    blank
+    range --status "how far a splat elongates along the direction the droplet was travelling. 1 is a round dot; higher values leave a directional smear on glancing impacts, and none on head-on ones (cl_blood_stretch)" \
+        "splatter directionality" cl_blood_stretch 1 5 0.25
+end
+
+/*
+RUNS AND STREAKS - blood that has landed and is still moving. Gravity acts
+entirely along a wall and not at all across a floor, which is why almost
+everything here only shows itself on a vertical surface.
+*/
+begin blood_runs
+    background #212F3CD0
+    style --compact
+    title "Blood Runs and Streaks"
+    blank
+    range --status "drag on a droplet running down a wall. Low values let it run a long way before stopping, high values stop it near the impact (cl_blood_slide)" \
+        "run-down drag" cl_blood_slide 0 10 0.5
+    range --status "fastest blood is allowed to run, in units per second. Drag alone settles a run at gravity divided by the drag above - about 320 u/s down a vertical wall, which crosses a room-height wall in a fifth of a second. Blood does not do that: a film running under gravity is limited by its own thickness. The shape of the mark is unchanged - it is drawn out by distance run and not by time - so a slower run simply takes longer to leave the same streak. 0 removes the cap (cl_blood_slide_speed)" \
+        "fastest run-down" cl_blood_slide_speed 0 320 4
+    blank
+    range --status "how fast a pool that is on the move swings its smear round to the direction it is now travelling. A mark points the way the blood went, and blood still running has a new way. 0 freezes the smear at the impact angle, which is what it used to do (cl_blood_slide_turn)" \
+        "smear follows the slide" cl_blood_slide_turn 0 40 2
+    range --status "how far a long run may draw a pool out, as a multiple of its width. The extra length trails BEHIND the pool, so it reads as a smear being drawn rather than a blob being carried. Set to 1 to keep the landing shape (cl_blood_slide_stretch)" \
+        "run-down streak length" cl_blood_slide_stretch 1 8 0.25
+    range --status "distance a pool has to travel to get most of the way to that streak length, in units. Short values streak a pool out almost at once; long ones need a proper run down a wall (cl_blood_slide_len)" \
+        "streak builds over" cl_blood_slide_len 4 128 4
+    range --status "distance over which a running mark NARROWS across its travel, in units - the companion to the length above. A run is fed by the blood moving through it, so what it leaves behind is about as wide as that stream, not as wide as the blot it is draining: a hand-width smear that starts running down a wall pulls into a rivulet rather than sliding down at full width. 0 keeps the width it landed with all the way down (cl_blood_slide_narrow)" \
+        "streak narrows over" cl_blood_slide_narrow 0 128 4
+    range --status "seconds a pool takes to gather back up once it stops moving. A streak is what blood on the MOVE looks like; what is left at the bottom of a slope is a POOL, and it also asks once, when it has finished gathering, whether it has come to rest against blood already lying there. 0 freezes the streak where it stopped (cl_blood_slide_relax)" \
+        "pool gathers when it stops" cl_blood_slide_relax 0 6 0.2
+    range --status "longest a mark may ever be drawn, tip to tip, in units. A single droplet is free to streak out to the full run-down length, but a pool that has gathered up is forced round - a big pool drawn as a long sliver lies across surface junctions and flickers. 0 removes the limit (cl_blood_streak_len)" \
+        "longest streak" cl_blood_streak_len 0 64 4
+    range --status "how much further a mark may be drawn on a vertical wall than on a flat floor, as a multiple. Gravity acts entirely ALONG a wall, so a run there keeps being drawn out; on a floor none of it does, nothing pulls the film anywhere and the blood spreads instead. 1 treats every surface the same (cl_blood_streak_wall)" \
+        "wall streaks run" cl_blood_streak_wall 1 12 0.5
+end
+
+/*
+POOLING AND EDGES - what happens when blood meets blood, and when it meets the
+end of the surface it is lying on. Both are nested behind their own toggle for
+the usual reason: with the behaviour off, none of its settings does anything.
+*/
+begin blood_pooling
+    background #212F3CD0
+    style --compact
+    title "Blood Pooling and Edges"
+    blank
+    toggle --status "a droplet landing on an existing splat merges into it and grows it, instead of stacking another overlapping disc in the same place (cl_blood_pool)" \
+        "pool together" cl_blood_pool
+
+    ifeq cl_blood_pool 1
+        range --status "how far apart two splats can be and still merge, as a multiple of their width. Around 2 gathers a spray into pools; 1 needs them to physically overlap and almost nothing merges (cl_blood_pool_dist)" \
+            "pooling reach" cl_blood_pool_dist 0.5 4 0.25
+        range --status "largest a pool may grow, as a multiple of one droplet. Once a pool reaches it, further droplets start new splats beside it instead (cl_blood_pool_max)" \
+            "largest pool" cl_blood_pool_max 1 24 0.5
+        range --status "how much of each absorbed droplet a pool actually gains, as a fraction of its area. At 1 a pool is exactly as wide as the blood in it; lower values mean the first droplets still grow it visibly and the hundredth one barely moves it (cl_blood_pool_gain)" \
+            "each drop adds" cl_blood_pool_gain 0.1 1 0.05
+    endif
+
+    toggle --status "a splat lands where its CENTRE lands, so one that lands near a ledge draws its far half out over the drop. This measures how far the surface really reaches around the puddle: a pool hanging well over the side slides off it, and whatever stays has its outline clipped to the edge (cl_blood_edge)" \
+        "blood knows about edges" cl_blood_edge
+
+    ifeq cl_blood_edge 1
+        range --status "how much of a pool has to be over thin air before the whole thing lets go and slides off, as a fraction of its rim. A quarter is clearly hanging off the side; at 1 nothing ever slides and every overhang is handled by clipping the outline alone (cl_blood_edge_slide)" \
+            "slides off when this much overhangs" cl_blood_edge_slide 0 1 0.05
+        range --status "the shove a pool leaves with, along the surface. It is a slide, not a jump - enough to carry the pool past its own rim against the run-down drag, and no more. Everything after that is gravity (cl_blood_edge_push)" \
+            "slide-off speed" cl_blood_edge_push 10 200 10
+        range --status "how many times one resting place may be argued with. A pool in a corner can measure as overhanging in a direction that gets it nowhere; out of tries it simply stays, clipped to the edge (cl_blood_edge_tries)" \
+            "slide-off attempts" cl_blood_edge_tries 0 8 1
+        range --status "how many puddles are measured per frame. Measuring happens once in a puddle life, but one wound lands sixty droplets between two frames - spreading the work is what keeps this off the frame time. Raise it if puddles clip or slide a moment late (cl_blood_edge_budget)" \
+            "edges measured per frame" cl_blood_edge_budget 1 64 1
+        range --status "how far a pool that has run into a wall may spread ALONG the foot of it, as a multiple of the width it would have had in open floor. Blood stops at a wall rather than drawing out through it, and the blood that cannot go through has to go somewhere - sideways along the wall is where. 1 leaves the pool simply clipped, which is still not clipping through (cl_blood_wall_spread)" \
+            "pools spread along walls" cl_blood_wall_spread 1 4 0.1
+    endif
+end
+
+/*
+BLOOD SOUND EFFECTS.
+
+THERE ARE TWO BLOOD SOUNDS AND THIS PAGE IS LAID OUT TO SAY SO, because not
+knowing that is what makes the spacing settings look broken. The impact is a
+droplet hitting a surface; the pooling sound is a droplet merging into blood that
+is already there, and during a fight the pooling one is by far the commoner of the
+two. They keep separate timers on purpose, so neither can silence the other - but
+that also means their rates ADD, and raising the impact spacing alone only ever
+thinned the quieter half.
+
+Hence the overall spacing at the top: one gap that every blood sound has to obey
+whatever kind it is. It is the one to reach for when the answer is simply fewer.
+*/
+begin blood_sound
+    background #212F3CD0
+    style --compact
+    title "Blood Sound Effects"
+    blank
+    toggle --status "wet sounds when blood lands on something and when it gathers into a pool. Both are rate limited - a single wound throws sixty droplets, and sixty voices would drop the gunfire rather than making the blood loud (cl_blood_sound)" \
+        "blood sounds" cl_blood_sound
+
+    ifeq cl_blood_sound 1
         blank
-        toggle --status "a wet impact when blood lands on something. Heavily rate limited - a single wound throws sixty droplets, so this is one splat per burst rather than sixty (cl_blood_sound)" \
-            "impact sound" cl_blood_sound
-
-        ifeq cl_blood_sound 1
-            range --status "loudness of the blood impact sound (cl_blood_sound_volume)" \
-                "impact volume" cl_blood_sound_volume 0 1 0.05
-            range --status "shortest gap between two impact sounds, in milliseconds. Low values turn a heavy fight into a continuous wet crackle; high values give one splat per burst (cl_blood_sound_gap)" \
-                "impact spacing" cl_blood_sound_gap 20 500 10
-            range --status "how many splats close enough to hear go by for each impact sound played. A thinning on top of the spacing above: the spacing decides how many impacts CAN be heard, this decides how sparse the ones you do hear feel. 1 plays one for every splat (cl_blood_sound_skip)" \
-                "impact every Nth splat" cl_blood_sound_skip 1 8 1
-            range --status "shortest gap between two POOLING sounds, in milliseconds - the softer sound of a droplet joining a puddle. Much denser than the impact spacing on purpose, since this one reads as texture when it overlaps. 0 plays one per droplet, but a measured burst merged 668 times in a second, and 668 voices drop the gunfire rather than making the blood loud (cl_blood_sound_pool_gap)" \
-                "pooling spacing" cl_blood_sound_pool_gap 0 500 10
-            range --status "how quickly a blood sound fades with distance. Quake II's falloff is LINEAR, not inverse-square, so it reaches exact silence at a fixed range and low settings are nearly flat: 1 is audible to 2080 units, 2 to 1080, and 3 - the engine's short-range setting - to 413, which is the only one with a real gradient across the distances blood actually lands at. Distant splats are culled wherever this reaches silence, so raising it also stops far-off blood from using up the spacing above (cl_blood_sound_attn)" \
-                "distance falloff" cl_blood_sound_attn 1 3 0.5
-        endif
-            range --status "drag on a droplet running down a wall. Low values let it run a long way before stopping, high values stop it near the impact (cl_blood_slide)" \
-                "run-down drag" cl_blood_slide 0 10 0.5
-            range --status "fastest blood is allowed to run, in units per second. Drag alone settles a run at gravity divided by the drag above - about 320 u/s down a vertical wall, which crosses a room-height wall in a fifth of a second. Blood does not do that: a film running under gravity is limited by its own thickness. The shape of the mark is unchanged - it is drawn out by distance run and not by time - so a slower run simply takes longer to leave the same streak. 0 removes the cap (cl_blood_slide_speed)" \
-                "fastest run-down" cl_blood_slide_speed 0 320 4
-            range --status "how long a droplet may stay in the air before giving up. This is a backstop for blood thrown somewhere it can never land - droplets do NOT fade in flight, they persist until they hit something (cl_blood_air_life)" \
-                "max time in the air" cl_blood_air_life 1 60 1
-            blank
-            range --status "how far a splat elongates along the direction the droplet was travelling. 1 is a round dot; higher values leave a directional smear on glancing impacts, and none on head-on ones (cl_blood_stretch)" \
-                "splatter directionality" cl_blood_stretch 1 5 0.25
-            blank
-            range --status "how fast a pool that is on the move swings its smear round to the direction it is now travelling. A mark points the way the blood went, and blood still running has a new way. 0 freezes the smear at the impact angle, which is what it used to do (cl_blood_slide_turn)" \
-                "smear follows the slide" cl_blood_slide_turn 0 40 2
-            range --status "how far a long run may draw a pool out, as a multiple of its width. The extra length trails BEHIND the pool, so it reads as a smear being drawn rather than a blob being carried. Set to 1 to keep the landing shape (cl_blood_slide_stretch)" \
-                "run-down streak length" cl_blood_slide_stretch 1 8 0.25
-            range --status "distance a pool has to travel to get most of the way to that streak length, in units. Short values streak a pool out almost at once; long ones need a proper run down a wall (cl_blood_slide_len)" \
-                "streak builds over" cl_blood_slide_len 4 128 4
-            range --status "distance over which a running mark NARROWS across its travel, in units - the companion to the length above. A run is fed by the blood moving through it, so what it leaves behind is about as wide as that stream, not as wide as the blot it is draining: a hand-width smear that starts running down a wall pulls into a rivulet rather than sliding down at full width. 0 keeps the width it landed with all the way down (cl_blood_slide_narrow)" \
-                "streak narrows over" cl_blood_slide_narrow 0 128 4
-            range --status "seconds a pool takes to gather back up once it stops moving. A streak is what blood on the MOVE looks like; what is left at the bottom of a slope is a POOL, and it also asks once, when it has finished gathering, whether it has come to rest against blood already lying there. 0 freezes the streak where it stopped (cl_blood_slide_relax)" \
-                "pool gathers when it stops" cl_blood_slide_relax 0 6 0.2
-            range --status "longest a mark may ever be drawn, tip to tip, in units. A single droplet is free to streak out to the full run-down length, but a pool that has gathered up is forced round - a big pool drawn as a long sliver lies across surface junctions and flickers. 0 removes the limit (cl_blood_streak_len)" \
-                "longest streak" cl_blood_streak_len 0 64 4
-            range --status "how much further a mark may be drawn on a vertical wall than on a flat floor, as a multiple. Gravity acts entirely ALONG a wall, so a run there keeps being drawn out; on a floor none of it does, nothing pulls the film anywhere and the blood spreads instead. 1 treats every surface the same (cl_blood_streak_wall)" \
-                "wall streaks run" cl_blood_streak_wall 1 12 0.5
-            blank
-            toggle --status "a droplet landing on an existing splat merges into it and grows it, instead of stacking another overlapping disc in the same place (cl_blood_pool)" \
-                "pool together" cl_blood_pool
-
-            ifeq cl_blood_pool 1
-                range --status "how far apart two splats can be and still merge, as a multiple of their width. Around 2 gathers a spray into pools; 1 needs them to physically overlap and almost nothing merges (cl_blood_pool_dist)" \
-                    "pooling reach" cl_blood_pool_dist 0.5 4 0.25
-                range --status "largest a pool may grow, as a multiple of one droplet. Once a pool reaches it, further droplets start new splats beside it instead (cl_blood_pool_max)" \
-                    "largest pool" cl_blood_pool_max 1 24 0.5
-                range --status "how much of each absorbed droplet a pool actually gains, as a fraction of its area. At 1 a pool is exactly as wide as the blood in it; lower values mean the first droplets still grow it visibly and the hundredth one barely moves it (cl_blood_pool_gain)" \
-                    "each drop adds" cl_blood_pool_gain 0.1 1 0.05
-            endif
-
-            toggle --status "a splat lands where its CENTRE lands, so one that lands near a ledge draws its far half out over the drop. This measures how far the surface really reaches around the puddle: a pool hanging well over the side slides off it, and whatever stays has its outline clipped to the edge (cl_blood_edge)" \
-                "blood knows about edges" cl_blood_edge
-
-            ifeq cl_blood_edge 1
-                range --status "how much of a pool has to be over thin air before the whole thing lets go and slides off, as a fraction of its rim. A quarter is clearly hanging off the side; at 1 nothing ever slides and every overhang is handled by clipping the outline alone (cl_blood_edge_slide)" \
-                    "slides off when this much overhangs" cl_blood_edge_slide 0 1 0.05
-                range --status "the shove a pool leaves with, along the surface. It is a slide, not a jump - enough to carry the pool past its own rim against the run-down drag, and no more. Everything after that is gravity (cl_blood_edge_push)" \
-                    "slide-off speed" cl_blood_edge_push 10 200 10
-                range --status "how many times one resting place may be argued with. A pool in a corner can measure as overhanging in a direction that gets it nowhere; out of tries it simply stays, clipped to the edge (cl_blood_edge_tries)" \
-                    "slide-off attempts" cl_blood_edge_tries 0 8 1
-                range --status "how many puddles are measured per frame. Measuring happens once in a puddle life, but one wound lands sixty droplets between two frames - spreading the work is what keeps this off the frame time. Raise it if puddles clip or slide a moment late (cl_blood_edge_budget)" \
-                    "edges measured per frame" cl_blood_edge_budget 1 64 1
-                range --status "how far a pool that has run into a wall may spread ALONG the foot of it, as a multiple of the width it would have had in open floor. Blood stops at a wall rather than drawing out through it, and the blood that cannot go through has to go somewhere - sideways along the wall is where. 1 leaves the pool simply clipped, which is still not clipping through (cl_blood_wall_spread)" \
-                    "pools spread along walls" cl_blood_wall_spread 1 4 0.1
-            endif
-        endif
+        range --status "shortest gap between ANY two blood sounds, in milliseconds - landings and pooling together. Everything below is per sound and independent, so their rates add up; this is the single ceiling over the lot of them, and the one to reach for when the answer is simply fewer. 0 leaves each sound to its own settings alone (cl_blood_sound_any_gap)" \
+            "overall sound spacing" cl_blood_sound_any_gap 0 500 10
+        blank
+        range --status "loudness of the blood sounds (cl_blood_sound_volume)" \
+            "blood sound volume" cl_blood_sound_volume 0 1 0.05
+        range --status "how quickly a blood sound fades with distance. Quake II's falloff is LINEAR, not inverse-square, so it reaches exact silence at a fixed range and low settings are nearly flat: 1 is audible to 2080 units, 2 to 1080, and 3 - the engine's short-range setting - to 413, which is the only one with a real gradient across the distances blood actually lands at. Distant splats are culled wherever this reaches silence, so raising it also stops far-off blood from using up the spacing above (cl_blood_sound_attn)" \
+            "distance falloff" cl_blood_sound_attn 1 3 0.5
+        blank
+        range --status "shortest gap between two LANDING sounds, in milliseconds - a droplet hitting a DRY surface. A droplet landing on blood that is already there does not make this sound at all, it makes the pooling one below, so once a floor is wet these become the rarer of the two (cl_blood_sound_gap)" \
+            "landing spacing" cl_blood_sound_gap 20 500 10
+        range --status "one landing sound played in every N that the spacing above would have let through. A thinning ON TOP of the spacing rather than in front of it, so the two multiply: 8 here against 90 ms above is a landing no oftener than every 720 ms. 1 plays every landing the spacing allows (cl_blood_sound_skip)" \
+            "landing every Nth" cl_blood_sound_skip 1 32 1
+        blank
+        range --status "shortest gap between two POOLING sounds, in milliseconds - a droplet merging into blood already on the surface. THIS IS THE COMMONEST BLOOD SOUND THERE IS: once a floor is wet almost every droplet merges rather than landing clean, and a measured burst merged 668 times in ONE SECOND. If blood is drowning the gunfire, it is this and not the landing spacing. 0 plays one per droplet (cl_blood_sound_pool_gap)" \
+            "pooling spacing" cl_blood_sound_pool_gap 0 500 10
+        range --status "one pooling sound played in every N that the spacing above would have let through - the same thinning the landings get, on its own count. Separate from theirs because the two rates are nothing alike: thinning landings does almost nothing to a busy fight, and this is the knob that does (cl_blood_sound_pool_skip)" \
+            "pooling every Nth" cl_blood_sound_pool_skip 1 32 1
     endif
 end
 

@@ -785,5 +785,12 @@ void SP_monster_boss2(edict_t *self)
     // game is not rerelease: the reader in g_combat.c is gated.
     self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
 
+    // [rerelease] The Hornet turns at 50.  flymonster_start_go leaves an unset
+    // yaw_speed at 10, which is what the 1997 game flew it at, and at 10 it
+    // spends most of a strafing pass still swinging round - firing rockets and
+    // bullets at where the player used to be.  Gated: 10 is the original feel.
+    if (M_RereleaseGame())
+        self->yaw_speed = 50;
+
     flymonster_start(self);
 }
