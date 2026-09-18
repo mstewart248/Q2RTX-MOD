@@ -72,9 +72,20 @@ jobs:
     # So they live as assets on a Release in this repo, which allows 2 GB per
     # file, does not count against repo size, and is not metered like LFS.
     #
-    # ONE-TIME SETUP, if this step fails with "release not found":
-    #   gh release create shipped-media --title "Shipped media" --notes "Static game data for CI builds" \
+    # THE RELEASE THIS PULLS FROM MUST EXIST, or every build fails here with
+    # "release not found" - which is what happened when it was deleted on
+    # 2026-09-18. It is a PRE-RELEASE, so it never appears as the repository's
+    # Latest release and cannot be mistaken for a playable build.
+    #
+    # To recreate it, from a tree that has the two files:
+    #
+    #   gh release create shipped-media --prerelease \
+    #      --title "Shipped media (CI fixture - not a game release)" \
+    #      --notes "Static Quake II RTX data for CI builds." \
     #      baseq2/q2rtx_media.pkz baseq2/blue_noise.pkz
+    #
+    # Deleting a GitHub release leaves its TAG behind, so recreating it against
+    # the existing shipped-media tag is enough - no new tag is needed.
     - name: Fetch shipped media
       env:
         GH_TOKEN: ${{ github.token }}

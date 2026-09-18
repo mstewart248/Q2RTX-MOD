@@ -413,6 +413,36 @@ IF(IS_64_BIT)
 
     add_custom_target(shaders DEPENDS ${shader_bytecode})
 
+    # REPACK baseq2/shaders.pkz FROM THE SHADERS JUST BUILT, ON EVERY BUILD.
+    #
+    # The engine loads bytecode by the path "shader_vkpt/<name>.spv"
+    # (src/refresh/vkpt/main.c), and that path resolves out of EITHER the loose
+    # baseq2/shader_vkpt directory a build produces OR baseq2/shaders.pkz. So a
+    # stale pkz does not sit harmlessly beside a fresh build - it shadows it,
+    # and the game can run bytecode that no longer matches the source.
+    #
+    # That is not hypothetical: the pkz shipped in this tree was built in 2020.
+    # It still carried the pre-1.7 ray tracing names (*.rgen.khr.spv,
+    # *.rgen.nv.spv) which nothing loads any more, and it had none of the froxel
+    # or fog shaders at all.
+    #
+    # It went stale because the only thing that ever rebuilt it was
+    # setup/package_shaders.cmake, which runs at INSTALL time on the Linux
+    # packaging path only - never on a normal build, and never on Windows. That
+    # script also used "7za a", which APPENDS to an existing archive, so entries
+    # deleted from the source tree survived every repack.
+    #
+    # Hence: delete first, then create, as part of the ordinary build. Written
+    # with cmake -E rather than 7za so it needs no external tool and behaves the
+    # same on every platform. "remove -f" rather than "rm -f" because
+    # cmake_minimum_required here is 3.9 and "rm" only arrived in 3.17.
+    add_custom_command(TARGET shaders POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E remove -f "${CMAKE_SOURCE_DIR}/baseq2/shaders.pkz"
+        COMMAND ${CMAKE_COMMAND} -E tar "cf" "${CMAKE_SOURCE_DIR}/baseq2/shaders.pkz" --format=zip -- "shader_vkpt"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/baseq2"
+        COMMENT "Packing baseq2/shaders.pkz from baseq2/shader_vkpt"
+        VERBATIM)
+
     if(TARGET glslangValidator)
         add_dependencies(shaders glslangValidator)
     endif()
