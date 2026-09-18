@@ -1994,8 +1994,13 @@ ITEM WHEEL
 The rerelease's hold-to-open item wheel, on the key that already opens the
 inventory.  Hold it and everything you are carrying is laid out around a ring
 with the mouse steering a cursor inside it; let go and whatever the cursor
-landed on is used.  Releasing without having moved uses what was already
-selected, so a tap of the key behaves like the old invuse.
+landed on is used.
+
+NOTHING IS SELECTED UNTIL THE CURSOR IS OUT ON THE BAND.  The hub is the empty
+choice - the cursor starts there, and bringing it back there clears the
+selection again - so a release is only ever a request when the player pointed
+at something.  Tapping the key, or opening the wheel and thinking better of it,
+uses nothing at all.  An item is not armed just for being the only one you have.
 
 WHAT GOES ON THE RING IS WHAT THE PLAYER CAN ACTUALLY SELECT: the powerups and
 the two power armours, and nothing else.  Ammo, armour, keys and the rest of
@@ -2217,10 +2222,24 @@ of snapping in under it.
 */
 float SCR_ItemWheelBlur(void)
 {
-    if (!cl_itemwheel_blur || !cl_itemwheel_blur->integer)
+    float   strength;
+
+    if (!cl_itemwheel_blur)
         return 0.0f;
 
-    return SCR_ItemWheelPhase();
+    // Not a toggle - it scales the wheel's own blur, which bloom.c already
+    // pitches well below the menu's.  1 is that blur, 0 is none, and anything
+    // between thins it out.  It reads as a switch at the ends, which is what
+    // the archived 0 or 1 from before this was a dial still means.
+    strength = Cvar_ClampValue(cl_itemwheel_blur, 0, 2);
+    if (strength <= 0.0f)
+        return 0.0f;
+
+    // The shaping curve is the menu's, and it belongs on the FADE rather than
+    // on the strength: it is what makes the blur arrive with the ring instead
+    // of ramping in behind it.  Putting the strength through it as well would
+    // mean half strength came out at six-sevenths of the blur.
+    return powf(SCR_ItemWheelPhase(), 0.25f) * strength;
 }
 
 /*
@@ -2319,9 +2338,12 @@ static void SCR_ItemWheelSlotPos(int slot, float radius, float *x, float *y)
     *y = -cosf(theta) * radius;
 }
 
-// The slot the cursor is pointing at, or -1 while it is still in the hub.  The
-// dead zone is what lets a tap of the key mean "use what was already selected"
-// rather than "use whatever happens to sit under a cursor at dead centre".
+// The slot the cursor is pointing at, or -1 while it is still in the hub.
+//
+// The hub is the dead zone, and it is the WHOLE hub rather than a smaller disc
+// inside it: what the player sees is a hole with items around the edge of it,
+// so "in the hole" and "chosen nothing" had better be the same place.  Selecting
+// means pointing out at the band.
 static int SCR_ItemWheelSlotAt(float x, float y)
 {
     float   theta;
@@ -2329,7 +2351,7 @@ static int SCR_ItemWheelSlotAt(float x, float y)
 
     if (!iw.count)
         return -1;
-    if (sqrtf(x * x + y * y) < iw.r_in * 0.45f)
+    if (sqrtf(x * x + y * y) < iw.r_in)
         return -1;
 
     theta = atan2f(x, -y);
@@ -2381,8 +2403,6 @@ is covering.
 */
 static void SCR_ItemWheelOpen(void)
 {
-    int     i;
-
     if (iw.active)
         return;
 
@@ -2392,20 +2412,13 @@ static void SCR_ItemWheelOpen(void)
     SCR_ItemWheelGeometry();
     SCR_ItemWheelResolve();
 
-    // Start on whatever the player already had selected, with the cursor out
-    // far enough to be visibly pointing at it, so that letting straight go
-    // again uses that item rather than nothing.
+    // Opens on NOTHING, with the cursor parked in the middle.  Seeding it from
+    // ps.stats[STAT_SELECTED_ITEM] was the obvious thing and it was wrong: it
+    // armed a release the player had not aimed, so carrying a single item meant
+    // every touch of the key used it.
     iw.sel_item = -1;
     iw.selected = -1;
     iw.cursor_x = iw.cursor_y = 0;
-
-    for (i = 0; i < iw.count; i++)
-        if (iw.item[i] == cl.frame.ps.stats[STAT_SELECTED_ITEM]) {
-            iw.sel_item = iw.item[i];
-            iw.selected = i;
-            SCR_ItemWheelSlotPos(i, iw.r_in * 0.8f, &iw.cursor_x, &iw.cursor_y);
-            break;
-        }
 
     CL_ClientCommand("inven");
 }
@@ -2466,14 +2479,15 @@ bool SCR_ItemWheelMouse(float dx, float dy)
         iw.cursor_y *= iw.r_out / len;
     }
 
-    // Outside the hub the cursor always names a slot; inside it the previous
-    // selection stands rather than being cleared, so drifting back through the
-    // middle on the way to somewhere else does not disarm the release.
+    // Out on the band the cursor names a slot; back in the hub it names none.
+    // Passing through the middle on the way from one item to another therefore
+    // disarms the release for those few frames, which is the point: the middle
+    // has to be a real choice, or there is no way to open the wheel and decide
+    // against it without using something.
     slot = SCR_ItemWheelSlotAt(iw.cursor_x, iw.cursor_y);
-    if (slot >= 0) {
-        iw.selected = slot;
-        iw.sel_item = iw.item[slot];
-    }
+
+    iw.selected = slot;
+    iw.sel_item = slot >= 0 ? iw.item[slot] : -1;
 
     return true;
 }
@@ -2719,12 +2733,20 @@ static void SCR_DrawItemWheelCursor(float cx, float cy, int alpha)
     float   size = max(6.0f, iw.r_out * 0.055f);
 
     len = sqrtf(iw.cursor_x * iw.cursor_x + iw.cursor_y * iw.cursor_y);
-    if (len < 1.0f) {
-        dx = 0; dy = -1;    // parked in the hub: point at the first slot
-    } else {
-        dx = iw.cursor_x / len;
-        dy = iw.cursor_y / len;
+
+    // AN ARROW MEANS SOMETHING IS SELECTED.  With nothing chosen the cursor is
+    // a dot instead: an arrow drifting around the hub still points at whatever
+    // slot it happens to be aimed at, which is the wheel claiming a selection
+    // that a release would not honour.  Dead centre it would have no direction
+    // to point in at all.
+    if (iw.selected < 0 || len < 1.0f) {
+        SCR_FillRing(cx + iw.cursor_x, cy + iw.cursor_y, size * 0.5f, 0,
+                     MakeColor(255, 255, 255, alpha));
+        return;
     }
+
+    dx = iw.cursor_x / len;
+    dy = iw.cursor_y / len;
 
     px = -dy;   // perpendicular, for the base corners
     py =  dx;

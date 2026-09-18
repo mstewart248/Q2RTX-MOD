@@ -1656,7 +1656,12 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
         else
             client->ps.pmove.pm_type = PM_NORMAL;
 
-        client->ps.pmove.gravity = sv_gravity->value;
+        // [rerelease] trigger_gravity scales a touching entity's gravity through
+        // ent->gravity, but vanilla fed sv_gravity straight to pmove, so the
+        // trigger only ever moved non-players. mguhub's gateway ring room is the
+        // one shipped map that sets it (0.5), and without this the long floaty
+        // jump under the ring is just a normal jump.
+        client->ps.pmove.gravity = sv_gravity->value * ent->gravity;
         pm.s = client->ps.pmove;
 
         for (i = 0 ; i < 3 ; i++) {
@@ -1715,6 +1720,11 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
         }
 
         gi.linkentity(ent);
+
+        // [rerelease] trigger_gravity re-applies itself from touch every frame,
+        // so clear the multiplier first - otherwise the last value the player
+        // walked through sticks for the rest of the level.
+        ent->gravity = 1.0f;
 
         if (ent->movetype != MOVETYPE_NOCLIP)
             G_TouchTriggers(ent);

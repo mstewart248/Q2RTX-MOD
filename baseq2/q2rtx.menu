@@ -773,7 +773,8 @@ begin screen
         toggle --status "hold the inventory key for the item selection wheel. Off opens the old scrolling inventory list on the same key (cl_itemwheel)" "item selection wheel" cl_itemwheel
         pairs --status "how far time slows while the wheel is held down. Single player only - it slows the whole server (cl_itemwheel_slowmo)" \
             "wheel bullet time" cl_itemwheel_slowmo "off" 1 "3/4 speed" 0.75 "half speed" 0.5 "quarter speed" 0.25 "tenth speed" 0.1
-        toggle --status "blur the world behind the wheel while it is up (cl_itemwheel_blur)" "wheel background blur" cl_itemwheel_blur
+        range --status "how hard the world blurs behind the wheel - deliberately lighter than the pause menu, since the game is still running behind it (cl_itemwheel_blur)" \
+            -p -f "%.0f%%" "wheel background blur" cl_itemwheel_blur 0 1 0.05
         pairs --status "the rerelease puts the wheel left of the crosshair so it does not cover what you are walking at (cl_itemwheel_x)" \
             "wheel position" cl_itemwheel_x "left of centre" 0.41 "centred" 0
         range --status "how far the mouse moves the wheel cursor (cl_itemwheel_sens)" "wheel cursor speed" cl_itemwheel_sens 0.25 3 0.25

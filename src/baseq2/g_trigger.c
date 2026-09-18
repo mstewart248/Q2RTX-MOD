@@ -671,11 +671,30 @@ trigger_gravity
 ==============================================================================
 */
 
-/*QUAKED trigger_gravity (.5 .5 .5) ?
+/*QUAKED trigger_gravity (.5 .5 .5) ? TOGGLE START_OFF
 Changes the touching entites gravity to
 the value of "gravity".  1.0 is standard
 gravity for the level.
+
+TOGGLE - trigger_gravity can be turned on and off
+START_OFF - trigger_gravity starts turned off (implies TOGGLE)
 */
+
+// [rerelease] the rerelease grew spawnflags on this trigger. mguhub's three
+// gateway-ring volumes are the only users in any shipped map, and all three
+// set CLIPPED.
+#define SPAWNFLAG_GRAVITY_TOGGLE    1
+#define SPAWNFLAG_GRAVITY_START_OFF 2
+#define SPAWNFLAG_GRAVITY_CLIPPED   4
+
+void trigger_gravity_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    if (self->solid == SOLID_NOT)
+        self->solid = SOLID_TRIGGER;
+    else
+        self->solid = SOLID_NOT;
+    gi.linkentity(self);
+}
 
 void trigger_gravity_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
 {
@@ -684,15 +703,34 @@ void trigger_gravity_touch(edict_t *self, edict_t *other, cplane_t *plane, csurf
 
 void SP_trigger_gravity(edict_t *self)
 {
-    if (st.gravity == NULL) {
+    if (st.gravity == NULL || !*st.gravity) {
         gi.dprintf("trigger_gravity without gravity set at %s\n", vtos(self->s.origin));
         G_FreeEdict(self);
         return;
     }
 
     InitTrigger(self);
-    self->gravity = atoi(st.gravity);
+
+    // [rerelease] atoi truncated every fractional multiplier to zero, so
+    // mguhub's "0.5" would have meant no gravity at all rather than half.
+    self->gravity = atof(st.gravity);
+
+    if (self->spawnflags & SPAWNFLAG_GRAVITY_TOGGLE)
+        self->use = trigger_gravity_use;
+
+    if (self->spawnflags & SPAWNFLAG_GRAVITY_START_OFF) {
+        self->use = trigger_gravity_use;
+        self->solid = SOLID_NOT;
+    }
+
     self->touch = trigger_gravity_touch;
+
+    // SPAWNFLAG_GRAVITY_CLIPPED (4) makes the trigger test the brush hull
+    // instead of the bounding box. It needs gi.clip(), which this game API does
+    // not export - see SP_trigger_hurt - so mguhub's three volumes act as plain
+    // bbox triggers: the low-gravity field reaches a little past the ring
+    // geometry rather than hugging it.
+    gi.linkentity(self);
 }
 
 

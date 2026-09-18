@@ -51,6 +51,17 @@ cvar_t *cvar_bloom_intensity = NULL;
 cvar_t *cvar_bloom_sigma_water = NULL;
 cvar_t *cvar_bloom_intensity_water = NULL;
 
+/* Full-screen blur radii, relative to screen height.
+
+   The menu can afford to be heavy handed: the world behind it is PAUSED and
+   nobody is reading it. The wheel cannot - time is slowed but still running,
+   you are still walking, and something is still shooting at you - so blurring
+   its background as hard as a paused menu takes the room away exactly when it
+   is still being played in. A little over half the radius keeps the ring
+   separated from the scene without hiding the scene. */
+#define BLOOM_SIGMA_MENU    0.030f
+#define BLOOM_SIGMA_WHEEL   0.018f
+
 static float bloom_intensity;
 static float bloom_sigma;
 static float under_water_animation;
@@ -124,24 +135,24 @@ void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_wa
 		ubo->tonemap_hdr_clamp_strength = phase; // Clamp color in HDR mode, to ensure menu is legible
 		phase = powf(phase, 0.25f);
 
-		bloom_sigma = phase * 0.03f;
+		bloom_sigma = phase * BLOOM_SIGMA_MENU;
 
 		ubo->bloom_intensity = 1.f;
 	}
 	else if (ui_blur > 0.f)
 	{
-		/* The item wheel, blurred the same way the menu is but ramped by the
-		   caller instead of by a timer of our own: the wheel already knows how
-		   far up it is, and a second clock here would disagree with the ring's
-		   own fade.
+		/* The item wheel. Ramped by the caller rather than by a timer of our
+		   own: the wheel already knows how far up it is, and a second clock
+		   here would disagree with the ring's own fade. ui_blur arrives with
+		   the fade curve already applied and the player's strength multiplied
+		   in, so it is simply a scale on the wheel's radius - which is why the
+		   menu's 0.25 power is NOT applied again here.
 
-		   The sigma runs from 0, so at the top of the fade this is exactly the
-		   menu's blur and on the way in it is a fraction of it. Intensity has
-		   to go to 1 with it - it is what makes the blurred copy replace the
-		   sharp frame rather than glow on top of it. */
+		   Intensity still has to go to 1: it is what makes the blurred copy
+		   replace the sharp frame rather than glow on top of it. */
 		menu_start_ms = 0;
 
-		bloom_sigma = powf(min(ui_blur, 1.f), 0.25f) * 0.03f;
+		bloom_sigma = min(ui_blur, 2.f) * BLOOM_SIGMA_WHEEL;
 
 		ubo->bloom_intensity = 1.f;
 		ubo->tonemap_hdr_clamp_strength = min(ui_blur, 1.f);

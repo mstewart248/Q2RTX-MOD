@@ -1005,6 +1005,7 @@ extern void trigger_elevator_use(void);
 extern void trigger_enable(void);
 extern void trigger_flashlight_touch(void);
 extern void trigger_gravity_touch(void);
+extern void trigger_gravity_use(void);
 extern void trigger_health_relay_use(void);
 extern void trigger_key_use(void);
 extern void trigger_monsterjump_touch(void);
@@ -2171,5 +2172,11 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sidestep, medic_sidestep },
 { P_monsterinfo_sidestep, soldier_sidestep },
 { P_monsterinfo_physics_change, stalker_physics_change },
+// [rerelease] trigger_gravity gained TOGGLE/START_OFF, so it now has a use
+// function. APPENDED rather than filed with the other P_use entries: this
+// table is indexed positionally by savegames, and sorting it in would shift
+// every later index and force a SAVE_VERSION bump. Same reasoning as the
+// appended ptr_type_t entries in g_ptrs.h.
+{ P_use, trigger_gravity_use },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

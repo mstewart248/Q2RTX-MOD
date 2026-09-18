@@ -122,6 +122,7 @@ cvar_t* cvar_pt_bsp_radiance_scale = NULL;
 cvar_t *cvar_pt_bsp_sky_lights = NULL;
 cvar_t *cvar_pt_accumulation_rendering = NULL;
 cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
+cvar_t *cvar_pt_accumulation_bypass_dlss = NULL;
 cvar_t *cvar_pt_projection = NULL;
 cvar_t *cvar_pt_dof = NULL;
 cvar_t *cvar_pt_dlss_indirect_spec = NULL;
@@ -4092,6 +4093,123 @@ static bool is_accumulation_rendering_active(void)
 	return cl_paused->integer == 2 && sv_paused->integer && cvar_pt_accumulation_rendering->integer > 0;
 }
 
+/* PHOTO MODE BYPASSES DLSS.
+
+   Accumulation rendering converges a static frame by averaging hundreds of
+   independent samples, and it is the one mode where the path tracer's own
+   output IS the final image - there is nothing for DLSS to reconstruct. Worse,
+   both DLSS modes actively damage it:
+
+     - Ray Reconstruction is a denoiser. Run over an already-converged frame it
+       removes detail it mistakes for residual noise, so the image stops getting
+       sharper long before the sample count says it should.
+     - Super Resolution is temporal, and it is being lied to about the jitter.
+       primary_rays.rgen takes its photo-mode branch (temporal_blend_factor > 0)
+       and offsets each ray by a RANDOM sub-pixel amount, ignoring
+       global_ubo.sub_pixel_jitter - which is exactly the value that gets handed
+       to NGX as the jitter offset. DLSS therefore resolves against a sample
+       pattern that has nothing to do with where the rays actually went.
+
+   Both are easy to miss in motion and obvious the moment you sit still and
+   watch the image converge, which is the entire point of the mode.
+
+   Skipping DLSS costs no resolution here: drs_process() already forces the
+   render scale to at least 100% while accumulation is active, so
+   VKPT_IMG_TAA_OUTPUT is at the unscaled extent and the substitute blit below
+   is a 1:1 copy rather than an upscale. (It is written as a blit, not a copy,
+   so it still does the right thing if drs_enable pins the scale under 100.)
+
+   pt_accumulation_bypass_dlss 0 restores the old behaviour for comparison. */
+static bool accumulation_bypasses_dlss(void)
+{
+	if (!is_accumulation_rendering_active())
+		return false;
+
+	if (!cvar_pt_accumulation_bypass_dlss || cvar_pt_accumulation_bypass_dlss->integer == 0)
+		return false;
+
+	return DLSSEnabled() ? true : false;
+}
+
+/* The stand-in for DLSSApply() while photo mode is bypassing it: put the
+   accumulated frame where the rest of the DLSS arm expects to find it.
+
+   VKPT_IMG_TAA_OUTPUT holds the linear accumulated colour that
+   asvgf_taau.comp's temporal_blend_factor branch just wrote, at
+   extent_taa_output; VKPT_IMG_DLSS_OUTPUT is at extent_unscaled and is what
+   bloom, tone mapping, frame generation and the final blit all read. While
+   accumulation is active drs_process() has already pinned the render scale at
+   100% or above, so the two extents match and this is a plain copy - the blit
+   form only matters if drs_enable holds the scale below that.
+
+   vkpt_taa() emits no barrier on TAA_OUTPUT of its own (DLSSApply does its own
+   BARRIER_COMPUTE on the way in), so the compute-write -> transfer-read barrier
+   here is load-bearing, not decoration. */
+static void
+vkpt_blit_accumulated_to_dlss_output(VkCommandBuffer cmd_buf)
+{
+	VkImageSubresourceRange subresource_range = {
+		.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel   = 0,
+		.levelCount     = 1,
+		.baseArrayLayer = 0,
+		.layerCount     = 1
+	};
+
+	IMAGE_BARRIER(cmd_buf,
+		.image            = qvk.images[VKPT_IMG_TAA_OUTPUT],
+		.subresourceRange = subresource_range,
+		.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask    = VK_ACCESS_TRANSFER_READ_BIT,
+		.oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout        = VK_IMAGE_LAYOUT_GENERAL);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image            = qvk.images[VKPT_IMG_DLSS_OUTPUT],
+		.subresourceRange = subresource_range,
+		.srcAccessMask    = 0,
+		.dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+	VkImageSubresourceLayers subresource = {
+		.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+		.mipLevel       = 0,
+		.baseArrayLayer = 0,
+		.layerCount     = 1
+	};
+
+	VkImageBlit blit_region = {
+		.srcSubresource = subresource,
+		.srcOffsets[0] = { .x = 0, .y = 0, .z = 0 },
+		.srcOffsets[1] = {
+			.x = (int32_t)qvk.extent_taa_output.width,
+			.y = (int32_t)qvk.extent_taa_output.height,
+			.z = 1
+		},
+		.dstSubresource = subresource,
+		.dstOffsets[0] = { .x = 0, .y = 0, .z = 0 },
+		.dstOffsets[1] = {
+			.x = (int32_t)qvk.extent_unscaled.width,
+			.y = (int32_t)qvk.extent_unscaled.height,
+			.z = 1
+		},
+	};
+
+	vkCmdBlitImage(cmd_buf,
+		qvk.images[VKPT_IMG_TAA_OUTPUT], VK_IMAGE_LAYOUT_GENERAL,
+		qvk.images[VKPT_IMG_DLSS_OUTPUT], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		1, &blit_region, VK_FILTER_LINEAR);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image            = qvk.images[VKPT_IMG_DLSS_OUTPUT],
+		.subresourceRange = subresource_range,
+		.srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+		.oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.newLayout        = VK_IMAGE_LAYOUT_GENERAL);
+}
+
 static void draw_shadowed_string(int x, int y, int flags, size_t maxlen, const char* s)
 {
 	R_SetColor(0xff000000u);
@@ -4823,7 +4941,21 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		ubo->pt_texture_lod_bias = cvar_pt_texture_lod_bias->value + log2f(resolution_scale);
 	}
 
-	if (DLSSEnabled()) {
+	/* NOT during accumulation. This assignment is unconditional over the whole
+	   if/else above, so with DLSS on it used to overwrite the accumulation LOD
+	   bias set a few lines up - the one that says "500 samples will resolve the
+	   aliasing, so read the sharpest mip". At pt_accumulation_rendering_framenum
+	   500 that intended bias is -log2(sqrt(500)) = -4.48; what landed instead was
+	   0 + log2(0.5) = -1.0 on pt_dlss 1. Roughly three and a half mip levels of
+	   blur baked into every texture in what is supposed to be a ground-truth
+	   reference image.
+
+	   It is also wrong on its own terms here: GetDLSSResolutionScale() is a fixed
+	   per-mode constant, but drs_process() has already pinned the render scale to
+	   100% for accumulation, so it was compensating for an upscale that is not
+	   happening. Independent of pt_accumulation_bypass_dlss - the sample count is
+	   what justifies the sharper mip, not whether DLSS filters the result. */
+	if (DLSSEnabled() && !ref_mode->enable_accumulation) {
 		ubo->pt_texture_lod_bias = cvar_pt_texture_lod_bias->value + log2f(GetDLSSResolutionScale());
 	}
 
@@ -5623,7 +5755,23 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			vkpt_fsr_do(post_cmd_buf);
 		}
 
-		if (DLSSEnabled()) {
+		if (accumulation_bypasses_dlss()) {
+			/* Photo mode - see accumulation_bypasses_dlss(). Everything downstream
+			   (bloom, tone mapping, the final blit) reads VKPT_IMG_DLSS_OUTPUT when
+			   DLSSEnabled(), so the accumulated frame is put there directly instead
+			   of being produced by NGX. The rest of the DLSS arm is untouched. */
+			vkpt_blit_accumulated_to_dlss_output(post_cmd_buf);
+
+			/* DLSS saw no frames for the whole pause, so whatever history it still
+			   holds is from before it. Keep asking for a reset so the first frame
+			   after the pause - which is also the first frame of motion again -
+			   starts clean instead of blending against a stale pre-pause image. */
+			vkpt_dlss_request_history_reset();
+
+			lastFrameTime = frame_time;
+			lastWallClocktime = frame_wallclock_time;
+		}
+		else if (DLSSEnabled()) {
 			DLSSRenderResolution resObj;
 			resObj.inputWidth = qvk.extent_render.width;
 			resObj.inputHeight = qvk.extent_render.height;
@@ -6447,7 +6595,14 @@ R_EndFrame_RTX(void)
 			// which does not exist yet - there is exactly one present per rendered frame
 			// further down. Until then "pt_dlss_fg_show 1" displays the interpolated
 			// image in place of the real one so it can be judged by eye.
-			if (DLSSGEnabled()) {
+			//
+			// Photo mode turns frame generation off along with DLSS itself: the scene
+			// is paused, so there is no motion to interpolate, and every frame the
+			// player sees should be a real accumulation step. Interpolating between
+			// two adjacent steps would just show a blend of two sample counts, which
+			// is precisely the convergence being watched. See
+			// accumulation_bypasses_dlss().
+			if (DLSSGEnabled() && !accumulation_bypasses_dlss()) {
 				/* HOW MANY GENERATED FRAMES CAN THIS DISPLAY ACTUALLY SHOW?
 
 				   A fixed-refresh display shows at most one frame per refresh interval. Presenting
@@ -6585,7 +6740,12 @@ R_EndFrame_RTX(void)
 			   to present it, which would starve the swapchain. If any acquire fails we fall
 			   back to the ordinary single present - nothing has been retargeted yet, and the
 			   images acquired so far are still presented, just without interpolation. */
-			unsigned int fg_want = DLSSGGeneratedFrames();
+			/* Must agree with the DLSSGApply gate above: with photo mode bypassing
+			   frame generation no interpolated image was produced this frame, so the
+			   group must collapse to the single real present. Asking for frames that
+			   were never generated would present whatever those images still held from
+			   before the pause. */
+			unsigned int fg_want = accumulation_bypasses_dlss() ? 0u : DLSSGGeneratedFrames();
 			if (fg_want > 0 && DLSSGFeatureReady() && !DLSSGShowInterpolated()
 			    && qvk.device_count == 1)
 			{
@@ -6707,7 +6867,9 @@ R_EndFrame_RTX(void)
 			   was set aside too readily. */
 			fg_debug_dump_frames(DLSSGEnabled() ? DLSSGGeneratedFrames() : 0);
 
-			if (DLSSGShowInterpolated())
+			/* Same reason as fg_want: nothing was interpolated this frame, so there is
+			   no interpolated image to show and the real one has to be blitted instead. */
+			if (DLSSGShowInterpolated() && !accumulation_bypasses_dlss())
 				vkpt_final_blit_simple(cmd_buf, GetDLSSGImage(1), GetDLSSExtent());
 			else if (!fg_real_blitted)
 				{
@@ -7584,6 +7746,10 @@ R_Init_RTX(bool total)
 
 	// number of frames to accumulate with linear weights in accumulation rendering modes
 	cvar_pt_accumulation_rendering_framenum = Cvar_Get("pt_accumulation_rendering_framenum", "500", 0);
+
+	// 1 -> photo mode skips DLSS and shows the accumulated frame as traced (default);
+	// 0 -> photo mode keeps running DLSS, as it used to. See accumulation_bypasses_dlss().
+	cvar_pt_accumulation_bypass_dlss = Cvar_Get("pt_accumulation_bypass_dlss", "1", CVAR_ARCHIVE);
 
 	// 0 -> perspective, 1 -> cylindrical
 	cvar_pt_projection = Cvar_Get("pt_projection", "0", CVAR_ARCHIVE);
