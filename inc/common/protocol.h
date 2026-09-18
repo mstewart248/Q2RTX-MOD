@@ -31,6 +31,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define PROTOCOL_VERSION_Q2PRO      36
 #define PROTOCOL_VERSION_MVD        37 // not used for UDP connections
 
+// [rerelease] The Quake II 2023 remaster (KEX engine) speaks a protocol of its
+// own, and the .dm2 files it records carry it verbatim. 2022 is what every
+// shipped remaster demo uses; 2023 is the live network version. We only ever
+// READ these - the engine still records and serves 34/35/36 - so support lives
+// entirely in a demo playback compatibility layer (src/client/kexdemo.c)
+// instead of becoming a protocol the client can connect with.
+#define PROTOCOL_VERSION_KEX_DEMOS  2022
+#define PROTOCOL_VERSION_KEX        2023
+
 #define PROTOCOL_VERSION_R1Q2_MINIMUM           1903    // b6377
 #define PROTOCOL_VERSION_R1Q2_UCMD              1904    // b7387
 #define PROTOCOL_VERSION_R1Q2_LONG_SOLID        1905    // b7759
@@ -63,6 +72,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MVD_SUPPORTED(x) \
     ((x) >= PROTOCOL_VERSION_MVD_MINIMUM && \
      (x) <= PROTOCOL_VERSION_MVD_CURRENT)
+
+// [rerelease] true for the two KEX protocol numbers that can turn up in the
+// serverdata of a .dm2 we are asked to play back.
+#define KEX_SUPPORTED(x) \
+    ((x) == PROTOCOL_VERSION_KEX_DEMOS || (x) == PROTOCOL_VERSION_KEX)
 
 //=========================================
 

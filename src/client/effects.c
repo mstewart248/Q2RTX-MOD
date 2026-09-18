@@ -202,6 +202,14 @@ void CL_MuzzleFlash(void)
     dl->radius = 100 * (2 - mz.silenced) + (Q_rand() & 31);
     dl->die = cl.time + 33;
 
+    // MZ_LOGIN, MZ_LOGOUT and MZ_RESPAWN are not gunfire. The game sends them
+    // through svc_muzzleflash purely to get a coloured light and a particle
+    // burst at a player who just appeared or left - p_client.c calls it "add a
+    // teleportation effect" - and the switch below draws them that way. Putting
+    // a muzzle flash MODEL on them lit up your own barrel the instant you
+    // spawned, before you had fired anything.
+    if (mz.weapon != MZ_LOGIN && mz.weapon != MZ_LOGOUT && mz.weapon != MZ_RESPAWN) {
+
     // Rerelease: the flash model, at the same place the dlight was just put.
     // Our own gun in first person is handled separately - CL_AddViewWeapon is
     // the only place that knows where the view model actually ended up.
@@ -249,6 +257,8 @@ void CL_MuzzleFlash(void)
     } else {
         CL_MuzzleFlashModel(dl->origin, pl->current.angles, 0);
     }
+
+    }   // not a spawn/despawn ping
 
     volume = 1.0f - 0.8f * mz.silenced;
 

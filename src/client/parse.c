@@ -27,10 +27,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 =====================================================================
 */
 
+// bits is 64 bits wide because the rerelease protocol adds a fifth bits byte.
+// Every other protocol writes at most 32 of them and is unaffected.
 static inline void CL_ParseDeltaEntity(server_frame_t  *frame,
                                        int             newnum,
                                        entity_state_t  *old,
-                                       int             bits)
+                                       uint64_t        bits)
 {
     entity_state_t    *state;
 
@@ -45,14 +47,17 @@ static inline void CL_ParseDeltaEntity(server_frame_t  *frame,
 
 #if USE_DEBUG
     if (cl_shownet->integer > 2 && bits) {
-        MSG_ShowDeltaEntityBits(bits);
+        MSG_ShowDeltaEntityBits((int)bits);
         Com_LPrintf(PRINT_DEVELOPER, "\n");
     }
 #endif
 
-    MSG_ParseDeltaEntity(old, state, newnum, bits, cl.esFlags);
+    if (cl.kex_protocol)
+        CL_KexDemo_ParseDeltaEntity(old, state, newnum, bits);
+    else
+        MSG_ParseDeltaEntity(old, state, newnum, (int)bits, cl.esFlags);
 
-    // shuffle previous origin to old
+    // shuffle previous origin to old. U_OLDORIGIN is bit 24 in both protocols.
     if (!(bits & U_OLDORIGIN) && !(state->renderfx & RF_BEAM))
         VectorCopy(old->origin, state->old_origin);
 }
@@ -61,16 +66,30 @@ static inline void CL_ParseDeltaEntity(server_frame_t  *frame,
 // CL_ParseServerMessage if the message overruns, to show where the list
 // diverged from the byte offsets the server actually wrote.
 #define ENT_TRACE_MAX 32
-static size_t ent_trace_off[ENT_TRACE_MAX];
-static int    ent_trace_num[ENT_TRACE_MAX];
-static int    ent_trace_bits[ENT_TRACE_MAX];
-static int    ent_trace_n;
+static size_t   ent_trace_off[ENT_TRACE_MAX];
+static int      ent_trace_num[ENT_TRACE_MAX];
+static uint64_t ent_trace_bits[ENT_TRACE_MAX];
+static int      ent_trace_n;
+
+// Read one entity's delta header in whichever protocol is in use. Rerelease
+// demos have an extra bits byte and are the reason bits is 64 bits wide.
+static inline int CL_ParseEntityBits(uint64_t *bits)
+{
+    int number, narrow;
+
+    if (cl.kex_protocol)
+        return CL_KexDemo_ParseEntityBits(bits);
+
+    number = MSG_ParseEntityBits(&narrow);
+    *bits = (uint32_t)narrow;
+    return number;
+}
 
 static void CL_ParsePacketEntities(server_frame_t *oldframe,
                                    server_frame_t *frame)
 {
     int            newnum;
-    int            bits;
+    uint64_t       bits;
     entity_state_t    *oldstate;
     int            oldindex, oldnum;
     int i;
@@ -97,7 +116,7 @@ static void CL_ParsePacketEntities(server_frame_t *oldframe,
 
     while (1) {
         size_t ent_off = msg_read.readcount;
-        newnum = MSG_ParseEntityBits(&bits);
+        newnum = CL_ParseEntityBits(&bits);
         if (ent_trace_n < ENT_TRACE_MAX) {
             ent_trace_off[ent_trace_n] = ent_off;
             ent_trace_num[ent_trace_n] = newnum;
@@ -141,6 +160,11 @@ static void CL_ParsePacketEntities(server_frame_t *oldframe,
             if (!oldframe) {
                 Com_Error(ERR_DROP, "%s: U_REMOVE with NULL oldframe", __func__);
             }
+
+            // A removed entity reverts to its baseline, including the `solid`
+            // that rerelease demos use to pick their origin encoding.
+            if (cl.kex_protocol)
+                CL_KexDemo_EntityRemoved(newnum);
 
             oldindex++;
 
@@ -204,7 +228,7 @@ static void CL_ParsePacketEntities(server_frame_t *oldframe,
     }
 }
 
-static void CL_ParseFrame(int extrabits)
+void CL_ParseFrame(int extrabits)
 {
     uint32_t bits, extraflags;
     int     currentframe, deltaframe,
@@ -218,7 +242,16 @@ static void CL_ParseFrame(int extrabits)
     cl.frameflags = 0;
 
     extraflags = 0;
-    if (cls.serverProtocol > PROTOCOL_VERSION_DEFAULT) {
+    if (cl.kex_protocol) {
+        // Rerelease frames are shaped like protocol 34's - two full frame
+        // numbers and a suppress count - but the frame numbers are not packed
+        // with the delta offset, and playerinfo/packetentities still carry
+        // their own command bytes inline (read below).
+        currentframe = MSG_ReadLong();
+        deltaframe = MSG_ReadLong();
+        if (MSG_ReadByte())
+            cl.frameflags |= FF_SUPPRESSED;
+    } else if (cls.serverProtocol > PROTOCOL_VERSION_DEFAULT) {
         bits = MSG_ReadLong();
 
         currentframe = bits & FRAMENUM_MASK;
@@ -318,7 +351,9 @@ static void CL_ParseFrame(int extrabits)
         frame.areabytes = 0;
     }
 
-    if (cls.serverProtocol <= PROTOCOL_VERSION_DEFAULT) {
+    // svc_playerinfo is 17 in both our numbering and KEX's, so this check is
+    // the same test either way.
+    if (cl.kex_protocol || cls.serverProtocol <= PROTOCOL_VERSION_DEFAULT) {
         if (MSG_ReadByte() != svc_playerinfo) {
             Com_Error(ERR_DROP, "%s: not playerinfo", __func__);
         }
@@ -327,9 +362,18 @@ static void CL_ParseFrame(int extrabits)
     SHOWNET(2, "%3zu:playerinfo\n", msg_read.readcount - 1);
 
     // parse playerstate
+    if (cl.kex_protocol) {
+        // Reads its own flags word - and a second one if the first asks for it
+        // - so unlike the others it is not handed a pre-read bits value.
+        CL_KexDemo_ParsePlayerstate(from, &frame.ps);
+        frame.clientNum = cl.clientNum;
+        goto packetentities;
+    }
+
     bits = MSG_ReadWord();
     if (cls.serverProtocol > PROTOCOL_VERSION_DEFAULT) {
-        MSG_ParseDeltaPlayerstate_Enhanced(from, &frame.ps, bits, extraflags);
+        MSG_ParseDeltaPlayerstate_Enhanced(from, &frame.ps, bits, extraflags,
+                                           (cl.esFlags & MSG_ES_BYTEINDICES) != 0);
 #if USE_DEBUG
         if (cl_shownet->integer > 2 && (bits || extraflags)) {
             MSG_ShowDeltaPlayerstateBits_Enhanced(bits, extraflags);
@@ -347,7 +391,8 @@ static void CL_ParseFrame(int extrabits)
             frame.clientNum = cl.clientNum;
         }
     } else {
-        MSG_ParseDeltaPlayerstate_Default(from, &frame.ps, bits);
+        MSG_ParseDeltaPlayerstate_Default(from, &frame.ps, bits,
+                                          (cl.esFlags & MSG_ES_BYTEINDICES) != 0);
 #if USE_DEBUG
         if (cl_shownet->integer > 2 && bits) {
             MSG_ShowDeltaPlayerstateBits_Default(bits);
@@ -357,8 +402,9 @@ static void CL_ParseFrame(int extrabits)
         frame.clientNum = cl.clientNum;
     }
 
-    // parse packetentities
-    if (cls.serverProtocol <= PROTOCOL_VERSION_DEFAULT) {
+packetentities:
+    // parse packetentities. svc_packetentities is 18 in both numberings.
+    if (cl.kex_protocol || cls.serverProtocol <= PROTOCOL_VERSION_DEFAULT) {
         if (MSG_ReadByte() != svc_packetentities) {
             Com_Error(ERR_DROP, "%s: not packetentities", __func__);
         }
@@ -423,10 +469,163 @@ static void CL_ParseFrame(int extrabits)
 =====================================================================
 */
 
-static void CL_ParseConfigstring(int index)
+/*
+=====================================================================
+
+  OLD CONFIGSTRING LAYOUT
+
+  This fork raised MAX_MODELS from 256 to 512, which moved CS_SOUNDS and every
+  section after it up by 256. That is invisible while talking to ourselves, but
+  a demo recorded before the change - which is every demo id ever shipped, every
+  demo any stock Quake II client ever wrote, and everything recorded by this
+  tree before MAX_MODELS was raised - carries the original indices. Played back
+  as they are, its sounds land in the model table, its images land in the sound
+  table, and so on down the line: the demo runs, but silent and half untextured.
+
+  Demo playback therefore translates the old layout into ours. Which layout a
+  given file uses cannot be read off its protocol version (both are 34), so it
+  is worked out from the first configstring that lands in a section that moved:
+  a sound path arriving where this engine keeps models can only be the old
+  layout, and vice versa.
+
+  The model and gun INDEX widths were widened in a separate commit from the
+  configstring layout, so a demo recorded in between this tree's own changes has
+  one and not the other. The two are therefore tracked apart, and cl_demo_encoding
+  can force either or both if the guess ever comes out wrong.
+
+=====================================================================
+*/
+
+// The layout every stock Quake II client and server has used since 3.20.
+#define MAX_MODELS_OLD          256
+#define CS_MODELS_OLD           32
+#define CS_SOUNDS_OLD           (CS_MODELS_OLD + MAX_MODELS_OLD)
+#define CS_IMAGES_OLD           (CS_SOUNDS_OLD + MAX_SOUNDS)
+#define CS_LIGHTS_OLD           (CS_IMAGES_OLD + MAX_IMAGES)
+#define CS_ITEMS_OLD            (CS_LIGHTS_OLD + MAX_LIGHTSTYLES)
+#define CS_PLAYERSKINS_OLD      (CS_ITEMS_OLD + MAX_ITEMS)
+#define CS_GENERAL_OLD          (CS_PLAYERSKINS_OLD + MAX_CLIENTS)
+#define MAX_CONFIGSTRINGS_OLD   (CS_GENERAL_OLD + MAX_GENERAL)
+
+// cl_demo_encoding: -1 detects, otherwise a mask of these two.
+#define DEMO_ENC_OLD_CONFIGSTRINGS  1
+#define DEMO_ENC_OLD_INDICES        2
+
+// Record which encoding the demo uses. The configstring layout and the width of
+// the model and gun indices moved together, in the same change, so one verdict
+// drives both - the index widths through cl.esFlags, which is what the entity
+// and player state parsers in msg.c read.
+static void CL_SetDemoEncoding(bool old_configstrings, bool old_indices)
+{
+    int forced = cl_demo_encoding->integer;
+
+    if (forced >= 0) {
+        old_configstrings = (forced & DEMO_ENC_OLD_CONFIGSTRINGS) != 0;
+        old_indices = (forced & DEMO_ENC_OLD_INDICES) != 0;
+    }
+
+    cl.demo_encoding_known = true;
+    cl.demo_old_configstrings = old_configstrings;
+    cl.demo_old_indices = old_indices;
+
+    if (old_indices)
+        cl.esFlags |= MSG_ES_BYTEINDICES;
+    else
+        cl.esFlags &= ~MSG_ES_BYTEINDICES;
+
+    Com_DPrintf("Demo encoding: %s configstrings, %s model and gun indices\n",
+                old_configstrings ? "original" : "extended",
+                old_indices ? "original" : "extended");
+}
+
+static int CL_RemapOldConfigstring(int index)
+{
+    if (index < CS_SOUNDS_OLD)
+        return index;   // the fixed strings and the first 256 models: unmoved
+    if (index < CS_IMAGES_OLD)
+        return CS_SOUNDS + (index - CS_SOUNDS_OLD);
+    if (index < CS_LIGHTS_OLD)
+        return CS_IMAGES + (index - CS_IMAGES_OLD);
+    if (index < CS_ITEMS_OLD)
+        return CS_LIGHTS + (index - CS_LIGHTS_OLD);
+    if (index < CS_PLAYERSKINS_OLD)
+        return CS_ITEMS + (index - CS_ITEMS_OLD);
+    if (index < CS_GENERAL_OLD)
+        return CS_PLAYERSKINS + (index - CS_PLAYERSKINS_OLD);
+    if (index < MAX_CONFIGSTRINGS_OLD)
+        return CS_GENERAL + (index - CS_GENERAL_OLD);
+    return -1;
+}
+
+// Peek at the string this configstring message carries without consuming it.
+static bool CL_PeekConfigstringIsSound(void)
+{
+    char   value[MAX_QPATH];
+    size_t saved_read = msg_read.readcount;
+    size_t saved_bits = msg_read.bitpos;
+    const char *ext;
+
+    MSG_ReadString(value, sizeof(value));
+
+    // put the cursor back so the real read below sees the same bytes
+    msg_read.readcount = saved_read;
+    msg_read.bitpos = saved_bits;
+
+    ext = COM_FileExtension(value);
+    return !Q_stricmp(ext, ".wav") || !Q_stricmp(ext, ".ogg");
+}
+
+// Decide, once per level, which layout the demo being played back uses, then
+// translate this index into ours. Returns -1 for an index with nowhere to go.
+static int CL_DemoConfigstringIndex(int index)
+{
+    if (!cl.demo_encoding_known) {
+        if (cl_demo_encoding->integer >= 0) {
+            CL_SetDemoEncoding(false, false);   // the cvar decides both halves
+        } else if (index < CS_SOUNDS_OLD) {
+            // Identical in both layouts - nothing to learn from it yet.
+            return index;
+        } else {
+            // The first index in a section that moved settles it. Below
+            // CS_IMAGES_OLD the old layout keeps sounds and this one keeps
+            // models; from there on the old layout keeps images and this one
+            // keeps sounds. Either way, a sound path is the tell.
+            bool is_sound = CL_PeekConfigstringIsSound();
+            bool old;
+
+            if (index < CS_IMAGES_OLD)
+                old = is_sound;
+            else
+                old = !is_sound;
+
+            // The two changes shipped together often enough that the
+            // configstring verdict is the best guess available for the index
+            // widths as well; cl_demo_encoding exists for when it is not.
+            CL_SetDemoEncoding(old, old);
+        }
+    }
+
+    if (cl.demo_old_configstrings)
+        return CL_RemapOldConfigstring(index);
+
+    return index;
+}
+
+void CL_ParseConfigstring(int index)
 {
     size_t  len, maxlen;
     char    *s;
+
+    // Demos recorded before this fork widened the model table index the
+    // sections above CS_MODELS differently. Rerelease demos have already been
+    // remapped by the time they get here.
+    if (cls.demo.playback && !cl.kex_protocol && MAX_MODELS != MAX_MODELS_OLD) {
+        index = CL_DemoConfigstringIndex(index);
+        if (index < 0) {
+            MSG_ReadString(NULL, 0);
+            return;
+        }
+    }
 
     if (index < 0 || index >= MAX_CONFIGSTRINGS) {
         Com_Error(ERR_DROP, "%s: bad index: %d", __func__, index);
@@ -457,18 +656,31 @@ static void CL_ParseConfigstring(int index)
     CL_UpdateConfigstring(index);
 }
 
-static void CL_ParseBaseline(int index, int bits)
+void CL_ParseBaseline(int index, uint64_t bits)
 {
+    // Baselines follow the configstrings, so the sniff above has normally
+    // settled which encoding this demo uses by now. If one somehow precached
+    // nothing that gave it away, assume the original encoding: every demo
+    // written before this fork widened its indices uses it, and this fork
+    // writes more than enough configstrings to be recognised.
+    if (cls.demo.playback && !cl.kex_protocol && MAX_MODELS != MAX_MODELS_OLD &&
+        !cl.demo_encoding_known) {
+        CL_SetDemoEncoding(true, true);
+    }
+
     if (index < 1 || index >= MAX_EDICTS) {
         Com_Error(ERR_DROP, "%s: bad index: %d", __func__, index);
     }
 #if USE_DEBUG
     if (cl_shownet->integer > 2) {
-        MSG_ShowDeltaEntityBits(bits);
+        MSG_ShowDeltaEntityBits((int)bits);
         Com_LPrintf(PRINT_DEVELOPER, "\n");
     }
 #endif
-    MSG_ParseDeltaEntity(NULL, &cl.baselines[index], index, bits, cl.esFlags);
+    if (cl.kex_protocol)
+        CL_KexDemo_ParseDeltaEntity(NULL, &cl.baselines[index], index, bits);
+    else
+        MSG_ParseDeltaEntity(NULL, &cl.baselines[index], index, (int)bits, cl.esFlags);
 }
 
 // instead of wasting space for svc_configstring and svc_spawnbaseline
@@ -490,14 +702,40 @@ static void CL_ParseGamestate(void)
         if (!index) {
             break;
         }
-        CL_ParseBaseline(index, bits);
+        CL_ParseBaseline(index, (uint32_t)bits);
     }
 }
 
-static void CL_ParseServerData(void)
+// Server frame interval, in Hz. Ordinary Quake II is 10; the rerelease game
+// runs at 40 and says so in its serverdata. cl.servertime is derived straight
+// from the frame number, so getting this wrong changes playback speed.
+void CL_SetServerFrameTime(int fps)
+{
+    if (fps < 1 || fps > 1000) {
+        if (fps)
+            Com_WPrintf("Server reports an unusable frame rate of %d Hz, "
+                        "assuming %d.\n", fps, BASE_FRAMERATE);
+        fps = BASE_FRAMERATE;
+    }
+
+    cl.frametime = 1000 / fps;
+    if (cl.frametime < 1)
+        cl.frametime = 1;
+    cl.frametime_inv = 1.0f / cl.frametime;
+#if USE_FPS
+    cl.framediv = BASE_FRAMETIME / cl.frametime;
+    if (cl.framediv < 1)
+        cl.framediv = 1;
+#endif
+}
+
+// Returns true if the rest of this message - and every message after it - is in
+// the Quake II rerelease's command numbering, and must go to CL_KexDemo_ParseMessage.
+bool CL_ParseServerData(void)
 {
     char    levelname[MAX_QPATH];
     int     i, protocol, attractloop q_unused;
+    bool    kex;
 
     Cbuf_Execute(&cl_cmdbuf);          // make sure any stuffed commands are done
 
@@ -513,17 +751,32 @@ static void CL_ParseServerData(void)
                 "(protocol=%d, servercount=%d, attractloop=%d)\n",
                 protocol, cl.servercount, attractloop);
 
-    // check protocol
-    if (cls.serverProtocol != protocol) {
-        if (!cls.demo.playback) {
-            Com_Error(ERR_DROP, "Requested protocol version %d, but server returned %d.",
-                      cls.serverProtocol, protocol);
-        }
-        // BIG HACK to let demos from release work with the 3.0x patch!!!
-        if (protocol < PROTOCOL_VERSION_OLD || protocol > PROTOCOL_VERSION_Q2PRO) {
-            Com_Error(ERR_DROP, "Demo uses unsupported protocol version %d.", protocol);
-        }
+    // [rerelease] A KEX demo's serverdata is ours with one extra field - a
+    // server frame rate byte, here - and then continues identically, so the
+    // handoff costs nothing but this branch. Everything past this point in the
+    // MESSAGE, though, uses KEX command numbering.
+    kex = KEX_SUPPORTED(protocol);
+    if (kex) {
         cls.serverProtocol = protocol;
+        CL_KexDemo_ParseServerData(protocol);
+    } else {
+        cl.kex_protocol = 0;
+
+        // check protocol
+        if (cls.serverProtocol != protocol) {
+            if (!cls.demo.playback) {
+                Com_Error(ERR_DROP, "Requested protocol version %d, but server returned %d.",
+                          cls.serverProtocol, protocol);
+            }
+            // BIG HACK to let demos from release work with the 3.0x patch!!!
+            if (protocol < PROTOCOL_VERSION_OLD || protocol > PROTOCOL_VERSION_Q2PRO) {
+                Com_Error(ERR_DROP, "Demo uses unsupported protocol version %d.", protocol);
+            }
+            cls.serverProtocol = protocol;
+        }
+
+        // Everything but a rerelease demo runs the game at the standard rate.
+        CL_SetServerFrameTime(BASE_FRAMERATE);
     }
 
     // game directory
@@ -561,12 +814,7 @@ static void CL_ParseServerData(void)
     // setup default pmove parameters
     PmoveInit(&cl.pmp);
 
-#if USE_FPS
-    // setup default frame times
-    cl.frametime = BASE_FRAMETIME;
-    cl.frametime_inv = BASE_1_FRAMETIME;
-    cl.framediv = 1;
-#endif
+    // frame times were set above, from the rate the demo or server announced
 
     // setup default server state
     cl.serverstate = ss_game;
@@ -666,6 +914,8 @@ static void CL_ParseServerData(void)
             cl.clientNum = CLIENTNUM_NONE;
         }
     }
+
+    return kex;
 }
 
 /*
@@ -921,7 +1171,7 @@ static void CL_ParseStartSoundPacket(void)
     SHOWNET(2, "    %s\n", cl.configstrings[CS_SOUNDS + snd.index]);
 }
 
-static void CL_ParseReconnect(void)
+void CL_ParseReconnect(void)
 {
     if (cls.demo.playback) {
         Com_Error(ERR_DISCONNECT, "Server disconnected");
@@ -1003,7 +1253,7 @@ static void CL_CheckForIP(const char *s)
     }
 }
 
-static void CL_ParsePrint(void)
+void CL_ParsePrint(void)
 {
     int level;
     char s[MAX_STRING_CHARS];
@@ -1065,7 +1315,7 @@ static void CL_ParsePrint(void)
         S_StartLocalSound_("misc/talk.wav");
 }
 
-static void CL_ParseCenterPrint(void)
+void CL_ParseCenterPrint(void)
 {
     char s[MAX_STRING_CHARS];
 
@@ -1079,7 +1329,7 @@ static void CL_ParseCenterPrint(void)
     }
 }
 
-static void CL_ParseStuffText(void)
+void CL_ParseStuffText(void)
 {
     char s[MAX_STRING_CHARS];
 
@@ -1088,13 +1338,13 @@ static void CL_ParseStuffText(void)
     Cbuf_AddText(&cl_cmdbuf, s);
 }
 
-static void CL_ParseLayout(void)
+void CL_ParseLayout(void)
 {
     MSG_ReadString(cl.layout, sizeof(cl.layout));
     SHOWNET(2, "    \"%s\"\n", cl.layout);
 }
 
-static void CL_ParseInventory(void)
+void CL_ParseInventory(void)
 {
     int        i;
 
@@ -1253,7 +1503,15 @@ void CL_ParseServerMessage(void)
     size_t      trace_off[24];
     int         trace_cmd[24];
     int         trace_n = 0;
-    int         index, bits;
+    int         index;
+    uint64_t    bits;
+
+    // [rerelease] Once a KEX demo's serverdata has been seen, every later
+    // message in it is in KEX command numbering too.
+    if (cl.kex_protocol) {
+        CL_KexDemo_ParseMessage();
+        return;
+    }
 
 #if USE_DEBUG
     if (cl_shownet->integer == 1) {
@@ -1294,9 +1552,9 @@ void CL_ParseServerMessage(void)
                 {
                     int en_i;
                     for (en_i = 0; en_i < ent_trace_n; en_i++)
-                        Com_Printf("  off %3zu num %5d bits %08x\n",
+                        Com_Printf("  off %3zu num %5d bits %016"PRIx64"\n",
                                    ent_trace_off[en_i], ent_trace_num[en_i],
-                                   (unsigned)ent_trace_bits[en_i]);
+                                   ent_trace_bits[en_i]);
                 }
             }
             Com_Error(ERR_DROP, "%s: read past end of server message "
@@ -1356,7 +1614,13 @@ badbyte:
             break;
 
         case svc_serverdata:
-            CL_ParseServerData();
+            // [rerelease] A KEX demo's first message looks like ours right up
+            // to the protocol number inside it, so the switch to KEX command
+            // numbering can only happen here, once that number has been read.
+            if (CL_ParseServerData()) {
+                CL_KexDemo_ParseMessage();
+                return;
+            }
             continue;
 
         case svc_configstring:
@@ -1370,7 +1634,7 @@ badbyte:
             break;
 
         case svc_spawnbaseline:
-            index = MSG_ParseEntityBits(&bits);
+            index = CL_ParseEntityBits(&bits);
             CL_ParseBaseline(index, bits);
             break;
 
@@ -1471,6 +1735,15 @@ void CL_SeekDemoMessage(void)
 {
     int         cmd, extrabits;
     int         index;
+
+    // [rerelease] KEX renumbered the commands this loop skips over, so seeking
+    // in one of those demos has to go through its own dispatch. That one parses
+    // everything rather than skipping - the handlers it calls already test
+    // cls.demo.seeking where it matters - which is slower but correct.
+    if (cl.kex_protocol) {
+        CL_KexDemo_SeekMessage();
+        return;
+    }
 
 #if USE_DEBUG
     if (cl_shownet->integer == 1) {

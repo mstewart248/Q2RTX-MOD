@@ -59,8 +59,8 @@ entity_update_new(centity_t *ent, const entity_state_t *state, const vec_t *orig
 
     // duplicate the current state so lerping doesn't hurt anything
     ent->prev = *state;
-#if USE_FPS
     ent->prev_frame = state->frame;
+#if USE_FPS
     ent->event_frame = cl.frame.number;
 #endif
 
@@ -108,21 +108,17 @@ entity_update_old(centity_t *ent, const entity_state_t *state, const vec_t *orig
 
         // duplicate the current state so lerping doesn't hurt anything
         ent->prev = *state;
-#if USE_FPS
         ent->prev_frame = state->frame;
-#endif
         // no lerping if teleported or morphed
         VectorCopy(origin, ent->lerp_origin);
         return;
     }
 
-#if USE_FPS
     // start alias model animation
     if (state->frame != ent->current.frame) {
         ent->prev_frame = ent->current.frame;
         ent->anim_start = cl.servertime - cl.frametime;
     }
-#endif
 
     // shuffle the last state to previous
     ent->prev = ent->current;
@@ -370,6 +366,14 @@ void CL_DeltaFrame(void)
     // getting a valid frame message ends the connection process
     if (cls.state == ca_precached)
         set_active_state();
+
+    // Start of a new view weapon animation frame. Same reasoning as the alias
+    // model animation below: the frame number steps at 10 Hz whatever the
+    // server tick is, so the interpolation has to run on the animation's clock.
+    if (cl.frame.ps.gunframe != cl.oldframe.ps.gunframe) {
+        cl.gun_prev_frame = cl.oldframe.ps.gunframe;
+        cl.gun_anim_start = cl.servertime;
+    }
 
     // set server time
     framenum = cl.frame.number - cl.serverdelta;
@@ -639,9 +643,14 @@ static void CL_AddPacketEntities(void)
                            cl.lerpfrac, ent.origin);
                 VectorCopy(ent.origin, ent.oldorigin);
             }
-#if USE_FPS
-            // run alias model animation
-            if (cent->prev_frame != s1->frame) {
+            // Run alias model animation over its own interval rather than the
+            // server's. They are the same thing at 10 Hz, which is why this is
+            // skipped there and the plain cl.lerpfrac above stands. A rerelease
+            // demo runs the server at 40 Hz while still stepping animation at
+            // 10 Hz, so lerping across the 25 ms server tick would hold each
+            // pose for three ticks and then snap through the fourth - the whole
+            // scene animating in steps no matter how high the frame rate is.
+            if (cl.frametime != BASE_FRAMETIME && cent->prev_frame != s1->frame) {
                 int delta = cl.time - cent->anim_start;
                 float frac;
 
@@ -657,7 +666,6 @@ static void CL_AddPacketEntities(void)
                 ent.oldframe = cent->prev_frame;
                 ent.backlerp = 1.0f - frac;
             }
-#endif
         }
 
         // rerelease target_light - a switchable dynamic light with no model.
@@ -1691,6 +1699,26 @@ static void CL_AddViewWeapon(void)
         } else {
             gun.oldframe = ops->gunframe;
             gun.backlerp = 1.0f - CL_KEYLERPFRAC;
+
+            // Interpolate over the animation interval, not the server one.
+            // Identical at 10 Hz; a rerelease demo ticks at 40 Hz while still
+            // stepping the gun one frame every 100 ms, so lerping across the
+            // 25 ms tick leaves the weapon holding each pose for three ticks
+            // and snapping through the fourth.
+            if (cl.frametime != BASE_FRAMETIME) {
+                int delta = cl.time - cl.gun_anim_start;
+                float frac;
+
+                if (delta >= BASE_FRAMETIME)
+                    frac = 1;
+                else if (delta > 0)
+                    frac = delta * BASE_1_FRAMETIME;
+                else
+                    frac = 0;
+
+                gun.oldframe = cl.gun_prev_frame;
+                gun.backlerp = 1.0f - frac;
+            }
         }
     }
 

@@ -542,8 +542,36 @@ V_RenderView
 
 ==================
 */
-void V_RenderView(int waterLevel)
+/*
+THE waterLevel ARGUMENT WAS NEVER PASSED.
+
+client.h declares this as V_RenderView(void) and SCR_DrawActive called it
+with the argument commented out at the call site -
+while the definition here took an int and handed it straight to R_RenderFrame.
+MSVC says so (C4027, function declared without formal parameter list) and
+compiles it anyway, so what prepare_ubo received was whatever happened to be
+left in the argument register.
+
+That is why the underwater warp came and went for no reason anybody could tie
+to a setting. medium is MEDIUM_WATER when the view leaf says so OR when
+waterLevel is 3, and the warp, the screen blend scaling and the fog gate all
+hang off `medium` - so a junk value that happened to be 3 made the effect work,
+and any unrelated edit that changed what the caller left in that register took
+it away again. Checking the cvars could never find it: they were always right.
+
+RDF_UNDERWATER IS THE ANSWER THE RENDERER ALREADY WANTED. The game sets it from
+gi.pointcontents at the EYE - see p_view.c - which is exactly the "is the eye
+submerged" question waterLevel 3 was standing in for, and it is already on its
+way to the renderer in cl.refdef.rdflags a few lines below. So this needs no
+new client state and no prediction: it follows the game, which is what the note
+on the warp in vkpt/main.c says the medium is supposed to do.
+
+The signature matches the header now, so the call site cannot silently drift
+from it again.
+*/
+void V_RenderView(void)
 {
+    int waterLevel;
     // an invalid frame will just use the exact previous refdef
     // we can't use the old frame if the video mode has changed, though...
     if (cl.frame.valid) {
@@ -629,6 +657,12 @@ void V_RenderView(int waterLevel)
         // sort entities for better cache locality
         qsort(cl.refdef.entities, cl.refdef.num_entities, sizeof(cl.refdef.entities[0]), entitycmpfnc);
     }
+
+    /* 3 is the only value prepare_ubo distinguishes - "the eye is under" - and
+       RDF_UNDERWATER is set on precisely that condition. Read from cl.frame
+       rather than cl.refdef because an invalid frame skips the block above and
+       leaves cl.refdef holding the previous frame's flags. */
+    waterLevel = (cl.frame.ps.rdflags & RDF_UNDERWATER) ? 3 : 0;
 
     R_RenderFrame(&cl.refdef, waterLevel);
 #if USE_DEBUG

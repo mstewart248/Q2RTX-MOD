@@ -101,10 +101,14 @@ typedef struct centity_s {
     int             trailcount;         // for diminishing grenade trails
     vec3_t          lerp_origin;        // for trails (variable hz)
 
-#if USE_FPS
+    // Alias model animation is interpolated over the ANIMATION interval rather
+    // than the server interval whenever the two differ - see CL_AddPacketEntities.
+    // The rerelease runs its game at 40 Hz but still advances monster animation
+    // at 10 Hz, so without this a demo of it animates in visible steps.
     int             prev_frame;
     int             anim_start;
 
+#if USE_FPS
     int             event_frame;
 #endif
 
@@ -197,8 +201,15 @@ typedef struct {
 #define CL_OLDKEYPS     &cl.oldkeyframe.ps
 #define CL_KEYLERPFRAC  cl.keylerpfrac
 #else
-#define CL_FRAMETIME    BASE_FRAMETIME
-#define CL_1_FRAMETIME  BASE_1_FRAMETIME
+// USE_FPS is off in this tree, so the keyframe machinery below stays compiled
+// out - but the server frame INTERVAL still cannot be a constant any more.
+// Rerelease demos run the game at 40 Hz, and cl.servertime is derived straight
+// from the frame number (CL_DeltaFrame), so a hardcoded 100 ms would play them
+// back at a quarter speed. cl.frametime is set once per connection, from the
+// rate the server or demo announces, and is BASE_FRAMETIME for everything that
+// is not a rerelease demo - so nothing about ordinary play changes.
+#define CL_FRAMETIME    cl.frametime
+#define CL_1_FRAMETIME  cl.frametime_inv
 #define CL_FRAMEDIV     1
 #define CL_FRAMESYNC    1
 #define CL_KEYPS        &cl.frame.ps
@@ -318,11 +329,38 @@ typedef struct client_state_s {
     int         maxclients;
     pmoveParams_t pmp;
 
-#if USE_FPS
+    // Server frame interval in milliseconds and its reciprocal. Always
+    // BASE_FRAMETIME / BASE_1_FRAMETIME except while playing back a rerelease
+    // demo, which runs the game at 40 Hz - see CL_FRAMETIME above. Set by
+    // CL_SetServerFrameTime, which both CL_ClearState and CL_ParseServerData
+    // call, so they are never left at the zero the state wipe leaves behind.
     int         frametime;      // variable server frame time
     float       frametime_inv;  // 1/frametime
+#if USE_FPS
     int         framediv;       // BASE_FRAMETIME/frametime
 #endif
+
+    // [rerelease] Non-zero while a KEX-protocol demo is being played back;
+    // holds PROTOCOL_VERSION_KEX_DEMOS or PROTOCOL_VERSION_KEX. Everything the
+    // compatibility layer needs to key off lives in src/client/kexdemo.c, but
+    // the entity and frame parsers in parse.c have to branch on it too.
+    int         kex_protocol;
+
+    // The view weapon animates on the same 10 Hz clock the world models do, so
+    // when the server tick is faster than that it needs the same treatment -
+    // see CL_AddViewWeapon. Tracked here rather than per entity because the gun
+    // lives in the player state, not in the entity list.
+    int         gun_prev_frame;
+    int         gun_anim_start;
+
+    // Which protocol encoding the demo being played back uses. The two halves
+    // are tracked apart because this fork changed them in separate commits, so
+    // a demo recorded in between has one and not the other. Not known until the
+    // first configstring settles it. See the OLD CONFIGSTRING LAYOUT block in
+    // parse.c.
+    bool        demo_encoding_known;
+    bool        demo_old_configstrings;
+    bool        demo_old_indices;
 
     char        baseconfigstrings[MAX_CONFIGSTRINGS][MAX_QPATH];
     char        configstrings[MAX_CONFIGSTRINGS][MAX_QPATH];
@@ -619,6 +657,12 @@ extern cvar_t    *cl_showclamp;
 
 extern cvar_t    *cl_vwep;
 
+// Overrides the auto-detected encoding of a demo being played back: -1 detects
+// it, otherwise a mask of 1 (original configstring layout) and 2 (original byte
+// model and gun indices), so 0 is fully extended and 3 fully original. See the
+// OLD CONFIGSTRING LAYOUT block in parse.c.
+extern cvar_t    *cl_demo_encoding;
+
 extern cvar_t    *cl_disable_particles;
 extern cvar_t    *cl_disable_explosions;
 extern cvar_t    *cl_explosion_sprites;
@@ -801,6 +845,37 @@ extern snd_params_t     snd;
 
 void CL_ParseServerMessage(void);
 void CL_SeekDemoMessage(void);
+void CL_SetServerFrameTime(int fps);
+
+// Handlers shared with the rerelease demo compatibility layer. Its message
+// dispatch is a separate loop (KEX renumbered every server command above
+// svc_frame), but everything those commands do once decoded is the same work
+// CL_ParseServerMessage does, so it calls straight into these rather than
+// growing a second copy of each.
+bool CL_ParseServerData(void);
+void CL_ParseConfigstring(int index);
+void CL_ParseBaseline(int index, uint64_t bits);
+void CL_ParseFrame(int extrabits);
+void CL_ParsePrint(void);
+void CL_ParseCenterPrint(void);
+void CL_ParseStuffText(void);
+void CL_ParseLayout(void);
+void CL_ParseInventory(void);
+void CL_ParseReconnect(void);
+
+
+//
+// kexdemo.c - Quake II rerelease (KEX) demo playback compatibility layer
+//
+bool CL_KexDemo_ParseServerData(int protocol);
+void CL_KexDemo_ParseMessage(void);
+void CL_KexDemo_SeekMessage(void);
+int  CL_KexDemo_RemapConfigstring(int index);
+int  CL_KexDemo_ParseEntityBits(uint64_t *bits);
+void CL_KexDemo_ParseDeltaEntity(const entity_state_t *from, entity_state_t *to,
+                                 int number, uint64_t bits);
+void CL_KexDemo_ParsePlayerstate(const player_state_t *from, player_state_t *to);
+void CL_KexDemo_EntityRemoved(int number);
 
 
 //

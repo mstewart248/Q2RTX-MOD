@@ -52,6 +52,7 @@ cvar_t  *cl_kickangles;
 cvar_t  *cl_rollhack;
 cvar_t  *cl_noglow;
 cvar_t  *cl_nolerp;
+cvar_t  *cl_demo_encoding;
 
 #if USE_DEBUG
 cvar_t  *cl_shownet;
@@ -743,6 +744,11 @@ void CL_ClearState(void)
     BSP_Free(cl.bsp);
     memset(&cl, 0, sizeof(cl));
     memset(&cl_entities, 0, sizeof(cl_entities));
+
+    // CL_FRAMETIME reads cl.frametime, so it must never be the zero the wipe
+    // above just left behind. CL_ParseServerData overwrites this with whatever
+    // rate the server or demo announces.
+    CL_SetServerFrameTime(BASE_FRAMERATE);
 
     if (cls.state > ca_connected) {
         cls.state = ca_connected;
@@ -2856,6 +2862,11 @@ static void CL_InitLocal(void)
     warn_on_fps_rounding(cl_maxfps);
     warn_on_fps_rounding(r_maxfps);
 
+    // -1 auto-detects the encoding a demo was recorded with; otherwise a mask
+    // of 1 (original configstring layout) and 2 (original byte model and gun
+    // indices), so 0 is fully extended and 3 fully original.
+    cl_demo_encoding = Cvar_Get("cl_demo_encoding", "-1", 0);
+
 #if USE_DEBUG
     cl_shownet = Cvar_Get("cl_shownet", "0", 0);
     cl_showmiss = Cvar_Get("cl_showmiss", "0", 0);
@@ -3031,6 +3042,14 @@ static void CL_InitLocal(void)
 CL_CheatsOK
 ==================
 */
+// See the declaration in inc/client/client.h. sv_running covers "+map foo",
+// which spawns a local server but has not connected the client back to it yet
+// by the time the command line has finished executing.
+bool CL_StartupActionPending(void)
+{
+    return cls.state == ca_disconnected && !sv_running->integer;
+}
+
 bool CL_CheatsOK(void)
 {
     // can cheat when disconnected or playing a demo

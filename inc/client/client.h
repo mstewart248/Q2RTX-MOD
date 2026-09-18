@@ -69,6 +69,12 @@ void CL_UpdateUserinfo(cvar_t *var, from_t from);
 void CL_SendStatusRequest(const netadr_t *address);
 demoInfo_t *CL_GetDemoInfo(const char *path, demoInfo_t *info);
 bool CL_CheatsOK(void);
+
+// True when nothing has actually started a game yet - no server running, not
+// connected, no demo playing. Qcommon_Init asks this to decide whether to run
+// the client_start action, rather than merely asking whether a + command was
+// present on the command line: "+game rerelease" only picks a game directory.
+bool CL_StartupActionPending(void);
 // extra factor on the frame time, for the item wheel's bullet time
 float CL_GetTimeScale(void);
 void CL_SetSky(void);
@@ -132,6 +138,7 @@ float V_CalcFov(float fov_x, float width, float height);
 #define CL_RestartFilesystem(total)     FS_Restart(total)
 #define CL_ForwardToServer()            false
 #define CL_CheatsOK()                   (bool)Cvar_VariableInteger("cheats")
+#define CL_StartupActionPending()       false
 
 #define Con_Init()                      (void)0
 #define Con_SetColor(color)             (void)0

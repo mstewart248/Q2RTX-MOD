@@ -1877,17 +1877,19 @@ void MSG_ParseDeltaEntity(const entity_state_t *from,
         return;
     }
 
+    // Wide unless we are reading a demo from before the model table grew - see
+    // MSG_ES_BYTEINDICES.
     if (bits & U_MODEL) {
-        to->modelindex = MSG_ReadWord();
+        to->modelindex = (flags & MSG_ES_BYTEINDICES) ? MSG_ReadByte() : MSG_ReadWord();
     }
     if (bits & U_MODEL2) {
-        to->modelindex2 = MSG_ReadWord();
+        to->modelindex2 = (flags & MSG_ES_BYTEINDICES) ? MSG_ReadByte() : MSG_ReadWord();
     }
     if (bits & U_MODEL3) {
-        to->modelindex3 = MSG_ReadWord();
+        to->modelindex3 = (flags & MSG_ES_BYTEINDICES) ? MSG_ReadByte() : MSG_ReadWord();
     }
     if (bits & U_MODEL4) {
-        to->modelindex4 = MSG_ReadWord();
+        to->modelindex4 = (flags & MSG_ES_BYTEINDICES) ? MSG_ReadByte() : MSG_ReadWord();
     }
 
     if (bits & U_FRAME8)
@@ -1982,7 +1984,8 @@ MSG_ParseDeltaPlayerstate_Default
 */
 void MSG_ParseDeltaPlayerstate_Default(const player_state_t *from,
                                        player_state_t *to,
-                                       int            flags)
+                                       int            flags,
+                                       bool           byte_gunindex)
 {
     int         i;
     int         statbits;
@@ -2053,7 +2056,8 @@ void MSG_ParseDeltaPlayerstate_Default(const player_state_t *from,
     }
 
     if (flags & PS_WEAPONINDEX) {
-        to->gunindex = MSG_ReadWord();
+        // widened alongside the entity model indices; see MSG_ES_BYTEINDICES
+        to->gunindex = byte_gunindex ? MSG_ReadByte() : MSG_ReadWord();
     }
 
     if (flags & PS_WEAPONFRAME) {
@@ -2095,7 +2099,8 @@ MSG_ParseDeltaPlayerstate_Default
 void MSG_ParseDeltaPlayerstate_Enhanced(const player_state_t    *from,
                                         player_state_t    *to,
                                         int               flags,
-                                        int               extraflags)
+                                        int               extraflags,
+                                        bool              byte_gunindex)
 {
     int         i;
     int         statbits;
@@ -2175,7 +2180,8 @@ void MSG_ParseDeltaPlayerstate_Enhanced(const player_state_t    *from,
     }
 
     if (flags & PS_WEAPONINDEX) {
-        to->gunindex = MSG_ReadWord();
+        // widened alongside the entity model indices; see MSG_ES_BYTEINDICES
+        to->gunindex = byte_gunindex ? MSG_ReadByte() : MSG_ReadWord();
     }
 
     if (flags & PS_WEAPONFRAME) {

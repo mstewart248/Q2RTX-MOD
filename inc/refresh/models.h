@@ -188,7 +188,25 @@ void MOD_FreeAll(void);
 void MOD_Init(void);
 void MOD_Shutdown(void);
 
-model_t *MOD_ForHandle(qhandle_t h);
+/*
+A HANDLE IS NOT ALWAYS AN INDEX INTO r_models, and the difference is what
+made "MOD_ForHandle: bad model handle -63" a fatal error rather than a
+returned NULL.  R_RegisterModel hands back ~N for a "*N" configstring - an
+INLINE BSP MODEL, a brush that lives in the world geometry and has no
+model_t of its own - so every door, lift and platform on the map reaches the
+client as a NEGATIVE handle.  ~62 is -63.
+
+Those handles travel through entity_t::model and cl.model_draw[] exactly like
+the real ones, and the renderer dispatches on them with `model & 0x80000000`.
+Any caller that skips that test and asks for the model_t used to die.
+
+MOD_ForHandle answers NULL for one now - that IS the honest answer, the same
+one an unloaded slot gets - and the macro carries the call site into the
+message for the handles that really are corrupt, because the old text named
+the model system and pointed nowhere near the caller that was at fault.
+*/
+model_t *MOD_ForHandle_(qhandle_t h, const char *file, int line);
+#define MOD_ForHandle(h)    MOD_ForHandle_(h, __FILE__, __LINE__)
 qhandle_t R_RegisterModel(const char *name);
 
 /*

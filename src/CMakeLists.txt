@@ -120,6 +120,7 @@ SET(SRC_CLIENT
 	client/footsteps.c
 	client/gtv.c
 	client/input.c
+	client/kexdemo.c
 	client/keys.c
 	client/locs.c
 	client/main.c

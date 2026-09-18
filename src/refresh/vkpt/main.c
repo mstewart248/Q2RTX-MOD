@@ -4493,7 +4493,21 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	else
 		ubo->medium = MEDIUM_NONE;
 
-	if (waterLevel == 3) {
+	/* THE GAME GETS THE LAST WORD, BUT ONLY WHERE THE WORLD HAD NO ANSWER.
+
+	   waterLevel 3 means the EYE is submerged, which V_RenderView now takes from
+	   RDF_UNDERWATER - the game's own gi.pointcontents test at the view origin.
+	   It catches what the lookup above cannot: BSP_PointLeaf walks the WORLD tree,
+	   so a pool that is a brush model - a func_water, or any liquid that moves -
+	   leaves the view leaf reading empty while the player is up to their eyes in
+	   it.
+
+	   Guarded on MEDIUM_NONE, which the unguarded version was not. RDF_UNDERWATER
+	   is set for slime and lava as well as water (p_view.c tests all three), so
+	   forcing MEDIUM_WATER unconditionally would take a correct MEDIUM_SLIME off
+	   the view leaf and tint a slime pit like clean water. This only fills the
+	   gap; where the leaf knows which liquid it is, it keeps that. */
+	if (waterLevel == 3 && ubo->medium == MEDIUM_NONE) {
 		ubo->medium = MEDIUM_WATER;
 	}
 
@@ -4609,6 +4623,34 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			ubo->fog_enable = 0;
 			ubo->fog_mode   = 0;
 			ubo->fog_vol_density_ratio = 1.0f;
+		}
+
+		/* AND THE MAP'S FOG STOPS AT THE WATERLINE - see pt_fog_underwater.
+
+		   Clearing fog_enable is the whole implementation, and it is not a trick:
+		   it says "this map has no fog definition", which while the eye is under
+		   water is exactly the truth we want the renderer to act on. Every
+		   consequence is one a classic map already relies on every frame -
+		   getDensity falls back to the flat world_box medium and getFogColor to
+		   white, god_rays.comp drops its local lights and its fog extinction and
+		   keeps the sun, and god_rays_filter.comp stops letting the froxel grid
+		   replace that march and forces transmittance to 1.
+
+		   So the shafts survive and the haze does not, which is the split that was
+		   wanted: the objection to fog underwater is that it double-counts the
+		   water's own extinction and tints the water with the map's AIR fog, and
+		   none of that is true of a sunbeam.
+
+		   Read from `medium`, which prepare_ubo set above from the view leaf plus
+		   RDF_UNDERWATER - the same fact the warp and the screen blend use, so the
+		   three cannot disagree about where the waterline is.
+
+		   fog_mode goes with it. It is only ever read as `fog_enable != 0 &&
+		   fog_mode >= N`, so it is redundant - but leaving a mode behind on a
+		   disabled fog is the kind of half-state somebody reads later and believes. */
+		if (ubo->medium != MEDIUM_NONE && cvar_pt_fog_underwater->value <= 0.f) {
+			ubo->fog_enable = 0;
+			ubo->fog_mode   = 0;
 		}
 		// fog_num_model_lights is NOT set here - num_model_lights is not built
 		// until add_dlights() further down this frame. See there.
@@ -5247,6 +5289,42 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		ubo->time_prev = continuous ? prev_time : ubo->time;
 
 		warp_time = ubo->time;
+	}
+
+	/* WATERLOG - `developer 1`, printed only when something CHANGES.
+
+	   The two eased ramps above and the `medium` they both come off are the
+	   whole state of "the eye is under water", and every symptom of getting it
+	   wrong looks the same from the outside: the warp not arriving, the warp not
+	   leaving, and the fog gate firing on dry land all read as "the water effects
+	   are broken". This separates them in one line, and costs nothing when off.
+
+	   On CHANGE only, and quantised, because both strengths are continuous - an
+	   every-frame print would be its own performance change, which is exactly the
+	   trap pt_fog_log 1 documents a few hundred lines up. */
+	{
+		// Fetched here rather than taken from the common `developer`, which the
+		// refresh module does not link against - the same way the FOGMODE probe
+		// above reaches pt_fog_log.
+		static cvar_t *wl_dev; if (!wl_dev) wl_dev = Cvar_Get("developer", "0", 0);
+		static int last_medium = -1;
+		static int last_warp = -1;
+		static int last_sub = -1;
+
+		int warp_q = (int)(ubo->water_warp * 20.f + 0.5f);
+		int sub_q  = ubo->fog_enable;
+
+		if (wl_dev->integer && (ubo->medium != last_medium || warp_q != last_warp || sub_q != last_sub))
+		{
+			Com_Printf("WATERLOG medium=%d water_warp=%.3f fog_enable=%d "
+			            "pt_water_warp=%.0f amp=%.4f fade=%.1f dt=%.4f\n",
+			            ubo->medium, ubo->water_warp, ubo->fog_enable,
+			            ubo->pt_water_warp, ubo->pt_water_warp_amp,
+			            ubo->pt_water_warp_fade, ubo->fog_frame_time);
+			last_medium = ubo->medium;
+			last_warp = warp_q;
+			last_sub = sub_q;
+		}
 	}
 
 	if (cvar_tm_blend_enable->integer)

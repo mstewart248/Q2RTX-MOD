@@ -78,7 +78,15 @@ typedef enum {
     MSG_ES_UMASK        = (1 << 4),
     MSG_ES_BEAMORIGIN   = (1 << 5),
     MSG_ES_SHORTANGLES  = (1 << 6),
-    MSG_ES_REMOVE       = (1 << 7)
+    MSG_ES_REMOVE       = (1 << 7),
+    // This fork raised MAX_MODELS past 255 and widened the model indices in an
+    // entity delta from a byte to a short to match. Everything it records or
+    // serves uses the wide form, but demos recorded BEFORE that change - which
+    // is every demo stock Quake II ever wrote - still carry bytes, and reading
+    // those as shorts desynchronises the message at the first baseline. Set
+    // while playing one of those back; see the OLD CONFIGSTRING LAYOUT block in
+    // src/client/parse.c, which works out which kind of demo it is.
+    MSG_ES_BYTEINDICES  = (1 << 8)
 } msgEsFlags_t;
 
 extern sizebuf_t    msg_write;
@@ -145,8 +153,10 @@ void    MSG_ReadDeltaUsercmd_Enhanced(const usercmd_t *from, usercmd_t *to, int 
 int     MSG_ParseEntityBits(int *bits);
 void    MSG_ParseDeltaEntity(const entity_state_t *from, entity_state_t *to, int number, int bits, msgEsFlags_t flags);
 #if USE_CLIENT
-void    MSG_ParseDeltaPlayerstate_Default(const player_state_t *from, player_state_t *to, int flags);
-void    MSG_ParseDeltaPlayerstate_Enhanced(const player_state_t *from, player_state_t *to, int flags, int extraflags);
+// byte_gunindex: see MSG_ES_BYTEINDICES - the gun index was widened with the
+// model indices, so old demos carry a byte there too.
+void    MSG_ParseDeltaPlayerstate_Default(const player_state_t *from, player_state_t *to, int flags, bool byte_gunindex);
+void    MSG_ParseDeltaPlayerstate_Enhanced(const player_state_t *from, player_state_t *to, int flags, int extraflags, bool byte_gunindex);
 #endif
 void    MSG_ParseDeltaPlayerstate_Packet(const player_state_t *from, player_state_t *to, int flags);
 

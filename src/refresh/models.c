@@ -527,7 +527,33 @@ fail1:
     return 0;
 }
 
-model_t *MOD_ForHandle(qhandle_t h)
+/*
+=================
+MOD_ForHandle_
+
+Call it through the MOD_ForHandle macro, which fills in the call site.
+
+AN INLINE BSP MODEL HANDLE IS NOT AN ERROR.  R_RegisterModel returns ~N for a
+"*N" configstring, so every brush entity on the map - every door, lift, plat and
+train - carries a negative handle, and ~62 is the -63 that used to kill the
+client on the way into mgu5m2.  There is no model_t behind one: the geometry is
+part of the world, and the renderer dispatches it on `model & 0x80000000` long
+before it would want a mesh.  NULL is therefore the correct answer and not a
+papered-over failure - it is the same answer a slot with no loaded model gives,
+and every caller already handles it, because every caller already has to.
+
+What made this fatal was that the test was written as "is this a valid index
+into r_models", which a legitimate handle of a second kind cannot pass.  The
+callers that are correct are the ones that check the top bit first; the ones
+that are not simply asked a question with no answer.
+
+The ONE-TIME WARNING is deliberately not silent. A caller reaching here is
+usually doing something it did not mean to - looking up the mesh of a door -
+and the whole point of the file:line is that the old message could not say who.
+Once per call site, so a per-frame path cannot flood the log.
+=================
+*/
+model_t *MOD_ForHandle_(qhandle_t h, const char *file, int line)
 {
     model_t *model;
 
@@ -535,15 +561,41 @@ model_t *MOD_ForHandle(qhandle_t h)
         return NULL;
     }
 
-    /* Say WHICH handle, and what the valid range was. The bare Q_assert printed
-       only the expression, which is the one thing you already know when you are
-       staring at the log - it left no way to tell a stale handle from a previous
-       map (small h, plausible) from an out-of-bounds array read somewhere in the
-       caller (huge or negative h, which is what an unclamped model index off the
-       wire produces). */
+    if (h & 0x80000000) {
+        // inline bsp model ("*N") - world geometry, no model_t. Warn once per site.
+        static const char *seen_file[8];
+        static int         seen_line[8];
+        static int         seen_num;
+        int i;
+
+        for (i = 0; i < seen_num; i++)
+            if (seen_line[i] == line && seen_file[i] == file)
+                break;
+
+        if (i == seen_num) {
+            Com_WPrintf("%s: inline bsp model handle %d (*%d) asked for at %s:%d; "
+                        "that brush has no model_t, returning NULL\n",
+                        __func__, h, ~h, file, line);
+            if (seen_num < q_countof(seen_file)) {
+                seen_file[seen_num] = file;
+                seen_line[seen_num] = line;
+                seen_num++;
+            }
+        }
+
+        return NULL;
+    }
+
+    /* Say WHICH handle, what the valid range was, AND WHO ASKED. The bare
+       Q_assert printed only the expression, which is the one thing you already
+       know when you are staring at the log - it left no way to tell a stale
+       handle from a previous map (small h, plausible) from an out-of-bounds
+       array read somewhere in the caller (huge h, which is what an unclamped
+       model index off the wire produces). The call site is the rest of it: this
+       error names the model system and the fault is always in the caller. */
     if (!(h > 0 && h <= r_numModels))
-        Com_Error(ERR_FATAL, "%s: bad model handle %d (r_numModels = %d)",
-                  __func__, h, r_numModels);
+        Com_Error(ERR_FATAL, "%s: bad model handle %d (r_numModels = %d), from %s:%d",
+                  __func__, h, r_numModels, file, line);
 
     model = &r_models[h - 1];
     if (!model->type) {

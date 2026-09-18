@@ -2948,6 +2948,24 @@ static void SCR_DrawSelectedItemName(int x, int y, int item)
     }
 }
 
+// Read a stat by the index a layout program names.
+//
+// [rerelease] The remaster's status bar addresses 64 stats and ours carries
+// MAX_STATS; the ones above that drive HUD features we do not draw - the
+// weapon wheel, the team compass, its own health bars - so while one of its
+// demos is playing an out of range index reads as zero rather than dropping
+// the demo on the floor. Everywhere else it is still a bug in the layout
+// program and still says so.
+static int SCR_LayoutStat(int index)
+{
+    if (index < 0 || index >= MAX_STATS) {
+        if (cl.kex_protocol)
+            return 0;
+        Com_Error(ERR_DROP, "%s: invalid stat index", __func__);
+    }
+    return cl.frame.ps.stats[index];
+}
+
 static void SCR_ExecuteLayoutString(const char *s)
 {
     char    buffer[MAX_QPATH];
@@ -3011,13 +3029,11 @@ static void SCR_ExecuteLayoutString(const char *s)
         if (!strcmp(token, "pic")) {
             // draw a pic from a stat number
             token = COM_Parse(&s);
-            value = atoi(token);
-            if (value < 0 || value >= MAX_STATS) {
-                Com_Error(ERR_DROP, "%s: invalid stat index", __func__);
-            }
-            index = cl.frame.ps.stats[value];
+            index = SCR_LayoutStat(atoi(token));
             if (index < 0 || index >= MAX_IMAGES) {
-                Com_Error(ERR_DROP, "%s: invalid pic index", __func__);
+                if (!cl.kex_protocol)
+                    Com_Error(ERR_DROP, "%s: invalid pic index", __func__);
+                continue;   // rerelease demo: an icon we have no slot for
             }
             token = cl.configstrings[CS_IMAGES + index];
             if (token[0] && cl.image_precache[index]) {
@@ -3118,11 +3134,7 @@ static void SCR_ExecuteLayoutString(const char *s)
             token = COM_Parse(&s);
             width = atoi(token);
             token = COM_Parse(&s);
-            value = atoi(token);
-            if (value < 0 || value >= MAX_STATS) {
-                Com_Error(ERR_DROP, "%s: invalid stat index", __func__);
-            }
-            value = cl.frame.ps.stats[value];
+            value = SCR_LayoutStat(atoi(token));
             HUD_DrawNumber(x, y, 0, width, value);
             continue;
         }
@@ -3187,13 +3199,11 @@ static void SCR_ExecuteLayoutString(const char *s)
 
         if (!strcmp(token, "stat_string")) {
             token = COM_Parse(&s);
-            index = atoi(token);
-            if (index < 0 || index >= MAX_STATS) {
-                Com_Error(ERR_DROP, "%s: invalid stat index", __func__);
-            }
-            index = cl.frame.ps.stats[index];
+            index = SCR_LayoutStat(atoi(token));
             if (index < 0 || index >= MAX_CONFIGSTRINGS) {
-                Com_Error(ERR_DROP, "%s: invalid string index", __func__);
+                if (!cl.kex_protocol)
+                    Com_Error(ERR_DROP, "%s: invalid string index", __func__);
+                continue;   // rerelease demo: a string we did not keep
             }
             HUD_DrawString(x, y, cl.configstrings[index]);
             continue;
@@ -3225,11 +3235,7 @@ static void SCR_ExecuteLayoutString(const char *s)
 
         if (!strcmp(token, "if")) {
             token = COM_Parse(&s);
-            value = atoi(token);
-            if (value < 0 || value >= MAX_STATS) {
-                Com_Error(ERR_DROP, "%s: invalid stat index", __func__);
-            }
-            value = cl.frame.ps.stats[value];
+            value = SCR_LayoutStat(atoi(token));
             if (!value) {   // skip to endif
                 while (strcmp(token, "endif")) {
                     token = COM_Parse(&s);
@@ -3615,7 +3621,7 @@ static void SCR_DrawActive(int waterLevel)
     SCR_TileClear();
 
     // draw 3D game view
-    V_RenderView(/*waterLevel*/);
+    V_RenderView();
 
     // draw all 2D elements
     SCR_Draw2D();

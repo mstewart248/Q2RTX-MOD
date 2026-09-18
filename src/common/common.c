@@ -862,6 +862,8 @@ Qcommon_Init
 */
 void Qcommon_Init(int argc, char **argv)
 {
+    bool late_commands;
+
     if (setjmp(com_abortframe))
         Sys_Error("Error during initialization: %s", com_errorMsg);
 
@@ -1003,18 +1005,27 @@ void Qcommon_Init(int argc, char **argv)
     Sys_RunConsole();
 
     // add + commands from command line
-    if (!Com_AddLateCommands()) {
-        // if the user didn't give any commands, run default action
+    late_commands = Com_AddLateCommands();
+    if (late_commands) {
+        // the user asked for something explicit
+        // so drop the loading plaque
+        SCR_EndLoadingPlaque();
+    }
+
+    // Run the start-up action. A dedicated server keeps the original rule -
+    // any + command counts as the user having asked for something. The client
+    // instead asks whether anything actually STARTED, because a command line
+    // can contain + commands that select a game directory or exec a config and
+    // then sit at the menu; "+game rerelease" is the obvious one, and treating
+    // it as "the user asked for a map" suppresses the attract loop for no good
+    // reason.
+    if (COM_DEDICATED ? !late_commands : CL_StartupActionPending()) {
         char *cmd = COM_DEDICATED ? "dedicated_start" : "client_start";
 
         if ((cmd = Cmd_AliasCommand(cmd)) != NULL) {
             Cbuf_AddText(&cmd_buffer, cmd);
             Cbuf_Execute(&cmd_buffer);
         }
-    } else {
-        // the user asked for something explicit
-        // so drop the loading plaque
-        SCR_EndLoadingPlaque();
     }
 
     // even not given a starting map, dedicated server starts
