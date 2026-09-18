@@ -226,6 +226,25 @@ static cvar_t *sky_map_sun_animate;
 // behaviour this build has always had.
 static cvar_t *sun_animate_interval;
 
+// THE SUN CARRIES BETWEEN MAPS. Where it was pointing on the last frame of the
+// map just left, and whether a frame has ever produced one. Every branch of the
+// sun switch fills these in, preset or animated, so what is carried is simply
+// where the sun WAS - which is what "pick the cycle up from here" has to mean
+// when the previous map set its own hour.
+//
+// Only SUN_PRESET_CURRENT_TIME / _FAST_TIME do not, because those build a
+// direction vector from a date and a latitude and never form an angle pair;
+// have_last_sun_angles stays false through a session spent entirely in one of
+// those and apply_map_sun falls back to the cvars.
+static float last_sun_elevation = 0.f;
+static float last_sun_azimuth = 0.f;
+static bool  have_last_sun_angles = false;
+
+// Raised by apply_map_sun on a map change: the animation clock has to be rebased
+// because cl.time went back to zero with the map load, and the cycle now starts
+// from whatever sun_elevation / sun_azimuth were just set to.
+static bool sun_cycle_restart = false;
+
 // Only meaningful in "rerelease" sky mode. An explicit sky_type pick already
 // declines every map's skybox and already says which atmosphere to render, so
 // overriding it here would make the menu lie.
@@ -942,18 +961,35 @@ static void apply_map_sun(void)
 	if (!cl.mapname[0])
 		return;
 
-	if (!sky_map_forces_procedural() && !map_sun_animate_active())
+	// Whatever this map turns out to be, the animation clock restarts here:
+	// cl.time went back to zero with the map load.
+	sun_cycle_restart = true;
+
+	// A MAP THAT ANIMATES PICKS THE SUN UP WHERE THE LAST ONE LEFT IT, and runs
+	// on from there. So the cycle survives the walk from one map to the next, and
+	// what breaks it is a map that states an hour of its own - which is the
+	// branch below, and which the next animating map then starts from in turn.
+	// The space levels break it the same way by not animating at all.
+	//
+	// Deliberately NOT seeded from sky_map_sun_elevation / _azimuth: those are a
+	// FIXED hour, and a map that asked for a moving sun has no fixed hour to be
+	// put back to on every load.
+	if (map_sun_animate_active())
+	{
+		if (have_last_sun_angles)
+		{
+			Cvar_SetValue(sun_elevation, last_sun_elevation, FROM_CODE);
+			Cvar_SetValue(sun_azimuth, last_sun_azimuth, FROM_CODE);
+		}
+		return;
+	}
+
+	if (!sky_map_forces_procedural())
 		return;
 
 	// SUN_PRESET_NONE is the menu's "Custom". Read the cvar directly rather than
-	// active_sun_preset(), which substitutes a different preset in multiplayer -
-	// and which reports Custom for an animating map, which would make this test
-	// answer its own question.
-	//
-	// A map running its own time of day is the exception: it has already
-	// overruled the preset, and these two angles are WHERE ITS CYCLE STARTS, so
-	// they have to be seeded or it starts from wherever the last map left the sun.
-	if (sun_preset->integer != 0 && !map_sun_animate_active())
+	// active_sun_preset(), which substitutes a different preset in multiplayer.
+	if (sun_preset->integer != 0)
 		return;
 
 	Cvar_SetValue(sun_elevation, sky_map_sun_elevation->value, FROM_CODE);
@@ -1006,37 +1042,32 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	double azimuth, elevation;
 
-	static float start_time = 0.0f, sun_animate_changed = 0.0f, sun_last_update = 0.0f, static_time = 0.0f, last_time = 0.0f;
-	static qboolean bLevelChangeTwice = qfalse;
-	static qboolean bStaticTimeKicked = qfalse;
+	static float start_time = 0.0f, sun_animate_changed = 0.0f, sun_last_update = 0.0f;
 
 	// The rate in force, which is sun_animate unless the map asked for one of its
 	// own - see effective_sun_animate.
 	const float sun_animate_rate = effective_sun_animate();
 
-	if (sun_animate_rate > 0) {
-		if (last_time > time) {
-			if (bLevelChangeTwice) {
-				static_time += last_time;
-			}
-			sun_last_update = 0.0f;
-			bLevelChangeTwice = qtrue;
-		}
-
-		last_time = time;
-
-		if (!bStaticTimeKicked) {
-			if (static_time > time) {
-				time += static_time;
-				bStaticTimeKicked = qtrue;
-			}
-			else {
-				static_time = time;
-			}
-		}
-		else {
-			time += static_time;
-		}
+	/* THE CLOCK IS REBASED ON EACH MAP, NOT ACCUMULATED ACROSS THEM.
+	
+	   cl.time restarts at zero on every map load, and `elapsed` below is
+	   measured from start_time, so something has to absorb that. What used to
+	   absorb it was a running static_time offset with two latches on it
+	   (bLevelChangeTwice, bStaticTimeKicked) that tried to keep `time` itself
+	   monotonic forever - and it still lost the sun on a map change, because the
+	   ANGLE is measured from sun_elevation / sun_azimuth, which the new map put
+	   back to its own starting values.
+	
+	   Carrying the angle instead makes all of that unnecessary: apply_map_sun
+	   writes the sun's last position into those two cvars as the new map loads,
+	   so restarting the clock from zero continues the cycle rather than
+	   interrupting it. The map change is then the only place that has to know
+	   anything, and `time` can be read exactly as the client reports it. */
+	if (sun_cycle_restart || time < start_time)
+	{
+		sun_cycle_restart = false;
+		start_time = time;
+		sun_last_update = 0.0f;
 	}
 
 	if (sun_animate_rate != sun_animate_changed)
@@ -1174,6 +1205,13 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 			}
 			break;
 		}
+
+		// Where the sun ended up, for the next map to pick up from. Every branch
+		// of the switch above lands here, so a map that states a fixed hour hands
+		// that hour on just as an animating one hands on its current position.
+		last_sun_elevation = (float)elevation;
+		last_sun_azimuth = (float)azimuth;
+		have_last_sun_angles = true;
 
 		float elevation_rad = elevation * M_PI / 180.0f; //max(-20.f, min(90.f, elevation)) * M_PI / 180.f;
 		float azimuth_rad = azimuth * M_PI / 180.f;
