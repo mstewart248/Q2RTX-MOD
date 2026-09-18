@@ -939,7 +939,8 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		// Stored as value+1, so the cleared row of an unregistered material
 		// (memset above) reads back as "the material said nothing" rather than
 		// as guide field 0. MAT_DLSS_GUIDE_FIELD has already rejected anything
-		// outside 0..3, so three bits is the whole range.
+		// outside 0..5, so three bits still covers the range (stored 1..6,
+		// with 7 spare).
 		if (material->dlss_guide_field >= 0)
 			mat_data[7] = (uint32_t)(material->dlss_guide_field + 1) & 7;
 	}

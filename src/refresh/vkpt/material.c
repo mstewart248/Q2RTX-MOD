@@ -504,12 +504,15 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	// else. Same numbering as the cvar, so whichever value looked right in the
 	// console is the value to write here.
 	case MAT_DLSS_GUIDE_FIELD:
-		if (ivalue < 0 || ivalue > 3)
+		// 0..5, matching pt_dlss_guide_field. 4 is the Fresnel-weighted mix and 5 the
+		// mirror split - both are per-surface answers, which is the whole reason this
+		// material key exists, so neither would be reachable if the range stayed 0..3.
+		if (ivalue < 0 || ivalue > 6)
 		{
 			if (sourceFile)
-				Com_EPrintf("%s:%d: dlss_guide_field must be 0..3, got %d\n", sourceFile, lineno, ivalue);
+				Com_EPrintf("%s:%d: dlss_guide_field must be 0..6, got %d\n", sourceFile, lineno, ivalue);
 			else
-				Com_EPrintf("dlss_guide_field must be 0..3, got %d\n", ivalue);
+				Com_EPrintf("dlss_guide_field must be 0..6, got %d\n", ivalue);
 			return Q_ERR_FAILURE;
 		}
 		mat->dlss_guide_field = ivalue;

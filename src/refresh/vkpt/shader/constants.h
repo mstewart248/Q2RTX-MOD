@@ -192,11 +192,16 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // is mostly the room behind, and it filters the view through the glass into
 // mush. Nothing downstream can tell the two apart, so the material says which.
 //
-// GUIDE_SET means the material stated a value; the two bits above it hold it,
-// using the same 0..3 numbering as the cvar so both feed one branch.
+// GUIDE_SET means the material stated a value; the three bits above it hold it,
+// using the same 0..5 numbering as the cvar so both feed one branch.
+//
+// These flags travel in the ALPHA OF AN rgba16f IMAGE (IMG_PT_VIEW_DIRECTION, then
+// IMG_ASVGF_COLOR), and half floats represent integers exactly only up to 2048. Every
+// bit below now sums to 2047, so the word is full: a further flag needs a different
+// home, not bit 11.
 #define CHECKERBOARD_FLAG_GUIDE_SET   128
 #define CHECKERBOARD_FLAG_GUIDE_SHIFT 8
-#define CHECKERBOARD_FLAG_GUIDE_MASK  768   /* bits 8-9 */
+#define CHECKERBOARD_FLAG_GUIDE_MASK  1792  /* bits 8-10 */
 
 // The value a material stores for the above, as packed into the material table.
 // 0 means the material said nothing and pt_dlss_guide_field decides; otherwise

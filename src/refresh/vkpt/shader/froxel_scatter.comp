@@ -74,6 +74,38 @@ the grid provides for free.
 
 #include "froxel_shared.h"
 
+/* FROXEL_ASSUME_MODE3  (2026-09-18)  -  NO BRANCH ON THE FOG MODE IN THIS SHADER.
+
+   Debug view 44 paints, in ONE frame, the density gate, `fog_lights` and
+   whether the light nest inside froxel_cell_scatter assigned its outputs. On
+   every collapsed frame it reads gate TRUE, fog_lights TRUE, nest NOT RUN, for
+   99.9% of cells; view 23 reads `fog_mode == 3` TRUE in the same state and the
+   old hoist test showed the SAME call executing in main and not inside the
+   nest. So the values are right and a branch on a dispatch-uniform UBO value is
+   being skipped - the signature of the shader running as a variant in which
+   that branch was folded to a value the mode did NOT have.
+
+   This pass is only ever dispatched with map fog enabled and cl_fog >= 2
+   (vkpt_froxel_enabled), so the shader never needed to test fog_enable at
+   all. With this on, fog_lights is a compile-time constant and the mode-3
+   path is unconditional: NOTHING here branches on fog_enable or fog_mode.
+   The cost is the mode-2 grid path, which is compiled out; if mode 2 in the
+   grid is wanted back, the mode must arrive as a specialization or push
+   constant chosen on the CPU, never as a UBO value branched on in here. */
+/* TESTED AND NOT THE CAUSE (2026-09-18, fogtmp/auto/modeonly): with only these
+   mode branches removed the fog still faded to 60% at 202 fps, while removing
+   only the density gate (FROXEL_NO_GATE, at the call site in main) held 100% at
+   210 fps twice. Default 0 so cl_fog 2 keeps its grid path; the switch stays
+   because it is the cheapest way to re-test the mode nest if it is ever needed. */
+#ifndef FROXEL_ASSUME_MODE3
+#define FROXEL_ASSUME_MODE3 0
+#endif
+#if FROXEL_ASSUME_MODE3
+#define FROXEL_MODE3 true
+#else
+#define FROXEL_MODE3 (global_ubo.fog_mode >= 3)
+#endif
+
 // fog_medium.glsl needs a rand(ivec2); the march seeds it per pixel, this pass
 // seeds it per cell so neighbouring froxels take different light subsets and
 // the spatial blur in the integrate pass has something to average.
@@ -263,7 +295,12 @@ void froxel_cell_scatter(
 	inout vec4 result, inout vec4 result_preblend,
 	inout float dbg_in_gate,
 	inout float dbg_last_post, inout float dbg_last_vol,
-	inout float dbg_last_in, inout float dbg_last_skyvis, inout float dbg_last_sky)
+	inout float dbg_last_in, inout float dbg_last_skyvis, inout float dbg_last_sky,
+	/* THE THREE TERMS AS VALUES, for debug views 40-42 (2026-09-18): x = the sun
+	   half (luminance of `inscatter` before the local lights are added), y = the
+	   local-light half, z = the sky half. main initialises all three to -1 so a
+	   view can tell "never assigned" from "assigned zero". */
+	inout vec3 dbg_terms)
 {
 	dbg_in_gate = 1.0;
 	/* SENTINEL AT DEPTH 2.  dbg_last_post is assigned three conditions
@@ -350,7 +387,7 @@ void froxel_cell_scatter(
 		uint cluster = (global_ubo.fog_camera_cluster < 0)
 		             ? ~0u : uint(global_ubo.fog_camera_cluster);
 
-		if (global_ubo.fog_mode >= 3)
+		if (FROXEL_MODE3)
 		{
 			// cl_fog 3: a real light sample per light, with its own
 			// occlusion ray and its own phase about that light's
@@ -457,6 +494,12 @@ void froxel_cell_scatter(
 			   straddle the three expressions in between.  All are unconditional and all
 			   add VALUE + 1u, so a zero delta means "did not execute". */
 			float dbg_vol = luminance(vol_inscatter);
+
+			/* Views 40-42. Captured as VALUES, before the multiply, so NaN, zero
+			   and finite can be told apart per cell in the picture. */
+			dbg_terms = vec3(luminance(inscatter),
+			                 luminance(vol_inscatter - sky_term),
+			                 luminance(sky_term));
 
 			inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005
 			           * global_ubo.fog_vol_density_ratio;
@@ -688,7 +731,11 @@ void main()
    to answer. Their fields now carry magnitudes; see the consolidated
    block at the accumulation. */
 
+#if FROXEL_ASSUME_MODE3
+	const bool fog_lights = true;   /* dispatch precondition - see the note at the top */
+#else
 	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 2);
+#endif
 	vec3 sun_color = sun_color_ubo.sun_color;
 
 	// Same bail as the march: nothing to scatter means an empty volume rather
@@ -712,9 +759,13 @@ void main()
 
 	   `fog_lights` is `(fog_enable != 0) && (fog_mode >= 2)` and `sun_color`
 	   comes from sun_color_ubo - a SINGLE device buffer, like the UBO. */
+#if FROXEL_ASSUME_MODE3
+	const bool have_light = true;
+#else
 	bool have_light = (global_ubo.pt_fog_const_src == 6.0)
 	                ? true
 	                : ((luminance(sun_color) != 0) || fog_lights);
+#endif
 
 	// One blue-noise value per column, offset per slice below. Sampling the
 	// texture once and stepping it is much cheaper than a fetch per slice, and
@@ -1137,7 +1188,11 @@ void main()
 
 		vec4 result = vec4(0);
 		/* STAGE 3 capture - see the store at the end of the loop. */
-		vec4 result_preblend = vec4(0);
+		/* -1 sentinel (2026-09-18): view 40 paints WHITE if the gated block never
+		   assigned this. The const_src 3 store clamps it to 0, as 0 was. */
+		vec4 result_preblend = vec4(-1.0);
+		/* Views 40-42: -1 = "the gate was shut and the block never ran". */
+		vec3 dbg_terms = vec3(-1.0);
 
 		/* DID THE GATE'S BODY ACTUALLY RUN?  A LOCAL - not a global, not a
 		   callee - set as the first statement inside the block, so nothing
@@ -1254,14 +1309,32 @@ void main()
 		   on view 39 is now the expected reading and confirms the fix is live. */
 		vec3 cell_sky_term = vec3(0);
 
-		if (fog_lights && global_ubo.fog_mode >= 3)
+		if (fog_lights && FROXEL_MODE3)
 		{
 			cell_sky_term = fog_sky_inscatter(world_pos_history);
 			dbg_hoist_entered = fog_debug_sky_entered;
 		}
 
+		/* FROXEL_NO_GATE  (2026-09-18)  -  THE DENSITY GATE IS THE SKIPPED BRANCH.
+
+		   With a -1 sentinel on result_preblend, debug view 40 paints WHITE on
+		   100% of cells on every collapsed frame: the body of this `if` never
+		   ran, while view 44 paints cell_has_density TRUE for the same cells in
+		   the same state. Forcing the condition to `density >= 0` (always true)
+		   still collapsed, so the branch INSTRUCTION is what is skipped, not the
+		   value it tests. Removing the branch leaves the compiler nothing to
+		   skip: the block runs for every cell, and `density` - already a factor
+		   of `result` - zeroes the empty ones exactly as the gate did. The cost
+		   is the lighting work in cells with no medium (~22% here). */
+#ifndef FROXEL_NO_GATE
+#define FROXEL_NO_GATE 1
+#endif
+#if FROXEL_NO_GATE
+		{
+#else
 		if (cell_has_density)
 		{
+#endif
 			/* The body now lives in froxel_cell_scatter(), above main. See the
 			   comment there: it is a codegen experiment against the collapse,
 			   and the lift is verbatim. */
@@ -1269,7 +1342,7 @@ void main()
 			                    sun_color, fog_lights, r1, fs, cell_sky_term,
 			                    result, result_preblend, dbg_in_gate,
 			                    dbg_last_post, dbg_last_vol, dbg_last_in,
-			                    dbg_last_skyvis, dbg_last_sky);
+			                    dbg_last_skyvis, dbg_last_sky, dbg_terms);
 		}
 
 		/* --- DEBUG VIEWS ---
@@ -1769,6 +1842,84 @@ void main()
 			dbg = vec3((fog_lights && global_ubo.fog_mode >= 3) ? 1.0 : 0.0,
 			           dbg_hoist_entered,
 			           fog_debug_sky_entered) * 0.02;
+
+		/* VIEWS 40-43: WHAT IS IN THE VALUE, NOT WHETHER A BRANCH RAN. (2026-09-18)
+
+		   Every earlier view asked whether some statement executed, and the
+		   answers contradicted each other. These ask what the number IS, per
+		   cell, one-hot, so the picture's colour is the answer:
+
+		     RED    the value is NaN
+		     GREEN  the value is exactly zero
+		     BLUE   the value is finite and positive
+		     WHITE  the -1 sentinel main initialised it to survived, i.e. the
+		            block never assigned it (the density gate was shut)
+
+		     40  luminance of result_preblend.rgb - the raw in-scatter the cell
+		         stores this frame, lighting * albedo * density
+		     41  the LOCAL-LIGHT half of vol_inscatter (fog_shade_chosen)
+		     42  the SUN half - `inscatter` before the local lights are added
+
+		   43 reads three dispatch-uniform inputs the CPU log cannot see as the
+		   shader sees them:
+		     RED    pt_fog_vol_scale * fog_vol_density_ratio is zero or NaN
+		     GREEN  fog_camera_cluster < 0
+		     BLUE   the camera cluster's light list is EMPTY
+		   Healthy frames must be black on 43. */
+		if (debug >= 40 && debug <= 42)
+		{
+			float v = (debug == 40) ? luminance(result_preblend.rgb)
+			        : (debug == 41) ? dbg_terms.y
+			                        : dbg_terms.x;
+
+			dbg = (v < 0.0)  ? vec3(1.0)
+			    : isnan(v)   ? vec3(1.0, 0.0, 0.0)
+			    : (v == 0.0) ? vec3(0.0, 1.0, 0.0)
+			                 : vec3(0.0, 0.0, 1.0);
+			dbg *= 0.02;
+		}
+
+		/* VIEW 44: THE GATE, THE LIGHT FLAG AND THE NEST, ONE FRAME, ONE CELL.
+		     RED    cell_has_density        (main's gate)
+		     GREEN  fog_lights              (main's copy of the UBO flag)
+		     BLUE   the light nest inside froxel_cell_scatter assigned dbg_terms
+		   Healthy: white. Gate shut: green only. Nest skipped with both flags on:
+		   yellow - and THAT would be the control-flow claim, finally measured
+		   against values instead of counters. */
+		if (debug == 44)
+			dbg = vec3(cell_has_density ? 1.0 : 0.0,
+			           fog_lights ? 1.0 : 0.0,
+			           (dbg_terms.x >= 0.0) ? 1.0 : 0.0) * 0.02;
+
+		/* VIEW 45: WHICH FACTOR OF getDensity IS ZERO, as the shader sees it.
+		     RED    world_box == 0  (world_center / world_half_size_inv vs p)
+		     GREEN  height fog + distance floor <= 0
+		     BLUE   pt_fog_density_max <= 0
+		   Healthy: black everywhere inside the fog. */
+		if (debug == 45)
+		{
+			vec3 bnd = clamp(3.0 - 2.0 * abs((world_pos_history - global_ubo.world_center.xyz)
+			                                 * global_ubo.world_half_size_inv.xyz), vec3(0), vec3(1));
+			float wb = bnd.x * bnd.y * bnd.z;
+			float hd = getHeightFogDensity(world_pos_history)
+			         + global_ubo.fog_density / FOG_DISTANCEFOG_REFERENCE;
+			dbg = vec3((wb == 0.0) ? 1.0 : 0.0,
+			           (hd <= 0.0) ? 1.0 : 0.0,
+			           (global_ubo.pt_fog_density_max <= 0.0) ? 1.0 : 0.0) * 0.02;
+		}
+
+		if (debug == 43)
+		{
+			float k = global_ubo.pt_fog_vol_scale * global_ubo.fog_vol_density_ratio;
+			int   c = global_ubo.fog_camera_cluster;
+			uint  cnt = (c < 0) ? 0u
+			          : light_buffer.light_list_offsets[c + 1]
+			          - light_buffer.light_list_offsets[c];
+
+			dbg = vec3((k == 0.0 || isnan(k)) ? 1.0 : 0.0,
+			           (c < 0) ? 1.0 : 0.0,
+			           (cnt == 0u) ? 1.0 : 0.0) * 0.02;
+		}
 
 		if (debug == 38)
 			dbg = vec3(cell_has_density ? 1.0 : 0.0,

@@ -261,6 +261,10 @@ void combine_fullres_fields(ivec2 opos)
     // True when the primary guides describe the REFLECTED surface, so the reflection is
     // no longer a secondary lobe that RR has to reproject separately - it is the surface.
     bool reflection_is_primary = false;
+    // pt_dlss_guide_field 4: mix the DEMODULATION guides (diffuse and specular albedo)
+    // between the two layers by the split's Fresnel weight instead of taking one layer's.
+    bool mix_albedo_by_fresnel = false;
+    float fresnel_weight = 0.0;
 
     if(paths_split)
     {
@@ -281,12 +285,75 @@ void combine_fullres_fields(ivec2 opos)
             ? (checkerboard_flags & CHECKERBOARD_FLAG_GUIDE_MASK) >> CHECKERBOARD_FLAG_GUIDE_SHIFT
             : int(global_ubo.pt_dlss_guide_field);
         bool split_was_glass = (checkerboard_flags & CHECKERBOARD_FLAG_GLASS) != 0;
+
+        /* The split's Fresnel weight, as reflect_refract.rgen parked it in the unused
+           alpha of the reflected albedo, biased by +1. Below 1 means this pixel split on
+           something that is not a Fresnel term - a security camera, an emissive screen -
+           and mode 4 then has nothing to weight with and falls back to mode 3. */
+        float fresnel_encoded = imageLoad(IMG_PT_REFLECTED_ALBEDO, p_reflect).a;
+        bool have_fresnel = fresnel_encoded >= 1.0;
+        fresnel_weight = have_fresnel ? clamp(fresnel_encoded - 1.0, 0.0, 1.0) : 0.0;
+
         if(guide_field == 2)
             reflection_is_primary = true;
         else if(guide_field == 3)
             reflection_is_primary = split_was_glass;
         else if(guide_field == 1)
             reflection_is_primary = luminance(c_reflect.rgb) > luminance(c_refract.rgb);
+        else if(guide_field == 4)
+        {
+            /* FRESNEL-WEIGHTED GUIDES - the middle ground between 0 and 3.
+ 
+               Depth, normal, motion and roughness describe a place in space. They cannot
+               be averaged between two unrelated surfaces, so they follow whichever layer
+               actually dominates the pixel, and the test is F: a smooth function of the
+               viewing angle carrying no sample noise. The boundary it draws across a pane
+               is therefore ONE coherent region edge, which is the difference between this
+               and guide_field 1 - comparing two noisy luminances per pixel flips the
+               guides pixel to pixel and frame to frame, and RR answers incoherent guides
+               by distrusting the history and blurring everything.
+ 
+               Diffuse and specular albedo are not geometry, they are what RR DIVIDES the
+               colour by before filtering and multiplies back afterwards. This pixel holds
+               F * reflection + (1 - F) * refraction, so the albedo that makes that
+               round-trip exact is the same F-weighted mix, applied below. Giving RR one
+               layer's albedo for a summed pixel is what inflates a faint reflection into
+               a solid one under guide_field 3 and divides it away under guide_field 0. */
+            reflection_is_primary = have_fresnel
+                ? (fresnel_weight >= global_ubo.pt_dlss_guide_fresnel)
+                : split_was_glass;
+            mix_albedo_by_fresnel = have_fresnel;
+        }
+        else if(guide_field == 6)
+        {
+            /* GUIDE FIELD 3, WITH THE DEMODULATION CORRECTED.
+
+               Geometry is picked exactly as mode 3 picks it - reflection on glass,
+               refraction on water and slime - because that is what actually looked
+               right, and because forcing the reflection's geometry (or a mirror
+               roughness) onto water is what turns moving water to mush.
+
+               The one thing mode 3 gets wrong is energy. RR divides by
+               pInDiffuseAlbedo, filters, and multiplies back; mode 3 hands it the
+               REFLECTED surface's albedo for a pixel that is only F reflection, so
+               the round trip does not close and the reflection comes back stronger
+               than it should - slightly, which is exactly the reported symptom. The
+               albedo that makes the round trip exact for F*reflect + (1-F)*refract is
+               the F-weighted mix of the two, so take mode 3's geometry and mode 4's
+               albedo. Roughness is deliberately left alone here. */
+            reflection_is_primary = split_was_glass;
+            mix_albedo_by_fresnel = have_fresnel;
+        }
+        else if(guide_field == 5)
+        {
+            /* The reflection field no longer describes the reflected object - it carries
+               the PANE's own normal, albedo, roughness and specular albedo, captured in
+               reflect_refract.rgen before the surface was replaced, plus the pane's own
+               depth and motion vector. So it is the field to take, and there is nothing
+               to mix: RR demodulates the reflected content with pInReflectedAlbedo and
+               the pane's specular albedo, which is the division of labour it documents. */
+            reflection_is_primary = true;
+        }
 
         p_primary = reflection_is_primary ? p_reflect : p_refract;
     }
@@ -302,10 +369,32 @@ void combine_fullres_fields(ivec2 opos)
     imageStore(IMG_FLAT_COLOR, opos, vec4(color, float(checkerboard_flags)));
 
     // --- Primary surface: colour motion, depth and the DLSS-RR guide buffers ---------
-    vec4 primary_motion = imageLoad(IMG_PT_MOTION, p_primary);
+    /* MOTION AND DEPTH NEED NOT COME FROM THE SAME FIELD AS THE REST OF THE GUIDES.
+
+       The albedo/normal/roughness guides describe what a pixel LOOKS like; the motion
+       vector says where its content was last frame, and DLSS warps the WHOLE pixel
+       with it. On a window that pixel is mostly the view THROUGH the glass, so taking
+       the reflection's mirrored vector - as guide field 2 and 3 do - stamps the
+       reflected character's motion onto the static scenery behind the pane, and it
+       visibly bobs along with the player.
+
+       The reflection does not need this channel: it has pInMotionVectorsReflections,
+       written below from p_reflect either way. So let the motion vector be chosen
+       separately. Depth follows it, because DLSS uses the two together to reproject -
+       pairing a refraction motion vector with a reflection depth would describe
+       neither surface. */
+    ivec2 p_motion = p_primary;
+    if(paths_split)
+    {
+        int motion_field = int(global_ubo.pt_dlss_guide_motion);
+        if(motion_field == 1)      p_motion = p_refract;
+        else if(motion_field == 2) p_motion = p_reflect;
+    }
+
+    vec4 primary_motion = imageLoad(IMG_PT_MOTION, p_motion);
 
     imageStore(IMG_FLAT_MOTION,             opos, primary_motion);
-    imageStore(IMG_DLSS_DEPTH,              opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT,    p_primary));
+    imageStore(IMG_DLSS_DEPTH,              opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT,    p_motion));
     /* DLSS FRAME GENERATION WANTS INVERSE DEPTH, NOT LINEAR DEPTH.
 
        nvsdk_ngx_defs_dlssg.h states that DLSS-G linearizes the depth buffer ITSELF:
@@ -332,11 +421,40 @@ void combine_fullres_fields(ivec2 opos)
        linear view distance IN QUAKE UNITS: positive, monotonic, no singularity, and the
        SDK's tuned 40 / 600 defaults land at sane world scales (40 units is about a
        doorframe, 600 about a large room). */
-    imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, p_primary).x), 0.01)));
-    imageStore(IMG_DLSS_ALBEDO,             opos, imageLoad(IMG_PT_ALBEDO,              p_primary));
-    imageStore(IMG_DLSS_ROUGHNESS,          opos, imageLoad(IMG_PT_ROUGHNESS,           p_primary));
+    imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, p_motion).x), 0.01)));
+    // Roughness and normal stay with p_primary: they are geometry, and a mix of a mirror
+    // and a rough wall is neither surface. Only the two demodulation guides are mixed.
+    vec4 guide_albedo      = imageLoad(IMG_PT_ALBEDO,          p_primary);
+    vec4 guide_spec_albedo = imageLoad(IMG_PT_SPECULAR_ALBEDO, p_primary);
+    if(mix_albedo_by_fresnel)
+    {
+        guide_albedo.rgb = mix(imageLoad(IMG_PT_ALBEDO, p_refract).rgb,
+                               imageLoad(IMG_PT_ALBEDO, p_reflect).rgb, fresnel_weight);
+        guide_spec_albedo.rgb = mix(imageLoad(IMG_PT_SPECULAR_ALBEDO, p_refract).rgb,
+                                    imageLoad(IMG_PT_SPECULAR_ALBEDO, p_reflect).rgb, fresnel_weight);
+    }
+
+    /* ROUGHNESS IS A PROPERTY OF THE REFLECTOR, NOT OF WHAT THE RAY LANDED ON.
+
+       p_primary's roughness belongs to the surface the chosen field hit - the room
+       through the glass, or the object in the reflection - and get_material defaults
+       that to 1 for anything without a roughness map, which is most BSP geometry. RR
+       sizes its specular filter with this, so a split pixel was asking for the widest
+       filter available and the reflection came back blurred however the geometry was
+       picked. That is the blur left at a low pt_dlss_guide_fresnel.
+
+       On a flat pane BOTH images are specular: the reflection is reflect(), and the
+       transmission is a straight refraction. Neither should be spatially filtered, so
+       the honest roughness for the composite is pt_dlss_guide_mirror_roughness, ~0.
+       Raise it towards 1 to buy noise suppression back at the cost of sharpness. */
+    float guide_roughness_x = imageLoad(IMG_PT_ROUGHNESS, p_primary).x;
+    if(mix_albedo_by_fresnel && int(global_ubo.pt_dlss_guide_field) != 6)
+        guide_roughness_x = clamp(global_ubo.pt_dlss_guide_mirror_roughness, 0.0, 1.0);
+
+    imageStore(IMG_DLSS_ALBEDO,             opos, guide_albedo);
+    imageStore(IMG_DLSS_ROUGHNESS,          opos, vec4(guide_roughness_x));
     imageStore(IMG_DLSS_NORMAL,             opos, imageLoad(IMG_PT_NORMAL,              p_primary));
-    imageStore(IMG_DLSS_SPECULAR_ALBEDO,    opos, imageLoad(IMG_PT_SPECULAR_ALBEDO,     p_primary));
+    imageStore(IMG_DLSS_SPECULAR_ALBEDO,    opos, guide_spec_albedo);
     // Colour before the transparency overlay. Like the main colour, the two layers are
     // summed for split pixels and averaged otherwise, so that this guide stays consistent
     // with what was written to IMG_FLAT_COLOR above.
@@ -367,7 +485,9 @@ void combine_fullres_fields(ivec2 opos)
 
     imageStore(IMG_DLSS_REFLECT_MOTION,     opos, vec4(reflect_motion, 0, 0));
     imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specular_length));
-    imageStore(IMG_DLSS_REFLECTED_ALBEDO,   opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, p_reflect));
+    // Alpha carries the Fresnel weight for mode 4 above; zero it so RR is handed a plain
+    // albedo and never sees the side channel.
+    imageStore(IMG_DLSS_REFLECTED_ALBEDO,   opos, vec4(imageLoad(IMG_PT_REFLECTED_ALBEDO, p_reflect).rgb, 0));
 }
 
 void main()

@@ -122,6 +122,23 @@ main()
 	// total-internal-reflection paths never assign it, yet it is read further down when
 	// writing the DLSS reflection guides (PT_REFLECT_MOTION / PT_REFLECTED_ALBEDO).
 	bool do_refraction = false;
+
+	/* Fresnel weight of the REFLECTION field, recorded at the bounce where this pixel's
+	   two fields first diverged. -1 means no Fresnel split happened here: chrome, security
+	   cameras and emissive screens divide by something other than a Fresnel term.
+
+	   pt_dlss_guide_field 4 needs it in the combine pass. A split pixel's colour is
+	   F * reflection + (1 - F) * refraction, so F is the only thing that lets the albedo
+	   handed to DLSS-RR describe that SUM. Handing RR one layer's albedo for a summed
+	   pixel is what makes RR's divide-filter-multiply amplify a faint reflection into a
+	   solid one (guides on the reflection) or divide it away (guides on the refraction).
+
+	   It rides in the otherwise unused alpha of IMG_PT_REFLECTED_ALBEDO, biased by +1 so
+	   that a zero from the per-frame clear stays distinguishable from a genuine F of 0,
+	   and is stripped again before that image is handed to RR. See the write near the
+	   bottom of this shader and combine_fullres_fields in checkerboard_interleave.comp. */
+	float fresnel_guide_weight = -1.0;
+
 	rng_seed = texelFetch(TEX_ASVGF_RNG_SEED_A, ipos, 0).r;
 	float rnd_dofraction = get_rng(RNG_BRDF_FRESNEL(push_constants.bounce_index));
 	bool stochastic_choice;
@@ -161,7 +178,16 @@ main()
 	int checkerboard_flags = int(view_direction.w);
 	// Different from primary_is_weapon - this carries over through reflections and refractions
 	int checkerboard_weapon_flag = checkerboard_flags & CHECKERBOARD_FLAG_WEAPON;
-	int checkerboard_mirror_flag = 0;
+	/* CARRIED ACROSS BOUNCES, like the weapon and glass flags below. It used to start
+	   at 0 every bounce, which silently undid itself: this shader runs once per bounce,
+	   so as soon as the reflected surface was ITSELF a reflect/refract kind - glass
+	   reflecting a screen, a pane reflecting another pane - the next bounce re-entered
+	   with the flag cleared and the imageStore at the bottom wrote VIEW_DIRECTION
+	   without it. direct_lighting.rgen then saw no mirror_model_guides and overwrote
+	   the captured mirror guides with the reflected surface's, so both the CHROME_MODEL
+	   path and guide field 5 lost their roughness exactly where the scene is most
+	   reflective. The flag has to survive every later bounce, like the two below. */
+	int checkerboard_mirror_flag = checkerboard_flags & CHECKERBOARD_FLAG_MIRROR_MODEL;
 	// Carried through further bounces like the weapon flag. Tells the combine pass the
 	// split here was glass, not water or slime.
 	int checkerboard_glass_flag = checkerboard_flags & CHECKERBOARD_FLAG_GLASS;
@@ -182,8 +208,17 @@ main()
 		int mat_guide_field = get_material_info(material_id).dlss_guide_field;
 		if(mat_guide_field >= 0)
 			checkerboard_guide_flags = CHECKERBOARD_FLAG_GUIDE_SET
-			                         | ((mat_guide_field & 3) << CHECKERBOARD_FLAG_GUIDE_SHIFT);
+			                         | ((mat_guide_field & 7) << CHECKERBOARD_FLAG_GUIDE_SHIFT);
 	}
+
+	// What the combine pass will resolve pt_dlss_guide_field to for this pixel. Needed
+	// HERE as well, because mode 5 has to capture the pane's own guides before the
+	// post-trace get_material replaces the shading surface. Same precedence the combine
+	// applies: a material that stated a value wins over the cvar.
+	int effective_guide_field = (checkerboard_guide_flags & CHECKERBOARD_FLAG_GUIDE_SET) != 0
+		? (checkerboard_guide_flags & CHECKERBOARD_FLAG_GUIDE_MASK) >> CHECKERBOARD_FLAG_GUIDE_SHIFT
+		: int(global_ubo.pt_dlss_guide_field);
+	bool mirror_guides_on_split = (effective_guide_field == 5);
 	// Carried like the two above. Says an EARLIER bounce already folded this pixel's
 	// path, so the apparent-position motion vector written near the bottom of this
 	// shader is no longer valid - see CHECKERBOARD_FLAG_MIRRORED in constants.h and the
@@ -284,6 +319,8 @@ main()
 				{
 					correction_factor *= split_weight;
 					checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
+					if(!was_split_on_entry)
+						fresnel_guide_weight = F;
 				}
 
 				throughput *= correction_factor;
@@ -339,6 +376,8 @@ main()
 			{
 				correction_factor *= split_weight;
 				checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
+				if(!was_split_on_entry)
+					fresnel_guide_weight = F;
 			}
 
 			throughput *= correction_factor;
@@ -518,6 +557,8 @@ main()
 					correction_factor = do_refraction ? 1 - F : F;
 					correction_factor *= split_weight;
 					checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
+					if(!was_split_on_entry)
+						fresnel_guide_weight = F;
 				}
 				else if(global_ubo.pt_denoiser_present != 0 && global_ubo.pt_glass_secondary_stochastic == 0)
 				{
@@ -648,6 +689,8 @@ main()
 			{
 				correction_factor *= split_weight;
 				checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
+				if(!was_split_on_entry)
+					fresnel_guide_weight = F;
 			}
 
 			throughput *= correction_factor;
@@ -666,6 +709,60 @@ main()
 	bool bounce_folds_path = !(do_refraction || primary_is_transparent);
 	if(bounce_folds_path)
 		checkerboard_mirrored_flag = CHECKERBOARD_FLAG_MIRRORED;
+
+	/* pt_dlss_guide_field 5 - THE MIRROR SPLIT RR DOCUMENTS, ON GLASS AND WATER.
+
+	   Guide fields 0 to 4 all pick between the two layers, and BOTH of them describe a
+	   surface on the FAR side of the pane: the get_material call after the trace below
+	   replaces the shading surface, so field 0 ends up describing the reflected object
+	   and field 1 the object seen through. Neither ever describes the reflector. RR is
+	   therefore never told this pixel is a smooth surface carrying a sharp specular lobe,
+	   and the roughness it is handed belongs to whatever the ray landed on - a rough wall,
+	   a grating floor. That roughness is what sizes RR's specular filter, so the
+	   reflection comes back blurred whichever layer supplies the geometry, and lowering
+	   pt_dlss_guide_fresnel trades the blur for artifacts rather than fixing it.
+
+	   The remedy is already implemented a few hundred lines above, for CHROME_MODEL: the
+	   primary guides describe the MIRROR, and the reflection travels in the specular
+	   channels - specular albedo, specular motion vectors, specular hit distance - all
+	   three of which a split pixel already fills in. So capture the pane's own parameters
+	   while normal, geo_normal and primary_base_color still describe it, and raise the
+	   same flag the chrome path raises so direct_lighting.rgen leaves them alone.
+
+	   Reflection field only. Field 1 goes on describing the surface seen THROUGH the pane,
+	   which is what the combine pass sums the two layers against.
+
+	   The trade: RR models reflection and has no transmission input at all, so calling the
+	   surface a mirror describes water and a glossy floor well, and a clear window worse
+	   than mode 0 does. That is a per-surface answer - prefer dlss_guide_field in the
+	   material over the global cvar. */
+	if(mirror_guides_on_split && !do_refraction && !was_split_on_entry
+		&& bitCount(checkerboard_flags) > 1 && checkerboard_mirror_flag == 0)
+	{
+		vec2 pane_metal_rough = texelFetch(TEX_PT_METALLIC_A, ipos, 0).xy;
+		vec3 pane_albedo, pane_base_reflectivity;
+		get_reflectivity(primary_base_color, pane_metal_rough.x, pane_albedo, pane_base_reflectivity);
+
+		/* NOT the material's roughness. get_material defaults roughness to 1 whenever a
+		   material supplies no roughness map, and glass that comes from BSP surface flags
+		   rather than a 'kind glass' entry supplies none - so the pane arrives here at 1.0,
+		   which asks RR for its widest specular filter and wipes the reflection out more
+		   thoroughly than any other guide field does.
+
+		   The reflection this shader traces is a PERFECT mirror: reflect(direction, normal),
+		   with no GGX lobe and no roughness sampling anywhere on the glass or water path. So
+		   0 is not a fudge, it is the roughness that path actually has. The cvar exists
+		   because normal-mapped glass can read too hard at exactly 0. */
+		float pane_guide_roughness = clamp(global_ubo.pt_dlss_guide_mirror_roughness, 0.0, 1.0);
+
+		imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
+		imageStore(IMG_PT_ALBEDO, ipos, vec4(pane_albedo, 0));
+		imageStore(IMG_PT_ROUGHNESS, ipos, vec4(pane_guide_roughness));
+		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(
+			pane_base_reflectivity, square(pane_guide_roughness), dot(normal, view_direction.xyz)), 0));
+
+		checkerboard_mirror_flag = CHECKERBOARD_FLAG_MIRROR_MODEL;
+	}
 
 	int reflection_cull_mask = REFLECTION_RAY_CULL_MASK;
 	if(global_ubo.first_person_model != 0 && include_player_model)
@@ -794,6 +891,19 @@ main()
 				imageStore(IMG_PT_MOTION, ipos, vec4(sky_motion, 0, 0));
 			if(!do_refraction)
 				imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(sky_motion, 0, 0));
+		}
+
+		/* pt_dlss_guide_field 4 records the split's Fresnel weight at the reflected-albedo
+		   write near the bottom of this shader, which this branch returns before reaching.
+		   Without it every pane and every water surface whose reflection ray leaves the map
+		   silently falls back to the mode 3 behaviour - outdoors that is most of the water.
+		   Only the alpha side channel is touched, so what the other modes see in the RGB is
+		   exactly unchanged. */
+		if(!do_refraction && fresnel_guide_weight >= 0.0)
+		{
+			vec3 sky_reflected_albedo = imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos).rgb;
+			imageStore(IMG_PT_REFLECTED_ALBEDO, ipos,
+				vec4(sky_reflected_albedo, 1.0 + fresnel_guide_weight));
 		}
 
 		return;
@@ -933,15 +1043,27 @@ main()
 
 		if(mv_sane || !mv_guard)
 		{
-			imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
-			imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
+			/* Mode 5 has just told RR the primary surface IS the pane, so the pane's own
+			   depth and motion vector have to survive: the mirrored apparent-position pair
+			   belongs in the specular channel alone. Writing it to PT_MOTION as well would
+			   claim the surface RR is tracking swings with the reflection, which is the
+			   ghosting the CHROME_MODEL branch above exists to stop. apparent_mv_written is
+			   still set below, which is what keeps the fallback from negating the depth. */
+			bool keep_pane_primary_mv = mirror_guides_on_split && !do_refraction
+				&& checkerboard_mirror_flag != 0;
 
-			// DLSS depth: the apparent distance of the reflected/refracted surface, which
-			// is what the motion vector above was built from. Positive - the sign flip on
-			// PT_VIEW_DEPTH_A is an internal marker for the Q2RTX filters, not depth data.
-			imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
-				(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
-					? abs(ref_view_pos_curr.z) : abs(distance_curr)));
+			if(!keep_pane_primary_mv)
+			{
+				imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(distance_curr));
+				imageStore(IMG_PT_MOTION, ipos, vec4(motion, fwidth_depth));
+
+				// DLSS depth: the apparent distance of the reflected/refracted surface, which
+				// is what the motion vector above was built from. Positive - the sign flip on
+				// PT_VIEW_DEPTH_A is an internal marker for the Q2RTX filters, not depth data.
+				imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
+					(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+						? abs(ref_view_pos_curr.z) : abs(distance_curr)));
+			}
 
 			if(!do_refraction) {
 				imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(motion.xy, motion.z, fwidth_depth));
@@ -999,7 +1121,15 @@ main()
 
 
 	if(!do_refraction) {
-		imageStore(IMG_PT_REFLECTED_ALBEDO, ipos, vec4(primary_base_color, 0.0));
+		/* Alpha carries the splitting bounce's Fresnel weight for pt_dlss_guide_field 4,
+		   biased by +1 so the per-frame clear reads as "nothing recorded" rather than as
+		   F == 0. A LATER bounce reaches this same write with fresnel_guide_weight back at
+		   -1, so what the splitting bounce recorded has to be carried rather than cleared -
+		   otherwise every pane at pt_reflect_refract > 1 loses its weight. */
+		float carried_F = (fresnel_guide_weight >= 0.0)
+			? 1.0 + fresnel_guide_weight
+			: imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos).a;
+		imageStore(IMG_PT_REFLECTED_ALBEDO, ipos, vec4(primary_base_color, carried_F));
 	}
 
 	primary_is_weapon = false;
