@@ -112,6 +112,39 @@ DLSS-specific renderer work that made the above actually look right:
   (`pt_glass_secondary_stochastic`), light transfer onto metallic surfaces, and
   crashes in `vid_restart` with DLSS active.
 
+## Motion blur
+
+Screen-space motion blur driven by the path tracer's own motion vectors, built
+to mirror RTX Remix's post-effect (`rtx.postfx.*`): the shutter is open for some
+fraction of each frame, and every pixel gathers the colour along the path its
+surface swept across the screen during that time.
+
+It runs between the temporal resolve and bloom — after the denoiser, so it
+smears the resolved image instead of sampling noise, and before bloom, so a
+moving light streaks and then blooms along its streak. With DLSS it runs *after*
+the upscale; blurring at render resolution first would hand DLSS exactly the
+soft edges its sharpening exists to fight.
+
+Taps are weighted by McGuire's reconstruction filter rather than box-averaged,
+so a fast foreground object does not drag a halo of background along with it,
+and a static object standing in front of a blurred one keeps its silhouette.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `pt_motion_blur` | `0` | Master switch. |
+| `pt_motion_blur_strength` | `0.5` | Shutter open time as a fraction of the frame — Remix's `exposureFraction`. `1` smears a surface across its entire per-frame movement; much above `0.7` reads as smeared rather than fast. |
+| `pt_motion_blur_samples` | `12` | Taps along the swept segment, and the cost knob. Below ~8 a fast pan shows the taps as separate ghosts; above ~24 nothing visibly improves. |
+| `pt_motion_blur_max` | `0.05` | Longest blur allowed, as a fraction of screen height — Remix's `blurDiameterFraction`. A safety rail rather than a quality setting: a teleport or a respawn produces a screen-long motion vector, and this stops that one frame becoming a full-screen smear. |
+| `pt_motion_blur_dynamic` | `0.5` | How much of a pixel's *object*-induced motion is discarded before blurring — Remix's `motionBlurDynamicDeduction`. `0` blurs everything by its true screen motion, which is the physically honest answer and also what makes a strafing enemy hardest to track. Separating the two shares needs the camera-only motion field, reconstructed per pixel from the depth buffer and the previous view matrix, so `0` is also the cheapest setting. |
+| `pt_motion_blur_jitter` | `1.0` | Dithers the tap positions, turning the ghosting a fixed tap comb leaves into grain. Costs nothing. |
+| `pt_motion_blur_min_px` | `0.5` | Motion shorter than this many pixels is passed through untouched, so a still image is never permanently softened. |
+| `pt_motion_blur_soft_z` | `32` | Depth difference, in world units, over which the foreground/background test fades from certain to even. Roughly waist height, which is the scale separating "two surfaces" from "one surface at an angle" in this game's geometry. |
+| `pt_motion_blur_fps_ref` | `0` | Frame-rate independence, off by default. The blur is a fraction of the *per-frame* displacement, so at a fixed camera speed it is twice as long at 30 fps as at 60 — physically correct, and what Remix does, but it means the look changes whenever the frame rate does, and is strongest exactly when the machine is struggling. Set a reference rate and the blur is scaled to what it would have been there instead. `0` keeps the physical behaviour. |
+
+In the menu: **graphics settings** → **motion blur**, with strength, quality,
+*hold moving objects sharp* and *maximum blur length* appearing underneath it
+once it is switched on.
+
 ## Volumetric fog and atmosphere
 
 The remaster authors fog on `worldspawn` — 67 of the 76 in-scope maps set height

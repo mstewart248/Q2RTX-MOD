@@ -1814,11 +1814,97 @@ static void UI_AddRectToBounds(const vrect_t *rc, int mins[2], int maxs[2])
 
 /*
 =================
+Menu_PendingValue
+
+The value a condition should be tested against: what the cvar WILL hold once
+this menu is left, not what it holds now.
+
+THE CONTROLS DO NOT WRITE THEIR CVAR WHEN YOU CHANGE THEM.  SpinControl_DoSlide
+and friends move `curvalue` and nothing else; the cvar is written by the _Pop
+functions, which run from Menu_Pop - i.e. when you back out of the menu.  So a
+condition reading cvar->integer sees the value from before you touched the
+control, and an ifeq keyed on a toggle in its own menu cannot come true until
+you have left and come back.  That is exactly the "I turned blood droplets off
+and all the options were still there" symptom, and it is why calling
+Menu_UpdateConditions more often does not fix it on its own.
+
+So look for a control in this menu bound to the same cvar and ask IT.  If there
+is none - the condition names a cvar this page does not edit - the cvar itself
+is the right answer and is returned unchanged.
+
+Each case mirrors that control type's _Pop function, because the whole point is
+to predict what _Pop is going to write.  Pairs and Strings write a STRING, so
+they are run through atoi to land in the same integer cvar->integer would.
+=================
+*/
+static int Menu_PendingValue(menuFrameWork_t *menu, cvar_t *cvar)
+{
+    int i;
+
+    for (i = 0; i < menu->nitems; i++) {
+        menuCommon_t *item = (menuCommon_t *)menu->items[i];
+
+        if (item->type == MTYPE_SLIDER) {
+            menuSlider_t *s = (menuSlider_t *)item;
+
+            /* An untouched slider has not diverged from its cvar, and
+               Slider_Pop skips it for that same reason. */
+            if (s->cvar == cvar && s->modified)
+                return (int)s->curvalue;
+
+            continue;
+        }
+
+        if (item->type == MTYPE_SPINCONTROL || item->type == MTYPE_VALUES ||
+            item->type == MTYPE_TOGGLE      || item->type == MTYPE_BITFIELD ||
+            item->type == MTYPE_PAIRS       || item->type == MTYPE_STRINGS) {
+            menuSpinControl_t *s = (menuSpinControl_t *)item;
+
+            if (s->cvar != cvar)
+                continue;
+
+            if (item->type == MTYPE_TOGGLE || item->type == MTYPE_BITFIELD) {
+                /* Both store 0 or 1 in curvalue, already XORed with negate on
+                   the way in; anything else means the cvar held a value the
+                   control could not represent and _Pop will not write it. */
+                if (s->curvalue != 0 && s->curvalue != 1)
+                    continue;
+
+                if (item->type == MTYPE_BITFIELD) {
+                    if (s->curvalue ^ s->negate)
+                        return cvar->integer | s->mask;
+                    return cvar->integer & ~s->mask;
+                }
+
+                return s->curvalue ^ s->negate;
+            }
+
+            /* -1 means the cvar held something outside this control's list. */
+            if (s->curvalue < 0 || s->curvalue >= s->numItems)
+                continue;
+
+            if (item->type == MTYPE_PAIRS)
+                return atoi(s->itemvalues[s->curvalue]);
+
+            if (item->type == MTYPE_STRINGS)
+                return atoi(s->itemnames[s->curvalue]);
+
+            return s->curvalue;
+        }
+    }
+
+    return cvar->integer;
+}
+
+/*
+=================
 Menu_UpdateConditions
 
-Show or hide every item carrying an ifeq/ifneq condition, according to its cvar
-RIGHT NOW.  Returns true if anything actually changed visibility, because the
-caller then has to re-run the layout - a hidden item takes no vertical space.
+Show or hide every item carrying an ifeq/ifneq condition, according to the value
+its cvar has RIGHT NOW - or, when a control on this page is holding an edit that
+has not been written back yet, the value that control is about to write.  See
+Menu_PendingValue.  Returns true if anything actually changed visibility, because
+the caller then has to re-run the layout - a hidden item takes no vertical space.
 
 Split out of Menu_Init so the conditions can be re-evaluated while the menu is
 open.  Evaluating them only on open meant a menu whose contents depend on one of
@@ -1849,7 +1935,7 @@ bool Menu_UpdateConditions(menuFrameWork_t *menu)
 				if (!cond->cvar)
 					continue;
 
-				int v = cond->cvar->integer;
+				int v = Menu_PendingValue(menu, cond->cvar);
 
 				switch (cond->op)
 				{
@@ -1870,6 +1956,45 @@ bool Menu_UpdateConditions(menuFrameWork_t *menu)
 
 			if (hide != was_hidden)
 				changed = true;
+		}
+	}
+
+	/* Rescue the cursor if it was sitting on something that just disappeared.
+	   Menu_AdjustCursor crawls past hidden items, so this is not a lockup
+	   without it - but the highlight vanishes until the next arrow press, and
+	   an Enter in that window activates a control that is not on screen. */
+	if (changed)
+	{
+		bool focus_visible = false;
+
+		for (int i = 0; i < menu->nitems; i++)
+		{
+			menuCommon_t *item = (menuCommon_t *)menu->items[i];
+
+			if ((item->flags & QMF_HASFOCUS) && !(item->flags & QMF_HIDDEN))
+			{
+				focus_visible = true;
+				break;
+			}
+		}
+
+		if (!focus_visible)
+		{
+			for (int i = 0; i < menu->nitems; i++)
+				((menuCommon_t *)menu->items[i])->flags &= ~QMF_HASFOCUS;
+
+			for (int i = 0; i < menu->nitems; i++)
+			{
+				menuCommon_t *item = (menuCommon_t *)menu->items[i];
+
+				if (UI_IsItemSelectable(item))
+				{
+					item->flags |= QMF_HASFOCUS;
+					if (item->status)
+						menu->status = item->status;
+					break;
+				}
+			}
 		}
 	}
 
@@ -2250,6 +2375,24 @@ void Menu_Draw(menuFrameWork_t *menu)
 {
     void *item;
     int i;
+
+//
+// re-test the ifeq/ifneq conditions
+//
+    /* Done here, every frame, rather than only from the input paths that route
+       through Menu_AfterValueChange.  There are more ways to move a control
+       than those paths cover - dragging a slider thumb goes through
+       Slider_MouseMove, the wheel and a click land in different handlers again,
+       and a cvar can be changed from the console with the menu still open - and
+       every one of them has to leave the list correct.  Re-testing at the point
+       of drawing is the only place that is true of all of them at once.
+
+       It is not a per-frame cost worth avoiding: it is one pass over a few
+       dozen items, and only while a menu is actually on screen.  Re-laying out
+       is still gated on something having genuinely changed visibility. */
+    if (Menu_UpdateConditions(menu) && menu->size) {
+        menu->size(menu);
+    }
 
 //
 // draw background

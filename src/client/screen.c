@@ -65,6 +65,7 @@ static cvar_t   *scr_health_bars;
 static cvar_t   *cl_weaponbar;
 static cvar_t   *cl_weaponbar_time;
 static cvar_t   *cl_weaponbar_hold;
+static cvar_t   *cl_weaponbar_grace;
 
 static cvar_t   *scr_draw2d;
 static cvar_t   *scr_lag_x;
@@ -1411,6 +1412,7 @@ void SCR_Init(void)
     cl_weaponbar = Cvar_Get("cl_weaponbar", "1", CVAR_ARCHIVE);
     cl_weaponbar_time = Cvar_Get("cl_weaponbar_time", "0.4", CVAR_ARCHIVE);
     cl_weaponbar_hold = Cvar_Get("cl_weaponbar_hold", "0.8", CVAR_ARCHIVE);
+    cl_weaponbar_grace = Cvar_Get("cl_weaponbar_grace", "0.5", CVAR_ARCHIVE);
     SCR_WeaponBarInit();
     scr_lag_x = Cvar_Get("scr_lag_x", "-1", 0);
     scr_lag_y = Cvar_Get("scr_lag_y", "-1", 0);
@@ -1637,6 +1639,9 @@ static struct {
     int         selected;               // slot the highlight is on, -1 when idle
     unsigned    input_time;             // cls.realtime of the last wheel step
     bool        committed;              // the "use" has already gone out
+    int         commit_slot;            // slot the "use" named, -1 if none yet
+    int         last_slot;              // where the highlight was when the bar went idle
+    unsigned    idle_time;              // cls.realtime the bar went idle
 } wb;
 
 static int SCR_WeaponBarFindItem(const char *name)
@@ -1731,14 +1736,45 @@ static bool SCR_WeaponBarStep(int dir)
     if (cl.frame.ps.stats[STAT_HEALTH] <= 0)
         return false;
 
-    // a new selection starts from whatever we are actually holding
-    if (wb.selected < 0 || wb.committed) {
+    // A step while the bar is still up - through the settle AND the whole
+    // fade - continues from the highlight the player can see, even once the
+    // "use" for it has gone out.  Re-seeding from the weapon in our hands
+    // there is what made a late correction jump: the switch costs a server
+    // round trip plus the lowering animation, so ps.gunindex still names the
+    // weapon you scrolled away from for long after the commit, and the
+    // highlight would snap back to it.
+    if (wb.selected < 0) {
+        unsigned    grace = Cvar_ClampValue(cl_weaponbar_grace, 0, 5) * 1000;
+
         SCR_WeaponBarResolve();
-        wb.selected = SCR_WeaponBarHeld();
-        wb.committed = false;
-        if (wb.selected < 0 || wb.item[wb.selected] < 0)
+
+        // Just missed it: for a moment after the bar has faded out a step
+        // picks the selection back up where it left off rather than starting
+        // over from the gun, so a correction that comes in a touch late still
+        // lands where the player was aiming it.  A resume keeps commit_slot,
+        // so settling back on the weapon already on its way to us does not
+        // ask for it a second time.
+        if (wb.last_slot >= 0 && SCR_WeaponBarCarried(wb.last_slot) &&
+            cls.realtime - wb.idle_time <= grace) {
+            wb.selected = wb.last_slot;
+        } else {
+            wb.selected = SCR_WeaponBarHeld();
+            wb.commit_slot = -1;
+        }
+
+        // nothing the bar can highlight - leave it idle rather than selected
+        // on a weapon it has no name or icon for
+        if (wb.selected < 0 || wb.item[wb.selected] < 0) {
+            wb.selected = -1;
             return false;
+        }
     }
+
+    // Back out of the committed state: a correction during the fade then
+    // settles and sends like any other selection, and the refreshed
+    // input_time below takes the bar back to full opacity, which is what
+    // shows the player the late input was taken.
+    wb.committed = false;
 
     dir *= wb.dir;
     from = wb.place[wb.selected];
@@ -1759,12 +1795,15 @@ static bool SCR_WeaponBarStep(int dir)
 static void SCR_WeaponBarThink(void)
 {
     unsigned    settle, hold;
+    int         target;
 
     if (wb.selected < 0)
         return;
 
     if (cls.state != ca_active) {
         wb.selected = -1;
+        wb.last_slot = -1;
+        wb.commit_slot = -1;
         return;
     }
 
@@ -1773,12 +1812,27 @@ static void SCR_WeaponBarThink(void)
 
     if (!wb.committed && cls.realtime - wb.input_time >= settle) {
         wb.committed = true;
-        if (wb.selected != SCR_WeaponBarHeld())
+
+        // What we are on our way to holding, which is not the same thing as
+        // what we are holding: once a "use" has gone out the gun in our hands
+        // takes a round trip plus the lowering animation to catch up.  Test
+        // the correction against the request, so that scrolling back onto the
+        // weapon we started from still cancels a switch that is in flight,
+        // and so that landing again on the one already coming does not ask
+        // for it twice.
+        target = wb.commit_slot >= 0 ? wb.commit_slot : SCR_WeaponBarHeld();
+
+        if (wb.selected != target)
             CL_ClientCommand(va("use %s", wb_slots[wb.selected].item));
+        wb.commit_slot = wb.selected;
     }
 
-    if (cls.realtime - wb.input_time >= settle + hold)
+    // keep the place across the fade-out, for the grace window in Step()
+    if (cls.realtime - wb.input_time >= settle + hold) {
+        wb.last_slot = wb.selected;
+        wb.idle_time = cls.realtime;
         wb.selected = -1;
+    }
 }
 
 // the HUD digits, scaled to sit above an icon three abreast
@@ -1885,6 +1939,8 @@ static void SCR_DrawWeaponBar(void)
 static void SCR_WeaponBarInit(void)
 {
     wb.selected = -1;
+    wb.last_slot = -1;
+    wb.commit_slot = -1;
 }
 
 static void SCR_WeaponBarCmd(int dir)
