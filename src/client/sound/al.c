@@ -340,6 +340,29 @@ void AL_StopChannel(channel_t *ch)
     memset(ch, 0, sizeof(*ch));
 }
 
+/*
+=================
+AL_EffectPitch
+
+The item wheel's bullet time slows the whole host frame, which slows how often
+sounds are STARTED but does nothing to the ones already playing: the world drops
+into slow motion under a full speed soundtrack, and the result reads as a stall
+rather than as time thickening.  Pitching every source by the same factor the
+frame time was scaled by is what makes the two agree.
+
+Effects only.  Music and cinematics come through streamSource, which is fed
+decoded samples at a fixed rate - pitching that would starve or flood its queue.
+The DMA mixer has no pitch control at all, so on the software path (s_enable 1)
+the slowdown is silent about itself.
+=================
+*/
+static float AL_EffectPitch(void)
+{
+    return max(0.05f, min(CL_GetTimeScale(), 1.0f));
+}
+
+static float s_pitch = 1.0f;
+
 void AL_PlayChannel(channel_t *ch)
 {
     sfxcache_t *sc = ch->sfx->cache;
@@ -358,6 +381,7 @@ void AL_PlayChannel(channel_t *ch)
         qalSourcei(ch->srcnum, AL_LOOPING, AL_FALSE);
     }
     qalSourcef(ch->srcnum, AL_GAIN, ch->master_vol);
+    qalSourcef(ch->srcnum, AL_PITCH, s_pitch);
     qalSourcef(ch->srcnum, AL_REFERENCE_DISTANCE, SOUND_FULLVOLUME);
     qalSourcef(ch->srcnum, AL_MAX_DISTANCE, 8192);
     qalSourcef(ch->srcnum, AL_ROLLOFF_FACTOR, ch->dist_mult * (8192 - SOUND_FULLVOLUME));
@@ -602,6 +626,15 @@ void AL_Update(void)
     qalListenerfv(AL_ORIENTATION, orientation);
     qalListenerf(AL_GAIN, S_GetLinearVolume(s_volume->value));
     qalDistanceModel(AL_LINEAR_DISTANCE_CLAMPED);
+
+    // Only walked when the factor actually moves, which for all but the tenth
+    // of a second either side of the wheel opening is never.
+    if (AL_EffectPitch() != s_pitch) {
+        s_pitch = AL_EffectPitch();
+        for (i = 0, ch = channels; i < s_numchannels; i++, ch++)
+            if (ch->sfx)
+                qalSourcef(ch->srcnum, AL_PITCH, s_pitch);
+    }
 
     // update spatialization for dynamic sounds
     ch = channels;

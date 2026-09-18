@@ -1423,6 +1423,22 @@ void Use_Compass(edict_t *ent, gitem_t *item);
 // subsampled down to this rather than split across packets
 #define POI_PATH_MAX    16
 
+// how long the objective marker stays on screen, in tenths of a second. The
+// breadcrumb trail is shorter lived, but that end of it is the client's call
+// (POI_TRAIL_TIME) since nothing about it needs to reach the server.
+#define POI_MARKER_TENTHS   150
+
+// how far apart the breadcrumbs are laid along the route; the rerelease asks
+// its pathfinder for a point every 64 units, and this is the same figure
+#define POI_PATH_SPACING    64.0f
+
+// breadcrumbs nearer than this to the player are dropped - they are behind
+// them or under their feet, and would only read as "go back the way you came"
+#define POI_PATH_MIN_DIST   96.0f
+
+// how far below a navmesh node to look for the floor to sit a breadcrumb on
+#define POI_DROP_MAX        256.0f
+
 // ROGUE POWERUPS (g_rogue_items.c).
 void Use_IR(edict_t *ent, gitem_t *item);
 void Use_Invisibility(edict_t *ent, gitem_t *item);

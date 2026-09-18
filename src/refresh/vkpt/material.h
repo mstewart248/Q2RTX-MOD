@@ -125,6 +125,16 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name);
 // registration sequence: update registration sequence of images used by the material
 void MAT_UpdateRegistration(pbr_material_t * mat);
 
+// Builds the name of a material instance: "<base name>#<8 hex digits>".
+// One place so the loader, the lookup and the stub writer cannot disagree.
+void MAT_InstanceName(const char* base_name, uint32_t instance_hash, char* out, size_t out_size);
+
+// The material for one connected group of BSP faces, identified by the geometry
+// hash bsp_mesh_t::prim_instance_hash carries, or NULL when no .mat section has
+// claimed that group - which is the overwhelmingly common case, so this is a
+// sorted lookup that fails fast and allocates nothing.
+pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_hash);
+
 // returns a material by index, if it's valid - NULL otherwise
 pbr_material_t* MAT_ForIndex(int index);
 

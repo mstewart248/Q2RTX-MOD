@@ -97,7 +97,7 @@ static float mix(float a, float b, float s)
 	return a * (1.f - s) + b * s;
 }
 
-void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode)
+void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode, float ui_blur)
 {
 	if (under_water)
 	{
@@ -127,6 +127,24 @@ void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_wa
 		bloom_sigma = phase * 0.03f;
 
 		ubo->bloom_intensity = 1.f;
+	}
+	else if (ui_blur > 0.f)
+	{
+		/* The item wheel, blurred the same way the menu is but ramped by the
+		   caller instead of by a timer of our own: the wheel already knows how
+		   far up it is, and a second clock here would disagree with the ring's
+		   own fade.
+
+		   The sigma runs from 0, so at the top of the fade this is exactly the
+		   menu's blur and on the way in it is a fraction of it. Intensity has
+		   to go to 1 with it - it is what makes the blurred copy replace the
+		   sharp frame rather than glow on top of it. */
+		menu_start_ms = 0;
+
+		bloom_sigma = powf(min(ui_blur, 1.f), 0.25f) * 0.03f;
+
+		ubo->bloom_intensity = 1.f;
+		ubo->tonemap_hdr_clamp_strength = min(ui_blur, 1.f);
 	}
 	else
 	{

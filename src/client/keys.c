@@ -611,6 +611,23 @@ void Key_Init(void)
 
 /*
 ===================
+Key_IsInvenBinding
+
+True for the bindings that open the full inventory, which is the key the item
+wheel takes over.  "cmd inven" is the same thing spelled out - both forms are
+in the wild, and the rerelease's config writes the second.
+===================
+*/
+static bool Key_IsInvenBinding(const char *kb)
+{
+    if (!kb)
+        return false;
+
+    return !Q_stricmp(kb, "inven") || !Q_stricmp(kb, "cmd inven");
+}
+
+/*
+===================
 Key_Event
 
 Called by the system between frames for both key up and key down events
@@ -723,6 +740,20 @@ void Key_Event(unsigned key, bool down, unsigned time)
 		if(R_InterceptKey(key, down))
 			return;
 	}
+
+    // The item wheel is HELD open, and the dispatch below cannot do that for
+    // it: a binding that does not start with a '+' never sees the key come
+    // back up, and an autorepeat while it is down is thrown away before it
+    // gets there.  So the key bound to the inventory is read here instead, in
+    // the one place that has both edges, and the wheel says whether it took
+    // it.  When it did not - wheel switched off, not in the rerelease, dead,
+    // watching a demo - the binding runs as it always has and opens the old
+    // inventory list.
+    if (Key_IsInvenBinding(keybindings[key]) &&
+        (cls.key_dest == KEY_GAME || !down)) {
+        if (SCR_ItemWheelKey(down, down && keydown[key] > 1))
+            return;
+    }
 
 //
 // if not a consolekey, send to the interpreter no matter what mode is

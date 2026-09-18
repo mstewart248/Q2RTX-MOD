@@ -3839,6 +3839,21 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 		}
 		else
 			feedback->view_material_index = -1;
+
+		/* Only static BSP geometry carries a group hash, and only there does
+		   readback.primitive index the world primitive buffer - see the field's
+		   note in vertex_buffer.h. */
+		feedback->view_prim_instance_hash = 0;
+
+		if (readback.instance == ~0u && readback.primitive != ~0u
+			&& vkpt_refdef.bsp_mesh_world_loaded
+			&& vkpt_refdef.bsp_mesh_world.prim_instance_hash
+			&& readback.primitive < vkpt_refdef.bsp_mesh_world.num_primitives)
+		{
+			feedback->view_prim_instance_hash =
+				vkpt_refdef.bsp_mesh_world.prim_instance_hash[readback.primitive];
+		}
+
 		strcpy(feedback->view_material, view_material);
 		strcpy(feedback->view_material_override, view_material_override);
 
@@ -5005,6 +5020,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	evaluate_taa_settings(&ref_mode);
 	
 	qvk.frame_menu_mode = cl_paused->integer == 1 && uis.menuDepth > 0 && render_world;
+	qvk.frame_ui_blur = render_world ? SCR_ItemWheelBlur() : 0.f;
 
 	int new_world_anim_frame = (int)(fd->time * 2);
 	bool update_world_animations = (new_world_anim_frame != world_anim_frame);
@@ -5109,7 +5125,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	ubo->weapon_left_handed = upload_info.weapon_left_handed;
 
 	vkpt_physical_sky_update_ubo(ubo, &sun_light, render_world);
-	vkpt_bloom_update(ubo, frame_time, ubo->medium != MEDIUM_NONE, qvk.frame_menu_mode);
+	vkpt_bloom_update(ubo, frame_time, ubo->medium != MEDIUM_NONE, qvk.frame_menu_mode, qvk.frame_ui_blur);
 	vkpt_motion_blur_update(frame_time);
 
 	if(update_world_animations)
@@ -5586,7 +5602,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		if (!DLSSEnabled()) {
 			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
-			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
+			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode || qvk.frame_ui_blur > 0.f)
 			{
 				vkpt_bloom_record_cmd_buffer(post_cmd_buf);
 			}
@@ -6368,7 +6384,7 @@ R_EndFrame_RTX(void)
 			}
 
 			BEGIN_PERF_MARKER(cmd_buf, PROFILER_BLOOM);
-			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode)
+			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode || qvk.frame_ui_blur > 0.f)
 			{
 				vkpt_bloom_record_cmd_buffer(cmd_buf);
 			}

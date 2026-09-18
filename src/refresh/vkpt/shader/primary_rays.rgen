@@ -306,6 +306,8 @@ main()
 		{
 			readback.material = ~0u;
 			readback.cluster = ~0u;
+			readback.primitive = ~0u;
+			readback.instance = ~0u;
 		}
 
 		// Compute a motion vector for the sky, because we don't want TAA to blur it.
@@ -380,6 +382,8 @@ main()
 	{
 		readback.material = triangle.material_id;
 		readback.cluster = triangle.cluster;
+		readback.primitive = triangle.instance_prim;
+		readback.instance = triangle.instance_index;
 	}
 
 	position       = triangle.positions * bary;

@@ -231,6 +231,20 @@ BEGIN_SHADER_STRUCT( ReadbackBuffer )
 	   need the grid geometry to interpret. */
 	uint dbg_slice_q;  /* sum over the centre z slice of post * 1e9 */
 	uint dbg_slice_n;  /* cells contributing to it                  */
+
+	/* WHICH TRIANGLE THE CROSSHAIR IS ON, so the material system can identify
+	   a single surface and not just the texture on it - see MAT_FindInstance
+	   and `mat create_instance`.
+
+	   `instance` is ~0u for static BSP geometry, and only then does `primitive`
+	   mean anything useful here: it is the index into the world primitive
+	   buffer, which is the same index bsp_mesh_t::prim_instance_hash is keyed
+	   on. For a model or a brush entity the pair identifies the instance and
+	   its local primitive instead, and there is no geometry hash to look up. */
+	uint primitive;
+	uint instance;
+	uint readback_pad0;
+	uint readback_pad1;
 }
 END_SHADER_STRUCT( ReadbackBuffer )
 

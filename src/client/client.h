@@ -119,6 +119,33 @@ extern centity_t    cl_entities[MAX_EDICTS];
 // in the game DLL, which is what fills the packet
 #define MAX_POI_PATH    16
 
+// How long the breadcrumb trail stays up. The objective marker outlives it -
+// the marker's lifetime comes from the server in TE_POI - because the trail is
+// only there to get you moving, while the marker is what you steer by.
+#define POI_TRAIL_TIME      10000   // ms
+
+// both fade out over the last stretch of their life rather than popping
+#define POI_FADE_TIME       1500    // ms
+
+// The rerelease beeps once per breadcrumb, because it drops them one at a time
+// over a couple of seconds. We send the whole trail in a single packet, so the
+// beeps are a client side chain instead: the server's own beep is the first of
+// them, these are the rest.
+#define POI_BEEP_INTERVAL   200     // ms
+#define POI_BEEP_MIN        4
+#define POI_BEEP_MAX        8
+
+// The compass green. The objective marker and the breadcrumbs share it on
+// purpose - that is what makes a chevron on the floor read as belonging to the
+// same trail as the arrow hanging over the door.
+#define POI_COLOR(a)        MakeColor(64, 255, 64, (a))
+
+// The breadcrumb chevron is the rerelease's own models/objects/pointer: a flat
+// arrowhead plate, 4 units long and 6 across, lying in its own XY plane and
+// pointing down +X. That is small for a mark you are meant to read from across
+// a room, so it is scaled up - see cl_poi_marker_scale.
+#define POI_MARKER_MODEL    "models/objects/pointer/tris.md2"
+
 #define MAX_CLIENTWEAPONMODELS        20        // PGM -- upped from 16 to fit the chainfist vwep
 
 typedef struct clientinfo_s {
@@ -329,9 +356,15 @@ typedef struct client_state_s {
     qhandle_t   poi_pic;
     int         poi_time;
 
-    // the breadcrumb trail that goes with it, shares poi_time
+    // The breadcrumb trail that goes with it. It is deliberately shorter lived
+    // than the marker, so it gets its own expiry instead of sharing poi_time.
     vec3_t      poi_path[MAX_POI_PATH];
     int         poi_path_count;
+    int         poi_path_time;
+
+    // the chain of beeps that plays while the trail is being laid out
+    int         poi_beep_time;
+    int         poi_beeps_left;
 } client_state_t;
 
 extern    client_state_t    cl;
@@ -911,6 +944,7 @@ void CL_RegisterTEntSounds(void);
 void CL_RegisterTEntModels(void);
 void CL_ParseTEnt(void);
 void CL_AddTEnts(void);
+float CL_CompassFade(int endtime);
 void CL_ClearTEnts(void);
 void CL_InitTEnts(void);
 
@@ -1281,6 +1315,13 @@ void    SCR_ModeChanged(void);
 void    SCR_LagSample(void);
 void    SCR_LagClear(void);
 void    SCR_SetCrosshairColor(void);
+
+// the rerelease item wheel - see the ITEM WHEEL block in screen.c
+bool    SCR_ItemWheelKey(bool down, bool autorepeat);
+bool    SCR_ItemWheelMouse(float dx, float dy);
+void    SCR_ItemWheelAbort(void);
+float   SCR_ItemWheelPhase(void);
+float   SCR_ItemWheelBlur(void);
 qhandle_t SCR_GetFont(void);
 void    SCR_SetHudAlpha(float alpha);
 

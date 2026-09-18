@@ -3329,9 +3329,20 @@ CL_Frame
 
 ==================
 */
+static int CL_ScaleFrameTime(int msec)
+{
+    float scale = CL_GetTimeScale();
+
+    if (!msec || scale >= 1.0f)
+        return msec;
+
+    return max(1, (int)(msec * scale));
+}
+
 unsigned CL_Frame(unsigned msec, int waterLevel)
 {
     bool phys_frame = true, ref_frame = true;
+    int main_lim, ref_lim, phys_lim;
 
     time_after_ref = time_before_ref = 0;
 
@@ -3341,6 +3352,20 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
 
     main_extra += msec;
     cls.realtime += msec;
+
+    /* THE PACING TARGETS ARE COUNTED IN GAME MILLISECONDS, AND BULLET TIME
+       SHRINKS THOSE.  Com_Frame has already scaled the msec we were handed by
+       CL_GetTimeScale(), so with the item wheel open at quarter speed a real
+       16ms frame reaches us as 4 - and gating the refresh on an unscaled
+       cl_maxfps would then render one frame in four.  That is a stutter, not
+       slow motion.  Scaling the targets by the same factor keeps every tick
+       landing at the wall clock rate it would have had anyway; the only thing
+       that changes is how much world each one advances.
+
+       A target of 0 means "this mode does not use it" and has to stay 0. */
+    main_lim = CL_ScaleFrameTime(main_msec);
+    ref_lim  = CL_ScaleFrameTime(ref_msec);
+    phys_lim = CL_ScaleFrameTime(phys_msec);
 
     /* NVIDIA Reflex. This blocks until the driver judges the frame should start, which
        is what stops the CPU queueing frames ahead of the GPU. It MUST come before
@@ -3361,8 +3386,8 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
         // fall through
     case SYNC_SLEEP_60:
         // run at limited fps if not active
-        if (main_extra < main_msec) {
-            return main_msec - main_extra;
+        if (main_extra < main_lim) {
+            return main_lim - main_extra;
         }
         break;
     case ASYNC_FULL:
@@ -3370,26 +3395,26 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
         phys_extra += msec;
         ref_extra += msec;
 
-        if (phys_extra < phys_msec) {
+        if (phys_extra < phys_lim) {
             phys_frame = false;
-        } else if (phys_extra > phys_msec * 4) {
-            phys_extra = phys_msec;
+        } else if (phys_extra > phys_lim * 4) {
+            phys_extra = phys_lim;
         }
 
-        if (ref_extra < ref_msec) {
+        if (ref_extra < ref_lim) {
             ref_frame = false;
-        } else if (ref_extra > ref_msec * 4) {
-            ref_extra = ref_msec;
+        } else if (ref_extra > ref_lim * 4) {
+            ref_extra = ref_lim;
         }
 
         // Return immediately if neither physics or refresh are scheduled
         if(!phys_frame && !ref_frame) {
-            return min(phys_msec - phys_extra, ref_msec - ref_extra);
+            return min(phys_lim - phys_extra, ref_lim - ref_extra);
         }
         break;
     case SYNC_MAXFPS:
         // everything ticks in sync with refresh
-        if (main_extra < main_msec) {
+        if (main_extra < main_lim) {
             if (!cl.sendPacketNow) {
                 return 0;
             }
@@ -3439,12 +3464,12 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
     phys_frame |= cl.sendPacketNow;
     if (phys_frame) {
         CL_FinalizeCmd();
-        phys_extra -= phys_msec;
+        phys_extra -= phys_lim;
         M_FRAMES++;
 
         // don't let the time go too far off
         // this can happen due to cl.sendPacketNow
-        if (phys_extra < -phys_msec * 4) {
+        if (phys_extra < -phys_lim * 4) {
             phys_extra = 0;
         }
     }
@@ -3469,7 +3494,7 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
         if (host_speeds->integer)
             time_after_ref = Sys_Milliseconds();
 
-        ref_extra -= ref_msec;
+        ref_extra -= ref_lim;
         R_FRAMES++;
 
         // update audio after the 3D view was drawn

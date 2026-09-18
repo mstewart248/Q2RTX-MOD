@@ -38,6 +38,9 @@ qhandle_t   cl_sfx_footsteps[4];
 qhandle_t   cl_sfx_lightning;
 qhandle_t   cl_sfx_disrexp;
 
+// the rerelease compass breadcrumb - a flat chevron plate that lies on the floor
+qhandle_t   cl_mod_poi_marker;
+
 qhandle_t   cl_mod_explode;
 // The disruptor's shell around a tracked victim. rogue drew that as a
 // cloud of black particles; this is the same sphere the monster-spawn
@@ -87,6 +90,11 @@ extern cvar_t* cvar_pt_particle_emissive;
 // Kept for experimenting; the two-chain path below means you should not need
 // it - your own beam now gets BOTH, each restricted to where it belongs.
 static cvar_t   *cl_beam_thirdperson;
+
+// How much bigger than its own 4x6 units a compass breadcrumb is drawn. The
+// model is authored small; this is what makes it a mark you can read from the
+// far side of a room, and a cvar because that is a matter of taste.
+static cvar_t   *cl_poi_marker_scale;
 
 // [Q2RTX] How far to drop the WORLD beam below the server's muzzle, in units.
 //
@@ -183,6 +191,12 @@ void CL_RegisterTEntModels(void)
     cl_mod_lightning = R_RegisterModel("models/proj/lightning/tris.md2");
     cl_mod_heatbeam = R_RegisterModel("models/proj/beam/tris.md2");
     cl_mod_explo4_big = R_RegisterModel("models/objects/r_explode2/tris.md2");
+
+    // No .md2 of this one ships anywhere - the rerelease only ever had the
+    // skeletal version - but R_RegisterModel decides whether to look for an
+    // md5/ beside it from the name it is GIVEN, so asking for the .md2 is what
+    // finds models/objects/pointer/md5/tris.md5mesh.
+    cl_mod_poi_marker = R_RegisterModel(POI_MARKER_MODEL);
 
 	for (int i = 0; i < sizeof(cl_mod_explosions) / sizeof(*cl_mod_explosions); i++)
 	{
@@ -1804,6 +1818,10 @@ void CL_ParseTEnt(void)
         cl.poi_path_count = te.count;
         for (i = 0; i < te.count && i < MAX_POI_PATH; i++)
             VectorCopy(te.path[i], cl.poi_path[i]);
+        cl.poi_path_time = cl.time + POI_TRAIL_TIME;
+        // one beep per breadcrumb, within reason - see CL_UpdateCompassBeeps
+        cl.poi_beeps_left = min(max(te.count - 1, POI_BEEP_MIN), POI_BEEP_MAX);
+        cl.poi_beep_time = cl.time + POI_BEEP_INTERVAL;
         break;
 
     case TE_POI:
@@ -1817,6 +1835,11 @@ void CL_ParseTEnt(void)
         else
             cl.poi_pic = 0;
         cl.poi_time = cl.time + te.time * 100;
+        // a TE_POI_PATH for this objective may follow in the same message and
+        // will raise the count; with no trail these are all the beeps there are
+        cl.poi_path_time = 0;
+        cl.poi_beeps_left = POI_BEEP_MIN;
+        cl.poi_beep_time = cl.time + POI_BEEP_INTERVAL;
         break;
 
     case TE_FORCEWALL:
@@ -1901,11 +1924,123 @@ void CL_ParseTEnt(void)
 
 /*
 =================
+CL_CompassFade
+
+1 while a compass marker has time left, ramping to 0 over the last
+POI_FADE_TIME of it so it thins out instead of blinking off. 0 means expired.
+=================
+*/
+float CL_CompassFade(int endtime)
+{
+    int left;
+
+    if (!endtime)
+        return 0;
+
+    left = endtime - cl.time;
+    if (left <= 0)
+        return 0;
+    if (left >= POI_FADE_TIME)
+        return 1;
+
+    return left / (float)POI_FADE_TIME;
+}
+
+/*
+=================
+CL_AddCompassTrail
+
+The breadcrumbs, as the rerelease draws them: its own models/objects/pointer at
+each step of the route, lying flat on the floor and yawed to point at the next
+one. The model is a chevron plate with a glow map, which is where the green
+comes from - nothing here tints it.
+
+The server has already dropped each point onto the floor under it
+(poi_drop_to_floor), so all that is left is to aim the chevron down the path.
+
+Real geometry, not a HUD overlay: these foreshorten and are occluded by walls,
+unlike the objective marker, which is deliberately drawn through them.
+=================
+*/
+static void CL_AddCompassTrail(void)
+{
+    entity_t    ent;
+    float       alpha, scale;
+    int         i, count;
+
+    if (!cl.poi_path_count || !cl_mod_poi_marker)
+        return;
+
+    alpha = CL_CompassFade(cl.poi_path_time);
+    if (alpha <= 0)
+        return;
+
+    scale = Cvar_ClampValue(cl_poi_marker_scale, 0.1f, 20.0f);
+    count = min(cl.poi_path_count, MAX_POI_PATH);
+
+    memset(&ent, 0, sizeof(ent));
+    ent.model = cl_mod_poi_marker;
+    // RF_TRANSLUCENT is what makes the renderer read ent.alpha at all, which
+    // is what the fade rides on
+    ent.flags = RF_TRANSLUCENT;
+    ent.alpha = alpha;
+    ent.scale = scale;
+
+    for (i = 0; i < count; i++) {
+        const float *here = cl.poi_path[i];
+        const float *next = (i + 1 < count) ? cl.poi_path[i + 1] : cl.poi_origin;
+        vec3_t      fwd;
+
+        // flattened: the plate lies in the floor plane, so only yaw matters -
+        // pitching it at a marker up a staircase would stand it on its edge
+        VectorSubtract(next, here, fwd);
+        fwd[2] = 0;
+        if (VectorNormalize(fwd) < 1)
+            continue;           // nowhere to point; skip rather than guess
+
+        vectoangles2(fwd, ent.angles);
+        ent.angles[PITCH] = ent.angles[ROLL] = 0;
+
+        VectorCopy(here, ent.origin);
+        VectorCopy(here, ent.oldorigin);
+
+        V_AddEntity(&ent);
+    }
+}
+
+/*
+=================
+CL_UpdateCompassBeeps
+
+The compass answers with a run of beeps, not a single blip: in the rerelease
+one plays for every breadcrumb as it is dropped, and the run of them is most
+of what makes using the compass feel like it did something. The trail here
+arrives all at once, so the beeps are paced out from this side instead.
+=================
+*/
+static void CL_UpdateCompassBeeps(void)
+{
+    if (!cl.poi_beeps_left)
+        return;
+
+    if (cl.time < cl.poi_beep_time)
+        return;
+
+    S_StartLocalSound("misc/help_marker.wav");
+
+    cl.poi_beeps_left--;
+    cl.poi_beep_time = cl.time + POI_BEEP_INTERVAL;
+}
+
+/*
+=================
 CL_AddTEnts
 =================
 */
 void CL_AddTEnts(void)
 {
+    CL_UpdateCompassBeeps();
+    CL_AddCompassTrail();
     CL_AddBeams();
     CL_AddPlayerBeams();
     CL_AddExplosions();
@@ -1944,5 +2079,6 @@ void CL_InitTEnts(void)
     cl_railspiral_color->generator = Com_Color_g;
     cl_railspiral_color_changed(cl_railspiral_color);
     cl_railspiral_radius = Cvar_Get("cl_railspiral_radius", "3", 0);
+    cl_poi_marker_scale = Cvar_Get("cl_poi_marker_scale", "3", CVAR_ARCHIVE);
 }
 

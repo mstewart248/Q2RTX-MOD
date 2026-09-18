@@ -765,6 +765,19 @@ begin screen
     toggle --status "1080p30 cutscenes from the rerelease; falls back to the original .cin when absent (cl_hd_cinematics)" "remastered cutscenes" cl_hd_cinematics
     blank
 	pairs --status "(scr_showitemname)" "selected inventory item" scr_showitemname "do not show" 0 "show on change" 1 "always show" 2
+    // The item wheel replaces the inventory list on the same key, so it is only
+    // offered where its icon art is complete - fs_rerelease is set by the
+    // filesystem when the game dir is the rerelease.  Everywhere else the key
+    // keeps opening the old list and there is nothing here to decide.
+    ifeq fs_rerelease 1
+        toggle --status "hold the inventory key for the item selection wheel. Off opens the old scrolling inventory list on the same key (cl_itemwheel)" "item selection wheel" cl_itemwheel
+        pairs --status "how far time slows while the wheel is held down. Single player only - it slows the whole server (cl_itemwheel_slowmo)" \
+            "wheel bullet time" cl_itemwheel_slowmo "off" 1 "3/4 speed" 0.75 "half speed" 0.5 "quarter speed" 0.25 "tenth speed" 0.1
+        toggle --status "blur the world behind the wheel while it is up (cl_itemwheel_blur)" "wheel background blur" cl_itemwheel_blur
+        pairs --status "the rerelease puts the wheel left of the crosshair so it does not cover what you are walking at (cl_itemwheel_x)" \
+            "wheel position" cl_itemwheel_x "left of centre" 0.41 "centred" 0
+        range --status "how far the mouse moves the wheel cursor (cl_itemwheel_sens)" "wheel cursor speed" cl_itemwheel_sens 0.25 3 0.25
+    endif
     toggle --status "show a named health bar for rerelease bosses such as Modir on mgu6m3 (scr_health_bars)" "boss health bars" scr_health_bars
     toggle --status "(scr_lag_draw)" "ping graph" scr_lag_draw
     values --status "(scr_demobar)" "demo bar" scr_demobar no yes verbose

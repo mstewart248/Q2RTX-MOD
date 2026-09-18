@@ -307,6 +307,12 @@ typedef struct ref_feedback_s {
 	char        view_material_override[MAX_QPATH];
     int         view_material_index;
 
+	/* The geometry the crosshair is on, for the material system's per-surface
+	   instances. view_prim_instance_hash names the connected group of BSP faces
+	   under the crosshair and is 0 when there is none - the crosshair is on a
+	   model, a brush entity or nothing at all. See `mat create_instance`. */
+	uint32_t    view_prim_instance_hash;
+
 	vec3_t      hdr_color;
 	float       adapted_luminance;
 } ref_feedback_t;

@@ -67,6 +67,12 @@ static cvar_t   *cl_weaponbar_time;
 static cvar_t   *cl_weaponbar_hold;
 static cvar_t   *cl_weaponbar_grace;
 
+static cvar_t   *cl_itemwheel;
+static cvar_t   *cl_itemwheel_sens;
+static cvar_t   *cl_itemwheel_x;
+static cvar_t   *cl_itemwheel_slowmo;
+static cvar_t   *cl_itemwheel_blur;
+
 static cvar_t   *scr_draw2d;
 static cvar_t   *scr_lag_x;
 static cvar_t   *scr_lag_y;
@@ -1413,6 +1419,19 @@ void SCR_Init(void)
     cl_weaponbar_time = Cvar_Get("cl_weaponbar_time", "0.4", CVAR_ARCHIVE);
     cl_weaponbar_hold = Cvar_Get("cl_weaponbar_hold", "0.8", CVAR_ARCHIVE);
     cl_weaponbar_grace = Cvar_Get("cl_weaponbar_grace", "0.5", CVAR_ARCHIVE);
+
+    // The item wheel.  Off falls back to the scrolling inventory list, which is
+    // what the same key has always opened; the menu only offers the switch in
+    // the rerelease, where the icon art is complete.
+    cl_itemwheel = Cvar_Get("cl_itemwheel", "1", CVAR_ARCHIVE);
+    cl_itemwheel_sens = Cvar_Get("cl_itemwheel_sens", "1", CVAR_ARCHIVE);
+    // How far the ring's centre sits from the left edge, in screen HEIGHTS -
+    // 0.41 is where the rerelease puts it, 0 centres it on the crosshair.
+    cl_itemwheel_x = Cvar_Get("cl_itemwheel_x", "0.41", CVAR_ARCHIVE);
+    // Bullet time, single player only.  1 leaves the clock alone, for anyone
+    // who wants the wheel without the slowdown.
+    cl_itemwheel_slowmo = Cvar_Get("cl_itemwheel_slowmo", "0.25", CVAR_ARCHIVE);
+    cl_itemwheel_blur = Cvar_Get("cl_itemwheel_blur", "1", CVAR_ARCHIVE);
     SCR_WeaponBarInit();
     scr_lag_x = Cvar_Get("scr_lag_x", "-1", 0);
     scr_lag_y = Cvar_Get("scr_lag_y", "-1", 0);
@@ -1835,8 +1854,9 @@ static void SCR_WeaponBarThink(void)
     }
 }
 
-// the HUD digits, scaled to sit above an icon three abreast
-static void SCR_WeaponBarNumber(int cx, int y, int color, int value, int dw, int dh)
+// The HUD digit pics at an arbitrary size.  Shared: the weapon bar sits them
+// above an icon three abreast, the item wheel under one.
+static void SCR_DrawHudDigits(int cx, int y, int color, int value, int dw, int dh)
 {
     char    num[8];
     int     i, l, x;
@@ -1921,7 +1941,7 @@ static void SCR_DrawWeaponBar(void)
                                  MakeColor(255, 255, 0, (int)(alpha * 255)));
 
         if (ammo >= 0)
-            SCR_WeaponBarNumber(cx, icon_y - digit_h - 2, ammo ? 0 : 1, ammo,
+            SCR_DrawHudDigits(cx, icon_y - digit_h - 2, ammo ? 0 : 1, ammo,
                                 digit_w, digit_h);
 
         if (!ammo)
@@ -1966,6 +1986,835 @@ static void SCR_WeapPrev_f(void)
     SCR_WeaponBarCmd(-1);
 }
 
+/*
+===============================================================================
+
+ITEM WHEEL
+
+The rerelease's hold-to-open item wheel, on the key that already opens the
+inventory.  Hold it and everything you are carrying is laid out around a ring
+with the mouse steering a cursor inside it; let go and whatever the cursor
+landed on is used.  Releasing without having moved uses what was already
+selected, so a tap of the key behaves like the old invuse.
+
+WHAT GOES ON THE RING IS WHAT THE PLAYER CAN ACTUALLY SELECT: the powerups and
+the two power armours, and nothing else.  Ammo, armour, keys and the rest of
+what the inventory carries are readouts - the server answers a "use" for one of
+them with "Item is not usable" - so a ring slot for them is a slot the cursor
+can land on and do nothing.  Weapons are off it too: this tree already puts them
+on the weapon bar above, on the mouse wheel, which is the rerelease's split as
+well.  The ammo a selection consumes is not lost, it just moves to the middle,
+where the hub shows the count for the thing the highlighted item burns.
+
+It is a REPLACEMENT for the scrolling inventory list, not an addition: with
+cl_itemwheel off - or in any game but the rerelease, which is the only one whose
+art has an icon for every item - the same key opens the list it always did.
+
+Like the weapon bar above, this lives entirely on the client.  The server is
+still told to open the inventory, because that is what makes it send the counts
+(svc_inventory is only ever emitted in answer to "inven"), but the ring, the
+cursor and the selection are all local: a wheel that had to ask the server which
+way the mouse moved would be useless.
+
+Three things happen to the rest of the game while it is up, all of them driven
+off SCR_ItemWheelPhase() so they come and go with the same fade as the ring:
+
+  - the world behind it blurs, through the same bloom path the menu uses
+    (vkpt_bloom_update), so the ring reads against a busy scene;
+  - in SINGLE PLAYER time slows to cl_itemwheel_slowmo - CL_GetTimeScale(),
+    applied in Com_Frame - which is the rerelease's bullet time.  Not in
+    multiplayer, where one player's inventory key must not slow the server;
+  - the sound pitches down with it, or the slowdown sounds like the game has
+    hitched rather than like time has thickened.
+
+The mouse is taken off the view for the duration and put on the cursor, which
+is clamped inside the ring and cannot leave it.  Movement keys are deliberately
+left alone: you can still back out of a room while you pick.
+
+===============================================================================
+*/
+
+// The item icons, by the CS_ITEMS name the server publishes.  Same arrangement
+// as wb_slots[] above and for the same reason: the icon a gitem_t carries is
+// known only to the game library, and nothing in the protocol ever tells the
+// client about it.  Taken from itemlist[] in src/baseq2/g_items.c - if an item
+// is added there, add it here or it reaches the wheel without a picture.
+//
+// "wheel" is every itemlist[] entry that has a use function and is not a weapon
+// - eighteen of them, which is the ring in the screenshot this was built from.
+// The rest keep their row because the table is also what the hub looks the ammo
+// icon up in, and because it is easier to check against itemlist[] when it
+// mirrors it whole.
+//
+// "ammo" is what USING the item spends, which is not the same as the gitem_t
+// ammo field: the power armours have none, and drain cells from inside
+// Power_Armor() in g_combat.c instead.  Only the ring entries need it - it is
+// what the hub puts its count under.
+typedef struct {
+    const char  *item;      // CS_ITEMS pickup name
+    const char  *icon;      // pic name, minus the extension
+    const char  *ammo;      // CS_ITEMS name of what it burns, NULL for none
+    bool        wheel;      // belongs on the ring
+} iwicon_t;
+
+static const iwicon_t iw_icons[] = {
+    { "Body Armor",          "i_bodyarmor",       NULL,      false },
+    { "Combat Armor",        "i_combatarmor",     NULL,      false },
+    { "Jacket Armor",        "i_jacketarmor",     NULL,      false },
+    { "Armor Shard",         "i_jacketarmor",     NULL,      false },
+    { "Power Screen",        "i_powerscreen",     "Cells",   true  },
+    { "Power Shield",        "i_powershield",     "Cells",   true  },
+    { "Blaster",             "w_blaster",         NULL,      false },
+    { "Shotgun",             "w_shotgun",         NULL,      false },
+    { "Super Shotgun",       "w_sshotgun",        NULL,      false },
+    { "Machinegun",          "w_machinegun",      NULL,      false },
+    { "Chaingun",            "w_chaingun",        NULL,      false },
+    { "Grenades",            "a_grenades",        NULL,      false },
+    { "Grenade Launcher",    "w_glauncher",       NULL,      false },
+    { "Rocket Launcher",     "w_rlauncher",       NULL,      false },
+    { "HyperBlaster",        "w_hyperblaster",    NULL,      false },
+    { "Railgun",             "w_railgun",         NULL,      false },
+    { "BFG10K",              "w_bfg",             NULL,      false },
+    { "Flare Gun",           "w_flareg",          NULL,      false },
+    { "Shells",              "a_shells",          NULL,      false },
+    { "Bullets",             "a_bullets",         NULL,      false },
+    { "Cells",               "a_cells",           NULL,      false },
+    { "Rockets",             "a_rockets",         NULL,      false },
+    { "Slugs",               "a_slugs",           NULL,      false },
+    { "Quad Damage",         "p_quad",            NULL,      true  },
+    { "Invulnerability",     "p_invulnerability", NULL,      true  },
+    { "Flashlight",          "p_torch",           NULL,      true  },
+    { "Silencer",            "p_silencer",        NULL,      true  },
+    { "Rebreather",          "p_rebreather",      NULL,      true  },
+    { "Environment Suit",    "p_envirosuit",      NULL,      true  },
+    { "Ancient Head",        "i_fixme",           NULL,      false },
+    { "Adrenaline",          "p_adrenaline",      NULL,      false },
+    { "Bandolier",           "p_bandolier",       NULL,      false },
+    { "Ammo Pack",           "i_pack",            NULL,      false },
+    { "Data CD",             "k_datacd",          NULL,      false },
+    { "Power Cube",          "k_powercube",       NULL,      false },
+    { "Pyramid Key",         "k_pyramid",         NULL,      false },
+    { "Data Spinner",        "k_dataspin",        NULL,      false },
+    { "Security Pass",       "k_security",        NULL,      false },
+    { "Blue Key",            "k_bluekey",         NULL,      false },
+    { "Red Key",             "k_redkey",          NULL,      false },
+    { "Commander's Head",    "k_comhead",         NULL,      false },
+    { "Airstrike Marker",    "i_airstrike",       NULL,      false },
+    { "Yellow Key",          "n64/i_yellow_key",  NULL,      false },
+    { "Trap",                "a_trap",            NULL,      false },
+    { "Disruptor",           "w_disintegrator",   NULL,      false },
+    { "Rounds",              "a_disruptor",       NULL,      false },
+    { "Tesla",               "a_tesla",           NULL,      false },
+    { "Flechettes",          "a_flechettes",      NULL,      false },
+    { "Prox",                "a_prox",            NULL,      false },
+    { "Compass",             "p_compass",         NULL,      true  },
+    { "Cloak",               "p_cloaker",         NULL,      true  },
+    { "IR Goggles",          "p_ir",              NULL,      true  },
+    { "A-M Bomb",            "p_nuke",            NULL,      true  },
+    { "Doppleganger",        "p_doppleganger",    NULL,      true  },
+    { "vengeance sphere",    "p_vengeance",       NULL,      true  },
+    { "hunter sphere",       "p_hunter",          NULL,      true  },
+    { "defender sphere",     "p_defender",        NULL,      true  },
+    { "Prox Launcher",       "w_proxlaunch",      NULL,      false },
+    { "ETF Rifle",           "w_etf_rifle",       NULL,      false },
+    { "Plasma Beam",         "w_heatbeam",        NULL,      false },
+    { "Chainfist",           "w_chainfist",       NULL,      false },
+    { "Legacy Head",         "i_health",          NULL,      false },
+    { "Double Damage",       "p_double",          NULL,      true  },
+    { "DualFire Damage",     "p_quadfire",        NULL,      true  },
+    { "Ionripper",           "w_ripper",          NULL,      false },
+    { "Phalanx",             "w_phallanx",        NULL,      false },
+    { "Mag Slug",            "a_mslugs",          NULL,      false },
+    { "Green Key",           "k_green",           NULL,      false },
+    { "Health",              "i_health",          NULL,      false },
+};
+
+#define IW_FADE_MS      110     // open and close, in REAL milliseconds
+
+/* THE RING, MEASURED OFF THE RERELEASE'S OWN WHEEL.  Every one of these is a
+   fraction of the screen HEIGHT, never the width: the layout then holds its
+   shape at any aspect ratio instead of stretching out on an ultrawide.
+
+   It sits left of the crosshair rather than over it, which is the rerelease's
+   placement and not an accident - time is slowed but you are still walking, so
+   the wheel has no business covering the thing you are walking at. */
+#define IW_OUTER        0.25f   // outer radius, in screen heights
+#define IW_HUB          0.56f   // hub radius, as a fraction of the outer
+#define IW_ICON         0.13f   // icon size, as a fraction of the outer radius
+#define IW_SELECTED     1.45f   // how much bigger the one under the cursor is
+
+static struct {
+    bool        active;                 // taking input - the key is still down
+    unsigned    change_time;            // Sys_Milliseconds of the last open/close
+    float       cursor_x, cursor_y;     // HUD pixels from the ring's centre
+
+    int         item[MAX_ITEMS];        // CS_ITEMS indices, in inventory order
+    qhandle_t   pic[MAX_ITEMS];
+    const char  *ammo[MAX_ITEMS];
+    int         count;
+
+    // THE SELECTION IS THE ITEM, NOT THE SLOT.  The ring is rebuilt every frame
+    // and firing the last rocket while it is open takes a slot out of the
+    // middle of it - holding a slot number would slide the highlight onto
+    // whatever moved up into it, and the release would then use that instead.
+    int         sel_item;               // CS_ITEMS index, -1 when none
+    int         selected;               // where sel_item sits this frame, or -1
+
+    bool        key_taken;              // the down edge was ours, so the up is too
+
+    float       cx, cy;                 // this frame's ring, in HUD pixels
+    float       r_out, r_in;
+} iw;
+
+// REAL milliseconds throughout, never cls.realtime: the wheel is the thing
+// slowing the clock down, so timing its own fade off the slowed clock would
+// stretch the fade by four and leave the blur ramping for half a second.
+static unsigned SCR_ItemWheelNow(void)
+{
+    return Sys_Milliseconds();
+}
+
+static bool SCR_ItemWheelEnabled(void)
+{
+    // rerelease only, by the same test the weapon bar makes: this is the one
+    // game whose art has an icon for every item the wheel can show, and the
+    // menu hides the option everywhere else (see fs_rerelease in q2rtx.menu).
+    return cl_itemwheel->integer && !Q_stricmp(cl.gamedir, "rerelease");
+}
+
+/*
+==============
+SCR_ItemWheelPhase
+
+0 when the wheel is gone, 1 when it is fully up, and the fade in between.  The
+blur, the slowdown and the ring's own opacity all come off this, so they can
+never disagree about how far up it is.
+==============
+*/
+float SCR_ItemWheelPhase(void)
+{
+    unsigned elapsed;
+    float    f;
+
+    // never opened this session, so there is nothing to be fading out of
+    if (!iw.active && !iw.change_time)
+        return 0.0f;
+
+    elapsed = SCR_ItemWheelNow() - iw.change_time;
+    f = min((float)elapsed / IW_FADE_MS, 1.0f);
+
+    return iw.active ? f : 1.0f - f;
+}
+
+/*
+==============
+SCR_ItemWheelBlur
+
+How hard to blur the world behind the ring, 0..1, for vkpt_bloom_update.  It is
+the same fade the ring itself uses, so the blur arrives with the wheel instead
+of snapping in under it.
+==============
+*/
+float SCR_ItemWheelBlur(void)
+{
+    if (!cl_itemwheel_blur || !cl_itemwheel_blur->integer)
+        return 0.0f;
+
+    return SCR_ItemWheelPhase();
+}
+
+/*
+==============
+CL_GetTimeScale
+
+What Com_Frame multiplies the frame's milliseconds by, on top of the timescale
+cvar.  It lives here because the item wheel is the only thing that moves it:
+holding the wheel up in single player slows the world to cl_itemwheel_slowmo,
+ramped on the same fade as the ring so that time eases in and out rather than
+stepping.
+
+MULTIPLAYER IS LEFT ALONE ON PURPOSE.  The slowdown works by slowing the whole
+host frame, server included, and one player's inventory key has no business
+doing that to everybody else.  Demos too: a demo plays back at the speed it was
+recorded at, whatever the viewer does with the wheel.
+==============
+*/
+float CL_GetTimeScale(void)
+{
+    float   phase, scale;
+
+    if (!cl_itemwheel_slowmo)
+        return 1.0f;
+
+    phase = SCR_ItemWheelPhase();
+    if (phase <= 0.0f)
+        return 1.0f;
+
+    if (cls.state != ca_active || cl.maxclients != 1 || cls.demo.playback)
+        return 1.0f;
+
+    scale = Cvar_ClampValue(cl_itemwheel_slowmo, 0.05f, 1.0f);
+
+    return 1.0f + (scale - 1.0f) * phase;
+}
+
+/*
+==============
+SCR_ItemWheelResolve
+
+The ring's contents, rebuilt every frame it is up.  Cheap enough - a couple of
+dozen names against the icon table - and it means picking something up, firing
+off the last rocket, or being handed a key while the wheel is open all show up
+straight away instead of on the next open.
+==============
+*/
+static void SCR_ItemWheelResolve(void)
+{
+    int     i, j;
+
+    iw.count = 0;
+
+    for (i = 0; i < MAX_ITEMS; i++) {
+        const char *name = cl.configstrings[CS_ITEMS + i];
+
+        if (cl.inventory[i] <= 0 || !*name)
+            continue;
+
+        for (j = 0; j < q_countof(iw_icons); j++)
+            if (!strcmp(name, iw_icons[j].item))
+                break;
+
+        // Not on the ring, or not an item this game has a row for at all
+        if (j == q_countof(iw_icons) || !iw_icons[j].wheel)
+            continue;
+
+        iw.item[iw.count] = i;
+        iw.ammo[iw.count] = iw_icons[j].ammo;
+
+        // An item whose icon is missing still goes on the ring, drawn as an
+        // empty cell.  Losing it silently would be worse: the ring is the only
+        // way to reach it while the wheel is switched on, and a powerup you
+        // cannot see is a powerup you cannot use.
+        iw.pic[iw.count] = R_RegisterPic2(iw_icons[j].icon);
+
+        iw.count++;
+    }
+
+    // Re-find the selection in the rebuilt list.  An item that ran out while
+    // the wheel was up leaves the highlight nowhere rather than on a stranger.
+    iw.selected = -1;
+    for (i = 0; i < iw.count; i++)
+        if (iw.item[i] == iw.sel_item) {
+            iw.selected = i;
+            break;
+        }
+}
+
+// Where slot i sits on the ring: straight up for the first, then clockwise.
+static void SCR_ItemWheelSlotPos(int slot, float radius, float *x, float *y)
+{
+    float theta = (2.0f * M_PI * slot) / iw.count;
+
+    *x =  sinf(theta) * radius;
+    *y = -cosf(theta) * radius;
+}
+
+// The slot the cursor is pointing at, or -1 while it is still in the hub.  The
+// dead zone is what lets a tap of the key mean "use what was already selected"
+// rather than "use whatever happens to sit under a cursor at dead centre".
+static int SCR_ItemWheelSlotAt(float x, float y)
+{
+    float   theta;
+    int     slot;
+
+    if (!iw.count)
+        return -1;
+    if (sqrtf(x * x + y * y) < iw.r_in * 0.45f)
+        return -1;
+
+    theta = atan2f(x, -y);
+    if (theta < 0)
+        theta += 2.0f * M_PI;
+
+    slot = (int)(theta / (2.0f * M_PI) * iw.count + 0.5f);
+    return slot % iw.count;
+}
+
+/*
+==============
+SCR_ItemWheelGeometry
+
+Where the ring is and how big, in HUD pixels.  See the IW_ constants above for
+where the numbers came from; the icons ride the middle of the band.
+==============
+*/
+static void SCR_ItemWheelGeometry(void)
+{
+    float   margin;
+
+    iw.r_out = scr.hud_height * IW_OUTER;
+    iw.r_in  = iw.r_out * IW_HUB;
+
+    // 0 centres it on screen, for anyone who would rather have it there
+    if (cl_itemwheel_x->value > 0)
+        iw.cx = scr.hud_height * Cvar_ClampValue(cl_itemwheel_x, 0, 2);
+    else
+        iw.cx = scr.hud_width * 0.5f;
+
+    iw.cy = scr.hud_height * 0.5f;
+
+    // however the cvar and the aspect ratio combine, the ring stays on screen
+    margin = iw.r_out + 4;
+    iw.cx = max(margin, min(iw.cx, scr.hud_width - margin));
+}
+
+/*
+==============
+SCR_ItemWheelOpen
+
+Called from the key handler when the inventory key goes down.  "inven" goes to
+the server for the same reason the old inventory screen sent it: svc_inventory
+is the only thing that refreshes cl.inventory, and it is only sent in answer to
+this.  The counts land a frame or two later, which is exactly what the fade-in
+is covering.
+==============
+*/
+static void SCR_ItemWheelOpen(void)
+{
+    int     i;
+
+    if (iw.active)
+        return;
+
+    iw.active = true;
+    iw.change_time = SCR_ItemWheelNow();
+
+    SCR_ItemWheelGeometry();
+    SCR_ItemWheelResolve();
+
+    // Start on whatever the player already had selected, with the cursor out
+    // far enough to be visibly pointing at it, so that letting straight go
+    // again uses that item rather than nothing.
+    iw.sel_item = -1;
+    iw.selected = -1;
+    iw.cursor_x = iw.cursor_y = 0;
+
+    for (i = 0; i < iw.count; i++)
+        if (iw.item[i] == cl.frame.ps.stats[STAT_SELECTED_ITEM]) {
+            iw.sel_item = iw.item[i];
+            iw.selected = i;
+            SCR_ItemWheelSlotPos(i, iw.r_in * 0.8f, &iw.cursor_x, &iw.cursor_y);
+            break;
+        }
+
+    CL_ClientCommand("inven");
+}
+
+/*
+==============
+SCR_ItemWheelClose
+
+The key came up.  Use what the cursor landed on, then put the server's own
+inventory screen away - it was opened underneath us to get the counts, and
+leaving it up would show the old list through the fade-out.
+==============
+*/
+static void SCR_ItemWheelClose(bool commit)
+{
+    if (!iw.active)
+        return;
+
+    iw.active = false;
+    iw.change_time = SCR_ItemWheelNow();
+
+    if (commit && iw.selected >= 0)
+        CL_ClientCommand(va("use %s", cl.configstrings[CS_ITEMS + iw.item[iw.selected]]));
+
+    CL_ClientCommand("putaway");
+}
+
+/*
+==============
+SCR_ItemWheelMouse
+
+The mouse while the wheel is up: it drives the cursor and NOT the view.  The
+cursor is clamped to the ring and can never leave it, so there is no way to
+lose it off the edge of the screen and no way to aim it at nothing.
+
+Returns true when it took the motion, which is what keeps the view still.
+==============
+*/
+bool SCR_ItemWheelMouse(float dx, float dy)
+{
+    float   len;
+    int     slot;
+
+    if (!iw.active)
+        return false;
+
+    SCR_ItemWheelGeometry();
+
+    iw.cursor_x += dx * Cvar_ClampValue(cl_itemwheel_sens, 0.1f, 10);
+    iw.cursor_y += dy * Cvar_ClampValue(cl_itemwheel_sens, 0.1f, 10);
+
+    // Clamped to the outer edge rather than to the icon ring, so pushing the
+    // mouse hard in a direction still reads as "that one" - the cursor piles
+    // up against the rim it is pointing through.
+    len = sqrtf(iw.cursor_x * iw.cursor_x + iw.cursor_y * iw.cursor_y);
+    if (len > iw.r_out && len > 0) {
+        iw.cursor_x *= iw.r_out / len;
+        iw.cursor_y *= iw.r_out / len;
+    }
+
+    // Outside the hub the cursor always names a slot; inside it the previous
+    // selection stands rather than being cleared, so drifting back through the
+    // middle on the way to somewhere else does not disarm the release.
+    slot = SCR_ItemWheelSlotAt(iw.cursor_x, iw.cursor_y);
+    if (slot >= 0) {
+        iw.selected = slot;
+        iw.sel_item = iw.item[slot];
+    }
+
+    return true;
+}
+
+/*
+==============
+SCR_ItemWheelKey
+
+The inventory key, down and up, from Key_Event.  Returns true when the wheel
+took it - the caller must then NOT run the binding, or the server would get an
+"inven" of its own on top of the one SCR_ItemWheelOpen sends.
+
+An autorepeat is swallowed rather than ignored, because the key being held down
+is the whole interface.
+==============
+*/
+bool SCR_ItemWheelKey(bool down, bool autorepeat)
+{
+    if (!down) {
+        bool taken = iw.key_taken;
+
+        // Taken even when the wheel has already closed itself underneath us -
+        // the menu opening is enough to do that - because the alternative is
+        // handing the up edge back and having the binding open the old
+        // inventory list on the way out of a gesture that is already over.
+        iw.key_taken = false;
+        SCR_ItemWheelClose(true);
+        return taken;
+    }
+
+    if (autorepeat)
+        return iw.key_taken;
+
+    if (iw.active)
+        return true;
+    if (cls.state != ca_active || cls.demo.playback)
+        return false;
+    if (!SCR_ItemWheelEnabled())
+        return false;
+    // dead players get the old screen; there is nothing to pick anyway
+    if (cl.frame.ps.stats[STAT_HEALTH] <= 0)
+        return false;
+
+    SCR_ItemWheelOpen();
+    iw.key_taken = true;
+    return true;
+}
+
+/*
+==============
+SCR_ItemWheelAbort
+
+Anything that takes the player out of the wheel without a key up - a level
+change, a disconnect, the console or the menu stealing focus, dying with it
+open - has to come through here, or the blur and the slowdown are left switched
+on with nothing on screen to explain them.  Nothing is used: the player never
+finished the gesture.
+==============
+*/
+void SCR_ItemWheelAbort(void)
+{
+    SCR_ItemWheelClose(false);
+}
+
+static void SCR_ItemWheelThink(void)
+{
+    if (!iw.active)
+        return;
+
+    if (cls.state != ca_active || cls.key_dest != KEY_GAME ||
+        cl.frame.ps.stats[STAT_HEALTH] <= 0 || !SCR_ItemWheelEnabled())
+        SCR_ItemWheelAbort();
+}
+
+/*
+==============
+SCR_FillRing
+
+A filled annulus out of horizontal fills, one per scanline, with the first and
+last pixel of each span faded by its coverage.  There is no circle in the 2D
+API and no way to hand it one: a pic would have to be authored, shipped and
+then scaled, and it would still be the wrong size at some resolution.  The few
+hundred quads this costs all land in the single instanced draw the 2D layer
+already makes, so doing it in software here costs a few hundred structs in a
+buffer that has room for sixteen thousand.
+
+r_in <= 0 gives a filled disc.
+==============
+*/
+static void SCR_FillRing(float cx, float cy, float r_out, float r_in, uint32_t color)
+{
+    int     y, top, bottom;
+    int     alpha = (color >> 24) & 0xff;
+
+    if (r_out <= 0 || !alpha)
+        return;
+
+    top = (int)floorf(cy - r_out);
+    bottom = (int)ceilf(cy + r_out);
+
+    for (y = top; y <= bottom; y++) {
+        float   dy = y + 0.5f - cy;
+        float   xo, xi;
+        float   spans[2][2];
+        int     i, n;
+
+        if (fabsf(dy) >= r_out)
+            continue;
+
+        xo = sqrtf(r_out * r_out - dy * dy);
+        xi = (r_in > 0 && fabsf(dy) < r_in) ? sqrtf(r_in * r_in - dy * dy) : 0;
+
+        if (xi > 0) {
+            spans[0][0] = cx - xo; spans[0][1] = cx - xi;
+            spans[1][0] = cx + xi; spans[1][1] = cx + xo;
+            n = 2;
+        } else {
+            spans[0][0] = cx - xo; spans[0][1] = cx + xo;
+            n = 1;
+        }
+
+        for (i = 0; i < n; i++) {
+            float   x0 = spans[i][0], x1 = spans[i][1];
+            int     ix0 = (int)ceilf(x0), ix1 = (int)floorf(x1);
+
+            // Sub-pixel caps.  Without them the rim steps in whole pixels and
+            // a ring this large reads as a polygon rather than a circle.
+            if (ix0 > x0)
+                R_DrawFill32(ix0 - 1, y, 1, 1,
+                             (color & 0x00ffffff) | ((int)(alpha * (ix0 - x0)) << 24));
+            if (x1 > ix1)
+                R_DrawFill32(ix1, y, 1, 1,
+                             (color & 0x00ffffff) | ((int)(alpha * (x1 - ix1)) << 24));
+
+            if (ix1 > ix0)
+                R_DrawFill32(ix0, y, ix1 - ix0, 1, color);
+        }
+    }
+}
+
+// The cursor, rasterised as an arbitrary triangle so it can point wherever the
+// mouse is pointing.  For each scanline, intersect the three edges with it and
+// fill between the two crossings.
+static void SCR_FillTriangle(const float p[3][2], uint32_t color)
+{
+    int     y, top, bottom;
+
+    top    = (int)floorf(min(p[0][1], min(p[1][1], p[2][1])));
+    bottom = (int)ceilf (max(p[0][1], max(p[1][1], p[2][1])));
+
+    for (y = top; y <= bottom; y++) {
+        float   sy = y + 0.5f;
+        float   xs[3];
+        int     n = 0, i, x0, x1;
+
+        for (i = 0; i < 3; i++) {
+            const float *a = p[i], *b = p[(i + 1) % 3];
+
+            if ((a[1] <= sy) == (b[1] <= sy))
+                continue;   // this edge does not cross this scanline
+            xs[n++] = a[0] + (sy - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+        }
+
+        if (n < 2)
+            continue;
+
+        x0 = (int)floorf(min(xs[0], xs[1]));
+        x1 = (int)ceilf (max(xs[0], xs[1]));
+        if (x1 > x0)
+            R_DrawFill32(x0, y, x1 - x0, 1, color);
+    }
+}
+
+/*
+==============
+SCR_DrawItemWheelHub
+
+The middle of the ring: what is highlighted, and - when using it spends
+something - the icon and count of what it spends.  That is why there is ammo in
+a wheel with no ammo on it: a power shield reads out the cells it will drain,
+because the number that decides whether picking it is worth anything is the
+cell count, not the one shield you are carrying.
+==============
+*/
+static void SCR_DrawItemWheelHub(float cx, float cy, float alpha)
+{
+    const char  *name, *ammo;
+    int         i, ammo_item = -1;
+    float       icon_sz, y;
+    int         digit_w, digit_h, block;
+
+    if (iw.selected < 0)
+        return;
+
+    name = cl.configstrings[CS_ITEMS + iw.item[iw.selected]];
+    ammo = iw.ammo[iw.selected];
+
+    if (ammo)
+        for (i = 0; i < MAX_ITEMS; i++)
+            if (!strcmp(cl.configstrings[CS_ITEMS + i], ammo)) {
+                ammo_item = i;
+                break;
+            }
+
+    // the hub is small, so the whole block is measured first and then centred
+    // in it rather than hung off a fixed offset that only suits one of the two
+    // layouts
+    icon_sz = iw.r_in * 0.32f;
+    digit_h = max((int)(icon_sz * 1.15f), 10);
+    digit_w = max((int)(digit_h * 0.7f), 6);
+
+    block = CHAR_HEIGHT;
+    if (ammo_item >= 0)
+        block += (int)icon_sz + 4 + digit_h;
+
+    y = cy - block / 2.0f;
+
+    R_SetAlpha(alpha);
+    HUD_DrawCenterString((int)cx, (int)y, name);
+    y += CHAR_HEIGHT + 4;
+
+    if (ammo_item >= 0) {
+        qhandle_t pic = 0;
+
+        for (i = 0; i < q_countof(iw_icons); i++)
+            if (!strcmp(iw_icons[i].item, ammo)) {
+                pic = R_RegisterPic2(iw_icons[i].icon);
+                break;
+            }
+
+        if (pic)
+            R_DrawStretchPic(cx - icon_sz / 2, y, icon_sz, icon_sz, pic);
+        y += icon_sz + 2;
+
+        SCR_DrawHudDigits((int)cx, (int)y, 0, cl.inventory[ammo_item], digit_w, digit_h);
+    }
+}
+
+static void SCR_DrawItemWheelCursor(float cx, float cy, int alpha)
+{
+    float   len, dx, dy, px, py;
+    float   tri[3][2];
+    float   size = max(6.0f, iw.r_out * 0.055f);
+
+    len = sqrtf(iw.cursor_x * iw.cursor_x + iw.cursor_y * iw.cursor_y);
+    if (len < 1.0f) {
+        dx = 0; dy = -1;    // parked in the hub: point at the first slot
+    } else {
+        dx = iw.cursor_x / len;
+        dy = iw.cursor_y / len;
+    }
+
+    px = -dy;   // perpendicular, for the base corners
+    py =  dx;
+
+    tri[0][0] = cx + iw.cursor_x + dx * size;
+    tri[0][1] = cy + iw.cursor_y + dy * size;
+    tri[1][0] = cx + iw.cursor_x - dx * size + px * size * 0.8f;
+    tri[1][1] = cy + iw.cursor_y - dy * size + py * size * 0.8f;
+    tri[2][0] = cx + iw.cursor_x - dx * size - px * size * 0.8f;
+    tri[2][1] = cy + iw.cursor_y - dy * size - py * size * 0.8f;
+
+    SCR_FillTriangle(tri, MakeColor(255, 255, 255, alpha));
+}
+
+static void SCR_DrawItemWheel(void)
+{
+    float       phase = SCR_ItemWheelPhase();
+    float       base, alpha, icon_sz, ring, cx, cy;
+    int         i, a;
+
+    if (phase <= 0.0f)
+        return;
+
+    // Kept resolving through the fade-out as well: the ring is still on screen
+    // and an item used on release disappears from it, which is the feedback
+    // that says the release was taken.
+    SCR_ItemWheelGeometry();
+    SCR_ItemWheelResolve();
+
+    base = Cvar_ClampValue(scr_alpha, 0, 1);
+    alpha = phase * base;
+    a = (int)(alpha * 255);
+
+    cx = iw.cx;
+    cy = iw.cy;
+
+    // The band itself.  Dark and mostly opaque, because the blur behind it is
+    // there to make the ICONS readable, not to make the band decorative.
+    SCR_FillRing(cx, cy, iw.r_out, iw.r_in, MakeColor(24, 24, 28, (int)(alpha * 216)));
+
+    ring = (iw.r_out + iw.r_in) * 0.5f;
+
+    // Give up icon size before the icons start touching each other.  Carrying
+    // every powerup at once is rare, but the band has to hold them when it
+    // happens rather than overlap them.
+    icon_sz = iw.r_out * IW_ICON;
+    if (iw.count)
+        icon_sz = min(icon_sz, 2.0f * M_PI * ring / iw.count * 0.8f);
+    icon_sz = max(icon_sz, 8.0f);
+
+    // An empty ring is still drawn.  Holding the key with nothing to pick has
+    // to LOOK like nothing to pick, not like the wheel failed to open.
+    for (i = 0; i < iw.count; i++) {
+        float   x, y, sz = icon_sz;
+        int     item = iw.item[i];
+        int     ia = a;
+
+        SCR_ItemWheelSlotPos(i, ring, &x, &y);
+        x += cx;
+        y += cy;
+
+        // the one under the cursor is bigger and at full strength; the rest
+        // are held back, so the selection reads at a glance
+        if (i == iw.selected)
+            sz *= IW_SELECTED;
+        else
+            ia = (int)(alpha * 165);
+
+        if (iw.pic[i]) {
+            R_SetAlpha(ia / 255.0f);
+            R_DrawStretchPic(x - sz / 2, y - sz / 2, sz, sz, iw.pic[i]);
+            R_SetAlpha(base);
+        } else {
+            SCR_FillRing(x, y, sz * 0.5f, sz * 0.35f, MakeColor(150, 150, 150, ia));
+        }
+
+        // Counts only where they mean something.  A key or a powerup you hold
+        // one of would otherwise say "1" under every icon, which is noise.
+        if (cl.inventory[item] > 1)
+            SCR_DrawHudDigits((int)x, (int)(y + sz / 2), 0, cl.inventory[item],
+                              max((int)(sz * 5 / 16), 4), max((int)(sz * 9 / 16), 6));
+    }
+
+    SCR_DrawItemWheelHub(cx, cy, alpha);
+
+    SCR_DrawItemWheelCursor(cx, cy, a);
+
+    R_SetAlpha(base);
+}
+
 #define DISPLAY_ITEMS   17
 
 static void SCR_DrawInventory(void)
@@ -1980,6 +2829,11 @@ static void SCR_DrawInventory(void)
     int     top;
 
     if (!(cl.frame.ps.stats[STAT_LAYOUTS] & 2))
+        return;
+
+    // The wheel is what opened this, and it is drawing the same
+    // inventory in a shape of its own.
+    if (SCR_ItemWheelPhase() > 0.0f)
         return;
 
     selected = cl.frame.ps.stats[STAT_SELECTED_ITEM];
@@ -2466,42 +3320,6 @@ static bool SCR_ProjectPoint(const vec3_t world, bool clamp_edge,
 
 /*
 =================
-SCR_DrawCompassTrail
-
-The breadcrumb path to the objective, drawn small and only where it is
-actually in front of you - unlike the objective marker itself, a trail point
-clamped to the screen edge would just be noise.
-=================
-*/
-static void SCR_DrawCompassTrail(void)
-{
-    int i, w, h;
-
-    if (!cl.poi_path_count || !cl.poi_pic)
-        return;
-
-    R_GetPicSize(&w, &h, cl.poi_pic);
-    if (w <= 0 || h <= 0)
-        return;
-
-    // the trail markers are deliberately a third the size of the objective
-    w = max(4, w / 3);
-    h = max(4, h / 3);
-
-    for (i = 0; i < cl.poi_path_count && i < MAX_POI_PATH; i++) {
-        float sx, sy, dist;
-
-        if (!SCR_ProjectPoint(cl.poi_path[i], false, &sx, &sy, &dist))
-            continue;
-        if (sx < 0 || sy < 0 || sx > scr.hud_width || sy > scr.hud_height)
-            continue;
-
-        R_DrawStretchPic((int)sx - w / 2, (int)sy - h / 2, w, h, cl.poi_pic);
-    }
-}
-
-/*
-=================
 SCR_DrawCompassPOI
 
 The rerelease compass marker. cl.poi_* is set by TE_POI when the player uses
@@ -2518,11 +3336,12 @@ wall, and the whole point is to see it anyway.
 */
 static void SCR_DrawCompassPOI(void)
 {
-    float   sx, sy, dist;
+    float   sx, sy, dist, alpha;
     int     w, h, margin;
     char    buf[16];
 
-    if (!cl.poi_time || cl.time >= cl.poi_time)
+    alpha = CL_CompassFade(cl.poi_time);
+    if (alpha <= 0)
         return;
 
     if (!cl.poi_pic)
@@ -2543,7 +3362,12 @@ static void SCR_DrawCompassPOI(void)
     clamp(sx, (float)margin, (float)(scr.hud_width - margin));
     clamp(sy, (float)margin, (float)(scr.hud_height - margin));
 
+    // the marker pic (pics/friend) is a white triangle; the compass green is
+    // what tells it apart from everything else on the HUD
+    R_SetColor(POI_COLOR((int)(alpha * 255)));
     R_DrawStretchPic((int)sx - w / 2, (int)sy - h / 2, w, h, cl.poi_pic);
+    R_ClearColor();
+    R_SetAlpha(Cvar_ClampValue(scr_alpha, 0, 1));
 
     Q_snprintf(buf, sizeof(buf), "%d", (int)(dist / 32.0f));
     SCR_DrawString((int)sx - (int)strlen(buf) * CHAR_WIDTH / 2,
@@ -2685,7 +3509,6 @@ static void SCR_Draw2D(void)
 
     SCR_DrawStats();
 
-    SCR_DrawCompassTrail();
     SCR_DrawCompassPOI();
 
     SCR_DrawHealthBars();
@@ -2693,6 +3516,8 @@ static void SCR_Draw2D(void)
     SCR_DrawLayout();
 
     SCR_DrawInventory();
+
+    SCR_DrawItemWheel();
 
     SCR_DrawWeaponBar();
 
@@ -2787,6 +3612,12 @@ text to the screen.
 void SCR_UpdateScreen(int waterLevel)
 {
     static int recursive;
+
+    // Ahead of every early-out below.  A loading plaque or a disabled screen
+    // is exactly when the wheel most needs to notice it has lost the game it
+    // was open over: left active, it would hold the blur and the slowdown on
+    // through the load.
+    SCR_ItemWheelThink();
 
     if (!scr.initialized) {
         return;             // not initialized yet

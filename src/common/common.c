@@ -1103,7 +1103,14 @@ void Qcommon_Frame(void)
         Cvar_ClampInteger(fixedtime, 1, 1000);
         msec = fixedtime->integer;
     } else if (timescale->value > 0) {
-        frac += msec * timescale->value;
+        float scale = timescale->value;
+#if USE_CLIENT
+        // The item wheel's bullet time, in single player.  It multiplies the
+        // cvar rather than replacing it, so a timescale someone set by hand
+        // still means what it said.
+        scale *= CL_GetTimeScale();
+#endif
+        frac += msec * scale;
         msec = frac;
         frac -= msec;
     }

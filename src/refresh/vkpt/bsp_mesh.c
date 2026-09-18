@@ -127,17 +127,21 @@ encode_normal(const vec3_t normal)
 }
 
 // Compute emissive factor for a surface
+/* `material` is the face's EFFECTIVE material - see face_effective_material.
+   Passed in rather than read off the texinfo because bsp_radiance and
+   default_radiance are exactly the kind of thing a per-surface instance exists
+   to change, and taking them from the texture's material would ignore it. */
 static float
-compute_emissive(mtexinfo_t *texinfo)
+compute_emissive(mtexinfo_t *texinfo, const pbr_material_t *material)
 {
-	if(!texinfo->material)
+	if(!material)
 		return 1.f;
 
 	const float bsp_emissive = (float)texinfo->radiance * cvar_pt_bsp_radiance_scale->value;
 
-	return ((texinfo->c.flags & SURF_LIGHT) && texinfo->material->bsp_radiance)
+	return ((texinfo->c.flags & SURF_LIGHT) && material->bsp_radiance)
 		? bsp_emissive
-		: texinfo->material->default_radiance;
+		: material->default_radiance;
 }
 
 #define DUMP_WORLD_MESH_TO_OBJ 0
@@ -150,6 +154,10 @@ static uint32_t
 create_poly(
 	const bsp_t* bsp,
 	const mface_t* surf,
+	/* The face's EFFECTIVE material - see face_effective_material. Passed in
+	   because the per-primitive emissive factor below comes off it, and a
+	   per-surface instance exists precisely to change how bright a surface is. */
+	const pbr_material_t* material,
 	uint material_id,
 	uint32_t primitive_index,
 	uint32_t max_prim,
@@ -241,7 +249,7 @@ create_poly(
 	if (!primitives_out)
 		return num_triangles;
 
-	const float emissive_factor = compute_emissive(texinfo);
+	const float emissive_factor = compute_emissive(texinfo, material);
 
 	float alpha = 1.f;
 	if (MAT_IsKind(material_id, MATERIAL_KIND_TRANSPARENT))
@@ -633,6 +641,261 @@ static int count_triangles(const bsp_t* bsp)
 	return num_tris;
 }
 
+/* ==========================================================================
+   MATERIAL INSTANCE IDENTITY - giving one use of a texture a name of its own.
+
+   A .mat file keys on a TEXTURE, so every surface drawn with textures/white
+   shares one set of values. That is usually what you want and occasionally
+   ruinous: the same blank white texture is the emissive face of a red spot
+   lamp in one room and an ordinary white panel in another, and tuning the
+   first to be a red light drags the second along with it.
+
+   RTX Remix solves this by hashing the geometry of a draw call, which gives
+   each mesh an identity independent of the texture on it. The same idea works
+   here, with BSP faces standing in for draw calls: hash the vertex positions
+   of a face and you have a name for that face alone.
+
+   A face is too small a unit on its own, though - a lamp housing is half a
+   dozen faces and tuning them one at a time, to identical values, is not a
+   workflow. So the unit is the CONNECTED GROUP: start at a face and take
+   everything reachable from it across a shared edge that draws with the same
+   material. That is "the mesh" in the sense a person means it, and it is what
+   `mat create_instance` puts under one .mat section.
+
+   STABILITY IS THE WHOLE REQUIREMENT. The hash is written into a material file
+   by a human and has to still mean the same surface next week, so it may only
+   depend on what is in the BSP: quantised vertex positions and the material.
+   Not face order, not the order edges happen to be walked, not any pointer,
+   not anything about this renderer's build. Recompiling the map WILL change
+   it - the geometry genuinely changed - and that is the honest behaviour.
+   ========================================================================== */
+
+/* Vertices land on integer or near-integer coordinates in a Quake II BSP, so
+   an eighth-unit grid quantises away float noise without ever merging two
+   distinct vertices. */
+#define INSTANCE_HASH_GRID 8.0f
+
+static inline uint32_t
+instance_hash_mix(uint32_t h, uint32_t value)
+{
+	/* FNV-1a, byte at a time. */
+	for (int b = 0; b < 4; b++)
+	{
+		h ^= (value >> (b * 8)) & 0xffu;
+		h *= 16777619u;
+	}
+	return h;
+}
+
+/* A face's own contribution to its group's hash.
+
+   The per-vertex hashes are SUMMED rather than chained, so the result does not
+   depend on which vertex the winding happens to start at - two faces with the
+   same corners hash alike however the BSP compiler chose to order them. */
+static uint32_t
+hash_face_geometry(const mface_t *surf)
+{
+	uint32_t accum = 0;
+
+	for (int i = 0; i < surf->numsurfedges; i++)
+	{
+		const msurfedge_t *surfedge = surf->firstsurfedge + i;
+		const float *point = surfedge->edge->v[surfedge->vert]->point;
+
+		uint32_t h = 2166136261u;
+
+		for (int c = 0; c < 3; c++)
+		{
+			int32_t quantized = (int32_t)lroundf(point[c] * INSTANCE_HASH_GRID);
+			h = instance_hash_mix(h, (uint32_t)quantized);
+		}
+
+		accum += h;
+	}
+
+	return accum;
+}
+
+static int
+uf_find(int *parent, int x)
+{
+	while (parent[x] != x)
+	{
+		parent[x] = parent[parent[x]];   // path halving
+		x = parent[x];
+	}
+	return x;
+}
+
+static void
+uf_union(int *parent, int a, int b)
+{
+	a = uf_find(parent, a);
+	b = uf_find(parent, b);
+	if (a != b)
+		parent[b] = a;
+}
+
+/* Which inline model owns a face, or -1 for the world.
+
+   Groups must not span this boundary: a door and the wall it sits flush
+   against can share an edge in the BSP, and merging them would let a door's
+   material instance reach out onto static geometry. Derived the same way
+   belongs_to_model decides what collect_surfaces skips, so the two agree. */
+static int
+face_model_owner(bsp_t *bsp, const mface_t *surf)
+{
+	for (int i = 0; i < bsp->nummodels; i++)
+	{
+		if (surf >= bsp->models[i].firstface &&
+		    surf < bsp->models[i].firstface + bsp->models[i].numfaces)
+			return i;
+	}
+	return -1;
+}
+
+/* One hash per BSP face, shared by every face in its connected group.
+   Caller frees. Returns NULL if the map has no faces. */
+static uint32_t *
+build_face_instance_hashes(bsp_t *bsp)
+{
+	if (bsp->numfaces <= 0)
+		return NULL;
+
+	uint32_t *face_hash = Z_Mallocz(sizeof(uint32_t) * bsp->numfaces);
+	int *parent = Z_Malloc(sizeof(int) * bsp->numfaces);
+	int *owner = Z_Malloc(sizeof(int) * bsp->numfaces);
+
+	for (int i = 0; i < bsp->numfaces; i++)
+	{
+		parent[i] = i;
+		owner[i] = face_model_owner(bsp, bsp->faces + i);
+	}
+
+	/* Join faces that share an edge and draw with the same material.
+
+	   Recording only the FIRST face seen on each edge is enough: an edge shared
+	   by three faces joins the second and third to that first one, and
+	   union-find makes the relation transitive from there. */
+	int *edge_first_face = Z_Malloc(sizeof(int) * max(bsp->numedges, 1));
+	for (int i = 0; i < bsp->numedges; i++)
+		edge_first_face[i] = -1;
+
+	for (int i = 0; i < bsp->numfaces; i++)
+	{
+		const mface_t *surf = bsp->faces + i;
+
+		if (!surf->texinfo)
+			continue;
+
+		for (int e = 0; e < surf->numsurfedges; e++)
+		{
+			ptrdiff_t edge_index = surf->firstsurfedge[e].edge - bsp->edges;
+
+			if (edge_index < 0 || edge_index >= bsp->numedges)
+				continue;
+
+			int other = edge_first_face[edge_index];
+
+			if (other < 0)
+			{
+				edge_first_face[edge_index] = i;
+				continue;
+			}
+
+			const mface_t *other_surf = bsp->faces + other;
+
+			if (!other_surf->texinfo)
+				continue;
+
+			if (owner[i] != owner[other])
+				continue;
+
+			if (surf->texinfo->material != other_surf->texinfo->material)
+				continue;
+
+			uf_union(parent, i, other);
+		}
+	}
+
+	Z_Free(edge_first_face);
+
+	/* Accumulate each face's geometry into its group's root. Summing keeps this
+	   independent of the order the faces are walked in. */
+	uint32_t *group_accum = Z_Mallocz(sizeof(uint32_t) * bsp->numfaces);
+
+	for (int i = 0; i < bsp->numfaces; i++)
+	{
+		if (!bsp->faces[i].texinfo)
+			continue;
+
+		group_accum[uf_find(parent, i)] += hash_face_geometry(bsp->faces + i);
+	}
+
+	/* Fold in the material name, so two groups that happen to occupy mirrored
+	   positions cannot collide, and so a hash visibly belongs to its texture. */
+	for (int i = 0; i < bsp->numfaces; i++)
+	{
+		const mface_t *surf = bsp->faces + i;
+
+		if (!surf->texinfo)
+			continue;
+
+		uint32_t h = group_accum[uf_find(parent, i)];
+
+		for (const char *c = surf->texinfo->name; *c; c++)
+			h = instance_hash_mix(h, (uint32_t)(unsigned char)Q_tolower(*c));
+
+		/* 0 is reserved for "this primitive has no group". */
+		face_hash[i] = h ? h : 1u;
+	}
+
+	Z_Free(group_accum);
+	Z_Free(parent);
+	Z_Free(owner);
+
+	return face_hash;
+}
+
+/* Filled by bsp_mesh_create_from_bsp for the duration of the build, read by
+   collect_surfaces as it emits each face's primitives. */
+static uint32_t *s_face_instance_hash = NULL;
+
+/* THE MATERIAL A FACE ACTUALLY DRAWS WITH.
+
+   Every path that asks "what material is on this surface?" has to come through
+   here, not through surf->texinfo->material, or an instance is only half
+   applied. That is not a hypothetical: applying it to the drawn geometry alone
+   left a light fixture shaded with the instance's white texture while the light
+   it CAST still came from the base material's red emissive, because the light
+   polygons are collected separately and were still reading the texture's
+   material. The surface looked right and lit the room the old colour. */
+static pbr_material_t*
+face_effective_material(bsp_t *bsp, const mface_t *surf)
+{
+	if (!surf->texinfo || !surf->texinfo->material)
+		return NULL;
+
+	pbr_material_t *base = surf->texinfo->material;
+
+	if (!s_face_instance_hash)
+		return base;
+
+	ptrdiff_t face_index = surf - bsp->faces;
+
+	if (face_index < 0 || face_index >= bsp->numfaces)
+		return base;
+
+	uint32_t instance_hash = s_face_instance_hash[face_index];
+
+	if (!instance_hash)
+		return base;
+
+	pbr_material_t *instance = MAT_FindInstance(base, instance_hash);
+
+	return instance ? instance : base;
+}
+
 static void
 collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int (*filter)(int, int))
 {
@@ -652,7 +915,21 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		}
 
 		
-		uint32_t material_id = surf->texinfo->material ? surf->texinfo->material->flags : 0;
+		/* PER-SURFACE MATERIAL INSTANCE.
+
+		   If this face's connected group has a .mat section keyed on its
+		   geometry hash, the face draws with THAT material rather than the one
+		   its texture names - which is the whole point of the mechanism, and
+		   why the swap happens here, before the kind and flag fixups below.
+		   Those read the material's own flags, so substituting afterwards
+		   would leave the instance wearing the base material's `is_light`. */
+		uint32_t face_hash = s_face_instance_hash && surf >= bsp->faces
+			&& (surf - bsp->faces) < bsp->numfaces
+			? s_face_instance_hash[surf - bsp->faces] : 0;
+
+		pbr_material_t* surf_material = face_effective_material(bsp, surf);
+
+		uint32_t material_id = surf_material ? surf_material->flags : 0;
 		uint32_t surf_flags = surf->drawflags | surf->texinfo->c.flags;
 
 
@@ -687,7 +964,7 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		if (!filter(material_id, surf_flags))
 			continue;
 
-		if ((material_id & MATERIAL_FLAG_LIGHT) && surf->texinfo->material->light_styles)
+		if ((material_id & MATERIAL_FLAG_LIGHT) && surf_material && surf_material->light_styles)
 		{
 			int light_style = get_surf_light_style(surf);
 			material_id |= (light_style << MATERIAL_LIGHT_STYLE_SHIFT) & MATERIAL_LIGHT_STYLE_MASK;
@@ -702,7 +979,21 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 		
 		VboPrimitive* surface_prims = wm->primitives + *prim_ctr;
 		
-		uint32_t prims_in_surface = create_poly(bsp, surf, material_id, *prim_ctr, wm->num_primitives_allocated, surface_prims);
+		uint32_t prims_in_surface = create_poly(bsp, surf, surf_material, material_id, *prim_ctr, wm->num_primitives_allocated, surface_prims);
+
+		/* Remember which connected group each emitted triangle came from, so
+		   the crosshair can name it later. Indexed by the same primitive number
+		   the path tracer reads back (Triangle.instance_prim for world
+		   geometry), which is why it is stored per primitive and not per face. */
+		if (wm->prim_instance_hash)
+		{
+			for (uint32_t k = 0; k < prims_in_surface; ++k)
+			{
+				uint32_t prim_index = *prim_ctr + k;
+				if (prim_index < wm->num_primitives_allocated)
+					wm->prim_instance_hash[prim_index] = face_hash;
+			}
+		}
 
 		for (uint32_t k = 0; k < prims_in_surface; ++k) 
 		{
@@ -923,7 +1214,7 @@ is_light_material(uint32_t material)
 }
 
 static void
-collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, int model_idx,
+collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_material_t *material, int model_idx,
 									  const vec3_t light_color, float emissive_factor, int light_style,
 									  int *num_lights, int *allocated_lights, light_poly_t **lights)
 {
@@ -958,7 +1249,7 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 		VectorCopy(positions + i2 * 3, light.positions + 6);
 		VectorScale(light_color, emissive_factor, light.color);
 
-		light.material = texinfo->material;
+		light.material = material;
 		light.style = light_style;
 		light.type = DYNLIGHT_POLYGON;
 		// Nobody has named a volumetric scale for this light, so copy_light()
@@ -986,7 +1277,7 @@ collect_one_light_poly_entire_texture(bsp_t *bsp, mface_t *surf, mtexinfo_t *tex
 }
 
 static void
-collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, int model_idx, const vec4_t plane,
+collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, pbr_material_t *material, int model_idx, const vec4_t plane,
 					   const float tex_scale[], const vec2_t min_light_texcoord, const vec2_t max_light_texcoord,
 					   const vec3_t light_color, float emissive_factor, int light_style,
 					   int* num_lights, int* allocated_lights, light_poly_t** lights)
@@ -1118,7 +1409,7 @@ collect_one_light_poly(bsp_t *bsp, mface_t *surf, mtexinfo_t *texinfo, int model
 				int i2 = (i + 1) % e;
 
 				light_poly_t* light = append_light_poly(num_lights, allocated_lights, lights);
-				light->material = texinfo->material;
+				light->material = material;
 				light->style = light_style;
 				light->type = DYNLIGHT_POLYGON;
 				light->emissive_factor = emissive_factor;
@@ -1206,6 +1497,15 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		if(!texinfo->material)
 			continue;
 
+		/* Everything below asks about the material on this face, and all of it
+		   has to see the per-surface instance if one has claimed the face -
+		   the emissive texture the light colour is sampled from, the radiance,
+		   the light style, and the material the light poly is tagged with. */
+		pbr_material_t *material = face_effective_material(bsp, surf);
+
+		if (!material)
+			continue;
+
 		int flags = surf->drawflags;
 		if (surf->texinfo) flags |= surf->texinfo->c.flags;
 
@@ -1218,12 +1518,12 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		// Check if any animation frame is a light material
 		bool any_light_frame = false;
 		{
-			pbr_material_t *current_material = texinfo->material;
+			pbr_material_t *current_material = material;
 			do
 			{
 				any_light_frame |= is_light_material(current_material->flags);
 				current_material = r_materials + current_material->next_frame;
-			} while (current_material != texinfo->material);
+			} while (current_material != material);
 		}
 		if(!any_light_frame)
 			continue;
@@ -1234,7 +1534,7 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		vec2_t max_light_texcoord;
 		vec3_t light_color;
 
-		if (!collect_frames_emissive_info(texinfo->material, &entire_texture_emissive, min_light_texcoord, max_light_texcoord, light_color))
+		if (!collect_frames_emissive_info(material, &entire_texture_emissive, min_light_texcoord, max_light_texcoord, light_color))
 		{
 			// This algorithm relies on information from the emissive texture,
 			// specifically the extents of the emissive pixels in that texture.
@@ -1242,15 +1542,15 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 			continue;
 		}
 
-		float emissive_factor = compute_emissive(texinfo);
+		float emissive_factor = compute_emissive(texinfo, material);
 		if(emissive_factor == 0)
 			continue;
 
-		int light_style = (texinfo->material->light_styles) ? get_surf_light_style(surf) : 0;
+		int light_style = (material->light_styles) ? get_surf_light_style(surf) : 0;
 
 		if (entire_texture_emissive)
 		{
-			collect_one_light_poly_entire_texture(bsp, surf, texinfo, model_idx, light_color, emissive_factor, light_style,
+			collect_one_light_poly_entire_texture(bsp, surf, texinfo, material, model_idx, light_color, emissive_factor, light_style,
 												  num_lights, allocated_lights, lights);
 			continue;
 		}
@@ -1262,9 +1562,9 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 			continue;
 		}
 
-		float tex_scale[2] = { 1.0f / texinfo->material->original_width, 1.0f / texinfo->material->original_height };
+		float tex_scale[2] = { 1.0f / material->original_width, 1.0f / material->original_height };
 
-		collect_one_light_poly(bsp, surf, texinfo, model_idx, plane,
+		collect_one_light_poly(bsp, surf, texinfo, material, model_idx, plane,
 							   tex_scale, min_light_texcoord, max_light_texcoord,
 							   light_color, emissive_factor, light_style,
 							   num_lights, allocated_lights, lights);
@@ -1290,9 +1590,11 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 		bool is_sky = !!(flags & SURF_SKY);
 		bool is_light = !!(flags & SURF_LIGHT);
 		bool is_nodraw = !!(flags & SURF_NODRAW);
-		bool is_lava = surf->texinfo->material ? MAT_IsKind(surf->texinfo->material->flags, MATERIAL_KIND_LAVA) : false;
-		
-		is_lava &= (surf->texinfo->material->image_emissive != NULL);
+		pbr_material_t *material = face_effective_material(bsp, surf);
+
+		bool is_lava = material ? MAT_IsKind(material->flags, MATERIAL_KIND_LAVA) : false;
+
+		is_lava &= (material && material->image_emissive != NULL);
 
 		if (!is_sky && !is_lava)
 			continue;
@@ -1332,8 +1634,8 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 			}
 			else
 			{
-				VectorCopy(surf->texinfo->material->image_emissive->light_color, light.color);
-				light.material = surf->texinfo->material;
+				VectorCopy(material->image_emissive->light_color, light.color);
+				light.material = material;
 			}
 
 			light.style = 0;
@@ -1871,6 +2173,12 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	wm->primitives = Z_Malloc(wm->num_primitives_allocated * sizeof(VboPrimitive));
 	wm->num_primitives = 0;
 
+	/* Group the BSP faces before any of them are turned into triangles: the
+	   grouping decides which material each face draws with, so it has to exist
+	   by the time collect_surfaces reads it. */
+	wm->prim_instance_hash = Z_Mallocz(wm->num_primitives_allocated * sizeof(uint32_t));
+	s_face_instance_hash = build_face_instance_hashes(bsp);
+
 	// clear these here because `bsp_mesh_load_custom_sky` creates lights before `collect_light_polys`
 	wm->num_light_polys = 0;
 	wm->allocated_light_polys = 0;
@@ -1929,6 +2237,7 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	obj_dump_file = NULL;
 #endif
 
+
 	if (!bsp->pvs_patched)
 	{
 		build_pvs2(bsp);
@@ -1983,6 +2292,17 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	collect_cluster_lights(wm, bsp);
 
 	compute_sky_visibility(wm, bsp);
+
+	/* Last consumer has run. The per-face table only exists for the duration of
+	   the build - the per-primitive copy on wm is what outlives it. Freed here
+	   rather than right after the geometry passes because the LIGHT passes above
+	   need it too, and freeing it early is what left instanced fixtures emitting
+	   their base material's colour. */
+	if (s_face_instance_hash)
+	{
+		Z_Free(s_face_instance_hash);
+		s_face_instance_hash = NULL;
+	}
 }
 
 void
@@ -1991,6 +2311,7 @@ bsp_mesh_destroy(bsp_mesh_t *wm)
 	Z_Free(wm->models);
 
 	Z_Free(wm->primitives);
+	Z_Free(wm->prim_instance_hash);
 
 	Z_Free(wm->light_polys);
 	Z_Free(wm->cluster_lights);

@@ -492,6 +492,14 @@ static void CL_MouseMove(void)
         return;
     }
 
+    // While the item wheel is up the mouse belongs to its cursor.  Raw deltas,
+    // before sensitivity and acceleration: the wheel wants a predictable
+    // distance across a fixed ring, not the aiming curve.  Movement keys are
+    // deliberately still live, so you can keep walking while you pick.
+    if (SCR_ItemWheelMouse(mx, my)) {
+        return;
+    }
+
     Cvar_ClampValue(m_accel, 0, 1);
 
     speed = sqrtf(mx * mx + my * my);

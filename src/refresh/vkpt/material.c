@@ -1135,6 +1135,29 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 	truncate_extension(name, mat_name_no_ext);
 	Q_strlwr(mat_name_no_ext);
 
+	/* A MATERIAL INSTANCE is named <texture>#<geometry hash> - see
+	   MAT_FindInstance. The suffix is part of the material's IDENTITY, which is
+	   the point of it, but it is not part of any path on disk: the instance
+	   still draws with its base texture unless its own .mat section says
+	   otherwise.
+
+	   So the name splits in two here. `mat_name_no_ext` stays whole and keys
+	   the material; `texture_name` has the suffix cut off and is what every
+	   lookup that touches the filesystem uses. An instance with an empty .mat
+	   section therefore auto-detects exactly the textures the base would have
+	   found on its own, which is what makes a fresh instance look like the
+	   texture before anyone overrode it. */
+	char texture_name[MAX_QPATH];
+	char texture_name_no_ext[MAX_QPATH];
+	Q_strlcpy(texture_name, name, sizeof(texture_name));
+	Q_strlcpy(texture_name_no_ext, mat_name_no_ext, sizeof(texture_name_no_ext));
+	{
+		char* sep = strchr(texture_name, '#');
+		if (sep) *sep = 0;
+		sep = strchr(texture_name_no_ext, '#');
+		if (sep) *sep = 0;
+	}
+
 	uint32_t hash = Com_HashString(mat_name_no_ext, RMATERIALS_HASH);
 	
 	pbr_material_t* mat = find_material(mat_name_no_ext, hash, r_materials, MAX_PBR_MATERIALS);
@@ -1171,8 +1194,8 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 	if (matdef
 		&& (matdef->image_flags & IF_SRC_MASK) == IF_SRC_BASE
 		&& is_game_custom()
-		&& FS_FileExistsEx(name, FS_PATH_GAME) != 0
-		&& !game_image_identical_to_base(name))
+		&& FS_FileExistsEx(texture_name, FS_PATH_GAME) != 0
+		&& !game_image_identical_to_base(texture_name))
 	{
 		matdef = NULL;
 		/* Forcing image to load from game prevents a normal or emissive map in baseq2
@@ -1199,14 +1222,14 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		// texture", i.e. exactly today's behaviour, so nothing that already
 		// ships changes.
 		if (!MAT_SPECIFIED(mat, MAT_TEXTURE_BASE))
-			autodetect_material_textures(mat, name, mat_name_no_ext, type, flags);
+			autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
 
 		if (mat->filename_base[0] && !mat->image_base) {
 			load_material_image(&mat->image_base, mat->filename_base, mat, type, flags | IF_SRGB);
 			if (mat->image_base == R_NOTEXTURE) {
 				Com_WPrintf("Texture '%s' specified in material '%s' could not be found. Using the low-res texture.\n", mat->filename_base, mat_name_no_ext);
 				
-				mat->image_base = IMG_Find(name, type, flags | IF_SRGB);
+				mat->image_base = IMG_Find(texture_name, type, flags | IF_SRGB);
 				mat->original_width = mat->image_base->width;
 				mat->original_height = mat->image_base->height;
 				if (mat->image_base == R_NOTEXTURE) {
@@ -1215,7 +1238,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 			}
 			else
 			{
-				IMG_GetDimensions(name, &mat->original_width, &mat->original_height);
+				IMG_GetDimensions(texture_name, &mat->original_width, &mat->original_height);
 			}
 		}
 
@@ -1264,7 +1287,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		MAT_Reset(mat);
 		Q_strlcpy(mat->name, mat_name_no_ext, sizeof(mat->name));
 
-		autodetect_material_textures(mat, name, mat_name_no_ext, type, flags);
+		autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
 	}
 
 	if(mat->synth_emissive && !mat->image_emissive)
@@ -1285,6 +1308,68 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 	List_Append(&r_materialsHash[hash], &mat->entry);
 
 	return mat;
+}
+
+void MAT_InstanceName(const char* base_name, uint32_t instance_hash, char* out, size_t out_size)
+{
+	/* Lower-case hex, because every material name is lower-cased on the way in
+	   and a name that does not survive that round trip would never be found. */
+	Q_snprintf(out, out_size, "%s#%08x", base_name, instance_hash);
+}
+
+pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_hash)
+{
+	if (!base || !instance_hash)
+		return NULL;
+
+	char instance_name[MAX_QPATH];
+	MAT_InstanceName(base->name, instance_hash, instance_name, sizeof(instance_name));
+
+	/* AN INSTANCE EXISTS ONLY BECAUSE A .mat SECTION DECLARES IT.
+
+	   Without this test MAT_Find would cheerfully auto-generate a material for
+	   every connected group in the map. That is not a small waste: the shader
+	   carries the material index in 12 bits (MATERIAL_INDEX_MASK), so there are
+	   4096 of them for the whole game, and a single level has far more surface
+	   groups than that. Declared instances are rare by construction, which is
+	   what keeps this affordable. */
+	bool declared = find_material_sorted(instance_name, r_map_materials, num_map_materials) != NULL
+		|| find_material_sorted(instance_name, r_global_materials, num_global_materials) != NULL;
+
+	if (!declared)
+		return NULL;
+
+	/* REGISTRATION FLAGS, NOT THE BASE'S ACCUMULATED ONES.
+
+	   base->image_flags is not what MAT_Find is normally handed. It is the
+	   registration flags OR-ed with the IF_SRC_* bits recording which game
+	   directory the base's definition came from, accumulated over the base's
+	   own load. Passing that back in sets a source bit on every IMG_Find the
+	   instance does, on top of the one load_material_image already derives from
+	   the instance's OWN definition file - so an instance declared in the
+	   rerelease would go looking for its textures in baseq2 as well.
+
+	   Only IF_TURBULENT survives, because that is a property of the SURFACE
+	   (SURF_WARP) that the instance shares with its base, and it is what
+	   bsp_mesh_register_textures passes for the same texture. */
+	imageflags_t instance_flags = base->image_flags & IF_TURBULENT;
+
+	pbr_material_t* instance = MAT_Find(instance_name, base->image_type ? base->image_type : IT_WALL, instance_flags);
+
+	/* The shader carries a material index in MATERIAL_INDEX_MASK bits, which is
+	   fewer than r_materials has slots. A material allocated past that point
+	   would have its index truncated and the surface would silently render as
+	   some unrelated material - so fall back to the base, which is merely the
+	   old behaviour, and say why. */
+	if (instance && (uint32_t)(instance - r_materials) > MATERIAL_INDEX_MASK)
+	{
+		Com_WPrintf("Material instance '%s' does not fit in the renderer's material index "
+		            "(%d slots); using '%s' instead.\n",
+		            instance_name, MATERIAL_INDEX_MASK + 1, base->name);
+		return NULL;
+	}
+
+	return instance;
 }
 
 void MAT_UpdateRegistration(pbr_material_t * mat)
@@ -1371,12 +1456,24 @@ pbr_material_t* MAT_ForSkin(image_t* image_base)
 void MAT_Print(pbr_material_t const * mat)
 {
 	Com_Printf("%s:\n", mat->name);
-	Com_Printf("    texture_base %s\n", mat->filename_base);
-	Com_Printf("    texture_normals %s\n", mat->filename_normals);
-	Com_Printf("    texture_emissive %s\n", mat->filename_emissive);
-	Com_Printf("    texture_mask %s\n", mat->filename_mask);
-	Com_Printf("    texture_roughness %s\n", mat->filename_roughness);
-	Com_Printf("    texture_metallic %s\n", mat->filename_metallic);
+
+	/* A filename with no image behind it renders exactly as if the slot were
+	   empty, and a plain listing cannot tell the two apart - which is the very
+	   case someone is trying to diagnose when they run this. "(NOT LOADED)"
+	   means the path was stated and the file was not found. */
+#define PRINT_TEXTURE(key, file, image) \
+	if (mat->file[0]) \
+		Com_Printf("    " key " %s%s\n", mat->file, (mat->image) ? "" : "   (NOT LOADED)"); \
+	else \
+		Com_Printf("    " key "\n")
+
+	PRINT_TEXTURE("texture_base", filename_base, image_base);
+	PRINT_TEXTURE("texture_normals", filename_normals, image_normals);
+	PRINT_TEXTURE("texture_emissive", filename_emissive, image_emissive);
+	PRINT_TEXTURE("texture_mask", filename_mask, image_mask);
+	PRINT_TEXTURE("texture_roughness", filename_roughness, image_roughness);
+	PRINT_TEXTURE("texture_metallic", filename_metallic, image_metallic);
+#undef PRINT_TEXTURE
 	Com_Printf("    bump_scale %f\n", mat->bump_scale);
 	Com_Printf("    roughness_override %f\n", mat->roughness_override);
 	Com_Printf("    metalness_factor %f\n", mat->metalness_factor);
@@ -1612,6 +1709,104 @@ static void material_command_reload(void)
 	           updated, generated);
 }
 
+/* `mat create_instance` - give the surface under the crosshair a material of its
+   own, so it can be tuned without dragging every other use of its texture along
+   with it.
+
+   The identity comes from the geometry, not from the texture: bsp_mesh.c hashes
+   the connected group of BSP faces the crosshair is on, and that hash names a
+   .mat section of its own. See the MATERIAL INSTANCE IDENTITY block there for
+   what "connected group" means and why the hash is stable enough to write into
+   a file by hand.
+
+   THE STUB IS DELIBERATELY EMPTY. A fresh instance is the texture as it would
+   look with no .mat entry at all - which is the point: the usual reason to want
+   one is that a shared override suits one surface and ruins another, so the
+   surface being split off wants to start from neutral, not from the override it
+   is escaping. Anything written under the section header from then on applies to
+   this surface alone. */
+static void material_create_instance(const pbr_material_t* mat)
+{
+	if (!vkpt_refdef.fd)
+		return;
+
+	uint32_t instance_hash = vkpt_refdef.fd->feedback.view_prim_instance_hash;
+
+	if (!instance_hash)
+	{
+		Com_Printf("No static world surface under the crosshair.\n");
+		Com_Printf("Instances are keyed on BSP geometry, so they only apply to the level "
+		           "itself - not to models, brush entities such as doors and platforms, or the sky.\n");
+		return;
+	}
+
+	if (strchr(mat->name, '#'))
+	{
+		Com_Printf("'%s' is already an instance", mat->name);
+		if (mat->source_matfile[0])
+			Com_Printf(", defined in %s line %d", mat->source_matfile, mat->source_line);
+		Com_Printf(".\n");
+		return;
+	}
+
+	char instance_name[MAX_QPATH];
+	MAT_InstanceName(mat->name, instance_hash, instance_name, sizeof(instance_name));
+
+	/* The hash is only meaningful inside one BSP, so the stub belongs in a file
+	   named after the map. materials/*.mat is already scanned wholesale at
+	   startup, so no loader change is needed to pick it up, and FS_MODE_APPEND
+	   writes into the active game directory - rerelease/ or baseq2/ - which is
+	   where the rest of that game's materials live. */
+	char map_base[MAX_QPATH];
+	Q_strlcpy(map_base, current_map_name, sizeof(map_base));
+	{
+		char* slash = strrchr(map_base, '/');
+		if (slash)
+			memmove(map_base, slash + 1, strlen(slash + 1) + 1);
+		char* dot = strrchr(map_base, '.');
+		if (dot)
+			*dot = 0;
+	}
+
+	if (!map_base[0])
+	{
+		Com_Printf("No map is loaded.\n");
+		return;
+	}
+
+	char file_name[MAX_QPATH];
+	Q_snprintf(file_name, sizeof(file_name), "materials/%s.mat", map_base);
+
+	qhandle_t file = 0;
+	int err = FS_OpenFile(file_name, &file, FS_MODE_APPEND);
+
+	if (err < 0 || !file)
+	{
+		Com_WPrintf("Cannot open '%s' for writing: %s\n", file_name, Q_ErrorString(err));
+		return;
+	}
+
+	/* '#' opens a comment only as the first non-whitespace character on a line,
+	   which is also why a name containing '#' parses - see load_material_file. */
+	FS_FPrintf(file, "\n# instance of %s\n", mat->name);
+	FS_FPrintf(file, "# %s, created at (%.0f %.0f %.0f)\n", map_base,
+	           vkpt_refdef.fd->vieworg[0], vkpt_refdef.fd->vieworg[1], vkpt_refdef.fd->vieworg[2]);
+	FS_FPrintf(file, "# Defaults to the texture with no overrides applied.\n");
+	FS_FPrintf(file, "%s:\n", instance_name);
+
+	FS_CloseFile(file);
+
+	Com_Printf("Created %s\n", instance_name);
+	Com_Printf("  stub written to %s\n", file_name);
+	Com_Printf("  the surface now uses the plain texture; add attributes under that "
+	           "section to change it, then 'mat reload'.\n");
+
+	/* Re-read the material files and rebuild the map so the new section takes
+	   effect now. Without the rebuild the faces keep the material index they
+	   were given when the BSP mesh was built, and nothing appears to happen. */
+	material_command_reload();
+}
+
 static void material_command_help(void)
 {
 	Com_Printf("mat command - interface to the material system\n");
@@ -1620,6 +1815,9 @@ static void material_command_help(void)
 	Com_Printf("    help: print this message\n");
 	Com_Printf("    print [name]: print the material at the crosshair, or the named one\n");
 	Com_Printf("    which: tell where the current material is defined\n");
+	Com_Printf("    create_instance: give the surface at the crosshair its own material,\n");
+	Com_Printf("        so it can be tuned without affecting other uses of the same texture.\n");
+	Com_Printf("        Writes an empty section to materials/<map>.mat and reloads.\n");
 	Com_Printf("    reload: re-read all .mat files from disk and rebuild\n");
 	Com_Printf("    save <filename> <options>: save the active materials to a file\n");
 	Com_Printf("        option 'all': save all materials (otherwise only the undefined ones)\n");
@@ -1711,9 +1909,31 @@ static void material_command(void)
 	if (strcmp(key, "print") == 0)
 	{
 		MAT_Print(mat);
+
+		/* The surface's own identity, so two uses of one texture can be told
+		   apart BEFORE committing to splitting them - aim at each in turn and
+		   compare. Nothing to report off the static world, where there is no
+		   geometry hash. */
+		if (vkpt_refdef.fd && vkpt_refdef.fd->feedback.view_prim_instance_hash)
+		{
+			uint32_t instance_hash = vkpt_refdef.fd->feedback.view_prim_instance_hash;
+			char instance_name[MAX_QPATH];
+			MAT_InstanceName(mat->name, instance_hash, instance_name, sizeof(instance_name));
+
+			if (strchr(mat->name, '#'))
+				Com_Printf("    surface: this IS an instance\n");
+			else
+				Com_Printf("    surface: %s ('mat create_instance' to split it off)\n", instance_name);
+		}
 		return;
 	}
 	
+	if (strcmp(key, "create_instance") == 0)
+	{
+		material_create_instance(mat);
+		return;
+	}
+
 	if (strcmp(key, "which") == 0)
 	{
 		Com_Printf("%s: ", mat->name);
@@ -1777,6 +1997,7 @@ static void material_completer(genctx_t* ctx, int argnum)
 		Prompt_AddMatch(ctx, "print");
 		Prompt_AddMatch(ctx, "save");
 		Prompt_AddMatch(ctx, "which");
+		Prompt_AddMatch(ctx, "create_instance");
 
 		for (int i = 0; i < c_NumAttributes; i++)
 			Prompt_AddMatch(ctx, c_Attributes[i].name);
@@ -1789,7 +2010,8 @@ static void material_completer(genctx_t* ctx, int argnum)
 			Prompt_AddMatch(ctx, "all");
 			Prompt_AddMatch(ctx, "force");
 		}
-		else if((strcmp(Cmd_Argv(1), "print") == 0) || (strcmp(Cmd_Argv(1), "which") == 0))
+		else if((strcmp(Cmd_Argv(1), "print") == 0) || (strcmp(Cmd_Argv(1), "which") == 0)
+			|| (strcmp(Cmd_Argv(1), "create_instance") == 0))
 		{
 			// Nothing to complete for these
 		}

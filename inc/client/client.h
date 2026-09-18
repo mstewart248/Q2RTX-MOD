@@ -69,6 +69,8 @@ void CL_UpdateUserinfo(cvar_t *var, from_t from);
 void CL_SendStatusRequest(const netadr_t *address);
 demoInfo_t *CL_GetDemoInfo(const char *path, demoInfo_t *info);
 bool CL_CheatsOK(void);
+// extra factor on the frame time, for the item wheel's bullet time
+float CL_GetTimeScale(void);
 void CL_SetSky(void);
 
 #if USE_CURL

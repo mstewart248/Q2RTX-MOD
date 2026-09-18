@@ -170,18 +170,115 @@ void target_poi_use(edict_t *ent, edict_t *other, edict_t *activator)
 
 /*
 =================
+poi_drop_to_floor
+
+Trace straight down from a navmesh node and return the point just above
+whatever stopped it. Nothing under it inside POI_DROP_MAX (a node over a gap,
+or one the trace starts inside) keeps the node where it was.
+=================
+*/
+static void poi_drop_to_floor(const vec3_t in, vec3_t out)
+{
+    vec3_t  end;
+    trace_t tr;
+
+    VectorCopy(in, end);
+    end[2] -= POI_DROP_MAX;
+
+    tr = gi.trace(in, NULL, NULL, end, NULL, MASK_SOLID);
+
+    if (tr.startsolid || tr.allsolid || tr.fraction == 1.0f) {
+        VectorCopy(in, out);
+        return;
+    }
+
+    VectorCopy(tr.endpos, out);
+    out[2] += 2;    // clear of the surface, so it is not z-fighting the floor
+}
+
+/*
+=================
+poi_build_trail
+
+Breadcrumbs along the route, one every POI_PATH_SPACING units, stopping when
+POI_PATH_MAX of them have been laid.
+
+Deliberately a fixed spacing rather than POI_PATH_MAX points spread over the
+whole route. The rerelease drops a marker every 64 units and gives up once the
+trail is a long way ahead of you, so what you get is a dense line covering the
+next stretch - which is the part you can act on. Spreading the same budget over
+a long level instead put one marker every few hundred units, and that reads as
+scattered dots rather than a path.
+
+Walking the polyline also means the spacing survives corners, and that the
+markers no longer sit only where the mesh happened to put a node.
+
+Returns how many points were written to `out`.
+=================
+*/
+static int poi_build_trail(edict_t *ent, const int *path, int n,
+                           vec3_t out[POI_PATH_MAX])
+{
+    vec3_t  prev, next;
+    float   since = 0;      // distance walked since the last marker was laid
+    int     i, sent = 0;
+
+    if (!Nav_NodeOrigin(path[0], prev))
+        return 0;
+
+    for (i = 1; i < n && sent < POI_PATH_MAX; i++) {
+        vec3_t  dir;
+        float   seg, at;
+
+        if (!Nav_NodeOrigin(path[i], next))
+            continue;
+
+        VectorSubtract(next, prev, dir);
+        seg = VectorNormalize(dir);
+
+        for (at = POI_PATH_SPACING - since; at <= seg; at += POI_PATH_SPACING) {
+            vec3_t  point;
+
+            if (sent >= POI_PATH_MAX)
+                break;
+
+            VectorMA(prev, at, dir, point);
+
+            // A point on the path sits wherever the mesh put the nodes it came
+            // from, which is often well clear of the floor - drawn as-is the
+            // trail looks like markers hanging in mid air. Drop it onto what is
+            // under it so the breadcrumbs lie on the ground you walk on.
+            poi_drop_to_floor(point, out[sent]);
+
+            // and skip what is behind or under the player, which would only ask
+            // them to backtrack over ground they are already standing on
+            if (Distance(out[sent], ent->s.origin) < POI_PATH_MIN_DIST)
+                continue;
+
+            sent++;
+        }
+
+        // carry the remainder into the next leg so the spacing does not reset
+        // at every corner
+        since = seg - (at - POI_PATH_SPACING);
+
+        VectorCopy(next, prev);
+    }
+
+    return sent;
+}
+
+/*
+=================
 Use_Compass
 
 The rerelease compass. target_poi above already tracks where the current
 objective is (level.valid_poi / level.current_poi); this points the player at
-it.
+it, and lays a trail of breadcrumbs along the way.
 
-The rerelease ALSO lays a trail of breadcrumb markers along a navmesh path to
-the objective (svc_help_path + PathRequest in g_items.cpp's Compass_Update).
-**That half is not ported and cannot be without a navigation mesh** - this tree
-has no path system at all, which is the same reason target_poi's "nearest"
-test falls back to straight-line distance. What you get is the objective
-marker itself, which is the part that actually tells you where to go.
+The rerelease's own trail is svc_help_path + PathRequest, in g_items.cpp's
+Compass_Update. We have a navmesh of our own now (g_nav.c), so the trail is
+built from that instead.
 
 Not consumed on use, like the flashlight.
 =================
@@ -201,7 +298,7 @@ void Use_Compass(edict_t *ent, gitem_t *item)
     gi.WriteByte(TE_POI);
     gi.WritePosition(level.current_poi);
     gi.WriteShort(level.current_poi_image);
-    gi.WriteShort(100);     // tenths of a second, so 10 s
+    gi.WriteShort(POI_MARKER_TENTHS);
     gi.unicast(ent, true);
 
     // [Q2RTX] The breadcrumb trail. The rerelease walks a navmesh path to the
@@ -213,35 +310,31 @@ void Use_Compass(edict_t *ent, gitem_t *item)
     // cannot get out of step with the player moving. The path is subsampled to
     // at most POI_PATH_MAX points so a long route still fits in one message.
     //
+    // The run of beeps that went with the drip is worth keeping though, and
+    // the client reproduces it off the back of this packet - see
+    // CL_UpdateCompassBeeps. The one below is the first of them.
+    //
     // No navmesh (or no route) simply means no trail; the objective marker
     // above is unaffected.
     if (Nav_Loaded()) {
         static int  path[512];
-        int         n;
+        vec3_t      pts[POI_PATH_MAX];
+        int         n, sent = 0;
 
         n = Nav_PathToPoint(ent->s.origin, level.current_poi,
                             path, q_countof(path));
-        if (n > 1) {
-            int step = (n + POI_PATH_MAX - 1) / POI_PATH_MAX;
-            int sent = 0, i;
-            vec3_t  pts[POI_PATH_MAX];
+        if (n > 1)
+            sent = poi_build_trail(ent, path, n, pts);
 
-            if (step < 1)
-                step = 1;
+        if (sent > 1) {
+            int i;
 
-            for (i = 0; i < n && sent < POI_PATH_MAX; i += step) {
-                if (Nav_NodeOrigin(path[i], pts[sent]))
-                    sent++;
-            }
-
-            if (sent > 1) {
-                gi.WriteByte(svc_temp_entity);
-                gi.WriteByte(TE_POI_PATH);
-                gi.WriteByte(sent);
-                for (i = 0; i < sent; i++)
-                    gi.WritePosition(pts[i]);
-                gi.unicast(ent, true);
-            }
+            gi.WriteByte(svc_temp_entity);
+            gi.WriteByte(TE_POI_PATH);
+            gi.WriteByte(sent);
+            for (i = 0; i < sent; i++)
+                gi.WritePosition(pts[i]);
+            gi.unicast(ent, true);
         }
     }
 

@@ -1,0 +1,16 @@
+
+# instance of textures/white
+# mguhub, created at (-7 0 -103)
+# Defaults to the texture with no overrides applied.
+textures/white#816d9fc8:
+texture_base materialDev/textures/white.tga
+texture_emissive materialDev/textures/white.tga
+texture_normals materialDev/textures/white_n.tga
+texture_roughness materialDev/textures/white_rough.tga
+metalness_factor 0
+roughness_override 0
+emissive_factor 1.0
+default_radiance 3.0
+volumetric_scale 10.0
+is_light 1
+

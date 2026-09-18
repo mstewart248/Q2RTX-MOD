@@ -277,6 +277,11 @@ typedef struct QVK_s {
 	uint32_t                    wait_for_idle_frames;
 	float                       timestampPeriod;
 	bool                        frame_menu_mode;
+	/* 0..1, how far the item wheel is up. Separate from frame_menu_mode on
+	   purpose: the wheel blurs the world the same way the menu does, but the
+	   world is still being RENDERED behind it, so FSR and frame generation
+	   must keep treating these as ordinary game frames. */
+	float                       frame_ui_blur;
 
 	VkShaderModule              shader_modules[NUM_QVK_SHADER_MODULES];
 
@@ -507,6 +512,22 @@ typedef struct bsp_mesh_s {
 	byte sky_cluster_mask[VIS_MAX_BYTES];
 
 	aabb_t* cluster_aabbs;
+
+	/* MATERIAL INSTANCE IDENTITY, one entry per world primitive.
+
+	   A hash of the CONNECTED GROUP of BSP faces the primitive belongs to -
+	   every face reachable from it across a shared edge that draws with the
+	   same material - taken over the group's quantised vertex positions. It is
+	   what lets one light fixture be tuned separately from another fixture
+	   built out of the same texture: `mat create_instance` reads the hash under
+	   the crosshair and writes a .mat section keyed on it.
+
+	   Derived purely from BSP geometry, so it is stable across runs and across
+	   rebuilds of this renderer - which it has to be, because it ends up
+	   written into a material file by hash. 0 means "no group", which only
+	   happens for primitives that did not come from a BSP face.
+	   See build_face_instance_hashes in bsp_mesh.c. */
+	uint32_t *prim_instance_hash;
 } bsp_mesh_t;
 
 void bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name);
@@ -842,7 +863,7 @@ VkResult vkpt_bloom_destroy(void);
 VkResult vkpt_bloom_create_pipelines(void);
 VkResult vkpt_bloom_destroy_pipelines(void);
 void vkpt_bloom_reset(void);
-void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode);
+void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode, float ui_blur);
 VkResult vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf);
 
 /* Screen-space motion blur - see motion_blur.c and shader/motion_blur.comp. */

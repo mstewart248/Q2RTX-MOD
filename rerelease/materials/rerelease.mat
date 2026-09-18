@@ -1033,6 +1033,7 @@ textures/dark_1/0text_41:
 	texture_normals materialDev/textures/dark_1/0text_41_n.tga
 	texture_roughness materialDev/textures/dark_1/0text_41_rough.tga
 	texture_metallic materialDev/textures/dark_1/0text_41_metallic.tga
+	
 textures/dark_1/0text_42:
 	texture_base materialDev/textures/dark_1/0text_42.tga
 	texture_normals materialDev/textures/dark_1/0text_42_n.tga
@@ -20596,8 +20597,9 @@ textures/tomf/tf_runemet1:
 textures/tomf/tf_runemet1b:
 	texture_base materialDev/textures/tomf/tf_runemet1b.tga
 	texture_normals materialDev/textures/tomf/tf_runemet1b_n.tga
-	metalness_factor 0
-
+	texture_metallic materialDev/textures/tomf/tf_runemet1b_metallic.tga
+	texture_roughness materialDev/textures/tomf/tf_runemet1b_rough.tga
+	
 textures/tomf/tf_runemet2:
 	texture_base materialDev/textures/tomf/tf_runemet2.tga
 	texture_normals materialDev/textures/tomf/tf_runemet2_n.tga
@@ -24619,6 +24621,7 @@ textures/white:
  	texture_normals materialDev/textures/white_n.tga
  	texture_emissive materialDev/textures/white_light.tga
  	emissive_factor 3.0
+	default_radiance 5.0
  	metalness_factor 0
 	is_light 1
 
