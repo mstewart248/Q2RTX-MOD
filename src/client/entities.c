@@ -1580,7 +1580,16 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
        and it does not matter whether CL_AddExplosions runs before or after the
        view weapon. It is also why this is not an explosion any more: the view
        flash is the one effect whose position is not a fact about the world. */
-    if (!cl_view_flash_time ||
+    /* cl.time restarts at zero on every map change, demo start and reconnect
+       (CL_ClearState), but this stamp is a file static that survives all of
+       them. A flash still pending when that happens left cl.time - stamp
+       deeply NEGATIVE, which is less than any window, so the flash never went
+       stale and sat welded to the barrel from the moment you spawned until
+       cl.time climbed back past where the old session had got to.
+
+       Time running backwards means the stamp belongs to a world that no longer
+       exists, so treat it as stale rather than as "not expired yet". */
+    if (!cl_view_flash_time || cl.time < cl_view_flash_time ||
         cl.time - cl_view_flash_time >= Cvar_ClampValue(cl_muzzleflash_time, 10, 200)) {
         cl_view_flash_time = 0;
         return;

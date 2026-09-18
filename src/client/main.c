@@ -1801,6 +1801,22 @@ static void CL_Precache_f(void)
         CL_PrepRefresh();
         CL_LoadState(LOAD_SOUNDS);
         CL_RegisterSounds();
+
+        /* Everything below is read out of the MAP and the map's own config, not
+           out of the connection, so a demo needs it exactly as much as a live
+           game does - CL_Begin does all four and says in its header that it is
+           "not used for demos", which is how they came to be missing here.
+           Without CL_LoadMapFog the worldspawn fog keys are never parsed,
+           cl_mapfog.valid stays false, and CL_GetMapFog refuses every frame:
+           levels that are meant to be full of fog play back perfectly clear.
+           The light loaders were missing for the same reason, and the dynamic
+           lights have to exist before the light editor resolves its own by
+           origin against them. */
+        LOC_LoadLocations();
+        CL_LoadDynamicLights();
+        LE_LoadLights();
+        CL_LoadMapFog();
+
         CL_LoadState(LOAD_NONE);
         cls.state = ca_precached;
         return;
