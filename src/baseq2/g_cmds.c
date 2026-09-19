@@ -481,6 +481,80 @@ void Cmd_FireTarget_f(edict_t *ent)
 
 /*
 =================
+Cmd_WhatIsIt_f
+
+whatisit [radius] - names the entity you are looking at, and prints the three
+fields that decide how it is DRAWN and how it FIGHTS: s.modelindex, s.skinnum
+and style.
+
+Why those three. A monster's appearance and its weapon come from different
+places, and when they disagree a screenshot cannot tell you which half is
+wrong. The soldier family is the worst case: models/monsters/soldier and
+models/monsters/soldierh are the same 434 triangles with different artwork, the
+six skins of each sit at the same indices, and soldier_fire picks the weapon
+from style + skinnum rather than from the model. So "a light soldier firing a
+lasergun beam" has three unrelated explanations - the wrong model, the wrong
+skin index, or a stale style - and this says which in one line.
+
+Aim-assisted like the player's own auto-aim: a straight trace first, then the
+nearest monster within a cone, so a monster that is slightly off-crosshair
+still answers. Cheat gated exactly like spawnmonster.
+=================
+*/
+void Cmd_WhatIsIt_f(edict_t *ent)
+{
+    vec3_t      forward, start, end, dir;
+    trace_t     tr;
+    edict_t     *t, *best = NULL;
+    float       radius, bestdot = 0.90f;
+
+    if ((deathmatch->value || coop->value) && !sv_cheats->value) {
+        gi.cprintf(ent, PRINT_HIGH, "You must run the server with '+set cheats 1' to enable this command.\n");
+        return;
+    }
+
+    radius = (gi.argc() > 1) ? atof(gi.argv(1)) : 2048.0f;
+    if (radius <= 0)
+        radius = 2048.0f;
+
+    AngleVectors(ent->client->v_angle, forward, NULL, NULL);
+    VectorCopy(ent->s.origin, start);
+    start[2] += ent->viewheight;
+    VectorMA(start, radius, forward, end);
+
+    tr = gi.trace(start, NULL, NULL, end, ent, MASK_SHOT);
+    if (tr.ent && tr.ent->inuse && tr.ent != world)
+        best = tr.ent;
+
+    // nothing under the crosshair - take the monster closest to the aim
+    if (!best) {
+        t = NULL;
+        while ((t = findradius(t, ent->s.origin, radius))) {
+            if (!(t->svflags & SVF_MONSTER) || !t->inuse)
+                continue;
+            VectorSubtract(t->s.origin, start, dir);
+            VectorNormalize(dir);
+            if (DotProduct(dir, forward) > bestdot) {
+                bestdot = DotProduct(dir, forward);
+                best = t;
+            }
+        }
+    }
+
+    if (!best) {
+        gi.cprintf(ent, PRINT_HIGH, "whatisit: nothing within %.0f units\n", radius);
+        return;
+    }
+
+    gi.cprintf(ent, PRINT_HIGH,
+               "%s #%d: modelindex %d, skinnum %d, style %d, health %d/%d, spawnflags %d\n",
+               best->classname ? best->classname : "(no classname)",
+               (int)(best - g_edicts), best->s.modelindex, best->s.skinnum,
+               best->style, best->health, best->max_health, best->spawnflags);
+}
+
+/*
+=================
 Cmd_KillMonsters_f
 
 killmonsters [radius] - kills every live monster within radius (default 1024) by
@@ -1227,6 +1301,8 @@ void ClientCommand(edict_t *ent)
         Cmd_SpawnMonster_f(ent);
     else if (Q_stricmp(cmd, "firetarget") == 0)
         Cmd_FireTarget_f(ent);
+    else if (Q_stricmp(cmd, "whatisit") == 0)
+        Cmd_WhatIsIt_f(ent);
     else if (Q_stricmp(cmd, "killmonsters") == 0)
         Cmd_KillMonsters_f(ent);
     else if (Q_stricmp(cmd, "nav") == 0)

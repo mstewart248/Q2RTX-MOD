@@ -1266,6 +1266,89 @@ static bool MD5_LoneSkinInDir(const char *base_path, char *buffer, size_t size)
 
 /*
 =================
+MD5_AppendMergedSkins
+
+Skins the rerelease added to a model's list that the classic .md2 cannot name,
+because the classic .md2 is the only one we can read.
+
+models/monsters/soldier is the case, and it is a real defect rather than a
+cosmetic one. Xatrix shipped its three soldier variants as a SEPARATE model,
+models/monsters/soldierh - a pure reskin of the stock soldier, same 434
+triangles - and the remaster MERGED them: its soldier/tris.md2 lists TWELVE
+skins (the classic six, then sold01, sold01_p, sold02, sold02_p, sold03,
+sold03_p) and its game code spawns the ripper, hypergun and lasergun soldiers
+as skinnum 6, 8 and 10 on the one model.
+
+This fork's game code goes the other way and keeps the two models apart - see
+SP_monster_soldier_h in m_soldier.c - which is fine while WE are the server.
+A rerelease DEMO is not: it replays the remaster's own entity states, so it
+sends modelindex = soldier with skinnum 8. Nothing has six-to-eleven, so
+get_mesh_material (main.c) fell back to materials[0], and every Xatrix soldier
+in every shipped demo played back wearing skin_lt - the LIGHT soldier's
+artwork, blue blaster and all.
+
+The artwork is not missing. The remaster ships sold01..sold03_p right there in
+the model's own md5/ directory. Only the LIST is short, because the only
+models/monsters/soldier/tris.md2 on the search path is the 1997 one out of
+baseq2/pak0.pak - the remaster ships no loose copy of its own twelve-skin file
+for us to read.
+
+So the extra names are written out, in the remaster's order, exactly as
+MD5_HeldWeaponSkin above writes out the held-weapon skins: there is no rule
+that derives them. (classic_skins) is what the 1997 list is expected to hold,
+and a list of any other length is left alone - so if a twelve-skin .md2 ever
+does turn up on the path, it wins and nothing is appended twice.
+=================
+*/
+static int MD5_AppendMergedSkins(const char *base_path, maliasmesh_t *mesh, int numskins)
+{
+	static const struct {
+		const char *md5_dir;        // the model's own md5/ directory
+		int         classic_skins;  // how many names the 1997 .md2 carries
+		const char *inherit_dir;    // where these skins' classic materials live
+		const char *stems[6];
+	} merged[] = {
+		{ "models/monsters/soldier/md5", 6, "models/monsters/soldierh",
+		  { "sold01", "sold01_p", "sold02", "sold02_p", "sold03", "sold03_p" } },
+	};
+
+	for (int i = 0; i < q_countof(merged); i++) {
+		if (Q_stricmp(base_path, merged[i].md5_dir))
+			continue;
+		if (numskins != merged[i].classic_skins)
+			break;
+
+		for (int j = 0; j < q_countof(merged[i].stems); j++) {
+			char probe[MAX_QPATH];
+			char inherit[MAX_QPATH];
+
+			if (numskins >= MAX_ALIAS_SKINS)
+				break;
+
+			Q_snprintf(probe, sizeof(probe), "%s/%s", base_path, merged[i].stems[j]);
+			if (!MD5_SkinExists(probe))
+				break;      // an incomplete set is not worth guessing through
+
+			Q_snprintf(inherit, sizeof(inherit), "%s.png", probe);
+			mesh->materials[numskins] = MAT_Find(inherit, IT_SKIN, IF_NONE);
+
+			// Same reason as the .md2's own skins below: take the classic
+			// material's tuning, which lives under the soldierh path these
+			// skins came from.
+			Q_snprintf(inherit, sizeof(inherit), "%s/%s.pcx",
+			           merged[i].inherit_dir, merged[i].stems[j]);
+			MAT_InheritScalars(mesh->materials[numskins], inherit);
+
+			numskins++;
+		}
+		break;
+	}
+
+	return numskins;
+}
+
+/*
+=================
 MD5_LoadSkinsFromMD2
 
 Reads the classic model's skin list so that skinnum keeps selecting the same
@@ -1334,6 +1417,10 @@ static int MD5_LoadSkinsFromMD2(const char *mod_name, const char *base_path, mal
 
 		numskins++;
 	}
+
+	// ...and the ones the remaster added to this model that the 1997 list
+	// cannot name. Only reached when the .md2 above actually read.
+	numskins = MD5_AppendMergedSkins(base_path, mesh, numskins);
 
 done:
 	FS_FreeFile(rawdata);

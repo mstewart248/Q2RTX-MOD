@@ -2051,6 +2051,104 @@ bool CL_CheckForIgnore(const char *s)
     return false;
 }
 
+/*
+=================
+CL_WhatIsIt_f
+
+whatisit [substring] - names what you are looking at, out of the CLIENT's copy
+of the entity: the model it was actually given (by name, from the configstring
+table), its skin index, frame, effects and renderfx.
+
+WHY THIS IS A CLIENT COMMAND. The game library has a "whatisit" of its own that
+knows the classname and the spawn fields, and it is the better answer when a
+game is running - so this one forwards to it as well. But a demo has no game
+library and no server, so during playback that one answers nothing at all, and
+a demo is exactly where a wrong-looking monster tends to be caught.
+
+What the client has is the pair that decides what you SEE: modelindex and
+skinnum. Two models that are reskins of each other are indistinguishable in a
+screenshot and obvious here - models/monsters/soldier and .../soldierh have the
+same 434 triangles and the same six skin slots, so "which of the two is this"
+cannot be answered by looking at it, only by reading the name back.
+
+It aims with cl.refdef rather than the player's view angles, and the free
+camera writes its position and angles into cl.refdef before the frame is drawn
+(vkpt/freecam.c), so this follows the free camera: pause the demo, fly up to
+the thing and ask.
+
+With a substring it skips aiming and lists every entity in the frame whose
+model name contains it, which is the practical way to catch something that is
+only on screen for a moment.
+=================
+*/
+static void CL_WhatIsIt_f(void)
+{
+    const char *filter = Cmd_Argc() > 1 ? Cmd_Argv(1) : NULL;
+    const entity_state_t *best = NULL;
+    float bestdot = 0.94f, bestdist = 0;
+    vec3_t forward;
+    int count = 0;
+
+    if (cls.state != ca_active) {
+        Com_Printf("Must be in a level.\n");
+        return;
+    }
+
+    AngleVectors(cl.refdef.viewangles, forward, NULL, NULL);
+
+    for (int i = 0; i < cl.frame.numEntities; i++) {
+        const entity_state_t *s =
+            &cl.entityStates[(cl.frame.firstEntity + i) & PARSE_ENTITIES_MASK];
+        const char *model = s->modelindex ? cl.configstrings[CS_MODELS + s->modelindex] : "";
+        vec3_t dir;
+        float dist, dot;
+
+        VectorSubtract(s->origin, cl.refdef.vieworg, dir);
+        dist = VectorNormalize(dir);
+        dot = DotProduct(dir, forward);
+
+        // A monster's origin is between its feet, so aiming at the body misses
+        // it by a few degrees at close range. Score the chest as well.
+        dir[2] += 24.0f / max(dist, 1.0f);
+        VectorNormalize(dir);
+        dot = max(dot, DotProduct(dir, forward));
+
+        if (filter) {
+            if (!*model || !Q_stristr(model, filter))
+                continue;
+            Com_Printf("#%d %s skin %d frame %d fx %#x rfx %#x  %.0f units%s\n",
+                       s->number, model, s->skinnum, s->frame, s->effects,
+                       s->renderfx, dist, dot > 0 ? "" : " (behind you)");
+            count++;
+            continue;
+        }
+
+        if (dot > bestdot) {
+            bestdot = dot;
+            bestdist = dist;
+            best = s;
+        }
+    }
+
+    if (filter) {
+        Com_Printf("%d entit%s matching \"%s\"\n", count, count == 1 ? "y" : "ies", filter);
+    } else if (best) {
+        Com_Printf("#%d %s skin %d frame %d fx %#x rfx %#x  %.0f units\n",
+                   best->number,
+                   best->modelindex ? cl.configstrings[CS_MODELS + best->modelindex]
+                                    : "(no model)",
+                   best->skinnum, best->frame, best->effects, best->renderfx, bestdist);
+    } else {
+        Com_Printf("Nothing under the crosshair. "
+                   "Try \"whatisit <part of a model name>\" to list what is in the frame.\n");
+    }
+
+    // The game library's version knows the classname, the style and the health,
+    // which is the other half of the answer whenever there is a game to ask.
+    if (!cls.demo.playback)
+        CL_ForwardToServer();
+}
+
 static void CL_DumpClients_f(void)
 {
     int i;
@@ -2726,6 +2824,7 @@ static const cmdreg_t c_client[] = {
     { "ignorenick", CL_IgnoreNick_f, CL_IgnoreNick_c },
     { "unignorenick", CL_UnIgnoreNick_f, CL_UnIgnoreNick_c },
     { "muzzleoffset", CL_MuzzleOffset_f },
+    { "whatisit", CL_WhatIsIt_f },
     { "dumpclients", CL_DumpClients_f },
     { "dumpstatusbar", CL_DumpStatusbar_f },
     { "dumplayout", CL_DumpLayout_f },
