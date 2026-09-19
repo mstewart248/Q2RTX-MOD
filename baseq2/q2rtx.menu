@@ -411,6 +411,19 @@ begin effects
     blank
     ifeq vid_rtx 1
         toggle --status "(cl_md5_models)" "md5 models" cl_md5_models
+        // SMOOTH MODEL NORMALS. The path tracer has always interpolated vertex
+        // normals across a triangle; what it could not do was interpolate an
+        // .md2's, because that format stores one BYTE per vertex - an index into
+        // a 162-direction table - so neighbouring vertices on a curved surface
+        // land on the same entry and there is nothing between them to blend.
+        // See smooth_model_normals() in vkpt/models.c. Both cvars are CVAR_FILES,
+        // like cl_md5_models above, so changing one reloads the models at once.
+        toggle --status "rebuilds model vertex normals from the geometry when a model loads, so curved surfaces read as curved instead of faceted. An .md2 stores each normal as one byte picked from 162 directions about 16 degrees apart, which is where the facets come from; off is the classic look. Hard edges are kept - see the crease angle below (pt_model_smooth_normals)" \
+            "smooth model normals" pt_model_smooth_normals
+        ifneq pt_model_smooth_normals 0
+        range --status "how far a triangle may lean away from the normal the model file stored at a corner before it counts as a different surface and is left out of that corner's average. LOW keeps more hard edges and smooths less; HIGH rounds everything off. 60 smooths a gun barrel while leaving the edge where it meets the receiver (pt_model_smooth_angle)" \
+            -f "%.0f deg" "smoothing crease angle" pt_model_smooth_angle 10 120 5
+        endif
         toggle --status "(cl_classic_railgun)" "classic railgun" cl_classic_railgun
         blank
     endif
@@ -495,8 +508,8 @@ begin blood_droplets
     pairs --status "force every droplet to one colour. \"as the game sends it\" leaves red blood red and the few green-blood effects green. Each droplet still gets its own light or dark shade, so a burst does not read as sixty copies of one object. Affects blood in the air as well as on the ground - the darkness settings further down apply to landed blood only (cl_blood_color)" \
         "blood colour" cl_blood_color "as the game sends it" 0 "red" 1 "green" 2 "blue" 3 "yellow" 4 "purple" 5 "black - oil" 6
     blank
-    pairs --status "triangles per droplet up close, as airborne bead / landed puddle. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading - and for a splat the outline is the RIM of a disc, which is why a puddle gets the larger share (pt_blood_tess)" \
-        "droplet detail" pt_blood_tess "low - 20 / 64 triangles" 0 "medium - 80 / 128" 1 "high - 320 / 320" 2
+    pairs --status "triangles per droplet up close, as airborne bead / landed puddle. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading - and for a splat the outline is the RIM of a disc, which is why a puddle gets the larger share. ULTRA is for close-up work only: it quadruples the memory every droplet slot reserves whether or not anything is near enough to use it (pt_blood_tess)" \
+        "droplet detail" pt_blood_tess "low - 20 / 64 triangles" 0 "medium - 80 / 128" 1 "high - 320 / 320" 2 "ultra - 1280 / 1280" 3
     range --status "a droplet of the standard size closer than this gets the full detail above. The level is picked from how much SCREEN a mark covers, not from distance alone, so a pool that has merged twenty droplets holds its detail twenty times further away and a small one drops a level sooner. Every expense scales with triangle count, so this is the knob that keeps a faceful of blood affordable (pt_blood_lod_near)" \
         "full detail within" pt_blood_lod_near 32 1024 32
     range --status "a droplet of the standard size past this distance drops to the lowest detail, where its outline is a couple of pixels anyway. Scaled by size like the setting above (pt_blood_lod_far)" \

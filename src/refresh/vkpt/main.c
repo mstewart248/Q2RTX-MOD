@@ -7763,6 +7763,15 @@ R_Init_RTX(bool total)
 	extern SDL_Window *sdl_window;
 	qvk.window = sdl_window;
 
+	/* Reconstructs .md2 vertex normals from the geometry at load time, so the
+	   path tracer's barycentric interpolation has something to interpolate -
+	   see smooth_quantized_model_normals in models.c for why the file itself
+	   cannot supply it. Registered here so both can be typed and completed
+	   before any model has been loaded; the loader fetches them again.
+	   CVAR_FILES because the normals are baked into the vertex buffer, so a
+	   change only lands when the models are reloaded - that flag does it. */
+	Cvar_Get("pt_model_smooth_normals", "1", CVAR_ARCHIVE | CVAR_FILES);
+	Cvar_Get("pt_model_smooth_angle", "60", CVAR_ARCHIVE | CVAR_FILES);
 	cvar_profiler = Cvar_Get("profiler", "0", 0);
 	cvar_profiler_samples = Cvar_Get("profiler_samples", "60", CVAR_ARCHIVE);
 	cvar_profiler_scale = Cvar_Get("profiler_scale", "1", CVAR_ARCHIVE);

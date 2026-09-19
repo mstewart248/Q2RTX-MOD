@@ -1152,7 +1152,9 @@ static void CL_AddPacketEntities(void)
                 CL_IonripperTrail(cent->lerp_origin, ent.origin);
                 V_AddLight(ent.origin, 100, 1, 0.5f, 0.5f);
             } else if (effects & EF_BLUEHYPERBLASTER) {
-                V_AddLight(ent.origin, 200, 0, 0, 1);
+                // See BLUEBLASTER_LIGHT_R in client.h - this was (0, 0, 1).
+                V_AddLight(ent.origin, 200, BLUEBLASTER_LIGHT_R,
+                           BLUEBLASTER_LIGHT_G, BLUEBLASTER_LIGHT_B);
             } else if (effects & EF_PLASMA) {
                 if (effects & EF_ANIM_ALLFAST) {
                     CL_BlasterTrail(cent->lerp_origin, ent.origin);

@@ -66,7 +66,7 @@ the first thing to look at if these ever start smearing.
 #include <assert.h>
 
 // Triangles per droplet, as an icosahedron subdivided pt_blood_tess times:
-// 0 -> 20 faces, 1 -> 80, 2 -> 320.
+// 0 -> 20 faces, 1 -> 80, 2 -> 320, 3 -> 1280.
 //
 // The vertex normals are already smooth - on a unit sphere the normal IS the
 // position, and primary_rays.rgen interpolates them across the triangle - so
@@ -75,12 +75,27 @@ the first thing to look at if these ever start smearing.
 // icosahedron has a visibly polygonal outline once a droplet covers more than a
 // few pixels. Hence 80 by default, with 320 available for close work.
 //
+// LEVEL 3 EXISTS FOR ONE CASE: A DROPLET LARGE IN FRAME.
+//
+// It is not a general quality step and it is not the default. Subdivision
+// is inherently x4, so level 3 is 1280 faces, and the slot stride - which
+// is what every buffer here is sized from - goes up by the same factor
+// whether or not any droplet is actually close enough to use it. At the
+// default cl_blood_max 512 that is about 102 MB per section, the figure
+// the upload note near the bottom of this file quotes for 2048 slots at
+// level 2. Raise cl_blood_max as well and it scales from there.
+//
+// Note also that pt_blood_lod_air (default 1) biases a droplet still in
+// FLIGHT down one level, so at pt_blood_tess 3 the spray draws at 320 and
+// only landed splats reach 1280. If it is the airborne beads that read as
+// polygonal up close, pt_blood_lod_air 0 is the cheaper knob to try first.
+//
 // It is also the cost knob. Every per-frame expense scales linearly with it -
 // the CPU generation loop, the host copy, and the dynamic BLAS rebuild, which
 // happens every frame because the droplets move. The staging buffers are sized
 // for MAX_BLOOD_SPHERES at the CURRENT tessellation and reallocated when it
 // changes, so picking 320 costs memory only while it is selected.
-#define BLOOD_SPHERE_MAX_SUBDIV 2
+#define BLOOD_SPHERE_MAX_SUBDIV 3
 #define BLOOD_SPHERE_MAX_FACES  (20 << (2 * BLOOD_SPHERE_MAX_SUBDIV))
 #define BLOOD_SPHERE_FACES(subdiv) (20 << (2 * (subdiv)))
 
@@ -132,19 +147,25 @@ Level 1 now also carries all four wobble harmonics (they gate at 32 segments),
 so an LOD step between 1 and 2 resolves the SAME outline more finely instead of
 drawing a differently shaped one. Level 0 still drops the highest harmonic, but
 nothing reaches level 0 until it is small on screen.
-*/
-#define BLOOD_PUDDLE_MAX_FACES (16*2*2 + 32*2*2 + 80*2*2)
 
-static const int puddle_segments[BLOOD_SPHERE_MAX_SUBDIV + 1] = { 16, 32, 80 };
-static const int puddle_rings[BLOOD_SPHERE_MAX_SUBDIV + 1]    = {  2,  2,  2 };
+Level 3 keeps the same rule and the same 2 rings: the sphere is 1280 faces
+there, so 320 segments spends exactly that budget on the rim and the puddle
+still costs nothing beyond the stride the sphere already sets. Every wobble
+harmonic is in by 64 segments, so level 3 resolves the outline level 2 draws
+rather than a differently shaped one - the same property the 1-to-2 step has.
+*/
+#define BLOOD_PUDDLE_MAX_FACES (16*2*2 + 32*2*2 + 80*2*2 + 320*2*2)
+
+static const int puddle_segments[BLOOD_SPHERE_MAX_SUBDIV + 1] = { 16, 32, 80, 320 };
+static const int puddle_rings[BLOOD_SPHERE_MAX_SUBDIV + 1]    = {  2,  2,  2,   2 };
 
 #define BLOOD_PUDDLE_FACES(level) (puddle_segments[level] * 2 * puddle_rings[level])
 
-// All three LOD levels, laid end to end: level 0 at [0,20), level 1 at [20,100),
-// level 2 at [100,420). Built once - the whole set is 420 faces, so there is no
-// reason to rebuild when the tessellation changes, and holding all of them is
-// what lets the level be picked PER DROPLET.
-#define BLOOD_TEMPLATE_TOTAL (20 + 80 + 320)
+// All four LOD levels, laid end to end: level 0 at [0,20), level 1 at [20,100),
+// level 2 at [100,420), level 3 at [420,1700). Built once - the whole set is
+// 1700 faces, so there is no reason to rebuild when the tessellation changes,
+// and holding all of them is what lets the level be picked PER DROPLET.
+#define BLOOD_TEMPLATE_TOTAL (20 + 80 + 320 + 1280)
 
 static blood_face_t   sphere_template[BLOOD_TEMPLATE_TOTAL];
 static uint32_t       sphere_normals[BLOOD_TEMPLATE_TOTAL][3];    // encode_normal of the above

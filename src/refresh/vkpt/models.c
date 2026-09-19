@@ -165,6 +165,215 @@ static void extract_model_lights(model_t* model)
 	}
 }
 
+/*
+PHONG SHADING FOR ALIAS MODELS - RECONSTRUCTING THE VERTEX NORMALS.
+
+The path tracer already interpolates vertex normals barycentrically at every
+hit (primary_rays.rgen, indirect_lighting.rgen and reflect_refract.rgen all do
+normalize(triangle.normals * bary)), so smooth shading is not something the
+renderer lacks - it is something the model files do not always feed it.
+
+.MD2 is the reason this exists.  It does not store a normal; it stores ONE
+BYTE per vertex per frame, an index into the 162-entry `bytedirs` table (see
+NUMVERTEXNORMALS in inc/common/math.h).  162 directions over a sphere is an
+average spacing of about 16 degrees, so every vertex across a gently curved
+surface - a head, a shoulder, a barrel - snaps to the SAME table entry as its
+neighbours.  The interpolation then has nothing to interpolate: the normal is
+constant over a patch of triangles and steps 16 degrees at the patch border.
+That is the faceted look, and it is why turning this off restores it exactly.
+The other formats are milder cases of the same thing: .md3 quantises to a
+lat/long byte pair, and .md5 has no normals at all so model_md5.c derives them
+from the bind pose without any weighting.
+
+So this pass does not add an interpolation scheme; it reconstructs the normal
+each vertex was rounded from, as the usual angle-weighted average of the
+adjacent face normals.  Three details make it safe on 1997 content:
+
+  - VERTICES ARE WELDED BY POSITION, not by index.  Every one of these loaders
+    splits a vertex where two triangles give it different texture coordinates,
+    so a UV seam running over the top of a head arrives here as two coincident
+    vertices.  Averaging per index would leave a lit seam along every one of
+    them.  The split copies are bit-identical in position, so an exact-bit hash
+    welds them and nothing else.  (model_md5.c already does this for its own
+    derived normals - see MD5_WeldSeamNormals - which is where the problem was
+    first found, on the rerelease soldier's helmet.)
+
+  - THE FACE NORMAL'S SIGN IS DERIVED, NOT ASSUMED.  MOD_LoadMD2_RTX reverses
+    its index order after building the mesh, the .md3 path does not, and the
+    IQM path reverses during conversion, so cross(e0, e1) does not point the
+    same way for all of them.  Taking the sign from the authored normals of the
+    corners makes this independent of the loader.
+
+  - THE AUTHORED NORMAL IS A SMOOTHING GROUP HINT, and it is respected.  A face
+    whose normal is more than pt_model_smooth_angle away from the normal stored
+    at that corner belongs to a different surface and is left out of the
+    average, and if the reconstruction ends up outside that cone anyway the
+    authored normal is kept.  Hard edges - a gun's barrel meeting its receiver,
+    the corners of a crate - survive.  This also gives the right answer for the
+    models whose normals are all the same byte (the players/w_*.md2 held
+    weapons), where MOD_LoadMD2_RTX substitutes flat face normals: the hint is
+    then the face normal itself and the cone test becomes the classic crease
+    angle.
+
+The work is per frame because .md2 and .md3 quantise each frame's positions
+independently, so a pose's normals have to come from that pose's geometry.
+Skinned models (.md5, .iqm) carry one bind pose here and numframes is 1; the
+shader transforms the result by the bone matrices as it always did.
+*/
+static inline uint32_t hash_vertex_position(const vec3_t p)
+{
+	uint32_t bits[3];
+	memcpy(bits, p, sizeof(bits));
+
+	// Zero and negative zero compare equal as floats but not as bits, and a
+	// .md2's frame translation happily produces both.
+	for (int i = 0; i < 3; i++)
+		if (bits[i] == 0x80000000u)
+			bits[i] = 0;
+
+	return bits[0] * 73856093u ^ bits[1] * 19349663u ^ bits[2] * 83492791u;
+}
+
+static void smooth_model_normals(model_t* model)
+{
+	// Read here rather than cached, because the normals are baked into the
+	// vertex buffer and so a change can only be applied by reloading the
+	// models.  CVAR_FILES is what makes that happen by itself - it is the
+	// same flag cl_md5_models uses to swap the .md2s for .md5s live.
+	if (!Cvar_Get("pt_model_smooth_normals", "1", CVAR_ARCHIVE | CVAR_FILES)->integer)
+		return;
+
+	const float crease_degrees = Cvar_Get("pt_model_smooth_angle", "60", CVAR_ARCHIVE | CVAR_FILES)->value;
+	const float min_cos = cosf((float)DEG2RAD(max(1.f, min(179.f, crease_degrees))));
+
+	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
+	{
+		maliasmesh_t* mesh = model->meshes + mesh_idx;
+
+		if (!mesh->positions || !mesh->normals || !mesh->indices)
+			continue;
+		if (mesh->numverts <= 0 || mesh->numtris <= 0)
+			continue;
+
+		size_t table_size = 16;
+		while (table_size < (size_t)mesh->numverts * 2)
+			table_size *= 2;
+
+		int* table = malloc(table_size * sizeof(int));
+		int* chain = malloc(mesh->numverts * sizeof(int));
+		int* weld  = malloc(mesh->numverts * sizeof(int));
+		vec3_t* accum = malloc(mesh->numverts * sizeof(vec3_t));
+
+		if (!table || !chain || !weld || !accum)
+		{
+			free(table); free(chain); free(weld); free(accum);
+			return;
+		}
+
+		for (int frame = 0; frame < model->numframes; frame++)
+		{
+			vec3_t* positions = mesh->positions + (size_t)frame * mesh->numverts;
+			vec3_t* normals   = mesh->normals   + (size_t)frame * mesh->numverts;
+
+			for (size_t i = 0; i < table_size; i++)
+				table[i] = -1;
+
+			memset(accum, 0, mesh->numverts * sizeof(vec3_t));
+
+			// Weld the UV-seam duplicates back together for shading purposes only.
+			for (int v = 0; v < mesh->numverts; v++)
+			{
+				uint32_t bucket = hash_vertex_position(positions[v]) & (uint32_t)(table_size - 1);
+				int rep = v;
+
+				for (int j = table[bucket]; j >= 0; j = chain[j])
+				{
+					if (positions[j][0] == positions[v][0] &&
+						positions[j][1] == positions[v][1] &&
+						positions[j][2] == positions[v][2])
+					{
+						rep = weld[j];
+						break;
+					}
+				}
+
+				chain[v] = table[bucket];
+				table[bucket] = v;
+				weld[v] = rep;
+			}
+
+			for (int tri = 0; tri < mesh->numtris; tri++)
+			{
+				const int idx[3] = {
+					mesh->indices[tri * 3 + 0],
+					mesh->indices[tri * 3 + 1],
+					mesh->indices[tri * 3 + 2] };
+
+				if (idx[0] < 0 || idx[0] >= mesh->numverts ||
+					idx[1] < 0 || idx[1] >= mesh->numverts ||
+					idx[2] < 0 || idx[2] >= mesh->numverts)
+					continue;
+
+				vec3_t e0, e1, face;
+				VectorSubtract(positions[idx[1]], positions[idx[0]], e0);
+				VectorSubtract(positions[idx[2]], positions[idx[0]], e1);
+				CrossProduct(e0, e1, face);
+
+				if (VectorNormalize(face) == 0.f)
+					continue; // degenerate, as the tangent pass also skips
+
+				float authored = DotProduct(face, normals[idx[0]])
+				               + DotProduct(face, normals[idx[1]])
+				               + DotProduct(face, normals[idx[2]]);
+
+				if (authored < 0.f)
+					VectorInverse(face);
+
+				for (int c = 0; c < 3; c++)
+				{
+					int iv = idx[c];
+
+					// Outside this corner's smoothing group - a hard edge.
+					if (DotProduct(face, normals[iv]) < min_cos)
+						continue;
+
+					vec3_t a, b;
+					VectorSubtract(positions[idx[(c + 1) % 3]], positions[iv], a);
+					VectorSubtract(positions[idx[(c + 2) % 3]], positions[iv], b);
+
+					if (VectorNormalize(a) == 0.f || VectorNormalize(b) == 0.f)
+						continue;
+
+					// Weight by the corner angle, so a fan of slivers does not
+					// outvote the one large triangle that shares the vertex.
+					float angle = acosf(max(-1.f, min(1.f, (float)DotProduct(a, b))));
+
+					VectorMA(accum[weld[iv]], angle, face, accum[weld[iv]]);
+				}
+			}
+
+			for (int v = 0; v < mesh->numverts; v++)
+			{
+				vec3_t n;
+				VectorCopy(accum[weld[v]], n);
+
+				if (VectorNormalize(n) == 0.f)
+					continue; // nothing accumulated - keep what the file said
+
+				if (DotProduct(n, normals[v]) < min_cos)
+					continue; // the reconstruction disagrees with the file; trust the file
+
+				VectorCopy(n, normals[v]);
+			}
+		}
+
+		free(table);
+		free(chain);
+		free(weld);
+		free(accum);
+	}
+}
+
 static void compute_missing_model_tangents(model_t* model)
 {
 	for (int mesh_idx = 0; mesh_idx < model->nummeshes; mesh_idx++)
@@ -523,6 +732,8 @@ int MOD_LoadMD2_RTX(model_t *model, const void *rawdata, size_t length, const ch
 		dst_mesh->indices[i + 2] = tmp;
 	}
 
+	smooth_model_normals(model);
+
 	compute_missing_model_tangents(model);
 
 	extract_model_lights(model);
@@ -763,6 +974,8 @@ int MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, const ch
         dst_frame++;
     }
 
+	smooth_model_normals(model);
+
 	compute_missing_model_tangents(model);
 
 	extract_model_lights(model);
@@ -834,6 +1047,8 @@ int MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, const ch
 		mesh->materials[0] = mat;
 		mesh->numskins = 1; // looks like IQM only supports one skin?
 	}
+
+	smooth_model_normals(model);
 
 	compute_missing_model_tangents(model);
 
@@ -1217,6 +1432,8 @@ int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const ch
 		memcpy(mesh->materials, shared_materials, sizeof(mesh->materials));
 		mesh->numskins = numskins;
 	}
+
+	smooth_model_normals(model);
 
 	compute_missing_model_tangents(model);
 

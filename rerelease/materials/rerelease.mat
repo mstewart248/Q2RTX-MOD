@@ -24916,3 +24916,44 @@ models/items/spawngro2/pskin:
 	metalness_factor 1.0
 	specular_factor 1.0
 
+
+# spawngro3 gets the same treatment, and for the same reason.
+#
+# It is the rerelease's own growing sphere - the medic commander summons with
+# it where this fork's game code uses spawngro/spawngro2 - so it is the one
+# that actually appears in a rerelease demo. The entry further up this file
+# already points it at the spawngro2 artwork, but that entry stops at the
+# textures: without `kind WATER` it stayed a REGULAR opaque surface and read
+# as the dark fuzzy ball the others used to, which is the whole defect the
+# block above was written to fix.
+#
+# Same override-after-the-generated-block rule: the LATTER entry wins, so
+# these sit at the end of the file and survive the next materialdev export.
+
+models/items/spawngro3/skin:
+	texture_base materialDev/models/items/spawngro2/skin.tga
+	texture_normals materialDev/models/items/spawngro2/skin_n.tga
+	kind WATER
+	# REQUIRED on a closed shape - see the spawngro2 entry above. The
+	# "vertical water is a force field" test reads a face normal, which is
+	# meaningless on a sphere, so without this the model wears a hard stripe
+	# round its equator where the sideways-facing band meets the caps.
+	curved_water 1
+	# Matched to spawngro/spawngro2 so all three growing spheres read alike.
+	base_factor 2.5
+	metalness_factor 1.0
+	specular_factor 1.0
+
+models/items/spawngro3/pskin:
+	texture_base materialDev/models/items/spawngro2/pskin.tga
+	texture_normals materialDev/models/items/spawngro2/pskin_n.tga
+	kind WATER
+	# REQUIRED on a closed shape - see the spawngro2 entry above. The
+	# "vertical water is a force field" test reads a face normal, which is
+	# meaningless on a sphere, so without this the model wears a hard stripe
+	# round its equator where the sideways-facing band meets the caps.
+	curved_water 1
+	# Matched to spawngro/spawngro2 so all three growing spheres read alike.
+	base_factor 2.5
+	metalness_factor 1.0
+	specular_factor 1.0

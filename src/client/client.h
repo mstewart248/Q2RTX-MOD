@@ -1037,6 +1037,23 @@ void CL_CheckPredictionError(void);
 //
 #define PARTICLE_GRAVITY        120
 #define BLASTER_PARTICLE_COLOR  0xe0
+
+/* The soldier that fires the blue blaster (monster_fire_blueblaster, via
+   EF_BLUEHYPERBLASTER / MZ_BLUEHYPERBLASTER) lit the room with a PURE blue
+   light - literally (0, 0, 1) at both the muzzle and the bolt in flight.
+   Under the path tracer a light with no red or green in it at all leaves
+   every surface it touches with only its blue channel, so a grey wall goes
+   navy and skin goes black, which reads as a colour bug rather than as a
+   blue weapon.
+
+   The bolt ITSELF was never that saturated: models/objects/blaser/skin.tga
+   averages rgb(73, 74, 122), a soft periwinkle. Only the dynamic light was
+   pure. These are the light to match it with - rgb(100, 100, 255) over 255.
+
+   Both emitters use this, so they cannot drift apart. */
+#define BLUEBLASTER_LIGHT_R     (100.0f / 255.0f)
+#define BLUEBLASTER_LIGHT_G     (100.0f / 255.0f)
+#define BLUEBLASTER_LIGHT_B     (255.0f / 255.0f)
 #define INSTANT_PARTICLE    -10000.0f
 
 typedef struct cparticle_s {

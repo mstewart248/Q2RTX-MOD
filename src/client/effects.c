@@ -268,7 +268,8 @@ void CL_MuzzleFlash(void)
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/blastf1a.wav"), volume, ATTN_NORM, 0);
         break;
     case MZ_BLUEHYPERBLASTER:
-        VectorSet(dl->color, 0, 0, 1);
+        // See BLUEBLASTER_LIGHT_R in client.h - this was (0, 0, 1).
+        VectorSet(dl->color, BLUEBLASTER_LIGHT_R, BLUEBLASTER_LIGHT_G, BLUEBLASTER_LIGHT_B);
         S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/hyprbf1a.wav"), volume, ATTN_NORM, 0);
         break;
     case MZ_HYPERBLASTER:
