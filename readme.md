@@ -30,11 +30,21 @@ original game — or from the remaster.
 
 ## Downloads
 
-Functional builds are published from the
-[Actions](https://github.com/mstewart248/Q2RTX-MOD/actions) tab. Download the
-artifact, extract it, and put `q2rtx_media.pkz`, `blue_noise.pkz` and the
-`pak*.pak` files from the original game into `baseq2/`. For the remaster
-content, see [Playing the rerelease campaign](#playing-the-rerelease-campaign).
+Get the newest package from
+[Releases](https://github.com/mstewart248/Q2RTX-MOD/releases/latest) —
+`Q2RTX-Overdrive-<version>-win64.zip`. It is a complete, playable build: both
+executables, the game library, the compiled shaders and the stock Quake II RTX
+media are all inside, so the only thing to add is **your own** `pak*.pak` files
+from the original game, which cannot be redistributed. Extract the archive, drop
+the paks into `baseq2/`, and read `README-FIRST.txt` in the archive root. For the
+remaster content, see
+[Playing the rerelease campaign](#playing-the-rerelease-campaign).
+
+Every push is also built on the
+[Actions](https://github.com/mstewart248/Q2RTX-MOD/actions) tab if you want the
+very latest code rather than a release. Those artifacts are the binaries only —
+`q2rtx_media.pkz` and `blue_noise.pkz` have to come from a release or from an
+existing Quake II RTX install.
 
 ![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake073.png)
 ![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake071.png)
