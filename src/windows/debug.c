@@ -512,7 +512,11 @@ LONG WINAPI Sys_ExceptionFilter(LPEXCEPTION_POINTERS exceptionInfo)
 
 finalize:
     // Try to quit nicely, most importantly, try to flush and close the console log.
-    Com_Quit(NULL, ERR_FATAL);
+    // NAME THIS IN THE LOG. Every "goto finalize" above leaves without a crash
+    // report - the player said no, or dbghelp/version/shell32 would not load -
+    // and the shutdown that follows is byte-for-byte a clean quit. A fault that
+    // produced no report was indistinguishable from typing "quit".
+    Com_Quit("unhandled exception", ERR_FATAL);
 
     return EXCEPTION_EXECUTE_HANDLER;
 }

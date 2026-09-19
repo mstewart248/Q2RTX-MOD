@@ -53,6 +53,14 @@ interface from being ambiguous.
 extern cvar_t   *cvar_vars;
 extern int      cvar_modified;
 
+// The cvar whose change last set a CVAR_FILES or CVAR_REFRESH bit in
+// cvar_modified, as "name = value".  Recorded here because it cannot be
+// recovered afterwards: Cvar_Get marks every cvar it CREATES as modified, so
+// scanning for modified cvars names all of them.  Consumed (and cleared) by
+// CL_ApplyPendingRestart, which is the only thing that reports it.
+#define CVAR_MODIFIED_BY_SIZE   128
+extern char     cvar_modified_by[CVAR_MODIFIED_BY_SIZE];
+
 void Cvar_Init(void);
 
 void Cvar_Variable_g(genctx_t *ctx);

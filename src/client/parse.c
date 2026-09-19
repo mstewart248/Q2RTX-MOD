@@ -1335,6 +1335,12 @@ void CL_ParseStuffText(void)
 
     MSG_ReadString(s, sizeof(s));
     SHOWNET(2, "    \"%s\"\n", s);
+    // A stufftext is the SERVER - or a demo - running console commands here,
+    // unfiltered. When one of them does something drastic nothing else in the
+    // log says where it came from, so trace them at developer level. SHOWNET
+    // above is not enough: it needs cl_shownet 2, which floods the log with
+    // every message in the stream.
+    Com_DPrintf("stufftext: \"%s\"\n", s);
     Cbuf_AddText(&cl_cmdbuf, s);
 }
 

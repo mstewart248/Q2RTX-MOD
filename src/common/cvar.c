@@ -31,6 +31,8 @@ cvar_t  *cvar_vars;
 
 int     cvar_modified;
 
+char    cvar_modified_by[CVAR_MODIFIED_BY_SIZE];
+
 #define Cvar_Malloc(size)   Z_TagMalloc(size, TAG_CVAR)
 
 #define CVARHASH_SIZE    256
@@ -183,6 +185,12 @@ static void change_string_value(cvar_t *var, const char *value, from_t from)
 
     var->modified = true;
     if (from != FROM_CODE) {
+        // Remember what asked for a renderer or filesystem restart. The bit
+        // alone says one is pending, never which cvar set it, and the answer is
+        // gone by the time anything services it - see cvar_modified_by.
+        if (var->flags & (CVAR_FILES | CVAR_REFRESH))
+            Q_snprintf(cvar_modified_by, sizeof(cvar_modified_by),
+                       "%s = \"%s\"", var->name, var->string);
         cvar_modified |= var->flags & CVAR_MODIFYMASK;
         var->flags |= CVAR_MODIFIED;
         if (from == FROM_MENU && !(var->flags & CVAR_NOARCHIVEMASK)) {

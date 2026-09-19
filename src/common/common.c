@@ -616,6 +616,15 @@ void Com_Quit(const char *reason, error_type_t type)
                    "Server %s\n", what);
     }
 
+    /* SAY SO IN THE LOG. Every route out of the process ends here, and until
+       this line the console log just stopped mid-sentence - "Shutting down
+       OpenAL" and nothing else - whether the player typed "quit", the window
+       was closed, or the exception filter caught a fault and bailed out
+       without managing to write a crash report. Three very different events
+       that looked identical afterwards, and the last one is the one worth
+       knowing about. The callers name themselves in (reason). */
+    Com_Printf("Com_Quit: %s\n", reason && *reason ? reason : "no reason given");
+
     SV_Shutdown(buffer, type);
     CL_Shutdown();
     NET_Shutdown();
@@ -628,7 +637,20 @@ void Com_Quit(const char *reason, error_type_t type)
 
 static void Com_Quit_f(void)
 {
-    Com_Quit(Cmd_Args(), ERR_DISCONNECT);
+    // Name the command AND where it came from, so the log line in Com_Quit
+    // tells "quit" apart from the other callers that pass NULL - and tells a
+    // player typing it apart from a menu item, a key binding running through
+    // the console buffer, or a server stuffing it at us.
+    static const char *const origin[] = {
+        "stufftext", "rcon", "menu", "console", "command line", "code"
+    };
+    from_t from = Cmd_From();
+    char buffer[MAX_STRING_CHARS];
+
+    Q_snprintf(buffer, sizeof(buffer), "\"quit %s\" from %s", Cmd_Args(),
+               from < q_countof(origin) ? origin[from] : "somewhere unknown");
+
+    Com_Quit(buffer, ERR_DISCONNECT);
 }
 
 #if !USE_CLIENT
@@ -1011,6 +1033,15 @@ void Qcommon_Init(int argc, char **argv)
         // so drop the loading plaque
         SCR_EndLoadingPlaque();
     }
+
+    // A + command can leave a renderer restart pending: "+game rerelease"
+    // re-execs the new gamedir's default.cfg/q2rtx.cfg/q2config.cfg, and every
+    // gamedir keeps its own copy of the last one, so a CVAR_FILES or
+    // CVAR_REFRESH cvar that has drifted between them really does change here.
+    // Do it NOW, with nothing loaded. Left pending it fires on the first frame
+    // instead - by which time client_start below has already started the
+    // attract-loop demo, and the device is torn down mid-demo.
+    CL_ApplyPendingRestart();
 
     // Run the start-up action. A dedicated server keeps the original rule -
     // any + command counts as the user having asked for something. The client

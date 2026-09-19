@@ -260,29 +260,64 @@ void CL_RunRefresh(void)
         mode_changed = 0;
     }
 
+    CL_ApplyPendingRestart();
+}
+
+/*
+============
+CL_ApplyPendingRestart
+
+Service a renderer restart that a CVAR_REFRESH or CVAR_FILES cvar asked for.
+
+WHY THIS IS SEPARATE FROM CL_RunRefresh.  The pending bit is set the instant the
+cvar changes, but the restart only happens on the next pass through the frame
+loop - and one caller changes those cvars with a demo already queued to start
+before that pass ever runs.
+
+"q2rtx +game rerelease" (rerelease.bat) is that caller.  fs_game_changed
+(src/common/files.c) restarts the filesystem - which restarts the renderer once,
+correctly - and then re-execs default.cfg, q2rtx.cfg, q2config.cfg and
+autoexec.cfg from the NEW game directory.  Each gamedir keeps its OWN
+q2config.cfg, so any CVAR_FILES or CVAR_REFRESH cvar whose two copies have
+drifted apart is a real change at that moment: today that is
+pt_model_smooth_angle, 60 in baseq2/q2config.cfg and 120 in
+rerelease/q2config.cfg.  That marks a restart pending, and the very next thing
+Qcommon_Init does is run client_start - the attract loop - so the Vulkan device
+was torn down and rebuilt in the middle of the first demo, right after its first
+map finished loading.  Two launches in a row died at the same spot.
+
+So Qcommon_Init calls this in between, while nothing is loaded and a restart
+costs nothing.  By the time the demo starts there is nothing left pending.
+============
+*/
+void CL_ApplyPendingRestart(void)
+{
+    if (!cls.ref_initialized) {
+        return;
+    }
+
+    if (!(cvar_modified & (CVAR_REFRESH | CVAR_FILES))) {
+        return;
+    }
+
+    /* NAME THE CULPRIT.  Scanning for cvars with `modified` set cannot do this:
+       Cvar_Get marks every cvar it CREATES as modified, so the first restart of
+       a session reported all seven CVAR_REFRESH cvars - ray_tracing_api, sli,
+       vid_display, vid_hwgamma, vid_rtx, vk_gpu_diag, vk_validation - and named
+       the one that actually changed only by accident.  cvar.c records the cvar
+       whose change set the bit, which is the only place that knows it. */
+    Com_Printf("vid_restart: triggered by %s\n",
+               cvar_modified_by[0] ? cvar_modified_by : "an unnamed cvar");
+    cvar_modified_by[0] = 0;
+
     if (cvar_modified & CVAR_REFRESH) {
-        // A renderer restart tears down and rebuilds the Vulkan device, the swapchain
-        // and the DLSS feature, so name the cvar that asked for it. Three of these were
-        // happening before the menu even appeared.
-        for (cvar_t *c = cvar_vars; c; c = c->next) {
-            if ((c->flags & CVAR_REFRESH) && c->modified) {
-                Com_Printf("vid_restart: triggered by %s = \"%s\"\n", c->name, c->string);
-                /* CLEAR IT. Only the global cvar_modified bit was ever cleared, so the
-                   per-cvar flags set during startup stayed set forever and every later
-                   restart re-reported the same six cvars - ray_tracing_api, sli,
-                   vid_display, vid_hwgamma, vid_rtx, vk_validation - whichever one had
-                   actually changed. That made the diagnostic useless for finding out what
-                   asked for a restart, which is the only reason it exists. */
-                c->modified = false;
-            }
-        }
         CL_RestartRefresh(true);
         /* A full refresh restart already re-registers files, so clearing only CVAR_REFRESH
            left CVAR_FILES pending and cost a SECOND complete renderer restart on the very
            next frame. Every restart is a chance to hit a device-lifetime bug, so the
            cheapest fix for restart crashes is to stop doing redundant restarts. */
         cvar_modified &= ~(CVAR_REFRESH | CVAR_FILES);
-    } else if (cvar_modified & CVAR_FILES) {
+    } else {
         CL_RestartRefresh(false);
         cvar_modified &= ~CVAR_FILES;
     }

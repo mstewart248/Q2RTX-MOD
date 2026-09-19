@@ -75,6 +75,12 @@ bool CL_CheatsOK(void);
 // the client_start action, rather than merely asking whether a + command was
 // present on the command line: "+game rerelease" only picks a game directory.
 bool CL_StartupActionPending(void);
+// Perform a renderer restart that a CVAR_FILES/CVAR_REFRESH cvar left pending,
+// instead of letting it land on whatever the next frame happens to be doing.
+// Qcommon_Init calls this after the command line's + commands - "+game
+// rerelease" re-execs the new gamedir's configs and can leave one pending -
+// and before client_start, so a restart cannot interrupt the demo it starts.
+void CL_ApplyPendingRestart(void);
 // extra factor on the frame time, for the item wheel's bullet time
 float CL_GetTimeScale(void);
 void CL_SetSky(void);
@@ -139,6 +145,7 @@ float V_CalcFov(float fov_x, float width, float height);
 #define CL_ForwardToServer()            false
 #define CL_CheatsOK()                   (bool)Cvar_VariableInteger("cheats")
 #define CL_StartupActionPending()       false
+#define CL_ApplyPendingRestart()        (void)0
 
 #define Con_Init()                      (void)0
 #define Con_SetColor(color)             (void)0

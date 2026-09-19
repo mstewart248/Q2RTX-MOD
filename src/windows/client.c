@@ -975,7 +975,9 @@ void VID_PumpEvents(void)
     win.lastMsgTime = Sys_Milliseconds();
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
-            Com_Quit(NULL, ERR_DISCONNECT);
+            // The window is gone - closed by the player, or destroyed by
+            // something that tore the renderer down and did not put it back.
+            Com_Quit("main window destroyed (WM_QUIT)", ERR_DISCONNECT);
             break;
         }
         TranslateMessage(&msg);
