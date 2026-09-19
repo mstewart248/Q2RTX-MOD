@@ -71,6 +71,12 @@ static cvar_t *pt_sky_light_scale;
 // rendered, 0 while the map's own skybox is. See publish_sky_state.
 static cvar_t *sky_procedural_active;
 
+// Read-only, published for the menu: 1 while sun_animate is something the player
+// can actually reach. It is reachable on the Custom preset, as it always was, and
+// everywhere in rerelease sky mode, where the preset control is hidden and the
+// sun runs on the Custom path regardless. See publish_sky_state.
+static cvar_t *sun_animate_available;
+
 // The menu's single "sky type" control. The renderer's real inputs are
 // physical_sky - which procedural preset backs a map with no skybox of its own
 // - and sky_use_map_skybox, whether a map that ships one gets to use it. Those
@@ -218,13 +224,44 @@ static cvar_t *sky_map_sun_azimuth;
 // NOT archived - it describes a map, not a preference.
 static cvar_t *sky_map_sun_animate;
 
-// How long the rendered sky is allowed to stand while the sun animates, in
-// seconds. 0 re-renders it every frame. See the long note in
-// vkpt_evaluate_sun_light for what this does and does not cost.
+// HOW FAR THE SUN MAY MOVE, IN DEGREES, before the sky is re-rendered. 0
+// re-renders it every frame. See the long note in vkpt_evaluate_sun_light.
 //
-// 4 is what the original throttle worked out to, so the default is the
-// behaviour this build has always had.
-static cvar_t *sun_animate_interval;
+// In degrees rather than seconds because what has to stay below the threshold is
+// the SIZE OF THE JUMP, and a fixed time interval does not bound that - the same
+// 4 seconds is a quarter of a degree at sun_animate 1 and six degrees at 25. The
+// sun's own disc is 1 degree across, so the default is a twentieth of that:
+// invisible at any rate, and it costs proportionally more only when the player
+// has asked the cycle to run faster.
+//
+// THE DEFAULT IS ALREADY CHEAP. At sun_animate 1 the sun moves 0.069 deg/s, so
+// 0.05 is about 1.4 re-renders a second - a few times the old fixed 4-second
+// throttle, and still nothing next to a frame. 0 is the opt-in setting exposed
+// as "sky updates: real time" in the environment menu, and it is a different
+// order of thing entirely: Matt remembers per-frame costing around 20 fps on a
+// 2080, which is the right shape for a 6.3M-thread cloud march every frame.
+static cvar_t *sun_animate_step;
+
+// The sun angle the CURRENTLY RENDERED sky was built around, which the one above
+// is measured against. Not the same as last_sun_* - that is where the sun IS,
+// this is where the picture thinks it is.
+static float rendered_sun_elevation = 0.f;
+static float rendered_sun_azimuth = 0.f;
+static bool  have_rendered_sun_angles = false;
+
+// Angular distance between two (elevation, azimuth) pairs, in degrees. The
+// spherical law of cosines, so it stays correct through the azimuth flip the
+// elevation wrap performs - there the pair changes by 180 degrees while the sun
+// itself has not moved at all.
+static float sun_angle_between(float e1, float a1, float e2, float a2)
+{
+	const float d2r = (float)(M_PI / 180.0);
+
+	float c = sinf(e1 * d2r) * sinf(e2 * d2r)
+		+ cosf(e1 * d2r) * cosf(e2 * d2r) * cosf((a1 - a2) * d2r);
+
+	return acosf(max(-1.f, min(1.f, c))) / d2r;
+}
 
 // THE SUN CARRIES BETWEEN MAPS. Where it was pointing on the last frame of the
 // map just left, and whether a frame has ever produced one. Every branch of the
@@ -245,13 +282,34 @@ static bool  have_last_sun_angles = false;
 // from whatever sun_elevation / sun_azimuth were just set to.
 static bool sun_cycle_restart = false;
 
+// Whether the sky currently in use is the one the map gets to speak for. In
+// "rerelease" mode the map owns the sun outright; any other sky_type is the
+// player having asked for one particular sky, and a map does not overrule that.
+static bool sky_mode_is_rerelease(void)
+{
+	return sky_type && sky_type->integer == SKY_TYPE_RERELEASE;
+}
+
 // Only meaningful in "rerelease" sky mode. An explicit sky_type pick already
 // declines every map's skybox and already says which atmosphere to render, so
 // overriding it here would make the menu lie.
 static bool sky_map_forces_procedural(void)
 {
-	return sky_type && sky_type->integer == SKY_TYPE_RERELEASE
-		&& map_procedural_sky(NULL) != MAP_SKY_NONE;
+	return sky_mode_is_rerelease() && map_procedural_sky(NULL) != MAP_SKY_NONE;
+}
+
+// Whether the loaded map STATES AN HOUR of its own - that is, whether its own
+// maps/<name>.cfg ran "mapcvar sky_map_sun_elevation" or "_azimuth".
+//
+// Asked of the mapcvar latch rather than of the cvar's VALUE, because both are
+// archived: a map that says nothing would otherwise be indistinguishable from
+// one that happened to name the angle left behind in the player's config. Seven
+// maps state an hour - base1, base2, base3, bunk1, ware1, mgu1m1, mgu2m1 - and
+// every other map carries the sun on from wherever the last one left it.
+static bool map_states_sun_hour(void)
+{
+	return Cmd_GetMapCvarSaved("sky_map_sun_elevation") != NULL
+		|| Cmd_GetMapCvarSaved("sky_map_sun_azimuth") != NULL;
 }
 
 // Whether the loaded map has asked to run its own time of day. Same "rerelease
@@ -259,7 +317,7 @@ static bool sky_map_forces_procedural(void)
 static bool map_sun_animate_active(void)
 {
 	return sky_map_sun_animate && sky_map_sun_animate->value > 0.f
-		&& sky_type && sky_type->integer == SKY_TYPE_RERELEASE;
+		&& sky_mode_is_rerelease();
 }
 
 // The animation rate actually in force. sun_animate is the player's own knob
@@ -332,12 +390,25 @@ typedef enum
 
 static int active_sun_preset(void)
 {
-	// A map running its own time of day overrides the player's preset - that is
-	// the whole point of sky_map_sun_animate, since every preset but Custom is a
-	// FIXED sun and would freeze the cycle the map asked for. Custom is where the
-	// animated path lives, so this reports Custom and the switch in
-	// vkpt_evaluate_sun_light falls through to it.
-	if (map_sun_animate_active())
+	/* [rerelease] THE MAP OWNS THE SUN IN RERELEASE SKY MODE, so there is no
+	   preset here to honour.
+	
+	   The time-of-day, elevation and azimuth controls are not even shown in that
+	   mode (see baseq2/q2rtx.menu) - a rerelease map states its own hour, or
+	   carries the previous map's, and the player's way of overruling that is to
+	   pick a different sky type, not to fight it a map at a time.
+	
+	   Reporting Custom is what makes any of that reachable: Custom is the only
+	   branch of the switch in vkpt_evaluate_sun_light that reads sun_elevation /
+	   sun_azimuth at all, and therefore the only one a map's stated hour, the
+	   carried position, or sun_animate can get at. Every other preset hardcodes
+	   an angle pair and ignores the cvars completely - which is exactly why
+	   base1's "mapcvar sky_map_sun_elevation 15" did nothing while sun_preset
+	   sat on Dawn.
+	
+	   Outside rerelease mode nothing changes: the player keeps the whole set of
+	   Q2RTX sun controls and sun_animate works on Custom only, as it always has. */
+	if (sky_mode_is_rerelease())
 		return SUN_PRESET_NONE;
 
 	bool multiplayer = cl.maxclients > 1;
@@ -965,35 +1036,33 @@ static void apply_map_sun(void)
 	// cl.time went back to zero with the map load.
 	sun_cycle_restart = true;
 
-	// A MAP THAT ANIMATES PICKS THE SUN UP WHERE THE LAST ONE LEFT IT, and runs
-	// on from there. So the cycle survives the walk from one map to the next, and
-	// what breaks it is a map that states an hour of its own - which is the
-	// branch below, and which the next animating map then starts from in turn.
-	// The space levels break it the same way by not animating at all.
+	// A MAP THAT STATES AN HOUR PUTS THE SUN THERE, on every load, and any cycle
+	// that was running starts again from that hour. Tested first, so a stated
+	// hour beats the carry however the sun happens to be moving.
 	//
-	// Deliberately NOT seeded from sky_map_sun_elevation / _azimuth: those are a
-	// FIXED hour, and a map that asked for a moving sun has no fixed hour to be
-	// put back to on every load.
-	if (map_sun_animate_active())
+	// Only in rerelease sky mode: outside it the player has the full set of sun
+	// controls and the map does not get a say. That is the intended way to
+	// overrule a map - change the sky type, rather than fight it map by map.
+	if (sky_mode_is_rerelease() && map_states_sun_hour())
 	{
-		if (have_last_sun_angles)
-		{
-			Cvar_SetValue(sun_elevation, last_sun_elevation, FROM_CODE);
-			Cvar_SetValue(sun_azimuth, last_sun_azimuth, FROM_CODE);
-		}
+		Cvar_SetValue(sun_elevation, sky_map_sun_elevation->value, FROM_CODE);
+		Cvar_SetValue(sun_azimuth, sky_map_sun_azimuth->value, FROM_CODE);
 		return;
 	}
 
-	if (!sky_map_forces_procedural())
-		return;
-
-	// SUN_PRESET_NONE is the menu's "Custom". Read the cvar directly rather than
-	// active_sun_preset(), which substitutes a different preset in multiplayer.
-	if (sun_preset->integer != 0)
-		return;
-
-	Cvar_SetValue(sun_elevation, sky_map_sun_elevation->value, FROM_CODE);
-	Cvar_SetValue(sun_azimuth, sky_map_sun_azimuth->value, FROM_CODE);
+	// OTHERWISE THE SUN CARRIES ON FROM WHERE IT WAS. A map that states no hour
+	// inherits the previous map's sun and, if it is animating, runs on from there
+	// - so the cycle survives the walk from one map to the next, and the later
+	// levels differ from one another without anyone having authored them yet.
+	//
+	// last_sun_* is only ever recorded off the Custom branch (see
+	// vkpt_evaluate_sun_light), so this cannot write a fixed preset's hardcoded
+	// angle over a Custom angle the player set themselves.
+	if (have_last_sun_angles && active_sun_preset() == SUN_PRESET_NONE)
+	{
+		Cvar_SetValue(sun_elevation, last_sun_elevation, FROM_CODE);
+		Cvar_SetValue(sun_azimuth, last_sun_azimuth, FROM_CODE);
+	}
 }
 
 // Publishes the answer above so the menu can grey out the controls that do not
@@ -1006,6 +1075,13 @@ static void publish_sky_state(void)
 
 	if (sky_procedural_active->integer != procedural)
 		Cvar_SetInteger(sky_procedural_active, procedural, FROM_CODE);
+
+	// The menu has no OR between conditions - they are ANDed - so "Custom or
+	// rerelease" has to arrive as one value rather than as two tests.
+	int animate_ok = (sky_mode_is_rerelease() || sun_preset->integer == 0) ? 1 : 0;
+
+	if (sun_animate_available->integer != animate_ok)
+		Cvar_SetInteger(sun_animate_available, animate_ok, FROM_CODE);
 }
 
 void
@@ -1042,7 +1118,7 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	double azimuth, elevation;
 
-	static float start_time = 0.0f, sun_animate_changed = 0.0f, sun_last_update = 0.0f;
+	static float start_time = 0.0f, sun_animate_changed = 0.0f;
 
 	// The rate in force, which is sun_animate unless the map asked for one of its
 	// own - see effective_sun_animate.
@@ -1067,14 +1143,12 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 	{
 		sun_cycle_restart = false;
 		start_time = time;
-		sun_last_update = 0.0f;
 	}
 
 	if (sun_animate_rate != sun_animate_changed)
 	{
 		start_time = time;
 		sun_animate_changed = sun_animate_rate;
-		sun_last_update = 0.0f;
 	}
 
 	const int preset = active_sun_preset();
@@ -1140,32 +1214,37 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 				   These are two different costs and they used to be welded
 				   together. The angle is a handful of float ops and feeds the
 				   UBO's sun_direction every frame regardless of this block, so
-				   direct sunlight, shadows and god rays follow it for nothing.
-				   Re-rendering the sky is a 1024x1024x6 dispatch of
-				   physical_sky.comp - 6.3M threads, each one a 128-step cloud
-				   march with an 8-step sun-transmittance march inside every
-				   dense step - and THAT is what could not be afforded per frame.
+				   the sun's DIRECTION - shadows, god rays, fog scattering - is
+				   continuous for nothing. Re-rendering the sky is a 1024x1024x6
+				   dispatch of physical_sky.comp: 6.3M threads, and every one
+				   above the horizon runs a 128-step cloud march at two 3D
+				   texture fetches a step, with another 8-step march inside every
+				   dense step. That is what could not be afforded per frame, and
+				   it is pure TEX/ALU - nothing a denoiser change touches.
 				
-				   The original throttle held the ANGLE still between sky
-				   re-renders, so the sun, and every shadow in the map with it,
-				   jumped in steps. Working out what the throttle actually came
-				   to: elapsed advances at 250 * rate per second and the gate was
-				   1000 * rate, so the period was 1000/250 = 4 SECONDS whatever
-				   the rate - and at the default rate the sun travels 0.28 deg in
-				   that time, a quarter of its own disc, snapped across the whole
-				   map at once.
+				   WHAT STILL WAITS FOR THE RE-RENDER is more than the picture,
+				   which is worth being exact about:
+				     - the sky image, including the drawn sun disc;
+				     - the sun's RADIANCE, which the path tracer reads from
+				       sun_color_ubo (path_tracer_rgen.h) - that buffer is filled
+				       by this dispatch, so the light's colour steps with it, and
+				       at sunrise and sunset that colour is moving fast;
+				     - sky-lit ambient, since a ray that misses samples the
+				       envmap.
+				   Only the direction is free. So the threshold below has to be
+				   small enough that the LIGHTING does not step, not merely small
+				   enough to hide a shifted sun disc.
 				
-				   So the angle is now unconditional and only skyNeedsUpdate is
-				   on the timer. What lags between re-renders is the sky picture
-				   itself: the gradient (low frequency, a 0.28 deg step in it is
-				   not visible) and the drawn sun disc, which is the one thing
-				   worth watching - at sun_animate_interval 4 it trails the
-				   lighting by up to a quarter of its diameter.
+				   The original throttle worked out to a fixed 4 SECONDS at any
+				   rate - elapsed advanced at 250 * rate per second against a gate
+				   of 1000 * rate - and it held the ANGLE still as well, so the
+				   whole map's shadows snapped 0.28 degrees at a time.
 				
-				   sun_animate_interval 0 re-renders every frame. Whether that is
+				   sun_animate_step 0 re-renders every frame. Whether that is
 				   affordable is a measurement, not a guess: it is the
-				   UPDATE_ENVIRONMENT line in the profiler, and physical_sky_draw_clouds
-				   0 is the cheap half of the same question. */
+				   UPDATE_ENVIRONMENT line in the profiler, and
+				   physical_sky_draw_clouds 0 is the cheap half of the same
+				   question. */
 				const float elapsed = (time - start_time) * 250.f * sun_animate_rate;
 
 				azimuth = fmod(sun_azimuth->value + elapsed / (24.f * 60.f * 60.f), 360.0f);
@@ -1189,12 +1268,20 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 				// Only ever RAISES the flag - something else may have set it
 				// this frame (a cvar change, a preset change) and lowering it
-				// here would swallow that update until the timer came round.
-				const float interval = max(0.f, sun_animate_interval->value);
-				if (sun_last_update == 0.0f || time < sun_last_update
-					|| time - sun_last_update >= interval)
+				// here would swallow that update until the sun next moved far
+				// enough.
+				//
+				// A map change needs no special case: the new map's hour is a
+				// long way from the rendered one, so the first frame on it
+				// re-renders by the ordinary rule.
+				if (!have_rendered_sun_angles
+					|| sun_angle_between((float)elevation, (float)azimuth,
+						rendered_sun_elevation, rendered_sun_azimuth)
+						>= max(0.f, sun_animate_step->value))
 				{
-					sun_last_update = time;
+					rendered_sun_elevation = (float)elevation;
+					rendered_sun_azimuth = (float)azimuth;
+					have_rendered_sun_angles = true;
 					skyNeedsUpdate = VK_TRUE;
 				}
 			}
@@ -1206,12 +1293,17 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 			break;
 		}
 
-		// Where the sun ended up, for the next map to pick up from. Every branch
-		// of the switch above lands here, so a map that states a fixed hour hands
-		// that hour on just as an animating one hands on its current position.
-		last_sun_elevation = (float)elevation;
-		last_sun_azimuth = (float)azimuth;
-		have_last_sun_angles = true;
+		// Where the sun ended up, for the next map to pick up from - but only off
+		// the Custom branch, which is the one fed by sun_elevation / sun_azimuth.
+		// A fixed preset's hardcoded angle is not the player's sun and must not be
+		// carried into their cvars; in rerelease mode every frame comes through
+		// here anyway, since active_sun_preset always reports Custom there.
+		if (preset == SUN_PRESET_NONE)
+		{
+			last_sun_elevation = (float)elevation;
+			last_sun_azimuth = (float)azimuth;
+			have_last_sun_angles = true;
+		}
 
 		float elevation_rad = elevation * M_PI / 180.0f; //max(-20.f, min(90.f, elevation)) * M_PI / 180.f;
 		float azimuth_rad = azimuth * M_PI / 180.f;
@@ -1420,7 +1512,9 @@ void InitialiseSkyCVars()
     sun_bounce = Cvar_Get("sun_bounce", "1.0", 0); 
     sun_bounce->changed = physical_sky_cvar_changed;
 
-    sun_animate = Cvar_Get("sun_animate", "0", 0); 
+    // Archived because the environment menu drives it: a speed the player picked
+    // from a slider is a preference and has to survive the session.
+    sun_animate = Cvar_Get("sun_animate", "0", CVAR_ARCHIVE);
     sun_animate->changed = physical_sky_cvar_changed;
 
 	sun_preset = Cvar_Get("sun_preset", va("%d", SUN_PRESET_MORNING), CVAR_ARCHIVE);
@@ -1451,6 +1545,7 @@ void InitialiseSkyCVars()
 
 	// engine state, not a setting - CVAR_ROM keeps a config from writing it
 	sky_procedural_active = Cvar_Get("sky_procedural_active", "1", CVAR_ROM);
+	sun_animate_available = Cvar_Get("sun_animate_available", "0", CVAR_ROM);
 
 	// 0 = always use the procedural sky, 1 = show the map's own skybox on
 	// rerelease maps, 2 = show it in every game directory
@@ -1476,10 +1571,10 @@ void InitialiseSkyCVars()
 
 	// Needs no physical_sky_cvar_changed: turning it on changes the sun ANGLE,
 	// which vkpt_evaluate_sun_light recomputes every frame anyway, and it raises
-	// skyNeedsUpdate itself on the first frame it runs (sun_last_update == 0).
+	// skyNeedsUpdate itself on the first frame it runs, by the angle rule.
 	sky_map_sun_animate = Cvar_Get("sky_map_sun_animate", "0", 0);
 
-	sun_animate_interval = Cvar_Get("sun_animate_interval", "4", CVAR_ARCHIVE);
+	sun_animate_step = Cvar_Get("sun_animate_step", "0.05", CVAR_ARCHIVE);
 }
 
 void UpdatePhysicalSkyCVars()

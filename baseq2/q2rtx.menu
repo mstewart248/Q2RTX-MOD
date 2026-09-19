@@ -89,13 +89,34 @@ begin environment
         range --status "how bright the MAP's skybox LOOKS - does not change the light it casts (pt_sky_brightness)" \
             "map sky brightness" pt_sky_brightness 0 2 0.1
     endif
-    pairs --status "physical sky only - a map drawing its own skybox has no sun to move (sun_preset)" "time of day" sun_preset "custom" 0 "current time" 1 "12x current time" 2 "night" 3 "dawn" 4 "morning" 5 "noon" 6 "evening" 7 "dusk" 8
-    bind "next time of day key" next_sun
-    blank
-    range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_elevation)" "physical sky sun elevation" sun_elevation -20 90 1
-    range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_azimuth)" "physical sky sun azimuth" sun_azimuth -20 380 5
-    pairs --status "only effective in custom time of day mode (sun_gamepad)" "control sun with gamepad" sun_gamepad off 0 "left stick" 1 "right stick" 2
-    blank
+    // WHERE THE SUN IS, is the MAP's to say in "rerelease" sky mode, so none of
+    // these four are shown there. A rerelease map states its own hour or carries
+    // the previous map's, and the way to overrule that is to pick a different sky
+    // type above - not to fight it one map at a time. active_sun_preset() reports
+    // Custom throughout that mode, so what these controls would have written is
+    // exactly what the map writes instead.
+    ifneq sky_type 0
+        pairs --status "physical sky only - a map drawing its own skybox has no sun to move (sun_preset)" "time of day" sun_preset "custom" 0 "current time" 1 "12x current time" 2 "night" 3 "dawn" 4 "morning" 5 "noon" 6 "evening" 7 "dusk" 8
+        bind "next time of day key" next_sun
+        blank
+        range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_elevation)" "physical sky sun elevation" sun_elevation -20 90 1
+        range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_azimuth)" "physical sky sun azimuth" sun_azimuth -20 380 5
+        pairs --status "only effective in custom time of day mode (sun_gamepad)" "control sun with gamepad" sun_gamepad off 0 "left stick" 1 "right stick" 2
+        blank
+    endif
+    // HOW FAST IT MOVES is the player's to say in either mode. Shown on the
+    // Custom preset, where sun_animate has always worked, and throughout
+    // rerelease mode, where the preset control above is hidden and the sun runs
+    // on the Custom path anyway. Conditions here are ANDed with no OR available,
+    // so the renderer publishes that either/or as one value.
+    ifeq sun_animate_available 1
+        range -f "%.0fx" --status "0 = off. Speed of the day/night cycle - 1x is one full turn every ~86 minutes. A map that states an hour of its own starts the cycle there; every other map carries the sun on from the last one (sun_animate)" "sun animation speed" sun_animate 0 25 1
+        // The sun's DIRECTION is continuous either way - shadows, god rays and
+        // fog read it straight from the frame's uniforms. This is about the sky
+        // PICTURE, which also carries the sun's colour and the sky-lit ambient.
+        pairs --status "how far the sun may move before the sky is re-rendered. Throttled is the old cadence, about a quarter of a degree - cheapest, and you can see it step. Smooth is a twentieth of the sun's disc, sub-pixel, and still only a couple of re-renders a second. Real time re-renders every frame and costs a lot of frame rate (sun_animate_step)"             "sky updates" sun_animate_step "throttled" 0.28 "smooth" 0.05 "real time" 0
+        blank
+    endif
     toggle --status "physical sky only (physical_sky_draw_clouds)" "physical sky clouds" physical_sky_draw_clouds
     blank
     range -f "%.1f deg" --status "physical sky only - latitude used to compute the sun position in automatic mode (sun_latitude)" "physical sky latitude" sun_latitude -90 90 2
