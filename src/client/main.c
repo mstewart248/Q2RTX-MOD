@@ -2892,19 +2892,32 @@ static void CL_InitLocal(void)
     // Rerelease muzzle flashes: a starburst model at the muzzle rather than
     // just a dynamic light. Set to 0 for the classic look.
     cl_muzzleflash_models = Cvar_Get("cl_muzzleflash_models", "1", CVAR_ARCHIVE);
-    // the flash model is only ~2.3 units across; the rerelease draws it far
-    // bigger than that, so the default scales it up
-    cl_muzzleflash_scale = Cvar_Get("cl_muzzleflash_scale", "2", CVAR_ARCHIVE);
-    // 22 is Matt's measured value, looking at his own model in a mirror
-    cl_muzzleflash_world_fwd   = Cvar_Get("cl_muzzleflash_world_fwd", "22", CVAR_ARCHIVE);
+    // The flash model is only ~2.3 units across and the rerelease draws it far
+    // bigger, so the default scales it up. 10 is the value these were finally
+    // tuned to by eye against the rerelease campaign.
+    cl_muzzleflash_scale = Cvar_Get("cl_muzzleflash_scale", "10", CVAR_ARCHIVE);
+    /* How far along the barrel the OTHER fellow's flash sits.
+       22 was measured off a player model in a mirror, and it is right for that
+       - but a monster is not a player: the soldier, the gunner and the enforcer
+       all hold shorter weapons much closer to the body, and 22 pushed the flash
+       out past the end of the gun and sometimes through a wall. 2 keeps it at
+       the muzzle on every shape in the game, which is the case that actually
+       comes up. Raise it if you only care how the player model looks. */
+    cl_muzzleflash_world_fwd   = Cvar_Get("cl_muzzleflash_world_fwd", "2", CVAR_ARCHIVE);
     cl_muzzleflash_world_right = Cvar_Get("cl_muzzleflash_world_right", "8", CVAR_ARCHIVE);
     cl_muzzleflash_world_up    = Cvar_Get("cl_muzzleflash_world_up", "8", CVAR_ARCHIVE);
-    // The flash is drawn by the effects path, which multiplies the texture by
-    // prev_adapted_luminance * 500 - enough to saturate it to flat white and
-    // lose the soft taper the artwork has. Entity alpha is the one lever that
-    // scales that back down without touching the shader or the global UBO
-    // (whose cvar list is a multiple of four and cannot take a single new entry).
-    cl_muzzleflash_brightness = Cvar_Get("cl_muzzleflash_brightness", "0.1", CVAR_ARCHIVE);
+    /* The flash is drawn by the effects path, which multiplies the texture by
+       prev_adapted_luminance * 500. Entity alpha is the one lever that scales
+       that back without touching the shader or the global UBO (whose cvar list
+       is a multiple of four and cannot take a single new entry).
+
+       Full alpha here on purpose. Clipping to flat white costs the soft taper,
+       which is why the VIEW flash below is held right down - but that argument
+       is about a flash filling half the screen. At the distance another
+       shooter is actually seen, the hot clipped core IS the read: it is a
+       muzzle flash across a room, not a soft glow, and anything dimmer
+       disappears against a lit wall. */
+    cl_muzzleflash_brightness = Cvar_Get("cl_muzzleflash_brightness", "1", CVAR_ARCHIVE);
 
     /* The gun in YOUR hands gets its own size and brightness, and it has to.
        The two cvars above are shared by every flash in the world, and the view
@@ -2923,8 +2936,8 @@ static void CL_InitLocal(void)
 
        These deliberately do NOT inherit the monster values - making the view
        flash a multiple of them is what produced the blob. */
-    cl_muzzleflash_view_size = Cvar_Get("cl_muzzleflash_view_size", "4", CVAR_ARCHIVE);
-    cl_muzzleflash_view_brightness = Cvar_Get("cl_muzzleflash_view_brightness", "0.03", CVAR_ARCHIVE);
+    cl_muzzleflash_view_size = Cvar_Get("cl_muzzleflash_view_size", "8", CVAR_ARCHIVE);
+    cl_muzzleflash_view_brightness = Cvar_Get("cl_muzzleflash_view_brightness", "0.06", CVAR_ARCHIVE);
     /* How long a flash stays up, in milliseconds, for every flash in the world.
        The machinegun fires every 100 ms, so anything at or above that leaves no
        gap between shots and the flash reads as permanently on instead of as a
@@ -2938,12 +2951,18 @@ static void CL_InitLocal(void)
        the flash from base_texture alone and never reads the emissive map, so
        turning this on cannot change the flash's own appearance.
 
-       OFF by default, for two honest reasons. Light extraction makes ONE LIGHT
-       POLY PER TRIANGLE and these models are 48 triangles - 24 of them
-       redundant back-facing duplicates - so each shot adds ~48 short-lived
-       area lights. And CL_MuzzleFlash already spawns a dynamic light at the
-       same point, so this doubles up rather than replacing it. */
-    cl_muzzleflash_light = Cvar_Get("cl_muzzleflash_light", "0", CVAR_ARCHIVE);
+       ON by default, because a path traced muzzle flash that does not light
+       the room is the one thing people notice immediately, and the dynamic
+       light alone is a point source with none of the shape the model has.
+
+       KNOW WHAT IT COSTS before turning it off is suggested as a fix for
+       something else. Light extraction makes ONE LIGHT POLY PER TRIANGLE and
+       these models are 48 triangles - 24 of them redundant back-facing
+       duplicates - so each shot adds ~48 short-lived area lights. And
+       CL_MuzzleFlash already spawns a dynamic light at the same point, so this
+       doubles up rather than replacing it. On a weapon that fires every 100 ms
+       in a room already near the light budget, 0 is the first thing to try. */
+    cl_muzzleflash_light = Cvar_Get("cl_muzzleflash_light", "1", CVAR_ARCHIVE);
     // dev aid: "x y z" overrides the built-in muzzle offset for the weapon in
     // hand, so one can be dialled in live instead of rebuilding each time
     cl_muzzleflash_offset = Cvar_Get("cl_muzzleflash_offset", "", 0);

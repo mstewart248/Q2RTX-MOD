@@ -104,6 +104,27 @@ DLSS-specific renderer work that made the above actually look right:
   `sky_map_sun_azimuth` / `sky_map_sun_elevation` place the sun on maps with no
   sun entity; `pt_sky_light_scale` scales the radiance a map skybox casts into
   the level.
+* **Animated sky and a moving sun** (`sun_animate`). The sun tracks across the
+  sky in real time, taking the whole sky — colour, horizon, god rays and the
+  light the level is actually lit by — with it. `sun_animate_step` sets the
+  speed. The original throttled variant is still selectable for the old
+  behaviour; the default path updates smoothly with no measurable cost, because
+  the sun angle is recomputed per frame regardless and only the sky's own
+  lookup tables are rebuilt when the angle has moved enough to matter.
+  `sky_map_sun_animate` turns it on for a single map, and the base-game maps
+  ship with sensible sun tracks.
+* **Reconstructed vertex normals on alias models** (`pt_model_smooth_normals`,
+  on by default). A `.md2` does not store a normal — it stores one byte per
+  vertex, an index into the 162-entry `bytedirs` table, so neighbouring vertices
+  across a curved surface snap to the *same* entry and the interpolation has
+  nothing to interpolate. That is the faceted 1997 look, and it survives into
+  the path tracer because the shaders interpolate whatever the model gives them.
+  This pass reconstructs the normal each vertex was rounded from, as the
+  angle-weighted average of the adjacent faces, welding split UV-seam copies by
+  position so no seam lights up. Hard edges survive:
+  `pt_model_smooth_angle` (default 60°) is a crease threshold read against the
+  authored normal, so a gun barrel meeting its receiver stays sharp. Set
+  `pt_model_smooth_normals 0` for the exact original shading.
 * **VRAM reduction** of up to ~3 GB versus upstream, plus `pt_blas_fast_trace` /
   `pt_tlas_fast_trace` build-quality switches and a resizable animated primitive
   buffer (`pt_primbuf`).
@@ -263,6 +284,12 @@ of `pak0.pak` — nothing has to be unpacked. What is supported:
 * **Rerelease muzzle flashes** (`cl_muzzleflash_models`) — a starburst model at
   the muzzle rather than only a dynamic light, in first and third person, with
   aim, offset, scale, brightness and duration cvars.
+* **The item wheel** (`cl_itemwheel`) — the remaster's radial selector, bound to
+  `+wheel` / `+wheel2`. Holding it slows the game to `cl_itemwheel_slowmo`
+  (default 0.25) rather than pausing, blurs the scene behind it
+  (`cl_itemwheel_blur`), and picks by direction rather than by cycling.
+  `cl_itemwheel_sens` scales pointer sensitivity and `cl_itemwheel_x` places it
+  horizontally.
 * **`misc_flare` coronas** (`cl_flares`), the rerelease **weapon wheel / weapon
   bar** (`cl_weaponbar`, `cl_weaponbar_hold`, `cl_weaponbar_time`), **boss health
   bars** (`scr_health_bars`), the item-name readout, the flashlight,
@@ -284,11 +311,54 @@ of `pak0.pak` — nothing has to be unpacked. What is supported:
 * **Weapon switching**: `g_quick_weapon_switch` (the rerelease's 20 Hz raise and
   lower plus `weapons/change.wav`) and `g_instant_weapon_switch`. Neither is
   latched, so the menu toggle takes effect immediately.
+* **Gravity zone brushes** — `trigger_gravity` with the rerelease's `TOGGLE`,
+  `START_OFF` and `CLIPPED` spawnflags, so a map can switch a low- or
+  zero-gravity volume on and off mid-level instead of only setting it once.
+  A missing `gravity` key is treated as "not specified" rather than as zero,
+  which is what `mguhub`'s `0.5` needs to mean half gravity and not none.
 * Rerelease items, entities and spawn functions, autosave timing
   (`g_auto_save_min_time`), tracker drag/lift (`g_tracker_drag`,
   `g_tracker_lift`), and the save-game format work to carry all of it.
 * Gameplay changes made early in this fork's life are **gated behind menu
   options**, so a fresh install plays with stock behaviour.
+
+## Demo playback
+
+Both demo formats play, from one client: the classic protocol 34/35/36 `.dm2`
+files, and the **Quake II 2023 remaster's own demos** — including the seven id
+ships with it (`demo1`, `demo2`, `rdemo1`, `rdemo2`, `xdemo1`–`xdemo3`).
+
+The remaster runs on KEX, which writes a protocol of its own: 2022 in every
+shipped `.dm2`, 2023 on the wire. It is recognisably Quake II — same message
+framing, same delta compression — but every structure it carries has been
+widened and the tables they index into have moved. Rather than grow a second
+engine inside the client, [`src/client/kexdemo.c`](src/client/kexdemo.c)
+translates a KEX message stream into the state the existing client already knows
+how to render, once, at parse time. Nothing is ever written back: this client
+still records and serves 34/35/36.
+
+* **Configstrings** are remapped — KEX raised `MAX_MODELS` to 8192 and inserted
+  a shadow-light table, so every section sits at a different index.
+* **Entity states** carry float origins, 64-bit effects, and per-entity alpha,
+  scale, owner, old_frame and split-screen fields. Everything with a home is
+  kept, including the alpha and scale this fork already had.
+* **Protocol 2022's variable origin precision** is handled: an entity's origin
+  is 32-bit float or 16-bit fixed point depending on its `solid`, and `solid` is
+  itself delta compressed — so it has to be tracked per entity for the whole
+  demo, with a separate baseline copy, because `U_REMOVE` returns an entity to
+  its baseline and the delta that resurrects it is encoded against *that*.
+* **`svc_configblast` / `svc_spawnbaselineblast`** are zlib streams with their
+  own inflate state, separate from `svc_zpacket`'s raw deflate.
+* Table overflows warn **once** rather than once per frame.
+
+The format was derived by reading the streams rather than from headers, then
+verified by parsing every `.dm2` id ships with the remaster end to end with no
+byte left over. A demo whose map differs from the local copy says so and plays
+anyway.
+
+The attract loop in `rerelease/autoexec.cfg` chains all seven on startup;
+`demo <file>` plays one directly, and [photo mode](#photo-mode) works during
+playback, so the free camera can be flown around a paused demo.
 
 ## Gore and physical blood
 
@@ -344,6 +414,19 @@ space, so a burst of sixty costs one instance, not sixty.
   default.
 * **`whereis <file>`** and **`path`** to see which archive or directory a file
   actually came from.
+* **`whatisit [substring]`** — names whatever you are looking at: the model it
+  was given (by name), its skin index, frame, effects and renderfx. It is a
+  *client* command, so it works during demo playback where there is no game
+  library to ask, and it aims with the render view, so it follows the photo-mode
+  free camera. Two models that are reskins of each other cannot be told apart in
+  a screenshot and are obvious here. With a substring it skips aiming and lists
+  every entity in the frame whose model name matches, which is how to catch
+  something that is only on screen for a moment. When a game is running it also
+  forwards to the game library's `whatisit`, which adds the classname, `style`,
+  health and spawnflags.
+* **`spawnmonster <classname> [distance]`**, **`firetarget <targetname>`**,
+  **`killmonsters [radius]`** and **`setpos x y z [pitch yaw]`** — cheat-gated,
+  for reaching behaviour that otherwise sits behind a level's worth of map.
 * `pt_sun_vis_feedback`, `vid_present_stats`, `vid_swapchain_images`,
   `vid_vsync_mailbox`, `vid_fullscreen_exclusive`, plus Vulkan validation helpers
   (`vk_gpu_av`, `vk_gpu_diag`, `vk_sync_validation`, `vk_shader_printf`).
@@ -899,6 +982,13 @@ at the price of a lot of noise, so thousands of frames of accumulation are often
 needed. Use the mouse wheel and `Shift`/`Ctrl` modifiers: wheel alone adjusts the
 focal distance, `Shift+Wheel` adjusts the aperture size, and `Ctrl` makes the
 adjustments finer.
+
+Photo mode **opens at its sharpest**: entering it snaps the aperture to
+`pt_photo_aperture` (default `0.01`) and leaving it puts back whatever the game
+was using. The gameplay default of 2.0 world units is a heavy defocus at
+converged quality, and the wheel adjust is multiplicative — 10% a click — so
+getting a clean frame used to mean thirty clicks down every single time. Set
+`pt_photo_aperture` negative to leave `pt_aperture` alone.
 
 Photo mode also has free camera controls. Once paused, use `W/A/S/D` plus `Q/E`
 to move up and down; `Shift` is faster and `Ctrl` slower. Move the mouse while

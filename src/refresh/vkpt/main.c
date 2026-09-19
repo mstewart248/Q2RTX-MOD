@@ -125,6 +125,7 @@ cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
 cvar_t *cvar_pt_accumulation_bypass_dlss = NULL;
 cvar_t *cvar_pt_projection = NULL;
 cvar_t *cvar_pt_dof = NULL;
+cvar_t *cvar_pt_photo_aperture = NULL;
 cvar_t *cvar_pt_dlss_indirect_spec = NULL;
 cvar_t* cvar_pt_freecam = NULL;
 cvar_t *cvar_pt_nearest = NULL;
@@ -4218,10 +4219,70 @@ static void draw_shadowed_string(int x, int y, int flags, size_t maxlen, const c
 	SCR_DrawStringEx(x, y, flags, maxlen, s, SCR_GetFont());
 }
 
+/*
+=================
+update_photo_mode_aperture
+
+Photo mode opens at its sharpest, not at the gameplay aperture.
+
+pt_aperture defaults to 2.0 world units, and at photo mode's converged quality
+that is a heavy, obvious defocus - while the first thing usually wanted out of
+photo mode is a clean, sharp frame. Getting one meant holding Shift and rolling
+the wheel down some thirty clicks EVERY time the mode was entered, because the
+adjust in R_InterceptKey_RTX is multiplicative: 10% a click, 1% with Ctrl.
+
+So entering photo mode snaps the aperture to pt_photo_aperture, and leaving it
+puts back whatever the game was using. The wheel still works from there - this
+sets the starting point, not a limit.
+
+RESTORING IS NOT POINTLESS, even though the value is overwritten again on the
+next entry. Under the default pt_dof 1 the aperture only exists inside photo
+mode at all (see the enable_dof switch in prepare_ubo) so there is nothing to
+disturb - but pt_dof 2 and 3 use it while the game is being PLAYED, and
+silently leaving a pinhole camera behind would change how the game looks
+afterwards.
+
+pt_photo_aperture below zero turns the whole thing off. Zero is allowed and
+gives a true pinhole; the wheel's own floor of 0.01 lifts it off zero again on
+the first click up, so it is not a trap.
+=================
+*/
+static void update_photo_mode_aperture(bool active)
+{
+	// < 0 means photo mode has not taken the aperture over, so there is
+	// nothing to hand back. Keyed on this rather than on (active) alone so
+	// that switching pt_photo_aperture off mid-session cannot restore a
+	// value that was never saved.
+	static float saved_aperture = -1.f;
+	static bool was_active = false;
+
+	if (active == was_active)
+		return;
+
+	was_active = active;
+
+	if (active) {
+		if (cvar_pt_photo_aperture->value < 0.f)
+			return;
+
+		saved_aperture = cvar_pt_aperture->value;
+		Cvar_SetByVar(cvar_pt_aperture, va("%f", cvar_pt_photo_aperture->value), FROM_CODE);
+	} else if (saved_aperture >= 0.f) {
+		Cvar_SetByVar(cvar_pt_aperture, va("%f", saved_aperture), FROM_CODE);
+		saved_aperture = -1.f;
+	}
+}
+
 static void
 evaluate_reference_mode(reference_mode_t* ref_mode)
 {
-	if (is_accumulation_rendering_active())
+	const bool accumulating = is_accumulation_rendering_active();
+
+	// before the branch below, so the very first accumulated frame is already
+	// using the photo mode aperture rather than converging the old one
+	update_photo_mode_aperture(accumulating);
+
+	if (accumulating)
 	{
 		num_accumulated_frames++;
 
@@ -7847,6 +7908,10 @@ R_Init_RTX(bool total)
 	// 2 -> enabled in the reference and no-denoiser modes
 	// 3 -> always enabled (where are my glasses?)
 	cvar_pt_dof = Cvar_Get("pt_dof", "1", CVAR_ARCHIVE);
+
+	// The aperture photo mode opens at - see update_photo_mode_aperture.
+	// Negative leaves pt_aperture alone, which is the old behaviour.
+	cvar_pt_photo_aperture = Cvar_Get("pt_photo_aperture", "0.01", CVAR_ARCHIVE);
 
 	// DLSS-RR: keep the full real indirect specular instead of the A-SVGF fake specular.
 	// 1 -> forces pt_fake_roughness_threshold to 1 whenever no A-SVGF pass runs (default)
