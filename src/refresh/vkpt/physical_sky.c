@@ -234,12 +234,34 @@ static cvar_t *sky_map_sun_animate;
 // invisible at any rate, and it costs proportionally more only when the player
 // has asked the cycle to run faster.
 //
-// THE DEFAULT IS ALREADY CHEAP. At sun_animate 1 the sun moves 0.069 deg/s, so
-// 0.05 is about 1.4 re-renders a second - a few times the old fixed 4-second
-// throttle, and still nothing next to a frame. 0 is the opt-in setting exposed
-// as "sky updates: real time" in the environment menu, and it is a different
-// order of thing entirely: Matt remembers per-frame costing around 20 fps on a
-// 2080, which is the right shape for a 6.3M-thread cloud march every frame.
+// The environment menu offers three points on this, as "sky updates":
+//
+//   throttled  0.28  The old cadence. At sun_animate 1 the sun moves 0.069
+//                    deg/s, so this is a re-render every ~4 s - what the
+//                    original fixed throttle worked out to. Free, and you can
+//                    see it step, because the sun's colour and the sky-lit
+//                    ambient step with the picture.
+//   smooth     0.05  The default. ~1.4 re-renders a second at sun_animate 1.
+//                    A twentieth of the sun's disc, which at 1024 px per cube
+//                    face is sub-pixel, so nothing steps visibly. NOT free -
+//                    it is several times the throttled rate - but small.
+//   real time  0     Every frame. A different order of thing entirely: Matt
+//                    measures about 20 fps on a 5070 Ti, and remembers about
+//                    the same on a 2080. Worth noting that those two barely
+//                    differing is NOT what a pure cloud-march cost would look
+//                    like across six years of hardware - either the two were
+//                    measured from different baselines (an fps delta is not a
+//                    time, and 200->180 is 0.6 ms while 60->40 is 8 ms), or
+//                    some of the cost is the fixed work around the dispatch:
+//                    the terrain shadowmap render pass, the buffer fill, the
+//                    barriers, and the single-workgroup resolve that drains
+//                    the GPU. The discriminator is the UPDATE_ENVIRONMENT line
+//                    in the profiler with physical_sky_draw_clouds toggled - if
+//                    the march is the cost, clouds off collapses it.
+//
+// Being in degrees is what keeps those three honest as sun_animate is raised:
+// each one re-renders more often at a faster cycle rather than letting the jump
+// grow, which is what a fixed interval would do - 0.28 deg at 1x is 6 deg at 25x.
 static cvar_t *sun_animate_step;
 
 // The sun angle the CURRENTLY RENDERED sky was built around, which the one above

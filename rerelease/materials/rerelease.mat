@@ -141,6 +141,21 @@ models/items/spawngro2/skin:
 	texture_normals materialDev/models/items/spawngro2/skin_n.tga
 	metalness_factor 0
 
+# The rerelease's medic commander grows its spawns with spawngro3, where this
+# fork's own game uses spawngro/spawngro2. The model ships with the remaster
+# but had no material, so it fell back to the default and rendered as a dark
+# fuzzy sphere in rerelease demos. Point it at the spawngro2 art so it matches
+# the ball the rest of the game uses.
+models/items/spawngro3/pskin:
+	texture_base materialDev/models/items/spawngro2/pskin.tga
+	texture_normals materialDev/models/items/spawngro2/pskin_n.tga
+	metalness_factor 0
+
+models/items/spawngro3/skin:
+	texture_base materialDev/models/items/spawngro2/skin.tga
+	texture_normals materialDev/models/items/spawngro2/skin_n.tga
+	metalness_factor 0
+
 models/monsters/carrier/pain2:
 	texture_base materialDev/models/monsters/carrier/pain2.tga
 	texture_normals materialDev/models/monsters/carrier/pain2_n.tga
