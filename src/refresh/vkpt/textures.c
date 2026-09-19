@@ -2024,9 +2024,39 @@ void vkpt_textures_update_descriptor_set()
 		VkSampler sampler = qvk.tex_sampler;
 
 		if (q_img->type == IT_WALL || q_img->type == IT_SKIN) {
-			if (cvar_pt_nearest->integer == 1)
+			/* pt_nearest - how world and model textures are sampled.
+
+			     0  filtered (trilinear + anisotropic)
+			     1  nearest magnification, linear mips + aniso - crisp texels
+			        up close without the shimmer, on EVERY map
+			     2  nearest, mip 0 only - crisp and noisy, on every map
+			     3  as 1, but only on the COLOUR maps
+			     4  as 2, but only on the colour maps
+
+			   WHY 3 AND 4 EXIST. Modes 1 and 2 hit every texture a material
+			   owns, and only one of them is a picture. Normal, roughness and
+			   metallic maps are SHADING DATA sampled per hit, and point
+			   sampling them quantises the surface itself: the normal map steps
+			   between texels instead of sweeping, so a smooth wall lights in
+			   flat facets and every specular highlight crawls between them as
+			   the camera moves. That has nothing to do with wanting visible
+			   texels, and under a temporal denoiser it is the difference that
+			   shows up most.
+
+			   So 3 and 4 point sample the albedo and the emissive - the two the
+			   eye reads as "the texture" - and leave the data maps filtered.
+
+			   IF_SRGB IS THE DISCRIMINATOR, and it is exact rather than a
+			   guess: the material loader tags base and emissive IF_SRGB because
+			   they are colour, and gives normal, roughness and metallic none
+			   because they are not. The same split the renderer already needs
+			   for correct decoding is the split wanted here. */
+			const int  mode = cvar_pt_nearest->integer;
+			const bool colour_map = (q_img->flags & IF_SRGB) != 0;
+
+			if (mode == 1 || (mode == 3 && colour_map))
 				sampler = qvk.tex_sampler_nearest_mipmap_aniso;
-			else if (cvar_pt_nearest->integer >= 2)
+			else if (mode == 2 || (mode == 4 && colour_map))
 				sampler = qvk.tex_sampler_nearest;
 		} else if (q_img->flags & IF_NEAREST) {
 			sampler = qvk.tex_sampler_nearest;

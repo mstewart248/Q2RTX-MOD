@@ -125,6 +125,16 @@ DLSS-specific renderer work that made the above actually look right:
   `pt_model_smooth_angle` (default 60°) is a crease threshold read against the
   authored normal, so a gun barrel meeting its receiver stays sharp. Set
   `pt_model_smooth_normals 0` for the exact original shading.
+* **Texture filtering, including a colour-only nearest mode** (`pt_nearest`).
+  `0` filtered, `1` nearest magnification with linear mips and anisotropy —
+  crisp texels up close with no shimmer at distance — and `2` nearest with mip 0
+  only, crisp and noisy. `3` and `4` are the same two applied to the **albedo
+  and emissive maps only**, leaving normal, roughness and metallic filtered.
+  That split is worth having: the data maps are shading input sampled per hit,
+  and point sampling them quantises the surface itself — a normal map that steps
+  between texels lights a smooth wall in flat facets and makes every highlight
+  crawl as the camera moves, which is not what "I want to see the pixels" asks
+  for. `3` is the one to pick for a pixelated look that still shades cleanly.
 * **VRAM reduction** of up to ~3 GB versus upstream, plus `pt_blas_fast_trace` /
   `pt_tlas_fast_trace` build-quality switches and a resizable animated primitive
   buffer (`pt_primbuf`).

@@ -184,6 +184,13 @@ begin video
         range --status "(tm_exposure_bias)" -f "%+.1f EV" "exposure bias (brightness)" tm_exposure_bias -5 0 0.1
         range --status "(tm_reinhard)" -p -f "%.0f%%" "contrast" tm_reinhard 0 1 0.1
 		range --status "(pt_texture_lod_bias)" "texture LOD bias" pt_texture_lod_bias -2 2 0.5
+        // Sits with the other texture settings rather than down among the
+        // denoiser and glass internals, which is where it used to be.
+        // "colour only" leaves the normal, roughness and metallic maps
+        // filtered - point sampling those quantises the SHADING, not the
+        // picture, and makes highlights crawl as the camera moves.
+        pairs --status "how world and model textures are sampled. The last two point sample the albedo and emissive only, and leave the normal, roughness and metallic maps filtered (pt_nearest)" \
+            "texture filtering" pt_nearest "filtered" 0 "nearest" 1 "nearest, no mipmaps" 2 "nearest, colour only" 3 "nearest, colour only, no mipmaps" 4
         pairs --status "(flt_taa)" "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
         pairs --status "(pt_dlss)" "DLSS Super Resolution" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
         // Ray Reconstruction REPLACES DLSS's denoiser, so it is meaningless without
@@ -246,7 +253,6 @@ begin video
         pairs --status "(pt_restir)" "ReStir Direct Illuminaton" pt_restir off 0 on 1
         toggle --status "(flt_enable)" "denoiser" flt_enable
         toggle --status "(flt_fixed_albedo)" "textures" flt_fixed_albedo ~1
-        pairs --status "(pt_nearest)" "texture filtering" pt_nearest "anisotropic" 0 "mixed" 1 "nearest (noisy)" 2
         pairs --status "experimental feature - simulates reflection and refraction effects in thick glass (pt_thick_glass)" \
             "thick glass refraction" pt_thick_glass "disabled" 0 "photo mode only" 1 "enabled" 2
         pairs --status "(pt_projection)" projection pt_projection perspective 0 cylindrical 1
