@@ -106,9 +106,12 @@ void InitDLSSCvars()
     viewsize_changed(cvar_pt_dlss);
 }
 
-// True when the path tracer should trace two full-resolution layers (field 0 =
-// reflection, field 1 = refraction) rather than two checkerboard halves.
+// True when THIS CONFIGURATION uses two full-resolution layers (field 0 = reflection,
+// field 1 = refraction) rather than two checkerboard halves.
 // Multi-GPU is excluded: there the two fields are how work is split across devices.
+//
+// Built from cvars only, so it is the right question for sizing the screen images -
+// see DLSSSplitFieldsActive() for the one the path tracer asks each frame.
 qboolean DLSSSplitFieldsEnabled() {
     if (cvar_pt_dlss_split_fields == NULL)
         return qfalse;
@@ -123,12 +126,42 @@ qboolean DLSSSplitFieldsEnabled() {
     }
 }
 
+/*
+==================
+DLSSSplitFieldsActive
+
+Whether the fields are being traced RIGHT NOW, as opposed to whether the
+configuration uses them.  The two answers differ in exactly one place: photo mode.
+
+The split fields exist to hand DLSS Ray Reconstruction a guide field it can believe.
+Photo mode does not run DLSS at all (vkpt_accumulation_bypasses_dlss), so nothing
+consumes them, and tracing them is not free - it doubles the packed width of the
+path tracer's screen images.  Photo mode also pins the render scale to 100%
+(drs_process), so leaving them on would ask for a packed width of twice the OUTPUT
+width, against the twice-the-RENDER-width the images were allocated for.  The extent
+check in R_RenderFrame_RTX saw that as "screen image extent changed" and rebuilt
+every screen image - 3.3 GB at 4K - on the way into photo mode and again on the way
+out.  That rebuild is the stall you see when pausing.
+
+Turning them off here instead costs nothing: the packed width drops back to the
+render width, which is what the images are already sized for, the extent stops
+moving, and photo mode traces the classic checkerboard - the unbiased path it used
+before split fields existed, which is what accumulation wants anyway.
+==================
+*/
+qboolean DLSSSplitFieldsActive() {
+    if (!DLSSSplitFieldsEnabled())
+        return qfalse;
+
+    return vkpt_accumulation_bypasses_dlss() ? qfalse : qtrue;
+}
+
 // True when the reflection and refraction layers are traced at half vertical
 // resolution - alternating rows, filled in from the neighbouring row by the combine
 // pass. Applies only to reflect/refract materials; opaque geometry is always full
 // resolution.
 qboolean DLSSFieldHalfRes() {
-    if (!DLSSSplitFieldsEnabled())
+    if (!DLSSSplitFieldsActive())
         return qfalse;
 
     return (cvar_pt_dlss_field_res != NULL && cvar_pt_dlss_field_res->integer == 2)

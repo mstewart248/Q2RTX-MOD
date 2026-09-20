@@ -1307,6 +1307,31 @@ static bool SCR_ResolveRemasteredCinematic(const char *name, char *path, size_t 
 
 /*
 ==================
+SCR_SkipCinematic
+
+A cinematic that never started, handed off exactly the way a finished one is.
+
+The loading plaque is why this exists rather than a bare SCR_FinishCinematic
+call.  SV_SpawnServer raises the plaque for every map command, "map idlog.cin"
+included, and only the started: path at the bottom of SCR_PlayCinematic ever
+took it back down.  A cinematic that could not be opened - not installed, or
+cl_cinematics 0, or a file that will not read - therefore returned with
+cls.disable_screen still set, and SCR_UpdateScreen draws NOTHING AT ALL while
+that is set: no menu, no console, and no sign of whatever "nextserver" went on
+to start underneath it, for the two minutes it takes the plaque to time out.
+That is what the attract loop looks like on an install with no
+video/idlog.cin, and it is indistinguishable from a hang.
+==================
+*/
+static void SCR_SkipCinematic(void)
+{
+    SCR_FinishCinematic();      // hand over to "nextserver" as usual
+    SCR_EndLoadingPlaque();     // nothing is loading, so nothing may hide the screen
+    Con_Close(false);
+}
+
+/*
+==================
 SCR_PlayCinematic
 
 ==================
@@ -1329,7 +1354,7 @@ void SCR_PlayCinematic(const char *name)
     {
         cl.image_precache[0] = R_RegisterPic2(name);
         if (!cl.image_precache[0]) {
-            SCR_FinishCinematic();
+            SCR_SkipCinematic();
             return;
         }
     }
@@ -1337,7 +1362,7 @@ void SCR_PlayCinematic(const char *name)
     {
         if (!Cvar_VariableValue("cl_cinematics"))
         {
-            SCR_FinishCinematic();
+            SCR_SkipCinematic();
             return;
         }
 
@@ -1391,7 +1416,7 @@ void SCR_PlayCinematic(const char *name)
         if (!cin.file)
         {
             Com_WPrintf("Cinematic \"%s\" not found. Skipping.\n", name);
-            SCR_FinishCinematic();
+            SCR_SkipCinematic();
             return;
         }
 
@@ -1425,7 +1450,7 @@ void SCR_PlayCinematic(const char *name)
     }
     else
     {
-        SCR_FinishCinematic();
+        SCR_SkipCinematic();
         return;
     }
 

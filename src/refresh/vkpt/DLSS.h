@@ -86,6 +86,7 @@ void DlssModeChanged(cvar_t* self);
 void DlssSplitFieldsChanged(cvar_t* self);
 void DlssFieldResChanged(cvar_t* self);
 qboolean DLSSSplitFieldsEnabled();
+qboolean DLSSSplitFieldsActive();
 qboolean DLSSFieldHalfRes();
 qboolean DLSSRayReconstructionActive();
 qboolean DLSSBypassDenoiser();

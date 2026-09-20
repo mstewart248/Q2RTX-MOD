@@ -680,7 +680,18 @@ static void SV_NextServer_f(void)
     if (sv.state != ss_pic && sv.state != ss_cinematic)
         return;     // can't nextserver while playing a normal game
 
-    if (Cvar_VariableInteger("deathmatch"))
+    /* A CINEMATIC ALWAYS HAS TO BE ANSWERED.  The deathmatch test is about the
+       end-of-match scoreboard pic, which is meant to sit there until somebody
+       moves; it used to cover cinematics as well, and that is a hang, not a
+       refusal.  A client that has reached the end of a cutscene has already
+       sent this command and put the loading plaque up on its way out
+       (SCR_RunCinematic, src/client/cin.c), so saying nothing back leaves the
+       plaque up for its full two minute timeout with the screen switched off
+       behind it - the player watches the video finish and then stares at
+       LOADING.  Anyone whose deathmatch cvar happened to be set got that from
+       the id logo at the head of the attract loop and from the intro of a new
+       game alike.  Vanilla Quake II has no deathmatch test here at all. */
+    if (sv.state == ss_pic && Cvar_VariableInteger("deathmatch"))
         return;
 
     sv.name[0] = 0; // make sure another doesn't sneak in
