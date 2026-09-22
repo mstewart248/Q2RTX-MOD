@@ -191,6 +191,20 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward)
     float       rot;
     float       variance;
     vec3_t      end;
+    vec3_t      beam_angles, beam_forward, beam_right, beam_up;
+
+    // [Q2RTX] Build the ring basis from the BEAM, not from the view.
+    //
+    // These rings used to be laid out in cl.v_right / cl.v_up, which made them
+    // circles around the beam only while the beam ran along v_forward - the
+    // moment it pointed anywhere else they tilted, flattened against it and
+    // stopped reading as a spiral. That welded the beam's direction to the
+    // view: it could not follow the gun without dragging the sparkles off it.
+    //
+    // Derived from `forward` they are perpendicular by construction, whatever
+    // the beam is aimed at, so the two can no longer come apart.
+    vectoangles2(forward, beam_angles);
+    AngleVectors(beam_angles, beam_forward, beam_right, beam_up);
 
     VectorMA(start, 4096, forward, end);
 
@@ -222,11 +236,11 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward)
 
             // trim it so it looks like it's starting at the origin
             if (i < 10) {
-                VectorScale(cl.v_right, c * (i / 10.0f), dir);
-                VectorMA(dir, s * (i / 10.0f), cl.v_up, dir);
+                VectorScale(beam_right, c * (i / 10.0f), dir);
+                VectorMA(dir, s * (i / 10.0f), beam_up, dir);
             } else {
-                VectorScale(cl.v_right, c, dir);
-                VectorMA(dir, s, cl.v_up, dir);
+                VectorScale(beam_right, c, dir);
+                VectorMA(dir, s, beam_up, dir);
             }
 
             p->alpha = 0.5f;

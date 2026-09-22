@@ -75,21 +75,78 @@ extern cvar_t* cvar_pt_particle_emissive;
 //     The beam is drawn from the moved origin along the old direction, so it
 //     runs parallel to the real shot and passes about 7 units under the impact.
 //
-//  2. THE SPARKLE PARTICLES COLLAPSE ONTO THE BEAM. CL_Heatbeam builds its
-//     rings in the VIEW basis (cl.v_right / cl.v_up) at a radius of only 1.5
-//     units. The view path forces the beam direction to be cl.v_forward, so
-//     those rings are exactly perpendicular to the beam and read as circles
-//     around it. Point the beam anywhere else and the rings tilt, flatten
-//     against the beam and stop looking like a spiral.
+//  2. THE SPARKLE PARTICLES COLLAPSE ONTO THE BEAM. (FIXED - left here because
+//     it explains the shape of the code.) CL_Heatbeam used to build its rings
+//     in the VIEW basis (cl.v_right / cl.v_up) at a radius of only 1.5 units,
+//     so they read as circles only while the beam ran along cl.v_forward;
+//     pointed anywhere else they tilted and flattened against it. The rings are
+//     built around the BEAM now, so the direction is free.
 //
-// Both are properties of the VIEW path being view-aligned by construction, so
-// no amount of tuning the world-muzzle path fixes them - see the beam section
-// of [[q2rtx-compass-and-beam-view]] for what a real fix needs.
+// (1) is still a property of the VIEW path being view-aligned by construction,
+// so no amount of tuning the world-muzzle path fixes it - see the beam section
+// of [[q2rtx-compass-and-beam-view]].
 //
 // 1 forces the world-muzzle chain to be used for the first-person view too.
 // Kept for experimenting; the two-chain path below means you should not need
 // it - your own beam now gets BOTH, each restricted to where it belongs.
 static cvar_t   *cl_beam_thirdperson;
+
+// [Q2RTX] Rebuild your own first-person beam on the CURRENT view ray instead of
+// aiming it at the server's stale impact point. DEFAULT 1 - without it the beam
+// lags behind a fast turn or a strafe by a full round trip while the sparkle
+// rings, which are built from cl.v_forward, stay on the crosshair, so the two
+// visibly come apart. See the long comment in CL_AddPlayerBeams.
+//
+// 0 restores the old behaviour.
+static cvar_t   *cl_beam_track_view;
+
+// [Q2RTX] Move the start of the first-person beam onto the weapon model, as
+// "forward left up" in the GUN's own basis - the same convention and units as
+// cl_muzzleflash_offset. DEFAULT EMPTY, i.e. OFF.
+//
+// The theory was sound and the result was worse, so read this before switching
+// it on. The beam does start 7 units in front of your EYE in the VIEW basis,
+// which carries none of what the gun carries - the gunangles sway (the game
+// code feeds it your angular velocity, so it leans hardest on a fast flick),
+// the weapon kick, CL_AdjustGunPosition's pullback - so the model really does
+// move independently of it. Hanging the beam off CL_GetViewWeaponTransform
+// fixes that by construction.
+//
+// What it also does is destroy the thing that made the beam read as coming out
+// of the barrel in the first place. From 7 units the first 32-unit segment is
+// enormous on screen and the gun is drawn on top of it, so the beam APPEARS to
+// emerge whereever the gun's silhouette ends - it is attached by occlusion, not
+// by position. Start it out at the barrel instead and that segment shrinks to a
+// thin line with a visible near end, which then floats in mid-air beside the
+// gun. This is the same failure the old cl_beam_offset note describes, and 30
+// units forward reproduced it exactly.
+//
+// So if you do tune this, tune it SMALL - far enough to ride the gun, close
+// enough that the near segment still covers it. Empty, or a gun that is not
+// being drawn (hand 2, no player model), uses the view-basis start.
+static cvar_t   *cl_beam_muzzle_offset;
+
+// [Q2RTX] How much of the beam's DIRECTION comes from the gun's own axis
+// instead of from the crosshair. 0 = crosshair, 1 = welded to the barrel.
+//
+// Anchoring the start on the gun stopped the beam's ROOT sliding off the model,
+// but the shaft still swung away from it on a fast spin, and in the opposite
+// direction: the beam LEADS the weapon. That is not lag, it is the gun's own
+// lag. SV_CalcGunOffset feeds gunangles 0.1 of your frame-to-frame angle delta
+// with the sign reversed, so the model deliberately trails a turn - and it
+// arrives from the server on top of that, so it trails by a round trip as well.
+// A beam drawn from the barrel to where you are looking RIGHT NOW is therefore
+// at an angle to the barrel for exactly as long as you keep spinning.
+//
+// So the beam has to trail with it. Leaning the direction onto the gun's axis
+// costs aim only while the sway is large, which is while you are spinning and
+// cannot see where it lands anyway; standing still gunangles is ~0 and the two
+// axes are the same vector, so this changes nothing at rest.
+//
+// This is only safe now that CL_Heatbeam builds its rings around the beam
+// instead of around the view - before that, pointing the beam off v_forward
+// tore the sparkles off it. See the comment there.
+static cvar_t   *cl_beam_follow_gun;
 
 // How much bigger than its own 4x6 units a compass breadcrumb is drawn. The
 // model is authored small; this is what makes it a mark you can read from the
@@ -836,6 +893,11 @@ typedef struct {
     int         endtime;
     vec3_t      offset;
     vec3_t      start, end;
+    // [Q2RTX] Length of the server's trace, muzzle to impact. `end` is a world
+    // point from the server frame that spawned this beam, and it goes stale the
+    // moment you turn or strafe; the RANGE does not, so it is what the
+    // first-person beam gets rebuilt from every frame. See CL_AddPlayerBeams.
+    float       range;
 } beam_t;
 
 static beam_t   cl_beams[MAX_BEAMS];
@@ -887,6 +949,9 @@ static void CL_ParsePlayerBeam(qhandle_t model)
             VectorCopy(te.pos1, b->start);
             VectorCopy(te.pos2, b->end);
             VectorCopy(te.offset, b->offset);
+            // [Q2RTX] Capture the trace length NOW - b->start is overwritten
+            // with the view gun position on the first draw of your own beam.
+            b->range = Distance(te.pos2, te.pos1);
             return;
         }
     }
@@ -900,6 +965,7 @@ static void CL_ParsePlayerBeam(qhandle_t model)
             VectorCopy(te.pos1, b->start);
             VectorCopy(te.pos2, b->end);
             VectorCopy(te.offset, b->offset);
+            b->range = Distance(te.pos2, te.pos1);
             return;
         }
     }
@@ -1053,6 +1119,7 @@ static void CL_AddPlayerBeams(void)
     int         framenum;
     float       hand_multiplier;
     bool        view_chain;
+    vec3_t      aim_end;
     player_state_t  *ps, *ops;
 
     if (info_hand->integer == 2)
@@ -1068,11 +1135,11 @@ static void CL_AddPlayerBeams(void)
             continue;
 
         // Your own beam in first person needs TWO chains. The view-derived one
-        // is the only thing that looks right down the barrel - it is aligned to
-        // v_forward, which is what makes the sparkle rings circle it - but it
-        // sits at eye level, so in a mirror it comes out of your face. The
-        // world chain is the opposite. Each is restricted to where it belongs
-        // by its render flag; see the emit calls below.
+        // is the only thing that looks right down the barrel - it starts on the
+        // gun and leans onto its axis - but it sits at eye level, so in a
+        // mirror it comes out of your face. The world chain is the opposite.
+        // Each is restricted to where it belongs by its render flag; see the
+        // emit calls below.
         //
         // In third person (chase cam) there is no view weapon to match, so the
         // world chain is used for everything.
@@ -1088,49 +1155,97 @@ static void CL_AddPlayerBeams(void)
                 b->start[j] = cl.refdef.vieworg[j] + ops->gunoffset[j] +
                     CL_KEYLERPFRAC * (ps->gunoffset[j] - ops->gunoffset[j]);
 
-            VectorMA(b->start, (hand_multiplier * b->offset[0]), cl.v_right, org);
-            VectorMA(org, b->offset[1], cl.v_forward, org);
-            VectorMA(org, b->offset[2], cl.v_up, org);
-            if (info_hand->integer == 2)
-                VectorMA(org, -1, cl.v_up, org);
+            // [Q2RTX] Start the beam ON THE GUN, in the gun's own basis, so it
+            // rides the sway, the kick and the wall pullback with the model
+            // instead of being rebuilt beside it from the view every frame.
+            // See cl_beam_muzzle_offset.
+            //
+            // NOTE the minus on the lateral term: the offset is written
+            // "forward left up" to match cl_muzzleflash_offset, and a left
+            // component is applied against -right. hand_multiplier flips it for
+            // a left-handed gun, which RF_LEFTHAND mirrors in the renderer.
+            vec3_t  gun_origin, gun_angles, mz;
+            vec3_t  gun_forward, gun_right, gun_up;
+            bool    have_gun;
 
-            // calculate pitch and yaw
-            VectorSubtract(b->end, org, dist);
+            have_gun = CL_GetViewWeaponTransform(gun_origin, gun_angles);
+            if (have_gun)
+                AngleVectors(gun_angles, gun_forward, gun_right, gun_up);
 
-            // FIXME: don't add offset twice?
-            d = VectorLength(dist);
-            VectorScale(cl.v_forward, d, dist);
-            VectorMA(dist, (hand_multiplier * b->offset[0]), cl.v_right, dist);
-            VectorMA(dist, b->offset[1], cl.v_forward, dist);
-            VectorMA(dist, b->offset[2], cl.v_up, dist);
-            if (info_hand->integer == 2)
-                VectorMA(org, -1, cl.v_up, org);
+            if (have_gun && cl_beam_muzzle_offset->string[0] &&
+                sscanf(cl_beam_muzzle_offset->string, "%f %f %f",
+                       &mz[0], &mz[1], &mz[2]) == 3) {
+                VectorMA(gun_origin, mz[0], gun_forward, org);
+                VectorMA(org, -mz[1] * hand_multiplier, gun_right, org);
+                VectorMA(org, mz[2], gun_up, org);
+            } else {
+                VectorMA(b->start, (hand_multiplier * b->offset[0]), cl.v_right, org);
+                VectorMA(org, b->offset[1], cl.v_forward, org);
+                VectorMA(org, b->offset[2], cl.v_up, org);
+                if (info_hand->integer == 2)
+                    VectorMA(org, -1, cl.v_up, org);
+            }
 
-            // The SPARKLE keeps the view-aligned direction above, and it has
-            // to: CL_Heatbeam builds its rings in the view basis (cl.v_right /
-            // cl.v_up) at a radius of only 1.5 units, so they read as circles
-            // around the beam only while the beam runs along v_forward. Point
-            // it anywhere else and they tilt and flatten onto it.
+            // [Q2RTX] Put the ENDPOINT back on the current view ray.
+            //
+            // b->end is where the server's trace landed, and the server traced
+            // with the angles from a usercmd that is a full round trip old. In
+            // every frame since, `org` above has tracked the gun exactly and
+            // b->end has not, so the drawn beam falls behind the crosshair as
+            // soon as you turn fast or strafe - while CL_Heatbeam's rings,
+            // which are built from cl.v_forward, stay on it. That is the split
+            // you see: rings on the crosshair, beam trailing off to the side.
+            //
+            // Only the DIRECTION of the shot is stale; its RANGE is not. So
+            // re-fire the server's trace from where the eye is now, along where
+            // it is looking now, and clip it against the world so turning into
+            // a near wall shortens the beam instead of pushing it through.
+            // Standing still this lands on b->end exactly - it is the same
+            // trace from the same place - so nothing changes when nothing moves.
+            if (cl_beam_track_view->integer && b->range > 0) {
+                vec3_t  eye_muzzle;
+                trace_t tr;
+
+                // Where the SERVER fires from: the eye plus the same
+                // {right, forward, up} offset, which does not depend on hand.
+                VectorMA(cl.refdef.vieworg, b->offset[0], cl.v_right, eye_muzzle);
+                VectorMA(eye_muzzle, b->offset[1], cl.v_forward, eye_muzzle);
+                VectorMA(eye_muzzle, b->offset[2], cl.v_up, eye_muzzle);
+                VectorMA(eye_muzzle, b->range, cl.v_forward, aim_end);
+
+                tr = CL_TracePoint(eye_muzzle, aim_end, MASK_SHOT, false);
+                VectorCopy(tr.endpos, aim_end);
+            } else {
+                VectorCopy(b->end, aim_end);
+            }
+
+            // Muzzle to impact. This is the honest line and it is what the
+            // beam used to be built from a second time, with a view-aligned
+            // vector in between for the sparkles - the two are one vector now
+            // that the rings no longer need the view basis.
+            VectorSubtract(aim_end, org, dist);
+
+            // [Q2RTX] Lean it onto the gun's axis so the shaft trails the model
+            // through a spin instead of leading it. See cl_beam_follow_gun.
+            if (have_gun && cl_beam_follow_gun->value > 0) {
+                float follow = Cvar_ClampValue(cl_beam_follow_gun, 0, 1);
+
+                d = VectorNormalize(dist);
+                for (j = 0; j < 3; j++)
+                    dist[j] += follow * (gun_forward[j] - dist[j]);
+                VectorNormalize(dist);
+                VectorScale(dist, d, dist);
+            }
+
+            // Same vector to both, so a sparkle can no longer sit off the beam.
             CL_Heatbeam(org, dist);
-
-            // [Q2RTX] ...but the BEAM ITSELF aims at the real impact point.
-            //
-            // The direction built above is v_forward plus the muzzle offset,
-            // which is NOT a line from the muzzle to where the shot actually
-            // landed - the offset tilts it down ~3 units and right ~2, so the
-            // drawn beam ended just under the impact sparks and read as
-            // shooting low. The server's endpoint is the truth: it traced from
-            // the eye along v_forward, so b->end IS the crosshair.
-            //
-            // Decoupling the two is the whole fix - the particles stay
-            // view-aligned and the beam connects muzzle to impact.
-            VectorSubtract(b->end, org, dist);
 
             vectoangles2(dist, angles);
 
             framenum = 1;
         } else {
             VectorCopy(b->start, org);
+            VectorCopy(b->end, aim_end);
 
             // calculate pitch and yaw
             VectorSubtract(b->end, org, dist);
@@ -1180,7 +1295,10 @@ static void CL_AddPlayerBeams(void)
 
             VectorCopy(b->start, world_org);
             world_org[2] -= cl_beam_muzzle_drop->value;
-            VectorSubtract(b->end, world_org, world_dist);
+            // Same corrected endpoint as the view chain - a mirror showing a
+            // beam that disagrees with the one down the barrel is worse than
+            // either being slightly wrong.
+            VectorSubtract(aim_end, world_org, world_dist);
             vectoangles2(world_dist, world_angles);
 
             CL_EmitBeamChain(b->model, world_org, world_dist, world_angles,
@@ -2064,6 +2182,12 @@ void CL_ClearTEnts(void)
 void CL_InitTEnts(void)
 {
     cl_beam_thirdperson = Cvar_Get("cl_beam_thirdperson", "0", CVAR_ARCHIVE);
+    cl_beam_track_view = Cvar_Get("cl_beam_track_view", "1", CVAR_ARCHIVE);
+    // NOT archived, exactly like cl_muzzleflash_offset: a dev knob that
+    // follows you between games in q2config.cfg is how the last one got a
+    // stale 30 -10 -9 welded on after its default changed.
+    cl_beam_muzzle_offset = Cvar_Get("cl_beam_muzzle_offset", "7 -2 -3", 0);
+    cl_beam_follow_gun = Cvar_Get("cl_beam_follow_gun", "1", 0);
     cl_beam_muzzle_drop = Cvar_Get("cl_beam_muzzle_drop", "10", CVAR_ARCHIVE);
     cl_railtrail_type = Cvar_Get("cl_railtrail_type", "0", 0);
     cl_railtrail_time = Cvar_Get("cl_railtrail_time", "1.0", 0);

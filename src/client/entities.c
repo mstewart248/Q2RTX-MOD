@@ -1649,6 +1649,35 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
     }
 }
 
+// [Q2RTX] The view weapon's FINAL transform, republished every frame for
+// anything that has to ride the gun rather than the view.
+//
+// Everything the gun does that the view does not is baked in here and nowhere
+// else: the gunangles sway (which the game code drives off your angular
+// velocity, so it swings hardest exactly when you flick), the weapon kick
+// added by CL_SetupFirstPersonView, CL_AdjustGunPosition's pullback out of
+// walls, and the high-fov nudge. Anything that rebuilds its own "near the gun"
+// position from cl.refdef.vieworg and cl.v_forward gets none of it and comes
+// apart from the model whenever one of them moves - which is what the plasma
+// beam was doing.
+//
+// Stamped with cls.framecount because CL_AddViewWeapon has several early
+// returns (gun hidden, no player model, no gun model yet); a caller must be
+// able to tell "the gun is over here" from "there is no gun this frame".
+static vec3_t   cl_view_gun_origin;
+static vec3_t   cl_view_gun_angles;
+static int      cl_view_gun_framecount = -1;
+
+bool CL_GetViewWeaponTransform(vec3_t origin, vec3_t angles)
+{
+    if (cl_view_gun_framecount != cls.framecount)
+        return false;
+
+    VectorCopy(cl_view_gun_origin, origin);
+    VectorCopy(cl_view_gun_angles, angles);
+    return true;
+}
+
 static void CL_AddViewWeapon(void)
 {
     player_state_t *ps, *ops;
@@ -1754,6 +1783,11 @@ static void CL_AddViewWeapon(void)
 	model_t* model = MOD_ForHandle(gun.model);
 	if (model && strstr(model->name, "v_flareg"))
 		gun.scale = 0.3f;
+
+    // [Q2RTX] Publish it before drawing, so the beam can hang off the barrel.
+    VectorCopy(gun.origin, cl_view_gun_origin);
+    VectorCopy(gun.angles, cl_view_gun_angles);
+    cl_view_gun_framecount = cls.framecount;
 
     V_AddEntity(&gun);
 

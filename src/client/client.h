@@ -885,6 +885,7 @@ void CL_DeltaFrame(void);
 void CL_AddEntities(void);
 // Adjust a gun origin so that the gun doesn't intersect with walls. Used for view weapons.
 void CL_AdjustGunPosition(vec3_t viewangles, vec3_t *gun_origin);
+bool CL_GetViewWeaponTransform(vec3_t origin, vec3_t angles);
 void CL_CalcViewValues(void);
 
 #if USE_DEBUG
