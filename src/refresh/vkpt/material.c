@@ -1230,13 +1230,20 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		if (mat->filename_base[0] && !mat->image_base) {
 			load_material_image(&mat->image_base, mat->filename_base, mat, type, flags | IF_SRGB);
 			if (mat->image_base == R_NOTEXTURE) {
-				Com_WPrintf("Texture '%s' specified in material '%s' could not be found. Using the low-res texture.\n", mat->filename_base, mat_name_no_ext);
-				
+				/* Only worth a warning if the fallback is missing too. A .mat
+				   entry naming a texture that has not been made yet - a stub
+				   pointing into materialDev/ - renders with the texture it would
+				   have replaced, which is the intended result, and a release
+				   carrying thousands of those printed one warning each.
+				   developer 1 still lists every one for whoever is authoring. */
 				mat->image_base = IMG_Find(texture_name, type, flags | IF_SRGB);
 				mat->original_width = mat->image_base->width;
 				mat->original_height = mat->image_base->height;
 				if (mat->image_base == R_NOTEXTURE) {
+					Com_WPrintf("Texture '%s' specified in material '%s' could not be found, and neither could '%s'.\n", mat->filename_base, mat_name_no_ext, texture_name);
 					mat->image_base = NULL;
+				} else {
+					Com_DPrintf("Texture '%s' specified in material '%s' could not be found. Using the low-res texture.\n", mat->filename_base, mat_name_no_ext);
 				}
 			}
 			else
@@ -1248,7 +1255,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		if (mat->filename_normals[0] && !mat->image_normals) {
 			load_material_image(&mat->image_normals, mat->filename_normals, mat, type, flags);
 			if (mat->image_normals == R_NOTEXTURE) {
-				Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_normals, mat_name_no_ext);
+				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_normals, mat_name_no_ext);
 				mat->image_normals = NULL;
 			}
 		}
@@ -1256,7 +1263,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		if (mat->filename_roughness[0] && !mat->image_roughness) {
 			load_material_image(&mat->image_roughness, mat->filename_roughness, mat, type, flags);
 			if (mat->image_roughness == R_NOTEXTURE) {
-				Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_roughness, mat_name_no_ext);
+				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_roughness, mat_name_no_ext);
 				mat->image_roughness = NULL;
 			}
 		}
@@ -1264,7 +1271,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		if (mat->filename_metallic[0] && !mat->image_metallic) {
 			load_material_image(&mat->image_metallic, mat->filename_metallic, mat, type, flags);
 			if (mat->image_metallic == R_NOTEXTURE) {
-				Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_metallic, mat_name_no_ext);
+				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_metallic, mat_name_no_ext);
 				mat->image_metallic = NULL;
 			}
 		}
@@ -1272,7 +1279,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		if (mat->filename_emissive[0] && !mat->image_emissive) {
 			load_material_image(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
 			if (mat->image_emissive == R_NOTEXTURE) {
-				Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_emissive, mat_name_no_ext);
+				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_emissive, mat_name_no_ext);
 				mat->image_emissive = NULL;
 			}
 		}
@@ -1280,7 +1287,7 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		if (mat->filename_mask[0] && !mat->image_mask) {
 			mat->image_mask = IMG_Find(mat->filename_mask, type, flags | IF_EXACT | (mat->image_flags & IF_SRC_MASK));
 			if (mat->image_mask == R_NOTEXTURE) {
-				Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_mask, mat_name_no_ext);
+				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_mask, mat_name_no_ext);
 				mat->image_mask = NULL;
 			}
 		}

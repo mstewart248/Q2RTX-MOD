@@ -538,8 +538,15 @@ qhandle_t R_RegisterModel(const char *name)
 				if (i == num_missing && num_missing < q_countof(missing)) {
 					missing[num_missing] = Z_CopyString(normalized);
 					num_missing++;
-					Com_WPrintf("%s: '%s' is not on the search path; anything using "
-								"it will be invisible.\n", __func__, normalized);
+					// players/<model>/w_*.md2 are probed for every weapon on every
+					// player model and most do not exist; the client falls back to
+					// the model's default weapon (CL_AddPacketEntities), so those
+					// are expected rather than a fault - developer only
+					if (!Q_stricmpn(normalized, "players/", 8))
+						Com_DPrintf("%s: optional '%s' not present\n", __func__, normalized);
+					else
+						Com_WPrintf("%s: '%s' is not on the search path; anything using "
+									"it will be invisible.\n", __func__, normalized);
 				}
 				return 0;
 			}

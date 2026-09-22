@@ -1056,6 +1056,42 @@ void Qcommon_Init(int argc, char **argv)
         if ((cmd = Cmd_AliasCommand(cmd)) != NULL) {
             Cbuf_AddText(&cmd_buffer, cmd);
             Cbuf_Execute(&cmd_buffer);
+        } else if (!COM_DEDICATED) {
+            /* NO client_start ANYWHERE: play the attract loop - the id
+               Software logo, then the demos - the way the original game did.
+
+               No shipped config defines client_start, neither pak's default.cfg
+               nor this port's q2rtx.cfg, so without this a stock install went
+               straight to the menu and the intro only ever appeared on a
+               machine with a hand-written autoexec.cfg. This is only the
+               fallback: any client_start a player defines wins, and an empty
+               one ('alias client_start ""') switches the loop off.
+
+               idlog.cin is the original out of baseq2 (the remaster has no .ogv
+               of it); a missing one is skipped and the demos still start. The
+               "set nextserver" has to come AFTER the map command, which clears
+               it, and the last demo points back at the first DEMO, so the logo
+               plays once per launch. The rerelease adds the Ground Zero
+               (rdemo*) and Reckoning (xdemo*) demos. */
+            if (Cvar_VariableInteger("fs_rerelease")) {
+                Cbuf_AddText(&cmd_buffer,
+                    "alias rr_logo \"map idlog.cin; set nextserver rr1\"\n"
+                    "alias rr1 \"demo demo1.dm2; popmenu; set nextserver rr2\"\n"
+                    "alias rr2 \"demo demo2.dm2; popmenu; set nextserver rr3\"\n"
+                    "alias rr3 \"demo rdemo1.dm2; popmenu; set nextserver rr4\"\n"
+                    "alias rr4 \"demo rdemo2.dm2; popmenu; set nextserver rr5\"\n"
+                    "alias rr5 \"demo xdemo1.dm2; popmenu; set nextserver rr6\"\n"
+                    "alias rr6 \"demo xdemo2.dm2; popmenu; set nextserver rr7\"\n"
+                    "alias rr7 \"demo xdemo3.dm2; popmenu; set nextserver rr1\"\n"
+                    "rr_logo\n");
+            } else {
+                Cbuf_AddText(&cmd_buffer,
+                    "alias attract_logo \"map idlog.cin; set nextserver attract1\"\n"
+                    "alias attract1 \"demo demo1.dm2; popmenu; set nextserver attract2\"\n"
+                    "alias attract2 \"demo demo2.dm2; popmenu; set nextserver attract1\"\n"
+                    "attract_logo\n");
+            }
+            Cbuf_Execute(&cmd_buffer);
         }
     }
 

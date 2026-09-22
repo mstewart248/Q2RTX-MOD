@@ -2688,6 +2688,32 @@ static int add_pack_files(unsigned mode, const char *dir, const char *prefix)
     return count;
 }
 
+// Drops from this one mount of (pack) every entry that also exists as a loose
+// file under (dir), by unlinking it from the pack's lookup hash. Each mount
+// loads its own pack_t, so other mounts of the same file are unaffected.
+static int pack_hide_loose(pack_t *pack, const char *dir)
+{
+    char path[MAX_OSPATH];
+    int hidden = 0;
+
+    for (unsigned i = 0; i < pack->hash_size; i++) {
+        packfile_t **link = &pack->file_hash[i];
+
+        while (*link) {
+            const char *name = pack->names + (*link)->nameofs;
+
+            if (Q_concat(path, sizeof(path), dir, "/", name) < sizeof(path)
+                && Sys_IsFile(path)) {
+                *link = (*link)->hash_next;
+                hidden++;
+            } else {
+                link = &(*link)->hash_next;
+            }
+        }
+    }
+    return hidden;
+}
+
 // Pushes the directory itself onto the head of the search path. Whatever goes
 // on last wins, so a loose file always beats the same name inside a pack that
 // was added before it - that is what keeps rerelease/overrides, /materials and
@@ -2782,9 +2808,25 @@ static void q_printf(2, 3) add_game_dir(unsigned mode, const char *fmt, ...)
                one is what made console and menu text fuzzy - 8-texel glyphs
                magnified 3-4x at 1440p. (The glyph-edge lines that once argued
                for it are clamped away in stretch_pic.frag for any font.) */
+            /* BUT A LOOSE FILE IN BASEQ2 STILL BEATS THE PACK. The pack ships
+               NVIDIA's stock q2rtx.menu, q2rtx.cfg, pt_toggles.cfg and
+               maps/*.cfg, and this fork overrides every one of them loose in
+               baseq2 - which, in baseq2's own layering, sits above the pack.
+               Mounting the pack up here without this put the stock copies on
+               top, and the New Game menu lost the three expansions. So this
+               mount carries only what baseq2 does not override. */
+            searchpath_t *before = fs_searchpaths, *search;
+
             memcpy(base, fs_gamedir, dirlen);
             memcpy(base + dirlen, BASEGAME, sizeof(BASEGAME));
             count += add_pack_files(mode, base, "q2rtx_media");
+
+            for (search = fs_searchpaths; search != before; search = search->next) {
+                int hidden = pack_hide_loose(search->pack, base);
+                if (hidden)
+                    Com_DPrintf("%s: %d file(s) of %s overridden loose in %s\n",
+                                __func__, hidden, search->pack->filename, base);
+            }
         }
     }
 
