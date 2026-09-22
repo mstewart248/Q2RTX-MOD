@@ -352,11 +352,60 @@ static bool MOD_BuildMD5Path(const char *md2_path, char *buffer, size_t size)
     return true;
 }
 
+/*
+=================
+MOD_MergedModel
+
+Models the remaster FOLDED INTO ANOTHER MODEL, for when the one the game asks
+for is not on the search path.
+
+This fork's game code still spawns Xatrix's separate models - the ripper,
+hypergun and lasergun soldiers on models/monsters/soldierh, the beta-class
+gladiator on models/monsters/gladb. The remaster ships neither. It merged them:
+soldierh is the stock soldier's skins 6-11 and gladb is the gladiator's skins
+2-3, same meshes, same frame numbering (gladb and gladiatr are both 90 frames;
+soldierh's 475 are the first 475 of the remaster soldier's 575). So a tree with
+loose Xatrix copies in it draws them, and a stock install draws an invisible
+gladiator and a laser soldier with no skin list at all.
+
+The substitution only happens when the requested .md2 is NOT on the path, so a
+setup that does have the classic model keeps it exactly as before. The model is
+still registered under the requested name - it is a separate model_t, the game
+and the renderer never see the other name - and skin_base shifts the entity's
+skinnum onto the merged list.
+=================
+*/
+static bool MOD_MergedModel(const char *name, char *source, size_t size, int *skin_base)
+{
+    static const struct {
+        const char *from;
+        const char *to;
+        int         skin_base;
+    } merged[] = {
+        { "models/monsters/soldierh/tris.md2", "models/monsters/soldier/tris.md2",  6 },
+        { "models/monsters/gladb/tris.md2",    "models/monsters/gladiatr/tris.md2", 2 },
+    };
+
+    for (int i = 0; i < q_countof(merged); i++) {
+        if (FS_pathcmp(name, merged[i].from))
+            continue;
+        if (FS_FileExists(name) || !FS_FileExists(merged[i].to))
+            return false;
+        Q_strlcpy(source, merged[i].to, size);
+        *skin_base = merged[i].skin_base;
+        return true;
+    }
+    return false;
+}
+
 qhandle_t R_RegisterModel(const char *name)
 {
     char normalized[MAX_QPATH];
+    char source[MAX_QPATH];     // the file actually read; see MOD_MergedModel
     char md5_path[MAX_QPATH];
     const char *load_name = name;
+    size_t srclen;
+    int skin_base = 0;
     qhandle_t index;
     size_t namelen;
     int filelen = 0;
@@ -397,6 +446,11 @@ qhandle_t R_RegisterModel(const char *name)
         goto done;
     }
 
+    memcpy(source, normalized, namelen + 1);
+    if (MOD_MergedModel(normalized, source, sizeof(source), &skin_base))
+        load_name = source;
+    srclen = strlen(source);
+
     // Always prefer models from the game dir, even if format might be 'inferior'
     for (int try_location = Q_stricmp(fs_game->string, BASEGAME) ? TRY_MODEL_SRC_GAME : TRY_MODEL_SRC_BASE;
          try_location >= TRY_MODEL_SRC_BASE;
@@ -406,8 +460,8 @@ qhandle_t R_RegisterModel(const char *name)
         if (try_location > 0)
             fs_flags = try_location == TRY_MODEL_SRC_GAME ? FS_PATH_GAME : FS_PATH_BASE;
 
-        char* extension = normalized + namelen - 4;
-        bool is_md2 = namelen > 4 && strcmp(extension, ".md2") == 0;
+        char* extension = source + srclen - 4;
+        bool is_md2 = srclen > 4 && strcmp(extension, ".md2") == 0;
 
         bool try_md3 = cls.ref_type == REF_TYPE_VKPT || (cls.ref_type == REF_TYPE_GL && gl_use_hd_assets->integer);
 
@@ -416,7 +470,7 @@ qhandle_t R_RegisterModel(const char *name)
         // just means not taking the .md3, and the classic shape then comes from
         // the MD5 or the MD2 according to cl_md5_models.
         if (try_md3 && cl_classic_railgun->integer
-            && (strstr(normalized, "weapons/g_rail") || strstr(normalized, "weapons/v_rail")))
+            && (strstr(source, "weapons/g_rail") || strstr(source, "weapons/v_rail")))
             try_md3 = false;
 
         // MOD_LoadMD5 is NULL in the GL renderer, which has no skeletal path
@@ -426,7 +480,7 @@ qhandle_t R_RegisterModel(const char *name)
         {
             memcpy(extension, ".md3", 4);
 
-            filelen = FS_LoadFileFlags(normalized, (void **)&rawdata, fs_flags);
+            filelen = FS_LoadFileFlags(source, (void **)&rawdata, fs_flags);
 
             memcpy(extension, ".md2", 4);
 
@@ -435,7 +489,7 @@ qhandle_t R_RegisterModel(const char *name)
         }
 
         if (!rawdata && try_md5
-            && MOD_BuildMD5Path(normalized, md5_path, sizeof(md5_path)))
+            && MOD_BuildMD5Path(source, md5_path, sizeof(md5_path)))
         {
             filelen = FS_LoadFileFlags(md5_path, (void **)&rawdata, fs_flags);
 
@@ -446,7 +500,7 @@ qhandle_t R_RegisterModel(const char *name)
         }
         if (!rawdata)
         {
-            filelen = FS_LoadFileFlags(normalized, (void **)&rawdata, fs_flags);
+            filelen = FS_LoadFileFlags(source, (void **)&rawdata, fs_flags);
         }
         if (rawdata)
             break;
@@ -454,7 +508,7 @@ qhandle_t R_RegisterModel(const char *name)
 
 	if (!rawdata)
 	{
-		filelen = FS_LoadFile(normalized, (void **)&rawdata);
+		filelen = FS_LoadFile(source, (void **)&rawdata);
 		if (!rawdata) {
 			if (filelen == Q_ERR(ENOENT)) {
 				/* A MODEL THAT IS NOT ON THE SEARCH PATH IS THE MOST INVISIBLE
@@ -571,16 +625,16 @@ qhandle_t R_RegisterModel(const char *name)
         // written by people who are not running with developer 1. At most one
         // line per model per registration.
         Com_WPrintf("%s: %s failed to load (%s); falling back to %s\n",
-                    __func__, load_name, Q_ErrorString(ret), normalized);
+                    __func__, load_name, Q_ErrorString(ret), source);
 
         memset(model, 0, sizeof(*model));
 
-        filelen = FS_LoadFile(normalized, (void **)&rawdata);
+        filelen = FS_LoadFile(source, (void **)&rawdata);
         if (rawdata) {
             if (filelen >= 4 && LittleLong(*(uint32_t *)rawdata) == MD2_IDENT && MOD_LoadMD2) {
                 memcpy(model->name, normalized, namelen + 1);
                 model->registration_sequence = registration_sequence;
-                ret = MOD_LoadMD2(model, rawdata, filelen, normalized);
+                ret = MOD_LoadMD2(model, rawdata, filelen, source);
             }
             FS_FreeFile(rawdata);
             rawdata = NULL;
@@ -593,6 +647,9 @@ qhandle_t R_RegisterModel(const char *name)
     }
 
 	model->model_class = get_model_class(model->name);
+	model->skin_base = skin_base;
+	if (skin_base)
+		Com_DPrintf("%s: %s drawn from %s, skins +%d\n", __func__, normalized, source, skin_base);
 
 done:
     index = (model - r_models) + 1;

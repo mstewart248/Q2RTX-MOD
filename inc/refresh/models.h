@@ -153,6 +153,9 @@ typedef struct model_s {
     int nummeshes;
     struct maliasmesh_s *meshes;
 	model_class_t model_class;
+	// added to entity->skinnum before it indexes the skin list; nonzero only
+	// for a model loaded in place of a merged one, see MOD_MergedModel
+	int skin_base;
 #else
     int numskins;
     struct image_s *skins[MAX_ALIAS_SKINS];

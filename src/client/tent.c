@@ -330,7 +330,10 @@ static explosion_t *CL_PlainExplosion(bool big)
 	}
 	else
 	{
-		ex->ent.model = big ? cl_mod_explo4_big : cl_mod_explo4;
+		// r_explode2 is Rogue's and the remaster does not ship it, so on a
+		// stock install the handle is 0 and a big explosion drew nothing at
+		// all. The regular one is the same effect at the smaller size.
+		ex->ent.model = (big && cl_mod_explo4_big) ? cl_mod_explo4_big : cl_mod_explo4;
     ex->baseframe = 15 * (Q_rand() & 1);
     ex->frames = 15;
 	}

@@ -2637,8 +2637,9 @@ alphacmp:
 
 // Loads every pack file in `dir` and pushes them onto the head of the search
 // path, pakXX.pak first in numerical order and the rest alphabetically.
+// With a (prefix), only packs whose file name starts with it are loaded.
 // Returns how many were added.
-static int add_pack_files(unsigned mode, const char *dir)
+static int add_pack_files(unsigned mode, const char *dir, const char *prefix)
 {
     searchpath_t    *search;
     pack_t          *pack;
@@ -2659,6 +2660,8 @@ static int add_pack_files(unsigned mode, const char *dir)
     qsort(list.files, list.count, sizeof(list.files[0]), pakcmp);
 
     for (i = 0; i < list.count; i++) {
+        if (prefix && Q_stricmpn(list.files[i], prefix, strlen(prefix)))
+            continue;
         len = Q_concat(path, sizeof(path), dir, "/", list.files[i]);
         if (len >= sizeof(path)) {
             Com_EPrintf("%s: refusing oversize path\n", __func__);
@@ -2734,11 +2737,56 @@ static void q_printf(2, 3) add_game_dir(unsigned mode, const char *fmt, ...)
     if ((mode & FS_PATH_GAME) && is_rerelease_dir(fs_gamedir) &&
         Q_concat(nested, sizeof(nested), fs_gamedir, "/" BASEGAME) < sizeof(nested) &&
         Sys_IsDir(nested)) {
-        add_pack_files(mode, nested);
+        add_pack_files(mode, nested, NULL);
         add_dir_path(mode, nested);
     }
 
-    count = add_pack_files(mode, fs_gamedir);
+    count = add_pack_files(mode, fs_gamedir, NULL);
+
+    /* Q2RTX'S OWN MEDIA HAS TO SIT ABOVE THE REREL PAK, NOT BELOW IT.
+
+       q2rtx_media.pkz ships in baseq2, and baseq2 is the bottom of the search
+       path. For the classic game that is the right place: it only has to beat
+       id's pak0.pak, which is also in baseq2 and loads first. The rerelease
+       breaks that. Its pak0.pak is in the GAME dir and re-ships the very
+       assets the media pack replaces, under their classic names - 4466 .wal
+       textures, 501 .pcx skins, pics/conchars.png - and every lookup that
+       prefers the game dir (images: "even if format might be 'inferior'";
+       models: .md3/.md5 probed per location) stops at the rerelease copy and
+       never reaches baseq2. Measured against a stock install: 343 of the
+       pack's images and 43 of its .md3 models were unreachable, the console
+       font among them.
+
+       Extracting the pack into the rerelease dir by hand hides most of this,
+       which is why it showed mainly on a fresh install - though not all of
+       it: the menu art (m_banner_*, m_main_*, conback) was shadowed in such a
+       tree too, because the rerelease's .pcx files were in the game dir
+       and those Q2RTX .tga files were not.
+       Mounting the pack here gives that layering without the extraction:
+       above the rerelease's paks, below its loose files, so a replacement
+       dropped into rerelease/ still wins over both.
+
+       Only q2rtx_media*.pkz - id's paks must stay under the rerelease, and
+       shaders.pkz has to keep losing to a loose baseq2/shader_vkpt/. The pack
+       stays mounted in baseq2 as well; FS_PATH_BASE lookups still see it. */
+    if ((mode & FS_PATH_GAME) && is_rerelease_dir(fs_gamedir)) {
+        char base[MAX_OSPATH];
+        const char *slash = strrchr(fs_gamedir, '/');
+        size_t dirlen = slash ? (size_t)(slash - fs_gamedir) + 1 : 0;
+
+        if (dirlen + sizeof(BASEGAME) <= sizeof(base)) {
+            /* Only three files are shipped under the same NAME by both
+               packs, and Q2RTX's copy is the one wanted for all of them:
+               armor/effect/skin.tga and keys/data_cd/tris.md2 are fixes, and
+               pics/conchars.png is the 256x256 font. The rerelease's 128x128
+               one is what made console and menu text fuzzy - 8-texel glyphs
+               magnified 3-4x at 1440p. (The glyph-edge lines that once argued
+               for it are clamped away in stretch_pic.frag for any font.) */
+            memcpy(base, fs_gamedir, dirlen);
+            memcpy(base + dirlen, BASEGAME, sizeof(BASEGAME));
+            count += add_pack_files(mode, base, "q2rtx_media");
+        }
+    }
 
     // Can't exit early for game directory
     if (!(mode & FS_PATH_GAME) && !count) {

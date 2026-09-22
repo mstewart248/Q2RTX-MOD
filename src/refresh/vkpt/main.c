@@ -2935,7 +2935,7 @@ static bool warn_once_for_model(const model_t* model, int site)
 	return true;
 }
 
-static pbr_material_t const * get_mesh_material(const entity_t* entity, const maliasmesh_t* mesh)
+static pbr_material_t const * get_mesh_material(const entity_t* entity, const model_t* model, const maliasmesh_t* mesh)
 {
 	if (entity->skin)
 	{
@@ -2949,9 +2949,10 @@ static pbr_material_t const * get_mesh_material(const entity_t* entity, const ma
 	   asking whether the answer is non-NULL afterwards reads out of bounds
 	   before the test can help. Check the range first. */
 	int skinnum = 0;
-	if (entity->skinnum >= 0 && entity->skinnum < q_countof(mesh->materials)
-		&& mesh->materials[entity->skinnum])
-		skinnum = entity->skinnum;
+	int wanted = entity->skinnum + model->skin_base;   // see MOD_MergedModel
+	if (entity->skinnum >= 0 && wanted < q_countof(mesh->materials)
+		&& mesh->materials[wanted])
+		skinnum = wanted;
 
 	return mesh->materials[skinnum];
 }
@@ -2959,7 +2960,7 @@ static pbr_material_t const * get_mesh_material(const entity_t* entity, const ma
 static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_t* model,
 	const maliasmesh_t* mesh, bool is_viewer_weapon, bool is_double_sided, float alpha)
 {
-	pbr_material_t const* material = get_mesh_material(entity, mesh);
+	pbr_material_t const* material = get_mesh_material(entity, model, mesh);
 
 	if (!material)
 	{

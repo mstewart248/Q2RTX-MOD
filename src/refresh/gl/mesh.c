@@ -556,15 +556,19 @@ static int texnum_for_mesh(const maliasmesh_t *mesh)
     if (!mesh->numskins)
         return TEXNUM_DEFAULT;
 
-    if (ent->skinnum < 0 || ent->skinnum >= mesh->numskins) {
-        Com_DPrintf("%s: no such skin: %d\n", "GL_DrawAliasModel", ent->skinnum);
+    // see MOD_MergedModel
+    const model_t *model = MOD_ForHandle(ent->model);
+    int skinnum = ent->skinnum + (model ? model->skin_base : 0);
+
+    if (ent->skinnum < 0 || skinnum >= mesh->numskins) {
+        Com_DPrintf("%s: no such skin: %d\n", "GL_DrawAliasModel", skinnum);
         return mesh->skins[0]->texnum;
     }
 
-    if (mesh->skins[ent->skinnum]->texnum == TEXNUM_DEFAULT)
+    if (mesh->skins[skinnum]->texnum == TEXNUM_DEFAULT)
         return mesh->skins[0]->texnum;
 
-    return mesh->skins[ent->skinnum]->texnum;
+    return mesh->skins[skinnum]->texnum;
 }
 
 static void draw_alias_mesh(const maliasmesh_t *mesh)
