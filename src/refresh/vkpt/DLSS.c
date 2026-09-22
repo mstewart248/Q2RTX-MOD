@@ -39,16 +39,12 @@ extern cvar_t* vid_rtx;
 int oldCvarValue;
 
 /* DLSS Ray Reconstruction edge state - see the long note above
-   DlssApplyRayReconstructionSideEffects. Declared up here with the other
-   file-scope state because InitDLSSCvars seeds dldn_last_state and sits above the
-   function that uses it.
+   DlssAnnounceRayReconstruction. Declared up here with the rest of the file-scope
+   state because InitDLSSCvars seeds it and sits above the function that uses it.
 
-   -1 on the saved pair means NOTHING IS SAVED, which is what makes the toggle
-   idempotent: a second RR-on must not overwrite the player's real settings with
-   the zeroes this code itself wrote. */
+   -1 means NOTHING OBSERVED YET, so the first callback is startup reporting what
+   the config held rather than the player flipping the switch. */
 static int dldn_last_state = -1;      // -1 unknown, 0 off, 1 on
-static int dldn_saved_flt_taa = -1;
-static int dldn_saved_flt_enable = -1;
 
 void InitDLSSCvars() 
 {
@@ -98,20 +94,16 @@ void InitDLSSCvars()
     cvar_pt_dlss->changed = viewsize_changed;
     cvar_pt_dlss_dldn->changed = DlssModeChanged;
     // Seed the RR edge detector with what the config left, so loading a config
-    // with RR already on does not read as the player turning it on and stamp on
-    // their saved anti-aliasing and denoiser settings.
+    // with RR already on does not read as the player turning it on and announce it.
     dldn_last_state = cvar_pt_dlss_dldn->integer ? 1 : 0;
     cvar_pt_dlss_split_fields->changed = DlssSplitFieldsChanged;
     cvar_pt_dlss_field_res->changed = DlssFieldResChanged;
     viewsize_changed(cvar_pt_dlss);
 }
 
-// True when THIS CONFIGURATION uses two full-resolution layers (field 0 = reflection,
-// field 1 = refraction) rather than two checkerboard halves.
+// True when the path tracer should trace two full-resolution layers (field 0 =
+// reflection, field 1 = refraction) rather than two checkerboard halves.
 // Multi-GPU is excluded: there the two fields are how work is split across devices.
-//
-// Built from cvars only, so it is the right question for sizing the screen images -
-// see DLSSSplitFieldsActive() for the one the path tracer asks each frame.
 qboolean DLSSSplitFieldsEnabled() {
     if (cvar_pt_dlss_split_fields == NULL)
         return qfalse;
@@ -126,42 +118,12 @@ qboolean DLSSSplitFieldsEnabled() {
     }
 }
 
-/*
-==================
-DLSSSplitFieldsActive
-
-Whether the fields are being traced RIGHT NOW, as opposed to whether the
-configuration uses them.  The two answers differ in exactly one place: photo mode.
-
-The split fields exist to hand DLSS Ray Reconstruction a guide field it can believe.
-Photo mode does not run DLSS at all (vkpt_accumulation_bypasses_dlss), so nothing
-consumes them, and tracing them is not free - it doubles the packed width of the
-path tracer's screen images.  Photo mode also pins the render scale to 100%
-(drs_process), so leaving them on would ask for a packed width of twice the OUTPUT
-width, against the twice-the-RENDER-width the images were allocated for.  The extent
-check in R_RenderFrame_RTX saw that as "screen image extent changed" and rebuilt
-every screen image - 3.3 GB at 4K - on the way into photo mode and again on the way
-out.  That rebuild is the stall you see when pausing.
-
-Turning them off here instead costs nothing: the packed width drops back to the
-render width, which is what the images are already sized for, the extent stops
-moving, and photo mode traces the classic checkerboard - the unbiased path it used
-before split fields existed, which is what accumulation wants anyway.
-==================
-*/
-qboolean DLSSSplitFieldsActive() {
-    if (!DLSSSplitFieldsEnabled())
-        return qfalse;
-
-    return vkpt_accumulation_bypasses_dlss() ? qfalse : qtrue;
-}
-
 // True when the reflection and refraction layers are traced at half vertical
 // resolution - alternating rows, filled in from the neighbouring row by the combine
 // pass. Applies only to reflect/refract materials; opaque geometry is always full
 // resolution.
 qboolean DLSSFieldHalfRes() {
-    if (!DLSSSplitFieldsActive())
+    if (!DLSSSplitFieldsEnabled())
         return qfalse;
 
     return (cvar_pt_dlss_field_res != NULL && cvar_pt_dlss_field_res->integer == 2)
@@ -1129,28 +1091,30 @@ explicit that it wants the raw noisy signal - A-SVGF's temporal accumulation
 violates the independent-sample assumption RR is built on - and TAA on top of
 RR's own temporal resolve just adds lag and smearing.
 
-So turning RR on switches both off, and turning it off puts back exactly what was
-there before. NOT hard-coded defaults: whatever the player actually had. Someone
-who deliberately runs RR with the denoiser on keeps that choice, because the
-restore only fires on the ON->OFF edge and only for values this code itself saved.
+THE RENDERER ALREADY DOES THIS, PER FRAME, FROM THE LIVE STATE:
 
-WHY THE SAVED STATE IS A SENTINEL AND NOT A BOOL. -1 means "nothing saved", which
-is what makes this idempotent: a second RR-on with RR already on must NOT save the
-zeroes it wrote itself, or turning RR off would restore off and the settings would
-be gone for good. dldn_last_state is the other half - the callback fires on every
-set, including a set to the value it already had, and only a genuine transition
-should move anything.
+  evaluate_reference_mode()  ref_mode->rr_denoiser = DLSSBypassDenoiser();
+                             if (rr_denoiser) enable_denoiser = false;
+  evaluate_taa_settings()    if (DLSSEnabled()) flt_taa = AA_MODE_OFF;
+                             and it returns early when enable_denoiser is false
+  vkpt_screen_image_profile() drops the A-SVGF image group on !DLSSBypassDenoiser(),
+                             so the memory is not spent either
 
-The player can still turn either back on by hand while RR is running; that is the
-point of doing it this way rather than forcing them off every frame. It does mean
-a hand-set value is overwritten by the restore on the way out, which is the lesser
-of the two surprises.
+so nothing here needs to - or should - write flt_taa and flt_enable.  It used to,
+and that is what made turning DLSS off ruin the picture: the zeroes it wrote were
+archived into q2config.cfg, and the restore only fired on the pt_dlss_dldn ON->OFF
+edge.  Setting pt_dlss 0 takes RR out of the picture by a different door, so the
+player was left with no DLSS, no denoiser and no anti-aliasing at once - raw 1-spp
+path tracing.  Worse, the saved pair lived in file-scope ints that do not survive a
+restart, so after the next launch even toggling pt_dlss_dldn could not put them
+back: the settings were gone for good.
+
+What is left is the announcement.  The cvars keep saying what the player chose and
+RR overrides them while it runs, which is the same contract pt_dlss_bypass_denoiser
+already had.
 ================================================================================
 */
-// Looked up lazily rather than cached at init: flt_taa and flt_enable are
-// declared by the GLOBAL_UBO cvar list, and this file cannot assume it ran first.
-// Weak, so a missing cvar is NULL instead of a fresh one with a wrong default.
-static void DlssApplyRayReconstructionSideEffects(int now_on)
+static void DlssAnnounceRayReconstruction(int now_on)
 {
     if (dldn_last_state == now_on)
         return;
@@ -1158,38 +1122,14 @@ static void DlssApplyRayReconstructionSideEffects(int now_on)
     int was_known = (dldn_last_state != -1);
     dldn_last_state = now_on;
 
-    // Nothing to do on the very first observation - that is startup telling us
+    // Nothing to say on the very first observation - that is startup telling us
     // what the config held, not the player flipping the switch.
-    if (!was_known)
+    if (!was_known || !now_on)
         return;
 
-    cvar_t *flt_taa = Cvar_WeakGet("flt_taa");
-    cvar_t *flt_enable = Cvar_WeakGet("flt_enable");
-
-    if (now_on) {
-        // Save only if we are not already holding a saved pair, so repeated
-        // ON transitions cannot overwrite the real values with our own zeroes.
-        if (dldn_saved_flt_taa == -1 && flt_taa)
-            dldn_saved_flt_taa = flt_taa->integer;
-        if (dldn_saved_flt_enable == -1 && flt_enable)
-            dldn_saved_flt_enable = flt_enable->integer;
-
-        if (flt_taa)
-            Cvar_SetInteger(flt_taa, 0, FROM_CODE);
-        if (flt_enable)
-            Cvar_SetInteger(flt_enable, 0, FROM_CODE);
-
-        Com_Printf("DLSS Ray Reconstruction on: anti-aliasing and the denoiser "
-                   "switched off (RR does both). Turn them back on if you want them.\n");
-    } else {
-        if (flt_taa && dldn_saved_flt_taa != -1)
-            Cvar_SetInteger(flt_taa, dldn_saved_flt_taa, FROM_CODE);
-        if (flt_enable && dldn_saved_flt_enable != -1)
-            Cvar_SetInteger(flt_enable, dldn_saved_flt_enable, FROM_CODE);
-
-        dldn_saved_flt_taa = -1;
-        dldn_saved_flt_enable = -1;
-    }
+    Com_Printf("DLSS Ray Reconstruction on: it is doing the denoising and the "
+               "anti-aliasing, so flt_enable and flt_taa are ignored until it is "
+               "off again. Your settings are untouched.\n");
 }
 
 void DlssModeChanged(cvar_t* self) {
@@ -1197,7 +1137,7 @@ void DlssModeChanged(cvar_t* self) {
     dlssModeChanged = qtrue;
 
     // Before the scr_viewsize switch below, which returns early in most cases.
-    DlssApplyRayReconstructionSideEffects(cvar_pt_dlss_dldn->integer ? 1 : 0);
+    DlssAnnounceRayReconstruction(cvar_pt_dlss_dldn->integer ? 1 : 0);
 
     switch (cvar_pt_dlss->integer) {
     case -1:

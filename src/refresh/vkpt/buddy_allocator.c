@@ -174,6 +174,16 @@ void subdivide_block(BuddyAllocator* allocator, uint32_t src_level, uint32_t dst
 		allocator->block_states[previous_level_block_offset + block_index * 2] = BLOCK_FREE;
 		allocator->block_states[previous_level_block_offset + block_index * 2 + 1] = BLOCK_FREE;
 
+		/* The parent's list item is dead now - block_index is already copied out
+		   above, and the parent is BLOCK_SPLIT, so it belongs on no free list.
+		   Returning it here is what keeps the pool balanced: a split retires one
+		   free block and creates two, so it must consume two items and give one
+		   back.  Without this the item was simply dropped, leaking one per split;
+		   after a few thousand splits the pool (block_num items, 4095 for the
+		   texture allocator) ran dry, allocate_list_item() below returned NULL,
+		   and this function faulted on item0->block_index. */
+		free_list_item(allocator, item);
+
 		// Add blocks to free list
 		AllocatorFreeListItem* item0 = allocate_list_item(allocator);
 		AllocatorFreeListItem* item1 = allocate_list_item(allocator);

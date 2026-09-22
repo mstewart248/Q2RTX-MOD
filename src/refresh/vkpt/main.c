@@ -334,7 +334,7 @@ static VkExtent2D get_render_extent(void)
 //   full-resolution split: width,   each field is a full layer of the whole screen
 uint32_t vkpt_pt_field_width(void)
 {
-	return DLSSSplitFieldsActive() ? qvk.extent_render.width : (qvk.extent_render.width / 2);
+	return DLSSSplitFieldsEnabled() ? qvk.extent_render.width : (qvk.extent_render.width / 2);
 }
 
 // Total packed width of the path-tracer screen images (both fields).
@@ -343,69 +343,31 @@ static uint32_t get_pt_packed_width(void)
 	return vkpt_pt_field_width() * 2;
 }
 
-/*
-=================
-get_configured_render_scale
-
-The render scale this CONFIGURATION asks for, which is not always the one in force
-right now.  Photo mode pins the live scale to 100% for as long as it is accumulating
-(drs_process), and that pin must not reach anything that sizes an image - see
-get_screen_image_extent() below and the same rule stated at vkpt_screen_image_profile().
-=================
-*/
-static int get_configured_render_scale(void)
-{
-	if (cvar_drs_enable->integer)
-	{
-		int scale = max(cvar_drs_minscale->integer, cvar_drs_maxscale->integer);
-
-		// with FSR we always upscale to 100% and thus need at least the unscaled extent
-		if (vkpt_fsr_is_enabled())
-			scale = max(scale, 100);
-
-		return scale;
-	}
-
-	return scr_viewsize->integer;
-}
-
-/*
-=================
-get_screen_image_extent
-
-How large the screen images have to be for this configuration.  Every change to the
-answer destroys and reallocates all of them - 3.3 GB at 4K with split fields - so it
-is built from cvars, never from what the renderer happens to be doing this frame.
-
-Pausing into photo mode used to break that rule twice over: drs_process() pins the
-render scale to 100%, and the full-resolution field reservation below was taken from
-the LIVE render extent, so the reservation jumped from twice the render width to
-twice the output width.  Entering photo mode rebuilt every screen image and leaving
-it rebuilt them again, which is the stall either way.  The reservation now comes from
-the configured scale, and photo mode does not trace the fields at all
-(DLSSSplitFieldsActive), so the pinned 100% needs no reservation of its own.
-=================
-*/
 static VkExtent2D get_screen_image_extent(void)
 {
-	const int scale = get_configured_render_scale();
-
 	VkExtent2D result;
-	result.width  = (uint32_t)(qvk.extent_unscaled.width  * (float)scale / 100.f);
-	result.height = (uint32_t)(qvk.extent_unscaled.height * (float)scale / 100.f);
-
-	if (!cvar_drs_enable->integer)
+	if (cvar_drs_enable->integer)
 	{
-		// without DRS the images also carry the unscaled output
-		result.width  = max(result.width,  qvk.extent_unscaled.width);
-		result.height = max(result.height, qvk.extent_unscaled.height);
+		int image_scale = max(cvar_drs_minscale->integer, cvar_drs_maxscale->integer);
+
+		// In case FSR enable we'll always upscale to 100% and thus need at least the unscaled extent
+		if(vkpt_fsr_is_enabled())
+			image_scale = max(image_scale, 100);
+
+		result.width = (uint32_t)(qvk.extent_unscaled.width * (float)image_scale / 100.f);
+		result.height = (uint32_t)(qvk.extent_unscaled.height * (float)image_scale / 100.f);
+	}
+	else
+	{
+		result.width = max(qvk.extent_render.width, qvk.extent_unscaled.width);
+		result.height = max(qvk.extent_render.height, qvk.extent_unscaled.height);
 	}
 
 	// With full-resolution fields the screen images must hold two width x height layers
 	// side by side. At the usual DLSS scales this is at or below what the images were
 	// already allocated at (Performance: 2 * 50% == 100% of the output width).
 	if (DLSSSplitFieldsEnabled())
-		result.width = max(result.width, (uint32_t)(qvk.extent_unscaled.width * (float)scale / 100.f) * 2);
+		result.width = max(result.width, qvk.extent_render.width * 2);
 
 	result.width = (result.width + 1) & ~1;
 
@@ -4159,7 +4121,7 @@ static bool is_accumulation_rendering_active(void)
    so it still does the right thing if drs_enable pins the scale under 100.)
 
    pt_accumulation_bypass_dlss 0 restores the old behaviour for comparison. */
-bool vkpt_accumulation_bypasses_dlss(void)
+static bool accumulation_bypasses_dlss(void)
 {
 	if (!is_accumulation_rendering_active())
 		return false;
@@ -4566,7 +4528,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	if (pt_field_offset_prev == 0)
 		pt_field_offset_prev = vkpt_pt_field_width();   // first frame - no history yet
 
-	ubo->pt_fullres_fields = DLSSSplitFieldsActive()
+	ubo->pt_fullres_fields = DLSSSplitFieldsEnabled()
 		? (DLSSFieldHalfRes() ? PT_FIELDS_HALFRES : PT_FIELDS_FULLRES)
 		: PT_FIELDS_CHECKERBOARD;
 	ubo->pt_field_offset = (int)vkpt_pt_field_width();
@@ -5932,8 +5894,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			vkpt_fsr_do(post_cmd_buf);
 		}
 
-		if (vkpt_accumulation_bypasses_dlss()) {
-			/* Photo mode - see vkpt_accumulation_bypasses_dlss(). Everything downstream
+		if (accumulation_bypasses_dlss()) {
+			/* Photo mode - see accumulation_bypasses_dlss(). Everything downstream
 			   (bloom, tone mapping, the final blit) reads VKPT_IMG_DLSS_OUTPUT when
 			   DLSSEnabled(), so the accumulated frame is put there directly instead
 			   of being produced by NGX. The rest of the DLSS arm is untouched. */
@@ -6778,8 +6740,8 @@ R_EndFrame_RTX(void)
 			// player sees should be a real accumulation step. Interpolating between
 			// two adjacent steps would just show a blend of two sample counts, which
 			// is precisely the convergence being watched. See
-			// vkpt_accumulation_bypasses_dlss().
-			if (DLSSGEnabled() && !vkpt_accumulation_bypasses_dlss()) {
+			// accumulation_bypasses_dlss().
+			if (DLSSGEnabled() && !accumulation_bypasses_dlss()) {
 				/* HOW MANY GENERATED FRAMES CAN THIS DISPLAY ACTUALLY SHOW?
 
 				   A fixed-refresh display shows at most one frame per refresh interval. Presenting
@@ -6922,7 +6884,7 @@ R_EndFrame_RTX(void)
 			   group must collapse to the single real present. Asking for frames that
 			   were never generated would present whatever those images still held from
 			   before the pause. */
-			unsigned int fg_want = vkpt_accumulation_bypasses_dlss() ? 0u : DLSSGGeneratedFrames();
+			unsigned int fg_want = accumulation_bypasses_dlss() ? 0u : DLSSGGeneratedFrames();
 			if (fg_want > 0 && DLSSGFeatureReady() && !DLSSGShowInterpolated()
 			    && qvk.device_count == 1)
 			{
@@ -7046,7 +7008,7 @@ R_EndFrame_RTX(void)
 
 			/* Same reason as fg_want: nothing was interpolated this frame, so there is
 			   no interpolated image to show and the real one has to be blitted instead. */
-			if (DLSSGShowInterpolated() && !vkpt_accumulation_bypasses_dlss())
+			if (DLSSGShowInterpolated() && !accumulation_bypasses_dlss())
 				vkpt_final_blit_simple(cmd_buf, GetDLSSGImage(1), GetDLSSExtent());
 			else if (!fg_real_blitted)
 				{
@@ -7934,7 +7896,7 @@ R_Init_RTX(bool total)
 	cvar_pt_accumulation_rendering_framenum = Cvar_Get("pt_accumulation_rendering_framenum", "500", 0);
 
 	// 1 -> photo mode skips DLSS and shows the accumulated frame as traced (default);
-	// 0 -> photo mode keeps running DLSS, as it used to. See vkpt_accumulation_bypasses_dlss().
+	// 0 -> photo mode keeps running DLSS, as it used to. See accumulation_bypasses_dlss().
 	cvar_pt_accumulation_bypass_dlss = Cvar_Get("pt_accumulation_bypass_dlss", "1", CVAR_ARCHIVE);
 
 	// 0 -> perspective, 1 -> cylindrical

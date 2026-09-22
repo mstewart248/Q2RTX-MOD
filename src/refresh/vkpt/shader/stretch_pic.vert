@@ -36,6 +36,10 @@ out gl_PerVertex {
 layout(location = 0) out vec4 color;
 layout(location = 1) out flat uint tex_id;
 layout(location = 2) out vec2 tex_coord;
+// The quad's own rectangle in the texture, as (min_s, min_t, max_s, max_t).
+// For a glyph this is its cell in the character atlas; the pixel shader keeps
+// the bilinear footprint inside it. See stretch_pic.frag.
+layout(location = 3) out flat vec4 tex_rect;
 
 struct StretchPic {
 	float x, y, w,   h;
@@ -65,6 +69,10 @@ main()
 
 	tex_coord     = vec2(sp.s, sp.t) + positions[gl_VertexIndex] * vec2(sp.w_s, sp.h_t);
 	tex_id        = sp.tex_handle;
+
+	vec2 uv0      = vec2(sp.s, sp.t);
+	vec2 uv1      = uv0 + vec2(sp.w_s, sp.h_t);
+	tex_rect      = vec4(min(uv0, uv1), max(uv0, uv1));
 
 	gl_Position = vec4(pos, 0.0, 1.0);
 }

@@ -853,11 +853,6 @@ bool vkpt_fsr_is_enabled(void);
 #define SCREEN_IMG_GROUP_FSR           (1u << 1)
 #define SCREEN_IMG_GROUP_ACCUM         (1u << 2)
 uint32_t vkpt_screen_image_profile(void);
-
-/* True while accumulation rendering (photo mode) is deliberately not running DLSS.
-   Defined in main.c next to the rest of the photo mode logic; declared here because
-   DLSSSplitFieldsActive() in DLSS.c has to ask. */
-bool vkpt_accumulation_bypasses_dlss(void);
 bool vkpt_fsr_needs_upscale(void);
 void vkpt_fsr_update_ubo(QVKUniformBuffer_t *ubo);
 VkResult vkpt_fsr_do(VkCommandBuffer cmd_buf);

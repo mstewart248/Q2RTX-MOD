@@ -948,13 +948,18 @@ draw_char(int x, int y, int flags, int c, qhandle_t font)
 		c ^= 0x80;
 	}
 
+	/* The glyph's cell in the 16x16 character atlas, passed exactly. Keeping
+	   the bilinear tap from reaching into the neighbouring cells is the pixel
+	   shader's job, since only it knows the font's texel size; see the clamp in
+	   shader/stretch_pic.frag. Nudging these coordinates inwards here cannot do
+	   it - the inset needed is half a texel, which depends on a resolution this
+	   code does not have, and paying it on the coordinates would squeeze the
+	   glyph into 7 of its 8 texels and soften it at every scale. */
 	float s = (c & 15) * 0.0625f;
 	float t = (c >> 4) * 0.0625f;
 
-	float eps = 1e-5f; /* fixes some ugly artifacts */
-
 	enqueue_stretch_pic(x, y, CHAR_WIDTH, CHAR_HEIGHT,
-		s + eps, t + eps, s + 0.0625f - eps, t + 0.0625f - eps,
+		s, t, s + 0.0625f, t + 0.0625f,
 		draw.colors[c >> 7].u32, font);
 }
 
