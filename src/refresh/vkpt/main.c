@@ -2899,6 +2899,42 @@ static ModelInstance model_instances_prev[MAX_MODEL_INSTANCES];
 static int num_model_lights = 0;
 static light_poly_t model_lights[MAX_MODEL_LIGHTS];
 
+/*
+=================
+warn_once_for_model
+
+EVERY WAY A MODEL CAN SILENTLY FAIL TO DRAW GOES THROUGH HERE.
+
+The paths below - no vertex buffer, bone-matrix overflow, instance overflow -
+were each marked with an assert() and then a bare return. assert() compiles to
+nothing in a release build, which is the only build anybody reporting a bug is
+running, so all three were pure silence: the monster is not there, the console
+says nothing, and there is no way to tell the case apart from a missing
+spawnpoint or a bad model path.
+
+Once per (model, site), so a per-frame draw path cannot flood the console while
+still naming the first model that hit it.
+=================
+*/
+static bool warn_once_for_model(const model_t* model, int site)
+{
+	static const model_t *seen_model[16];
+	static int            seen_site[16];
+	static int            seen_num;
+	int i;
+
+	for (i = 0; i < seen_num; i++)
+		if (seen_model[i] == model && seen_site[i] == site)
+			return false;
+
+	if (seen_num < q_countof(seen_model)) {
+		seen_model[seen_num] = model;
+		seen_site[seen_num] = site;
+		seen_num++;
+	}
+	return true;
+}
+
 static pbr_material_t const * get_mesh_material(const entity_t* entity, const maliasmesh_t* mesh)
 {
 	if (entity->skin)
@@ -2906,8 +2942,15 @@ static pbr_material_t const * get_mesh_material(const entity_t* entity, const ma
 		return MAT_ForSkin(IMG_ForHandle(entity->skin));
 	}
 
+	/* skinnum ARRIVES FROM THE NETWORK AND IS NOT BOUNDED BY ANYTHING.
+	   entity_state_t::skinnum is a full int32 that a server - or a recorded
+	   demo from a different game - is free to set to whatever it likes, and
+	   mesh->materials is MAX_ALIAS_SKINS entries long. Indexing it first and
+	   asking whether the answer is non-NULL afterwards reads out of bounds
+	   before the test can help. Check the range first. */
 	int skinnum = 0;
-	if (mesh->materials[entity->skinnum])
+	if (entity->skinnum >= 0 && entity->skinnum < q_countof(mesh->materials)
+		&& mesh->materials[entity->skinnum])
 		skinnum = entity->skinnum;
 
 	return mesh->materials[skinnum];
@@ -3264,6 +3307,12 @@ static void process_regular_entity(
 		
 		if (iqm_matrix_index + model->iqmData->num_poses > MAX_IQM_MATRICES)
 		{
+			// skeletal models only - an MD2 uses no bone matrices at all, so
+			// this budget is spent entirely by .md5/.iqm entities
+			if (warn_once_for_model(model, 0))
+				Com_WPrintf("Out of IQM bone matrices (%d used of %d); '%s' and other "
+					"skeletal models will not be drawn this frame.\n",
+					iqm_matrix_index, MAX_IQM_MATRICES, model->name);
 			assert(!"IQM matrix buffer overflow");
 			return;
 		}
@@ -3278,6 +3327,19 @@ static void process_regular_entity(
 	bool use_static_blas = vkpt_model_is_static(model) && (mesh_filter != MESH_FILTER_ALL);
 
 	const model_vbo_t* vbo = vkpt_get_model_vbo(model);
+
+	/* No uploaded vertex data means there is nothing to instance. This used to
+	   be "caught" further down by `mesh->tri_offset < 0`, which never fired:
+	   tri_offset lives in hunk memory that is zeroed on allocation and is only
+	   ever ASSIGNED by the uploader, so a mesh that was never uploaded carries
+	   offset 0 - a valid-looking pointer into a buffer that does not exist. */
+	if (!vbo || !vbo->buffer.buffer)
+	{
+		if (warn_once_for_model(model, 1))
+			Com_WPrintf("Model '%s' has no vertex buffer and will not be drawn.\n",
+				model->name);
+		return;
+	}
 
 	if (use_static_blas)
 	{
@@ -3308,12 +3370,19 @@ static void process_regular_entity(
 
 		if (current_instance_index >= MAX_MODEL_INSTANCES)
 		{
+			if (warn_once_for_model(model, 2))
+				Com_WPrintf("Out of model instances (%d); '%s' and later models "
+					"will not be drawn this frame.\n", MAX_MODEL_INSTANCES, model->name);
 			assert(!"Model instance count overflow");
 			break;
 		}
 
 		if (!use_static_blas && current_animated_index >= MAX_MODEL_INSTANCES)
 		{
+			if (warn_once_for_model(model, 3))
+				Com_WPrintf("Out of animated model instances (%d); '%s' and later "
+					"animated models will not be drawn this frame.\n",
+					MAX_MODEL_INSTANCES, model->name);
 			assert(!"Animated model count overflow");
 			break;
 		}

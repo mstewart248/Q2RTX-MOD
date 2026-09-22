@@ -364,6 +364,7 @@ qhandle_t R_RegisterModel(const char *name)
     byte *rawdata = NULL;
     uint32_t ident;
     mod_load_t load;
+    bool loaded_substitute = false;
     int ret;
 
     // empty names are legal, silently ignore them
@@ -428,6 +429,9 @@ qhandle_t R_RegisterModel(const char *name)
             filelen = FS_LoadFileFlags(normalized, (void **)&rawdata, fs_flags);
 
             memcpy(extension, ".md2", 4);
+
+            if (rawdata)
+                loaded_substitute = true;
         }
 
         if (!rawdata && try_md5
@@ -435,8 +439,10 @@ qhandle_t R_RegisterModel(const char *name)
         {
             filelen = FS_LoadFileFlags(md5_path, (void **)&rawdata, fs_flags);
 
-            if (rawdata)
+            if (rawdata) {
                 load_name = md5_path;
+                loaded_substitute = true;
+            }
         }
         if (!rawdata)
         {
@@ -450,8 +456,37 @@ qhandle_t R_RegisterModel(const char *name)
 	{
 		filelen = FS_LoadFile(normalized, (void **)&rawdata);
 		if (!rawdata) {
-			// don't spam about missing models
 			if (filelen == Q_ERR(ENOENT)) {
+				/* A MODEL THAT IS NOT ON THE SEARCH PATH IS THE MOST INVISIBLE
+				   KIND OF INVISIBLE THERE IS.
+
+				   Returning 0 is right - handle 0 draws nothing and every
+				   caller copes - but doing it in complete silence is what
+				   makes "the gladiator is missing" unanswerable. The usual
+				   cause is a mission-pack model (models/monsters/gladb,
+				   models/monsters/soldierh: Xatrix, not baseq2) on a search
+				   path that does not include the pak holding it, and the
+				   engine knew that the whole time and said nothing.
+
+				   The comment this replaces was right that a per-miss warning
+				   would spam: the client probes for per-player weapon models
+				   that legitimately do not exist. Hence once per NAME, capped
+				   - a bounded handful of lines at map load, which is what a
+				   bug report needs and a play session will never notice. */
+				static const char *missing[32];
+				static int         num_missing;
+				int i;
+
+				for (i = 0; i < num_missing; i++)
+					if (!FS_pathcmp(missing[i], normalized))
+						break;
+
+				if (i == num_missing && num_missing < q_countof(missing)) {
+					missing[num_missing] = Z_CopyString(normalized);
+					num_missing++;
+					Com_WPrintf("%s: '%s' is not on the search path; anything using "
+								"it will be invisible.\n", __func__, normalized);
+				}
 				return 0;
 			}
 
@@ -508,6 +543,49 @@ qhandle_t R_RegisterModel(const char *name)
     ret = load(model, rawdata, filelen, load_name);
 
     FS_FreeFile(rawdata);
+    rawdata = NULL;
+
+    /*
+       A .md5mesh (or .md3) THAT DOES NOT LOAD MUST NOT COST US THE MODEL.
+
+       Everything above is a substitution: the caller asked for a .md2 and we
+       quietly handed the loader a higher-detail stand-in sitting beside it.
+       The MD5 parser is deliberately strict - model_md5.c says so, and says
+       the caller "falls back to the .md2" when it refuses a file - but nothing
+       here actually did. A single unexpected token in one .md5mesh therefore
+       returned handle 0, and handle 0 is not a broken model, it is NO model:
+       the monster is silently, completely invisible, and the only trace is one
+       Com_EPrintf that a player is never going to be looking at.
+
+       That is a strictly worse outcome than the format we were substituting
+       FOR, which is still sitting right there on the search path. So take it.
+       The fallback is per model, so one bad file costs that one model its
+       skeletal version and nothing else.
+
+       Note this runs only for a substitute. A .md2 that fails to load has
+       nothing left to fall back to and still reports the error as before.
+    */
+    if (ret && loaded_substitute) {
+        // WARN, not DPrintf: this is the one line that tells a user why a
+        // model looks like the 1997 one, and the bug reports it answers are
+        // written by people who are not running with developer 1. At most one
+        // line per model per registration.
+        Com_WPrintf("%s: %s failed to load (%s); falling back to %s\n",
+                    __func__, load_name, Q_ErrorString(ret), normalized);
+
+        memset(model, 0, sizeof(*model));
+
+        filelen = FS_LoadFile(normalized, (void **)&rawdata);
+        if (rawdata) {
+            if (filelen >= 4 && LittleLong(*(uint32_t *)rawdata) == MD2_IDENT && MOD_LoadMD2) {
+                memcpy(model->name, normalized, namelen + 1);
+                model->registration_sequence = registration_sequence;
+                ret = MOD_LoadMD2(model, rawdata, filelen, normalized);
+            }
+            FS_FreeFile(rawdata);
+            rawdata = NULL;
+        }
+    }
 
     if (ret) {
         memset(model, 0, sizeof(*model));

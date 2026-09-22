@@ -1185,6 +1185,24 @@ void ai_run(edict_t *self, float dist)
         return;
     }
 
+    // PMM - a crouch that never reached its stand-up frame must not outlive the
+    // dodge.  monster_duck_down shrinks maxs[2] by 32 and ONLY the monster_duck_up
+    // at the tail of the crouch animation puts it back, so every path that
+    // replaces currentmove mid-crouch - ai_run choosing an attack, the enemy
+    // being lost and the monster going back to its run, a blocked/plat move, a
+    // sidestep that declined - strands the monster at waist height for the rest
+    // of the level.  Nothing about it looks wrong: the animation is whatever it
+    // moved on to, so it walks, aims and fires normally while every shot at its
+    // chest passes clean over the bounding box.  Only the one instance that was
+    // interrupted is affected, which is what makes it look like a one-off.
+    //
+    // The rerelease unducks here, at the top of ai_run, for exactly this reason:
+    // the crouch animations all sit on ai_move / ai_charge frames, so a monster
+    // reaching ai_run at all has left the crouch behind.  See ai_run in
+    // src/rerelease/g_ai.cpp.  This tree had no equivalent.
+    if ((self->monsterinfo.aiflags & AI_DUCKED) && self->monsterinfo.unduck)
+        self->monsterinfo.unduck(self);
+
     // ROGUE - if we are currently walking a hint path, that is ALL we do:
     // steer at the next node and watch for the enemy coming back into view.
     // g_rogue.c owns the chain itself; this is just the per-frame half.

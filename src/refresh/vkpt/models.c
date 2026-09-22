@@ -1190,8 +1190,90 @@ static void MD5_SkinPath(const char *base_path, const char *skin,
 	if (MD5_HeldWeaponSkin(mod_name, buffer, size))
 		return;
 
-	// MAT_Find truncates the extension anyway; the material system is what
-	// decides which image file actually backs this name
+	/* THE REMASTER MERGED THIS MODEL INTO ANOTHER ONE, so its artwork is
+	   filed under the other model's name.
+
+	   models/monsters/soldierh is the case, and it is the mirror image of
+	   MD5_AppendMergedSkins below. Xatrix shipped its three soldier variants
+	   as a separate model; the remaster folded them into the stock soldier and
+	   ships sold01..sold03_p in models/monsters/soldier/md5/ ONLY. This fork
+	   keeps the two models apart (see SP_monster_soldier_h), so it still asks
+	   for models/monsters/soldierh - and every probe above then looks under a
+	   soldierh/md5/ that the remaster does not ship, which is how the ripper,
+	   hypergun and LASERGUN soldiers render solid white for anyone whose
+	   rerelease artwork comes out of the pak rather than a hand-built tree.
+
+	   The stems are identical across the merge, so only the directory moves. */
+	if (slash) {
+		static const struct {
+			const char *from;   // the model directory this fork asks for
+			const char *to;     // where the remaster actually files the skins
+		} merged_dirs[] = {
+			{ "models/monsters/soldierh", "models/monsters/soldier" },
+		};
+		size_t dirlen = (size_t)(slash - skin);
+
+		for (int i = 0; i < q_countof(merged_dirs); i++) {
+			if (dirlen != strlen(merged_dirs[i].from)
+				|| Q_stricmpn(skin, merged_dirs[i].from, dirlen))
+				continue;
+
+			Q_snprintf(candidate, sizeof(candidate), "%s/md5/%s",
+			           merged_dirs[i].to, name);
+			if (MD5_SkinExists(candidate)) {
+				Q_snprintf(buffer, size, "%s.png", candidate);
+				return;
+			}
+			break;
+		}
+	}
+
+	// the MODEL's own md5/ directory, for a model whose .md2 names its skin
+	// somewhere else entirely
+	Q_snprintf(candidate, sizeof(candidate), "%s/%s", base_path, name);
+	if (MD5_SkinExists(candidate)) {
+		// MAT_Find truncates the extension anyway; the material system is what
+		// decides which image file actually backs this name
+		Q_snprintf(buffer, size, "%s.png", candidate);
+		return;
+	}
+
+	/* NO md5-ERA OVERRIDE EXISTS FOR THIS SKIN, so fall back to the name the
+	   .md2 actually wrote - which is where the classic artwork is, normally
+	   inside pak0.pak.
+
+	   Every step above hunts for a re-unwrapped rerelease texture, and where
+	   the rerelease ships one it is unambiguously the right answer. Where it
+	   does not - the user mounted the geometry but not the artwork, or this
+	   model's md5/ directory simply holds no image under this stem - the old
+	   code still handed MAT_Find the md5/ path it had just failed to find, and
+	   a material with no base image renders PURE WHITE. That is the "white
+	   monsters" of the bug reports, and it is a regression against the .md2
+	   the MD5 replaced: the classic skin was on the search path the whole time.
+
+	   The UVs disagree, so a classic texture is not a perfect fit on a
+	   re-unwrapped mesh. It is still enormously better than white, it is what
+	   the model looked like before MD5 support existed, and it costs nothing
+	   when the rerelease artwork is present because this line is not reached.
+	   MAT_InheritScalars in the caller then inherits from this same name, which
+	   is a no-op rather than a conflict. */
+	{
+		char classic[MAX_QPATH];
+		char *cdot;
+
+		Q_strlcpy(classic, skin, sizeof(classic));
+		cdot = strrchr(classic, '.');
+		if (cdot && !strchr(cdot, '/'))
+			*cdot = 0;
+
+		if (MD5_SkinExists(classic)) {
+			Q_strlcpy(buffer, skin, size);
+			return;
+		}
+	}
+
+	// nothing exists anywhere; name the md5/ path, so the material warning
+	// points at the directory the artwork is supposed to live in
 	Q_snprintf(buffer, size, "%s/%s.png", base_path, name);
 }
 
@@ -1474,11 +1556,42 @@ int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const ch
 
 		Q_snprintf(probe_path, sizeof(probe_path), "%s/%s", base_path, name);
 
+		/* (base_path) is "<dir>/md5"; (classic_path) is the "<dir>" beside it,
+		   which is where a .pcx out of pak0.pak lives. Same rule as
+		   MD5_SkinPath: an md5-era override wins, and when there is none the
+		   classic artwork is used rather than a name that resolves to nothing
+		   and renders white. */
+		char classic_path[MAX_QPATH];
+		char *md5_slash;
+
+		Q_strlcpy(classic_path, base_path, sizeof(classic_path));
+		md5_slash = strrchr(classic_path, '/');
+		if (md5_slash && !Q_stricmp(md5_slash, "/md5"))
+			*md5_slash = 0;
+		else
+			classic_path[0] = 0;
+
 		if (MD5_SkinExists(probe_path))
 			Q_snprintf(default_skin, sizeof(default_skin), "%s.png", probe_path);
 		else if (!MD5_HeldWeaponSkin(mod_name, default_skin, sizeof(default_skin))
 		         && !MD5_LoneSkinInDir(base_path, default_skin, sizeof(default_skin)))
-			Q_snprintf(default_skin, sizeof(default_skin), "%s/skin.png", base_path);
+		{
+			char classic_probe[MAX_QPATH];
+
+			// the classic model's own stem, then the "skin" convention, then
+			// a directory that holds exactly one image - all beside the .md2
+			if (classic_path[0]
+			    && (Q_snprintf(classic_probe, sizeof(classic_probe), "%s/%s", classic_path, name),
+			        MD5_SkinExists(classic_probe)))
+				Q_snprintf(default_skin, sizeof(default_skin), "%s.pcx", classic_probe);
+			else if (classic_path[0]
+			         && (Q_snprintf(classic_probe, sizeof(classic_probe), "%s/skin", classic_path),
+			             MD5_SkinExists(classic_probe)))
+				Q_snprintf(default_skin, sizeof(default_skin), "%s.pcx", classic_probe);
+			else if (!classic_path[0]
+			         || !MD5_LoneSkinInDir(classic_path, default_skin, sizeof(default_skin)))
+				Q_snprintf(default_skin, sizeof(default_skin), "%s/skin.png", base_path);
+		}
 
 		probe.materials[0] = MAT_Find(default_skin, IT_SKIN, IF_NONE);
 		numskins = 1;

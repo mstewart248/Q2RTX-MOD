@@ -1915,23 +1915,54 @@ vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, bool upd
 	return VK_SUCCESS;
 }
 
+/*
+=================
+model_vbo_index
+
+r_models has MAX_RMODELS slots and model_vertex_data has MAX_MODELS - half as
+many - because registration is allowed to hold a whole extra map's worth of
+models alive while the next map loads. Nothing enforced that difference here:
+both accessors below indexed model_vertex_data with (model - r_models), which
+for a model in the upper half is a READ PAST THE END of the array, and the
+garbage it returns is then handed to the GPU as a descriptor index.
+
+vkpt_vertex_buffer_upload_models() only ever walks the lower half too, so a
+model up there has no vertex buffer at all and genuinely cannot be drawn. -1
+says exactly that, and the caller turns it into "not drawn, and here is which
+model" - which is what the old code should have done instead of reading out of
+bounds and hoping.
+=================
+*/
+static int model_vbo_index(const model_t* model)
+{
+	ptrdiff_t index;
+
+	if (!model)
+		return -1;
+
+	index = model - r_models;
+	if (index < 0 || index >= MAX_MODELS)
+		return -1;
+
+	return (int)index;
+}
+
 bool vkpt_model_is_static(const model_t* model)
 {
-	if (!model)
+	int index = model_vbo_index(model);
+
+	if (index < 0)
 		return false;
 
-	size_t model_index = model - r_models;
-	const model_vbo_t* vbo = &model_vertex_data[model_index];
-
-	return vbo->is_static;
+	return model_vertex_data[index].is_static;
 }
 
 const model_vbo_t* vkpt_get_model_vbo(const model_t* model)
 {
-	if (!model)
-		return NULL;
+	int model_index = model_vbo_index(model);
 
-	size_t model_index = model - r_models;
+	if (model_index < 0)
+		return NULL;
 	
 	return &model_vertex_data[model_index];
 }
