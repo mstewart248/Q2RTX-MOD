@@ -4467,6 +4467,8 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	memcpy(ubo->P_prev, ubo->P, sizeof(float) * 16);
 	memcpy(ubo->invP_prev, ubo->invP, sizeof(float) * 16);
 	ubo->cylindrical_hfov_prev = ubo->cylindrical_hfov;
+	ubo->projection_fov_scale_prev[0] = ubo->projection_fov_scale[0];
+	ubo->projection_fov_scale_prev[1] = ubo->projection_fov_scale[1];
 	ubo->prev_taa_output_width = ubo->taa_output_width;
 	ubo->prev_taa_output_height = ubo->taa_output_height;
 
@@ -4494,15 +4496,66 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	inverse(V, *ubo->invV);
 	inverse(P, *ubo->invP);
 
-	if (cvar_pt_projection->integer == 1 && render_world)
+	/* CAMERA PROJECTION. Every mode except PROJECTION_RECTILINEAR bypasses the
+	   projection matrix built above and warps the view direction in closed form
+	   instead - see projection.glsl. What the shader needs from here is the scale
+	   that maps the screen edge to the edge of that projection's plane, which is a
+	   handful of transcendentals per frame and so is computed here rather than once
+	   per pixel. The horizontal scale is the vertical one times the UNSCALED aspect,
+	   because the projection is a property of the output image, not of whatever
+	   internal resolution DLSS or the resolution scaler happens to be rendering at.
+
+	   The player setup view stays rectilinear: it is a viewport-adjusted
+	   sub-rectangle of the screen, which the curved modes have no notion of. */
+	int projection = render_world ? cvar_pt_projection->integer : PROJECTION_RECTILINEAR;
+
+	const float vfov = fd->fov_y * (float)M_PI / 180.f;
+	const float unscaled_aspect = (float)qvk.extent_unscaled.width / (float)qvk.extent_unscaled.height;
+	float fov_scale[2] = { 0.f, 0.f };
+	float cylindrical_hfov = 0.f;
+
+	switch (projection)
 	{
-		float rad_per_pixel = atanf(tanf(fd->fov_y * M_PI / 360.0f) / ((float)qvk.extent_unscaled.height * 0.5f));
-		ubo->cylindrical_hfov = rad_per_pixel * (float)qvk.extent_unscaled.width;
+	case PROJECTION_RECTILINEAR:
+	default:
+		/* P and invP carry the whole projection; nothing else is needed. */
+		break;
+
+	case PROJECTION_PANINI:
+		fov_scale[1] = tanf(vfov * 0.5f);
+		fov_scale[0] = fov_scale[1] * unscaled_aspect;
+		break;
+
+	case PROJECTION_STEREOGRAPHIC:
+		fov_scale[1] = tanf(vfov * 0.5f * STEREOGRAPHIC_ANGLE);
+		fov_scale[0] = fov_scale[1] * unscaled_aspect;
+		break;
+
+	case PROJECTION_CYLINDRICAL:
+		/* The odd one out: it keeps the matrix for its VERTICAL scale (P[1][1] in
+		   cylindrical_forward) and wants a horizontal field ANGLE rather than a plane
+		   half-extent, so it does not use fov_scale at all. */
+		{
+			float rad_per_pixel = atanf(tanf(vfov * 0.5f) / ((float)qvk.extent_unscaled.height * 0.5f));
+			cylindrical_hfov = rad_per_pixel * (float)qvk.extent_unscaled.width;
+		}
+		break;
+
+	case PROJECTION_EQUIRECTANGULAR:
+		fov_scale[1] = vfov * 0.5f;
+		fov_scale[0] = fov_scale[1] * unscaled_aspect;
+		break;
+
+	case PROJECTION_MERCATOR:
+		fov_scale[1] = logf(tanf((float)M_PI * 0.25f + vfov * 0.25f));
+		fov_scale[0] = fov_scale[1] * unscaled_aspect;
+		break;
 	}
-	else
-	{
-		ubo->cylindrical_hfov = 0.f;
-	}
+
+	ubo->pt_projection = projection;
+	ubo->cylindrical_hfov = cylindrical_hfov;
+	ubo->projection_fov_scale[0] = fov_scale[0];
+	ubo->projection_fov_scale[1] = fov_scale[1];
 	
 	ubo->current_frame_idx = qvk.frame_counter;
 	ubo->width = qvk.extent_render.width;
@@ -5075,9 +5128,9 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		default: enable_dof = true; break;
 		}
 
-		if (cvar_pt_projection->integer != 0)
+		if (cvar_pt_projection->integer != PROJECTION_RECTILINEAR)
 		{
-			// DoF does not make physical sense with the cylindrical projection
+			// DoF does not make physical sense with the non-rectilinear projections
 			enable_dof = false;
 		}
 
@@ -7899,7 +7952,10 @@ R_Init_RTX(bool total)
 	// 0 -> photo mode keeps running DLSS, as it used to. See accumulation_bypasses_dlss().
 	cvar_pt_accumulation_bypass_dlss = Cvar_Get("pt_accumulation_bypass_dlss", "1", CVAR_ARCHIVE);
 
-	// 0 -> perspective, 1 -> cylindrical
+	// Camera projection; see PROJECTION_* in shader/constants.h, projection.glsl,
+	// and the pt_projection entry in doc/client.md.
+	// 0 -> perspective (rectilinear), 1 -> panini, 2 -> stereographic,
+	// 3 -> cylindrical, 4 -> equirectangular, 5 -> mercator
 	cvar_pt_projection = Cvar_Get("pt_projection", "0", CVAR_ARCHIVE);
 
 	// depth of field control:

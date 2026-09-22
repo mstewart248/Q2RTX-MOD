@@ -467,6 +467,23 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	GLOBAL_UBO_VAR_LIST_DO(float,           time_prev) \
 	GLOBAL_UBO_VAR_LIST_DO(int,             weapon_left_handed) \
 	\
+	/* CAMERA PROJECTION - see PROJECTION_* in constants.h and projection.glsl.  */ \
+	/* projection_fov_scale is the half-extent, in that projection's own plane   */ \
+	/* coordinates, that the screen edge maps to; prepare_ubo computes it on the */ \
+	/* CPU because it is one transcendental per frame rather than one per pixel. */ \
+	/* The _prev copy is what lets a reprojection run through LAST frame's warp, */ \
+	/* so a FOV change does not smear the whole picture for a frame.             */ \
+	/* Two vec2 fill exactly one 16-byte std140 slot, and pt_projection then     */ \
+	/* gets a padded group of its own - see the alignment note at the top.       */ \
+	/* PLACED LAST, immediately before the cvar list, so nothing above moves.    */ \
+	GLOBAL_UBO_VAR_LIST_DO(vec2,            projection_fov_scale) \
+	GLOBAL_UBO_VAR_LIST_DO(vec2,            projection_fov_scale_prev) \
+	\
+	GLOBAL_UBO_VAR_LIST_DO(int,             pt_projection) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             projection_pad0) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             projection_pad1) \
+	GLOBAL_UBO_VAR_LIST_DO(int,             projection_pad2) \
+	\
 	UBO_CVAR_LIST // WARNING: Do not put any other members into global_ubo after this: the CVAR list is not vec4-aligned
 
 BEGIN_SHADER_STRUCT( ModelInstance )

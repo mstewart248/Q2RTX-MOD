@@ -327,4 +327,31 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // spotlight emission profile given by an 1D texture, indexed by the cosine of the angle from the axis
 #define DYNLIGHT_SPOT_EMISSION_PROFILE_AXIS_ANGLE_TEXTURE   1
 
+//
+// Camera projections - the value of the pt_projection cvar, mirrored into
+// global_ubo.pt_projection and switched on in projection.glsl.
+//
+// RECTILINEAR is the only one that goes through the projection MATRIX; every
+// other mode ignores P/invP entirely and maps the screen through a closed-form
+// warp of the view direction, scaled by global_ubo.projection_fov_scale.
+//
+// These numbers are the upstream Q2RTX ones and are part of the cvar's public
+// interface - do not renumber them.
+//
+#define PROJECTION_RECTILINEAR      0
+#define PROJECTION_PANINI           1
+#define PROJECTION_STEREOGRAPHIC    2
+#define PROJECTION_CYLINDRICAL      3
+#define PROJECTION_EQUIRECTANGULAR  4
+#define PROJECTION_MERCATOR         5
+
+// Fraction of the polar angle the stereographic projection carries to the plane.
+// 0.5 is the true stereographic map (projecting from the antipode); smaller
+// values pull the edges in and flatten the fisheye.
+#define STEREOGRAPHIC_ANGLE         0.5
+
+// Panini distance of the projection centre from the cylinder axis.
+// 0.0 -> rectilinear, 1.0 -> cylindrical stereographic, +inf -> cylindrical orthographic.
+#define PANINI_D                    1.0
+
 #endif /*_CONSTANTS_H_*/

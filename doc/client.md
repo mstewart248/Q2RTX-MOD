@@ -883,10 +883,20 @@ Default value is 10.
 Size of new particles, before they fade out, in world units. Default value is 0.35.
 
 #### `pt_projection`
-Selects the projection to use for rendering. Default value is 0.
+Selects the camera projection to use for rendering. Default value is 0.
 
-- 0 — regular perspective projection
-- 1 — cylindrical projection
+- 0 — regular perspective (rectilinear) projection
+- 1 — panini (cylindrical stereographic) projection
+- 2 — stereographic projection
+- 3 — cylindrical projection
+- 4 — equirectangular projection
+- 5 — mercator projection
+
+Only mode 0 uses a projection matrix; the rest warp the view direction directly,
+which means they show their character only at a wide `fov`. Panini keeps vertical
+lines straight and is the one that stays playable at 120–160 degrees; equirectangular
+and mercator are the ones to use for panoramic captures. Depth of field is disabled
+in every mode but 0, because the aperture model assumes a flat image plane.
 
 #### `pt_reflect_refract`
 Number of reflection or refraction bounces to trace. Default value is 2.

@@ -758,6 +758,19 @@ void monster_triggered_spawn(edict_t *self)
     self->air_finished_framenum = level.framenum + 12 * BASE_FRAMERATE;
     gi.linkentity(self);
 
+    // Trigger-spawned monsters never reach the M_droptofloor in
+    // walkmonster_start_go - it is gated on !(spawnflags & 2) - so without this
+    // they stay at the exact height the mapper placed them. Original Q2 maps put
+    // them on the floor, so that was invisible; rerelease maps place them well
+    // above it and rely on the drop (mgu6m1 spawns two gladiators 153 units up in
+    // a ceiling alcove), and they hang in the air. The rerelease drops them from
+    // monster_start_go and skips it for fliers/swimmers - see
+    // src/rerelease/g_monster.cpp. Match that here. A mapper who wants a monster
+    // left in the air still has SPAWNFLAG_MONSTER_NO_DROP, which M_droptofloor
+    // honours.
+    if (!(self->flags & (FL_FLY | FL_SWIM)))
+        M_droptofloor(self);
+
     monster_start_go(self);
 
     if (self->enemy && !(self->spawnflags & 1) && !(self->enemy->flags & FL_NOTARGET)) {

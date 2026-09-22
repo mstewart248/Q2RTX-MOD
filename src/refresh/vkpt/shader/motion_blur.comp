@@ -198,7 +198,7 @@ load_view_distance(vec2 uv, vec3 view_dir)
 {
 	float stored = load_stored_depth(uv);
 
-	if (global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+	if (global_ubo.pt_dlss_linear_z != 0 && projection_is_rectilinear())
 		return stored / max(view_dir.z, 1e-3);
 
 	return stored;

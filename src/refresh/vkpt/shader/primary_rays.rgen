@@ -460,10 +460,10 @@ main()
 	// test, which is what has to reject weapon-coloured history on the background the
 	// gun uncovers as the camera turns.
 	//
-	// Cylindrical projection has no projection matrix, so radial distance stays correct
+	// The non-rectilinear projections have no projection matrix, so radial distance stays correct
 	// (and consistent with the motion vectors) there.
 	imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
-		(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+		(global_ubo.pt_dlss_linear_z != 0 && projection_is_rectilinear())
 			? view_pos_curr.z : distance_curr));
 
 	vec3 primary_base_color = vec3(1);

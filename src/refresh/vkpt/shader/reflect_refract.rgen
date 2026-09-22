@@ -1061,7 +1061,7 @@ main()
 				// is what the motion vector above was built from. Positive - the sign flip on
 				// PT_VIEW_DEPTH_A is an internal marker for the Q2RTX filters, not depth data.
 				imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(
-					(global_ubo.pt_dlss_linear_z != 0 && global_ubo.cylindrical_hfov <= 0)
+					(global_ubo.pt_dlss_linear_z != 0 && projection_is_rectilinear())
 						? abs(ref_view_pos_curr.z) : abs(distance_curr)));
 			}
 

@@ -761,9 +761,9 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 
 		vec3_t up, down, left, right;
 
-		if (cvar_pt_projection->integer == 1)
+		if (cvar_pt_projection->integer != PROJECTION_RECTILINEAR)
 		{
-			// make the sprite always face the camera and always vertical in cylindrical projection mode
+			// make the sprite always face the camera and always vertical in the curved projection modes
 
 			vec3_t to_camera;
 			VectorSubtract(view_origin, e->origin, to_camera);
