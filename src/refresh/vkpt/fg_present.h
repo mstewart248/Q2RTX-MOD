@@ -101,10 +101,18 @@ void FGPresent_WaitUntilPending(unsigned int max_pending);
    abandoned and those presents issued at once, so the queue catches up instead of
    walking through stale content. One group behind is left alone - that is the ordinary
    steady state and collapsing it would wreck the pacing. */
+/* `group_size` > 0 selects READINESS-RELATIVE pacing (vsync off) and target_us/min_gap_us
+   are ignored: the present goes out at
+       (moment the group's GPU work finished) + slot_index * pace * cadence / group_size
+   where cadence is the measured interval between groups becoming ready. Slot 0 flips as
+   soon as the frame is done; nothing references the display refresh, and a group is cut
+   short the moment the NEXT group is ready, so the pacer can never hold the renderer back.
+   group_size 0 keeps the absolute-deadline schedule (vsync on). */
 bool FGPresent_Enqueue(VkSwapchainKHR swapchain, uint32_t image_index,
                        VkSemaphore wait_semaphore, uint64_t target_us,
                        uint64_t min_gap_us, uint64_t reflex_present_id,
-                       uint64_t group_id, uint64_t timeline_value);
+                       uint64_t group_id, uint64_t timeline_value,
+                       uint32_t slot_index, uint32_t group_size, float pace);
 
 // The result of the most recently issued present, consumed by the main thread to
 // decide whether the swapchain needs recreating. Returns VK_SUCCESS when there is

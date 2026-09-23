@@ -57,6 +57,9 @@ typedef struct {
     uint64_t       reflex_present_id;   // 0 = generated frame, present out of band
     uint64_t       group_id;            // the rendered frame this belongs to
     uint64_t       timeline_value;      // frame work complete at this value
+    uint32_t       slot_index;          // position in the group (relative pacing only)
+    uint32_t       group_size;          // 0 = absolute deadline, >0 = relative pacing
+    float          pace;                // fraction of the cadence a group may span
 } fg_present_item_t;
 
 static fg_present_item_t fg_queue[FG_PRESENT_QUEUE_SIZE];
@@ -78,6 +81,11 @@ static VkResult     fg_last_result = VK_SUCCESS;
    feedback - more lead produces less lateness - which is what makes it safe to close the
    loop here, unlike deriving the lead from a measured frame interval. */
 static volatile double fg_late_ema_us = 0.0;
+
+/* Smoothed interval between consecutive groups becoming READY (their GPU work done), as
+   seen by the present thread. This is the render cadence the relative pacing spreads a
+   group across - measured from the GPU's output, never from the display refresh. */
+static double fg_cadence_us = 0.0;
 
 /* pt_dlss_fg_stats 1 reports the gaps between presents as they are ACTUALLY issued -
    the only number that says whether pacing is working. Bunched gaps mean the generated
@@ -348,6 +356,36 @@ uint64_t FGPresent_SignalTimeline(VkQueue queue)
     return value;
 }
 
+/* True once any frame LATER than `value` has finished on the GPU - i.e. the next group is
+   ready and the one still being paced is out of date. Non-blocking. */
+static bool fg_timeline_passed(uint64_t value)
+{
+    if (value == 0 || fg_timeline == VK_NULL_HANDLE)
+        return false;
+
+    uint64_t counter = 0;
+    if (vkGetSemaphoreCounterValue(qvk.device, fg_timeline, &counter) != VK_SUCCESS)
+        return false;
+    return counter > value;
+}
+
+/* fg_wait_until() for relative pacing: also returns as soon as a newer group is ready, so
+   a slot that turned out too wide costs one present's spacing, not the render rate.
+   Sleeps at most a millisecond at a time so the check actually gets to run. */
+static void fg_wait_until_or_superseded(uint64_t target_us, uint64_t timeline_value)
+{
+    for (;;) {
+        uint64_t now = Sys_Microseconds();
+        if (now >= target_us)
+            return;
+        if (fg_timeline_passed(timeline_value))
+            return;
+
+        uint64_t remaining = target_us - now;
+        SDL_Delay(remaining > 2000 ? 1 : 0);
+    }
+}
+
 /* Host wait - no queue operation, so nothing queues behind it. */
 static bool fg_timeline_wait(uint64_t value)
 {
@@ -393,6 +431,7 @@ static int SDLCALL fg_present_thread(void *unused)
            them. Honouring that schedule would walk the display through stale generated
            frames; issue them at once and let the newest content land instead. */
         bool stale = (fg_newest_group > item.group_id + 1);
+        bool relative = (item.group_size > 0);
 
         /* Release the queue while waiting and presenting so the main thread can keep
            queueing the rest of the group. The item is not popped until it has actually
@@ -426,7 +465,35 @@ static int SDLCALL fg_present_thread(void *unused)
             image_ready = (item.group_id == fg_ready_group);
         }
 
-        fg_wait_until(effective_target);
+        /* Readiness time and cadence, once per group. Taken AFTER the wait above, so it
+           is the moment this group's frames became presentable. */
+        static uint64_t fg_seen_group = (uint64_t)-1;
+        static uint64_t fg_group_ready_us = 0;
+        if (item.group_id != fg_seen_group) {
+            fg_seen_group = item.group_id;
+            uint64_t t = Sys_Microseconds();
+            if (fg_group_ready_us != 0) {
+                double d = (double)(t - fg_group_ready_us);
+                if (d > 500.0 && d < 250000.0)
+                    fg_cadence_us = (fg_cadence_us > 0.0) ? fg_cadence_us * 0.9 + d * 0.1 : d;
+            }
+            fg_group_ready_us = t;
+        }
+
+        if (relative) {
+            /* VSYNC OFF: spread the group evenly across one render interval, starting the
+               moment it is ready. No refresh period, no lead, no floor. `pace` < 1 keeps
+               the group shorter than the cadence so the thread is always idle before the
+               next group lands - it cannot ratchet the render rate down. */
+            double slot = (fg_cadence_us > 0.0)
+                ? fg_cadence_us * (double)item.pace / (double)item.group_size : 0.0;
+            effective_target = stale ? 0
+                : fg_group_ready_us + (uint64_t)(slot * (double)item.slot_index);
+            fg_wait_until_or_superseded(effective_target, item.timeline_value);
+        }
+        else {
+            fg_wait_until(effective_target);
+        }
 
         VkPresentInfoKHR present_info = {
             .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -488,7 +555,7 @@ static int SDLCALL fg_present_thread(void *unused)
            second the counter reports. It is invisible without a number and it has now
            cost several rounds, so say it out loud rather than waiting for someone to
            switch on pt_dlss_fg_stats. */
-        {
+        if (!relative) {
             static int    late_n = 0;
             static double late_sum = 0.0;
             static uint64_t late_warned_us = 0;
@@ -645,7 +712,8 @@ void FGPresent_Shutdown(void)
 bool FGPresent_Enqueue(VkSwapchainKHR swapchain, uint32_t image_index,
                        VkSemaphore wait_semaphore, uint64_t target_us,
                        uint64_t min_gap_us, uint64_t reflex_present_id,
-                       uint64_t group_id, uint64_t timeline_value)
+                       uint64_t group_id, uint64_t timeline_value,
+                       uint32_t slot_index, uint32_t group_size, float pace)
 {
     if (!fg_thread || !fg_queue_mutex)
         return false;
@@ -666,6 +734,9 @@ bool FGPresent_Enqueue(VkSwapchainKHR swapchain, uint32_t image_index,
     fg_queue[tail].reflex_present_id = reflex_present_id;
     fg_queue[tail].group_id       = group_id;
     fg_queue[tail].timeline_value = timeline_value;
+    fg_queue[tail].slot_index     = slot_index;
+    fg_queue[tail].group_size     = group_size;
+    fg_queue[tail].pace           = pace;
     fg_queue[tail].queued_at_us   = Sys_Microseconds();
     if (group_id > fg_newest_group)
         fg_newest_group = group_id;

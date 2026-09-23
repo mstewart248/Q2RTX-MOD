@@ -7508,6 +7508,33 @@ R_EndFrame_RTX(void)
 		unsigned int total = fg_generated_count + 1;
 		double interval = (fg_render_interval_us > 0.0) ? fg_render_interval_us : 16666.0;
 
+		/* VSYNC OFF MEANS NO SCHEDULE DERIVED FROM THE DISPLAY. Everything below this
+		   point used to apply outside FIFO too: the slot clamped to one refresh, then
+		   REPLACED by the measured vblank period, a floor of a full refresh between
+		   presents, and deadlines a whole GPU frame-time ahead. So a 2x group always
+		   spanned two refreshes and the base rate could never exceed refresh / 2 - 30 fps
+		   on a 60Hz panel, ~49 on the 98Hz reading in issue #15 - and deadlines holding
+		   swapchain images throttled the renderer below even that. Frame generation does
+		   not work that way: the base rate is whatever the GPU renders, and the generated
+		   frames are slotted evenly between consecutive real ones.
+
+		   So outside FIFO the group is handed to the present thread with RELATIVE slots:
+		   the first present flips as soon as the GPU finishes, the rest follow at
+		   pace * cadence / total, and a group is abandoned the moment the next one is
+		   ready (see FGPresent_Enqueue). pt_dlss_fg_uncapped 0 restores the old schedule
+		   for comparison. */
+		static cvar_t *cv_uncapped = NULL;
+		if (!cv_uncapped) cv_uncapped = Cvar_Get("pt_dlss_fg_uncapped", "1", CVAR_ARCHIVE);
+		static cvar_t *cv_pace = NULL;
+		if (!cv_pace) cv_pace = Cvar_Get("pt_dlss_fg_pace", "0.95", CVAR_ARCHIVE);
+
+		const bool fg_uncapped = cv_uncapped->integer != 0
+			&& qvk.present_mode != VK_PRESENT_MODE_FIFO_KHR;
+		float fg_pace = cv_pace->value;
+		if (fg_pace < 0.5f) fg_pace = 0.5f;
+		if (fg_pace > 1.0f) fg_pace = 1.0f;
+		const uint32_t fg_group_size = fg_uncapped ? total : 0u;
+
 		/* ORDER MATTERS HERE, and getting it wrong is what produced 14.2 ms present gaps
 		   on a 16.67 ms display. The slot, the group duration and the floor all have to be
 		   settled BEFORE the anchor, because the anchor's re-anchor window and the floor
@@ -7530,7 +7557,7 @@ R_EndFrame_RTX(void)
 				   inside vkQueuePresentKHR holding the swapchain lock. */
 				slot = refresh_slot;
 			}
-			else if (refresh_slot < slot) {
+			else if (!fg_uncapped && refresh_slot < slot) {
 				/* Never stretch a group wider than the display can resolve. */
 				slot = refresh_slot;
 			}
@@ -7545,6 +7572,7 @@ R_EndFrame_RTX(void)
 		uint64_t vb_us = 0;
 		double   vb_period_us = 0.0;
 		bool     phase_locked = cv_vblank->integer
+			&& !fg_uncapped
 			&& qvk.present_mode != VK_PRESENT_MODE_FIFO_KHR
 			&& FGPresent_VBlankInfo(&vb_us, &vb_period_us)
 			&& vb_period_us >= 4000.0 && vb_period_us <= 100000.0;
@@ -7708,7 +7736,7 @@ R_EndFrame_RTX(void)
 
 			if (!FGPresent_Enqueue(qvk.swap_chain, fg_interp_image_index[i],
 				qvk.semaphores_present[fg_interp_image_index[i]], target_us, min_gap_us, 0,
-				qvk.frame_counter, fg_timeline_value))
+				qvk.frame_counter, fg_timeline_value, i, fg_group_size, fg_pace))
 			{
 				/* Queue full or no thread: present inline rather than drop the frame,
 				   which would leave its semaphore signalled and its image never
@@ -7741,7 +7769,8 @@ R_EndFrame_RTX(void)
 		uint64_t real_target_us = base_us + (uint64_t)(slot * (double)fg_generated_count);
 		if (!FGPresent_Enqueue(qvk.swap_chain, qvk.current_swap_chain_image_index,
 			qvk.semaphores_present[qvk.current_swap_chain_image_index], real_target_us,
-			min_gap_us, Reflex_CurrentPresentID(), qvk.frame_counter, fg_timeline_value))
+			min_gap_us, Reflex_CurrentPresentID(), qvk.frame_counter, fg_timeline_value,
+			fg_generated_count, fg_group_size, fg_pace))
 		{
 			fg_presented_by_thread = false;   // fall through to the inline present below
 		}
