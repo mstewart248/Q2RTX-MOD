@@ -39,13 +39,24 @@ typedef struct BufferResource_s {
 } BufferResource_t;
 
 VkResult
-buffer_create(
+buffer_create_(
 		BufferResource_t *buf,
-		VkDeviceSize size, 
+		VkDeviceSize size,
 		VkBufferUsageFlags usage,
-		VkMemoryPropertyFlags mem_properties);
+		VkMemoryPropertyFlags mem_properties,
+		const char *site);
+
+// the call site is recorded so a device-lost report can name the buffer a
+// faulting GPU address belongs to - see vkpt_buffer_registry_report
+#define BUFFER_CREATE_STR2(x) #x
+#define BUFFER_CREATE_STR(x) BUFFER_CREATE_STR2(x)
+#define buffer_create(buf, size, usage, mem_properties) \
+	buffer_create_(buf, size, usage, mem_properties, __FILE__ ":" BUFFER_CREATE_STR(__LINE__))
 
 VkResult buffer_destroy(BufferResource_t *buf);
+
+void vkpt_buffer_registry_name(VkBuffer buffer, const char *name);
+void vkpt_buffer_registry_report(VkDeviceAddress address, VkDeviceSize precision);
 void buffer_unmap(BufferResource_t *buf);
 void *buffer_map(BufferResource_t *buf);
 void buffer_unmap(BufferResource_t *buf);
@@ -95,6 +106,9 @@ const char *qvk_format_to_string(VkFormat format);
 const char *qvk_result_to_string(VkResult result);
 
 #define ATTACH_LABEL_VARIABLE(a, type) \
+	do { \
+	if (VK_DEBUG_REPORT_OBJECT_TYPE_##type##_EXT == VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT) \
+		vkpt_buffer_registry_name((VkBuffer)(a), #a); \
 	if(qvkDebugMarkerSetObjectNameEXT) { \
 		/*Com_Printf("attaching object label 0x%08lx %s\n", (uint64_t) a, #a);*/ \
 		VkDebugMarkerObjectNameInfoEXT name_info = { \
@@ -104,9 +118,13 @@ const char *qvk_result_to_string(VkResult result);
 			.pObjectName = #a \
 		}; \
 		qvkDebugMarkerSetObjectNameEXT(qvk.device, &name_info); \
-	}
+	} \
+	} while (0)
 
 #define ATTACH_LABEL_VARIABLE_NAME(a, type, name) \
+	do { \
+	if (VK_DEBUG_REPORT_OBJECT_TYPE_##type##_EXT == VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT) \
+		vkpt_buffer_registry_name((VkBuffer)(a), name); \
 	if(qvkDebugMarkerSetObjectNameEXT) { \
 		/*Com_Printf("attaching object label 0x%08lx %s\n", (uint64_t) a, name);*/ \
 		VkDebugMarkerObjectNameInfoEXT name_info = { \
@@ -116,7 +134,8 @@ const char *qvk_result_to_string(VkResult result);
 			.pObjectName = name, \
 		}; \
 		qvkDebugMarkerSetObjectNameEXT(qvk.device, &name_info); \
-	}
+	} \
+	} while (0)
 
 #define BEGIN_CMD_LABEL(cmd_buf, label) \
 	if(qvkCmdBeginDebugUtilsLabelEXT) { \

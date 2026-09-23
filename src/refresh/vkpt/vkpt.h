@@ -270,6 +270,7 @@ typedef struct QVK_s {
 	bool                        supports_present_id;
 	bool                        supports_device_fault;   /* VK_EXT_device_fault */
 	bool                        supports_checkpoints;    /* VK_NV_device_diagnostic_checkpoints */
+	bool                        supports_address_binding_report; /* VK_EXT_device_address_binding_report */
 
 	uint32_t                    current_swap_chain_image_index;
 	uint32_t                    current_frame_index;

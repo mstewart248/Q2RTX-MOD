@@ -463,6 +463,26 @@ static void vkpt_pt_destroy_dynamic(int idx)
 	destroy_accel_struct(&blas_blood[idx]);
 }
 
+/* The assert this replaces compiled away in release, which is the only build a
+   device loss has ever been reported from. Past the end of buf_accel_scratch
+   a build scribbles over whatever happens to be mapped next and faults on the
+   first unmapped page - so say so, once per frame, before that happens. */
+static void check_scratch_overflow(VkDeviceSize build_scratch_size, const char *site)
+{
+	static uint64_t last_frame = ~0ull;
+
+	/* the buffer grows (ensure_scratch_capacity), so compare against its size
+	   now, not the size it was created with */
+	if (scratch_buf_ptr <= buf_accel_scratch.size || last_frame == qvk.frame_counter)
+		return;
+
+	last_frame = qvk.frame_counter;
+	Com_EPrintf("%s: acceleration structure build scratch overflow - this build needs %llu bytes "
+		"and ends at %zu, past the %zu byte scratch buffer (frame %llu)\n", site,
+		(unsigned long long)build_scratch_size, scratch_buf_ptr, buf_accel_scratch.size,
+		(unsigned long long)qvk.frame_counter);
+}
+
 static inline int accel_matches(accel_match_info_t *match,
 								int fast_build,
 								uint32_t vertex_count,
@@ -570,6 +590,12 @@ vkpt_pt_create_accel_bottom(
 	VkAccelerationStructureBuildSizesInfoKHR sizeInfo = { .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
 	qvkGetAccelerationStructureBuildSizesKHR(qvk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &max_primitive_count, &sizeInfo);
 
+	/* Scratch is needed for what is BUILT, not for what is allocated. The
+	   re-query below for a bloated dynamic allocation used to size the scratch
+	   reservation too - twice the scratch this build uses, which is what first
+	   ran the shared buffer past its end. */
+	const VkDeviceSize scratch_size = sizeInfo.buildScratchSize;
+
 	if (doAlloc)
 	{
 		uint32_t num_vertices_to_allocate = num_vertices;
@@ -614,9 +640,9 @@ vkpt_pt_create_accel_bottom(
 	assert(buf_accel_scratch.address);
 
 	// Update the scratch buffer ptr
-	scratch_buf_ptr += sizeInfo.buildScratchSize;
+	scratch_buf_ptr += scratch_size;
 	scratch_buf_ptr = align(scratch_buf_ptr, minAccelerationStructureScratchOffsetAlignment);
-	assert(scratch_buf_ptr < SIZE_SCRATCH_BUFFER);
+	check_scratch_overflow(scratch_size, __func__);
 
 	// build offset
 	VkAccelerationStructureBuildRangeInfoKHR offset = { .primitiveCount = max(num_vertices, num_indices) / 3 };
@@ -698,6 +724,12 @@ vkpt_pt_create_accel_bottom_aabb(
 	VkAccelerationStructureBuildSizesInfoKHR sizeInfo = { .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
 	qvkGetAccelerationStructureBuildSizesKHR(qvk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &max_primitive_count, &sizeInfo);
 
+	/* Scratch is needed for what is BUILT, not for what is allocated. The
+	   re-query below for a bloated dynamic allocation used to size the scratch
+	   reservation too - twice the scratch this build uses, which is what first
+	   ran the shared buffer past its end. */
+	const VkDeviceSize scratch_size = sizeInfo.buildScratchSize;
+
 	if (doAlloc)
 	{
 		int num_aabs_to_allocate = num_aabbs;
@@ -740,9 +772,9 @@ vkpt_pt_create_accel_bottom_aabb(
 	assert(buf_accel_scratch.address);
 
 	// Update the scratch buffer ptr
-	scratch_buf_ptr += sizeInfo.buildScratchSize;
+	scratch_buf_ptr += scratch_size;
 	scratch_buf_ptr = align(scratch_buf_ptr, minAccelerationStructureScratchOffsetAlignment);
-	assert(scratch_buf_ptr < SIZE_SCRATCH_BUFFER);
+	check_scratch_overflow(scratch_size, __func__);
 
 	// build offset
 	VkAccelerationStructureBuildRangeInfoKHR offset = { .primitiveCount = num_aabbs };
@@ -751,6 +783,102 @@ vkpt_pt_create_accel_bottom_aabb(
 	qvkCmdBuildAccelerationStructuresKHR(cmd_buf, 1, &buildInfo, &offsets);
 
 	blas->present = true;
+}
+
+/* The scratch one bottom-level build of this shape needs - the same query the
+   builders make, so the sum below is exact rather than an estimate. */
+static VkDeviceSize scratch_for_triangles(uint32_t num_vertices, uint32_t num_indices, bool indexed, bool fast_build)
+{
+	if (num_vertices == 0)
+		return 0;
+
+	const VkAccelerationStructureGeometryKHR geometry = {
+		.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+		.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
+		.geometry = { .triangles = {
+			.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+			.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+			.vertexStride = sizeof(float) * 3,
+			.maxVertex = max(num_vertices, 1) - 1,
+			.indexType = indexed ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_NONE_KHR,
+		} }
+	};
+	const VkAccelerationStructureBuildGeometryInfoKHR info = {
+		.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+		.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+		.flags = fast_build ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR : VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+		.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+		.geometryCount = 1,
+		.pGeometries = &geometry,
+	};
+	uint32_t prims = max(num_vertices, num_indices) / 3;
+	VkAccelerationStructureBuildSizesInfoKHR size = { .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+	qvkGetAccelerationStructureBuildSizesKHR(qvk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &prims, &size);
+	return align(size.buildScratchSize, minAccelerationStructureScratchOffsetAlignment);
+}
+
+static VkDeviceSize scratch_for_aabbs(uint32_t num_aabbs, bool fast_build)
+{
+	if (num_aabbs == 0)
+		return 0;
+
+	const VkAccelerationStructureGeometryKHR geometry = {
+		.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+		.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR,
+		.geometry = { .aabbs = {
+			.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR,
+			.stride = sizeof(VkAabbPositionsKHR),
+		} }
+	};
+	const VkAccelerationStructureBuildGeometryInfoKHR info = {
+		.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+		.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+		.flags = fast_build ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR : VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+		.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+		.geometryCount = 1,
+		.pGeometries = &geometry,
+	};
+	VkAccelerationStructureBuildSizesInfoKHR size = { .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+	qvkGetAccelerationStructureBuildSizesKHR(qvk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &num_aabbs, &size);
+	return align(size.buildScratchSize, minAccelerationStructureScratchOffsetAlignment);
+}
+
+/*
+=================
+ensure_scratch_capacity
+
+THE SHARED BUILD SCRATCH WAS A FIXED 32 MB, AND ONE FRAME'S DYNAMIC GEOMETRY
+CAN NEED MORE. Measured on demo1 with a heavy config: a single build asked for
+37.6 MB. The only guard was an assert(), compiled out in release, so the build
+ran past the end of the buffer - corrupting whatever was mapped after it (model
+vertex buffers, as it happened) and losing the device on the first unmapped
+page it reached. Whether it faulted depended on the memory layout of the run,
+which is why the crash came and went.
+
+So the buffer grows. It can only be replaced HERE: this is the top of the
+frame's builds, before anything recorded in this command buffer points at it,
+and the wait covers the frames still in flight that do. It only ever grows, so
+a map that needs it pays the wait once. Headroom covers the top-level build,
+which reuses the same scratch after these.
+=================
+*/
+static void ensure_scratch_capacity(VkDeviceSize needed)
+{
+	if (needed <= buf_accel_scratch.size)
+		return;
+
+	VkDeviceSize new_size = needed + needed / 4 + (4 << 20);
+	new_size = align(new_size, 1 << 20);
+
+	Com_Printf("Growing the acceleration structure build scratch from %zu to %llu bytes (%llu needed).\n",
+		buf_accel_scratch.size, (unsigned long long)new_size, (unsigned long long)needed);
+
+	vkpt_device_wait_idle();
+	buffer_destroy(&buf_accel_scratch);
+	buffer_create(&buf_accel_scratch, new_size,
+		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	ATTACH_LABEL_VARIABLE(buf_accel_scratch.buffer, BUFFER);
 }
 
 VkResult
@@ -762,6 +890,32 @@ vkpt_pt_create_all_dynamic(
 	scratch_buf_ptr = 0;
 
 	const bool dyn_fast_build = !(cvar_pt_blas_fast_trace && cvar_pt_blas_fast_trace->integer);
+
+	// every build below, sized before the first one is recorded
+	{
+		BufferResource_t *bv = NULL, *bi = NULL, *ba = NULL;
+		uint64_t ov = 0, oi = 0, oa = 0;
+		uint32_t nv = 0, ni = 0, na = 0;
+		VkDeviceSize needed = 0;
+
+		const uint32_t sections[] = {
+			upload_info->opaque_prim_count, upload_info->transparent_prim_count,
+			upload_info->masked_prim_count, upload_info->viewer_model_prim_count,
+			upload_info->viewer_weapon_prim_count, upload_info->explosions_prim_count,
+			upload_info->blood_prim_count,
+		};
+		for (int i = 0; i < LENGTH(sections); i++)
+			needed += scratch_for_triangles(sections[i] * 3, 0, false, dyn_fast_build);
+
+		vkpt_get_transparency_buffers(VKPT_TRANSPARENCY_PARTICLES, &bv, &ov, &bi, &oi, &nv, &ni);
+		needed += scratch_for_triangles(nv, ni, bi != NULL, dyn_fast_build);
+		vkpt_get_beam_aabb_buffer(&ba, &oa, &na);
+		needed += scratch_for_aabbs(na, dyn_fast_build);
+		vkpt_get_transparency_buffers(VKPT_TRANSPARENCY_SPRITES, &bv, &ov, &bi, &oi, &nv, &ni);
+		needed += scratch_for_triangles(nv, ni, bi != NULL, dyn_fast_build);
+
+		ensure_scratch_capacity(needed);
+	}
 
 	uint64_t offset_vertex_base = 0;
 	uint64_t offset_vertex = offset_vertex_base;
@@ -971,7 +1125,7 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 	// Update the scratch buffer ptr
 	scratch_buf_ptr += sizeInfo.buildScratchSize;
 	scratch_buf_ptr = align(scratch_buf_ptr, minAccelerationStructureScratchOffsetAlignment);
-	assert(scratch_buf_ptr < SIZE_SCRATCH_BUFFER);
+	check_scratch_overflow(sizeInfo.buildScratchSize, __func__);
 
 	VkAccelerationStructureBuildRangeInfoKHR offset = { .primitiveCount = num_instances };
 

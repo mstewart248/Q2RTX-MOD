@@ -55,16 +55,146 @@ get_memory_type(uint32_t mem_req_type_bits, VkMemoryPropertyFlags mem_prop)
 	return 0;
 }
 
+/*
+=================
+Buffer registry
+
+Every live buffer's GPU address range, name and creation site, plus the most
+recently destroyed ones, so that vkpt_report_device_lost can say WHICH buffer a
+faulting address belongs to. VK_EXT_device_fault reports only a raw address,
+and a raw address was all the last device loss left to go on.
+
+Every buffer is created device-addressable for this (bufferDeviceAddress is
+always enabled), so the registry covers descriptor-bound buffers too - which
+matters most for the freed ones: a descriptor still pointing at a destroyed
+buffer is one of the few ways to fault with robustBufferAccess on.
+=================
+*/
+typedef struct {
+	VkBuffer        buffer;
+	VkDeviceAddress address;
+	VkDeviceSize    size;
+	uint64_t        created, destroyed;     // qvk.frame_counter
+	const char      *site;
+	char            name[64];
+} buffer_record_t;
+
+#define MAX_LIVE_BUFFER_RECORDS     8192
+#define MAX_FREED_BUFFER_RECORDS    2048
+
+static buffer_record_t live_records[MAX_LIVE_BUFFER_RECORDS];
+static int             num_live_records;
+static buffer_record_t freed_records[MAX_FREED_BUFFER_RECORDS];
+static unsigned        num_freed_records;      // total ever; ring index is % MAX
+
+static void buffer_registry_add(const BufferResource_t *buf, const char *site)
+{
+	if (num_live_records >= MAX_LIVE_BUFFER_RECORDS)
+		return;
+
+	buffer_record_t *r = &live_records[num_live_records++];
+	memset(r, 0, sizeof(*r));
+	r->buffer = buf->buffer;
+	r->address = buf->address;
+	r->size = buf->size;
+	r->created = qvk.frame_counter;
+	r->site = site;
+}
+
+static void buffer_registry_remove(VkBuffer buffer)
+{
+	for (int i = num_live_records - 1; i >= 0; i--) {
+		if (live_records[i].buffer != buffer)
+			continue;
+		live_records[i].destroyed = qvk.frame_counter;
+		freed_records[num_freed_records++ % MAX_FREED_BUFFER_RECORDS] = live_records[i];
+		live_records[i] = live_records[--num_live_records];
+		return;
+	}
+}
+
+void vkpt_buffer_registry_name(VkBuffer buffer, const char *name)
+{
+	if (!buffer || !name)
+		return;
+	for (int i = num_live_records - 1; i >= 0; i--) {
+		if (live_records[i].buffer == buffer) {
+			Q_strlcpy(live_records[i].name, name, sizeof(live_records[i].name));
+			return;
+		}
+	}
+}
+
+static void print_buffer_record(const char *what, const buffer_record_t *r, VkDeviceAddress address)
+{
+	long long offset = (long long)(address - r->address);
+
+	Com_EPrintf("    %s: '%s' (%s) 0x%016llx..0x%016llx, %llu bytes, offset %+lld, created frame %llu",
+		what, r->name[0] ? r->name : "unnamed", r->site ? r->site : "?",
+		(unsigned long long)r->address, (unsigned long long)(r->address + r->size),
+		(unsigned long long)r->size, offset, (unsigned long long)r->created);
+	if (r->destroyed)
+		Com_EPrintf(", DESTROYED frame %llu", (unsigned long long)r->destroyed);
+	Com_EPrintf("\n");
+}
+
+void vkpt_buffer_registry_report(VkDeviceAddress address, VkDeviceSize precision)
+{
+	// the fault lies somewhere in [lo, hi)
+	VkDeviceAddress lo = precision ? (address & ~(precision - 1)) : address;
+	VkDeviceAddress hi = lo + (precision ? precision : 1);
+	const buffer_record_t *below = NULL, *above = NULL;
+	int hits = 0;
+
+	for (int i = 0; i < num_live_records; i++) {
+		const buffer_record_t *r = &live_records[i];
+		if (!r->address)
+			continue;
+		if (r->address < hi && r->address + r->size > lo) {
+			print_buffer_record("inside live buffer", r, address);
+			hits++;
+		} else if (r->address + r->size <= lo) {
+			if (!below || r->address + r->size > below->address + below->size)
+				below = r;
+		} else if (!above || r->address < above->address) {
+			above = r;
+		}
+	}
+
+	unsigned freed = num_freed_records < MAX_FREED_BUFFER_RECORDS ? num_freed_records : MAX_FREED_BUFFER_RECORDS;
+	for (unsigned i = 0; i < freed; i++) {
+		const buffer_record_t *r = &freed_records[i];
+		if (r->address && r->address < hi && r->address + r->size > lo) {
+			print_buffer_record("inside FREED buffer", r, address);
+			hits++;
+		}
+	}
+
+	if (hits)
+		return;
+
+	Com_EPrintf("    in no live or recently freed buffer (%d live, %u freed tracked) - an image, "
+		"or memory freed longer ago; nearest buffers:\n", num_live_records, freed);
+	if (below)
+		print_buffer_record("ends below", below, address);
+	if (above)
+		print_buffer_record("starts above", above, address);
+}
+
 VkResult
-buffer_create(
+buffer_create_(
 		BufferResource_t *buf,
-		VkDeviceSize size, 
+		VkDeviceSize size,
 		VkBufferUsageFlags usage,
-		VkMemoryPropertyFlags mem_properties)
+		VkMemoryPropertyFlags mem_properties,
+		const char *site)
 {
 	assert(size > 0);
 	assert(buf);
 	VkResult result = VK_SUCCESS;
+
+	// device-addressable so the buffer registry can place it; see above
+	usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
 	VkBufferCreateInfo buf_create_info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -130,6 +260,8 @@ buffer_create(
 		buf->address = 0;
 	}
 
+	buffer_registry_add(buf, site);
+
 	return VK_SUCCESS;
 
 fail_bind_buf_memory:
@@ -147,8 +279,10 @@ VkResult
 buffer_destroy(BufferResource_t *buf)
 {
 	assert(!buf->is_mapped);
-	if (buf->buffer != VK_NULL_HANDLE)
+	if (buf->buffer != VK_NULL_HANDLE) {
+		buffer_registry_remove(buf->buffer);
 		vkDestroyBuffer(qvk.device, buf->buffer, NULL);
+	}
 	if(buf->memory != VK_NULL_HANDLE)
 		vkFreeMemory(qvk.device, buf->memory, NULL);
 	buf->buffer = VK_NULL_HANDLE;

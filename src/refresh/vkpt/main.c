@@ -643,6 +643,106 @@ get_vk_layer_list(
 	_VK(vkEnumerateInstanceLayerProperties(num_layers, *ext));
 }
 
+/*
+=================
+Address binding log
+
+A ring of the most recent memory bind/unbind events reported through
+VK_EXT_device_address_binding_report - every buffer, image and driver-internal
+allocation, not only the buffers vk_util.c's registry knows about. The first
+device loss this was added for faulted in a gap between two model vertex
+buffers that no engine buffer had ever occupied; this is what can name it.
+=================
+*/
+typedef struct {
+	VkDeviceAddress address;
+	VkDeviceSize    size;
+	uint64_t        handle;
+	uint64_t        frame;
+	VkObjectType    object_type;
+	bool            unbind;
+	bool            internal;       // driver-internal allocation
+	char            name[48];
+} binding_event_t;
+
+#define MAX_BINDING_EVENTS 16384
+static binding_event_t binding_events[MAX_BINDING_EVENTS];
+static uint64_t        num_binding_events;
+
+static const char* object_type_name(VkObjectType type)
+{
+	switch (type)
+	{
+	case VK_OBJECT_TYPE_BUFFER:                     return "buffer";
+	case VK_OBJECT_TYPE_IMAGE:                      return "image";
+	case VK_OBJECT_TYPE_DEVICE_MEMORY:              return "device memory";
+	case VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR: return "accel struct";
+	default:                                        return "object";
+	}
+}
+
+static void record_address_binding(const VkDebugUtilsMessengerCallbackDataEXT* callback_data)
+{
+	const VkDeviceAddressBindingCallbackDataEXT* b = NULL;
+
+	for (const VkBaseInStructure* s = callback_data->pNext; s; s = s->pNext)
+		if (s->sType == VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT)
+			b = (const VkDeviceAddressBindingCallbackDataEXT*)s;
+	if (!b)
+		return;
+
+	binding_event_t* e = &binding_events[num_binding_events++ % MAX_BINDING_EVENTS];
+	memset(e, 0, sizeof(*e));
+	e->address = b->baseAddress;
+	e->size = b->size;
+	e->unbind = b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_UNBIND_EXT;
+	e->internal = !!(b->flags & VK_DEVICE_ADDRESS_BINDING_INTERNAL_OBJECT_BIT_EXT);
+	e->frame = qvk.frame_counter;
+	if (callback_data->objectCount)
+	{
+		const VkDebugUtilsObjectNameInfoEXT* obj = &callback_data->pObjects[0];
+		e->handle = obj->objectHandle;
+		e->object_type = obj->objectType;
+		if (obj->pObjectName)
+			Q_strlcpy(e->name, obj->pObjectName, sizeof(e->name));
+	}
+}
+
+/* Name every bound range that overlaps [lo, hi), newest first. An UNBIND is as
+   interesting as a bind: a write into memory whose owner has just gone away. */
+static void report_address_bindings(VkDeviceAddress address, VkDeviceSize precision)
+{
+	if (!qvk.supports_address_binding_report)
+	{
+		Com_EPrintf("    (no address binding log: VK_EXT_device_address_binding_report unavailable)" "\n");
+		return;
+	}
+
+	VkDeviceAddress lo = precision ? (address & ~(precision - 1)) : address;
+	VkDeviceAddress hi = lo + (precision ? precision : 1);
+	uint64_t first = num_binding_events > MAX_BINDING_EVENTS ? num_binding_events - MAX_BINDING_EVENTS : 0;
+	int shown = 0;
+
+	for (uint64_t n = num_binding_events; n-- > first && shown < 12; )
+	{
+		const binding_event_t* e = &binding_events[n % MAX_BINDING_EVENTS];
+		if (e->address >= hi || e->address + e->size <= lo)
+			continue;
+
+		Com_EPrintf("    %s %s%s '%s' 0x%llx 0x%016llx..0x%016llx (%llu bytes), offset %+lld, frame %llu" "\n",
+			e->unbind ? "UNBOUND" : "bound  ", e->internal ? "driver-internal " : "",
+			object_type_name(e->object_type), e->name[0] ? e->name : "unnamed",
+			(unsigned long long)e->handle, (unsigned long long)e->address,
+			(unsigned long long)(e->address + e->size), (unsigned long long)e->size,
+			(long long)(address - e->address), (unsigned long long)e->frame);
+		shown++;
+	}
+
+	if (!shown)
+		Com_EPrintf("    no bind or unbind in the last %llu events touched this address" "\n",
+			(unsigned long long)(num_binding_events - first));
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 vk_debug_callback(
 		VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -650,6 +750,13 @@ vk_debug_callback(
 		const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
 		void *user_data)
 {
+	// address-binding reports are bookkeeping for device-lost reports, not errors
+	if (type & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT)
+	{
+		record_address_binding(callback_data);
+		return VK_FALSE;
+	}
+
 	Com_EPrintf("validation layer %i %i: %s\n", (int32_t)type, (int32_t)severity,  callback_data->pMessage);
 	debug_output("Vulkan error: %s\n", callback_data->pMessage);
 
@@ -2060,7 +2167,10 @@ init_vulkan(void)
 			| VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
 		.messageType =
 			  VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
-			| VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
+			| VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+			/* only ever delivered once the device enables
+			   VK_EXT_device_address_binding_report; see vk_gpu_diag */
+			| VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
 		.pfnUserCallback = vk_debug_callback,
 		.pUserData = NULL
 	};
@@ -2214,6 +2324,12 @@ init_vulkan(void)
 
 			if (gpu_diag >= 1 && !strcmp(ext_properties[j].extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME))
 				qvk.supports_device_fault = true;
+
+			/* Every memory bind and unbind - images and driver-internal
+			   allocations included - with its address range, so a fault address
+			   can be named even when it is in no buffer this engine created. */
+			if (gpu_diag >= 1 && !strcmp(ext_properties[j].extensionName, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME))
+				qvk.supports_address_binding_report = true;
 
 			if (gpu_diag >= 2 && !strcmp(ext_properties[j].extensionName, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME))
 				qvk.supports_checkpoints = true;
@@ -2467,6 +2583,10 @@ init_vulkan(void)
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
 		.deviceFault = VK_TRUE,
 	};
+	VkPhysicalDeviceAddressBindingReportFeaturesEXT device_features_binding_report = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT,
+		.reportAddressBinding = VK_TRUE,
+	};
 	VkPhysicalDevicePresentIdFeaturesKHR device_features_present_id = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
 		.presentId = VK_TRUE,
@@ -2545,6 +2665,7 @@ init_vulkan(void)
 	max_extension_count += 1; /* VK_EXT_full_screen_exclusive */
 	max_extension_count += 2; /* VK_NV_low_latency2, VK_KHR_present_id */
 	max_extension_count += 2; /* VK_EXT_device_fault, VK_NV_device_diagnostic_checkpoints */
+	max_extension_count += 1; /* VK_EXT_device_address_binding_report */
 
 	const char** device_extensions = alloca(sizeof(char*) * max_extension_count);
 	uint32_t device_extension_count = 0;
@@ -2613,6 +2734,16 @@ init_vulkan(void)
 		
 		device_features_fault.pNext = (void*)device_features.pNext;
 		device_features.pNext = &device_features_fault;
+	}
+
+	if (qvk.supports_address_binding_report)
+	{
+		static const char* binding_ext[] = { VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			binding_ext, LENGTH(binding_ext));
+
+		device_features_binding_report.pNext = (void*)device_features.pNext;
+		device_features.pNext = &device_features_binding_report;
 	}
 
 	if (qvk.supports_checkpoints)
@@ -6444,7 +6575,13 @@ void vkpt_report_device_lost(const char* context)
 			uint32_t count = 0;
 			qvkGetQueueCheckpointDataNV(queues[q].queue, &count, NULL);
 			if (!count)
+			{
+				/* Say so rather than print nothing: an empty list means the fault
+				   was in work with no perf marker - uploads, BLAS/TLAS builds - or
+				   before the first marked pass of the frame. */
+				Com_EPrintf("Checkpoints on the %s queue: none recorded" "\n", queues[q].name);
 				continue;
+			}
 
 			VkCheckpointDataNV* data = alloca(sizeof(VkCheckpointDataNV) * count);
 			memset(data, 0, sizeof(VkCheckpointDataNV) * count);
@@ -6518,6 +6655,16 @@ void vkpt_report_device_lost(const char* context)
 					Com_EPrintf("  %-15s addr 0x%016llx  +/- 0x%llx" "\n", kind,
 						(unsigned long long)a->reportedAddress,
 						(unsigned long long)a->addressPrecision);
+
+					/* A data address is only useful if it can be named. Instruction
+					   pointers are shader code, which is not in any buffer. */
+					if (a->addressType == VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT ||
+						a->addressType == VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT ||
+						a->addressType == VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT)
+					{
+						vkpt_buffer_registry_report(a->reportedAddress, a->addressPrecision);
+						report_address_bindings(a->reportedAddress, a->addressPrecision);
+					}
 				}
 
 				for (uint32_t i = 0; i < counts.vendorInfoCount; i++)
