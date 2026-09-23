@@ -740,6 +740,21 @@ void CL_ClearState(void)
     CL_FreeDynamicLights();
     CL_FreeMapFog();
 
+    /* A cinematic has to die with the connection it was playing on. Nothing
+       else stops one that is interrupted rather than finished: Esc during the
+       attract loop's idlog.cin pauses it under the menu, and picking a new game
+       from there disconnects and loads the map with cin.start_time still set.
+       The moment the menu closed, SCR_RunCinematic resumed it inside the new
+       level, found no frame, and took its "finished" path - which puts the
+       loading plaque up over a live game (nothing takes it down again until
+       the console is opened) and unregisters cl.image_precache[0], by then one
+       of the map's own images. Vanilla Quake II stops it in CL_Disconnect.
+       It must happen before the wipe below, while image_precache[0] is still
+       the cinematic's frame, and only in ca_cinematic, where it is. */
+    if (cls.state == ca_cinematic) {
+        SCR_StopCinematic();
+    }
+
     // wipe the entire cl structure
     BSP_Free(cl.bsp);
     memset(&cl, 0, sizeof(cl));
