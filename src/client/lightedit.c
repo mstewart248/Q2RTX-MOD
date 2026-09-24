@@ -46,7 +46,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   light debug_on / light debug_off show the lights as spheres
 //   light reload                     re-read the file from disk
 //
-// r, g, b and brightness are all 0..255, as typed. radius is in world units
+// r, g, b are 0..255, as typed. brightness is on the same 0..255 scale but is a
+// real number, so a big, barely-there light can be "brightness .1". radius is in world units
 // and is the size of the emitter sphere, which is what softens the shadow
 // edge; it also sets the size of the debug marker and of the crosshair pick
 // target, so what is on screen in debug mode is exactly what gets picked.
@@ -67,7 +68,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   rgb <r> <g> <b>        colour, 0..255 each   (also "color", "colour")
 //   red <n> / green <n> / blue <n>
 //                          one channel of the colour
-//   brightness <n>         0..255                (also "bright")
+//   brightness <n>         0..255, fractions allowed (.5, .05)  (also "bright")
 //   radius <n>             emitter size in world units   (also "size")
 //   vol <n>                volumetric scale      (also "volume", "volscale")
 //   cone <deg|off>         spot cone, a FULL angle; "off" makes it a point
@@ -150,7 +151,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 typedef struct {
     vec3_t      origin;
     byte        rgb[3];         // 0..255, exactly as typed
-    byte        brightness;     // 0..255, exactly as typed
+    float       brightness;     // 0..255 scale, fractions allowed, as typed
     float       radius;         // world units - emitter size, marker, pick size
     float       vol_scale;      // LIGHT_VOLUMETRIC_SCALE_UNSET = class default
     float       cone;           // FULL cone angle in degrees; 0 = point light
@@ -221,6 +222,17 @@ static byte LE_ParseByte(const char *s)
     int v = atoi(s);
 
     clamp(v, 0, 255);
+    return v;
+}
+
+// A typed brightness. Same 0..255 scale as the colour, but a real number: at a
+// small radius even 1 is plenty bright, and a big soft light that is barely
+// there needs .5 or .1. Clamped like LE_ParseByte.
+static float LE_ParseBrightness(const char *s)
+{
+    float v = atof(s);
+
+    clamp(v, 0.0f, 255.0f);
     return v;
 }
 
@@ -315,7 +327,7 @@ comes out around 5 - which is faithful but leaves little room to tune downwards.
 light_scale is the knob if that becomes annoying.
 =================
 */
-static byte LE_EntityBrightness(const cdynamiclight_t *c)
+static float LE_EntityBrightness(const cdynamiclight_t *c)
 {
     float scale = LE_LightScale();
     float bright = 0.0f;
@@ -324,10 +336,11 @@ static byte LE_EntityBrightness(const cdynamiclight_t *c)
         bright = c->intensity * Cvar_VariableValue("cl_dynamic_light_scale")
                  / scale * 255.0f;
 
-    // a light that resolves to 0 would be invisible and read as a bug, so the
-    // floor is 1 - dim, but unmistakably lit
-    clamp(bright, 1.0f, 255.0f);
-    return (byte)bright;
+    // a light that resolves to 0 would be invisible and read as a bug, so it
+    // gets a small floor - dim, but lit. Brightness is a float now, so a small
+    // entity keeps its fraction instead of rounding up to a whole step.
+    clamp(bright, 0.01f, 255.0f);
+    return bright;
 }
 
 typedef struct {
@@ -442,7 +455,7 @@ static int LE_ApplyKeyedToken(editlight_t *l, int argc, int i)
     }
     if (!strcmp(key, "bright")) {
         NEED(1);
-        l->brightness = LE_ParseByte(Cmd_Argv(i + 1));
+        l->brightness = LE_ParseBrightness(Cmd_Argv(i + 1));
         l->have |= LE_HAVE_BRIGHT;
         return 2;
     }
@@ -595,7 +608,7 @@ void LE_LoadLights(void)
             for (i = 0; i < 3; i++)
                 l->rgb[i] = LE_ParseByte(Cmd_Argv(3 + i));
 
-            l->brightness = LE_ParseByte(Cmd_Argv(6));
+            l->brightness = LE_ParseBrightness(Cmd_Argv(6));
             l->have |= LE_HAVE_RGB | LE_HAVE_BRIGHT;
 
             i = 7;
@@ -721,7 +734,7 @@ static void LE_WriteKeyedTail(qhandle_t f, const editlight_t *l, unsigned skip)
     if (have & LE_HAVE_RGB)
         FS_FPrintf(f, "  rgb %d %d %d", l->rgb[0], l->rgb[1], l->rgb[2]);
     if (have & LE_HAVE_BRIGHT)
-        FS_FPrintf(f, "  bright %d", l->brightness);
+        FS_FPrintf(f, "  bright %g", l->brightness);
     if (have & LE_HAVE_RADIUS)
         FS_FPrintf(f, "  radius %.1f", l->radius);
     if (have & LE_HAVE_VOL)
@@ -771,7 +784,7 @@ static void LE_WriteLights(void)
         }
         placed++;
 
-        FS_FPrintf(f, "%.1f %.1f %.1f   %d %d %d   %d   %.1f",
+        FS_FPrintf(f, "%.1f %.1f %.1f   %d %d %d   %g   %.1f",
                    l->origin[0], l->origin[1], l->origin[2],
                    l->rgb[0], l->rgb[1], l->rgb[2],
                    l->brightness, l->radius);
@@ -989,11 +1002,11 @@ static void LE_PrintLight(const editlight_t *l)
                l->ent_index >= 0 ? " (replaces a map light)" : "",
                l->origin[0], l->origin[1], l->origin[2]);
 
-    Com_Printf("    rgb %d %d %d%s   brightness %d%s   radius %.1f%s\n",
+    Com_Printf("    rgb %d %d %d%s   brightness %g%s   radius %.1f%s\n",
                (int)(r.color[0] * 255.0f + 0.5f),
                (int)(r.color[1] * 255.0f + 0.5f),
                (int)(r.color[2] * 255.0f + 0.5f), LE_SRC(l, LE_HAVE_RGB),
-               (int)(r.intensity / max(LE_LightScale(), 1.0f) * 255.0f + 0.5f),
+               r.intensity / max(LE_LightScale(), 1.0f) * 255.0f,
                LE_SRC(l, LE_HAVE_BRIGHT),
                // radius is never inherited - a dynamic_light's own radius is
                // its REACH, already folded into its intensity, not an emitter
@@ -1034,7 +1047,7 @@ static void LE_PrintEntity(const cdynamiclight_t *c)
                c->replaced ? "REPLACED - a light stands in for it"
                            : "DORMANT - \"light replace\" to light it");
 
-    Com_Printf("    rgb %d %d %d   brightness %d (converted from intensity %.0f)\n",
+    Com_Printf("    rgb %d %d %d   brightness %g (converted from intensity %.0f)\n",
                (int)(c->color[0] * 255.0f + 0.5f),
                (int)(c->color[1] * 255.0f + 0.5f),
                (int)(c->color[2] * 255.0f + 0.5f),
@@ -1112,7 +1125,7 @@ static void LE_ParseCreateArgs(editlight_t *l, int first)
     }
 
     if (argc >= first + 4) {
-        l->brightness = LE_ParseByte(Cmd_Argv(first + 3));
+        l->brightness = LE_ParseBrightness(Cmd_Argv(first + 3));
         l->have |= LE_HAVE_BRIGHT;
     }
 
@@ -1404,7 +1417,7 @@ static void LE_Edit_f(void)
                 break;
 
             case LEA_BRIGHT:
-                l->brightness = LE_ParseByte(Cmd_Argv(3));
+                l->brightness = LE_ParseBrightness(Cmd_Argv(3));
                 break;
 
             case LEA_RADIUS:
