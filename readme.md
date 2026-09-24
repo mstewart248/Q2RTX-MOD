@@ -145,6 +145,33 @@ DLSS-specific renderer work that made the above actually look right:
   between texels lights a smooth wall in flat facets and makes every highlight
   crawl as the camera moves, which is not what "I want to see the pixels" asks
   for. `3` is the one to pick for a pixelated look that still shades cleanly.
+* **Parallax occlusion mapping (height maps)** (`pt_pom`, on by default). Give a
+  material a height map and its surface gets real depth: bricks stand proud of
+  the mortar and grates look recessed, with the texture shifting correctly as
+  you move around it. It works like RTX Remix, and Remix values carry over.
+  To use it:
+  1. Paint a greyscale height map for the texture: **white is raised, black is
+     sunken**. Only the red channel is read.
+  2. Save it beside the texture as `<name>_height.tga` (in `overrides/` or next
+     to the original texture). It is picked up automatically — no `.mat` entry
+     needed. Or name it explicitly with `texture_height` in a `.mat`.
+  3. Tune the depth per material with `displace_in` (how far black sinks below
+     the surface, default `0.05`) and `displace_out` (how far white rises above
+     it, default `0`). Both are in texture-repeat units: `0.05` is 5% of one
+     tile of the texture, so the effect keeps its size however the texture is
+     scaled on the wall.
+
+  ```
+  textures/e1u1/metal3_5:
+      texture_height overrides/metal3_5_height.tga
+      displace_in 0.08
+      displace_out 0.02
+  ```
+
+  `pt_pom_scale` multiplies every material's depth at once, and
+  `pt_pom_max_steps` (default `32`) trades cost for smoother deep displacement.
+  Only the texture lookup moves: silhouettes and shadows still come from the
+  flat surface. See [Attributes](#attributes-1).
 * **VRAM reduction** of up to ~3 GB versus upstream, plus `pt_blas_fast_trace` /
   `pt_tlas_fast_trace` build-quality switches and a resizable animated primitive
   buffer (`pt_primbuf`).
@@ -548,7 +575,9 @@ map loaded.
 
 ## Attributes
 
-`r`, `g`, `b` and `brightness` are all **0..255, as typed**. `radius` is in world
+`r`, `g` and `b` are **0..255, as typed**. `brightness` is on the same 0..255
+scale but takes **fractions**, so a large, barely-there light can be
+`brightness .1` or `.05` — at a small radius even `1` is quite bright. `radius` is in world
 units and is the size of the emitter sphere, which is what softens the shadow
 edge; it also sets the size of the debug marker and of the crosshair pick target,
 so what you see in debug mode is exactly what you pick.
@@ -560,7 +589,7 @@ change one number:
 |---|---|---|
 | `rgb` | `<r> <g> <b>`, 0..255 each | `color`, `colour` |
 | `red` / `green` / `blue` | one channel of the colour | |
-| `brightness` | 0..255 | `bright` |
+| `brightness` | 0..255, fractions allowed (`.5`, `.1`) | `bright` |
 | `radius` | emitter size in world units | `size` |
 | `vol` | volumetric scale | `volume`, `volscale` |
 | `cone` | spot cone as a **full** angle in degrees, or `off` for a point light | `angle` |
@@ -717,6 +746,9 @@ Attributes marked **(new)** do not exist in upstream Quake II RTX.
 | `texture_mask` | path | alpha / cutout mask |
 | `texture_roughness` | path | **(new)** roughness map. Linear data, never sRGB |
 | `texture_metallic` | path | **(new)** metallic map. Linear data, never sRGB |
+| `texture_height` | path | **(new)** height map for parallax occlusion mapping. Greyscale, white raised, black sunken; red channel read |
+| `displace_in` | float | **(new)** how far black in the height map sinks below the surface, in texture-repeat units (`0.05` = 5% of one tile). Default `0.05`, as in RTX Remix |
+| `displace_out` | float | **(new)** how far white rises above the surface, same units. Default `0` |
 | `kind` | name | `REGULAR`, `CHROME`, `GLASS`, `WATER`, `SLIME`, `LAVA`, `SKY`, `INVISIBLE`, `SCREEN`, `CAMERA`, and — newly namable from a `.mat` — `TRANSPARENT`, `TRANSP_MODEL`, `CHROME_MODEL` |
 | `is_light` | bool | this surface emits |
 | `light_styles` | bool | honour lightstyles |
@@ -746,6 +778,7 @@ in the original texture path:
 | `_n.tga` | normals | |
 | `_rough.tga` | roughness | **(new)** RTX-Remix-style sidecar — no `.mat` entry needed |
 | `_metallic.tga` | metallic | **(new)** RTX-Remix-style sidecar |
+| `_height.tga` | height | **(new)** height map for parallax occlusion mapping, with the default `displace_in 0.05` |
 | `_light.tga` | emissive | |
 | `_glow.png` | emissive | **(new)** the rerelease's own name for an emissive map, and it ships one beside nearly every MD5 skin. Accepted **only under `md5/`** — 1571 `_glow.png` files exist across `rerelease/` and `baseq2/` and only 143 are under `md5/`; accepting the suffix everywhere would silently turn hundreds of ordinary wall textures into light sources and relight every map. A `_glow` map masks with alpha, so the alpha is folded into RGB on load |
 
