@@ -749,7 +749,7 @@ static void write_sprite_geometry(const float* view_matrix, const entity_t* enti
 		if (!model || model->type != MOD_SPRITE)
 			continue;
 
-		mspriteframe_t *frame = &model->spriteframes[e->frame % model->numframes];
+		mspriteframe_t *frame = &model->spriteframes[(unsigned)e->frame % model->numframes];
 		image_t *image = frame->image;
 
 		sprite_info[0] = image - r_images;

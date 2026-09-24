@@ -1384,7 +1384,9 @@ void PutClientInServer(edict_t *ent)
     client->ps.gunindex = gi.modelindex(client->pers.weapon->view_model);
 
     // clear entity state values
+    ent->s.sound = 0;
     ent->s.effects = 0;
+    ent->s.renderfx = 0;
     ent->s.modelindex = 255;        // will use the skin specified model
     ent->s.modelindex2 = 255;       // custom gun model
     // sknum is player num and weapon number
@@ -1495,6 +1497,14 @@ void ClientBegin(edict_t *ent)
         // with deltaangles
         for (i = 0 ; i < 3 ; i++)
             ent->client->ps.pmove.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]);
+
+        // A hub return lands here too (SV_AutoSaveEnd saves the player's body
+        // with the level), but the gclient came across from the level just
+        // left, so ps.gunindex is that level's model index - here it can name
+        // an inline brush model instead, and the view weapon vanishes.
+        // Re-register it against this level's configstrings.
+        if (ent->client->pers.weapon && ent->client->pers.weapon->view_model)
+            ent->client->ps.gunindex = gi.modelindex(ent->client->pers.weapon->view_model);
     } else {
         // a spawn point will completely reinitialize the entity
         // except for the persistant data that was initialized at
@@ -1689,9 +1699,12 @@ void ClientDisconnect(edict_t *ent)
 
     gi.unlinkentity(ent);
     ent->s.modelindex = 0;
+    ent->s.modelindex2 = 0;
     ent->s.sound = 0;
     ent->s.event = 0;
     ent->s.effects = 0;
+    ent->s.renderfx = 0;
+    ent->s.solid = 0;
     ent->solid = SOLID_NOT;
     ent->inuse = false;
     ent->classname = "disconnected";
@@ -1815,10 +1828,6 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
         // perform a pmove
         gi.Pmove(&pm);
 
-        // save results of pmove
-        client->ps.pmove = pm.s;
-        client->old_pmove = pm.s;
-
         for (i = 0 ; i < 3 ; i++) {
             ent->s.origin[i] = SHORT2COORD(pm.s.origin[i]);
             ent->velocity[i] = SHORT2COORD(pm.s.velocity[i]);
@@ -1831,10 +1840,16 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
         client->resp.cmd_angles[1] = SHORT2ANGLE(ucmd->angles[1]);
         client->resp.cmd_angles[2] = SHORT2ANGLE(ucmd->angles[2]);
 
-        if (ent->groundentity && !pm.groundentity && (pm.cmd.upmove >= 10) && (pm.waterlevel == 0)) {
+        // play jump sound when pmove actually starts a jump (PMF_JUMP_HELD
+        // newly set), rather than guessing from ground entity changes
+        if (~client->ps.pmove.pm_flags & pm.s.pm_flags & PMF_JUMP_HELD && pm.waterlevel == 0) {
             gi.sound(ent, CHAN_VOICE, gi.soundindex("*jump1.wav"), 1, ATTN_NORM, 0);
             PlayerNoise(ent, ent->s.origin, PNOISE_SELF);
         }
+
+        // save results of pmove
+        client->ps.pmove = pm.s;
+        client->old_pmove = pm.s;
 
         ent->viewheight = pm.viewheight;
         ent->waterlevel = pm.waterlevel;

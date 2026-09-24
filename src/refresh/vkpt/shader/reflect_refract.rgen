@@ -835,21 +835,20 @@ main()
 		// Reflection ray hit the sky - store an empty surface into the G-buffer,
 		// blend the environment under the transparency.
 
-		if(found_intersection(ray_payload_geometry))
-		{
-			vec3 env = env_map(direction, false);
-			// seen sky, in a reflection - same treatment as the primary ray,
-			// including pt_sky_brightness being a MAP SKYBOX control only. A
-			// reflection of the physical sky has to match the sky itself or
-			// water and glass show a different sky from the one overhead.
-			env *= global_ubo.pt_env_scale;
-			if (global_ubo.environment_type == ENVIRONMENT_STATIC)
-				env *= global_ubo.pt_sky_brightness;
-			else
-				env *= global_ubo.pt_physical_sky_brightness;
-			
-			transparent = alpha_blend(transparent, vec4(env * throughput, 1));
-		}
+		// Also when the ray hit nothing at all (upstream f6dfa332) - escaping the map
+		// used to leave a black reflection instead of the environment.
+		vec3 env = env_map(direction, false);
+		// seen sky, in a reflection - same treatment as the primary ray,
+		// including pt_sky_brightness being a MAP SKYBOX control only. A
+		// reflection of the physical sky has to match the sky itself or
+		// water and glass show a different sky from the one overhead.
+		env *= global_ubo.pt_env_scale;
+		if (global_ubo.environment_type == ENVIRONMENT_STATIC)
+			env *= global_ubo.pt_sky_brightness;
+		else
+			env *= global_ubo.pt_physical_sky_brightness;
+		
+		transparent = alpha_blend(transparent, vec4(env * throughput, 1));
 
 		material_id = (primary_medium << MATERIAL_LIGHT_STYLE_SHIFT) & MATERIAL_LIGHT_STYLE_MASK;
 

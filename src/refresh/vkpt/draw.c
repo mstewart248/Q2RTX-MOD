@@ -237,7 +237,6 @@ vkpt_draw_initialize()
 {
 	num_stretch_pics = 0;
 	LOG_FUNC();
-	create_render_pass();
 	for(int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		_VK(buffer_create(buf_stretch_pic_queue + i, sizeof(StretchPic_t) * MAX_STRETCH_PICS, 
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -383,7 +382,6 @@ vkpt_draw_destroy()
 		buffer_destroy(buf_stretch_pic_queue + i);
 		buffer_destroy(buf_ubo + i);
 	}
-	vkDestroyRenderPass(qvk.device, render_pass_stretch_pic, NULL);
 	vkDestroyDescriptorPool(qvk.device, desc_pool_sbo, NULL);
 	vkDestroyDescriptorSetLayout(qvk.device, desc_set_layout_sbo, NULL);
 	vkDestroyDescriptorPool(qvk.device, desc_pool_ubo, NULL);
@@ -407,6 +405,8 @@ vkpt_draw_destroy_pipelines()
 	}
 	free(framebuffer_stretch_pic);
 	framebuffer_stretch_pic = NULL;
+
+	vkDestroyRenderPass(qvk.device, render_pass_stretch_pic, NULL);
 	
 	return VK_SUCCESS;
 }
@@ -415,6 +415,10 @@ VkResult
 vkpt_draw_create_pipelines()
 {
 	LOG_FUNC();
+
+	// The render pass format follows the swapchain (HDR toggle), so it is
+	// recreated along with the pipelines rather than once at init.
+	create_render_pass();
 
 	assert(desc_set_layout_sbo);
 	VkDescriptorSetLayout desc_set_layouts[] = {

@@ -55,7 +55,7 @@ void MoveClientToIntermission(edict_t *ent)
     ent->s.modelindex = 0;
     ent->s.modelindex2 = 0;
     ent->s.modelindex3 = 0;
-    ent->s.modelindex = 0;
+    ent->s.modelindex4 = 0;
     ent->s.effects = 0;
     ent->s.sound = 0;
     ent->solid = SOLID_NOT;
@@ -100,7 +100,7 @@ void BeginIntermission(edict_t *targ)
                 if (!client->inuse)
                     continue;
                 // strip players of all keys between units
-                for (n = 0; n < MAX_ITEMS; n++) {
+                for (n = 0; n < game.num_items; n++) {
                     if (itemlist[n].flags & IT_KEY)
                         client->client->pers.inventory[n] = 0;
                 }
@@ -138,8 +138,10 @@ void BeginIntermission(edict_t *targ)
         }
     }
 
-    VectorCopy(ent->s.origin, level.intermission_origin);
-    VectorCopy(ent->s.angles, level.intermission_angle);
+    if (ent) {
+        VectorCopy(ent->s.origin, level.intermission_origin);
+        VectorCopy(ent->s.angles, level.intermission_angle);
+    }
 
     // move all clients to the intermission point
     for (i = 0 ; i < maxclients->value ; i++) {
@@ -441,14 +443,17 @@ void G_SetStats(edict_t *ent)
             // ran out of cells for power armor
             ent->flags &= ~FL_POWER_ARMOR;
             gi.sound(ent, CHAN_ITEM, gi.soundindex("misc/power2.wav"), 1, ATTN_NORM, 0);
-            power_armor_type = 0;;
+            power_armor_type = 0;
         }
     }
 
     index = ArmorIndex(ent);
     if (power_armor_type && (!index || (level.framenum & 8))) {
         // flash between power armor and other armor icon
-        ent->client->ps.stats[STAT_ARMOR_ICON] = gi.imageindex("i_powershield");
+        if (power_armor_type == POWER_ARMOR_SHIELD)
+            ent->client->ps.stats[STAT_ARMOR_ICON] = gi.imageindex("i_powershield");
+        else
+            ent->client->ps.stats[STAT_ARMOR_ICON] = gi.imageindex("i_powerscreen");
         ent->client->ps.stats[STAT_ARMOR] = cells;
     } else if (index) {
         item = GetItemByIndex(index);

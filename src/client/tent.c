@@ -1014,8 +1014,8 @@ static void CL_AddBeams(void)
         } else {
             model_length = 30.0f;
         }
-        steps = ceil(d / model_length);
-        len = (d - model_length) / (steps - 1);
+        steps = ceilf(d / model_length);
+        len = steps > 1 ? (d - model_length) / (steps - 1) : 0;
 
         memset(&ent, 0, sizeof(ent));
         ent.model = b->model;
@@ -1030,7 +1030,7 @@ static void CL_AddBeams(void)
             ent.angles[1] = angles[1];
             ent.angles[2] = Q_rand() % 360;
             V_AddEntity(&ent);
-            return;
+            continue;
         }
 
         while (d > 0) {
@@ -1562,7 +1562,7 @@ static void CL_RailTrail(void)
         }
     }
 
-    if (!cl_railtrail_type->integer || cvar_pt_beam_lights->value <= 0)
+    if (!cl_railtrail_type->integer || (cls.ref_type == REF_TYPE_VKPT && cvar_pt_beam_lights->value <= 0))
     {
         CL_RailLights(rail_color);
     }

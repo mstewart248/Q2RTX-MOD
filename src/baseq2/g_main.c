@@ -381,7 +381,8 @@ edict_t *CreateTargetChangeLevel(char *map)
 
     ent = G_Spawn();
     ent->classname = "target_changelevel";
-    Q_snprintf(level.nextmap, sizeof(level.nextmap), "%s", map);
+    if (map != level.nextmap)
+        Q_strlcpy(level.nextmap, map, sizeof(level.nextmap));
     ent->map = level.nextmap;
     return ent;
 }
@@ -601,7 +602,8 @@ void G_RunFrame(void)
 
         level.current_entity = ent;
 
-        VectorCopy(ent->s.origin, ent->s.old_origin);
+        if (!(ent->s.renderfx & RF_BEAM))
+            VectorCopy(ent->s.origin, ent->s.old_origin);
 
         // if the ground entity moved, make sure we are still on it
         if ((ent->groundentity) && (ent->groundentity->linkcount != ent->groundentity_linkcount)) {

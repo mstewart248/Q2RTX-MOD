@@ -29,10 +29,10 @@ typedef struct {
     int16_t     origin[3];
     int16_t     angles[3];
     int16_t     old_origin[3];
-    uint8_t     modelindex;
-    uint8_t     modelindex2;
-    uint8_t     modelindex3;
-    uint8_t     modelindex4;
+    uint16_t    modelindex;     // MAX_MODELS is 512 - bytes truncated these
+    uint16_t    modelindex2;
+    uint16_t    modelindex3;
+    uint16_t    modelindex4;
     uint32_t    skinnum;
     uint32_t    effects;
     uint32_t    renderfx;
@@ -51,7 +51,7 @@ typedef struct {
     int8_t          kick_angles[3];
     int8_t          gunangles[3];
     int8_t          gunoffset[3];
-    uint8_t         gunindex;
+    uint16_t        gunindex;       // indexes the same 512-entry model list
     uint8_t         gunframe;
     uint8_t         blend[4];
     uint8_t         fov;

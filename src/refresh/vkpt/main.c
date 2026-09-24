@@ -6379,8 +6379,13 @@ static void report_present_stats(void)
 	present_stats_last_us = now;
 }
 
+/* Rebuilds every VKPT_INIT_SWAPCHAIN_RECREATE resource. With new_swapchain false the
+   swapchain itself is kept: a screen-image extent or profile change (photo mode pins the
+   render scale to 100% on pause, which widens the split-field images) does not alter the
+   window, and tearing the swapchain down for it also dropped and re-took full-screen
+   exclusive mode - ~400 ms of blank monitor on every pause and unpause. */
 static void
-recreate_swapchain(void)
+rebuild_render_resources(bool new_swapchain)
 {
 	vkpt_device_wait_idle();
 
@@ -6398,12 +6403,25 @@ recreate_swapchain(void)
 
 	vkpt_dlss_request_history_reset();
 	vkpt_destroy_all(VKPT_INIT_SWAPCHAIN_RECREATE);
-	destroy_swapchain();
-	SDL_GetWindowSize(qvk.window, &qvk.win_width, &qvk.win_height);
-	create_swapchain();
+	if (new_swapchain)
+	{
+		destroy_swapchain();
+		SDL_GetWindowSize(qvk.window, &qvk.win_width, &qvk.win_height);
+		create_swapchain();
+	}
+	else
+	{
+		Com_Printf("Screen images rebuilt, swapchain kept [%s]\n", swapchain_reason);
+	}
 	vkpt_initialize_all(VKPT_INIT_SWAPCHAIN_RECREATE);
 
 	qvk.wait_for_idle_frames = MAX_FRAMES_IN_FLIGHT * 2;
+}
+
+static void
+recreate_swapchain(void)
+{
+	rebuild_render_resources(true);
 }
 
 static int compare_doubles(const void* pa, const void* pb)
@@ -6759,9 +6777,13 @@ R_BeginFrame_RTX(void)
 			(!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox) ? "vid_vsync_mailbox changed" :
 			(desired_swapchain_images() != swapchain_requested_images)
 			? "swapchain image count changed" : "frame generation vsync override changed";
+		const bool swapchain_changed = (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync)
+		   || (!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox)
+		   || (desired_swapchain_images() != swapchain_requested_images)
+		   || (fg_wants_no_vsync() != swapchain_fg_forced_no_vsync);
 		qvk.extent_screen_images = extent_screen_images;
 		screen_image_profile_current = screen_image_profile;
-		recreate_swapchain();
+		rebuild_render_resources(swapchain_changed);
 	}
 
 retry:;

@@ -1015,6 +1015,8 @@ void CL_SetupMuzzleFlashEntity(entity_t *ent, const vec3_t origin,
 extern qhandle_t cl_mod_muzzleflash;
 void CL_MuzzleOffset_f(void);
 void CL_ViewMuzzleFlash(void);
+void CL_PlayerModelMuzzleFlash(void);
+void CL_AddPlayerModelFlash(void);
 
 void CL_RegisterTEntSounds(void);
 void CL_RegisterTEntModels(void);

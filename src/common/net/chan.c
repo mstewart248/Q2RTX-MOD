@@ -305,6 +305,12 @@ static bool NetchanOld_Process(netchan_t *netchan)
         }
     }
 
+    if (msg_read.readcount > msg_read.cursize) {
+        SHOWDROP("%s: message too short\n",
+                 NET_AdrToString(&netchan->remote_address));
+        return false;
+    }
+
     reliable_message = sequence >> 31;
     reliable_ack = sequence_ack >> 31;
 
@@ -665,6 +671,12 @@ static bool NetchanNew_Process(netchan_t *netchan)
         fragment_offset &= 0x7FFF;
     }
 
+    if (msg_read.readcount > msg_read.cursize) {
+        SHOWDROP("%s: message too short\n",
+                 NET_AdrToString(&netchan->remote_address));
+        return false;
+    }
+
     SHOWPACKET("recv %4zu : s=%d ack=%d rack=%d",
                msg_read.cursize, sequence, sequence_ack, reliable_ack);
     if (fragmented_message) {
@@ -729,7 +741,7 @@ static bool NetchanNew_Process(netchan_t *netchan)
         }
 
         length = msg_read.cursize - msg_read.readcount;
-        if (chan->fragment_in.cursize + length > chan->fragment_in.maxsize) {
+        if (length > chan->fragment_in.maxsize - chan->fragment_in.cursize) {
             SHOWDROP("%s: oversize fragment at %i\n",
                      NET_AdrToString(&netchan->remote_address), sequence);
             return false;

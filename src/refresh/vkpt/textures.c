@@ -2075,16 +2075,6 @@ void vkpt_textures_update_descriptor_set()
 		img_info->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 		img_info->imageView   = image_view;
 		img_info->sampler     = sampler;
-
-		if (i >= VKPT_IMG_BLOOM_HBLUR &&
-			i <= VKPT_IMG_BLOOM_VBLUR) {
-			img_info->sampler = qvk.tex_sampler_linear_clamp;
-		}
-
-		if (i >= VKPT_IMG_DLSS_BLOOM_HBLUR &&
-			i <= VKPT_IMG_DLSS_BLOOM_VBLUR) {
-			img_info->sampler = qvk.tex_sampler_linear_clamp;
-		}
 	}
 
 	/* The whole binding is one descriptor array, so this is a single write of
@@ -2171,7 +2161,7 @@ vkpt_screen_image_profile
 
 Which optional screen-image groups this configuration will actually use.  Built
 only from cvars, never from per-frame state, because the images are rebuilt when
-this value changes and a rebuild tears down the swapchain - photo mode, which is
+this value changes and a rebuild stalls for ~100 ms - photo mode, which is
 entered by PAUSING, must not be able to trigger one mid-frame.  That is why the
 accumulation group keys off pt_accumulation_rendering (the cvar that permits photo
 mode) rather than is_accumulation_rendering_active() (whether it is running now).
@@ -2425,12 +2415,6 @@ LIST_IMAGES_A_B
 		           (image_profile & SCREEN_IMG_GROUP_ACCUM) ? "" : " photo-mode");
 	}
 
-	/* attach labels to images */
-#define IMG_DO(_name, _binding, ...) \
-	ATTACH_LABEL_VARIABLE_NAME(qvk.images[VKPT_IMG_##_name], IMAGE, #_name);
-	LIST_IMAGES
-	LIST_IMAGES_A_B
-#undef IMG_DO
 	/* attach labels to images */
 #define IMG_DO(_name, _binding, ...) \
 	ATTACH_LABEL_VARIABLE_NAME(qvk.images[VKPT_IMG_##_name], IMAGE, #_name);

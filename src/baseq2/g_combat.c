@@ -34,6 +34,23 @@ bool CanDamage(edict_t *targ, edict_t *inflictor)
 
 // bmodels need special checking because their origin is 0,0,0
     if (targ->movetype == MOVETYPE_PUSH) {
+        int i;
+
+        // [rerelease] test against the closest point of the target's box,
+        // not only its centre. A blast inside the box always counts: mgu4m1's
+        // crate drop sets off its explosions inside a func_explosive that the
+        // train is still sliding out of, so the centre trace hit the train
+        // first and the crate never broke, leaving the player walled in.
+        for (i = 0; i < 3; i++) {
+            dest[i] = inflictor->s.origin[i];
+            clamp(dest[i], targ->absmin[i], targ->absmax[i]);
+        }
+        if (VectorCompare(dest, inflictor->s.origin))
+            return true;
+        trace = gi.trace(inflictor->s.origin, vec3_origin, vec3_origin, dest, inflictor, MASK_SOLID);
+        if (trace.fraction == 1.0f || trace.ent == targ)
+            return true;
+
         VectorAdd(targ->absmin, targ->absmax, dest);
         VectorScale(dest, 0.5f, dest);
         trace = gi.trace(inflictor->s.origin, vec3_origin, vec3_origin, dest, inflictor, MASK_SOLID);

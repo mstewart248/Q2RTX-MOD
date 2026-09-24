@@ -155,6 +155,27 @@ VkResult vkpt_initialize_god_rays(void)
 	god_rays.eccentricity = Cvar_Get("gr_eccentricity", "0.75", 0);
 	god_rays.enable = Cvar_Get("gr_enable", "1", 0);
 
+	// Created once here rather than in create_image_views(), which runs on every
+	// swapchain recreate and leaked a sampler each time.
+	VkSamplerReductionModeCreateInfo redutcion_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+		.reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN
+	};
+
+	const VkSamplerCreateInfo sampler_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.pNext = &redutcion_create_info,
+		.magFilter = VK_FILTER_LINEAR,
+		.minFilter = VK_FILTER_LINEAR,
+		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
+	};
+
+	_VK(vkCreateSampler(qvk.device, &sampler_create_info, NULL, &god_rays.shadow_sampler));
+
 	return VK_SUCCESS;
 }
 
@@ -681,25 +702,6 @@ void vkpt_god_rays_prepare_ubo(
 static void create_image_views(void)
 {
 	god_rays.shadow_image_view = vkpt_shadow_map_get_view();
-
-	VkSamplerReductionModeCreateInfo redutcion_create_info = {
-		.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
-		.reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN
-	};
-
-	const VkSamplerCreateInfo sampler_create_info = {
-		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-		.pNext = &redutcion_create_info,
-		.magFilter = VK_FILTER_LINEAR,
-		.minFilter = VK_FILTER_LINEAR,
-		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
-	};
-
-	_VK(vkCreateSampler(qvk.device, &sampler_create_info, NULL, &god_rays.shadow_sampler));
 }
 
 static void create_pipeline_layout(void)

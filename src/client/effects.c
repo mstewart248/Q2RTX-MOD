@@ -218,47 +218,43 @@ void CL_MuzzleFlash(void)
     // Rerelease: the flash model, at the same place the dlight was just put.
     // Our own gun in first person is handled separately - CL_AddViewWeapon is
     // the only place that knows where the view model actually ended up.
-    if (mz.entity == cl.frame.clientNum + 1 && !cl.thirdPersonView) {
-        // Your own gun needs BOTH: the view flash for what you see down the
-        // barrel, and a world-space one at the player model's gun that only
-        // mirrors will draw. Same split as the plasma beam's two chains.
+    if (mz.entity == cl.frame.clientNum + 1) {
+        // Your own gun, in EITHER view. It needs the view flash for what you see
+        // down the barrel (first person only), and a flash on the player model's
+        // gun - which mirrors draw in first person and which IS the flash in
+        // third person. Same split as the plasma beam's two chains.
         //
-        // The dlight position above is NOT the right place for that second one.
-        // It is origin + forward*18 + right*16 with no vertical term at all,
-        // which suits a monster - whose origin sits mid-body - but for YOUR
-        // model it lands a long way out in front at hip height. Worse,
-        // CL_AddPacketEntities slides your own model BACK 15 units so the view
-        // point ends up in front of its head (entities.c, "offset the model
-        // back a bit"), so the flash was about 33 units clear of the body it is
-        // supposed to be attached to.
+        // Third person used to fall through to the monster branch below, and
+        // that is wrong twice over for your own entity:
         //
-        // So place this one relative to the model as it is actually drawn, and
-        // make the three offsets cvars - where a player model holds its gun is
-        // a thing to look at and nudge, not to derive.
-        vec3_t  world_muzzle, yaw_only, f, r, u;
+        //  - pl->current is NOT where your model is. The server never sends
+        //    origin or angles for the viewer's own entity (MSG_ES_FIRSTPERSON),
+        //    so CL_DeltaFrame fills them from the authoritative playerstate -
+        //    which trails the PREDICTED origin your model is drawn at by a
+        //    server frame or more. Running, that is tens of units behind you.
+        //  - it was spawned once and left in the world. You keep moving for
+        //    the flash's whole life, carrying the gun further past it still.
+        //
+        // Both together put the flash behind the character. The mirror copy
+        // looked right mostly because mirrors get checked standing still.
+        //
+        // So the model flash is now rebuilt every frame from the predicted
+        // player transform, the way the view flash follows the view gun - see
+        // CL_AddPlayerModelFlash in entities.c.
+        vec3_t  yaw_only;
 
-        // YAW COMES FROM THE VIEW, NOT FROM THE ENTITY.
-        //
-        // pl->current.angles is the server's copy of your own player entity,
-        // which arrives at the server tick rate and - for your own client - is
-        // the one thing the client already knows better than the server does.
-        // Feeding it to a model that grows entirely along +X (the flash is
-        // v_machn/flash, vertices 0.0 .. 0.4 in X, so it flares FORWARD from
-        // its origin) is what had the flare pointing back at the player.
-        //
-        // cl.refdef.viewangles is the predicted, current facing, and it is
-        // exactly what the first-person flash uses - so the two halves of the
-        // pair now agree by construction.
-        VectorSet(yaw_only, 0, cl.refdef.viewangles[YAW], 0);
-        AngleVectors(yaw_only, f, r, u);
+        if (!cl.thirdPersonView)
+            CL_ViewMuzzleFlash();
+        CL_PlayerModelMuzzleFlash();
 
-        VectorCopy(pl->current.origin, world_muzzle);
-        VectorMA(world_muzzle, -15.0f + cl_muzzleflash_world_fwd->value, f, world_muzzle);
-        VectorMA(world_muzzle, cl_muzzleflash_world_right->value, r, world_muzzle);
-        VectorMA(world_muzzle, cl_muzzleflash_world_up->value, u, world_muzzle);
-
-        CL_ViewMuzzleFlash();
-        CL_MuzzleFlashModel(world_muzzle, yaw_only, RF_REFLECTION_FX);
+        // The light keeps its classic 18-forward/16-right placement - it
+        // stays clear of the body that way - but measured from the predicted
+        // player rather than from the stale playerstate copy.
+        VectorSet(yaw_only, 0, cl.playerEntityAngles[YAW], 0);
+        AngleVectors(yaw_only, fv, rv, NULL);
+        VectorCopy(cl.playerEntityOrigin, dl->origin);
+        VectorMA(dl->origin, 18, fv, dl->origin);
+        VectorMA(dl->origin, 16, rv, dl->origin);
     } else {
         CL_MuzzleFlashModel(dl->origin, pl->current.angles, 0);
     }

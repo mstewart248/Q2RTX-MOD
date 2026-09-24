@@ -58,6 +58,7 @@ STATIC HANDLE processHandle, threadHandle;
 STATIC HANDLE crashReport;
 STATIC CHAR faultyModuleName[MAX_PATH];
 STATIC DWORD moduleInfoSize;
+STATIC volatile LONG exceptionEntered;
 
 #define MI_SIZE_V1   584
 #define MI_SIZE_V2  1664
@@ -206,6 +207,11 @@ LONG WINAPI Sys_ExceptionFilter(LPEXCEPTION_POINTERS exceptionInfo)
 
     // debugger present? not our business
     if (IsDebuggerPresent()) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // only enter once (another thread, or a fault inside this handler)
+    if (InterlockedCompareExchange(&exceptionEntered, 1, 0)) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 

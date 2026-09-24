@@ -1539,6 +1539,10 @@ CL_PacketEvent
 */
 static void CL_PacketEvent(void)
 {
+    if (msg_read.cursize < 4) {
+        return;
+    }
+
     //
     // remote command packet
     //

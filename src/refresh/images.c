@@ -974,21 +974,31 @@ static void IMG_List_f(void)
 static image_t *alloc_image(void)
 {
     int i;
-    image_t *image;
+    image_t *image, *placeholder = NULL;
 
     // find a free image_t slot
     for (i = 1, image = r_images + 1; i < r_numImages; i++, image++) {
         if (!image->registration_sequence)
-            break;
+            return image;
+        if (!placeholder && image->type == IT_PIC && !(image->flags & IF_PERMANENT) &&
+            !image->upload_width && !image->upload_height)
+            placeholder = image;
     }
 
-    if (i == r_numImages) {
-        if (r_numImages == MAX_RIMAGES)
-            return NULL;
+    // allocate new slot if possible
+    if (r_numImages < MAX_RIMAGES) {
         r_numImages++;
+        return image;
     }
 
-    return image;
+    // reuse placeholder (failed temp pic) slot if available
+    if (placeholder) {
+        List_Remove(&placeholder->entry);
+        memset(placeholder, 0, sizeof(*placeholder));
+        return placeholder;
+    }
+
+    return NULL;
 }
 
 // finds the given image of the given type.
@@ -1124,8 +1134,8 @@ int IMG_GetDimensions(const char* name, int* width, int* height)
         dpcx_t pcx;
         len = FS_Read(&pcx, sizeof(pcx), f);
         if (len == sizeof(pcx)) {
-            w = LittleShort(pcx.xmax) + 1;
-            h = LittleShort(pcx.ymax) + 1;
+            w = (LittleShort(pcx.xmax) - LittleShort(pcx.xmin)) + 1;
+            h = (LittleShort(pcx.ymax) - LittleShort(pcx.ymin)) + 1;
         }
     }
 
@@ -1348,10 +1358,14 @@ static int find_or_load_image(const char *name, size_t len,
 
     // look for it
     if ((image = lookup_image(name, type, hash, len - 4)) != NULL) {
-        image->flags |= flags & IF_PERMANENT;
         image->registration_sequence = registration_sequence;
-        *image_p = image;
-        return Q_ERR_SUCCESS;
+        if (image->upload_width && image->upload_height) {
+            image->flags |= flags & IF_PERMANENT;
+            *image_p = image;
+            return Q_ERR_SUCCESS;
+        }
+        // placeholder for a temp pic that previously failed to load
+        return Q_ERR(ENOENT);
     }
 
     // allocate image slot
@@ -1409,6 +1423,17 @@ static int find_or_load_image(const char *name, size_t len,
 
     if (ret < 0) {
         memset(image, 0, sizeof(*image));
+        if (type == IT_PIC && !(flags & IF_PERMANENT)) {
+            // don't reload missing temp pics (HUD icons etc) from disk every
+            // frame: keep an empty placeholder in the hash table until the
+            // next registration sequence frees it
+            memcpy(image->name, name, len + 1);
+            image->baselen = len - 4;
+            image->type = type;
+            image->flags = flags;
+            image->registration_sequence = registration_sequence;
+            List_Append(&r_imageHash[hash], &image->entry);
+        }
         return ret;
     }
 

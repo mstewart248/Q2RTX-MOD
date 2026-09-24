@@ -1587,6 +1587,11 @@ int BSP_Load(const char *name, bsp_t **bsp_p)
         return filelen;
     }
 
+    if (filelen < sizeof(dheader_t)) {
+        ret = Q_ERR_FILE_TOO_SMALL;
+        goto fail2;
+    }
+
     // byte swap and validate the header
     header = (dheader_t *)buf;
     if (LittleLong(header->ident) != IDBSPHEADER &&
@@ -1916,6 +1921,11 @@ overrun:
                 Q_SetBit(mask, 939);
                 Q_SetBit(mask, 947);
             }
+        } else if (bsp->checksum == 0x2b2ccdd1 || bsp->checksum == 0x1ebe8001) {
+            // mgu6m2, waterfall (original and updated rerelease BSP)
+            Q_SetBit(mask, 213);
+            Q_SetBit(mask, 214);
+            Q_SetBit(mask, 217);
         }
     }
 

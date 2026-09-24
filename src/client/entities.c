@@ -1559,6 +1559,65 @@ void CL_ViewMuzzleFlash(void)
     cl_view_flash_roll = frand() * 360.0f;
 }
 
+// The flash on your own PLAYER MODEL's gun: the only one in third person, and
+// the mirror-only twin of the view flash in first person. Stamped the same way
+// as the view flash, and for the same reason - it is rebuilt every frame from
+// the predicted player transform instead of being spawned into the world once.
+// A spawned one sat where you WERE: your own entity's pl->current origin is
+// the lagging playerstate, and you kept moving for the flash's whole life.
+static int  cl_player_flash_time;
+static float cl_player_flash_roll;
+
+// called from CL_MuzzleFlash when the flash belongs to us, in either view
+void CL_PlayerModelMuzzleFlash(void)
+{
+    cl_player_flash_time = cl.time;
+    cl_player_flash_roll = frand() * 360.0f;
+}
+
+// Runs after CL_AddPacketEntities, so cl.playerEntityOrigin/Angles and
+// cl.thirdPersonView all describe the frame being drawn.
+void CL_AddPlayerModelFlash(void)
+{
+    vec3_t  muzzle, yaw_only, f, r, u;
+    entity_t ent;
+
+    // same staleness rules as the view flash, including cl.time going backwards
+    if (!cl_player_flash_time || cl.time < cl_player_flash_time ||
+        cl.time - cl_player_flash_time >= Cvar_ClampValue(cl_muzzleflash_time, 10, 200)) {
+        cl_player_flash_time = 0;
+        return;
+    }
+
+    if (!cl_muzzleflash_models->integer || !cl_mod_muzzleflash)
+        return;
+
+    // Placed relative to the model AS DRAWN: CL_AddPacketEntities draws your
+    // own model at the predicted origin, yaw only, slid back 15 units so the
+    // view point sits in front of its head. The three cvars are where the
+    // player model holds its gun relative to that - a thing to look at and
+    // nudge, not to derive.
+    //
+    // Yaw only, and from the prediction: the flash model grows along +X, and
+    // the server's copy of your angles is what once had it pointing back at
+    // you.
+    VectorSet(yaw_only, 0, cl.playerEntityAngles[YAW], 0);
+    AngleVectors(yaw_only, f, r, u);
+
+    VectorCopy(cl.playerEntityOrigin, muzzle);
+    VectorMA(muzzle, -15.0f + cl_muzzleflash_world_fwd->value, f, muzzle);
+    VectorMA(muzzle, cl_muzzleflash_world_right->value, r, muzzle);
+    VectorMA(muzzle, cl_muzzleflash_world_up->value, u, muzzle);
+
+    // In third person the model is in plain view, so the flash is too. In
+    // first person the model is mirror-only and so is its flash - the view
+    // flash covers the camera.
+    CL_SetupMuzzleFlashEntity(&ent, muzzle, yaw_only, cl_player_flash_roll,
+                              cl.thirdPersonView ? 0 : RF_REFLECTION_FX,
+                              cl_mod_muzzleflash);
+    V_AddEntity(&ent);
+}
+
 static void CL_AddViewWeaponFlash(const entity_t *gun)
 {
     const model_t   *model;
@@ -2100,6 +2159,7 @@ void CL_AddEntities(void)
     CL_CalcViewValues();
     CL_FinishViewValues();
     CL_AddPacketEntities();
+    CL_AddPlayerModelFlash();
     CL_AddTEnts();
     CL_AddParticles();
     CL_AddDLights();

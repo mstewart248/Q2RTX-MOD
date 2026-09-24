@@ -731,8 +731,65 @@ void SV_Physics_Toss(edict_t *ent)
     
 
 // move origin
-    VectorScale(ent->velocity, FRAMETIME, move);
-    trace = SV_PushEntity(ent, move);
+    if (ent->movetype == MOVETYPE_TOSS) {
+        // [rerelease] TOSS slides: up to five moves a frame along whatever it
+        // hits, losing half the into-surface speed each time, with friction on
+        // floors, and it only comes to rest once it is slower than 60 u/s.
+        // The single stock Q2 move stopped a tossed thing dead the first time
+        // it touched anything flat enough to stand on and could never get off
+        // a slope steeper than that. mgu4m1's crate drop depends on the
+        // rerelease behaviour: func_object *52 slides down its ramp, across the
+        // ledge and into the water, and with the stock move it stayed on the
+        // ledge and walled the player in.
+        float   time_left = FRAMETIME;
+        int     num_tries = 5;
+        float   backoff_dot;
+        int     i;
+
+        memset(&trace, 0, sizeof(trace));
+        trace.fraction = 1.0f;
+
+        while (time_left > 0 && num_tries-- > 0) {
+            VectorScale(ent->velocity, time_left, move);
+            trace = SV_PushEntity(ent, move);
+            if (!ent->inuse)
+                return;
+            if (trace.fraction == 1.0f || trace.allsolid)
+                break;      // allsolid is handled just below
+
+            time_left -= time_left * trace.fraction;
+
+            // The rerelease removes only half the into-surface speed here
+            // (SlideClipVelocity with 0.5), which relies on its engine's trace
+            // backing off the surface. Against this engine's trace the next
+            // try went straight back into the slope at fraction 0 - mgu4m1's
+            // crate sat on its ramp building up speed and never moved - so
+            // take all of it, as stock Q2's ClipVelocity does.
+            backoff_dot = DotProduct(ent->velocity, trace.plane.normal);
+            for (i = 0; i < 3; i++) {
+                ent->velocity[i] -= trace.plane.normal[i] * backoff_dot;
+                if (ent->velocity[i] > -STOP_EPSILON && ent->velocity[i] < STOP_EPSILON)
+                    ent->velocity[i] = 0;
+            }
+
+            if (trace.plane.normal[2] > 0.7f) {
+                if (VectorLength(ent->velocity) < 60.0f) {
+                    ent->groundentity = trace.ent;
+                    ent->groundentity_linkcount = trace.ent->linkcount;
+                    VectorClear(ent->velocity);
+                    VectorClear(ent->avelocity);
+                    break;
+                }
+
+                // friction for tossing stuff (gibs, etc)
+                VectorScale(ent->velocity, 0.75f, ent->velocity);
+                VectorScale(ent->avelocity, 0.75f, ent->avelocity);
+            }
+        }
+    } else {
+        VectorScale(ent->velocity, FRAMETIME, move);
+        trace = SV_PushEntity(ent, move);
+    }
 
     // Buried in solid and going nowhere.  SV_PushEntity has already refused the
     // move; treat whatever we are inside as the ground so gravity stops piling
@@ -741,9 +798,24 @@ void SV_Physics_Toss(edict_t *ent)
     // even slightly inside the floor sinks forever - see the note in
     // SV_PushEntity for why the trace does not stop it.
     if (trace.allsolid) {
-        if (trace.ent) {
-            ent->groundentity = trace.ent;
-            ent->groundentity_linkcount = trace.ent->linkcount;
+        edict_t *ground = trace.ent;
+
+        // Rest on what we are actually buried in. The move trace can name the
+        // world even when the box is inside a brush entity - mgu4m1's crate
+        // (func_object *192) spawns inside the clamp that holds it up
+        // (func_explosive *190) - and resting on the world meant it never
+        // fell when the clamp was blown away. Resting on the clamp, it drops
+        // as soon as the clamp is freed, as in the rerelease.
+        if (ground == world) {
+            trace_t in = gi.trace(ent->s.origin, ent->mins, ent->maxs, ent->s.origin, ent,
+                                  ent->clipmask ? ent->clipmask : MASK_SOLID);
+            if (in.allsolid && in.ent && in.ent != world)
+                ground = in.ent;
+        }
+
+        if (ground) {
+            ent->groundentity = ground;
+            ent->groundentity_linkcount = ground->linkcount;
         }
         VectorClear(ent->velocity);
         VectorClear(ent->avelocity);
@@ -789,7 +861,7 @@ void SV_Physics_Toss(edict_t *ent)
     if (!ent->inuse)
         return;
 
-    if (trace.fraction < 1 && !trace.allsolid) {
+    if (trace.fraction < 1 && !trace.allsolid && ent->movetype != MOVETYPE_TOSS) {
         if (ent->movetype == MOVETYPE_WALLBOUNCE)
             backoff = 2.0f;
         else if (ent->movetype == MOVETYPE_BOUNCE)

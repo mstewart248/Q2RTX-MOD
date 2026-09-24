@@ -306,8 +306,8 @@ vkpt_pt_init()
 	ATTACH_LABEL_VARIABLE(rt_pipeline_layout, PIPELINE_LAYOUT);
 
 	VkDescriptorPoolSize pool_sizes[] = {
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAMES_IN_FLIGHT * LENGTH(bindings) },
-		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_FRAMES_IN_FLIGHT }
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, MAX_FRAMES_IN_FLIGHT * LENGTH(bindings) },
+		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_FRAMES_IN_FLIGHT * TLAS_COUNT }
 	};
 
 	VkDescriptorPoolCreateInfo pool_create_info = {
@@ -510,10 +510,48 @@ static inline int accel_matches_top_level(accel_match_info_t *match,
 // to try to avoid later allocations.
 #define DYNAMIC_GEOMETRY_BLOAT_FACTOR 2
 
+/* The dynamic bottom-level builds are queued here and recorded with a single
+   vkCmdBuildAccelerationStructuresKHR (upstream dd352e77). Recording them back
+   to back is slower: some drivers barrier implicitly between separate build
+   commands. Each build already has its own scratch range, so batching is legal. */
+#define MAX_BATCH_ACCEL_BUILDS 16
+
+typedef struct {
+	uint32_t numBuilds;
+	VkAccelerationStructureGeometryKHR geometries[MAX_BATCH_ACCEL_BUILDS];
+	VkAccelerationStructureBuildGeometryInfoKHR buildInfos[MAX_BATCH_ACCEL_BUILDS];
+	VkAccelerationStructureBuildRangeInfoKHR rangeInfos[MAX_BATCH_ACCEL_BUILDS];
+	const VkAccelerationStructureBuildRangeInfoKHR *rangeInfoPtrs[MAX_BATCH_ACCEL_BUILDS];
+} accel_build_batch_t;
+
+static void
+accel_batch_add(accel_build_batch_t *batch,
+	const VkAccelerationStructureGeometryKHR *geometry,
+	const VkAccelerationStructureBuildGeometryInfoKHR *build_info,
+	uint32_t primitive_count)
+{
+	assert(batch->numBuilds < MAX_BATCH_ACCEL_BUILDS);
+	uint32_t i = batch->numBuilds++;
+
+	batch->geometries[i] = *geometry;
+	batch->buildInfos[i] = *build_info;
+	batch->buildInfos[i].pGeometries = &batch->geometries[i];
+	batch->rangeInfos[i] = (VkAccelerationStructureBuildRangeInfoKHR){ .primitiveCount = primitive_count };
+	batch->rangeInfoPtrs[i] = &batch->rangeInfos[i];
+}
+
+static void
+accel_batch_flush(VkCommandBuffer cmd_buf, accel_build_batch_t *batch)
+{
+	if (batch->numBuilds > 0)
+		qvkCmdBuildAccelerationStructuresKHR(cmd_buf, batch->numBuilds, batch->buildInfos, batch->rangeInfoPtrs);
+	batch->numBuilds = 0;
+}
+
 
 static void
 vkpt_pt_create_accel_bottom(
-	VkCommandBuffer cmd_buf,
+	accel_build_batch_t *batch,
 	BufferResource_t* buffer_vertex,
 	VkDeviceAddress offset_vertex,
 	BufferResource_t* buffer_index,
@@ -644,18 +682,14 @@ vkpt_pt_create_accel_bottom(
 	scratch_buf_ptr = align(scratch_buf_ptr, minAccelerationStructureScratchOffsetAlignment);
 	check_scratch_overflow(scratch_size, __func__);
 
-	// build offset
-	VkAccelerationStructureBuildRangeInfoKHR offset = { .primitiveCount = max(num_vertices, num_indices) / 3 };
-	const VkAccelerationStructureBuildRangeInfoKHR* offsets = &offset;
-
-	qvkCmdBuildAccelerationStructuresKHR(cmd_buf, 1, &buildInfo, &offsets);
+	accel_batch_add(batch, &geometry, &buildInfo, max(num_vertices, num_indices) / 3);
 
 	blas->present = true;
 }
 
 static void
 vkpt_pt_create_accel_bottom_aabb(
-	VkCommandBuffer cmd_buf,
+	accel_build_batch_t *batch,
 	BufferResource_t* buffer_aabb,
 	VkDeviceAddress offset_aabb,
 	int num_aabbs,
@@ -776,11 +810,7 @@ vkpt_pt_create_accel_bottom_aabb(
 	scratch_buf_ptr = align(scratch_buf_ptr, minAccelerationStructureScratchOffsetAlignment);
 	check_scratch_overflow(scratch_size, __func__);
 
-	// build offset
-	VkAccelerationStructureBuildRangeInfoKHR offset = { .primitiveCount = num_aabbs };
-	const VkAccelerationStructureBuildRangeInfoKHR* offsets = &offset;
-
-	qvkCmdBuildAccelerationStructuresKHR(cmd_buf, 1, &buildInfo, &offsets);
+	accel_batch_add(batch, &geometry, &buildInfo, num_aabbs);
 
 	blas->present = true;
 }
@@ -917,37 +947,40 @@ vkpt_pt_create_all_dynamic(
 		ensure_scratch_capacity(needed);
 	}
 
+	static accel_build_batch_t batch;
+	batch.numBuilds = 0;
+
 	uint64_t offset_vertex_base = 0;
 	uint64_t offset_vertex = offset_vertex_base;
 	uint64_t offset_index = 0;
-	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->opaque_prim_count * 3, 0, blas_dynamic + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->transparent_prim_offset * sizeof(prim_positions_t);
-	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->transparent_prim_count * 3, 0, blas_transparent_models + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->masked_prim_offset * sizeof(prim_positions_t);
-	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->masked_prim_count * 3, 0, blas_masked_models + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->viewer_model_prim_offset * sizeof(prim_positions_t);
-	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->viewer_model_prim_count * 3, 0, blas_viewer_models + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->viewer_weapon_prim_offset * sizeof(prim_positions_t);
-	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->viewer_weapon_prim_count * 3, 0, blas_viewer_weapon + idx, true, dyn_fast_build);
 
 	offset_vertex = offset_vertex_base + upload_info->explosions_prim_offset * sizeof(prim_positions_t);
-	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->explosions_prim_count * 3, 0, blas_explosions + idx, true, dyn_fast_build);
 
 	// Blood droplets (cl_blood_spheres). Just another section of the instanced
 	// position buffer, so it builds exactly like the model sections above - the
 	// only difference is who wrote the vertices into it; see blood.c.
 	offset_vertex = offset_vertex_base + upload_info->blood_prim_offset * sizeof(prim_positions_t);
-	vkpt_pt_create_accel_bottom(cmd_buf, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->blood_prim_count * 3, 0, blas_blood + idx, true, dyn_fast_build);
 
 	BufferResource_t* buffer_vertex = NULL;
@@ -955,16 +988,18 @@ vkpt_pt_create_all_dynamic(
 	uint32_t num_vertices = 0;
 	uint32_t num_indices = 0;
 	vkpt_get_transparency_buffers(VKPT_TRANSPARENCY_PARTICLES, &buffer_vertex, &offset_vertex, &buffer_index, &offset_index, &num_vertices, &num_indices);
-	vkpt_pt_create_accel_bottom(cmd_buf, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_particles + idx, true, dyn_fast_build);
+	vkpt_pt_create_accel_bottom(&batch, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_particles + idx, true, dyn_fast_build);
 
 	BufferResource_t *buffer_aabb = NULL;
 	uint64_t offset_aabb = 0;
 	uint32_t num_aabbs = 0;
 	vkpt_get_beam_aabb_buffer(&buffer_aabb, &offset_aabb, &num_aabbs);
-	vkpt_pt_create_accel_bottom_aabb(cmd_buf, buffer_aabb, offset_aabb, num_aabbs, blas_beams + idx, true, dyn_fast_build);
+	vkpt_pt_create_accel_bottom_aabb(&batch, buffer_aabb, offset_aabb, num_aabbs, blas_beams + idx, true, dyn_fast_build);
 	
 	vkpt_get_transparency_buffers(VKPT_TRANSPARENCY_SPRITES, &buffer_vertex, &offset_vertex, &buffer_index, &offset_index, &num_vertices, &num_indices);
-	vkpt_pt_create_accel_bottom(cmd_buf, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_sprites + idx, true, dyn_fast_build);
+	vkpt_pt_create_accel_bottom(&batch, buffer_vertex, offset_vertex, buffer_index, offset_index, num_vertices, num_indices, blas_sprites + idx, true, dyn_fast_build);
+
+	accel_batch_flush(cmd_buf, &batch);
 
 	MEM_BARRIER_BUILD_ACCEL(cmd_buf);
 	scratch_buf_ptr = 0;
