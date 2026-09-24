@@ -1043,8 +1043,12 @@ void SP_monster_brain(edict_t *self) {
     self->monsterinfo.search = brain_search;
     self->monsterinfo.idle = brain_idle;
 
-    self->monsterinfo.power_armor_type = POWER_ARMOR_SCREEN;
-    self->monsterinfo.power_armor_power = 100;
+    // [rerelease] only when the map did not set the keys itself: mgu2m3's
+    // brains carry power_armor_type/_power "0" to remove the screen
+    if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_TYPE))
+        self->monsterinfo.power_armor_type = POWER_ARMOR_SCREEN;
+    if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_POWER))
+        self->monsterinfo.power_armor_power = 100;
 
     gi.linkentity(self);
 

@@ -60,6 +60,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define DOOR_TOGGLE         32
 #define DOOR_X_AXIS         64
 #define DOOR_Y_AXIS         128
+// Rogue/rerelease func_door_rotating flags (src/rerelease/g_func.cpp)
+#define DOOR_ROTATING_INACTIVE  65536   // does nothing until first used (rhangar2 t265, rsewer1 t18)
+#define DOOR_ROTATING_SAFE_OPEN 131072  // swings away from whoever opens it (xsewer1, hangar2, xware...)
+
+#define PLAT_NO_MONSTER     2           // rogue: monsters may not ride/use this plat
+
+#define WATER_SMART         2           // rogue: func_water that chases the lowest player (rmine2 thelava)
+
+#define ROTATING_START_ON   1
+#define ROTATING_TOUCH_PAIN 16
+#define ROTATING_ACCEL      65536       // rogue: spin up / spin down instead of snapping
 
 
 /*
@@ -173,9 +184,14 @@ void AngleMove_Final(edict_t *ent)
 {
     vec3_t  move;
 
-    if (ent->moveinfo.state == STATE_UP)
-        VectorSubtract(ent->moveinfo.end_angles, ent->s.angles, move);
-    else
+    // [rerelease] a SAFE_OPEN door opening away from the activator heads for
+    // end_angles_reversed instead (see door_use).
+    if (ent->moveinfo.state == STATE_UP) {
+        if (ent->moveinfo.reversing)
+            VectorSubtract(ent->moveinfo.end_angles_reversed, ent->s.angles, move);
+        else
+            VectorSubtract(ent->moveinfo.end_angles, ent->s.angles, move);
+    } else
         VectorSubtract(ent->moveinfo.start_angles, ent->s.angles, move);
 
     if (VectorEmpty(move)) {
@@ -195,11 +211,32 @@ void AngleMove_Begin(edict_t *ent)
     float   len;
     float   traveltime;
     float   frames;
+    bool    accelerating;
+
+    // [rerelease/rogue] accelerate as needed. 9 func_door_rotatings in the
+    // rerelease maps set "accel" (rmine2 t150/t128/t123/t104/t96, rhangar1 t240,
+    // rmine1 t264, rware1 t100/t106) and used to swing at full speed from the
+    // first frame. The rerelease adds accel every 40 Hz tick, so a 10 Hz frame
+    // adds it four times to keep the same real-time spin-up. Only doors that
+    // really accelerate (accel != speed, see AngleMove_Calc) do this, so a
+    // team speed from Think_CalcMoveSpeed is never overridden.
+    accelerating = ent->accel > 0 && ent->accel != ent->speed;
+    if (accelerating && ent->moveinfo.speed < ent->speed) {
+        ent->moveinfo.speed += ent->accel * 4;
+        if (ent->moveinfo.speed > ent->speed)
+            ent->moveinfo.speed = ent->speed;
+    }
+    // never divide by zero below, whatever the entity's keys were
+    if (ent->moveinfo.speed <= 0)
+        ent->moveinfo.speed = ent->speed > 0 ? ent->speed : 100;
 
     // set destdelta to the vector needed to move
-    if (ent->moveinfo.state == STATE_UP)
-        VectorSubtract(ent->moveinfo.end_angles, ent->s.angles, destdelta);
-    else
+    if (ent->moveinfo.state == STATE_UP) {
+        if (ent->moveinfo.reversing)
+            VectorSubtract(ent->moveinfo.end_angles_reversed, ent->s.angles, destdelta);
+        else
+            VectorSubtract(ent->moveinfo.end_angles, ent->s.angles, destdelta);
+    } else
         VectorSubtract(ent->moveinfo.start_angles, ent->s.angles, destdelta);
 
     // calculate length of vector
@@ -218,15 +255,30 @@ void AngleMove_Begin(edict_t *ent)
     // scale the destdelta vector by the time spent traveling to get velocity
     VectorScale(destdelta, 1.0f / traveltime, ent->avelocity);
 
-    // set nextthink to trigger a think when dest is reached
-    ent->nextthink = level.framenum + frames;
-    ent->think = AngleMove_Final;
+    // [rerelease/rogue] once done accelerating, act as a normal rotation;
+    // until then re-evaluate every frame
+    if (!accelerating || ent->moveinfo.speed >= ent->speed) {
+        // set nextthink to trigger a think when dest is reached
+        ent->nextthink = level.framenum + frames;
+        ent->think = AngleMove_Final;
+    } else {
+        ent->nextthink = level.framenum + 1;
+        ent->think = AngleMove_Begin;
+    }
 }
 
 void AngleMove_Calc(edict_t *ent, void(*func)(edict_t*))
 {
     VectorClear(ent->avelocity);
     ent->moveinfo.endfunc = func;
+
+    // [rerelease/rogue] if we're supposed to accelerate, this tells
+    // AngleMove_Begin to do so. SP_func_door_rotating defaults accel to speed,
+    // which means "no acceleration"; accel 0 is treated the same so nothing
+    // ever divides by a zero speed.
+    if (ent->accel > 0 && ent->accel != ent->speed)
+        ent->moveinfo.speed = 0;
+
     if (level.current_entity == ((ent->flags & FL_TEAMSLAVE) ? ent->teammaster : ent)) {
         AngleMove_Begin(ent);
     } else {
@@ -264,8 +316,11 @@ void plat_CalcAcceleratedMove(moveinfo_t *moveinfo)
     if ((moveinfo->remaining_distance - accel_dist - decel_dist) < 0) {
         float   f;
 
+        // [rerelease] a move too short to reach full speed starts at its
+        // peak speed rather than at zero, as src/rerelease/g_func.cpp does
         f = (moveinfo->accel + moveinfo->decel) / (moveinfo->accel * moveinfo->decel);
-        moveinfo->move_speed = (-2 + sqrtf(4 - 4 * f * (-2 * moveinfo->remaining_distance))) / (2 * f);
+        moveinfo->move_speed = moveinfo->current_speed =
+            (-2 + sqrtf(4 - 4 * f * (-2 * moveinfo->remaining_distance))) / (2 * f);
         decel_dist = AccelerationDistance(moveinfo->move_speed, moveinfo->decel);
     }
 
@@ -282,8 +337,14 @@ void plat_Accelerate(moveinfo_t *moveinfo)
                 moveinfo->next_speed = 0;
                 return;
             }
-            if (moveinfo->current_speed > moveinfo->decel)
+            if (moveinfo->current_speed > moveinfo->decel) {
                 moveinfo->current_speed -= moveinfo->decel;
+
+                // [rerelease] Paril-KEX "fix platforms in xdm6": a speed that
+                // rounds to nothing would stall the mover short of its end
+                if (fabsf(moveinfo->current_speed) < 0.01f)
+                    moveinfo->current_speed = moveinfo->remaining_distance + 1;
+            }
         }
         return;
     }
@@ -411,13 +472,22 @@ void plat_blocked(edict_t *self, edict_t *other)
     if (!(other->svflags & SVF_MONSTER) && (!other->client)) {
         // give it a chance to go away on it's own terms (like gibs)
         T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, 100000, 1, 0, MOD_CRUSH);
-        // if it's still there, nuke it
-        if (other)
+        // if it's still there, nuke it. [rerelease] T_Damage may already have
+        // freed it; exploding a freed edict puts the explosion at the world origin
+        if (other && other->inuse && other->solid)
             BecomeExplosion1(other);
         return;
     }
 
+    // [rerelease/rogue] gib dead things, so a corpse can't hold a plat up forever
+    if (other->health < 1)
+        T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, 100, 1, 0, MOD_CRUSH);
+
     T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, self->dmg, 1, 0, MOD_CRUSH);
+
+    // [rerelease] killed the thing, so don't switch directions
+    if (!other->inuse || !other->solid)
+        return;
 
     if (self->moveinfo.state == STATE_UP)
         plat_go_down(self);
@@ -428,6 +498,16 @@ void plat_blocked(edict_t *self, edict_t *other)
 
 void Use_Plat(edict_t *ent, edict_t *other, edict_t *activator)
 {
+    // [rerelease/rogue] a monster using the plat (monster AI riding it) moves
+    // it from either end once it has stopped, unless the mapper set NO_MONSTER.
+    if (other && (other->svflags & SVF_MONSTER) && !(ent->spawnflags & PLAT_NO_MONSTER)) {
+        if (ent->moveinfo.state == STATE_TOP)
+            plat_go_down(ent);
+        else if (ent->moveinfo.state == STATE_BOTTOM)
+            plat_go_up(ent);
+        return;
+    }
+
     if (ent->think)
         return;     // already down
     plat_go_down(ent);
@@ -589,8 +669,56 @@ REVERSE will cause the it to rotate in the opposite direction.
 STOP mean it will stop moving instead of pushing entities
 */
 
+/*
+[rerelease/rogue] ACCEL spin-up / spin-down. rmine1's t68 gears, rsewer1's
+light1 fans, rsewer2 t269 and rware1's t230 fork lift carry spawnflag 65536
+and an "accel"; they snapped to full speed before. The rerelease steps the
+speed every 40 Hz tick, so each 10 Hz frame here steps it four times.
+Reaching full speed / a standstill fires the targets (rware1 t230 -> t232).
+*/
+void rotating_accel(edict_t *self)
+{
+    float   current_speed;
+    float   step = self->accel * 4;
+
+    current_speed = VectorLength(self->avelocity);
+    if (current_speed >= (self->speed - step)) { // done
+        VectorScale(self->movedir, self->speed, self->avelocity);
+        G_UseTargets(self, self);
+    } else {
+        current_speed += step;
+        VectorScale(self->movedir, current_speed, self->avelocity);
+        self->think = rotating_accel;
+        self->nextthink = level.framenum + 1;
+    }
+}
+
+void rotating_decel(edict_t *self)
+{
+    float   current_speed;
+    float   step = self->decel * 4;
+
+    current_speed = VectorLength(self->avelocity);
+    if (current_speed <= step) { // done
+        VectorClear(self->avelocity);
+        G_UseTargets(self, self);
+        self->touch = NULL;
+    } else {
+        current_speed -= step;
+        VectorScale(self->movedir, current_speed, self->avelocity);
+        self->think = rotating_decel;
+        self->nextthink = level.framenum + 1;
+    }
+}
+
 void rotating_blocked(edict_t *self, edict_t *other)
 {
+    // [rerelease] harmless when dmg is 0, and at most one hit per 10 Hz frame
+    if (!self->dmg)
+        return;
+    if (level.framenum < self->touch_debounce_framenum)
+        return;
+    self->touch_debounce_framenum = level.framenum + 1;
     T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, self->dmg, 1, 0, MOD_CRUSH);
 }
 
@@ -600,16 +728,27 @@ void rotating_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *
         T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, self->dmg, 1, 0, MOD_CRUSH);
 }
 
+// [rerelease] "func_rotating will use its targets when it stops and starts."
 void rotating_use(edict_t *self, edict_t *other, edict_t *activator)
 {
     if (!VectorEmpty(self->avelocity)) {
         self->s.sound = 0;
-        VectorClear(self->avelocity);
-        self->touch = NULL;
+        if (self->spawnflags & ROTATING_ACCEL) { // decelerate
+            rotating_decel(self);
+        } else {
+            VectorClear(self->avelocity);
+            G_UseTargets(self, self);
+            self->touch = NULL;
+        }
     } else {
         self->s.sound = self->moveinfo.sound_middle;
-        VectorScale(self->movedir, self->speed, self->avelocity);
-        if (self->spawnflags & 16)
+        if (self->spawnflags & ROTATING_ACCEL) { // accelerate
+            rotating_accel(self);
+        } else {
+            VectorScale(self->movedir, self->speed, self->avelocity);
+            G_UseTargets(self, self);
+        }
+        if (self->spawnflags & ROTATING_TOUCH_PAIN)
             self->touch = rotating_touch;
     }
 }
@@ -637,16 +776,34 @@ void SP_func_rotating(edict_t *ent)
 
     if (!ent->speed)
         ent->speed = 100;
-    if (!ent->dmg)
+    // [rerelease] only default dmg when the key is absent: an explicit "dmg" "0"
+    // makes a harmless rotator (mgu1m5's rotor platforms, mgdm1, hangar1).
+    if (!(st.keys_specified & SPAWNKEY_DMG))
         ent->dmg = 2;
 
-//  ent->moveinfo.sound_middle = "doors/hydro1.wav";
+    // [rerelease] "noise" is the looping sound while it turns
+    if (st.noise)
+        ent->moveinfo.sound_middle = gi.soundindex(st.noise);
+
+    // [rerelease/rogue] ACCEL defaults, clamped to the final speed. Set before
+    // START_ON so a start-on accelerating rotator spins up from the first frame.
+    if (ent->spawnflags & ROTATING_ACCEL) {
+        if (!ent->accel)
+            ent->accel = 1;
+        else if (ent->accel > ent->speed)
+            ent->accel = ent->speed;
+
+        if (!ent->decel)
+            ent->decel = 1;
+        else if (ent->decel > ent->speed)
+            ent->decel = ent->speed;
+    }
 
     ent->use = rotating_use;
     if (ent->dmg)
         ent->blocked = rotating_blocked;
 
-    if (ent->spawnflags & 1)
+    if (ent->spawnflags & ROTATING_START_ON)
         ent->use(ent, NULL, NULL);
 
     if (ent->spawnflags & 64)
@@ -692,7 +849,12 @@ void button_done(edict_t *self)
         return;
     }
 
-    self->s.effects &= ~EF_ANIM23;
+    // [rerelease] N64 button textures have a separate static "pressed" frame
+    // (frame 2) instead of an animated second pair; see button_wait
+    if (level.is_n64)
+        self->s.frame = 0;
+    else
+        self->s.effects &= ~EF_ANIM23;
     self->s.effects |= EF_ANIM01;
 }
 
@@ -715,6 +877,12 @@ void button_wait(edict_t *self)
 
     if (self->bmodel_anim.enabled) {
         self->bmodel_anim.alternate = true;
+        G_UseTargets(self, self->activator);
+    } else if (level.is_n64) {
+        // [rerelease] q64 maps: hold the static pressed frame, no animation
+        self->s.effects &= ~EF_ANIM01;
+        self->s.frame = 2;
+
         G_UseTargets(self, self->activator);
     } else {
         self->s.effects &= ~EF_ANIM01;
@@ -872,11 +1040,73 @@ void door_use_areaportals(edict_t *self, bool open)
 
 void door_go_down(edict_t *self);
 
+/*
+[rerelease] Door start/stop sounds.
+
+Attenuation: the rerelease lets a door set "attenuation" (rhangar1's t9 doors
+use 0.5 so they carry across the hangar); -1 means no attenuation at all.
+Absent (0 here) keeps the classic ATTN_STATIC.
+
+Position: a team of doors (double doors) plays from the centre of the whole
+team rather than from the master half, unless that point is inside a wall.
+*/
+static float door_sound_attenuation(edict_t *self)
+{
+    if (!self->attenuation)
+        return ATTN_STATIC;
+    if (self->attenuation == -1)
+        return ATTN_NONE;
+    return self->attenuation;
+}
+
+static void door_play_sound(edict_t *self, int sound)
+{
+    float   atten = door_sound_attenuation(self);
+    vec3_t  p, c;
+    int     count = 0;
+    edict_t *t;
+
+    if (!self->teammaster) {
+        gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, sound, 1, atten, 0);
+        return;
+    }
+
+    VectorClear(p);
+    for (t = self->teammaster; t; t = t->teamchain) {
+        VectorAdd(t->absmin, t->absmax, c);
+        VectorMA(p, 0.5f, c, p);
+        count++;
+    }
+
+    if (count == 1) {
+        gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, sound, 1, atten, 0);
+        return;
+    }
+
+    VectorScale(p, 1.0f / count, p);
+
+    if (gi.pointcontents(p) & CONTENTS_SOLID) {
+        gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, sound, 1, atten, 0);
+        return;
+    }
+
+    gi.positioned_sound(p, self, CHAN_NO_PHS_ADD + CHAN_VOICE, sound, 1, atten, 0);
+}
+
+/*
+[rerelease] Area portals and START_OPEN doors.
+
+A START_OPEN door's "bottom" is open and its "top" is closed, so the portal
+logic is mirrored for it: it opens the portal when it starts back towards its
+open position and closes it once it has shut. Vanilla closed the portal when
+such a door reached its open position, so e.g. ware2's tank_doora left portal
+t305 shut with the door wide open (see also Think_DoorActivateAreaPortal).
+*/
 void door_hit_top(edict_t *self)
 {
     if (!(self->flags & FL_TEAMSLAVE)) {
         if (self->moveinfo.sound_end)
-            gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, self->moveinfo.sound_end, 1, ATTN_STATIC, 0);
+            door_play_sound(self, self->moveinfo.sound_end);
         self->s.sound = 0;
     }
     self->moveinfo.state = STATE_TOP;
@@ -886,24 +1116,29 @@ void door_hit_top(edict_t *self)
         self->think = door_go_down;
         self->nextthink = level.framenum + self->moveinfo.wait * BASE_FRAMERATE;
     }
+
+    if (self->spawnflags & DOOR_START_OPEN)
+        door_use_areaportals(self, false);
 }
 
 void door_hit_bottom(edict_t *self)
 {
     if (!(self->flags & FL_TEAMSLAVE)) {
         if (self->moveinfo.sound_end)
-            gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, self->moveinfo.sound_end, 1, ATTN_STATIC, 0);
+            door_play_sound(self, self->moveinfo.sound_end);
         self->s.sound = 0;
     }
     self->moveinfo.state = STATE_BOTTOM;
-    door_use_areaportals(self, false);
+
+    if (!(self->spawnflags & DOOR_START_OPEN))
+        door_use_areaportals(self, false);
 }
 
 void door_go_down(edict_t *self)
 {
     if (!(self->flags & FL_TEAMSLAVE)) {
         if (self->moveinfo.sound_start)
-            gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, self->moveinfo.sound_start, 1, ATTN_STATIC, 0);
+            door_play_sound(self, self->moveinfo.sound_start);
         self->s.sound = self->moveinfo.sound_middle;
     }
     if (self->max_health) {
@@ -916,6 +1151,9 @@ void door_go_down(edict_t *self)
         Move_Calc(self, self->moveinfo.start_origin, door_hit_bottom);
     else if (strcmp(self->classname, "func_door_rotating") == 0)
         AngleMove_Calc(self, door_hit_bottom);
+
+    if (self->spawnflags & DOOR_START_OPEN)
+        door_use_areaportals(self, true);
 }
 
 void door_go_up(edict_t *self, edict_t *activator)
@@ -932,7 +1170,7 @@ void door_go_up(edict_t *self, edict_t *activator)
 
     if (!(self->flags & FL_TEAMSLAVE)) {
         if (self->moveinfo.sound_start)
-            gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, self->moveinfo.sound_start, 1, ATTN_STATIC, 0);
+            door_play_sound(self, self->moveinfo.sound_start);
         self->s.sound = self->moveinfo.sound_middle;
     }
     self->moveinfo.state = STATE_UP;
@@ -942,7 +1180,9 @@ void door_go_up(edict_t *self, edict_t *activator)
         AngleMove_Calc(self, door_hit_top);
 
     G_UseTargets(self, activator);
-    door_use_areaportals(self, true);
+
+    if (!(self->spawnflags & DOOR_START_OPEN))
+        door_use_areaportals(self, true);
 }
 
 void smart_water_go_up(edict_t* self) 
@@ -951,6 +1191,7 @@ void smart_water_go_up(edict_t* self)
     edict_t* lowestPlayer;
     edict_t* ent;
     float	 lowestPlayerPt;
+    uint32_t i;
 
     if (self->moveinfo.state == STATE_TOP)
     { // reset top wait time
@@ -982,7 +1223,7 @@ void smart_water_go_up(edict_t* self)
     // find the lowest player point.
     lowestPlayerPt = 999999;
     lowestPlayer = NULL;
-    for (uint32_t i = 0; i < game.maxclients; i++)
+    for (i = 0; i < game.maxclients; i++)
     {
         ent = &g_edicts[1 + i];
 
@@ -1018,16 +1259,9 @@ void smart_water_go_up(edict_t* self)
     else if (self->moveinfo.speed > self->speed)
         self->moveinfo.speed = self->speed;
 
-    vec3_t clearVec = { 0, 0, 1 };
-
     // FIXME - should this allow any movement other than straight up?
-    VectorCopy(clearVec, self->moveinfo.dir);
-
-    //self->moveinfo.dir = { 0, 0, 1 };
-    vec3_t multVector;
+    VectorSet(self->moveinfo.dir, 0, 0, 1);
     VectorScale(self->moveinfo.dir, self->moveinfo.speed, self->velocity);
-
-    //self->velocity = self->moveinfo.dir * self->moveinfo.speed;
     self->moveinfo.remaining_distance = distance;
 
     if (self->moveinfo.state != STATE_UP)
@@ -1037,8 +1271,11 @@ void smart_water_go_up(edict_t* self)
         self->moveinfo.state = STATE_UP;
     }
 
+    // [rerelease] re-aim at the lowest player every frame. This used to wait
+    // moveinfo.wait seconds, and func_water's wait is -1, so the lava never
+    // re-evaluated its speed (rmine2 thelava).
     self->think = smart_water_go_up;
-    self->nextthink = level.framenum + self->moveinfo.wait * BASE_FRAMERATE;
+    self->nextthink = level.framenum + 1;
 }
 
 void door_use(edict_t *self, edict_t *other, edict_t *activator)
@@ -1048,6 +1285,20 @@ void door_use(edict_t *self, edict_t *other, edict_t *activator)
 
     if (self->flags & FL_TEAMSLAVE)
         return;
+
+    // [rerelease] SAFE_OPEN: a closed rotating door swings away from whoever
+    // opens it - towards end_angles_reversed when the activator stands on the
+    // side its "angles" key points at (xsewer1, hangar2, xsewer2, xware, jail2).
+    if (!strcmp(self->classname, "func_door_rotating") && (self->spawnflags & DOOR_ROTATING_SAFE_OPEN) &&
+        (self->moveinfo.state == STATE_BOTTOM || self->moveinfo.state == STATE_DOWN)) {
+        if (activator && !VectorEmpty(self->moveinfo.dir)) {
+            vec3_t forward;
+
+            VectorSubtract(activator->s.origin, self->s.origin, forward);
+            VectorNormalize(forward);
+            self->moveinfo.reversing = DotProduct(forward, self->moveinfo.dir) > 0;
+        }
+    }
 
     if (self->spawnflags & DOOR_TOGGLE) {
         if (self->moveinfo.state == STATE_UP || self->moveinfo.state == STATE_TOP) {
@@ -1061,20 +1312,18 @@ void door_use(edict_t *self, edict_t *other, edict_t *activator)
         }
     }
 
-    VectorClear(center);
+    // [rerelease/rogue] smart water is different: it chases the lowest player
+    // instead of moving to a fixed end point (rmine2's 8 "thelava" brushes).
     VectorAdd(self->mins, self->maxs, center);
-    //center = self->mins + self->maxs;
-    VectorScale(center, .5f, center);
-    //center *= 0.5f;
-
-    //if ((strcmp(self->classname, "func_water") == 0) /* && (gi.pointcontents(center) & MASK_WATER) && self->spawnflags & 2*/)
-    //{
-    //    self->message = NULL;
-    //    self->touch = NULL;
-    //    self->enemy = activator;
-    //    smart_water_go_up(self);
-    //    return;
-    //}
+    VectorScale(center, 0.5f, center);
+    if (!strcmp(self->classname, "func_water") && (gi.pointcontents(center) & MASK_WATER) &&
+        (self->spawnflags & WATER_SMART)) {
+        self->message = NULL;
+        self->touch = NULL;
+        self->enemy = activator;
+        smart_water_go_up(self);
+        return;
+    }
 
     // trigger all paired doors
     for (ent = self ; ent ; ent = ent->teamchain) {
@@ -1171,10 +1420,25 @@ void Think_SpawnDoorTrigger(edict_t *ent)
     other->touch = Touch_DoorTrigger;
     gi.linkentity(other);
 
+    // func_door START_OPEN opens its portal in Think_DoorActivateAreaPortal;
+    // this still covers func_door_rotating. Opening twice is harmless.
     if (ent->spawnflags & DOOR_START_OPEN)
         door_use_areaportals(ent, true);
 
     Think_CalcMoveSpeed(ent);
+}
+
+// [rerelease] A START_OPEN func_door is open at spawn, so its area portal must
+// start open too - including targeted doors, which never spawn a trigger
+// (ware2 tank_doora -> func_areaportal t305).
+void Think_DoorActivateAreaPortal(edict_t *ent)
+{
+    door_use_areaportals(ent, true);
+
+    if (ent->health || ent->targetname)
+        Think_CalcMoveSpeed(ent);
+    else
+        Think_SpawnDoorTrigger(ent);
 }
 
 void door_blocked(edict_t *self, edict_t *other)
@@ -1184,8 +1448,9 @@ void door_blocked(edict_t *self, edict_t *other)
     if (!(other->svflags & SVF_MONSTER) && (!other->client)) {
         // give it a chance to go away on it's own terms (like gibs)
         T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, 100000, 1, 0, MOD_CRUSH);
-        // if it's still there, nuke it
-        if (other)
+        // if it's still there, nuke it. [rerelease] unless T_Damage already
+        // freed it - a freed edict would explode at the world origin
+        if (other && other->inuse && other->solid)
             BecomeExplosion1(other);
         return;
     }
@@ -1314,10 +1579,35 @@ void SP_func_door(edict_t *ent)
     gi.linkentity(ent);
 
     ent->nextthink = level.framenum + 1;
-    if (ent->health || ent->targetname)
+    if (ent->spawnflags & DOOR_START_OPEN)
+        ent->think = Think_DoorActivateAreaPortal;
+    else if (ent->health || ent->targetname)
         ent->think = Think_CalcMoveSpeed;
     else
         ent->think = Think_SpawnDoorTrigger;
+}
+
+/*
+[rerelease/rogue] use function of an INACTIVE func_door_rotating. The first
+use only arms the door: it gets its proximity trigger (or, when shootable, its
+damage handling) next frame, and is a normal door from then on. rhangar2's
+t265 security door and rsewer1's t18 valves wait for this.
+*/
+void Door_Activate(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->use = NULL;
+
+    if (self->health) {
+        self->takedamage = DAMAGE_YES;
+        self->die = door_killed;
+        self->max_health = self->health;
+    }
+
+    if (self->health)
+        self->think = Think_CalcMoveSpeed;
+    else
+        self->think = Think_SpawnDoorTrigger;
+    self->nextthink = level.framenum + 1;
 }
 
 
@@ -1352,6 +1642,11 @@ REVERSE will cause the door to rotate in the opposite direction.
 
 void SP_func_door_rotating(edict_t *ent)
 {
+    // [rerelease] SAFE_OPEN keeps the "angles" direction to decide which way
+    // to swing (door_use). G_SetMovedir clears s.angles, as below.
+    if (ent->spawnflags & DOOR_ROTATING_SAFE_OPEN)
+        G_SetMovedir(ent->s.angles, ent->moveinfo.dir);
+
     VectorClear(ent->s.angles);
 
     // set the axis of rotation
@@ -1374,6 +1669,8 @@ void SP_func_door_rotating(edict_t *ent)
 
     VectorCopy(ent->s.angles, ent->pos1);
     VectorMA(ent->s.angles, st.distance, ent->movedir, ent->pos2);
+    // [rerelease] the opposite swing, used by SAFE_OPEN (rerelease pos3)
+    VectorMA(ent->s.angles, -st.distance, ent->movedir, ent->moveinfo.end_angles_reversed);
     ent->moveinfo.distance = st.distance;
 
     ent->movetype = MOVETYPE_PUSH;
@@ -1402,6 +1699,11 @@ void SP_func_door_rotating(edict_t *ent)
 
     // if it starts open, switch the positions
     if (ent->spawnflags & DOOR_START_OPEN) {
+        if (ent->spawnflags & DOOR_ROTATING_SAFE_OPEN) {
+            ent->spawnflags &= ~DOOR_ROTATING_SAFE_OPEN;
+            gi.dprintf("%s at %s: SAFE_OPEN is not compatible with START_OPEN\n", ent->classname, vtos(ent->s.origin));
+        }
+
         VectorCopy(ent->pos2, ent->s.angles);
         VectorCopy(ent->pos1, ent->pos2);
         VectorCopy(ent->s.angles, ent->pos1);
@@ -1443,6 +1745,15 @@ void SP_func_door_rotating(edict_t *ent)
         ent->think = Think_CalcMoveSpeed;
     else
         ent->think = Think_SpawnDoorTrigger;
+
+    // [rerelease/rogue] INACTIVE: no trigger, no damage until first used
+    if (ent->spawnflags & DOOR_ROTATING_INACTIVE) {
+        ent->takedamage = DAMAGE_NO;
+        ent->die = NULL;
+        ent->think = NULL;
+        ent->nextthink = 0;
+        ent->use = Door_Activate;
+    }
 }
 
 void smart_water_blocked(edict_t* self, edict_t* other) 
@@ -1549,11 +1860,12 @@ void SP_func_water(edict_t *self)
 #define TRAIN_START_ON      1
 #define TRAIN_TOGGLE        2
 #define TRAIN_BLOCK_STOPS   4
+#define TRAIN_MOVE_TEAMCHAIN 8  // rogue: drive every team member along with the train
 // Rerelease func_train flags. Values from src/rerelease/g_func.cpp.
 #define TRAIN_FIX_OFFSET    16
 #define TRAIN_USE_ORIGIN    32
 
-/*QUAKED func_train (0 .5 .8) ? START_ON TOGGLE BLOCK_STOPS
+/*QUAKED func_train (0 .5 .8) ? START_ON TOGGLE BLOCK_STOPS MOVE_TEAMCHAIN FIX_OFFSET USE_ORIGIN
 Trains are moving platforms that players can ride.
 The targets origin specifies the min point of the train at each corner.
 The train spawns at the first target it is pointing at.
@@ -1570,8 +1882,8 @@ void train_blocked(edict_t *self, edict_t *other)
     if (!(other->svflags & SVF_MONSTER) && (!other->client)) {
         // give it a chance to go away on it's own terms (like gibs)
         T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, 100000, 1, 0, MOD_CRUSH);
-        // if it's still there, nuke it
-        if (other)
+        // if it's still there, nuke it ([rerelease] unless T_Damage freed it)
+        if (other && other->inuse && other->solid)
             BecomeExplosion1(other);
         return;
     }
@@ -1607,7 +1919,10 @@ void train_wait(edict_t *self)
             self->nextthink = level.framenum + self->moveinfo.wait * BASE_FRAMERATE;
             self->think = train_next;
         } else if (self->spawnflags & TRAIN_TOGGLE) { // && wait < 0
-            train_next(self);
+            // rogue/rerelease: don't pre-advance to the next corner. Clearing
+            // target_ent makes the next use call train_next, which also picks
+            // up that corner's speed at the right moment.
+            self->target_ent = NULL;
             self->spawnflags &= ~TRAIN_START_ON;
             VectorClear(self->velocity);
             self->nextthink = 0;
@@ -1616,12 +1931,17 @@ void train_wait(edict_t *self)
         if (!(self->flags & FL_TEAMSLAVE)) {
             if (self->moveinfo.sound_end)
                 gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, self->moveinfo.sound_end, 1, ATTN_STATIC, 0);
-            self->s.sound = 0;
         }
+        self->s.sound = 0;
     } else {
         train_next(self);
     }
 
+}
+
+// endfunc for MOVE_TEAMCHAIN pieces; the master train drives the path
+void train_piece_wait(edict_t *self)
+{
 }
 
 // Where a train sits when it reaches a path_corner.
@@ -1661,6 +1981,7 @@ void train_next(edict_t *self)
 again:
     if (!self->target) {
 //      gi.dprintf ("train_next: no next target\n");
+        self->s.sound = 0;
         return;
     }
 
@@ -1686,14 +2007,26 @@ again:
         goto again;
     }
 
+    // rogue/rerelease: a path_corner's speed (and optional accel/decel) takes
+    // over from the leg that ends at it onward. 87 path_corners in the rerelease
+    // maps set it - e.g. mgu6m1's mining laser crawls forward at 100 and recoils
+    // back at 1000; without this every leg ran at the train's own speed.
+    if (ent->speed) {
+        self->speed = ent->speed;
+        self->moveinfo.speed = ent->speed;
+        self->moveinfo.accel = ent->accel ? ent->accel : ent->speed;
+        self->moveinfo.decel = ent->decel ? ent->decel : ent->speed;
+        self->moveinfo.current_speed = 0;
+    }
+
     self->moveinfo.wait = ent->wait;
     self->target_ent = ent;
 
     if (!(self->flags & FL_TEAMSLAVE)) {
         if (self->moveinfo.sound_start)
             gi.sound(self, CHAN_NO_PHS_ADD + CHAN_VOICE, self->moveinfo.sound_start, 1, ATTN_STATIC, 0);
-        self->s.sound = self->moveinfo.sound_middle;
     }
+    self->s.sound = self->moveinfo.sound_middle;
 
     train_path_dest(self, ent, dest);
     self->moveinfo.state = STATE_TOP;
@@ -1701,6 +2034,28 @@ again:
     VectorCopy(dest, self->moveinfo.end_origin);
     Move_Calc(self, dest, train_wait);
     self->spawnflags |= TRAIN_START_ON;
+
+    // rogue: MOVE_TEAMCHAIN moves every teamed piece by the same offset at the
+    // same speed. Vanilla only ever moved the master, so teamed pieces stayed put.
+    if (self->spawnflags & TRAIN_MOVE_TEAMCHAIN) {
+        edict_t *e;
+        vec3_t  dir, dst;
+
+        VectorSubtract(dest, self->s.origin, dir);
+        for (e = self->teamchain; e; e = e->teamchain) {
+            VectorAdd(dir, e->s.origin, dst);
+            VectorCopy(e->s.origin, e->moveinfo.start_origin);
+            VectorCopy(dst, e->moveinfo.end_origin);
+
+            e->moveinfo.state = STATE_TOP;
+            e->speed = self->speed;
+            e->moveinfo.speed = self->moveinfo.speed;
+            e->moveinfo.accel = self->moveinfo.accel;
+            e->moveinfo.decel = self->moveinfo.decel;
+            e->movetype = MOVETYPE_PUSH;
+            Move_Calc(e, dst, train_piece_wait);
+        }
+    }
 }
 
 void train_resume(edict_t *self)
@@ -2039,8 +2394,8 @@ void door_secret_blocked(edict_t *self, edict_t *other)
     if (!(other->svflags & SVF_MONSTER) && (!other->client)) {
         // give it a chance to go away on it's own terms (like gibs)
         T_Damage(other, self, self, vec3_origin, other->s.origin, vec3_origin, 100000, 1, 0, MOD_CRUSH);
-        // if it's still there, nuke it
-        if (other)
+        // if it's still there, nuke it ([rerelease] unless T_Damage freed it)
+        if (other && other->inuse && other->solid)
             BecomeExplosion1(other);
         return;
     }
@@ -2125,7 +2480,18 @@ Kills everything inside when fired, irrespective of protection.
 */
 void use_killbox(edict_t *self, edict_t *other, edict_t *activator)
 {
-    KillBox(self);
+    // [rerelease] a killbox is a brush: KillBox() tests a point-entity hull at
+    // the brush origin (usually the world origin), so the brush volume itself
+    // must be tested. The rerelease briefly makes it a linked trigger so its
+    // bounds are valid for the test (biggun t117, mgu6m2 sham_hurt).
+    // Not ported: DEADLY_COOP (level.deadly_kill_box) and EXACT_COLLISION.
+    self->solid = SOLID_TRIGGER;
+    gi.linkentity(self);
+
+    KillBoxBrush(self, (self->spawnflags & 4) != 0);   // 4 = EXACT_COLLISION
+
+    self->solid = SOLID_NOT;
+    gi.linkentity(self);
 }
 
 void SP_func_killbox(edict_t *ent)

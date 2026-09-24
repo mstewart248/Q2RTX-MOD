@@ -32,6 +32,9 @@ static int  sound_shake;
 static int  sound_moan;
 static int  sound_scream[8];
 
+// [rerelease] a silent marine: no shaking, moaning or screaming
+#define SPAWNFLAG_INSANE_QUIET  64
+
 void insane_fist(edict_t *self)
 {
     gi.sound(self, CHAN_VOICE, sound_fist, 1, ATTN_IDLE, 0);
@@ -39,11 +42,17 @@ void insane_fist(edict_t *self)
 
 void insane_shake(edict_t *self)
 {
+    if (self->spawnflags & SPAWNFLAG_INSANE_QUIET)
+        return;
+
     gi.sound(self, CHAN_VOICE, sound_shake, 1, ATTN_IDLE, 0);
 }
 
 void insane_moan(edict_t *self)
 {
+    if (self->spawnflags & SPAWNFLAG_INSANE_QUIET)
+        return;
+
     // [rerelease] "don't moan every second" - the moan is hung on several
     // frames of the crawl and stand loops, so untimed it fires continuously
     // and a room full of them is a wall of noise. attack_finished is unused on
@@ -61,6 +70,9 @@ void insane_moan(edict_t *self)
 
 void insane_scream(edict_t *self)
 {
+    if (self->spawnflags & SPAWNFLAG_INSANE_QUIET)
+        return;
+
     gi.sound(self, CHAN_VOICE, sound_scream[Q_rand() % 8], 1, ATTN_IDLE, 0);
 }
 

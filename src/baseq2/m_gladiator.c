@@ -599,8 +599,13 @@ void SP_monster_gladiator(edict_t *self)
         self->s.modelindex = gi.modelindex("models/monsters/gladb/tris.md2");
         self->health = 250;
         self->mass = 350;
-        self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
-        self->monsterinfo.power_armor_power = 250;
+        // [rerelease] only when the map did not set the keys itself: the
+        // MGU maps place dozens of gladb with power_armor_type/_power "0"
+        // (mgu1m4, mgu2m1-m3, mguboss) to strip the shield
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_TYPE))
+            self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_POWER))
+            self->monsterinfo.power_armor_power = 250;
         // [rerelease] the plasma gun idles audibly. The rerelease keeps this in
         // monsterinfo.weapon_sound and lets M_SetEffects re-assert it; this
         // tree drives looping monster sounds straight off s.sound, so it is set

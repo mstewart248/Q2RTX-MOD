@@ -66,6 +66,15 @@ vec3_t flyer_maxs = {16, 16, 16};
 
 extern mmove_t flyer_move_attack2, flyer_move_attack3, flyer_move_kamikaze;
 
+/* [rerelease] the carrier's summons come from a "reinforcements" list with a
+   "monster_slots" budget, like the medic commander's (M_SetupReinforcements,
+   g_spawnmonster.c). This is id's default list; mgu4m3's carrier overrides it
+   with "monster_stalker 1" and monster_slots 4. Rogue's hardcoded
+   flyer/kamikaze pattern is kept for the original game. */
+static const char *carrier_default_reinforcements =
+	"monster_flyer 1;monster_flyer 1;monster_flyer 1;monster_kamikaze 1";
+#define CARRIER_DEFAULT_MONSTER_SLOTS 3
+
 void
 carrier_sight(edict_t *self, edict_t *other /* other */)
 {
@@ -412,6 +421,75 @@ CarrierMachineGun(edict_t *self)
 	}
 }
 
+/*
+ * [rerelease] rogue/m_rogue_carrier.cpp CarrierSpawn: summon the reinforcement
+ * carrier_ready_spawn picked, charge its strength against monster_slots, and
+ * send it straight at the carrier's enemy.
+ */
+static void
+CarrierSpawnReinforcement(edict_t *self, vec3_t startpoint)
+{
+	vec3_t spawnpoint;
+	reinforcement_t *re;
+	edict_t *ent;
+
+	if (self->monsterinfo.chosen_reinforcements[0] < 0 ||
+		self->monsterinfo.chosen_reinforcements[0] >= self->monsterinfo.num_reinforcements)
+	{
+		return;
+	}
+
+	re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[0]];
+
+	/* one summon per pick; spawn_check runs this on several frames */
+	self->monsterinfo.chosen_reinforcements[0] = -1;
+
+	if (!FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32))
+	{
+		return;
+	}
+
+	ent = CreateMonster(spawnpoint, self->s.angles, re->classname);
+
+	if (!ent || !ent->inuse)
+	{
+		return;
+	}
+
+	gi.sound(self, CHAN_BODY, sound_spawn, 1, ATTN_NONE, 0);
+
+	ent->nextthink = level.framenum;
+	ent->think(ent);
+
+	ent->monsterinfo.aiflags |= AI_SPAWNED_CARRIER | AI_DO_NOT_COUNT |
+								AI_IGNORE_SHOTS;
+	ent->monsterinfo.commander = self;
+	ent->monsterinfo.monster_slots = re->strength;
+	self->monsterinfo.monster_used += re->strength;
+
+	if (self->enemy && (self->enemy->inuse) && (self->enemy->health > 0))
+	{
+		ent->enemy = self->enemy;
+		FoundTarget(ent);
+
+		if (!strcmp(ent->classname, "monster_kamikaze"))
+		{
+			ent->monsterinfo.lefty = 0;
+			ent->monsterinfo.attack_state = AS_STRAIGHT;
+			ent->monsterinfo.currentmove = &flyer_move_kamikaze;
+			ent->monsterinfo.aiflags |= AI_CHARGING;
+			ent->mass = 100;
+			ent->owner = self;
+		}
+		else if (!strcmp(ent->classname, "monster_flyer"))
+		{
+			ent->monsterinfo.lefty = (random() < 0.5f) ? 1 : 0;
+			ent->monsterinfo.attack_state = AS_SLIDING;
+			ent->monsterinfo.currentmove = &flyer_move_attack3;
+		}
+	}
+}
+
 void
 CarrierSpawn(edict_t *self)
 {
@@ -424,6 +502,12 @@ CarrierSpawn(edict_t *self)
 	AngleVectors(self->s.angles, f, r, NULL);
 
 	G_ProjectSource(self->s.origin, offset, f, r, startpoint);
+
+	if (M_RereleaseGame())
+	{
+		CarrierSpawnReinforcement(self, startpoint);
+		return;
+	}
 
 	/* rogue adds 0.1s here because its float level.time is sometimes a
 	   little low; one frame is the same nudge */
@@ -539,6 +623,28 @@ carrier_ready_spawn(edict_t *self)
 	VectorSet(offset, 105, 0, -58);
 	AngleVectors(self->s.angles, f, r, NULL);
 	G_ProjectSource(self->s.origin, offset, f, r, startpoint);
+
+	/* [rerelease] pick the next reinforcement now, so the spawn-in effect
+	   is sized for it; nothing left in the budget means no effect and no
+	   summon */
+	if (M_RereleaseGame())
+	{
+		reinforcement_t *re;
+
+		if (!M_PickReinforcements(self, 1))
+		{
+			return;
+		}
+
+		re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[0]];
+
+		if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32))
+		{
+			SpawnGrow_Spawn(spawnpoint, 0);
+		}
+
+		return;
+	}
 
 	if (FindSpawnPoint(startpoint, flyer_mins, flyer_maxs, spawnpoint, 32))
 	{
@@ -1008,7 +1114,7 @@ carrier_attack(edict_t *self)
 		{
 			luck = random();
 
-			if (self->monsterinfo.monster_slots > 2)
+			if (M_SlotsLeft(self) > 2)
 			{
 				if (luck <= 0.20)
 				{
@@ -1054,7 +1160,7 @@ carrier_attack(edict_t *self)
 		{
 			luck = random();
 
-			if (self->monsterinfo.monster_slots > 2)
+			if (M_SlotsLeft(self) > 2)
 			{
 				if (luck < 0.3)
 				{
@@ -1155,7 +1261,7 @@ carrier_reattack_mg(edict_t *self)
 	{
 		if (random() <= 0.5)
 		{
-			if ((random() < 0.7) || (self->monsterinfo.monster_slots <= 2))
+			if ((random() < 0.7) || (M_SlotsLeft(self) <= 2))
 			{
 				self->monsterinfo.currentmove = &carrier_move_attack_mg;
 			}
@@ -1302,7 +1408,7 @@ Carrier_CheckAttack(edict_t *self)
 		if (tr.ent != self->enemy)
 		{
 			/* go ahead and spawn stuff if we're mad a a client */
-			if (self->enemy->client && (self->monsterinfo.monster_slots > 2))
+			if (self->enemy->client && (M_SlotsLeft(self) > 2))
 			{
 				self->monsterinfo.attack_state = AS_BLIND;
 				return true;
@@ -1461,6 +1567,13 @@ SP_monster_carrier(edict_t *self)
 	/* 2000 - 4000 health */
 	self->health = max(2000, 2000 + 1000 * ((skill->value) - 1));
 
+	/* [rerelease] health_multiplier scales the base only, before the coop
+	   bonus below (mgu3m4/mgu3secret/mgu4m3 carriers use 0.75-1.25), so it
+	   is applied here and zeroed so monster_start does not apply it again */
+	if (st.health_multiplier > 0)
+		self->health = (int)(self->health * st.health_multiplier);
+	st.health_multiplier = 0;
+
 	/* add health in coop (500 * skill) */
 	if (coop->value)
 	{
@@ -1503,6 +1616,37 @@ SP_monster_carrier(edict_t *self)
 	flymonster_start(self);
 
 	self->monsterinfo.attack_finished = 0;
+
+	/* [rerelease] the summon budget and list come from the map. monster_slots
+	   is parsed straight into monsterinfo; 0 means unset (the rerelease
+	   defaults it to 3), then it grows by half per skill level. The slot
+	   checks above use M_SlotsLeft, which is monster_slots itself in the
+	   original game, where monster_used never moves. */
+	if (M_RereleaseGame())
+	{
+		const char *reinforcements = st.reinforcements ? st.reinforcements :
+									 carrier_default_reinforcements;
+
+		if (!self->monsterinfo.monster_slots)
+		{
+			self->monsterinfo.monster_slots = CARRIER_DEFAULT_MONSTER_SLOTS;
+		}
+
+		self->monsterinfo.monster_used = 0;
+
+		if (self->monsterinfo.monster_slots > 0 && *reinforcements)
+		{
+			if (skill->value)
+			{
+				self->monsterinfo.monster_slots +=
+					(int)floorf(self->monsterinfo.monster_slots * (skill->value / 2.0f));
+			}
+
+			M_SetupReinforcements(self, reinforcements);
+		}
+
+		return;
+	}
 
 	switch ((int)skill->value)
 	{

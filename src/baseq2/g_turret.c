@@ -78,15 +78,27 @@ void turret_breach_fire(edict_t *self)
     vec3_t  start;
     int     damage;
     int     speed;
+    edict_t *owner;
 
     AngleVectors(self->s.angles, f, r, u);
     VectorMA(self->s.origin, self->move_origin[0], f, start);
     VectorMA(start, self->move_origin[1], r, start);
     VectorMA(start, self->move_origin[2], u, start);
 
-    damage = 100 + random() * 50;
+    // [rerelease] "count" overrides the rocket damage - jail1's "bigturret2"
+    // (count 500) is the gun that blows the "bigdoor" func_explosive
+    if (self->count)
+        damage = self->count;
+    else
+        damage = 100 + random() * 50;
     speed = 550 + 50 * skill->value;
-    fire_rocket(self->teammaster->owner, start, f, damage, speed, 150, damage);
+    // [rerelease] credit the rocket to whoever is driving the turret (the
+    // driver's activator, e.g. the player who set off turret_invisible_brain)
+    // rather than to the driver entity itself.
+    // (The rerelease also scales the rocket by the breach's "scale", kept in
+    // dmg_radius; fire_rocket doesn't hand the rocket back here.)
+    owner = self->teammaster->owner;
+    fire_rocket((owner && owner->activator) ? owner->activator : owner, start, f, damage, speed, 150, damage);
     gi.positioned_sound(start, self, CHAN_WEAPON, gi.soundindex("weapons/rocklf1a.wav"), 1, ATTN_NORM, 0);
 }
 
@@ -148,6 +160,17 @@ void turret_breach_think(edict_t *self)
     if (delta[1] < -1 * self->speed * FRAMETIME)
         delta[1] = -1 * self->speed * FRAMETIME;
 
+    // [rerelease] "noise": every part of the turret with one loops it while
+    // the turret is turning (jail1 "bigturret", turret/moving.wav)
+    for (ent = self->teammaster; ent; ent = ent->teamchain) {
+        if (ent->noise_index) {
+            if (delta[0] || delta[1])
+                ent->s.sound = ent->noise_index;
+            else
+                ent->s.sound = 0;
+        }
+    }
+
     VectorScale(delta, 1.0f / FRAMETIME, self->avelocity);
 
     self->nextthink = level.framenum + 1;
@@ -199,11 +222,16 @@ void turret_breach_finish_init(edict_t *self)
         gi.dprintf("%s at %s needs a target\n", self->classname, vtos(self->s.origin));
     } else {
         self->target_ent = G_PickTarget(self->target);
-        VectorSubtract(self->target_ent->s.origin, self->s.origin, self->move_origin);
-        G_FreeEdict(self->target_ent);
+        if (self->target_ent) {
+            VectorSubtract(self->target_ent->s.origin, self->s.origin, self->move_origin);
+            G_FreeEdict(self->target_ent);
+        } else {
+            gi.dprintf("%s at %s: could not find target entity \"%s\"\n", self->classname, vtos(self->s.origin), self->target);
+        }
     }
 
     self->teammaster->dmg = self->dmg;
+    self->teammaster->dmg_radius = self->dmg_radius;   // rocket scale
     self->think = turret_breach_think;
     self->think(self);
 }
@@ -212,6 +240,10 @@ void SP_turret_breach(edict_t *self)
 {
     self->solid = SOLID_BSP;
     self->movetype = MOVETYPE_PUSH;
+
+    if (st.noise)
+        self->noise_index = gi.soundindex(st.noise);
+
     gi.setmodel(self, self->model);
 
     if (!self->speed)
@@ -230,6 +262,12 @@ void SP_turret_breach(edict_t *self)
     self->pos1[YAW]   = st.minyaw;
     self->pos2[PITCH] = -1 * st.maxpitch;
     self->pos2[YAW]   = st.maxyaw;
+
+    // [rerelease] "scale" on a breach means the size of its rockets, not of
+    // the brush: jail1's "bigturret2" has scale 2.5, and left in s.scale the
+    // client drew the whole gun 2.5x about the world origin
+    self->dmg_radius = self->s.scale;
+    self->s.scale = 0;
 
     self->ideal_yaw = self->s.angles[YAW];
     self->move_angles[YAW] = self->ideal_yaw;
@@ -251,6 +289,11 @@ void SP_turret_base(edict_t *self)
 {
     self->solid = SOLID_BSP;
     self->movetype = MOVETYPE_PUSH;
+
+    // [rerelease] looped by turret_breach_think while turning
+    if (st.noise)
+        self->noise_index = gi.soundindex(st.noise);
+
     gi.setmodel(self, self->model);
     self->blocked = turret_blocked;
     gi.linkentity(self);

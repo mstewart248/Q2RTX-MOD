@@ -1497,13 +1497,7 @@ void SP_monster_guncmdr(edict_t *self)
     VectorSet(self->maxs, 16, 16, 36);
     self->s.skinnum = 2;    // cskin, the commander skin
 
-    // st.health_multiplier is 0 unless the map sets it - the rerelease defaults
-    // it to 1, this tree does not. Multiplying unguarded gave the commander 0
-    // health, so it spawned already dead: no animation, no movement, no attack.
-    // Every other monster here guards it the same way.
-    self->health = 325;
-    if (st.health_multiplier > 0)
-        self->health = (int)(self->health * st.health_multiplier);
+    self->health = 325;     // health_multiplier: applied in monster_start
 	self->gib_health = -175;
 	self->mass = 255;
 
@@ -1532,11 +1526,10 @@ void SP_monster_guncmdr(edict_t *self)
 	self->monsterinfo.currentmove = &guncmdr_move_stand;
 	self->monsterinfo.scale = MODEL_SCALE;
 
-    // st.was_key_specified has no equivalent here; a zero field means the
-    // mapper did not set one, which is the same test in practice.
-    if (!self->monsterinfo.power_armor_power)
+    // [rerelease] st.was_key_specified - an explicit "0" removes the shield
+    if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_POWER))
         self->monsterinfo.power_armor_power = 200;
-    if (!self->monsterinfo.power_armor_type)
+    if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_TYPE))
         self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
 
 	// PMM

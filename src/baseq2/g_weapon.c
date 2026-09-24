@@ -2100,7 +2100,9 @@ void heat_think(edict_t *self)
         if (DotProduct(self->movedir, dir) < 0.45f && DotProduct(self->movedir, dir) > -0.45f)
             VectorNegate(dir, dir);
 
-        VectorSlerp(self->movedir, dir, self->accel, self->movedir);
+        // accel is the rerelease's turn fraction PER 40 Hz TICK; four of those
+        // compound into one of our 10 Hz frames, or seekers turn 4x too slowly
+        VectorSlerp(self->movedir, dir, 1.0f - powf(1.0f - self->accel, 4), self->movedir);
         vectoangles(self->movedir, self->s.angles);
 
         if (!self->enemy) {

@@ -370,9 +370,7 @@ void SP_monster_arachnid(edict_t *self)
 	self->movetype = MOVETYPE_STEP;
 	self->solid = SOLID_BBOX;
 
-	self->health = 1000;
-	if (st.health_multiplier > 0)
-		self->health = (int)(self->health * st.health_multiplier);
+	self->health = 1000;    // health_multiplier: applied in monster_start
 	self->gib_health = -200;
 
 	self->monsterinfo.scale = MODEL_SCALE;

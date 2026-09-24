@@ -182,6 +182,14 @@ void SP_trigger_flashlight(edict_t *self);
 void SP_misc_flare(edict_t *self);
 void SP_target_light(edict_t *self);
 void SP_dynamic_light(edict_t *self);
+void SP_trigger_coop_relay(edict_t *self);
+void SP_target_gravity(edict_t *self);
+void SP_target_soundfx(edict_t *self);
+void SP_misc_nuke_core(edict_t *self);
+void SP_misc_hologram(edict_t *self);
+void SP_misc_ctf_banner(edict_t *self);
+void SP_misc_ctf_small_banner(edict_t *self);
+void SP_game_mode_only(edict_t *self);
 void SP_monster_tank(edict_t *self);
 void SP_monster_tank_stand(edict_t *self);
 void SP_monster_widow(edict_t *self);
@@ -375,6 +383,19 @@ static const spawn_func_t spawn_funcs[] = {
     {"misc_flare", SP_misc_flare},
     {"target_light", SP_target_light},
     {"dynamic_light", SP_dynamic_light},
+    {"trigger_coop_relay", SP_trigger_coop_relay},
+    {"target_gravity", SP_target_gravity},
+    {"target_soundfx", SP_target_soundfx},
+    {"misc_nuke_core", SP_misc_nuke_core},
+    {"misc_hologram", SP_misc_hologram},
+    {"misc_ctf_banner", SP_misc_ctf_banner},
+    {"misc_ctf_small_banner", SP_misc_ctf_small_banner},
+    // no CTF / tag mode here: the rerelease frees these outside it as well
+    {"info_player_team1", SP_game_mode_only},
+    {"info_player_team2", SP_game_mode_only},
+    {"item_flag_team1", SP_game_mode_only},
+    {"item_flag_team2", SP_game_mode_only},
+    {"dm_tag_token", SP_game_mode_only},
     {"monster_tank", SP_monster_tank},
     {"monster_tank_stand", SP_monster_tank_stand},
     {"monster_widow", SP_monster_widow},
@@ -448,6 +469,13 @@ static const spawn_field_t spawn_fields[] = {
     {"volume", FOFS(volume), F_FLOAT},
     {"attenuation", FOFS(attenuation), F_FLOAT},
     {"map", FOFS(map), F_LSTRING},
+    // rerelease: trigger_coop_relay's second message lives in ->map, as theirs does
+    {"message2", FOFS(map), F_LSTRING},
+    // rerelease: explicit bounds for brushless triggers. q64/orbit has three
+    // trigger_multiples and a trigger_coop_relay with no model that get their
+    // whole size from these; without them they are zero-sized and untouchable.
+    {"mins", FOFS(mins), F_VECTOR},
+    {"maxs", FOFS(maxs), F_VECTOR},
     {"origin", FOFS(s.origin), F_VECTOR},
     {"angles", FOFS(s.angles), F_VECTOR},
     {"angle", FOFS(s.angles), F_ANGLEHACK},
@@ -491,6 +519,8 @@ static const spawn_field_t spawn_fields[] = {
 
     // rerelease target_camera / path_corner tweaks. No shipped map sets it.
     {"hackflags", FOFS(hackflags), F_INT},
+    {"crosslevel_flags", FOFS(crosslevel_flags), F_INT},     // trigger_relay (city2 redfieldbutton)
+    {"monster_slots", FOFS(monsterinfo.monster_slots), F_INT},  // carrier / widow spawn budget
 
     {NULL}
 };
@@ -522,7 +552,11 @@ static const spawn_field_t temp_fields[] = {
     {"reinforcements", STOFS(reinforcements), F_LSTRING},
     {"health_multiplier", STOFS(health_multiplier), F_FLOAT},
     {"image", STOFS(image), F_LSTRING},
-    {"goals", STOFS(goals), F_LSTRING},   // mannequin held weapon
+    {"goals", STOFS(goals), F_LSTRING},   // mannequin held weapon; worldspawn N64 objectives
+    {"start_items", STOFS(start_items), F_LSTRING},
+    {"instantitems", STOFS(instantitems), F_INT},
+    {"style_on", STOFS(style_on), F_LSTRING},
+    {"style_off", STOFS(style_off), F_LSTRING},
     {"radius", STOFS(radius), F_FLOAT},
     {"fade_start_dist", STOFS(fade_start_dist), F_INT},
     {"fade_end_dist", STOFS(fade_end_dist), F_INT},
@@ -552,6 +586,9 @@ static const struct {
 } item_classname_aliases[] = {
     { "weapon_heatbeam", "weapon_plasmabeam" },
     { "weapon_nailgun",  "weapon_etf_rifle"  },
+    // rerelease ED_CallSpawn remaps this too (g_spawn.cpp:470); 113 in the
+    // Ground Zero maps, which otherwise had no flechette ammo lying around
+    { "ammo_nails",      "ammo_flechettes"   },
 };
 
 /*
@@ -608,7 +645,7 @@ void ED_CallSpawn(edict_t *ent)
 ED_NewString
 =============
 */
-char *ED_NewString(const char *string)
+static char *ED_NewStringEx(const char *string, bool localize)
 {
     char    *newb, *new_p;
     int     i, l;
@@ -617,7 +654,8 @@ char *ED_NewString(const char *string)
     // rerelease maps store "$map_you_found_a_secret" rather than the text.
     // Resolving here catches every entity key at spawn for the cost of one
     // comparison, instead of at each of the places a message is displayed.
-    string = L10N_Resolve(string, localized, sizeof(localized));
+    if (localize)
+        string = L10N_Resolve(string, localized, sizeof(localized));
 
     l = strlen(string) + 1;
 
@@ -637,6 +675,11 @@ char *ED_NewString(const char *string)
     }
 
     return newb;
+}
+
+char *ED_NewString(const char *string)
+{
+    return ED_NewStringEx(string, true);
 }
 
 
@@ -696,7 +739,10 @@ static bool ED_ParseField(const spawn_field_t *fields, const char *key, const ch
             // found it
             switch (f->type) {
             case F_LSTRING:
-                *(char **)(b + f->ofs) = ED_NewString(value);
+                // worldspawn "goals" is a TAB-separated list of $keys; resolving it
+                // as one string mangles every entry after the first.
+                // G_CommitN64Goal resolves the entries one at a time.
+                *(char **)(b + f->ofs) = ED_NewStringEx(value, Q_stricmp(key, "goals") != 0);
                 break;
             case F_VECTOR:
                 if (sscanf(value, "%f %f %f", &vec[0], &vec[1], &vec[2]) != 3) {
@@ -816,6 +862,18 @@ void ED_ParseEdict(const char **data, edict_t *ent, const char* pathList, int* m
         if (!Q_strcasecmp(key, "bmodel_anim_start") || !Q_strcasecmp(key, "bmodel_anim_end"))
             ent->bmodel_anim.enabled = true;
 
+        // edict fields whose explicit 0 differs from "not set" (rerelease was_key_specified)
+        if (!Q_stricmp(key, "angle"))
+            st.keys_specified |= SPAWNKEY_ANGLE;
+        else if (!Q_stricmp(key, "angles"))
+            st.keys_specified |= SPAWNKEY_ANGLES;
+        else if (!Q_stricmp(key, "dmg"))
+            st.keys_specified |= SPAWNKEY_DMG;
+        else if (!Q_stricmp(key, "power_armor_type"))
+            st.keys_specified |= SPAWNKEY_POWER_ARMOR_TYPE;
+        else if (!Q_stricmp(key, "power_armor_power"))
+            st.keys_specified |= SPAWNKEY_POWER_ARMOR_POWER;
+
         if (!ED_ParseField(spawn_fields, key, value, (byte *)ent)) {
             if (!ED_ParseField(temp_fields, key, value, (byte *)&st)) {
                 gi.dprintf("%s: %s is not a field\n", __func__, key);
@@ -915,6 +973,60 @@ char* GetEntityValue(const char** data, const char* searchKey) {
 
 /*
 ================
+G_FixTeams
+
+ROGUE: a MOVE_TEAMCHAIN func_train drives its whole team (train_next moves every
+member), so it has to be the team master. G_FindTeams makes whichever member
+comes first in the entity lump the master; if that is a target_speaker or an
+info_notnull, the train is a slave, SV_Physics_Pusher never runs it, and it
+never moves - rmine1's ore train and crane, rammo1's antimatter core, rbase1's
+laser trains, rware1, rlava1 and rhangar2 all froze that way.
+Port of src/rerelease/g_spawn.cpp G_FixTeams.
+================
+*/
+#define TRAIN_MOVE_TEAMCHAIN    8   // g_func.c
+
+static void G_FixTeams(void)
+{
+    edict_t *e, *e2, *chain;
+    int     i, j, c = 0;
+
+    for (i = 1, e = g_edicts + i; i < globals.num_edicts; i++, e++) {
+        if (!e->inuse || !e->team || !e->classname)
+            continue;
+        if (strcmp(e->classname, "func_train") || !(e->spawnflags & TRAIN_MOVE_TEAMCHAIN))
+            continue;
+        if (!(e->flags & FL_TEAMSLAVE))
+            continue;
+
+        chain = e;
+        e->teammaster = e;
+        e->teamchain = NULL;
+        e->flags &= ~FL_TEAMSLAVE;
+        e->flags |= FL_TEAMMASTER;
+        c++;
+        for (j = 1, e2 = g_edicts + j; j < globals.num_edicts; j++, e2++) {
+            if (e2 == e || !e2->inuse || !e2->team)
+                continue;
+            if (!strcmp(e->team, e2->team)) {
+                chain->teamchain = e2;
+                e2->teammaster = e;
+                e2->teamchain = NULL;
+                chain = e2;
+                e2->flags |= FL_TEAMSLAVE;
+                e2->flags &= ~FL_TEAMMASTER;
+                e2->movetype = MOVETYPE_PUSH;
+                e2->speed = e->speed;
+            }
+        }
+    }
+
+    if (c)
+        gi.dprintf("%i teams repaired\n", c);
+}
+
+/*
+================
 G_FindTeams
 
 Chain together all entities with a matching team field.
@@ -940,6 +1052,7 @@ void G_FindTeams(void)
             continue;
         chain = e;
         e->teammaster = e;
+        e->flags |= FL_TEAMMASTER;
         c++;
         c2++;
         for (j = i + 1, e2 = e + 1 ; j < globals.num_edicts ; j++, e2++) {
@@ -958,6 +1071,8 @@ void G_FindTeams(void)
             }
         }
     }
+
+    G_FixTeams();
 
     gi.dprintf("%i teams with %i entities\n", c, c2);
 }
@@ -1176,6 +1291,7 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
 
     Q_strlcpy(level.mapname, mapname, sizeof(level.mapname));
     Q_strlcpy(game.spawnpoint, spawnpoint, sizeof(game.spawnpoint));
+    level.is_n64 = !strncmp(level.mapname, "q64/", 4);
 
     // set client fields on player ents
     for (i = 0 ; i < game.maxclients ; i++)
@@ -1270,6 +1386,10 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     InitHintPaths();
 
     PlayerTrail_Init();
+
+    // runtime spawns (medic/carrier summons, target_spawner, resurrection) go
+    // through ED_CallSpawn too, and must not see the last map entity's keys
+    memset(&st, 0, sizeof(st));
 }
 
 
@@ -1464,6 +1584,16 @@ void SP_worldspawn(edict_t *ent)
     if (st.nextmap)
         Q_strlcpy(level.nextmap, st.nextmap, sizeof(level.nextmap));
 
+    // [rerelease] N64 objectives, start items, instant powerups
+    if (st.goals && !deathmatch->value) {
+        level.goals = st.goals;
+        game.help1changed++;
+        G_CommitN64Goal();
+    }
+    if (st.start_items)
+        level.start_items = st.start_items;
+    level.instantitems = st.instantitems > 0 || level.is_n64;
+
     // make some data visible to the server
 
     if (ent->message && ent->message[0]) {
@@ -1507,6 +1637,7 @@ void SP_worldspawn(edict_t *ent)
         gi.cvar_set("sv_gravity", "800");
     else
         gi.cvar_set("sv_gravity", st.gravity);
+    level.gravity = st.gravity ? atof(st.gravity) : 800;
 
     snd_fry = gi.soundindex("player/fry.wav");  // standing in lava / slime
 

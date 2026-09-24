@@ -1665,10 +1665,8 @@ void SP_monster_medic(edict_t *self)
         self->yaw_speed = 40;
     }
 
-    // the rerelease scales a monster's health per difficulty with this key;
-    // mgu3m3 and mgu4m3 both use it to soften their commanders on hard
-    if (st.health_multiplier > 0)
-        self->health = (int)(self->health * st.health_multiplier);
+    // health_multiplier (mgu3m3/mgu4m3 soften their commanders on hard with
+    // it) is applied once for every monster in monster_start
 
     self->pain = medic_pain;
     self->die = medic_die;

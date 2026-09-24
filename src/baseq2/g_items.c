@@ -58,7 +58,19 @@ static int  power_shield_index;
 void Use_Quad(edict_t *ent, gitem_t *item);
 void Use_Double(edict_t *ent, gitem_t *item);
 void Use_QuadFire(edict_t *ent, gitem_t *item);
+void Use_Breather(edict_t *ent, gitem_t *item);
+void Use_Envirosuit(edict_t *ent, gitem_t *item);
+void Use_Invulnerability(edict_t *ent, gitem_t *item);
+void Use_Silencer(edict_t *ent, gitem_t *item);
 static int  quad_drop_timeout_hack;
+
+// [rerelease] SPAWNFLAG_ITEM_TOSS_SPAWN: a trigger-spawned item is thrown out
+// (forward and up) when it appears instead of just blinking in
+#define ITEM_TOSS_SPAWN         0x00000004
+#define ITEM_SPAWNFLAGS_MAX     0x00000008
+
+// set while Item_TriggeredSpawn drops an item, see droptofloor
+static bool item_triggered_spawning;
 
 //======================================================================
 
@@ -161,6 +173,20 @@ void SetRespawn(edict_t *ent, float delay)
 
 //======================================================================
 
+/*
+The items the rerelease picks up with Pickup_Powerup, i.e. the ones its
+instant-items rule applies to. This tree also routes ammo_nuke, the spheres,
+the flashlight and the compass through Pickup_Powerup; the rerelease gives
+those their own pickups, so they are left out here.
+*/
+static bool Powerup_IsInstant(const gitem_t *it)
+{
+    return it->use == Use_Quad || it->use == Use_Invulnerability ||
+           it->use == Use_Silencer || it->use == Use_Breather ||
+           it->use == Use_Envirosuit || it->use == Use_Invisibility ||
+           it->use == Use_IR || it->use == Use_Double || it->use == Use_QuadFire;
+}
+
 bool Pickup_Powerup(edict_t *ent, edict_t *other)
 {
     int     quantity;
@@ -182,6 +208,11 @@ bool Pickup_Powerup(edict_t *ent, edict_t *other)
                 quad_drop_timeout_hack = ent->nextthink - level.framenum;
             ent->item->use(other, ent->item);
         }
+    } else if (level.instantitems && Powerup_IsInstant(ent->item)) {
+        // [rerelease] the N64 had no inventory: on its maps (and any map with
+        // worldspawn "instantitems") a powerup takes effect the moment it is
+        // picked up (IsInstantItemsEnabled)
+        ent->item->use(other, ent->item);
     }
 
     return true;
@@ -519,7 +550,9 @@ void SP_item_foodcube(edict_t *self)
 bool Pickup_Key(edict_t *ent, edict_t *other)
 {
     if (coop->value) {
-        if (strcmp(ent->classname, "key_power_cube") == 0) {
+        // [rerelease] explosive charges (q64/complex, orbit, station) are
+        // several of a kind like power cubes, so each carries its own cube bit
+        if (strcmp(ent->classname, "key_power_cube") == 0 || strcmp(ent->classname, "key_explosive_charges") == 0) {
             if (other->client->pers.power_cubes & ((ent->spawnflags & 0x0000ff00) >> 8))
                 return false;
             other->client->pers.inventory[ITEM_INDEX(ent->item)]++;
@@ -986,6 +1019,55 @@ void Use_Item(edict_t *ent, edict_t *other, edict_t *activator)
 //======================================================================
 
 /*
+=================
+Item_TriggeredSpawn / SetTriggeredSpawn
+
+[rerelease] PGM - a TRIGGER_SPAWN item isn't placed at load at all: it waits,
+unlinked, until triggered, and only then drops to the floor (from wherever it
+is at that moment) - optionally thrown out first with TOSS_SPAWN (4). Power
+cubes and explosive charges keep the older behaviour: placed at load, just
+hidden, and revealed by Use_Item.
+=================
+*/
+void droptofloor(edict_t *ent);
+
+void Item_TriggeredSpawn(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->svflags &= ~SVF_NOCLIENT;
+    self->use = NULL;
+
+    if (self->spawnflags & ITEM_TOSS_SPAWN) {
+        vec3_t  forward;
+
+        self->movetype = MOVETYPE_TOSS;
+        AngleVectors(self->s.angles, forward, NULL, NULL);
+        self->s.origin[2] += 16;
+        VectorScale(forward, 100, self->velocity);
+        self->velocity[2] = 300;
+    }
+
+    if (strcmp(self->classname, "key_power_cube") && strcmp(self->classname, "key_explosive_charges"))
+        self->spawnflags &= ITEM_NO_TOUCH;
+
+    item_triggered_spawning = true;
+    droptofloor(self);
+    item_triggered_spawning = false;
+}
+
+static void SetTriggeredSpawn(edict_t *ent)
+{
+    // don't do anything on key_power_cubes
+    if (!strcmp(ent->classname, "key_power_cube") || !strcmp(ent->classname, "key_explosive_charges"))
+        return;
+
+    ent->think = NULL;
+    ent->nextthink = 0;
+    ent->use = Item_TriggeredSpawn;
+    ent->svflags |= SVF_NOCLIENT;
+    ent->solid = SOLID_NOT;
+}
+
+/*
 ================
 droptofloor
 ================
@@ -1018,7 +1100,8 @@ void droptofloor(edict_t *ent)
         // A trigger-spawned item stays hidden until something reveals it, so mappers
         // park it inside scenery on purpose. Deleting it there breaks the map: mgu2m3
         // would lose the yellow key that opens its exit. Leave it where the map put it.
-        if (ent->spawnflags & ITEM_TRIGGER_SPAWN)
+        // (Item_TriggeredSpawn has already cleared the flag when it drops one.)
+        if ((ent->spawnflags & ITEM_TRIGGER_SPAWN) || item_triggered_spawning)
             goto placed;
 
         // Otherwise do what the rerelease does and nudge it out of whatever it is
@@ -1156,10 +1239,12 @@ void SpawnItem(edict_t *ent, gitem_t *item)
     // key be trigger-spawned or made no-touch, and its maps rely on it: mgu2m3 hides
     // key_yellow_key (spawnflags 1) until the data CD is inserted. Keep the warning
     // for genuinely unknown bits.
+    // [rerelease] PGM - any item may use TRIGGER_SPAWN (1), NO_TOUCH (2) and
+    // TOSS_SPAWN (4); only values from 8 up are invalid (g_items.cpp SpawnItem).
     if (ent->spawnflags) {
         if (item->flags & IT_KEY)
-            ent->spawnflags &= (ITEM_TRIGGER_SPAWN | ITEM_NO_TOUCH);
-        if (ent->spawnflags & ~(ITEM_TRIGGER_SPAWN | ITEM_NO_TOUCH)) {
+            ent->spawnflags &= (ITEM_TRIGGER_SPAWN | ITEM_NO_TOUCH | ITEM_TOSS_SPAWN);
+        if (ent->spawnflags >= ITEM_SPAWNFLAGS_MAX) {
             ent->spawnflags = 0;
             gi.dprintf("%s at %s has invalid spawnflags set\n", ent->classname, vtos(ent->s.origin));
         }
@@ -1193,7 +1278,19 @@ void SpawnItem(edict_t *ent, gitem_t *item)
         }
     }
 
-    if (coop->value && (strcmp(ent->classname, "key_power_cube") == 0)) {
+    // [rerelease] ROGUE - deathmatch-only items: the nuke, the doppleganger and
+    // the vengeance / hunter spheres are removed outside deathmatch (rammo2's
+    // ammo_nuke, the spheres rogue's maps scatter without skill flags)
+    if (!deathmatch->value) {
+        if (item->pickup == Pickup_Doppleganger || (item->classname && !strcmp(item->classname, "ammo_nuke")) ||
+            item->use == Use_Vengeance || item->use == Use_Hunter) {
+            gi.dprintf("%s at %s spawned in non-DM; freeing...\n", ent->classname, vtos(ent->s.origin));
+            G_FreeEdict(ent);
+            return;
+        }
+    }
+
+    if (coop->value && (strcmp(ent->classname, "key_power_cube") == 0 || strcmp(ent->classname, "key_explosive_charges") == 0)) {
         ent->spawnflags |= (1 << (8 + level.power_cubes));
         level.power_cubes++;
     }
@@ -1210,6 +1307,9 @@ void SpawnItem(edict_t *ent, gitem_t *item)
     ent->s.renderfx = RF_GLOW;
     if (ent->model)
         gi.modelindex(ent->model);
+
+    if (ent->spawnflags & ITEM_TRIGGER_SPAWN)
+        SetTriggeredSpawn(ent);
 }
 
 //======================================================================
@@ -2242,6 +2342,103 @@ gitem_t itemlist[] = {
         NULL,
         /* icon */      "n64/i_yellow_key",
         /* pickup */    "Yellow Key",
+        /* width */     2,
+        0,
+        NULL,
+        IT_STAY_COOP | IT_KEY,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
+    /*QUAKED key_explosive_charges (0 .5 .8) (-16 -16 -16) (16 16 16)
+    N64 (q64/orbit, station, complex). orbit's three pickups count down the exit;
+    station and complex consume them at trigger_keys. Stacks in single player.
+    */
+    {
+        "key_explosive_charges",
+        Pickup_Key,
+        NULL,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/n64/charge/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "n64/i_charges",
+        /* pickup */    "Explosive Charges",
+        /* width */     2,
+        0,
+        NULL,
+        IT_STAY_COOP | IT_KEY,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
+    /*QUAKED key_power_core (0 .5 .8) (-16 -16 -16) (16 16 16)
+    N64 (q64/process): feeds trigger_key t50, which powers the crate mover.
+    */
+    {
+        "key_power_core",
+        Pickup_Key,
+        NULL,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/items/n64/power_core/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "k_pyramid",
+        /* pickup */    "Power Core",
+        /* width */     2,
+        0,
+        NULL,
+        IT_STAY_COOP | IT_KEY,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
+    /*QUAKED key_nuke_container (0 .5 .8) (-16 -16 -16) (16 16 16)
+    Ground Zero: spawned by a target_spawner in rammo2, consumed in rammo1.
+    */
+    {
+        "key_nuke_container",
+        Pickup_Key,
+        NULL,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/weapons/g_nuke/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "i_contain",
+        /* pickup */    "Antimatter Pod",
+        /* width */     2,
+        0,
+        NULL,
+        IT_STAY_COOP | IT_KEY,
+        0,
+        NULL,
+        0,
+        /* precache */ ""
+    },
+
+    /*QUAKED key_nuke (0 .5 .8) (-16 -16 -16) (16 16 16)
+    Ground Zero: trigger-spawned in rammo1; the rboss exit trigger_key needs it.
+    */
+    {
+        "key_nuke",
+        Pickup_Key,
+        NULL,
+        Drop_General,
+        NULL,
+        "items/pkup.wav",
+        "models/weapons/g_nuke/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "i_nuke",
+        /* pickup */    "Antimatter Bomb",
         /* width */     2,
         0,
         NULL,

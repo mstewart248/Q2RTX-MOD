@@ -97,11 +97,64 @@ void SP_CreateCoopSpots(edict_t *self)
 }
 
 
+/*
+=================
+SpawnPoint_FixStuck
+
+[rerelease] a spawn point whose player-sized box starts in solid is nudged
+out with G_FixStuckObject, so the player isn't spawned stuck in a wall.
+The spot is not linked, so the player box is only put on it for the test.
+=================
+*/
+static void SpawnPoint_FixStuck(edict_t *self)
+{
+    static const vec3_t player_mins = { -16, -16, -24 };
+    static const vec3_t player_maxs = { 16, 16, 32 };
+    vec3_t  fixed;
+
+    if (!gi.trace(self->s.origin, player_mins, player_maxs, self->s.origin, self, MASK_SOLID).startsolid)
+        return;
+
+    VectorCopy(player_mins, self->mins);
+    VectorCopy(player_maxs, self->maxs);
+    VectorCopy(self->s.origin, fixed);
+    if (G_FixStuckObject(self, fixed, MASK_SOLID) == STUCK_FIXED)
+        VectorCopy(fixed, self->s.origin);
+    VectorClear(self->mins);
+    VectorClear(self->maxs);
+}
+
+/*
+[Paril-KEX] on the N64 maps a spawn point can sit on an elevator; letting it
+fall as a player-sized toss trigger lets it ride the lift, so a respawn
+lands where the lift is now, not in the air where it started.
+*/
+void info_player_start_drop(edict_t *self)
+{
+    self->solid = SOLID_TRIGGER;
+    self->movetype = MOVETYPE_TOSS;
+    VectorSet(self->mins, -16, -16, -24);
+    VectorSet(self->maxs, 16, 16, 32);
+    gi.linkentity(self);
+}
+
+static void SpawnPoint_Setup(edict_t *self)
+{
+    SpawnPoint_FixStuck(self);
+
+    if (level.is_n64) {
+        self->think = info_player_start_drop;
+        self->nextthink = level.framenum + 1;
+    }
+}
+
 /*QUAKED info_player_start (1 0 0) (-16 -16 -24) (16 16 32)
 The normal starting point for a level.
 */
 void SP_info_player_start(edict_t *self)
 {
+    SpawnPoint_Setup(self);
+
     if (!coop->value)
         return;
     if (Q_stricmp(level.mapname, "security") == 0) {
@@ -138,9 +191,9 @@ void SP_info_player_coop_lava(edict_t *self)
         return;
     }
 
-    // the rerelease unsticks these; G_FixStuckObject is already ported here
-    if (gi.trace(self->s.origin, self->mins, self->maxs, self->s.origin, self, MASK_SOLID).startsolid)
-        G_FixStuckObject(self, self->s.origin, MASK_SOLID);
+    // the rerelease unsticks these (with the player's box - the spot's own
+    // mins/maxs are zero)
+    SpawnPoint_FixStuck(self);
 }
 
 void SP_info_player_coop(edict_t *self)
@@ -149,6 +202,10 @@ void SP_info_player_coop(edict_t *self)
         G_FreeEdict(self);
         return;
     }
+
+    // [rerelease] runs SP_info_player_start: stuck fix and the N64 drop
+    // (SP_FixCoopSpots below replaces the think on the maps it patches)
+    SpawnPoint_Setup(self);
 
     if ((Q_stricmp(level.mapname, "jail2") == 0)   ||
         (Q_stricmp(level.mapname, "jail4") == 0)   ||
@@ -589,6 +646,69 @@ void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
 
 /*
 ==============
+Player_GiveStartItems
+
+[Paril-KEX] worldspawn "start_items": "classname [count];classname [count];..."
+Each entry is handed over through the item's own pickup, as a dropped item so
+nothing respawns and weapons come without their bonus ammo; a count of 0
+takes the item away. mgu1m2-mgu1m5 and mgu4trial use it to hand a player
+who starts there the weapons the unit expects.
+==============
+*/
+static void Player_GiveStartItems(edict_t *ent, const char *ptr)
+{
+    char        entry[MAX_TOKEN_CHARS];
+    char        item_name[MAX_QPATH];
+    const char  *p, *token;
+    gitem_t     *item;
+    edict_t     *dummy;
+    size_t      len;
+    int         count;
+
+    while (*ptr) {
+        // split off the next ';'-separated entry
+        len = strcspn(ptr, ";");
+        if (len >= sizeof(entry))
+            len = sizeof(entry) - 1;
+        memcpy(entry, ptr, len);
+        entry[len] = 0;
+        ptr += strcspn(ptr, ";");
+        if (*ptr == ';')
+            ptr++;
+
+        p = entry;
+        token = COM_Parse(&p);
+        if (!*token)
+            continue;
+        Q_strlcpy(item_name, token, sizeof(item_name));
+
+        item = FindItemByClassname(item_name);
+        if (!item || !item->pickup) {
+            gi.dprintf("Invalid start_items entry: %s\n", item_name);
+            continue;
+        }
+
+        count = 1;
+        token = COM_Parse(&p);
+        if (*token)
+            count = atoi(token);
+
+        if (count == 0) {
+            ent->client->pers.inventory[ITEM_INDEX(item)] = 0;
+            continue;
+        }
+
+        dummy = G_Spawn();
+        dummy->item = item;
+        dummy->count = count;
+        dummy->spawnflags |= DROPPED_ITEM;
+        item->pickup(dummy, ent);
+        G_FreeEdict(dummy);
+    }
+}
+
+/*
+==============
 InitClientPersistant
 
 This is only called when the game first initializes in single player,
@@ -651,6 +771,19 @@ void InitClientPersistant(gclient_t *client)
     client->pers.max_prox       = 50;
 
     client->pers.connected = true;
+
+    // [Paril-KEX] worldspawn start_items, given at the same point the
+    // rerelease does: whenever the persistant data is rebuilt from scratch -
+    // a new game, a CLEAR_INVENTORY unit exit (ExitLevel zeroes pers, so the
+    // next map's PutClientInServer lands here), and deathmatch respawns.
+    // The pickups need the player edict; it is attached to the client by the
+    // time any caller gets here.
+    if (level.start_items && *level.start_items) {
+        edict_t *ent = g_edicts + 1 + (client - game.clients);
+
+        if (ent->client == client)
+            Player_GiveStartItems(ent, level.start_items);
+    }
 }
 
 

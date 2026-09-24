@@ -17,10 +17,28 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 #include "g_local.h"
 
+// [rerelease] trigger_multiple / trigger_once spawnflags (PGM added 8 and 16)
+#define SPAWNFLAG_TRIGGER_MONSTER       1
+#define SPAWNFLAG_TRIGGER_NOT_PLAYER    2
+#define SPAWNFLAG_TRIGGER_TRIGGERED     4
+#define SPAWNFLAG_TRIGGER_TOGGLE        8
+#define SPAWNFLAG_TRIGGER_LATCHED       16
+
+/*
+[rerelease] An explicit "angle" "0" is a real direction (+X), not "no
+direction". Testing only for non-zero angles dropped it, so city1's two
+trigger_push volumes with angle 0 had a zero movedir and pushed nothing. The
+rerelease tests whether the key was present at all. Only valid inside a spawn
+function, which is the only place this is called from.
+*/
+static bool trigger_has_angles(edict_t *self)
+{
+    return (st.keys_specified & (SPAWNKEY_ANGLE | SPAWNKEY_ANGLES)) || !VectorEmpty(self->s.angles);
+}
 
 void InitTrigger(edict_t *self)
 {
-    if (!VectorEmpty(self->s.angles))
+    if (trigger_has_angles(self))
         G_SetMovedir(self->s.angles, self->movedir);
 
     self->solid = SOLID_TRIGGER;
@@ -65,6 +83,18 @@ void multi_trigger(edict_t *ent)
 
 void Use_Multi(edict_t *ent, edict_t *other, edict_t *activator)
 {
+    // [rerelease] TOGGLE turns the volume on and off instead of firing it.
+    // rhangar2's lift triggers, mgu4m1's door1_off and q64/orbit's t323 all
+    // rely on this; without it, using them fired their targets directly.
+    if (ent->spawnflags & SPAWNFLAG_TRIGGER_TOGGLE) {
+        if (ent->solid == SOLID_TRIGGER)
+            ent->solid = SOLID_NOT;
+        else
+            ent->solid = SOLID_TRIGGER;
+        gi.linkentity(ent);
+        return;
+    }
+
     ent->activator = activator;
     multi_trigger(ent);
 }
@@ -92,10 +122,13 @@ void Touch_Multi(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *sur
     multi_trigger(self);
 }
 
-/*QUAKED trigger_multiple (.5 .5 .5) ? MONSTER NOT_PLAYER TRIGGERED
+/*QUAKED trigger_multiple (.5 .5 .5) ? MONSTER NOT_PLAYER TRIGGERED TOGGLE LATCHED
 Variable sized repeatable trigger.  Must be targeted at one or more entities.
 If "delay" is set, the trigger waits some time after activating before firing.
 "wait" : Seconds between triggerings. (.2 default)
+
+TOGGLE - using this trigger will activate/deactivate it. trigger will begin inactive.
+LATCHED - fires once when something enters and once when the volume empties.
 sounds
 1)  secret
 2)  beep beep
@@ -110,6 +143,64 @@ void trigger_enable(edict_t *self, edict_t *other, edict_t *activator)
     gi.linkentity(self);
 }
 
+/*
+[rerelease] LATCHED trigger_multiple. Instead of firing on touch it looks at
+its volume every frame and fires its targets on each change of state: once when
+the first eligible entity arrives and once when the last one leaves. mguboss's
+pressure plates (plate1-4, plate_tut1-4) and the areaportal triggers in mgu5m2
+(ap4-6) and mgu6m1 (ap_3) are built on this - the second firing is what
+releases the plate / closes the portal again.
+
+Eligibility is the same filter Touch_Multi applies.
+*/
+static bool latched_trigger_filter(edict_t *self, edict_t *other)
+{
+    if (other->client) {
+        if (self->spawnflags & SPAWNFLAG_TRIGGER_NOT_PLAYER)
+            return false;
+    } else if (other->svflags & SVF_MONSTER) {
+        if (!(self->spawnflags & SPAWNFLAG_TRIGGER_MONSTER))
+            return false;
+    } else
+        return false;
+
+    if (!VectorEmpty(self->movedir)) {
+        vec3_t  forward;
+
+        AngleVectors(other->s.angles, forward, NULL, NULL);
+        if (DotProduct(forward, self->movedir) < 0)
+            return false;
+    }
+
+    return true;
+}
+
+void latched_trigger_think(edict_t *self)
+{
+    static edict_t  *touch[MAX_EDICTS];
+    bool    any_inside = false;
+    int     i, num;
+
+    self->nextthink = level.framenum + 1;
+
+    num = gi.BoxEdicts(self->absmin, self->absmax, touch, MAX_EDICTS, AREA_SOLID);
+
+    for (i = 0; i < num; i++) {
+        if (!touch[i]->inuse)
+            continue;
+        if (latched_trigger_filter(self, touch[i])) {
+            self->activator = touch[i];
+            any_inside = true;
+            break;
+        }
+    }
+
+    if (!!self->count != any_inside) {
+        G_UseTargets(self, self->activator);
+        self->count = any_inside ? 1 : 0;
+    }
+}
+
 void SP_trigger_multiple(edict_t *ent)
 {
     if (ent->sounds == 1)
@@ -121,12 +212,39 @@ void SP_trigger_multiple(edict_t *ent)
 
     if (!ent->wait)
         ent->wait = 0.2f;
-    ent->touch = Touch_Multi;
     ent->movetype = MOVETYPE_NONE;
     ent->svflags |= SVF_NOCLIENT;
 
+    if (trigger_has_angles(ent))
+        G_SetMovedir(ent->s.angles, ent->movedir);
 
-    if (ent->spawnflags & 4) {
+    // a rerelease trigger may define mins/maxs by hand instead of carrying a
+    // brush model; setmodel(NULL) is a fatal server error
+    if (ent->model)
+        gi.setmodel(ent, ent->model);
+
+    // [rerelease] LATCHED polls its volume instead of being touched - see
+    // latched_trigger_think. It stays SOLID_TRIGGER only so it is linked with
+    // a valid absmin/absmax; with no touch function nothing else happens.
+    if (ent->spawnflags & SPAWNFLAG_TRIGGER_LATCHED) {
+        if (ent->spawnflags & (SPAWNFLAG_TRIGGER_TRIGGERED | SPAWNFLAG_TRIGGER_TOGGLE))
+            gi.dprintf("%s at %s: latched and triggered/toggle are not supported\n",
+                       ent->classname, vtos(ent->s.origin));
+
+        ent->solid = SOLID_TRIGGER;
+        ent->think = latched_trigger_think;
+        ent->nextthink = level.framenum + 1;
+        ent->use = Use_Multi;
+        gi.linkentity(ent);
+        return;
+    }
+
+    ent->touch = Touch_Multi;
+
+    // [rerelease] a TOGGLE trigger begins inactive, exactly like TRIGGERED:
+    // the first use switches it on through trigger_enable, later uses toggle
+    // it through Use_Multi
+    if (ent->spawnflags & (SPAWNFLAG_TRIGGER_TRIGGERED | SPAWNFLAG_TRIGGER_TOGGLE)) {
         ent->solid = SOLID_NOT;
         ent->use = trigger_enable;
     } else {
@@ -134,13 +252,6 @@ void SP_trigger_multiple(edict_t *ent)
         ent->use = Use_Multi;
     }
 
-    if (!VectorEmpty(ent->s.angles))
-        G_SetMovedir(ent->s.angles, ent->movedir);
-
-    // a rerelease trigger may define mins/maxs by hand instead of carrying a
-    // brush model; setmodel(NULL) is a fatal server error
-    if (ent->model)
-        gi.setmodel(ent, ent->model);
     gi.linkentity(ent);
 }
 
@@ -338,6 +449,12 @@ This fixed size trigger cannot be touched, it can only be fired by other events.
 */
 void trigger_relay_use(edict_t *self, edict_t *other, edict_t *activator)
 {
+    // [rerelease] gate on cross-level trigger bits (city2 redfieldbutton only
+    // points the compass at the red field once the unit's trigger is set)
+    if (self->crosslevel_flags &&
+        self->crosslevel_flags != (game.serverflags & SFL_CROSS_TRIGGER_MASK & self->crosslevel_flags))
+        return;
+
     G_UseTargets(self, activator);
 }
 
@@ -383,7 +500,10 @@ void trigger_key_use(edict_t *self, edict_t *other, edict_t *activator)
         int     player;
         edict_t *ent;
 
-        if (strcmp(self->item->classname, "key_power_cube") == 0) {
+        // [rerelease] explosive charges use the power-cube bits too, so using
+        // one in coop takes one charge, not all of them (q64/orbit, station)
+        if (strcmp(self->item->classname, "key_power_cube") == 0 ||
+            strcmp(self->item->classname, "key_explosive_charges") == 0) {
             int cube;
 
             for (cube = 0; cube < 8; cube++)
@@ -522,6 +642,10 @@ trigger_push
 */
 
 #define PUSH_ONCE       1
+// [rerelease] PGM spawnflags. PUSH_PLUS (2) and CLIP (16) are set by no
+// shipped map and are not ported.
+#define PUSH_SILENT     4
+#define PUSH_START_OFF  8
 
 static int windsound;
 
@@ -535,7 +659,10 @@ void trigger_push_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface
         if (other->client) {
             // don't take falling damage immediately from this
             VectorCopy(other->velocity, other->client->oldvelocity);
-            if (other->fly_sound_debounce_framenum < level.framenum) {
+            // [rerelease] SILENT: the MGU drop pod launchers (mgu1m1-mgu6m1,
+            // spawnflags 4101) and mgu6m1/mgu6m2's vents push without the howl
+            if (!(self->spawnflags & PUSH_SILENT) &&
+                other->fly_sound_debounce_framenum < level.framenum) {
                 other->fly_sound_debounce_framenum = level.framenum + 1.5f * BASE_FRAMERATE;
                 gi.sound(other, CHAN_AUTO, windsound, 1, ATTN_NORM, 0);
             }
@@ -546,9 +673,24 @@ void trigger_push_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface
 }
 
 
-/*QUAKED trigger_push (.5 .5 .5) ? PUSH_ONCE
+// [rerelease] a targeted trigger_push toggles on and off when used
+void trigger_push_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    if (self->solid == SOLID_NOT)
+        self->solid = SOLID_TRIGGER;
+    else
+        self->solid = SOLID_NOT;
+    gi.linkentity(self);
+}
+
+/*QUAKED trigger_push (.5 .5 .5) ? PUSH_ONCE PUSH_PLUS PUSH_SILENT START_OFF CLIP
 Pushes the player
 "speed"     defaults to 1000
+
+If targeted, it will toggle on and off when used.
+
+START_OFF - toggled trigger_push begins in off setting
+SILENT - doesn't make wind noise
 */
 void SP_trigger_push(edict_t *self)
 {
@@ -557,6 +699,24 @@ void SP_trigger_push(edict_t *self)
     self->touch = trigger_push_touch;
     if (!self->speed)
         self->speed = 1000;
+
+    // [rerelease] toggleable pushers. rsewer2's t269 and tutorial's troll are
+    // START_OFF and switched on by the map; with no use function here they
+    // were live from level entry and could never be switched at all.
+    if (self->targetname) {
+        self->use = trigger_push_use;
+        if (self->spawnflags & PUSH_START_OFF)
+            self->solid = SOLID_NOT;
+    } else if (self->spawnflags & PUSH_START_OFF) {
+        // what the rerelease does with a START_OFF push nobody can switch on:
+        // it becomes an inert solid brush. No shipped map hits this.
+        gi.dprintf("trigger_push is START_OFF but not targeted.\n");
+        self->svflags = 0;
+        self->touch = NULL;
+        self->solid = SOLID_BSP;
+        self->movetype = MOVETYPE_PUSH;
+    }
+
     gi.linkentity(self);
 }
 
@@ -625,9 +785,15 @@ void hurt_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf
     else
         self->timestamp = level.framenum + 1;
 
+    // [rerelease] debounce the sound per trigger, once a second. Testing
+    // framenum % 10 only played it when a touch happened to land on a whole
+    // second, and a SLOW hurt (spawnflag 16) only touches once a second at an
+    // arbitrary phase - so it was usually silent for its entire life.
     if (!(self->spawnflags & 4)) {
-        if ((level.framenum % 10) == 0)
+        if (self->fly_sound_debounce_framenum < level.framenum) {
             gi.sound(other, CHAN_AUTO, self->noise_index, 1, ATTN_NORM, 0);
+            self->fly_sound_debounce_framenum = level.framenum + 1 * BASE_FRAMERATE;
+        }
     }
 
     if (self->spawnflags & 8)

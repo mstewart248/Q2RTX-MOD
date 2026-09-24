@@ -1427,9 +1427,7 @@ SP_monster_stalker(edict_t *self)
 	self->gib_health = -50;
 	self->mass = 250;
 
-	/* the rerelease scales monster health per difficulty with this key */
-	if (st.health_multiplier > 0)
-		self->health = (int)(self->health * st.health_multiplier);
+	/* health_multiplier is applied once for every monster in monster_start */
 
 	self->pain = stalker_pain;
 	self->die = stalker_die;

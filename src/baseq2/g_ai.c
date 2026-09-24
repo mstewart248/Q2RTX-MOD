@@ -564,6 +564,11 @@ bool FindTarget(edict_t *self)
     bool        heardit;
     int         r;
 
+    // [rerelease] N64 cutscene behaviour: q64/command's closing procession
+    // (HACKFLAG_END_CUTSCENE) marches its path and ignores the player
+    if (self->hackflags & HACKFLAG_END_CUTSCENE)
+        return false;
+
     if (self->monsterinfo.aiflags & AI_GOOD_GUY) {
         if (self->goalentity && self->goalentity->inuse && self->goalentity->classname) {
             if (strcmp(self->goalentity->classname, "target_actor") == 0)

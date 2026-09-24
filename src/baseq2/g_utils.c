@@ -248,6 +248,52 @@ void G_UseTargets(edict_t *ent, edict_t *activator)
     if (ent->killtarget) {
         t = NULL;
         while ((t = G_Find(t, FOFS(targetname), ent->killtarget))) {
+            // [rerelease] killtargeting a member of a team (a train carriage,
+            // a door half) must leave the chain intact: G_FreeEdict alone
+            // leaves the master's teamchain pointing at a freed edict that
+            // the next move then drags around. Slaves are spliced out; a
+            // killed master hands FL_TEAMMASTER to the next member.
+            if (t->teammaster) {
+                if (t->flags & FL_TEAMSLAVE) {
+                    edict_t *master;
+
+                    for (master = t->teammaster; master; master = master->teamchain) {
+                        if (master->teamchain == t) {
+                            master->teamchain = t->teamchain;
+                            break;
+                        }
+                    }
+                } else if (t->flags & FL_TEAMMASTER) {
+                    edict_t *new_master, *m;
+
+                    t->teammaster->flags &= ~FL_TEAMMASTER;
+                    new_master = t->teammaster->teamchain;
+
+                    if (new_master) {
+                        new_master->flags |= FL_TEAMMASTER;
+                        new_master->flags &= ~FL_TEAMSLAVE;
+
+                        for (m = new_master; m; m = m->teamchain)
+                            m->teammaster = new_master;
+                    }
+                }
+            }
+
+            // [rerelease] a killtargeted monster counts as killed (the
+            // rerelease's G_MonsterKilled), otherwise the level's kill tally
+            // can never reach its total - scripted monsters removed by a
+            // trigger stay "alive" in the help computer forever. Same
+            // exclusions as the kill count in Killed() (g_combat.c).
+            if (t->svflags & SVF_MONSTER) {
+                if (t->deadflag == DEAD_NO &&
+                    !(t->monsterinfo.aiflags & (AI_GOOD_GUY | AI_DO_NOT_COUNT)) &&
+                    !(t->spawnflags & SPAWNFLAG_MONSTER_DEAD)) {
+                    level.killed_monsters++;
+                    if (coop->value && t->enemy && t->enemy->client)
+                        t->enemy->client->resp.score++;
+                }
+            }
+
             G_FreeEdict(t);
             if (!ent->inuse) {
                 gi.dprintf("entity was removed while using killtargets\n");
@@ -583,6 +629,78 @@ bool KillBox(edict_t *ent)
     }
 
     return true;        // all clear
+}
+
+/*
+=================
+KillBoxBrush
+
+[rerelease] KillBox for brush models (g_utils.cpp KillBox with bsp_clipping).
+The classic KillBox traces the brush's own mins/maxs as a box, which for a
+bmodel is the whole bounding box - and it traces from s.origin, which is
+(0 0 0) for most bmodels, so a trigger-spawned func_wall / func_explosive
+either kills nothing or kills things well outside the brush. Instead gather
+every damageable solid inside the brush's absolute bounds and only telefrag
+the ones the brush really overlaps. The game API has no gi.clip, so the
+overlap test is a zero-length trace of the victim's own box: it starts solid
+only when it is inside something solid, and the candidates are already
+restricted to the brush's bounds.
+
+The brush must be linked SOLID_BSP before calling this when `exact` is set.
+Without `exact` (func_killbox) everything damageable in the bounds dies, as the
+rerelease does when EXACT_COLLISION is not set.
+=================
+*/
+bool KillBoxBrush(edict_t *ent, bool exact)
+{
+    static edict_t  *touch[MAX_EDICTS];
+    static bool     was_stuck[MAX_EDICTS];
+    edict_t         *hit;
+    trace_t         tr;
+    int             i, num, solid;
+
+    num = gi.BoxEdicts(ent->absmin, ent->absmax, touch, MAX_EDICTS, AREA_SOLID);
+
+    // Without gi.clip the only overlap test is "does the victim's box start
+    // solid". That also fires for anything flush against a wall or already
+    // embedded, so first record which candidates are solid WITHOUT the brush
+    // and only kill the ones the brush itself makes solid.
+    if (exact) {
+        solid = ent->solid;
+        ent->solid = SOLID_NOT;
+        gi.linkentity(ent);
+        for (i = 0; i < num; i++) {
+            hit = touch[i];
+            was_stuck[i] = false;
+            if (hit == ent || !hit->inuse)
+                continue;
+            tr = gi.trace(hit->s.origin, hit->mins, hit->maxs, hit->s.origin, hit, MASK_SOLID);
+            was_stuck[i] = tr.startsolid || tr.allsolid;
+        }
+        ent->solid = solid;
+        gi.linkentity(ent);
+    }
+
+    for (i = 0; i < num; i++) {
+        hit = touch[i];
+
+        if (hit == ent)
+            continue;
+        if (!hit->inuse || !hit->takedamage || hit->solid == SOLID_NOT || hit->solid == SOLID_TRIGGER)
+            continue;
+
+        if (exact) {
+            if (was_stuck[i])
+                continue;
+            tr = gi.trace(hit->s.origin, hit->mins, hit->maxs, hit->s.origin, hit, MASK_SOLID);
+            if (!tr.startsolid && !tr.allsolid)
+                continue;
+        }
+
+        T_Damage(hit, ent, ent, vec3_origin, ent->s.origin, vec3_origin, 100000, 0, DAMAGE_NO_PROTECTION, MOD_TELEFRAG);
+    }
+
+    return true;
 }
 
 /*

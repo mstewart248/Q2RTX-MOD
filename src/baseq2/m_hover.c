@@ -846,8 +846,11 @@ void SP_monster_hover(edict_t *self)
         self->health = 450;
         self->mass = 225;
         self->yaw_speed = 23;
-        self->monsterinfo.power_armor_type = POWER_ARMOR_SCREEN;
-        self->monsterinfo.power_armor_power = 100;
+        // [rerelease] unless the map set the keys (an explicit 0 removes it)
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_TYPE))
+            self->monsterinfo.power_armor_type = POWER_ARMOR_SCREEN;
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_POWER))
+            self->monsterinfo.power_armor_power = 100;
     }
 
     self->pain = hover_pain;

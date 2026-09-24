@@ -746,6 +746,12 @@ void monster_use(edict_t *self, edict_t *other, edict_t *activator)
 
 void monster_start_go(edict_t *self);
 
+// true while a trigger-spawned monster runs monster_start_go from its
+// triggered spawn; walkmonster_start_go & co. call monster_start_go at map load
+// too, before hiding the monster, and a SPAWNFLAG_MONSTER_DEAD corpse must only
+// be laid out once it is actually spawned
+static bool m_triggered_spawning;
+
 
 void monster_triggered_spawn(edict_t *self)
 {
@@ -771,9 +777,13 @@ void monster_triggered_spawn(edict_t *self)
     if (!(self->flags & (FL_FLY | FL_SWIM)))
         M_droptofloor(self);
 
+    m_triggered_spawning = true;
     monster_start_go(self);
+    m_triggered_spawning = false;
 
-    if (self->enemy && !(self->spawnflags & 1) && !(self->enemy->flags & FL_NOTARGET)) {
+    // [rerelease] a good guy (SCENIC) does not go for whoever triggered it
+    if (self->health > 0 && self->enemy && !(self->spawnflags & 1) &&
+        !(self->enemy->flags & FL_NOTARGET) && !(self->monsterinfo.aiflags & AI_GOOD_GUY)) {
         FoundTarget(self);
     } else {
         self->enemy = NULL;
@@ -782,12 +792,37 @@ void monster_triggered_spawn(edict_t *self)
 
 void monster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activator)
 {
+    int i;
+
     // we have a one frame delay here so we don't telefrag the guy who activated us
     self->think = monster_triggered_spawn;
     self->nextthink = level.framenum + 1;
-    if (activator->client)
+    // [rerelease] q64/command's end-cutscene procession is spawned by the
+    // player but must not turn on them
+    if (activator->client && !(self->hackflags & HACKFLAG_END_CUTSCENE))
         self->enemy = activator;
     self->use = monster_use;
+
+    // [rerelease] a SCENIC monster appears already in motion: spawn it now
+    // (monster_triggered_spawn drops it to the floor) and run 30 animation
+    // frames on the spot, so the scene it belongs to is under way the moment
+    // it becomes visible - biggun's monster_soldier_light group, boss2's one.
+    // 30 frames is 30 frames here too: the rerelease clears next_move_time so
+    // each of its calls advances one 10 Hz animation frame, as monster_think
+    // does in this tree.
+    if (self->spawnflags & SPAWNFLAG_MONSTER_SCENIC) {
+        self->nextthink = 0;
+        self->think(self);
+
+        if ((self->spawnflags & 1) && self->inuse)
+            monster_use(self, other, activator);
+
+        for (i = 0; i < 30; i++) {
+            if (!self->inuse || !self->think)
+                break;
+            self->think(self);
+        }
+    }
 }
 
 bool monster_start(edict_t *self);
@@ -804,9 +839,12 @@ void stationarymonster_triggered_spawn(edict_t *self)
     self->air_finished_framenum = level.framenum + 12 * BASE_FRAMERATE;
     gi.linkentity(self);
 
+    m_triggered_spawning = true;
     monster_start_go(self);
+    m_triggered_spawning = false;
 
-    if (self->enemy && !(self->spawnflags & 1) && !(self->enemy->flags & FL_NOTARGET))
+    if (self->health > 0 && self->enemy && !(self->spawnflags & 1) &&
+        !(self->enemy->flags & FL_NOTARGET) && !(self->monsterinfo.aiflags & AI_GOOD_GUY))
         FoundTarget(self);
     else
         self->enemy = NULL;
@@ -817,7 +855,7 @@ void stationarymonster_triggered_spawn_use(edict_t *self, edict_t *other, edict_
     // one frame of delay so we do not telefrag whoever triggered us
     self->think = stationarymonster_triggered_spawn;
     self->nextthink = level.framenum + 1;
-    if (activator->client)
+    if (activator->client && !(self->hackflags & HACKFLAG_END_CUTSCENE))
         self->enemy = activator;
     self->use = monster_use;
 }
@@ -1336,10 +1374,83 @@ try_duck:
     }
 }
 
+void ED_CallSpawn(edict_t *ent);
+void drop_temp_touch(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf);
+void drop_make_touchable(edict_t *ent);
+
+/*
+=================
+M_DropHealthItem
+
+[rerelease] A monster whose "item" is one of the health classnames. The
+rerelease gives each health size its own itemlist row with a classname
+(g_items.cpp), so FindItemByClassname finds it and Drop_Item tosses it. This
+tree has a single classname-less "Health" row whose size lives in the spawn
+function (count/style/model), so there is nothing for FindItemByClassname to
+find. monster_start keeps the classname instead (in ->map, see there) and this
+spawns the real item entity and then tosses it exactly like Drop_Item does:
+same box, same 100 forward / 300 up throw, same 1 second before it can be
+picked up. mgu1m3's mutants (boss_d1/2/3 ...) drop item_health_small this way;
+18 of the 27 such monsters are there.
+=================
+*/
+static edict_t *M_DropHealthItem(edict_t *self, const char *classname)
+{
+    edict_t *dropped;
+    vec3_t  forward;
+
+    dropped = G_Spawn();
+    dropped->classname = (char *)classname;
+    VectorCopy(self->s.origin, dropped->s.origin);
+
+    // the spawn function sets the model, count and style for this size
+    ED_CallSpawn(dropped);
+    if (!dropped->inuse)
+        return NULL;
+    if (!dropped->item || !dropped->model) {
+        G_FreeEdict(dropped);
+        return NULL;
+    }
+
+    dropped->spawnflags = DROPPED_ITEM;
+    dropped->s.effects = dropped->item->world_model_flags;
+    dropped->s.renderfx = RF_GLOW;
+    VectorSet(dropped->mins, -15, -15, -15);
+    VectorSet(dropped->maxs, 15, 15, 15);
+    gi.setmodel(dropped, dropped->model);
+    dropped->solid = SOLID_TRIGGER;
+    dropped->movetype = MOVETYPE_TOSS;
+    dropped->touch = drop_temp_touch;
+    dropped->owner = self;
+
+    AngleVectors(self->s.angles, forward, NULL, NULL);
+    VectorScale(forward, 100, dropped->velocity);
+    dropped->velocity[2] = 300;
+
+    // replaces the droptofloor think SpawnItem queued
+    dropped->think = drop_make_touchable;
+    dropped->nextthink = level.framenum + 1 * BASE_FRAMERATE;
+
+    gi.linkentity(dropped);
+    return dropped;
+}
+
 void monster_death_use(edict_t *self)
 {
     self->flags &= ~(FL_FLY | FL_SWIM);
     self->monsterinfo.aiflags &= AI_GOOD_GUY;
+
+    // health drop - see M_DropHealthItem and monster_start
+    if (!self->item && self->map) {
+        edict_t *dropped = M_DropHealthItem(self, self->map);
+
+        if (dropped && self->itemtarget) {
+            dropped->target = self->itemtarget;
+            self->itemtarget = NULL;
+        }
+
+        self->map = NULL;
+    }
 
     if (self->item) {
         edict_t *dropped = Drop_Item(self, self->item);
@@ -1403,6 +1514,18 @@ bool monster_start(edict_t *self)
         return false;
     }
 
+    // [rerelease] SCENIC monsters are set dressing - biggun's eight
+    // monster_soldier_light (sf 524291) and boss2's one play a scripted scene
+    // instead of fighting, so they are good guys and never enter the tally
+    if (self->spawnflags & SPAWNFLAG_MONSTER_SCENIC)
+        self->monsterinfo.aiflags |= AI_GOOD_GUY;
+
+    // [rerelease] the N64 hackflags. q64/command's closing procession (18
+    // monsters with HACKFLAG_END_CUTSCENE marching down a path) must not count
+    // toward the kill total or the level could never read 100%.
+    if (self->hackflags & (HACKFLAG_END_CUTSCENE | HACKFLAG_ATTACK_PLAYER))
+        self->monsterinfo.aiflags |= AI_DO_NOT_COUNT;
+
     if ((self->spawnflags & 4) && !(self->monsterinfo.aiflags & AI_GOOD_GUY)) {
         self->spawnflags &= ~4;
         self->spawnflags |= 1;
@@ -1410,9 +1533,28 @@ bool monster_start(edict_t *self)
     }
 
     // ROGUE - AI_DO_NOT_COUNT keeps summoned and healed monsters, and the
-    // throwaway entities DetermineBBox spawns, out of the level tally
-    if (!(self->monsterinfo.aiflags & (AI_GOOD_GUY | AI_DO_NOT_COUNT)))
+    // throwaway entities DetermineBBox spawns, out of the level tally.
+    // [rerelease] a corpse (SPAWNFLAG_MONSTER_DEAD) is not a kill either -
+    // mgu3m1/m2/m4 each lay out 8-11 dead mutants.
+    if (!(self->monsterinfo.aiflags & (AI_GOOD_GUY | AI_DO_NOT_COUNT)) &&
+        !(self->spawnflags & SPAWNFLAG_MONSTER_DEAD))
         level.total_monsters++;
+
+    // [rerelease] "health_multiplier" scales the spawn function's base health.
+    // id does it in every monster's spawn function (health = 300 *
+    // st.health_multiplier in m_mutant.cpp and ~40 others); doing it here, once,
+    // before max_health is taken covers every monster in this tree without
+    // touching each file. The MGU maps set it on 530 monsters, mostly to make
+    // the hard-skill duplicates tougher (mgu3m* place a 0.75 and a 1.0 copy of
+    // each monster). gib_health is not scaled, as in the rerelease. 0 means the
+    // key was not given. The value is consumed so a monster spawned later at
+    // runtime (a carrier's flyers, a medic commander's summons) cannot inherit
+    // it from whatever entity was parsed last - `st` is not cleared after the
+    // map loads. widow/widow2/carrier apply it themselves (their coop bonus is
+    // added after the multiply) and zero it before getting here.
+    if (st.health_multiplier > 0)
+        self->health = (int)(self->health * st.health_multiplier);
+    st.health_multiplier = 0;
 
     self->nextthink = level.framenum + 1;
     self->svflags |= SVF_MONSTER;
@@ -1431,10 +1573,47 @@ bool monster_start(edict_t *self)
         self->monsterinfo.checkattack = M_CheckAttack;
     VectorCopy(self->s.origin, self->s.old_origin);
 
+    // ->map carries a health drop's classname on monsters (below); a stray
+    // "map" key must not be mistaken for one
+    self->map = NULL;
+
     if (st.item) {
         self->item = FindItemByClassname(st.item);
-        if (!self->item)
-            gi.dprintf("%s at %s has bad item: %s\n", self->classname, vtos(self->s.origin), st.item);
+        if (!self->item) {
+            // [rerelease] health sizes have no classnamed itemlist row here;
+            // remember the classname and spawn it on death (M_DropHealthItem).
+            // ->map is free on a monster (only changelevel/sky/coop-relay
+            // entities use it) and is saved as a level string, so this
+            // survives a savegame. Precache now: the drop happens mid-level.
+            static const struct {
+                const char *classname;
+                const char *model;
+            } health_drops[] = {
+                { "item_health",       "models/items/healing/medium/tris.md2" },
+                { "item_health_small", "models/items/healing/stimpack/tris.md2" },
+                { "item_health_large", "models/items/healing/large/tris.md2" },
+                { "item_health_mega",  "models/items/mega_h/tris.md2" },
+            };
+            int i;
+            bool found = false;
+
+            for (i = 0; i < (int)(sizeof(health_drops) / sizeof(health_drops[0])); i++) {
+                if (!Q_stricmp(st.item, health_drops[i].classname)) {
+                    self->map = (char *)health_drops[i].classname;
+                    gi.modelindex(health_drops[i].model);
+                    PrecacheItem(FindItem("Health"));
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                gi.dprintf("%s at %s has bad item: %s\n", self->classname, vtos(self->s.origin), st.item);
+        }
+
+        // consumed, like health_multiplier above: a monster summoned later
+        // must not inherit the last parsed entity's drop
+        st.item = NULL;
     }
 
     // randomize what frame they start on
@@ -1473,12 +1652,97 @@ bool monster_start(edict_t *self)
     // mins/maxs and before anything can duck.
     self->monsterinfo.base_height = self->maxs[2];
 
+    // the power armor key bits belong to the entity being parsed; drop them so
+    // a monster summoned later (CreateMonster reuses the stale `st`) takes its
+    // spawn function's default armor rather than the last map entity's keys
+    st.keys_specified &= ~(SPAWNKEY_POWER_ARMOR_TYPE | SPAWNKEY_POWER_ARMOR_POWER);
+
     return true;
+}
+
+/*
+=================
+M_SpawnDead
+
+[rerelease] SPAWNFLAG_MONSTER_DEAD: lay the monster out as a corpse, the way
+monster_start_go does in g_monster.cpp - by making it die naturally and then
+fast-forwarding the death animation. mgu3m1/m2/m4 scatter 30 dead mutants this
+way, mgu1m2 has dead gunners/infantry/light soldiers, mgu1m4 a dead SS.
+
+die() is called straight, not through Killed(), so the corpse is never
+counted as a kill (monster_start left it out of total_monsters too) and
+monster_death_use never runs - no deathtarget, no item drop, as in the
+rerelease. Health 0 is above every gib_health, so die() picks a death
+animation rather than gibbing; it also sets deadflag DEAD_DEAD, which keeps
+Killed() from counting it when the player shoots the body later.
+
+AI_SPAWNED_DEAD is up while the death frames' think functions run, so the few
+that would act on the world (death-frame weapon fire, BossExplode) can skip.
+Only the frames' thinkfuncs run, not their movement - the body shrinks and
+settles exactly where it was placed.
+=================
+*/
+static void M_SpawnDead(edict_t *self)
+{
+    mmove_t *move;
+    vec3_t  f;
+    vec3_t  point = { 0, 0, 0 };
+    int     i;
+
+    self->health = 0;
+    VectorCopy(self->s.origin, f);
+
+    self->monsterinfo.aiflags |= AI_SPAWNED_DEAD;
+
+    if (self->die)
+        self->die(self, self, self, 0, point);
+
+    if (!self->inuse)
+        return;
+
+    // the rerelease calls monsterinfo.setskin here: a corpse wears the
+    // damaged skin even though it never took the pain that sets it
+    if (self->health < self->max_health / 2)
+        self->s.skinnum |= 1;
+
+    move = self->monsterinfo.currentmove;
+    if (move) {
+        for (i = move->firstframe; i < move->lastframe; i++) {
+            self->s.frame = i;
+
+            if (move->frame[i - move->firstframe].thinkfunc)
+                move->frame[i - move->firstframe].thinkfunc(self);
+
+            if (!self->inuse)
+                return;
+
+            // a thinkfunc swapped the animation - stop fast-forwarding a move
+            // that is no longer the one playing
+            if (self->monsterinfo.currentmove != move)
+                break;
+        }
+
+        if (self->monsterinfo.currentmove == move) {
+            if (move->endfunc)
+                move->endfunc(self);
+
+            if (!self->inuse)
+                return;
+
+            self->s.frame = move->lastframe;
+        }
+    }
+
+    VectorCopy(f, self->s.origin);
+    gi.linkentity(self);
+
+    self->monsterinfo.aiflags &= ~AI_SPAWNED_DEAD;
 }
 
 void monster_start_go(edict_t *self)
 {
     vec3_t  v;
+    bool    spawn_dead;
 
     if (self->health <= 0)
         return;
@@ -1529,26 +1793,40 @@ void monster_start_go(edict_t *self)
         }
     }
 
+    // [rerelease] allow spawning dead. A trigger-spawned corpse is laid out
+    // when it is triggered, not at map load (see m_triggered_spawning).
+    spawn_dead = (self->spawnflags & SPAWNFLAG_MONSTER_DEAD) &&
+                 (!(self->spawnflags & 2) || m_triggered_spawning);
+
     if (self->target) {
         self->goalentity = self->movetarget = G_PickTarget(self->target);
         if (!self->movetarget) {
             gi.dprintf("%s can't find target %s at %s\n", self->classname, self->target, vtos(self->s.origin));
             self->target = NULL;
             self->monsterinfo.pause_framenum = INT_MAX;
-            self->monsterinfo.stand(self);
+            if (!spawn_dead)
+                self->monsterinfo.stand(self);
         } else if (strcmp(self->movetarget->classname, "path_corner") == 0) {
             VectorSubtract(self->goalentity->s.origin, self->s.origin, v);
             self->ideal_yaw = self->s.angles[YAW] = vectoyaw(v);
-            self->monsterinfo.walk(self);
+            if (!spawn_dead)
+                self->monsterinfo.walk(self);
             self->target = NULL;
         } else {
             self->goalentity = self->movetarget = NULL;
             self->monsterinfo.pause_framenum = INT_MAX;
-            self->monsterinfo.stand(self);
+            if (!spawn_dead)
+                self->monsterinfo.stand(self);
         }
     } else {
         self->monsterinfo.pause_framenum = INT_MAX;
-        self->monsterinfo.stand(self);
+        if (!spawn_dead)
+            self->monsterinfo.stand(self);
+    }
+
+    if (spawn_dead) {
+        M_SpawnDead(self);
+        return;
     }
 
     self->think = monster_think;

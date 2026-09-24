@@ -577,6 +577,7 @@ extern void dabeam_hit(void);
 extern void debris_die(void);
 extern void defender_pain(void);
 extern void defender_think(void);
+extern void Door_Activate(void);
 extern void door_blocked(void);
 extern void door_go_down(void);
 extern void door_hit_bottom(void);
@@ -644,6 +645,7 @@ extern void func_animation_use(void);
 extern void func_clock_think(void);
 extern void func_clock_use(void);
 extern void func_conveyor_use(void);
+extern void func_explosive_activate(void);
 extern void func_explosive_explode(void);
 extern void func_explosive_spawn(void);
 extern void func_explosive_use(void);
@@ -745,6 +747,7 @@ extern void infantry_sidestep(void);
 extern void infantry_sight(void);
 extern void infantry_stand(void);
 extern void infantry_walk(void);
+extern void info_player_start_drop(void);
 extern void insane_die(void);
 extern void insane_pain(void);
 extern void insane_run(void);
@@ -752,6 +755,7 @@ extern void insane_stand(void);
 extern void insane_walk(void);
 extern void ionripper_sparks(void);
 extern void ionripper_touch(void);
+extern void Item_TriggeredSpawn(void);
 extern void jorg_attack(void);
 extern void Jorg_CheckAttack(void);
 extern void jorg_die(void);
@@ -760,6 +764,7 @@ extern void jorg_run(void);
 extern void jorg_search(void);
 extern void jorg_stand(void);
 extern void jorg_walk(void);
+extern void latched_trigger_think(void);
 extern void lavaball_fly(void);
 extern void lavaball_touch(void);
 extern void light_use(void);
@@ -799,11 +804,14 @@ extern void MegaHealth_think(void);
 extern void misc_banner_think(void);
 extern void misc_blackhole_think(void);
 extern void misc_blackhole_use(void);
+extern void misc_ctf_banner_think(void);
 extern void misc_deadsoldier_die(void);
 extern void misc_easterchick2_think(void);
 extern void misc_easterchick_think(void);
 extern void misc_eastertank_think(void);
 extern void misc_flare_use(void);
+extern void misc_hologram_think(void);
+extern void misc_nuke_core_use(void);
 extern void misc_nuke_use(void);
 extern void misc_player_mannequin_think(void);
 extern void misc_player_mannequin_use(void);
@@ -880,7 +888,9 @@ extern void prox_open(void);
 extern void prox_seek(void);
 extern void Prox_Think(void);
 extern void rocket_touch(void);
+extern void rotating_accel(void);
 extern void rotating_blocked(void);
+extern void rotating_decel(void);
 extern void rotating_light_alarm(void);
 extern void rotating_light_killed(void);
 extern void rotating_light_use(void);
@@ -960,6 +970,7 @@ extern void target_laser_start(void);
 extern void target_laser_think(void);
 extern void target_laser_use(void);
 extern void target_light_flicker_think(void);
+extern void target_light_think(void);
 extern void target_light_use(void);
 extern void target_lightramp_think(void);
 extern void target_lightramp_use(void);
@@ -980,6 +991,7 @@ extern void Think_AccelMove(void);
 extern void Think_Boss3Stand(void);
 extern void Think_CalcMoveSpeed(void);
 extern void Think_Delay(void);
+extern void Think_DoorActivateAreaPortal(void);
 extern void Think_SpawnDoorTrigger(void);
 extern void Think_TankStand(void);
 extern void Touch_DoorTrigger(void);
@@ -992,9 +1004,12 @@ extern void tracker_pain_daemon_think(void);
 extern void tracker_touch(void);
 extern void train_blocked(void);
 extern void train_next(void);
+extern void train_piece_wait(void);
 extern void train_use(void);
 extern void train_wait(void);
 extern void Trap_Think(void);
+extern void trigger_coop_relay_think(void);
+extern void trigger_coop_relay_use(void);
 extern void trigger_counter_use(void);
 extern void trigger_crosslevel_trigger_use(void);
 extern void trigger_crossunit_trigger_use(void);
@@ -1010,6 +1025,7 @@ extern void trigger_health_relay_use(void);
 extern void trigger_key_use(void);
 extern void trigger_monsterjump_touch(void);
 extern void trigger_push_touch(void);
+extern void trigger_push_use(void);
 extern void trigger_relay_use(void);
 extern void trigger_teleport_touch(void);
 extern void trigger_teleport_use(void);
@@ -1035,6 +1051,7 @@ extern void turret_stand(void);
 extern void turret_wake(void);
 extern void turret_walk(void);
 extern void update_target_camera(void);
+extern void update_target_soundfx(void);
 extern void Use_Areaportal(void);
 extern void Use_Boss3(void);
 extern void Use_Item(void);
@@ -1048,11 +1065,13 @@ extern void use_target_camera(void);
 extern void use_target_changelevel(void);
 extern void use_target_explosion(void);
 extern void use_target_goal(void);
+extern void use_target_gravity(void);
 extern void use_target_healthbar(void);
 extern void Use_Target_Help(void);
 extern void use_target_music(void);
 extern void use_target_secret(void);
 extern void use_target_sky(void);
+extern void use_target_soundfx(void);
 extern void use_target_spawner(void);
 extern void Use_Target_Speaker(void);
 extern void use_target_splash(void);
@@ -1131,7 +1150,9 @@ const save_ptr_t save_ptrs[] = {
 { P_think, heat_think },
 { P_think, hover_deadthink },
 { P_think, hunter_think },
+{ P_think, info_player_start_drop },
 { P_think, ionripper_sparks },
+{ P_think, latched_trigger_think },
 { P_think, lavaball_fly },
 { P_think, M_droptofloor },
 { P_think, M_FliesOff },
@@ -1143,9 +1164,11 @@ const save_ptr_t save_ptrs[] = {
 { P_think, MegaHealth_think },
 { P_think, misc_banner_think },
 { P_think, misc_blackhole_think },
+{ P_think, misc_ctf_banner_think },
 { P_think, misc_easterchick2_think },
 { P_think, misc_easterchick_think },
 { P_think, misc_eastertank_think },
+{ P_think, misc_hologram_think },
 { P_think, misc_player_mannequin_think },
 { P_think, misc_satellite_dish_think },
 { P_think, monster_think },
@@ -1168,6 +1191,8 @@ const save_ptr_t save_ptrs[] = {
 { P_think, prox_open },
 { P_think, prox_seek },
 { P_think, Prox_Think },
+{ P_think, rotating_accel },
+{ P_think, rotating_decel },
 { P_think, rotating_light_alarm },
 { P_think, smart_water_go_up },
 { P_think, SP_CreateCoopSpots },
@@ -1184,6 +1209,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, target_laser_start },
 { P_think, target_laser_think },
 { P_think, target_light_flicker_think },
+{ P_think, target_light_think },
 { P_think, target_lightramp_think },
 { P_think, target_poi_setup },
 { P_think, target_steam_start },
@@ -1195,12 +1221,14 @@ const save_ptr_t save_ptrs[] = {
 { P_think, Think_Boss3Stand },
 { P_think, Think_CalcMoveSpeed },
 { P_think, Think_Delay },
+{ P_think, Think_DoorActivateAreaPortal },
 { P_think, Think_SpawnDoorTrigger },
 { P_think, Think_TankStand },
 { P_think, tracker_fly },
 { P_think, tracker_pain_daemon_think },
 { P_think, train_next },
 { P_think, Trap_Think },
+{ P_think, trigger_coop_relay_think },
 { P_think, trigger_elevator_init },
 { P_think, turret_brain_link },
 { P_think, turret_brain_think },
@@ -1209,6 +1237,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, turret_driver_link },
 { P_think, turret_driver_think },
 { P_think, update_target_camera },
+{ P_think, update_target_soundfx },
 { P_think, vengeance_think },
 { P_think, walkmonster_start_go },
 { P_think, WidowExplode },
@@ -1275,21 +1304,25 @@ const save_ptr_t save_ptrs[] = {
 { P_use, actor_use },
 { P_use, button_use },
 { P_use, commander_body_use },
+{ P_use, Door_Activate },
 { P_use, door_secret_use },
 { P_use, door_use },
 { P_use, dynamic_light_use },
 { P_use, func_animation_use },
 { P_use, func_clock_use },
 { P_use, func_conveyor_use },
+{ P_use, func_explosive_activate },
 { P_use, func_explosive_spawn },
 { P_use, func_explosive_use },
 { P_use, func_object_use },
 { P_use, func_timer_use },
 { P_use, func_wall_use },
 { P_use, hurt_use },
+{ P_use, Item_TriggeredSpawn },
 { P_use, light_use },
 { P_use, misc_blackhole_use },
 { P_use, misc_flare_use },
+{ P_use, misc_nuke_core_use },
 { P_use, misc_nuke_use },
 { P_use, misc_player_mannequin_use },
 { P_use, misc_satellite_dish_use },
@@ -1313,14 +1346,17 @@ const save_ptr_t save_ptrs[] = {
 { P_use, target_poi_use },
 { P_use, target_string_use },
 { P_use, train_use },
+{ P_use, trigger_coop_relay_use },
 { P_use, trigger_counter_use },
 { P_use, trigger_crosslevel_trigger_use },
 { P_use, trigger_crossunit_trigger_use },
 { P_use, trigger_disguise_use },
 { P_use, trigger_elevator_use },
 { P_use, trigger_enable },
+{ P_use, trigger_gravity_use },
 { P_use, trigger_health_relay_use },
 { P_use, trigger_key_use },
+{ P_use, trigger_push_use },
 { P_use, trigger_relay_use },
 { P_use, trigger_teleport_use },
 { P_use, turret_activate },
@@ -1339,11 +1375,13 @@ const save_ptr_t save_ptrs[] = {
 { P_use, use_target_changelevel },
 { P_use, use_target_explosion },
 { P_use, use_target_goal },
+{ P_use, use_target_gravity },
 { P_use, use_target_healthbar },
 { P_use, Use_Target_Help },
 { P_use, use_target_music },
 { P_use, use_target_secret },
 { P_use, use_target_sky },
+{ P_use, use_target_soundfx },
 { P_use, use_target_spawner },
 { P_use, Use_Target_Speaker },
 { P_use, use_target_splash },
@@ -1450,6 +1488,7 @@ const save_ptr_t save_ptrs[] = {
 { P_moveinfo_endfunc, plat2_hit_top },
 { P_moveinfo_endfunc, plat_hit_bottom },
 { P_moveinfo_endfunc, plat_hit_top },
+{ P_moveinfo_endfunc, train_piece_wait },
 { P_moveinfo_endfunc, train_wait },
 { P_moveinfo_endfunc, turret_wake },
 { P_monsterinfo_currentmove, &actor_move_attack },
@@ -2172,11 +2211,5 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sidestep, medic_sidestep },
 { P_monsterinfo_sidestep, soldier_sidestep },
 { P_monsterinfo_physics_change, stalker_physics_change },
-// [rerelease] trigger_gravity gained TOGGLE/START_OFF, so it now has a use
-// function. APPENDED rather than filed with the other P_use entries: this
-// table is indexed positionally by savegames, and sorting it in would shift
-// every later index and force a SAVE_VERSION bump. Same reasoning as the
-// appended ptr_type_t entries in g_ptrs.h.
-{ P_use, trigger_gravity_use },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

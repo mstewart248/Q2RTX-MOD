@@ -21,8 +21,50 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 Fire an origin based temp entity event to the clients.
 "style"     type byte
 */
+/*
+This entity only ever writes [type][position]. A temp entity whose client
+parser (CL_ParseTEntPacket in src/client/parse.c) reads anything more - a
+second position, a direction, a count, an entity number - would consume bytes
+belonging to the next message and desynchronise the stream, dropping the
+client. So only the types the client reads as a single position are allowed.
+Keep this list in step with the "MSG_ReadPos(te.pos1); break;" group there.
+*/
+static bool tent_is_position_only(int type)
+{
+    switch (type) {
+    case TE_GRENADE_EXPLOSION:
+    case TE_GRENADE_EXPLOSION_WATER:
+    case TE_EXPLOSION2:
+    case TE_PLASMA_EXPLOSION:
+    case TE_ROCKET_EXPLOSION:
+    case TE_ROCKET_EXPLOSION_WATER:
+    case TE_EXPLOSION1:
+    case TE_EXPLOSION1_NP:
+    case TE_EXPLOSION1_BIG:
+    case TE_BFG_EXPLOSION:
+    case TE_BFG_BIGEXPLOSION:
+    case TE_BOSSTPORT:
+    case TE_PLAIN_EXPLOSION:
+    case TE_CHAINFIST_SMOKE:
+    case TE_TRACKER_EXPLOSION:
+    case TE_TELEPORT_EFFECT:
+    case TE_DBALL_GOAL:
+    case TE_WIDOWSPLASH:
+    case TE_NUKEBLAST:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void Use_Target_Tent(edict_t *ent, edict_t *other, edict_t *activator)
 {
+    if (!tent_is_position_only(ent->style)) {
+        gi.dprintf("%s at %s: temp entity type %d needs more than a position, not sent\n",
+                   ent->classname, vtos(ent->s.origin), ent->style);
+        return;
+    }
+
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(ent->style);
     gi.WritePosition(ent->s.origin);
@@ -31,6 +73,13 @@ void Use_Target_Tent(edict_t *ent, edict_t *other, edict_t *activator)
 
 void SP_target_temp_entity(edict_t *ent)
 {
+    // [rerelease] the N64 maps number their temp entities differently: their
+    // 27 is the teleport flash. Ours is TE_BLUEHYPERBLASTER, which the client
+    // reads as TWO positions, so the 19 of these in q64/command desynced the
+    // net stream and dropped the client the first time one fired.
+    if (level.is_n64 && ent->style == 27)
+        ent->style = TE_TELEPORT_EFFECT;
+
     ent->use = Use_Target_Tent;
 }
 
@@ -152,6 +201,16 @@ void SP_target_help(edict_t *ent)
         return;
     }
     ent->use = Use_Target_Help;
+
+    // [rerelease] a SETPOI help target hands target_poi_use its own compass
+    // icon, which target_poi_use reads from noise_index. Left at 0 the 42
+    // setpoi target_helps in the rerelease maps set an objective with no icon.
+    if (ent->spawnflags & SPAWNFLAG_HELP_SET_POI) {
+        if (st.image)
+            ent->noise_index = gi.imageindex(st.image);
+        else
+            ent->noise_index = gi.imageindex("friend");
+    }
 }
 
 //==========================================================
@@ -191,18 +250,98 @@ void SP_target_secret(edict_t *ent)
 
 //==========================================================
 
-/*QUAKED target_goal (1 0 1) (-8 -8 -8) (8 8 8)
+/*
+=================
+G_CommitN64Goal
+
+[rerelease] The N64 maps carry their objectives in worldspawn "goals" as one
+tab-separated list, and each target_goal advances to the next one. Copy entry
+number level.goal_num into helpmessage1 and bump help1changed, so
+G_PlayerNotifyGoal announces it and the help computer shows it - the same
+commit the rerelease's G_PlayerNotifyGoal does.
+
+The entries are localization keys ("$map_bio_goal_0"), so each one is
+resolved on its own here. That only works if level.goals still holds the raw
+list: ED_NewString resolves "$..." for every key, and applied to the whole
+tab-separated string it mangles every entry after the first.
+
+Safe to call more than once for the same goal_num.
+=================
+*/
+void G_CommitN64Goal(void)
+{
+    const char  *goal, *end;
+    char        raw[sizeof(game.helpmessage1)];
+    char        resolved[sizeof(game.helpmessage1)];
+    const char  *text;
+    size_t      len;
+    int         i;
+
+    if (!level.goals || deathmatch->value)
+        return;
+
+    // skip ahead by the number of goals already finished
+    goal = level.goals;
+    for (i = 0; i < level.goal_num; i++) {
+        while (*goal && *goal != '\t')
+            goal++;
+        if (!*goal) {
+            // ran off the end: more target_goals than listed objectives
+            gi.dprintf("G_CommitN64Goal: goal %d is past the end of the goals list\n", level.goal_num);
+            return;
+        }
+        goal++;
+    }
+
+    end = goal;
+    while (*end && *end != '\t')
+        end++;
+
+    len = end - goal;
+    if (len >= sizeof(raw))
+        len = sizeof(raw) - 1;
+    memcpy(raw, goal, len);
+    raw[len] = 0;
+
+    text = L10N_Resolve(raw, resolved, sizeof(resolved));
+
+    if (strcmp(game.helpmessage1, text)) {
+        Q_strlcpy(game.helpmessage1, text, sizeof(game.helpmessage1));
+        game.help1changed++;
+    }
+}
+
+/*QUAKED target_goal (1 0 1) (-8 -8 -8) (8 8 8) KEEP_MUSIC
 Counts a goal completed.
 These are single use targets.
+
+"sounds"    CD track to switch to when the last goal is found (default: stop the music)
+KEEP_MUSIC  leave the music alone when the last goal is found
 */
+#define SPAWNFLAG_GOAL_KEEP_MUSIC   1
+
 void use_target_goal(edict_t *ent, edict_t *other, edict_t *activator)
 {
     gi.sound(ent, CHAN_VOICE, ent->noise_index, 1, ATTN_NORM, 0);
 
     level.found_goals++;
 
-    if (level.found_goals == level.total_goals)
-        gi.configstring(CS_CDTRACK, "0");
+    // [rerelease] the N64 target_goals all carry "sounds" 78 - the music the
+    // level switches to once its objectives are done - where this used to
+    // stop the music outright
+    if (level.found_goals == level.total_goals && !(ent->spawnflags & SPAWNFLAG_GOAL_KEEP_MUSIC)) {
+        if (ent->sounds)
+            gi.configstring(CS_CDTRACK, va("%d", ent->sounds));
+        else
+            gi.configstring(CS_CDTRACK, "0");
+    }
+
+    // [rerelease] N64 objectives: move on to the next one in the list.
+    // G_PlayerNotifyGoal (from ClientEndServerFrame) announces it.
+    if (level.goals) {
+        level.goal_num++;
+        G_CommitN64Goal();
+    }
 
     G_UseTargets(ent, activator);
     G_FreeEdict(ent);
@@ -222,6 +361,13 @@ void SP_target_goal(edict_t *ent)
     ent->noise_index = gi.soundindex(st.noise);
     ent->svflags = SVF_NOCLIENT;
     level.total_goals++;
+
+    // Worldspawn always spawns first, so level.goals is set by now. Putting
+    // the first N64 objective up from here covers every map that has a
+    // target_goal; maps with a single objective and no target_goal need the
+    // same call from SP_worldspawn.
+    if (level.goals && !level.goal_num)
+        G_CommitN64Goal();
 }
 
 //==========================================================
@@ -361,6 +507,10 @@ void SP_target_splash(edict_t *self)
     if (!self->count)
         self->count = 32;
 
+    // [rerelease] N64 sparks are electric blue (client splash colour 7)
+    if (level.is_n64 && self->sounds == 1)
+        self->sounds = 7;
+
     self->svflags = SVF_NOCLIENT;
 }
 
@@ -389,6 +539,17 @@ void use_target_spawner(edict_t *self, edict_t *other, edict_t *activator)
     ent->classname = self->target;
     VectorCopy(self->s.origin, ent->s.origin);
     VectorCopy(self->s.angles, ent->s.angles);
+
+    // [rerelease] st still holds whatever entity the map load parsed last;
+    // the spawn function must not see its keys (item, noise, angle flags...)
+    memset(&st, 0, sizeof(st));
+
+    // [rerelease] monsters that appear mid-level are not part of the level's
+    // monster total - monster_start skips counting them - otherwise every
+    // spawner-fed room (the factory maps, rmine2 and friends) leaves the end
+    // of level tally short of 100% however thoroughly you clear it.
+    ent->monsterinfo.aiflags |= AI_DO_NOT_COUNT;
+
     ED_CallSpawn(ent);
     gi.unlinkentity(ent);
     KillBox(ent);
@@ -556,10 +717,16 @@ void SP_target_crossunit_target(edict_t *self)
 
 //==========================================================
 
-/*QUAKED target_laser (0 .5 .8) (-8 -8 -8) (8 8 8) START_ON RED GREEN BLUE YELLOW ORANGE FAT
+/*QUAKED target_laser (0 .5 .8) (-8 -8 -8) (8 8 8) START_ON RED GREEN BLUE YELLOW ORANGE FAT WINDOWSTOP
 When triggered, fires a laser.  You can either set a target
 or a direction.
+
+WINDOWSTOP - stops at CONTENTS_WINDOW (on N64 maps: draw as lightning instead)
 */
+
+// [rerelease] PGM. Seven non-N64 lasers set it: six in rbase1, one in rammo2.
+#define SPAWNFLAG_LASER_STOPWINDOW  128
+#define SPAWNFLAG_LASER_FAT         64
 
 void target_laser_think(edict_t *self)
 {
@@ -570,6 +737,7 @@ void target_laser_think(edict_t *self)
     vec3_t  point;
     vec3_t  last_movedir;
     int     count;
+    int     mask;
 
     if (self->spawnflags & 0x80000000)
         count = 8;
@@ -585,11 +753,19 @@ void target_laser_think(edict_t *self)
             self->spawnflags |= 0x80000000;
     }
 
+    // [rerelease] WINDOWSTOP lasers stop at glass (MASK_SHOT adds
+    // CONTENTS_WINDOW). On N64 maps bit 128 has already been turned into
+    // LIGHTNING by target_laser_start.
+    if (self->spawnflags & SPAWNFLAG_LASER_STOPWINDOW)
+        mask = MASK_SHOT;
+    else
+        mask = CONTENTS_SOLID | CONTENTS_MONSTER | CONTENTS_DEADMONSTER;
+
     ignore = self;
     VectorCopy(self->s.origin, start);
     VectorMA(start, 2048, self->movedir, end);
     while (1) {
-        tr = gi.trace(start, NULL, NULL, end, ignore, CONTENTS_SOLID | CONTENTS_MONSTER | CONTENTS_DEADMONSTER);
+        tr = gi.trace(start, NULL, NULL, end, ignore, mask);
 
         if (!tr.ent)
             break;
@@ -656,6 +832,14 @@ void target_laser_start(edict_t *self)
     self->s.renderfx |= RF_BEAM | RF_TRANSLUCENT;
     self->s.modelindex = 1;         // must be non-zero
 
+    // [rerelease] on Q2N64 spawnflag 128 is a lightning bolt, not WINDOWSTOP.
+    // 42 q64 lasers set it (16 with spawnflags 2209 alone); all of them are
+    // meant to be arcs of lightning.
+    if (level.is_n64 && (self->spawnflags & SPAWNFLAG_LASER_STOPWINDOW)) {
+        self->spawnflags &= ~SPAWNFLAG_LASER_STOPWINDOW;
+        self->spawnflags |= SPAWNFLAG_LASER_LIGHTNING;
+    }
+
     /*
      * [rerelease] SPAWNFLAG_LASER_LIGHTNING (0x10000). id added this well after
      * the original six colour flags, and it OVERRIDES them: it forces the blue
@@ -675,7 +859,9 @@ void target_laser_start(edict_t *self)
     }
 
     // set the beam diameter
-    if (self->spawnflags & 64)
+    // [rerelease] N64 maps set 64 for something else entirely (q64/lab's
+    // lasers predate lightning), so FAT is ignored there
+    if (!level.is_n64 && (self->spawnflags & SPAWNFLAG_LASER_FAT))
         self->s.frame = 16;
     else
         self->s.frame = 4;
@@ -700,6 +886,13 @@ void target_laser_start(edict_t *self)
             if (!ent)
                 gi.dprintf("%s at %s: %s is a bad target\n", self->classname, vtos(self->s.origin), self->target);
             self->enemy = ent;
+
+            // [rerelease] N64 fix: a laser aimed at a parked func_train sets
+            // the train moving, so the beam tracks it. q64/complex's t69/t70
+            // trains are never started by anything else.
+            if (ent && level.is_n64 && !strcmp(ent->classname, "func_train") &&
+                !(ent->spawnflags & 1) && ent->use)     // 1 = TRAIN_START_ON
+                ent->use(ent, self, self);
         } else {
             G_SetMovedir(self->s.angles, self->movedir);
         }
@@ -815,21 +1008,38 @@ void SP_target_lightramp(edict_t *self)
 
 //==========================================================
 
-/*QUAKED target_earthquake (1 0 0) (-8 -8 -8) (8 8 8)
+/*QUAKED target_earthquake (1 0 0) (-8 -8 -8) (8 8 8) SILENT TOGGLE UNKNOWN_ROGUE ONE_SHOT
 When triggered, this initiates a level-wide earthquake.
-All players and monsters are affected.
+All players are affected with a screen shake.
 "speed"     severity of the quake (default:200)
 "count"     duration of the quake (default:5)
+
+SILENT      no rumble sound
+TOGGLE      each use starts or stops the quake (it still ends after "count")
+ONE_SHOT    a single view kick of speed * 0.1 degrees instead of a quake
 */
+
+// [rerelease] PGM spawnflags. SILENT is on 14 shipped quakes and ONE_SHOT on
+// 2; TOGGLE is set by no map directly but forced on every N64 quake (see
+// SP_target_earthquake).
+#define SPAWNFLAG_EARTHQUAKE_SILENT     1
+#define SPAWNFLAG_EARTHQUAKE_TOGGLE     2
+#define SPAWNFLAG_EARTHQUAKE_ONE_SHOT   8
 
 void target_earthquake_think(edict_t *self)
 {
     int     i;
     edict_t *e;
 
-    if (self->last_move_framenum < level.framenum) {
-        gi.positioned_sound(self->s.origin, self, CHAN_AUTO, self->noise_index, 1.0f, ATTN_NONE, 0);
-        self->last_move_framenum = level.framenum + 0.5f * BASE_FRAMERATE;
+    // [rerelease] quake.wav is 7.7 s long. Restarting it every half second
+    // on CHAN_AUTO stacked up to fifteen copies of it for the length of the
+    // quake; the rerelease restarts it every 6.5 s on CHAN_VOICE, which
+    // replaces the previous copy instead of piling on top of it.
+    if (!(self->spawnflags & SPAWNFLAG_EARTHQUAKE_SILENT)) {
+        if (self->last_move_framenum < level.framenum) {
+            gi.positioned_sound(self->s.origin, self, CHAN_VOICE, self->noise_index, 1.0f, ATTN_NONE, 0);
+            self->last_move_framenum = level.framenum + 6.5f * BASE_FRAMERATE;
+        }
     }
 
     for (i = 1, e = g_edicts + i; i < globals.num_edicts; i++, e++) {
@@ -837,8 +1047,9 @@ void target_earthquake_think(edict_t *self)
             continue;
         if (!e->client)
             continue;
-        if (!e->groundentity)
-            continue;
+
+        // (the rerelease shakes airborne players too; the groundentity test
+        // belonged to the vanilla impulse described below)
 
         // The rerelease made this a pure screen shake - its own QUAKED comment
         // says "All players are affected with a screen shake" - and the MGU maps
@@ -855,16 +1066,55 @@ void target_earthquake_think(edict_t *self)
 
 void target_earthquake_use(edict_t *self, edict_t *other, edict_t *activator)
 {
+    // [rerelease] ONE_SHOT is a single jolt, not a quake: the same pitch kick
+    // taking damage gives, decaying over DAMAGE_TIME in SV_CalcViewOffset
+    if (self->spawnflags & SPAWNFLAG_EARTHQUAKE_ONE_SHOT) {
+        int     i;
+        edict_t *e;
+
+        for (i = 1, e = g_edicts + i; i < globals.num_edicts; i++, e++) {
+            if (!e->inuse)
+                continue;
+            if (!e->client)
+                continue;
+
+            e->client->v_dmg_pitch = -self->speed * 0.1f;
+            e->client->v_dmg_time = level.time + DAMAGE_TIME;
+        }
+
+        return;
+    }
+
     self->timestamp = level.framenum + self->count * BASE_FRAMERATE;
-    self->nextthink = level.framenum + 1;
+
+    // [rerelease] TOGGLE: every other use stops the quake early. self->style
+    // remembers which half of the cycle we are in.
+    if (self->spawnflags & SPAWNFLAG_EARTHQUAKE_TOGGLE) {
+        if (self->style)
+            self->nextthink = 0;
+        else
+            self->nextthink = level.framenum + 1;
+
+        self->style = !self->style;
+    } else {
+        self->nextthink = level.framenum + 1;
+        self->last_move_framenum = 0;
+    }
+
     self->activator = activator;
-    self->last_move_framenum = 0;
 }
 
 void SP_target_earthquake(edict_t *self)
 {
     if (!self->targetname)
         gi.dprintf("untargeted %s at %s\n", self->classname, vtos(self->s.origin));
+
+    // [rerelease] the five N64 quakes are all switched on and off by the map
+    // and are meant to be gentle
+    if (level.is_n64) {
+        self->spawnflags |= SPAWNFLAG_EARTHQUAKE_TOGGLE;
+        self->speed = 5;
+    }
 
     if (!self->count)
         self->count = 5;
@@ -876,7 +1126,8 @@ void SP_target_earthquake(edict_t *self)
     self->think = target_earthquake_think;
     self->use = target_earthquake_use;
 
-    self->noise_index = gi.soundindex("world/quake.wav");
+    if (!(self->spawnflags & SPAWNFLAG_EARTHQUAKE_SILENT))
+        self->noise_index = gi.soundindex("world/quake.wav");
 }
 
 /*QUAKED target_steam (1 0 0) (-8 -8 -8) (8 8 8)
@@ -998,10 +1249,6 @@ void SP_target_steam(edict_t *self)
 Points the monster named by "target" at the entity named by "killtarget", making
 the latter a valid enemy even if it is not a monster. Ported from
 src/rerelease/rogue/g_rogue_newtarg.cpp.
-
-Note: the rerelease also sets AI_DO_NOT_COUNT on the promoted entity so it is
-excluded from the level monster total. That flag does not exist in this tree, so
-a promoted non-monster will count toward the total shown at level end.
 */
 void target_anger_use(edict_t *self, edict_t *other, edict_t *activator)
 {
@@ -1015,7 +1262,7 @@ void target_anger_use(edict_t *self, edict_t *other, edict_t *activator)
 
     // make whatever it is a "good guy" so the monster will try to kill it
     if (!(target->svflags & SVF_MONSTER)) {
-        target->monsterinfo.aiflags |= AI_GOOD_GUY;
+        target->monsterinfo.aiflags |= AI_GOOD_GUY | AI_DO_NOT_COUNT;
         target->svflags |= SVF_MONSTER;
         target->health = 300;
     }

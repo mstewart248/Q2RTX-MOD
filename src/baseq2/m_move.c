@@ -484,6 +484,42 @@ Deliberately NOT ported: `RF_STAIR_STEP` (this tree's client has no stair
 smoothing to feed), `G_Impact`, and the CheckForBadArea tesla handling.
 =================
 */
+/*
+=================
+M_SuperStepGroundOK
+
+[rerelease] m_move.cpp: a SPAWNFLAG_MONSTER_SUPER_STEP monster standing on the
+world (or on nothing) may only step onto the world. With a 64 unit step it
+would otherwise climb onto other monsters, the player, or crates.
+=================
+*/
+static bool M_SuperStepGroundOK(edict_t *ent, trace_t *trace, vec3_t oldorg)
+{
+    if (!(ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP))
+        return true;
+
+    if (!ent->groundentity || ent->groundentity->solid == SOLID_BSP) {
+        if (!trace->ent || trace->ent->solid != SOLID_BSP) {
+            // walked off an edge
+            VectorCopy(oldorg, ent->s.origin);
+            M_CheckGround(ent);
+            return false;
+        }
+    }
+
+    // [Paril-KEX] the 64 unit step-down lets a super stepper past the "walked
+    // off an edge" test above, so make sure it really landed on something -
+    // otherwise the ~400 mgu3 monsters hop off cliffs
+    M_CheckGround(ent);
+    if (!ent->groundentity) {
+        VectorCopy(oldorg, ent->s.origin);
+        M_CheckGround(ent);
+        return false;
+    }
+
+    return true;
+}
+
 static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
 {
     vec3_t      oldorg, start_up, end_up, end_fwd, end, dir, forward, yawang;
@@ -495,8 +531,13 @@ static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
 
     VectorCopy(ent->s.origin, oldorg);
 
-    // push down from a step height above the wished position
-    if (!(ent->monsterinfo.aiflags & AI_NOSTEP))
+    // push down from a step height above the wished position.
+    // [rerelease] SPAWNFLAG_MONSTER_SUPER_STEP monsters take 64 unit steps
+    // (and may step off ledges, below) - mgu3m1-m4/mgu3secret set it on ~400
+    // monsters so they can climb the chunky terrain of those maps.
+    if (ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP)
+        stepsize = 64;
+    else if (!(ent->monsterinfo.aiflags & AI_NOSTEP))
         stepsize = STEPSIZE;
     else
         stepsize = 1;
@@ -557,7 +598,10 @@ static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
             return true;
         }
 
-        return false;       // walked off an edge
+        // [rerelease] a super stepper does not balk here; M_CheckBottom
+        // below still refuses a drop it has nothing to land on
+        if (!(ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP))
+            return false;   // walked off an edge
     }
 
     // (3) if we did not actually get anywhere, slide along whatever we hit
@@ -602,6 +646,9 @@ static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
         VectorCopy(oldorg, ent->s.origin);
         return false;
     }
+
+    if (!M_SuperStepGroundOK(ent, &trace, oldorg))
+        return false;
 
     if (ent->flags & FL_PARTIALGROUND)
         ent->flags &= ~FL_PARTIALGROUND;
@@ -722,7 +769,10 @@ bool SV_movestep(edict_t *ent, vec3_t move, bool relink)
         return SV_movestep_rerelease(ent, move, relink);
 
 // push down from a step height above the wished position
-    if (!(ent->monsterinfo.aiflags & AI_NOSTEP))
+    // [rerelease] 64 for SPAWNFLAG_MONSTER_SUPER_STEP, as above
+    if (ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP)
+        stepsize = 64;
+    else if (!(ent->monsterinfo.aiflags & AI_NOSTEP))
         stepsize = STEPSIZE;
     else
         stepsize = 1;
@@ -770,7 +820,8 @@ bool SV_movestep(edict_t *ent, vec3_t move, bool relink)
             return true;
         }
 
-        return false;       // walked off an edge
+        if (!(ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP))
+            return false;   // walked off an edge
     }
 
 // check point traces down for dangling corners
@@ -789,6 +840,9 @@ bool SV_movestep(edict_t *ent, vec3_t move, bool relink)
         VectorCopy(oldorg, ent->s.origin);
         return false;
     }
+
+    if (!M_SuperStepGroundOK(ent, &trace, oldorg))
+        return false;
 
     if (ent->flags & FL_PARTIALGROUND) {
         ent->flags &= ~FL_PARTIALGROUND;

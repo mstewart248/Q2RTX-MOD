@@ -1586,7 +1586,10 @@ static void dirtoangles(vec3_t angles)
 CL_ParseTEnt
 =================
 */
-static const byte splash_color[] = {0x00, 0xe0, 0xb0, 0x50, 0xd0, 0xe0, 0xe8};
+// [rerelease] index 7 is SPLASH_ELECTRIC: N64 maps' target_splash "sounds 1"
+// becomes it (blue sparks with the spark sounds) - 36 of them across q64/.
+#define SPLASH_ELECTRIC     7
+static const byte splash_color[] = {0x00, 0xe0, 0xb0, 0x50, 0xd0, 0xe0, 0xe8, 0x74};
 
 void CL_ParseTEnt(void)
 {
@@ -1643,13 +1646,13 @@ void CL_ParseTEnt(void)
         break;
 
     case TE_SPLASH:         // bullet hitting water
-        if (te.color < 0 || te.color > 6)
+        if (te.color < 0 || te.color >= q_countof(splash_color))
             r = 0x00;
         else
             r = splash_color[te.color];
         CL_ParticleEffectWaterSplash(te.pos1, te.dir, r, te.count);
 
-        if (te.color == SPLASH_SPARKS) {
+        if (te.color == SPLASH_SPARKS || te.color == SPLASH_ELECTRIC) {
             r = Q_rand() & 3;
             if (r == 0)
                 S_StartSound(te.pos1, 0, 0, cl_sfx_spark5, 1, ATTN_STATIC, 0);

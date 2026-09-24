@@ -608,13 +608,7 @@ void SP_monster_guardian(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
 
-    // st.health_multiplier is 0 here unless the map sets it (the rerelease
-    // defaults it to 1), so multiplying unguarded spawns the monster DEAD -
-    // health 0, inert, and killmonsters skips it. Same one-line bug that broke
-    // monster_guncmdr and monster_shambler; caught here in play.
-    self->health = 2500;
-    if (st.health_multiplier > 0)
-        self->health = (int)(self->health * st.health_multiplier);
+    self->health = 2500;    // health_multiplier: applied in monster_start
     self->gib_health = -200;
 
     self->monsterinfo.scale = MODEL_SCALE;

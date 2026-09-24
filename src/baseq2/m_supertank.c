@@ -649,6 +649,12 @@ void BossExplode(edict_t *self)
     vec3_t  org;
     int     n;
 
+    // [rerelease] "no blowy on deady": a boss laid out as a corpse
+    // (SPAWNFLAG_MONSTER_DEAD) reaches this death frame while M_SpawnDead
+    // fast-forwards the animation, and must stay a body, not explode
+    if (self->spawnflags & SPAWNFLAG_MONSTER_DEAD)
+        return;
+
     self->think = BossExplode;
     VectorCopy(self->s.origin, org);
     org[2] += 24 + (Q_rand() & 15);
@@ -802,10 +808,11 @@ void SP_monster_supertank(edict_t *self)
 
     // RAFAEL - monster_boss5. The map may override either value with the
     // power_armor_type / power_armor_power keys, so only fill in what is unset.
+    // [rerelease] keyed on whether the key was given, so an explicit 0 works
     if (self->spawnflags & SPAWNFLAG_SUPERTANK_POWERSHIELD) {
-        if (!self->monsterinfo.power_armor_type)
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_TYPE))
             self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
-        if (!self->monsterinfo.power_armor_power)
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_POWER))
             self->monsterinfo.power_armor_power = 400;
     }
 

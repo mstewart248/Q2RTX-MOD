@@ -418,7 +418,9 @@ mmove_t soldier_move_walk2 = {FRAME_walk209, FRAME_walk218, soldier_frames_walk2
 
 void soldier_walk(edict_t *self)
 {
-    if (random() < 0.5f)
+    // [rerelease] during the N64 end cutscene (q64/command's procession)
+    // always use the fast walk, or the slow one bogs the whole line down
+    if (!(self->hackflags & HACKFLAG_END_CUTSCENE) && random() < 0.5f)
         self->monsterinfo.currentmove = &soldier_move_walk1;
     else
         self->monsterinfo.currentmove = &soldier_move_walk2;
@@ -756,6 +758,12 @@ void soldier_fire(edict_t *self, int flash_number, bool angle_limited)
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_index], forward, right, start);
 
     if (flash_number == 5 || flash_number == 6) {
+        // [rerelease] a soldier laid out as a corpse (SPAWNFLAG_MONSTER_DEAD,
+        // mgu1m2/mgu1m4) must not fire its dying shot while M_SpawnDead
+        // fast-forwards the death animation
+        if (self->spawnflags & SPAWNFLAG_MONSTER_DEAD)
+            return;
+
         VectorCopy(forward, aim);
     } else {
         // the dead-soldier shots above are the only ones that do not need an
@@ -2442,6 +2450,8 @@ void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
 // SPAWN
 //
 
+static float soldier_health_multiplier = 1.0f;
+
 void SP_monster_soldier_x(edict_t *self)
 {
 
@@ -2493,7 +2503,27 @@ void SP_monster_soldier_x(edict_t *self)
 
     self->monsterinfo.stand(self);
 
+    // the variants below set their health AFTER this returns, so the generic
+    // health_multiplier in monster_start sees 0 and cannot help them - keep
+    // the key for soldier_set_health (monster_start consumes st's copy)
+    soldier_health_multiplier = (st.health_multiplier > 0) ? st.health_multiplier : 1.0f;
+
     walkmonster_start(self);
+}
+
+/*
+=================
+soldier_set_health
+
+[rerelease] health = max_health = base * st.health_multiplier, as each
+soldier spawn in m_soldier.cpp does. The MGU maps set the key on ~150 soldiers
+(101 hyperguns, 42 laserguns - mgu3m*'s hard-skill copies).
+=================
+*/
+static void soldier_set_health(edict_t *self, int base)
+{
+    self->health = self->max_health = (int)(base * soldier_health_multiplier);
+    soldier_health_multiplier = 1.0f;
 }
 
 
@@ -2524,7 +2554,7 @@ void SP_monster_soldier_light(edict_t *self)
     gi.soundindex("soldier/solatck2.wav");
 
     self->s.skinnum = 0;
-    self->health = 20;
+    soldier_set_health(self, 20);
     self->gib_health = -30;
 }
 
@@ -2544,7 +2574,7 @@ void SP_monster_soldier(edict_t *self)
     gi.soundindex("soldier/solatck1.wav");
 
     self->s.skinnum = 2;
-    self->health = 30;
+    soldier_set_health(self, 30);
     self->gib_health = -30;
 }
 
@@ -2564,7 +2594,7 @@ void SP_monster_soldier_ss(edict_t *self)
     gi.soundindex("soldier/solatck3.wav");
 
     self->s.skinnum = 4;
-    self->health = 40;
+    soldier_set_health(self, 40);
     self->gib_health = -30;
 }
 
@@ -2607,7 +2637,7 @@ void SP_monster_soldier_ripper(edict_t *self)
     gi.soundindex("soldier/solatck2.wav");
 
     self->s.skinnum = 0;
-    self->health = 50;
+    soldier_set_health(self, 50);
     self->gib_health = -30;
 }
 
@@ -2629,7 +2659,7 @@ void SP_monster_soldier_hypergun(edict_t *self)
     gi.soundindex("misc/lasfly.wav");
 
     self->s.skinnum = 2;
-    self->health = 60;
+    soldier_set_health(self, 60);
     self->gib_health = -30;
 }
 
@@ -2650,6 +2680,6 @@ void SP_monster_soldier_lasergun(edict_t *self)
     gi.soundindex("misc/lasfly.wav");
 
     self->s.skinnum = 4;
-    self->health = 70;
+    soldier_set_health(self, 70);
     self->gib_health = -30;
 }

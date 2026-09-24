@@ -71,6 +71,75 @@ extern void Move_Calc(edict_t *ent, vec3_t dest, void (*func)(edict_t *));
 
 mmove_t turret_move_fire;
 
+/* [rerelease] spawnflag 262144 turns the laser sight off */
+#define SPAWNFLAG_TURRET_NO_LASERSIGHT 0x40000
+
+static void
+TurretLaserSightOff(edict_t *self)
+{
+	if (self->target_ent)
+	{
+		G_FreeEdict(self->target_ent);
+		self->target_ent = NULL;
+	}
+}
+
+/*
+ * [rerelease] rogue/m_rogue_turret.cpp: an aiming turret paints a thin red
+ * laser down its barrel, wandering a little around the aim point (tighter
+ * once it can see its enemy) so the player can see where it is tracking.
+ * Purely cosmetic: a beam entity kept in target_ent, freed when the turret
+ * stands down or dies.
+ */
+static void
+TurretLaserSight(edict_t *self)
+{
+	vec3_t forward, end;
+	trace_t tr;
+	float scan_range, t;
+
+	if (self->spawnflags & SPAWNFLAG_TURRET_NO_LASERSIGHT)
+	{
+		return;
+	}
+
+	if (!self->target_ent)
+	{
+		self->target_ent = G_Spawn();
+		self->target_ent->s.modelindex = 1; /* MODELINDEX_WORLD */
+		self->target_ent->s.renderfx = RF_BEAM;
+		self->target_ent->s.frame = 1;
+		self->target_ent->s.skinnum = 0xf0f0f0f0;
+		self->target_ent->classname = "turret_lasersight";
+		VectorCopy(self->s.origin, self->target_ent->s.origin);
+	}
+
+	AngleVectors(self->s.angles, forward, NULL, NULL);
+	VectorMA(self->s.origin, 8192, forward, end);
+	tr = gi.trace(self->s.origin, NULL, NULL, end, self, MASK_SOLID);
+
+	scan_range = 64.f;
+
+	if (self->enemy && visible(self, self->enemy))
+	{
+		scan_range = 12.f;
+	}
+
+	t = level.time;
+	tr.endpos[0] += sinf(t + self->s.number) * scan_range;
+	tr.endpos[1] += cosf((t - self->s.number) * 3.f) * scan_range;
+	tr.endpos[2] += sinf((t - self->s.number) * 2.5f) * scan_range;
+
+	VectorSubtract(tr.endpos, self->s.origin, forward);
+	VectorNormalize(forward);
+
+	VectorMA(self->s.origin, 8192, forward, end);
+	tr = gi.trace(self->s.origin, NULL, NULL, end, self, MASK_SOLID);
+
+	VectorCopy(tr.endpos, self->target_ent->s.old_origin);
+	gi.linkentity(self->target_ent);
+}
+
 void
 TurretAim(edict_t *self)
 {
@@ -350,6 +419,8 @@ TurretAim(edict_t *self)
 
 		self->s.angles[YAW] = anglemod(current + move);
 	}
+
+	TurretLaserSight(self);
 }
 
 void
@@ -379,6 +450,7 @@ turret_stand(edict_t *self)
 {
 
 	self->monsterinfo.currentmove = &turret_move_stand;
+	TurretLaserSightOff(self);
 }
 
 mframe_t turret_frames_ready_gun[] = {
@@ -693,6 +765,8 @@ turret_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /* 
 			G_UseTargets(self, self);
 		}
 	}
+
+	TurretLaserSightOff(self);
 
 	G_FreeEdict(self);
 }

@@ -296,6 +296,12 @@ void InfantryMachineGun(edict_t *self)
     vec3_t  vec;
     int     flash_number;
 
+    // death2 sprays the machinegun as the infantry falls. A corpse laid out
+    // by SPAWNFLAG_MONSTER_DEAD (mgu1m2) has that animation fast-forwarded at
+    // map load by M_SpawnDead; don't let it spray bullets into its neighbours.
+    if (self->monsterinfo.aiflags & AI_SPAWNED_DEAD)
+        return;
+
     // attack1 (rerelease timing) fires at attak103, attack3 at attak311, and the
     // classic MD2 attack1 at attak111.  These never collide: the rerelease
     // attack1 skips attak108-113 entirely, and attack3 lives on attak3xx.

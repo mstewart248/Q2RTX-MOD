@@ -789,7 +789,10 @@ void path_corner_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_
     else
         next = NULL;
 
-    if ((next) && (next->spawnflags & 1)) {
+    // [Paril-KEX] only a path_corner teleports: a point_combat's spawnflag 1
+    // means HOLD, and xhangar1's t77 chain hands a monster from path_corner
+    // to point_combat - reading its HOLD bit as TELEPORT warped the monster
+    if ((next) && !strcmp(next->classname, "path_corner") && (next->spawnflags & 1)) {
         VectorCopy(next->s.origin, v);
         v[2] += next->mins[2];
         v[2] -= other->mins[2];
@@ -807,6 +810,13 @@ void path_corner_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_
     }
 
     if (!other->movetarget) {
+        // [rerelease] N64 cutscene actors (hackflags END_CUTSCENE, e.g. the
+        // q64/command procession) vanish at the end of their path
+        if (other->hackflags & HACKFLAG_END_CUTSCENE) {
+            G_FreeEdict(other);
+            return;
+        }
+
         other->monsterinfo.pause_framenum = INT_MAX;
         other->monsterinfo.stand(other);
     } else {
@@ -953,13 +963,66 @@ Default _cone value is 10 (used to set size of light for spotlights)
 
 #define START_OFF   1
 
+/*
+[rerelease] "style_on" / "style_off" name the lightstyle a switchable light
+takes when turned on / off, instead of the fixed "m" / "a". A digit means
+"copy standard style N" - tutorial b1..b6 and mgu1m4's five door lights use
+style_on "9" so the lamp strobes once lit. The rerelease reads the string back
+out of the configstring; the game API has no get_configstring, so the standard
+styles SP_worldspawn installs (g_spawn.c) are mirrored here.
+
+The resolved style number is kept in the light's otherwise unused, saved
+"count" (on) and "sounds" (off) fields as N + 1, 0 meaning the classic "m" /
+"a". Only the digit form is supported (it is the only form any shipped map
+uses); a literal pattern string falls back to the default with a warning.
+*/
+static const char *const light_standard_styles[] = {
+    "m",
+    "mmnmmommommnonmmonqnmmo",
+    "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
+    "mmmmmaaaaammmmmaaaaaabcdefgabcdefg",
+    "mamamamamama",
+    "jklmnopqrstuvwxyzyxwvutsrqponmlkj",
+    "nmonqnmomnmomomno",
+    "mmmaaaabcdefgmmmmaaaammmaamm",
+    "mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa",
+    "aaaaaaaazzzzzzzz",
+    "mmamammmmammamamaaamammma",
+    "abcdefghijklmnopqrrqponmlkjihgfedcba"
+};
+
+static int light_parse_style(edict_t *self, const char *str, const char *key)
+{
+    int n;
+
+    if (!str || !*str)
+        return 0;
+    if (*str >= '0' && *str <= '9') {
+        n = atoi(str);
+        if (n >= 0 && n < (int)q_countof(light_standard_styles))
+            return n + 1;
+    }
+    gi.dprintf("%s at %s: unsupported %s \"%s\"\n", self->classname, vtos(self->s.origin), key, str);
+    return 0;
+}
+
+static const char *light_style_on(edict_t *self)
+{
+    return self->count > 0 ? light_standard_styles[self->count - 1] : "m";
+}
+
+static const char *light_style_off(edict_t *self)
+{
+    return self->sounds > 0 ? light_standard_styles[self->sounds - 1] : "a";
+}
+
 void light_use(edict_t *self, edict_t *other, edict_t *activator)
 {
     if (self->spawnflags & START_OFF) {
-        gi.configstring(CS_LIGHTS + self->style, "m");
+        gi.configstring(CS_LIGHTS + self->style, light_style_on(self));
         self->spawnflags &= ~START_OFF;
     } else {
-        gi.configstring(CS_LIGHTS + self->style, "a");
+        gi.configstring(CS_LIGHTS + self->style, light_style_off(self));
         self->spawnflags |= START_OFF;
     }
 }
@@ -974,10 +1037,12 @@ void SP_light(edict_t *self)
 
     if (self->style >= 32) {
         self->use = light_use;
+        self->count = light_parse_style(self, st.style_on, "style_on");
+        self->sounds = light_parse_style(self, st.style_off, "style_off");
         if (self->spawnflags & START_OFF)
-            gi.configstring(CS_LIGHTS + self->style, "a");
+            gi.configstring(CS_LIGHTS + self->style, light_style_off(self));
         else
-            gi.configstring(CS_LIGHTS + self->style, "m");
+            gi.configstring(CS_LIGHTS + self->style, light_style_on(self));
     }
 }
 
@@ -1001,7 +1066,10 @@ void func_wall_use(edict_t *self, edict_t *other, edict_t *activator)
     if (self->solid == SOLID_NOT) {
         self->solid = SOLID_BSP;
         self->svflags &= ~SVF_NOCLIENT;
-        KillBox(self);
+        // [rerelease] link first, then the brush-exact KillBox (the classic
+        // box trace from a bmodel's (0 0 0) origin missed or overreached)
+        gi.linkentity(self);
+        KillBoxBrush(self, true);
     } else {
         self->solid = SOLID_NOT;
         self->svflags |= SVF_NOCLIENT;
@@ -1081,7 +1149,9 @@ void func_object_use(edict_t *self, edict_t *other, edict_t *activator)
     self->solid = SOLID_BSP;
     self->svflags &= ~SVF_NOCLIENT;
     self->use = NULL;
-    KillBox(self);
+    // [rerelease] link first, then the brush-exact KillBox
+    gi.linkentity(self);
+    KillBoxBrush(self, true);
     func_object_release(self);
 }
 
@@ -1188,7 +1258,26 @@ void func_explosive_explode(edict_t *self, edict_t *inflictor, edict_t *attacker
         ThrowDebris(self, "models/objects/debris2/tris.md2", 2, chunkorigin);
     }
 
+    // [rerelease] PMM - a func_explosive riding a train (rmine1 "boxcrane",
+    // rsewer2 "train", rware1 "deathmonger") splices itself out of the team
+    // chain, or the master keeps pushing a freed edict around
+    if ((self->flags & FL_TEAMSLAVE) && self->teammaster && self->teammaster->inuse) {
+        edict_t *master;
+
+        for (master = self->teammaster; master; master = master->teamchain) {
+            if (master->teamchain == self) {
+                master->teamchain = self->teamchain;
+                break;
+            }
+        }
+    }
+
     G_UseTargets(self, attacker);
+
+    // [rerelease] "sounds" 1 = breaking glass (the q64 windows: q64/jail
+    // "glassfloor", q64/complex t90, q64/lab, q64/outpost)
+    if (self->noise_index)
+        gi.positioned_sound(self->s.origin, self, CHAN_AUTO, self->noise_index, 1, ATTN_NORM, 0);
 
     if (self->dmg)
         BecomeExplosion1(self);
@@ -1201,13 +1290,41 @@ void func_explosive_use(edict_t *self, edict_t *other, edict_t *activator)
     func_explosive_explode(self, other, activator, self->health, self->s.origin);
 }
 
+/*
+[rerelease] PGM - INACTIVE (8): the brush is solid but can't be hurt until
+something that targets it fires it; after that it takes damage and a further
+trigger blows it. rlava2 "minits" (16 of them) and rlava1 enable_left/right
+wait for their switch; jail1 "bigdoor" waits for the big turret sequence.
+Only a real targeter arms it (not a killtarget or a stray relay).
+*/
+void func_explosive_activate(edict_t *self, edict_t *other, edict_t *activator)
+{
+    bool approved = false;
+
+    // PMM - looked like target and targetname were flipped here
+    if (other && other->target && self->targetname && !strcmp(other->target, self->targetname))
+        approved = true;
+    if (!approved && activator && activator->target && self->targetname && !strcmp(activator->target, self->targetname))
+        approved = true;
+
+    if (!approved)
+        return;
+
+    self->use = func_explosive_use;
+    if (!self->health)
+        self->health = 100;
+    self->die = func_explosive_explode;
+    self->takedamage = DAMAGE_YES;
+}
+
 void func_explosive_spawn(edict_t *self, edict_t *other, edict_t *activator)
 {
     self->solid = SOLID_BSP;
     self->svflags &= ~SVF_NOCLIENT;
     self->use = NULL;
-    KillBox(self);
+    // link first so the brush is solid for KillBoxBrush's overlap test
     gi.linkentity(self);
+    KillBoxBrush(self, true);
 }
 
 void SP_func_explosive(edict_t *self)
@@ -1229,6 +1346,11 @@ void SP_func_explosive(edict_t *self)
         self->svflags |= SVF_NOCLIENT;
         self->solid = SOLID_NOT;
         self->use = func_explosive_spawn;
+    } else if (self->spawnflags & 8) {
+        // [rerelease] PGM INACTIVE, see func_explosive_activate
+        self->solid = SOLID_BSP;
+        if (self->targetname)
+            self->use = func_explosive_activate;
     } else {
         self->solid = SOLID_BSP;
         if (self->targetname)
@@ -1240,11 +1362,22 @@ void SP_func_explosive(edict_t *self)
     if (self->spawnflags & 4)
         self->s.effects |= EF_ANIM_ALLFAST;
 
-    if (self->use != func_explosive_use) {
+    // [rerelease] PGM ALWAYS_SHOOTABLE (16): shootable even though it has a
+    // targetname. hangar1's two "fuse" boxes are the fan kill switch - they
+    // are both targeted and meant to be shot out.
+    if ((self->spawnflags & 16) ||
+        (self->use != func_explosive_use && self->use != func_explosive_activate)) {
         if (!self->health)
             self->health = 100;
         self->die = func_explosive_explode;
         self->takedamage = DAMAGE_YES;
+    }
+
+    if (self->sounds) {
+        if (self->sounds == 1)
+            self->noise_index = gi.soundindex("world/brkglas.wav");
+        else
+            gi.dprintf("%s at %s: invalid \"sounds\" %d\n", self->classname, vtos(self->absmin), self->sounds);
     }
 
     gi.linkentity(self);
@@ -1512,12 +1645,17 @@ void misc_blackhole_use(edict_t *ent, edict_t *other, edict_t *activator)
 
 void misc_blackhole_think(edict_t *self)
 {
-    if (++self->s.frame < 19)
-        self->nextthink = level.framenum + 1;
-    else {
+    if (++self->s.frame >= 19)
         self->s.frame = 0;
-        self->nextthink = level.framenum + 1;
+
+    // [rerelease] AUTO_NOISE (1) also tumbles it, 50 degrees a second on
+    // pitch and yaw
+    if (self->spawnflags & 1) {
+        self->s.angles[0] += 50.0f * FRAMETIME;
+        self->s.angles[1] += 50.0f * FRAMETIME;
     }
+
+    self->nextthink = level.framenum + 1;
 }
 
 void SP_misc_blackhole(edict_t *ent)
@@ -1531,6 +1669,11 @@ void SP_misc_blackhole(edict_t *ent)
     ent->use = misc_blackhole_use;
     ent->think = misc_blackhole_think;
     ent->nextthink = level.framenum + 2;
+
+    // [rerelease] AUTO_NOISE (1): the looping hum
+    if (ent->spawnflags & 1)
+        ent->s.sound = gi.soundindex("world/blackhole.wav");
+
     gi.linkentity(ent);
 }
 
@@ -1695,7 +1838,8 @@ void misc_deadsoldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, 
 {
     int     n;
 
-    if (self->health > -80)
+    // [rerelease] gibs at -30 rather than -80, like every other corpse
+    if (self->health > -30)
         return;
 
     gi.sound(self, CHAN_BODY, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
@@ -1948,7 +2092,9 @@ void SP_misc_satellite_dish(edict_t *ent)
 void SP_light_mine1(edict_t *ent)
 {
     ent->movetype = MOVETYPE_NONE;
-    ent->solid = SOLID_BBOX;
+    // [rerelease] SOLID_NOT: these hang in mine corridors and a 4 unit box
+    // snagged players and blocked shots for no benefit
+    ent->solid = SOLID_NOT;
     ent->s.modelindex = gi.modelindex("models/objects/minelite/light1/tris.md2");
     gi.linkentity(ent);
 }
@@ -1959,7 +2105,9 @@ void SP_light_mine1(edict_t *ent)
 void SP_light_mine2(edict_t *ent)
 {
     ent->movetype = MOVETYPE_NONE;
-    ent->solid = SOLID_BBOX;
+    // [rerelease] SOLID_NOT: these hang in mine corridors and a 4 unit box
+    // snagged players and blocked shots for no benefit
+    ent->solid = SOLID_NOT;
     ent->s.modelindex = gi.modelindex("models/objects/minelite/light2/tris.md2");
     gi.linkentity(ent);
 }
@@ -2024,7 +2172,8 @@ void SP_misc_gib_head(edict_t *ent)
     ent->avelocity[1] = random() * 200;
     ent->avelocity[2] = random() * 200;
     ent->think = G_FreeEdict;
-    ent->nextthink = level.framenum + 30 * BASE_FRAMERATE;
+    // [rerelease] the head only lingers 10 seconds (arm/leg keep 30)
+    ent->nextthink = level.framenum + 10 * BASE_FRAMERATE;
     gi.linkentity(ent);
 }
 
@@ -2261,8 +2410,15 @@ void teleporter_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t
     other->client->ps.pmove.pm_flags |= PMF_TIME_TELEPORT;
 
     // draw the teleport splash at source and on the player
-    self->owner->s.event = EV_PLAYER_TELEPORT;
-    other->s.event = EV_PLAYER_TELEPORT;
+    // [rerelease] NO_TELEPORT_EFFECT (2) swaps the big splash for the quiet
+    // EV_OTHER_TELEPORT flash
+    if (!(self->owner->spawnflags & 2)) {
+        self->owner->s.event = EV_PLAYER_TELEPORT;
+        other->s.event = EV_PLAYER_TELEPORT;
+    } else {
+        self->owner->s.event = EV_OTHER_TELEPORT;
+        other->s.event = EV_OTHER_TELEPORT;
+    }
 
     // set angles
     for (i = 0 ; i < 3 ; i++) {
@@ -2286,21 +2442,24 @@ void SP_misc_teleporter(edict_t *ent)
 {
     edict_t     *trig;
 
-    if (!ent->target) {
-        gi.dprintf("teleporter without a target.\n");
-        G_FreeEdict(ent);
-        return;
-    }
-
     gi.setmodel(ent, "models/objects/dmspot/tris.md2");
     ent->s.skinnum = 1;
+    // (the rerelease's N64_EFFECT / EF_TELEPORTER2 has no equivalent in our
+    // protocol; the classic fountain is used for all of them)
     ent->s.effects = EF_TELEPORTER;
-    ent->s.sound = gi.soundindex("world/amb10.wav");
+    // [rerelease] NO_SOUND (1)
+    if (!(ent->spawnflags & 1))
+        ent->s.sound = gi.soundindex("world/amb10.wav");
     ent->solid = SOLID_BBOX;
 
     VectorSet(ent->mins, -32, -32, -24);
     VectorSet(ent->maxs, 32, 32, -16);
     gi.linkentity(ent);
+
+    // [rerelease] the N64 maps place target-less teleporter pads purely as
+    // decoration - keep the pad, just don't give it a trigger
+    if (!ent->target)
+        return;
 
     trig = G_Spawn();
     trig->touch = teleporter_touch;
@@ -2319,6 +2478,11 @@ Point teleporters at these.
 */
 void SP_misc_teleporter_dest(edict_t *ent)
 {
+    // [Paril-KEX] the N64 doesn't display these; the point entity stays so
+    // teleporters can still find it
+    if (level.is_n64)
+        return;
+
     gi.setmodel(ent, "models/objects/dmspot/tris.md2");
     ent->s.skinnum = 0;
     ent->solid = SOLID_BBOX;
@@ -2342,10 +2506,8 @@ entity through cl.clientinfo[s.skinnum], exactly as it does for real players.
 Only three are addressable (one per player model type), which is a limitation of
 id's own implementation, not of this port.
 
-Divergence: the rerelease scales these with "radius" (boss2 asks for .45 and 1).
-entity_state_t has no scale field here and the protocol sends none, so they
-stand at full player size - the same limitation misc_model and monster_guncmdr
-hit. The bbox is left unscaled to match what is drawn.
+"radius" scales the model and its bbox through s.scale, as in the rerelease
+(boss2 asks for .45 and 1).
 =================
 */
 #define GESTURE_FLIP_OFF        0
@@ -2460,7 +2622,7 @@ from each of the three player model types.
 "height"    which player model to use (1 female, 2 male, 3 cyborg)
 "goals"     name of the weapon model to hold
 "image"     name of the player skin to use
-"radius"    how much to scale the model - NOT honoured here, see above
+"radius"    how much to scale the model
 */
 void SP_misc_player_mannequin(edict_t *self)
 {
@@ -2474,6 +2636,14 @@ void SP_misc_player_mannequin(edict_t *self)
 
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, 32);
+
+    // [rerelease] "radius" is the model scale
+    if (st.radius > 0.0f) {
+        self->s.scale = st.radius;
+        VectorScale(self->mins, self->s.scale, self->mins);
+        VectorScale(self->maxs, self->s.scale, self->maxs);
+    }
+
     self->yaw_speed = 30;
     self->ideal_yaw = 0;
     self->s.modelindex = 255;   // resolved through cl.clientinfo[skinnum]

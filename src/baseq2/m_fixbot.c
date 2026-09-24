@@ -1109,11 +1109,7 @@ void SP_monster_fixbot(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
 
-    // st.health_multiplier is 0 here unless the map sets it (the rerelease
-    // defaults it to 1), so multiplying unguarded spawns the monster DEAD.
-    self->health = 150;
-    if (st.health_multiplier > 0)
-        self->health = (int)(self->health * st.health_multiplier);
+    self->health = 150;     // health_multiplier: applied in monster_start
 
     self->mass = 150;
 

@@ -82,6 +82,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FL_NO_KNOCKBACK         0x00000800
 #define FL_POWER_ARMOR          0x00001000  // power armor (if any) is active
 #define FL_MECHANICAL           0x00002000  // ROGUE - bleeds sparks, not blood
+#define FL_TEAMMASTER           0x00004000  // rerelease - first on the team (G_FindTeams/G_FixTeams)
 #define FL_FLASHLIGHT           0x00400000  // rerelease - player flashlight is on
 #define FL_DISGUISED            0x00800000  // ROGUE - trigger_disguise; monsters do not acquire you
 #define FL_RESPAWN              0x80000000  // used for item respawning
@@ -212,6 +213,19 @@ typedef enum {
 // clearing it. Jorg dies and Makron climbs out of the wreck - without this the
 // boss bar blinks out between the two halves.
 #define AI_DOUBLE_TROUBLE       0x10000000
+// [rerelease] spawned as a corpse (SPAWNFLAG_MONSTER_DEAD): die() must not gib,
+// count a kill, or fire deathtarget-style side effects meant for a real death.
+#define AI_SPAWNED_DEAD         0x20000000
+
+// [rerelease] monster spawnflags above the classic byte (g_monster.cpp)
+#define SPAWNFLAG_MONSTER_DEAD          0x00010000
+#define SPAWNFLAG_MONSTER_SUPER_STEP    0x00020000
+#define SPAWNFLAG_MONSTER_NO_DROP       0x00040000
+#define SPAWNFLAG_MONSTER_SCENIC        0x00080000
+
+// [rerelease] edict->hackflags bits shared by monsters and path_corners
+#define HACKFLAG_ATTACK_PLAYER  1
+#define HACKFLAG_END_CUTSCENE   4
 
 //monster attack state
 #define AS_STRAIGHT             1
@@ -434,6 +448,12 @@ typedef struct {
     // [rerelease] switchable dynamic_light state, published as CS_DYNAMICLIGHTS
     int         dynamiclight_count;
     int         dynamiclight_bits;
+    float       gravity;            // sv_gravity for this level (worldspawn, target_gravity)
+    bool        is_n64;             // rerelease: map lives under q64/ - several entities behave differently
+    char        *goals;             // rerelease N64: worldspawn "goals", tab-separated objectives
+    int         goal_num;           // index of the current one, advanced by target_goal
+    char        *start_items;       // worldspawn "start_items", see Player_GiveStartItems
+    bool        instantitems;       // worldspawn "instantitems" (always on for N64 maps)
     int         next_auto_save;     // rerelease target_autosave rate limit
 
     // rerelease target_poi: where the current objective marker points. The
@@ -566,6 +586,10 @@ typedef struct {
     float       radius;             // rerelease func_eye detection radius
     int         fade_start_dist;    // rerelease misc_flare
     int         fade_end_dist;
+    char        *start_items;       // rerelease worldspawn: "classname [count];..." given on spawn
+    int         instantitems;       // rerelease worldspawn: powerups activate on pickup
+    char        *style_on;          // rerelease light: lightstyle digit/string when on/off
+    char        *style_off;
 } spawn_temp_t;
 
 #define SPAWNKEY_SKY            1
@@ -574,6 +598,12 @@ typedef struct {
 #define SPAWNKEY_SKYAXIS        8
 #define SPAWNKEY_EFFECTS        16
 #define SPAWNKEY_RENDERFX       32
+// rerelease st.was_key_specified() equivalents for edict fields whose 0 is meaningful
+#define SPAWNKEY_ANGLE          64      // InitTrigger: explicit "angle" "0" is +X
+#define SPAWNKEY_ANGLES         128
+#define SPAWNKEY_DMG            256     // func_rotating: explicit "dmg" "0" means harmless
+#define SPAWNKEY_POWER_ARMOR_TYPE   512 // gladb/brain: explicit 0 means "no power armor"
+#define SPAWNKEY_POWER_ARMOR_POWER  1024
 
 
 typedef struct {
@@ -593,6 +623,10 @@ typedef struct {
     float       distance;
 
     float       wait;
+
+    // [rerelease] func_door_rotating SAFE_OPEN: the swing away from the activator
+    vec3_t      end_angles_reversed;
+    bool        reversing;
 
     // state data
     int         state;
@@ -1089,6 +1123,8 @@ void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
 // g_utils.c
 //
 bool    KillBox(edict_t *ent);
+bool    KillBoxBrush(edict_t *ent, bool exact);    // rerelease KillBox for brush models (g_utils.c)
+void    G_CommitN64Goal(void);          // g_target.c: current N64 objective -> help computer
 
 // [Paril-KEX] G_FixStuckObject: nudge an object spawned inside solid back out.
 // Ported from G_FixStuckObject_Generic in src/rerelease/p_move.cpp.
@@ -1933,6 +1969,9 @@ struct edict_s {
     // [rerelease] target_camera / path_corner behaviour flags. id calls these
     // "hackflags"; they come straight off the map and only the N64 maps set them.
     int         hackflags;
+
+    // [rerelease] trigger_relay: only fire when these cross-level trigger bits are set
+    int         crosslevel_flags;
 
     // rerelease brush-model animation (func_animation, and 52 animated
     // func_buttons across 21 of the shipped maps)

@@ -586,15 +586,28 @@ void SP_misc_viper_missile(edict_t *self)
     gi.linkentity(self);
 }
 
-/*QUAKED misc_lavaball (1 0 0) (-8 -8 -8) (8 8 8)
+/*QUAKED misc_lavaball (1 0 0) (-8 -8 -8) (8 8 8) NO_EXPLODE
 Throws a burning ball out of the lava every few seconds.
+
+NO_EXPLODE  the ball just vanishes on impact - no damage, no explosion. All
+            19 lavaballs on mgu6m1/mgu6m3 set it; they are scenery, and
+            without it every one of them was a 20 damage grenade going off
+            at the lava's edge every few seconds.
 
 "speed"     launch speed, default 185
 */
+#define SPAWNFLAG_LAVABALL_NO_EXPLODE   1
+
 void lavaball_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
 {
     if (other == self->owner)
         return;
+
+    // the spawner copies its spawnflags onto every ball (lavaball_fly)
+    if (self->spawnflags & SPAWNFLAG_LAVABALL_NO_EXPLODE) {
+        G_FreeEdict(self);
+        return;
+    }
 
     if (surf && (surf->flags & SURF_SKY)) {
         G_FreeEdict(self);
@@ -1013,9 +1026,20 @@ void SP_misc_flare(edict_t *ent)
         ent->s.frame = gi.imageindex("/sprites/flare_01.tga");
     }
 
-    // no "rgba" key means white
-    if (!ent->s.skinnum)
-        ent->s.skinnum = -1;
+    // No "rgba" key: the RED / GREEN / BLUE spawnflags pick the colour (the
+    // rerelease's RF_SHELL_* bits; q64/complex's four blue "spawnflags 4"
+    // flares by the core have no rgba at all). Neither means white.
+    if (!ent->s.skinnum) {
+        if (ent->spawnflags & (SPAWNFLAG_FLARE_RED | SPAWNFLAG_FLARE_GREEN | SPAWNFLAG_FLARE_BLUE)) {
+            int r = (ent->spawnflags & SPAWNFLAG_FLARE_RED) ? 255 : 0;
+            int g = (ent->spawnflags & SPAWNFLAG_FLARE_GREEN) ? 255 : 0;
+            int b = (ent->spawnflags & SPAWNFLAG_FLARE_BLUE) ? 255 : 0;
+
+            ent->s.skinnum = (int)(((unsigned)r << 24) | ((unsigned)g << 16) | ((unsigned)b << 8) | 255u);
+        } else {
+            ent->s.skinnum = -1;
+        }
+    }
 
     ent->s.modelindex2 = flare_byte(st.fade_start_dist, FLARE_FADE_UNIT);
     ent->s.modelindex3 = flare_byte(st.fade_end_dist, FLARE_FADE_UNIT);
@@ -1040,19 +1064,89 @@ door and lift indicators, spark emitters and the like.
 s.frame carries the radius and s.skinnum the packed colour; the client turns
 that into a sphere light when it sees RF_CUSTOM_LIGHT.
 
-The rerelease also lerps the colour along a lightstyle string, or toward a
-"target"ed dynamic_light. That needs to read CS_LIGHTS back out of the server,
-which this game API cannot do, and no map in scope uses either - none sets
-"style", "target" or any spawnflag.
+[rerelease] With a "target" (an info_notnull carrying an "rgba") the colour
+pulses between the light's own colour and the target's, following lightstyle
+"style" at "speed" - the N64 alarm and security lights: q64/intel
+"security1", q64/ship t210/t211, q64/station t367, q64/complex t90. On the N64
+maps the style is offset by 10 into the Paril-KEX N64 styles 10-14. The
+rerelease reads the pattern back out of CS_LIGHTS; this game API has no
+get_configstring, so the standard patterns (SP_worldspawn plus the rerelease's
+12-14) are mirrored in target_light_styles. It thinks at 10 Hz in the
+rerelease too, so "speed" needs no rescaling here.
+
+"count" keeps the light's own colour, "chain" the colour target and "delay"
+the position along the style.
 */
 #define SPAWNFLAG_TARGET_LIGHT_START_ON 1
 #define SPAWNFLAG_TARGET_LIGHT_NO_LERP  2
 #define SPAWNFLAG_TARGET_LIGHT_FLICKER  4
 
+static const char *const target_light_styles[] = {
+    "m",
+    "mmnmmommommnonmmonqnmmo",
+    "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
+    "mmmmmaaaaammmmmaaaaaabcdefgabcdefg",
+    "mamamamamama",
+    "jklmnopqrstuvwxyzyxwvutsrqponmlkj",
+    "nmonqnmomnmomomno",
+    "mmmaaaabcdefgmmmmaaaammmaamm",
+    "mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa",
+    "aaaaaaaazzzzzzzz",
+    "mmamammmmammamamaaamammma",
+    "abcdefghijklmnopqrrqponmlkjihgfedcba",
+    "zzazazzzzazzazazaaazazzza",
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba"
+};
+
 void target_light_flicker_think(edict_t *self)
 {
     if (random() < 0.5f)
         self->svflags ^= SVF_NOCLIENT;
+
+    self->nextthink = level.framenum + 1;
+}
+
+// think function handles interpolation from start to finish
+void target_light_think(edict_t *self)
+{
+    const char  *style;
+    int         len, index, next_index;
+    float       current_lerp, next_lerp, mod_lerp, lerp, backlerp;
+    int         my_rgb, target_rgb, r, g, b;
+
+    if (self->spawnflags & SPAWNFLAG_TARGET_LIGHT_FLICKER)
+        target_light_flicker_think(self);
+
+    if (self->style >= 0 && self->style < (int)q_countof(target_light_styles))
+        style = target_light_styles[self->style];
+    else
+        style = "m";
+    len = (int)strlen(style);
+
+    self->delay += self->speed;
+
+    index = ((int)self->delay) % len;
+    current_lerp = (float)(style[index] - 'a') / (float)('z' - 'a');
+
+    if (!(self->spawnflags & SPAWNFLAG_TARGET_LIGHT_NO_LERP)) {
+        next_index = (index + 1) % len;
+        next_lerp = (float)(style[next_index] - 'a') / (float)('z' - 'a');
+        mod_lerp = fmodf(self->delay, 1.0f);
+        lerp = (next_lerp * mod_lerp) + (current_lerp * (1.0f - mod_lerp));
+    } else {
+        lerp = current_lerp;
+    }
+
+    my_rgb = self->count;
+    target_rgb = self->chain ? self->chain->s.skinnum : my_rgb;
+    backlerp = 1.0f - lerp;
+
+    b = (int)((((target_rgb >> 8) & 0xff) * lerp) + (((my_rgb >> 8) & 0xff) * backlerp));
+    g = (int)((((target_rgb >> 16) & 0xff) * lerp) + (((my_rgb >> 16) & 0xff) * backlerp));
+    r = (int)((((target_rgb >> 24) & 0xff) * lerp) + (((my_rgb >> 24) & 0xff) * backlerp));
+
+    self->s.skinnum = (int)(((unsigned)b << 8) | ((unsigned)g << 16) | ((unsigned)r << 24));
 
     self->nextthink = level.framenum + 1;
 }
@@ -1072,7 +1166,11 @@ void target_light_use(edict_t *self, edict_t *other, edict_t *activator)
         return;
     }
 
-    if (self->spawnflags & SPAWNFLAG_TARGET_LIGHT_FLICKER) {
+    // has a colour "target"
+    if (self->chain) {
+        self->think = target_light_think;
+        self->nextthink = level.framenum + 1;
+    } else if (self->spawnflags & SPAWNFLAG_TARGET_LIGHT_FLICKER) {
         self->think = target_light_flicker_think;
         self->nextthink = level.framenum + 1;
     }
@@ -1088,9 +1186,23 @@ void SP_target_light(edict_t *self)
 
     if (!self->s.skinnum)
         self->s.skinnum = -1;
+    self->count = self->s.skinnum;
+
+    // the colour targets are info_notnulls earlier in the entity lump, as
+    // they are in the rerelease, which also picks them at spawn
+    if (self->target)
+        self->chain = G_PickTarget(self->target);
 
     if (self->spawnflags & SPAWNFLAG_TARGET_LIGHT_START_ON)
         target_light_use(self, self, self);
+
+    if (!self->speed)
+        self->speed = 1.0f;
+    else
+        self->speed = 0.1f / self->speed;
+
+    if (level.is_n64)
+        self->style += 10;
 
     self->use = target_light_use;
 
@@ -1150,4 +1262,269 @@ void SP_dynamic_light(edict_t *self)
         level.dynamiclight_bits |= 1u << self->count;
 
     dynamic_light_publish();
+}
+
+/*QUAKED trigger_coop_relay (.5 .5 .5) ? AUTO_FIRE
+Like a trigger_relay, but in coop every live player must be inside its bounds
+for it to fire; otherwise "message" goes to the activator and "message2" to the
+players still outside. Outside coop it is a plain trigger_relay that never
+prints its message. Port of src/rerelease/g_trigger.cpp.
+
+Used by ware2 (the tank-bay door relay) and q64/orbit (wait_players_relay, which
+has no brush and takes its box from mins/maxs keys). Before this the relays did
+not exist, so ware2's tank_doorb and orbit's t323 doors had no way to open.
+
+AUTO_FIRE: poll the box every "wait" seconds instead of waiting to be used, and
+free itself once it fires. No shipped map sets it.
+*/
+#define SPAWNFLAG_COOP_RELAY_AUTO_FIRE  1
+
+static bool trigger_coop_relay_skip(edict_t *player)
+{
+    return !player->inuse || !player->client || player->health <= 0 ||
+           player->deadflag || player->movetype == MOVETYPE_NOCLIP ||
+           player->client->resp.spectator;
+}
+
+static bool trigger_coop_relay_inside(edict_t *self, edict_t *player)
+{
+    int i;
+
+    for (i = 0; i < 3; i++) {
+        if (player->absmin[i] > self->absmax[i] || player->absmax[i] < self->absmin[i])
+            return false;
+    }
+    return true;
+}
+
+static void trigger_coop_relay_fire(edict_t *self, edict_t *activator)
+{
+    char *msg = self->message;
+
+    self->message = NULL;
+    G_UseTargets(self, activator);
+    self->message = msg;
+}
+
+void trigger_coop_relay_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    bool    can_use = true;
+    int     i;
+
+    if (coop->value) {
+        for (i = 1; i <= game.maxclients; i++) {
+            edict_t *player = &g_edicts[i];
+
+            if (trigger_coop_relay_skip(player) || trigger_coop_relay_inside(self, player))
+                continue;
+            if (self->timestamp < level.framenum)
+                gi.centerprintf(player, "%s", self->map);
+            can_use = false;
+        }
+    }
+
+    if (!can_use) {
+        if (self->timestamp < level.framenum && activator && activator->client)
+            gi.centerprintf(activator, "%s", self->message);
+        self->timestamp = level.framenum + 5 * BASE_FRAMERATE;
+        return;
+    }
+
+    trigger_coop_relay_fire(self, activator);
+}
+
+void trigger_coop_relay_think(edict_t *self)
+{
+    int     i, active = 0, inside = 0;
+
+    for (i = 1; i <= game.maxclients; i++) {
+        edict_t *player = &g_edicts[i];
+
+        if (trigger_coop_relay_skip(player))
+            continue;
+        active++;
+        if (trigger_coop_relay_inside(self, player))
+            inside++;
+    }
+
+    if (active && inside == active) {
+        trigger_coop_relay_fire(self, &g_edicts[1]);
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (inside && self->timestamp < level.framenum) {
+        for (i = 1; i <= game.maxclients; i++) {
+            edict_t *player = &g_edicts[i];
+
+            if (trigger_coop_relay_skip(player))
+                continue;
+            gi.centerprintf(player, "%s", trigger_coop_relay_inside(self, player) ? self->message : self->map);
+        }
+        self->timestamp = level.framenum + 5 * BASE_FRAMERATE;
+    }
+
+    self->nextthink = level.framenum + self->wait * BASE_FRAMERATE;
+}
+
+void SP_trigger_coop_relay(edict_t *self)
+{
+    InitTrigger(self);
+
+    if (!self->message)
+        self->message = "$g_coop_wait_for_players";
+    if (!self->map)     // "message2"
+        self->map = "$g_coop_players_waiting_for_you";
+    if (!self->wait)
+        self->wait = 1;
+
+    if (self->spawnflags & SPAWNFLAG_COOP_RELAY_AUTO_FIRE) {
+        self->think = trigger_coop_relay_think;
+        self->nextthink = level.framenum + self->wait * BASE_FRAMERATE;
+    } else {
+        self->use = trigger_coop_relay_use;
+    }
+    self->svflags |= SVF_NOCLIENT;
+    gi.linkentity(self);
+}
+
+/*QUAKED target_gravity (1 0 0) (-8 -8 -8) (8 8 8)
+N64: sets sv_gravity to "gravity" when used. q64/orbit's gravity-generator
+button fires one (350). level.gravity is saved so a loaded game gets it back.
+*/
+void use_target_gravity(edict_t *self, edict_t *other, edict_t *activator)
+{
+    gi.cvar_set("sv_gravity", va("%g", self->gravity));
+    level.gravity = self->gravity;
+}
+
+void SP_target_gravity(edict_t *self)
+{
+    self->use = use_target_gravity;
+    self->gravity = st.gravity ? atof(st.gravity) : 800;
+}
+
+/*QUAKED target_soundfx (1 0 0) (-8 -8 -8) (8 8 8)
+N64: plays one of a fixed set of sounds, chosen by the NUMBER in "noise", after
+"delay" seconds. volume/attenuation default to 1; attenuation -1 means none.
+*/
+void update_target_soundfx(edict_t *self)
+{
+    gi.positioned_sound(self->s.origin, self, CHAN_VOICE, self->noise_index, self->volume, self->attenuation, 0);
+}
+
+void use_target_soundfx(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->think = update_target_soundfx;
+    self->nextthink = level.framenum + self->delay * BASE_FRAMERATE;
+    if (self->nextthink <= level.framenum)
+        self->nextthink = level.framenum + 1;
+}
+
+void SP_target_soundfx(edict_t *self)
+{
+    if (!self->volume)
+        self->volume = 1.0f;
+
+    if (!self->attenuation)
+        self->attenuation = 1.0f;
+    else if (self->attenuation == -1)
+        self->attenuation = 0;
+
+    switch (st.noise ? atoi(st.noise) : 0) {
+    case 1: self->noise_index = gi.soundindex("world/x_alarm.wav"); break;
+    case 2: self->noise_index = gi.soundindex("world/flyby1.wav"); break;
+    case 4: self->noise_index = gi.soundindex("world/amb12.wav"); break;
+    case 5: self->noise_index = gi.soundindex("world/amb17.wav"); break;
+    case 7: self->noise_index = gi.soundindex("world/bigpump2.wav"); break;
+    default:
+        gi.dprintf("%s at %s: unknown noise %s\n", self->classname, vtos(self->s.origin), st.noise ? st.noise : "");
+        return;
+    }
+
+    self->use = use_target_soundfx;
+}
+
+/*QUAKED misc_nuke_core (1 0 0) (-16 -16 -16) (16 16 16)
+Ground Zero (rammo1): the antimatter core. Toggles visible/invisible; starts visible.
+*/
+void misc_nuke_core_use(edict_t *self, edict_t *other, edict_t *activator)
+{
+    self->svflags ^= SVF_NOCLIENT;
+}
+
+void SP_misc_nuke_core(edict_t *ent)
+{
+    gi.setmodel(ent, "models/objects/core/tris.md2");
+    gi.linkentity(ent);
+    ent->use = misc_nuke_core_use;
+}
+
+/*QUAKED misc_hologram (1.0 1.0 0.0) (-16 -16 0) (16 16 32)
+N64 (q64/cargo): a spinning, flickering Strogg ship hologram. The rerelease's
+EF_HOLOGRAM bit does not fit our 32-bit effects; alpha flicker + spin carry it.
+*/
+void misc_hologram_think(edict_t *ent)
+{
+    ent->s.angles[1] = anglemod(ent->s.angles[1] + 100 * FRAMETIME);
+    ent->s.alpha = 0.2f + random() * 0.4f;
+    ent->nextthink = level.framenum + 1;
+}
+
+void SP_misc_hologram(edict_t *ent)
+{
+    ent->solid = SOLID_NOT;
+    ent->s.modelindex = gi.modelindex("models/ships/strogg1/tris.md2");
+    VectorSet(ent->mins, -16, -16, 0);
+    VectorSet(ent->maxs, 16, 16, 32);
+    ent->s.renderfx |= RF_TRANSLUCENT;
+    ent->s.alpha = 0.2f + random() * 0.4f;
+    ent->s.scale = 0.75f;
+    ent->think = misc_hologram_think;
+    ent->nextthink = level.framenum + 1;
+    gi.linkentity(ent);
+}
+
+/*QUAKED misc_ctf_banner (1 .5 0) (-4 -64 0) (4 64 248) TEAM2
+QUAKED misc_ctf_small_banner (1 .5 0) (-4 -32 0) (4 32 124) TEAM2
+Animated team banners. The rerelease spawns them in every mode, CTF or not.
+*/
+void misc_ctf_banner_think(edict_t *ent)
+{
+    ent->s.frame = (ent->s.frame + 1) % 16;
+    ent->nextthink = level.framenum + BASE_FRAMERATE / 10;
+}
+
+static void misc_ctf_banner_setup(edict_t *ent, const char *model)
+{
+    ent->movetype = MOVETYPE_NONE;
+    ent->solid = SOLID_NOT;
+    ent->s.modelindex = gi.modelindex(model);
+    if (ent->spawnflags & 1)    // TEAM2
+        ent->s.skinnum = 1;
+    ent->s.frame = Q_rand_uniform(16);
+    gi.linkentity(ent);
+
+    ent->think = misc_ctf_banner_think;
+    ent->nextthink = level.framenum + BASE_FRAMERATE / 10;
+}
+
+void SP_misc_ctf_banner(edict_t *ent)
+{
+    misc_ctf_banner_setup(ent, "models/ctf/banner/tris.md2");
+}
+
+void SP_misc_ctf_small_banner(edict_t *ent)
+{
+    misc_ctf_banner_setup(ent, "models/ctf/banner/small.md2");
+}
+
+/*
+CTF / tag-mode entities. We have neither mode, and the rerelease frees these
+outside it too (info_player_team* are empty markers). Registered only so the
+spawn code stops reporting them as unknown.
+*/
+void SP_game_mode_only(edict_t *ent)
+{
+    G_FreeEdict(ent);
 }

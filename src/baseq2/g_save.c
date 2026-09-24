@@ -228,6 +228,9 @@ static const save_field_t entityfields[] = {
     F(moveinfo.distance),
 
     F(moveinfo.wait),
+    I(crosslevel_flags),
+    V(moveinfo.end_angles_reversed),
+    O(moveinfo.reversing),
 
     I(moveinfo.state),
     V(moveinfo.dir),
@@ -432,6 +435,11 @@ static const save_field_t levelfields[] = {
     E(health_bar_entities[1]),
     I(dynamiclight_count),
     I(dynamiclight_bits),
+    F(gravity),
+    L(goals),
+    I(goal_num),
+    L(start_items),
+    O(instantitems),
     F(sky_rotate),
     I(sky_autorotate),
     V(intermission_origin),
@@ -1021,7 +1029,11 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // a flat array indexed by ITEM_INDEX (= item - itemlist), so every insertion
 // shifts the index of everything after it and a version-61 save would restore
 // the wrong items. One bump covers the whole batch.
-#define SAVE_VERSION    63
+// 64: four keys (explosive charges, power core, antimatter pod/bomb) join
+// itemlist[] after key_yellow_key, level.gravity joins levelfields, and new
+// callbacks (train_piece_wait, the coop relay, target_gravity/soundfx, ...)
+// shift save_ptrs[].
+#define SAVE_VERSION    64
 
 /*
 ============
@@ -1237,6 +1249,12 @@ void ReadLevel(const char *filename)
 
     // load the level locals
     read_fields(&ctx, levelfields, &level);
+
+    level.is_n64 = !strncmp(level.mapname, "q64/", 4);
+
+    // target_gravity can change it mid-level; worldspawn does not run on a load
+    if (level.gravity)
+        gi.cvar_set("sv_gravity", va("%g", level.gravity));
 
     // level.mapname is restored now, so the navmesh freed above can come back.
     // This has to be after read_fields and before anything can path - note

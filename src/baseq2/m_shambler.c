@@ -643,12 +643,7 @@ void SP_monster_shambler(edict_t* self)
 	sound_smack = gi.soundindex("shambler/smack.wav");
 	sound_boom = gi.soundindex("shambler/sboom.wav");
 
-    // st.health_multiplier is 0 here unless the map sets it (the rerelease
-    // defaults it to 1), so multiplying unguarded spawns the monster dead.
-    // Same one-line bug that broke monster_guncmdr.
-    self->health = 600;
-    if (st.health_multiplier > 0)
-        self->health = (int)(self->health * st.health_multiplier);
+    self->health = 600;     // health_multiplier: applied in monster_start
 	self->gib_health = -60;
 
 	self->mass = 500;

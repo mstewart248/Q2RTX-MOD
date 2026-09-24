@@ -1536,10 +1536,13 @@ void SP_monster_widow(edict_t *self)
 
     // st.health_multiplier is 0 here unless the map sets it (the rerelease
     // defaults it to 1), so multiplying unguarded spawns the monster DEAD.
-    // Same one-line bug that broke guncmdr, shambler and guardian.
+    // Applied here rather than in monster_start because the rerelease scales
+    // only the base, before the coop bonus; zeroed so monster_start does not
+    // apply it a second time.
     self->health = 2000 + 1000 * (int)skill->value;
     if (st.health_multiplier > 0)
         self->health = (int)(self->health * st.health_multiplier);
+    st.health_multiplier = 0;
     if (coop->value)
         self->health += 500 * (int)skill->value;
 
@@ -1547,11 +1550,10 @@ void SP_monster_widow(edict_t *self)
     self->mass = 1500;
 
     if (skill->value == 3) {
-        // st.was_key_specified has no equivalent here; a zero field means the
-        // map did not set it, exactly as m_guncmdr.c documents.
-        if (!self->monsterinfo.power_armor_type)
+        // [rerelease] st.was_key_specified: an explicit "0" key wins
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_TYPE))
             self->monsterinfo.power_armor_type = POWER_ARMOR_SHIELD;
-        if (!self->monsterinfo.power_armor_power)
+        if (!(st.keys_specified & SPAWNKEY_POWER_ARMOR_POWER))
             self->monsterinfo.power_armor_power = 500;
     }
 

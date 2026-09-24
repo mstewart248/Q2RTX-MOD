@@ -31,6 +31,13 @@ void tank_refire_rocket(edict_t *self);
 void tank_doattack_rocket(edict_t *self);
 void tank_reattack_blaster(edict_t *self);
 
+// [rerelease] m_tank.cpp. GUARDIAN is the N64 "chonky" tank commander;
+// HEAT_SEEKING swaps its rockets for heat seekers. The MGU maps set 16 on
+// most of their tank commanders (mgu2m3, mgu3m2-m4, mgu4m1: spawnflags 18/19,
+// 131346, 132626 ...).
+#define SPAWNFLAG_TANK_COMMANDER_GUARDIAN       8
+#define SPAWNFLAG_TANK_COMMANDER_HEAT_SEEKING   16
+
 static int  sound_thud;
 static int  sound_pain;
 static int  sound_idle;
@@ -402,7 +409,12 @@ void TankRocket(edict_t *self)
     VectorSubtract(vec, start, dir);
     VectorNormalize(dir);
 
-    monster_fire_rocket(self, start, dir, 50, 550, flash_number);
+    // [rerelease] heat seekers fly at 500 and steer by self->accel (0.075
+    // unless the map set "accel"; see SP_monster_tank)
+    if (self->spawnflags & SPAWNFLAG_TANK_COMMANDER_HEAT_SEEKING)
+        monster_fire_heat(self, start, dir, 50, 500, flash_number, self->accel);
+    else
+        monster_fire_rocket(self, start, dir, 50, 550, flash_number);
 }
 
 void TankMachineGun(edict_t *self)
@@ -1063,6 +1075,19 @@ void SP_monster_tank(edict_t *self)
         self->health = 750;
         self->gib_health = -200;
     }
+
+    // [rerelease] the N64 tank commander is a chonky boy: half again the size
+    // (unless the map scaled it) and 1500 health. monster_start grows the box
+    // and mass to match s.scale and applies health_multiplier on top.
+    if (self->spawnflags & SPAWNFLAG_TANK_COMMANDER_GUARDIAN) {
+        if (!self->s.scale)
+            self->s.scale = 1.5f;
+        self->health = 1500;
+    }
+
+    // [rerelease] heat seeker turn rate (the "accel" key overrides it)
+    if (!self->accel)
+        self->accel = 0.075f;
 
     self->mass = 500;
 
