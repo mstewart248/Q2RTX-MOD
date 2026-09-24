@@ -510,10 +510,6 @@ static void parasite_get_proboscis_start(edict_t *self, vec3_t start)
     }
 
     G_ProjectSource(self->s.origin, offset, f, r, start);
-    gi.dprintf("PARDBG start frame %d org %.1f %.1f %.1f yaw %.1f off %.1f %.1f %.1f -> %.1f %.1f %.1f\n",
-               self->s.frame, self->s.origin[0], self->s.origin[1], self->s.origin[2],
-               self->s.angles[YAW], offset[0], offset[1], offset[2],
-               start[0], start[1], start[2]);
 }
 
 // Draw the tether.  cl_mod_parasite_segment is the real segment model, stretched

@@ -968,6 +968,7 @@ static cvar_t *cl_blood_sound_dist = NULL;
 static cvar_t *cl_blood_sound_attn = NULL;
 static cvar_t *cl_blood_permanent = NULL;
 static cvar_t *cl_blood_model_collision = NULL;
+static cvar_t *cl_blood_fling_speed = NULL;
 static cvar_t *cl_blood_flesh_damp = NULL;
 static cvar_t *cl_blood_flesh_run = NULL;
 static cvar_t *cl_blood_flesh_cling = NULL;
@@ -1120,6 +1121,7 @@ static cparticle_t *CL_PickBlood(cparticle_t *const *list, int count, bool newes
 // is answerable from these three numbers and is guesswork without them.
 static int blood_retired;
 static int blood_detached;
+static int blood_flung;       // thrown off a spinning brush model
 // Runs that reached the foot of a surface and finished emptying into a pool
 // there - see CL_BloodDrainToPool. These are the ones that used to snap into a
 // floor splat in one frame, so this and detached/s are what tell the two apart.
@@ -1267,6 +1269,10 @@ void FX_Init(void)
     // is stop on the box, which is nowhere near the surface being drawn.
     // See CL_TracePoint and CL_BloodTraceModels.
     cl_blood_model_collision = Cvar_Get("cl_blood_model_collision", "1", CVAR_ARCHIVE);
+    // Surface speed, in units/sec, above which blood cannot stay on a ROTATING
+    // brush model and is thrown off it instead - see CL_BloodSpinVelocity.
+    // 0 lets blood ride anything.
+    cl_blood_fling_speed = Cvar_Get("cl_blood_fling_speed", "200", CVAR_ARCHIVE);
     // How a droplet leaves a body it has hit - see CL_BloodRunOffModel.
     // damp is the fraction of the along-the-surface speed it keeps; run is
     // the minimum speed it is given downhill, which is what gets it off a
@@ -3170,6 +3176,57 @@ static bool CL_BloodMaySlide(const cparticle_t *p)
 
 /*
 ===============
+CL_BloodSpinVelocity
+
+THE MGU6M1 ROLLERS. A splat riding a ROTATING brush model turns with it, so its
+normal changes every frame. That defeats both of the renderer's shortcuts in
+write_blood_geometry: the exact-match cache and the translate-only path. Every
+rider pays a full mesh rebuild on the CPU every frame. A pair of rollers coated
+by a few gibbed monsters held ~1300 riders, and the rebuild alone took 40 ms a
+frame (15 fps).
+
+It is also wrong physically. At 400 deg/s and radius 64 the roller surface moves
+at ~450 units/sec, about 4 g of centripetal pull, and blood would not stay on.
+So above cl_blood_fling_speed a rotating surface throws the blood off instead of
+carrying it. Off the roller, the blood lands and settles on something that holds
+still, where it costs nothing.
+
+Rotation only. A lift or a door translates, which the renderer's move path
+already handles cheaply, and blood on a lift should stay on it.
+
+Returns true, with the surface velocity at `point` in `vel`, when the surface
+there is moving faster than the threshold.
+===============
+*/
+static bool CL_BloodSpinVelocity(const centity_t *cent, const vec3_t point, vec3_t vel)
+{
+    vec3_t local, prev, axis[3];
+
+    if (!cl_blood_fling_speed->value || cent->current.solid != PACKED_BSP)
+        return false;
+
+    if (VectorCompare(cent->prev.angles, cent->current.angles))
+        return false;
+
+    // Into the entity's frame at the current pose, back out at the previous
+    // pose - the same point on the surface one server frame earlier.
+    VectorSubtract(point, cent->current.origin, local);
+    AnglesToAxis(cent->current.angles, axis);
+    RotatePoint(local, axis);
+
+    AnglesToAxis(cent->prev.angles, axis);
+    TransposeAxis(axis);
+    RotatePoint(local, axis);
+    VectorAdd(local, cent->prev.origin, prev);
+
+    VectorSubtract(point, prev, vel);
+    VectorScale(vel, 1000.0f * CL_1_FRAMETIME, vel);
+
+    return VectorLength(vel) > cl_blood_fling_speed->value;
+}
+
+/*
+===============
 CL_BloodTraceModels
 
 The other half of the bounding-box problem.  CL_TracePoint has been told to
@@ -4319,6 +4376,25 @@ static bool CL_BloodSettleAtRest(cparticle_t *p, float dt)
     return true;
 }
 
+// A stuck droplet goes back to free flight with velocity `vel`: its surface has
+// gone out from under it, or is spinning too fast to hold it.
+static void CL_BloodLaunch(cparticle_t *p, const vec3_t vel)
+{
+    p->blood_state = BLOOD_AIRBORNE;
+    p->blood_flatten = 1.0f;
+    p->blood_stretch = 1.0f;
+    p->blood_stretch_base = 1.0f;
+    p->blood_cross = 1.0f;
+    p->blood_cross_base = 1.0f;
+    CL_BloodClearSlide(p);
+    VectorClear(p->blood_slide_axis);
+    VectorClear(p->blood_tangent);
+    VectorCopy(vel, p->vel);
+    p->time = cl.time;
+    p->alpha = 1.0f;
+    p->alphavel = -1.0f / max(0.1f, cl_blood_air_life->value);
+}
+
 // Returns true when the droplet merged into an existing pool and should be
 // retired - the blood it carried is now part of that splat.
 static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
@@ -4330,21 +4406,20 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         // Follow the surface first, so everything below works from where the
         // droplet actually is this frame.
         if (p->blood_ent >= 0) {
+            vec3_t fling;
+
             if (!CL_BloodRideEntity(p)) {
                 // The door it was on has gone. Fall.
-                p->blood_state = BLOOD_AIRBORNE;
-                p->blood_flatten = 1.0f;
-                p->blood_stretch = 1.0f;
-                p->blood_stretch_base = 1.0f;
-                p->blood_cross = 1.0f;
-                p->blood_cross_base = 1.0f;
-                CL_BloodClearSlide(p);
-                VectorClear(p->blood_slide_axis);
-                VectorClear(p->blood_tangent);
-                VectorClear(p->vel);
-                p->time = cl.time;
-                p->alpha = 1.0f;
-                p->alphavel = -1.0f / max(0.1f, cl_blood_air_life->value);
+                CL_BloodLaunch(p, vec3_origin);
+                return false;
+            }
+
+            // Spinning too fast to hold on - see CL_BloodSpinVelocity.
+            if (CL_BloodSpinVelocity(&cl_entities[p->blood_ent], p->org, fling)) {
+                blood_flung++;
+                VectorMA(p->org, 1.0f, p->blood_normal, p->org);
+                CL_BloodDetachFromEntity(p);
+                CL_BloodLaunch(p, fling);
                 return false;
             }
 
@@ -4611,7 +4686,18 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     }
 
     if (frac < 1.0f) {
+        vec3_t fling;
+
         LerpVector(p->org, end, frac, hit_point);
+
+        // Landing on a fast spinner does not stick: the surface throws the
+        // droplet on at its own speed, and it never becomes a rider.
+        if (hit && CL_BloodSpinVelocity(hit, hit_point, fling)) {
+            blood_flung++;
+            VectorMA(hit_point, 1.0f, hit_normal, p->org);
+            VectorCopy(fling, p->vel);
+            return false;
+        }
 
         if (CL_BloodPoolInto(p, hit_point, hit_normal,
                              hit ? (int)(hit - cl_entities) : -1, 0.f))
@@ -5970,7 +6056,7 @@ void CL_AddParticles(void)
     static int      blood_trace_acc, blood_model_trace_acc, blood_model_hit_acc, blood_sim_frames;
     static int      blood_edge_trace_acc, blood_edge_probe_acc, blood_edge_slide_acc;
     static int      blood_wall_spread_acc;
-    static int      blood_retired_acc, blood_detached_acc, blood_drain_acc;
+    static int      blood_retired_acc, blood_detached_acc, blood_drain_acc, blood_flung_acc;
     static int      blood_settle_acc, blood_rest_pool_acc, blood_pool_full_acc;
     static int      blood_pool_acc;
     uint64_t blood_sim_usec = 0;
@@ -5983,6 +6069,7 @@ void CL_AddParticles(void)
     blood_wall_spreads = 0;
     blood_retired = 0;
     blood_detached = 0;
+    blood_flung = 0;
     blood_drains = 0;
     blood_pinned = 0;
     blood_runnable = 0;
@@ -6250,6 +6337,7 @@ void CL_AddParticles(void)
     blood_wall_spread_acc += blood_wall_spreads;
     blood_retired_acc += blood_retired;
     blood_detached_acc += blood_detached;
+    blood_flung_acc += blood_flung;
     blood_drain_acc += blood_drains;
     blood_settle_acc += blood_settles;
     blood_rest_pool_acc += blood_rest_pools;
@@ -6264,7 +6352,7 @@ void CL_AddParticles(void)
             // Edge numbers are per SECOND, not per frame: measurements are
             // amortised across frames on purpose, so a per-frame figure would
             // round to zero and say nothing about what the sweep is costing.
-            Com_Printf("blood: %d airborne, %d stuck (%d riding, %d/%d pinned) | sim %.2f ms/frame, %d traces/frame, %d mesh/frame (%d hits/s) | edge %d probes/s, %d traces/s, %d slid off/s, %d walled/s | rest %d settled/s, %d pooled/s, %d full/s | %d merges/s, %d retired/s, %d detached/s, %d drained/s | particles %d active, %d free\n",
+            Com_Printf("blood: %d airborne, %d stuck (%d riding, %d/%d pinned) | sim %.2f ms/frame, %d traces/frame, %d mesh/frame (%d hits/s) | edge %d probes/s, %d traces/s, %d slid off/s, %d walled/s | rest %d settled/s, %d pooled/s, %d full/s | %d merges/s, %d retired/s, %d detached/s, %d flung/s, %d drained/s | particles %d active, %d free\n",
                 blood_air, blood_stuck, blood_riding, blood_pinned, blood_runnable,
                 blood_sim_frames ? (float)blood_sim_usec_acc / blood_sim_frames / 1000.f : 0.f,
                 blood_sim_frames ? blood_trace_acc / blood_sim_frames : 0,
@@ -6273,12 +6361,12 @@ void CL_AddParticles(void)
                 blood_edge_probe_acc, blood_edge_trace_acc, blood_edge_slide_acc,
                 blood_wall_spread_acc,
                 blood_settle_acc, blood_rest_pool_acc, blood_pool_full_acc,
-                blood_pool_acc, blood_retired_acc, blood_detached_acc, blood_drain_acc,
+                blood_pool_acc, blood_retired_acc, blood_detached_acc, blood_flung_acc, blood_drain_acc,
                 num_active, num_free);
             blood_sim_usec_acc = 0; blood_trace_acc = 0; blood_model_trace_acc = 0; blood_model_hit_acc = 0; blood_sim_frames = 0;
             blood_edge_trace_acc = 0; blood_edge_probe_acc = 0; blood_edge_slide_acc = 0;
             blood_wall_spread_acc = 0;
-            blood_retired_acc = 0; blood_detached_acc = 0; blood_drain_acc = 0;
+            blood_retired_acc = 0; blood_detached_acc = 0; blood_flung_acc = 0; blood_drain_acc = 0;
             blood_settle_acc = 0; blood_rest_pool_acc = 0; blood_pool_full_acc = 0;
             blood_pool_acc = 0;
         }

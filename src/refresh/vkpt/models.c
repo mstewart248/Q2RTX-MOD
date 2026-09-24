@@ -1392,6 +1392,10 @@ static int MD5_AppendMergedSkins(const char *base_path, maliasmesh_t *mesh, int 
 	} merged[] = {
 		{ "models/monsters/soldier/md5", 6, "models/monsters/soldierh",
 		  { "sold01", "sold01_p", "sold02", "sold02_p", "sold03", "sold03_p" } },
+		// monster_gladb: the remaster's gladiatr.md2 lists skin2/pain2 after
+		// the classic pair; the 1997 one in baseq2/pak0.pak stops at two
+		{ "models/monsters/gladiatr/md5", 2, "models/monsters/gladiatr",
+		  { "skin2", "pain2" } },
 	};
 
 	for (int i = 0; i < q_countof(merged); i++) {
@@ -1404,7 +1408,7 @@ static int MD5_AppendMergedSkins(const char *base_path, maliasmesh_t *mesh, int 
 			char probe[MAX_QPATH];
 			char inherit[MAX_QPATH];
 
-			if (numskins >= MAX_ALIAS_SKINS)
+			if (!merged[i].stems[j] || numskins >= MAX_ALIAS_SKINS)
 				break;
 
 			Q_snprintf(probe, sizeof(probe), "%s/%s", base_path, merged[i].stems[j]);

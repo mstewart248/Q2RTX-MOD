@@ -224,10 +224,13 @@ names to the stock gladiator (verified against both MD2s), so every move
 table here is shared; only the gun differs. Marked with self->style = 1,
 the same marker the rerelease uses.
 
-Model note: the rerelease puts gladb on gladiatr/tris.md2 at skinnum 2, which
-needs a 3-skin gladiatr.md2 that does not exist in this install. Xatrix's
-models/monsters/gladb/tris.md2 is used instead - 2 skins, so gladiator_pain's
-existing 'skinnum = 1 below half health' works unchanged.
+Model note: like the rerelease, gladb is the stock gladiatr/tris.md2 at
+skinnum 2 (skin2, and pain2 once M_SetDamageSkin sets bit 0). It is a pure
+reskin, so this draws through the gladiator's md5/ mesh and its skin2/pain2
+artwork. Xatrix's separate models/monsters/gladb/tris.md2 is not used: loading
+it here left gladb on the 1997 mesh whenever a loose copy was on the path.
+Where only the classic 2-skin gladiatr.md2 is readable, MD5_AppendMergedSkins
+(vkpt/models.c) supplies skin2/pain2.
 */
 void gladbGun(edict_t *self)
 {
@@ -596,7 +599,7 @@ void SP_monster_gladiator(edict_t *self)
     if (self->style == 1) {
         // monster_gladb. Health and power armour follow the rerelease, which is
         // what the MGU maps are balanced against - not xatrix's tougher 800.
-        self->s.modelindex = gi.modelindex("models/monsters/gladb/tris.md2");
+        self->s.modelindex = gi.modelindex("models/monsters/gladiatr/tris.md2");
         self->health = 250;
         self->mass = 350;
         // [rerelease] only when the map did not set the keys itself: the
@@ -654,4 +657,10 @@ void SP_monster_gladb(edict_t *self)
 {
     self->style = 1;
     SP_monster_gladiator(self);
+
+    if (!self->inuse)
+        return;             // deathmatch: SP_monster_gladiator freed it
+
+    // skin2; after the spawn, because monster_start zeroes skinnum
+    self->s.skinnum = 2;
 }

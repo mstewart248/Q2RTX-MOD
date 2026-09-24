@@ -18591,7 +18591,9 @@ textures/tomc/tc_rockwall_c:
 	texture_normals materialDev/textures/tomc/tc_rockwall_c_n.png
 	texture_roughness materialDev/textures/tomc/tc_rockwall_c_rough.png
 	texture_metallic materialDev/textures/tomc/tc_rockwall_c_metal.png
-
+	texture_height materialDev/textures/tomc/tc_rockwall_c_height.png
+	displace_out .05
+	displace_in 0
 
 textures/tomc/tc_rockwall_d:
 	texture_base materialDev/textures/tomc/tc_rockwall_d.tga
