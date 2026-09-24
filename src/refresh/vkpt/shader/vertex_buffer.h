@@ -42,7 +42,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    the top 16) and the value would have fitted there, but a named word costs
    32KB across the whole table and leaves the next per-material knob somewhere
    obvious to go. */
-#define MATERIAL_UINTS          8
+#define MATERIAL_UINTS          9
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      8192
@@ -281,6 +281,9 @@ struct MaterialInfo
 	uint mask_texture;
 	uint roughness_texture;
 	uint metallic_texture;
+	uint height_texture;
+	float displace_in;
+	float displace_out;
 	float bump_scale;
 	float roughness_override;
 	float metalness_factor;
@@ -550,6 +553,7 @@ get_material_info(uint material_id)
 	data[5] = light_buffer.material_table[material_index * MATERIAL_UINTS + 5];
 	data[6] = light_buffer.material_table[material_index * MATERIAL_UINTS + 6];
 	data[7] = light_buffer.material_table[material_index * MATERIAL_UINTS + 7];
+	data[8] = light_buffer.material_table[material_index * MATERIAL_UINTS + 8];
 
 	MaterialInfo minfo;
 	minfo.base_texture = data[0] & 0xffff;
@@ -558,6 +562,9 @@ get_material_info(uint material_id)
 	minfo.mask_texture = data[1] >> 16;
 	minfo.roughness_texture = data[6] & 0xffff;
 	minfo.metallic_texture = data[6] >> 16;
+	minfo.height_texture = data[7] >> 16;
+	minfo.displace_in = unpackHalf2x16(data[8]).x;
+	minfo.displace_out = unpackHalf2x16(data[8]).y;
 	minfo.bump_scale = unpackHalf2x16(data[2]).x;
 	minfo.roughness_override = unpackHalf2x16(data[2]).y;
 	minfo.metalness_factor = unpackHalf2x16(data[3]).x;

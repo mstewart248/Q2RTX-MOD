@@ -1042,6 +1042,114 @@ bool get_is_gradient(ivec2 ipos)
 	return false;
 }
 
+float pom_height(uint height_texture, vec2 uv, vec2 tex_coord_x, vec2 tex_coord_y, float mip_level)
+{
+	if (mip_level >= 0)
+		return global_textureLod(height_texture, uv, mip_level).r;
+	return global_textureGrad(height_texture, uv, tex_coord_x, tex_coord_y).r;
+}
+
+/*
+Parallax occlusion mapping, RTX-Remix style: returns the texture coordinate where
+the ray really meets the height field, and every map the material has is then
+sampled there.
+
+The height field lives in a slab around the triangle. Height 1 is displace_out
+ABOVE the triangle's plane, height 0 is displace_in BELOW it, both in UV units
+(0.05 = 5% of one texture repeat), which is what Remix's displaceIn/displaceOut
+mean, so values carry over. The ray reached the plane at tex_coord; it entered
+the top of the slab earlier, further back along the ray, and the march starts
+there and descends through the whole in + out thickness.
+
+The texture-space frame comes from the triangle's own positions and UVs rather
+than from triangle.tangents. That frame is dP/du and dP/dv exactly, so it
+also knows how many world units one UV spans - which is what turns a depth in
+UV units into a world-space slab and keeps the effect the same size no matter
+how a mapper scaled the texture - and it has the right sign on mirrored UVs
+without the handedness dance the normal map needs.
+
+Only the texture lookup moves. The hit position, depth and motion vectors stay
+on the triangle, so outward bumps cannot poke past a silhouette and there is
+no self-shadowing: shadow rays still see the flat surface.
+*/
+vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, vec3 ray_direction,
+                        vec2 tex_coord, vec2 tex_coord_x, vec2 tex_coord_y, float mip_level)
+{
+	float depth_in  = max(minfo.displace_in, 0.0) * global_ubo.pt_pom_scale;
+	float depth_out = max(minfo.displace_out, 0.0) * global_ubo.pt_pom_scale;
+	float thickness = depth_in + depth_out;
+	if (thickness <= 0)
+		return tex_coord;
+
+	vec2 duv0 = triangle.tex_coords[1] - triangle.tex_coords[0];
+	vec2 duv1 = triangle.tex_coords[2] - triangle.tex_coords[0];
+	vec3 dp0  = triangle.positions[1] - triangle.positions[0];
+	vec3 dp1  = triangle.positions[2] - triangle.positions[0];
+
+	float det = duv0.x * duv1.y - duv1.x * duv0.y;
+	if (abs(det) < 1e-10)
+		return tex_coord;
+
+	vec3 dPdu = (dp0 * duv1.y - dp1 * duv0.y) / det;
+	vec3 dPdv = (dp1 * duv0.x - dp0 * duv1.x) / det;
+
+	vec3 V = -ray_direction;
+	vec3 N = geo_normal;
+	if (dot(N, V) < 0)
+		N = -N;
+	float NdotV = dot(N, V);
+	if (NdotV < 1e-3)
+		return tex_coord;
+
+	// Dual basis: how far u and v move per world unit along V. Both vectors are
+	// perpendicular to N, so V's normal component drops out on its own.
+	vec3 cu = cross(dPdv, N);
+	vec3 cv = cross(N, dPdu);
+	float du_den = dot(dPdu, cu);
+	float dv_den = dot(dPdv, cv);
+	if (abs(du_den) < 1e-10 || abs(dv_den) < 1e-10)
+		return tex_coord;
+	vec2 v_uv = vec2(dot(V, cu) / du_den, dot(V, cv) / dv_den);
+
+	float world_per_uv = sqrt(length(dPdu) * length(dPdv));
+
+	// Clamping the grazing angle bounds the UV sweep, which is the usual POM
+	// trade: a little flattening at grazing angles instead of texture smearing
+	// across the whole surface.
+	float slant = 1.0 / max(NdotV, 0.15);
+	vec2 uv_top   = tex_coord + v_uv * (depth_out * world_per_uv * slant);
+	vec2 uv_sweep = -v_uv * (thickness * world_per_uv * slant);
+
+	float max_steps = clamp(global_ubo.pt_pom_max_steps, 4.0, 128.0);
+	int steps = int(mix(max_steps, max(4.0, max_steps * 0.25), NdotV));
+	float layer = 1.0 / float(steps);
+
+	// d is how far below the top of the slab the ray is, 0..1 of the thickness;
+	// the height field's floor at a texel is (1 - h) on the same scale.
+	float d = 0;
+	vec2 uv = uv_top;
+	float surf = 1.0 - pom_height(minfo.height_texture, uv, tex_coord_x, tex_coord_y, mip_level);
+	float prev_d = 0;
+	vec2 prev_uv = uv;
+	float prev_surf = surf;
+
+	for (int i = 0; i < steps && d < surf; i++)
+	{
+		prev_d = d;
+		prev_uv = uv;
+		prev_surf = surf;
+		d += layer;
+		uv = uv_top + uv_sweep * d;
+		surf = 1.0 - pom_height(minfo.height_texture, uv, tex_coord_x, tex_coord_y, mip_level);
+	}
+
+	// Refine between the last step above the field and the first below it.
+	float after = surf - d;
+	float before = prev_surf - prev_d;
+	float denom = after - before;
+	float w = (abs(denom) > 1e-6) ? clamp(after / denom, 0.0, 1.0) : 0.0;
+	return mix(uv, prev_uv, w);
+}
 
 void
 get_material(
@@ -1052,6 +1160,7 @@ get_material(
 	vec2 tex_coord_y,
 	float mip_level,
 	vec3 geo_normal,
+	vec3 ray_direction,
 	out vec3 base_color,
 	out vec3 normal,
 	out float metallic,
@@ -1117,6 +1226,12 @@ get_material(
 	MaterialInfo minfo = get_material_info(triangle.material_id);
 
 	perturb_tex_coord(triangle.material_id, triangle.texture_flags, global_ubo.time, tex_coord);
+
+	// After the warp, so a height-mapped surface that also scrolls or warps
+	// is displaced where it is drawn.
+	if (global_ubo.pt_pom != 0 && minfo.height_texture != 0)
+		tex_coord = parallax_occlusion(triangle, minfo, geo_normal, ray_direction,
+		                               tex_coord, tex_coord_x, tex_coord_y, mip_level);
 
 	vec4 image1 = vec4(1);
 	if (minfo.base_texture != 0)

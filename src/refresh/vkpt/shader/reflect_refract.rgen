@@ -1123,6 +1123,7 @@ main()
 		tex_coord_y, 
 		-1, 
 		geo_normal, 
+		direction,
 		primary_base_color, 
 		normal, 
 		primary_metallic, 

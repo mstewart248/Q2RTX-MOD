@@ -8325,6 +8325,7 @@ R_Init_RTX(bool total)
 
 	Cmd_AddCommand("fog_debug", (xcommand_t)&vkpt_fog_debug);
 	Cmd_AddCommand("reload_shader", (xcommand_t)&vkpt_reload_shader);
+	Cmd_AddCommand("profiler_dump", (xcommand_t)&vkpt_profiler_dump);
 	Cmd_AddCommand("reload_textures", (xcommand_t)&vkpt_reload_textures);
 	Cmd_AddCommand("show_pvs", (xcommand_t)&vkpt_show_pvs);
 	Cmd_AddCommand("next_sun", (xcommand_t)&vkpt_next_sun_preset);
@@ -8369,6 +8370,7 @@ R_Shutdown_RTX(bool total)
 		Cvar_SetInteger(cvar_drs_last_scale, drs_current_scale, FROM_CODE);
 
 	Cmd_RemoveCommand("reload_shader");
+	Cmd_RemoveCommand("profiler_dump");
 	Cmd_RemoveCommand("reload_textures");
 	Cmd_RemoveCommand("show_pvs");
 	Cmd_RemoveCommand("next_sun");

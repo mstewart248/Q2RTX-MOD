@@ -402,3 +402,27 @@ double vkpt_get_profiler_result(int idx)
 	double ms = (double)(end - begin) * 1e-6 * qvk.timestampPeriod;
 	return ms;
 }
+
+/* profiler_dump: print every pass's running average (over profiler_samples frames) to
+   the console, so a scripted benchmark can read per-pass GPU cost from the log instead
+   of from the overlay. Passes that did not run this frame are skipped. */
+void
+vkpt_profiler_dump(void)
+{
+	const char *names[] = {
+#define PROFILER_DO(name, indent) #name,
+		PROFILER_LIST
+#undef PROFILER_DO
+	};
+
+	Com_Printf("PROFDUMP begin api=%s samples=%d\n", qvk.use_ray_query ? "query" : "pipeline", (int)profiler_data.allocated_samples);
+	for (int idx = 0; idx < NUM_PROFILER_ENTRIES; idx++)
+	{
+		const profiler_entry_samples_t *e = &profiler_data.samples[idx];
+		if (e->num_samples == 0)
+			continue;
+		double avg_ms = ((double)e->accumulated / (e->num_samples * 1e6)) * qvk.timestampPeriod;
+		Com_Printf("PROFDUMP %-34s %8.3f ms\n", names[idx] + 9, avg_ms);
+	}
+	Com_Printf("PROFDUMP end\n");
+}

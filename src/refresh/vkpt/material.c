@@ -176,10 +176,15 @@ static void MAT_SetIndex(pbr_material_t* mat)
 	mat->next_frame = mat_index;
 }
 
+// Remix's default displaceIn, so a bare _height sidecar looks the way it
+// does there.
+#define MAT_DEFAULT_DISPLACE_IN 0.05f
+
 static void MAT_Reset(pbr_material_t * mat)
 {
 	memset(mat, 0, sizeof(pbr_material_t));
 	mat->bump_scale = 1.0f;
+	mat->displace_in = MAT_DEFAULT_DISPLACE_IN;
 	mat->roughness_override = -1.0f;
 	mat->metalness_factor = 1.f;
 	mat->emissive_factor = 1.f;
@@ -340,6 +345,9 @@ enum AttributeIndex
 	MAT_VOLUMETRIC_SCALE,
 	MAT_CURVED_WATER,
 	MAT_DLSS_GUIDE_FIELD,
+	MAT_TEXTURE_HEIGHT,
+	MAT_DISPLACE_IN,
+	MAT_DISPLACE_OUT,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -370,6 +378,9 @@ static struct MaterialAttribute {
 	{MAT_VOLUMETRIC_SCALE, "volumetric_scale", ATTR_FLOAT},
 	{MAT_CURVED_WATER, "curved_water", ATTR_BOOL},
 	{MAT_DLSS_GUIDE_FIELD, "dlss_guide_field", ATTR_INT},
+	{MAT_TEXTURE_HEIGHT, "texture_height", ATTR_STRING},
+	{MAT_DISPLACE_IN, "displace_in", ATTR_FLOAT},
+	{MAT_DISPLACE_OUT, "displace_out", ATTR_FLOAT},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -467,6 +478,8 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	switch (t->index)
 	{
 	case MAT_BUMP_SCALE: mat->bump_scale = fvalue; break;
+	case MAT_DISPLACE_IN: mat->displace_in = fvalue; break;
+	case MAT_DISPLACE_OUT: mat->displace_out = fvalue; break;
 	case MAT_VOLUMETRIC_SCALE: mat->volumetric_scale = fvalue; break;
 	case MAT_ROUGHNESS_OVERRIDE: mat->roughness_override = fvalue; break;
 	case MAT_METALNESS_FACTOR: mat->metalness_factor = fvalue; break;
@@ -535,6 +548,9 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 		break;
 	case MAT_TEXTURE_METALLIC:
 		set_material_texture(mat, svalue, mat->filename_metallic, &mat->image_metallic, IF_NONE, !sourceFile);
+		break;
+	case MAT_TEXTURE_HEIGHT:
+		set_material_texture(mat, svalue, mat->filename_height, &mat->image_height, IF_NONE, !sourceFile);
 		break;
 	case MAT_LIGHT_STYLES:
 		mat->light_styles = bvalue;
@@ -770,11 +786,18 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		WRITE_TEXTURE(MAT_TEXTURE_MASK, filename_mask, "texture_mask");
 		WRITE_TEXTURE(MAT_TEXTURE_ROUGHNESS, filename_roughness, "texture_roughness");
 		WRITE_TEXTURE(MAT_TEXTURE_METALLIC, filename_metallic, "texture_metallic");
+		WRITE_TEXTURE(MAT_TEXTURE_HEIGHT, filename_height, "texture_height");
 
 #undef WRITE_TEXTURE
 		
 		if (mat->bump_scale != 1.f)
 			FS_FPrintf(file, "\tbump_scale %f\n", mat->bump_scale);
+
+		if (mat->displace_in != MAT_DEFAULT_DISPLACE_IN)
+			FS_FPrintf(file, "\tdisplace_in %f\n", mat->displace_in);
+
+		if (mat->displace_out != 0.f)
+			FS_FPrintf(file, "\tdisplace_out %f\n", mat->displace_out);
 		
 		if (mat->roughness_override > 0.f)
 			FS_FPrintf(file, "\troughness_override %f\n", mat->roughness_override);
@@ -990,6 +1013,16 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 			mat->image_metallic = NULL;
 		else
 			Q_strlcpy(mat->filename_metallic, mat->image_metallic->filepath, sizeof(mat->filename_metallic));
+	}
+
+	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_HEIGHT))
+	{
+		Q_snprintf(file_name, sizeof(file_name), "%s_height.tga", mat_name_no_ext);
+		mat->image_height = IMG_Find(file_name, type, flags);
+		if (mat->image_height == R_NOTEXTURE)
+			mat->image_height = NULL;
+		else
+			Q_strlcpy(mat->filename_height, mat->image_height->filepath, sizeof(mat->filename_height));
 	}
 
 	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE))
@@ -1276,6 +1309,14 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 			}
 		}
 
+		if (mat->filename_height[0] && !mat->image_height) {
+			load_material_image(&mat->image_height, mat->filename_height, mat, type, flags);
+			if (mat->image_height == R_NOTEXTURE) {
+				Com_DPrintf("Texture '%s' specified in material '%s' could not be found.\n", mat->filename_height, mat_name_no_ext);
+				mat->image_height = NULL;
+			}
+		}
+
 		if (mat->filename_emissive[0] && !mat->image_emissive) {
 			load_material_image(&mat->image_emissive, mat->filename_emissive, mat, type, flags | IF_SRGB);
 			if (mat->image_emissive == R_NOTEXTURE) {
@@ -1393,6 +1434,7 @@ void MAT_UpdateRegistration(pbr_material_t * mat)
 	if (mat->image_emissive) mat->image_emissive->registration_sequence = registration_sequence;
 	if (mat->image_roughness) mat->image_roughness->registration_sequence = registration_sequence;
 	if (mat->image_metallic) mat->image_metallic->registration_sequence = registration_sequence;
+	if (mat->image_height) mat->image_height->registration_sequence = registration_sequence;
 	if (mat->image_mask) mat->image_mask->registration_sequence = registration_sequence;
 }
 
@@ -1483,8 +1525,11 @@ void MAT_Print(pbr_material_t const * mat)
 	PRINT_TEXTURE("texture_mask", filename_mask, image_mask);
 	PRINT_TEXTURE("texture_roughness", filename_roughness, image_roughness);
 	PRINT_TEXTURE("texture_metallic", filename_metallic, image_metallic);
+	PRINT_TEXTURE("texture_height", filename_height, image_height);
 #undef PRINT_TEXTURE
 	Com_Printf("    bump_scale %f\n", mat->bump_scale);
+	Com_Printf("    displace_in %f\n", mat->displace_in);
+	Com_Printf("    displace_out %f\n", mat->displace_out);
 	Com_Printf("    roughness_override %f\n", mat->roughness_override);
 	Com_Printf("    metalness_factor %f\n", mat->metalness_factor);
 	Com_Printf("    emissive_factor %f\n", mat->emissive_factor);
@@ -1566,6 +1611,8 @@ from the definition.
 static void material_reapply_definition(pbr_material_t* mat, const pbr_material_t* matdef)
 {
 	mat->bump_scale         = matdef->bump_scale;
+	mat->displace_in        = matdef->displace_in;
+	mat->displace_out       = matdef->displace_out;
 	mat->roughness_override = matdef->roughness_override;
 	mat->metalness_factor   = matdef->metalness_factor;
 	mat->emissive_factor    = matdef->emissive_factor;
@@ -1622,6 +1669,7 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	RELOAD_TEXTURE(MAT_TEXTURE_NORMALS,   image_normals,   filename_normals,   IF_NONE);
 	RELOAD_TEXTURE(MAT_TEXTURE_ROUGHNESS, image_roughness, filename_roughness, IF_NONE);
 	RELOAD_TEXTURE(MAT_TEXTURE_METALLIC,  image_metallic,  filename_metallic,  IF_NONE);
+	RELOAD_TEXTURE(MAT_TEXTURE_HEIGHT,    image_height,    filename_height,    IF_NONE);
 	RELOAD_TEXTURE(MAT_TEXTURE_EMISSIVE,  image_emissive,  filename_emissive,  IF_SRGB);
 	RELOAD_TEXTURE(MAT_TEXTURE_MASK,      image_mask,      filename_mask,      IF_NONE);
 

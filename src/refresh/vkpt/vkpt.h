@@ -677,6 +677,7 @@ VkResult vkpt_profiler_query(VkCommandBuffer cmd_buf, int idx, VKPTProfilerActio
 VkResult vkpt_reset_query_pool(VkCommandBuffer cmd_buf);
 VkResult vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass);
 void draw_profiler(int enable_asvgf);
+void vkpt_profiler_dump(void);
 double vkpt_get_profiler_result(int idx);
 
 VkResult vkpt_readback(ReadbackBuffer* dst);

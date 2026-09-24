@@ -943,6 +943,15 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 		// with 7 spare).
 		if (material->dlss_guide_field >= 0)
 			mat_data[7] = (uint32_t)(material->dlss_guide_field + 1) & 7;
+
+		// Height map for parallax occlusion mapping: index in the top half of
+		// word 7, displace_in / displace_out as halves in word 8. No map means
+		// the shader skips POM entirely.
+		if (material->image_height) {
+			mat_data[7] |= (uint32_t)(material->image_height - r_images) << 16;
+			mat_data[8] = floatToHalf(material->displace_in);
+			mat_data[8] |= (uint32_t)floatToHalf(material->displace_out) << 16;
+		}
 	}
 
 	memcpy(lbo->cluster_debug_mask, cluster_debug_mask, MAX_LIGHT_LISTS / 8);

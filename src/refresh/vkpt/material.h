@@ -41,6 +41,7 @@ typedef struct pbr_material_s {
 	char filename_mask[MAX_QPATH];
 	char filename_roughness[MAX_QPATH];
 	char filename_metallic[MAX_QPATH];
+	char filename_height[MAX_QPATH];
 	char source_matfile[MAX_QPATH];
 	uint32_t source_line;
 	int original_width;
@@ -53,7 +54,18 @@ typedef struct pbr_material_s {
 	// legacy packing (roughness in base alpha, metallic in normals alpha).
 	image_t * image_roughness;
 	image_t * image_metallic;
+	// Height map for parallax occlusion mapping, RTX-Remix style: white is the
+	// surface, black is displace_in below it.
+	image_t * image_height;
 	float bump_scale;
+	// Depth of the height map's black level below the surface, in UV units
+	// (0.05 = 5% of one texture repeat) - the same unit as Remix's displaceIn,
+	// so values carry over. Scaled globally by pt_pom_scale.
+	float displace_in;
+	// Height of the height map's white level ABOVE the surface, same units -
+	// Remix's displaceOut. Height h lands at h * (in + out) - in, so with both
+	// set the surface itself sits at h = in / (in + out).
+	float displace_out;
 	float roughness_override;
 	float metalness_factor;
 	float emissive_factor;

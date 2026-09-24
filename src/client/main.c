@@ -45,6 +45,9 @@ cvar_t  *cl_muzzleflash_offset;
 cvar_t  *cl_warn_on_fps_rounding;
 cvar_t  *cl_maxfps;
 cvar_t  *cl_async;
+// Benchmark aid: keep full speed when the window is not active. Not archived, so a
+// scripted run cannot leave it behind in q2config.cfg.
+static cvar_t *cl_unfocused_fullspeed;
 cvar_t  *r_maxfps;
 cvar_t  *cl_autopause;
 
@@ -2997,6 +3000,8 @@ static void CL_InitLocal(void)
     cl_maxfps->changed = cl_maxfps_changed;
     cl_async = Cvar_Get("cl_async", "1", CVAR_ARCHIVE);
     cl_async->changed = cl_sync_changed;
+    cl_unfocused_fullspeed = Cvar_Get("cl_unfocused_fullspeed", "0", 0);
+    cl_unfocused_fullspeed->changed = cl_sync_changed;
     r_maxfps = Cvar_Get("r_maxfps", "0", CVAR_ARCHIVE);
     r_maxfps->changed = cl_maxfps_changed;
     cl_autopause = Cvar_Get("cl_autopause", "1", 0);
@@ -3472,7 +3477,7 @@ void CL_UpdateFrameTimes(void)
         // run at 10 fps if minimized
         main_msec = fps_to_msec(10);
         sync_mode = SYNC_SLEEP_10;
-    } else if (cls.active == ACT_RESTORED || cls.state != ca_active) {
+    } else if ((cls.active == ACT_RESTORED && !cl_unfocused_fullspeed->integer) || cls.state != ca_active) {
         // run at 60 fps if not active
             main_msec = fps_to_msec(60);
             sync_mode = SYNC_SLEEP_60;
