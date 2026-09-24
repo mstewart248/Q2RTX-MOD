@@ -153,6 +153,31 @@ static void PM_StepSlideMove_(void)
             break;
         }
 
+        // [rerelease] if this is the same plane we hit before, nudge the
+        // origin out along it: the classic epsilon trap on non-axial planes,
+        // where the box keeps re-hitting one slope and the crease logic below
+        // zeroes the velocity - "stuck" against a surface that is not a corner.
+        // The rerelease follows the nudge with G_FixStuckObject; here a nudge
+        // that lands in solid is simply undone.
+        if (pmp->rerelease) {
+            for (i = 0; i < numplanes; i++) {
+                if (DotProduct(trace.plane.normal, planes[i]) > 0.99f) {
+                    vec3_t  nudged;
+                    trace_t test;
+
+                    VectorCopy(pml.origin, nudged);
+                    nudged[0] += trace.plane.normal[0] * 0.01f;
+                    nudged[1] += trace.plane.normal[1] * 0.01f;
+                    test = pm->trace(nudged, pm->mins, pm->maxs, nudged);
+                    if (!test.startsolid)
+                        VectorCopy(nudged, pml.origin);
+                    break;
+                }
+            }
+            if (i < numplanes)
+                continue;
+        }
+
         VectorCopy(trace.plane.normal, planes[numplanes]);
         numplanes++;
 
@@ -208,7 +233,7 @@ static void PM_StepSlideMove(void)
     vec3_t      start_o, start_v;
     vec3_t      down_o, down_v;
     trace_t     trace;
-    float       down_dist, up_dist;
+    float       down_dist, up_dist, step_size;
     vec3_t      up, down;
 
     VectorCopy(pml.origin, start_o);
@@ -222,9 +247,22 @@ static void PM_StepSlideMove(void)
     VectorCopy(start_o, up);
     up[2] += STEPSIZE;
 
-    trace = pm->trace(up, pm->mins, pm->maxs, up);
-    if (trace.allsolid)
-        return;     // can't step up
+    if (pmp->rerelease) {
+        // [rerelease] sweep up rather than test the end point, and step by the
+        // height actually reached: under a low or sloped ceiling the stock test
+        // passes, the box is placed a full STEPSIZE up, and the push-down below
+        // then has further to go than it came.
+        trace = pm->trace(start_o, pm->mins, pm->maxs, up);
+        if (trace.allsolid)
+            return;     // can't step up
+        step_size = trace.endpos[2] - start_o[2];
+        VectorCopy(trace.endpos, up);
+    } else {
+        trace = pm->trace(up, pm->mins, pm->maxs, up);
+        if (trace.allsolid)
+            return;     // can't step up
+        step_size = STEPSIZE;
+    }
 
     // try sliding above
     VectorCopy(up, pml.origin);
@@ -234,7 +272,7 @@ static void PM_StepSlideMove(void)
 
     // push down the final amount
     VectorCopy(pml.origin, down);
-    down[2] -= STEPSIZE;
+    down[2] -= step_size;
     trace = pm->trace(pml.origin, pm->mins, pm->maxs, down);
     if (!trace.allsolid)
         VectorCopy(trace.endpos, pml.origin);
@@ -250,11 +288,30 @@ static void PM_StepSlideMove(void)
     if (down_dist > up_dist || trace.plane.normal[2] < MIN_STEP_NORMAL) {
         VectorCopy(down_o, pml.origin);
         VectorCopy(down_v, pml.velocity);
-        return;
+        if (!pmp->rerelease)
+            return;
+    } else if (!pmp->rerelease || (pm->s.pm_flags & PMF_ON_GROUND)) {
+        //!! Special case
+        // if we were walking along a plane, then we need to copy the Z over
+        pml.velocity[2] = down_v[2];
     }
-    //!! Special case
-    // if we were walking along a plane, then we need to copy the Z over
-    pml.velocity[2] = down_v[2];
+
+    if (!pmp->rerelease)
+        return;
+
+    // [rerelease] step down stairs and slopes. Stock pmove moves horizontally,
+    // ends up hovering over a descending slope, and the 0.25 ground probe in
+    // PM_CategorizePosition misses - so every frame down a ramp is a short fall
+    // that gravity accelerates, and each landing clips that fall into the slope
+    // as extra speed. Snapping back onto the floor keeps the player walking.
+    if ((pm->s.pm_flags & PMF_ON_GROUND) && !pml.ladder &&
+        (pm->waterlevel < 2 || (pm->cmd.upmove < 10 && pml.velocity[2] <= 0))) {
+        VectorCopy(pml.origin, down);
+        down[2] -= STEPSIZE;
+        trace = pm->trace(pml.origin, pm->mins, pm->maxs, down);
+        if (trace.fraction < 1.0f)
+            VectorCopy(trace.endpos, pml.origin);
+    }
 }
 
 /*
@@ -560,6 +617,7 @@ static void PM_CategorizePosition(void)
     trace_t     trace;
     int         sample1;
     int         sample2;
+    bool        slanted;
 
 // if the player hull point one unit down is solid, the player
 // is on ground
@@ -577,7 +635,23 @@ static void PM_CategorizePosition(void)
         pml.groundsurface = trace.surface;
         pml.groundcontents = trace.contents;
 
-        if (!trace.ent || (trace.plane.normal[2] < 0.7f && !trace.startsolid)) {
+        slanted = trace.plane.normal[2] < 0.7f && !trace.startsolid;
+
+        // [rerelease] a player wedged between a too-steep slope and a wall can
+        // neither stand on the slope nor slide off it, and stock pmove leaves
+        // them there. Allow "standing" on the slope when the box is right up
+        // against something along the slope's normal.
+        if (pmp->rerelease && slanted && trace.fraction < 1.0f) {
+            vec3_t  out;
+            trace_t slant;
+
+            VectorAdd(pml.origin, trace.plane.normal, out);
+            slant = pm->trace(pml.origin, pm->mins, pm->maxs, out);
+            if (slant.fraction < 1.0f && !slant.startsolid)
+                slanted = false;
+        }
+
+        if (!trace.ent || slanted) {
             pm->groundentity = NULL;
             pm->s.pm_flags &= ~PMF_ON_GROUND;
         } else {

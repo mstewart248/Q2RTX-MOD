@@ -197,6 +197,17 @@ void Reflex_OnSwapchainCreated(VkSwapchainKHR swapchain)
     reflex_mode_applied = false;
 }
 
+/* CRASHED WITHOUT THIS (Q2RTX_CrashReport10, 2026-09-23): minimizing destroys the
+   swapchain and create_swapchain() returns early on a zero extent, so reflex_swapchain
+   kept the freed handle. The client keeps calling Reflex_SleepAndBeginFrame() while
+   minimized, and vkLatencySleepNV on the dead swapchain took an access violation
+   inside nvoglv64 on restore. */
+void Reflex_OnSwapchainDestroyed(void)
+{
+    reflex_swapchain = VK_NULL_HANDLE;
+    reflex_mode_applied = false;
+}
+
 /* The sleep mode is per swapchain and has to be re-applied whenever the swapchain is
    recreated or the cvars change. Cheap enough to check every frame. */
 static void reflex_apply_mode(void)

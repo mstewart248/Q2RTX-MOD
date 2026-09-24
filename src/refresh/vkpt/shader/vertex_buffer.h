@@ -457,7 +457,12 @@ load_and_transform_triangle(int instance_idx, uint buffer_idx, uint prim_id)
 		t.material_id = animate_material(t.material_id, mi.frame);
 		t.cluster = mi.cluster;
 		t.emissive_factor = 1.0;
-		t.alpha = mi.alpha;
+		// Multiply, don't replace: a brush model's TRANS33/66 faces carry their
+		// own alpha from bsp_mesh.c (e.g. the fire over the MGU drop pod
+		// windows, a func_wall), and overwriting it with the entity alpha
+		// (1.0 unless RF_TRANSLUCENT) drew them fully opaque. Every other
+		// static-mesh prim stores alpha 1.0, so this is a no-op for those.
+		t.alpha *= mi.alpha;
 
 		// Store the index of that instance and the prim offset relative to the instance.
 		t.instance_index = uint(instance_idx);

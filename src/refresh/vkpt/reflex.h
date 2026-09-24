@@ -61,6 +61,10 @@ bool Reflex_Enabled(void);
 // creation - the mode is a property of the swapchain, not the device.
 void Reflex_OnSwapchainCreated(VkSwapchainKHR swapchain);
 
+// Forgets the swapchain. Call BEFORE destroying it - while minimized no new swapchain
+// is created, and every Reflex call would otherwise go to the freed handle.
+void Reflex_OnSwapchainDestroyed(void);
+
 // Blocks until the driver says this frame should start, then opens a new frame.
 // Call at the TOP of the client frame, before input is sampled - that placement is
 // the entire point, since the sleep is what stops the CPU running ahead.

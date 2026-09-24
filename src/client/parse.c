@@ -813,6 +813,7 @@ bool CL_ParseServerData(void)
 
     // setup default pmove parameters
     PmoveInit(&cl.pmp);
+    cl.pmp.rerelease = Q_strHas(cl.gamedir, "rerelease");
 
     // frame times were set above, from the rate the demo or server announced
 

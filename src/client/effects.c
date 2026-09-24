@@ -208,7 +208,12 @@ void CL_MuzzleFlash(void)
     // teleportation effect" - and the switch below draws them that way. Putting
     // a muzzle flash MODEL on them lit up your own barrel the instant you
     // spawned, before you had fired anything.
-    if (mz.weapon != MZ_LOGIN && mz.weapon != MZ_LOGOUT && mz.weapon != MZ_RESPAWN) {
+    //
+    // MZ_PODLIGHT is the same story: g_trigger.c's drop pod emergency light
+    // rides svc_muzzleflash at the player for its red dlight, and without this
+    // every strobe pulse also flashed a muzzle model at your gun.
+    if (mz.weapon != MZ_LOGIN && mz.weapon != MZ_LOGOUT && mz.weapon != MZ_RESPAWN
+        && mz.weapon != MZ_PODLIGHT) {
 
     // Rerelease: the flash model, at the same place the dlight was just put.
     // Our own gun in first person is handled separately - CL_AddViewWeapon is
@@ -424,7 +429,7 @@ void CL_MuzzleFlash(void)
 		dl->radius = 192 + (Q_rand() & 63);                   // 80 .. 143
 		// Shorter than the 100ms think interval so each pulse has a real
 		// off-phase, and jittered so the strobe never settles into a rhythm.
-		dl->die = cl.time + 35 + (Q_rand() & 31);            // 35 .. 66ms
+		dl->die = cl.time + 45 + (Q_rand() & 31);            // 45 .. 76ms (was 35 .. 66)
 		break;
 	// Q2RTX
     }

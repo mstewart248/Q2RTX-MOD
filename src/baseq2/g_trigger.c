@@ -849,10 +849,12 @@ void droppod_light_think(edict_t *self)
         return;
     }
 
-    // Drop roughly one beat in four so the strobe stays irregular. The pulse
+    // Drop roughly one beat in three so the strobe stays irregular. The pulse
     // itself cannot go faster than one think (10Hz), so the randomness has to
     // come from skipped beats plus the jittered radius and life on the client.
-    if (player->inuse && player->client && player->health > 0 && (Q_rand() & 3)) {
+    // (Was one in four - about 7.5 pulses/s. One in three, ~6.7/s, slowed it a
+    // touch at Matt's request 2026-09-23.)
+    if (player->inuse && player->client && player->health > 0 && (Q_rand() % 3)) {
         gi.WriteByte(svc_muzzleflash);
         gi.WriteShort(player - g_edicts);
         gi.WriteByte(MZ_PODLIGHT);

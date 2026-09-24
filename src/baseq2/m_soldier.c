@@ -39,6 +39,7 @@ static int  sound_death_ss;
 static int  sound_cock;
 
 extern mmove_t soldier_move_trip;
+extern mmove_t soldier_move_attack5;
 
 /*
 =================
@@ -57,7 +58,7 @@ Mapping this file onto src/rerelease/m_soldier.cpp
                            tree's are enum tags for range().  Hence the two
                            SOLDIER_RANGE_* below, matching their g_local.h:2213.
   their `radius_dmg`       the force-a-refire flag.  Free here: this tree's
-                           soldierh_laserbeam takes its flash index as an
+                           soldierh_laserbeam takes its muzzle point as an
                            argument instead of parking it in radius_dmg, which
                            is what their soldierh_laser_update does.
   their `self->dmg`        set by the shotgun shot, cleared by soldier_cock:
@@ -638,37 +639,22 @@ The odd skin of each pair is that variant's pain skin, which soldier_pain sets
 with |= 1, so every test here is a range and not an equality.
 =================
 */
-static void soldierh_laserbeam(edict_t *self, int flash_index)
+// `start` is the muzzle projected from the model's own facing (s.angles), as the
+// rerelease's soldierh_laser_update does.  The Xatrix original rebuilt it from
+// the direction to the enemy with forward/right swapped and offsets tuned for
+// its own flash table; fed this tree's machinegun offsets, that put the beam
+// origin off to the side of the gun, further off the more the body was turned
+// away from the target.
+static void soldierh_laserbeam(edict_t *self, const vec3_t start)
 {
-    vec3_t  forward, right, up;
-    vec3_t  start, dir, angles, end;
-    vec3_t  tempvec;
     edict_t *ent;
 
     if (Q_rand() % 5 == 0)
         gi.sound(self, CHAN_AUTO, gi.soundindex("misc/lasfly.wav"), 1, ATTN_STATIC, 0);
 
-    VectorCopy(self->s.origin, start);
-    VectorCopy(self->enemy->s.origin, end);
-    VectorSubtract(end, start, dir);
-    vectoangles(dir, angles);
-    VectorCopy(monster_flash_offset[flash_index], tempvec);
-
     ent = G_Spawn();
-    VectorCopy(self->s.origin, ent->s.origin);
-    AngleVectors(angles, forward, right, up);
-    VectorCopy(angles, ent->s.angles);
-    VectorCopy(ent->s.origin, start);
-
-    // flash 85 is the left-hand muzzle; its offset needs mirroring
-    if (flash_index == 85)
-        VectorMA(start, tempvec[0] - 14, right, start);
-    else
-        VectorMA(start, tempvec[0] + 2, right, start);
-    VectorMA(start, tempvec[2] + 8, up, start);
-    VectorMA(start, tempvec[1], forward, start);
-
     VectorCopy(start, ent->s.origin);
+    VectorCopy(self->s.angles, ent->s.angles);
     ent->enemy = self->enemy;
     ent->owner = self;
     ent->dmg = 1;
@@ -715,7 +701,7 @@ static void soldierh_fire_weapon(edict_t *self, int flash_index)
                 self->monsterinfo.pause_framenum = self->monsterinfo.fire_framenum;
         }
 
-        soldierh_laserbeam(self, flash_index);
+        soldierh_laserbeam(self, start);
 
         if (level.framenum >= self->monsterinfo.fire_framenum)
             self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
@@ -1708,6 +1694,13 @@ void soldier_stand_up(edict_t *self)
 {
     soldierh_hyper_laser_sound_end(self);
 
+    // The lasergun and machinegun hold attak506 for their whole burst, and the
+    // angle cone in soldier_fire holds too.  Bailing out mid-hold used to carry
+    // AI_HOLD_FRAME into the trip: M_MoveFrame's nextframe jump keeps the flag,
+    // no trip frame clears it, and the soldier froze on runt08 lying on the
+    // floor - still ducked - until pain or death replaced the move.
+    self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+
     // rejoin the trip animation at its get-back-up half
     self->monsterinfo.currentmove = &soldier_move_trip;
     self->monsterinfo.nextframe = FRAME_runt08;
@@ -1722,9 +1715,34 @@ static void ai_soldier_move(edict_t *self, float dist)
         soldier_stand_up(self);
 }
 
+// M_MoveFrame runs a frame's aifunc and THEN its thinkfunc.  When
+// ai_soldier_move bails out through soldier_stand_up, the move is already the
+// trip, but this frame's attack5 think still runs.  On attak506 that fired the
+// burst and set AI_HOLD_FRAME straight back after soldier_stand_up cleared it,
+// the nextframe jump to runt08 kept it, and the soldier lay frozen on the floor
+// until pain or death.  On attak505 it started the hyper laser loop that the
+// trip never ends.  So each attack5 think does nothing once the move has gone.
+static bool soldier_still_prone(edict_t *self)
+{
+    return self->monsterinfo.currentmove == &soldier_move_attack5;
+}
+
+static void soldier_sound_start5(edict_t *self)
+{
+    if (soldier_still_prone(self))
+        soldierh_hyper_laser_sound_start(self);
+}
+
 void soldier_fire5(edict_t *self)
 {
-    soldier_fire(self, 8, true);
+    if (soldier_still_prone(self))
+        soldier_fire(self, 8, true);
+}
+
+static void soldier_hyperripper5_prone(edict_t *self)
+{
+    if (soldier_still_prone(self))
+        soldierh_hyperripper5(self);
 }
 
 mframe_t soldier_frames_attack5 [] = {
@@ -1732,10 +1750,10 @@ mframe_t soldier_frames_attack5 [] = {
     { ai_move, 11, monster_footstep },
     { ai_move, 0,  monster_footstep },
     { ai_soldier_move, 0, NULL },
-    { ai_soldier_move, 0, soldierh_hyper_laser_sound_start },
+    { ai_soldier_move, 0, soldier_sound_start5 },
     { ai_soldier_move, 0, soldier_fire5 },
-    { ai_soldier_move, 0, soldierh_hyperripper5 },
-    { ai_soldier_move, 0, soldierh_hyperripper5 }
+    { ai_soldier_move, 0, soldier_hyperripper5_prone },
+    { ai_soldier_move, 0, soldier_hyperripper5_prone }
 };
 mmove_t soldier_move_attack5 = {FRAME_attak501, FRAME_attak508, soldier_frames_attack5, soldier_stand_up};
 

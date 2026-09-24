@@ -35,6 +35,10 @@ typedef struct {
     bool        strafehack;
     bool        flyhack;
     bool        waterhack;
+    // [rerelease] the movement fixes from the rerelease's p_move.cpp - see
+    // pmove.c. Must match on client and server or prediction diverges, so both
+    // derive it from the game directory the same way SV_SpawnServer does.
+    bool        rerelease;
     float       speedmult;
     float       watermult;
     float       maxspeed;

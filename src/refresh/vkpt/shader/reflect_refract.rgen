@@ -652,7 +652,18 @@ main()
 			else
 			{
 				do_split = bitCount(checkerboard_flags) == 1 && F > 0;
-				do_refraction = do_split ? stochastic_choice  : (F < 0.1);
+				if(do_split)
+					do_refraction = stochastic_choice;
+				else if(global_ubo.pt_glass_secondary_flat != 0)
+				{
+					// pt_glass_secondary_flat - see global_ubo.h. Decide on the flat pane, at
+					// the F where both weights are equal, so the choice neither flickers under
+					// the jitter nor steps in brightness where it changes.
+					float F_flat = 0.05 + 0.95 * pow(1.0 - abs(dot(direction, geo_normal)), 5.0);
+					do_refraction = F_flat < 0.5 || F == 0.0; // F is forced to 0 when the reflection would enter the pane
+				}
+				else
+					do_refraction = (F < 0.1);
 			}
 
 			if(do_refraction)

@@ -18584,8 +18584,10 @@ textures/tomc/tc_rockwall_b_netting:
 
 textures/tomc/tc_rockwall_c:
 	texture_base materialDev/textures/tomc/tc_rockwall_c.tga
-	texture_normals materialDev/textures/tomc/tc_rockwall_c_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_rockwall_c_n.png
+	texture_roughness materialDev/textures/tomc/tc_rockwall_c_rough.png
+	texture_metallic materialDev/textures/tomc/tc_rockwall_c_metal.png
+
 
 textures/tomc/tc_rockwall_d:
 	texture_base materialDev/textures/tomc/tc_rockwall_d.tga
@@ -18599,11 +18601,15 @@ textures/tomc/tc_rockwall_e:
 
 textures/tomc/tc_rockwall_f:
 	texture_base materialDev/textures/tomc/tc_rockwall_f.tga
-	texture_normals materialDev/textures/tomc/tc_rockwall_f_n.tga
+	texture_normals materialDev/textures/tomc/tc_rockwall_f_n.png
+	texture_metallic materialDev/textures/tomc/tc_rockwall_f_metal.png
+	texture_roughness materialDev/textures/tomc/tc_rockwall_f_rough.png
 
 textures/tomc/tc_rockwall_f_blend:
-	texture_base materialDev/textures/tomc/tc_rockwall_f_blend.tga
-	texture_normals materialDev/textures/tomc/tc_rockwall_f_blend_n.tga
+	texture_base materialDev/textures/tomc/tc_rockwall_f_blend.png
+	texture_normals materialDev/textures/tomc/tc_rockwall_f_blend_n.png
+	texture_metallic materialDev/textures/tomc/tc_rockwall_f_blend_metal.png
+	texture_roughness materialDev/textures/tomc/tc_rockwall_f_blend_rough.png
 
 textures/tomc/tc_rockwall_f_blend2:
 	texture_base materialDev/textures/tomc/tc_rockwall_f_blend2.tga
@@ -19168,7 +19174,7 @@ textures/tomf/fuse1_3b:
 # 	metalness_factor 0
 
 textures/tomf/glocrys_1b:
-	texture_base extures/tomf/glocrys_1b.wal
+	texture_base textures/tomf/glocrys_1b.wal
 	emissive_factor 2.0
 	is_light 1	
 	kind WATER	
@@ -19236,7 +19242,9 @@ textures/tomf/ho_wall_panel_01d:
 
 textures/tomf/hvydoor1_1b:
 	texture_base materialDev/textures/tomf/hvydoor1_1b.tga
-	texture_normals materialDev/textures/tomf/hvydoor1_1b_n.tga
+	texture_normals materialDev/textures/tomf/hvydoor1_1b_n.png
+	texture_metallic materialDev/textures/tomf/hvydoor1_1b_metal.png
+	texture_roughness materialDev/textures/tomf/hvydoor1_1b_rough.png
 
 textures/tomf/hvydoor1_1c:
 	texture_base materialDev/textures/tomf/hvydoor1_1c.tga

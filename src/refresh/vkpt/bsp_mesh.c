@@ -192,6 +192,10 @@ create_poly(
 		texture_flags |= TEXTURE_FLAG_SCROLL_Y;
 	if (texinfo->c.flags & SURF_N64_SCROLL_FLIP)
 		texture_flags |= TEXTURE_FLAG_SCROLL_FLIP;
+
+	// the MGU drop pod fire - see the glocrys_1b hack in collect_surfaces
+	if (Q_strHas(texinfo->name, "glocrys_1b") && texinfo->c.value == 0 && (texinfo->c.flags & SURF_TRANS_MASK))
+		texture_flags |= TEXTURE_FLAG_FAST_FLOW;
 	
 	for (int i = 0; i < surf->numsurfedges; i++) {
 		msurfedge_t *src_surfedge = surf->firstsurfedge + i;
@@ -202,7 +206,15 @@ create_poly(
 		float *t = tex_coords + i * 2;
 
 		VectorCopy(src_vert->point, p);
-		
+
+		// Sink the pod fire deeper into the window recess, toward the sky face
+		// 2 units behind it. The move is along the face normal and the texture
+		// axes lie in the face plane, so the texture mapping is unchanged.
+		if (texture_flags & TEXTURE_FLAG_FAST_FLOW) {
+			float d = (surf->drawflags & DSURF_PLANEBACK) ? 1.5f : -1.5f;
+			VectorMA(src_vert->point, d, surf->plane->normal, p);
+		}
+
 		t[0] = (DotProduct(p, texinfo->axis[0]) + texinfo->offset[0]) * sc[0];
 		t[1] = (DotProduct(p, texinfo->axis[1]) + texinfo->offset[1]) * sc[1];
 
@@ -935,9 +947,23 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 
 		// ugly hacks for situations when the same texture is used with different effects
 
+		// MGU drop pods: the fire over the pod window is a thin func_wall brush
+		// in tomf/glocrys_1b with light value 0. Only its inner face is
+		// TRANS33|FLOWING; the rest are 0x0 and the back face is coplanar with
+		// the sky face behind it (mgu6m1: *73 at x -514..-516, sky at -516).
+		// The opaque faces become SKY, which filter_all drops from brush models,
+		// so the window still shows the sky. The translucent face is forced to
+		// TRANSPARENT - rerelease.mat marks glocrys_1b is_light for the tomb
+		// crystals, and a LIGHT material never reaches TRANSPARENT below, which
+		// is why this used to delete the whole brush and lose the fire.
+		// Emission still comes from the material's emissive_factor.
 		if (Q_strHas(surf->texinfo->name, "glocrys_1b") && surf->texinfo->c.value == 0) {
-			//Com_EPrintf("DrawFlag: %d\n", surf->drawflags);
-			surf_flags = SURF_SKY;
+			if (surf_flags & SURF_TRANS_MASK) {
+				material_id &= ~MATERIAL_FLAG_LIGHT;
+				material_id = MAT_SetKind(material_id, MATERIAL_KIND_TRANSPARENT);
+			} else {
+				surf_flags = SURF_SKY;
+			}
 		}
 
 		if ((MAT_IsKind(material_id, MATERIAL_KIND_WATER) || MAT_IsKind(material_id, MATERIAL_KIND_SLIME)) && !(surf_flags & SURF_WARP))

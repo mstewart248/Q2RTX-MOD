@@ -143,6 +143,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define TEXTURE_FLAG_SCROLL_Y        0x00000002
 #define TEXTURE_FLAG_SCROLL_FLIP     0x00000004
 
+// Doubles the SURF_FLOWING scroll rate on one face. Set only on the fire over
+// the MGU drop pod windows (see bsp_mesh.c), which reads as a crawl at 1.6.
+#define TEXTURE_FLAG_FAST_FLOW       0x00000008
+
 // Scroll rate in texture widths per second, for the N64 scroll flags above.
 // Matches GL_ScrollSpeed() in the rerelease-derived q2repro renderer, which
 // uses 1.6 for plain SURF_FLOWING, 0.5 for SURF_FLOWING on a warped surface,

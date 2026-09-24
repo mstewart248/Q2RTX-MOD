@@ -2947,6 +2947,7 @@ destroy_swapchain(void)
 
 	qvk.num_swap_chain_images = 0;
 
+	Reflex_OnSwapchainDestroyed();
 	vkDestroySwapchainKHR(qvk.device, qvk.swap_chain, NULL);
 	qvk.swap_chain = VK_NULL_HANDLE;
 

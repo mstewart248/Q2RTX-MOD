@@ -524,7 +524,13 @@ void perturb_tex_coord(uint material_id, uint texture_flags, float time, inout v
     }
     else if((material_id & MATERIAL_FLAG_FLOWING) != 0)
     {
-        tex_coord.x -= time * 0.5;
+        // GL_ScrollSpeed(): 1.6 for plain SURF_FLOWING, 0.5 when the surface
+        // also warps (see TEXTURE_N64_SCROLL_SPEED). Everything used to take
+        // 0.5, which left e.g. the fire over the MGU drop pod windows crawling.
+        float speed = ((material_id & MATERIAL_FLAG_WARP) != 0) ? 0.5 : 1.6;
+        if((texture_flags & TEXTURE_FLAG_FAST_FLOW) != 0)
+            speed *= 2.0;
+        tex_coord.x -= time * speed;
     }
 
     if((material_id & MATERIAL_FLAG_WARP) != 0)
