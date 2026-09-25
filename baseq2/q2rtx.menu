@@ -381,6 +381,12 @@ begin effects
        nest - with the effect off, none of these does anything. */
     ifeq vid_rtx 1
         blank
+        /* Not behind the warp toggle: this is how murky the liquid itself is,
+           and it applies whether or not the view warps. One scale covers water,
+           slime and lava alike, because the shader's per-medium colours all
+           multiply by it (water.glsl, get_extinction_factors). */
+        range --status "how quickly light fades travelling through water, slime and lava. Lower sees further and brighter; higher is murkier. It also scales the light rays scattered inside the water, so near 0 those fade out too. Default 0.5 (pt_water_density)" \
+            -f "%.2f" "underwater murkiness" pt_water_density 0 1.5 0.05
         toggle --status "warp the view while you are underwater, the way the original game does. Here it bends the camera rays instead of resampling the finished frame, so it costs no sharpness through DLSS, has real geometry to bend in from off the edge of the screen, and never touches the HUD (pt_water_warp)" \
             "underwater warp" pt_water_warp
 

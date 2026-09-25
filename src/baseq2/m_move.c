@@ -202,7 +202,7 @@ static bool SV_alternate_flystep(edict_t *ent, vec3_t move, bool relink)
     vec3_t      aim_fwd, aim_rgt, aim_up, yaw_angles;
     vec3_t      probe, mins8, maxs8;
     float       current_speed, dist_to_wanted, turn_factor, speed_factor;
-    float       accel, wanted_speed;
+    float       accel, wanted_speed, probe_dist;
     bool        bad_movement_direction;
     trace_t     tr;
 
@@ -275,8 +275,13 @@ static bool SV_alternate_flystep(edict_t *ent, vec3_t move, bool relink)
     VectorSet(yaw_angles, 0, ent->s.angles[YAW], 0);
     AngleVectors(yaw_angles, aim_fwd, aim_rgt, aim_up);
 
-    // blocked from moving that way from here?
-    VectorMA(ent->s.origin, ent->monsterinfo.fly_acceleration, wanted_dir, probe);
+    // blocked from moving that way from here?  The rerelease probes one tick's
+    // worth of acceleration AS A DISTANCE, so this is the unscaled number - the
+    // scaled one reaches four times as far and flags every wall within 30
+    // units as a block, which keeps a swimmer in a narrow channel permanently
+    // veering off whatever is beside it.
+    probe_dist = ent->monsterinfo.fly_acceleration / FLY_TICK_SCALE;
+    VectorMA(ent->s.origin, probe_dist, wanted_dir, probe);
     tr = gi.trace(ent->s.origin, ent->mins, ent->maxs, probe, ent, MASK_SOLID | CONTENTS_MONSTERCLIP);
 
     // a fairly close block, so shift more dramatically than the slerp would
@@ -287,13 +292,13 @@ static bool SV_alternate_flystep(edict_t *ent, vec3_t move, bool relink)
         VectorCopy(ent->s.origin, a);
         a[2] += ent->mins[2];
         VectorCopy(ent->s.origin, b);
-        b[2] += ent->mins[2] - ent->monsterinfo.fly_acceleration;
+        b[2] += ent->mins[2] - probe_dist;
         bottom_visible = SV_flystep_testvisposition(a, wanted_pos, ent->s.origin, b, ent);
 
         VectorCopy(ent->s.origin, a);
         a[2] += ent->maxs[2];
         VectorCopy(ent->s.origin, b);
-        b[2] += ent->maxs[2] + ent->monsterinfo.fly_acceleration;
+        b[2] += ent->maxs[2] + probe_dist;
         top_visible = SV_flystep_testvisposition(a, wanted_pos, ent->s.origin, b, ent);
 
         if (bottom_visible == top_visible) {
@@ -333,6 +338,13 @@ static bool SV_alternate_flystep(edict_t *ent, vec3_t move, bool relink)
         turn_factor = 0.45f;
     else
         turn_factor = min(1.0f, 0.84f + (0.08f * (current_speed / ent->monsterinfo.fly_speed)));
+
+    // turn_factor is kept PER CALL, and they make FLY_TICK_SCALE calls for
+    // every one of ours - so compound it, the way the heat-seeker does
+    // (g_weapon.c).  Left per-call, a 10hz flyer turns a quarter as fast as
+    // theirs: a full-speed flipper swings a ~130 unit circle instead of ~33
+    // and keeps sailing past the point beside you it is trying to reach.
+    turn_factor = powf(turn_factor, FLY_TICK_SCALE);
 
     if (current_speed)
         VectorCopy(dir, final_dir);

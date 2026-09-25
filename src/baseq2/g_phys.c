@@ -992,7 +992,16 @@ void SV_Physics_Step(edict_t *ent)
             if (!((ent->flags & FL_SWIM) && (ent->waterlevel > 2))) {
                 if (ent->velocity[2] < sv_gravity->value * -0.1f)
                     hitsound = true;
-                if (ent->waterlevel == 0)
+                // [rerelease] an AI_ALTERNATE_FLY swimmer that is not fully
+                // under is not steered at all (SV_alternate_flystep leaves it
+                // to its velocity), and the friction below is skipped for it -
+                // so without gravity at waterlevel 1-2 a flipper that drifts
+                // up to the surface, or into water shallower than it needs,
+                // and stops against a wall floats there forever.  Theirs sinks
+                // back under: g_phys.cpp adds gravity at any level below
+                // WATER_UNDER.
+                if (ent->waterlevel == 0 ||
+                    ((ent->flags & FL_SWIM) && (ent->monsterinfo.aiflags & AI_ALTERNATE_FLY)))
                     SV_AddGravity(ent);
             }
 

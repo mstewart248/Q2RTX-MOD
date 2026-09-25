@@ -45,6 +45,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   light delete                     remove the light under the crosshair
 //   light debug_on / light debug_off show the lights as spheres
 //   light reload                     re-read the file from disk
+//   light probe [targetname]         same as probe_trigger, below
+//
+//   probe_trigger [targetname]       what the button / trigger under the
+//                                    crosshair fires, followed down the whole
+//                                    chain of relays with their delays, and
+//                                    which of those names switch lights - the
+//                                    names "light edit trigger_on" takes. Given
+//                                    a name, starts the chain from that instead.
 //
 // r, g, b are 0..255, as typed. brightness is on the same 0..255 scale but is a
 // real number, so a big, barely-there light can be "brightness .1". radius is in world units
@@ -79,6 +87,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //                                                (also "direction")
 //   origin                 move it to in front of the camera  (also "move")
 //   x <n> / y <n> / z <n>  nudge one coordinate
+//   trigger_on <name>      dark until the game fires <name>, then lit
+//   trigger_off <name>     lit until the game fires <name>, then dark
+//                          ("light edit trigger_on default" clears either)
 //
 // Every INHERITABLE attribute also takes "default", which unstates it and sends
 // it back where it came from: the entity for a replacement light, or the plain
@@ -118,6 +129,26 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // Only debug mode makes a dormant map light pickable. With the markers off there
 // is nothing on screen to aim at.
 //
+// LIGHTS THE GAME SWITCHES
+//
+// The rerelease switches its baked lighting with lightstyles: every "light"
+// entity with a targetname gets a style of 32 or above, qrad bakes it into its
+// own lightmap layer, and firing the targetname makes light_use flip
+// CS_LIGHTS+style between "m" and "a". This renderer never draws lightmaps, so
+// a switched room goes dark and then stays dark - mgu4m1's red emergency lights
+// (rect_light_02, style 34) are exactly that. But the configstring still flips.
+//
+// So "trigger_on <name>" looks <name> up among the map's light entities, takes
+// their style, and makes this light follow it - INVERTED when those lights start
+// on, because "on when fired" of a light that starts lit means "on when it goes
+// out". trigger_off is the same with the sense reversed. The name is what is
+// stored, not the style, so it reads in the file and survives a recompile that
+// renumbers styles. Only names that switch light entities work: nothing else the
+// game fires is visible to the client. probe_trigger shows which ones those are.
+//
+// A switched light toggles each time its name fires, exactly like the map's
+// own, and a light_use style_on flicker pattern carries through un-inverted.
+//
 // The file is <gamedir>/maps/lights/<mapname>.cfg, rewritten in full after
 // every change - edit and delete need a rewrite anyway, so append would only
 // be a second code path to get wrong. It is read back through the normal
@@ -147,6 +178,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define LE_HAVE_CONE        (1u << 4)
 #define LE_HAVE_STYLE       (1u << 5)
 #define LE_HAVE_AIM         (1u << 6)
+#define LE_HAVE_TRIGGER     (1u << 7)
+
+// Longest targetname kept. The game's own are unbounded, but nothing in a
+// shipped map comes near this.
+#define LE_NAME_LEN         64
 
 typedef struct {
     vec3_t      origin;
@@ -164,11 +200,44 @@ typedef struct {
     // stops emitting and everything not in `have` is inherited from it.
     int         ent_index;
     vec3_t      ent_origin;     // the link key, as stored in the file
+
+    // LE_HAVE_TRIGGER: the targetname this light is switched by. trigger_on
+    // means dark until it fires; false is trigger_off, lit until it fires.
+    char        trigger[LE_NAME_LEN];
+    bool        trigger_on;
+
+    // what `trigger` resolved to, cached by LE_BindTrigger so the per-frame path
+    // never searches the lump: the lightstyle to follow (-1 = the name switches
+    // no light, and the trigger is ignored), and whether to follow it inverted
+    int         trigger_style;
+    bool        trigger_invert;
 } editlight_t;
 
 static editlight_t  *le_lights;
 static int          le_num_lights;
 static bool         le_debug;
+
+// The map's entity lump, cut down to what probe_trigger and the trigger lookup
+// need. Parsed once per map in LE_LoadLights; the lump is never large enough
+// (mgu4m1 is 1540 entities) for a linear search per command to matter, and the
+// per-frame path only ever uses the style cached in the light's resolve.
+typedef struct {
+    char    classname[LE_NAME_LEN];
+    char    targetname[LE_NAME_LEN];
+    char    target[LE_NAME_LEN];
+    char    killtarget[LE_NAME_LEN];
+    char    pathtarget[LE_NAME_LEN];
+    char    message[LE_NAME_LEN];
+    vec3_t  origin;
+    float   delay;
+    float   wait;
+    int     model;          // N of "*N", or -1 for a point entity
+    int     style;
+    int     spawnflags;
+} leent_t;
+
+static leent_t      *le_ents;
+static int          le_num_ents;
 
 static cvar_t   *light_enable;
 static cvar_t   *light_scale;
@@ -286,6 +355,201 @@ static bool LE_Active(void)
 static float LE_LightScale(void)
 {
     return light_scale ? light_scale->value : 2000.0f;
+}
+
+/*
+=================================================================
+
+  the entity lump
+
+  Everything the client can know about what the game fires. The
+  targetname graph is static, so it can be read straight out of the
+  BSP; what is live is only the lightstyle configstrings, and those
+  are what a triggered light actually follows.
+
+=================================================================
+*/
+
+// advances (data) past one { ... } block. false at the end of the lump or on
+// anything malformed, the same contract as CL_ParseEntityBlock.
+static bool LE_ParseEnt(const char **data, leent_t *out)
+{
+    char        key[LE_NAME_LEN];
+    const char  *token;
+
+    memset(out, 0, sizeof(*out));
+    out->model = -1;
+
+    token = COM_Parse(data);
+    if (!*data && !*token)
+        return false;
+    if (strcmp(token, "{"))
+        return false;
+
+    while (1) {
+        token = COM_Parse(data);
+        if (!*data && !*token)
+            return false;
+        if (!strcmp(token, "}"))
+            break;
+
+        Q_strlcpy(key, token, sizeof(key));
+
+        token = COM_Parse(data);
+        if (!*data && !*token)
+            return false;
+
+        if (!strcmp(key, "classname"))
+            Q_strlcpy(out->classname, token, sizeof(out->classname));
+        else if (!strcmp(key, "targetname"))
+            Q_strlcpy(out->targetname, token, sizeof(out->targetname));
+        else if (!strcmp(key, "target"))
+            Q_strlcpy(out->target, token, sizeof(out->target));
+        else if (!strcmp(key, "killtarget"))
+            Q_strlcpy(out->killtarget, token, sizeof(out->killtarget));
+        else if (!strcmp(key, "pathtarget"))
+            Q_strlcpy(out->pathtarget, token, sizeof(out->pathtarget));
+        else if (!strcmp(key, "message"))
+            Q_strlcpy(out->message, token, sizeof(out->message));
+        else if (!strcmp(key, "origin"))
+            sscanf(token, "%f %f %f", &out->origin[0], &out->origin[1], &out->origin[2]);
+        else if (!strcmp(key, "model") && token[0] == '*')
+            out->model = atoi(token + 1);
+        else if (!strcmp(key, "delay"))
+            out->delay = atof(token);
+        else if (!strcmp(key, "wait"))
+            out->wait = atof(token);
+        else if (!strcmp(key, "style"))
+            out->style = atoi(token);
+        else if (!strcmp(key, "spawnflags"))
+            out->spawnflags = atoi(token);
+    }
+
+    return true;
+}
+
+static void LE_FreeEnts(void)
+{
+    Z_Free(le_ents);
+    le_ents = NULL;
+    le_num_ents = 0;
+}
+
+static void LE_LoadEnts(void)
+{
+    const char  *data;
+    leent_t     ent;
+    int         count = 0;
+
+    LE_FreeEnts();
+
+    if (!cl.bsp || !cl.bsp->entitystring)
+        return;
+
+    data = cl.bsp->entitystring;
+    while (LE_ParseEnt(&data, &ent))
+        count++;
+
+    if (!count)
+        return;
+
+    le_ents = Z_Mallocz(sizeof(leent_t) * count);
+
+    data = cl.bsp->entitystring;
+    while (le_num_ents < count && LE_ParseEnt(&data, &le_ents[le_num_ents]))
+        le_num_ents++;
+}
+
+// What a targetname switches, as far as lighting goes.
+typedef struct {
+    int     style;          // -1 = no switchable light has that name
+    int     count;          // how many light entities it switches
+    bool    starts_on;
+    bool    mixed;          // those lights disagree on style or start state
+} leswitch_t;
+
+// Whether this lump entry is a light the game can switch. SP_light only hooks
+// light_use for a targetnamed light on style 32 or above - below that the style
+// is a shared animation (flicker, pulse) that firing the name cannot change.
+static bool LE_IsSwitchLight(const leent_t *e)
+{
+    return e->targetname[0] && e->style >= 32 && e->style < MAX_LIGHTSTYLES &&
+           !strcmp(e->classname, "light");
+}
+
+static bool LE_FindSwitch(const char *name, leswitch_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->style = -1;
+
+    if (!name || !*name)
+        return false;
+
+    for (int i = 0; i < le_num_ents; i++) {
+        const leent_t *e = &le_ents[i];
+        bool on = !(e->spawnflags & 1);     // START_OFF
+
+        if (!LE_IsSwitchLight(e) || strcmp(e->targetname, name))
+            continue;
+
+        if (!out->count) {
+            out->style = e->style;
+            out->starts_on = on;
+        } else if (e->style != out->style || on != out->starts_on) {
+            out->mixed = true;
+        }
+        out->count++;
+    }
+
+    return out->count > 0;
+}
+
+/*
+=================
+LE_BindTrigger
+
+Resolves a light's trigger name to the style it follows. Called whenever the name
+or the entity lump changes - on load, and after every edit - never per frame.
+
+"trigger_on" is dark until the name fires. If the lights with that name start
+OFF, firing turns them on, so following their style directly is right; if they
+start ON, firing turns them off, and this light has to be their inverse.
+trigger_off is the same with the sense reversed.
+=================
+*/
+static void LE_BindTrigger(editlight_t *l)
+{
+    leswitch_t sw;
+
+    l->trigger_style = -1;
+    l->trigger_invert = false;
+
+    if (!(l->have & LE_HAVE_TRIGGER))
+        return;
+
+    if (!LE_FindSwitch(l->trigger, &sw))
+        return;
+
+    l->trigger_style = sw.style;
+    l->trigger_invert = l->trigger_on ? sw.starts_on : !sw.starts_on;
+}
+
+// How lit a light's trigger has it right now, as a multiplier. 1 for a light
+// with no trigger, or one whose name switches nothing.
+static float LE_TriggerValue(const editlight_t *l)
+{
+    float v;
+
+    if (!(l->have & LE_HAVE_TRIGGER) || l->trigger_style < 0)
+        return 1.0f;
+
+    // 'a' is 0. A non-inverted light keeps any style_on flicker the map gave
+    // its switch; an inverted one can only be on or off.
+    v = CL_LightStyleValue(l->trigger_style);
+    if (l->trigger_invert)
+        v = v > 0.0f ? 0.0f : 1.0f;
+
+    return v;
 }
 
 /*
@@ -498,6 +762,13 @@ static int LE_ApplyKeyedToken(editlight_t *l, int argc, int i)
             l->have |= LE_HAVE_AIM;
         return 4;
     }
+    if (!strcmp(key, "trigger_on") || !strcmp(key, "trigger_off")) {
+        NEED(1);
+        Q_strlcpy(l->trigger, Cmd_Argv(i + 1), sizeof(l->trigger));
+        l->trigger_on = !strcmp(key, "trigger_on");
+        l->have |= LE_HAVE_TRIGGER;
+        return 2;
+    }
 
 #undef NEED
 
@@ -523,6 +794,10 @@ void LE_LoadLights(void)
     int     line = 0, ret, replacements = 0;
 
     LE_FreeLights();
+
+    // before the file, so its trigger names can be resolved as they are read -
+    // and regardless of whether there is a file, since probe_trigger needs it
+    LE_LoadEnts();
 
     if (!cl.mapname[0])
         return;
@@ -578,6 +853,7 @@ void LE_LoadLights(void)
         l->ent_index = -1;
         l->vol_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
         l->radius = LIGHT_DEFAULT_RADIUS;
+        l->trigger_style = -1;
 
         if (!strcmp(Cmd_Argv(0), "maplight")) {
             // maplight  entx enty entz  x y z  [key value...]
@@ -643,6 +919,11 @@ void LE_LoadLights(void)
             }
             i += used;
         }
+
+        LE_BindTrigger(l);
+        if ((l->have & LE_HAVE_TRIGGER) && l->trigger_style < 0)
+            Com_WPrintf("Line %d of %s: no switchable light is named \"%s\"; "
+                        "that light ignores its trigger.\n", line, path, l->trigger);
 
         le_num_lights++;
 
@@ -716,6 +997,8 @@ void LE_FreeLights(void)
     le_lights = NULL;
     le_num_lights = 0;
 
+    LE_FreeEnts();
+
     // The entities outlive this - they belong to dynamiclights.c and are only
     // reallocated on a map load - so "light reload" would otherwise keep every
     // suppression from the previous read of the file. Clearing them here is what
@@ -745,6 +1028,9 @@ static void LE_WriteKeyedTail(qhandle_t f, const editlight_t *l, unsigned skip)
         FS_FPrintf(f, "  style %d", l->style);
     if (have & LE_HAVE_AIM)
         FS_FPrintf(f, "  aim %.4f %.4f %.4f", l->aim[0], l->aim[1], l->aim[2]);
+    if (have & LE_HAVE_TRIGGER)
+        FS_FPrintf(f, "  %s \"%s\"",
+                   l->trigger_on ? "trigger_on" : "trigger_off", l->trigger);
 }
 
 /*
@@ -772,7 +1058,7 @@ static void LE_WriteLights(void)
 
     FS_FPrintf(f, "// placed lights for %s - written by \"light place\"\n", cl.mapname);
     FS_FPrintf(f, "// x y z   r g b   brightness   radius   [volumetric scale]"
-                  "   [cone d] [style n] [aim x y z]\n");
+                  "   [cone d] [style n] [aim x y z] [trigger_on|trigger_off name]\n");
 
     for (int i = 0; i < le_num_lights; i++) {
         const editlight_t *l = &le_lights[i];
@@ -797,7 +1083,7 @@ static void LE_WriteLights(void)
         if (l->have & LE_HAVE_VOL) {
             FS_FPrintf(f, "   %.3f", l->vol_scale);
             tail |= LE_HAVE_VOL;
-        } else if (l->have & (LE_HAVE_CONE | LE_HAVE_STYLE | LE_HAVE_AIM)) {
+        } else if (l->have & ~tail) {
             FS_FPrintf(f, "   -");
         }
 
@@ -811,7 +1097,8 @@ static void LE_WriteLights(void)
         FS_FPrintf(f, "// ENTITY's, and is the link; the second is this light's own.\n");
         FS_FPrintf(f, "// Attributes not listed are inherited from the entity.\n");
         FS_FPrintf(f, "// maplight <entity x y z>  <x y z>  [rgb r g b] [bright n]"
-                      " [radius r] [vol v] [cone d] [style n] [aim x y z]\n");
+                      " [radius r] [vol v] [cone d] [style n] [aim x y z]"
+                      " [trigger_on|trigger_off name]\n");
 
         for (int i = 0; i < le_num_lights; i++) {
             const editlight_t *l = &le_lights[i];
@@ -1023,6 +1310,18 @@ static void LE_PrintLight(const editlight_t *l)
         Com_Printf("    aim %.3f %.3f %.3f%s\n",
                    r.aim[0], r.aim[1], r.aim[2], LE_SRC(l, LE_HAVE_AIM));
 
+    if (l->have & LE_HAVE_TRIGGER) {
+        if (l->trigger_style >= 0)
+            Com_Printf("    trigger_%s \"%s\"   follows style %d%s   %s right now\n",
+                       l->trigger_on ? "on" : "off", l->trigger, l->trigger_style,
+                       l->trigger_invert ? " inverted" : "",
+                       LE_TriggerValue(l) > 0.0f ? "LIT" : "DARK");
+        else
+            Com_Printf("    trigger_%s \"%s\"   NO switchable light has that name, "
+                       "so this is ignored\n",
+                       l->trigger_on ? "on" : "off", l->trigger);
+    }
+
     if (l->ent_index >= 0) {
         Com_Printf("    entity at %.0f %.0f %.0f%s\n",
                    l->ent_origin[0], l->ent_origin[1], l->ent_origin[2],
@@ -1074,6 +1373,404 @@ static void LE_PrintEntity(const cdynamiclight_t *c)
         Com_Printf("    volumetric scale %.3f\n", c->vol_scale);
     else
         Com_Printf("    volumetric scale: not set, uses the default\n");
+}
+
+/*
+=================================================================
+
+  probe_trigger
+
+  What a button or trigger fires, read out of the entity lump and
+  followed down the chain. The chain matters more than the first
+  link: mgu4m1's light switch fires rect_light_01, which puts the
+  white lights out, and a trigger_relay on that same name fires
+  rect_light_02 - the red ones - five seconds later. The button's own
+  target is only half the story.
+
+=================================================================
+*/
+
+#define LE_PROBE_MAX_DEPTH      8
+#define LE_PROBE_MAX_SEEN       64
+#define LE_PROBE_RANGE          8192.0f
+
+static const char   *le_probe_seen[LE_PROBE_MAX_SEEN];
+static int          le_probe_num_seen;
+
+// Classes whose "target" is somewhere to go rather than something to fire: a
+// monster's is the path_corner it walks to, a train's is its first stop.
+static bool LE_TargetIsPath(const leent_t *e)
+{
+    return !strncmp(e->classname, "path_", 5) ||
+           !strncmp(e->classname, "monster_", 8) ||
+           !strncmp(e->classname, "misc_", 5) ||
+           !strcmp(e->classname, "func_train") ||
+           !strcmp(e->classname, "target_actor");
+}
+
+static void LE_Indent(int depth)
+{
+    for (int i = 0; i < depth; i++)
+        Com_Printf("  ");
+}
+
+// The line that matters: this name switches lights, here is how to follow it.
+static void LE_ProbeSwitch(const char *name, int depth)
+{
+    leswitch_t  sw;
+    bool        lit;
+
+    if (!LE_FindSwitch(name, &sw))
+        return;
+
+    lit = CL_LightStyleValue(sw.style) > 0.0f;
+
+    LE_Indent(depth);
+    Com_Printf("* SWITCHES %d light%s on style %d - they start %s, %s now%s\n",
+               sw.count, sw.count == 1 ? "" : "s", sw.style,
+               sw.starts_on ? "ON" : "OFF", lit ? "ON" : "OFF",
+               sw.mixed ? " (not all agree)" : "");
+    LE_Indent(depth);
+    Com_Printf("    light edit trigger_on %s    - dark until this fires\n", name);
+    LE_Indent(depth);
+    Com_Printf("    light edit trigger_off %s   - lit until this fires\n", name);
+}
+
+static void LE_ProbeName(const char *name, float at, int depth)
+{
+    char    also[256];
+    struct {
+        const char  *classname;
+        int         count;
+    } groups[24];
+    int     num_groups = 0, found = 0;
+
+    LE_Indent(depth);
+    if (at > 0.0f)
+        Com_Printf("fires \"%s\"   at +%gs\n", name, at);
+    else
+        Com_Printf("fires \"%s\"\n", name);
+
+    // relays can loop, and a func_timer chain always does
+    for (int i = 0; i < le_probe_num_seen; i++) {
+        if (!strcmp(le_probe_seen[i], name)) {
+            LE_Indent(depth + 1);
+            Com_Printf("(already shown above)\n");
+            return;
+        }
+    }
+    if (le_probe_num_seen < LE_PROBE_MAX_SEEN)
+        le_probe_seen[le_probe_num_seen++] = name;
+
+    LE_ProbeSwitch(name, depth + 1);
+
+    for (int i = 0; i < le_num_ents; i++) {
+        const leent_t *e = &le_ents[i];
+        bool chains;
+
+        if (strcmp(e->targetname, name))
+            continue;
+        found++;
+
+        // the switch line above already said everything about these
+        if (LE_IsSwitchLight(e))
+            continue;
+
+        chains = (e->target[0] || e->killtarget[0]) && !LE_TargetIsPath(e);
+
+        if (chains && depth < LE_PROBE_MAX_DEPTH) {
+            LE_Indent(depth + 1);
+            Com_Printf("%s", e->classname);
+            if (e->model >= 0)
+                Com_Printf(" *%d", e->model);
+            else
+                Com_Printf(" at %.0f %.0f %.0f", e->origin[0], e->origin[1], e->origin[2]);
+            if (e->delay > 0.0f)
+                Com_Printf("   delay %g", e->delay);
+            Com_Printf("\n");
+
+            if (e->target[0])
+                LE_ProbeName(e->target, at + e->delay, depth + 2);
+            if (e->killtarget[0]) {
+                LE_Indent(depth + 2);
+                Com_Printf("removes \"%s\"   at +%gs\n", e->killtarget, at + e->delay);
+            }
+            continue;
+        }
+
+        // everything else is summarised by class - seven target_speakers are
+        // one line, not seven
+        {
+            int g;
+
+            for (g = 0; g < num_groups; g++)
+                if (!strcmp(groups[g].classname, e->classname))
+                    break;
+            if (g == num_groups && num_groups < q_countof(groups)) {
+                groups[g].classname = e->classname;
+                groups[g].count = 0;
+                num_groups++;
+            }
+            if (g < num_groups)
+                groups[g].count++;
+        }
+    }
+
+    if (!found) {
+        LE_Indent(depth + 1);
+        Com_Printf("(nothing in the map has that name)\n");
+        return;
+    }
+
+    if (num_groups) {
+        also[0] = 0;
+        for (int g = 0; g < num_groups; g++) {
+            char one[LE_NAME_LEN + 16];
+
+            Q_snprintf(one, sizeof(one), "%s%d %s", g ? ", " : "",
+                       groups[g].count, groups[g].classname);
+            Q_strlcat(also, one, sizeof(also));
+        }
+        LE_Indent(depth + 1);
+        Com_Printf("also: %s\n", also);
+    }
+}
+
+/*
+=================
+LE_PickBrushEnt
+
+The brush entity under the crosshair: a button, a door, a trigger volume. Traced
+against each inline model at wherever the game has it now, so a door that has
+opened is picked where it is drawn.
+
+Trigger volumes are invisible and often sit in front of the thing they belong
+to - a trigger_multiple filling a doorway - so a visible entity along the ray
+wins over a nearer trigger. A trigger is picked only when there is nothing
+else, and one the eye is standing inside is reported separately.
+=================
+*/
+static bool LE_IsTriggerVolume(const leent_t *e)
+{
+    return !strncmp(e->classname, "trigger_", 8) ||
+           !strcmp(e->classname, "func_areaportal");
+}
+
+static const leent_t *LE_PickBrushEnt(const leent_t **inside_out)
+{
+    const leent_t   *best_solid = NULL, *best_trigger = NULL, *inside = NULL;
+    float           solid_frac = 1.0f, trigger_frac = 1.0f;
+    vec3_t          start, end;
+    trace_t         tr;
+    float           world_frac;
+
+    VectorCopy(cl.refdef.vieworg, start);
+    VectorMA(start, LE_PROBE_RANGE, cl.v_forward, end);
+
+    CM_BoxTrace(&tr, start, end, vec3_origin, vec3_origin, cl.bsp->nodes, MASK_SOLID);
+    // a button is flush with the wall it is set in, so allow a couple of units
+    world_frac = tr.fraction + 2.0f / LE_PROBE_RANGE;
+
+    for (int i = 0; i < le_num_ents; i++) {
+        const leent_t   *e = &le_ents[i];
+        const mmodel_t  *cmodel;
+        const vec_t     *origin = vec3_origin, *angles = vec3_origin;
+
+        if (e->model <= 0 || e->model >= cl.bsp->nummodels)
+            continue;
+
+        cmodel = &cl.bsp->models[e->model];
+
+        // where the game has it now, if it is sending it. A trigger never is,
+        // and never moves, so the compiled position is right for those.
+        for (int j = 0; j < cl.numSolidEntities; j++) {
+            const centity_t *cent = cl.solidEntities[j];
+
+            if (cent->current.solid == PACKED_BSP &&
+                cl.model_clip[cent->current.modelindex] == cmodel) {
+                origin = cent->current.origin;
+                angles = cent->current.angles;
+                break;
+            }
+        }
+
+        CM_TransformedBoxTrace(&tr, start, end, vec3_origin, vec3_origin,
+                               cmodel->headnode, MASK_ALL, origin, angles);
+
+        if (tr.startsolid) {
+            if (LE_IsTriggerVolume(e) && !inside)
+                inside = e;
+            continue;
+        }
+        if (tr.fraction >= 1.0f || tr.fraction > world_frac)
+            continue;
+
+        if (LE_IsTriggerVolume(e)) {
+            if (tr.fraction < trigger_frac) {
+                trigger_frac = tr.fraction;
+                best_trigger = e;
+            }
+        } else if (tr.fraction < solid_frac) {
+            solid_frac = tr.fraction;
+            best_solid = e;
+        }
+    }
+
+    if (inside_out)
+        *inside_out = inside;
+
+    return best_solid ? best_solid : best_trigger;
+}
+
+static void LE_ProbeEnt(const leent_t *e)
+{
+    int sources = 0;
+
+    le_probe_num_seen = 0;
+
+    Com_Printf("%s", e->classname);
+    if (e->model >= 0)
+        Com_Printf(" (model *%d)", e->model);
+    if (e->targetname[0])
+        Com_Printf("   named \"%s\"", e->targetname);
+    Com_Printf("\n");
+
+    if (e->message[0])
+        Com_Printf("  message \"%s\"\n", e->message);
+    if (e->wait < 0.0f)
+        Com_Printf("  wait -1 - fires once\n");
+    else if (e->wait > 0.0f)
+        Com_Printf("  wait %g\n", e->wait);
+
+    if (e->target[0]) {
+        if (LE_TargetIsPath(e))
+            Com_Printf("  target \"%s\" is a path to follow, not something it fires\n",
+                       e->target);
+        else
+            LE_ProbeName(e->target, e->delay, 1);
+    }
+    if (e->killtarget[0])
+        Com_Printf("  removes \"%s\"\n", e->killtarget);
+    if (e->pathtarget[0])
+        Com_Printf("  pathtarget \"%s\" - tells the train where to go\n", e->pathtarget);
+    if (!e->target[0] && !e->killtarget[0])
+        Com_Printf("  fires nothing itself\n");
+
+    // and the other direction: a door or a light is more often the END of a
+    // chain, and what the mapper wants to know is what sets it off
+    if (e->targetname[0]) {
+        LE_ProbeSwitch(e->targetname, 1);
+
+        for (int i = 0; i < le_num_ents; i++) {
+            const leent_t *s = &le_ents[i];
+
+            if (strcmp(s->target, e->targetname))
+                continue;
+
+            if (!sources++)
+                Com_Printf("  is fired by:\n");
+            if (sources > 8) {
+                Com_Printf("    ...\n");
+                break;
+            }
+
+            Com_Printf("    %s", s->classname);
+            if (s->model >= 0)
+                Com_Printf(" *%d", s->model);
+            else
+                Com_Printf(" at %.0f %.0f %.0f", s->origin[0], s->origin[1], s->origin[2]);
+            if (s->targetname[0])
+                Com_Printf("   named \"%s\"", s->targetname);
+            if (s->delay > 0.0f)
+                Com_Printf("   delay %g", s->delay);
+            Com_Printf("\n");
+        }
+    }
+}
+
+/*
+=================
+LE_Probe
+
+probe_trigger with no argument probes what is under the crosshair; with one,
+the chain starting from that name, which is how to look at a trigger_relay or
+anything else with no brush to aim at.
+=================
+*/
+static void LE_Probe(const char *name)
+{
+    const leent_t *e, *inside = NULL;
+
+    if (!le_ents) {
+        Com_Printf("This map has no entities to probe.\n");
+        return;
+    }
+
+    if (name && *name) {
+        int named = 0;
+
+        le_probe_num_seen = 0;
+        for (int i = 0; i < le_num_ents; i++)
+            if (!strcmp(le_ents[i].targetname, name))
+                named++;
+
+        Com_Printf("%d entit%s named \"%s\"\n", named, named == 1 ? "y" : "ies", name);
+        LE_ProbeName(name, 0.0f, 0);
+        return;
+    }
+
+    e = LE_PickBrushEnt(&inside);
+
+    if (!e && !inside) {
+        Com_Printf("No button, door or trigger under the crosshair. "
+                   "\"probe_trigger <targetname>\" probes by name.\n");
+        return;
+    }
+
+    if (e)
+        LE_ProbeEnt(e);
+
+    if (inside && inside != e) {
+        Com_Printf("\nYou are standing inside a %s (model *%d)%s%s%s\n",
+                   inside->classname, inside->model,
+                   inside->target[0] ? " that fires \"" : "",
+                   inside->target, inside->target[0] ? "\"" : "");
+    }
+}
+
+static void LE_ProbeTrigger_f(void)
+{
+    if (!LE_Active())
+        return;
+
+    LE_Probe(Cmd_Argv(1));
+}
+
+// Why a name cannot drive a light: either nothing has it, or what has it is not
+// a light the game can switch.
+static void LE_ExplainNoSwitch(const char *name)
+{
+    int         named = 0;
+    const char  *first = NULL;
+
+    for (int i = 0; i < le_num_ents; i++) {
+        if (strcmp(le_ents[i].targetname, name))
+            continue;
+        if (!named++)
+            first = le_ents[i].classname;
+    }
+
+    if (!named) {
+        Com_Printf("Nothing in %s is named \"%s\". probe_trigger on the switch "
+                   "shows the names it fires.\n", cl.mapname, name);
+        return;
+    }
+
+    Com_Printf("\"%s\" names %d entit%s (%s%s) but no light the game switches, and "
+               "only a switched light's state reaches the client. probe_trigger "
+               "%s shows what it fires - one of those names may be a switch.\n",
+               name, named, named == 1 ? "y" : "ies", first,
+               named > 1 ? ", ..." : "", name);
 }
 
 /*
@@ -1154,6 +1851,7 @@ static editlight_t *LE_NewLight(void)
     l->ent_index = -1;
     l->radius = LIGHT_DEFAULT_RADIUS;
     l->vol_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+    l->trigger_style = -1;
 
     return l;
 }
@@ -1268,6 +1966,7 @@ typedef enum {
     LEA_AIM,        // no value: the camera's direction
     LEA_ORIGIN,     // no value: re-place in front of the camera
     LEA_COORD,      // one float into origin[chan]
+    LEA_TRIGGER,    // a targetname; chan 1 = trigger_on, 0 = trigger_off
 } leattrkind_t;
 
 typedef struct {
@@ -1302,6 +2001,8 @@ static const leattrdef_t le_attrs[] = {
     { "x",          LEA_COORD,   0,              0 },
     { "y",          LEA_COORD,   0,              1 },
     { "z",          LEA_COORD,   0,              2 },
+    { "trigger_on", LEA_TRIGGER, LE_HAVE_TRIGGER, 1 },
+    { "trigger_off", LEA_TRIGGER, LE_HAVE_TRIGGER, 0 },
 };
 
 /*
@@ -1341,7 +2042,8 @@ static void LE_Edit_f(void)
                    Cmd_Argv(0));
         Com_Printf("Attributes: rgb r g b | red | green | blue | brightness |\n"
                    "            radius | vol | cone <deg|off> | style | aim |\n"
-                   "            origin | x | y | z\n");
+                   "            origin | x | y | z | trigger_on <name> |\n"
+                   "            trigger_off <name>   (names: probe_trigger)\n");
         LE_PrintLight(l);
         return;
     }
@@ -1446,6 +2148,25 @@ static void LE_Edit_f(void)
                 l->origin[a->chan] = atof(Cmd_Argv(3));
                 break;
 
+            case LEA_TRIGGER: {
+                leswitch_t sw;
+
+                // refuse a name that switches no light rather than store a
+                // trigger that silently does nothing
+                if (!LE_FindSwitch(Cmd_Argv(3), &sw)) {
+                    LE_ExplainNoSwitch(Cmd_Argv(3));
+                    return;
+                }
+                if (sw.mixed)
+                    Com_WPrintf("The lights named \"%s\" disagree on style or "
+                                "start state; following the first one.\n",
+                                Cmd_Argv(3));
+
+                Q_strlcpy(l->trigger, Cmd_Argv(3), sizeof(l->trigger));
+                l->trigger_on = a->chan;
+                break;
+            }
+
             default:
                 break;
             }
@@ -1453,6 +2174,7 @@ static void LE_Edit_f(void)
             l->have |= a->bit;
         }
 
+        LE_BindTrigger(l);
         LE_PrintLight(l);
         LE_WriteLights();
         return;
@@ -1634,7 +2356,7 @@ static void LE_Light_f(void)
 
     if (!*cmd) {
         Com_Printf("Usage: %s <place|replace|edit|vol|print|styles|delete|"
-                   "debug_on|debug_off|reload>\n", Cmd_Argv(0));
+                   "debug_on|debug_off|reload|probe>\n", Cmd_Argv(0));
         return;
     }
 
@@ -1670,15 +2392,38 @@ static void LE_Light_f(void)
         LE_Delete_f();
     else if (!strcmp(cmd, "reload"))
         LE_LoadLights();
+    else if (!strcmp(cmd, "probe"))
+        LE_Probe(Cmd_Argv(2));
     else
         Com_Printf("Unknown subcommand \"%s\".\n", cmd);
+}
+
+// Every name that switches lights, once each - what trigger_on and trigger_off
+// accept, so the console can complete them.
+static void LE_AddSwitchMatches(genctx_t *ctx)
+{
+    for (int i = 0; i < le_num_ents; i++) {
+        const leent_t *e = &le_ents[i];
+        int j;
+
+        if (!LE_IsSwitchLight(e))
+            continue;
+
+        for (j = 0; j < i; j++)
+            if (LE_IsSwitchLight(&le_ents[j]) &&
+                !strcmp(le_ents[j].targetname, e->targetname))
+                break;
+
+        if (j == i)
+            Prompt_AddMatch(ctx, e->targetname);
+    }
 }
 
 static void LE_Light_c(genctx_t *ctx, int argnum)
 {
     static const char *const subcommands[] = {
         "place", "replace", "edit", "vol", "print", "styles", "delete",
-        "debug_on", "debug_off", "reload", NULL
+        "debug_on", "debug_off", "reload", "probe", NULL
     };
 
     if (argnum == 1) {
@@ -1695,8 +2440,17 @@ static void LE_Light_c(genctx_t *ctx, int argnum)
         return;
     }
 
+    if (argnum == 2 && !Q_stricmp(Cmd_Argv(1), "probe")) {
+        LE_AddSwitchMatches(ctx);
+        return;
+    }
+
     // "default" is a valid value for every inheritable attribute
     if (argnum == 3 && !Q_stricmp(Cmd_Argv(1), "edit")) {
+        if (!Q_stricmp(Cmd_Argv(2), "trigger_on") ||
+            !Q_stricmp(Cmd_Argv(2), "trigger_off"))
+            LE_AddSwitchMatches(ctx);
+
         for (int i = 0; i < q_countof(le_attrs); i++)
             if (le_attrs[i].bit && !Q_stricmp(Cmd_Argv(2), le_attrs[i].name)) {
                 Prompt_AddMatch(ctx, "default");
@@ -1705,8 +2459,15 @@ static void LE_Light_c(genctx_t *ctx, int argnum)
     }
 }
 
+static void LE_ProbeTrigger_c(genctx_t *ctx, int argnum)
+{
+    if (argnum == 1)
+        LE_AddSwitchMatches(ctx);
+}
+
 static const cmdreg_t c_lightedit[] = {
     { "light", LE_Light_f, LE_Light_c },
+    { "probe_trigger", LE_ProbeTrigger_f, LE_ProbeTrigger_c },
     { NULL }
 };
 
@@ -1796,6 +2557,11 @@ void LE_AddLightsToScene(void)
             p.brightness = light_debug_brightness->value *
                            (l == pick.light ? 4.0f : 1.0f);
 
+            // a light its trigger has dark right now reads dim, so a room can
+            // be judged in both states without losing track of what is where
+            if (LE_TriggerValue(l) <= 0.0f)
+                p.brightness *= 0.25f;
+
             V_AddParticle(&p);
         }
 
@@ -1816,6 +2582,9 @@ void LE_AddLightsToScene(void)
         // after it has been retuned - and a hand-placed light can be given one
         if (r.style)
             intensity *= CL_LightStyleValue(r.style);
+
+        // and the switch it has been tied to with trigger_on / trigger_off
+        intensity *= LE_TriggerValue(l);
 
         if (intensity <= 0.0f)
             continue;

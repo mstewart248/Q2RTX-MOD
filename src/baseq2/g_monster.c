@@ -391,7 +391,6 @@ Callers gate on M_RereleaseGame() themselves; every one of them has other
 rerelease-only fields to set alongside this.
 =================
 */
-#define FLY_TICK_SCALE  4.0f    // their 40hz tick against this tree's 10hz think
 
 void monster_fly_setup(edict_t *self, float speed, float accel, float min_dist, float max_dist)
 {

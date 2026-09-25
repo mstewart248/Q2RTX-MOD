@@ -1271,6 +1271,9 @@ bool ai_check_move(edict_t *self, float dist);
 void VectorSlerp(vec3_t from, vec3_t to, float frac, vec3_t out);
 // [rerelease] opt this monster into SV_alternate_flystep.  accel is the
 // rerelease's own per-tick number and is scaled to this tree's 10hz here.
+// FLY_TICK_SCALE is how many of their ticks fit in one of our thinks; anything
+// in SV_alternate_flystep that is applied once per call has to account for it.
+#define FLY_TICK_SCALE  4.0f    // their 40hz tick against this tree's 10hz think
 void monster_fly_setup(edict_t *self, float speed, float accel, float min_dist, float max_dist);
 void stationarymonster_start(edict_t *self);
 void stationarymonster_start_go(edict_t *self);

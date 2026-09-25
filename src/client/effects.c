@@ -424,11 +424,16 @@ void CL_MuzzleFlash(void)
 	// against 0.21 for pure red), so the colour change alone would have roughly
 	// doubled the brightness. The intensity drops by more than that to land
 	// about 40% dimmer than the red was, to the eye. Matt's request 2026-09-24.
+	//
+	// 0.35 green (hue ~38 deg, full orange) then read as too orange, so green
+	// came down to 0.15 (hue ~25 deg, red-orange). That cuts luminance from 0.47
+	// to 0.32, so the intensity goes up ~1.45x to hold the brightness that was
+	// signed off the night before. Matt's request 2026-09-25.
 	case MZ_PODLIGHT:
 		VectorCopy(pl->current.origin, dl->origin);
 		dl->origin[2] += 16;
-		VectorSet(dl->color, 1.0f, 0.35f, 0.05f);            // emergency orange
-		dl->radius = 48 + (Q_rand() & 31);                    // 48 .. 79 (was 192 .. 255)
+		VectorSet(dl->color, 1.0f, 0.15f, 0.02f);            // emergency red-orange (was 1, 0.35, 0.05)
+		dl->radius = 76 + (Q_rand() & 31);                    // 76 .. 107 (was 48 .. 79, originally 192 .. 255)
 		// Shorter than the 100ms think interval so each pulse has a real
 		// off-phase, and jittered so the strobe never settles into a rhythm.
 		dl->die = cl.time + 45 + (Q_rand() & 31);            // 45 .. 76ms (was 35 .. 66)

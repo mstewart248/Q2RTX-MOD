@@ -8330,6 +8330,8 @@ R_Init_RTX(bool total)
 	cvar_pt_projection->changed = accumulation_cvar_changed;
 
 	cvar_pt_num_bounce_rays->flags |= CVAR_ARCHIVE;
+	// on a slider in the effects menu, so it has to survive a restart
+	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
 
 	qvk.win_width  = r_config.width;
 	qvk.win_height = r_config.height;
