@@ -37,6 +37,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/protocol.h"
 #include "common/sizebuf.h"
 #include "common/zone.h"
+#include "common/cpuprof.h"
 
 #include "system/system.h"
 #include "refresh/refresh.h"

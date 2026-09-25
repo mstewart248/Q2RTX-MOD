@@ -264,7 +264,41 @@ typedef struct {
 	bool           dev_pending;
 } blood_cache_entry_t;
 
-static blood_cache_entry_t blood_cache[MAX_BLOOD_SPHERES];
+/*
+ULTRA REGIONS - the top tessellation level only right in front of the camera.
+
+pt_blood_tess 3 is 1280 faces a droplet, and every slot used to be that wide
+whatever its droplet actually drew. With a floor of 2048 splats that made the
+blood BLAS a 2.6M-triangle rebuild every frame, most of it padding, and every
+regenerated droplet cleared and re-uploaded 210 KB of slot. demo1 at 2048/tess 3
+went from ~90 fps to ~60 as the floor filled up, BVH_UPDATE 0.3 -> 3.5-4.5 ms,
+with 15-130 ms renderer hitches while blood landed.
+
+So at tess 3 the section is split into REGIONS:
+
+    [ ultra 0 .. U-1 ][ normal slot 0 .. cl_blood_max-1 ]
+      ultra_stride       stride = worst case at tess 2
+
+A droplet lives in its client slot's normal region unless its chosen level
+needs more faces than that holds - which choose_lods only allows within
+pt_blood_ultra_dist of the camera - in which case it borrows one of
+pt_blood_ultra_slots ultra regions for as long as it stays that close. When the
+pool is full the extra droplets are drawn one level down, in their own slot.
+
+Everything that used to be per slot (cache, dirty flag, device span, blanking,
+uploads) is per REGION now, so a droplet changing region is just "the old region
+went dead, the new one needs building" - which the machinery already handled.
+Below tess 3 there is no pool: U = 0 and region r is slot r, exactly as before.
+*/
+#define BLOOD_ULTRA_MAX   64
+#define BLOOD_MAX_REGIONS (MAX_BLOOD_SPHERES + BLOOD_ULTRA_MAX)
+
+static blood_cache_entry_t blood_cache[BLOOD_MAX_REGIONS];
+
+// Which ultra region a client slot holds (-1: none), and the reverse.
+static int16_t ultra_of_slot[MAX_BLOOD_SPHERES];
+static int16_t slot_of_ultra[BLOOD_ULTRA_MAX];
+static bool    ultra_maps_ready = false;
 
 static struct {
 	BufferResource_t  staging_prim[MAX_FRAMES_IN_FLIGHT];
@@ -281,7 +315,9 @@ static struct {
 	int               cache_hits;       // droplets whose geometry was reused as-is
 	int               cache_moves;      // droplets whose geometry was only TRANSLATED
 	uint32_t          stride;           // primitives reserved per droplet slot
-	bool              dirty_slot[MAX_BLOOD_SPHERES];  // slots rewritten this frame
+	uint32_t          ultra_stride;     // primitives per ultra region (0: no pool)
+	int               ultra_count;      // ultra regions at the front of the section
+	bool              dirty_slot[BLOOD_MAX_REGIONS];  // regions rewritten this frame
 	uint32_t          last_prim_offset; // where the blood section sat last frame
 	bool              have_last_offset;
 	uint32_t          primbuf_generation; // which incarnation of the instanced buffers
@@ -292,12 +328,39 @@ static struct {
 	bool              buffers_ready;
 } blood;
 
+static inline uint32_t region_offset(int r)
+{
+	return r < blood.ultra_count
+		? (uint32_t)r * blood.ultra_stride
+		: (uint32_t)blood.ultra_count * blood.ultra_stride + (uint32_t)(r - blood.ultra_count) * blood.stride;
+}
+
+static inline uint32_t region_cap(int r)
+{
+	return r < blood.ultra_count ? blood.ultra_stride : blood.stride;
+}
+
+static inline int region_of_slot(int slot)
+{
+	if (blood.ultra_count && ultra_maps_ready && ultra_of_slot[slot] >= 0)
+		return ultra_of_slot[slot];
+	return blood.ultra_count + slot;
+}
+
+static void reset_ultra_maps(void)
+{
+	memset(ultra_of_slot, 0xff, sizeof(ultra_of_slot));
+	memset(slot_of_ultra, 0xff, sizeof(slot_of_ultra));
+	ultra_maps_ready = true;
+}
+
 // transparency.c - palette index or rgba to linear float RGB
 extern void cast_u32_to_f32_color(int color_index, const color_t* pcolor, float* color_f32, float hdr_factor);
 // bsp_mesh.c - the CPU port of utils.glsl's encode_normal
 extern uint32_t encode_normal(const vec3_t normal);
 
 static cvar_t* cvar_pt_blood_spheres = NULL;
+static cvar_t* cvar_pt_blood_ultra_dist = NULL;
 static cvar_t* cvar_pt_blood_tess = NULL;
 static cvar_t* cvar_pt_blood_stats = NULL;
 static cvar_t* cvar_pt_blood_lod_near = NULL;
@@ -669,17 +732,39 @@ static int vkpt_blood_slot_capacity(void)
 	return max(1, min(wanted, MAX_BLOOD_SPHERES));
 }
 
-static bool ensure_buffers(void)
+/*
+The section layout - see ULTRA REGIONS. The ONE definition, shared by
+ensure_buffers and vkpt_blood_prim_count, which have to agree to the primitive.
+*/
+static uint32_t blood_layout(int max_droplets, int* ultra_count, uint32_t* ultra_stride, uint32_t* stride)
 {
-	const int max_droplets = cvar_pt_blood_spheres->integer ? vkpt_blood_slot_capacity() : 1;
 	const int subdiv = max(0, min(cvar_pt_blood_tess->integer, BLOOD_SPHERE_MAX_SUBDIV));
 	const int worst_faces = max(BLOOD_SPHERE_FACES(subdiv), BLOOD_PUDDLE_FACES(subdiv));
 
-	const uint32_t needed = (uint32_t)max_droplets * (uint32_t)worst_faces;
+	int u = 0;
+	if (subdiv == BLOOD_SPHERE_MAX_SUBDIV)
+		u = max(0, min(Cvar_Get("pt_blood_ultra_slots", "32", CVAR_ARCHIVE)->integer, BLOOD_ULTRA_MAX));
+
+	*ultra_count = u;
+	*ultra_stride = u ? (uint32_t)worst_faces : 0;
+	*stride = u ? (uint32_t)max(BLOOD_SPHERE_FACES(subdiv - 1), BLOOD_PUDDLE_FACES(subdiv - 1))
+	            : (uint32_t)worst_faces;
+
+	return (uint32_t)u * *ultra_stride + (uint32_t)max_droplets * *stride;
+}
+
+static bool ensure_buffers(void)
+{
+	const int max_droplets = cvar_pt_blood_spheres->integer ? vkpt_blood_slot_capacity() : 1;
+
+	int ultra_count;
+	uint32_t ultra_stride, stride;
+	const uint32_t needed = blood_layout(max_droplets, &ultra_count, &ultra_stride, &stride);
 
 	// Exact compare, not >=: the point is to reallocate ONLY when the settings
 	// change, never in response to how much blood happens to be on screen.
-	if (blood.buffers_ready && blood.max_prims == needed)
+	if (blood.buffers_ready && blood.max_prims == needed
+		&& blood.stride == stride && blood.ultra_count == ultra_count && blood.ultra_stride == ultra_stride)
 		return true;
 
 	release_buffers();
@@ -710,8 +795,11 @@ static bool ensure_buffers(void)
 	blood.prim_shadow = Z_Mallocz(prim_size);
 	blood.pos_shadow = Z_Mallocz(pos_size);
 
-	blood.stride = (uint32_t)worst_faces;
+	blood.stride = stride;
+	blood.ultra_stride = ultra_stride;
+	blood.ultra_count = ultra_count;
 	blood.max_prims = needed;
+	reset_ultra_maps();
 	blood.buffers_ready = true;
 
 	// New buffers, a new stride, and a shadow copy full of zeros: nothing the
@@ -742,6 +830,7 @@ VkResult vkpt_blood_initialize(void)
 	// Triangles per droplet: 0 -> 20, 1 -> 80. This is the cost knob; see the
 	// comment on BLOOD_SPHERE_MAX_SUBDIV.
 	cvar_pt_blood_tess = Cvar_Get("pt_blood_tess", "2", CVAR_ARCHIVE);
+	cvar_pt_blood_ultra_dist = Cvar_Get("pt_blood_ultra_dist", "40", CVAR_ARCHIVE);
 
 	// Print live droplet and triangle counts once a second, so the cost of a
 	// given firefight can be read off rather than guessed at.
@@ -837,17 +926,17 @@ uint32_t vkpt_blood_prim_count(int num_spheres)
 	// The reservation only claims ADDRESS SPACE in the instanced buffer; the BLAS
 	// is still built over the range actually written, so over-reserving costs
 	// nothing at trace time.
-	int subdiv = max(0, min(cvar_pt_blood_tess->integer, BLOOD_SPHERE_MAX_SUBDIV));
-
 	// The larger of the two meshes, because which one each droplet gets is not
-	// known until vkpt_blood_update picks it.
-	const int worst = max(BLOOD_SPHERE_FACES(subdiv), BLOOD_PUDDLE_FACES(subdiv));
+	// known until vkpt_blood_update picks it - and at tess 3, the ultra pool in
+	// front of the normal slots (blood_layout).
+	int ultra_count;
+	uint32_t ultra_stride, stride;
 
 	// The SLOT SPACE, which is cl_blood_max - not this frame's droplet count, and
 	// not MAX_BLOOD_SPHERES. Slots live as long as their droplet and are handed
 	// out lowest-first, so the highest occupied slot has nothing to do with how
 	// many are currently alive; and it must match what ensure_buffers allocated.
-	return (uint32_t)vkpt_blood_slot_capacity() * (uint32_t)worst;
+	return blood_layout(vkpt_blood_slot_capacity(), &ultra_count, &ultra_stride, &stride);
 }
 
 // Face count for a droplet at a given LOD. A landed droplet is a puddle mesh and
@@ -1154,7 +1243,7 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 		// An invalid cache entry means a brand new droplet, which has no band to
 		// be kept in and simply takes the raw answer.
 		const blood_cache_entry_t* prev = (spheres[s].slot >= 0 && spheres[s].slot < MAX_BLOOD_SPHERES)
-			? blood_cache + spheres[s].slot : NULL;
+			? blood_cache + region_of_slot(spheres[s].slot) : NULL;
 
 		float near_thr = near_thr_sq;
 		float far_thr = far_thr_sq;
@@ -1231,11 +1320,102 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 
 		level = max(0, min(level, max_level));
 
+		/*
+		THE ULTRA LEVEL (pt_blood_tess 3) IS FOR DROPLETS IN FLIGHT, RIGHT IN
+		FRONT OF THE CAMERA, and for nothing else.
+
+		It was built for the airborne droplets, yet pt_blood_lod_air kept every
+		one of those a level down while the SPLATS - which the bands above measure
+		as several reference droplets wide - sat at 1280 faces far across the
+		room. A floor of 2048 of them was the whole 90 -> 60 fps slide.
+
+		So at tess 3: a splat tops out at tess 2's level and falls off from
+		there; a droplet within pt_blood_ultra_dist (~3 feet) gets the full level,
+		ignoring the in-flight bias, and past it is capped the same as a splat.
+		25% hysteresis on the distance, for the cache's sake like the bands.
+		*/
+		if (max_level == BLOOD_SPHERE_MAX_SUBDIV)
+		{
+			if (is_splat)
+				level = min(level, max_level - 1);
+			else
+			{
+				float ultra = max(0.f, cvar_pt_blood_ultra_dist->value);
+				if (prev && prev->valid && prev->level == max_level)
+					ultra *= 1.25f;
+				level = (dist_sq <= ultra * ultra) ? max_level : min(level, max_level - 1);
+			}
+		}
+
 		sphere_lod[s] = (uint8_t)level;
 		total += faces_for(spheres + s, level);
 	}
 
 	return total;
+}
+
+/*
+================
+assign_ultra_regions
+
+Gives every droplet whose chosen level does not fit a normal region one of the
+ultra regions (see ULTRA REGIONS), keeping the one it already holds so a parked
+splat stays cached. Droplets that no longer need one release it first; when the
+pool is still full, the rest are drawn one level down in their own slot.
+================
+*/
+static void assign_ultra_regions(const blood_sphere_t* spheres, int num_spheres)
+{
+	if (!blood.ultra_count)
+		return;
+	if (!ultra_maps_ready)
+		reset_ultra_maps();
+
+	static bool wants[MAX_BLOOD_SPHERES];
+	memset(wants, 0, sizeof(wants));
+
+	for (int s = 0; s < num_spheres; s++)
+	{
+		const int slot = spheres[s].slot;
+		if (spheres[s].radius <= 0.f || slot < 0 || slot >= MAX_BLOOD_SPHERES)
+			continue;
+		if ((uint32_t)faces_for(spheres + s, sphere_lod[s]) > blood.stride)
+			wants[slot] = true;
+	}
+
+	for (int u = 0; u < blood.ultra_count; u++)
+	{
+		const int slot = slot_of_ultra[u];
+		if (slot >= 0 && !wants[slot])
+		{
+			ultra_of_slot[slot] = -1;
+			slot_of_ultra[u] = -1;
+		}
+	}
+
+	int next_free = 0;
+	for (int s = 0; s < num_spheres; s++)
+	{
+		const int slot = spheres[s].slot;
+		if (spheres[s].radius <= 0.f || slot < 0 || slot >= MAX_BLOOD_SPHERES || !wants[slot])
+			continue;
+		if (ultra_of_slot[slot] >= 0)
+			continue;
+
+		while (next_free < blood.ultra_count && slot_of_ultra[next_free] >= 0)
+			next_free++;
+
+		if (next_free < blood.ultra_count)
+		{
+			slot_of_ultra[next_free] = (int16_t)slot;
+			ultra_of_slot[slot] = (int16_t)next_free;
+		}
+		else
+		{
+			sphere_lod[s] = (uint8_t)max(0, (int)sphere_lod[s] - 1);
+			wants[slot] = false;
+		}
+	}
 }
 
 /*
@@ -1263,12 +1443,10 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	blood.cache_hits = 0;
 	blood.cache_moves = 0;
 
-	const uint32_t stride = blood.stride;
-
-	// Which slots this frame's droplets occupy. Anything else inside the used
-	// range has to be blanked, or a dead droplet's leftovers stay in the
-	// acceleration structure.
-	static bool slot_live[MAX_BLOOD_SPHERES];
+	// Which REGIONS this frame's droplets occupy (see ULTRA REGIONS). Anything
+	// else inside the used range has to be blanked, or a dead droplet's
+	// leftovers stay in the acceleration structure.
+	static bool slot_live[BLOOD_MAX_REGIONS];
 	memset(slot_live, 0, sizeof(slot_live));
 
 	int highest_slot = -1;
@@ -1314,7 +1492,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			memcpy(look_was, look_now, sizeof(look_now));
 			look_seen = true;
 
-			for (int i = 0; i < MAX_BLOOD_SPHERES; i++)
+			for (int i = 0; i < BLOOD_MAX_REGIONS; i++)
 				blood_cache[i].valid = false;
 		}
 	}
@@ -1329,13 +1507,15 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		if (sphere->slot < 0 || sphere->slot >= MAX_BLOOD_SPHERES)
 			continue;
 
-		slot_live[sphere->slot] = true;
-		if (sphere->slot > highest_slot)
-			highest_slot = sphere->slot;
+		// A droplet's geometry always goes in its own region - its slot's, or the
+		// ultra region it holds - so it stays put however the array shifts.
+		const int region = region_of_slot(sphere->slot);
+		const uint32_t prim_index = region_offset(region);
+		const uint32_t cap = region_cap(region);
 
-		// A droplet's geometry always goes in its own slot, so it stays put for
-		// the droplet's whole life however the array around it shifts.
-		const uint32_t prim_index = (uint32_t)sphere->slot * stride;
+		slot_live[region] = true;
+		if (region > highest_slot)
+			highest_slot = region;
 
 		const bool is_splat = is_splat_sphere(sphere);
 
@@ -1351,7 +1531,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			? puddle_tangents + puddle_lod_offset[level]
 			: sphere_tangents + lod_offset[level];
 
-		if (prim_index + (uint32_t)faces > blood.max_prims)
+		if (prim_index + (uint32_t)faces > blood.max_prims || (uint32_t)faces > cap)
 			continue;
 
 		blood.sphere_count++;
@@ -1362,7 +1542,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		// nothing to do at all - see the comment on blood_cache_entry_t. With a
 		// stable slot this is the fast path for any droplet that did not change
 		// since last frame, not merely for a floor that has finished settling.
-		blood_cache_entry_t* cache = blood_cache + sphere->slot;
+		blood_cache_entry_t* cache = blood_cache + region;
 
 		if (cache->valid
 			&& cache->level == level
@@ -1446,7 +1626,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 				cache->prim_offset = prim_index;
 				cache->faces = (uint16_t)faces;
 
-				blood.dirty_slot[sphere->slot] = true;
+				blood.dirty_slot[region] = true;
 
 				blood.cache_moves++;
 				continue;
@@ -1460,7 +1640,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		cache->sphere = *sphere;
 		cache->faces = (uint16_t)faces;
 
-		blood.dirty_slot[sphere->slot] = true;
+		blood.dirty_slot[region] = true;
 
 		vec3_t color;
 		cast_u32_to_f32_color(sphere->color, &sphere->rgba, color, 1.0f);
@@ -1725,10 +1905,10 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		//
 		// Only runs when the droplet was regenerated, so the cost sits with the
 		// work that was already happening rather than with every frame.
-		if ((uint32_t)faces < stride)
+		if ((uint32_t)faces < cap)
 		{
 			const uint32_t tail = prim_index + (uint32_t)faces;
-			const uint32_t count = stride - (uint32_t)faces;
+			const uint32_t count = cap - (uint32_t)faces;
 
 			memset(blood.prim_shadow + tail, 0, sizeof(VboPrimitive) * count);
 			memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * count);
@@ -1752,8 +1932,8 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		if (slot_live[i] || blood_cache[i].blanked)
 			continue;
 
-		memset(blood.prim_shadow + (size_t)i * stride, 0, sizeof(VboPrimitive) * stride);
-		memset(blood.pos_shadow + (size_t)i * stride, 0, sizeof(prim_positions_t) * stride);
+		memset(blood.prim_shadow + region_offset(i), 0, sizeof(VboPrimitive) * region_cap(i));
+		memset(blood.pos_shadow + region_offset(i), 0, sizeof(prim_positions_t) * region_cap(i));
 
 		blood_cache[i].valid = false;
 		blood_cache[i].blanked = true;
@@ -1763,13 +1943,13 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	}
 
 	// Everything past the used range is simply not covered by the build.
-	for (int i = highest_slot + 1; i < MAX_BLOOD_SPHERES; i++)
+	for (int i = highest_slot + 1; i < BLOOD_MAX_REGIONS; i++)
 	{
 		blood_cache[i].valid = false;
 		blood_cache[i].blanked = false;
 	}
 
-	return (uint32_t)(highest_slot + 1) * stride;
+	return highest_slot < 0 ? 0 : region_offset(highest_slot) + region_cap(highest_slot);
 }
 
 /*
@@ -1840,6 +2020,8 @@ void vkpt_blood_update(
 		return;
 	}
 
+	assign_ultra_regions(spheres, num_spheres);
+
 	if (needed > blood.max_prims)
 	{
 		// More droplets than the buffers were sized for. Cannot happen while
@@ -1906,16 +2088,14 @@ void vkpt_blood_update(
 	exactly the source ranges the GPU copy reads, in the same frame, so whatever
 	else is stale in this frame's staging buffer is never read.
 	*/
-	const uint32_t stride = blood.stride;
-
-	// prim_count is (highest_slot + 1) * stride, but clamp against the buffer as
-	// well - a slot handed out past the current cl_blood_max would otherwise
-	// describe a copy that runs off the end of it.
+	// How many REGIONS the section covers this frame (see ULTRA REGIONS).
 	uint32_t slot_limit = 0;
-	if (stride)
 	{
-		slot_limit = min(prim_count, blood.max_prims) / stride;
-		slot_limit = min(slot_limit, (uint32_t)MAX_BLOOD_SPHERES);
+		const uint32_t limit = min(prim_count, blood.max_prims);
+		const uint32_t total = (uint32_t)blood.ultra_count + (uint32_t)vkpt_blood_slot_capacity();
+		while (slot_limit < total && slot_limit < BLOOD_MAX_REGIONS
+			&& region_offset((int)slot_limit) + region_cap((int)slot_limit) <= limit)
+			slot_limit++;
 	}
 
 	// AN EPOCH is a run of frames over which the section keeps the same address
@@ -1949,14 +2129,14 @@ void vkpt_blood_update(
 			(VkDeviceSize)prim_offset * sizeof(prim_positions_t),
 			(VkDeviceSize)prim_count * sizeof(prim_positions_t), 0);
 
-		for (uint32_t i = 0; i < MAX_BLOOD_SPHERES; i++)
+		for (uint32_t i = 0; i < BLOOD_MAX_REGIONS; i++)
 		{
 			blood_cache[i].dev_pending = true;
 
 			// Past the filled range the device holds bytes that belong to
 			// somebody else, so assume the worst for those slots until one is
 			// written across its whole stride.
-			blood_cache[i].dev_span = (i < slot_limit) ? 0 : (uint16_t)stride;
+			blood_cache[i].dev_span = (i < slot_limit) ? 0 : (uint16_t)region_cap((int)i);
 		}
 
 		// The fill and the copies below write the same memory, so they have to be
@@ -1994,7 +2174,7 @@ void vkpt_blood_update(
 		// The whole array, not just the slots in range: dev_pending is sticky, so
 		// a slot the section does not reach yet keeps its flag for the frame it
 		// does.
-		for (uint32_t i = 0; i < MAX_BLOOD_SPHERES; i++)
+		for (uint32_t i = 0; i < BLOOD_MAX_REGIONS; i++)
 		{
 			if (blood.dirty_slot[i])
 				blood_cache[i].dev_pending = true;
@@ -2003,8 +2183,8 @@ void vkpt_blood_update(
 
 	// One region per dirty slot. File scope rather than stack: 4096 slots is
 	// 200 KB of VkBufferCopy across the two.
-	static VkBufferCopy regions_prim[MAX_BLOOD_SPHERES];
-	static VkBufferCopy regions_pos[MAX_BLOOD_SPHERES];
+	static VkBufferCopy regions_prim[BLOOD_MAX_REGIONS];
+	static VkBufferCopy regions_pos[BLOOD_MAX_REGIONS];
 	uint32_t num_regions = 0;
 	size_t up_prim_bytes = 0;
 	size_t up_pos_bytes = 0;
@@ -2020,7 +2200,7 @@ void vkpt_blood_update(
 		// content sticks out past it. Everything beyond that is already zero on
 		// both sides.
 		uint32_t n = max((uint32_t)c->faces, (uint32_t)c->dev_span);
-		n = min(n, stride);
+		n = min(n, region_cap((int)i));
 
 		c->dev_pending = false;
 		c->dev_span = c->faces;
@@ -2028,7 +2208,7 @@ void vkpt_blood_update(
 		if (n == 0)
 			continue;
 
-		const uint32_t lo = i * stride;
+		const uint32_t lo = region_offset((int)i);
 
 		// Neighbouring slots that both need their whole stride are one copy
 		// rather than two - which is the common shape on an epoch frame.

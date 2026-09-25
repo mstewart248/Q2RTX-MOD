@@ -414,15 +414,21 @@ void CL_MuzzleFlash(void)
 		S_StartSound(NULL, mz.entity, CHAN_WEAPON, S_RegisterSound("weapons/flaregun.wav"), volume, ATTN_NORM, 0);
 		break;
 
-	// A bare red light, no particles and no sound. Unlike a real muzzle flash
+	// A bare orange light, no particles and no sound. Unlike a real muzzle flash
 	// this sits on the entity rather than at the end of a gun barrel, so the
 	// forward/right offset applied above is undone - the MGU drop pod is only
 	// 32 units across and the offset would put the light outside its walls.
+	//
+	// Was pure red (1, 0, 0) at 192 .. 255, which read as too hot. Orange carries
+	// green, and green is most of perceived luminance (0.47 for this orange
+	// against 0.21 for pure red), so the colour change alone would have roughly
+	// doubled the brightness. The intensity drops by more than that to land
+	// about 40% dimmer than the red was, to the eye. Matt's request 2026-09-24.
 	case MZ_PODLIGHT:
 		VectorCopy(pl->current.origin, dl->origin);
 		dl->origin[2] += 16;
-		VectorSet(dl->color, 1.0f, 0.0f, 0.0f);              // pure red
-		dl->radius = 192 + (Q_rand() & 63);                   // 80 .. 143
+		VectorSet(dl->color, 1.0f, 0.35f, 0.05f);            // emergency orange
+		dl->radius = 48 + (Q_rand() & 31);                    // 48 .. 79 (was 192 .. 255)
 		// Shorter than the 100ms think interval so each pulse has a real
 		// off-phase, and jittered so the strobe never settles into a rhythm.
 		dl->die = cl.time + 45 + (Q_rand() & 31);            // 45 .. 76ms (was 35 .. 66)

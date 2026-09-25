@@ -2475,6 +2475,12 @@ init_vulkan(void)
 	qvk.queue_idx_transfer = -1;
 	uint32_t graphics_family_queue_count = 0;
 
+	/* pt_transfer_on_graphics 1 (read at device creation, so set it on the command
+	   line or vid_restart): put the per-frame staging uploads on the graphics queue
+	   instead of a dedicated transfer family. Diagnostic for the "upload lights"
+	   profiler spikes - see the UPLOAD SPIKE TRACKER in profiler.c. */
+	const bool transfer_on_graphics = Cvar_Get("pt_transfer_on_graphics", "0", 0)->integer != 0;
+
 	for(int i = 0; i < num_queue_families; i++) {
 		if(!queue_families[i].queueCount)
 			continue;
@@ -2495,6 +2501,11 @@ init_vulkan(void)
 			qvk.queue_idx_transfer = i;
 		}
 	}
+
+	if(transfer_on_graphics && qvk.queue_idx_graphics >= 0)
+		qvk.queue_idx_transfer = qvk.queue_idx_graphics;
+
+	Com_Printf("Vulkan queue families: graphics %d, transfer %d\n", qvk.queue_idx_graphics, qvk.queue_idx_transfer);
 
 	if(qvk.queue_idx_graphics < 0 || qvk.queue_idx_transfer < 0) {
 		Com_Error(ERR_FATAL, "Could not find a suitable Vulkan queue family!\n");

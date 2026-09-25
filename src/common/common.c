@@ -43,6 +43,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/tests.h"
 #include "common/utils.h"
 #include "common/zone.h"
+#include "common/cpuprof.h"
 
 #include "client/client.h"
 #include "client/keys.h"
@@ -123,6 +124,8 @@ unsigned    com_eventTime;
 unsigned    com_localTime;
 bool        com_initialized;
 time_t      com_startTime;
+
+uint64_t cpuprof_us[CPUPROF_COUNT];
 
 #if USE_CLIENT
 cvar_t  *host_speeds;
@@ -1148,6 +1151,7 @@ void Qcommon_Frame(void)
 
     // sleep on network sockets when running a dedicated server
     // still do a select(), but don't sleep when running a client!
+    CPUPROF_BEGIN(NET_SLEEP);
     NET_Sleep(remaining);
 
     // calculate time spent running last frame and sleeping
@@ -1170,6 +1174,8 @@ void Qcommon_Frame(void)
         }
     }
 #endif
+
+    CPUPROF_END(NET_SLEEP);
 
     if (msec > 250) {
         Com_DPrintf("Hitch warning: %u msec frame time\n", msec);
@@ -1207,7 +1213,9 @@ void Qcommon_Frame(void)
 
     NET_UpdateStats();
 
+    CPUPROF_BEGIN(SERVER);
     remaining = SV_Frame(msec);
+    CPUPROF_END(SERVER);
 
     int waterLevel = SV_GetWaterLevel();
     

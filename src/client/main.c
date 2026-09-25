@@ -44,6 +44,8 @@ cvar_t  *cl_muzzleflash_brightness;
 cvar_t  *cl_muzzleflash_offset;
 cvar_t  *cl_warn_on_fps_rounding;
 cvar_t  *cl_maxfps;
+static cvar_t *cl_cpustats;
+static cvar_t *cl_cpustats_long;
 cvar_t  *cl_async;
 // Benchmark aid: keep full speed when the window is not active. Not archived, so a
 // scripted run cannot leave it behind in q2config.cfg.
@@ -3001,6 +3003,8 @@ static void CL_InitLocal(void)
     // Archived: these are frame-pacing settings a user tunes once, and they were being
     // silently reset to the defaults on every launch.
     cl_maxfps = Cvar_Get("cl_maxfps", "62", CVAR_ARCHIVE);
+    cl_cpustats = Cvar_Get("cl_cpustats", "0", 0);
+    cl_cpustats_long = Cvar_Get("cl_cpustats_long", "20", 0);
     cl_maxfps->changed = cl_maxfps_changed;
     cl_async = Cvar_Get("cl_async", "1", CVAR_ARCHIVE);
     cl_async->changed = cl_sync_changed;
@@ -3516,6 +3520,8 @@ static int CL_ScaleFrameTime(int msec)
     return max(1, (int)(msec * scale));
 }
 
+static void CL_CpuStatsFrame(void);
+
 unsigned CL_Frame(unsigned msec, int waterLevel)
 {
     bool phys_frame = true, ref_frame = true;
@@ -3548,10 +3554,17 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
        is what stops the CPU queueing frames ahead of the GPU. It MUST come before
        CL_ProcessEvents(), because that is where IN_Frame() samples input - sleeping
        after input sampling would add latency instead of removing it. */
-    if (R_LatencySleep)
+    if (R_LatencySleep) {
+        CPUPROF_BEGIN(REFLEX);
         R_LatencySleep();
+        CPUPROF_END(REFLEX);
+    }
 
-    CL_ProcessEvents();
+    {
+        CPUPROF_BEGIN(CL_EVENTS);
+        CL_ProcessEvents();
+        CPUPROF_END(CL_EVENTS);
+    }
 
     switch (sync_mode) {
     case SYNC_TIMEDEMO:
@@ -3619,8 +3632,13 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
     }
 
     // read next demo frame
-    if (cls.demo.playback)
+    if (cls.demo.playback) {
+        CPUPROF_BEGIN(DEMO);
         CL_DemoFrame(main_extra);
+        CPUPROF_END(DEMO);
+    }
+
+    CPUPROF_BEGIN(PREDICT);
 
     // calculate local time
     if (cls.state == ca_active && !sv_paused->integer)
@@ -3661,6 +3679,8 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
 
     UI_Frame(main_extra);
 
+    CPUPROF_END(PREDICT);
+
     if (ref_frame) {
         // update the screen
         if (host_speeds->integer)
@@ -3675,8 +3695,14 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
         R_FRAMES++;
 
         // update audio after the 3D view was drawn
-        S_Update();
+        {
+            CPUPROF_BEGIN(SOUND);
+            S_Update();
+            CPUPROF_END(SOUND);
+        }
         SCR_RunCinematic();
+
+        CL_CpuStatsFrame();
     } else if (sync_mode == SYNC_SLEEP_10) {
         // force audio and effects update if not rendering
         CL_CalcViewValues();
@@ -3695,6 +3721,96 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
 
     main_extra = 0;
     return 0;
+}
+
+/*
+============
+CL_CpuStatsFrame
+
+Closes out one rendered frame of the CPU FRAME PROFILER (inc/common/cpuprof.h).
+"other" is wall time between rendered frames that no section claimed.
+============
+*/
+static void CL_CpuStatsFrame(void)
+{
+    static const char *const names[CPUPROF_COUNT] = {
+#define CPUPROF_DO(id, name) name,
+        CPUPROF_LIST
+#undef CPUPROF_DO
+    };
+    static uint64_t last_us, second_start_us;
+    static uint64_t sum_us[CPUPROF_COUNT + 1], worst_us[CPUPROF_COUNT + 1];
+    static uint64_t sum_wall_us, worst_wall_us;
+    static int frames, long_frames;
+
+    const uint64_t now = Sys_Microseconds();
+    const uint64_t wall = last_us ? now - last_us : 0;
+    last_us = now;
+
+    uint64_t frame_us[CPUPROF_COUNT + 1], claimed = 0;
+    for (int i = 0; i < CPUPROF_COUNT; i++) {
+        frame_us[i] = cpuprof_us[i];
+        claimed += cpuprof_us[i];
+        cpuprof_us[i] = 0;
+    }
+    frame_us[CPUPROF_COUNT] = wall > claimed ? wall - claimed : 0;
+
+    if (!cl_cpustats->integer || !wall) {
+        second_start_us = now;
+        return;
+    }
+
+    char buf[512];
+    size_t len;
+
+    if (wall > (uint64_t)(cl_cpustats_long->value * 1000.0f)) {
+        long_frames++;
+        len = Q_snprintf(buf, sizeof(buf), "CPULONG %.2f ms:", wall * 1e-3);
+        for (int i = 0; i <= CPUPROF_COUNT && len < sizeof(buf); i++)
+            if (frame_us[i] >= 100)
+                len += Q_snprintf(buf + len, sizeof(buf) - len, " %s %.2f",
+                                  i < CPUPROF_COUNT ? names[i] : "other", frame_us[i] * 1e-3);
+        Com_Printf("%s\n", buf);
+    }
+
+    frames++;
+    sum_wall_us += wall;
+    for (int i = 0; i <= CPUPROF_COUNT; i++)
+        sum_us[i] += frame_us[i];
+    if (wall > worst_wall_us) {
+        worst_wall_us = wall;
+        memcpy(worst_us, frame_us, sizeof(worst_us));
+    }
+
+    if (now - second_start_us < 1000000)
+        return;
+
+    len = Q_snprintf(buf, sizeof(buf), "CPUSTATS %d frames avg %.2f ms, %d long |",
+                     frames, sum_wall_us * 1e-3 / frames, long_frames);
+    for (int i = 0; i <= CPUPROF_COUNT && len < sizeof(buf); i++)
+        len += Q_snprintf(buf + len, sizeof(buf) - len, " %s %.2f",
+                          i < CPUPROF_COUNT ? names[i] : "other", sum_us[i] * 1e-3 / frames);
+    // scene size on the last frame, to tell accumulation from scene content
+    if (len < sizeof(buf))
+        len += Q_snprintf(buf + len, sizeof(buf) - len, " | ents %d parts %d dlights %d blood %d",
+                          cl.refdef.num_entities, cl.refdef.num_particles,
+                          cl.refdef.num_dlights, cl.refdef.num_blood_spheres);
+    Com_Printf("%s\n", buf);
+
+    len = Q_snprintf(buf, sizeof(buf), "CPUSTATS worst %.2f ms |", worst_wall_us * 1e-3);
+    for (int i = 0; i <= CPUPROF_COUNT && len < sizeof(buf); i++)
+        len += Q_snprintf(buf + len, sizeof(buf) - len, " %s %.2f",
+                          i < CPUPROF_COUNT ? names[i] : "other", worst_us[i] * 1e-3);
+    Com_Printf("%s\n", buf);
+
+    // 2: also dump the GPU per-pass averages, so both sides share a timeline
+    if (cl_cpustats->integer >= 2)
+        Cbuf_AddText(&cmd_buffer, "profiler_dump\n");
+
+    memset(sum_us, 0, sizeof(sum_us));
+    sum_wall_us = worst_wall_us = 0;
+    frames = long_frames = 0;
+    second_start_us = now;
 }
 
 /*

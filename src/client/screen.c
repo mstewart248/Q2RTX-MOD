@@ -3671,7 +3671,11 @@ void SCR_UpdateScreen(int waterLevel)
 
     SCR_WeaponBarThink();
 
-    R_BeginFrame();
+    {
+        CPUPROF_BEGIN(R_BEGIN);
+        R_BeginFrame();
+        CPUPROF_END(R_BEGIN);
+    }
 
     // do 3D refresh drawing
     SCR_DrawActive(waterLevel);
@@ -3685,7 +3689,11 @@ void SCR_UpdateScreen(int waterLevel)
     // draw loading plaque
     SCR_DrawLoading();
 
-    R_EndFrame();
+    {
+        CPUPROF_BEGIN(R_END);
+        R_EndFrame();
+        CPUPROF_END(R_END);
+    }
 
     recursive--;
 }

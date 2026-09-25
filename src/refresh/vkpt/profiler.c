@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "vkpt.h"
 #include "DLSS.h"
+#include "system/system.h"
 
 #include <assert.h>
 
@@ -54,6 +55,80 @@ static struct {
 	// Sample data for profiled values
 	profiler_entry_samples_t samples[NUM_PROFILER_ENTRIES];
 } profiler_data;
+
+/* UPLOAD SPIKE TRACKER - diagnostic, read out by profiler_dump.
+
+   The overlay reported "upload lights" at 43 ms average against a 13.8 ms frame.
+   That marker brackets two tiny copies on the TRANSFER queue, so its span is
+   wall-clock time on that queue: whatever it spends stalled counts, and none of
+   it is inside FRAME_TIME, which starts in the trace command buffer after the
+   transfer semaphore has been waited on. A 60-sample average cannot say whether
+   that is one huge stall or a steady cost, nor whether it lines up with the
+   frame drops the player sees. This counts it per frame, next to the CPU frame
+   interval, so the two can be compared. The GPU values are read back
+   MAX_FRAMES_IN_FLIGHT frames late, so the CPU side uses the worst interval
+   over the last MAX_FRAMES_IN_FLIGHT + 1 frames. */
+#define SPIKE_WORST 8
+typedef struct {
+	float upload_ms, gpu_frame_ms, cpu_ms;
+} upload_spike_t;
+
+static struct {
+	uint64_t last_us;
+	float cpu_recent[MAX_FRAMES_IN_FLIGHT + 1];
+	int cpu_recent_idx;
+
+	int frames;
+	double upload_sum;
+	float upload_max, cpu_max;
+	int upload_over_2, upload_over_5, upload_over_20;
+	int cpu_over_25, cpu_over_50;
+	int both; // upload > 5 ms AND a CPU interval > 25 ms in the window
+	upload_spike_t worst[SPIKE_WORST];
+} upload_spikes;
+
+static void
+upload_spikes_reset(void)
+{
+	uint64_t last_us = upload_spikes.last_us;
+	memset(&upload_spikes, 0, sizeof(upload_spikes));
+	upload_spikes.last_us = last_us;
+}
+
+static void
+upload_spikes_record(float upload_ms, float gpu_frame_ms)
+{
+	uint64_t now = Sys_Microseconds();
+	float cpu_ms = upload_spikes.last_us ? (float)(now - upload_spikes.last_us) * 1e-3f : 0.f;
+	upload_spikes.last_us = now;
+
+	upload_spikes.cpu_recent[upload_spikes.cpu_recent_idx] = cpu_ms;
+	upload_spikes.cpu_recent_idx = (upload_spikes.cpu_recent_idx + 1) % LENGTH(upload_spikes.cpu_recent);
+	float cpu_window = 0.f;
+	for (int i = 0; i < LENGTH(upload_spikes.cpu_recent); i++)
+		cpu_window = max(cpu_window, upload_spikes.cpu_recent[i]);
+
+	upload_spikes.frames++;
+	upload_spikes.upload_sum += upload_ms;
+	upload_spikes.upload_max = max(upload_spikes.upload_max, upload_ms);
+	upload_spikes.cpu_max = max(upload_spikes.cpu_max, cpu_ms);
+	upload_spikes.upload_over_2 += upload_ms > 2.f;
+	upload_spikes.upload_over_5 += upload_ms > 5.f;
+	upload_spikes.upload_over_20 += upload_ms > 20.f;
+	upload_spikes.cpu_over_25 += cpu_ms > 25.f;
+	upload_spikes.cpu_over_50 += cpu_ms > 50.f;
+	upload_spikes.both += upload_ms > 5.f && cpu_window > 25.f;
+
+	// keep the SPIKE_WORST largest uploads, sorted descending
+	int slot = SPIKE_WORST;
+	while (slot > 0 && upload_spikes.worst[slot - 1].upload_ms < upload_ms)
+		slot--;
+	if (slot < SPIKE_WORST) {
+		memmove(&upload_spikes.worst[slot + 1], &upload_spikes.worst[slot],
+			(SPIKE_WORST - slot - 1) * sizeof(upload_spike_t));
+		upload_spikes.worst[slot] = (upload_spike_t){ upload_ms, gpu_frame_ms, cpu_window };
+	}
+}
 
 VkResult
 vkpt_profiler_initialize()
@@ -259,6 +334,10 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
 					reset_samples(idx);
 			}
 		}
+
+		double upload_ms = vkpt_get_profiler_result(PROFILER_UPLOAD_LIGHTS);
+		if (upload_ms > 0.0)
+			upload_spikes_record((float)upload_ms, (float)vkpt_get_profiler_result(PROFILER_FRAME_TIME));
 	}
 	else
 	{
@@ -420,5 +499,19 @@ vkpt_profiler_dump(void)
 		double avg_ms = ((double)e->accumulated / (e->num_samples * 1e6)) * qvk.timestampPeriod;
 		Com_Printf("PROFDUMP %-34s %8.3f ms\n", names[idx] + 9, avg_ms);
 	}
+
+	// counted since the previous dump
+	const int n = upload_spikes.frames;
+	Com_Printf("UPLOADSPIKES transfer_on_graphics=%d frames=%d upload_mean=%.3f upload_max=%.2f "
+		"up>2=%d up>5=%d up>20=%d cpu_max=%.2f cpu>25=%d cpu>50=%d both=%d\n",
+		qvk.queue_idx_transfer == qvk.queue_idx_graphics, n,
+		n ? upload_spikes.upload_sum / n : 0.0, upload_spikes.upload_max,
+		upload_spikes.upload_over_2, upload_spikes.upload_over_5, upload_spikes.upload_over_20,
+		upload_spikes.cpu_max, upload_spikes.cpu_over_25, upload_spikes.cpu_over_50, upload_spikes.both);
+	for (int i = 0; i < SPIKE_WORST && upload_spikes.worst[i].upload_ms > 0.f; i++)
+		Com_Printf("UPLOADSPIKE upload=%.2f gpu_frame=%.2f cpu_window=%.2f\n",
+			upload_spikes.worst[i].upload_ms, upload_spikes.worst[i].gpu_frame_ms, upload_spikes.worst[i].cpu_ms);
+	upload_spikes_reset();
+
 	Com_Printf("PROFDUMP end\n");
 }

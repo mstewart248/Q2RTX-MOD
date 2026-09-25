@@ -572,6 +572,7 @@ from it again.
 void V_RenderView(void)
 {
     int waterLevel;
+    CPUPROF_BEGIN(VIEW_PREP);
     // an invalid frame will just use the exact previous refdef
     // we can't use the old frame if the video mode has changed, though...
     if (cl.frame.valid) {
@@ -664,7 +665,11 @@ void V_RenderView(void)
        leaves cl.refdef holding the previous frame's flags. */
     waterLevel = (cl.frame.ps.rdflags & RDF_UNDERWATER) ? 3 : 0;
 
+    CPUPROF_END(VIEW_PREP);
+
+    CPUPROF_BEGIN(R_RENDER);
     R_RenderFrame(&cl.refdef, waterLevel);
+    CPUPROF_END(R_RENDER);
 #if USE_DEBUG
     if (cl_stats->integer)
         Com_Printf("ent:%i  lt:%i  part:%i\n", r_numentities, r_numdlights, r_numparticles);

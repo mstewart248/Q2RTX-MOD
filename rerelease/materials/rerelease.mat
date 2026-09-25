@@ -11811,8 +11811,14 @@ textures/e3u1/prwlt1_1:
 
 textures/e3u1/prwlt1_3:
 	texture_base materialDev/textures/e3u1/prwlt1_3.tga
-	texture_normals materialDev/textures/e3u1/prwlt1_3_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e3u1/prwlt1_3_n.png
+	texture_emissive materialDev/textures/e3u1/prwlt1_3_light.png
+	texture_metallic materialDev/textures/e3u1/prwlt1_3_metal.png
+	texture_roughness materialDev/textures/e3u1/prwlt1_3_rough.png
+	emissive_factor 1.0
+	default_radiance 1.5
+	volumetric_scale 1
+	is_light 1
 
 textures/e3u1/pthnm1_3:
 	texture_base materialDev/textures/e3u1/pthnm1_3.tga
