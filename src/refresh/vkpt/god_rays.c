@@ -306,7 +306,7 @@ vkpt_god_rays_noop(void)
 		); \
 	} while(0)
 
-void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass)
+void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass, bool full_res)
 {
 	BARRIER_COMPUTE(command_buffer, qvk.images[VKPT_IMG_PT_GODRAYS_THROUGHPUT_DIST]);
 	BARRIER_COMPUTE(command_buffer, qvk.images[VKPT_IMG_ASVGF_COLOR]);
@@ -425,7 +425,9 @@ void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, i
 
 	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &pass);
 
-	uint32_t group_size = THREAD_GROUP_SIZE * 2;
+	// One thread per 2x2 block normally. In photo mode (full_res, the shader's
+	// fog_accum_march) every pixel marches its own ray, so cover all of them.
+	uint32_t group_size = full_res ? THREAD_GROUP_SIZE : THREAD_GROUP_SIZE * 2;
 	uint32_t group_num_x = (qvk.gpu_slice_width + (group_size - 1)) / group_size;
 	uint32_t group_num_y = (qvk.extent_render.height + (group_size - 1)) / group_size;
 

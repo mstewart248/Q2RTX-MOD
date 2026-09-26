@@ -884,6 +884,7 @@ void CL_KexDemo_EntityRemoved(int number);
 //
 void CL_DeltaFrame(void);
 void CL_AddEntities(void);
+uint32_t CL_FrameRand(uint32_t salt);
 // Adjust a gun origin so that the gun doesn't intersect with walls. Used for view weapons.
 void CL_AdjustGunPosition(vec3_t viewangles, vec3_t *gun_origin);
 bool CL_GetViewWeaponTransform(vec3_t origin, vec3_t angles);

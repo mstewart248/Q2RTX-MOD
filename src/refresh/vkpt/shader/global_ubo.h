@@ -167,6 +167,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ 	UBO_CVAR_DO(pt_fog_froxel, 0.0) /* 1 = evaluate map fog in the froxel grid (cheap, temporally reused); 0 = the old per-pixel march in god_rays.comp */ 	UBO_CVAR_DO(pt_fog_froxel_history, 0.95) /* how much of the PREVIOUS frame's froxel volume to keep; this is what removes the noise. 0 disables temporal reuse */ \
 	/* What REFLECTION and REFRACTION pixels get for map fog. A negative PT_VIEW_DEPTH_A is reflect_refract's marker for such a pixel, and its magnitude is the UNFOLDED camera->mirror->object path length (PRIMARY_RAY_T_MAX for a reflected sky), so handing that straight to the view-aligned grid asks for a full-length column measured along the CAMERA ray - which is why reflections of a green sky came out orange on mgu5m1. 0 = grid, but stopped at the reflecting surface (smooth; no fog within the reflected image, which the grid cannot see at any price). 1 = the march's two-pass result (complete, but the march is the per-pixel estimator with no temporal history, so the fog inside reflections is NOISY). 2 = the old full-length column, kept only to reproduce the orange bug. See god_rays_filter.comp. */ \
 	UBO_CVAR_DO(pt_fog_froxel_reflect, 0.0) \
+	UBO_CVAR_DO(pt_fog_accum_march, 1.0) /* PHOTO MODE FOG. While accumulation rendering is active (temporal_blend_factor > 0), 1 skips the froxel grid and god_rays_filter's bilateral upsample and runs the per-pixel march at FULL resolution with white-noise sampling, so the map fog converges with the image instead of arriving pre-filtered. 0 keeps the gameplay path in photo mode. See fog_accum_march() below. */ \
 	/* Frame rate at which pt_fog_froxel_history means exactly what it says. That weight is applied ONCE PER FRAME, so on its own its time constant is measured in frames - 0.95 averages over ~20 of them, a third of a second at 60fps and a full second at 20 - and the fog therefore converges at whatever rate the machine runs at. The scatter pass rescales it to w^(dt*this) so the TIME constant is what stays fixed. 0 disables the correction and restores the raw per-frame weight. */ \
 	UBO_CVAR_DO(pt_fog_froxel_history_hz, 60.0) \
 	/* SPATIAL RESERVOIR REUSE (ReSTIR) for the froxel grid, cl_fog 3 only. 1 = a cell may borrow which LIGHT its neighbours' candidate draws picked, then still traces its own visibility ray on the winner. It costs NO extra rays - the reservoir and spatial passes trace nothing - and unlike pt_fog_froxel_filter it does not blur, so it cuts noise without softening the sky shafts. Defaults OFF; the grid renders exactly as before at 0. */ \
@@ -595,6 +596,39 @@ bool fog_sun_is_the_sky()
 {
 	return global_ubo.pt_fog_sky_sun_only != 0
 	    && global_ubo.environment_type == ENVIRONMENT_DYNAMIC;
+}
+
+/*
+=================
+fog_accum_march
+
+PHOTO MODE FOG. True while accumulation rendering is running (the only time
+temporal_blend_factor is non-zero - asvgf_taau.comp averages each frame into
+IMG_HQ_COLOR_INTERLEAVED) and pt_fog_accum_march is on.
+
+Accumulation mode is the ground-truth image, and the gameplay fog path cannot be
+part of one. The froxel grid is a 160x88 volume with an EMA history and a 3x3x3
+cross-cell blur, and even without the grid god_rays_filter.comp bilaterally
+upsamples a HALF-resolution march whose sub-pixel (GetRotatedGridOffset) is the
+same every frame. Every one of those is a filter: averaging more frames of them
+converges to the filtered answer, not to the fog.
+
+So in photo mode the march does all of it, per pixel, at full resolution:
+  god_rays.comp          one march per pixel, white-noise sampling seeded by the
+                         frame index (the blue-noise set repeats every 512
+                         frames and would stop converging), local lights kept
+                         even under fog_sun_is_the_sky()
+  god_rays_filter.comp   reads that pixel's own march, no bilateral, no grid
+  main.c                 does not dispatch the froxel passes at all
+Each frame is then one independent estimate of the full integral, including the
+reflected/refracted leg (pass_index 1) and the path tracer's own throughput
+through glass and water, which the grid never had.
+=================
+*/
+bool fog_accum_march()
+{
+	return global_ubo.temporal_blend_factor > 0.0
+	    && global_ubo.pt_fog_accum_march != 0.0;
 }
 
 #endif

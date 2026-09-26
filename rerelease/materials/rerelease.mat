@@ -19755,7 +19755,7 @@ textures/tomf/tf_brick6_01b:
 	texture_roughness materialDev/textures/tomf/tf_brick6_01b_rough.png
 	displace_out .00
 	displace_in 0.03
-	specular_factor .5
+	specular_factor .1
 	metalness_factor 0
 
 
@@ -19764,19 +19764,29 @@ textures/tomf/tf_brick6_01c:
 	texture_normals materialDev/textures/tomf/tf_brick6_01c_n.png
 	texture_height materialDev/textures/tomf/tf_brick6_01c_height.png
 	texture_roughness materialDev/textures/tomf/tf_brick6_01c_rough.png
-	displace_out .03
-	displace_in 0.0
-	specular_factor .5
+	displace_out .00
+	displace_in 0.01
+	specular_factor .1
 	metalness_factor 0
 
 textures/tomf/tf_brick6_01c2:
 	texture_base materialDev/textures/tomf/tf_brick6_01c2.tga
-	texture_normals materialDev/textures/tomf/tf_brick6_01c2_n.tga
+	texture_normals materialDev/textures/tomf/tf_brick6_01c2_n.png	
+	texture_height materialDev/textures/tomf/tf_brick6_01c2_height.png
+	texture_roughness materialDev/textures/tomf/tf_brick6_01c2_rough.png
+	displace_out 0
+	displace_in 0.01
+	specular_factor .1
 	metalness_factor 0
 
 textures/tomf/tf_brick6_01c3:
 	texture_base materialDev/textures/tomf/tf_brick6_01c3.tga
-	texture_normals materialDev/textures/tomf/tf_brick6_01c3_n.tga
+	texture_normals materialDev/textures/tomf/tf_brick6_01c2_n.png	
+	texture_height materialDev/textures/tomf/tf_brick6_01c2_height.png
+	texture_roughness materialDev/textures/tomf/tf_brick6_01c2_rough.png
+	displace_out 0
+	displace_in 0.01
+	specular_factor .1
 	metalness_factor 0
 
 textures/tomf/tf_brick6_02:
@@ -19785,8 +19795,8 @@ textures/tomf/tf_brick6_02:
 	texture_height materialDev/textures/tomf/tf_brick6_02_height.png
 	texture_roughness materialDev/textures/tomf/tf_brick6_02_rough.png
 	displace_out .00
-	displace_in 0.03
-	specular_factor .5
+	displace_in 0.01
+	specular_factor .1
 	metalness_factor 0
 
 textures/tomf/tf_brick6_02b:
@@ -25101,3 +25111,105 @@ models/items/spawngro3/pskin:
 	base_factor 2.5
 	metalness_factor 1.0
 	specular_factor 1.0
+
+# --- Gib skins (added by hand, AFTER the generated block) ---
+# baseq2.mat already has entries for these, so materialdev_export.py skips
+# them. rerelease.mat sorts after baseq2.mat and wins the dedup, so these
+# REPLACE those entries - their base/emissive/specular factors are copied
+# here to keep the current look. TGAs: palette dump of pak0 skin.pcx, alpha
+# 255 = fully rough; _n.tga is flat with alpha 0 (metalness 0).
+
+models/objects/gibs/arm/skin:
+	texture_base materialDev/models/objects/gibs/arm/skin.tga
+	texture_normals materialDev/models/objects/gibs/arm/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/bone/skin:
+	texture_base materialDev/models/objects/gibs/bone/skin.tga
+	texture_normals materialDev/models/objects/gibs/bone/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/bone2/skin:
+	texture_base materialDev/models/objects/gibs/bone2/skin.tga
+	texture_normals materialDev/models/objects/gibs/bone2/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/chest/skin:
+	texture_base materialDev/models/objects/gibs/chest/skin.tga
+	texture_normals materialDev/models/objects/gibs/chest/skin_n.tga
+	texture_roughness materialDev/models/objects/gibs/chest/skin_rough.tga
+	texture_metallic materialDev/models/objects/gibs/chest/skin_metal.tga
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/gear/skin:
+	texture_base materialDev/models/objects/gibs/gear/skin.tga
+	texture_normals materialDev/models/objects/gibs/gear/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/head/skin:
+	texture_base materialDev/models/objects/gibs/head/skin.tga
+	texture_normals materialDev/models/objects/gibs/head/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/head2/skin:
+	texture_base materialDev/models/objects/gibs/head2/skin.tga
+	texture_normals materialDev/models/objects/gibs/head2/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/head2/player:
+	texture_base materialDev/models/objects/gibs/head2/player.tga
+	texture_normals materialDev/models/objects/gibs/head2/player_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/leg/skin:
+	texture_base materialDev/models/objects/gibs/leg/skin.tga
+	texture_normals materialDev/models/objects/gibs/leg/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/skull/skin:
+	texture_base materialDev/models/objects/gibs/skull/skin.tga
+	texture_normals materialDev/models/objects/gibs/skull/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0
+
+models/objects/gibs/sm_meat/skin:
+	texture_base materialDev/models/objects/gibs/sm_meat/skin.tga
+	texture_normals materialDev/models/objects/gibs/sm_meat/skin_n.tga
+	texture_roughness materialDev/models/objects/gibs/sm_meat/skin_rough.tga
+	texture_metallic materialDev/models/objects/gibs/sm_meat/skin_metal.tga
+	base_factor 2.5
+
+models/objects/gibs/sm_metal/skin:
+	texture_base materialDev/models/objects/gibs/sm_metal/skin.tga
+	texture_normals materialDev/models/objects/gibs/sm_metal/skin_n.tga
+	metalness_factor 0
+	emissive_factor 0.1
+	base_factor 2.5
+	specular_factor 0

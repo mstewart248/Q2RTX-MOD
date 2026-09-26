@@ -6036,17 +6036,23 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	{
 		VkCommandBuffer trace_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 
+		// Photo mode fog (fog_accum_march in global_ubo.h): the march runs at
+		// full resolution and the filter reads it per pixel, so the froxel grid
+		// is never sampled and is not dispatched at all.
+		const bool fog_accum_march = ref_mode.enable_accumulation
+		                           && cvar_pt_fog_accum_march->value != 0.f;
+
 		if (god_rays_enabled)
 		{
 			BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS);
-			vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 0);
+			vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 0, fog_accum_march);
 			END_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS);
 		}
 
 		// [froxel grid] the map fog's cheap path. Runs after the march - which
 		// still produces the sun shafts - and before the filter, which is what
 		// reads the integrated volume this writes.
-		if (god_rays_enabled && vkpt_froxel_enabled())
+		if (god_rays_enabled && vkpt_froxel_enabled() && !fog_accum_march)
 		{
 			BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_FOG_FROXEL);
 			vkpt_record_froxel_command_buffer(trace_cmd_buf);
@@ -6065,7 +6071,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			if (ref_mode.reflect_refract > 0)
 			{
 				BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS_REFLECT_REFRACT);
-				vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 1);
+				vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 1, fog_accum_march);
 				END_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS_REFLECT_REFRACT);
 			}
 

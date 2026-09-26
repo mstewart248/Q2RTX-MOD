@@ -960,7 +960,7 @@ VkResult vkpt_god_rays_destroy_pipelines(void);
 VkResult vkpt_god_rays_update_images(void);
 VkResult vkpt_god_rays_noop(void);
 bool vkpt_god_rays_enabled(const sun_light_t* sun_light);
-void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass);
+void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass, bool full_res);
 void vkpt_record_god_rays_filter_command_buffer(VkCommandBuffer command_buffer);
 // [froxel grid] the two map-fog volume passes, and whether they replace the
 // per-pixel march this frame. See god_rays.c.

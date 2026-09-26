@@ -920,12 +920,24 @@ SV_StepDirection
 Turns to the movement direction, and walks the current distance if
 facing it.
 
+[rerelease] Two changes, both only for the rerelease game:
+  - a step that FAILS puts ideal_yaw and the current yaw back. The 1997 code
+    left the monster aimed at whatever just blocked it, which poisons every
+    retry after it - SV_NewChaseDir derives its forbidden `turnaround` from
+    ideal_yaw, so the way back out of a corner is exactly the one it refuses.
+  - a step that succeeds but that we are not yet facing is undone, and then
+    reported as `allow_no_turns`. The navmesh follower passes true there (it is
+    turning towards its route, that is progress); everyone else passes false
+    so the caller goes on to try something else.
 ======================
 */
-bool SV_StepDirection(edict_t *ent, float yaw, float dist)
+static bool SV_StepDirection(edict_t *ent, float yaw, float dist, bool allow_no_turns)
 {
     vec3_t      move, oldorigin;
     float       delta;
+    float       old_ideal_yaw = ent->ideal_yaw;
+    float       old_current_yaw = ent->s.angles[YAW];
+    bool        rerelease = M_RereleaseGame();
 
     ent->ideal_yaw = yaw;
     M_ChangeYaw(ent);
@@ -937,10 +949,22 @@ bool SV_StepDirection(edict_t *ent, float yaw, float dist)
 
     VectorCopy(ent->s.origin, oldorigin);
     if (SV_movestep(ent, move, false)) {
-        delta = ent->s.angles[YAW] - ent->ideal_yaw;
-        if (delta > 45 && delta < 315) {
-            // not turned far enough, so don't take the step
-            VectorCopy(oldorigin, ent->s.origin);
+        if (!ent->inuse)
+            return true;
+
+        if (rerelease) {
+            if (strncmp(ent->classname, "monster_widow", 13) && !FacingIdeal(ent)) {
+                // not turned far enough, so don't take the step - but still turn
+                VectorCopy(oldorigin, ent->s.origin);
+                gi.linkentity(ent);
+                return allow_no_turns;
+            }
+        } else {
+            delta = ent->s.angles[YAW] - ent->ideal_yaw;
+            if (delta > 45 && delta < 315) {
+                // not turned far enough, so don't take the step
+                VectorCopy(oldorigin, ent->s.origin);
+            }
         }
         gi.linkentity(ent);
         G_TouchTriggers(ent);
@@ -948,6 +972,10 @@ bool SV_StepDirection(edict_t *ent, float yaw, float dist)
     }
     gi.linkentity(ent);
     G_TouchTriggers(ent);
+    if (rerelease) {
+        ent->ideal_yaw = old_ideal_yaw;
+        ent->s.angles[YAW] = old_current_yaw;
+    }
     return false;
 }
 
@@ -968,24 +996,22 @@ void SV_FixCheckBottom(edict_t *ent)
 ================
 SV_NewChaseDir
 
+[rerelease] Chases a POSITION rather than an entity, so the navmesh follower
+can hand it the route point it could not step towards.
 ================
 */
 #define DI_NODIR    -1
-void SV_NewChaseDir(edict_t *actor, edict_t *enemy, float dist)
+static bool SV_NewChaseDir(edict_t *actor, const vec3_t pos, float dist)
 {
     float   deltax, deltay;
     float   d[3];
     float   tdir, olddir, turnaround;
 
-    //FIXME: how did we get here with no enemy
-    if (!enemy)
-        return;
-
     olddir = anglemod((int)(actor->ideal_yaw / 45) * 45);
     turnaround = anglemod(olddir - 180);
 
-    deltax = enemy->s.origin[0] - actor->s.origin[0];
-    deltay = enemy->s.origin[1] - actor->s.origin[1];
+    deltax = pos[0] - actor->s.origin[0];
+    deltay = pos[1] - actor->s.origin[1];
     if (deltax > 10)
         d[1] = 0;
     else if (deltax < -10)
@@ -1006,8 +1032,8 @@ void SV_NewChaseDir(edict_t *actor, edict_t *enemy, float dist)
         else
             tdir = d[2] == 90 ? 135 : 215;
 
-        if (tdir != turnaround && SV_StepDirection(actor, tdir, dist))
-            return;
+        if (tdir != turnaround && SV_StepDirection(actor, tdir, dist, false))
+            return true;
     }
 
 // try other directions
@@ -1018,39 +1044,57 @@ void SV_NewChaseDir(edict_t *actor, edict_t *enemy, float dist)
     }
 
     if (d[1] != DI_NODIR && d[1] != turnaround
-        && SV_StepDirection(actor, d[1], dist))
-        return;
+        && SV_StepDirection(actor, d[1], dist, false))
+        return true;
 
     if (d[2] != DI_NODIR && d[2] != turnaround
-        && SV_StepDirection(actor, d[2], dist))
-        return;
+        && SV_StepDirection(actor, d[2], dist, false))
+        return true;
 
     // ROGUE/rerelease: neither axis worked, so give the monster a chance to
     // deal with the block itself - jump the gap, or ride a plat.  If it says
     // it handled it, we must not move or turn it this frame.
     if (actor->monsterinfo.blocked && actor->inuse && actor->health > 0 &&
         !(actor->monsterinfo.aiflags & AI_TARGET_ANGER)) {
-        if (actor->monsterinfo.blocked(actor, dist))
-            return;
+        nav_monster_t *nm = Nav_MonsterState(actor);
+
+        if (actor->monsterinfo.blocked(actor, dist)) {
+            nm->move_block_counter = -2;
+            return true;
+        }
+
+        // [rerelease] we couldn't step; instead of running endlessly in our
+        // current spot, switch to node navigation for a bit to get to where
+        // we need to go - M_MoveToPath treats the monster as melee while
+        // temp_melee is on, so it paths even with the enemy in plain sight.
+        if (M_RereleaseGame() && !nm->temp_melee && Nav_MonsterCanPath(actor) &&
+            !(actor->monsterinfo.aiflags & (AI_LOST_SIGHT | AI_COMBAT_POINT |
+                                            AI_TARGET_ANGER | AI_PATHING))) {
+            if (++nm->move_block_counter > 2) {
+                nm->temp_melee = true;
+                nm->move_block_change_framenum = level.framenum + 3 * BASE_FRAMERATE;
+                nm->move_block_counter = 0;
+            }
+        }
     }
 
     /* there is no direct path to the player, so pick another direction */
 
-    if (olddir != DI_NODIR && SV_StepDirection(actor, olddir, dist))
-        return;
+    if (olddir != DI_NODIR && SV_StepDirection(actor, olddir, dist, false))
+        return true;
 
     if (Q_rand() & 1) { /*randomly determine direction of search*/
         for (tdir = 0 ; tdir <= 315 ; tdir += 45)
-            if (tdir != turnaround && SV_StepDirection(actor, tdir, dist))
-                return;
+            if (tdir != turnaround && SV_StepDirection(actor, tdir, dist, false))
+                return true;
     } else {
         for (tdir = 315 ; tdir >= 0 ; tdir -= 45)
-            if (tdir != turnaround && SV_StepDirection(actor, tdir, dist))
-                return;
+            if (tdir != turnaround && SV_StepDirection(actor, tdir, dist, false))
+                return true;
     }
 
-    if (turnaround != DI_NODIR && SV_StepDirection(actor, turnaround, dist))
-        return;
+    if (turnaround != DI_NODIR && SV_StepDirection(actor, turnaround, dist, false))
+        return true;
 
     // [rerelease] Every direction failed.  The 1997 code parks ideal_yaw back
     // on `olddir` - the direction that just failed - so the next frame runs
@@ -1068,6 +1112,8 @@ void SV_NewChaseDir(edict_t *actor, edict_t *enemy, float dist)
 
     if (!M_CheckBottom(actor))
         SV_FixCheckBottom(actor);
+
+    return false;
 }
 
 /*
@@ -1092,13 +1138,217 @@ bool SV_CloseEnough(edict_t *ent, edict_t *goal, float dist)
 
 /*
 ======================
+M_NavPathToGoal
+
+[rerelease] m_move.cpp, on top of Nav_GetPathToGoal. Walk the navmesh route
+to our enemy: re-query when we reach the point we were walking at or the
+cached answer is two seconds old, then step straight towards it. When the
+next leg is a jump or a drop we walk at its LANDING point; SV_movestep will
+refuse to step off the ledge, the blocked hook runs, and blocked_checkjump
+sees AI_PATHING + NAV_PATH_TRAVERSAL and makes the jump.
+
+Returns false when the route is no good, which drops the monster back onto
+the classic movement.
+======================
+*/
+#define NAV_PATH_CACHE      (2 * BASE_FRAMERATE)
+
+static bool M_NavPathToGoal(edict_t *self, float dist, const vec3_t goal)
+{
+    nav_monster_t   *nm = Nav_MonsterState(self);
+    nav_path_t      *path = &nm->path;
+    float           *path_to;
+    float           yaw;
+    float           old_yaw = self->s.angles[YAW];
+    float           old_ideal_yaw = self->ideal_yaw;
+    vec3_t          d;
+
+    // mark us as *trying* now (the path is valid)
+    self->monsterinfo.aiflags |= AI_PATHING;
+
+    path_to = (path->code == NAV_PATH_TRAVERSAL) ?
+        path->second_move_point : path->first_move_point;
+
+    if ((path->code != NAV_PATH_TRAVERSAL && Nav_PointReached(self, path_to)) ||
+        nm->cache_framenum <= level.framenum) {
+        nav_caps_t  caps = { 0, 0 };
+
+        if (self->monsterinfo.can_jump) {
+            caps.jump_height = self->monsterinfo.jump_height;
+            caps.drop_height = self->monsterinfo.drop_height;
+        }
+
+        if (!Nav_GetPathToGoal(self, goal, &caps, path)) {
+            if (g_debug_monster_paths->integer)
+                gi.dprintf("[path] %s %d: no route (code %d)\n",
+                           self->classname, self->s.number, path->code);
+            return false;
+        }
+
+        nm->cache_framenum = level.framenum + NAV_PATH_CACHE;
+        path_to = (path->code == NAV_PATH_TRAVERSAL) ?
+            path->second_move_point : path->first_move_point;
+    }
+
+    // SV_movestep's anti-wedge may have just re-aimed us along a wall; give
+    // that a frame before steering back at the route
+    if (self->monsterinfo.random_change_framenum >= level.framenum &&
+        !(self->monsterinfo.aiflags & AI_ALTERNATE_FLY)) {
+        yaw = self->ideal_yaw;
+    } else {
+        VectorSubtract(path_to, self->s.origin, d);
+        yaw = vectoyaw(d);
+    }
+
+    if (g_debug_monster_paths->integer && (level.framenum + self->s.number) % BASE_FRAMERATE == 0)
+        gi.dprintf("[path] %s %d at (%.0f %.0f %.0f) code %d -> (%.0f %.0f %.0f) blocked %.1f\n",
+                   self->classname, self->s.number,
+                   self->s.origin[0], self->s.origin[1], self->s.origin[2], path->code,
+                   path_to[0], path_to[1], path_to[2], nm->blocked_time);
+
+    if (!SV_StepDirection(self, yaw, dist, true)) {
+        if (!self->inuse)
+            return false;
+
+        if (self->monsterinfo.blocked && !(self->monsterinfo.aiflags & AI_TARGET_ANGER) &&
+            self->health > 0) {
+            // if we're blocked, the blocked function will be deferred to for yaw
+            self->s.angles[YAW] = old_yaw;
+            self->ideal_yaw = old_ideal_yaw;
+            if (self->monsterinfo.blocked(self, dist))
+                return true;
+        }
+
+        // try the first point
+        if (self->monsterinfo.random_change_framenum >= level.framenum) {
+            yaw = self->ideal_yaw;
+        } else {
+            VectorSubtract(path->first_move_point, self->s.origin, d);
+            yaw = vectoyaw(d);
+        }
+
+        if (!SV_StepDirection(self, yaw, dist, true)) {
+            // we got blocked, but all is not lost yet; do a similar bump
+            // around-ish behavior to try to regain our composure
+            if (self->monsterinfo.aiflags & AI_BLOCKED) {
+                self->monsterinfo.aiflags &= ~AI_BLOCKED;
+                return true;
+            }
+
+            if (self->monsterinfo.random_change_framenum < level.framenum && self->inuse) {
+                self->monsterinfo.random_change_framenum = level.framenum + 15;
+                if (SV_NewChaseDir(self, path_to, dist))
+                    return true;
+            }
+
+            nm->blocked_time += FRAMETIME * 3;
+        }
+
+        if (nm->blocked_time > 1.5f)
+            return false;
+    }
+
+    return true;
+}
+
+/*
+=============
+M_MoveToPath
+
+[rerelease] Advanced movement code that uses the navmesh if allowed and
+conditions are right. True means this frame's move was handled (even if the
+monster only turned); false means use the classic movement.
+=============
+*/
+static bool M_MoveToPath(edict_t *self, float dist)
+{
+    nav_monster_t   *nm;
+    combat_style_t  style;
+    float           standing;
+
+    if (!M_RereleaseGame())
+        return false;
+    if (!Nav_MonsterCanPath(self))
+        return false;
+
+    nm = Nav_MonsterState(self);
+
+    if (nm->wait_framenum > level.framenum)
+        return false;
+    if (!self->enemy || !self->enemy->inuse)
+        return false;
+    if (self->enemy->client && self->enemy->client->invisible_framenum > level.framenum)
+        return false;
+    if (self->monsterinfo.attack_state >= AS_MISSILE)
+        return true;
+
+    style = self->monsterinfo.combat_style;
+    if (nm->temp_melee)
+        style = COMBAT_MELEE;
+
+    standing = max(self->maxs[2], -self->mins[2]);
+
+    if (visible(self, self->enemy)) {
+        if (style == COMBAT_MELEE) {
+            // path pretty close to the enemy, then let normal Quake movement take over
+            if (realrange(self, self->enemy) > 240.0f ||
+                fabsf(self->s.origin[2] - self->enemy->s.origin[2]) > standing) {
+                if (M_NavPathToGoal(self, dist, self->enemy->s.origin))
+                    return true;
+                nm->temp_melee = false;
+            } else {
+                nm->temp_melee = false;
+                return false;
+            }
+        } else if (style == COMBAT_MIXED) {
+            // most mixed combat AI have fairly short range attacks, so try to
+            // path within mid range
+            if (realrange(self, self->enemy) > 440.0f ||
+                fabsf(self->s.origin[2] - self->enemy->s.origin[2]) > standing * 2.0f) {
+                if (M_NavPathToGoal(self, dist, self->enemy->s.origin))
+                    return true;
+            } else {
+                return false;
+            }
+        } else {
+            // COMBAT_RANGED, or a style we never derived: do the normal
+            // "shoot, walk, shoot" behavior
+            return false;
+        }
+    } else {
+        // we can't see our enemy, let's see if we can path to them
+        if (M_NavPathToGoal(self, dist, self->enemy->s.origin))
+            return true;
+    }
+
+    if (!self->inuse)
+        return false;
+
+    if (nm->path.code > NAV_PATH_START_ERRORS) {
+        nm->wait_framenum = level.framenum + 10 * BASE_FRAMERATE;
+        return false;
+    }
+
+    nm->blocked_time += FRAMETIME * 3;
+
+    if (nm->blocked_time > 5.0f) {
+        nm->blocked_time = 0;
+        nm->wait_framenum = level.framenum + 5 * BASE_FRAMERATE;
+        return false;
+    }
+
+    return true;
+}
+
+/*
+======================
 M_MoveToGoal
 ======================
 */
 void M_MoveToGoal(edict_t *ent, float dist)
 {
     edict_t     *goal;
-    vec3_t      waypoint;
+    vec3_t      d;
 
     goal = ent->goalentity;
 
@@ -1109,35 +1359,85 @@ void M_MoveToGoal(edict_t *ent, float dist)
     if (ent->enemy &&  SV_CloseEnough(ent, ent->enemy, dist))
         return;
 
-    // [rerelease] Try the navmesh before the classic corner-follower, for a
-    // monster whose combat_style says it needs to close the distance. A
-    // monster in the middle of an attack is left alone - the rerelease gates
-    // this the same way, on attack_state < AS_MISSILE.
-    if (M_RereleaseGame() && ent->monsterinfo.attack_state < AS_MISSILE &&
-        Nav_CombatWaypoint(ent, waypoint)) {
-        vec3_t  delta;
-        float   saved_yaw = ent->ideal_yaw;
-
-        VectorSubtract(waypoint, ent->s.origin, delta);
-        delta[2] = 0;
-        if (SV_StepDirection(ent, vectoyaw(delta), dist))
-            return;
-
-        // The mesh said go that way and the world disagreed, so fall through
-        // to the classic movement rather than standing still - but put
-        // ideal_yaw back first.  SV_StepDirection writes it even when the step
-        // FAILS, and leaving it aimed at whatever just blocked us poisons the
-        // fallback twice over: the retry below re-tries the yaw that just
-        // failed, and SV_NewChaseDir derives its forbidden `turnaround` from
-        // it, which is exactly the direction - back the way we came - that
-        // would get the monster out of the corner it is stuck in.
-        ent->ideal_yaw = saved_yaw;
+    if (!M_RereleaseGame()) {
+    // bump around...
+        if ((Q_rand() & 3) == 1 || !SV_StepDirection(ent, ent->ideal_yaw, dist, false)) {
+            if (ent->inuse && goal)
+                SV_NewChaseDir(ent, goal->s.origin, dist);
+        }
+        return;
     }
 
-// bump around...
-    if ((Q_rand() & 3) == 1 || !SV_StepDirection(ent, ent->ideal_yaw, dist)) {
+    if (!goal)
+        return;
+
+    // [Paril-KEX] try paths if we can't see the enemy
+    if (!(ent->monsterinfo.aiflags & AI_COMBAT_POINT) &&
+        ent->monsterinfo.attack_state < AS_MISSILE) {
+        if (M_MoveToPath(ent, dist)) {
+            nav_monster_t *nm = Nav_MonsterState(ent);
+
+            nm->blocked_time = max(0.0f, nm->blocked_time - FRAMETIME);
+            return;
+        }
+    }
+
+    ent->monsterinfo.aiflags &= ~AI_PATHING;
+
+    if (g_debug_monster_paths->integer >= 2 && ent->enemy &&
+        (level.framenum + ent->s.number) % BASE_FRAMERATE == 0)
+        gi.dprintf("[move] %s %d at (%.0f %.0f %.0f) classic -> (%.0f %.0f %.0f)%s\n",
+                   ent->classname, ent->s.number,
+                   ent->s.origin[0], ent->s.origin[1], ent->s.origin[2],
+                   goal->s.origin[0], goal->s.origin[1], goal->s.origin[2],
+                   (ent->monsterinfo.aiflags & AI_LOST_SIGHT) ? " lost-sight" : "");
+
+    // [Paril-KEX] if we have a straight shot to our target, just move
+    // straight instead of trying to stick to invisible guide lines
+    if (ent->monsterinfo.bad_move_framenum <= level.framenum ||
+        (ent->monsterinfo.aiflags & AI_CHARGING)) {
+        trace_t tr;
+
+        if (!FacingIdeal(ent)) {
+            M_ChangeYaw(ent);
+            return;
+        }
+
+        tr = gi.trace(ent->s.origin, NULL, NULL, goal->s.origin, ent, MASK_MONSTERSOLID);
+        if (tr.fraction == 1.0f || tr.ent == goal) {
+            VectorSubtract(goal->s.origin, ent->s.origin, d);
+            if (SV_StepDirection(ent, vectoyaw(d), dist, false))
+                return;
+        }
+
+        // we didn't make a step, so don't try this for a while
+        // *unless* we're going to a path corner
+        if (goal->classname && strcmp(goal->classname, "path_corner") &&
+            strcmp(goal->classname, "point_combat")) {
+            ent->monsterinfo.bad_move_framenum = level.framenum + 5 * BASE_FRAMERATE;
+            ent->monsterinfo.aiflags &= ~AI_CHARGING;
+        }
+    }
+
+    // bump around...
+    if ((ent->monsterinfo.random_change_framenum <= level.framenum   // random change time is up
+         && (Q_rand() & 3) == 1                                      // random bump around
+         && !(ent->monsterinfo.aiflags & AI_CHARGING)                // charging monsters don't deflect unless they have to
+         && !((ent->monsterinfo.aiflags & AI_ALTERNATE_FLY) && ent->enemy &&
+              !(ent->monsterinfo.aiflags & AI_LOST_SIGHT)))          // nor do alternate fliers
+        || !SV_StepDirection(ent, ent->ideal_yaw, dist,
+                             ent->monsterinfo.bad_move_framenum > level.framenum)) {
+        if (ent->monsterinfo.aiflags & AI_BLOCKED) {
+            ent->monsterinfo.aiflags &= ~AI_BLOCKED;
+            return;
+        }
+        ent->monsterinfo.random_change_framenum = level.framenum + 5 + (Q_rand() % 6);
         if (ent->inuse)
-            SV_NewChaseDir(ent, goal, dist);
+            SV_NewChaseDir(ent, goal->s.origin, dist);
+        Nav_MonsterState(ent)->move_block_counter = 0;
+    } else if (ent->monsterinfo.bad_move_framenum > level.framenum) {
+        // rerelease: bad_move_time -= 250ms
+        ent->monsterinfo.bad_move_framenum -= 2;
     }
 }
 

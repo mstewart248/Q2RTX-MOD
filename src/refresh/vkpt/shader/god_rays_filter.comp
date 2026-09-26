@@ -155,6 +155,12 @@ void main()
 	// shafts still come from the march, which is why this only takes over when
 	// the map's own fog is what is being rendered (pt_fog_froxel, and fog_mode
 	// >= 2 on the C side).
+	// PHOTO MODE: the march ran at full resolution, so this pixel's own value
+	// is the sample. No bilateral taps (they are a spatial filter, and would
+	// converge to a blurred fog) and no froxel grid below. See fog_accum_march.
+	if (fog_accum_march())
+		result = texelFetch(TEX_GODRAYS_INTERMEDIATE, i_position.xy, 0);
+
 	float raw_view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, i_position.xy, 0).r;
 
 	/* A NEGATIVE VIEW DEPTH MEANS THIS PIXEL WENT THROUGH A REFLECTION OR A
@@ -216,7 +222,8 @@ void main()
 	// mode 1 is the only one that declines the grid and keeps the marched result
 	bool froxel_pixel = !is_reflection || reflect_mode != 1;
 
-	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_froxel > 0.0 && froxel_pixel)
+	if (global_ubo.fog_enable != 0 && global_ubo.pt_fog_froxel > 0.0 && froxel_pixel
+	    && !fog_accum_march())
 	{
 		float view_depth = abs(raw_view_depth);
 

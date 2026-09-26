@@ -1513,6 +1513,9 @@ bool monster_start(edict_t *self)
         return false;
     }
 
+    // a reused edict must not inherit a dead monster's navmesh route
+    Nav_ResetMonster(self);
+
     // [rerelease] SCENIC monsters are set dressing - biggun's eight
     // monster_soldier_light (sf 524291) and boss2's one play a scripted scene
     // instead of fighting, so they are good guys and never enter the tally

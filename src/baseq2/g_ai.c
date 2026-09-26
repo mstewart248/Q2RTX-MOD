@@ -742,6 +742,12 @@ bool FacingIdeal(edict_t *self)
     float   delta;
 
     delta = anglemod(self->s.angles[YAW] - self->ideal_yaw);
+
+    // [rerelease] a monster walking a navmesh route lines up properly before
+    // it steps - 45 degrees off is enough to walk it into the door frame
+    if (self->monsterinfo.aiflags & AI_PATHING)
+        return !(delta > 5 && delta < 355);
+
     if (delta > 45 && delta < 315)
         return false;
     return true;
@@ -1176,7 +1182,6 @@ void ai_run(edict_t *self, float dist)
     edict_t     *tempgoal;
     edict_t     *save;
     bool        new;
-    bool        nav_steering = false;
     edict_t     *marker;
     float       d1, d2;
     trace_t     tr;
@@ -1277,7 +1282,15 @@ void ai_run(edict_t *self, float dist)
 //      if (self.aiflags & AI_LOST_SIGHT)
 //          dprint("regained sight\n");
         M_MoveToGoal(self, dist);
-        self->monsterinfo.aiflags &= ~AI_LOST_SIGHT;
+        if (!self->inuse)
+            return;
+        if (self->monsterinfo.aiflags & AI_LOST_SIGHT) {
+            nav_monster_t *nm = Nav_MonsterState(self);
+
+            self->monsterinfo.aiflags &= ~AI_LOST_SIGHT;
+            if (nm->move_block_change_framenum < level.framenum)
+                nm->temp_melee = false;
+        }
         VectorCopy(self->enemy->s.origin, self->monsterinfo.last_sighting);
         M_UpdateBlindFireTarget(self);
         self->monsterinfo.trail_framenum = level.framenum;
@@ -1321,6 +1334,10 @@ void ai_run(edict_t *self, float dist)
         self->monsterinfo.aiflags |= (AI_LOST_SIGHT | AI_PURSUIT_LAST_SEEN);
         self->monsterinfo.aiflags &= ~(AI_PURSUE_NEXT | AI_PURSUE_TEMP);
         new = true;
+
+        // [rerelease] immediately try paths
+        Nav_MonsterState(self)->blocked_time = 0;
+        Nav_MonsterState(self)->wait_framenum = 0;
     }
 
     if (self->monsterinfo.aiflags & AI_PURSUE_NEXT) {
@@ -1354,51 +1371,15 @@ void ai_run(edict_t *self, float dist)
         }
     }
 
-    // [Q2RTX] No hint path took us anywhere. If this map has a navmesh, use it
-    // to pick the next corner to head for rather than milling about at the last
-    // place we saw the player. This only STEERS the pursuit by writing
-    // last_sighting - see Nav_MonsterPursue - and it never runs on a map that
-    // has authored hint_paths.
-    //
-    // It has to run HERE, after the player-trail code above has picked its
-    // goal, for two reasons that both showed up as monsters grinding along
-    // walls:
-    //
-    //   - running it earlier and setting AI_LOST_SIGHT meant the `new` block
-    //     above never fired, so `new` stayed false and the course correction
-    //     at the bottom of this function - the only obstacle test in the whole
-    //     pursuit - was skipped for every navmesh waypoint ever set.
-    //   - the trail code would then overwrite last_sighting on the very next
-    //     frame, so the monster's goal alternated between a navmesh corner and
-    //     a stale breadcrumb and it just dithered on the spot.
-    {
-        vec3_t  was;
-
-        VectorCopy(self->monsterinfo.last_sighting, was);
-
-        if (Nav_MonsterPursue(self)) {
-            // the mesh owns the goal now; the trail must not take it back
-            self->monsterinfo.aiflags &= ~(AI_PURSUE_NEXT | AI_PURSUE_TEMP |
-                                           AI_PURSUIT_LAST_SEEN);
-            // we have a plan, so do not let the hint search fire again next frame
-            self->monsterinfo.trail_framenum = level.framenum;
-            nav_steering = true;
-
-            // only re-run the course correction when the aim point actually
-            // moved - it costs three traces, and a waypoint we are already
-            // walking cleanly towards does not need re-checking every frame
-            if (!VectorCompare(was, self->monsterinfo.last_sighting))
-                new = true;
-        }
-    }
-
     VectorSubtract(self->s.origin, self->monsterinfo.last_sighting, v);
     d1 = VectorLength(v);
-    if (d1 <= dist) {
-        // arriving at a navmesh waypoint is the mesh's business, not the
-        // trail's; letting this set AI_PURSUE_NEXT would hand the goal back
-        if (!nav_steering)
-            self->monsterinfo.aiflags |= AI_PURSUE_NEXT;
+    // [rerelease] While the navmesh is walking us to the enemy (AI_PATHING,
+    // left set by M_MoveToGoal on the previous frame) the trail breadcrumbs
+    // are not our goal, so arriving at one must not advance the trail.
+    // last_sighting is still what M_MoveToGoal gets as the goal for the frame
+    // the mesh gives up and the classic pursuit takes over.
+    if (d1 <= dist && !(self->monsterinfo.aiflags & AI_PATHING)) {
+        self->monsterinfo.aiflags |= AI_PURSUE_NEXT;
         dist = d1;
     }
 
@@ -1479,10 +1460,14 @@ on a func_plat, instead of milling about at the edge.
 
 Lifted from src/rerelease/rogue/g_rogue_newai.cpp.  Differences here:
 
-  - the AI_PATHING / nav_path branches are dropped; this tree has no nav mesh.
-  - the "how deep is the water I would land in" test uses gi.pointcontents at
-    roughly waist height instead of the rerelease's M_CatagorizePosition, which
-    in this tree only reads an entity's own origin.
+  - the AI_PATHING branch reads the route from g_nav.c (Nav_MonsterState)
+    rather than monsterinfo.nav_path.
+  - the rerelease's "how deep is the water I would land in" test is not
+    ported: it hands M_CatagorizePosition the FLOOR point as if it were an
+    origin, so its feet probe lands inside the floor and never reads water -
+    in practice the rerelease never refuses a drop for water. This tree used
+    to refuse any drop into water deeper than 24 units, which kept monsters on
+    the bank while the player swam away below them.
   - jump timing is in frame numbers, not gtime_t.
 
 Every jump ANIMATION lives in frames the rerelease appended to its models, so
@@ -1671,6 +1656,34 @@ blocked_jump_result_t blocked_checkjump(edict_t *self, float dist)
     if (self->monsterinfo.jump_framenum > level.framenum)
         return NO_JUMP;
 
+    // [rerelease] if we're pathing, the nodes will ensure we can reach the
+    // destination: only jump where the route says the next leg IS a jump,
+    // facing along it, and trust it for the landing.
+    if (self->monsterinfo.aiflags & AI_PATHING) {
+        nav_path_t  *path = &Nav_MonsterState(self)->path;
+        vec3_t      dir;
+
+        if (path->code != NAV_PATH_TRAVERSAL)
+            return NO_JUMP;
+
+        VectorSubtract(path->second_move_point, path->first_move_point, dir);
+        self->ideal_yaw = vectoyaw(dir);
+
+        if (!FacingIdeal(self)) {
+            M_ChangeYaw(self);
+            return JUMP_TURN;
+        }
+
+        monster_jump_start(self);
+
+        // the jump is under way; re-query as soon as we are back on the ground
+        Nav_MonsterState(self)->cache_framenum = 0;
+
+        if (path->second_move_point[2] > path->first_move_point[2])
+            return JUMP_JUMP_UP;
+        return JUMP_JUMP_DOWN;
+    }
+
     AngleVectors(self->s.angles, forward, NULL, up);
 
     if (self->enemy->absmin[2] > (self->absmin[2] + STEPSIZE))
@@ -1692,19 +1705,7 @@ blocked_jump_result_t blocked_checkjump(edict_t *self, float dist)
 
         trace = gi.trace(pt1, NULL, NULL, pt2, self, MASK_MONSTERSOLID | MASK_WATER);
         if (trace.fraction < 1 && !trace.allsolid && !trace.startsolid) {
-            // check how deep the water is - never jump into something we would
-            // have to swim out of
-            if (trace.contents & CONTENTS_WATER) {
-                trace_t deep;
-                vec3_t  waist;
-
-                deep = gi.trace(trace.endpos, NULL, NULL, pt2, self, MASK_MONSTERSOLID);
-                VectorCopy(deep.endpos, waist);
-                waist[2] += 24;
-                if (gi.pointcontents(waist) & MASK_WATER)
-                    return NO_JUMP;
-            }
-
+            // (no water depth test - see the notes at the top of this section)
             if ((self->absmin[2] - trace.endpos[2]) >= 24 && (trace.contents & (MASK_SOLID | CONTENTS_WATER))) {
                 // don't drop way past the enemy, and don't drop onto a slope
                 if ((self->enemy->absmin[2] - trace.endpos[2]) > 32)

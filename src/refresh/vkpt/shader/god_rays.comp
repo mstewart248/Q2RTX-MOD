@@ -61,8 +61,27 @@ float GetShadow(vec3 worldPos, out float distanceToWater)
 	return depthOpaque > uvzShadow.z ? 1 : 0;
 }
 
+uint pcg_hash(uint v)
+{
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
 float rand(ivec2 pos)
 {
+	// Photo mode: white noise, fresh every frame. The blue-noise set below is
+	// indexed by current_frame_idx & 511, so past 512 accumulated frames it
+	// would hand every pixel the same samples again and the fog would stop
+	// converging while the rest of the image kept going. See fog_accum_march.
+	if (fog_accum_march())
+	{
+		uint h = pcg_hash(uint(global_ubo.current_frame_idx));
+		h = pcg_hash(h ^ uint(pos.y));
+		h = pcg_hash(h ^ uint(pos.x));
+		return float(h >> 8) * (1.0 / 16777216.0);
+	}
+
     int texnum = global_ubo.current_frame_idx & (NUM_BLUE_NOISE_TEX - 1);
     ivec2 texpos = pos & ivec2(BLUE_NOISE_RES - 1);
     float noise = texelFetch(TEX_BLUE_NOISE, ivec3(texpos, texnum), 0).r;
@@ -130,8 +149,10 @@ void main()
 	   them would be summed on top of the grid's.
 
 	   Only when the grid is actually running: at pt_fog_froxel 0 the march is
-	   the whole renderer and has to keep both halves. */
-	if (fog_lights && global_ubo.pt_fog_froxel > 0.0 && fog_sun_is_the_sky())
+	   the whole renderer and has to keep both halves. Nor in photo mode, where
+	   the filter never reads the grid (fog_accum_march). */
+	if (fog_lights && global_ubo.pt_fog_froxel > 0.0 && fog_sun_is_the_sky()
+	    && !fog_accum_march())
 		fog_lights = false;
 
 	// Whether the map's medium is given real, density-proportional extinction
@@ -146,7 +167,15 @@ void main()
 	}
 		
 	ivec2 pixelPos = ivec2(gl_GlobalInvocationID.xy);
-	ivec2 sourcePixelPos = pixelPos.xy * 2 + GetRotatedGridOffset(pixelPos.xy);
+
+	// Half resolution normally: one march per 2x2 block, always at the same
+	// sub-pixel, which god_rays_filter.comp then upsamples. In photo mode every
+	// pixel marches its own ray. god_rays.c sizes the dispatch to match
+	// (full_res), and IMG_GODRAYS_INTERMEDIATE (ASVGF_COLOR) is already full
+	// size, so this costs nothing but time.
+	ivec2 sourcePixelPos = fog_accum_march()
+	                     ? pixelPos
+	                     : pixelPos.xy * 2 + GetRotatedGridOffset(pixelPos.xy);
 
 	if (sourcePixelPos.x >= global_ubo.pt_field_offset * 2 || sourcePixelPos.y >= global_ubo.height)
 		return;

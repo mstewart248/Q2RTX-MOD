@@ -1028,22 +1028,24 @@ static void CL_AddBeams(void)
             ent.flags = RF_FULLBRIGHT;
             ent.angles[0] = angles[0];
             ent.angles[1] = angles[1];
-            ent.angles[2] = Q_rand() % 360;
+            ent.angles[2] = CL_FrameRand(i << 10) % 360;
             V_AddEntity(&ent);
             continue;
         }
 
+        // per-segment salt: stable while paused, see CL_FrameRand
+        int seg = 0;
         while (d > 0) {
             VectorCopy(org, ent.origin);
             if (b->model == cl_mod_lightning) {
                 ent.flags = RF_FULLBRIGHT;
                 ent.angles[0] = -angles[0];
                 ent.angles[1] = angles[1] + 180.0f;
-                ent.angles[2] = Q_rand() % 360;
+                ent.angles[2] = CL_FrameRand((i << 10) + seg++) % 360;
             } else {
                 ent.angles[0] = angles[0];
                 ent.angles[1] = angles[1];
-                ent.angles[2] = Q_rand() % 360;
+                ent.angles[2] = CL_FrameRand((i << 10) + seg++) % 360;
             }
 
             V_AddEntity(&ent);

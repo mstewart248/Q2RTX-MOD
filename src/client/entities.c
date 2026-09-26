@@ -741,7 +741,7 @@ static void CL_AddPacketEntities(void)
         if (renderfx & RF_BEAM) {
             // the four beam colors are encoded in 32 bits of skinnum (hack)
             ent.alpha = 0.30f;
-            ent.skinnum = (s1->skinnum >> ((Q_rand() % 4) * 8)) & 0xff;
+            ent.skinnum = (s1->skinnum >> ((CL_FrameRand(s1->number) % 4) * 8)) & 0xff;
             ent.model = 0;
         } else {
             // set skin
@@ -1006,7 +1006,7 @@ static void CL_AddPacketEntities(void)
         // stationary emitter and must not compete with them.
         if (effects & EF_BARREL_EXPLODING) {
             CL_BarrelBurnEffect(cent, ent.origin);
-            V_AddLight(ent.origin, 100 + (Q_rand() % 60), 1.0f, 0.6f, 0.15f);
+            V_AddLight(ent.origin, 100 + (CL_FrameRand(s1->number + 0x10000) % 60), 1.0f, 0.6f, 0.15f);
         }
 
         // add automatic particle trails
@@ -1066,7 +1066,7 @@ static void CL_AddPacketEntities(void)
             } else if (effects & EF_TRAP) {
                 ent.origin[2] += 32;
                 CL_TrapParticles(cent, ent.origin);
-                i = (Q_rand() % 100) + 100;
+                i = (CL_FrameRand(s1->number + 0x20000) % 100) + 100;
                 V_AddLight(ent.origin, i, 1, 0.8f, 0.1f);
             } else if (effects & EF_FLAG1) {
                 CL_FlagTrail(cent->lerp_origin, ent.origin, 242);
@@ -2145,6 +2145,40 @@ void CL_AddTestModel(void)
             V_AddEntity(&entity);
         }
     }
+}
+
+/*
+===============
+CL_FrameRand
+
+Q_rand() for effects that re-roll EVERY RENDER FRAME rather than once per
+event - lightning segment rolls, beam colour, flickering fuse and trap lights.
+
+While the game is paused those draws kept changing although nothing else did,
+so photo mode (accumulation rendering) averaged every variant together: a
+lightning bolt converged to a wide smeared band, and a flickering light to its
+mean. cl.time stops while sv_paused, so hashing it with a per-site salt gives a
+value that is random-looking across sites and identical from frame to frame
+for as long as the pause lasts. The player's own beam already did the
+equivalent (CL_EmitBeamChain rolls by cl.time).
+
+Unpaused it is plain Q_rand(), so gameplay is unchanged. Not a general
+replacement: the renderer draws its photo-mode jitter from Q_rand too
+(shadow_map.c), and that must keep varying.
+===============
+*/
+uint32_t CL_FrameRand(uint32_t salt)
+{
+    if (!sv_paused->integer)
+        return Q_rand();
+
+    uint32_t h = (uint32_t)cl.time * 0x9E3779B1u ^ salt * 0x85EBCA77u;
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    return h;
 }
 
 /*

@@ -216,6 +216,11 @@ typedef enum {
 // [rerelease] spawned as a corpse (SPAWNFLAG_MONSTER_DEAD): die() must not gib,
 // count a kill, or fire deathtarget-style side effects meant for a real death.
 #define AI_SPAWNED_DEAD         0x20000000
+// [rerelease] this monster is walking a navmesh route this frame - see
+// M_NavPathToGoal in m_move.c. Set and cleared every frame by M_MoveToGoal; the
+// route itself lives in g_nav.c and is not saved, so a stale bit after a load
+// is harmless (it is cleared on the next move).
+#define AI_PATHING              0x40000000
 
 // [rerelease] monster spawnflags above the classic byte (g_monster.cpp)
 #define SPAWNFLAG_MONSTER_DEAD          0x00010000
@@ -984,6 +989,7 @@ extern  cvar_t  *password;
 extern  cvar_t  *spectator_password;
 extern  cvar_t  *needpass;
 extern  cvar_t  *g_select_empty;
+extern  cvar_t  *g_debug_monster_paths;
 extern  cvar_t  *dedicated;
 extern  cvar_t  *cl_md5_models;
 extern  cvar_t  *nomonsters;
@@ -1427,8 +1433,8 @@ void blacklight_think(edict_t *self);
 void trigger_disguise_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 void trigger_disguise_use(edict_t *self, edict_t *other, edict_t *activator);
 
-// NAVIGATION MESH (g_nav.c). The rerelease's own navmeshes, loaded per level.
-// Nothing here is wired into monster AI yet - see Nav_FindPath's callers.
+// NAVIGATION MESH (g_nav.c). The rerelease's own navmeshes, loaded per level,
+// and this tree's stand-in for the engine's gi.GetPathToGoal.
 void Nav_Load(const char *mapname);
 void Nav_Free(void);
 bool Nav_Loaded(void);
@@ -1448,12 +1454,52 @@ int  Nav_PathToPointCaps(const vec3_t from, const vec3_t to, const nav_caps_t *c
                          int *out, int max_out);
 bool Nav_NodeOrigin(int node, vec3_t out);
 void Cmd_Nav_f(edict_t *ent);
-bool Nav_MonsterPursue(edict_t *self);
 void Nav_ClearPursuit(void);
-// [rerelease] the in-sight half of navmesh pursuit, gated on combat_style.
-// Fills out with the next point to walk at; see g_nav.c.
-bool Nav_CombatWaypoint(edict_t *self, vec3_t out);
 void Nav_ClearCombat(void);
+
+// [rerelease] PathReturnCode, trimmed to what this tree produces. Everything
+// after NAV_PATH_START_ERRORS is a failure, exactly as in the rerelease.
+typedef enum {
+    NAV_PATH_REACHED_GOAL,      // on the goal's node; walk straight at it
+    NAV_PATH_TRAVERSAL,         // next leg is a jump/drop: first = take-off, second = landing
+    NAV_PATH_IN_PROGRESS,       // walking; first = next point, second = the one after
+    NAV_PATH_START_ERRORS,
+    NAV_PATH_NO_NAV,            // no navmesh for this map
+    NAV_PATH_NO_START_NODE,
+    NAV_PATH_NO_GOAL_NODE,
+    NAV_PATH_NO_PATH
+} nav_path_code_t;
+
+// [rerelease] PathInfo
+typedef struct {
+    vec3_t          first_move_point;
+    vec3_t          second_move_point;
+    nav_path_code_t code;
+} nav_path_t;
+
+// [rerelease] the monsterinfo nav fields (nav_path, nav_path_cache_time,
+// path_blocked_counter, path_wait_time). Kept in g_nav.c by entity number
+// rather than in monsterinfo so there is nothing new to save.
+typedef struct {
+    nav_path_t  path;
+    int         cache_framenum;     // re-query no later than this
+    float       blocked_time;       // seconds; give the route up past a limit
+    int         wait_framenum;      // do not try the mesh again until this
+
+    // [rerelease] AI_TEMP_MELEE_COMBAT and its bookkeeping: a monster that
+    // keeps failing to step while it can see its enemy paths to them for a
+    // few seconds as if it were melee-only. See SV_NewChaseDir.
+    bool        temp_melee;
+    int         move_block_counter;
+    int         move_block_change_framenum;
+} nav_monster_t;
+
+nav_monster_t *Nav_MonsterState(edict_t *ent);
+void Nav_ResetMonster(edict_t *ent);
+bool Nav_MonsterCanPath(edict_t *self);
+bool Nav_PointReached(const edict_t *self, const vec3_t point);
+bool Nav_GetPathToGoal(edict_t *self, const vec3_t goal, const nav_caps_t *caps,
+                       nav_path_t *out);
 extern int hint_paths_present;
 
 // Rerelease compass (g_rerelease.c) - points at level.current_poi.

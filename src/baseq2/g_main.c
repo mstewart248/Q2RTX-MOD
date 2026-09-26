@@ -43,6 +43,7 @@ cvar_t  *maxclients;
 cvar_t  *maxspectators;
 cvar_t  *maxentities;
 cvar_t  *g_select_empty;
+cvar_t  *g_debug_monster_paths;
 cvar_t  *dedicated;
 cvar_t  *cl_md5_models;
 cvar_t  *nomonsters;
@@ -183,6 +184,8 @@ void InitGame(void)
     filterban = gi.cvar("filterban", "1", 0);
 
     g_select_empty = gi.cvar("g_select_empty", "0", CVAR_ARCHIVE);
+    // [rerelease] 1 = print each navmesh-pathing monster's route once a second
+    g_debug_monster_paths = gi.cvar("g_debug_monster_paths", "0", 0);
 
     run_pitch = gi.cvar("run_pitch", "0.002", 0);
     run_roll = gi.cvar("run_roll", "0.005", 0);
