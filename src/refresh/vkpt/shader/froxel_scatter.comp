@@ -711,9 +711,12 @@ void froxel_cell_scatter(
 layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
 void main()
 {
-	ivec3 cell = ivec3(gl_GlobalInvocationID.xy, 0);
+	/* ONE INVOCATION PER CELL, not one per column looping over z - see the
+	   note at the froxel dispatches in god_rays.c. The z loop below is kept
+	   as a ONE-TRIP loop so its `continue`s still mean "done with this cell". */
+	ivec3 cell = ivec3(gl_GlobalInvocationID);
 
-	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y)
+	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y || cell.z >= FROXEL_GRID_Z)
 		return;
 
 	/* DISPATCH MARKERS (2026-09-14).  dbg_n_lt7 counts columns that ENTER
@@ -805,7 +808,7 @@ void main()
 	// A whole column is walked by one thread so the jitter and the history
 	// lookup can share setup, and because the integrate pass wants the same
 	// access pattern.
-	for (int z = 0; z < FROXEL_GRID_Z; z++)
+	for (int z = int(gl_GlobalInvocationID.z); z == int(gl_GlobalInvocationID.z); z = FROXEL_GRID_Z)
 	{
 		cell.z = z;
 
@@ -2780,7 +2783,8 @@ void main()
 	}
 
 #if FOG_DEBUG_PROBES   /* centre-column sentinels, stored after the loop */
-	if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2)
+	if (cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
+	    && cell.z == FROXEL_GRID_Z / 2)
 	{
 		/* dens/gate/in/skyvis/sky - see the header comment on this file.
 		   One writer per field, so a -1 means the sentinel was never

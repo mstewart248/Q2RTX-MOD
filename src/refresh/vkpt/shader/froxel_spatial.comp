@@ -169,9 +169,12 @@ layout(set = GOD_RAYS_DESC_SET_IDX, binding = 7, rgba32f) uniform writeonly imag
 layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
 void main()
 {
-	ivec3 cell = ivec3(gl_GlobalInvocationID.xy, 0);
+	/* ONE INVOCATION PER CELL, not one per column looping over z - see the
+	   note at the froxel dispatches in god_rays.c. The z loop below is kept
+	   as a ONE-TRIP loop so its `continue`s still mean "done with this cell". */
+	ivec3 cell = ivec3(gl_GlobalInvocationID);
 
-	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y)
+	if (cell.x >= FROXEL_GRID_X || cell.y >= FROXEL_GRID_Y || cell.z >= FROXEL_GRID_Z)
 		return;
 
 	bool fog_lights = (global_ubo.fog_enable != 0) && (global_ubo.fog_mode >= 3);
@@ -190,7 +193,7 @@ void main()
 
 	float base_rand = rand(cell.xy);
 
-	for (int z = 0; z < FROXEL_GRID_Z; z++)
+	for (int z = int(gl_GlobalInvocationID.z); z == int(gl_GlobalInvocationID.z); z = FROXEL_GRID_Z)
 	{
 		cell.z = z;
 

@@ -145,6 +145,25 @@ static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
         }
     }
 
+    /* The renderer takes start_z as the TOP of the band and end_z as the BOTTOM,
+       which is how most maps author it - but not all. mgu2m2 (-128 .. 580) and
+       mgu2m3 (-864 .. -256) have start BELOW end. KEX keeps each colour at its
+       own key's height and the fog thick at the LOW end either way: mgu2m2 in
+       the rerelease is dense blue-grey down low fading into orange up high.
+       Taken as authored, the band came out negative, getHeightFogDensity went
+       flat and getFogColor pinned end_color everywhere - one solid orange.
+       Swapping the heights WITH their colours keeps every colour where the
+       mapper put it and hands the shader the top/bottom order it expects. */
+    if (out->hf_start_z < out->hf_end_z) {
+        vec3_t tmp;
+        float z = out->hf_start_z;
+        out->hf_start_z = out->hf_end_z;
+        out->hf_end_z = z;
+        VectorCopy(out->hf_start_color, tmp);
+        VectorCopy(out->hf_end_color, out->hf_start_color);
+        VectorCopy(tmp, out->hf_end_color);
+    }
+
     out->valid = is_world && got_any;
     return out->valid;
 }

@@ -567,7 +567,8 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 			god_rays.pipelines[GOD_RAYS_PIPELINE_FROXEL_RESERVOIR]);
 
-		vkCmdDispatch(command_buffer, group_num_x, group_num_y, 1);
+		// one thread per cell, like scatter - see the note there
+		vkCmdDispatch(command_buffer, group_num_x, group_num_y, FROXEL_GRID_Z);
 
 		END_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_RESERVOIR);
 
@@ -580,7 +581,8 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 			god_rays.pipelines[GOD_RAYS_PIPELINE_FROXEL_SPATIAL]);
 
-		vkCmdDispatch(command_buffer, group_num_x, group_num_y, 1);
+		// one thread per cell, like scatter - see the note there
+		vkCmdDispatch(command_buffer, group_num_x, group_num_y, FROXEL_GRID_Z);
 
 		END_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_SPATIAL);
 
@@ -589,13 +591,24 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 			0, 1, &mem_barrier, 0, NULL, 0, NULL);
 	}
 
-	// --- scatter: one thread per column of the volume, walking z ---
+	/* --- scatter: ONE THREAD PER CELL, z from the dispatch's third dimension ---
+
+	   This was one thread per column walking all FROXEL_GRID_Z slices in a loop,
+	   and under GPU load that loop stopped doing its work past the first slice:
+	   pt_fog_log's FOGGRID read n=14080 (one slice, 160x88) with branch=0 in
+	   every bad-state capture on mgu2m2, and the full 1802240 in the good one.
+	   The other 127 slices kept stale contents, so the fog froze in screen space
+	   and "stopped taking samples". The 2026-09-18 FROXEL_NO_GATE fix removed
+	   one branch of that loop without explaining why it was skipped; this
+	   removes the loop. Scatter, reservoir and spatial have no dependence
+	   between slices, so nothing is lost - integrate, which is a real
+	   front-to-back sum, keeps its column loop. */
 	BEGIN_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_SCATTER);
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 		god_rays.pipelines[GOD_RAYS_PIPELINE_FROXEL_SCATTER]);
 
-	vkCmdDispatch(command_buffer, group_num_x, group_num_y, 1);
+	vkCmdDispatch(command_buffer, group_num_x, group_num_y, FROXEL_GRID_Z);
 
 	END_PERF_MARKER(command_buffer, PROFILER_FOG_FROXEL_SCATTER);
 
