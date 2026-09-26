@@ -1227,6 +1227,64 @@ static void fg_dump_swapchain_image(uint32_t index)
 	buffer_destroy(&staging);
 }
 
+/* THE MOTION VECTORS DLSS-G IS HANDED, as a PNG plus numbers. `pt_dlss_fg_dump 2`.
+
+   Written for the start-of-motion glitch: standing still, then moving, some objects hold
+   their old position in the generated frame and pop into place on the real one. That is
+   what a motion vector field that is zero (or a frame stale) on the FIRST moving frame
+   would do, and it would be invisible in steady motion, where last frame's field is
+   nearly this frame's. The dump runs before this frame's DLSS-G submit but after the TAA
+   pass that writes VKPT_IMG_PT_DLSS_MOTION, so this is the field the current frame's
+   Evaluate is about to read.
+
+   Greyscale is |mv| in render pixels, 8 px = white. The console line gives the mean and
+   max, and how many pixels are exactly zero - a stale field shows up there first. */
+static void fg_dump_motion(BufferResource_t *staging)
+{
+	VkExtent2D ext = qvk.extent_taa_output;
+	uint16_t *mv = Z_Malloc((size_t)ext.width * ext.height * 8);
+	byte *rgb = Z_Malloc((size_t)ext.width * ext.height * 3);
+	if (!mv || !rgb) {
+		Z_Free(mv);
+		Z_Free(rgb);
+		return;
+	}
+
+	if (fg_dump_read_full(qvk.images[VKPT_IMG_PT_DLSS_MOTION], mv, ext, staging)) {
+		double sum = 0.0, sumx = 0.0, sumy = 0.0;
+		float maxmag = 0.0f;
+		size_t zeros = 0, nonfinite = 0;
+		const size_t n = (size_t)ext.width * ext.height;
+		for (size_t i = 0; i < n; i++) {
+			float x = fg_half_to_float(mv[i * 4 + 0]) * (float)ext.width;
+			float y = fg_half_to_float(mv[i * 4 + 1]) * (float)ext.height;
+			byte g = 0;
+			if (!isfinite(x) || !isfinite(y)) {
+				nonfinite++;
+				g = 255;
+			} else {
+				float m = sqrtf(x * x + y * y);
+				if (m == 0.0f) zeros++;
+				sum += m; sumx += x; sumy += y;
+				if (m > maxmag) maxmag = m;
+				g = (byte)min(255.0f, m * (255.0f / 8.0f) + 0.5f);
+			}
+			rgb[i * 3 + 0] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = g;
+		}
+
+		char name[64];
+		Q_snprintf(name, sizeof(name), "fgdump%u_mv.png", fg_dump_run);
+		stbi_write_png(name, ext.width, ext.height, 3, rgb, ext.width * 3);
+		Com_Printf("DLSS-G: wrote %s - mv px mean |%.3f| avg (%.3f, %.3f) max %.2f, "
+			"%.1f%% exactly zero, %zu non-finite\n", name, sum / (double)n,
+			sumx / (double)n, sumy / (double)n, maxmag,
+			100.0 * (double)zeros / (double)n, nonfinite);
+	}
+
+	Z_Free(mv);
+	Z_Free(rgb);
+}
+
 static void fg_debug_dump_frames(unsigned int generated_count)
 {
 	static cvar_t *cv_dump = NULL;
@@ -1234,14 +1292,22 @@ static void fg_debug_dump_frames(unsigned int generated_count)
 	if (!cv_dump->integer)
 		return;
 
+	/* 2 = skip the swapchain images (seven full-size reads, slow enough to disturb the
+	   next frame's timing) and add the motion vector field instead. */
+	const int dump_mode = cv_dump->integer;
 	Cvar_Set("pt_dlss_fg_dump", "0");   /* one shot */
 
 	/* Each run gets its own prefix. The first control run was destroyed by the run
 	   after it, which is exactly the comparison it existed to make. */
 	fg_dump_run++;
 
-	for (uint32_t i = 0; i < qvk.num_swap_chain_images; i++)
-		fg_dump_swapchain_image(i);
+	/* The frame number ties consecutive dumps to real frames. */
+	Com_Printf("DLSS-G: dump %u at frame %llu\n", fg_dump_run,
+		(unsigned long long)qvk.frame_counter);
+
+	if (dump_mode != 2)
+		for (uint32_t i = 0; i < qvk.num_swap_chain_images; i++)
+			fg_dump_swapchain_image(i);
 
 	VkExtent2D ext = GetDLSSExtent();
 	VkDeviceSize bytes = (VkDeviceSize)ext.width * ext.height * 8;
@@ -1272,6 +1338,9 @@ static void fg_debug_dump_frames(unsigned int generated_count)
 		}
 		Z_Free(pixels);
 	}
+
+	if (dump_mode == 2)
+		fg_dump_motion(&staging);
 
 	buffer_destroy(&staging);
 }

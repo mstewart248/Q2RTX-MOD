@@ -1251,6 +1251,9 @@ void InitDLSSGCvars()
     Cvar_Get("pt_dlss_fg_mvinvalid", "0", 0);
     Cvar_Get("pt_dlss_fg_cambasis", "1", 0);
     Cvar_Get("pt_dlss_fg_camfwd_sign", "0", 0);   /* 0 = resolve automatically */
+    Cvar_Get("pt_dlss_fg_mat_transpose", "0", 0);
+    Cvar_Get("pt_dlss_fg_mat_yflip", "0", 0);
+    Cvar_Get("pt_dlss_fg_proj", "1", 0);
 }
 
 unsigned int DLSSGMaxMultiplier()
@@ -1557,19 +1560,105 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
     /* clipToPrevClip / prevClipToClip are built from the view-projection pair rather
        than from V/P separately, because the UBO carries V_prev and P_prev but no
        inverse of V_prev. */
+    /* A PROJECTION WHOSE DEPTH ROW MATCHES THE DEPTH IMAGE WE HAND OVER - pt_dlss_fg_proj.
+
+       This is the start-of-motion glitch: stand still, tap forward, and near objects
+       (the red crystals at the mgu5m1 start are the easiest place to see it) jump in the
+       generated frame. DLSS-G rebuilds each pixel's position from (screen xy, depth)
+       through clipToCameraView / clipToPrevClip, so the z row of these matrices has to
+       produce exactly the value in the depth image.
+
+       It did not. The FG depth image holds 1/z (view-space Z, pt_dlss_linear_z, with
+       depthInverted), about 0.01 at 100 units. ubo->P's z row is
+       z/w = (f+n)/(f-n) + 2fn/((f-n) z), which with n = 1, f = 4096 only spans
+       1.0005 .. 3 and is never used for depth anywhere in the renderer. Inverting it at
+       z/w = 0.01 puts every pixel about 2 units BEHIND the camera.
+
+       Why only when you start to move, and only forward: at a standstill clipToPrevClip
+       is the identity, so the depth never matters. Rotation does not depend on depth
+       either, so turning looked right. Any translation - even a tap of the key - is
+       applied to points DLSS-G believes are 2 units away, so the parallax is enormous
+       and near, bright objects visibly jump.
+
+       Replacing the z row with z_clip = 1, w = z gives z/w = 1/z, the depth image's own
+       value, by construction. x, y and w are untouched, so nothing else moves. Built
+       for both frames, since clipToPrevClip goes through the previous projection too.
+       0 restores the old matrices for an A/B. */
+    mat4_t Pfg, Pfg_prev, invPfg;
+    memcpy(Pfg, *ubo->P, sizeof(Pfg));
+    memcpy(Pfg_prev, *ubo->P_prev, sizeof(Pfg_prev));
+    const qboolean fgProj = Cvar_Get("pt_dlss_fg_proj", "1", 0)->integer ? qtrue : qfalse;
+    if (fgProj) {
+        /* Column-major: row 2 is elements 2, 6, 10, 14. */
+        Pfg[2] = Pfg[6] = Pfg[10] = 0.0f;           Pfg[14] = 1.0f;
+        Pfg_prev[2] = Pfg_prev[6] = Pfg_prev[10] = 0.0f; Pfg_prev[14] = 1.0f;
+        inverse(Pfg, invPfg);
+    } else {
+        memcpy(invPfg, *ubo->invP, sizeof(invPfg));
+    }
+
     mat4_t VP, VP_prev, invVP, invVP_prev, clipToPrev, prevToClip;
-    mult_matrix_matrix(VP, *ubo->P, *ubo->V);
-    mult_matrix_matrix(VP_prev, *ubo->P_prev, *ubo->V_prev);
+    mult_matrix_matrix(VP, Pfg, *ubo->V);
+    mult_matrix_matrix(VP_prev, Pfg_prev, *ubo->V_prev);
     inverse(VP, invVP);
     inverse(VP_prev, invVP_prev);
     mult_matrix_matrix(clipToPrev, VP_prev, invVP);
     mult_matrix_matrix(prevToClip, VP, invVP_prev);
 
+    /* MATRIX LAYOUT A/B - pt_dlss_fg_mat_transpose / pt_dlss_fg_mat_yflip.
+
+       The FG guide says "float[4][4] in row-major order (assuming post-multiplication)",
+       and Streamline, which NVIDIA builds DLSS-G's inputs with, composes its matrices
+       left-to-right (clipToPrevClip = clipToView * viewToPrevView * prevViewToClip) and
+       stores camera position in row 3. That is the D3D row-vector convention, and a
+       row-vector matrix stored row-major is the SAME 16 floats as a column-vector matrix
+       stored column-major, which is what Q2RTX has. If that reading is right, the
+       transpose below hands DLSS-G the translation in its projective row.
+
+       Invisible at a standstill: the clip-to-prev-clip pair is identity then, and the
+       transpose of identity is identity. It only goes wrong once the camera moves,
+       which is when the start-of-motion glitch appears. Default 0 (no transpose),
+       per the guide; 1 is the original behaviour. Measured with the old projection it
+       made no difference, but that projection broke every translation anyway - see
+       pt_dlss_fg_proj above - so that measurement says nothing about this.
+
+       yflip conjugates the clip-space matrices by diag(1,-1,1,1). Q2RTX's P negates y
+       (Vulkan NDC, +y down) and D3D clip space, which the SDK is written against, has
+       +y up. Independent of the transpose question, so both can be swept. */
+    float srcViewToClip[16], srcClipToView[16], srcClipToPrev[16], srcPrevToClip[16];
+    memcpy(srcViewToClip, Pfg, sizeof(srcViewToClip));
+    memcpy(srcClipToView, invPfg, sizeof(srcClipToView));
+    memcpy(srcClipToPrev, clipToPrev, sizeof(srcClipToPrev));
+    memcpy(srcPrevToClip, prevToClip, sizeof(srcPrevToClip));
+
+    if (Cvar_Get("pt_dlss_fg_mat_yflip", "0", 0)->integer) {
+        /* Column-major, element [c * 4 + r]. F*M negates row 1, M*F negates column 1,
+           F*M*F negates the entries where exactly one of the two is 1. */
+        for (int c = 0; c < 4; c++) {
+            for (int r = 0; r < 4; r++) {
+                const int i = c * 4 + r;
+                if (r == 1) srcViewToClip[i] = -srcViewToClip[i];
+                if (c == 1) srcClipToView[i] = -srcClipToView[i];
+                if ((r == 1) != (c == 1)) {
+                    srcClipToPrev[i] = -srcClipToPrev[i];
+                    srcPrevToClip[i] = -srcPrevToClip[i];
+                }
+            }
+        }
+    }
+
     float mViewToClip[16], mClipToView[16], mClipToPrev[16], mPrevToClip[16];
-    mat4_transpose(mViewToClip, *ubo->P);
-    mat4_transpose(mClipToView, *ubo->invP);
-    mat4_transpose(mClipToPrev, clipToPrev);
-    mat4_transpose(mPrevToClip, prevToClip);
+    if (Cvar_Get("pt_dlss_fg_mat_transpose", "0", 0)->integer) {
+        mat4_transpose(mViewToClip, srcViewToClip);
+        mat4_transpose(mClipToView, srcClipToView);
+        mat4_transpose(mClipToPrev, srcClipToPrev);
+        mat4_transpose(mPrevToClip, srcPrevToClip);
+    } else {
+        memcpy(mViewToClip, srcViewToClip, sizeof(mViewToClip));
+        memcpy(mClipToView, srcClipToView, sizeof(mClipToView));
+        memcpy(mClipToPrev, srcClipToPrev, sizeof(mClipToPrev));
+        memcpy(mPrevToClip, srcPrevToClip, sizeof(mPrevToClip));
+    }
 
     /* THE WORLD-SPACE CAMERA FRAME, WHICH USED TO BE ALL ZEROS.
 
