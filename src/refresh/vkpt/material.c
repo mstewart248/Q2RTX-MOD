@@ -1347,6 +1347,9 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 	if (mat->image_normals)
 		mat->image_normals->flags |= IF_NORMAL_MAP;
 
+	if (mat->image_height)
+		mat->image_height->flags |= IF_HEIGHT_MAP;
+
 	if (mat->image_emissive && !mat->image_emissive->processing_complete)
 		vkpt_extract_emissive_texture_info(mat->image_emissive);
 
@@ -1699,6 +1702,9 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 
 	if (mat->image_normals)
 		mat->image_normals->flags |= IF_NORMAL_MAP;
+
+	if (mat->image_height)
+		mat->image_height->flags |= IF_HEIGHT_MAP;
 
 	if (mat->image_emissive && !mat->image_emissive->processing_complete)
 		vkpt_extract_emissive_texture_info(mat->image_emissive);

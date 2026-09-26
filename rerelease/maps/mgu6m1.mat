@@ -1,0 +1,16 @@
+# Material overrides for mgu6m1 only - loaded by MAT_ChangeMap on map load.
+
+# The fire over the drop pod window (func_wall *73, TRANS33|FLOWING, value 0).
+# A slight glow of its own, at the same 33% transparency. This lives here
+# rather than in materials/rerelease.mat because mgu5m2 uses glocrys_1b as a
+# 1000-radiance surface light and mgu5trial as warped water, and a global
+# emissive would change both. The texture is its own emissive map so the whole
+# fire glows, not just the pixels over pt_surface_lights_threshold.
+#
+# Tried 2026-09-23 and rejected: is_light 1 + emissive_factor 0.15 so the fire
+# lit the pod in place of the red strobe. It made the fire read as opaque.
+textures/tomf/glocrys_1b:
+	texture_base textures/tomf/glocrys_1b.wal
+	texture_emissive textures/tomf/glocrys_1b.wal
+	bsp_radiance 0
+	emissive_factor 0.01

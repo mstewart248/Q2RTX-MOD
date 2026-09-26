@@ -19750,12 +19750,23 @@ textures/tomf/tf_brick6_01:
 
 textures/tomf/tf_brick6_01b:
 	texture_base materialDev/textures/tomf/tf_brick6_01b.tga
-	texture_normals materialDev/textures/tomf/tf_brick6_01b_n.tga
+	texture_normals materialDev/textures/tomf/tf_brick6_01b_n.png
+	texture_height materialDev/textures/tomf/tf_brick6_01b_height.png
+	texture_roughness materialDev/textures/tomf/tf_brick6_01b_rough.png
+	displace_out .00
+	displace_in 0.03
+	specular_factor .5
 	metalness_factor 0
+
 
 textures/tomf/tf_brick6_01c:
 	texture_base materialDev/textures/tomf/tf_brick6_01c.tga
-	texture_normals materialDev/textures/tomf/tf_brick6_01c_n.tga
+	texture_normals materialDev/textures/tomf/tf_brick6_01c_n.png
+	texture_height materialDev/textures/tomf/tf_brick6_01c_height.png
+	texture_roughness materialDev/textures/tomf/tf_brick6_01c_rough.png
+	displace_out .03
+	displace_in 0.0
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_brick6_01c2:
@@ -19770,7 +19781,12 @@ textures/tomf/tf_brick6_01c3:
 
 textures/tomf/tf_brick6_02:
 	texture_base materialDev/textures/tomf/tf_brick6_02.tga
-	texture_normals materialDev/textures/tomf/tf_brick6_02_n.tga
+	texture_normals materialDev/textures/tomf/tf_brick6_02_n.png
+	texture_height materialDev/textures/tomf/tf_brick6_02_height.png
+	texture_roughness materialDev/textures/tomf/tf_brick6_02_rough.png
+	displace_out .00
+	displace_in 0.03
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_brick6_02b:
@@ -19840,7 +19856,12 @@ textures/tomf/tf_con4_01:
 
 textures/tomf/tf_con5_01:
 	texture_base materialDev/textures/tomf/tf_con5_01.tga
-	texture_normals materialDev/textures/tomf/tf_con5_01_n.tga
+	texture_normals materialDev/textures/tomf/tf_con5_01_n.png
+	texture_height materialDev/textures/tomf/tf_con5_01_height.png
+	texture_roughness materialDev/textures/tomf/tf_con5_01_rough.png
+	displace_out .06
+	displace_in 0.0
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_con5_02:
@@ -19850,22 +19871,42 @@ textures/tomf/tf_con5_02:
 
 textures/tomf/tf_con5_03:
 	texture_base materialDev/textures/tomf/tf_con5_03.tga
-	texture_normals materialDev/textures/tomf/tf_con5_03_n.tga
+	texture_normals materialDev/textures/tomf/tf_con5_03_n.png
+	texture_height materialDev/textures/tomf/tf_con5_03_height.png
+	texture_roughness materialDev/textures/tomf/tf_con5_03_rough.png
+	displace_out .06
+	displace_in 0.0
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_con5_04:
 	texture_base materialDev/textures/tomf/tf_con5_04.tga
-	texture_normals materialDev/textures/tomf/tf_con5_04_n.tga
+	texture_normals materialDev/textures/tomf/tf_con5_04_n.png
+	texture_height materialDev/textures/tomf/tf_con5_04_height.png
+	texture_roughness materialDev/textures/tomf/tf_con5_04_rough.png
+	displace_out .06
+	displace_in 0.0
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_con5_05:
 	texture_base materialDev/textures/tomf/tf_con5_05.tga
-	texture_normals materialDev/textures/tomf/tf_con5_05_n.tga
+	texture_normals materialDev/textures/tomf/tf_con5_05_n.png
+	texture_roughness materialDev/textures/tomf/tf_con5_05_rough.png
+	texture_height materialDev/textures/tomf/tf_con5_05_height.png
+	displace_out .06
+	displace_in 0.0
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_con5_06:
 	texture_base materialDev/textures/tomf/tf_con5_06.tga
-	texture_normals materialDev/textures/tomf/tf_con5_06_n.tga
+	texture_normals materialDev/textures/tomf/tf_con5_06_n.png
+	texture_roughness materialDev/textures/tomf/tf_con5_06_rough.png
+	texture_height materialDev/textures/tomf/tf_con5_06_height.png
+	displace_out .03
+	displace_in 0.0
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_con5_07:
@@ -19875,7 +19916,12 @@ textures/tomf/tf_con5_07:
 
 textures/tomf/tf_con5_12:
 	texture_base materialDev/textures/tomf/tf_con5_12.tga
-	texture_normals materialDev/textures/tomf/tf_con5_12_n.tga
+	texture_normals materialDev/textures/tomf/tf_con5_12_n.png
+	texture_height materialDev/textures/tomf/tf_con5_12_height.png
+	texture_roughness materialDev/textures/tomf/tf_con5_12_rough.png
+	displace_out .06
+	displace_in 0.0
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_con5_13:
@@ -19930,8 +19976,9 @@ textures/tomf/tf_con5b_12:
 
 textures/tomf/tf_conc_07b:
 	texture_base materialDev/textures/tomf/tf_conc_07b.tga
-	texture_normals materialDev/textures/tomf/tf_conc_07b_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/tf_conc_07b_n.png
+	texture_roughness materialDev/textures/tomf/tf_conc_07b_rough.png
+	texture_metallic materialDev/textures/tomf/tf_conc_07b_metal.png
 
 textures/tomf/tf_conflr01_1:
 	texture_base materialDev/textures/tomf/tf_conflr01_1.tga
@@ -19960,12 +20007,22 @@ textures/tomf/tf_conflr03_1:
 
 textures/tomf/tf_conflr03_2:
 	texture_base materialDev/textures/tomf/tf_conflr03_2.tga
-	texture_normals materialDev/textures/tomf/tf_conflr03_2_n.tga
+	texture_normals materialDev/textures/tomf/tf_conflr03_2_n.png
+	texture_height materialDev/textures/tomf/tf_conflr03_2_height.png
+	texture_roughness materialDev/textures/tomf/tf_conflr03_2_rough.png
+	specular_factor .25
+	displace_in .03
+	displace_out 0
 	metalness_factor 0
 
 textures/tomf/tf_conflr03_2b:
 	texture_base materialDev/textures/tomf/tf_conflr03_2b.tga
-	texture_normals materialDev/textures/tomf/tf_conflr03_2b_n.tga
+	texture_normals materialDev/textures/tomf/tf_conflr03_2b_n.png
+	texture_height materialDev/textures/tomf/tf_conflr03_2b_height.png
+	texture_roughness materialDev/textures/tomf/tf_conflr03_2b_rough.png
+	specular_factor .25
+	displace_in .03
+	displace_out 0
 	metalness_factor 0
 
 textures/tomf/tf_conflr04_1:
@@ -20035,12 +20092,22 @@ textures/tomf/tf_crate1_2:
 
 textures/tomf/tf_crate1_3:
 	texture_base materialDev/textures/tomf/tf_crate1_3.tga
-	texture_normals materialDev/textures/tomf/tf_crate1_3_n.tga
+	texture_normals materialDev/textures/tomf/tf_crate1_3_n.png
+	texture_roughness materialDev/textures/tomf/tf_crate1_3_rough.png
+	texture_height materialDev/textures/tomf/tf_crate1_3_height.png
+	specular_factor .5
+	displace_in .00
+	displace_out .03
 	metalness_factor 0
 
 textures/tomf/tf_crate1jg:
 	texture_base materialDev/textures/tomf/tf_crate1jg.tga
-	texture_normals materialDev/textures/tomf/tf_crate1jg_n.tga
+	texture_normals materialDev/textures/tomf/tf_crate1jg_n.png
+	texture_roughness materialDev/textures/tomf/tf_crate1jg_rough.png
+	texture_height materialDev/textures/tomf/tf_crate1jg_height.png
+	specular_factor .5
+	displace_in .00
+	displace_out .03
 	metalness_factor 0
 
 textures/tomf/tf_crate2_1:
@@ -20116,6 +20183,7 @@ textures/tomf/tf_crate5_4:
 textures/tomf/tf_crate6_1:
 	texture_base materialDev/textures/tomf/tf_crate6_1.tga
 	texture_normals materialDev/textures/tomf/tf_crate6_1_n.tga
+	specular_factor .25
 	metalness_factor 0
 
 textures/tomf/tf_crate6_2:
@@ -20126,6 +20194,7 @@ textures/tomf/tf_crate6_2:
 textures/tomf/tf_crate6_3:
 	texture_base materialDev/textures/tomf/tf_crate6_3.tga
 	texture_normals materialDev/textures/tomf/tf_crate6_3_n.tga
+	specular_factor .25
 	metalness_factor 0
 
 textures/tomf/tf_crate7_1:
@@ -20480,7 +20549,10 @@ textures/tomf/tf_metwall4_02:
 
 textures/tomf/tf_metwall4_02b:
 	texture_base materialDev/textures/tomf/tf_metwall4_02b.tga
-	texture_normals materialDev/textures/tomf/tf_metwall4_02b_n.tga
+	texture_normals materialDev/textures/tomf/tf_metwall4_02b_n.png
+	texture_roughness materialDev/textures/tomf/tf_metwall4_02b_rough.png
+	texture_metallic materialDev/textures/tomf/tf_metwall4_02b_metal.png
+	specular_factor .5
 
 textures/tomf/tf_metwall4_04:
 	texture_base materialDev/textures/tomf/tf_metwall4_04.tga
@@ -20529,7 +20601,12 @@ textures/tomf/tf_nat1d:
 
 textures/tomf/tf_nat1g:
 	texture_base materialDev/textures/tomf/tf_nat1g.tga
-	texture_normals materialDev/textures/tomf/tf_nat1g_n.tga
+	texture_normals materialDev/textures/tomf/tf_nat1g_n.png
+	texture_height materialDev/textures/tomf/tf_nat1g_height.png
+	texture_roughness materialDev/textures/tomf/tf_nat1g_rough.png
+	specular_factor .5
+	displace_in .00
+	displace_out .005
 	metalness_factor 0
 
 textures/tomf/tf_nat1h:
@@ -20562,7 +20639,12 @@ textures/tomf/tf_nat2d:
 
 textures/tomf/tf_nat2f:
 	texture_base materialDev/textures/tomf/tf_nat2f.tga
-	texture_normals materialDev/textures/tomf/tf_nat2f_n.tga
+	texture_normals materialDev/textures/tomf/tf_nat2f_n.png
+	texture_height materialDev/textures/tomf/tf_nat2f_height.png
+	texture_roughness materialDev/textures/tomf/tf_nat2f_rough.png
+	specular_factor .5
+	displace_in .00
+	displace_out .03
 	metalness_factor 0
 
 textures/tomf/tf_nat2g:
@@ -20572,7 +20654,12 @@ textures/tomf/tf_nat2g:
 
 textures/tomf/tf_nat2h:
 	texture_base materialDev/textures/tomf/tf_nat2h.tga
-	texture_normals materialDev/textures/tomf/tf_nat2h_n.tga
+	texture_normals materialDev/textures/tomf/tf_nat2h_n.png
+	texture_height materialDev/textures/tomf/tf_nat2h_height.png
+	texture_roughness materialDev/textures/tomf/tf_nat2h_rough.png
+	specular_factor .5
+	displace_in .00
+	displace_out .03
 	metalness_factor 0
 
 textures/tomf/tf_nat2i:
@@ -20737,6 +20824,7 @@ textures/tomf/tf_wood01_6:
 textures/tomf/tf_wood01b:
 	texture_base materialDev/textures/tomf/tf_wood01b.tga
 	texture_normals materialDev/textures/tomf/tf_wood01b_n.tga
+	specular_factor .5
 	metalness_factor 0
 
 textures/tomf/tf_wood01b_2:

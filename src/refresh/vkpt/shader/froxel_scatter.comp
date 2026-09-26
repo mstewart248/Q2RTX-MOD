@@ -1309,9 +1309,84 @@ void main()
 		   on view 39 is now the expected reading and confirms the fix is live. */
 		vec3 cell_sky_term = vec3(0);
 
+		/* FROXEL_SKY_PROBE_CLAMP  (2026-09-25)  -  NEVER PROBE THE SKY FROM INSIDE A WALL.
+
+		   The sky term is one ray straight up from the cell centre. Out in the
+		   distance a cell is tens of units across, so a cell beside a tunnel wall
+		   can have its centre in the rock or in the void outside the map - and
+		   from there the ray escapes (the map shell has no outward faces), the
+		   cell reads full sky, and the spatial filter spreads it into the air of
+		   an unlit tunnel. Matt saw exactly that: a cyan ring glowing at the far
+		   end of a pitch-dark sewer, present with pt_fog_isolate 1 (sky only) and
+		   gone with 2.
+
+		   The primary rays already know where open air ends along each line of
+		   sight: PT_PRIMARY_DIST, radial like the grid's own z. So the probe is
+		   checked against it. If the camera can see the cell centre, nothing
+		   changes. If it cannot, the probe moves SIDEWAYS, at the same depth, to
+		   whichever of four points across the cell's footprint the camera CAN
+		   see at that depth - a point the primary ray has proved is open air on
+		   the visible side of the silhouette. A cell with no visible point keeps
+		   its true centre, exactly as before.
+
+		   WHY SIDEWAYS AND NOT TOWARD THE CAMERA. The first version pulled an
+		   occluded probe in along the view ray to just short of the surface.
+		   That fixed the tunnel and broke thin occluders: a cell of open tunnel
+		   whose centre pixel landed on a bar of a grate had its probe dragged to
+		   the NEAR side of the bar, into the room the player stands in, and
+		   picked up that room's sky - fog gathered along every bar. Staying at
+		   the cell's own depth never crosses the occluder.
+
+		   Only the sky ray's origin moves - density, albedo, lights and history
+		   keep the true centre - and it costs up to five texel fetches per cell,
+		   no rays.
+
+		   Primary rays are recorded in the previous submission and the froxel
+		   pass's cross-frame barrier orders against all prior commands, so the
+		   distances are this frame's. 0 restores the unmoved probe for A/B. */
+#ifndef FROXEL_SKY_PROBE_CLAMP
+#define FROXEL_SKY_PROBE_CLAMP 1
+#endif
+		vec3 sky_probe = world_pos_history;
+#if FROXEL_SKY_PROBE_CLAMP
+		{
+			// Same field-relative screen mapping god_rays_filter uses to read
+			// the grid back; see the FIELD LAYOUT note in global_ubo.h.
+			int field_width = max(global_ubo.pt_field_offset, 1);
+			float probe_dist = length(world_pos_history - global_ubo.cam_pos.xyz);
+
+			// Centre first, then four points across the cell's footprint.
+			const vec2 taps[5] = vec2[5](vec2(0.5),
+				vec2(0.15, 0.15), vec2(0.85, 0.15), vec2(0.15, 0.85), vec2(0.85, 0.85));
+
+			float best_dist = -1.0;
+			vec2  best_tap  = vec2(0.5);
+			for (int i = 0; i < 5; i++)
+			{
+				vec2 screen_uv = (vec2(cell.xy) + taps[i]) / vec2(FROXEL_GRID_X, FROXEL_GRID_Y);
+				ivec2 pix = clamp(ivec2(screen_uv * vec2(field_width, global_ubo.height)),
+				                  ivec2(0), ivec2(field_width - 1, global_ubo.height - 1));
+				float surface_dist = texelFetch(TEX_PT_PRIMARY_DIST, pix, 0).r;
+
+				if (i == 0 && surface_dist > probe_dist)
+					break; // centre is in open air - leave it alone
+
+				if (surface_dist > best_dist)
+				{
+					best_dist = surface_dist;
+					best_tap  = taps[i];
+				}
+			}
+
+			// A few units of clearance so the probe does not sit on the surface.
+			if (best_dist > probe_dist + 4.0)
+				sky_probe = froxel_to_world(cell, vec3(best_tap, 0.5));
+		}
+#endif
+
 		if (fog_lights && FROXEL_MODE3)
 		{
-			cell_sky_term = fog_sky_inscatter(world_pos_history);
+			cell_sky_term = fog_sky_inscatter(sky_probe);
 			dbg_hoist_entered = fog_debug_sky_entered;
 		}
 

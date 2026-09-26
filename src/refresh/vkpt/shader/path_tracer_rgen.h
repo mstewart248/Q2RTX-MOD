@@ -1042,45 +1042,219 @@ bool get_is_gradient(ivec2 ipos)
 	return false;
 }
 
-float pom_height(uint height_texture, vec2 uv, vec2 tex_coord_x, vec2 tex_coord_y, float mip_level)
+/*
+Parallax occlusion mapping, ported from RTX Remix
+(dxvk-remix: rtx/concept/surface_material/opaque_surface_material_interaction.slangh).
+Returns the texture coordinate where the view ray really meets the height field;
+every map the material has is then sampled there.
+
+pt_pom 1 is Remix's default QuadtreePOM (pomTraceRay): an exact walk through the
+height map's texels, using the mip chain as a quadtree of maximum heights to skip
+empty space. It needs max-filtered height mips, which the texture upload builds
+for images flagged IF_HEIGHT_MAP. pt_pom 2 is Remix's RaymarchPOM: fixed layers,
+sampled at mip 0. Both follow Remix line for line, so displace_in / displace_out
+carry over unchanged.
+
+Only the texture lookup moves. The hit position, depth and motion vectors stay on
+the triangle, and shadow rays still see the flat surface.
+*/
+
+// Remix pomSampleHeight: depth below the top of the slab, sampled at mip 0.
+float pom_sample_depth(uint height_texture, vec2 uv)
 {
-	if (mip_level >= 0)
-		return global_textureLod(height_texture, uv, mip_level).r;
-	return global_textureGrad(height_texture, uv, tex_coord_x, tex_coord_y).r;
+	return 1.0 - global_textureLod(height_texture, uv, 0).r;
 }
 
-/*
-Parallax occlusion mapping, RTX-Remix style: returns the texture coordinate where
-the ray really meets the height field, and every map the material has is then
-sampled there.
+// Remix pomGetBoxHeight: the maximum height inside one texel of a mip level. Sampling a
+// texel centre at an exact lod returns that texel unfiltered.
+float pom_box_height(uint height_texture, vec2 box_center, int level)
+{
+	return global_textureLod(height_texture, box_center, float(level)).r;
+}
 
-The height field lives in a slab around the triangle. Height 1 is displace_out
-ABOVE the triangle's plane, height 0 is displace_in BELOW it, both in UV units
-(0.05 = 5% of one texture repeat), which is what Remix's displaceIn/displaceOut
-mean, so values carry over. The ray reached the plane at tex_coord; it entered
-the top of the slab earlier, further back along the ray, and the march starts
-there and descends through the whole in + out thickness.
+// Remix pomGetBoxSize: the size, in UV, of one texel of a mip level.
+vec2 pom_box_size(int level, ivec2 full_size)
+{
+	return 1.0 / vec2(max(full_size >> level, ivec2(1)));
+}
 
-The texture-space frame comes from the triangle's own positions and UVs rather
-than from triangle.tangents. That frame is dP/du and dP/dv exactly, so it
-also knows how many world units one UV spans - which is what turns a depth in
-UV units into a world-space slab and keeps the effect the same size no matter
-how a mapper scaled the texture - and it has the right sign on mirrored UVs
-without the handedness dance the normal map needs.
+// Remix pomGetPatchCorners: each corner of the box takes the minimum of the four boxes
+// around it, so neighbouring boxes share corners and the level-0 surface is watertight.
+// Returned as the corners 00, 01, 10, 11 in the ray's forward frame.
+vec4 pom_patch_corners(uint tex, vec2 box_center, vec2 box_step, float height, int level)
+{
+	float box00 = pom_box_height(tex, box_center + box_step * vec2(-1, -1), level);
+	float box01 = pom_box_height(tex, box_center + box_step * vec2(-1,  0), level);
+	float box02 = pom_box_height(tex, box_center + box_step * vec2(-1,  1), level);
+	float box10 = pom_box_height(tex, box_center + box_step * vec2( 0, -1), level);
+	float box12 = pom_box_height(tex, box_center + box_step * vec2( 0,  1), level);
+	float box20 = pom_box_height(tex, box_center + box_step * vec2( 1, -1), level);
+	float box21 = pom_box_height(tex, box_center + box_step * vec2( 1,  0), level);
+	float box22 = pom_box_height(tex, box_center + box_step * vec2( 1,  1), level);
 
-Only the texture lookup moves. The hit position, depth and motion vectors stay
-on the triangle, so outward bumps cannot poke past a silhouette and there is
-no self-shadowing: shadow rays still see the flat surface.
-*/
+	return vec4(
+		min(min(box00, box01), min(box10, height)),
+		min(min(box01, box02), min(height, box12)),
+		min(min(box10, height), min(box20, box21)),
+		min(min(height, box12), min(box21, box22)));
+}
+
+// Remix pomTraceRay. origin.z = 1 is the top of the slab and z = 0 its floor; xy is UV.
+vec2 pom_trace_quadtree(uint tex, vec3 origin, vec3 direction,
+                        vec2 tex_coord_x, vec2 tex_coord_y, float mip_level, float neutral_height)
+{
+	ivec2 full_size = global_textureSize(tex, 0);
+	int num_mips = global_textureQueryLevels(tex);
+	bool outwards = direction.z > 0;
+
+	int min_mip;
+	if (mip_level >= 0)
+		min_mip = int(mip_level);
+	else
+	{
+		vec2 ddx_tex = tex_coord_x * vec2(full_size);
+		vec2 ddy_tex = tex_coord_y * vec2(full_size);
+		float dd_max_sq = max(dot(ddx_tex, ddx_tex), dot(ddy_tex, ddy_tex));
+		min_mip = int(max(0.0, 0.5 * log2(max(dd_max_sq, 1e-20))));
+	}
+	min_mip = clamp(min_mip, 0, num_mips - 1);
+
+	origin.xy += direction.xy * (1.0 - neutral_height) / direction.z;
+
+	// Remix starts inward rays halfway down the quadtree, outward ones at the bottom.
+	int level = outwards ? 0 : max((num_mips - 1) / 2, min_mip);
+	vec3 cur_pos = origin;
+
+	vec2 forward_step = vec2(direction.x >= 0 ? 1.0 : -1.0, direction.y >= 0 ? 1.0 : -1.0);
+	vec2 forward_half_step = forward_step * 0.5;
+	int max_iterations = int(clamp(global_ubo.pt_pom_max_steps, 4.0, 256.0));
+	int iterations = 0;
+	float prev_height = 1.0;
+
+	while (level >= min_mip && iterations < max_iterations && (!outwards || cur_pos.z <= 1.0))
+	{
+		iterations++;
+		vec2 box_size = pom_box_size(level, full_size);
+		vec2 box_center = floor(cur_pos.xy / box_size) * box_size + 0.5 * box_size;
+		float height = pom_box_height(tex, box_center, level);
+
+		// Below the box's maximum height above the finest level: descend one level.
+		if (level != min_mip && cur_pos.z <= height)
+		{
+			level--;
+			continue;
+		}
+
+		// Where the ray leaves the box sideways, and where it meets the box's top.
+		vec2 box_far_corner = box_center + forward_half_step * box_size;
+		vec3 intersect_dist = (vec3(box_far_corner, height) - origin) / direction;
+		float bounds_intersect = min(intersect_dist.x, intersect_dist.y);
+		vec3 box_exit = origin + bounds_intersect * direction;
+
+		if (!outwards && intersect_dist.z <= bounds_intersect)
+		{
+			if (level == 0)
+			{
+				// Intersect a bilinear patch through the box corners rather than the
+				// flat top of the texel, so magnified height maps stay smooth.
+				vec2 box_near_corner = box_center - forward_half_step * box_size;
+				vec2 box_entrance_dist = (box_near_corner - origin.xy) / direction.xy;
+				vec3 box_entrance = origin + max(0.0, max(box_entrance_dist.x, box_entrance_dist.y)) * direction;
+
+				vec2 forward_box_step = box_size * forward_step;
+				vec4 corners = pom_patch_corners(tex, box_center, forward_box_step, height, min_mip);
+				iterations += 8;
+
+				vec2 entrance_coord = (box_entrance.xy - box_near_corner) / forward_box_step;
+				vec2 exit_coord = (box_exit.xy - box_near_corner) / forward_box_step;
+
+				float entrance_height = mix(mix(corners[0], corners[2], entrance_coord.x),
+				                            mix(corners[1], corners[3], entrance_coord.x), entrance_coord.y);
+				float exit_height = mix(corners[2], mix(corners[1], corners[3], exit_coord.x), exit_coord.y);
+
+				float frac = (box_entrance.z - entrance_height)
+				           / ((exit_height - entrance_height) - (box_exit.z - box_entrance.z));
+				vec3 intercept = box_entrance + (box_exit - box_entrance) * frac;
+
+				if (entrance_height > box_entrance.z || (frac <= 1.0 && intercept.z <= height && frac >= 0.0))
+					return intercept.xy;
+				// Missed the patch: carry on into the next box.
+			}
+			else if (level == min_mip)
+			{
+				// Too far away for level 0: interpolate between the previous box's height
+				// at the entrance and this box's at the exit.
+				float frac = (cur_pos.z - prev_height) / ((height - prev_height) - (box_exit.z - cur_pos.z));
+				return (cur_pos + (box_exit - cur_pos) * frac).xy;
+			}
+			else
+			{
+				// Drop onto the box's top and descend.
+				cur_pos = origin + intersect_dist.z * direction;
+				level--;
+				continue;
+			}
+		}
+
+		// Left the box through a side: step just past it, and climb a level if the next
+		// box is in a different parent.
+		int next_level = min(num_mips - 1, level + 1);
+		vec3 next_pos = box_exit + direction * min(box_size.x, box_size.y) * 0.01;
+		vec2 next_box_size = pom_box_size(next_level, full_size);
+		if (any(notEqual(floor(cur_pos.xy / next_box_size), floor(next_pos.xy / next_box_size))))
+			level = next_level;
+		cur_pos = next_pos;
+		prev_height = height;
+	}
+
+	// Outward rays can pass the top of the slab; stop them there.
+	if (cur_pos.z > 1.0)
+		return (origin + ((1.0 - origin.z) / direction.z) * direction).xy;
+
+	return cur_pos.xy;
+}
+
+// Remix RaymarchPOM (the first branch of pomCalculateTexcoord).
+vec2 pom_trace_raymarch(uint tex, vec2 tex_coord, vec3 view_dir, float total_height, float neutral_height)
+{
+	float max_samples = clamp(global_ubo.pt_pom_max_steps, 4.0, 256.0);
+	float num_layers = mix(max_samples, max_samples * 0.25, abs(view_dir.z));
+	float layer_size = 1.0 / num_layers;
+	vec2 step = view_dir.xy / view_dir.z * total_height * layer_size;
+
+	vec2 uv = tex_coord + step * num_layers * (1.0 - neutral_height);
+	float curr_height = pom_sample_depth(tex, uv);
+
+	float curr_depth = 0.0, prev_height = 0.0;
+	int max_iterations = int(num_layers) + 2;
+	for (int i = 0; i < max_iterations && curr_depth < curr_height; i++)
+	{
+		uv -= step;
+		prev_height = curr_height;
+		curr_height = pom_sample_depth(tex, uv);
+		curr_depth += layer_size;
+	}
+
+	// Interpolate the last two samples to reduce sample aliasing.
+	float depth_n_minus_1 = prev_height - curr_depth + layer_size;
+	float depth_n = curr_height - curr_depth;
+	float weight = clamp(depth_n / (depth_n - depth_n_minus_1), 0.0, 1.0);
+	return uv + step * weight;
+}
+
 vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, vec3 ray_direction,
                         vec2 tex_coord, vec2 tex_coord_x, vec2 tex_coord_y, float mip_level)
 {
-	float depth_in  = max(minfo.displace_in, 0.0) * global_ubo.pt_pom_scale;
-	float depth_out = max(minfo.displace_out, 0.0) * global_ubo.pt_pom_scale;
-	float thickness = depth_in + depth_out;
-	if (thickness <= 0)
+	float displace_in  = max(minfo.displace_in, 0.0) * global_ubo.pt_pom_scale;
+	float displace_out = max(minfo.displace_out, 0.0) * global_ubo.pt_pom_scale;
+	float total_height = displace_in + displace_out;
+	if (total_height <= 0)
 		return tex_coord;
+	float neutral_height = displace_in / total_height;
 
+	// Remix genTangSpace: the raw dP/du and dP/dv, both scaled by the length of the
+	// longer one. The texture-space frame is (rawTangent, rawBitangent, normal), so a
+	// displacement of 1 is one texture repeat along the longer axis, in world units.
 	vec2 duv0 = triangle.tex_coords[1] - triangle.tex_coords[0];
 	vec2 duv1 = triangle.tex_coords[2] - triangle.tex_coords[0];
 	vec3 dp0  = triangle.positions[1] - triangle.positions[0];
@@ -1092,63 +1266,42 @@ vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, 
 
 	vec3 dPdu = (dp0 * duv1.y - dp1 * duv0.y) / det;
 	vec3 dPdv = (dp1 * duv0.x - dp0 * duv1.x) / det;
+	float longer = sqrt(max(dot(dPdu, dPdu), dot(dPdv, dPdv)));
+	if (longer <= 0)
+		return tex_coord;
 
 	vec3 V = -ray_direction;
 	vec3 N = geo_normal;
 	if (dot(N, V) < 0)
 		N = -N;
-	float NdotV = dot(N, V);
-	if (NdotV < 1e-3)
+
+	// Remix: worldToTexture = inverse(transpose(mat3(rawTangent, rawBitangent, normal))).
+	mat3 texture_to_world = mat3(dPdu / longer, dPdv / longer, N);
+	if (abs(determinant(texture_to_world)) < 1e-6)
+		return tex_coord;
+	vec3 view_dir = normalize(inverse(texture_to_world) * V);
+	if (view_dir.z < 1e-3)
 		return tex_coord;
 
-	// Dual basis: how far u and v move per world unit along V. Both vectors are
-	// perpendicular to N, so V's normal component drops out on its own.
-	vec3 cu = cross(dPdv, N);
-	vec3 cv = cross(N, dPdu);
-	float du_den = dot(dPdu, cu);
-	float dv_den = dot(dPdv, cv);
-	if (abs(du_den) < 1e-10 || abs(dv_den) < 1e-10)
-		return tex_coord;
-	vec2 v_uv = vec2(dot(V, cu) / du_den, dot(V, cv) / dv_den);
-
-	float world_per_uv = sqrt(length(dPdu) * length(dPdv));
-
-	// Clamping the grazing angle bounds the UV sweep, which is the usual POM
-	// trade: a little flattening at grazing angles instead of texture smearing
-	// across the whole surface.
-	float slant = 1.0 / max(NdotV, 0.15);
-	vec2 uv_top   = tex_coord + v_uv * (depth_out * world_per_uv * slant);
-	vec2 uv_sweep = -v_uv * (thickness * world_per_uv * slant);
-
-	float max_steps = clamp(global_ubo.pt_pom_max_steps, 4.0, 128.0);
-	int steps = int(mix(max_steps, max(4.0, max_steps * 0.25), NdotV));
-	float layer = 1.0 / float(steps);
-
-	// d is how far below the top of the slab the ray is, 0..1 of the thickness;
-	// the height field's floor at a texel is (1 - h) on the same scale.
-	float d = 0;
-	vec2 uv = uv_top;
-	float surf = 1.0 - pom_height(minfo.height_texture, uv, tex_coord_x, tex_coord_y, mip_level);
-	float prev_d = 0;
-	vec2 prev_uv = uv;
-	float prev_surf = surf;
-
-	for (int i = 0; i < steps && d < surf; i++)
+	vec2 result;
+	if (global_ubo.pt_pom == 2)
 	{
-		prev_d = d;
-		prev_uv = uv;
-		prev_surf = surf;
-		d += layer;
-		uv = uv_top + uv_sweep * d;
-		surf = 1.0 - pom_height(minfo.height_texture, uv, tex_coord_x, tex_coord_y, mip_level);
+		result = pom_trace_raymarch(minfo.height_texture, tex_coord, view_dir, total_height, neutral_height);
+	}
+	else
+	{
+		// A ray exactly along a texture axis would divide 0 by 0 at the box planes.
+		vec3 direction = -vec3(view_dir.xy, view_dir.z / total_height);
+		if (abs(direction.x) < 1e-7) direction.x = 1e-7;
+		if (abs(direction.y) < 1e-7) direction.y = 1e-7;
+		result = pom_trace_quadtree(minfo.height_texture, vec3(tex_coord, 1.0), direction,
+		                            tex_coord_x, tex_coord_y, mip_level, neutral_height);
 	}
 
-	// Refine between the last step above the field and the first below it.
-	float after = surf - d;
-	float before = prev_surf - prev_d;
-	float denom = after - before;
-	float w = (abs(denom) > 1e-6) ? clamp(after / denom, 0.0, 1.0) : 0.0;
-	return mix(uv, prev_uv, w);
+	// Remix WAR for REMIX-3709: POM sometimes produces NaNs.
+	if (any(isnan(result)) || any(isinf(result)))
+		return tex_coord;
+	return result;
 }
 
 void

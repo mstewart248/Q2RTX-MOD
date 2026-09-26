@@ -525,6 +525,94 @@ image_num_miplevels(const image_t *q_img)
 	return get_num_miplevels(q_img->upload_width, q_img->upload_height);
 }
 
+/* POM HEIGHT MAPS GET A MIP CHAIN OF MAXIMUM HEIGHTS, NOT AVERAGES.
+
+   The quadtree POM trace in path_tracer_rgen.h - a port of RTX Remix's
+   pomTraceRay - treats each texel of mip N as a box that no texel beneath it rises
+   above, and skips the whole box when the ray passes over it. The linear
+   vkCmdBlitImage chain every other texture gets averages instead, and an averaged
+   box is lower than its peaks, so rays would slip through them. Remix's texture
+   tools build height mips with a max filter; this does the same, on the CPU, at
+   upload. */
+static bool
+image_has_max_mips(const image_t *q_img)
+{
+	return (q_img->flags & IF_HEIGHT_MAP) && image_num_miplevels(q_img) > 1;
+}
+
+static int
+image_bytes_per_pixel(const image_t *q_img)
+{
+	return q_img->pixel_format == PF_R16_UNORM ? 2 : 4;
+}
+
+static size_t
+mip_level_bytes(int wd, int ht, int bpp)
+{
+	// Each level starts on a 4-byte boundary in the staging buffer.
+	return ((size_t)wd * ht * bpp + 3) & ~(size_t)3;
+}
+
+// Staging bytes an image needs: its device size, or a tightly packed max-mip chain
+// if that is bigger.
+static size_t
+image_staging_size(const image_t *q_img, VkDeviceSize device_size)
+{
+	if (!image_has_max_mips(q_img))
+		return device_size;
+
+	int bpp = image_bytes_per_pixel(q_img);
+	int wd = q_img->upload_width;
+	int ht = q_img->upload_height;
+	size_t total = 0;
+	for (int mip = 0; mip < image_num_miplevels(q_img); mip++)
+	{
+		total += mip_level_bytes(wd, ht, bpp);
+		wd = (wd > 1) ? (wd >> 1) : wd;
+		ht = (ht > 1) ? (ht >> 1) : ht;
+	}
+	return max(total, (size_t)device_size);
+}
+
+// One level down: each texel takes the per-channel maximum of the 2x2 texels above
+// it, plus the extra row or column an odd-sized level leaves over at its far edge.
+static void
+downsample_max(const byte *src, int wd, int ht, byte *dst, int nwd, int nht, int bpp)
+{
+	for (int y = 0; y < nht; y++)
+	{
+		int y0 = min(y * 2, ht - 1);
+		int y1 = (y == nht - 1) ? ht - 1 : min(y * 2 + 1, ht - 1);
+
+		for (int x = 0; x < nwd; x++)
+		{
+			int x0 = min(x * 2, wd - 1);
+			int x1 = (x == nwd - 1) ? wd - 1 : min(x * 2 + 1, wd - 1);
+
+			if (bpp == 2)
+			{
+				const uint16_t *s = (const uint16_t *)src;
+				uint16_t m = 0;
+				for (int sy = y0; sy <= y1; sy++)
+					for (int sx = x0; sx <= x1; sx++)
+						m = max(m, s[sy * wd + sx]);
+				((uint16_t *)dst)[y * nwd + x] = m;
+			}
+			else
+			{
+				for (int c = 0; c < 4; c++)
+				{
+					byte m = 0;
+					for (int sy = y0; sy <= y1; sy++)
+						for (int sx = x0; sx <= x1; sx++)
+							m = max(m, src[(sy * wd + sx) * 4 + c]);
+					dst[(y * nwd + x) * 4 + c] = m;
+				}
+			}
+		}
+	}
+}
+
 
 /*
 ================
@@ -1078,6 +1166,10 @@ void IMG_ReloadAll(void)
             if (strstr(filepath, "_n."))
             {
                 image->flags |= IF_NORMAL_MAP;
+            }
+            if (strstr(filepath, "_height."))
+            {
+                image->flags |= IF_HEIGHT_MAP;
             }
             if(image->flags & IF_FAKE_EMISSIVE)
             {
@@ -1684,7 +1776,7 @@ vkpt_textures_end_registration()
 		assert(!(mem_req.alignment & (mem_req.alignment - 1)));
 		total_size += mem_req.alignment - 1;
 		total_size &= ~(mem_req.alignment - 1);
-		total_size += mem_req.size;
+		total_size += image_staging_size(q_img, mem_req.size);
 
 		DeviceMemory* image_memory = tex_image_memory + i;
 		image_memory->size = mem_req.size;
@@ -1786,10 +1878,10 @@ vkpt_textures_end_registration()
 			.newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
 		);
 
-		int bytes_per_pixel = q_img->pixel_format == PF_R16_UNORM ? 2 : 4;
+		int bytes_per_pixel = image_bytes_per_pixel(q_img);
 		memcpy(staging_buffer + offset, q_img->pix_data, wd * ht * bytes_per_pixel);
 
-		VkBufferImageCopy cpy_info = {
+		VkBufferImageCopy cpy_info[32] = { {
 			.bufferOffset = offset,
 			.imageSubresource = { 
 				.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1799,26 +1891,76 @@ vkpt_textures_end_registration()
 			},
 			.imageOffset    = { 0, 0, 0 },
 			.imageExtent    = { wd, ht, 1 }
-		};
+		} };
+		uint32_t num_regions = 1;
+
+		// Height maps: every level comes from here, max-filtered (see image_has_max_mips).
+		// Levels are built in system memory - the staging buffer is write-combined and
+		// slow to read back - and each is copied in as its own region.
+		bool max_mips = image_has_max_mips(q_img);
+		if (max_mips)
+		{
+			assert(num_mip_levels <= (int)q_countof(cpy_info));
+			int lwd = wd, lht = ht;
+			size_t level_offset = offset;
+			const byte *prev_level = q_img->pix_data;
+			byte *scratch[2] = {
+				Z_Malloc(mip_level_bytes(max(wd >> 1, 1), max(ht >> 1, 1), bytes_per_pixel)),
+				Z_Malloc(mip_level_bytes(max(wd >> 2, 1), max(ht >> 2, 1), bytes_per_pixel)),
+			};
+
+			for (int mip = 1; mip < num_mip_levels; mip++)
+			{
+				int nwd = (lwd > 1) ? (lwd >> 1) : lwd;
+				int nht = (lht > 1) ? (lht >> 1) : lht;
+				byte *level = scratch[(mip - 1) & 1];
+
+				downsample_max(prev_level, lwd, lht, level, nwd, nht, bytes_per_pixel);
+
+				level_offset += mip_level_bytes(lwd, lht, bytes_per_pixel);
+				memcpy(staging_buffer + level_offset, level, (size_t)nwd * nht * bytes_per_pixel);
+
+				cpy_info[num_regions++] = (VkBufferImageCopy) {
+					.bufferOffset = level_offset,
+					.imageSubresource = {
+						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel       = mip,
+						.baseArrayLayer = 0,
+						.layerCount     = 1,
+					},
+					.imageOffset    = { 0, 0, 0 },
+					.imageExtent    = { nwd, nht, 1 }
+				};
+
+				prev_level = level;
+				lwd = nwd;
+				lht = nht;
+			}
+
+			Z_Free(scratch[0]);
+			Z_Free(scratch[1]);
+		}
 
 		vkCmdCopyBufferToImage(cmd_buf, buf_img_upload.buffer, tex_images[i],
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy_info);
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, num_regions, cpy_info);
 
 		// Transition mip 0 to VK_IMAGE_LAYOUT_GENERAL for use in the next command list.
+		// A height map's chain is complete already, so all of it goes straight to
+		// shader reads and phase 4 leaves it alone.
 
 		subresource_range.baseMipLevel = 0;
-		subresource_range.levelCount = 1;
+		subresource_range.levelCount = max_mips ? num_mip_levels : 1;
 
 		IMAGE_BARRIER(cmd_buf,
 			.image = tex_images[i],
 			.subresourceRange = subresource_range,
 			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+			.dstAccessMask = max_mips ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_TRANSFER_READ_BIT,
 			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL
 		);
 
-		offset += mem_req.size;
+		offset += image_staging_size(q_img, mem_req.size);
 	}
 
 	buffer_unmap(&buf_img_upload);
@@ -1848,6 +1990,10 @@ vkpt_textures_end_registration()
 			.baseArrayLayer = 0,
 			.layerCount = 1
 		};
+
+		// Height maps uploaded their whole max-filtered chain in phase 3.
+		if (image_has_max_mips(q_img))
+			continue;
 
 		bool normalize = (q_img->flags & IF_NORMAL_MAP) && !q_img->is_srgb;
 

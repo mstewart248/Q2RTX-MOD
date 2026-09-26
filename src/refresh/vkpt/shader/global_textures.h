@@ -415,6 +415,14 @@ global_textureSize(uint idx, int level)
 	return textureSize(global_texture_descriptors[nonuniformEXT(idx)], level);
 }
 
+int
+global_textureQueryLevels(uint idx)
+{
+	if(idx >= NUM_GLOBAL_TEXTUES)
+		return 1;
+	return textureQueryLevels(global_texture_descriptors[nonuniformEXT(idx)]);
+}
+
 bool
 is_waterUBO(uint material)
 {

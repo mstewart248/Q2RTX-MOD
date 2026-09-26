@@ -1,0 +1,18 @@
+# Material overrides for mgu1m1 only - loaded by MAT_ChangeMap on map load.
+
+# The fire over the drop pod window (func_wall *107, TRANS33|FLOWING, value 0), given
+# the same slight glow of its own that maps/mgu6m1.mat gives mgu6m1's. Without
+# it the fire falls back to materials/rerelease.mat's glocrys_1b (WATER +
+# is_light, meant for the tomb crystals), has no emission once bsp_mesh.c's
+# pod-fire hack strips the light flag, and only shows when the red strobe
+# lights it - it looked as if this pod had no fire at all.
+# mgu1m1 ALSO uses glocrys_1b as a 500-radiance surface light on 28 faces, so
+# overriding the texture would switch those lights off (bsp_radiance 0). This is
+# a per-surface INSTANCE instead: #065871b8 is the geometry hash of the pod-fire
+# brush's face group (see build_face_instance_hashes in bsp_mesh.c). It changes
+# only if the map is recompiled with different geometry.
+textures/tomf/glocrys_1b#065871b8:
+	texture_base textures/tomf/glocrys_1b.wal
+	texture_emissive textures/tomf/glocrys_1b.wal
+	bsp_radiance 0
+	emissive_factor 0.01

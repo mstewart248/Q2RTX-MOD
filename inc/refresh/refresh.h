@@ -434,6 +434,7 @@ typedef enum {
     IF_NORMAL_MAP   = (1 << 12),
     IF_BILERP       = (1 << 13), // always lerp, independent of bilerp_pics cvar
     IF_NO_MIPMAPS   = (1 << 14), // upload mip 0 only; for images drawn 1:1 and replaced every frame
+    IF_HEIGHT_MAP   = (1 << 15), // POM height map: mips hold the MAXIMUM of the texels below, not the average
 
     // Image source indicator/requirement flags
     IF_SRC_BASE     = (0x1 << 16),
