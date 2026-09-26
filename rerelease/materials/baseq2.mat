@@ -3024,6 +3024,9 @@ textures/e1u1/metal3_4:
 textures/e1u1/metal3_5:
 	texture_base overrides/metal3_5.tga
 	texture_normals overrides/metal3_5_n.tga
+	texture_height overrides/metal3_5_height.png
+	displace_in .03
+	displace_out 0.0
 	base_factor 4
 	specular_factor 0
 
@@ -6137,7 +6140,7 @@ textures/e1u3/metal3_3:
 
 textures/e1u3/metal3_5:
 	texture_base overrides/metal3_5.tga
-	texture_normals overrides/metal3_5_n.tga
+	texture_normals overrides/metal3_5_n.tga	
 	base_factor 4
 	specular_factor 0
 

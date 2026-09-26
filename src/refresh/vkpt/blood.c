@@ -1705,8 +1705,10 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		const uint32_t splat_plane_nrm = is_splat ? encode_normal(sphere->normal) : 0;
 
 		// Landed splats can be translucent; droplets in flight never are.
+		// A splat dissolving into water carries its own fade on top of that.
 		const float splat_alpha = is_splat
-			? max(0.05f, min(cvar_pt_blood_splat_alpha->value, 1.f)) : 1.f;
+			? max(0.05f, min(cvar_pt_blood_splat_alpha->value, 1.f)) *
+			  max(0.f, min(sphere->alpha, 1.f)) : 1.f;
 		const uint32_t splat_alpha_half = (uint32_t)floatToHalf(splat_alpha);
 
 		// A puddle's z runs from 0 at its base to 1 at its apex, where a sphere's
@@ -1734,7 +1736,14 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		blood_sphere_t that is already quantized, so this cannot make a parked
 		splat's geometry change from one frame to the next.
 		*/
-		if (is_splat && cvar_pt_blood_wobble_max->value > 0.f)
+		if (is_splat && sphere->wobble > 0.f)
+		{
+			// Dissolving into water - see blood_sphere_t::wobble. Uncapped on
+			// purpose: the cloud grows several times its landed width and is
+			// meant to stay ragged the whole way, not round off into a disc.
+			wobble = min(sphere->wobble, 0.9f);
+		}
+		else if (is_splat && cvar_pt_blood_wobble_max->value > 0.f)
 		{
 			const float spread = sphere->radius * max(0.1f, global_blood_splat_size);
 			const float half_width = spread * max(1.f, max(sphere->stretch, sphere->cross));

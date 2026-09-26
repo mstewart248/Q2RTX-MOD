@@ -996,6 +996,14 @@ static cvar_t *cl_blood_wall_spread = NULL;
 static cvar_t *cl_blood_drain = NULL;
 static cvar_t *cl_blood_cling_size = NULL;
 static cvar_t *cl_blood_trail = NULL;
+static cvar_t *cl_blood_water = NULL;
+static cvar_t *cl_blood_water_life = NULL;
+static cvar_t *cl_blood_water_spread = NULL;
+static cvar_t *cl_blood_water_depth = NULL;
+static cvar_t *cl_blood_water_wobble = NULL;
+static cvar_t *cl_blood_water_thin = NULL;
+static cvar_t *cl_blood_water_merge = NULL;
+static cvar_t *cl_blood_water_max = NULL;
 
 /*
 ===============
@@ -1291,6 +1299,30 @@ void FX_Init(void)
     // pull into the surface keeps it in contact so it follows the shape.
     cl_blood_flesh_cling = Cvar_Get("cl_blood_flesh_cling", "25", CVAR_ARCHIVE);
     cl_blood_splat_life = Cvar_Get("cl_blood_splat_life", "8", CVAR_ARCHIVE);
+
+    // BLOOD THAT REACHES WATER DISSOLVES INTO IT - see CL_BloodDissolve. The
+    // flight trace used to be MASK_SOLID alone, so a droplet fell straight
+    // through the surface and parked on the bottom as an ordinary floor splat.
+    // _life is seconds to fade out, _spread how many times its landed width the
+    // cloud grows to, _depth how far under the surface it sits, _wobble the
+    // raggedness of its churning outline (a fraction of its radius).
+    cl_blood_water = Cvar_Get("cl_blood_water", "1", CVAR_ARCHIVE);
+    cl_blood_water_life = Cvar_Get("cl_blood_water_life", "3", CVAR_ARCHIVE);
+    cl_blood_water_spread = Cvar_Get("cl_blood_water_spread", "1", CVAR_ARCHIVE);
+    cl_blood_water_depth = Cvar_Get("cl_blood_water_depth", "1.5", CVAR_ARCHIVE);
+    cl_blood_water_wobble = Cvar_Get("cl_blood_water_wobble", "0.35", CVAR_ARCHIVE);
+    // How fast a cloud goes see-through as it spreads: opacity falls as its
+    // width to this power. 2 is the same blood spread over the area - twice as
+    // wide, a quarter as dense - and is what makes it read as dissolving.
+    cl_blood_water_thin = Cvar_Get("cl_blood_water_thin", "2", CVAR_ARCHIVE);
+    // How much a cloud grows when it takes in one it touches, as a fraction of
+    // the smaller one's width. Small on purpose - see CL_BloodMergeWaterPools.
+    cl_blood_water_merge = Cvar_Get("cl_blood_water_merge", "0.1", CVAR_ARCHIVE);
+    // THE CEILING on a cloud's landed radius in world units, before it spreads.
+    // Merging adds a little per droplet, and a droplet is 1.8 units across, so
+    // one bullet's 60 of them come to about this; a shotgun blast is a dozen
+    // bullets' worth and without the cap filled the whole pool.
+    cl_blood_water_max = Cvar_Get("cl_blood_water_max", "12", CVAR_ARCHIVE);
     cl_blood_slide = Cvar_Get("cl_blood_slide", "2.5", CVAR_ARCHIVE);
 
     // HOW FAST BLOOD IS ALLOWED TO RUN, in units per second.
@@ -1576,12 +1608,12 @@ void FX_Init(void)
 
     // A wet impact when blood lands.
     cl_blood_sound = Cvar_Get("cl_blood_sound", "1", CVAR_ARCHIVE);
-    // 1.0, because the CLIPS are now normalised to Quake II's own level rather
+    // 0.7 is Matt's tuned level. Full scale is 1.0 because the CLIPS are now normalised to Quake II's own level rather
     // than the engine compensating for quiet assets. Measured: world/ric1.wav
     // sits at mean -16 dB / peak 0 dB, and the source mp3s arrived ~10 dB under
     // that - which is why this was inaudible however far the slider went. The
     // wavs are regenerated from the mp3s with matching gain plus a limiter.
-    cl_blood_sound_volume = Cvar_Get("cl_blood_sound_volume", "1.0", CVAR_ARCHIVE);
+    cl_blood_sound_volume = Cvar_Get("cl_blood_sound_volume", "0.7", CVAR_ARCHIVE);
 
     // Minimum milliseconds between two impact sounds.
     //
@@ -1590,8 +1622,8 @@ void FX_Init(void)
     // overlapping copies of the same clip - a burst of noise, and enough voices
     // to starve every other sound in the scene. One impact per window turns that
     // into a single wet splat, and a sustained fight into an irregular patter,
-    // which is what it should sound like.
-    cl_blood_sound_gap = Cvar_Get("cl_blood_sound_gap", "90", CVAR_ARCHIVE);
+    // which is what it should sound like. 100 is Matt's tuned value.
+    cl_blood_sound_gap = Cvar_Get("cl_blood_sound_gap", "100", CVAR_ARCHIVE);
 
     // One LANDING sound heard in every N that clear the gap above - a THINNING
     // on top of that rate limit. Matt: "the blood splats should only play sounds
@@ -1603,9 +1635,9 @@ void FX_Init(void)
     // droplets and ran BEFORE the gap: sixty of them land inside one window the
     // gap was only ever going to let a single sound out of, so thinning sixty to
     // eight still left that same one sound. Counted after the gap instead, the
-    // two multiply - 8 here against 90 ms above is a landing sound no oftener
-    // than every 720 ms.
-    cl_blood_sound_skip = Cvar_Get("cl_blood_sound_skip", "2", CVAR_ARCHIVE);
+    // two multiply - the default 16 here against 100 ms above is a landing
+    // sound no oftener than every 1.6 s (Matt's tuned values).
+    cl_blood_sound_skip = Cvar_Get("cl_blood_sound_skip", "16", CVAR_ARCHIVE);
 
     // The POOLING sound's own thinning, the companion to the one above.
     //
@@ -1630,15 +1662,15 @@ void FX_Init(void)
     // gunfire and the monsters - a failure that reads as a bug somewhere else
     // entirely, which is the expensive kind.
     //
-    // So 40 ms: still a fast wet crackle during a burst, every isolated droplet
-    // still heard on its own, and bounded at 25/s. 0 is one command away and
-    // gives the literal behaviour for anyone who wants to hear it.
+    // So a gap, and the default is Matt's tuned 200 ms: bounded at 5/s, every
+    // isolated droplet still heard on its own. 40 gives a fast wet crackle
+    // during a burst (25/s), and 0 gives the literal behaviour.
     //
     // Still the OPPOSITE treatment to the impacts, which is the point: an impact
     // is a loud transient and fifty at once is mush, while the pooling sound is
-    // quieter and wetter and reads as texture when it overlaps. Hence 40 here
-    // against 90 plus every-other-splat there.
-    cl_blood_sound_pool_gap = Cvar_Get("cl_blood_sound_pool_gap", "40", CVAR_ARCHIVE);
+    // quieter and wetter and reads as texture when it overlaps - so this one is
+    // thinned by its gap alone, with no skip on top.
+    cl_blood_sound_pool_gap = Cvar_Get("cl_blood_sound_pool_gap", "200", CVAR_ARCHIVE);
 
     // THE FLOOR UNDER BOTH SOUNDS AT ONCE, in milliseconds.
     //
@@ -4402,12 +4434,215 @@ static void CL_BloodLaunch(cparticle_t *p, const vec3_t vel)
     p->alphavel = -1.0f / max(0.1f, cl_blood_air_life->value);
 }
 
+// Every cloud in the water, rebuilt each frame by CL_AddParticles - see
+// CL_BloodMergeWaterPools. Bounded by the slot count: each one owns a slot.
+static cparticle_t *blood_dissolving[MAX_BLOOD_SPHERES];
+static int          num_blood_dissolving;
+
+// A cloud's life runs t = 0 at contact to 1 when it is gone. How wide it has
+// grown by then, as a multiple of its landed width: fast at first, then slowing.
+static float CL_BloodWaterGrow(float t)
+{
+    const float u = 1.f - t;
+    return 1.f + max(0.f, cl_blood_water_spread->value) * (1.f - u * u * u);
+}
+
+// And how opaque it is: the fade, thinned by the spread - so it falls away
+// from the moment of contact (the spread is fastest there) without the extra
+// squared fade an earlier version had, which emptied it in under a second.
+static float CL_BloodWaterOpacity(float t)
+{
+    return (1.f - t) / powf(CL_BloodWaterGrow(t), max(0.f, cl_blood_water_thin->value));
+}
+
+// The cap on a cloud's landed radius, in p->radius units - see cl_blood_water_max.
+static float CL_BloodWaterMaxBase(void)
+{
+    return max(0.1f, cl_blood_water_max->value) / max(0.1f, cl_blood_splat_size->value);
+}
+
+static float CL_BloodWaterT(const cparticle_t *p)
+{
+    const float a = p->alpha + (cl.time - p->time) * 0.001f * p->alphavel;
+    return 1.f - max(0.f, min(a, 1.f));
+}
+
+// Drawn radius, before the wobble - the renderer multiplies by the splat size.
+static float CL_BloodWaterRadius(const cparticle_t *p)
+{
+    return p->radius * CL_BloodWaterGrow(CL_BloodWaterT(p)) *
+           max(0.1f, cl_blood_splat_size->value);
+}
+
+// Zero alpha is the faded-out branch's cue: CL_AddParticles frees it at the top
+// of its next pass, the one place that is safe - see CL_MakeBloodSphere.
+static inline bool CL_BloodWaterGone(const cparticle_t *p)
+{
+    return p->alpha <= 0.f && p->alphavel == 0.f;
+}
+
+/*
+===============
+CL_BloodMergeWaterPools
+
+CLOUDS THAT TOUCH BECOME ONE. A burst puts dozens of droplets into the water in
+the same frame, all at the same depth, and drawn separately they overlap as a
+stack of coplanar translucent discs fighting each other for every pixel. So any
+two that touch - landing on top of one another, or spreading into each other
+later - merge, and the larger takes the smaller in.
+
+THE SURVIVOR BARELY GROWS: cl_blood_water_merge (0.1) of the smaller one's
+width, and it stays where it is. Both obvious alternatives were tried and both
+were far too big. Summing the areas compounded - sixty droplets built a disc
+eight droplets wide that then kept spreading. The smallest covering circle was
+no better, because a wound's spray scatters droplets over a wide arc and
+touching clouds CHAIN: each covering circle reached the next droplet, and one
+shot filled the whole pool Matt was standing in. Absorbing rather than covering
+keeps a burst the size of where most of it landed.
+
+AND IT NEVER WINDS THE FADE BACK. The first version mixed the opacities, so every
+fresh droplet merging in darkened the cloud and bought it more life, and a spray
+arriving over half a second held the pool dark for most of its life. The merged
+cloud takes the OLDER of the two clocks: the fade starts at first contact and
+runs straight through.
+
+Run once a frame after the particle pass, so a whole burst that landed this
+frame merges before it is drawn twice. O(n^2) in clouds, which are few and
+short-lived; the plane tests throw most pairs out before any radius is worked.
+===============
+*/
+static void CL_BloodMergeWaterPools(void)
+{
+    const float size = max(0.1f, cl_blood_splat_size->value);
+
+    for (int i = 0; i < num_blood_dissolving; i++) {
+        cparticle_t *a = blood_dissolving[i];
+
+        if (CL_BloodWaterGone(a))
+            continue;
+
+        for (int j = i + 1; j < num_blood_dissolving; j++) {
+            cparticle_t *b = blood_dissolving[j];
+
+            if (CL_BloodWaterGone(b))
+                continue;
+            if (DotProduct(a->blood_normal, b->blood_normal) < 0.9f)
+                continue;
+
+            vec3_t d;
+            VectorSubtract(b->org, a->org, d);
+            const float h = DotProduct(d, a->blood_normal);
+            if (fabsf(h) > 4.f)
+                continue;
+
+            const float ra = CL_BloodWaterRadius(a);
+            const float rb = CL_BloodWaterRadius(b);
+            const float dist_sq = DotProduct(d, d) - h * h;
+
+            if (dist_sq > (ra + rb) * (ra + rb))
+                continue;
+
+            // The larger one survives; it moves least.
+            cparticle_t *keep = (ra >= rb) ? a : b;
+            cparticle_t *gone = (ra >= rb) ? b : a;
+            const float rk = max(ra, rb), rg = min(ra, rb);
+            const float dist = sqrtf(max(0.f, dist_sq));
+
+            // The older clock, so the fade is never wound back.
+            const float t = max(CL_BloodWaterT(keep), CL_BloodWaterT(gone));
+            keep->alpha = 1.f;
+            keep->time = cl.time - t / max(1e-4f, -keep->alphavel) * 1000.f;
+
+            // Grow a little, and lean the same little way towards what it took
+            // in, within the survivor's plane.
+            const float rn = rk + max(0.f, cl_blood_water_merge->value) * rg;
+            if (dist > 1e-4f) {
+                vec3_t along;
+                VectorMA(d, -h, a->blood_normal, along);
+                VectorMA(keep->org, ((keep == a) ? 1.f : -1.f) * min(1.f, (rn - rk) / dist),
+                         along, keep->org);
+            }
+
+            keep->radius = min(rn / (CL_BloodWaterGrow(t) * size), CL_BloodWaterMaxBase());
+
+            gone->alpha = 0.f;
+            gone->alphavel = 0.f;
+
+            // `a` itself went: nothing more for it to take in.
+            if (gone == a)
+                break;
+        }
+    }
+}
+
+/*
+===============
+CL_BloodDissolve
+
+BLOOD DOES NOT SPLAT ON WATER, IT DISSOLVES INTO IT. A droplet that reaches the
+surface becomes a flat cloud just under it - cl_blood_water_depth below the plane,
+so it is seen THROUGH the water rather than lying on top of it like paint on a
+floor - and from then on it only spreads and fades. CL_AddParticles grows it to
+cl_blood_water_spread times its width with a churning outline (blood_sphere_t::
+wobble) while the fade runs out over cl_blood_water_life, and the ordinary
+faded-out branch frees it. Nothing is ever parked on the bottom.
+
+`depth` 0 leaves it where it is: that is the droplet that started under water
+(a wound below the surface), which has no surface to hang under.
+
+Not BLOOD_STUCK, so nothing pools into it, runs it, or probes its rim - and a
+still cloud costs nothing in CL_SimulateBloodSphere.
+===============
+*/
+static void CL_BloodDissolve(cparticle_t *p, const vec3_t point, const vec3_t normal, float depth)
+{
+    vec3_t ox, oy;
+    const float a = frand() * 2.f * (float)M_PI;
+
+    CL_BloodDetachFromEntity(p);
+    p->blood_state = BLOOD_DISSOLVE;
+    VectorCopy(normal, p->blood_normal);
+    // A fraction of a unit of jitter, so two clouds overlapping for the one
+    // frame before they merge are not exactly coplanar.
+    if (depth > 0.f)
+        depth += frand() * 0.25f;
+    VectorMA(point, -depth, normal, p->org);
+    VectorClear(p->vel);
+    p->blood_born = cl.time;
+    // A splat that ran into the water may be a pool of twenty droplets already.
+    p->radius = min(p->radius, CL_BloodWaterMaxBase());
+
+    // Any direction in the plane: it is only the axis the outline breathes
+    // along, so the cloud swells unevenly instead of as a clean circle.
+    CL_PerpendicularBasis(normal, ox, oy);
+    VectorScale(ox, cosf(a), p->blood_tangent);
+    VectorMA(p->blood_tangent, sinf(a), oy, p->blood_tangent);
+
+    p->blood_flatten = max(0.05f, min(cl_blood_flatten->value, 1.0f));
+    p->blood_stretch = p->blood_stretch_base = 1.f;
+    p->blood_cross = p->blood_cross_base = 1.f;
+    CL_BloodClearSlide(p);
+    VectorClear(p->blood_slide_axis);
+    p->blood_rim = BLOOD_RIM_FULL;
+    p->blood_rim_dirty = false;
+    p->blood_block = 0;
+    p->blood_arrived = false;
+
+    p->time = cl.time;
+    p->alpha = 1.0f;
+    p->alphavel = -1.0f / max(0.1f, cl_blood_water_life->value);
+}
+
 // Returns true when the droplet merged into an existing pool and should be
 // retired - the blood it carried is now part of that splat.
 static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
 {
     trace_t tr;
     vec3_t  end;
+
+    // Dissolving into water: nothing moves, CL_AddParticles draws the spread.
+    if (p->blood_state == BLOOD_DISSOLVE)
+        return false;
 
     if (p->blood_state == BLOOD_STUCK) {
         // Follow the surface first, so everything below works from where the
@@ -4531,6 +4766,15 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
 
         VectorMA(p->org, dt, p->vel, end);
 
+        // RAN INTO THE WATER. It dissolves where it went under rather than
+        // carrying on down the bank as a permanent mark nobody can see properly
+        // - those parked on the submerged slope, pale-rimmed and never fading.
+        if (cl_blood_water->integer && cl.bsp && cl.bsp->nodes &&
+            (CM_PointContents(end, cl.bsp->nodes) & MASK_WATER)) {
+            CL_BloodDissolve(p, end, p->blood_normal, 0.f);
+            return false;
+        }
+
         // Re-attach: trace from just off the surface into it.  A hit keeps the
         // droplet on the wall and picks up the new normal, which is what carries
         // it around a corner.  A miss means it has run off an edge.
@@ -4650,8 +4894,19 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     // world and the brush models have real geometry and are handled here; bodies
     // have only a box, and get their real triangles from CL_BloodTraceModels
     // below instead.
+    // WATER IS A SURFACE TOO, for blood. Already under it - a wound below the
+    // surface - and it dissolves where it is; otherwise the trace stops at the
+    // surface as well as at walls, and the hit below turns it into a cloud.
+    const bool water = cl_blood_water->integer && cl.bsp && cl.bsp->nodes;
+    static const vec3_t water_up = { 0.f, 0.f, 1.f };
+
+    if (water && (CM_PointContents(p->org, cl.bsp->nodes) & MASK_WATER)) {
+        CL_BloodDissolve(p, p->org, water_up, 0.f);
+        return false;
+    }
+
     blood_traces++;
-    tr = CL_TracePoint(p->org, end, MASK_SOLID, false);
+    tr = CL_TracePoint(p->org, end, water ? (MASK_SOLID | MASK_WATER) : MASK_SOLID, false);
 
     if (tr.allsolid || tr.startsolid) {
         // Spawned inside geometry - a wound right against a wall. Leave it where
@@ -4696,6 +4951,15 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         vec3_t fling;
 
         LerpVector(p->org, end, frac, hit_point);
+
+        // The surface of a pool. CL_BloodTraceModels returns early on a body,
+        // so reaching here means frac is still the world trace's and tr.contents
+        // describes what it hit.
+        if (water && (tr.contents & MASK_WATER)) {
+            CL_BloodDissolve(p, hit_point, hit_normal,
+                             max(0.f, cl_blood_water_depth->value));
+            return false;
+        }
 
         // Landing on a fast spinner does not stick: the surface throws the
         // droplet on at its own speed, and it never becomes a rider.
@@ -6022,6 +6286,7 @@ void CL_AddParticles(void)
 
     num_blood_splats = 0;
     num_blood_airborne = 0;
+    num_blood_dissolving = 0;
 
     // Slots still in use are marked as the list is walked; whatever is left
     // unmarked at the end belonged to a droplet that has died. Reclaiming them
@@ -6249,6 +6514,10 @@ void CL_AddParticles(void)
                         }
                     }
                 }
+            } else if (p->blood_state == BLOOD_DISSOLVE) {
+                blood_air++;    // counts against the budget like any droplet
+                if (num_blood_dissolving < MAX_BLOOD_SPHERES)
+                    blood_dissolving[num_blood_dissolving++] = p;
             } else {
                 blood_air++;
                 if (num_blood_airborne < MAX_PARTICLES)
@@ -6300,9 +6569,37 @@ void CL_AddParticles(void)
                 // rebuild back exactly when a floorful of splats faded together.
                 // Twelve steps is under a pixel of movement per step at the size
                 // these are drawn, and costs twelve rebuilds instead of hundreds.
-                if (alpha < 0.25f) {
+                if (alpha < 0.25f && p->blood_state != BLOOD_DISSOLVE) {
                     const float steps = 12.0f;
                     b->radius *= floorf(alpha * 4.0f * steps) / steps;
+                }
+
+                b->alpha = 1.f;
+                b->wobble = 0.f;
+
+                // DISSOLVING INTO WATER - see CL_BloodDissolve. `t` runs 0 at
+                // contact to 1 when it is gone. It spreads fast and then slows
+                // (ease-out), thins as it spreads so the same blood covers more
+                // water, and churns: the wobble phases slide so lobes bulge and
+                // recede, and the two axes breathe out of step so it never grows
+                // as a clean circle. Unquantized, unlike the rest of this block -
+                // it changes every frame on purpose, and only lives a few seconds.
+                if (p->blood_state == BLOOD_DISSOLVE) {
+                    const float t = 1.f - alpha;
+                    const float grow = CL_BloodWaterGrow(t);
+                    // The churn's own clock - see cparticle_t::blood_born.
+                    const float age = (cl.time - p->blood_born) * 0.001f /
+                                      max(0.1f, cl_blood_water_life->value);
+
+                    b->radius = p->radius * grow;
+                    b->flatten = max(0.02f, p->blood_flatten / grow);
+                    b->seed = p->seed + age * 5.f;
+                    b->stretch = 1.f + 0.3f * (0.5f + 0.5f * sinf(age * 7.f + p->seed));
+                    b->cross = 1.f + 0.3f * (0.5f + 0.5f * sinf(age * 9.f + p->seed * 1.7f));
+                    b->stretch_trail = 0.f;
+                    b->wobble = max(0.f, cl_blood_water_wobble->value) *
+                                (0.6f + 0.4f * min(1.f, age));
+                    b->alpha = CL_BloodWaterOpacity(t);
                 }
             }
             VectorCopy(origin, p->prev_org);
@@ -6327,6 +6624,8 @@ void CL_AddParticles(void)
     }
 
     active_particles = active;
+
+    CL_BloodMergeWaterPools();
 
     for (int i = 0; i < MAX_BLOOD_SPHERES; i++)
         if (!blood_slot_seen[i])

@@ -1233,10 +1233,16 @@ typedef struct cparticle_s {
     // the rest of the level.  Out of tries it simply stays, clipped to the edge,
     // which is still not floating.
     int      blood_edge_tries;
+
+    // BLOOD_DISSOLVE only: when it reached the water. The wobble's churn runs off
+    // this rather than off the fade, because a merge rewinds the fade (see
+    // CL_BloodMergeWaterPools) and the outline must not jump back with it.
+    float    blood_born;
 } cparticle_t;
 
 #define BLOOD_AIRBORNE  0
 #define BLOOD_STUCK     1
+#define BLOOD_DISSOLVE  2   // hit water: spreading out and fading - CL_BloodDissolve
 
 // BLOOD_RIM_SAMPLES / BLOOD_RIM_FULL / BLOOD_RIM_SCALE live in refresh.h, beside
 // blood_sphere_t - the client measures the reach and the renderer consumes it, so

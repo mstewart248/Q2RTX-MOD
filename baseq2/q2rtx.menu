@@ -678,7 +678,7 @@ begin blood_sound
         blank
         range --status "shortest gap between two LANDING sounds, in milliseconds - a droplet hitting a DRY surface. A droplet landing on blood that is already there does not make this sound at all, it makes the pooling one below, so once a floor is wet these become the rarer of the two (cl_blood_sound_gap)" \
             "landing spacing" cl_blood_sound_gap 20 500 10
-        range --status "one landing sound played in every N that the spacing above would have let through. A thinning ON TOP of the spacing rather than in front of it, so the two multiply: 8 here against 90 ms above is a landing no oftener than every 720 ms. 1 plays every landing the spacing allows (cl_blood_sound_skip)" \
+        range --status "one landing sound played in every N that the spacing above would have let through. A thinning ON TOP of the spacing rather than in front of it, so the two multiply: the default 16 here against 100 ms above is a landing no oftener than every 1.6 s. 1 plays every landing the spacing allows (cl_blood_sound_skip)" \
             "landing every Nth" cl_blood_sound_skip 1 32 1
         blank
         range --status "shortest gap between two POOLING sounds, in milliseconds - a droplet merging into blood already on the surface. THIS IS THE COMMONEST BLOOD SOUND THERE IS: once a floor is wet almost every droplet merges rather than landing clean, and a measured burst merged 668 times in ONE SECOND. If blood is drowning the gunfire, it is this and not the landing spacing. 0 plays one per droplet (cl_blood_sound_pool_gap)" \

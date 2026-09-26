@@ -263,6 +263,14 @@ typedef struct blood_sphere_s {
     // is quantized for the same reason the fade is: it feeds the geometry cache,
     // and anything that varies continuously there rebuilds the mesh every frame.
     uint32_t rim_support;
+
+    // Blood DISSOLVING INTO WATER (see CL_BloodDissolve). `alpha` multiplies
+    // pt_blood_splat_alpha, so 1 is an ordinary splat; `wobble` > 0 replaces
+    // pt_blood_wobble for this splat and skips the world-unit lobe cap, which is
+    // what lets a cloud spreading under the surface stay ragged as it grows.
+    // Ordinary splats carry 1 and 0 and generate byte-identical geometry.
+    float   alpha;
+    float   wobble;
 } blood_sphere_t;
 
 // The rim encoding, shared because the client measures it and the renderer

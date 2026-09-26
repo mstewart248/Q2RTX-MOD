@@ -1271,6 +1271,18 @@ main()
 			{
 				material_id = (material_id & ~MATERIAL_KIND_MASK) | transparency_kind;
 			}
+			// BLOOD SEEN THROUGH WATER. The water surface has already spent the
+			// split on reflection/refraction, so the one above cannot happen and
+			// the splat used to draw solid whatever its alpha - which is why blood
+			// dissolving under the surface never faded. Dither instead: this
+			// pixel goes through with probability 1 - alpha, and the denoiser
+			// resolves that into the fade. Needs a bounce left to go through on.
+			else if (is_blood(triangle.material_id)
+				&& push_constants.bounce_index < int(global_ubo.pt_reflect_refract - 1)
+				&& get_rng(RNG_RESTIR_SPATIAL_Y(push_constants.bounce_index)) >= triangle.alpha)
+			{
+				material_id = (material_id & ~MATERIAL_KIND_MASK) | transparency_kind;
+			}
 		}
 	}
 
