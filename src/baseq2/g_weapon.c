@@ -34,6 +34,13 @@ static void check_dodge(edict_t *self, vec3_t start, vec3_t dir, int speed)
     trace_t tr;
     float   eta;
 
+    // The rerelease has no fire-time check: M_CheckDodge in monster_think
+    // watches FL_DODGE projectiles all the way in instead.  A single roll here,
+    // made while the shot is still far off, almost never lands inside the
+    // 0.5s duck window, which is why soldiers never ducked or dove.
+    if (M_RereleaseGame())
+        return;
+
     // easy mode only ducks one quarter the time
     if (skill->value == 0) {
         if (random() > 0.25f)
@@ -397,6 +404,7 @@ void fire_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed
     bolt->think = G_FreeEdict;
     bolt->dmg = damage;
     bolt->classname = "bolt";
+    bolt->flags |= FL_DODGE;
     if (hyper)
         bolt->spawnflags = 1;
     gi.linkentity(bolt);
@@ -588,6 +596,7 @@ void fire_flechette(edict_t *self, vec3_t start, vec3_t dir, int damage, int spe
     flechette->dmg = damage;
     flechette->dmg_radius = (float)kick;   // carries the kick to the touch
     flechette->classname = "flechette";
+    flechette->flags |= FL_DODGE;
     gi.linkentity(flechette);
 
     if (self->client)
@@ -631,6 +640,7 @@ void fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, int spee
     bolt->think = G_FreeEdict;
     bolt->dmg = damage;
     bolt->classname = "bolt";
+    bolt->flags |= FL_DODGE;
     gi.linkentity(bolt);
 
     if (self->client)
@@ -672,6 +682,7 @@ void fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int spe
     ion->dmg = damage;
     ion->dmg_radius = 100;
     ion->classname = "ionripper";
+    ion->flags |= FL_DODGE;
     gi.linkentity(ion);
 
     if (self->client)
@@ -721,6 +732,7 @@ void fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int s
     bolt->think = G_FreeEdict;
     bolt->dmg = damage;
     bolt->classname = "bolt";
+    bolt->flags |= FL_DODGE;
     gi.linkentity(bolt);
 
     if (self->client)
@@ -810,6 +822,7 @@ void fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed,
     plasma->radius_dmg = radius_damage;
     plasma->dmg_radius = damage_radius;
     plasma->classname = "plasma";
+    plasma->flags |= FL_DODGE;
     gi.linkentity(plasma);
 
     if (self->client)
@@ -933,6 +946,7 @@ void fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int sp
     grenade->dmg = damage;
     grenade->dmg_radius = damage_radius;
     grenade->classname = "grenade";
+    grenade->flags |= FL_DODGE;
 
     gi.linkentity(grenade);
 }
@@ -969,6 +983,7 @@ void fire_grenade2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int s
     grenade->dmg = damage;
     grenade->dmg_radius = damage_radius;
     grenade->classname = "hgrenade";
+    grenade->flags |= FL_DODGE;
     if (held)
         grenade->spawnflags = 3;
     else
@@ -1059,6 +1074,7 @@ void fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed,
     rocket->dmg_radius = damage_radius;
     rocket->s.sound = gi.soundindex("weapons/rockfly.wav");
     rocket->classname = "rocket";
+    rocket->flags |= FL_DODGE;
 
     if (self->client)
         check_dodge(self, rocket->s.origin, dir, speed);
@@ -1313,6 +1329,7 @@ void fire_bfg(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, fl
     bfg->radius_dmg = damage;
     bfg->dmg_radius = damage_radius;
     bfg->classname = "bfg blast";
+    bfg->flags |= FL_DODGE;
     bfg->s.sound = gi.soundindex("weapons/bfg__l1a.wav");
 
     bfg->think = bfg_think;
@@ -1866,6 +1883,7 @@ void fire_prox(edict_t *self, vec3_t start, vec3_t aimdir, int prox_damage_multi
     prox->nextthink = level.framenum;
     prox->dmg = PROX_DAMAGE * prox_damage_multiplier;
     prox->classname = "prox_mine";
+    prox->flags |= FL_DODGE;
     prox->svflags |= SVF_DAMAGEABLE;
 
     switch (prox_damage_multiplier) {
@@ -2139,6 +2157,7 @@ void fire_heat(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed,
     heat->speed = speed;
     heat->accel = turn_fraction;
     heat->classname = "rocket";
+    heat->flags |= FL_DODGE;
 
     heat->nextthink = level.framenum + 1;
     heat->think = heat_think;

@@ -1111,6 +1111,18 @@ stalker_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gra
 		return;
 	}
 
+	/* rerelease: M_CheckDodge offers the same shot every think, so rest
+	   1-5 seconds between dodge jumps (timestamp is a framenum here) */
+	if (M_RereleaseGame())
+	{
+		if (self->timestamp > level.framenum)
+		{
+			return;
+		}
+
+		self->timestamp = level.framenum + (int)((1.0f + 4.0f * random()) * BASE_FRAMERATE);
+	}
+
 	/* this will override the foundtarget call of stalker_run */
 	stalker_dodge_jump(self);
 }

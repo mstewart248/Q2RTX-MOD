@@ -1327,6 +1327,12 @@ void gekk_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool g
 {
     float   r;
 
+    // [Paril-KEX] "this dodge is bad" - the rerelease compiles the whole body
+    // out.  M_CheckDodge calls this every think, so it has to be a no-op there
+    // or the gekk would do nothing but duck.
+    if (M_RereleaseGame())
+        return;
+
     r = random();
     if (r > 0.25f)
         return;

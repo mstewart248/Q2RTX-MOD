@@ -580,23 +580,11 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
         return;
     }
 
-    // Trip trigger.  The rerelease enters this from soldier_duck out of its
-    // attack6 run-and-gun, which this tree does not have.  It must NOT hang off
-    // soldier_dodge either: check_dodge() in g_weapon.c is only called from the
-    // projectile weapons, never from fire_lead, so hitscan fire would never
-    // trigger it and the trip would almost never be seen.  Taking pain while
-    // running fires for every weapon and is already debounced to 3 seconds by
-    // pain_debounce_framenum above.  It sits ABOVE the nightmare early-out on
-    // purpose: skill 3 skips pain ANIMATIONS, but the trip is a behaviour and
-    // should still happen there.
-
-    if (M_RereleaseGame() &&
-        !(self->monsterinfo.aiflags & AI_STAND_GROUND) &&
-        self->monsterinfo.currentmove != &soldier_move_trip &&
-        self->enemy && random() < 0.5f) {
-        self->monsterinfo.currentmove = &soldier_move_trip;
-        return;
-    }
+    // No trip here.  The rerelease only trips from soldier_duck, when a dodge
+    // catches the soldier mid attack6 run-and-gun - a dive out of the way of a
+    // shot, not a reaction to being hit.  A 50% trip on pain made soldiers
+    // fall over far more than the rerelease does; M_CheckDodge now scans for
+    // incoming projectiles every think, so the real dive gets its chances.
 
     if (skill->value == 3)
         return;     // no pain anims in nightmare

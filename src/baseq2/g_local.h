@@ -85,6 +85,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FL_TEAMMASTER           0x00004000  // rerelease - first on the team (G_FindTeams/G_FixTeams)
 #define FL_FLASHLIGHT           0x00400000  // rerelease - player flashlight is on
 #define FL_DISGUISED            0x00800000  // ROGUE - trigger_disguise; monsters do not acquire you
+#define FL_DODGE                0x02000000  // rerelease - projectile monsters try to dodge (M_CheckDodge)
 #define FL_RESPAWN              0x80000000  // used for item respawning
 
 

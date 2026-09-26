@@ -704,8 +704,71 @@ void M_MoveFrame(edict_t *self)
 }
 
 
+/*
+=================
+M_CheckDodge
+
+[Paril-KEX] active checking for projectiles to dodge.  Every think, look for an
+FL_DODGE projectile within 512 units that is in front of us and will reach us
+inside a second, and hand it to monsterinfo.dodge.  Because this repeats as
+the shot closes in, the eta eventually drops under M_MonsterDodge's 0.5s duck
+window - the old fire-time check_dodge rolled once, far out, and almost never
+got there.  Rerelease game only; the classic game keeps check_dodge.
+=================
+*/
+static void M_CheckDodge(edict_t *self)
+{
+    static edict_t *list[MAX_EDICTS];
+    vec3_t  mins, maxs, end, v;
+    trace_t tr;
+    float   speed;
+    int     i, num;
+
+    // we recently made a valid dodge, don't try again for a bit
+    if (level.framenum < self->monsterinfo.dodge_framenum)
+        return;
+
+    VectorSet(v, 512, 512, 512);
+    VectorSubtract(self->absmin, v, mins);
+    VectorAdd(self->absmax, v, maxs);
+    num = gi.BoxEdicts(mins, maxs, list, MAX_EDICTS, AREA_SOLID);
+
+    for (i = 0; i < num; i++) {
+        edict_t *ent = list[i];
+
+        // not a valid projectile
+        if (!ent->inuse || !(ent->flags & FL_DODGE))
+            continue;
+
+        // not moving
+        if (VectorLengthSquared(ent->velocity) < 16.f)
+            continue;
+
+        // projectile is behind us, we can't see it
+        if (!infront(self, ent))
+            continue;
+
+        // will it hit us within 1 second? gives us enough time to dodge
+        VectorAdd(ent->s.origin, ent->velocity, end);
+        tr = gi.trace(ent->s.origin, ent->mins, ent->maxs, end, ent, ent->clipmask);
+
+        if (tr.ent != self)
+            continue;
+
+        VectorSubtract(tr.endpos, ent->s.origin, v);
+        speed = VectorLength(ent->velocity);
+
+        self->monsterinfo.dodge(self, ent->owner, VectorLength(v) / speed, &tr,
+                                ent->movetype == MOVETYPE_BOUNCE || ent->movetype == MOVETYPE_TOSS);
+        return;
+    }
+}
+
 void monster_think(edict_t *self)
 {
+    if (M_RereleaseGame() && self->health > 0 && self->monsterinfo.dodge)
+        M_CheckDodge(self);
+
     M_MoveFrame(self);
     if (self->linkcount != self->monsterinfo.linkcount) {
         self->monsterinfo.linkcount = self->linkcount;
@@ -1274,14 +1337,24 @@ void M_MonsterDodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bo
     // You cannot duck under something that arcs down onto you, so a bouncing or
     // tossed projectile disables the crouch and leaves only the sidestep.
     bool ducker = (self->monsterinfo.duck && self->monsterinfo.unduck && !gravity);
-    bool dodger = (self->monsterinfo.sidestep != NULL);
+    // a monster told to hold its position does not strafe off it
+    bool dodger = (self->monsterinfo.sidestep != NULL && !(self->monsterinfo.aiflags & AI_STAND_GROUND));
     float height;
+
+    // this can be called after the monster has "died"
+    if (self->health < 1)
+        return;
 
     if (!ducker && !dodger)
         return;
 
-    if (!self->enemy)
-        return;
+    // a shot at an idle monster wakes it up on the shooter
+    if (!self->enemy) {
+        if (!attacker)
+            return;
+        self->enemy = attacker;
+        FoundTarget(self);
+    }
 
     // one frame of warning is not enough to react to, and 2.5s is so far off
     // that reacting now is pointless
