@@ -599,17 +599,21 @@ const char *vk_requested_device_extensions_ray_pipeline[] = {
 	VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 	VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
 	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-	VK_NVX_BINARY_IMPORT,
 	VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
-	VK_NVX_IMAGE_VIEW_HANDLE
 };
 
 const char* vk_requested_device_extensions_ray_query[] = {
 	VK_KHR_RAY_QUERY_EXTENSION_NAME,
 	VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-	VK_NVX_BINARY_IMPORT,
 	VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
+};
+
+/* Needed by NGX (DLSS, DLSS-G, DLSS 5). NVIDIA-only, so they are requested only when the
+   picked device has them - asking for them unconditionally made vkCreateDevice fail with
+   VK_ERROR_EXTENSION_NOT_PRESENT on AMD. See qvk.supports_ngx. */
+const char *vk_requested_device_extensions_ngx[] = {
+	VK_NVX_BINARY_IMPORT,
 	VK_NVX_IMAGE_VIEW_HANDLE
 };
 
@@ -2465,6 +2469,31 @@ init_vulkan(void)
 
 	qvk.physical_device = devices[picked_device];
 
+	/* Checked on the picked device only: the loop above ORs its flags across every GPU,
+	   and a mixed AMD + NVIDIA system must not request NVX extensions on the AMD one. */
+	{
+		uint32_t num_ext;
+		vkEnumerateDeviceExtensionProperties(qvk.physical_device, NULL, &num_ext, NULL);
+		VkExtensionProperties *ext_properties = alloca(sizeof(VkExtensionProperties) * num_ext);
+		vkEnumerateDeviceExtensionProperties(qvk.physical_device, NULL, &num_ext, ext_properties);
+
+		int found = 0;
+		for (int j = 0; j < LENGTH(vk_requested_device_extensions_ngx); j++)
+		{
+			for (uint32_t k = 0; k < num_ext; k++)
+			{
+				if (!strcmp(ext_properties[k].extensionName, vk_requested_device_extensions_ngx[j]))
+				{
+					found++;
+					break;
+				}
+			}
+		}
+		qvk.supports_ngx = (found == LENGTH(vk_requested_device_extensions_ngx));
+		if (!qvk.supports_ngx)
+			Com_Printf("NVX extensions not available: DLSS, DLSS-G and DLSS 5 are disabled on this GPU.\n");
+	}
+
 	{
 		VkPhysicalDeviceDriverProperties driver_properties = {
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
@@ -2810,6 +2839,7 @@ init_vulkan(void)
 
 	uint32_t max_extension_count = LENGTH(vk_requested_device_extensions_common);
 	max_extension_count += max(LENGTH(vk_requested_device_extensions_ray_pipeline), LENGTH(vk_requested_device_extensions_ray_query));
+	max_extension_count += LENGTH(vk_requested_device_extensions_ngx);
 	max_extension_count += LENGTH(vk_requested_device_extensions_debug);
 	max_extension_count += 1; /* VK_EXT_full_screen_exclusive */
 	max_extension_count += 2; /* VK_NV_low_latency2, VK_KHR_present_id */
@@ -2837,6 +2867,12 @@ init_vulkan(void)
 		device_features_vk12.pNext = &physical_device_rt_pipeline_features;
 	}
 	
+	if (qvk.supports_ngx)
+	{
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			vk_requested_device_extensions_ngx, LENGTH(vk_requested_device_extensions_ngx));
+	}
+
 	if (qvk.enable_validation)
 	{
 		append_string_list(device_extensions, &device_extension_count, max_extension_count,

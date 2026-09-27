@@ -178,6 +178,11 @@ qboolean DLSSCreated() {
 qboolean dlssRuntimeFailed = qfalse;
 
 qboolean DLSSEnabled() {
+    /* Not an NVIDIA device (no NVX extensions): NGX cannot initialise, and DLSSApply
+       treats a missing NGX as fatal, so a pt_dlss left over in a config must not reach it. */
+    if (!qvk.supports_ngx) {
+        return qfalse;
+    }
     if (dlssRuntimeFailed) {
         return qfalse;
     }

@@ -322,7 +322,7 @@ void DLSS5_InitCvars(void)
 
 qboolean DLSS5Enabled(void)
 {
-    return cvar_pt_dlss5 && cvar_pt_dlss5->integer != 0 && !nr.failed;
+    return cvar_pt_dlss5 && cvar_pt_dlss5->integer != 0 && !nr.failed && qvk.supports_ngx;
 }
 
 /* Module directory of q2rtx.exe, with a trailing backslash. */

@@ -288,6 +288,9 @@ typedef struct QVK_s {
 	   timings with. Both optional; see reflex.c. */
 	bool                        supports_low_latency;
 	bool                        supports_present_id;
+	/* VK_NVX_binary_import + VK_NVX_image_view_handle on the picked device. NGX (DLSS,
+	   DLSS-G, DLSS 5) cannot run without them, and only NVIDIA drivers expose them. */
+	bool                        supports_ngx;
 	bool                        supports_device_fault;   /* VK_EXT_device_fault */
 	bool                        supports_checkpoints;    /* VK_NV_device_diagnostic_checkpoints */
 	bool                        supports_address_binding_report; /* VK_EXT_device_address_binding_report */
