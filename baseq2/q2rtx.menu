@@ -252,10 +252,14 @@ begin video
         pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser below OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had. (pt_dlss_dldn)" \
             "DLSS Ray-Reconstruction" pt_dlss_dldn off 0 on 1
         pairs --status "generates extra frames between rendered ones. Needs DLSS on. Pick the multiplier so base framerate x multiplier is about your refresh rate - so a HEAVIER scene wants a HIGHER multiplier, not a lower one (60Hz: 2x at 30fps base, 3x at 20, 4x at 15, 6x at 10). Check the base rate with pt_dlss_fg_stats 1. With vsync ON the presented rate is capped at refresh instead, and 2x is all that helps. Turn Reflex on with this. (pt_dlss_fg)" "DLSS Frame Generation" pt_dlss_fg off 0 2x 2 3x 3 4x 4 5x 5 6x 6
-        pairs --status "neural rendering on the finished frame - the leaked DLSS 5 model (nvngx_dlssnr.dll). RTX 50 series only. Runs after tone mapping and before frame generation and the HUD. dlss5_info in the console if it will not start (pt_dlss5)" \
+        // Only when nvngx_dlssnr.dll is next to q2rtx.exe - it is not shipped. See
+        // DLSS5_InitCvars, which sets pt_dlss5_available.
+        ifeq pt_dlss5_available 1
+        pairs --status "neural rendering on the finished frame - the DLSS 5 model (nvngx_dlssnr.dll). RTX 50 series only. Runs after tone mapping and before frame generation and the HUD. dlss5_info in the console if it will not start (pt_dlss5)" \
             "DLSS 5 Neural Rendering" pt_dlss5 off 0 on 1
         ifneq pt_dlss5 0
             action "DLSS 5 settings..." pushmenu dlss5
+        endif
         endif
         endif
         pairs --status "NVIDIA Reflex. Stops the CPU queueing frames ahead of the GPU, which is where most input lag comes from. Measured here: 16ms down to 3ms without frame generation. Leave it on. Boost also holds GPU clocks up - more power, marginal gain. (pt_reflex)" "NVIDIA Reflex" pt_reflex off 0 on 1 "on + boost" 2

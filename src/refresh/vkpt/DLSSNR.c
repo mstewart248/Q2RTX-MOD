@@ -276,8 +276,21 @@ static void dlss5_info_f(void)
     }
 }
 
+static void ExeDir(wchar_t* out, size_t size);
+
+/* Whether nvngx_dlssnr.dll sits next to q2rtx.exe. The model is not something this
+   project ships, so without it DLSS 5 stays off and the menu hides its settings
+   (pt_dlss5_available, read by q2rtx.menu). Checked once at startup. */
+static qboolean dlssnrPresent;
+
 void DLSS5_InitCvars(void)
 {
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    ExeDir(dir, MAX_PATH);
+    swprintf(path, MAX_PATH, L"%lsnvngx_dlssnr.dll", dir);
+    dlssnrPresent = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+    Cvar_FullSet("pt_dlss5_available", dlssnrPresent ? "1" : "0", CVAR_ROM, FROM_CODE);
+
     cvar_pt_dlss5 = Cvar_Get("pt_dlss5", "0", CVAR_ARCHIVE);
     cvar_pt_dlss5->changed = enable_changed;
 
@@ -322,7 +335,8 @@ void DLSS5_InitCvars(void)
 
 qboolean DLSS5Enabled(void)
 {
-    return cvar_pt_dlss5 && cvar_pt_dlss5->integer != 0 && !nr.failed && qvk.supports_ngx;
+    return cvar_pt_dlss5 && cvar_pt_dlss5->integer != 0 && !nr.failed && qvk.supports_ngx
+        && dlssnrPresent;
 }
 
 /* Module directory of q2rtx.exe, with a trailing backslash. */

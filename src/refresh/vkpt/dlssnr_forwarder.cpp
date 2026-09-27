@@ -1,8 +1,8 @@
 /*
 DLSS 5 NEURAL RENDERING (DLSSNR) FORWARDER - built as nvngx.dll_dlssnr.dll
 
-nvngx_dlssnr.dll is the leaked DLSS 5 runtime (NGX feature 18). It is not in the SDK and the
-driver's NGX core does not route feature 18 to it, so it is loaded directly and its own
+nvngx_dlssnr.dll is the DLSS 5 Neural Rendering runtime (NGX feature 18). It is not in the SDK
+version this project builds against and the driver's NGX core does not route feature 18 to it, so it is loaded directly and its own
 NVSDK_NGX_VULKAN_* exports are called - the same thing OptiScaler's DLSSNR fork does.
 
 The snippet has a caller gate: it resolves the module that owns its caller's return address

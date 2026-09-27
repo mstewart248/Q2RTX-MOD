@@ -637,7 +637,7 @@ IF (WIN32)
 			if (WIN32)
 				add_definitions(-DNV_WINDOWS)
 
-				# DLSS 5 Neural Rendering forwarder. The leaked nvngx_dlssnr.dll only accepts
+				# DLSS 5 Neural Rendering forwarder. nvngx_dlssnr.dll only accepts
 				# calls from a module whose path contains "nvngx.dll", so its calls are made
 				# from this DLL - see refresh/vkpt/dlssnr_forwarder.cpp. Loaded at runtime by
 				# DLSSNR.c, so the game still starts without it.
