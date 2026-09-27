@@ -92,6 +92,7 @@ static bool vkpt_get_window_gdi_device(char *out, size_t out_size)
 
 #include "shader/vertex_buffer.h"
 #include "DLSS.h"
+#include "DLSSNR.h"
 #include "fg_present.h"
 #include "reflex.h"
 #include <vulkan/vulkan.h>
@@ -231,6 +232,8 @@ VkptInit_t vkpt_initialization[] = {
 	{ "bloom|",   vkpt_bloom_create_pipelines,         vkpt_bloom_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "mblur",    vkpt_motion_blur_initialize,         vkpt_motion_blur_destroy,             VKPT_INIT_DEFAULT,            0 },
 	{ "mblur|",   vkpt_motion_blur_create_pipelines,   vkpt_motion_blur_destroy_pipelines,   VKPT_INIT_RELOAD_SHADER,      0 },
+	{ "dlss5",    vkpt_dlss5_initialize,               vkpt_dlss5_destroy,                   VKPT_INIT_DEFAULT,            0 },
+	{ "dlss5|",   vkpt_dlss5_create_pipelines,         vkpt_dlss5_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "tonemap",  vkpt_tone_mapping_initialize,        vkpt_tone_mapping_destroy,            VKPT_INIT_DEFAULT,            0 },
 	{ "tonemap|", vkpt_tone_mapping_create_pipelines,  vkpt_tone_mapping_destroy_pipelines,  VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "fsr",      vkpt_fsr_initialize,                 vkpt_fsr_destroy,                     VKPT_INIT_DEFAULT,            0 },
@@ -383,6 +386,8 @@ static bool dlss_reset_history = true;
 // Same idea for frame generation: DLSS-G keeps its own history of the previous
 // backbuffer, so it needs telling when that history is meaningless.
 static bool dlssg_reset_history = true;
+// And for DLSS 5 Neural Rendering, which keeps temporal history of its own output.
+static bool dlss5_reset_history = true;
 
 /* Smoothed interval between RENDERED frames, in microseconds, with the presentation
    stall already subtracted - i.e. what the GPU can actually do, not the cadence the
@@ -413,6 +418,7 @@ void vkpt_dlss_request_history_reset(void)
 {
 	dlss_reset_history = true;
 	dlssg_reset_history = true;
+	dlss5_reset_history = true;
 }
 
 void vkpt_reset_accumulation()
@@ -6772,6 +6778,7 @@ rebuild_render_resources(bool new_swapchain)
 	FGPresent_Drain();
 
 	DestroyDLSSGFeature();
+	DLSS5_DestroyFeature();
 
 	vkpt_dlss_request_history_reset();
 	vkpt_destroy_all(VKPT_INIT_SWAPCHAIN_RECREATE);
@@ -7388,6 +7395,14 @@ R_EndFrame_RTX(void)
 					.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
 					.oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
 					.newLayout        = VK_IMAGE_LAYOUT_GENERAL);
+			}
+
+			// DLSS 5 Neural Rendering: on the finished, tone-mapped, HUD-less frame,
+			// before frame generation interpolates it and before the HUD is drawn.
+			// Photo mode skips it - accumulation stays the unbiased reference.
+			if (DLSS5Enabled() && !accumulation_bypasses_dlss()) {
+				DLSS5Apply(cmd_buf, dlss5_reset_history ? qtrue : qfalse);
+				dlss5_reset_history = false;
 			}
 
 
@@ -8658,6 +8673,7 @@ R_Init_RTX(bool total)
 	vkpt_motion_blur_init_cvars();
 	InitDLSSCvars();
 	InitDLSSGCvars();
+	DLSS5_InitCvars();
 
 	// Minimum NVIDIA driver version - this is a cvar in case something changes in the future,
 	// and the current test no longer works.
@@ -8766,6 +8782,7 @@ R_Shutdown_RTX(bool total)
 
 	vkpt_device_wait_idle();
 	Reflex_Shutdown();
+	DLSS5_Shutdown();
 	DLSSDeconstructor();
 
 	// Persist current DRS scale

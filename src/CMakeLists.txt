@@ -318,6 +318,7 @@ SET(SRC_VKPT
 	refresh/vkpt/conversion.c
 	refresh/vkpt/DLSS.c
 	refresh/vkpt/DLSSG.cpp
+	refresh/vkpt/DLSSNR.c
 	refresh/vkpt/fg_present.c
 	refresh/vkpt/fg_present.h
 	refresh/vkpt/reflex.c
@@ -351,6 +352,7 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/bloom_blur.comp
 	refresh/vkpt/shader/bloom_downscale.comp
 	refresh/vkpt/shader/motion_blur.comp
+	refresh/vkpt/shader/dlss5_convert.comp
 	refresh/vkpt/shader/compositing.comp
 	refresh/vkpt/shader/checkerboard_interleave.comp
 	refresh/vkpt/shader/asvgf_atrous.comp
@@ -634,6 +636,22 @@ IF (WIN32)
 			target_include_directories(client PRIVATE "$ENV{DLSS_SDK2_PATH}/include")
 			if (WIN32)
 				add_definitions(-DNV_WINDOWS)
+
+				# DLSS 5 Neural Rendering forwarder. The leaked nvngx_dlssnr.dll only accepts
+				# calls from a module whose path contains "nvngx.dll", so its calls are made
+				# from this DLL - see refresh/vkpt/dlssnr_forwarder.cpp. Loaded at runtime by
+				# DLSSNR.c, so the game still starts without it.
+				add_library(dlssnr_forwarder SHARED refresh/vkpt/dlssnr_forwarder.cpp)
+				target_include_directories(dlssnr_forwarder PRIVATE "$ENV{DLSS_SDK2_PATH}/include")
+				set_target_properties(dlssnr_forwarder PROPERTIES
+					OUTPUT_NAME "nvngx.dll_dlssnr" PREFIX "" SUFFIX ".dll"
+					RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
+					RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
+					RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
+					RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}"
+					RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}")
+				add_dependencies(client dlssnr_forwarder)
+
 				if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 					target_link_libraries(client "$ENV{DLSS_SDK2_PATH}/lib/Windows_x86_64/x64/nvsdk_ngx_s_dbg.lib")
 				else()

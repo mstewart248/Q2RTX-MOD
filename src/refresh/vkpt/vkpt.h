@@ -87,6 +87,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_BLOOM_COMPOSITE_COMP)                   \
 	SHADER_MODULE_DO(QVK_MOD_BLOOM_DOWNSCALE_COMP)                   \
 	SHADER_MODULE_DO(QVK_MOD_MOTION_BLUR_COMP)                       \
+	SHADER_MODULE_DO(QVK_MOD_DLSS5_CONVERT_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_TONE_MAPPING_HISTOGRAM_COMP)            \
 	SHADER_MODULE_DO(QVK_MOD_TONE_MAPPING_CURVE_COMP)                \
 	SHADER_MODULE_DO(QVK_MOD_TONE_MAPPING_APPLY_COMP)                \

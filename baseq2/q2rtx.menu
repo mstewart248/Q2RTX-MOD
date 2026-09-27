@@ -146,6 +146,41 @@ begin hdr
     range --status "(tm_hdr_saturation_scale)" -f "%.0f%%" "Saturation adjustment" tm_hdr_saturation_scale 0 200 5
 end
 
+/*
+DLSS 5 Neural Rendering. The model reads everything except the compare split when it is
+BUILT, so changing any of these rebuilds it after a short pause (a brief hitch, by design).
+*/
+begin dlss5
+    background #212F3CD0
+    style --compact
+    title "DLSS 5 Neural Rendering"
+    pairs --status "(pt_dlss5)" "DLSS 5" pt_dlss5 off 0 on 1
+    blank
+    pairs --status "the model's own presets - not the super resolution letters. default lets the model choose (pt_dlss5_preset)" \
+        "model preset" pt_dlss5_preset default 0 "preset 1" 1 "preset 2" 2 "preset 3" 3
+    pairs --status "the model's processing profiles (pt_dlss5_style)" \
+        "style" pt_dlss5_style standard 0 natural 1 cinematic 2
+    range --status "how strongly the model's answer replaces the frame (pt_dlss5_intensity)" \
+        -f "%.2f" "intensity" pt_dlss5_intensity 0 2 0.05
+    range --status "how much fine surface detail the model adds or reshapes (pt_dlss5_local_structure)" \
+        -f "%.2f" "local structure" pt_dlss5_local_structure 0 2 0.05
+    range --status "how much the model re-grades local contrast and tone (pt_dlss5_local_tone)" \
+        -f "%.2f" "local tone" pt_dlss5_local_tone 0 2 0.05
+    range --status "skin detail on faces and bodies. -1 leaves it to the model (pt_dlss5_skin)" \
+        -f "%.2f" "skin structure" pt_dlss5_skin -1 2 0.05
+    toggle --status "let the model mask out what it should not touch (pt_dlss5_automask)" \
+        "auto mask" pt_dlss5_automask
+    toggle --status "UI correction. There is no HUD in the frame the model sees, so off is expected (pt_dlss5_ui_correction)" \
+        "UI correction" pt_dlss5_ui_correction
+    blank
+    range --status "how much of the model's edit reaches the screen. 0 is the original frame, above 1 exaggerates what the model changed. Live, no rebuild (pt_dlss5_strength)" \
+        -f "%.2f" "edit strength" pt_dlss5_strength 0 3 0.1
+    range --status "0 keeps the original colours and takes only the model's lighting change - use it if colours drift. 1 takes the model's colour too. Live (pt_dlss5_colour)" \
+        -f "%.2f" "colour from model" pt_dlss5_colour 0 1 0.05
+    pairs --status "split screen: left half is the frame WITHOUT DLSS 5. difference: shows only what the model changed, x8 - black means untouched (pt_dlss5_compare)" \
+        "compare" pt_dlss5_compare off 0 "split screen" 1 "difference x8" 2
+end
+
 begin photomode
     background #212F3CD0
     style --compact
@@ -217,6 +252,11 @@ begin video
         pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser below OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had. (pt_dlss_dldn)" \
             "DLSS Ray-Reconstruction" pt_dlss_dldn off 0 on 1
         pairs --status "generates extra frames between rendered ones. Needs DLSS on. Pick the multiplier so base framerate x multiplier is about your refresh rate - so a HEAVIER scene wants a HIGHER multiplier, not a lower one (60Hz: 2x at 30fps base, 3x at 20, 4x at 15, 6x at 10). Check the base rate with pt_dlss_fg_stats 1. With vsync ON the presented rate is capped at refresh instead, and 2x is all that helps. Turn Reflex on with this. (pt_dlss_fg)" "DLSS Frame Generation" pt_dlss_fg off 0 2x 2 3x 3 4x 4 5x 5 6x 6
+        pairs --status "neural rendering on the finished frame - the leaked DLSS 5 model (nvngx_dlssnr.dll). RTX 50 series only. Runs after tone mapping and before frame generation and the HUD. dlss5_info in the console if it will not start (pt_dlss5)" \
+            "DLSS 5 Neural Rendering" pt_dlss5 off 0 on 1
+        ifneq pt_dlss5 0
+            action "DLSS 5 settings..." pushmenu dlss5
+        endif
         endif
         pairs --status "NVIDIA Reflex. Stops the CPU queueing frames ahead of the GPU, which is where most input lag comes from. Measured here: 16ms down to 3ms without frame generation. Leave it on. Boost also holds GPU clocks up - more power, marginal gain. (pt_reflex)" "NVIDIA Reflex" pt_reflex off 0 on 1 "on + boost" 2
         range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off. (pt_reflex_fps_max)" "Reflex frame rate cap" pt_reflex_fps_max 0 240 5

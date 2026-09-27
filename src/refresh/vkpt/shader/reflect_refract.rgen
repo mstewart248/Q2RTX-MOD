@@ -897,6 +897,30 @@ main()
 				/ vec2(get_image_size());
 			vec2 sky_motion = prev_screen_pos - curr_screen_pos;
 
+			/* A REFLECTED sky does not sit along the reflected ray as seen from the camera.
+			   The block above is right for the primary sky and for sky seen through a pane,
+			   where `direction` is (close to) the view ray through this pixel. For a
+			   reflection it projected the ray AFTER the bounce - pointing up and away - and
+			   subtracted this pixel's position: a large vector even with a still camera,
+			   converging on wherever that direction lands on screen. DLSS-RR followed it,
+			   dragging the reflected sky's history into streaks and a flat band across the
+			   water.
+
+			   Treat the reflector as a flat mirror, as the apparent-position vector below
+			   does for geometry: the sky appears along `direction` folded back across the
+			   reflector's plane. Project that one direction through both cameras. A still
+			   camera gives exactly zero; turning the camera moves the reflected sky with it;
+			   moving it does not, since the sky is at infinity. */
+			if(global_ubo.pt_dlss_sky_reflect_mv != 0 && correct_motion_vector == 1 && spec_bounce_index == 0)
+			{
+				vec3 apparent_dir = reflect(direction, geo_normal);
+				vec2 apparent_prev, apparent_curr;
+				float apparent_dist;
+				projection_view_to_screen((global_ubo.V_prev * vec4(apparent_dir, 0)).xyz, apparent_prev, apparent_dist, true);
+				projection_view_to_screen((global_ubo.V * vec4(apparent_dir, 0)).xyz, apparent_curr, apparent_dist, false);
+				sky_motion = apparent_prev - apparent_curr;
+			}
+
 			if(checkerboard_mirror_flag == 0)
 				imageStore(IMG_PT_MOTION, ipos, vec4(sky_motion, 0, 0));
 			if(!do_refraction)

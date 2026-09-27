@@ -1,0 +1,83 @@
+/*
+DLSS 5 NEURAL RENDERING - the passes around the model. See DLSSNR.c.
+
+VKPT_IMG_DLSS_OUTPUT is LINEAR display-referred light after tone mapping; the sRGB encode only
+happens later, in the _SRGB swapchain blit. The model was trained on what an SDR game buffer
+actually holds, which is sRGB-ENCODED values - OptiScaler's proxy is linear -> sRGB for the
+same reason. Handing it linear values reads to the model as a dark, oversaturated frame, and
+its global colour/tone adaptation then hunts: the red <-> washed-out blue cycling.
+
+  mode 0  ENCODE, in place on DLSS_OUTPUT: linear -> sRGB, clamped to [0,1], alpha 1.
+  mode 1  RESOLVE: the model's answer (written by NGX into IMG_MOTION_BLUR, free scratch at
+          this point in the frame) against the encoded original still in DLSS_OUTPUT, back
+          to linear into DLSS_OUTPUT.
+
+The resolve, in linear light:
+  colour    0 keeps the ORIGINAL's hue and takes only the model's luminance change (a ratio,
+            bounded to 4x so a near-black pixel cannot explode); 1 takes the model's colour
+            as well. OptiScaler separates the two for the same reason: letting the model
+            shift hue is where the colour drift shows.
+  strength  scales the edit: 0 is the original, 1 the model, above 1 exaggerates it.
+  view 2    |edit| x8 in sRGB units - black means the model left the pixel alone.
+  split     pixels left of it are the original (compare mode 1).
+*/
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+#include "utils.glsl"
+
+layout(push_constant) uniform Dlss5ConvertPushConstants {
+	ivec2 extent;
+	int   mode;
+	int   split;
+	float strength;
+	float colour;
+	int   view;
+} push;
+
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+void main()
+{
+	ivec2 ipos = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(ipos, push.extent)))
+		return;
+
+	vec4 c = imageLoad(IMG_DLSS_OUTPUT, ipos);
+
+	if (push.mode == 0)
+	{
+		imageStore(IMG_DLSS_OUTPUT, ipos, vec4(linear_to_srgb(clamp(c.rgb, vec3(0), vec3(1))), 1.0));
+		return;
+	}
+
+	vec3 orig_enc  = clamp(c.rgb, vec3(0), vec3(1));
+	vec3 model_enc = clamp(imageLoad(IMG_MOTION_BLUR, ipos).rgb, vec3(0), vec3(1));
+	vec3 o = srgb_to_linear(orig_enc);
+	vec3 m = srgb_to_linear(model_enc);
+
+	float yo = dot(o, kLuma);
+	float ym = dot(m, kLuma);
+	vec3 luma_only = o * clamp(ym / max(yo, 1e-4), 0.0, 4.0);
+	vec3 edited = mix(luma_only, m, clamp(push.colour, 0.0, 1.0));
+
+	vec3 result = max(o + (edited - o) * push.strength, vec3(0));
+
+	if (push.view == 2)
+		result = srgb_to_linear(clamp(abs(linear_to_srgb(clamp(edited, vec3(0), vec3(1))) - orig_enc) * 8.0, vec3(0), vec3(1)));
+
+	if (ipos.x < push.split)
+		result = o;
+
+	imageStore(IMG_DLSS_OUTPUT, ipos, vec4(result, c.a));
+}
