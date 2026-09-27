@@ -615,6 +615,29 @@ void boss2_pain(edict_t *self, edict_t *other, float kick, int damage)
     }
 }
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t boss2_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/boss2/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/boss2/gibs/chaingun.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss2/gibs/cpu.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss2/gibs/engine.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/boss2/gibs/rocket.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss2/gibs/spine.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/boss2/gibs/wing.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss2/gibs/larm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss2/gibs/rarm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss2/gibs/larm.md2", GIB_SKINNED | GIB_UPRIGHT, 2.0f },
+    { 1, "models/monsters/boss2/gibs/rarm.md2", GIB_SKINNED | GIB_UPRIGHT, 2.0f },
+    { 1, "models/monsters/boss2/gibs/larm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.35f },
+    { 1, "models/monsters/boss2/gibs/rarm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.35f },
+    { 1, "models/monsters/boss2/gibs/head.md2", GIB_SKINNED | GIB_METALLIC | GIB_HEAD, 1.0f },
+};
+const int boss2_num_rerelease_gibs = (int)(sizeof(boss2_rerelease_gibs) / sizeof(boss2_rerelease_gibs[0]));
+
 void boss2_dead(edict_t *self)
 {
     VectorSet(self->mins, -56, -56, 0);
@@ -756,6 +779,8 @@ void SP_monster_boss2(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/boss2/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(boss2_rerelease_gibs, boss2_num_rerelease_gibs);
     VectorSet(self->mins, -56, -56, 0);
     VectorSet(self->maxs, 56, 56, 80);
 

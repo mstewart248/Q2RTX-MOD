@@ -541,6 +541,63 @@ stalker_pain(edict_t *self, edict_t *other /* unused */, float kick, int damage)
 
 	M_SetDamageSkin(self);
 
+	/* [rerelease] id's order: nightmare only loses the pain ANIMATION, so the
+	   false death, the sound and the dodge jump all still happen there; the
+	   false death is a flat 30% (Ground Zero: 0.2 * skill, never on easy);
+	   and the pain sound plays on every debounced hit, not just big ones. */
+	if (M_RereleaseGame())
+	{
+		if (self->groundentity == NULL)
+		{
+			return;
+		}
+
+		if ((self->monsterinfo.currentmove == &stalker_move_false_death_end) ||
+			(self->monsterinfo.currentmove == &stalker_move_false_death_start))
+		{
+			return;
+		}
+
+		if (self->monsterinfo.currentmove == &stalker_move_false_death)
+		{
+			stalker_reactivate(self);
+			return;
+		}
+
+		if ((self->health > 0) && (self->health < (self->max_health / 4)) &&
+			(random() < 0.30f))
+		{
+			if (!STALKER_ON_CEILING(self) || stalker_ok_to_transition(self))
+			{
+				stalker_false_death_start(self);
+				return;
+			}
+		}
+
+		if (level.framenum < self->pain_debounce_framenum)
+		{
+			return;
+		}
+
+		self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+		gi.sound(self, CHAN_VOICE, sound_pain, 1, ATTN_NORM, 0);
+
+		if (damage > 10) /* don't react unless the damage was significant */
+		{
+			if (self->groundentity && (random() < 0.5f))
+			{
+				stalker_dodge_jump(self);
+			}
+			else if (skill->value != 3) /* no pain anims in nightmare */
+			{
+				self->monsterinfo.currentmove = &stalker_move_pain;
+			}
+		}
+
+		return;
+	}
+
 	if (skill->value == 3)
 	{
 		return; /* no pain anims in nightmare */
@@ -634,6 +691,30 @@ stalker_shoot_attack(edict_t *self)
 
 	VectorSubtract(self->enemy->s.origin, start, dir);
 
+	/* [rerelease] lead the shot 30% of the time with PredictAim, a 5 damage
+	   bolt (Ground Zero's was 15), and a normalized direction */
+	if (M_RereleaseGame())
+	{
+		if (random() < 0.3f)
+		{
+			PredictAim(self->enemy, start, 1000, true, 0, dir, end);
+		}
+		else
+		{
+			VectorCopy(self->enemy->s.origin, end);
+		}
+
+		trace = gi.trace(start, vec3_origin, vec3_origin, end, self, MASK_SHOT);
+
+		if ((trace.ent == self->enemy) || (trace.ent == world))
+		{
+			VectorNormalize(dir);
+			monster_fire_blaster2(self, start, dir, 5, 800, MZ2_STALKER_BLASTER, EF_BLASTER);
+		}
+
+		return;
+	}
+
 	if (random() < (0.20 + 0.1 * skill->value))
 	{
 		dist = VectorLength(dir);
@@ -658,17 +739,96 @@ void
 stalker_shoot_attack2(edict_t *self)
 {
 
-	if (random() < (0.4 + (0.1 * (float)skill->value)))
+	/* [rerelease] a flat 50%, not scaled by skill */
+	float chance = M_RereleaseGame() ? 0.5f : (0.4f + (0.1f * (float)skill->value));
+
+	if (random() < chance)
 	{
 		stalker_shoot_attack(self);
 	}
 }
 
+/* [rerelease] ai_charge as id's g_ai.cpp has it, for the stalker only.
+   This tree's ai_charge is the 1997 one and walks straight at the enemy
+   whatever attack_state says; the rerelease honours stalker_attack_ranged's
+   circle-strafe roll. A sliding charge scales its step by the move's
+   sidestep_scale, which stalker_move_shoot leaves at 0 - so half the time
+   the stalker plays its run frames ON THE SPOT, turning to track you while it
+   fires. That is id's behaviour, not a stuck monster. Kept local rather than
+   changing ai_charge itself, because a dozen other monsters set AS_SLIDING
+   and would all change with it. */
+static void stalker_charge(edict_t *self, float dist)
+{
+	vec3_t v;
+
+	if (!M_RereleaseGame())
+	{
+		ai_charge(self, dist);
+		return;
+	}
+
+	if (!self->enemy || !self->enemy->inuse)
+	{
+		return;
+	}
+
+	if (visible(self, self->enemy))
+	{
+		VectorMA(self->enemy->s.origin, -0.1f, self->enemy->velocity,
+				self->monsterinfo.blind_fire_target);
+	}
+
+	if (!(self->monsterinfo.aiflags & AI_MANUAL_STEERING))
+	{
+		VectorSubtract(self->enemy->s.origin, self->s.origin, v);
+		self->ideal_yaw = vectoyaw(v);
+	}
+
+	M_ChangeYaw(self);
+
+	if (dist)
+	{
+		if (self->monsterinfo.aiflags & AI_CHARGING)
+		{
+			M_MoveToGoal(self, dist);
+			return;
+		}
+
+		/* sliding: sidestep_scale 0 (see above), so no step at all */
+		if (self->monsterinfo.attack_state != AS_SLIDING)
+		{
+			M_walkmove(self, self->s.angles[YAW], dist);
+		}
+	}
+
+	/* [Paril-KEX] if our enemy is literally right next to us, give us more
+	   rotational speed so we don't get circled (range_to <= RANGE_MELEE * 2.5,
+	   a 50 unit gap between the boxes) */
+	{
+		int i;
+
+		for (i = 0; i < 3; i++)
+		{
+			if (self->absmin[i] > self->enemy->absmax[i])
+				v[i] = self->absmin[i] - self->enemy->absmax[i];
+			else if (self->enemy->absmin[i] > self->absmax[i])
+				v[i] = self->enemy->absmin[i] - self->absmax[i];
+			else
+				v[i] = 0;
+		}
+
+		if (VectorLength(v) <= 50.0f)
+		{
+			M_ChangeYaw(self);
+		}
+	}
+}
+
 mframe_t stalker_frames_shoot[] = {
-	{ai_charge, 13, NULL},
-	{ai_charge, 17, stalker_shoot_attack},
-	{ai_charge, 21, NULL},
-	{ai_charge, 18, stalker_shoot_attack2}
+	{stalker_charge, 13, NULL},
+	{stalker_charge, 17, stalker_shoot_attack},
+	{stalker_charge, 21, NULL},
+	{stalker_charge, 18, stalker_shoot_attack2}
 };
 
 mmove_t stalker_move_shoot = {
@@ -687,8 +847,11 @@ stalker_attack_ranged(edict_t *self)
 		return;
 	}
 
-	/* circle strafe stuff */
-	if (random() > (1.0 - (0.5 / (float)(skill->value))))
+	/* circle strafe stuff. [rerelease] a flat 50/50; Ground Zero divided by
+	   skill, which also made easy (skill 0) strafe every time */
+	float straight = M_RereleaseGame() ? 0.5f : (1.0f - (0.5f / (float)(skill->value)));
+
+	if (random() > straight)
 	{
 		self->monsterinfo.attack_state = AS_STRAIGHT;
 	}
@@ -1157,7 +1320,10 @@ void
 stalker_jump_wait_land(edict_t *self)
 {
 
-	if ((random() < (0.3 + (0.1 * (float)(skill->value)))) &&
+	/* [rerelease] a flat 40% chance to shoot mid-jump */
+	float chance = M_RereleaseGame() ? 0.4f : (0.3f + (0.1f * (float)(skill->value)));
+
+	if ((random() < chance) &&
 		(level.framenum >= self->monsterinfo.attack_finished))
 	{
 		self->monsterinfo.attack_finished = level.framenum + 0.3f * BASE_FRAMERATE;
@@ -1360,6 +1526,21 @@ mmove_t stalker_move_death = {
    	stalker_dead
 };
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t stalker_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/stalker/gibs/bodya.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/stalker/gibs/bodyb.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/stalker/gibs/claw.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 2, "models/monsters/stalker/gibs/leg.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 2, "models/monsters/stalker/gibs/foot.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/stalker/gibs/head.md2", GIB_SKINNED | GIB_HEAD, 1.0f },
+};
+const int stalker_num_rerelease_gibs = (int)(sizeof(stalker_rerelease_gibs) / sizeof(stalker_rerelease_gibs[0]));
+
 void
 stalker_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /* unused */,
 		int damage, vec3_t point /* unused */)
@@ -1376,6 +1557,15 @@ stalker_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /*
 	if (self->health <= self->gib_health)
 	{
 		gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+
+		/* [rerelease] id's own gib parts - see stalker_rerelease_gibs */
+		if (M_RereleaseGame())
+		{
+			self->s.skinnum /= 2;
+			ThrowGibs(self, damage, stalker_rerelease_gibs, stalker_num_rerelease_gibs);
+			self->deadflag = DEAD_DEAD;
+			return;
+		}
 
 		for (n = 0; n < 2; n++)
 		{
@@ -1430,6 +1620,8 @@ SP_monster_stalker(edict_t *self)
 	gi.modelindex("models/proj/laser2/tris.md2");
 
 	self->s.modelindex = gi.modelindex("models/monsters/stalker/tris.md2");
+	if (M_RereleaseGame())
+		PrecacheGibs(stalker_rerelease_gibs, stalker_num_rerelease_gibs);
 	VectorSet(self->mins, -28, -28, -18);
 	VectorSet(self->maxs, 28, 28, 18);
 	self->movetype = MOVETYPE_STEP;

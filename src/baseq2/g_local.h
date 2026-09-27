@@ -155,6 +155,11 @@ typedef enum {
 //gib types
 #define GIB_ORGANIC             0
 #define GIB_METALLIC            1
+// [rerelease] gib flags, OR'd onto the two types above (id's values)
+#define GIB_HEAD                4   // ThrowGibs: the monster itself becomes this gib
+#define GIB_DEBRIS              8   // explode outwards, no blood trail
+#define GIB_SKINNED             16  // keep the monster's skinnum (pain skin)
+#define GIB_UPRIGHT             32  // settle upright rather than on its side
 
 //monster ai flags
 #define AI_STAND_GROUND         0x00000001
@@ -1322,7 +1327,23 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type);
 void ThrowGibACID(edict_t *self, char *gibname, int damage, int type);
 void ThrowHeadACID(edict_t *self, char *gibname, int damage, int type);
 void ThrowClientHead(edict_t *self, int damage);
-void ThrowGib(edict_t *self, char *gibname, int damage, int type);
+edict_t *ThrowGib(edict_t *self, char *gibname, int damage, int type);
+
+// [rerelease] a monster's gib burst as data, as id's ThrowGibs takes it.
+// count 0 means 1; scale 0 means 1. The GIB_HEAD entry must come LAST, since
+// it turns the monster itself into that gib and every other gib is placed
+// from the monster's bounding box.
+typedef struct {
+    int         count;
+    const char  *gibname;
+    int         type;
+    float       scale;
+} gib_def_t;
+
+void ThrowGibs(edict_t *self, int damage, const gib_def_t *gibs, int num_gibs);
+void PrecacheGibs(const gib_def_t *gibs, int num_gibs);
+#define THROW_GIBS(self, damage, list) ThrowGibs(self, damage, list, (int)(sizeof(list) / sizeof(list[0])))
+#define PRECACHE_GIBS(list) PrecacheGibs(list, (int)(sizeof(list) / sizeof(list[0])))
 // The LUDICROUS_GIBS() set. Every call site is already inside a gate, but
 // without these declarations each one compiled implicitly - nothing was
 // checking the argument types, and MSVC warned C4013 in 17 monster files.

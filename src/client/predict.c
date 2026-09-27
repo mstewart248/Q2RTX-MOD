@@ -319,9 +319,32 @@ void CL_PredictMovement(void)
     }
 
     if (pm.s.pm_type != PM_SPECTATOR && (pm.s.pm_flags & PMF_ON_GROUND)) {
+        vec3_t      point, end;
+        trace_t     tr;
+        centity_t   *ground_ent;
+        bool        same_plane;
+
+        // [rerelease] only a change of ground plane is a step. Running up a
+        // ramp at low frame rates rises more than 8 units per frame, and
+        // smoothing each of those as a stair makes the view saw up the slope.
+        VectorScale(pm.s.origin, 0.125f, point);
+        VectorCopy(point, end);
+        end[2] -= 0.25f;
+        tr = CL_Trace(point, pm.mins, pm.maxs, end);
+        ground_ent = CL_TraceHitEntity(&tr);
+        same_plane = tr.fraction < 1.0f &&
+            VectorCompare(tr.plane.normal, cl.predicted_ground_normal) &&
+            fabsf(tr.plane.dist - cl.predicted_ground_dist) < 0.01f &&
+            ground_ent == cl.predicted_ground_ent;
+        if (tr.fraction < 1.0f) {
+            VectorCopy(tr.plane.normal, cl.predicted_ground_normal);
+            cl.predicted_ground_dist = tr.plane.dist;
+            cl.predicted_ground_ent = ground_ent;
+        }
+
         oldz = cl.predicted_origins[cl.predicted_step_frame & CMD_MASK][2];
         step = pm.s.origin[2] - oldz;
-        if (step > 63 && step < 160) {
+        if (step > 63 && step < 160 && !same_plane) {
             cl.predicted_step = step * 0.125f;
             cl.predicted_step_time = cls.realtime;
             cl.predicted_step_frame = frame + 1;    // don't double step

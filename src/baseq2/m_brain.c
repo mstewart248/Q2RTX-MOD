@@ -853,6 +853,21 @@ void brain_dead(edict_t *self) {
 
 
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t brain_rerelease_gibs[] = {
+    { 1, "models/objects/gibs/bone/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/monsters/brain/gibs/arm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/brain/gibs/boot.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/brain/gibs/pelvis.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/brain/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/brain/gibs/door.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/brain/gibs/head.md2", GIB_SKINNED | GIB_HEAD, 1.0f },
+};
+const int brain_num_rerelease_gibs = (int)(sizeof(brain_rerelease_gibs) / sizeof(brain_rerelease_gibs[0]));
+
 void brain_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point) {
     int     n;
 
@@ -864,6 +879,12 @@ void brain_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see brain_rerelease_gibs
+                ThrowGibs(self, damage, brain_rerelease_gibs, brain_num_rerelease_gibs);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 4; n++)
@@ -1014,6 +1035,8 @@ void SP_monster_brain(edict_t *self) {
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/brain/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(brain_rerelease_gibs, brain_num_rerelease_gibs);
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, 32);
 

@@ -428,6 +428,19 @@ mframe_t infantry_frames_death3 [] = {
 mmove_t infantry_move_death3 = {FRAME_death301, FRAME_death309, infantry_frames_death3, infantry_dead};
 
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t infantry_rerelease_gibs[] = {
+    { 1, "models/objects/gibs/bone/tris.md2", GIB_ORGANIC, 1.0f },
+    { 3, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/monsters/infantry/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/infantry/gibs/gun.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 2, "models/monsters/infantry/gibs/foot.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/infantry/gibs/arm.md2", GIB_SKINNED, 1.0f },
+};
+const int infantry_num_rerelease_gibs = (int)(sizeof(infantry_rerelease_gibs) / sizeof(infantry_rerelease_gibs[0]));
+
 void infantry_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -437,6 +450,18 @@ void infantry_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dama
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see infantry_rerelease_gibs
+                self->s.skinnum /= 2;
+                ThrowGibs(self, damage, infantry_rerelease_gibs, infantry_num_rerelease_gibs);
+                // the head only survives the third death animation; the
+                // other two have already lost it (see the head pop below)
+                ThrowHead(self, self->monsterinfo.currentmove != &infantry_move_death3
+                          ? "models/objects/gibs/sm_meat/tris.md2"
+                          : "models/monsters/infantry/gibs/head.md2", damage, GIB_SKINNED);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 4; n++)
@@ -574,6 +599,35 @@ void infantry_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dama
     } else {
         self->monsterinfo.currentmove = &infantry_move_death3;
         gi.sound(self, CHAN_VOICE, sound_die2, 1, ATTN_NORM, 0);
+    }
+
+    // [rerelease] "don't always pop a head gib, it gets old": one death in
+    // four on the two animations that lose the head, the head itself flies
+    // off - away from whatever killed him, lobbed up, spinning slowly.
+    if (M_RereleaseGame() && n != 2 && random() <= 0.25f) {
+        edict_t *head = ThrowGib(self, "models/monsters/infantry/gibs/head.md2", damage, GIB_ORGANIC);
+
+        if (head) {
+            vec3_t dir;
+
+            VectorCopy(self->s.angles, head->s.angles);
+            VectorCopy(self->s.origin, head->s.origin);
+            head->s.origin[2] += 32 * (self->s.scale > 0 ? self->s.scale : 1.0f);
+
+            if (inflictor && inflictor != self)
+                VectorSubtract(self->s.origin, inflictor->s.origin, dir);
+            else
+                VectorClear(dir);
+            dir[2] = 0;
+            if (VectorNormalize(dir) == 0)
+                AngleVectors(self->s.angles, dir, NULL, NULL);
+
+            VectorScale(dir, 100.0f, head->velocity);
+            head->velocity[2] = 200.0f;
+            VectorScale(head->avelocity, 0.15f, head->avelocity);
+            head->s.skinnum = 0;
+            gi.linkentity(head);
+        }
     }
 }
 
@@ -1062,6 +1116,10 @@ void SP_monster_infantry(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/infantry/tris.md2");
+    if (M_RereleaseGame()) {
+        PrecacheGibs(infantry_rerelease_gibs, infantry_num_rerelease_gibs);
+        gi.modelindex("models/monsters/infantry/gibs/head.md2");
+    }
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, 32);
 

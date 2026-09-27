@@ -1355,6 +1355,25 @@ carrier_pain(edict_t *self, edict_t *other /* unused */, float kick /* unused */
 	}
 }
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t carrier_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 3, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/carrier/gibs/base.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/carrier/gibs/chest.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/carrier/gibs/gl.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/carrier/gibs/lcg.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/carrier/gibs/lwing.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/carrier/gibs/rcg.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/carrier/gibs/rwing.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 2, "models/monsters/carrier/gibs/spawner.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/carrier/gibs/thigh.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/carrier/gibs/head.md2", GIB_SKINNED | GIB_METALLIC | GIB_HEAD, 1.0f },
+};
+const int carrier_num_rerelease_gibs = (int)(sizeof(carrier_rerelease_gibs) / sizeof(carrier_rerelease_gibs[0]));
+
 void
 carrier_dead(edict_t *self)
 {
@@ -1561,6 +1580,8 @@ SP_monster_carrier(edict_t *self)
 	self->movetype = MOVETYPE_STEP;
 	self->solid = SOLID_BBOX;
 	self->s.modelindex = gi.modelindex("models/monsters/carrier/tris.md2");
+	if (M_RereleaseGame())
+		PrecacheGibs(carrier_rerelease_gibs, carrier_num_rerelease_gibs);
 	VectorSet(self->mins, -56, -56, -44);
 	VectorSet(self->maxs, 56, 56, 44);
 

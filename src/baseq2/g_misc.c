@@ -159,12 +159,35 @@ void gib_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
     }
 }
 
+/* [rerelease] GIB_UPRIGHT: a gun, a leg or a hammer lands standing the way it
+   was modelled instead of being laid flat on its side like a chunk of meat.
+   id clamps pitch and roll to +-5 degrees on every touch of a floor. That is
+   done on each impact here too, NOT gated on groundentity: the touch runs
+   before physics sets groundentity for that impact, and a bouncing (metallic)
+   gib may hit the floor several times before it settles. The spin stops on
+   the first floor hit so it cannot tip itself over between bounces. */
+void gib_touch_upright(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    if (!plane || plane->normal[2] <= 0.7f)
+        return;
+
+    clamp(self->s.angles[0], -5.0f, 5.0f);
+    clamp(self->s.angles[2], -5.0f, 5.0f);
+    VectorClear(self->avelocity);
+
+    // one landing sound, not one per bounce
+    if (!self->count) {
+        self->count = 1;
+        gi.sound(self, CHAN_VOICE, gi.soundindex("misc/fhit3.wav"), 1, ATTN_NORM, 0);
+    }
+}
+
 void gib_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     G_FreeEdict(self);
 }
 
-void ThrowGib(edict_t *self, char *gibname, int damage, int type)
+edict_t *ThrowGib(edict_t *self, char *gibname, int damage, int type)
 {
     edict_t *gib;
     vec3_t  vd;
@@ -189,12 +212,28 @@ void ThrowGib(edict_t *self, char *gibname, int damage, int type)
 
     gi.setmodel(gib, gibname);
     gib->solid = SOLID_NOT;
-    gib->s.effects |= EF_GIB;
+    // [rerelease] debris is a piece of machinery, not flesh: no blood trail
+    if (!(type & GIB_DEBRIS))
+        gib->s.effects |= EF_GIB;
     gib->flags |= FL_NO_KNOCKBACK;
     gib->takedamage = DAMAGE_YES;
     gib->die = gib_die;
 
-    if (type == GIB_ORGANIC) {
+    // [rerelease] a monster's own gib parts carry its pain skin
+    if (type & GIB_SKINNED)
+        gib->s.skinnum = self->s.skinnum;
+    if (self->s.scale > 0 && self->s.scale != 1.0f)
+        gib->s.scale = self->s.scale;
+
+    // id starts its gibs at a random orientation; the 1997 code left them at
+    // 0 0 0, so every arm and gun left the body facing the same way
+    if (type & (GIB_SKINNED | GIB_UPRIGHT)) {
+        gib->s.angles[0] = random() * 359;
+        gib->s.angles[1] = random() * 359;
+        gib->s.angles[2] = random() * 359;
+    }
+
+    if (!(type & GIB_METALLIC)) {
         gib->movetype = ludicrous ? MOVETYPE_EXPLODE : MOVETYPE_TOSS;
         gib->touch = gib_touch;
         vscale = ludicrous ? 1.0f : 0.5f;
@@ -203,15 +242,28 @@ void ThrowGib(edict_t *self, char *gibname, int damage, int type)
         vscale = 1.0f;
     }
 
+    if (type & GIB_UPRIGHT)
+        gib->touch = gib_touch_upright;
+
     VelocityForDamage(damage, vd);
-    VectorMA(self->velocity, vscale, vd, gib->velocity);
+
+    if (type & GIB_DEBRIS) {
+        // explode outwards with the damage, rather than riding the body's velocity
+        vd[0] = 100 * crandom();
+        vd[1] = 100 * crandom();
+        vd[2] = 100 + 100 * crandom();
+        VectorMA(self->velocity, damage, vd, gib->velocity);
+    } else {
+        VectorMA(self->velocity, vscale, vd, gib->velocity);
+    }
 
     if (ludicrous) {
         gib->avelocity[0] = random() * 300;
         gib->avelocity[1] = random() * 300;
         gib->avelocity[2] = random() * 600;
     } else {
-        ClipGibVelocity(gib);
+        if (!(type & GIB_DEBRIS))
+            ClipGibVelocity(gib);
         gib->avelocity[0] = random() * 600;
         gib->avelocity[1] = random() * 600;
         gib->avelocity[2] = random() * 600;
@@ -224,6 +276,47 @@ void ThrowGib(edict_t *self, char *gibname, int damage, int type)
     }
 
     gi.linkentity(gib);
+    return gib;
+}
+
+/*
+=================
+ThrowGibs / PrecacheGibs
+
+[rerelease] id's ThrowGibs, as a table walk. Every entry is thrown `count`
+times; the GIB_HEAD entry turns the monster itself into that gib (ThrowHead),
+so it must be the last one in the list.
+=================
+*/
+void ThrowGibs(edict_t *self, int damage, const gib_def_t *gibs, int num_gibs)
+{
+    int i, n, count;
+
+    for (i = 0; i < num_gibs; i++) {
+        count = gibs[i].count > 0 ? gibs[i].count : 1;
+
+        for (n = 0; n < count; n++) {
+            if (gibs[i].type & GIB_HEAD) {
+                ThrowHead(self, (char *)gibs[i].gibname, damage, gibs[i].type);
+            } else {
+                edict_t *gib = ThrowGib(self, (char *)gibs[i].gibname, damage, gibs[i].type);
+
+                // a per-entry size, e.g. the Hornet's three sizes of arm
+                if (gib && gibs[i].scale > 0 && gibs[i].scale != 1.0f) {
+                    gib->s.scale = gibs[i].scale * (self->s.scale > 0 ? self->s.scale : 1.0f);
+                    gi.linkentity(gib);
+                }
+            }
+        }
+    }
+}
+
+void PrecacheGibs(const gib_def_t *gibs, int num_gibs)
+{
+    int i;
+
+    for (i = 0; i < num_gibs; i++)
+        gi.modelindex((char *)gibs[i].gibname);
 }
 
 
@@ -408,7 +501,7 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type)
         gib->takedamage = DAMAGE_YES;
         gib->die = gib_die;
 
-        if (type == GIB_ORGANIC) {
+        if (!(type & GIB_METALLIC)) {
             gib->movetype = MOVETYPE_TOSS;
             gib->touch = gib_touch;
             vscale = 1.0f;
@@ -426,7 +519,9 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type)
         gib->avelocity[2] = random() * 600;
     }
 
-    self->s.skinnum = 0;
+    // [rerelease] a monster's own head gib keeps its pain skin
+    if (!(type & GIB_SKINNED) || ludicrous)
+        self->s.skinnum = 0;
     self->s.frame = 0;
     VectorClear(self->mins);
     VectorClear(self->maxs);
@@ -442,7 +537,7 @@ void ThrowHead(edict_t *self, char *gibname, int damage, int type)
     self->takedamage = DAMAGE_YES;
     self->die = gib_die;
 
-    if (type == GIB_ORGANIC) {
+    if (!(type & GIB_METALLIC)) {
         self->movetype = MOVETYPE_TOSS;
         self->touch = gib_touch;
         vscale = 0.5f;

@@ -2269,6 +2269,20 @@ mframe_t soldier_frames_death6 [] = {
 };
 mmove_t soldier_move_death6 = {FRAME_death601, FRAME_death610, soldier_frames_death6, soldier_dead};
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t soldier_rerelease_gibs[] = {
+    { 3, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/objects/gibs/bone2/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/objects/gibs/bone/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/monsters/soldier/gibs/arm.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/soldier/gibs/gun.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/soldier/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/soldier/gibs/head.md2", GIB_HEAD | GIB_SKINNED, 1.0f },
+};
+const int soldier_num_rerelease_gibs = (int)(sizeof(soldier_rerelease_gibs) / sizeof(soldier_rerelease_gibs[0]));
+
 void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -2283,6 +2297,12 @@ void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see soldier_rerelease_gibs
+                ThrowGibs(self, damage, soldier_rerelease_gibs, soldier_num_rerelease_gibs);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 3; n++)
                 ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
             ThrowGib(self, "models/objects/gibs/chest/tris.md2", damage, GIB_ORGANIC);
@@ -2444,6 +2464,8 @@ void SP_monster_soldier_x(edict_t *self)
 {
 
     self->s.modelindex = gi.modelindex("models/monsters/soldier/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(soldier_rerelease_gibs, soldier_num_rerelease_gibs);
     self->monsterinfo.scale = MODEL_SCALE;
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, 32);

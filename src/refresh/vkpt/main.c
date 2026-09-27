@@ -122,6 +122,7 @@ cvar_t* cvar_pt_bsp_radiance_scale = NULL;
 cvar_t *cvar_pt_bsp_sky_lights = NULL;
 cvar_t *cvar_pt_accumulation_rendering = NULL;
 cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
+cvar_t *cvar_pt_accumulation_stats = NULL;
 cvar_t *cvar_pt_accumulation_bypass_dlss = NULL;
 cvar_t *cvar_pt_projection = NULL;
 cvar_t *cvar_pt_dof = NULL;
@@ -4555,6 +4556,81 @@ static void update_photo_mode_aperture(bool active)
 	}
 }
 
+/*
+=================
+draw_accumulation_stats
+
+pt_accumulation_stats 1: a panel in the top left corner while photo mode
+accumulates, showing how many frames have gone into the image, how long it
+has been running, and how long it took to reach the target. Unlike the
+progress text it never fades, in either pt_accumulation_rendering mode, so it
+has to be switched off before the screenshot.
+
+(frames) is the count past the warm-up frames, so it starts at 0 and matches
+the frames the blend has actually taken. num_accumulated_frames resets
+whenever the image restarts (view moved, a setting changed), and the clock
+restarts with it.
+=================
+*/
+static void draw_accumulation_stats(int frames, int target)
+{
+	static unsigned start_ms;
+	static unsigned target_reached_ms;
+	static int last_frames = -1;
+	const unsigned now = Sys_Milliseconds();
+
+	frames = max(0, frames);
+
+	// a restart - or the very first frame - resets the clock
+	if (frames < last_frames || last_frames < 0 || num_accumulated_frames <= 1) {
+		start_ms = now;
+		target_reached_ms = 0;
+	}
+	last_frames = frames;
+
+	if (!target_reached_ms && frames >= target)
+		target_reached_ms = now;
+
+	if (!cvar_pt_accumulation_stats->integer)
+		return;
+
+	const float elapsed = (now - start_ms) * 0.001f;
+	char text[MAX_QPATH];
+	int x = 5, y = 5;
+
+	R_SetScale(0.5f);
+	R_SetAlphaScale(1.f);
+
+	draw_shadowed_string(x, y, UI_LEFT, MAX_QPATH, "Accumulation");
+	y += 10;
+
+	Q_snprintf(text, sizeof(text), "Frames:  %d / %d (%d%%)", frames, target,
+	           (int)(min(1.f, frames / (float)target) * 100.f));
+	draw_shadowed_string(x, y, UI_LEFT, MAX_QPATH, text);
+	y += 10;
+
+	Q_snprintf(text, sizeof(text), "Elapsed: %d:%04.1f", (int)(elapsed / 60.f), fmodf(elapsed, 60.f));
+	draw_shadowed_string(x, y, UI_LEFT, MAX_QPATH, text);
+	y += 10;
+
+	Q_snprintf(text, sizeof(text), "Rate:    %.1f frames/s", elapsed > 0.f ? frames / elapsed : 0.f);
+	draw_shadowed_string(x, y, UI_LEFT, MAX_QPATH, text);
+	y += 10;
+
+	if (target_reached_ms) {
+		const float t = (target_reached_ms - start_ms) * 0.001f;
+		Q_snprintf(text, sizeof(text), "Target reached in %d:%04.1f", (int)(t / 60.f), fmodf(t, 60.f));
+	} else if (frames > 0) {
+		const float remaining = (target - frames) * (elapsed / frames);
+		Q_snprintf(text, sizeof(text), "Remaining: ~%d:%04.1f", (int)(remaining / 60.f), fmodf(remaining, 60.f));
+	} else {
+		Q_strlcpy(text, "Warming up...", sizeof(text));
+	}
+	draw_shadowed_string(x, y, UI_LEFT, MAX_QPATH, text);
+
+	R_SetScale(1.f);
+}
+
 static void
 evaluate_reference_mode(reference_mode_t* ref_mode)
 {
@@ -4618,6 +4694,8 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 			SCR_SetHudAlpha(0.f);
 			break;
 		}
+
+		draw_accumulation_stats(num_accumulated_frames - num_warmup_frames, num_frames_to_accumulate);
 	}
 	else
 	{
@@ -8302,6 +8380,11 @@ R_Init_RTX(bool total)
 
 	// number of frames to accumulate with linear weights in accumulation rendering modes
 	cvar_pt_accumulation_rendering_framenum = Cvar_Get("pt_accumulation_rendering_framenum", "500", 0);
+
+	// 1 -> photo mode shows a stats panel (frames accumulated, elapsed time,
+	// time to reach pt_accumulation_rendering_framenum) that does NOT fade out
+	// with the progress text. Toggle it off before taking the shot.
+	cvar_pt_accumulation_stats = Cvar_Get("pt_accumulation_stats", "0", CVAR_ARCHIVE);
 
 	// 1 -> photo mode skips DLSS and shows the accumulated frame as traced (default);
 	// 0 -> photo mode keeps running DLSS, as it used to. See accumulation_bypasses_dlss().

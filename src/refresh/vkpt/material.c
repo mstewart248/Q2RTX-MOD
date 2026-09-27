@@ -1061,11 +1061,15 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 	// If there is no normals/metalness image, assume that the material is a
 	// basic diffuse one - unless the definition asked for these itself, in
 	// which case zeroing them throws away the only thing it said.
+	//
+	// A dedicated _metallic / _rough map counts as asking: the shader reads
+	// metallic = sample * metalness_factor, so zeroing the factor here threw a
+	// metallic map away whenever the texture had no normal map beside it.
 	if (!mat->image_normals)
 	{
-		if (!MAT_SPECIFIED(mat, MAT_SPECULAR_FACTOR))
+		if (!MAT_SPECIFIED(mat, MAT_SPECULAR_FACTOR) && !mat->image_roughness && !mat->image_metallic)
 			mat->specular_factor = 0.f;
-		if (!MAT_SPECIFIED(mat, MAT_METALNESS_FACTOR))
+		if (!MAT_SPECIFIED(mat, MAT_METALNESS_FACTOR) && !mat->image_metallic)
 			mat->metalness_factor = 0.f;
 	}
 }

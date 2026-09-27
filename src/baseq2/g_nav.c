@@ -908,10 +908,12 @@ bool Nav_MonsterCanPath(edict_t *self)
     if (!Nav_Loaded())
         return false;
 
-    // an authored hint_path network beats the navmesh wherever one exists
-    if (hint_paths_present)
-        return false;
-
+    // A monster actually walking a hint_path chain keeps to it. A map merely
+    // HAVING hint_paths is not a reason to switch the mesh off: the rerelease
+    // has no such gate, and with it every Ground Zero map (they all carry
+    // hint_paths, and all ship a .nav) lost SV_NewChaseDir's stuck fallback -
+    // a stalker below a ledge ran into the wall under the player forever
+    // instead of pathing round to the ramp.
     if (self->monsterinfo.aiflags & AI_HINT_PATH)
         return false;
 

@@ -705,6 +705,20 @@ mframe_t guncmdr_frames_death5[] = {
 };
 mmove_t guncmdr_move_death5 = { FRAME_c_death501, FRAME_c_death528, guncmdr_frames_death5, guncmdr_dead };
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t guncmdr_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/bone/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/objects/gibs/gear/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/monsters/gunner/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/gunner/gibs/garm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/gunner/gibs/gun.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/gunner/gibs/foot.md2", GIB_SKINNED, 1.0f },
+};
+const int guncmdr_num_rerelease_gibs = (int)(sizeof(guncmdr_rerelease_gibs) / sizeof(guncmdr_rerelease_gibs[0]));
+
 void guncmdr_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     vec3_t  forward, dif;
@@ -718,9 +732,19 @@ void guncmdr_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
         // which is what the gib models are skinned for
         self->s.skinnum /= 2;
 
-        // The rerelease throws per-monster skinned gibs (chest/garm/gun/foot).
-        // Those models are not shipped here, so this uses the generic set the
-        // rest of this tree's monsters use - same shape, stock assets.
+        // [rerelease] id's own gib parts - see guncmdr_rerelease_gibs. The head
+        // only survives death 5; every other death has already lost it.
+        if (M_RereleaseGame()) {
+            ThrowGibs(self, damage, guncmdr_rerelease_gibs, guncmdr_num_rerelease_gibs);
+            ThrowHead(self, self->monsterinfo.currentmove != &guncmdr_move_death5
+                      ? "models/objects/gibs/sm_meat/tris.md2"
+                      : "models/monsters/gunner/gibs/head.md2", damage, GIB_SKINNED);
+            self->deadflag = DEAD_DEAD;
+            return;
+        }
+
+        // The classic game has no per-monster gib models, so it throws the
+        // generic set the rest of this tree's monsters use.
         for (n = 0; n < 2; n++)
             ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
         for (n = 0; n < 4; n++)

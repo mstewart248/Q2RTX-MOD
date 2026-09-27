@@ -524,6 +524,23 @@ void jorg_attack(edict_t *self)
     }
 }
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t boss31_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/boss3/jorg/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/boss3/jorg/gibs/foot.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/boss3/jorg/gibs/gun.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 2, "models/monsters/boss3/jorg/gibs/thigh.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss3/jorg/gibs/spine.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 4, "models/monsters/boss3/jorg/gibs/tube.md2", GIB_SKINNED, 1.0f },
+    { 6, "models/monsters/boss3/jorg/gibs/spike.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/boss3/jorg/gibs/head.md2", GIB_SKINNED | GIB_METALLIC | GIB_HEAD, 1.0f },
+};
+const int boss31_num_rerelease_gibs = (int)(sizeof(boss31_rerelease_gibs) / sizeof(boss31_rerelease_gibs[0]));
+
 void jorg_dead(edict_t *self)
 {
 #if 0
@@ -672,6 +689,8 @@ void SP_monster_jorg(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/boss3/rider/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(boss31_rerelease_gibs, boss31_num_rerelease_gibs);
     self->s.modelindex2 = gi.modelindex("models/monsters/boss3/jorg/tris.md2");
     VectorSet(self->mins, -80, -80, 0);
     VectorSet(self->maxs, 80, 80, 140);

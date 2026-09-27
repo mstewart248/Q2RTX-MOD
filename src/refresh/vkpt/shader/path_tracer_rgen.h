@@ -1517,7 +1517,17 @@ get_material(
 	}
 	else
 	{
-		// no normal map, so the block above did not run
+		// no normal map, so the block above did not run.
+		//
+		// A metallic map must not need one. Legacy roughness lives in the base
+		// alpha and was only ever read in the block above, so a metal map with
+		// no normal map (and no _rough map) rendered at roughness 1 - a fully
+		// rough metal reads as dull paint, and the map looked like it did
+		// nothing until a normal map was added. Surfaces with neither map keep
+		// the old pinned roughness of 1.
+		if (have_metallic_tex && !have_roughness_tex)
+			roughness = image1.a;
+
 		if (minfo.roughness_override >= 0)
 			roughness = max(roughness, minfo.roughness_override);
 

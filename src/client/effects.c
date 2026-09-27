@@ -429,10 +429,15 @@ void CL_MuzzleFlash(void)
 	// came down to 0.15 (hue ~25 deg, red-orange). That cuts luminance from 0.47
 	// to 0.32, so the intensity goes up ~1.45x to hold the brightness that was
 	// signed off the night before. Matt's request 2026-09-25.
+	//
+	// Still read as too orange: green/red went from 0.15 to 0.06 (sRGB hue ~25
+	// to ~16 deg, more red than orange). Red is already 1, so it goes to 1.25
+	// instead, which holds luminance at 0.32 and the brightness where it was.
+	// Matt's request 2026-09-26.
 	case MZ_PODLIGHT:
 		VectorCopy(pl->current.origin, dl->origin);
 		dl->origin[2] += 16;
-		VectorSet(dl->color, 1.0f, 0.15f, 0.02f);            // emergency red-orange (was 1, 0.35, 0.05)
+		VectorSet(dl->color, 1.25f, 0.075f, 0.02f);          // emergency red-orange (was 1, 0.15, 0.02; before that 1, 0.35, 0.05)
 		dl->radius = 76 + (Q_rand() & 31);                    // 76 .. 107 (was 48 .. 79, originally 192 .. 255)
 		// Shorter than the 100ms think interval so each pulse has a real
 		// off-phase, and jittered so the strobe never settles into a rhythm.

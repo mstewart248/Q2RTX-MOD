@@ -655,11 +655,39 @@ void flyer_pain(edict_t *self, edict_t *other, float kick, int damage)
 }
 
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t flyer_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/sm_metal/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/monsters/flyer/gibs/base.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/flyer/gibs/gun.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/flyer/gibs/wing.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/flyer/gibs/head.md2", GIB_SKINNED | GIB_HEAD, 1.0f },
+};
+const int flyer_num_rerelease_gibs = (int)(sizeof(flyer_rerelease_gibs) / sizeof(flyer_rerelease_gibs[0]));
+
 void flyer_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
 	int     n;
 
     gi.sound(self, CHAN_VOICE, sound_die, 1, ATTN_NORM, 0);
+
+    // [rerelease] id blows the flyer apart into its own parts, and the
+    // body itself becomes the last of them, instead of vanishing into a
+    // plain explosion - see flyer_rerelease_gibs
+    if (M_RereleaseGame() && !LUDICROUS_GIBS()) {
+        gi.WriteByte(svc_temp_entity);
+        gi.WriteByte(TE_EXPLOSION1);
+        gi.WritePosition(self->s.origin);
+        gi.multicast(self->s.origin, MULTICAST_PHS);
+
+        self->s.skinnum /= 2;
+        ThrowGibs(self, 55, flyer_rerelease_gibs, flyer_num_rerelease_gibs);
+        self->deadflag = DEAD_DEAD;
+        return;
+    }
 
     // Stock Quake II throws no gibs here at all - the flyer just explodes.
     if (LUDICROUS_GIBS()) {
@@ -710,6 +738,8 @@ void SP_monster_flyer(edict_t *self)
     gi.soundindex("flyer/flyatck3.wav");
 
     self->s.modelindex = gi.modelindex("models/monsters/flyer/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(flyer_rerelease_gibs, flyer_num_rerelease_gibs);
     // [rerelease] id's own comment: "PMM - shortened to 16 from 32".  Our tree already gave this shorter box to the kamikaze variant only; the rerelease gives it to every flyer
     if (M_RereleaseGame()) {
         VectorSet(self->mins, -16, -16, -24);

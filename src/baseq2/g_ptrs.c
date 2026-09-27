@@ -676,6 +676,7 @@ extern void gekk_walk(void);
 extern void gib_die(void);
 extern void gib_think(void);
 extern void gib_touch(void);
+extern void gib_touch_upright(void);
 extern void gladiator_attack(void);
 extern void gladiator_blocked(void);
 extern void gladiator_die(void);
@@ -2211,5 +2212,7 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_sidestep, medic_sidestep },
 { P_monsterinfo_sidestep, soldier_sidestep },
 { P_monsterinfo_physics_change, stalker_physics_change },
+// appended, not sorted in: save_ptrs[] is indexed positionally (see SAVE_VERSION in g_save.c)
+{ P_touch, gib_touch_upright },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

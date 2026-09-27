@@ -633,6 +633,23 @@ void supertank_attack(edict_t *self)
 // death
 //
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t supertank_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/boss1/gibs/cgun.md2", GIB_SKINNED | GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/boss1/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/boss1/gibs/core.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/boss1/gibs/ltread.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss1/gibs/rgun.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss1/gibs/rtread.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss1/gibs/tube.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/boss1/gibs/head.md2", GIB_SKINNED | GIB_METALLIC | GIB_HEAD, 1.0f },
+};
+const int supertank_num_rerelease_gibs = (int)(sizeof(supertank_rerelease_gibs) / sizeof(supertank_rerelease_gibs[0]));
+
 void supertank_dead(edict_t *self)
 {
     VectorSet(self->mins, -60, -60, 0);
@@ -644,6 +661,8 @@ void supertank_dead(edict_t *self)
 }
 
 
+extern const gib_def_t boss2_rerelease_gibs[], boss31_rerelease_gibs[], carrier_rerelease_gibs[];
+extern const int boss2_num_rerelease_gibs, boss31_num_rerelease_gibs, carrier_num_rerelease_gibs;
 void BossExplode(edict_t *self)
 {
     vec3_t  org;
@@ -693,6 +712,43 @@ void BossExplode(edict_t *self)
         break;
     case 8:
         self->s.sound = 0;
+
+        // [rerelease] each boss comes apart into its own parts - its gun,
+        // treads, wings, head - rather than the generic meat and gear.
+        // id throws these from each boss's own death function; here the
+        // explosion sequence owns the boss's think, so it is done from here.
+        if (M_RereleaseGame() && !LUDICROUS_GIBS()) {
+            const gib_def_t *list = NULL;
+            int num = 0;
+
+            if (!Q_stricmp(self->classname, "monster_boss2")) {
+                list = boss2_rerelease_gibs;
+                num = boss2_num_rerelease_gibs;
+            } else if (!Q_stricmp(self->classname, "monster_jorg")) {
+                list = boss31_rerelease_gibs;
+                num = boss31_num_rerelease_gibs;
+            } else if (!Q_stricmp(self->classname, "monster_supertank")) {
+                list = supertank_rerelease_gibs;
+                num = supertank_num_rerelease_gibs;
+            } else if (!Q_stricmp(self->classname, "monster_carrier")) {
+                list = carrier_rerelease_gibs;
+                num = carrier_num_rerelease_gibs;
+            }
+
+            if (list) {
+                gi.WriteByte(svc_temp_entity);
+                gi.WriteByte(TE_EXPLOSION1_BIG);
+                gi.WritePosition(self->s.origin);
+                gi.multicast(self->s.origin, MULTICAST_PHS);
+
+                // the boss may be flying (hornet, carrier); its parts fall
+                VectorSet(self->gravityVector, 0, 0, -1);
+                self->s.skinnum /= 2;
+                ThrowGibs(self, 500, list, num);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
+        }
         if (!LUDICROUS_GIBS()) {
             for (n = 0; n < 4; n++)
                 ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", 500, GIB_ORGANIC);
@@ -779,6 +835,8 @@ void SP_monster_supertank(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/boss1/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(supertank_rerelease_gibs, supertank_num_rerelease_gibs);
     VectorSet(self->mins, -64, -64, 0);
     VectorSet(self->maxs, 64, 64, 112);
 

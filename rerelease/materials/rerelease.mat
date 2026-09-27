@@ -86,6 +86,12 @@ models/monsters/soldier/md5/skin_ss:
 models/monsters/float/md5/skin:
 	specular_factor 10.0
 	
+models/monsters/stalker/md5/skin:
+	specular_factor 1.0
+	
+models/monsters/stalker/md5/pain:
+	specular_factor 1.0
+	
 
 # e2u3/baselt_red is a BSP surface light (SURF_LIGHT + radiance). Any entry here turns
 # off the synthesized emissive (see the note on the commented stub in the generated block),
@@ -187,6 +193,10 @@ models/items/spawngro3/skin:
 	texture_base materialDev/models/items/spawngro2/skin.tga
 	texture_normals materialDev/models/items/spawngro2/skin_n.tga
 	metalness_factor 0
+
+models/monsters/arachnid/skin:
+	texture_base materialDev/models/monsters/arachnid/skin.tga
+	texture_metallic materialDev/models/monsters/arachnid/skin_metallic.png
 
 models/monsters/carrier/pain2:
 	texture_base materialDev/models/monsters/carrier/pain2.tga

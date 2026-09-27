@@ -403,6 +403,20 @@ mframe_t gladiator_frames_death [] = {
 };
 mmove_t gladiator_move_death = {FRAME_death1, FRAME_death22, gladiator_frames_death, gladiator_dead};
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t gladiator_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/bone/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/monsters/gladiatr/gibs/thigh.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/gladiatr/gibs/larm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/gladiatr/gibs/rarm.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/gladiatr/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/gladiatr/gibs/head.md2", GIB_SKINNED | GIB_HEAD, 1.0f },
+};
+const int gladiator_num_rerelease_gibs = (int)(sizeof(gladiator_rerelease_gibs) / sizeof(gladiator_rerelease_gibs[0]));
+
 void gladiator_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -415,6 +429,13 @@ void gladiator_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dam
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see gladiator_rerelease_gibs
+                self->s.skinnum /= 2;
+                ThrowGibs(self, damage, gladiator_rerelease_gibs, gladiator_num_rerelease_gibs);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 4; n++)
@@ -595,6 +616,8 @@ void SP_monster_gladiator(edict_t *self)
     }
 
     self->gib_health = -175;
+    if (M_RereleaseGame())
+        PrecacheGibs(gladiator_rerelease_gibs, gladiator_num_rerelease_gibs);
 
     if (self->style == 1) {
         // monster_gladb. Health and power armour follow the rerelease, which is

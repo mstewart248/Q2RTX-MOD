@@ -694,6 +694,19 @@ mframe_t mutant_frames_death2 [] = {
 };
 mmove_t mutant_move_death2 = {FRAME_death201, FRAME_death210, mutant_frames_death2, mutant_dead};
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t mutant_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/bone/tris.md2", GIB_ORGANIC, 1.0f },
+    { 4, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/monsters/mutant/gibs/hand.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 2, "models/monsters/mutant/gibs/foot.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/mutant/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/mutant/gibs/head.md2", GIB_SKINNED | GIB_HEAD, 1.0f },
+};
+const int mutant_num_rerelease_gibs = (int)(sizeof(mutant_rerelease_gibs) / sizeof(mutant_rerelease_gibs[0]));
+
 void mutant_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -702,6 +715,13 @@ void mutant_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see mutant_rerelease_gibs
+                self->s.skinnum /= 2;
+                ThrowGibs(self, damage, mutant_rerelease_gibs, mutant_num_rerelease_gibs);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 4; n++)
@@ -943,6 +963,8 @@ void SP_monster_mutant(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/mutant/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(mutant_rerelease_gibs, mutant_num_rerelease_gibs);
     // [rerelease] id shrank the mutant a lot: 36 units wide and 54 tall,
     // against the classic 64 wide and 72 tall.  This is why ours snags on a
     // half-open door where the rerelease's runs straight through - the classic

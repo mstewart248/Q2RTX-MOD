@@ -577,6 +577,20 @@ mframe_t berserk_frames_death2 [] = {
 mmove_t berserk_move_death2 = {FRAME_deathc1, FRAME_deathc8, berserk_frames_death2, berserk_dead};
 
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t berserk_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/bone/tris.md2", GIB_ORGANIC, 1.0f },
+    { 3, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/objects/gibs/gear/tris.md2", GIB_ORGANIC, 1.0f },
+    { 1, "models/monsters/berserk/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/berserk/gibs/hammer.md2", GIB_SKINNED | GIB_UPRIGHT, 1.0f },
+    { 1, "models/monsters/berserk/gibs/thigh.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/berserk/gibs/head.md2", GIB_HEAD | GIB_SKINNED, 1.0f },
+};
+const int berserk_num_rerelease_gibs = (int)(sizeof(berserk_rerelease_gibs) / sizeof(berserk_rerelease_gibs[0]));
+
 void berserk_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -585,6 +599,13 @@ void berserk_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see berserk_rerelease_gibs
+                self->s.skinnum = 0;
+                ThrowGibs(self, damage, berserk_rerelease_gibs, berserk_num_rerelease_gibs);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 4; n++)
@@ -1257,6 +1278,8 @@ void SP_monster_berserk(edict_t *self)
     sound_sight = gi.soundindex("berserk/sight.wav");
 
     self->s.modelindex = gi.modelindex("models/monsters/berserk/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(berserk_rerelease_gibs, berserk_num_rerelease_gibs);
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, 32);
     self->movetype = MOVETYPE_STEP;

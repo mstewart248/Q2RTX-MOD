@@ -644,6 +644,19 @@ void hover_dead(edict_t *self)
     gi.linkentity(self);
 }
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t hover_rerelease_gibs[] = {
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 2, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/hover/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 2, "models/monsters/hover/gibs/ring.md2", GIB_SKINNED | GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/hover/gibs/foot.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/hover/gibs/head.md2", GIB_SKINNED | GIB_HEAD, 1.0f },
+};
+const int hover_num_rerelease_gibs = (int)(sizeof(hover_rerelease_gibs) / sizeof(hover_rerelease_gibs[0]));
+
 void hover_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -653,6 +666,13 @@ void hover_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see hover_rerelease_gibs
+                self->s.skinnum /= 2;
+                ThrowGibs(self, 150, hover_rerelease_gibs, hover_num_rerelease_gibs);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 2; n++)
@@ -834,6 +854,8 @@ void SP_monster_hover(edict_t *self)
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
     self->s.modelindex = gi.modelindex("models/monsters/hover/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(hover_rerelease_gibs, hover_num_rerelease_gibs);
     VectorSet(self->mins, -24, -24, -24);
     VectorSet(self->maxs, 24, 24, 32);
 

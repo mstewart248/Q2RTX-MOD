@@ -844,6 +844,20 @@ mframe_t tank_frames_death1 [] = {
 };
 mmove_t tank_move_death = {FRAME_death101, FRAME_death132, tank_frames_death1, tank_dead};
 
+/* [rerelease] id's gib list for this monster (ThrowGibs in the rerelease
+   source). Thrown in the rerelease game only; the head entry, if any, is
+   last because it turns the monster itself into that gib. */
+const gib_def_t tank_rerelease_gibs[] = {
+    { 1, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 3, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/objects/gibs/gear/tris.md2", GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/tank/gibs/foot.md2", GIB_SKINNED | GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/tank/gibs/thigh.md2", GIB_SKINNED | GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/tank/gibs/chest.md2", GIB_SKINNED, 1.0f },
+    { 1, "models/monsters/tank/gibs/head.md2", GIB_HEAD | GIB_SKINNED, 1.0f },
+};
+const int tank_num_rerelease_gibs = (int)(sizeof(tank_rerelease_gibs) / sizeof(tank_rerelease_gibs[0]));
+
 void tank_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -853,6 +867,13 @@ void tank_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, 
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
+            if (M_RereleaseGame()) {
+                // [rerelease] id's own gib parts - see tank_rerelease_gibs
+                self->s.skinnum /= 2;
+                ThrowGibs(self, damage, tank_rerelease_gibs, tank_num_rerelease_gibs);
+                self->deadflag = DEAD_DEAD;
+                return;
+            }
             for (n = 0; n < 1 /*4*/; n++)
                 ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 4; n++)
@@ -1040,6 +1061,8 @@ void SP_monster_tank(edict_t *self)
 	}
 
     self->s.modelindex = gi.modelindex("models/monsters/tank/tris.md2");
+    if (M_RereleaseGame())
+        PrecacheGibs(tank_rerelease_gibs, tank_num_rerelease_gibs);
     // [rerelease] 8 units shorter; applies to the tank commander too, which shares this spawn
     if (M_RereleaseGame()) {
         VectorSet(self->mins, -32, -32, -16);
