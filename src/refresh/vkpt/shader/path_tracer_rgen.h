@@ -1304,6 +1304,11 @@ vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, 
 	return result;
 }
 
+// Cleared by callers that shade a hit nobody looks at directly - the indirect
+// bounce (pt_bounce_material 1) - where parallax occlusion would cost a whole
+// height-field trace per pixel for detail the bounce light cannot show.
+bool get_material_allow_pom = true;
+
 void
 get_material(
 	Triangle triangle,
@@ -1382,7 +1387,7 @@ get_material(
 
 	// After the warp, so a height-mapped surface that also scrolls or warps
 	// is displaced where it is drawn.
-	if (global_ubo.pt_pom != 0 && minfo.height_texture != 0)
+	if (global_ubo.pt_pom != 0 && minfo.height_texture != 0 && get_material_allow_pom)
 		tex_coord = parallax_occlusion(triangle, minfo, geo_normal, ray_direction,
 		                               tex_coord, tex_coord_x, tex_coord_y, mip_level);
 

@@ -2430,6 +2430,10 @@ LIST_IMAGES_A_B
 #undef IMG_DO
 	};
 
+	// Written by primary rays on the graphics queue and read by the froxel
+	// scatter pass, which runs on the compute queue under pt_async_compute.
+	vkpt_image_sharing_graphics_compute(&images_create_info[VKPT_IMG_PT_PRIMARY_DIST]);
+
 #ifdef VKPT_DEVICE_GROUPS
 	if (qvk.device_count > 1)
 	{

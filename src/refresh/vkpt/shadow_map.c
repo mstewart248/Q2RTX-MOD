@@ -181,6 +181,10 @@ vkpt_shadow_map_initialize()
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
 
+	// drawn on the graphics queue, sampled by the froxel scatter pass on the
+	// compute queue under pt_async_compute
+	vkpt_image_sharing_graphics_compute(&img_info);
+
 	_VK(vkCreateImage(qvk.device, &img_info, NULL, &img_smap));
 	ATTACH_LABEL_VARIABLE(img_smap, IMAGE);
 

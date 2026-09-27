@@ -306,13 +306,12 @@ vkpt_god_rays_noop(void)
 		); \
 	} while(0)
 
-void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass, bool full_res)
+/* Writes this frame's TLAS into god_rays.descriptor_set[current frame]. Must run
+   after vkpt_pt_create_toplevel and before anything binds that set this frame:
+   the god rays march, the froxel passes (possibly on the compute queue) and the
+   filter. */
+void vkpt_god_rays_update_tlas_descriptor(void)
 {
-	BARRIER_COMPUTE(command_buffer, qvk.images[VKPT_IMG_PT_GODRAYS_THROUGHPUT_DIST]);
-	BARRIER_COMPUTE(command_buffer, qvk.images[VKPT_IMG_ASVGF_COLOR]);
-
-	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, god_rays.pipelines[0]);
-
 	// Point this frame's set at this frame's TLAS. Writing set[idx] here is safe
 	// because the frame fence guarantees the previous use of THAT set has
 	// completed - the sets are per frame in flight for exactly this reason.
@@ -371,30 +370,17 @@ void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, i
 		   identifies the structure - a generation counter bumped by build_tlas
 		   when it recreates - never the handle.
 
-		   PASS 0 ONLY, AND THAT IS LOAD-BEARING. This function is recorded TWICE
-		   into the SAME command buffer: pass 0 (PROFILER_GOD_RAYS) and, when
-		   reflect_refract is on, pass 1 (PROFILER_GOD_RAYS_REFLECT_REFRACT),
-		   with the froxel pass binding the same set in between. Updating a
-		   descriptor set that is already bound to a RECORDING command buffer
-		   invalidates that command buffer, and everything recorded afterwards is
-		   undefined:
-
-		     vkCmdBindDescriptorSets(): ... command buffer ... is now in an
-		     invalid state ... because the following objects bound to the command
-		     buffer were invalidated: VkDescriptorSet ... was destroyed or
-		     updated without UPDATE_AFTER_BIND
-
-		   The old handle guard hid that by accident - by pass 1 the handle
-		   matched what pass 0 had just written, so it skipped. Removing the
-		   guard without this condition made it fire on every pass 1 of every
-		   frame, which is a far worse bug than the one being fixed (measured:
-		   0 -> 100 invalidations per run).
-
-		   Pass 0 precedes every bind of this set in the command buffer, and it
-		   is recorded whenever pass 1 is - both sit under the same
-		   `if (god_rays_enabled)` in main.c - so the descriptor is still written
-		   exactly once per frame and always before use. */
-		if (pass == 0 && tlas != VK_NULL_HANDLE)
+		   ONCE PER FRAME, RIGHT AFTER THE TLAS BUILD, AND THAT IS LOAD-BEARING.
+		   Updating a descriptor set that is bound in a recording or pending
+		   command buffer invalidates that command buffer (no UPDATE_AFTER_BIND).
+		   This used to be done while recording god rays pass 0, which was the
+		   first bind of the set in the frame - until pt_async_compute recorded
+		   AND SUBMITTED the froxel passes, which bind this set and trace this
+		   TLAS, before pass 0 was recorded. The fog then traced the previous
+		   TLAS, and after a map change that one is freed: device lost at the
+		   first level load (2026-09-27). Called from main.c right after
+		   vkpt_pt_create_toplevel, it precedes every bind on every queue. */
+		if (tlas != VK_NULL_HANDLE)
 		{
 			VkWriteDescriptorSetAccelerationStructureKHR as_info = {
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
@@ -412,6 +398,15 @@ void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, i
 			vkUpdateDescriptorSets(qvk.device, 1, &as_write, 0, NULL);
 		}
 	}
+
+}
+
+void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass, bool full_res)
+{
+	BARRIER_COMPUTE(command_buffer, qvk.images[VKPT_IMG_PT_GODRAYS_THROUGHPUT_DIST]);
+	BARRIER_COMPUTE(command_buffer, qvk.images[VKPT_IMG_ASVGF_COLOR]);
+
+	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, god_rays.pipelines[0]);
 
 	VkDescriptorSet desc_sets[] = {
 		god_rays.descriptor_set[qvk.current_frame_index],
@@ -468,10 +463,10 @@ descriptor sets safe.
    nothing, and this says which half of the apparatus stopped. */
 uint32_t vkpt_froxel_dispatch_count = 0;
 
-void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
+/* Both halves bind for themselves: under pt_async_compute they are recorded into
+   two different command buffers on the compute queue. */
+static void froxel_bind_descriptors(VkCommandBuffer command_buffer)
 {
-	vkpt_froxel_dispatch_count++;
-
 	VkDescriptorSet desc_sets[] = {
 		god_rays.descriptor_set[qvk.current_frame_index],
 		qvk.desc_set_vertex_buffer,
@@ -485,6 +480,28 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 	int pass = 0;
 	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout,
 		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &pass);
+}
+
+void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
+{
+	vkpt_record_froxel_light_selection(command_buffer);
+	vkpt_record_froxel_shading(command_buffer);
+}
+
+/* THE FIRST HALF: the cross-frame barrier and the ReSTIR light selection.
+
+   Reads only the uniform buffer, the light buffer and blue noise - nothing this
+   frame traces - so under pt_async_compute it starts as soon as the uniform
+   buffer copy has landed and runs alongside the BVH build and primary rays.
+
+   The cross-frame barrier stays here, at the head of the froxel work, and is
+   still sufficient on the compute queue: every froxel pass of every frame is on
+   that one queue, so it orders them all, exactly as it did on the graphics queue.
+   The one graphics-queue reader, the god rays filter, reads froxel_integrated[i]
+   of its own frame only, which the next frame does not write. */
+void vkpt_record_froxel_light_selection(VkCommandBuffer command_buffer)
+{
+	froxel_bind_descriptors(command_buffer);
 
 	/* ORDER THIS FRAME'S HISTORY READ AFTER THE PREVIOUS FRAME'S SCATTER WRITE.
 
@@ -590,6 +607,25 @@ void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer)
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			0, 1, &mem_barrier, 0, NULL, 0, NULL);
 	}
+}
+
+/* THE SECOND HALF: scatter and integrate. Scatter traces shadow rays against this
+   frame's TLAS, samples this frame's shadow map and places its probes with
+   PT_PRIMARY_DIST, so under pt_async_compute it waits for primary rays. */
+void vkpt_record_froxel_shading(VkCommandBuffer command_buffer)
+{
+	vkpt_froxel_dispatch_count++;
+
+	froxel_bind_descriptors(command_buffer);
+
+	uint32_t group_num_x = (FROXEL_GRID_X + FROXEL_GROUP_X - 1) / FROXEL_GROUP_X;
+	uint32_t group_num_y = (FROXEL_GRID_Y + FROXEL_GROUP_Y - 1) / FROXEL_GROUP_Y;
+
+	VkMemoryBarrier mem_barrier = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+	};
 
 	/* --- scatter: ONE THREAD PER CELL, z from the dispatch's third dimension ---
 
@@ -1142,6 +1178,9 @@ static void create_froxel_volumes(void)
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
 		};
+		// written on the compute queue under pt_async_compute, the integrated
+		// volume read by the god rays filter on the graphics queue
+		vkpt_image_sharing_graphics_compute(&img_info);
 
 		_VK(vkCreateImage(qvk.device, &img_info, NULL, image_slots[i]));
 

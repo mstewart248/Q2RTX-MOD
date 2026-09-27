@@ -1996,6 +1996,12 @@ create_command_pool_and_fences(void)
 	cmd_pool_create_info.queueFamilyIndex = qvk.queue_idx_transfer;
 	_VK(vkCreateCommandPool(qvk.device, &cmd_pool_create_info, NULL, &qvk.cmd_buffers_transfer.command_pool));
 
+	if (qvk.async_compute_available)
+	{
+		cmd_pool_create_info.queueFamilyIndex = qvk.queue_idx_compute;
+		_VK(vkCreateCommandPool(qvk.device, &cmd_pool_create_info, NULL, &qvk.cmd_buffers_compute.command_pool));
+	}
+
 	/* fences and semaphores */
 	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
 	{
@@ -2011,6 +2017,9 @@ create_command_pool_and_fences(void)
 				_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->image_available_fg[fg]));
 			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->transfer_finished));
 			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->trace_finished));
+			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->fog_inputs_ready));
+			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->primary_finished));
+			_VK(vkCreateSemaphore(qvk.device, &semaphore_info, NULL, &group->fog_finished));
 
 			ATTACH_LABEL_VARIABLE(group->image_available, SEMAPHORE);
 			ATTACH_LABEL_VARIABLE(group->render_finished, SEMAPHORE);
@@ -2018,6 +2027,9 @@ create_command_pool_and_fences(void)
 				ATTACH_LABEL_VARIABLE(group->image_available_fg[fg], SEMAPHORE);
 			ATTACH_LABEL_VARIABLE(group->transfer_finished, SEMAPHORE);
 			ATTACH_LABEL_VARIABLE(group->trace_finished, SEMAPHORE);
+			ATTACH_LABEL_VARIABLE(group->fog_inputs_ready, SEMAPHORE);
+			ATTACH_LABEL_VARIABLE(group->primary_finished, SEMAPHORE);
+			ATTACH_LABEL_VARIABLE(group->fog_finished, SEMAPHORE);
 
 			group->trace_signaled = false;
 		}
@@ -2575,7 +2587,45 @@ init_vulkan(void)
 	if(transfer_on_graphics && qvk.queue_idx_graphics >= 0)
 		qvk.queue_idx_transfer = qvk.queue_idx_graphics;
 
-	Com_Printf("Vulkan queue families: graphics %d, transfer %d\n", qvk.queue_idx_graphics, qvk.queue_idx_transfer);
+	/* ASYNC COMPUTE: a family with COMPUTE and no GRAPHICS, i.e. the hardware's
+	   async compute engine. Work submitted there runs concurrently with the
+	   graphics queue and fills the shader units the ray tracing passes leave idle
+	   while they wait on traversal. Needs timestamps, because the profiler markers
+	   of the passes moved there are written from this queue.
+
+	   If the only such family is the one the transfer queue already took, a second
+	   queue from it is used, so the per-frame uploads and the async work do not
+	   serialise behind each other; with only one queue there, async compute is
+	   simply not used. Multi-GPU (device groups) never uses it. */
+	qvk.queue_idx_compute = -1;
+	uint32_t compute_queue_index = 0;
+	for(int i = 0; i < num_queue_families; i++) {
+		const VkQueueFlags flags = queue_families[i].queueFlags;
+		if(!queue_families[i].queueCount
+		   || !(flags & VK_QUEUE_COMPUTE_BIT) || (flags & VK_QUEUE_GRAPHICS_BIT)
+		   || queue_families[i].timestampValidBits == 0)
+			continue;
+		if(i == qvk.queue_idx_transfer) {
+			// usable only as its second queue; keep looking for a family of its own
+			if(queue_families[i].queueCount >= 2 && qvk.queue_idx_compute < 0) {
+				qvk.queue_idx_compute = i;
+				compute_queue_index = 1;
+			}
+			continue;
+		}
+		qvk.queue_idx_compute = i;
+		compute_queue_index = 0;
+		break;
+	}
+	qvk.async_compute_available = qvk.queue_idx_compute >= 0 && qvk.device_count == 1;
+	if(!qvk.async_compute_available)
+		qvk.queue_idx_compute = -1;
+	qvk.queue_families_graphics_compute[0] = (uint32_t)qvk.queue_idx_graphics;
+	qvk.queue_families_graphics_compute[1] = (uint32_t)qvk.queue_idx_compute;
+
+	Com_Printf("Vulkan queue families: graphics %d, transfer %d, compute %d%s\n",
+		qvk.queue_idx_graphics, qvk.queue_idx_transfer, qvk.queue_idx_compute,
+		qvk.async_compute_available ? "" : " (no async compute)");
 
 	if(qvk.queue_idx_graphics < 0 || qvk.queue_idx_transfer < 0) {
 		Com_Error(ERR_FATAL, "Could not find a suitable Vulkan queue family!\n");
@@ -2585,6 +2635,7 @@ init_vulkan(void)
 	float queue_priorities = 1.0f;
 	int num_create_queues = 0;
 	VkDeviceQueueCreateInfo queue_create_info[3];
+	static const float two_queue_priorities[2] = { 1.0f, 1.0f };
 
 	/* A DEDICATED PRESENT QUEUE, when the graphics family has a second queue.
 
@@ -2611,11 +2662,22 @@ init_vulkan(void)
 		queue_create_info[num_create_queues++] = q;
 	};
 	if(qvk.queue_idx_transfer != qvk.queue_idx_graphics) {
+		// the compute queue shares this family when it is queue 1 of it
+		const bool with_compute = qvk.async_compute_available && qvk.queue_idx_compute == qvk.queue_idx_transfer;
+		VkDeviceQueueCreateInfo q = {
+			.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+			.queueCount       = with_compute ? 2 : 1,
+			.pQueuePriorities = with_compute ? two_queue_priorities : &queue_priorities,
+			.queueFamilyIndex = qvk.queue_idx_transfer,
+		};
+		queue_create_info[num_create_queues++] = q;
+	};
+	if(qvk.async_compute_available && qvk.queue_idx_compute != qvk.queue_idx_transfer) {
 		VkDeviceQueueCreateInfo q = {
 			.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
 			.queueCount       = 1,
 			.pQueuePriorities = &queue_priorities,
-			.queueFamilyIndex = qvk.queue_idx_transfer,
+			.queueFamilyIndex = qvk.queue_idx_compute,
 		};
 		queue_create_info[num_create_queues++] = q;
 	};
@@ -2859,6 +2921,10 @@ init_vulkan(void)
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_graphics, 0, &qvk.queue_graphics);
 	vkGetDeviceQueue(qvk.device, qvk.queue_idx_transfer, 0, &qvk.queue_transfer);
 
+	qvk.queue_compute = VK_NULL_HANDLE;
+	if (qvk.async_compute_available)
+		vkGetDeviceQueue(qvk.device, qvk.queue_idx_compute, compute_queue_index, &qvk.queue_compute);
+
 	qvk.queue_present = qvk.queue_graphics;
 	qvk.queue_present_dedicated = false;
 	if (want_present_queue) {
@@ -3055,6 +3121,9 @@ destroy_vulkan(void)
 				vkDestroySemaphore(qvk.device, group->image_available_fg[fg], NULL);
 			vkDestroySemaphore(qvk.device, group->transfer_finished, NULL);
 			vkDestroySemaphore(qvk.device, group->trace_finished, NULL);
+			vkDestroySemaphore(qvk.device, group->fog_inputs_ready, NULL);
+			vkDestroySemaphore(qvk.device, group->primary_finished, NULL);
+			vkDestroySemaphore(qvk.device, group->fog_finished, NULL);
 		}
 	}
 
@@ -3064,9 +3133,13 @@ destroy_vulkan(void)
 
 	vkpt_free_command_buffers(&qvk.cmd_buffers_graphics);
 	vkpt_free_command_buffers(&qvk.cmd_buffers_transfer);
+	vkpt_free_command_buffers(&qvk.cmd_buffers_compute);
 
 	vkDestroyCommandPool(qvk.device, qvk.cmd_buffers_graphics.command_pool, NULL);
 	vkDestroyCommandPool(qvk.device, qvk.cmd_buffers_transfer.command_pool, NULL);
+	if (qvk.cmd_buffers_compute.command_pool)
+		vkDestroyCommandPool(qvk.device, qvk.cmd_buffers_compute.command_pool, NULL);
+	qvk.cmd_buffers_compute.command_pool = VK_NULL_HANDLE;
 
 	vkDestroyDevice(qvk.device,   NULL);
 	_VK(qvkDestroyDebugUtilsMessengerEXT(qvk.instance, qvk.dbg_messenger, NULL));
@@ -5838,6 +5911,57 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 	bool god_rays_enabled = vkpt_god_rays_enabled(&sun_light) && render_world;
 
+	// Photo mode fog (fog_accum_march in global_ubo.h): the march runs at
+	// full resolution and the filter reads it per pixel, so the froxel grid
+	// is never sampled and is not dispatched at all.
+	const bool fog_accum_march = ref_mode.enable_accumulation
+	                           && cvar_pt_fog_accum_march->value != 0.f;
+
+	// [froxel grid] the map fog's cheap path.
+	const bool run_froxel = god_rays_enabled && vkpt_froxel_enabled() && !fog_accum_march;
+
+	/* ASYNC COMPUTE, pt_async_compute (default 0 = everything on the graphics
+	   queue, exactly as before; 1 = the froxel fog on the compute queue).
+
+	   MEASURED 2026-09-27, 5070 Ti, pt_dlss 5, 2560x1440, 3 runs per arm
+	   (fogtmp/auto/async_bench.py): no gain. GPU frame base1 12.77 -> 12.70 ms,
+	   xswamp 12.50 -> 12.65 ms (one outlier; 12.51 -> 12.41 without it). The
+	   overlap is real but the GPU is already full: BVH build +37% and reflect/
+	   refract 1 +53% absorb what the fog stops costing. Hence off by default.
+
+	   The froxel grid is ~1.3 ms of compute that no ray tracing pass reads until
+	   the god rays filter, so it moves to the compute queue and overlaps them:
+
+	     graphics  [clears, UBO copy, sky] ->fog_inputs_ready
+	               [blood, instancing, BVH, shadow map, primary] ->primary_finished
+	               [god rays march, reflect/refract 1, god rays march 2]
+	               wait fog_finished -> [god rays filter, reflect/refract 2, lighting]
+	     compute   wait fog_inputs_ready -> [ReSTIR reservoir, spatial]
+	               wait primary_finished -> [scatter, integrate] ->fog_finished
+
+	   The waits are at COMPUTE_SHADER: every consumer on either side is a
+	   compute dispatch (ray query mode) - and in pipeline mode the filter, the
+	   first reader of the fog, is still a compute dispatch.
+
+	   Cross-frame ordering needs nothing new. All froxel passes stay on one
+	   queue, so the existing pt_fog_xframe_barrier orders them; and each frame's
+	   graphics work waits fog_finished before its filter, so the next frame's
+	   shadow-map redraw (after pt_fog_smap_war on the graphics queue) is chained
+	   behind this frame's scatter reads through that wait. Switching the cvar
+	   moves the fog between queues, which that barrier cannot order across, so a
+	   switch drains the device once. */
+	static cvar_t *cvar_pt_async_compute = NULL;
+	if (!cvar_pt_async_compute)
+		cvar_pt_async_compute = Cvar_Get("pt_async_compute", "0", 0);
+	const bool async_fog = run_froxel && qvk.async_compute_available
+	                     && cvar_pt_async_compute->integer != 0;
+	{
+		static bool prev_async_fog = false;
+		if (async_fog != prev_async_fog)
+			vkpt_device_wait_idle();
+		prev_async_fog = async_fog;
+	}
+
 	VkSemaphore transfer_semaphores[VKPT_MAX_GPUS];
 	VkSemaphore trace_semaphores[VKPT_MAX_GPUS];
 	VkSemaphore prev_trace_semaphores[VKPT_MAX_GPUS];
@@ -6090,6 +6214,19 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		}
 		END_PERF_MARKER(trace_cmd_buf, PROFILER_UPDATE_ENVIRONMENT);
 
+		/* Async fog: everything the froxel light selection reads is in place
+		   here (the uniform buffer copy above, the light buffer via the transfer
+		   semaphore this buffer waits on), so the frame's first graphics
+		   submission ends here and signals the compute queue. It is submitted
+		   below with the rest - the staging UBO is only written after
+		   vkpt_pt_create_toplevel. */
+		VkCommandBuffer fog_inputs_cmd_buf = VK_NULL_HANDLE;
+		if (async_fog)
+		{
+			fog_inputs_cmd_buf = trace_cmd_buf;
+			trace_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+		}
+
 		// Blood droplets. Writes its own section of the instanced buffers by host
 		// copy and emits its own barrier, so it is independent of the compute pass
 		// below; it only has to land before vkpt_pt_create_all_dynamic builds the
@@ -6106,6 +6243,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		vkpt_pt_create_all_dynamic(trace_cmd_buf, qvk.current_frame_index, &upload_info);
 		vkpt_pt_create_toplevel(trace_cmd_buf, qvk.current_frame_index, &upload_info, upload_info.weapon_left_handed);
 		vkpt_pt_update_descripter_set_bindings(qvk.current_frame_index);
+		if (god_rays_enabled)
+			vkpt_god_rays_update_tlas_descriptor();
 		END_PERF_MARKER(trace_cmd_buf, PROFILER_BVH_UPDATE);
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_SHADOW_MAP);
@@ -6171,23 +6310,71 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		// The host-side image of the uniform buffer is only ready after the `vkpt_pt_create_toplevel` call above
 		_VK(vkpt_uniform_buffer_upload_to_staging());
 
-		vkpt_submit_command_buffer(
-			trace_cmd_buf,
-			qvk.queue_graphics,
-			all_device_mask,
-			qvk.device_count, transfer_semaphores, wait_stages, device_indices,
-			0, 0, 0,
-			VK_NULL_HANDLE);
+		if (async_fog)
+		{
+			semaphore_group_t *sem = &qvk.semaphores[qvk.current_frame_index][0];
+			VkPipelineStageFlags compute_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			uint32_t device_index = 0;
+
+			vkpt_submit_command_buffer(
+				fog_inputs_cmd_buf,
+				qvk.queue_graphics,
+				all_device_mask,
+				qvk.device_count, transfer_semaphores, wait_stages, device_indices,
+				1, &sem->fog_inputs_ready, &device_index,
+				VK_NULL_HANDLE);
+
+			// The FOG_FROXEL timestamps bracket both halves, so under async compute
+			// that row is wall time on the compute queue, including the wait for
+			// primary rays; the per-pass rows below it are still pass costs. No
+			// debug label for it - a label may not span two command buffers.
+			VkCommandBuffer light_selection_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_compute);
+			_VK(vkpt_profiler_query(light_selection_cmd_buf, PROFILER_FOG_FROXEL, PROFILER_START));
+			vkpt_record_froxel_light_selection(light_selection_cmd_buf);
+			vkpt_submit_command_buffer(
+				light_selection_cmd_buf,
+				qvk.queue_compute,
+				all_device_mask,
+				1, &sem->fog_inputs_ready, &compute_stage, &device_index,
+				0, 0, 0,
+				VK_NULL_HANDLE);
+
+			vkpt_submit_command_buffer(
+				trace_cmd_buf,
+				qvk.queue_graphics,
+				all_device_mask,
+				0, 0, 0, 0,
+				1, &sem->primary_finished, &device_index,
+				VK_NULL_HANDLE);
+
+			VkCommandBuffer shading_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_compute);
+			vkpt_record_froxel_shading(shading_cmd_buf);
+			_VK(vkpt_profiler_query(shading_cmd_buf, PROFILER_FOG_FROXEL, PROFILER_STOP));
+			vkpt_submit_command_buffer(
+				shading_cmd_buf,
+				qvk.queue_compute,
+				all_device_mask,
+				1, &sem->primary_finished, &compute_stage, &device_index,
+				1, &sem->fog_finished, &device_index,
+				VK_NULL_HANDLE);
+		}
+		else
+		{
+			vkpt_submit_command_buffer(
+				trace_cmd_buf,
+				qvk.queue_graphics,
+				all_device_mask,
+				qvk.device_count, transfer_semaphores, wait_stages, device_indices,
+				0, 0, 0,
+				VK_NULL_HANDLE);
+		}
 	}
 
 	{
 		VkCommandBuffer trace_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 
-		// Photo mode fog (fog_accum_march in global_ubo.h): the march runs at
-		// full resolution and the filter reads it per pixel, so the froxel grid
-		// is never sampled and is not dispatched at all.
-		const bool fog_accum_march = ref_mode.enable_accumulation
-		                           && cvar_pt_fog_accum_march->value != 0.f;
+		// set when this block's last submission has to wait for the async fog
+		VkSemaphore fog_wait = VK_NULL_HANDLE;
 
 		if (god_rays_enabled)
 		{
@@ -6198,8 +6385,9 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		// [froxel grid] the map fog's cheap path. Runs after the march - which
 		// still produces the sun shafts - and before the filter, which is what
-		// reads the integrated volume this writes.
-		if (god_rays_enabled && vkpt_froxel_enabled() && !fog_accum_march)
+		// reads the integrated volume this writes. On the compute queue instead
+		// under pt_async_compute, see async_fog above.
+		if (run_froxel && !async_fog)
 		{
 			BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_FOG_FROXEL);
 			vkpt_record_froxel_command_buffer(trace_cmd_buf);
@@ -6220,6 +6408,23 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 				BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS_REFLECT_REFRACT);
 				vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 1, fog_accum_march);
 				END_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS_REFLECT_REFRACT);
+			}
+
+			// The filter is the first reader of the async fog. Everything before
+			// it goes to the GPU now, so that work overlaps the fog rather than
+			// queueing behind the wait.
+			if (async_fog)
+			{
+				vkpt_submit_command_buffer(
+					trace_cmd_buf,
+					qvk.queue_graphics,
+					all_device_mask,
+					0, 0, 0, 0,
+					0, 0, 0,
+					VK_NULL_HANDLE);
+
+				trace_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+				fog_wait = qvk.semaphores[qvk.current_frame_index][0].fog_finished;
 			}
 
 			BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS_FILTER);
@@ -6245,12 +6450,15 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		}
 
 		vkpt_pt_trace_lighting(trace_cmd_buf, ref_mode.num_bounce_rays);
-		
+
+		VkPipelineStageFlags fog_wait_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		uint32_t fog_wait_device = 0;
+
 		vkpt_submit_command_buffer(
 			trace_cmd_buf,
 			qvk.queue_graphics,
 			all_device_mask,
-			0, 0, 0, 0,
+			fog_wait ? 1 : 0, fog_wait ? &fog_wait : 0, fog_wait ? &fog_wait_stage : 0, fog_wait ? &fog_wait_device : 0,
 			qvk.device_count, trace_semaphores, device_indices,
 			VK_NULL_HANDLE);
 
@@ -6746,6 +6954,7 @@ void vkpt_report_device_lost(const char* context)
 		const struct { const char* name; VkQueue queue; } queues[] = {
 			{ "graphics", qvk.queue_graphics },
 			{ "transfer", qvk.queue_transfer },
+			{ "compute",  qvk.queue_compute  },
 			{ "present",  qvk.queue_present  },
 		};
 
@@ -7000,6 +7209,7 @@ retry:;
 
 	vkpt_reset_command_buffers(&qvk.cmd_buffers_graphics);
 	vkpt_reset_command_buffers(&qvk.cmd_buffers_transfer);
+	vkpt_reset_command_buffers(&qvk.cmd_buffers_compute);
 
 	// Process the profiler queries - always enabled to support DRS
 	{
@@ -9015,6 +9225,22 @@ R_EndRegistration_RTX(void)
 	MAT_FreeUnused();
 }
 
+void vkpt_image_sharing_graphics_compute(VkImageCreateInfo* info)
+{
+	if (qvk.async_compute_available)
+	{
+		info->sharingMode = VK_SHARING_MODE_CONCURRENT;
+		info->queueFamilyIndexCount = 2;
+		info->pQueueFamilyIndices = qvk.queue_families_graphics_compute;
+	}
+	else
+	{
+		info->sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		info->queueFamilyIndexCount = 0;
+		info->pQueueFamilyIndices = NULL;
+	}
+}
+
 VkCommandBuffer vkpt_begin_command_buffer(cmd_buf_group_t* group)
 {
 	if (group->used_this_frame == group->count_per_frame)
@@ -9189,7 +9415,7 @@ void vkpt_submit_command_buffer(
 	FGPresent_SwapchainUnlock();
 
 #ifdef USE_DEBUG
-	cmd_buf_group_t* groups[] = { &qvk.cmd_buffers_graphics, &qvk.cmd_buffers_transfer };
+	cmd_buf_group_t* groups[] = { &qvk.cmd_buffers_graphics, &qvk.cmd_buffers_transfer, &qvk.cmd_buffers_compute };
 	for (int ngroup = 0; ngroup < LENGTH(groups); ngroup++)
 	{
 		cmd_buf_group_t* group = groups[ngroup];

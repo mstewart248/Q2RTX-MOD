@@ -178,6 +178,15 @@ typedef struct semaphore_group_s {
 	VkSemaphore image_available_fg[DLSSG_MAX_GENERATED_FRAMES];
 	VkSemaphore transfer_finished;
 	VkSemaphore trace_finished;
+	/* Async compute (pt_async_compute): the froxel fog runs on queue_compute in two
+	   halves. fog_inputs_ready releases the first half (the ReSTIR light selection,
+	   which needs only the uniform buffer and the light buffer), primary_finished
+	   releases the second (scatter and integrate need the TLAS, the shadow map and
+	   this frame's PT_PRIMARY_DIST), and fog_finished holds the god rays filter -
+	   the first graphics pass to read the integrated volume - until both are done. */
+	VkSemaphore fog_inputs_ready;
+	VkSemaphore primary_finished;
+	VkSemaphore fog_finished;
 	bool trace_signaled;
 } semaphore_group_t;
 
@@ -205,6 +214,15 @@ typedef struct QVK_s {
 	bool                        queue_present_dedicated;
 	int32_t                     queue_idx_graphics;
 	int32_t                     queue_idx_transfer;
+	/* A queue from a compute-only family, for work that can overlap the ray tracing
+	   passes (the froxel fog). VK_NULL_HANDLE when the device has no such family;
+	   async_compute_available is false then and every pass stays on queue_graphics.
+	   Images that both queues touch are created VK_SHARING_MODE_CONCURRENT over
+	   queue_families_graphics_compute - see vkpt_image_sharing_graphics_compute. */
+	VkQueue                     queue_compute;
+	int32_t                     queue_idx_compute;
+	bool                        async_compute_available;
+	uint32_t                    queue_families_graphics_compute[2];
 	VkSurfaceKHR                surface;
 	VkSwapchainKHR              swap_chain;
 	VkSurfaceFormatKHR          surf_format;
@@ -233,6 +251,7 @@ typedef struct QVK_s {
 
 	cmd_buf_group_t             cmd_buffers_graphics;
 	cmd_buf_group_t             cmd_buffers_transfer;
+	cmd_buf_group_t             cmd_buffers_compute;
 	semaphore_group_t           semaphores[MAX_FRAMES_IN_FLIGHT][VKPT_MAX_GPUS];
 
 	uint32_t                    num_extensions;
@@ -696,6 +715,11 @@ void vkpt_invalidate_texture_descriptors(void);
 void vkpt_init_light_textures(void);
 
 VkCommandBuffer vkpt_begin_command_buffer(cmd_buf_group_t* group);
+// Sets sharingMode / queueFamilyIndexCount / pQueueFamilyIndices on an image
+// create info so the image may be used by both queue_graphics and
+// queue_compute with no ownership transfer. Leaves EXCLUSIVE when there is no
+// separate compute family.
+void vkpt_image_sharing_graphics_compute(VkImageCreateInfo* info);
 void vkpt_free_command_buffers(cmd_buf_group_t* group);
 void vkpt_reset_command_buffers(cmd_buf_group_t* group);
 /* vkQueueWaitIdle with the swapchain/queue lock held. A VkQueue needs external
@@ -960,11 +984,18 @@ VkResult vkpt_god_rays_destroy_pipelines(void);
 VkResult vkpt_god_rays_update_images(void);
 VkResult vkpt_god_rays_noop(void);
 bool vkpt_god_rays_enabled(const sun_light_t* sun_light);
+void vkpt_god_rays_update_tlas_descriptor(void);
 void vkpt_record_god_rays_trace_command_buffer(VkCommandBuffer command_buffer, int pass, bool full_res);
 void vkpt_record_god_rays_filter_command_buffer(VkCommandBuffer command_buffer);
 // [froxel grid] the two map-fog volume passes, and whether they replace the
 // per-pixel march this frame. See god_rays.c.
 void vkpt_record_froxel_command_buffer(VkCommandBuffer command_buffer);
+// The same passes split in two, for pt_async_compute: light selection (ReSTIR
+// reservoir + spatial) needs no ray-traced input from this frame, shading
+// (scatter + integrate) needs the TLAS, the shadow map and PT_PRIMARY_DIST.
+// vkpt_record_froxel_command_buffer is exactly the two back to back.
+void vkpt_record_froxel_light_selection(VkCommandBuffer command_buffer);
+void vkpt_record_froxel_shading(VkCommandBuffer command_buffer);
 bool vkpt_froxel_enabled(void);
 // allocates the froxel volumes on the first frame they are wanted, so the
 // grid costs no VRAM at all while pt_fog_froxel is off (which is the default)
