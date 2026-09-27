@@ -72,6 +72,31 @@ one.
 // Matt landed on cl_fog_scale 0.01 with pt_fog_light_scale 1, i.e. an effective
 // base1 density of ~0.018. These constants bake that in so cl_fog_scale 1.0 is
 // the value that looks right, which is what the cvar claims to mean.
+/* FOG_LEAN (2026-09-26): pin the bisection/experiment cvars to their defaults at
+   COMPILE time, so the driver can delete every const_src stage, isolate path and
+   history experiment before register allocation. They are all UBO reads at
+   runtime, which keeps ~1000 lines of dead-in-practice code live in the scatter
+   shader. Compile with -DFOG_LEAN=1 to test whether the shader's size (spills)
+   is what zeroes / whites out the volume; 0 (default) keeps the cvars live. */
+#ifndef FOG_LEAN
+#define FOG_LEAN 0
+#endif
+#if FOG_LEAN
+#define FOG_CONST_SRC     0.0
+#define FOG_ISOLATE_F     0.0
+#define FOG_HISTORY_SNAP  0.0
+#define FOG_HISTORY_HOLD  0.0
+#define FOG_HISTORY_CLAMP 0.0
+#define FOG_PRINTF        0.0
+#else
+#define FOG_CONST_SRC     global_ubo.pt_fog_const_src
+#define FOG_ISOLATE_F     global_ubo.pt_fog_isolate
+#define FOG_HISTORY_SNAP  global_ubo.pt_fog_froxel_history_snap
+#define FOG_HISTORY_HOLD  global_ubo.pt_fog_history_hold
+#define FOG_HISTORY_CLAMP global_ubo.pt_fog_history_clamp
+#define FOG_PRINTF        global_ubo.pt_fog_printf
+#endif
+
 #define FOG_HEIGHTFOG_REFERENCE 0.025
 #define FOG_DISTANCEFOG_REFERENCE 2.0
 
@@ -388,7 +413,7 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, float rand01
 	// Same isolation as mode 3 - see the note there. Kept in both in-scatter
 	// functions so the cvar means the same thing on the march and on the grid,
 	// which is what makes cl_fog 2 usable as the reference it is supposed to be.
-	int fog_isolate = int(global_ubo.pt_fog_isolate);
+	int fog_isolate = int(FOG_ISOLATE_F);
 	if (fog_isolate == 2)
 	{
 		sky_term = vec3(0);
@@ -1073,7 +1098,7 @@ vec3 fog_sky_inscatter(vec3 sky_p)
 	   Isolate 1 - "sky only" - is NOT handled here, because it is a statement
 	   about the LIGHT half (skip it, and the rays it costs) and this function no
 	   longer owns that half. Each caller applies it. */
-	if (int(global_ubo.pt_fog_isolate) == 2)
+	if (int(FOG_ISOLATE_F) == 2)
 	{
 		sky_term = vec3(0);
 		fog_debug_sky_term = sky_term;
@@ -1371,7 +1396,7 @@ vec3 getVolumeLightInscatterWithSky(uint cluster_idx, vec3 p, vec3 view_dir,
                                     vec3 rnd, uint seed, vec3 sky_term)
 {
 	// "sky only" - skips the candidate loop and the visibility ray with it
-	if (int(global_ubo.pt_fog_isolate) == 1)
+	if (int(FOG_ISOLATE_F) == 1)
 		return sky_term;
 
 	float g = fog_eccentricity();
@@ -1434,7 +1459,7 @@ float getDensity(vec3 p)
 	     FLAT -> world_box was zeroing, i.e. `p` or world_center/half_size_inv.
 	     STILL COLLAPSES -> the height-fog term (which depends on p.z and the
 	       hf_* fields). */
-	if (global_ubo.pt_fog_const_src == 9.0)
+	if (FOG_CONST_SRC == 9.0)
 		world_box = 1.0;
 
 	// Without a map fog definition this is the original flat medium, so god rays

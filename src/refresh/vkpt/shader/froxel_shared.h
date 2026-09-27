@@ -245,9 +245,20 @@ froxel_integrate.comp (which unscales on load) so the two cannot drift apart.
    (froxel_scatter.comp:670-688), which is below SPIR-V, and instrumentation
    is what has grown this shader to 1866 lines. Note the one datum already
    against that theory: `const int debug = 0` alone, which deletes the view
-   chain, still collapsed at 452 frames. This switch tests the rest. */
+   chain, still collapsed at 452 frames. This switch tests the rest.
+
+   OFF SINCE 2026-09-26, AND 1 NOW HANGS THE GPU. Once scatter went to one
+   invocation per cell (god_rays.c, ca90074b), the probes' same-address
+   atomics are issued by ~1.8M concurrent threads instead of 14080 column
+   threads spread over 128 loop trips. On mgu5m1 that is a DEVICE LOST
+   (nvlddmkm event 153, TDR) within 15-70 s of loading, every run - bisected
+   over pt_fog_froxel, pt_fog_restir, history, filter, sky trace and
+   const_src, and only this switch cleared it (every probes-off arm in
+   fogtmp/crash/results.txt ran 75-120 s clean). Before turning it back on,
+   make the per-cell atomics per-column again or gate them to the centre
+   cell. Repro: fogtmp/crash/crashrepro.py. */
 #ifndef FOG_DEBUG_PROBES
-#define FOG_DEBUG_PROBES 1
+#define FOG_DEBUG_PROBES 0
 #endif
 
 /* The integrate pass keeps its own switch, defaulting ON. Its two atomics are

@@ -244,7 +244,7 @@ bool world_to_prev_froxel_uvw(vec3 world_pos, out vec3 uvw)
 	   the grid dimension, floor, and put the coordinate back at +0.5 of that
 	   texel, which is exactly where a trilinear fetch returns one texel and
 	   nothing else. */
-	if (global_ubo.pt_fog_froxel_history_snap > 0.0)
+	if (FOG_HISTORY_SNAP > 0.0)
 	{
 		vec3 dims = vec3(FROXEL_GRID_X, FROXEL_GRID_Y, FROXEL_GRID_Z);
 		uvw = (floor(uvw * dims) + 0.5) / dims;
@@ -282,6 +282,29 @@ so `inout` keeps the semantics bit-identical without having to prove that every
 path writes before it reads.
 =================
 */
+/* FOG_NAN_GUARD (2026-09-26): refuse a non-finite in-scatter before it can
+   reach the volume. The instrumented runs (fogtmp/crash/x_v7*) show the bad
+   states begin with a handful of cells whose sun term is NaN/Inf, after which
+   the whole grid reads garbage. 0 restores the unguarded arithmetic. */
+#ifndef FOG_NAN_GUARD
+#define FOG_NAN_GUARD 1
+#endif
+vec3 fog_finite(vec3 v) { return (any(isnan(v)) || any(isinf(v))) ? vec3(0) : v; }
+
+/* FOG_DEBUG_SAMPLE taps - written inside froxel_cell_scatter, read by the
+   instrument at the end of main. Globals, like fog_debug_sky_term. */
+vec3 dbg_g_insc = vec3(0);
+vec3 dbg_g_alb = vec3(0);
+vec3 dbg_g_res = vec3(0);
+vec3 dbg_g_vol = vec3(0);
+vec3 dbg_g_chk = vec3(0);
+float dbg_g_s1 = 0.0;
+float dbg_g_s2 = 0.0;
+vec3 dbg_g_sun = vec3(0);
+float dbg_g_phase = -1.0;
+float dbg_g_shadow = -1.0;
+float dbg_g_sunsky = -1.0;
+
 void froxel_cell_scatter(
 	ivec3 cell, int z,
 	float density, vec3 world_pos, vec3 world_pos_history,
@@ -366,6 +389,9 @@ void froxel_cell_scatter(
 	   larger again. They differ by more than two orders of magnitude, so
 	   the terms have to be scaled separately and only then summed. */
 	vec3 inscatter = vec3(0);
+#if FOG_DEBUG_SAMPLE
+	dbg_g_sunsky = fog_sun_is_the_sky() ? 1.0 : 0.0;
+#endif
 
 	if (!fog_sun_is_the_sky())
 	{
@@ -374,6 +400,10 @@ void froxel_cell_scatter(
 		                         distanceToWater);
 
 		float scatter = shadow * phase;
+#if FOG_DEBUG_SAMPLE
+		dbg_g_phase = phase;
+		dbg_g_shadow = shadow;
+#endif
 		if (global_ubo.pt_fog_ambient > 0.0)
 			scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
 
@@ -466,7 +496,7 @@ void froxel_cell_scatter(
 				}
 #endif
 
-				if (int(global_ubo.pt_fog_isolate) != 1)
+				if (int(FOG_ISOLATE_F) != 1)
 					vol_inscatter += fog_shade_chosen(world_pos, view_dir,
 						fog_eccentricity(), light_rnd, y, W);
 
@@ -501,6 +531,16 @@ void froxel_cell_scatter(
 			                 luminance(vol_inscatter - sky_term),
 			                 luminance(sky_term));
 
+#if FOG_NAN_GUARD
+			inscatter = fog_finite(inscatter);
+			vol_inscatter = fog_finite(vol_inscatter);
+#endif
+#if FOG_DEBUG_SAMPLE
+			dbg_g_vol = vol_inscatter;
+			dbg_g_sun = inscatter;
+			dbg_g_s1 = global_ubo.pt_fog_vol_scale;
+			dbg_g_s2 = global_ubo.fog_vol_density_ratio;
+#endif
 			inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005
 			           * global_ubo.fog_vol_density_ratio;
 
@@ -685,7 +725,7 @@ void froxel_cell_scatter(
 	   ONE CELL. 1.8M invocations printing would overflow the layer's
 	   staging buffer, and an overflow TRUNCATES silently - which looks
 	   exactly like "the shader did not print". */
-	if (global_ubo.pt_fog_printf != 0.0
+	if (FOG_PRINTF != 0.0
 	    && cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
 	    && z == FROXEL_GRID_Z / 2)
 	{
@@ -694,7 +734,12 @@ void froxel_cell_scatter(
 		               luminance(inscatter), world_pos_history.z);
 	}
 
-	result.rgb = (global_ubo.pt_fog_const_src != 0.0)
+#if FOG_NAN_GUARD
+	inscatter = fog_finite(inscatter);
+	albedo = fog_finite(albedo);
+	if (isnan(density) || isinf(density)) density = 0.0;
+#endif
+	result.rgb = (FOG_CONST_SRC != 0.0)
 	           ? vec3(3.4e-5) * albedo * density
 	           : inscatter * albedo * density;
 
@@ -703,6 +748,12 @@ void froxel_cell_scatter(
 	float sigma = (global_ubo.pt_fog_extinction > 0.0)
 	            ? global_ubo.pt_fog_extinction : 0.0001;
 	result.a = density * sigma;
+#if FOG_DEBUG_SAMPLE
+	dbg_g_insc = inscatter;
+	dbg_g_alb = albedo;
+	dbg_g_res = result.rgb;
+	dbg_g_chk = inscatter * albedo * density;
+#endif
 
 	/* Snapshot BEFORE the temporal blend, for pt_fog_const_src 3. */
 	result_preblend = result;
@@ -765,7 +816,7 @@ void main()
 #if FROXEL_ASSUME_MODE3
 	const bool have_light = true;
 #else
-	bool have_light = (global_ubo.pt_fog_const_src == 6.0)
+	bool have_light = (FOG_CONST_SRC == 6.0)
 	                ? true
 	                : ((luminance(sun_color) != 0) || fog_lights);
 #endif
@@ -868,7 +919,7 @@ void main()
 		   `buf_light` is the standout suspect: a SINGLE device buffer uploaded
 		   every frame by a bare vkCmdCopyBuffer with NO barriers, protected
 		   only by a CONDITIONAL cross-queue semaphore wait (see session 12b). */
-		if (global_ubo.pt_fog_const_src == 15.0)
+		if (FOG_CONST_SRC == 15.0)
 		{
 			FroxelCellSample fs15 = froxel_cell_sample(cell, base_rand);
 			uint cluster15 = (global_ubo.fog_camera_cluster < 0)
@@ -900,7 +951,7 @@ void main()
 
 		   The results feed the stored value scaled to nothing, so they cannot
 		   be optimised away and the picture is unchanged. */
-		if (global_ubo.pt_fog_const_src == 14.0)
+		if (FOG_CONST_SRC == 14.0)
 		{
 			FroxelCellSample fs14 = froxel_cell_sample(cell, base_rand);
 			float d14 = getDensity(fs14.p_centre);
@@ -933,7 +984,7 @@ void main()
 
 		   The fetch feeds the stored value so it cannot be optimised away, but
 		   is scaled to nothing so the picture is unchanged. */
-		if (global_ubo.pt_fog_const_src == 13.0)
+		if (FOG_CONST_SRC == 13.0)
 		{
 			vec4 h = vec4(0);
 			for (int k = 0; k < 4; k++)
@@ -946,7 +997,7 @@ void main()
 			continue;
 		}
 
-		if (global_ubo.pt_fog_const_src == 12.0)
+		if (FOG_CONST_SRC == 12.0)
 		{
 			float busy = 0.0;
 			for (int k = 0; k < 64; k++)
@@ -957,7 +1008,7 @@ void main()
 			continue;
 		}
 
-		if (global_ubo.pt_fog_const_src == 7.0)
+		if (FOG_CONST_SRC == 7.0)
 		{
 			imageStore(IMG_FROXEL_SCATTER, cell,
 			           vec4(vec3(1.5e-5) * FROXEL_STORAGE_SCALE, 0.0));
@@ -1030,7 +1081,7 @@ void main()
 
 		   A point inside the fog band, so the medium evaluates to something
 		   representative rather than zero. */
-		if (global_ubo.pt_fog_const_src == 10.0)
+		if (FOG_CONST_SRC == 10.0)
 			world_pos_history = vec3(904.0, 1300.0, -400.0);
 
 		/* BISECTION, STAGE 11 (pt_fog_const_src 11): a position that varies PER
@@ -1051,7 +1102,7 @@ void main()
 		   Derived from `cell` alone and scaled to span the map's fog band
 		   (hf_end_z -825 .. hf_start_z -438, world_cz 96) so density lands in a
 		   representative range rather than clamping. */
-		if (global_ubo.pt_fog_const_src == 11.0)
+		if (FOG_CONST_SRC == 11.0)
 			world_pos_history = vec3(904.0, 1300.0, -825.0)
 			                  + vec3(cell) * vec3(11.0, 20.0, 3.0);
 
@@ -1135,7 +1186,7 @@ void main()
 
 		   Same lattice stage 11 uses, so the density field has a comparable
 		   spread across the band rather than clamping. */
-		vec3 density_pos = (global_ubo.pt_fog_const_src == 16.0)
+		vec3 density_pos = (FOG_CONST_SRC == 16.0)
 		                 ? vec3(904.0, 1300.0, -825.0) + vec3(cell) * vec3(11.0, 20.0, 3.0)
 		                 : world_pos_history;
 
@@ -1165,9 +1216,9 @@ void main()
 		     STILL COLLAPSES -> stage 8 was saturation. getDensity is fully
 		       exonerated, and so is every other arm that went flat while
 		       running brighter than the control. */
-		float density = (global_ubo.pt_fog_const_src == 8.0)
+		float density = (FOG_CONST_SRC == 8.0)
 		              ? 1.0
-		              : (global_ubo.pt_fog_const_src == 17.0)
+		              : (FOG_CONST_SRC == 17.0)
 		                ? global_ubo.pt_fog_const_density
 		                : getDensity(density_pos);
 
@@ -2273,7 +2324,7 @@ void main()
 					   age channel, which distinguishes `no measurement yet` from `no fog
 					   here` and can expire a held cell. This tests whether that is worth
 					   building, for one line and no extra storage. */
-					if (global_ubo.pt_fog_history_hold > 0.0 && !cell_has_density)
+					if (FOG_HISTORY_HOLD > 0.0 && !cell_has_density)
 						w = 1.0;
 
 					/* THE FLOOR UNDER THE HISTORY - pt_fog_history_clamp, see
@@ -2300,7 +2351,7 @@ void main()
 					   froxel_integrate down its sigma <= 1e-7 branch with
 					   transmittance pinned at 1.0, so the medium stops
 					   absorbing as well as stops glowing. */
-					float hclamp = global_ubo.pt_fog_history_clamp;
+					float hclamp = FOG_HISTORY_CLAMP;
 
 					if (hclamp > 1.0)
 						history = max(history,
@@ -2772,8 +2823,69 @@ void main()
 			           fract(v * 1024.0)) * 0.02;
 		}
 
-		vec4 store_val = (global_ubo.pt_fog_const_src == 3.0) ? result_preblend : result;
+		/* FOG_DEBUG_SAMPLE (2026-09-26): WHICH TERM CARRIES THE WHITE NOISE.
+		   Shader-only instrument, off by default; compile with
+		   -DFOG_DEBUG_SAMPLE=1. Plain stores, no atomics (FOG_DEBUG_PROBES'
+		   per-cell atomics hang the GPU - see froxel_shared.h). Read back by
+		   FOGCELL under pt_fog_log 1, which prints the fields in this order:
+		     dens   = this frame's PRE-blend luminance at one fixed cell
+		     gate   = sun_color_ubo.sun_luminance (uniform)
+		     in     = pre-blend luminance of the LAST ABNORMAL cell
+		     skyvis = that cell's sky term
+		     sky    = that cell's light term
+		     post   = that cell's POST-blend luminance
+		     frame  = the frame that abnormal cell was written in
+		   "Abnormal" is a pre- or post-blend luminance over 1e-2 per unit
+		   length, ~200x a healthy cell, sampled on a sparse lattice (~900 cells)
+		   so the writer count stays trivial. Last writer wins; `frame` says
+		   whether it is fresh. */
+#ifndef FOG_DEBUG_SAMPLE
+#define FOG_DEBUG_SAMPLE 0
+#endif
+#if FOG_DEBUG_SAMPLE
+		{
+			float lum_pre  = luminance(max(result_preblend.rgb, vec3(0)));
+			float lum_vol  = luminance(max(dbg_g_vol, vec3(0)));
+			bool  lattice  = ((cell.x & 15) == 8 && (cell.y & 15) == 8 && (cell.z & 7) == 4);
+			bool insc_nan = any(isnan(dbg_g_insc));
+			bool insc_inf = any(isinf(dbg_g_insc));
+			bool insc_neg = any(lessThan(dbg_g_insc, vec3(0)));
+			bool sun_nan  = any(isnan(dbg_g_sun)) || any(isinf(dbg_g_sun));
+			/* ONE writer cell - FOGCELL: dens=lum(result_preblend) gate=sun_color.r
+			   in=sun term .r skyvis=phase sky=[inscatter after += .r, raw] post=shadow
+			   frame=gpu frame */
+			if (cell.x == 80 && cell.y == 80 && cell.z == 40)
+			{
+				readback.dbg_pre_b    = floatBitsToUint(lum_pre);
+				readback.dbg_expect_b = floatBitsToUint(sun_color.r);
+				readback.dbg_ratio_b  = floatBitsToUint(dbg_g_sun.r);
+				readback.dbg_vol_b    = floatBitsToUint(dbg_g_phase);
+				readback.dbg_post_b   = floatBitsToUint(dbg_g_insc.r);
+				readback.dbg_sunlum_b = floatBitsToUint(dbg_g_shadow);
+				readback.dbg_frame    = global_ubo.current_frame_idx;
+			}
+			/* Sparse lattice, ~800 cells: per-frame statistics as monotonic
+			   counters that the CPU differences (FOGGRID prints the deltas as
+			   n / pad / first / op / after_op / branch / after_br / last). */
+			if (lattice)
+			{
+				atomicAdd(readback.dbg_n_cells, 1u);                                        // n        lattice cells
+				atomicAdd(readback.dbg_n_pad,   uint(clamp(lum_vol  * 1e4, 0.0, 1e6)));     // pad      sum vol_inscatter x1e4
+				atomicAdd(readback.dbg_n_zero,  insc_nan ? 1u : 0u);                         // first    inscatter NaN
+				atomicAdd(readback.dbg_n_centre, insc_inf ? 1u : 0u);                        // op       inscatter Inf
+				atomicAdd(readback.dbg_slice_q, insc_neg ? 1u : 0u);                         // after_op inscatter negative
+				atomicAdd(readback.dbg_n_lt7,   sun_nan ? 1u : 0u);                          // branch   sun term NaN/Inf
+				atomicAdd(readback.dbg_slice_n, (dbg_g_sunsky > 0.5) ? 1u : 0u);             // after_br fog_sun_is_the_sky()
+				atomicAdd(readback.dbg_sum_q,   uint(clamp(lum_pre  * 1e7, 0.0, 1e6)));     // last     sum result_preblend x1e7
+			}
+		}
+#endif
+		vec4 store_val = (FOG_CONST_SRC == 3.0) ? result_preblend : result;
 
+#if FOG_NAN_GUARD
+		if (any(isnan(store_val)) || any(isinf(store_val)))
+			store_val = vec4(0);
+#endif
 		imageStore(IMG_FROXEL_SCATTER, cell,
 		           clamp(store_val * FROXEL_STORAGE_SCALE,
 		                 vec4(0.0), vec4(FROXEL_STORAGE_MAX)));
