@@ -548,7 +548,7 @@ void G_SetStats(edict_t *ent)
     // rerelease flashlight - the client owns the light itself, the game only
     // owns the on/off state that trigger_flashlight drives
     //
-    ent->client->ps.stats[STAT_FLASHLIGHT] = (ent->flags & FL_FLASHLIGHT) ? 1 : 0;
+    ent->client->ps.stats[STAT_FLASHLIGHT] = (ent->flags & FL_FLASHLIGHT) ? STAT_FLASHLIGHT_ON : 0;
 
     //
     // [rerelease] target_healthbar. Two bars packed a byte each into one stat:

@@ -3454,6 +3454,10 @@ static void SCR_DrawHealthBars(void)
     if (scr_draw2d->integer <= 1)
         return;
 
+    // slot 19 is CTF's team 1 caps, and mods put their own values there
+    if (!CL_GameOwnsExtraStats())
+        return;
+
     stat = cl.frame.ps.stats[STAT_HEALTH_BARS];
     if (!stat)
         return;

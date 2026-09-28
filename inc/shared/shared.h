@@ -1331,6 +1331,12 @@ typedef enum {
 // invented one did not match. 18..31 are unused.
 #define STAT_FLASHLIGHT         18      // rerelease trigger_flashlight, see V_AddEntities
 
+// The "on" value the game writes into STAT_FLASHLIGHT, and the only one the
+// client honors. Slot 18 is STAT_CTF_TEAM1_PIC in CTF and the rerelease, and
+// mods use it freely, so a plain nonzero test lit the flashlight for good in
+// their multiplayer demos. An image index can never be this large.
+#define STAT_FLASHLIGHT_ON      0x7F4C
+
 // [rerelease] target_healthbar. Two bars packed into one short, a byte each:
 // bit 7 = the bar is active, bits 0-6 = health remaining out of 127. The name
 // beside it comes from CS_HEALTH_BAR_NAME.
@@ -1443,6 +1449,13 @@ typedef enum {
 // [rerelease] the display name of whatever target_healthbar is currently
 // showing, already run through the localization table by the game.
 #define CS_HEALTH_BAR_NAME      (CS_GENERAL + 1)
+
+// Set by this tree's baseq2 game at worldspawn so the client can tell it from
+// every other game DLL. STAT_FLASHLIGHT and STAT_HEALTH_BARS sit in slots CTF,
+// the rerelease and mods fill with their own data, so the client reads them
+// only when this says the game is ours - see CL_GameOwnsExtraStats.
+#define CS_GAME_ID              (CS_GENERAL + 2)
+#define GAME_ID_STRING          "q2rtx"
 
 // Some mods actually exploit CS_STATUSBAR to take space up to CS_AIRACCEL
 #define CS_SIZE(cs) \

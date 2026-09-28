@@ -1131,11 +1131,13 @@ void gekk_pain(edict_t *self, edict_t *other, float kick, int damage)
 
 void gekk_dead(edict_t *self)
 {
-    // a corpse in water keeps its full box, or it stops blocking and the
-    // player swims through it
-    if (self->waterlevel >= 2)
-        return;
-
+    // [rerelease] no early-out in water. Xatrix returned here underwater, which
+    // left the body a MOVETYPE_STEP monster still thinking: the wdeath frames
+    // looped forever, and with FL_SWIM already cleared by monster_death_use a
+    // step mover in water gets no gravity and no friction, so knockback carried
+    // the corpse along until it hit a wall, or bobbed it through the surface
+    // (gravity above, none below). The rerelease finishes it the same way in
+    // or out of water; as a dead monster the player passes through it anyway.
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, -8);
     self->movetype = MOVETYPE_TOSS;

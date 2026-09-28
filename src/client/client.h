@@ -411,6 +411,16 @@ typedef struct client_state_s {
 
 extern    client_state_t    cl;
 
+// Whether STAT_FLASHLIGHT and STAT_HEALTH_BARS hold this tree's data rather
+// than some other game's (CTF team pics and caps, mod HUD values). True when
+// the game sent CS_GAME_ID, and also in single player so demos recorded before
+// that marker existed still work: no vanilla single player game writes those
+// slots; CTF and the mods that do are multiplayer.
+static inline bool CL_GameOwnsExtraStats(void)
+{
+    return !strcmp(cl.configstrings[CS_GAME_ID], GAME_ID_STRING) || cl.maxclients == 1;
+}
+
 /*
 ==================================================================
 

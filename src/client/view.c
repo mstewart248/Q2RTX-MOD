@@ -239,6 +239,16 @@ void V_SetLightVolumetricScale(float scale)
 		? LIGHT_VOLUMETRIC_SCALE_UNSET : scale;
 }
 
+// whether the game's trigger_flashlight state says the light is on
+static bool V_MapFlashlight(void)
+{
+    int stat = cl.frame.ps.stats[STAT_FLASHLIGHT];
+
+    if (!CL_GameOwnsExtraStats())
+        return false;
+    return stat == STAT_FLASHLIGHT_ON || stat == 1;
+}
+
 void V_Flashlight(void)
 {
     if(cls.ref_type == REF_TYPE_VKPT) {
@@ -600,7 +610,10 @@ void V_RenderView(void)
 
         // cl_flashlight is the player's own switch; the stat is the rerelease
         // trigger_flashlight state, so either one turns the light on.
-        if(cl_flashlight->integer || cl.frame.ps.stats[STAT_FLASHLIGHT])
+        // cl_flashlight -1 keeps it off even when the map asks for it.
+        // Games from before STAT_FLASHLIGHT_ON wrote 1 (old demos).
+        if(cl_flashlight->integer > 0 ||
+           (cl_flashlight->integer == 0 && V_MapFlashlight()))
             V_Flashlight();
 
         // never let it sit exactly on a node line, because a water plane can

@@ -1618,6 +1618,9 @@ void SP_worldspawn(edict_t *ent)
 
     gi.configstring(CS_MAXCLIENTS, va("%i", (int)(maxclients->value)));
 
+    // tells the client STAT_FLASHLIGHT / STAT_HEALTH_BARS are ours to read
+    gi.configstring(CS_GAME_ID, GAME_ID_STRING);
+
     // status bar program
     if (deathmatch->value)
         gi.configstring(CS_STATUSBAR, dm_statusbar);
