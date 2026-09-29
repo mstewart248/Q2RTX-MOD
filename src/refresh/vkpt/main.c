@@ -4508,6 +4508,10 @@ get_accumulation_rendering_framenum(void)
 
 static bool is_accumulation_rendering_active(void)
 {
+	// pt_dlss5_drugs pauses the game the way the pause key does, but it needs the
+	// real-time DLSS path (and DLSS 5) running, not photo mode.
+	if (DLSS5DrugsActive())
+		return false;
 	return cl_paused->integer == 2 && sv_paused->integer && cvar_pt_accumulation_rendering->integer > 0;
 }
 

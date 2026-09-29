@@ -22,6 +22,15 @@ tuning cvar marks the feature dirty, and it is rebuilt once the value has held s
 DLSS5_REBUILD_DELAY_MS - dragging a slider would otherwise rebuild it every frame. They are
 also re-sent at evaluate, which is harmless and covers any the model does read live.
 pt_dlss5_strength, _colour and _compare are ours, applied in the resolve, and are live.
+
+FEEDBACK (pt_dlss5_drugs 1). Pauses the game and feeds the model its own finished output:
+after the resolve, DLSS_OUTPUT is copied into a private image, and on every following frame
+that image is copied over the freshly rendered DLSS_OUTPUT before the encode, so the path
+traced frame is ignored and the model keeps re-processing its last answer. The first frame
+seeds the loop with the real frame. The model's history is not reset while it runs. What
+gets fed back is the resolved frame, so pt_dlss5_colour 0 still locks the hue and only the
+luminance drifts; pt_dlss5_colour 1 lets the model's colour compound too, and
+pt_dlss5_strength above 1 speeds it up.
 */
 
 #include "vkpt.h"
@@ -76,6 +85,13 @@ static struct {
     unsigned dirtyTime;
     unsigned long long frames;
     qboolean warnedHdr;
+
+    /* pt_dlss5_drugs */
+    VkImage feedback;
+    VkDeviceMemory feedbackMemory;
+    uint32_t feedbackWidth, feedbackHeight;
+    qboolean feedbackSeeded;    /* the image holds a result to feed back */
+    qboolean drugsPaused;       /* we set cl_paused, so we clear it */
 } nr;
 
 static VkPipeline       convert_pipeline;
@@ -102,6 +118,7 @@ static cvar_t* cvar_pt_dlss5_ui_correction;
 static cvar_t* cvar_pt_dlss5_compare;
 static cvar_t* cvar_pt_dlss5_strength;
 static cvar_t* cvar_pt_dlss5_colour;
+static cvar_t* cvar_pt_dlss5_drugs;
 
 VkResult vkpt_dlss5_initialize(void)
 {
@@ -210,14 +227,29 @@ static void ReleaseFeature(void)
     nr.reset = qtrue;
 }
 
+/* Device must be idle. */
+static void DestroyFeedback(void)
+{
+    if (nr.feedback)
+        vkDestroyImage(qvk.device, nr.feedback, NULL);
+    if (nr.feedbackMemory)
+        vkFreeMemory(qvk.device, nr.feedbackMemory, NULL);
+    nr.feedback = VK_NULL_HANDLE;
+    nr.feedbackMemory = VK_NULL_HANDLE;
+    nr.feedbackWidth = nr.feedbackHeight = 0;
+    nr.feedbackSeeded = qfalse;
+}
+
 void DLSS5_DestroyFeature(void)
 {
     ReleaseFeature();
+    DestroyFeedback();
 }
 
 void DLSS5_Shutdown(void)
 {
     ReleaseFeature();
+    DestroyFeedback();
 
     if (nr.params && nr.params_destroy)
         nr.params_destroy(nr.params);
@@ -252,6 +284,33 @@ static void enable_changed(cvar_t* self)
     }
 }
 
+static void drugs_changed(cvar_t* self)
+{
+    if (self->integer) {
+        if (!DLSS5Enabled())
+            Com_WPrintf("pt_dlss5_drugs: DLSS 5 is not running (needs pt_dlss5 1 and DLSS on), "
+                "so there is nothing to feed back.\n");
+        /* Pause the way the pause key does; the server follows cl_paused in single player. */
+        if (cl_paused->integer == 0) {
+            Cvar_Set("cl_paused", "2");
+            nr.drugsPaused = qtrue;
+        }
+        nr.feedbackSeeded = qfalse;
+        return;
+    }
+
+    if (nr.drugsPaused && cl_paused->integer == 2)
+        Cvar_Set("cl_paused", "0");
+    nr.drugsPaused = qfalse;
+
+    if (nr.feedback) {
+        vkpt_device_wait_idle();
+        DestroyFeedback();
+    }
+    /* Back to the real frame; the history is full of the trip. */
+    nr.reset = qtrue;
+}
+
 static void dlss5_info_f(void)
 {
     Com_Printf("DLSS 5 Neural Rendering\n");
@@ -266,6 +325,8 @@ static void dlss5_info_f(void)
         cvar_pt_dlss5_automask->integer);
     Com_Printf("  strength %.2f, colour %.2f, compare %d\n",
         cvar_pt_dlss5_strength->value, cvar_pt_dlss5_colour->value, cvar_pt_dlss5_compare->integer);
+    Com_Printf("  drugs %d, feedback %s\n", cvar_pt_dlss5_drugs->integer,
+        nr.feedback ? (nr.feedbackSeeded ? "looping" : "allocated") : "none");
     if (nr.failed)
         Com_Printf("  FAILED: %s (result 0x%08X)\n", nr.reason, (unsigned)nr.lastResult);
 
@@ -320,6 +381,9 @@ void DLSS5_InitCvars(void)
        invents hues outright (a yellow ammo readout goes magenta). Its lighting and detail
        edits survive at 0; that is the part worth having. */
     cvar_pt_dlss5_colour = Cvar_Get("pt_dlss5_colour", "0", CVAR_ARCHIVE);
+    /* Pause and loop the model's output back into itself. Not archived. */
+    cvar_pt_dlss5_drugs = Cvar_Get("pt_dlss5_drugs", "0", 0);
+    cvar_pt_dlss5_drugs->changed = drugs_changed;
 
     cvar_pt_dlss5_preset->changed = tuning_changed;
     cvar_pt_dlss5_style->changed = tuning_changed;
@@ -337,6 +401,91 @@ qboolean DLSS5Enabled(void)
 {
     return cvar_pt_dlss5 && cvar_pt_dlss5->integer != 0 && !nr.failed && qvk.supports_ngx
         && dlssnrPresent;
+}
+
+qboolean DLSS5DrugsActive(void)
+{
+    return cvar_pt_dlss5_drugs && cvar_pt_dlss5_drugs->integer != 0 && DLSS5Enabled();
+}
+
+static qboolean EnsureFeedback(uint32_t width, uint32_t height)
+{
+    if (nr.feedback && nr.feedbackWidth == width && nr.feedbackHeight == height)
+        return qtrue;
+    if (nr.feedback) {
+        vkpt_device_wait_idle();
+        DestroyFeedback();
+    }
+
+    VkImageCreateInfo img_info = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType     = VK_IMAGE_TYPE_2D,
+        .format        = VK_FORMAT_R16G16B16A16_SFLOAT,   /* DLSS_OUTPUT's format */
+        .extent        = { width, height, 1 },
+        .mipLevels     = 1,
+        .arrayLayers   = 1,
+        .samples       = VK_SAMPLE_COUNT_1_BIT,
+        .tiling        = VK_IMAGE_TILING_OPTIMAL,
+        .usage         = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(qvk.device, &img_info, NULL, &nr.feedback) != VK_SUCCESS) {
+        nr.feedback = VK_NULL_HANDLE;
+        return qfalse;
+    }
+    ATTACH_LABEL_VARIABLE(nr.feedback, IMAGE);
+
+    VkMemoryRequirements mem_req;
+    vkGetImageMemoryRequirements(qvk.device, nr.feedback, &mem_req);
+    if (allocate_gpu_memory(mem_req, &nr.feedbackMemory) != VK_SUCCESS
+        || vkBindImageMemory(qvk.device, nr.feedback, nr.feedbackMemory, 0) != VK_SUCCESS) {
+        DestroyFeedback();
+        return qfalse;
+    }
+
+    nr.feedbackWidth = width;
+    nr.feedbackHeight = height;
+    nr.feedbackSeeded = qfalse;
+    return qtrue;
+}
+
+static void CopyWhole(VkCommandBuffer cmd, VkImage src, VkImage dst, uint32_t width, uint32_t height)
+{
+    VkImageCopy region = {
+        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .extent = { width, height, 1 },
+    };
+    vkCmdCopyImage(cmd, src, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+}
+
+/* Last frame's result over this frame's DLSS_OUTPUT, before the encode. */
+static void FeedbackIn(VkCommandBuffer cmd, uint32_t width, uint32_t height)
+{
+    /* Previous submission's copy-out; barriers reach back across submissions on one queue. */
+    ImageBarrier(cmd, nr.feedback, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    ImageBarrier(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT],
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    CopyWhole(cmd, nr.feedback, qvk.images[VKPT_IMG_DLSS_OUTPUT], width, height);
+    ImageBarrier(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT],
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+}
+
+/* This frame's finished result into the feedback image, for the next frame. The resolve's
+   barrier already made DLSS_OUTPUT visible to transfer reads. */
+static void FeedbackOut(VkCommandBuffer cmd, uint32_t width, uint32_t height)
+{
+    const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    IMAGE_BARRIER(cmd,
+        .image = nr.feedback,
+        .subresourceRange = range,
+        .srcAccessMask = nr.feedbackSeeded ? VK_ACCESS_TRANSFER_READ_BIT : 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout = nr.feedbackSeeded ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL);
+    CopyWhole(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT], nr.feedback, width, height);
+    nr.feedbackSeeded = qtrue;
 }
 
 /* Module directory of q2rtx.exe, with a trailing backslash. */
@@ -493,6 +642,10 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
         VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
         VK_ACCESS_SHADER_WRITE_BIT);
 
+    const qboolean drugs = DLSS5DrugsActive() && EnsureFeedback(width, height);
+    if (drugs && nr.feedbackSeeded)
+        FeedbackIn(cmd, width, height);
+
     /* The model wants sRGB-encoded values; the frame is linear. */
     Convert(cmd, 0, width, height);
 
@@ -555,4 +708,7 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
 
     /* The model's answer against the encoded original, back to linear in DLSS_OUTPUT. */
     Convert(cmd, 1, width, height);
+
+    if (drugs)
+        FeedbackOut(cmd, width, height);
 }

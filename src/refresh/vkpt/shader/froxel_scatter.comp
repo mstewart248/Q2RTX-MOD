@@ -1401,7 +1401,28 @@ void main()
 #ifndef FROXEL_SKY_PROBE_CLAMP
 #define FROXEL_SKY_PROBE_CLAMP 1
 #endif
+/* FROXEL_SKY_PROBE_VOID  (2026-09-29)  -  A CELL WITH NO VISIBLE PROBE GETS NO SKY.
+
+   The clamp above used to fall back to the true centre when none of its five
+   taps was visible, and under a CEILING that is the common case: every tap
+   lands on the same ceiling at about the same depth. A far cell is tens of
+   units deep, so its centre sits ABOVE the ceiling brush, in the void outside
+   the map - the up-ray escapes, the cell reads full sky, and the trilinear read
+   at the surface plus the 3x3x3 filter bleed it into a room with no sky
+   anywhere. Matt saw it as pt_fog_sky_scale brightening a dark indoor room, on
+   skybox maps only (under the physical sky fog_sky_inscatter returns 0).
+
+   Nothing is lost by zeroing it. The visible part of such a cell is in front
+   of the occluder, i.e. under that same ceiling; and a cell straddling open
+   ground already read 0, because its centre is inside the ground brush and the
+   up-ray hits the brush's top face (culling is disabled on the BSP). The only
+   cells this changes are the ones whose ray started in the void. 0 = old
+   behaviour for A/B. */
+#ifndef FROXEL_SKY_PROBE_VOID
+#define FROXEL_SKY_PROBE_VOID 1
+#endif
 		vec3 sky_probe = world_pos_history;
+		bool sky_probe_ok = true;
 #if FROXEL_SKY_PROBE_CLAMP
 		{
 			// Same field-relative screen mapping god_rays_filter uses to read
@@ -1415,6 +1436,7 @@ void main()
 
 			float best_dist = -1.0;
 			vec2  best_tap  = vec2(0.5);
+			bool  centre_open = false;
 			for (int i = 0; i < 5; i++)
 			{
 				vec2 screen_uv = (vec2(cell.xy) + taps[i]) / vec2(FROXEL_GRID_X, FROXEL_GRID_Y);
@@ -1423,7 +1445,10 @@ void main()
 				float surface_dist = texelFetch(TEX_PT_PRIMARY_DIST, pix, 0).r;
 
 				if (i == 0 && surface_dist > probe_dist)
+				{
+					centre_open = true;
 					break; // centre is in open air - leave it alone
+				}
 
 				if (surface_dist > best_dist)
 				{
@@ -1435,10 +1460,14 @@ void main()
 			// A few units of clearance so the probe does not sit on the surface.
 			if (best_dist > probe_dist + 4.0)
 				sky_probe = froxel_to_world(cell, vec3(best_tap, 0.5));
+#if FROXEL_SKY_PROBE_VOID
+			else if (!centre_open)
+				sky_probe_ok = false;
+#endif
 		}
 #endif
 
-		if (fog_lights && FROXEL_MODE3)
+		if (fog_lights && FROXEL_MODE3 && sky_probe_ok)
 		{
 			cell_sky_term = fog_sky_inscatter(sky_probe);
 			dbg_hoist_entered = fog_debug_sky_entered;

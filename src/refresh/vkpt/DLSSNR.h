@@ -13,6 +13,10 @@ The snippet is reached through nvngx.dll_dlssnr.dll (dlssnr_forwarder.cpp); see 
 void DLSS5_InitCvars(void);
 qboolean DLSS5Enabled(void);
 
+/* pt_dlss5_drugs: the game is paused and each frame's DLSS 5 result is fed back in as the
+   next frame's input. main.c keeps photo mode out of the way while this is on. */
+qboolean DLSS5DrugsActive(void);
+
 /* Records the pass into cmd. Call only when DLSSEnabled() and not in photo mode. */
 void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory);
 
