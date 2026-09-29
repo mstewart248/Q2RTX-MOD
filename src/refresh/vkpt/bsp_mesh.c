@@ -1047,6 +1047,36 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 					cluster = BSP_PointLeaf(bsp->nodes, center)->cluster;
 				}
 
+				// Some compilers (the rerelease q2dm6, for one) don't split wall faces at a
+				// liquid surface, so a fan triangle can have its center under lava while
+				// half of it sticks up into the room. It then gets the liquid cluster's
+				// light list and light stats, and the part above the surface renders dark
+				// in sharp triangle shapes. Probe near each corner and prefer an air cluster.
+				if (BSP_PointLeaf(bsp->nodes, center)->contents & MASK_WATER)
+				{
+					vec3_t tri_center, e1, e2, normal;
+					VectorAdd(positions + 0, positions + 3, tri_center);
+					VectorAdd(tri_center, positions + 6, tri_center);
+					VectorScale(tri_center, 1.f / 3.f, tri_center);
+					VectorSubtract(positions + 3, positions + 0, e1);
+					VectorSubtract(positions + 6, positions + 0, e2);
+					CrossProduct(e1, e2, normal);
+					VectorNormalize(normal);
+
+					for (int v = 0; v < 3; v++)
+					{
+						vec3_t probe;
+						LerpVector(positions + v * 3, tri_center, 0.1f, probe);
+						VectorMA(probe, 0.01f, normal, probe);
+						const mleaf_t* leaf = BSP_PointLeaf(bsp->nodes, probe);
+						if (leaf->cluster >= 0 && !(leaf->contents & (MASK_WATER | CONTENTS_SOLID)))
+						{
+							cluster = leaf->cluster;
+							break;
+						}
+					}
+				}
+
 				surface_prims[k].cluster = cluster;
 
 				if (cluster >= 0 && (MAT_IsKind(material_id, MATERIAL_KIND_SKY) || MAT_IsKind(material_id, MATERIAL_KIND_LAVA)))
