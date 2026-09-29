@@ -17591,6 +17591,8 @@ textures/r_mine/sgnmine03:
 textures/r_mine/walmine01:
 	texture_base materialDev/textures/r_mine/walmine01.tga
 	texture_normals materialDev/textures/r_mine/walmine01_n.tga
+	specular_factor 0.0
+	roughness_override 1.0
 	metalness_factor 0
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
@@ -17608,6 +17610,7 @@ textures/r_mine/walmine02:
 	texture_emissive materialDev/textures/r_mine/walmine02.tga
  	metalness_factor 0
 	roughness_override 0
+	specular_factor 5
 	emissive_factor .005
 	default_radiance 10
 	is_light 1
@@ -17691,6 +17694,8 @@ textures/r_sewer/flrswr02:
 textures/r_sewer/flrswr03:
 	texture_base materialDev/textures/r_sewer/flrswr03.tga
 	texture_normals materialDev/textures/r_sewer/flrswr03_n.tga
+	specular_factor 0.0
+	roughness_override 1.0
 	metalness_factor 0
 
 textures/r_sewer/flrswr04:

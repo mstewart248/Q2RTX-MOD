@@ -8080,6 +8080,9 @@ textures/e2u1/tunl3_3:
 textures/e2u1/tunl3_4:
 	texture_base overrides/tunl3_4.tga
 	texture_normals overrides/tunl3_4_n.tga
+	texture_height overrides/tunl3_4_height.png
+	displace_in .025
+	displace_out 0.0
 	base_factor 2.5
 
 textures/e2u1/tunl3_5:

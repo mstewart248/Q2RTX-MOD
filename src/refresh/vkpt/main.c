@@ -3353,8 +3353,27 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 {
 	int cluster = -1;
 	if (bsp_world_model)
+	{
 		cluster = BSP_PointLeaf(bsp_world_model->nodes, entity->origin)->cluster;
-	
+
+		// Some mappers sink an entity's origin into the floor or a wall (base1 has a
+		// misc_deadsoldier at -1964 1968 -164 whose origin is in solid). A cluster of -1
+		// means no light list, so the whole model gets no direct lighting and renders
+		// nearly black. Like the brush-model fallback in process_bsp_entity, probe a few
+		// points nearby - upward first, since that is the usual case - until one is in
+		// open space.
+		static const float probe_offsets[][3] = {
+			{ 0, 0, 4 }, { 0, 0, 8 }, { 0, 0, 16 }, { 0, 0, 24 }, { 0, 0, 32 },
+			{ 8, 0, 8 }, { -8, 0, 8 }, { 0, 8, 8 }, { 0, -8, 8 }, { 0, 0, -8 },
+		};
+		for (int i = 0; cluster < 0 && i < (int)q_countof(probe_offsets); i++)
+		{
+			vec3_t probe;
+			VectorAdd(entity->origin, probe_offsets[i], probe);
+			cluster = BSP_PointLeaf(bsp_world_model->nodes, probe)->cluster;
+		}
+	}
+
 	int frame = entity->frame;
 	int oldframe = entity->oldframe;
 	if (frame >= model->numframes) frame = 0;
@@ -8606,7 +8625,7 @@ R_Init_RTX(bool total)
 	cvar_fullscreen_exclusive = Cvar_Get("vid_fullscreen_exclusive", "1", CVAR_ARCHIVE);
 	cvar_hdr = Cvar_Get("vid_hdr", "0", CVAR_ARCHIVE);
 	cvar_pt_caustics = Cvar_Get("pt_caustics", "1", CVAR_ARCHIVE);
-	cvar_pt_enable_nodraw = Cvar_Get("pt_enable_nodraw", "0", 0);
+	cvar_pt_enable_nodraw = Cvar_Get("pt_enable_nodraw", "1", 0);
 	/* Synthesize materials for surfaces with LIGHT flag.
 	 * 0: disabled
 	 * 1: enabled for "custom" materials (not in materials.csv)
