@@ -1229,6 +1229,24 @@ static int random_frames(float lo, float hi)
 }
 
 /*
+id tuned M_MonsterDodge for the rerelease's 40 Hz server, and this one runs at
+BASE_FRAMERATE (10 Hz).  M_CheckDodge offers each incoming projectile to the
+monster once per server frame, and id rolls "half the time, just take it" on
+every one of those offers, and ignores a shot less than one frame out.  Copied
+as-is at 10 Hz, a bolt got a quarter of the rolls and lost its last 100 ms
+instead of its last 25 ms, so from a couple of hundred units away a soldier
+barely ever reacted - no duck, and so no trip or prone either.  Keep id's
+wall-clock behaviour instead: the same one-40th-of-a-second cutoff, and the
+chance of letting a whole server frame's worth of id rolls all say "take it".
+*/
+#define DODGE_ID_TICK   (1.0f / 40)
+
+static float M_DodgeTakeItChance(void)
+{
+    return powf(0.5f, (1.0f / BASE_FRAMERATE) / DODGE_ID_TICK);
+}
+
+/*
 =================
 monster_done_dodge
 
@@ -1382,11 +1400,11 @@ void M_MonsterDodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bo
 
     // one frame of warning is not enough to react to, and 2.5s is so far off
     // that reacting now is pointless
-    if (eta < FRAMETIME || eta > 2.5f)
+    if (eta < DODGE_ID_TICK || eta > 2.5f)
         return;
 
-    // half the time, just take it
-    if (random() > 0.5f)
+    // half the time, just take it - per id tick, see DODGE_ID_TICK
+    if (random() < M_DodgeTakeItChance())
         return;
 
     // How high the shot is going to pass. The -1 is because absmax is

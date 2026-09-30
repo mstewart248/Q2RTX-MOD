@@ -295,6 +295,14 @@ static void drs_maxscale_changed(cvar_t *self)
 	Cvar_ClampInteger(self, 50, 200);
 }
 
+// Switching ReSTIR DI on (the video menu toggle, or the console) also turns on
+// one spatial sample.  pt_restir_spatial itself still defaults to 0 at startup.
+static void restir_cvar_changed(cvar_t* self)
+{
+	if (self->integer != 0)
+		Cvar_SetByVar(cvar_pt_restir_spatial, "1", FROM_CODE);
+}
+
 static void accumulation_cvar_changed(cvar_t* self)
 {
 	// Reset accumulation rendering on DoF parameter change
@@ -8787,6 +8795,8 @@ R_Init_RTX(bool total)
 	cvar_pt_focus->changed = accumulation_cvar_changed;
 	cvar_pt_freecam->changed = accumulation_cvar_changed;
 	cvar_pt_projection->changed = accumulation_cvar_changed;
+
+	cvar_pt_restir->changed = restir_cvar_changed;
 
 	cvar_pt_num_bounce_rays->flags |= CVAR_ARCHIVE;
 	cvar_pt_sharc->flags |= CVAR_ARCHIVE; // the video menu's "multi-bounce lighting" toggle
