@@ -53,7 +53,7 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	float vis;
 
 	Reservoir r, prev_r, spatial_r;
-	prev_r.W = 0;
+	init_reservoir(prev_r); // no history unless the reprojection below finds one
 
 	// Diagnostics for pt_restir_debug 24 / 25 - see the debug block below.
 	float dbg_w_fresh = 0.0;
@@ -207,7 +207,8 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 				{
 					uvec4 packed_reservoir = texelFetch(TEX_PT_RESTIR_B, pos_prev_r, 0);
 					unpack_reservoir(packed_reservoir, prev_idx, prev_r);
-					prev_r.p_hat = get_unshadowed_path_contrib(prev_r.y, position, normal, view_direction.xyz, phong_exp, phong_scale, phong_weight, prev_r.y_pos);                    
+					prev_r.p_hat = prev_r.y == RESTIR_EMPTY_ID ? 0.0
+						: get_unshadowed_path_contrib(prev_r.y, position, normal, view_direction.xyz, phong_exp, phong_scale, phong_weight, prev_r.y_pos);
 				}
 			}
 		}
@@ -225,6 +226,8 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 			phong_scale,
 			phong_weight,
 			0,
+			shadow_cull_mask,
+			global_ubo.pt_restir_initial_vis != 0,
 			prev_r,
 			r,
 			dbg_w_fresh,
@@ -235,8 +238,137 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 		r = prev_r;
 	}
 
-    //Spatio-temporal
-	if(global_ubo.pt_restir_spatial != 0)
+	// What the history gets - see "Spatial results are for this frame only" below.
+	Reservoir r_temporal = r;
+	bool spatial_output_only = global_ubo.pt_restir_spatial != 0 && global_ubo.pt_restir_pairwise == 0;
+
+	// Spatial reuse, RTXDI's "unbiased" mode (RTXDI_SpatialResampling with ray-traced
+	// bias correction). Runs unless pt_restir_pairwise selects the older pairwise path.
+	//
+	// The previous version skipped every neighbour whose reservoir had come up empty
+	// (W == 0), so only neighbours that happened to find a visible light were reused:
+	// sunlight through an opening - where most sun samples hit the wall - was credited
+	// as if every sample got through (+12% on base2 against plain RIS). Counting the
+	// empty neighbours instead would darken a lit pixel beside a shadow, because a
+	// shadowed neighbour could never have produced this pixel's sun sample.
+	//
+	// The fix is RTXDI's 1/Z normalisation: every neighbour is streamed (an empty one
+	// with zero weight), and only after the sample is chosen is each neighbour asked
+	// whether it COULD have produced it - light facing its surface, and (with
+	// pt_restir_spatial_vis) not shadowed from its surface. Z sums the M of exactly
+	// those. Neighbour surfaces come from this frame's G-buffer at the same offset.
+	if(global_ubo.pt_restir_spatial != 0 && global_ubo.pt_restir_pairwise == 0)
+	{
+		float rng = get_rng(RNG_RESTIR_SP_LIGHT_SELECTION(0));
+		vec2 rng_pos = vec2(get_rng(RNG_RESTIR_SPATIAL_X(0)), get_rng(RNG_RESTIR_SPATIAL_Y(0)));
+
+		int cur_left = ipos.x >= global_ubo.pt_field_offset ? global_ubo.pt_field_offset : 0;
+		int cur_right = ipos.x >= global_ubo.pt_field_offset ? global_ubo.pt_field_offset * 2 : global_ubo.pt_field_offset;
+
+		// The canonical reservoir: this pixel's fresh candidates merged with its history.
+		Reservoir s;
+		init_reservoir(s);
+		if(r.y != RESTIR_INVALID_ID && r.y != RESTIR_EMPTY_ID && r.W > 0.0 && r.p_hat > 0.0)
+			update_reservoir(r.y, r.p_hat * r.W * float(r.M), r.y_pos, r.p_hat, rng, s);
+		uint m_canonical = r.M;
+		uint m_total = r.M;
+
+		ivec2 n_pixel[RESTIR_SPACIAL_SAMPLES];
+		uint n_m[RESTIR_SPACIAL_SAMPLES];
+		int num_n = 0;
+
+		int distance = use_shadow_rays ? RESTIR_SPACIAL_DISTANCE : 2;
+		int samples = min(RESTIR_SPACIAL_SAMPLES, int(global_ubo.pt_restir_spatial) * 2);
+		int wanted = int(global_ubo.pt_restir_spatial);
+
+		for(int i = 0; i < samples && num_n < wanted; i++)
+		{
+			ivec2 off = ivec2(ceil(sample_disk(rng_pos) * distance));
+			if(i == 4) distance *= 2;
+			rng_pos = rng_pos * 10 - floor(rng_pos * 10);
+
+			ivec2 sample_pos;
+			sample_pos.x = clamp(pos_prev.x + off.x, field_left, field_right - 1);
+			sample_pos.y = clamp(pos_prev.y + off.y, 0, int(global_ubo.height - 1));
+			ivec2 sample_pos_r = sample_pos;
+			if(global_ubo.pt_restir == 2)
+			{
+				sample_pos.x = min((sample_pos.x & ~1) + (sample_pos.y & 1), field_right - 1);
+				sample_pos_r = sample_pos;
+				sample_pos_r.y >>= 1;
+			}
+			else if(global_ubo.pt_restir == 3)
+			{
+				sample_pos &= ~1;
+				sample_pos_r >>= 1;
+			}
+
+			uint str_idx = get_light_current_idx(texelFetch(TEX_PT_RESTIR_ID_B, sample_pos_r, 0).x);
+			if(str_idx == RESTIR_INVALID_ID)
+				continue;
+
+			float depth_prev = texelFetch(TEX_PT_VIEW_DEPTH_B, sample_pos, 0).x;
+			if(abs(depth_prev - view_depth) >= 0.1 * abs(view_depth))
+				continue;
+			if(use_shadow_rays && dot(decode_normal(texelFetch(TEX_PT_NORMAL_B, sample_pos, 0).x), normal) <= 0.9)
+				continue;
+
+			Reservoir st_r;
+			unpack_reservoir(texelFetch(TEX_PT_RESTIR_B, sample_pos_r, 0), str_idx, st_r);
+			if(st_r.M == 0)
+				continue;
+
+			// The neighbour's sample, evaluated in this pixel's domain. An empty neighbour
+			// is streamed with zero weight - it only contributes its M, and only if the
+			// Z test below says it could have found the chosen sample.
+			float p_hat = (str_idx == RESTIR_EMPTY_ID || st_r.W <= 0.0) ? 0.0
+				: get_unshadowed_path_contrib(st_r.y, position, normal, view_direction.xyz, phong_exp, phong_scale, phong_weight, st_r.y_pos);
+			float w = p_hat * st_r.W * float(st_r.M);
+			if(w > 0.0)
+				update_reservoir(st_r.y, w, st_r.y_pos, p_hat, rng, s);
+
+			// The same neighbourhood in this frame's G-buffer, for the Z test.
+			ivec2 np = ipos + (sample_pos - pos_prev);
+			np.x = clamp(np.x, cur_left, cur_right - 1);
+			np.y = clamp(np.y, 0, int(global_ubo.height - 1));
+			n_pixel[num_n] = np;
+			n_m[num_n] = st_r.M;
+			m_total += st_r.M;
+			num_n++;
+		}
+
+		s.W = 0.0;
+		if(s.y != RESTIR_INVALID_ID && s.p_hat > 0.0)
+		{
+			// This pixel could have produced the sample (s.p_hat > 0), so its own M counts.
+			float z = float(m_canonical);
+			for(int n = 0; n < num_n; n++)
+			{
+				vec4 n_pos = texelFetch(TEX_PT_SHADING_POSITION, n_pixel[n], 0);
+				if(floatBitsToUint(n_pos.w) == 0)
+					continue;
+				vec3 n_normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, n_pixel[n], 0).x);
+				vec3 n_view = texelFetch(TEX_PT_VIEW_DIRECTION, n_pixel[n], 0).xyz;
+
+				// Only the sign matters, so the BRDF lobe is left out.
+				if(get_unshadowed_path_contrib(s.y, n_pos.xyz, n_normal, n_view, 1.0, 1.0, 0.0, s.y_pos) <= 0.0)
+					continue;
+				if(use_shadow_rays && global_ubo.pt_restir_spatial_vis != 0
+					&& !restir_sample_visible(s.y, s.y_pos, n_pos.xyz, n_view, shadow_cull_mask))
+					continue;
+
+				z += float(n_m[n]);
+			}
+			s.W = z > 0.0 ? s.w_sum / (z * s.p_hat) : 0.0;
+			if(isnan(s.W) || isinf(s.W))
+				s.W = 0.0;
+		}
+		s.M = m_total;
+		r = s;
+	}
+
+	// The older spatial paths, kept for A/B: pt_restir_pairwise 1.
+	if(global_ubo.pt_restir_spatial != 0 && global_ubo.pt_restir_pairwise != 0)
 	{
 		float rng = get_rng(RNG_RESTIR_SP_LIGHT_SELECTION(0));
 		uint processed = 0;
@@ -486,6 +618,29 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 
 	}
 
+	// Spatial results are for this frame only. Feeding the spatially reused reservoir
+	// back as history - to this pixel next frame and, through its neighbours, to
+	// everything within reach - let any excess compound frame over frame: measured
+	// +59% on base2 with 4 neighbours and permutation sampling, +9.6% without the
+	// permutation, against +0.1% for temporal-only history. So the history is this
+	// pixel's temporal reservoir, with its own sample's visibility applied (reusing the
+	// shading ray when spatial reuse kept the same sample). Also means less correlated
+	// noise, which DLSS-RR wants.
+	if(spatial_output_only)
+	{
+		bool has_sample = r_temporal.y != RESTIR_INVALID_ID && r_temporal.y != RESTIR_EMPTY_ID && r_temporal.W > 0.0;
+		if(has_sample && use_shadow_rays)
+		{
+			bool same_sample = r_temporal.y == r.y && all(equal(r_temporal.y_pos, r.y_pos));
+			bool visible = same_sample
+				? r.W > 0.0
+				: restir_sample_visible(r_temporal.y, r_temporal.y_pos, position, view_direction.xyz, shadow_cull_mask);
+			if(!visible)
+				r_temporal.W = 0.0;
+		}
+		r = r_temporal;
+	}
+
 	// Captured before the rescale below, so view 13 shows the w_sum that actually
 	// produced W = w_sum / (p_hat * M) this frame rather than the value stored for
 	// the next one.
@@ -673,7 +828,11 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 
 	if(use_shadow_rays)
 	{
-		imageStore(IMG_PT_RESTIR_ID_A, ipos_r, uvec4(r.W == 0.0f ? RESTIR_INVALID_ID : r.y));
+		// A reservoir that ends with no usable sample - nothing visible, or shadowed at
+		// shading - is stored as EMPTY, not INVALID, so its M survives into next frame's
+		// merge. See RESTIR_EMPTY_ID.
+		uint stored_id = r.W != 0.0f ? r.y : (r.M > 0 ? RESTIR_EMPTY_ID : RESTIR_INVALID_ID);
+		imageStore(IMG_PT_RESTIR_ID_A, ipos_r, uvec4(stored_id));
 		imageStore(IMG_PT_RESTIR_A, ipos_r, uvec4(pack_reservoir(r)));	
 	}
 }

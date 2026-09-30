@@ -27,6 +27,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 extern cvar_t *cvar_profiler_scale;
 extern cvar_t *cvar_pt_reflect_refract;
 extern cvar_t *cvar_pt_fog_froxel;
+extern cvar_t *cvar_pt_sharc;
+extern cvar_t *cvar_pt_restir_gi;
 extern cvar_t *cvar_flt_fsr_enable;
 extern cvar_t *cvar_profiler_samples;
 
@@ -412,10 +414,12 @@ draw_profiler(int enable_asvgf)
 	{
 		PROFILER_DO(PROFILER_ASVGF_GRADIENT_REPROJECT, 1);
 	}
+	if (cvar_pt_sharc->value != 0) { PROFILER_DO(PROFILER_SHARC, 1); }
 	PROFILER_DO(PROFILER_DIRECT_LIGHTING, 1);
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING, 1);
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING_0, 2);
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING_1, 2);
+	if (cvar_pt_restir_gi->value != 0) { PROFILER_DO(PROFILER_RESTIR_GI, 1); }
 	PROFILER_DO(PROFILER_GOD_RAYS, 1);
 	PROFILER_DO(PROFILER_GOD_RAYS_REFLECT_REFRACT, 1);
 	PROFILER_DO(PROFILER_GOD_RAYS_FILTER, 1);

@@ -716,6 +716,28 @@ window - the old fire-time check_dodge rolled once, far out, and almost never
 got there.  Rerelease game only; the classic game keeps check_dodge.
 =================
 */
+/*
+The rerelease's infront(), which M_CheckDodge is written against: a much wider
+cone than the 1997 one in g_ai.c (dot > -0.3 against 0.3), narrowed to 0.15 for
+an ambush monster that has not found anyone yet.  Kept local so the classic
+sight checks that share infront() are untouched.
+*/
+static bool M_DodgeInfront(edict_t *self, edict_t *other)
+{
+    vec3_t  forward, vec;
+    float   dot;
+
+    AngleVectors(self->s.angles, forward, NULL, NULL);
+    VectorSubtract(other->s.origin, self->s.origin, vec);
+    VectorNormalize(vec);
+    dot = DotProduct(vec, forward);
+
+    if ((self->spawnflags & 1) && !self->enemy)
+        return dot > 0.15f;
+
+    return dot > -0.30f;
+}
+
 static void M_CheckDodge(edict_t *self)
 {
     static edict_t *list[MAX_EDICTS];
@@ -745,7 +767,7 @@ static void M_CheckDodge(edict_t *self)
             continue;
 
         // projectile is behind us, we can't see it
-        if (!infront(self, ent))
+        if (!M_DodgeInfront(self, ent))
             continue;
 
         // will it hit us within 1 second? gives us enough time to dodge
@@ -1191,12 +1213,14 @@ bool M_CalculatePitchToFire(edict_t *self, const vec3_t target, const vec3_t sta
   behaviours can now be revisited.
 
   TIME UNITS: the rerelease works in gtime_t seconds; everything here is in
-  server FRAMES, hence the *_framenum names. DUCK_INTERVAL is their 0.5s.
+  server FRAMES, hence the *_framenum names. DUCK_INTERVAL is their 5000_ms
+  (g_local.h) - it once read 0.5s here, which let monsters duck ten times as
+  often as id's.
 
 =================================================================
 */
 
-#define DUCK_INTERVAL   (int)(0.5f * BASE_FRAMERATE)
+#define DUCK_INTERVAL   (int)(5.0f * BASE_FRAMERATE)
 
 // random frame count in [lo, hi] seconds
 static int random_frames(float lo, float hi)
@@ -1415,14 +1439,18 @@ void M_MonsterDodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bo
             self->monsterinfo.aiflags |= AI_DODGING;
             self->monsterinfo.attack_state = AS_SLIDING;
             self->monsterinfo.dodge_framenum = level.framenum + random_frames(0.4f, 2.0f);
-            return;
         }
+
+        // id returns here whether or not the sidestep took.  Falling through
+        // to the duck when it declined (the soldier declines mid-trip, mid
+        // prone-fire and in pain4) knocked it out of those into a crouch.
+        return;
     }
 
 try_duck:
-    // no sidestep available (or it declined) - crouch instead, but only once
-    // the shot is genuinely close
-    if (ducker && eta < 0.5f) {
+    // no sidestep available, or the shot is high enough to duck under - crouch,
+    // but only once the shot is genuinely close
+    if (ducker && tr && eta < 0.5f) {
         if (level.framenum < self->monsterinfo.next_duck_framenum)
             return;
 

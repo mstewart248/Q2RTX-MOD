@@ -8928,7 +8928,9 @@ textures/e1u3/refdr3_3:
 textures/e1u3/refdr3_4:
 	texture_base materialDev/textures/e1u3/refdr3_4.tga
 	texture_normals materialDev/textures/e1u3/refdr3_4_n.tga
-	metalness_factor 0
+	metalness_factor 1
+	specular_factor .35
+	roughness_override .5
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the

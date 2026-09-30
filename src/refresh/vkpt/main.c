@@ -421,6 +421,11 @@ void vkpt_dlss_request_history_reset(void)
 	dlss5_reset_history = true;
 }
 
+/* Radiance cache (pt_sharc): zero it before its next use. Set for the first frame,
+   a new map, and whenever it has been off (disabled, or photo mode) - entries from
+   before that describe lighting that may no longer exist. */
+static bool sharc_clear_pending = true;
+
 void vkpt_reset_accumulation()
 {
 	num_accumulated_frames = 0;
@@ -6514,6 +6519,17 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			END_PERF_MARKER(trace_cmd_buf, PROFILER_ASVGF_GRADIENT_REPROJECT);
 		}
 
+		// Never in photo mode: the cache is biased, and that mode is the reference.
+		if (cvar_pt_sharc->value != 0 && !ref_mode.enable_accumulation && ref_mode.num_bounce_rays > 0)
+		{
+			vkpt_pt_sharc_update(trace_cmd_buf, sharc_clear_pending);
+			sharc_clear_pending = false;
+		}
+		else
+		{
+			sharc_clear_pending = true;
+		}
+
 		vkpt_pt_trace_lighting(trace_cmd_buf, ref_mode.num_bounce_rays);
 
 		VkPipelineStageFlags fog_wait_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
@@ -8773,6 +8789,8 @@ R_Init_RTX(bool total)
 	cvar_pt_projection->changed = accumulation_cvar_changed;
 
 	cvar_pt_num_bounce_rays->flags |= CVAR_ARCHIVE;
+	cvar_pt_sharc->flags |= CVAR_ARCHIVE; // the video menu's "multi-bounce lighting" toggle
+	cvar_pt_restir_gi->flags |= CVAR_ARCHIVE; // the video menu's "ReStir Global Illumination" toggle
 	// on a slider in the effects menu, so it has to survive a restart
 	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
 
@@ -9268,6 +9286,7 @@ R_BeginRegistration_RTX(const char *name)
 	bsp_mesh_create_from_bsp(&vkpt_refdef.bsp_mesh_world, bsp, name);
 	vkpt_light_buffers_create(&vkpt_refdef.bsp_mesh_world);
 	_VK(vkpt_vertex_buffer_upload_bsp_mesh(&vkpt_refdef.bsp_mesh_world));
+	sharc_clear_pending = true;
 	vkpt_refdef.bsp_mesh_world_loaded = 1;
 	bsp = NULL;
 	world_anim_frame = 0;

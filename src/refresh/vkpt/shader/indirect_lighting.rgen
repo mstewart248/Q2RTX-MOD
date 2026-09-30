@@ -31,8 +31,22 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "path_tracer_rgen.h"
 #include "path_tracer_transparency.glsl"
+#include "sharc.h"
+#include "restir_gi.h"
 
 layout(constant_id = 0) const uint spec_bounce_index = 0;
+
+// pt_sharc 4 debug: -1 = no cache query on this path, 0 = query missed, 1 = hit
+int sharc_debug_hit = -1;
+
+// ReSTIR GI candidate (pt_restir_gi), filled in by indirect_lighting() on the first
+// bounce and written out by main() - see restir_gi.h.
+bool gi_candidate = false;     // a diffuse bounce was taken; its result belongs to ReSTIR GI
+vec3 gi_sample_pos = vec3(0);
+vec3 gi_sample_normal = vec3(0);
+vec3 gi_t0 = vec3(0);          // throughput into the bounce, before the hit's albedo
+vec3 gi_origin = vec3(0);
+vec3 gi_origin_normal = vec3(0);
 
 /* Texture mip at a bounce hit from a ray cone - Akenine-Moller et al.,
    "Improved Shader and Texture Level of Detail Using Ray Cones", JCGT 2021:
@@ -140,6 +154,10 @@ indirect_lighting(
     vec3 primary_albedo, primary_base_reflectivity;
     get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
 
+	bool use_restir_gi = spec_bounce_index == 0 && !half_res && restir_gi_enabled();
+	gi_origin = position;
+	gi_origin_normal = normal;
+
 
 	bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
 
@@ -213,7 +231,7 @@ indirect_lighting(
 		{
 			vec3 basis_normal, dir_sphere;
 		#if ENABLE_SH
-			if(spec_bounce_index == 0 && global_ubo.flt_enable != 0)
+			if(spec_bounce_index == 0 && global_ubo.flt_enable != 0 && !use_restir_gi)
 			{
 				dir_sphere = sample_cos_hemisphere_multi(0, 1, rng3, HEMISPHERE_UNIFORMISH);
 				basis_normal = geo_normal;
@@ -263,6 +281,16 @@ indirect_lighting(
 	}
 
 	trace_geometry_ray(bounce_ray, true, bounce_cull_mask);
+
+	if(use_restir_gi && !is_specular_ray)
+	{
+		gi_candidate = true;
+		gi_t0 = bounce_throughput;
+		// A miss still makes a (black) sample, somewhere far away along the ray.
+		float t = found_intersection(ray_payload_geometry) ? ray_payload_geometry.hit_distance : 10000.0;
+		gi_sample_pos = bounce_ray.origin + bounce_direction * t;
+		gi_sample_normal = -bounce_direction; // replaced by the surface normal on a surface hit
+	}
 
 	// Specular hit distance for DLSS Ray Reconstruction (RR integration guide 3.4.9).
 	//
@@ -469,6 +497,9 @@ indirect_lighting(
 		
 		if (dot(bounce_flat_normal, bounce_direction) > 0)
 			bounce_geo_normal = -bounce_geo_normal;
+
+		if(gi_candidate)
+			gi_sample_normal = dot(bounce_geo_normal, bounce_direction) > 0 ? -bounce_geo_normal : bounce_geo_normal;
 		
 		vec3 bounce_normal  = bounce_geo_normal;
 		vec3 bounce_base_color = vec3(bounce_minfo.base_factor);
@@ -500,7 +531,9 @@ indirect_lighting(
 			   (P[1][1] = 1 / tan(fov_y / 2)); the bounce leg adds the lobe's
 			   spread. Photo mode keeps only the pixel footprint: the reference
 			   must not be prefiltered by a guess at the lobe. */
-			float pixel_angle = 2.0 / (global_ubo.P[1][1] * float(global_ubo.height));
+			// abs: P[1][1] is negative (Vulkan Y flip). Without it the cone came out negative,
+			// was clamped to nothing, and every bounce hit sampled mip 0.
+			float pixel_angle = 2.0 / (abs(global_ubo.P[1][1]) * float(global_ubo.height));
 			float lobe_spread = is_specular_ray
 				? 2.0 * primary_roughness * primary_roughness
 				: global_ubo.pt_bounce_cone_diffuse;
@@ -628,6 +661,27 @@ indirect_lighting(
 				bounce_contrib += bounce_specular_throughput * bounce_sun_specular * global_ubo.sun_bounce_scale * sun_attenuation;
 		}
 
+		// Radiance cache (pt_sharc): the path ends here, so instead of stopping in the
+		// dark, pick up the light that would have kept bouncing - see sharc.h. At the
+		// second bounce there was no NEE above either, so that comes from the cache too
+		// unless pt_sharc is 2. bounce_throughput already carries this hit's albedo.
+		if(sharc_enabled() && spec_bounce_index >= global_ubo.pt_num_bounce_rays - 1)
+		{
+			// oriented exactly as sharc_update.rgen orients it, or the normal bins differ
+			vec3 cache_normal = dot(bounce_geo_normal, bounce_direction) > 0 ? -bounce_geo_normal : bounce_geo_normal;
+			vec3 cached_indirect, cached_direct;
+			bool sharc_found = sharc_lookup_bounce(bounce_position, cache_normal, ray_payload_geometry.hit_distance,
+				rng_seed ^ (spec_bounce_index * 0x9e3779b9u), cached_indirect, cached_direct);
+			sharc_debug_hit = sharc_found ? 1 : 0;
+			if(sharc_found)
+			{
+				vec3 cached = cached_indirect;
+				if(spec_bounce_index > 0 && global_ubo.pt_sharc != 2)
+					cached += cached_direct;
+				bounce_contrib += bounce_throughput * cached * global_ubo.pt_sharc_scale;
+			}
+		}
+
 		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
 		{
 			// store surface parameters for the next bounce
@@ -690,7 +744,82 @@ main()
 			return;
 	}
 
+	// pt_sharc 3: debug view of the radiance cache itself. The screen shows what the
+	// cache holds at each visible surface (indirect + direct, times the albedo applied
+	// downstream) and nothing else; black means the lookup found no usable entry.
+	if(global_ubo.pt_sharc == 3 || global_ubo.pt_sharc == 5)
+	{
+		if(spec_bounce_index == 0)
+		{
+			vec3 debug_position = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0).xyz;
+			vec3 debug_normal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
+			vec3 cached_indirect, cached_direct;
+			sharc_lookup(debug_position, debug_normal, cached_indirect, cached_direct);
+			// 5 = the indirect half alone, times pt_sharc_scale
+			vec3 debug_color = global_ubo.pt_sharc == 5
+				? cached_indirect * global_ubo.pt_sharc_scale
+				: cached_indirect + cached_direct;
+			debug_color = clamp_output(debug_color) * STORAGE_SCALE_HF;
+
+			imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
+			imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
+			imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debug_color)));
+			imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(vec3(0))));
+		}
+		return;
+	}
+
 	indirect_lighting(ipos, half_res, bounce_direction, bounce_contrib, is_specular_ray);
+
+	// pt_sharc 4: hit-rate view of the cache lookups the path tracer itself makes at its
+	// last bounce. Green = found a usable entry, red = missed, black = the path ended
+	// in sky / nothing before reaching the last bounce. Best with flt_fixed_albedo 1.
+	if(global_ubo.pt_sharc == 4)
+	{
+		if(spec_bounce_index == 0)
+		{
+			imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
+			imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
+			imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(vec3(0))));
+			imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(vec3(0))));
+		}
+		if(sharc_debug_hit >= 0)
+		{
+			vec3 marker = (sharc_debug_hit == 1 ? vec3(0, 1, 0) : vec3(1, 0, 0)) * global_ubo.prev_adapted_luminance * 2.0;
+			imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(marker * STORAGE_SCALE_HF)));
+		}
+		return;
+	}
+
+	// ReSTIR GI, first bounce: every pixel leaves restir_gi.rgen a candidate (or a marker
+	// saying why there is none), and a diffuse bounce stops here instead of lighting
+	// the pixel - restir_gi.rgen does that with whichever sample wins.
+	if(spec_bounce_index == 0 && restir_gi_enabled())
+	{
+		imageStore(IMG_PT_RESTIR_GI_ORIGIN_A, ipos, vec4(gi_origin, uintBitsToFloat(encode_normal(gi_origin_normal))));
+
+		if(gi_candidate)
+		{
+			vec3 contrib = clamp_output(bounce_contrib);
+			vec3 radiance = vec3(
+				gi_t0.x > 1e-6 ? contrib.x / gi_t0.x : 0,
+				gi_t0.y > 1e-6 ? contrib.y / gi_t0.y : 0,
+				gi_t0.z > 1e-6 ? contrib.z / gi_t0.z : 0);
+
+			imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(gi_sample_pos, 0));
+			imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(
+				encode_normal(gi_sample_normal),
+				packRGBE(radiance),
+				floatBitsToUint(RESTIR_GI_CAND_DIFFUSE),
+				packRGBE(gi_t0)));
+			return;
+		}
+
+		// A material-0 or lava pixel returns from indirect_lighting() with
+		// is_specular_ray false and nothing sampled.
+		float marker = is_specular_ray ? RESTIR_GI_CAND_SPECULAR : RESTIR_GI_CAND_INVALID;
+		imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(0, 0, floatBitsToUint(marker), 0));
+	}
 
 	if(any(isinf(bounce_contrib)) || any(isnan(bounce_contrib)) || any(isinf(bounce_direction)) || any(isnan(bounce_direction)) )
 		return;
@@ -699,6 +828,26 @@ main()
 
 	if(all(equal(bounce_contrib, vec3(0))))
 		return;
+
+	// ReSTIR GI, second bounce behind a diffuse first bounce: this light belongs to the
+	// candidate's L_o, not to the pixel. The throughput here is T0 * albedo * ..., so
+	// dividing by T0 leaves what the first hit sends back.
+	if(spec_bounce_index > 0 && restir_gi_enabled() && !is_specular_ray)
+	{
+		uvec4 data = imageLoad(IMG_PT_RESTIR_GI_DATA_A, ipos);
+		if(uintBitsToFloat(data.z) == RESTIR_GI_CAND_DIFFUSE)
+		{
+			vec3 t0 = unpackRGBE(data.w);
+			vec3 radiance = unpackRGBE(data.y);
+			radiance += vec3(
+				t0.x > 1e-6 ? bounce_contrib.x / t0.x : 0,
+				t0.y > 1e-6 ? bounce_contrib.y / t0.y : 0,
+				t0.z > 1e-6 ? bounce_contrib.z / t0.z : 0);
+			data.y = packRGBE(radiance);
+			imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, data);
+		}
+		return;
+	}
 
 	if(is_specular_ray)
 	{

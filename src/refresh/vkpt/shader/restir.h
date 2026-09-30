@@ -34,6 +34,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define RESTIR_INVALID_ID       0xFFFF
 #define RESTIR_ENV_ID           0xFFFE
+// A reservoir that holds no sample but DID look: its M still counts in every merge.
+// Storing such a reservoir as INVALID threw its M away, so the next sample that got
+// through arrived with a clean slate and full weight instead of being diluted by the
+// failures before it - a bias that grew with the history length (measured +0.6% at
+// pt_restir_m_clamp 2, +11% at 32).
+#define RESTIR_EMPTY_ID         0xFFFD
 
 #define RESTIR_SPACIAL_DISTANCE 32
 #define RESTIR_SPACIAL_SAMPLES  8
@@ -97,7 +103,9 @@ pack_reservoir(Reservoir r)
 {
 	uvec4 vec;
 	r.W = r.y == RESTIR_INVALID_ID ? 0.0 : r.W;
-	vec.x = packHalf2x16(vec2(r.W, r.w_sum));
+	// The second half holds the sample count M. It used to hold w_sum, which nothing
+	// read back, while M was invented on load - see unpack_reservoir.
+	vec.x = packHalf2x16(vec2(r.W, float(r.M)));
 	vec.y = packHalf2x16(r.y_pos);
 	return vec;
 }
@@ -106,16 +114,19 @@ void
 unpack_reservoir(uvec4 packed, uint light_idx, out Reservoir r)
 {
 	r.y = light_idx;
-	// A reused reservoir claims this sample count rather than tracking a real one, so it
-	// is the whole temporal weight: at 32 the history outweighs this frame 32:1 and the
-	// lighting lags by roughly that many frames. pt_restir_m_clamp trades that lag
-	// against the noise a shorter history buys.
+	// The stored sample count, clamped: the clamp is the whole temporal history length -
+	// at 32 the history outweighs a fresh frame 2:1 and lighting lags by that many frames.
+	// pt_restir_m_clamp trades that lag against the noise a shorter history buys.
+	// (M used to be invented here as the clamp itself for every reservoir, so one that
+	// had just been created claimed a full history.)
 	uint m_clamp = uint(max(1.0, global_ubo.pt_restir_m_clamp));
-	r.M = light_idx == RESTIR_INVALID_ID ? 0 : (global_ubo.pt_restir != 3 ? m_clamp : uint(RESTIR_M_VC_CLAMP));
+	if (global_ubo.pt_restir == 3) m_clamp = uint(RESTIR_M_VC_CLAMP);
 	vec2 val = unpackHalf2x16(packed.x);
+	float stored_m = (isnan(val.y) || isinf(val.y)) ? 0.0 : max(val.y, 0.0);
+	r.M = light_idx == RESTIR_INVALID_ID ? 0 : min(uint(stored_m + 0.5), m_clamp);
 	r.W = val.x;
-	if (isnan(r.W) || isinf(r.W) || r.y == RESTIR_INVALID_ID) r.W = 0.0;
-	r.w_sum = val.y;
+	if (isnan(r.W) || isinf(r.W) || r.y == RESTIR_INVALID_ID || r.y == RESTIR_EMPTY_ID) r.W = 0.0;
+	r.w_sum = 0.0;
 	r.y_pos = unpackHalf2x16(packed.y);
 	r.p_hat = 0.0;
 }
@@ -125,7 +136,7 @@ unpack_reservoir(uvec4 packed, uint light_idx, out Reservoir r)
 uint
 get_light_current_idx(uint index)
 {
-	if (index < global_ubo.num_static_lights || index == RESTIR_INVALID_ID || index == RESTIR_ENV_ID)
+	if (index < global_ubo.num_static_lights || index == RESTIR_INVALID_ID || index == RESTIR_ENV_ID || index == RESTIR_EMPTY_ID)
 	{
 		return index;
 	}
@@ -269,6 +280,13 @@ process_selected_light_restir(
 		polygonal_light_pdfw = global_ubo.sun_solid_angle;
 		pos_on_light_polygonal = position + L * 10000;
 		contrib_polygonal = env_map(L, false) * polygonal_light_pdfw * global_ubo.pt_env_scale;
+
+		// Sun behind the geometric surface: none, as get_sunlight does (GNdotL <= 0) and
+		// as the polygon-light branch above does. Only the bump-mapped shading normal was
+		// tested here, so grazing sunlit surfaces took sun that plain RIS never gives them
+		// - a flat excess over every sunlit surface, which spatial reuse then spread.
+		if (dot(L, geo_normal) <= 0)
+			contrib_polygonal = vec3(0);
 	}
 
 	contrib_polygonal *= min(weight, global_ubo.pt_restir_max_w);
@@ -325,6 +343,46 @@ process_selected_light_restir(
 }
 
 
+/* Whether the point a reservoir chose on its light can see the shading point - the
+   same point and shadow ray process_selected_light_restir traces. */
+bool
+restir_sample_visible(uint light_idx, vec2 light_position, vec3 position, vec3 view_direction, int shadow_cull_mask)
+{
+	vec3 pos_on_light;
+
+	if (light_idx == RESTIR_ENV_ID)
+	{
+		vec2 disk = sample_disk(light_position) * global_ubo.sun_tan_half_angle;
+		vec3 L = normalize(global_ubo.sun_direction + global_ubo.sun_tangent * disk.x + global_ubo.sun_bitangent * disk.y);
+		pos_on_light = position + L * 10000;
+	}
+	else
+	{
+		LightPolygon light = get_light_polygon(light_idx);
+		vec3 light_normal;
+		float pdfw = 0;
+
+		switch (uint(light.type))
+		{
+		case DYNLIGHT_POLYGON:
+			pos_on_light = sample_projected_triangle(position, light.positions, light_position, light_normal, pdfw);
+			break;
+		case DYNLIGHT_SPHERE:
+			pos_on_light = sample_projected_sphere(position, light.positions, light_position, light_normal, pdfw);
+			break;
+		case DYNLIGHT_SPOT:
+			pos_on_light = sample_projected_spotlight(position, light.positions, light.spot_emission_profile, light_position, light_normal, pdfw);
+			break;
+		}
+
+		if (!(pdfw > 0))
+			return false;
+	}
+
+	Ray shadow_ray = get_shadow_ray(position - view_direction * 0.01, pos_on_light, 0);
+	return trace_shadow_ray(shadow_ray, shadow_cull_mask) > 0;
+}
+
 void
 get_direct_illumination_restir(
 	vec3 position,
@@ -335,6 +393,8 @@ get_direct_illumination_restir(
 	float phong_scale,
 	float phong_weight,
 	int bounce,
+	int shadow_cull_mask,
+	bool initial_visibility,
 	Reservoir prev_r,
 	out Reservoir reservoir,
 	out float dbg_w_fresh,
@@ -434,11 +494,37 @@ get_direct_illumination_restir(
 			: 0.0;
 	}
 
-	//Combine with temporal
-	if (prev_r.W > 0.0 && prev_r.y != RESTIR_INVALID_ID && prev_r.p_hat > 0)
+	// Initial visibility (RTXDI's enableInitialVisibility). The fresh sample has to be
+	// shadow-tested BEFORE it meets the history, not only after. Otherwise a shadowed
+	// candidate enters the merge at full weight, rarely wins against a long visible
+	// history, and its share of the weight is credited to that history's light: a pixel
+	// that sees light A while B is behind a wall ends up lit as if both reached it.
+	// Measured +21.6% on base2 against plain RIS with 32 frames of history, +0.2% with
+	// one. A shadowed fresh sample now brings zero weight but keeps its M - "this many
+	// candidates were tried and found nothing".
+	if (initial_visibility && reservoir.y != RESTIR_INVALID_ID && reservoir.w_sum > 0
+		&& !restir_sample_visible(reservoir.y, reservoir.y_pos, position, view_direction, shadow_cull_mask))
 	{
-		update_reservoir(prev_r.y, prev_r.p_hat * prev_r.W * prev_r.M, prev_r.y_pos, prev_r.p_hat, rng, reservoir);
-		reservoir.M += prev_r.M - 1;
+		reservoir.y = RESTIR_INVALID_ID;
+		reservoir.w_sum = 0.0;
+		reservoir.p_hat = 0.0;
+	}
+
+	//Combine with temporal
+	//
+	// A history whose sample was shadowed (stored W == 0) still COUNTS: its M says
+	// "this many samples were tried here and found nothing", and dropping it keeps only
+	// the lucky, unshadowed histories. That was a measured +20% on q2dm1's sunlight
+	// against plain RIS - partly occluded light came out as if unoccluded.
+	if (prev_r.y != RESTIR_INVALID_ID && prev_r.M > 0)
+	{
+		if (prev_r.y != RESTIR_EMPTY_ID && prev_r.W > 0.0 && prev_r.p_hat > 0)
+		{
+			update_reservoir(prev_r.y, prev_r.p_hat * prev_r.W * prev_r.M, prev_r.y_pos, prev_r.p_hat, rng, reservoir);
+			reservoir.M += prev_r.M - 1;
+		}
+		else
+			reservoir.M += prev_r.M;
 	}
 
 	reservoir.W = reservoir.w_sum / (reservoir.p_hat * reservoir.M);
@@ -524,7 +610,7 @@ load_neighbour_surface(ivec2 pos, vec3 centre_position, vec3 view_direction)
 float
 eval_target_at(uint light_idx, vec2 light_pos, RestirSurface s)
 {
-	if (light_idx == RESTIR_INVALID_ID) return 0.0;
+	if (light_idx == RESTIR_INVALID_ID || light_idx == RESTIR_EMPTY_ID) return 0.0;
 	return get_unshadowed_path_contrib(light_idx, s.position, s.normal, s.view_direction,
 		s.phong_exp, s.phong_scale, s.phong_weight, light_pos);
 }

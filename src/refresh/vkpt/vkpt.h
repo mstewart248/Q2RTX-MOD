@@ -108,12 +108,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_FSR_RCAS_FP16_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_FSR_RCAS_FP32_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_NORMALIZE_NORMAL_MAP_COMP)              \
+	SHADER_MODULE_DO(QVK_MOD_SHARC_RESOLVE_COMP)                     \
 
 #define LIST_RT_RGEN_SHADER_MODULES \
 	SHADER_MODULE_DO(QVK_MOD_PRIMARY_RAYS_RGEN)                      \
 	SHADER_MODULE_DO(QVK_MOD_REFLECT_REFRACT_RGEN)                   \
 	SHADER_MODULE_DO(QVK_MOD_DIRECT_LIGHTING_RGEN)                   \
 	SHADER_MODULE_DO(QVK_MOD_INDIRECT_LIGHTING_RGEN)                 \
+	SHADER_MODULE_DO(QVK_MOD_SHARC_UPDATE_RGEN)                      \
+	SHADER_MODULE_DO(QVK_MOD_RESTIR_GI_RGEN)                         \
 
 #define LIST_RT_PIPELINE_SHADER_MODULES \
 	SHADER_MODULE_DO(QVK_MOD_PATH_TRACER_RCHIT)                      \
@@ -334,6 +337,9 @@ typedef struct QVK_s {
 	BufferResource_t            buf_light;
 	BufferResource_t            buf_light_staging[MAX_FRAMES_IN_FLIGHT];
 	BufferResource_t            buf_light_stats[NUM_LIGHT_STATS_BUFFERS];
+	BufferResource_t            buf_sharc_keys;
+	BufferResource_t            buf_sharc_accum;
+	BufferResource_t            buf_sharc_resolved;
 	BufferResource_t            buf_light_counts_history[LIGHT_COUNT_HISTORY];
 	
 	BufferResource_t            buf_iqm_matrices;
@@ -617,10 +623,12 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_REFLECT_REFRACT_1,          1) \
 	PROFILER_DO(PROFILER_REFLECT_REFRACT_2,          1) \
 	PROFILER_DO(PROFILER_ASVGF_GRADIENT_REPROJECT,   1) \
+	PROFILER_DO(PROFILER_SHARC,                      1) \
 	PROFILER_DO(PROFILER_DIRECT_LIGHTING,            1) \
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING,          1) \
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING_0,        2) \
 	PROFILER_DO(PROFILER_INDIRECT_LIGHTING_1,        2) \
+	PROFILER_DO(PROFILER_RESTIR_GI,                  1) \
 	PROFILER_DO(PROFILER_ASVGF_FULL,                 1) \
 	PROFILER_DO(PROFILER_ASVGF_RECONSTRUCT_GRADIENT, 2) \
 	PROFILER_DO(PROFILER_ASVGF_TEMPORAL,             2) \
@@ -818,6 +826,8 @@ void vkpt_vertex_buffer_cleanup_bsp_mesh(bsp_mesh_t *bsp_mesh);
 VkResult vkpt_vertex_buffer_create_pipelines(void);
 VkResult vkpt_vertex_buffer_destroy_pipelines(void);
 VkResult vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, bool update_world_animations);
+void vkpt_sharc_clear(VkCommandBuffer cmd_buf);
+void vkpt_sharc_resolve(VkCommandBuffer cmd_buf);
 void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index);
 VkResult vkpt_vertex_buffer_upload_models(void);
 void vkpt_light_buffer_reset_counts(void);
@@ -847,6 +857,7 @@ VkResult vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityU
 VkResult vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf);
 VkResult vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce);
 VkResult vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays);
+VkResult vkpt_pt_sharc_update(VkCommandBuffer cmd_buf, bool clear);
 VkResult vkpt_pt_update_descripter_set_bindings(int idx);
 VkAccelerationStructureKHR vkpt_pt_get_geometry_tlas(int idx);
 VkResult vkpt_pt_create_all_dynamic(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo* upload_info);

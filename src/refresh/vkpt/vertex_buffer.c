@@ -26,6 +26,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 static VkDescriptorPool desc_pool_vertex_buffer;
 static VkPipeline       pipeline_instance_geometry;
 static VkPipeline       pipeline_animate_materials;
+static VkPipeline       pipeline_sharc_resolve;
 static VkPipelineLayout pipeline_layout_instance_geometry;
 
 model_vbo_t model_vertex_data[MAX_MODELS];
@@ -1532,6 +1533,24 @@ vkpt_vertex_buffer_create()
 			.descriptorCount = 3,
 			.binding = LIGHT_STATS_BUFFER_BINDING_IDX,
 			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = SHARC_KEY_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = SHARC_ACCUM_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = SHARC_RESOLVED_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_ALL,
 		}
 	};
 
@@ -1588,6 +1607,17 @@ vkpt_vertex_buffer_create()
 	}
 
 	buffer_create(&null_buffer, 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	// Radiance cache (pt_sharc), ~68 MB. Zeroed by vkpt_sharc_clear before first use.
+	buffer_create(&qvk.buf_sharc_keys, sizeof(uint32_t) * SHARC_CAPACITY,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	buffer_create(&qvk.buf_sharc_accum, sizeof(uint32_t) * SHARC_ACCUM_UINTS * SHARC_CAPACITY,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	buffer_create(&qvk.buf_sharc_resolved, sizeof(float) * 4 * SHARC_RESOLVED_VEC4S * SHARC_CAPACITY,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	VkDescriptorPoolSize pool_sizes[] = {
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, LENGTH(vbo_layout_bindings) + MAX_MODELS + 128 },
@@ -1662,6 +1692,22 @@ vkpt_vertex_buffer_create()
 	buf_info.range = sizeof(SunColorBuffer);
 	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
 
+	output_buf_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	output_buf_write.dstBinding = SHARC_KEY_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_sharc_keys.buffer;
+	buf_info.range = qvk.buf_sharc_keys.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
+	output_buf_write.dstBinding = SHARC_ACCUM_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_sharc_accum.buffer;
+	buf_info.range = qvk.buf_sharc_accum.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
+	output_buf_write.dstBinding = SHARC_RESOLVED_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_sharc_resolved.buffer;
+	buf_info.range = qvk.buf_sharc_resolved.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
 	create_primbuf();
 	
 	memset(model_vertex_data, 0, sizeof(model_vertex_data));
@@ -1720,6 +1766,10 @@ vkpt_vertex_buffer_destroy()
 
 	buffer_destroy(&qvk.buf_tonemap);
 	buffer_destroy(&qvk.buf_sun_color);
+
+	buffer_destroy(&qvk.buf_sharc_keys);
+	buffer_destroy(&qvk.buf_sharc_accum);
+	buffer_destroy(&qvk.buf_sharc_resolved);
 
 	Z_Free(qvk.iqm_matrices_shadow);
 	Z_Free(qvk.iqm_matrices_prev);
@@ -1843,13 +1893,19 @@ vkpt_vertex_buffer_create_pipelines()
 			.stage = SHADER_STAGE(QVK_MOD_ANIMATE_MATERIALS_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
 			.layout = pipeline_layout_instance_geometry
 		},
+		{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = SHADER_STAGE(QVK_MOD_SHARC_RESOLVE_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
+			.layout = pipeline_layout_instance_geometry
+		},
 	};
 
-	VkPipeline pipelines[2];
+	VkPipeline pipelines[3];
 	_VK(vkCreateComputePipelines(qvk.device, 0, LENGTH(compute_pipeline_info), compute_pipeline_info, 0, pipelines));
 
 	pipeline_instance_geometry = pipelines[0];
 	pipeline_animate_materials = pipelines[1];
+	pipeline_sharc_resolve = pipelines[2];
 
 	return VK_SUCCESS;
 }
@@ -1863,10 +1919,12 @@ vkpt_vertex_buffer_destroy_pipelines()
 
 	vkDestroyPipeline(qvk.device, pipeline_instance_geometry, NULL);
 	vkDestroyPipeline(qvk.device, pipeline_animate_materials, NULL);
+	vkDestroyPipeline(qvk.device, pipeline_sharc_resolve, NULL);
 	vkDestroyPipelineLayout(qvk.device, pipeline_layout_instance_geometry, NULL);
 
 	pipeline_instance_geometry = VK_NULL_HANDLE;
 	pipeline_animate_materials = VK_NULL_HANDLE;
+	pipeline_sharc_resolve = VK_NULL_HANDLE;
 	pipeline_layout_instance_geometry = VK_NULL_HANDLE;
 
 	return VK_SUCCESS;
@@ -1922,6 +1980,44 @@ vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, bool upd
 		0, NULL);
 
 	return VK_SUCCESS;
+}
+
+/* Radiance cache (pt_sharc, shader/sharc.h): zero every entry. Needed before the
+   first use, on a map change (the old map's keys would light the new one) and when
+   the cache is switched back on (its entries are from whenever it was last on). */
+void
+vkpt_sharc_clear(VkCommandBuffer cmd_buf)
+{
+	vkCmdFillBuffer(cmd_buf, qvk.buf_sharc_keys.buffer, 0, VK_WHOLE_SIZE, 0);
+	vkCmdFillBuffer(cmd_buf, qvk.buf_sharc_accum.buffer, 0, VK_WHOLE_SIZE, 0);
+	vkCmdFillBuffer(cmd_buf, qvk.buf_sharc_resolved.buffer, 0, VK_WHOLE_SIZE, 0);
+
+	VkMemoryBarrier barrier = {
+		.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+	};
+
+	// ALL_COMMANDS like BUFFER_BARRIER: the ray tracing stage bit is invalid on ray query devices
+	vkCmdPipelineBarrier(cmd_buf,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		0, 1, &barrier, 0, NULL, 0, NULL);
+}
+
+// Folds this frame's cache samples into the resolved entries - see sharc_resolve.comp.
+void
+vkpt_sharc_resolve(VkCommandBuffer cmd_buf)
+{
+	VkDescriptorSet desc_sets[] = {
+		qvk.desc_set_ubo,
+		qvk.desc_set_vertex_buffer
+	};
+	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_sharc_resolve);
+	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
+		pipeline_layout_instance_geometry, 0, LENGTH(desc_sets), desc_sets, 0, 0);
+
+	vkCmdDispatch(cmd_buf, SHARC_CAPACITY / 256, 1, 1);
 }
 
 /*

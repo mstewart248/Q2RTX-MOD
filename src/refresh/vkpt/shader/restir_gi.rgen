@@ -1,0 +1,241 @@
+/*
+Copyright (C) 2026
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// ========================================================================== //
+// ReSTIR GI temporal resampling (pt_restir_gi) - see restir_gi.h.
+//
+// Runs after the bounce passes. Merges this frame's first-bounce candidate with
+// last frame's reservoir at the reprojected pixel, lights the pixel's
+// low-frequency (diffuse indirect) channel with the sample that wins, and keeps
+// the merged reservoir for next frame.
+// ========================================================================== //
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+
+#include "path_tracer_rgen.h"
+#include "restir_gi.h"
+
+uint gi_rng;
+
+float gi_rand()
+{
+	gi_rng = pcg_hash(gi_rng);
+	return float(gi_rng >> 8) * (1.0 / 16777216.0);
+}
+
+void
+main()
+{
+	if(!restir_gi_enabled())
+		return;
+
+	ivec2 ipos = ivec2(rt_LaunchID.xy);
+	if(rt_LaunchID.z != 0)
+		ipos.x += global_ubo.pt_field_offset;
+
+	// Same idle test as indirect_lighting.rgen: that pass wrote nothing for these
+	// pixels this frame, so what is in the candidate images is last frame's.
+	if(global_ubo.pt_fullres_fields != 0)
+	{
+		bool is_second_field = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+		int cb_flags = int(imageLoad(IMG_PT_VIEW_DIRECTION, ipos).w) & CHECKERBOARD_FLAG_FIELD_MASK;
+		bool field1_idle = is_second_field && bitCount(cb_flags) <= 1;
+		bool row_idle = !PT_FIELD_ROW_TRACED(global_ubo, ipos.y)
+			&& IS_REFLECT_REFRACT_KIND(floatBitsToUint(imageLoad(IMG_PT_SHADING_POSITION, ipos).w));
+		if(field1_idle || row_idle)
+			return;
+	}
+
+	uvec4 cand_data = imageLoad(IMG_PT_RESTIR_GI_DATA_A, ipos);
+	float marker = uintBitsToFloat(cand_data.z);
+
+	if(marker == RESTIR_GI_CAND_INVALID)
+	{
+		imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(0));
+		imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(0));
+		return;
+	}
+
+	bool have_candidate = marker == RESTIR_GI_CAND_DIFFUSE;
+
+	vec4 origin = imageLoad(IMG_PT_RESTIR_GI_ORIGIN_A, ipos);
+	vec3 x_v = origin.xyz;
+	vec3 n_v = decode_normal(floatBitsToUint(origin.w));
+
+	gi_rng = pcg_hash(uint(ipos.x) ^ pcg_hash(uint(ipos.y) ^ pcg_hash(global_ubo.current_frame_idx ^ 0x5ee7c0deu)));
+
+	float m_clamp = max(global_ubo.pt_restir_gi_m_clamp, 1.0);
+
+	GIReservoir r;
+	r.pos = vec3(0);
+	r.normal = vec3(0, 0, 1);
+	r.radiance = vec3(0);
+	r.W = 0;
+	r.M = 0;
+	float w_sum = 0;
+	float p_hat_selected = 0;
+
+	// This frame's candidate. Cosine-distributed around n_v, so its source pdf is
+	// cos / pi and its resampling weight p_hat / p = luminance(L_o) * pi.
+	if(have_candidate)
+	{
+		vec4 cand_pos = imageLoad(IMG_PT_RESTIR_GI_POS_A, ipos);
+		GIReservoir c;
+		c.pos = cand_pos.xyz;
+		c.normal = decode_normal(cand_data.x);
+		c.radiance = unpackRGBE(cand_data.y);
+
+		float p_hat = gi_p_hat(c.radiance, c.pos, c.normal, x_v, n_v);
+		float w = p_hat > 0 ? luminance(c.radiance) * M_PI : 0;
+
+		r = c;
+		r.M = 1;
+		w_sum = w;
+		p_hat_selected = p_hat;
+	}
+
+	// Last frame's reservoir at the reprojected pixel - the same reprojection,
+	// permutation and rejection tests as ReSTIR DI (direct_lighting.rgen).
+	{
+		int field_left = 0;
+		int field_right = global_ubo.pt_prev_field_offset;
+		if(ipos.x >= global_ubo.pt_field_offset)
+		{
+			field_left = field_right;
+			field_right = global_ubo.pt_prev_field_offset * 2;
+		}
+
+		vec4 motion = texelFetch(TEX_PT_MOTION, ipos, 0);
+		float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
+		ivec2 pos_prev = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy)
+			* vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height));
+
+		// Permutation sampling, for DLSS-RR - see direct_lighting.rgen.
+		if(global_ubo.pt_restir_permutation != 0)
+		{
+			ivec2 perm_offset = ivec2(global_ubo.current_frame_idx & 3, (global_ubo.current_frame_idx >> 2) & 3);
+			ivec2 permuted = pos_prev + perm_offset;
+			permuted.x ^= 3;
+			permuted.y ^= 3;
+			permuted -= perm_offset;
+			if(permuted.x >= field_left && permuted.x < field_right && permuted.y >= 0 && permuted.y < global_ubo.height)
+				pos_prev = permuted;
+		}
+
+		bool in_bounds = pos_prev.x >= field_left && pos_prev.x < field_right && pos_prev.y >= 0 && pos_prev.y < global_ubo.height;
+
+		if(in_bounds)
+		{
+			float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
+			float depth_prev = texelFetch(TEX_PT_VIEW_DEPTH_B, pos_prev, 0).x;
+			vec3 normal_cur = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+			vec3 normal_prev = decode_normal(texelFetch(TEX_PT_NORMAL_B, pos_prev, 0).x);
+
+			bool similar = abs(depth_prev - view_depth) < 0.1 * abs(view_depth)
+				&& dot(normal_prev, normal_cur) > 0.9;
+
+			if(similar)
+			{
+				GIReservoir prev = gi_load(
+					texelFetch(TEX_PT_RESTIR_GI_POS_B, pos_prev, 0),
+					texelFetch(TEX_PT_RESTIR_GI_DATA_B, pos_prev, 0));
+
+				if(gi_is_valid(prev))
+				{
+					vec3 x_r = texelFetch(TEX_PT_RESTIR_GI_ORIGIN_B, pos_prev, 0).xyz;
+					float jacobian = gi_jacobian(prev.pos, prev.normal, x_v, x_r);
+					// A huge or tiny Jacobian means the sample is far from where it was
+					// found - reusing it would be a firefly or a hole.
+					if(jacobian < 0.1 || jacobian > 10.0)
+						jacobian = 0;
+
+					prev.M = min(prev.M, m_clamp);
+					float p_hat = gi_p_hat(prev.radiance, prev.pos, prev.normal, x_v, n_v);
+					float w = p_hat * prev.W * prev.M * jacobian;
+
+					w_sum += w;
+					if(w > 0 && gi_rand() * w_sum < w)
+					{
+						r.pos = prev.pos;
+						r.normal = prev.normal;
+						r.radiance = prev.radiance;
+						p_hat_selected = p_hat;
+					}
+					r.M += prev.M;
+				}
+			}
+		}
+	}
+
+	r.W = (r.M > 0 && p_hat_selected > 0) ? w_sum / (r.M * p_hat_selected) : 0;
+	if(isnan(r.W) || isinf(r.W))
+		r.W = 0;
+	r.M = min(r.M, m_clamp);
+
+	imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(r.pos, r.W));
+	imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(
+		encode_normal(r.normal),
+		packRGBE(r.radiance),
+		floatBitsToUint(r.M),
+		cand_data.w));
+
+	// pt_restir_gi 2: debug view of the history length - white = a full reservoir
+	// (pt_restir_gi_m_clamp samples), black = nothing reused. Shown alone.
+	if(global_ubo.pt_restir_gi == 2)
+	{
+		vec3 debug_color = vec3(r.M / m_clamp) * global_ubo.prev_adapted_luminance * 2.0;
+		imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
+		imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
+		imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debug_color * STORAGE_SCALE_HF)));
+		imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(vec3(0))));
+		return;
+	}
+
+	// Light the pixel only on frames whose first bounce was diffuse: T0 carries this
+	// frame's 1 / (1 - specular_pdf), so on specular frames the path tracer's own
+	// specular estimate stands in, exactly as it did before ReSTIR.
+	if(!have_candidate || r.W <= 0)
+		return;
+
+	vec3 t0 = unpackRGBE(cand_data.w);
+	vec3 dir = r.pos - x_v;
+	float dist = length(dir);
+	dir /= max(dist, 1e-6);
+	float cos_v = max(0, dot(n_v, dir));
+
+	vec3 contrib = clamp_output(t0 * r.radiance * (cos_v / M_PI) * r.W);
+	if(all(equal(contrib, vec3(0))))
+		return;
+
+	// Hit distance for DLSS-RR's diffuse guide: how far the light this pixel is lit by is.
+	imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(min(dist, PRIMARY_RAY_T_MAX)));
+
+	contrib *= STORAGE_SCALE_LF;
+
+	SH low_freq = load_SH(TEX_PT_COLOR_LF_SH, TEX_PT_COLOR_LF_COCG, ipos);
+#if ENABLE_SH
+	if(global_ubo.flt_enable == 0)
+		low_freq.shY.xyz += contrib;
+	else
+		accumulate_SH(low_freq, irradiance_to_SH(contrib, dir), 1.0);
+#else
+	low_freq.shY.xyz += contrib;
+#endif
+	STORE_SH(IMG_PT_COLOR_LF_SH, IMG_PT_COLOR_LF_COCG, ipos, low_freq);
+}

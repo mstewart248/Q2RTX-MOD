@@ -1,0 +1,288 @@
+/*
+Copyright (C) 2026
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// ========================================================================== //
+// Trains the spatial hash radiance cache (pt_sharc, see sharc.h).
+//
+// One thread per pt_sharc_stride x pt_sharc_stride block of the screen picks a
+// random pixel, starts at its G-buffer surface and traces up to
+// pt_sharc_bounces cosine-distributed bounces. Every vertex gets the same
+// lighting the path tracer gives a bounce hit - emission, NEE with the
+// indirect light settings, and the sun - and the path ends in a cache lookup
+// instead of darkness. The light each vertex received is then added into that
+// vertex's cache entry. Because the lookup at the end reads what earlier frames
+// wrote, each frame adds one more bounce to the cache.
+//
+// Diffuse only: surfaces bounce with their diffuse albedo, as the path
+// tracer's bounce hits do with pt_bounce_material 0.
+// ========================================================================== //
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+
+#include "path_tracer_rgen.h"
+#include "sharc.h"
+
+#define SHARC_MAX_BOUNCES 4
+#define SHARC_MAX_VERTICES (SHARC_MAX_BOUNCES + 1)
+
+uint sharc_rng;
+
+float sharc_rand()
+{
+	sharc_rng = sharc_pcg(sharc_rng);
+	return float(sharc_rng >> 8) * (1.0 / 16777216.0);
+}
+
+// get_direct_illumination and get_sunlight draw from get_rng(); a fresh random
+// seed per vertex points it at an unrelated spot in the noise texture.
+void sharc_reseed_nee()
+{
+	sharc_rng = sharc_pcg(sharc_rng);
+	rng_seed = sharc_rng;
+}
+
+// Same rule as indirect_lighting.rgen's second bounce: a light that NEE samples
+// is not counted again when a bounce ray happens to hit it.
+bool sharc_is_analytic_light(uint material_id)
+{
+	return (material_id & MATERIAL_FLAG_LIGHT) != 0 && global_ubo.pt_indirect_polygon_lights >= 0;
+}
+
+vec3 sharc_nee(vec3 position, vec3 normal, uint cluster_idx, uint material_id, vec3 view_direction)
+{
+	sharc_reseed_nee();
+
+	vec3 diffuse, specular;
+	get_direct_illumination(
+		position,
+		normal,
+		normal,
+		cluster_idx,
+		material_id,
+		shadow_ray_cull_mask(),
+		view_direction,
+		vec3(1), // albedo; the cache stores light without it
+		vec3(0), // base reflectivity: diffuse only
+		0.0,     // specular factor
+		1.0,     // roughness
+		MEDIUM_NONE,
+		false,   // enable_caustics
+		0.0,     // direct_specular_weight
+		global_ubo.pt_indirect_polygon_lights > 0,
+		global_ubo.pt_indirect_dyn_lights > 0,
+		false,   // is_gradient
+		1,       // bounce
+		diffuse,
+		specular);
+
+	return diffuse;
+}
+
+vec3 sharc_sun(vec3 position, vec3 normal, uint cluster_idx, uint material_id, vec3 view_direction, float hit_distance)
+{
+	float sun_attenuation = square(clamp(1.0 - square(square(hit_distance / global_ubo.pt_sun_bounce_range)), 0, 1));
+	if (sun_attenuation <= 0)
+		return vec3(0);
+
+	sharc_reseed_nee();
+
+	vec3 diffuse, specular;
+	get_sunlight(
+		cluster_idx,
+		material_id,
+		position,
+		normal,
+		normal,
+		view_direction,
+		vec3(0), // base reflectivity
+		0.0,     // specular factor
+		1.0,     // roughness
+		MEDIUM_NONE,
+		false,   // enable_caustics
+		diffuse,
+		specular,
+		shadow_ray_cull_mask());
+
+	return diffuse * global_ubo.sun_bounce_scale * sun_attenuation;
+}
+
+void
+main()
+{
+	if (!sharc_enabled())
+		return;
+
+	uint stride = uint(clamp(global_ubo.pt_sharc_stride, 1, 16));
+	int num_bounces = int(clamp(global_ubo.pt_sharc_bounces, 1, SHARC_MAX_BOUNCES));
+
+	uvec2 launch = rt_LaunchID.xy;
+	sharc_rng = sharc_pcg(launch.x ^ sharc_pcg(launch.y ^ sharc_pcg(global_ubo.current_frame_idx)));
+
+	ivec2 ipos = ivec2(launch * stride) + ivec2(sharc_rand() * stride, sharc_rand() * stride);
+	if (any(greaterThanEqual(ipos, get_image_size())))
+		return;
+
+	vec4 position_material = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0);
+	uint material_id = floatBitsToUint(position_material.w);
+
+	// Nothing to learn from the sky, from lava (self-lit, skipped by the path tracer
+	// too), or from the weapon, which moves with the camera and not with the world.
+	if (material_id == 0 || is_lava(material_id) || is_sky(material_id) || (material_id & MATERIAL_FLAG_WEAPON) != 0)
+		return;
+
+	uint cluster_idx = texelFetch(TEX_PT_CLUSTER_A, ipos, 0).x;
+	if (cluster_idx == 0xffff) cluster_idx = ~0u; // because the image is uint16
+
+	vec3 position = position_material.xyz;
+	vec3 normal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
+	vec3 view_direction = texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0).xyz;
+
+	if (any(isnan(position)) || any(isnan(normal)) || dot(normal, view_direction) > 0)
+		return;
+
+	// Per vertex: the cache slot, what arrives at it (indirect), its NEE (direct),
+	// and what it sends back to the vertex before it.
+	int   slot[SHARC_MAX_VERTICES];
+	vec3  incoming[SHARC_MAX_VERTICES];
+	vec3  nee[SHARC_MAX_VERTICES];
+	vec3  albedo[SHARC_MAX_VERTICES];
+	vec3  emitted[SHARC_MAX_VERTICES];
+	vec3  lit[SHARC_MAX_VERTICES]; // nee + sun, for the vertex before this one
+
+	for (int i = 0; i < SHARC_MAX_VERTICES; i++)
+	{
+		slot[i] = -1;
+		incoming[i] = vec3(0);
+		nee[i] = vec3(0);
+		albedo[i] = vec3(0);
+		emitted[i] = vec3(0);
+		lit[i] = vec3(0);
+	}
+
+	slot[0] = sharc_insert(position, normal);
+	nee[0] = sharc_nee(position, normal, cluster_idx, material_id, view_direction);
+
+	int num_vertices = 1;
+	bool ends_on_surface = false;
+
+	for (int bounce = 0; bounce < num_bounces; bounce++)
+	{
+		mat3 basis = construct_ONB_frisvad(normal);
+		vec3 direction = normalize(basis * sample_cos_hemisphere(vec2(sharc_rand(), sharc_rand())));
+
+		Ray ray;
+		ray.origin = position - view_direction * 0.01;
+		ray.direction = direction;
+		ray.t_min = 0;
+		ray.t_max = 10000;
+
+		// No viewer models: the cache is world lighting.
+		trace_geometry_ray(ray, true, BOUNCE_RAY_CULL_MASK);
+
+		if (!found_intersection(ray_payload_geometry))
+			break;
+
+		Triangle triangle = get_hit_triangle(ray_payload_geometry);
+		uint hit_material = triangle.material_id;
+
+		if (is_sky(hit_material))
+		{
+			if (!sharc_is_analytic_light(hit_material))
+				incoming[bounce] = env_map(direction, true) * global_ubo.pt_env_scale;
+			break;
+		}
+
+		vec3 bary = get_hit_barycentric(ray_payload_geometry);
+		vec2 tex_coord = triangle.tex_coords * bary;
+		if ((hit_material & MATERIAL_FLAG_WARP) != 0)
+			tex_coord = lava_uv_warp(tex_coord, global_ubo.time);
+
+		MaterialInfo minfo = get_material_info(hit_material);
+
+		vec3 hit_position = triangle.positions * bary;
+		vec3 hit_normal = normalize(triangle.normals * bary);
+		vec3 flat_normal = normalize(cross(
+			triangle.positions[1] - triangle.positions[0],
+			triangle.positions[2] - triangle.positions[1]));
+		if (dot(flat_normal, direction) > 0)
+			hit_normal = -hit_normal;
+		// The interpolated normal can still face along the ray at a grazing hit.
+		if (dot(hit_normal, direction) > 0)
+			hit_normal = -hit_normal;
+
+		vec3 base_color = vec3(minfo.base_factor);
+		if (minfo.base_texture != 0)
+			base_color *= global_textureLod(minfo.base_texture, tex_coord, 2).rgb;
+		base_color = clamp(base_color, vec3(0), vec3(1));
+
+		vec3 emissive = sample_emissive_texture(hit_material, minfo, tex_coord, vec2(0), vec2(0), 3);
+		emissive *= triangle.emissive_factor;
+		emissive += get_emissive_shell(hit_material) * base_color;
+		// spotlight term that matches sample_light_lists() in light_lists.h
+		emissive *= sqrt(max(0, -dot(direction, hit_normal)));
+		if (sharc_is_analytic_light(hit_material))
+			emissive = vec3(0);
+
+		int v = bounce + 1;
+		albedo[v] = base_color;
+		emitted[v] = emissive;
+		nee[v] = sharc_nee(hit_position, hit_normal, triangle.cluster, hit_material, direction);
+		lit[v] = nee[v] + sharc_sun(hit_position, hit_normal, triangle.cluster, hit_material, direction, ray_payload_geometry.hit_distance);
+
+		position = hit_position;
+		normal = hit_normal;
+		view_direction = direction;
+		num_vertices = v + 1;
+		ends_on_surface = true;
+
+		// Last vertex: its incoming light is the cache itself.
+		if (bounce == num_bounces - 1)
+		{
+			vec3 cached_direct;
+			sharc_lookup(position, normal, incoming[v], cached_direct);
+		}
+		else
+		{
+			slot[v] = sharc_insert(position, normal);
+			ends_on_surface = false;
+		}
+	}
+
+	// Light flows back down the path: what leaves vertex v towards v-1.
+	for (int v = num_vertices - 1; v >= 1; v--)
+		incoming[v - 1] = emitted[v] + albedo[v] * (lit[v] + incoming[v]);
+
+	// The last vertex only read the cache; feeding that back into itself teaches
+	// nothing, so it gets no sample.
+	int num_trained = ends_on_surface ? num_vertices - 1 : num_vertices;
+
+	float rnd = sharc_rand();
+	float clamp_value = max(global_ubo.pt_sharc_clamp, 0.0) * max(global_ubo.prev_adapted_luminance, 1e-5);
+	for (int v = 0; v < num_trained; v++)
+	{
+		vec3 ind = incoming[v];
+		// Firefly clamp, relative to exposure. A single bright sample in a sparse
+		// voxel otherwise lingers for pt_sharc_frames frames as a blotch.
+		float lum = luminance(ind);
+		if (clamp_value > 0 && lum > clamp_value)
+			ind *= clamp_value / lum;
+
+		sharc_accumulate(slot[v], ind, nee[v], rnd);
+	}
+}

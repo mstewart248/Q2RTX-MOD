@@ -342,6 +342,7 @@ SET(HEADERS_VKPT
 
 set(SRC_SHADERS
 	refresh/vkpt/shader/animate_materials.comp
+	refresh/vkpt/shader/sharc_resolve.comp
 	refresh/vkpt/shader/god_rays_filter.comp
 	refresh/vkpt/shader/god_rays.comp
 	refresh/vkpt/shader/froxel_reservoir.comp
@@ -385,6 +386,8 @@ set(SRC_RT_SHADERS
 	refresh/vkpt/shader/primary_rays.rgen
 	refresh/vkpt/shader/direct_lighting.rgen
 	refresh/vkpt/shader/indirect_lighting.rgen
+	refresh/vkpt/shader/sharc_update.rgen
+	refresh/vkpt/shader/restir_gi.rgen
 	refresh/vkpt/shader/path_tracer.rchit
 	refresh/vkpt/shader/path_tracer.rmiss
 	refresh/vkpt/shader/path_tracer_masked.rahit

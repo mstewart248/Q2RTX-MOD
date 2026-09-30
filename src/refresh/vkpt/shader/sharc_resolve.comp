@@ -1,0 +1,92 @@
+/*
+Copyright (C) 2026
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// Folds this frame's radiance cache samples into the resolved entries, clears the
+// per-frame sums, and evicts entries that have gone unvisited. See sharc.h.
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+#include "utils.glsl"
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#include "vertex_buffer.h"
+
+#include "sharc.h"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+void
+main()
+{
+	uint idx = gl_GlobalInvocationID.x;
+	if (idx >= SHARC_CAPACITY)
+		return;
+
+	if (sharc_keys[idx] == 0u)
+		return;
+
+	uint base = idx * SHARC_ACCUM_UINTS;
+	uint rbase = idx * SHARC_RESOLVED_VEC4S;
+	uint frame = global_ubo.current_frame_idx;
+
+	vec4 ind = sharc_resolved[rbase + 0];
+	vec4 dir = sharc_resolved[rbase + 1];
+
+	uint n = min(sharc_accum[base + 3], SHARC_MAX_FRAME_SAMPLES);
+
+	if (n == 0u)
+	{
+		// Entries are only allocated by a sample, so this one had samples once
+		// and has gone quiet.
+		uint age = (frame - uint(dir.w)) & 0xffffffu;
+		if (age > uint(max(global_ubo.pt_sharc_stale, 1.0)))
+		{
+			sharc_keys[idx] = 0u;
+			sharc_resolved[rbase + 0] = vec4(0);
+			sharc_resolved[rbase + 1] = vec4(0);
+		}
+		return;
+	}
+
+	float inv = 1.0 / (float(n) * sharc_fixed_scale());
+	vec3 frame_indirect = vec3(sharc_accum[base + 0], sharc_accum[base + 1], sharc_accum[base + 2]) * inv;
+	vec3 frame_direct   = vec3(sharc_accum[base + 4], sharc_accum[base + 5], sharc_accum[base + 6]) * inv;
+
+	/* A plain running mean until pt_sharc_frames worth of history, then an
+	   exponential average with that time constant. A voxel that gets many
+	   samples per frame converges in one frame; one that gets few still keeps
+	   its lag bounded. */
+	float total = ind.w + float(n);
+	float weight = max(float(n) / total, 1.0 / max(global_ubo.pt_sharc_frames, 1.0));
+
+	ind.rgb = mix(ind.rgb, frame_indirect, weight);
+	dir.rgb = mix(dir.rgb, frame_direct, weight);
+	ind.w = min(total, 65536.0);
+	dir.w = float(frame & 0xffffffu); // exact in a float; the age above wraps to match
+
+	sharc_resolved[rbase + 0] = ind;
+	sharc_resolved[rbase + 1] = dir;
+
+	for (uint i = 0; i < SHARC_ACCUM_UINTS; i++)
+		sharc_accum[base + i] = 0u;
+}

@@ -268,6 +268,7 @@ begin video
         toggle --status "(flt_fsr_enable)" "AMD FSR 1.0" flt_fsr_enable
         range --status "lower is sharper (flt_fsr_sharpness)" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01        
         pairs --status "(pt_num_bounce_rays)" "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2
+        pairs --status "extra bounces of light from a world-space radiance cache, on top of global illumination. Costs about 0.5ms (pt_sharc)" "multi-bounce lighting" pt_sharc off 0 on 2
         pairs --status "(pt_reflect_refract)" "reflection/refraction depth" pt_reflect_refract off 0 1 1 2 2 4 4 8 8
 		toggle --status "turn some monitors in the game into security camera views (pt_cameras)" \
             "security cameras" pt_cameras
@@ -295,6 +296,7 @@ begin video
         endif
         blank
         pairs --status "(pt_restir)" "ReStir Direct Illuminaton" pt_restir off 0 on 1
+        pairs --status "reuses good bounce-light samples across frames: less noise in indirect light, about 0.2ms (pt_restir_gi)" "ReStir Global Illumination" pt_restir_gi off 0 on 1
         toggle --status "(flt_enable)" "denoiser" flt_enable
         toggle --status "(flt_fixed_albedo)" "textures" flt_fixed_albedo ~1
         pairs --status "experimental feature - simulates reflection and refraction effects in thick glass (pt_thick_glass)" \

@@ -60,6 +60,8 @@ typedef enum {
     PIPELINE_DIRECT_LIGHTING_CAUSTICS,
     PIPELINE_INDIRECT_LIGHTING_FIRST,
     PIPELINE_INDIRECT_LIGHTING_SECOND,
+	PIPELINE_SHARC_UPDATE,
+	PIPELINE_RESTIR_GI,
 
 	PIPELINE_COUNT
 } pipeline_index_t;
@@ -98,6 +100,8 @@ cvar_t*                      cvar_pt_blas_fast_trace = NULL;
 extern cvar_t *cvar_pt_caustics;
 extern cvar_t *cvar_pt_reflect_refract;
 extern cvar_t* cvar_pt_restir;
+extern cvar_t* cvar_pt_sharc_stride;
+extern cvar_t* cvar_pt_restir_gi;
 
 typedef struct QvkGeometryInstance_s {
 	float    transform[12];
@@ -1434,6 +1438,52 @@ vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce)
 	return VK_SUCCESS;
 }
 
+static void
+sharc_barrier(VkCommandBuffer cmd_buf)
+{
+	VkMemoryBarrier barrier = {
+		.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+	};
+
+	vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+}
+
+/* Radiance cache (pt_sharc, shader/sharc.h): train it from this frame's G-buffer and
+   resolve it, ready for indirect_lighting.rgen to read. Needs the primary surfaces
+   and must run before the first bounce pass, which overwrites SHADING_POSITION with
+   the bounce hit when there is a second bounce. */
+VkResult
+vkpt_pt_sharc_update(VkCommandBuffer cmd_buf, bool clear)
+{
+	BEGIN_PERF_MARKER(cmd_buf, PROFILER_SHARC);
+
+	if (clear)
+		vkpt_sharc_clear(cmd_buf);
+
+	uint32_t stride = (uint32_t)max(1, min(16, (int)cvar_pt_sharc_stride->value));
+
+	pt_push_constants_t push;
+	push.gpu_index = -1;
+	push.bounce = 0;
+
+	dispatch_rays(cmd_buf, PIPELINE_SHARC_UPDATE, push,
+		(qvk.extent_render.width + stride - 1) / stride,
+		(qvk.extent_render.height + stride - 1) / stride, 1);
+
+	sharc_barrier(cmd_buf);
+
+	vkpt_sharc_resolve(cmd_buf);
+
+	sharc_barrier(cmd_buf);
+
+	END_PERF_MARKER(cmd_buf, PROFILER_SHARC);
+
+	return VK_SUCCESS;
+}
+
 VkResult
 vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 {
@@ -1513,6 +1563,9 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_HF]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_SPEC]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_BOUNCE_THROUGHPUT]);
+				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_POS_A + frame_idx]);
+				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_DATA_A + frame_idx]);
+				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_ORIGIN_A + frame_idx]);
 
 				END_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING_0 + bounce_ray);
 			}
@@ -1520,6 +1573,35 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 	}
 
 	END_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING);
+
+	// ReSTIR GI (shader/restir_gi.h): merge the first-bounce candidates with last
+	// frame's reservoirs and light the diffuse channel. The shader itself stands down
+	// in photo mode.
+	if (cvar_pt_restir_gi->value != 0 && num_bounce_rays >= 1)
+	{
+		BEGIN_PERF_MARKER(cmd_buf, PROFILER_RESTIR_GI);
+
+		for (int i = 0; i < qvk.device_count; i++)
+		{
+			set_current_gpu(cmd_buf, i);
+
+			pt_push_constants_t push;
+			push.gpu_index = qvk.device_count == 1 ? -1 : i;
+			push.bounce = 0;
+
+			dispatch_rays(cmd_buf, PIPELINE_RESTIR_GI, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+		}
+
+		set_current_gpu(cmd_buf, ALL_GPUS);
+
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_POS_A + frame_idx]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_DATA_A + frame_idx]);
+
+		END_PERF_MARKER(cmd_buf, PROFILER_RESTIR_GI);
+	}
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
 
@@ -1632,6 +1714,14 @@ vkpt_pt_create_pipelines()
 		case PIPELINE_INDIRECT_LIGHTING_SECOND:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_INDIRECT_LIGHTING_RGEN];
 			shader_stages[0].pSpecializationInfo = &specInfo[1];
+			break;
+		case PIPELINE_SHARC_UPDATE:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_SHARC_UPDATE_RGEN];
+			shader_stages[0].pSpecializationInfo = NULL;
+			break;
+		case PIPELINE_RESTIR_GI:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_RESTIR_GI_RGEN];
+			shader_stages[0].pSpecializationInfo = NULL;
 			break;
 		default:
 			assert(!"invalid pipeline index");

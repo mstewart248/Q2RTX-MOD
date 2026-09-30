@@ -185,6 +185,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(PT_RESTIR_ID_B,            NUM_IMAGES_BASE + 31, R16_UINT,            r16ui,   IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_A,               NUM_IMAGES_BASE + 32, R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_B,               NUM_IMAGES_BASE + 33, R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_POS_A,       NUM_IMAGES_BASE + 34, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_POS_B,       NUM_IMAGES_BASE + 35, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_DATA_A,      NUM_IMAGES_BASE + 36, R32G32B32A32_UINT,  rgba32ui, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_DATA_B,      NUM_IMAGES_BASE + 37, R32G32B32A32_UINT,  rgba32ui, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_ORIGIN_A,    NUM_IMAGES_BASE + 38, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_ORIGIN_B,    NUM_IMAGES_BASE + 39, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 
 #define LIST_IMAGES_B_A \
 	IMG_DO(PT_VISBUF_PRIM_B,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
@@ -221,8 +227,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(PT_RESTIR_ID_A,            NUM_IMAGES_BASE + 31, R16_UINT,            r16ui,   IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_B,               NUM_IMAGES_BASE + 32, R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_RESTIR_A,               NUM_IMAGES_BASE + 33, R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_POS_B,       NUM_IMAGES_BASE + 34, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_POS_A,       NUM_IMAGES_BASE + 35, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_DATA_B,      NUM_IMAGES_BASE + 36, R32G32B32A32_UINT,  rgba32ui, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_DATA_A,      NUM_IMAGES_BASE + 37, R32G32B32A32_UINT,  rgba32ui, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_ORIGIN_B,    NUM_IMAGES_BASE + 38, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(PT_RESTIR_GI_ORIGIN_A,    NUM_IMAGES_BASE + 39, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 
-#define NUM_IMAGES (NUM_IMAGES_BASE + 34) /* this really sucks but I don't know how to fix it
+#define NUM_IMAGES (NUM_IMAGES_BASE + 40) /* this really sucks but I don't know how to fix it
                                              counting with enum does not work in GLSL */
 
 // todo: make naming consistent!

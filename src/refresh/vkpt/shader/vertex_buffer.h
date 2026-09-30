@@ -61,6 +61,14 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SUN_COLOR_BUFFER_BINDING_IDX 7
 #define SUN_COLOR_UBO_BINDING_IDX 8
 #define LIGHT_STATS_BUFFER_BINDING_IDX 9
+#define SHARC_KEY_BUFFER_BINDING_IDX 10
+#define SHARC_ACCUM_BUFFER_BINDING_IDX 11
+#define SHARC_RESOLVED_BUFFER_BINDING_IDX 12
+
+// Spatial hash radiance cache (pt_sharc) - see shader/sharc.h. Must be a power of two.
+#define SHARC_CAPACITY          (1 << 20)
+#define SHARC_ACCUM_UINTS       8   // per entry: indirect rgb, sample count, direct rgb, unused
+#define SHARC_RESOLVED_VEC4S    2   // per entry: indirect rgb + sample count, direct rgb + last frame
 
 #define VERTEX_BUFFER_WORLD 0
 #define VERTEX_BUFFER_INSTANCED 1
