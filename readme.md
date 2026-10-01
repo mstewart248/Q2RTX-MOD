@@ -90,16 +90,53 @@ DLSS-specific renderer work that made the above actually look right:
   `pt_dlss_spec_hitdist`) — RR was previously sizing its diffuse spatial filter
   with no signal at all.
 * **Bloom and tone mapping** reworked for the DLSS output chain.
+* **Frame generation from a standstill** (`pt_dlss_fg_proj`, on by default).
+  Starting to walk forward used to make parts of the screen hold and then snap
+  into place. DLSS-G rebuilds each pixel's position from the depth buffer, and
+  the projection it was handed did not match the 1/z depth Q2RTX writes, so
+  forward movement was reprojected 20–100× too far. Turning was never affected.
+* **Non-NVIDIA GPUs** start cleanly with DLSS and frame generation switched
+  off, rather than trying to initialise NGX on hardware that cannot run it.
 * An extensive DLSS/G-buffer debug view set: `pt_dlss_debug`,
   `pt_dlss_fg_stats`, `pt_dlss_fg_indicator`, `pt_dlss_fg_compare`.
 
 ## Path tracer
 
-* **ReSTIR direct illumination** (`pt_restir`) with temporal reuse, permutation
-  sampling, pairwise MIS spatial reuse (`pt_restir_pairwise`), a boiling filter
+* **ReSTIR direct illumination** (`pt_restir`, menu: *ReStir Direct
+  Illumination*) with temporal reuse, permutation sampling, spatial reuse
+  (`pt_restir_spatial`), pairwise MIS (`pt_restir_pairwise`), a boiling filter
   (`pt_restir_boiling`), a tunable history length (`pt_restir_m_clamp`) and its
-  own debug views. `pt_restir_spatial 0` — temporal only — is the right setting
-  under DLSS-RR.
+  own debug views (`pt_restir_debug`). Its brightness bias has been measured
+  against plain RIS and largely removed: temporal reuse was +20% too bright and
+  spatial reuse +41–60%, and both are now within a few percent. Reservoirs that
+  found nothing keep their history weight, spatial neighbours are shadow-tested
+  from their own surface the way RTXDI does it (`pt_restir_spatial_vis`), and
+  the spatial result feeds shading only instead of being fed back into the
+  history, where it compounded. Switching ReSTIR on also turns on one spatial
+  sample.
+* **ReSTIR GI** (`pt_restir_gi`, menu: *ReStir Global Illumination*, off by
+  default, about 0.2 ms). The first diffuse bounce becomes a sample that is
+  reused across frames, so a bounce that found the lit wall keeps lighting the
+  pixel for several frames instead of being thrown away. Temporal reuse only;
+  `pt_restir_gi_m_clamp` sets the history length and `pt_restir_gi 2` shows it.
+  Never used in photo mode.
+* **Multi-bounce lighting from a world-space radiance cache** (`pt_sharc`,
+  menu: *multi-bounce lighting*, off by default, about 0.5 ms). An
+  implementation of NVIDIA's SHaRC: a few rays per frame (`pt_sharc_stride`)
+  walk up to `pt_sharc_bounces` bounces and store what they find in a hashed
+  voxel grid, and the last bounce of every ordinary path reads the cache
+  instead of stopping, so light keeps bouncing further than the path tracer can
+  afford to trace. Voxels are sized by screen footprint (`pt_sharc_voxel_px`),
+  and `pt_sharc_jitter` and `pt_sharc_min_dist` keep the grid from showing as
+  blocks or leaks. `pt_sharc_scale` (default `250`) is a deliberate artistic
+  gain: Quake's textures are dark enough that physically correct extra bounces
+  add well under 1%. Debug views: `pt_sharc 3` the cache itself, `4` lookup hit
+  rate, `5` indirect light only.
+* **Full materials at the indirect bounce** (`pt_bounce_material`, on by
+  default). The original renderer shaded every bounce hit as plain grey paint —
+  base colour at a fixed mip, no normal map, roughness 1, no specular — so
+  metal and glossy surfaces bounced light like matte walls. Bounces now get the
+  real material, with a ray-cone texture LOD.
 * **Underwater screen warp** (`pt_water_warp`). Unlike the original's
   post-process resample, this bends the *camera rays*, so it costs no sharpness
   through DLSS, has real off-screen geometry to bend in from, and never touches
@@ -108,12 +145,17 @@ DLSS-specific renderer work that made the above actually look right:
   `D_WarpScreen`.
 * **Submerged screen blend** scoped separately from the global one
   (`tm_blend_water_enable`, `tm_blend_water_vignette`).
+* **Underwater murkiness** (`pt_water_density`, default `0.5`): how quickly
+  light fades travelling through water, slime and lava. Lower sees further and
+  brighter, higher is murkier.
 * **Sky system**: `sky_type` selects between the procedural sky and the map's
   own skybox; `sky_use_map_skybox` controls whether rerelease maps show their
   authored skybox (`1`) or always the procedural one (`0`);
   `sky_map_sun_azimuth` / `sky_map_sun_elevation` place the sun on maps with no
   sun entity; `pt_sky_light_scale` scales the radiance a map skybox casts into
-  the level.
+  the level. A **time of day** other than *custom* (`sun_preset`) fixes the
+  sun's position itself, so the elevation and azimuth sliders only appear on
+  *custom*; *noon* puts the sun straight overhead.
 * **Animated sky and a moving sun** (`sun_animate`). The sun tracks across the
   sky in real time, taking the whole sky — colour, horizon, god rays and the
   light the level is actually lit by — with it. `sun_animate_step` sets the
@@ -265,6 +307,13 @@ Also in the fog system:
 * **Fog in reflections** (`pt_fog_froxel_reflect`) — `0` grid, stopped at the
   reflecting surface; `1` the march's two-pass result, complete but noisy.
 * **Fog with DLSS Frame Generation**, which needed its own fixes.
+* **Fog in photo mode** (`pt_fog_accum_march`, on by default). Accumulation
+  skips the froxel grid and its upsample and marches the fog per pixel at full
+  resolution instead, so a converged screenshot has no grid in it.
+* **Stability**: a non-finite value in a single light's in-scatter could
+  poison the whole volume — the fog would collapse to nothing or turn to white
+  noise. Those values are now caught before they spread. Sky fog no longer
+  leaks into indoor areas.
 * **Calibration**: `cl_fog_scale` maps the map's authored density onto
   extinction (KEX's constant lives in a closed renderer and cannot be derived).
   `cl_volumetric_fog_density` lets a map carry a *second* density for mode 3,
@@ -366,6 +415,17 @@ of `pak0.pak` — nothing has to be unpacked. What is supported:
 * Rerelease items, entities and spawn functions, autosave timing
   (`g_auto_save_min_time`), tracker drag/lift (`g_tracker_drag`,
   `g_tracker_lift`), and the save-game format work to carry all of it.
+* **Soldier dodging checked against id's rerelease source.** As in the
+  rerelease, soldiers react only to *projectiles* — blaster, hyperblaster,
+  grenades, rockets, BFG and the expansion weapons — never to hitscan. A chest-
+  or head-high bolt makes them crouch; a low one makes them sidestep. A high
+  shot that catches a blaster or shotgun soldier in its run-and-shoot makes it
+  trip, and if it still faces you it fires from the ground. Machinegun soldiers
+  never trip, as in id's code. id tuned the dodge rolls for a 40 Hz server;
+  they are rescaled for this engine's 10 Hz so soldiers react as often as they
+  do in the rerelease.
+* The rerelease's **per-monster gib parts** — the arms, heads, chests and guns
+  each monster breaks into — and further monster navigation fixes.
 * Gameplay changes made early in this fork's life are **gated behind menu
   options**, so a fresh install plays with stock behaviour.
 
@@ -430,6 +490,10 @@ space, so a burst of sixty costs one instance, not sixty.
   (`pt_blood_roughness`, `pt_blood_specular`), an animated surface ripple
   (`pt_blood_normal_*`, `pt_blood_wobble`), thin-film darkening
   (`pt_blood_thin_dark`, `_thin_power`), splat alpha and darkening, puddle sink.
+* **Blood in water** (`cl_blood_water`, on by default): droplets that reach
+  water spread out, sink and fade instead of bouncing off the surface. Lifetime,
+  spread, sinking depth, wobble and a cap on how many dissolve at once are
+  tunable (`cl_blood_water_life`, `_spread`, `_depth`, `_wobble`, `_max`).
 * **Colour**: `cl_blood_color` forces one colour — red, green, blue, yellow,
   purple, or black/oil — while keeping the per-droplet shade variation, or leaves
   the game's own red/green as sent.
@@ -487,7 +551,9 @@ refractions on water, glass, mirror and screen surfaces, procedural environments
 sunlight with direct and indirect illumination, volumetric god rays, the player
 avatar casting shadows and appearing in reflections, multi-GPU (SLI), deathmatch
 and cooperative multiplayer, optional two-bounce indirect illumination,
-high-quality screenshot mode, and the [photo mode](#photo-mode).
+high-quality screenshot mode, and the [photo mode](#photo-mode). Fixes made in
+the upstream Quake II RTX repository after this fork was created have been
+merged in.
 
 ---
 
@@ -1048,6 +1114,15 @@ to move up and down; `Shift` is faster and `Ctrl` slower. Move the mouse while
 holding the left mouse button to change orientation, hold the right button and
 move up or down to zoom, and hold both buttons and move left or right to adjust
 camera roll.
+
+`pt_accumulation_stats 1` adds a panel in the top left corner that stays up
+while the image accumulates: how many frames have gone in, how long it has been
+running, and how long it took to reach the target. Unlike the progress text it
+never fades, so turn it off before taking the shot.
+
+Fog in photo mode is marched per pixel at full resolution rather than read from
+the froxel grid (`pt_fog_accum_march`), and ReSTIR GI is never used here, so the
+converged image stays an unbiased reference.
 
 Settings are in the game menu, or see `pt_accumulation_rendering`, `pt_dof`,
 `pt_aperture`, `pt_freecam` and friends in the [Client Manual](doc/client.md).
