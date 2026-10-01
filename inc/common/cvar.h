@@ -95,6 +95,10 @@ cvar_t *Cvar_Get(const char *var_name, const char *value, int flags);
 // if it exists, the value will not be changed, but flags will be ORed in
 // that allows variables to be unarchived without needing bitflags
 
+void Cvar_SetDefault(const char *var_name, const char *value);
+// changes the default, creating the variable at it if it doesn't exist;
+// a variable still at its old default follows to the new one
+
 cvar_t *Cvar_WeakGet(const char *var_name);
 // creates weak variable without value
 

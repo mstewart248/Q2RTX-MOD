@@ -3699,8 +3699,66 @@ static void free_game_paths(void)
     fs_searchpaths = fs_base_searchpaths;
 }
 
+/* THE CLASSIC GAME HAS NO PLAYER MODELS OF ITS OWN ON A STEAM INSTALL.
+
+   Quake II put players/ (male, female, cyborg) on disk loose, never in a pak,
+   and the remaster's baseq2/pak0.pak - the copy the README tells people to use
+   - doesn't carry them either. On such an install the Player Setup menu says
+   "No player models found." The remaster's own pak0.pak has all three, so
+   mount just its players/ entries at the bottom of the base path. Everything
+   else in that pak stays out: its textures and models re-use classic names and
+   would leak into the classic game. Anything in baseq2 - loose or packed -
+   still wins, and FS_ListFiles drops the duplicate names. */
+static void add_rerelease_players(void)
+{
+    static const char prefix[] = "players/";
+    static const char *const paks[] = {
+        REREL_GAME "/" BASEGAME "/pak0.pak",  // the remaster's folder, verbatim
+        REREL_GAME "/pak0.pak",               // its pak copied up one level
+    };
+    char path[MAX_OSPATH];
+
+    for (int i = 0; i < q_countof(paks); i++) {
+        searchpath_t *search;
+        packfile_t *file;
+        pack_t *pack;
+        unsigned kept = 0;
+
+        if (Q_concat(path, sizeof(path), sys_basedir->string, "/", paks[i]) >= sizeof(path))
+            continue;
+        if (!Sys_IsFile(path) || !(pack = load_pack_file(path)))
+            continue;
+
+        for (unsigned j = 0; j < pack->num_files; j++) {
+            file = &pack->files[j];
+            if (!Q_stricmpn(pack->names + file->nameofs, prefix, sizeof(prefix) - 1))
+                pack->files[kept++] = *file;
+        }
+
+        if (!kept) {
+            pack_free(pack);
+            continue;
+        }
+
+        pack->num_files = kept;
+        Z_Free(pack->file_hash);
+        pack_calc_hashes(pack);
+        Com_DPrintf("%s: %u player file(s) from %s\n", __func__, kept, path);
+
+        search = FS_Malloc(sizeof(searchpath_t));
+        search->mode = FS_PATH_BASE | FS_PATH_GAME;
+        search->filename[0] = 0;
+        search->pack = pack_get(pack);
+        search->next = fs_searchpaths;
+        fs_searchpaths = search;
+        return;
+    }
+}
+
 static void setup_base_paths(void)
 {
+    add_rerelease_players();
+
     // base paths have both BASE and GAME bits set by default
     // the GAME bit will be removed once gamedir is set,
     // and will be put back once gamedir is reset to basegame
@@ -3848,6 +3906,37 @@ void FS_Shutdown(void)
     Cmd_Deregister(c_fs);
 }
 
+/* THE REMASTER'S FOG DEFAULTS. Its maps author fog the classic ones mostly
+   don't have, and these are the settings tuned against them: the froxel grid
+   with ReSTIR in cl_fog 3. The classic column must match each cvar's own
+   Cvar_Get / UBO_CVAR_DO default, since it is what a switch back restores. */
+static const struct {
+    const char *name, *classic, *rerelease;
+} rerelease_defaults[] = {
+    { "cl_fog",                    "0",   "3"    },
+    { "cl_fog_scale",              "2",   "1000" },
+    { "cl_volumetric_fog_density", "-1",  "1"    },
+    { "pt_fog_froxel",             "0",   "1"    },
+    { "pt_fog_restir",             "0.0", "1"    },
+    { "pt_fog_light_knee",         "2.0", "0.15" },
+    { "pt_fog_light_scale",        "1.0", "1.5"  },
+    { "pt_fog_sky_pvs",            "0.5", "0"    },
+};
+
+// Runs before the new game's configs, so its q2config.cfg still has the last
+// word; this only decides what a cvar the player never set starts at.
+static void set_game_defaults(bool rerelease)
+{
+    for (int i = 0; i < q_countof(rerelease_defaults); i++) {
+        const char *name = rerelease_defaults[i].name;
+
+        if (rerelease)
+            Cvar_SetDefault(name, rerelease_defaults[i].rerelease);
+        else if (Cvar_FindVar(name))
+            Cvar_SetDefault(name, rerelease_defaults[i].classic);
+    }
+}
+
 // this is called when local server starts up and gets it's latched variables,
 // client receives a serverdata packet, or user changes the game by hand while
 // disconnected
@@ -3869,6 +3958,7 @@ static void fs_game_changed(cvar_t *self)
     // rather than in the first time startup branch below, so that it follows a
     // runtime gamedir switch too.
     Cvar_Set("fs_rerelease", Q_stricmp(self->string, REREL_GAME) ? "0" : "1");
+    set_game_defaults(fs_rerelease->integer);
 
     // check for the first time startup
     if (!fs_base_searchpaths) {

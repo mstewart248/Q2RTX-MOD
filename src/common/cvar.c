@@ -324,6 +324,45 @@ cvar_t *Cvar_Get(const char *var_name, const char *var_value, int flags)
 
 /*
 ============
+Cvar_SetDefault
+
+For defaults that depend on which game is running. The game directory is set
+before any config runs and before the subsystems register their cvars, so a
+variable created here keeps this default when they do; the configs then apply
+the player's own value on top. A variable the player has changed from the old
+default keeps its value, and so does one set on the command line.
+============
+*/
+void Cvar_SetDefault(const char *var_name, const char *value)
+{
+    cvar_t *var = Cvar_FindVar(var_name);
+    bool at_default;
+
+    if (!var) {
+        Cvar_Get(var_name, value, 0);
+        return;
+    }
+
+    // set by the player before anything registered it (+set on the command
+    // line): its value is theirs, and its default isn't known yet
+    if (var->flags & (CVAR_CUSTOM | CVAR_WEAK)) {
+        return;
+    }
+
+    if (!strcmp(var->default_string, value)) {
+        return;
+    }
+
+    at_default = !strcmp(var->string, var->default_string);
+    Z_Free(var->default_string);
+    var->default_string = Z_CvarCopyString(value);
+    if (at_default) {
+        Cvar_SetByVar(var, value, FROM_CODE);
+    }
+}
+
+/*
+============
 Cvar_WeakGet
 ============
 */
