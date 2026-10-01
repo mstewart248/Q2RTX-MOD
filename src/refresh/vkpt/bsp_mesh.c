@@ -422,7 +422,10 @@ static int filter_static_sky(int flags, int surf_flags)
 {
 	enum sky_class_e sky_class = classify_sky(flags, surf_flags);
 
-	if (((surf_flags & SURF_NODRAW) && cvar_pt_enable_nodraw->integer) || (sky_class == SKY_CLASS_NODRAW_SKYLIGHT))
+	// pt_enable_nodraw deliberately does not apply here. Many maps mark their sky faces
+	// SKY|NODRAW; dropping them leaves holes in the sky through which rays hit other parts
+	// of the level. Only the explicit skylight class (pt_bsp_sky_lights 2) is skipped.
+	if (sky_class == SKY_CLASS_NODRAW_SKYLIGHT)
 		return 0;
 	
 	if (sky_class == SKY_CLASS_MATERIAL)

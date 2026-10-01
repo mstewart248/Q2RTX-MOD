@@ -1095,6 +1095,18 @@ static void CL_Changing_f(void)
         Cmd_ExecTrigger("#cl_changelevel");
     }
 
+    /* A map change has to kill a running cinematic HERE, not just in
+       CL_ClearState: that only stops one in ca_cinematic, and this line is
+       what takes us out of it before CL_ClearState ever runs.  "map base1"
+       typed into the console over idlog.cin got past it that way - the
+       video sat paused under the console, resumed decoding the moment the
+       new level was live, and when it ran out took its "finished" path,
+       raising a loading plaque over the game that stayed up until the
+       console was opened. */
+    if (cls.state == ca_cinematic) {
+        SCR_StopCinematic();
+    }
+
     SCR_BeginLoadingPlaque();
 
     cls.state = ca_connected;   // not active anymore, but not disconnected
