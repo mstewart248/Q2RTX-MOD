@@ -99,10 +99,14 @@ begin environment
         pairs --status "physical sky only - a map drawing its own skybox has no sun to move (sun_preset)" "time of day" sun_preset "custom" 0 "current time" 1 "12x current time" 2 "night" 3 "dawn" 4 "morning" 5 "noon" 6 "evening" 7 "dusk" 8
         bind "next time of day key" next_sun
         blank
-        range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_elevation)" "physical sky sun elevation" sun_elevation -20 90 1
-        range -f "%.0f deg" --status "physical sky only, and only in custom time of day mode (sun_azimuth)" "physical sky sun azimuth" sun_azimuth -20 380 5
-        pairs --status "only effective in custom time of day mode (sun_gamepad)" "control sun with gamepad" sun_gamepad off 0 "left stick" 1 "right stick" 2
-        blank
+        // Every other time of day fixes the sun's angle itself and ignores these
+        // three, so they are only shown on Custom.
+        ifeq sun_preset 0
+            range -f "%.0f deg" --status "physical sky only (sun_elevation)" "physical sky sun elevation" sun_elevation -20 90 1
+            range -f "%.0f deg" --status "physical sky only (sun_azimuth)" "physical sky sun azimuth" sun_azimuth -20 380 5
+            pairs --status "move the sun with a gamepad stick (sun_gamepad)" "control sun with gamepad" sun_gamepad off 0 "left stick" 1 "right stick" 2
+            blank
+        endif
     endif
     // HOW FAST IT MOVES is the player's to say in either mode. Shown on the
     // Custom preset, where sun_animate has always worked, and throughout

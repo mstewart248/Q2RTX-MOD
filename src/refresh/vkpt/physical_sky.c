@@ -1214,7 +1214,8 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 			break;
 
 		case SUN_PRESET_NOON:
-			elevation = 80.f;
+			// straight overhead; azimuth means nothing at 90 degrees
+			elevation = 90.f;
 			azimuth = -75.f;
 			break;
 
