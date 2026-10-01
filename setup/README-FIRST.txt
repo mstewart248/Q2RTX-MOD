@@ -75,13 +75,14 @@ A ray tracing capable GPU and a current driver. DLSS Super Resolution, Ray
 Reconstruction and Frame Generation need a compatible NVIDIA GPU; the renderer
 runs without them.
 
-The DLSS runtime DLLs are included beside q2rtx.exe:
+The NVIDIA DLSS runtime DLLs are NOT included. To use DLSS, supply your own
+copies and put them in the same folder as q2rtx.exe:
 
     nvngx_dlss.dll      Super Resolution
     nvngx_dlssd.dll     Ray Reconstruction
     nvngx_dlssg.dll     Frame Generation
 
-Keep them next to the executable.
+Without them the game runs normally with the DLSS options unavailable.
 
 
 --------------------------------------------------------------------------------

@@ -227,6 +227,7 @@ process_selected_light_restir(
 	vec3 contrib_polygonal = vec3(0);
 	vec3 L, pos_on_light_polygonal;
 	bool polygonal_light_is_sky = false;
+	bool is_sun = light_idx == RESTIR_ENV_ID;
 	diffuse = vec3(0);
 	specular = vec3(0);
 	vis = 1.0;
@@ -329,7 +330,24 @@ process_selected_light_restir(
 
 	vec3 F = vec3(0);
 
-	if (vis > 0 && direct_specular_weight > 0)
+	if (is_sun)
+	{
+		// The sun is shaded the way get_sunlight shades it for pt_restir 0, NOT like
+		// a polygon light. direct_specular_weight is the hand-off of polygon-light
+		// highlights to the indirect specular rays on smooth surfaces (roughness under
+		// pt_direct_roughness_threshold), but those rays never pick up the sun, so
+		// applying it here zeroed the sun's highlight on every glossy surface: tiled
+		// and metal floors visibly lost their sheen whenever ReSTIR was switched on.
+		// Same disk-widened lobe (NoH_offset) and pt_sun_specular switch as well.
+		if (vis > 0 && global_ubo.pt_sun_specular > 0)
+		{
+			float NoH_offset = 0.5 * square(global_ubo.sun_tan_half_angle);
+			vec3 specular_brdf = GGX_times_NdotL(view_direction, global_ubo.sun_direction,
+				normal, roughness, base_reflectivity, NoH_offset, specular_factor, F);
+			specular = radiance * specular_brdf;
+		}
+	}
+	else if (vis > 0 && direct_specular_weight > 0)
 	{
 		vec3 specular_brdf = GGX_times_NdotL(view_direction, L,
 			normal, roughness, base_reflectivity, 0.0, specular_factor, F);

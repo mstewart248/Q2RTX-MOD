@@ -106,8 +106,11 @@ jobs:
         shell: bash
         run: |
           python setup/package_release.py \
-            --out "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" \
-            --dlss-dir DLSS_SDK/lib/Windows_x86_64/rel
+            --out "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip"
+          # The DLSS runtime DLLs must never be in the package; players supply their own.
+          if unzip -l "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" | grep -i 'nvngx[^/]*\.dll'; then
+            echo "ERROR: package contains NVIDIA runtime DLLs"; exit 1
+          fi
 
       - name: Publish release
         env:

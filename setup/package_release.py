@@ -2,7 +2,7 @@
 """
 Assemble a complete, playable Quake II RTX Overdrive package.
 
-    python setup/package_release.py --out Q2RTX-Overdrive-win64.zip [--dlss-dir DIR]
+    python setup/package_release.py --out Q2RTX-Overdrive-win64.zip
 
 Run from the repository root. Used by .github/workflows/release.yml and usable
 by hand for a local package; both go through here so a release built on CI and
@@ -19,12 +19,14 @@ WHAT GOES IN, and the rule behind it:
     baseq2/shader_vkpt and packed in baseq2/shaders.pkz.
   * the stock Quake II RTX media that is too large for git: q2rtx_media.pkz and
     blue_noise.pkz. CI restores these from the `shipped-media` release.
-  * the three DLSS runtime redistributables, taken from the SDK's
-    lib/Windows_x86_64/rel directory.
   * the repo documentation plus a generated README-FIRST.txt.
 
 WHAT STAYS OUT:
 
+  * every NVIDIA DLSS / NGX runtime DLL (nvngx_*.dll). They are NOT part of
+    a release: players supply their own copies and put them beside q2rtx.exe.
+    build_manifest refuses to package one even if it turns up somewhere the
+    rules above would otherwise pick it up.
   * every .pak file. They are id Software's and cannot be redistributed; the
     README tells the player where to get their own.
   * music/ and video/ - the player's own copies from the remaster.
@@ -52,10 +54,11 @@ REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe']
 OPTIONAL_ROOT = ['q2rtxded-x86.exe']
 DOCS = ['license.txt', 'notice.txt', 'readme.md', 'changelog.md']
 
-# Ray Reconstruction is served by nvngx_dlssd.dll. nvngx_dlssnr.dll is
-# deliberately not shipped: it is a separate 165 MB snippet that is not part of
-# the SDK's redistributable set and fails signature validation at load.
-DLSS_DLLS = ['nvngx_dlss.dll', 'nvngx_dlssd.dll', 'nvngx_dlssg.dll']
+# NVIDIA's DLSS runtime DLLs never go in a release - players bring their own.
+# Anything matching this is refused wherever it comes from.
+def is_nvidia_runtime(arc):
+    n = os.path.basename(arc).lower()
+    return n.startswith('nvngx') and n.endswith('.dll')
 
 REQUIRED_BASEQ2 = [
     'baseq2/gamex86_64.dll',
@@ -71,11 +74,14 @@ def tracked(repo, prefix):
     return [l.strip() for l in out.splitlines() if l.strip()]
 
 
-def build_manifest(repo, dlss_dir):
-    members, seen, missing, skipped = [], set(), [], []
+def build_manifest(repo):
+    members, seen, missing, skipped, refused = [], set(), [], [], []
 
     def add(disk, arc, required):
         if arc in seen:
+            return
+        if is_nvidia_runtime(arc):
+            refused.append(arc)
             return
         if not os.path.isfile(disk):
             (missing if required else skipped).append(arc)
@@ -88,14 +94,6 @@ def build_manifest(repo, dlss_dir):
     for f in OPTIONAL_ROOT:
         add(os.path.join(repo, f), f, False)
 
-    for f in DLSS_DLLS:
-        # Prefer the SDK checkout; fall back to a copy sitting next to the exe.
-        cand = os.path.join(dlss_dir, f) if dlss_dir else None
-        if cand and os.path.isfile(cand):
-            add(cand, f, True)
-        else:
-            add(os.path.join(repo, f), f, True)
-
     shaders = os.path.join(repo, 'baseq2', 'shader_vkpt')
     if not os.path.isdir(shaders):
         missing.append('baseq2/shader_vkpt/')
@@ -107,7 +105,7 @@ def build_manifest(repo, dlss_dir):
         for f in tracked(repo, prefix):
             add(os.path.join(repo, f), f, False)
 
-    return members, missing, skipped
+    return members, missing, skipped, refused
 
 
 def readme_text():
@@ -119,12 +117,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', required=True)
     ap.add_argument('--repo', default='.')
-    ap.add_argument('--dlss-dir', default='',
-                    help='DLSS SDK lib/Windows_x86_64/rel directory')
     args = ap.parse_args()
 
     repo = os.path.abspath(args.repo)
-    members, missing, skipped = build_manifest(repo, args.dlss_dir)
+    members, missing, skipped, refused = build_manifest(repo)
+
+    if refused:
+        print('left out NVIDIA runtime DLL(s) - players supply their own:')
+        for r in refused:
+            print('   ' + r)
 
     if missing:
         print('ABORT - required files absent:', file=sys.stderr)
