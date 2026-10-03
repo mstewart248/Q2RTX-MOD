@@ -1013,6 +1013,18 @@ static void Con_DrawSolidConsole(void)
                          MAX_STRING_CHARS, APP_VERSION, con.charsetImage);
     }
 
+// draw the loaded shaders' fingerprint above it (vkpt sets pt_shader_version),
+// so a screenshot of the console shows which shaders ran as well as which exe
+    {
+        const char *sv = Cvar_VariableString("pt_shader_version");
+        if (sv[0]) {
+            Q_snprintf(buffer, sizeof(buffer), "shaders %s", sv);
+            SCR_DrawStringEx(con.vidWidth - CHAR_WIDTH,
+                             y - CHAR_HEIGHT * (con_clock->integer ? 2 : 1),
+                             UI_RIGHT, MAX_STRING_CHARS, buffer, con.charsetImage);
+        }
+    }
+
     // restore rendering parameters
     R_ClearColor();
 }

@@ -3039,6 +3039,23 @@ init_vulkan(void)
 	return true;
 }
 
+/* A fingerprint of the SPIR-V actually loaded - FNV-1a over every module's
+   path, size and bytes, in load order - so a screenshot of the console says
+   which shaders the game was really running, whatever pack or loose folder
+   they came from. Published as the read-only cvar pt_shader_version (the
+   console draws it under the engine version) and printed once per load. */
+static uint64_t shader_hash;
+static int      shader_hash_modules;
+
+static void shader_hash_add(const void *data, size_t size)
+{
+	const unsigned char *p = data;
+	for (size_t i = 0; i < size; i++) {
+		shader_hash ^= p[i];
+		shader_hash *= 0x100000001b3ull;
+	}
+}
+
 static VkShaderModule
 create_shader_module_from_file(const char *name, const char *enum_name, bool is_rt_shader)
 {
@@ -3074,6 +3091,11 @@ create_shader_module_from_file(const char *name, const char *enum_name, bool is_
 		return VK_NULL_HANDLE;
 	}
 
+	shader_hash_add(path, strlen(path));
+	shader_hash_add(&size, sizeof(size));
+	shader_hash_add(data, size);
+	shader_hash_modules++;
+
 	VkShaderModule module;
 
 	VkShaderModuleCreateInfo create_info = {
@@ -3093,6 +3115,9 @@ VkResult
 vkpt_load_shader_modules()
 {
 	VkResult ret = VK_SUCCESS;
+
+	shader_hash = 0xcbf29ce484222325ull;
+	shader_hash_modules = 0;
 #define SHADER_MODULE_DO(a) do { \
 	qvk.shader_modules[a] = create_shader_module_from_file(shader_module_file_names[a], #a, IS_RT_SHADER); \
 	ret = (ret == VK_SUCCESS && qvk.shader_modules[a]) ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED; \
@@ -3113,6 +3138,16 @@ vkpt_load_shader_modules()
 #undef IS_RT_SHADER
 
 #undef SHADER_MODULE_DO
+
+	{
+		char ver[32];
+		// fold to 32 bits: 8 hex digits is plenty to tell two sets apart
+		Q_snprintf(ver, sizeof(ver), "%08x", (unsigned)(shader_hash ^ (shader_hash >> 32)));
+		Cvar_FullSet("pt_shader_version", ver, CVAR_ROM, FROM_CODE);
+		Com_Printf("Shader version: %s (%d modules, %s)\n", ver, shader_hash_modules,
+		           qvk.use_ray_query ? "ray query" : "ray pipeline");
+	}
+
 	return ret;
 }
 
