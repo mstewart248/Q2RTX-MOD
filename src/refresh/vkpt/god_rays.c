@@ -99,6 +99,12 @@ struct
 	   crosses a frame boundary, so both are written and consumed inside one. */
 	froxel_volume_t froxel_reservoir[2];
 
+	/* pt_fog_froxel_sky_history: the sky (and grid-sun) part of each scatter cell, on
+	   its own ping-pong like froxel_scatter. Binding 8 is this frame's, 9 the previous
+	   frame's, sampled with the same reprojection as the main history so that
+	   total - sky stays the local-light part. */
+	froxel_volume_t froxel_sky[MAX_FRAMES_IN_FLIGHT];
+
 	VkSampler froxel_sampler;
 	bool froxel_initialized;
 
@@ -757,7 +763,7 @@ static void create_image_views(void)
 
 static void create_pipeline_layout(void)
 {
-	VkDescriptorSetLayoutBinding bindings[8] = { 0 };
+	VkDescriptorSetLayoutBinding bindings[10] = { 0 };
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[0].descriptorCount = 1;
@@ -820,6 +826,17 @@ static void create_pipeline_layout(void)
 	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[7].descriptorCount = 1;
 	bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// The sky-part history pair (pt_fog_froxel_sky_history): 8 written, 9 sampled.
+	bindings[8].binding = 8;
+	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[8].descriptorCount = 1;
+	bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	bindings[9].binding = 9;
+	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[9].descriptorCount = 1;
+	bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
 	const VkDescriptorSetLayoutCreateInfo set_layout_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -945,11 +962,11 @@ static void create_descriptor_set(void)
 	const VkDescriptorPoolSize pool_sizes[] = {
 		// three samplers per set: the shadow map, the froxel history, and the
 		// integrated volume the filter reads
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_FRAMES_IN_FLIGHT * 3 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_FRAMES_IN_FLIGHT * 4 },
 		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_FRAMES_IN_FLIGHT },
 		// the scatter volume this frame writes, the integrated volume, and the
 		// two ReSTIR reservoirs
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAMES_IN_FLIGHT * 4 }
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAMES_IN_FLIGHT * 5 }
 	};
 
 	const VkDescriptorPoolCreateInfo pool_create_info = {
@@ -990,7 +1007,7 @@ static void update_descriptor_set(void)
 	
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		VkWriteDescriptorSet writes[7] = {
+		VkWriteDescriptorSet writes[9] = {
 			{
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 				.dstSet = god_rays.descriptor_set[i],
@@ -1011,6 +1028,8 @@ static void update_descriptor_set(void)
 		VkDescriptorImageInfo froxel_integrated_info;
 		VkDescriptorImageInfo froxel_sampled_info;
 		VkDescriptorImageInfo froxel_reservoir_info[2];
+		VkDescriptorImageInfo froxel_sky_write_info;
+		VkDescriptorImageInfo froxel_sky_history_info;
 
 		if (god_rays.froxel_initialized)
 		{
@@ -1091,6 +1110,34 @@ static void update_descriptor_set(void)
 					.pImageInfo = &froxel_reservoir_info[r]
 				};
 			}
+
+			// Unconditional for the same reason as the reservoirs: the scatter
+			// shader statically uses both bindings.
+			froxel_sky_write_info = (VkDescriptorImageInfo) {
+				.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+				.imageView = god_rays.froxel_sky[i].view
+			};
+			froxel_sky_history_info = (VkDescriptorImageInfo) {
+				.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+				.imageView = god_rays.froxel_sky[(i + 1) % MAX_FRAMES_IN_FLIGHT].view,
+				.sampler = god_rays.froxel_sampler
+			};
+			writes[num_writes++] = (VkWriteDescriptorSet) {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = god_rays.descriptor_set[i],
+				.descriptorCount = 1,
+				.dstBinding = 8,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.pImageInfo = &froxel_sky_write_info
+			};
+			writes[num_writes++] = (VkWriteDescriptorSet) {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = god_rays.descriptor_set[i],
+				.descriptorCount = 1,
+				.dstBinding = 9,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &froxel_sky_history_info
+			};
 		}
 
 		vkUpdateDescriptorSets(qvk.device, num_writes, writes, 0, NULL);
@@ -1115,7 +1162,7 @@ static void create_froxel_volumes(void)
 	if (god_rays.froxel_initialized)
 		return;
 
-	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT * 2 + 2 };
+	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT * 3 + 2 };
 
 	VkImage* image_slots[MAX_FROXEL_VOLUMES];
 	VkImageView* views[MAX_FROXEL_VOLUMES];
@@ -1159,6 +1206,16 @@ static void create_froxel_volumes(void)
 		views[num_volumes] = &god_rays.froxel_reservoir[r].view;
 		memories[num_volumes] = &god_rays.froxel_reservoir[r].memory;
 		formats[num_volumes] = VK_FORMAT_R32G32B32A32_SFLOAT;
+		num_volumes++;
+	}
+
+	// Same format and scale as froxel_scatter: the sky part is a slice of it.
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		image_slots[num_volumes] = &god_rays.froxel_sky[i].image;
+		views[num_volumes] = &god_rays.froxel_sky[i].view;
+		memories[num_volumes] = &god_rays.froxel_sky[i].memory;
+		formats[num_volumes] = VK_FORMAT_R16G16B16A16_SFLOAT;
 		num_volumes++;
 	}
 
@@ -1340,6 +1397,13 @@ static void destroy_froxel_volumes(void)
 		vkDestroyImageView(qvk.device, god_rays.froxel_reservoir[r].view, NULL);
 		vkDestroyImage(qvk.device, god_rays.froxel_reservoir[r].image, NULL);
 		vkFreeMemory(qvk.device, god_rays.froxel_reservoir[r].memory, NULL);
+	}
+
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		vkDestroyImageView(qvk.device, god_rays.froxel_sky[i].view, NULL);
+		vkDestroyImage(qvk.device, god_rays.froxel_sky[i].image, NULL);
+		vkFreeMemory(qvk.device, god_rays.froxel_sky[i].memory, NULL);
 	}
 
 	vkDestroySampler(qvk.device, god_rays.froxel_sampler, NULL);

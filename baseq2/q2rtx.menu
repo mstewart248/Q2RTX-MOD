@@ -190,7 +190,7 @@ begin photomode
     style --compact
     title "Photo Mode Settings"
     blank
-    pairs --status "(pt_accumulation_rendering)" "enable photo mode" pt_accumulation_rendering no 0 yes 1 "yes, hide GUI immediately" 2
+    pairs --status "(pt_accumulation_rendering)" "enable photo mode" pt_accumulation_rendering no 0 yes 1 "yes, hide GUI immediately" 2 "yes, pure path tracing (no ReSTIR or SHaRC)" 3
     bind "activation key" pause
     toggle --status "(scr_showpause)" "show pause plaque" scr_showpause
     blank
@@ -806,6 +806,8 @@ begin fog
             "physical sky" pt_fog_scale_sun 0 16 0.5
         pairs --status "how the PHYSICAL sky lights the fog. fast: sun shafts through the shadow map only. accurate: also the sky's own light (set by sky light), with a traced ray per fog cell so it clips crisply under roofs and overhangs - costs more (pt_fog_sky_sun_only)" \
             "physical sky fog" pt_fog_sky_sun_only "fast" 1 "accurate" 0
+        pairs --status "lets moving things - a spinning fan - cast shadows in the sky light of the fog, by giving the sky its own short history in the fog grid. Costs some GPU time and ~28 MB (pt_fog_froxel_sky_history)" \
+            "moving sky shadows" pt_fog_froxel_sky_history off 0 on 0.6
         range --status "how much of the SKY's own light the fog scatters - the soft glow under open sky, apart from the sun's shafts. Applies to a map's skybox, and to the physical sky when physical sky fog is accurate (pt_fog_scale_skybox)" \
             "sky light" pt_fog_scale_skybox 0 8 0.25
         range --status "how much fog EMISSIVE SURFACES make - the map's own light fixtures, which are most of its light (pt_fog_scale_emissive)" \

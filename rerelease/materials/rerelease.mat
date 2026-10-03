@@ -209,7 +209,8 @@ models/items/spawngro3/skin:
 
 models/monsters/arachnid/skin:
 	texture_base materialDev/models/monsters/arachnid/skin.tga
-	texture_metallic materialDev/models/monsters/arachnid/skin_metallic.png
+	texture_metallic materialDev/models/monsters/arachnid/skin_metal.png
+	texture_roughness materialDev/models/monsters/arachnid/skin_rough.png
 
 models/monsters/carrier/pain2:
 	texture_base materialDev/models/monsters/carrier/pain2.tga
@@ -8980,7 +8981,8 @@ textures/e1u3/refdr3_4:
 textures/e1u3/sflr1_4:
 	texture_base materialDev/textures/e1u3/sflr1_4.tga
 	texture_normals materialDev/textures/e1u3/sflr1_4_n.tga
-	metalness_factor 0
+	metalness_factor 1
+	specular_factor .1
 
 textures/e1u3/shiny1_4:
 	texture_base materialDev/textures/e1u3/shiny1_4.tga
@@ -19402,7 +19404,7 @@ textures/tomf/metal2_2f:
 	texture_normals materialDev/textures/tomf/metal2_2f_n.png
 	texture_metallic materialDev/textures/tomf/metal2_2f_metal.png
 	texture_roughness materialDev/textures/tomf/metal2_2f_rough.png
-	specular_factor .5
+	specular_factor .1
 
 textures/tomf/metal2_2h:
 	texture_base materialDev/textures/tomf/metal2_2h.tga

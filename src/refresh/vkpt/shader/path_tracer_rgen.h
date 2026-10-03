@@ -403,6 +403,60 @@ trace_geometry_ray(Ray ray, bool cull_back_faces, int instance_mask)
 #endif
 }
 
+#ifdef KHR_RAY_QUERY
+// trace_geometry_ray that sees straight through water and slime: every triangle is
+// forced through the candidate loop (NoOpaque) so the liquid ones can be refused.
+// Used to recover the surface behind a liquid face that is coplanar with it - see the
+// refraction fallback in reflect_refract.rgen.
+void
+trace_geometry_ray_skip_liquid(Ray ray, bool cull_back_faces, int instance_mask)
+{
+	uint rayFlags = gl_RayFlagsNoOpaqueEXT | gl_RayFlagsSkipProceduralPrimitives;
+	if (cull_back_faces)
+		rayFlags |= gl_RayFlagsCullBackFacingTrianglesEXT;
+
+	ray_payload_geometry.barycentric = vec2(0);
+	ray_payload_geometry.primitive_id = ~0u;
+	ray_payload_geometry.buffer_and_instance_idx = 0;
+	ray_payload_geometry.hit_distance = 0;
+
+	rayQueryEXT rayQuery;
+	rayQueryInitializeEXT(rayQuery, topLevelAS[TLAS_INDEX_GEOMETRY], rayFlags, instance_mask,
+		ray.origin, ray.t_min, ray.direction, ray.t_max);
+
+	while (rayQueryProceedEXT(rayQuery))
+	{
+		uint sbtOffset = rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(rayQuery, false);
+		int primitiveID = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, false);
+		int instanceID = rayQueryGetIntersectionInstanceIdEXT(rayQuery, false);
+		int geometryIndex = rayQueryGetIntersectionGeometryIndexEXT(rayQuery, false);
+		uint instanceCustomIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(rayQuery, false);
+		vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rayQuery, false);
+
+		int model_index;
+		uint prim_offset;
+		get_model_index_and_prim_offset(instanceID, geometryIndex, model_index, prim_offset);
+		Triangle t = load_and_transform_triangle(model_index, instanceCustomIndex, primitiveID + prim_offset);
+		if (is_water(t.material_id) || is_slime(t.material_id))
+			continue;
+
+		if (sbtOffset != SBTO_MASKED || pt_logic_masked(primitiveID, instanceID, geometryIndex, instanceCustomIndex, bary))
+			rayQueryConfirmIntersectionEXT(rayQuery);
+	}
+
+	if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
+	{
+		pt_logic_rchit(ray_payload_geometry,
+			rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true),
+			rayQueryGetIntersectionInstanceIdEXT(rayQuery, true),
+			rayQueryGetIntersectionGeometryIndexEXT(rayQuery, true),
+			rayQueryGetIntersectionInstanceCustomIndexEXT(rayQuery, true),
+			rayQueryGetIntersectionTEXT(rayQuery, true),
+			rayQueryGetIntersectionBarycentricsEXT(rayQuery, true));
+	}
+}
+#endif
+
 float vmin(vec3 v) { return min(v.x, min(v.y, v.z)); }
 float vmax(vec3 v) { return max(v.x, max(v.y, v.z)); }
 

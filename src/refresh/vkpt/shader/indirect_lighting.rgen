@@ -45,6 +45,11 @@ bool gi_candidate = false;     // a diffuse bounce was taken; its result belongs
 vec3 gi_sample_pos = vec3(0);
 vec3 gi_sample_normal = vec3(0);
 vec3 gi_t0 = vec3(0);          // throughput into the bounce, before the hit's albedo
+// The pixel's throughput BEFORE the diffuse/specular lobe choice and its Fresnel split,
+// stored with the candidate so restir_gi.rgen can shade the reservoir on every frame,
+// not only on the frames whose first bounce happened to go diffuse - see restir_gi.h.
+vec3 gi_base = vec3(0);
+bool gi_active = false;        // this pixel takes part in ReSTIR GI this frame
 vec3 gi_origin = vec3(0);
 vec3 gi_origin_normal = vec3(0);
 
@@ -155,6 +160,8 @@ indirect_lighting(
     get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
 
 	bool use_restir_gi = spec_bounce_index == 0 && !half_res && restir_gi_enabled();
+	gi_active = use_restir_gi;
+	gi_base = throughput.rgb;
 	gi_origin = position;
 	gi_origin_normal = normal;
 
@@ -806,7 +813,8 @@ main()
 				gi_t0.y > 1e-6 ? contrib.y / gi_t0.y : 0,
 				gi_t0.z > 1e-6 ? contrib.z / gi_t0.z : 0);
 
-			imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(gi_sample_pos, 0));
+			// POS.w carries the pre-lobe throughput until restir_gi.rgen replaces it with W.
+			imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(gi_sample_pos, uintBitsToFloat(packRGBE(gi_base))));
 			imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(
 				encode_normal(gi_sample_normal),
 				packRGBE(radiance),
@@ -816,8 +824,10 @@ main()
 		}
 
 		// A material-0 or lava pixel returns from indirect_lighting() with
-		// is_specular_ray false and nothing sampled.
-		float marker = is_specular_ray ? RESTIR_GI_CAND_SPECULAR : RESTIR_GI_CAND_INVALID;
+		// is_specular_ray false and nothing sampled. A pixel that is not taking part
+		// (half-resolution GI) is INVALID too, so no stale reservoir keeps shading it.
+		float marker = (gi_active && is_specular_ray) ? RESTIR_GI_CAND_SPECULAR : RESTIR_GI_CAND_INVALID;
+		imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(0, 0, 0, uintBitsToFloat(packRGBE(gi_base))));
 		imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(0, 0, floatBitsToUint(marker), 0));
 	}
 

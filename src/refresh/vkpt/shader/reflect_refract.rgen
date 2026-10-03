@@ -811,6 +811,20 @@ main()
 
 	trace_geometry_ray(reflection_ray, backface_culling, reflection_cull_mask);
 
+#ifdef KHR_RAY_QUERY
+	// A liquid face flush with a wall (the rerelease z-fights there): the ray entering the
+	// liquid starts 1 mm behind the shared plane, i.e. inside the solid wall brush, which has
+	// no inner faces - it leaves the map and the miss branch below paints the sky. Retrace
+	// from the camera side of the plane, looking through liquid faces, so it lands on the
+	// coplanar wall instead.
+	if(!found_intersection(ray_payload_geometry) && dot(direction, normal) < 0
+		&& (primary_is_water || primary_is_slime))
+	{
+		reflection_ray.origin = position - view_direction.xyz * 0.01;
+		trace_geometry_ray_skip_liquid(reflection_ray, backface_culling, reflection_cull_mask);
+	}
+#endif
+
 	// Add the transparency encountered along the reflection ray
 
 	Triangle triangle;

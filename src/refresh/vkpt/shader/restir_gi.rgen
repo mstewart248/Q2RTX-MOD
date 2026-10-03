@@ -74,6 +74,11 @@ main()
 
 	bool have_candidate = marker == RESTIR_GI_CAND_DIFFUSE;
 
+	// POS.w holds the pixel's throughput before the lobe choice on every frame
+	// (indirect_lighting.rgen); it is replaced by W below.
+	vec4 cand_pos = imageLoad(IMG_PT_RESTIR_GI_POS_A, ipos);
+	vec3 t_base = unpackRGBE(floatBitsToUint(cand_pos.w));
+
 	vec4 origin = imageLoad(IMG_PT_RESTIR_GI_ORIGIN_A, ipos);
 	vec3 x_v = origin.xyz;
 	vec3 n_v = decode_normal(floatBitsToUint(origin.w));
@@ -95,7 +100,6 @@ main()
 	// cos / pi and its resampling weight p_hat / p = luminance(L_o) * pi.
 	if(have_candidate)
 	{
-		vec4 cand_pos = imageLoad(IMG_PT_RESTIR_GI_POS_A, ipos);
 		GIReservoir c;
 		c.pos = cand_pos.xyz;
 		c.normal = decode_normal(cand_data.x);
@@ -207,17 +211,38 @@ main()
 		return;
 	}
 
-	// Light the pixel only on frames whose first bounce was diffuse: T0 carries this
-	// frame's 1 / (1 - specular_pdf), so on specular frames the path tracer's own
-	// specular estimate stands in, exactly as it did before ReSTIR.
-	if(!have_candidate || r.W <= 0)
+	// Shade the reservoir on EVERY frame, including the ones whose first bounce went
+	// specular. The path tracer picks the diffuse or the specular lobe with probability
+	// 1/2 on dielectrics and weights the winner by 2, so without ReSTIR a pixel's diffuse
+	// indirect light is twice its value on half the frames and nothing on the others -
+	// a coefficient of variation of 1 that no amount of sample reuse touched while the
+	// reservoir was only shaded on the diffuse frames (measured: ReSTIR GI left the
+	// per-frame noise in dark areas unchanged). The reservoir is an unbiased estimate
+	// of the diffuse integral whichever frames supplied its candidates, so it can
+	// stand in at weight 1 every frame; the specular lobe keeps its own 1/p estimate
+	// on the specular frames. The throughput here is therefore the pre-lobe throughput
+	// times this sample's own Fresnel transmission - what the diffuse branch would
+	// have applied for this direction, minus the lobe-selection weight.
+	if(r.W <= 0)
 		return;
 
-	vec3 t0 = unpackRGBE(cand_data.w);
 	vec3 dir = r.pos - x_v;
 	float dist = length(dir);
 	dir /= max(dist, 1e-6);
 	float cos_v = max(0, dot(n_v, dir));
+
+	vec3 t0;
+	{
+		vec4 base_color = texelFetch(TEX_PT_BASE_COLOR_A, ipos, 0);
+		float metallic = texelFetch(TEX_PT_METALLIC_A, ipos, 0).x;
+		vec3 albedo, base_reflectivity;
+		get_reflectivity(base_color.rgb, metallic, albedo, base_reflectivity);
+		vec3 V = -texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0).xyz;
+		vec3 H = normalize(V + dir);
+		float VoH = max(0, dot(V, H));
+		vec3 F = schlick_fresnel(base_reflectivity, VoH, base_color.a);
+		t0 = t_base * (vec3(1.0) - F);
+	}
 
 	vec3 contrib = clamp_output(t0 * r.radiance * (cos_v / M_PI) * r.W);
 	if(all(equal(contrib, vec3(0))))

@@ -29,9 +29,19 @@ frame's candidate with last frame's reservoir and lights the pixel with the
 winner. A good sample - one that found the lit wall - survives for several
 frames instead of being thrown away, which is where the noise goes.
 
+The reservoir is shaded on every frame, not only on frames whose first bounce went
+diffuse: the diffuse/specular lobe choice (p = 1/2 on dielectrics, winner weighted
+by 2) otherwise leaves the diffuse indirect term flipping between 2x and 0 from
+frame to frame, which is most of the indirect noise and which reuse alone cannot
+remove. The reservoir estimates the diffuse integral regardless of which frames
+supplied its candidates, so it stands in at weight 1 every frame; the specular
+lobe keeps its own 1/p estimate on the specular frames.
+
 Per-pixel images, all double-buffered (A = this frame, B = last frame):
 
-  PT_RESTIR_GI_POS     xyz = x_s, w = W (the reservoir's unbiased weight)
+  PT_RESTIR_GI_POS     xyz = x_s, w = W (the reservoir's unbiased weight);
+                       before restir_gi.rgen runs, w = the pixel's throughput
+                       before the lobe choice (RGBE bits), every frame
   PT_RESTIR_GI_DATA    x = n_s (encode_normal), y = L_o (RGBE), z = M (float bits),
                        w = T0 (RGBE), this frame's throughput into the bounce
   PT_RESTIR_GI_ORIGIN  xyz = the pixel's shading point x_v, w = its normal

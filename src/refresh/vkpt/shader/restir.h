@@ -27,6 +27,22 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // See `path_tracer.h` for an overview of the path tracer.
 // ========================================================================== //
 
+// MEASURED VERDICT (2026-10-03, base2, paused, scored in the darkest quarter of the
+// frame against plain RIS, which is already an 8-candidate RIS with the light-stats
+// visibility prior):
+//  - per-frame noise: temporal-only ReSTIR DI is 1-5% quieter than plain RIS; with 2-4
+//    spatial neighbours 7%; never more. Brightness within +-3%.
+//  - but each pixel's sample is frozen for the history length, so the per-frame noise
+//    does not change from frame to frame: an 8-px-blurred 8-frame mean deviates from
+//    plain RIS by 7-9% rms in dark areas (plain against itself: 1.6%), and two such
+//    captures a minute apart correlate at 0.92. Under DLSS-RR that is a stable
+//    low-frequency mottling that no temporal denoiser can average away - the 'noise in
+//    low light with ReSTIR on'. A shorter history (pt_restir_m_clamp 8) shrinks it
+//    by a quarter; nothing temporal removes it. That needs a spatial pass that
+//    actually averages neighbours without bias, which this one does not yet do.
+//  - hence pt_restir defaults to 0. Harness: baseq2/restir_noise_v3.cfg and the
+//    rn_score2.py scorer described in the restir-noise-investigation memory note.
+
 #ifndef  _RESTIR_H_
 #define  _RESTIR_H_
 
@@ -152,6 +168,12 @@ get_light_current_idx(uint index)
 }
 
 
+// The target function p_hat of a light at a surface: its unshadowed projected
+// irradiance. Deliberately free of anything that changes from frame to frame (the
+// light statistics below are not part of it): a reused sample is weighed as
+// p_hat_now(y) * W_then, and W_then carries 1 / p_hat_then(y), so any noise in the
+// target function turns into a ratio of two noisy numbers and a bias (measured
+// +4.4% in lit areas with the statistics folded in here).
 float
 get_unshadowed_path_contrib(
 	uint light_idx,
@@ -197,6 +219,29 @@ get_unshadowed_path_contrib(
 	return m;
 }
 
+// The share of last frame's shadow rays towards this light, from this cluster and
+// surface orientation, that got through - the pt_light_stats prior that sample_lights()
+// in light_lists.h applies for plain RIS, floored at 0.1 the same way. 1 when there
+// is no record. Used only to shape the fresh candidate draw (see
+// get_direct_illumination_restir), never in the target function.
+float
+restir_light_prior(uint light_idx, uint cluster_idx, vec3 normal)
+{
+	if (global_ubo.pt_light_stats == 0
+		|| light_idx >= global_ubo.num_static_lights
+		|| cluster_idx == ~0u)
+		return 1.0;
+
+	uint buffer_idx = (global_ubo.current_frame_idx + NUM_LIGHT_STATS_BUFFERS - 1) % NUM_LIGHT_STATS_BUFFERS;
+	uint addr = get_light_stats_addr(cluster_idx, light_idx, get_primary_direction(normal));
+
+	uint num_hits = light_stats_bufers[buffer_idx].stats[addr];
+	uint num_misses = light_stats_bufers[buffer_idx].stats[addr + 1];
+	uint num_total = num_hits + num_misses;
+
+	return num_total > 0 ? max(float(num_hits) / float(num_total), 0.1) : 1.0;
+}
+
 
 void
 process_selected_light_restir(
@@ -221,7 +266,8 @@ process_selected_light_restir(
 	uint cluster_idx,
 	out vec3 diffuse,
 	out vec3 specular,
-	out float vis)
+	out float vis,
+	out bool o_null_light)
 {
 	float polygonal_light_pdfw = 0;
 	vec3 contrib_polygonal = vec3(0);
@@ -297,6 +343,7 @@ process_selected_light_restir(
 	float l_polygonal = luminance(abs(contrib_polygonal)) * mix(1, spec_polygonal, phong_weight);
 
 	bool null_light = (l_polygonal == 0);
+	o_null_light = null_light;
 
 	Ray shadow_ray = get_shadow_ray(position - view_direction * 0.01, pos_on_light_polygonal, 0);
 
@@ -450,6 +497,15 @@ get_direct_illumination_restir(
 	int stride = int(partitions);
 	rng = rng_part - floor(rng_part);
 
+	// The candidates are one light from each of `partitions` consecutive strata (every
+	// stride-th entry from a random phase), so each one stands for its stratum and
+	// its RIS weight is p_hat * partitions - not p_hat * list_size / num_drawn, which
+	// is the same thing only when the list length divides evenly. For a list of 17 the
+	// two phases draw 9 and 8 candidates and list_size / num_drawn alternates between
+	// 1.89 and 2.125 around the correct 2. W divides by M = num_drawn, so fold it in.
+	uint num_drawn_expected = min(uint(RESTIR_SAMPLING_M), uint(ceil((list_size - fpart) / float(stride))));
+	inv_pdf = float(stride) * float(max(num_drawn_expected, 1u));
+
 	uint current_idx, current_light_idx;
 
 	vec2 rng2 = vec2(
@@ -465,6 +521,17 @@ get_direct_illumination_restir(
 	// candidate is still a drawn candidate as far as the estimator is concerned.
 	uint num_drawn = 0;
 
+	// Two-stage RIS. The fresh draw resamples with the target p_hat * prior, where
+	// the prior is the per-cluster share of shadow rays towards each light that got
+	// through last frame (pt_light_stats, as plain RIS uses). Without it most fresh
+	// candidates in a room lit through a doorway are lights behind the wall; each one
+	// that wins the merge shades black and costs the history its weight. The
+	// reservoir is then re-expressed for the pure target p_hat before it meets the
+	// history: W' = w_sum / (p_hat'(y) M) is an unbiased contribution weight for y,
+	// and p_hat(y) W' M is its weight as a candidate under p_hat. The prior is thus
+	// consumed within the frame and never appears in a ratio across frames.
+	float sel_p_hat_pure = 0.0;
+
 #pragma unroll
 	for (uint i = 0, n_idx = list_start; i < RESTIR_SAMPLING_M; i++, n_idx += stride)
 	{
@@ -478,7 +545,17 @@ get_direct_illumination_restir(
 		if (current_light_idx == ~0u) continue;
 
 		p_hat = get_unshadowed_path_contrib(current_light_idx, position, normal, view_direction, phong_exp, phong_scale, phong_weight, rng2);
-		if (p_hat > 0)update_reservoir(current_light_idx, p_hat * inv_pdf, rng2, p_hat, rng, reservoir);
+		float p_prop = p_hat * restir_light_prior(current_light_idx, cluster_idx, normal);
+		if (p_prop > 0 && update_reservoir(current_light_idx, p_prop * inv_pdf, rng2, p_prop, rng, reservoir))
+			sel_p_hat_pure = p_hat;
+	}
+
+	if (reservoir.p_hat > 0.0 && sel_p_hat_pure > 0.0)
+	{
+		float m_fresh = float(max(num_drawn, 1u));
+		float W_prop = reservoir.w_sum / (reservoir.p_hat * m_fresh);
+		reservoir.p_hat = sel_p_hat_pure;
+		reservoir.w_sum = sel_p_hat_pure * W_prop * m_fresh;
 	}
 
 	// RIS is unbiased only when W divides by the number of candidates DRAWN. This

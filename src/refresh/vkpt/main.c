@@ -1521,9 +1521,57 @@ fg_debug_paint_current_swapchain_image(VkCommandBuffer cmd_buf, unsigned int gen
    uses it too, so the acquire has to be inside the lock. But a blocking acquire inside
    the lock deadlocks: the images it is waiting for are released by presents that need the
    same lock. So poll with a short timeout and drop the lock between attempts. */
+/* SWAPCHAIN IMAGE OWNERSHIP DIAGNOSTICS (2026-10-03). A hang seen while toggling photo
+   mode with frame generation on left the main thread polling this acquire forever with
+   the present thread idle and nothing queued - i.e. the app already held every image it
+   is allowed to, so some image was acquired and never presented. Each image records the
+   frame that acquired it (0 = not held); every present clears it. An acquire that hands
+   back an image still marked held, or an acquire that has polled for 2 s, prints the
+   whole table, so the log names the frame and path that leaked. */
+#define VKPT_HELD_SLOTS 16
+static bool is_accumulation_rendering_active(void);
+static volatile uint64_t swapchain_held_frame[VKPT_HELD_SLOTS];
+
+void vkpt_note_image_presented(uint32_t index)
+{
+	if (index < VKPT_HELD_SLOTS)
+		swapchain_held_frame[index] = 0;
+}
+
+static void swapchain_held_reset(void)
+{
+	for (int i = 0; i < VKPT_HELD_SLOTS; i++)
+		swapchain_held_frame[i] = 0;
+}
+
+static void swapchain_held_print(const char *why)
+{
+	char line[256];
+	int off = Q_snprintf(line, sizeof(line), "SWAPCHAIN %s: frame %llu, %u images, held:",
+		why, (unsigned long long)qvk.frame_counter, qvk.surf_num_images);
+	for (uint32_t i = 0; i < qvk.surf_num_images && i < VKPT_HELD_SLOTS && off < (int)sizeof(line) - 24; i++)
+		if (swapchain_held_frame[i])
+			off += Q_snprintf(line + off, sizeof(line) - off, " %u@%llu", i,
+				(unsigned long long)(swapchain_held_frame[i] - 1));
+	char tail[96];
+	Q_snprintf(tail, sizeof(tail), "; fg queue %d, fg mult %u, photo %d", FGPresent_QueueCount(),
+		DLSSGMultiplier(), is_accumulation_rendering_active() ? 1 : 0);
+	Com_EPrintf("%s%s\n", line, tail);
+
+	/* The console log is buffered and a hung frame never flushes it, so also append to
+	   a file of its own and close it at once. */
+	FILE *f = fopen("swapchain_diag.txt", "a");
+	if (f) {
+		fprintf(f, "%s%s\n", line, tail);
+		fclose(f);
+	}
+}
+
 static VkResult
 acquire_next_image_locked(VkSemaphore semaphore, uint32_t *out_index)
 {
+	const uint64_t diag_start_us = Sys_Microseconds();
+	bool diag_reported = false;
 	/* DO NOT POLL WHEN NOTHING CAN RELEASE THE LOCK.  (2026-09-17)
 
 	   Under FIFO the present queue is FULL at steady state - that is precisely how
@@ -1574,8 +1622,23 @@ acquire_next_image_locked(VkSemaphore semaphore, uint32_t *out_index)
 		/* Nothing was acquired and the semaphore was not signalled, so retrying is safe.
 		   Yield so the present thread can actually release an image. */
 		if (res == VK_TIMEOUT || res == VK_NOT_READY) {
+			if (!diag_reported && Sys_Microseconds() - diag_start_us > 2000000ull) {
+				diag_reported = true;
+				swapchain_held_print("ACQUIRE STUCK 2s");
+			}
 			SDL_Delay(0);
 			continue;
+		}
+
+		if ((res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) && *out_index < VKPT_HELD_SLOTS) {
+			static int double_reports = 0;
+			if (swapchain_held_frame[*out_index] && double_reports < 20) {
+				double_reports++;
+				char why[64];
+				Q_snprintf(why, sizeof(why), "image %u acquired while still held", *out_index);
+				swapchain_held_print(why);
+			}
+			swapchain_held_frame[*out_index] = qvk.frame_counter + 1;
 		}
 
 		return res;
@@ -3168,6 +3231,7 @@ vkpt_destroy_shader_modules()
 VkResult
 destroy_swapchain(void)
 {
+	swapchain_held_reset();
 	for(int i = 0; i < qvk.num_swap_chain_images; i++) {
 		vkDestroyImageView  (qvk.device, qvk.swap_chain_image_views[i], NULL);
 		qvk.swap_chain_image_views[i] = VK_NULL_HANDLE;
@@ -4585,6 +4649,17 @@ static bool is_accumulation_rendering_active(void)
 	return cl_paused->integer == 2 && sv_paused->integer && cvar_pt_accumulation_rendering->integer > 0;
 }
 
+/* pt_accumulation_rendering 3: photo mode as a pure, unbiased path-traced reference.
+   Modes 1 and 2 already drop SHaRC and ReSTIR GI (both gate on temporal_blend_factor)
+   but kept ReSTIR DI, whose temporal reuse is biased (+1..3% measured on base2, more
+   with initial visibility) and clamps W at pt_restir_max_w. Mode 3 also turns off
+   ReSTIR DI and the froxel fog's ReSTIR, and forces the full-resolution fog march, so
+   the only estimators left are plain RIS light sampling and the BRDF bounce rays. */
+static bool is_pure_accumulation_active(void)
+{
+	return is_accumulation_rendering_active() && cvar_pt_accumulation_rendering->integer == 3;
+}
+
 /* PHOTO MODE BYPASSES DLSS.
 
    Accumulation rendering converges a static frame by averaging hundreds of
@@ -4864,10 +4939,13 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 
 		switch (cvar_pt_accumulation_rendering->integer)
 		{
-		case 1: {
+		case 1:
+		case 3: {
 			char text[MAX_QPATH];
 			float percentage = powf(max(0.f, (num_accumulated_frames - num_warmup_frames) / (float)num_frames_to_accumulate), 0.5f);
-			Q_snprintf(text, sizeof(text), "Photo mode: accumulating samples... %d%%", (int)(min(1.f, percentage) * 100.f));
+			Q_snprintf(text, sizeof(text), "%s: accumulating samples... %d%%",
+				cvar_pt_accumulation_rendering->integer == 3 ? "Photo mode (pure path tracing)" : "Photo mode",
+				(int)(min(1.f, percentage) * 100.f));
 
 			int frames_after_accumulation_finished = num_accumulated_frames - num_warmup_frames - num_frames_to_accumulate;
 			float hud_alpha = max(0.f, min(1.f, (50 - frames_after_accumulation_finished) * 0.02f)); // fade out for 50 frames after accumulation finishes
@@ -5606,6 +5684,16 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
 
+	// pt_accumulation_rendering 3 - see is_pure_accumulation_active().
+	if (ref_mode->enable_accumulation && is_pure_accumulation_active())
+	{
+		ubo->pt_restir = 0.f;
+		ubo->pt_restir_gi = 0.f;
+		ubo->pt_sharc = 0.f;
+		ubo->pt_fog_restir = 0.f;
+		ubo->pt_fog_accum_march = 1.f;
+	}
+
 	bool fsr_enabled = vkpt_fsr_is_enabled();
 	qboolean dlss_enabled = DLSSEnabled();
 
@@ -6050,7 +6138,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	// full resolution and the filter reads it per pixel, so the froxel grid
 	// is never sampled and is not dispatched at all.
 	const bool fog_accum_march = ref_mode.enable_accumulation
-	                           && cvar_pt_fog_accum_march->value != 0.f;
+	                           && (cvar_pt_fog_accum_march->value != 0.f || is_pure_accumulation_active());
 
 	// [froxel grid] the map fog's cheap path.
 	const bool run_froxel = god_rays_enabled && vkpt_froxel_enabled() && !fog_accum_march;
@@ -7453,8 +7541,11 @@ R_EndFrame_RTX(void)
 	uint64_t fg_stall_us = 0;
 
 	/* The swapchain image holding the REAL frame. It is now the image R_BeginFrame
-	   acquired, blitted BEFORE DLSSGApply - see the note at that blit. */
-	uint32_t fg_real_image_index = 0;
+	   acquired, blitted BEFORE DLSSGApply - see the note at that blit. Defaults to that
+	   image rather than 0: a frame that retargets to the extra images and then restores
+	   this index must land back on the image it acquired, or that image is never
+	   presented (see the leak note at the extra-image acquire). */
+	uint32_t fg_real_image_index = qvk.current_swap_chain_image_index;
 	bool fg_real_blitted = false;
 
 
@@ -7707,7 +7798,19 @@ R_EndFrame_RTX(void)
 			   were never generated would present whatever those images still held from
 			   before the pause. */
 			unsigned int fg_want = accumulation_bypasses_dlss() ? 0u : DLSSGGeneratedFrames();
-			if (fg_want > 0 && DLSSGFeatureReady() && !DLSSGShowInterpolated()
+			/* fg_real_blitted: SWAPCHAIN IMAGE LEAK, fixed 2026-10-03. The real-frame copy
+			   above and this block both gate on DLSSGFeatureReady(), but DLSSGApply between
+			   them creates the feature lazily. On the frame it was (re)created - startup, and
+			   after every photo-mode entry or exit, since the screen-image rebuild destroys
+			   it - the copy was skipped, fg_real_image_index stayed 0, and this block still
+			   ran: the real frame was presented as image 0 and the image R_BeginFrame
+			   acquired was never presented. One image leaked per occurrence until the app
+			   held all of them and acquire_next_image_locked() polled forever - the photo
+			   mode freeze with frame generation on (dump: main thread in that acquire,
+			   present thread idle, swapchain_diag.txt showing all 7 images held). Building
+			   the group only when this frame's real copy was taken keeps the two gates in
+			   step; the creating frame falls back to a single present. */
+			if (fg_want > 0 && fg_real_blitted && DLSSGFeatureReady() && !DLSSGShowInterpolated()
 			    && qvk.device_count == 1)
 			{
 				/* fg_want extra images: fg_want-1 for the remaining generated frames, plus
@@ -8312,6 +8415,7 @@ R_EndFrame_RTX(void)
 				FGPresent_SwapchainLock();
 				Reflex_NotifyOutOfBandPresent(qvk.queue_present);
 				vkQueuePresentKHR(qvk.queue_present, &fallback);
+				vkpt_note_image_presented(fg_interp_image_index[i]);
 				FGPresent_SwapchainUnlock();
 			}
 		}
@@ -8359,6 +8463,7 @@ R_EndFrame_RTX(void)
 		Reflex_SetMarker(VK_LATENCY_MARKER_PRESENT_START_NV);
 		FGPresent_SwapchainLock();
 		res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
+		vkpt_note_image_presented(qvk.current_swap_chain_image_index);
 		FGPresent_SwapchainUnlock();
 		Reflex_SetMarker(VK_LATENCY_MARKER_PRESENT_END_NV);
 	}
@@ -8747,8 +8852,10 @@ R_Init_RTX(bool total)
 	// pt_fog_lava_scale. Takes effect on map load.
 	cvar_pt_fog_lava = Cvar_Get("pt_fog_lava", "1", CVAR_FILES);
 
-	// 0 -> disabled, regular pause; 1 -> enabled; 2 -> enabled, hide GUI
+	// 0 -> disabled, regular pause; 1 -> enabled; 2 -> enabled, hide GUI;
+	// 3 -> enabled, pure path tracing: no ReSTIR DI/GI, no SHaRC, no fog ReSTIR
 	cvar_pt_accumulation_rendering = Cvar_Get("pt_accumulation_rendering", "1", CVAR_ARCHIVE);
+	cvar_pt_accumulation_rendering->changed = accumulation_cvar_changed;
 
 	// number of frames to accumulate with linear weights in accumulation rendering modes
 	cvar_pt_accumulation_rendering_framenum = Cvar_Get("pt_accumulation_rendering_framenum", "500", 0);
@@ -8865,6 +8972,10 @@ R_Init_RTX(bool total)
 	cvar_pt_num_bounce_rays->flags |= CVAR_ARCHIVE;
 	cvar_pt_sharc->flags |= CVAR_ARCHIVE; // the video menu's "multi-bounce lighting" toggle
 	cvar_pt_restir_gi->flags |= CVAR_ARCHIVE; // the video menu's "ReStir Global Illumination" toggle
+	// UBO cvars are registered without CVAR_ARCHIVE, so a console value lasts until the next
+	// launch and the header default comes back. This one is a per-setup choice, so keep it.
+	cvar_pt_dlss_guide_field->flags |= CVAR_ARCHIVE;
+	cvar_pt_fog_froxel_sky_history->flags |= CVAR_ARCHIVE; // the fog menu's "moving sky shadows"
 	// on a slider in the effects menu, so it has to survive a restart
 	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
 

@@ -540,6 +540,7 @@ static int SDLCALL fg_present_thread(void *unused)
         VkQueue present_queue = fg_use_present_queue() ? qvk.queue_present
                                                        : qvk.queue_graphics;
         VkResult res = vkQueuePresentKHR(present_queue, &present_info);
+        vkpt_note_image_presented(item.image_index);
 
         if (item.reflex_present_id)
             Reflex_SetMarkerForFrame(VK_LATENCY_MARKER_PRESENT_END_NV, item.reflex_present_id);
@@ -745,6 +746,16 @@ bool FGPresent_Enqueue(VkSwapchainKHR swapchain, uint32_t image_index,
     SDL_CondSignal(fg_queue_added);
     SDL_UnlockMutex(fg_queue_mutex);
     return true;
+}
+
+int FGPresent_QueueCount(void)
+{
+    if (!fg_queue_mutex)
+        return 0;
+    SDL_LockMutex(fg_queue_mutex);
+    int n = fg_queue_count;
+    SDL_UnlockMutex(fg_queue_mutex);
+    return n;
 }
 
 VkResult FGPresent_TakeLastResult(void)

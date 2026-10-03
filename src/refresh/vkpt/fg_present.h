@@ -119,6 +119,11 @@ bool FGPresent_Enqueue(VkSwapchainKHR swapchain, uint32_t image_index,
 // nothing new to report, and clears the stored value.
 VkResult FGPresent_TakeLastResult(void);
 
+/* Diagnostics: presents queued but not yet issued, and the hook every present calls so
+   main.c can track which swapchain images the app still holds. */
+int  FGPresent_QueueCount(void);
+void vkpt_note_image_presented(uint32_t index);
+
 /* Smoothed microseconds by which presents are missing their deadlines. The schedule adds
    this to its lead, which is a self-correcting loop: too short a lead shows up as lateness
    and lengthens the lead, and a long enough lead drives the lateness to zero. */

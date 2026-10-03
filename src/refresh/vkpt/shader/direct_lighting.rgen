@@ -349,7 +349,6 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 					continue;
 				vec3 n_normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, n_pixel[n], 0).x);
 				vec3 n_view = texelFetch(TEX_PT_VIEW_DIRECTION, n_pixel[n], 0).xyz;
-
 				// Only the sign matters, so the BRDF lobe is left out.
 				if(get_unshadowed_path_contrib(s.y, n_pos.xyz, n_normal, n_view, 1.0, 1.0, 0.0, s.y_pos) <= 0.0)
 					continue;
@@ -586,6 +585,7 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 
 	if(r.W != 0.0f)
 	{
+		bool null_light;
 		process_selected_light_restir(
 			r.y,
 			r.y_pos,
@@ -608,12 +608,36 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 			cluster_idx,
 			direct_diffuse,
 			direct_specular,
-			vis);
+			vis,
+			null_light);
 
 		
 		high_freq += direct_diffuse;
 		o_specular += direct_specular;                
+		// Visibility reuse: an occluded sample leaves the history with zero weight and
+		// its M kept. Measured 2026-10-03 on base2 against plain RIS (raw, paused): this
+		// costs +1..3% brightness and cuts per-frame noise only ~3%; keeping the occluded
+		// sample instead (no visibility reuse) is -2..-5% and no quieter; RTXDI's initial
+		// visibility on top is -13..-29% noise but +5..+10% bright. None of them changes
+		// the real problem, which is that a temporal-only reservoir freezes each pixel's
+		// sample for its history length - see the note at the top of restir.h.
 		if(vis == 0.0f) r.W = 0.0f;
+
+		// The shadow ray goes into the per-cluster light statistics, exactly as the
+		// plain path's does (see get_direct_illumination in path_tracer_rgen.h), so
+		// next frame's target function knows which lights reach this cluster. With
+		// ReSTIR on nothing used to write them: the buffers are cleared every frame,
+		// so the prior was simply absent whenever ReSTIR was the one sampling.
+		if(global_ubo.pt_light_stats != 0
+			&& use_shadow_rays
+			&& !null_light
+			&& r.y < global_ubo.num_static_lights
+			&& cluster_idx != ~0u)
+		{
+			uint addr = get_light_stats_addr(cluster_idx, r.y, get_primary_direction(normal));
+			if(vis == 0) addr += 1;
+			atomicAdd(light_stats_bufers[global_ubo.current_frame_idx % NUM_LIGHT_STATS_BUFFERS].stats[addr], 1);
+		}
 
 
 	}
