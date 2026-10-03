@@ -537,6 +537,17 @@ get_surf_plane_equation(mface_t* surf, float* plane)
 	return (maxlen > 0.f);
 }
 
+/* An invisible lava face - SURF_NODRAW, hidden by pt_enable_nodraw like every
+   other nodraw face - must not light anything, surfaces or fog. Maps put the
+   lava texture on nodraw brushes for the damage volume and the inside of a
+   pool, and those turned into walls of glowing fog where nothing is drawn. */
+static bool
+is_invisible_lava(int surf_flags, const pbr_material_t *material)
+{
+	return (surf_flags & SURF_NODRAW) && cvar_pt_enable_nodraw->integer &&
+	       material && MAT_IsKind(material->flags, MATERIAL_KIND_LAVA);
+}
+
 static bool
 is_sky_or_lava_cluster(bsp_mesh_t* wm, mface_t* surf, int cluster, int material_id)
 {
@@ -1575,6 +1586,9 @@ collect_light_polys(bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int* num_lights, 
 		if (flags & SURF_SKY)
 			continue;
 
+		if (is_invisible_lava(flags, material))
+			continue;
+
 		// Check if any animation frame is a light material
 		bool any_light_frame = false;
 		{
@@ -1657,6 +1671,9 @@ collect_sky_and_lava_light_polys(bsp_mesh_t *wm, bsp_t* bsp)
 		is_lava &= (material && material->image_emissive != NULL);
 
 		if (!is_sky && !is_lava)
+			continue;
+
+		if (is_lava && is_invisible_lava(flags, material))
 			continue;
 
 		float positions[3 * /*max_vertices*/ 32];
@@ -2156,6 +2173,9 @@ collect_fog_lava_lights(bsp_mesh_t *wm, bsp_t *bsp)
 
 		pbr_material_t *material = face_effective_material(bsp, surf);
 		if (!material || !material->image_emissive || !MAT_IsKind(material->flags, MATERIAL_KIND_LAVA))
+			continue;
+
+		if (is_invisible_lava(surf->drawflags | surf->texinfo->c.flags, material))
 			continue;
 
 		// already a real light
