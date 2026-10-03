@@ -107,6 +107,19 @@ textures/e2u3/baselt_red:
 	is_light 1
 	metalness_factor 0
 
+# e1u1/baslt3_4 is a BSP surface light too - same treatment as baselt_red above.
+# _light.png is the base colour masked by the rerelease baslt3_4_glow.png (copied
+# alongside as _glow.png); replace it with a real light map if wanted.
+# Kept outside the generated block: materialdev_export.py rewrites that block wholesale.
+textures/e1u1/baslt3_4:
+	texture_base materialDev/textures/e1u1/baslt3_4.tga
+	texture_normals materialDev/textures/e1u1/baslt3_4_n.tga
+	texture_emissive materialDev/textures/e1u1/baslt3_4_light.png
+	emissive_factor 1.0
+	default_radiance 1
+	is_light 1
+	metalness_factor 0
+
 # e1u1/wndow1_5 is flagged two ways in the shipped maps:
 #   mgu2m2, mgu2m3, rdm7  flags 0x1 (SURF_LIGHT), radiance 260-2500 - an opaque light panel.
 #   mgu5m3                flags 0x10 (TRANS33), radiance 0 - a real see-through window.
@@ -1548,6 +1561,7 @@ textures/e1u1/+1cgrate7_1:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
+# Live entry for this texture is outside the generated block, after e2u3/baselt_red.
 # textures/e1u1/baslt3_4:
 # 	texture_base materialDev/textures/e1u1/baslt3_4.tga
 # 	texture_normals materialDev/textures/e1u1/baslt3_4_n.tga
@@ -1839,8 +1853,12 @@ textures/e1u1/color2_6:
 
 textures/e1u1/color2_8:
 	texture_base materialDev/textures/e1u1/color2_8.tga
-	texture_normals materialDev/textures/e1u1/color2_8_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e1u1/color2_8_n.png
+	texture_height materialDev/textures/e1u1/color2_8_height.png
+	texture_metallic materialDev/textures/e1u1/color2_8_metal.png
+	texture_roughness materialDev/textures/e1u1/color2_8_rough.png
+	displace_in .03
+	displace_out 0.0
 
 textures/e1u1/colorb1_4:
 	texture_base materialDev/textures/e1u1/colorb1_4.tga
@@ -12396,7 +12414,7 @@ textures/hodge/ho_tech_panel_01_a:
 	texture_emissive materialDev/textures/hodge/ho_tech_panel_01_a_light.tga
 	is_light 1
 	default_radiance 1
-	metalness_factor 0
+	metalness_factor 1
 
 textures/hodge/ho_trim_01_a:
 	texture_base materialDev/textures/hodge/ho_trim_01_a.tga
@@ -19381,8 +19399,10 @@ textures/tomf/metal2_2e:
 
 textures/tomf/metal2_2f:
 	texture_base materialDev/textures/tomf/metal2_2f.tga
-	texture_normals materialDev/textures/tomf/metal2_2f_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/metal2_2f_n.png
+	texture_metallic materialDev/textures/tomf/metal2_2f_metal.png
+	texture_roughness materialDev/textures/tomf/metal2_2f_rough.png
+	specular_factor .5
 
 textures/tomf/metal2_2h:
 	texture_base materialDev/textures/tomf/metal2_2h.tga
@@ -20988,8 +21008,12 @@ textures/tomf/thinm_gr1b:
 
 textures/tomf/thinm_gr2a:
 	texture_base materialDev/textures/tomf/thinm_gr2a.tga
-	texture_normals materialDev/textures/tomf/thinm_gr2a_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/thinm_gr2a_n.png
+	texture_metallic materialDev/textures/tomf/thinm_gr2a_metal.png
+	texture_roughness materialDev/textures/tomf/thinm_gr2a_rough.png
+	texture_height materialDev/textures/tomf/thinm_gr2a_height.png
+	displace_in .03
+	displace_out 0
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
@@ -21007,7 +21031,8 @@ textures/tomf/thinm_gr2a:
 textures/tomf/thinm_st1a:
 	texture_base materialDev/textures/tomf/thinm_st1a.tga
 	texture_normals materialDev/textures/tomf/thinm_st1a_n.tga
-	metalness_factor 0
+	metalness_factor 1
+	specular_factor .2
 
 textures/tomf/thinm_st1b:
 	texture_base materialDev/textures/tomf/thinm_st1b.tga
