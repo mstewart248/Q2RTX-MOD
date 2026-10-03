@@ -80,6 +80,7 @@ cvar_t  *sv_features;
 
 cvar_t  *sv_flaregun;
 cvar_t  *g_ludicrous_gibs;
+cvar_t  *g_duck_hitbox;
 cvar_t  *g_no_janitor;
 cvar_t  *g_quick_weapon_switch;
 cvar_t  *g_instant_weapon_switch;
@@ -217,6 +218,9 @@ void InitGame(void)
     // the same cvar (see cl_ludicrous_gibs' twin in cl_init) so it exists in
     // the menu before any map is loaded, and so the particle side can read it.
     g_ludicrous_gibs = gi.cvar("g_ludicrous_gibs", "0", CVAR_ARCHIVE);
+    // 1: a ducked monster's box follows its animation (M_UpdateDuckBox);
+    // 0: id's fixed 32-unit crouch
+    g_duck_hitbox = gi.cvar("g_duck_hitbox", "1", CVAR_ARCHIVE);
 
     // Gibs, heads and debris stay where they land - see KEEP_GIBS(). Registered
     // by the client too, so the Effects menu can offer it before a game library
@@ -632,5 +636,18 @@ void G_RunFrame(void)
 
     // build the playerstate_t structures for all players
     ClientEndServerFrames();
+
+    // [Paril-KEX] run monster pains now, so a hit from an entity that thinks
+    // after the monster isn't a frame late. monster_think runs it too; the
+    // accumulated damage is cleared, so a second call does nothing.
+    if (M_RereleaseGame()) {
+        ent = &g_edicts[0];
+        for (i = 0; i < globals.num_edicts; i++, ent++) {
+            if (!ent->inuse || !(ent->svflags & SVF_MONSTER))
+                continue;
+
+            M_ProcessPain(ent);
+        }
+    }
 }
 

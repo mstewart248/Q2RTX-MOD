@@ -3906,20 +3906,15 @@ void FS_Shutdown(void)
     Cmd_Deregister(c_fs);
 }
 
-/* THE REMASTER'S FOG DEFAULTS. Its maps author fog the classic ones mostly
-   don't have, and these are the settings tuned against them: the froxel grid
-   with ReSTIR in cl_fog 3. The classic column must match each cvar's own
-   Cvar_Get / UBO_CVAR_DO default, since it is what a switch back restores. */
+/* THE REMASTER'S FOG DEFAULTS. Fog is on by default in the remaster, whose maps
+   author it, and off in the classic game. Everything else about the fog is the
+   same in both - same knobs, same defaults - so that one setting gives one look.
+   The classic column must match each cvar's own Cvar_Get / UBO_CVAR_DO default,
+   since it is what a switch back restores. */
 static const struct {
     const char *name, *classic, *rerelease;
 } rerelease_defaults[] = {
-    { "cl_fog",                    "0",   "3"    },
-    { "cl_fog_scale",              "2",   "1000" },
-    { "cl_volumetric_fog_density", "-1",  "1"    },
-    { "pt_fog_froxel",             "0",   "1"    },
-    { "pt_fog_restir",             "0.0", "1"    },
-    { "pt_fog_light_knee",         "2.0", "0.15" },
-    { "pt_fog_light_scale",        "1.0", "1.5"  },
+    { "cl_fog",                    "0",   "1"    },
     { "pt_fog_sky_pvs",            "0.5", "0"    },
 };
 

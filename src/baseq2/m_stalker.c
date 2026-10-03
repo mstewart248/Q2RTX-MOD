@@ -17,6 +17,7 @@ static int sound_punch_hit2;
 static int sound_idle;
 
 int stalker_do_pounce(edict_t *self, vec3_t dest);
+bool M_ShouldReactToPain(edict_t *self, int mod);   /* g_monster.c */
 void stalker_stand(edict_t *self);
 void stalker_run(edict_t *self);
 void stalker_walk(edict_t *self);
@@ -215,18 +216,22 @@ stalker_ok_to_transition(edict_t *self)
 	return true;
 }
 
+/* [rerelease] the sight and idle noises are on the voice channel, so they no
+   longer cut off (or get cut off by) the blaster */
 void
 stalker_sight(edict_t *self, edict_t *other /* unused */)
 {
 
-	gi.sound(self, CHAN_WEAPON, sound_sight, 1, ATTN_NORM, 0);
+	gi.sound(self, M_RereleaseGame() ? CHAN_VOICE : CHAN_WEAPON,
+			sound_sight, 1, ATTN_NORM, 0);
 }
 
 void
 stalker_idle_noise(edict_t *self)
 {
 
-	gi.sound(self, CHAN_WEAPON, sound_idle, 0.5, ATTN_IDLE, 0);
+	gi.sound(self, M_RereleaseGame() ? CHAN_VOICE : CHAN_WEAPON,
+			sound_idle, 0.5, ATTN_IDLE, 0);
 }
 
 mframe_t stalker_frames_idle[] = {
@@ -352,10 +357,12 @@ stalker_stand(edict_t *self)
 	}
 }
 
+/* [rerelease] the monster_footstep calls in this file are id's; they do
+   nothing in the original game, so the tables stay shared */
 mframe_t stalker_frames_run[] = {
-	{ai_run, 13, NULL},
+	{ai_run, 13, monster_footstep},
 	{ai_run, 17, NULL},
-	{ai_run, 21, NULL},
+	{ai_run, 21, monster_footstep},
 	{ai_run, 18, NULL}
 };
 
@@ -381,12 +388,12 @@ stalker_run(edict_t *self)
 }
 
 mframe_t stalker_frames_walk[] = {
-	{ai_walk, 4, NULL},
+	{ai_walk, 4, monster_footstep},
 	{ai_walk, 6, NULL},
 	{ai_walk, 8, NULL},
 	{ai_walk, 5, NULL},
 
-	{ai_walk, 4, NULL},
+	{ai_walk, 4, monster_footstep},
 	{ai_walk, 6, NULL},
 	{ai_walk, 8, NULL},
 	{ai_walk, 4, NULL}
@@ -410,7 +417,7 @@ mframe_t stalker_frames_reactivate[] = {
 	{ai_move, 0, NULL},
 	{ai_move, 0, NULL},
 	{ai_move, 0, NULL},
-	{ai_move, 0, NULL}
+	{ai_move, 0, monster_footstep}
 };
 
 mmove_t stalker_move_false_death_end = {
@@ -583,13 +590,14 @@ stalker_pain(edict_t *self, edict_t *other /* unused */, float kick, int damage)
 
 		gi.sound(self, CHAN_VOICE, sound_pain, 1, ATTN_NORM, 0);
 
-		if (damage > 10) /* don't react unless the damage was significant */
+		/* don't react unless the damage was significant - or a chainfist */
+		if (meansOfDeath == MOD_CHAINFIST || damage > 10)
 		{
 			if (self->groundentity && (random() < 0.5f))
 			{
 				stalker_dodge_jump(self);
 			}
-			else if (skill->value != 3) /* no pain anims in nightmare */
+			else if (M_ShouldReactToPain(self, meansOfDeath)) /* no pain anims in nightmare */
 			{
 				self->monsterinfo.currentmove = &stalker_move_pain;
 			}
@@ -697,7 +705,7 @@ stalker_shoot_attack(edict_t *self)
 	{
 		if (random() < 0.3f)
 		{
-			PredictAim(self->enemy, start, 1000, true, 0, dir, end);
+			PredictAimEx(self, self->enemy, start, 1000, true, 0, dir, end);
 		}
 		else
 		{
@@ -898,11 +906,11 @@ mframe_t stalker_frames_swing_l[] = {
 	{ai_charge, 2, NULL},
 	{ai_charge, 4, NULL},
 	{ai_charge, 6, NULL},
-	{ai_charge, 10, NULL},
+	{ai_charge, 10, monster_footstep},
 	{ai_charge, 5, stalker_swing_attack},
 	{ai_charge, 5, NULL},
 	{ai_charge, 5, NULL},
-	{ai_charge, 5, NULL} /* stalker_swing_check_l */
+	{ai_charge, 5, monster_footstep} /* stalker_swing_check_l */
 };
 
 mmove_t stalker_move_swing_l = {
@@ -914,10 +922,10 @@ mmove_t stalker_move_swing_l = {
 
 mframe_t stalker_frames_swing_r[] = {
 	{ai_charge, 4, NULL},
-	{ai_charge, 6, NULL},
+	{ai_charge, 6, monster_footstep},
 	{ai_charge, 6, stalker_swing_attack},
 	{ai_charge, 10, NULL},
-	{ai_charge, 5, NULL} /* stalker_swing_check_r */
+	{ai_charge, 5, monster_footstep} /* stalker_swing_check_r */
 };
 
 mmove_t stalker_move_swing_r = {
@@ -1127,6 +1135,39 @@ stalker_do_pounce(edict_t *self, vec3_t dest)
 
 	VectorCopy(dest, jumpLZ);
 
+	/* [rerelease] simulate the arc instead of solving for it: try 400, 600
+	   and 800 ups, and take the first speed at which some pitch lands the
+	   jump (M_CalculatePitchToFire, 3 seconds of flight, stopping at the
+	   first thing it hits). The launch is straight along that pitched
+	   direction, toward the target rather than along the stalker's facing. */
+	if (M_RereleaseGame())
+	{
+		vec3_t dir;
+
+		VectorCopy(dist, dir);
+		VectorNormalize(dir);
+
+		while (velocity <= 800)
+		{
+			if (M_CalculatePitchToFire(self, jumpLZ, self->s.origin, dir,
+					velocity, 3, false, true))
+			{
+				break;
+			}
+
+			velocity += 200;
+		}
+
+		/* nothing found */
+		if (velocity > 800)
+		{
+			return 0;
+		}
+
+		VectorScale(dir, velocity, self->velocity);
+		return 1;
+	}
+
 	preferHighJump = 0;
 
 	/* if we're having to jump up a distance, jump a little too high to compensate. */
@@ -1222,7 +1263,7 @@ stalker_jump_straightup(edict_t *self)
 mframe_t stalker_frames_jump_straightup[] = {
 	{ai_move, 1, stalker_jump_straightup},
 	{ai_move, 1, stalker_jump_wait_land},
-	{ai_move, -1, NULL},
+	{ai_move, -1, monster_footstep},
 	{ai_move, -1, NULL}
 };
 
@@ -1332,7 +1373,11 @@ stalker_jump_wait_land(edict_t *self)
 
 	if (self->groundentity == NULL)
 	{
-		self->gravity = 1.3;
+		/* id's 1.3 only lasts the one 40 Hz tick after this think before
+		   SV_Physics_Step resets it; in rerelease SV_Physics_Step blends a
+		   think's gravity override to a quarter for the same effect, so the
+		   plain 1.3 is right in both modes. */
+		self->gravity = 1.3f;
 		self->monsterinfo.nextframe = self->s.frame;
 
 		if (monster_jump_finished(self))
@@ -1356,7 +1401,7 @@ mframe_t stalker_frames_jump_up[] = {
 
 	{ai_move, 0, stalker_jump_up},
 	{ai_move, 0, stalker_jump_wait_land},
-	{ai_move, 0, NULL}
+	{ai_move, 0, monster_footstep}
 };
 
 mmove_t stalker_move_jump_up = {
@@ -1374,7 +1419,7 @@ mframe_t stalker_frames_jump_down[] = {
 
 	{ai_move, 0, stalker_jump_down},
 	{ai_move, 0, stalker_jump_wait_land},
-	{ai_move, 0, NULL}
+	{ai_move, 0, monster_footstep}
 };
 
 mmove_t stalker_move_jump_down = {
@@ -1468,8 +1513,11 @@ bool stalker_blocked(edict_t *self, float dist)
 			return true;
 		}
 
-		/* occasionally just pounce the obstruction instead */
-		if (visible(self, self->enemy) && random() < 0.1f)
+		/* occasionally just pounce the obstruction instead. id rolls 10% on
+		   every blocked move, which it makes at 40 Hz - four rolls per frame
+		   here, 1 - 0.9^4 = 34% */
+		if (visible(self, self->enemy) &&
+			random() < (M_RereleaseGame() ? 0.3439f : 0.1f))
 		{
 			stalker_do_pounce(self, self->enemy->s.origin);
 			return true;
@@ -1516,7 +1564,7 @@ mframe_t stalker_frames_death[] = {
 	{ai_move, -5, NULL},
 	{ai_move, -5, NULL},
 
-	{ai_move, 0, NULL}
+	{ai_move, 0, monster_footstep}
 };
 
 mmove_t stalker_move_death = {

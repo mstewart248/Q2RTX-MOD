@@ -10,8 +10,9 @@
  *
  * Ported from src/rerelease/rogue/m_rogue_widow2.cpp, sharing the support
  * layer built for m_widow.c (G_ProjectSource2, CountPlayers, AI_BLOCKED, the
- * powerup mirroring) and adding two monster weapon wrappers to g_monster.c -
- * monster_fire_heatbeam and monster_fire_tracker.
+ * powerup mirroring - only partly effective, see m_widow.c) and adding two
+ * monster weapon wrappers to g_monster.c - monster_fire_heatbeam and
+ * monster_fire_tracker.
  *
  * Deliberate differences from the rerelease, none of them accidental:
  *
@@ -37,6 +38,7 @@
 
 #include "g_local.h"
 #include "m_widow2.h"
+
 
 #define WIDOW2_TONGUE_RANGE 256.0f
 
@@ -381,7 +383,7 @@ void WidowDisrupt(edict_t *self)
         monster_fire_tracker(self, start, dir, 20, 500, self->enemy, MZ2_WIDOW_DISRUPTOR);
     } else {
         /* he is moving - lead him and fire a dumb one */
-        PredictAim(self->enemy, start, 1200, true, 0, dir, NULL);
+        PredictAimEx(self, self->enemy, start, 1200, true, 0, dir, NULL);
         monster_fire_tracker(self, start, dir, 20, 1200, NULL, MZ2_WIDOW_DISRUPTOR);
     }
 
@@ -901,19 +903,17 @@ void widow2_pain(edict_t *self, edict_t *other /* unused */,
     else
         gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NONE, 0);
 
-    // M_ShouldReactToPain does not exist here; skill 3 is the nightmare gate
-    // the rest of this tree uses for the same purpose.
-    if (skill->value >= 3)
+    if (M_RereleaseGame() ? !M_ShouldReactToPain(self, meansOfDeath) : skill->value >= 3)
         return; // no pain anims in nightmare
 
     if (damage >= 15) {
         if (damage < 75) {
-            if (random() < (0.6f - (0.2f * skill->value))) {
+            if (skill->value < 3 && random() < (0.6f - (0.2f * skill->value))) {
                 self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
                 self->monsterinfo.currentmove = &widow2_move_pain;
             }
         } else {
-            if (random() < (0.75f - (0.1f * skill->value))) {
+            if (skill->value < 3 && random() < (0.75f - (0.1f * skill->value))) {
                 self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
                 self->monsterinfo.currentmove = &widow2_move_pain;
             }
@@ -1067,6 +1067,9 @@ bool Widow2_CheckAttack(edict_t *self)
 
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         chance = 0.4f;
+    else if (M_RereleaseGame())
+        /* id's ladder on the box gap (range_to), RANGE_MID being 940 */
+        chance = (range_to(self, self->enemy) <= 940) ? 0.8f : 0.5f;
     else if (enemy_range <= RANGE_NEAR)
         chance = 0.8f;
     else if (enemy_range <= RANGE_MID)

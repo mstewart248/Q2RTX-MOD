@@ -168,6 +168,7 @@ static const save_field_t entityfields[] = {
 
     E(proboscus),
     E(beam),
+    E(beam2),
     E(mynoise),
     E(mynoise2),
 
@@ -413,6 +414,25 @@ static const save_field_t entityfields[] = {
     E(monsterinfo.goal_hint),
     FT(monsterinfo.last_hint_framenum),
 
+    // [rerelease] shared AI state. damage_* is the pending pain of the current
+    // frame (M_ProcessPain); carrying it costs nothing and a save taken between
+    // the hit and the monster's think would otherwise drop the pain.
+    I(monsterinfo.aiflags2),
+    E(monsterinfo.last_player_enemy),
+    O(monsterinfo.close_sight_tripped),
+    O(monsterinfo.had_visibility),
+    FT(monsterinfo.checkattack_framenum),
+    FT(monsterinfo.strafe_check_framenum),
+    FT(monsterinfo.react_to_damage_framenum),
+    FT(monsterinfo.surprise_framenum),
+    I(monsterinfo.base_health),
+    I(monsterinfo.health_scaling),
+    I(monsterinfo.damage_blood),
+    I(monsterinfo.damage_knockback),
+    E(monsterinfo.damage_attacker),
+    I(monsterinfo.damage_mod),
+    FT(dead_framenum),
+
     {0}
 #undef _OFS
 };
@@ -455,6 +475,7 @@ static const save_field_t levelfields[] = {
     I(sound2_entity_framenum),
 
     I(pic_health),
+    I(coop_scale_players),
 
     I(total_secrets),
     I(found_secrets),
@@ -1037,7 +1058,9 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 // itemlist[] after key_yellow_key, level.gravity joins levelfields, and new
 // callbacks (train_piece_wait, the coop relay, target_gravity/soundfx, ...)
 // shift save_ptrs[].
-#define SAVE_VERSION    64
+// 65: the rerelease shared-AI fields (monsterinfo.aiflags2 .. damage_mod,
+// dead_framenum) join entityfields and coop_scale_players joins levelfields.
+#define SAVE_VERSION    65
 
 /*
 ============

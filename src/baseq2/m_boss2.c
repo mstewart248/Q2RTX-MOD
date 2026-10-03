@@ -27,6 +27,8 @@ boss2
 #include "m_boss2.h"
 
 void BossExplode(edict_t *self);
+void BossExplodeTick(edict_t *self);
+void BossGib(edict_t *self);
 
 bool infront(edict_t *self, edict_t *other);
 
@@ -67,7 +69,7 @@ void Boss2HyperBlaster(edict_t *self)
     id = (self->s.frame & 1) ? MZ2_BOSS2_MACHINEGUN_L2 : MZ2_BOSS2_MACHINEGUN_R2;
 
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[id], forward, right, start);
+    M_ProjectFlashSource(self, monster_flash_offset[id], forward, right, start);
 
     VectorCopy(self->enemy->s.origin, target);
     target[2] += self->enemy->viewheight;
@@ -86,17 +88,20 @@ void Boss2Rocket64(edict_t *self)
     vec3_t  dir;
     vec3_t  vec;
     float   time, dist;
+    float   scale;
 
     if (!self->enemy || !self->enemy->inuse)
         return;
 
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_BOSS2_ROCKET_1], forward, right, start);
+    M_ProjectFlashSource(self, monster_flash_offset[MZ2_BOSS2_ROCKET_1], forward, right, start);
 
-    // walk the launch point sideways across four shots so the volley sweeps
-    start[2] += 10.0f;
-    VectorMA(start, -2.0f, right, start);
-    VectorMA(start, -(float)((self->count++ % 4) * 8), right, start);
+    // walk the launch point sideways across four shots so the volley sweeps;
+    // the steps grow with the model, as the muzzle does
+    scale = self->s.scale ? self->s.scale : 1.0f;
+    start[2] += 10.0f * scale;
+    VectorMA(start, -2.0f * scale, right, start);
+    VectorMA(start, -(float)((self->count++ % 4) * 8) * scale, right, start);
 
     if (self->enemy->client && random() < 0.9f) {
         // lead a moving player
@@ -115,12 +120,70 @@ void Boss2Rocket64(edict_t *self)
     monster_fire_rocket(self, start, dir, 35, BOSS2_ROCKET_SPEED, MZ2_BOSS2_ROCKET_1);
 }
 
+/*
+=================
+Boss2PredictiveRocket
+
+[rerelease] The volley at a player: all four rockets lead the target at 750,
+spread in time rather than space (-0.1 .. +0.1 s), so one of them is likely to
+land wherever the player dodges to.
+=================
+*/
+static void Boss2PredictiveRocket(edict_t *self)
+{
+    static const int    flashes[4] = { MZ2_BOSS2_ROCKET_1, MZ2_BOSS2_ROCKET_2, MZ2_BOSS2_ROCKET_3, MZ2_BOSS2_ROCKET_4 };
+    static const float  offsets[4] = { -0.10f, -0.05f, 0.05f, 0.10f };
+    vec3_t  forward, right;
+    vec3_t  start;
+    vec3_t  dir;
+    int     i;
+
+    AngleVectors(self->s.angles, forward, right, NULL);
+
+    for (i = 0; i < 4; i++) {
+        M_ProjectFlashSource(self, monster_flash_offset[flashes[i]], forward, right, start);
+        PredictAimEx(self, self->enemy, start, BOSS2_ROCKET_SPEED, false, offsets[i], dir, NULL);
+        monster_fire_rocket(self, start, dir, 50, BOSS2_ROCKET_SPEED, flashes[i]);
+    }
+}
+
 void Boss2Rocket(edict_t *self)
 {
     vec3_t  forward, right;
     vec3_t  start;
     vec3_t  dir;
     vec3_t  vec;
+
+    // [rerelease] 90% of volleys at a player lead it; the rest - and every
+    // volley at a non-player - is a fan aimed at the feet, at 500
+    if (M_RereleaseGame()) {
+        static const int    flashes[4] = { MZ2_BOSS2_ROCKET_1, MZ2_BOSS2_ROCKET_2, MZ2_BOSS2_ROCKET_3, MZ2_BOSS2_ROCKET_4 };
+        static const float  spread[4] = { 0.4f, 0.025f, -0.025f, -0.4f };
+        static const float  drop[4] = { 15, 0, 0, 15 };
+        int     i;
+
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        if (self->enemy->client && random() < 0.9f) {
+            Boss2PredictiveRocket(self);
+            return;
+        }
+
+        AngleVectors(self->s.angles, forward, right, NULL);
+
+        for (i = 0; i < 4; i++) {
+            M_ProjectFlashSource(self, monster_flash_offset[flashes[i]], forward, right, start);
+            VectorCopy(self->enemy->s.origin, vec);
+            vec[2] -= drop[i];
+            VectorSubtract(vec, start, dir);
+            VectorNormalize(dir);
+            VectorMA(dir, spread[i], right, dir);
+            VectorNormalize(dir);
+            monster_fire_rocket(self, start, dir, 50, 500, flashes[i]);
+        }
+        return;
+    }
 
     AngleVectors(self->s.angles, forward, right, NULL);
 
@@ -163,6 +226,19 @@ void boss2_firebullet_right(edict_t *self)
     vec3_t  start;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] scale-aware muzzle, PredictAim 0.2 s AHEAD at eye height
+    // (the classic -0.2 * velocity lags behind), three times the h spread
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[MZ2_BOSS2_MACHINEGUN_R1], forward, right, start);
+        PredictAimEx(self, self->enemy, start, 0, true, -0.2f, forward, NULL);
+        monster_fire_bullet(self, start, forward, 6, 4, DEFAULT_BULLET_HSPREAD * 3, DEFAULT_BULLET_VSPREAD, MZ2_BOSS2_MACHINEGUN_R1);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_BOSS2_MACHINEGUN_R1], forward, right, start);
 
     VectorMA(self->enemy->s.origin, -0.2f, self->enemy->velocity, target);
@@ -179,6 +255,18 @@ void boss2_firebullet_left(edict_t *self)
     vec3_t  start;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] see boss2_firebullet_right
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[MZ2_BOSS2_MACHINEGUN_L1], forward, right, start);
+        PredictAimEx(self, self->enemy, start, 0, true, -0.2f, forward, NULL);
+        monster_fire_bullet(self, start, forward, 6, 4, DEFAULT_BULLET_HSPREAD * 3, DEFAULT_BULLET_VSPREAD, MZ2_BOSS2_MACHINEGUN_L1);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_BOSS2_MACHINEGUN_L1], forward, right, start);
 
     VectorMA(self->enemy->s.origin, -0.2f, self->enemy->velocity, target);
@@ -233,6 +321,74 @@ static void boss2_shrink(edict_t *self)
 
     self->maxs[2] = 50;
     gi.linkentity(self);
+
+    BossExplodeTick(self);
+}
+
+/*
+=================
+boss2_death_last
+
+The last death frame. Classic: the original BossExplode sequence takes over
+the hornet's think. [rerelease] the explosions have been running since the
+start of the animation (BossExplodeTick, see m_supertank.c) and boss2_dead
+gibs as soon as it ends.
+=================
+*/
+static void boss2_death_last(edict_t *self)
+{
+    if (!M_RereleaseGame()) {
+        BossExplode(self);
+        return;
+    }
+
+    BossExplodeTick(self);
+}
+
+/*
+=================
+boss2 movement
+
+[rerelease] id moves the hornet 10 a frame walking and running (classic 8),
+charges at 2 through the machinegun and rocket attacks (classic 1), and the
+rocket volley only knocks it back 5 (classic 20). The tables are shared with
+the classic game, so the rerelease distances are swapped in here. A 0 dist is
+AI_HOLD_FRAME and stays 0.
+=================
+*/
+static void boss2_ai_walk(edict_t *self, float dist)
+{
+    if (M_RereleaseGame() && dist)
+        dist = 10 * self->monsterinfo.scale;
+    ai_walk(self, dist);
+}
+
+static void boss2_ai_run(edict_t *self, float dist)
+{
+    if (M_RereleaseGame() && dist)
+        dist = 10 * self->monsterinfo.scale;
+    ai_run(self, dist);
+}
+
+static void boss2_ai_charge(edict_t *self, float dist)
+{
+    if (M_RereleaseGame() && dist)
+        dist = 2 * self->monsterinfo.scale;
+    ai_charge(self, dist);
+}
+
+static void boss2_ai_recoil(edict_t *self, float dist)
+{
+    if (M_RereleaseGame() && dist)
+        dist = -5 * self->monsterinfo.scale;
+    ai_move(self, dist);
+}
+
+// [rerelease] the last hyperblaster frame fires AND decides whether to go on
+static void boss2_hb_reattack(edict_t *self)
+{
+    Boss2HyperBlaster(self);
+    boss2_reattack_mg(self);
 }
 
 mframe_t boss2_frames_stand [] = {
@@ -295,109 +451,109 @@ mframe_t boss2_frames_fidget [] = {
 mmove_t boss2_move_fidget = {FRAME_stand1, FRAME_stand30, boss2_frames_fidget, NULL};
 
 mframe_t boss2_frames_walk [] = {
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL },
-    { ai_walk,    8,  NULL }
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL },
+    { boss2_ai_walk, 8, NULL }
 };
 mmove_t boss2_move_walk = {FRAME_walk1, FRAME_walk20, boss2_frames_walk, NULL};
 
 
 mframe_t boss2_frames_run [] = {
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL },
-    { ai_run, 8,  NULL }
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL },
+    { boss2_ai_run, 8, NULL }
 };
 mmove_t boss2_move_run = {FRAME_walk1, FRAME_walk20, boss2_frames_run, NULL};
 
 mframe_t boss2_frames_attack_pre_mg [] = {
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  boss2_attack_mg }
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  boss2_attack_mg }
 };
 mmove_t boss2_move_attack_pre_mg = {FRAME_attack1, FRAME_attack9, boss2_frames_attack_pre_mg, NULL};
 
 
 // Loop this
 mframe_t boss2_frames_attack_mg [] = {
-    { ai_charge,  1,  Boss2MachineGun },
-    { ai_charge,  1,  Boss2MachineGun },
-    { ai_charge,  1,  Boss2MachineGun },
-    { ai_charge,  1,  Boss2MachineGun },
-    { ai_charge,  1,  Boss2MachineGun },
-    { ai_charge,  1,  boss2_reattack_mg }
+    { boss2_ai_charge, 1,  Boss2MachineGun },
+    { boss2_ai_charge, 1,  Boss2MachineGun },
+    { boss2_ai_charge, 1,  Boss2MachineGun },
+    { boss2_ai_charge, 1,  Boss2MachineGun },
+    { boss2_ai_charge, 1,  Boss2MachineGun },
+    { boss2_ai_charge, 1,  boss2_reattack_mg }
 };
 mmove_t boss2_move_attack_mg = {FRAME_attack10, FRAME_attack15, boss2_frames_attack_mg, NULL};
 
 mframe_t boss2_frames_attack_post_mg [] = {
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL }
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL }
 };
 mmove_t boss2_move_attack_post_mg = {FRAME_attack16, FRAME_attack19, boss2_frames_attack_post_mg, boss2_run};
 
 mframe_t boss2_frames_attack_rocket [] = {
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_move,    -20,    Boss2Rocket },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL },
-    { ai_charge,  1,  NULL }
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_recoil, -20, Boss2Rocket },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL },
+    { boss2_ai_charge, 1,  NULL }
 };
 mmove_t boss2_move_attack_rocket = {FRAME_attack20, FRAME_attack40, boss2_frames_attack_rocket, boss2_run};
 
@@ -408,7 +564,7 @@ mframe_t boss2_frames_attack_hb [] = {
     { ai_charge, 2, Boss2HyperBlaster },
     { ai_charge, 2, Boss2HyperBlaster },
     { ai_charge, 2, Boss2HyperBlaster },
-    { ai_charge, 2, boss2_reattack_mg }
+    { ai_charge, 2, boss2_hb_reattack }
 };
 mmove_t boss2_move_attack_hb = {FRAME_attack10, FRAME_attack15, boss2_frames_attack_hb, NULL};
 
@@ -469,54 +625,54 @@ mmove_t boss2_move_pain_light = {FRAME_pain20, FRAME_pain23, boss2_frames_pain_l
 
 mframe_t boss2_frames_death [] = {
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
     { ai_move, 0, boss2_shrink },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  BossExplode }
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  boss2_death_last }
 };
 mmove_t boss2_move_death = {FRAME_death2, FRAME_death50, boss2_frames_death, boss2_dead};
 
@@ -584,6 +740,16 @@ void boss2_attack_mg(edict_t *self)
 
 void boss2_reattack_mg(edict_t *self)
 {
+    // [rerelease] through boss2_attack_mg, so the N64 hornet loops its
+    // hyperblaster instead of dropping into the machinegun
+    if (M_RereleaseGame()) {
+        if (infront(self, self->enemy) && random() <= 0.7f)
+            boss2_attack_mg(self);
+        else
+            self->monsterinfo.currentmove = &boss2_move_attack_post_mg;
+        return;
+    }
+
     if (infront(self, self->enemy))
         if (random() <= 0.7f)
             self->monsterinfo.currentmove = &boss2_move_attack_mg;
@@ -602,6 +768,27 @@ void boss2_pain(edict_t *self, edict_t *other, float kick, int damage)
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+    // [rerelease] the pain sound still plays in nightmare, the animation not
+    if (M_RereleaseGame()) {
+        // American wanted these at no attenuation
+        if (damage < 10)
+            gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NONE, 0);
+        else if (damage < 30)
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NONE, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NONE, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        if (damage < 30)
+            self->monsterinfo.currentmove = &boss2_move_pain_light;
+        else
+            self->monsterinfo.currentmove = &boss2_move_pain_heavy;
+        return;
+    }
+
 // American wanted these at no attenuation
     if (damage < 10) {
         gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NONE, 0);
@@ -640,6 +827,15 @@ const int boss2_num_rerelease_gibs = (int)(sizeof(boss2_rerelease_gibs) / sizeof
 
 void boss2_dead(edict_t *self)
 {
+    // [rerelease] the explosions ran through the whole death; now it comes
+    // apart at once (boss2_gib), unless placed as a corpse ("no blowy on deady")
+    if (M_RereleaseGame() && !(self->spawnflags & SPAWNFLAG_MONSTER_DEAD)) {
+        // boss2_die slowed its fall; the parts fall at full weight
+        self->gravity = 1.0f;
+        BossGib(self);
+        return;
+    }
+
     VectorSet(self->mins, -56, -56, 0);
     VectorSet(self->maxs, 56, 56, 80);
     self->movetype = MOVETYPE_TOSS;
@@ -650,6 +846,35 @@ void boss2_dead(edict_t *self)
 
 void boss2_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
+    if (M_RereleaseGame()) {
+        if (self->spawnflags & SPAWNFLAG_MONSTER_DEAD) {
+            // a placed corpse can still be blown apart
+            if (self->health <= self->gib_health) {
+                BossGib(self);
+                return;
+            }
+
+            if (self->deadflag == DEAD_DEAD)
+                return;
+
+            self->deadflag = DEAD_DEAD;
+            self->takedamage = DAMAGE_YES;
+        } else {
+            gi.sound(self, CHAN_VOICE, sound_death, 1, ATTN_NONE, 0);
+            self->deadflag = DEAD_DEAD;
+            self->takedamage = DAMAGE_NO;
+            self->count = 0;
+            // id stops it dead and lets it sink at 30% gravity while it burns.
+            // id scales gravityVector.z; this tree's SV_AddGravity ignores the
+            // vector's length, so the entity's gravity scale does the same job.
+            VectorClear(self->velocity);
+            self->gravity *= 0.30f;
+        }
+
+        self->monsterinfo.currentmove = &boss2_move_death;
+        return;
+    }
+
     gi.sound(self, CHAN_VOICE, sound_death, 1, ATTN_NONE, 0);
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_NO;

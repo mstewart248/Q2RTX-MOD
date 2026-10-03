@@ -55,9 +55,31 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // treat them as a near/far pair.
 //
 // THE DENSITY SCALE IS NOT DERIVABLE. KEX's density-to-extinction constant lives
-// in a closed renderer. Taken raw, fog_density 0.03 would mean 50% visibility at
-// 23 units - pea soup - so there is certainly a scale factor we cannot read.
-// cl_fog_scale exists to calibrate it against retail screenshots by eye.
+// in a closed renderer, so the authored numbers cannot be taken literally. They
+// used to be, times a cl_fog_scale that every map then needed its own value of
+// (300 on the id maps, 4 on the MGU ones, 1000 left in a config), and the same
+// menu settings looked completely different from one map to the next and from
+// the classic campaign to the rerelease.
+//
+// So the authored values now give the fog its SHAPE and nothing else: the
+// densities are normalised so the thickest point of the medium is 1 - exactly
+// the flat medium the classic campaign's god rays have always marched. How
+// bright the fog is comes only from the five pt_fog_scale_* knobs (sun, skybox,
+// emissive, dynamic, model) plus each light's own volscale.
+//
+// THE MAP CFGS WERE CONVERTED, NOT RETUNED. rerelease/maps/*.cfg used to carry
+// cl_fog_scale S and cl_volumetric_fog_density V. With P the old peak density of
+// the map's own medium (hf_density / 0.025 + fog_density / 2), the old renderer
+// drew the sun at density P*S times gr_intensity (2) times the fog colour, and
+// the local lights at density P*V. So each cfg now sets, for the same picture:
+//
+//   pt_fog_scale_sun        P * S * 2 * luminance(fog colour)
+//                           (the colour itself is dropped under the physical sky)
+//   pt_fog_scale_<source>   P * V / FOG_LOCAL_DENSITY (0.05) * its old scale
+//   pt_fog_scale_skybox     the same, times its old pt_fog_sky_scale
+//
+// mapcvar still restores the player's own values on the next map, so these are
+// per-map overrides of the menu knobs, not new defaults.
 
 #include "client.h"
 
@@ -78,12 +100,13 @@ typedef struct {
 static mapfog_t cl_mapfog;
 
 static cvar_t   *cl_fog;
-static cvar_t   *cl_fog_scale;
 
-// [cl_fog 3] The density that mode 3 uses, separate from cl_fog_scale because
-// the two modes need wildly different numbers for the same map. See the note at
-// its registration in CL_InitMapFog.
-static cvar_t   *cl_volumetric_fog_density;
+/* The normalisation constants. These MUST match FOG_HEIGHTFOG_REFERENCE and
+   FOG_DISTANCEFOG_REFERENCE in fog_medium.glsl, which divides the values handed
+   to it by them: the shader's density at the floor of the band is
+   hf_density / HF_REF + density / DIST_REF, and that is what is scaled to 1. */
+#define MAPFOG_HEIGHTFOG_REFERENCE   0.025f
+#define MAPFOG_DISTANCEFOG_REFERENCE 2.0f
 
 /*
 =================
@@ -168,53 +191,39 @@ static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
     return out->valid;
 }
 
+// Fog is on or off. The old 1/2/3 modes are gone: 1 is what was mode 3, the
+// froxel volumetric, and anything an old config left above 1 means "on".
+static void cl_fog_changed(cvar_t *self)
+{
+    if (self->integer > 1)
+        Cvar_SetInteger(self, 1, FROM_CODE);
+    else if (self->integer < 0)
+        Cvar_SetInteger(self, 0, FROM_CODE);
+}
+
 void CL_InitMapFog(void)
 {
     // Registered at client init, not lazily at map load, because the video
     // menu binds to these by name when it is built.
-    // DEFAULT OFF while the volumetric is still being finished - see
-    // [[q2rtx-rerelease-fog]]. 1 = sun-lit medium, 2 = lit by the map's own
-    // lights with traced sky visibility.
     cl_fog = Cvar_Get("cl_fog", "0", CVAR_ARCHIVE);
+    cl_fog->changed = cl_fog_changed;
+    cl_fog_changed(cl_fog);
 
-    // The local-light brightness knob for cl_fog 2. Lives in the UBO cvar list
-    // (appended at the END - see the alignment memory) so the shader reads it.
-    Cvar_Get("pt_fog_light_scale", "1.0", CVAR_ARCHIVE);
+    /* THE FIVE FOG KNOBS - the only things that set how bright the fog is.
+       Registered here only to make them ARCHIVE; the renderer owns them (the
+       first two are UBO cvars in global_ubo.h, the other three are read in
+       vertex_buffer.c) and the defaults must match theirs. A map cfg may set
+       any of them with mapcvar. */
+    Cvar_Get("pt_fog_scale_sun",      "2.0", CVAR_ARCHIVE);   // physical sky
+    Cvar_Get("pt_fog_scale_skybox",   "1.0", CVAR_ARCHIVE);   // the map's skybox
+    Cvar_Get("pt_fog_scale_emissive", "1.0", CVAR_ARCHIVE);
+    Cvar_Get("pt_fog_scale_dynamic",  "1.0", CVAR_ARCHIVE);
+    Cvar_Get("pt_fog_scale_model",    "1.0", CVAR_ARCHIVE);
+    Cvar_Get("pt_fog_lava_scale",     "5.0", CVAR_ARCHIVE);   // lava, x10 in vertex_buffer.c
 
-    // The calibration knob. 1.0 means "the map's authored value, taken raw".
-    // KEX's density-to-extinction constant is inside a closed renderer and
-    // cannot be derived, so this is matched against retail by eye.
-    //
-    // 2 rather than 1: Matt's calibration, 2026-08-31, once the sky brushes
-    // stopped being counted as area lights in the fog. The authored densities
-    // read thin on their own at the light levels these maps actually use.
-    /* CAUTION: this is an APPEARANCE calibration that also, silently, sets the
-       cost of the god rays pass. The densities below are written pre-scaled, and
-       getStep() in fog_medium.glsl picks the march step from that scaled value -
-       so raising cl_fog_scale shortens the step, and past a certain point pins it
-       at 1 unit and multiplies the pass cost by up to twenty.
-
-       On a cl_fog 3 map with its own cl_volumetric_fog_density the scale is
-       divided back out of the image (vol_density_ratio below), so it can cost
-       that twenty times over for a picture that does not change at all. Set it
-       PER MAP with mapcvar, never globally, and read the note on getStep. */
-    cl_fog_scale = Cvar_Get("cl_fog_scale", "2", CVAR_ARCHIVE);
-
-    /* THE SAME MAP NEEDS A DIFFERENT DENSITY IN MODE 1 AND MODE 3, and the
-       difference is not a matter of taste - it falls out of how each mode is lit.
-
-       cl_fog 1's only term is the sun through a HARD shadow cliff
-       (pt_fog_ambient defaults to 0), so most of the volume is multiplied by
-       ZERO and the scale has to be enormous for the handful of lit steps to
-       carry the look: mgu1m1 ships mapcvar cl_fog_scale 250. Switch that map to
-       cl_fog 3 and nothing is zeroed any more - every step is lit by something -
-       so the same 250 over-amplifies the whole volume, and faint sun leakage in
-       dim interiors becomes visible haze. Matt hit exactly that on mgu1m1.
-
-       -1 means "no opinion, use cl_fog_scale", which is what every map that has
-       not been split yet wants. So this changes NOTHING until it is set, and a
-       map cfg can then carry both numbers and switch modes without a retune. */
-    cl_volumetric_fog_density = Cvar_Get("cl_volumetric_fog_density", "-1", CVAR_ARCHIVE);
+    // Not a brightness knob - the quality of the physical sky's fog, fast or
+    // accurate. See its note in global_ubo.h; the default must match it.
+    Cvar_Get("pt_fog_sky_sun_only",   "1",   CVAR_ARCHIVE);
 }
 
 /*
@@ -252,40 +261,36 @@ void CL_FreeMapFog(void)
 =================
 CL_GetMapFog
 
-Fills the renderer-side description. Returns false when this map has no fog or
-the feature is switched off, in which case the caller leaves the medium alone.
+Fills the renderer-side description. Returns false only when fog is switched
+off, in which case the renderer falls back to the classic god rays. A map with
+no fog of its own still gets a medium - a flat white one - so turning fog on
+looks the same on the classic campaign as on the rerelease.
 =================
 */
 bool CL_GetMapFog(mapfog_params_t *out)
 {
-    float scale;
+    float peak;
 
-    if (!cl_mapfog.valid || !cl_fog || !cl_fog->integer)
+    if (!cl_fog || !cl_fog->integer)
         return false;
 
-    /* cl_fog_scale is the SKY/SUN density and it applies in EVERY mode - a
-       first version of this switched the whole density over to
-       cl_volumetric_fog_density in mode 3, which meant one knob drove both
-       halves and the other did nothing. That is not the split: mode 3 renders
-       BOTH the sun term (which is cl_fog 1's fog, and wants cl_fog_scale) and
-       the local-light term (which wants its own, much lower number) at the same
-       time, so the two densities have to coexist rather than take turns. */
-    scale = cl_fog_scale ? cl_fog_scale->value : 1.0f;
+    memset(out, 0, sizeof(*out));
+    out->mode = 3;
 
-    if (scale <= 0.0f)
-        return false;
+    peak = 0.0f;
+    if (cl_mapfog.valid)
+        peak = cl_mapfog.hf_density / MAPFOG_HEIGHTFOG_REFERENCE
+             + cl_mapfog.density / MAPFOG_DISTANCEFOG_REFERENCE;
 
-    /* The volumetric half is expressed as a RATIO against that, because the
-       densities handed to the renderer carry the map's height-fog profile and
-       only their magnitude should move. Negative means "no opinion, match the
-       sky density", which is the default and leaves every existing map alone. */
-    out->vol_density_ratio = 1.0f;
-    if (cl_volumetric_fog_density && cl_volumetric_fog_density->value >= 0.0f)
-        out->vol_density_ratio = cl_volumetric_fog_density->value / scale;
+    if (peak <= 0.0f) {
+        out->density = MAPFOG_DISTANCEFOG_REFERENCE;    // density 1 everywhere
+        VectorSet(out->color, 1, 1, 1);
+        return true;
+    }
 
-    out->mode       = cl_fog->integer;
-    out->density    = cl_mapfog.density * scale;
-    out->hf_density = cl_mapfog.hf_density * scale;
+    // Keep the shape, drop the magnitude: the band floor comes out at 1.
+    out->density    = cl_mapfog.density / peak;
+    out->hf_density = cl_mapfog.hf_density / peak;
     out->hf_falloff = cl_mapfog.hf_falloff;
     out->hf_start_z = cl_mapfog.hf_start_z;
     out->hf_end_z   = cl_mapfog.hf_end_z;
@@ -293,5 +298,5 @@ bool CL_GetMapFog(mapfog_params_t *out)
     VectorCopy(cl_mapfog.hf_start_color, out->hf_start_color);
     VectorCopy(cl_mapfog.hf_end_color, out->hf_end_color);
 
-    return (out->density > 0.0f) || (out->hf_density > 0.0f);
+    return true;
 }

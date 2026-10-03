@@ -138,9 +138,7 @@ void arachnid_pain(edict_t *self, edict_t *other, float kick, int damage)
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
     gi.sound(self, CHAN_VOICE, sound_pain, 1, ATTN_NORM, 0);
 
-    // M_ShouldReactToPain does not exist here; skill 3 is the nightmare gate
-    // the rest of this tree uses.
-    if (skill->value >= 3)
+    if (!M_ShouldReactToPain(self, meansOfDeath))
         return; // no pain anims in nightmare
 
     r = random();
@@ -270,7 +268,8 @@ void arachnid_attack(edict_t *self)
 		return;
 
     if (self->monsterinfo.melee_debounce_framenum < level.framenum &&
-        realrange(self, self->enemy) < MELEE_DISTANCE)
+        (M_RereleaseGame() ? range_to(self, self->enemy) < RR_MELEE_DISTANCE
+                           : realrange(self, self->enemy) < MELEE_DISTANCE))
 		self->monsterinfo.currentmove = &arachnid_melee;
 	else if ((self->enemy->s.origin[2] - self->s.origin[2]) > 150.f)
 		self->monsterinfo.currentmove = &arachnid_attack_up1;

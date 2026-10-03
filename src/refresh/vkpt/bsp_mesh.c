@@ -34,6 +34,7 @@ extern cvar_t *cvar_pt_enable_surface_lights;
 extern cvar_t *cvar_pt_enable_surface_lights_warp;
 extern cvar_t* cvar_pt_bsp_radiance_scale;
 extern cvar_t *cvar_pt_bsp_sky_lights;
+extern cvar_t *cvar_pt_fog_lava;
 
 static void
 remove_collinear_edges(float* positions, float* tex_coords, mbasis_t* bases, int* num_vertices)
@@ -2037,7 +2038,8 @@ light_affects_cluster(light_poly_t* light, const aabb_t* aabb)
 }
 
 static void
-collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
+build_cluster_light_lists(bsp_mesh_t *wm, bsp_t *bsp, light_poly_t *lights, int num_lights, int index_base,
+                          int max_total, int *out_num, int **out_offsets, int **out_lights)
 {
 #define MAX_LIGHTS_PER_CLUSTER 3064
 	int* cluster_lights = Z_Malloc(MAX_LIGHTS_PER_CLUSTER * wm->num_clusters * sizeof(int));
@@ -2046,9 +2048,9 @@ collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
 	// Construct an array of visible lights for each cluster.
 	// The array is in `cluster_lights`, with MAX_LIGHTS_PER_CLUSTER stride.
 
-	for (int nlight = 0; nlight < wm->num_light_polys; nlight++)
+	for (int nlight = 0; nlight < num_lights; nlight++)
 	{
-		light_poly_t* light = wm->light_polys + nlight;
+		light_poly_t* light = lights + nlight;
 
 		if(light->cluster < 0)
 			continue;
@@ -2062,7 +2064,7 @@ collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
 				int* num_cluster_lights = cluster_light_counts + other_cluster;
 				if (*num_cluster_lights < MAX_LIGHTS_PER_CLUSTER)
 				{
-					cluster_lights[other_cluster * MAX_LIGHTS_PER_CLUSTER + *num_cluster_lights] = nlight;
+					cluster_lights[other_cluster * MAX_LIGHTS_PER_CLUSTER + *num_cluster_lights] = index_base + nlight;
 					(*num_cluster_lights)++;
 				}
 			}
@@ -2071,36 +2073,154 @@ collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
 
 	// Count the total number of cluster <-> light relations to allocate memory
 
-	wm->num_cluster_lights = 0;
+	int num_relations = 0;
 	for (int cluster = 0; cluster < wm->num_clusters; cluster++)
 	{
-		wm->num_cluster_lights += cluster_light_counts[cluster];
+		num_relations += cluster_light_counts[cluster];
 	}
 
-	wm->cluster_lights = Z_Mallocz(wm->num_cluster_lights * sizeof(int));
-	wm->cluster_light_offsets = Z_Mallocz((wm->num_clusters + 1) * sizeof(int));
+	if (max_total > 0 && num_relations > max_total)
+	{
+		Com_WPrintf("%d cluster <-> light relations, more than the limit of %d; the rest are dropped.\n",
+		            num_relations, max_total);
+		num_relations = max_total;
+	}
 
-	// Com_Printf("Total interactions: %d, culled bbox: %d, culled proj: %d\n", wm->num_cluster_lights, lights_culled_bbox, lights_culled_proj);
+	int *list = Z_Mallocz(max(num_relations, 1) * sizeof(int));
+	int *offsets = Z_Mallocz((wm->num_clusters + 1) * sizeof(int));
 
-	// Compact the previously constructed array into wm->cluster_lights
+	// Com_Printf("Total interactions: %d, culled bbox: %d, culled proj: %d\n", num_relations, lights_culled_bbox, lights_culled_proj);
+
+	// Compact the previously constructed array into `list`
 
 	int list_offset = 0;
 	for (int cluster = 0; cluster < wm->num_clusters; cluster++)
 	{
 		assert(list_offset >= 0);
-		wm->cluster_light_offsets[cluster] = list_offset;
-		int count = cluster_light_counts[cluster];
+		offsets[cluster] = list_offset;
+		int count = min(cluster_light_counts[cluster], num_relations - list_offset);
 		memcpy(
-			wm->cluster_lights + list_offset, 
-			cluster_lights + MAX_LIGHTS_PER_CLUSTER * cluster, 
+			list + list_offset,
+			cluster_lights + MAX_LIGHTS_PER_CLUSTER * cluster,
 			count * sizeof(int));
 		list_offset += count;
 	}
-	wm->cluster_light_offsets[wm->num_clusters] = list_offset;
+	offsets[wm->num_clusters] = list_offset;
+
+	*out_num = list_offset;
+	*out_offsets = offsets;
+	*out_lights = list;
 
 	Z_Free(cluster_lights);
 	Z_Free(cluster_light_counts);
 #undef MAX_LIGHTS_PER_CLUSTER
+}
+
+static void
+collect_cluster_lights(bsp_mesh_t *wm, bsp_t *bsp)
+{
+	build_cluster_light_lists(wm, bsp, wm->light_polys, wm->num_light_polys, 0, 0,
+	                          &wm->num_cluster_lights, &wm->cluster_light_offsets, &wm->cluster_lights);
+}
+
+/*
+Lava as a FOG-ONLY light.
+
+Lava that the sky/lava cluster files do not promote to a poly-light (nearly all
+of it - only city1 and q2dm6 say !all_lava) lights its surroundings only through
+bounce rays hitting its emissive texture, and the fog in-scatters from the light
+lists alone, so it made no fog. Promoting it to a real light would change how it
+lights the room. Instead it goes into a separate list that only the fog walks:
+the path tracer, ReSTIR and the primitives' MATERIAL_FLAG_LIGHT are untouched.
+
+A face counts if its emitting side - the +normal side of the light triangle,
+which is the side light_affects_cluster and the fog's facing test keep - is open
+air. That drops the copy of the surface seen from inside the lava.
+*/
+static void
+collect_fog_lava_lights(bsp_mesh_t *wm, bsp_t *bsp)
+{
+	wm->num_fog_light_polys = 0;
+
+	if (!cvar_pt_fog_lava->integer)
+		return;
+
+	bool truncated = false;
+
+	for (int i = 0; i < bsp->numfaces && !truncated; i++)
+	{
+		mface_t *surf = bsp->faces + i;
+
+		if (belongs_to_model(bsp, surf) || !surf->texinfo)
+			continue;
+
+		pbr_material_t *material = face_effective_material(bsp, surf);
+		if (!material || !material->image_emissive || !MAT_IsKind(material->flags, MATERIAL_KIND_LAVA))
+			continue;
+
+		// already a real light
+		if (material->flags & MATERIAL_FLAG_LIGHT)
+			continue;
+
+		float positions[3 * /*max_vertices*/ 32];
+		int num_vertices = min(surf->numsurfedges, 32);
+
+		for (int k = 0; k < num_vertices; k++)
+		{
+			msurfedge_t *src_surfedge = surf->firstsurfedge + k;
+			VectorCopy(src_surfedge->edge->v[src_surfedge->vert]->point, positions + k * 3);
+		}
+
+		remove_collinear_edges(positions, NULL, NULL, &num_vertices);
+
+		for (int k = 0; k < num_vertices - 2; k++)
+		{
+			int i1 = (k + 2) % num_vertices;
+			int i2 = (k + 1) % num_vertices;
+
+			light_poly_t light;
+			VectorCopy(positions, light.positions + 0);
+			VectorCopy(positions + i1 * 3, light.positions + 3);
+			VectorCopy(positions + i2 * 3, light.positions + 6);
+
+			if (!get_triangle_off_center(light.positions, light.off_center, NULL, 1.f))
+				continue;
+
+			mleaf_t *leaf = BSP_PointLeaf(bsp->nodes, light.off_center);
+			if (leaf->cluster < 0 || (leaf->contents & (CONTENTS_SOLID | CONTENTS_LAVA)))
+				continue;
+
+			// a lava light from the map's cluster file already covers this face
+			if (is_sky_or_lava_cluster(wm, surf, leaf->cluster, surf->texinfo->material->flags))
+				continue;
+
+			if (wm->num_fog_light_polys >= MAX_FOG_LIGHT_POLYS)
+			{
+				truncated = true;
+				break;
+			}
+
+			VectorCopy(material->image_emissive->light_color, light.color);
+			light.material = material;
+			light.style = 0;
+			light.type = DYNLIGHT_POLYGON;
+			light.volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
+			light.cluster = leaf->cluster;
+
+			light_poly_t *dst = append_light_poly(&wm->num_fog_light_polys, &wm->allocated_fog_light_polys, &wm->fog_light_polys);
+			memcpy(dst, &light, sizeof(light_poly_t));
+		}
+	}
+
+	if (truncated)
+		Com_WPrintf("More than %d lava triangles; the rest make no fog. Raise MAX_FOG_LIGHT_POLYS.\n", MAX_FOG_LIGHT_POLYS);
+
+	if (wm->num_fog_light_polys == 0)
+		return;
+
+	build_cluster_light_lists(wm, bsp, wm->fog_light_polys, wm->num_fog_light_polys,
+	                          MAX_LIGHT_POLYS - wm->num_fog_light_polys, MAX_FOG_LIGHT_LIST_NODES,
+	                          &wm->num_fog_cluster_lights, &wm->fog_cluster_light_offsets, &wm->fog_cluster_lights);
 }
 
 static tinyobj_attrib_t custom_sky_attrib;
@@ -2349,6 +2469,7 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	}
 
 	collect_cluster_lights(wm, bsp);
+	collect_fog_lava_lights(wm, bsp);
 
 	compute_sky_visibility(wm, bsp);
 
@@ -2375,6 +2496,9 @@ bsp_mesh_destroy(bsp_mesh_t *wm)
 	Z_Free(wm->light_polys);
 	Z_Free(wm->cluster_lights);
 	Z_Free(wm->cluster_light_offsets);
+	Z_Free(wm->fog_light_polys);
+	Z_Free(wm->fog_cluster_lights);
+	Z_Free(wm->fog_cluster_light_offsets);
 	Z_Free(wm->cluster_aabbs);
 
 	memset(wm, 0, sizeof(*wm));

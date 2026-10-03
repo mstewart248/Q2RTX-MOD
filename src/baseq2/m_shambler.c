@@ -254,9 +254,7 @@ void shambler_pain(edict_t* self, edict_t* other, float kick, int damage)
 			return;
 	}
 	
-    // M_ShouldReactToPain does not exist here; skill 3 is the nightmare gate
-    // the rest of this tree uses for the same purpose.
-    if (skill->value >= 3)
+    if (!M_ShouldReactToPain(self, meansOfDeath))
         return; // no pain anims in nightmare
 
     if (level.framenum < self->pain_debounce_framenum)
@@ -354,7 +352,7 @@ void ShamblerCastLightning(edict_t* self)
     // bolt_speed 0 - the lightning is hitscan, so there is no travel time to
     // lead. PredictAim MUST guard that division (see g_ai.c); it did not, and
     // the resulting infinite aim point fired the bolt behind the shambler.
-    PredictAim(self->enemy, start, 0, false,
+    PredictAimEx(self, self->enemy, start, 0, false,
                (self->spawnflags & SPAWNFLAG_SHAMBLER_PRECISE) ? 0.0f : 0.1f, dir, NULL);
 
     VectorMA(start, 8192, dir, end);
@@ -390,7 +388,8 @@ void ShamblerCastLightning(edict_t* self)
     gi.WritePosition(tr.endpos);                    // destination point
     gi.multicast(start, MULTICAST_PVS);
 
-    fire_bullet(self, start, dir, 8 + (Q_rand() % 5), 15, 0, 0, MOD_TESLA);
+    // irandom(8, 12) - the upper bound is exclusive, so 8-11
+    fire_bullet(self, start, dir, 8 + (Q_rand() % 4), 15, 0, 0, MOD_TESLA);
 }
 
 mframe_t shambler_frames_magic[] = {
@@ -527,7 +526,7 @@ void sham_swingl9(edict_t* self)
 {
 	ai_charge(self, 8);
 
-	if ((random() < 0.5f) && self->enemy && realrange(self, self->enemy) < MELEE_DISTANCE)
+	if ((random() < 0.5f) && self->enemy && range_to(self, self->enemy) < (M_RereleaseGame() ? RR_MELEE_DISTANCE : MELEE_DISTANCE))
 		self->monsterinfo.currentmove = &shambler_attack_swingr;
 }
 
@@ -536,7 +535,7 @@ void sham_swingr9(edict_t* self)
 	ai_charge(self, 1);
 	ai_charge(self, 10);
 
-	if ((random() < 0.5f) && self->enemy && realrange(self, self->enemy) < MELEE_DISTANCE)
+	if ((random() < 0.5f) && self->enemy && range_to(self, self->enemy) < (M_RereleaseGame() ? RR_MELEE_DISTANCE : MELEE_DISTANCE))
 		self->monsterinfo.currentmove = &shambler_attack_swingl;
 }
 

@@ -41,6 +41,9 @@ static int  sound_cock;
 extern mmove_t soldier_move_trip;
 extern mmove_t soldier_move_attack5;
 
+static void soldierh_hyper_laser_sound_start(edict_t *self);
+static void soldierh_hyper_laser_sound_end(edict_t *self);
+
 /*
 =================
 Mapping this file onto src/rerelease/m_soldier.cpp
@@ -53,10 +56,16 @@ Mapping this file onto src/rerelease/m_soldier.cpp
                            <=1 blaster/ripper, 2-3 shotgun/hypergun,
                            >=4 machinegun/lasergun.
   their `s.skinnum >= 6`   ours is `self->style == 1` (the soldierh family).
-  their `range_to()`       ours is `realrange()` - both are box distance - and
-                           their RANGE_* are DISTANCES in units where this
-                           tree's are enum tags for range().  Hence the two
-                           SOLDIER_RANGE_* below, matching their g_local.h:2213.
+  their `range_to()`       ours is `realrange()`.  NOT the same measure: theirs
+                           is the gap between the two bounding boxes, ours is
+                           origin to origin (box gap only for scaled
+                           entities), so every SOLDIER_RANGE_* test below
+                           fires roughly 32 units further out than id's.  All
+                           of them go through realrange() so the switch can
+                           be made in one place.  Their RANGE_* are DISTANCES
+                           in units where this tree's are enum tags for
+                           range().  Hence the two SOLDIER_RANGE_* below, with
+                           id's values from their g_local.h:2213.
   their `radius_dmg`       the force-a-refire flag.  Free here: this tree's
                            soldierh_laserbeam takes its muzzle point as an
                            argument instead of parking it in radius_dmg, which
@@ -451,14 +460,23 @@ mmove_t soldier_move_run = {FRAME_run03, FRAME_run08, soldier_frames_run, NULL};
 
 void soldier_run(edict_t *self)
 {
+    // [rerelease] running ends any sidestep and winds down the hypergun loop
+    if (M_RereleaseGame()) {
+        monster_done_dodge(self);
+        soldierh_hyper_laser_sound_end(self);
+    }
+
     if (self->monsterinfo.aiflags & AI_STAND_GROUND) {
         self->monsterinfo.currentmove = &soldier_move_stand1;
         return;
     }
 
+    // [rerelease] a soldier already running keeps running instead of
+    // replaying the two start_run frames
     if (self->monsterinfo.currentmove == &soldier_move_walk1 ||
         self->monsterinfo.currentmove == &soldier_move_walk2 ||
-        self->monsterinfo.currentmove == &soldier_move_start_run) {
+        self->monsterinfo.currentmove == &soldier_move_start_run ||
+        (M_RereleaseGame() && self->monsterinfo.currentmove == &soldier_move_run)) {
         self->monsterinfo.currentmove = &soldier_move_run;
     } else {
         self->monsterinfo.currentmove = &soldier_move_start_run;
@@ -538,11 +556,20 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     float   r;
     int     n;
-
-    // pain replaces currentmove, so the burst never reaches its sound_end frame
-    self->s.sound = 0;
+    bool    rerelease = M_RereleaseGame();
 
     M_SetDamageSkin(self);
+
+    if (rerelease) {
+        monster_done_dodge(self);
+        soldier_stop_charge(self);
+
+        // if we're blind firing, this needs to be turned off here
+        self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+    } else {
+        // pain replaces currentmove, so the burst never reaches its sound_end frame
+        self->s.sound = 0;
+    }
 
     if (level.framenum < self->pain_debounce_framenum) {
         if ((self->velocity[2] > 100) && ((self->monsterinfo.currentmove == &soldier_move_pain1) || (self->monsterinfo.currentmove == &soldier_move_pain2) || (self->monsterinfo.currentmove == &soldier_move_pain3))) {
@@ -554,6 +581,8 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
             if (self->monsterinfo.aiflags & AI_DUCKED)
                 monster_duck_up(self);
             self->monsterinfo.currentmove = &soldier_move_pain4;
+            if (rerelease)
+                soldierh_hyper_laser_sound_end(self);
         }
         return;
     }
@@ -569,14 +598,12 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
         gi.sound(self, CHAN_VOICE, sound_pain_ss, 1, ATTN_NORM, 0);
 
     if (self->velocity[2] > 100) {
-            // PMM - clear the duck flag before abandoning the current move,
-            // or a soldier hurt mid-duck/mid-trip stays permanently shrunk.
-            // monster_duck_up() is unguarded, so this must only run where the
-            // move really is being replaced - never on the nightmare path
-            // below, which leaves the move alone and still owes its own duck_up.
-            if (self->monsterinfo.aiflags & AI_DUCKED)
-                monster_duck_up(self);
+        // PMM - clear duck flag (see above)
+        if (self->monsterinfo.aiflags & AI_DUCKED)
+            monster_duck_up(self);
         self->monsterinfo.currentmove = &soldier_move_pain4;
+        if (rerelease)
+            soldierh_hyper_laser_sound_end(self);
         return;
     }
 
@@ -586,7 +613,7 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
     // fall over far more than the rerelease does; M_CheckDodge now scans for
     // incoming projectiles every think, so the real dive gets its chances.
 
-    if (skill->value == 3)
+    if (rerelease ? !M_ShouldReactToPain(self, meansOfDeath) : skill->value == 3)
         return;     // no pain anims in nightmare
 
     r = random();
@@ -595,8 +622,7 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
     // soldier hurt mid-duck stays permanently shrunk.  monster_duck_up() is
     // unguarded, so this only runs where the move really is being replaced -
     // never on the nightmare path above, which leaves the move alone and still
-    // owes its own duck_up.  The trip above does not need it either: it calls
-    // duck_down (guarded) and duck_up itself, so the pair still balances.
+    // owes its own duck_up.
     if (self->monsterinfo.aiflags & AI_DUCKED)
         monster_duck_up(self);
 
@@ -606,6 +632,9 @@ void soldier_pain(edict_t *self, edict_t *other, float kick, int damage)
         self->monsterinfo.currentmove = &soldier_move_pain2;
     else
         self->monsterinfo.currentmove = &soldier_move_pain3;
+
+    if (rerelease)
+        soldierh_hyper_laser_sound_end(self);
 }
 
 
@@ -629,55 +658,39 @@ The odd skin of each pair is that variant's pain skin, which soldier_pain sets
 with |= 1, so every test here is a range and not an equality.
 =================
 */
-// `start` is the muzzle projected from the model's own facing (s.angles), as the
-// rerelease's soldierh_laser_update does.  The Xatrix original rebuilt it from
-// the direction to the enemy with forward/right swapped and offsets tuned for
-// its own flash table; fed this tree's machinegun offsets, that put the beam
-// origin off to the side of the gun, further off the more the body was turned
-// away from the target.
-static void soldierh_laserbeam(edict_t *self, const vec3_t start)
+/* The rerelease's soldierh_laser_update: the beam starts at the muzzle,
+   projected from the model's own facing plus 6 up, and leads the enemy with a
+   10-20% random lag so it can miss a moving target. Called on every fire frame
+   and, between them, by the beam's think. The flash index rides in ->count. */
+void soldierh_laser_update(edict_t *laser)
 {
-    edict_t *ent;
+    edict_t *self = laser->owner;
+    vec3_t  forward, right, up, start;
+    const float *ofs = monster_flash_offset[laser->count];
 
-    if (Q_rand() % 5 == 0)
-        gi.sound(self, CHAN_AUTO, gi.soundindex("misc/lasfly.wav"), 1, ATTN_STATIC, 0);
+    AngleVectors(self->s.angles, forward, right, up);
+    VectorCopy(self->s.origin, start);
+    VectorMA(start, ofs[0], forward, start);
+    VectorMA(start, ofs[1], right, start);
+    VectorMA(start, ofs[2] + 6, up, start);
 
-    ent = G_Spawn();
-    VectorCopy(start, ent->s.origin);
-    VectorCopy(self->s.angles, ent->s.angles);
-    ent->enemy = self->enemy;
-    ent->owner = self;
-    ent->dmg = 1;
-    ent->classname = "soldier_laserbeam";
+    if (!self->deadflag && self->enemy && self->enemy->inuse)
+        PredictAimEx(self, self->enemy, start, 0, false, 0.1f + random() * 0.1f, forward, NULL);
 
-    monster_dabeam(ent);
+    VectorCopy(start, laser->s.origin);
+    VectorCopy(forward, laser->movedir);
+    gi.linkentity(laser);
 }
 
-static void soldierh_fire_weapon(edict_t *self, int flash_index)
+static void soldierh_laserbeam(edict_t *self, int flash_index)
 {
-    vec3_t  start;
-    vec3_t  forward, right, up;
-    vec3_t  aim, dir, end;
-    float   r, u;
+    monster_fire_dabeam(self, 1, false, DABEAM_SOLDIER, flash_index);
+}
 
-    AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[flash_index], forward, right, start);
-
-    VectorCopy(self->enemy->s.origin, end);
-    end[2] += self->enemy->viewheight;
-    VectorSubtract(end, start, aim);
-    vectoangles(aim, dir);
-    AngleVectors(dir, forward, right, up);
-
-    // these three aim far tighter than the stock soldier's 1000/500 scatter
-    r = crandom() * 100;
-    u = crandom() * 50;
-    VectorMA(start, 8192, forward, end);
-    VectorMA(end, r, right, end);
-    VectorMA(end, u, up, end);
-    VectorSubtract(end, start, aim);
-    VectorNormalize(aim);
-
+// `start` and `aim` come from soldier_fire, which also handles the dying shot
+// (straight ahead, no enemy needed) and the soldierh family's tighter scatter.
+static void soldierh_fire_weapon(edict_t *self, vec3_t start, vec3_t aim, int flash_index)
+{
     if (self->s.skinnum <= 1) {
         monster_fire_ionripper(self, start, aim, 5, 600, MZ_IONRIPPER, EF_IONRIPPER);
     } else if (self->s.skinnum <= 3) {
@@ -691,7 +704,7 @@ static void soldierh_fire_weapon(edict_t *self, int flash_index)
                 self->monsterinfo.pause_framenum = self->monsterinfo.fire_framenum;
         }
 
-        soldierh_laserbeam(self, start);
+        soldierh_laserbeam(self, flash_index);
 
         if (level.framenum >= self->monsterinfo.fire_framenum)
             self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
@@ -746,6 +759,8 @@ void soldier_fire(edict_t *self, int flash_number, bool angle_limited)
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_index], forward, right, start);
 
     if (flash_number == 5 || flash_number == 6) {
+        // he's dead: the dying shot goes wherever the body points, for the
+        // soldierh family too - it never looks at (or needs) an enemy.
         // [rerelease] a soldier laid out as a corpse (SPAWNFLAG_MONSTER_DEAD,
         // mgu1m2/mgu1m4) must not fire its dying shot while M_SpawnDead
         // fast-forwards the death animation
@@ -762,7 +777,11 @@ void soldier_fire(edict_t *self, int flash_number, bool angle_limited)
             return;
         }
 
-        VectorCopy(self->enemy->s.origin, end);
+        // [rerelease] PMM - a blind volley shoots at the remembered position
+        if (M_RereleaseGame() && self->monsterinfo.attack_state == AS_BLIND)
+            VectorCopy(self->monsterinfo.blind_fire_target, end);
+        else
+            VectorCopy(self->enemy->s.origin, end);
         end[2] += self->enemy->viewheight;
         VectorSubtract(end, start, aim);
 
@@ -789,8 +808,14 @@ void soldier_fire(edict_t *self, int flash_number, bool angle_limited)
         vectoangles(aim, dir);
         AngleVectors(dir, forward, right, up);
 
-        r = crandom() * 1000;
-        u = crandom() * 500;
+        // the soldierh family aims far tighter than the stock soldier
+        if (self->style == 1) {
+            r = crandom() * 100;
+            u = crandom() * 50;
+        } else {
+            r = crandom() * 1000;
+            u = crandom() * 500;
+        }
         VectorMA(start, 8192, forward, end);
         VectorMA(end, r, right, end);
         VectorMA(end, u, up, end);
@@ -800,19 +825,25 @@ void soldier_fire(edict_t *self, int flash_number, bool angle_limited)
     }
 
     if (self->style == 1) {
-        soldierh_fire_weapon(self, flash_index);
+        soldierh_fire_weapon(self, start, aim, flash_index);
         return;
     }
 
     if (self->s.skinnum <= 1) {
-		if (self->monsterFireHyperBlaster) {
+		// the hyperblaster look is a Q2RTX addition, classic game only
+		if (self->monsterFireHyperBlaster && !M_RereleaseGame()) {
 			monster_fire_hyper_blaster(self, start, aim, 5, 600, flash_index, EF_HYPERBLASTER);
 		}
 		else {
 			monster_fire_blaster(self, start, aim, 5, 600, flash_index, EF_BLASTER);
 		}
     } else if (self->s.skinnum <= 3) {
-        monster_fire_shotgun(self, start, aim, 2, 1, DEFAULT_SHOTGUN_HSPREAD, DEFAULT_SHOTGUN_VSPREAD, DEFAULT_SHOTGUN_COUNT, flash_index);
+        // [rerelease] a wider, thinner pattern: 1500/750 and 9 pellets
+        // against the classic 1000/500 and 12
+        if (M_RereleaseGame())
+            monster_fire_shotgun(self, start, aim, 2, 1, 1500, 750, 9, flash_index);
+        else
+            monster_fire_shotgun(self, start, aim, 2, 1, DEFAULT_SHOTGUN_HSPREAD, DEFAULT_SHOTGUN_VSPREAD, DEFAULT_SHOTGUN_COUNT, flash_index);
         // [Paril-KEX] this soldier must cock before it can fire again.  Every
         // reader of self->dmg is rerelease-only, but keep the write gated so a
         // baseq2 soldier's dmg field stays exactly as the 1997 game left it.
@@ -1231,8 +1262,8 @@ Three changes to a move id shipped but barely used:
   the shotgun check at slot 1 jumps to the cocking half, exactly as attack1 and
   attack2 do.
 
-Dropped: their MMOVE_T's 5th field (0.65f) is `sidestep_scale`, and this tree's
-mmove_t has no such field - it only scales sidestep distance, not run speed.
+The move carries id's sidestep_scale (0.65f); only rerelease ai_charge reads
+it, so on these ai_run frames it is inert, as it is in id's code.
 =================
 */
 static void ai_soldier_charge(edict_t *self, float dist)
@@ -1361,7 +1392,7 @@ mframe_t soldier_frames_attack6 [] = {
     { ai_soldier_charge, 12, monster_footstep },
     { ai_soldier_charge, 17, soldier_attack6_refire_tail }
 };
-mmove_t soldier_move_attack6 = {FRAME_runs01, FRAME_runs14, soldier_frames_attack6, soldier_run};
+mmove_t soldier_move_attack6 = {FRAME_runs01, FRAME_runs14, soldier_frames_attack6, soldier_run, 0.65f};
 
 
 /*
@@ -1566,7 +1597,7 @@ void soldier_attack(edict_t *self)
 
     // PMM - run TOWARDS the player and shoot rather than stopping to shoot.
     // Not limited by M_CheckClearShot: at this range it does not matter.
-    if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) && random() < 0.25f &&
+    if (!(self->monsterinfo.aiflags & (AI_BLOCKED | AI_STAND_GROUND)) && random() < 0.25f &&
         self->s.skinnum <= 3 &&
         realrange(self, self->enemy) >= (SOLDIER_RANGE_NEAR * 0.5f)) {
         self->monsterinfo.currentmove = &soldier_move_attack6;
@@ -2025,6 +2056,20 @@ void soldier_dead(edict_t *self)
     gi.linkentity(self);
 }
 
+// [rerelease] the hypergun's dying burst gets its spin-up loop and wind-down,
+// as id's death1 table does.  Gated: the original game plays this table too.
+static void soldier_death1_sound_start(edict_t *self)
+{
+    if (M_RereleaseGame())
+        soldierh_hyper_laser_sound_start(self);
+}
+
+static void soldier_death1_sound_end(edict_t *self)
+{
+    if (M_RereleaseGame())
+        soldierh_hyper_laser_sound_end(self);
+}
+
 mframe_t soldier_frames_death1 [] = {
     { ai_move, 0,   NULL },
     { ai_move, -10, NULL },
@@ -2048,12 +2093,12 @@ mframe_t soldier_frames_death1 [] = {
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
 
-    { ai_move, 0,   NULL },
+    { ai_move, 0,   soldier_death1_sound_start },
     { ai_move, 0,   soldier_fire6 },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   soldier_fire7 },
-    { ai_move, 0,   NULL },
+    { ai_move, 0,   soldier_death1_sound_end },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
@@ -2163,65 +2208,72 @@ mframe_t soldier_frames_death3 [] = {
 };
 mmove_t soldier_move_death3 = {FRAME_death301, FRAME_death345, soldier_frames_death3, soldier_dead};
 
+// [rerelease] id gave death4 its own steps (the classic table is all zeros);
+// the original game keeps standing still through it
+static void ai_soldier_death_move(edict_t *self, float dist)
+{
+    ai_move(self, M_RereleaseGame() ? dist : 0);
+}
+
 mframe_t soldier_frames_death4 [] = {
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 1.5f, NULL },
+    { ai_soldier_death_move, 2.5f, NULL },
+    { ai_soldier_death_move, -1.5f, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, -0.5f, NULL },
+    { ai_soldier_death_move, 0, NULL },
 
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0, soldier_death_shrink },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 4, NULL },
+    { ai_soldier_death_move, 4, NULL },
+    { ai_soldier_death_move, 8, soldier_death_shrink },
+    { ai_soldier_death_move, 8, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
 
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
 
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
 
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 0, NULL },
+    { ai_soldier_death_move, 5.5f, NULL },
 
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL },
-    { ai_move, 0,   NULL }
+    { ai_soldier_death_move, 2.5f, NULL },
+    { ai_soldier_death_move, -2, NULL },
+    { ai_soldier_death_move, -2, NULL }
 };
 mmove_t soldier_move_death4 = {FRAME_death401, FRAME_death453, soldier_frames_death4, soldier_dead};
 
@@ -2288,7 +2340,10 @@ void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
     int     n;
 
     // a hyper-soldier killed mid-burst would otherwise loop its spin-up sound
-    // forever - s.sound is sticky until something clears it
+    // forever - s.sound is sticky until something clears it.  The rerelease
+    // plays the wind-down as it does so.
+    if (M_RereleaseGame())
+        soldierh_hyper_laser_sound_end(self);
     self->s.sound = 0;
 
 // check for gib
@@ -2298,7 +2353,11 @@ void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
         if (!LUDICROUS_GIBS()) {
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
             if (M_RereleaseGame()) {
-                // [rerelease] id's own gib parts - see soldier_rerelease_gibs
+                // [rerelease] id's own gib parts - see soldier_rerelease_gibs.
+                // The gib models carry half the body's skins.  id's soldierh
+                // skins are 6-11; this tree's are 0-5 with style 1, so put the
+                // 6 back before halving.
+                self->s.skinnum = (self->s.skinnum + (self->style == 1 ? 6 : 0)) / 2;
                 ThrowGibs(self, damage, soldier_rerelease_gibs, soldier_num_rerelease_gibs);
                 self->deadflag = DEAD_DEAD;
                 return;
@@ -2434,13 +2493,39 @@ void soldier_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
     else // (self->s.skinnum == 5)
         gi.sound(self, CHAN_VOICE, sound_death_ss, 1, ATTN_NORM, 0);
 
-    if (fabsf((self->s.origin[2] + self->viewheight) - point[2]) <= 4) {
-        // head shot
-        self->monsterinfo.currentmove = &soldier_move_death3;
-        return;
+    if (!M_RereleaseGame()) {
+        if (fabsf((self->s.origin[2] + self->viewheight) - point[2]) <= 4) {
+            // head shot
+            self->monsterinfo.currentmove = &soldier_move_death3;
+            return;
+        }
+
+        n = Q_rand() % 5;
+    } else {
+        // [rerelease] not a head shot while being thrown upward
+        if (fabsf((self->s.origin[2] + self->viewheight) - point[2]) <= 4 &&
+            self->velocity[2] < 65.f) {
+            // head shot
+            self->monsterinfo.currentmove = &soldier_move_death3;
+            return;
+        }
+
+        // if we die while on the ground, do a quicker death4
+        if (self->monsterinfo.currentmove == &soldier_move_trip ||
+            self->monsterinfo.currentmove == &soldier_move_attack5) {
+            self->monsterinfo.currentmove = &soldier_move_death4;
+            self->monsterinfo.nextframe = FRAME_death413;
+            soldier_death_shrink(self);
+            return;
+        }
+
+        // only do the spin-death if we have enough velocity to justify it
+        if (self->velocity[2] > 65.f || VectorLength(self->velocity) > 150.f)
+            n = Q_rand() % 5;
+        else
+            n = Q_rand() % 4;
     }
 
-    n = Q_rand() % 5;
     if (n == 0)
         self->monsterinfo.currentmove = &soldier_move_death1;
     else if (n == 1)
@@ -2500,10 +2585,9 @@ void SP_monster_soldier_x(edict_t *self)
         self->monsterinfo.unduck = monster_duck_up;
         self->monsterinfo.sidestep = soldier_sidestep;
         self->monsterinfo.blocked = soldier_blocked;
-        // PMM - shoot at where you last saw them through a wall.  attack1 is
-        // the blind volley; soldier_blind_check on its first frame does the
-        // aiming.  Named `blindfire` after the rerelease's own opt-in field.
-        self->monsterinfo.blindfire = true;
+        // PMM - shooting at where you last saw them through a wall
+        // (monsterinfo.blindfire) is opted into per variant below: only the
+        // light soldier, the ripper and the hypergun, as id's spawns do.
     }
     self->monsterinfo.attack = soldier_attack;
     self->monsterinfo.melee = NULL;
@@ -2548,13 +2632,18 @@ void SP_monster_soldier_light(edict_t *self)
 
     SP_monster_soldier_x(self);
 
-	float val = crandom();
-
-	if (val < 0) {
-		self->monsterFireHyperBlaster = qtrue;
-	}
-	else {
+	// Q2RTX's hyperblaster look for half the light soldiers; classic game only
+	if (M_RereleaseGame()) {
 		self->monsterFireHyperBlaster = qfalse;
+	} else {
+		float val = crandom();
+
+		if (val < 0) {
+			self->monsterFireHyperBlaster = qtrue;
+		}
+		else {
+			self->monsterFireHyperBlaster = qfalse;
+		}
 	}
 
     sound_pain_light = gi.soundindex("soldier/solpain2.wav");
@@ -2566,6 +2655,11 @@ void SP_monster_soldier_light(edict_t *self)
     self->s.skinnum = 0;
     soldier_set_health(self, 20);
     self->gib_health = -30;
+
+    // [rerelease] PMM - blindfire (attack1 is the blind volley;
+    // soldier_blind_check on its first frame does the aiming)
+    if (M_RereleaseGame())
+        self->monsterinfo.blindfire = true;
 }
 
 /*QUAKED monster_soldier (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
@@ -2649,6 +2743,10 @@ void SP_monster_soldier_ripper(edict_t *self)
     self->s.skinnum = 0;
     soldier_set_health(self, 50);
     self->gib_health = -30;
+
+    // [rerelease] PMM - blindfire
+    if (M_RereleaseGame())
+        self->monsterinfo.blindfire = true;
 }
 
 /*QUAKED monster_soldier_hypergun (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight
@@ -2671,6 +2769,10 @@ void SP_monster_soldier_hypergun(edict_t *self)
     self->s.skinnum = 2;
     soldier_set_health(self, 60);
     self->gib_health = -30;
+
+    // [rerelease] PMM - blindfire
+    if (M_RereleaseGame())
+        self->monsterinfo.blindfire = true;
 }
 
 /*QUAKED monster_soldier_lasergun (1 .5 0) (-16 -16 -24) (16 16 32) Ambush Trigger_Spawn Sight

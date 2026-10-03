@@ -76,7 +76,7 @@ CL_ClipMoveToEntities
 
 ====================
 */
-static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr, bool bmodels_only)
+static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr, bool bmodels_only, int extra_contents)
 {
     int         i;
     trace_t     trace;
@@ -107,7 +107,7 @@ static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const 
             return;
 
         CM_TransformedBoxTrace(&trace, start, end,
-                               mins, maxs, headnode,  MASK_PLAYERSOLID,
+                               mins, maxs, headnode,  MASK_PLAYERSOLID | extra_contents,
                                ent->current.origin, ent->current.angles);
 
         CM_ClipEntity(tr, &trace, (struct edict_s *)ent);
@@ -116,7 +116,7 @@ static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const 
 
 static void CL_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr)
 {
-    CL_ClipMoveToEntities_(start, mins, maxs, end, tr, false);
+    CL_ClipMoveToEntities_(start, mins, maxs, end, tr, false, 0);
 }
 
 
@@ -159,7 +159,12 @@ trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, boo
     if (t.fraction < 1.0f)
         t.ent = (struct edict_s *)1;
 
-    CL_ClipMoveToEntities_(start, vec3_origin, vec3_origin, end, &t, !clip_bbox_entities);
+    // The entities are clipped as player-solid, as prediction does - but a
+    // caller asking for WATER has to get it from them too. A func_water is a
+    // brush entity, not world contents (mgu6m1's pools are nothing else), and
+    // without this blood fell straight through one onto the floor beneath.
+    CL_ClipMoveToEntities_(start, vec3_origin, vec3_origin, end, &t, !clip_bbox_entities,
+                           contentmask & MASK_WATER);
 
     return t;
 }
@@ -204,7 +209,7 @@ static trace_t q_gameabi CL_Trace(const vec3_t start, const vec3_t mins, const v
     return t;
 }
 
-static int CL_PointContents(const vec3_t point)
+int CL_PointContents(const vec3_t point)
 {
     int         i;
     centity_t   *ent;

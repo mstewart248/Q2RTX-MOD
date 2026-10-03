@@ -183,8 +183,9 @@ vec3  fog_debug_sky_term = vec3(0);
 vec3  fog_debug_light_term = vec3(0);   /* the LIGHT half, for debug view 14 */
 /* WHICH RETURN PATH getSkyVisibility TOOK, for debug view 17.
    0 = never called at all, 1 = the fog_sky_trace==0 early return (which hands
-   back fog_sky_fade, and that is 0.0 on xswamp), 2 = ray escaped, 3 = ray
-   blocked. View 5 shows the VALUE and cannot tell "returned 0" from "never ran
+   back fog_sky_fade, and that is 0.0 on xswamp), 2 = ray reached the sky, 3 = ray
+   blocked (or, with FOG_SKY_REQUIRE_HIT, no sky face above). View 5 shows the
+   VALUE and cannot tell "returned 0" from "never ran
    and the per-cell reset is still showing" - which matters, because an
    independent query (view 16) answers IDENTICALLY on collapsed frames. */
 float fog_debug_sky_path = 0.0;
@@ -269,12 +270,57 @@ float getSkyVisibility(vec3 p)
 	   nearest. 0 keeps the original any-hit binary test, which is cheaper. */
 	float soften = global_ubo.pt_fog_sky_soften;
 
+	/* FOG_SKY_REQUIRE_HIT  (2026-10-02)  -  "SEES SKY" MEANS THE RAY REACHES A SKY FACE.
+
+	   It used to mean "the ray escapes the geometry", and a point in the void
+	   outside the map, or inside a wall brush, escapes too: the BSP has no faces
+	   out there, so nothing is in the way. A froxel cell is tens of units deep,
+	   so cells along every wall and ceiling of an enclosed room have centres out
+	   there; they read full sky, and the trilinear read plus the 3x3x3 filter
+	   spread it into the room as blue blobs. Matt saw it with physical sky fog on
+	   accurate, which is the mode that adds this term under the physical sky.
+	   FROXEL_SKY_PROBE_VOID only catches the cells the depth buffer proves are
+	   behind a surface along the VIEW ray, not ones off to the side of a wall.
+
+	   The sky faces are in this TLAS (AS_FLAG_SKY / AS_FLAG_CUSTOM_SKY), and from
+	   the void a sky face can only be reached THROUGH the map's hull - the sky
+	   face's front side is the playable air - so an opaque face is hit first.
+	   So trace the sky alone for its distance, then the solid geometry only up to
+	   it. No sky above -> 0. The opaque ray is also capped at the sky now, so
+	   another part of the map stacked above the sky no longer shadows the open
+	   ground under it. One extra ray, only in this term's callers, against the
+	   few sky triangles. 0 = the old "escapes" test, for A/B. */
+#ifndef FOG_SKY_REQUIRE_HIT
+#define FOG_SKY_REQUIRE_HIT 1
+#endif
+	float sky_tmax = 65536.0;
+#if FOG_SKY_REQUIRE_HIT
+	{
+		rayQueryEXT rs;
+		rayQueryInitializeEXT(rs, FOG_TLAS, gl_RayFlagsOpaqueEXT,
+			AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY,
+			p, 1.0, vec3(0, 0, 1), 65536.0);
+
+		while (rayQueryProceedEXT(rs)) {}
+
+		if (rayQueryGetIntersectionTypeEXT(rs, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+		{
+			fog_debug_sky_traced = 1.0;
+			fog_debug_sky_path = 3.0; // blocked: no sky face above
+			fog_debug_sky_vis = 0.0;
+			return fog_debug_sky_vis;
+		}
+
+		sky_tmax = rayQueryGetIntersectionTEXT(rs, true);
+	}
+#endif
+
 	rayQueryEXT rq;
 	rayQueryInitializeEXT(rq, FOG_TLAS,
 		(soften > 0.0) ? gl_RayFlagsOpaqueEXT
 		               : (gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT),
 		AS_FLAG_OPAQUE,
-		p, 1.0, vec3(0, 0, 1), 65536.0);
+		p, 1.0, vec3(0, 0, 1), sky_tmax);
 
 	while (rayQueryProceedEXT(rq)) {}
 
@@ -303,6 +349,23 @@ float getSkyVisibility(vec3 p)
 // 1 / (4 pi). Anywhere the fog scatters light that has no preferred direction -
 // the local-light term below, and the ambient-in-shadow term in the march.
 #define FOG_ISOTROPIC_PHASE 0.0796
+
+// The fog's view of a cluster's lights: the regular list, then the fog-only
+// lights (lava, see collect_fog_lava_lights) the path tracer never sees, walked
+// as one list.
+uint fog_light_count(uint cluster_idx)
+{
+	return light_buffer.light_list_offsets[cluster_idx + 1] - light_buffer.light_list_offsets[cluster_idx]
+	     + light_buffer.fog_light_list_offsets[cluster_idx + 1] - light_buffer.fog_light_list_offsets[cluster_idx];
+}
+
+uint fog_light_at(uint cluster_idx, uint i)
+{
+	uint start = light_buffer.light_list_offsets[cluster_idx];
+	uint n     = light_buffer.light_list_offsets[cluster_idx + 1] - start;
+	return (i < n) ? light_buffer.light_list_lights[start + i]
+	               : light_buffer.fog_light_list_lights[light_buffer.fog_light_list_offsets[cluster_idx] + (i - n)];
+}
 
 // In-scatter at a point from the map's own lights.
 //
@@ -400,7 +463,7 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, float rand01
 			                    global_ubo.fog_sky_b);
 
 		sky_term = sky_radiance
-		         * FOG_SKY_SOLID_ANGLE * global_ubo.pt_fog_sky_scale
+		         * FOG_SKY_SOLID_ANGLE * global_ubo.pt_fog_scale_skybox
 		         * sky_vis;
 	}
 
@@ -425,10 +488,7 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, float rand01
 	if (cluster_idx == ~0u)
 		return sky_term;
 
-	uint list_start = light_buffer.light_list_offsets[cluster_idx];
-	uint list_end   = light_buffer.light_list_offsets[cluster_idx + 1];
-
-	uint count = list_end - list_start;
+	uint count = fog_light_count(cluster_idx);
 	if (count == 0)
 		return sky_term;
 
@@ -444,8 +504,7 @@ vec3 getClusterLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, float rand01
 
 	for (uint i = 0; i < taken; i++)
 	{
-		uint n_idx = list_start + ((offset + i * stride) % count);
-		uint light_idx = light_buffer.light_list_lights[n_idx];
+		uint light_idx = fog_light_at(cluster_idx, (offset + i * stride) % count);
 		if (light_idx == ~0u)
 			continue;
 
@@ -1083,8 +1142,12 @@ vec3 fog_sky_inscatter(vec3 sky_p)
 			                    global_ubo.fog_sky_g,
 			                    global_ubo.fog_sky_b);
 
+		// The SKY LIGHT knob, for either sky - the map's skybox, or the physical
+		// sky in accurate mode. Kept apart from pt_fog_scale_sun on purpose: the
+		// sun's shafts and the sky's ambient glow need tuning separately, and
+		// tying them meant thinning the haze also dimmed the shafts.
 		sky_term = sky_radiance
-		         * FOG_SKY_SOLID_ANGLE * global_ubo.pt_fog_sky_scale
+		         * FOG_SKY_SOLID_ANGLE * global_ubo.pt_fog_scale_skybox
 		         * sky_vis * FOG_ISOTROPIC_PHASE;
 	}
 
@@ -1196,10 +1259,7 @@ FogReservoir fog_ris_initial(uint cluster_idx, vec3 p, vec3 view_dir, float g, u
 	if (cluster_idx == ~0u)
 		return r;
 
-	uint list_start = light_buffer.light_list_offsets[cluster_idx];
-	uint list_end   = light_buffer.light_list_offsets[cluster_idx + 1];
-
-	uint count = list_end - list_start;
+	uint count = fog_light_count(cluster_idx);
 	if (count == 0)
 		return r;
 
@@ -1218,8 +1278,7 @@ FogReservoir fog_ris_initial(uint cluster_idx, vec3 p, vec3 view_dir, float g, u
 
 	for (uint i = 0; i < M; i++)
 	{
-		uint n_idx = list_start + (uint(fog_rand() * float(count)) % count);
-		uint light_idx = light_buffer.light_list_lights[n_idx];
+		uint light_idx = fog_light_at(cluster_idx, uint(fog_rand() * float(count)) % count);
 		if (light_idx == ~0u)
 			continue;
 
@@ -1418,6 +1477,13 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 vec3 getFogColor(vec3 p)
 {
 	if (global_ubo.fog_enable == 0)
+		return vec3(1.0);
+
+	// The map's fog colour was picked to match the map's OWN skybox - id's orange
+	// 0.91 0.61 0.27 is the unit1_ sky. Under the physical sky that skybox is
+	// gone, and tinting the earth sun's white light with it is what turned the
+	// shafts yellow. So the colour only applies while the map's skybox is drawn.
+	if (global_ubo.environment_type == ENVIRONMENT_DYNAMIC)
 		return vec3(1.0);
 
 	if (global_ubo.fog_hf_density <= 0)

@@ -44,8 +44,29 @@ static int  sound_step_left;
 static int  sound_step_right;
 static int  sound_death_hit;
 
+static int  sound_attack1_end;  // [rerelease] the machinegun spinning down
+static int  sound_bfg_fire;     // [rerelease] the BFG shot itself
+
 void BossExplode(edict_t *self);
+void BossExplodeTick(edict_t *self);
+void BossGib(edict_t *self);
 void MakronToss(edict_t *self);
+
+/*
+=================
+jorg_attack1_end_sound
+
+The machinegun loop (s.sound) stops; [rerelease] with its spin-down sound.
+=================
+*/
+static void jorg_attack1_end_sound(edict_t *self)
+{
+    if (self->s.sound) {
+        if (M_RereleaseGame())
+            gi.sound(self, CHAN_WEAPON, sound_attack1_end, 1, ATTN_NORM, 0);
+        self->s.sound = 0;
+    }
+}
 
 
 void jorg_search(edict_t *self)
@@ -275,57 +296,111 @@ mframe_t jorg_frames_pain1 [] = {
 };
 mmove_t jorg_move_pain1 = {FRAME_pain101, FRAME_pain103, jorg_frames_pain1, jorg_run};
 
+/*
+=================
+jorg death
+
+[rerelease] id walks Jorg through his death - he staggers back, steps, lurches
+forward - with footsteps, and the explosions run from the first frame
+(BossExplodeTick, see m_supertank.c). At the end jorg_dead blows him apart and
+throws the Makron out. The classic game keeps the original stand-still death
+that ends in BossExplode, with MakronToss a frame before.
+=================
+*/
+static void jorg_ai_death(edict_t *self, float dist)
+{
+    ai_move(self, M_RereleaseGame() ? dist : 0);
+}
+
+static void jorg_death_step_left(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    jorg_step_left(self);
+    BossExplodeTick(self);
+}
+
+static void jorg_death_step_right(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    jorg_step_right(self);
+    BossExplodeTick(self);
+}
+
+static void jorg_death_toss(edict_t *self)
+{
+    if (!M_RereleaseGame()) {
+        MakronToss(self);
+        return;
+    }
+
+    BossExplodeTick(self);
+}
+
+static void jorg_death_last(edict_t *self)
+{
+    if (!M_RereleaseGame()) {
+        BossExplode(self);
+        return;
+    }
+
+    BossExplodeTick(self);
+}
+
 mframe_t jorg_frames_death1 [] = {
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },       // 10
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },       // 20
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },       // 30
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },       // 40
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  jorg_death_hit },
-    { ai_move,    0,  MakronToss },
-    { ai_move,    0,  BossExplode }     // 50
+    { jorg_ai_death, 0, NULL },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, -2, BossExplodeTick },
+    { jorg_ai_death, -5, BossExplodeTick },
+    { jorg_ai_death, -8, BossExplodeTick },
+    { jorg_ai_death, -15, jorg_death_step_left },
+    { jorg_ai_death, 0, BossExplodeTick },          // 10
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, -11, BossExplodeTick },
+    { jorg_ai_death, -25, BossExplodeTick },
+    { jorg_ai_death, -10, jorg_death_step_right },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },          // 20
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, -21, BossExplodeTick },
+    { jorg_ai_death, -10, BossExplodeTick },
+    { jorg_ai_death, -16, jorg_death_step_left },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },          // 30
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 22, BossExplodeTick },
+    { jorg_ai_death, 33, jorg_death_step_left },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 28, BossExplodeTick },
+    { jorg_ai_death, 28, jorg_death_step_right },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },          // 40
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, 0, BossExplodeTick },
+    { jorg_ai_death, -19, BossExplodeTick },
+    { jorg_ai_death, 0, jorg_death_hit },
+    { jorg_ai_death, 0, jorg_death_toss },
+    { jorg_ai_death, 0, jorg_death_last }           // 50
 };
 mmove_t jorg_move_death = {FRAME_death01, FRAME_death50, jorg_frames_death1, jorg_dead};
 
@@ -378,6 +453,17 @@ mmove_t jorg_move_end_attack1 = {FRAME_attak115, FRAME_attak118, jorg_frames_end
 
 void jorg_reattack1(edict_t *self)
 {
+    // [rerelease] the loop ends with its spin-down sound
+    if (M_RereleaseGame()) {
+        if (visible(self, self->enemy) && random() < 0.9f) {
+            self->monsterinfo.currentmove = &jorg_move_attack1;
+        } else {
+            self->monsterinfo.currentmove = &jorg_move_end_attack1;
+            jorg_attack1_end_sound(self);
+        }
+        return;
+    }
+
     if (visible(self, self->enemy))
         if (random() < 0.9f)
             self->monsterinfo.currentmove = &jorg_move_attack1;
@@ -400,6 +486,59 @@ void jorg_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
 
     M_SetDamageSkin(self);
+
+    // [rerelease] m_boss31.cpp: the machinegun keeps spinning unless he goes
+    // into pain, pain1 is silent, and the pain sound plays in nightmare too
+    if (M_RereleaseGame()) {
+        bool    do_pain3 = false;
+
+        if (level.framenum < self->pain_debounce_framenum)
+            return;
+
+        if (meansOfDeath != MOD_CHAINFIST) {
+            // Lessen the chance of him going into his pain frames if he takes little damage
+            if (damage <= 40)
+                if (random() <= 0.6f)
+                    return;
+
+            // If he's entering his attack1 or using attack1, lessen the chance of him going into pain
+            if ((self->s.frame >= FRAME_attak101) && (self->s.frame <= FRAME_attak108))
+                if (random() <= 0.005f)
+                    return;
+
+            if ((self->s.frame >= FRAME_attak109) && (self->s.frame <= FRAME_attak114))
+                if (random() <= 0.00005f)
+                    return;
+
+            if ((self->s.frame >= FRAME_attak201) && (self->s.frame <= FRAME_attak208))
+                if (random() <= 0.005f)
+                    return;
+        }
+
+        self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+        if (damage > 50) {
+            if (damage <= 100) {
+                gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+            } else if (random() <= 0.3f) {
+                do_pain3 = true;
+                gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NORM, 0);
+            }
+        }
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        jorg_attack1_end_sound(self);
+
+        if (damage <= 50)
+            self->monsterinfo.currentmove = &jorg_move_pain1;
+        else if (damage <= 100)
+            self->monsterinfo.currentmove = &jorg_move_pain2;
+        else if (do_pain3)
+            self->monsterinfo.currentmove = &jorg_move_pain3;
+        return;
+    }
 
     self->s.sound = 0;
 
@@ -456,6 +595,23 @@ void jorgBFG(edict_t *self)
     vec3_t  vec;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] scale-aware muzzle, and the shot sounds like a BFG on the
+    // weapon channel instead of repeating the attack yell
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[MZ2_JORG_BFG_1], forward, right, start);
+        VectorCopy(self->enemy->s.origin, vec);
+        vec[2] += self->enemy->viewheight;
+        VectorSubtract(vec, start, dir);
+        VectorNormalize(dir);
+        gi.sound(self, CHAN_WEAPON, sound_bfg_fire, 1, ATTN_NORM, 0);
+        monster_fire_bfg(self, start, dir, 50, 300, 100, 200, MZ2_JORG_BFG_1);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_JORG_BFG_1], forward, right, start);
 
     VectorCopy(self->enemy->s.origin, vec);
@@ -480,6 +636,19 @@ void jorg_firebullet_right(edict_t *self)
     vec3_t  start;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] scale-aware muzzle; aimed at the body (no eye height) with
+    // the right gun leading 0.2 s and the left one lagging 0.2 s
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[MZ2_JORG_MACHINEGUN_R1], forward, right, start);
+        PredictAimEx(self, self->enemy, start, 0, false, -0.2f, forward, NULL);
+        monster_fire_bullet(self, start, forward, 6, 4, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD, MZ2_JORG_MACHINEGUN_R1);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_JORG_MACHINEGUN_R1], forward, right, start);
 
     VectorMA(self->enemy->s.origin, -0.2f, self->enemy->velocity, target);
@@ -496,6 +665,18 @@ void jorg_firebullet_left(edict_t *self)
     vec3_t  start;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] see jorg_firebullet_right
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[MZ2_JORG_MACHINEGUN_L1], forward, right, start);
+        PredictAimEx(self, self->enemy, start, 0, false, 0.2f, forward, NULL);
+        monster_fire_bullet(self, start, forward, 6, 4, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD, MZ2_JORG_MACHINEGUN_L1);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_JORG_MACHINEGUN_L1], forward, right, start);
 
     VectorMA(self->enemy->s.origin, -0.2f, self->enemy->velocity, target);
@@ -515,7 +696,8 @@ void jorg_firebullet(edict_t *self)
 void jorg_attack(edict_t *self)
 {
     if (random() <= 0.75f) {
-        gi.sound(self, CHAN_VOICE, sound_attack1, 1, ATTN_NORM, 0);
+        // [rerelease] the machinegun wind-up is a weapon sound
+        gi.sound(self, M_RereleaseGame() ? CHAN_WEAPON : CHAN_VOICE, sound_attack1, 1, ATTN_NORM, 0);
         self->s.sound = gi.soundindex("boss3/w_loop.wav");
         self->monsterinfo.currentmove = &jorg_move_start_attack1;
     } else {
@@ -543,6 +725,16 @@ const int boss31_num_rerelease_gibs = (int)(sizeof(boss31_rerelease_gibs) / size
 
 void jorg_dead(edict_t *self)
 {
+    // [rerelease] the death animation is over: blow Jorg apart, then throw
+    // the Makron out of the wreck. MakronToss reads the target and enemy,
+    // which ThrowHead leaves on the head gib.
+    if (M_RereleaseGame()) {
+        BossGib(self);
+        if (self->inuse)
+            MakronToss(self);
+        return;
+    }
+
 #if 0
     edict_t *tempent;
     /*
@@ -575,7 +767,7 @@ void jorg_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, 
     gi.sound(self, CHAN_VOICE, sound_death, 1, ATTN_NORM, 0);
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_NO;
-    self->s.sound = 0;
+    jorg_attack1_end_sound(self);
     self->count = 0;
     self->monsterinfo.currentmove = &jorg_move_death;
 }
@@ -688,14 +880,24 @@ void SP_monster_jorg(edict_t *self)
 
     self->movetype = MOVETYPE_STEP;
     self->solid = SOLID_BBOX;
-    self->s.modelindex = gi.modelindex("models/monsters/boss3/rider/tris.md2");
-    if (M_RereleaseGame())
+    // [rerelease] Jorg himself is the main model and the Makron riding him the
+    // second one (the classic game has them the other way round), and he has
+    // 8000 health - 3000 is the classic figure
+    if (M_RereleaseGame()) {
+        sound_attack1_end = gi.soundindex("boss3/bs3atck1_end.wav");
+        sound_bfg_fire = gi.soundindex("makron/bfg_fire.wav");
+
+        self->s.modelindex = gi.modelindex("models/monsters/boss3/jorg/tris.md2");
+        self->s.modelindex2 = gi.modelindex("models/monsters/boss3/rider/tris.md2");
         PrecacheGibs(boss31_rerelease_gibs, boss31_num_rerelease_gibs);
-    self->s.modelindex2 = gi.modelindex("models/monsters/boss3/jorg/tris.md2");
+    } else {
+        self->s.modelindex = gi.modelindex("models/monsters/boss3/rider/tris.md2");
+        self->s.modelindex2 = gi.modelindex("models/monsters/boss3/jorg/tris.md2");
+    }
     VectorSet(self->mins, -80, -80, 0);
     VectorSet(self->maxs, 80, 80, 140);
 
-    self->health = 3000;
+    self->health = M_RereleaseGame() ? 8000 : 3000;
     self->gib_health = -2000;
     self->mass = 1000;
 

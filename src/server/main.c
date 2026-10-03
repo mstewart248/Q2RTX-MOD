@@ -2183,7 +2183,12 @@ void SV_Init(void)
     Cvar_Get("protocol", STRINGIFY(PROTOCOL_VERSION_DEFAULT), CVAR_SERVERINFO | CVAR_ROM);
 
     Cvar_Get("skill", "1", CVAR_LATCH);
-    Cvar_Get("deathmatch", "1", CVAR_SERVERINFO | CVAR_LATCH);
+    // Single player unless asked otherwise. Q2PRO defaulted this to 1, which
+    // made a bare "map q2dm1" from the console start a deathmatch with cheats
+    // off. A dedicated server is still forced to deathmatch in SV_InitGame
+    // unless coop is set, and once deathmatch is set it stays set - it is
+    // only ever changed by the player (or the menus).
+    Cvar_Get("deathmatch", "0", CVAR_SERVERINFO | CVAR_LATCH);
     Cvar_Get("coop", "0", /*CVAR_SERVERINFO|*/CVAR_LATCH);
     Cvar_Get("cheats", "0", CVAR_SERVERINFO | CVAR_LATCH);
     Cvar_Get("dmflags", va("%i", DF_INSTANT_ITEMS), CVAR_SERVERINFO);
@@ -2250,7 +2255,10 @@ void SV_Init(void)
     sv_packetdup_hack = Cvar_Get("sv_packetdup_hack", "0", 0);
 #endif
 
-    sv_allow_map = Cvar_Get("sv_allow_map", "0", 0);
+    // 1: "map" always does a full restart, as it did in vanilla Quake II.
+    // Q2PRO's default of 0 refused "map" on a running server and demanded
+    // "gamemap" instead.
+    sv_allow_map = Cvar_Get("sv_allow_map", "1", 0);
 
 #if !USE_CLIENT
     sv_recycle = Cvar_Get("sv_recycle", "0", 0);

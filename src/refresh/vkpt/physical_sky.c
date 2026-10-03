@@ -1021,69 +1021,92 @@ static void sky_type_changed(cvar_t *self)
 
 	default:
 		Com_WPrintf("sky_type %d is out of range, expected 0..3\n", self->integer);
-		break;
+		return;
 	}
+
+	// The two writes above are FROM_CODE, and a FROM_CODE set never runs the
+	// target's changed callback (see change_string_value), so neither one asks
+	// for the sky to be re-rendered. physical_sky CHANGING used to cover for
+	// that - a new preset re-renders on the next frame - but when it already
+	// held the value being picked nothing changed at all. Rerelease mode on
+	// q2dm1 leaves it on earth; pick earth and the sky stayed whatever the
+	// previous map last rendered (base1's Stroggos red) until another sky was
+	// picked and then earth again.
+	physical_sky_cvar_changed(self);
 }
 
 /*
 =================
 apply_map_sun
 
-Seeds sun_elevation / sun_azimuth from sky_map_sun_* when a map on
-use_procedural_sky is loaded.
+Seeds sun_elevation / sun_azimuth when a map is loaded: from the map's stated
+hour (sky_map_sun_*) in rerelease sky mode, otherwise from wherever the sun was
+on the previous map. It sets a STARTING POINT, not an override - move the sun
+afterwards and it stays where you put it.
 
-Fires once per map, on the first frame the new name is visible, and only while
-the sun preset is Custom. So it sets a STARTING POINT, not an override: move the
-sun afterwards and it stays where you put it, and pick any time-of-day preset
-and this does not run at all - that preset is honoured exactly as on any other
-map.
+TWO THINGS THIS USED TO GET WRONG, both of which left base1 on the previous
+map's sun instead of its own 15 / 285:
 
-Keyed on the map name rather than on a load hook, so it cannot disagree with
-sky_map_forces_procedural about which map is loaded.
+  - It decided once, on the first frame a new map NAME was visible, and asked
+    the mapcvar latch then. But "Execing maps/base1.cfg" only queues the file;
+    it runs when the command buffer next runs, and anything holding the buffer
+    (a "wait" in a menu or new-game command chain) lets the first frame through
+    before it. The latch was still empty, the carry won, and it never asked
+    again. Now the stated hour is applied the first frame its latch EXISTS, at
+    any point during the map, once.
+
+  - Keyed on the map name, so reloading the same map - a restart, a save on
+    base1 - was not a new map and the hour was never reapplied. Now it is
+    driven by vkpt_physical_sky_begin_map, called from R_BeginRegistration_RTX
+    on every load.
 =================
 */
+static bool map_sun_pending = false;    // a map was loaded, not yet handled
+static bool map_hour_applied = false;   // this map's stated hour is in place
+
+void vkpt_physical_sky_begin_map(void)
+{
+	map_sun_pending = true;
+	map_hour_applied = false;
+}
+
 static void apply_map_sun(void)
 {
-	static char last_map[MAX_QPATH];
+	if (map_sun_pending)
+	{
+		map_sun_pending = false;
 
-	if (!strcmp(last_map, cl.mapname))
-		return;
+		// Whatever this map turns out to be, the animation clock restarts here:
+		// cl.time went back to zero with the map load.
+		sun_cycle_restart = true;
 
-	Q_strlcpy(last_map, cl.mapname, sizeof(last_map));
-
-	if (!cl.mapname[0])
-		return;
-
-	// Whatever this map turns out to be, the animation clock restarts here:
-	// cl.time went back to zero with the map load.
-	sun_cycle_restart = true;
+		// THE SUN CARRIES ON FROM WHERE IT WAS. A map that states no hour inherits
+		// the previous map's sun and, if it is animating, runs on from there - so
+		// the cycle survives the walk from one map to the next. A map that DOES
+		// state an hour overwrites this below, as soon as its cfg has run.
+		//
+		// last_sun_* is only ever recorded off the Custom branch (see
+		// vkpt_evaluate_sun_light), so this cannot write a fixed preset's hardcoded
+		// angle over a Custom angle the player set themselves.
+		if (have_last_sun_angles && active_sun_preset() == SUN_PRESET_NONE)
+		{
+			Cvar_SetValue(sun_elevation, last_sun_elevation, FROM_CODE);
+			Cvar_SetValue(sun_azimuth, last_sun_azimuth, FROM_CODE);
+		}
+	}
 
 	// A MAP THAT STATES AN HOUR PUTS THE SUN THERE, on every load, and any cycle
-	// that was running starts again from that hour. Tested first, so a stated
-	// hour beats the carry however the sun happens to be moving.
+	// that was running starts again from that hour.
 	//
 	// Only in rerelease sky mode: outside it the player has the full set of sun
 	// controls and the map does not get a say. That is the intended way to
 	// overrule a map - change the sky type, rather than fight it map by map.
-	if (sky_mode_is_rerelease() && map_states_sun_hour())
+	if (!map_hour_applied && sky_mode_is_rerelease() && map_states_sun_hour())
 	{
+		map_hour_applied = true;
+		sun_cycle_restart = true;
 		Cvar_SetValue(sun_elevation, sky_map_sun_elevation->value, FROM_CODE);
 		Cvar_SetValue(sun_azimuth, sky_map_sun_azimuth->value, FROM_CODE);
-		return;
-	}
-
-	// OTHERWISE THE SUN CARRIES ON FROM WHERE IT WAS. A map that states no hour
-	// inherits the previous map's sun and, if it is animating, runs on from there
-	// - so the cycle survives the walk from one map to the next, and the later
-	// levels differ from one another without anyone having authored them yet.
-	//
-	// last_sun_* is only ever recorded off the Custom branch (see
-	// vkpt_evaluate_sun_light), so this cannot write a fixed preset's hardcoded
-	// angle over a Custom angle the player set themselves.
-	if (have_last_sun_angles && active_sun_preset() == SUN_PRESET_NONE)
-	{
-		Cvar_SetValue(sun_elevation, last_sun_elevation, FROM_CODE);
-		Cvar_SetValue(sun_azimuth, last_sun_azimuth, FROM_CODE);
 	}
 }
 

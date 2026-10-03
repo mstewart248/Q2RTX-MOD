@@ -18,6 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // console.c
 
 #include "client.h"
+#include "mod_version.h"
 
 #define CON_TIMES       16
 #define CON_TIMES_MASK  (CON_TIMES - 1)
@@ -984,7 +985,7 @@ static void Con_DrawSolidConsole(void)
                     UI_DRAWCURSOR, con.charsetImage);
     }
 
-#define APP_VERSION APPLICATION " " LONG_VERSION_STRING
+#define APP_VERSION MOD_NAME " " MOD_LONG_VERSION_STRING
 #define VER_WIDTH ((int)(sizeof(APP_VERSION) + 1) * CHAR_WIDTH)
 
     y = vislines - CON_PRESTEP + CHAR_HEIGHT;

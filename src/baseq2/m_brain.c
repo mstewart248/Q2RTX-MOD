@@ -423,12 +423,22 @@ mframe_t brain_frames_death2 [] =
 };
 mmove_t brain_move_death2 = {FRAME_death201, FRAME_death205, brain_frames_death2, brain_dead};
 
+static void brain_shrink_step(edict_t *self)
+{
+    brain_shrink(self);
+    monster_footstep(self);
+}
+
 mframe_t brain_frames_death1 [] =
 {
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move,    0,  monster_footstep },
     { ai_move,    -2, NULL },
-    { ai_move,    9,  NULL },
+    { ai_move,    9,  brain_shrink_step },
+    { ai_move,    0,  NULL },
+    { ai_move,    0,  NULL },
+    { ai_move,    0,  NULL },
+    { ai_move,    0,  monster_footstep },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
@@ -436,11 +446,7 @@ mframe_t brain_frames_death1 [] =
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { ai_move,    0,  monster_footstep },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL }
 };
@@ -513,7 +519,10 @@ void brain_tentacle_attack(edict_t *self) {
     vec3_t  aim;
 
     VectorSet(aim, MELEE_DISTANCE, 0, 8);
-    if (fire_hit(self, aim, (10 + (Q_rand() % 5)), -600) && skill->value > 0)
+    // the original never chains the tentacles into the chest attack on easy;
+    // the rerelease does on every skill
+    if (fire_hit(self, aim, (10 + (Q_rand() % 5)), -600) &&
+        (M_RereleaseGame() || skill->value > 0))
         self->spawnflags |= 65536;
     else
         self->monsterinfo.melee_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
@@ -674,50 +683,49 @@ static const vec3_t brain_leye[11] = {
     {  -4.332820f,  9.444570f, 33.526340f }
 };
 
-static void brain_eye_laser(edict_t *self, const vec3_t angles, const vec3_t eye)
+/* The rerelease's brain_right/left_eye_laser_update: each eye's beam starts at
+   that eye for the current walk-cycle frame and leads the enemy with a 10-20%
+   random lag. */
+void brain_eye_laser_update(edict_t *laser, bool left)
 {
-    vec3_t   forward, right, up, start;
-    edict_t *ent;
+    edict_t *self = laser->owner;
+    vec3_t  forward, right, up, start, dir;
+    int     i = self->s.frame - FRAME_walk101;
+    const float *eye;
 
-    AngleVectors(angles, forward, right, up);
+    // the eye tables cover attack4's frames, which are the walk cycle's; clamp
+    // so a beam still following after the animation moved on cannot read off
+    // the end
+    if (i < 0)
+        i = 0;
+    else if (i > 10)
+        i = 10;
+    eye = left ? brain_leye[i] : brain_reye[i];
 
+    AngleVectors(self->s.angles, forward, right, up);
     VectorCopy(self->s.origin, start);
     VectorMA(start, eye[0], right, start);
     VectorMA(start, eye[1], forward, start);
     VectorMA(start, eye[2], up, start);
 
-    ent = G_Spawn();
-    ent->classname = "brain_laserbeam";
-    VectorCopy(angles, ent->s.angles);
-    VectorCopy(start, ent->s.origin);
-    ent->enemy = self->enemy;
-    ent->owner = self;
-    ent->dmg = 1;
-    monster_dabeam(ent);
+    VectorCopy(laser->movedir, dir);
+    if (self->enemy && self->enemy->inuse)
+        PredictAimEx(self, self->enemy, start, 0, false, 0.1f + random() * 0.1f, dir, NULL);
+
+    VectorCopy(start, laser->s.origin);
+    VectorCopy(dir, laser->movedir);
+    gi.linkentity(laser);
 }
 
 void brain_laserbeam(edict_t *self)
 {
-    vec3_t  dir, angles;
-    int     i;
-
     if (!self->enemy)
         return;
 
-    // the eye tables are indexed by walk-cycle frame; attack4 runs over exactly
-    // those frames, but clamp anyway so a stray call cannot read off the end
-    i = self->s.frame - FRAME_walk101;
-    if (i < 0 || i >= 11)
-        return;
-
-    if (random() > 0.8f)
-        gi.sound(self, CHAN_AUTO, sound_laser_fly, 1, ATTN_STATIC, 0);
-
-    VectorSubtract(self->enemy->s.origin, self->s.origin, dir);
-    vectoangles(dir, angles);
-
-    brain_eye_laser(self, angles, brain_reye[i]);
-    brain_eye_laser(self, angles, brain_leye[i]);
+    // dis is my right eye
+    monster_fire_dabeam(self, 1, false, DABEAM_BRAIN_R, 0);
+    // dis is me left eye
+    monster_fire_dabeam(self, 1, true, DABEAM_BRAIN_L, 0);
 }
 
 void brain_laserbeam_reattack(edict_t *self)
@@ -819,6 +827,32 @@ void brain_pain(edict_t *self, edict_t *other, float kick, int damage) {
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+    // [rerelease] the pain sound plays even when there is no pain animation
+    if (M_RereleaseGame()) {
+        r = random();
+        if (r < 0.33f)
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+        else if (r < 0.66f)
+            gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        if (r < 0.33f)
+            self->monsterinfo.currentmove = &brain_move_pain1;
+        else if (r < 0.66f)
+            self->monsterinfo.currentmove = &brain_move_pain2;
+        else
+            self->monsterinfo.currentmove = &brain_move_pain3;
+
+        if (self->monsterinfo.aiflags & AI_DUCKED)
+            monster_duck_up(self);
+        return;
+    }
+
     if (skill->value == 3)
         return;     // no pain anims in nightmare
 
@@ -881,6 +915,7 @@ void brain_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
             gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
             if (M_RereleaseGame()) {
                 // [rerelease] id's own gib parts - see brain_rerelease_gibs
+                self->s.skinnum /= 2;
                 ThrowGibs(self, damage, brain_rerelease_gibs, brain_num_rerelease_gibs);
                 self->deadflag = DEAD_DEAD;
                 return;

@@ -71,10 +71,12 @@ extern int carrier_move_attack_pre_mg;
 extern int carrier_move_attack_rail;
 extern int carrier_move_attack_rocket;
 extern int carrier_move_death;
+extern int carrier_move_death_rr;
 extern int carrier_move_pain_heavy;
 extern int carrier_move_pain_light;
 extern int carrier_move_run;
 extern int carrier_move_spawn;
+extern int carrier_move_spawn_rr;
 extern int carrier_move_stand;
 extern int carrier_move_walk;
 extern int chick_move_attack1;
@@ -441,6 +443,8 @@ extern int tank_move_stand;
 extern int tank_move_start_run;
 extern int tank_move_walk;
 extern int turret_move_fire;
+extern int turret_move_fire_blind;
+extern int turret_move_fire_rr;
 extern int turret_move_ready_gun;
 extern int turret_move_run;
 extern int turret_move_seek;
@@ -573,7 +577,7 @@ extern void chick_walk(void);
 extern void commander_body_drop(void);
 extern void commander_body_think(void);
 extern void commander_body_use(void);
-extern void dabeam_hit(void);
+extern void dabeam_think(void);
 extern void debris_die(void);
 extern void defender_pain(void);
 extern void defender_think(void);
@@ -765,6 +769,7 @@ extern void jorg_run(void);
 extern void jorg_search(void);
 extern void jorg_stand(void);
 extern void jorg_walk(void);
+extern void kamikaze_touch(void);
 extern void latched_trigger_think(void);
 extern void lavaball_fly(void);
 extern void lavaball_touch(void);
@@ -1126,7 +1131,7 @@ const save_ptr_t save_ptrs[] = {
 { P_think, check_target_healthbar },
 { P_think, commander_body_drop },
 { P_think, commander_body_think },
-{ P_think, dabeam_hit },
+{ P_think, dabeam_think },
 { P_think, defender_think },
 { P_think, door_go_down },
 { P_think, door_secret_move2 },
@@ -1271,6 +1276,7 @@ const save_ptr_t save_ptrs[] = {
 { P_touch, hurt_touch },
 { P_touch, hyper_blaster_touch },
 { P_touch, ionripper_touch },
+{ P_touch, kamikaze_touch },
 { P_touch, lavaball_touch },
 { P_touch, loogie_touch },
 { P_touch, misc_viper_bomb_touch },
@@ -1563,10 +1569,12 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &carrier_move_attack_rail },
 { P_monsterinfo_currentmove, &carrier_move_attack_rocket },
 { P_monsterinfo_currentmove, &carrier_move_death },
+{ P_monsterinfo_currentmove, &carrier_move_death_rr },
 { P_monsterinfo_currentmove, &carrier_move_pain_heavy },
 { P_monsterinfo_currentmove, &carrier_move_pain_light },
 { P_monsterinfo_currentmove, &carrier_move_run },
 { P_monsterinfo_currentmove, &carrier_move_spawn },
+{ P_monsterinfo_currentmove, &carrier_move_spawn_rr },
 { P_monsterinfo_currentmove, &carrier_move_stand },
 { P_monsterinfo_currentmove, &carrier_move_walk },
 { P_monsterinfo_currentmove, &chick_move_attack1 },
@@ -1933,6 +1941,8 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_currentmove, &tank_move_start_run },
 { P_monsterinfo_currentmove, &tank_move_walk },
 { P_monsterinfo_currentmove, &turret_move_fire },
+{ P_monsterinfo_currentmove, &turret_move_fire_blind },
+{ P_monsterinfo_currentmove, &turret_move_fire_rr },
 { P_monsterinfo_currentmove, &turret_move_ready_gun },
 { P_monsterinfo_currentmove, &turret_move_run },
 { P_monsterinfo_currentmove, &turret_move_seek },

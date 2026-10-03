@@ -529,6 +529,15 @@ typedef struct bsp_mesh_s {
 	int allocated_light_polys;
 	light_poly_t *light_polys;
 
+	// lights only the fog reads (lava), and their per-cluster lists, which
+	// already hold final light_polys indices - see MAX_FOG_LIGHT_POLYS
+	int num_fog_light_polys;
+	int allocated_fog_light_polys;
+	light_poly_t *fog_light_polys;
+	int num_fog_cluster_lights;
+	int *fog_cluster_light_offsets;
+	int *fog_cluster_lights;
+
 	uint32_t sky_clusters[MAX_SKY_CLUSTERS];
 	int num_sky_clusters;
 	bool all_lava_emissive;

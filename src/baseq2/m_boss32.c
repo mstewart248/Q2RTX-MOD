@@ -404,7 +404,11 @@ void makronBFG(edict_t *self)
     vec3_t  vec;
 
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_MAKRON_BFG], forward, right, start);
+    // [rerelease] scale-aware muzzle
+    if (M_RereleaseGame())
+        M_ProjectFlashSource(self, monster_flash_offset[MZ2_MAKRON_BFG], forward, right, start);
+    else
+        G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_MAKRON_BFG], forward, right, start);
 
     VectorCopy(self->enemy->s.origin, vec);
     vec[2] += self->enemy->viewheight;
@@ -491,7 +495,11 @@ void MakronRailgun(edict_t *self)
     vec3_t  forward, right;
 
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_MAKRON_RAILGUN_1], forward, right, start);
+    // [rerelease] scale-aware muzzle
+    if (M_RereleaseGame())
+        M_ProjectFlashSource(self, monster_flash_offset[MZ2_MAKRON_RAILGUN_1], forward, right, start);
+    else
+        G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_MAKRON_RAILGUN_1], forward, right, start);
 
     // calc direction to where we targted
     VectorSubtract(self->pos1, start, dir);
@@ -512,7 +520,11 @@ void MakronHyperblaster(edict_t *self)
     flash_number = MZ2_MAKRON_BLASTER_1 + (self->s.frame - FRAME_attak405);
 
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
+    // [rerelease] scale-aware muzzle
+    if (M_RereleaseGame())
+        M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+    else
+        G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
     if (self->enemy) {
         VectorCopy(self->enemy->s.origin, vec);
@@ -531,7 +543,10 @@ void MakronHyperblaster(edict_t *self)
 
     AngleVectors(dir, forward, NULL, NULL);
 
-    monster_fire_blaster(self, start, forward, 15, 1000, MZ2_MAKRON_BLASTER_1, EF_BLASTER);
+    // [rerelease] each bolt flashes at its own muzzle as the arm sweeps; the
+    // classic code flashed MZ2_MAKRON_BLASTER_1 for all seventeen
+    monster_fire_blaster(self, start, forward, 15, 1000,
+                         M_RereleaseGame() ? flash_number : MZ2_MAKRON_BLASTER_1, EF_BLASTER);
 }
 
 
@@ -539,6 +554,45 @@ void makron_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
 
     M_SetDamageSkin(self);
+
+    // [rerelease] m_boss32.cpp: nothing interrupts his entrance, and the pain
+    // sound still plays in nightmare
+    if (M_RereleaseGame()) {
+        bool    do_pain6 = false;
+
+        if (self->monsterinfo.currentmove == &makron_move_sight)
+            return;
+
+        if (level.framenum < self->pain_debounce_framenum)
+            return;
+
+        // Lessen the chance of him going into his pain frames
+        if (meansOfDeath != MOD_CHAINFIST && damage <= 25)
+            if (random() < 0.2f)
+                return;
+
+        self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+        if (damage <= 40) {
+            gi.sound(self, CHAN_VOICE, sound_pain4, 1, ATTN_NONE, 0);
+        } else if (damage <= 110) {
+            gi.sound(self, CHAN_VOICE, sound_pain5, 1, ATTN_NONE, 0);
+        } else if (random() <= ((damage <= 150) ? 0.45f : 0.35f)) {
+            do_pain6 = true;
+            gi.sound(self, CHAN_VOICE, sound_pain6, 1, ATTN_NONE, 0);
+        }
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        if (damage <= 40)
+            self->monsterinfo.currentmove = &makron_move_pain4;
+        else if (damage <= 110)
+            self->monsterinfo.currentmove = &makron_move_pain5;
+        else if (do_pain6)
+            self->monsterinfo.currentmove = &makron_move_pain6;
+        return;
+    }
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -607,6 +661,48 @@ void makron_torso_think(edict_t *self)
         self->s.frame = 346;
         self->nextthink = level.framenum + 1;
     }
+
+    // [rerelease] the thrown torso (makron_spawn_torso) lands on its back and
+    // rolls upright, 15 degrees a frame
+    if (M_RereleaseGame() && self->s.angles[0] > 0)
+        self->s.angles[0] = max(0.f, self->s.angles[0] - 15);
+}
+
+/*
+=================
+makron_spawn_torso
+
+[rerelease] id's torso is a gib thrown up and back off the top of the body,
+still twitching (frames 346-364), instead of a static model dropped 84 units
+off to one side.
+=================
+*/
+static void makron_spawn_torso(edict_t *self)
+{
+    edict_t *tempent;
+    vec3_t  forward, up;
+
+    tempent = ThrowGib(self, "models/monsters/boss3/rider/tris.md2", 0, GIB_ORGANIC);
+    VectorCopy(self->s.origin, tempent->s.origin);
+    VectorCopy(self->s.angles, tempent->s.angles);
+    self->maxs[2] -= tempent->maxs[2];
+    tempent->s.origin[2] += self->maxs[2] - 15;
+
+    tempent->s.frame = 346;
+    tempent->s.modelindex = gi.modelindex("models/monsters/boss3/rider/tris.md2");
+    tempent->s.skinnum = 1;
+    tempent->think = makron_torso_think;
+    tempent->nextthink = level.framenum + 1;
+    tempent->s.sound = gi.soundindex("makron/spine.wav");
+    tempent->movetype = MOVETYPE_TOSS;
+    tempent->s.effects = EF_GIB;
+    AngleVectors(tempent->s.angles, forward, NULL, up);
+    VectorMA(tempent->velocity, 120, up, tempent->velocity);
+    VectorMA(tempent->velocity, -120, forward, tempent->velocity);
+    VectorMA(tempent->s.origin, -10, forward, tempent->s.origin);
+    tempent->s.angles[0] = 90;
+    VectorClear(tempent->avelocity);
+    gi.linkentity(tempent);
 }
 
 void makron_torso(edict_t *ent)
@@ -631,7 +727,11 @@ void makron_torso(edict_t *ent)
 void makron_dead(edict_t *self)
 {
     VectorSet(self->mins, -60, -60, 0);
-    VectorSet(self->maxs, 60, 60, 72);
+    // [rerelease] the legs alone - the torso was thrown clear
+    if (M_RereleaseGame())
+        VectorSet(self->maxs, 60, 60, 24);
+    else
+        VectorSet(self->maxs, 60, 60, 72);
     self->movetype = MOVETYPE_TOSS;
     self->svflags |= SVF_DEADMONSTER;
     self->nextthink = 0;
@@ -665,6 +765,16 @@ void makron_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
     gi.sound(self, CHAN_VOICE, sound_death, 1, ATTN_NONE, 0);
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_YES;
+
+    if (M_RereleaseGame()) {
+        self->svflags |= SVF_DEADMONSTER;
+        self->monsterinfo.currentmove = &makron_move_death2;
+        makron_spawn_torso(self);
+        VectorSet(self->mins, -60, -60, 0);
+        VectorSet(self->maxs, 60, 60, 48);
+        gi.linkentity(self);
+        return;
+    }
 
     tempent = G_Spawn();
     VectorCopy(self->s.origin, tempent->s.origin);
@@ -837,6 +947,37 @@ void MakronSpawn(edict_t *self)
     vec3_t      vec;
     edict_t     *player;
 
+    // [rerelease] he comes out already fighting: run his first think now,
+    // jump at Jorg's enemy (or whoever can see him), take that enemy as his
+    // own and play his entrance
+    if (M_RereleaseGame()) {
+        SP_monster_makron(self);
+        if (!self->inuse)
+            return;
+        if (self->think)
+            self->think(self);
+
+        if (self->enemy && self->enemy->inuse && self->enemy->health > 0)
+            player = self->enemy;
+        else
+            player = AI_GetSightClient(self);
+
+        if (!player)
+            return;
+
+        VectorSubtract(player->s.origin, self->s.origin, vec);
+        self->s.angles[YAW] = vectoyaw(vec);
+        VectorNormalize(vec);
+        VectorScale(vec, 400, self->velocity);
+        self->velocity[2] = 200;
+        self->groundentity = NULL;
+        self->enemy = player;
+        FoundTarget(self);
+        self->monsterinfo.sight(self, self->enemy);
+        self->s.frame = self->monsterinfo.nextframe = FRAME_active01;
+        return;
+    }
+
     SP_monster_makron(self);
 
     // jump at player
@@ -863,6 +1004,26 @@ void MakronToss(edict_t *self)
 {
     edict_t *ent;
     int     i;
+
+    // [rerelease] Jorg is already in pieces (jorg_dead), so nothing is in the
+    // way: the Makron spawns at once, with Jorg's enemy to hand over
+    if (M_RereleaseGame()) {
+        ent = G_Spawn();
+        ent->classname = "monster_makron";
+        ent->target = self->target;
+        VectorCopy(self->s.origin, ent->s.origin);
+        ent->enemy = self->enemy;
+
+        MakronSpawn(ent);
+
+        // set health bar over to Makron when we throw him out
+        if (ent->inuse) {
+            for (i = 0; i < MAX_HEALTH_BARS; i++)
+                if (level.health_bar_entities[i] && level.health_bar_entities[i]->enemy == self)
+                    level.health_bar_entities[i]->enemy = ent;
+        }
+        return;
+    }
 
     ent = G_Spawn();
     ent->nextthink = level.framenum + 0.8f * BASE_FRAMERATE;

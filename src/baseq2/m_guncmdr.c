@@ -481,6 +481,9 @@ void guncmdr_pain(edict_t *self, edict_t *other, float kick, int damage)
     vec3_t  forward, dif;
     int     r;
 
+    // id applies the damage skin from T_Damage on every hit (monsterinfo.setskin)
+    guncmdr_setskin(self);
+
     monster_done_dodge(self);
 
 	if (self->monsterinfo.currentmove == &guncmdr_move_jump || 
@@ -503,9 +506,7 @@ void guncmdr_pain(edict_t *self, edict_t *other, float kick, int damage)
 	else
 		gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
 
-    // M_ShouldReactToPain does not exist here; skill 3 is the nightmare gate
-    // every other monster in this tree uses for the same purpose.
-    if (skill->value >= 3)
+    if (!M_ShouldReactToPain(self, meansOfDeath))
 	{
 		if (random() < 0.3)
 			self->monsterinfo.dodge(self, other, FRAMETIME, NULL, false);
@@ -724,6 +725,9 @@ void guncmdr_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
     vec3_t  forward, dif;
     int     n, r;
 
+    // id's T_Damage applies the damage skin before the monster's die runs
+    guncmdr_setskin(self);
+
     // check for gib
     if (self->health <= self->gib_health) {
 		gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
@@ -831,7 +835,7 @@ void GunnerCmdrFire(edict_t *self)
 
 	AngleVectors(self->s.angles, forward, right, NULL);
 	M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
-	PredictAim(self->enemy, start, 800, false, random() * 0.3f, aim, NULL);
+	PredictAimEx(self, self->enemy, start, 800, false, random() * 0.3f, aim, NULL);
 	for (i = 0; i < 3; i++)
 		aim[i] += crandom() * 0.025f;
 	monster_fire_flechette(self, start, aim, 4, 800, flash_number);
@@ -991,7 +995,7 @@ void GunnerCmdrGrenade(edict_t *self)
         VectorMA(aim, pitch, up, aim);
         VectorNormalize(aim);
     } else {
-        PredictAim(self->enemy, start, 800, false, 0.0f, aim, NULL);
+        PredictAimEx(self, self->enemy, start, 800, false, 0.0f, aim, NULL);
         VectorMA(aim, spread, right, aim);
         VectorNormalize(aim);
     }
@@ -1013,16 +1017,12 @@ void GunnerCmdrGrenade(edict_t *self)
     } else {
         speed = mortar ? MORTAR_SPEED : GRENADE_SPEED;
 
-        // An arc that actually lands, or - failing that - a flat throw. The
-        // rerelease passes extra right/up jitter to monster_fire_grenade; this
-        // tree's takes no such arguments, so the aim vector carries it instead:
-        // the fallback tilts upward to approximate their 200-unit up_adjust.
-        if (!M_CalculatePitchToFire(self, target, start, aim, speed, 2.5f, mortar, false)) {
-            aim[2] += 0.33f;
-            VectorNormalize(aim);
-        }
-
-        monster_fire_grenade(self, start, aim, 50, speed, flash_number);
+        // try search for best pitch
+        if (M_CalculatePitchToFire(self, target, start, aim, speed, 2.5f, mortar, false))
+            monster_fire_grenade_ex(self, start, aim, 50, speed, flash_number, crandom() * 10.0f, random() * 10.0f);
+        else
+            // normal shot
+            monster_fire_grenade_ex(self, start, aim, 50, speed, flash_number, crandom() * 10.0f, 200.0f + crandom() * 10.0f);
     }
 }
 
@@ -1160,6 +1160,12 @@ static const float RANGE_GRENADE_MORTAR = 525.f;
 // at this range, run towards the enemy
 static const float RANGE_CHAINGUN_RUN = 400.f;
 
+// kick range. id's RANGE_MELEE is 20 units of gap between the two bounding
+// boxes ("bboxes basically touching"); the enum RANGE_MELEE here is 0, which
+// made the kick dead. Measured through realrange() - origin to origin at the
+// moment - so the box-gap switch can happen in one place.
+static const float GUNCMDR_RANGE_KICK = 20.f;
+
 /*
 =================
 guncmdr_try_lob
@@ -1207,7 +1213,7 @@ void guncmdr_attack(edict_t *self)
     // `bad_area` is rogue's "standing in a tesla/trap zone" flag, which this
     // tree has no concept of; it only ever forces the chaingun, so dropping it
     // just removes that special case.
-    if (d < RANGE_MELEE && self->monsterinfo.melee_debounce_framenum < level.framenum)
+    if (d < GUNCMDR_RANGE_KICK && self->monsterinfo.melee_debounce_framenum < level.framenum)
         self->monsterinfo.currentmove = &guncmdr_move_attack_kick;
     else if ((d <= RANGE_GRENADE || (random() < 0.5f)) &&
              M_CheckClearShot(self, monster_flash_offset[MZ2_GUNCMDR_CHAINGUN_1], shot_start))
@@ -1543,7 +1549,7 @@ void SP_monster_guncmdr(edict_t *self)
 	self->monsterinfo.sight = guncmdr_sight;
 	self->monsterinfo.search = guncmdr_search;
     // monsterinfo.setskin does not exist in this tree; guncmdr_setskin is
-    // called directly from pain and die instead.
+    // called directly from guncmdr_pain and guncmdr_die instead.
 
 	gi.linkentity(self);
 

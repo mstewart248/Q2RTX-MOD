@@ -275,7 +275,7 @@ void main()
 		   march above was thrown away. A map SKYBOX always takes this path, so
 		   cl_fog 3 there is unchanged.
 
-		   Under fog_sun_is_the_sky() the two shaders have SPLIT the work -
+		   Under fog_sun_in_march() the two shaders have SPLIT the work -
 		   froxel_scatter.comp skipped its sun term and god_rays.comp dropped its
 		   local half - so each holds exactly one half of the same integral and
 		   they sum. Adding is only correct BECAUSE of those two skips; an
@@ -288,7 +288,7 @@ void main()
 		   one path and both estimators measure that same path. The grid's is the
 		   one to keep - it carries the temporal history, where the march's is a
 		   single per-pixel sample. */
-		if (fog_sun_is_the_sky())
+		if (fog_sun_in_march())
 		{
 			result.rgb += grid.rgb;
 			result.a = grid.a;

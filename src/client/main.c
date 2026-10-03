@@ -2929,17 +2929,18 @@ static void CL_InitLocal(void)
     // just a dynamic light. Set to 0 for the classic look.
     cl_muzzleflash_models = Cvar_Get("cl_muzzleflash_models", "1", CVAR_ARCHIVE);
     // The flash model is only ~2.3 units across and the rerelease draws it far
-    // bigger, so the default scales it up. 10 is the value these were finally
+    // bigger, so the default scales it up. 12 is the value these were finally
     // tuned to by eye against the rerelease campaign.
-    cl_muzzleflash_scale = Cvar_Get("cl_muzzleflash_scale", "10", CVAR_ARCHIVE);
+    cl_muzzleflash_scale = Cvar_Get("cl_muzzleflash_scale", "12", CVAR_ARCHIVE);
     /* How far along the barrel the OTHER fellow's flash sits.
        22 was measured off a player model in a mirror, and it is right for that
        - but a monster is not a player: the soldier, the gunner and the enforcer
        all hold shorter weapons much closer to the body, and 22 pushed the flash
        out past the end of the gun and sometimes through a wall. 2 keeps it at
-       the muzzle on every shape in the game, which is the case that actually
-       comes up. Raise it if you only care how the player model looks. */
-    cl_muzzleflash_world_fwd   = Cvar_Get("cl_muzzleflash_world_fwd", "2", CVAR_ARCHIVE);
+       the muzzle on every shape in the game. The default is 22 anyway: it was
+       the preferred look in play against the rerelease campaign. Drop it to 2
+       if monster flashes are seen floating off the gun or through walls. */
+    cl_muzzleflash_world_fwd   = Cvar_Get("cl_muzzleflash_world_fwd", "22", CVAR_ARCHIVE);
     cl_muzzleflash_world_right = Cvar_Get("cl_muzzleflash_world_right", "8", CVAR_ARCHIVE);
     cl_muzzleflash_world_up    = Cvar_Get("cl_muzzleflash_world_up", "8", CVAR_ARCHIVE);
     /* The flash is drawn by the effects path, which multiplies the texture by
@@ -2987,9 +2988,9 @@ static void CL_InitLocal(void)
        the flash from base_texture alone and never reads the emissive map, so
        turning this on cannot change the flash's own appearance.
 
-       ON by default, because a path traced muzzle flash that does not light
-       the room is the one thing people notice immediately, and the dynamic
-       light alone is a point source with none of the shape the model has.
+       OFF by default: the dynamic light CL_MuzzleFlash already spawns is
+       enough, and this one costs a lot of lights (see below). Turn it on for
+       the shaped area light the model gives.
 
        KNOW WHAT IT COSTS before turning it off is suggested as a fix for
        something else. Light extraction makes ONE LIGHT POLY PER TRIANGLE and
@@ -2997,8 +2998,8 @@ static void CL_InitLocal(void)
        duplicates - so each shot adds ~48 short-lived area lights. And
        CL_MuzzleFlash already spawns a dynamic light at the same point, so this
        doubles up rather than replacing it. On a weapon that fires every 100 ms
-       in a room already near the light budget, 0 is the first thing to try. */
-    cl_muzzleflash_light = Cvar_Get("cl_muzzleflash_light", "1", CVAR_ARCHIVE);
+       in a room already near the light budget, that adds up fast. */
+    cl_muzzleflash_light = Cvar_Get("cl_muzzleflash_light", "0", CVAR_ARCHIVE);
     // dev aid: "x y z" overrides the built-in muzzle offset for the weapon in
     // hand, so one can be dialled in live instead of rebuilding each time
     cl_muzzleflash_offset = Cvar_Get("cl_muzzleflash_offset", "", 0);

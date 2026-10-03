@@ -26,6 +26,8 @@ jobs:
       uses: actions/checkout@v3
       with:
         submodules: true
+        # full history, so the tags are there for the version (cmake/mod_version.cmake)
+        fetch-depth: 0
       
     # The DLSS headers and the x64 import library are not vendored in this
     # repository, so the SDK is cloned and DLSS_SDK2_PATH is pointed at it.
@@ -144,6 +146,8 @@ jobs:
       uses: actions/checkout@v3
       with:
         submodules: true
+        # full history, so the tags are there for the version (cmake/mod_version.cmake)
+        fetch-depth: 0
 
     - name: Checkout NVIDIA DLSS SDK
       uses: actions/checkout@v3

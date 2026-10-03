@@ -66,14 +66,21 @@ void parasite_sight(edict_t *self, edict_t *other)
     gi.sound(self, CHAN_WEAPON, sound_sight, 1, ATTN_NORM, 0);
 }
 
+// the rerelease plays its idle noises quieter and with a tighter falloff
 void parasite_tap(edict_t *self)
 {
-    gi.sound(self, CHAN_WEAPON, sound_tap, 1, ATTN_IDLE, 0);
+    if (M_RereleaseGame())
+        gi.sound(self, CHAN_WEAPON, sound_tap, 0.75f, 2.75f, 0);
+    else
+        gi.sound(self, CHAN_WEAPON, sound_tap, 1, ATTN_IDLE, 0);
 }
 
 void parasite_scratch(edict_t *self)
 {
-    gi.sound(self, CHAN_WEAPON, sound_scratch, 1, ATTN_IDLE, 0);
+    if (M_RereleaseGame())
+        gi.sound(self, CHAN_WEAPON, sound_scratch, 0.75f, 2.75f, 0);
+    else
+        gi.sound(self, CHAN_WEAPON, sound_scratch, 1, ATTN_IDLE, 0);
 }
 
 void parasite_search(edict_t *self)
@@ -154,6 +161,10 @@ void parasite_refidget(edict_t *self)
 
 void parasite_idle(edict_t *self)
 {
+    // rerelease: never fidget while it has someone to fight
+    if (M_RereleaseGame() && self->enemy)
+        return;
+
     self->monsterinfo.currentmove = &parasite_move_start_fidget;
 }
 
@@ -321,6 +332,20 @@ void parasite_pain(edict_t *self, edict_t *other, float kick, int damage)
     }
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+    // [rerelease] the pain sound plays even when there is no pain animation
+    if (M_RereleaseGame()) {
+        if (random() < 0.5f)
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        self->monsterinfo.currentmove = &parasite_move_pain1;
+        return;
+    }
 
     if (skill->value == 3)
         return;     // no pain anims in nightmare
@@ -657,7 +682,12 @@ void proboscis_think(edict_t *self)
         VectorSubtract(self->s.origin, start, dir);
         dist = VectorNormalize(dir);
 
-        if (dist <= self->speed * 2 * FRAMETIME) {
+        // Home once the remaining gap is within one tick of pull.  id's test
+        // is speed * 2 * frame_time, two of its 40 Hz ticks (125 units at
+        // 2500 u/s).  A literal 125 here would let the 250-unit 10 Hz step
+        // fly straight past the parasite; two of OUR ticks (500) lands it
+        // 100-200 ms early.  One 10 Hz tick is the closest match in time.
+        if (dist <= self->speed * FRAMETIME) {
             // home; let the parasite know and go away next frame
             self->style = 3;
             self->think = proboscis_reset;
@@ -695,6 +725,9 @@ void proboscis_think(edict_t *self)
                 T_Damage(self->enemy, self, self->owner, dir, self->s.origin, vec3_origin,
                          2, 0, DAMAGE_NO_KNOCKBACK, MOD_UNKNOWN);
                 self->owner->health = min(self->owner->max_health, self->owner->health + 2);
+                // [rerelease] the heal can lift it back over the pain-skin line
+                if (M_RereleaseGame())
+                    M_SetDamageSkin(self->owner);
                 self->timestamp = level.framenum + 1;
             }
 
@@ -742,7 +775,8 @@ static void fire_proboscis(edict_t *self, vec3_t start, vec3_t dir, float speed)
     tip->movetype = MOVETYPE_FLYMISSILE;
     tip->owner = self;
     self->proboscus = tip;
-    tip->clipmask = MASK_SHOT;
+    // corpses do not stop the barb
+    tip->clipmask = MASK_SHOT & ~CONTENTS_DEADMONSTER;
     VectorCopy(start, tip->s.origin);
     VectorCopy(start, tip->s.old_origin);
     tip->speed = speed;
@@ -774,7 +808,9 @@ static void parasite_fire_proboscis(edict_t *self)
         proboscis_reset(self->proboscus);
 
     parasite_get_proboscis_start(self, start);
-    PredictAim(self->enemy, start, PROBOSCIS_SPEED, false, crandom() * 0.03f, dir, NULL);
+    // the rerelease misses by up to 0.1 s of lead either way
+    PredictAimEx(self, self->enemy, start, PROBOSCIS_SPEED, false,
+               crandom() * (M_RereleaseGame() ? 0.1f : 0.03f), dir, NULL);
 
     fire_proboscis(self, start, dir, PROBOSCIS_SPEED);
 }
@@ -919,10 +955,21 @@ void parasite_attack(edict_t *self)
 {
     // the rerelease fires a physical barb on a tether; the classic drain is
     // a hitscan on the same frames
-    if (M_RereleaseGame())
+    if (M_RereleaseGame()) {
+        vec3_t  start;
+
+        // only fire with a clear line from the mouth, and reel in any barb
+        // still left out before launching another
+        if (!M_CheckClearShot(self, parasite_drain_offsets[0], start))
+            return;
+
+        if (self->proboscus && self->proboscus->style != 2)
+            proboscis_retract(self->proboscus);
+
         self->monsterinfo.currentmove = &parasite_move_fire_proboscis;
-    else
+    } else {
         self->monsterinfo.currentmove = &parasite_move_drain;
+    }
 }
 
 

@@ -163,7 +163,8 @@ static edict_t *fixbot_FindDeadMonster(edict_t *self)
 static void fixbot_set_fly_parameters(edict_t *self, bool heal, bool weld)
 {
     self->monsterinfo.fly_position_time = 0;
-    self->monsterinfo.fly_acceleration = 5.0f;
+    /* the rerelease's 5 is per 40 Hz tick; scale it as monster_fly_setup does */
+    self->monsterinfo.fly_acceleration = 5.0f * FLY_TICK_SCALE;
     self->monsterinfo.fly_speed = 110.0f;
     self->monsterinfo.fly_buzzard = false;
 
@@ -424,8 +425,14 @@ static void blastoff(edict_t *self, const vec3_t start, const vec3_t aimdir,
     hspread += (self->s.frame - FRAME_takeoff_01);
     vspread += (self->s.frame - FRAME_takeoff_01);
 
-    fire_bullet(self, (float *)start, (float *)aimdir, damage, kick,
-            hspread, vspread, MOD_UNKNOWN);
+    /* [rerelease] the wash kicks up TE_SHOTGUN puffs, not TE_GUNSHOT; a
+       one-pellet fire_shotgun is fire_bullet with that impact */
+    if (M_RereleaseGame())
+        fire_shotgun(self, (float *)start, (float *)aimdir, damage, kick,
+                hspread, vspread, 1, MOD_UNKNOWN);
+    else
+        fire_bullet(self, (float *)start, (float *)aimdir, damage, kick,
+                hspread, vspread, MOD_UNKNOWN);
 }
 
 void fly_vertical(edict_t *self)
@@ -450,7 +457,9 @@ void fly_vertical(edict_t *self)
         self->goalentity->think = G_FreeEdict;
         self->monsterinfo.currentmove = &fixbot_move_stand;
         self->goalentity = self->enemy = NULL;
-        return;
+        /* [rerelease] the last frame still sprays its exhaust */
+        if (!M_RereleaseGame())
+            return;
     }
 
     /* kick up some particles */
@@ -698,11 +707,33 @@ mmove_t fixbot_move_start_attack = {
 /*
  * The repair beam, and the resurrection at the end of it.
  */
+/* The rerelease's fixbot_laser_update: from just in front of the fixbot, at
+   the middle of what it is repairing, wobbling while it works as a medic. */
+void fixbot_laser_update(edict_t *laser)
+{
+    edict_t *self = laser->owner;
+    vec3_t  start, dir;
+
+    AngleVectors(self->s.angles, dir, NULL, NULL);
+    VectorMA(self->s.origin, 16, dir, start);
+
+    if (self->enemy && self->enemy->inuse && self->health > 0) {
+        vec3_t point;
+        VectorAdd(self->enemy->absmin, self->enemy->absmax, point);
+        VectorScale(point, 0.5f, point);
+        if (self->monsterinfo.aiflags & AI_MEDIC)
+            point[0] += sinf(level.time) * 8;
+        VectorSubtract(point, self->s.origin, dir);
+        VectorNormalize(dir);
+    }
+
+    VectorCopy(start, laser->s.origin);
+    VectorCopy(dir, laser->movedir);
+    gi.linkentity(laser);
+}
+
 void fixbot_fire_laser(edict_t *self)
 {
-    edict_t *beam;
-    vec3_t   dir, start;
-
     /* critter dun got blown up while bein' fixed */
     if (!self->enemy || !self->enemy->inuse ||
         self->enemy->health <= self->enemy->gib_health) {
@@ -711,19 +742,12 @@ void fixbot_fire_laser(edict_t *self)
         return;
     }
 
-    /* A one-frame beam, as for monster_guardian. dmg 0 marks it a HEALING
-       beam - dabeam_hit skips T_Damage for a non-positive dmg. */
-    AngleVectors(self->s.angles, dir, NULL, NULL);
-    VectorMA(self->s.origin, 16, dir, start);
-
-    beam = G_Spawn();
-    VectorCopy(start, beam->s.origin);
-    VectorCopy(self->s.angles, beam->s.angles);
-    beam->enemy = self->enemy;
-    beam->owner = self;
-    beam->dmg = 0;
-    beam->classname = "fixbot_healbeam";
-    monster_dabeam(beam);
+    /* A negative dmg is the healer ray: dabeam_update gives health back
+       instead of doing damage. The rerelease fires it at -1 but heals on
+       EVERY 40 Hz tick (fixbot_laser_update calls dabeam_update with damage
+       from its postthink) plus twice per fire call - about 6 per 100 ms.
+       This tree heals once per 10 Hz fire call, so it carries all six. */
+    monster_fire_dabeam(self, -6, false, DABEAM_FIXBOT, 0);
 
     if (self->enemy->health > (self->enemy->mass / 10)) {
         vec3_t  maxs;
@@ -737,6 +761,10 @@ void fixbot_fire_laser(edict_t *self)
         self->enemy->targetname = NULL;
         self->enemy->combattarget = NULL;
         self->enemy->deathtarget = NULL;
+        if (M_RereleaseGame()) {
+            self->enemy->healthtarget = NULL;
+            self->enemy->itemtarget = NULL;
+        }
         self->enemy->monsterinfo.healer = self;
 
         VectorCopy(self->enemy->maxs, maxs);
@@ -801,7 +829,9 @@ void fixbot_fire_laser(edict_t *self)
                 }
                 self->enemy = NULL;
                 self->oldenemy = NULL;
-                self->monsterinfo.aiflags &= ~AI_MEDIC;
+                /* [rerelease] id leaves AI_MEDIC set after a resurrect */
+                if (!M_RereleaseGame())
+                    self->monsterinfo.aiflags &= ~AI_MEDIC;
                 if (!FindTarget(self)) {
                     self->monsterinfo.pause_framenum = INT_MAX;
                     self->monsterinfo.stand(self);
@@ -810,7 +840,8 @@ void fixbot_fire_laser(edict_t *self)
             }
         }
 
-        self->monsterinfo.aiflags &= ~AI_MEDIC;
+        if (!M_RereleaseGame())
+            self->monsterinfo.aiflags &= ~AI_MEDIC;
         self->monsterinfo.currentmove = &fixbot_move_stand;
     } else {
         self->enemy->monsterinfo.aiflags |= AI_RESURRECTING;
@@ -977,7 +1008,9 @@ void fixbot_fire_blaster(edict_t *self)
 
     if (!visible(self, self->enemy)) {
         self->monsterinfo.currentmove = &fixbot_move_run;
-        return;
+        /* [rerelease] it goes back to running but still lets this shot go */
+        if (!M_RereleaseGame())
+            return;
     }
 
     AngleVectors(self->s.angles, forward, right, up);

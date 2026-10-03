@@ -70,6 +70,12 @@ void turret_attack(edict_t *self);
 extern void Move_Calc(edict_t *ent, vec3_t dest, void (*func)(edict_t *));
 
 mmove_t turret_move_fire;
+mmove_t turret_move_fire_rr;
+mmove_t turret_move_fire_blind;
+
+/* [rerelease] the gun whirs while it deploys and clunks when it is ready */
+static int sound_moved;
+static int sound_moving;
 
 /* [rerelease] spawnflag 262144 turns the laser sight off */
 #define SPAWNFLAG_TURRET_NO_LASERSIGHT 0x40000
@@ -170,6 +176,22 @@ TurretAim(edict_t *self)
 		return;
 	}
 
+	/* [rerelease] blindfire aims at where the enemy was last seen, at head
+	   height if they were below it and at their feet if above */
+	if (self->monsterinfo.currentmove == &turret_move_fire_blind)
+	{
+		VectorCopy(self->monsterinfo.blind_fire_target, end);
+
+		if (self->enemy->s.origin[2] < self->monsterinfo.blind_fire_target[2])
+		{
+			end[2] += self->enemy->viewheight + 10;
+		}
+		else
+		{
+			end[2] += self->enemy->mins[2] - 10;
+		}
+	}
+	else
 	{
 		VectorCopy(self->enemy->s.origin, end);
 
@@ -340,6 +362,9 @@ TurretAim(edict_t *self)
 			break;
 	}
 
+	/* yaw_speed is degrees per 100 ms frame. The rerelease turns yaw_speed/4
+	   per 40 Hz tick and runs this every tick while it is up (the run move
+	   is AI_HIGH_TICK_RATE), which comes to the same yaw_speed per frame. */
 	current = self->s.angles[PITCH];
 	speed = self->yaw_speed;
 
@@ -475,6 +500,17 @@ mmove_t turret_move_ready_gun = {
 void
 turret_ready_gun(edict_t *self)
 {
+	/* [rerelease] start the deploy loop once, not on every call */
+	if (M_RereleaseGame())
+	{
+		if (self->monsterinfo.currentmove != &turret_move_ready_gun)
+		{
+			self->monsterinfo.currentmove = &turret_move_ready_gun;
+			self->s.sound = sound_moving;
+		}
+
+		return;
+	}
 
 	self->monsterinfo.currentmove = &turret_move_ready_gun;
 }
@@ -528,6 +564,232 @@ turret_run(edict_t *self)
 	else
 	{
 		self->monsterinfo.currentmove = &turret_move_run;
+
+		/* [rerelease] deployed: stop the loop and clunk into place. id keeps
+		   the loop in monsterinfo.weapon_sound; it is s.sound here, which
+		   the turret uses for nothing else */
+		if (M_RereleaseGame() && self->s.sound)
+		{
+			self->s.sound = 0;
+			gi.sound(self, CHAN_WEAPON, sound_moved, 1.0f, ATTN_NORM, 0);
+		}
+	}
+}
+
+/*
+ * [rerelease] rogue/m_rogue_turret.cpp TurretFire, as the rerelease has it.
+ *
+ * Fixed projectile speeds (rocket 650, blaster 800), and a lead - aimed with
+ * the projectile's real speed - only on a skill/5 roll, with a random
+ * under-lead that shrinks as the skill goes up. The machinegun aims 0.3 s
+ * behind the enemy and keeps firing at the blindfire point once it loses
+ * sight; the projectile guns still need to see their target.
+ */
+static void
+TurretFireRerelease(edict_t *self)
+{
+	vec3_t forward;
+	vec3_t start, end, dir;
+	float dist, chance;
+	trace_t trace;
+	int rocketSpeed;
+
+	TurretAim(self);
+
+	if (!self->enemy || !self->enemy->inuse)
+	{
+		return;
+	}
+
+	if (self->monsterinfo.aiflags & AI_LOST_SIGHT)
+	{
+		VectorCopy(self->monsterinfo.blind_fire_target, end);
+	}
+	else
+	{
+		VectorCopy(self->enemy->s.origin, end);
+	}
+
+	VectorSubtract(end, self->s.origin, dir);
+	VectorNormalize(dir);
+	AngleVectors(self->s.angles, forward, NULL, NULL);
+	chance = DotProduct(dir, forward);
+
+	if (chance < 0.98f)
+	{
+		return;
+	}
+
+	if (self->spawnflags & SPAWN_ROCKET)
+	{
+		rocketSpeed = 650;
+	}
+	else if (self->spawnflags & SPAWN_BLASTER)
+	{
+		rocketSpeed = 800;
+	}
+	else
+	{
+		rocketSpeed = 0;
+	}
+
+	if (!(self->spawnflags & SPAWN_MACHINEGUN) && !visible(self, self->enemy))
+	{
+		return;
+	}
+
+	VectorCopy(self->s.origin, start);
+
+	/* aim for the head. */
+	if (!(self->monsterinfo.aiflags & AI_LOST_SIGHT))
+	{
+		if (self->enemy->client)
+		{
+			end[2] += self->enemy->viewheight;
+		}
+		else
+		{
+			end[2] += 22;
+		}
+	}
+
+	VectorSubtract(end, start, dir);
+	dist = VectorLength(dir);
+
+	/* predictive fire; on harder skills it goes straight at the enemy less
+	   and leads them more */
+	if (!(self->monsterinfo.aiflags & AI_LOST_SIGHT))
+	{
+		if (self->spawnflags & SPAWN_MACHINEGUN)
+		{
+			PredictAimEx(self, self->enemy, start, 0, true, 0.3f, dir, NULL);
+		}
+		else if (random() < skill->value / 5.0f)
+		{
+			PredictAimEx(self, self->enemy, start, (float)rocketSpeed, true,
+					(random() * (3.0f - skill->value)) / 3.0f -
+					random() * (0.05f * (3.0f - skill->value)),
+					dir, NULL);
+		}
+	}
+
+	VectorNormalize(dir);
+	trace = gi.trace(start, NULL, NULL, end, self, MASK_PROJECTILE);
+
+	if ((trace.ent != self->enemy) && (trace.ent != world))
+	{
+		return;
+	}
+
+	if (self->spawnflags & SPAWN_BLASTER)
+	{
+		monster_fire_blaster(self, start, dir, TURRET_BLASTER_DAMAGE_RR,
+				rocketSpeed, MZ2_TURRET_BLASTER, EF_BLASTER);
+	}
+	else if (self->spawnflags & SPAWN_MACHINEGUN)
+	{
+		if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME))
+		{
+			/* start of a burst: freeze on this frame, spin the barrels up,
+			   and wait a second before the first round */
+			self->monsterinfo.aiflags |= AI_HOLD_FRAME;
+			self->monsterinfo.duck_wait_framenum = level.framenum +
+					(2.0f + random() * skill->value) * BASE_FRAMERATE;
+			self->monsterinfo.next_duck_framenum = level.framenum + 1 * BASE_FRAMERATE;
+			gi.sound(self, CHAN_VOICE,
+					gi.soundindex("weapons/chngnu1a.wav"), 1, ATTN_NORM, 0);
+		}
+		else
+		{
+			if (self->monsterinfo.next_duck_framenum < level.framenum &&
+				self->monsterinfo.melee_debounce_framenum <= level.framenum)
+			{
+				monster_fire_bullet(self, start, dir, TURRET_BULLET_DAMAGE_RR,
+						0, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD,
+						MZ2_TURRET_MACHINEGUN);
+				/* 10hz - one round per game frame in this tree */
+				self->monsterinfo.melee_debounce_framenum = level.framenum + 1;
+			}
+
+			if (self->monsterinfo.duck_wait_framenum < level.framenum)
+			{
+				self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+			}
+		}
+	}
+	else if (self->spawnflags & SPAWN_ROCKET)
+	{
+		if (dist * trace.fraction > 72)
+		{
+			monster_fire_rocket(self, start, dir, 40, rocketSpeed, MZ2_TURRET_ROCKET);
+		}
+	}
+}
+
+/*
+ * [rerelease] rogue's blindfire shot: through the wall at where the enemy
+ * was last seen. Only the projectile turrets do it - the machinegun keeps
+ * shooting from TurretFire instead.
+ */
+void
+TurretFireBlind(edict_t *self)
+{
+	vec3_t forward;
+	vec3_t start, end, dir;
+	float chance;
+	int rocketSpeed = 550;
+
+	TurretAim(self);
+
+	if (!self->enemy || !self->enemy->inuse)
+	{
+		return;
+	}
+
+	VectorSubtract(self->monsterinfo.blind_fire_target, self->s.origin, dir);
+	VectorNormalize(dir);
+	AngleVectors(self->s.angles, forward, NULL, NULL);
+	chance = DotProduct(dir, forward);
+
+	if (chance < 0.98f)
+	{
+		return;
+	}
+
+	if (self->spawnflags & SPAWN_ROCKET)
+	{
+		if (skill->value == 2)
+		{
+			rocketSpeed += (int)(random() * 200);
+		}
+		else if (skill->value == 3)
+		{
+			rocketSpeed += (int)(100 + random() * 200);
+		}
+	}
+
+	VectorCopy(self->s.origin, start);
+	VectorCopy(self->monsterinfo.blind_fire_target, end);
+
+	if (self->enemy->s.origin[2] < self->monsterinfo.blind_fire_target[2])
+	{
+		end[2] += self->enemy->viewheight + 10;
+	}
+	else
+	{
+		end[2] += self->enemy->mins[2] - 10;
+	}
+
+	VectorSubtract(end, start, dir);
+	VectorNormalize(dir);
+
+	if (self->spawnflags & SPAWN_BLASTER)
+	{
+		monster_fire_blaster(self, start, dir, 20, 1000, MZ2_TURRET_BLASTER, EF_BLASTER);
+	}
+	else if (self->spawnflags & SPAWN_ROCKET)
+	{
+		monster_fire_rocket(self, start, dir, 50, rocketSpeed, MZ2_TURRET_ROCKET);
 	}
 }
 
@@ -540,6 +802,12 @@ TurretFire(edict_t *self)
 	trace_t trace;
 	int rocketSpeed = 0;
 
+
+	if (M_RereleaseGame())
+	{
+		TurretFireRerelease(self);
+		return;
+	}
 
 	TurretAim(self);
 
@@ -698,23 +966,92 @@ mmove_t turret_move_fire = {
    	turret_run
 };
 
+/*
+ * [rerelease] the fire moves are AI_HIGH_TICK_RATE: all four frames play in
+ * one 100 ms frame (fire, then three more aims - fire_blind aims three times
+ * and then fires). At 10 Hz that is one frame that aims a full yaw_speed and
+ * fires; the pow02-04 recoil frames cannot be shown in the time.
+ */
+mframe_t turret_frames_fire_rr[] = {
+	{ai_run, 0, TurretFire}
+};
+
+mmove_t turret_move_fire_rr = {
+	FRAME_pow01,
+   	FRAME_pow01,
+   	turret_frames_fire_rr,
+   	turret_run
+};
+
+mframe_t turret_frames_fire_blind[] = {
+	{ai_run, 0, TurretFireBlind}
+};
+
+mmove_t turret_move_fire_blind = {
+	FRAME_pow01,
+   	FRAME_pow01,
+   	turret_frames_fire_blind,
+   	turret_run
+};
+
 void
 turret_attack(edict_t *self)
 {
+	float r, chance;
 
 	if (self->s.frame < FRAME_run01)
 	{
 		turret_ready_gun(self);
+		return;
 	}
-	else
+
+	if (!M_RereleaseGame())
 	{
 		self->monsterinfo.nextframe = FRAME_pow01;
 		self->monsterinfo.currentmove = &turret_move_fire;
+		return;
 	}
-	/* rogue's third arm here was blind fire - shooting at the enemy's last
-	   known position through a wall. That AI (monsterinfo.blindfire,
-	   blind_fire_target, blind_fire_delay, AS_BLIND) does not exist in this
-	   tree, so the turret never enters that state and the arm is dropped. */
+
+	if (self->monsterinfo.attack_state != AS_BLIND)
+	{
+		self->monsterinfo.currentmove = &turret_move_fire_rr;
+		return;
+	}
+
+	/* [rerelease] blindfire: shoot at the enemy's last known position
+	   through the wall. Certain right after losing them, a long shot later
+	   on. */
+	if (self->monsterinfo.blind_fire_delay < 1.0f * BASE_FRAMERATE)
+	{
+		chance = 1.0f;
+	}
+	else if (self->monsterinfo.blind_fire_delay < 7.5f * BASE_FRAMERATE)
+	{
+		chance = 0.4f;
+	}
+	else
+	{
+		chance = 0.1f;
+	}
+
+	r = random();
+
+	/* minimum of 3.4 seconds, plus 0-4, before the next attempt */
+	self->monsterinfo.blind_fire_delay += (3.4f + 4.0f * random()) * BASE_FRAMERATE;
+
+	/* don't shoot at the origin */
+	if (VectorEmpty(self->monsterinfo.blind_fire_target))
+	{
+		return;
+	}
+
+	/* don't shoot if the dice say not to */
+	if (r > chance)
+	{
+		return;
+	}
+
+	self->monsterinfo.currentmove = &turret_move_fire_blind;
 }
 
 void
@@ -731,6 +1068,60 @@ turret_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /* 
 	vec3_t start;
 	edict_t *base;
 
+	/* [rerelease] debris as id throws it, the base becomes a team of its
+	   own, and the turret leaves its own wreck behind as the head gib */
+	if (M_RereleaseGame())
+	{
+		static const gib_def_t turret_debris[] = {
+			{ 2, "models/objects/debris1/tris.md2", GIB_METALLIC | GIB_DEBRIS, 1.0f }
+		};
+
+		AngleVectors(self->s.angles, forward, NULL, NULL);
+		VectorMA(self->s.origin, 1, forward, self->s.origin);
+
+		ThrowGibs(self, 2, turret_debris, 1);
+		ThrowGibs(self, 1, turret_debris, 1);
+
+		gi.WriteByte(svc_temp_entity);
+		gi.WriteByte(TE_PLAIN_EXPLOSION);
+		gi.WritePosition(self->s.origin);
+		gi.multicast(self->s.origin, MULTICAST_PHS);
+
+		if (self->teamchain)
+		{
+			base = self->teamchain;
+			base->solid = SOLID_BBOX;
+			base->takedamage = DAMAGE_NO;
+			base->movetype = MOVETYPE_NONE;
+			base->teammaster = base;
+			base->teamchain = NULL;
+			base->flags &= ~FL_TEAMSLAVE;
+			base->flags |= FL_TEAMMASTER;
+			gi.linkentity(base);
+
+			self->teammaster = self->teamchain = NULL;
+			self->flags &= ~(FL_TEAMSLAVE | FL_TEAMMASTER);
+		}
+
+		if (self->target)
+		{
+			if (self->enemy && self->enemy->inuse)
+			{
+				G_UseTargets(self, self->enemy);
+			}
+			else
+			{
+				G_UseTargets(self, self);
+			}
+		}
+
+		TurretLaserSightOff(self);
+
+		ThrowHead(self, "models/monsters/turret/tris.md2", damage,
+				GIB_SKINNED | GIB_METALLIC | GIB_DEBRIS);
+		self->s.frame = 14;
+		return;
+	}
 
 	gi.WriteByte(svc_temp_entity);
 	gi.WriteByte(TE_PLAIN_EXPLOSION);
@@ -829,6 +1220,12 @@ turret_wall_spawn(edict_t *turret)
 	ent->solid = SOLID_NOT;
 
 	ent->teammaster = turret;
+
+	if (M_RereleaseGame())
+	{
+		turret->flags |= FL_TEAMMASTER;
+	}
+
 	turret->teammaster = turret;
 	turret->teamchain = ent;
 	ent->teamchain = NULL;
@@ -847,6 +1244,11 @@ turret_wake(edict_t *self)
 	/* the wall section will call this when it stops moving. */
 	if (self->flags & FL_TEAMSLAVE)
 	{
+		if (M_RereleaseGame())
+		{
+			self->s.sound = 0;
+		}
+
 		return;
 	}
 
@@ -940,9 +1342,19 @@ turret_activate(edict_t *self, edict_t *other, edict_t *activator)
 		/* start up the wall section */
 		VectorMA(self->teamchain->s.origin, 32, forward, endpos);
 		Move_Calc(self->teamchain, endpos, turret_wake);
+
+		/* [rerelease] the wall section whirs as it slides out, in place of
+		   rogue's door sound */
+		if (M_RereleaseGame())
+		{
+			base->s.sound = sound_moving;
+		}
 	}
 
-	gi.sound(self, CHAN_VOICE, gi.soundindex("world/dr_short.wav"), 1, ATTN_NORM, 0);
+	if (!M_RereleaseGame())
+	{
+		gi.sound(self, CHAN_VOICE, gi.soundindex("world/dr_short.wav"), 1, ATTN_NORM, 0);
+	}
 }
 
 /* checkattack .. ignore range, just attack if available */
@@ -974,8 +1386,36 @@ turret_checkattack(edict_t *self)
 			if ((self->enemy->solid != SOLID_NOT) || (tr.fraction < 1.0))
 			{
 				/* if we can't see our target, and we're not blocked by a monster, go into blind fire if available */
-				if ((!(tr.ent->svflags & SVF_MONSTER)) && (!visible(self, self->enemy)))
+				if (M_RereleaseGame() && (!(tr.ent->svflags & SVF_MONSTER)) &&
+					(!visible(self, self->enemy)) && self->monsterinfo.blindfire &&
+					(self->monsterinfo.blind_fire_delay <= 10 * BASE_FRAMERATE))
 				{
+					if (level.framenum < self->monsterinfo.attack_finished)
+					{
+						return false;
+					}
+
+					if (level.framenum < (self->monsterinfo.trail_framenum +
+										  self->monsterinfo.blind_fire_delay))
+					{
+						/* wait for our time */
+						return false;
+					}
+
+					/* make sure we're not going to shoot something we don't want to shoot */
+					tr = gi.trace(spot1, NULL, NULL, self->monsterinfo.blind_fire_target,
+							self, CONTENTS_MONSTER);
+
+					if (tr.allsolid || tr.startsolid ||
+						((tr.fraction < 1.0f) && (tr.ent != self->enemy) && !tr.ent->client))
+					{
+						return false;
+					}
+
+					self->monsterinfo.attack_state = AS_BLIND;
+					self->monsterinfo.attack_finished = level.framenum +
+							(0.5f + 2.0f * random()) * BASE_FRAMERATE;
+					return true;
 				}
 
 				return false;
@@ -990,7 +1430,9 @@ turret_checkattack(edict_t *self)
 
 	enemy_range = range(self, self->enemy);
 
-	if (enemy_range == RANGE_MELEE)
+	/* rogue never had this - the turret ignores range, as the comment on
+	   this function says - so it is kept for the original game only */
+	if (!M_RereleaseGame() && (enemy_range == RANGE_MELEE))
 	{
 		/* don't always melee in easy mode */
 		if ((skill->value == 0) && (rand() & 3))
@@ -1062,6 +1504,12 @@ SP_monster_turret(edict_t *self)
 	gi.soundindex("world/dr_short.wav");
 	gi.modelindex("models/objects/debris1/tris.md2");
 
+	if (M_RereleaseGame())
+	{
+		sound_moved = gi.soundindex("turret/moved.wav");
+		sound_moving = gi.soundindex("turret/moving.wav");
+	}
+
 	self->s.modelindex = gi.modelindex("models/monsters/turret/tris.md2");
 
 	VectorSet(self->mins, -12, -12, -12);
@@ -1073,6 +1521,22 @@ SP_monster_turret(edict_t *self)
 	self->gib_health = -100;
 	self->mass = 250;
 
+	/* [rerelease] 50 health (behind 50 armour, below), scaled by the map's
+	   health_multiplier here rather than in monster_start: a wall unit does
+	   not reach monster_start until it is triggered, long after its spawn
+	   keys are gone */
+	if (M_RereleaseGame())
+	{
+		self->health = 50;
+
+		if (st.health_multiplier > 0)
+		{
+			self->health = (int)(self->health * st.health_multiplier);
+		}
+
+		st.health_multiplier = 0;
+	}
+
 	/* [rerelease] turrets wear 50 points of combat armour - the only monster
 	   in the game that wears any ordinary armour at all */
 	if (M_RereleaseGame())
@@ -1081,6 +1545,13 @@ SP_monster_turret(edict_t *self)
 		self->monsterinfo.armor_power = 50;
 	}
 	self->yaw_speed = 45;
+
+	/* [rerelease] turns 10 degrees per frame per skill level; skill 0 leaves
+	   it at 0, which stationarymonster_start_go raises to its default 20 */
+	if (M_RereleaseGame())
+	{
+		self->yaw_speed = 10 * (int)skill->value;
+	}
 
 	self->flags |= FL_MECHANICAL;
 
@@ -1175,10 +1646,21 @@ SP_monster_turret(edict_t *self)
 		stationarymonster_start(self);
 	}
 
+	/* [rerelease] a turret with several weapon flags set is normalised to
+	   exactly one, machinegun over rocket over blaster - the order the skin
+	   is picked in. Rogue left them all set, and TurretFire's own order
+	   (blaster first) then fired a different gun from the one it wore. */
 	if (self->spawnflags & SPAWN_MACHINEGUN)
 	{
 		gi.soundindex("infantry/infatck1.wav");
 		self->s.skinnum = 1;
+
+		if (M_RereleaseGame())
+		{
+			gi.soundindex("weapons/chngnu1a.wav");
+			self->spawnflags &= ~SPAWN_WEAPONCHOICE;
+			self->spawnflags |= SPAWN_MACHINEGUN;
+		}
 	}
 	else if (self->spawnflags & SPAWN_ROCKET)
 	{
@@ -1186,6 +1668,12 @@ SP_monster_turret(edict_t *self)
 		gi.modelindex("models/objects/rocket/tris.md2");
 		gi.soundindex("chick/chkatck2.wav");
 		self->s.skinnum = 2;
+
+		if (M_RereleaseGame())
+		{
+			self->spawnflags &= ~SPAWN_WEAPONCHOICE;
+			self->spawnflags |= SPAWN_ROCKET;
+		}
 	}
 	else
 	{
@@ -1197,9 +1685,21 @@ SP_monster_turret(edict_t *self)
 		gi.modelindex("models/objects/laser/tris.md2");
 		gi.soundindex("misc/lasfly.wav");
 		gi.soundindex("soldier/solatck2.wav");
+
+		if (M_RereleaseGame())
+		{
+			self->spawnflags &= ~SPAWN_WEAPONCHOICE;
+			self->spawnflags |= SPAWN_BLASTER;
+		}
 	}
 
 	/*  turrets don't get mad at monsters, and visa versa */
 	self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
+
+	/* [rerelease] the projectile turrets blindfire */
+	if (M_RereleaseGame() && (self->spawnflags & (SPAWN_ROCKET | SPAWN_BLASTER)))
+	{
+		self->monsterinfo.blindfire = true;
+	}
 
 }

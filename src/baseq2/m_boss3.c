@@ -31,6 +31,17 @@ void Use_Boss3(edict_t *ent, edict_t *other, edict_t *activator)
     gi.WriteByte(svc_temp_entity);
     gi.WriteByte(TE_BOSSTPORT);
     gi.WritePosition(ent->s.origin);
+
+    // [rerelease] heard through the PHS, and the stand-in only hides, so the
+    // map can trigger it (and the teleport effect) again
+    if (M_RereleaseGame()) {
+        gi.multicast(ent->s.origin, MULTICAST_PHS);
+        ent->svflags |= SVF_NOCLIENT;
+        ent->solid = SOLID_NOT;
+        gi.linkentity(ent);
+        return;
+    }
+
     gi.multicast(ent->s.origin, MULTICAST_PVS);
     G_FreeEdict(ent);
 }

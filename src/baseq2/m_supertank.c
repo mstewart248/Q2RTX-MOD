@@ -38,10 +38,13 @@ static int  sound_search2;
 static  int tread_sound;
 
 void BossExplode(edict_t *self);
+void BossExplodeTick(edict_t *self);
 
 void TreadSound(edict_t *self)
 {
-    gi.sound(self, CHAN_VOICE, tread_sound, 1, ATTN_NORM, 0);
+    // [rerelease] on the body channel, so the treads no longer cut off a
+    // pain or search sound on the voice channel
+    gi.sound(self, M_RereleaseGame() ? CHAN_BODY : CHAN_VOICE, tread_sound, 1, ATTN_NORM, 0);
 }
 
 void supertank_search(edict_t *self)
@@ -57,6 +60,9 @@ void supertank_dead(edict_t *self);
 // RAFAEL - monster_boss5 is the supertank with a power shield. Rogue's own
 // value; nothing else on the supertank uses bit 3.
 #define SPAWNFLAG_SUPERTANK_POWERSHIELD     8
+// [rerelease] n64: the death animation's last six frames loop (BossLoop) while
+// the explosions keep going. SP_monster_supertank sets it on every q64/ map.
+#define SPAWNFLAG_SUPERTANK_LONG_DEATH      16
 
 void supertankRocket(edict_t *self);
 void supertankMachineGun(edict_t *self);
@@ -273,31 +279,77 @@ mframe_t supertank_frames_pain1 [] = {
 };
 mmove_t supertank_move_pain1 = {FRAME_pain1_1, FRAME_pain1_4, supertank_frames_pain1, supertank_run};
 
+/*
+=================
+BossLoop
+
+[rerelease] SPAWNFLAG_SUPERTANK_LONG_DEATH: send the death animation back to
+death_19 `count` more times before letting it finish.
+=================
+*/
+static void BossLoop(edict_t *self)
+{
+    if (!(self->spawnflags & SPAWNFLAG_SUPERTANK_LONG_DEATH))
+        return;
+
+    if (self->count)
+        self->count--;
+    else
+        self->spawnflags &= ~SPAWNFLAG_SUPERTANK_LONG_DEATH;
+
+    self->monsterinfo.nextframe = FRAME_death_19;
+}
+
+/*
+=================
+supertank_death_last
+
+The last death frame. Classic: the original BossExplode sequence takes over
+the supertank's think. [rerelease] the explosions have been going since the
+start of the animation (BossExplodeTick); keep them going, loop for the N64
+long death, and let supertank_dead gib once the animation is done.
+=================
+*/
+static void supertank_death_last(edict_t *self)
+{
+    if (!M_RereleaseGame()) {
+        BossExplode(self);
+        return;
+    }
+
+    BossExplodeTick(self);
+    BossLoop(self);
+}
+
+// [rerelease] id's BossExplode runs on the FIRST frame and spawns a helper that
+// pops explosions over the body every 50-200 ms; BossExplodeTick does the same
+// from each frame here (a no-op in the classic game). The first frame is
+// empty, matching the helper's 75-250 ms start delay.
 mframe_t supertank_frames_death1 [] = {
     { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  BossExplode }
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  BossExplodeTick },
+    { ai_move,    0,  supertank_death_last }
 };
 mmove_t supertank_move_death = {FRAME_death_1, FRAME_death_24, supertank_frames_death1, supertank_dead};
 
@@ -356,14 +408,15 @@ static void supertankGrenade(edict_t *self)
     AngleVectors(self->s.angles, forward, right, NULL);
     M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
 
-    PredictAim(self->enemy, start, 0, false, crandom() * 0.1f, forward, aim_point);
+    PredictAimEx(self, self->enemy, start, 0, false, crandom() * 0.1f, forward, aim_point);
 
     for (speed = 500.0f; speed < 1000.0f; speed += 100.0f) {
         VectorCopy(forward, aim);
         if (!M_CalculatePitchToFire(self, aim_point, start, aim, speed, 2.5f, true, false))
             continue;
 
-        monster_fire_grenade(self, start, aim, 50, speed, flash_number);
+        // the solved arc, with none of fire_grenade's classic 200 up
+        monster_fire_grenade_ex(self, start, aim, 50, speed, flash_number, 0.0f, 0.0f);
         break;
     }
 }
@@ -409,6 +462,23 @@ mframe_t supertank_frames_attack3[] = {
 };
 mmove_t supertank_move_attack3 = {FRAME_attak3_1, FRAME_attak3_27, supertank_frames_attack3, supertank_run};
 
+/*
+=================
+supertank_ai_rocket
+
+[rerelease] id keeps turning to face the enemy (ai_charge) through all three
+rocket shots and the recovery after them, frames 1-21; the classic table only
+did for the first eight.
+=================
+*/
+static void supertank_ai_rocket(edict_t *self, float dist)
+{
+    if (M_RereleaseGame())
+        ai_charge(self, dist);
+    else
+        ai_move(self, dist);
+}
+
 mframe_t supertank_frames_attack2[] = {
     { ai_charge,  0,  NULL },
     { ai_charge,  0,  NULL },
@@ -418,19 +488,19 @@ mframe_t supertank_frames_attack2[] = {
     { ai_charge,  0,  NULL },
     { ai_charge,  0,  NULL },
     { ai_charge,  0,  supertankRocket },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  supertankRocket },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  supertankRocket },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, supertankRocket },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, supertankRocket },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
+    { supertank_ai_rocket, 0, NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
     { ai_move,    0,  NULL },
@@ -472,6 +542,17 @@ mmove_t supertank_move_end_attack1 = {FRAME_attak1_7, FRAME_attak1_20, supertank
 
 void supertank_reattack1(edict_t *self)
 {
+    // [rerelease] the burst runs until the time supertank_attack picked
+    // (1.5-2.7 s), then carries on 30% of the time
+    if (M_RereleaseGame()) {
+        if (visible(self, self->enemy) &&
+            (self->timestamp >= level.framenum || random() < 0.3f))
+            self->monsterinfo.currentmove = &supertank_move_attack1;
+        else
+            self->monsterinfo.currentmove = &supertank_move_end_attack1;
+        return;
+    }
+
     if (visible(self, self->enemy))
         if (random() < 0.9f)
             self->monsterinfo.currentmove = &supertank_move_attack1;
@@ -488,6 +569,41 @@ void supertank_pain(edict_t *self, edict_t *other, float kick, int damage)
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
+
+    // [rerelease] no pain during the rockets on every skill, and the pain
+    // sound plays even in nightmare, where there is no pain animation
+    if (M_RereleaseGame()) {
+        if (meansOfDeath != MOD_CHAINFIST) {
+            // Lessen the chance of him going into his pain frames
+            if (damage <= 25)
+                if (random() < 0.2f)
+                    return;
+
+            // Don't go into pain if he's firing his rockets
+            if ((self->s.frame >= FRAME_attak2_1) && (self->s.frame <= FRAME_attak2_14))
+                return;
+        }
+
+        if (damage <= 10)
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+        else if (damage <= 25)
+            gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+
+        self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        if (damage <= 10)
+            self->monsterinfo.currentmove = &supertank_move_pain1;
+        else if (damage <= 25)
+            self->monsterinfo.currentmove = &supertank_move_pain2;
+        else
+            self->monsterinfo.currentmove = &supertank_move_pain3;
+        return;
+    }
 
     // Lessen the chance of him going into his pain frames
     if (damage <= 25)
@@ -533,6 +649,28 @@ void supertankRocket(edict_t *self)
         flash_number = MZ2_SUPERTANK_ROCKET_3;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] scale-aware muzzle; plain rockets lead the target and fly
+    // at 750 (boss5's heat seekers are unchanged)
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+
+        if (self->spawnflags & SPAWNFLAG_SUPERTANK_POWERSHIELD) {
+            VectorCopy(self->enemy->s.origin, vec);
+            vec[2] += self->enemy->viewheight;
+            VectorSubtract(vec, start, dir);
+            VectorNormalize(dir);
+            monster_fire_heat(self, start, dir, 40, 500, flash_number, 0.075f);
+        } else {
+            PredictAimEx(self, self->enemy, start, 750, false, 0.0f, forward, NULL);
+            monster_fire_rocket(self, start, forward, 50, 750, flash_number);
+        }
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
     VectorCopy(self->enemy->s.origin, vec);
@@ -564,6 +702,19 @@ void supertankMachineGun(edict_t *self)
     dir[2] = 0;
 
     AngleVectors(dir, forward, right, NULL);
+
+    // [rerelease] scale-aware muzzle, a 0.1 s lead at eye height, and three
+    // times the spread
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+        PredictAimEx(self, self->enemy, start, 0, true, -0.1f, forward, NULL);
+        monster_fire_bullet(self, start, forward, 6, 4, DEFAULT_BULLET_HSPREAD * 3, DEFAULT_BULLET_VSPREAD * 3, flash_number);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
     if (self->enemy) {
@@ -595,17 +746,25 @@ void supertank_attack(edict_t *self)
 
     if (M_RereleaseGame()) {
         vec3_t  scratch;
-        bool    chaingun_good = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_MACHINEGUN_1], scratch);
-        bool    rocket_good   = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_ROCKET_1], scratch);
-        bool    grenade_good  = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_GRENADE_1], scratch);
+        bool    chaingun_good, rocket_good, grenade_good;
+
+        // id's range_to: the gap between the two bounding boxes
+        range = range_to(self, self->enemy);
+
+        chaingun_good = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_MACHINEGUN_1], scratch);
+        rocket_good   = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_ROCKET_1], scratch);
+        grenade_good  = M_CheckClearShot(self, monster_flash_offset[MZ2_SUPERTANK_GRENADE_1], scratch);
 
         // the grenade is the lobbing answer to an enemy standing ABOVE us,
         // which is why vec[2] > 120 forces it over the flat-firing weapons
         if (chaingun_good && (!rocket_good || range <= 540 || random() < 0.3f)) {
-            if (grenade_good && (range >= 350 || vec[2] > 120.0f || random() < 0.2f))
+            if (grenade_good && (range >= 350 || vec[2] > 120.0f || random() < 0.2f)) {
                 self->monsterinfo.currentmove = &supertank_move_attack4;
-            else
+            } else {
                 self->monsterinfo.currentmove = &supertank_move_attack1;
+                // how long the chaingun burst lasts - see supertank_reattack1
+                self->timestamp = level.framenum + (1.5f + 1.2f * random()) * BASE_FRAMERATE;
+            }
         } else if (rocket_good) {
             if (grenade_good && (vec[2] > 120.0f || random() < 0.2f))
                 self->monsterinfo.currentmove = &supertank_move_attack4;
@@ -650,8 +809,18 @@ const gib_def_t supertank_rerelease_gibs[] = {
 };
 const int supertank_num_rerelease_gibs = (int)(sizeof(supertank_rerelease_gibs) / sizeof(supertank_rerelease_gibs[0]));
 
+void BossGib(edict_t *self);
+
 void supertank_dead(edict_t *self)
 {
+    // [rerelease] the explosions have run through the whole death animation;
+    // now it comes apart, at once - unless it was placed as a corpse ("no
+    // blowy on deady"), which stays a body
+    if (M_RereleaseGame() && !(self->spawnflags & SPAWNFLAG_MONSTER_DEAD)) {
+        BossGib(self);
+        return;
+    }
+
     VectorSet(self->mins, -60, -60, 0);
     VectorSet(self->maxs, 60, 60, 72);
     self->movetype = MOVETYPE_TOSS;
@@ -663,6 +832,69 @@ void supertank_dead(edict_t *self)
 
 extern const gib_def_t boss2_rerelease_gibs[], boss31_rerelease_gibs[], carrier_rerelease_gibs[];
 extern const int boss2_num_rerelease_gibs, boss31_num_rerelease_gibs, carrier_num_rerelease_gibs;
+
+/*
+=================
+BossExplodeTick
+
+[rerelease] id's BossExplode (g_rogue_newai.cpp) is called on a boss's first
+death frame and spawns a helper entity that pops an explosion at a random point
+in the boss's box every 50-200 ms until the boss is gone. Here the boss's own
+death frames call this once each - one explosion per 100 ms server frame - so
+there is no extra entity or think to save. The supertank, hornet and Jorg use
+it; the carrier and guardian still end on the classic BossExplode.
+
+id makes two of every three explosions TE_EXPLOSION1_NL (no light); this
+protocol has no such temp entity, so they are all TE_EXPLOSION1.
+
+A no-op in the classic game, and for a corpse being laid out by M_SpawnDead.
+=================
+*/
+void BossExplodeTick(edict_t *self)
+{
+    vec3_t  org;
+
+    if (!M_RereleaseGame())
+        return;
+
+    // no blowy on deady
+    if ((self->spawnflags & SPAWNFLAG_MONSTER_DEAD) || (self->monsterinfo.aiflags & AI_SPAWNED_DEAD))
+        return;
+
+    org[0] = self->s.origin[0] + self->mins[0] + random() * self->size[0];
+    org[1] = self->s.origin[1] + self->mins[1] + random() * self->size[1];
+    org[2] = self->s.origin[2] + self->mins[2] + random() * self->size[2];
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_EXPLOSION1);
+    gi.WritePosition(org);
+    gi.multicast(org, MULTICAST_PVS);
+}
+
+/*
+=================
+BossGib
+
+[rerelease] the end of a boss death (supertank_gib, boss2_gib, jorg's
+BossExplode end): the big explosion and the boss's own parts, straight away.
+That is exactly the last step of BossExplode, so go there directly.
+=================
+*/
+void BossGib(edict_t *self)
+{
+    // a placed corpse that is shot apart gibs too; BossExplode would refuse
+    // it, and the body is about to become its own head gib anyway
+    self->spawnflags &= ~SPAWNFLAG_MONSTER_DEAD;
+    self->count = 8;
+    BossExplode(self);
+
+    // called as the death animation's endfunc: M_MoveFrame stops on
+    // SVF_DEADMONSTER, instead of stepping the head gib (now frame 0) back
+    // onto the boss's death frames and running their thinks
+    if (self->inuse)
+        self->svflags |= SVF_DEADMONSTER;
+}
+
 void BossExplode(edict_t *self)
 {
     vec3_t  org;
@@ -727,7 +959,8 @@ void BossExplode(edict_t *self)
             } else if (!Q_stricmp(self->classname, "monster_jorg")) {
                 list = boss31_rerelease_gibs;
                 num = boss31_num_rerelease_gibs;
-            } else if (!Q_stricmp(self->classname, "monster_supertank")) {
+            } else if (!Q_stricmp(self->classname, "monster_supertank") ||
+                       !Q_stricmp(self->classname, "monster_boss5")) {
                 list = supertank_rerelease_gibs;
                 num = supertank_num_rerelease_gibs;
             } else if (!Q_stricmp(self->classname, "monster_carrier")) {
@@ -784,6 +1017,30 @@ void BossExplode(edict_t *self)
 
 void supertank_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
+    if (M_RereleaseGame()) {
+        if (self->spawnflags & SPAWNFLAG_MONSTER_DEAD) {
+            // a placed corpse can still be blown apart
+            if (self->health <= self->gib_health) {
+                BossGib(self);
+                return;
+            }
+
+            if (self->deadflag == DEAD_DEAD)
+                return;
+
+            self->deadflag = DEAD_DEAD;
+            self->takedamage = DAMAGE_YES;
+        } else {
+            gi.sound(self, CHAN_VOICE, sound_death, 1, ATTN_NORM, 0);
+            self->deadflag = DEAD_DEAD;
+            self->takedamage = DAMAGE_NO;
+            // count is BossLoop's loop counter here, not BossExplode's step
+        }
+
+        self->monsterinfo.currentmove = &supertank_move_death;
+        return;
+    }
+
     gi.sound(self, CHAN_VOICE, sound_death, 1, ATTN_NORM, 0);
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_NO;
@@ -881,6 +1138,13 @@ void SP_monster_supertank(edict_t *self)
     self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
 
     walkmonster_start(self);
+
+    // [rerelease] every N64 supertank gets the long death: ten more loops of
+    // the last six death frames
+    if (M_RereleaseGame() && level.is_n64) {
+        self->spawnflags |= SPAWNFLAG_SUPERTANK_LONG_DEATH;
+        self->count = 10;
+    }
 }
 
 /*QUAKED monster_boss5 (1 .5 0) (-64 -64 0) (64 64 72) Ambush Trigger_Spawn Sight

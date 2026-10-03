@@ -230,16 +230,79 @@ realcheck:
 
 /*
 =================
-FindSpawnPoint
+SpawnPoint_DropToFloor
 
-Nudge upward (by up to maxMoveUp) until a body of this size clears. Returns the
-spot in `spawnpoint`.
+[rerelease] M_droptofloor_generic with the arguments FindSpawnPoint gives it:
+floor (not ceiling), no ignore entity, MASK_MONSTERSOLID, and a start-solid
+drop counts as failure.
 =================
 */
-bool FindSpawnPoint(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoint, float maxMoveUp)
+static bool SpawnPoint_DropToFloor(vec3_t origin, vec3_t mins, vec3_t maxs)
+{
+    trace_t tr;
+    vec3_t  end;
+
+    tr = gi.trace(origin, mins, maxs, origin, NULL, MASK_MONSTERSOLID);
+    if (tr.startsolid)
+        origin[2] += 1;
+
+    VectorCopy(origin, end);
+    end[2] -= 256;
+
+    tr = gi.trace(origin, mins, maxs, end, NULL, MASK_MONSTERSOLID);
+    if (tr.fraction == 1 || tr.allsolid || tr.startsolid)
+        return false;
+
+    VectorCopy(tr.endpos, origin);
+    return true;
+}
+
+/*
+=================
+FindSpawnPointEx
+
+Find a spot a body of this size fits in, near startpoint. Returns it in
+`spawnpoint`.
+
+[rerelease] drop it to the floor first; if that fails, push it out of whatever
+it is stuck in - in any of the six directions, not just up - and drop again.
+`drop` false (the carrier's flyers) skips the floor and only unsticks.
+
+The original game nudges upward by up to maxMoveUp instead, which the
+rerelease no longer uses at all.
+=================
+*/
+bool FindSpawnPointEx(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoint, float maxMoveUp, bool drop)
 {
     trace_t tr;
     vec3_t  top;
+
+    if (M_RereleaseGame()) {
+        edict_t probe;
+
+        VectorCopy(startpoint, spawnpoint);
+
+        if (drop && SpawnPoint_DropToFloor(spawnpoint, mins, maxs))
+            return true;
+
+        VectorCopy(startpoint, spawnpoint);
+
+        // G_FixStuckObject takes the box from an entity and ignores that
+        // entity in its traces. A zeroed stand-in that is not in the world
+        // gives it the box and makes the ignore a no-op, as id's nullptr does.
+        memset(&probe, 0, sizeof(probe));
+        VectorCopy(mins, probe.mins);
+        VectorCopy(maxs, probe.maxs);
+
+        if (G_FixStuckObject(&probe, spawnpoint, MASK_MONSTERSOLID) == STUCK_NO_GOOD_POSITION)
+            return false;
+
+        // fixed, so drop again
+        if (drop && !SpawnPoint_DropToFloor(spawnpoint, mins, maxs))
+            return false;
+
+        return true;
+    }
 
     tr = gi.trace(startpoint, mins, maxs, startpoint, NULL, MASK_MONSTERSOLID | CONTENTS_PLAYERCLIP);
 
@@ -257,6 +320,28 @@ bool FindSpawnPoint(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoi
 
     VectorCopy(startpoint, spawnpoint);
     return true;
+}
+
+// the rerelease's default: drop to the floor
+bool FindSpawnPoint(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoint, float maxMoveUp)
+{
+    return FindSpawnPointEx(startpoint, mins, maxs, spawnpoint, maxMoveUp, true);
+}
+
+/*
+=================
+CreateFlyMonster
+
+[rerelease] a flier needs no ground, only room: re-check the spot, since the
+spawner may have moved since FindSpawnPoint picked it.
+=================
+*/
+edict_t *CreateFlyMonster(vec3_t origin, vec3_t angles, vec3_t mins, vec3_t maxs, char *classname)
+{
+    if (!CheckSpawnPoint(origin, mins, maxs))
+        return NULL;
+
+    return CreateMonster(origin, angles, classname);
 }
 
 /*
@@ -486,10 +571,22 @@ int M_PickReinforcements(edict_t *self, int max_slots)
     for (i = 0; i < MAX_REINFORCEMENTS; i++)
         self->monsterinfo.chosen_reinforcements[i] = -1;
 
-    // how many to try for. Rogue's log2 curve, so large groups stay rare.
-    num_slots = 1 + (Q_rand() % MAX_REINFORCEMENTS);
-    if (num_slots > 3)
-        num_slots = 1 + (Q_rand() % 3);
+    // how many to try for: id's max(1, (int)log2(frandom(32))), 32 being
+    // 2^MAX_REINFORCEMENTS. The curve leans LARGE, not small - 1, 2, 3 or 4 at
+    // 12.5/12.5/25/50% - and never reaches 5. Written as the thresholds,
+    // since log2 of a draw near 0 is -inf and casting that to int is undefined.
+    {
+        float r = random() * (1 << MAX_REINFORCEMENTS);
+
+        if (r >= 16)
+            num_slots = 4;
+        else if (r >= 8)
+            num_slots = 3;
+        else if (r >= 4)
+            num_slots = 2;
+        else
+            num_slots = 1;
+    }
 
     remaining = self->monsterinfo.monster_slots - self->monsterinfo.monster_used;
 

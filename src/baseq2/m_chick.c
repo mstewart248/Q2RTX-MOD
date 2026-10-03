@@ -119,6 +119,9 @@ void chick_fidget(edict_t *self)
 {
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         return;
+    // rerelease: never fidget while she has someone to fight
+    if (M_RereleaseGame() && self->enemy)
+        return;
     if (random() <= 0.3f)
         self->monsterinfo.currentmove = &chick_move_fidget;
 }
@@ -215,6 +218,8 @@ void chick_walk(edict_t *self)
 
 void chick_run(edict_t *self)
 {
+    monster_done_dodge(self);
+
     if (self->monsterinfo.aiflags & AI_STAND_GROUND) {
         self->monsterinfo.currentmove = &chick_move_stand;
         return;
@@ -277,13 +282,18 @@ void chick_pain(edict_t *self, edict_t *other, float kick, int damage)
 
     M_SetDamageSkin(self);
 
+    if (M_RereleaseGame())
+        monster_done_dodge(self);
+
     if (level.framenum < self->pain_debounce_framenum)
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 
-    // [rerelease] being hit ends a blind volley
-    self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+    // [rerelease] being hit ends a blind volley - but only a hit that plays a
+    // pain animation (id clears it after the nightmare check)
+    if (!M_RereleaseGame())
+        self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
 
     r = random();
     if (r < 0.33f)
@@ -293,8 +303,11 @@ void chick_pain(edict_t *self, edict_t *other, float kick, int damage)
     else
         gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NORM, 0);
 
-    if (skill->value == 3)
+    if (M_RereleaseGame() ? !M_ShouldReactToPain(self, meansOfDeath) : skill->value == 3)
         return;     // no pain anims in nightmare
+
+    if (M_RereleaseGame())
+        self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
 
     if (damage <= 10)
         self->monsterinfo.currentmove = &chick_move_pain1;
@@ -302,12 +315,17 @@ void chick_pain(edict_t *self, edict_t *other, float kick, int damage)
         self->monsterinfo.currentmove = &chick_move_pain2;
     else
         self->monsterinfo.currentmove = &chick_move_pain3;
+
+    // [rerelease] a pain animation ends any duck
+    if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_DUCKED))
+        monster_duck_up(self);
 }
 
 void chick_dead(edict_t *self)
 {
     VectorSet(self->mins, -16, -16, 0);
-    VectorSet(self->maxs, 16, 16, 16);
+    // the rerelease corpse is a lower box than the original's
+    VectorSet(self->maxs, 16, 16, M_RereleaseGame() ? 8 : 16);
     self->movetype = MOVETYPE_TOSS;
     self->svflags |= SVF_DEADMONSTER;
     self->nextthink = 0;
@@ -611,12 +629,30 @@ void ChickSlash(edict_t *self)
 }
 
 
+/*
+=================
+chick_fire_rocket
+
+[rerelease] Plain rockets fly at 650, the heat-seekers at 500.
+=================
+*/
+static void chick_fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int speed, float turn)
+{
+    if (self->s.skinnum > 1)
+        monster_fire_heat(self, start, dir, 50, speed, MZ2_CHICK_ROCKET_1, turn);
+    else
+        monster_fire_rocket(self, start, dir, 50, speed, MZ2_CHICK_ROCKET_1);
+}
+
 void ChickRocket(edict_t *self)
 {
     vec3_t  forward, right;
     vec3_t  start;
     vec3_t  dir;
     vec3_t  vec;
+
+    if (M_RereleaseGame() && (!self->enemy || !self->enemy->inuse))
+        return;
 
     AngleVectors(self->s.angles, forward, right, NULL);
     G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_CHICK_ROCKET_1], forward, right, start);
@@ -643,14 +679,36 @@ void ChickRocket(edict_t *self)
             if (tr.startsolid || tr.allsolid || tr.fraction < 0.5f)
                 continue;
 
-            if (self->s.skinnum > 1)
-                monster_fire_heat(self, start, dir, 50, 500, MZ2_CHICK_ROCKET_1, 0.075f);
-            else
-                monster_fire_rocket(self, start, dir, 50, 500, MZ2_CHICK_ROCKET_1);
+            chick_fire_rocket(self, start, dir, (self->s.skinnum > 1) ? 500 : 650, 0.075f);
             return;
         }
 
         return;     // no angle worked - hold the shot
+    }
+
+    // [rerelease] aimed shot: usually at the feet for the splash (two in three),
+    // at the eyes when the enemy stands above the launcher; leads the target
+    // 35% of the time; and holds fire if a wall right in front would eat it.
+    if (M_RereleaseGame()) {
+        int     speed = (self->s.skinnum > 1) ? 500 : 650;
+        trace_t tr;
+
+        VectorCopy(self->enemy->s.origin, vec);
+        if (random() < 0.33f || start[2] < self->enemy->absmin[2])
+            vec[2] += self->enemy->viewheight;
+        else
+            vec[2] = self->enemy->absmin[2] + 1;
+        VectorSubtract(vec, start, dir);
+
+        if (random() < 0.35f)
+            PredictAimEx(self, self->enemy, start, speed, false, 0.0f, dir, vec);
+
+        VectorNormalize(dir);
+
+        tr = gi.trace(start, NULL, NULL, vec, self, MASK_SHOT);
+        if (tr.fraction > 0.5f || !tr.ent || tr.ent->solid != SOLID_BSP)
+            chick_fire_rocket(self, start, dir, speed, 0.15f);
+        return;
     }
 
     VectorCopy(self->enemy->s.origin, vec);
@@ -705,21 +763,27 @@ mframe_t chick_frames_start_attack1 [] = {
 mmove_t chick_move_start_attack1 = {FRAME_attak101, FRAME_attak113, chick_frames_start_attack1, NULL};
 
 
+static void chick_rerocket_step(edict_t *self)
+{
+    chick_rerocket(self);
+    monster_footstep(self);
+}
+
 mframe_t chick_frames_attack1 [] = {
     { ai_charge, 19,  ChickRocket },
-    { ai_charge, -6,  NULL },
+    { ai_charge, -6,  monster_footstep },
     { ai_charge, -5,  NULL },
     { ai_charge, -2,  NULL },
-    { ai_charge, -7,  NULL },
+    { ai_charge, -7,  monster_footstep },
     { ai_charge, 0,   NULL },
     { ai_charge, 1,   NULL },
     { ai_charge, 10,  ChickReload },
     { ai_charge, 4,   NULL },
-    { ai_charge, 5,   NULL },
+    { ai_charge, 5,   monster_footstep },
     { ai_charge, 6,   NULL },
     { ai_charge, 6,   NULL },
     { ai_charge, 4,   NULL },
-    { ai_charge, 3,   chick_rerocket }
+    { ai_charge, 3,   chick_rerocket_step }
 
 };
 mmove_t chick_move_attack1 = {FRAME_attak114, FRAME_attak127, chick_frames_attack1, NULL};
@@ -743,10 +807,21 @@ void chick_rerocket(edict_t *self)
         return;
     }
 
+    // [rerelease] stop the volley once the launcher no longer has a line
+    if (M_RereleaseGame()) {
+        vec3_t  start;
+
+        if (!M_CheckClearShot(self, monster_flash_offset[MZ2_CHICK_ROCKET_1], start)) {
+            self->monsterinfo.currentmove = &chick_move_end_attack1;
+            return;
+        }
+    }
+
     if (self->enemy->health > 0) {
         if (range(self, self->enemy) > RANGE_MELEE)
             if (visible(self, self->enemy))
-                if (random() <= 0.6f) {
+                // the rerelease refires 70% of the time, the original 60%
+                if (random() <= (M_RereleaseGame() ? 0.7f : 0.6f)) {
                     self->monsterinfo.currentmove = &chick_move_attack1;
                     return;
                 }
@@ -820,6 +895,16 @@ void chick_melee(edict_t *self)
 
 void chick_attack(edict_t *self)
 {
+    // [rerelease] only start the launch with a clear line from the launcher
+    if (M_RereleaseGame()) {
+        vec3_t  start;
+
+        if (!M_CheckClearShot(self, monster_flash_offset[MZ2_CHICK_ROCKET_1], start))
+            return;
+
+        monster_done_dodge(self);
+    }
+
     // [rerelease] blind fire - see gunner_attack for the shape.  Her cooldown
     // is longer than his (5.5-6.5s against his 4.1-7.1) because a rocket is a
     // lot more punishing to eat from a corridor you cannot see down.

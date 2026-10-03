@@ -46,7 +46,13 @@ void berserk_sight(edict_t *self, edict_t *other)
 
 void berserk_search(edict_t *self)
 {
-    gi.sound(self, CHAN_VOICE, sound_search, 1, ATTN_NORM, 0);
+    // rerelease: half the searches use the idle growl instead
+    if (M_RereleaseGame() && (Q_rand() & 1))
+        // registered on first play, not precached: mgu5m2 is at the 256-sound limit and
+        // a precache here pushed real sounds out; a full table now just skips this one
+        gi.sound(self, CHAN_VOICE, gi.soundindex("berserk/idle.wav"), 1, ATTN_NORM, 0);
+    else
+        gi.sound(self, CHAN_VOICE, sound_search, 1, ATTN_NORM, 0);
 }
 
 
@@ -115,6 +121,9 @@ void berserk_fidget(edict_t *self)
 {
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         return;
+    // rerelease: never fidget while it has someone to fight
+    if (M_RereleaseGame() && self->enemy)
+        return;
     if (random() > 0.15f)
         return;
 
@@ -127,13 +136,13 @@ mframe_t berserk_frames_walk [] = {
     { ai_walk, 9.1, NULL },
     { ai_walk, 6.3, NULL },
     { ai_walk, 4.9, NULL },
-    { ai_walk, 6.7, NULL },
+    { ai_walk, 6.7, monster_footstep },
     { ai_walk, 6.0, NULL },
     { ai_walk, 8.2, NULL },
     { ai_walk, 7.2, NULL },
     { ai_walk, 6.1, NULL },
     { ai_walk, 4.9, NULL },
-    { ai_walk, 4.7, NULL },
+    { ai_walk, 4.7, monster_footstep },
     { ai_walk, 4.7, NULL },
     { ai_walk, 4.8, NULL }
 };
@@ -181,6 +190,8 @@ mmove_t berserk_move_run1 = {FRAME_run1, FRAME_run6, berserk_frames_run1, NULL};
 
 void berserk_run(edict_t *self)
 {
+    monster_done_dodge(self);
+
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         self->monsterinfo.currentmove = &berserk_move_stand;
     else
@@ -191,6 +202,15 @@ void berserk_run(edict_t *self)
 void berserk_attack_spike(edict_t *self)
 {
     static  vec3_t  aim = {MELEE_DISTANCE, 0, -24};
+
+    // rerelease: the quick spike is the weak hit (5-10, light kick), and a
+    // whiff holds off the next melee for 1.2 s
+    if (M_RereleaseGame()) {
+        if (!fire_hit(self, aim, 5 + (Q_rand() % 6), 80))
+            self->monsterinfo.melee_debounce_framenum = level.framenum + 12;
+        return;
+    }
+
     fire_hit(self, aim, (15 + (Q_rand() % 6)), 400);    //  Faster attack -- upwards and backwards
 }
 
@@ -218,7 +238,30 @@ void berserk_attack_club(edict_t *self)
     vec3_t  aim;
 
     VectorSet(aim, MELEE_DISTANCE, self->mins[0], -4);
+
+    // rerelease: the slow club is the heavy hit (15-20), and a whiff holds
+    // off the next melee for 2.5 s
+    if (M_RereleaseGame()) {
+        if (!fire_hit(self, aim, 15 + (Q_rand() % 6), 400))
+            self->monsterinfo.melee_debounce_framenum = level.framenum + 25;
+        return;
+    }
+
     fire_hit(self, aim, (5 + (Q_rand() % 6)), 400);     // Slower attack
+}
+
+// The rerelease lands the standing club on att_c15, the original on att_c17;
+// one table serves both games, so each frame only fires in its own game.
+static void berserk_attack_club_rr(edict_t *self)
+{
+    if (M_RereleaseGame())
+        berserk_attack_club(self);
+}
+
+static void berserk_attack_club_classic(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        berserk_attack_club(self);
 }
 
 mframe_t berserk_frames_attack_club [] = {
@@ -228,9 +271,9 @@ mframe_t berserk_frames_attack_club [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, berserk_swing },
     { ai_charge, 0, NULL },
+    { ai_charge, 0, berserk_attack_club_rr },
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
-    { ai_charge, 0, berserk_attack_club },
+    { ai_charge, 0, berserk_attack_club_classic },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL }
@@ -280,6 +323,7 @@ void berserk_melee(edict_t *self)
             self->monsterinfo.attack_finished = 0;
             return;
         }
+        monster_done_dodge(self);
     }
 
     if ((Q_rand() % 2) == 0)
@@ -366,11 +410,15 @@ bool berserk_duck(edict_t *self, float eta)
     return true;
 }
 
+// id's berserk_move_attack_strike is the leap - our berserk_move_attack_slam
+extern mmove_t berserk_move_attack_slam;
+
 bool berserk_sidestep(edict_t *self)
 {
     if (self->monsterinfo.currentmove == &berserk_move_jump ||
         self->monsterinfo.currentmove == &berserk_move_jump2 ||
         self->monsterinfo.currentmove == &berserk_move_attack_strike ||
+        self->monsterinfo.currentmove == &berserk_move_attack_slam ||
         self->monsterinfo.currentmove == &berserk_move_pain2)
         return false;
 
@@ -395,8 +443,22 @@ void berserk_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, boo
 static void berserk_run_attack_speed(edict_t *self)
 {
     // close enough to connect - jump straight to the swing
-    if (self->enemy && realrange(self, self->enemy) < MELEE_DISTANCE)
+    if (self->enemy && realrange(self, self->enemy) < MELEE_DISTANCE) {
         self->monsterinfo.nextframe = self->s.frame + 6;
+        monster_done_dodge(self);
+    }
+}
+
+static void berserk_run_attack_speed_step(edict_t *self)
+{
+    berserk_run_attack_speed(self);
+    monster_footstep(self);
+}
+
+static void berserk_run_attack_speed_undodge(edict_t *self)
+{
+    berserk_run_attack_speed(self);
+    monster_done_dodge(self);
 }
 
 static void berserk_run_swing(edict_t *self)
@@ -404,28 +466,30 @@ static void berserk_run_swing(edict_t *self)
     berserk_swing(self);
     self->monsterinfo.melee_debounce_framenum = level.framenum + 0.6f * BASE_FRAMERATE;
 
-    if (self->monsterinfo.attack_state == AS_SLIDING)
+    if (self->monsterinfo.attack_state == AS_SLIDING) {
         self->monsterinfo.attack_state = AS_STRAIGHT;
+        monster_done_dodge(self);
+    }
 }
 
 mframe_t berserk_frames_run_attack1 [] = {
     { ai_run, 21, berserk_run_attack_speed },
-    { ai_run, 11, berserk_run_attack_speed },
+    { ai_run, 11, berserk_run_attack_speed_step },
     { ai_run, 21, berserk_run_attack_speed },
-    { ai_run, 25, berserk_run_attack_speed },
-    { ai_run, 18, berserk_run_attack_speed },
+    { ai_run, 25, berserk_run_attack_speed_undodge },
+    { ai_run, 18, berserk_run_attack_speed_step },
     { ai_run, 19, berserk_run_attack_speed },
     { ai_run, 21, NULL },
-    { ai_run, 11, NULL },
+    { ai_run, 11, monster_footstep },
     { ai_run, 21, NULL },
     { ai_run, 25, NULL },
-    { ai_run, 18, NULL },
+    { ai_run, 18, monster_footstep },
     { ai_run, 19, NULL },
     { ai_run, 21, berserk_run_swing },
-    { ai_run, 11, NULL },
+    { ai_run, 11, monster_footstep },
     { ai_run, 21, NULL },
     { ai_run, 25, NULL },
-    { ai_run, 18, NULL },
+    { ai_run, 18, monster_footstep },
     { ai_run, 19, berserk_attack_club }
 };
 mmove_t berserk_move_run_attack1 = {FRAME_r_att1, FRAME_r_att18, berserk_frames_run_attack1, berserk_run};
@@ -514,9 +578,19 @@ mframe_t berserk_frames_pain2 [] = {
 };
 mmove_t berserk_move_pain2 = {FRAME_painb1, FRAME_painb20, berserk_frames_pain2, berserk_run};
 
+extern mmove_t berserk_move_jump_slam;
+
 void berserk_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     M_SetDamageSkin(self);
+
+    // rerelease: no pain at all while jumping or in the leaping slam
+    if (M_RereleaseGame() &&
+        (self->monsterinfo.currentmove == &berserk_move_jump ||
+         self->monsterinfo.currentmove == &berserk_move_jump2 ||
+         self->monsterinfo.currentmove == &berserk_move_jump_slam ||
+         self->monsterinfo.currentmove == &berserk_move_attack_slam))
+        return;
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -524,8 +598,18 @@ void berserk_pain(edict_t *self, edict_t *other, float kick, int damage)
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
     gi.sound(self, CHAN_VOICE, sound_pain, 1, ATTN_NORM, 0);
 
-    if (skill->value == 3)
+    if (M_RereleaseGame() ? !M_ShouldReactToPain(self, meansOfDeath) : skill->value == 3)
         return;     // no pain anims in nightmare
+
+    if (M_RereleaseGame()) {
+        monster_done_dodge(self);
+        // the rerelease only throws the long pain for a hit over 50
+        if ((damage <= 50) || (random() < 0.5f))
+            self->monsterinfo.currentmove = &berserk_move_pain1;
+        else
+            self->monsterinfo.currentmove = &berserk_move_pain2;
+        return;
+    }
 
     if ((damage < 20) || (random() < 0.5f))
         self->monsterinfo.currentmove = &berserk_move_pain1;
@@ -843,6 +927,10 @@ static void berserk_high_gravity(edict_t *self)
         self->gravity = 2.25f * (800.0f / g);
     else
         self->gravity = 5.25f * (800.0f / g);
+
+    // the slam's launch is solved against exactly these values for a whole
+    // frame (BERSERK_SLAM_GRAV_*), so keep them out of the rerelease blend
+    self->monsterinfo.aiflags2 |= AI2_FULL_GRAVITY;
 }
 
 static void berserk_attack_slam(edict_t *self)
@@ -878,6 +966,7 @@ static void berserk_attack_slam(edict_t *self)
     gi.multicast(tr.endpos, MULTICAST_PHS);
 
     self->gravity = 1.0f;
+    self->monsterinfo.aiflags2 &= ~AI2_FULL_GRAVITY;
     VectorClear(self->velocity);
 
     T_SlamRadiusDamage(tr.endpos, self, self, BERSERK_SLAM_DAMAGE, BERSERK_SLAM_KICK,
@@ -971,7 +1060,7 @@ static void berserk_jump_takeoff(edict_t *self)
 
     lead_speed = (dist > 1.0f) ? (dist / nominal_time) : 800.0f;
 
-    PredictAim(self->enemy, self->s.origin, lead_speed, false, 0.0f, dir, aim_point);
+    PredictAimEx(self, self->enemy, self->s.origin, lead_speed, false, 0.0f, dir, aim_point);
 
     self->s.angles[YAW] = vectoyaw(dir);
     AngleVectors(self->s.angles, forward, NULL, NULL);
@@ -1231,7 +1320,10 @@ void berserk_jump(edict_t *self, blocked_jump_result_t result)
     //
     // Drop on the JUMP frames and slam on impact - NOT berserk_move_attack_slam,
     // which freezes mid-swing for the whole descent.
-    if (level.framenum > self->timestamp &&
+    //
+    // Port-only: the rerelease always plays the plain jump, so the drop-slam
+    // is kept out of the rerelease game.
+    if (!M_RereleaseGame() && level.framenum > self->timestamp &&
         !(self->spawnflags & SPAWNFLAG_BERSERK_NOJUMPING)) {
         self->monsterinfo.currentmove = &berserk_move_jump_slam;
         self->timestamp = level.framenum + 5 * BASE_FRAMERATE;

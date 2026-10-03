@@ -75,6 +75,72 @@ bool fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
     float       range;
     vec3_t      dir;
 
+    // [rerelease] fire_hit from g_weapon.cpp: reach is the box gap, the blow
+    // lands on the closest point of the enemy's box, and needs a clear line to
+    // that point and on from it to the enemy. Its MELEE_DISTANCE is 50 of box
+    // gap where this tree's is 80 from the origin - monster code here passes
+    // MELEE_DISTANCE as aim[0], so that exact value means the rerelease's 50;
+    // a literal reach (the widow's 100/150) is the same number in both.
+    if (M_RereleaseGame()) {
+        float reach = (aim[0] == MELEE_DISTANCE) ? RR_MELEE_DISTANCE : aim[0];
+
+        range = M_DistanceBetweenBoxes(self->enemy->absmin, self->enemy->absmax, self->absmin, self->absmax);
+        if (range > reach)
+            return false;
+
+        if (!(aim[1] > self->mins[0] && aim[1] < self->maxs[0])) {
+            // this is a side hit so adjust the "right" value out to the edge of their bbox
+            if (aim[1] < 0)
+                aim[1] = self->enemy->mins[0];
+            else
+                aim[1] = self->enemy->maxs[0];
+        }
+
+        M_ClosestPointToBox(self->s.origin, self->enemy->absmin, self->enemy->absmax, point);
+
+        // check that we can hit the point on the bbox
+        tr = gi.trace(self->s.origin, NULL, NULL, point, self, MASK_PROJECTILE);
+        if (tr.fraction < 1) {
+            if (!tr.ent->takedamage)
+                return false;
+            // if it will hit any client/monster then hit the one we wanted to hit
+            if ((tr.ent->svflags & SVF_MONSTER) || (tr.ent->client))
+                tr.ent = self->enemy;
+        }
+
+        // check that we can hit the player from the point
+        tr = gi.trace(point, NULL, NULL, self->enemy->s.origin, self, MASK_PROJECTILE);
+        if (tr.fraction < 1) {
+            if (!tr.ent->takedamage)
+                return false;
+            // if it will hit any client/monster then hit the one we wanted to hit
+            if ((tr.ent->svflags & SVF_MONSTER) || (tr.ent->client))
+                tr.ent = self->enemy;
+        }
+
+        AngleVectors(self->s.angles, forward, right, up);
+        VectorMA(self->s.origin, range, forward, point);
+        VectorMA(point, aim[1], right, point);
+        VectorMA(point, aim[2], up, point);
+        VectorSubtract(point, self->enemy->s.origin, dir);
+
+        // do the damage
+        T_Damage(tr.ent, self, self, dir, point, vec3_origin, damage, kick / 2, DAMAGE_NO_KNOCKBACK, MOD_HIT);
+
+        if (!(tr.ent->svflags & SVF_MONSTER) && (!tr.ent->client))
+            return false;
+
+        // do our special form of knockback here
+        VectorAdd(self->enemy->absmin, self->enemy->absmax, v);
+        VectorScale(v, 0.5f, v);
+        VectorSubtract(v, point, v);
+        VectorNormalize(v);
+        VectorMA(self->enemy->velocity, kick, v, self->enemy->velocity);
+        if (self->enemy->velocity[2] > 0)
+            self->enemy->groundentity = NULL;
+        return true;
+    }
+
     //see if enemy is in range. M_RangeBetween measures between bounding boxes
     // when either side is scaled, so a giant monster (mgu6m3's 5.5x Modir) can
     // still land a melee swing - on the origin measure its own bbox is wider
@@ -932,6 +998,63 @@ void fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int sp
     scale = crandom() * 10.0f;
     VectorMA(grenade->velocity, scale, right, grenade->velocity);
     VectorSet(grenade->avelocity, 300, 300, 300);
+    grenade->movetype = MOVETYPE_BOUNCE;
+    grenade->clipmask = MASK_SHOT;
+    grenade->solid = SOLID_BBOX;
+    grenade->s.effects |= EF_GRENADE;
+    VectorClear(grenade->mins);
+    VectorClear(grenade->maxs);
+    grenade->s.modelindex = gi.modelindex("models/objects/grenade/tris.md2");
+    grenade->owner = self;
+    grenade->touch = Grenade_Touch;
+    grenade->nextthink = level.framenum + timer * BASE_FRAMERATE;
+    grenade->think = Grenade_Explode;
+    grenade->dmg = damage;
+    grenade->dmg_radius = damage_radius;
+    grenade->classname = "grenade";
+    grenade->flags |= FL_DODGE;
+
+    gi.linkentity(grenade);
+}
+
+/*
+=================
+fire_grenade_ex
+
+[rerelease] fire_grenade with the reference's adjustments: the throw is aimdir
+* speed, plus up_adjust "up" scaled by level gravity / 800 and right_adjust
+"right" - in place of the classic fixed 200 +-10 up and +-10 right. A monster's
+grenade tumbles at random. The rerelease's player grenade (grenade4 model,
+Grenade4_Think) does not exist in this tree, so `monster` changes nothing else.
+=================
+*/
+void fire_grenade_ex(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer,
+                     float damage_radius, float right_adjust, float up_adjust, bool monster)
+{
+    edict_t *grenade;
+    vec3_t  dir;
+    vec3_t  forward, right, up;
+
+    vectoangles(aimdir, dir);
+    AngleVectors(dir, forward, right, up);
+
+    grenade = G_Spawn();
+    VectorCopy(start, grenade->s.origin);
+    VectorScale(aimdir, speed, grenade->velocity);
+
+    if (up_adjust) {
+        float g = level.gravity > 0 ? level.gravity : sv_gravity->value;
+
+        VectorMA(grenade->velocity, up_adjust * (g / 800.0f), up, grenade->velocity);
+    }
+
+    if (right_adjust)
+        VectorMA(grenade->velocity, right_adjust, right, grenade->velocity);
+
+    if (monster)
+        VectorSet(grenade->avelocity, crandom() * 360, crandom() * 360, crandom() * 360);
+    else
+        VectorSet(grenade->avelocity, 300, 300, 300);
     grenade->movetype = MOVETYPE_BOUNCE;
     grenade->clipmask = MASK_SHOT;
     grenade->solid = SOLID_BBOX;

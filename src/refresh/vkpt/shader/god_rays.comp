@@ -142,7 +142,7 @@ void main()
 
 	   Normally the froxel grid REPLACES this march outright, so whatever is
 	   computed here is thrown away and costs only time. Under
-	   fog_sun_is_the_sky() the filter ADDS the two instead - the march supplies
+	   fog_sun_in_march() the filter ADDS the two instead - the march supplies
 	   the sun, because a shadow-mapped hard edge survives a per-pixel march and
 	   does NOT survive the grid's 3x3x3 cross-cell blur (see the long note in
 	   froxel_scatter.comp). The grid keeps the local lights, so this copy of
@@ -151,7 +151,7 @@ void main()
 	   Only when the grid is actually running: at pt_fog_froxel 0 the march is
 	   the whole renderer and has to keep both halves. Nor in photo mode, where
 	   the filter never reads the grid (fog_accum_march). */
-	if (fog_lights && global_ubo.pt_fog_froxel > 0.0 && fog_sun_is_the_sky()
+	if (fog_lights && global_ubo.pt_fog_froxel > 0.0 && fog_sun_in_march()
 	    && !fog_accum_march())
 		fog_lights = false;
 
@@ -448,7 +448,7 @@ void main()
 		}
 	}
 
-	vec3 inscatterColor = inscatter * sun_color_ubo.sun_color * global_ubo.god_rays_intensity * 0.0001;
+	vec3 inscatterColor = inscatter * sun_color_ubo.sun_color * fog_sun_scale() * 0.0001;
 
 	// The local-light half carries its own radiance already, so it is added
 	// after the sun tint rather than being folded into it.
@@ -462,24 +462,14 @@ void main()
 	// 0.005, not the 0.05 this had before the triangle area was folded in - a
 	// light panel is hundreds of square units, so including area raised the whole
 	// term by roughly two orders of magnitude. This constant only puts the light
-	// buffer's radiance*area units in the same range as the sun term; the knob
-	// for taste is pt_fog_light_scale.
+	// buffer's radiance*area units in the same range as the sun term; the knobs
+	// for taste are the per-source pt_fog_scale_* cvars.
 	if (fog_lights)
 	{
-		// cl_fog 3 gets its own brightness knob. It has no knee compressing the
-		// total, so it sits at a completely different level from mode 2 and one
-		// cvar could not calibrate both - switching modes to compare them would
-		// otherwise retune the other every time.
-		float local_scale = (global_ubo.fog_mode >= 3)
-		                  ? global_ubo.pt_fog_vol_scale
-		                  : global_ubo.pt_fog_light_scale;
-
-		// fog_vol_density_ratio is cl_volumetric_fog_density / cl_fog_scale. The
-		// density folded into localInscatter during the march was the SKY/SUN
-		// one, so this is what gives the local-light half its own density
-		// without touching the sun term above. 1 when the two match.
-		inscatterColor += localInscatter * local_scale * 0.005
-		                * global_ubo.fog_vol_density_ratio;
+		// The per-source knobs (pt_fog_scale_emissive/dynamic/model, the skybox
+		// term's pt_fog_scale_skybox) are already inside localInscatter; this only
+		// puts the local half at its fixed density against the sun's.
+		inscatterColor += localInscatter * 0.005 * FOG_LOCAL_DENSITY;
 	}
 
 	if(medium != MEDIUM_NONE)

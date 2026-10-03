@@ -49,6 +49,7 @@ here because the classes are not obvious from the light buffer:
   emissive   every triangle of a BSP or model face whose material is is_light -
              which, with cl_dynamic_lights 0, is nearly all of a map's lighting.
              Overridable per material with `volumetric_scale` in a .mat file.
+             LAVA is the exception: it has its own knob, pt_fog_lava_scale.
   sky        the sky brushes.  copy_light marks these by storing the colour
              NEGATIVE, and the fog counts them through its own sky term with its
              own visibility trace, so the default here is 0 - see the "fog in the
@@ -61,13 +62,15 @@ here because the classes are not obvious from the light buffer:
   model      DYNLIGHT_POLYGON lights that are not world geometry: emissive
              surfaces on md2/md5 models, and the beam/laser cylinder lights.
 
-All four are plain (non-archived) cvars, so changing a default here really does
-change behaviour for an existing install.
+emissive, dynamic and model are three of the five fog knobs on the fog menu, and
+mapfog.c registers them ARCHIVE with these same defaults - keep the two in step.
+sky stays a plain cvar at 0: the sky reaches the fog through its own term.
 */
 static cvar_t* cvar_pt_fog_scale_emissive = NULL;
 static cvar_t* cvar_pt_fog_scale_sky      = NULL;
 static cvar_t* cvar_pt_fog_scale_dynamic  = NULL;
 static cvar_t* cvar_pt_fog_scale_model    = NULL;
+static cvar_t* cvar_pt_fog_lava_scale     = NULL;
 
 // Resolve a light's volumetric scale: an explicit value wins, otherwise the
 // material's, otherwise the class default.  Called once per light per frame.
@@ -89,6 +92,12 @@ resolve_volumetric_scale(const light_poly_t* light)
 
 	if (light->type == DYNLIGHT_SPHERE || light->type == DYNLIGHT_SPOT)
 		return cvar_pt_fog_scale_dynamic ? cvar_pt_fog_scale_dynamic->value : 1.f;
+
+	// lava has its own knob (pt_fog_lava gives the fog its lava lights). It is
+	// x10 so the menu's 1..10 covers the useful range: a lava pool's emission
+	// is dim next to a fixture's, and the right amount measured ~50 by eye.
+	if (light->material && MAT_IsKind(light->material->flags, MATERIAL_KIND_LAVA))
+		return 10.f * (cvar_pt_fog_lava_scale ? cvar_pt_fog_lava_scale->value : 5.f);
 
 	if (light->material)
 		return cvar_pt_fog_scale_emissive ? cvar_pt_fog_scale_emissive->value : 1.f;
@@ -883,11 +892,33 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			float* vblight = *(lbo->light_polys + (nlight + model_light_offset) * LIGHT_POLY_VEC4S);
 			copy_light(light, vblight, sky_radiance);
 		}
+
+		// The fog-only lights live at the top of light_polys, and their lists
+		// already hold those indices. If the regular lights have grown into
+		// that space this frame, the fog goes without them rather than
+		// overwriting anything.
+		int fog_base = MAX_LIGHT_POLYS - bsp_mesh->num_fog_light_polys;
+		if (bsp_mesh->num_fog_light_polys > 0 && total_lights <= fog_base)
+		{
+			for (int nlight = 0; nlight < bsp_mesh->num_fog_light_polys; nlight++)
+			{
+				float* vblight = *(lbo->light_polys + (fog_base + nlight) * LIGHT_POLY_VEC4S);
+				copy_light(bsp_mesh->fog_light_polys + nlight, vblight, sky_radiance);
+			}
+			memcpy(lbo->fog_light_list_offsets, bsp_mesh->fog_cluster_light_offsets, sizeof(uint32_t) * (bsp_mesh->num_clusters + 1));
+			memcpy(lbo->fog_light_list_lights, bsp_mesh->fog_cluster_lights, sizeof(uint32_t) * bsp_mesh->num_fog_cluster_lights);
+		}
+		else
+		{
+			memset(lbo->fog_light_list_offsets, 0, sizeof(uint32_t) * (bsp_mesh->num_clusters + 1));
+		}
 	}
 	else
 	{
 		lbo->light_list_offsets[0] = 0;
 		lbo->light_list_offsets[1] = 0;
+		lbo->fog_light_list_offsets[0] = 0;
+		lbo->fog_light_list_offsets[1] = 0;
 	}
 
 	/* effects.c declares this - hence the assert below:
@@ -1472,6 +1503,7 @@ vkpt_vertex_buffer_create()
 	cvar_pt_fog_scale_sky      = Cvar_Get("pt_fog_scale_sky",      "0.0", 0);
 	cvar_pt_fog_scale_dynamic  = Cvar_Get("pt_fog_scale_dynamic",  "1.0", 0);
 	cvar_pt_fog_scale_model    = Cvar_Get("pt_fog_scale_model",    "1.0", 0);
+	cvar_pt_fog_lava_scale     = Cvar_Get("pt_fog_lava_scale",     "5.0", 0);
 
 	VkDescriptorSetLayoutBinding vbo_layout_bindings[] = {
 		{

@@ -956,16 +956,28 @@ void point_combat_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface
             gi.dprintf("%s at %s target %s does not exist\n", self->classname, vtos(self->s.origin), self->target);
             other->movetarget = self;
         }
-        self->target = NULL;
+        // [Paril-KEX] the rerelease leaves the target so points can be re-used
+        if (!M_RereleaseGame())
+            self->target = NULL;
     } else if ((self->spawnflags & 1) && !(other->flags & (FL_SWIM | FL_FLY))) {
+        // [rerelease] already standing
+        if (M_RereleaseGame() && (other->monsterinfo.aiflags & AI_STAND_GROUND))
+            return;
+
         other->monsterinfo.pause_framenum = INT_MAX;
         other->monsterinfo.aiflags |= AI_STAND_GROUND;
+        if (M_RereleaseGame())
+            other->monsterinfo.aiflags2 |= AI2_REACHED_HOLD_COMBAT | AI2_THIRD_EYE;
         other->monsterinfo.stand(other);
     }
 
     if (other->movetarget == self) {
-        other->target = NULL;
-        other->movetarget = NULL;
+        // [Paril-KEX] a holding monster keeps movetarget, so ai_run can tell
+        // when it has been knocked too far from the point it guards
+        if (!M_RereleaseGame() || !(self->spawnflags & 1)) {
+            other->target = NULL;
+            other->movetarget = NULL;
+        }
         other->goalentity = other->enemy;
         other->monsterinfo.aiflags &= ~AI_COMBAT_POINT;
     }

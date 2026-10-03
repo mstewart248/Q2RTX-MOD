@@ -61,9 +61,40 @@ static int PF_ModelIndex(const char *name)
     return PF_FindIndex(name, CS_MODELS, MAX_MODELS, __func__);
 }
 
+/*
+A full sound table drops the SOUND, not the game. This fork keeps the old
+protocol's 256 sounds (the rerelease has 2048), and mgu5m2 sits right at that
+limit - one extra precache anywhere in its monster mix, or a sound first
+registered mid-fight, used to end the session with an ERR_DROP. Index 0 is a
+valid "no sound" everywhere it is used (SV_StartSound accepts it, s.sound 0
+is silence), so the overflowing sound just never plays.
+*/
 static int PF_SoundIndex(const char *name)
 {
-    return PF_FindIndex(name, CS_SOUNDS, MAX_SOUNDS, __func__);
+    static char warned[16][MAX_QPATH];
+    static int  num_warned;
+    char *string;
+    int i;
+
+    if (!name || !name[0])
+        return 0;
+
+    for (i = 1; i < MAX_SOUNDS; i++) {
+        string = sv.configstrings[CS_SOUNDS + i];
+        if (!string[0] || !strcmp(string, name))
+            break;
+    }
+
+    if (i < MAX_SOUNDS)
+        return PF_FindIndex(name, CS_SOUNDS, MAX_SOUNDS, __func__);
+
+    // warn once per name - a sound played every shot would otherwise spam
+    for (i = 0; i < num_warned && i < 16; i++)
+        if (!strcmp(warned[i], name))
+            return 0;
+    Q_strlcpy(warned[num_warned++ % 16], name, MAX_QPATH);
+    Com_WPrintf("%s(%s): sound table full (%d), not played\n", __func__, name, MAX_SOUNDS);
+    return 0;
 }
 
 static int PF_ImageIndex(const char *name)

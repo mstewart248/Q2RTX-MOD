@@ -25,6 +25,12 @@
 #define RAIL_FIRE_TIME (3 * BASE_FRAMERATE)
 
 void BossExplode(edict_t *self);
+void BossExplodeTick(edict_t *self);        /* m_supertank.c */
+bool FindSpawnPointEx(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoint,
+		float maxMoveUp, bool drop);        /* g_spawnmonster.c */
+edict_t *CreateFlyMonster(vec3_t origin, vec3_t angles, vec3_t mins, vec3_t maxs,
+		char *classname);                   /* g_spawnmonster.c */
+bool M_ShouldReactToPain(edict_t *self, int mod);   /* g_monster.c */
 
 void carrier_run(edict_t *self);
 void carrier_stand(edict_t *self);
@@ -85,14 +91,16 @@ void
 CarrierCoopCheck(edict_t *self)
 {
 
-	/* no more than 4 players in coop, so.. */
-	edict_t *targets[4];
+	/* rogue sized this for 4 coop players; game.maxclients can be far more,
+	   and the old fixed array overran once a fifth player qualified */
+	edict_t *targets[MAX_CLIENTS];
 	int num_targets = 0, target, player;
 	edict_t *ent;
 	trace_t tr;
 
-	/* if we're not in coop, this is a noop */
-	if (!coop || !coop->value)
+	/* if we're not in coop, this is a noop. [rerelease] Paril lets it run in
+	   single player too, so he fires a rocket if you get below him */
+	if (!M_RereleaseGame() && (!coop || !coop->value))
 	{
 		return;
 	}
@@ -103,7 +111,7 @@ CarrierCoopCheck(edict_t *self)
 		return;
 	}
 
-	memset(targets, 0, 4 * sizeof(edict_t *));
+	memset(targets, 0, sizeof(targets));
 
 	/* cycle through players */
 	for (player = 1; player <= game.maxclients; player++)
@@ -118,6 +126,11 @@ CarrierCoopCheck(edict_t *self)
 		if (!ent->client)
 		{
 			continue;
+		}
+
+		if (num_targets >= (int)(sizeof(targets) / sizeof(targets[0])))
+		{
+			break;
 		}
 
 		if (inback(self, ent) || below(self, ent))
@@ -238,7 +251,10 @@ CarrierGrenade(edict_t *self)
 	}
 
 	flash_number = MZ2_GUNNER_GRENADE_1;
-	monster_fire_grenade(self, start, aim, 50, 600, flash_number);
+	if (M_RereleaseGame())
+		monster_fire_grenade_ex(self, start, aim, 50, 600, flash_number, crandom() * 10.0f, 200.0f + crandom() * 10.0f);
+	else
+		monster_fire_grenade(self, start, aim, 50, 600, flash_number);
 }
 
 void
@@ -254,25 +270,25 @@ CarrierPredictiveRocket(edict_t *self)
 	/* 1 */
 	G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_CARRIER_ROCKET_1],
 			forward, right, start);
-	PredictAim(self->enemy, start, CARRIER_ROCKET_SPEED, false, -0.3f, dir, NULL);
+	PredictAimEx(self, self->enemy, start, CARRIER_ROCKET_SPEED, false, -0.3f, dir, NULL);
 	monster_fire_rocket(self, start, dir, 50, CARRIER_ROCKET_SPEED, MZ2_CARRIER_ROCKET_1);
 
 	/* 2 */
 	G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_CARRIER_ROCKET_2],
 			forward, right, start);
-	PredictAim(self->enemy, start, CARRIER_ROCKET_SPEED, false, -0.15f, dir, NULL);
+	PredictAimEx(self, self->enemy, start, CARRIER_ROCKET_SPEED, false, -0.15f, dir, NULL);
 	monster_fire_rocket(self, start, dir, 50, CARRIER_ROCKET_SPEED, MZ2_CARRIER_ROCKET_2);
 
 	/* 3 */
 	G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_CARRIER_ROCKET_3], forward,
 			right, start);
-	PredictAim(self->enemy, start, CARRIER_ROCKET_SPEED, false, 0.0f, dir, NULL);
+	PredictAimEx(self, self->enemy, start, CARRIER_ROCKET_SPEED, false, 0.0f, dir, NULL);
 	monster_fire_rocket(self, start, dir, 50, CARRIER_ROCKET_SPEED, MZ2_CARRIER_ROCKET_3);
 
 	/* 4 */
 	G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_CARRIER_ROCKET_4], forward,
 			right, start);
-	PredictAim(self->enemy, start, CARRIER_ROCKET_SPEED, false, 0.15f, dir, NULL);
+	PredictAimEx(self, self->enemy, start, CARRIER_ROCKET_SPEED, false, 0.15f, dir, NULL);
 	monster_fire_rocket(self, start, dir, 50, CARRIER_ROCKET_SPEED, MZ2_CARRIER_ROCKET_4);
 }
 
@@ -364,6 +380,17 @@ carrier_firebullet_right(edict_t *self)
 	AngleVectors(self->s.angles, forward, right, NULL);
 	G_ProjectSource(self->s.origin, monster_flash_offset[flashnum], forward, right, start);
 
+	/* [rerelease] both guns aim at where the enemy was 0.3s ago, with the
+	   normal bullet spread; rogue led this one and trailed the other, at
+	   triple spread */
+	if (M_RereleaseGame())
+	{
+		PredictAimEx(self, self->enemy, start, 0, true, -0.3f, forward, NULL);
+		monster_fire_bullet(self, start, forward, 6, 4, DEFAULT_BULLET_HSPREAD,
+				DEFAULT_BULLET_VSPREAD, flashnum);
+		return;
+	}
+
 	VectorMA(self->enemy->s.origin, 0.2, self->enemy->velocity, target);
 	target[2] += self->enemy->viewheight;
 	VectorSubtract(target, start, forward);
@@ -394,6 +421,15 @@ carrier_firebullet_left(edict_t *self)
 	AngleVectors(self->s.angles, forward, right, NULL);
 	G_ProjectSource(self->s.origin, monster_flash_offset[flashnum],
 			forward, right, start);
+
+	/* [rerelease] see carrier_firebullet_right */
+	if (M_RereleaseGame())
+	{
+		PredictAimEx(self, self->enemy, start, 0, true, -0.3f, forward, NULL);
+		monster_fire_bullet(self, start, forward, 6, 4, DEFAULT_BULLET_HSPREAD,
+				DEFAULT_BULLET_VSPREAD, flashnum);
+		return;
+	}
 
 	VectorMA(self->enemy->s.origin, -0.2, self->enemy->velocity, target);
 
@@ -444,12 +480,13 @@ CarrierSpawnReinforcement(edict_t *self, vec3_t startpoint)
 	/* one summon per pick; spawn_check runs this on several frames */
 	self->monsterinfo.chosen_reinforcements[0] = -1;
 
-	if (!FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32))
+	/* fliers: no drop to the floor, and the spot is re-checked */
+	if (!FindSpawnPointEx(startpoint, re->mins, re->maxs, spawnpoint, 32, false))
 	{
 		return;
 	}
 
-	ent = CreateMonster(spawnpoint, self->s.angles, re->classname);
+	ent = CreateFlyMonster(spawnpoint, self->s.angles, re->mins, re->maxs, re->classname);
 
 	if (!ent || !ent->inuse)
 	{
@@ -478,7 +515,6 @@ CarrierSpawnReinforcement(edict_t *self, vec3_t startpoint)
 			ent->monsterinfo.attack_state = AS_STRAIGHT;
 			ent->monsterinfo.currentmove = &flyer_move_kamikaze;
 			ent->monsterinfo.aiflags |= AI_CHARGING;
-			ent->mass = 100;
 			ent->owner = self;
 		}
 		else if (!strcmp(ent->classname, "monster_flyer"))
@@ -570,20 +606,56 @@ CarrierSpawn(edict_t *self)
 	}
 }
 
+/*
+ * [rerelease] the summon loop runs until 2 seconds after carrier_prep_spawn,
+ * but every frame carrier_ready_spawn spends holding for the turn pushes that
+ * deadline out by one 40 Hz tick (25 ms), not by a whole frame. Those holds
+ * are counted in self->count, in quarter frames, rather than folded into
+ * timestamp the way id does - timestamp is an integer frame here. One loop
+ * is 5 frames, so with no holds it gets five summons; every hold costs a net
+ * 75 ms of the 2 seconds.
+ */
+#define CARRIER_SPAWN_QUARTERS(self) \
+	(4 * (level.framenum - (self)->timestamp) - (self)->count)
+
 void
 carrier_prep_spawn(edict_t *self)
 {
 	CarrierCoopCheck(self);
 	self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
 	self->timestamp = level.framenum;
+	self->count = 0;
 	self->yaw_speed = 10;
-	CarrierMachineGun(self);
+
+	/* [rerelease] the guns stay quiet while it summons */
+	if (!M_RereleaseGame())
+	{
+		CarrierMachineGun(self);
+	}
 }
 
 void
 carrier_spawn_check(edict_t *self)
 {
 	CarrierCoopCheck(self);
+
+	if (M_RereleaseGame())
+	{
+		CarrierSpawn(self);
+
+		if (CARRIER_SPAWN_QUARTERS(self) > 4 * 2 * BASE_FRAMERATE)
+		{
+			self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+			self->yaw_speed = CARRIER_YAW_SPEED;
+		}
+		else
+		{
+			self->monsterinfo.nextframe = FRAME_spawn08;
+		}
+
+		return;
+	}
+
 	CarrierMachineGun(self);
 	CarrierSpawn(self);
 
@@ -607,14 +679,27 @@ carrier_ready_spawn(edict_t *self)
 
 
 	CarrierCoopCheck(self);
-	CarrierMachineGun(self);
+
+	if (!M_RereleaseGame())
+	{
+		CarrierMachineGun(self);
+	}
 
 	current_yaw = anglemod(self->s.angles[YAW]);
 
 	if (fabs(current_yaw - self->ideal_yaw) > 0.1)
 	{
 		self->monsterinfo.aiflags |= AI_HOLD_FRAME;
-		self->timestamp++;
+
+		if (M_RereleaseGame())
+		{
+			self->count++;      /* one FRAME_TIME_S, see CARRIER_SPAWN_QUARTERS */
+		}
+		else
+		{
+			self->timestamp++;
+		}
+
 		return;
 	}
 
@@ -638,7 +723,7 @@ carrier_ready_spawn(edict_t *self)
 
 		re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[0]];
 
-		if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32))
+		if (FindSpawnPointEx(startpoint, re->mins, re->maxs, spawnpoint, 32, false))
 		{
 			SpawnGrow_Spawn(spawnpoint, 0);
 		}
@@ -667,7 +752,15 @@ carrier_start_spawn(edict_t *self)
 		return;
 	}
 
-	mytime = (level.framenum - self->timestamp) / 5;
+	if (M_RereleaseGame())
+	{
+		/* which half-second of the loop, net of the turning holds */
+		mytime = CARRIER_SPAWN_QUARTERS(self) / (4 * 5);
+	}
+	else
+	{
+		mytime = (level.framenum - self->timestamp) / 5;
+	}
 
 	VectorSubtract(self->enemy->s.origin, self->s.origin, temp);
 	enemy_yaw = vectoyaw2(temp);
@@ -686,7 +779,10 @@ carrier_start_spawn(edict_t *self)
 		self->ideal_yaw = anglemod(enemy_yaw + 30);
 	}
 
-	CarrierMachineGun(self);
+	if (!M_RereleaseGame())
+	{
+		CarrierMachineGun(self);
+	}
 }
 
 mframe_t carrier_frames_stand[] = {
@@ -954,6 +1050,38 @@ mmove_t carrier_move_spawn = {
    	NULL
 };
 
+/* [rerelease] the summon no longer machine-guns on the way through, and
+   it goes back to running at the end instead of into another burst */
+mframe_t carrier_frames_spawn_rr[] = {
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, carrier_prep_spawn},        /* 7 - end of wind down */
+	{ai_charge, -2, carrier_start_spawn},       /* 8 - start of spawn */
+	{ai_charge, -2, carrier_ready_spawn},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -10, carrier_spawn_check},      /* 12 - actual spawn */
+	{ai_charge, -2, NULL},                      /* 13 - begin of wind down */
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL},
+	{ai_charge, -2, NULL}                       /* 18 - end of wind down */
+};
+
+mmove_t carrier_move_spawn_rr = {
+	FRAME_spawn01,
+   	FRAME_spawn18,
+   	carrier_frames_spawn_rr,
+   	carrier_run
+};
+
+#define CARRIER_MOVE_SPAWN (M_RereleaseGame() ? &carrier_move_spawn_rr : &carrier_move_spawn)
+
 mframe_t carrier_frames_pain_heavy[] = {
 	{ai_move, 0, NULL},
 	{ai_move, 0, NULL},
@@ -1011,6 +1139,36 @@ mmove_t carrier_move_death = {
 	FRAME_death01,
    	FRAME_death16,
    	carrier_frames_death,
+   	carrier_dead
+};
+
+/* [rerelease] the explosions run beside the whole animation - id's BossExplode
+   on frame 1 spawns an exploder that pops one every 50-200 ms from about
+   100 ms later on; BossExplodeTick (m_supertank.c) is that, one per frame -
+   and carrier_dead blows it apart at the end */
+mframe_t carrier_frames_death_rr[] = {
+	{ai_move, 0, NULL},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick},
+	{ai_move, 0, BossExplodeTick}
+};
+
+mmove_t carrier_move_death_rr = {
+	FRAME_death01,
+   	FRAME_death16,
+   	carrier_frames_death_rr,
    	carrier_dead
 };
 
@@ -1072,7 +1230,7 @@ carrier_attack(edict_t *self)
 
 	if (self->monsterinfo.attack_state == AS_BLIND)
 	{
-		self->monsterinfo.currentmove = &carrier_move_spawn;
+		self->monsterinfo.currentmove = CARRIER_MOVE_SPAWN;
 		return;
 	}
 
@@ -1132,7 +1290,7 @@ carrier_attack(edict_t *self)
 				}
 				else
 				{
-					self->monsterinfo.currentmove = &carrier_move_spawn;
+					self->monsterinfo.currentmove = CARRIER_MOVE_SPAWN;
 				}
 			}
 			else
@@ -1175,7 +1333,7 @@ carrier_attack(edict_t *self)
 				}
 				else
 				{
-					self->monsterinfo.currentmove = &carrier_move_spawn;
+					self->monsterinfo.currentmove = CARRIER_MOVE_SPAWN;
 				}
 			}
 			else
@@ -1267,7 +1425,7 @@ carrier_reattack_mg(edict_t *self)
 			}
 			else
 			{
-				self->monsterinfo.currentmove = &carrier_move_spawn;
+				self->monsterinfo.currentmove = CARRIER_MOVE_SPAWN;
 			}
 		}
 		else
@@ -1313,6 +1471,67 @@ carrier_pain(edict_t *self, edict_t *other /* unused */, float kick /* unused */
 
 
 	M_SetDamageSkin(self);
+
+	/* [rerelease] the pain sound and its debounce come before the reaction
+	   gate, so it still cries out in nightmare; a chainfist always staggers
+	   it (light pain), and any reaction cuts the chaingun loop */
+	if (M_RereleaseGame())
+	{
+		if (level.framenum < self->pain_debounce_framenum)
+		{
+			return;
+		}
+
+		self->pain_debounce_framenum = level.framenum + 5 * BASE_FRAMERATE;
+
+		if (damage < 10)
+		{
+			gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NONE, 0);
+		}
+		else if (damage < 30)
+		{
+			gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NONE, 0);
+		}
+		else
+		{
+			gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NONE, 0);
+		}
+
+		if (!M_ShouldReactToPain(self, meansOfDeath))
+		{
+			return;
+		}
+
+		/* id zeroes weapon_sound; here that means handing s.sound back to
+		   the engine hum */
+		self->s.sound = sound_engine;
+
+		if (damage >= 10)
+		{
+			if (damage < 30)
+			{
+				if (meansOfDeath == MOD_CHAINFIST || random() < 0.5f)
+				{
+					changed = true;
+					self->monsterinfo.currentmove = &carrier_move_pain_light;
+				}
+			}
+			else
+			{
+				self->monsterinfo.currentmove = &carrier_move_pain_heavy;
+				changed = true;
+			}
+		}
+
+		if (changed)
+		{
+			self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
+			self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+			self->yaw_speed = CARRIER_YAW_SPEED;
+		}
+
+		return;
+	}
 
 	if (skill->value == 3)
 	{
@@ -1377,6 +1596,33 @@ const int carrier_num_rerelease_gibs = (int)(sizeof(carrier_rerelease_gibs) / si
 void
 carrier_dead(edict_t *self)
 {
+	/* [rerelease] one big blast and it comes apart into its own parts */
+	if (M_RereleaseGame())
+	{
+		gi.WriteByte(svc_temp_entity);
+		gi.WriteByte(TE_EXPLOSION1_BIG);
+		gi.WritePosition(self->s.origin);
+		gi.multicast(self->s.origin, MULTICAST_PHS);
+
+		self->s.sound = 0;
+		self->s.skinnum /= 2;
+
+		self->gravityVector[2] = -1.0f;
+
+		ThrowGibs(self, 500, carrier_rerelease_gibs, carrier_num_rerelease_gibs);
+
+		/* this is the death move's endfunc: stop M_MoveFrame stepping the
+		   head gib back onto the death frames (as BossGib does). Not BossGib
+		   itself - id's carrier_dead is its own sequence, with the skin and
+		   gravity resets above */
+		if (self->inuse)
+		{
+			self->svflags |= SVF_DEADMONSTER;
+		}
+
+		return;
+	}
+
 	VectorSet(self->mins, -56, -56, 0);
 	VectorSet(self->maxs, 56, 56, 80);
 	self->movetype = MOVETYPE_TOSS;
@@ -1396,6 +1642,16 @@ carrier_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /*
 	/* engine hum and any chaingun loop both stop here - dying mid-burst would
 	   otherwise leave the loop running on the corpse forever */
 	self->s.sound = 0;
+
+	if (M_RereleaseGame())
+	{
+		/* stop dead in the air and sink only very slowly while it burns */
+		self->monsterinfo.currentmove = &carrier_move_death_rr;
+		VectorClear(self->velocity);
+		self->gravityVector[2] *= 0.01f;
+		return;
+	}
+
 	self->monsterinfo.currentmove = &carrier_move_death;
 }
 

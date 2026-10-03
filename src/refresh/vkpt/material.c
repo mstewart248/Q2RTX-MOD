@@ -119,6 +119,8 @@ void MAT_Init()
 	memset(r_map_materials, 0, sizeof(r_map_materials));
 	num_global_materials = 0;
 	num_map_materials = 0;
+	// nothing is loaded now, so the next MAT_ChangeMap must load, not skip
+	current_map_name[0] = 0;
 
 	// initialize the hash table
 	for (int i = 0; i < RMATERIALS_HASH; i++)
@@ -861,6 +863,16 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 
 void MAT_ChangeMap(const char* map_name)
 {
+	/* THE SAME MAP RELOADING IS NOT A MAP CHANGE. Every CL_PrepRefresh rebuilds
+	   the world and lands here - including the one 'mat <attr>' triggers for
+	   RELOAD_MAP attributes (is_light, kind, curved_water) so the light list and
+	   BLAS pick the edit up. On a map with its own .mat the reset below then
+	   re-created every wall material from disk and threw that very edit away,
+	   so 'mat is_light 1' appeared to do nothing. Re-reading the files on
+	   request is 'mat reload', which reloads them itself. */
+	if (map_name && current_map_name[0] && !Q_stricmp(map_name, current_map_name))
+		return;
+
 	Q_strlcpy(current_map_name, map_name ? map_name : "", sizeof(current_map_name));
 
 	// clear the old map-specific materials

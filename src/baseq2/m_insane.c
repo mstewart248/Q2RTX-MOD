@@ -57,7 +57,7 @@ void insane_moan(edict_t *self)
     // frames of the crawl and stand loops, so untimed it fires continuously
     // and a room full of them is a wall of noise. attack_finished is unused on
     // this monster, so it doubles as the throttle exactly as the rerelease
-    // does.
+    // does - one throttle shared with insane_scream.
     if (M_RereleaseGame()) {
         if (self->monsterinfo.attack_finished > level.framenum)
             return;
@@ -72,6 +72,14 @@ void insane_scream(edict_t *self)
 {
     if (self->spawnflags & SPAWNFLAG_INSANE_QUIET)
         return;
+
+    // [rerelease] the same 1-3s throttle as insane_moan, on the same timer
+    if (M_RereleaseGame()) {
+        if (self->monsterinfo.attack_finished > level.framenum)
+            return;
+        self->monsterinfo.attack_finished =
+            level.framenum + (1.0f + 2.0f * random()) * BASE_FRAMERATE;
+    }
 
     gi.sound(self, CHAN_VOICE, sound_scream[Q_rand() % 8], 1, ATTN_IDLE, 0);
 }
@@ -468,7 +476,13 @@ void insane_run(edict_t *self)
             self->monsterinfo.currentmove = &insane_move_down;
             return;
         }
-    if (self->spawnflags & 4)               // Crawling?
+    if ((self->spawnflags & 4) ||           // Crawling?
+        // [rerelease] already down on the floor - keep crawling rather than
+        // springing up to run
+        (M_RereleaseGame() &&
+         ((self->s.frame >= FRAME_cr_pain2 && self->s.frame <= FRAME_cr_pain10) ||
+          (self->s.frame >= FRAME_crawl1 && self->s.frame <= FRAME_crawl9) ||
+          (self->s.frame >= FRAME_stand99 && self->s.frame <= FRAME_stand160))))
         self->monsterinfo.currentmove = &insane_move_runcrawl;
     else if (random() <= 0.5f)              // Else, mix it up
         self->monsterinfo.currentmove = &insane_move_run_normal;
@@ -500,7 +514,8 @@ void insane_pain(edict_t *self, edict_t *other, float kick, int damage)
         l = 100;
     gi.sound(self, CHAN_VOICE, gi.soundindex(va("player/male/pain%i_%i.wav", l, r)), 1, ATTN_IDLE, 0);
 
-    if (skill->value == 3)
+    // [rerelease] id dropped the nightmare gate for the insane marine
+    if (!M_RereleaseGame() && skill->value == 3)
         return;     // no pain anims in nightmare
 
     // Don't go into pain frames if crucified.
@@ -509,7 +524,10 @@ void insane_pain(edict_t *self, edict_t *other, float kick, int damage)
         return;
     }
 
-    if (((self->s.frame >= FRAME_crawl1) && (self->s.frame <= FRAME_crawl9)) || ((self->s.frame >= FRAME_stand99) && (self->s.frame <= FRAME_stand160))) {
+    // [rerelease] stand1-40 is the drop to the floor (uptodown), so that is
+    // a crawl pain too
+    if (((self->s.frame >= FRAME_crawl1) && (self->s.frame <= FRAME_crawl9)) || ((self->s.frame >= FRAME_stand99) && (self->s.frame <= FRAME_stand160)) ||
+        (M_RereleaseGame() && self->s.frame >= FRAME_stand1 && self->s.frame <= FRAME_stand40)) {
         self->monsterinfo.currentmove = &insane_move_crawl_pain;
     } else
         self->monsterinfo.currentmove = &insane_move_stand_pain;
@@ -744,7 +762,19 @@ void SP_misc_insane(edict_t *self)
 
     self->monsterinfo.scale = MODEL_SCALE;
 
-    if (self->spawnflags & 8) {                 // Crucified ?
+    if (M_RereleaseGame()) {
+        // [rerelease] a crucified marine keeps the full -16..32 box and is a
+        // stationary monster rather than a flying one (FL_STATIONARY, set by
+        // stationarymonster_start: no unstick nudge, no pathing); every marine,
+        // crucified or not, gets one of the three skins
+        if (self->spawnflags & 8) {             // Crucified ?
+            self->flags |= FL_NO_KNOCKBACK;
+            stationarymonster_start(self);
+        } else
+            walkmonster_start(self);
+
+        self->s.skinnum = Q_rand() % 3;
+    } else if (self->spawnflags & 8) {          // Crucified ?
         VectorSet(self->mins, -16, 0, 0);
         VectorSet(self->maxs, 16, 8, 32);
         self->flags |= FL_NO_KNOCKBACK;

@@ -461,6 +461,22 @@ ADD_DEFINITIONS(-DVERSION_POINT=${Q2RTX_VERSION_POINT})
 ADD_DEFINITIONS(-DVERSION_SHA=${Q2RTX_VERSION_SHA})
 ADD_DEFINITIONS(-DVERSION_BRANCH=${Q2RTX_VERSION_BRANCH})
 
+# The Overdrive version shown in the console, log and crash reports. Generated
+# on every build (see cmake/mod_version.cmake) - VERSION_SHA above is only
+# read at configure time and goes stale in an IDE that just rebuilds.
+find_package(Git QUIET)
+set(MOD_VERSION_DIR ${CMAKE_CURRENT_BINARY_DIR}/mod_version)
+add_custom_target(mod_version
+    COMMAND ${CMAKE_COMMAND}
+        -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DOUTPUT_FILE=${MOD_VERSION_DIR}/mod_version.h
+        -P ${CMAKE_SOURCE_DIR}/cmake/mod_version.cmake
+    BYPRODUCTS ${MOD_VERSION_DIR}/mod_version.h
+    COMMENT "Updating mod_version.h"
+    VERBATIM)
+include_directories(${MOD_VERSION_DIR})
+
 ADD_DEFINITIONS(-DHAVE_CONFIG_H=1 -DCURL_STATICLIB -DAL_LIBTYPE_STATIC)
 
 IF(WIN32)
@@ -546,6 +562,11 @@ ELSE()
         server/ac.c
         client/null.c
     )
+ENDIF()
+
+add_dependencies(server mod_version)
+IF (TARGET client)
+    add_dependencies(client mod_version)
 ENDIF()
 
 TARGET_COMPILE_DEFINITIONS(server PRIVATE USE_SERVER=1)

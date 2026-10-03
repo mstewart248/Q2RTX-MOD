@@ -4775,7 +4775,7 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         // carrying on down the bank as a permanent mark nobody can see properly
         // - those parked on the submerged slope, pale-rimmed and never fading.
         if (cl_blood_water->integer && cl.bsp && cl.bsp->nodes &&
-            (CM_PointContents(end, cl.bsp->nodes) & MASK_WATER)) {
+            (CL_PointContents(end) & MASK_WATER)) {
             CL_BloodDissolve(p, end, p->blood_normal, 0.f);
             return false;
         }
@@ -4905,7 +4905,7 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     const bool water = cl_blood_water->integer && cl.bsp && cl.bsp->nodes;
     static const vec3_t water_up = { 0.f, 0.f, 1.f };
 
-    if (water && (CM_PointContents(p->org, cl.bsp->nodes) & MASK_WATER)) {
+    if (water && (CL_PointContents(p->org) & MASK_WATER)) {
         CL_BloodDissolve(p, p->org, water_up, 0.f);
         return false;
     }

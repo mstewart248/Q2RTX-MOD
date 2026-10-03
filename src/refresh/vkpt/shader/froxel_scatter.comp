@@ -353,7 +353,7 @@ void froxel_cell_scatter(
 	/* --- the sun, through the shadow map ---
 
 	   SKIPPED when the march is carrying the sun instead
-	   (fog_sun_is_the_sky). Not merely to avoid counting it twice - that
+	   (fog_sun_in_march - the physical sky, in fast AND accurate mode). Not merely to avoid counting it twice - that
 	   is the POINT of the split.
 
 	   A froxel cell is a box, the volume is only FROXEL_GRID_Z slices
@@ -381,8 +381,8 @@ void froxel_cell_scatter(
 	   god_rays.comp applies both at the very END of its march, after the
 	   accumulation, which is easy to miss when reading the loop alone:
 
-	     sun    * sun_color * god_rays_intensity * 0.0001
-	     lights * pt_fog_light_scale * 0.005
+	     sun    * sun_color * fog_sun_scale() * 0.0001
+	     lights * 0.005 * FOG_LOCAL_DENSITY
 
 	   The 0.0001 exists because sun_color is of order 1e4; the 0.005
 	   because a light-buffer entry is radiance * triangle area, which is
@@ -390,10 +390,10 @@ void froxel_cell_scatter(
 	   the terms have to be scaled separately and only then summed. */
 	vec3 inscatter = vec3(0);
 #if FOG_DEBUG_SAMPLE
-	dbg_g_sunsky = fog_sun_is_the_sky() ? 1.0 : 0.0;
+	dbg_g_sunsky = fog_sun_in_march() ? 1.0 : 0.0;
 #endif
 
-	if (!fog_sun_is_the_sky())
+	if (!fog_sun_in_march())
 	{
 		float distanceToWater;
 		float shadow = GetShadow(world_pos - global_ubo.sun_direction * 20,
@@ -408,7 +408,7 @@ void froxel_cell_scatter(
 			scatter += (1.0 - shadow) * global_ubo.pt_fog_ambient * FOG_ISOTROPIC_PHASE;
 
 		inscatter = scatter * sun_color
-		          * global_ubo.god_rays_intensity * 0.0001;
+		          * fog_sun_scale() * 0.0001;
 	}
 
 	// --- the map's own lights and the sky ---
@@ -511,10 +511,8 @@ void froxel_cell_scatter(
 					view_dir, light_rnd, seed, sky_term);
 			}
 
-			// pt_fog_vol_scale, not pt_fog_light_scale: mode 3 has no
-			// knee crushing the total, so it sits at a different level
-			// entirely and sharing one cvar would mean retuning mode 2
-			// every time the two are compared.
+			// The per-source knobs are already inside vol_inscatter; this
+			// only puts the local half at its fixed density (FOG_LOCAL_DENSITY).
 			/* TEMPORARY probe, GENERATION 2 - raw IEEE bits, see vertex_buffer.h.
 			   Generation 1 clamped to [0, 4e9], which maps a negative value, a
 			   NaN and the "expect <= 0" sentinel all onto the same printed 0. */
@@ -538,11 +536,10 @@ void froxel_cell_scatter(
 #if FOG_DEBUG_SAMPLE
 			dbg_g_vol = vol_inscatter;
 			dbg_g_sun = inscatter;
-			dbg_g_s1 = global_ubo.pt_fog_vol_scale;
-			dbg_g_s2 = global_ubo.fog_vol_density_ratio;
+			dbg_g_s1 = 1.0;
+			dbg_g_s2 = FOG_LOCAL_DENSITY;
 #endif
-			inscatter += vol_inscatter * global_ubo.pt_fog_vol_scale * 0.005
-			           * global_ubo.fog_vol_density_ratio;
+			inscatter += vol_inscatter * 0.005 * FOG_LOCAL_DENSITY;
 
 			float dbg_post = luminance(inscatter);
 #if FOG_DEBUG_PROBES   /* carry dbg_post/dbg_vol out of the block */
@@ -1591,7 +1588,7 @@ void main()
 			   none. Reading the mode-3 cvar while rendering mode 2 is how a
 			   correct sky term shows up as black. */
 			float debug_scale = (global_ubo.fog_mode >= 3)
-			                  ? global_ubo.pt_fog_vol_scale
+			                  ? FOG_LOCAL_DENSITY
 			                  : global_ubo.pt_fog_light_scale;
 
 			dbg = fog_debug_sky_term * debug_scale * 0.005
@@ -1654,7 +1651,7 @@ void main()
 		if (debug == 14)
 		{
 			float debug_scale = (global_ubo.fog_mode >= 3)
-			                  ? global_ubo.pt_fog_vol_scale
+			                  ? FOG_LOCAL_DENSITY
 			                  : global_ubo.pt_fog_light_scale;
 
 			dbg = fog_debug_light_term * debug_scale * 0.005
@@ -2068,11 +2065,10 @@ void main()
 
 		if (debug == 43)
 		{
-			float k = global_ubo.pt_fog_vol_scale * global_ubo.fog_vol_density_ratio;
+			float k = FOG_LOCAL_DENSITY;
 			int   c = global_ubo.fog_camera_cluster;
 			uint  cnt = (c < 0) ? 0u
-			          : light_buffer.light_list_offsets[c + 1]
-			          - light_buffer.light_list_offsets[c];
+			          : fog_light_count(uint(c));
 
 			dbg = vec3((k == 0.0 || isnan(k)) ? 1.0 : 0.0,
 			           (c < 0) ? 1.0 : 0.0,

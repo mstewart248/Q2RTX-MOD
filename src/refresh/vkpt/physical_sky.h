@@ -43,6 +43,7 @@ VkResult vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_
 void vkpt_physical_sky_latch_local_time(void);
 bool vkpt_physical_sky_needs_update(void);
 void vkpt_next_sun_preset(void);
+void vkpt_physical_sky_begin_map(void);
 
 // Classification of the skybox the current map asks for; see map_skybox_scope
 // in physical_sky.c. Passed to vkpt_physical_sky_set_map_skybox by R_SetSky_RTX.

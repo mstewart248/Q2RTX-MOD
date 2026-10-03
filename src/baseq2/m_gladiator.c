@@ -144,6 +144,31 @@ void gladiator_run(edict_t *self)
 }
 
 
+/*
+=================
+gladiator_set_move / gladiator_rr_end
+
+The rerelease trims a frame or two off both ends of the melee, pain and death
+animations (melee3-16, pain2-5, painup2-6, death2-22).  New mmove_t's would
+need savegame table entries, so the rerelease reuses the original moves: it
+starts them at its first frame through nextframe, and gladiator_rr_end cuts the
+move short on its last one, exactly where id's move hands over to
+gladiator_run.
+=================
+*/
+static void gladiator_set_move(edict_t *self, mmove_t *move, int rr_firstframe)
+{
+    self->monsterinfo.currentmove = move;
+    if (M_RereleaseGame())
+        self->monsterinfo.nextframe = rr_firstframe;
+}
+
+static void gladiator_rr_end(edict_t *self)
+{
+    if (M_RereleaseGame())
+        gladiator_run(self);
+}
+
 void GaldiatorMelee(edict_t *self)
 {
     vec3_t  aim;
@@ -178,14 +203,14 @@ mframe_t gladiator_frames_attack_melee [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, GaldiatorMelee },
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, gladiator_rr_end },
     { ai_charge, 0, NULL }
 };
 mmove_t gladiator_move_attack_melee = {FRAME_melee1, FRAME_melee17, gladiator_frames_attack_melee, gladiator_run};
 
 void gladiator_melee(edict_t *self)
 {
-    self->monsterinfo.currentmove = &gladiator_move_attack_melee;
+    gladiator_set_move(self, &gladiator_move_attack_melee, FRAME_melee3);
 }
 
 
@@ -322,7 +347,7 @@ mframe_t gladiator_frames_pain [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
+    { ai_move, 0, gladiator_rr_end },
     { ai_move, 0, NULL }
 };
 mmove_t gladiator_move_pain = {FRAME_pain1, FRAME_pain6, gladiator_frames_pain, gladiator_run};
@@ -333,7 +358,7 @@ mframe_t gladiator_frames_pain_air [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
+    { ai_move, 0, gladiator_rr_end },
     { ai_move, 0, NULL }
 };
 mmove_t gladiator_move_pain_air = {FRAME_painup1, FRAME_painup7, gladiator_frames_pain_air, gladiator_run};
@@ -345,7 +370,7 @@ void gladiator_pain(edict_t *self, edict_t *other, float kick, int damage)
 
     if (level.framenum < self->pain_debounce_framenum) {
         if ((self->velocity[2] > 100) && (self->monsterinfo.currentmove == &gladiator_move_pain))
-            self->monsterinfo.currentmove = &gladiator_move_pain_air;
+            gladiator_set_move(self, &gladiator_move_pain_air, FRAME_painup2);
         return;
     }
 
@@ -356,13 +381,13 @@ void gladiator_pain(edict_t *self, edict_t *other, float kick, int damage)
     else
         gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
 
-    if (skill->value == 3)
+    if (M_RereleaseGame() ? !M_ShouldReactToPain(self, meansOfDeath) : skill->value == 3)
         return;     // no pain anims in nightmare
 
     if (self->velocity[2] > 100)
-        self->monsterinfo.currentmove = &gladiator_move_pain_air;
+        gladiator_set_move(self, &gladiator_move_pain_air, FRAME_painup2);
     else
-        self->monsterinfo.currentmove = &gladiator_move_pain;
+        gladiator_set_move(self, &gladiator_move_pain, FRAME_pain2);
 
 }
 
@@ -556,11 +581,20 @@ void gladiator_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int dam
         return;
 
 // regular death
-    gi.sound(self, CHAN_VOICE, sound_die, 1, ATTN_NORM, 0);
+    if (M_RereleaseGame()) {
+        // the rerelease thuds on the body channel and only sometimes yells
+        gi.sound(self, CHAN_BODY, sound_die, 1, ATTN_NORM, 0);
+        if (Q_rand() & 1)
+            // registered on first play, not precached: mgu5m2 is at the 256-sound limit and
+            // a precache here pushed real sounds out; a full table now just skips this one
+            gi.sound(self, CHAN_VOICE, gi.soundindex("gladiator/death.wav"), 1, ATTN_NORM, 0);
+    } else {
+        gi.sound(self, CHAN_VOICE, sound_die, 1, ATTN_NORM, 0);
+    }
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_YES;
 
-    self->monsterinfo.currentmove = &gladiator_move_death;
+    gladiator_set_move(self, &gladiator_move_death, FRAME_death2);
 }
 
 

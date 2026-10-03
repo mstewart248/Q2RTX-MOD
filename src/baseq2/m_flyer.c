@@ -47,6 +47,8 @@ void flyer_stand(edict_t *self);
 void flyer_nextmove(edict_t *self);
 void flyer_kamikaze_check(edict_t *self);
 bool flyer_blocked(edict_t *self, float dist);
+static void flyer_set_fly_parameters(edict_t *self, bool melee);
+extern mmove_t flyer_move_kamikaze;
 
 
 void flyer_sight(edict_t *self, edict_t *other)
@@ -215,7 +217,10 @@ mmove_t flyer_move_run = {FRAME_stand01, FRAME_stand45, flyer_frames_run, NULL};
 
 void flyer_run(edict_t *self)
 {
-    if (self->monsterinfo.aiflags & AI_STAND_GROUND)
+    // [rerelease] the kamikaze (mass 100) only ever does its dive
+    if (M_RereleaseGame() && self->mass > 50)
+        self->monsterinfo.currentmove = &flyer_move_kamikaze;
+    else if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         self->monsterinfo.currentmove = &flyer_move_stand;
     else
         self->monsterinfo.currentmove = &flyer_move_run;
@@ -223,12 +228,18 @@ void flyer_run(edict_t *self)
 
 void flyer_walk(edict_t *self)
 {
-    self->monsterinfo.currentmove = &flyer_move_walk;
+    if (M_RereleaseGame() && self->mass > 50)
+        flyer_run(self);
+    else
+        self->monsterinfo.currentmove = &flyer_move_walk;
 }
 
 void flyer_stand(edict_t *self)
 {
-    self->monsterinfo.currentmove = &flyer_move_stand;
+    if (M_RereleaseGame() && self->mass > 50)
+        flyer_run(self);
+    else
+        self->monsterinfo.currentmove = &flyer_move_stand;
 }
 
 mframe_t flyer_frames_start [] = {
@@ -358,6 +369,25 @@ void flyer_fire(edict_t *self, int flash_number)
     vec3_t  end;
     vec3_t  dir;
     int     effect;
+
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
+    // [rerelease] always the plain blaster, with every fourth frame's bolt
+    // drawn as a hyperblaster bolt; the random hyperblaster flyer is ours
+    if (M_RereleaseGame()) {
+        AngleVectors(self->s.angles, forward, right, NULL);
+        G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
+
+        VectorCopy(self->enemy->s.origin, end);
+        end[2] += self->enemy->viewheight;
+        VectorSubtract(end, start, dir);
+        VectorNormalize(dir);
+
+        monster_fire_blaster(self, start, dir, 1, 1000, flash_number,
+                             (self->s.frame % 4) ? 0 : EF_HYPERBLASTER);
+        return;
+    }
 
     if ((self->s.frame == FRAME_attak204) || (self->s.frame == FRAME_attak207) || (self->s.frame == FRAME_attak210))
 		if (self->monsterFireHyperBlaster) {
@@ -606,6 +636,17 @@ void flyer_melee(edict_t *self)
 {
 //  flyer.nextmove = ACTION_attack1;
 //  self->monsterinfo.currentmove = &flyer_move_stop;
+    if (M_RereleaseGame()) {
+        // the kamikaze has no melee - it just keeps diving
+        if (self->mass > 50) {
+            flyer_run(self);
+            return;
+        }
+        self->monsterinfo.currentmove = &flyer_move_start_melee;
+        flyer_set_fly_parameters(self, true);
+        return;
+    }
+
     self->monsterinfo.currentmove = &flyer_move_start_melee;
 }
 
@@ -626,16 +667,45 @@ void flyer_check_melee(edict_t *self)
     }
 
     self->monsterinfo.currentmove = &flyer_move_end_melee;
+    // [rerelease] the slice is over: back to cruising
+    if (M_RereleaseGame())
+        flyer_set_fly_parameters(self, false);
 }
 
 void flyer_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     int     n;
 
+    // [rerelease] pmm - kamikazes don't feel pain
+    if (M_RereleaseGame() && self->mass != 50)
+        return;
+
     M_SetDamageSkin(self);
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
+
+    if (M_RereleaseGame()) {
+        // id plays the pain sound even in nightmare, then drops out of
+        // thruster mode before the flinch
+        self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+        n = Q_rand() % 3;
+        gi.sound(self, CHAN_VOICE, (n == 1) ? sound_pain2 : sound_pain1, 1, ATTN_NORM, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        flyer_set_fly_parameters(self, false);
+
+        if (n == 0)
+            self->monsterinfo.currentmove = &flyer_move_pain1;
+        else if (n == 1)
+            self->monsterinfo.currentmove = &flyer_move_pain2;
+        else
+            self->monsterinfo.currentmove = &flyer_move_pain3;
+        return;
+    }
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
     if (skill->value == 3)
@@ -686,6 +756,7 @@ void flyer_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage,
         self->s.skinnum /= 2;
         ThrowGibs(self, 55, flyer_rerelease_gibs, flyer_num_rerelease_gibs);
         self->deadflag = DEAD_DEAD;
+        self->touch = NULL;
         return;
     }
 
@@ -714,7 +785,11 @@ void SP_monster_flyer(edict_t *self)
 
 	float val = crandom();
 
-	if (val < 0) {
+	// the random hyperblaster flyer is a port addition; not in the rerelease
+	if (M_RereleaseGame()) {
+		self->monsterFireHyperBlaster = qfalse;
+	}
+	else if (val < 0) {
 		self->monsterFireHyperBlaster = qtrue;
 	}
 	else {
@@ -884,6 +959,22 @@ void flyer_kamikaze_check(edict_t *self)
         flyer_kamikaze_explode(self);
 }
 
+/*
+=================
+kamikaze_touch
+
+[rerelease] touch for the kamikaze: whatever it runs into, it blows itself up.
+=================
+*/
+void kamikaze_touch(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    vec3_t  dir;
+
+    VectorCopy(ent->velocity, dir);
+    VectorNormalize(dir);
+    T_Damage(ent, ent, ent, dir, ent->s.origin, dir, 9999, 100, 0, MOD_UNKNOWN);
+}
+
 mframe_t flyer_frames_kamikaze [] = {
     { ai_charge, 40, flyer_kamikaze_check },
     { ai_charge, 40, flyer_kamikaze_check },
@@ -928,7 +1019,8 @@ void SP_monster_kamikaze(edict_t *self)
     self->monsterinfo.aiflags &= ~AI_ALTERNATE_FLY;
     self->monsterinfo.fly_buzzard = false;
     self->monsterinfo.fly_thrusters = false;
-    self->touch = NULL;
+    // [rerelease] it detonates on touching anything at all
+    self->touch = M_RereleaseGame() ? kamikaze_touch : NULL;
     self->yaw_speed = 5;
 
     gi.linkentity(self);

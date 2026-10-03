@@ -34,7 +34,13 @@ extern mmove_t infantry_move_attack4;
 
 // RANGE_NEAR * 0.75 in the rerelease, where their RANGE_NEAR is 440 units.  This
 // tree's RANGE_NEAR is an enum tag rather than a distance, so spell it out.
+// id measures it box gap to box gap (range_to); realrange() is origin to origin
+// at the moment, so every test against it goes through realrange().
 #define RANGE_RUN_ATTACK    330.0f
+
+// id's RANGE_MELEE: 20 units of gap between the bounding boxes ("bboxes
+// basically touching"), again measured through realrange()
+#define INFANTRY_RANGE_MELEE    20.0f
 
 
 static int  sound_pain1;
@@ -175,6 +181,10 @@ mmove_t infantry_move_fidget = {FRAME_stand01, FRAME_stand49, infantry_frames_fi
 
 void infantry_fidget(edict_t *self)
 {
+    // [rerelease] no idling while there is someone to fight
+    if (M_RereleaseGame() && self->enemy)
+        return;
+
     self->monsterinfo.currentmove = &infantry_move_fidget;
     gi.sound(self, CHAN_VOICE, sound_idle, 1, ATTN_IDLE, 0);
 }
@@ -200,20 +210,35 @@ void infantry_walk(edict_t *self)
     self->monsterinfo.currentmove = &infantry_move_walk;
 }
 
+// [rerelease] id slowed the run: 15/18/20 on run02/05/06 where the classic
+// table has 20/30/35.  Indexed by frame, as the move only covers run01-08.
+static const float infantry_run_dist_rerelease[8] = { 10, 15, 5, 7, 18, 20, 2, 6 };
+
+static void ai_infantry_run(edict_t *self, float dist)
+{
+    if (M_RereleaseGame() && self->s.frame >= FRAME_run01 && self->s.frame <= FRAME_run08)
+        dist = infantry_run_dist_rerelease[self->s.frame - FRAME_run01];
+
+    ai_run(self, dist);
+}
+
 mframe_t infantry_frames_run [] = {
-    { ai_run, 10, NULL },
-    { ai_run, 20, monster_footstep },
-    { ai_run, 5,  NULL },
-    { ai_run, 7, monster_done_dodge },
-    { ai_run, 30, NULL },
-    { ai_run, 35, monster_footstep },
-    { ai_run, 2,  NULL },
-    { ai_run, 6,  NULL }
+    { ai_infantry_run, 10, NULL },
+    { ai_infantry_run, 20, monster_footstep },
+    { ai_infantry_run, 5,  NULL },
+    { ai_infantry_run, 7, monster_done_dodge },
+    { ai_infantry_run, 30, NULL },
+    { ai_infantry_run, 35, monster_footstep },
+    { ai_infantry_run, 2,  NULL },
+    { ai_infantry_run, 6,  NULL }
 };
 mmove_t infantry_move_run = {FRAME_run01, FRAME_run08, infantry_frames_run, NULL};
 
 void infantry_run(edict_t *self)
 {
+    if (M_RereleaseGame())
+        monster_done_dodge(self);
+
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         self->monsterinfo.currentmove = &infantry_move_stand;
     else
@@ -249,11 +274,69 @@ mframe_t infantry_frames_pain2 [] = {
 };
 mmove_t infantry_move_pain2 = {FRAME_pain201, FRAME_pain210, infantry_frames_pain2, infantry_run};
 
+extern mmove_t infantry_move_jump;
+extern mmove_t infantry_move_jump2;
+
+/*
+=================
+infantry_pain
+
+The rerelease's version, gated: never interrupts a jump (unless the infantry
+is not running its own think - id's "allow turret to pain"), dodges a third of
+the time when the pain itself is on cooldown or suppressed, plays the pain
+sound before the nightmare early-out, and stands back up from a duck.
+=================
+*/
 void infantry_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     int     n;
 
     M_SetDamageSkin(self);
+
+    if (M_RereleaseGame()) {
+        // allow turret to pain
+        if ((self->monsterinfo.currentmove == &infantry_move_jump ||
+             self->monsterinfo.currentmove == &infantry_move_jump2) && self->think == monster_think)
+            return;
+
+        monster_done_dodge(self);
+
+        if (level.framenum < self->pain_debounce_framenum) {
+            if (self->think == monster_think && random() < 0.33f)
+                self->monsterinfo.dodge(self, other, FRAMETIME, NULL, false);
+
+            return;
+        }
+
+        self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+        n = Q_rand() % 2;
+
+        if (n == 0)
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+
+        if (self->think != monster_think)
+            return;
+
+        if (!M_ShouldReactToPain(self, meansOfDeath)) {
+            if (random() < 0.33f)
+                self->monsterinfo.dodge(self, other, FRAMETIME, NULL, false);
+
+            return;     // no pain anims in nightmare
+        }
+
+        if (n == 0)
+            self->monsterinfo.currentmove = &infantry_move_pain1;
+        else
+            self->monsterinfo.currentmove = &infantry_move_pain2;
+
+        // PMM - clear duck flag
+        if (self->monsterinfo.aiflags & AI_DUCKED)
+            monster_duck_up(self);
+        return;
+    }
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -302,6 +385,10 @@ void InfantryMachineGun(edict_t *self)
     if (self->monsterinfo.aiflags & AI_SPAWNED_DEAD)
         return;
 
+    // [rerelease] PGM - no enemy, no shot; this includes death2's dying spray
+    if (M_RereleaseGame() && (!self->enemy || !self->enemy->inuse))
+        return;
+
     // attack1 (rerelease timing) fires at attak103, attack3 at attak311, and the
     // classic MD2 attack1 at attak111.  These never collide: the rerelease
     // attack1 skips attak108-113 entirely, and attack3 lives on attak3xx.
@@ -323,7 +410,10 @@ void InfantryMachineGun(edict_t *self)
         AngleVectors(self->s.angles, forward, right, NULL);
         G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
-        if (self->enemy) {
+        if (self->enemy && M_RereleaseGame()) {
+            // [rerelease] leads 0.2 s ahead at eye height
+            PredictAimEx(self, self->enemy, start, 0, true, -0.2f, forward, NULL);
+        } else if (self->enemy) {
             VectorMA(self->enemy->s.origin, -0.2f, self->enemy->velocity, target);
             target[2] += self->enemy->viewheight;
             VectorSubtract(target, start, forward);
@@ -346,6 +436,15 @@ void InfantryMachineGun(edict_t *self)
 
 void infantry_sight(edict_t *self, edict_t *other)
 {
+    // [rerelease] sight or search line, 50/50, on the voice channel
+    if (M_RereleaseGame()) {
+        if (Q_rand() & 1)
+            gi.sound(self, CHAN_VOICE, sound_sight, 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_search, 1, ATTN_NORM, 0);
+        return;
+    }
+
     gi.sound(self, CHAN_BODY, sound_sight, 1, ATTN_NORM, 0);
 }
 
@@ -365,11 +464,11 @@ mframe_t infantry_frames_death1 [] = {
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, -1, NULL },
-    { ai_move, -4, NULL },
+    { ai_move, -4, monster_footstep },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
     { ai_move, 0,  NULL },
-    { ai_move, -1, NULL },
+    { ai_move, -1, monster_footstep },
     { ai_move, 3,  NULL },
     { ai_move, 1,  NULL },
     { ai_move, 1,  NULL },
@@ -378,7 +477,7 @@ mframe_t infantry_frames_death1 [] = {
     { ai_move, 2,  NULL },
     { ai_move, 9, infantry_shrink_footstep },
     { ai_move, 9,  NULL },
-    { ai_move, 5,  NULL },
+    { ai_move, 5, monster_footstep },
     { ai_move, -3, NULL },
     { ai_move, -3, NULL }
 };
@@ -391,8 +490,8 @@ mframe_t infantry_frames_death2 [] = {
     { ai_move, 5,   NULL },
     { ai_move, -1,  NULL },
     { ai_move, 0,   NULL },
-    { ai_move, 1,   NULL },
-    { ai_move, 1,   NULL },
+    { ai_move, 1,   monster_footstep },
+    { ai_move, 1,   monster_footstep },
     { ai_move, 4,   NULL },
     { ai_move, 3,   NULL },
     { ai_move, 0,   NULL },
@@ -414,15 +513,22 @@ mframe_t infantry_frames_death2 [] = {
 };
 mmove_t infantry_move_death2 = {FRAME_death201, FRAME_death225, infantry_frames_death2, infantry_dead};
 
+// [rerelease] id skips death306
+static void infantry_death3_skip(edict_t *self)
+{
+    if (M_RereleaseGame())
+        self->monsterinfo.nextframe = FRAME_death307;
+}
+
 mframe_t infantry_frames_death3 [] = {
     { ai_move, 0,   NULL },
     { ai_move, 0,   NULL },
     { ai_move, 0, infantry_shrink_footstep },
     { ai_move, -6,  NULL },
-    { ai_move, -11, NULL },
+    { ai_move, -11, infantry_death3_skip },
     { ai_move, -3,  NULL },
     { ai_move, -11, NULL },
-    { ai_move, 0,   NULL },
+    { ai_move, 0,   monster_footstep },
     { ai_move, 0,   NULL }
 };
 mmove_t infantry_move_death3 = {FRAME_death301, FRAME_death309, infantry_frames_death3, infantry_dead};
@@ -655,20 +761,22 @@ extern mmove_t infantry_move_jump2;
 infantry_duck / infantry_sidestep
 
 The ROGUE/rerelease dodge pair. Returning a bool is what lets
-M_MonsterDodge fall back from a sidestep to a duck. Neither interrupts a
-firing sequence - a monster that ducked mid-burst threw the shot away.
+M_MonsterDodge fall back from a sidestep to a duck. Only M_MonsterDodge (the
+rerelease game) ever calls them.
 =================
 */
 bool infantry_duck(edict_t *self, float eta)
 {
+    // if we're jumping, don't dodge
     if (self->monsterinfo.currentmove == &infantry_move_jump ||
         self->monsterinfo.currentmove == &infantry_move_jump2)
         return false;
 
-    if (self->monsterinfo.currentmove == &infantry_move_attack1 ||
+    // don't duck during our firing or melee frames
+    if (self->s.frame == FRAME_attak103 ||
+        self->s.frame == FRAME_attak315 ||
         self->monsterinfo.currentmove == &infantry_move_attack2) {
-        // already shooting - stand back up rather than half-duck
-        monster_duck_up(self);
+        self->monsterinfo.unduck(self);
         return false;
     }
 
@@ -678,14 +786,31 @@ bool infantry_duck(edict_t *self, float eta)
 
 bool infantry_sidestep(edict_t *self)
 {
+    // if we're jumping, don't dodge
     if (self->monsterinfo.currentmove == &infantry_move_jump ||
         self->monsterinfo.currentmove == &infantry_move_jump2)
         return false;
 
-    // strafing happens on the run move; AS_SLIDING is what makes
-    // ai_run sidestep rather than close
-    if (self->monsterinfo.currentmove != &infantry_move_run)
-        self->monsterinfo.currentmove = &infantry_move_run;
+    // AS_SLIDING (set by M_MonsterDodge) is what makes ai_run strafe
+    if (self->monsterinfo.currentmove == &infantry_move_run)
+        return true;
+
+    // Don't sidestep if we're already sidestepping, and def not unless we're
+    // actually shooting or if we already cocked: on a firing frame with the
+    // gun spent, break into the run-and-gun instead.  Anything else carries
+    // on as it was.  (id also tests its next_move, a pending queued
+    // animation; this tree switches moves at once, so currentmove covers it.)
+    if (self->monsterinfo.currentmove != &infantry_move_attack4 &&
+        (self->s.frame == FRAME_attak103 ||
+         self->s.frame == FRAME_attak311 ||
+         self->s.frame == FRAME_attak416) &&
+        !self->count) {
+        // give us a fire time boost so we don't end up firing for 1 frame:
+        // 0.3-0.6s
+        self->monsterinfo.fire_framenum += (int)((0.3f + 0.3f * random()) * BASE_FRAMERATE + 0.5f);
+
+        self->monsterinfo.currentmove = &infantry_move_attack4;
+    }
 
     return true;
 }
@@ -762,6 +887,19 @@ void infantry_skip_cock(edict_t *self)
     self->monsterinfo.nextframe = FRAME_attak114;
 }
 
+// id pairs these with a footstep in its frame tables (a C++ lambda there)
+static void infantry_set_firetime_footstep(edict_t *self)
+{
+    infantry_set_firetime(self);
+    monster_footstep(self);
+}
+
+static void infantry_skip_cock_footstep(edict_t *self)
+{
+    infantry_skip_cock(self);
+    monster_footstep(self);
+}
+
 void infantry_fire(edict_t *self)
 {
     InfantryMachineGun(self);
@@ -777,6 +915,8 @@ void infantry_fire(edict_t *self)
     if (self->monsterinfo.currentmove == &infantry_move_attack4) {
         if (level.framenum >= self->monsterinfo.fire_framenum) {
             // ran out of firing time
+            if (M_RereleaseGame())
+                monster_done_dodge(self);
             self->monsterinfo.currentmove = &infantry_move_attack1;
             self->monsterinfo.nextframe = FRAME_attak114;
         } else if ((self->monsterinfo.aiflags & AI_STAND_GROUND) ||
@@ -785,6 +925,8 @@ void infantry_fire(edict_t *self)
             // got too close, or ran out of room to advance
             self->monsterinfo.currentmove = &infantry_move_attack1;
             self->monsterinfo.nextframe = FRAME_attak103;
+            if (M_RereleaseGame())
+                monster_done_dodge(self);
             self->monsterinfo.attack_state = AS_STRAIGHT;
         }
         return;
@@ -802,12 +944,12 @@ void infantry_fire(edict_t *self)
 
 mframe_t infantry_frames_attack1 [] = {
     { ai_charge, 0,  NULL },
-    { ai_charge, 6,  infantry_set_firetime },
+    { ai_charge, 6,  infantry_set_firetime_footstep },
     { ai_charge, 0,  infantry_fire },
     { ai_charge, 0,  NULL },
     { ai_charge, 1,  NULL },
     { ai_charge, -7, NULL },
-    { ai_charge, -6, infantry_skip_cock },
+    { ai_charge, -6, infantry_skip_cock_footstep },
     // dead frames start - jumped by infantry_skip_cock above
     { ai_charge, -1, NULL },
     { ai_charge, 0,  infantry_cock_gun },
@@ -837,7 +979,7 @@ mframe_t infantry_frames_attack3 [] = {
     { ai_charge, 1,  NULL },
     { ai_charge, 2,  NULL },
     { ai_charge, -2, NULL },
-    { ai_charge, -3, infantry_set_firetime },
+    { ai_charge, -3, infantry_set_firetime_footstep },
     { ai_charge, 1,  infantry_fire },
     { ai_charge, 5,  NULL },
     { ai_charge, -1, NULL },
@@ -889,17 +1031,23 @@ void infantry_attack4_refire(edict_t *self)
         self->monsterinfo.nextframe = FRAME_run201;
 }
 
+static void infantry_fire_footstep(edict_t *self)
+{
+    monster_footstep(self);
+    infantry_fire(self);
+}
+
 mframe_t infantry_frames_attack4 [] = {
     { ai_charge, 16, infantry_fire },
-    { ai_charge, 16, infantry_fire },
+    { ai_charge, 16, infantry_fire_footstep },
     { ai_charge, 13, infantry_fire },
     { ai_charge, 10, infantry_fire },
     { ai_charge, 16, infantry_fire },
-    { ai_charge, 16, infantry_fire },
+    { ai_charge, 16, infantry_fire_footstep },
     { ai_charge, 16, infantry_fire },
     { ai_charge, 16, infantry_attack4_refire }
 };
-mmove_t infantry_move_attack4 = {FRAME_run201, FRAME_run208, infantry_frames_attack4, infantry_run};
+mmove_t infantry_move_attack4 = {FRAME_run201, FRAME_run208, infantry_frames_attack4, infantry_run, 0.5f};
 
 // The infantry's SECOND standing firing pose (rerelease infantry_move_attack5).
 // Runs over the appended attak401-423 and is entered at attak405 - the first
@@ -915,7 +1063,7 @@ mframe_t infantry_frames_attack5 [] = {
     { ai_charge, 0, NULL },                     // attak404, skipped
     { ai_charge, 0, NULL },                     // attak405 - entry point
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL },
+    { ai_charge, 0, monster_footstep },
     { ai_charge, 0, infantry_cock_gun },        // attak408
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
@@ -931,7 +1079,7 @@ mframe_t infantry_frames_attack5 [] = {
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
     { ai_charge, 0, NULL },
-    { ai_charge, 0, NULL }                      // attak423
+    { ai_charge, 0, monster_footstep }          // attak423
 };
 mmove_t infantry_move_attack5 = {FRAME_attak401, FRAME_attak423, infantry_frames_attack5, infantry_run};
 
@@ -968,6 +1116,33 @@ mmove_t infantry_move_attack2 = {FRAME_attak201, FRAME_attak208, infantry_frames
 
 void infantry_attack(edict_t *self)
 {
+    // [rerelease] punch when the boxes are basically touching and the last
+    // punch did not miss in the past 1.5s; otherwise only shoot with a clear
+    // line from the muzzle - and do nothing at all without one
+    if (M_RereleaseGame()) {
+        vec3_t  shot_start;
+
+        monster_done_dodge(self);
+
+        if (realrange(self, self->enemy) <= INFANTRY_RANGE_MELEE &&
+            self->monsterinfo.melee_debounce_framenum <= level.framenum)
+            self->monsterinfo.currentmove = &infantry_move_attack2;
+        else if (M_CheckClearShot(self, monster_flash_offset[MZ2_INFANTRY_MACHINEGUN_1], shot_start)) {
+            if (!M_RereleaseAnims())
+                // classic md2: attak101-115 is the old cock-then-shoot
+                // animation, and attak3xx does not exist
+                self->monsterinfo.currentmove = &infantry_move_attack1_classic;
+            else if (self->count)
+                self->monsterinfo.currentmove = &infantry_move_attack1;
+            else if (random() <= 0.1f) {
+                self->monsterinfo.currentmove = &infantry_move_attack5;
+                self->monsterinfo.nextframe = FRAME_attak405;
+            } else
+                self->monsterinfo.currentmove = &infantry_move_attack3;
+        }
+        return;
+    }
+
     if (range(self, self->enemy) == RANGE_MELEE &&
         (!M_RereleaseGame() ||
          self->monsterinfo.melee_debounce_framenum <= level.framenum))
@@ -1000,8 +1175,6 @@ monsterinfo.blocked is called from SV_NewChaseDir when the infantry has run out
 of step directions.  It jumps down off ledges and up onto them, and rides
 func_plats.  All of this runs on the APPENDED jump frames, so blocked_checkjump
 refuses unless M_RereleaseAnims() is on.
-
-Dropped vs the rerelease: monster_done_dodge (no AI_DODGING flag in this tree).
 =================
 */
 #define SPAWNFLAG_INFANTRY_NOJUMPING   8
@@ -1068,6 +1241,8 @@ void infantry_jump(edict_t *self, blocked_jump_result_t result)
 {
     if (!self->enemy)
         return;
+
+    monster_done_dodge(self);
 
     if (result == JUMP_JUMP_UP)
         self->monsterinfo.currentmove = &infantry_move_jump2;

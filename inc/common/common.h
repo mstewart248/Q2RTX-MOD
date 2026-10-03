@@ -27,6 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //
 
 #define PRODUCT         "Quake II RTX"
+#define MOD_NAME        "q2rtx overdrive"
 
 #if USE_CLIENT
 #define APPLICATION     "q2rtx"

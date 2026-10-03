@@ -958,6 +958,7 @@ main()
 	vec3 new_pos_prev = triangle.positions_prev * bary;
 
 	vec3 new_geo_normal = normalize(triangle.normals * bary);
+	triangle.alpha = blood_hit_alpha(triangle, new_geo_normal);
 	material_id    = triangle.material_id;
 	cluster_idx    = triangle.cluster;
 

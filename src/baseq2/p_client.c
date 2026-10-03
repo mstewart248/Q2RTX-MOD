@@ -551,6 +551,27 @@ void LookAtKiller(edict_t *self, edict_t *inflictor, edict_t *attacker)
 player_die
 ==================
 */
+/*
+==================
+RemoveAttackingPainDaemons
+
+ROGUE (p_client.cpp): free every disruptor "pain daemon" still chewing on
+this entity, so a dead player stops taking tracker damage.
+==================
+*/
+static void RemoveAttackingPainDaemons(edict_t *self)
+{
+    edict_t *tracker = NULL;
+
+    while ((tracker = G_Find(tracker, FOFS(classname), "pain daemon")) != NULL) {
+        if (tracker->enemy == self)
+            G_FreeEdict(tracker);
+    }
+
+    if (self->client)
+        self->client->tracker_pain_framenum = 0;
+}
+
 void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
@@ -599,6 +620,28 @@ void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
     self->client->breather_framenum = 0;
     self->client->enviro_framenum = 0;
     self->flags &= ~FL_POWER_ARMOR;
+
+    // ROGUE (p_client.cpp): the cloak goes too, and an owned sphere is told
+    // its owner died - vengeance and hunter die unless they are attacking,
+    // the defender always does
+    self->client->invisible_framenum = 0;
+
+    if (self->client->owned_sphere && self->client->owned_sphere->inuse &&
+        self->client->owned_sphere->die) {
+        edict_t *sphere = self->client->owned_sphere;
+
+        sphere->die(sphere, self, self, 0, vec3_origin);
+    }
+
+    // killed by the tracker: GIB!
+    if (meansOfDeath == MOD_TRACKER) {
+        self->health = -100;
+        damage = 400;
+    }
+
+    // make sure no trackers are still hurting us
+    if (self->client->tracker_pain_framenum)
+        RemoveAttackingPainDaemons(self);
 
     if (self->health < -40) {
         // gib

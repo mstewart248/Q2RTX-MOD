@@ -152,7 +152,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* silently corrupts the tm_* tone-mapping values. Appending keeps that blast radius 0. */ \
 	UBO_CVAR_DO(pt_rr_white_noise, 0) /* hashed white noise instead of the tiled blue-noise texture, per DLSS-RR guide 3.5; 0 keeps the blue noise */ \
 	UBO_CVAR_DO(pt_fog_light_scale, 1.0) /* brightness of local lights scattered in map fog (cl_fog 2) */ \
-	UBO_CVAR_DO(pt_fog_sky_scale, 1.0) /* brightness of SKY light scattered in map fog (cl_fog 2) */ \
+	UBO_CVAR_DO(pt_fog_scale_skybox, 1.0) /* FOG KNOB "sky light": brightness of the SKY's own ambient light scattered in the fog - a map's skybox, or the physical sky when pt_fog_sky_sun_only is 0 (accurate). The sun's shafts are pt_fog_scale_sun */ \
 	UBO_CVAR_DO(pt_fog_light_knee, 2.0) /* soft roll-off on the SUMMED local-light total; SATURATES AT THIS VALUE, so it crushes the bright-core-to-dim-wash contrast that makes a light read as a glowing cloud. 0 disables it, and 0 is the right starting point for tuning localised glow. NOT a distance falloff - that is pt_fog_light_falloff */ \
 	UBO_CVAR_DO(pt_fog_light_falloff, 4.0) /* distance exponent for a light's fog glow. 2 = plain inverse square; 4 is Matt's calibration - it pulls the glow in tight around each fixture instead of washing the whole room. Only ever steepens BEYOND pt_fog_light_pivot, so the near field keeps its correct brightness at any setting */ \
 	UBO_CVAR_DO(pt_fog_light_pivot, 128.0) /* world radius inside which a light keeps plain inverse-square brightness; pt_fog_light_falloff only steepens the decay BEYOND this, so the near field can never brighten however high the exponent goes */ \
@@ -165,22 +165,22 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_fog_eccentricity, -1.0) /* map-fog scattering directionality, 0 = even in all directions .. 0.95 = tight shafts; -1 follows gr_eccentricity */ \
 	UBO_CVAR_DO(pt_fog_ambient, 0.0) /* fraction of the sun's radiance that lights map fog IN SHADOW, isotropically; 0 = the hard shadow-map cliff this always had */ \
 	UBO_CVAR_DO(pt_fog_extinction, 0.0) /* real extinction per unit density for map fog, so a long ray SATURATES instead of accumulating without bound; 0 = the legacy flat 0.0001 */ \
-	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ 	UBO_CVAR_DO(pt_fog_froxel, 0.0) /* 1 = evaluate map fog in the froxel grid (cheap, temporally reused); 0 = the old per-pixel march in god_rays.comp */ 	UBO_CVAR_DO(pt_fog_froxel_history, 0.99) /* how much of the PREVIOUS frame's froxel volume to keep; this is what removes the noise. 0 disables temporal reuse */ \
+	UBO_CVAR_DO(pt_fog_opacity, 1.0) /* how much of the accumulated transmittance dims what is BEHIND the fog; only has any effect when pt_fog_extinction > 0 */ 	UBO_CVAR_DO(pt_fog_froxel, 1.0) /* 1 = evaluate map fog in the froxel grid (cheap, temporally reused); 0 = the old per-pixel march in god_rays.comp */ 	UBO_CVAR_DO(pt_fog_froxel_history, 0.99) /* how much of the PREVIOUS frame's froxel volume to keep; this is what removes the noise. 0 disables temporal reuse */ \
 	/* What REFLECTION and REFRACTION pixels get for map fog. A negative PT_VIEW_DEPTH_A is reflect_refract's marker for such a pixel, and its magnitude is the UNFOLDED camera->mirror->object path length (PRIMARY_RAY_T_MAX for a reflected sky), so handing that straight to the view-aligned grid asks for a full-length column measured along the CAMERA ray - which is why reflections of a green sky came out orange on mgu5m1. 0 = grid, but stopped at the reflecting surface (smooth; no fog within the reflected image, which the grid cannot see at any price). 1 = the march's two-pass result (complete, but the march is the per-pixel estimator with no temporal history, so the fog inside reflections is NOISY). 2 = the old full-length column, kept only to reproduce the orange bug. See god_rays_filter.comp. */ \
 	UBO_CVAR_DO(pt_fog_froxel_reflect, 0.0) \
 	UBO_CVAR_DO(pt_fog_accum_march, 1.0) /* PHOTO MODE FOG. While accumulation rendering is active (temporal_blend_factor > 0), 1 skips the froxel grid and god_rays_filter's bilateral upsample and runs the per-pixel march at FULL resolution with white-noise sampling, so the map fog converges with the image instead of arriving pre-filtered. 0 keeps the gameplay path in photo mode. See fog_accum_march() below. */ \
 	/* Frame rate at which pt_fog_froxel_history means exactly what it says. That weight is applied ONCE PER FRAME, so on its own its time constant is measured in frames - 0.95 averages over ~20 of them, a third of a second at 60fps and a full second at 20 - and the fog therefore converges at whatever rate the machine runs at. The scatter pass rescales it to w^(dt*this) so the TIME constant is what stays fixed. 0 disables the correction and restores the raw per-frame weight. */ \
 	UBO_CVAR_DO(pt_fog_froxel_history_hz, 60.0) \
 	/* SPATIAL RESERVOIR REUSE (ReSTIR) for the froxel grid, cl_fog 3 only. 1 = a cell may borrow which LIGHT its neighbours' candidate draws picked, then still traces its own visibility ray on the winner. It costs NO extra rays - the reservoir and spatial passes trace nothing - and unlike pt_fog_froxel_filter it does not blur, so it cuts noise without softening the sky shafts. Defaults OFF; the grid renders exactly as before at 0. */ \
-	UBO_CVAR_DO(pt_fog_restir, 0.0) \
+	UBO_CVAR_DO(pt_fog_restir, 1.0) \
 	/* How many neighbouring reservoirs each cell pulls in, 0..8. 0 makes the spatial pass a pass-through and is equivalent to pt_fog_restir 0 except for the memory. Cost is linear in this; quality saturates quickly because the taps are correlated through their shared light list. */ \
 	UBO_CVAR_DO(pt_fog_restir_taps, 3.0) \
 	/* Radius of the reuse neighbourhood in CELLS across the screen. Too large and the taps stop being about the same region of the map, which costs variance rather than saving it - the estimator stays unbiased either way. */ \
 	UBO_CVAR_DO(pt_fog_restir_radius, 3.0) \
 	/* Radius of the reuse neighbourhood along DEPTH, in slices, 0..8. Kept separate from the screen radius because the axes are not comparable: slices are exponentially spaced, so one z step is a fixed 6.3% of the distance and out in the distance is a far bigger world-space stride than several cells of x or y. */ \
 	UBO_CVAR_DO(pt_fog_restir_radius_z, 1.0) \
-	/* cl_fog 3 only. Its own brightness knob rather than sharing pt_fog_light_scale, because mode 3 has no knee compressing the total and so sits at a completely different level - one cvar could not calibrate both, and switching modes to compare would retune the other every time. */ \
-	UBO_CVAR_DO(pt_fog_vol_scale, 1.0) \
+	/* FOG KNOB: brightness of the SUN scattered in the fog under the physical sky. Replaces gr_intensity while fog is on; 2.0 is gr_intensity's default, so the classic campaign's shafts are unchanged by turning fog on. See fog_sun_scale(). */ \
+	UBO_CVAR_DO(pt_fog_scale_sun, 2.0) \
 	/* cl_fog 3 only. Ceiling on one light sample's luminance, which is what stops a froxel cell that landed very close to a small emitter from blowing out into a solid bright block. Biased on purpose; RTX Remix calls this froxelFireflyFilteringLuminanceThreshold. LOWER THIS FIRST if the fog looks blotchy. 0 disables it. */ \
 	UBO_CVAR_DO(pt_fog_firefly, 20.0) \
 	/* 3x3 blur across each froxel SLICE, applied in the integrate pass. Every cell is one light sample with one BINARY visibility ray, and that all-or-nothing term is the one thing RIS cannot importance-sample away - this is what smooths it. Blurring within a slice is sound because every cell of a given z sits at the same view depth. RTX Remix does the same thing in a pass of its own. 0 = off. */ \
@@ -246,7 +246,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	   mass spreads and none leaks into empty cells. It costs some temporal
 	   aliasing while turning, which is the trade to judge. */ \
 	UBO_CVAR_DO(pt_fog_froxel_history_snap, 0.0) \
-	UBO_CVAR_DO(pt_fog_sky_sun_only, 1) /* under the PHYSICAL sky, let cl_fog 1's sun term carry the sky's contribution to the fog on its own, instead of cl_fog 3 also adding its ambient sky term. NOTE the sun term is occluded by the SHADOW MAP while mode 3's sky term uses a traced ray, so this trades the crisp clipping under overhangs for the sun's directionality - which is why it defaults OFF. Appended at the END of the cvar list on purpose; see the alignment note at the top of this file */ \
+	UBO_CVAR_DO(pt_fog_sky_sun_only, 1) /* FOG MENU "physical sky fog". 1 = fast: under the PHYSICAL sky the per-pixel march carries the shadow-mapped sun on its own and no sky ray is traced. 0 = accurate: the froxel grid also adds the sky's ambient light, occluded by a TRACED ray per cell, which clips the fog crisply under overhangs - at the cost of that ray. The SUN is in the march in both modes (fog_sun_in_march), so neither leaks sun fog indoors. No effect under a map skybox. Appended at the END of the cvar list on purpose; see the alignment note at the top of this file */ \
 	UBO_CVAR_DO(pt_physical_sky_brightness, 1.0) /* how bright the PHYSICAL sky LOOKS, independent of the light it casts. The map-skybox equivalent is pt_sky_brightness, and the two are deliberately separate cvars: a value tuned to stop a map's skybox blowing out (Matt runs 0.005 for mgu5m1) has no business dimming a procedural atmosphere. 1 = show it at exactly the brightness it casts, which is the physically honest default */ \
 	/* Appearance of the cl_blood_spheres droplets. Blood is a glossy DIELECTRIC, so metallic stays 0 and the wet look comes from a low roughness against a high specular factor - NOT from the chrome path, which would make it a mirror ball and cost a second traced ray at half resolution. */ \
 	UBO_CVAR_DO(pt_blood_roughness, 0.06) /* surface roughness of a blood droplet. Below ~0.02 the highlight becomes a point the denoiser cannot hold on to; above ~0.2 the droplet stops reading as wet */ \
@@ -259,6 +259,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_blood_thin_dark, 0.12) /* colour multiplier at the feather edge, where the film is thinnest. Well below pt_blood_splat_dark on purpose: a hard bright rim is most of what makes a puddle read as a decal */ \
 	UBO_CVAR_DO(pt_blood_thin_power, 2.0) /* how far the dark edge reaches inward. The dome's normals are steepened by cl_blood_flatten, so the raw thickness saturates quickly and a power above 1 is what gives the edge a visible width. Higher = a wider dark band */ \
 	UBO_CVAR_DO(pt_blood_splat_alpha, 0.95) /* opacity of a LANDED splat. DEFAULT 0.95 - just off solid, so the floor reads through the blood a little. 1 = fully solid, the behaviour before this existed. Below 1 the surface under the splat is traced through it, so the floor's own texture and lighting show through the blood. Airborne droplets are always solid - a bead in flight is a body of liquid, and making it translucent would mean tracing through every droplet of a spray. Read by blood.c as well as by the shader: it is written into each landed primitive's alpha, and it also drops blood out of the SHADOW ray mask, without which a splat shadows the very floor you are looking through it at */ \
+	UBO_CVAR_DO(pt_blood_edge_alpha, 0.2) /* opacity multiplier at the feather edge of a translucent LANDED splat, ramping to 1 over its body with the same thickness pt_blood_thin_power shapes. A film is clearest where it is thinnest; without this the edge read MORE opaque than the pool, most of all seen through water. Only acts while pt_blood_splat_alpha is below 1 */ \
 	UBO_CVAR_DO(pt_fog_const_src, 0.0) /* TEMPORARY BISECTION: 1 replaces the fog's LIGHTING with a constant in froxel_scatter.comp, keeping albedo and density. Asks whether the fade survives a source term that cannot vary - if it does, the fault is downstream of the scatter computation. APPENDED AT THE END on purpose: a cvar inserted mid-list shifts every cvar after it in the shaders' view whenever the .spv and the exe disagree. See the alignment note at the top of this file. */ \
 	UBO_CVAR_DO(pt_fog_printf, 0.0) /* 1 = emit debugPrintfEXT from one froxel cell. Needs vk_validation 1 AND vk_shader_printf 1; output arrives through vk_debug_callback at INFO severity and lands in console.log. Separate from pt_fog_const_src because any non-zero value of THAT switches the lighting to a constant. APPENDED AT THE END - see the alignment note at the top. */ \
 	UBO_CVAR_DO(pt_fog_history_clamp, 0.0) /* HISTORY VALIDATION - the floor under the temporal blend, and the one thing RTX Remix's volumetrics has that this does not. The blend h <- (1-w)*raw + w*h has exactly one fixed point, h == raw, ONLY if the history round trip is lossless. It is not: with a survival fraction k per trip the volume settles at h = (1-w)*raw / (1 - w*k), which at w = 0.95 and the measured k of ~0.9 is 35% of the true value - and the deficit is amplified by 1/(1-w), so a 10% leak becomes a 65% loss. Nothing in the current shader can detect that state, let alone leave it: every frame reads a value that is already too dark and blends 95% of it forward. Remix does not rely on the fixed point. It carries a per-froxel accumulation AGE (an R8_UNORM volume beside the radiance, see rtx_global_volumetrics.cpp), weights by that age rather than by a constant, caps it at maxAccumulationFrames, and resets it wherever reprojection fails - so a froxel whose history has drifted is thrown away rather than averaged forward forever. This is the cheap half of that idea, and it is a MEASUREMENT before it is a fix: a one-sided floor saying the history may not sit more than this factor below the value this frame computed. Set it to 8 and the volume physically cannot hold less than an eighth of the raw estimate. THE FOG STOPS FADING -> the fade IS the history sitting below raw, and the age-and-reset machinery is the real fix. IT STILL FADES -> `raw` itself is dying and the temporal path is innocent, which retires the whole blend as a suspect in one run. ONE-SIDED, and that matters: max(), never a symmetric clamp. A cell whose light sample legitimately missed this frame has raw == 0, the floor is then 0, and the averaging that removes the noise is untouched. A symmetric clamp would pin that cell to zero and turn the grid back into the per-frame static the blend exists to remove. Applied INSIDE the accept guard, after the empty/non-finite test, so an unwritten history is still refused outright rather than lifted to raw/ratio and then blended - which would darken a newly visible cell, the exact failure that guard was written for. 0 disables it and restores the unbounded blend. APPENDED AT THE END - see the alignment note at the top. */ \
@@ -614,9 +615,60 @@ god_rays_filter.comp before trying it again.
 */
 bool fog_sun_is_the_sky()
 {
+	// pt_fog_sky_sun_only is the fog menu's "physical sky fog" choice: 1 = fast
+	// (the march carries the shadow-mapped sun, no sky ray), 0 = accurate (the
+	// grid adds the traced sky term too). The sun is pt_fog_scale_sun, the sky
+	// term pt_fog_scale_skybox ("sky light"), so each can be tuned on its own.
 	return global_ubo.pt_fog_sky_sun_only != 0
 	    && global_ubo.environment_type == ENVIRONMENT_DYNAMIC;
 }
+
+/*
+=================
+fog_sun_in_march
+
+Whether the shadow-mapped SUN is carried by the per-pixel march (god_rays.comp)
+rather than by the froxel grid. Under the physical sky this is ALWAYS true, in
+fast and accurate mode alike.
+
+It used to be fog_sun_is_the_sky(), so accurate mode (pt_fog_sky_sun_only 0) put
+the sun back in the grid - and the grid's coarse cells plus its 3x3x3 blur carry
+sunlit air through walls, which is sun fog leaking indoors (Matt, 2026-10-02).
+The two choices are separate: WHERE the sun is computed is fixed to the march;
+pt_fog_sky_sun_only now only decides whether the grid ALSO adds the traced sky
+ambient (fog_sky_inscatter). The three sun-split sites key off this predicate -
+froxel_scatter.comp skips its sun, god_rays.comp drops its local half,
+god_rays_filter.comp adds rather than replaces - so they cannot disagree.
+=================
+*/
+bool fog_sun_in_march()
+{
+	return global_ubo.environment_type == ENVIRONMENT_DYNAMIC;
+}
+
+/*
+=================
+fog_sun_scale
+
+The sun term's brightness. With fog on this is pt_fog_scale_sun - the "physical
+sky" knob - on every map, so the same setting gives the same shafts everywhere.
+With fog off (or underwater, where prepare_ubo clears fog_enable) the classic
+god rays keep gr_intensity, exactly as the base game has always had them.
+=================
+*/
+float fog_sun_scale()
+{
+	return (global_ubo.fog_enable != 0) ? global_ubo.pt_fog_scale_sun
+	                                    : global_ubo.god_rays_intensity;
+}
+
+/* The fixed density the LOCAL-LIGHT half of the fog is rendered at, relative to
+   the sun's. Every map's medium is normalised to a peak of 1 (mapfog.c), and at
+   that density the local lights would be ~20x too bright against the sun - the
+   old per-map cfgs carried this as cl_volumetric_fog_density / cl_fog_scale,
+   which came out at 0.01 on most of them. It is a calibration constant, not a
+   setting: the per-source pt_fog_scale_* knobs are what move it. */
+#define FOG_LOCAL_DENSITY 0.05
 
 /*
 =================

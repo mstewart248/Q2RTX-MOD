@@ -50,13 +50,17 @@ static int  sound_thud;
 void mutant_step(edict_t *self)
 {
     int     n;
+    // the rerelease steps on the body channel, so a step no longer cuts off
+    // a sight or pain yell
+    int     chan = M_RereleaseGame() ? CHAN_BODY : CHAN_VOICE;
+
     n = (Q_rand() + 1) % 3;
     if (n == 0)
-        gi.sound(self, CHAN_VOICE, sound_step1, 1, ATTN_NORM, 0);
+        gi.sound(self, chan, sound_step1, 1, ATTN_NORM, 0);
     else if (n == 1)
-        gi.sound(self, CHAN_VOICE, sound_step2, 1, ATTN_NORM, 0);
+        gi.sound(self, chan, sound_step2, 1, ATTN_NORM, 0);
     else
-        gi.sound(self, CHAN_VOICE, sound_step3, 1, ATTN_NORM, 0);
+        gi.sound(self, chan, sound_step3, 1, ATTN_NORM, 0);
 }
 
 void mutant_sight(edict_t *self, edict_t *other)
@@ -605,6 +609,28 @@ void mutant_pain(edict_t *self, edict_t *other, float kick, int damage)
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+    // [rerelease] the pain sound plays even when there is no pain animation
+    if (M_RereleaseGame()) {
+        r = random();
+        if (r < 0.33f)
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+        else if (r < 0.66f)
+            gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        if (r < 0.33f)
+            self->monsterinfo.currentmove = &mutant_move_pain1;
+        else if (r < 0.66f)
+            self->monsterinfo.currentmove = &mutant_move_pain2;
+        else
+            self->monsterinfo.currentmove = &mutant_move_pain3;
+        return;
+    }
 
     if (skill->value == 3)
         return;     // no pain anims in nightmare

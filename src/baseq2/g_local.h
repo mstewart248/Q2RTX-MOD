@@ -83,6 +83,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FL_POWER_ARMOR          0x00001000  // power armor (if any) is active
 #define FL_MECHANICAL           0x00002000  // ROGUE - bleeds sparks, not blood
 #define FL_TEAMMASTER           0x00004000  // rerelease - first on the team (G_FindTeams/G_FixTeams)
+// [rerelease] FL_NOVISIBLE: never visible to monsters at all (visible() and
+// M_CheckAttack refuse it). FL_ALIVE_KNOCKBACK_ONLY replaces FL_NO_KNOCKBACK
+// on a dying monster in the rerelease game: the hits of the frame it died on
+// still push the body, nothing after that does (see dead_framenum).
+#define FL_NOVISIBLE            0x00008000
+#define FL_ALIVE_KNOCKBACK_ONLY 0x00010000
+// [rerelease] a monster that never moves (the turret): never pathed and never
+// nudged out of solid at spawn. Set by stationarymonster_start.
+#define FL_STATIONARY           0x00020000
 #define FL_FLASHLIGHT           0x00400000  // rerelease - player flashlight is on
 #define FL_DISGUISED            0x00800000  // ROGUE - trigger_disguise; monsters do not acquire you
 #define FL_DODGE                0x02000000  // rerelease - projectile monsters try to dodge (M_CheckDodge)
@@ -97,6 +106,24 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 
 #define MELEE_DISTANCE  80
+
+// [rerelease] The rerelease measures AI distances as the GAP BETWEEN BOUNDING
+// BOXES (range_to), not between origins, and its thresholds are tuned for that:
+// 20 is "boxes basically touching". This tree's RANGE_MELEE..RANGE_FAR are
+// range() CATEGORY numbers, so the rerelease's distances get their own names.
+// MELEE_DISTANCE above stays the classic origin-measured 80; RR_MELEE_DISTANCE
+// is the rerelease's box-gap melee reach (fire_hit maps an aim[0] of
+// MELEE_DISTANCE onto it in rerelease mode).
+#define RR_RANGE_MELEE      20.0f
+#define RR_RANGE_NEAR       440.0f
+#define RR_RANGE_MID        940.0f
+#define RR_MELEE_DISTANCE   50.0f
+
+// the rerelease's MASK_PROJECTILE is MASK_SHOT plus CONTENTS_PROJECTILECLIP,
+// which this tree's BSPs do not have
+#ifndef MASK_PROJECTILE
+#define MASK_PROJECTILE     MASK_SHOT
+#endif
 
 #define BODY_QUEUE_SIZE     8
 
@@ -227,6 +254,23 @@ typedef enum {
 // route itself lives in g_nav.c and is not saved, so a stale bit after a load
 // is harmless (it is cleared on the next move).
 #define AI_PATHING              0x40000000
+
+// [rerelease] aiflags is a plain int here and the rerelease's 64-bit flag set
+// does not fit, so the newer bits live in monsterinfo.aiflags2.
+//   AI2_THIRD_EYE           sees in every direction (infront() is skipped);
+//                           set with REACHED_HOLD_COMBAT by a "hold"
+//                           point_combat, cleared by FoundTarget
+//   AI2_FORGET_ENEMY        drop the current enemy on the next ai_checkattack
+//   AI2_REACHED_HOLD_COMBAT standing guard at a hold point_combat; ai_run gives
+//                           the post up if knocked >160 units off it or out of
+//                           sight of it
+#define AI2_THIRD_EYE           0x00000001
+#define AI2_FORGET_ENEMY        0x00000002
+#define AI2_REACHED_HOLD_COMBAT 0x00000004
+// this tree only: the gravity this think sets is meant at FULL strength for the
+// whole 10 Hz frame - skip the rerelease quarter-blend in SV_Physics_Step. For
+// a jump already solved for 10 Hz physics (the berserk's slam leap).
+#define AI2_FULL_GRAVITY        0x00000008
 
 // [rerelease] monster spawnflags above the classic byte (g_monster.cpp)
 #define SPAWNFLAG_MONSTER_DEAD          0x00010000
@@ -507,6 +551,10 @@ typedef struct {
     int         body_que;           // dead bodies
 
     int         power_cubes;        // ugly necessity for coop
+
+    // [rerelease] most players that have been in this level at once - the
+    // coop monster health scale is taken from it (G_Monster_ScaleCoopHealth)
+    int         coop_scale_players;
 } level_locals_t;
 
 
@@ -662,6 +710,11 @@ typedef struct {
     int         lastframe;
     mframe_t    *frame;
     void        (*endfunc)(edict_t *self);
+    // [rerelease] how much of each frame's distance ai_charge turns into a
+    // sideways step while the monster is AS_SLIDING. Optional fifth
+    // initializer; 0 (left out) means no strafing during this move, which is
+    // what every rerelease move but a couple of run-and-gun ones uses.
+    float       sidestep_scale;
 } mmove_t;
 
 // ROGUE - one entry of a monster's summon list. `classname` is a level-tagged
@@ -885,6 +938,25 @@ typedef struct {
     // do nothing at all, while a ranged one is happy to stand and shoot.
     // Derived in monster_start() when a spawn function leaves it UNKNOWN.
     combat_style_t combat_style;
+
+    // [rerelease] shared AI state (g_ai.cpp / g_combat.cpp / g_monster.cpp).
+    // All *_framenum are absolute frame numbers.
+    int         aiflags2;               // AI2_* above
+    edict_t     *last_player_enemy;     // ROGUE: who to go back to after a tesla
+    bool        close_sight_tripped;    // sight sound already played for this enemy
+    bool        had_visibility;         // has seen its enemy at least once (blindfire gate)
+    int         checkattack_framenum;   // checkattack throttle (100 ms = every frame here)
+    int         strafe_check_framenum;  // flyers hold a strafe/straight choice until this
+    int         react_to_damage_framenum;   // M_ReactToDamage debounce, 3-5 s
+    int         surprise_framenum;      // frame the surprise double damage was given
+    int         base_health;            // coop health scaling
+    int         health_scaling;
+    // pain deferral (M_ProcessPain): every hit of a frame is summed and pain()
+    // runs once, from monster_think, with the total
+    int         damage_blood;
+    int         damage_knockback;
+    edict_t     *damage_attacker;
+    int         damage_mod;
 } monsterinfo_t;
 
 
@@ -938,11 +1010,17 @@ extern  int snd_fry;
 #define MOD_TRIGGER_HURT    31
 #define MOD_HIT             32
 #define MOD_TARGET_BLASTER  33
-// Private spawnflag bits used on a live monster_dabeam beam entity. The beam is
-// spawned at runtime and never comes from a map, so these cannot collide with
-// mapper-set spawnflags. (Xatrix wrote these as bare 0x80000000 / 0x1.)
-#define SPAWNFLAG_DABEAM_ON     0x00000001
-#define SPAWNFLAG_DABEAM_SPARK  0x80000000
+// Private spawnflag bit on a live monster_fire_dabeam beam entity: it is the
+// owner's beam2, not its beam. The beam is spawned at runtime and never comes
+// from a map, so this cannot collide with mapper-set spawnflags.
+#define SPAWNFLAG_DABEAM_SECONDARY  0x00000001
+
+// monster_fire_dabeam kinds - which owner update function re-aims the beam
+#define DABEAM_SOLDIER      1
+#define DABEAM_BRAIN_R      2
+#define DABEAM_BRAIN_L      3
+#define DABEAM_GUARDIAN     4
+#define DABEAM_FIXBOT       5
 
 #define MOD_RIPPER          34
 #define MOD_BLUEBLASTER     35
@@ -1040,6 +1118,7 @@ extern  cvar_t  *sv_flaregun;
 // InitGame (or a stray call from a tool build) reads as "off" rather than
 // crashing.
 extern  cvar_t  *g_ludicrous_gibs;
+extern  cvar_t  *g_duck_hitbox;
 extern  cvar_t  *g_no_janitor;
 #define LUDICROUS_GIBS()    (g_ludicrous_gibs && g_ludicrous_gibs->value)
 
@@ -1220,9 +1299,19 @@ void monster_fire_blaster2(edict_t *self, vec3_t start, vec3_t dir, int damage, 
 void monster_fire_hyper_blaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_ionripper(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
 void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype, int effect);
-void monster_dabeam(edict_t *self);
-void dabeam_hit(edict_t *self);
+void monster_fire_dabeam(edict_t *self, int damage, bool secondary, int kind, int param);
+void dabeam_update(edict_t *self, bool damage);
+void dabeam_think(edict_t *self);
+void soldierh_laser_update(edict_t *laser);
+void brain_eye_laser_update(edict_t *laser, bool left);
+void guardian_fire_update(edict_t *laser);
+void fixbot_laser_update(edict_t *laser);
 void monster_fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int flashtype);
+// [rerelease] the reference's monster_fire_grenade: right_adjust/up_adjust
+// replace the classic fixed 200 +-10 up / +-10 right throw (up_adjust is scaled
+// by level gravity / 800). g_monster.c.
+void monster_fire_grenade_ex(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed,
+                             int flashtype, float right_adjust, float up_adjust);
 void monster_fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, int flashtype);
 void monster_fire_railgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int flashtype);
 void monster_fire_heatbeam(edict_t *self, vec3_t start, vec3_t dir, vec3_t offset, int damage, int kick, int flashtype);
@@ -1264,9 +1353,30 @@ typedef enum {
     JUMP_JUMP_DOWN
 } blocked_jump_result_t;
 
-// [rerelease] AI range measurement; box-relative for SCALED entities, origin
-// relative otherwise. g_ai.c.
+// AI range measurement, = range_to: the rerelease's box gap in rerelease mode;
+// classic is origin relative (box-relative for SCALED entities). g_ai.c.
 float M_RangeBetween(edict_t *self, edict_t *other);
+// [rerelease] distance between two entities for AI purposes: the box gap in the
+// rerelease game (compare against RR_RANGE_*), M_RangeBetween's classic origin
+// measure otherwise. range() and M_RangeBetween both go through it.
+float range_to(edict_t *self, edict_t *other);
+float M_DistanceBetweenBoxes(const vec3_t amin, const vec3_t amax, const vec3_t bmin, const vec3_t bmax);
+bool M_BoxesIntersect(const vec3_t amin, const vec3_t amax, const vec3_t bmin, const vec3_t bmax);
+void M_ClosestPointToBox(const vec3_t p, const vec3_t bmin, const vec3_t bmax, vec3_t out);
+// [rerelease] no pain ANIMATION while ducked or heading for a combat point, and
+// none at all on nightmare unless it was the chainfist. Pain callbacks get the
+// means of death through the meansOfDeath global, so pass that. The callback
+// still runs (and plays its sound) - it decides the animation with this.
+bool M_ShouldReactToPain(edict_t *self, int mod);
+void M_UpdateDuckBox(edict_t *self);
+bool M_DuckCrouchTop(edict_t *self, float *top);
+void M_ProcessPain(edict_t *e);
+// [rerelease] blindfire aim: the target, or 20 units either side of it, if the
+// line is clear for at least half its length. out_dir is normalised.
+bool M_AdjustBlindfireTarget(edict_t *self, const vec3_t start, const vec3_t target,
+                             const vec3_t right, vec3_t out_dir);
+void G_Monster_ScaleCoopHealth(edict_t *self);
+void G_Monster_CheckCoopHealthScaling(void);
 void M_UpdateBlindFireTarget(edict_t *self);
 void M_SetDamageSkin(edict_t *self);
 
@@ -1319,6 +1429,10 @@ void M_WorldEffects(edict_t *ent);
 bool M_CheckAttack(edict_t *self);
 void M_FlyCheck(edict_t *self);
 void M_CheckGround(edict_t *ent);
+bool SV_CloseEnough(edict_t *ent, edict_t *goal, float dist);  // m_move.c
+// boss death effects shared by the bosses, m_supertank.c
+void BossExplodeTick(edict_t *self);
+void BossGib(edict_t *self);
 
 //
 // g_misc.c
@@ -1392,7 +1506,16 @@ float vectoyaw2(vec3_t vec);
 void PredictAim(edict_t *target, vec3_t start, float bolt_speed, bool eye_height,
                 float offset, vec3_t aimdir, vec3_t aimpoint);
 bool visible(edict_t *self, edict_t *other);
+// [rerelease] visible(self, other, through_glass). visible() above is the
+// rerelease default, through_glass = true.
+bool visible_ex(edict_t *self, edict_t *other, bool through_glass);
+// [rerelease] PredictAim with the shooter, which the rerelease's blocked-line
+// check needs to trace from. PredictAim() is this with self = NULL.
+void PredictAimEx(edict_t *self, edict_t *target, vec3_t start, float bolt_speed, bool eye_height,
+                  float offset, vec3_t aimdir, vec3_t aimpoint);
 bool FacingIdeal(edict_t *self);
+// [rerelease] a random live player this monster can see, or NULL
+edict_t *AI_GetSightClient(edict_t *self);
 
 //
 // g_weapon.c
@@ -1592,6 +1715,11 @@ void SP_item_foodcube(edict_t *self);
 void ionripper_sparks(edict_t *self);
 void ionripper_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 void fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius);
+// [rerelease] fire_grenade(self, start, dir, damage, speed, timer, radius,
+// right_adjust, up_adjust, monster). `monster` only picks the monster
+// grenade's random spin; this tree has no separate player grenade model/think.
+void fire_grenade_ex(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer,
+                     float damage_radius, float right_adjust, float up_adjust, bool monster);
 void fire_grenade2(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius, bool held);
 void fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
 void fire_rail(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick);
@@ -1622,6 +1750,8 @@ edict_t *CreateGroundMonster(vec3_t origin, vec3_t angles, vec3_t entMins, vec3_
 bool CheckSpawnPoint(vec3_t origin, vec3_t mins, vec3_t maxs);
 bool CheckGroundSpawnPoint(vec3_t origin, vec3_t entMins, vec3_t entMaxs, float height, float gravity);
 bool FindSpawnPoint(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoint, float maxMoveUp);
+bool FindSpawnPointEx(vec3_t startpoint, vec3_t mins, vec3_t maxs, vec3_t spawnpoint, float maxMoveUp, bool drop);
+edict_t *CreateFlyMonster(vec3_t origin, vec3_t angles, vec3_t mins, vec3_t maxs, char *classname);
 void SpawnGrow_Spawn(vec3_t startpos, int size);
 void spawngrow_think(edict_t *self);
 edict_t *PickCoopTarget(edict_t *self);
@@ -1873,6 +2003,11 @@ struct gclient_s {
     // allowed at a time, so the item use functions check this before spawning
     // another, and the sphere clears it when it explodes.
     edict_t     *owned_sphere;
+
+    // [rerelease] the last monster that found this player (FoundTarget), for
+    // AI_GetMonsterAlertedByPlayers: other monsters that can see it wake up
+    edict_t     *sight_entity;
+    int         sight_entity_framenum;
 };
 
 
@@ -2010,6 +2145,8 @@ struct edict_s {
     // coloured beam rather than the lightning model - the same limitation the
     // parasite's proboscis hit.
     edict_t     *beam;
+    // the second dabeam (the brain's left eye, the guardian's other emitter)
+    edict_t     *beam2;
 
     edict_t     *mynoise;       // can go in client only
     edict_t     *mynoise2;
@@ -2077,5 +2214,9 @@ struct edict_s {
     edict_t     *monster_hint_chain;
     edict_t     *target_hint_chain;
     int         hint_chain_id;
+
+    // [rerelease] frame this entity died on; FL_ALIVE_KNOCKBACK_ONLY lets that
+    // frame's hits still knock the body about
+    int         dead_framenum;
 };
 

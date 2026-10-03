@@ -27,6 +27,23 @@ set(SHADER_SOURCE_DEPENDENCIES
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/water.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/water_warp.glsl)
 
+# The list above is kept by hand and fell behind: fog_medium.glsl,
+# froxel_sample.glsl, froxel_shared.h, light_sampling.h and shader_structs.h
+# were never on it, so editing one left every .spv that includes it stale
+# until something else forced a rebuild. Picking up every include file in the
+# directory means a new one can't be missed. A file added later is seen at
+# the next configure (CONFIGURE_DEPENDS makes that automatic where CMake
+# supports it).
+if(NOT CMAKE_VERSION VERSION_LESS 3.12)
+    set(SHADER_GLOB_FLAGS CONFIGURE_DEPENDS)
+endif()
+file(GLOB SHADER_INCLUDE_FILES ${SHADER_GLOB_FLAGS}
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/*.glsl
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/*.h
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/fsr/*.h)
+list(APPEND SHADER_SOURCE_DEPENDENCIES ${SHADER_INCLUDE_FILES})
+list(REMOVE_DUPLICATES SHADER_SOURCE_DEPENDENCIES)
+
 if(TARGET glslangValidator)
     set(GLSLANG_COMPILER "$<TARGET_FILE:glslangValidator>")
     message(STATUS "Using glslangValidator built from source")

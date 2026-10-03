@@ -27,10 +27,64 @@ Returns true if the inflictor can directly damage the target.  Used for
 explosions and melee attacks.
 ============
 */
+/*
+[rerelease] CanDamage from g_combat.cpp: traces run between the CENTRES of the
+two boxes (when linked) rather than the origins, and a BSP target is first
+tested at the point of its box closest to the blast. A monster's origin sits
+at its feet-ish middle, so the origin traces caught on low cover that the
+blast plainly clears.
+*/
+static bool CanDamage_rerelease(edict_t *targ, edict_t *inflictor)
+{
+    vec3_t  dest, inflictor_center, targ_center;
+    trace_t trace;
+    int     i;
+
+    if (inflictor->area.prev) {
+        VectorAdd(inflictor->absmin, inflictor->absmax, inflictor_center);
+        VectorScale(inflictor_center, 0.5f, inflictor_center);
+    } else {
+        VectorCopy(inflictor->s.origin, inflictor_center);
+    }
+
+    if (targ->solid == SOLID_BSP) {
+        M_ClosestPointToBox(inflictor_center, targ->absmin, targ->absmax, dest);
+
+        trace = gi.trace(inflictor_center, vec3_origin, vec3_origin, dest, inflictor, MASK_SOLID);
+        if (trace.fraction == 1.0f)
+            return true;
+    }
+
+    if (targ->area.prev) {
+        VectorAdd(targ->absmin, targ->absmax, targ_center);
+        VectorScale(targ_center, 0.5f, targ_center);
+    } else {
+        VectorCopy(targ->s.origin, targ_center);
+    }
+
+    trace = gi.trace(inflictor_center, vec3_origin, vec3_origin, targ_center, inflictor, MASK_SOLID);
+    if (trace.fraction == 1.0f)
+        return true;
+
+    for (i = 0; i < 4; i++) {
+        VectorCopy(targ_center, dest);
+        dest[0] += (i & 2) ? -15.0f : 15.0f;
+        dest[1] += (i & 1) ? -15.0f : 15.0f;
+        trace = gi.trace(inflictor_center, vec3_origin, vec3_origin, dest, inflictor, MASK_SOLID);
+        if (trace.fraction == 1.0f)
+            return true;
+    }
+
+    return false;
+}
+
 bool CanDamage(edict_t *targ, edict_t *inflictor)
 {
     vec3_t  dest;
     trace_t trace;
+
+    if (M_RereleaseGame())
+        return CanDamage_rerelease(targ, inflictor);
 
 // bmodels need special checking because their origin is 0,0,0
     if (targ->movetype == MOVETYPE_PUSH) {
@@ -105,17 +159,40 @@ Killed
 */
 qboolean Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
+    bool        rerelease = M_RereleaseGame();
+    bool        medic_c_spawn = false;
+    edict_t     *medic_commander = NULL;
+    int         medic_slots = 0;
+
     if (targ->health < -999)
         targ->health = -999;
 
+    // [Paril-KEX] a medic that dies lets go of the corpse it was healing
+    if (rerelease && (targ->svflags & SVF_MONSTER) && (targ->monsterinfo.aiflags & AI_MEDIC)) {
+        if (targ->enemy && targ->enemy->inuse && (targ->enemy->svflags & SVF_MONSTER))
+            cleanupHealTarget(targ->enemy);
+        targ->monsterinfo.aiflags &= ~AI_MEDIC;
+    }
+
     targ->enemy = attacker;
+
+    // [Paril-KEX] a medic commander only gets his slots back once the monster
+    // he summoned is GIBBED, since another medic can revive it - see the end of
+    // this function. Remember the link now: die() may free the edict.
+    if (rerelease && (targ->svflags & SVF_MONSTER) && (targ->monsterinfo.aiflags & AI_SPAWNED_MEDIC_C)) {
+        medic_c_spawn = true;
+        medic_commander = targ->monsterinfo.commander;
+        medic_slots = targ->monsterinfo.monster_slots;
+    }
 
     if ((targ->svflags & SVF_MONSTER) && (targ->deadflag != DEAD_DEAD)) {
 //      targ->svflags |= SVF_DEADMONSTER;   // now treat as a different content type
 
         // ROGUE - hand the slot back to whoever summoned this one, so a
-        // commander can keep replacing its escort as the player kills it
-        if ((targ->monsterinfo.aiflags & AI_SPAWNED_MASK) && targ->monsterinfo.commander) {
+        // commander can keep replacing its escort as the player kills it.
+        // [rerelease] not the medic commander's - that waits for the gib.
+        if ((targ->monsterinfo.aiflags & AI_SPAWNED_MASK) && targ->monsterinfo.commander &&
+            !medic_c_spawn) {
             edict_t *commander = targ->monsterinfo.commander;
             if (commander->inuse && commander->monsterinfo.monster_used > 0)
                 commander->monsterinfo.monster_used--;
@@ -134,7 +211,8 @@ qboolean Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage
             targ->owner = attacker;
     }
 
-    if (targ->movetype == MOVETYPE_PUSH || targ->movetype == MOVETYPE_STOP || targ->movetype == MOVETYPE_NONE) {
+    if ((targ->movetype == MOVETYPE_PUSH || targ->movetype == MOVETYPE_STOP || targ->movetype == MOVETYPE_NONE) &&
+        !(rerelease && (targ->svflags & SVF_MONSTER))) {
         // doors, triggers, etc - never gib, so report "did not gib". This used
         // to be a bare `return;` in a qboolean function, which handed the
         // caller an indeterminate value; under ludicrous gibs that decides
@@ -150,9 +228,25 @@ qboolean Killed(edict_t *targ, edict_t *inflictor, edict_t *attacker, int damage
 
     targ->die(targ, inflictor, attacker, damage, point);
 
+    // [Paril-KEX] gibbed (or freed outright), so no medic can bring it back:
+    // refund the strength it cost its commander. monster_slots on a SUMMONED
+    // monster is that strength, set by the medic commander when it spawned it.
+    // (0 there would mean a summon from before the medic set it; count 1, the
+    // classic refund, rather than leak the slot.)
+    if (medic_c_spawn && (!targ->inuse || targ->health <= targ->gib_health)) {
+        if (medic_commander && medic_commander->inuse && medic_commander->classname &&
+            !strcmp(medic_commander->classname, "monster_medic_commander")) {
+            medic_commander->monsterinfo.monster_used -= (medic_slots > 0) ? medic_slots : 1;
+            if (medic_commander->monsterinfo.monster_used < 0)
+                medic_commander->monsterinfo.monster_used = 0;
+        }
+        if (targ->inuse)
+            targ->monsterinfo.commander = NULL;
+    }
+
     // did it come apart? the caller uses this to decide whether the corpse is
     // worth tracking for further damage
-    return (targ->health <= targ->gib_health) ? qtrue : qfalse;
+    return (!targ->inuse || targ->health <= targ->gib_health) ? qtrue : qfalse;
 }
 
 
@@ -217,6 +311,10 @@ static int CheckPowerArmor(edict_t *ent, const vec3_t point, const vec3_t normal
     if (dflags & (DAMAGE_NO_ARMOR | DAMAGE_NO_POWER_ARMOR))
         return 0;
 
+    // [rerelease] power armor does nothing for the dead
+    if (M_RereleaseGame() && ent->health <= 0)
+        return 0;
+
     index = 0;  // shut up gcc
 
     if (client) {
@@ -256,6 +354,54 @@ static int CheckPowerArmor(edict_t *ent, const vec3_t point, const vec3_t normal
         damagePerCell = 2;
         pa_te_type = TE_SHIELD_SPARKS;
         damage = (2 * damage) / 3;
+    }
+
+    if (M_RereleaseGame()) {
+        // Paril: fix small amounts of damage not being absorbed
+        if (damage < 1)
+            damage = 1;
+
+        save = power * damagePerCell;
+        if (!save)
+            return 0;
+
+        // [Paril-KEX] energy damage should do more to power armor
+        if (dflags & DAMAGE_ENERGY) {
+            save /= 2;
+            if (save < 1)
+                save = 1;
+        }
+
+        if (save > damage)
+            save = damage;
+
+        if (dflags & DAMAGE_ENERGY)
+            power_used = (save / damagePerCell) * 2;
+        else
+            power_used = save / damagePerCell;
+        if (power_used < 1)
+            power_used = 1;
+
+        SpawnDamage(pa_te_type, point, normal, save);
+        ent->powerarmor_framenum = level.framenum + 0.2f * BASE_FRAMERATE;
+
+        // Paril: power armor always uses damagePerCell even if it only does a
+        // single point of damage
+        if (power_used < damagePerCell)
+            power_used = damagePerCell;
+        if (power_used > power)
+            power_used = power;
+
+        if (client) {
+            client->pers.inventory[index] -= power_used;
+        } else {
+            ent->monsterinfo.power_armor_power -= power_used;
+
+            // a monster's screen/shield giving out is announced
+            if (!ent->monsterinfo.power_armor_power)
+                gi.sound(ent, CHAN_AUTO, gi.soundindex("misc/mon_power2.wav"), 1, ATTN_NORM, 0);
+        }
+        return save;
     }
 
     save = power * damagePerCell;
@@ -331,8 +477,143 @@ static int CheckArmor(edict_t *ent, const vec3_t point, const vec3_t normal, int
     return save;
 }
 
-void M_ReactToDamage(edict_t *targ, edict_t *attacker)
+/*
+=================
+M_ReactToDamage_rerelease
+
+[rerelease] M_ReactToDamage from g_combat.cpp. A monster that just switched
+targets because it was hurt ignores further damage for 3-5 seconds, one held
+on its enemy by target_anger stays on it above a third of its health, and a
+medic stays on its patient above a quarter. Nothing happens when the attacker
+already is the enemy, and the "help our buddy" case no longer re-runs
+FoundTarget on the enemy it already has. (The tesla_mine targeting at the top
+of id's version needs rogue's bad-area tracking, which this tree lacks.)
+=================
+*/
+static void M_SwitchEnemyMedicCleanup(edict_t *targ)
 {
+    // [Paril-KEX] a medic that turns on someone lets go of its patient
+    if ((targ->svflags & SVF_MONSTER) && (targ->monsterinfo.aiflags & AI_MEDIC)) {
+        if (targ->enemy && targ->enemy->inuse && (targ->enemy->svflags & SVF_MONSTER))
+            cleanupHealTarget(targ->enemy);
+        targ->monsterinfo.aiflags &= ~AI_MEDIC;
+    }
+}
+
+static void M_ReactToDamage_rerelease(edict_t *targ, edict_t *attacker, edict_t *inflictor)
+{
+    if (!(attacker->client) && !(attacker->svflags & SVF_MONSTER))
+        return;
+
+    if (attacker == targ || attacker == targ->enemy)
+        return;
+
+    // dead monsters, like misc_deadsoldier, don't have AI functions
+    if (targ->svflags & SVF_DEADMONSTER)
+        return;
+
+    // if we are a good guy monster and our attacker is a player
+    // or another good guy, do not get mad at them
+    if (targ->monsterinfo.aiflags & AI_GOOD_GUY) {
+        if (attacker->client || (attacker->monsterinfo.aiflags & AI_GOOD_GUY))
+            return;
+    }
+
+    // PGM - if we're currently mad at something a target_anger made us mad at,
+    // ignore damage
+    if (targ->enemy && (targ->monsterinfo.aiflags & AI_TARGET_ANGER)) {
+        // make sure whatever we were pissed at is still around.
+        if (targ->enemy->inuse) {
+            float percentHealth = (float)targ->health / (float)targ->max_health;
+
+            if (percentHealth > 0.33f)
+                return;
+        }
+
+        // remove the target anger flag
+        targ->monsterinfo.aiflags &= ~AI_TARGET_ANGER;
+    }
+
+    // we recently switched from reacting to damage, don't do it
+    if (targ->monsterinfo.react_to_damage_framenum > level.framenum)
+        return;
+
+    // PMM - if we're healing someone, try to stay with them
+    if (targ->enemy && (targ->monsterinfo.aiflags & AI_MEDIC)) {
+        float percentHealth = (float)targ->health / (float)targ->max_health;
+
+        // ignore it some of the time
+        if (targ->enemy->inuse && percentHealth > 0.25f)
+            return;
+
+        // remove the medic flag
+        cleanupHealTarget(targ->enemy);
+        targ->monsterinfo.aiflags &= ~AI_MEDIC;
+    }
+
+    // we now know that we are not both good guys
+    targ->monsterinfo.react_to_damage_framenum = level.framenum + (int)((3.0f + 2.0f * random()) * BASE_FRAMERATE);
+
+    // if attacker is a client, get mad at them because he's good and we're not
+    if (attacker->client) {
+        targ->monsterinfo.aiflags &= ~AI_SOUND_TARGET;
+
+        // this can only happen in coop (both new and old enemies are clients)
+        // only switch if can't see the current enemy
+        if (targ->enemy != attacker) {
+            if (targ->enemy && targ->enemy->client) {
+                if (visible(targ, targ->enemy)) {
+                    targ->oldenemy = attacker;
+                    return;
+                }
+                targ->oldenemy = targ->enemy;
+            }
+
+            M_SwitchEnemyMedicCleanup(targ);
+
+            targ->enemy = attacker;
+            if (!(targ->monsterinfo.aiflags & AI_DUCKED))
+                FoundTarget(targ);
+        }
+        return;
+    }
+
+    if (attacker->enemy == targ ||  // if they *meant* to shoot us, then shoot back
+        // it's the same base (walk/swim/fly) type and both don't ignore shots,
+        // get mad at them
+        (((targ->flags & (FL_FLY | FL_SWIM)) == (attacker->flags & (FL_FLY | FL_SWIM))) &&
+         strcmp(targ->classname, attacker->classname) != 0 &&
+         !(attacker->monsterinfo.aiflags & AI_IGNORE_SHOTS) &&
+         !(targ->monsterinfo.aiflags & AI_IGNORE_SHOTS))) {
+        if (targ->enemy != attacker) {
+            M_SwitchEnemyMedicCleanup(targ);
+
+            if (targ->enemy && targ->enemy->client)
+                targ->oldenemy = targ->enemy;
+            targ->enemy = attacker;
+            if (!(targ->monsterinfo.aiflags & AI_DUCKED))
+                FoundTarget(targ);
+        }
+    }
+    // otherwise get mad at whoever they are mad at (help our buddy) unless it is us!
+    else if (attacker->enemy && attacker->enemy != targ && targ->enemy != attacker->enemy) {
+        M_SwitchEnemyMedicCleanup(targ);
+
+        if (targ->enemy && targ->enemy->client)
+            targ->oldenemy = targ->enemy;
+        targ->enemy = attacker->enemy;
+        if (!(targ->monsterinfo.aiflags & AI_DUCKED))
+            FoundTarget(targ);
+    }
+}
+
+void M_ReactToDamage(edict_t *targ, edict_t *attacker, edict_t *inflictor)
+{
+    if (M_RereleaseGame()) {
+        M_ReactToDamage_rerelease(targ, attacker, inflictor);
+        return;
+    }
+
     if (!(attacker->client) && !(attacker->svflags & SVF_MONSTER))
         return;
 
@@ -428,6 +709,7 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     int         asave;
     int         psave;
     int         te_sparks;
+    bool        sphere_notified = false;    // PGM
     // Ludicrous gibs only: which corpse was last re-killed, and when. See the
     // staged-death block further down.
     static edict_t *lastTarget = NULL;
@@ -458,16 +740,36 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
 
     client = targ->client;
 
+    // ROGUE/[rerelease] a player with a defender sphere out takes half damage
+    if (M_RereleaseGame() && damage && client && client->owned_sphere &&
+        client->owned_sphere->spawnflags == SPHERE_DEFENDER) {
+        damage /= 2;
+        if (!damage)
+            damage = 1;
+    }
+
     if (dflags & DAMAGE_BULLET)
         te_sparks = TE_BULLET_SPARKS;
     else
         te_sparks = TE_SPARKS;
 
 // bonus damage for suprising a monster
-    if (!(dflags & DAMAGE_RADIUS) && (targ->svflags & SVF_MONSTER) && (attacker->client) && (!targ->enemy) && (targ->health > 0))
+    if (M_RereleaseGame()) {
+        // [rerelease] every hit of the frame the surprise landed on counts -
+        // all of a shotgun blast, not just the first pellet
+        if (!(dflags & DAMAGE_RADIUS) && (targ->svflags & SVF_MONSTER) && (attacker->client) &&
+            (!targ->enemy || targ->monsterinfo.surprise_framenum == level.framenum) && (targ->health > 0)) {
+            damage *= 2;
+            targ->monsterinfo.surprise_framenum = level.framenum;
+        }
+    } else if (!(dflags & DAMAGE_RADIUS) && (targ->svflags & SVF_MONSTER) && (attacker->client) && (!targ->enemy) && (targ->health > 0))
         damage *= 2;
 
     if (targ->flags & FL_NO_KNOCKBACK)
+        knockback = 0;
+    // [rerelease] a dead body only takes the knockback of the frame it died on
+    if ((targ->flags & FL_ALIVE_KNOCKBACK_ONLY) &&
+        (!targ->deadflag || targ->dead_framenum != level.framenum))
         knockback = 0;
 
 // figure momentum add
@@ -503,7 +805,11 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     }
 
     // check for invincibility
-    if ((client && client->invincible_framenum > level.framenum) && !(dflags & DAMAGE_NO_PROTECTION)) {
+    // ROGUE - [rerelease] a monster has one too (the widow mirrors the player's)
+    if (((client && client->invincible_framenum > level.framenum) ||
+         (M_RereleaseGame() && (targ->svflags & SVF_MONSTER) &&
+          targ->monsterinfo.invincible_framenum > level.framenum)) &&
+        !(dflags & DAMAGE_NO_PROTECTION)) {
         if (targ->pain_debounce_framenum < level.framenum) {
             gi.sound(targ, CHAN_ITEM, gi.soundindex("items/protect4.wav"), 1, ATTN_NORM, 0);
             targ->pain_debounce_framenum = level.framenum + 2 * BASE_FRAMERATE;
@@ -561,8 +867,26 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
 
         targ->health = targ->health - take;
 
+        // PGM - spheres need to know who to shoot at
+        if (M_RereleaseGame() && client && client->owned_sphere) {
+            sphere_notified = true;
+            if (client->owned_sphere->pain)
+                client->owned_sphere->pain(client->owned_sphere, attacker, 0, 0);
+        }
+
         if (targ->health <= 0) {
-            if ((targ->svflags & SVF_MONSTER) || (client))
+            // [rerelease] a monster's body keeps that frame's knockback
+            // (FL_ALIVE_KNOCKBACK_ONLY); the classic body takes none after the
+            // killing hit. Players keep FL_NO_KNOCKBACK, which their respawn
+            // clears.
+            if (M_RereleaseGame() && (targ->svflags & SVF_MONSTER)) {
+                targ->flags |= FL_ALIVE_KNOCKBACK_ONLY;
+                targ->dead_framenum = level.framenum;
+                // a death supersedes any pain still pending this frame
+                targ->monsterinfo.damage_blood = 0;
+                targ->monsterinfo.damage_knockback = 0;
+                targ->monsterinfo.damage_attacker = NULL;
+            } else if ((targ->svflags & SVF_MONSTER) || (client))
                 targ->flags |= FL_NO_KNOCKBACK;
 
             if (!LUDICROUS_GIBS()) {
@@ -617,8 +941,30 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
         }
     }
 
-    if (targ->svflags & SVF_MONSTER) {
-        M_ReactToDamage(targ, attacker);
+    // PGM - spheres need to know who to shoot at
+    if (M_RereleaseGame() && !sphere_notified && client && client->owned_sphere) {
+        sphere_notified = true;
+        if (client->owned_sphere->pain)
+            client->owned_sphere->pain(client->owned_sphere, attacker, 0, 0);
+    }
+
+    if ((targ->svflags & SVF_MONSTER) && M_RereleaseGame()) {
+        // [rerelease] pain is deferred: the hit is added to the frame's total
+        // and M_ProcessPain runs pain() once at the end of the frame, ducked or
+        // not - the callback decides the animation (M_ShouldReactToPain), so
+        // there is no blanket nightmare debounce. A hit that does no damage
+        // at all does not provoke; one that armor fully absorbed still does
+        // (damage is the amount before armor), with no pain to show for it.
+        if (damage > 0) {
+            M_ReactToDamage(targ, attacker, inflictor);
+
+            targ->monsterinfo.damage_attacker = attacker;
+            targ->monsterinfo.damage_blood += take;
+            targ->monsterinfo.damage_knockback += knockback;
+            targ->monsterinfo.damage_mod = mod;
+        }
+    } else if (targ->svflags & SVF_MONSTER) {
+        M_ReactToDamage(targ, attacker, inflictor);
         if (!(targ->monsterinfo.aiflags & AI_DUCKED) && (take)) {
             targ->pain(targ, attacker, knockback, take);
             // nightmare mode monsters don't go into pain frames often

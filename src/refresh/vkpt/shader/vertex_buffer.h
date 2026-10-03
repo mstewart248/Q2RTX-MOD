@@ -31,6 +31,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MAX_IQM_MATRICES        32768
 
 #define MAX_LIGHT_POLYS         8192
+// Fog-only lights (lava): stored at the TOP of light_polys, from
+// MAX_LIGHT_POLYS - num_fog_light_polys up, so their indices stay put while the
+// model lights below them come and go. Read through fog_light_list_*.
+#define MAX_FOG_LIGHT_POLYS     2048
+#define MAX_FOG_LIGHT_LIST_NODES (1 << 19)
 // 4 until the per-light volumetric scale arrived; p0..p3 were completely full
 // (positions in xyz, colour in the three w's, then style/prev-style/type/spot
 // profile), so there was no spare lane to steal and a fifth vec4 is the honest
@@ -120,6 +125,10 @@ BEGIN_SHADER_STRUCT( LightBuffer )
 	uint cluster_debug_mask[MAX_LIGHT_LISTS / 32];
 	uint sky_visibility[MAX_LIGHT_LISTS / 32];
 	uint sky_cluster_mask[MAX_LIGHT_LISTS / 32];
+	// per-cluster lists of the fog-only lights; the fog walks light_list_* and
+	// then these, the path tracer never sees them
+	uint fog_light_list_offsets[MAX_LIGHT_LISTS];
+	uint fog_light_list_lights[MAX_FOG_LIGHT_LIST_NODES];
 }
 END_SHADER_STRUCT( LightBuffer )
 

@@ -65,6 +65,25 @@ void floater_fire_blaster(edict_t *self)
     vec3_t  dir;
     int     effect;
 
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
+    // [rerelease] always the plain blaster, with every fourth frame's bolt
+    // drawn as a hyperblaster bolt; the random hyperblaster floater is ours
+    if (M_RereleaseGame()) {
+        AngleVectors(self->s.angles, forward, right, NULL);
+        G_ProjectSource(self->s.origin, monster_flash_offset[MZ2_FLOAT_BLASTER_1], forward, right, start);
+
+        VectorCopy(self->enemy->s.origin, end);
+        end[2] += self->enemy->viewheight;
+        VectorSubtract(end, start, dir);
+        VectorNormalize(dir);
+
+        monster_fire_blaster(self, start, dir, 1, 1000, MZ2_FLOAT_BLASTER_1,
+                             (self->s.frame % 4) ? 0 : EF_HYPERBLASTER);
+        return;
+    }
+
     if ((self->s.frame == FRAME_attak104) || (self->s.frame == FRAME_attak107))
 		if (self->monsterFireHyperBlaster) {
 			effect = EF_HYPERBLASTER;			
@@ -667,6 +686,22 @@ void floater_pain(edict_t *self, edict_t *other, float kick, int damage)
         self->monsterinfo.currentmove == &floater_move_pop)
         return;
 
+    if (M_RereleaseGame()) {
+        // id plays the pain sound even in nightmare
+        n = Q_rand() % 3;
+        gi.sound(self, CHAN_VOICE, (n == 0) ? sound_pain1 : sound_pain2, 1, ATTN_NORM, 0);
+
+        self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        if (n == 0)
+            self->monsterinfo.currentmove = &floater_move_pain1;
+        else
+            self->monsterinfo.currentmove = &floater_move_pain2;
+        return;
+    }
+
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
     if (skill->value == 3)
         return;     // no pain anims in nightmare
@@ -749,7 +784,11 @@ void SP_monster_floater(edict_t *self)
 
 	float val = crandom();
 
-	if (val < 0) {
+	// the random hyperblaster floater is a port addition; not in the rerelease
+	if (M_RereleaseGame()) {
+		self->monsterFireHyperBlaster = qfalse;
+	}
+	else if (val < 0) {
 		self->monsterFireHyperBlaster = qtrue;
 	}
 	else {
@@ -774,7 +813,11 @@ void SP_monster_floater(edict_t *self)
     if (M_RereleaseGame())
         PrecacheGibs(float_rerelease_gibs, float_num_rerelease_gibs);
     VectorSet(self->mins, -24, -24, -24);
-    VectorSet(self->maxs, 24, 24, 32);
+    // [rerelease] id raised the top of the box to 48
+    if (M_RereleaseGame())
+        VectorSet(self->maxs, 24, 24, 48);
+    else
+        VectorSet(self->maxs, 24, 24, 32);
 
     self->health = 200;
     self->gib_health = -80;

@@ -236,7 +236,9 @@ void actor_pain(edict_t *self, edict_t *other, float kick, int damage)
         else
             self->monsterinfo.currentmove = &actor_move_taunt;
         name = actor_names[(self - g_edicts) % MAX_ACTOR_NAMES];
-        gi.cprintf(other, PRINT_CHAT, "%s: %s!\n", name, messages[Q_rand() % 3]);
+        // [rerelease] any of the four lines; the original never picked the last
+        gi.cprintf(other, PRINT_CHAT, "%s: %s!\n", name,
+                   messages[Q_rand() % (M_RereleaseGame() ? (int)q_countof(messages) : 3)]);
         return;
     }
 

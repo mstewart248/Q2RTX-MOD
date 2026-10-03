@@ -121,6 +121,7 @@ cvar_t* cvar_pt_surface_lights_fake_emissive_algo = NULL;
 cvar_t* cvar_pt_surface_lights_threshold = NULL;
 cvar_t* cvar_pt_bsp_radiance_scale = NULL;
 cvar_t *cvar_pt_bsp_sky_lights = NULL;
+cvar_t *cvar_pt_fog_lava = NULL;
 cvar_t *cvar_pt_accumulation_rendering = NULL;
 cvar_t *cvar_pt_accumulation_rendering_framenum = NULL;
 cvar_t *cvar_pt_accumulation_stats = NULL;
@@ -3432,9 +3433,28 @@ add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, 
 
 		light->cluster = BSP_PointLeaf(bsp->nodes, dlight->origin)->cluster;
 
+		/* The light's identity for ReSTIR's frame-to-frame remap
+		   (update_mlight_prev_to_current). It used to be the dlight's INDEX,
+		   i + 1, but the dlight list is rebuilt every frame and its order is
+		   not stable: placed lights come last, after muzzle flashes, rockets,
+		   temp entities and dynamic_light entities, so any of those coming or
+		   going shifted the placed light to another index. The temporal
+		   reservoir then followed the index to a different light, and a placed
+		   light flickered with pt_restir on. Hashing the position instead keeps
+		   a light that stays put matched to itself; one that moves gets a fresh
+		   reservoir, which is the right thing for it anyway. */
+		uint32_t pos_hash = 2166136261u;
+		for (int k = 0; k < 3; k++)
+		{
+			int32_t q = (int32_t)floorf(dlight->origin[k] * 4.f);
+			pos_hash = (pos_hash ^ (uint32_t)q) * 16777619u;
+		}
+		pos_hash ^= pos_hash >> 15;
+
 		entity_hash_t hash;
-		hash.entity = i + 1; //entity ID
-		hash.mesh = 0xAA;
+		hash.entity = (pos_hash & 0x3FFF) | 1; // nonzero: 0 means "no identity"
+		hash.mesh = (pos_hash >> 14) & 0xFF;
+		hash.bsp = 0;
 
 		if (light->cluster >= 0)
 		{
@@ -5243,7 +5263,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			ubo->fog_hf_end_g   = mf.hf_end_color[1];
 			ubo->fog_hf_end_b   = mf.hf_end_color[2];
 			ubo->fog_mode       = mf.mode;
-			ubo->fog_vol_density_ratio = mf.vol_density_ratio;
+			ubo->fog_vol_density_ratio = 1.0f;   // retired; see FOG_LOCAL_DENSITY
 		} else {
 			ubo->fog_enable = 0;
 			ubo->fog_mode   = 0;
@@ -5357,7 +5377,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			           "volscale=%.6f ratio=%.6f\n",
 				(int)ubo->environment_type, ubo->pt_fog_sky_sun_only,
 				ubo->fog_sky_r, ubo->fog_sky_g, ubo->fog_sky_b,
-				ubo->pt_fog_sky_scale, ubo->pt_env_scale,
+				ubo->pt_fog_scale_skybox, ubo->pt_env_scale,
 				ubo->pt_fog_isolate, ubo->fog_sky_fade,
 				/* THE TWO FACTORS THE SKY TERM IS MULTIPLIED BY.
 
@@ -5374,7 +5394,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 				   cl_volumetric_fog_density / cl_fog_scale out of
 				   CL_GetMapFog, and this map's cfg sets that cvar to the
 				   mangled literal "2pt.0". */
-				ubo->pt_fog_vol_scale, ubo->fog_vol_density_ratio);
+				ubo->pt_fog_scale_sun, ubo->fog_vol_density_ratio);
 
 			if (Cvar_Get("pt_fog_log", "0", 0)->integer == 1)
 			Com_Printf("FOGLOG cluster=%d org=%.4f %.4f %.4f dV=%.8f dP=%.8f enable=%d mode=%d\n",
@@ -5423,8 +5443,8 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 					{ "vol_ratio",     ubo->fog_vol_density_ratio },
 					{ "num_model_lt",  (float)ubo->fog_num_model_lights },
 					{ "cluster",       (float)ubo->fog_camera_cluster },
-					{ "pt_sky_scale",  ubo->pt_fog_sky_scale },
-					{ "pt_vol_scale",  ubo->pt_fog_vol_scale },
+					{ "pt_sky_scale",  ubo->pt_fog_scale_skybox },
+					{ "pt_sun_scale",  ubo->pt_fog_scale_sun },
 					{ "pt_brightness", ubo->pt_fog_brightness },
 					{ "god_intensity", ubo->god_rays_intensity },
 					/* getDensity's OWN inputs - never logged before, and the
@@ -8683,6 +8703,13 @@ R_Init_RTX(bool total)
 	// Nonzero settings should only be used for custom maps where sky surfaces are marked properly for Q2RTX.
 	cvar_pt_bsp_sky_lights = Cvar_Get("pt_bsp_sky_lights", "0", 0);
 
+	// Let lava light the FOG. Lava that is not already a poly-light glows only
+	// through bounce rays, and the fog in-scatters from the light lists alone, so
+	// it made no fog at all. 1 builds a second set of lava lights that ONLY the
+	// fog reads - the surface lighting is untouched. Brightness is
+	// pt_fog_lava_scale. Takes effect on map load.
+	cvar_pt_fog_lava = Cvar_Get("pt_fog_lava", "1", CVAR_FILES);
+
 	// 0 -> disabled, regular pause; 1 -> enabled; 2 -> enabled, hide GUI
 	cvar_pt_accumulation_rendering = Cvar_Get("pt_accumulation_rendering", "1", CVAR_ARCHIVE);
 
@@ -9256,6 +9283,9 @@ R_BeginRegistration_RTX(const char *name)
 	// per-map override lasts exactly one map and leaves the player's own value
 	// behind when they move on.
 	Cmd_RestoreMapCvars();
+
+	// The sun is (re)seeded for the new map once its cfg has run - see apply_map_sun.
+	vkpt_physical_sky_begin_map();
 
 	// Name the entrance the player used before the map's cfg runs: that cfg can
 	// gate sections of itself on it with the "spawnpoint" command, and the names

@@ -1063,6 +1063,12 @@ void SV_Physics_Step(edict_t *ent)
         SV_FlyMove(ent, FRAMETIME, mask);
 
         gi.linkentity(ent);
+
+        // PGM - [rerelease] reset this every time they move; G_TouchTriggers
+        // will set it back if appropriate (trigger_gravity)
+        if (M_RereleaseGame())
+            ent->gravity = 1.0f;
+
         G_TouchTriggers(ent);
         if (!ent->inuse)
             return;
@@ -1080,6 +1086,28 @@ void SV_Physics_Step(edict_t *ent)
         ent->monsterinfo.physics_change(ent);
 
 // regular thinking
+    if (M_RereleaseGame()) {
+        /*
+        [rerelease] A gravity override set by the think (a frame function: the
+        berserk's leap, the stalker's dodge jump) lasts ONE 40 Hz tick there:
+        the next physics tick moves with it and then resets gravity to 1 (or to
+        a trigger_gravity's value, re-applied by G_TouchTriggers every tick). At
+        10 Hz one frame's gravity covers all four of those ticks, so the
+        override is worth a quarter of it and whatever it replaced the other
+        three quarters. A body at rest is not reset there, so it keeps a full
+        override - hence only for a body that will move next frame.
+        */
+        float before = ent->gravity;
+
+        SV_RunThink(ent);
+
+        if (ent->inuse && ent->gravity != before &&
+            !(ent->monsterinfo.aiflags2 & AI2_FULL_GRAVITY) &&
+            (ent->velocity[0] || ent->velocity[1] || ent->velocity[2]))
+            ent->gravity = before + (ent->gravity - before) * 0.25f;
+        return;
+    }
+
     SV_RunThink(ent);
 }
 

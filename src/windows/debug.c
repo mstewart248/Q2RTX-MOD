@@ -21,6 +21,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //
 
 #include "client.h"
+#include "mod_version.h"
 #include <dbghelp.h>
 
 typedef DWORD (WINAPI *SETSYMOPTIONS)(DWORD);
@@ -345,7 +346,7 @@ LONG WINAPI Sys_ExceptionFilter(LPEXCEPTION_POINTERS exceptionInfo)
         systemTime.wMinute,
         systemTime.wSecond);
     write_report(
-        "by " APPLICATION " " LONG_VERSION_STRING
+        "by " MOD_NAME " " MOD_LONG_VERSION_STRING
         ", built " __DATE__", " __TIME__ "\r\n");
 
 #pragma warning(push)

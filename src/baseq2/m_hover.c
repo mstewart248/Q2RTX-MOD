@@ -83,6 +83,7 @@ void hover_attack(edict_t *self);
 void hover_reattack(edict_t *self);
 void hover_fire_blaster(edict_t *self);
 void hover_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+static void hover_gib(edict_t *self);
 
 mframe_t hover_frames_stand [] = {
     { ai_stand, 0, NULL },
@@ -497,6 +498,9 @@ void hover_fire_blaster(edict_t *self)
     int     effect;
     int     flash;
 
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
     if (self->s.frame == FRAME_attak104)
 		if (self->monsterFireHyperBlaster && !HOVER_IS_DAEDALUS(self)) {
 			effect = EF_HYPERBLASTER;
@@ -518,6 +522,19 @@ void hover_fire_blaster(edict_t *self)
     VectorCopy(self->enemy->s.origin, end);
     end[2] += self->enemy->viewheight;
     VectorSubtract(end, start, dir);
+
+    // [rerelease] no random hyperblaster icarus (that is ours): plain blaster
+    // with every fourth frame's bolt drawn as a hyperblaster/blaster bolt
+    if (M_RereleaseGame()) {
+        VectorNormalize(dir);
+        if (HOVER_IS_DAEDALUS(self))
+            monster_fire_blaster2(self, start, dir, 1, 1000, flash,
+                                  (self->s.frame % 4) ? 0 : EF_BLASTER);
+        else
+            monster_fire_blaster(self, start, dir, 1, 1000, flash,
+                                 (self->s.frame % 4) ? 0 : EF_HYPERBLASTER);
+        return;
+    }
 
     if (HOVER_IS_DAEDALUS(self)) {
         // ROGUE - the daedalus fires the green blaster2 bolt
@@ -588,10 +605,38 @@ void hover_pain(edict_t *self, edict_t *other, float kick, int damage)
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 
+    daed = HOVER_IS_DAEDALUS(self);
+
+    if (M_RereleaseGame()) {
+        // [rerelease] the sound plays even in nightmare, and a big hit picks
+        // pain1/pain2 30/70 - "PGM pain sequence is WAY too long"
+        float r = random();
+
+        if (r < 0.5f)
+            gi.sound(self, CHAN_VOICE, daed ? daed_sound_pain1 : sound_pain1, 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, daed ? daed_sound_pain2 : sound_pain2, 1, ATTN_NORM, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        r = random();
+        if (damage <= 25) {
+            if (r < 0.5f)
+                self->monsterinfo.currentmove = &hover_move_pain3;
+            else
+                self->monsterinfo.currentmove = &hover_move_pain2;
+        } else {
+            if (r < 0.3f)
+                self->monsterinfo.currentmove = &hover_move_pain1;
+            else
+                self->monsterinfo.currentmove = &hover_move_pain2;
+        }
+        return;
+    }
+
     if (skill->value == 3)
         return;     // no pain anims in nightmare
-
-    daed = HOVER_IS_DAEDALUS(self);
 
     if (damage <= 25) {
         if (random() < 0.5f) {
@@ -618,6 +663,15 @@ void hover_deadthink(edict_t *self)
         self->nextthink = level.framenum + 1;
         return;
     }
+
+    // [rerelease] it comes apart into its own parts instead of vanishing in
+    // an explosion - and, since hover_dying calls this mid-frame, without
+    // freeing the edict out from under the move code
+    if (M_RereleaseGame() && !LUDICROUS_GIBS()) {
+        hover_gib(self);
+        return;
+    }
+
     // Stock Quake II throws no gibs here - the icarus just explodes.
     if (LUDICROUS_GIBS()) {
         for (n = 0; n < 16; n++) {
@@ -657,22 +711,40 @@ const gib_def_t hover_rerelease_gibs[] = {
 };
 const int hover_num_rerelease_gibs = (int)(sizeof(hover_rerelease_gibs) / sizeof(hover_rerelease_gibs[0]));
 
+// [rerelease] hover_gib: explosion, then id's gib parts with the body itself
+// becoming the head
+static void hover_gib(edict_t *self)
+{
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_EXPLOSION1);
+    gi.WritePosition(self->s.origin);
+    gi.multicast(self->s.origin, MULTICAST_PHS);
+
+    self->s.skinnum /= 2;
+    ThrowGibs(self, 150, hover_rerelease_gibs, hover_num_rerelease_gibs);
+    self->deadflag = DEAD_DEAD;
+}
+
 void hover_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point)
 {
     int     n;
+
+    // [rerelease] the engine glow goes out, and so does the power screen
+    if (M_RereleaseGame()) {
+        self->s.effects = 0;
+        self->monsterinfo.power_armor_type = POWER_ARMOR_NONE;
+    }
 
 // check for gib
     if (self->health <= self->gib_health) {
         // Stock Quake II: one burst of gibs and the body is gone.
         if (!LUDICROUS_GIBS()) {
-            gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
             if (M_RereleaseGame()) {
                 // [rerelease] id's own gib parts - see hover_rerelease_gibs
-                self->s.skinnum /= 2;
-                ThrowGibs(self, 150, hover_rerelease_gibs, hover_num_rerelease_gibs);
-                self->deadflag = DEAD_DEAD;
+                hover_gib(self);
                 return;
             }
+            gi.sound(self, CHAN_VOICE, gi.soundindex("misc/udeath.wav"), 1, ATTN_NORM, 0);
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 2; n++)
@@ -814,7 +886,11 @@ void SP_monster_hover(edict_t *self)
 
 	float val = crandom();
 
-	if (val < 0) {
+	// the random hyperblaster icarus is a port addition; not in the rerelease
+	if (M_RereleaseGame()) {
+		self->monsterFireHyperBlaster = qfalse;
+	}
+	else if (val < 0) {
 		self->monsterFireHyperBlaster = qtrue;
 	}
 	else {

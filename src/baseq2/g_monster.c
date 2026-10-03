@@ -123,41 +123,63 @@ void monster_fire_blueblaster(edict_t *self, vec3_t start, vec3_t dir, int damag
 
 /*
 =================
-monster_dabeam
+monster_fire_dabeam
 
-Xatrix "damage beam": a one-frame RF_BEAM entity that traces from the monster to
-its enemy and hurts whatever it passes through. Used by monster_soldier_lasergun.
-The beam entity is spawned by the caller and freed by dabeam_hit a frame later.
+Xatrix "damage beam", ported from the rerelease (xatrix/g_xatrix_monster.cpp):
+the lasergun soldier, the brain's eyes, the guardian and the fixbot's repair ray.
+
+ONE beam per owner (self->beam, or self->beam2 for a second one - the brain's
+other eye, the guardian's other emitter), kept alive while the owner keeps
+firing and freed 200 ms after it stops. Each fire call re-aims it through the
+owner's update function and traces it NOW, with damage.
+
+What this replaced spawned a NEW beam entity every fire frame and traced it a
+frame LATER, so for its first frame a beam's end point (s.old_origin) was still
+(0,0,0) - drawn from the gun to the middle of the map - while the previous
+frame's beam was still up: two beams in completely different directions. Its
+pierce loop also ignored only the LAST entity it went through, so a beam
+starting inside two overlapping bodies (corpses overlap all the time) traced
+back and forth between them forever and hung the game.
+
+The rerelease updates a live beam every 40 Hz server frame (postthink) without
+damage; here the beam's own think does that once per 10 Hz frame, between
+fire calls, so a beam that is about to time out still follows the gun.
 =================
 */
-void dabeam_hit(edict_t *self)
+#define DABEAM_MAX_PIERCE   16
+
+void dabeam_update(edict_t *self, bool damage)
 {
-    edict_t *ignore;
+    edict_t *marked[DABEAM_MAX_PIERCE];
+    int     marked_solid[DABEAM_MAX_PIERCE];
+    int     num_marked = 0;
     vec3_t  start, end;
     trace_t tr;
 
-    ignore = self;
     VectorCopy(self->s.origin, start);
     VectorMA(start, 2048, self->movedir, end);
 
     while (1) {
-        tr = gi.trace(start, NULL, NULL, end, ignore,
+        tr = gi.trace(start, NULL, NULL, end, self,
                       CONTENTS_SOLID | CONTENTS_MONSTER | CONTENTS_DEADMONSTER);
         if (!tr.ent)
             break;
 
-        // A beam with dmg <= 0 is a HEALING beam - the fixbot's repair laser,
-        // which rogue marks with damage -1. It is drawn and traced exactly the
-        // same way, it just must not hurt what it is pointed at.
-        if (self->dmg > 0 && tr.ent->takedamage &&
-            !(tr.ent->flags & FL_IMMUNE_LASER) && tr.ent != self->owner)
-            T_Damage(tr.ent, self, self->owner, self->movedir, tr.endpos,
-                     vec3_origin, self->dmg, skill->value, DAMAGE_ENERGY, MOD_TARGET_LASER);
+        if (damage) {
+            // hurt it if we can
+            if (self->dmg > 0 && tr.ent->takedamage &&
+                !(tr.ent->flags & FL_IMMUNE_LASER) && tr.ent != self->owner)
+                T_Damage(tr.ent, self, self->owner, self->movedir, tr.endpos,
+                         vec3_origin, self->dmg, skill->value, DAMAGE_ENERGY, MOD_TARGET_LASER);
+
+            // healer ray (the fixbot): undo damage up to full health
+            if (self->dmg < 0 && tr.ent->health < tr.ent->max_health)
+                tr.ent->health = min(tr.ent->max_health, tr.ent->health - self->dmg);
+        }
 
         // stop at the first thing that is not a monster or player
         if (!(tr.ent->svflags & SVF_MONSTER) && !tr.ent->client) {
-            if (self->spawnflags & SPAWNFLAG_DABEAM_SPARK) {
-                self->spawnflags &= ~SPAWNFLAG_DABEAM_SPARK;
+            if (damage) {
                 gi.WriteByte(svc_temp_entity);
                 gi.WriteByte(TE_LASER_SPARKS);
                 gi.WriteByte(10);
@@ -169,52 +191,138 @@ void dabeam_hit(edict_t *self)
             break;
         }
 
-        ignore = tr.ent;
+        // Pierce it: make it non-solid until the trace is done, the way the
+        // rerelease's pierce_trace marks what it has passed through, so the
+        // re-trace can never find it again - however the bodies overlap.
+        if (num_marked == DABEAM_MAX_PIERCE)
+            break;
+
+        marked[num_marked] = tr.ent;
+        marked_solid[num_marked] = tr.ent->solid;
+        num_marked++;
+        tr.ent->solid = SOLID_NOT;
+        gi.linkentity(tr.ent);
+
         VectorCopy(tr.endpos, start);
     }
 
-    VectorCopy(tr.endpos, self->s.old_origin);
-    self->nextthink = level.framenum + 1;
-    self->think = G_FreeEdict;
-}
-
-void monster_dabeam(edict_t *self)
-{
-    vec3_t last_movedir;
-    vec3_t point;
-
-    self->movetype = MOVETYPE_NONE;
-    self->solid = SOLID_NOT;
-    self->s.renderfx |= RF_BEAM | RF_TRANSLUCENT;
-    self->s.modelindex = 1;     // must be non-zero for the beam to be sent
-
-    self->s.frame = 2;          // beam width
-    self->s.skinnum = 0xf2f2f0f0;   // beam colour (packed palette indices)
-
-    if (self->enemy) {
-        VectorCopy(self->movedir, last_movedir);
-        VectorMA(self->enemy->absmin, 0.5f, self->enemy->size, point);
-        VectorSubtract(point, self->s.origin, self->movedir);
-        VectorNormalize(self->movedir);
-        if (!VectorCompare(self->movedir, last_movedir))
-            self->spawnflags |= SPAWNFLAG_DABEAM_SPARK;
-    } else {
-        G_SetMovedir(self->s.angles, self->movedir);
+    for (int i = 0; i < num_marked; i++) {
+        marked[i]->solid = marked_solid[i];
+        gi.linkentity(marked[i]);
     }
 
-    self->think = dabeam_hit;
-    self->nextthink = level.framenum + 1;
-    VectorSet(self->mins, -8, -8, -8);
-    VectorSet(self->maxs, 8, 8, 8);
+    VectorMA(tr.endpos, 1.0f, tr.plane.normal, self->s.old_origin);
     gi.linkentity(self);
+}
 
-    self->spawnflags |= SPAWNFLAG_DABEAM_SPARK | SPAWNFLAG_DABEAM_ON;
-    self->svflags &= ~SVF_NOCLIENT;
+static void dabeam_run_update(edict_t *beam)
+{
+    switch (beam->style) {
+    case DABEAM_SOLDIER:    soldierh_laser_update(beam); break;
+    case DABEAM_BRAIN_R:    brain_eye_laser_update(beam, false); break;
+    case DABEAM_BRAIN_L:    brain_eye_laser_update(beam, true); break;
+    case DABEAM_GUARDIAN:   guardian_fire_update(beam); break;
+    case DABEAM_FIXBOT:     fixbot_laser_update(beam); break;
+    }
+}
+
+static edict_t **dabeam_slot(edict_t *owner, bool secondary)
+{
+    return secondary ? &owner->beam2 : &owner->beam;
+}
+
+void dabeam_think(edict_t *self)
+{
+    edict_t *owner = self->owner;
+    edict_t **slot = NULL;
+
+    if (owner && owner->inuse) {
+        slot = dabeam_slot(owner, (self->spawnflags & SPAWNFLAG_DABEAM_SECONDARY) != 0);
+        if (*slot != self)
+            slot = NULL;
+    }
+
+    // timed out, or the owner is gone: the rerelease's beam_think
+    if (!slot || level.framenum >= self->timestamp) {
+        if (slot)
+            *slot = NULL;
+        G_FreeEdict(self);
+        return;
+    }
+
+    // still live: follow the gun without hurting anything
+    dabeam_run_update(self);
+    dabeam_update(self, false);
+    self->nextthink = level.framenum + 1;
+}
+
+/* `kind` picks the update function (DABEAM_*), and `param` is stored on the
+   beam for it - the soldier's muzzle flash index. */
+void monster_fire_dabeam(edict_t *self, int damage, bool secondary, int kind, int param)
+{
+    edict_t **slot = dabeam_slot(self, secondary);
+    edict_t *beam = *slot;
+
+    if (beam && (!beam->inuse || beam->owner != self))
+        beam = NULL;
+
+    if (!beam) {
+        beam = G_Spawn();
+        beam->classname = "dabeam";
+        beam->movetype = MOVETYPE_NONE;
+        beam->solid = SOLID_NOT;
+        beam->s.renderfx |= RF_BEAM;
+        beam->s.modelindex = 1;     // must be non-zero for the beam to be sent
+        beam->owner = self;
+        beam->dmg = damage;
+        beam->s.frame = 2;          // beam width
+        beam->spawnflags = secondary ? SPAWNFLAG_DABEAM_SECONDARY : 0;
+
+        if (self->monsterinfo.aiflags & AI_MEDIC)
+            beam->s.skinnum = 0xf3f3f1f1;
+        else
+            beam->s.skinnum = 0xf2f2f0f0;
+
+        beam->think = dabeam_think;
+        beam->s.sound = gi.soundindex("misc/lasfly.wav");
+        *slot = beam;
+    }
+
+    beam->style = kind;
+    beam->count = param;
+    beam->timestamp = level.framenum + 2;   // the rerelease's 200 ms
+    beam->nextthink = level.framenum + 1;
+
+    dabeam_run_update(beam);
+    dabeam_update(beam, true);
 }
 
 void monster_fire_grenade(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int flashtype)
 {
     fire_grenade(self, start, aimdir, damage, speed, 2.5f, damage + 40);
+
+    gi.WriteByte(svc_muzzleflash3);
+    gi.WriteShort(self - g_edicts);
+    gi.WriteShort(flashtype);
+    gi.WriteDir(aimdir);
+    gi.multicast(start, MULTICAST_PVS);
+}
+
+/*
+=================
+monster_fire_grenade_ex
+
+[rerelease] monster_fire_grenade with the reference's right_adjust/up_adjust:
+the grenade is thrown along aimdir plus up_adjust units/sec "up" (scaled by
+level gravity / 800) and right_adjust "right", instead of the fixed 200 +-10 up
+and +-10 right of the classic throw. Monsters that aim their lob
+(M_CalculatePitchToFire) pass 0/0.
+=================
+*/
+void monster_fire_grenade_ex(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed,
+                             int flashtype, float right_adjust, float up_adjust)
+{
+    fire_grenade_ex(self, start, aimdir, damage, speed, 2.5f, damage + 40, right_adjust, up_adjust, true);
 
     gi.WriteByte(svc_muzzleflash3);
     gi.WriteShort(self - g_edicts);
@@ -248,6 +356,11 @@ void monster_fire_rocket(edict_t *self, vec3_t start, vec3_t dir, int damage, in
 
 void monster_fire_railgun(edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick, int flashtype)
 {
+    // [rerelease] a muzzle inside a wall does not fire at all - the rail would
+    // otherwise start in solid and hit whatever is on the far side
+    if (M_RereleaseGame() && (gi.pointcontents(start) & MASK_SOLID))
+        return;
+
     fire_rail(self, start, aimdir, damage, kick);
 
     gi.WriteByte(svc_muzzleflash3);
@@ -519,6 +632,18 @@ void M_CatagorizePosition(edict_t *ent)
 }
 
 
+// 8 of the rerelease's 100 ms-debounced hits a second, spread over our 10
+// frames: 0.8 of a hit per frame, rounded randomly so the average is exact
+static int M_WorldDamagePerFrame(int hit)
+{
+    float   d = hit * 0.8f;
+    int     whole = (int)d;
+
+    if (random() < d - whole)
+        whole++;
+    return whole;
+}
+
 void M_WorldEffects(edict_t *ent)
 {
     int     dmg;
@@ -561,18 +686,37 @@ void M_WorldEffects(edict_t *ent)
         return;
     }
 
-    if ((ent->watertype & CONTENTS_LAVA) && !(ent->flags & FL_IMMUNE_LAVA)) {
-        if (ent->damage_debounce_framenum < level.framenum) {
-            ent->damage_debounce_framenum = level.framenum + 0.2f * BASE_FRAMERATE;
-            T_Damage(ent, world, world, vec3_origin, ent->s.origin, vec3_origin, 10 * ent->waterlevel, 0, 0, MOD_LAVA);
+    if (M_RereleaseGame()) {
+        // [rerelease] lava and slime both bite on a 100 ms debounce. On their
+        // 40 Hz server "+100 ms, strictly later" lands a hit every 5th tick,
+        // eight a second; at 10 Hz the nearest debounce would give five or
+        // ten. So hit every frame with 8/10 of the damage, the fraction
+        // carried by a random round, which keeps the rerelease's damage per
+        // second.
+        if ((ent->watertype & CONTENTS_LAVA) && !(ent->flags & FL_IMMUNE_LAVA))
+            T_Damage(ent, world, world, vec3_origin, ent->s.origin, vec3_origin,
+                     M_WorldDamagePerFrame(10 * ent->waterlevel), 0, 0, MOD_LAVA);
+        if ((ent->watertype & CONTENTS_SLIME) && !(ent->flags & FL_IMMUNE_SLIME))
+            T_Damage(ent, world, world, vec3_origin, ent->s.origin, vec3_origin,
+                     M_WorldDamagePerFrame(4 * ent->waterlevel), 0, 0, MOD_SLIME);
+    } else {
+        if ((ent->watertype & CONTENTS_LAVA) && !(ent->flags & FL_IMMUNE_LAVA)) {
+            if (ent->damage_debounce_framenum < level.framenum) {
+                ent->damage_debounce_framenum = level.framenum + 0.2f * BASE_FRAMERATE;
+                T_Damage(ent, world, world, vec3_origin, ent->s.origin, vec3_origin, 10 * ent->waterlevel, 0, 0, MOD_LAVA);
+            }
+        }
+        if ((ent->watertype & CONTENTS_SLIME) && !(ent->flags & FL_IMMUNE_SLIME)) {
+            if (ent->damage_debounce_framenum < level.framenum) {
+                ent->damage_debounce_framenum = level.framenum + 1 * BASE_FRAMERATE;
+                T_Damage(ent, world, world, vec3_origin, ent->s.origin, vec3_origin, 4 * ent->waterlevel, 0, 0, MOD_SLIME);
+            }
         }
     }
-    if ((ent->watertype & CONTENTS_SLIME) && !(ent->flags & FL_IMMUNE_SLIME)) {
-        if (ent->damage_debounce_framenum < level.framenum) {
-            ent->damage_debounce_framenum = level.framenum + 1 * BASE_FRAMERATE;
-            T_Damage(ent, world, world, vec3_origin, ent->s.origin, vec3_origin, 4 * ent->waterlevel, 0, 0, MOD_SLIME);
-        }
-    }
+
+    // T_Damage may have killed and freed it
+    if (!ent->inuse)
+        return;
 
     if (!(ent->flags & FL_INWATER)) {
         if (!(ent->svflags & SVF_DEADMONSTER)) {
@@ -606,8 +750,20 @@ void M_droptofloor(edict_t *ent)
         return;
     }
 
+    // [rerelease] only nudged off the floor when it actually starts in solid;
+    // the unconditional unit of lift lets a monster on a slope end up a unit
+    // in the air or stuck under a low ceiling
+    if (M_RereleaseGame()) {
+        bool ceiling = ent->gravityVector[2] > 0;
+
+        if (gi.trace(ent->s.origin, ent->mins, ent->maxs, ent->s.origin, ent, MASK_MONSTERSOLID).startsolid)
+            ent->s.origin[2] += ceiling ? -1 : 1;
+
+        VectorCopy(ent->s.origin, end);
+        end[2] += ceiling ? 256 : -256;
+    }
     // ROGUE - a ceiling walker drops *up* to its ceiling
-    if (ent->gravityVector[2] < 0) {
+    else if (ent->gravityVector[2] < 0) {
         ent->s.origin[2] += 1;
         VectorCopy(ent->s.origin, end);
         end[2] -= 256;
@@ -630,8 +786,20 @@ void M_droptofloor(edict_t *ent)
 }
 
 
+// G_PowerUpExpiring: on for good until the last 3 s, then half of each second
+static bool M_PowerUpShowing(int end_framenum)
+{
+    int left = end_framenum - level.framenum;
+
+    return left > 3 * BASE_FRAMERATE || (left % BASE_FRAMERATE) < BASE_FRAMERATE / 2;
+}
+
 void M_SetEffects(edict_t *ent)
 {
+    // [rerelease] the powerup shells are cleared here too, so they go out
+    // when the powerup does
+    if (M_RereleaseGame())
+        ent->s.effects &= ~(EF_DOUBLE | EF_QUAD | EF_PENT);
     ent->s.effects &= ~(EF_COLOR_SHELL | EF_POWERSCREEN);
     ent->s.renderfx &= ~(RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE);
 
@@ -650,6 +818,21 @@ void M_SetEffects(edict_t *ent)
             ent->s.effects |= EF_COLOR_SHELL;
             ent->s.renderfx |= RF_SHELL_GREEN;
         }
+    }
+
+    // PMM - [rerelease] monster powerups: the widow mirrors the player's quad,
+    // double and invulnerability onto herself and shows the matching shell,
+    // blinking over the last three seconds like the player's
+    if (M_RereleaseGame()) {
+        if (ent->monsterinfo.quad_framenum > level.framenum &&
+            M_PowerUpShowing(ent->monsterinfo.quad_framenum))
+            ent->s.effects |= EF_QUAD;
+        if (ent->monsterinfo.double_framenum > level.framenum &&
+            M_PowerUpShowing(ent->monsterinfo.double_framenum))
+            ent->s.effects |= EF_DOUBLE;
+        if (ent->monsterinfo.invincible_framenum > level.framenum &&
+            M_PowerUpShowing(ent->monsterinfo.invincible_framenum))
+            ent->s.effects |= EF_PENT;
     }
 }
 
@@ -717,26 +900,12 @@ got there.  Rerelease game only; the classic game keeps check_dodge.
 =================
 */
 /*
-The rerelease's infront(), which M_CheckDodge is written against: a much wider
-cone than the 1997 one in g_ai.c (dot > -0.3 against 0.3), narrowed to 0.15 for
-an ambush monster that has not found anyone yet.  Kept local so the classic
-sight checks that share infront() are untouched.
+M_CheckDodge only runs in the rerelease game, where infront() is the
+rerelease's own wide cone (dot > -0.3) - the same test id makes here, with no
+narrower cone for an ambush monster. The rerelease also requires SVF_PROJECTILE,
+which this tree does not have; FL_DODGE is only ever set on projectiles, so it
+stands in for both.
 */
-static bool M_DodgeInfront(edict_t *self, edict_t *other)
-{
-    vec3_t  forward, vec;
-    float   dot;
-
-    AngleVectors(self->s.angles, forward, NULL, NULL);
-    VectorSubtract(other->s.origin, self->s.origin, vec);
-    VectorNormalize(vec);
-    dot = DotProduct(vec, forward);
-
-    if ((self->spawnflags & 1) && !self->enemy)
-        return dot > 0.15f;
-
-    return dot > -0.30f;
-}
 
 static void M_CheckDodge(edict_t *self)
 {
@@ -767,7 +936,7 @@ static void M_CheckDodge(edict_t *self)
             continue;
 
         // projectile is behind us, we can't see it
-        if (!M_DodgeInfront(self, ent))
+        if (!infront(self, ent))
             continue;
 
         // will it hit us within 1 second? gives us enough time to dodge
@@ -788,10 +957,32 @@ static void M_CheckDodge(edict_t *self)
 
 void monster_think(edict_t *self)
 {
-    if (M_RereleaseGame() && self->health > 0 && self->monsterinfo.dodge)
-        M_CheckDodge(self);
+    if (M_RereleaseGame()) {
+        // [rerelease] the pain of last frame's hits, summed (see M_ProcessPain)
+        M_ProcessPain(self);
+
+        // pain above freed us, or swapped our think
+        if (!self->inuse || self->think != monster_think)
+            return;
+
+        // N64 rtest monsters go straight for player one
+        if ((self->hackflags & HACKFLAG_ATTACK_PLAYER) && !self->enemy && g_edicts[1].inuse) {
+            self->enemy = &g_edicts[1];
+            FoundTarget(self);
+        }
+
+        // [Paril-KEX] co-op health scale; players joining after we spawned
+        if (coop->value && self->health > 0)
+            G_Monster_CheckCoopHealthScaling();
+
+        if (self->health > 0 && self->monsterinfo.dodge)
+            M_CheckDodge(self);
+    }
 
     M_MoveFrame(self);
+    if (!self->inuse)
+        return;
+    M_UpdateDuckBox(self);
     if (self->linkcount != self->monsterinfo.linkcount) {
         self->monsterinfo.linkcount = self->linkcount;
         M_CheckGround(self);
@@ -820,6 +1011,9 @@ void monster_use(edict_t *self, edict_t *other, edict_t *activator)
     if (activator->flags & FL_NOTARGET)
         return;
     if (!(activator->client) && !(activator->monsterinfo.aiflags & AI_GOOD_GUY))
+        return;
+    // ROGUE - a disguised player is not who it is looking for
+    if (M_RereleaseGame() && (activator->flags & FL_DISGUISED))
         return;
 
 // delay reaction so if the monster is teleported, its sound is still heard
@@ -966,6 +1160,9 @@ void stationarymonster_start_go(edict_t *self)
 
 void stationarymonster_start(edict_t *self)
 {
+    // [rerelease] FL_STATIONARY: never pathed, never nudged out of solid
+    if (M_RereleaseGame())
+        self->flags |= FL_STATIONARY;
     self->think = stationarymonster_start_go;
     monster_start(self);
 }
@@ -1091,6 +1288,37 @@ bool M_CheckClearShot(edict_t *self, const vec3_t offset, vec3_t start)
     VectorSet(real_angles, self->s.angles[PITCH], self->ideal_yaw, 0);
     AngleVectors(real_angles, f, r, NULL);
     M_ProjectFlashSource(self, offset, f, r, start);
+
+    // [rerelease] a monster firing blind (or steering itself, or that has lost
+    // sight) is checking the shot it will actually take - at the remembered
+    // blind_fire_target - and only that one. Dead monsters do not block.
+    if (M_RereleaseGame()) {
+        bool is_blind = self->monsterinfo.attack_state == AS_BLIND ||
+                        (self->monsterinfo.aiflags & (AI_MANUAL_STEERING | AI_LOST_SIGHT));
+        int  mask = MASK_PROJECTILE & ~CONTENTS_DEADMONSTER;
+
+        if (is_blind) {
+            VectorCopy(self->monsterinfo.blind_fire_target, target);
+        } else {
+            VectorCopy(self->enemy->s.origin, target);
+            target[2] += self->enemy->viewheight;
+        }
+
+        tr = gi.trace(start, NULL, NULL, target, self, mask);
+        if (tr.ent == self->enemy || (tr.ent && tr.ent->client) ||
+            (tr.fraction > 0.8f && !tr.startsolid))
+            return true;
+
+        if (!is_blind) {
+            VectorCopy(self->enemy->s.origin, target);
+            tr = gi.trace(start, NULL, NULL, target, self, mask);
+            if (tr.ent == self->enemy || (tr.ent && tr.ent->client) ||
+                (tr.fraction > 0.8f && !tr.startsolid))
+                return true;
+        }
+
+        return false;
+    }
 
     VectorCopy(self->enemy->s.origin, target);
     target[2] += self->enemy->viewheight;
@@ -1336,6 +1564,114 @@ expires - note AI_HOLD_FRAME stops MOVEMENT too, which is what is wanted here
 because a ducking monster should not slide along the floor.
 =================
 */
+/*
+=================
+M_UpdateDuckBox
+
+A ducked monster's box follows its ANIMATION, frame by frame.
+
+id shrinks the box by a flat 32 units for the whole of every crouch - duck,
+the soldier's kneel-and-fire (attack3), prone fire, the trip - but the models
+do not crouch that far: a kneeling soldier is drawn up to 27 units above the
+box top of 0 (attack3), so a blaster bolt aimed at its chest went straight
+through it, and the rerelease's dodge makes them duck at exactly that moment.
+The tables (g_duckbox_tables.h) are the highest vertex of every frame of the
+rerelease models; the box top takes that value for the frame now playing,
+never above the standing height nor below mins.
+
+g_duck_hitbox 0 restores id's fixed crouch. Applies to both games - classic
+monsters crouch through the same frames.
+=================
+*/
+#include "g_duckbox_tables.h"
+
+typedef struct {
+    const signed char *tops;
+    int                num_frames;
+    int                crouch;      // the deepest crouch, for the dodge test
+} duckbox_t;
+
+#define DUCKBOX(name, CROUCH) { duckbox_##name, (int)(sizeof(duckbox_##name) / sizeof(duckbox_##name[0])), CROUCH }
+
+static const duckbox_t *M_DuckBoxFor(edict_t *self)
+{
+    static const duckbox_t soldier  = DUCKBOX(soldier,  DUCKBOX_CROUCH_SOLDIER);
+    static const duckbox_t soldierh = DUCKBOX(soldierh, DUCKBOX_CROUCH_SOLDIERH);
+    static const duckbox_t infantry = DUCKBOX(infantry, DUCKBOX_CROUCH_INFANTRY);
+    static const duckbox_t gunner   = DUCKBOX(gunner,   DUCKBOX_CROUCH_GUNNER);
+    static const duckbox_t chick    = DUCKBOX(bitch,    DUCKBOX_CROUCH_BITCH);
+    static const duckbox_t medic    = DUCKBOX(medic,    DUCKBOX_CROUCH_MEDIC);
+    static const duckbox_t brain    = DUCKBOX(brain,    DUCKBOX_CROUCH_BRAIN);
+    static const duckbox_t berserk  = DUCKBOX(berserk,  DUCKBOX_CROUCH_BERSERK);
+    const char *cn = self->classname;
+
+    if (!cn)
+        return NULL;
+    if (!strncmp(cn, "monster_soldier", 15))
+        return self->style == 1 ? &soldierh : &soldier;  // style 1: ripper/hypergun/lasergun
+    if (!strcmp(cn, "monster_infantry"))
+        return &infantry;
+    if (!strcmp(cn, "monster_gunner") || !strcmp(cn, "monster_guncmdr"))
+        return &gunner;
+    if (!strncmp(cn, "monster_chick", 13))
+        return &chick;
+    if (!strncmp(cn, "monster_medic", 13))
+        return &medic;
+    if (!strcmp(cn, "monster_brain"))
+        return &brain;
+    if (!strcmp(cn, "monster_berserk"))
+        return &berserk;
+    return NULL;
+}
+
+static float M_DuckBoxScale(edict_t *self)
+{
+    return self->s.scale > 0 ? self->s.scale : 1.0f;
+}
+
+void M_UpdateDuckBox(edict_t *self)
+{
+    const duckbox_t *db;
+    float top, lo, hi;
+
+    if (!g_duck_hitbox || !g_duck_hitbox->integer)
+        return;
+    if (!(self->monsterinfo.aiflags & AI_DUCKED) || self->health <= 0)
+        return;
+    db = M_DuckBoxFor(self);
+    if (!db || self->s.frame < 0 || self->s.frame >= db->num_frames)
+        return;
+
+    top = db->tops[self->s.frame] * M_DuckBoxScale(self);
+    lo = self->mins[2] + 1;
+    hi = M_BaseHeight(self);
+    if (top < lo)
+        top = lo;
+    if (top > hi)
+        top = hi;
+
+    if (self->maxs[2] != top) {
+        self->maxs[2] = top;
+        gi.linkentity(self);
+    }
+}
+
+// Where the top of the box will be at the bottom of a crouch, in world z, for
+// M_MonsterDodge's "can I duck under this shot" test. False when the box is
+// not animation-driven for this monster, so the caller keeps id's -32.
+bool M_DuckCrouchTop(edict_t *self, float *top)
+{
+    const duckbox_t *db;
+
+    if (!g_duck_hitbox || !g_duck_hitbox->integer)
+        return false;
+    db = M_DuckBoxFor(self);
+    if (!db || db->crouch >= 127)
+        return false;
+    *top = self->s.origin[2] + db->crouch * M_DuckBoxScale(self);
+    return true;
+}
+
 void monster_duck_hold(edict_t *self)
 {
     if (level.framenum >= self->monsterinfo.duck_wait_framenum)
@@ -1411,7 +1747,9 @@ void M_MonsterDodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bo
     // s.origin + maxs + 1. A shot arriving BELOW this can be ducked under; one
     // above it has to be stepped around.
     if (ducker && tr) {
-        height = self->absmax[2] - 32 - 1;
+        // with g_duck_hitbox the crouch is the model's, not a flat 32
+        if (!M_DuckCrouchTop(self, &height))
+            height = self->absmax[2] - 32 - 1;
 
         // nothing to duck under, and no sidestep available
         if (!dodger && (tr->endpos[2] <= height || (self->monsterinfo.aiflags & AI_DUCKED)))
@@ -1556,7 +1894,13 @@ static edict_t *M_DropHealthItem(edict_t *self, const char *classname)
 void monster_death_use(edict_t *self)
 {
     self->flags &= ~(FL_FLY | FL_SWIM);
-    self->monsterinfo.aiflags &= AI_GOOD_GUY;
+    // [rerelease] keeps the flags a corpse still needs: DOUBLE_TROUBLE holds
+    // the boss bar, and the SPAWNED bits decide who gets the slot back when
+    // the body is gibbed (Killed)
+    if (M_RereleaseGame())
+        self->monsterinfo.aiflags &= (AI_DOUBLE_TROUBLE | AI_GOOD_GUY | AI_SPAWNED_MASK);
+    else
+        self->monsterinfo.aiflags &= AI_GOOD_GUY;
 
     // health drop - see M_DropHealthItem and monster_start
     if (!self->item && self->map) {
@@ -1605,8 +1949,8 @@ void monster_death_use(edict_t *self)
 M_FireHealthTarget
 
 [rerelease] A monster with a "healthtarget" fires it every time it is hurt.
-id does this in M_ProcessPain, right after the pain callback; this tree calls
-pain straight out of T_Damage, so this is called from there instead.
+id does this in M_ProcessPain, right after the pain callback - so does this tree
+in the rerelease game; the classic T_Damage calls it straight after pain.
 =================
 */
 void M_FireHealthTarget(edict_t *self)
@@ -1622,6 +1966,183 @@ void M_FireHealthTarget(edict_t *self)
     self->target = saved;
 }
 
+
+/*
+=================
+M_ShouldReactToPain
+
+[rerelease] Whether a pain callback should play a pain ANIMATION: not while
+ducked or running for a combat point, and on nightmare not at all unless it was
+the chainfist. The callback itself always runs (and plays its sound); this is
+what it asks before changing animation. Pain callbacks get the means of death
+through the meansOfDeath global, which M_ProcessPain restores for them.
+=================
+*/
+bool M_ShouldReactToPain(edict_t *self, int mod)
+{
+    if (self->monsterinfo.aiflags & (AI_DUCKED | AI_COMBAT_POINT))
+        return false;
+
+    return (mod & ~MOD_FRIENDLY_FIRE) == MOD_CHAINFIST || skill->value < 3;
+}
+
+/*
+=================
+M_ProcessPain
+
+[rerelease] T_Damage does not call a living monster's pain() in the rerelease
+game; it adds the hit to monsterinfo.damage_* and this runs pain() ONCE with
+the frame's total - a shotgun blast is one pain, not twelve. id runs it for
+every monster at the end of each server frame (G_RunFrame) and from
+monster_think; so does this tree. The damage is cleared before pain() runs,
+so whichever call comes second finds nothing to do. Deaths are not deferred: Killed() still
+runs from T_Damage, so a corpse that no longer thinks can still be gibbed.
+=================
+*/
+void M_ProcessPain(edict_t *e)
+{
+    edict_t *attacker;
+    int     blood, knockback, saved_mod;
+
+    if (!e->monsterinfo.damage_blood) {
+        e->monsterinfo.damage_knockback = 0;
+        e->monsterinfo.damage_attacker = NULL;
+        return;
+    }
+
+    blood = e->monsterinfo.damage_blood;
+    knockback = e->monsterinfo.damage_knockback;
+    attacker = e->monsterinfo.damage_attacker;
+
+    e->monsterinfo.damage_blood = 0;
+    e->monsterinfo.damage_knockback = 0;
+    e->monsterinfo.damage_attacker = NULL;
+
+    // died since: Killed() has dealt with it
+    if (e->health <= 0 || e->deadflag)
+        return;
+
+    // the attacker had the rest of a frame to go away
+    if (!attacker || !attacker->inuse)
+        attacker = world;
+
+    if (e->pain) {
+        saved_mod = meansOfDeath;
+        meansOfDeath = e->monsterinfo.damage_mod;
+        e->pain(e, attacker, (float)knockback, blood);
+        meansOfDeath = saved_mod;
+    }
+
+    if (!e->inuse)
+        return;
+
+    // [Paril-KEX] fire health target
+    M_FireHealthTarget(e);
+}
+
+/*
+=================
+M_AdjustBlindfireTarget
+
+[rerelease] (m_tank.cpp) Aim a blind shot at `target`. Blindfire has its own
+fail test: the shot is good unless the line starts in solid or is blocked
+within its first half. Failing that, try 20 units to the left and then to the
+right. `out_dir` is the normalised direction.
+=================
+*/
+bool M_AdjustBlindfireTarget(edict_t *self, const vec3_t start, const vec3_t target,
+                             const vec3_t right, vec3_t out_dir)
+{
+    static const float  shifts[3] = { 0.0f, -20.0f, 20.0f };
+    vec3_t  end;
+    trace_t tr;
+    int     i;
+
+    for (i = 0; i < 3; i++) {
+        VectorMA(target, shifts[i], right, end);
+        tr = gi.trace(start, NULL, NULL, end, self, MASK_PROJECTILE);
+
+        if (tr.startsolid || tr.allsolid || tr.fraction < 0.5f)
+            continue;
+
+        VectorSubtract(end, start, out_dir);
+        VectorNormalize(out_dir);
+        return true;
+    }
+
+    return false;
+}
+
+/*
+=================
+G_Monster_ScaleCoopHealth / G_Monster_CheckCoopHealthScaling
+
+[Paril-KEX] Give a monster extra health for every coop player beyond the first
+that has been in the level, g_coop_health_scaling (0..1, default 0 - off) of its
+base health each. The rerelease bumps level.coop_scale_players from ClientBegin;
+here it is the most players seen in the level at once, recounted at most once a
+frame, which comes to the same thing since neither ever goes down.
+=================
+*/
+void G_Monster_ScaleCoopHealth(edict_t *self)
+{
+    static cvar_t   *g_coop_health_scaling;
+    float           scaling;
+    int             delta, additional_health;
+
+    if (!g_coop_health_scaling)
+        g_coop_health_scaling = gi.cvar("g_coop_health_scaling", "0", CVAR_LATCH);
+
+    // already scaled
+    if (self->monsterinfo.health_scaling >= level.coop_scale_players)
+        return;
+
+    // this is just to fix monsters that change health after spawning...
+    // looking at you, soldiers
+    if (!self->monsterinfo.base_health)
+        self->monsterinfo.base_health = self->max_health;
+
+    scaling = g_coop_health_scaling->value;
+    if (scaling < 0)
+        scaling = 0;
+    else if (scaling > 1)
+        scaling = 1;
+
+    delta = level.coop_scale_players - self->monsterinfo.health_scaling;
+    additional_health = delta * (int)(self->monsterinfo.base_health * scaling);
+
+    self->health = max(1, self->health + additional_health);
+    self->max_health += additional_health;
+
+    self->monsterinfo.health_scaling = level.coop_scale_players;
+}
+
+void G_Monster_CheckCoopHealthScaling(void)
+{
+    static int  last_framenum = -1;
+    int         i, count = 0;
+
+    if (last_framenum == level.framenum)
+        return;
+    last_framenum = level.framenum;
+
+    for (i = 1; i <= game.maxclients; i++) {
+        if (g_edicts[i].inuse && g_edicts[i].client)
+            count++;
+    }
+
+    if (count <= level.coop_scale_players)
+        return;
+
+    level.coop_scale_players = count;
+
+    for (i = game.maxclients + 1; i < globals.num_edicts; i++) {
+        edict_t *e = &g_edicts[i];
+
+        if (e->inuse && (e->svflags & SVF_MONSTER) && e->health > 0)
+            G_Monster_ScaleCoopHealth(e);
+    }
+}
 
 //============================================================================
 
@@ -1689,6 +2210,8 @@ bool monster_start(edict_t *self)
     self->s.skinnum = 0;
     self->deadflag = DEAD_NO;
     self->svflags &= ~SVF_DEADMONSTER;
+    // [rerelease] a medic-revived monster takes knockback again
+    self->flags &= ~FL_ALIVE_KNOCKBACK_ONLY;
 
     if (!self->monsterinfo.checkattack)
         self->monsterinfo.checkattack = M_CheckAttack;
@@ -1772,6 +2295,28 @@ bool monster_start(edict_t *self)
     // something to restore. Captured here, after the spawn function has set
     // mins/maxs and before anything can duck.
     self->monsterinfo.base_height = self->maxs[2];
+
+    if (M_RereleaseGame()) {
+        // Paril: monsters' old default viewheight (25) is all messed up for
+        // certain monsters. Calculate from maxs to make a bit more sense.
+        // (The walk/fly/swim start_go no longer force 25/10 in the rerelease
+        // game, and this is after the scale above, so it scales with them.)
+        if (!self->viewheight)
+            self->viewheight = (int)(self->maxs[2] - 8.f);
+
+        // PMM - clear these
+        self->monsterinfo.quad_framenum = 0;
+        self->monsterinfo.double_framenum = 0;
+        self->monsterinfo.invincible_framenum = 0;
+
+        // set base health & set base scaling to 1 player
+        self->monsterinfo.base_health = self->health;
+        self->monsterinfo.health_scaling = 1;
+
+        // [Paril-KEX] co-op health scale
+        if (coop->value)
+            G_Monster_ScaleCoopHealth(self);
+    }
 
     // the power armor key bits belong to the entity being parsed; drop them so
     // a monster summoned later (CreateMonster reuses the stale `st`) takes its
@@ -1860,21 +2405,109 @@ static void M_SpawnDead(edict_t *self)
     self->monsterinfo.aiflags &= ~AI_SPAWNED_DEAD;
 }
 
+/*
+=================
+M_StartGoUnstick
+
+[rerelease] monster_start_go's stuck-in-solid recovery: walking monsters always
+drop to the floor here, and a monster that is in solid (or, walking, cannot
+take a zero-length step) is moved to the nearest free spot by G_FixStuckObject,
+then failing that nudged up to 8 units each way. Good guys, flyers and swimmers
+are only tested, not dropped.
+=================
+*/
+static bool M_DropToFloorOK(edict_t *self)
+{
+    vec3_t  end;
+    trace_t tr;
+
+    M_droptofloor(self);
+
+    // what the rerelease's bool M_droptofloor reports: did it find a floor
+    // (or, NO_DROP, is it at least not in solid)
+    if (self->spawnflags & SPAWNFLAG_MONSTER_NO_DROP)
+        return !gi.trace(self->s.origin, self->mins, self->maxs, self->s.origin, self, MASK_MONSTERSOLID).startsolid;
+
+    VectorCopy(self->s.origin, end);
+    end[2] += (self->gravityVector[2] > 0) ? 1 : -1;
+    tr = gi.trace(self->s.origin, self->mins, self->maxs, end, self, MASK_MONSTERSOLID);
+    return !tr.allsolid && tr.fraction < 1.0f;
+}
+
+static void M_StartGoUnstick(edict_t *self)
+{
+    static const int adjust[] = { 0, -1, 1, -2, 2, -4, 4, -8, 8 };
+    vec3_t  check, fixed;
+    bool    is_stuck;
+    bool    tested_only = (self->monsterinfo.aiflags & AI_GOOD_GUY) || (self->flags & (FL_FLY | FL_SWIM));
+    int     x, y, z;
+
+    VectorCopy(self->s.origin, check);
+
+    if (tested_only)
+        is_stuck = gi.trace(self->s.origin, self->mins, self->maxs, self->s.origin, self, MASK_MONSTERSOLID).startsolid;
+    else
+        is_stuck = !M_DropToFloorOK(self) || !M_walkmove(self, 0, 0);
+
+    if (is_stuck) {
+        VectorCopy(check, fixed);
+        if (G_FixStuckObject(self, fixed, MASK_MONSTERSOLID) != STUCK_NO_GOOD_POSITION) {
+            VectorCopy(fixed, self->s.origin);
+            gi.linkentity(self);
+            if (!(self->flags & (FL_FLY | FL_SWIM)) && !(self->monsterinfo.aiflags & AI_GOOD_GUY))
+                M_droptofloor(self);
+            is_stuck = false;
+        }
+    }
+
+    // last ditch effort: brute force. Paril: try nudging them out. this fixes
+    // monsters stuck in very shallow slopes.
+    for (y = 0; is_stuck && y < 3; y++) {
+        for (x = 0; is_stuck && x < 3; x++) {
+            for (z = 0; is_stuck && z < 3; z++) {
+                self->s.origin[0] = check[0] + adjust[x];
+                self->s.origin[1] = check[1] + adjust[y];
+                self->s.origin[2] = check[2] + adjust[z];
+                gi.linkentity(self);
+
+                if (self->monsterinfo.aiflags & AI_GOOD_GUY) {
+                    is_stuck = gi.trace(self->s.origin, self->mins, self->maxs, self->s.origin, self, MASK_MONSTERSOLID).startsolid;
+                } else if (!(self->flags & (FL_FLY | FL_SWIM))) {
+                    M_droptofloor(self);
+                    is_stuck = !M_walkmove(self, 0, 0);
+                }
+            }
+        }
+    }
+
+    if (is_stuck)
+        gi.dprintf("WARNING: %s stuck in solid at %s\n", self->classname, vtos(self->s.origin));
+}
+
 void monster_start_go(edict_t *self)
 {
     vec3_t  v;
     bool    spawn_dead;
 
+    // [rerelease] unstick and drop - not for a trigger-spawned monster still
+    // waiting at its map position (that runs when it is spawned), nor a
+    // FL_STATIONARY one
+    if (M_RereleaseGame() && !(self->flags & FL_STATIONARY) &&
+        (!(self->spawnflags & 2) || m_triggered_spawning))
+        M_StartGoUnstick(self);
+
     if (self->health <= 0)
         return;
 
     // [rerelease] a SCALED monster's eyes are not 25 units off the floor. The
-    // callers above have just set the classic fixed viewheight, so scale it
-    // here, where every start path passes. Left alone at 1x, because the
-    // rerelease's wider change (viewheight = maxs[2] - 8 for everything) would
-    // move every monster's sight line in the classic game too.
-    if (self->s.scale > 0.f && self->s.scale != 1.f)
+    // classic callers above have just set the fixed viewheight, so scale it
+    // here, where every start path passes. In the rerelease game viewheight
+    // comes from the (already scaled) maxs in monster_start instead.
+    if (!M_RereleaseGame() && self->s.scale > 0.f && self->s.scale != 1.f)
         self->viewheight = (int)(self->viewheight * self->s.scale);
+
+    if (M_RereleaseGame())
+        VectorCopy(self->s.origin, self->s.old_origin);
 
     // check for target to combat_point and change to combattarget
     if (self->target) {
@@ -1957,17 +2590,22 @@ void monster_start_go(edict_t *self)
 
 void walkmonster_start_go(edict_t *self)
 {
-    if (!(self->spawnflags & 2) && level.time < 1) {
-        M_droptofloor(self);
+    // [rerelease] monster_start_go drops and unsticks every walking monster;
+    // viewheight came from maxs in monster_start
+    if (!M_RereleaseGame()) {
+        if (!(self->spawnflags & 2) && level.time < 1) {
+            M_droptofloor(self);
 
-        if (self->groundentity)
-            if (!M_walkmove(self, 0, 0))
-                gi.dprintf("%s in solid at %s\n", self->classname, vtos(self->s.origin));
+            if (self->groundentity)
+                if (!M_walkmove(self, 0, 0))
+                    gi.dprintf("%s in solid at %s\n", self->classname, vtos(self->s.origin));
+        }
     }
 
     if (!self->yaw_speed)
         self->yaw_speed = 20;
-    self->viewheight = 25;
+    if (!M_RereleaseGame())
+        self->viewheight = 25;
 
     monster_start_go(self);
 
@@ -1984,12 +2622,19 @@ void walkmonster_start(edict_t *self)
 
 void flymonster_start_go(edict_t *self)
 {
-    if (!M_walkmove(self, 0, 0))
-        gi.dprintf("%s in solid at %s\n", self->classname, vtos(self->s.origin));
+    // [rerelease] flyers turn at 30, the stuck test is monster_start_go's, and
+    // viewheight came from maxs in monster_start
+    if (M_RereleaseGame()) {
+        if (!self->yaw_speed)
+            self->yaw_speed = 30;
+    } else {
+        if (!M_walkmove(self, 0, 0))
+            gi.dprintf("%s in solid at %s\n", self->classname, vtos(self->s.origin));
 
-    if (!self->yaw_speed)
-        self->yaw_speed = 10;
-    self->viewheight = 25;
+        if (!self->yaw_speed)
+            self->yaw_speed = 10;
+        self->viewheight = 25;
+    }
 
     monster_start_go(self);
 
@@ -2008,9 +2653,15 @@ void flymonster_start(edict_t *self)
 
 void swimmonster_start_go(edict_t *self)
 {
-    if (!self->yaw_speed)
-        self->yaw_speed = 10;
-    self->viewheight = 10;
+    // [rerelease] swimmers turn at 30; viewheight came from maxs in monster_start
+    if (M_RereleaseGame()) {
+        if (!self->yaw_speed)
+            self->yaw_speed = 30;
+    } else {
+        if (!self->yaw_speed)
+            self->yaw_speed = 10;
+        self->viewheight = 10;
+    }
 
     monster_start_go(self);
 

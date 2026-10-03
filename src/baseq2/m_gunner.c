@@ -292,9 +292,21 @@ mframe_t gunner_frames_pain1 [] = {
 };
 mmove_t gunner_move_pain1 = {FRAME_pain101, FRAME_pain118, gunner_frames_pain1, gunner_run};
 
+extern mmove_t gunner_move_jump;
+extern mmove_t gunner_move_jump2;
+
 void gunner_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     M_SetDamageSkin(self);
+
+    // [rerelease] pain ends any sidestep, and never interrupts a jump
+    if (M_RereleaseGame()) {
+        monster_done_dodge(self);
+
+        if (self->monsterinfo.currentmove == &gunner_move_jump ||
+            self->monsterinfo.currentmove == &gunner_move_jump2)
+            return;
+    }
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
@@ -306,7 +318,7 @@ void gunner_pain(edict_t *self, edict_t *other, float kick, int damage)
     else
         gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
 
-    if (skill->value == 3)
+    if (M_RereleaseGame() ? !M_ShouldReactToPain(self, meansOfDeath) : skill->value == 3)
         return;     // no pain anims in nightmare
 
     if (damage <= 10)
@@ -319,6 +331,10 @@ void gunner_pain(edict_t *self, edict_t *other, float kick, int damage)
     // [rerelease] being hit ends a blind volley - it also means the gunner now
     // has a much better idea where you are than the remembered position
     self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+
+    // [rerelease] PMM - clear duck flag
+    if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_DUCKED))
+        monster_duck_up(self);
 }
 
 void gunner_dead(edict_t *self)
@@ -646,18 +662,27 @@ void GunnerFire(edict_t *self)
     vec3_t  aim;
     int     flash_number;
 
+    // [rerelease] PGM - nothing to shoot at (the classic code crashed here)
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
     flash_number = MZ2_GUNNER_MACHINEGUN_1 + (self->s.frame - FRAME_attak216);
 
     AngleVectors(self->s.angles, forward, right, NULL);
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
-    // project enemy back a bit and target there
-    VectorCopy(self->enemy->s.origin, target);
-    VectorMA(target, -0.2f, self->enemy->velocity, target);
-    target[2] += self->enemy->viewheight;
+    if (M_RereleaseGame()) {
+        // [rerelease] leads 0.2 s ahead at eye height
+        PredictAimEx(self, self->enemy, start, 0, true, -0.2f, aim, NULL);
+    } else {
+        // project enemy back a bit and target there
+        VectorCopy(self->enemy->s.origin, target);
+        VectorMA(target, -0.2f, self->enemy->velocity, target);
+        target[2] += self->enemy->viewheight;
 
-    VectorSubtract(target, start, aim);
-    VectorNormalize(aim);
+        VectorSubtract(target, start, aim);
+        VectorNormalize(aim);
+    }
     monster_fire_bullet(self, start, aim, 3, 4, DEFAULT_BULLET_HSPREAD, DEFAULT_BULLET_VSPREAD, flash_number);
 }
 
@@ -684,11 +709,17 @@ void gunner_blind_check(edict_t *self)
 void GunnerGrenade(edict_t *self)
 {
     vec3_t  start;
-    vec3_t  forward, right;
-    vec3_t  aim;
+    vec3_t  forward, right, up;
+    vec3_t  aim, target;
     int     flash_number;
     float   spread;
+    float   pitch = 0;
+    float   dist;
     bool    blindfire = (self->monsterinfo.aiflags & AI_MANUAL_STEERING) != 0;
+
+    // [rerelease] PGM - no enemy, no grenade
+    if (M_RereleaseGame() && (!self->enemy || !self->enemy->inuse))
+        return;
 
     // attak105/108/111/114 are the classic throw; attak309/312/315/318 are the
     // same four shots in the rerelease's second, front-on throwing animation
@@ -713,30 +744,54 @@ void GunnerGrenade(edict_t *self)
     if (self->s.frame >= FRAME_attak301 && self->s.frame <= FRAME_attak324)
         flash_number = MZ2_GUNNER_GRENADE2_1 + (MZ2_GUNNER_GRENADE_4 - flash_number);
 
-    AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
+    if (!M_RereleaseGame()) {
+        // classic: straight ahead ("FIXME: do a spread ... around forward"
+        // was never implemented)
+        AngleVectors(self->s.angles, forward, right, NULL);
+        G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
+        monster_fire_grenade(self, start, forward, 50, 600, flash_number);
+        return;
+    }
 
-    VectorCopy(forward, aim);
-
-    // [rerelease] a blind volley lobs at the remembered position rather than
-    // straight ahead - the yaw is already there via gunner_blind_check, but the
-    // pitch has to come from the target or every blind grenade flies level
+    // [rerelease] a blind volley lobs at the remembered position, as long as
+    // the enemy is still out of sight
     if (blindfire && !visible(self, self->enemy)) {
-        vec3_t  blind_aim;
-
         if (VectorEmpty(self->monsterinfo.blind_fire_target))
             return;
 
-        VectorSubtract(self->monsterinfo.blind_fire_target, start, blind_aim);
-        if (VectorNormalize(blind_aim) > 0.0f)
-            VectorCopy(blind_aim, aim);
+        VectorCopy(self->monsterinfo.blind_fire_target, target);
+    } else {
+        VectorCopy(self->enemy->s.origin, target);
     }
-    // the classic code never implemented the fan its own comment asked for
-    // ("FIXME: do a spread ... around forward"); the rerelease does
-    if (M_RereleaseGame())
-        VectorMA(aim, spread, right, aim);
 
-    monster_fire_grenade(self, start, aim, 50, 600, flash_number);
+    AngleVectors(self->s.angles, forward, right, up);
+    M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+
+    VectorSubtract(target, self->s.origin, aim);
+    dist = VectorLength(aim);
+
+    // aim up if they're on the same level as me and far away
+    if (dist > 512 && aim[2] < 64 && aim[2] > -64)
+        aim[2] += (dist - 512);
+
+    VectorNormalize(aim);
+    pitch = aim[2];
+    if (pitch > 0.4f)
+        pitch = 0.4f;
+    else if (pitch < -0.5f)
+        pitch = -0.5f;
+
+    // the fan around forward, tilted by the clamped pitch (deliberately left
+    // unnormalised, as id's is - the tilt throws a little harder)
+    VectorMA(forward, spread, right, aim);
+    VectorMA(aim, pitch, up, aim);
+
+    // try search for best pitch
+    if (M_CalculatePitchToFire(self, target, start, aim, 600, 2.5f, false, false))
+        monster_fire_grenade_ex(self, start, aim, 50, 600, flash_number, crandom() * 10.0f, random() * 10.0f);
+    else
+        // normal shot
+        monster_fire_grenade_ex(self, start, aim, 50, 600, flash_number, crandom() * 10.0f, 200.0f + crandom() * 10.0f);
 }
 
 mframe_t gunner_frames_attack_chain [] = {
@@ -835,8 +890,55 @@ mframe_t gunner_frames_attack_grenade2 [] = {
 };
 mmove_t gunner_move_attack_grenade2 = {FRAME_attak305, FRAME_attak324, gunner_frames_attack_grenade2, gunner_run};
 
+/*
+=================
+gunner_grenade_check
+
+[rerelease] Only throw when there is a clear line from the launcher, the target
+is at least 100 units from the muzzle, and some arc actually lands there.
+=================
+*/
+static bool gunner_grenade_check(edict_t *self)
+{
+    vec3_t  start, target, dir, aim;
+
+    if (!self->enemy)
+        return false;
+
+    if (!M_CheckClearShot(self, monster_flash_offset[MZ2_GUNNER_GRENADE_1], start))
+        return false;
+
+    // check for flag telling us that we're blindfiring
+    if (self->monsterinfo.aiflags & AI_MANUAL_STEERING)
+        VectorCopy(self->monsterinfo.blind_fire_target, target);
+    else
+        VectorCopy(self->enemy->s.origin, target);
+
+    // see if we're too close (muzzle to target point, not a range check)
+    VectorSubtract(target, start, dir);
+
+    if (VectorLength(dir) < 100)
+        return false;
+
+    // check to see that we can trace to the player before we start
+    // tossing grenades around.
+    VectorCopy(dir, aim);
+    VectorNormalize(aim);
+    return M_CalculatePitchToFire(self, target, start, aim, 600, 2.5f, false, false);
+}
+
+// [rerelease] id's RANGE_NEAR * 0.35: inside this the gunner always uses the
+// chaingun if it has a clear shot. id measures it box gap to box gap (range_to);
+// realrange() is origin to origin at the moment.
+#define GUNNER_RANGE_CHAINGUN   (440.0f * 0.35f)
+
 void gunner_attack(edict_t *self)
 {
+    vec3_t  shot_start;
+
+    if (M_RereleaseGame())
+        monster_done_dodge(self);
+
     // [rerelease] Blind fire: M_CheckAttack put us in AS_BLIND because the
     // enemy is out of sight but recently seen.  The chance ladder falls off
     // with the accumulated delay, so the first blind shot after losing someone
@@ -867,13 +969,42 @@ void gunner_attack(edict_t *self)
         // doubles as the "this volley is blind" signal to GunnerGrenade
         self->monsterinfo.aiflags |= AI_MANUAL_STEERING;
 
-        if (M_RereleaseAnims() && random() < 0.5f)
-            self->monsterinfo.currentmove = &gunner_move_attack_grenade2;
-        else
-            self->monsterinfo.currentmove = &gunner_move_attack_grenade;
+        if (gunner_grenade_check(self)) {
+            // if the check passes, go for the attack
+            if (M_RereleaseAnims() && random() < 0.5f)
+                self->monsterinfo.currentmove = &gunner_move_attack_grenade2;
+            else
+                self->monsterinfo.currentmove = &gunner_move_attack_grenade;
 
-        self->monsterinfo.attack_finished = level.framenum + 2.0f * random() * BASE_FRAMERATE;
+            self->monsterinfo.attack_finished = level.framenum + 2.0f * random() * BASE_FRAMERATE;
+        } else {
+            // turn off blindfire flag
+            self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+        }
+
         self->timestamp = level.framenum + (2.0f + random()) * BASE_FRAMERATE;
+        return;
+    }
+
+    // [rerelease] chaingun while the 2-3 s grenade cooldown in ->timestamp
+    // runs, or when close with a clear shot; otherwise a 50% grenade volley if
+    // one can land, else the chaingun if it has a clear shot - and nothing at
+    // all if neither does. (id's PGM tesla `bad_area` case has no counterpart
+    // in this tree.)
+    if (M_RereleaseGame()) {
+        if (self->timestamp > level.framenum ||
+            (realrange(self, self->enemy) <= GUNNER_RANGE_CHAINGUN &&
+             M_CheckClearShot(self, monster_flash_offset[MZ2_GUNNER_MACHINEGUN_1], shot_start))) {
+            self->monsterinfo.currentmove = &gunner_move_attack_chain;
+        } else if (self->timestamp <= level.framenum && random() <= 0.5f && gunner_grenade_check(self)) {
+            if (M_RereleaseAnims() && random() < 0.5f)
+                self->monsterinfo.currentmove = &gunner_move_attack_grenade2;
+            else
+                self->monsterinfo.currentmove = &gunner_move_attack_grenade;
+            self->timestamp = level.framenum + (2.0f + random()) * BASE_FRAMERATE;
+        } else if (M_CheckClearShot(self, monster_flash_offset[MZ2_GUNNER_MACHINEGUN_1], shot_start)) {
+            self->monsterinfo.currentmove = &gunner_move_attack_chain;
+        }
         return;
     }
 
@@ -920,7 +1051,6 @@ of step directions.  It jumps down off ledges and up onto them, and rides
 func_plats.  All of this runs on the APPENDED jump frames, so blocked_checkjump
 refuses unless M_RereleaseAnims() is on.
 
-Dropped vs the rerelease: monster_done_dodge (no AI_DODGING flag in this tree).
 =================
 */
 #define SPAWNFLAG_GUNNER_NOJUMPING   8
@@ -987,6 +1117,8 @@ void gunner_jump(edict_t *self, blocked_jump_result_t result)
 {
     if (!self->enemy)
         return;
+
+    monster_done_dodge(self);
 
     if (result == JUMP_JUMP_UP)
         self->monsterinfo.currentmove = &gunner_move_jump2;

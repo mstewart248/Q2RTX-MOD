@@ -927,6 +927,8 @@ void V_AddParticle(particle_t *p);
 // clip_bbox_entities adds the axial boxes of monsters, corpses and the like -
 // see CL_TracePoint for why anything that DRAWS its hit point wants them out.
 trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, bool clip_bbox_entities);
+// Contents at a point, world AND brush entities - a func_water is the latter.
+int CL_PointContents(const vec3_t point);
 // Which entity a CL_TracePoint result hit, or NULL for the world.
 centity_t *CL_TraceHitEntity(const trace_t *tr);
 blood_sphere_t *V_AddBloodSphere(void);

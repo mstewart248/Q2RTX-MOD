@@ -103,7 +103,10 @@ medic is standing on top of rather than resurrecting it inside itself.
 void cleanupHealTarget(edict_t *ent)
 {
     ent->monsterinfo.healer = NULL;
-    ent->takedamage = DAMAGE_YES;
+    // id's abortHeal also runs this on the medic's PLAYER enemy, where its
+    // takedamage = true is a no-op; here it would demote DAMAGE_AIM
+    if (!ent->client)
+        ent->takedamage = DAMAGE_YES;
     ent->monsterinfo.aiflags &= ~AI_RESURRECTING;
     M_SetEffects(ent);
 }
@@ -173,6 +176,10 @@ edict_t *medic_FindDeadMonster(edict_t *self)
     edict_t *best = NULL;
     float   radius = 1024;
 
+    // [rerelease] no corpse hunting while it is busy reacting to being hit
+    if (M_RereleaseGame() && self->monsterinfo.react_to_damage_framenum > level.framenum)
+        return NULL;
+
     // [rerelease] a medic holding its ground only looks as far as its cable
     // actually reaches, instead of walking off a ledge after a distant corpse
     if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_STAND_GROUND))
@@ -205,6 +212,9 @@ edict_t *medic_FindDeadMonster(edict_t *self)
         if (ent->nextthink)
             continue;
         if (!visible(self, ent))
+            continue;
+        // [rerelease] stop it from trying to heal player_noise entities
+        if (M_RereleaseGame() && ent->classname && !strncmp(ent->classname, "player", 6))
             continue;
         // [rerelease] don't resurrect someone right on top of us - the revived
         // monster would spawn inside the medic
@@ -408,6 +418,8 @@ mmove_t medic_move_run = {FRAME_run1, FRAME_run6, medic_frames_run, NULL};
 
 void medic_run(edict_t *self)
 {
+    monster_done_dodge(self);
+
     if (!(self->monsterinfo.aiflags & AI_MEDIC)) {
         edict_t *ent;
 
@@ -488,6 +500,7 @@ mframe_t medic_frames_pain2_rr [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
@@ -495,8 +508,7 @@ mframe_t medic_frames_pain2_rr [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
-    { ai_move, 0, NULL }
+    { ai_move, 0, monster_footstep }
 };
 mmove_t medic_move_pain2_rr = {FRAME_painb2, FRAME_painb13, medic_frames_pain2_rr, medic_run};
 
@@ -506,25 +518,73 @@ void medic_pain(edict_t *self, edict_t *other, float kick, int damage)
     // commander. M_SetDamageSkin also clears it again on a heal.
     M_SetDamageSkin(self);
 
+    if (M_RereleaseGame())
+        monster_done_dodge(self);
+
     if (level.framenum < self->pain_debounce_framenum)
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 
+    if (M_RereleaseGame()) {
+        float   r = random();
+        float   big_chance;
+
+        if (MEDIC_IS_COMMANDER(self)) {
+            // the commander shrugs off anything under 35 with just a grunt -
+            // except the chainfist
+            if (damage < 35) {
+                gi.sound(self, CHAN_VOICE, commander_sound_pain1, 1, ATTN_NORM, 0);
+                if (meansOfDeath != MOD_CHAINFIST)
+                    return;
+            }
+            gi.sound(self, CHAN_VOICE, commander_sound_pain2, 1, ATTN_NORM, 0);
+        } else if (r < 0.5f) {
+            gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
+        } else {
+            gi.sound(self, CHAN_VOICE, sound_pain2, 1, ATTN_NORM, 0);
+        }
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        // a medic working the cable ignores pain
+        if (meansOfDeath != MOD_CHAINFIST && (self->monsterinfo.aiflags & AI_MEDIC))
+            return;
+
+        if (MEDIC_IS_COMMANDER(self)) {
+            self->monsterinfo.aiflags &= ~(AI_MANUAL_STEERING | AI_HOLD_FRAME);
+
+            // no more than a 50% chance of the long flinch
+            big_chance = damage * 0.005f;
+            if (big_chance > 0.5f)
+                big_chance = 0.5f;
+
+            if (r < big_chance)
+                self->monsterinfo.currentmove = &medic_move_pain2_rr;
+            else
+                self->monsterinfo.currentmove = &medic_move_pain1_rr;
+        } else if (r < 0.5f) {
+            self->monsterinfo.currentmove = &medic_move_pain1_rr;
+        } else {
+            self->monsterinfo.currentmove = &medic_move_pain2_rr;
+        }
+
+        if (self->monsterinfo.aiflags & AI_DUCKED)
+            monster_duck_up(self);
+
+        abortHeal(self, false, false, false);
+        return;
+    }
+
     if (skill->value == 3)
         return;     // no pain anims in nightmare
 
     if (random() < 0.5f) {
-        if (M_RereleaseGame())
-            self->monsterinfo.currentmove = &medic_move_pain1_rr;
-        else
-            self->monsterinfo.currentmove = &medic_move_pain1;
+        self->monsterinfo.currentmove = &medic_move_pain1;
         gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_pain1 : sound_pain1, 1, ATTN_NORM, 0);
     } else {
-        if (M_RereleaseGame())
-            self->monsterinfo.currentmove = &medic_move_pain2_rr;
-        else
-            self->monsterinfo.currentmove = &medic_move_pain2;
+        self->monsterinfo.currentmove = &medic_move_pain2;
         gi.sound(self, CHAN_VOICE, MEDIC_IS_COMMANDER(self) ? commander_sound_pain2 : sound_pain2, 1, ATTN_NORM, 0);
     }
 }
@@ -537,6 +597,50 @@ void medic_fire_blaster(edict_t *self)
     vec3_t  dir;
     int     effect;
     int     flash;
+
+    // [rerelease] the two blaster shots (attack9/12) hit for 6, every bolt of
+    // the hyperblaster burst for 2, and only one burst frame in four draws the
+    // hyperblaster trail.  Same numbers for the medic and the commander; the
+    // commander's bolts are the green blaster2.
+    if (M_RereleaseGame()) {
+        int damage;
+
+        // paranoia checking
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        AngleVectors(self->s.angles, forward, right, NULL);
+
+        if ((self->s.frame == FRAME_attack9) || (self->s.frame == FRAME_attack12)) {
+            effect = EF_BLASTER;
+            damage = 6;
+            flash = MEDIC_IS_COMMANDER(self) ? MZ2_MEDIC_BLASTER_2 : MZ2_MEDIC_BLASTER_1;
+            M_ProjectFlashSource(self, monster_flash_offset[flash], forward, right, start);
+        } else {
+            // the barrel is turning, so the muzzle moves shot to shot
+            int i = self->s.frame - FRAME_attack19;
+
+            effect = (self->s.frame % 4) ? 0 : EF_HYPERBLASTER;
+            damage = 2;
+            flash = MZ2_MEDIC_HYPERBLASTER;
+            clamp(i, 0, MEDIC_HYPERBLASTER_SHOTS - 1);
+            M_ProjectFlashSource(self, medic_hyperblaster_offset[i], forward, right, start);
+        }
+
+        VectorCopy(self->enemy->s.origin, end);
+        end[2] += self->enemy->viewheight;
+        VectorSubtract(end, start, dir);
+        VectorNormalize(dir);
+
+        if (self->enemy->classname && !strcmp(self->enemy->classname, "tesla_mine"))
+            damage = 3;
+
+        if (MEDIC_IS_COMMANDER(self))
+            monster_fire_blaster2(self, start, dir, damage, 1000, flash, effect);
+        else
+            monster_fire_blaster(self, start, dir, damage, 1000, flash, effect);
+        return;
+    }
 
     if ((self->s.frame == FRAME_attack9) || (self->s.frame == FRAME_attack12))
 		if (self->monsterFireHyperBlaster && !MEDIC_IS_COMMANDER(self)) {
@@ -555,28 +659,10 @@ void medic_fire_blaster(edict_t *self)
     else
         effect = 0;
 
-    // [rerelease] The blaster and the hyperblaster come out of different
-    // muzzles - the arm sits about 9 units further back for the burst - and the
-    // burst is 12 of the medic's 14 shots, so firing it from the blaster offset
-    // puts the flash out in front of the model.  The two blaster shots are the
-    // ones on attack9 and attack12; everything else is the hyperblaster.
-    if (M_RereleaseGame() && self->s.frame != FRAME_attack9
-        && self->s.frame != FRAME_attack12)
-        flash = MZ2_MEDIC_HYPERBLASTER;
-    else
-        flash = MEDIC_IS_COMMANDER(self) ? MZ2_MEDIC_BLASTER_2 : MZ2_MEDIC_BLASTER_1;
+    flash = MEDIC_IS_COMMANDER(self) ? MZ2_MEDIC_BLASTER_2 : MZ2_MEDIC_BLASTER_1;
 
     AngleVectors(self->s.angles, forward, right, NULL);
-
-    if (flash == MZ2_MEDIC_HYPERBLASTER) {
-        // the barrel is turning, so the muzzle moves shot to shot
-        int i = self->s.frame - FRAME_attack19;
-
-        clamp(i, 0, MEDIC_HYPERBLASTER_SHOTS - 1);
-        G_ProjectSource(self->s.origin, medic_hyperblaster_offset[i], forward, right, start);
-    } else {
-        G_ProjectSource(self->s.origin, monster_flash_offset[flash], forward, right, start);
-    }
+    G_ProjectSource(self->s.origin, monster_flash_offset[flash], forward, right, start);
 
     VectorCopy(self->enemy->s.origin, end);
     end[2] += self->enemy->viewheight;
@@ -660,7 +746,7 @@ mframe_t medic_frames_death_rr [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, -18, NULL },
+    { ai_move, -18, monster_footstep },
     { ai_move, -10, medic_shrink },
     { ai_move, -6, NULL },
     { ai_move, 0, NULL },
@@ -673,7 +759,7 @@ mframe_t medic_frames_death_rr [] = {
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
-    { ai_move, 0, NULL },
+    { ai_move, 0, monster_footstep },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
     { ai_move, 0, NULL },
@@ -904,6 +990,7 @@ extern mmove_t medic_move_attackBlaster_rr;
 extern mmove_t medic_move_attackCable;
 extern mmove_t medic_move_attackHyperBlaster;
 extern mmove_t medic_move_attackHyperBlaster_rr;
+extern mmove_t medic_move_callReinforcements;
 
 /*
 =================
@@ -922,11 +1009,16 @@ static bool medic_is_attacking(edict_t *self)
         || move == &medic_move_attackHyperBlaster_rr
         || move == &medic_move_attackCable
         || move == &medic_move_attackBlaster
-        || move == &medic_move_attackBlaster_rr;
+        || move == &medic_move_attackBlaster_rr
+        || move == &medic_move_callReinforcements;
 }
 
 bool medic_duck(edict_t *self, float eta)
 {
+    // [rerelease] never duck out of a heal
+    if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_MEDIC))
+        return false;
+
     if (medic_is_attacking(self)) {
         // already shooting - stand back up rather than half-duck
         monster_duck_up(self);
@@ -1024,7 +1116,7 @@ mframe_t medic_frames_attackHyperBlaster_rr [] = {
     { ai_charge, 0,   NULL },
     { ai_charge, 0,   NULL },
     { ai_charge, 2,   NULL },
-    { ai_charge, 3,   NULL }
+    { ai_charge, 3,   monster_footstep }
 };
 mmove_t medic_move_attackHyperBlaster_rr = {FRAME_attack15, FRAME_attack34, medic_frames_attackHyperBlaster_rr, medic_run};
 
@@ -1083,7 +1175,7 @@ mframe_t medic_frames_attackBlaster_rr [] = {
     { ai_charge, 3,   NULL },
     { ai_charge, 2,   NULL },
     { ai_charge, 0,   medic_quick_attack },
-    { ai_charge, 0,   NULL },
+    { ai_charge, 0,   monster_footstep },
     { ai_charge, 0,   NULL },
     { ai_charge, 0,   medic_fire_blaster },
     { ai_charge, 0,   NULL },
@@ -1115,6 +1207,190 @@ static vec3_t   medic_cable_offsets[] = {
     { 32.7, -19.7, 10.4 }
 };
 
+/*
+=================
+medic_cable_attack_rr
+
+[rerelease] id's cable, ported as written.  Compared with the original:
+
+- no 256-unit range or 45-degree pitch limit (medic_checkattack already keeps
+  the medic within MEDIC_MAX_HEAL_DISTANCE), and the line test is MASK_SOLID,
+  so another monster standing in the way does not stop the heal;
+- it gives up properly - a gibbed or revived patient, a blocked line, or a
+  patient too close to resurrect all go through abortHeal rather than a bare
+  return that plays the whole animation for nothing;
+- the patient cannot be shot while the cable is on it;
+- before reviving, the patient's standing box must be clear, or it is gibbed;
+- the revived monster ignores friendly fire, is not a fresh kill, and is
+  pointed at the medic's enemy.
+=================
+*/
+static void medic_cable_attack_rr(edict_t *self)
+{
+    vec3_t  start, end, f, r, dir, maxs;
+    trace_t tr;
+    float   distance;
+    edict_t *patient = self->enemy;
+
+    if (!patient || !patient->inuse || (patient->s.effects & EF_GIB)) {
+        abortHeal(self, false, false, false);
+        return;
+    }
+
+    // we switched back to a player; let the animation finish
+    if (patient->client)
+        return;
+
+    // our patient is alive again - we got switched to someone else by damage
+    if (patient->health > 0) {
+        abortHeal(self, false, false, false);
+        return;
+    }
+
+    AngleVectors(self->s.angles, f, r, NULL);
+    M_ProjectFlashSource(self, medic_cable_offsets[self->s.frame - FRAME_attack42], f, r, start);
+
+    // too close to resurrect - the patient would come back inside the medic,
+    // so gib it instead
+    VectorSubtract(start, patient->s.origin, dir);
+    distance = VectorLength(dir);
+    if (distance < MEDIC_MIN_DISTANCE) {
+        abortHeal(self, true, true, false);
+        return;
+    }
+
+    tr = gi.trace(start, NULL, NULL, patient->s.origin, self, MASK_SOLID);
+    if (tr.fraction != 1.0f && tr.ent != patient) {
+        if (tr.ent == g_edicts) {
+            // blocked by level geometry: back off and come again once, then
+            // write this medic off the patient for good
+            if (self->monsterinfo.medicTries > 1) {
+                abortHeal(self, true, false, true);
+                return;
+            }
+            self->monsterinfo.medicTries++;
+            cleanupHeal(self, true);
+            return;
+        }
+        abortHeal(self, true, false, false);
+        return;
+    }
+
+    if (self->s.frame == FRAME_attack43) {
+        gi.sound(patient, CHAN_AUTO, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_hit : sound_hook_hit, 1, ATTN_NORM, 0);
+        patient->monsterinfo.aiflags |= AI_RESURRECTING;
+        // the patient cannot be gibbed out from under the cable
+        patient->takedamage = DAMAGE_NO;
+        M_SetEffects(patient);
+    } else if (self->s.frame == FRAME_attack50) {
+        reinforcement_t saved_reinf[MAX_REINFORCEMENT_TYPES];
+        int     saved_num_reinf, saved_slots, saved_used;
+        int     saved_gib_health, saved_max_health;
+
+        patient->spawnflags = 0;
+        // keep the SPAWNED flags: a revived escort still belongs to its commander
+        patient->monsterinfo.aiflags &= AI_SPAWNED_MASK;
+        patient->target = NULL;
+        patient->targetname = NULL;
+        patient->combattarget = NULL;
+        patient->deathtarget = NULL;
+        patient->healthtarget = NULL;
+        patient->itemtarget = NULL;
+        patient->monsterinfo.healer = self;
+
+        // is there room to stand back up?  +48 makes up for the corpse shrink
+        VectorCopy(patient->maxs, maxs);
+        maxs[2] += 48;
+
+        tr = gi.trace(patient->s.origin, patient->mins, maxs, patient->s.origin, patient, MASK_MONSTERSOLID);
+        if (tr.startsolid || tr.allsolid || tr.ent != g_edicts) {
+            abortHeal(self, true, true, false);
+            return;
+        }
+
+        // not a fresh kill - and this has to be set before the spawn function
+        // runs, because monster_start is what adds to the level tally
+        patient->monsterinfo.aiflags |= AI_DO_NOT_COUNT;
+
+        // ED_CallSpawn re-reads the spawn temp, which mid-game still holds
+        // whatever entity the map parsed last.  Clear it, with an empty (not
+        // missing) summon list so a revived commander does not set its list up
+        // again, and put back what the spawn function would overwrite.
+        memcpy(saved_reinf, patient->monsterinfo.reinforcements, sizeof(saved_reinf));
+        saved_num_reinf  = patient->monsterinfo.num_reinforcements;
+        saved_slots      = patient->monsterinfo.monster_slots;
+        saved_used       = patient->monsterinfo.monster_used;
+        saved_gib_health = patient->gib_health;
+        saved_max_health = patient->max_health;
+
+        memset(&st, 0, sizeof(st));
+        st.reinforcements = (char *)"";
+
+        ED_CallSpawn(patient);
+
+        memcpy(patient->monsterinfo.reinforcements, saved_reinf, sizeof(saved_reinf));
+        patient->monsterinfo.num_reinforcements = saved_num_reinf;
+        patient->monsterinfo.monster_slots      = saved_slots;
+        patient->monsterinfo.monster_used       = saved_used;
+
+        // a body that has already been killed once gibs twice as easily; its
+        // health is what it had before (health_multiplier included)
+        patient->gib_health = saved_gib_health / 2;
+        patient->health = patient->max_health = saved_max_health;
+
+        M_SetDamageSkin(patient);
+
+        if (patient->think) {
+            patient->nextthink = level.framenum;
+            patient->think(patient);
+        }
+        patient->monsterinfo.aiflags &= ~AI_RESURRECTING;
+        patient->monsterinfo.aiflags |= AI_IGNORE_SHOTS | AI_DO_NOT_COUNT;
+        // turn off flies
+        patient->s.effects &= ~EF_FLIES;
+        patient->monsterinfo.healer = NULL;
+
+        if (self->oldenemy && self->oldenemy->inuse && self->oldenemy->health > 0) {
+            patient->enemy = self->oldenemy;
+            FoundTarget(patient);
+        } else {
+            patient->enemy = NULL;
+            if (!FindTarget(patient)) {
+                // no valid enemy, so stop acting
+                patient->monsterinfo.pause_framenum = INT_MAX;
+                patient->monsterinfo.stand(patient);
+            }
+            self->enemy = NULL;
+            self->oldenemy = NULL;
+            if (!FindTarget(self)) {
+                // no valid enemy, so stop acting
+                self->monsterinfo.pause_framenum = INT_MAX;
+                self->monsterinfo.stand(self);
+                return;
+            }
+        }
+
+        cleanupHeal(self, false);
+        return;
+    } else if (self->s.frame == FRAME_attack44) {
+        gi.sound(self, CHAN_WEAPON, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_heal : sound_hook_heal, 1, ATTN_NORM, 0);
+    }
+
+    // adjust start for beam origin being in middle of a segment
+    VectorMA(start, 8, f, start);
+
+    // adjust end z for end spot since the monster is currently dead
+    VectorCopy(patient->s.origin, end);
+    end[2] = (patient->absmin[2] + patient->absmax[2]) / 2;
+
+    gi.WriteByte(svc_temp_entity);
+    gi.WriteByte(TE_MEDIC_CABLE_ATTACK);
+    gi.WriteShort(self - g_edicts);
+    gi.WritePosition(start);
+    gi.WritePosition(end);
+    gi.multicast(self->s.origin, MULTICAST_PVS);
+}
+
 void medic_cable_attack(edict_t *self)
 {
     vec3_t  offset, start, end, f, r;
@@ -1122,16 +1398,13 @@ void medic_cable_attack(edict_t *self)
     vec3_t  dir, angles;
     float   distance;
 
-    // [rerelease] EVERY failure below used to be a bare `return`, so a medic
-    // whose patient it cannot reach played all 19 cable frames, healed nobody,
-    // and medic_run then re-picked the same corpse - forever, because nothing
-    // marked it.  That is the medic stuck in a corner working its arm.  id
-    // aborts instead, and gives up for good on the second try.
-    if (!self->enemy->inuse) {
-        if (M_RereleaseGame())
-            abortHeal(self, false, false, false);
+    if (M_RereleaseGame()) {
+        medic_cable_attack_rr(self);
         return;
     }
+
+    if (!self->enemy->inuse)
+        return;
 
     AngleVectors(self->s.angles, f, r, NULL);
     VectorCopy(medic_cable_offsets[self->s.frame - FRAME_attack42], offset);
@@ -1140,119 +1413,38 @@ void medic_cable_attack(edict_t *self)
     // check for max distance
     VectorSubtract(start, self->enemy->s.origin, dir);
     distance = VectorLength(dir);
-    if (distance > 256) {
-        if (M_RereleaseGame())
-            abortHeal(self, false, false, false);
+    if (distance > 256)
         return;
-    }
-
-    // [rerelease] too close to resurrect - the patient would come back inside
-    // the medic, so gib it instead
-    if (M_RereleaseGame() && distance < MEDIC_MIN_DISTANCE) {
-        abortHeal(self, true, true, false);
-        return;
-    }
 
     // check for min/max pitch
     vectoangles(dir, angles);
     if (angles[0] < -180)
         angles[0] += 360;
-    if (fabsf(angles[0]) > 45) {
-        if (M_RereleaseGame())
-            abortHeal(self, true, false, false);
+    if (fabsf(angles[0]) > 45)
         return;
-    }
 
     tr = gi.trace(start, NULL, NULL, self->enemy->s.origin, self, MASK_SHOT);
-    if (tr.fraction != 1.0f && tr.ent != self->enemy) {
-        if (M_RereleaseGame()) {
-            if (tr.ent == g_edicts) {
-                // blocked by level geometry: retreat and re-approach once,
-                // then write this medic off the patient for good
-                if (self->monsterinfo.medicTries > 1) {
-                    abortHeal(self, true, false, true);
-                    return;
-                }
-                self->monsterinfo.medicTries++;
-                cleanupHeal(self, true);
-                return;
-            }
-            abortHeal(self, true, false, false);
-        }
+    if (tr.fraction != 1.0f && tr.ent != self->enemy)
         return;
-    }
 
     if (self->s.frame == FRAME_attack43) {
         gi.sound(self->enemy, CHAN_AUTO, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_hit : sound_hook_hit, 1, ATTN_NORM, 0);
         self->enemy->monsterinfo.aiflags |= AI_RESURRECTING;
     } else if (self->s.frame == FRAME_attack50) {
-        reinforcement_t saved_reinf[MAX_REINFORCEMENT_TYPES];
-        int     saved_num_reinf = 0, saved_slots = 0, saved_used = 0;
-        int     saved_gib_health = 0;
-
         self->enemy->spawnflags = 0;
-        // [rerelease] id keeps the SPAWNED flags across a resurrection.  Zeroing
-        // aiflags outright loses the marker that says a commander summoned this
-        // monster, so a revived escort starts counting toward the level total.
-        if (M_RereleaseGame())
-            self->enemy->monsterinfo.aiflags &= AI_SPAWNED_MASK;
-        else
-            self->enemy->monsterinfo.aiflags = 0;
+        self->enemy->monsterinfo.aiflags = 0;
         self->enemy->target = NULL;
         self->enemy->targetname = NULL;
         self->enemy->combattarget = NULL;
         self->enemy->deathtarget = NULL;
-
-        if (M_RereleaseGame()) {
-            // ED_CallSpawn re-reads the SPAWN TEMP, and `st` is only cleared
-            // while the map is being parsed - mid-game it still holds whatever
-            // the last parsed entity left behind.  Resurrecting a medic
-            // commander would therefore re-parse a stale `reinforcements`
-            // string, so clear it and put the monster's real summon list back
-            // afterwards.  Same reasoning as id's `st = {}` here.
-            memcpy(saved_reinf, self->enemy->monsterinfo.reinforcements, sizeof(saved_reinf));
-            saved_num_reinf   = self->enemy->monsterinfo.num_reinforcements;
-            saved_slots       = self->enemy->monsterinfo.monster_slots;
-            saved_used        = self->enemy->monsterinfo.monster_used;
-            saved_gib_health  = self->enemy->gib_health;
-
-            memset(&st, 0, sizeof(st));
-        }
-
         self->enemy->owner = self;
         ED_CallSpawn(self->enemy);
         self->enemy->owner = NULL;
-
-        if (M_RereleaseGame()) {
-            memcpy(self->enemy->monsterinfo.reinforcements, saved_reinf, sizeof(saved_reinf));
-            self->enemy->monsterinfo.num_reinforcements = saved_num_reinf;
-            self->enemy->monsterinfo.monster_slots      = saved_slots;
-            self->enemy->monsterinfo.monster_used       = saved_used;
-
-            // a body that has already been killed once gibs twice as easily
-            self->enemy->gib_health = saved_gib_health / 2;
-
-            // and must not be counted as a fresh kill
-            self->enemy->monsterinfo.aiflags |= AI_DO_NOT_COUNT;
-        }
         if (self->enemy->think) {
             self->enemy->nextthink = level.framenum;
             self->enemy->think(self->enemy);
         }
         self->enemy->monsterinfo.aiflags |= AI_RESURRECTING;
-
-        // [rerelease] the patient is a live monster again, so release every
-        // trace of the heal: the claim, the give-up marks (a medic that once
-        // bailed on the CORPSE may legitimately heal this new body later),
-        // this medic's try counter, and the corpse flies.
-        if (M_RereleaseGame()) {
-            self->enemy->monsterinfo.healer = NULL;
-            self->enemy->monsterinfo.badMedic1 = NULL;
-            self->enemy->monsterinfo.badMedic2 = NULL;
-            self->enemy->s.effects &= ~EF_FLIES;
-            self->monsterinfo.medicTries = 0;
-        }
-
         if (self->oldenemy && self->oldenemy->client) {
             self->enemy->enemy = self->oldenemy;
             FoundTarget(self->enemy);
@@ -1280,7 +1472,52 @@ void medic_cable_attack(edict_t *self)
 void medic_hook_retract(edict_t *self)
 {
     gi.sound(self, CHAN_WEAPON, MEDIC_IS_COMMANDER(self) ? commander_sound_hook_retract : sound_hook_retract, 1, ATTN_NORM, 0);
+
+    // [rerelease] the heal itself already released the patient (or the cable
+    // gave up); the retract only ends medic mode and goes back to the fight
+    if (M_RereleaseGame()) {
+        self->monsterinfo.aiflags &= ~AI_MEDIC;
+
+        if (self->oldenemy && self->oldenemy->inuse && self->oldenemy->health > 0) {
+            self->enemy = self->oldenemy;
+            HuntTarget(self);
+        } else {
+            self->enemy = self->goalentity = NULL;
+            self->oldenemy = NULL;
+            if (!FindTarget(self)) {
+                // no valid enemy, so stop acting
+                self->monsterinfo.pause_framenum = INT_MAX;
+                self->monsterinfo.stand(self);
+            }
+        }
+        return;
+    }
+
     self->enemy->monsterinfo.aiflags &= ~AI_RESURRECTING;
+}
+
+/*
+The rerelease plays the cable on attack37-55 rather than attack33-60, backs
+away from the patient on 37-40 instead of stepping in, and drops the -15 lurch
+on the retract frame.  A new move would need a savegame table entry, so it runs
+on the original move: medic_start_cable starts it on attack37, the two aifuncs
+below flip the steps, and medic_cable_rr_end cuts it off after attack55 exactly
+where id's move hands over to medic_run.
+*/
+static void medic_cable_step(edict_t *self, float dist)
+{
+    ai_charge(self, M_RereleaseGame() ? -dist : dist);
+}
+
+static void medic_cable_retract_move(edict_t *self, float dist)
+{
+    ai_move(self, M_RereleaseGame() ? 0 : dist);
+}
+
+static void medic_cable_rr_end(edict_t *self)
+{
+    if (M_RereleaseGame())
+        medic_run(self);
 }
 
 mframe_t medic_frames_attackCable [] = {
@@ -1288,11 +1525,11 @@ mframe_t medic_frames_attackCable [] = {
     { ai_move, 3,     NULL },
     { ai_move, 5,     NULL },
     { ai_move, 4.4,   NULL },
-    { ai_charge, 4.7, NULL },
-    { ai_charge, 5,   NULL },
-    { ai_charge, 6,   NULL },
-    { ai_charge, 4,   NULL },
-    { ai_charge, 0,   NULL },
+    { medic_cable_step, 4.7, NULL },
+    { medic_cable_step, 5,   NULL },
+    { medic_cable_step, 6,   NULL },
+    { medic_cable_step, 4,   NULL },
+    { ai_charge, 0,   monster_footstep },
     { ai_move, 0,     medic_hook_launch },
     { ai_move, 0,     medic_cable_attack },
     { ai_move, 0,     medic_cable_attack },
@@ -1303,10 +1540,10 @@ mframe_t medic_frames_attackCable [] = {
     { ai_move, 0,     medic_cable_attack },
     { ai_move, 0,     medic_cable_attack },
     { ai_move, 0,     medic_cable_attack },
-    { ai_move, -15,   medic_hook_retract },
+    { medic_cable_retract_move, -15, medic_hook_retract },
     { ai_move, -1.5,  NULL },
-    { ai_move, -1.2,  NULL },
-    { ai_move, -3,    NULL },
+    { ai_move, -1.2,  monster_footstep },
+    { ai_move, -3,    medic_cable_rr_end },
     { ai_move, -2,    NULL },
     { ai_move, 0.3,   NULL },
     { ai_move, 0.7,   NULL },
@@ -1314,6 +1551,14 @@ mframe_t medic_frames_attackCable [] = {
     { ai_move, 1.3,   NULL }
 };
 mmove_t medic_move_attackCable = {FRAME_attack33, FRAME_attack60, medic_frames_attackCable, medic_run};
+
+static void medic_start_cable(edict_t *self)
+{
+    self->monsterinfo.currentmove = &medic_move_attackCable;
+    // [Paril-KEX] "started on 36 as they intended" - attack37 in this model
+    if (M_RereleaseGame())
+        self->monsterinfo.nextframe = FRAME_attack37;
+}
 
 
 
@@ -1337,6 +1582,44 @@ turned between them and a player can walk into the spot in the meantime.
 ==============================================================================
 */
 
+/*
+=================
+medic_reinforcement_start
+
+Where summon slot `count` is tried from.  [rerelease] A scaled commander
+summons around its own footprint: id multiplies the offset by s.scale and then
+projects it through M_ProjectFlashSource, which scales it again, so a scaled
+commander's spots sit scale^2 out; ported as written.  The look-behind retry
+keeps an unscaled 10-unit lift, also as id has it.
+=================
+*/
+static void medic_reinforcement_start(edict_t *self, int count, const vec3_t f, const vec3_t r,
+                                      bool behind, vec3_t startpoint)
+{
+    vec3_t  offset;
+    float   scale = 1.0f;
+
+    VectorCopy(reinforcement_position[count], offset);
+
+    if (M_RereleaseGame() && self->s.scale) {
+        scale = self->s.scale;
+        VectorScale(offset, scale, offset);
+    }
+
+    if (behind) {
+        offset[0] *= -1.0f;
+        offset[1] *= -1.0f;
+    }
+
+    if (M_RereleaseGame())
+        M_ProjectFlashSource(self, offset, f, r, startpoint);
+    else
+        G_ProjectSource(self->s.origin, offset, f, r, startpoint);
+
+    // a little off the ground
+    startpoint[2] += behind ? 10 : 10 * scale;
+}
+
 void medic_start_spawn(edict_t *self)
 {
     gi.sound(self, CHAN_WEAPON, commander_sound_spawn, 1, ATTN_NORM, 0);
@@ -1345,7 +1628,7 @@ void medic_start_spawn(edict_t *self)
 
 void medic_determine_spawn(edict_t *self)
 {
-    vec3_t  f, r, offset, startpoint, spawnpoint;
+    vec3_t  f, r, startpoint, spawnpoint;
     int     count, num_summoned;
     int     num_success = 0;
     reinforcement_t *re;
@@ -1355,9 +1638,7 @@ void medic_determine_spawn(edict_t *self)
     num_summoned = M_PickReinforcements(self, 0);
 
     for (count = 0; count < num_summoned; count++) {
-        VectorCopy(reinforcement_position[count], offset);
-        G_ProjectSource(self->s.origin, offset, f, r, startpoint);
-        startpoint[2] += 10;    // a little off the ground
+        medic_reinforcement_start(self, count, f, r, false, startpoint);
 
         re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
@@ -1372,11 +1653,7 @@ void medic_determine_spawn(edict_t *self)
     // nothing in front - see whether spinning round helps
     if (num_success == 0) {
         for (count = 0; count < num_summoned; count++) {
-            VectorCopy(reinforcement_position[count], offset);
-            offset[0] *= -1.0f;
-            offset[1] *= -1.0f;
-            G_ProjectSource(self->s.origin, offset, f, r, startpoint);
-            startpoint[2] += 10;
+            medic_reinforcement_start(self, count, f, r, true, startpoint);
 
             re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
@@ -1402,7 +1679,7 @@ void medic_determine_spawn(edict_t *self)
 
 void medic_spawngrows(edict_t *self)
 {
-    vec3_t  f, r, offset, startpoint, spawnpoint;
+    vec3_t  f, r, startpoint, spawnpoint;
     int     count, num_summoned;
     int     num_success = 0;
     float   current_yaw;
@@ -1423,9 +1700,7 @@ void medic_spawngrows(edict_t *self)
     num_summoned = self->monsterinfo.num_chosen_reinforcements;
 
     for (count = 0; count < num_summoned; count++) {
-        VectorCopy(reinforcement_position[count], offset);
-        G_ProjectSource(self->s.origin, offset, f, r, startpoint);
-        startpoint[2] += 10;
+        medic_reinforcement_start(self, count, f, r, false, startpoint);
 
         re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
@@ -1445,7 +1720,7 @@ void medic_spawngrows(edict_t *self)
 void medic_finish_spawn(edict_t *self)
 {
     edict_t *ent;
-    vec3_t  f, r, offset, startpoint, spawnpoint;
+    vec3_t  f, r, startpoint, spawnpoint;
     int     count, num_summoned;
     edict_t *designated_enemy;
     reinforcement_t *re;
@@ -1457,9 +1732,7 @@ void medic_finish_spawn(edict_t *self)
     for (count = 0; count < num_summoned; count++) {
         re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
-        VectorCopy(reinforcement_position[count], offset);
-        G_ProjectSource(self->s.origin, offset, f, r, startpoint);
-        startpoint[2] += 10;
+        medic_reinforcement_start(self, count, f, r, false, startpoint);
 
         ent = NULL;
         if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32)) {
@@ -1478,6 +1751,10 @@ void medic_finish_spawn(edict_t *self)
 
         ent->monsterinfo.aiflags |= AI_IGNORE_SHOTS | AI_DO_NOT_COUNT | AI_SPAWNED_MEDIC_C;
         ent->monsterinfo.commander = self;
+        // [rerelease] the summon remembers what it cost, so the slot can be
+        // handed back when it dies
+        if (M_RereleaseGame())
+            ent->monsterinfo.monster_slots = re->strength;
         self->monsterinfo.monster_used += re->strength;
 
         if (self->monsterinfo.aiflags & AI_MEDIC)
@@ -1539,8 +1816,42 @@ mmove_t medic_move_callReinforcements = {FRAME_attack33, FRAME_attack55, medic_f
 
 void medic_attack(edict_t *self)
 {
-    float r = random();
+    float r;
 
+    if (M_RereleaseGame()) {
+        monster_done_dodge(self);
+
+        // signal from medic_checkattack to summon.  id then rolls again below
+        // regardless, which makes it an 80% summon rather than a certain one.
+        if (self->monsterinfo.aiflags & AI_BLOCKED) {
+            self->monsterinfo.currentmove = &medic_move_callReinforcements;
+            self->monsterinfo.aiflags &= ~AI_BLOCKED;
+        }
+
+        r = random();
+        if (self->monsterinfo.aiflags & AI_MEDIC) {
+            // a commander with slots left would sometimes rather summon than heal
+            if (MEDIC_IS_COMMANDER(self) && r > 0.8f && M_SlotsLeft(self) > 0)
+                self->monsterinfo.currentmove = &medic_move_callReinforcements;
+            else
+                medic_start_cable(self);
+        } else {
+            // lost sight of a player: summon blind
+            if (self->monsterinfo.attack_state == AS_BLIND) {
+                self->monsterinfo.currentmove = &medic_move_callReinforcements;
+                return;
+            }
+            // otherwise a commander summons whenever any slot is left
+            if (MEDIC_IS_COMMANDER(self) && r > 0.2f &&
+                range(self, self->enemy) > RANGE_MELEE && M_SlotsLeft(self) > 0)
+                self->monsterinfo.currentmove = &medic_move_callReinforcements;
+            else
+                self->monsterinfo.currentmove = &medic_move_attackBlaster_rr;
+        }
+        return;
+    }
+
+    r = random();
     if (self->monsterinfo.aiflags & AI_MEDIC) {
         // a commander with slots left would rather summon than heal
         if (MEDIC_IS_COMMANDER(self) && r > 0.8f && M_SlotsLeft(self) > 0)
@@ -1548,20 +1859,9 @@ void medic_attack(edict_t *self)
         else
             self->monsterinfo.currentmove = &medic_move_attackCable;
     } else {
-        // [rerelease] "give a LARGE bias to spawning things when we have
-        // room" - the commander waits until MOST of its slots are free and
-        // then summons a wave, rather than trickling one out whenever a single
-        // slot frees up. 150 units, not RANGE_MELEE, is the rerelease's own
-        // standoff distance for this.
         if (MEDIC_IS_COMMANDER(self) && r > 0.2f &&
-            (M_RereleaseGame()
-                 ? (M_SlotsLeft(self) > self->monsterinfo.monster_slots * 0.8f &&
-                    realrange(self, self->enemy) > 150)
-                 : (M_SlotsLeft(self) > 0 &&
-                    range(self, self->enemy) > RANGE_MELEE)))
+            M_SlotsLeft(self) > 0 && range(self, self->enemy) > RANGE_MELEE)
             self->monsterinfo.currentmove = &medic_move_callReinforcements;
-        else if (M_RereleaseGame())
-            self->monsterinfo.currentmove = &medic_move_attackBlaster_rr;
         else
             self->monsterinfo.currentmove = &medic_move_attackBlaster;
     }
@@ -1600,6 +1900,34 @@ bool medic_checkattack(edict_t *self)
         return true;
     }
 
+    if (M_RereleaseGame()) {
+        // a commander that has lost sight of a player summons blind.  (Only
+        // reachable once ai_checkattack consults checkattack without sight,
+        // as id's does; ours returns before getting here.)
+        if (self->enemy->client && !visible(self, self->enemy) && M_SlotsLeft(self) > 0) {
+            self->monsterinfo.attack_state = AS_BLIND;
+            return true;
+        }
+
+        // "give a LARGE bias to spawning things when we have room" - with most
+        // of its slots free and the enemy beyond 150 units, a commander skips
+        // the usual attack roll.  AI_BLOCKED tells medic_attack to summon.
+        if (self->monsterinfo.monster_slots && random() < 0.8f &&
+            M_SlotsLeft(self) > self->monsterinfo.monster_slots * 0.8f &&
+            realrange(self, self->enemy) > 150) {
+            self->monsterinfo.aiflags |= AI_BLOCKED;
+            self->monsterinfo.attack_state = AS_MISSILE;
+            return true;
+        }
+
+        // ROGUE - his idle animation looks bad in combat, so always attack
+        // when he's on a combat point
+        if (self->monsterinfo.aiflags & AI_STAND_GROUND) {
+            self->monsterinfo.attack_state = AS_MISSILE;
+            return true;
+        }
+    }
+
     return M_CheckAttack(self);
 }
 
@@ -1632,14 +1960,11 @@ void SP_monster_medic(edict_t *self)
     // on, so this has to be settled before anything reads MEDIC_IS_COMMANDER
     commander = !strcmp(self->classname, "monster_medic_commander");
 
-	float val = crandom();
-
-	if (val < 0) {
+	// port-only: half the classic medics fire a hyperblaster.  The rerelease
+	// medic's burst is its own, in medic_fire_blaster.
+	self->monsterFireHyperBlaster = qfalse;
+	if (!M_RereleaseGame() && crandom() < 0)
 		self->monsterFireHyperBlaster = qtrue;
-	}
-	else {
-		self->monsterFireHyperBlaster = qfalse;
-	}
 
     if (commander) {
         commander_sound_idle1 = gi.soundindex("medic_commander/medidle.wav");
@@ -1722,6 +2047,11 @@ void SP_monster_medic(edict_t *self)
 
     walkmonster_start(self);
 
+    // [rerelease] every medic, not just the commander, ignores fire from
+    // other monsters
+    if (M_RereleaseGame())
+        self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
+
     if (commander) {
         // walkmonster_start clears skinnum, so this has to come after it
         self->s.skinnum = 2;
@@ -1729,20 +2059,39 @@ void SP_monster_medic(edict_t *self)
         // the commander ignores incoming fire while it is working
         self->monsterinfo.aiflags |= AI_IGNORE_SHOTS;
 
-        // how much it can summon, before the per-monster strength costs
-        switch ((int)skill->value) {
-        case 0:  self->monsterinfo.monster_slots = 3; break;
-        case 1:  self->monsterinfo.monster_slots = 4; break;
-        default: self->monsterinfo.monster_slots = 6; break;
-        }
-
         // power_armor_type/power_armor_power are real spawn fields, so mgu4m3's
         // 250-300 point screens are already in place by the time we get here.
         // Rogue gives the commander none by default, so nothing to set.
 
-        // parsing the list also precaches every monster in it - a summon
-        // mid-level has no safe way to precache
-        M_SetupReinforcements(self, st.reinforcements ? st.reinforcements : medic_default_reinforcements);
+        if (M_RereleaseGame()) {
+            const char *reinforcements = st.reinforcements ? st.reinforcements : medic_default_reinforcements;
+
+            // the map's monster_slots (already in the field) or 3, then
+            // +50% per skill level: 3/4/6/7.  There is no "key given" flag
+            // for this field, so an explicit 0 reads as unset.
+            if (!self->monsterinfo.monster_slots)
+                self->monsterinfo.monster_slots = 3;
+
+            if (self->monsterinfo.monster_slots && *reinforcements) {
+                if (skill->value)
+                    self->monsterinfo.monster_slots += (int)floorf(self->monsterinfo.monster_slots * (skill->value / 2.0f));
+
+                // parsing the list also precaches every monster in it - a
+                // summon mid-level has no safe way to precache
+                M_SetupReinforcements(self, reinforcements);
+            }
+        } else {
+            // how much it can summon, before the per-monster strength costs
+            switch ((int)skill->value) {
+            case 0:  self->monsterinfo.monster_slots = 3; break;
+            case 1:  self->monsterinfo.monster_slots = 4; break;
+            default: self->monsterinfo.monster_slots = 6; break;
+            }
+
+            // parsing the list also precaches every monster in it - a summon
+            // mid-level has no safe way to precache
+            M_SetupReinforcements(self, st.reinforcements ? st.reinforcements : medic_default_reinforcements);
+        }
 
         gi.modelindex("models/items/spawngro/tris.md2");
         gi.modelindex("models/items/spawngro2/tris.md2");

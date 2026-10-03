@@ -23,9 +23,10 @@
  *    helper called from pain and die, which is how m_gekk.c and m_mutant.c
  *    already flip a damage skin.
  *
- *  - The rerelease's range_to() is a float distance; this tree's range() is
- *    the classic enum, which is what rogue itself compared against. The
- *    chance ladder in Widow_CheckAttack uses our enum directly.
+ *  - The rerelease's range_to() is a float distance between the two boxes;
+ *    this tree's range() is the classic enum, which is what rogue itself
+ *    compared against. Widow_CheckAttack uses range_to and id's 20/440/940
+ *    thresholds in the rerelease, and our enum in the original game.
  *
  *  - PredictAim has a different signature here: the target is the first
  *    argument and the outputs are plain vec3_t, not pointers.
@@ -33,16 +34,22 @@
  *  - st.was_key_specified has no equivalent; a zero field means "the map did
  *    not set it", exactly as m_guncmdr.c documents.
  *
- *  - She MIRRORS the player's powerups onto herself so a quad picked up in
- *    her arena does not trivialise the fight. That needed three new
- *    monsterinfo framenums, which are in the savegame table - leaving them
- *    out is the bug class that made base_height come back zero.
+ *  - She is MEANT to mirror the player's powerups onto herself so a quad
+ *    picked up in her arena does not trivialise the fight. Only part of that
+ *    works here: the quad/double damage multiplier on her own weapons and
+ *    the power armour do, but nothing reads monsterinfo.invincible_framenum
+ *    (T_Damage only honours a CLIENT's invulnerability) and M_SetEffects
+ *    draws none of the three shells - so a mirrored pent gives her no
+ *    protection and none of it shows. The three framenums are in the
+ *    savegame table - leaving them out is the bug class that made
+ *    base_height come back zero.
  *
  * =======================================================================
  */
 
 #include "g_local.h"
 #include "m_widow.h"
+
 
 /* rogue counts these in seconds; this tree counts server frames */
 #define RAIL_TIME           (3 * BASE_FRAMERATE)
@@ -253,7 +260,7 @@ void WidowBlaster(edict_t *self)
 
         G_ProjectSource(self->s.origin, monster_flash_offset[flashnum], forward, right, start);
 
-        PredictAim(self->enemy, start, 1000, true, crandom() * 0.1f, forward, NULL);
+        PredictAimEx(self, self->enemy, start, 1000, true, crandom() * 0.1f, forward, NULL);
 
         /* clamp it to within 15 degrees of where the arm is actually pointing */
         vectoangles(forward, angles);
@@ -1081,21 +1088,19 @@ void widow_pain(edict_t *self, edict_t *other /* unused */,
     else
         gi.sound(self, CHAN_VOICE, sound_pain3, 1, ATTN_NONE, 0);
 
-    // M_ShouldReactToPain does not exist here; skill 3 is the nightmare gate
-    // the rest of this tree uses for the same purpose.
-    if (skill->value >= 3)
+    if (M_RereleaseGame() ? !M_ShouldReactToPain(self, meansOfDeath) : skill->value >= 3)
         return; // no pain anims in nightmare
 
     self->monsterinfo.fire_framenum = 0;
 
     if (damage >= 15) {
         if (damage < 75) {
-            if (random() < (0.6f - (0.2f * skill->value))) {
+            if (skill->value < 3 && random() < (0.6f - (0.2f * skill->value))) {
                 self->monsterinfo.currentmove = &widow_move_pain_light;
                 self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
             }
         } else {
-            if (random() < (0.75f - (0.1f * skill->value))) {
+            if (skill->value < 3 && random() < (0.75f - (0.1f * skill->value))) {
                 self->monsterinfo.currentmove = &widow_move_pain_heavy;
                 self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
             }
@@ -1238,6 +1243,7 @@ bool Widow_CheckAttack(edict_t *self)
     float   enemy_yaw;
     float   real_enemy_range;
     int     enemy_range;
+    float   box_range;
 
     if (!self->enemy || !self->enemy->inuse)
         return false;
@@ -1294,6 +1300,7 @@ bool Widow_CheckAttack(edict_t *self)
     }
 
     enemy_range = range(self, self->enemy);
+    box_range = range_to(self, self->enemy);
     VectorSubtract(self->enemy->s.origin, self->s.origin, temp);
     enemy_yaw = vectoyaw(temp);
 
@@ -1301,8 +1308,9 @@ bool Widow_CheckAttack(edict_t *self)
 
     real_enemy_range = realrange(self, self->enemy);
 
-    /* melee attack */
-    if (real_enemy_range <= (MELEE_DISTANCE + 20)) {
+    /* melee attack. [rerelease] id's MELEE_DISTANCE is 50, not this tree's
+       80, so the kick starts at 70 units origin to origin, not 100 */
+    if (real_enemy_range <= ((M_RereleaseGame() ? 50 : MELEE_DISTANCE) + 20)) {
         /* don't always melee in easy mode */
         if (skill->value == 0 && (Q_rand() % 4))
             return false;
@@ -1319,6 +1327,17 @@ bool Widow_CheckAttack(edict_t *self)
 
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
         chance = 0.4f;
+    else if (M_RereleaseGame()) {
+        /* id's ladder on the box gap: 20 is the boxes all but touching */
+        if (box_range <= 20)
+            chance = 0.8f;
+        else if (box_range <= 440)
+            chance = 0.7f;
+        else if (box_range <= 940)
+            chance = 0.6f;
+        else
+            chance = 0.5f;
+    }
     else if (enemy_range <= RANGE_MELEE)
         chance = 0.8f;
     else if (enemy_range <= RANGE_NEAR)

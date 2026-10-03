@@ -9,15 +9,12 @@
  * float level.time site becomes this tree's integer level.framenum, and
  * M_SetAnimation() becomes a direct monsterinfo.currentmove assignment.
  *
- * Four substitutions worth naming, because they are not literal ports:
+ * Three substitutions worth naming, because they are not literal ports:
  *
  *  - The rerelease's RANGE_NEAR is a FLOAT DISTANCE of 440 units. This tree's
  *    RANGE_NEAR is the enum value 1 returned by range(). Using ours here would
  *    have compared a distance against 1 and sent the guardian into its long
  *    range attack from anywhere. It is spelled out as GUARDIAN_RANGE_NEAR.
- *
- *  - M_ShouldReactToPain() does not exist here; skill 3 is the nightmare gate
- *    the rest of this tree uses for the same purpose.
  *
  *  - There is no monsterinfo.weapon_sound in this tree. It only ever fed
  *    ent->s.sound in the rerelease, so the spin-up loop is set on s.sound
@@ -46,7 +43,7 @@
 /* The kick will not chain: a miss stands the guardian down for a second. */
 #define GUARDIAN_MELEE_DEBOUNCE (1 * BASE_FRAMERATE)
 
-void BossExplode(edict_t *self);
+void BossExplodeTick(edict_t *self);        /* m_supertank.c */
 
 void guardian_run(edict_t *self);
 void guardian_stand(edict_t *self);
@@ -231,9 +228,7 @@ void guardian_pain(edict_t *self, edict_t *other /* unused */,
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
 
-    // M_ShouldReactToPain does not exist here; skill 3 is the nightmare gate
-    // the rest of this tree uses for the same purpose.
-    if (skill->value >= 3)
+    if (!M_ShouldReactToPain(self, meansOfDeath))
         return; // no pain anims in nightmare
 
     self->monsterinfo.currentmove = &guardian_move_pain1;
@@ -329,9 +324,11 @@ mmove_t guardian_move_atk1_spin = {
 void guardian_atk1(edict_t *self)
 {
     self->monsterinfo.currentmove = &guardian_move_atk1_spin;
-    /* 650ms + up to 1.5s of extra spin, in frames */
-    self->timestamp = level.framenum + (int)(0.65f * BASE_FRAMERATE) +
-            (int)(random() * 1.5f * BASE_FRAMERATE);
+    /* 650ms + up to 1.5s of extra spin. Rounded UP to a frame: the spin12
+       check runs on whole frames after this one, and id's "timestamp >
+       level.time" holds for frame k exactly when k < 6.5 + 15 * random */
+    self->timestamp = level.framenum +
+            (int)ceilf((0.65f + random() * 1.5f) * BASE_FRAMERATE);
 }
 
 static mframe_t guardian_frames_atk1_in[] = {
@@ -377,32 +374,40 @@ static const vec3_t guardian_laser_positions[] = {
     {112.0f, -62.0f, 60.0f}
 };
 
-void guardian_laser_fire(edict_t *self)
+/* The rerelease's guardian_fire_update: from whichever emitter this frame's
+   parity names, at a random point inside the enemy's box. */
+void guardian_fire_update(edict_t *laser)
 {
-    vec3_t  forward, right, start;
-    edict_t *beam;
-
-    if (!self->enemy || !self->enemy->inuse)
-        return;
-
-    gi.sound(self, CHAN_WEAPON, sound_laser, 1, ATTN_NORM, 0);
+    edict_t *self = laser->owner;
+    vec3_t  forward, right, start, target;
 
     AngleVectors(self->s.angles, forward, right, NULL);
     M_ProjectFlashSource(self,
             guardian_laser_positions[1 - (self->s.frame & 1)],
             forward, right, start);
 
-    /* monster_dabeam() aims itself at ->enemy and frees itself a frame later,
-       so all this has to hand it is where the beam starts and who owns it. */
-    beam = G_Spawn();
-    VectorCopy(start, beam->s.origin);
-    VectorCopy(self->s.angles, beam->s.angles);
-    beam->enemy = self->enemy;
-    beam->owner = self;
-    beam->dmg = 25;
-    beam->classname = "guardian_laserbeam";
+    if (self->enemy && self->enemy->inuse) {
+        VectorAdd(self->enemy->s.origin, self->enemy->mins, target);
+        for (int k = 0; k < 3; k++)
+            target[k] += random() * self->enemy->size[k];
+        VectorSubtract(target, start, forward);
+        VectorNormalize(forward);
+    } else {
+        VectorCopy(laser->movedir, forward);
+    }
 
-    monster_dabeam(beam);
+    VectorCopy(start, laser->s.origin);
+    VectorCopy(forward, laser->movedir);
+    gi.linkentity(laser);
+}
+
+void guardian_laser_fire(edict_t *self)
+{
+    if (!self->enemy || !self->enemy->inuse)
+        return;
+
+    gi.sound(self, CHAN_WEAPON, sound_laser, 1, ATTN_NORM, 0);
+    monster_fire_dabeam(self, 25, (self->s.frame & 1) != 0, DABEAM_GUARDIAN, 0);
 }
 
 static mframe_t guardian_frames_atk2_fire[] = {
@@ -452,7 +457,9 @@ void guardian_kick(edict_t *self)
 {
     vec3_t aim;
 
-    VectorSet(aim, MELEE_DISTANCE, 0, -80);
+    /* id's MELEE_DISTANCE (50, not this tree's 80), which the rerelease's
+       fire_hit measures box to box */
+    VectorSet(aim, 50, 0, -80);
 
     if (!fire_hit(self, aim, 85, 700))
         self->monsterinfo.melee_debounce_framenum =
@@ -488,7 +495,12 @@ void guardian_attack(edict_t *self)
     if (!self->enemy || !self->enemy->inuse)
         return;
 
-    r = M_RangeBetween(self, self->enemy);
+    /* the gap between the two boxes, as id measures it - the guardian is 192
+       units wide, so from its origin a player at its feet is already past
+       the 120 kick range. Explicit, since range_to is the origin distance
+       in classic mode */
+    r = M_DistanceBetweenBoxes(self->absmin, self->absmax,
+                               self->enemy->absmin, self->enemy->absmax);
 
     if (r > GUARDIAN_RANGE_NEAR)
         self->monsterinfo.currentmove = &guardian_move_atk2_in;
@@ -516,6 +528,20 @@ void guardian_explode(edict_t *self)
     gi.multicast(self->s.origin, MULTICAST_ALL);
 }
 
+/* id's ThrowGibs list: two of each of the six body chunks, then the head,
+   which turns the guardian itself into the last chunk */
+static const gib_def_t guardian_death_gibs[] = {
+    { 2, "models/objects/gibs/sm_meat/tris.md2", GIB_ORGANIC, 1.0f },
+    { 4, "models/objects/gibs/sm_metal/tris.md2", GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/guardian/gib1.md2", GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/guardian/gib2.md2", GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/guardian/gib3.md2", GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/guardian/gib4.md2", GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/guardian/gib5.md2", GIB_METALLIC, 1.0f },
+    { 2, "models/monsters/guardian/gib6.md2", GIB_METALLIC, 1.0f },
+    { 1, "models/monsters/guardian/gib7.md2", GIB_METALLIC | GIB_HEAD, 1.0f },
+};
+
 void guardian_dead(edict_t *self)
 {
     int i;
@@ -523,48 +549,46 @@ void guardian_dead(edict_t *self)
     for (i = 0; i < 3; i++)
         guardian_explode(self);
 
-    for (i = 0; i < 2; i++)
-        ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", 125, GIB_ORGANIC);
+    THROW_GIBS(self, 125, guardian_death_gibs);
 
-    for (i = 0; i < 4; i++)
-        ThrowGib(self, "models/objects/gibs/sm_metal/tris.md2", 125, GIB_METALLIC);
-
-    /* two of each of the six body chunks, then the head */
-    for (i = 0; i < 6; i++) {
-        ThrowGib(self, (char *)guardian_gibs[i], 125, GIB_METALLIC);
-        ThrowGib(self, (char *)guardian_gibs[i], 125, GIB_METALLIC);
-    }
-
-    ThrowHead(self, (char *)guardian_gibs[6], 125, GIB_METALLIC);
+    // the death move's endfunc: stop M_MoveFrame stepping the head gib back
+    // onto the death frames, as BossGib does
+    if (self->inuse)
+        self->svflags |= SVF_DEADMONSTER;
 }
 
+/* id's BossExplode on frame 1 spawns an exploder that pops an explosion every
+   50-200 ms, from about 100 ms later, while the animation plays out.
+   BossExplodeTick (m_supertank.c) is that, one per frame from frame 2 - not
+   the classic BossExplode, which would take over the guardian's think and
+   freeze it on one frame. */
 static mframe_t guardian_frames_death1[] = {
-    {ai_move, 0, BossExplode},
     {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move},
-    {ai_move}
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick},
+    {ai_move, 0, BossExplodeTick}
 };
 mmove_t guardian_move_death = {
     FRAME_death1,

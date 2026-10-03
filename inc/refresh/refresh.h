@@ -325,30 +325,23 @@ typedef struct ref_feedback_s {
 	float       adapted_luminance;
 } ref_feedback_t;
 
-// the rerelease's per-map atmospheric fog, read off worldspawn by the client in
-// src/client/mapfog.c. These are the map's own authored values; how thick they
-// actually render is cl_fog_scale, because KEX's density-to-extinction constant
-// is not derivable from anything we have.
+// The fog medium for this frame, built by the client in src/client/mapfog.c.
+// A map's authored fog keys give it its SHAPE and colour only - the densities
+// are normalised to a peak of 1, so how bright the fog renders is decided by
+// the pt_fog_scale_* knobs alone and the same setting looks the same on every
+// map. A map with no fog keys gets a flat white medium of density 1.
 typedef struct {
-    int     mode;               // cl_fog: 1 = sun-lit medium, 2 = lit by local lights
+    int     mode;               // the renderer's fog_mode; 3 whenever cl_fog is on
 
-    float   density;            // plain distance fog
+    float   density;            // plain distance fog, normalised
     vec3_t  color;
 
-    float   hf_density;         // altitude-banded fog
+    float   hf_density;         // altitude-banded fog, normalised
     float   hf_falloff;
     float   hf_start_z;         // world Z of the TOP of the band
     float   hf_end_z;           // world Z of the BOTTOM; always below start
     vec3_t  hf_start_color;
     vec3_t  hf_end_color;
-
-    // How much denser (or thinner) the VOLUMETRIC half is than the sky/sun half.
-    // The densities above are scaled by cl_fog_scale and drive the sun term in
-    // EVERY mode; this ratio is applied on top of them, to the local-light term
-    // only, so cl_fog 3 can carry its own density without disturbing the sky
-    // fog. 1.0 means the two match, which is what cl_volumetric_fog_density -1
-    // (its default) produces.
-    float   vol_density_ratio;
 } mapfog_params_t;
 
 /* THE RENDERER-SIDE ACCESSOR FOR THE ABOVE, DECLARED HERE ON PURPOSE.

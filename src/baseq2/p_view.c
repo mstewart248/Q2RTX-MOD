@@ -751,6 +751,12 @@ void G_SetClientEffects(edict_t *ent)
         }
     }
 
+    // being chewed on by a disruptor: the tracker sets EF_TRACKERTRAIL on
+    // the player, but s.effects is rebuilt from zero above every frame, so
+    // it has to be re-applied here or it never shows (rerelease p_view.cpp)
+    if (M_RereleaseGame() && ent->client->tracker_pain_framenum > level.framenum)
+        ent->s.effects |= EF_TRACKERTRAIL;
+
     if (ent->client->quad_framenum > level.framenum) {
         remaining = ent->client->quad_framenum - level.framenum;
         if (remaining > 30 || (remaining & 4))

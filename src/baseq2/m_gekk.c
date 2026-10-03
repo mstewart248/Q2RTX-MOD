@@ -47,6 +47,10 @@ The deliberate differences from the Xatrix original are:
 #define SPAWNFLAG_GEKK_NOJUMPING    16
 #define SPAWNFLAG_GEKK_NOSWIM       32
 
+// The rerelease's RANGE_* distances - see gekk_attack
+#define GEKK_RANGE_NEAR 440.0f
+#define GEKK_RANGE_MID  940.0f
+
 static int  sound_swing;
 static int  sound_hit;
 static int  sound_hit2;
@@ -128,6 +132,10 @@ static bool gekk_check_jump(edict_t *self)
     vec3_t  v;
     float   distance;
 
+    // reached from the leap takeoff too, by which time the enemy may be gone
+    if (!self->enemy)
+        return false;
+
     // [rerelease] one test, not the generic two: don't jump if there is no
     // way we can reach standing height. Xatrix's pair of band tests refused
     // the jump whenever the gekk was much above OR below its enemy, which on
@@ -156,6 +164,9 @@ static bool gekk_check_jump_close(edict_t *self)
 {
     vec3_t  v;
     float   distance;
+
+    if (!self->enemy)
+        return false;
 
     v[0] = self->s.origin[0] - self->enemy->s.origin[0];
     v[1] = self->s.origin[1] - self->enemy->s.origin[1];
@@ -352,12 +363,57 @@ mframe_t gekk_frames_standunderwater [] = {
 };
 mmove_t gekk_move_standunderwater = {FRAME_amb_01, FRAME_amb_04, gekk_frames_standunderwater, NULL};
 
+// [rerelease] standing in the water it treads the 32 swim frames with ai_stand
+// distances, and never calls gekk_check_underwater - Xatrix's amb loop did,
+// which threw an enemy-less gekk into land_to_water/swim_start (ai_run and
+// gekk_bite with no enemy). See gekk_select_moves.
+mframe_t gekk_frames_standunderwater_rr [] = {
+    {ai_stand2, 14, NULL},
+    {ai_stand2, 14, NULL},
+    {ai_stand2, 14, NULL},
+    {ai_stand2, 14, NULL},
+    {ai_stand2, 16, NULL},
+    {ai_stand2, 16, NULL},
+    {ai_stand2, 16, NULL},
+    {ai_stand2, 18, NULL},
+    {ai_stand2, 18, NULL},
+    {ai_stand2, 18, NULL},
+
+    {ai_stand2, 20, NULL},
+    {ai_stand2, 20, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 24, NULL},
+    {ai_stand2, 24, NULL},
+    {ai_stand2, 26, NULL},
+    {ai_stand2, 26, NULL},
+    {ai_stand2, 24, NULL},
+    {ai_stand2, 24, NULL},
+
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 22, NULL},
+    {ai_stand2, 18, NULL},
+    {ai_stand2, 18, NULL},
+
+    {ai_stand2, 18, NULL},
+    {ai_stand2, 18, NULL}
+};
+
+static void gekk_select_moves(void);
+
 void gekk_swim_loop(edict_t *self)
 {
     // [rerelease] steer with SV_alternate_flystep for as long as we are
     // swimming; water_to_land and gekk_attack take it away again
     self->monsterinfo.aiflags |= AI_ALTERNATE_FLY;
     self->flags |= FL_SWIM;
+    gekk_select_moves();
     self->monsterinfo.currentmove = &gekk_move_swim_loop;
 }
 
@@ -369,6 +425,77 @@ mframe_t gekk_frames_swim [] = {
     {ai_run, 16, gekk_swim}
 };
 mmove_t gekk_move_swim_loop = {FRAME_amb_01, FRAME_amb_04, gekk_frames_swim, gekk_swim_loop};
+
+// [rerelease] the swim loop is the swim_start frames again, minus the claws
+// and bite, as a plain loop - no gekk_swim re-entering swim_start.
+mframe_t gekk_frames_swim_rr [] = {
+    {ai_run, 14, NULL},
+    {ai_run, 14, NULL},
+    {ai_run, 14, NULL},
+    {ai_run, 14, NULL},
+    {ai_run, 16, NULL},
+    {ai_run, 16, NULL},
+    {ai_run, 16, NULL},
+    {ai_run, 18, NULL},
+    {ai_run, 18, NULL},
+    {ai_run, 18, NULL},
+
+    {ai_run, 20, NULL},
+    {ai_run, 20, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 24, NULL},
+    {ai_run, 24, NULL},
+    {ai_run, 26, NULL},
+    {ai_run, 26, NULL},
+    {ai_run, 24, NULL},
+    {ai_run, 24, NULL},
+
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 22, NULL},
+    {ai_run, 18, NULL},
+    {ai_run, 18, NULL},
+
+    {ai_run, 18, NULL},
+    {ai_run, 18, NULL}
+};
+
+/*
+=================
+gekk_select_moves
+
+Points gekk_move_swim_loop and gekk_move_standunderwater at the rerelease's
+tables or Xatrix's. Done by rewriting the two moves rather than adding new
+ones so a savegame still finds them under their registered addresses; the
+game dir is latched, so the answer never changes while this DLL is loaded.
+Called from every way into the two moves, so a loaded game is covered too
+(M_MoveFrame snaps an out-of-range frame back to firstframe).
+=================
+*/
+static void gekk_select_moves(void)
+{
+    if (M_RereleaseGame()) {
+        gekk_move_swim_loop.firstframe = FRAME_swim_01;
+        gekk_move_swim_loop.lastframe = FRAME_swim_32;
+        gekk_move_swim_loop.frame = gekk_frames_swim_rr;
+        gekk_move_standunderwater.firstframe = FRAME_swim_01;
+        gekk_move_standunderwater.lastframe = FRAME_swim_32;
+        gekk_move_standunderwater.frame = gekk_frames_standunderwater_rr;
+    } else {
+        gekk_move_swim_loop.firstframe = FRAME_amb_01;
+        gekk_move_swim_loop.lastframe = FRAME_amb_04;
+        gekk_move_swim_loop.frame = gekk_frames_swim;
+        gekk_move_standunderwater.firstframe = FRAME_amb_01;
+        gekk_move_standunderwater.lastframe = FRAME_amb_04;
+        gekk_move_standunderwater.frame = gekk_frames_standunderwater;
+    }
+}
 
 mframe_t gekk_frames_swim_start [] = {
     {ai_run, 14, NULL},
@@ -429,6 +556,10 @@ void gekk_stand(edict_t *self)
 {
     if (self->waterlevel >= 2) {
         self->flags |= FL_SWIM;
+        // [rerelease] it steers with SV_alternate_flystep while treading water
+        if (M_RereleaseGame())
+            self->monsterinfo.aiflags |= AI_ALTERNATE_FLY;
+        gekk_select_moves();
         self->monsterinfo.currentmove = &gekk_move_standunderwater;
     } else if (self->monsterinfo.currentmove != &gekk_move_chant) {
         // don't break the chant loop that SP_monster_gekk started
@@ -726,7 +857,11 @@ void reloogie(edict_t *self)
     }
 
     if (self->enemy && self->enemy->health >= 0) {
-        if (random() > 0.7f && range(self, self->enemy) == RANGE_NEAR)
+        // [rerelease] anywhere within 440, melee range included
+        if (M_RereleaseGame()) {
+            if (random() > 0.7f && realrange(self, self->enemy) <= GEKK_RANGE_NEAR)
+                self->monsterinfo.currentmove = &gekk_move_spit;
+        } else if (random() > 0.7f && range(self, self->enemy) == RANGE_NEAR)
             self->monsterinfo.currentmove = &gekk_move_spit;
     }
 }
@@ -831,6 +966,9 @@ void gekk_bite(edict_t *self)
 {
     vec3_t  aim;
 
+    if (!self->enemy)
+        return;
+
     VectorSet(aim, MELEE_DISTANCE, 0, 0);
     fire_hit(self, aim, 5, 0);
 }
@@ -884,7 +1022,9 @@ void gekk_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t 
         return;
     }
 
-    if (other->takedamage) {
+    // [rerelease] style is armed at takeoff and spent on the first hit, so a
+    // leap does its contact damage once instead of on every touch
+    if (other->takedamage && (self->style == 1 || !M_RereleaseGame())) {
         if (VectorLength(self->velocity) > 200) {
             vec3_t  point;
             vec3_t  normal;
@@ -895,6 +1035,7 @@ void gekk_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t 
             VectorMA(self->s.origin, self->maxs[0], normal, point);
             damage = 10 + 10 * random();
             T_Damage(other, self, self, self->velocity, point, normal, damage, damage, 0, MOD_GEKK);
+            self->style = 0;
         }
     }
 
@@ -930,6 +1071,7 @@ void gekk_jump_takeoff(edict_t *self)
     self->monsterinfo.aiflags |= AI_DUCKED;
     self->monsterinfo.attack_finished = level.framenum + 3 * BASE_FRAMERATE;
     self->touch = gekk_jump_touch;
+    self->style = 1;
 }
 
 // the water-to-land lunge: starts from the enemy's height, and much softer
@@ -955,6 +1097,7 @@ void gekk_jump_takeoff2(edict_t *self)
     self->monsterinfo.aiflags |= AI_DUCKED;
     self->monsterinfo.attack_finished = level.framenum + 3 * BASE_FRAMERATE;
     self->touch = gekk_jump_touch;
+    self->style = 1;
 }
 
 void gekk_stop_skid(edict_t *self)
@@ -996,8 +1139,6 @@ void gekk_check_landing(edict_t *self)
 // took the FAR branch and could only spit or charge, when the rerelease takes
 // the NEAR branch, which is the one that holds the LEAP. That is exactly the
 // "only jumps when you are already close, otherwise sits and spits" report.
-#define GEKK_RANGE_NEAR 440.0f
-#define GEKK_RANGE_MID  940.0f
 
 void gekk_attack(edict_t *self)
 {
@@ -1117,10 +1258,20 @@ void gekk_pain(edict_t *self, edict_t *other, float kick, int damage)
     gi.sound(self, CHAN_VOICE, sound_pain1, 1, ATTN_NORM, 0);
 
     if (self->waterlevel >= 2) {
-        if (!(self->flags & FL_SWIM))
+        if (!(self->flags & FL_SWIM)) {
+            // [rerelease] and steer like a swimmer from here on
+            if (M_RereleaseGame())
+                self->monsterinfo.aiflags |= AI_ALTERNATE_FLY;
             self->flags |= FL_SWIM;
+        }
+        // [rerelease] no pain anims in nightmare
+        if (M_RereleaseGame() && !M_ShouldReactToPain(self, meansOfDeath))
+            return;
         self->monsterinfo.currentmove = &gekk_move_pain;
     } else {
+        if (M_RereleaseGame() && !M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
         r = random();
         if (r > 0.5f)
             self->monsterinfo.currentmove = &gekk_move_pain1;
@@ -1165,6 +1316,18 @@ void gekk_gibfest(edict_t *self)
     self->deadflag = DEAD_DEAD;
 }
 
+// [rerelease] the corpse stops blocking as it goes down: flattened to the
+// floor and made a dead monster partway through the fall (or at once in water)
+static void gekk_shrink(edict_t *self)
+{
+    if (!M_RereleaseGame())
+        return;
+
+    self->maxs[2] = 0;
+    self->svflags |= SVF_DEADMONSTER;
+    gi.linkentity(self);
+}
+
 void isgibfest(edict_t *self)
 {
     if (random() > 0.9f)
@@ -1177,7 +1340,7 @@ mframe_t gekk_frames_death1 [] = {
     {ai_move, -11.484f, NULL},
     {ai_move, -17.952f, NULL},
     {ai_move, -6.953f, NULL},
-    {ai_move, -7.393f, NULL},
+    {ai_move, -7.393f, gekk_shrink},
     {ai_move, -10.713f, NULL},
     {ai_move, -17.464f, NULL},
     {ai_move, -11.678f, NULL},
@@ -1269,6 +1432,7 @@ void gekk_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, 
     self->s.skinnum = 2;
 
     if (self->waterlevel >= 2) {
+        gekk_shrink(self);
         self->monsterinfo.currentmove = &gekk_move_wdeath;
     } else {
         r = random();
@@ -1567,6 +1731,7 @@ void SP_monster_gekk(edict_t *self)
 
     gi.linkentity(self);
 
+    gekk_select_moves();
     self->monsterinfo.currentmove = &gekk_move_stand;
     self->monsterinfo.scale = MODEL_SCALE;
 

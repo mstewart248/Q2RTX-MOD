@@ -285,6 +285,32 @@ shadow_ray_cull_mask()
 	return mask;
 }
 
+/*
+The opacity of a blood hit, thinned toward a landed splat's feather edge.
+
+The edge of a translucent pool read MORE opaque than its body - not its colour
+(pt_blood_thin_dark moves that and the edge stayed solid), its coverage. A
+film is clearest where it is thinnest, so the alpha is scaled by the same
+measured thickness get_material darkens with: dot of the dome normal with the
+surface plane normal that write_blood_geometry carries in the tangent slot,
+0 at the rim and 1 over the body.
+
+Only while splats are translucent at all: at alpha 1 blood is FORCE_OPAQUE and
+in the shadow mask (see shadow_ray_cull_mask), and thinning the edge then would
+show the floor under it in the splat's own shadow.
+*/
+float
+blood_hit_alpha(Triangle t, vec3 geo_normal)
+{
+	if (!is_blood(t.material_id) || t.tex_coords[2].x <= 0.5 || t.alpha >= 0.999
+	    || global_ubo.pt_blood_splat_alpha >= 0.999)
+		return t.alpha;
+
+	float thickness = clamp(abs(dot(geo_normal, t.tangents[0])), 0.0, 1.0);
+	thickness = pow(thickness, max(0.01, global_ubo.pt_blood_thin_power));
+	return t.alpha * mix(clamp(global_ubo.pt_blood_edge_alpha, 0.0, 1.0), 1.0, thickness);
+}
+
 bool
 is_chrome(uint material)
 {

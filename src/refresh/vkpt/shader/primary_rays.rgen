@@ -389,6 +389,7 @@ main()
 	position       = triangle.positions * bary;
 	vec2 tex_coord = triangle.tex_coords * bary;
 	vec3 geo_normal = normalize(triangle.normals * bary);
+	triangle.alpha = blood_hit_alpha(triangle, geo_normal);
 
 	vec3 flat_normal = normalize(cross(
 		triangle.positions[1] - triangle.positions[0],

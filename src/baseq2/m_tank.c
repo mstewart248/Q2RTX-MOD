@@ -302,11 +302,51 @@ void tank_pain(edict_t *self, edict_t *other, float kick, int damage)
 {
     M_SetDamageSkin(self);
 
-    if (damage <= 10)
+    if (damage <= 10 && !(M_RereleaseGame() && meansOfDeath == MOD_CHAINFIST))
         return;
 
     if (level.framenum < self->pain_debounce_framenum)
         return;
+
+    // [rerelease] m_tank.cpp: no pain while attacking on every skill, the
+    // commander has its own pain sound, and only an actual pain animation
+    // ends a blind volley
+    if (M_RereleaseGame()) {
+        if (meansOfDeath != MOD_CHAINFIST) {
+            if (damage <= 30)
+                if (random() > 0.2f)
+                    return;
+
+            // don't go into pain while attacking
+            if ((self->s.frame >= FRAME_attak301) && (self->s.frame <= FRAME_attak330))
+                return;
+            if ((self->s.frame >= FRAME_attak101) && (self->s.frame <= FRAME_attak116))
+                return;
+        }
+
+        self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+        if (self->count)
+            // registered on first play, not precached: mgu5m2 is at the 256-sound limit and
+            // a precache here pushed real sounds out; a full table now just skips this one
+            gi.sound(self, CHAN_VOICE, gi.soundindex("tank/pain.wav"), 1, ATTN_NORM, 0);
+        else
+            gi.sound(self, CHAN_VOICE, sound_pain, 1, ATTN_NORM, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        // PMM - blindfire cleanup
+        self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+
+        if (damage <= 30)
+            self->monsterinfo.currentmove = &tank_move_pain1;
+        else if (damage <= 60)
+            self->monsterinfo.currentmove = &tank_move_pain2;
+        else
+            self->monsterinfo.currentmove = &tank_move_pain3;
+        return;
+    }
 
     // [rerelease] being hit ends a blind volley
     self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
@@ -358,6 +398,26 @@ void TankBlaster(edict_t *self)
         flash_number = MZ2_TANK_BLASTER_3;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] scale-aware muzzle, blindfire at the remembered spot, and
+    // a straight-line PredictAim at the body (no eye height, no lead speed)
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+
+        if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+            if (!M_AdjustBlindfireTarget(self, start, self->monsterinfo.blind_fire_target, right, dir))
+                return;
+        } else {
+            PredictAimEx(self, self->enemy, start, 0, false, 0.0f, dir, NULL);
+        }
+
+        monster_fire_blaster(self, start, dir, 30, 800, flash_number, EF_BLASTER);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
     VectorCopy(self->enemy->s.origin, end);
@@ -394,17 +454,67 @@ void TankRocket(edict_t *self)
         flash_number = MZ2_TANK_ROCKET_3;
 
     AngleVectors(self->s.angles, forward, right, NULL);
+
+    // [rerelease] m_tank.cpp TankRocket: speed key, feet shots, skill-scaled
+    // lead, and no shot into a wall right in front of the launcher
+    if (M_RereleaseGame()) {
+        bool    blindfire = (self->monsterinfo.aiflags & AI_MANUAL_STEERING) ? true : false;
+        int     rocketSpeed;
+        trace_t tr;
+
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        // [Paril-KEX] scale
+        M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+
+        if (self->speed)
+            rocketSpeed = self->speed;
+        else if (self->spawnflags & SPAWNFLAG_TANK_COMMANDER_HEAT_SEEKING)
+            rocketSpeed = 500;
+        else
+            rocketSpeed = 650;
+
+        if (blindfire) {
+            VectorCopy(self->monsterinfo.blind_fire_target, vec);
+        } else if (random() < 0.66f || (start[2] < self->enemy->absmin[2])) {
+            // don't shoot at feet if they're above me
+            VectorCopy(self->enemy->s.origin, vec);
+            vec[2] += self->enemy->viewheight;
+        } else {
+            VectorCopy(self->enemy->s.origin, vec);
+            vec[2] = self->enemy->absmin[2] + 1;
+        }
+        VectorSubtract(vec, start, dir);
+
+        // lead target (not when blindfiring): 20, 35, 50, 65 chance of leading
+        if (!blindfire && (random() < (0.2f + ((3 - skill->integer) * 0.15f))))
+            PredictAimEx(self, self->enemy, start, rocketSpeed, false, 0, dir, vec);
+
+        VectorNormalize(dir);
+
+        if (blindfire) {
+            // blindfire doesn't check target (done in checkattack)
+            if (!M_AdjustBlindfireTarget(self, start, vec, right, dir))
+                return;
+        } else {
+            // paranoia, make sure we're not shooting a target right next to us
+            tr = gi.trace(start, NULL, NULL, vec, self, MASK_PROJECTILE);
+            if (!(tr.fraction > 0.5f || !tr.ent || tr.ent->solid != SOLID_BSP))
+                return;
+        }
+
+        if (self->spawnflags & SPAWNFLAG_TANK_COMMANDER_HEAT_SEEKING)
+            monster_fire_heat(self, start, dir, 50, rocketSpeed, flash_number, self->accel);
+        else
+            monster_fire_rocket(self, start, dir, 50, rocketSpeed, flash_number);
+        return;
+    }
+
     G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
-    // [rerelease] blindfire aims at where the enemy was last seen
-    if (M_RereleaseGame() && (self->monsterinfo.aiflags & AI_MANUAL_STEERING)) {
-        if (VectorEmpty(self->monsterinfo.blind_fire_target))
-            return;
-        VectorCopy(self->monsterinfo.blind_fire_target, vec);
-    } else {
-        VectorCopy(self->enemy->s.origin, vec);
-        vec[2] += self->enemy->viewheight;
-    }
+    VectorCopy(self->enemy->s.origin, vec);
+    vec[2] += self->enemy->viewheight;
 
     VectorSubtract(vec, start, dir);
     VectorNormalize(dir);
@@ -428,7 +538,11 @@ void TankMachineGun(edict_t *self)
     flash_number = MZ2_TANK_MACHINEGUN_1 + (self->s.frame - FRAME_attak406);
 
     AngleVectors(self->s.angles, forward, right, NULL);
-    G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
+    // [rerelease] scale-aware muzzle (the N64 tank commander is 1.5x)
+    if (M_RereleaseGame())
+        M_ProjectFlashSource(self, monster_flash_offset[flash_number], forward, right, start);
+    else
+        G_ProjectSource(self->s.origin, monster_flash_offset[flash_number], forward, right, start);
 
     if (self->enemy) {
         VectorCopy(self->enemy->s.origin, vec);
@@ -514,6 +628,25 @@ mmove_t tank_move_attack_post_blast = {FRAME_attak117, FRAME_attak122, tank_fram
 
 void tank_reattack_blaster(edict_t *self)
 {
+    // [rerelease] a blind volley ends here, and the 60% reattack is no longer
+    // reserved for hard and nightmare
+    if (M_RereleaseGame()) {
+        if (self->monsterinfo.aiflags & AI_MANUAL_STEERING) {
+            self->monsterinfo.aiflags &= ~AI_MANUAL_STEERING;
+            self->monsterinfo.currentmove = &tank_move_attack_post_blast;
+            return;
+        }
+
+        if (visible(self, self->enemy))
+            if (self->enemy->health > 0)
+                if (random() <= 0.6f) {
+                    self->monsterinfo.currentmove = &tank_move_reattack_blast;
+                    return;
+                }
+        self->monsterinfo.currentmove = &tank_move_attack_post_blast;
+        return;
+    }
+
     if (skill->value >= 2)
         if (visible(self, self->enemy))
             if (self->enemy->health > 0)
@@ -685,8 +818,8 @@ void tank_refire_rocket(edict_t *self)
         return;
     }
 
-    // Only on hard or nightmare
-    if (skill->value >= 2)
+    // Only on hard or nightmare ([rerelease] every skill)
+    if (skill->value >= 2 || M_RereleaseGame())
         if (self->enemy->health > 0)
             if (visible(self, self->enemy))
                 if (random() <= 0.4f) {
@@ -706,6 +839,19 @@ void tank_attack(edict_t *self)
     vec3_t  vec;
     float   range;
     float   r;
+
+    // [rerelease] the corpse strike comes first, and also covers a 0-health
+    // enemy (id tests <= 0; the classic < 0 left it shooting at a corpse)
+    if (M_RereleaseGame()) {
+        if (!self->enemy || !self->enemy->inuse)
+            return;
+
+        if (self->enemy->health <= 0) {
+            self->monsterinfo.currentmove = &tank_move_attack_strike;
+            self->monsterinfo.aiflags &= ~AI_BRUTAL;
+            return;
+        }
+    }
 
     // [rerelease] blind fire - see gunner_attack.  The tank only takes the shot
     // if the launcher itself has a clear line; it is a big monster and the
@@ -771,6 +917,37 @@ void tank_attack(edict_t *self)
     range = VectorLength(vec);
 
     r = random();
+
+    // [rerelease] every attack has to have a clear shot from its own muzzle,
+    // and the machinegun is never wasted on a tesla mine up close
+    if (M_RereleaseGame()) {
+        vec3_t  ignored;
+        bool    can_machinegun;
+
+        if (range <= 250) {
+            can_machinegun = (!self->enemy->classname || strcmp(self->enemy->classname, "tesla_mine")) &&
+                M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_MACHINEGUN_5], ignored);
+
+            if (can_machinegun && r < ((range <= 125) ? 0.5f : 0.25f))
+                self->monsterinfo.currentmove = &tank_move_attack_chain;
+            else if (M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_BLASTER_1], ignored))
+                self->monsterinfo.currentmove = &tank_move_attack_blast;
+        } else {
+            bool    can_rocket;
+
+            can_machinegun = M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_MACHINEGUN_5], ignored);
+            can_rocket = M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_ROCKET_1], ignored);
+
+            if (can_machinegun && r < 0.33f)
+                self->monsterinfo.currentmove = &tank_move_attack_chain;
+            else if (can_rocket && r < 0.66f) {
+                self->monsterinfo.currentmove = &tank_move_attack_pre_rocket;
+                self->pain_debounce_framenum = level.framenum + 5 * BASE_FRAMERATE;  // no pain for a while
+            } else if (M_CheckClearShot(self, monster_flash_offset[MZ2_TANK_BLASTER_1], ignored))
+                self->monsterinfo.currentmove = &tank_move_attack_blast;
+        }
+        return;
+    }
 
     if (range <= 125) {
         if (r < 0.4f)
@@ -871,6 +1048,9 @@ void tank_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, 
                 // [rerelease] id's own gib parts - see tank_rerelease_gibs
                 self->s.skinnum /= 2;
                 ThrowGibs(self, damage, tank_rerelease_gibs, tank_num_rerelease_gibs);
+                // the arm, unless it already fell off on the death below
+                if (!self->style)
+                    ThrowGib(self, "models/monsters/tank/gibs/barm.md2", damage, GIB_SKINNED | GIB_UPRIGHT);
                 self->deadflag = DEAD_DEAD;
                 return;
             }
@@ -1008,6 +1188,28 @@ void tank_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, 
     if (self->deadflag == DEAD_DEAD)
         return;
 
+    // [rerelease] [Paril-KEX] dropped arm
+    if (M_RereleaseGame() && !self->style) {
+        vec3_t  fwd, rgt, up;
+        edict_t *arm_gib;
+
+        self->style = 1;
+
+        AngleVectors(self->s.angles, fwd, rgt, up);
+
+        arm_gib = ThrowGib(self, "models/monsters/tank/gibs/barm.md2", damage, GIB_SKINNED | GIB_UPRIGHT);
+        VectorMA(self->s.origin, -16.f, rgt, arm_gib->s.origin);
+        VectorMA(arm_gib->s.origin, 23.f, up, arm_gib->s.origin);
+        VectorCopy(arm_gib->s.origin, arm_gib->s.old_origin);
+        VectorSet(arm_gib->avelocity, crandom() * 15.f, crandom() * 15.f, 180.f);
+        VectorScale(up, 100.f, arm_gib->velocity);
+        VectorMA(arm_gib->velocity, -120.f, rgt, arm_gib->velocity);
+        VectorCopy(self->s.angles, arm_gib->s.angles);
+        arm_gib->s.angles[2] = -90.f;
+        arm_gib->s.skinnum /= 2;
+        gi.linkentity(arm_gib);
+    }
+
 // regular death
     gi.sound(self, CHAN_VOICE, sound_die, 1, ATTN_NORM, 0);
     self->deadflag = DEAD_DEAD;
@@ -1053,7 +1255,11 @@ void SP_monster_tank(edict_t *self)
 
 	float val = crandom();
 
-	if (val < 0) {
+	// the random hyperblaster tank is a port addition; not in the rerelease
+	if (M_RereleaseGame()) {
+		self->monsterFireHyperBlaster = qfalse;
+	}
+	else if (val < 0) {
 		self->monsterFireHyperBlaster = qtrue;
 	}
 	else {
@@ -1061,8 +1267,10 @@ void SP_monster_tank(edict_t *self)
 	}
 
     self->s.modelindex = gi.modelindex("models/monsters/tank/tris.md2");
-    if (M_RereleaseGame())
+    if (M_RereleaseGame()) {
         PrecacheGibs(tank_rerelease_gibs, tank_num_rerelease_gibs);
+        gi.modelindex("models/monsters/tank/gibs/barm.md2");
+    }
     // [rerelease] 8 units shorter; applies to the tank commander too, which shares this spawn
     if (M_RereleaseGame()) {
         VectorSet(self->mins, -32, -32, -16);
@@ -1094,6 +1302,10 @@ void SP_monster_tank(edict_t *self)
     if (strcmp(self->classname, "monster_tank_commander") == 0) {
         self->health = 1000;
         self->gib_health = -225;
+        // [rerelease] the commander has its own pain sound (tank_pain)
+        if (M_RereleaseGame()) {
+            self->count = 1;
+        }
     } else {
         self->health = 750;
         self->gib_health = -200;

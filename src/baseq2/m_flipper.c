@@ -136,11 +136,18 @@ void flipper_walk(edict_t *self)
     self->monsterinfo.currentmove = &flipper_move_walk;
 }
 
+// [rerelease] the first four start_run frames move 0, not 8; done through
+// this wrapper so the move keeps its one (savegame-registered) table
+static void flipper_ai_start_run(edict_t *self, float dist)
+{
+    ai_run(self, M_RereleaseGame() ? 0 : dist);
+}
+
 mframe_t flipper_frames_start_run [] = {
-    { ai_run, 8, NULL },
-    { ai_run, 8, NULL },
-    { ai_run, 8, NULL },
-    { ai_run, 8, NULL },
+    { flipper_ai_start_run, 8, NULL },
+    { flipper_ai_start_run, 8, NULL },
+    { flipper_ai_start_run, 8, NULL },
+    { flipper_ai_start_run, 8, NULL },
     { ai_run, 8, flipper_run }
 };
 mmove_t flipper_move_start_run = {FRAME_flphor01, FRAME_flphor05, flipper_frames_start_run, NULL};
@@ -220,6 +227,21 @@ void flipper_pain(edict_t *self, edict_t *other, float kick, int damage)
         return;
 
     self->pain_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
+
+    if (M_RereleaseGame()) {
+        // id plays the pain sound even in nightmare
+        n = Q_rand() & 1;
+        gi.sound(self, CHAN_VOICE, n ? sound_pain2 : sound_pain1, 1, ATTN_NORM, 0);
+
+        if (!M_ShouldReactToPain(self, meansOfDeath))
+            return;     // no pain anims in nightmare
+
+        if (n == 0)
+            self->monsterinfo.currentmove = &flipper_move_pain1;
+        else
+            self->monsterinfo.currentmove = &flipper_move_pain2;
+        return;
+    }
 
     if (skill->value == 3)
         return;     // no pain anims in nightmare
@@ -333,7 +355,9 @@ void flipper_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
                 ThrowGib(self, "models/objects/gibs/bone/tris.md2", damage, GIB_ORGANIC);
             for (n = 0; n < 2; n++)
                 ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
-            ThrowHead(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
+            // [rerelease] the head gib is head2, not a lump of meat
+            ThrowHead(self, M_RereleaseGame() ? "models/objects/gibs/head2/tris.md2"
+                      : "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC);
             self->deadflag = DEAD_DEAD;
             return;
         }
@@ -357,6 +381,9 @@ void flipper_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damag
     gi.sound(self, CHAN_VOICE, sound_death, 1, ATTN_NORM, 0);
     self->deadflag = DEAD_DEAD;
     self->takedamage = DAMAGE_YES;
+    // [rerelease] the body stops blocking straight away, not at flipper_dead
+    if (M_RereleaseGame())
+        self->svflags |= SVF_DEADMONSTER;
     self->monsterinfo.currentmove = &flipper_move_death;
 }
 
