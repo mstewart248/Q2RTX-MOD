@@ -12242,12 +12242,20 @@ textures/hodge/ho_flat_a:
 textures/hodge/ho_floor3_blood_01:
 	texture_base materialDev/textures/hodge/ho_floor3_blood_01.tga
 	texture_normals materialDev/textures/hodge/ho_floor3_blood_01_n.tga
+	texture_roughness materialDev/textures/hodge/ho_floor3_blood_01_rough.tga
+	texture_metallic materialDev/textures/hodge/ho_floor3_blood_01_metallic.tga
+	specular_factor 0.2
 	metalness_factor 0
+	base_factor 2.5
 
 textures/hodge/ho_floor3_blood_02:
 	texture_base materialDev/textures/hodge/ho_floor3_blood_02.tga
 	texture_normals materialDev/textures/hodge/ho_floor3_blood_02_n.tga
+	texture_roughness materialDev/textures/hodge/ho_floor3_blood_02_rough.tga
+	texture_metallic materialDev/textures/hodge/ho_floor3_blood_02_metallic.tga
+	specular_factor 0.2
 	metalness_factor 0
+	base_factor 2.5
 
 textures/hodge/ho_floor3_blood_03:
 	texture_base materialDev/textures/hodge/ho_floor3_blood_03.tga
