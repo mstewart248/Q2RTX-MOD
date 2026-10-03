@@ -258,6 +258,7 @@ begin video_reconstruction
     style --compact
     title "Reconstruction"
     pairs --status "(flt_taa)" "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
+    toggle --status "the path tracer's own denoiser (A-SVGF). Off shows the raw noisy samples - useful for comparing, or under DLSS Ray-Reconstruction, which denoises by itself and switches this off when turned on (flt_enable)" "denoiser" flt_enable
     pairs --status "(pt_dlss)" "DLSS Super Resolution" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
     // Ray Reconstruction REPLACES DLSS's denoiser, so it is meaningless without
     // DLSS itself. This whole submenu is only reachable with vid_rtx 1;
@@ -280,7 +281,7 @@ begin video_reconstruction
     // and the present path in main.c. Deferred deliberately; when it lands,
     // move the endif below back to just after Ray-Reconstruction.
     ifneq pt_dlss 0
-    pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser below OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had. (pt_dlss_dldn)" \
+    pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser above OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had. (pt_dlss_dldn)" \
         "DLSS Ray-Reconstruction" pt_dlss_dldn off 0 on 1
     pairs --status "generates extra frames between rendered ones. Needs DLSS on. Pick the multiplier so base framerate x multiplier is about your refresh rate - so a HEAVIER scene wants a HIGHER multiplier, not a lower one (60Hz: 2x at 30fps base, 3x at 20, 4x at 15, 6x at 10). Check the base rate with pt_dlss_fg_stats 1. With vsync ON the presented rate is capped at refresh instead, and 2x is all that helps. Turn Reflex on with this. (pt_dlss_fg)" "DLSS Frame Generation" pt_dlss_fg off 0 2x 2 3x 3 4x 4 5x 5 6x 6
     // Only when nvngx_dlssnr.dll is next to q2rtx.exe - it is not shipped. See
@@ -346,7 +347,6 @@ begin video_renderer
         blank
         pairs --status "(pt_restir)" "ReStir Direct Illuminaton" pt_restir off 0 on 1
         pairs --status "reuses good bounce-light samples across frames: less noise in indirect light, about 0.2ms (pt_restir_gi)" "ReStir Global Illumination" pt_restir_gi off 0 on 1
-        toggle --status "(flt_enable)" "denoiser" flt_enable
         toggle --status "(flt_fixed_albedo)" "textures" flt_fixed_albedo ~1
         pairs --status "experimental feature - simulates reflection and refraction effects in thick glass (pt_thick_glass)" \
             "thick glass refraction" pt_thick_glass "disabled" 0 "photo mode only" 1 "enabled" 2
