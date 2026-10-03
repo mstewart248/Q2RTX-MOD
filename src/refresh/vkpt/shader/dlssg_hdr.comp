@@ -1,0 +1,156 @@
+/*
+Copyright (C) 2026 Matt Stewart
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// ========================================================================== //
+// HDR10 <-> scRGB for DLSS Frame Generation, in place.
+//
+// DLSS-FG only accepts a display-ready frame with values in [0,1]: HDR10
+// (BT.2020 primaries, ST.2084/PQ). Its programming guide names scRGB as
+// unsupported, and that is what this renderer's HDR tone mapper writes into
+// IMG_DLSS_OUTPUT (linear BT.709, 1.0 = 80 nits, highlights far above 1) -
+// the cause of the flicker and artifacts with frame generation under HDR.
+//
+// mode 0 (encode): scRGB -> PQ, before DLSS-FG reads the frame.
+// mode 1 (decode): PQ -> scRGB, on the frame and on every generated frame
+//                  afterwards, so the swapchain path is unchanged.
+//
+// SDR has the same problem one octave down. IMG_DLSS_OUTPUT is tone mapped
+// but LINEAR: the sRGB encode only happens in the final blit, because the
+// swapchain is an _SRGB format. So DLSS-FG was reading linear light and
+// treating it as the display-encoded frame it asks for. Measured at a still
+// camera (fgspot, 2026-10-02): every generated frame came back on a different
+// tone curve from the real one - about 4x brighter in the darkest tones,
+// tapering to equal at white - so at 4x three of every four presented frames
+// had lifted mid-dark textures. That reads as a pulsating, lighter copy of
+// the texture on dimly lit geometry while bright and black areas look fine.
+//
+// mode 2 (encode): linear -> sRGB, before DLSS-FG reads the frame.
+// mode 3 (decode): sRGB -> linear, on the frame and every generated frame.
+// See dlssg_hdr.c.
+// ========================================================================== //
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+#include "utils.glsl"
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform PushConstants {
+    uint mode;      // 0 PQ encode, 1 PQ decode, 2 sRGB encode, 3 sRGB decode
+    uint target;    // 0 DLSS_OUTPUT, 1..5 DLSS_FG_OUTPUT .. DLSS_FG_OUTPUT5
+    uint width;
+    uint height;
+} push;
+
+// ST.2084 constants
+const float PQ_M1 = 0.1593017578125;
+const float PQ_M2 = 78.84375;
+const float PQ_C1 = 0.8359375;
+const float PQ_C2 = 18.8515625;
+const float PQ_C3 = 18.6875;
+
+vec3 pq_encode(vec3 nits)
+{
+    vec3 y = pow(clamp(nits / 10000.0, 0.0, 1.0), vec3(PQ_M1));
+    return pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), vec3(PQ_M2));
+}
+
+vec3 pq_decode(vec3 n)
+{
+    vec3 p = pow(clamp(n, 0.0, 1.0), vec3(1.0 / PQ_M2));
+    vec3 y = pow(max(p - PQ_C1, 0.0) / (PQ_C2 - PQ_C3 * p), vec3(1.0 / PQ_M1));
+    return y * 10000.0;
+}
+
+vec3 srgb_encode(vec3 lin)
+{
+    lin = clamp(lin, 0.0, 1.0);
+    return mix(lin * 12.92, 1.055 * pow(lin, vec3(1.0 / 2.4)) - 0.055,
+               greaterThan(lin, vec3(0.0031308)));
+}
+
+vec3 srgb_decode(vec3 enc)
+{
+    enc = clamp(enc, 0.0, 1.0);
+    return mix(enc / 12.92, pow((enc + 0.055) / 1.055, vec3(2.4)),
+               greaterThan(enc, vec3(0.04045)));
+}
+
+vec3 bt709_to_bt2020(vec3 c)
+{
+    return vec3(dot(vec3(0.6274040, 0.3292820, 0.0433136), c),
+                dot(vec3(0.0690970, 0.9195400, 0.0113612), c),
+                dot(vec3(0.0163916, 0.0880132, 0.8955950), c));
+}
+
+vec3 bt2020_to_bt709(vec3 c)
+{
+    return vec3(dot(vec3( 1.6604910, -0.5876411, -0.0728499), c),
+                dot(vec3(-0.1245505,  1.1328999, -0.0083494), c),
+                dot(vec3(-0.0181508, -0.1005789,  1.1187297), c));
+}
+
+vec4 load_target(ivec2 p)
+{
+    switch (push.target) {
+    case 1:  return imageLoad(IMG_DLSS_FG_OUTPUT, p);
+    case 2:  return imageLoad(IMG_DLSS_FG_OUTPUT2, p);
+    case 3:  return imageLoad(IMG_DLSS_FG_OUTPUT3, p);
+    case 4:  return imageLoad(IMG_DLSS_FG_OUTPUT4, p);
+    case 5:  return imageLoad(IMG_DLSS_FG_OUTPUT5, p);
+    default: return imageLoad(IMG_DLSS_OUTPUT, p);
+    }
+}
+
+void store_target(ivec2 p, vec4 v)
+{
+    switch (push.target) {
+    case 1:  imageStore(IMG_DLSS_FG_OUTPUT, p, v); break;
+    case 2:  imageStore(IMG_DLSS_FG_OUTPUT2, p, v); break;
+    case 3:  imageStore(IMG_DLSS_FG_OUTPUT3, p, v); break;
+    case 4:  imageStore(IMG_DLSS_FG_OUTPUT4, p, v); break;
+    case 5:  imageStore(IMG_DLSS_FG_OUTPUT5, p, v); break;
+    default: imageStore(IMG_DLSS_OUTPUT, p, v); break;
+    }
+}
+
+void main()
+{
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(push.width) || p.y >= int(push.height))
+        return;
+
+    vec4 c = load_target(p);
+
+    switch (push.mode) {
+    case 0:  c.rgb = pq_encode(max(bt709_to_bt2020(c.rgb), 0.0) * 80.0); break;   // scRGB 1.0 = 80 nits
+    case 1:  c.rgb = bt2020_to_bt709(pq_decode(c.rgb) / 80.0); break;
+    case 2:  c.rgb = srgb_encode(c.rgb); break;
+    default: c.rgb = srgb_decode(c.rgb); break;
+    }
+
+    store_target(p, c);
+}

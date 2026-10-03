@@ -104,9 +104,11 @@ extern "C" unsigned int DLSSG_EvaluateFeature(VkCommandBuffer cmd,
     evalParams.pDepth = in->pDepth;
     evalParams.pMVecs = in->pMotionVectors;
     evalParams.pOutputInterpFrame = in->pOutputInterpolated;
-    // HUDLess / UI are left null for now: the backbuffer we hand over is already the
-    // pre-HUD image, so there is no UI for DLSS-G to separate out yet.
-    evalParams.pHudless = NULL;
+    // HUDLess: the backbuffer we hand over is already the pre-HUD image (the 2D layer
+    // is drawn onto the swapchain after frame generation), so the caller can pass the
+    // same resource here. That tells the runtime there is no UI in the frame; with
+    // both HUDLess and UI absent it runs its own UI-detection heuristics instead.
+    evalParams.pHudless = in->pHudless;
     evalParams.pUI = NULL;
     evalParams.pUIAlpha = NULL;
     evalParams.pBidirectionalDistortionField = NULL;
@@ -175,6 +177,9 @@ extern "C" unsigned int DLSSG_EvaluateFeature(VkCommandBuffer cmd,
     opt.mvecsSubrectSize = { in->renderWidth, in->renderHeight };
     opt.depthSubrectBase = { 0, 0 };
     opt.depthSubrectSize = { in->renderWidth, in->renderHeight };
+    // HUDLess covers its whole resource, like the backbuffer.
+    opt.hudLessSubrectBase = { 0, 0 };
+    opt.hudLessSubrectSize = { 0, 0 };
 
     opt.minRelativeLinearDepthObjectSeparation = in->minRelativeLinearDepthObjectSeparation;
 

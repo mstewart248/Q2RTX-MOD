@@ -233,6 +233,8 @@ VkptInit_t vkpt_initialization[] = {
 	{ "bloom|",   vkpt_bloom_create_pipelines,         vkpt_bloom_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "mblur",    vkpt_motion_blur_initialize,         vkpt_motion_blur_destroy,             VKPT_INIT_DEFAULT,            0 },
 	{ "mblur|",   vkpt_motion_blur_create_pipelines,   vkpt_motion_blur_destroy_pipelines,   VKPT_INIT_RELOAD_SHADER,      0 },
+	{ "fghdr",    vkpt_dlssg_hdr_initialize,           vkpt_dlssg_hdr_destroy,               VKPT_INIT_DEFAULT,            0 },
+	{ "fghdr|",   vkpt_dlssg_hdr_create_pipelines,     vkpt_dlssg_hdr_destroy_pipelines,     VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "dlss5",    vkpt_dlss5_initialize,               vkpt_dlss5_destroy,                   VKPT_INIT_DEFAULT,            0 },
 	{ "dlss5|",   vkpt_dlss5_create_pipelines,         vkpt_dlss5_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "tonemap",  vkpt_tone_mapping_initialize,        vkpt_tone_mapping_destroy,            VKPT_INIT_DEFAULT,            0 },

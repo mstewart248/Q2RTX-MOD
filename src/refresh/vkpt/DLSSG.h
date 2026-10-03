@@ -69,6 +69,11 @@ typedef struct DLSSG_EvalInputs {
     NVSDK_NGX_Resource_VK* pMotionVectors;
     NVSDK_NGX_Resource_VK* pOutputInterpolated;
 
+    // Optional. The scene colour WITHOUT any HUD. Q2RTX draws its 2D layer onto the
+    // swapchain images after frame generation, so the backbuffer handed over is already
+    // HUD-less and this can simply alias it; NULL leaves the runtime to detect UI itself.
+    NVSDK_NGX_Resource_VK* pHudless;
+
     unsigned int renderWidth;
     unsigned int renderHeight;
 

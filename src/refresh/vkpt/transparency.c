@@ -605,6 +605,20 @@ bool vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int ma
 	return true;
 }
 
+static int beam_entity_id(const entity_t *beam)
+{
+	if (beam->id)
+		return beam->id;
+
+	uint32_t h = 2166136261u;
+	for (int k = 0; k < 3; k++) {
+		h = (h ^ (uint32_t)(int32_t)floorf(beam->origin[k])) * 16777619u;
+		h = (h ^ (uint32_t)(int32_t)floorf(beam->oldorigin[k])) * 16777619u;
+	}
+	h ^= h >> 15;
+	return (int)((h & 0x3FFF) | 1);   // nonzero: 0 means "no identity"
+}
+
 void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, entity_t* entities, int num_entites, float adapted_luminance, int* light_entity_ids, int* num_light_entities)
 {
 	const float hdr_factor = cvar_pt_beam_lights->value * adapted_luminance * 20.f;
@@ -637,9 +651,21 @@ void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_l
 		
 		const entity_t* beam = beams[i];
 
+		/* The beam light's identity for ReSTIR's frame-to-frame remap. It was
+		   the beam's INDEX in this frame's entity list, which shifts whenever
+		   anything before it comes or goes, and hash.bsp was never set - so a
+		   beam light almost never matched itself from the last frame, its
+		   lighting on nearby walls was re-picked from scratch every frame, and
+		   frame generation interpolated between two different lightings: a
+		   pulsing, washed-out band around laser beams. The entity's own id is
+		   stable; temp-entity beams without one fall back to their endpoints,
+		   which hold still for as long as the beam does. */
+		uint32_t beam_id = (uint32_t)beam_entity_id(beams[i]);
 		entity_hash_t hash;
-		hash.entity = (beams[i] - entities) + 1; //entity ID
+		hash.entity = beam_id & 0x3FFF;
 		hash.model = RF_BEAM;
+		hash.mesh = 0;   // set per triangle by vkpt_build_cylinder_light
+		hash.bsp = 0;
 
 		// Adjust beam width. Default "narrow" beams have a width of 4, "fat" beams have 16.
 		if (beam->frame == 0)

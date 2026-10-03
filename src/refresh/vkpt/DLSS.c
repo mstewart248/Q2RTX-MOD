@@ -1259,6 +1259,8 @@ void InitDLSSGCvars()
     Cvar_Get("pt_dlss_fg_mat_transpose", "0", 0);
     Cvar_Get("pt_dlss_fg_mat_yflip", "0", 0);
     Cvar_Get("pt_dlss_fg_proj", "1", 0);
+    /* HUD-less hint - see the comment at .pHudless in DLSSGApply. 0 = do not provide it. */
+    Cvar_Get("pt_dlss_fg_hudless", "1", 0);
 }
 
 unsigned int DLSSGMaxMultiplier()
@@ -1828,6 +1830,9 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
         cv_split_eval = Cvar_Get("pt_dlss_fg_split_eval", "0", 0);
     const bool splitEval = cv_split_eval->integer != 0 && generatedFrames > 1;
 
+    const bool fgHdr10 = vkpt_dlssg_hdr_active();
+    const VkExtent2D outSize2D = { outSize.Width, outSize.Height };
+
     for (unsigned int genIndex = 1; genIndex <= generatedFrames; genIndex++)
     {
     /* Each Evaluate gets its own command buffer and its own submit. The caller's `cmd`
@@ -1839,6 +1844,12 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
     const int outImg = DLSSGOutputImageIndex(genIndex);
     BARRIER_COMPUTE(evalCmd, qvk.images[outImg]);
 
+    /* HDR: DLSS-FG wants HDR10/PQ, the frame is scRGB - see dlssg_hdr.c.
+       Encoded once, into whichever buffer the FIRST evaluate is recorded in, so
+       it runs before DLSS-FG reads the frame even with split submissions. */
+    if (genIndex == 1 && fgHdr10)
+        vkpt_dlssg_hdr_convert(evalCmd, 0, false, outSize2D);
+
     NVSDK_NGX_Resource_VK outputInterp = ToNGXResource(
         qvk.images[outImg], qvk.images_views[outImg],
         outSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);
@@ -1848,6 +1859,18 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
         .pDepth = &depth,
         .pMotionVectors = &mvecs,
         .pOutputInterpolated = &outputInterp,
+
+        /* THE FRAME HAS NO HUD IN IT, SO SAY SO. The 2D layer (status bar, crosshair,
+           console notify lines) is drawn onto each swapchain image AFTER frame
+           generation, so VKPT_IMG_DLSS_OUTPUT is already the HUD-less image the SDK
+           describes for pHudless. Handing the same resource over in both roles makes
+           the guide's identity hold exactly - Backbuffer = UI + (1 - a) * Hudless with
+           UI = 0 everywhere - and tells the runtime that nothing in the frame is UI.
+           Without either hint, DLSS-G runs its own UI-detection heuristics, which look
+           for static, saturated, high-contrast content, i.e. a stationary laser beam
+           in a still camera. pt_dlss_fg_hudless 0 restores the old no-hint behaviour
+           for an A/B. */
+        .pHudless = Cvar_Get("pt_dlss_fg_hudless", "1", 0)->integer ? &backbuffer : NULL,
 
         .renderWidth = renderSize.Width,
         .renderHeight = renderSize.Height,
@@ -1995,5 +2018,13 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
        `all_gpus` is false: frame generation already requires device_count == 1. */
     if (splitEval)
         vkpt_submit_command_buffer_simple(evalCmd, qvk.queue_graphics, false);
+    }
+
+    /* Back to scRGB for everything downstream: the real frame and each generated
+       one. `cmd` is submitted after the split evaluates, so this follows them. */
+    if (fgHdr10) {
+        vkpt_dlssg_hdr_convert(cmd, 0, true, outSize2D);
+        for (unsigned int genIndex = 1; genIndex <= generatedFrames; genIndex++)
+            vkpt_dlssg_hdr_convert(cmd, (int)genIndex, true, outSize2D);
     }
 }

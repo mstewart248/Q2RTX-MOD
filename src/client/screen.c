@@ -1366,6 +1366,10 @@ static const cmdreg_t scr_cmds[] = {
     { "clearchathud", SCR_ClearChatHUD_f },
     { "weapnext", SCR_WeapNext_f },
     { "weapprev", SCR_WeapPrev_f },
+    // the rerelease's own names: its default.cfg binds MWHEEL and the d-pad
+    // to these, and as unknown commands they went to the game as chat
+    { "cl_weapnext", SCR_WeapNext_f },
+    { "cl_weapprev", SCR_WeapPrev_f },
     { NULL }
 };
 

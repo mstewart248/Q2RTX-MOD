@@ -3906,9 +3906,11 @@ void FS_Shutdown(void)
     Cmd_Deregister(c_fs);
 }
 
-/* THE REMASTER'S FOG DEFAULTS. Fog is on by default in the remaster, whose maps
+/* THE REMASTER'S DEFAULTS. Fog is on by default in the remaster, whose maps
    author it, and off in the classic game. Everything else about the fog is the
    same in both - same knobs, same defaults - so that one setting gives one look.
+   Laser beams light their surroundings five times harder in the remaster, whose
+   maps lean on them as light sources (pt_beam_lights, transparency.c).
    The classic column must match each cvar's own Cvar_Get / UBO_CVAR_DO default,
    since it is what a switch back restores. */
 static const struct {
@@ -3916,6 +3918,7 @@ static const struct {
 } rerelease_defaults[] = {
     { "cl_fog",                    "0",   "1"    },
     { "pt_fog_sky_pvs",            "0.5", "0"    },
+    { "pt_beam_lights",            "1.0", "5"    },
 };
 
 // Runs before the new game's configs, so its q2config.cfg still has the last

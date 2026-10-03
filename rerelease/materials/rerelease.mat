@@ -8931,6 +8931,7 @@ textures/e1u3/refdr3_4:
 	metalness_factor 1
 	specular_factor .35
 	roughness_override .5
+	
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
@@ -12392,6 +12393,9 @@ textures/hodge/ho_snow_01a:
 textures/hodge/ho_tech_panel_01_a:
 	texture_base materialDev/textures/hodge/ho_tech_panel_01_a.tga
 	texture_normals materialDev/textures/hodge/ho_tech_panel_01_a_n.tga
+	texture_emissive materialDev/textures/hodge/ho_tech_panel_01_a_light.tga
+	is_light 1
+	default_radiance 1
 	metalness_factor 0
 
 textures/hodge/ho_trim_01_a:
