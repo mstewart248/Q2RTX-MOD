@@ -12260,6 +12260,10 @@ textures/hodge/ho_floor3_blood_02:
 textures/hodge/ho_floor3_blood_03:
 	texture_base materialDev/textures/hodge/ho_floor3_blood_03.tga
 	texture_normals materialDev/textures/hodge/ho_floor3_blood_03_n.tga
+	texture_roughness materialDev/textures/hodge/ho_floor3_blood_03_rough.tga
+	texture_metallic materialDev/textures/hodge/ho_floor3_blood_03_metallic.tga
+	base_factor 2.5
+	specular_factor 0.2
 	metalness_factor 0
 
 textures/hodge/ho_floor_05_a:
