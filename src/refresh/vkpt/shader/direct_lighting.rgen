@@ -151,7 +151,7 @@ direct_lighting_restir(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq,
 	// trade blotches for fireflies.
 	if(global_ubo.pt_restir_permutation != 0)
 	{
-		ivec2 perm_offset = ivec2(global_ubo.current_frame_idx & 3, (global_ubo.current_frame_idx >> 2) & 3);
+		ivec2 perm_offset = restir_permutation_offset();
 		ivec2 permuted = pos_prev + perm_offset;
 		permuted.x ^= 3;
 		permuted.y ^= 3;

@@ -473,8 +473,16 @@ void main()
 	}
 
 	if(medium != MEDIUM_NONE)
+	{
 		inscatterColor *= global_ubo.pt_water_density * 30;
-	
+
+		// Pass 1 in a medium is the leg REFRACTED through the surface from above;
+		// pass 0 in one means the eye is submerged. Only the view from above is
+		// toned down - see pt_water_fog_above.
+		if(push.pass_index != 0)
+			inscatterColor *= max(global_ubo.pt_water_fog_above, 0.0);
+	}
+
 	vec4 prevColor;
 
 	if(push.pass_index != 0)

@@ -27,6 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
+#extension GL_KHR_shader_subgroup_arithmetic : require
 
 #include "path_tracer_rgen.h"
 #include "restir_gi.h"
@@ -37,6 +38,15 @@ float gi_rand()
 {
 	gi_rng = pcg_hash(gi_rng);
 	return float(gi_rng >> 8) * (1.0 / 16777216.0);
+}
+
+// Is last frame's pixel pos_prev the same surface as this one? Same test as ReSTIR DI.
+bool gi_similar(ivec2 pos_prev, float view_depth, vec3 normal_cur)
+{
+	float depth_prev = texelFetch(TEX_PT_VIEW_DEPTH_B, pos_prev, 0).x;
+	vec3 normal_prev = decode_normal(texelFetch(TEX_PT_NORMAL_B, pos_prev, 0).x);
+	return abs(depth_prev - view_depth) < 0.1 * abs(view_depth)
+		&& dot(normal_prev, normal_cur) > 0.9;
 }
 
 void
@@ -51,13 +61,14 @@ main()
 
 	// Same idle test as indirect_lighting.rgen: that pass wrote nothing for these
 	// pixels this frame, so what is in the candidate images is last frame's.
+	uint material_id = floatBitsToUint(imageLoad(IMG_PT_SHADING_POSITION, ipos).w);
 	if(global_ubo.pt_fullres_fields != 0)
 	{
 		bool is_second_field = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
 		int cb_flags = int(imageLoad(IMG_PT_VIEW_DIRECTION, ipos).w) & CHECKERBOARD_FLAG_FIELD_MASK;
 		bool field1_idle = is_second_field && bitCount(cb_flags) <= 1;
 		bool row_idle = !PT_FIELD_ROW_TRACED(global_ubo, ipos.y)
-			&& IS_REFLECT_REFRACT_KIND(floatBitsToUint(imageLoad(IMG_PT_SHADING_POSITION, ipos).w));
+			&& IS_REFLECT_REFRACT_KIND(material_id);
 		if(field1_idle || row_idle)
 			return;
 	}
@@ -82,10 +93,12 @@ main()
 	vec4 origin = imageLoad(IMG_PT_RESTIR_GI_ORIGIN_A, ipos);
 	vec3 x_v = origin.xyz;
 	vec3 n_v = decode_normal(floatBitsToUint(origin.w));
+	vec3 view_dir = texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0).xyz;
 
 	gi_rng = pcg_hash(uint(ipos.x) ^ pcg_hash(uint(ipos.y) ^ pcg_hash(global_ubo.current_frame_idx ^ 0x5ee7c0deu)));
 
 	float m_clamp = max(global_ubo.pt_restir_gi_m_clamp, 1.0);
+	float max_age = global_ubo.pt_restir_gi_max_age;
 
 	GIReservoir r;
 	r.pos = vec3(0);
@@ -93,17 +106,21 @@ main()
 	r.radiance = vec3(0);
 	r.W = 0;
 	r.M = 0;
+	r.age = 0;
 	float w_sum = 0;
 	float p_hat_selected = 0;
 
 	// This frame's candidate. Cosine-distributed around n_v, so its source pdf is
-	// cos / pi and its resampling weight p_hat / p = luminance(L_o) * pi.
+	// cos / pi and its resampling weight p_hat / p = luminance(L_o) * pi. A black
+	// candidate (the bounce found nothing lit) has weight 0 but still counts in M:
+	// "I looked and found nothing" is information the estimate must keep.
 	if(have_candidate)
 	{
 		GIReservoir c;
 		c.pos = cand_pos.xyz;
 		c.normal = decode_normal(cand_data.x);
 		c.radiance = unpackRGBE(cand_data.y);
+		c.age = 0;
 
 		float p_hat = gi_p_hat(c.radiance, c.pos, c.normal, x_v, n_v);
 		float w = p_hat > 0 ? luminance(c.radiance) * M_PI : 0;
@@ -127,13 +144,16 @@ main()
 
 		vec4 motion = texelFetch(TEX_PT_MOTION, ipos, 0);
 		float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
-		ivec2 pos_prev = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy)
+		ivec2 pos_reproj = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy)
 			* vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height));
+		ivec2 pos_prev = pos_reproj;
 
-		// Permutation sampling, for DLSS-RR - see direct_lighting.rgen.
+		// Permutation sampling, for DLSS-RR - see direct_lighting.rgen. The offset
+		// must be random per frame (restir_permutation_offset): with a frame counter
+		// every reservoir marched across the screen at 1 or 3 pixels a frame.
 		if(global_ubo.pt_restir_permutation != 0)
 		{
-			ivec2 perm_offset = ivec2(global_ubo.current_frame_idx & 3, (global_ubo.current_frame_idx >> 2) & 3);
+			ivec2 perm_offset = restir_permutation_offset();
 			ivec2 permuted = pos_prev + perm_offset;
 			permuted.x ^= 3;
 			permuted.y ^= 3;
@@ -142,18 +162,25 @@ main()
 				pos_prev = permuted;
 		}
 
+		float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
+		vec3 normal_cur = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+
 		bool in_bounds = pos_prev.x >= field_left && pos_prev.x < field_right && pos_prev.y >= 0 && pos_prev.y < global_ubo.height;
+		bool similar = in_bounds && gi_similar(pos_prev, view_depth, normal_cur);
 
-		if(in_bounds)
+		// The shuffled pixel is another surface (an edge, a step): fall back to the
+		// pixel's own history rather than start over. Without this every pixel within
+		// 3 px of a depth edge lost its history on most frames and lit itself with a
+		// lone M = 1 candidate at full strength - a glint along every edge. Measured:
+		// permutation on cost 3% of dark-area brightness and doubled the frozen pattern.
+		if(global_ubo.pt_restir_gi_edge_fallback != 0 && !similar && pos_prev != pos_reproj)
 		{
-			float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
-			float depth_prev = texelFetch(TEX_PT_VIEW_DEPTH_B, pos_prev, 0).x;
-			vec3 normal_cur = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
-			vec3 normal_prev = decode_normal(texelFetch(TEX_PT_NORMAL_B, pos_prev, 0).x);
+			pos_prev = pos_reproj;
+			in_bounds = pos_prev.x >= field_left && pos_prev.x < field_right && pos_prev.y >= 0 && pos_prev.y < global_ubo.height;
+			similar = in_bounds && gi_similar(pos_prev, view_depth, normal_cur);
+		}
 
-			bool similar = abs(depth_prev - view_depth) < 0.1 * abs(view_depth)
-				&& dot(normal_prev, normal_cur) > 0.9;
-
+		{
 			if(similar)
 			{
 				GIReservoir prev = gi_load(
@@ -162,26 +189,49 @@ main()
 
 				if(gi_is_valid(prev))
 				{
-					vec3 x_r = texelFetch(TEX_PT_RESTIR_GI_ORIGIN_B, pos_prev, 0).xyz;
-					float jacobian = gi_jacobian(prev.pos, prev.normal, x_v, x_r);
-					// A huge or tiny Jacobian means the sample is far from where it was
-					// found - reusing it would be a firefly or a hole.
-					if(jacobian < 0.1 || jacobian > 10.0)
-						jacobian = 0;
-
 					prev.M = min(prev.M, m_clamp);
-					float p_hat = gi_p_hat(prev.radiance, prev.pos, prev.normal, x_v, n_v);
-					float w = p_hat * prev.W * prev.M * jacobian;
 
-					w_sum += w;
-					if(w > 0 && gi_rand() * w_sum < w)
+					float w = 0;
+					float p_hat_prev = 0;
+					if(prev.W > 0)
 					{
-						r.pos = prev.pos;
-						r.normal = prev.normal;
-						r.radiance = prev.radiance;
-						p_hat_selected = p_hat;
+						vec3 x_r = texelFetch(TEX_PT_RESTIR_GI_ORIGIN_B, pos_prev, 0).xyz;
+						float jacobian = gi_jacobian(prev.pos, prev.normal, x_v, x_r);
+
+						// A huge or tiny Jacobian means the sample is far from where it was
+						// found - reusing it would be a firefly or a hole. The light is
+						// dropped but the M still counts: skipping the reservoir whole left
+						// the pixel with a lone M = 1 candidate at full strength, and in
+						// motion with permutation on that tripped constantly on near and
+						// grazing samples - Matt saw it as heavy noise (2026-10-04).
+						if(jacobian < 0.1 || jacobian > 10.0)
+							jacobian = 0;
+
+						// A sample older than pt_restir_gi_max_age frames is dropped: the
+						// light it carries was measured too long ago. Its M stays, so the
+						// replacement enters at its proper share instead of flashing.
+						if(max_age > 0 && prev.age >= max_age)
+							jacobian = 0;
+
+						p_hat_prev = gi_p_hat(prev.radiance, prev.pos, prev.normal, x_v, n_v);
+						w = p_hat_prev * prev.W * prev.M * jacobian;
 					}
-					r.M += prev.M;
+
+					{
+						w_sum += w;
+						if(w > 0 && gi_rand() * w_sum < w)
+						{
+							r.pos = prev.pos;
+							r.normal = prev.normal;
+							r.radiance = prev.radiance;
+							r.age = prev.age + 1;
+							p_hat_selected = p_hat_prev;
+						}
+						// Even an empty history (W = 0: M tries, nothing found) adds its M.
+						// Dropping it made every dark pixel start over at M = 1, so the next
+						// bright bounce lit it at full strength for a frame - the glints.
+						r.M += prev.M;
+					}
 				}
 			}
 		}
@@ -192,18 +242,60 @@ main()
 		r.W = 0;
 	r.M = min(r.M, m_clamp);
 
+	vec3 dir = r.pos - x_v;
+	float dist = length(dir);
+	dir /= max(dist, 1e-6);
+
+	// Final visibility (RTXDI enableFinalVisibility): the sample was found from a
+	// neighbouring pixel or an earlier frame, so test that this surface can still
+	// see it. Occlusion mutes this frame's shading only; the sample stays in the
+	// history and is tested again next frame, as in RTXDI. Dropping it from the
+	// history left a dark hole until the next lit bounce arrived, which in motion
+	// read as ghosting.
+	float visibility = 1.0;
+	if(r.W > 0 && global_ubo.pt_restir_gi_vis != 0)
+	{
+		int shadow_cull_mask = shadow_ray_cull_mask();
+		bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
+		if(global_ubo.first_person_model != 0 && !primary_is_weapon)
+			shadow_cull_mask |= AS_FLAG_VIEWER_MODELS;
+		else
+			shadow_cull_mask |= AS_FLAG_VIEWER_WEAPON;
+
+		Ray shadow_ray = get_shadow_ray(x_v - view_dir * 0.01, r.pos, 0);
+		visibility = trace_shadow_ray(shadow_ray, shadow_cull_mask);
+	}
+
+	// Boiling filter (RTXDI_GIBoilingFilter). Compared on what the pixel would show,
+	// p_hat * W, against the mean of the subgroup's lit pixels - a subgroup covers a
+	// small block of the screen, so that is a local mean. A sample that found light
+	// pt_restir_gi_boiling times brighter than its neighbours' is almost always a
+	// firefly, and without this it is the sample that wins every merge and sits
+	// frozen in the pixel. Lanes that returned above do not take part.
+	if(global_ubo.pt_restir_gi_boiling > 0)
+	{
+		float estimate = r.W * p_hat_selected;
+		float sum_sg = subgroupAdd(estimate);
+		float cnt_sg = subgroupAdd(estimate > 0 ? 1.0 : 0.0);
+		float avg = cnt_sg > 0 ? sum_sg / cnt_sg : 0;
+		if(avg > 0 && estimate > avg * global_ubo.pt_restir_gi_boiling)
+			gi_drop(r);
+	}
+
 	imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(r.pos, r.W));
 	imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(
 		encode_normal(r.normal),
 		packRGBE(r.radiance),
 		floatBitsToUint(r.M),
-		cand_data.w));
+		uint(r.age)));
 
 	// pt_restir_gi 2: debug view of the history length - white = a full reservoir
 	// (pt_restir_gi_m_clamp samples), black = nothing reused. Shown alone.
-	if(global_ubo.pt_restir_gi == 2)
+	// pt_restir_gi 3: age of the sample in use - white = 2 * pt_restir_gi_m_clamp frames.
+	if(global_ubo.pt_restir_gi == 2 || global_ubo.pt_restir_gi == 3)
 	{
-		vec3 debug_color = vec3(r.M / m_clamp) * global_ubo.prev_adapted_luminance * 2.0;
+		float v = global_ubo.pt_restir_gi == 2 ? r.M / m_clamp : r.age / (2.0 * m_clamp);
+		vec3 debug_color = vec3(v) * global_ubo.prev_adapted_luminance * 2.0;
 		imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
 		imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
 		imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debug_color * STORAGE_SCALE_HF)));
@@ -223,12 +315,9 @@ main()
 	// on the specular frames. The throughput here is therefore the pre-lobe throughput
 	// times this sample's own Fresnel transmission - what the diffuse branch would
 	// have applied for this direction, minus the lobe-selection weight.
-	if(r.W <= 0)
+	if(r.W <= 0 || visibility <= 0)
 		return;
 
-	vec3 dir = r.pos - x_v;
-	float dist = length(dir);
-	dir /= max(dist, 1e-6);
 	float cos_v = max(0, dot(n_v, dir));
 
 	vec3 t0;
@@ -237,14 +326,14 @@ main()
 		float metallic = texelFetch(TEX_PT_METALLIC_A, ipos, 0).x;
 		vec3 albedo, base_reflectivity;
 		get_reflectivity(base_color.rgb, metallic, albedo, base_reflectivity);
-		vec3 V = -texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0).xyz;
+		vec3 V = -view_dir;
 		vec3 H = normalize(V + dir);
 		float VoH = max(0, dot(V, H));
 		vec3 F = schlick_fresnel(base_reflectivity, VoH, base_color.a);
 		t0 = t_base * (vec3(1.0) - F);
 	}
 
-	vec3 contrib = clamp_output(t0 * r.radiance * (cos_v / M_PI) * r.W);
+	vec3 contrib = clamp_output(t0 * r.radiance * (cos_v / M_PI) * r.W * visibility);
 	if(all(equal(contrib, vec3(0))))
 		return;
 

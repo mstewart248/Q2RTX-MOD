@@ -43,7 +43,8 @@ Per-pixel images, all double-buffered (A = this frame, B = last frame):
                        before restir_gi.rgen runs, w = the pixel's throughput
                        before the lobe choice (RGBE bits), every frame
   PT_RESTIR_GI_DATA    x = n_s (encode_normal), y = L_o (RGBE), z = M (float bits),
-                       w = T0 (RGBE), this frame's throughput into the bounce
+                       w = T0 (RGBE), this frame's throughput into the bounce, until
+                       restir_gi.rgen replaces it with the sample's age in frames
   PT_RESTIR_GI_ORIGIN  xyz = the pixel's shading point x_v, w = its normal
                        (encode_normal, float bits). Needed because the first
                        bounce pass overwrites PT_SHADING_POSITION.
@@ -53,6 +54,18 @@ Before restir_gi.rgen runs, DATA.z is a candidate marker instead of M.
 Target function: p_hat = luminance(L_o) * cos(theta_v). With cosine-weighted
 candidates (p = cos / pi) a lone candidate gets W = pi / cos and shades exactly
 what the path tracer would have added without ReSTIR.
+
+An EMPTY reservoir - M > 0 but W = 0, because every sample it has seen was black -
+is a valid history and is reused for its M (gi_is_valid). Treating it as garbage
+reset dark pixels to M = 1 every frame, so a bounce that finally found light shaded
+the pixel at M = 1, i.e. at full strength, and then decayed over m_clamp frames:
+a one-frame glint per pixel per lucky bounce. With M kept, that bounce enters at
+1 / (M + 1) of its value, which is the estimate it should give.
+
+Pieces every production ReSTIR GI has and this one gained on 2026-10-04 (all in
+restir_gi.rgen): a random per-frame permutation offset, a sample age limit
+(pt_restir_gi_max_age), a boiling filter (pt_restir_gi_boiling) and final
+visibility (pt_restir_gi_vis). Still missing: spatial reuse.
 
 Never in accumulation (photo) mode: sample reuse is biased there, and that mode
 is the unbiased reference.
@@ -79,6 +92,7 @@ struct GIReservoir
 	vec3 radiance;  // L_o, towards the point that sampled it
 	float W;
 	float M;
+	float age;      // frames since the sample was drawn (0 = this frame's candidate)
 };
 
 GIReservoir gi_load(vec4 pos_w, uvec4 data)
@@ -89,13 +103,25 @@ GIReservoir gi_load(vec4 pos_w, uvec4 data)
 	r.normal = decode_normal(data.x);
 	r.radiance = unpackRGBE(data.y);
 	r.M = uintBitsToFloat(data.z);
+	r.age = float(data.w);
 	return r;
 }
 
-// Garbage history - the first frame, a resize - must never be reused.
+// Drop the sample but keep the history length: the pixel still knows how many
+// bounces it has seen, so the next lit sample enters at its proper share.
+void gi_drop(inout GIReservoir r)
+{
+	r.W = 0;
+	r.radiance = vec3(0);
+	r.age = 0;
+}
+
+// Garbage history - the first frame, a resize - must never be reused. An empty
+// reservoir (M > 0, W = 0) is not garbage, see the header comment.
 bool gi_is_valid(GIReservoir r)
 {
-	return r.M > 0 && r.M < 1e6 && r.W > 0 && !isinf(r.W) && !isnan(r.W)
+	bool w_ok = global_ubo.pt_restir_gi_keep_empty != 0 ? r.W >= 0 : r.W > 0;
+	return r.M > 0 && r.M < 1e6 && w_ok && !isinf(r.W) && !isnan(r.W)
 	    && !any(isnan(r.pos)) && !any(isinf(r.pos))
 	    && !any(isnan(r.radiance)) && !any(isinf(r.radiance));
 }

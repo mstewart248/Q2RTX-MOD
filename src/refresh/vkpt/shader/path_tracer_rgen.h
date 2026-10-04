@@ -198,6 +198,19 @@ uint pcg_hash(uint v)
 	return (word >> 22u) ^ word;
 }
 
+// Permutation sampling (RTXDI_PermutationSampling): the previous-frame lookup is
+// shuffled within 4x4 blocks that are shifted by a per-frame offset. RTXDI draws
+// that offset from a random number generated per frame. It must not be the frame
+// counter: with offset = frame & 3 the XOR-3 shuffle composes into a steady march -
+// 1 in 4 reservoirs moved 3 pixels right every frame, the other 3 moved 1 pixel
+// left - which is exactly the right-to-left crawl ReSTIR GI showed, since a GI
+// reservoir carries its own radiance and so is visible wherever it goes.
+ivec2 restir_permutation_offset()
+{
+	uint h = pcg_hash(global_ubo.current_frame_idx ^ 0x7e55a7edu);
+	return ivec2(h & 3, (h >> 2) & 3);
+}
+
 float
 get_rng(uint idx)
 {
