@@ -247,6 +247,7 @@ main()
 	int correct_motion_vector = 0; // 1 -> flat reflection, 2 -> flat refraction
 	bool include_player_model = !primary_is_weapon;
 	bool backface_culling = true;
+	bool primary_is_blood_film = false;
 	
 	// Process reflection or refraction.
 	// Each pixel follows either the reflected or the refracted path, depending on 
@@ -481,6 +482,16 @@ main()
 		// One ray stops at the primary surface, the other goes through it.
 
 		correct_motion_vector = 2;
+
+		// Blood arrives here as TRANSPARENT (primary_rays.rgen rewrites its kind), so
+		// the only place it is still recognisable is its own triangle, via the visbuf.
+		uvec2 vis_prim = imageLoad(IMG_PT_VISBUF_PRIM_A, ipos).xy;
+		if (vis_prim.x != ~0u)
+		{
+			ModelInstance mi = instance_buffer.model_instances[vis_prim.x];
+			primary_is_blood_film = is_blood(load_triangle(mi.render_buffer_idx,
+				mi.render_prim_offset + vis_prim.y).material_id);
+		}
 
 		// Apply a very light distortion effect to TRANS walls (but not models with alpha)
 		if((material_id & MATERIAL_KIND_MASK) == MATERIAL_KIND_TRANSPARENT)
@@ -784,6 +795,22 @@ main()
 	if(push_constants.bounce_index < int(global_ubo.pt_reflect_refract - 1))
 		reflection_cull_mask |= AS_FLAG_TRANSPARENT;
 
+	/*
+	THE RAY THROUGH A SPLAT MUST START ON THE CAMERA'S SIDE OF THE FLOOR.
+
+	A landed splat's base is buried pt_blood_puddle_sink below the surface, so its
+	rim runs flush with the floor. The usual "1 mm behind the surface along the
+	normal" start put the through-ray UNDER the floor there; the floor's back face
+	is culled, so the ray saw whatever lit geometry or void lies beneath - a thin
+	sparkling outline round every translucent splat (pt_blood_splat_alpha 1 or
+	pt_blood_puddle_sink 0 each hid it). Start 0.01 back along the view ray
+	instead, and look past blood so it does not just re-hit the splat it left.
+	Overlapping splats lose their layering through the film, which at 5% body
+	transparency nobody can see.
+	*/
+	if(primary_is_blood_film)
+		reflection_cull_mask &= ~AS_FLAG_BLOOD;
+
 	// In full-resolution field mode the two fields are SUMMED by the combine pass rather
 	// than averaged, so anything the fields inherited in common must not be counted
 	// twice. The transparency overlay accumulated before this surface (particles, beams,
@@ -804,7 +831,7 @@ main()
 	reflection_ray.t_min = 0;
 	reflection_ray.t_max = PRIMARY_RAY_T_MAX;
 
-	if(dot(direction, normal) >= 0)
+	if(dot(direction, normal) >= 0 || primary_is_blood_film)
 		reflection_ray.origin -= view_direction.xyz * 0.01;
 	else
 		reflection_ray.origin -= normal.xyz * 0.001;

@@ -309,6 +309,12 @@ void main()
 	vec3 localInscatter = vec3(0);
 	int step_index = 0;
 
+	// Where the ray really begins (camera, reflecting surface, or box entry).
+	// The jitter below may pull the first step's start up to a whole step
+	// BEHIND it - harmless for the one end-of-step lookup, but the sun
+	// sub-samples walk back over the step and must not follow it there.
+	float ray_begin = offset;
+
 	offset += getStep(offset, density) * (rand(pixelPos.xy) - 1);
 
 	while(true)
@@ -316,6 +322,7 @@ void main()
 		float density = getDensity(currentPos);
 		float stepLength = getStep(offset, density);
 
+		float seg_begin = max(offset, ray_begin);
 		offset += stepLength;
 
 		if (offset >= distance)
@@ -388,6 +395,29 @@ void main()
 		const vec3 shadowBias = -global_ubo.sun_direction * 20;
 		float distanceToWater;
 		float shadow = GetShadow(currentPos + shadowBias, distanceToWater);
+
+		// SUN VISIBILITY IS AVERAGED OVER THE WHOLE STEP, not read at its end.
+		// The step is tens of units long, and a shaft through a grate goes lit /
+		// dark every few - one lookup per step made each pixel a coin toss, and
+		// the bilateral upsample in god_rays_filter blew those into blobs. The
+		// extra lookups are shadow-map fetches only, stratified with this pixel's
+		// jitter so neighbours still differ. See pt_fog_sun_substeps.
+		int sun_substeps = clamp(int(global_ubo.pt_fog_sun_substeps), 1, 16);
+		if (sun_substeps > 1)
+		{
+			float sub_jitter = rand(ivec2(pixelPos.xy) + ivec2(step_index * 13 + 1, step_index * 7 + 5));
+			float vis = shadow;
+			for (int k = 1; k < sun_substeps; k++)
+			{
+				// Only over the part of this step the ray actually travelled: the
+				// first one starts behind ray_begin (see above), and sampling there
+				// lit fog from behind the camera or inside the reflecting wall.
+				float back = max(offset - seg_begin, 0.0) * (float(k) - 1.0 + sub_jitter) / float(sun_substeps - 1);
+				float dw;
+				vis += GetShadow(currentPos - direction * back + shadowBias, dw);
+			}
+			shadow = vis / float(sun_substeps);
+		}
 
 		// AMBIENT IN SHADOW.
 		//

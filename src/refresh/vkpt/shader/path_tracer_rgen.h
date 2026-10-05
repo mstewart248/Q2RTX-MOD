@@ -1471,6 +1471,26 @@ get_material(
 		roughness = clamp(global_ubo.pt_blood_roughness, 0.0, 1.0);
 		emissive = vec3(0);
 		specular_factor = global_ubo.pt_blood_specular;
+
+		/*
+		THE RIM MUST NOT BE A MIRROR. Its dome normal lies in the floor plane, so
+		with this roughness and specular - and the ripple on top - the outermost
+		band is a grazing-Fresnel mirror that picks up every lamp in the room as
+		a sparkling outline in the LAMP's colour, which no denoiser can hold.
+		The film there is thinnest, so fade its specular and tip its normal back
+		to the floor's over the same band the darkening uses.
+		*/
+		if (blood_landed)
+		{
+			vec3 plane_n = triangle.tangents[0];
+			if (dot(plane_n, geo_normal) < 0)
+				plane_n = -plane_n;
+			float thickness = clamp(dot(geo_normal, plane_n), 0.0, 1.0);
+			thickness = pow(thickness, max(0.01, global_ubo.pt_blood_thin_power));
+
+			normal = normalize(mix(plane_n, normal, thickness));
+			specular_factor *= mix(clamp(global_ubo.pt_blood_edge_spec, 0.0, 1.0), 1.0, thickness);
+		}
 		return;
 	}
 
