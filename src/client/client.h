@@ -249,6 +249,11 @@ typedef struct client_state_s {
     vec3_t      predicted_velocity;
     vec3_t      prediction_error;
 
+    // demo playback view origin, see CL_SmoothDemoOrigin
+    vec3_t      demo_smooth_origin;
+    int         demo_smooth_time;
+    bool        demo_smooth_valid;
+
     // rebuilt each valid frame
     centity_t       *solidEntities[MAX_PACKET_ENTITIES];
     int             numSolidEntities;
@@ -634,6 +639,7 @@ extern cvar_t    *cl_muzzleflash_light;
 extern cvar_t    *cl_muzzleflash_brightness;
 extern cvar_t    *cl_muzzleflash_offset;
 extern cvar_t    *cl_predict;
+extern cvar_t    *cl_demosmooth;
 extern cvar_t    *cl_muzzleflash_world_fwd;
 extern cvar_t    *cl_muzzleflash_world_right;
 extern cvar_t    *cl_muzzleflash_world_up;

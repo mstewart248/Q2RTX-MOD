@@ -421,6 +421,9 @@ void froxel_cell_scatter(
 	// --- the map's own lights and the sky ---
 	// The sun half (and its ambient-in-shadow term) before the local lights join it.
 	vec3 sun_part = inscatter;
+	// pt_fog_froxel_dyn_split: the model lights' own sample, which goes on the
+	// short history with the sky. Stays zero while the split is off.
+	vec3 dyn_term = vec3(0);
 
 	if (fog_lights)
 	{
@@ -517,8 +520,25 @@ void froxel_cell_scatter(
 			{
 				/* WAS: getVolumeLightInscatter(..., world_pos_history, ...), whose
 				   FIRST statement was fog_sky_inscatter(sky_p). Same reason. */
-				vol_inscatter = getVolumeLightInscatterWithSky(cluster, world_pos,
+				vol_inscatter = getVolumeLightInscatterWithSky_static(cluster, world_pos,
 					view_dir, light_rnd, seed, sky_term);
+			}
+
+			/* pt_fog_froxel_dyn_split: the model lights were left out of the pick
+			   above (and out of the reservoir pass), so they get their own here -
+			   a second candidate loop over only them and a second visibility ray.
+			   Its own blue-noise offset and seed, so the two samples do not land
+			   on correlated points. */
+			if (FOG_DYN_SPLIT)
+			{
+				vec3 dyn_rnd = fract(light_rnd + vec3(0.5, 0.38196601, 0.61803399));
+				uint dyn_seed = seed * 747796405u + 2891336453u;
+				dyn_term = fog_dynamic_inscatter(cluster, world_pos, view_dir,
+				                                 dyn_rnd, dyn_seed);
+#if FOG_NAN_GUARD
+				dyn_term = fog_finite(dyn_term);
+#endif
+				vol_inscatter += dyn_term;
 			}
 
 			// The per-source knobs are already inside vol_inscatter; this
@@ -755,7 +775,8 @@ void froxel_cell_scatter(
 	   ReSTIR and the plain branch add it linearly), so this is exactly its share. */
 	fast_rgb = (FOG_CONST_SRC != 0.0) ? vec3(0)
 	         : (fog_finite(sun_part)
-	            + (fog_lights ? fog_finite(sky_term) * 0.005 * FOG_LOCAL_DENSITY : vec3(0)))
+	            + (fog_lights ? (fog_finite(sky_term) + fog_finite(dyn_term))
+	                            * 0.005 * FOG_LOCAL_DENSITY : vec3(0)))
 	           * albedo * density;
 	fast_rgb = clamp(fast_rgb, vec3(0), max(result.rgb, vec3(0)));
 

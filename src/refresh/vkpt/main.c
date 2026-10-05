@@ -8975,7 +8975,7 @@ R_Init_RTX(bool total)
 	// UBO cvars are registered without CVAR_ARCHIVE, so a console value lasts until the next
 	// launch and the header default comes back. This one is a per-setup choice, so keep it.
 	cvar_pt_dlss_guide_field->flags |= CVAR_ARCHIVE;
-	cvar_pt_fog_froxel_sky_history->flags |= CVAR_ARCHIVE; // the fog menu's "moving sky shadows"
+	cvar_pt_fog_froxel_sky_history->flags |= CVAR_ARCHIVE; // the fog menu's "split froxel histories"
 	// on a slider in the effects menu, so it has to survive a restart
 	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
 

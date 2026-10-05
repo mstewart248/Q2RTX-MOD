@@ -111,9 +111,12 @@ begin environment
     // HOW FAST IT MOVES is the player's to say in either mode. Shown on the
     // Custom preset, where sun_animate has always worked, and throughout
     // rerelease mode, where the preset control above is hidden and the sun runs
-    // on the Custom path anyway. Conditions here are ANDed with no OR available,
-    // so the renderer publishes that either/or as one value.
-    ifeq sun_animate_available 1
+    // on the Custom path anyway. ifeqor tests both against the values the
+    // controls above are ABOUT to write, so the block appears the moment either
+    // is changed here. (It used to read the renderer's sun_animate_available,
+    // which only follows the saved values - change the sky type or time of day
+    // in this menu and the controls stayed hidden until you left and came back.)
+    ifeqor sky_type 0 sun_preset 0
         range -f "%.0fx" --status "0 = off. Speed of the day/night cycle - 1x is one full turn every ~86 minutes. A map that states an hour of its own starts the cycle there; every other map carries the sun on from the last one (sun_animate)" "sun animation speed" sun_animate 0 25 1
         // The sun's DIRECTION is continuous either way - shadows, god rays and
         // fog read it straight from the frame's uniforms. This is about the sky
@@ -643,8 +646,8 @@ begin blood_splats
             "splat lifetime" cl_blood_splat_life 1 30 1
     endif
 
-    range --status "how many blood droplets and splats may exist at once. With no janitor on, this is what bounds the floor - the oldest splat is recycled once it is reached (cl_blood_max)" \
-        "droplet budget" cl_blood_max 64 512 32
+    range --status "how many blood droplets and splats may exist at once. With no janitor on, this is what bounds the floor - the oldest splat is recycled once it is reached. 512 holds about two monsters' worth. Costs memory: about 160 KB per droplet at droplet detail 'high', so 5120 is ~800 MB (cl_blood_max)" \
+        "droplet budget" cl_blood_max 64 5120 64
     range --status "height of a landed puddle as a fraction of its width. Low values lie flat on the floor; high values sit up off it like a bead (cl_blood_flatten)" \
         "puddle height" cl_blood_flatten 0.04 1 0.02
     range --status "width of a landed puddle, as a multiple of the droplet that made it. Independent of the height above - neither drags the other with it (cl_blood_splat_size)" \
@@ -806,8 +809,8 @@ begin fog
             "physical sky" pt_fog_scale_sun 0 16 0.5
         pairs --status "how the PHYSICAL sky lights the fog. fast: sun shafts through the shadow map only. accurate: also the sky's own light (set by sky light), with a traced ray per fog cell so it clips crisply under roofs and overhangs - costs more (pt_fog_sky_sun_only)" \
             "physical sky fog" pt_fog_sky_sun_only "fast" 1 "accurate" 0
-        pairs --status "lets moving things - a spinning fan - cast shadows in the sky light of the fog, by giving the sky its own short history in the fog grid. Costs some GPU time and ~28 MB (pt_fog_froxel_sky_history)" \
-            "moving sky shadows" pt_fog_froxel_sky_history off 0 on 0.6
+        pairs --status "gives the sky light and the dynamic lights - weapon fire, muzzle flashes, rockets - their own short history in the fog grid, so moving things like a spinning fan cast sky shadows and a flash shows in the fog without lingering. Costs some GPU time and ~28 MB (pt_fog_froxel_sky_history, pt_fog_froxel_dyn_split)" \
+            "split froxel histories" pt_fog_froxel_sky_history off 0 on 0.6
         range --status "how much of the SKY's own light the fog scatters - the soft glow under open sky, apart from the sun's shafts. Applies to a map's skybox, and to the physical sky when physical sky fog is accurate (pt_fog_scale_skybox)" \
             "sky light" pt_fog_scale_skybox 0 8 0.25
         range --status "how much fog EMISSIVE SURFACES make - the map's own light fixtures, which are most of its light (pt_fog_scale_emissive)" \

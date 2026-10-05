@@ -186,7 +186,10 @@ typedef struct particle_s {
 // permanence nothing ever expires, so the same number became a lifetime total:
 // the floor fills once, stays full, and from then on there is only ever room for
 // the most recent monster. Permanence did not add blood, it froze the budget.
-#define MAX_BLOOD_SPHERES 4096
+// 8192 since 2026-10-04: the menu goes to 5120 (512 held the blood of about two
+// monsters), and 4096 silently clamped it. Arrays sized from this are a few
+// hundred KB in all.
+#define MAX_BLOOD_SPHERES 8192
 
 typedef struct blood_sphere_s {
     // WHERE THIS DROPLET'S GEOMETRY LIVES, and it is stable for the droplet's

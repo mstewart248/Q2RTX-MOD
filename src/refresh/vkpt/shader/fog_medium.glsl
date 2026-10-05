@@ -1252,14 +1252,57 @@ wsum then means the same thing in every reservoir, which is what makes two of
 them addable - a neighbour has no way to know the count its source cell used.
 =================
 */
-FogReservoir fog_ris_initial(uint cluster_idx, vec3 p, vec3 view_dir, float g, uint seed)
+/* pt_fog_froxel_dyn_split: which part of the cluster's lights a candidate loop
+   draws from. The split rides on the sky part's short history volume, so it is
+   only live while pt_fog_froxel_sky_history is. */
+#define FOG_LIGHTS_ALL      0u
+#define FOG_LIGHTS_STATIC   1u   // the BSP's own lights + the fog-only (lava) list
+#define FOG_LIGHTS_DYNAMIC  2u   // the model lights: dlights, flashes, flashlight, ...
+
+#define FOG_DYN_SPLIT (global_ubo.pt_fog_froxel_dyn_split != 0.0                        && global_ubo.pt_fog_froxel_sky_history > 0.0)
+
+/* How many entries at the head of a cluster's REGULAR list are static lights.
+   inject_model_lights (vertex_buffer.c) copies the BSP list first and appends
+   the PVS-visible model lights after it, and model light indices all sit at or
+   above num_static_lights - so "index >= num_static_lights" is false then true
+   along the list, and a binary search finds the boundary. The fog-only (lava)
+   list is separate and always static. */
+uint fog_light_static_count(uint cluster_idx)
+{
+	uint start = light_buffer.light_list_offsets[cluster_idx];
+	uint lo = 0;
+	uint hi = light_buffer.light_list_offsets[cluster_idx + 1] - start;
+	uint first_model = uint(max(global_ubo.num_static_lights, 0));
+
+	while (lo < hi)
+	{
+		uint mid = (lo + hi) >> 1;
+		if (light_buffer.light_list_lights[start + mid] < first_model)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+FogReservoir fog_ris_initial_part(uint cluster_idx, vec3 p, vec3 view_dir, float g, uint seed,
+                                  uint part)
 {
 	FogReservoir r = fog_reservoir_empty();
 
 	if (cluster_idx == ~0u)
 		return r;
 
-	uint count = fog_light_count(cluster_idx);
+	/* The list this loop draws from, as a sub-range of fog_light_at's indexing:
+	   [0, n_static) of the regular list, then the dynamic tail [n_static, n_reg),
+	   then the fog-only list. STATIC skips the tail, DYNAMIC takes only it. */
+	uint n_reg = light_buffer.light_list_offsets[cluster_idx + 1]
+	           - light_buffer.light_list_offsets[cluster_idx];
+	uint n_static = (part == FOG_LIGHTS_ALL) ? n_reg : fog_light_static_count(cluster_idx);
+	uint n_dyn = n_reg - n_static;
+
+	uint count = (part == FOG_LIGHTS_DYNAMIC) ? n_dyn
+	                                          : fog_light_count(cluster_idx) - n_dyn;
 	if (count == 0)
 		return r;
 
@@ -1278,7 +1321,11 @@ FogReservoir fog_ris_initial(uint cluster_idx, vec3 p, vec3 view_dir, float g, u
 
 	for (uint i = 0; i < M; i++)
 	{
-		uint light_idx = fog_light_at(cluster_idx, uint(fog_rand() * float(count)) % count);
+		uint i_part = uint(fog_rand() * float(count)) % count;
+		uint i_list = (part == FOG_LIGHTS_DYNAMIC) ? n_static + i_part
+		            : (i_part < n_static)          ? i_part
+		                                           : i_part + n_dyn;
+		uint light_idx = fog_light_at(cluster_idx, i_list);
 		if (light_idx == ~0u)
 			continue;
 
@@ -1312,6 +1359,11 @@ FogReservoir fog_ris_initial(uint cluster_idx, vec3 p, vec3 view_dir, float g, u
 	}
 
 	return r;
+}
+
+FogReservoir fog_ris_initial(uint cluster_idx, vec3 p, vec3 view_dir, float g, uint seed)
+{
+	return fog_ris_initial_part(cluster_idx, p, view_dir, g, seed, FOG_LIGHTS_ALL);
 }
 
 /*
@@ -1463,6 +1515,41 @@ vec3 getVolumeLightInscatterWithSky(uint cluster_idx, vec3 p, vec3 view_dir,
 	FogReservoir r = fog_ris_initial(cluster_idx, p, view_dir, g, seed);
 
 	return fog_shade_chosen(p, view_dir, g, rnd, r.y, fog_reservoir_W(r)) + sky_term;
+}
+
+/* pt_fog_froxel_dyn_split, the froxel grid's two halves of the local lights.
+   With the split off, _static is exactly the old single loop over every light
+   and _dynamic is never called. With it on, the static loop skips the model
+   lights and fog_dynamic_inscatter samples them with their own candidate loop
+   and their own visibility ray, so a muzzle flash no longer has to win the one
+   shared pick to show up - and its result is near-deterministic when only one
+   or two dynamic lights are live, which is what lets it sit on the short
+   history without sparkling. */
+vec3 getVolumeLightInscatterWithSky_static(uint cluster_idx, vec3 p, vec3 view_dir,
+                                           vec3 rnd, uint seed, vec3 sky_term)
+{
+	if (int(FOG_ISOLATE_F) == 1)
+		return sky_term;
+
+	float g = fog_eccentricity();
+
+	FogReservoir r = fog_ris_initial_part(cluster_idx, p, view_dir, g, seed,
+		FOG_DYN_SPLIT ? FOG_LIGHTS_STATIC : FOG_LIGHTS_ALL);
+
+	return fog_shade_chosen(p, view_dir, g, rnd, r.y, fog_reservoir_W(r)) + sky_term;
+}
+
+vec3 fog_dynamic_inscatter(uint cluster_idx, vec3 p, vec3 view_dir, vec3 rnd, uint seed)
+{
+	if (int(FOG_ISOLATE_F) == 1)
+		return vec3(0);
+
+	float g = fog_eccentricity();
+
+	FogReservoir r = fog_ris_initial_part(cluster_idx, p, view_dir, g, seed,
+		FOG_LIGHTS_DYNAMIC);
+
+	return fog_shade_chosen(p, view_dir, g, rnd, r.y, fog_reservoir_W(r));
 }
 
 vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir, vec3 rnd, uint seed)

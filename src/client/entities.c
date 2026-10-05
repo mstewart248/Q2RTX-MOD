@@ -1992,6 +1992,79 @@ static inline float lerp_client_fov(float ofov, float nfov, float lerp)
 
 /*
 ===============
+CL_SmoothDemoOrigin
+
+A demo stores the player origin the server had at each snapshot, which is
+wherever the last usercmd packet to arrive before that frame left the player.
+Packets and server frames don't line up (25 packets/s against 10 frames/s at
+the default cl_maxpackets), so a steady run lands 0.6x-1.4x of the true
+distance per snapshot, and lerping straight between them makes the view surge
+and drag several times a second. Live play never shows it because prediction
+draws the player from the usercmds.
+
+Instead, carry the view along the recorded velocity and pull it toward the
+snapshot path with time constant cl_demosmooth (seconds, 0 = off). When the
+recorded velocity disagrees with how far the player actually moved (stuck on
+a wall, frozen, riding a lift or a pusher), follow the snapshots instead.
+===============
+*/
+static void CL_SmoothDemoOrigin(const player_state_t *ops, const player_state_t *ps, float lerp)
+{
+    vec3_t vel, disp;
+    float tau = cl_demosmooth->value;
+    float frame_sec = CL_FRAMETIME * 0.001f;
+    float dt, mismatch, speed, c;
+    int delta = cl.time - cl.demo_smooth_time;
+    int i;
+
+    if (tau <= 0 || !cl.oldframe.valid) {
+        cl.demo_smooth_valid = false;
+        return;
+    }
+
+    // first frame, seek, teleport or respawn: start again from the snapshots
+    if (!cl.demo_smooth_valid || delta < 0 || delta > 250 ||
+        (ps->pmove.pm_flags & PMF_TELEPORT_BIT) ||
+        Distance(cl.refdef.vieworg, cl.demo_smooth_origin) > 64) {
+        VectorCopy(cl.refdef.vieworg, cl.demo_smooth_origin);
+        cl.demo_smooth_time = cl.time;
+        cl.demo_smooth_valid = true;
+        return;
+    }
+
+    if (!delta) {
+        VectorCopy(cl.demo_smooth_origin, cl.refdef.vieworg);
+        return;
+    }
+
+    for (i = 0; i < 3; i++) {
+        vel[i] = SHORT2COORD(ops->pmove.velocity[i] +
+            lerp * (ps->pmove.velocity[i] - ops->pmove.velocity[i]));
+        disp[i] = SHORT2COORD(ps->pmove.origin[i] - ops->pmove.origin[i]) / frame_sec;
+    }
+
+    // snapshot jitter stays within about 0.5x-2x of the velocity; anything
+    // further off means the velocity isn't moving the player
+    mismatch = Distance(vel, disp) * frame_sec;
+    speed = fmaxf(VectorLength(vel), VectorLength(disp)) * frame_sec;
+    if (mismatch > 0.75f * speed + 2)
+        VectorCopy(disp, vel);
+    if (cls.demo.eof)
+        VectorClear(vel);   // no next snapshot coming, don't run ahead
+
+    dt = delta * 0.001f;
+    c = 1.0f - expf(-dt / tau);
+    for (i = 0; i < 3; i++) {
+        cl.demo_smooth_origin[i] += vel[i] * dt;
+        cl.demo_smooth_origin[i] += (cl.refdef.vieworg[i] - cl.demo_smooth_origin[i]) * c;
+    }
+
+    cl.demo_smooth_time = cl.time;
+    VectorCopy(cl.demo_smooth_origin, cl.refdef.vieworg);
+}
+
+/*
+===============
 CL_CalcViewValues
 
 Sets cl.refdef view values and sound spatialization params.
@@ -2038,6 +2111,9 @@ void CL_CalcViewValues(void)
             cl.refdef.vieworg[i] = SHORT2COORD(ops->pmove.origin[i] +
                 lerp * (ps->pmove.origin[i] - ops->pmove.origin[i]));
         }
+
+        if (cls.demo.playback)
+            CL_SmoothDemoOrigin(ops, ps, lerp);
     }
 
     // if not running a demo or on a locked frame, add the local angle movement

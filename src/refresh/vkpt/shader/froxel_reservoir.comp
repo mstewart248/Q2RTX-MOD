@@ -163,7 +163,10 @@ void main()
 			continue;
 		}
 
-		FogReservoir r = fog_ris_initial(cluster, fs.p, fs.view_dir, g, fs.seed);
+		// pt_fog_froxel_dyn_split: the model lights are sampled on their own in
+		// the scatter pass, so they must not be candidates here as well.
+		FogReservoir r = fog_ris_initial_part(cluster, fs.p, fs.view_dir, g, fs.seed,
+			FOG_DYN_SPLIT ? FOG_LIGHTS_STATIC : FOG_LIGHTS_ALL);
 
 		imageStore(IMG_FROXEL_RESERVOIR_INITIAL, cell, vec4(
 			(r.y == ~0u) ? -1.0 : float(r.y),

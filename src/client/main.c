@@ -27,6 +27,7 @@ cvar_t  *cl_noskins;
 cvar_t  *cl_footsteps;
 cvar_t  *cl_timeout;
 cvar_t  *cl_predict;
+cvar_t  *cl_demosmooth;
 cvar_t  *cl_gunalpha;
 cvar_t  *cl_muzzleflash_models;
 cvar_t  *cl_muzzleflash_scale;
@@ -3010,6 +3011,7 @@ static void CL_InitLocal(void)
     cl_noskins = Cvar_Get("cl_noskins", "0", 0);
     cl_noskins->changed = cl_noskins_changed;
     cl_predict = Cvar_Get("cl_predict", "1", 0);
+    cl_demosmooth = Cvar_Get("cl_demosmooth", "0.15", 0);
     cl_predict->changed = cl_predict_changed;
     cl_kickangles = Cvar_Get("cl_kickangles", "1", CVAR_CHEAT);
     cl_warn_on_fps_rounding = Cvar_Get("cl_warn_on_fps_rounding", "1", 0);

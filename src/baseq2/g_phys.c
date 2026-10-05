@@ -675,6 +675,9 @@ TOSS / BOUNCE
 ==============================================================================
 */
 
+void gib_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+void debris_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
+
 /*
 =============
 SV_Physics_Toss
@@ -888,6 +891,30 @@ void SV_Physics_Toss(edict_t *ent)
 
 //      if (ent->touch)
 //          ent->touch (ent, trace.ent, &trace.plane, trace.surface);
+
+        // Gibs and debris only rest on something flatter than 45 degrees.
+        // On a steeper slope, or wedged between a ramp and a wall, the 1.5
+        // overbounce keeps throwing them back up forever - they fall, hop up
+        // the slope and fall again, sometimes higher each time. The rerelease
+        // never shows it because its debris is freed after 5-10 seconds; ours
+        // stays for the level (KEEP_GIBS). So settle a piece that has kept
+        // hitting things for a second without getting anywhere. Grenades and
+        // other bouncing projectiles are left alone.
+        if (ent->movetype == MOVETYPE_BOUNCE && !ent->groundentity &&
+            (ent->die == gib_die || ent->die == debris_die)) {
+            vec3_t moved;
+
+            VectorSubtract(ent->s.origin, ent->pos1, moved);
+            if (VectorLength(moved) > 16) {
+                VectorCopy(ent->s.origin, ent->pos1);
+                ent->last_move_framenum = level.framenum;
+            } else if (level.framenum - ent->last_move_framenum > BASE_FRAMERATE) {
+                ent->groundentity = trace.ent;
+                ent->groundentity_linkcount = trace.ent->linkcount;
+                VectorClear(ent->velocity);
+                VectorClear(ent->avelocity);
+            }
+        }
     }
 
 // check for water transition

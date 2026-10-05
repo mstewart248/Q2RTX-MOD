@@ -858,6 +858,13 @@ static inline bool ready_to_send(void)
     if (!cl_maxpackets->integer) {
         return true;
     }
+    // local game: packets are free, and throttling them is what makes demos
+    // stutter. The server moves the player once per packet, so at 25 packets/s
+    // against 10 frames/s each snapshot catches 2 or 3 packets' worth of
+    // movement, and a recorded run surges and drags on playback.
+    if (cls.serverAddress.type == NA_LOOPBACK) {
+        return true;
+    }
 
     if (cl_maxpackets->integer < 10) {
         Cvar_Set("cl_maxpackets", "10");
