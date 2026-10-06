@@ -13392,6 +13392,7 @@ textures/e3u3/grate1_1:
 textures/e3u3/grate1_3:
 	texture_base textures/e3u3/grate1_3.tga
 	texture_normals textures/e3u3/grate1_3_n.tga
+	specular_factor .1	
 	base_factor 2.5
 
 textures/e3u3/grate1_5:

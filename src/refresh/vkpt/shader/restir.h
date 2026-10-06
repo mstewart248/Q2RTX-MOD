@@ -336,7 +336,20 @@ process_selected_light_restir(
 			contrib_polygonal = vec3(0);
 	}
 
-	contrib_polygonal *= min(weight, global_ubo.pt_restir_max_w);
+	// The clamp is relative to the cluster's light-list length. W = stride * sum(p_hat) /
+	// p_hat(y), so with N similar lights an ordinary sample has W ~ N: a flat cap of 12
+	// cut every sample in a cluster of more than 12 lights (to 12/N of its light) and made
+	// ReSTIR darker than plain RIS - which has no clamp at all - wherever lights crowd
+	// together, i.e. most of the rerelease maps (lists of ~128). Relative to N, the cap
+	// only catches a sample pt_restir_max_w times less important than an average
+	// candidate, the firefly case it was meant for; a one-light list keeps the old 12.
+	float w_limit = global_ubo.pt_restir_max_w;
+	if (cluster_idx != ~0u)
+	{
+		uint list_len = light_buffer.light_list_offsets[cluster_idx + 1] - light_buffer.light_list_offsets[cluster_idx];
+		w_limit *= float(max(list_len, 1u));
+	}
+	contrib_polygonal *= min(weight, w_limit);
 
 	float spec_polygonal = phong(normal, L, view_direction, phong_exp) * phong_scale;
 

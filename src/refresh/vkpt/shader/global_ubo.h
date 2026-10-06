@@ -94,7 +94,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_reflect_refract, 2) /* number of reflection or refraction bounces: 0, 1 or 2 */ \
 	UBO_CVAR_DO(pt_restir, 0) /* ReSTIR DI for the first surface, 0 or 1. Off: measured 2026-10-03 to cut per-frame noise by only 1-7% over plain RIS while freezing each pixel sample for its history length, which DLSS-RR renders as stable mottling in dark areas - see the verdict at the top of restir.h */ \
 	UBO_CVAR_DO(pt_restir_spatial, 0) /* ReSTIR spatial samples; 0 = temporal-only, the right setting under DLSS-RR */ \
-	UBO_CVAR_DO(pt_restir_max_w, 12.0) /* ReSTIR max weight clamp */ \
+	UBO_CVAR_DO(pt_restir_max_w, 12.0) /* ReSTIR weight clamp, as a multiple of the cluster's light-list length (a typical W): a flat 12 darkened every cluster of more than 12 lights */ \
 	UBO_CVAR_DO(pt_restir_permutation, 1) /* ReSTIR permutation sampling, 0 or 1 */ \
 	UBO_CVAR_DO(pt_restir_pairwise, 0) /* ReSTIR spatial reuse weighting: 0 legacy count-weighted sum, 1 pairwise MIS */ \
 	UBO_CVAR_DO(pt_restir_boiling, 0) /* ReSTIR boiling filter threshold as a multiple of the local mean, 0 disables */ \
