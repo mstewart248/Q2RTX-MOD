@@ -2646,8 +2646,10 @@ textures/e1u1/wsupprt1_2:
 
 textures/e1u1/wsupprt1_4:
 	texture_base materialDev/textures/e1u1/wsupprt1_4.tga
-	texture_normals materialDev/textures/e1u1/wsupprt1_4_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e1u1/wsupprt1_4_n.png
+	texture_roughness materialDev/textures/e1u1/wsupprt1_4_rough.png
+	texture_metallic materialDev/textures/e1u1/wsupprt1_4_metal.png
+	specular_factor .3
 
 textures/e1u1/wsupprt1_8:
 	texture_base materialDev/textures/e1u1/wsupprt1_8.tga

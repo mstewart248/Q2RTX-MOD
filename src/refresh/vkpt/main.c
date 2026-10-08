@@ -4634,6 +4634,15 @@ typedef struct reference_mode_s
 	int reflect_refract;
 } reference_mode_t;
 
+/* Radiance cache (pt_sharc): never in photo mode - the cache is biased, and that mode
+   is the reference - and only at exactly 2 bounces, the one setting the video menu
+   offers it for. With 1 bounce it only adds bias; from 3 on, real bounces carry the
+   light it approximates. Gates both the cache update and the shaders' use of it. */
+static bool sharc_active(const reference_mode_t *ref_mode)
+{
+	return cvar_pt_sharc->value != 0 && !ref_mode->enable_accumulation && ref_mode->num_bounce_rays == 2.f;
+}
+
 static int
 get_accumulation_rendering_framenum(void)
 {
@@ -5812,6 +5821,9 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	if (ref_mode->num_bounce_rays < 1.f)
 		ubo->pt_specular_mis = 0; // disable MIS if there are no specular rays
 
+	if (!sharc_active(ref_mode))
+		ubo->pt_sharc = 0.f;
+
 	ubo->pt_min_log_sky_luminance = exp2f(ubo->pt_min_log_sky_luminance);
 	ubo->pt_max_log_sky_luminance = exp2f(ubo->pt_max_log_sky_luminance);
 
@@ -5865,6 +5877,51 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	}
 
 	ubo->num_cameras = wm->num_cameras;
+}
+
+/* pt_fog_froxel_dyn_split puts a cluster's model lights on the SHORT froxel
+   history and its BSP lights on the long one, and tells them apart by index
+   (fog_light_static_count in fog_medium.glsl). Emissive surfaces on brush
+   entities - doors, trains, mgu4m1's tomf/shoot01 crate clamps - are fixtures,
+   not flashes, so they belong with the BSP lights. prepare_entities instances
+   them interleaved with the md2 lights in entity order; this moves them to the
+   front, keeping the order otherwise, and counts them for the fog. Reordering
+   is safe for ReSTIR: update_mlight_prev_to_current matches lights by hash,
+   not by index, and the ids move with their lights. */
+static int num_bmodel_lights = 0;
+
+static void
+partition_bmodel_lights(void)
+{
+	static light_poly_t sorted_lights[MAX_MODEL_LIGHTS];
+	static int sorted_ids[MAX_MODEL_LIGHTS];
+	int *ids = light_entity_ids[entity_frame_num];
+	int n = 0;
+
+	num_bmodel_lights = 0;
+	for (int i = 0; i < num_model_lights; i++)
+	{
+		if (((entity_hash_t*)&ids[i])->bsp)
+			num_bmodel_lights++;
+	}
+
+	if (num_bmodel_lights == 0 || num_bmodel_lights == num_model_lights)
+		return;
+
+	for (int pass = 1; pass >= 0; pass--)
+	{
+		for (int i = 0; i < num_model_lights; i++)
+		{
+			if (((entity_hash_t*)&ids[i])->bsp != (unsigned)pass)
+				continue;
+			sorted_lights[n] = model_lights[i];
+			sorted_ids[n] = ids[i];
+			n++;
+		}
+	}
+
+	memcpy(model_lights, sorted_lights, sizeof(light_poly_t) * n);
+	memcpy(ids, sorted_ids, sizeof(int) * n);
 }
 
 static void
@@ -5992,6 +6049,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 	}
 
+	partition_bmodel_lights();
 	update_mlight_prev_to_current();
 	vkpt_vertex_buffer_ensure_primbuf_size(upload_info.num_prims);
 
@@ -6005,6 +6063,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	// add_dlights() (which builds the count) and prepare_ubo() (which would
 	// otherwise overwrite it), and before the UBO is uploaded to staging.
 	ubo->fog_num_model_lights = num_model_lights;
+	ubo->fog_num_bmodel_lights = num_bmodel_lights;
 
 	// How long the frame just rendered took, for the froxel grid's temporal
 	// blend. Same fallback the tone mapper uses below: fd->time stops advancing
@@ -6673,8 +6732,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			END_PERF_MARKER(trace_cmd_buf, PROFILER_ASVGF_GRADIENT_REPROJECT);
 		}
 
-		// Never in photo mode: the cache is biased, and that mode is the reference.
-		if (cvar_pt_sharc->value != 0 && !ref_mode.enable_accumulation && ref_mode.num_bounce_rays > 0)
+		if (sharc_active(&ref_mode))
 		{
 			vkpt_pt_sharc_update(trace_cmd_buf, sharc_clear_pending);
 			sharc_clear_pending = false;
@@ -8972,7 +9030,7 @@ R_Init_RTX(bool total)
 
 	cvar_pt_num_bounce_rays->flags |= CVAR_ARCHIVE;
 	cvar_pt_bounce_albedo_power->flags |= CVAR_ARCHIVE; // the video menu's "bounce light strength" slider
-	cvar_pt_sharc->flags |= CVAR_ARCHIVE; // the video menu's "multi-bounce lighting" toggle
+	cvar_pt_sharc->flags |= CVAR_ARCHIVE; // the video menu's "SHaRC multi-bounce approximation" toggle
 	cvar_pt_restir_gi->flags |= CVAR_ARCHIVE; // the video menu's "ReStir Global Illumination" toggle
 	// UBO cvars are registered without CVAR_ARCHIVE, so a console value lasts until the next
 	// launch and the header default comes back. This one is a per-setup choice, so keep it.

@@ -1256,8 +1256,8 @@ them addable - a neighbour has no way to know the count its source cell used.
    draws from. The split rides on the sky part's short history volume, so it is
    only live while pt_fog_froxel_sky_history is. */
 #define FOG_LIGHTS_ALL      0u
-#define FOG_LIGHTS_STATIC   1u   // the BSP's own lights + the fog-only (lava) list
-#define FOG_LIGHTS_DYNAMIC  2u   // the model lights: dlights, flashes, flashlight, ...
+#define FOG_LIGHTS_STATIC   1u   // the BSP's own lights, brush-entity emissives + the fog-only (lava) list
+#define FOG_LIGHTS_DYNAMIC  2u   // the other model lights: dlights, flashes, flashlight, md2 emissives, beams
 
 #define FOG_DYN_SPLIT (global_ubo.pt_fog_froxel_dyn_split != 0.0                        && global_ubo.pt_fog_froxel_sky_history > 0.0)
 
@@ -1266,13 +1266,19 @@ them addable - a neighbour has no way to know the count its source cell used.
    the PVS-visible model lights after it, and model light indices all sit at or
    above num_static_lights - so "index >= num_static_lights" is false then true
    along the list, and a binary search finds the boundary. The fog-only (lava)
-   list is separate and always static. */
+   list is separate and always static.
+
+   Brush-entity emissive surfaces (doors, trains, mgu4m1's crate clamps) are
+   model lights too, but they are fixtures, not flashes: main.c packs them at
+   the front of the model lights and fog_num_bmodel_lights says how many, so
+   they count as static here and stay on the long history. */
 uint fog_light_static_count(uint cluster_idx)
 {
 	uint start = light_buffer.light_list_offsets[cluster_idx];
 	uint lo = 0;
 	uint hi = light_buffer.light_list_offsets[cluster_idx + 1] - start;
-	uint first_model = uint(max(global_ubo.num_static_lights, 0));
+	uint first_model = uint(max(global_ubo.num_static_lights, 0))
+	                 + uint(max(global_ubo.fog_num_bmodel_lights, 0));
 
 	while (lo < hi)
 	{

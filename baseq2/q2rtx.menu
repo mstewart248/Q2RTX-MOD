@@ -329,7 +329,12 @@ begin video_renderer
         // other slider: a lower power lifts dark albedos further.
         range --status "how much light surfaces pass on when it bounces - their look is unchanged. 1 matches the textures, which are far darker than what they depict, so bounce light barely shows. Around 0.5 adds visible fill; much lower flattens the lighting (pt_bounce_albedo_power)" \
             -f "%.2f" "bounce light strength" pt_bounce_albedo_power 1 0.2 -0.05
-        pairs --status "extra bounces of light from a world-space radiance cache, on top of global illumination. Costs about 0.5ms (pt_sharc)" "multi-bounce lighting" pt_sharc off 0 on 2
+        // Only at exactly 2 bounces, and the renderer agrees (sharc_active in main.c):
+        // with 1 the cache only adds bias, and from 3 on real bounces do its job.
+        ifeq pt_num_bounce_rays 2
+        pairs --status "stands in for the bounces after the second with light looked up in a world-space radiance cache. Costs about 0.5ms (pt_sharc)" \
+            "SHaRC multi-bounce approximation" pt_sharc off 0 on 2
+        endif
         pairs --status "(pt_reflect_refract)" "reflection/refraction depth" pt_reflect_refract off 0 1 1 2 2 4 4 8 8
 		toggle --status "turn some monitors in the game into security camera views (pt_cameras)" \
             "security cameras" pt_cameras

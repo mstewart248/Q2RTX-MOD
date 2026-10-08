@@ -50,8 +50,18 @@ static bool CanDamage_rerelease(edict_t *targ, edict_t *inflictor)
     if (targ->solid == SOLID_BSP) {
         M_ClosestPointToBox(inflictor_center, targ->absmin, targ->absmax, dest);
 
+        // A blast inside the box always counts, and so does a trace that
+        // stops on the target itself - the same rule as the classic path
+        // below. mgu4m1's crate drop (b_exp_win_01) sets off its explosions
+        // inside clamp func_explosive *51 while crane train *122 is still
+        // sliding out of it: the zero-length trace started in the train,
+        // came back fraction 0, the clamp never broke and the crate stayed
+        // up.
+        if (VectorCompare(dest, inflictor_center))
+            return true;
+
         trace = gi.trace(inflictor_center, vec3_origin, vec3_origin, dest, inflictor, MASK_SOLID);
-        if (trace.fraction == 1.0f)
+        if (trace.fraction == 1.0f || trace.ent == targ)
             return true;
     }
 
