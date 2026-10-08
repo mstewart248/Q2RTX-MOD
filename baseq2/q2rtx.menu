@@ -320,8 +320,11 @@ begin video_renderer
         pairs --status "how world and model textures are sampled. The last two point sample the albedo and emissive only, and leave the normal, roughness and metallic maps filtered (pt_nearest)" \
             "texture filtering" pt_nearest "filtered" 0 "nearest" 1 "nearest, no mipmaps" 2 "nearest, colour only" 3 "nearest, colour only, no mipmaps" 4
         blank
-        pairs --status "how many times light bounces. Every bounce samples the lights (pt_bounce_nee); from the third on, dim paths stop early (pt_bounce_rr), so 4 and 8 cost far less than 4x and 8x (pt_num_bounce_rays)" \
-            "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2 "very high" 4 ultra 8
+        // A slider rather than named presets, so 3 and 5-7 are reachable too. The
+        // old "low" (0.5, half-resolution diffuse only) is console-only now; %g
+        // still shows it as 0.5 rather than rounding it to 0 or 1.
+        range --status "how many times light bounces. 0 turns bounce lighting off. Every bounce samples the lights (pt_bounce_nee); from the third on, dim paths stop early (pt_bounce_rr), so 4 and 8 cost far less than 4x and 8x (pt_num_bounce_rays)" \
+            -f "%g" "light bounces" pt_num_bounce_rays 0 8 1
         // Runs from 1 down to 0.2 so that right = more bounce light, like every
         // other slider: a lower power lifts dark albedos further.
         range --status "how much light surfaces pass on when it bounces - their look is unchanged. 1 matches the textures, which are far darker than what they depict, so bounce light barely shows. Around 0.5 adds visible fill; much lower flattens the lighting (pt_bounce_albedo_power)" \

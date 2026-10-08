@@ -88,7 +88,8 @@ void UI_PushMenu(menuFrameWork_t *menu)
 
     uis.activeMenu = menu;
 
-    UI_DoHitTest();
+    // No hit test here either (see UI_PopMenu): a menu keeps its highlight between
+    // visits, and the pointer left over from the menu that opened it would move it.
 
     if (menu->expose) {
         menu->expose(menu);
@@ -165,7 +166,10 @@ void UI_PopMenu(void)
     uis.activeMenu = uis.layers[uis.menuDepth - 1];
     uis.mouseTracker = NULL;
 
-    UI_DoHitTest();
+    // No hit test here: the pointer is still wherever it was in the submenu, so
+    // one would move the parent's highlight to whichever item happens to sit at
+    // that spot instead of the one that opened the submenu. The next real mouse
+    // move or click hit-tests as usual.
 }
 
 /*
@@ -511,6 +515,13 @@ void UI_KeyEvent(int key, bool down)
             uis.mouseTracker = NULL;
         }
         return;
+    }
+
+    // Menu_Keydown only acts on a click if the item under the pointer already has
+    // the highlight. Since opening or closing a menu no longer hit-tests, the
+    // pointer may not have moved since, so hit-test now.
+    if (key == K_MOUSE1 || key == K_MOUSE3) {
+        UI_DoHitTest();
     }
 
     sound = Menu_Keydown(uis.activeMenu, key);
