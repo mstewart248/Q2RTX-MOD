@@ -4933,7 +4933,8 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 		ref_mode->enable_accumulation = true;
 		ref_mode->enable_denoiser = false;
 		ref_mode->rr_denoiser = false;
-		ref_mode->num_bounce_rays = 2;
+		// The reference gets at least two bounces, and as many as gameplay uses.
+		ref_mode->num_bounce_rays = max(2, min(8, round(cvar_pt_num_bounce_rays->value)));
 		ref_mode->temporal_blend_factor = 1.f / min(max(1, num_accumulated_frames - num_warmup_frames), num_frames_to_accumulate);
 		ref_mode->reflect_refract = max(4, cvar_pt_reflect_refract->integer);
 
@@ -5006,7 +5007,7 @@ evaluate_reference_mode(reference_mode_t* ref_mode)
 		if (cvar_pt_num_bounce_rays->value == 0.5f)
 			ref_mode->num_bounce_rays = 0.5f;
 		else
-			ref_mode->num_bounce_rays = max(0, min(2, round(cvar_pt_num_bounce_rays->value)));
+			ref_mode->num_bounce_rays = max(0, min(8, round(cvar_pt_num_bounce_rays->value))); // up to 8 - see pt_num_bounce_rays
 		ref_mode->temporal_blend_factor = 0.f;
 		ref_mode->reflect_refract = max(0, cvar_pt_reflect_refract->integer);
 	}
@@ -8970,6 +8971,7 @@ R_Init_RTX(bool total)
 	cvar_pt_restir->changed = restir_cvar_changed;
 
 	cvar_pt_num_bounce_rays->flags |= CVAR_ARCHIVE;
+	cvar_pt_bounce_albedo_power->flags |= CVAR_ARCHIVE; // the video menu's "bounce light strength" slider
 	cvar_pt_sharc->flags |= CVAR_ARCHIVE; // the video menu's "multi-bounce lighting" toggle
 	cvar_pt_restir_gi->flags |= CVAR_ARCHIVE; // the video menu's "ReStir Global Illumination" toggle
 	// UBO cvars are registered without CVAR_ARCHIVE, so a console value lasts until the next

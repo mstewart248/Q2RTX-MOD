@@ -303,8 +303,16 @@ main()
         color_output = PQEncode(linear_color_output);
     }
     else
-    { 
+    {
         linear_color_output = PQDecode(color_output);
+
+        // pt_dlss_exact_color: nothing is filtered on this path, so hand the colour over
+        // untouched instead of round-tripping it through PQ and fp16 shared memory - the
+        // round trip left every pixel slightly off the colour-before-transparency guide
+        // DLSS-RR compares it against, and clamped highlights at 10000. With no TAA the
+        // output and render grids coincide, so int_render_pos is this very pixel.
+        if(global_ubo.pt_dlss_exact_color != 0)
+            linear_color_output = texelFetch(TEX_FLAT_COLOR, int_render_pos, 0).rgb;
     }
 
     bool is_readback_pixel = all(equal(ipos, ivec2(global_ubo.unscaled_width / 2, global_ubo.unscaled_height / 2)));

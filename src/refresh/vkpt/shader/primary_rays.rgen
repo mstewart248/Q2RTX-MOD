@@ -354,6 +354,12 @@ main()
 		imageStore(IMG_PT_VISBUF_BARY_A, ipos, vec4(0));
 		imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(0));
 		imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
+		// pt_dlss_bt_guide 1: the sky is the opaque background, not a transparency, so it
+		// belongs in DLSS-RR's colour-before-transparency guide as well. compositing.comp
+		// adds this accumulated opaque part of the overlay back - see global_ubo.h. Alpha 1,
+		// like the sky's alpha in `transparent`: nothing behind it shows.
+		if(global_ubo.pt_dlss_bt_guide == 1)
+			imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(env, 1));
 		imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(PRIMARY_RAY_T_MAX));
 
 		// DLSS-RR guide buffers for sky pixels. The RR integration guide (3.4.2) calls
@@ -705,6 +711,11 @@ main()
 
 	// Start the transparency accumulation from the primary surface emissive component, with zero alpha
 	vec4 transparent = vec4(primary_emissive * throughput, 0);
+
+	// pt_dlss_bt_guide 1: emissive is part of the surface, not a transparency - the same
+	// term, kept apart from the effects so DLSS-RR's colour-before-transparency guide has it.
+	if(global_ubo.pt_dlss_bt_guide == 1)
+		imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(primary_emissive * throughput, 0));
 
 	if(global_ubo.pt_show_sky != 0 && is_sky(triangle.material_id))
 	{

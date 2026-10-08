@@ -52,8 +52,38 @@ projected_tri_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, floa
 	return pa * brdf;
 }
 
+// projected_tri_area with the EXACT solid angle as the selection mass, matching
+// sample_spherical_triangle (pt_light_spherical_tri). The planar area above is
+// (|cross| of the projected triangle) = twice the area of the flat triangle through the
+// three projected vertices, which falls well short of the solid angle once a light is
+// large or close - a light covering an octant gets ~0.55x the mass its contribution
+// needs, so it is picked too rarely and comes back with too large a weight.
 float
-projected_sphere_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight)
+spherical_tri_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight)
+{
+	positions[0] = positions[0] - p;
+	positions[1] = positions[1] - p;
+	positions[2] = positions[2] - p;
+
+	vec3 g = cross(positions[1] - positions[0], positions[2] - positions[0]);
+	if (dot(n, positions[0]) <= 0 && dot(n, positions[1]) <= 0 && dot(n, positions[2]) <= 0)
+		return 0;
+	if (dot(g, positions[0]) >= 0 && dot(g, positions[1]) >= 0 && dot(g, positions[2]) >= 0)
+		return 0;
+
+	vec3 L = normalize(positions * vec3(1.0 / 3.0));
+	float specular = phong(n, L, V, phong_exp) * phong_scale;
+	float brdf = mix(1.0, specular, phong_weight);
+
+	float area = spherical_triangle_area(normalize(positions[0]), normalize(positions[1]), normalize(positions[2]));
+	float pa = max(area - 1e-5, 0.);
+	return pa * brdf;
+}
+
+// max_irradiance caps the light's projected size, in the 2 * (1 - cos) measure used
+// here - see pt_bounce_dlight_cap. The 7-argument overloads below keep the old 2 * pi.
+float
+projected_sphere_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight, float max_irradiance)
 {
 	vec3 position = positions[0] - p;
 	float sphere_radius = positions[1].x;
@@ -68,13 +98,19 @@ projected_sphere_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, f
 	float brdf = mix(1.0, specular, phong_weight);
 
 	float irradiance = 2 * (1 - sqrt(max(0, 1 - square(sphere_radius * rdist))));
-	irradiance = min(irradiance, 2 * M_PI); //max solid angle
+	irradiance = min(irradiance, max_irradiance); //max solid angle
 
 	return irradiance * brdf;
 }
 
 float
-projected_spotlight_area(mat3 positions, float emission_profile, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight)
+projected_sphere_area(mat3 positions, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight)
+{
+	return projected_sphere_area(positions, p, n, V, phong_exp, phong_scale, phong_weight, 2 * M_PI);
+}
+
+float
+projected_spotlight_area(mat3 positions, float emission_profile, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight, float max_irradiance)
 {
 	vec3 position = positions[0] - p;
 	float sphere_radius = positions[1].x;
@@ -94,9 +130,15 @@ projected_spotlight_area(mat3 positions, float emission_profile, vec3 p, vec3 n,
 
 	float irradiance = 2 * falloff * square(rdist);
 
-	irradiance = min(irradiance, 2 * M_PI); //max solid angle
+	irradiance = min(irradiance, max_irradiance); //max solid angle
 
 	return irradiance * brdf;
+}
+
+float
+projected_spotlight_area(mat3 positions, float emission_profile, vec3 p, vec3 n, vec3 V, float phong_exp, float phong_scale, float phong_weight)
+{
+	return projected_spotlight_area(positions, emission_profile, p, n, V, phong_exp, phong_scale, phong_weight, 2 * M_PI);
 }
 
 uint get_light_stats_addr(uint cluster, uint light, uint side)
@@ -124,13 +166,18 @@ sample_lights(
 	out int light_index,
 	out float pdfw,
 	out bool is_sky_light,
-	vec3 rng)
+	vec3 rng,
+	float max_dyn_irradiance) // pt_bounce_dlight_cap for bounces, 2 * pi otherwise
 {
 	position_light = vec3(0);
 	light_index = -1;
 	light_color = vec3(0);
 	pdfw = 0;
 	is_sky_light = false;
+
+	// pt_light_spherical_tri - see global_ubo.h. Mass and sampler must agree, so both
+	// switch together.
+	bool spherical_tri = global_ubo.pt_light_spherical_tri != 0;
 
 	if (list_idx == ~0u)
 		return;
@@ -167,13 +214,15 @@ sample_lights(
 		float m = 0.0f;
 		switch (uint(light.type)) {
 		case DYNLIGHT_POLYGON:
-			m = projected_tri_area(light.positions, p, n, V, phong_exp, phong_scale, phong_weight);
+			m = spherical_tri
+				? spherical_tri_area(light.positions, p, n, V, phong_exp, phong_scale, phong_weight)
+				: projected_tri_area(light.positions, p, n, V, phong_exp, phong_scale, phong_weight);
 			break;
 		case DYNLIGHT_SPHERE:
-			m = projected_sphere_area(light.positions, p, n, V, phong_exp, phong_scale, phong_weight);
+			m = projected_sphere_area(light.positions, p, n, V, phong_exp, phong_scale, phong_weight, max_dyn_irradiance);
 			break;
 		case DYNLIGHT_SPOT:
-			m = projected_spotlight_area(light.positions, light.spot_emission_profile, p, n, V, phong_exp, phong_scale, phong_weight);
+			m = projected_spotlight_area(light.positions, light.spot_emission_profile, p, n, V, phong_exp, phong_scale, phong_weight, max_dyn_irradiance);
 			break;
 		}
 
@@ -261,7 +310,16 @@ sample_lights(
 
 		switch (uint(light.type)) {
 		case DYNLIGHT_POLYGON:
-			position_light = sample_projected_triangle(p, light.positions, rng.yz, light_normal, pdfw);
+			if (spherical_tri)
+			{
+				position_light = sample_spherical_triangle(p, light.positions, rng.yz, light_normal, pdfw);
+				// Degenerate triangle: no sample, but keep the position finite for the
+				// caller's shadow-ray and phong math.
+				if (!(pdfw > 0))
+					position_light = light.positions[0];
+			}
+			else
+				position_light = sample_projected_triangle(p, light.positions, rng.yz, light_normal, pdfw);
 			break;
 		case DYNLIGHT_SPHERE:
 			position_light = sample_projected_sphere(p, light.positions, rng.yz, light_normal, pdfw);
@@ -281,6 +339,12 @@ sample_lights(
 			float LdotNL = max(0, -dot(light_normal, L));
 			float spotlight = sqrt(LdotNL);
 			float inv_pdfw = 1.0 / pdfw;
+
+			// The same cap the selection mass above was computed with, so the estimate
+			// stays consistent: a capped light is picked as often as its capped size says
+			// and returns that capped size. 1 / pdfw is the 2 * (1 - cos) size here.
+			if (uint(light.type) != DYNLIGHT_POLYGON)
+				inv_pdfw = min(inv_pdfw, max_dyn_irradiance);
 
 			if (light.color.r >= 0)
 			{

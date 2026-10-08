@@ -61,6 +61,9 @@ uniform accelerationStructureEXT topLevelAS[TLAS_COUNT];
 #define RNG_RESTIR_SP_LIGHT_SELECTION(bounce) 	(4 + 9 + 12 * bounce)
 #define RNG_RESTIR_SPATIAL_X(bounce)	  		(4 + 10 + 12 * bounce)
 #define RNG_RESTIR_SPATIAL_Y(bounce)	  		(4 + 11 + 12 * bounce)
+// Russian roulette for bounce rays from the third bounce on (indirect_lighting.rgen).
+// Shares its slot with ReSTIR DI's spatial light pick, which only ever uses bounce 0.
+#define RNG_RUSSIAN_ROULETTE(bounce)			RNG_RESTIR_SP_LIGHT_SELECTION(bounce)
 
 // AS_FLAG_BLOOD is in all four: a droplet is visible, reflective, bounces light
 // and casts a shadow exactly like any other opaque geometry. It is a separate bit
@@ -882,6 +885,12 @@ get_direct_illumination(
 		get_rng(RNG_NEE_TRI_X(bounce)),
 		get_rng(RNG_NEE_TRI_Y(bounce)));
 
+	// pt_bounce_dlight_cap - see global_ubo.h. Bounces only, and never in photo mode,
+	// which must stay unbiased.
+	float max_dyn_irradiance = 2 * M_PI;
+	if (bounce > 0 && global_ubo.pt_bounce_dlight_cap > 0 && global_ubo.temporal_blend_factor == 0)
+		max_dyn_irradiance = global_ubo.pt_bounce_dlight_cap;
+
 	if (enable_polygonal || enable_dynamic)
 	{
 		sample_lights(
@@ -899,7 +908,8 @@ get_direct_illumination(
 			light_index,
 			light_pdfw,
 			polygonal_light_is_sky,
-			rng);
+			rng,
+			max_dyn_irradiance);
 	}
 
 	bool is_polygonal = true;

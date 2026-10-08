@@ -42,14 +42,15 @@ Per-pixel images, all double-buffered (A = this frame, B = last frame):
   PT_RESTIR_GI_POS     xyz = x_s, w = W (the reservoir's unbiased weight);
                        before restir_gi.rgen runs, w = the pixel's throughput
                        before the lobe choice (RGBE bits), every frame
-  PT_RESTIR_GI_DATA    x = n_s (encode_normal), y = L_o (RGBE), z = M (float bits),
-                       w = T0 (RGBE), this frame's throughput into the bounce, until
-                       restir_gi.rgen replaces it with the sample's age in frames
+  PT_RESTIR_GI_DATA    x = n_s (encode_normal), y = L_o (RGBE),
+                       z = M and the sample's age in frames (packHalf2x16),
+                       w = the pixel's pre-lobe throughput (RGBE), kept for the
+                       spatial pass, which shades after POS.w has become W.
+                       Before restir_gi.rgen runs, z is a candidate marker (float
+                       bits) and w is T0, this frame's throughput into the bounce.
   PT_RESTIR_GI_ORIGIN  xyz = the pixel's shading point x_v, w = its normal
                        (encode_normal, float bits). Needed because the first
                        bounce pass overwrites PT_SHADING_POSITION.
-
-Before restir_gi.rgen runs, DATA.z is a candidate marker instead of M.
 
 Target function: p_hat = luminance(L_o) * cos(theta_v). With cosine-weighted
 candidates (p = cos / pi) a lone candidate gets W = pi / cos and shades exactly
@@ -65,7 +66,18 @@ a one-frame glint per pixel per lucky bounce. With M kept, that bounce enters at
 Pieces every production ReSTIR GI has and this one gained on 2026-10-04 (all in
 restir_gi.rgen): a random per-frame permutation offset, a sample age limit
 (pt_restir_gi_max_age), a boiling filter (pt_restir_gi_boiling) and final
-visibility (pt_restir_gi_vis). Still missing: spatial reuse.
+visibility (pt_restir_gi_vis).
+
+SPATIAL REUSE (pt_restir_gi_spatial, 2026-10-06). Temporal reuse alone averages a
+pixel's own history and nothing else, so where few bounces find light the pixel
+holds 0, 1 or 2 lit samples out of its 16 - a coarse per-pixel pattern that changes
+slowly, which DLSS-RR keeps as if it were detail - and one lucky bright sample lights
+one pixel for ~16 frames. A second dispatch of restir_gi.rgen (push bounce_index 1)
+merges each pixel's temporal reservoir with those of a few random neighbours, picked
+afresh every frame, normalised RTXDI-style by 1/Z (the M of every reservoir that
+could have produced the chosen sample) and shaded with a final visibility ray. Its
+result lights the pixel only; the history stays temporal, which is what kept the
+same idea from compounding in ReSTIR DI (see direct_lighting.rgen).
 
 Never in accumulation (photo) mode: sample reuse is biased there, and that mode
 is the unbiased reference.
@@ -102,9 +114,18 @@ GIReservoir gi_load(vec4 pos_w, uvec4 data)
 	r.W = pos_w.w;
 	r.normal = decode_normal(data.x);
 	r.radiance = unpackRGBE(data.y);
-	r.M = uintBitsToFloat(data.z);
-	r.age = float(data.w);
+	vec2 m_age = unpackHalf2x16(data.z);
+	r.M = m_age.x;
+	r.age = m_age.y;
 	return r;
+}
+
+// DATA.z of a stored reservoir: M and age as two halves. M is clamped to
+// pt_restir_gi_m_clamp and integral, so fp16 holds it exactly; age is capped where
+// fp16 stops counting in ones, far beyond any useful pt_restir_gi_max_age.
+uint gi_pack_m_age(float M, float age)
+{
+	return packHalf2x16(vec2(M, min(age, 2048.0)));
 }
 
 // Drop the sample but keep the history length: the pixel still knows how many

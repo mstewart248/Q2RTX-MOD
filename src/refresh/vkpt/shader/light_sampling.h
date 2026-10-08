@@ -157,6 +157,117 @@ sample_projected_triangle(vec3 p, mat3 positions, vec2 rnd, out vec3 light_norma
 	return p + lo;
 }
 
+/*
+EXACT SPHERICAL-TRIANGLE SAMPLING (pt_light_spherical_tri).
+
+Upstream Q2RTX's sampler (Frank Richter, 2023), which ff3ec4ef replaced with the planar
+projection above. The planar version samples the flat triangle spanned by the three
+projected vertices and converts its area pdf to solid angle per sample, so the weight
+of a sample changes across a large or close light - about 5x across a light covering
+an octant of the hemisphere. This one is uniform in solid angle, so every sample of a
+triangle carries the same weight.
+
+Kept beside the planar functions rather than replacing them: ReSTIR DI and the fog
+still call those, and their target functions were tuned against them.
+*/
+
+// Solid angle of a triangle whose vertices are already projected onto the unit sphere
+// around the shading point. From "On the Measure of Solid Angles", F. Eriksson, 1990.
+float spherical_triangle_area(vec3 A, vec3 B, vec3 C)
+{
+	return 2.0 * atan(abs(dot(A, cross(B, C))), 1.0 + dot(A, B) + dot(B, C) + dot(A, C));
+}
+
+// pdf per steradian of sample_spherical_triangle, for a triangle already projected with
+// project_triangle(). Uniform, so it does not depend on where the sample landed.
+float get_spherical_triangle_pdfw(mat3 projected_positions)
+{
+	float area = spherical_triangle_area(projected_positions[0], projected_positions[1], projected_positions[2]);
+	return area > 0.0 ? 1.0 / area : 0.0;
+}
+
+/* Sample a triangle, projected to a unit sphere.
+ *
+ * The implementation is based on the algorithm described in:
+ * James Arvo. 1995. Stratified sampling of spherical triangles.
+ * Proceedings of the 22nd annual conference on Computer graphics and interactive techniques (SIGGRAPH '95).
+ * Association for Computing Machinery, New York, NY, USA, 437-438.
+ * https://doi.org/10.1145/218380.218500
+ *
+ * pdfw is 0 for a degenerate triangle; the caller must not use the sample then.
+ */
+vec3
+sample_spherical_triangle(vec3 pt, mat3 positions, vec2 rnd, out vec3 light_normal, out float pdfw)
+{
+	light_normal = cross(positions[1] - positions[0], positions[2] - positions[0]);
+	light_normal = normalize(light_normal);
+
+	// Use surface point as origin
+	positions[0] = positions[0] - pt;
+	positions[1] = positions[1] - pt;
+	positions[2] = positions[2] - pt;
+
+	// Distance of triangle to origin
+	float o = dot(light_normal, positions[0]);
+
+	// Project triangle to unit sphere
+	vec3 A = normalize(positions[0]);
+	vec3 B = normalize(positions[1]);
+	vec3 C = normalize(positions[2]);
+	// Planes passing through two vertices and origin. They'll be used to obtain the angles.
+	vec3 norm_AB = normalize(cross(A, B));
+	vec3 norm_CA = normalize(cross(C, A));
+	// Side of spherical triangle
+	float cos_c = dot(A, B);
+	// Angle at vertex A
+	float cos_alpha = dot(norm_AB, -norm_CA);
+
+	float area = spherical_triangle_area(A, B, C);
+
+	// Use one random variable to select the new area.
+	float new_area = rnd.x * area;
+
+	float sin_alpha = sqrt(max(0.0, 1.0 - cos_alpha * cos_alpha)); // = sin(acos(cos_alpha))
+	float sin_new_area = sin(new_area);
+	float cos_new_area = cos(new_area);
+	// Save the sine and cosine of the angle phi.
+	float p = sin_new_area * cos_alpha - cos_new_area * sin_alpha;
+	float q = cos_new_area * cos_alpha + sin_new_area * sin_alpha;
+
+	// Compute the pair (u, v) that determines new_beta.
+	float u = q - cos_alpha;
+	float v = p + sin_alpha * cos_c;
+
+	// Let cos_b be the cosine of the new edge length new_b.
+	float cos_b = clamp(((v * q - u * p) * cos_alpha - v) / ((v * p + u * q) * sin_alpha), -1.0, 1.0);
+
+	// Compute the third vertex of the sub-triangle.
+	vec3 new_C = cos_b * A + sqrt(max(0.0, 1.0 - cos_b * cos_b)) * normalize(C - dot(C, A) * A);
+
+	// Use the other random variable to select cos(phi).
+	float z = 1.0 - rnd.y * (1.0 - dot(new_C, B));
+
+	// Construct the corresponding point on the sphere.
+	vec3 direction = z * B + sqrt(max(0.0, 1.0 - z * z)) * normalize(new_C - dot(new_C, B) * B);
+	// ...which is also the direction!
+
+	// Line-plane intersection
+	vec3 lo = direction * (o / dot(light_normal, direction));
+
+	// Since the solid angle is distributed uniformly, the PDF wrt to solid angle is simply:
+	pdfw = area > 0.0 ? 1.0 / area : 0.0;
+
+	// A sliver triangle or a sample on its edge can produce a NaN or Inf above. Report
+	// no sample rather than hand the caller a non-finite light position.
+	if (any(isnan(lo)) || any(isinf(lo)) || isnan(pdfw) || isinf(pdfw))
+	{
+		pdfw = 0.0;
+		lo = positions[0];
+	}
+
+	return pt + lo;
+}
+
 vec3
 sample_projected_sphere(vec3 p, mat3 positions, vec2 rnd, out vec3 light_normal, out float pdfw)
 {

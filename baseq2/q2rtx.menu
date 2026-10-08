@@ -320,7 +320,12 @@ begin video_renderer
         pairs --status "how world and model textures are sampled. The last two point sample the albedo and emissive only, and leave the normal, roughness and metallic maps filtered (pt_nearest)" \
             "texture filtering" pt_nearest "filtered" 0 "nearest" 1 "nearest, no mipmaps" 2 "nearest, colour only" 3 "nearest, colour only, no mipmaps" 4
         blank
-        pairs --status "(pt_num_bounce_rays)" "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2
+        pairs --status "how many times light bounces. Every bounce samples the lights (pt_bounce_nee); from the third on, dim paths stop early (pt_bounce_rr), so 4 and 8 cost far less than 4x and 8x (pt_num_bounce_rays)" \
+            "global illumination" pt_num_bounce_rays low 0.5 medium 1 high 2 "very high" 4 ultra 8
+        // Runs from 1 down to 0.2 so that right = more bounce light, like every
+        // other slider: a lower power lifts dark albedos further.
+        range --status "how much light surfaces pass on when it bounces - their look is unchanged. 1 matches the textures, which are far darker than what they depict, so bounce light barely shows. Around 0.5 adds visible fill; much lower flattens the lighting (pt_bounce_albedo_power)" \
+            -f "%.2f" "bounce light strength" pt_bounce_albedo_power 1 0.2 -0.05
         pairs --status "extra bounces of light from a world-space radiance cache, on top of global illumination. Costs about 0.5ms (pt_sharc)" "multi-bounce lighting" pt_sharc off 0 on 2
         pairs --status "(pt_reflect_refract)" "reflection/refraction depth" pt_reflect_refract off 0 1 1 2 2 4 4 8 8
 		toggle --status "turn some monitors in the game into security camera views (pt_cameras)" \

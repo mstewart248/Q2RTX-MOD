@@ -102,6 +102,7 @@ extern cvar_t *cvar_pt_reflect_refract;
 extern cvar_t* cvar_pt_restir;
 extern cvar_t* cvar_pt_sharc_stride;
 extern cvar_t* cvar_pt_restir_gi;
+extern cvar_t* cvar_pt_restir_gi_spatial;
 
 typedef struct QvkGeometryInstance_s {
 	float    transform[12];
@@ -1388,6 +1389,8 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO]);
+	// The opaque-overlay accumulator for pt_dlss_bt_guide, read back by reflect_refract.
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_BEFORE_TRANSPARENT]);
 
 
 	return VK_SUCCESS;
@@ -1434,6 +1437,9 @@ vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VISBUF_BARY_A + frame_idx]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DEPTH_SPLIT]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_REFLECT_MOTION]);
+	// pt_dlss_bt_guide's opaque-overlay accumulator, carried bounce to bounce like
+	// PT_TRANSPARENT above.
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_BEFORE_TRANSPARENT]);
 
 	return VK_SUCCESS;
 }
@@ -1534,7 +1540,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 
 	BEGIN_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING);
 
-	assert(num_bounce_rays <= 2);
+	assert(num_bounce_rays <= 8);
 	if (num_bounce_rays > 0)
 	{
 		for (int i = 0; i < qvk.device_count; i++)
@@ -1547,14 +1553,18 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
             else
                 height = qvk.extent_render.height;
 
-			for (int bounce_ray = 0; bounce_ray < (int)ceilf(num_bounce_rays); bounce_ray++)
+			const int num_bounces = (int)ceilf(num_bounce_rays);
+			for (int bounce_ray = 0; bounce_ray < num_bounces; bounce_ray++)
             {
-				BEGIN_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING_0 + bounce_ray);
+				// Marker 0 is the first bounce; marker 1 spans every later bounce, which all
+				// run the second-bounce pipeline with their number in the push constant.
+				if (bounce_ray <= 1)
+					BEGIN_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING_0 + bounce_ray);
                 pipeline_index_t pipeline = (bounce_ray == 0) ? PIPELINE_INDIRECT_LIGHTING_FIRST : PIPELINE_INDIRECT_LIGHTING_SECOND;
 
                 pt_push_constants_t push;
                 push.gpu_index = qvk.device_count == 1 ? -1 : i;
-                push.bounce = 0;
+                push.bounce = bounce_ray;
 
                 dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), height, qvk.device_count == 1 ? 2 : 1);
 
@@ -1566,8 +1576,13 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_POS_A + frame_idx]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_DATA_A + frame_idx]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_ORIGIN_A + frame_idx]);
+				// The next bounce's starting point, written by this one.
+				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_SHADING_POSITION]);
+				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_GEO_NORMAL2]);
+				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DIRECTION2]);
 
-				END_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING_0 + bounce_ray);
+				if (bounce_ray == 0 || bounce_ray == num_bounces - 1)
+					END_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING_0 + (bounce_ray == 0 ? 0 : 1));
 			}
 		}
 	}
@@ -1599,6 +1614,29 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_POS_A + frame_idx]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_DATA_A + frame_idx]);
+
+		// Spatial reuse (pt_restir_gi_spatial): the same shader again, bounce_index 1,
+		// reading the reservoirs every pixel's temporal pass has just written - which is
+		// why it is a separate dispatch behind the barriers above.
+		if (cvar_pt_restir_gi_spatial->value > 0)
+		{
+			for (int i = 0; i < qvk.device_count; i++)
+			{
+				set_current_gpu(cmd_buf, i);
+
+				pt_push_constants_t push;
+				push.gpu_index = qvk.device_count == 1 ? -1 : i;
+				push.bounce = 1;
+
+				dispatch_rays(cmd_buf, PIPELINE_RESTIR_GI, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+			}
+
+			set_current_gpu(cmd_buf, ALL_GPUS);
+
+			BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);
+			BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);
+			BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE]);
+		}
 
 		END_PERF_MARKER(cmd_buf, PROFILER_RESTIR_GI);
 	}

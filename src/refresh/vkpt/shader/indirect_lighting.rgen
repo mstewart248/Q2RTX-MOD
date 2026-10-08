@@ -36,6 +36,27 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 layout(constant_id = 0) const uint spec_bounce_index = 0;
 
+/* WHICH BOUNCE THIS DISPATCH TRACES (0 = the first). The first-bounce pipeline is
+   always bounce 0. The second-bounce pipeline is dispatched once for every later
+   bounce - pt_num_bounce_rays goes up to 8 - with its number in the push constant;
+   every bounce after the first runs the same code, so spec_bounce_index still only
+   tells the two pipelines apart. Set in main(). */
+int bounce_number = 0;
+
+/* Was the vertex this bounce ray left from light sampled (NEE)? Then every light it
+   can hit was already counted there, and a light the ray lands on must not be added
+   again as an emissive hit. Bounce 0 leaves the primary surface (direct_lighting.rgen),
+   bounce 1 the first bounce hit (lit by the bounce-0 pass); a later hit is only light
+   sampled with pt_bounce_nee. Same rule for sky polygons that are lights. */
+bool ray_origin_light_sampled()
+{
+	if (bounce_number == 0)
+		return global_ubo.pt_direct_polygon_lights >= 0;
+	if (bounce_number == 1 || global_ubo.pt_bounce_nee != 0)
+		return global_ubo.pt_indirect_polygon_lights >= 0;
+	return false;
+}
+
 // pt_sharc 4 debug: -1 = no cache query on this path, 0 = query missed, 1 = hit
 int sharc_debug_hit = -1;
 
@@ -83,6 +104,44 @@ bounce_texture_lod(Triangle triangle, uint tex_index, float cone_width, vec3 ray
 	float lod = 0.5 * log2(texel_area / world_area) + log2(max(cone_width, 1e-4) / cos_theta);
 
 	return max(0, lod + global_ubo.pt_bounce_lod_bias);
+}
+
+/* pt_bounce_lobe_select: how often the first bounce samples the specular lobe.
+
+   Each lobe gets rays in proportion to what it can return: the specular lobe's
+   directional albedo (the split-sum fit DLSS-RR's specular albedo guide uses, times the
+   material's specular factor) against the diffuse albedo it leaves behind. On a rough
+   dielectric that is ~0.04 against ~0.3, so the diffuse indirect is sampled ~85% of the
+   time at weight ~1.2 instead of half the time at weight 2 - the 0-or-2x coin flip that
+   ReSTIR GI used to hide.
+
+   Glossy surfaces keep at least the old half of the rays: their reflection is sharp and
+   on screen, and a 1-in-10 sample at 10x weight would turn it into sparkle under RR.
+   The floor fades out between roughness 0.25 and 0.5. */
+float
+bounce_specular_probability(vec3 albedo, vec3 base_reflectivity, float specular_factor, float roughness, float NoV)
+{
+	// The specular sample needs NoV > 0 and can never succeed otherwise - spend every
+	// ray on the diffuse lobe.
+	if (NoV <= 0)
+		return 0.0;
+
+	float spec = clamp(luminance(EnvBRDFApprox2(base_reflectivity, square(roughness), NoV)) * specular_factor, 0.0, 1.0);
+
+	// No specular lobe at all (specular factor 0): nothing to sample there.
+	if (spec <= 0.0)
+		return 0.0;
+
+	float diff = luminance(albedo) * (1.0 - spec);
+
+	// No diffuse lobe to speak of (a black or metal-like base): all specular.
+	if (diff <= 0.0)
+		return 1.0;
+
+	float p = clamp(spec / (spec + diff), 0.1, 0.9);
+
+	float glossy = 1.0 - smoothstep(0.25, 0.5, roughness);
+	return max(p, 0.5 * glossy);
 }
 
 void
@@ -186,20 +245,30 @@ indirect_lighting(
 	vec3 bounce_throughput = throughput.rgb;
 
 	is_specular_ray = false;
-	{ 
-		vec2 rng3 = vec2(get_rng(RNG_BRDF_X(spec_bounce_index+1)), get_rng(RNG_BRDF_Y(spec_bounce_index+1)));
+	{
+		vec2 rng3 = vec2(get_rng(RNG_BRDF_X(bounce_number + 1)), get_rng(RNG_BRDF_Y(bounce_number + 1)));
 
-		float rng_frensel = get_rng(RNG_BRDF_FRESNEL(spec_bounce_index+1));
+		float rng_frensel = get_rng(RNG_BRDF_FRESNEL(bounce_number + 1));
 
 		float specular_pdf = 0;
+
+		// The specular lobe was picked but its sample was unusable - see
+		// pt_bounce_failed_spec_zero. Such a path carries no light.
+		bool specular_failed = false;
 
 #if BOUNCE_SPECULAR
 		if(spec_bounce_index == 0)
 		{
 			specular_pdf = (primary_metallic == 1 && fake_specular_weight == 0) ? 1.0 : 0.5;
+
+			// pt_bounce_lobe_select - see bounce_specular_probability() above.
+			if(global_ubo.pt_bounce_lobe_select != 0 && specular_pdf < 1.0)
+				specular_pdf = bounce_specular_probability(primary_albedo, primary_base_reflectivity,
+					primary_specular_factor, primary_roughness, NoV);
+
 			gi_no_diffuse = specular_pdf >= 1.0;
 
-			if(rng_frensel < specular_pdf) 
+			if(rng_frensel < specular_pdf)
 			{
 				mat3 basis = construct_ONB_frisvad(normal);
 
@@ -217,7 +286,13 @@ indirect_lighting(
 				float NoH = max(0, dot(N, H));
 				float VoH = max(0, -dot(V, H));
 
-				if (NoL > 0 && NoV > 0)
+				// pt_bounce_geo_hemisphere: a reflection below the GEOMETRIC surface
+				// would only hit the surface itself.
+				bool usable = NoL > 0 && NoV > 0;
+				if(global_ubo.pt_bounce_geo_hemisphere != 0)
+					usable = usable && dot(L, geo_normal) > 0;
+
+				if (usable)
 				{
 					// See the Heitz paper referenced above for the estimator explanation.
 					//   (BRDF / PDF) = F * G2(V, L) / G1(V)
@@ -232,11 +307,33 @@ indirect_lighting(
 					is_specular_ray = true;
 					bounce_direction = normalize(L);
 				}
+				else if(global_ubo.pt_bounce_failed_spec_zero != 0)
+				{
+					// An unusable sample is where the GGX lobe returns nothing - its
+					// estimate is zero. It used to fall through to the diffuse branch
+					// below and be weighted 1 / (1 - specular_pdf), so the diffuse lobe
+					// was sampled more often than its probability: +10..44% indirect on
+					// rough surfaces facing the camera.
+					specular_failed = true;
+				}
 			}
 		}
 #endif
 
-		if(!is_specular_ray)
+		if(specular_failed)
+		{
+			// Still a specular frame (ReSTIR GI files it as one) and still traced, so the
+			// DLSS-RR hit-distance guides below get a value: along the mirror direction,
+			// kept above the surface. No light comes back along it.
+			vec3 V = view_direction.xyz;
+			vec3 L = reflect(V, normal);
+			if(dot(L, geo_normal) <= 0)
+				L = reflect(V, geo_normal);
+			bounce_direction = normalize(L);
+			bounce_throughput = vec3(0);
+			is_specular_ray = true;
+		}
+		else if(!is_specular_ray)
 		{
 			vec3 basis_normal, dir_sphere;
 		#if ENABLE_SH
@@ -264,6 +361,17 @@ indirect_lighting(
 			vec3 F = schlick_fresnel(primary_base_reflectivity, VoH, primary_specular_factor);
 
 			bounce_throughput *= vec3(1.0) - F;
+
+			// pt_bounce_geo_hemisphere: the lobe is built around the bump-mapped normal,
+			// so part of it can point INTO the geometry. Light cannot arrive from there -
+			// light sampling already drops lights below the surface - so the sample
+			// carries nothing. It is mirrored above the surface only so that the ray
+			// traced for the hit-distance guides does not stop on the surface itself.
+			if(global_ubo.pt_bounce_geo_hemisphere != 0 && dot(bounce_direction, geo_normal) <= 0)
+			{
+				bounce_direction = normalize(reflect(bounce_direction, geo_normal));
+				bounce_throughput = vec3(0);
+			}
 		}
 	}
 
@@ -415,9 +523,10 @@ indirect_lighting(
 		}
 	*/
 
-	if(!found_intersection(ray_payload_geometry)) 
+	if(!found_intersection(ray_payload_geometry))
 	{
-		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
+		// The path ends: the later bounce passes find material 0 and stand down.
+		if(bounce_number < global_ubo.pt_num_bounce_rays - 1)
 		{
 			imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(0));
 		}
@@ -436,17 +545,16 @@ indirect_lighting(
 
 	if(is_sky(triangle.material_id))
 	{
-		// On the first bounce, analytic lights are processed in the direct lighting pass, so 
+		// On the first bounce, analytic lights are processed in the direct lighting pass, so
 		// check if `pt_direct_polygon_lights` is non-negative:
 		//   0 means disable the polygon lights contribution;
 		//   1 means sample the polygon lights analytically;
 		//   -1 means replace the polygon lights with bounce ray sampling.
-		// On the second bounce, analytic lights are processed in the first bounce pass,
-		// guided by the same rules for the `pt_indirect_polygon_lights` setting.
+		// On later bounces, analytic lights are processed by the previous bounce pass,
+		// guided by the same rules for the `pt_indirect_polygon_lights` setting - see
+		// ray_origin_light_sampled().
 
-		bool is_analytic_light = (triangle.material_id & MATERIAL_FLAG_LIGHT) != 0 && 
-			((spec_bounce_index == 0) && (global_ubo.pt_direct_polygon_lights >= 0)	|| 
-			 (spec_bounce_index == 1) && (global_ubo.pt_indirect_polygon_lights >= 0));
+		bool is_analytic_light = (triangle.material_id & MATERIAL_FLAG_LIGHT) != 0 && ray_origin_light_sampled();
 
 		if(!is_analytic_light || is_specular_ray)
 		{
@@ -468,7 +576,11 @@ indirect_lighting(
 					pos_on_triangle -= position;
 					pos_on_triangle = normalize(pos_on_triangle);
 
-					float pdfw = get_triangle_pdfw(projected_positions, pos_on_triangle);
+					// The pdf light sampling would have had for this point - it must match
+					// the sampler sample_lights used (pt_light_spherical_tri).
+					float pdfw = (global_ubo.pt_light_spherical_tri != 0)
+						? get_spherical_triangle_pdfw(projected_positions)
+						: get_triangle_pdfw(projected_positions, pos_on_triangle);
 
 					direct_specular_weight *= get_specular_sampled_lighting_weight(primary_roughness,
 						normal, -view_direction.xyz, bounce_direction, pdfw);
@@ -478,7 +590,7 @@ indirect_lighting(
 			}
 		}
 
-		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
+		if(bounce_number < global_ubo.pt_num_bounce_rays - 1)
 		{
 			imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(0));
 		}
@@ -581,9 +693,7 @@ indirect_lighting(
 			// See the comment for `is_analytic_light` above under `if(is_sky(triangle.material_id))`
 			// Same logic applies.
 
-			bool is_analytic_light = (bounce_material_id & MATERIAL_FLAG_LIGHT) != 0 && 
-				((spec_bounce_index == 0) && (global_ubo.pt_direct_polygon_lights >= 0)	|| 
-				 (spec_bounce_index == 1) && (global_ubo.pt_indirect_polygon_lights >= 0));
+			bool is_analytic_light = (bounce_material_id & MATERIAL_FLAG_LIGHT) != 0 && ray_origin_light_sampled();
 
 			if(is_specular_ray)
 			{
@@ -606,7 +716,19 @@ indirect_lighting(
 		// diffuse albedo - its colour is in the Fresnel term.
 		vec3 bounce_specular_throughput = bounce_throughput * indirect_specular_weight;
 
-		bounce_throughput *= bounce_albedo;
+		/* pt_bounce_albedo_power: how much light a surface hands on to the next bounce.
+		   Measured 2026-10-06, the rerelease base textures average a LINEAR albedo of
+		   0.04 (median 0.02) - each bounce keeps 2-4% of its light, so a second bounce
+		   is ~0.1% of the image and 2 vs 8 bounces look identical. Remastered PBR
+		   textures sit around 0.2-0.6. Raising the albedo to a power below 1 lifts dark
+		   surfaces far more than bright ones (0.5: 0.02 -> 0.14, 0.1 -> 0.32,
+		   0.5 -> 0.71) and only for light bouncing off them; the surfaces look the same
+		   on screen. Capped at 0.9 so a path can never gain energy. 1 = physical. */
+		vec3 bounce_reflectance = bounce_albedo;
+		if(global_ubo.pt_bounce_albedo_power != 1.0)
+			bounce_reflectance = min(pow(max(bounce_albedo, vec3(0)), vec3(max(global_ubo.pt_bounce_albedo_power, 0.05))), vec3(0.9));
+
+		bounce_throughput *= bounce_reflectance;
 		bounce_throughput *= indirect_specular_weight;
 
 		float sun_bounce_range = global_ubo.pt_sun_bounce_range;
@@ -615,7 +737,14 @@ indirect_lighting(
 		
 		float sun_attenuation = square(clamp(1.0 - square(square(ray_payload_geometry.hit_distance / sun_bounce_range)), 0, 1));
 
-		if(spec_bounce_index == 0)
+		/* Light sampling at the hit. The first bounce always had it. Every later bounce
+		   used to get only the sun (below) and whatever non-light emissive it happened to
+		   hit, so indoors a second bounce carried almost nothing: the lamps that light a
+		   room were never sampled from its walls. pt_bounce_nee samples them at every
+		   bounce, the same way, with that bounce's own random numbers. */
+		bool light_sample_here = bounce_number == 0 || global_ubo.pt_bounce_nee != 0;
+
+		if(light_sample_here)
 		{
 			bool is_gradient = get_is_gradient(ipos);
 
@@ -638,7 +767,7 @@ indirect_lighting(
 		    	global_ubo.pt_indirect_polygon_lights > 0,
 		    	global_ubo.pt_indirect_dyn_lights > 0,
 		    	is_gradient,
-		    	1, // bounce
+		    	bounce_number + 1, // bounce
 		    	bounce_diffuse,
 				bounce_specular);
 
@@ -671,33 +800,60 @@ indirect_lighting(
 		}
 
 		// Radiance cache (pt_sharc): the path ends here, so instead of stopping in the
-		// dark, pick up the light that would have kept bouncing - see sharc.h. At the
-		// second bounce there was no NEE above either, so that comes from the cache too
-		// unless pt_sharc is 2. bounce_throughput already carries this hit's albedo.
-		if(sharc_enabled() && spec_bounce_index >= global_ubo.pt_num_bounce_rays - 1)
+		// dark, pick up the light that would have kept bouncing - see sharc.h. Where this
+		// hit was not light sampled above, the cache's direct light stands in for that
+		// too, unless pt_sharc is 2. bounce_throughput already carries this hit's albedo.
+		if(sharc_enabled() && bounce_number >= global_ubo.pt_num_bounce_rays - 1)
 		{
 			// oriented exactly as sharc_update.rgen orients it, or the normal bins differ
 			vec3 cache_normal = dot(bounce_geo_normal, bounce_direction) > 0 ? -bounce_geo_normal : bounce_geo_normal;
 			vec3 cached_indirect, cached_direct;
 			bool sharc_found = sharc_lookup_bounce(bounce_position, cache_normal, ray_payload_geometry.hit_distance,
-				rng_seed ^ (spec_bounce_index * 0x9e3779b9u), cached_indirect, cached_direct);
+				rng_seed ^ (uint(bounce_number) * 0x9e3779b9u), cached_indirect, cached_direct);
 			sharc_debug_hit = sharc_found ? 1 : 0;
 			if(sharc_found)
 			{
 				vec3 cached = cached_indirect;
-				if(spec_bounce_index > 0 && global_ubo.pt_sharc != 2)
+				if(!light_sample_here && global_ubo.pt_sharc != 2)
 					cached += cached_direct;
 				bounce_contrib += bounce_throughput * cached * global_ubo.pt_sharc_scale;
 			}
 		}
 
-		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
+		if(bounce_number < global_ubo.pt_num_bounce_rays - 1)
 		{
-			// store surface parameters for the next bounce
-			imageStore(IMG_PT_GEO_NORMAL2, ipos, uvec4(encode_normal(bounce_geo_normal)));
-			imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(bounce_position.xyz, uintBitsToFloat(triangle.material_id)));
-			imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(bounce_direction, 0));
-			imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(bounce_throughput, is_specular_ray ? 1 : 0));
+			/* RUSSIAN ROULETTE (pt_bounce_rr), from the third bounce on: continue with
+			   probability p = the path's remaining throughput and divide by p, so the
+			   estimate stays unbiased while a path that has already lost most of its
+			   light - three Quake albedos in, about 3% is left - is usually not traced
+			   further. What keeps 8 bounces from costing 8 bounce passes. Never ends a
+			   path at the first or second bounce, so 1 and 2 bounces are unchanged. */
+			bool continue_path = true;
+			if(global_ubo.pt_bounce_rr != 0 && bounce_number + 1 >= 2)
+			{
+				float p = clamp(max(bounce_throughput.r, max(bounce_throughput.g, bounce_throughput.b)), 0.05, 1.0);
+				if(get_rng(RNG_RUSSIAN_ROULETTE(bounce_number + 1)) >= p)
+					continue_path = false;
+				else
+					bounce_throughput /= p;
+			}
+
+			if(continue_path)
+			{
+				// store surface parameters for the next bounce
+				imageStore(IMG_PT_GEO_NORMAL2, ipos, uvec4(encode_normal(bounce_geo_normal)));
+				imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(bounce_position.xyz, uintBitsToFloat(triangle.material_id)));
+				imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(bounce_direction, 0));
+				// .a says which channel the rest of the path lands in: the FIRST bounce's
+				// lobe, carried through every later bounce (those are always diffuse).
+				bool path_is_specular = (spec_bounce_index == 0) ? is_specular_ray : first_bounce_is_specular;
+				imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(bounce_throughput, path_is_specular ? 1 : 0));
+			}
+			else
+			{
+				// The path ends: the later bounce passes find material 0 and stand down.
+				imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(0));
+			}
 		}
 	}
 
@@ -717,6 +873,9 @@ main()
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	if(rt_LaunchID.z != 0)
 		ipos.x += global_ubo.pt_field_offset;
+
+	// See bounce_number at the top: the second-bounce pipeline runs once per later bounce.
+	bounce_number = (spec_bounce_index == 0) ? 0 : max(1, push_constants.bounce_index);
 
 	// Half-resolution tracing happens in the "low" GI setting
 	bool half_res = global_ubo.pt_num_bounce_rays == 0.5;

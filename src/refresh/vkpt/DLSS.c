@@ -32,6 +32,11 @@ cvar_t* cvar_pt_dlss_bypass_denoiser = NULL;
 cvar_t* cvar_pt_dlss_field_res = NULL;
 cvar_t* cvar_pt_dlss_diff_hitdist = NULL;
 cvar_t* cvar_pt_dlss_reflected_albedo = NULL;
+cvar_t* cvar_pt_dlss_spec_motion = NULL;
+cvar_t* cvar_pt_dlss_rr_mat_yflip = NULL;
+// UBO cvars, defined in main.c by the UBO_CVAR_LIST expansion.
+extern cvar_t* cvar_pt_dlss_bt_guide;
+extern cvar_t* cvar_pt_projection;
 qboolean recreateSwapChain = qfalse;
 qboolean dlssModeChanged = qfalse;
 extern cvar_t* scr_viewsize;
@@ -79,6 +84,27 @@ void InitDLSSCvars()
     // IMG_PT_REFLECTED_ALBEDO was written and cleared all along but never handed over.
     // Default 0: not judged by eye yet.
     cvar_pt_dlss_reflected_albedo = Cvar_Get("pt_dlss_reflected_albedo", "0", CVAR_ARCHIVE);
+
+    // HOW DLSS-RR LEARNS WHERE REFLECTIONS MOVE (RR integration guide 3.4.8 / 3.4.9).
+    // The guide offers two inputs for it: specular motion vectors, or the specular hit
+    // distance plus the camera's world-to-view and view-to-clip matrices, from which RR
+    // works out the motion of the reflected image itself. Streamline integrations always
+    // send the matrices. Ours sent only the vectors, and on every pixel that is not a
+    // glass/water split those are the SURFACE's motion - telling RR that a reflection on a
+    // glossy floor slides along with the floor.
+    //   0 - specular motion vectors only (the old behaviour, default until judged by eye)
+    //   1 - hit distance + matrices, no specular motion vectors: RR derives reflection
+    //       motion for every pixel. Glass and water lose their exact mirrored vectors.
+    //   2 - both
+    // Not archived: an A/B knob. Ignored for the non-rectilinear projections, which
+    // have no projection matrix.
+    cvar_pt_dlss_spec_motion = Cvar_Get("pt_dlss_spec_motion", "0", 0);
+
+    // The view-to-clip matrix handed over with pt_dlss_spec_motion 1/2 is this tree's
+    // Vulkan projection, whose y points DOWN; the SDK is written against D3D's y-up clip
+    // space and does not say which it expects. 1 negates the y row. If reflections
+    // move the wrong way vertically under pt_dlss_spec_motion 1, flip this.
+    cvar_pt_dlss_rr_mat_yflip = Cvar_Get("pt_dlss_rr_mat_yflip", "0", 0);
 
     // Resolution of the reflection/refraction layers while split fields are active.
     //   1 - both layers at full internal render resolution
@@ -910,6 +936,41 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         && cvar_pt_dlss_reflected_albedo->integer != 0;
     NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
+    // pt_dlss_bt_guide 2: leave the colour-before-transparency guide out (RR guide 3.4.11
+    // calls it optional). 0 and 1 choose what the shaders put in it - see global_ubo.h.
+    const bool useBeforeTransparency = !(cvar_pt_dlss_bt_guide != NULL && cvar_pt_dlss_bt_guide->integer == 2);
+
+    // pt_dlss_spec_motion - see InitDLSSCvars. The matrices are "row major, left
+    // multiplication" per RR guide 3.4.9; as the DLSS-G code below explains, a row-vector
+    // matrix stored row-major is the same 16 floats as this tree's column-vector matrices
+    // stored column-major, so V and P go over without a transpose.
+    const int specMotion = (cvar_pt_dlss_spec_motion != NULL) ? cvar_pt_dlss_spec_motion->integer : 0;
+    const bool rrMatrices = (specMotion == 1 || specMotion == 2)
+        && (cvar_pt_projection == NULL || cvar_pt_projection->integer == PROJECTION_RECTILINEAR);
+    float rrWorldToView[16], rrViewToClip[16];
+    if (rrMatrices) {
+        const QVKUniformBuffer_t* ubo = &vkpt_refdef.uniform_buffer;
+        memcpy(rrWorldToView, *ubo->V, sizeof(rrWorldToView));
+        memcpy(rrViewToClip, *ubo->P, sizeof(rrViewToClip));
+
+        /* ubo->P's depth row is z/w = (f+n)/(f-n) + 2fn/((f-n) z), which spans 1.0005..3 and
+           is used for nothing - see pt_dlss_fg_proj below. RR is created with LINEAR depth
+           (view-space z), so hand it a standard D3D-style row instead, z/w = 0 at the near
+           plane and 1 at the far one. Column-major: row 2 is elements 2, 6, 10, 14. */
+        const float zn = vkpt_refdef.z_near, zf = vkpt_refdef.z_far;
+        rrViewToClip[2] = 0.0f;
+        rrViewToClip[6] = 0.0f;
+        rrViewToClip[10] = zf / (zf - zn);
+        rrViewToClip[14] = -zf * zn / (zf - zn);
+
+        if (cvar_pt_dlss_rr_mat_yflip != NULL && cvar_pt_dlss_rr_mat_yflip->integer) {
+            // row 1: elements 1, 5, 9, 13
+            for (int c = 0; c < 4; c++)
+                rrViewToClip[c * 4 + 1] = -rrViewToClip[c * 4 + 1];
+        }
+    }
+    const bool useReflectionMotion = !(rrMatrices && specMotion == 1);
+
     if (!denoiseMode) {
         NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
             .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
@@ -948,7 +1009,9 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .InColorSubrectBase = sourceOffset,
             .InDepthSubrectBase = sourceOffset,
             .InMVSubrectBase = sourceOffset,
-            .pInMotionVectorsReflections = &reflectMotion,			
+            .pInMotionVectorsReflections = useReflectionMotion ? &reflectMotion : NULL,
+            .pInWorldToViewMatrix = rrMatrices ? rrWorldToView : NULL,
+            .pInViewToClipMatrix = rrMatrices ? rrViewToClip : NULL,
 			.pInNormals = &normal,
 			.pInDiffuseHitDistance = useDiffuseHitDist ? &diffuseLength : NULL,
 			.pInSpecularHitDistance = &specularLength,
@@ -957,7 +1020,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .pInRoughness = &roughness,
             .pInReflectedAlbedo = useReflectedAlbedo ? &reflectedAlbedo : NULL,
             .InReflectedAlbedoSubrectBase = sourceOffset,
-            .pInColorBeforeTransparency = &beforeTransparent,
+            .pInColorBeforeTransparency = useBeforeTransparency ? &beforeTransparent : NULL,
             .InColorBeforeTransparencySubrectBase = sourceOffset
         };
 
