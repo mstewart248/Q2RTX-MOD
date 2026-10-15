@@ -113,6 +113,12 @@ typedef struct pbr_material_s {
 	// reflected surface while the colour is mostly the room behind it.
 	// See CHECKERBOARD_FLAG_GUIDE_SET in shader/constants.h.
 	int dlss_guide_field;
+	// pt_bounce_albedo_power for surfaces using this material: the power their
+	// albedo is raised to when they pass light on to the next bounce, in the
+	// menu slider's own numbers (1 = physical, lower = more bounce light). It
+	// REPLACES the slider rather than scaling it. Not stated (<= 0, the default)
+	// means the slider decides.
+	float albedo_strength;
 } pbr_material_t;
 
 extern pbr_material_t r_materials[MAX_PBR_MATERIALS];

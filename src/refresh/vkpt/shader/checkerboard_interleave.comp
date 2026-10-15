@@ -557,50 +557,31 @@ void main()
 
     imageStore(IMG_FLAT_COLOR, opos, color);
 
-    if(use_center_mv) {
+    // The two fields only differ in which one supplies the motion vector and guides.
+    ivec2 src = use_center_mv ? ipos : ipos + ivec2(other_side_offset, 0);
 
-        imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
-        //imageStore(IMG_DLSS_REFLECT_MOTION, opos, multResolutionScale(imageLoad(IMG_PT_REFLECT_MOTION, ipos)));
-        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos).xy, 0, 0));
-        //vec2 reflect_mv = load_reflect_motion(ipos, other_side_offset);
-        //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
-        imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
-    imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos).x), 0.01)));
-        imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos));
-        imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos));
-        imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos));
-        imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos));
-        imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos));
-        imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos));
+    imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, src));
+    // motion_blur.comp reads this one whether or not DLSS is on.
+    imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, src));
 
-        vec4 specularRayLength = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos);
-        vec4 diffuseRayLength = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos);
+    // The rest are DLSS inputs only. With DLSS off nothing reads them, and writing them
+    // made this pass cost ~0.85 ms at 2913x1670 under A-SVGF.
+    if(global_ubo.pt_dlss != 0)
+    {
+        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, src).xy, 0, 0));
+        imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, src).x), 0.01)));
+        imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, src));
+        imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, src));
+        imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, src));
+        imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, src));
+        imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, src));
+        imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, src));
 
-        imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x)));
-        imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x)));
-        
+        float specularRayLength = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, src).x);
+        float diffuseRayLength = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, src).x);
 
-    }        
-    else {
-
-        imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos + ivec2(other_side_offset, 0)).xy, 0, 0));
-        //vec2 reflect_mv = load_reflect_motion(ipos + ivec2(other_side_offset, 0), other_side_offset);
-        //imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(reflect_mv, 0, 0));
-        imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)));
-    imageStore(IMG_DLSS_FG_DEPTH, opos, vec4(1.0 / max(abs(imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos + ivec2(other_side_offset, 0)).x), 0.01)));
-        imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)));
-        imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos + ivec2(other_side_offset, 0)));
-
-        vec4 specularRayLength = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos + ivec2(other_side_offset, 0));
-        vec4 diffuseRayLength = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos + ivec2(other_side_offset, 0));
-
-        imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x), ConvertDistance(diffuseRayLength.x)));
-        imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(ConvertDistance(specularRayLength.x) , ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x), ConvertDistance(specularRayLength.x)));
+        imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuseRayLength));
+        imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specularRayLength));
     }
     
 }

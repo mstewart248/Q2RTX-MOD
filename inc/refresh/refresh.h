@@ -130,6 +130,12 @@ typedef struct dlight_s {
     // V_AddSphereLight sets that, so a caller only touches this to override.
     float   volumetric_scale;
 
+    // A light that stays put in the map - placed with the light editor, or a
+    // rerelease dynamic_light entity - rather than weapon fire or a flash. The
+    // froxel fog keeps these on its long history with the map's own lights;
+    // see partition_bmodel_lights() in vkpt main.c. Set by V_MarkLightFixture.
+    bool    fixture;
+
     // VKPT light types support
     dlight_type light_type;
     // Spotlight options

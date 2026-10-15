@@ -36,6 +36,12 @@ static BufferResource_t null_buffer;
 // The buffer can grow later if necessary, but that causes stutter.
 static cvar_t* cvar_pt_primbuf = NULL;
 
+// 0 ignores every material's albedo_strength, so the whole scene bounces at
+// pt_bounce_albedo_power - an A/B switch for the per-material values, not a
+// setting. Read where the material table is written, so it takes effect on the
+// next frame with no shader or UBO involvement.
+static cvar_t* cvar_pt_bounce_albedo_material = NULL;
+
 /*
 THE PER-LIGHT VOLUMETRIC SCALE DEFAULTS - one per class of light source.
 
@@ -984,6 +990,13 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			mat_data[8] = floatToHalf(material->displace_in);
 			mat_data[8] |= (uint32_t)floatToHalf(material->displace_out) << 16;
 		}
+
+		// albedo_strength as a half in the low half of word 9, top half spare.
+		// Left at zero when not stated, which the shader reads as "use
+		// pt_bounce_albedo_power" - the same as an unregistered material's row.
+		// pt_bounce_albedo_material 0 leaves every row at zero.
+		if (material->albedo_strength > 0.f && cvar_pt_bounce_albedo_material->integer)
+			mat_data[9] = floatToHalf(material->albedo_strength);
 	}
 
 	memcpy(lbo->cluster_debug_mask, cluster_debug_mask, MAX_LIGHT_LISTS / 8);
@@ -1497,6 +1510,9 @@ vkpt_vertex_buffer_create()
 	char primbuf_initial_value[16];
 	Q_snprintf(primbuf_initial_value, sizeof(primbuf_initial_value), "%d", PRIMBUF_SIZE_DEFAULT);
 	cvar_pt_primbuf = Cvar_Get("pt_primbuf", primbuf_initial_value, CVAR_ARCHIVE);
+
+	// not archived: a comparison switch should come back on by itself
+	cvar_pt_bounce_albedo_material = Cvar_Get("pt_bounce_albedo_material", "1", 0);
 
 	// see the block comment on these at the top of the file
 	cvar_pt_fog_scale_emissive = Cvar_Get("pt_fog_scale_emissive", "1.0", 0);

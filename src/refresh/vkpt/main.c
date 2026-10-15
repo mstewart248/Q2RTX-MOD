@@ -120,6 +120,7 @@ cvar_t *cvar_pt_enable_surface_lights_warp = NULL;
 cvar_t* cvar_pt_surface_lights_fake_emissive_algo = NULL;
 cvar_t* cvar_pt_surface_lights_threshold = NULL;
 cvar_t* cvar_pt_bsp_radiance_scale = NULL;
+cvar_t *cvar_pt_light_style_reach = NULL;
 cvar_t *cvar_pt_bsp_sky_lights = NULL;
 cvar_t *cvar_pt_fog_lava = NULL;
 cvar_t *cvar_pt_accumulation_rendering = NULL;
@@ -3555,7 +3556,10 @@ add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, 
 		entity_hash_t hash;
 		hash.entity = (pos_hash & 0x3FFF) | 1; // nonzero: 0 means "no identity"
 		hash.mesh = (pos_hash >> 14) & 0xFF;
-		hash.bsp = 0;
+		// placed lights and dynamic_light entities share the brush-entity
+		// lights' bit, which keeps them on the fog's long history - see
+		// partition_bmodel_lights()
+		hash.bsp = dlight->fixture ? 1 : 0;
 
 		if (light->cluster >= 0)
 		{
@@ -5704,6 +5708,15 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		ubo->pt_fog_accum_march = 1.f;
 	}
 
+	// ReSTIR DI is for DLSS-RR. Under A-SVGF its reused samples are correlated from frame
+	// to frame, so the temporal filter cannot average them and they show as sparkle -
+	// worst on glass. Measured at base1's window 2026-10-10: 2.6x the frame-to-frame noise
+	// of plain light sampling, 17% darker, +2.4 ms. Turning off A-SVGF's antilag did not
+	// help, so it is the samples, not the gradients. Plain sampling is what stock Q2RTX
+	// runs here.
+	if (ref_mode->enable_denoiser && !DLSSRayReconstructionActive())
+		ubo->pt_restir = 0.f;
+
 	bool fsr_enabled = vkpt_fsr_is_enabled();
 	qboolean dlss_enabled = DLSSEnabled();
 
@@ -5814,7 +5827,11 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	ubo->flt_enable = ref_mode->enable_denoiser;
 	ubo->flt_taa = qvk.effective_aa_mode;
 	ubo->pt_dlss =	DLSSMode();
-	ubo->pt_dlssdn = DLSSModeDenoise();
+	// Whether RR is actually running, not the raw pt_dlss_dldn cvar: that stays 1 in the
+	// config after DLSS is switched off (the RR menu entry is hidden at pt_dlss 0), and
+	// reflect_refract.rgen reads this to randomise the reflect/refract split per pixel -
+	// which, under A-SVGF, left glass and water swimming in noise.
+	ubo->pt_dlssdn = DLSSRayReconstructionActive() ? 1 : 0;
 	ubo->pt_num_bounce_rays = ref_mode->num_bounce_rays;
 	ubo->pt_reflect_refract = ref_mode->reflect_refract;
 
@@ -5883,9 +5900,12 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
    history and its BSP lights on the long one, and tells them apart by index
    (fog_light_static_count in fog_medium.glsl). Emissive surfaces on brush
    entities - doors, trains, mgu4m1's tomf/shoot01 crate clamps - are fixtures,
-   not flashes, so they belong with the BSP lights. prepare_entities instances
-   them interleaved with the md2 lights in entity order; this moves them to the
-   front, keeping the order otherwise, and counts them for the fog. Reordering
+   not flashes, so they belong with the BSP lights. So do the dlights that stay
+   put - lights placed with the light editor and dynamic_light entities, which
+   add_dlights() gives the same hash.bsp bit (dlight_t.fixture). prepare_entities
+   instances the brush lights interleaved with the md2 lights in entity order;
+   this moves all of them to the front, keeping the order otherwise, and counts
+   them for the fog. Reordering
    is safe for ReSTIR: update_mlight_prev_to_current matches lights by hash,
    not by index, and the ids move with their lights. */
 static int num_bmodel_lights = 0;
@@ -6039,9 +6059,12 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	prepare_entities(&upload_info);
 	if (bsp_world_model && render_world)
 	{
-		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_opaque,      g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
+		// AS_FLAG_WORLD_STATIC rides along with AS_FLAG_OPAQUE on the static world
+		// only (brush models copy geom_opaque's mask, so it is set here rather than
+		// there), for the sky-exposure bake - see constants.h.
+		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_opaque,      g_identity_transform, VERTEX_BUFFER_WORLD, -1, AS_FLAG_OPAQUE | AS_FLAG_WORLD_STATIC);
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_transparent, g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
-		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_masked,      g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
+		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_masked,      g_identity_transform, VERTEX_BUFFER_WORLD, -1, AS_FLAG_OPAQUE | AS_FLAG_WORLD_STATIC);
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_sky,         g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_custom_sky,  g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
 
@@ -8897,6 +8920,13 @@ R_Init_RTX(bool total)
 	// Multiplier for texinfo radiance field to convert radiance to emissive factors
 	cvar_pt_bsp_radiance_scale = Cvar_Get("pt_bsp_radiance_scale", "0.001", CVAR_FILES);
 
+	// Which of a lamp face's lightmap styles animate the lamp - see get_surf_light_style()
+	// in bsp_mesh.c. A style counts only if a light entity carrying it reaches the face:
+	// within this many times the entity's "light" value. 0 = the face's first style.
+	// Default 0: 1.05 cleaned up base1's style-6 lamp but also stopped the lamps that
+	// flash with base1's func_timer lights (t155-t159), and those flashes should stay.
+	cvar_pt_light_style_reach = Cvar_Get("pt_light_style_reach", "0", CVAR_FILES);
+
 	// Controls which sky surfaces become poly-lights.
 	// 0 -> only the SKY surfaces in clusters listed in sky_clusters.txt
 	// 1 -> also surfaces with both SKY and LIGHT flags set
@@ -9532,6 +9562,7 @@ R_BeginRegistration_RTX(const char *name)
 	bsp_world_model = bsp;
 	bsp_mesh_register_textures(bsp);
 	bsp_mesh_create_from_bsp(&vkpt_refdef.bsp_mesh_world, bsp, name);
+	vkpt_sky_exposure_begin_map(bsp, &vkpt_refdef.bsp_mesh_world.world_aabb);
 	vkpt_light_buffers_create(&vkpt_refdef.bsp_mesh_world);
 	_VK(vkpt_vertex_buffer_upload_bsp_mesh(&vkpt_refdef.bsp_mesh_world));
 	sharc_clear_pending = true;

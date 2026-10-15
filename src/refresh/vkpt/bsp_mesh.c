@@ -33,6 +33,7 @@ extern cvar_t *cvar_pt_enable_nodraw;
 extern cvar_t *cvar_pt_enable_surface_lights;
 extern cvar_t *cvar_pt_enable_surface_lights_warp;
 extern cvar_t* cvar_pt_bsp_radiance_scale;
+extern cvar_t *cvar_pt_light_style_reach;
 extern cvar_t *cvar_pt_bsp_sky_lights;
 extern cvar_t *cvar_pt_fog_lava;
 
@@ -490,14 +491,163 @@ get_triangle_off_center(const float* positions, float* center, float* anti_cente
 	return (length > 0.f);
 }
 
+/* WHICH LIGHT STYLE ANIMATES A LAMP.
+
+   A face's styles[] are its LIGHTMAP styles: one per animated or switchable light
+   that reached the face when the map was lit. The renderer has always taken the
+   first non-zero one as the lamp's own animation. On id's maps that holds - qrad3
+   lit with linear falloff, so a style only lands on faces within its light's range
+   ("light" value, 300 if unset), and every one of the 793 styled lamp faces in
+   pak0 is within 1.014x of it.
+
+   The rerelease maps were relit with bounce and inverse-square falloff, which
+   spreads a style far past its light: 6814 styled lamp faces, 3174 of them beyond
+   1.1x. base1's wall lamp at (-256 -188 56) picked up style 6 (flicker) from a
+   light 330 units away and flickered, while its own lights sit 18 units off and are
+   steady. Under A-SVGF a flickering light resets the history of everything it lights
+   each change, so the metal round that lamp stayed noisy after the rest was fixed.
+
+   So a style counts only if a light entity carrying it reaches the face directly:
+   within pt_light_style_reach times its range of the face's bounds. A style no
+   light entity carries at all (city1 has three) is kept, as before. Filled by
+   bsp_mesh_create_from_bsp for the duration of the build. */
+typedef struct {
+	vec3_t origin;
+	float range;
+	int style;
+} styled_light_t;
+
+static styled_light_t *s_styled_lights = NULL;
+static int s_num_styled_lights = 0;
+static float s_light_style_reach = 0.f;
+
+static void
+collect_styled_lights(const bsp_t *bsp)
+{
+	s_num_styled_lights = 0;
+	s_light_style_reach = cvar_pt_light_style_reach ? cvar_pt_light_style_reach->value : 0.f;
+
+	if (s_light_style_reach <= 0.f || !bsp->entitystring)
+		return;
+
+	int allocated = 0;
+	const char *data = bsp->entitystring;
+
+	while (data)
+	{
+		const char *token = COM_Parse(&data);
+		if (!data || token[0] != '{')
+			break;
+
+		char classname[MAX_QPATH] = "";
+		vec3_t origin = { 0.f, 0.f, 0.f };
+		bool has_origin = false;
+		int style = 0;
+		float range = 300.f; // qrad3's default "light"
+
+		while (data)
+		{
+			char key[MAX_QPATH];
+			Q_strlcpy(key, COM_Parse(&data), sizeof(key));
+			if (!data || key[0] == '}')
+				break;
+
+			const char *value = COM_Parse(&data);
+			if (!data)
+				break;
+
+			if (!strcmp(key, "classname"))
+				Q_strlcpy(classname, value, sizeof(classname));
+			else if (!strcmp(key, "origin"))
+				has_origin = sscanf(value, "%f %f %f", &origin[0], &origin[1], &origin[2]) == 3;
+			else if (!strcmp(key, "style"))
+				style = atoi(value);
+			else if (!strcmp(key, "light"))
+				range = (float)atof(value);
+		}
+
+		if (strncmp(classname, "light", 5) || !has_origin || style <= 0 || style >= 255)
+			continue;
+
+		if (s_num_styled_lights >= allocated)
+		{
+			allocated = max(64, allocated * 2);
+			styled_light_t *grown = Z_Malloc(allocated * sizeof(styled_light_t));
+			if (s_styled_lights)
+			{
+				memcpy(grown, s_styled_lights, s_num_styled_lights * sizeof(styled_light_t));
+				Z_Free(s_styled_lights);
+			}
+			s_styled_lights = grown;
+		}
+
+		styled_light_t *light = s_styled_lights + s_num_styled_lights++;
+		VectorCopy(origin, light->origin);
+		light->range = max(range, 1.f);
+		light->style = style;
+	}
+}
+
+static void
+free_styled_lights(void)
+{
+	if (s_styled_lights)
+		Z_Free(s_styled_lights);
+	s_styled_lights = NULL;
+	s_num_styled_lights = 0;
+}
+
+static bool
+light_style_reaches_surf(const mface_t *surf, int style)
+{
+	if (s_light_style_reach <= 0.f)
+		return true;
+
+	vec3_t mins = { FLT_MAX, FLT_MAX, FLT_MAX };
+	vec3_t maxs = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+	for (int i = 0; i < surf->numsurfedges; i++)
+	{
+		const float *p = surf->firstsurfedge[i].edge->v[surf->firstsurfedge[i].vert]->point;
+		for (int k = 0; k < 3; k++)
+		{
+			mins[k] = min(mins[k], p[k]);
+			maxs[k] = max(maxs[k], p[k]);
+		}
+	}
+
+	bool style_has_light = false;
+	for (int i = 0; i < s_num_styled_lights; i++)
+	{
+		const styled_light_t *light = s_styled_lights + i;
+		if (light->style != style)
+			continue;
+
+		style_has_light = true;
+
+		float dist2 = 0.f;
+		for (int k = 0; k < 3; k++)
+		{
+			float d = max(max(mins[k] - light->origin[k], light->origin[k] - maxs[k]), 0.f);
+			dist2 += d * d;
+		}
+
+		float reach = light->range * s_light_style_reach;
+		if (dist2 <= reach * reach)
+			return true;
+	}
+
+	return !style_has_light;
+}
+
 static int
 get_surf_light_style(const mface_t* surf)
 {
 	for (int nstyle = 0; nstyle < 4; nstyle++)
 	{
-		if (surf->styles[nstyle] != 0 && surf->styles[nstyle] != 255)
+		int style = surf->styles[nstyle];
+		if (style != 0 && style != 255 && light_style_reaches_surf(surf, style))
 		{
-			return surf->styles[nstyle];
+			return style;
 		}
 	}
 
@@ -2378,6 +2528,9 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 	wm->prim_instance_hash = Z_Mallocz(wm->num_primitives_allocated * sizeof(uint32_t));
 	s_face_instance_hash = build_face_instance_hashes(bsp);
 
+	// Read by get_surf_light_style, for the faces and the light polys alike.
+	collect_styled_lights(bsp);
+
 	// clear these here because `bsp_mesh_load_custom_sky` creates lights before `collect_light_polys`
 	wm->num_light_polys = 0;
 	wm->allocated_light_polys = 0;
@@ -2503,6 +2656,8 @@ bsp_mesh_create_from_bsp(bsp_mesh_t *wm, bsp_t *bsp, const char* map_name)
 		Z_Free(s_face_instance_hash);
 		s_face_instance_hash = NULL;
 	}
+
+	free_styled_lights();
 }
 
 void

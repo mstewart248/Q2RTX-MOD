@@ -204,6 +204,8 @@ static void MAT_Reset(pbr_material_t * mat)
 	mat->volumetric_scale = LIGHT_VOLUMETRIC_SCALE_UNSET;
 	// negative means "not stated", so pt_dlss_guide_field decides
 	mat->dlss_guide_field = -1;
+	// negative means "not stated", so pt_bounce_albedo_power decides
+	mat->albedo_strength = -1.f;
 }
 
 //
@@ -350,6 +352,7 @@ enum AttributeIndex
 	MAT_TEXTURE_HEIGHT,
 	MAT_DISPLACE_IN,
 	MAT_DISPLACE_OUT,
+	MAT_ALBEDO_STRENGTH,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -383,6 +386,7 @@ static struct MaterialAttribute {
 	{MAT_TEXTURE_HEIGHT, "texture_height", ATTR_STRING},
 	{MAT_DISPLACE_IN, "displace_in", ATTR_FLOAT},
 	{MAT_DISPLACE_OUT, "displace_out", ATTR_FLOAT},
+	{MAT_ALBEDO_STRENGTH, "albedo_strength", ATTR_FLOAT},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -534,6 +538,13 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 		break;
 	case MAT_BASE_FACTOR:
 		mat->base_factor = fvalue;
+		break;
+	// Overrides pt_bounce_albedo_power for surfaces using this material - same
+	// numbers as the "bounce light strength" slider, so whichever value looked
+	// right there is the value to write here. 0 or negative hands the surface
+	// back to the slider, which is also how 'mat albedo_strength -1' undoes it.
+	case MAT_ALBEDO_STRENGTH:
+		mat->albedo_strength = fvalue > 0.f ? fvalue : -1.f;
 		break;
 	case MAT_TEXTURE_BASE:
 		set_material_texture(mat, svalue, mat->filename_base, &mat->image_base, IF_SRGB, !sourceFile);
@@ -844,6 +855,10 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 		// likewise only written when stated - the default is "let the cvar decide"
 		if (mat->dlss_guide_field >= 0)
 			FS_FPrintf(file, "\tdlss_guide_field %d\n", mat->dlss_guide_field);
+
+		// likewise - the default is "let the slider decide"
+		if (mat->albedo_strength > 0.f)
+			FS_FPrintf(file, "\talbedo_strength %f\n", mat->albedo_strength);
 
 		if (mat->synth_emissive)
 			FS_FPrintf(file, "\tsynth_emissive 1\n");
@@ -1166,6 +1181,7 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	INHERIT(MAT_EMISSIVE_THRESHOLD, emissive_threshold);
 	INHERIT(MAT_VOLUMETRIC_SCALE, volumetric_scale);
 	INHERIT(MAT_DLSS_GUIDE_FIELD, dlss_guide_field);
+	INHERIT(MAT_ALBEDO_STRENGTH, albedo_strength);
 
 #undef INHERIT
 
@@ -1572,6 +1588,10 @@ void MAT_Print(pbr_material_t const * mat)
 		Com_Printf("    dlss_guide_field %d\n", mat->dlss_guide_field);
 	else
 		Com_Printf("    dlss_guide_field (pt_dlss_guide_field)\n");
+	if (mat->albedo_strength > 0.f)
+		Com_Printf("    albedo_strength %f\n", mat->albedo_strength);
+	else
+		Com_Printf("    albedo_strength (pt_bounce_albedo_power)\n");
 }
 
 // Swap one of a live material's textures for the one the definition now names.
@@ -1644,6 +1664,7 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->synth_emissive     = matdef->synth_emissive;
 	mat->volumetric_scale   = matdef->volumetric_scale;
 	mat->dlss_guide_field   = matdef->dlss_guide_field;
+	mat->albedo_strength    = matdef->albedo_strength;
 	// what the definition states ITSELF, which is what the auto-detection and
 	// the inheritance below are gated on
 	mat->specified_fields   = matdef->specified_fields;
@@ -1770,7 +1791,13 @@ static void material_command_reload(void)
 
 		if (!matdef) {
 			// nothing in any .mat names this one - it was generated from the
-			// texture and its sidecars, and there is nothing to re-apply
+			// texture and its sidecars, and there is nothing to re-apply.
+			// Except what it inherits: an md5 skin with no entry of its own
+			// still takes the classic skin's tuning, and that entry is one of
+			// the ones just re-read - without this an edit to it (base_factor,
+			// albedo_strength, ...) reached the md5 model only on a restart.
+			if (mat->inherit_source[0])
+				MAT_InheritScalars(mat, mat->inherit_source);
 			++generated;
 			continue;
 		}

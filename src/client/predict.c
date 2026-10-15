@@ -76,13 +76,14 @@ CL_ClipMoveToEntities
 
 ====================
 */
-static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr, bool bmodels_only, int extra_contents)
+static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr, bool bmodels_only, int contentmask)
 {
     int         i;
     trace_t     trace;
     mnode_t     *headnode;
     centity_t   *ent;
     mmodel_t    *cmodel;
+    int         mask;
 
     for (i = 0; i < cl.numSolidEntities; i++) {
         ent = cl.solidEntities[i];
@@ -93,6 +94,7 @@ static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const 
             if (!cmodel)
                 continue;
             headnode = cmodel->headnode;
+            mask = contentmask;
         } else {
             // A non-bmodel entity has no real collision geometry here, only the
             // axial box the server packed into entity_state_t::solid. That is
@@ -101,13 +103,16 @@ static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const 
             if (bmodels_only)
                 continue;
             headnode = CM_HeadnodeForBox(ent->mins, ent->maxs);
+            // The box hull is always CONTENTS_MONSTER (cmodel.c); a caller that
+            // asked for boxes gets them whatever else its mask says.
+            mask = contentmask | CONTENTS_MONSTER;
         }
 
         if (tr->allsolid)
             return;
 
         CM_TransformedBoxTrace(&trace, start, end,
-                               mins, maxs, headnode,  MASK_PLAYERSOLID | extra_contents,
+                               mins, maxs, headnode, mask,
                                ent->current.origin, ent->current.angles);
 
         CM_ClipEntity(tr, &trace, (struct edict_s *)ent);
@@ -116,7 +121,7 @@ static void CL_ClipMoveToEntities_(const vec3_t start, const vec3_t mins, const 
 
 static void CL_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, trace_t *tr)
 {
-    CL_ClipMoveToEntities_(start, mins, maxs, end, tr, false, 0);
+    CL_ClipMoveToEntities_(start, mins, maxs, end, tr, false, MASK_PLAYERSOLID);
 }
 
 
@@ -159,12 +164,16 @@ trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, boo
     if (t.fraction < 1.0f)
         t.ent = (struct edict_s *)1;
 
-    // The entities are clipped as player-solid, as prediction does - but a
-    // caller asking for WATER has to get it from them too. A func_water is a
-    // brush entity, not world contents (mgu6m1's pools are nothing else), and
-    // without this blood fell straight through one onto the floor beneath.
+    // The entities get the caller's own mask, the same one the world just had.
+    // They used to be clipped as player-solid, as prediction does, which made
+    // PLAYERCLIP and MONSTERCLIP brushes solid - but only inside brush entities,
+    // since the world half never saw them. rmine1's func_wall railing (*18) is a
+    // visible beam over an invisible 40-unit clip slab, and blood stuck to the
+    // slab in mid-air. The caller's mask is also how WATER reaches a func_water,
+    // which is a brush entity, not world contents (mgu6m1's pools are nothing
+    // else); without it blood fell straight through one onto the floor beneath.
     CL_ClipMoveToEntities_(start, vec3_origin, vec3_origin, end, &t, !clip_bbox_entities,
-                           contentmask & MASK_WATER);
+                           contentmask);
 
     return t;
 }

@@ -425,6 +425,13 @@ qboolean TryInit(VkInstance _instance, VkPhysicalDevice _physDevice, const char*
         return qfalse;
     }
 
+    /* Without this NGX may keep a released feature's VRAM in its own cache. Every
+       swapchain resize (alt-tab out of fullscreen) recreates DLSS-RR and DLSS-G at
+       the new size; after ~10 such recreates at 3 sizes a 4K DLAA session had a
+       DLSS-G create fail with 0xbad0000d (out of GPU memory) and spill to system RAM.
+       Shared by every feature created from dlssObj.pParams. */
+    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_FreeMemOnReleaseFeature, 1);
+
     return qtrue;
 }
 

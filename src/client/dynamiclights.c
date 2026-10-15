@@ -459,6 +459,9 @@ void CL_AddDynamicLightsToScene(void)
         // retunes the light just added; the sentinel puts it back on the
         // pt_fog_scale_dynamic class default, which is the normal case
         V_SetLightVolumetricScale(dl->vol_scale);
+
+        // a map light, not a flash: the fog keeps it on the long history
+        V_MarkLightFixture();
     }
 }
 

@@ -23,9 +23,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // selected by the push constant bounce_index:
 //
 //   0 - TEMPORAL. Merges this frame's first-bounce candidate with last frame's
-//       reservoir at the reprojected pixel and keeps the merged reservoir for next
-//       frame. With spatial reuse off it also lights the pixel's low-frequency
-//       (diffuse indirect) channel with the sample that wins.
+//       reservoir from a nearby reprojected pixel and keeps the merged reservoir
+//       for next frame. With spatial reuse off it also lights the pixel's
+//       low-frequency (diffuse indirect) channel with the sample that wins.
 //
 //   1 - SPATIAL (pt_restir_gi_spatial > 0). Merges each pixel's temporal reservoir
 //       with those of a few random neighbours and lights the pixel with the result.
@@ -41,6 +41,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 // The most neighbours the spatial pass merges, whatever pt_restir_gi_spatial asks for.
 #define GI_SPATIAL_MAX_NEIGHBOURS 8
+
+// Random previous-frame pixels the temporal pass tries (pt_restir_gi_temporal_radius),
+// each in a window 0.7 times the size of the last, before it falls back to the
+// permuted and then the plain reprojected pixel. RTX Remix tries up to 9.
+#define GI_TEMPORAL_RANDOM_TRIES 6
 
 uint gi_rng;
 
@@ -65,15 +70,27 @@ bool gi_same_surface(vec3 normal_a, vec3 normal_b, vec3 geo_a, vec3 geo_b)
 	return dot(normal_a, normal_b) > 0.9;
 }
 
-// Is last frame's pixel pos_prev the same surface as this one? Same depth test as ReSTIR DI.
-bool gi_similar(ivec2 pos_prev, float view_depth, vec3 normal_cur, vec3 geo_normal_cur)
+/* Is last frame's pixel pos_prev the same surface as this one?
+
+   The depth is compared with where this surface was LAST frame - this frame's view
+   depth plus motion.z, RTXDI's expectedPrevLinearDepth. Compared with this frame's
+   depth, walking toward a surface closer than about ten times the step per frame
+   failed the 10% test every frame, so the floor ahead of the player kept losing its
+   history while moving. Reflections store both values negated (reflect_refract.rgen),
+   so the sum is right for them too. */
+bool gi_similar(ivec2 pos_prev, float expected_prev_depth, vec3 normal_cur, vec3 geo_normal_cur)
 {
 	float depth_prev = texelFetch(TEX_PT_VIEW_DEPTH_B, pos_prev, 0).x;
-	if(abs(depth_prev - view_depth) >= 0.1 * abs(view_depth))
+	if(abs(depth_prev - expected_prev_depth) >= 0.1 * abs(expected_prev_depth))
 		return false;
 	vec3 normal_prev = decode_normal(texelFetch(TEX_PT_NORMAL_B, pos_prev, 0).x);
 	vec3 geo_normal_prev = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_B, pos_prev, 0).x);
 	return gi_same_surface(normal_prev, normal_cur, geo_normal_prev, geo_normal_cur);
+}
+
+bool gi_in_field(ivec2 p, int field_left, int field_right)
+{
+	return p.x >= field_left && p.x < field_right && p.y >= 0 && p.y < global_ubo.height;
 }
 
 // A reservoir the temporal pass wrote THIS frame. Unlike history from an earlier
@@ -100,49 +117,9 @@ int gi_shadow_cull_mask(int checkerboard_flags)
 	return mask;
 }
 
-// Shade the reservoir on EVERY frame, including the ones whose first bounce went
-// specular. Without ReSTIR the path tracer's diffuse indirect light exists only on
-// the frames whose first bounce picked the diffuse lobe, weighted 1 / p there, and is
-// nothing on the others - a coefficient of variation that no amount of sample reuse
-// touched while the reservoir was only shaded on the diffuse frames (measured: ReSTIR
-// GI left the per-frame noise in dark areas unchanged). The reservoir is an unbiased
-// estimate of the diffuse integral whichever frames supplied its candidates, so it can
-// stand in at weight 1 every frame; the specular lobe keeps its own 1/p estimate on
-// the specular frames. The throughput here is therefore the pre-lobe throughput times
-// this sample's own Fresnel transmission - what the diffuse branch would have applied
-// for this direction, minus the lobe-selection weight.
-void gi_shade(ivec2 ipos, vec3 x_v, vec3 n_v, vec3 view_dir, vec3 t_base,
-              vec3 sample_pos, vec3 radiance, float W, float visibility)
+// Add light to the pixel's low-frequency (diffuse indirect) channel.
+void gi_add_lf(ivec2 ipos, vec3 contrib, vec3 dir)
 {
-	if(W <= 0 || visibility <= 0)
-		return;
-
-	vec3 dir = sample_pos - x_v;
-	float dist = length(dir);
-	dir /= max(dist, 1e-6);
-
-	float cos_v = max(0, dot(n_v, dir));
-
-	vec3 t0;
-	{
-		vec4 base_color = texelFetch(TEX_PT_BASE_COLOR_A, ipos, 0);
-		float metallic = texelFetch(TEX_PT_METALLIC_A, ipos, 0).x;
-		vec3 albedo, base_reflectivity;
-		get_reflectivity(base_color.rgb, metallic, albedo, base_reflectivity);
-		vec3 V = -view_dir;
-		vec3 H = normalize(V + dir);
-		float VoH = max(0, dot(V, H));
-		vec3 F = schlick_fresnel(base_reflectivity, VoH, base_color.a);
-		t0 = t_base * (vec3(1.0) - F);
-	}
-
-	vec3 contrib = clamp_output(t0 * radiance * (cos_v / M_PI) * W * visibility);
-	if(all(equal(contrib, vec3(0))))
-		return;
-
-	// Hit distance for DLSS-RR's diffuse guide: how far the light this pixel is lit by is.
-	imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(min(dist, PRIMARY_RAY_T_MAX)));
-
 	contrib *= STORAGE_SCALE_LF;
 
 	SH low_freq = load_SH(TEX_PT_COLOR_LF_SH, TEX_PT_COLOR_LF_COCG, ipos);
@@ -154,7 +131,109 @@ void gi_shade(ivec2 ipos, vec3 x_v, vec3 n_v, vec3 view_dir, vec3 t_base,
 #else
 	low_freq.shY.xyz += contrib;
 #endif
+
+	// The channel is RGBA16F and holds light times STORAGE_SCALE_LF, so anything past
+	// ~64 would be stored as +Inf - then NaN wherever compositing multiplies it by a
+	// zero albedo channel, and DLSS-RR would carry that in its history. Without the
+	// candidate clamp a reused sample beside a lamp can spike that high.
+	if(global_ubo.flt_enable == 0)
+		low_freq.shY.xyz = min(low_freq.shY.xyz, vec3(65000.0));
+
 	STORE_SH(IMG_PT_COLOR_LF_SH, IMG_PT_COLOR_LF_COCG, ipos, low_freq);
+}
+
+// The primary surface's specular reflectance, for the Fresnel split in gi_contribution.
+struct GISurface
+{
+	vec3 base_reflectivity;
+	float specular_factor;
+};
+
+GISurface gi_load_surface(ivec2 ipos)
+{
+	vec4 base_color = texelFetch(TEX_PT_BASE_COLOR_A, ipos, 0);
+	float metallic = texelFetch(TEX_PT_METALLIC_A, ipos, 0).x;
+	vec3 albedo;
+	GISurface s;
+	get_reflectivity(base_color.rgb, metallic, albedo, s.base_reflectivity);
+	s.specular_factor = base_color.a;
+	return s;
+}
+
+// The reservoir is shaded on EVERY frame, including the ones whose first bounce went
+// specular. Without ReSTIR the path tracer's diffuse indirect light exists only on
+// the frames whose first bounce picked the diffuse lobe, weighted 1 / p there, and is
+// nothing on the others - a coefficient of variation that no amount of sample reuse
+// touched while the reservoir was only shaded on the diffuse frames (measured: ReSTIR
+// GI left the per-frame noise in dark areas unchanged). The reservoir is an unbiased
+// estimate of the diffuse integral whichever frames supplied its candidates, so it can
+// stand in at weight 1 every frame; the specular lobe keeps its own 1/p estimate on
+// the specular frames. The throughput here is therefore the pre-lobe throughput times
+// this sample's own Fresnel transmission - what the diffuse branch would have applied
+// for this direction, minus the lobe-selection weight.
+vec3 gi_contribution(GISurface surf, vec3 x_v, vec3 n_v, vec3 view_dir, vec3 t_base,
+                     vec3 sample_pos, vec3 radiance, float W, out vec3 dir, out float dist)
+{
+	dir = sample_pos - x_v;
+	dist = length(dir);
+	dir /= max(dist, 1e-6);
+	if(!(W > 0))
+		return vec3(0);
+
+	float cos_v = max(0, dot(n_v, dir));
+
+	vec3 V = -view_dir;
+	vec3 H = normalize(V + dir);
+	float VoH = max(0, dot(V, H));
+	vec3 F = schlick_fresnel(surf.base_reflectivity, VoH, surf.specular_factor);
+
+	return clamp_output(t_base * (vec3(1.0) - F) * radiance * (cos_v / M_PI) * W);
+}
+
+// Light the pixel with one sample. `scale` is the share of the diffuse estimate the
+// reservoir stands for (1 - pt_restir_gi_fresh_mix).
+void gi_shade(ivec2 ipos, vec3 x_v, vec3 n_v, vec3 view_dir, vec3 t_base,
+              vec3 sample_pos, vec3 radiance, float W, float visibility, float scale)
+{
+	if(W <= 0 || visibility <= 0 || scale <= 0)
+		return;
+
+	vec3 dir;
+	float dist;
+	vec3 contrib = gi_contribution(gi_load_surface(ipos), x_v, n_v, view_dir, t_base,
+		sample_pos, radiance, W * visibility, dir, dist) * scale;
+	if(all(equal(contrib, vec3(0))))
+		return;
+
+	/* pt_restir_gi_hitdist 1: DLSS-RR's diffuse hit distance becomes the distance to the
+	   reused sample. At 0 (default) the pixel keeps this frame's own first-bounce
+	   distance, written by indirect_lighting.rgen, which is what RTX Remix and RTXDI hand
+	   their denoisers. The RR guide does not document this input, and a guide that means
+	   "this frame's ray" on some pixels and "a sample reused from another pixel, many
+	   frames ago" on their neighbours is a pattern RR can only misread. */
+	if(global_ubo.pt_restir_gi_hitdist != 0)
+		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(min(dist, PRIMARY_RAY_T_MAX)));
+
+	gi_add_lf(ipos, contrib, dir);
+}
+
+/* pt_restir_gi_decorrelate - RTXDI's "Decorrelation for DLSS Ray Reconstruction".
+   On this share of pixels, picked afresh every frame, the pixel is lit by this frame's
+   own bounce exactly as the plain path tracer would light it, and the reservoir is not
+   shaded at all (it is still kept and reused). RR expects noise that is independent
+   from frame to frame; reused light is not, and where a lucky sample is shared RR takes
+   the correlated pattern for real lighting and keeps it. Swapping in an independent
+   sample at random pixels breaks the pattern up, so RR recognises it as noise and
+   filters it. Both are unbiased estimates of the same light, and the choice depends on
+   the pixel and frame alone - never on the light - so the mix stays unbiased. Both
+   passes make the same choice from the same hash. 0 = off. */
+bool gi_decorrelate_here(ivec2 ipos)
+{
+	float p = global_ubo.pt_restir_gi_decorrelate;
+	if(!(p > 0))
+		return false;
+	uint h = pcg_hash(uint(ipos.x) ^ pcg_hash(uint(ipos.y) ^ pcg_hash(global_ubo.current_frame_idx ^ 0xdec0de11u)));
+	return float(h >> 8) * (1.0 / 16777216.0) < p;
 }
 
 void
@@ -184,10 +263,15 @@ temporal_pass(ivec2 ipos)
 	vec4 view = texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0);
 	vec3 view_dir = view.xyz;
 
+	float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
+	vec3 normal_cur = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+	vec3 geo_v = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
+
 	gi_rng = pcg_hash(uint(ipos.x) ^ pcg_hash(uint(ipos.y) ^ pcg_hash(global_ubo.current_frame_idx ^ 0x5ee7c0deu)));
 
 	float m_clamp = max(global_ubo.pt_restir_gi_m_clamp, 1.0);
 	float max_age = global_ubo.pt_restir_gi_max_age;
+	bool bias_correction = global_ubo.pt_restir_gi_bias_correction != 0;
 
 	GIReservoir r;
 	r.pos = vec3(0);
@@ -198,11 +282,20 @@ temporal_pass(ivec2 ipos)
 	r.age = 0;
 	float w_sum = 0;
 	float p_hat_selected = 0;
+	bool selected_prev = false;
+	float m_cand = 0;
+
+	// This frame's bounce exactly as the plain path tracer adds it, for
+	// pt_restir_gi_fresh_mix: T0 (DATA.w) already carries the 1 / (1 - p_spec) lobe
+	// weight and the Fresnel split.
+	vec3 fresh = vec3(0);
+	vec3 fresh_dir = n_v;
 
 	// This frame's candidate. Cosine-distributed around n_v, so its source pdf is
-	// cos / pi and its resampling weight p_hat / p = luminance(L_o) * pi. A black
-	// candidate (the bounce found nothing lit) has weight 0 but still counts in M:
-	// "I looked and found nothing" is information the estimate must keep.
+	// cos / pi and its resampling weight p_hat / p = luminance(L_o) * pi, times its
+	// confidence. A black candidate (the bounce found nothing lit) has weight 0 but
+	// still counts in M: "I looked and found nothing" is information the estimate
+	// must keep.
 	if(have_candidate)
 	{
 		GIReservoir c;
@@ -211,136 +304,227 @@ temporal_pass(ivec2 ipos)
 		c.radiance = unpackRGBE(cand_data.y);
 		c.age = 0;
 
-		/* pt_restir_gi_clamp: firefly clamp, relative to exposure, as SHaRC's training
-		   clamp. A rare bounce that lands next to a lamp has a weight hundreds of times
-		   its neighbours', wins every merge and then lights this pixel - and, through
-		   spatial reuse, the pixels around it - for the whole history length: a blotch
-		   DLSS-RR keeps because it does not flicker. Biased by design, and ReSTIR GI
-		   never runs in photo mode. */
+		fresh = unpackRGBE(cand_data.w) * c.radiance;
+		vec3 to_sample = c.pos - x_v;
+		if(dot(to_sample, to_sample) > 0)
+			fresh_dir = normalize(to_sample);
+
+		/* pt_restir_gi_clamp (default 0 = off): firefly clamp relative to exposure. It
+		   compares the radiance leaving a bounce hit with the adapted luminance of the
+		   screen, which has the primary surface's dark albedo in it, so it bites at a
+		   small fraction of its nominal multiple - and the hot spots beside lamps it
+		   cuts are most of the bounce light. At 64 it took 8-19% of the indirect light
+		   in the offline model, and the auto-exposure then darkened the threshold
+		   further. Biased by design; ReSTIR GI never runs in photo mode. */
 		float clamp_value = max(global_ubo.pt_restir_gi_clamp, 0.0) * max(global_ubo.prev_adapted_luminance, 1e-5);
 		float lum = luminance(c.radiance);
 		if(clamp_value > 0 && lum > clamp_value)
 			c.radiance *= clamp_value / lum;
 
-		float p_hat = gi_p_hat(c.radiance, c.pos, c.normal, x_v, n_v);
-		float w = p_hat > 0 ? luminance(c.radiance) * M_PI : 0;
+		/* pt_restir_gi_candidate_m: the fresh candidate counts as this many samples
+		   against the history (RTX Remix's DLSS-RR mode uses 3). An unbiased confidence
+		   weight - it only makes the reservoir forget faster, which keeps a lucky sample
+		   from sitting in the same pixels long enough for RR to take it for detail. */
+		m_cand = max(global_ubo.pt_restir_gi_candidate_m, 1.0);
+
+		float p_hat = gi_p_hat(c.radiance, c.pos, c.normal, x_v, n_v, geo_v);
+		float w = p_hat > 0 ? luminance(c.radiance) * M_PI * m_cand : 0;
 
 		r = c;
-		r.M = 1;
+		r.M = m_cand;
 		w_sum = w;
 		p_hat_selected = p_hat;
 	}
 
-	// Last frame's reservoir at the reprojected pixel - the same reprojection,
-	// permutation and rejection tests as ReSTIR DI (direct_lighting.rgen).
+	// ---- Where to take last frame's reservoir from ----
+	int field_left = 0;
+	int field_right = global_ubo.pt_prev_field_offset;
+	if(ipos.x >= global_ubo.pt_field_offset)
 	{
-		int field_left = 0;
-		int field_right = global_ubo.pt_prev_field_offset;
-		if(ipos.x >= global_ubo.pt_field_offset)
+		field_left = field_right;
+		field_right = global_ubo.pt_prev_field_offset * 2;
+	}
+
+	vec4 motion = texelFetch(TEX_PT_MOTION, ipos, 0);
+	float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
+	ivec2 pos_reproj = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy)
+		* vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height));
+
+	float expected_prev_depth = view_depth + motion.z;
+	if(isnan(expected_prev_depth) || isinf(expected_prev_depth))
+		expected_prev_depth = view_depth;
+
+	ivec2 pos_prev = pos_reproj;
+	bool found = false;
+
+	/* pt_restir_gi_temporal_radius - the DLSS-RR guide's "randomize the temporal reuse
+	   step" (section 3.5), done as RTX Remix's DLSS-RR compatibility mode does it: the
+	   history comes from a random pixel up to radius/2 away (in pixels at 540 lines,
+	   scaled to the render height), retried in smaller windows when that pixel is
+	   another surface. RR assumes every pixel's samples are independent; a reservoir
+	   that stays within one 4x4 block (permutation sampling) keeps a lucky bright sample
+	   in the same spot for its whole history, and RR keeps that as a blob that fades in
+	   and out. Moved at random, the same light lands somewhere new every frame and
+	   averages into a smooth glow. The bias correction below accounts for histories
+	   that come from a different surface. */
+	float radius = max(global_ubo.pt_restir_gi_temporal_radius, 0.0) * float(global_ubo.height) * (1.0 / 540.0);
+	for(int i = 0; i < GI_TEMPORAL_RANDOM_TRIES && radius >= 1.0 && !found; i++)
+	{
+		ivec2 p = pos_reproj + ivec2(round((vec2(gi_rand(), gi_rand()) - 0.5) * radius));
+		radius *= 0.7;
+		if(gi_in_field(p, field_left, field_right) && gi_similar(p, expected_prev_depth, normal_cur, geo_v))
 		{
-			field_left = field_right;
-			field_right = global_ubo.pt_prev_field_offset * 2;
+			pos_prev = p;
+			found = true;
 		}
+	}
 
-		vec4 motion = texelFetch(TEX_PT_MOTION, ipos, 0);
-		float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
-		ivec2 pos_reproj = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy)
-			* vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height));
-		ivec2 pos_prev = pos_reproj;
-
-		// Permutation sampling, for DLSS-RR - see direct_lighting.rgen. The offset
-		// must be random per frame (restir_permutation_offset): with a frame counter
-		// every reservoir marched across the screen at 1 or 3 pixels a frame.
-		if(global_ubo.pt_restir_permutation != 0)
+	// Permutation sampling (RTXDI), as ReSTIR DI does - see direct_lighting.rgen. The
+	// offset must be random per frame (restir_permutation_offset): with a frame counter
+	// every reservoir marched across the screen at 1 or 3 pixels a frame.
+	bool permuted_outside = false;
+	if(!found && global_ubo.pt_restir_permutation != 0)
+	{
+		ivec2 perm_offset = restir_permutation_offset();
+		ivec2 permuted = pos_reproj + perm_offset;
+		permuted.x ^= 3;
+		permuted.y ^= 3;
+		permuted -= perm_offset;
+		if(gi_in_field(permuted, field_left, field_right))
 		{
-			ivec2 perm_offset = restir_permutation_offset();
-			ivec2 permuted = pos_prev + perm_offset;
-			permuted.x ^= 3;
-			permuted.y ^= 3;
-			permuted -= perm_offset;
-			if(permuted.x >= field_left && permuted.x < field_right && permuted.y >= 0 && permuted.y < global_ubo.height)
+			if(gi_similar(permuted, expected_prev_depth, normal_cur, geo_v))
+			{
 				pos_prev = permuted;
+				found = true;
+			}
 		}
+		else
+			permuted_outside = true;
+	}
 
-		float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
-		vec3 normal_cur = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
-		vec3 geo_normal_cur = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
-
-		bool in_bounds = pos_prev.x >= field_left && pos_prev.x < field_right && pos_prev.y >= 0 && pos_prev.y < global_ubo.height;
-		bool similar = in_bounds && gi_similar(pos_prev, view_depth, normal_cur, geo_normal_cur);
-
-		// The shuffled pixel is another surface (an edge, a step): fall back to the
-		// pixel's own history rather than start over. Without this every pixel within
-		// 3 px of a depth edge lost its history on most frames and lit itself with a
-		// lone M = 1 candidate at full strength - a glint along every edge. Measured:
-		// permutation on cost 3% of dark-area brightness and doubled the frozen pattern.
-		if(global_ubo.pt_restir_gi_edge_fallback != 0 && !similar && pos_prev != pos_reproj)
+	/* The plain reprojected pixel: the only tap with permutation off, and otherwise
+	   the last resort (pt_restir_gi_edge_fallback). Without it a pixel near an edge lost
+	   its history whenever the shuffled tap landed on the other surface, and on a frame
+	   whose own bounce went specular it then had nothing to be lit from - the dark
+	   outline along edges and glossy surfaces (-9% at edges in the offline model, -1%
+	   with the fallback). */
+	if(!found && (global_ubo.pt_restir_permutation == 0 || global_ubo.pt_restir_gi_edge_fallback != 0 || permuted_outside))
+	{
+		if(gi_in_field(pos_reproj, field_left, field_right) && gi_similar(pos_reproj, expected_prev_depth, normal_cur, geo_v))
 		{
 			pos_prev = pos_reproj;
-			in_bounds = pos_prev.x >= field_left && pos_prev.x < field_right && pos_prev.y >= 0 && pos_prev.y < global_ubo.height;
-			similar = in_bounds && gi_similar(pos_prev, view_depth, normal_cur, geo_normal_cur);
+			found = true;
 		}
+	}
 
+	// ---- Merge it ----
+	vec3 x_r = vec3(0);
+	vec3 n_r = vec3(0, 0, 1);
+	vec3 geo_r = vec3(0, 0, 1);
+	float m_prev = 0;
+
+	if(found)
+	{
+		GIReservoir prev = gi_load(
+			texelFetch(TEX_PT_RESTIR_GI_POS_B, pos_prev, 0),
+			texelFetch(TEX_PT_RESTIR_GI_DATA_B, pos_prev, 0));
+
+		if(gi_is_valid(prev))
 		{
-			if(similar)
+			vec4 origin_prev = texelFetch(TEX_PT_RESTIR_GI_ORIGIN_B, pos_prev, 0);
+			x_r = origin_prev.xyz;
+			n_r = decode_normal(floatBitsToUint(origin_prev.w));
+			geo_r = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_B, pos_prev, 0).x);
+
+			/* Can the history's sample be moved here? A Jacobian outside [0.1, 10] means it
+			   is far from where it was found. Every history is tested, the empty ones too -
+			   they keep the position of their last black candidate - because testing only
+			   the lit ones would make the rejection depend on whether light was found. */
+			float jacobian = gi_jacobian(prev.pos, prev.normal, x_v, x_r);
+			bool usable = gi_validate_jacobian(jacobian);
+
+			// pt_restir_gi_max_age, randomised to 0.5..1x so expiries do not line up.
+			if(max_age > 0 && prev.age + 1 > max_age * (0.5 + 0.5 * gi_rand()))
+				usable = false;
+
+			/* With bias correction an unusable history is skipped whole - no light and no
+			   M - as RTXDI does. The old rule (pt_restir_gi_bias_correction 0) kept its M
+			   with none of its light, which says "M bounces, all black" about a pixel whose
+			   bounces were lit: darker in corners and contact zones, and in motion. */
+			if(usable || !bias_correction)
 			{
-				GIReservoir prev = gi_load(
-					texelFetch(TEX_PT_RESTIR_GI_POS_B, pos_prev, 0),
-					texelFetch(TEX_PT_RESTIR_GI_DATA_B, pos_prev, 0));
+				prev.M = min(prev.M, m_clamp);
 
-				if(gi_is_valid(prev))
+				float p_hat_prev = 0;
+				float w = 0;
+				if(usable && prev.W > 0)
 				{
-					prev.M = min(prev.M, m_clamp);
-
-					float w = 0;
-					float p_hat_prev = 0;
-					if(prev.W > 0)
-					{
-						vec3 x_r = texelFetch(TEX_PT_RESTIR_GI_ORIGIN_B, pos_prev, 0).xyz;
-						float jacobian = gi_jacobian(prev.pos, prev.normal, x_v, x_r);
-
-						// A huge or tiny Jacobian means the sample is far from where it was
-						// found - reusing it would be a firefly or a hole. The light is
-						// dropped but the M still counts: skipping the reservoir whole left
-						// the pixel with a lone M = 1 candidate at full strength, and in
-						// motion with permutation on that tripped constantly on near and
-						// grazing samples - Matt saw it as heavy noise (2026-10-04).
-						if(jacobian < 0.1 || jacobian > 10.0)
-							jacobian = 0;
-
-						// A sample older than pt_restir_gi_max_age frames is dropped: the
-						// light it carries was measured too long ago. Its M stays, so the
-						// replacement enters at its proper share instead of flashing.
-						if(max_age > 0 && prev.age >= max_age)
-							jacobian = 0;
-
-						p_hat_prev = gi_p_hat(prev.radiance, prev.pos, prev.normal, x_v, n_v);
-						w = p_hat_prev * prev.W * prev.M * jacobian;
-					}
-
-					{
-						w_sum += w;
-						if(w > 0 && gi_rand() * w_sum < w)
-						{
-							r.pos = prev.pos;
-							r.normal = prev.normal;
-							r.radiance = prev.radiance;
-							r.age = prev.age + 1;
-							p_hat_selected = p_hat_prev;
-						}
-						// Even an empty history (W = 0: M tries, nothing found) adds its M.
-						// Dropping it made every dark pixel start over at M = 1, so the next
-						// bright bounce lit it at full strength for a frame - the glints.
-						r.M += prev.M;
-					}
+					p_hat_prev = gi_p_hat(prev.radiance, prev.pos, prev.normal, x_v, n_v, geo_v);
+					w = p_hat_prev * prev.W * prev.M * jacobian;
 				}
+
+				w_sum += w;
+
+				// Without a candidate the history is the only sample: it keeps its geometry
+				// even when it carries no light, so it can be tested again next frame.
+				if(!have_candidate || (w > 0 && gi_rand() * w_sum < w))
+				{
+					r.pos = prev.pos;
+					r.normal = prev.normal;
+					r.radiance = prev.radiance;
+					r.age = prev.age + 1;
+					p_hat_selected = p_hat_prev;
+					selected_prev = true;
+				}
+
+				// An empty history (W = 0: M tries, nothing found) adds its M too. Dropping
+				// it made every dark pixel start over at M = 1, so the next bright bounce lit
+				// it at full strength for a frame - glints, and a bright bias in dark areas.
+				r.M += prev.M;
+				m_prev = prev.M;
 			}
 		}
 	}
 
-	r.W = (r.M > 0 && p_hat_selected > 0) ? w_sum / (r.M * p_hat_selected) : 0;
-	if(isnan(r.W) || isinf(r.W))
-		r.W = 0;
+	float W = 0;
+	if(w_sum > 0 && p_hat_selected > 0)
+	{
+		if(bias_correction)
+		{
+			/* RTXDI's "basic" bias correction (GI temporal resampling: pi / piSum). Each
+			   source counts in proportion to how likely it was to produce the chosen sample:
+			   its confidence times its own target function, evaluated at its own surface.
+			   1/M counted the history's M even for a sample its surface could not have
+			   drawn - behind it, or out of reconnection range - and with permutation or a
+			   random history pixel on a normal-mapped wall that is a steady few percent of
+			   the hemisphere, which compounded through the history into darkening. */
+			float p_cur = p_hat_selected;
+			float p_prev = 0;
+			if(m_prev > 0)
+			{
+				p_prev = gi_p_hat(r.radiance, r.pos, r.normal, x_r, n_r, geo_r);
+
+				// This frame's candidate only counts as reachable from the previous surface
+				// if the move from there to here would pass the same Jacobian test.
+				if(p_prev > 0 && !selected_prev)
+				{
+					float j = gi_jacobian(r.pos, r.normal, x_v, x_r);
+					if(!gi_validate_jacobian(j))
+						p_prev = 0;
+				}
+			}
+
+			float pi = selected_prev ? p_prev : p_cur;
+			float pi_sum = p_cur * m_cand + p_prev * m_prev;
+			W = pi_sum > 0 ? w_sum * pi / (pi_sum * p_hat_selected) : 0;
+		}
+		else
+			W = w_sum / (r.M * p_hat_selected);
+	}
+	if(isnan(W) || isinf(W))
+		W = 0;
+
+	r.W = W;
 	r.M = min(r.M, m_clamp);
 
 	bool spatial = global_ubo.pt_restir_gi_spatial > 0;
@@ -362,9 +546,10 @@ temporal_pass(ivec2 ipos)
 	// Boiling filter (RTXDI_GIBoilingFilter). Compared on what the pixel would show,
 	// p_hat * W, against the mean of the subgroup's lit pixels - a subgroup covers a
 	// small block of the screen, so that is a local mean. A sample that found light
-	// pt_restir_gi_boiling times brighter than its neighbours' is almost always a
-	// firefly, and without this it is the sample that wins every merge and sits
-	// frozen in the pixel. Lanes that returned above do not take part.
+	// pt_restir_gi_boiling times brighter than its neighbours' is dropped with its
+	// whole history, as in RTXDI. The mean includes the pixel itself, so a threshold
+	// at or above the subgroup size never fires. Lanes that returned above do not
+	// take part.
 	if(global_ubo.pt_restir_gi_boiling > 0)
 	{
 		float estimate = r.W * p_hat_selected;
@@ -396,11 +581,33 @@ temporal_pass(ivec2 ipos)
 		return;
 	}
 
+	/* pt_restir_gi_fresh_mix: light this share of the diffuse indirect with this
+	   frame's own bounce, as the plain path tracer would, and the rest with the
+	   reservoir (RTXDI's final MIS against the initial sample; 1/8 there on rough
+	   surfaces). Both are unbiased estimates of the same light, so any mix is too. It
+	   puts fresh, independent noise on top of the reused light, which tells RR this
+	   part of the image is noise to be filtered rather than detail to be kept - at the
+	   price of more per-frame noise. On frames whose bounce went specular there is no
+	   fresh sample, and that zero is part of the plain estimate. */
+	float fresh_mix = clamp(global_ubo.pt_restir_gi_fresh_mix, 0.0, 1.0);
+
+	// pt_restir_gi_decorrelate: this pixel shows its own bounce alone this frame, and
+	// the spatial pass, making the same choice, leaves it alone.
+	if(gi_decorrelate_here(ipos))
+	{
+		if(have_candidate)
+			gi_add_lf(ipos, clamp_output(fresh), fresh_dir);
+		return;
+	}
+
+	if(fresh_mix > 0 && have_candidate)
+		gi_add_lf(ipos, clamp_output(fresh) * fresh_mix, fresh_dir);
+
 	// The spatial pass lights the pixel instead - see spatial_pass().
 	if(spatial)
 		return;
 
-	gi_shade(ipos, x_v, n_v, view_dir, t_base, r.pos, r.radiance, r.W, visibility);
+	gi_shade(ipos, x_v, n_v, view_dir, t_base, r.pos, r.radiance, r.W, visibility, 1.0 - fresh_mix);
 }
 
 /*
@@ -421,9 +628,9 @@ same move the temporal pass makes, and rejected outside the same [0.1, 10] range
 Normalised by 1/Z rather than 1/M: Z sums the M of only the reservoirs that could
 have produced the chosen sample - the sample lies in front of that neighbour's
 surface and facing it, the move from there to here passes the Jacobian range and,
-with pt_restir_gi_spatial_vis 2, the neighbour can see it. Dividing by every
-neighbour's M instead dims pixels next to geometry the sample is hidden from, the
-bias RTXDI's unbiased mode exists to remove (and that ReSTIR DI measured here).
+with pt_restir_gi_spatial_vis 2 (the default), the neighbour can see it. Without
+that last test pixels beside an occluder count neighbours that could never have
+found the sample, and come out darker (-4% there in the offline model).
 
 Then one shadow ray from this pixel to the chosen sample (pt_restir_gi_spatial_vis
 >= 1): a neighbour across a corner or a thin wall can hand over light this surface
@@ -431,12 +638,31 @@ cannot see, which without the ray leaks through.
 
 Runs after the temporal pass has written every pixel's reservoir (a separate
 dispatch, see vkpt_pt_trace_lighting) and reads only those.
+
+SHADING EVERY SAMPLE (pt_restir_gi_shade_all, 2026-10-10). RTXDI resamples the
+neighbourhood down to one sample because its spatial result becomes the next frame's
+history. Here it does not - the history stays temporal - so the pick only throws
+information away: the pixel took the hue of whichever lamp that one sample had seen
+and that sample's visibility, all or nothing, and in a room lit only by bounce light
+that read as patches of coloured light jumping about. With shade_all every reservoir
+gathered lights the pixel, each weighted by the generalised balance heuristic (its M
+times its target function at its own surface, over the same sum at every surface
+gathered - RTXDI's basic bias correction, per sample) and each behind its own shadow
+ray. That is the average the one-sample pick draws from, computed instead of drawn:
+the same light, less noise, and the colour and visibility of k + 1 samples instead of
+one, for the same number of rays as pt_restir_gi_spatial_vis 2. The weights test
+geometry only, not each neighbour's visibility (that would take k * (k + 1) rays), so
+pixels right beside an occluder come out a little darker, as with spatial_vis 1.
 */
 void
 spatial_pass(ivec2 ipos)
 {
 	// The temporal pass drew the debug view.
 	if(global_ubo.pt_restir_gi == 2 || global_ubo.pt_restir_gi == 3)
+		return;
+
+	// pt_restir_gi_decorrelate: the temporal pass lit this pixel with its own bounce.
+	if(gi_decorrelate_here(ipos))
 		return;
 
 	uvec4 data_q = imageLoad(IMG_PT_RESTIR_GI_DATA_A, ipos);
@@ -469,9 +695,11 @@ spatial_pass(ivec2 ipos)
 
 	float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
 	vec3 normal_cur = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
-	vec3 geo_normal_cur = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
+	vec3 geo_q = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
 
 	gi_rng = pcg_hash(uint(ipos.x) ^ pcg_hash(uint(ipos.y) ^ pcg_hash(global_ubo.current_frame_idx ^ 0x5a71a1u)));
+
+	bool shade_all = global_ubo.pt_restir_gi_shade_all != 0;
 
 	// The canonical reservoir: this pixel's own temporal result, moved nowhere.
 	vec3 s_pos = q.pos;
@@ -479,9 +707,9 @@ spatial_pass(ivec2 ipos)
 	vec3 s_radiance = q.radiance;
 	float p_hat_s = 0;
 	float w_sum = 0;
-	if(q.W > 0)
+	if(!shade_all && q.W > 0)
 	{
-		float p_hat = gi_p_hat(q.radiance, q.pos, q.normal, x_q, n_q);
+		float p_hat = gi_p_hat(q.radiance, q.pos, q.normal, x_q, n_q, geo_q);
 		float w = p_hat * q.W * q.M;
 		if(w > 0)
 		{
@@ -499,6 +727,10 @@ spatial_pass(ivec2 ipos)
 
 	ivec2 n_pixel[GI_SPATIAL_MAX_NEIGHBOURS];
 	float n_m[GI_SPATIAL_MAX_NEIGHBOURS];
+	// The neighbours' surfaces: shading point, normal and geometric normal (both packed).
+	vec3 n_x[GI_SPATIAL_MAX_NEIGHBOURS];
+	uint n_nrm[GI_SPATIAL_MAX_NEIGHBOURS];
+	uint n_geo[GI_SPATIAL_MAX_NEIGHBOURS];
 	int num_n = 0;
 
 	// Twice as many tries as neighbours wanted, since some land off this surface.
@@ -508,31 +740,43 @@ spatial_pass(ivec2 ipos)
 		ivec2 p = ipos + ivec2(round(offset));
 		if(p == ipos)
 			continue;
-		if(p.x < field_left || p.x >= field_right || p.y < 0 || p.y >= global_ubo.height)
+		if(!gi_in_field(p, field_left, field_right))
 			continue;
+
+		// Split-field mode: a field-1 pixel whose two paths never diverged was not traced
+		// this frame (main() below), so its reservoir images still hold an older frame's.
+		if(global_ubo.pt_fullres_fields != 0 && p.x >= global_ubo.pt_field_offset)
+		{
+			int cb_flags_n = int(texelFetch(TEX_PT_VIEW_DIRECTION, p, 0).w) & CHECKERBOARD_FLAG_FIELD_MASK;
+			if(bitCount(cb_flags_n) <= 1)
+				continue;
+		}
 
 		// The same surface, judged on this frame's G-buffer.
 		float depth_n = texelFetch(TEX_PT_VIEW_DEPTH_A, p, 0).x;
 		if(abs(depth_n - view_depth) >= 0.1 * abs(view_depth))
 			continue;
 		vec3 normal_n = decode_normal(texelFetch(TEX_PT_NORMAL_A, p, 0).x);
-		vec3 geo_normal_n = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, p, 0).x);
-		if(!gi_same_surface(normal_n, normal_cur, geo_normal_n, geo_normal_cur))
+		uint geo_packed_n = texelFetch(TEX_PT_GEO_NORMAL_A, p, 0).x;
+		vec3 geo_normal_n = decode_normal(geo_packed_n);
+		if(!gi_same_surface(normal_n, normal_cur, geo_normal_n, geo_q))
 			continue;
 
 		GIReservoir nr = gi_load(imageLoad(IMG_PT_RESTIR_GI_POS_A, p), imageLoad(IMG_PT_RESTIR_GI_DATA_A, p));
 		if(!gi_is_valid_current(nr))
 			continue;
 
+		vec4 origin_n = imageLoad(IMG_PT_RESTIR_GI_ORIGIN_A, p);
+
 		// An empty neighbour (W = 0) brings no sample, only its M - which Z below
 		// counts if it could have found the chosen one.
-		if(nr.W > 0)
+		if(!shade_all && nr.W > 0)
 		{
-			vec3 x_n = imageLoad(IMG_PT_RESTIR_GI_ORIGIN_A, p).xyz;
+			vec3 x_n = origin_n.xyz;
 			float jacobian = gi_jacobian(nr.pos, nr.normal, x_q, x_n);
-			if(jacobian >= 0.1 && jacobian <= 10.0)
+			if(gi_validate_jacobian(jacobian))
 			{
-				float p_hat = gi_p_hat(nr.radiance, nr.pos, nr.normal, x_q, n_q);
+				float p_hat = gi_p_hat(nr.radiance, nr.pos, nr.normal, x_q, n_q, geo_q);
 				float w = p_hat * nr.W * nr.M * jacobian;
 				if(w > 0)
 				{
@@ -550,31 +794,136 @@ spatial_pass(ivec2 ipos)
 
 		n_pixel[num_n] = p;
 		n_m[num_n] = nr.M;
+		n_x[num_n] = origin_n.xyz;
+		n_nrm[num_n] = floatBitsToUint(origin_n.w);
+		n_geo[num_n] = geo_packed_n;
 		num_n++;
+	}
+
+	int cull_mask = gi_shadow_cull_mask(checkerboard_flags);
+	float fresh_mix = clamp(global_ubo.pt_restir_gi_fresh_mix, 0.0, 1.0);
+
+	// pt_restir_gi_shade_all - see above.
+	if(shade_all)
+	{
+		GISurface surf = gi_load_surface(ipos);
+		vec3 sum = vec3(0);
+		float best = 0;
+		float best_dist = 0;
+
+		// i = -1 is this pixel's own reservoir, 0 .. num_n - 1 the neighbours'.
+		for(int i = -1; i < num_n; i++)
+		{
+			GIReservoir s = q;
+			vec3 x_src = x_q;
+			vec3 n_src = n_q;
+			vec3 geo_src = geo_q;
+			float m_src = q.M;
+			if(i >= 0)
+			{
+				s = gi_load(imageLoad(IMG_PT_RESTIR_GI_POS_A, n_pixel[i]), imageLoad(IMG_PT_RESTIR_GI_DATA_A, n_pixel[i]));
+				x_src = n_x[i];
+				n_src = decode_normal(n_nrm[i]);
+				geo_src = decode_normal(n_geo[i]);
+				m_src = n_m[i];
+			}
+			if(!(s.W > 0))
+				continue;
+
+			// Moved here from the surface that found it, within the range the merge allows.
+			float jacobian = 1.0;
+			if(i >= 0)
+			{
+				jacobian = gi_jacobian(s.pos, s.normal, x_q, x_src);
+				if(!gi_validate_jacobian(jacobian))
+					continue;
+			}
+
+			float p_q = gi_p_hat(s.radiance, s.pos, s.normal, x_q, n_q, geo_q);
+			if(p_q <= 0)
+				continue;
+			float p_src = (i < 0) ? p_q : gi_p_hat(s.radiance, s.pos, s.normal, x_src, n_src, geo_src);
+			if(p_src <= 0)
+				continue;
+
+			// The generalised balance heuristic over every surface gathered that could
+			// have produced this sample: in front of it, facing it, and - for a
+			// neighbour - near enough that the move from there to here passes the
+			// Jacobian range. This pixel counts with its own target function.
+			float p_sum = q.M * p_q;
+			for(int j = 0; j < num_n; j++)
+			{
+				float p_j = p_src;
+				if(j != i)
+				{
+					p_j = gi_p_hat(s.radiance, s.pos, s.normal, n_x[j], decode_normal(n_nrm[j]), decode_normal(n_geo[j]));
+					if(p_j > 0)
+					{
+						float jacobian_j = gi_jacobian(s.pos, s.normal, x_q, n_x[j]);
+						if(!gi_validate_jacobian(jacobian_j))
+							p_j = 0;
+					}
+				}
+				p_sum += n_m[j] * p_j;
+			}
+			float mis = m_src * p_src / p_sum;
+
+			float visibility = 1.0;
+			if(global_ubo.pt_restir_gi_spatial_vis >= 1)
+			{
+				Ray shadow_ray = get_shadow_ray(x_q - view_dir * 0.01, s.pos, 0);
+				visibility = trace_shadow_ray(shadow_ray, cull_mask);
+				if(visibility <= 0)
+					continue;
+			}
+
+			vec3 dir;
+			float dist;
+			vec3 c = gi_contribution(surf, x_q, n_q, view_dir, t_base, s.pos, s.radiance,
+				s.W * jacobian * mis * visibility, dir, dist) * (1.0 - fresh_mix);
+
+			// A-SVGF's SH channel needs each sample's direction; RR reads the sum.
+			if(global_ubo.flt_enable != 0)
+				gi_add_lf(ipos, c, dir);
+			else
+				sum += c;
+
+			// The hit-distance guide (pt_restir_gi_hitdist 1) gets the strongest sample's.
+			float l = luminance(c);
+			if(l > best)
+			{
+				best = l;
+				best_dist = dist;
+			}
+		}
+
+		if(any(greaterThan(sum, vec3(0))))
+			gi_add_lf(ipos, sum, n_q);
+		if(best > 0 && global_ubo.pt_restir_gi_hitdist != 0)
+			imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(min(best_dist, PRIMARY_RAY_T_MAX)));
+		return;
 	}
 
 	// Nothing lit anywhere in the neighbourhood.
 	if(w_sum <= 0 || p_hat_s <= 0)
 		return;
 
-	int cull_mask = gi_shadow_cull_mask(checkerboard_flags);
-
 	// Z. This pixel always counts: p_hat_s > 0 says the chosen sample is in front of
 	// it, and its own samples were found from here.
 	float z = q.M;
 	for(int n = 0; n < num_n; n++)
 	{
-		vec4 o = imageLoad(IMG_PT_RESTIR_GI_ORIGIN_A, n_pixel[n]);
-		vec3 x_n = o.xyz;
-		vec3 n_n = decode_normal(floatBitsToUint(o.w));
+		vec3 x_n = n_x[n];
+		vec3 n_n = decode_normal(n_nrm[n]);
+		vec3 geo_n = decode_normal(n_geo[n]);
 
 		// gi_p_hat's geometric test alone - unit radiance, so only the sign matters.
-		if(gi_p_hat(vec3(1), s_pos, s_normal, x_n, n_n) <= 0)
+		if(gi_p_hat(vec3(1), s_pos, s_normal, x_n, n_n, geo_n) <= 0)
 			continue;
 
 		// The move from there to here must pass the range the merge above enforces.
 		float jacobian = gi_jacobian(s_pos, s_normal, x_q, x_n);
-		if(jacobian < 0.1 || jacobian > 10.0)
+		if(!gi_validate_jacobian(jacobian))
 			continue;
 
 		if(global_ubo.pt_restir_gi_spatial_vis >= 2)
@@ -599,7 +948,7 @@ spatial_pass(ivec2 ipos)
 		visibility = trace_shadow_ray(shadow_ray, cull_mask);
 	}
 
-	gi_shade(ipos, x_q, n_q, view_dir, t_base, s_pos, s_radiance, W, visibility);
+	gi_shade(ipos, x_q, n_q, view_dir, t_base, s_pos, s_radiance, W, visibility, 1.0 - fresh_mix);
 }
 
 void

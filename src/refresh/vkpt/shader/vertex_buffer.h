@@ -47,7 +47,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    the top 16) and the value would have fitted there, but a named word costs
    32KB across the whole table and leaves the next per-material knob somewhere
    obvious to go. */
-#define MATERIAL_UINTS          9
+/* Raised from 9 for albedo_strength: words 7 and 8 are full since the height
+   map moved in. Low half of word 9 only, so the top half is the next knob's. */
+#define MATERIAL_UINTS          10
 
 // should match the same constant declared in material.h
 #define MAX_PBR_MATERIALS      8192
@@ -314,6 +316,9 @@ struct MaterialInfo
 	   overriding pt_dlss_guide_field, in the cvar's own 0..3 numbering.
 	   -1 means the material said nothing - see CHECKERBOARD_FLAG_GUIDE_SET. */
 	int dlss_guide_field;
+	/* The material's own pt_bounce_albedo_power, from albedo_strength in its
+	   .mat entry. 0 means the material said nothing and the cvar decides. */
+	float albedo_strength;
 };
 
 struct LightPolygon
@@ -571,6 +576,7 @@ get_material_info(uint material_id)
 	data[6] = light_buffer.material_table[material_index * MATERIAL_UINTS + 6];
 	data[7] = light_buffer.material_table[material_index * MATERIAL_UINTS + 7];
 	data[8] = light_buffer.material_table[material_index * MATERIAL_UINTS + 8];
+	data[9] = light_buffer.material_table[material_index * MATERIAL_UINTS + 9];
 
 	MaterialInfo minfo;
 	minfo.base_texture = data[0] & 0xffff;
@@ -593,6 +599,7 @@ get_material_info(uint material_id)
 	// Stored as value+1 so that zero - which is what an unregistered material's
 	// cleared table row holds - reads as "nothing stated".
 	minfo.dlss_guide_field = int(data[7] & 7) - 1;
+	minfo.albedo_strength = unpackHalf2x16(data[9]).x;
 
 	// Apply the light style for non-camera materials.
 	// Camera materials use the same bits to store the camera ID.

@@ -102,6 +102,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_FROXEL_SPATIAL_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_FROXEL_SCATTER_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_FROXEL_INTEGRATE_COMP)                  \
+	SHADER_MODULE_DO(QVK_MOD_SKY_EXPOSURE_BAKE_COMP)                 \
 	SHADER_MODULE_DO(QVK_MOD_SHADOW_MAP_VERT)                        \
 	SHADER_MODULE_DO(QVK_MOD_COMPOSITING_COMP)                       \
 	SHADER_MODULE_DO(QVK_MOD_FSR_EASU_FP16_COMP)                     \
@@ -1032,6 +1033,10 @@ bool vkpt_froxel_enabled(void);
 // allocates the froxel volumes on the first frame they are wanted, so the
 // grid costs no VRAM at all while pt_fog_froxel is off (which is the default)
 void vkpt_froxel_ensure(void);
+// pt_fog_sky_exposure: set up the new map's sky-exposure grid (bounds, voxel
+// size, the solid mask from a BSP point test) and restart its bake. Called from
+// R_BeginRegistration_RTX after the device has been idled.
+void vkpt_sky_exposure_begin_map(bsp_t* bsp, const aabb_t* world_aabb);
 void vkpt_god_rays_prepare_ubo(
 	QVKUniformBuffer_t * ubo, 
 	const aabb_t* world_aabb,

@@ -1,0 +1,24 @@
+
+# instance of textures/e2u3/baselt_red
+# mgu6m1, created at (2049 1940 -283)
+# Defaults to the texture with no overrides applied.
+textures/e2u3/baselt_red#ce17a441:
+	texture_base materialDev/textures/e2u3/baselt_red.tga
+	texture_normals materialDev/textures/e2u3/baselt_red_n.tga
+	texture_emissive materialDev/textures/e2u3/baselt_red_light.png
+	emissive_factor 1.0
+	default_radiance .01
+	is_light 1
+	metalness_factor 0
+
+# instance of textures/e2u3/baselt_red
+# mgu6m1, created at (2046 1807 -284)
+# Defaults to the texture with no overrides applied.
+textures/e2u3/baselt_red#0ebb696a:
+	texture_base materialDev/textures/e2u3/baselt_red.tga
+	texture_normals materialDev/textures/e2u3/baselt_red_n.tga
+	texture_emissive materialDev/textures/e2u3/baselt_red_light.png
+	emissive_factor 1.0
+	default_radiance .01
+	is_light 1
+	metalness_factor 0

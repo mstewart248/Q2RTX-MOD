@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "shared/shared.h"
 #include "vkpt.h"
 #include "vk_util.h"
+#include "system/system.h"
 #include "shader/froxel_shared.h"
 
 static const uint32_t THREAD_GROUP_SIZE = 16;
@@ -55,7 +56,7 @@ typedef struct {
 
 struct
 {
-	VkPipeline pipelines[6];
+	VkPipeline pipelines[7];
 	VkPipelineLayout pipeline_layout;
 	VkDescriptorSetLayout descriptor_set_layout;
 
@@ -105,6 +106,14 @@ struct
 	   total - sky stays the local-light part. */
 	froxel_volume_t froxel_sky[MAX_FRAMES_IN_FLIGHT];
 
+	/* pt_fog_sky_exposure: the world-space sky-exposure volume (R32UI packed,
+	   SKY_EXPOSURE_DIM_*; layout in sky_exposure_bake.comp), created with the
+	   froxel volumes - binding 10 - and the bake's solid mask, one bit per voxel,
+	   binding 11. The mask is host-visible and written at map load, so it is
+	   created at init, independent of the grid. */
+	froxel_volume_t sky_exposure;
+	BufferResource_t sky_exposure_mask;
+
 	VkSampler froxel_sampler;
 	bool froxel_initialized;
 
@@ -121,6 +130,37 @@ cvar_t* cvar_pt_fog_froxel = NULL;
 // than dispatched to do nothing.
 static cvar_t* cvar_pt_fog_restir = NULL;
 
+// UBO cvars (global_ubo.h), registered in main.c
+extern cvar_t* cvar_pt_fog_sky_exposure;
+extern cvar_t* cvar_pt_fog_sky_exposure_rays;
+
+// voxels baked per frame; the bake is spread over frames so loading a map does
+// not cost one long GPU stall
+static cvar_t* cvar_pt_fog_sky_exposure_bake = NULL;
+
+/* THE SKY-EXPOSURE BAKE'S STATE. See sky_exposure_bake.comp for what it computes.
+
+   begin_map sets the grid up and restarts the bake; each frame's froxel shading
+   pass bakes the next `pt_fog_sky_exposure_bake` voxels; prepare_ubo tells the
+   shaders the volume may be read only once the last batch was recorded more than
+   MAX_FRAMES_IN_FLIGHT frames ago, so no frame reads it while the GPU may still
+   be writing it - on either queue. */
+static struct {
+	bool     have_map;
+	vec3_t   origin;
+	float    voxel;
+	int      dims[3];
+	uint32_t total;       // voxels in the used box
+	uint32_t next;        // first voxel the next batch bakes
+	int      rays;        // pt_fog_sky_exposure_rays this bake was started with
+	uint32_t frame;       // prepare_ubo calls, i.e. frames
+	uint32_t done_frame;  // frame the last batch was recorded in
+	uint32_t start_frame; // frame the first batch was recorded in
+	bool     started;
+	bool     reported;
+	bool     wanted;      // pt_fog_sky_exposure as resolved for this frame's sky
+} sky_exposure;
+
 enum {
 	GOD_RAYS_PIPELINE_TRACE = 0,
 	GOD_RAYS_PIPELINE_FILTER,
@@ -128,7 +168,14 @@ enum {
 	GOD_RAYS_PIPELINE_FROXEL_INTEGRATE,
 	GOD_RAYS_PIPELINE_FROXEL_RESERVOIR,
 	GOD_RAYS_PIPELINE_FROXEL_SPATIAL,
+	GOD_RAYS_PIPELINE_SKY_EXPOSURE_BAKE,
 };
+
+#define SKY_EXPOSURE_MASK_WORDS \
+	((SKY_EXPOSURE_DIM_X * SKY_EXPOSURE_DIM_Y * SKY_EXPOSURE_DIM_Z + 31) / 32)
+
+// Smallest voxel edge, so a small map does not get a needlessly fine grid.
+#define SKY_EXPOSURE_MIN_VOXEL 8.f
 
 static void create_froxel_volumes(void);
 static void destroy_froxel_volumes(void);
@@ -161,6 +208,15 @@ VkResult vkpt_initialize_god_rays(void)
 	god_rays.eccentricity = Cvar_Get("gr_eccentricity", "0.75", 0);
 	god_rays.enable = Cvar_Get("gr_enable", "1", 0);
 
+	cvar_pt_fog_sky_exposure_bake = Cvar_Get("pt_fog_sky_exposure_bake", "16384", 0);
+
+	// 250 KB, host-visible: begin_map writes the solid mask straight into it.
+	// A renderer restart re-registers the map, which refills it.
+	memset(&sky_exposure, 0, sizeof(sky_exposure));
+	_VK(buffer_create(&god_rays.sky_exposure_mask, SKY_EXPOSURE_MASK_WORDS * sizeof(uint32_t),
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+
 	// Created once here rather than in create_image_views(), which runs on every
 	// swapchain recreate and leaked a sampler each time.
 	VkSamplerReductionModeCreateInfo redutcion_create_info = {
@@ -188,6 +244,9 @@ VkResult vkpt_initialize_god_rays(void)
 VkResult vkpt_destroy_god_rays(void)
 {
 	destroy_froxel_volumes();
+
+	buffer_destroy(&god_rays.sky_exposure_mask);
+	sky_exposure.have_map = false;
 
 	vkDestroySampler(qvk.device, god_rays.shadow_sampler, NULL);
 	vkDestroyDescriptorPool(qvk.device, god_rays.descriptor_pool, NULL);
@@ -615,6 +674,158 @@ void vkpt_record_froxel_light_selection(VkCommandBuffer command_buffer)
 	}
 }
 
+/* One batch of the sky-exposure bake (pt_fog_sky_exposure). Recorded here, at the
+   head of the froxel shading half, because that is the first point in the frame
+   on either queue where this frame's TLAS is certain to be built. The shaders
+   do not read the volume until prepare_ubo says the bake is complete, so this
+   frame's scatter pass is not waiting on it; the barrier is for whatever reads
+   it next on this queue. */
+static void record_sky_exposure_bake(VkCommandBuffer command_buffer)
+{
+	if (!sky_exposure.have_map || sky_exposure.next >= sky_exposure.total)
+		return;
+
+	if (!sky_exposure.wanted)
+		return;
+
+	uint32_t count = (uint32_t)max(1024, cvar_pt_fog_sky_exposure_bake->integer);
+	count = min(count, sky_exposure.total - sky_exposure.next);
+
+	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+		god_rays.pipelines[GOD_RAYS_PIPELINE_SKY_EXPOSURE_BAKE]);
+
+	uint32_t first = sky_exposure.next;
+	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout,
+		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &first);
+
+	vkCmdDispatch(command_buffer, (count + SKY_EXPOSURE_BAKE_GROUP - 1) / SKY_EXPOSURE_BAKE_GROUP, 1, 1);
+
+	VkMemoryBarrier mem_barrier = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
+	};
+	vkCmdPipelineBarrier(command_buffer,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 1, &mem_barrier, 0, NULL, 0, NULL);
+
+	// the froxel passes after this read the push constant as pass 0
+	int pass = 0;
+	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout,
+		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &pass);
+
+	if (!sky_exposure.started)
+	{
+		sky_exposure.started = true;
+		sky_exposure.start_frame = sky_exposure.frame;
+	}
+
+	sky_exposure.next += count;
+	if (sky_exposure.next >= sky_exposure.total)
+		sky_exposure.done_frame = sky_exposure.frame;
+}
+
+static void restart_sky_exposure_bake(void)
+{
+	sky_exposure.next = 0;
+	sky_exposure.started = false;
+	sky_exposure.reported = false;
+	sky_exposure.rays = cvar_pt_fog_sky_exposure_rays ? (int)cvar_pt_fog_sky_exposure_rays->value : 0;
+}
+
+/*
+=================
+vkpt_sky_exposure_begin_map
+
+Fits the sky-exposure grid to the new map and marks which voxels are solid.
+
+THE VOXEL IS CUBIC and sized so the whole of the world's bounds fit in
+SKY_EXPOSURE_DIM_*, centred on them; only that used box is baked and read. At the
+default 160x160x80 a 4096-unit map gets 25.6-unit voxels.
+
+THE SOLID MASK is a BSP point test per voxel centre, on the CPU. A centre inside
+a brush, or in the void outside the hull, cannot be baked honestly: from inside a
+brush every ray starts on a face, and from the void a ray can pass through a sky
+brush's missing outer side and hit its sky face from behind, which reads as sky.
+Those voxels are stored as invalid so the shaders' normalised lookup leaves them
+out entirely - which is also what keeps the void's false sky out of rooms whose
+walls are the hull. Q2's compiler fills everything outside the map as solid, so
+CONTENTS_SOLID covers both.
+
+Runs after vkpt_device_wait_idle in R_BeginRegistration_RTX, so the previous
+map's bake cannot be reading the mask while it is rewritten.
+=================
+*/
+void vkpt_sky_exposure_begin_map(bsp_t* bsp, const aabb_t* world_aabb)
+{
+	sky_exposure.have_map = false;
+	sky_exposure.total = 0;
+	restart_sky_exposure_bake();
+
+	if (!bsp || !bsp->nodes || !world_aabb || !god_rays.sky_exposure_mask.buffer)
+		return;
+
+	vec3_t size;
+	VectorSubtract(world_aabb->maxs, world_aabb->mins, size);
+	if (size[0] <= 0.f || size[1] <= 0.f || size[2] <= 0.f)
+		return;
+
+	const int alloc[3] = { SKY_EXPOSURE_DIM_X, SKY_EXPOSURE_DIM_Y, SKY_EXPOSURE_DIM_Z };
+
+	float voxel = SKY_EXPOSURE_MIN_VOXEL;
+	for (int a = 0; a < 3; a++)
+		voxel = max(voxel, size[a] / (float)alloc[a]);
+
+	for (int a = 0; a < 3; a++)
+	{
+		sky_exposure.dims[a] = (int)ceilf(size[a] / voxel);
+		sky_exposure.dims[a] = max(1, min(sky_exposure.dims[a], alloc[a]));
+		sky_exposure.origin[a] = world_aabb->mins[a] - 0.5f * ((float)sky_exposure.dims[a] * voxel - size[a]);
+	}
+	sky_exposure.voxel = voxel;
+	sky_exposure.total = (uint32_t)(sky_exposure.dims[0] * sky_exposure.dims[1] * sky_exposure.dims[2]);
+
+	uint32_t* bits = buffer_map(&god_rays.sky_exposure_mask);
+	if (!bits)
+		return;
+
+	memset(bits, 0, SKY_EXPOSURE_MASK_WORDS * sizeof(uint32_t));
+
+	unsigned start_ms = Sys_Milliseconds();
+	uint32_t solid = 0;
+	uint32_t index = 0;
+	for (int z = 0; z < sky_exposure.dims[2]; z++)
+	{
+		for (int y = 0; y < sky_exposure.dims[1]; y++)
+		{
+			for (int x = 0; x < sky_exposure.dims[0]; x++, index++)
+			{
+				vec3_t p = {
+					sky_exposure.origin[0] + ((float)x + 0.5f) * voxel,
+					sky_exposure.origin[1] + ((float)y + 0.5f) * voxel,
+					sky_exposure.origin[2] + ((float)z + 0.5f) * voxel
+				};
+
+				const mleaf_t* leaf = BSP_PointLeaf(bsp->nodes, p);
+				if (!leaf || (leaf->contents & CONTENTS_SOLID))
+				{
+					bits[index >> 5] |= 1u << (index & 31u);
+					solid++;
+				}
+			}
+		}
+	}
+
+	buffer_unmap(&god_rays.sky_exposure_mask);
+
+	sky_exposure.have_map = true;
+
+	Com_Printf("sky exposure: %dx%dx%d voxels of %.1f units, %.0f%% open (mask %u ms)\n",
+		sky_exposure.dims[0], sky_exposure.dims[1], sky_exposure.dims[2], voxel,
+		100.0 * (double)(sky_exposure.total - solid) / (double)sky_exposure.total,
+		Sys_Milliseconds() - start_ms);
+}
+
 /* THE SECOND HALF: scatter and integrate. Scatter traces shadow rays against this
    frame's TLAS, samples this frame's shadow map and places its probes with
    PT_PRIMARY_DIST, so under pt_async_compute it waits for primary rays. */
@@ -623,6 +834,8 @@ void vkpt_record_froxel_shading(VkCommandBuffer command_buffer)
 	vkpt_froxel_dispatch_count++;
 
 	froxel_bind_descriptors(command_buffer);
+
+	record_sky_exposure_bake(command_buffer);
 
 	uint32_t group_num_x = (FROXEL_GRID_X + FROXEL_GROUP_X - 1) / FROXEL_GROUP_X;
 	uint32_t group_num_y = (FROXEL_GRID_Y + FROXEL_GROUP_Y - 1) / FROXEL_GROUP_Y;
@@ -752,6 +965,40 @@ void vkpt_god_rays_prepare_ubo(
 	// allocate the froxel volumes if this is the first frame that wants them
 	vkpt_froxel_ensure();
 
+	// pt_fog_sky_exposure. 2, the default, means "only under the physical sky":
+	// with a map's own skybox the rerelease maps' heavy fog went dark under every
+	// overhang. vkpt_physical_sky_update_ubo has set environment_type by now, so
+	// resolve it to 0 or 1 here and the shaders never see the 2. A map that never
+	// shows the physical sky never bakes; switching to it starts the bake.
+	if (ubo->pt_fog_sky_exposure >= 2.f)
+		ubo->pt_fog_sky_exposure = (ubo->environment_type == ENVIRONMENT_DYNAMIC) ? 1.f : 0.f;
+	sky_exposure.wanted = ubo->pt_fog_sky_exposure > 0.f;
+
+	// A changed direction count rebakes.
+	sky_exposure.frame++;
+	if (sky_exposure.have_map && cvar_pt_fog_sky_exposure_rays
+		&& (int)cvar_pt_fog_sky_exposure_rays->value != sky_exposure.rays)
+		restart_sky_exposure_bake();
+
+	bool baked = sky_exposure.have_map && god_rays.froxel_initialized
+	          && sky_exposure.next >= sky_exposure.total
+	          && sky_exposure.frame - sky_exposure.done_frame > MAX_FRAMES_IN_FLIGHT;
+
+	if (baked && !sky_exposure.reported)
+	{
+		sky_exposure.reported = true;
+		Com_Printf("sky exposure: baked %u voxels at %d rays in %u frames\n",
+			sky_exposure.total, sky_exposure.rays,
+			sky_exposure.done_frame - sky_exposure.start_frame + 1);
+	}
+
+	VectorCopy(sky_exposure.origin, ubo->sky_exposure_origin);
+	ubo->sky_exposure_voxel = sky_exposure.voxel;
+	ubo->sky_exposure_dim_x = sky_exposure.dims[0];
+	ubo->sky_exposure_dim_y = sky_exposure.dims[1];
+	ubo->sky_exposure_dim_z = sky_exposure.dims[2];
+	ubo->sky_exposure_ready = baked ? 1 : 0;
+
 	// Shadow parameters
 	memcpy(ubo->shadow_map_VP, shadowmap_viewproj, 16 * sizeof(float));
 }
@@ -763,7 +1010,7 @@ static void create_image_views(void)
 
 static void create_pipeline_layout(void)
 {
-	VkDescriptorSetLayoutBinding bindings[10] = { 0 };
+	VkDescriptorSetLayoutBinding bindings[12] = { 0 };
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[0].descriptorCount = 1;
@@ -837,6 +1084,20 @@ static void create_pipeline_layout(void)
 	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[9].descriptorCount = 1;
 	bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	// pt_fog_sky_exposure: 10 the volume, written by the bake and read by every
+	// fog shader through getSkyVisibility - a storage image, because it is
+	// packed R32UI and the lookup does its own wall-aware 8-tap blend; 11 the
+	// bake's solid mask.
+	bindings[10].binding = 10;
+	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[10].descriptorCount = 1;
+	bindings[10].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	bindings[11].binding = 11;
+	bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[11].descriptorCount = 1;
+	bindings[11].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
 	const VkDescriptorSetLayoutCreateInfo set_layout_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -917,7 +1178,14 @@ static void create_pipelines(void)
 		.pName = "main"
 	};
 
-	const VkComputePipelineCreateInfo pipeline_create_infos[6] = {
+	const VkPipelineShaderStageCreateInfo sky_exposure_bake_shader = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+		.module = qvk.shader_modules[QVK_MOD_SKY_EXPOSURE_BAKE_COMP],
+		.pName = "main"
+	};
+
+	const VkComputePipelineCreateInfo pipeline_create_infos[7] = {
 		{
 			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 			.stage = shader,
@@ -951,6 +1219,11 @@ static void create_pipelines(void)
 			.stage = froxel_spatial_shader,
 			.layout = god_rays.pipeline_layout
 		},
+		{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = sky_exposure_bake_shader,
+			.layout = god_rays.pipeline_layout
+		},
 	};
 
 	_VK(vkCreateComputePipelines(qvk.device, VK_NULL_HANDLE, LENGTH(pipeline_create_infos), pipeline_create_infos,
@@ -960,13 +1233,15 @@ static void create_pipelines(void)
 static void create_descriptor_set(void)
 {
 	const VkDescriptorPoolSize pool_sizes[] = {
-		// three samplers per set: the shadow map, the froxel history, and the
-		// integrated volume the filter reads
+		// samplers per set: the shadow map, the froxel history, the integrated
+		// volume the filter reads, the sky-part history
 		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_FRAMES_IN_FLIGHT * 4 },
 		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_FRAMES_IN_FLIGHT },
-		// the scatter volume this frame writes, the integrated volume, and the
-		// two ReSTIR reservoirs
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAMES_IN_FLIGHT * 5 }
+		// the scatter volume this frame writes, the integrated volume, the
+		// two ReSTIR reservoirs, the sky part, the sky exposure volume
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_FRAMES_IN_FLIGHT * 6 },
+		// the sky exposure bake's solid mask
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, MAX_FRAMES_IN_FLIGHT }
 	};
 
 	const VkDescriptorPoolCreateInfo pool_create_info = {
@@ -1007,7 +1282,7 @@ static void update_descriptor_set(void)
 	
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		VkWriteDescriptorSet writes[9] = {
+		VkWriteDescriptorSet writes[12] = {
 			{
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 				.dstSet = god_rays.descriptor_set[i],
@@ -1018,6 +1293,25 @@ static void update_descriptor_set(void)
 			}
 		};
 		uint32_t num_writes = 1;
+
+		// The sky exposure mask exists from init, grid or no grid.
+		VkDescriptorBufferInfo sky_exposure_mask_info = {
+			.buffer = god_rays.sky_exposure_mask.buffer,
+			.offset = 0,
+			.range = VK_WHOLE_SIZE
+		};
+		if (god_rays.sky_exposure_mask.buffer)
+		{
+			writes[num_writes++] = (VkWriteDescriptorSet) {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = god_rays.descriptor_set[i],
+				.descriptorCount = 1,
+				.dstBinding = 11,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &sky_exposure_mask_info
+			};
+		}
+		VkDescriptorImageInfo sky_exposure_info;
 
 		// THE PING-PONG. Set i writes scatter volume i and SAMPLES volume 1-i
 		// as its history, so the temporal blend costs no copy at all - which is
@@ -1138,6 +1432,21 @@ static void update_descriptor_set(void)
 				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 				.pImageInfo = &froxel_sky_history_info
 			};
+
+			// The sky exposure volume: one image, the same in both sets - it is
+			// per map, not per frame.
+			sky_exposure_info = (VkDescriptorImageInfo) {
+				.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+				.imageView = god_rays.sky_exposure.view
+			};
+			writes[num_writes++] = (VkWriteDescriptorSet) {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = god_rays.descriptor_set[i],
+				.descriptorCount = 1,
+				.dstBinding = 10,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.pImageInfo = &sky_exposure_info
+			};
 		}
 
 		vkUpdateDescriptorSets(qvk.device, num_writes, writes, 0, NULL);
@@ -1162,14 +1471,18 @@ static void create_froxel_volumes(void)
 	if (god_rays.froxel_initialized)
 		return;
 
-	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT * 3 + 2 };
+	enum { MAX_FROXEL_VOLUMES = MAX_FRAMES_IN_FLIGHT * 3 + 2 + 1 };
 
 	VkImage* image_slots[MAX_FROXEL_VOLUMES];
 	VkImageView* views[MAX_FROXEL_VOLUMES];
 	VkDeviceMemory* memories[MAX_FROXEL_VOLUMES];
 	VkFormat formats[MAX_FROXEL_VOLUMES];
+	VkExtent3D extents[MAX_FROXEL_VOLUMES];
 	int num_volumes = 0;
 	VkDeviceSize total_bytes = 0;
+
+	for (int i = 0; i < MAX_FROXEL_VOLUMES; i++)
+		extents[i] = (VkExtent3D) { FROXEL_GRID_X, FROXEL_GRID_Y, FROXEL_GRID_Z };
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
@@ -1219,13 +1532,23 @@ static void create_froxel_volumes(void)
 		num_volumes++;
 	}
 
+	// pt_fog_sky_exposure: world space, not a froxel grid - its own size. Cleared
+	// to zero with the rest, which the shaders never read: sky_exposure_ready
+	// stays 0 until a bake has finished.
+	image_slots[num_volumes] = &god_rays.sky_exposure.image;
+	views[num_volumes] = &god_rays.sky_exposure.view;
+	memories[num_volumes] = &god_rays.sky_exposure.memory;
+	formats[num_volumes] = VK_FORMAT_R32_UINT;
+	extents[num_volumes] = (VkExtent3D) { SKY_EXPOSURE_DIM_X, SKY_EXPOSURE_DIM_Y, SKY_EXPOSURE_DIM_Z };
+	num_volumes++;
+
 	for (int i = 0; i < num_volumes; i++)
 	{
 		VkImageCreateInfo img_info = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.imageType = VK_IMAGE_TYPE_3D,
 			.format = formats[i],
-			.extent = { FROXEL_GRID_X, FROXEL_GRID_Y, FROXEL_GRID_Z },
+			.extent = extents[i],
 			.mipLevels = 1,
 			.arrayLayers = 1,
 			.samples = VK_SAMPLE_COUNT_1_BIT,
@@ -1406,11 +1729,17 @@ static void destroy_froxel_volumes(void)
 		vkFreeMemory(qvk.device, god_rays.froxel_sky[i].memory, NULL);
 	}
 
+	vkDestroyImageView(qvk.device, god_rays.sky_exposure.view, NULL);
+	vkDestroyImage(qvk.device, god_rays.sky_exposure.image, NULL);
+	vkFreeMemory(qvk.device, god_rays.sky_exposure.memory, NULL);
+
 	vkDestroySampler(qvk.device, god_rays.froxel_sampler, NULL);
 
 	memset(god_rays.froxel_scatter, 0, sizeof(god_rays.froxel_scatter));
 	memset(god_rays.froxel_integrated, 0, sizeof(god_rays.froxel_integrated));
 	memset(god_rays.froxel_reservoir, 0, sizeof(god_rays.froxel_reservoir));
+	memset(god_rays.froxel_sky, 0, sizeof(god_rays.froxel_sky));
+	memset(&god_rays.sky_exposure, 0, sizeof(god_rays.sky_exposure));
 	god_rays.froxel_sampler = VK_NULL_HANDLE;
 	god_rays.froxel_initialized = false;
 }

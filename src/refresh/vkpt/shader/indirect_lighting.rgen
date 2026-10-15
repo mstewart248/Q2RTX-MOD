@@ -680,6 +680,14 @@ indirect_lighting(
 
 			get_reflectivity(bounce_base_color, metallic, bounce_albedo, bounce_base_reflectivity);
 			bounce_direct_specular = 1.0;
+
+			/* pt_restir_gi_secondary_roughness: the light leaving this hit becomes a ReSTIR GI
+			   candidate, which other pixels reuse as if it left the hit evenly in all
+			   directions - so its highlight toward THIS pixel must not be sharp, or one
+			   glint becomes a bright sample spread over the neighbours. RTXDI's ReSTIR GI
+			   notes advise clamping the secondary roughness. Lighting at the hit only. */
+			if(gi_candidate && global_ubo.pt_restir_gi_secondary_roughness > 0)
+				bounce_roughness = max(bounce_roughness, global_ubo.pt_restir_gi_secondary_roughness);
 		}
 
 		if(luminance(emissive) > 0) 
@@ -723,10 +731,16 @@ indirect_lighting(
 		   textures sit around 0.2-0.6. Raising the albedo to a power below 1 lifts dark
 		   surfaces far more than bright ones (0.5: 0.02 -> 0.14, 0.1 -> 0.32,
 		   0.5 -> 0.71) and only for light bouncing off them; the surfaces look the same
-		   on screen. Capped at 0.9 so a path can never gain energy. 1 = physical. */
+		   on screen. Capped at 0.9 so a path can never gain energy. 1 = physical.
+		   A material's albedo_strength replaces the cvar for that surface: the
+		   textures are not uniformly dark, so one global power over- or under-lifts
+		   some of them. */
+		float albedo_power = bounce_minfo.albedo_strength > 0.0
+			? bounce_minfo.albedo_strength
+			: global_ubo.pt_bounce_albedo_power;
 		vec3 bounce_reflectance = bounce_albedo;
-		if(global_ubo.pt_bounce_albedo_power != 1.0)
-			bounce_reflectance = min(pow(max(bounce_albedo, vec3(0)), vec3(max(global_ubo.pt_bounce_albedo_power, 0.05))), vec3(0.9));
+		if(albedo_power != 1.0)
+			bounce_reflectance = min(pow(max(bounce_albedo, vec3(0)), vec3(max(albedo_power, 0.05))), vec3(0.9));
 
 		bounce_throughput *= bounce_reflectance;
 		bounce_throughput *= indirect_specular_weight;

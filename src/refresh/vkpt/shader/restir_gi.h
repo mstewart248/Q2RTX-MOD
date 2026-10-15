@@ -18,7 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 /*
 ReSTIR GI (pt_restir_gi) - Ouyang et al., "ReSTIR GI: Path Resampling for
-Real-Time Path Tracing", HPG 2021. Temporal reuse only for now.
+Real-Time Path Tracing", HPG 2021. Temporal and spatial reuse.
 
 The first DIFFUSE bounce of every pixel becomes a candidate sample instead of
 lighting the pixel directly: the point its ray hit (x_s, n_s) and the light
@@ -79,6 +79,32 @@ could have produced the chosen sample) and shaded with a final visibility ray. I
 result lights the pixel only; the history stays temporal, which is what kept the
 same idea from compounding in ReSTIR DI (see direct_lighting.rgen).
 
+REWORK FOR BRIGHTNESS AND DLSS-RR (2026-10-10). ReSTIR GI made the lighting darker
+and, once its clamp was off, blotchy under RR. Measured with an offline copy of these
+rules (session scratchpad restir_gi_fresh/mc_sim) and checked against RTXDI, RTX Remix
+and the DLSS-RR integration guide, the causes and the changes:
+
+  - The candidate clamp (pt_restir_gi_clamp) compared a bounce hit's radiance with
+    the adapted luminance of the albedo-modulated screen, so it cut in ~14x too early
+    (more with pt_bounce_albedo_power below 1) and removed the hot spots beside lamps
+    that ARE most of the bounce light: -8..-19%. It also fed back through the
+    auto-exposure. Now 0 by default; RR handles the outliers better than a clamp does.
+  - Bookkeeping that kept a rejected history's M with none of its light, and 1/M
+    normalisation, darkened corners, normal-mapped walls and pixels beside occluders.
+    The temporal merge now uses RTXDI's "basic" bias correction (pi / piSum: a source
+    counts only as far as it could have produced the chosen sample), a history whose
+    reconnection Jacobian fails is skipped whole as in RTXDI, empty histories are kept
+    (they were thrown away, a bright bias that hid part of the darkening), and the
+    spatial Z tests visibility from each neighbour (pt_restir_gi_spatial_vis 2).
+  - RR assumes independent samples (RR guide 3.5: "Randomize the temporal reuse
+    step"). A reservoir that holds a bright sample in one 4x4 block for 16+ frames is a
+    blob RR keeps and fades slowly. The temporal pass now takes its history from a
+    random pixel nearby (pt_restir_gi_temporal_radius, RTX Remix's DLSS-RR compatibility
+    mode) and gives the fresh candidate more confidence (pt_restir_gi_candidate_m).
+  - The depth test now expects last frame's depth (view depth + motion.z), so walking
+    toward a surface no longer throws its history away every frame.
+  pt_restir_gi_bias_correction 0 restores the old bookkeeping for A/B.
+
 Never in accumulation (photo) mode: sample reuse is biased there, and that mode
 is the unbiased reference.
 */
@@ -128,13 +154,15 @@ uint gi_pack_m_age(float M, float age)
 	return packHalf2x16(vec2(M, min(age, 2048.0)));
 }
 
-// Drop the sample but keep the history length: the pixel still knows how many
-// bounces it has seen, so the next lit sample enters at its proper share.
+// Empty the reservoir completely (RTXDI_EmptyGIReservoir), history length included.
+// Dropping the sample but keeping M said "M bounces, none of them lit" about a pixel
+// whose bounces were lit - a pure loss of light.
 void gi_drop(inout GIReservoir r)
 {
 	r.W = 0;
 	r.radiance = vec3(0);
 	r.age = 0;
+	r.M = 0;
 }
 
 // Garbage history - the first frame, a resize - must never be reused. An empty
@@ -147,9 +175,13 @@ bool gi_is_valid(GIReservoir r)
 	    && !any(isnan(r.radiance)) && !any(isinf(r.radiance));
 }
 
-// The target function for a sample seen from shading point x_v with normal n_v.
-// Zero when the sample is behind the surface or faces away from it.
-float gi_p_hat(vec3 radiance, vec3 sample_pos, vec3 sample_normal, vec3 x_v, vec3 n_v)
+// The target function for a sample seen from shading point x_v with normal n_v
+// (bump-mapped) and geometric normal geo_v. Zero when the sample is behind the
+// surface or faces away from it. Below the GEOMETRIC surface it is zero too when
+// pt_bounce_geo_hemisphere is on, because the bounce that makes candidates gives
+// nothing there - without this a neighbour's sample could light a pixel through
+// the surface its own bounces cannot reach.
+float gi_p_hat(vec3 radiance, vec3 sample_pos, vec3 sample_normal, vec3 x_v, vec3 n_v, vec3 geo_v)
 {
 	vec3 d = sample_pos - x_v;
 	float len = length(d);
@@ -159,6 +191,8 @@ float gi_p_hat(vec3 radiance, vec3 sample_pos, vec3 sample_normal, vec3 x_v, vec
 	float cos_v = dot(n_v, d);
 	float cos_s = dot(sample_normal, -d);
 	if (cos_v <= 0 || cos_s <= 0)
+		return 0;
+	if (global_ubo.pt_bounce_geo_hemisphere != 0 && dot(geo_v, d) <= 0)
 		return 0;
 	return luminance(radiance) * cos_v;
 }
@@ -178,6 +212,21 @@ float gi_jacobian(vec3 sample_pos, vec3 sample_normal, vec3 x_q, vec3 x_r)
 	if (cos_r <= 1e-4)
 		return 0;
 	return (cos_q / cos_r) * (lr2 / lq2);
+}
+
+/* Can a sample be moved with this Jacobian, and with how much of it? Outside
+   [0.1, 10] it is too far from where it was found to reuse (RTXDI_ValidateGIJacobian).
+   Inside, pt_restir_gi_jacobian_clamp limits it to [1/c, c], as RTXDI's sample app and
+   RTX Remix do: a sample reused right beside a contact otherwise comes out up to ten
+   times brighter than it was found, a firefly that spatial reuse then spreads. */
+bool gi_validate_jacobian(inout float jacobian)
+{
+	if (!(jacobian >= 0.1 && jacobian <= 10.0))
+		return false;
+	float c = global_ubo.pt_restir_gi_jacobian_clamp;
+	if (c >= 1.0)
+		jacobian = clamp(jacobian, 1.0 / c, c);
+	return true;
 }
 
 #endif // RESTIR_GI_H_

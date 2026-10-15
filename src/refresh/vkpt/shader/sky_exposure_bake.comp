@@ -1,0 +1,208 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/*
+==============================================================================
+
+SKY EXPOSURE BAKE - how much of the sky each point of the map can see.
+
+WHY. The fog's sky term used to be one ray straight up from each sample: if it
+escaped, the point got the WHOLE open-sky term. Outdoors that is close enough,
+but under a small hole in a roof it is badly wrong - a point 200 units under a
+128-unit hole sees about 6% of the sky, and got 100%. That made a column of fog
+far brighter than the fog outside, with hard walls the exact shape of the hole,
+and the froxel grid's spherical depth slices stair-stepped those walls into the
+bull's-eye rings (Matt, 2026-10-09).
+
+WHAT. For every voxel of a world-space grid over the map's bounds, trace
+pt_fog_sky_exposure_rays directions spread evenly over the upper hemisphere and
+store the fraction that reach a sky face. That is the solid angle of sky the
+point sees, normalised so open ground is 1 - exactly what isotropic in-scatter
+from a uniform sky is proportional to. A point under a hole now gets a dim glow
+that spreads out in a cone below it and fades toward the floor, with no hard
+edge for the depth slices to quantise.
+
+STATIC WORLD ONLY (AS_FLAG_WORLD_STATIC). Doors, the fan, monsters and items are
+left out; fog_sky_dynamic_visibility adds the moving part back per sample.
+
+"REACHES A SKY FACE", NOT "ESCAPES": the same rule as FOG_SKY_REQUIRE_HIT. Trace
+the sky faces alone for their distance, then the level up to it. A direction
+that escapes into nothing is not sky.
+
+SOLID VOXELS - centres inside a brush or in the void outside the hull, decided on
+the CPU by a BSP point test (god_rays.c) and passed in as one bit per voxel - are
+stored as 0, which the lookup skips.
+
+ONE UINT PER VOXEL:
+    bits  0- 7  exposure, unorm8
+    bits  8-11  clearance along -x, in 15ths of a voxel (15 = a voxel or more)
+    bits 12-15  +x
+    bits 16-19  -y      20-23  +y
+    bits 24-27  -z      28-31  +z
+The clearances are what stop the lookup blending across a wall or a roof - see
+fog_sky_exposure_lookup in fog_medium.glsl. They are floored, so a voxel never
+claims to see further than it does.
+
+DISPATCH. One thread per voxel, linear index push.pass_index + invocation; the
+CPU walks the index range over several frames so no single frame pays for the
+whole map. Every thread finishes its voxel completely, so the volume is never
+half-converged - it is simply not read until the last batch has landed.
+
+==============================================================================
+*/
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_ray_query               : enable
+
+#include "constants.h"
+
+#define GOD_RAYS_DESC_SET_IDX 0
+#include "god_rays_shared.h"
+
+#define GLOBAL_UBO_DESC_SET_IDX 2
+#include "global_ubo.h"
+
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 10, r32ui) uniform writeonly uimage3D IMG_SKY_EXPOSURE;
+
+// one bit per voxel of the USED box, x fastest: 1 = solid or outside the map
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 11, std430) readonly buffer SkyExposureMask {
+	uint sky_exposure_solid[];
+};
+
+layout(local_size_x = SKY_EXPOSURE_BAKE_GROUP, local_size_y = 1, local_size_z = 1) in;
+
+uint hash_u32(uint x)
+{
+	x ^= x >> 16; x *= 0x7feb352du;
+	x ^= x >> 15; x *= 0x846ca68bu;
+	x ^= x >> 16;
+	return x;
+}
+
+bool direction_sees_sky(vec3 p, vec3 dir)
+{
+	rayQueryEXT rs;
+	rayQueryInitializeEXT(rs, FOG_TLAS, gl_RayFlagsOpaqueEXT,
+		AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY,
+		p, 0.5, dir, 65536.0);
+
+	while (rayQueryProceedEXT(rs)) {}
+
+	if (rayQueryGetIntersectionTypeEXT(rs, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+		return false;
+
+	float t_sky = rayQueryGetIntersectionTEXT(rs, true);
+
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, FOG_TLAS,
+		gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+		AS_FLAG_WORLD_STATIC,
+		p, 0.5, dir, t_sky);
+
+	while (rayQueryProceedEXT(rq)) {}
+
+	return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// How far the level lets this point see along dir, in 15ths of max_t, floored.
+uint clearance(vec3 p, vec3 dir, float max_t)
+{
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, FOG_TLAS, gl_RayFlagsOpaqueEXT,
+		AS_FLAG_WORLD_STATIC,
+		p, 0.0, dir, max_t);
+
+	while (rayQueryProceedEXT(rq)) {}
+
+	if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+		return 15u;
+
+	float t = rayQueryGetIntersectionTEXT(rq, true);
+	return uint(clamp(floor(t / max_t * 15.0), 0.0, 14.0));
+}
+
+void main()
+{
+	ivec3 used = ivec3(global_ubo.sky_exposure_dim_x,
+	                   global_ubo.sky_exposure_dim_y,
+	                   global_ubo.sky_exposure_dim_z);
+
+	uint total = uint(used.x * used.y * used.z);
+	uint index = push.pass_index + gl_GlobalInvocationID.x;
+
+	if (index >= total)
+		return;
+
+	ivec3 voxel = ivec3(int(index % uint(used.x)),
+	                    int((index / uint(used.x)) % uint(used.y)),
+	                    int(index / uint(used.x * used.y)));
+
+	if ((sky_exposure_solid[index >> 5] & (1u << (index & 31u))) != 0u)
+	{
+		imageStore(IMG_SKY_EXPOSURE, voxel, uvec4(0));
+		return;
+	}
+
+	float voxel_size = global_ubo.sky_exposure_voxel;
+	vec3 p = global_ubo.sky_exposure_origin + (vec3(voxel) + vec3(0.5)) * voxel_size;
+
+	uint clear = 0u;
+	for (int a = 0; a < 3; a++)
+	{
+		vec3 axis = vec3(0);
+		axis[a] = 1.0;
+		clear |= clearance(p, -axis, voxel_size) << uint(a * 8);
+		clear |= clearance(p,  axis, voxel_size) << uint(a * 8 + 4);
+	}
+
+	/* An open voxel must never read as solid (0), which the lookup would skip.
+	   Six clearances all below a 15th of a voxel cannot happen to a centre the
+	   BSP put in open air, but a floor of one in -z costs nothing to be sure. */
+	if (clear == 0u)
+		clear = 1u << 16;
+
+	int num_dirs = clamp(int(global_ubo.pt_fog_sky_exposure_rays), 16, 1024);
+
+	/* Stratified over the hemisphere: cos(theta) from the base-2 radical
+	   inverse, azimuth from the golden ratio, which covers the hemisphere
+	   evenly for any count. Uniform cos(theta) is uniform SOLID ANGLE, which is
+	   the measure isotropic in-scatter needs. The per-voxel shift of both keeps
+	   neighbouring voxels from sharing one fixed set of directions, which would
+	   alias against the edge of a hole as structure instead of as fine noise. */
+	uint h = hash_u32(index * 0x9e3779b9u + 0x632be5abu);
+	float shift_z   = float(h & 0xffffu) / 65536.0;
+	float shift_phi = float(h >> 16) / 65536.0;
+
+	int seen = 0;
+	for (int k = 0; k < num_dirs; k++)
+	{
+		float cos_theta = fract(float(bitfieldReverse(uint(k))) * 2.3283064365386963e-10 + shift_z);
+		float phi = 2.0 * M_PI * fract(float(k) * 0.6180339887 + shift_phi);
+		float sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+
+		vec3 dir = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+
+		if (direction_sees_sky(p, dir))
+			seen++;
+	}
+
+	uint exposure = uint(round(float(seen) / float(num_dirs) * 255.0));
+
+	imageStore(IMG_SKY_EXPOSURE, voxel, uvec4(exposure | (clear << 8), 0u, 0u, 0u));
+}

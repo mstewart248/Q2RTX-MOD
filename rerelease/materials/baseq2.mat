@@ -2655,6 +2655,7 @@ textures/e1u1/grass1_4:
 textures/e1u1/grass1_7:
 	texture_base overrides/grass1_7.tga
 	texture_normals overrides/grass1_7_n.tga
+	albedo_strength .2
 	base_factor 2
 	specular_factor 0
 
@@ -3228,16 +3229,19 @@ textures/e1u1/redkeypad:
 textures/e1u1/rocks16_2:
 	texture_base overrides/rocks16_2.tga
 	texture_normals overrides/rocks16_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e1u1/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e1u1/rocks22_1:
 	texture_base overrides/rocks22_1.tga
 	texture_normals overrides/rocks22_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e1u1/rpip2_2:
@@ -4757,6 +4761,7 @@ textures/e1u2/reds1_4:
 textures/e1u2/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e1u2/shooter1:
@@ -5802,6 +5807,7 @@ textures/e1u3/grass1_7:
 	texture_base overrides/grass1_7.tga
 	texture_normals overrides/grass1_7_n.tga
 	base_factor 2
+	albedo_strength .2
 	specular_factor 0
 
 textures/e1u3/grate1_4:
@@ -6297,16 +6303,19 @@ textures/e1u3/reflt3_9:
 textures/e1u3/rocks14_2:
 	texture_base overrides/rocks14_2.tga
 	texture_normals overrides/rocks14_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e1u3/rocks16_1:
 	texture_base overrides/rocks16_1.tga
 	texture_normals overrides/rocks16_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e1u3/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e1u3/rpip2_2:
@@ -7941,43 +7950,51 @@ textures/e2u1/rock6_4:
 textures/e2u1/rocks15_2:
 	texture_base overrides/rocks15_2.tga
 	texture_normals overrides/rocks15_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u1/rocks16_1:
 	texture_base overrides/rocks16_1.tga
 	texture_normals overrides/rocks16_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u1/rocks17_2:
 	texture_base overrides/rocks17_2.tga
 	texture_normals overrides/rocks17_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u1/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u1/rocks21_1:
 	texture_base overrides/rocks21_1.tga
 	texture_normals overrides/rocks21_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u1/rocks22_1:
 	texture_base overrides/rocks22_1.tga
 	texture_normals overrides/rocks22_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u1/rocks23_2:
 	texture_base overrides/rocks23_2.tga
 	texture_normals overrides/rocks23_2_n.tga
 	texture_emissive overrides/rocks23_2_light.tga
+	albedo_strength .3
 	emissive_factor 0.2
 	base_factor 2.5
 
 textures/e2u1/rocks24_2:
 	texture_base overrides/rocks24_2.tga
 	texture_normals overrides/rocks24_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u1/rpip2_1:
@@ -8867,16 +8884,19 @@ textures/e2u2/rock25_1:
 textures/e2u2/rocks15_2:
 	texture_base overrides/rocks15_2.tga
 	texture_normals overrides/rocks15_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u2/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u2/rocks24_1:
 	texture_base overrides/rocks24_1.tga
 	texture_normals overrides/rocks24_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u2/rpip2_2:
@@ -10462,11 +10482,13 @@ textures/e2u3/rock2_1:
 textures/e2u3/rocks17_2:
 	texture_base overrides/rocks17_2.tga
 	texture_normals overrides/rocks17_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u3/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e2u3/rpip2_2:
@@ -11968,16 +11990,19 @@ textures/e3u1/rock0_1:
 textures/e3u1/rocks16_2:
 	texture_base overrides/rocks16_2.tga
 	texture_normals overrides/rocks16_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e3u1/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e3u1/rocks22_1:
 	texture_base overrides/rocks22_1.tga
 	texture_normals overrides/rocks22_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e3u1/shooter2:
@@ -13414,6 +13439,7 @@ textures/e3u3/grocks22_1:
 	texture_base overrides/grocks22_1.tga
 	texture_normals overrides/grocks22_1_n.tga
 	texture_emissive overrides/grocks22_1_light.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e3u3/hbut1_1:
@@ -13704,11 +13730,13 @@ textures/e3u3/reds1_4:
 textures/e3u3/rocks17_2:
 	texture_base overrides/rocks17_2.tga
 	texture_normals overrides/rocks17_2_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e3u3/rocks19_1:
 	texture_base overrides/rocks19_1.tga
 	texture_normals overrides/rocks19_1_n.tga
+	albedo_strength .3
 	base_factor 2.5
 
 textures/e3u3/rpip2_2:

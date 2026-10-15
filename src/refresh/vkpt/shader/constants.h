@@ -283,6 +283,22 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // path_tracer_rgen.h are the complete list, and every other ray path in the tree
 // derives from them.
 #define AS_FLAG_BLOOD           (1 << 6)
+// The static world - BSP model 0's opaque and masked instances only, set as an
+// override where main.c instances them. Always carried TOGETHER with
+// AS_FLAG_OPAQUE, so every existing cull mask still hits the world exactly as
+// before; the bit exists so the sky-exposure bake (sky_exposure_bake.comp) can
+// trace the level while ignoring brush models (doors, the fan), monsters and
+// items, none of which belong in a bake that runs once per map.
+#define AS_FLAG_WORLD_STATIC    (1 << 7)
+
+/* The sky-exposure volume (pt_fog_sky_exposure): a world-space grid over the
+   map's bounds holding how much of the sky each point can see. Allocated at this
+   size; the voxel size is chosen per map so the bounds fit, and only the used
+   part is baked. One packed uint per voxel, so 8 MB. */
+#define SKY_EXPOSURE_DIM_X      160
+#define SKY_EXPOSURE_DIM_Y      160
+#define SKY_EXPOSURE_DIM_Z      80
+#define SKY_EXPOSURE_BAKE_GROUP 64
 
 // Effects TLAS flags
 #define AS_FLAG_EFFECTS         (1 << 0)

@@ -207,6 +207,116 @@ float fog_debug_sky_entered = 0.0;
 float fog_debug_sky_traced  = 0.0;
 float fog_debug_sky_vis  = 0.0;
 
+/* THE SKY-EXPOSURE VOLUME (pt_fog_sky_exposure), baked by sky_exposure_bake.comp.
+   One uint per voxel - see the layout there: the exposure in the low 8 bits, then
+   six 4-bit CLEARANCES, how far the voxel centre can see along -x +x -y +y -z +z
+   (in 15ths of a voxel, up to one voxel). 0 = solid, inside a brush or in the void.
+
+   THE LOOKUP IS A TRILINEAR BLEND OF THE 8 SURROUNDING VOXELS THAT CAN SEE THE
+   SAMPLE POINT, renormalised. A plain trilinear fetch blended across walls: a
+   voxel is ~25 units and a Q2 wall or roof 8-32, so the room under a roof with
+   open sky above it took up to half the outdoor value in a band under the whole
+   ceiling, and every wall bordering the outdoors glowed the same way. A
+   neighbour is dropped when the sample point lies further from it, along any
+   axis, than that voxel's clearance in that direction - i.e. a wall stands
+   between them. Axis by axis is an approximation, but BSP walls are mostly axis
+   aligned. Solid voxels drop out the same way (zero clearance), which also keeps
+   the void beyond the hull, which can see sky faces from behind, out of rooms.
+
+   Returns -1 when the volume cannot answer: not baked yet, switched off, outside
+   the baked box, or no neighbour can see the point (a pocket thinner than a
+   voxel). The caller then falls back to the straight-up ray. */
+layout(set = GOD_RAYS_DESC_SET_IDX, binding = 10, r32ui) uniform readonly uimage3D IMG_SKY_EXPOSURE_READ;
+
+float fog_sky_exposure_lookup(vec3 p)
+{
+	if (global_ubo.sky_exposure_ready == 0 || global_ubo.pt_fog_sky_exposure <= 0.0)
+		return -1.0;
+
+	ivec3 used = ivec3(global_ubo.sky_exposure_dim_x,
+	                   global_ubo.sky_exposure_dim_y,
+	                   global_ubo.sky_exposure_dim_z);
+
+	// voxel-centre coordinates: voxel i's centre is at g == i
+	vec3 g = (p - global_ubo.sky_exposure_origin) / global_ubo.sky_exposure_voxel - vec3(0.5);
+
+	if (any(lessThan(g, vec3(-0.5))) || any(greaterThan(g, vec3(used) - vec3(0.5))))
+		return -1.0;
+
+	ivec3 base = clamp(ivec3(floor(g)), ivec3(0), max(used - ivec3(2), ivec3(0)));
+	vec3 f = clamp(g - vec3(base), vec3(0.0), vec3(1.0));
+
+	float sum = 0.0;
+	float wsum = 0.0;
+
+	for (int k = 0; k < 8; k++)
+	{
+		ivec3 o = ivec3(k & 1, (k >> 1) & 1, k >> 2);
+		ivec3 c = min(base + o, used - ivec3(1));
+
+		vec3 w3 = mix(vec3(1.0) - f, f, vec3(o));
+		float w = w3.x * w3.y * w3.z;
+		if (w <= 0.0)
+			continue;
+
+		uint t = imageLoad(IMG_SKY_EXPOSURE_READ, c).r;
+		uint clear = t >> 8;
+		if (clear == 0u)
+			continue; // solid
+
+		// from this voxel's centre to the sample point, in voxels
+		vec3 d = g - vec3(c);
+
+		bool sees = true;
+		for (int a = 0; a < 3; a++)
+		{
+			uint shift = uint(a * 8 + (d[a] < 0.0 ? 0 : 4));
+			uint q = (clear >> shift) & 15u;
+			if (q < 15u && abs(d[a]) > (float(q) + 0.5) / 15.0)
+				sees = false;
+		}
+		if (!sees)
+			continue;
+
+		sum  += w * (float(t & 255u) / 255.0);
+		wsum += w;
+	}
+
+	if (wsum < 0.02)
+		return -1.0;
+
+	return sum / wsum;
+}
+
+/* What the bake cannot know: MOVING geometry overhead. One ray straight up
+   against everything opaque plus the sky; if the nearest thing above is a brush
+   model, a monster or an item, this point is in its sky shadow. If it is the
+   static world or the sky, the bake already accounts for it. That is what keeps
+   the spinning fan's shadow in the sky fog (fog-sky-moving-shadows).
+
+   Static world = BSP model 0: custom index VERTEX_BUFFER_WORLD with no model
+   instance. Brush models share VERTEX_BUFFER_WORLD but carry one. */
+float fog_sky_dynamic_visibility(vec3 p)
+{
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, FOG_TLAS, gl_RayFlagsOpaqueEXT,
+		AS_FLAG_OPAQUE | AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY,
+		p, 1.0, vec3(0, 0, 1), 65536.0);
+
+	while (rayQueryProceedEXT(rq)) {}
+
+	if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+		return 1.0;
+
+	int instance = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+	int custom   = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+
+	bool static_world = custom == VERTEX_BUFFER_WORLD
+	                 && instance_buffer.tlas_instance_model_indices[instance] < 0;
+
+	return static_world ? 1.0 : 0.0;
+}
+
 /*
 =================
 getSkyVisibility
@@ -238,6 +348,22 @@ float getSkyVisibility(vec3 p)
 	{
 		// fall back to the CPU cluster estimate
 		fog_debug_sky_vis = global_ubo.fog_sky_fade;
+		return fog_debug_sky_vis;
+	}
+
+	/* pt_fog_sky_exposure 1 - HOW MUCH sky this point sees, not WHETHER the one
+	   ray straight up escapes. See fog_sky_exposure_lookup and global_ubo.h. */
+	float exposure = fog_sky_exposure_lookup(p);
+	if (exposure >= 0.0)
+	{
+		exposure = 1.0 - pow(1.0 - exposure, max(global_ubo.pt_fog_sky_exposure_curve, 0.01));
+
+		if (exposure > 0.0 && global_ubo.pt_fog_sky_exposure_dynamic != 0.0)
+			exposure *= fog_sky_dynamic_visibility(p);
+
+		fog_debug_sky_traced = 1.0;
+		fog_debug_sky_path = (exposure > 0.0) ? 2.0 : 3.0;
+		fog_debug_sky_vis = exposure;
 		return fog_debug_sky_vis;
 	}
 
@@ -1256,8 +1382,8 @@ them addable - a neighbour has no way to know the count its source cell used.
    draws from. The split rides on the sky part's short history volume, so it is
    only live while pt_fog_froxel_sky_history is. */
 #define FOG_LIGHTS_ALL      0u
-#define FOG_LIGHTS_STATIC   1u   // the BSP's own lights, brush-entity emissives + the fog-only (lava) list
-#define FOG_LIGHTS_DYNAMIC  2u   // the other model lights: dlights, flashes, flashlight, md2 emissives, beams
+#define FOG_LIGHTS_STATIC   1u   // the BSP's own lights, brush-entity emissives, placed lights + the fog-only (lava) list
+#define FOG_LIGHTS_DYNAMIC  2u   // the other model lights: weapon dlights, flashes, flashlight, md2 emissives, beams
 
 #define FOG_DYN_SPLIT (global_ubo.pt_fog_froxel_dyn_split != 0.0                        && global_ubo.pt_fog_froxel_sky_history > 0.0)
 
@@ -1269,9 +1395,11 @@ them addable - a neighbour has no way to know the count its source cell used.
    list is separate and always static.
 
    Brush-entity emissive surfaces (doors, trains, mgu4m1's crate clamps) are
-   model lights too, but they are fixtures, not flashes: main.c packs them at
-   the front of the model lights and fog_num_bmodel_lights says how many, so
-   they count as static here and stay on the long history. */
+   model lights too, but they are fixtures, not flashes, and so are the
+   dlights placed with the light editor and the dynamic_light entities
+   (dlight_t.fixture): main.c packs them at the front of the model lights and
+   fog_num_bmodel_lights says how many, so they count as static here and stay
+   on the long history. */
 uint fog_light_static_count(uint cluster_idx)
 {
 	uint start = light_buffer.light_list_offsets[cluster_idx];

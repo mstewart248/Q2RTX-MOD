@@ -239,6 +239,26 @@ void V_SetLightVolumetricScale(float scale)
 		? LIGHT_VOLUMETRIC_SCALE_UNSET : scale;
 }
 
+/*
+=====================
+V_MarkLightFixture
+
+Mark the light that was just added as a fixture of the map, not a transient
+one. The froxel fog's split histories (pt_fog_froxel_dyn_split) put dlights on
+the short history so a muzzle flash or rocket does not lag in the fog; a light
+that stays put belongs on the long one with the map's own lights, where it is
+not noisy. Called right after the add, like V_SetLightVolumetricScale, by the
+light editor and the dynamic_light entity code.
+=====================
+*/
+void V_MarkLightFixture(void)
+{
+	if (r_numdlights <= 0)
+		return;
+
+	r_dlights[r_numdlights - 1].fixture = true;
+}
+
 // whether the game's trigger_flashlight state says the light is on
 static bool V_MapFlashlight(void)
 {

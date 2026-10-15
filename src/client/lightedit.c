@@ -2610,6 +2610,9 @@ void LE_AddLightsToScene(void)
         // still on LIGHT_VOLUMETRIC_SCALE_UNSET goes back to the class default,
         // which is exactly what passing the sentinel straight through does.
         V_SetLightVolumetricScale(r.vol_scale);
+
+        // a placed light stays put, so the fog keeps it on the long history
+        V_MarkLightFixture();
     }
 }
 

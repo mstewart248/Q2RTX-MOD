@@ -350,6 +350,7 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/froxel_spatial.comp
 	refresh/vkpt/shader/froxel_scatter.comp
 	refresh/vkpt/shader/froxel_integrate.comp
+	refresh/vkpt/shader/sky_exposure_bake.comp
 	refresh/vkpt/shader/bloom_composite.comp
 	refresh/vkpt/shader/bloom_blur.comp
 	refresh/vkpt/shader/bloom_downscale.comp
