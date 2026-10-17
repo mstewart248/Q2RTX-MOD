@@ -972,6 +972,31 @@ main()
 				projection_view_to_screen((global_ubo.V * vec4(apparent_dir, 0)).xyz, apparent_curr, apparent_dist, false);
 				sky_motion = apparent_prev - apparent_curr;
 			}
+			/* SKY SEEN THROUGH A PANE THAT BENDS THE RAY. "Close to the view ray" above only
+			   holds for a flat pane. Normal-mapped thick glass refracts in through one bumped
+			   face and out through another, so `direction` leaves a few degrees off the view
+			   ray - a different few degrees at every texel, re-sampled under the jitter each
+			   frame - and last frame's projection of it minus THIS PIXEL is that bend, not
+			   motion: 10-50 px of random vector per pixel with a still camera. DLSS-RR then
+			   reprojects history from scattered places and the reflection riding on the pane
+			   comes out as raw 1-spp noise wherever sky is behind it, while geometry behind the
+			   same pane, whose vector projects its hit point through both cameras, stays clean.
+
+			   Do the same for the sky: project `direction` through both cameras. For an unbent
+			   ray this frame's projection IS the jittered pixel position, so flat glass is
+			   unchanged; a still camera now gives exactly zero however much the pane bends.
+			   Unfolded paths only - after a reflection the direction says nothing about where
+			   the pixel sees it, and the old vector is left alone there. The bound doubles as
+			   the finite check, as at the apparent-position guard below. */
+			else if(global_ubo.pt_dlss_sky_refract_mv != 0 && !bounce_folds_path && !path_already_folded)
+			{
+				vec2 through_curr;
+				float through_dist;
+				projection_view_to_screen((global_ubo.V * vec4(direction, 0)).xyz, through_curr, through_dist, false);
+				vec2 through_motion = prev_screen_pos - through_curr;
+				if(all(lessThan(abs(through_motion), vec2(4.0))))
+					sky_motion = through_motion;
+			}
 
 			if(checkerboard_mirror_flag == 0)
 				imageStore(IMG_PT_MOTION, ipos, vec4(sky_motion, 0, 0));

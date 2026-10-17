@@ -194,6 +194,14 @@ void main()
 	uint material_id = floatBitsToUint(position_material.w);
 	int medium = int((material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT);
 
+	// Glass is not a participating medium, and every medium rule below (eccentricity,
+	// extinction, the pt_water_density in-scatter boost) is written for water, slime
+	// and lava. A two-sided single-plane window under pt_thick_glass 2 never lets the
+	// ray re-exit, so the whole leg out to the sky arrives flagged MEDIUM_GLASS and
+	// was marched as water. pt_fog_through_glass - see global_ubo.h.
+	if (medium == MEDIUM_GLASS && global_ubo.pt_fog_through_glass != 0.0)
+		medium = MEDIUM_NONE;
+
 	vec3 direction = texelFetch(TEX_PT_VIEW_DIRECTION, sourcePixelPos.xy, 0).xyz;
 
 	// The light set for this ray. Written by the primary ray pass, which runs

@@ -107,6 +107,21 @@ textures/e2u3/baselt_red:
 	is_light 1
 	metalness_factor 0
 
+# e2u3/baselt_ltblu - same treatment as baselt_red above. _light.png is the base colour
+# masked by the rerelease baselt_ltblu_glow.png alpha (copied alongside as _glow.png);
+# replace it with a real light map if wanted. Only mgu5m2 flags it SURF_LIGHT (radiance
+# 300); rhangar1 and rsewer2 use it with flags 0, and default_radiance 0 keeps those
+# faces dark as before (with the engine default of 1 they would turn into lights).
+# Kept outside the generated block: materialdev_export.py rewrites that block wholesale.
+textures/e2u3/baselt_ltblu:
+	texture_base materialDev/textures/e2u3/baselt_ltblu.tga
+	texture_normals materialDev/textures/e2u3/baselt_ltblu_n.tga
+	texture_emissive materialDev/textures/e2u3/baselt_ltblu_light.png
+	emissive_factor 1.0
+	default_radiance 0
+	is_light 1
+	metalness_factor 0
+
 # e1u1/baslt3_4 is a BSP surface light too - same treatment as baselt_red above.
 # _light.png is the base colour masked by the rerelease baslt3_4_glow.png (copied
 # alongside as _glow.png); replace it with a real light map if wanted.
@@ -119,6 +134,22 @@ textures/e1u1/baslt3_4:
 	default_radiance 1
 	is_light 1
 	metalness_factor 0
+
+# e1u1/baslt3_2 - same treatment as baselt_red above. _light.png is the base colour
+# masked by the rerelease baslt3_2_glow.png alpha (copied alongside as _glow.png);
+# replace it with a real light map if wanted. power1, q2ctf1, q2ctf2, xdm4 and xhangar1
+# flag it SURF_LIGHT (radiance 1000-10000); mgu5m2 uses it on 4 faces with flags 0, and
+# default_radiance 0 keeps those dark as before (with the engine default of 1 they
+# would turn into lights).
+# Kept outside the generated block: materialdev_export.py rewrites that block wholesale.
+textures/e1u1/baslt3_2:
+	texture_base materialDev/textures/e1u1/baslt3_2.tga
+	texture_normals materialDev/textures/e1u1/baslt3_2_n.tga
+	texture_emissive materialDev/textures/e1u1/baslt3_2_lightb.png
+	emissive_factor 1.0
+	default_radiance .5
+	is_light 1
+	metalness_factor 1
 
 # e1u1/wndow1_5 is flagged two ways in the shipped maps:
 #   mgu2m2, mgu2m3, rdm7  flags 0x1 (SURF_LIGHT), radiance 260-2500 - an opaque light panel.
@@ -1583,6 +1614,7 @@ textures/e1u1/+1cgrate7_1:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
+# (Superseded: live entry with texture_emissive + is_light sits above this block.)
 # textures/e1u1/baslt3_2:
 # 	texture_base materialDev/textures/e1u1/baslt3_2.tga
 # 	texture_normals materialDev/textures/e1u1/baslt3_2_n.tga
@@ -10450,6 +10482,7 @@ textures/e2u2/rock1_2:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
+# (Superseded: live entry with texture_emissive + is_light sits above this block.)
 # textures/e2u3/baselt_ltblu:
 # 	texture_base materialDev/textures/e2u3/baselt_ltblu.tga
 # 	texture_normals materialDev/textures/e2u3/baselt_ltblu_n.tga
@@ -12195,7 +12228,11 @@ textures/e3u2/hall04_2:
 textures/e3u3/grate1_6:
 	texture_base materialDev/textures/e3u3/grate1_6.tga
 	texture_normals materialDev/textures/e3u3/grate1_6_n.tga
-	metalness_factor 0
+	texture_metallic materialDev/textures/e3u3/grate1_6_metal.png
+	texture_roughness materialDev/textures/e3u3/grate1_6_rough.png
+	texture_height materialDev/textures/e3u3/grate1_6_height.png
+	displace_in .03
+	displace_out .00
 
 # Commented out - stock Q2RTX already ships a high-res override for this texture in
 # q2rtx_media.pkz (overrides/<basename>.tga and/or _n.tga). The automatic MAT_Find
@@ -19276,8 +19313,9 @@ textures/tomf/fmet2_3b:
 
 textures/tomf/fuse1_3b:
 	texture_base materialDev/textures/tomf/fuse1_3b.tga
-	texture_normals materialDev/textures/tomf/fuse1_3b_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/fuse1_3b_n.png
+	texture_metallic materialDev/textures/tomf/fuse1_3b_metal.png
+	texture_roughness materialDev/textures/tomf/fuse1_3b_rough.png
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
@@ -19420,9 +19458,10 @@ textures/tomf/metal1_2c:
 
 textures/tomf/metal2_2b:
 	texture_base materialDev/textures/tomf/metal2_2b.tga
-	texture_normals materialDev/textures/tomf/metal2_2b_n.tga
-	metalness_factor 0
-
+	texture_normals materialDev/textures/tomf/metal2_2b_n.png
+	texture_roughness materialDev/textures/tomf/metal2_2b_rough.png
+	bump_scale .5
+	
 textures/tomf/metal2_2c:
 	texture_base materialDev/textures/tomf/metal2_2c.tga
 	texture_normals materialDev/textures/tomf/metal2_2c_n.tga
@@ -19431,7 +19470,9 @@ textures/tomf/metal2_2c:
 textures/tomf/metal2_2d:
 	texture_base materialDev/textures/tomf/metal2_2d.tga
 	texture_normals materialDev/textures/tomf/metal2_2d_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/textures/tomf/metal2_2d_rough.png
+	texture_metallic materialDev/textures/tomf/metal2_2d_metal.png
+	bump_scale .5
 
 textures/tomf/metal2_2e:
 	texture_base materialDev/textures/tomf/metal2_2e.tga
@@ -19448,7 +19489,9 @@ textures/tomf/metal2_2f:
 textures/tomf/metal2_2h:
 	texture_base materialDev/textures/tomf/metal2_2h.tga
 	texture_normals materialDev/textures/tomf/metal2_2h_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/textures/tomf/metal2_2h_rough.png
+	texture_metallic materialDev/textures/tomf/metal2_2h_metal.png
+	bump_scale .5
 
 # Commented out - stock Q2RTX already ships a high-res override for this texture in
 # q2rtx_media.pkz (overrides/<basename>.tga and/or _n.tga). The automatic MAT_Find
@@ -19478,7 +19521,8 @@ textures/tomf/metal36_dr1:
 textures/tomf/metl5b_3b:
 	texture_base materialDev/textures/tomf/metl5b_3b.tga
 	texture_normals materialDev/textures/tomf/metl5b_3b_n.tga
-	metalness_factor 0
+	texture_metallic materialDev/textures/tomf/metl5b_3b_metal.png
+	texture_roughness materialDev/textures/tomf/metl5b_3b_rough.png
 
 textures/tomf/metl5b_3c:
 	texture_base materialDev/textures/tomf/metl5b_3c.tga
@@ -21078,7 +21122,8 @@ textures/tomf/thinm_st1a:
 textures/tomf/thinm_st1b:
 	texture_base materialDev/textures/tomf/thinm_st1b.tga
 	texture_normals materialDev/textures/tomf/thinm_st1b_n.tga
-	metalness_factor 0
+	texture_metallic materialDev/textures/tomf/thinm_st1b_metal.png
+	texture_roughness materialDev/textures/tomf/thinm_st1b_rough.png
 
 # Commented out - stock Q2RTX already ships a high-res override for this texture in
 # q2rtx_media.pkz (overrides/<basename>.tga and/or _n.tga). The automatic MAT_Find
@@ -25303,3 +25348,794 @@ models/objects/gibs/sm_metal/skin:
 	emissive_factor 0.1
 	base_factor 2.5
 	specular_factor 0
+
+# --- Monster gib skins (added by hand, AFTER the generated block) ---
+# Every skin named by rerelease/models/monsters/*/gibs/*.md2 - both skins of each
+# gib (chest.pcx and chest2.pcx etc.; the second is the one a GIB_SKINNED gib
+# takes when its monster died wearing its pain skin). No .mat claimed any of
+# them, so before this they rendered with engine defaults; these entries keep
+# that look until the TGAs are painted: base_factor 1, specular_factor 1 as
+# defaults, and the TGAs are palette dumps of the .pcx (alpha 255 = fully
+# rough), _n.tga flat with alpha 0 (metalness 0). Paint the TGAs, add a
+# texture_emissive / base_factor / roughness map as needed, reload_textures.
+# The monster's own skin entry (e.g. models/monsters/gladiatr/skin in
+# baseq2.mat, base_factor 1.5) is the reference for matching a gib to its body.
+
+models/monsters/berserk/gibs/chest:
+	texture_base materialDev/models/monsters/berserk/gibs/chest.tga
+	texture_normals materialDev/models/monsters/berserk/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/berserk/gibs/hammer:
+	texture_base materialDev/models/monsters/berserk/gibs/hammer.tga
+	texture_normals materialDev/models/monsters/berserk/gibs/hammer_n.tga
+	metalness_factor 0
+
+models/monsters/berserk/gibs/head:
+	texture_base materialDev/models/monsters/berserk/gibs/head.tga
+	texture_normals materialDev/models/monsters/berserk/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/berserk/gibs/thigh:
+	texture_base materialDev/models/monsters/berserk/gibs/thigh.tga
+	texture_normals materialDev/models/monsters/berserk/gibs/thigh_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/arm:
+	texture_base materialDev/models/monsters/bitch/gibs/arm.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/arm_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/arm_bi:
+	texture_base materialDev/models/monsters/bitch/gibs/arm_bi.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/arm_bi_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/chest:
+	texture_base materialDev/models/monsters/bitch/gibs/chest.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/chest_bi:
+	texture_base materialDev/models/monsters/bitch/gibs/chest_bi.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/chest_bi_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/foot:
+	texture_base materialDev/models/monsters/bitch/gibs/foot.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/foot_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/foot_bi:
+	texture_base materialDev/models/monsters/bitch/gibs/foot_bi.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/foot_bi_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/head:
+	texture_base materialDev/models/monsters/bitch/gibs/head.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/head_bi:
+	texture_base materialDev/models/monsters/bitch/gibs/head_bi.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/head_bi_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/tube:
+	texture_base materialDev/models/monsters/bitch/gibs/tube.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/tube_n.tga
+	metalness_factor 0
+
+models/monsters/bitch/gibs/tube_bi:
+	texture_base materialDev/models/monsters/bitch/gibs/tube_bi.tga
+	texture_normals materialDev/models/monsters/bitch/gibs/tube_bi_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/cgun:
+	texture_base materialDev/models/monsters/boss1/gibs/cgun.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/cgun_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/cgun2:
+	texture_base materialDev/models/monsters/boss1/gibs/cgun2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/cgun2_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/chest:
+	texture_base materialDev/models/monsters/boss1/gibs/chest.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/chest2:
+	texture_base materialDev/models/monsters/boss1/gibs/chest2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/chest2_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/core:
+	texture_base materialDev/models/monsters/boss1/gibs/core.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/core_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/core2:
+	texture_base materialDev/models/monsters/boss1/gibs/core2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/core2_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/head:
+	texture_base materialDev/models/monsters/boss1/gibs/head.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/head2:
+	texture_base materialDev/models/monsters/boss1/gibs/head2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/head2_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/ltread:
+	texture_base materialDev/models/monsters/boss1/gibs/ltread.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/ltread_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/ltread2:
+	texture_base materialDev/models/monsters/boss1/gibs/ltread2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/ltread2_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/rgun:
+	texture_base materialDev/models/monsters/boss1/gibs/rgun.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/rgun_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/rgun2:
+	texture_base materialDev/models/monsters/boss1/gibs/rgun2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/rgun2_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/rtread:
+	texture_base materialDev/models/monsters/boss1/gibs/rtread.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/rtread_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/rtread2:
+	texture_base materialDev/models/monsters/boss1/gibs/rtread2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/rtread2_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/tube:
+	texture_base materialDev/models/monsters/boss1/gibs/tube.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/tube_n.tga
+	metalness_factor 0
+
+models/monsters/boss1/gibs/tube2:
+	texture_base materialDev/models/monsters/boss1/gibs/tube2.tga
+	texture_normals materialDev/models/monsters/boss1/gibs/tube2_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/chaingun:
+	texture_base materialDev/models/monsters/boss2/gibs/chaingun.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/chaingun_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/chest:
+	texture_base materialDev/models/monsters/boss2/gibs/chest.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/cpu:
+	texture_base materialDev/models/monsters/boss2/gibs/cpu.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/cpu_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/engine:
+	texture_base materialDev/models/monsters/boss2/gibs/engine.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/engine_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/head:
+	texture_base materialDev/models/monsters/boss2/gibs/head.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/larm:
+	texture_base materialDev/models/monsters/boss2/gibs/larm.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/larm_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/rarm:
+	texture_base materialDev/models/monsters/boss2/gibs/rarm.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/rarm_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/rocket:
+	texture_base materialDev/models/monsters/boss2/gibs/rocket.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/rocket_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/spine:
+	texture_base materialDev/models/monsters/boss2/gibs/spine.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/spine_n.tga
+	metalness_factor 0
+
+models/monsters/boss2/gibs/wing:
+	texture_base materialDev/models/monsters/boss2/gibs/wing.tga
+	texture_normals materialDev/models/monsters/boss2/gibs/wing_n.tga
+	metalness_factor 0
+
+models/monsters/brain/gibs/arm:
+	texture_base materialDev/models/monsters/brain/gibs/arm.tga
+	texture_normals materialDev/models/monsters/brain/gibs/arm_n.tga
+	metalness_factor 0
+
+models/monsters/brain/gibs/boot:
+	texture_base materialDev/models/monsters/brain/gibs/boot.tga
+	texture_normals materialDev/models/monsters/brain/gibs/boot_n.tga
+	metalness_factor 0
+
+models/monsters/brain/gibs/chest:
+	texture_base materialDev/models/monsters/brain/gibs/chest.tga
+	texture_normals materialDev/models/monsters/brain/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/brain/gibs/door:
+	texture_base materialDev/models/monsters/brain/gibs/door.tga
+	texture_normals materialDev/models/monsters/brain/gibs/door_n.tga
+	metalness_factor 0
+
+models/monsters/brain/gibs/head:
+	texture_base materialDev/models/monsters/brain/gibs/head.tga
+	texture_normals materialDev/models/monsters/brain/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/brain/gibs/pelvis:
+	texture_base materialDev/models/monsters/brain/gibs/pelvis.tga
+	texture_normals materialDev/models/monsters/brain/gibs/pelvis_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/base:
+	texture_base materialDev/models/monsters/carrier/gibs/base.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/base_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/chest:
+	texture_base materialDev/models/monsters/carrier/gibs/chest.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/gl:
+	texture_base materialDev/models/monsters/carrier/gibs/gl.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/gl_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/head:
+	texture_base materialDev/models/monsters/carrier/gibs/head.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/lcg:
+	texture_base materialDev/models/monsters/carrier/gibs/lcg.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/lcg_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/lwing:
+	texture_base materialDev/models/monsters/carrier/gibs/lwing.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/lwing_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/rcg:
+	texture_base materialDev/models/monsters/carrier/gibs/rcg.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/rcg_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/rwing:
+	texture_base materialDev/models/monsters/carrier/gibs/rwing.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/rwing_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/spawner:
+	texture_base materialDev/models/monsters/carrier/gibs/spawner.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/spawner_n.tga
+	metalness_factor 0
+
+models/monsters/carrier/gibs/thigh:
+	texture_base materialDev/models/monsters/carrier/gibs/thigh.tga
+	texture_normals materialDev/models/monsters/carrier/gibs/thigh_n.tga
+	metalness_factor 0
+
+models/monsters/float/gibs/base:
+	texture_base materialDev/models/monsters/float/gibs/base.tga
+	texture_normals materialDev/models/monsters/float/gibs/base_n.tga
+	metalness_factor 0
+
+models/monsters/float/gibs/gun:
+	texture_base materialDev/models/monsters/float/gibs/gun.tga
+	texture_normals materialDev/models/monsters/float/gibs/gun_n.tga
+	metalness_factor 0
+
+models/monsters/float/gibs/jar:
+	texture_base materialDev/models/monsters/float/gibs/jar.tga
+	texture_normals materialDev/models/monsters/float/gibs/jar_n.tga
+	metalness_factor 0
+
+models/monsters/float/gibs/piece:
+	texture_base materialDev/models/monsters/float/gibs/piece.tga
+	texture_normals materialDev/models/monsters/float/gibs/piece_n.tga
+	metalness_factor 0
+
+models/monsters/flyer/gibs/base:
+	texture_base materialDev/models/monsters/flyer/gibs/base.tga
+	texture_normals materialDev/models/monsters/flyer/gibs/base_n.tga
+	metalness_factor 0
+
+models/monsters/flyer/gibs/gun:
+	texture_base materialDev/models/monsters/flyer/gibs/gun.tga
+	texture_normals materialDev/models/monsters/flyer/gibs/gun_n.tga
+	metalness_factor 0
+
+models/monsters/flyer/gibs/head:
+	texture_base materialDev/models/monsters/flyer/gibs/head.tga
+	texture_normals materialDev/models/monsters/flyer/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/flyer/gibs/wing:
+	texture_base materialDev/models/monsters/flyer/gibs/wing.tga
+	texture_normals materialDev/models/monsters/flyer/gibs/wing_n.tga
+	metalness_factor 0
+
+models/monsters/gladiatr/gibs/chest:
+	texture_base materialDev/models/monsters/gladiatr/gibs/chest.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/chest_n.tga
+	texture_metallic materialDev/models/monsters/gladiatr/gibs/chest_metal.png
+	texture_roughness materialDev/models/monsters/gladiatr/gibs/chest_rough.png
+
+models/monsters/gladiatr/gibs/chest2:
+	texture_base materialDev/models/monsters/gladiatr/gibs/chest2.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/chest2_n.tga
+	metalness_factor 0
+
+models/monsters/gladiatr/gibs/head:
+	texture_base materialDev/models/monsters/gladiatr/gibs/head.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/gladiatr/gibs/head2:
+	texture_base materialDev/models/monsters/gladiatr/gibs/head2.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/head2_n.tga
+	metalness_factor 0
+
+models/monsters/gladiatr/gibs/larm:
+	texture_base materialDev/models/monsters/gladiatr/gibs/larm.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/larm_n.tga
+	metalness_factor 0
+
+models/monsters/gladiatr/gibs/larm2:
+	texture_base materialDev/models/monsters/gladiatr/gibs/larm2.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/larm2_n.tga
+	metalness_factor 0
+
+models/monsters/gladiatr/gibs/rarm:
+	texture_base materialDev/models/monsters/gladiatr/gibs/rarm.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/rarm_n.tga
+	texture_metallic materialDev/models/monsters/gladiatr/gibs/rarm_metal.png
+	texture_roughness materialDev/models/monsters/gladiatr/gibs/rarm_rough.png
+
+models/monsters/gladiatr/gibs/rarm2:
+	texture_base materialDev/models/monsters/gladiatr/gibs/rarm2.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/rarm2_n.tga
+	metalness_factor 0
+
+models/monsters/gladiatr/gibs/thigh:
+	texture_base materialDev/models/monsters/gladiatr/gibs/thigh.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/thigh_n.tga
+	texture_metallic materialDev/models/monsters/gladiatr/gibs/thigh_metal.png
+	texture_roughness materialDev/models/monsters/gladiatr/gibs/thigh_rough.png
+
+models/monsters/gladiatr/gibs/thigh2:
+	texture_base materialDev/models/monsters/gladiatr/gibs/thigh2.tga
+	texture_normals materialDev/models/monsters/gladiatr/gibs/thigh2_n.tga
+	texture_metallic materialDev/models/monsters/gladiatr/gibs/thigh2_metal.png
+	
+models/monsters/gunner/gibs/cchest:
+	texture_base materialDev/models/monsters/gunner/gibs/cchest.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/cchest_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/cfoot:
+	texture_base materialDev/models/monsters/gunner/gibs/cfoot.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/cfoot_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/cgarm:
+	texture_base materialDev/models/monsters/gunner/gibs/cgarm.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/cgarm_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/cgun:
+	texture_base materialDev/models/monsters/gunner/gibs/cgun.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/cgun_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/chead:
+	texture_base materialDev/models/monsters/gunner/gibs/chead.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/chead_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/chest:
+	texture_base materialDev/models/monsters/gunner/gibs/chest.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/foot:
+	texture_base materialDev/models/monsters/gunner/gibs/foot.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/foot_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/garm:
+	texture_base materialDev/models/monsters/gunner/gibs/garm.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/garm_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/gun:
+	texture_base materialDev/models/monsters/gunner/gibs/gun.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/gun_n.tga
+	metalness_factor 0
+
+models/monsters/gunner/gibs/head:
+	texture_base materialDev/models/monsters/gunner/gibs/head.tga
+	texture_normals materialDev/models/monsters/gunner/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/chest:
+	texture_base materialDev/models/monsters/hover/gibs/chest.tga
+	texture_normals materialDev/models/monsters/hover/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/chestr:
+	texture_base materialDev/models/monsters/hover/gibs/chestr.tga
+	texture_normals materialDev/models/monsters/hover/gibs/chestr_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/foot:
+	texture_base materialDev/models/monsters/hover/gibs/foot.tga
+	texture_normals materialDev/models/monsters/hover/gibs/foot_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/footr:
+	texture_base materialDev/models/monsters/hover/gibs/footr.tga
+	texture_normals materialDev/models/monsters/hover/gibs/footr_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/head:
+	texture_base materialDev/models/monsters/hover/gibs/head.tga
+	texture_normals materialDev/models/monsters/hover/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/headr:
+	texture_base materialDev/models/monsters/hover/gibs/headr.tga
+	texture_normals materialDev/models/monsters/hover/gibs/headr_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/ring:
+	texture_base materialDev/models/monsters/hover/gibs/ring.tga
+	texture_normals materialDev/models/monsters/hover/gibs/ring_n.tga
+	metalness_factor 0
+
+models/monsters/hover/gibs/ringr:
+	texture_base materialDev/models/monsters/hover/gibs/ringr.tga
+	texture_normals materialDev/models/monsters/hover/gibs/ringr_n.tga
+	metalness_factor 0
+
+models/monsters/infantry/gibs/arm:
+	texture_base materialDev/models/monsters/infantry/gibs/arm.tga
+	texture_normals materialDev/models/monsters/infantry/gibs/arm_n.tga
+	metalness_factor 0
+
+models/monsters/infantry/gibs/chest:
+	texture_base materialDev/models/monsters/infantry/gibs/chest.tga
+	texture_normals materialDev/models/monsters/infantry/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/infantry/gibs/foot:
+	texture_base materialDev/models/monsters/infantry/gibs/foot.tga
+	texture_normals materialDev/models/monsters/infantry/gibs/foot_n.tga
+	metalness_factor 0
+
+models/monsters/infantry/gibs/gun:
+	texture_base materialDev/models/monsters/infantry/gibs/gun.tga
+	texture_normals materialDev/models/monsters/infantry/gibs/gun_n.tga
+	metalness_factor 0
+
+models/monsters/infantry/gibs/head:
+	texture_base materialDev/models/monsters/infantry/gibs/head.tga
+	texture_normals materialDev/models/monsters/infantry/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/chest:
+	texture_base materialDev/models/monsters/medic/gibs/chest.tga
+	texture_normals materialDev/models/monsters/medic/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/chestr:
+	texture_base materialDev/models/monsters/medic/gibs/chestr.tga
+	texture_normals materialDev/models/monsters/medic/gibs/chestr_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/gun:
+	texture_base materialDev/models/monsters/medic/gibs/gun.tga
+	texture_normals materialDev/models/monsters/medic/gibs/gun_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/gunr:
+	texture_base materialDev/models/monsters/medic/gibs/gunr.tga
+	texture_normals materialDev/models/monsters/medic/gibs/gunr_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/head:
+	texture_base materialDev/models/monsters/medic/gibs/head.tga
+	texture_normals materialDev/models/monsters/medic/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/headr:
+	texture_base materialDev/models/monsters/medic/gibs/headr.tga
+	texture_normals materialDev/models/monsters/medic/gibs/headr_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/hook:
+	texture_base materialDev/models/monsters/medic/gibs/hook.tga
+	texture_normals materialDev/models/monsters/medic/gibs/hook_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/hookr:
+	texture_base materialDev/models/monsters/medic/gibs/hookr.tga
+	texture_normals materialDev/models/monsters/medic/gibs/hookr_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/leg:
+	texture_base materialDev/models/monsters/medic/gibs/leg.tga
+	texture_normals materialDev/models/monsters/medic/gibs/leg_n.tga
+	metalness_factor 0
+
+models/monsters/medic/gibs/legr:
+	texture_base materialDev/models/monsters/medic/gibs/legr.tga
+	texture_normals materialDev/models/monsters/medic/gibs/legr_n.tga
+	metalness_factor 0
+
+models/monsters/mutant/gibs/chest:
+	texture_base materialDev/models/monsters/mutant/gibs/chest.tga
+	texture_normals materialDev/models/monsters/mutant/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/mutant/gibs/foot:
+	texture_base materialDev/models/monsters/mutant/gibs/foot.tga
+	texture_normals materialDev/models/monsters/mutant/gibs/foot_n.tga
+	metalness_factor 0
+
+models/monsters/mutant/gibs/hand:
+	texture_base materialDev/models/monsters/mutant/gibs/hand.tga
+	texture_normals materialDev/models/monsters/mutant/gibs/hand_n.tga
+	metalness_factor 0
+
+models/monsters/mutant/gibs/head:
+	texture_base materialDev/models/monsters/mutant/gibs/head.tga
+	texture_normals materialDev/models/monsters/mutant/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/parasite/gibs/bleg:
+	texture_base materialDev/models/monsters/parasite/gibs/bleg.tga
+	texture_normals materialDev/models/monsters/parasite/gibs/bleg_n.tga
+	metalness_factor 0
+
+models/monsters/parasite/gibs/chest:
+	texture_base materialDev/models/monsters/parasite/gibs/chest.tga
+	texture_normals materialDev/models/monsters/parasite/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/parasite/gibs/fleg:
+	texture_base materialDev/models/monsters/parasite/gibs/fleg.tga
+	texture_normals materialDev/models/monsters/parasite/gibs/fleg_n.tga
+	metalness_factor 0
+
+models/monsters/parasite/gibs/head:
+	texture_base materialDev/models/monsters/parasite/gibs/head.tga
+	texture_normals materialDev/models/monsters/parasite/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/arm:
+	texture_base materialDev/models/monsters/soldier/gibs/arm.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/arm_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/arm_lt:
+	texture_base materialDev/models/monsters/soldier/gibs/arm_lt.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/arm_lt_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/arm_sold01:
+	texture_base materialDev/models/monsters/soldier/gibs/arm_sold01.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/arm_sold01_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/arm_sold02:
+	texture_base materialDev/models/monsters/soldier/gibs/arm_sold02.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/arm_sold02_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/arm_sold03:
+	texture_base materialDev/models/monsters/soldier/gibs/arm_sold03.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/arm_sold03_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/arm_ss:
+	texture_base materialDev/models/monsters/soldier/gibs/arm_ss.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/arm_ss_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/chest:
+	texture_base materialDev/models/monsters/soldier/gibs/chest.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/chest_lt:
+	texture_base materialDev/models/monsters/soldier/gibs/chest_lt.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/chest_lt_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/chest_sold01:
+	texture_base materialDev/models/monsters/soldier/gibs/chest_sold01.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/chest_sold01_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/chest_sold02:
+	texture_base materialDev/models/monsters/soldier/gibs/chest_sold02.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/chest_sold02_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/chest_sold03:
+	texture_base materialDev/models/monsters/soldier/gibs/chest_sold03.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/chest_sold03_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/chest_ss:
+	texture_base materialDev/models/monsters/soldier/gibs/chest_ss.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/chest_ss_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/gun:
+	texture_base materialDev/models/monsters/soldier/gibs/gun.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/gun_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/gun_lt:
+	texture_base materialDev/models/monsters/soldier/gibs/gun_lt.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/gun_lt_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/gun_sold01:
+	texture_base materialDev/models/monsters/soldier/gibs/gun_sold01.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/gun_sold01_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/gun_sold02:
+	texture_base materialDev/models/monsters/soldier/gibs/gun_sold02.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/gun_sold02_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/gun_sold03:
+	texture_base materialDev/models/monsters/soldier/gibs/gun_sold03.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/gun_sold03_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/gun_ss:
+	texture_base materialDev/models/monsters/soldier/gibs/gun_ss.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/gun_ss_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/head:
+	texture_base materialDev/models/monsters/soldier/gibs/head.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/head_lt:
+	texture_base materialDev/models/monsters/soldier/gibs/head_lt.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/head_lt_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/head_sold01:
+	texture_base materialDev/models/monsters/soldier/gibs/head_sold01.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/head_sold01_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/head_sold02:
+	texture_base materialDev/models/monsters/soldier/gibs/head_sold02.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/head_sold02_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/head_sold03:
+	texture_base materialDev/models/monsters/soldier/gibs/head_sold03.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/head_sold03_n.tga
+	metalness_factor 0
+
+models/monsters/soldier/gibs/head_ss:
+	texture_base materialDev/models/monsters/soldier/gibs/head_ss.tga
+	texture_normals materialDev/models/monsters/soldier/gibs/head_ss_n.tga
+	metalness_factor 0
+
+models/monsters/stalker/gibs/bodya:
+	texture_base materialDev/models/monsters/stalker/gibs/bodya.tga
+	texture_normals materialDev/models/monsters/stalker/gibs/bodya_n.tga
+	metalness_factor 0
+
+models/monsters/stalker/gibs/bodyb:
+	texture_base materialDev/models/monsters/stalker/gibs/bodyb.tga
+	texture_normals materialDev/models/monsters/stalker/gibs/bodyb_n.tga
+	metalness_factor 0
+
+models/monsters/stalker/gibs/claw:
+	texture_base materialDev/models/monsters/stalker/gibs/claw.tga
+	texture_normals materialDev/models/monsters/stalker/gibs/claw_n.tga
+	metalness_factor 0
+
+models/monsters/stalker/gibs/foot:
+	texture_base materialDev/models/monsters/stalker/gibs/foot.tga
+	texture_normals materialDev/models/monsters/stalker/gibs/foot_n.tga
+	metalness_factor 0
+
+models/monsters/stalker/gibs/head:
+	texture_base materialDev/models/monsters/stalker/gibs/head.tga
+	texture_normals materialDev/models/monsters/stalker/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/stalker/gibs/leg:
+	texture_base materialDev/models/monsters/stalker/gibs/leg.tga
+	texture_normals materialDev/models/monsters/stalker/gibs/leg_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/barm:
+	texture_base materialDev/models/monsters/tank/gibs/barm.tga
+	texture_normals materialDev/models/monsters/tank/gibs/barm_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/barm_c:
+	texture_base materialDev/models/monsters/tank/gibs/barm_c.tga
+	texture_normals materialDev/models/monsters/tank/gibs/barm_c_n.tga
+	texture_metallic materialDev/models/monsters/tank/gibs/barm_c_metal.png
+	texture_roughness materialDev/models/monsters/tank/gibs/barm_c_rough.png
+
+models/monsters/tank/gibs/chest:
+	texture_base materialDev/models/monsters/tank/gibs/chest.tga
+	texture_normals materialDev/models/monsters/tank/gibs/chest_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/chest_c:
+	texture_base materialDev/models/monsters/tank/gibs/chest_c.tga
+	texture_normals materialDev/models/monsters/tank/gibs/chest_c_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/foot:
+	texture_base materialDev/models/monsters/tank/gibs/foot.tga
+	texture_normals materialDev/models/monsters/tank/gibs/foot_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/foot_c:
+	texture_base materialDev/models/monsters/tank/gibs/foot_c.tga
+	texture_normals materialDev/models/monsters/tank/gibs/foot_c_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/head:
+	texture_base materialDev/models/monsters/tank/gibs/head.tga
+	texture_normals materialDev/models/monsters/tank/gibs/head_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/head_c:
+	texture_base materialDev/models/monsters/tank/gibs/head_c.tga
+	texture_normals materialDev/models/monsters/tank/gibs/head_c_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/thigh:
+	texture_base materialDev/models/monsters/tank/gibs/thigh.tga
+	texture_normals materialDev/models/monsters/tank/gibs/thigh_n.tga
+	metalness_factor 0
+
+models/monsters/tank/gibs/thigh_c:
+	texture_base materialDev/models/monsters/tank/gibs/thigh_c.tga
+	texture_normals materialDev/models/monsters/tank/gibs/thigh_c_n.tga
+	metalness_factor 0

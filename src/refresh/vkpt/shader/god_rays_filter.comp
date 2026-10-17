@@ -219,6 +219,30 @@ void main()
 	bool is_reflection = raw_view_depth < 0.0;
 	int  reflect_mode  = int(global_ubo.pt_fog_froxel_reflect);
 
+	/* NOT EVERY NEGATIVE DEPTH IS A MIRROR. reflect_refract.rgen marks refractions
+	   the same way, and everything above is about reflections: a refracted path
+	   carries straight on through the pane, roughly along this pixel's own camera
+	   ray, so it stays inside the frustum and the grid CAN answer for it. Stopping
+	   it at the pane is why no grid fog - the sky light, the local lights - was
+	   ever seen through a window in gameplay, while photo mode, whose march runs
+	   the refracted leg as pass 1, showed it.
+
+	   A path is see-through when no bounce has folded it (CHECKERBOARD_FLAG_MIRRORED,
+	   raised by reflections, chrome, cameras and total internal reflection) and it
+	   did not end up inside water, slime or lava, whose medium the march models and
+	   the air grid must not paint over. MEDIUM_GLASS counts as air: the rerelease
+	   windows are single two-sided planes, so a pt_thick_glass 2 ray never re-exits
+	   them and carries the glass flag on out to the sky. pt_fog_through_glass. */
+	bool see_through = false;
+	if (is_reflection && global_ubo.pt_fog_through_glass != 0.0)
+	{
+		int path_flags = int(texelFetch(TEX_PT_VIEW_DIRECTION, i_position.xy, 0).w);
+		uint path_material = floatBitsToUint(texelFetch(TEX_PT_SHADING_POSITION, i_position.xy, 0).w);
+		int path_medium = int((path_material & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT);
+		see_through = (path_flags & CHECKERBOARD_FLAG_MIRRORED) == 0
+			&& (path_medium == MEDIUM_NONE || path_medium == MEDIUM_GLASS);
+	}
+
 	// mode 1 is the only one that declines the grid and keeps the marched result
 	bool froxel_pixel = !is_reflection || reflect_mode != 1;
 
@@ -268,6 +292,22 @@ void main()
 		               / vec2(float(field_width), float(global_ubo.height));
 
 		vec4 grid = sample_froxel(screen_uv, view_depth);
+
+		/* Through the pane: the column to the pane once, plus the stretch beyond it
+		   scaled by this layer's throughput - (1 - F) and the glass tint for the
+		   refraction field - which is how the march's pass 1 weights the same leg.
+		   The integrated volume is cumulative from the eye, so the stretch beyond is
+		   a difference of two lookups down the same screen position; abs() of the
+		   negative depth is the radial distance to the refracted hit, PRIMARY_RAY_T_MAX
+		   for sky. A bent ray is read down the unbent column - the grid holds nothing
+		   else - which is a small error next to having no fog there at all. */
+		if (see_through && reflect_mode == 0)
+		{
+			vec4 beyond = sample_froxel(screen_uv, abs(raw_view_depth));
+			vec3 layer_throughput = texelFetch(TEX_PT_GODRAYS_THROUGHPUT_DIST, i_position.xy, 0).rgb;
+			grid.rgb += layer_throughput * max(beyond.rgb - grid.rgb, vec3(0.0));
+			grid.a = beyond.a;
+		}
 
 		/* REPLACE, OR ADD.
 
