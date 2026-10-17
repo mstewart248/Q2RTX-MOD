@@ -10457,6 +10457,12 @@ textures/e2u3/wires2_1:
 	texture_normals overrides/wires2_1_n.tga
 	base_factor 2.5
 
+textures/e2u3/wndow1_2:
+	texture_base overrides/wndow1_2.tga
+	texture_normals overrides/wndow1_2_n.tga
+	kind GLASS
+	base_factor 2.5
+
 textures/e2u3/wplat1_2:
 	texture_base overrides/wplat1_2.tga
 	texture_normals overrides/wplat1_2_n.tga

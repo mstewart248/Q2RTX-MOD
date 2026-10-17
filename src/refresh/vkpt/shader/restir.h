@@ -152,6 +152,11 @@ unpack_reservoir(uvec4 packed, uint light_idx, out Reservoir r)
 uint
 get_light_current_idx(uint index)
 {
+	// A sun sample left over from before pt_restir_sun_reservoir was switched off: the sun
+	// is lit outside the reservoir now, so reusing it would count it twice.
+	if (index == RESTIR_ENV_ID && global_ubo.pt_restir_sun_reservoir == 0)
+		return RESTIR_INVALID_ID;
+
 	if (index < global_ubo.num_static_lights || index == RESTIR_INVALID_ID || index == RESTIR_ENV_ID || index == RESTIR_EMPTY_ID)
 	{
 		return index;
@@ -496,12 +501,19 @@ get_direct_illumination_restir(
 	rng = get_rng(RNG_NEE_LIGHT_SELECTION(bounce));
 
 
-	uint add_sun = (global_ubo.sun_visible != 0) && ((cluster_idx == ~0u) || (light_buffer.sky_visibility[cluster_idx >> 5] & (1 << (cluster_idx & 31))) != 0) ? 1 : 0;
+	// The sun is a candidate only with pt_restir_sun_reservoir 1; by default
+	// direct_lighting_restir lights it separately, as plain RIS does - see that cvar for
+	// the seams it caused along cluster lines.
+	uint add_sun = (global_ubo.pt_restir_sun_reservoir != 0) && (global_ubo.sun_visible != 0) && ((cluster_idx == ~0u) || (light_buffer.sky_visibility[cluster_idx >> 5] & (1 << (cluster_idx & 31))) != 0) ? 1 : 0;
 
 	uint sun_idx = add_sun > 0 ? list_end : -1;
 	list_end += add_sun;
 	float list_size = float(list_end - list_start);
-	float partitions = ceil(list_size / float(RESTIR_SAMPLING_M));
+	// At least one partition: an empty list (common once the sun stopped padding every
+	// sky-visible cluster's list to one) gave partitions = 0, hence fpart = -1 and
+	// stride 0, so the loop read the PREVIOUS cluster's last light sixteen times at zero
+	// weight - 0/0 in update_reservoir, and a NaN rng that then refused the history too.
+	float partitions = max(1.0, ceil(list_size / float(RESTIR_SAMPLING_M)));
 	float inv_pdf = list_size;
 	float rng_part = rng * partitions;
 	float fpart = min(floor(rng_part), partitions - 1);

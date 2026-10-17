@@ -628,6 +628,20 @@ main()
 		{
 			// This field stays on the surface.
 			throughput *= triangle.alpha;
+
+			/* pt_dlss_blood_guides: tell the combine pass how much of this pixel the
+			   splat covers, so the DLSS-RR guides can follow the blood rather than the
+			   floor under it. Same side channel the glass Fresnel weight rides - the
+			   alpha of PT_REFLECTED_ALBEDO, biased by +1 - written on field 0, the
+			   field combine_fullres_fields reads it from. Nothing else writes field 0
+			   here: blood is not a reflect/refract kind, so reflect_refract.rgen never
+			   runs on it. RGB is kept, it is RR's reflected albedo. */
+			if (global_ubo.pt_dlss_blood_guides != 0 && global_ubo.pt_fullres_fields != 0
+			    && is_blood(triangle.material_id))
+			{
+				vec3 reflected_albedo = imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos).rgb;
+				imageStore(IMG_PT_REFLECTED_ALBEDO, ipos, vec4(reflected_albedo, 1.0 + triangle.alpha));
+			}
 		}
 		else
 		{

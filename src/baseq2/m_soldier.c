@@ -689,12 +689,18 @@ static void soldierh_laserbeam(edict_t *self, int flash_index)
 
 // `start` and `aim` come from soldier_fire, which also handles the dying shot
 // (straight ahead, no enemy needed) and the soldierh family's tighter scatter.
+//
+// The flash is the soldier's own MZ2_ id, as the rerelease passes it. Xatrix
+// passed MZ_IONRIPPER / MZ_BLUEHYPERBLASTER, PLAYER flash ids (16, 17), and the
+// client reads svc_muzzleflash3 as a monster id - MZ2_TANK_MACHINEGUN_13/14. So
+// the flash sat at the tank's chaingun, 24 units right and 26 up, beside the
+// soldier's head, with the tank's sparks, smoke puff and machinegun sound.
 static void soldierh_fire_weapon(edict_t *self, vec3_t start, vec3_t aim, int flash_index)
 {
     if (self->s.skinnum <= 1) {
-        monster_fire_ionripper(self, start, aim, 5, 600, MZ_IONRIPPER, EF_IONRIPPER);
+        monster_fire_ionripper(self, start, aim, 5, 600, flash_index, EF_IONRIPPER);
     } else if (self->s.skinnum <= 3) {
-        monster_fire_blueblaster(self, start, aim, 1, 600, MZ_BLUEHYPERBLASTER, EF_BLUEHYPERBLASTER);
+        monster_fire_blueblaster(self, start, aim, 1, 600, flash_index, EF_BLUEHYPERBLASTER);
     } else {
         if (!(self->monsterinfo.aiflags & AI_HOLD_FRAME)) {
             self->monsterinfo.fire_framenum = level.framenum + (3 + Q_rand() % 8);

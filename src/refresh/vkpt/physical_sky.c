@@ -1002,6 +1002,15 @@ everywhere it exists, and boss2 keeps the Q2RTX space sky.
 */
 static void sky_type_changed(cvar_t *self)
 {
+	// "rerelease" is the rerelease game's choice only - the environment menu offers
+	// it under fs_rerelease alone. Anywhere else (the default, or a value carried in
+	// from an old config) it becomes Stroggos, the sky stock Q2RTX gives the base
+	// game. Written back so the menu shows what is in use; the two games keep
+	// separate configs, so the rerelease's own pick is untouched. A FROM_CODE set
+	// does not re-enter this callback.
+	if (self->integer == SKY_TYPE_RERELEASE && !Cvar_VariableInteger("fs_rerelease"))
+		Cvar_SetInteger(self, SKY_TYPE_STROGGOS, FROM_CODE);
+
 	switch (self->integer) {
 	case SKY_TYPE_RERELEASE:
 		// every map that ships a skybox uses it; physical_sky is left alone

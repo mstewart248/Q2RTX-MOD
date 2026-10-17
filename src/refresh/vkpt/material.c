@@ -902,7 +902,10 @@ void MAT_ChangeMap(const char* map_name)
 	char file_name[MAX_QPATH];
 	Q_snprintf(file_name, sizeof(file_name), "%s.mat", map_name_no_ext);
 	num_map_materials = load_material_file(file_name, r_map_materials, MAX_PBR_MATERIALS);
-	if (num_map_materials > 0) {	
+	if (num_map_materials > 0) {
+		// find_material_sorted binary-searches this table. Unsorted, an entry
+		// that comes after one with a larger name was never found.
+		sort_and_deduplicate_materials(r_map_materials, &num_map_materials);
 		Com_Printf("Loaded %d materials from %s\n", num_map_materials, file_name);
 	}
 
@@ -1769,8 +1772,10 @@ static void material_command_reload(void)
 
 		memset(r_map_materials, 0, sizeof(r_map_materials));
 		num_map_materials = load_material_file(file_name, r_map_materials, MAX_PBR_MATERIALS);
-		if (num_map_materials > 0)
+		if (num_map_materials > 0) {
+			sort_and_deduplicate_materials(r_map_materials, &num_map_materials);
 			Com_Printf("Loaded %d materials from %s\n", num_map_materials, file_name);
+		}
 	}
 
 	int updated = 0, generated = 0;

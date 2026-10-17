@@ -265,6 +265,8 @@ void combine_fullres_fields(ivec2 opos)
     // between the two layers by the split's Fresnel weight instead of taking one layer's.
     bool mix_albedo_by_fresnel = false;
     float fresnel_weight = 0.0;
+    // pt_dlss_blood_guides: this split is a translucent blood splat's alpha, see below.
+    bool blood_split = false;
 
     if(paths_split)
     {
@@ -353,6 +355,29 @@ void combine_fullres_fields(ivec2 opos)
                to mix: RR demodulates the reflected content with pInReflectedAlbedo and
                the pane's specular albedo, which is the division of labour it documents. */
             reflection_is_primary = true;
+        }
+
+        /* TRANSLUCENT BLOOD (pt_dlss_blood_guides). A splat below pt_blood_splat_alpha 1
+           splits on its ALPHA: field 0 is the blood surface at alpha, field 1 the floor
+           seen through it at 1 - alpha. There is no reflection layer here at all, so none
+           of the modes above describe it - guide field 0 handed RR the floor for every
+           splat pixel, a 0.99 splat included, and RR filtered the blood's wet highlight
+           with the floor's roughness.
+
+           So treat alpha the way mode 4 treats F. primary_rays.rgen parks it in the same
+           side channel. Geometry follows whichever layer covers more of the pixel - alpha
+           carries no sample noise, so the switch is one clean ring inside the feather
+           edge - and the demodulation albedos mix by alpha, which is what makes RR's
+           divide-filter-multiply close for alpha * blood + (1 - alpha) * floor. The
+           roughness is left as the chosen layer's own (see guide_roughness_x below):
+           mode 4's mirror roughness is for a pane, and blood is 0.06, not 0. Field 0 is
+           identified by its material - the flag word has no bit left for it. */
+        uint field0_kind = floatBitsToUint(imageLoad(IMG_PT_SHADING_POSITION, p_reflect).w) & MATERIAL_KIND_MASK;
+        if(global_ubo.pt_dlss_blood_guides != 0 && have_fresnel && field0_kind == MATERIAL_KIND_BLOOD)
+        {
+            blood_split = true;
+            reflection_is_primary = fresnel_weight >= 0.5;
+            mix_albedo_by_fresnel = true;
         }
 
         p_primary = reflection_is_primary ? p_reflect : p_refract;
@@ -448,7 +473,7 @@ void combine_fullres_fields(ivec2 opos)
        the honest roughness for the composite is pt_dlss_guide_mirror_roughness, ~0.
        Raise it towards 1 to buy noise suppression back at the cost of sharpness. */
     float guide_roughness_x = imageLoad(IMG_PT_ROUGHNESS, p_primary).x;
-    if(mix_albedo_by_fresnel && int(global_ubo.pt_dlss_guide_field) != 6)
+    if(mix_albedo_by_fresnel && int(global_ubo.pt_dlss_guide_field) != 6 && !blood_split)
         guide_roughness_x = clamp(global_ubo.pt_dlss_guide_mirror_roughness, 0.0, 1.0);
 
     imageStore(IMG_DLSS_ALBEDO,             opos, guide_albedo);
@@ -477,7 +502,9 @@ void combine_fullres_fields(ivec2 opos)
     // No branch needed for pt_dlss_guide_field: when the reflection supplies the guides
     // p_primary IS p_reflect, and reflect_refract.rgen writes the same mirrored vector
     // to both PT_MOTION and PT_REFLECT_MOTION there.
-    vec2 reflect_motion = paths_split
+    // A blood split has no mirrored layer: its specular lobe rides the surface the
+    // guides describe, exactly as on a non-split pixel.
+    vec2 reflect_motion = (paths_split && !blood_split)
         ? imageLoad(IMG_PT_REFLECT_MOTION, p_reflect).xy
         : primary_motion.xy;
 

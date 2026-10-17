@@ -67,8 +67,15 @@ color disabled #7f7f7f
 begin environment
     background #212F3CD0
     style --compact
-    pairs --status "rerelease: every map that ships a skybox uses it, except boss2 which keeps the Q2RTX space sky (sky_type)" \
-        "sky type" sky_type "rerelease" 0 "original env.map" 1 earth 2 stroggos 3
+    // "rerelease" (the map's own skybox) is offered in the rerelease game only;
+    // physical_sky.c turns sky_type 0 into stroggos everywhere else.
+    ifeq fs_rerelease 1
+        pairs --status "rerelease: every map that ships a skybox uses it, except boss2 which keeps the Q2RTX space sky (sky_type)" \
+            "sky type" sky_type "rerelease" 0 "original env.map" 1 earth 2 stroggos 3
+    endif
+    ifneq fs_rerelease 1
+        pairs --status "(sky_type)" "sky type" sky_type "original env.map" 1 earth 2 stroggos 3
+    endif
     // EV stops only mean something against the procedural sky's own sun and
     // atmosphere. When the map's own skybox is what gets rendered, its light is
     // controlled from Video > sky light instead. sky_procedural_active is

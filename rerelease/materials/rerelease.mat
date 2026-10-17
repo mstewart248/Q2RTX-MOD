@@ -384,6 +384,12 @@ models/monsters/stalker/skin:
 	texture_normals materialDev/models/monsters/stalker/skin_n.tga
 	metalness_factor 0
 
+models/monsters/turret/md5/skin:
+	metalness_factor 1
+	roughness_override .01
+	base_factor 10
+	specular_factor 1
+	
 models/monsters/turret/skin:
 	texture_base materialDev/models/monsters/turret/skin.tga
 	texture_normals materialDev/models/monsters/turret/skin_n.tga
@@ -2200,7 +2206,9 @@ textures/e1u1/ggrate9_1:
 textures/e1u1/grate1_8:
 	texture_base materialDev/textures/e1u1/grate1_8.tga
 	texture_normals materialDev/textures/e1u1/grate1_8_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/textures/e1u1/grate1_8_rough.tga
+	texture_metallic materialDev/textures/e1u1/grate1_8_metallic.tga
+	base_factor 3
 
 textures/e1u1/grey1_1:
 	texture_base materialDev/textures/e1u1/grey1_1.tga
@@ -8284,7 +8292,7 @@ textures/e1u2/btelev_dn4:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
-# textures/e1u2/ceil1_16:
+# textures/e1u2/mat :
 # 	texture_base materialDev/textures/e1u2/ceil1_16.tga
 # 	texture_normals materialDev/textures/e1u2/ceil1_16_n.tga
 # 	metalness_factor 0

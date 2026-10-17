@@ -1,4 +1,22 @@
 # Material overrides for mgu5m1 only - loaded by MAT_ChangeMap on map load.
+# Entries are kept in name order: builds before the material.c sort fix
+# binary-searched this table unsorted and silently missed out-of-order ones.
+
+# The ceiling lights (e1u2/ceil1_16, 126 faces). Every face is flagged SURF_LIGHT
+# but with radiance 0, so compute_emissive gives 0: the _light.tga draws black and
+# the faces are skipped as lights. The rerelease draws _glow textures fullbright
+# whatever the radiance, which is why they look lit there. bsp_radiance 0 makes
+# default_radiance the strength instead. Other maps run this texture at radiance
+# 5000-20000 (strength 5-20); this map is already lit by point lights, so 3 is a
+# starting guess - tune it. An explicit entry loads only the files it names, so
+# the three override images are spelled out.
+textures/e1u2/ceil1_16:
+	texture_base overrides/ceil1_16.tga
+	texture_normals overrides/ceil1_16_n.tga
+	texture_emissive overrides/ceil1_16_light.tga
+	bsp_radiance 0
+	default_radiance 3
+	is_light 1
 
 # The fire over the drop pod window (func_wall *36, TRANS33|FLOWING, value 0), given
 # the same slight glow of its own that maps/mgu6m1.mat gives mgu6m1's. Without
