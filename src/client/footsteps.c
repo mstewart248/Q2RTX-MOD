@@ -169,6 +169,28 @@ static int CL_FootstepMaterialForTexture(const char *texture)
 
 /*
 =================
+CL_SurfaceMaterial
+
+The footstep material word of a world surface - "clank", "grass" - or NULL for
+a texture with none. The room reverb (sound/reverb.c) picks its preset by these
+words too. Same cache, so a repeat lookup costs nothing.
+=================
+*/
+const char *CL_SurfaceMaterial(const csurface_t *surface)
+{
+    // see CL_FootstepSound: the mtexinfo_t keeps the name csurface_t truncates
+    const mtexinfo_t *texinfo = (const mtexinfo_t *)surface;
+    int n;
+
+    if (!texinfo || !texinfo->name[0])
+        return NULL;
+
+    n = CL_FootstepMaterialForTexture(texinfo->name);
+    return n < 0 ? NULL : fs_materials[n].word;
+}
+
+/*
+=================
 CL_FootstepSound
 
 The sound to play for a footstep by the entity at `origin`, or 0 to let the

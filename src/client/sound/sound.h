@@ -123,6 +123,12 @@ void AL_Update(void);
 void AL_RawSamples(int samples, int rate, int width, int channels, byte *data, float volume);
 void AL_UnqueueRawSamples(void);
 
+/* room reverb (reverb.c) */
+void AL_InitReverb(const unsigned *sources, int count);
+void AL_ShutdownReverb(void);
+void AL_UpdateReverb(void);
+void AL_ReverbChannel(const channel_t *ch);
+
 /* seconds of queued-but-unheard streamed audio (needed for cinematic A/V sync) */
 double AL_GetStreamLatency(void);
 

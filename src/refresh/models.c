@@ -247,7 +247,9 @@ get_model_class(const char *name)
 		return MCLASS_FLASH;
 	else if (!strcmp(name, "models/objects/smoke/tris.md2"))
 		return MCLASS_SMOKE;
-	else if (!strcmp(name, "models/objects/minelite/light2/tris.md2"))
+	// light1 only lights where its skin glows - see wall_lamp_color in vkpt/main.c
+	else if (!strcmp(name, "models/objects/minelite/light1/tris.md2") ||
+	         !strcmp(name, "models/objects/minelite/light2/tris.md2"))
         return MCLASS_STATIC_LIGHT;
     else if (!strcmp(name, "models/objects/flare/tris.md2"))
         return MCLASS_FLARE;

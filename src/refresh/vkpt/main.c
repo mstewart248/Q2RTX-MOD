@@ -3408,6 +3408,32 @@ static pbr_material_t const * get_mesh_material(const entity_t* entity, const mo
 	return mesh->materials[skinnum];
 }
 
+/* The mine wall lamps get a cylinder light along the tube (process_regular_entity)
+   and a light-flagged material so GI rays don't count that tube twice
+   (fill_model_instance). light_mine2 always has, in Q2RTX's green. light_mine1
+   is the rerelease's warm tube (its base_glow.png, and the _color 239 201 155
+   mgu6m1 gives it) - but only where its skin actually glows: classic Q2RTX's
+   material has no emissive map and leaves it a dark fixture, and lighting it
+   there would relight boss2. */
+static bool wall_lamp_color(const entity_t* entity, const model_t* model, vec3_t color)
+{
+	if (model->model_class != MCLASS_STATIC_LIGHT)
+		return false;
+
+	if (strstr(model->name, "/light1/"))
+	{
+		pbr_material_t const* material = model->nummeshes ? get_mesh_material(entity, model, model->meshes) : NULL;
+		if (!material || !material->image_emissive)
+			return false;
+
+		VectorSet(color, 0.45f, 0.38f, 0.29f);  // light2's brightness, warm
+		return true;
+	}
+
+	VectorSet(color, 0.25f, 0.5f, 0.07f);
+	return true;
+}
+
 static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_t* model,
 	const maliasmesh_t* mesh, bool is_viewer_weapon, bool is_double_sided, float alpha)
 {
@@ -3532,7 +3558,8 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 	// for this model. Mark the material with the light flag to avoid double contribution and noise
 	// from the GI rays. This (together with the custom lights) is a hack that should be replaced
 	// by a better model that has a separate mesh for the light rod.
-	if (model->model_class == MCLASS_STATIC_LIGHT)
+	vec3_t lamp_color;
+	if (wall_lamp_color(entity, model, lamp_color))
 		instance->material |= MATERIAL_FLAG_LIGHT;
 }
 
@@ -3961,15 +3988,15 @@ static void process_regular_entity(
 	}
 
 	// add cylinder lights for wall lamps
-	if (model->model_class == MCLASS_STATIC_LIGHT)
+	vec4_t color;
+	if (wall_lamp_color(entity, model, color))
 	{
-		vec4_t begin, end, color;
+		vec4_t begin, end;
 		vec4_t offset1 = { 0.f, 0.5f, -10.f, 1.f };
 		vec4_t offset2 = { 0.f, 0.5f,  10.f, 1.f };
 
 		mult_matrix_vector(begin, transform, offset1);
 		mult_matrix_vector(end, transform, offset2);
-		VectorSet(color, 0.25f, 0.5f, 0.07f);
 
 		entity_hash_t hash;
 		hash.entity = entity->id;

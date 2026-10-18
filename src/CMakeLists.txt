@@ -142,6 +142,7 @@ SET(SRC_CLIENT
 	client/ui/ui.c
 	client/sound/dma.c
 	client/sound/al.c
+	client/sound/reverb.c
 	client/sound/main.c
 	client/sound/mem.c
 	client/sound/mix.c

@@ -228,6 +228,7 @@ bool AL_Init(void)
 
     s_numchannels = i;
 	AL_InitStreamSource();
+    AL_InitReverb(s_srcnums, s_numchannels);
 
     Com_Printf("OpenAL initialized.\n");
     return true;
@@ -254,6 +255,7 @@ void AL_Shutdown(void)
         s_numchannels = 0;
     }
 
+    AL_ShutdownReverb();
     QAL_Shutdown();
 }
 
@@ -387,6 +389,7 @@ void AL_PlayChannel(channel_t *ch)
     qalSourcef(ch->srcnum, AL_ROLLOFF_FACTOR, ch->dist_mult * (8192 - SOUND_FULLVOLUME));
 
     AL_Spatialize(ch);
+    AL_ReverbChannel(ch);
 
     // play it
     qalSourcePlay(ch->srcnum);
@@ -626,6 +629,8 @@ void AL_Update(void)
     qalListenerfv(AL_ORIENTATION, orientation);
     qalListenerf(AL_GAIN, S_GetLinearVolume(s_volume->value));
     qalDistanceModel(AL_LINEAR_DISTANCE_CLAMPED);
+
+    AL_UpdateReverb();
 
     // Only walked when the factor actually moves, which for all but the tenth
     // of a second either side of the wheel opening is never.

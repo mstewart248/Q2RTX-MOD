@@ -469,8 +469,13 @@ bool SV_Push(edict_t *pusher, vec3_t move, vec3_t amove)
             || check->movetype == MOVETYPE_NOCLIP)
             continue;
 
-        if (!check->area.prev)
-            continue;       // not linked in anywhere
+        // not linked in anywhere. A SOLID_NOT entity never goes into the area
+        // lists, so area.prev alone skipped every gib and piece of debris: a
+        // rising lift passed up through them and they dropped out of its
+        // underside. linkcount says it has been linked at all, which is what
+        // the rerelease's `linked` test means.
+        if (!check->area.prev && !(check->solid == SOLID_NOT && check->linkcount))
+            continue;
 
         // if the entity is standing on the pusher, it will definitely be moved
         if (check->groundentity != pusher) {

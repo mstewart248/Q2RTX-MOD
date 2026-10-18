@@ -437,6 +437,7 @@ begin sound
     toggle --status "(ogg_shuffle)" "shuffle tracks" ogg_shuffle
     blank
     values --status "(s_ambient)" "ambient sounds" s_ambient "no" "yes" "only player's own"
+    range --status "room echo by the size of the space and what it is made of, as in the rerelease. OpenAL only (s_reverb)" -p -f "%.0f%%" "room reverb" s_reverb 0 1 0.05
     values --status "(cl_chat_sound)" "chat beep" cl_chat_sound "disabled" "default" "alternative"
     blank
     values --status "(s_enable)" "sound engine" s_enable "no sound" "software" "OpenAL"

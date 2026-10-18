@@ -648,6 +648,7 @@ extern cvar_t    *cl_footsteps;
 // player/stepN.wav sounds.
 extern cvar_t    *cl_footstep_materials;
 qhandle_t CL_FootstepSound(const vec3_t origin);
+const char *CL_SurfaceMaterial(const csurface_t *surface);
 void CL_ClearFootstepCache(void);
 void CL_InitFootsteps(void);
 extern cvar_t    *cl_noskins;

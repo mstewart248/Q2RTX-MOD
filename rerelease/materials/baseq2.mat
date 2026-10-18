@@ -1022,7 +1022,7 @@ models/objects/minelite/light1/base:
 models/objects/minelite/light1/skin:
 	texture_base models/objects/minelite/light1/skin.tga
 	texture_normals models/objects/minelite/light1/skin_n.tga
-	emissive_factor 0.1
+	texture_emissive models/objects/minelite/light1/skin_light.tga
 	base_factor 2.5
 	specular_factor 0
 
