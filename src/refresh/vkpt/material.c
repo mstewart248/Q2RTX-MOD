@@ -943,6 +943,45 @@ static void load_material_image(image_t** image, const char* filename, pbr_mater
 	}
 }
 
+/*
+=================
+player_skin_map
+
+PLAYER SKINS SHARE ONE SET OF SURFACE MAPS PER MODEL, AND ANY SKIN MAY REPLACE
+ONE OF THEM.
+
+Every skin of a player model wears the same UV layout, so rerelease.mat points
+all of a model's skin entries at one body_n / body_rough / body_metallic in
+materialDev/players/<model>/. A skin that needs its own map - one variant that
+is metal where the others are cloth - drops it beside its own base texture,
+named after it (grunt_metallic.tga next to grunt.tga), and that file is used
+instead of the shared one with no .mat edit. Players only: every other entry
+that names a texture_base still describes its textures exactly as written.
+
+Returns (shared) unless (mat_name) is players/<model>/<skin>, and
+<base_file without extension><suffix>.tga exists.
+=================
+*/
+static const char* player_skin_map(const char* mat_name, const char* base_file,
+	const char* shared, const char* suffix, char* buffer, size_t size)
+{
+	const char* slash;
+	char stem[MAX_QPATH];
+
+	if (strncmp(mat_name, "players/", 8) || !base_file[0])
+		return shared;
+
+	slash = strchr(mat_name + 8, '/');
+	if (!slash || slash == mat_name + 8 || strchr(slash + 1, '/'))
+		return shared;
+
+	truncate_extension(base_file, stem);
+	if (Q_snprintf(buffer, size, "%s%s.tga", stem, suffix) >= size || !FS_FileExists(buffer))
+		return shared;
+
+	return buffer;
+}
+
 static qboolean game_image_identical_to_base(const char* name)
 {
 	/* Check if a game image is actually different from the base version,
@@ -1294,6 +1333,26 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		// ships changes.
 		if (!MAT_SPECIFIED(mat, MAT_TEXTURE_BASE))
 			autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
+		else
+		{
+			// a player skin's own maps beat its model's shared ones
+			char skin_map[MAX_QPATH];
+			struct { char* filename; const char* suffix; } slots[] = {
+				{ mat->filename_normals,   "_n" },
+				{ mat->filename_roughness, "_rough" },
+				{ mat->filename_metallic,  "_metallic" },
+				{ mat->filename_height,    "_height" },
+				{ mat->filename_emissive,  "_light" },
+			};
+
+			for (int i = 0; i < q_countof(slots); i++)
+			{
+				const char* found = player_skin_map(mat->name, mat->filename_base, slots[i].filename,
+				                                    slots[i].suffix, skin_map, sizeof(skin_map));
+				if (found != slots[i].filename)
+					Q_strlcpy(slots[i].filename, found, MAX_QPATH);
+			}
+		}
 
 		if (mat->filename_base[0] && !mat->image_base) {
 			load_material_image(&mat->image_base, mat->filename_base, mat, type, flags | IF_SRGB);
@@ -1522,7 +1581,17 @@ pbr_material_t* MAT_ForSkin(image_t* image_base)
 	// if it's already using this skin, do nothing
 	if (mat->image_base == image_base)
 		return mat;
-	
+
+	/* A .MAT ENTRY'S OWN texture_base WINS OVER THE SKIN THE CLIENT REGISTERED.
+	   Player bodies are the one model drawn through here: their skin is picked
+	   per client (entity->skin), not from the model's skin list. Swapping in
+	   that image unconditionally threw away the base of an entry such as
+	   players/male/grunt pointing at a painted override, so player skins
+	   ignored texture_base while every other model honoured it. A tuning-only
+	   entry (no texture_base) still takes the registered skin below. */
+	if (MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) && mat->image_base)
+		return mat;
+
 	mat->image_base = image_base;
 
 	// update registration sequence of material and its textures
@@ -1537,6 +1606,22 @@ pbr_material_t* MAT_ForSkin(image_t* image_base)
 	mat->registration_sequence = rseq;
 
 	return mat;
+}
+
+// Where a .mat file a definition came from actually lives. The recorded name is
+// game-relative, and in the rerelease that names two files - rerelease/'s
+// materials/baseq2.mat shadows baseq2/'s - so say which folder it was read from,
+// or that it came out of a pack.
+static void material_source_location(const char* file_name, char* out, size_t size)
+{
+	const char* game = Cvar_VariableString("game");
+
+	if (FS_FileExistsEx(file_name, FS_TYPE_REAL | FS_PATH_GAME))
+		Q_concat(out, size, game[0] ? game : BASEGAME, "/", file_name);
+	else if (FS_FileExistsEx(file_name, FS_TYPE_REAL | FS_PATH_BASE))
+		Q_concat(out, size, BASEGAME "/", file_name);
+	else
+		Q_concat(out, size, file_name, " (inside a pack)");
 }
 
 //
@@ -1595,6 +1680,28 @@ void MAT_Print(pbr_material_t const * mat)
 		Com_Printf("    albedo_strength %f\n", mat->albedo_strength);
 	else
 		Com_Printf("    albedo_strength (pt_bounce_albedo_power)\n");
+
+	// Last, so it sits right above the prompt: the file and line to edit.
+	char where[MAX_OSPATH];
+	if (mat->source_matfile[0])
+	{
+		material_source_location(mat->source_matfile, where, sizeof(where));
+		Com_Printf("    defined in: %s line %u\n", where, mat->source_line);
+	}
+	else
+		Com_Printf("    defined in: no .mat entry - generated from the texture and its sidecars\n");
+
+	// An md5 skin with no entry of its own takes the classic skin's tuning.
+	if (mat->inherit_source[0])
+	{
+		const pbr_material_t* src = find_material_sorted(mat->inherit_source,
+			r_global_materials, num_global_materials);
+		if (src && src->source_matfile[0])
+		{
+			material_source_location(src->source_matfile, where, sizeof(where));
+			Com_Printf("    inherits tuning from: %s, %s line %u\n", mat->inherit_source, where, src->source_line);
+		}
+	}
 }
 
 // Swap one of a live material's textures for the one the definition now names.
@@ -1708,14 +1815,23 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	if (describes_textures || MAT_SPECIFIED(matdef, attr)) \
 		material_reload_image(&mat->image, mat->filename, matdef->filename, mat, extra)
 
-	RELOAD_TEXTURE(MAT_TEXTURE_BASE,      image_base,      filename_base,      IF_SRGB);
-	RELOAD_TEXTURE(MAT_TEXTURE_NORMALS,   image_normals,   filename_normals,   IF_NONE);
-	RELOAD_TEXTURE(MAT_TEXTURE_ROUGHNESS, image_roughness, filename_roughness, IF_NONE);
-	RELOAD_TEXTURE(MAT_TEXTURE_METALLIC,  image_metallic,  filename_metallic,  IF_NONE);
-	RELOAD_TEXTURE(MAT_TEXTURE_HEIGHT,    image_height,    filename_height,    IF_NONE);
-	RELOAD_TEXTURE(MAT_TEXTURE_EMISSIVE,  image_emissive,  filename_emissive,  IF_SRGB);
-	RELOAD_TEXTURE(MAT_TEXTURE_MASK,      image_mask,      filename_mask,      IF_NONE);
+	// a player skin's own map beats its model's shared one, as in MAT_Find
+	char skin_map[MAX_QPATH];
+#define RELOAD_SKIN_TEXTURE(attr, image, filename, suffix, extra) \
+	if (describes_textures || MAT_SPECIFIED(matdef, attr)) \
+		material_reload_image(&mat->image, mat->filename, describes_textures \
+			? player_skin_map(mat->name, matdef->filename_base, matdef->filename, suffix, skin_map, sizeof(skin_map)) \
+			: matdef->filename, mat, extra)
 
+	RELOAD_TEXTURE(MAT_TEXTURE_BASE,           image_base,      filename_base,                   IF_SRGB);
+	RELOAD_SKIN_TEXTURE(MAT_TEXTURE_NORMALS,   image_normals,   filename_normals,   "_n",        IF_NONE);
+	RELOAD_SKIN_TEXTURE(MAT_TEXTURE_ROUGHNESS, image_roughness, filename_roughness, "_rough",    IF_NONE);
+	RELOAD_SKIN_TEXTURE(MAT_TEXTURE_METALLIC,  image_metallic,  filename_metallic,  "_metallic", IF_NONE);
+	RELOAD_SKIN_TEXTURE(MAT_TEXTURE_HEIGHT,    image_height,    filename_height,    "_height",   IF_NONE);
+	RELOAD_SKIN_TEXTURE(MAT_TEXTURE_EMISSIVE,  image_emissive,  filename_emissive,  "_light",    IF_SRGB);
+	RELOAD_TEXTURE(MAT_TEXTURE_MASK,           image_mask,      filename_mask,                   IF_NONE);
+
+#undef RELOAD_SKIN_TEXTURE
 #undef RELOAD_TEXTURE
 
 	if (!describes_textures)
@@ -2050,7 +2166,11 @@ static void material_command(void)
 	{
 		Com_Printf("%s: ", mat->name);
 		if (mat->source_matfile[0])
-			Com_Printf("%s line %d\n", mat->source_matfile, mat->source_line);
+		{
+			char where[MAX_OSPATH];
+			material_source_location(mat->source_matfile, where, sizeof(where));
+			Com_Printf("%s line %u\n", where, mat->source_line);
+		}
 		else
 			Com_Printf("automatically generated\n");
 		return;

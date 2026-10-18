@@ -539,20 +539,22 @@ models/monsters/flipper/skin:
 models/monsters/float/pain:
 	texture_base models/monsters/float/pain.tga
 	texture_normals models/monsters/float/pain_n.tga
+	texture_roughness models/monsters/float/pain_rough.tga
+	texture_metallic models/monsters/float/pain_metallic.tga
 	texture_emissive models/monsters/float/pain_light.tga
-	roughness_override 1
 	emissive_factor 0.02
 	base_factor 1.5
-	specular_factor 0
+	specular_factor 1
 
 models/monsters/float/skin:
 	texture_base models/monsters/float/skin.tga
 	texture_normals models/monsters/float/skin_n.tga
 	texture_emissive models/monsters/float/skin_light.tga
-	roughness_override 1
+	texture_roughness models/monsters/float/skin_rough.tga
+	texture_metallic models/monsters/float/skin_metallic.tga
 	emissive_factor 0.02
 	base_factor 1.5
-	specular_factor 0
+	specular_factor 1
 
 models/monsters/flyer/pain:
 	texture_base models/monsters/flyer/pain.tga

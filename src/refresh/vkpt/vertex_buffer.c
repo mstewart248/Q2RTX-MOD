@@ -921,8 +921,20 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	}
 	else
 	{
+		// No world (the player setup menu): one light list, list 0, holding the
+		// frame's model lights - the menu's dlights. main.c gives every no-world
+		// instance cluster 0 and sets num_static_lights to 0, so they sit at
+		// index 0 up. This list used to be left empty, and the menu model was lit
+		// by nothing but its own emissives.
+		int n = min(num_model_lights, MAX_LIGHT_POLYS);
+		for (int nlight = 0; nlight < n; nlight++)
+		{
+			float* vblight = *(lbo->light_polys + nlight * LIGHT_POLY_VEC4S);
+			copy_light(transformed_model_lights + nlight, vblight, sky_radiance);
+			lbo->light_list_lights[nlight] = nlight;
+		}
 		lbo->light_list_offsets[0] = 0;
-		lbo->light_list_offsets[1] = 0;
+		lbo->light_list_offsets[1] = n;
 		lbo->fog_light_list_offsets[0] = 0;
 		lbo->fog_light_list_offsets[1] = 0;
 	}

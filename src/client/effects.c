@@ -1002,6 +1002,7 @@ static cvar_t *cl_blood_drain = NULL;
 static cvar_t *cl_blood_cling_size = NULL;
 static cvar_t *cl_blood_trail = NULL;
 static cvar_t *cl_blood_water = NULL;
+static cvar_t *cl_blood_lava = NULL;
 static cvar_t *cl_blood_water_life = NULL;
 static cvar_t *cl_blood_water_spread = NULL;
 static cvar_t *cl_blood_water_depth = NULL;
@@ -1316,6 +1317,9 @@ void FX_Init(void)
     cl_blood_water_spread = Cvar_Get("cl_blood_water_spread", "1", CVAR_ARCHIVE);
     cl_blood_water_depth = Cvar_Get("cl_blood_water_depth", "1.5", CVAR_ARCHIVE);
     cl_blood_water_wobble = Cvar_Get("cl_blood_water_wobble", "0.35", CVAR_ARCHIVE);
+    // LAVA IS NOT WATER, for blood - see CL_BloodBurnUp. 1: blood that reaches
+    // lava is simply gone. 0: lava is one more water and gets the cloud.
+    cl_blood_lava = Cvar_Get("cl_blood_lava", "1", CVAR_ARCHIVE);
     // How fast a cloud goes see-through as it spreads: opacity falls as its
     // width to this power. 2 is the same blood spread over the area - twice as
     // wide, a quarter as dense - and is what makes it read as dissolving.
@@ -4638,8 +4642,46 @@ static void CL_BloodDissolve(cparticle_t *p, const vec3_t point, const vec3_t no
     p->alphavel = -1.0f / max(0.1f, cl_blood_water_life->value);
 }
 
-// Returns true when the droplet merged into an existing pool and should be
-// retired - the blood it carried is now part of that splat.
+/*
+===============
+CL_BloodLiquidMask / CL_BloodBurnUp
+
+BLOOD THAT REACHES LAVA IS GONE. Matt: "When blood splats hit lava they should
+just disappear". Lava is in MASK_WATER, so it used to get CL_BloodDissolve's
+water treatment - a cloud spreading just under the surface - which on lava read
+as splats lying on it.
+
+CL_BloodLiquidMask is what the flight trace stops at besides walls: all of
+MASK_WATER under cl_blood_water, and lava on its own under cl_blood_lava - so
+lava takes blood even with the water clouds switched off. CL_BloodBurnUp
+answers whether contents `c` takes the droplet; true goes back through
+CL_SimulateBloodSphere as "retire it", the same exit a drained run uses.
+===============
+*/
+static int CL_BloodLiquidMask(void)
+{
+    int mask = 0;
+
+    if (!cl.bsp || !cl.bsp->nodes)
+        return 0;
+    if (cl_blood_water->integer)
+        mask |= MASK_WATER;
+    if (cl_blood_lava->integer)
+        mask |= CONTENTS_LAVA;
+    return mask;
+}
+
+static bool CL_BloodBurnUp(cparticle_t *p, int c)
+{
+    if (!(c & CONTENTS_LAVA) || !cl_blood_lava->integer)
+        return false;
+
+    CL_BloodDetachFromEntity(p);
+    return true;
+}
+
+// Returns true when the droplet should be retired: it merged into an existing
+// pool - the blood it carried is now part of that splat - or reached lava.
 static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
 {
     trace_t tr;
@@ -4774,8 +4816,14 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         // RAN INTO THE WATER. It dissolves where it went under rather than
         // carrying on down the bank as a permanent mark nobody can see properly
         // - those parked on the submerged slope, pale-rimmed and never fading.
-        if (cl_blood_water->integer && cl.bsp && cl.bsp->nodes &&
-            (CL_PointContents(end) & MASK_WATER)) {
+        // Ran into lava instead: gone - see CL_BloodBurnUp.
+        const int liquid = CL_BloodLiquidMask();
+        const int ran_into = liquid ? (CL_PointContents(end) & liquid) : 0;
+
+        if (CL_BloodBurnUp(p, ran_into))
+            return true;
+
+        if (ran_into) {
             CL_BloodDissolve(p, end, p->blood_normal, 0.f);
             return false;
         }
@@ -4902,16 +4950,21 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     // WATER IS A SURFACE TOO, for blood. Already under it - a wound below the
     // surface - and it dissolves where it is; otherwise the trace stops at the
     // surface as well as at walls, and the hit below turns it into a cloud.
-    const bool water = cl_blood_water->integer && cl.bsp && cl.bsp->nodes;
+    // Lava stops it too, and takes it - see CL_BloodBurnUp.
+    const int liquid = CL_BloodLiquidMask();
     static const vec3_t water_up = { 0.f, 0.f, 1.f };
+    const int under = liquid ? (CL_PointContents(p->org) & liquid) : 0;
 
-    if (water && (CL_PointContents(p->org) & MASK_WATER)) {
+    if (CL_BloodBurnUp(p, under))
+        return true;
+
+    if (under) {
         CL_BloodDissolve(p, p->org, water_up, 0.f);
         return false;
     }
 
     blood_traces++;
-    tr = CL_TracePoint(p->org, end, water ? (MASK_SOLID | MASK_WATER) : MASK_SOLID, false);
+    tr = CL_TracePoint(p->org, end, MASK_SOLID | liquid, false);
 
     if (tr.allsolid || tr.startsolid) {
         // Spawned inside geometry - a wound right against a wall. Leave it where
@@ -4960,7 +5013,10 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         // The surface of a pool. CL_BloodTraceModels returns early on a body,
         // so reaching here means frac is still the world trace's and tr.contents
         // describes what it hit.
-        if (water && (tr.contents & MASK_WATER)) {
+        if (CL_BloodBurnUp(p, tr.contents & liquid))
+            return true;
+
+        if (tr.contents & liquid) {
             CL_BloodDissolve(p, hit_point, hit_normal,
                              max(0.f, cl_blood_water_depth->value));
             return false;

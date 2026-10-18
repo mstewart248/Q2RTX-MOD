@@ -42,13 +42,41 @@ typedef struct m_player_s {
     menuSpinControl_t   view;
 
     refdef_t    refdef;
-    entity_t    entities[2];
+    entity_t    entities[2];    // the model and its weapon
+    int         num_actors;     // how many of those loaded
+
+    // An invisible bounce card above and in front of the model (path tracer
+    // only): a white quad drawn as a viewer model, so the camera never sees it
+    // but bounce and shadow rays do. It sends some of the footlight back down
+    // into the shadows. The quad is baked in place in the .md2 (written by a
+    // script), so it is drawn at the origin unrotated and does not turn with
+    // the model.
+    entity_t    card;
+
+    entity_t    scene[3];       // what is handed to the renderer each frame
 
     int        time;
     int        oldTime;
 
+    // turning the model by dragging it - see Keydown and UpdateDrag
+    float       yaw;
+    bool        dragging;
+    int         drag_x;
+
+    // the skin last chosen for each model (uis.pmi index), so stepping to another
+    // model and back brings its skin back instead of the first one in the list.
+    // Kept across openings of the menu; Free clears it with the rest.
+    int         model_skin[MAX_PLAYERMODELS];
+
     char *pmnames[MAX_PLAYERMODELS];
 } m_player_t;
+
+// the way the model faces when the menu opens - three-quarters toward the camera
+#define PLAYER_DEFAULT_YAW  260.0f
+
+// how far the model turns per unit of mouse travel, in degrees: about a full turn
+// across the half of the screen it stands in
+#define PLAYER_DRAG_DEGREES 0.5f
 
 static m_player_t    m_player;
 
@@ -84,9 +112,24 @@ static const char *viewmodes[] = {
 	NULL
 };
 
+// The camera sits at the origin looking down +x; the model stands at x 40 with
+// its feet at z -24, turned toward -y. Lit like a stage footlight: one white
+// light just below its feet and a little in front, throwing light and shadows UP
+// the body and face. Upstream's blue rim stays behind it, dimmer, so the
+// silhouette still separates from the black. (Upstream's white key came from
+// over the camera's shoulder instead.)
+//
+// Close underneath is what makes it dramatic - moved out in front (about 36
+// degrees up at the face) it lit the face but went flat. The model holds its gun
+// across its chest, so from here the gun shadows the chest and face; the bounce
+// card above the head (m_player.card) fills that shadow, so the light can stay
+// small. A sphere light's colour is its radiance, so its total output grows with
+// the radius squared: radius 24 gave 16x the light of radius 6, and with the
+// card that was too bright. Keep the sphere clear of the feet: at 24 its edge
+// came within ~3 units of the nearest one.
 static dlight_t dlights[] = {
-	{.origin = { -120.f, -80.f, 80.f },.color = {1.f, 1.f, 1.f},.intensity = 200.f,.radius = 20.f },
-	{.origin = { 100.f, 80.f, 20.f },.color = {0.5f, 0.5f, 1.f},.intensity = 200.f,.radius = 20.f }
+	{.origin = { 24.f, -12.f, -48.f },.color = {1.f, 1.f, 1.f},.intensity = 60.f,.radius = 6.f },
+	{.origin = { 100.f, 80.f, 20.f },.color = {0.5f, 0.5f, 1.f},.intensity = 120.f,.radius = 20.f }
 };
 
 static void ReloadMedia(void)
@@ -95,14 +138,17 @@ static void ReloadMedia(void)
     char *model = uis.pmi[m_player.model.curvalue].directory;
     char *skin = uis.pmi[m_player.model.curvalue].skindisplaynames[m_player.skin.curvalue];
 
-    m_player.refdef.num_entities = 0;
+    m_player.num_actors = 0;
+
+    m_player.card.model = (cls.ref_type == REF_TYPE_VKPT)
+        ? R_RegisterModel("models/rtx/bounce_card/tris.md2") : 0;
 
     Q_concat(scratch, sizeof(scratch), "players/", model, "/tris.md2");
     m_player.entities[0].model = R_RegisterModel(scratch);
     if (!m_player.entities[0].model)
         return;
 
-    m_player.refdef.num_entities++;
+    m_player.num_actors++;
 
     Q_concat(scratch, sizeof(scratch), "players/", model, "/", skin, ".pcx");
     m_player.entities[0].skin = R_RegisterSkin(scratch);
@@ -115,7 +161,7 @@ static void ReloadMedia(void)
     if (!m_player.entities[1].model)
         return;
 
-    m_player.refdef.num_entities++;
+    m_player.num_actors++;
 }
 
 static void RunFrame(void)
@@ -133,11 +179,55 @@ static void RunFrame(void)
 
         frame = (m_player.time / 120) % 40;
 
-        for (i = 0; i < m_player.refdef.num_entities; i++) {
+        for (i = 0; i < m_player.num_actors; i++) {
             m_player.entities[i].oldframe = m_player.entities[i].frame;
             m_player.entities[i].frame = frame;
         }
     }
+}
+
+static void SetYaw(float yaw)
+{
+    int i;
+
+    m_player.yaw = anglemod(yaw);
+    for (i = 0; i < 2; i++)
+        m_player.entities[i].angles[YAW] = m_player.yaw;
+}
+
+// Follows the mouse while the drag Keydown started is held. Menus are told about
+// key presses but not releases, so the button is polled here, once a frame.
+static void UpdateDrag(void)
+{
+    int x;
+
+    if (!m_player.dragging)
+        return;
+
+    if (!Key_IsDown(K_MOUSE1)) {
+        m_player.dragging = false;
+        return;
+    }
+
+    // Dragging right brings the side facing the camera round to the right, as if
+    // the model were grabbed by its front: screen right is -y from this camera,
+    // and turning the facing toward -y is an increase in yaw.
+    x = uis.mouseCoords[0];
+    SetYaw(m_player.yaw + (x - m_player.drag_x) * PLAYER_DRAG_DEGREES);
+    m_player.drag_x = x;
+}
+
+// A left click that does not land on a menu item - on the model, or anywhere on
+// the empty screen - starts turning the model; UpdateDrag takes it from there.
+static menuSound_t Keydown(menuFrameWork_t *self, int key)
+{
+    if (key == K_MOUSE1 && !Menu_HitTest(self)) {
+        m_player.dragging = true;
+        m_player.drag_x = uis.mouseCoords[0];
+        return QMS_SILENT;
+    }
+
+    return QMS_NOTHANDLED;
 }
 
 static void Draw(menuFrameWork_t *self)
@@ -147,6 +237,7 @@ static void Draw(menuFrameWork_t *self)
 
     m_player.refdef.time = uis.realtime * 0.001f;
 
+    UpdateDrag();
     RunFrame();
 
     if (m_player.time == m_player.oldTime) {
@@ -156,9 +247,13 @@ static void Draw(menuFrameWork_t *self)
                    (float)(m_player.time - m_player.oldTime);
     }
 
-    for (i = 0; i < m_player.refdef.num_entities; i++) {
+    m_player.refdef.num_entities = 0;
+    for (i = 0; i < m_player.num_actors; i++) {
         m_player.entities[i].backlerp = backlerp;
+        m_player.scene[m_player.refdef.num_entities++] = m_player.entities[i];
     }
+    if (m_player.card.model)
+        m_player.scene[m_player.refdef.num_entities++] = m_player.card;
 
     Menu_Draw(self);
 
@@ -235,10 +330,13 @@ static menuSound_t Change(menuCommon_t *self)
     case ID_MODEL:
         m_player.skin.itemnames =
             uis.pmi[m_player.model.curvalue].skindisplaynames;
-        m_player.skin.curvalue = 0;
+        m_player.skin.curvalue = m_player.model_skin[m_player.model.curvalue];
+        if (m_player.skin.curvalue < 0 || m_player.skin.curvalue >= uis.pmi[m_player.model.curvalue].nskins)
+            m_player.skin.curvalue = 0;
         SpinControl_Init(&m_player.skin);
         // fall through
     case ID_SKIN:
+        m_player.model_skin[m_player.model.curvalue] = m_player.skin.curvalue;
         ReloadMedia();
         break;
     default:
@@ -322,6 +420,7 @@ static bool Push(menuFrameWork_t *self)
 
     m_player.skin.curvalue = currentskinindex;
     m_player.skin.itemnames = uis.pmi[currentdirectoryindex].skindisplaynames;
+    m_player.model_skin[currentdirectoryindex] = currentskinindex;
 
     m_player.hand.curvalue = Cvar_VariableInteger("hand");
     clamp(m_player.hand.curvalue, 0, 2);
@@ -351,6 +450,10 @@ static bool Push(menuFrameWork_t *self)
 
     ReloadMedia();
 
+    // every opening starts from the same pose, not wherever the last drag left it
+    m_player.dragging = false;
+    SetYaw(PLAYER_DEFAULT_YAW);
+
     // set up oldframe correctly
     m_player.time = uis.realtime - 120;
     m_player.oldTime = m_player.time;
@@ -368,13 +471,14 @@ static void Free(menuFrameWork_t *self)
 void M_Menu_PlayerConfig(void)
 {
     static const vec3_t origin = { 40.0f, 0.0f, 0.0f };
-    static const vec3_t angles = { 0.0f, 260.0f, 0.0f };
+    static const vec3_t angles = { 0.0f, PLAYER_DEFAULT_YAW, 0.0f };
 
     m_player.menu.name = "players";
     m_player.menu.push = Push;
     m_player.menu.pop = Pop;
     m_player.menu.size = Size;
     m_player.menu.draw = Draw;
+    m_player.menu.keydown = Keydown;
     m_player.menu.free = Free;
 	m_player.menu.image = uis.backgroundHandle;
 
@@ -403,8 +507,12 @@ void M_Menu_PlayerConfig(void)
     VectorCopy(origin, m_player.entities[1].origin);
     VectorCopy(origin, m_player.entities[1].oldorigin);
 
+    // placed and tilted in the model file itself - origin, no rotation
+    m_player.card.flags = RF_VIEWERMODEL;
+    m_player.card.id = 3;
+
     m_player.refdef.num_entities = 0;
-    m_player.refdef.entities = m_player.entities;
+    m_player.refdef.entities = m_player.scene;
     m_player.refdef.rdflags = RDF_NOWORLDMODEL;
 
 	if (cls.ref_type == REF_TYPE_VKPT)

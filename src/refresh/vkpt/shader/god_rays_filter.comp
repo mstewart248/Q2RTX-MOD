@@ -293,6 +293,22 @@ void main()
 
 		vec4 grid = sample_froxel(screen_uv, view_depth);
 
+		/* ONE COLUMN, TWO LAYERS. Under the full-resolution split the reflection
+		   (field 0) and refraction (field 1) layers of a water or glass pixel are
+		   SUMMED by checkerboard_interleave.comp, and both of them start at the eye,
+		   so each taking this whole column put it on screen twice - the veil over
+		   water came out about twice the one over the floor beside it. Each layer
+		   keeps half, the same split reflect_refract.rgen gives the overlay; the
+		   combine pass reads the split from field 0's flags, so this does too.
+		   pt_fog_split_once. */
+		vec3 shared_column = grid.rgb;
+		if (global_ubo.pt_fullres_fields != 0 && global_ubo.pt_fog_split_once != 0.0)
+		{
+			int field0_flags = int(texelFetch(TEX_PT_VIEW_DIRECTION, ivec2(i_position.x - field_left, i_position.y), 0).w);
+			if (bitCount(field0_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1)
+				grid.rgb *= 0.5;
+		}
+
 		/* Through the pane: the column to the pane once, plus the stretch beyond it
 		   scaled by this layer's throughput - (1 - F) and the glass tint for the
 		   refraction field - which is how the march's pass 1 weights the same leg.
@@ -305,7 +321,7 @@ void main()
 		{
 			vec4 beyond = sample_froxel(screen_uv, abs(raw_view_depth));
 			vec3 layer_throughput = texelFetch(TEX_PT_GODRAYS_THROUGHPUT_DIST, i_position.xy, 0).rgb;
-			grid.rgb += layer_throughput * max(beyond.rgb - grid.rgb, vec3(0.0));
+			grid.rgb += layer_throughput * max(beyond.rgb - shared_column, vec3(0.0));
 			grid.a = beyond.a;
 		}
 

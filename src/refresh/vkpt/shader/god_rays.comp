@@ -125,6 +125,22 @@ bool IntersectRayBox(vec3 origin, vec3 direction, vec3 mins, vec3 maxs, out floa
 
 #include "fog_medium.glsl"
 
+// Whether this pixel's two layers (field 0 reflection, field 1 refraction) are
+// SUMMED by checkerboard_interleave.comp, which decides that from field 0's flags.
+// Both layers begin at the eye, so the column pass 0 marched up to the surface is
+// shared, and each layer may keep only half of it. See pt_fog_split_once.
+bool fog_layers_summed(ivec2 pos)
+{
+	if (global_ubo.pt_fullres_fields == 0 || global_ubo.pt_fog_split_once == 0.0)
+		return false;
+
+	if (pos.x >= global_ubo.pt_field_offset)
+		pos.x -= global_ubo.pt_field_offset;
+
+	int flags = int(texelFetch(TEX_PT_VIEW_DIRECTION, pos, 0).w);
+	return bitCount(flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1;
+}
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 void main()
 {
@@ -180,11 +196,22 @@ void main()
 	if (sourcePixelPos.x >= global_ubo.pt_field_offset * 2 || sourcePixelPos.y >= global_ubo.height)
 		return;
 
+	// The share of pass 0's eye-to-surface column this layer keeps.
+	float shared_column_weight = (push.pass_index != 0 && fog_layers_summed(sourcePixelPos)) ? 0.5 : 1.0;
+
 	if(push.pass_index != 0)
 	{
 		float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, sourcePixelPos.xy, 0).x;
 		if(view_depth >= 0)
 		{
+			// A split decided after the trace (security camera, translucent model)
+			// can leave field 0 on the primary surface, with no leg to march.
+			if (shared_column_weight < 1.0)
+			{
+				vec4 column = imageLoad(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy));
+				imageStore(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy),
+				           vec4(column.rgb * shared_column_weight, column.a));
+			}
 			return;
 		}
 	}
@@ -524,7 +551,10 @@ void main()
 	vec4 prevColor;
 
 	if(push.pass_index != 0)
+	{
 		prevColor = imageLoad(IMG_GODRAYS_INTERMEDIATE, ivec2(gl_GlobalInvocationID.xy));
+		prevColor.rgb *= shared_column_weight;
+	}
 	else
 		prevColor = vec4(0);
 

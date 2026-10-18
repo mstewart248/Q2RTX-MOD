@@ -765,6 +765,8 @@ void CL_RequestNextDownload(void)
             for (i = 2; i < MAX_MODELS; i++) {
                 name = cl.configstrings[CS_MODELS + i];
                 if (!name[0]) {
+                    if (i == MODELINDEX_PLAYER)
+                        continue;   // reserved and left empty - see PF_FindIndex
                     break;
                 }
                 if (name[0] == '*' || name[0] == '#') {
@@ -788,6 +790,8 @@ void CL_RequestNextDownload(void)
             for (i = 2; i < MAX_MODELS; i++) {
                 name = cl.configstrings[CS_MODELS + i];
                 if (!name[0]) {
+                    if (i == MODELINDEX_PLAYER)
+                        continue;   // reserved and left empty - see PF_FindIndex
                     break;
                 }
                 if (name[0] == '*' || name[0] == '#') {

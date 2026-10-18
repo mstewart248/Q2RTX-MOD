@@ -1526,6 +1526,13 @@ void ClientBegin(edict_t *ent)
 
     ent->client = game.clients + (ent - g_edicts - 1);
 
+    // The client cleared its inventory copy when it connected, and a loadgame
+    // or hub return below takes the waiting body without PutClientInServer, so
+    // reset here too. Otherwise G_SendInventory, still holding what it sent
+    // before the load, sees nothing new and the weapon bar has no weapons until
+    // a shot changes the ammo count.
+    G_ResetInventoryTracking(ent);
+
     if (deathmatch->value) {
         ClientBeginDeathmatch(ent);
         return;

@@ -1786,8 +1786,12 @@ static bool SCR_WeaponBarStep(int dir)
         }
 
         // nothing the bar can highlight - leave it idle rather than selected
-        // on a weapon it has no name or icon for
-        if (wb.selected < 0 || wb.item[wb.selected] < 0) {
+        // on a weapon it has no name or icon for.  The same when the gun in our
+        // hands is not in the inventory: the inventory has not arrived yet
+        // (it is empty after a load until the server sends it), and taking the
+        // step anyway swallowed it with nothing to move to - hand it to the
+        // server's weapnext instead.
+        if (wb.selected < 0 || wb.item[wb.selected] < 0 || !SCR_WeaponBarCarried(wb.selected)) {
             wb.selected = -1;
             return false;
         }

@@ -82,6 +82,8 @@ typedef int qhandle_t;
 #define MAX_EDICTS          8192    // must change protocol to increase more
 #define MAX_LIGHTSTYLES     256
 #define MAX_MODELS          512     // these are sent over the net as bytes
+#define MODELINDEX_PLAYER   255     // "this client's player model": never a file, so its
+                                    // configstring stays empty - see PF_FindIndex
 #define MAX_SOUNDS          256     // so they cannot be blindly increased
 #define MAX_IMAGES          256
 #define MAX_ITEMS           256

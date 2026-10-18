@@ -248,6 +248,8 @@ void CL_RegisterBspModels(void)
     for (i = 1; i < MAX_MODELS; i++) {
         name = cl.configstrings[CS_MODELS + i];
         if (!name[0]) {
+            if (i == MODELINDEX_PLAYER)
+                continue;   // reserved and left empty - see PF_FindIndex
             break;
         }
         if (name[0] == '*')
@@ -280,6 +282,8 @@ void CL_RegisterVWepModels(void)
     for (i = 2; i < MAX_MODELS; i++) {
         name = cl.configstrings[CS_MODELS + i];
         if (!name[0]) {
+            if (i == MODELINDEX_PLAYER)
+                continue;   // reserved and left empty - see PF_FindIndex
             break;
         }
         if (name[0] != '#') {
@@ -355,6 +359,8 @@ void CL_PrepRefresh(void)
     for (i = 2; i < MAX_MODELS; i++) {
         name = cl.configstrings[CS_MODELS + i];
         if (!name[0]) {
+            if (i == MODELINDEX_PLAYER)
+                continue;   // reserved and left empty - see PF_FindIndex
             break;
         }
         if (name[0] == '#') {
@@ -449,6 +455,18 @@ void CL_UpdateConfigstring(int index)
     // stops rotating is a race against level load time.
     if (index == CS_SKY || index == CS_SKYAXIS || index == CS_SKYROTATE) {
         CL_SetSky();
+        return;
+    }
+
+    // A mid-level music change - target_music (mgu5m3 switches between tracks 9,
+    // 19 and 64 as you go), a finished N64 target_goal, target_camera. Without
+    // this the change was dropped: the new track sat in the configstring until
+    // the next CL_PrepRefresh - a save load, vid_restart or `mat reload` - played
+    // it, so those seemed to change the music by themselves. Upstream Q2RTX has
+    // the same case; this fork's music code predates it. OGG_PlayTrack leaves a
+    // track that is already playing alone.
+    if (index == CS_CDTRACK) {
+        OGG_PlayTrack(atoi(s));
         return;
     }
 

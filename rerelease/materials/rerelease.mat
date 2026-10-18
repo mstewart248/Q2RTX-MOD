@@ -388,7 +388,7 @@ models/monsters/turret/md5/skin:
 	metalness_factor 1
 	roughness_override .01
 	base_factor 10
-	specular_factor 1
+	specular_factor 10
 	
 models/monsters/turret/skin:
 	texture_base materialDev/models/monsters/turret/skin.tga
@@ -18726,18 +18726,16 @@ textures/tomc/tc_rockwall_a:
 	texture_normals materialDev/textures/tomc/tc_rockwall_a_n.tga
 	metalness_factor 0
 
-# Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
-# so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
-# material has NO .mat entry at all: bsp_mesh.c does
-#     bool material_custom = !mat->source_matfile[0];
-#     synth_surface_material &= (pt_enable_surface_lights >= 2) || material_custom;
-# and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
-# turns material_custom off and silently kills the light. A stub is only safe for a
-# texture that is not a BSP surface light.
-# textures/tomc/tc_rockwall_b:
-# 	texture_base materialDev/textures/tomc/tc_rockwall_b.tga
-# 	texture_normals materialDev/textures/tomc/tc_rockwall_b_n.tga
-# 	metalness_factor 0
+# Deliberately NOT a light. The BSP flags this rock with SURF_LIGHT and a non-zero
+# radiance, so with no .mat entry Q2RTX synthesizes an emissive material and the whole
+# wall glows. That synthesis only runs for a texture with NO entry (bsp_mesh.c:
+# material_custom = !mat->source_matfile[0], and pt_enable_surface_lights defaults to 1),
+# so this entry is what switches the glow off. Do not add a texture_emissive here.
+textures/tomc/tc_rockwall_b:
+	texture_base materialDev/textures/tomc/tc_rockwall_b.tga
+	texture_normals materialDev/textures/tomc/tc_rockwall_b_n.tga
+	metalness_factor 0
+	albedo_strength .3
 
 textures/tomc/tc_rockwall_b_netting:
 	texture_base materialDev/textures/tomc/tc_rockwall_b_netting.tga
@@ -18757,6 +18755,7 @@ textures/tomc/tc_rockwall_d:
 	texture_base materialDev/textures/tomc/tc_rockwall_d.tga
 	texture_normals materialDev/textures/tomc/tc_rockwall_d_n.tga
 	metalness_factor 0
+	albedo_strength .3
 
 textures/tomc/tc_rockwall_e:
 	texture_base materialDev/textures/tomc/tc_rockwall_e.tga
@@ -25273,18 +25272,19 @@ models/objects/gibs/arm/skin:
 models/objects/gibs/bone/skin:
 	texture_base materialDev/models/objects/gibs/bone/skin.tga
 	texture_normals materialDev/models/objects/gibs/bone/skin_n.tga
+	texture_roughness materialDev/models/objects/gibs/bone/skin_rough.png
+	texture_metallic materialDev/models/objects/gibs/bone/skin_metallic.png
 	metalness_factor 0
 	emissive_factor 0.1
 	base_factor 2.5
-	specular_factor 0
 
 models/objects/gibs/bone2/skin:
 	texture_base materialDev/models/objects/gibs/bone2/skin.tga
 	texture_normals materialDev/models/objects/gibs/bone2/skin_n.tga
+	texture_roughness materialDev/models/objects/gibs/bone2/skin_rough.png
 	metalness_factor 0
-	emissive_factor 0.1
 	base_factor 2.5
-	specular_factor 0
+	specular_factor 1
 
 models/objects/gibs/chest/skin:
 	texture_base materialDev/models/objects/gibs/chest/skin.tga
@@ -25652,22 +25652,26 @@ models/monsters/carrier/gibs/thigh:
 models/monsters/float/gibs/base:
 	texture_base materialDev/models/monsters/float/gibs/base.tga
 	texture_normals materialDev/models/monsters/float/gibs/base_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/models/monsters/float/gibs/base_rough.png
+	texture_metallic materialDev/models/monsters/float/gibs/base_metal.png
 
 models/monsters/float/gibs/gun:
 	texture_base materialDev/models/monsters/float/gibs/gun.tga
 	texture_normals materialDev/models/monsters/float/gibs/gun_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/models/monsters/float/gibs/gun_rough.png
+	texture_metallic materialDev/models/monsters/float/gibs/gun_metal.png
 
 models/monsters/float/gibs/jar:
 	texture_base materialDev/models/monsters/float/gibs/jar.tga
 	texture_normals materialDev/models/monsters/float/gibs/jar_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/models/monsters/float/gibs/jar_rough.png
+	texture_metallic materialDev/models/monsters/float/gibs/jar_metal.png
 
 models/monsters/float/gibs/piece:
 	texture_base materialDev/models/monsters/float/gibs/piece.tga
 	texture_normals materialDev/models/monsters/float/gibs/piece_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/models/monsters/float/gibs/piece_rough.png
+	texture_metallic materialDev/models/monsters/float/gibs/piece_metal.png
 
 models/monsters/flyer/gibs/base:
 	texture_base materialDev/models/monsters/flyer/gibs/base.tga
@@ -25979,8 +25983,9 @@ models/monsters/soldier/gibs/arm_ss:
 
 models/monsters/soldier/gibs/chest:
 	texture_base materialDev/models/monsters/soldier/gibs/chest.tga
-	texture_normals materialDev/models/monsters/soldier/gibs/chest_n.tga
-	metalness_factor 0
+	texture_normals materialDev/models/monsters/soldier/gibs/chest_n.png
+	texture_roughness materialDev/models/monsters/soldier/gibs/chest_rough.png
+	texture_metallic materialDev/models/monsters/soldier/gibs/chest_metal.png
 
 models/monsters/soldier/gibs/chest_lt:
 	texture_base materialDev/models/monsters/soldier/gibs/chest_lt.tga
@@ -26010,7 +26015,8 @@ models/monsters/soldier/gibs/chest_ss:
 models/monsters/soldier/gibs/gun:
 	texture_base materialDev/models/monsters/soldier/gibs/gun.tga
 	texture_normals materialDev/models/monsters/soldier/gibs/gun_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/models/monsters/soldier/gibs/gun_rough.png
+	texture_metallic materialDev/models/monsters/soldier/gibs/gun_metal.png
 
 models/monsters/soldier/gibs/gun_lt:
 	texture_base materialDev/models/monsters/soldier/gibs/gun_lt.tga
@@ -26040,7 +26046,8 @@ models/monsters/soldier/gibs/gun_ss:
 models/monsters/soldier/gibs/head:
 	texture_base materialDev/models/monsters/soldier/gibs/head.tga
 	texture_normals materialDev/models/monsters/soldier/gibs/head_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/models/monsters/soldier/gibs/head_rough.png
+	texture_metallic materialDev/models/monsters/soldier/gibs/head_metal.png
 
 models/monsters/soldier/gibs/head_lt:
 	texture_base materialDev/models/monsters/soldier/gibs/head_lt.tga
@@ -26147,3 +26154,287 @@ models/monsters/tank/gibs/thigh_c:
 	texture_base materialDev/models/monsters/tank/gibs/thigh_c.tga
 	texture_normals materialDev/models/monsters/tank/gibs/thigh_c_n.tga
 	metalness_factor 0
+
+# --- Player model skins (added by hand, AFTER the generated block) ---
+# Every default skin of the three player models: players/{male,female,cyborg}/
+# *.pcx in the remaster's pak0.pak, minus the _i menu icons and the flag1/flag2
+# CTF flag textures. A player body takes its skin per client (entity->skin) and
+# looks its material up under the skin's path, for the .md2 and the md5 mesh
+# alike - the md5 meshes keep the classic UV layout, so one texture fits both.
+# Colour is per SKIN: <skin>.tga is a palette dump of the .pcx. The surface maps
+# are per MODEL and shared by all of its skins: body_n.tga (flat), body_rough.tga
+# (white = fully rough) and body_metallic.tga (black = dielectric). Paint them,
+# then mat reload. A skin that needs its own map drops it beside its colour
+# texture, named after it - grunt_n / _rough / _metallic / _height / _light.tga
+# next to grunt.tga - and it is used instead of the shared one, with no edit
+# here (player_skin_map in src/refresh/vkpt/material.c).
+
+players/male/cipher:
+	texture_base materialDev/players/male/cipher.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/claymore:
+	texture_base materialDev/players/male/claymore.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/ctf_b:
+	texture_base materialDev/players/male/ctf_b.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/ctf_r:
+	texture_base materialDev/players/male/ctf_r.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/deaddude:
+	texture_base materialDev/players/male/deaddude.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/disguise:
+	texture_base materialDev/players/male/disguise.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/flak:
+	texture_base materialDev/players/male/flak.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/grunt:
+	texture_base materialDev/players/male/grunt.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/howitzer:
+	texture_base materialDev/players/male/howitzer.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/insane1:
+	texture_base materialDev/players/male/insane1.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/insane2:
+	texture_base materialDev/players/male/insane2.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/insane3:
+	texture_base materialDev/players/male/insane3.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/major:
+	texture_base materialDev/players/male/major.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/nightops:
+	texture_base materialDev/players/male/nightops.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/pointman:
+	texture_base materialDev/players/male/pointman.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/psycho:
+	texture_base materialDev/players/male/psycho.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/rampage:
+	texture_base materialDev/players/male/rampage.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/razor:
+	texture_base materialDev/players/male/razor.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/recon:
+	texture_base materialDev/players/male/recon.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/rogue_b:
+	texture_base materialDev/players/male/rogue_b.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/rogue_r:
+	texture_base materialDev/players/male/rogue_r.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/scout:
+	texture_base materialDev/players/male/scout.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/sniper:
+	texture_base materialDev/players/male/sniper.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/male/viper:
+	texture_base materialDev/players/male/viper.tga
+	texture_normals materialDev/players/male/body_n.tga
+	texture_roughness materialDev/players/male/body_rough.tga
+	texture_metallic materialDev/players/male/body_metallic.tga
+
+players/female/athena:
+	texture_base materialDev/players/female/athena.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/brianna:
+	texture_base materialDev/players/female/brianna.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/cobalt:
+	texture_base materialDev/players/female/cobalt.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/ctf_b:
+	texture_base materialDev/players/female/ctf_b.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/ctf_r:
+	texture_base materialDev/players/female/ctf_r.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/disguise:
+	texture_base materialDev/players/female/disguise.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/ensign:
+	texture_base materialDev/players/female/ensign.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/jezebel:
+	texture_base materialDev/players/female/jezebel.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/jungle:
+	texture_base materialDev/players/female/jungle.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/lotus:
+	texture_base materialDev/players/female/lotus.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/rogue_b:
+	texture_base materialDev/players/female/rogue_b.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/rogue_r:
+	texture_base materialDev/players/female/rogue_r.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/stiletto:
+	texture_base materialDev/players/female/stiletto.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/venus:
+	texture_base materialDev/players/female/venus.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/female/voodoo:
+	texture_base materialDev/players/female/voodoo.tga
+	texture_normals materialDev/players/female/body_n.tga
+	texture_roughness materialDev/players/female/body_rough.tga
+	texture_metallic materialDev/players/female/body_metallic.tga
+
+players/cyborg/ctf_b:
+	texture_base materialDev/players/cyborg/ctf_b.tga
+	texture_normals materialDev/players/cyborg/body_n.tga
+	texture_roughness materialDev/players/cyborg/body_rough.tga
+	texture_metallic materialDev/players/cyborg/body_metallic.tga
+
+players/cyborg/ctf_r:
+	texture_base materialDev/players/cyborg/ctf_r.tga
+	texture_normals materialDev/players/cyborg/body_n.tga
+	texture_roughness materialDev/players/cyborg/body_rough.tga
+	texture_metallic materialDev/players/cyborg/body_metallic.tga
+
+players/cyborg/disguise:
+	texture_base materialDev/players/cyborg/disguise.tga
+	texture_normals materialDev/players/cyborg/body_n.tga
+	texture_roughness materialDev/players/cyborg/body_rough.tga
+	texture_metallic materialDev/players/cyborg/body_metallic.tga
+
+players/cyborg/oni911:
+	texture_base materialDev/players/cyborg/oni911.tga
+	texture_normals materialDev/players/cyborg/body_n.tga
+	texture_roughness materialDev/players/cyborg/body_rough.tga
+	texture_metallic materialDev/players/cyborg/body_metallic.tga
+
+players/cyborg/ps9000:
+	texture_base materialDev/players/cyborg/ps9000.tga
+	texture_normals materialDev/players/cyborg/body_n.tga
+	texture_roughness materialDev/players/cyborg/body_rough.tga
+	texture_metallic materialDev/players/cyborg/body_metallic.tga
+
+players/cyborg/tyr574:
+	texture_base materialDev/players/cyborg/tyr574.tga
+	texture_normals materialDev/players/cyborg/body_n.tga
+	texture_roughness materialDev/players/cyborg/body_rough.tga
+	texture_metallic materialDev/players/cyborg/body_metallic.tga

@@ -38,6 +38,18 @@ static int PF_FindIndex(const char *name, int start, int max, const char *func)
         return 0;
 
     for (i = 1; i < max; i++) {
+        // Model index 255 means "this client's player model" - the game sets it
+        // on players and their bodies, and the client draws any entity carrying
+        // it through cl.clientinfo. It was never handed out while MAX_MODELS was
+        // 256, but with the raised limit a busy map reached it: mgu5m3's two
+        // ammo_grenades drew as player models. Never give it to a file, as the
+        // rerelease reserves it (MODELINDEX_PLAYER). Inline models are numbered
+        // in SV_SpawnServer and stop below it (the most any map has is 227).
+        // The slot is left EMPTY, so every client loop that walks the model
+        // configstrings has to step over it rather than stop there - stopping
+        // left every model from 256 up unloaded (mgu6m1's invulnerability).
+        if (start == CS_MODELS && i == MODELINDEX_PLAYER)
+            continue;
         string = sv.configstrings[start + i];
         if (!string[0]) {
             break;

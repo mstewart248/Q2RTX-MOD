@@ -167,7 +167,11 @@ cvar_t *cvar_dump_image = NULL;
 #endif
 
 byte cluster_debug_mask[VIS_MAX_BYTES];
-int cluster_debug_index;
+// -1 = the PVS debug overlay is off. It was left at the C default of 0 until the
+// first map load reset it, so before any level the overlay was "on" for cluster 0 -
+// which the player setup menu gives its models (see fill_model_instance): a red
+// 8-unit checkerboard over the model when the menu was opened over the intro.
+int cluster_debug_index = -1;
 
 #define UBO_CVAR_DO(name, default_value) cvar_t *cvar_##name;
 UBO_CVAR_LIST
@@ -395,6 +399,9 @@ static VkExtent2D get_screen_image_extent(void)
 // resolution change carried stale history into the new scene. Set on any event that
 // invalidates temporal history, consumed once by the next DLSS evaluation.
 static bool dlss_reset_history = true;
+// The player setup preview has been running DLSS during photo mode - see the DLSS
+// arm of R_RenderFrame_RTX.
+static bool dlss_photo_preview_running = false;
 // Same idea for frame generation: DLSS-G keeps its own history of the previous
 // backbuffer, so it needs telling when that history is meaningless.
 static bool dlssg_reset_history = true;
@@ -3468,7 +3475,14 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 	const float* transform, uint32_t material_id, int instance_index, int iqm_matrix_index)
 {
 	int cluster = -1;
-	if (bsp_world_model)
+	if (vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL))
+	{
+		// No world (the player setup menu): the scene's one light list, list 0,
+		// holds its dlights. Looking the menu's origin up in whatever map happens
+		// to be loaded behind it would hand the model that map's light list instead.
+		cluster = 0;
+	}
+	else if (bsp_world_model)
 	{
 		cluster = BSP_PointLeaf(bsp_world_model->nodes, entity->origin)->cluster;
 
@@ -3533,7 +3547,9 @@ add_dlights(const dlight_t* dlights, int num_dlights, light_poly_t* light_list, 
 		const dlight_t* dlight = dlights + i;
 		light_poly_t* light = light_list + *num_lights;
 
-		light->cluster = BSP_PointLeaf(bsp->nodes, dlight->origin)->cluster;
+		// No BSP: a no-world scene (the player setup menu), whose one light list
+		// is list 0 - see vkpt_light_buffer_upload_to_staging.
+		light->cluster = bsp ? BSP_PointLeaf(bsp->nodes, dlight->origin)->cluster : 0;
 
 		/* The light's identity for ReSTIR's frame-to-frame remap
 		   (update_mlight_prev_to_current). It used to be the dlight's INDEX,
@@ -3992,7 +4008,11 @@ prepare_entities(EntityUploadInfo* upload_info)
 	int instance_idx = 0;
 	int iqm_matrix_offset = 0;
 
-	const bool first_person_model = (cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON) && cl.baseclientinfo.model;
+	// Viewer models - seen by bounce and shadow rays, never by the camera - are also
+	// how the player setup menu's bounce card (playerconfig.c) gets into its
+	// no-world scene, whatever the menu's own view setting says.
+	const bool first_person_model = ((vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL) != 0)
+		|| ((cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON) && cl.baseclientinfo.model);
 
 	for (int i = 0; i < vkpt_refdef.fd->num_entities; i++)
 	{
@@ -4641,9 +4661,18 @@ typedef struct reference_mode_s
 /* Radiance cache (pt_sharc): never in photo mode - the cache is biased, and that mode
    is the reference - and only at exactly 2 bounces, the one setting the video menu
    offers it for. With 1 bounce it only adds bias; from 3 on, real bounces carry the
-   light it approximates. Gates both the cache update and the shaders' use of it. */
+   light it approximates. Gates both the cache update and the shaders' use of it.
+
+   Never without a world either (the player setup menu): the cache is a world-space
+   voxel grid, and the menu model standing at the origin filled the voxels round it
+   with the railgun's emission, then read it back on every bounce that landed in
+   them - solid red blocks over the model with grid-straight edges. Being off for
+   a frame also queues a clear, so none of that reaches the level afterwards. */
 static bool sharc_active(const reference_mode_t *ref_mode)
 {
+	if (vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL))
+		return false;
+
 	return cvar_pt_sharc->value != 0 && !ref_mode->enable_accumulation && ref_mode->num_bounce_rays == 2.f;
 }
 
@@ -4930,11 +4959,20 @@ static void draw_accumulation_stats(int frames, int target)
 static void
 evaluate_reference_mode(reference_mode_t* ref_mode)
 {
-	const bool accumulating = is_accumulation_rendering_active();
+	const bool photo_mode = is_accumulation_rendering_active();
 
 	// before the branch below, so the very first accumulated frame is already
-	// using the photo mode aperture rather than converging the old one
-	update_photo_mode_aperture(accumulating);
+	// using the photo mode aperture rather than converging the old one. Keyed on
+	// photo mode itself, so a menu frame in between does not hand it back.
+	update_photo_mode_aperture(photo_mode);
+
+	/* Photo mode accumulates the WORLD view. The player setup menu's no-world
+	   frame, opened from photo mode, used to be accumulated too: its model is
+	   animated, so that averaged it into a smear, and the photo then carried on
+	   accumulating over whatever the menu had left behind. The menu renders as
+	   it does in play, and the photo starts over when the menu closes. */
+	const bool accumulating = photo_mode
+		&& !(vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL));
 
 	if (accumulating)
 	{
@@ -5290,7 +5328,9 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	if (wm->geom_opaque.prim_counts)      ubo->num_static_primitives += wm->geom_opaque.prim_counts[0];
 	if (wm->geom_transparent.prim_counts) ubo->num_static_primitives += wm->geom_transparent.prim_counts[0];
 	if (wm->geom_masked.prim_counts)      ubo->num_static_primitives += wm->geom_masked.prim_counts[0];
-	ubo->num_static_lights = vkpt_refdef.bsp_mesh_world.num_light_polys;
+	// Without a world the light buffer holds only the frame's model lights, from
+	// index 0 (see vkpt_light_buffer_upload_to_staging).
+	ubo->num_static_lights = render_world ? vkpt_refdef.bsp_mesh_world.num_light_polys : 0;
 
 	vkpt_fog_upload(ubo->fog_volumes);
 
@@ -5873,7 +5913,8 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 		vkpt_fsr_update_ubo(ubo);
 	}
 
-	ubo->first_person_model = cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON;
+	// also on without a world: the player setup menu's bounce card is a viewer model
+	ubo->first_person_model = cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON || !render_world;
 
 	memset(ubo->environment_rotation_matrix, 0, sizeof(ubo->environment_rotation_matrix));
 	VectorCopy(sky_matrix[0], ubo->environment_rotation_matrix[0]);
@@ -5978,7 +6019,13 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	float frame_time = min(1.f, max(0.f, fd->time - previous_time));
 	previous_time = fd->time;
 
-	vkpt_freecam_update(cls.frametime);
+	/* Photo mode's free camera belongs to the world view. Run on the player setup
+	   menu's no-world frame, it wrote the level's camera into the menu's refdef -
+	   which the menu keeps, and never sets again - so the model was drawn from
+	   wherever the player stood in the map: tiny and off to one side, and still
+	   like that after photo mode was left. */
+	if (render_world)
+		vkpt_freecam_update(cls.frametime);
 
 	static unsigned previous_wallclock_time = 0;
 	unsigned current_wallclock_time = Sys_Milliseconds();
@@ -6070,6 +6117,15 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		vkpt_build_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, fd->entities, fd->num_entities, prev_adapted_luminance, light_entity_ids[entity_frame_num], &num_model_lights);
 		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
+	}
+	else if (!render_world)
+	{
+		// The player setup menu lights its model with dlights. Upstream passed them
+		// in the UBO; here every light goes through the cluster lists, and this used
+		// to run only with a world, so the menu model got none and showed nothing
+		// but its own emissives. Without a BSP they all go into list 0, which
+		// fill_model_instance gives every no-world instance.
+		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, NULL, light_entity_ids[entity_frame_num]);
 	}
 
 	partition_bmodel_lights();
@@ -6837,7 +6893,9 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			vkpt_fsr_do(post_cmd_buf);
 		}
 
-		if (accumulation_bypasses_dlss()) {
+		// not for a menu frame opened from photo mode: that one is not accumulated
+		// (see evaluate_reference_mode), so it goes through DLSS as it does in play
+		if (ref_mode.enable_accumulation && accumulation_bypasses_dlss()) {
 			/* Photo mode - see accumulation_bypasses_dlss(). Everything downstream
 			   (bloom, tone mapping, the final blit) reads VKPT_IMG_DLSS_OUTPUT when
 			   DLSSEnabled(), so the accumulated frame is put there directly instead
@@ -6854,6 +6912,23 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			lastWallClocktime = frame_wallclock_time;
 		}
 		else if (DLSSEnabled()) {
+			/* The player setup preview opened from PHOTO MODE is the only frame that
+			   reaches DLSS during the pause: the world frames around it take the
+			   bypass above, and every one of them asks for a history reset for the
+			   first frame after the pause. That reset is the world's, not the
+			   preview's - taking it restarted RR on every preview frame. The preview
+			   resets once, on its first frame (what RR holds then is the pre-pause
+			   world), and leaves the flag standing for the world. */
+			const bool photo_preview = !render_world && is_accumulation_rendering_active();
+			bool reset_history = dlss_reset_history;
+			if (photo_preview) {
+				reset_history = !dlss_photo_preview_running;
+				dlss_photo_preview_running = true;
+			} else {
+				dlss_reset_history = false;
+				dlss_photo_preview_running = false;
+			}
+
 			DLSSRenderResolution resObj;
 			resObj.inputWidth = qvk.extent_render.width;
 			resObj.inputHeight = qvk.extent_render.height;
@@ -6865,9 +6940,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_DLSS);
 			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter,
 				frame_time <= 0.f ? frame_wallclock_time : frame_time,
-				dlss_reset_history ? qtrue : qfalse);
+				reset_history ? qtrue : qfalse);
 			END_PERF_MARKER(post_cmd_buf, PROFILER_DLSS);
-			dlss_reset_history = false;
 			lastFrameTime = frame_time;
 			lastWallClocktime = frame_wallclock_time;
 		}

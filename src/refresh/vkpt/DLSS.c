@@ -761,6 +761,19 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         resObject.outputHeight = resObject.inputHeight;
     }
 
+    /* INPUT NEVER WIDER THAN OUTPUT. get_render_extent() rounds the render width up
+       to even, so at a 100% render scale an odd-width window renders one column more
+       than it outputs - 3438 in for 3437 out - and NGX refuses to create the feature
+       ("Input dimensions ... must be <= output dimensions"), which switches DLSS off
+       until pt_dlss is changed. Photo mode pins the scale at 100%, and the player
+       setup preview opened from it runs DLSS at that scale: Matt, "stuck with the
+       denoiser off even though RR looks like it was turned on in the menu". The
+       spare column is simply not handed over. */
+    if (resObject.inputWidth > resObject.outputWidth)
+        resObject.inputWidth = resObject.outputWidth;
+    if (resObject.inputHeight > resObject.outputHeight)
+        resObject.inputHeight = resObject.outputHeight;
+
     ValidateDLSSFeature(cmd, resObject);
 
     if (dlssObj.pDlssFeature == NULL)
