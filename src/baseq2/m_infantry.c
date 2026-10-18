@@ -34,12 +34,13 @@ extern mmove_t infantry_move_attack4;
 
 // RANGE_NEAR * 0.75 in the rerelease, where their RANGE_NEAR is 440 units.  This
 // tree's RANGE_NEAR is an enum tag rather than a distance, so spell it out.
-// id measures it box gap to box gap (range_to); realrange() is origin to origin
-// at the moment, so every test against it goes through realrange().
+// id measures it box gap to box gap: range_to(), which is that in the
+// rerelease game. Not realrange() - that is origin to origin there.
 #define RANGE_RUN_ATTACK    330.0f
 
 // id's RANGE_MELEE: 20 units of gap between the bounding boxes ("bboxes
-// basically touching"), again measured through realrange()
+// basically touching"), again through range_to(). Measured with realrange() it
+// was dead: two touching boxes have origins at least 32 apart.
 #define INFANTRY_RANGE_MELEE    20.0f
 
 
@@ -872,7 +873,7 @@ void infantry_set_firetime(edict_t *self)
 
     if (M_RereleaseAnims() &&
         !(self->monsterinfo.aiflags & AI_STAND_GROUND) && self->enemy &&
-        realrange(self, self->enemy) >= RANGE_RUN_ATTACK &&
+        range_to(self, self->enemy) >= RANGE_RUN_ATTACK &&
         ai_check_move(self, 8.0f)) {
         self->monsterinfo.aiflags &= ~AI_HOLD_FRAME;
         self->monsterinfo.currentmove = &infantry_move_attack4;
@@ -920,7 +921,7 @@ void infantry_fire(edict_t *self)
             self->monsterinfo.currentmove = &infantry_move_attack1;
             self->monsterinfo.nextframe = FRAME_attak114;
         } else if ((self->monsterinfo.aiflags & AI_STAND_GROUND) ||
-                   (self->enemy && (realrange(self, self->enemy) < RANGE_RUN_ATTACK ||
+                   (self->enemy && (range_to(self, self->enemy) < RANGE_RUN_ATTACK ||
                                     !ai_check_move(self, 8.0f)))) {
             // got too close, or ran out of room to advance
             self->monsterinfo.currentmove = &infantry_move_attack1;
@@ -1124,7 +1125,7 @@ void infantry_attack(edict_t *self)
 
         monster_done_dodge(self);
 
-        if (realrange(self, self->enemy) <= INFANTRY_RANGE_MELEE &&
+        if (range_to(self, self->enemy) <= INFANTRY_RANGE_MELEE &&
             self->monsterinfo.melee_debounce_framenum <= level.framenum)
             self->monsterinfo.currentmove = &infantry_move_attack2;
         else if (M_CheckClearShot(self, monster_flash_offset[MZ2_INFANTRY_MACHINEGUN_1], shot_start)) {

@@ -1162,8 +1162,9 @@ static const float RANGE_CHAINGUN_RUN = 400.f;
 
 // kick range. id's RANGE_MELEE is 20 units of gap between the two bounding
 // boxes ("bboxes basically touching"); the enum RANGE_MELEE here is 0, which
-// made the kick dead. Measured through realrange() - origin to origin at the
-// moment - so the box-gap switch can happen in one place.
+// made the kick dead. Measured through range_to(), the box gap in the
+// rerelease game - realrange() is origin to origin there, and two touching
+// boxes are never within 20 of each other that way, so it was still dead.
 static const float GUNCMDR_RANGE_KICK = 20.f;
 
 /*
@@ -1203,7 +1204,7 @@ void guncmdr_attack(edict_t *self)
 
 	monster_done_dodge(self);
 
-	float d = realrange(self, self->enemy);
+	float d = range_to(self, self->enemy);
 
 	vec3_t forward, right, aim;
 	AngleVectors(self->s.angles, forward, right, NULL); // PGM
@@ -1236,7 +1237,7 @@ void guncmdr_attack(edict_t *self)
 
 void guncmdr_fire_chain(edict_t *self)
 {
-	if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) && self->enemy && realrange(self, self->enemy) > RANGE_CHAINGUN_RUN && ai_check_move(self, 8.0f))
+	if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) && self->enemy && range_to(self, self->enemy) > RANGE_CHAINGUN_RUN && ai_check_move(self, 8.0f))
 		self->monsterinfo.currentmove = &guncmdr_move_fire_chain_run;
 	else
 		self->monsterinfo.currentmove = &guncmdr_move_fire_chain;
@@ -1251,7 +1252,7 @@ void guncmdr_refire_chain(edict_t *self)
 		if (visible(self, self->enemy))
 			if (random() <= 0.5f)
 			{
-				if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) && self->enemy && realrange(self, self->enemy) > RANGE_CHAINGUN_RUN && ai_check_move(self, 8.0f))
+				if (!(self->monsterinfo.aiflags & AI_STAND_GROUND) && self->enemy && range_to(self, self->enemy) > RANGE_CHAINGUN_RUN && ai_check_move(self, 8.0f))
 					self->monsterinfo.currentmove = &guncmdr_move_fire_chain_run;
 				else
 					self->monsterinfo.currentmove = &guncmdr_move_fire_chain;

@@ -928,8 +928,8 @@ static bool gunner_grenade_check(edict_t *self)
 }
 
 // [rerelease] id's RANGE_NEAR * 0.35: inside this the gunner always uses the
-// chaingun if it has a clear shot. id measures it box gap to box gap (range_to);
-// realrange() is origin to origin at the moment.
+// chaingun if it has a clear shot. id measures it box gap to box gap, as
+// range_to() does in the rerelease game.
 #define GUNNER_RANGE_CHAINGUN   (440.0f * 0.35f)
 
 void gunner_attack(edict_t *self)
@@ -993,7 +993,7 @@ void gunner_attack(edict_t *self)
     // in this tree.)
     if (M_RereleaseGame()) {
         if (self->timestamp > level.framenum ||
-            (realrange(self, self->enemy) <= GUNNER_RANGE_CHAINGUN &&
+            (range_to(self, self->enemy) <= GUNNER_RANGE_CHAINGUN &&
              M_CheckClearShot(self, monster_flash_offset[MZ2_GUNNER_MACHINEGUN_1], shot_start))) {
             self->monsterinfo.currentmove = &gunner_move_attack_chain;
         } else if (self->timestamp <= level.framenum && random() <= 0.5f && gunner_grenade_check(self)) {

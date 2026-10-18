@@ -1888,9 +1888,9 @@ bool M_CheckAttack(edict_t *self)
         // because the monster closes to melee before it ever rolls an attack.
         //
         // Their range bounds are real distances (20 / 440 / 940), not this
-        // tree's RANGE_* enum tags, so measure with realrange().  They also
-        // apply no skill multiplier here.
-        float d = realrange(self, self->enemy);
+        // tree's RANGE_* enum tags, so measure with range_to() - the box gap
+        // they are distances of.  They also apply no skill multiplier here.
+        float d = range_to(self, self->enemy);
 
         if (d > 940.0f)
             return false;

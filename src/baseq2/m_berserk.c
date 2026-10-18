@@ -443,7 +443,7 @@ void berserk_dodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, boo
 static void berserk_run_attack_speed(edict_t *self)
 {
     // close enough to connect - jump straight to the swing
-    if (self->enemy && realrange(self, self->enemy) < MELEE_DISTANCE) {
+    if (self->enemy && range_to(self, self->enemy) < MELEE_DISTANCE) {
         self->monsterinfo.nextframe = self->s.frame + 6;
         monster_done_dodge(self);
     }
@@ -503,17 +503,17 @@ void berserk_attack(edict_t *self)
         return;
 
     if (self->monsterinfo.melee_debounce_framenum <= level.framenum &&
-        realrange(self, self->enemy) < MELEE_DISTANCE) {
+        range_to(self, self->enemy) < MELEE_DISTANCE) {
         berserk_melee(self);
     } else if (!(self->spawnflags & SPAWNFLAG_BERSERK_NOJUMPING) &&
                level.framenum > self->timestamp && (Q_rand() & 1) &&
-               realrange(self, self->enemy) > 150.0f) {
+               range_to(self, self->enemy) > 150.0f) {
         // the leaping ground slam.  Only worth doing from a distance, and on a
         // long cooldown - otherwise the berserk just pogos at you
         self->monsterinfo.currentmove = &berserk_move_attack_slam;
         self->timestamp = level.framenum + 5 * BASE_FRAMERATE;
     } else if (self->monsterinfo.currentmove == &berserk_move_run1 &&
-               realrange(self, self->enemy) <= BERSERK_RANGE_NEAR) {
+               range_to(self, self->enemy) <= BERSERK_RANGE_NEAR) {
         // pick up the run attack at the same point in the stride, so the
         // switch from run1 to r_att1 does not pop
         self->monsterinfo.currentmove = &berserk_move_run_attack1;

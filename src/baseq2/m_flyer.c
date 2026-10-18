@@ -548,7 +548,7 @@ void flyer_attack(edict_t *self)
         return;
     }
 
-    range = realrange(self, self->enemy);
+    range = range_to(self, self->enemy);
     self->monsterinfo.attack_state = AS_STRAIGHT;
 
     // the closer it already is, the likelier it commits to the slice

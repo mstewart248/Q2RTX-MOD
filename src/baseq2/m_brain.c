@@ -779,7 +779,7 @@ void brain_attack(edict_t *self)
     if (!self->enemy)
         return;
 
-    if (realrange(self, self->enemy) <= BRAIN_RANGE_NEAR) {
+    if (range_to(self, self->enemy) <= BRAIN_RANGE_NEAR) {
         if (random() < 0.5f)
             self->monsterinfo.currentmove = &brain_move_attack3;
         else if (!(self->spawnflags & SPAWNFLAG_BRAIN_NO_LASERS))

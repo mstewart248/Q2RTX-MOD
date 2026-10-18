@@ -598,6 +598,21 @@ void G_RunFrame(void)
         return;
     }
 
+    // A monster (alive or dead) is RF_FRAMELERP: the client draws it sliding
+    // from s.old_origin to s.origin over the frame, so old_origin has to be
+    // where it stood when the frame began. Taking it when the entity's own
+    // turn comes round below missed whatever a lower-numbered entity had
+    // already done to it - a lift carrying it - and anything riding a lift
+    // that runs first jumped the lift's whole 0.1 s of travel at once, ten
+    // times a second, while the lift itself glided.
+    ent = &g_edicts[0];
+    for (i = 0 ; i < globals.num_edicts ; i++, ent++) {
+        if (ent->inuse && (ent->s.renderfx & RF_FRAMELERP)) {
+            VectorCopy(ent->s.origin, ent->s.old_origin);
+            ent->old_origin_framenum = level.framenum;
+        }
+    }
+
     //
     // treat each object in turn
     // even the world gets a chance to think
@@ -609,7 +624,8 @@ void G_RunFrame(void)
 
         level.current_entity = ent;
 
-        if (!(ent->s.renderfx & RF_BEAM))
+        // everything else, and anything spawned since the pass above, as id did
+        if (!(ent->s.renderfx & RF_BEAM) && ent->old_origin_framenum != level.framenum)
             VectorCopy(ent->s.origin, ent->s.old_origin);
 
         // if the ground entity moved, make sure we are still on it

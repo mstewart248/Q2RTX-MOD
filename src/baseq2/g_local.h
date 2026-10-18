@@ -2132,6 +2132,7 @@ struct edict_s {
     edict_t     *activator;
     edict_t     *groundentity;
     int         groundentity_linkcount;
+    int         old_origin_framenum;    // G_RunFrame took s.old_origin at frame start
     edict_t     *teamchain;
     edict_t     *teammaster;
 

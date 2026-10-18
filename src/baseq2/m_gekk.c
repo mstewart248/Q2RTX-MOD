@@ -859,7 +859,7 @@ void reloogie(edict_t *self)
     if (self->enemy && self->enemy->health >= 0) {
         // [rerelease] anywhere within 440, melee range included
         if (M_RereleaseGame()) {
-            if (random() > 0.7f && realrange(self, self->enemy) <= GEKK_RANGE_NEAR)
+            if (random() > 0.7f && range_to(self, self->enemy) <= GEKK_RANGE_NEAR)
                 self->monsterinfo.currentmove = &gekk_move_spit;
         } else if (random() > 0.7f && range(self, self->enemy) == RANGE_NEAR)
             self->monsterinfo.currentmove = &gekk_move_spit;
@@ -1147,7 +1147,7 @@ void gekk_attack(edict_t *self)
     if (!self->enemy)
         return;
 
-    r = realrange(self, self->enemy);
+    r = range_to(self, self->enemy);
 
     if (self->flags & FL_SWIM) {
         // stay in the water while the enemy is still in it

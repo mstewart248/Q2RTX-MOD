@@ -26438,3 +26438,80 @@ players/cyborg/tyr574:
 	texture_normals materialDev/players/cyborg/body_n.tga
 	texture_roughness materialDev/players/cyborg/body_rough.tga
 	texture_metallic materialDev/players/cyborg/body_metallic.tga
+
+# --- Third-person weapon skins, md5 (added by hand, AFTER the generated block) ---
+# The weapon a player holds in third person, players/<model>/md5/w_*.md5mesh,
+# draws with the WORLD weapon's md5 skin in models/weapons/g_*/md5/ (MD5_SkinPath
+# and MD5_HeldWeaponSkin in src/refresh/vkpt/models.c). So an entry here also
+# changes that weapon's pickup on the floor. weapon.md5mesh (custom player
+# skins) uses the shotgun's.
+# The entries are empty, i.e. tuning-only, and change nothing as they stand:
+# - the textures still come from the md5/ folder: <stem>.png, <stem>_glow.png,
+#   and any <stem>_n / _rough / _metallic / _height .tga dropped beside it
+#   (g_chain has all three). A single texture_<slot> line replaces just that slot.
+# - every value not written here is still inherited from the classic skin's
+#   entry, as the comment on each says. A value written here wins. Exception:
+#   with its own _rough.tga a skin skips the classic roughness_override and
+#   specular_factor, and with _metallic.tga the classic metalness_factor.
+# Don't add a texture_base unless you mean to replace every texture: an entry
+# that names one describes all of them, and 'mat reload' then stops re-applying
+# the inherited values (a cold load still does), so g_shotg drops from
+# base_factor 2.5 to 1 after the reload.
+
+models/weapons/g_bfg/md5/skin:
+	# w_bfg; inherits emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_blast/md5/base:
+	# w_blaster; inherits emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_chainf/md5/skin:
+	# w_chainfist; inherits metalness_factor 0 (rerelease.mat)
+
+models/weapons/g_chain/md5/skin:
+	# w_chaingun; inherits emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_dist/md5/skin:
+	# w_disrupt; inherits metalness_factor 0 (rerelease.mat)
+
+models/weapons/g_etf_rifle/md5/skin:
+	# w_etfrifle; no classic entry, engine defaults
+
+models/weapons/g_launch/md5/skin:
+	# w_glauncher; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_flareg/md5/base:
+	# w_grapple; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_hyperb/md5/skin:
+	# w_hyperblaster; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_machn/md5/skin:
+	# w_machinegun; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_shotx/md5/skin:
+	# w_phalanx; inherits metalness_factor 0 (rerelease.mat)
+
+models/weapons/g_beamer/md5/skin:
+	# w_plasma; inherits metalness_factor 0 (rerelease.mat)
+
+models/weapons/g_plaunch/md5/proxskin:
+	# w_plauncher; no classic entry, engine defaults
+
+models/weapons/g_rail/md5/skin:
+	# w_railgun; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_boom/md5/ripper:
+	# w_ripper; inherits metalness_factor 0 (rerelease.mat)
+
+models/weapons/g_rocket/md5/skin:
+	# w_rlauncher; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
+
+models/weapons/g_shotg/md5/skin:
+	# w_shotgun; inherits specular_factor 0, emissive_factor 0.1, base_factor 2.5 (baseq2.mat)
+
+models/weapons/g_shotg2/md5/skin:
+	texture_metallic models/weapons/g_shotg2/md5/skin_metal.png
+	texture_roughness models/weapons/g_shotg2/md5/skin_rough.png
+	emissive_factor .1
+	
+

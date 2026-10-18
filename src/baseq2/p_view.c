@@ -122,8 +122,12 @@ void P_DamageFeedback(edict_t *player)
     if (count < 10)
         count = 10; // always make a visible effect
 
-    // play an apropriate pain sound
-    if ((level.framenum > player->pain_debounce_framenum) && !(player->flags & FL_GODMODE) && (client->invincible_framenum <= level.framenum)) {
+    // play an apropriate pain sound - except in lava, where the voice belongs
+    // to the burn scream in P_WorldEffects. It only held the pain sound off
+    // while alive: a body still burning after death grunted over its own
+    // death scream every 0.7 s until it gibbed.
+    if ((level.framenum > player->pain_debounce_framenum) && !(player->flags & FL_GODMODE) && (client->invincible_framenum <= level.framenum)
+        && !(player->waterlevel && (player->watertype & CONTENTS_LAVA))) {
         r = 1 + (Q_rand() & 1);
         player->pain_debounce_framenum = level.framenum + 0.7f * BASE_FRAMERATE;
         if (player->health < 25)
@@ -553,13 +557,21 @@ void P_FallingDamage(edict_t *ent)
     ent->client->fall_time = level.time + FALL_TIME;
 
     if (delta > 30) {
+        // landing hard in shallow lava: the burn scream is the voice, so no
+        // landing grunt over it, and its debounce is left alone - zeroing it
+        // restarted the scream on the next frame, 0.1 s in
+        bool in_lava = ent->waterlevel && (ent->watertype & CONTENTS_LAVA);
+
         if (ent->health > 0) {
-            if (delta >= 55)
+            if (in_lava)
+                ent->s.event = EV_FALLSHORT;
+            else if (delta >= 55)
                 ent->s.event = EV_FALLFAR;
             else
                 ent->s.event = EV_FALL;
         }
-        ent->pain_debounce_framenum = level.framenum;   // no normal pain sound
+        if (!in_lava)
+            ent->pain_debounce_framenum = level.framenum;   // no normal pain sound
         damage = (delta - 30) / 2;
         if (damage < 1)
             damage = 1;
@@ -613,6 +625,14 @@ void P_WorldEffects(void)
 
         // clear damage_debounce, so the pain sound will play immediately
         current_player->damage_debounce_framenum = level.framenum - 1 * BASE_FRAMERATE;
+
+        // That line never did it for a player - only monsters read
+        // damage_debounce. The burn scream below waits on pain_debounce, so a
+        // pain grunt from the last 0.7 s (the hit that knocked you in, a hard
+        // landing) held the scream off and was what you heard falling in.
+        // Clearing it starts the scream this frame, over the grunt.
+        if (current_player->watertype & CONTENTS_LAVA)
+            current_player->pain_debounce_framenum = level.framenum;
     }
 
     //

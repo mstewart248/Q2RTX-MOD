@@ -56,13 +56,12 @@ Mapping this file onto src/rerelease/m_soldier.cpp
                            <=1 blaster/ripper, 2-3 shotgun/hypergun,
                            >=4 machinegun/lasergun.
   their `s.skinnum >= 6`   ours is `self->style == 1` (the soldierh family).
-  their `range_to()`       ours is `realrange()`.  NOT the same measure: theirs
-                           is the gap between the two bounding boxes, ours is
-                           origin to origin (box gap only for scaled
-                           entities), so every SOLDIER_RANGE_* test below
-                           fires roughly 32 units further out than id's.  All
-                           of them go through realrange() so the switch can
-                           be made in one place.  Their RANGE_* are DISTANCES
+  their `range_to()`       ours too: in the rerelease game it is the gap
+                           between the two bounding boxes, as theirs.  NOT
+                           realrange(), which is origin to origin there - it
+                           ran every SOLDIER_RANGE_* test about 32 units
+                           closer in than id's and made the 20-unit melee
+                           impossible.  Their RANGE_* are DISTANCES
                            in units where this tree's are enum tags for
                            range().  Hence the two SOLDIER_RANGE_* below, with
                            id's values from their g_local.h:2213.
@@ -904,7 +903,7 @@ void soldier_attack1_refire1(edict_t *self)
             return;
 
         if (((random() < 0.5f) && visible(self, self->enemy)) ||
-            (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE))
+            (range_to(self, self->enemy) <= SOLDIER_RANGE_MELEE))
             self->monsterinfo.nextframe = FRAME_attak102;
         else
             self->monsterinfo.nextframe = FRAME_attak110;
@@ -937,7 +936,7 @@ void soldier_attack1_refire2(edict_t *self)
 
         // radius_dmg is the forced refire the shotgun check below asked for
         if (((self->radius_dmg || random() < 0.5f) && visible(self, self->enemy)) ||
-            (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE)) {
+            (range_to(self, self->enemy) <= SOLDIER_RANGE_MELEE)) {
             self->monsterinfo.nextframe = FRAME_attak102;
             self->radius_dmg = 0;
         }
@@ -1028,7 +1027,7 @@ void soldier_attack2_refire1(edict_t *self)
             return;
 
         if (((random() < 0.5f) && visible(self, self->enemy)) ||
-            (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE))
+            (range_to(self, self->enemy) <= SOLDIER_RANGE_MELEE))
             self->monsterinfo.nextframe = FRAME_attak204;
         return;
     }
@@ -1061,7 +1060,7 @@ void soldier_attack2_refire2(edict_t *self)
         // melee-range clause: it is already firing a continuous beam
         if (((self->radius_dmg || random() < 0.5f) && visible(self, self->enemy)) ||
             ((self->style == 0 || self->s.skinnum < 4) &&
-             (realrange(self, self->enemy) <= SOLDIER_RANGE_MELEE))) {
+             (range_to(self, self->enemy) <= SOLDIER_RANGE_MELEE))) {
             self->monsterinfo.nextframe = FRAME_attak204;
             self->radius_dmg = 0;
         }
@@ -1293,7 +1292,7 @@ void soldier_attack6_refire1(edict_t *self)
         return;
 
     if (self->enemy->health <= 0 ||
-        realrange(self, self->enemy) < SOLDIER_RANGE_NEAR ||
+        range_to(self, self->enemy) < SOLDIER_RANGE_NEAR ||
         !visible(self, self->enemy)) {
         soldier_run(self);
         return;
@@ -1315,7 +1314,7 @@ void soldier_attack6_refire2(edict_t *self)
         return;
 
     if (self->enemy->health <= 0 ||
-        (!self->radius_dmg && realrange(self, self->enemy) < SOLDIER_RANGE_NEAR) ||
+        (!self->radius_dmg && range_to(self, self->enemy) < SOLDIER_RANGE_NEAR) ||
         !visible(self, self->enemy)) {
         soldierh_hyper_laser_sound_end(self);
         return;
@@ -1605,7 +1604,7 @@ void soldier_attack(edict_t *self)
     // Not limited by M_CheckClearShot: at this range it does not matter.
     if (!(self->monsterinfo.aiflags & (AI_BLOCKED | AI_STAND_GROUND)) && random() < 0.25f &&
         self->s.skinnum <= 3 &&
-        realrange(self, self->enemy) >= (SOLDIER_RANGE_NEAR * 0.5f)) {
+        range_to(self, self->enemy) >= (SOLDIER_RANGE_NEAR * 0.5f)) {
         self->monsterinfo.currentmove = &soldier_move_attack6;
         return;
     }
@@ -1617,7 +1616,7 @@ void soldier_attack(edict_t *self)
         // [Paril-KEX] the shotgun guard only uses attack2 up close - attack1
         // is its long pose and the spread makes it useless there
         if (self->style == 0 && self->s.skinnum >= 2 && self->s.skinnum <= 3 &&
-            realrange(self, self->enemy) <= (SOLDIER_RANGE_NEAR * 0.65f))
+            range_to(self, self->enemy) <= (SOLDIER_RANGE_NEAR * 0.65f))
             attack1_possible = false;
         else
             attack1_possible = M_CheckClearShot(self, monster_flash_offset[MZ2_SOLDIER_BLASTER_1], ignored);
@@ -1665,7 +1664,7 @@ void soldier_sight(edict_t *self, edict_t *other)
     // [Paril-KEX] the rerelease drops the skill test and adds a visibility one -
     // don't break into a run-and-shoot at something you cannot see.  The
     // soldierh family always takes it; the stock soldier one time in four.
-    if (self->enemy && realrange(self, self->enemy) >= SOLDIER_RANGE_NEAR &&
+    if (self->enemy && range_to(self, self->enemy) >= SOLDIER_RANGE_NEAR &&
         visible(self, self->enemy)) {
         if (self->style == 1 || random() > 0.75f) {
             // legacy bug fix: no run-and-shoot for the machinegun and lasergun
