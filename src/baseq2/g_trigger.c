@@ -1015,12 +1015,14 @@ void droppod_light_think(edict_t *self)
         return;
     }
 
-    // Drop roughly one beat in three so the strobe stays irregular. The pulse
-    // itself cannot go faster than one think (10Hz), so the randomness has to
-    // come from skipped beats plus the jittered radius and life on the client.
-    // (Was one in four - about 7.5 pulses/s. One in three, ~6.7/s, slowed it a
-    // touch at Matt's request 2026-09-23.)
-    if (player->inuse && player->client && player->health > 0 && (Q_rand() % 3)) {
+    // One beat every other frame, 5 a second, the rate of the light style 4
+    // ("mamama...") the rerelease runs on the pod's own `light`. The client
+    // fades each beat up and down over the 200ms - see MZ_PODLIGHT in
+    // effects.c. (Was a random two frames in three - ~6.7 hard flashes a
+    // second - and before that three in four, ~7.5/s. Steady 5/s at Matt's
+    // request 2026-10-20: the rerelease is slower, and the fast hard flashes
+    // gave ReSTIR artifacts.)
+    if (player->inuse && player->client && player->health > 0 && !(level.framenum & 1)) {
         gi.WriteByte(svc_muzzleflash);
         gi.WriteShort(player - g_edicts);
         gi.WriteByte(MZ_PODLIGHT);

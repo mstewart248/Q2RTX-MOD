@@ -165,10 +165,22 @@ void CL_AddDLights(void)
 
     dl = cl_dlights;
     for (i = 0; i < MAX_DLIGHTS; i++, dl++) {
+        float scale = 1.0f;
+
         if (dl->die < cl.time)
             continue;
+
+        // A pulsing light ramps 0 -> 1 -> 0 over dl->pulse ms. It stays in
+        // the list at zero rather than dropping out, so ReSTIR keeps matching
+        // it to itself from frame to frame.
+        if (dl->pulse) {
+            scale = 1.0f - fabsf(2.0f * (cl.time - dl->pulse_start) / dl->pulse - 1.0f);
+            if (scale < 0.0f)
+                scale = 0.0f;
+        }
+
         V_AddLight(dl->origin, dl->radius,
-                   dl->color[0], dl->color[1], dl->color[2]);
+                   dl->color[0] * scale, dl->color[1] * scale, dl->color[2] * scale);
     }
 }
 
@@ -434,14 +446,24 @@ void CL_MuzzleFlash(void)
 	// to ~16 deg, more red than orange). Red is already 1, so it goes to 1.25
 	// instead, which holds luminance at 0.32 and the brightness where it was.
 	// Matt's request 2026-09-26.
+	//
+	// The beat now copies the rerelease: the pod's own `light` is style 4,
+	// "mamama...", which KEX steps every 100ms and lerps between steps
+	// (cl_lerp_lightstyles, default 1, in Paril's q2repro) - a 5 Hz fade up
+	// and down. The game sends a beat every 200ms and each one fades 0 -> 1
+	// -> 0 over that time. It used to be ~6.7 random hard flashes a second
+	// (45 .. 76ms each, radius jittered 76 .. 107), faster than the rerelease,
+	// and switching a light fully on and off that often left ReSTIR reusing
+	// samples of a light that was no longer there. The peak sits at the old
+	// average radius. Matt's request 2026-10-20.
 	case MZ_PODLIGHT:
 		VectorCopy(pl->current.origin, dl->origin);
 		dl->origin[2] += 16;
 		VectorSet(dl->color, 1.25f, 0.075f, 0.02f);          // emergency red-orange (was 1, 0.15, 0.02; before that 1, 0.35, 0.05)
-		dl->radius = 76 + (Q_rand() & 31);                    // 76 .. 107 (was 48 .. 79, originally 192 .. 255)
-		// Shorter than the 100ms think interval so each pulse has a real
-		// off-phase, and jittered so the strobe never settles into a rhythm.
-		dl->die = cl.time + 45 + (Q_rand() & 31);            // 45 .. 76ms (was 35 .. 66)
+		dl->radius = 92;                                      // peak (was 76 .. 107 per flash, before that 48 .. 79, originally 192 .. 255)
+		dl->pulse_start = cl.time;
+		dl->pulse = 200;
+		dl->die = cl.time + 200;
 		break;
 	// Q2RTX
     }

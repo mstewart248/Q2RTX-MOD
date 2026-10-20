@@ -64,8 +64,14 @@ static cvar_t *cvar_fg_pace_to_refresh = NULL;
    pt_reflex_vrr_cap: the VRR frame cap below, on by default. See reflex_vrr_interval_us(). */
 static cvar_t *cvar_vrr = NULL;
 static cvar_t *cvar_reflex_vrr_cap = NULL;
-/* NVAPI's answer for the monitor the swapchain was last created on: 1 VRR, 0 fixed, -1 unknown. */
-static int     reflex_vrr_detected = -1;
+/* NVAPI's answer for the monitor the swapchain was last created on: 1 VRR, 0 fixed, -1 unknown,
+   -2 not asked yet (so the first answer always prints, "unknown" included). */
+static int     reflex_vrr_detected = -2;
+/* The NVAPI bits behind the last printed answer, and the monitor and time to ask again.
+   See Reflex_DetectVRR() for why it is asked more than once. */
+static uint32_t reflex_vrr_bits = 0;
+static char     reflex_vrr_gdi_device[64];
+static unsigned reflex_vrr_next_poll_ms = 0;
 
 /* Refresh rate of the display the window is on, or 0 if SDL will not say. */
 int Reflex_DisplayRefreshHz(void)
@@ -119,6 +125,13 @@ static int reflex_paced_render_fps(void)
    variable refresh. The three function ids are from NVIDIA's public nvapi_interface.h and
    the struct is NV_GET_VRR_INFO_V1 from nvapi.h, declared by hand for the same reason
    fg_present.c declares its D3DKMT structs: the SDK is not in the tree for one bit. */
+
+/* Bits of reflex_query_vrr()'s *bits_out, for the console line. */
+#define REFLEX_VRR_ACTIVE       1u
+#define REFLEX_VRR_POSSIBLE     2u
+#define REFLEX_VRR_REQUESTED    4u
+#define REFLEX_VRR_DISPLAY_MODE 8u
+
 #ifdef _WIN32
 
 typedef void *(*PFN_reflex_nvapi_QueryInterface)(unsigned int id);
@@ -128,12 +141,22 @@ typedef int   (*PFN_reflex_NvAPI_GetVRRInfo)(uint32_t display_id, void *vrr_info
 
 typedef struct {
     uint32_t version;
-    uint32_t bIsVRREnabled : 1;
-    uint32_t reserved      : 31;
+    uint32_t bIsVRREnabled          : 1;    /* VRR is ACTIVE right now - see below */
+    uint32_t bIsVRRPossible         : 1;
+    uint32_t bIsVRRRequested        : 1;
+    uint32_t bIsVRRIndicatorEnabled : 1;
+    uint32_t bIsDisplayInVRRMode    : 1;
+    uint32_t reserved               : 27;
     uint32_t reservedEx[4];
 } reflex_nv_vrr_info_t;
 
-static int reflex_query_vrr(const char *gdi_device)
+/* bIsVRREnabled ALONE MISSED THE REPORTER'S G-SYNC (issue #22, second report). Its
+   nvapi.h comment is "VRR Mode is currently ACTIVE", and the first ask is made right
+   after the swapchain is created, before the first present - G-SYNC has not engaged yet,
+   so it read 0, "fixed refresh" was printed, and neither the cap nor the VRR pacing
+   ever switched on. Possible + requested is the configured state (a G-SYNC panel with
+   G-SYNC switched on in the control panel), which holds before the first flip. */
+static int reflex_query_vrr(const char *gdi_device, uint32_t *bits_out)
 {
     static bool tried = false;
     static PFN_reflex_NvAPI_GetDisplayIdByDisplayName get_display_id = NULL;
@@ -165,29 +188,76 @@ static int reflex_query_vrr(const char *gdi_device)
     if (get_vrr_info(display_id, &info) != 0)
         return -1;
 
-    return info.bIsVRREnabled ? 1 : 0;
+    *bits_out = (info.bIsVRREnabled       ? REFLEX_VRR_ACTIVE       : 0)
+              | (info.bIsVRRPossible      ? REFLEX_VRR_POSSIBLE     : 0)
+              | (info.bIsVRRRequested     ? REFLEX_VRR_REQUESTED    : 0)
+              | (info.bIsDisplayInVRRMode ? REFLEX_VRR_DISPLAY_MODE : 0);
+
+    if (info.bIsVRREnabled || info.bIsDisplayInVRRMode)
+        return 1;
+    return (info.bIsVRRPossible && info.bIsVRRRequested) ? 1 : 0;
 }
 
 #else
 
-static int reflex_query_vrr(const char *gdi_device) { (void)gdi_device; return -1; }
+static int reflex_query_vrr(const char *gdi_device, uint32_t *bits_out)
+{
+    (void)gdi_device;
+    (void)bits_out;
+    return -1;
+}
 
 #endif  /* _WIN32 */
 
-void Reflex_DetectVRR(const char *gdi_device)
+/* Prints only when the answer, or a bit other than "active", changes: "active" can drop
+   for a moment around loads and swapchain recreates without anything being different. */
+static void reflex_update_vrr(const char *gdi_device)
 {
-    int vrr = (gdi_device && *gdi_device) ? reflex_query_vrr(gdi_device) : -1;
-    if (vrr == reflex_vrr_detected)
-        return;
+    uint32_t bits = 0;
+    int vrr = (gdi_device && *gdi_device) ? reflex_query_vrr(gdi_device, &bits) : -1;
+    bool changed = vrr != reflex_vrr_detected
+        || ((bits ^ reflex_vrr_bits) & ~REFLEX_VRR_ACTIVE) != 0;
     reflex_vrr_detected = vrr;
+    reflex_vrr_bits = bits;
+    if (!changed)
+        return;
 
-    if (vrr > 0)
-        Com_Printf("Reflex: G-SYNC / VRR is on for %s\n", gdi_device);
-    else if (vrr == 0)
-        Com_Printf("Reflex: %s is fixed refresh (no G-SYNC / VRR)\n", gdi_device);
+    if (vrr >= 0)
+        Com_Printf("Reflex: %s %s (NVAPI: active %d, possible %d, requested %d, "
+                   "display in VRR mode %d)\n",
+            gdi_device,
+            vrr > 0 ? "is G-SYNC / VRR" : "is fixed refresh (no G-SYNC / VRR)",
+            (bits & REFLEX_VRR_ACTIVE)       ? 1 : 0,
+            (bits & REFLEX_VRR_POSSIBLE)     ? 1 : 0,
+            (bits & REFLEX_VRR_REQUESTED)    ? 1 : 0,
+            (bits & REFLEX_VRR_DISPLAY_MODE) ? 1 : 0);
     else
         Com_Printf("Reflex: cannot tell whether the display is VRR - set pt_vrr 1 for a "
                    "G-SYNC / FreeSync display\n");
+}
+
+/* Asked again once a second after this, by reflex_poll_vrr(): the swapchain create that
+   calls this runs before the first present, so whatever only shows up once G-SYNC has
+   engaged arrives later - and a switch in the control panel does not recreate the
+   swapchain at all. */
+void Reflex_DetectVRR(const char *gdi_device)
+{
+    Q_strlcpy(reflex_vrr_gdi_device, gdi_device ? gdi_device : "", sizeof(reflex_vrr_gdi_device));
+    reflex_vrr_next_poll_ms = Sys_Milliseconds() + 1000;
+    reflex_update_vrr(reflex_vrr_gdi_device);
+}
+
+static void reflex_poll_vrr(void)
+{
+    if (!reflex_vrr_gdi_device[0] || (cvar_vrr && cvar_vrr->integer >= 0))
+        return;
+
+    unsigned now = Sys_Milliseconds();
+    if ((int)(now - reflex_vrr_next_poll_ms) < 0)
+        return;
+    reflex_vrr_next_poll_ms = now + 1000;
+
+    reflex_update_vrr(reflex_vrr_gdi_device);
 }
 
 bool Reflex_DisplayVRR(void)
@@ -498,6 +568,9 @@ uint64_t Reflex_CurrentPresentID(void)
 
 void Reflex_SleepAndBeginFrame(void)
 {
+    /* Ahead of the mode, which reads the answer for the VRR cap. */
+    reflex_poll_vrr();
+
     /* Apply mode changes even while disabled, so switching pt_reflex off actually tells
        the driver to stop rather than just skipping our sleep. */
     reflex_apply_mode();

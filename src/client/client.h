@@ -1292,6 +1292,8 @@ typedef struct cdlight_s {
     float   die;        // stop lighting after this time
     float   decay;      // drop this each second
 	vec3_t  velosity;     // move this far each second
+    int     pulse;      // nonzero: brightness ramps 0 -> 1 -> 0 over this many ms
+    int     pulse_start; // cl.time the pulse began
 } cdlight_t;
 
 void CL_BigTeleportParticles(const vec3_t org);

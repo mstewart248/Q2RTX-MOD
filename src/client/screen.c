@@ -3331,9 +3331,14 @@ static void SCR_LayoutTableCells(const char **s, int row)
 static void SCR_LayoutTableStart(const char **s)
 {
     const char  *p = *s;
+    int         n;
 
     memset(&scr_table, 0, sizeof(scr_table));
-    scr_table.num_columns = min(atoi(COM_Parse(&p)), MAX_TABLE_COLUMNS);
+
+    // not inside min(): the macro would parse a second token, the first
+    // heading, and every table came out with no columns
+    n = atoi(COM_Parse(&p));
+    scr_table.num_columns = min(n, MAX_TABLE_COLUMNS);
     SCR_LayoutTableCells(s, 0);
     scr_table.num_rows = 1;
 }

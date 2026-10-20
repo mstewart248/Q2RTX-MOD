@@ -638,7 +638,7 @@ static void PM_CategorizePosition(void)
     trace_t     trace;
     int         sample1;
     int         sample2;
-    bool        slanted;
+    bool        slanted, rising;
 
 // if the player hull point one unit down is solid, the player
 // is on ground
@@ -647,7 +647,24 @@ static void PM_CategorizePosition(void)
     point[0] = pml.origin[0];
     point[1] = pml.origin[1];
     point[2] = pml.origin[2] - 0.25f;
-    if (pml.velocity[2] > 180) { //!!ZOID changed from 100 to 180 (ramp accel)
+    rising = pml.velocity[2] > 180; //!!ZOID changed from 100 to 180 (ramp accel)
+
+    // A fast run up a steep ramp stores the ramp's own climb rate as Z (the
+    // step-up copies it from the clipped pass), and on a 40 degree ramp that
+    // is over 180 at about 350 ups - a diagonal run into a wall is enough.
+    // Since Update 1 copies that Z in the air too, a single airborne frame
+    // then repeats forever: no friction, the ramp hands the Z back each frame,
+    // and the player glides up the ramp with no keys held. Only count Z as
+    // leaving the ground when it actually moves away from the floor under us.
+    if (rising && pmp->rerelease) {
+        trace = pm->trace(pml.origin, pm->mins, pm->maxs, point);
+        if (trace.fraction < 1.0f && !trace.startsolid &&
+            trace.plane.normal[2] >= 0.7f &&
+            DotProduct(pml.velocity, trace.plane.normal) < 10)
+            rising = false;
+    }
+
+    if (rising) {
         pm->s.pm_flags &= ~PMF_ON_GROUND;
         pm->groundentity = NULL;
     } else {
