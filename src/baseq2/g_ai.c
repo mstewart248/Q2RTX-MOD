@@ -316,8 +316,13 @@ static void ai_stand_rerelease(edict_t *self)
     bool    retval;
 
     if (self->monsterinfo.aiflags & AI_STAND_GROUND) {
-        // [Paril-KEX] check if we've been pushed out of our point_combat
-        if (self->movetarget &&
+        // [Paril-KEX] check if we've been pushed out of our point_combat.
+        // Update 1: only a real hold point counts - a temporary stand (a
+        // monster that stopped to listen) or a path_corner movetarget is not
+        // somewhere it has to get back to
+        if (!(self->monsterinfo.aiflags & AI_TEMP_STAND_GROUND) &&
+            self->movetarget && self->movetarget->classname &&
+            !strcmp(self->movetarget->classname, "point_combat") &&
             !M_BoxesIntersect(self->absmin, self->absmax, self->movetarget->absmin, self->movetarget->absmax)) {
             self->monsterinfo.aiflags &= ~AI_STAND_GROUND;
             self->monsterinfo.aiflags |= AI_COMBAT_POINT;
@@ -326,7 +331,8 @@ static void ai_stand_rerelease(edict_t *self)
             return;
         }
 
-        if (self->enemy) {
+        // Update 1: a noise is not something to face and shoot at
+        if (self->enemy && !(self->enemy->classname && !strcmp(self->enemy->classname, "player_noise"))) {
             VectorSubtract(self->enemy->s.origin, self->s.origin, v);
             self->ideal_yaw = vectoyaw(v);
             if (!FacingIdeal(self) && (self->monsterinfo.aiflags & AI_TEMP_STAND_GROUND)) {
@@ -1041,9 +1047,15 @@ bool infront(edict_t *self, edict_t *other)
     VectorNormalize(vec);
     dot = DotProduct(vec, forward);
 
-    // [rerelease] a much wider cone - everything but the 145 degrees behind
-    if (M_RereleaseGame())
+    if (M_RereleaseGame()) {
+        // [Paril-KEX] Update 1: if we're an ambush monster, reduce our cone of
+        // vision to not ruin surprises, unless we already had an enemy.
+        if ((self->spawnflags & 1) && !self->monsterinfo.trail_framenum && !self->enemy)
+            return dot > 0.15f;
+
+        // [rerelease] a much wider cone - everything but the 145 degrees behind
         return dot > -0.30f;
+    }
 
     if (dot > 0.3f)
         return true;
@@ -1296,8 +1308,31 @@ static bool FindTarget_rerelease(edict_t *self)
     if (!client->inuse)
         return false;
 
-    if (client == self->enemy)
-        return true;    // JDC false;
+    if (client == self->enemy) {
+        bool skip_found = true;
+
+        // [Paril-KEX] Update 1: slight special behavior if we are currently
+        // going to a sound and we hear a new one; because player noises are
+        // re-used, this can leave us with the "same" enemy even though it's a
+        // different noise.
+        if (heardit && (self->monsterinfo.aiflags & AI_SOUND_TARGET)) {
+            vec3_t temp;
+
+            VectorSubtract(client->s.origin, self->s.origin, temp);
+            self->ideal_yaw = vectoyaw(temp);
+
+            if (!FacingIdeal(self))
+                skip_found = false;
+            else if (!SV_CloseEnough(self, client, 8.f))
+                skip_found = false;
+
+            if (!skip_found && (self->monsterinfo.aiflags & AI_TEMP_STAND_GROUND))
+                self->monsterinfo.aiflags &= ~(AI_STAND_GROUND | AI_TEMP_STAND_GROUND);
+        }
+
+        if (skip_found)
+            return true;    // JDC false;
+    }
 
     // ROGUE - hintpath coop fix
     if ((self->monsterinfo.aiflags & AI_HINT_PATH) && coop->value)
@@ -1616,7 +1651,7 @@ void M_UpdateBlindFireTarget(edict_t *self)
 
 /*
 =============
-M_CheckAttack_rerelease
+M_CheckAttack_Base
 
 [rerelease] M_CheckAttack from g_ai.cpp. Distances are box gaps (range_to)
 against 20/440/940, there is no skill multiplier and no cooldown on a
@@ -1625,9 +1660,15 @@ in the way counts as a clear shot; blindfire needs the enemy to have been seen
 at least once; an info_notnull target (non-client, SOLID_NOT) is always shot
 at. Flyers pick strafe-or-straight and hold the choice for 1-3 seconds; every
 other monster goes back to AS_STRAIGHT unless it is walking a navmesh route.
+
+Update 1 made this M_CheckAttack_Base: the chance per range band (and the
+flyer strafe chance) are parameters, so the bosses' own checkattacks are now
+thin wrappers around it rather than copies of it.
 =============
 */
-static bool M_CheckAttack_rerelease(edict_t *self)
+bool M_CheckAttack_Base(edict_t *self, float stand_ground_chance, float melee_chance,
+                        float near_chance, float mid_chance, float far_chance,
+                        float strafe_scalar)
 {
     vec3_t  spot1, spot2;
     float   chance, enemy_dist;
@@ -1724,20 +1765,24 @@ static bool M_CheckAttack_rerelease(edict_t *self)
     if (level.framenum < self->monsterinfo.attack_finished)
         return false;
 
-    if (enemy_dist > RR_RANGE_MID)
-        return false;
-
+    // [Paril-KEX] Update 1 dropped the flat "beyond RANGE_MID, never fire"
+    // cutoff in favour of a far tier. The default far chance is 0, so a roaming
+    // monster still holds fire past 940, but one holding a point_combat
+    // (AI_STAND_GROUND) now shoots from any distance - mgu6m1's roller-room
+    // gladiator rails the player from the top of the steps.
     if (self->monsterinfo.aiflags & AI_STAND_GROUND)
-        chance = 0.7f;
+        chance = stand_ground_chance;
     else if (enemy_dist <= RR_RANGE_MELEE)
-        chance = 0.4f;
+        chance = melee_chance;
     else if (enemy_dist <= RR_RANGE_NEAR)
-        chance = 0.25f;
+        chance = near_chance;
+    else if (enemy_dist <= RR_RANGE_MID)
+        chance = mid_chance;
     else
-        chance = 0.06f;
+        chance = far_chance;
 
     // PGM - go ahead and shoot every time if it's a info_notnull
-    if (random() < chance || (!self->enemy->client && self->enemy->solid == SOLID_NOT)) {
+    if ((!self->enemy->client && self->enemy->solid == SOLID_NOT) || random() < chance) {
         self->monsterinfo.attack_state = AS_MISSILE;
         self->monsterinfo.attack_finished = level.framenum;
         return true;
@@ -1748,7 +1793,6 @@ static bool M_CheckAttack_rerelease(edict_t *self)
         if (self->monsterinfo.strafe_check_framenum <= level.framenum) {
             // originally, just 0.3
             float   strafe_chance;
-            int     new_state = AS_STRAIGHT;
 
             if (!strcmp(self->classname, "monster_daedalus"))
                 strafe_chance = 0.8f;
@@ -1758,14 +1802,22 @@ static bool M_CheckAttack_rerelease(edict_t *self)
             // if enemy is tesla, never strafe
             if (M_EnemyIsTesla(self))
                 strafe_chance = 0;
+            else
+                strafe_chance *= strafe_scalar;
 
-            if (random() < strafe_chance)
-                new_state = AS_SLIDING;
+            // [Update 1] a zero chance (tesla, or a boss that passes 0) leaves
+            // the current attack state alone instead of forcing it straight
+            if (strafe_chance) {
+                int new_state = AS_STRAIGHT;
 
-            if (new_state != self->monsterinfo.attack_state) {
-                self->monsterinfo.strafe_check_framenum =
-                    level.framenum + (int)((1.0f + 2.0f * random()) * BASE_FRAMERATE);
-                self->monsterinfo.attack_state = new_state;
+                if (random() < strafe_chance)
+                    new_state = AS_SLIDING;
+
+                if (new_state != self->monsterinfo.attack_state) {
+                    self->monsterinfo.strafe_check_framenum =
+                        level.framenum + (int)((1.0f + 2.0f * random()) * BASE_FRAMERATE);
+                    self->monsterinfo.attack_state = new_state;
+                }
             }
         }
     }
@@ -1787,7 +1839,7 @@ bool M_CheckAttack(edict_t *self)
     trace_t tr;
 
     if (M_RereleaseGame())
-        return M_CheckAttack_rerelease(self);
+        return M_CheckAttack_Base(self, 0.7f, 0.4f, 0.25f, 0.06f, 0.f, 1.0f);
 
     if (self->enemy->health > 0) {
         // see if any entities are in the way of the shot
@@ -2090,7 +2142,7 @@ once per 100 ms - every frame at 10 Hz) whether or not the enemy is in sight,
 so a monster can attack while strafing or charging and can blindfire, and the
 attack it picks is dispatched the same frame. A monster heading for a combat
 point fights anyone within 100 units on the way. A dead enemy also clears the
-goal, and an AI_BRUTAL monster only stops at the corpse's gib_health.
+goal; an AI_BRUTAL monster keeps on a corpse until it is gone (Update 1).
 =============
 */
 static bool ai_checkattack_rerelease(edict_t *self, float dist)
@@ -2140,10 +2192,10 @@ static bool ai_checkattack_rerelease(edict_t *self, float dist)
         if (self->enemy->health > 0)
             hesDeadJim = true;
     } else {
-        if (self->monsterinfo.aiflags & AI_BRUTAL) {
-            if (self->enemy->health <= self->enemy->gib_health)
-                hesDeadJim = true;
-        } else {
+        // [Update 1] an AI_BRUTAL monster (tank, shambler, a mad actor) never
+        // gives up on a corpse from its health alone; it stops when the corpse
+        // goes away or when its own code clears AI_BRUTAL
+        if (!(self->monsterinfo.aiflags & AI_BRUTAL)) {
             if (self->enemy->health <= 0)
                 hesDeadJim = true;
         }

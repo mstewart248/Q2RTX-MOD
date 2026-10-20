@@ -56,6 +56,15 @@ purposes only.
     Licensed under the terms of the "MIT" or "Expat" license, see below.
     https://github.com/GPUOpen-Effects/FidelityFX-CAS
 
+* Steam Audio
+    Copyright (c) 2017-2023 Valve Corporation
+    licensed under the terms of the Apache License, Version 2.0.
+    https://github.com/ValveSoftware/steam-audio
+    phonon.dll is built from this source without Intel IPP (setup/build_phonon.py).
+    Its license, and the notices for PFFFT, libmysofa, zlib, FlatBuffers, the
+    CIPIC HRTF Database and the Google Spherical Harmonics Library compiled into
+    it, are in licenses/steam-audio/.
+
 Roughness and specular channels were adjusted in texture maps to work with
 the Quake II RTX engine.
 

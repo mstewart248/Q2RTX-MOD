@@ -219,7 +219,13 @@ static void parse_entity_event(int number)
 
             if (!sfx)
                 sfx = cl_sfx_footsteps[Q_rand() & 3];
-            S_StartSound(NULL, number, CHAN_BODY, sfx, 1, ATTN_NORM, 0);
+            // A monster's (monster_footstep) is the rerelease's
+            // EV_OTHER_FOOTSTEP, which it plays at half volume and idle
+            // attenuation: at a player's level they carry across the map.
+            if (number > cl.maxclients)
+                S_StartSound(NULL, number, CHAN_BODY, sfx, 0.5f, ATTN_IDLE, 0);
+            else
+                S_StartSound(NULL, number, CHAN_BODY, sfx, 1, ATTN_NORM, 0);
         }
         break;
     case EV_FALLSHORT:

@@ -1,0 +1,266 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/*
+==============================================================================
+
+SOUND DIFFRACT - the ways round corners, on the GPU.
+
+WHAT. Sound bends round the edge of a wall, as its wavelengths, 2 cm to 17 m,
+are the size of doors and walls; light does too, but by half a micron, so
+rays that bounce like light (sound_trace.comp) leave it out. For each point
+steamaudio.c asks about - a voice the listener cannot see - this finds what
+comes round the corners of the world: the edges steamaudio.c finds where two
+of its faces meet sticking out. An edge that hides the point from the
+listener, and that both can see, carries some of it round: as much as the
+uniform theory of diffraction (Kouyoumjian and Pathak, 1974) says a hard
+wedge of its angle lets into its shadow, per band, the highs less than the
+lows. What comes back stands in for Steam Audio's pathing (s_pathing): how
+loud the way round is, how long the shortest is, and which way it arrives
+from.
+
+One edge to a way: round two corners - a doorway, then along a corridor - is
+left to the probes.
+
+PER EDGE, for the listener L and the point S:
+  * the angles round the edge from its face 0, through the open: phi' of L
+    and phi of S, both between 0 and n pi, n the wedge index. The edge hides
+    S from L when they are more than pi apart.
+  * Q, where the shortest way touches the edge, the angles to it the same on
+    both sides; r1 = |LQ|, r2 = |QS|, beta the angle between the way and the
+    edge.
+  * D, the hard wedge's coefficient, at the distance parameter
+    L = r1 r2 sin^2(beta) / (r1 + r2), and from it the way's level against a
+    free field over r1 + r2: |D| sqrt((r1 + r2) / (r1 r2)). That is a half
+    (-6 dB) at the edge of the shadow, where the wall just hides S, and less
+    deeper in, and less again for the highs.
+Ways add up as energy, each by its own length.
+
+DISPATCH. A group per query, its threads sharing out the edges and adding up
+what they find at the end.
+
+==============================================================================
+*/
+
+#version 460
+#extension GL_EXT_ray_query : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#include "sound_trace_shared.h"
+
+#define PI 3.14159265358979
+
+#define EDGE_OFFSET     0.05    // metres off the edge, into the open, that the way's two halves are traced from
+#define END_SLACK       0.05    // metres a traced line stops short of where it goes
+#define MIN_DIST        0.1     // metres: a point nearer an edge's line than this is on it
+#define MAX_WAY         100.0   // metres: no longer way counts (steamaudio.c's SA_PATH_RANGE)
+
+layout(local_size_x = SOUND_DIFFRACT_GROUP, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT SOUND_TLAS;
+
+// sound_trace.comp's
+layout(set = 0, binding = 1, std140) uniform SoundTraceParams {
+	vec4  listener;
+	vec4  sources[SOUND_TRACE_MAX_SOURCES];
+	vec4  materials[SOUND_TRACE_MAX_MATERIALS];
+	uvec4 counts;
+	uvec4 counts2;
+	vec4  dists;
+	vec4  shift;
+	vec4  queries[SOUND_TRACE_MAX_QUERIES];
+	uvec4 counts3;      // queries, edges
+} params;
+
+// R_SOUND_EDGE_FLOATS
+struct SoundEdge {
+	vec4 start;         // and its length
+	vec4 dir;           // and its wedge index
+	vec4 face;          // the way face 0 goes off from it
+	vec4 normal;        // face 0's, into the open
+};
+
+layout(set = 0, binding = 4, std430) readonly buffer SoundEdges {
+	SoundEdge edges[];
+};
+
+// R_SOUND_DIFFRACTION_FLOATS a query
+layout(set = 0, binding = 5, std430) writeonly buffer SoundDiffraction {
+	vec4 diffraction[];
+};
+
+// the bands, at the frequencies steamaudio.c's materials are given for
+const float band_hz[3] = float[](400.0, 2500.0, 15000.0);
+
+shared bool s_seen;
+shared vec4 s_energy[SOUND_DIFFRACT_GROUP];    // per band, over the way's length squared; the shortest way
+shared vec4 s_dir[SOUND_DIFFRACT_GROUP];       // weighted; the weights
+
+bool clear(vec3 from, vec3 to)
+{
+	vec3 d = to - from;
+	float len = length(d);
+	if (len <= END_SLACK)
+		return true;
+
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, SOUND_TLAS, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+	                      0xFF, from, 0.0, d / len, len - END_SLACK);
+	while (rayQueryProceedEXT(rq)) {}
+	return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// The transition function F(X) = 2j sqrt(X) e^(jX) * integral from sqrt(X) to
+// infinity of e^(-j t^2) dt, as (re, im). Through the Fresnel integrals'
+// auxiliary functions (Abramowitz and Stegun 7.3.32-33), it is
+// sqrt(2 pi X) (f + j g) at z = sqrt(2 X / pi); past X = 10, its asymptotic
+// series.
+vec2 transition(float X)
+{
+	if (X > 10.0)
+		return vec2(1.0 - 0.75 / (X * X), 0.5 / X - 1.875 / (X * X * X));
+
+	float z = sqrt(2.0 * X / PI);
+	float f = (1.0 + 0.926 * z) / (2.0 + z * (1.792 + 3.104 * z));
+	float g = 1.0 / (2.0 + z * (4.142 + z * (3.492 + 6.670 * z)));
+	return sqrt(2.0 * PI * X) * vec2(f, g);
+}
+
+// One of the coefficient's four terms, cot((pi + s beta) / 2n) F(kL a(beta)),
+// written by eps, how far its cotangent is from where it blows up: on a
+// shadow or reflection boundary, where F goes to 0 and the product does not.
+vec2 wedge_term(float n, float kl, float beta, float s)
+{
+	float N = round((beta + s * PI) / (2.0 * PI * n));
+	float eps = PI + s * (beta - 2.0 * PI * n * N);
+	if (abs(eps) < 1e-4)
+		eps = eps < 0.0 ? -1e-4 : 1e-4;
+
+	float h = sin(0.5 * eps);
+	return transition(2.0 * kl * h * h) / tan(eps / (2.0 * n));
+}
+
+// a hard wedge's |D| sqrt((r1 + r2) / (r1 r2)) per band: what comes round,
+// against a free field over the way's length
+vec3 wedge_gain(float n, float phi_in, float phi_out, float sin_beta, float r1, float r2)
+{
+	float lp = r1 * r2 / (r1 + r2);
+	float bm = phi_out - phi_in, bp = phi_out + phi_in;
+	vec3 g;
+
+	for (int b = 0; b < 3; b++) {
+		float k = 2.0 * PI * band_hz[b] / SOUND_TRACE_SPEED_OF_SOUND;
+		float kl = k * lp * sin_beta * sin_beta;
+		vec2 sum = wedge_term(n, kl, bm, 1.0) + wedge_term(n, kl, bm, -1.0)
+		         + wedge_term(n, kl, bp, 1.0) + wedge_term(n, kl, bp, -1.0);
+		g[b] = length(sum) / (2.0 * n * sqrt(2.0 * PI * k * lp) * sin_beta);
+	}
+	return min(g, vec3(1.0));
+}
+
+void main()
+{
+	uint  q = gl_WorkGroupID.x;
+	uint  t = gl_LocalInvocationIndex;
+	vec3  L = params.listener.xyz;
+	vec3  S = params.queries[q].xyz;
+	vec4  energy = vec4(0.0, 0.0, 0.0, MAX_WAY);
+	vec4  dir = vec4(0.0);
+
+	if (t == 0)
+		s_seen = clear(L, S);
+	barrier();
+
+	// in sight: the direct sound is all of it
+	if (s_seen) {
+		if (t == 0) {
+			diffraction[q * 2 + 0] = vec4(0.0);
+			diffraction[q * 2 + 1] = vec4(0.0, 0.0, 0.0, 1.0);
+		}
+		return;
+	}
+
+	for (uint i = t; i < params.counts3.y; i += SOUND_DIFFRACT_GROUP) {
+		SoundEdge e = edges[i];
+		float n = e.dir.w;
+		vec3  l = L - e.start.xyz, s = S - e.start.xyz;
+		float zl = dot(l, e.dir.xyz), zs = dot(s, e.dir.xyz);
+		vec3  lp = l - zl * e.dir.xyz, sp = s - zs * e.dir.xyz;
+		float rl = length(lp), rs = length(sp);
+		if (rl < MIN_DIST || rs < MIN_DIST)
+			continue;
+
+		// round the edge from face 0 through the open; past n pi is inside the wall
+		float phi_l = atan(dot(lp, e.normal.xyz), dot(lp, e.face.xyz));
+		float phi_s = atan(dot(sp, e.normal.xyz), dot(sp, e.face.xyz));
+		if (phi_l < 0.0)
+			phi_l += 2.0 * PI;
+		if (phi_s < 0.0)
+			phi_s += 2.0 * PI;
+		if (phi_l > n * PI || phi_s > n * PI || abs(phi_s - phi_l) <= PI)
+			continue;
+
+		// where the way touches it: the straight line, with the edge's two
+		// sides unfolded into one plane; a way that would touch the line past
+		// the edge's ends goes round something else
+		float z = zl + (zs - zl) * rl / (rl + rs);
+		if (z < 0.0 || z > e.start.w)
+			continue;
+		vec3  Q = e.start.xyz + z * e.dir.xyz;
+		float r1 = distance(L, Q), r2 = distance(Q, S);
+		float way = r1 + r2;
+		if (way > MAX_WAY)
+			continue;
+
+		// the two halves, from just off the edge into the open
+		float mid = 0.5 * n * PI;
+		vec3  off = Q + EDGE_OFFSET * (cos(mid) * e.face.xyz + sin(mid) * e.normal.xyz);
+		if (!clear(L, off) || !clear(off, S))
+			continue;
+
+		vec3  g = wedge_gain(n, phi_l, phi_s, clamp(rl / r1, 0.05, 1.0), r1, r2);
+		vec3  e2 = g * g / (way * way);
+		float w = (e2.x + e2.y + e2.z) / 3.0;
+		energy = vec4(energy.xyz + e2, min(energy.w, way));
+		dir += vec4(w * normalize(Q - L), w);
+	}
+
+	s_energy[t] = energy;
+	s_dir[t] = dir;
+	barrier();
+	for (uint stride = SOUND_DIFFRACT_GROUP / 2; stride > 0; stride >>= 1) {
+		if (t < stride) {
+			vec4 a = s_energy[t], b = s_energy[t + stride];
+			s_energy[t] = vec4(a.xyz + b.xyz, min(a.w, b.w));
+			s_dir[t] += s_dir[t + stride];
+		}
+		barrier();
+	}
+
+	if (t == 0) {
+		energy = s_energy[0];
+		dir = s_dir[0];
+		if (dir.w > 0.0) {
+			diffraction[q * 2 + 0] = vec4(energy.xyz * energy.w * energy.w, energy.w);
+			diffraction[q * 2 + 1] = vec4(dir.xyz / dir.w, 0.0);
+		} else {
+			diffraction[q * 2 + 0] = vec4(0.0);
+			diffraction[q * 2 + 1] = vec4(0.0);
+		}
+	}
+}

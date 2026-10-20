@@ -616,7 +616,8 @@ would otherwise climb onto other monsters, the player, or crates.
 */
 static bool M_SuperStepGroundOK(edict_t *ent, trace_t *trace, vec3_t oldorg)
 {
-    if (!(ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP))
+    // [Update 1] a dead monster is no longer a super stepper
+    if (!(ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP) || ent->health <= 0)
         return true;
 
     if (!ent->groundentity || ent->groundentity->solid == SOLID_BSP) {
@@ -655,8 +656,9 @@ static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
     // push down from a step height above the wished position.
     // [rerelease] SPAWNFLAG_MONSTER_SUPER_STEP monsters take 64 unit steps
     // (and may step off ledges, below) - mgu3m1-m4/mgu3secret set it on ~400
-    // monsters so they can climb the chunky terrain of those maps.
-    if (ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP)
+    // monsters so they can climb the chunky terrain of those maps. Update 1:
+    // only while alive.
+    if ((ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP) && ent->health > 0)
         stepsize = 64;
     else if (!(ent->monsterinfo.aiflags & AI_NOSTEP))
         stepsize = STEPSIZE;
@@ -720,8 +722,10 @@ static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
         }
 
         // [rerelease] a super stepper does not balk here; M_CheckBottom
-        // below still refuses a drop it has nothing to land on
-        if (!(ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP))
+        // below still refuses a drop it has nothing to land on.
+        // [Paril-KEX] Update 1: allow dead monsters to "fall" off of edges in
+        // their death animation
+        if (!(ent->spawnflags & SPAWNFLAG_MONSTER_SUPER_STEP) && ent->health > 0)
             return false;   // walked off an edge
     }
 
@@ -790,7 +794,12 @@ static bool SV_movestep_rerelease(edict_t *ent, vec3_t move, bool relink)
 // the move is ok
     if (relink) {
         gi.linkentity(ent);
-        G_TouchTriggers(ent);
+
+        // [Paril-KEX] Update 1: this is something N64 does to avoid doors
+        // opening at the start of a level, which triggers some monsters to
+        // spawn. (id skips level.time <= FRAME_TIME, its first frame.)
+        if (!level.is_n64 || level.framenum > 1)
+            G_TouchTriggers(ent);
     }
     return true;
 }

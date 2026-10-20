@@ -613,10 +613,14 @@ void SV_Physics_Pusher(edict_t *ent)
         gi.error("pushed_p > &pushed[MAX_EDICTS], memory corrupted");
 
     if (part) {
-        // the move failed, bump all nextthink times and back out moves
-        for (mv = ent ; mv ; mv = mv->teamchain) {
-            if (mv->nextthink > 0)
-                mv->nextthink++;
+        // the move failed, bump all nextthink times and back out moves.
+        // [Paril-KEX] Update 1 dropped the bump: the movers measure what is
+        // left (Move_Final, Think_AccelMove) and keep to their schedule.
+        if (!M_RereleaseGame()) {
+            for (mv = ent ; mv ; mv = mv->teamchain) {
+                if (mv->nextthink > 0)
+                    mv->nextthink++;
+            }
         }
 
         // if the pusher has a "blocked" function, call it
@@ -1101,7 +1105,11 @@ void SV_Physics_Step(edict_t *ent)
         if (M_RereleaseGame())
             ent->gravity = 1.0f;
 
-        G_TouchTriggers(ent);
+        // [Paril-KEX] Update 1: this is something N64 does to avoid doors
+        // opening at the start of a level, which triggers some monsters to
+        // spawn (id: level.time <= FRAME_TIME, its first frame)
+        if (!level.is_n64 || level.framenum > 1)
+            G_TouchTriggers(ent);
         if (!ent->inuse)
             return;
 

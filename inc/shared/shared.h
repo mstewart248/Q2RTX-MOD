@@ -1274,9 +1274,22 @@ typedef enum {
 	// reason for the drip. Packet is [byte count][count * position].
 	// Fork-local: append below, never above.
 	TE_POI_PATH,
+	// Rerelease: directional damage indicators (the rerelease's svc_damage),
+	// UNICAST to the player who was hit. Packet is [byte count] then count *
+	// ([byte DI_* bits | damage / 3 clamped to 1..31][dir from the source to
+	// the player]). Fork-local: append below, never above.
+	TE_DAMAGE_INDICATOR,
 
     TE_NUM_ENTITIES
 } temp_event_t;
+
+// TE_DAMAGE_INDICATOR: at most this many sources per packet, and the bits of
+// each source's first byte
+#define MAX_DAMAGE_INDICATORS   4
+#define DI_DAMAGE_MASK          0x1F
+#define DI_HEALTH               0x20
+#define DI_ARMOR                0x40
+#define DI_POWER_ARMOR          0x80
 
 #define SPLASH_UNKNOWN      0
 #define SPLASH_SPARKS       1
@@ -1330,7 +1343,7 @@ typedef enum {
 // Reserved for a rerelease target_poi HUD, if one is ever wanted. The game
 // already tracks the objective in level.current_poi; nothing sends it to the
 // client, because the rerelease draws no floating marker in these maps and an
-// invented one did not match. 18..31 are unused.
+// invented one did not match. 24..31 are unused.
 #define STAT_FLASHLIGHT         18      // rerelease trigger_flashlight, see V_AddEntities
 
 // The "on" value the game writes into STAT_FLASHLIGHT, and the only one the
@@ -1344,6 +1357,17 @@ typedef enum {
 // beside it comes from CS_HEALTH_BAR_NAME.
 #define STAT_HEALTH_BARS        19
 #define MAX_HEALTH_BARS         2
+
+// [rerelease] the "rerelease hud" extras (cl_rerelease_hud, which the game
+// reads back out of the userinfo). STAT_HIT_MARKER is the damage this player
+// dealt in the frame just sent, 0 when they hit nothing; the client flashes the
+// hit marker and plays its sound on each frame it is nonzero. STAT_KEY_A..C are
+// image indices of up to three held keys, which the single player status bar
+// draws beside the selected item.
+#define STAT_HIT_MARKER         20
+#define STAT_KEY_A              21
+#define STAT_KEY_B              22
+#define STAT_KEY_C              23
 
 // #define STAT_POI_ICON        18
 // #define STAT_POI_X           19
@@ -1458,6 +1482,14 @@ typedef enum {
 // only when this says the game is ours - see CL_GameOwnsExtraStats.
 #define CS_GAME_ID              (CS_GENERAL + 2)
 #define GAME_ID_STRING          "q2rtx"
+
+// [rerelease] the trigger_fog that last changed the fog / the height fog, as
+// "<brush model number> <blend 0..1 from its _off to its on values> <ms>".
+// Empty means the map's own worldspawn fog. The values themselves are read by
+// the client from the BSP entity lump (src/client/mapfog.c); the engine saves
+// configstrings with the level, so a loaded game keeps the fog it was saved in.
+#define CS_TRIGGER_FOG          (CS_GENERAL + 3)
+#define CS_TRIGGER_HEIGHTFOG    (CS_GENERAL + 4)
 
 // Some mods actually exploit CS_STATUSBAR to take space up to CS_AIRACCEL
 #define CS_SIZE(cs) \

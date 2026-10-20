@@ -44,6 +44,7 @@ baseq2/**/*.txt
 !baseq2/*.txt
 !baseq2/maps/sky/*.txt
 !baseq2/pics/flashlight_profile.png
+!baseq2/models/rtx/**
 
 # SHIPPED GAME DATA - these must survive the blanket extension rules above.
 #

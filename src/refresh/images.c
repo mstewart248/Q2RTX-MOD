@@ -1025,7 +1025,23 @@ static image_t *lookup_image(const char *name,
 }
 
 #define TRY_IMAGE_SRC_GAME      1
-#define TRY_IMAGE_SRC_BASE      0
+#define TRY_IMAGE_SRC_BASE      0   // any path, game dir included
+#define TRY_IMAGE_SRC_BASE_ONLY 2   // baseq2's own paths only
+
+// Pics whose baseq2 copy wins over a game dir's copy of the same name. The
+// rerelease's pics/i_health.pcx is the classic cross with its palette entry
+// changed from red to green; the red one is wanted on the HUD in every game.
+static const char *const prefer_base_pics[] = {
+    "pics/i_health",
+};
+
+static bool prefer_base_pic(const char *name, size_t baselen)
+{
+    for (int i = 0; i < q_countof(prefer_base_pics); i++)
+        if (strlen(prefer_base_pics[i]) == baselen && !FS_pathcmpn(name, prefer_base_pics[i], baselen))
+            return true;
+    return false;
+}
 
 static int _try_image_format(imageformat_t fmt, image_t *image, int try_src, byte **pic)
 {
@@ -1400,6 +1416,13 @@ static int find_or_load_image(const char *name, size_t len,
     if (ret < 0)
     {
         bool is_not_baseq2 = fs_game->string[0] && strcmp(fs_game->string, BASEGAME) != 0;
+
+        if (is_not_baseq2 && !(flags & IF_SRC_MASK) && prefer_base_pic(name, len - 4)) {
+            memcpy(image->name, name, len + 1);
+            image->baselen = len - 4;
+            ret = try_load_image_candidate(image, NULL, 0, &pic, type, flags, !!override_textures, TRY_IMAGE_SRC_BASE_ONLY);
+            image->flags |= IF_SRC_BASE;
+        }
     	
         // Always prefer images from the game dir, even if format might be 'inferior'
         for (int try_location = is_not_baseq2 ? TRY_IMAGE_SRC_GAME : TRY_IMAGE_SRC_BASE;
@@ -1407,6 +1430,8 @@ static int find_or_load_image(const char *name, size_t len,
             try_location--)
         {
             int location_flag = try_location == TRY_IMAGE_SRC_GAME ? IF_SRC_GAME : IF_SRC_BASE;
+            if (ret >= 0)
+                break;  // a prefer_base_pics entry already loaded
             if(((flags & IF_SRC_MASK) != 0) && ((flags & IF_SRC_MASK) != location_flag))
                 continue;
 

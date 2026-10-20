@@ -782,9 +782,16 @@ void widow2_walk(edict_t *self)
     self->monsterinfo.currentmove = &widow2_move_walk;
 }
 
+void widow2_attack(edict_t *self);
+
 void widow2_melee(edict_t *self)
 {
-    self->monsterinfo.currentmove = &widow2_move_tongs;
+    /* [Paril-KEX] Update 1: a generic box-gap melee call while the tongue is
+       still cooling down (it was just tossed) becomes a normal attack */
+    if (M_RereleaseGame() && self->timestamp >= level.framenum)
+        widow2_attack(self);
+    else
+        self->monsterinfo.currentmove = &widow2_move_tongs;
 }
 
 void widow2_attack(edict_t *self)
@@ -799,6 +806,26 @@ void widow2_attack(edict_t *self)
 
     if (!self->enemy || !self->enemy->inuse)
         return;
+
+    /* [Paril-KEX] Update 1 moved the tongue grab here from Widow2_CheckAttack,
+       which is now the generic check: any attack she starts within 300 units,
+       once the toss cooldown is over, is a grab if the tongue can reach. In
+       easy mode she now grabs 3 times in 4 (the old check skipped 3 in 4). */
+    if (M_RereleaseGame() && self->timestamp < level.framenum &&
+        realrange(self, self->enemy) < 300) {
+        vec3_t  f, rt, u, spot1;
+
+        AngleVectors(self->s.angles, f, rt, u);
+        G_ProjectSource2(self->s.origin, widow2_tongue_offsets[0], f, rt, u, spot1);
+
+        if (widow2_tongue_attack_ok(spot1, self->enemy->s.origin, WIDOW2_TONGUE_RANGE)) {
+            // be nice in easy mode
+            if (skill->value != 0 || (Q_rand() % 4)) {
+                self->monsterinfo.currentmove = &widow2_move_tongs;
+                return;
+            }
+        }
+    }
 
     /* rogue's self->bad_area branch lived here; there is no trigger_bad_area
        in this tree, so she falls through to the ordinary choice below. */
@@ -1012,6 +1039,12 @@ bool Widow2_CheckAttack(edict_t *self)
         self->monsterinfo.attack_state = AS_MISSILE;
         return true;
     }
+
+    /* [Paril-KEX] Update 1: the rest is the generic check with her odds; the
+       tongue grab moved into widow2_attack, and the "no clear shot: spawn"
+       AS_BLIND branch is gone */
+    if (M_RereleaseGame())
+        return M_CheckAttack_Base(self, 0.4f, 0.8f, 0.8f, 0.5f, 0.f, 0.f);
 
     if (self->enemy->health > 0) {
         /* see if anything is in the way of the shot */

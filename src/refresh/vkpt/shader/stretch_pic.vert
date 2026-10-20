@@ -45,6 +45,9 @@ struct StretchPic {
 	float x, y, w,   h;
 	float s, t, w_s, h_t;
 	uint color, tex_handle;
+	// the quad's edges are (w, skew_y) and (skew_x, h): 0 for every upright
+	// pic, set only by R_DrawRotatedPic
+	float skew_x, skew_y;
 };
 
 layout(set = 0, binding = 0) readonly buffer SBO {
@@ -62,7 +65,8 @@ void
 main()
 {
 	StretchPic sp = stretch_pics[gl_InstanceIndex];
-	vec2 pos      = positions[gl_VertexIndex] * vec2(sp.w, sp.h) + vec2(sp.x, sp.y);
+	vec2 corner   = positions[gl_VertexIndex];
+	vec2 pos      = corner.x * vec2(sp.w, sp.skew_y) + corner.y * vec2(sp.skew_x, sp.h) + vec2(sp.x, sp.y);
 	color         = unpackUnorm4x8(sp.color);
 	
 	color = pow(color, vec4(2.4));

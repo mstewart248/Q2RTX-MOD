@@ -91,6 +91,7 @@ Without them the game runs normally with the DLSS options unavailable.
 
     q2rtx.exe                   the game
     q2rtxded.exe                dedicated server
+    phonon.dll                  Steam Audio: 3D sound and occlusion
     baseq2/gamex86_64.dll       game logic module
     baseq2/q2rtx_media.pkz      stock Quake II RTX art: textures, models, sky
     baseq2/blue_noise.pkz       sampling noise the path tracer needs
@@ -106,6 +107,7 @@ Without them the game runs normally with the DLSS options unavailable.
     readme.md                   full feature documentation and cvar reference
     changelog.md                upstream Quake II RTX change log
     license.txt, notice.txt     licensing
+    licenses/steam-audio/       Steam Audio's licence and third-party notices
 
 Quake II RTX Overdrive is licensed under the GPL v2; see license.txt. The Quake
 II game data files remain copyrighted by id Software under the original terms

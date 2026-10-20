@@ -38,6 +38,7 @@ static int sound_search;
 #define SPAWNFLAG_BERSERK_NOJUMPING 8
 static int sound_thud;
 static int sound_jump;
+static int sound_explod;
 
 void berserk_sight(edict_t *self, edict_t *other)
 {
@@ -511,6 +512,8 @@ void berserk_attack(edict_t *self)
         // the leaping ground slam.  Only worth doing from a distance, and on a
         // long cooldown - otherwise the berserk just pogos at you
         self->monsterinfo.currentmove = &berserk_move_attack_slam;
+        // Update 1: the jump sound plays as the wind-up starts
+        gi.sound(self, CHAN_WEAPON, sound_jump, 1, ATTN_NORM, 0);
         self->timestamp = level.framenum + 5 * BASE_FRAMERATE;
     } else if (self->monsterinfo.currentmove == &berserk_move_run1 &&
                range_to(self, self->enemy) <= BERSERK_RANGE_NEAR) {
@@ -844,10 +847,12 @@ velocity directly) and monsterinfo.unduck (monster_duck_up does that job now).
 =================
 */
 
-// how far the slam reaches, and how hard it throws
-#define BERSERK_SLAM_DAMAGE     35
-#define BERSERK_SLAM_KICK       150.0f
-#define BERSERK_SLAM_RADIUS     275.0f
+// how far the slam reaches, and how hard it throws. Update 1 changed id's
+// (35, 150, 275) to (8, 300, 165) along with T_SlamRadiusDamage's falloff:
+// less damage, more throw, a tighter ring.
+#define BERSERK_SLAM_DAMAGE     8
+#define BERSERK_SLAM_KICK       300.0f
+#define BERSERK_SLAM_RADIUS     165.0f
 
 void berserk_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf);
 
@@ -859,6 +864,10 @@ Like T_RadiusDamage, but it measures from the closest point on each victim's box
 rather than its centre, and it drives the damage from the impact POINT while
 keeping the push origin at the victim's feet - which is what launches them
 upward instead of sideways.
+
+Update 1: damage AND kick fall off with the square of (1 - distance / radius),
+the search reaches twice the radius so a big box whose near side is inside the
+ring still counts, and a player already in mid air is not hit at all.
 =================
 */
 static void closest_point_to_box(const vec3_t from, const vec3_t mins, const vec3_t maxs, vec3_t out)
@@ -872,16 +881,19 @@ static void closest_point_to_box(const vec3_t from, const vec3_t mins, const vec
 void T_SlamRadiusDamage(vec3_t point, edict_t *inflictor, edict_t *attacker,
                         float damage, float kick, edict_t *ignore, float radius, int mod)
 {
-    float    points;
+    float    points, amount;
     edict_t *ent = NULL;
     vec3_t   boxmins, boxmaxs, closest, v, dir, hit_point;
 
-    while ((ent = findradius(ent, inflictor->s.origin, radius)) != NULL) {
+    while ((ent = findradius(ent, inflictor->s.origin, radius * 2.0f)) != NULL) {
         if (ent == ignore)
             continue;
         if (!ent->takedamage)
             continue;
         if (!CanDamage(ent, inflictor))
+            continue;
+        // don't hit players in mid air
+        if (ent->client && !ent->groundentity)
             continue;
 
         VectorAdd(ent->s.origin, ent->mins, boxmins);
@@ -889,11 +901,18 @@ void T_SlamRadiusDamage(vec3_t point, edict_t *inflictor, edict_t *attacker,
         closest_point_to_box(point, boxmins, boxmaxs, closest);
 
         VectorSubtract(closest, point, v);
-        points = damage - 0.5f * VectorLength(v);
-        if (ent == attacker)
-            points = points * 0.5f;
-        if (points < 1)
-            points = 1;
+
+        // calculate contribution amount
+        amount = min(1.0f, 1.0f - (VectorLength(v) / radius));
+
+        // too far away
+        if (amount <= 0.0f)
+            continue;
+
+        amount *= amount;
+
+        // damage & kick are exponentially scaled
+        points = max(1.0f, damage * amount);
 
         VectorSubtract(ent->s.origin, point, dir);
         VectorNormalize(dir);
@@ -903,7 +922,7 @@ void T_SlamRadiusDamage(vec3_t point, edict_t *inflictor, edict_t *attacker,
         hit_point[2] = ent->absmin[2];
 
         T_Damage(ent, inflictor, attacker, dir, hit_point, dir,
-                 (int)points, (int)kick, DAMAGE_RADIUS, mod);
+                 (int)points, (int)(kick * amount), DAMAGE_RADIUS, mod);
 
         if (ent->client && ent->velocity[2] < 270)
             ent->velocity[2] = 270;
@@ -939,6 +958,7 @@ static void berserk_attack_slam(edict_t *self)
     trace_t tr;
 
     gi.sound(self, CHAN_WEAPON, sound_thud, 1, ATTN_NORM, 0);
+    gi.sound(self, CHAN_AUTO, sound_explod, 0.75f, ATTN_NORM, 0);   // Update 1
 
     // find the ground just under the leading fist
     AngleVectors(self->s.angles, f, r, NULL);
@@ -1120,7 +1140,7 @@ static void berserk_jump_takeoff(edict_t *self)
     self->monsterinfo.attack_finished = level.framenum + 3 * BASE_FRAMERATE;
     self->touch = berserk_jump_touch;
 
-    gi.sound(self, CHAN_WEAPON, sound_jump, 1, ATTN_NORM, 0);
+    // (Update 1 moved the jump sound to berserk_attack, at the wind-up)
     berserk_high_gravity(self);
 }
 
@@ -1141,16 +1161,18 @@ static void berserk_check_landing(edict_t *self)
 
     // still airborne: hold on the tucked frames until we land, and give up
     // after the 3 second watchdog so a leap into a pit cannot freeze the anim
+    // (back to the takeoff frame, slam3 since Update 1)
     if (level.framenum > self->monsterinfo.attack_finished)
-        self->monsterinfo.nextframe = FRAME_slam2;
+        self->monsterinfo.nextframe = FRAME_slam3;
     else
         self->monsterinfo.nextframe = FRAME_slam5;
 }
 
+// Update 1: one more wind-up frame - the leap leaves on slam3, not slam2
 mframe_t berserk_frames_attack_slam [] = {
     { ai_charge, 0, NULL },
-    { ai_charge, 0, berserk_jump_takeoff },
-    { ai_move,   0, berserk_high_gravity },
+    { ai_charge, 0, NULL },
+    { ai_move,   0, berserk_jump_takeoff },
     { ai_move,   0, berserk_high_gravity },
     { ai_move,   0, berserk_check_landing },
     { ai_move, 0, monster_footstep },
@@ -1366,6 +1388,7 @@ void SP_monster_berserk(edict_t *self)
     if (M_RereleaseGame()) {
         sound_thud = gi.soundindex("mutant/thud1.wav");
         sound_jump = gi.soundindex("berserk/jump.wav");
+        sound_explod = gi.soundindex("world/explod2.wav");
     }
     sound_sight = gi.soundindex("berserk/sight.wav");
 

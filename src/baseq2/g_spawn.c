@@ -183,6 +183,7 @@ void SP_misc_flare(edict_t *self);
 void SP_target_light(edict_t *self);
 void SP_dynamic_light(edict_t *self);
 void SP_trigger_coop_relay(edict_t *self);
+void SP_trigger_fog(edict_t *self);
 void SP_target_gravity(edict_t *self);
 void SP_target_soundfx(edict_t *self);
 void SP_misc_nuke_core(edict_t *self);
@@ -384,6 +385,7 @@ static const spawn_func_t spawn_funcs[] = {
     {"target_light", SP_target_light},
     {"dynamic_light", SP_dynamic_light},
     {"trigger_coop_relay", SP_trigger_coop_relay},
+    {"trigger_fog", SP_trigger_fog},
     {"target_gravity", SP_target_gravity},
     {"target_soundfx", SP_target_soundfx},
     {"misc_nuke_core", SP_misc_nuke_core},
@@ -555,6 +557,7 @@ static const spawn_field_t temp_fields[] = {
     {"goals", STOFS(goals), F_LSTRING},   // mannequin held weapon; worldspawn N64 objectives
     {"start_items", STOFS(start_items), F_LSTRING},
     {"instantitems", STOFS(instantitems), F_INT},
+    {"hub_map", STOFS(hub_map), F_INT},
     {"style_on", STOFS(style_on), F_LSTRING},
     {"style_off", STOFS(style_off), F_LSTRING},
     {"radius", STOFS(radius), F_FLOAT},
@@ -1474,6 +1477,24 @@ static const char single_statusbar[] =
 "   xv  148 "
 "   pic 11 "
 "endif "
+
+// [rerelease] held keys (cl_rerelease_hud), right of the help icon; they move
+// up a row while the powerup timer has the bottom one
+"if 9 "
+"   yb  -76 "
+"endif "
+"if 21 "
+"   xv  296 "
+"   pic 21 "
+"endif "
+"if 22 "
+"   xv  272 "
+"   pic 22 "
+"endif "
+"if 23 "
+"   xv  248 "
+"   pic 23 "
+"endif "
 ;
 
 static const char dm_statusbar[] =
@@ -1593,6 +1614,7 @@ void SP_worldspawn(edict_t *ent)
     if (st.start_items)
         level.start_items = st.start_items;
     level.instantitems = st.instantitems > 0 || level.is_n64;
+    level.hub_map = st.hub_map > 0;
 
     // make some data visible to the server
 

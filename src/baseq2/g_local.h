@@ -66,6 +66,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 // target_changelevel spawnflags [rerelease]
 #define SPAWNFLAG_CHANGELEVEL_CLEAR_INVENTORY   0x00000008
+#define SPAWNFLAG_CHANGELEVEL_NO_END_OF_UNIT    0x00000010  // no end of unit screen
+#define SPAWNFLAG_CHANGELEVEL_IMMEDIATE_LEAVE   0x00000040  // ...and no intermission either
 
 // edict->flags
 #define FL_FLY                  0x00000001
@@ -437,6 +439,23 @@ typedef struct gitem_s {
 
 
 
+// [rerelease] one row of the end of unit screen: a level of the current unit,
+// either visited (pretty_name set) or only seen as the target of one of its
+// target_changelevels. Kept in game_locals_t across the unit, and in the
+// savegame as a block after the clients - see WriteGame.
+#define MAX_LEVELS_PER_UNIT     8
+
+typedef struct {
+    char        map_name[MAX_QPATH];    // bsp name
+    char        pretty_name[MAX_QPATH]; // level name, empty if never visited
+    int         total_secrets;          // these four are set when we leave the level
+    int         found_secrets;
+    int         total_monsters;
+    int         killed_monsters;
+    int         time;                   // frames spent in the level
+    int         visit_order;            // 1 = first level of the unit
+} level_entry_t;
+
 //
 // this structure is left intact through an entire game
 // it should be initialized at dll load time, and read/written to
@@ -470,6 +489,9 @@ typedef struct {
     int         num_items;
 
     bool        autosaved;
+
+    // [rerelease] the levels of the current unit, for the end of unit screen
+    level_entry_t   level_entries[MAX_LEVELS_PER_UNIT];
 } game_locals_t;
 
 
@@ -555,6 +577,15 @@ typedef struct {
     // [rerelease] most players that have been in this level at once - the
     // coop monster health scale is taken from it (G_Monster_ScaleCoopHealth)
     int         coop_scale_players;
+
+    // [rerelease] end of unit screen. hub_map is the worldspawn key: a hub
+    // (mguhub) is not a level of any unit and gets no row. entry is this
+    // level's row in game.level_entries, set in ClientBegin. Neither is in the
+    // level save; SpawnEntities runs before ReadLevel, and ClientBegin after.
+    bool        hub_map;
+    level_entry_t   *entry;
+    bool        intermission_eou;   // this intermission ends the unit
+    bool        eou_screen;         // ...and its table has been sent
 } level_locals_t;
 
 
@@ -647,6 +678,7 @@ typedef struct {
     int         fade_end_dist;
     char        *start_items;       // rerelease worldspawn: "classname [count];..." given on spawn
     int         instantitems;       // rerelease worldspawn: powerups activate on pickup
+    int         hub_map;            // rerelease worldspawn: a hub, not part of any unit
     char        *style_on;          // rerelease light: lightstyle digit/string when on/off
     char        *style_off;
 } spawn_temp_t;
@@ -696,6 +728,14 @@ typedef struct {
     float       remaining_distance;
     float       decel_distance;
     void        (*endfunc)(edict_t *);
+
+    // [rerelease] where Move_Calc is heading, so Move_Final and
+    // Think_AccelMove can measure what is really left once the mover has been
+    // blocked (SV_Physics_Pusher no longer delays its think, Update 1). Not
+    // saved, to keep the save format: a move loaded mid-flight has
+    // dest_valid false and finishes on the classic bookkeeping.
+    vec3_t      dest;
+    bool        dest_valid;
 } moveinfo_t;
 
 
@@ -1427,6 +1467,9 @@ void monster_duck_up(edict_t *self);
 void M_MonsterDodge(edict_t *self, edict_t *attacker, float eta, trace_t *tr, bool gravity);
 void M_WorldEffects(edict_t *ent);
 bool M_CheckAttack(edict_t *self);
+bool M_CheckAttack_Base(edict_t *self, float stand_ground_chance, float melee_chance,
+                        float near_chance, float mid_chance, float far_chance,
+                        float strafe_scalar);
 void M_FlyCheck(edict_t *self);
 void M_CheckGround(edict_t *ent);
 bool SV_CloseEnough(edict_t *ent, edict_t *goal, float dist);  // m_move.c
@@ -1808,6 +1851,10 @@ void G_SendInventory(edict_t *ent);
 void G_ResetInventoryTracking(edict_t *ent);
 void ValidateSelectedItem(edict_t *ent);
 void DeathmatchScoreboardMessage(edict_t *client, edict_t *killer);
+bool G_RereleaseHud(edict_t *ent);
+void G_UpdateLevelEntry(void);
+void G_SetLevelEntry(void);
+void G_EndOfUnitMessage(bool press_button);
 
 //
 // g_pweapon.c
@@ -1923,6 +1970,7 @@ struct gclient_s {
     bool        showscores;         // set layout stat
     bool        showinventory;      // set layout stat
     bool        showhelp;
+    bool        showeou;            // [rerelease] the end of unit screen is up
     bool        showhelpicon;
 
     int         ammo_index;
@@ -1942,6 +1990,17 @@ struct gclient_s {
     int         damage_blood;       // damage taken out of health
     int         damage_knockback;   // impact damage
     vec3_t      damage_from;        // origin for vector calculation
+
+    // [rerelease] cl_rerelease_hud: where this frame's damage came from, for
+    // the directional indicators, and how much this player dealt, for the
+    // hit marker. Both are sent and cleared in ClientEndServerFrame.
+    struct {
+        vec3_t  from;
+        int     health, armor, power;
+    } damage_indicators[MAX_DAMAGE_INDICATORS];
+    int         num_damage_indicators;
+    int         hit_marker_damage;
+
 
     float       killer_yaw;         // when dead, look at killer
 

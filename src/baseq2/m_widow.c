@@ -1275,6 +1275,13 @@ bool Widow_CheckAttack(edict_t *self)
         return true;
     }
 
+    /* [Paril-KEX] Update 1: everything past the spawn bias is the generic
+       check with her own odds. That drops the "no clear shot at a client:
+       spawn" AS_BLIND branch, the 70-unit origin-to-origin kick (melee is now
+       the generic 20-unit box gap) and the easy-mode 1-in-4 kick. */
+    if (M_RereleaseGame())
+        return M_CheckAttack_Base(self, 0.4f, 0.8f, 0.7f, 0.6f, 0.5f, 0.f);
+
     if (self->enemy->health > 0) {
         /* see if anything is in the way of the shot */
         VectorCopy(self->s.origin, spot1);

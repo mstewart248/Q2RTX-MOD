@@ -444,6 +444,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	/* so the fog march reads [num_static_lights, +fog_num_model_lights).   */ \
 	GLOBAL_UBO_VAR_LIST_DO(int,             fog_num_model_lights) \
 	\
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_color_start_z) /* world Z where the colour is all fog_hf_start_* */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_color_end_z)   /* and where it is all fog_hf_end_* - see mapfog.c */ \
+	GLOBAL_UBO_VAR_LIST_DO(int,             fog_color_layers) /* cl_fog_rerelease: getFogColor blends both fogs' colours */ \
+	GLOBAL_UBO_VAR_LIST_DO(float,           fog_hf_color_pad1) \
+	\
 	GLOBAL_UBO_VAR_LIST_DO(int,             fog_mode) /* 0 off, 1 sun-only, 2 local lights */ \
 	GLOBAL_UBO_VAR_LIST_DO(int,             fog_camera_cluster) /* -1 if outside the world */ \
 	GLOBAL_UBO_VAR_LIST_DO(float,           fog_sky_fade) /* 0..1 sky exposure, eased; see main.c */ \

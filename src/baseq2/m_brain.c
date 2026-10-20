@@ -509,8 +509,10 @@ mframe_t brain_frames_attack1 [] =
 };
 mmove_t brain_move_attack1 = {FRAME_attak101, FRAME_attak118, brain_frames_attack1, brain_run};
 
+// The tentacles-hit flag lives in count. It used to be spawnflag 65536, which
+// is SPAWNFLAG_MONSTER_DEAD - Update 1 moved it out the same way.
 void brain_chest_open(edict_t *self) {
-    self->spawnflags &= ~65536;
+    self->count = 0;
     self->monsterinfo.power_armor_type = POWER_ARMOR_NONE;
     gi.sound(self, CHAN_BODY, sound_chest_open, 1, ATTN_NORM, 0);
 }
@@ -523,7 +525,7 @@ void brain_tentacle_attack(edict_t *self) {
     // the rerelease does on every skill
     if (fire_hit(self, aim, (10 + (Q_rand() % 5)), -600) &&
         (M_RereleaseGame() || skill->value > 0))
-        self->spawnflags |= 65536;
+        self->count = 1;
     else
         self->monsterinfo.melee_debounce_framenum = level.framenum + 3 * BASE_FRAMERATE;
     gi.sound(self, CHAN_WEAPON, sound_tentacles_retract, 1, ATTN_NORM, 0);
@@ -531,8 +533,8 @@ void brain_tentacle_attack(edict_t *self) {
 
 void brain_chest_closed(edict_t *self) {
     self->monsterinfo.power_armor_type = POWER_ARMOR_SCREEN;
-    if (self->spawnflags & 65536) {
-        self->spawnflags &= ~65536;
+    if (self->count) {
+        self->count = 0;
         self->monsterinfo.currentmove = &brain_move_attack1;
     }
 }

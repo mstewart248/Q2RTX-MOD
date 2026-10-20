@@ -176,6 +176,27 @@ void R_DrawStretchPic_GL(int x, int y, int w, int h, qhandle_t pic)
                   draw.colors[0].u32, image);
 }
 
+// A pic w x h centred on (cx, cy), turned clockwise by `angle` radians.
+void R_DrawRotatedPic_GL(float cx, float cy, float w, float h, float angle, qhandle_t pic)
+{
+    image_t *image = IMG_ForHandle(pic);
+    float c = cosf(angle), s = sinf(angle);
+    float ux = w * c * 0.5f, uy = w * s * 0.5f;     // half the width edge
+    float vx = -h * s * 0.5f, vy = h * c * 0.5f;    // half the height edge
+    vec_t *dst_vert;
+
+    // draw it upright to get the indices, colour and blend flags queued, then
+    // move the four corners
+    _GL_StretchPic(0, 0, 0, 0, image->sl, image->tl, image->sh, image->th,
+                   draw.colors[0].u32, image->texnum, image->flags);
+
+    dst_vert = tess.vertices + (tess.numverts - 4) * 4;
+    dst_vert[ 0] = cx - ux - vx; dst_vert[ 1] = cy - uy - vy;
+    dst_vert[ 4] = cx + ux - vx; dst_vert[ 5] = cy + uy - vy;
+    dst_vert[ 8] = cx + ux + vx; dst_vert[ 9] = cy + uy + vy;
+    dst_vert[12] = cx - ux + vx; dst_vert[13] = cy - uy + vy;
+}
+
 void R_DrawPic_GL(int x, int y, qhandle_t pic)
 {
     image_t *image = IMG_ForHandle(pic);

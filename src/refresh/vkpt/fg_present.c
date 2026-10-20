@@ -481,12 +481,16 @@ static int SDLCALL fg_present_thread(void *unused)
         }
 
         if (relative) {
-            /* VSYNC OFF: spread the group evenly across one render interval, starting the
-               moment it is ready. No refresh period, no lead, no floor. `pace` < 1 keeps
+            /* VSYNC OFF, OR VRR: spread the group evenly across one render interval, starting
+               the moment it is ready. No lead, and no refresh period except VRR's floor
+               below. `pace` < 1 keeps
                the group shorter than the cadence so the thread is always idle before the
                next group lands - it cannot ratchet the render rate down. */
             double slot = (fg_cadence_us > 0.0)
                 ? fg_cadence_us * (double)item.pace / (double)item.group_size : 0.0;
+            /* VRR's floor - the panel's fastest refresh. 0 otherwise. */
+            if (slot < (double)item.min_gap_us)
+                slot = (double)item.min_gap_us;
             effective_target = stale ? 0
                 : fg_group_ready_us + (uint64_t)(slot * (double)item.slot_index);
             fg_wait_until_or_superseded(effective_target, item.timeline_value);
@@ -696,8 +700,11 @@ void FGPresent_Shutdown(void)
         /* The frame submit that signals fg_timeline may still be in flight, and
            destroying a semaphore with a pending operation is a use-after-free. The
            present thread is already joined above, so nothing else is touching a
-           queue and this wait cannot race the way vkDeviceWaitIdle otherwise can. */
+           queue and this wait cannot race the way vkDeviceWaitIdle otherwise can -
+           but the sound's simulation thread, which sound_trace.c's lock holds off. */
+        vkpt_sound_lock();
         vkDeviceWaitIdle(qvk.device);
+        vkpt_sound_unlock();
 
         if (fg_timeline != VK_NULL_HANDLE)
             vkDestroySemaphore(qvk.device, fg_timeline, NULL);

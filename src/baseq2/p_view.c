@@ -186,6 +186,35 @@ void P_DamageFeedback(edict_t *player)
         client->v_dmg_time = level.time + DAMAGE_TIME;
     }
 
+    // [rerelease] cl_rerelease_hud: which way this frame's damage came from.
+    // Each source is a third of its damage in 5 bits plus what it hit.
+    if (client->num_damage_indicators && G_RereleaseHud(player)) {
+        int i;
+
+        gi.WriteByte(svc_temp_entity);
+        gi.WriteByte(TE_DAMAGE_INDICATOR);
+        gi.WriteByte(client->num_damage_indicators);
+        for (i = 0; i < client->num_damage_indicators; i++) {
+            int total = client->damage_indicators[i].health +
+                        client->damage_indicators[i].armor +
+                        client->damage_indicators[i].power;
+            int bits = min(max(total / 3, 1), DI_DAMAGE_MASK);
+
+            if (client->damage_indicators[i].health)
+                bits |= DI_HEALTH;
+            if (client->damage_indicators[i].armor)
+                bits |= DI_ARMOR;
+            if (client->damage_indicators[i].power)
+                bits |= DI_POWER_ARMOR;
+
+            VectorSubtract(player->s.origin, client->damage_indicators[i].from, v);
+            VectorNormalize(v);
+            gi.WriteByte(bits);
+            gi.WriteDir(v);
+        }
+        gi.unicast(player, false);
+    }
+
     //
     // clear totals
     //
@@ -193,6 +222,7 @@ void P_DamageFeedback(edict_t *player)
     client->damage_armor = 0;
     client->damage_parmor = 0;
     client->damage_knockback = 0;
+    client->num_damage_indicators = 0;
 }
 
 
@@ -707,6 +737,14 @@ void P_WorldEffects(void)
                 current_player->pain_debounce_framenum = level.framenum;
 
                 T_Damage(current_player, world, world, vec3_origin, current_player->s.origin, vec3_origin, current_player->dmg, 0, DAMAGE_NO_ARMOR, MOD_WATER);
+            }
+        } else if (M_RereleaseGame() &&
+                   current_player->air_finished_framenum <= level.framenum + 3 * BASE_FRAMERATE) {
+            // [rerelease] almost out of air: a wade sound every second, cycling
+            // through the three as Update 1 does
+            if (current_player->client->next_drown_framenum < level.framenum) {
+                gi.sound(current_player, CHAN_VOICE, gi.soundindex(va("player/wade%d.wav", 1 + (level.framenum / BASE_FRAMERATE) % 3)), 1, ATTN_NORM, 0);
+                current_player->client->next_drown_framenum = level.framenum + 1 * BASE_FRAMERATE;
             }
         }
     } else {

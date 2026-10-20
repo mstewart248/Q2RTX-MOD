@@ -143,6 +143,7 @@ SET(SRC_CLIENT
 	client/sound/dma.c
 	client/sound/al.c
 	client/sound/reverb.c
+	client/sound/steamaudio.c
 	client/sound/main.c
 	client/sound/mem.c
 	client/sound/mix.c
@@ -308,6 +309,7 @@ SET(SRC_VKPT
 	refresh/vkpt/precomputed_sky.c
 	refresh/vkpt/profiler.c
 	refresh/vkpt/shadow_map.c
+	refresh/vkpt/sound_trace.c
 	refresh/vkpt/textures.c
 	refresh/vkpt/tone_mapping.c
 	refresh/vkpt/transparency.c
@@ -352,6 +354,8 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/froxel_scatter.comp
 	refresh/vkpt/shader/froxel_integrate.comp
 	refresh/vkpt/shader/sky_exposure_bake.comp
+	refresh/vkpt/shader/sound_trace.comp
+	refresh/vkpt/shader/sound_diffract.comp
 	refresh/vkpt/shader/bloom_composite.comp
 	refresh/vkpt/shader/bloom_blur.comp
 	refresh/vkpt/shader/bloom_downscale.comp
@@ -609,6 +613,12 @@ IF (TARGET client)
         ELSE ()
         TARGET_LINK_LIBRARIES(client vulkan)
         ENDIF()
+    ENDIF()
+
+    # Steam Audio (sound/steamaudio.c): headers only, phonon.dll is loaded at run time
+    IF (EXISTS "${CMAKE_SOURCE_DIR}/extern/steamaudio/include/phonon.h")
+        TARGET_INCLUDE_DIRECTORIES(client PRIVATE "${CMAKE_SOURCE_DIR}/extern/steamaudio/include")
+        TARGET_COMPILE_DEFINITIONS(client PRIVATE USE_STEAMAUDIO=1)
     ENDIF()
 
     TARGET_LINK_LIBRARIES(client stb)

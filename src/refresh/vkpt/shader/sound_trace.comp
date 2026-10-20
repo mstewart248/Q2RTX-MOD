@@ -1,0 +1,323 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/*
+==============================================================================
+
+SOUND TRACE - sound off the walls, on the GPU.
+
+WHAT. Steam Audio's real-time reflection simulator (ReflectionSimulator in
+core/src/core/reflection_simulator.cpp), the same algorithm step for step, so
+that s_reflections_gpu 0 and 1 sound alike and Steam Audio does the rest - the
+averaging of runs, the reconstruction of a response and the convolution - as
+before. See sound_trace.c for how a run gets here.
+
+Rays leave the listener, spread evenly over the sphere, and bounce round the
+map's acoustic scene (steamaudio.c's faces and materials, not the renderer's).
+At every hit the source is looked for with a shadow ray; what reaches it goes
+into the source's energy field - energy per 10 ms bin of delay after the
+direct sound, per band, per first-order Ambisonics channel of the direction
+the ray left the listener in, in world space. Each bounce keeps what the
+surface does not absorb, and goes on as a mirror or, by the surface's
+scattering, a cosine-weighted diffuse one.
+
+DIFFERENCES, none of them heard:
+  * the sphere of listener rays is Steam Audio's (Hammersley) shifted by a
+    random amount every run (Cranley-Patterson), so runs differ and Steam
+    Audio's averaging of them converges; the CPU's is the same every run.
+  * a diffuse bounce picks any cosine-weighted direction, not one of 32.
+  * each source traces paths of its own; the CPU shares one set between all
+    the sources. Twice the rays, which RT cores do not notice, and no field
+    for every source at once in shared memory.
+
+Sound that bends round corners is not here: see sound_diffract.comp.
+
+DISPATCH. x: blocks of SOUND_TRACE_GROUP * rays_per_thread listener rays,
+y: the sources. A group adds its rays into a field in shared memory and adds
+that into the source's in the output once at the end, both with
+compare-and-swap float adds, which every Vulkan device has.
+
+==============================================================================
+*/
+
+#version 460
+#extension GL_EXT_ray_query : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#include "sound_trace_shared.h"
+
+#define PI 3.14159265358979
+
+// Steam Audio's IReflectionSimulator constants
+#define HIT_SURFACE_OFFSET  1e-2
+#define SPECULAR_EXPONENT   100.0
+#define SOURCE_RADIUS       0.1
+#define LISTENER_RADIUS     0.1
+
+#define FIELD_SIZE  (SOUND_TRACE_CHANNELS * SOUND_TRACE_BANDS * SOUND_TRACE_MAX_BINS)
+
+layout(local_size_x = SOUND_TRACE_GROUP, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT SOUND_TLAS;
+
+layout(set = 0, binding = 1, std140) uniform SoundTraceParams {
+	vec4  listener;
+	vec4  sources[SOUND_TRACE_MAX_SOURCES];
+	vec4  materials[SOUND_TRACE_MAX_MATERIALS];    // absorption low, mid, high; scattering
+	uvec4 counts;       // sources, rays, bounces, bins
+	uvec4 counts2;      // rays per thread, seed
+	vec4  dists;        // most a path may travel, nearest a source counts from, energy of a ray
+	vec4  shift;        // of the listener rays, this run
+	vec4  queries[SOUND_TRACE_MAX_QUERIES];    // sound_diffract.comp's
+	uvec4 counts3;      // and its queries, edges
+} params;
+
+// per triangle: its normal in its mesh's space, and its material
+struct SoundTri {
+	vec3 normal;
+	uint material;
+};
+
+layout(set = 0, binding = 2, std430) readonly buffer SoundTris {
+	SoundTri tris[];
+};
+
+// [source][channel][band][bin], float bits
+layout(set = 0, binding = 3, std430) buffer SoundFields {
+	uint fields[];
+};
+
+shared uint s_field[FIELD_SIZE];
+
+uint hash_u32(uint x)
+{
+	x ^= x >> 16; x *= 0x7feb352du;
+	x ^= x >> 15; x *= 0x846ca68bu;
+	x ^= x >> 16;
+	return x;
+}
+
+float rand01(inout uint state)
+{
+	state = state * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return float((word >> 22u) ^ word) * (1.0 / 4294967296.0);
+}
+
+void shared_add(uint i, float v)
+{
+	uint prev = s_field[i];
+	while (true) {
+		uint got = atomicCompSwap(s_field[i], prev, floatBitsToUint(uintBitsToFloat(prev) + v));
+		if (got == prev)
+			break;
+		prev = got;
+	}
+}
+
+void global_add(uint i, float v)
+{
+	uint prev = fields[i];
+	while (true) {
+		uint got = atomicCompSwap(fields[i], prev, floatBitsToUint(uintBitsToFloat(prev) + v));
+		if (got == prev)
+			break;
+		prev = got;
+	}
+}
+
+// Sampling::generateSphereSamples, shifted
+vec3 listener_ray(uint i, uint n)
+{
+	float u = fract((float(i) + 0.5) / float(n) + params.shift.x);
+	float v = fract(float(bitfieldReverse(i)) * (1.0 / 4294967296.0) + params.shift.y);
+	float azimuth = 2.0 * PI * u;
+	float height = 2.0 * v - 1.0;
+	float horizontal = sqrt(max(1.0 - height * height, 0.0));
+	return vec3(horizontal * cos(azimuth), height, horizontal * -sin(azimuth));
+}
+
+vec3 cosine_bounce(vec3 n, inout uint rng)
+{
+	// Duff et al., "Building an Orthonormal Basis, Revisited"
+	float s = n.z >= 0.0 ? 1.0 : -1.0;
+	float a = -1.0 / (s + n.z);
+	float b = n.x * n.y * a;
+	vec3 t = vec3(1.0 + s * n.x * n.x * a, s * b, -s * n.x);
+	vec3 bt = vec3(b, s + n.y * n.y * a, -n.y);
+
+	float u1 = rand01(rng), u2 = rand01(rng);
+	float r = sqrt(u1), phi = 2.0 * PI * u2;
+	return normalize(t * (r * cos(phi)) + bt * (r * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
+}
+
+// Ray::intersect(Sphere): the near root, or a huge number for a miss
+float sphere_hit(vec3 o, vec3 d, vec3 c, float r)
+{
+	vec3 v = o - c;
+	float B = 2.0 * dot(v, d);
+	float C = dot(v, v) - r * r;
+	float D = B * B - 4.0 * C;
+	if (D < 0.0)
+		return 1e30;
+	return -0.5 * (B + sqrt(D));
+}
+
+// ReflectionSimulator::trace's test past the first bounce: a path that goes
+// through a source or the listener is the direct sound, not a reflection
+bool through_ends(vec3 o, vec3 d, float t_hit)
+{
+	vec3 listener = params.listener.xyz;
+
+	for (uint k = 0; k < params.counts.x; k++) {
+		vec3 c = params.sources[k].xyz;
+		if (length(listener - c) > SOURCE_RADIUS) {
+			float t = sphere_hit(o, d, c, SOURCE_RADIUS);
+			if (t >= 0.0 && t < t_hit)
+				return true;
+		}
+	}
+
+	float t = sphere_hit(o, d, listener, LISTENER_RADIUS);
+	return t >= 0.0 && t < t_hit;
+}
+
+void trace_ray(uint ray, uint source)
+{
+	vec3  listener = params.listener.xyz;
+	vec3  src = params.sources[source].xyz;
+	uint  num_bins = params.counts.w;
+	float max_distance = params.dists.x;
+	float min_distance = params.dists.y;
+	float direct_delay = length(src - listener) / SOUND_TRACE_SPEED_OF_SOUND;
+
+	uint rng = hash_u32(params.counts2.y ^ hash_u32(ray * SOUND_TRACE_MAX_SOURCES + source));
+
+	vec3 dir = listener_ray(ray, params.counts.y);
+	vec3 origin = listener;
+
+	// SphericalHarmonics::evaluate of the direction, order 1: Google's SH in
+	// its frame (-z, -x, y) of Steam Audio's
+	float sh[SOUND_TRACE_CHANNELS] = float[](0.282095, -0.488603 * dir.x, 0.488603 * dir.y, -0.488603 * dir.z);
+
+	vec3 accum = vec3(1.0);
+	float accum_distance = 0.0;
+
+	for (uint bounce = 0; bounce < params.counts.z; bounce++) {
+		rayQueryEXT rq;
+		rayQueryInitializeEXT(rq, SOUND_TLAS, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.0, dir, 1e30);
+		while (rayQueryProceedEXT(rq)) {}
+
+		if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionTriangleEXT)
+			break;
+		if (accum_distance > max_distance)
+			break;
+
+		float t = rayQueryGetIntersectionTEXT(rq, true);
+		if (t <= LISTENER_RADIUS)
+			break;
+
+		uint tri = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true))
+		         + uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+		SoundTri st = tris[tri];
+		vec4 mat = params.materials[st.material];
+
+		mat4x3 to_world = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+		vec3 normal = normalize(mat3(to_world) * st.normal);
+		if (dot(normal, dir) > 0.0)
+			normal = -normal;
+
+		vec3 hit_point = origin + dir * t + HIT_SURFACE_OFFSET * normal;
+
+		if (bounce > 0 && through_ends(origin, dir, t))
+			break;
+
+		// ReflectionSimulator::shade
+		vec3 to_source = src - hit_point;
+		float source_distance = length(to_source);
+		if (dot(normal, to_source) >= 0.0 && source_distance > min_distance) {
+			vec3 l = to_source / source_distance;
+
+			rayQueryEXT sq;
+			rayQueryInitializeEXT(sq, SOUND_TLAS, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+			                      0xFF, hit_point, 0.0, l, source_distance);
+			while (rayQueryProceedEXT(sq)) {}
+
+			if (rayQueryGetIntersectionTypeEXT(sq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+				float scattering = mat.w;
+				float diffuse = (1.0 / PI) * scattering * max(dot(normal, l), 0.0);
+				vec3 half_vector = normalize((l - dir) * 0.5);
+				float specular = ((SPECULAR_EXPONENT + 2.0) / (8.0 * PI)) * (1.0 - scattering)
+				               * pow(max(dot(half_vector, normal), 0.0), SPECULAR_EXPONENT);
+				float attenuation = 1.0 / max(source_distance, min_distance);
+				float distance_term = (1.0 / (4.0 * PI)) * attenuation * attenuation;
+				float energy = params.dists.z * distance_term * (diffuse + specular);
+
+				float delay = (accum_distance + t + source_distance) / SOUND_TRACE_SPEED_OF_SOUND - direct_delay;
+				int bin = int(floor(delay / SOUND_TRACE_BIN_SECONDS));
+
+				if (bin >= 0 && bin < int(num_bins)) {
+					vec3 e = energy * (vec3(1.0) - mat.xyz) * accum;
+					for (uint c = 0; c < SOUND_TRACE_CHANNELS; c++)
+						for (uint b = 0; b < SOUND_TRACE_BANDS; b++)
+							shared_add((c * SOUND_TRACE_BANDS + b) * num_bins + uint(bin), sh[c] * e[b]);
+				}
+			}
+		}
+
+		// ReflectionSimulator::bounce
+		if (bounce + 1 < params.counts.z) {
+			accum *= vec3(1.0) - mat.xyz;
+			accum_distance += t;
+			origin = hit_point;
+
+			if (rand01(rng) < mat.w)
+				dir = cosine_bounce(normal, rng);
+			else
+				dir = reflect(dir, normal);
+		}
+	}
+}
+
+void main()
+{
+	uint source = gl_WorkGroupID.y;
+	uint num_bins = params.counts.w;
+	uint size = SOUND_TRACE_CHANNELS * SOUND_TRACE_BANDS * num_bins;
+	uint per_thread = params.counts2.x;
+
+	for (uint i = gl_LocalInvocationIndex; i < size; i += SOUND_TRACE_GROUP)
+		s_field[i] = 0u;
+	barrier();
+
+	for (uint k = 0; k < per_thread; k++) {
+		uint ray = (gl_WorkGroupID.x * per_thread + k) * SOUND_TRACE_GROUP + gl_LocalInvocationIndex;
+		if (ray >= params.counts.y)
+			break;
+		trace_ray(ray, source);
+	}
+
+	barrier();
+
+	uint base = source * size;
+	for (uint i = gl_LocalInvocationIndex; i < size; i += SOUND_TRACE_GROUP) {
+		float v = uintBitsToFloat(s_field[i]);
+		if (v != 0.0)
+			global_add(base + i, v);
+	}
+}

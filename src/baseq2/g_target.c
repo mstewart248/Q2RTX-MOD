@@ -102,8 +102,29 @@ Normal sounds play each time the target is used.  The reliable flag can be set f
 Looped sounds are always atten 3 / vol 1, and the use function toggles it on/off.
 Multiple identical looping sounds will just increase volume without any speed cost.
 */
+
+// The train at a path_corner that has just fired its pathtarget: train_wait
+// passes the corner as `other`.
+static edict_t *speaker_train(edict_t *corner)
+{
+    edict_t *e;
+    int     i;
+
+    if (!corner || !corner->classname || strcmp(corner->classname, "path_corner"))
+        return NULL;
+
+    for (i = game.maxclients + 1; i < globals.num_edicts; i++) {
+        e = &g_edicts[i];
+        if (e->inuse && e->target_ent == corner && e->movetype == MOVETYPE_PUSH && e->s.modelindex)
+            return e;
+    }
+
+    return NULL;
+}
+
 void Use_Target_Speaker(edict_t *ent, edict_t *other, edict_t *activator)
 {
+    edict_t *train;
     int     chan;
 
     if (ent->spawnflags & 3) {
@@ -118,6 +139,19 @@ void Use_Target_Speaker(edict_t *ent, edict_t *other, edict_t *activator)
             chan = CHAN_VOICE | CHAN_RELIABLE;
         else
             chan = CHAN_VOICE;
+
+        // A whole-level sound set off by a train on its way rides it: the
+        // ship in base1 that starts its flyby at a corner is heard from where
+        // it is, as it goes (the client places such a sound: AL_GlobalPlaced).
+        // The ship is sent to every client from then on, so that the sound
+        // follows it out of sight too.
+        train = ent->attenuation ? NULL : speaker_train(other);
+        if (train) {
+            train->svflags |= SVF_NOCULL;
+            gi.sound(train, chan, ent->noise_index, ent->volume, ATTN_NONE, 0);
+            return;
+        }
+
         // use a positioned_sound, because this entity won't normally be
         // sent to any clients because it is invisible
         gi.positioned_sound(ent->s.origin, ent, chan, ent->noise_index, ent->volume, ent->attenuation, 0);

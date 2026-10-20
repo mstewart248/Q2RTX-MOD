@@ -252,6 +252,8 @@ VkptInit_t vkpt_initialization[] = {
 	{ "godrays",    vkpt_initialize_god_rays,           vkpt_destroy_god_rays,              VKPT_INIT_DEFAULT,             0 },
 	{ "godrays|",   vkpt_god_rays_create_pipelines,     vkpt_god_rays_destroy_pipelines,    VKPT_INIT_RELOAD_SHADER,       0 },
 	{ "godraysI",   vkpt_god_rays_update_images,        vkpt_god_rays_noop,                 VKPT_INIT_SWAPCHAIN_RECREATE,  0 },
+	{ "sound",      vkpt_sound_initialize,              vkpt_sound_destroy,                 VKPT_INIT_DEFAULT,             0 },
+	{ "sound|",     vkpt_sound_create_pipelines,        vkpt_sound_destroy_pipelines,       VKPT_INIT_RELOAD_SHADER,       0 },
 };
 
 VkImage GetDLSSImage();
@@ -1656,7 +1658,9 @@ acquire_next_image_locked(VkSemaphore semaphore, uint32_t *out_index)
 void vkpt_device_wait_idle(void)
 {
 	FGPresent_SwapchainLock();
+	vkpt_sound_lock();
 	vkDeviceWaitIdle(qvk.device);
+	vkpt_sound_unlock();
 	FGPresent_SwapchainUnlock();
 }
 
@@ -1992,8 +1996,10 @@ create_swapchain(void)
 #ifdef _WIN32
 	{
 		char gdi_device[64];
-		if (vkpt_get_window_gdi_device(gdi_device, sizeof(gdi_device)))
+		if (vkpt_get_window_gdi_device(gdi_device, sizeof(gdi_device))) {
 			FGPresent_VBlankStart(gdi_device);
+			Reflex_DetectVRR(gdi_device);
+		}
 	}
 #endif
 
@@ -2745,9 +2751,31 @@ init_vulkan(void)
 	qvk.queue_families_graphics_compute[0] = (uint32_t)qvk.queue_idx_graphics;
 	qvk.queue_families_graphics_compute[1] = (uint32_t)qvk.queue_idx_compute;
 
-	Com_Printf("Vulkan queue families: graphics %d, transfer %d, compute %d%s\n",
+	/* THE SOUND'S QUEUE (sound_trace.c): the reflections traced on the GPU are
+	   submitted from the sound's simulation thread, so they need a queue nothing
+	   else uses. The first compute-only family with one left after the transfer
+	   and async compute queues taken from it. No timestamps needed. */
+	qvk.queue_idx_sound = -1;
+	uint32_t sound_queue_index = 0;
+	for(int i = 0; i < num_queue_families && qvk.device_count == 1; i++) {
+		const VkQueueFlags flags = queue_families[i].queueFlags;
+		uint32_t taken = 0;
+		if(!(flags & VK_QUEUE_COMPUTE_BIT) || (flags & VK_QUEUE_GRAPHICS_BIT))
+			continue;
+		if(i == qvk.queue_idx_transfer)
+			taken = 1;
+		if(i == qvk.queue_idx_compute)
+			taken = max(taken, compute_queue_index + 1);
+		if(queue_families[i].queueCount > taken) {
+			qvk.queue_idx_sound = i;
+			sound_queue_index = taken;
+			break;
+		}
+	}
+
+	Com_Printf("Vulkan queue families: graphics %d, transfer %d, compute %d%s, sound %d\n",
 		qvk.queue_idx_graphics, qvk.queue_idx_transfer, qvk.queue_idx_compute,
-		qvk.async_compute_available ? "" : " (no async compute)");
+		qvk.async_compute_available ? "" : " (no async compute)", qvk.queue_idx_sound);
 
 	if(qvk.queue_idx_graphics < 0 || qvk.queue_idx_transfer < 0) {
 		Com_Error(ERR_FATAL, "Could not find a suitable Vulkan queue family!\n");
@@ -2756,7 +2784,7 @@ init_vulkan(void)
 	
 	float queue_priorities = 1.0f;
 	int num_create_queues = 0;
-	VkDeviceQueueCreateInfo queue_create_info[3];
+	VkDeviceQueueCreateInfo queue_create_info[4];
 	static const float two_queue_priorities[2] = { 1.0f, 1.0f };
 
 	/* A DEDICATED PRESENT QUEUE, when the graphics family has a second queue.
@@ -2803,6 +2831,29 @@ init_vulkan(void)
 		};
 		queue_create_info[num_create_queues++] = q;
 	};
+	/* the sound's queue: one more of a family already asked for, or a family of
+	   its own. Below the render work in priority, as far as that means anything. */
+	static float sound_family_priorities[16];
+	if(qvk.queue_idx_sound >= 0 && sound_queue_index < LENGTH(sound_family_priorities)) {
+		for(uint32_t k = 0; k < LENGTH(sound_family_priorities); k++)
+			sound_family_priorities[k] = k < sound_queue_index ? 1.0f : 0.5f;
+		int found = -1;
+		for(int k = 0; k < num_create_queues; k++)
+			if(queue_create_info[k].queueFamilyIndex == (uint32_t)qvk.queue_idx_sound)
+				found = k;
+		if(found < 0) {
+			VkDeviceQueueCreateInfo q = {
+				.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+				.queueFamilyIndex = qvk.queue_idx_sound,
+			};
+			found = num_create_queues++;
+			queue_create_info[found] = q;
+		}
+		queue_create_info[found].queueCount = sound_queue_index + 1;
+		queue_create_info[found].pQueuePriorities = sound_family_priorities;
+	} else {
+		qvk.queue_idx_sound = -1;
+	}
 
 #ifdef VKPT_DEVICE_GROUPS
 	if (qvk.device_count > 1) {
@@ -3053,6 +3104,10 @@ init_vulkan(void)
 	qvk.queue_compute = VK_NULL_HANDLE;
 	if (qvk.async_compute_available)
 		vkGetDeviceQueue(qvk.device, qvk.queue_idx_compute, compute_queue_index, &qvk.queue_compute);
+
+	qvk.queue_sound = VK_NULL_HANDLE;
+	if (qvk.queue_idx_sound >= 0)
+		vkGetDeviceQueue(qvk.device, qvk.queue_idx_sound, sound_queue_index, &qvk.queue_sound);
 
 	qvk.queue_present = qvk.queue_graphics;
 	qvk.queue_present_dedicated = false;
@@ -4767,6 +4822,11 @@ static bool accumulation_bypasses_dlss(void)
 	return DLSSEnabled() ? true : false;
 }
 
+bool vkpt_fg_bypassed(void)
+{
+	return accumulation_bypasses_dlss();
+}
+
 /* The stand-in for DLSSApply() while photo mode is bypassing it: put the
    accumulated frame where the rest of the DLSS arm expects to find it.
 
@@ -5458,6 +5518,9 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			ubo->fog_hf_end_r   = mf.hf_end_color[0];
 			ubo->fog_hf_end_g   = mf.hf_end_color[1];
 			ubo->fog_hf_end_b   = mf.hf_end_color[2];
+			ubo->fog_hf_color_start_z = mf.hf_color_start_z;
+			ubo->fog_hf_color_end_z   = mf.hf_color_end_z;
+			ubo->fog_color_layers     = mf.color_layers;
 			ubo->fog_mode       = mf.mode;
 			ubo->fog_vol_density_ratio = 1.0f;   // retired; see FOG_LOCAL_DENSITY
 		} else {
@@ -8366,9 +8429,29 @@ R_EndFrame_RTX(void)
 		static cvar_t *cv_pace = NULL;
 		if (!cv_pace) cv_pace = Cvar_Get("pt_dlss_fg_pace", "0.95", CVAR_ARCHIVE);
 
+		/* VRR TAKES THE RELATIVE PATH EVEN UNDER FIFO (issue #22). The FIFO schedule below
+		   assumes one present retires per vblank, so it pins the slot to the refresh period.
+		   On a G-SYNC display there is no fixed vblank - FIFO flips as each present arrives -
+		   and a 4x group then spans 4 x 6.94 = 27.8 ms on a 144 Hz panel while a 35 fps
+		   render arrives every 28.6. The schedule gains 0.8 ms a frame, the deadlines slide
+		   into the past, the presents bunch at the 0.85-slot floor (the reporter's 5.96 ms
+		   gaps, then 10.6), and every second or so the anchor jumps forward (the 12.9 ms
+		   gaps) - judder - while the lead held each real frame 40 ms and the main thread
+		   stalled 27 ms a frame waiting for it. Relative pacing spreads the group over the
+		   measured render cadence from the moment it is ready, which is what VRR shows.
+		   The refresh period stays as a floor (min_gap_us below). */
+		const bool fg_vrr = Reflex_DisplayVRR();
 		const bool fg_uncapped = cv_uncapped->integer != 0
-			&& qvk.present_mode != VK_PRESENT_MODE_FIFO_KHR;
+			&& (qvk.present_mode != VK_PRESENT_MODE_FIFO_KHR || fg_vrr);
 		float fg_pace = cv_pace->value;
+		if (fg_vrr) {
+			/* Under VRR the slots ARE the display intervals, so pace < 1 shows up directly as
+			   a short-short-short-long rhythm. Reflex holds the cadence there, and a group
+			   that runs long is cut short by the next one becoming ready. */
+			static cvar_t *cv_vrr_pace = NULL;
+			if (!cv_vrr_pace) cv_vrr_pace = Cvar_Get("pt_dlss_fg_vrr_pace", "1.0", CVAR_ARCHIVE);
+			fg_pace = cv_vrr_pace->value;
+		}
 		if (fg_pace < 0.5f) fg_pace = 0.5f;
 		if (fg_pace > 1.0f) fg_pace = 1.0f;
 		const uint32_t fg_group_size = fg_uncapped ? total : 0u;
@@ -8520,6 +8603,12 @@ R_EndFrame_RTX(void)
 		uint64_t min_gap_us = phase_locked
 			? (uint64_t)vb_period_us
 			: (uint64_t)(slot * 0.85);
+
+		/* Relative slots take the floor as a minimum slot width. Only VRR sets one: the
+		   panel's fastest refresh, so a group never outruns what it can show. Faster than
+		   that, FIFO backs up and IMMEDIATE tears. */
+		if (fg_uncapped)
+			min_gap_us = (fg_vrr && refresh_hz > 0) ? (uint64_t)(1000000.0 / (double)refresh_hz) : 0;
 
 		/* TRIED AND REVERTED: letting FIFO do the pacing by presenting the whole group
 		   immediately (base = now, no slot, no floor). It DOES cut latency hard - 70 ms
@@ -8887,10 +8976,11 @@ static void vkpt_fog_debug(void)
 	if (have) {
 		Com_Printf("  mode %d   density %g   heightfog %g  z %.0f..%.0f  falloff %g\n",
 			mf.mode, mf.density, mf.hf_density, mf.hf_end_z, mf.hf_start_z, mf.hf_falloff);
-		Com_Printf("  fog colour %.2f %.2f %.2f   hf %.2f %.2f %.2f -> %.2f %.2f %.2f\n",
+		Com_Printf("  rerelease level fog (cl_fog_rerelease): %s\n", mf.color_layers ? "on" : "off");
+		Com_Printf("  fog colour %.2f %.2f %.2f   hf %.2f %.2f %.2f at z %.0f -> %.2f %.2f %.2f at z %.0f\n",
 			mf.color[0], mf.color[1], mf.color[2],
-			mf.hf_end_color[0], mf.hf_end_color[1], mf.hf_end_color[2],
-			mf.hf_start_color[0], mf.hf_start_color[1], mf.hf_start_color[2]);
+			mf.hf_end_color[0], mf.hf_end_color[1], mf.hf_end_color[2], mf.hf_color_end_z,
+			mf.hf_start_color[0], mf.hf_start_color[1], mf.hf_start_color[2], mf.hf_color_start_z);
 	}
 	// cl_fog 2 scatters the CLUSTER light list, which is the static lights plus
 	// any model lights injected into it - not the model lights alone. A zero
@@ -9960,6 +10050,7 @@ void R_RegisterFunctionsRTX()
 	R_DrawString = R_DrawString_RTX;
 	R_DrawPic = R_DrawPic_RTX;
 	R_DrawStretchPic = R_DrawStretchPic_RTX;
+	R_DrawRotatedPic = R_DrawRotatedPic_RTX;
 	R_TileClear = R_TileClear_RTX;
 	R_DrawFill8 = R_DrawFill8_RTX;
 	R_DrawFill32 = R_DrawFill32_RTX;
@@ -9970,6 +10061,7 @@ void R_RegisterFunctionsRTX()
 	R_InterceptKey = R_InterceptKey_RTX;
 	R_IsHDR = R_IsHDR_RTX;
 	R_LatencySleep = Reflex_SleepAndBeginFrame;
+	vkpt_sound_register();
 	IMG_Load = IMG_Load_RTX;
 	IMG_Unload = IMG_Unload_RTX;
 	IMG_ReadPixels = IMG_ReadPixels_RTX;

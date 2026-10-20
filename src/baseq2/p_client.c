@@ -1581,6 +1581,10 @@ void ClientBegin(edict_t *ent)
 
     // make sure all view stuff is valid
     ClientEndServerFrame(ent);
+
+    // [rerelease] this level's row of the end of unit screen; here so its
+    // clock starts only once a player is actually in the level
+    G_SetLevelEntry();
 }
 
 /*

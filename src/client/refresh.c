@@ -477,6 +477,7 @@ int(*R_DrawString)(int x, int y, int flags, size_t maxChars,
 	const char *string, qhandle_t font) = NULL;
 void(*R_DrawPic)(int x, int y, qhandle_t pic) = NULL;
 void(*R_DrawStretchPic)(int x, int y, int w, int h, qhandle_t pic) = NULL;
+void(*R_DrawRotatedPic)(float cx, float cy, float w, float h, float angle, qhandle_t pic) = NULL;
 void(*R_TileClear)(int x, int y, int w, int h, qhandle_t pic) = NULL;
 void(*R_DrawFill8)(int x, int y, int w, int h, int c) = NULL;
 void(*R_DrawFill32)(int x, int y, int w, int h, uint32_t color) = NULL;
@@ -487,6 +488,7 @@ void(*R_AddDecal)(decal_t *d) = NULL;
 bool(*R_InterceptKey)(unsigned key, bool down) = NULL;
 bool(*R_IsHDR)(void) = NULL;
 void(*R_LatencySleep)(void) = NULL;
+bool(*R_SoundTrace)(const r_sound_trace_t *trace, const char **why) = NULL;
 
 void(*IMG_Unload)(image_t *image) = NULL;
 void(*IMG_Load)(image_t *image, byte *pic) = NULL;

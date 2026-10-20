@@ -273,9 +273,27 @@ static void PM_StepSlideMove(void)
     // push down the final amount
     VectorCopy(pml.origin, down);
     down[2] -= step_size;
-    trace = pm->trace(pml.origin, pm->mins, pm->maxs, down);
-    if (!trace.allsolid)
-        VectorCopy(trace.endpos, pml.origin);
+    if (pmp->rerelease && start_o[2] < down[2]) {
+        // [Update 1] jitspoe's stair clip fix: a box moving up (a jump into a
+        // step's edge) ends the push-down above where it started, so the
+        // short trace often finds no floor and the step-up is thrown away by
+        // the normal check below. Probing to just under the start finds the
+        // step's top, so a jump against a stair lands on it. The box itself
+        // still stops at the normal push-down end.
+        vec3_t  original_down;
+
+        VectorCopy(down, original_down);
+        down[2] = start_o[2] - 1;
+        trace = pm->trace(pml.origin, pm->mins, pm->maxs, down);
+        if (!trace.allsolid) {
+            trace_t real_trace = pm->trace(pml.origin, pm->mins, pm->maxs, original_down);
+            VectorCopy(real_trace.endpos, pml.origin);
+        }
+    } else {
+        trace = pm->trace(pml.origin, pm->mins, pm->maxs, down);
+        if (!trace.allsolid)
+            VectorCopy(trace.endpos, pml.origin);
+    }
 
     VectorCopy(pml.origin, up);
 
@@ -290,9 +308,12 @@ static void PM_StepSlideMove(void)
         VectorCopy(down_v, pml.velocity);
         if (!pmp->rerelease)
             return;
-    } else if (!pmp->rerelease || (pm->s.pm_flags & PMF_ON_GROUND)) {
+    } else {
         //!! Special case
-        // if we were walking along a plane, then we need to copy the Z over
+        // if we were walking along a plane, then we need to copy the Z over.
+        // [Update 1] the rerelease had this behind PMF_ON_GROUND, which kept
+        // the stepped-up pass's Z in the air and broke ramp jumps; Update 1
+        // dropped the condition again, which is also what stock Q2 does.
         pml.velocity[2] = down_v[2];
     }
 

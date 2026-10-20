@@ -525,7 +525,9 @@ void SV_BuildClientFrame(client_t *client)
             }
         }
 
-        if(!ent_visible && (!sv_novis->integer || !ent->s.modelindex))
+        // SVF_NOCULL: sent anyway - a ship whose flyby rides it, so the
+        // client hears it from where it is (Use_Target_Speaker)
+        if(!ent_visible && !(ent->svflags & SVF_NOCULL) && (!sv_novis->integer || !ent->s.modelindex))
             continue;
         
 		if (ent->s.number != e) {

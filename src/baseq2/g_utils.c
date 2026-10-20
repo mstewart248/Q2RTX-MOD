@@ -686,7 +686,10 @@ bool KillBoxBrush(edict_t *ent, bool exact)
 
         if (hit == ent)
             continue;
-        if (!hit->inuse || !hit->takedamage || hit->solid == SOLID_NOT || hit->solid == SOLID_TRIGGER)
+        // [Update 1] other brush models (a damageable func_explosive, say) are
+        // never telefragged by an appearing brush
+        if (!hit->inuse || !hit->takedamage || hit->solid == SOLID_NOT || hit->solid == SOLID_TRIGGER ||
+            hit->solid == SOLID_BSP)
             continue;
 
         if (exact) {

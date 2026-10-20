@@ -49,7 +49,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //
 // Under water the "underwater" preset applies regardless of the table. Changes
 // fade over s_reverb_lerptime; going in or out of water switches at once.
-// Interface sounds and the music stay dry - see AL_ReverbChannel.
+// Interface sounds, radio voices and the music stay dry - see AL_ReverbChannel.
 //
 // maps/<map>.environments, if present, REPLACES the default table for that map.
 // KEX can also merge the two ("merge" / "additive"); no map ships one, so only
@@ -136,12 +136,17 @@ static struct {
     LPALDELETEAUXILIARYEFFECTSLOTS  DeleteAuxiliaryEffectSlots;
     LPALAUXILIARYEFFECTSLOTI        AuxiliaryEffectSloti;
     LPALAUXILIARYEFFECTSLOTF        AuxiliaryEffectSlotf;
+    LPALGENFILTERS                  GenFilters;
+    LPALDELETEFILTERS               DeleteFilters;
+    LPALFILTERI                     Filteri;
+    LPALFILTERF                     Filterf;
 } efx;
 
 static struct {
     bool        available;
     ALuint      effect;
     ALuint      slot;
+    ALuint      mute;                   // a filter that passes nothing, 0 = none
     float       gain;                   // slot gain last set, -1 = not yet
 
     char        mapname[MAX_QPATH];     // whose table is loaded
@@ -722,6 +727,10 @@ static bool RV_LoadEFX(void)
     RV_PROC(DeleteAuxiliaryEffectSlots, LPALDELETEAUXILIARYEFFECTSLOTS)
     RV_PROC(AuxiliaryEffectSloti, LPALAUXILIARYEFFECTSLOTI)
     RV_PROC(AuxiliaryEffectSlotf, LPALAUXILIARYEFFECTSLOTF)
+    RV_PROC(GenFilters, LPALGENFILTERS)
+    RV_PROC(DeleteFilters, LPALDELETEFILTERS)
+    RV_PROC(Filteri, LPALFILTERI)
+    RV_PROC(Filterf, LPALFILTERF)
 
 #undef RV_PROC
     return true;
@@ -775,6 +784,16 @@ void AL_InitReverb(const unsigned *sources, int count)
         return;
     }
 
+    // for AL_ReverbFeed; the reverb works without it
+    efx.GenFilters(1, &rv.mute);
+    efx.Filteri(rv.mute, AL_FILTER_TYPE, AL_FILTER_LOWPASS);
+    efx.Filterf(rv.mute, AL_LOWPASS_GAIN, 0);
+    if (qalGetError() != AL_NO_ERROR) {
+        if (rv.mute)
+            efx.DeleteFilters(1, &rv.mute);
+        rv.mute = 0;
+    }
+
     rv.available = true;
 }
 
@@ -789,6 +808,9 @@ game itself never plays an unattenuated sound on the player), and the beeps
 the GAME sends for the same purpose, which arrive as ordinary sounds on the
 player entity and so have to go by name - the help computer's "computer
 updated" and the message beep.
+
+Radio voices stay dry too (AL_ChannelIsRadio): they come over a radio, not
+across the room.
 =================
 */
 static const char *const rv_dry_sounds[] = {
@@ -797,19 +819,89 @@ static const char *const rv_dry_sounds[] = {
     "misc/talk1.wav",
 };
 
+// By name, as the start of it. All but the chatter are cut below 300 Hz, the
+// way a radio is: the marines' calls in base1 and the other units (voice*,
+// v_*, unit*), the pilots, the radio sets.
+static const char *const rv_radio_sounds[] = {
+    "world/chatter",
+    "world/pilot",
+    "world/radio",
+    "world/unit",
+    "world/v_",
+    "world/voice",
+};
+
+// A sound's name as the game gave it: S_RegisterSound keeps it under "sound/".
+static const char *RV_SoundName(const channel_t *ch)
+{
+    const char *name = ch->sfx->name;
+
+    if (!Q_strncasecmp(name, "sound/", 6))
+        name += 6;
+    return name;
+}
+
+bool AL_ChannelIsDry(const channel_t *ch)
+{
+    const char  *name;
+    int         i;
+
+    if ((ch->entnum == -1 || ch->entnum == listener_entnum) && !ch->dist_mult)
+        return true;
+
+    name = RV_SoundName(ch);
+    for (i = 0; i < (int)q_countof(rv_dry_sounds); i++)
+        if (!Q_stricmp(name, rv_dry_sounds[i]))
+            return true;
+
+    return false;
+}
+
+bool AL_ChannelIsRadio(const channel_t *ch)
+{
+    const char  *name = RV_SoundName(ch);
+    int         i;
+
+    for (i = 0; i < (int)q_countof(rv_radio_sounds); i++)
+        if (!Q_strncasecmp(name, rv_radio_sounds[i], strlen(rv_radio_sounds[i])))
+            return true;
+
+    return false;
+}
+
 void AL_ReverbChannel(const channel_t *ch)
 {
     bool    dry;
-    int     i;
 
     if (!rv.available)
         return;
 
-    dry = (ch->entnum == -1 || ch->entnum == listener_entnum) && !ch->dist_mult;
-    for (i = 0; !dry && i < (int)q_countof(rv_dry_sounds); i++)
-        dry = !Q_stricmp(ch->sfx->name, rv_dry_sounds[i]);
-
+    dry = AL_ChannelIsDry(ch) || AL_ChannelIsRadio(ch);
     qalSource3i(ch->srcnum, AL_AUXILIARY_SEND_FILTER, dry ? AL_EFFECTSLOT_NULL : rv.slot, 0, AL_FILTER_NULL);
+}
+
+// A source heard only through the reverb, its direct path muted: Steam
+// Audio's room feed (steamaudio.c), a mix of what each of its voices sends to
+// the room. False if there is no reverb to feed.
+bool AL_ReverbFeed(unsigned source)
+{
+    if (!rv.available || !rv.mute)
+        return false;
+
+    qalGetError();
+    qalSourcei(source, AL_DIRECT_FILTER, rv.mute);
+    qalSource3i(source, AL_AUXILIARY_SEND_FILTER, rv.slot, 0, AL_FILTER_NULL);
+    return qalGetError() == AL_NO_ERROR;
+}
+
+// The decay time of the reverb playing now, 0 if there is none: how much
+// OpenAL sends to the room from a source depends on it (SA_RoomGain).
+float AL_ReverbDecayTime(void)
+{
+    if (!rv.available || rv.target < 0)
+        return 0;
+
+    return rv.current.flDecayTime;
 }
 
 // after the sources are gone - a slot still in use cannot be deleted
@@ -818,6 +910,8 @@ void AL_ShutdownReverb(void)
     if (!rv.available)
         return;
 
+    if (rv.mute)
+        efx.DeleteFilters(1, &rv.mute);
     efx.DeleteAuxiliaryEffectSlots(1, &rv.slot);
     efx.DeleteEffects(1, &rv.effect);
     rv.available = false;

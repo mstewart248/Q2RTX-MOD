@@ -650,6 +650,7 @@ extern cvar_t    *cl_footstep_materials;
 qhandle_t CL_FootstepSound(const vec3_t origin);
 const char *CL_SurfaceMaterial(const csurface_t *surface);
 void CL_ClearFootstepCache(void);
+void CL_RegisterFootstepSounds(void);
 void CL_InitFootsteps(void);
 extern cvar_t    *cl_noskins;
 extern cvar_t    *cl_kickangles;
@@ -836,6 +837,7 @@ typedef struct {
     int entity1;
     int entity2;
     int time;
+    byte di_bits[MAX_DAMAGE_INDICATORS];  // TE_DAMAGE_INDICATOR; directions in path
 } tent_params_t;
 
 typedef struct {
@@ -1431,6 +1433,8 @@ void    SCR_UpdateScreen(void);
 void    SCR_SizeUp(void);
 void    SCR_SizeDown(void);
 void    SCR_CenterPrint(const char *str);
+void    SCR_ClearHudEvents(void);
+void    SCR_AddDamageIndicator(const vec3_t dir, int bits);
 void    SCR_FinishCinematic(void);
 void    SCR_StopCinematic(void);
 void    SCR_PlayCinematic(const char *name);

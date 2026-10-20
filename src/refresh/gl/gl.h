@@ -471,6 +471,7 @@ void R_SetClipRect_GL(const clipRect_t *clip);
 float R_ClampScaleGL(cvar_t *var);
 void R_SetScale_GL(float scale);
 void R_DrawStretchPic_GL(int x, int y, int w, int h, qhandle_t pic);
+void R_DrawRotatedPic_GL(float cx, float cy, float w, float h, float angle, qhandle_t pic);
 void R_DrawPic_GL(int x, int y, qhandle_t pic);
 void R_TileClear_GL(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawFill8_GL(int x, int y, int w, int h, int c);

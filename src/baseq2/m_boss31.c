@@ -781,6 +781,12 @@ bool Jorg_CheckAttack(edict_t *self)
     int         enemy_range;
     float       enemy_yaw;
 
+    // [Paril-KEX] Update 1: the rerelease's bosses use the generic check with
+    // their own odds - box-gap ranges, blindfire, no far shots unless holding
+    // ground, no random 0-2 s cooldown, and no flyer strafe flips here
+    if (M_RereleaseGame())
+        return M_CheckAttack_Base(self, 0.4f, 0.8f, 0.4f, 0.2f, 0.f, 0.f);
+
     if (self->enemy->health > 0) {
         // see if any entities are in the way of the shot
         VectorCopy(self->s.origin, spot1);

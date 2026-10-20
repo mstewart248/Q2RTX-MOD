@@ -1040,6 +1040,7 @@ static void read_fields(game_read_context_t* ctx, const save_field_t *fields, vo
 
 #define SAVE_MAGIC1     MakeLittleLong('S','S','V','1')
 #define SAVE_MAGIC2     MakeLittleLong('S','A','V','1')
+#define SAVE_MAGIC_EOU  MakeLittleLong('E','O','U','1')  // see WriteGame
 // 53: the six classic *_dodge functions are hooked up again for baseq2, which
 // adds them to save_ptrs[] - and that table is indexed POSITIONALLY, so every
 // entry after the insertion point shifts and version-52 saves cannot be read.
@@ -1099,8 +1100,31 @@ void WriteGame(const char *filename, qboolean autosave)
         write_fields(f, clientfields, &game.clients[i]);
     }
 
+    // [rerelease] the end of unit screen's levels. They go after everything
+    // else, where a build without them stops reading, so saves still load both
+    // ways and SAVE_VERSION stays put.
+    G_UpdateLevelEntry();
+    write_int(f, SAVE_MAGIC_EOU);
+    write_int(f, sizeof(game.level_entries));
+    write_data(game.level_entries, sizeof(game.level_entries), f);
+
     if (fclose(f))
         gi.error("Couldn't write %s", filename);
+}
+
+// The optional block WriteGame puts after the clients; none in older saves.
+static void read_level_entries(FILE *f)
+{
+    int     v[2];
+
+    memset(game.level_entries, 0, sizeof(game.level_entries));
+
+    if (fread(v, 1, sizeof(v), f) != sizeof(v) ||
+        LittleLong(v[0]) != SAVE_MAGIC_EOU || LittleLong(v[1]) != sizeof(game.level_entries))
+        return;
+
+    if (fread(game.level_entries, 1, sizeof(game.level_entries), f) != sizeof(game.level_entries))
+        memset(game.level_entries, 0, sizeof(game.level_entries));
 }
 
 static game_read_context_t make_read_context(FILE* f, int version)
@@ -1172,6 +1196,8 @@ void ReadGame(const char *filename)
         read_fields(&ctx, clientfields, &game.clients[i]);
     }
 
+    read_level_entries(f);
+
     fclose(f);
 }
 
@@ -1196,6 +1222,9 @@ void WriteLevel(const char *filename)
 
     write_int(f, SAVE_MAGIC2);
     write_int(f, SAVE_VERSION);
+
+    // [rerelease] leaving or saving the level: bring its end of unit row up to date
+    G_UpdateLevelEntry();
 
     // write out level_locals_t
     write_fields(f, levelfields, &level);

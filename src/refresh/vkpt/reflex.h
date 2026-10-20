@@ -42,6 +42,13 @@
 // Available regardless of whether Reflex itself is supported.
 int Reflex_DisplayRefreshHz(void);
 
+// Asks the driver (NVAPI) whether G-SYNC / VRR is on for the GDI display `gdi_device`
+// ("\\.\DISPLAY1"). Call on every swapchain creation - it is per monitor.
+void Reflex_DetectVRR(const char *gdi_device);
+
+// True when the display is running variable refresh: the NVAPI answer, or pt_vrr 0 / 1.
+bool Reflex_DisplayVRR(void);
+
 // Loads the entry points. Call once after the device exists.
 void Reflex_Init(void);
 

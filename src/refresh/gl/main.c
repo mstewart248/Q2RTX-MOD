@@ -964,6 +964,7 @@ void R_RegisterFunctionsGL()
 	R_DrawString = R_DrawString_GL;
 	R_DrawPic = R_DrawPic_GL;
 	R_DrawStretchPic = R_DrawStretchPic_GL;
+	R_DrawRotatedPic = R_DrawRotatedPic_GL;
 	R_TileClear = R_TileClear_GL;
 	R_DrawFill8 = R_DrawFill8_GL;
 	R_DrawFill32 = R_DrawFill32_GL;
@@ -973,6 +974,7 @@ void R_RegisterFunctionsGL()
 	R_AddDecal = R_AddDecal_GL;
 	R_InterceptKey = R_InterceptKey_GL;
 	R_IsHDR = NULL;
+	R_SoundTrace = NULL;
 	IMG_Load = IMG_Load_GL;
 	IMG_Unload = IMG_Unload_GL;
 	IMG_ReadPixels = IMG_ReadPixels_GL;

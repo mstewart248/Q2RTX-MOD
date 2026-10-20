@@ -756,7 +756,24 @@ TurretFireBlind(edict_t *self)
 		return;
 	}
 
-	if (self->spawnflags & SPAWN_ROCKET)
+	/* [Paril-KEX] Update 1: the blind shot uses the same speeds as an aimed
+	   one (650 rocket, 800 blaster), with no skill bonus */
+	if (M_RereleaseGame())
+	{
+		if (self->spawnflags & SPAWN_ROCKET)
+		{
+			rocketSpeed = 650;
+		}
+		else if (self->spawnflags & SPAWN_BLASTER)
+		{
+			rocketSpeed = 800;
+		}
+		else
+		{
+			rocketSpeed = 0;
+		}
+	}
+	else if (self->spawnflags & SPAWN_ROCKET)
 	{
 		if (skill->value == 2)
 		{
@@ -783,13 +800,23 @@ TurretFireBlind(edict_t *self)
 	VectorSubtract(end, start, dir);
 	VectorNormalize(dir);
 
+	/* Update 1: and the same damage - the aimed blaster's 8, rockets 40 */
 	if (self->spawnflags & SPAWN_BLASTER)
 	{
-		monster_fire_blaster(self, start, dir, 20, 1000, MZ2_TURRET_BLASTER, EF_BLASTER);
+		if (M_RereleaseGame())
+		{
+			monster_fire_blaster(self, start, dir, TURRET_BLASTER_DAMAGE_RR, rocketSpeed,
+					MZ2_TURRET_BLASTER, EF_BLASTER);
+		}
+		else
+		{
+			monster_fire_blaster(self, start, dir, 20, 1000, MZ2_TURRET_BLASTER, EF_BLASTER);
+		}
 	}
 	else if (self->spawnflags & SPAWN_ROCKET)
 	{
-		monster_fire_rocket(self, start, dir, 50, rocketSpeed, MZ2_TURRET_ROCKET);
+		monster_fire_rocket(self, start, dir, M_RereleaseGame() ? 40 : 50, rocketSpeed,
+				MZ2_TURRET_ROCKET);
 	}
 }
 
@@ -1090,7 +1117,7 @@ turret_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /* 
 		if (self->teamchain)
 		{
 			base = self->teamchain;
-			base->solid = SOLID_BBOX;
+			base->solid = SOLID_NOT;	/* Update 1: was SOLID_BBOX */
 			base->takedamage = DAMAGE_NO;
 			base->movetype = MOVETYPE_NONE;
 			base->teammaster = base;

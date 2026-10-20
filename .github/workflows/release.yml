@@ -63,6 +63,26 @@ jobs:
           repository: NVIDIA/DLSS
           path: DLSS_SDK
 
+      # phonon.dll, the Steam Audio runtime, built from source WITHOUT Intel
+      # IPP: Valve's prebuilt DLL links IPP and oneMKL, which cannot ship with a
+      # GPL program (setup/build_phonon.py has the whole story, and
+      # package_release.py refuses that DLL). Building it takes several
+      # minutes, so the finished DLL is cached against the script, which pins
+      # every source archive by hash. It runs before Configure because it also
+      # writes extern/steamaudio/include when those headers are not committed.
+      - name: Cache Steam Audio runtime
+        id: phonon
+        uses: actions/cache@v4
+        with:
+          path: |
+            phonon.dll
+            extern/steamaudio/include
+          key: phonon-win64-${{ hashFiles('setup/build_phonon.py') }}
+
+      - name: Build Steam Audio runtime
+        if: steps.phonon.outputs.cache-hit != 'true'
+        run: python setup/build_phonon.py
+
       - name: Configure Win64
         env:
           DLSS_SDK2_PATH: ${{ github.workspace }}/DLSS_SDK
@@ -94,7 +114,8 @@ jobs:
         shell: bash
         run: |
           fail=0
-          for f in q2rtx.exe q2rtxded.exe baseq2/gamex86_64.dll \
+          for f in q2rtx.exe q2rtxded.exe baseq2/gamex86_64.dll phonon.dll \
+                   extern/steamaudio/include/phonon.h \
                    baseq2/q2rtx_media.pkz baseq2/blue_noise.pkz baseq2/shaders.pkz; do
             if [ -s "$f" ]; then echo "ok   $f ($(du -h "$f" | cut -f1))"
             else echo "MISSING $f"; fail=1; fi

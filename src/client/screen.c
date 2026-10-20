@@ -61,6 +61,7 @@ static cvar_t   *scr_showpmove;
 static cvar_t   *scr_showturtle;
 static cvar_t   *scr_showitemname;
 static cvar_t   *scr_health_bars;
+static cvar_t   *cl_rerelease_hud;
 
 static cvar_t   *cl_weaponbar;
 static cvar_t   *cl_weaponbar_time;
@@ -105,6 +106,34 @@ static cvar_t   *ch_x;
 static cvar_t   *ch_y;
 
 vrect_t     scr_vrect;      // position of render window on screen
+
+// the rerelease HUD extras, see SCR_DrawHitMarker and SCR_DrawDamageIndicators;
+// sizes are virtual pixels, measured off rerelease screenshots
+#define RHUD_RED            MakeColor(160, 16, 8, 255)  // the rerelease's marker and indicator red
+#define HIT_MARKER_SIZE     40      // the 48x48 pic, drawn this big
+#define HIT_MARKER_HOLD     200     // ms the hit marker stays fully up
+#define HIT_MARKER_FADE     300     // then takes this long to fade
+#define DAMAGE_IND_RADIUS   106     // crosshair to the middle of the bar
+#define DAMAGE_IND_WIDTH    5
+#define DAMAGE_IND_LENGTH   24
+#define DAMAGE_IND_HOLD     1000    // ms a damage indicator stays fully up
+#define DAMAGE_IND_FADE     500     // then takes this long to fade
+#define DAMAGE_IND_MERGE    0.94f   // cos 20 degrees: closer than this is the same source
+#define MAX_SCR_DAMAGE_IND  8
+
+static struct {
+    qhandle_t   marker_pic;
+    qhandle_t   damage_pic;
+
+    int         marker_frame;       // the last cl.frame.number looked at
+    unsigned    marker_time;        // cls.realtime of the last hit, 0 = none
+
+    struct {
+        vec3_t      dir;            // from the player towards the source
+        int         bits;           // DI_*
+        unsigned    time;           // cls.realtime of the last hit from there, 0 = free
+    } ind[MAX_SCR_DAMAGE_IND];
+} rhud;
 
 static const char *const sb_nums[2][STAT_PICS] = {
     {
@@ -355,9 +384,30 @@ CENTER PRINTING
 ===============================================================================
 */
 
-static char     scr_centerstring[MAX_STRING_CHARS];
-static unsigned scr_centertime_start;   // for slow victory printing
-static int      scr_center_lines;
+// [rerelease] center prints type themselves out a character at a time and
+// queue up behind each other, up to four, instead of the newest one wiping
+// whatever was still on screen. Each stays scr_centertime seconds after its
+// last character is out.
+#define MAX_CENTER_PRINTS   4
+#define MAX_CENTER_LINES    32
+
+typedef struct {
+    char        text[MAX_STRING_CHARS];     // as received, binds expanded
+    char        lines[MAX_STRING_CHARS];    // the same, cut at each newline
+    int         line_start[MAX_CENTER_LINES];
+    int         num_lines;                  // 0 = free slot
+    int         current_line;               // the line being typed
+    int         line_count;                 // characters of it typed so far
+    bool        finished;                   // all typed, now counting down
+    unsigned    time_tick;                  // cls.realtime of the next character
+    unsigned    time_off;                   // cls.realtime it goes away, once finished
+} centerprint_t;
+
+static centerprint_t    scr_centers[MAX_CENTER_PRINTS];
+static int              scr_center_index = -1;  // the one on screen, -1 = none
+static int              scr_center_last = -1;   // the one queued most recently
+
+static cvar_t   *scr_printspeed;
 
 /*
 ==============
@@ -369,8 +419,9 @@ unbound.
 */
 static bool SCR_KeyForCommand(const char *command, char *out, size_t outsize)
 {
-    // a couple of the rerelease's commands have no equivalent here; the
-    // equipment wheel prompt is really about opening the inventory
+    // The wheels are real commands now, but a player who never bound them
+    // still opens the equipment wheel with the inventory key, so that is the
+    // key a "%bind:+wheel2" prompt falls back to.
     static const char *const aliases[][2] = {
         { "+wheel",  "inven" },
         { "+wheel1", "inven" },
@@ -379,14 +430,11 @@ static bool SCR_KeyForCommand(const char *command, char *out, size_t outsize)
     const char *key;
     int i;
 
-    for (i = 0; i < q_countof(aliases); i++) {
-        if (!Q_stricmp(command, aliases[i][0])) {
-            command = aliases[i][1];
-            break;
-        }
-    }
-
     key = Key_GetBinding(command);
+    for (i = 0; !*key && i < q_countof(aliases); i++) {
+        if (!Q_stricmp(command, aliases[i][0]))
+            key = Key_GetBinding(aliases[i][1]);
+    }
     if (!*key)
         return false;
 
@@ -471,53 +519,190 @@ Called for important messages that should stay in the center of the screen
 for a few moments
 ==============
 */
+static unsigned SCR_CenterTime(void)
+{
+    return Cvar_ClampValue(scr_centertime, 0.3f, 10.0f) * 1000;
+}
+
+// The slot a new print goes in, as the rerelease picks it: the first free one
+// after the print on screen, or, with all four taken, the one on screen itself,
+// which is then overwritten and the queue moves on to the oldest waiting.
+static centerprint_t *SCR_QueueCenterPrint(void)
+{
+    centerprint_t   *c;
+    int             i;
+
+    if (scr_center_index < 0) {
+        scr_center_index = 0;
+        for (i = 1; i < MAX_CENTER_PRINTS; i++)
+            scr_centers[i].num_lines = 0;
+        scr_center_last = 0;
+        return &scr_centers[0];
+    }
+
+    for (i = 1; i < MAX_CENTER_PRINTS; i++) {
+        int n = (scr_center_index + i) % MAX_CENTER_PRINTS;
+        if (!scr_centers[n].num_lines) {
+            scr_center_last = n;
+            return &scr_centers[n];
+        }
+    }
+
+    c = &scr_centers[scr_center_index];
+    scr_center_last = scr_center_index;
+    scr_center_index = (scr_center_index + 1) % MAX_CENTER_PRINTS;
+    return c;
+}
+
+static void SCR_ClearCenterPrints(void)
+{
+    memset(scr_centers, 0, sizeof(scr_centers));
+    scr_center_index = scr_center_last = -1;
+}
+
 void SCR_CenterPrint(const char *str)
 {
-    char        expanded[MAX_STRING_CHARS];
-    const char  *s;
+    char            expanded[MAX_STRING_CHARS];
+    centerprint_t   *c;
+    char            *s;
 
     SCR_ExpandBinds(str, expanded, sizeof(expanded));
-    str = expanded;
 
-    scr_centertime_start = cls.realtime;
-    if (!strcmp(scr_centerstring, str)) {
+    // nothing to print clears the screen, as it always did
+    if (!expanded[0]) {
+        SCR_ClearCenterPrints();
         return;
     }
 
-    Q_strlcpy(scr_centerstring, str, sizeof(scr_centerstring));
-
-    // count the number of lines for centering
-    scr_center_lines = 1;
-    s = str;
-    while (*s) {
-        if (*s == '\n')
-            scr_center_lines++;
-        s++;
+    // The same message again while it is still queued or showing - a locked
+    // door told twice - only keeps it up longer. It is not typed out again.
+    if (scr_center_last >= 0 && scr_centers[scr_center_last].num_lines &&
+        !strcmp(scr_centers[scr_center_last].text, expanded)) {
+        c = &scr_centers[scr_center_last];
+        if (c->finished)
+            c->time_off = cls.realtime + SCR_CenterTime();
+        return;
     }
 
+    c = SCR_QueueCenterPrint();
+    memset(c, 0, sizeof(*c));
+    Q_strlcpy(c->text, expanded, sizeof(c->text));
+    Q_strlcpy(c->lines, expanded, sizeof(c->lines));
+
+    for (s = c->lines; c->num_lines < MAX_CENTER_LINES; ) {
+        c->line_start[c->num_lines++] = s - c->lines;
+        s = strchr(s, '\n');
+        if (!s)
+            break;
+        *s++ = 0;
+    }
+
+    c->time_tick = cls.realtime;
+
     // echo it to the console
-    Com_Printf("%s\n", scr_centerstring);
+    Com_Printf("%s\n", expanded);
     Con_ClearNotify_f();
+}
+
+// Type out every character that has come due, so a low frame rate puts out
+// several at once instead of slowing the typing down. scr_printspeed is the
+// time per character; 0 prints the whole message at once.
+static void SCR_TypeCenterPrint(centerprint_t *c)
+{
+    unsigned    step = Cvar_ClampValue(scr_printspeed, 0, 1) * 1000;
+    int         len;
+
+    if (!step && !c->finished) {
+        c->current_line = c->num_lines - 1;
+        c->line_count = strlen(c->lines + c->line_start[c->current_line]);
+        c->finished = true;
+        c->time_off = cls.realtime + SCR_CenterTime();
+    }
+
+    while (!c->finished && (int)(cls.realtime - c->time_tick) >= 0) {
+        len = strlen(c->lines + c->line_start[c->current_line]);
+
+        // like the rerelease, a finished line holds the cursor for one tick
+        if (c->line_count < len) {
+            c->line_count++;
+        } else if (c->current_line + 1 < c->num_lines) {
+            c->current_line++;
+            c->line_count = 0;
+        } else {
+            c->finished = true;
+            c->time_off = cls.realtime + SCR_CenterTime();
+        }
+        c->time_tick += step;
+    }
 }
 
 static void SCR_DrawCenterString(void)
 {
-    int y;
-    float alpha;
+    centerprint_t   *c;
+    float           alpha;
+    int             i, x, y, next;
 
-    Cvar_ClampValue(scr_centertime, 0.3f, 10.0f);
-
-    alpha = SCR_FadeAlpha(scr_centertime_start, scr_centertime->value * 1000, 300);
-    if (!alpha) {
+    if (scr_center_index < 0)
         return;
+
+    // the rerelease holds them back while the end of unit table is up; they
+    // would land on top of it
+    if ((cl.frame.ps.stats[STAT_LAYOUTS] & 1) && strstr(cl.layout, "draw_table"))
+        return;
+
+    c = &scr_centers[scr_center_index];
+
+    // ran out of time; on to the next one in the queue, if there is one
+    if (c->finished && (int)(cls.realtime - c->time_off) >= 0) {
+        c->num_lines = 0;
+        next = (scr_center_index + 1) % MAX_CENTER_PRINTS;
+        if (!scr_centers[next].num_lines) {
+            scr_center_index = scr_center_last = -1;
+            return;
+        }
+        scr_center_index = next;
+        c = &scr_centers[next];
+        c->current_line = c->line_count = 0;
+        c->time_tick = cls.realtime;
     }
+
+    SCR_TypeCenterPrint(c);
+
+    // fade over the last 300 ms
+    alpha = 1;
+    if (c->finished && c->time_off - cls.realtime < 300)
+        alpha = (c->time_off - cls.realtime) / 300.0f;
 
     R_SetAlpha(alpha * scr_alpha->value);
 
-    y = scr.hud_height / 4 - scr_center_lines * 8 / 2;
+    // up top while a layout or the inventory is open, as the rerelease does
+    if (cl.frame.ps.stats[STAT_LAYOUTS] & 3)
+        y = 8;
+    else if (c->num_lines <= 4)
+        y = scr.hud_height * 0.2f;
+    else
+        y = 48;
 
-    SCR_DrawStringMulti(scr.hud_width / 2, y, UI_CENTER,
-                        MAX_STRING_CHARS, scr_centerstring, scr.font_pic);
+    for (i = 0; i < c->num_lines; i++, y += CHAR_HEIGHT) {
+        const char  *line = c->lines + c->line_start[i];
+        size_t      len = strlen(line);
+
+        if (i == c->current_line && !c->finished)
+            len = c->line_count;
+
+        // each line centred on what is typed of it so far, as the rerelease
+        // does, so a line grows out from the middle
+        if (len)
+            x = SCR_DrawStringEx(scr.hud_width / 2, y, UI_CENTER, len, line, scr.font_pic);
+        else
+            x = scr.hud_width / 2;
+
+        if (i == c->current_line) {
+            // the blinking cursor
+            R_DrawChar(x, y, 0, 10 + ((cls.realtime >> 8) & 1), scr.font_pic);
+            break;
+        }
+    }
 
     R_SetAlpha(scr_alpha->value);
 }
@@ -1336,6 +1521,9 @@ void SCR_RegisterMedia(void)
     R_GetPicSize(&scr.loading_width, &scr.loading_height, scr.loading_pic);
 
     scr.net_pic = R_RegisterPic("net");
+    // rerelease art; 0 where there is none, which leaves those two undrawn
+    rhud.marker_pic = R_RegisterPic("marker");
+    rhud.damage_pic = R_RegisterPic("damage_indicator");
     scr.font_pic = R_RegisterFont(scr_font->string);
 
     scr_crosshair_changed(scr_crosshair);
@@ -1355,6 +1543,10 @@ static void scr_scale_changed(cvar_t *self)
 static void SCR_WeaponBarInit(void);
 static void SCR_WeapNext_f(void);
 static void SCR_WeapPrev_f(void);
+static void SCR_WeaponWheelDown_f(void);
+static void SCR_WeaponWheelUp_f(void);
+static void SCR_EquipmentWheelDown_f(void);
+static void SCR_EquipmentWheelUp_f(void);
 
 static const cmdreg_t scr_cmds[] = {
     { "timerefresh", SCR_TimeRefresh_f },
@@ -1370,6 +1562,13 @@ static const cmdreg_t scr_cmds[] = {
     // to these, and as unknown commands they went to the game as chat
     { "cl_weapnext", SCR_WeapNext_f },
     { "cl_weapprev", SCR_WeapPrev_f },
+    // the rerelease's wheel binds: +wheel the weapons, +wheel2 the equipment
+    { "+wheel", SCR_WeaponWheelDown_f },
+    { "-wheel", SCR_WeaponWheelUp_f },
+    { "+wheel1", SCR_WeaponWheelDown_f },
+    { "-wheel1", SCR_WeaponWheelUp_f },
+    { "+wheel2", SCR_EquipmentWheelDown_f },
+    { "-wheel2", SCR_EquipmentWheelUp_f },
     { NULL }
 };
 
@@ -1382,7 +1581,10 @@ void SCR_Init(void)
 {
     scr_viewsize = Cvar_Get("viewsize", "100", CVAR_ARCHIVE);
     scr_showpause = Cvar_Get("scr_showpause", "1", 0);
-    scr_centertime = Cvar_Get("scr_centertime", "2.5", 0);
+    // [rerelease] 5 s after the last character is typed, from 2.5 s after the
+    // message arrived; scr_printspeed is the time per typed character
+    scr_centertime = Cvar_Get("scr_centertime", "5", 0);
+    scr_printspeed = Cvar_Get("scr_printspeed", "0.04", 0);
     scr_demobar = Cvar_Get("scr_demobar", "1", 0);
     scr_font = Cvar_Get("scr_font", "conchars", 0);
     scr_font->changed = scr_font_changed;
@@ -1419,6 +1621,9 @@ void SCR_Init(void)
     scr_showturtle = Cvar_Get("scr_showturtle", "1", 0);
     scr_showitemname = Cvar_Get("scr_showitemname", "1", CVAR_ARCHIVE);
     scr_health_bars = Cvar_Get("scr_health_bars", "1", CVAR_ARCHIVE);
+    // userinfo too: the game reads it to decide on the key icons, the low
+    // ammo warning and the powerup timer, and to send the other two at all
+    cl_rerelease_hud = Cvar_Get("cl_rerelease_hud", "1", CVAR_ARCHIVE | CVAR_USERINFO);
     cl_weaponbar = Cvar_Get("cl_weaponbar", "1", CVAR_ARCHIVE);
     cl_weaponbar_time = Cvar_Get("cl_weaponbar_time", "0.4", CVAR_ARCHIVE);
     cl_weaponbar_hold = Cvar_Get("cl_weaponbar_hold", "0.8", CVAR_ARCHIVE);
@@ -2023,6 +2228,13 @@ It is a REPLACEMENT for the scrolling inventory list, not an addition: with
 cl_itemwheel off - or in any game but the rerelease, which is the only one whose
 art has an icon for every item - the same key opens the list it always did.
 
+THE SAME RING IS ALSO THE WEAPON WHEEL.  The rerelease binds +wheel to its
+weapon wheel and +wheel2 to this one (its default.cfg; "%bind:+wheel2" in its
+hints).  Held open on +wheel it lays out the weapons you carry, in the weapon
+bar's order and with the bar's icons, each with its ammo count under it, and a
+release raises the one you pointed at.  Everything else - the hub, the cursor,
+the blur, the slowdown - is shared, and only one of the two is up at a time.
+
 Like the weapon bar above, this lives entirely on the client.  The server is
 still told to open the inventory, because that is what makes it send the counts
 (svc_inventory is only ever emitted in answer to "inven"), but the ring, the
@@ -2156,14 +2368,18 @@ static const iwicon_t iw_icons[] = {
 #define IW_ICON         0.13f   // icon size, as a fraction of the outer radius
 #define IW_SELECTED     1.45f   // how much bigger the one under the cursor is
 
+enum { IW_MODE_ITEMS, IW_MODE_WEAPONS };
+
 static struct {
     bool        active;                 // taking input - the key is still down
     unsigned    change_time;            // Sys_Milliseconds of the last open/close
     float       cursor_x, cursor_y;     // HUD pixels from the ring's centre
+    int         mode;                   // IW_MODE_*, kept through the fade-out
 
     int         item[MAX_ITEMS];        // CS_ITEMS indices, in inventory order
     qhandle_t   pic[MAX_ITEMS];
     const char  *ammo[MAX_ITEMS];
+    int         shown[MAX_ITEMS];       // CS_ITEMS index whose count goes under the icon
     int         count;
 
     // THE SELECTION IS THE ITEM, NOT THE SLOT.  The ring is rebuilt every frame
@@ -2301,6 +2517,25 @@ static void SCR_ItemWheelResolve(void)
 
     iw.count = 0;
 
+    // The weapon wheel is the weapon bar's list laid out round the ring: the
+    // same names, icons and order, and the ammo count under each gun.
+    if (iw.mode == IW_MODE_WEAPONS) {
+        SCR_WeaponBarResolve();
+        for (i = 0; i < WB_NUM_SLOTS; i++) {
+            int slot = wb.order[i];
+
+            if (!SCR_WeaponBarCarried(slot))
+                continue;
+
+            iw.item[iw.count] = wb.item[slot];
+            iw.ammo[iw.count] = wb_slots[slot].ammo;
+            iw.shown[iw.count] = wb.ammo[slot];
+            iw.pic[iw.count] = wb.pic[slot];
+            iw.count++;
+        }
+        goto reselect;
+    }
+
     for (i = 0; i < MAX_ITEMS; i++) {
         const char *name = cl.configstrings[CS_ITEMS + i];
 
@@ -2317,6 +2552,7 @@ static void SCR_ItemWheelResolve(void)
 
         iw.item[iw.count] = i;
         iw.ammo[iw.count] = iw_icons[j].ammo;
+        iw.shown[iw.count] = i;
 
         // An item whose icon is missing still goes on the ring, drawn as an
         // empty cell.  Losing it silently would be worse: the ring is the only
@@ -2327,6 +2563,7 @@ static void SCR_ItemWheelResolve(void)
         iw.count++;
     }
 
+reselect:
     // Re-find the selection in the rebuilt list.  An item that ran out while
     // the wheel was up leaves the highlight nowhere rather than on a stranger.
     iw.selected = -1;
@@ -2409,13 +2646,14 @@ this.  The counts land a frame or two later, which is exactly what the fade-in
 is covering.
 ==============
 */
-static void SCR_ItemWheelOpen(void)
+static void SCR_ItemWheelOpen(int mode)
 {
     if (iw.active)
         return;
 
     iw.active = true;
     iw.change_time = SCR_ItemWheelNow();
+    iw.mode = mode;
 
     SCR_ItemWheelGeometry();
     SCR_ItemWheelResolve();
@@ -2428,7 +2666,10 @@ static void SCR_ItemWheelOpen(void)
     iw.selected = -1;
     iw.cursor_x = iw.cursor_y = 0;
 
-    CL_ClientCommand("inven");
+    // the weapon wheel needs only what this tree's game pushes every frame
+    // anyway (G_SendInventory), so it leaves the inventory screen shut
+    if (mode == IW_MODE_ITEMS)
+        CL_ClientCommand("inven");
 }
 
 /*
@@ -2451,7 +2692,8 @@ static void SCR_ItemWheelClose(bool commit)
     if (commit && iw.selected >= 0)
         CL_ClientCommand(va("use %s", cl.configstrings[CS_ITEMS + iw.item[iw.selected]]));
 
-    CL_ClientCommand("putaway");
+    if (iw.mode == IW_MODE_ITEMS)
+        CL_ClientCommand("putaway");
 }
 
 /*
@@ -2522,7 +2764,9 @@ bool SCR_ItemWheelKey(bool down, bool autorepeat)
         // handing the up edge back and having the binding open the old
         // inventory list on the way out of a gesture that is already over.
         iw.key_taken = false;
-        SCR_ItemWheelClose(true);
+        // a wheel +wheel opened is that key's to close
+        if (taken)
+            SCR_ItemWheelClose(true);
         return taken;
     }
 
@@ -2539,10 +2783,49 @@ bool SCR_ItemWheelKey(bool down, bool autorepeat)
     if (cl.frame.ps.stats[STAT_HEALTH] <= 0)
         return false;
 
-    SCR_ItemWheelOpen();
+    SCR_ItemWheelOpen(IW_MODE_ITEMS);
     iw.key_taken = true;
     return true;
 }
+
+/*
+==============
+SCR_WheelDown / SCR_WheelUp
+
++wheel / -wheel and +wheel2 / -wheel2.  These are button commands, so the key
+coming up arrives as the - half on its own, with no key hook needed.  Only one
+wheel is up at a time; a second wheel key while one is open is ignored, and a
+wheel the inventory key opened is that key's to close.
+==============
+*/
+static void SCR_WheelDown(int mode)
+{
+    if (iw.active)
+        return;
+
+    if (cls.state != ca_active || cls.demo.playback || cls.key_dest != KEY_GAME)
+        return;
+
+    if (!SCR_ItemWheelEnabled() || cl.frame.ps.stats[STAT_HEALTH] <= 0) {
+        // what the inventory key gives in the same case: the old list
+        if (mode == IW_MODE_ITEMS)
+            CL_ClientCommand("inven");
+        return;
+    }
+
+    SCR_ItemWheelOpen(mode);
+}
+
+static void SCR_WheelUp(int mode)
+{
+    if (iw.active && iw.mode == mode && !iw.key_taken)
+        SCR_ItemWheelClose(true);
+}
+
+static void SCR_WeaponWheelDown_f(void)     { SCR_WheelDown(IW_MODE_WEAPONS); }
+static void SCR_WeaponWheelUp_f(void)       { SCR_WheelUp(IW_MODE_WEAPONS); }
+static void SCR_EquipmentWheelDown_f(void)  { SCR_WheelDown(IW_MODE_ITEMS); }
+static void SCR_EquipmentWheelUp_f(void)    { SCR_WheelUp(IW_MODE_ITEMS); }
 
 /*
 ==============
@@ -2773,7 +3056,7 @@ static void SCR_DrawItemWheel(void)
 {
     float       phase = SCR_ItemWheelPhase();
     float       base, alpha, icon_sz, ring, cx, cy;
-    int         i, a;
+    int         i, a, held;
 
     if (phase <= 0.0f)
         return;
@@ -2805,12 +3088,20 @@ static void SCR_DrawItemWheel(void)
         icon_sz = min(icon_sz, 2.0f * M_PI * ring / iw.count * 0.8f);
     icon_sz = max(icon_sz, 8.0f);
 
+    // the gun in your hands, which the weapon wheel marks
+    held = -1;
+    if (iw.mode == IW_MODE_WEAPONS) {
+        held = SCR_WeaponBarHeld();
+        held = held >= 0 ? wb.item[held] : -1;
+    }
+
     // An empty ring is still drawn.  Holding the key with nothing to pick has
     // to LOOK like nothing to pick, not like the wheel failed to open.
     for (i = 0; i < iw.count; i++) {
         float   x, y, sz = icon_sz;
         int     item = iw.item[i];
         int     ia = a;
+        int     n;
 
         SCR_ItemWheelSlotPos(i, ring, &x, &y);
         x += cx;
@@ -2823,6 +3114,9 @@ static void SCR_DrawItemWheel(void)
         else
             ia = (int)(alpha * 165);
 
+        if (item == held)
+            SCR_FillRing(x, y, sz * 0.72f, sz * 0.6f, MakeColor(255, 255, 255, ia / 2));
+
         if (iw.pic[i]) {
             R_SetAlpha(ia / 255.0f);
             R_DrawStretchPic(x - sz / 2, y - sz / 2, sz, sz, iw.pic[i]);
@@ -2832,9 +3126,11 @@ static void SCR_DrawItemWheel(void)
         }
 
         // Counts only where they mean something.  A key or a powerup you hold
-        // one of would otherwise say "1" under every icon, which is noise.
-        if (cl.inventory[item] > 1)
-            SCR_DrawHudDigits((int)x, (int)(y + sz / 2), 0, cl.inventory[item],
+        // one of would otherwise say "1" under every icon, which is noise.  A
+        // gun shows its ammo, empty included, in the red digits when it is.
+        n = iw.shown[i] >= 0 ? cl.inventory[iw.shown[i]] : -1;
+        if (iw.mode == IW_MODE_WEAPONS ? n >= 0 : n > 1)
+            SCR_DrawHudDigits((int)x, (int)(y + sz / 2), n ? 0 : 1, n,
                               max((int)(sz * 5 / 16), 4), max((int)(sz * 9 / 16), 6));
     }
 
@@ -2974,6 +3270,123 @@ static int SCR_LayoutStat(int index)
     return cl.frame.ps.stats[index];
 }
 
+/*
+==============
+The rerelease's layout table, which its end of unit screen is built from:
+"start_table <n> <heading>..." names n columns, "table_row <n> <cell>..." adds
+a row (cells past n left blank), and "draw_table" draws the lot as a boxed
+grid centred on the cursor x with its top at the cursor y. Columns are as
+wide as their widest cell; headings are centred, the first column is left
+aligned and the rest right aligned, as the rerelease draws them.
+==============
+*/
+#define MAX_TABLE_ROWS      11      // eight levels, the headings, the totals and a spacer
+#define MAX_TABLE_COLUMNS   6
+#define TABLE_ROW_HEIGHT    10
+
+static struct {
+    char    cells[MAX_TABLE_ROWS][MAX_TABLE_COLUMNS][24];
+    int     widths[MAX_TABLE_COLUMNS];  // in characters
+    int     num_rows;
+    int     num_columns;
+} scr_table;
+
+// the rerelease names its headings by localization key
+static const char *SCR_LayoutTableText(const char *token)
+{
+    static const char *const keys[][2] = {
+        { "$m_eou_level",   "Level" },
+        { "$m_eou_kills",   "Kills" },
+        { "$m_eou_secrets", "Secrets" },
+        { "$m_eou_time",    "Time" },
+    };
+    int i;
+
+    for (i = 0; i < q_countof(keys); i++)
+        if (!Q_stricmp(token, keys[i][0]))
+            return keys[i][1];
+
+    return token;
+}
+
+static void SCR_LayoutTableCells(const char **s, int row)
+{
+    char    *token;
+    int     i, n;
+
+    n = atoi(COM_Parse(s));
+    for (i = 0; i < n; i++) {
+        token = COM_Parse(s);
+        if (row < MAX_TABLE_ROWS && i < MAX_TABLE_COLUMNS) {
+            Q_strlcpy(scr_table.cells[row][i], SCR_LayoutTableText(token), sizeof(scr_table.cells[0][0]));
+            scr_table.widths[i] = max(scr_table.widths[i], (int)strlen(scr_table.cells[row][i]));
+        }
+    }
+
+    if (row < MAX_TABLE_ROWS)
+        for (; i < MAX_TABLE_COLUMNS; i++)
+            scr_table.cells[row][i][0] = 0;
+}
+
+static void SCR_LayoutTableStart(const char **s)
+{
+    const char  *p = *s;
+
+    memset(&scr_table, 0, sizeof(scr_table));
+    scr_table.num_columns = min(atoi(COM_Parse(&p)), MAX_TABLE_COLUMNS);
+    SCR_LayoutTableCells(s, 0);
+    scr_table.num_rows = 1;
+}
+
+static void SCR_LayoutTableRow(const char **s)
+{
+    SCR_LayoutTableCells(s, scr_table.num_rows);
+    if (scr_table.num_rows < MAX_TABLE_ROWS)
+        scr_table.num_rows++;
+}
+
+static void SCR_LayoutTableDraw(int x, int y)
+{
+    int     i, r, w, h, cx, len;
+
+    if (!scr_table.num_rows || scr_table.num_columns <= 0)
+        return;
+
+    w = -CHAR_WIDTH;
+    for (i = 0; i < scr_table.num_columns; i++)
+        w += (scr_table.widths[i] + 1) * CHAR_WIDTH;
+    h = scr_table.num_rows * TABLE_ROW_HEIGHT;
+
+    x -= w / 2;
+    y += CHAR_HEIGHT;
+
+    R_DrawFill32(x - 8, y - 6, w + 16, h + 10, MakeColor(0, 0, 0, 230));
+    R_DrawFill32(x - 8, y - 6, w + 16, 1, MakeColor(128, 128, 128, 255));
+    R_DrawFill32(x - 8, y + h + 3, w + 16, 1, MakeColor(128, 128, 128, 255));
+    R_DrawFill32(x - 8, y - 5, 1, h + 8, MakeColor(128, 128, 128, 255));
+    R_DrawFill32(x + w + 7, y - 5, 1, h + 8, MakeColor(128, 128, 128, 255));
+
+    for (i = 0; i < scr_table.num_columns; i++) {
+        for (r = 0; r < scr_table.num_rows; r++) {
+            const char *text = scr_table.cells[r][i];
+
+            len = strlen(text);
+            if (r == 0)
+                cx = x + (scr_table.widths[i] - len) * CHAR_WIDTH / 2;
+            else if (i != 0)
+                cx = x + (scr_table.widths[i] - len) * CHAR_WIDTH;
+            else
+                cx = x;
+
+            if (r == 0)
+                HUD_DrawAltString(cx, y + r * TABLE_ROW_HEIGHT, text);
+            else
+                HUD_DrawString(cx, y + r * TABLE_ROW_HEIGHT, text);
+        }
+        x += (scr_table.widths[i] + 1) * CHAR_WIDTH;
+    }
+}
+
 static void SCR_ExecuteLayoutString(const char *s)
 {
     char    buffer[MAX_QPATH];
@@ -3035,9 +3448,11 @@ static void SCR_ExecuteLayoutString(const char *s)
         }
 
         if (!strcmp(token, "pic")) {
-            // draw a pic from a stat number
+            // draw a pic from a stat number; `value` keeps which stat, for the
+            // STAT_SELECTED_ICON test below
             token = COM_Parse(&s);
-            index = SCR_LayoutStat(atoi(token));
+            value = atoi(token);
+            index = SCR_LayoutStat(value);
             if (index < 0 || index >= MAX_IMAGES) {
                 if (!cl.kex_protocol)
                     Com_Error(ERR_DROP, "%s: invalid pic index", __func__);
@@ -3255,6 +3670,36 @@ static void SCR_ExecuteLayoutString(const char *s)
             continue;
         }
 
+        // [rerelease] the server frame test the end of unit screen uses to
+        // hold back its "press any button" line
+        if (!strcmp(token, "ifgef")) {
+            token = COM_Parse(&s);
+            if (cl.frame.number < atoi(token)) {
+                while (strcmp(token, "endif")) {
+                    token = COM_Parse(&s);
+                    if (!s) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (!strcmp(token, "start_table")) {
+            SCR_LayoutTableStart(&s);
+            continue;
+        }
+
+        if (!strcmp(token, "table_row")) {
+            SCR_LayoutTableRow(&s);
+            continue;
+        }
+
+        if (!strcmp(token, "draw_table")) {
+            SCR_LayoutTableDraw(x, y);
+            continue;
+        }
+
         if (!strcmp(token, "color")) {
             color_t     color;
 
@@ -3410,6 +3855,175 @@ static void SCR_DrawCompassPOI(void)
                    (int)sy + h / 2 + 2, UI_DROPSHADOW, buf);
 }
 
+/*
+===============================================================================
+
+RERELEASE HUD EXTRAS
+
+cl_rerelease_hud turns on the rerelease's hit markers, directional damage
+indicators, held key icons, low ammo warning and soonest-to-run-out powerup
+timer. The client draws the first two; the game does the rest, reading the
+cvar back out of the userinfo, and only sends the first two when it is on.
+
+===============================================================================
+*/
+
+
+void SCR_ClearHudEvents(void)
+{
+    SCR_ClearCenterPrints();
+    rhud.marker_frame = 0;
+    rhud.marker_time = 0;
+    memset(rhud.ind, 0, sizeof(rhud.ind));
+}
+
+// TE_DAMAGE_INDICATOR: `dir` points from the source to the player. Hits from
+// about the same direction refresh one indicator rather than stacking up.
+void SCR_AddDamageIndicator(const vec3_t dir, int bits)
+{
+    vec3_t  from;
+    int     i, best = 0;
+
+    if (!cl_rerelease_hud->integer)
+        return;
+
+    VectorNegate(dir, from);
+
+    for (i = 0; i < MAX_SCR_DAMAGE_IND; i++) {
+        if (!rhud.ind[i].time ||
+            cls.realtime - rhud.ind[i].time >= DAMAGE_IND_HOLD + DAMAGE_IND_FADE) {
+            rhud.ind[i].time = 0;
+            continue;
+        }
+        if (DotProduct(rhud.ind[i].dir, from) > DAMAGE_IND_MERGE)
+            break;
+    }
+
+    if (i == MAX_SCR_DAMAGE_IND) {
+        // a free slot, else the oldest
+        for (i = 0; i < MAX_SCR_DAMAGE_IND; i++) {
+            if (!rhud.ind[i].time)
+                break;
+            if (rhud.ind[i].time < rhud.ind[best].time)
+                best = i;
+        }
+        if (i == MAX_SCR_DAMAGE_IND)
+            i = best;
+        rhud.ind[i].bits = 0;
+    }
+
+    VectorCopy(from, rhud.ind[i].dir);
+    rhud.ind[i].bits = (rhud.ind[i].bits & ~DI_DAMAGE_MASK) | bits;
+    rhud.ind[i].time = cls.realtime;
+}
+
+// A thin bar for each recent source of damage, pointing in at the crosshair
+// from a wide ring in the direction it came from (flat, ahead = up), solid at
+// the inner end. Sized off the rerelease at 1080p (virtual 960x540). Red is
+// health, white armor and green power armor, after the screen flashes they go
+// with.
+static void SCR_DrawDamageIndicators(void)
+{
+    vec3_t      yaw, forward, right;
+    float       cx, cy, theta, alpha;
+    unsigned    age;
+    color_t     color;
+    int         i, amount;
+
+    if (!cl_rerelease_hud->integer || !rhud.damage_pic)
+        return;
+
+    VectorSet(yaw, 0, cl.refdef.viewangles[YAW], 0);
+    AngleVectors(yaw, forward, right, NULL);
+
+    cx = scr.hud_width * 0.5f;
+    cy = scr.hud_height * 0.5f;
+
+    for (i = 0; i < MAX_SCR_DAMAGE_IND; i++) {
+        if (!rhud.ind[i].time)
+            continue;
+
+        age = cls.realtime - rhud.ind[i].time;
+        if (age >= DAMAGE_IND_HOLD + DAMAGE_IND_FADE) {
+            rhud.ind[i].time = 0;
+            continue;
+        }
+
+        alpha = 1;
+        if (age > DAMAGE_IND_HOLD)
+            alpha = 1 - (float)(age - DAMAGE_IND_HOLD) / DAMAGE_IND_FADE;
+
+        // the game sends a third of the damage, 1..31; 30 damage is full strength
+        amount = rhud.ind[i].bits & DI_DAMAGE_MASK;
+        alpha *= 0.5f + 0.5f * min(amount, 10) / 10.0f;
+
+        if (rhud.ind[i].bits & DI_HEALTH)
+            color.u32 = RHUD_RED;
+        else if (rhud.ind[i].bits & DI_ARMOR)
+            color.u32 = MakeColor(255, 255, 255, 255);
+        else
+            color.u32 = MakeColor(64, 255, 64, 255);
+
+        theta = atan2f(DotProduct(rhud.ind[i].dir, right), DotProduct(rhud.ind[i].dir, forward));
+
+        R_SetColor(color.u32);
+        R_SetAlpha(alpha * Cvar_ClampValue(scr_alpha, 0, 1));
+        // the pic fades in from its top edge, so upright at the top of the
+        // ring its solid end faces the crosshair, and round from there
+        R_DrawRotatedPic(cx + DAMAGE_IND_RADIUS * sinf(theta),
+                         cy - DAMAGE_IND_RADIUS * cosf(theta),
+                         DAMAGE_IND_WIDTH, DAMAGE_IND_LENGTH, theta, rhud.damage_pic);
+    }
+
+    R_ClearColor();
+    R_SetAlpha(Cvar_ClampValue(scr_alpha, 0, 1));
+}
+
+// STAT_HIT_MARKER is nonzero in each frame the player did damage. Every such
+// frame brings the marker back up and plays its sound. The pic is four white
+// ticks with black edges in its corners; tinted red and drawn a little under
+// its own size they match the rerelease at 1080p.
+static void SCR_DrawHitMarker(void)
+{
+    color_t     color;
+    unsigned    age;
+    float       alpha;
+
+    if (!cl_rerelease_hud->integer || !CL_GameOwnsExtraStats()) {
+        rhud.marker_time = 0;
+        return;
+    }
+
+    if (cl.frame.valid && cl.frame.number != rhud.marker_frame) {
+        rhud.marker_frame = cl.frame.number;
+        if (cl.frame.ps.stats[STAT_HIT_MARKER] > 0) {
+            rhud.marker_time = cls.realtime;
+            S_StartLocalSound("weapons/marker.wav");
+        }
+    }
+
+    if (!rhud.marker_time || !rhud.marker_pic)
+        return;
+
+    age = cls.realtime - rhud.marker_time;
+    if (age >= HIT_MARKER_HOLD + HIT_MARKER_FADE) {
+        rhud.marker_time = 0;
+        return;
+    }
+
+    alpha = 1;
+    if (age > HIT_MARKER_HOLD)
+        alpha = 1 - (float)(age - HIT_MARKER_HOLD) / HIT_MARKER_FADE;
+
+    color.u32 = RHUD_RED;
+    R_SetColor(color.u32);
+    R_SetAlpha(alpha * Cvar_ClampValue(scr_alpha, 0, 1));
+    R_DrawStretchPic((scr.hud_width - HIT_MARKER_SIZE) / 2, (scr.hud_height - HIT_MARKER_SIZE) / 2,
+                     HIT_MARKER_SIZE, HIT_MARKER_SIZE, rhud.marker_pic);
+    R_ClearColor();
+    R_SetAlpha(Cvar_ClampValue(scr_alpha, 0, 1));
+}
+
 static void SCR_DrawCrosshair(void)
 {
     int x, y;
@@ -3546,6 +4160,10 @@ static void SCR_Draw2D(void)
     // the rest of 2D elements share common alpha
     R_ClearColor();
     R_SetAlpha(Cvar_ClampValue(scr_alpha, 0, 1));
+
+    SCR_DrawDamageIndicators();
+
+    SCR_DrawHitMarker();
 
     SCR_DrawStats();
 

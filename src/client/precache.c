@@ -207,6 +207,7 @@ void CL_RegisterSounds(void)
 
     S_BeginRegistration();
     CL_RegisterTEntSounds();
+    CL_RegisterFootstepSounds();
     for (i = 1; i < MAX_SOUNDS; i++) {
         s = cl.configstrings[CS_SOUNDS + i];
         if (!s[0])

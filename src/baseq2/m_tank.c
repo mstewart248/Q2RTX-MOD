@@ -661,6 +661,13 @@ void tank_reattack_blaster(edict_t *self)
 void tank_poststrike(edict_t *self)
 {
     self->enemy = NULL;
+    // [Paril-KEX] Update 1: after the strike the tank stands until something
+    // wakes it, rather than running with no enemy
+    if (M_RereleaseGame()) {
+        self->monsterinfo.pause_framenum = INT_MAX;
+        self->monsterinfo.stand(self);
+        return;
+    }
     tank_run(self);
 }
 

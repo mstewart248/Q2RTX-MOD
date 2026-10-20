@@ -119,12 +119,21 @@ void Move_Done(edict_t *ent)
 
 void Move_Final(edict_t *ent)
 {
+    vec3_t  move;
+
     if (ent->moveinfo.remaining_distance == 0) {
         Move_Done(ent);
         return;
     }
 
-    VectorScale(ent->moveinfo.dir, ent->moveinfo.remaining_distance / FRAMETIME, ent->velocity);
+    // [Paril-KEX] use exact remaining distance. A blocked mover keeps its
+    // schedule now (Update 1), so whatever it lost while blocked is made up
+    // on this last frame.
+    if (M_RereleaseGame() && ent->moveinfo.dest_valid) {
+        VectorSubtract(ent->moveinfo.dest, ent->s.origin, move);
+        VectorScale(move, 1.0f / FRAMETIME, ent->velocity);
+    } else
+        VectorScale(ent->moveinfo.dir, ent->moveinfo.remaining_distance / FRAMETIME, ent->velocity);
 
     ent->think = Move_Done;
     ent->nextthink = level.framenum + 1;
@@ -150,6 +159,8 @@ void Think_AccelMove(edict_t *ent);
 void Move_Calc(edict_t *ent, const vec3_t dest, void(*func)(edict_t*))
 {
     VectorClear(ent->velocity);
+    VectorCopy(dest, ent->moveinfo.dest);
+    ent->moveinfo.dest_valid = true;
     VectorSubtract(dest, ent->s.origin, ent->moveinfo.dir);
     ent->moveinfo.remaining_distance = VectorNormalize(ent->moveinfo.dir);
     ent->moveinfo.endfunc = func;
@@ -401,7 +412,13 @@ void plat_Accelerate(moveinfo_t *moveinfo)
 
 void Think_AccelMove(edict_t *ent)
 {
-    ent->moveinfo.remaining_distance -= ent->moveinfo.current_speed;
+    // [Paril-KEX] calculate distance dynamically, so a frame spent blocked is
+    // not counted as travelled. (id measures to start_origin or end_origin by
+    // state, which only holds for plats; dest holds for every mover.)
+    if (M_RereleaseGame() && ent->moveinfo.dest_valid)
+        ent->moveinfo.remaining_distance = Distance(ent->moveinfo.dest, ent->s.origin);
+    else
+        ent->moveinfo.remaining_distance -= ent->moveinfo.current_speed;
 
     if (ent->moveinfo.current_speed == 0)       // starting or blocked
         plat_CalcAcceleratedMove(&ent->moveinfo);
@@ -2066,6 +2083,12 @@ void train_resume(edict_t *self)
     ent = self->target_ent;
 
     train_path_dest(self, ent, dest);
+
+    // [Update 1] restart the travel loop too; a train toggled back on used to
+    // move in silence until it reached its next corner
+    if (M_RereleaseGame())
+        self->s.sound = self->moveinfo.sound_middle;
+
     self->moveinfo.state = STATE_TOP;
     VectorCopy(self->s.origin, self->moveinfo.start_origin);
     VectorCopy(dest, self->moveinfo.end_origin);

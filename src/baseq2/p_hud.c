@@ -18,6 +18,216 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "g_local.h"
 
 
+/*
+===============
+G_RereleaseHud
+
+[rerelease] Whether this player has cl_rerelease_hud on: the hit marker,
+directional damage indicators, held key icons, the low ammo warning and the
+soonest-to-run-out powerup timer. The client keeps it in its userinfo.
+===============
+*/
+bool G_RereleaseHud(edict_t *ent)
+{
+    return M_RereleaseGame() && ent->client &&
+           atoi(Info_ValueForKey(ent->client->pers.userinfo, "cl_rerelease_hud")) > 0;
+}
+
+
+/*
+======================================================================
+
+END OF UNIT
+
+[rerelease] The table of levels, kills, secrets and times shown over the
+intermission that ends a unit. game.level_entries collects a row per level
+across the unit: G_SetLevelEntry claims one when a player first walks into a
+level, G_UpdateLevelEntry copies the level's counts into it whenever we leave
+or save, and G_RunFrame adds up the time.
+
+======================================================================
+*/
+
+void G_UpdateLevelEntry(void)
+{
+    if (!level.entry)
+        return;
+
+    level.entry->found_secrets = level.found_secrets;
+    level.entry->total_secrets = level.total_secrets;
+    level.entry->killed_monsters = level.killed_monsters;
+    level.entry->total_monsters = level.total_monsters;
+}
+
+static level_entry_t *G_FindLevelEntry(const char *map, size_t len)
+{
+    int i;
+
+    for (i = 0; i < MAX_LEVELS_PER_UNIT; i++) {
+        level_entry_t *entry = &game.level_entries[i];
+
+        if (!entry->map_name[0] ||
+            (strlen(entry->map_name) == len && !strncmp(entry->map_name, map, len)))
+            return entry;
+    }
+
+    gi.dprintf("WARNING: more than %d maps in unit, can't track the rest\n", MAX_LEVELS_PER_UNIT);
+    return NULL;
+}
+
+// Called from ClientBegin, so the clock only starts once a player is in.
+void G_SetLevelEntry(void)
+{
+    level_entry_t   *entry;
+    edict_t         *changelevel = NULL;
+    int             i, highest_order = 0;
+
+    if (deathmatch->value || !M_RereleaseGame())
+        return;
+
+    // a hub is no level of any unit; the next map picks up as the start
+    if (level.hub_map)
+        return;
+
+    for (i = 0; i < MAX_LEVELS_PER_UNIT; i++)
+        highest_order = max(highest_order, game.level_entries[i].visit_order);
+
+    entry = G_FindLevelEntry(level.mapname, strlen(level.mapname));
+    if (!entry)
+        return;
+
+    level.entry = entry;
+    Q_strlcpy(entry->map_name, level.mapname, sizeof(entry->map_name));
+
+    // first visit: it goes after everything seen so far
+    if (!entry->pretty_name[0]) {
+        Q_strlcpy(entry->pretty_name, level.level_name, sizeof(entry->pretty_name));
+        entry->visit_order = highest_order + 1;
+    }
+
+    // Every level this one leads to gets a row now, so a secret level that is
+    // never found still shows as "???". A next unit's map does not count, nor
+    // does a cinematic or end picture.
+    while ((changelevel = G_Find(changelevel, FOFS(classname), "target_changelevel"))) {
+        const char  *map = changelevel->map, *p;
+        size_t      len;
+
+        if (!map || !*map || strchr(map, '*'))
+            continue;
+
+        p = strchr(map, '+');
+        if (p)
+            map = p + 1;
+
+        if (strstr(map, ".cin") || strstr(map, ".pcx"))
+            continue;
+
+        p = strchr(map, '$');
+        len = p ? (size_t)(p - map) : strlen(map);
+        if (!len || len >= MAX_QPATH)
+            continue;
+
+        entry = G_FindLevelEntry(map, len);
+        if (!entry)
+            return;
+
+        if (!entry->map_name[0])
+            Q_strlcpy(entry->map_name, map, len + 1);
+    }
+}
+
+static int G_LevelEntryOrder(const level_entry_t *e)
+{
+    if (e->visit_order)
+        return e->visit_order;
+    return e->map_name[0] ? MAX_LEVELS_PER_UNIT + 1 : MAX_LEVELS_PER_UNIT + 2;
+}
+
+static int G_LevelEntryCompare(const void *a, const void *b)
+{
+    return G_LevelEntryOrder(a) - G_LevelEntryOrder(b);
+}
+
+static void G_EndOfUnitRow(char *layout, size_t size, const level_entry_t *e)
+{
+    int ms = e->time * 1000 / BASE_FRAMERATE;
+
+    // a level we never got to
+    if (!e->pretty_name[0]) {
+        Q_strlcat(layout, "table_row 1 ??? ", size);
+        return;
+    }
+
+    Q_strlcat(layout, va("table_row 4 \"%.23s\" %d/%d %d/%d %02d:%02d:%03d ",
+                         e->pretty_name, e->killed_monsters, e->total_monsters,
+                         e->found_secrets, e->total_secrets,
+                         ms / 60000, (ms / 1000) % 60, ms % 1000), size);
+}
+
+/*
+===============
+G_EndOfUnitMessage
+
+Sends everyone the end of unit table, drawn by the client's start_table /
+table_row / draw_table layout commands. The rerelease holds the "press any
+button" line back with a server frame test; this tree's frame numbers are not
+the client's, so the table is simply sent again with the line once the
+intermission can be left (see G_RunFrame).
+===============
+*/
+void G_EndOfUnitMessage(bool press_button)
+{
+    level_entry_t   entries[MAX_LEVELS_PER_UNIT], totals;
+    char            layout[MAX_STRING_CHARS];
+    int             i, num_rows = 0;
+
+    G_UpdateLevelEntry();
+
+    memcpy(entries, game.level_entries, sizeof(entries));
+    qsort(entries, MAX_LEVELS_PER_UNIT, sizeof(entries[0]), G_LevelEntryCompare);
+
+    Q_strlcpy(layout, "start_table 4 Level Kills Secrets Time ", sizeof(layout));
+
+    memset(&totals, 0, sizeof(totals));
+    for (i = 0; i < MAX_LEVELS_PER_UNIT && entries[i].map_name[0]; i++) {
+        G_EndOfUnitRow(layout, sizeof(layout), &entries[i]);
+
+        totals.found_secrets += entries[i].found_secrets;
+        totals.total_secrets += entries[i].total_secrets;
+        totals.killed_monsters += entries[i].killed_monsters;
+        totals.total_monsters += entries[i].total_monsters;
+        totals.time += entries[i].time;
+
+        if (entries[i].visit_order)
+            num_rows++;
+    }
+
+    // a blank row, then the totals under a nameless first column
+    if (num_rows > 1) {
+        Q_strlcat(layout, "table_row 0 ", sizeof(layout));
+        Q_strlcpy(totals.pretty_name, " ", sizeof(totals.pretty_name));
+        G_EndOfUnitRow(layout, sizeof(layout), &totals);
+    }
+
+    Q_strlcat(layout, "xv 160 yt 16 draw_table ", sizeof(layout));
+
+    if (press_button)
+        Q_strlcat(layout, "xv 0 yb -48 cstring2 \"Press any button to continue.\" ", sizeof(layout));
+
+    gi.WriteByte(svc_layout);
+    gi.WriteString(layout);
+    gi.multicast(vec3_origin, MULTICAST_ALL_R);
+
+    level.eou_screen = true;
+    for (i = 0; i < game.maxclients; i++) {
+        if (g_edicts[i + 1].inuse) {
+            game.clients[i].showeou = true;
+            game.clients[i].showhelp = false;
+            game.clients[i].showscores = false;
+        }
+    }
+}
+
 
 /*
 ======================================================================
@@ -29,7 +239,10 @@ INTERMISSION
 
 void MoveClientToIntermission(edict_t *ent)
 {
-    if (deathmatch->value || coop->value)
+    // [rerelease] coop shows the end of unit table in place of the scores
+    bool scores = deathmatch->value || (coop->value && !level.eou_screen);
+
+    if (scores)
         ent->client->showscores = true;
     VectorCopy(level.intermission_origin, ent->s.origin);
     ent->client->ps.pmove.origin[0] = COORD2SHORT(level.intermission_origin[0]);
@@ -62,9 +275,12 @@ void MoveClientToIntermission(edict_t *ent)
 
     // add the layout
 
-    if (deathmatch->value || coop->value) {
+    if (scores) {
         DeathmatchScoreboardMessage(ent, NULL);
         gi.unicast(ent, true);
+    } else if (level.eou_screen && !ent->client->showeou) {
+        // someone who came in after the table went out
+        G_EndOfUnitMessage(level.framenum > level.intermission_framenum + 5 * BASE_FRAMERATE);
     }
 
 }
@@ -92,6 +308,10 @@ void BeginIntermission(edict_t *targ)
     level.changemap = targ->map;
     // [rerelease] CLEAR_INVENTORY: strip the players back to defaults on the way out
     level.intermission_clear = (targ->spawnflags & SPAWNFLAG_CHANGELEVEL_CLEAR_INVENTORY) != 0;
+    level.intermission_eou = false;
+
+    // [rerelease] this level's row of the end of unit screen
+    G_UpdateLevelEntry();
 
     if (strstr(level.changemap, "*")) {
         if (coop->value) {
@@ -104,6 +324,18 @@ void BeginIntermission(edict_t *targ)
                     if (itemlist[n].flags & IT_KEY)
                         client->client->pers.inventory[n] = 0;
                 }
+            }
+        }
+
+        // [rerelease] the unit is over: show its levels, unless this exit
+        // says not to - and if it says to leave at once, do
+        if (M_RereleaseGame() && !deathmatch->value) {
+            level.intermission_eou = true;
+            if (!(targ->spawnflags & SPAWNFLAG_CHANGELEVEL_NO_END_OF_UNIT)) {
+                G_EndOfUnitMessage(false);
+            } else if (targ->spawnflags & SPAWNFLAG_CHANGELEVEL_IMMEDIATE_LEAVE) {
+                level.exitintermission = 1;
+                return;
             }
         }
     } else {
@@ -341,6 +573,11 @@ void Cmd_Help_f(edict_t *ent)
         return;
     }
 
+    // [rerelease] the help computer would replace the end of unit table and,
+    // closed again, leave its own page up in the table's place
+    if (level.eou_screen)
+        return;
+
     ent->client->showinventory = false;
     ent->client->showscores = false;
 
@@ -356,6 +593,68 @@ void Cmd_Help_f(edict_t *ent)
 
 
 //=======================================================================
+
+/*
+===============
+G_SetPowerupTimer
+
+[rerelease] cl_rerelease_hud: the powerup timer shows whichever powerup runs
+out first, rather than the first held in a fixed order, and covers the ones
+that order left out - IR goggles, the cloak, the silencer's shots and a
+power sphere, which outranks them all.
+===============
+*/
+static void G_SetPowerupTimer(edict_t *ent)
+{
+    static const struct {
+        const char  *icon;
+        size_t      ofs;
+    } timed[] = {
+        { "p_quad",             CLOFS(quad_framenum) },
+        { "p_quadfire",         CLOFS(quadfire_framenum) },
+        { "p_double",           CLOFS(double_framenum) },
+        { "p_invulnerability",  CLOFS(invincible_framenum) },
+        { "p_cloaker",          CLOFS(invisible_framenum) },
+        { "p_envirosuit",       CLOFS(enviro_framenum) },
+        { "p_rebreather",       CLOFS(breather_framenum) },
+        { "p_ir",               CLOFS(ir_framenum) },
+    };
+    gclient_t   *client = ent->client;
+    edict_t     *sphere = client->owned_sphere;
+    const char  *icon = NULL;
+    int         i, best = 0, value = 0;
+
+    if (sphere && sphere->inuse) {
+        if (sphere->spawnflags & SPHERE_DEFENDER)
+            icon = "p_defender";
+        else if (sphere->spawnflags & SPHERE_HUNTER)
+            icon = "p_hunter";
+        else if (sphere->spawnflags & SPHERE_VENGEANCE)
+            icon = "p_vengeance";
+        else
+            icon = "i_fixme";
+        value = (sphere->wait - level.framenum + BASE_FRAMERATE - 1) / BASE_FRAMERATE;
+    } else {
+        for (i = 0; i < q_countof(timed); i++) {
+            int end = *(int *)((byte *)client + timed[i].ofs);
+
+            if (end > level.framenum && (!icon || end < best)) {
+                icon = timed[i].icon;
+                best = end;
+            }
+        }
+
+        if (icon) {
+            value = (best - level.framenum + BASE_FRAMERATE - 1) / BASE_FRAMERATE;
+        } else if (client->silencer_shots) {
+            icon = "p_silencer";
+            value = client->silencer_shots;
+        }
+    }
+
+    client->ps.stats[STAT_TIMER_ICON] = icon ? gi.imageindex(icon) : 0;
+    client->ps.stats[STAT_TIMER] = icon ? value : 0;
+}
 
 /*
 ===============
@@ -475,7 +774,9 @@ void G_SetStats(edict_t *ent)
     //
     // timers
     //
-    if (ent->client->quad_framenum > level.framenum) {
+    if (G_RereleaseHud(ent)) {
+        G_SetPowerupTimer(ent);
+    } else if (ent->client->quad_framenum > level.framenum) {
         ent->client->ps.stats[STAT_TIMER_ICON] = gi.imageindex("p_quad");
         ent->client->ps.stats[STAT_TIMER] = (ent->client->quad_framenum - level.framenum) / 10;
     } else if (ent->client->double_framenum > level.framenum) {
@@ -520,7 +821,7 @@ void G_SetStats(edict_t *ent)
         if (ent->client->showinventory && ent->client->pers.health > 0)
             ent->client->ps.stats[STAT_LAYOUTS] |= 2;
     } else {
-        if (ent->client->showscores || ent->client->showhelp)
+        if (ent->client->showscores || ent->client->showhelp || ent->client->showeou)
             ent->client->ps.stats[STAT_LAYOUTS] |= 1;
         if (ent->client->showinventory && ent->client->pers.health > 0)
             ent->client->ps.stats[STAT_LAYOUTS] |= 2;
@@ -603,6 +904,36 @@ void G_SetStats(edict_t *ent)
 
         ent->client->ps.stats[STAT_HEALTH_BARS] = (short)stat;
     }
+
+    //
+    // [rerelease] cl_rerelease_hud: up to three held keys, taking turns every
+    // five seconds when there are more, and the damage this player dealt
+    // since the last frame went out, for the hit marker
+    //
+    ent->client->ps.stats[STAT_KEY_A] = 0;
+    ent->client->ps.stats[STAT_KEY_B] = 0;
+    ent->client->ps.stats[STAT_KEY_C] = 0;
+    ent->client->ps.stats[STAT_HIT_MARKER] = 0;
+
+    if (G_RereleaseHud(ent)) {
+        int keys[MAX_ITEMS], num_keys = 0, offset = 0, i;
+
+        if (!deathmatch->value) {
+            for (i = 0; i < game.num_items; i++)
+                if ((itemlist[i].flags & IT_KEY) && ent->client->pers.inventory[i])
+                    keys[num_keys++] = i;
+
+            if (num_keys > 3)
+                offset = level.framenum / (5 * BASE_FRAMERATE);
+
+            for (i = 0; i < min(num_keys, 3); i++)
+                ent->client->ps.stats[STAT_KEY_A + i] =
+                    gi.imageindex(itemlist[keys[(i + offset) % num_keys]].icon);
+        }
+
+        ent->client->ps.stats[STAT_HIT_MARKER] = min(ent->client->hit_marker_damage, 0x7fff);
+    }
+    ent->client->hit_marker_damage = 0;
 }
 
 /*

@@ -744,11 +744,17 @@ bool Pickup_Armor(edict_t *ent, edict_t *other)
     int             newcount;
     float           salvage;
     int             salvagecount;
+    int             base_count;
 
     // get info on new armor
     newinfo = (gitem_armor_t *)ent->item->info;
 
     old_armor_index = ArmorIndex(other);
+
+    // [Update 1] a start_items count is the amount of armor handed over
+    base_count = newinfo ? newinfo->base_count : 0;
+    if (M_RereleaseGame() && ent->count)
+        base_count = ent->count;
 
     // handle armor shards specially
     if (ent->item->tag == ARMOR_SHARD) {
@@ -760,7 +766,7 @@ bool Pickup_Armor(edict_t *ent, edict_t *other)
 
     // if player has no armor, just use it
     else if (!old_armor_index) {
-        other->client->pers.inventory[ITEM_INDEX(ent->item)] = newinfo->base_count;
+        other->client->pers.inventory[ITEM_INDEX(ent->item)] = base_count;
     }
 
     // use the better armor
@@ -777,7 +783,7 @@ bool Pickup_Armor(edict_t *ent, edict_t *other)
             // calc new armor values
             salvage = oldinfo->normal_protection / newinfo->normal_protection;
             salvagecount = salvage * other->client->pers.inventory[old_armor_index];
-            newcount = newinfo->base_count + salvagecount;
+            newcount = base_count + salvagecount;
             if (newcount > newinfo->max_count)
                 newcount = newinfo->max_count;
 
@@ -789,7 +795,7 @@ bool Pickup_Armor(edict_t *ent, edict_t *other)
         } else {
             // calc new armor values
             salvage = newinfo->normal_protection / oldinfo->normal_protection;
-            salvagecount = salvage * newinfo->base_count;
+            salvagecount = salvage * base_count;
             newcount = other->client->pers.inventory[old_armor_index] + salvagecount;
             if (newcount > oldinfo->max_count)
                 newcount = oldinfo->max_count;

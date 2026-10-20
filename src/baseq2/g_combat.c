@@ -850,6 +850,11 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     if (!(dflags & DAMAGE_NO_PROTECTION) && CheckTeamDamage(targ, attacker))
         return;
 
+    // [rerelease] the attacker's hit marker, published (or not) in G_SetStats
+    if (targ != attacker && attacker->client && targ->health > 0 &&
+        !(targ->svflags & SVF_DEADMONSTER) && mod != MOD_TARGET_LASER)
+        attacker->client->hit_marker_damage += take + psave + asave;
+
 // do the damage
     if (take) {
         if (targ->flags & FL_MECHANICAL)
@@ -1002,6 +1007,32 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
         client->damage_blood += take;
         client->damage_knockback += knockback;
         VectorCopy(point, client->damage_from);
+
+        // [rerelease] where it came from, for the directional damage
+        // indicators: hits close together are one source. A direct hit
+        // points at whoever fired, a splash at what went off.
+        if (inflictor != world && attacker != world && (take || psave || asave)) {
+            int i;
+
+            for (i = 0; i < client->num_damage_indicators; i++)
+                if (Distance(point, client->damage_indicators[i].from) < 32)
+                    break;
+
+            if (i == client->num_damage_indicators && i < MAX_DAMAGE_INDICATORS) {
+                VectorCopy((dflags & DAMAGE_RADIUS) ? inflictor->s.origin : attacker->s.origin,
+                           client->damage_indicators[i].from);
+                client->damage_indicators[i].health = 0;
+                client->damage_indicators[i].armor = 0;
+                client->damage_indicators[i].power = 0;
+                client->num_damage_indicators++;
+            }
+
+            if (i < client->num_damage_indicators) {
+                client->damage_indicators[i].health += take;
+                client->damage_indicators[i].power += psave;
+                client->damage_indicators[i].armor += asave;
+            }
+        }
     }
 }
 

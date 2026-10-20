@@ -351,6 +351,9 @@ typedef struct {
     float   hf_end_z;           // world Z of the BOTTOM; always below start
     vec3_t  hf_start_color;
     vec3_t  hf_end_color;
+    float   hf_color_start_z;   // the colour is hf_start_color at this world Z
+    float   hf_color_end_z;     // and hf_end_color at this one
+    bool    color_layers;       // each fog in its own colour by its share (cl_fog_rerelease)
 } mapfog_params_t;
 
 /* THE RENDERER-SIDE ACCESSOR FOR THE ABOVE, DECLARED HERE ON PURPOSE.
@@ -524,6 +527,8 @@ extern int     (*R_DrawString)(int x, int y, int flags, size_t maxChars,
 bool R_GetPicSize(int *w, int *h, qhandle_t pic);   // returns transparency bit
 extern void    (*R_DrawPic)(int x, int y, qhandle_t pic);
 extern void    (*R_DrawStretchPic)(int x, int y, int w, int h, qhandle_t pic);
+// a pic w x h centred on (cx, cy), turned clockwise by angle radians
+extern void    (*R_DrawRotatedPic)(float cx, float cy, float w, float h, float angle, qhandle_t pic);
 extern void    (*R_TileClear)(int x, int y, int w, int h, qhandle_t pic);
 extern void    (*R_DrawFill8)(int x, int y, int w, int h, int c);
 extern void    (*R_DrawFill32)(int x, int y, int w, int h, uint32_t color);
@@ -544,6 +549,73 @@ extern bool    (*R_IsHDR)(void);
 // into a latency reduction rather than just a frame limiter. NULL on renderers that
 // do not implement it.
 extern void    (*R_LatencySleep)(void);
+
+// Sound off the walls, traced on the GPU for client/sound/steamaudio.c: one
+// run of Steam Audio's reflection simulation, and the ways round corners
+// (see refresh/vkpt/sound_trace.c). Everything is in Steam Audio's space, in
+// metres.
+typedef struct {
+    int             num_verts, num_tris;
+    const float     *verts;         // 3 per vertex
+    const int       *tris;          // 3 per triangle
+    const int       *mats;          // per triangle, into the materials
+} r_sound_mesh_t;
+
+// A corner of the world that sound bends round: R_SOUND_EDGE_FLOATS per edge,
+// its start (3) and length (1); which way it runs (3, unit) and its wedge
+// index (1): the open space round it is that many half turns, between 1 and 2
+// for a corner that sticks out; the way one of its two faces goes off from it
+// (3, unit), and 0; and that face's normal, out into the open (3), and 0.
+#define R_SOUND_EDGE_FLOATS         16
+
+typedef struct {
+    unsigned        key;            // a new key is a new scene, built on its first run
+    int             num_meshes;
+    const r_sound_mesh_t *meshes;
+    int             num_edges;
+    const float     *edges;         // R_SOUND_EDGE_FLOATS each, the world's only
+} r_sound_geom_t;
+
+// What a diffraction query finds, R_SOUND_DIFFRACTION_FLOATS per query: the
+// energy per band (3) that comes round the edges, against a free field at the
+// shortest way's length; that length (1), 0 for no way round; the way it comes
+// from (3), the energy-weighted sum of unit vectors from the listener to the
+// edges, shorter as they disagree; and 1 when the listener sees the point, in
+// which case the rest is 0.
+#define R_SOUND_DIFFRACTION_FLOATS  8
+
+typedef struct {
+    int             mesh;
+    float           transform[3][4];    // to the world, row-major
+} r_sound_instance_t;
+
+typedef struct {
+    const r_sound_geom_t *geom;
+    int             num_instances;  // the meshes where they are, the world among them
+    const r_sound_instance_t *instances;
+    int             num_materials;
+    const float     (*materials)[4];    // absorption low, mid, high; scattering
+    float           listener[3];
+    int             num_sources;
+    const float     *sources;       // 3 per source
+    int             num_rays, num_bounces;
+    float           duration;       // seconds a path may last
+    float           min_distance;   // nearer to a wall than this, a source is not heard off it
+    unsigned        seed;           // different every run
+    int             num_channels, num_bins;
+    float           *const *fields; // per source, [channel][band][bin], written whole
+
+    // The way round the edges from the listener to each point, as well or
+    // instead (num_sources 0).
+    int             num_queries;
+    const float     *queries;       // 3 per query
+    float           *diffraction;   // R_SOUND_DIFFRACTION_FLOATS per query, written whole
+} r_sound_trace_t;
+
+// Runs on the calling thread and waits for the GPU. NULL `trace` asks only
+// whether it could. False, and why, when it cannot; NULL on renderers that
+// never can.
+extern bool    (*R_SoundTrace)(const r_sound_trace_t *trace, const char **why);
 
 #if REF_GL
 void R_RegisterFunctionsGL(void);

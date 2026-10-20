@@ -33,6 +33,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SVF_NOCLIENT            0x00000001  // don't send entity to clients, even if it has effects
 #define SVF_DEADMONSTER         0x00000002  // treat as CONTENTS_DEADMONSTER for collision
 #define SVF_MONSTER             0x00000004  // treat as CONTENTS_MONSTER for collision
+#define SVF_NOCULL              0x00000400  // sent to every client, in sight or not (the rerelease's bit)
 
 // edict->solid values
 

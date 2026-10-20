@@ -17,6 +17,9 @@ WHAT GOES IN, and the rule behind it:
   * the build outputs: q2rtx.exe, q2rtxded.exe, q2rtxded-x86.exe if it was
     built, baseq2/gamex86_64.dll, and the compiled shaders both loose in
     baseq2/shader_vkpt and packed in baseq2/shaders.pkz.
+  * phonon.dll, the Steam Audio runtime, as built from source by
+    setup/build_phonon.py, with its Apache-2.0 licence and third-party notices
+    from extern/steamaudio/ under licenses/steam-audio/.
   * the stock Quake II RTX media that is too large for git: q2rtx_media.pkz and
     blue_noise.pkz. CI restores these from the `shipped-media` release.
   * the repo documentation plus a generated README-FIRST.txt.
@@ -27,6 +30,9 @@ WHAT STAYS OUT:
     a release: players supply their own copies and put them beside q2rtx.exe.
     build_manifest refuses to package one even if it turns up somewhere the
     rules above would otherwise pick it up.
+  * Valve's PREBUILT phonon.dll from the Steam Audio SDK zip. It links Intel
+    IPP and oneMKL, which are not open source and cannot ship with a GPL
+    program; the package is refused if the phonon.dll found carries them.
   * every .pak file. They are id Software's and cannot be redistributed; the
     README tells the player where to get their own.
   * music/ and video/ - the player's own copies from the remaster.
@@ -50,7 +56,7 @@ TOP = 'Q2RTX-Overdrive'
 # Already-compressed payloads - storing them is both faster and no larger.
 STORE_EXT = ('.pkz', '.png', '.jpg', '.jpeg', '.kpf', '.mp3', '.ogg', '.zip')
 
-REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe']
+REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe', 'phonon.dll']
 OPTIONAL_ROOT = ['q2rtxded-x86.exe']
 DOCS = ['license.txt', 'notice.txt', 'readme.md', 'changelog.md']
 
@@ -59,6 +65,21 @@ DOCS = ['license.txt', 'notice.txt', 'readme.md', 'changelog.md']
 def is_nvidia_runtime(arc):
     n = os.path.basename(arc).lower()
     return n.startswith('nvngx') and n.endswith('.dll')
+
+# Steam Audio's licence and the notices for what is compiled into phonon.dll:
+# (file in the repository, path in the package).
+LICENSES = [
+    ('extern/steamaudio/LICENSE.md', 'licenses/steam-audio/LICENSE.md'),
+    ('extern/steamaudio/THIRDPARTY.md', 'licenses/steam-audio/THIRDPARTY.md'),
+]
+
+# Valve's prebuilt phonon.dll links Intel IPP (its PE sections are named
+# IPPCODE/IPPDATA) and oneMKL; setup/build_phonon.py builds without either.
+PROPRIETARY_MARKERS = (b'IPPCODE', b'IPPDATA', b'Intel oneMKL')
+
+def has_proprietary_code(path):
+    data = open(path, 'rb').read()
+    return [m.decode() for m in PROPRIETARY_MARKERS if m in data]
 
 REQUIRED_BASEQ2 = [
     'baseq2/gamex86_64.dll',
@@ -93,6 +114,15 @@ def build_manifest(repo):
         add(os.path.join(repo, f), f, True)
     for f in OPTIONAL_ROOT:
         add(os.path.join(repo, f), f, False)
+    for disk, arc in LICENSES:
+        add(os.path.join(repo, disk), arc, True)
+
+    phonon = os.path.join(repo, 'phonon.dll')
+    if os.path.isfile(phonon):
+        found = has_proprietary_code(phonon)
+        if found:
+            refused.append('phonon.dll (prebuilt with Intel IPP/oneMKL: %s) - '
+                           'run setup/build_phonon.py' % ', '.join(found))
 
     shaders = os.path.join(repo, 'baseq2', 'shader_vkpt')
     if not os.path.isdir(shaders):
@@ -122,10 +152,16 @@ def main():
     repo = os.path.abspath(args.repo)
     members, missing, skipped, refused = build_manifest(repo)
 
+    bad_phonon = [r for r in refused if r.startswith('phonon.dll')]
+    refused = [r for r in refused if not r.startswith('phonon.dll')]
     if refused:
         print('left out NVIDIA runtime DLL(s) - players supply their own:')
         for r in refused:
             print('   ' + r)
+
+    if bad_phonon:
+        print('ABORT - ' + bad_phonon[0], file=sys.stderr)
+        return 1
 
     if missing:
         print('ABORT - required files absent:', file=sys.stderr)

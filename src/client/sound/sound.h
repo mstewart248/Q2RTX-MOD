@@ -36,6 +36,9 @@ typedef struct sfxcache_s {
 #if USE_OPENAL
     int         size;
     int         bufnum;
+    int         samples;        // the 16 bit copy in data[] Steam Audio mixes
+    int         rate;           // from, when pcm is set (steamaudio.c)
+    bool        pcm;
 #endif
     byte        data[1];        // variable sized
 } sfxcache_t;
@@ -80,6 +83,7 @@ typedef struct channel_s {
 #if USE_OPENAL
     int         autoframe;
     int         srcnum;
+    bool        steam;          // mixed by steamaudio.c, not an OpenAL source
 #endif
 } channel_t;
 
@@ -123,11 +127,31 @@ void AL_Update(void);
 void AL_RawSamples(int samples, int rate, int width, int channels, byte *data, float volume);
 void AL_UnqueueRawSamples(void);
 
+bool AL_ChannelOrigin(const channel_t *ch, vec3_t origin);
+
 /* room reverb (reverb.c) */
 void AL_InitReverb(const unsigned *sources, int count);
 void AL_ShutdownReverb(void);
 void AL_UpdateReverb(void);
+bool AL_ChannelIsDry(const channel_t *ch);
+bool AL_ChannelIsRadio(const channel_t *ch);
 void AL_ReverbChannel(const channel_t *ch);
+bool AL_ReverbFeed(unsigned source);
+float AL_ReverbDecayTime(void);
+
+/* Steam Audio mixer (steamaudio.c) */
+bool SA_Init(void);
+void SA_Shutdown(void);
+bool SA_Active(void);
+void SA_Update(void);
+void SA_SoundInfo(void);
+bool SA_PlayChannel(channel_t *ch, const channel_t *sync);
+void SA_StopChannel(channel_t *ch);
+void SA_Spatialize(channel_t *ch);
+bool SA_ChannelDone(const channel_t *ch);
+void SA_SetPitch(float pitch);
+void SA_StoreSamples(sfxcache_t *sc, const wavinfo_t *info);
+void SA_DeleteSfx(sfxcache_t *sc);
 
 /* seconds of queued-but-unheard streamed audio (needed for cinematic A/V sync) */
 double AL_GetStreamLatency(void);

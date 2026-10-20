@@ -562,6 +562,16 @@ void ExitLevel(void)
         }
     }
 
+    // [rerelease] a new unit starts its end of unit screen afresh
+    if (level.intermission_eou) {
+        memset(game.level_entries, 0, sizeof(game.level_entries));
+        level.entry = NULL;
+        level.intermission_eou = false;
+        level.eou_screen = false;
+        for (i = 0 ; i < game.maxclients ; i++)
+            game.clients[i].showeou = false;
+    }
+
     // clear some things before going to next level
     for (i = 0 ; i < maxclients->value ; i++) {
         ent = g_edicts + 1 + i;
@@ -652,6 +662,17 @@ void G_RunFrame(void)
 
     // build the playerstate_t structures for all players
     ClientEndServerFrames();
+
+    // [rerelease] the time column of the end of unit screen counts while
+    // player 1 is in the level and it is not over
+    if (level.entry && !level.intermission_framenum &&
+        g_edicts[1].inuse && g_edicts[1].client->pers.connected)
+        level.entry->time++;
+
+    // [rerelease] the end of unit table gets its "press any button" line the
+    // moment ClientThink starts taking a button press to leave
+    if (level.eou_screen && level.framenum == level.intermission_framenum + 5 * BASE_FRAMERATE + 1)
+        G_EndOfUnitMessage(true);
 
     // [Paril-KEX] run monster pains now, so a hit from an entity that thinks
     // after the monster isn't a frame late. monster_think runs it too; the

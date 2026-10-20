@@ -1402,7 +1402,7 @@ bool guncmdr_duck(edict_t *self, float eta)
 
 	if ((self->monsterinfo.currentmove == &guncmdr_move_fire_chain_dodge_left) ||
 		(self->monsterinfo.currentmove == &guncmdr_move_fire_chain_dodge_right) ||
-		(self->monsterinfo.currentmove == &guncmdr_move_attack_grenade_back_dodge_right) ||
+		(self->monsterinfo.currentmove == &guncmdr_move_attack_grenade_back_dodge_left) ||	/* Update 1: was _right twice */
 		(self->monsterinfo.currentmove == &guncmdr_move_attack_grenade_back_dodge_right) ||
 		(self->monsterinfo.currentmove == &guncmdr_move_attack_mortar_dodge))
 	{

@@ -60,6 +60,12 @@ static cvar_t *cvar_reflex_stats = NULL;
 /* With frame generation on, cap the RENDER rate to refresh / multiplier so the presented
    rate lands exactly on the display refresh. See reflex_paced_render_fps(). */
 static cvar_t *cvar_fg_pace_to_refresh = NULL;
+/* pt_vrr: -1 asks the driver whether G-SYNC is on for this display, 0 / 1 override it.
+   pt_reflex_vrr_cap: the VRR frame cap below, on by default. See reflex_vrr_interval_us(). */
+static cvar_t *cvar_vrr = NULL;
+static cvar_t *cvar_reflex_vrr_cap = NULL;
+/* NVAPI's answer for the monitor the swapchain was last created on: 1 VRR, 0 fixed, -1 unknown. */
+static int     reflex_vrr_detected = -1;
 
 /* Refresh rate of the display the window is on, or 0 if SDL will not say. */
 int Reflex_DisplayRefreshHz(void)
@@ -107,6 +113,123 @@ static int reflex_paced_render_fps(void)
     return (fps > 0) ? fps : 0;
 }
 
+/* ---- VRR (G-SYNC) detection ----
+
+   Asked of NVAPI because nothing in Vulkan, DXGI or SDL says whether the panel is running
+   variable refresh. The three function ids are from NVIDIA's public nvapi_interface.h and
+   the struct is NV_GET_VRR_INFO_V1 from nvapi.h, declared by hand for the same reason
+   fg_present.c declares its D3DKMT structs: the SDK is not in the tree for one bit. */
+#ifdef _WIN32
+
+typedef void *(*PFN_reflex_nvapi_QueryInterface)(unsigned int id);
+typedef int   (*PFN_reflex_NvAPI_Initialize)(void);
+typedef int   (*PFN_reflex_NvAPI_GetDisplayIdByDisplayName)(const char *display_name, uint32_t *display_id);
+typedef int   (*PFN_reflex_NvAPI_GetVRRInfo)(uint32_t display_id, void *vrr_info);
+
+typedef struct {
+    uint32_t version;
+    uint32_t bIsVRREnabled : 1;
+    uint32_t reserved      : 31;
+    uint32_t reservedEx[4];
+} reflex_nv_vrr_info_t;
+
+static int reflex_query_vrr(const char *gdi_device)
+{
+    static bool tried = false;
+    static PFN_reflex_NvAPI_GetDisplayIdByDisplayName get_display_id = NULL;
+    static PFN_reflex_NvAPI_GetVRRInfo get_vrr_info = NULL;
+
+    if (!tried) {
+        tried = true;
+        void *nvapi = SDL_LoadObject("nvapi64.dll");
+        PFN_reflex_nvapi_QueryInterface query = nvapi
+            ? (PFN_reflex_nvapi_QueryInterface)SDL_LoadFunction(nvapi, "nvapi_QueryInterface") : NULL;
+        PFN_reflex_NvAPI_Initialize init = query
+            ? (PFN_reflex_NvAPI_Initialize)query(0x0150e828u) : NULL;
+        if (init && init() == 0) {
+            get_display_id = (PFN_reflex_NvAPI_GetDisplayIdByDisplayName)query(0xae457190u);
+            get_vrr_info   = (PFN_reflex_NvAPI_GetVRRInfo)query(0xdf8fda57u);   /* driver 525+ */
+        }
+    }
+
+    if (!get_display_id || !get_vrr_info)
+        return -1;
+
+    uint32_t display_id = 0;
+    if (get_display_id(gdi_device, &display_id) != 0)
+        return -1;
+
+    reflex_nv_vrr_info_t info;
+    memset(&info, 0, sizeof(info));
+    info.version = (uint32_t)sizeof(info) | (1u << 16);   /* MAKE_NVAPI_VERSION(..., 1) */
+    if (get_vrr_info(display_id, &info) != 0)
+        return -1;
+
+    return info.bIsVRREnabled ? 1 : 0;
+}
+
+#else
+
+static int reflex_query_vrr(const char *gdi_device) { (void)gdi_device; return -1; }
+
+#endif  /* _WIN32 */
+
+void Reflex_DetectVRR(const char *gdi_device)
+{
+    int vrr = (gdi_device && *gdi_device) ? reflex_query_vrr(gdi_device) : -1;
+    if (vrr == reflex_vrr_detected)
+        return;
+    reflex_vrr_detected = vrr;
+
+    if (vrr > 0)
+        Com_Printf("Reflex: G-SYNC / VRR is on for %s\n", gdi_device);
+    else if (vrr == 0)
+        Com_Printf("Reflex: %s is fixed refresh (no G-SYNC / VRR)\n", gdi_device);
+    else
+        Com_Printf("Reflex: cannot tell whether the display is VRR - set pt_vrr 1 for a "
+                   "G-SYNC / FreeSync display\n");
+}
+
+bool Reflex_DisplayVRR(void)
+{
+    if (cvar_vrr && cvar_vrr->integer >= 0)
+        return cvar_vrr->integer != 0;
+    return reflex_vrr_detected > 0;
+}
+
+/* Presents per rendered frame: the frame generation multiplier, except in photo mode,
+   which bypasses frame generation and presents every render once. */
+static unsigned int reflex_presents_per_frame(void)
+{
+    unsigned int mult = DLSSGMultiplier();
+    if (mult < 2 || vkpt_fg_bypassed())
+        return 1;
+    return mult;
+}
+
+/* The VRR frame cap as a minimum frame interval, 0 when it does not apply.
+
+   WHY (issue #22): at or above the refresh rate a VRR display drops out of variable
+   refresh - with vsync on it backs up into FIFO and the input lag climbs; with it off it
+   tears. NVIDIA's own Reflex cap with G-SYNC + V-SYNC keeps the PRESENTED rate at
+   refresh - refresh^2 / 3600 (138 on 144 Hz, 224 on 240 Hz). The driver cannot apply it
+   here: the generated presents are out of band, so all it sees is the render rate (35 fps
+   at 4x), which is nowhere near the cap. So apply it to the render rate ourselves,
+   divided by the presents each render produces: 69 / 46 / 34 / 27 / 23 fps at 2x-6x on a
+   144 Hz panel. */
+static uint32_t reflex_vrr_interval_us(void)
+{
+    if (!cvar_reflex_vrr_cap || cvar_reflex_vrr_cap->integer == 0 || !Reflex_DisplayVRR())
+        return 0;
+
+    int refresh = Reflex_DisplayRefreshHz();
+    if (refresh <= 0)
+        return 0;
+
+    double presented_fps = (double)refresh - (double)refresh * (double)refresh / 3600.0;
+    return (uint32_t)(1000000.0 * (double)reflex_presents_per_frame() / presented_fps + 0.5);
+}
+
 void Reflex_Init(void)
 {
     cvar_reflex         = Cvar_Get("pt_reflex", "1", CVAR_ARCHIVE);
@@ -118,6 +241,8 @@ void Reflex_Init(void)
        GPU was managing (a 40 fps base capped to 30 samples motion less often) and the
        cap itself adds wait. Do not re-enable this by default without testing it. */
     cvar_fg_pace_to_refresh = Cvar_Get("pt_dlss_fg_pace_to_refresh", "0", 0);   /* NOT archived */
+    cvar_vrr            = Cvar_Get("pt_vrr", "-1", CVAR_ARCHIVE);
+    cvar_reflex_vrr_cap = Cvar_Get("pt_reflex_vrr_cap", "1", CVAR_ARCHIVE);
 
     if (!qvk.supports_low_latency) {
         Com_Printf("Reflex: VK_NV_low_latency2 not available, low latency mode disabled\n");
@@ -214,7 +339,7 @@ static void reflex_apply_mode(void)
 {
     static int last_mode = -1;
     static int last_fps_max = -1;
-    static int last_effective_fps = -1;
+    static uint32_t last_interval_us = (uint32_t)-1;
 
     if (!qvk.supports_low_latency || !qvkSetLatencySleepModeNV)
         return;
@@ -231,13 +356,20 @@ static void reflex_apply_mode(void)
     if (paced_fps > 0 && (effective_fps == 0 || paced_fps < effective_fps))
         effective_fps = paced_fps;
 
-    if (reflex_mode_applied && mode == last_mode && fps_max == last_fps_max
-        && effective_fps == last_effective_fps)
-        return;
-
     /* minimumIntervalUs is the frame rate cap: the minimum time between frame starts.
        0 disables it. */
     uint32_t interval_us = (effective_fps > 0) ? (uint32_t)(1000000.0 / (double)effective_fps) : 0;
+
+    /* The VRR cap is a longer interval than any of the above unless the user asked for
+       less, so the longest interval wins. */
+    uint32_t vrr_interval_us = reflex_vrr_interval_us();
+    bool vrr_capped = vrr_interval_us > interval_us;
+    if (vrr_capped)
+        interval_us = vrr_interval_us;
+
+    if (reflex_mode_applied && mode == last_mode && fps_max == last_fps_max
+        && interval_us == last_interval_us)
+        return;
 
     VkLatencySleepModeInfoNV info = {
         .sType             = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV,
@@ -254,18 +386,27 @@ static void reflex_apply_mode(void)
         return;
     }
 
-    Com_Printf("Reflex: %s%s%s\n",
-        mode == 0 ? "off" : "on",
-        (mode >= 2) ? " + boost" : "",
-        interval_us
-            ? va(", render capped at %d fps%s", effective_fps,
-                 (paced_fps > 0 && effective_fps == paced_fps)
-                     ? va(" (paced to %d Hz display)", Reflex_DisplayRefreshHz()) : "")
-            : "");
+    if (vrr_capped)
+        Com_Printf("Reflex: %s%s, render capped at %.1f fps (VRR: %.0f presented on the %d Hz "
+            "display, pt_reflex_vrr_cap)\n",
+            mode == 0 ? "off" : "on",
+            (mode >= 2) ? " + boost" : "",
+            1000000.0 / (double)interval_us,
+            1000000.0 * (double)reflex_presents_per_frame() / (double)interval_us,
+            Reflex_DisplayRefreshHz());
+    else
+        Com_Printf("Reflex: %s%s%s\n",
+            mode == 0 ? "off" : "on",
+            (mode >= 2) ? " + boost" : "",
+            interval_us
+                ? va(", render capped at %d fps%s", effective_fps,
+                     (paced_fps > 0 && effective_fps == paced_fps)
+                         ? va(" (paced to %d Hz display)", Reflex_DisplayRefreshHz()) : "")
+                : "");
 
     last_mode = mode;
     last_fps_max = fps_max;
-    last_effective_fps = effective_fps;
+    last_interval_us = interval_us;
     reflex_mode_applied = true;
 }
 

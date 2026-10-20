@@ -1693,8 +1693,10 @@ vec3 getVolumeLightInscatter(uint cluster_idx, vec3 p, vec3 sky_p, vec3 view_dir
 }
 
 // The scattering albedo at a point: the map's height-fog gradient, lerped by
-// altitude between end_color at the bottom of the band and start_color at the
-// top. Maps that define only the plain distance fog use fog_color instead.
+// altitude between start_color and end_color across fog_hf_color_*_z - the
+// density band, or under cl_fog_rerelease KEX's ramp (see mapfog.c), blended
+// then with the distance fog's fog_color by how much of each fog is at p. Maps
+// that define only the plain distance fog use fog_color alone.
 vec3 getFogColor(vec3 p)
 {
 	if (global_ubo.fog_enable == 0)
@@ -1710,12 +1712,12 @@ vec3 getFogColor(vec3 p)
 	if (global_ubo.fog_hf_density <= 0)
 		return vec3(global_ubo.fog_color_r, global_ubo.fog_color_g, global_ubo.fog_color_b);
 
-	float band = global_ubo.fog_hf_start_z - global_ubo.fog_hf_end_z;
-	float t = (band > 0) ? clamp((p.z - global_ubo.fog_hf_end_z) / band, 0.0, 1.0) : 0.0;
+	float ramp = global_ubo.fog_hf_color_end_z - global_ubo.fog_hf_color_start_z;
+	float t = (ramp != 0) ? clamp((p.z - global_ubo.fog_hf_color_start_z) / ramp, 0.0, 1.0) : 0.0;
 
 	vec3 bottom = vec3(global_ubo.fog_hf_end_r,   global_ubo.fog_hf_end_g,   global_ubo.fog_hf_end_b);
 	vec3 top    = vec3(global_ubo.fog_hf_start_r, global_ubo.fog_hf_start_g, global_ubo.fog_hf_start_b);
-	vec3 color  = mix(bottom, top, t);
+	vec3 color  = mix(top, bottom, t);
 
 	// A few maps leave one of the two colours black. Taken literally that kills
 	// all scattered light in half the band and reads as a bug, so fall back to
@@ -1723,7 +1725,22 @@ vec3 getFogColor(vec3 p)
 	if (dot(color, vec3(1.0)) < 0.01)
 		color = (dot(top, vec3(1.0)) > dot(bottom, vec3(1.0))) ? top : bottom;
 
-	return color;
+	// cl_fog_rerelease: the medium is the two fogs added together, and KEX
+	// draws them as two layers in their own colours - mgu6m1 opens with orange
+	// height fog down low under its purple-blue distance fog. So each scatters
+	// its own colour in proportion to how much of it is here. A distance fog
+	// with no colour of its own (base3) takes the height fog's.
+	if (global_ubo.fog_color_layers == 0)
+		return color;
+
+	vec3  dist_color = vec3(global_ubo.fog_color_r, global_ubo.fog_color_g, global_ubo.fog_color_b);
+	float dist_d = global_ubo.fog_density / FOG_DISTANCEFOG_REFERENCE;
+	float hf_d = getHeightFogDensity(p);
+
+	if (dot(dist_color, vec3(1.0)) < 0.01 || hf_d + dist_d <= 0)
+		return color;
+
+	return (color * hf_d + dist_color * dist_d) / (hf_d + dist_d);
 }
 
 float getDensity(vec3 p)

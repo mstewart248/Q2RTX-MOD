@@ -71,6 +71,31 @@ void CL_ClearFootstepCache(void)
 
 /*
 =================
+CL_RegisterFootstepSounds
+
+Registers the sound sets found so far over again, from CL_RegisterSounds. A
+sound restart - snd_restart, which every change of s_steamaudio does, or a
+filesystem restart - frees every sound and hands out new handles, and a stale
+one kept here ended the level at the next step with "S_SfxForHandle: out of
+range".
+=================
+*/
+void CL_RegisterFootstepSounds(void)
+{
+    footstep_material_t *mat;
+    char    path[MAX_QPATH];
+    int     i, j;
+
+    for (i = 0, mat = fs_materials; i < fs_num_materials; i++, mat++) {
+        for (j = 0; j < mat->count; j++) {
+            Q_snprintf(path, sizeof(path), "player/steps/%s%d.wav", mat->word, j + 1);
+            mat->sounds[j] = S_RegisterSound(path);
+        }
+    }
+}
+
+/*
+=================
 CL_FindFootstepMaterial
 
 Find or create the sound set for one material word. Returns -1 if no sounds

@@ -1968,6 +1968,11 @@ void CL_ParseTEnt(void)
         cl.poi_beep_time = cl.time + POI_BEEP_INTERVAL;
         break;
 
+    case TE_DAMAGE_INDICATOR:
+        for (i = 0; i < te.count; i++)
+            SCR_AddDamageIndicator(te.path[i], te.di_bits[i]);
+        break;
+
     case TE_FORCEWALL:
         CL_ForceWall(te.pos1, te.pos2, te.color);
         break;

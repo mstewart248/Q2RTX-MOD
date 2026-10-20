@@ -431,6 +431,13 @@ void monster_fire_bfg(edict_t *self, vec3_t start, vec3_t aimdir, int damage, in
 
 void M_FliesOff(edict_t *self)
 {
+    // with the janitor off the corpse stays for the level, and so do its
+    // flies; look again in a minute in case the janitor comes back on
+    if (KEEP_GIBS()) {
+        self->nextthink = level.framenum + 60 * BASE_FRAMERATE;
+        return;
+    }
+
     self->s.effects &= ~EF_FLIES;
     self->s.sound = 0;
 }
@@ -900,12 +907,29 @@ got there.  Rerelease game only; the classic game keeps check_dodge.
 =================
 */
 /*
-M_CheckDodge only runs in the rerelease game, where infront() is the
-rerelease's own wide cone (dot > -0.3) - the same test id makes here, with no
-narrower cone for an ambush monster. The rerelease also requires SVF_PROJECTILE,
-which this tree does not have; FL_DODGE is only ever set on projectiles, so it
-stands in for both.
+The rerelease requires SVF_PROJECTILE, which this tree does not have; FL_DODGE
+is only ever set on projectiles, so it stands in for both.
 */
+
+/*
+=================
+projectile_infront
+
+[Update 1] M_CheckDodge's own cone, a plain dot > 0.35 (about 70 degrees
+either side). The initial rerelease used infront(), whose wide -0.3 cone saw
+shots coming from well behind the monster, and whose Update 1 ambush cone
+would otherwise leak into dodging.
+=================
+*/
+static bool projectile_infront(edict_t *self, edict_t *other)
+{
+    vec3_t  vec, forward;
+
+    AngleVectors(self->s.angles, forward, NULL, NULL);
+    VectorSubtract(other->s.origin, self->s.origin, vec);
+    VectorNormalize(vec);
+    return DotProduct(vec, forward) > 0.35f;
+}
 
 static void M_CheckDodge(edict_t *self)
 {
@@ -936,7 +960,7 @@ static void M_CheckDodge(edict_t *self)
             continue;
 
         // projectile is behind us, we can't see it
-        if (!infront(self, ent))
+        if (!projectile_infront(self, ent))
             continue;
 
         // will it hit us within 1 second? gives us enough time to dodge
@@ -1077,7 +1101,7 @@ void monster_triggered_spawn_use(edict_t *self, edict_t *other, edict_t *activat
     self->nextthink = level.framenum + 1;
     // [rerelease] q64/command's end-cutscene procession is spawned by the
     // player but must not turn on them
-    if (activator->client && !(self->hackflags & HACKFLAG_END_CUTSCENE))
+    if (activator && activator->client && !(self->hackflags & HACKFLAG_END_CUTSCENE))
         self->enemy = activator;
     self->use = monster_use;
 
@@ -1133,7 +1157,7 @@ void stationarymonster_triggered_spawn_use(edict_t *self, edict_t *other, edict_
     // one frame of delay so we do not telefrag whoever triggered us
     self->think = stationarymonster_triggered_spawn;
     self->nextthink = level.framenum + 1;
-    if (activator->client && !(self->hackflags & HACKFLAG_END_CUTSCENE))
+    if (activator && activator->client && !(self->hackflags & HACKFLAG_END_CUTSCENE))
         self->enemy = activator;
     self->use = monster_use;
 }

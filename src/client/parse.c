@@ -1046,6 +1046,23 @@ static void CL_ParseTEntPacket(void)
             MSG_ReadPos(te.path[i]);
         break;
 
+    // directional damage indicators - a count, then a damage byte and a
+    // direction for each
+    case TE_DAMAGE_INDICATOR:
+        te.count = MSG_ReadByte();
+        for (i = 0; i < te.count; i++) {
+            vec3_t  dir;
+            int     bits = MSG_ReadByte();
+            MSG_ReadDir(dir);
+            if (i < MAX_DAMAGE_INDICATORS) {
+                te.di_bits[i] = bits;
+                VectorCopy(dir, te.path[i]);
+            }
+        }
+        if (te.count > MAX_DAMAGE_INDICATORS)
+            te.count = MAX_DAMAGE_INDICATORS;
+        break;
+
     case TE_FORCEWALL:
         MSG_ReadPos(te.pos1);
         MSG_ReadPos(te.pos2);

@@ -322,6 +322,16 @@ Also in the fog system:
   use `cl_fog_scale`". Set these **per map** with `mapcvar` — see
   [Per-map settings](#per-map-settings-mapcvar) — because `cl_fog_scale` also
   silently sets the march step length and therefore the cost of the pass.
+* **Rerelease level fog** (`cl_fog_rerelease`, off by default; "rerelease
+  level fog" on the fog page). It makes rerelease maps follow the rerelease's
+  own fog rules:
+  * its `trigger_fog`s, which change the fog as the player moves;
+  * its height fog colours;
+  * no height fog when a map gives no falloff;
+  * the distance fog drawn in its own colour.
+
+  Off keeps each map's starting fog, which the map cfgs are balanced for. Turn
+  it on for one map with `mapcvar cl_fog_rerelease 1` in that map's cfg.
 * A large set of `pt_fog_*` diagnostics (`_debug`, `_isolate`, `_log`,
   `_history_clamp`, `_history_hold`, `_const_src`, `_printf`) left in place
   deliberately; they are bisection tools, not settings.
@@ -376,16 +386,27 @@ of `pak0.pak` — nothing has to be unpacked. What is supported:
   3909 `textures/<name>.mat` files naming one of 15 sound sets — `clank`,
   `glass`, `boot`, `mech`, `wood`, `step`, `splash`, `grass`, `tile`, `carpet`,
   `energy`, `snow`, `junk`, `meat`, `flesh`. The game DLL is not involved, so
-  nothing here affects gameplay, prediction, or old demos.
+  nothing here affects gameplay, prediction, or old demos. A monster's steps
+  play at half volume and idle attenuation, as the rerelease plays them.
 * **Rerelease muzzle flashes** (`cl_muzzleflash_models`) — a starburst model at
   the muzzle rather than only a dynamic light, in first and third person, with
   aim, offset, scale, brightness and duration cvars.
-* **The item wheel** (`cl_itemwheel`) — the remaster's radial selector, bound to
-  `+wheel` / `+wheel2`. Holding it slows the game to `cl_itemwheel_slowmo`
+* **The weapon and item wheels** (`cl_itemwheel`) — the remaster's radial
+  selectors: hold `+wheel` for weapons (with their ammo counts) and `+wheel2`
+  (or the inventory key) for equipment. Holding one slows the game to `cl_itemwheel_slowmo`
   (default 0.25) rather than pausing, blurs the scene behind it
   (`cl_itemwheel_blur`), and picks by direction rather than by cycling.
   `cl_itemwheel_sens` scales pointer sensitivity and `cl_itemwheel_x` places it
   horizontally.
+* **The rerelease HUD extras** (`cl_rerelease_hud`, Screen menu "rerelease
+  hud"): hit markers, directional damage indicators around the crosshair, held
+  key icons, the low ammo warning, and a powerup timer that shows whichever
+  powerup runs out first (IR goggles, cloak, silencer and spheres included).
+* **Typed-out centre messages** that queue up behind each other rather than
+  replacing each other (`scr_printspeed` per character, 0 for instant;
+  `scr_centertime` now counts from the last character), and the **end of unit
+  table** of levels, kills, secrets and times over the intermission that ends
+  each unit.
 * **`misc_flare` coronas** (`cl_flares`), the rerelease **weapon wheel / weapon
   bar** (`cl_weaponbar`, `cl_weaponbar_hold`, `cl_weaponbar_time`), **boss health
   bars** (`scr_health_bars`), the item-name readout, the flashlight,
@@ -509,7 +530,80 @@ space, so a burst of sixty costs one instance, not sixty.
 * **`g_ludicrous_gibs`** (off by default): far more gib chunks, heavier blood
   trails, gibs that never expire, and corpses that can be shot apart in stages
   after they are already dead. **`g_no_janitor`** stops the entity janitor
-  removing gibs and corpses.
+  removing gibs and corpses, and the flies on corpses stay with them instead of
+  leaving after a minute.
+
+## Sound
+
+* **Room reverb** (`s_reverb`, on by default): the rerelease's echo. The size of
+  the space around the player and what it is made of (the footstep material
+  words) pick a reverb preset from the rerelease's `sound/default.environments`,
+  faded over `s_reverb_lerptime` milliseconds. `s_reverb_debug 1` prints what it
+  picked. Menu and interface sounds stay dry, and so do radio voices (the
+  marines' calls in base1, the pilots, the radio sets).
+* **Whole-level sounds** (`s_global_sounds`, 1 by default): sounds a map or
+  monster plays at "no attenuation", heard at full level all over the level.
+  Quake II put them in the player's head. At 1 the ones on something the
+  player can be shown come from it: the flyby a ship sets off rides the ship,
+  so base1's ships are heard going over, and a boss's scream comes from the
+  boss. 2 places the map's invisible speakers too (explosions, battle sounds,
+  alarms), from where each stands; 0 puts them all back in the head. Radio
+  voices stay in the ear. Placed, they do not fade with distance; with Steam
+  Audio, walls muffle them down to `s_global_floor` (0.25) at most, the low
+  rumble getting through more than the treble, so a ship overhead is loud
+  outside and a rumble through the building inside.
+* **Steam Audio** (`s_steamaudio`, on by default): sounds in the world are mixed
+  through Valve's Steam Audio instead of being placed by OpenAL. Each one goes
+  through an HRTF, so direction comes across on headphones, and through a direct
+  path filter fed by traces against the map and its moving brushes: a wall
+  between the player and a sound muffles it by an amount that depends on the
+  wall's material, and distance takes off treble. A sound round a corner comes
+  round it, a little muffled, from the way it arrives. `s_steamaudio_hrtf 0` pans for
+  speakers instead, `s_occlusion` (0-1) scales the muffling, `s_steamaudio_volume`
+  trims the mix, and `sa_voices` lists every playing sound with its distance,
+  gain and occlusion. The mix is held under `s_steamaudio_ceiling` (-3 dB under
+  full scale; `s_steamaudio_limiter 0` turns it off), so a loud fight turns only
+  the effects down rather than tripping OpenAL's limiter, which turns the
+  music down with them; `sa_voices` prints how hot the mix ran. With `s_reflections` (on by default) it also simulates
+  sound off walls: rays from the player bounce round the map and its moving
+  brushes (`s_reflections_bounces`, 64), every surface absorbing by its footstep
+  material, and every sound gets the echo of where it is, while the player's
+  own get the room's as heard from the player. `s_reflections_all 0` gives
+  that to the loudest `s_reflections_sources` (8) only, and the room's to the
+  rest; either way only sounds playing cost anything, and on the GPU a run
+  shares its rays out among them. It takes over from the room reverb
+  while it is on. `s_reflections_gain` scales it against the direct sound;
+  `s_reflections_rays`, `s_reflections_rate` (runs a second) and
+  `s_reflections_threads` trade it against CPU time, and `sa_voices` lists the
+  slots too. With `s_reflections_gpu` (on by default) the rays are traced on
+  the GPU's RT cores instead, up to `s_reflections_gpu_rays` (8192) a source,
+  with everything after the tracing still Steam Audio's; it needs the RTX
+  renderer on the ray query API (the default on NVIDIA), and falls back to the
+  CPU wherever it cannot run. `sa_reflcheck` traces one run both ways from
+  where the player stands and prints the two side by side. With `s_pathing`
+  (on by default) sound also finds its way round
+  the map: probes over every floor, `s_pathing_spacing` (3) metres apart, are
+  baked into the shortest ways between them the first time a map is played
+  (a second or so in the background, kept in `pathing/<map>.bin` under the game
+  directory after that), and a sound behind a wall is heard along those ways,
+  from the doorway or corner it comes round, by how far it travelled and how
+  sharply it turned. A door that shuts closes the way through it;
+  `s_pathing_alternates 1` then looks for another, at more CPU cost.
+  `s_pathing_gain` scales it, and `s_pathing_rate` is runs a second (30). Where
+  there is no probe in reach, the simpler corner search stands in. With
+  `s_diffraction` (on by default) the GPU's RT cores work out instead how a
+  hidden sound bends round the map's corners - every edge where two walls
+  meet sticking out - by the theory of diffraction off a wedge: half its level
+  just round a corner, less the harder it turns, and the treble far less than
+  the bass, from the way it comes round. That takes the place of the probes'
+  way wherever one corner gets the sound round; round two (a doorway, then
+  along a corridor) the probes' way stands. `sa_voices` marks such sounds
+  "e". It needs the RTX renderer on the ray query API. It needs
+  `phonon.dll` beside `q2rtx.exe`. Without it, or
+  with `s_steamaudio 0`, OpenAL places everything as before. The release's
+  phonon.dll is built from Steam Audio's source by `setup/build_phonon.py`,
+  without Intel IPP; its licence (Apache 2.0) and notices are in
+  `licenses/steam-audio/`.
 
 ## Authoring and debugging tools
 

@@ -1099,6 +1099,10 @@ void fixbot_pain(edict_t *self, edict_t *other /* unused */,
         self->monsterinfo.currentmove = &fixbot_move_painb;
     else
         self->monsterinfo.currentmove = &fixbot_move_paina;
+
+    // [Update 1] being hurt drops whatever it was welding or healing
+    if (M_RereleaseGame())
+        abortHeal(self, false, false, false);
 }
 
 void fixbot_dead(edict_t *self)

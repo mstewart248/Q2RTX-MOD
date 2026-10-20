@@ -131,6 +131,10 @@ void target_poi_use(edict_t *ent, edict_t *other, edict_t *activator)
             else
                 return;
         }
+
+        // [Update 1] the picked member advances the stage too
+        if (ent->count && level.current_poi_stage <= ent->count)
+            level.current_poi_stage = ent->count;
     } else if (ent->count) {
         if (level.current_poi_stage <= ent->count)
             level.current_poi_stage = ent->count;
@@ -941,6 +945,113 @@ void SP_trigger_flashlight(edict_t *self)
     self->movedir[2] = st.height;
 
     gi.linkentity(self);
+}
+
+/*QUAKED trigger_fog (.5 .5 .5) ? AFFECT_FOG AFFECT_HEIGHTFOG INSTANTANEOUS FORCE BLEND
+Changes the fog as players move through the brush: 30 of them on 11 maps
+(mgu1m2, mgu4m1-3, mgu6m1-3, refinery, rlava2, rmine2, tutorial).
+AFFECT_FOG / AFFECT_HEIGHTFOG pick which of the two fogs it sets. Moving with
+its "angles" applies the on values, against them the _off values; FORCE always
+applies the on values; BLEND mixes the two by how far through the brush the
+player is along "angles". INSTANTANEOUS ignores "delay".
+
+"target"  an info_notnull to take the fog keys from instead of this entity
+"delay"   seconds the change takes, default 0.5 (the target's, when there is one)
+"wait"    seconds before it can fire again, default 0
+
+The fog keys (fog_density, heightfog_start_dist, ... and their _off twins) are
+read by the CLIENT, out of the BSP entity lump, in src/client/mapfog.c - the
+same way worldspawn's are. All the game decides is which trigger applied last,
+how far between its _off and on values, and over how long, and that goes out
+in CS_TRIGGER_FOG / CS_TRIGGER_HEIGHTFOG. Nothing new is saved: the engine
+writes configstrings into the level save, so a loaded game keeps its fog.
+*/
+#define SPAWNFLAG_FOG_AFFECT_FOG        1
+#define SPAWNFLAG_FOG_AFFECT_HEIGHTFOG  2
+#define SPAWNFLAG_FOG_INSTANTANEOUS     4
+#define SPAWNFLAG_FOG_FORCE             8
+#define SPAWNFLAG_FOG_BLEND             16
+
+void trigger_fog_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
+{
+    edict_t *values = self->movetarget ? self->movetarget : self;
+    float   blend;
+    int     ms;
+    char    *cs;
+
+    if (!other->client)
+        return;
+
+    if (self->timestamp > level.framenum)
+        return;
+    self->timestamp = level.framenum + self->wait * BASE_FRAMERATE;
+
+    if (self->spawnflags & SPAWNFLAG_FOG_BLEND) {
+        // how far through the brush along its facing: 0 entering from behind,
+        // 1 at the far side
+        vec3_t  center, start, pos;
+        float   len;
+        int     i;
+
+        for (i = 0; i < 3; i++) {
+            center[i] = (self->absmin[i] + self->absmax[i]) * 0.5f;
+            start[i] = -self->movedir[i] * (self->size[i] + other->size[i]) * 0.5f;
+            pos[i] = (other->s.origin[i] - center[i]) * fabsf(self->movedir[i]);
+        }
+
+        len = 2 * VectorLength(start);
+        VectorSubtract(pos, start, pos);
+        blend = len > 0 ? VectorLength(pos) / len : 0;
+        blend = blend < 0 ? 0 : blend > 1 ? 1 : blend;
+    } else if (self->spawnflags & SPAWNFLAG_FOG_FORCE) {
+        blend = 1;
+    } else {
+        // standing still does nothing, so a lift ride can't trip it backwards
+        if (VectorLength(other->velocity) <= 0.0001f)
+            return;
+        blend = DotProduct(other->velocity, self->movedir) > 0 ? 1 : 0;
+    }
+
+    if (self->spawnflags & SPAWNFLAG_FOG_INSTANTANEOUS)
+        ms = 0;
+    else
+        ms = values->delay * 1000;
+
+    cs = va("%s %.2f %d", self->model + 1, blend, ms);
+
+    if (self->spawnflags & SPAWNFLAG_FOG_AFFECT_FOG)
+        gi.configstring(CS_TRIGGER_FOG, cs);
+    if (self->spawnflags & SPAWNFLAG_FOG_AFFECT_HEIGHTFOG)
+        gi.configstring(CS_TRIGGER_HEIGHTFOG, cs);
+}
+
+void SP_trigger_fog(edict_t *self)
+{
+    // the client finds the values by brush model, so one is required
+    if (!self->model || self->model[0] != '*') {
+        gi.dprintf("trigger_fog without a brush model\n");
+        G_FreeEdict(self);
+        return;
+    }
+
+    if (self->s.angles[YAW] == 0)
+        self->s.angles[YAW] = 360;
+
+    InitTrigger(self);
+
+    if (!(self->spawnflags & (SPAWNFLAG_FOG_AFFECT_FOG | SPAWNFLAG_FOG_AFFECT_HEIGHTFOG)))
+        gi.dprintf("trigger_fog %s with no fog spawnflags set\n", self->model);
+
+    if (self->target) {
+        self->movetarget = G_PickTarget(self->target);
+        if (self->movetarget && !self->movetarget->delay)
+            self->movetarget->delay = 0.5f;
+    }
+
+    if (!self->delay)
+        self->delay = 0.5f;
+
+    self->touch = trigger_fog_touch;
 }
 
 /*QUAKED misc_flare (1.0 1.0 0.0) (-32 -32 -32) (32 32 32) RED GREEN BLUE LOCK_ANGLE

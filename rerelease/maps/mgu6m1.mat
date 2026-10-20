@@ -14,3 +14,16 @@ textures/tomf/glocrys_1b:
 	texture_emissive textures/tomf/glocrys_1b.wal
 	bsp_radiance 0
 	emissive_factor 0.01
+
+# The see-through grate pane at x 1120..1152, y 960..1152, z -784..-704: a
+# 32-unit TRANS33 brush, both sides in e1u3/con1_1 (faces 14072 and
+# 14229/14230/14232, instances #cb172b3b / #c101d420), made GLASS 2026-10-19.
+# The other 87 con1_1 faces on this map are opaque, and collect_surfaces
+# demotes GLASS back to REGULAR on any face without SURF_TRANS_MASK, so this
+# reaches only the pane. A map entry replaces the baseq2.mat one outright,
+# hence the repeated textures.
+textures/e1u3/con1_1:
+	texture_base textures/e1u3/con1_1.tga
+	texture_normals textures/e1u3/con1_1_n.tga
+	base_factor 2.5
+	kind GLASS

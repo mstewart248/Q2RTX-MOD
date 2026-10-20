@@ -1025,6 +1025,7 @@ extern void trigger_elevator_init(void);
 extern void trigger_elevator_use(void);
 extern void trigger_enable(void);
 extern void trigger_flashlight_touch(void);
+extern void trigger_fog_touch(void);
 extern void trigger_gravity_touch(void);
 extern void trigger_gravity_use(void);
 extern void trigger_health_relay_use(void);
@@ -2224,5 +2225,6 @@ const save_ptr_t save_ptrs[] = {
 { P_monsterinfo_physics_change, stalker_physics_change },
 // appended, not sorted in: save_ptrs[] is indexed positionally (see SAVE_VERSION in g_save.c)
 { P_touch, gib_touch_upright },
+{ P_touch, trigger_fog_touch },
 };
 const int num_save_ptrs = sizeof(save_ptrs) / sizeof(save_ptrs[0]);

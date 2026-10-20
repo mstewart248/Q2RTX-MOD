@@ -349,7 +349,10 @@ void mutant_jump_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_
     // leap can only body-slam once.  Ours used to be able to damage on every
     // touch for the whole flight.
     if (other->takedamage && (!M_RereleaseGame() || self->style == 1)) {
-        if (VectorLength(self->velocity) > 400) {
+        // [Paril-KEX] Update 1: only if we're actually moving fast enough to
+        // hurt - 30, not 400, which a pounce had usually lost by the time it
+        // reached anyone
+        if (VectorLength(self->velocity) > (M_RereleaseGame() ? 30 : 400)) {
             vec3_t  point;
             vec3_t  normal;
             int     damage;
@@ -382,12 +385,13 @@ void mutant_jump_takeoff(edict_t *self)
     AngleVectors(self->s.angles, forward, NULL, NULL);
     self->s.origin[2] += 1;
 
-    // [rerelease] a shorter, flatter pounce - 400/150 against the classic
-    // 600/250.  Paired with the 265 unit cap in mutant_check_jump this turns
-    // the leap into a gap-closer instead of a room-crossing charge.
+    // [rerelease] a shorter, flatter pounce - 425/160 (400/150 before Update 1)
+    // against the classic 600/250.  Paired with the 265 unit cap in
+    // mutant_check_jump this turns the leap into a gap-closer instead of a
+    // room-crossing charge.
     if (M_RereleaseGame()) {
-        VectorScale(forward, 400, self->velocity);
-        self->velocity[2] = 150;
+        VectorScale(forward, 425, self->velocity);
+        self->velocity[2] = 160;
         self->style = 1;
     } else {
         VectorScale(forward, 600, self->velocity);
@@ -676,13 +680,39 @@ static void mutant_shrink(edict_t *self)
     gi.linkentity(self);
 }
 
+/*
+=================
+mutant_death_slide_right / mutant_death_slide_left
+
+[Paril-KEX] Update 1: the body slides sideways as it falls (id's
+ai_move_slide_right/left), so the corpse lands where the death pose puts it
+and keeps the shrunk upright box instead of the old offset 64x64 one. The
+frame distances below are id's; the classic game ignores them and plays its
+stationary ai_move 0.
+=================
+*/
+static void mutant_death_slide_right(edict_t *self, float dist)
+{
+    if (M_RereleaseGame())
+        M_walkmove(self, self->s.angles[YAW] + 90, dist);
+    else
+        ai_move(self, 0);
+}
+
+static void mutant_death_slide_left(edict_t *self, float dist)
+{
+    if (M_RereleaseGame())
+        M_walkmove(self, self->s.angles[YAW] - 90, dist);
+    else
+        ai_move(self, 0);
+}
+
 void mutant_dead(edict_t *self)
 {
-    // [rerelease] a longer, flatter corpse box that matches the sprawled pose
-    if (M_RereleaseGame()) {
-        VectorSet(self->mins, 0, -48, -24);
-        VectorSet(self->maxs, 64, 16, -8);
-    } else {
+    // [rerelease] Update 1 dropped the longer, flatter corpse box (0 -48 -24,
+    // 64 16 -8) along with mutant_dead itself: the corpse keeps the box
+    // mutant_shrink left it, and the slide puts the body under it
+    if (!M_RereleaseGame()) {
         VectorSet(self->mins, -16, -16, -24);
         VectorSet(self->maxs, 16, 16, -8);
     }
@@ -694,29 +724,29 @@ void mutant_dead(edict_t *self)
 }
 
 mframe_t mutant_frames_death1 [] = {
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  mutant_shrink },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL }
+    { mutant_death_slide_right, 0,  NULL },
+    { mutant_death_slide_right, 0,  NULL },
+    { mutant_death_slide_right, 0,  NULL },
+    { mutant_death_slide_right, 2,  NULL },
+    { mutant_death_slide_right, 5,  NULL },
+    { mutant_death_slide_right, 7,  mutant_shrink },
+    { mutant_death_slide_right, 6,  NULL },
+    { mutant_death_slide_right, 2,  NULL },
+    { mutant_death_slide_right, 0,  NULL }
 };
 mmove_t mutant_move_death1 = {FRAME_death101, FRAME_death109, mutant_frames_death1, mutant_dead};
 
 mframe_t mutant_frames_death2 [] = {
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  mutant_shrink },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL },
-    { ai_move,    0,  NULL }
+    { mutant_death_slide_left,  0,  NULL },
+    { mutant_death_slide_left,  0,  NULL },
+    { mutant_death_slide_left,  0,  NULL },
+    { mutant_death_slide_left,  1,  NULL },
+    { mutant_death_slide_left,  3,  mutant_shrink },
+    { mutant_death_slide_left,  6,  NULL },
+    { mutant_death_slide_left,  8,  NULL },
+    { mutant_death_slide_left,  5,  NULL },
+    { mutant_death_slide_left,  2,  NULL },
+    { mutant_death_slide_left,  0,  NULL }
 };
 mmove_t mutant_move_death2 = {FRAME_death201, FRAME_death210, mutant_frames_death2, mutant_dead};
 

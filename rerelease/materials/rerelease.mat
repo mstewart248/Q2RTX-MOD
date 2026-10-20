@@ -18923,8 +18923,13 @@ textures/tomc/tc_tomb_rubble_a:
 
 textures/tomc/tc_tomb_sediment_b:
 	texture_base materialDev/textures/tomc/tc_tomb_sediment_b.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_sediment_b_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_tomb_sediment_b_n.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_sediment_b_metal.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_sediment_b_rough.png
+	texture_height materialDev/textures/tomc/tc_tomb_sediment_b_height.png
+	displace_in .03
+	displace_out 0.0
+	specular_factor .5
 
 textures/tomc/tc_tomb_tile_256_a:
 	texture_base materialDev/textures/tomc/tc_tomb_tile_256_a.tga

@@ -438,6 +438,15 @@ begin sound
     blank
     values --status "(s_ambient)" "ambient sounds" s_ambient "no" "yes" "only player's own"
     range --status "room echo by the size of the space and what it is made of, as in the rerelease. OpenAL only (s_reverb)" -p -f "%.0f%%" "room reverb" s_reverb 0 1 0.05
+    values --status "Steam Audio: 3D sound through an HRTF, and walls and doors that muffle what is behind them. Needs phonon.dll, OpenAL only (s_steamaudio)" "spatial audio" s_steamaudio "OpenAL" "Steam Audio"
+    values --status "binaural for headphones, or plain stereo panning for speakers. Steam Audio only (s_steamaudio_hrtf)" "spatial output" s_steamaudio_hrtf "speakers" "headphones (HRTF)"
+    range --status "how much walls, doors and water muffle a sound behind them. Steam Audio only (s_occlusion)" -p -f "%.0f%%" "occlusion" s_occlusion 0 1 0.05
+    toggle --status "sound off walls, ray traced through the map; replaces the room reverb. Steam Audio only (s_reflections)" "reflections" s_reflections
+    range --status "how loud sound off walls is against the direct sound. Steam Audio only (s_reflections_gain)" -p -f "%.0f%%" "reflections level" s_reflections_gain 0 2 0.1
+    toggle --status "trace the sound off walls on the GPU's RT cores instead of the CPU; the CPU stands in where it cannot. Steam Audio only (s_reflections_gpu)" "reflections on the GPU" s_reflections_gpu
+    toggle --status "every sound gets the echo of where it is, not only the 8 loudest; more work for the mixer, best with reflections on the GPU. Steam Audio only (s_reflections_all)" "echo for every sound" s_reflections_all
+    toggle --status "sound round corners and through doorways along the map's baked paths. Steam Audio only (s_pathing)" "sound pathing" s_pathing
+    toggle --status "sound bends round the map's corners, worked out on the GPU's RT cores; the baked paths stand in where it cannot. Steam Audio only (s_diffraction)" "sound round corners on the GPU" s_diffraction
     values --status "(cl_chat_sound)" "chat beep" cl_chat_sound "disabled" "default" "alternative"
     blank
     values --status "(s_enable)" "sound engine" s_enable "no sound" "software" "OpenAL"
@@ -659,7 +668,7 @@ begin blood_splats
     style --compact
     title "Blood Splats and Puddles"
     blank
-    toggle --status "landed blood never fades. Also FASTER, not just better looking - a settled splat costs nothing, while a fading one changes every frame and is rebuilt every frame. Capped by the droplet budget: once full, the oldest splat is recycled (g_no_janitor)" \
+    toggle --status "landed blood never fades, and gibs and the flies on corpses stay for the whole level. Also FASTER, not just better looking - a settled splat costs nothing, while a fading one changes every frame and is rebuilt every frame. Capped by the droplet budget: once full, the oldest splat is recycled (g_no_janitor)" \
         "no janitor" g_no_janitor
 
     ifeq g_no_janitor 0
@@ -825,6 +834,8 @@ begin fog
             "fog" cl_fog "off" 0 "on" 1
 
     ifge cl_fog 1
+        toggle --status "rerelease maps follow the rerelease's own fog rules: its fog triggers that change the fog as you move, its height fog colours, and the distance fog in its own colour. Off keeps each map's starting fog, which the map settings are balanced for. A map's cfg can turn it on for that map alone with mapcvar (cl_fog_rerelease)" \
+            "rerelease level fog" cl_fog_rerelease
         blank
         range --status "how much SUNLIGHT the fog scatters under the physical sky - the shafts through windows and openings (pt_fog_scale_sun)" \
             "physical sky" pt_fog_scale_sun 0 16 0.5
@@ -881,6 +892,7 @@ begin screen
         pairs --status "the rerelease puts the wheel left of the crosshair so it does not cover what you are walking at (cl_itemwheel_x)" \
             "wheel position" cl_itemwheel_x "left of centre" 0.41 "centred" 0
         range --status "how far the mouse moves the wheel cursor (cl_itemwheel_sens)" "wheel cursor speed" cl_itemwheel_sens 0.25 3 0.25
+        toggle --status "hit markers, damage direction indicators, held key icons, the low ammo warning and a timer for whichever powerup runs out first (cl_rerelease_hud)" "rerelease hud" cl_rerelease_hud
     endif
     toggle --status "show a named health bar for rerelease bosses such as Modir on mgu6m3 (scr_health_bars)" "boss health bars" scr_health_bars
     toggle --status "(scr_lag_draw)" "ping graph" scr_lag_draw

@@ -46,6 +46,9 @@ typedef struct {
 	float x, y, w,   h;
 	float s, t, w_s, h_t;
 	uint32_t color, tex_handle;
+	// The quad's edges are (w, skew_y) and (skew_x, h), so 0 is an upright
+	// rectangle; R_DrawRotatedPic is the only thing that sets them.
+	float skew_x, skew_y;
 } StretchPic_t;
 
 // Not using global UBO b/c it's only filled when a world is drawn, but here we need it all the time
@@ -156,6 +159,8 @@ static inline void enqueue_stretch_pic(
 	sp->y = y;
 	sp->w = w;
 	sp->h = h;
+	sp->skew_x = 0.0f;
+	sp->skew_y = 0.0f;
 
 	sp->s   = s1;
 	sp->t   = t1;
@@ -901,6 +906,36 @@ R_DrawStretchPic_RTX(int x, int y, int w, int h, qhandle_t pic)
 		x,    y,    w,    h,
 		0.0f, 0.0f, 1.0f, 1.0f,
 		draw.colors[0].u32, pic);
+}
+
+// A pic w x h centred on (cx, cy), turned clockwise by `angle` radians. The
+// queue works in normalized device coordinates, which stretch x and y by
+// different amounts, so the turn is done here in pixels and handed over as the
+// quad's two edge vectors. The clip rect is not applied to these.
+void
+R_DrawRotatedPic_RTX(float cx, float cy, float w, float h, float angle, qhandle_t pic)
+{
+	float c = cosf(angle), s = sinf(angle);
+	float ux = w * c, uy = w * s;      // along the pic's width
+	float vx = -h * s, vy = h * c;     // down its height
+	float width = r_config.width * draw.scale;
+	float height = r_config.height * draw.scale;
+	bool clip = clip_enable;
+	StretchPic_t *sp;
+
+	if (draw.alpha_scale == 0.f || num_stretch_pics == MAX_STRETCH_PICS)
+		return;
+
+	clip_enable = false;
+	enqueue_stretch_pic(cx - (ux + vx) * 0.5f, cy - (uy + vy) * 0.5f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 1.0f, draw.colors[0].u32, pic);
+	clip_enable = clip;
+
+	sp = stretch_pic_queue + num_stretch_pics - 1;
+	sp->w = 2.0f * ux / width;
+	sp->skew_y = 2.0f * uy / height;
+	sp->skew_x = 2.0f * vx / width;
+	sp->h = 2.0f * vy / height;
 }
 
 void

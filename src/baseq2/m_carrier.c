@@ -1655,6 +1655,43 @@ carrier_die(edict_t *self, edict_t *inflictor /* unused */, edict_t *attacker /*
 	self->monsterinfo.currentmove = &carrier_move_death;
 }
 
+/*
+ * Shoot out the back if appropriate. The rockets are on their own timer
+ * (self->wait), independent of the main attack.
+ */
+static bool
+Carrier_ShootOutTheBack(edict_t *self)
+{
+	bool enemy_infront, enemy_inback, enemy_below;
+
+	enemy_infront = infront(self, self->enemy);
+	enemy_inback = inback(self, self->enemy);
+	enemy_below = below(self, self->enemy);
+
+	if ((enemy_inback) || (!enemy_infront && enemy_below))
+	{
+		/* this is using wait because the attack is supposed to be independent */
+		if (level.framenum >= self->wait)
+		{
+			self->wait = level.framenum + CARRIER_ROCKET_TIME;
+			self->monsterinfo.attack(self);
+
+			if (random() < 0.6)
+			{
+				self->monsterinfo.attack_state = AS_SLIDING;
+			}
+			else
+			{
+				self->monsterinfo.attack_state = AS_STRAIGHT;
+			}
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool
 Carrier_CheckAttack(edict_t *self)
 {
@@ -1662,10 +1699,22 @@ Carrier_CheckAttack(edict_t *self)
 	vec3_t temp;
 	float chance = 0;
 	trace_t tr;
-	bool enemy_infront, enemy_inback, enemy_below;
 	int enemy_range;
 	float enemy_yaw;
 
+	/* [Paril-KEX] Update 1: the back rockets come first, with no clear-shot
+	   test in front of them, then the generic check with the carrier's odds.
+	   The old body's "no clear shot at a client: spawn flyers" AS_BLIND
+	   branch went with it. */
+	if (M_RereleaseGame())
+	{
+		if (Carrier_ShootOutTheBack(self))
+		{
+			return true;
+		}
+
+		return M_CheckAttack_Base(self, 0.4f, 0.8f, 0.8f, 0.8f, 0.5f, 0.f);
+	}
 
 	if (self->enemy->health > 0)
 	{
@@ -1697,36 +1746,15 @@ Carrier_CheckAttack(edict_t *self)
 		}
 	}
 
-	enemy_infront = infront(self, self->enemy);
-	enemy_inback = inback(self, self->enemy);
-	enemy_below = below(self, self->enemy);
-
 	enemy_range = range(self, self->enemy);
 	VectorSubtract(self->enemy->s.origin, self->s.origin, temp);
 	enemy_yaw = vectoyaw2(temp);
 
 	self->ideal_yaw = enemy_yaw;
 
-	/* shoot out the back if appropriate */
-	if ((enemy_inback) || (!enemy_infront && enemy_below))
+	if (Carrier_ShootOutTheBack(self))
 	{
-		/* this is using wait because the attack is supposed to be independent */
-		if (level.framenum >= self->wait)
-		{
-			self->wait = level.framenum + CARRIER_ROCKET_TIME;
-			self->monsterinfo.attack(self);
-
-			if (random() < 0.6)
-			{
-				self->monsterinfo.attack_state = AS_SLIDING;
-			}
-			else
-			{
-				self->monsterinfo.attack_state = AS_STRAIGHT;
-			}
-
-			return true;
-		}
+		return true;
 	}
 
 	/* melee attack */

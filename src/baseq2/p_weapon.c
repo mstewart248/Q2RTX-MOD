@@ -340,6 +340,41 @@ Think_Weapon
 Called by ClientBeginServerFrame and ClientThink
 =================
 */
+/*
+=================
+Weapon_LowAmmoWarning
+
+[rerelease] cl_rerelease_hud: the ammo count at which a weapon starts warning,
+from the rerelease item table's quantity_warn. Everything not listed warns at 5.
+=================
+*/
+static int Weapon_LowAmmoWarning(const gitem_t *weapon)
+{
+    static const struct {
+        const char  *classname;
+        int         warn;
+    } warn[] = {
+        { "weapon_supershotgun",    10 },
+        { "weapon_machinegun",      30 },
+        { "weapon_etf_rifle",       30 },
+        { "weapon_chaingun",        60 },
+        { "weapon_hyperblaster",    30 },
+        { "weapon_boomer",          30 },
+        { "weapon_plasmabeam",      50 },
+        { "weapon_bfg",             50 },
+        { "ammo_grenades",          2 },
+        { "ammo_trap",              1 },
+        { "ammo_tesla",             1 },
+    };
+    int i;
+
+    for (i = 0; i < q_countof(warn); i++)
+        if (!strcmp(weapon->classname, warn[i].classname))
+            return warn[i].warn;
+
+    return 5;
+}
+
 void Think_Weapon(edict_t *ent)
 {
     // if just died, put the weapon away
@@ -350,6 +385,10 @@ void Think_Weapon(edict_t *ent)
 
     // call active weapon think routine
     if (ent->client->pers.weapon && ent->client->pers.weapon->weaponthink) {
+        gitem_t *weapon = ent->client->pers.weapon;
+        int     ammo = ent->client->ammo_index;
+        int     before = ammo ? ent->client->pers.inventory[ammo] : 0;
+
         // quad and double do not stack outside deathmatch, matching rogue
         damage_multiplier = 1;
         if (ent->client->quad_framenum > level.framenum)
@@ -362,7 +401,19 @@ void Think_Weapon(edict_t *ent)
             is_silenced = MZ_SILENCED;
         else
             is_silenced = 0;
-        ent->client->pers.weapon->weaponthink(ent);
+        weapon->weaponthink(ent);
+
+        // [rerelease] the low ammo warning, once, as a shot takes the count
+        // down past the weapon's mark. Only this player hears it.
+        if (ammo && G_RereleaseHud(ent)) {
+            int warn = Weapon_LowAmmoWarning(weapon);
+
+            if (before > warn && ent->client->pers.inventory[ammo] <= warn) {
+                gi.WriteByte(svc_stufftext);
+                gi.WriteString("play weapons/lowammo.wav\n");
+                gi.unicast(ent, true);
+            }
+        }
     }
 }
 
@@ -729,6 +780,9 @@ void Weapon_Grenade(edict_t *ent)
         if (ent->client->ps.gunframe == 11) {
             if (!ent->client->grenade_framenum) {
                 ent->client->grenade_framenum = level.framenum + (GRENADE_TIMER + 0.2f) * BASE_FRAMERATE;
+                ent->client->weapon_sound = gi.soundindex("weapons/hgrenc1b.wav");
+            } else if (M_RereleaseGame() && !ent->client->grenade_blew_up) {
+                // [Update 1] keep the primed hiss going for the whole hold
                 ent->client->weapon_sound = gi.soundindex("weapons/hgrenc1b.wav");
             }
 
@@ -1392,12 +1446,15 @@ void weapon_railgun_fire(edict_t *ent)
     int         damage;
     int         kick;
 
-    // [rerelease] id deleted the SP/DM split and kept the lower pair
-    // everywhere, so the campaign railgun is 100/200, not 150/250.
-    if (M_RereleaseGame() || deathmatch->value) {
+    // [rerelease] the initial drop deleted the SP/DM split and used 100/200
+    // everywhere; Update 1 put the split back with 125/225 for the campaign.
+    if (deathmatch->value) {
         // normal damage is too extreme in dm
         damage = 100;
         kick = 200;
+    } else if (M_RereleaseGame()) {
+        damage = 125;
+        kick = 225;
     } else {
         damage = 150;
         kick = 250;
@@ -2424,6 +2481,9 @@ void Weapon_Trap(edict_t *ent)
         if (ent->client->ps.gunframe == 11) {
             if (!ent->client->grenade_framenum) {
                 ent->client->grenade_framenum = level.framenum + (GRENADE_TIMER + 0.2f) * BASE_FRAMERATE;
+                ent->client->weapon_sound = gi.soundindex("weapons/traploop.wav");
+            } else if (M_RereleaseGame() && !ent->client->grenade_blew_up) {
+                // [Update 1] keep the primed hiss going for the whole hold
                 ent->client->weapon_sound = gi.soundindex("weapons/traploop.wav");
             }
 

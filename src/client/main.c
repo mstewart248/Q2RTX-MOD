@@ -745,6 +745,7 @@ void CL_ClearState(void)
     LE_FreeLights();
     CL_FreeDynamicLights();
     CL_FreeMapFog();
+    SCR_ClearHudEvents();
 
     /* A cinematic has to die with the connection it was playing on. Nothing
        else stops one that is interrupted rather than finished: Esc during the

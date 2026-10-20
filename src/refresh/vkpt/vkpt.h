@@ -111,6 +111,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_FSR_RCAS_FP32_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_NORMALIZE_NORMAL_MAP_COMP)              \
 	SHADER_MODULE_DO(QVK_MOD_SHARC_RESOLVE_COMP)                     \
+	SHADER_MODULE_DO(QVK_MOD_SOUND_TRACE_COMP)                       \
+	SHADER_MODULE_DO(QVK_MOD_SOUND_DIFFRACT_COMP)                    \
 
 #define LIST_RT_RGEN_SHADER_MODULES \
 	SHADER_MODULE_DO(QVK_MOD_PRIMARY_RAYS_RGEN)                      \
@@ -228,6 +230,12 @@ typedef struct QVK_s {
 	VkQueue                     queue_compute;
 	int32_t                     queue_idx_compute;
 	bool                        async_compute_available;
+	/* The sound's own queue: steamaudio.c's reflections and diffraction traced on the GPU are
+	   submitted from its simulation thread (sound_trace.c), so no other thread may
+	   use it. From a compute-only family, after the queues the transfer and async
+	   compute paths took of it; VK_NULL_HANDLE when there is none left. */
+	VkQueue                     queue_sound;
+	int32_t                     queue_idx_sound;
 	uint32_t                    queue_families_graphics_compute[2];
 	VkSurfaceKHR                surface;
 	VkSwapchainKHR              swap_chain;
@@ -1010,6 +1018,18 @@ void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_l
 bool vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, vec3_t begin, vec3_t end, vec3_t color, float radius, entity_hash_t hash, int* light_entity_ids);
 bool get_triangle_off_center(const float* positions, float* center, float* anti_center, float offset);
 
+// True while photo mode bypasses DLSS, and with it frame generation (main.c).
+bool vkpt_fg_bypassed(void);
+
+// steamaudio.c's reflections and ways round corners traced on the GPU - see sound_trace.c
+VkResult vkpt_sound_initialize(void);
+VkResult vkpt_sound_destroy(void);
+VkResult vkpt_sound_create_pipelines(void);
+VkResult vkpt_sound_destroy_pipelines(void);
+void vkpt_sound_register(void);
+void vkpt_sound_lock(void);
+void vkpt_sound_unlock(void);
+
 VkResult vkpt_initialize_god_rays(void);
 VkResult vkpt_destroy_god_rays(void);
 VkResult vkpt_god_rays_create_pipelines(void);
@@ -1125,6 +1145,7 @@ void R_SetColor_RTX(uint32_t color);
 void R_LightPoint_RTX(const vec3_t origin, vec3_t light);
 void R_SetScale_RTX(float scale);
 void R_DrawStretchPic_RTX(int x, int y, int w, int h, qhandle_t pic);
+void R_DrawRotatedPic_RTX(float cx, float cy, float w, float h, float angle, qhandle_t pic);
 void R_DrawPic_RTX(int x, int y, qhandle_t pic);
 void R_TileClear_RTX(int x, int y, int w, int h, qhandle_t pic);
 void R_DrawFill8_RTX(int x, int y, int w, int h, int c);

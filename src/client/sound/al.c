@@ -89,6 +89,8 @@ static ALuint s_srcnums[MAX_CHANNELS];
 static ALuint streamSource = 0;
 static int s_framecount;
 
+static cvar_t *s_global_sounds;
+
 void AL_SoundInfo(void)
 {
     Com_Printf("AL_VENDOR: %s\n", qalGetString(AL_VENDOR));
@@ -96,6 +98,7 @@ void AL_SoundInfo(void)
     Com_Printf("AL_VERSION: %s\n", qalGetString(AL_VERSION));
     Com_Printf("AL_EXTENSIONS: %s\n", qalGetString(AL_EXTENSIONS));
     Com_Printf("Number of sources: %d\n", s_numchannels);
+    SA_SoundInfo();
 }
 
 /*
@@ -189,6 +192,8 @@ bool AL_Init(void)
 
     Com_DPrintf("Initializing OpenAL\n");
 
+    s_global_sounds = Cvar_Get("s_global_sounds", "1", 0);
+
     if (!QAL_Init()) {
         goto fail0;
     }
@@ -229,6 +234,7 @@ bool AL_Init(void)
     s_numchannels = i;
 	AL_InitStreamSource();
     AL_InitReverb(s_srcnums, s_numchannels);
+    SA_Init();      // after the reverb: the Steam Audio bus sends to it
 
     Com_Printf("OpenAL initialized.\n");
     return true;
@@ -255,6 +261,7 @@ void AL_Shutdown(void)
         s_numchannels = 0;
     }
 
+    SA_Shutdown();
     AL_ShutdownReverb();
     QAL_Shutdown();
 }
@@ -287,8 +294,16 @@ sfxcache_t *AL_UploadSfx(sfx_t *s)
     }
 #endif
 
-    // allocate placeholder sfxcache
-    sc = s->cache = S_Malloc(sizeof(*sc));
+    // allocate placeholder sfxcache - with a copy of the samples when Steam
+    // Audio does the mixing, as it cannot read them back out of OpenAL
+    if (SA_Active()) {
+        sc = s->cache = S_Malloc(sizeof(*sc) + s_info.samples * sizeof(int16_t));
+        SA_StoreSamples(sc, &s_info);
+    } else {
+        sc = s->cache = S_Malloc(sizeof(*sc));
+        sc->samples = sc->rate = 0;
+        sc->pcm = false;
+    }
     sc->length = s_info.samples * 1000 / s_info.rate; // in msec
     sc->loopstart = s_info.loopstart;
     sc->width = s_info.width;
@@ -308,24 +323,65 @@ void AL_DeleteSfx(sfx_t *s)
         return;
     }
 
+    SA_DeleteSfx(sc);
+
     name = sc->bufnum;
     qalDeleteBuffers(1, &name);
+}
+
+/*
+=================
+AL_GlobalPlaced
+
+Whether a whole-level sound (ATTN_NONE: heard at full level everywhere) still
+comes from somewhere. Quake II put them all in the listener's head. With
+s_global_sounds 1 the ones on something the client is sent come from it - a
+ship on its flyby (the game puts a speaker's flyby on the ship that set it
+off), a boss's scream; 2 adds the map's invisible speakers, from where each
+stands; 0 is as Quake II had it. Radio voices stay in the ear at every
+setting. Placed, such a sound keeps its level with distance: only what lies
+in the way takes from it (SA_Place).
+=================
+*/
+static bool AL_GlobalPlaced(const channel_t *ch)
+{
+    int mode = s_global_sounds->integer;
+
+    if (mode <= 0 || AL_ChannelIsRadio(ch))
+        return false;
+
+    // a fixed origin is a speaker, or an entity the client is not sent
+    return mode >= 2 || !ch->fixed_origin;
+}
+
+// Where a channel's sound comes from. False if from the listener.
+bool AL_ChannelOrigin(const channel_t *ch, vec3_t origin)
+{
+    // anything coming from the view entity will always be full volume
+    // no attenuation = no spatialization, as a rule (AL_GlobalPlaced)
+    if (ch->entnum == -1 || ch->entnum == listener_entnum || (!ch->dist_mult && !AL_GlobalPlaced(ch))) {
+        VectorCopy(listener_origin, origin);
+        return false;
+    }
+
+    if (ch->fixed_origin) {
+        VectorCopy(ch->origin, origin);
+    } else {
+        CL_GetEntitySoundOrigin(ch->entnum, origin);
+    }
+    return true;
 }
 
 static void AL_Spatialize(channel_t *ch)
 {
     vec3_t      origin;
 
-    // anything coming from the view entity will always be full volume
-    // no attenuation = no spatialization
-    if (ch->entnum == -1 || ch->entnum == listener_entnum || !ch->dist_mult) {
-        VectorCopy(listener_origin, origin);
-    } else if (ch->fixed_origin) {
-        VectorCopy(ch->origin, origin);
-    } else {
-        CL_GetEntitySoundOrigin(ch->entnum, origin);
+    if (ch->steam) {
+        SA_Spatialize(ch);
+        return;
     }
 
+    AL_ChannelOrigin(ch, origin);
     qalSource3f(ch->srcnum, AL_POSITION, AL_UnpackVector(origin));
 }
 
@@ -337,8 +393,12 @@ void AL_StopChannel(channel_t *ch)
 #endif
 
     // stop it
-    qalSourceStop(ch->srcnum);
-    qalSourcei(ch->srcnum, AL_BUFFER, AL_NONE);
+    if (ch->steam) {
+        SA_StopChannel(ch);
+    } else {
+        qalSourceStop(ch->srcnum);
+        qalSourcei(ch->srcnum, AL_BUFFER, AL_NONE);
+    }
     memset(ch, 0, sizeof(*ch));
 }
 
@@ -365,7 +425,8 @@ static float AL_EffectPitch(void)
 
 static float s_pitch = 1.0f;
 
-void AL_PlayChannel(channel_t *ch)
+// `sync` is a looping channel of the same sfx to start in phase with
+static void AL_PlayChannelSync(channel_t *ch, const channel_t *sync)
 {
     sfxcache_t *sc = ch->sfx->cache;
 
@@ -375,6 +436,12 @@ void AL_PlayChannel(channel_t *ch)
 #endif
 
     ch->srcnum = s_srcnums[ch - channels];
+
+    // Steam Audio mixes every effect sound but the interface ones
+    ch->steam = SA_PlayChannel(ch, sync);
+    if (ch->steam)
+        return;
+
     qalGetError();
     qalSourcei(ch->srcnum, AL_BUFFER, sc->bufnum);
     if (ch->autosound /*|| sc->loopstart >= 0*/) {
@@ -395,7 +462,21 @@ void AL_PlayChannel(channel_t *ch)
     qalSourcePlay(ch->srcnum);
     if (qalGetError() != AL_NO_ERROR) {
         AL_StopChannel(ch);
+        return;
     }
+
+    // attempt to synchronize with existing sounds of the same type
+    if (sync && !sync->steam) {
+        ALint offset;
+
+        qalGetSourcei(sync->srcnum, AL_SAMPLE_OFFSET, &offset);
+        qalSourcei(ch->srcnum, AL_SAMPLE_OFFSET, offset);
+    }
+}
+
+void AL_PlayChannel(channel_t *ch)
+{
+    AL_PlayChannelSync(ch, NULL);
 }
 
 static void AL_IssuePlaysounds(void)
@@ -572,7 +653,10 @@ static void AL_AddLoopSounds(void)
                 ch->end = paintedtime + sc->length;
                 if (ch->master_vol != scale) {
                     ch->master_vol = scale;
-                    qalSourcef(ch->srcnum, AL_GAIN, scale);
+                    if (ch->steam)
+                        AL_Spatialize(ch);      // the gain is part of placing it
+                    else
+                        qalSourcef(ch->srcnum, AL_GAIN, scale);
                 }
                 loopchannels++;
                 continue;
@@ -596,16 +680,8 @@ static void AL_AddLoopSounds(void)
             ch->dist_mult = SOUND_LOOPATTENUATE;
             ch->end = paintedtime + sc->length;
 
-            AL_PlayChannel(ch);
+            AL_PlayChannelSync(ch, ch2);
             loopchannels++;
-
-            // attempt to synchronize with existing sounds of the same type
-            if (ch2) {
-                ALint offset;
-
-                qalGetSourcei(ch2->srcnum, AL_SAMPLE_OFFSET, &offset);
-                qalSourcei(ch->srcnum, AL_SAMPLE_OFFSET, offset);
-            }
         }
     }
 }
@@ -631,13 +707,15 @@ void AL_Update(void)
     qalDistanceModel(AL_LINEAR_DISTANCE_CLAMPED);
 
     AL_UpdateReverb();
+    SA_Update();
 
     // Only walked when the factor actually moves, which for all but the tenth
     // of a second either side of the wheel opening is never.
     if (AL_EffectPitch() != s_pitch) {
         s_pitch = AL_EffectPitch();
+        SA_SetPitch(s_pitch);
         for (i = 0, ch = channels; i < s_numchannels; i++, ch++)
-            if (ch->sfx)
+            if (ch->sfx && !ch->steam)
                 qalSourcef(ch->srcnum, AL_PITCH, s_pitch);
     }
 
@@ -650,6 +728,11 @@ void AL_Update(void)
         if (ch->autosound) {
             // autosounds are regenerated fresh each frame
             if (ch->autoframe != s_framecount) {
+                AL_StopChannel(ch);
+                continue;
+            }
+        } else if (ch->steam) {
+            if (SA_ChannelDone(ch)) {
                 AL_StopChannel(ch);
                 continue;
             }

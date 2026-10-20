@@ -140,7 +140,8 @@ void abortHeal(edict_t *self, bool change_frame, bool gib, bool mark)
     int             hurt;
     static const vec3_t pain_normal = { 0, 0, 1 };
 
-    if (self->enemy)
+    // [Update 1] only a patient still in use is cleaned up
+    if (self->enemy && self->enemy->inuse)
         cleanupHealTarget(self->enemy);
 
     if (mark && self->enemy && self->enemy->inuse) {
@@ -1589,12 +1590,14 @@ medic_reinforcement_start
 Where summon slot `count` is tried from.  [rerelease] A scaled commander
 summons around its own footprint: id multiplies the offset by s.scale and then
 projects it through M_ProjectFlashSource, which scales it again, so a scaled
-commander's spots sit scale^2 out; ported as written.  The look-behind retry
-keeps an unscaled 10-unit lift, also as id has it.
+commander's spots sit scale^2 out; ported as written.  Update 1 dropped that
+first multiply in medic_spawngrows and medic_finish_spawn but not in
+medic_determine_spawn, hence `prescale`.  The look-behind retry keeps an
+unscaled 10-unit lift, also as id has it.
 =================
 */
 static void medic_reinforcement_start(edict_t *self, int count, const vec3_t f, const vec3_t r,
-                                      bool behind, vec3_t startpoint)
+                                      bool behind, bool prescale, vec3_t startpoint)
 {
     vec3_t  offset;
     float   scale = 1.0f;
@@ -1603,7 +1606,8 @@ static void medic_reinforcement_start(edict_t *self, int count, const vec3_t f, 
 
     if (M_RereleaseGame() && self->s.scale) {
         scale = self->s.scale;
-        VectorScale(offset, scale, offset);
+        if (prescale)
+            VectorScale(offset, scale, offset);
     }
 
     if (behind) {
@@ -1638,7 +1642,7 @@ void medic_determine_spawn(edict_t *self)
     num_summoned = M_PickReinforcements(self, 0);
 
     for (count = 0; count < num_summoned; count++) {
-        medic_reinforcement_start(self, count, f, r, false, startpoint);
+        medic_reinforcement_start(self, count, f, r, false, true, startpoint);
 
         re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
@@ -1653,7 +1657,7 @@ void medic_determine_spawn(edict_t *self)
     // nothing in front - see whether spinning round helps
     if (num_success == 0) {
         for (count = 0; count < num_summoned; count++) {
-            medic_reinforcement_start(self, count, f, r, true, startpoint);
+            medic_reinforcement_start(self, count, f, r, true, true, startpoint);
 
             re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
@@ -1700,7 +1704,7 @@ void medic_spawngrows(edict_t *self)
     num_summoned = self->monsterinfo.num_chosen_reinforcements;
 
     for (count = 0; count < num_summoned; count++) {
-        medic_reinforcement_start(self, count, f, r, false, startpoint);
+        medic_reinforcement_start(self, count, f, r, false, false, startpoint);
 
         re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
@@ -1732,7 +1736,7 @@ void medic_finish_spawn(edict_t *self)
     for (count = 0; count < num_summoned; count++) {
         re = &self->monsterinfo.reinforcements[self->monsterinfo.chosen_reinforcements[count]];
 
-        medic_reinforcement_start(self, count, f, r, false, startpoint);
+        medic_reinforcement_start(self, count, f, r, false, false, startpoint);
 
         ent = NULL;
         if (FindSpawnPoint(startpoint, re->mins, re->maxs, spawnpoint, 32)) {
