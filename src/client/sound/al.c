@@ -85,9 +85,19 @@ double AL_GetStreamLatency(void)
     return stream_queued_sec;
 }
 
+#ifndef AL_SOURCE_DISTANCE_MODEL
+#define AL_SOURCE_DISTANCE_MODEL 0x200
+#endif
+
+// AL_INVERSE_DISTANCE_CLAMPED's outer clamp: past any map
+#define AL_INVERSE_MAX_DISTANCE 65536
+
 static ALuint s_srcnums[MAX_CHANNELS];
 static ALuint streamSource = 0;
 static int s_framecount;
+static unsigned s_looptime;     // cls.realtime of the last fade step (AL_LOOP_FADE_MSEC)
+
+bool al_source_distance_model;
 
 static cvar_t *s_global_sounds;
 
@@ -204,6 +214,12 @@ bool AL_Init(void)
         goto fail1;
     }
 
+    // S_Falloff's two curves side by side, a distance model to each source:
+    // without it there is only Quake II's (S_RealFalloff)
+    al_source_distance_model = qalIsExtensionPresent("AL_EXT_source_distance_model");
+    if (al_source_distance_model)
+        qalEnable(AL_SOURCE_DISTANCE_MODEL);
+
 	/* generate source names */
 	qalGetError();
 	qalGenSources(1, &streamSource);
@@ -264,6 +280,7 @@ void AL_Shutdown(void)
     SA_Shutdown();
     AL_ShutdownReverb();
     QAL_Shutdown();
+    al_source_distance_model = false;
 }
 
 sfxcache_t *AL_UploadSfx(sfx_t *s)
@@ -425,6 +442,25 @@ static float AL_EffectPitch(void)
 
 static float s_pitch = 1.0f;
 
+// S_Falloff's curve for a channel's own OpenAL source
+static void AL_SetDistance(const channel_t *ch)
+{
+    if (ch->dist_mult < 0) {
+        // real sound's 1/r, full out to the reference distance
+        qalSourcei(ch->srcnum, AL_DISTANCE_MODEL, AL_INVERSE_DISTANCE_CLAMPED);
+        qalSourcef(ch->srcnum, AL_REFERENCE_DISTANCE, -ch->dist_mult);
+        qalSourcef(ch->srcnum, AL_MAX_DISTANCE, AL_INVERSE_MAX_DISTANCE);
+        qalSourcef(ch->srcnum, AL_ROLLOFF_FACTOR, 1);
+        return;
+    }
+
+    if (al_source_distance_model)
+        qalSourcei(ch->srcnum, AL_DISTANCE_MODEL, AL_LINEAR_DISTANCE_CLAMPED);
+    qalSourcef(ch->srcnum, AL_REFERENCE_DISTANCE, SOUND_FULLVOLUME);
+    qalSourcef(ch->srcnum, AL_MAX_DISTANCE, 8192);
+    qalSourcef(ch->srcnum, AL_ROLLOFF_FACTOR, ch->dist_mult * (8192 - SOUND_FULLVOLUME));
+}
+
 // `sync` is a looping channel of the same sfx to start in phase with
 static void AL_PlayChannelSync(channel_t *ch, const channel_t *sync)
 {
@@ -451,9 +487,7 @@ static void AL_PlayChannelSync(channel_t *ch, const channel_t *sync)
     }
     qalSourcef(ch->srcnum, AL_GAIN, ch->master_vol);
     qalSourcef(ch->srcnum, AL_PITCH, s_pitch);
-    qalSourcef(ch->srcnum, AL_REFERENCE_DISTANCE, SOUND_FULLVOLUME);
-    qalSourcef(ch->srcnum, AL_MAX_DISTANCE, 8192);
-    qalSourcef(ch->srcnum, AL_ROLLOFF_FACTOR, ch->dist_mult * (8192 - SOUND_FULLVOLUME));
+    AL_SetDistance(ch);
 
     AL_Spatialize(ch);
     AL_ReverbChannel(ch);
@@ -548,35 +582,91 @@ static channel_t *AL_FindLoopingSound(int entnum, sfx_t *sfx)
 #define AL_LOOP_SOURCES_PER_SFX 4   // positional spread kept per distinct sfx
 #define AL_LOOP_CHANNEL_RESERVE 8   // voices ambience may never take from gameplay
 
-// The linear gain OpenAL will apply to a loop source at this entity, matching
-// the AL_LINEAR_DISTANCE_CLAMPED reference distance and rolloff that
-// AL_PlayChannel programs - and S_SpatializeOrigin on the DMA side.
-static float AL_LoopGain(int entnum)
+// A loop sound fades in and out over this, rather than start and stop dead as
+// it comes into and goes out of the frame, or as nearer emitters of its sfx
+// take the voices: under s_falloff 1 it is still heard when it goes.
+#define AL_LOOP_FADE_MSEC       250
+
+// one sfx's loop sounds in the frame, as AL_AddLoopSounds gives them voices
+typedef struct {
+    sfx_t   *sfx;
+    int     num;
+    int     ent[AL_LOOP_SOURCES_PER_SFX];   // its loudest emitters, loudest first
+    float   gain[AL_LOOP_SOURCES_PER_SFX];
+    float   scale;                          // the share of each
+} al_loop_t;
+
+// The gain OpenAL will apply to a loop source at this entity, matching the
+// distance model, reference distance and rolloff that AL_SetDistance programs
+// - and S_SpatializeOrigin on the DMA side.
+static float AL_LoopGain(int entnum, float dist_mult)
 {
     vec3_t  origin;
-    float   gain;
 
     CL_GetEntitySoundOrigin(entnum, origin);
     VectorSubtract(origin, listener_origin, origin);
 
-    gain = 1.0f - (VectorLength(origin) - SOUND_FULLVOLUME) * SOUND_LOOPATTENUATE;
-    return min(max(gain, 0.0f), 1.0f);
+    return S_Falloff(VectorLength(origin), dist_mult);
+}
+
+// loudest first
+static int AL_LoopCmp(const void *p1, const void *p2)
+{
+    const al_loop_t *a = p1, *b = p2;
+    float la = a->gain[0] * a->scale, lb = b->gain[0] * b->scale;
+
+    return (la < lb) - (la > lb);
+}
+
+// a voice nothing is playing on: a loop sound never cuts another off
+static channel_t *AL_FreeChannel(void)
+{
+    int i;
+
+    for (i = 0; i < s_numchannels; i++)
+        if (!channels[i].sfx)
+            return &channels[i];
+
+    return NULL;
+}
+
+/*
+=================
+AL_LoopStopped
+
+An autosound AL_AddLoopSounds did not keep: whether the game stopped it - its
+entity, still in the frame, plays something else or nothing, as a door that
+has arrived or a fan switched off - so it stops at once, as it always did.
+Otherwise its entity has gone out of the frame, or nearer emitters of its sfx
+took the voices, and it fades out.
+=================
+*/
+static bool AL_LoopStopped(const channel_t *ch)
+{
+    const centity_t *ent;
+
+    if (ch->entnum <= 0 || ch->entnum >= MAX_EDICTS)
+        return true;
+
+    ent = &cl_entities[ch->entnum];
+    if (ent->serverframe != cl.frame.number)
+        return false;
+
+    return S_SfxForHandle(cl.sound_precache[ent->current.sound]) != ch->sfx;
 }
 
 static void AL_AddLoopSounds(void)
 {
+    static al_loop_t    loops[MAX_SOUNDS];
     int         i, j, k;
     int         sounds[MAX_EDICTS];
-    int         soundnum;
+    int         soundnum, numloops;
     channel_t   *ch, *ch2;
     sfx_t       *sfx;
-    sfxcache_t  *sc;
+    al_loop_t   *loop;
     int         num;
     entity_state_t  *ent;
-    int         best_ent[AL_LOOP_SOURCES_PER_SFX];
-    float       best_gain[AL_LOOP_SOURCES_PER_SFX];
-    int         numbest;
-    float       gain, total, kept, scale;
+    float       dist_mult, gain, total, kept;
     int         loopchannels, maxloopchannels;
 
     if (cls.state != ca_active || sv_paused->integer || !s_ambient->integer) {
@@ -584,9 +674,8 @@ static void AL_AddLoopSounds(void)
     }
 
     S_BuildSoundList(sounds);
-
-    loopchannels = 0;
-    maxloopchannels = max(1, s_numchannels - AL_LOOP_CHANNEL_RESERVE);
+    dist_mult = S_LoopDistMult();
+    numloops = 0;
 
     for (i = 0; i < cl.frame.numEntities; i++) {
         if (!sounds[i])
@@ -597,14 +686,14 @@ static void AL_AddLoopSounds(void)
         sfx = S_SfxForHandle(cl.sound_precache[soundnum]);
         if (!sfx)
             continue;       // bad sound effect
-        sc = sfx->cache;
-        if (!sc)
+        if (!sfx->cache)
             continue;
 
         // find every emitter of this sfx in the frame. `total` is what the
         // group as a whole is allowed to sum to; only the loudest few of them
         // actually get a voice.
-        numbest = 0;
+        loop = &loops[numloops];
+        loop->num = 0;
         total = 0.0f;
 
         for (j = i; j < cl.frame.numEntities; j++) {
@@ -615,70 +704,99 @@ static void AL_AddLoopSounds(void)
             num = (cl.frame.firstEntity + j) & PARSE_ENTITIES_MASK;
             ent = &cl.entityStates[num];
 
-            gain = AL_LoopGain(ent->number);
+            gain = AL_LoopGain(ent->number, dist_mult);
             if (gain <= 0.0f)
                 continue;       // completely attenuated
             total += gain;
 
             // insertion sort into the loudest AL_LOOP_SOURCES_PER_SFX
-            if (numbest < AL_LOOP_SOURCES_PER_SFX)
-                numbest++;
-            else if (gain <= best_gain[numbest - 1])
+            if (loop->num < AL_LOOP_SOURCES_PER_SFX)
+                loop->num++;
+            else if (gain <= loop->gain[loop->num - 1])
                 continue;       // quieter than everything already kept
 
-            for (k = numbest - 1; k > 0 && best_gain[k - 1] < gain; k--) {
-                best_gain[k] = best_gain[k - 1];
-                best_ent[k] = best_ent[k - 1];
+            for (k = loop->num - 1; k > 0 && loop->gain[k - 1] < gain; k--) {
+                loop->gain[k] = loop->gain[k - 1];
+                loop->ent[k] = loop->ent[k - 1];
             }
-            best_gain[k] = gain;
-            best_ent[k] = ent->number;
+            loop->gain[k] = gain;
+            loop->ent[k] = ent->number;
         }
 
-        if (!numbest)
+        if (!loop->num)
             continue;           // not audible
 
         kept = 0.0f;
-        for (k = 0; k < numbest; k++)
-            kept += best_gain[k];
+        for (k = 0; k < loop->num; k++)
+            kept += loop->gain[k];
+
+        // Under real sound's falloff (s_falloff 1) no emitter is ever silent,
+        // and a map's copies of one hum are laid out for Quake II's, each to
+        // be heard only near it: mguhub has 33 of world/comp_hum3.wav. Summed,
+        // the far ones add up to it at full volume everywhere, and a few such
+        // hums together clip. So only the voiced few count, as the separate
+        // sources they are, adding up in power.
+        if (dist_mult < 0) {
+            total = 0.0f;
+            for (k = 0; k < loop->num; k++)
+                total += loop->gain[k] * loop->gain[k];
+            total = sqrtf(total);
+        }
 
         // OpenAL multiplies AL_GAIN by the distance attenuation and the sources
         // are phase locked, so the group sums to scale * kept. Solve for the
         // scale that lands that on the clamped total.
-        scale = min(total, 1.0f) / kept;
+        loop->sfx = sfx;
+        loop->scale = min(total, 1.0f) / kept;
+        numloops++;
+    }
 
-        for (k = 0; k < numbest; k++) {
-            ch = AL_FindLoopingSound(best_ent[k], sfx);
+    // The loudest first, so that what AL_LOOP_CHANNEL_RESERVE leaves out is
+    // what is heard least. Under s_falloff 1 nothing in the frame is silent,
+    // and more of them than there are voices is the rule, not the exception.
+    qsort(loops, numloops, sizeof(loops[0]), AL_LoopCmp);
+
+    loopchannels = 0;
+    maxloopchannels = max(1, s_numchannels - AL_LOOP_CHANNEL_RESERVE);
+
+    for (i = 0, loop = loops; i < numloops; i++, loop++) {
+        sfx = loop->sfx;
+        for (k = 0; k < loop->num; k++) {
+            // its level is set as it fades, in AL_Update
+            ch = AL_FindLoopingSound(loop->ent[k], sfx);
             if (ch) {
                 ch->autoframe = s_framecount;
-                ch->end = paintedtime + sc->length;
-                if (ch->master_vol != scale) {
-                    ch->master_vol = scale;
-                    if (ch->steam)
-                        AL_Spatialize(ch);      // the gain is part of placing it
-                    else
-                        qalSourcef(ch->srcnum, AL_GAIN, scale);
+                ch->end = paintedtime + sfx->cache->length;
+                ch->loop_vol = loop->scale;
+                if (ch->dist_mult != dist_mult) {
+                    ch->dist_mult = dist_mult;      // s_falloff changed
+                    if (!ch->steam)
+                        AL_SetDistance(ch);
                 }
                 loopchannels++;
                 continue;
             }
 
+            // what is already playing goes on (above)
             if (loopchannels >= maxloopchannels)
-                break;          // leave the rest of the voices for gameplay
+                continue;       // leave the rest of the voices for gameplay
 
             // allocate a channel
-            ch = S_PickChannel(0, 0);
+            ch = AL_FreeChannel();
             if (!ch)
-                break;
+                continue;
 
             ch2 = AL_FindLoopingSound(0, sfx);
 
             ch->autosound = true;   // remove next frame
             ch->autoframe = s_framecount;
             ch->sfx = sfx;
-            ch->entnum = best_ent[k];
-            ch->master_vol = scale;
-            ch->dist_mult = SOUND_LOOPATTENUATE;
-            ch->end = paintedtime + sc->length;
+            ch->entnum = loop->ent[k];
+            ch->loop_vol = loop->scale;
+            ch->fade = 0;
+            ch->master_vol = 0;
+            ch->dist_mult = dist_mult;
+            ch->end = paintedtime + sfx->cache->length;
 
             AL_PlayChannelSync(ch, ch2);
             loopchannels++;
@@ -691,12 +809,16 @@ void AL_Update(void)
     int         i;
     channel_t   *ch;
     vec_t       orientation[6];
+    float       fade, vol;
 
     if (!s_active) {
         return;
     }
 
     paintedtime = cl.time;
+
+    fade = min((cls.realtime - s_looptime) / (float)AL_LOOP_FADE_MSEC, 1.0f);
+    s_looptime = cls.realtime;
 
     // set listener parameters
     qalListener3f(AL_POSITION, AL_UnpackVector(listener_origin));
@@ -726,10 +848,20 @@ void AL_Update(void)
             continue;
 
         if (ch->autosound) {
-            // autosounds are regenerated fresh each frame
-            if (ch->autoframe != s_framecount) {
+            // autosounds are regenerated fresh each frame; one that was not
+            // fades out, unless the game stopped it
+            if (ch->autoframe == s_framecount) {
+                ch->fade = min(ch->fade + fade, 1.0f);
+            } else if (AL_LoopStopped(ch) || (ch->fade -= fade) <= 0) {
                 AL_StopChannel(ch);
                 continue;
+            }
+
+            vol = ch->loop_vol * ch->fade;
+            if (ch->master_vol != vol) {
+                ch->master_vol = vol;
+                if (!ch->steam)
+                    qalSourcef(ch->srcnum, AL_GAIN, vol);
             }
         } else if (ch->steam) {
             if (SA_ChannelDone(ch)) {

@@ -59,6 +59,7 @@ typedef struct playsound_s {
     sfx_t       *sfx;
     float       volume;
     float       attenuation;
+    float       bound;          // > 0: S_StartBoundedSound's range
     int         entnum;
     int         entchannel;
     bool        fixed_origin;   // use origin field instead of entnum's origin
@@ -76,12 +77,14 @@ typedef struct channel_s {
     int         entnum;         // to allow overriding a specific sound
     int         entchannel;     //
     vec3_t      origin;         // only use if fixed_origin is set
-    vec_t       dist_mult;      // distance multiplier (attenuation/clipK)
+    vec_t       dist_mult;      // how it falls off with distance: see S_Falloff
     float       master_vol;     // 0.0-1.0 master volume
     bool        fixed_origin;   // use origin instead of fetching entnum's origin
     bool        autosound;      // from an entity->sound, cleared each frame
 #if USE_OPENAL
     int         autoframe;
+    float       loop_vol;       // an autosound's share of its sfx's level (AL_AddLoopSounds)
+    float       fade;           // and how far it has faded in, 0-1 (AL_LOOP_FADE_MSEC)
     int         srcnum;
     bool        steam;          // mixed by steamaudio.c, not an OpenAL source
 #endif
@@ -153,6 +156,9 @@ void SA_SetPitch(float pitch);
 void SA_StoreSamples(sfxcache_t *sc, const wavinfo_t *info);
 void SA_DeleteSfx(sfxcache_t *sc);
 
+/* OpenAL takes a distance model per source: S_Falloff's two curves side by side */
+extern bool al_source_distance_model;
+
 /* seconds of queued-but-unheard streamed audio (needed for cinematic A/V sync) */
 double AL_GetStreamLatency(void);
 
@@ -168,6 +174,10 @@ extern int s_stream_min_buffers;
 #define     SOUND_FULLVOLUME    80
 
 #define     SOUND_LOOPATTENUATE 0.003f
+
+float S_Falloff(float dist, float dist_mult);
+float S_ChannelDistMult(float attenuation);
+float S_LoopDistMult(void);
 
 extern bool s_active;
 

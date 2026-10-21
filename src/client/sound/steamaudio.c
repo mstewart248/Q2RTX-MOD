@@ -64,7 +64,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //   listener off the walls from there. The loudest sources of sound have a
 //   slot each and one more is at the listener, for everything else. On the
 //   mixer thread each voice is convolved with its slot's response, and the
-//   lot is summed as Ambisonics and decoded through the HRTF. It takes over
+//   lot is summed as Ambisonics and decoded to stereo. It takes over
 //   from the room reverb (reverb.c), which stays the fallback until the
 //   first simulation of a map is in. See REFLECTIONS.
 //
@@ -108,6 +108,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define SA_TRACE_MSEC       33      // how often a voice re-traces its occlusion
 #define SA_SAMPLE_RADIUS    12.0f   // points around the origin tested with it
+#define SA_VOICE_DROP       8.0f    // a body's sound comes from this far under the top of its box: see SA_VoicePoint
 #define SA_MAX_WALLS        3       // walls a blocked path is followed through
 #define SA_BURIED_SLOP      32.0f   // see SA_Walk
 #define SA_SMOOTH_SEC       0.06f   // occlusion changes ease in over about this
@@ -125,8 +126,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SA_SRC_PER_RAY      2
 #define SA_PATH_CANDIDATES  16      // shortest one-bend paths kept for two bends
 #define SA_PATH_TESTS       4       // traces each kind of path may try
-#define SA_EDGE_TRACES      24      // over or past an obstacle: see SA_EdgePath
+#define SA_EDGE_TRACES      32      // over or past an obstacle: see SA_EdgePath
+#define SA_EDGE_SIDES       3       // the first of its directions: over it, and to either side
 #define SA_PATH_RETRY_MSEC  100     // a voice with no way round looks again this often
+#define SA_GO_ON_MSEC       250     // see SA_GoesOn
+#define SA_GO_ON_DIST       32.0f
+#define SA_YOUNG_MSEC       150     // a sound this new takes its first way round at once: see SA_Occlude
 
 // sound off walls: see REFLECTIONS
 #define SA_REFL_MAX_SLOTS   31      // sources with a response of their own, at most: a channel
@@ -145,6 +150,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SA_REFL_HIDDEN      0.3f    // see SA_Reflect
 #define SA_REFL_MAX_SEND    32.0f
 #define SA_LIMIT_RELEASE    0.15f   // seconds: see SA_Limit
+#define SA_DUCK_KEY         0.25f   // the player's weapon at this level ducks the rest fully: see SA_Duck
+#define SA_DUCK_RELEASE     0.15f   // seconds: see SA_Duck
 #define SA_SIM_MIN_MSEC     25      // between two runs at least: see SA_MixReflections
 #define SA_SIM_MOVE         8.0f    // what moves less than this is simulated where it was
 #define SA_SIM_MOVER_MSEC   2000    // a brush entity moving longer than this, a fan or a train,
@@ -178,7 +185,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // A sound with no direction - the player's own - comes out of the binaural
 // effect at full level in BOTH ears, where OpenAL spreads it at -3 dB a side.
 // Matching OpenAL keeps the player's weapons where they sat against everything
-// else, so the unplaced part of a voice is scaled by this.
+// else, so the unplaced part of a voice is scaled by this. (The weapons then
+// get s_steamaudio_weapon on top: see SA_Duck.)
 #define SA_CENTRE_GAIN      0.70710678f
 
 #ifdef _WIN32
@@ -304,6 +312,7 @@ typedef struct {
     float           trans[3];       // what the blocked part lets through
     float           air[3];         // air absorption (and a water surface)
     float           room;           // of the direct effect's output, what goes to the reverb
+    bool            key;            // the player's own weapon, which the rest ducks under (SA_Duck)
     int             refl_slot;      // the reflection slot it is heard off the walls through, -1 = none
     float           refl;           // of the voice's samples, what goes to that slot
     float           path;           // of the voice's samples, what comes round the map's paths
@@ -338,6 +347,7 @@ typedef struct {
 // the game thread's per-channel occlusion state
 typedef struct {
     bool        fresh;              // just started: take the first trace as is
+    unsigned    started;            // cls.realtime it was fresh at
     unsigned    next_trace;
     float       target_occ, target_trans[3];
     float       occ, trans[3];
@@ -358,10 +368,13 @@ typedef struct {
     vec3_t      relays[SA_SRC_RAYS * SA_SRC_PER_RAY];
 
     // where it is and how loud, as last placed, for the reflection slots and
-    // the paths
+    // the paths; whose, for the next sound on the channel (SA_GoesOn)
     bool        placed;             // false: from the listener
     float       level;
     vec3_t      origin;
+    unsigned    placed_at;          // cls.realtime
+    int         entnum;
+    float       dist_mult;
 
     // Steam Audio's way round (see PATHING): what the simulation is asked
     // about this sound as, and what it found, eased in like the occlusion -
@@ -379,6 +392,7 @@ typedef struct {
     float       dist;
     int         bends;
     float       path_mid;
+    bool        small;              // the way over or past a small thing won over Steam Audio's
 } sa_chan_t;
 
 // what the last pathing run said of a voice
@@ -513,14 +527,19 @@ static struct {
     IPLHRTFInterpolation interp;
     float               volume;
     float               ceiling;        // linear; 0 = no limiter (SA_Limit)
+    float               duck;           // linear: the most SA_Duck turns the rest down to
+    bool                refl_hrtf;      // the reflections decoded through the HRTF: see SA_MixReflections
 
     // mixer thread only
     sa_voice_t          voices[MAX_CHANNELS];
     sa_parm_t           snap[MAX_CHANNELS];
     IPLAudioBuffer      in, mid, out;
     float               bus[2][SA_FRAME];
+    float               key_bus[2][SA_FRAME];   // the player's weapon (SA_Duck)
     float               room[SA_FRAME];
     float               limit_gain;     // SA_Limit's, 1 when it is not holding anything down
+    float               duck_level;     // SA_Duck's: how loud the player's weapon is, 0-1
+    float               duck_gain;      // and what it last turned the rest down to
 
     // under mix_lock: the last SA_RING frames mixed, which both sources'
     // callbacks read from at their own pace
@@ -533,8 +552,9 @@ static struct {
     uint64_t            wait_sum;
     unsigned            wait_count, wait_max;
     // and how loud the mix came out of the voices (before SA_Limit), how
-    // many frames went over full scale, and the least gain SA_Limit gave
-    float               meter_peak, meter_gain;
+    // many frames went over full scale, the least gain SA_Limit gave, and the
+    // least SA_Duck did
+    float               meter_peak, meter_gain, meter_duck;
     unsigned            meter_frames, meter_over;
     // and what mixing a frame took, and how many reflection slots it ran
     uint64_t            mix_usec_sum;
@@ -542,6 +562,7 @@ static struct {
 
     // game thread only
     sa_chan_t           chans[MAX_CHANNELS];
+    float               weapon_gain;    // s_steamaudio_weapon, linear
     bool                listener_buried;
     bool                listener_wet;
 
@@ -661,6 +682,7 @@ static struct {
     sa_slot_t           slots[SA_REFL_MAX_SLOTS];
     bool                slot_ready[SA_REFL_MAX_SLOTS + 1];
     float               refl_gain;
+    float               refl_hold;      // units: see SA_ReflSend
     float               path_gain;
     unsigned            path_keys;      // handed out to voices, never 0
     unsigned            path_asked[MAX_CHANNELS];   // the keys the last input asked about
@@ -676,6 +698,8 @@ static cvar_t   *s_steamaudio_interp;
 static cvar_t   *s_steamaudio_volume;
 static cvar_t   *s_steamaudio_limiter;
 static cvar_t   *s_steamaudio_ceiling;
+static cvar_t   *s_steamaudio_weapon;
+static cvar_t   *s_steamaudio_duck;
 static cvar_t   *s_occlusion;
 static cvar_t   *s_global_floor;
 static cvar_t   *s_reflections;
@@ -687,6 +711,8 @@ static cvar_t   *s_reflections_rays;
 static cvar_t   *s_reflections_bounces;
 static cvar_t   *s_reflections_rate;
 static cvar_t   *s_reflections_gain;
+static cvar_t   *s_reflections_hold;
+static cvar_t   *s_reflections_hrtf;
 static cvar_t   *s_reflections_gpu;
 static cvar_t   *s_reflections_gpu_rays;
 static cvar_t   *s_pathing;
@@ -719,9 +745,11 @@ mids and highs a bounce, which in a small Quake room rings for over a second
 sound a metre off), and has rock - Quake's "boot" - ring longer than metal. A
 Quake face stands for pipes, panels, grilles, rubble and machinery the map
 does not model, which take a good deal more: so metal loses a quarter of its
-mids (that room 0.47 s, a 24 m hall 1.6 s), rock more than a third and more of
-its highs (0.37 s and 1.3 s, darker than metal), soft things most. Scattering
-is likewise higher than Steam Audio's flat-mirror 0.05.
+mids (that room 0.47 s, a 24 m hall 1.6 s), rock a fifth - stone rings longer
+than metal - and soft things most. Scattering is likewise higher than Steam
+Audio's flat-mirror 0.05. Rock losing more than a third, darker than metal,
+made mgu6m1's canyon, two thirds rock, ring like a metal room a few times the
+size of base1's corridor: the player's own sounds there 0.49 s, now 0.74.
 
 "boot" is the hard default the remaster gives rock, cinder block, concrete,
 brick and some painted metal; "step" is mostly floors.
@@ -743,7 +771,7 @@ static const sa_material_t sa_materials[] = {
     { "mech",   { 0.40f, 0.14f, 0.05f }, { 0.25f, 0.30f, 0.35f }, 0.40f },  // machinery
     { "energy", { 0.40f, 0.14f, 0.05f }, { 0.20f, 0.25f, 0.30f }, 0.25f },
     { "junk",   { 0.40f, 0.14f, 0.05f }, { 0.30f, 0.35f, 0.40f }, 0.45f },
-    { "boot",   { 0.25f, 0.08f, 0.03f }, { 0.25f, 0.35f, 0.45f }, 0.40f },  // rock, block, concrete
+    { "boot",   { 0.25f, 0.08f, 0.03f }, { 0.15f, 0.20f, 0.25f }, 0.40f },  // rock, block, concrete
     { "step",   { 0.25f, 0.08f, 0.03f }, { 0.20f, 0.30f, 0.35f }, 0.30f },  // floors
     { "tile",   { 0.28f, 0.10f, 0.03f }, { 0.08f, 0.12f, 0.15f }, 0.10f },
     { "wood",   { 0.45f, 0.20f, 0.07f }, { 0.20f, 0.20f, 0.25f }, 0.20f },
@@ -1169,16 +1197,22 @@ where the sight lines over its two ends cross: |LA| / (|LA| + |BS|) of the
 way from where the line goes in (A) to where it comes out (B), L being the
 listener and S the source. That is the near end when the listener is pressed
 against it, the far end when the source is, and the middle between.
+
+With `sides`, the sides of the thing a way goes round - over it, and to
+either side - are counted too, on the ring the first way is found on and the
+next one out. More than one is a way round something small, a crate or a
+pillar, which sound goes round on every side (see SA_TraceVoice); a corner,
+or a doorway in a wall, has one.
 =================
 */
 static const float sa_edge_dists[] = { 48, 96, 160, 240 };
 
-static bool SA_EdgePath(const vec3_t src, int skip, bool buried, sa_path_t *path)
+static bool SA_EdgePath(const vec3_t src, int skip, bool buried, sa_path_t *path, int *sides)
 {
     trace_t tr;
     vec3_t  pts[3], d, a, b, k, up, side, dirs[6], p;
     float   la, bs;
-    int     i, j, traces;
+    int     i, j, traces, found = -1, seen = 0;
 
     VectorSubtract(src, listener_origin, d);
     if (VectorNormalize(d) < 1)
@@ -1220,12 +1254,17 @@ static bool SA_EdgePath(const vec3_t src, int skip, bool buried, sa_path_t *path
     VectorNormalize(dirs[4]);
 
     for (i = traces = 0; i < (int)q_countof(sa_edge_dists); i++) {
+        if (found >= 0 && i > found + 1)
+            break;
         for (j = 0; j < 6; j++) {
+            // once there is a way, only the sides not seen yet
+            if (found >= 0 && (j >= SA_EDGE_SIDES || (seen & (1 << j))))
+                continue;
             VectorMA(k, sa_edge_dists[i], dirs[j], p);
             if (CM_PointContents(p, cl.bsp->nodes) & MASK_SOLID)
                 continue;
             if (traces + 2 > SA_EDGE_TRACES)
-                return false;
+                goto done;
             traces++;
             if (!SA_Clear(listener_origin, p, skip))
                 continue;
@@ -1233,14 +1272,25 @@ static bool SA_EdgePath(const vec3_t src, int skip, bool buried, sa_path_t *path
             if (!SA_Reaches(p, src, skip, buried))
                 continue;
 
+            seen |= 1 << j;
+            if (found >= 0)
+                continue;
             VectorCopy(listener_origin, pts[0]);
             VectorCopy(p, pts[1]);
             VectorCopy(src, pts[2]);
-            return SA_MakePath(path, pts, 3);
+            SA_MakePath(path, pts, 3);
+            found = i;
+            // in between two sides is not a side of its own
+            if (!sides || j >= SA_EDGE_SIDES)
+                goto done;
         }
     }
 
-    return false;
+done:
+    if (sides)
+        for (j = *sides = 0; j < 6; j++)
+            *sides += (seen >> j) & 1;
+    return found >= 0;
 }
 
 /*
@@ -1258,9 +1308,10 @@ there are.
 This is not Steam Audio's pathing, which bakes probes through the whole map
 and finds paths of any length - only what a few traces can find: the sound
 round the corner the player is at, or the one the source is at, or both.
+`sides`: SA_EdgePath's, for a way over or past; 0 for any other.
 =================
 */
-static bool SA_FindPath(sa_chan_t *c, const vec3_t src, int skip, bool buried, sa_path_t *path)
+static bool SA_FindPath(sa_chan_t *c, const vec3_t src, int skip, bool buried, sa_path_t *path, int *sides)
 {
     sa_cand_t   via[SA_PATH_CANDIDATES], list[SA_PATH_TESTS];
     vec3_t      pts[4];
@@ -1268,9 +1319,11 @@ static bool SA_FindPath(sa_chan_t *c, const vec3_t src, int skip, bool buried, s
     float       len;
     int         i, j, n, num_via;
 
+    *sides = 0;
     if (cls.realtime >= c->next_edge) {
-        if (SA_EdgePath(src, skip, buried, path))
+        if (SA_EdgePath(src, skip, buried, path, sides))
             return true;
+        *sides = 0;
         c->next_edge = cls.realtime + SA_PATH_RETRY_MSEC;
     }
 
@@ -1336,13 +1389,11 @@ static bool SA_FindPath(sa_chan_t *c, const vec3_t src, int skip, bool buried, s
     return false;
 }
 
-// the linear falloff OpenAL is given (AL_LINEAR_DISTANCE_CLAMPED from
-// SOUND_FULLVOLUME) and the DMA mixer applies
+// the falloff OpenAL is given and the DMA mixer applies: Quake II's straight
+// line, or under s_falloff 1 real sound's 1/r
 static float SA_Falloff(float dist, float dist_mult)
 {
-    float gain = 1.0f - max(dist - SOUND_FULLVOLUME, 0) * dist_mult;
-
-    return min(max(gain, 0.0f), 1.0f);
+    return S_Falloff(dist, dist_mult);
 }
 
 // what a path passes, low/mid/high, against the straight line: its bends,
@@ -3191,6 +3242,18 @@ SA_MixReflections
 The sound off the walls, into the bus: each slot's sends convolved with its
 response, summed as Ambisonics and decoded for the listener's head.
 
+Decoded as plain stereo, not through the HRTF, unless s_reflections_hrtf.
+Steam Audio's binaural decode of first-order Ambisonics, of sound coming
+from every way at once, takes 8 to 12 dB out of 1.5-3 kHz and 5 to 9 out of
+the highs against the lows - where the HRTF itself, averaged over every
+way, is flat within a dB - and leaves each ear peaks and dips of its own.
+Every echo came out dull, boomy and, ringing at a few pitches, metallic.
+Under a near sound that hid; a far voice is heard mostly as its echo, and
+mgu6m1's soldiers called as a muffled wash (2026-10-21). The plain decode is
+flat, and as loud within a dB (A-weighted, for a gun and a voice); the echo
+keeps left from right, and loses only above from below and in front from
+behind.
+
 Every slot is run every frame, sounding or not. A new response reaches a
 slot's effect through a triple buffer that takes the next only once the
 last has been read - one left unread holds back the one after it, stale.
@@ -3236,7 +3299,7 @@ static int SA_MixReflections(unsigned map, const IPLCoordinateSpace3 *listener, 
     dp.order = SA_REFL_ORDER;
     dp.hrtf = sa.hrtf;
     dp.orientation = *listener;
-    dp.binaural = use_hrtf;
+    dp.binaural = use_hrtf;     // and s_reflections_hrtf: see above
     qiplAmbisonicsDecodeEffectApply(sa.refl_decode, &dp, &sa.refl_amb, &sa.out);
 
     l = sa.out.data[0];
@@ -3260,10 +3323,10 @@ static void SA_StartVoice(sa_voice_t *v, const sa_parm_t *p)
     v->path_live = false;
 }
 
-// sa.mid into the bus from `dir`, `spatial` of it placed, the rest in the
+// sa.mid into `bus` from `dir`, `spatial` of it placed, the rest in the
 // middle of the head
-static void SA_MixPlaced(IPLBinauralEffect binaural, IPLPanningEffect panning, const IPLVector3 *dir,
-                         float spatial, bool use_hrtf, IPLHRTFInterpolation interp)
+static void SA_MixPlaced(float (*bus)[SA_FRAME], IPLBinauralEffect binaural, IPLPanningEffect panning,
+                         const IPLVector3 *dir, float spatial, bool use_hrtf, IPLHRTFInterpolation interp)
 {
     IPLBinauralEffectParams bp;
     IPLPanningEffectParams  pp;
@@ -3295,9 +3358,53 @@ static void SA_MixPlaced(IPLBinauralEffect binaural, IPLPanningEffect panning, c
     l = sa.out.data[0];
     r = sa.out.data[1];
     for (j = 0; j < SA_FRAME; j++) {
-        sa.bus[0][j] += l[j];
-        sa.bus[1][j] += r[j];
+        bus[0][j] += l[j];
+        bus[1][j] += r[j];
     }
+}
+
+/*
+=================
+SA_Duck
+
+Everything but the player's own weapon is turned down while it sounds, by
+s_steamaudio_duck at the most, and the weapon is mixed back in on top. A
+monster yelling within a few metres came out as loud as the gun at the
+ears, or louder - its full level through the HRTF against the gun's
+centred -3 dB - and the two together went over the ceiling, so SA_Limit took
+the punch out of every shot. Quake II's own mixer had a monster in front at
+half the level of the player's own sounds, a side.
+
+The rest goes down with the gun's level, fully from SA_DUCK_KEY up, and
+comes back over SA_DUCK_RELEASE as its shots die away; in dB, so a silenced
+gun ducks it less. Only the direct sound: the echoes, the gun's own among
+them, are mixed in after.
+=================
+*/
+static void SA_Duck(float depth)
+{
+    float   peak = 0, level, target, gain, step;
+    int     j;
+
+    for (j = 0; j < SA_FRAME; j++)
+        peak = max(peak, max(fabsf(sa.key_bus[0][j]), fabsf(sa.key_bus[1][j])));
+
+    // up at once, down over SA_DUCK_RELEASE
+    level = min(peak / SA_DUCK_KEY, 1.0f);
+    if (level < sa.duck_level)
+        level += (sa.duck_level - level) * expf(-SA_FRAME / (SA_DUCK_RELEASE * sa.audio.samplingRate));
+    sa.duck_level = level;
+
+    target = powf(depth, level);
+    gain = sa.duck_gain;
+    step = (target - gain) / SA_FRAME;
+    for (j = 0; j < SA_FRAME; j++) {
+        gain += step;
+        sa.bus[0][j] = sa.bus[0][j] * gain + sa.key_bus[0][j];
+        sa.bus[1][j] = sa.bus[1][j] * gain + sa.key_bus[1][j];
+    }
+    sa.duck_gain = target;
+    sa.meter_duck = min(sa.meter_duck, target);
 }
 
 /*
@@ -3345,9 +3452,9 @@ static void SA_MixFrame(float *out, float *room)
     IPLDirectEffectParams   dp, path_dp;
     sa_voice_t  *v;
     sa_parm_t   *p;
-    float       pitch, volume, ceiling, *m;
+    float       pitch, volume, ceiling, duck, *m;
     const float *in;
-    bool        use_hrtf, refl_on;
+    bool        use_hrtf, refl_hrtf, refl_on;
     IPLHRTFInterpolation interp;
     IPLCoordinateSpace3 listener;
     unsigned    wait, refl_map, usec;
@@ -3358,9 +3465,11 @@ static void SA_MixFrame(float *out, float *room)
     memcpy(sa.snap, sa.parms, sizeof(sa.snap));
     pitch = sa.pitch;
     use_hrtf = sa.use_hrtf;
+    refl_hrtf = sa.refl_hrtf;
     interp = sa.interp;
     volume = sa.volume;
     ceiling = sa.ceiling;
+    duck = sa.duck;
     refl_on = sa.refl_on;
     refl_map = sa.refl_mix_map;
     listener = sa.listener_space;
@@ -3368,6 +3477,7 @@ static void SA_MixFrame(float *out, float *room)
     SDL_UnlockMutex(sa.param_lock);
 
     memset(sa.bus, 0, sizeof(sa.bus));
+    memset(sa.key_bus, 0, sizeof(sa.key_bus));
     memset(sa.room, 0, sizeof(sa.room));
     if (sa.refl) {
         for (i = 0; i <= sa.num_slots; i++)
@@ -3429,7 +3539,7 @@ static void SA_MixFrame(float *out, float *room)
                 sa.room[j] += m[j] * p->room;
         }
 
-        SA_MixPlaced(v->binaural, v->panning, &p->dir, p->spatial, use_hrtf, interp);
+        SA_MixPlaced(p->key ? sa.key_bus : sa.bus, v->binaural, v->panning, &p->dir, p->spatial, use_hrtf, interp);
 
         // what comes round, as a second voice from where it arrives: to
         // the room too, as what came round went before as part of the
@@ -3452,14 +3562,17 @@ static void SA_MixFrame(float *out, float *room)
                     sa.room[j] += m[j] * p->room;
             }
 
-            SA_MixPlaced(v->path_binaural, v->path_panning, &p->path_dir, p->path_spatial, use_hrtf, interp);
+            SA_MixPlaced(p->key ? sa.key_bus : sa.bus, v->path_binaural, v->path_panning,
+                         &p->path_dir, p->path_spatial, use_hrtf, interp);
         } else {
             v->path_live = false;
         }
     }
 
+    SA_Duck(duck);
+
     if (sa.refl)
-        busy = SA_MixReflections(refl_map, &listener, use_hrtf);
+        busy = SA_MixReflections(refl_map, &listener, use_hrtf && refl_hrtf);
 
     SDL_LockMutex(sa.param_lock);
     for (i = 0; i < MAX_CHANNELS; i++) {
@@ -3570,24 +3683,32 @@ static void SA_ListenerDir(const vec3_t d, IPLVector3 *out)
 SA_RoomGain
 
 What OpenAL sends to the room reverb from one of its own sources this far
-away, with the distance settings al.c gives them (linear from
-SOUND_FULLVOLUME, rolled off by dist_mult over SA_AL_MAX_DISTANCE). OpenAL
-Soft does not attenuate the send the way it does the direct path: it takes an
-inverse curve over the rolled-off distance and blends in the reverb's own
-decay over it, so only sounds near the listener reach the room at any level -
--20 dB and more by 200 units. That is what the reverb was set up against with
+away, with the distance settings al.c gives them (AL_SetDistance: linear from
+SOUND_FULLVOLUME, rolled off by dist_mult over SA_AL_MAX_DISTANCE, or 1/r from
+the reference distance at a rolloff of 1). OpenAL Soft does not attenuate the
+send the way it does the direct path: it takes an inverse curve over the
+rolled-off distance and blends in the reverb's own decay over it, so only
+sounds near the listener reach the room at any level - -20 dB and more by 200
+units on Quake II's line. That is what the reverb was set up against with
 s_steamaudio 0, so the Steam Audio mix sends the same.
 =================
 */
 static float SA_RoomGain(float dist, float dist_mult)
 {
-    float   base, attn, decay;
+    float   ref, base, attn, decay;
 
-    if (dist <= SOUND_FULLVOLUME)
+    if (dist_mult < 0) {
+        ref = -dist_mult;
+        base = dist - ref;
+    } else {
+        ref = SOUND_FULLVOLUME;
+        base = (dist - ref) * dist_mult * (SA_AL_MAX_DISTANCE - SOUND_FULLVOLUME);
+    }
+
+    if (dist <= ref)
         return 1;
 
-    base = (dist - SOUND_FULLVOLUME) * dist_mult * (SA_AL_MAX_DISTANCE - SOUND_FULLVOLUME);
-    attn = SOUND_FULLVOLUME / (SOUND_FULLVOLUME + base);
+    attn = ref / (ref + base);
 
     // the distance the reverb takes to die away by 60 dB, at 343.3 m/s
     decay = AL_ReverbDecayTime() * 343.3f;
@@ -3612,11 +3733,28 @@ would bury it: what comes off the walls outweighs the direct sound from a
 metre on in a small metal room, from three in a 24 m hall, and keeps growing
 with distance. Held at two metres, a sound across a small room comes with
 its echo a few dB over it, one across a hall a few dB under.
+Under s_falloff 1 the direct sound falls off as real sound does, and for a
+while the balance was kept at every distance, so that a far sound came more
+and more as what comes off the walls. It buried far voices: a soldier 25 m
+off in mgu6m1's rock gorge called with his echo 13 dB over his voice. So a
+voice with a slot of its own keeps the real balance out to
+s_reflections_hold metres and is held there beyond - 3 by default, which
+puts that soldier's echo about 5 dB under him; 1000 keeps the real balance
+at every distance. Where the listener's room's response stands in for a
+voice's own (`held`) it is held at SA_REFL_FULL_DIST: that is right only
+for a sound in the listener's room, and the far ones mostly are not. So is
+a loop sound: a map's hums are many and laid out for Quake II's falloff,
+and each at its echo's full level adds up to a roar.
 =================
 */
-static float SA_ReflSend(float dist, float dist_mult)
+static float SA_ReflSend(float dist, float dist_mult, bool held)
 {
-    float r = min(max(dist, SA_UNITS_PER_METER), SA_REFL_FULL_DIST);
+    float r = max(dist, SA_UNITS_PER_METER);
+
+    if (held || dist_mult >= 0)
+        r = min(r, SA_REFL_FULL_DIST);
+    else
+        r = min(r, sa.refl_hold);
 
     return SA_Falloff(dist, dist_mult) * r / SA_UNITS_PER_METER;
 }
@@ -3785,6 +3923,7 @@ static void SA_UpdateSimulation(void)
         return;
 
     sa.refl_gain = Cvar_ClampValue(s_reflections_gain, 0, 4);
+    sa.refl_hold = Cvar_ClampValue(s_reflections_hold, 1, 1000) * SA_UNITS_PER_METER;
     sa.path_gain = Cvar_ClampValue(s_pathing_gain, 0, 4);
 
     if (bsp != sa.map_bsp || (bsp && bsp->checksum != sa.map_checksum)) {
@@ -3945,8 +4084,9 @@ static void SA_Reflect(const channel_t *ch, float dist, sa_parm_t *p)
         // metre off; a gun or a voice is half that from the ears, so is
         // heard twice as loud over its echo.
         send = ch->master_vol * SA_REFL_OWN;
+        if (p->key)
+            send *= sa.weapon_gain;
     } else {
-        send = ch->master_vol * SA_ReflSend(dist, ch->dist_mult);
         s = SA_SlotIndex(SA_SlotKey(ch));
         if (s < 0 || !sa.slot_ready[s]) {
             // The room's response stands in. It is right for a sound in the
@@ -3954,9 +4094,14 @@ static void SA_Reflect(const channel_t *ch, float dist, sa_parm_t *p)
             // behind a wall sends less. A whole-level one is more likely
             // outside it altogether - a ship overhead - and sends only what
             // gets through.
-            vis = p->occlusion + (1 - p->occlusion) * p->trans[1];
+            send = ch->master_vol * SA_ReflSend(dist, ch->dist_mult, true);
+            // one behind something it goes round on either side of - a
+            // pillar, a crate - is in the listener's room
+            vis = c->small ? 1 : p->occlusion + (1 - p->occlusion) * p->trans[1];
             send *= ch->dist_mult ? SA_REFL_HIDDEN + (1 - SA_REFL_HIDDEN) * vis : vis;
             s = sa.num_slots;
+        } else {
+            send = ch->master_vol * SA_ReflSend(dist, ch->dist_mult, ch->autosound);
         }
     }
 
@@ -4025,6 +4170,15 @@ SA_TraceVoice
 Sets the targets a voice's occlusion eases towards: how much of the source the
 listener sees, what reaches it through walls and round corners, and how much
 of what is heard comes round a corner, from which way.
+
+The way round is Steam Audio's when it has one: the probes', or the GPU's
+round an edge. SA_FindPath's stands in while it has none - no run yet, in its
+sight, or no way it knows of. And over or past a small thing in the way, a
+crate or a pillar, SA_EdgePath's takes over when it is the louder: sound goes
+round such a thing on every side and over it, where the GPU counts only the
+one edge both ends can see (-14 dB of the mids round a crate's corner, -22
+of the highs) and the probes go the long way round. An infantry firing from
+behind a crate was not heard at all.
 =================
 */
 static void SA_TraceVoice(sa_chan_t *c, const vec3_t origin, float dist, float dist_mult, int skip)
@@ -4032,7 +4186,7 @@ static void SA_TraceVoice(sa_chan_t *c, const vec3_t origin, float dist, float d
     sa_path_t   path;
     float       trans[3], bent[3], occ, direct, round;
     bool        buried, found;
-    int         b;
+    int         b, sides = 0;
 
     buried = CM_PointContents(origin, cl.bsp->nodes) & MASK_SOLID;
     occ = SA_Occlusion(origin, skip, buried, trans);
@@ -4040,6 +4194,7 @@ static void SA_TraceVoice(sa_chan_t *c, const vec3_t origin, float dist, float d
     c->target_round = 0;
     c->bends = 0;
     c->path_mid = 0;
+    c->small = false;
 
     // Steam Audio's way round, if it has one to say...
     c->path_state = SA_PathResult(c, dist, dist_mult);
@@ -4049,14 +4204,35 @@ static void SA_TraceVoice(sa_chan_t *c, const vec3_t origin, float dist, float d
     // ...else, mostly hidden: look for one - though while there has been
     // none, not on every trace, as finding none costs the most
     found = false;
-    if (c->path_state != SA_PATH_ROUND && occ < 0.5f && cls.realtime >= c->next_path) {
-        found = SA_FindPath(c, origin, skip, buried, &path);
-        if (!found)
-            c->next_path = cls.realtime + SA_PATH_RETRY_MSEC;
+    if (occ < 0.5f && c->target_path <= 0) {
+        if (cls.realtime >= c->next_path) {
+            found = SA_FindPath(c, origin, skip, buried, &path, &sides);
+            if (!found)
+                c->next_path = cls.realtime + SA_PATH_RETRY_MSEC;
+        }
+    } else if (occ < 0.5f && cls.realtime >= c->next_edge) {
+        found = SA_EdgePath(origin, skip, buried, &path, &sides) && sides > 1;
+        if (found) {
+            SA_PathGain(&path, dist, dist_mult, bent);
+            found = bent[1] * sqrtf(sides) > c->target_path * c->target_path_eq[1];
+        }
+        if (found)
+            c->target_path = 0;
+        else
+            c->next_edge = cls.realtime + SA_PATH_RETRY_MSEC;
     }
 
     if (found) {
         SA_PathGain(&path, dist, dist_mult, bent);
+
+        // Round something it can go round on more than one side of - a
+        // pillar, a crate - each way carries its share, and they add up in
+        // power; the one found stands for the others.
+        if (sides > 1) {
+            c->small = true;
+            for (b = 0; b < 3; b++)
+                bent[b] = min(bent[b] * sqrtf(sides), 1.0f);
+        }
 
         // how loud each way is, for where it seems to come from
         direct = occ + (1 - occ) * trans[1];
@@ -4076,12 +4252,49 @@ static void SA_TraceVoice(sa_chan_t *c, const vec3_t origin, float dist, float d
     VectorCopy(trans, c->target_trans);
 }
 
+/*
+=================
+SA_VoicePoint
+
+Where what lies between a sound and the listener is looked for from. For a
+monster or a player, its upper body, SA_VOICE_DROP under the top of its box,
+where it calls and fires from - not its origin, the middle of the box. In
+mgu6m1's canyon the lip of a ledge hid a soldier's origin from the floor below
+in every view that had his head and shoulders in plain sight, and each call
+of his came through the rock; from the upper body, about one view in eight.
+=================
+*/
+static void SA_VoicePoint(const channel_t *ch, const vec3_t origin, vec3_t point)
+{
+    const centity_t *ent;
+    trace_t     tr;
+    vec3_t      top;
+
+    VectorCopy(origin, point);
+    if (ch->entnum <= 0 || ch->entnum >= MAX_EDICTS)
+        return;
+
+    // in the frame and solid, with a box of its own - not lying dead
+    ent = &cl_entities[ch->entnum];
+    if (ent->serverframe != cl.frame.number || !ent->current.solid || ent->current.solid == PACKED_BSP)
+        return;
+    if (ent->maxs[2] <= SA_VOICE_DROP)
+        return;
+
+    // up from the origin, short of a low ceiling
+    VectorCopy(origin, top);
+    top[2] += ent->maxs[2] - SA_VOICE_DROP;
+    SA_Trace(&tr, origin, top, ch->entnum);
+    if (!tr.startsolid)
+        VectorCopy(tr.endpos, point);
+}
+
 // occlusion and the way round, eased in: fills p's occlusion and turns `dir`
 // (world space, from the listener) towards the way the sound comes round
 static void SA_Occlude(channel_t *ch, const vec3_t origin, float dist, vec3_t dir, sa_parm_t *p)
 {
     sa_chan_t   *c = &sa.chans[ch - channels];
-    vec3_t      round_dir, path_dir;
+    vec3_t      round_dir, path_dir, point;
     float       strength, a, w, spread;
     uint64_t    start;
     int         b;
@@ -4092,7 +4305,8 @@ static void SA_Occlude(channel_t *ch, const vec3_t origin, float dist, vec3_t di
 
     if (c->fresh || cls.realtime >= c->next_trace) {
         start = Sys_Microseconds();
-        SA_TraceVoice(c, origin, dist, ch->dist_mult, ch->entnum > 0 ? ch->entnum : -1);
+        SA_VoicePoint(ch, origin, point);
+        SA_TraceVoice(c, point, dist, ch->dist_mult, ch->entnum > 0 ? ch->entnum : -1);
         sa.trace_usec += (unsigned)(Sys_Microseconds() - start);
         c->next_trace = cls.realtime + SA_TRACE_MSEC;
     }
@@ -4117,10 +4331,14 @@ static void SA_Occlude(channel_t *ch, const vec3_t origin, float dist, vec3_t di
             for (b = 0; b < 3; b++)
                 c->round_dir[b] += (c->target_round_dir[b] - c->round_dir[b]) * a;
 
-        // the same for Steam Audio's, which starts as it is from silence
+        // The same for Steam Audio's, which starts as it is from silence -
+        // at its level too, while the sound is new: a run takes 30-100 ms to
+        // answer, and a shot is over in about a tenth of a second.
         if (c->target_path > 0 && c->path < 0.001f) {
             VectorCopy(c->target_path_eq, c->path_eq);
             VectorCopy(c->target_path_vec, c->path_vec);
+            if (cls.realtime - c->started < SA_YOUNG_MSEC)
+                c->path = c->target_path;
         } else if (c->target_path > 0) {
             for (b = 0; b < 3; b++) {
                 c->path_eq[b] += (c->target_path_eq[b] - c->path_eq[b]) * a;
@@ -4203,11 +4421,18 @@ static void SA_Place(channel_t *ch, sa_parm_t *p)
     p->path_dir.x = p->path_dir.y = 0;
     p->path_dir.z = -1;
     p->path_spatial = 1;
+    p->key = false;
 
     if (!AL_ChannelOrigin(ch, origin)) {
         // from the listener: no falloff, no direction, and OpenAL sends such
         // a sound to the room in full - a radio voice not at all
         p->gain = ch->master_vol * SA_CENTRE_GAIN;
+        // the player's own weapon - every muzzle flash's sound - stands over
+        // the rest (SA_Duck)
+        if (ch->entnum == listener_entnum && (ch->entchannel & 7) == CHAN_WEAPON) {
+            p->key = true;
+            p->gain *= sa.weapon_gain;
+        }
         p->room = AL_ChannelIsRadio(ch) ? 0 : 1.0f / SA_CENTRE_GAIN;
         p->spatial = 0;
         p->dir.x = p->dir.y = 0;
@@ -4225,6 +4450,7 @@ static void SA_Place(channel_t *ch, sa_parm_t *p)
     p->gain = ch->master_vol * SA_Falloff(dist, ch->dist_mult);
 
     c->placed = true;
+    c->placed_at = cls.realtime;
     c->level = p->gain;
     VectorCopy(origin, c->origin);
 
@@ -4274,12 +4500,33 @@ static void SA_CopyPlacement(sa_parm_t *dst, const sa_parm_t *src)
     memcpy(dst->trans, src->trans, sizeof(dst->trans));
     memcpy(dst->air, src->air, sizeof(dst->air));
     dst->room = src->room;
+    dst->key = src->key;
     dst->refl_slot = src->refl_slot;
     dst->refl = src->refl;
     dst->path = src->path;
     memcpy(dst->path_eq, src->path_eq, sizeof(dst->path_eq));
     dst->path_dir = src->path_dir;
     dst->path_spatial = src->path_spatial;
+}
+
+/*
+=================
+SA_GoesOn
+
+Whether a channel's new sound goes on with what was found for its last: the
+same entity's, from about where that one was a moment ago - a gun's next
+shot. The way round comes from a pathing run, 30-100 ms after a sound is
+new, and the infantry's shot lasts 92 ms: started afresh, every shot of a
+burst was over before its way round was in.
+=================
+*/
+static bool SA_GoesOn(const sa_chan_t *c, const channel_t *ch)
+{
+    vec3_t  origin;
+
+    return ch->entnum > 0 && c->placed && c->entnum == ch->entnum && c->dist_mult == ch->dist_mult &&
+           cls.realtime - c->placed_at < SA_GO_ON_MSEC && AL_ChannelOrigin(ch, origin) &&
+           DistanceSquared(origin, c->origin) < SA_GO_ON_DIST * SA_GO_ON_DIST;
 }
 
 /*
@@ -4293,17 +4540,24 @@ mixing. `sync` is a looping channel of the same sfx to start in phase with.
 bool SA_PlayChannel(channel_t *ch, const channel_t *sync)
 {
     sfxcache_t  *sc = ch->sfx->cache;
+    sa_chan_t   *c;
     sa_parm_t   place, *p;
     int         i = ch - channels;
 
     if (!sa.active || !sc || !sc->pcm || AL_ChannelIsDry(ch))
         return false;
 
-    memset(&sa.chans[i], 0, sizeof(sa.chans[i]));
-    sa.chans[i].fresh = true;
-    if (!++sa.path_keys)
-        sa.path_keys++;
-    sa.chans[i].path_key = sa.path_keys;
+    c = &sa.chans[i];
+    if (!SA_GoesOn(c, ch)) {
+        memset(c, 0, sizeof(*c));
+        c->fresh = true;
+        c->started = cls.realtime;
+        if (!++sa.path_keys)
+            sa.path_keys++;
+        c->path_key = sa.path_keys;
+    }
+    c->entnum = ch->entnum;
+    c->dist_mult = ch->dist_mult;
     SA_Place(ch, &place);
 
     SDL_LockMutex(sa.param_lock);
@@ -4372,21 +4626,26 @@ void SA_SetPitch(float pitch)
 
 static void SA_ReadSettings(void)
 {
-    bool    use_hrtf;
+    bool    use_hrtf, refl_hrtf;
     IPLHRTFInterpolation interp;
-    float   volume, ceiling = 0;
+    float   volume, ceiling = 0, duck;
 
     use_hrtf = s_steamaudio_hrtf->integer;
+    refl_hrtf = s_reflections_hrtf->integer;
     interp = s_steamaudio_interp->integer ? IPL_HRTFINTERPOLATION_BILINEAR : IPL_HRTFINTERPOLATION_NEAREST;
     volume = Cvar_ClampValue(s_steamaudio_volume, 0, 4);
     if (s_steamaudio_limiter->integer)
         ceiling = powf(10, Cvar_ClampValue(s_steamaudio_ceiling, -24, 0) / 20);
+    duck = powf(10, -Cvar_ClampValue(s_steamaudio_duck, 0, 24) / 20);
+    sa.weapon_gain = powf(10, Cvar_ClampValue(s_steamaudio_weapon, -12, 12) / 20);
 
     SDL_LockMutex(sa.param_lock);
     sa.use_hrtf = use_hrtf;
+    sa.refl_hrtf = refl_hrtf;
     sa.interp = interp;
     sa.volume = volume;
     sa.ceiling = ceiling;
+    sa.duck = duck;
     SDL_UnlockMutex(sa.param_lock);
 }
 
@@ -4499,7 +4758,7 @@ static void SA_Voices_f(void)
     char        round[16], refl[16];
     uint64_t    wait_sum;
     unsigned    wait_count, wait_max, runs, path_map, meter_frames, meter_over;
-    float       latency, msec, spacing, sec, meter_peak, meter_gain;
+    float       latency, msec, spacing, sec, meter_peak, meter_gain, meter_duck;
     const char  *error, *gpu_why;
     uint64_t    mix_usec_sum;
     unsigned    mix_usec_max, busy_sum, busy_max;
@@ -4515,7 +4774,8 @@ static void SA_Voices_f(void)
     // occl: how much of it the listener sees. trans: what reaches it of the
     // rest, through walls and round corners. round: what comes round a
     // corner (mid band) against the straight line, and over how many bends
-    // - or "p", by Steam Audio's paths, or "e", round the GPU's edges
+    // ("s": over or past something small, louder than Steam Audio's way) -
+    // or "p", by Steam Audio's paths, or "e", round the GPU's edges
     // (s_diffraction). room: what of it goes to the reverb.
     // refl: the reflection slot it is heard off the walls through, and what
     // it sends there.
@@ -4527,10 +4787,10 @@ static void SA_Voices_f(void)
         p = sa.parms[i];
         SDL_UnlockMutex(sa.param_lock);
         c = &sa.chans[i];
-        if (c->path_state == SA_PATH_ROUND)
+        if (c->bends)
+            Q_snprintf(round, sizeof(round), "%.2f/%d%s", c->path_mid, c->bends, c->small ? "s" : "");
+        else if (c->path_state == SA_PATH_ROUND)
             Q_snprintf(round, sizeof(round), "%.2f %c", c->path * c->path_eq[1], c->path_edges ? 'e' : 'p');
-        else if (c->bends)
-            Q_snprintf(round, sizeof(round), "%.2f/%d", c->path_mid, c->bends);
         else
             Q_strlcpy(round, "  -   ", sizeof(round));
         states[c->path_state]++;
@@ -4641,10 +4901,11 @@ static void SA_Voices_f(void)
     sa.wait_sum = sa.wait_count = sa.wait_max = 0;
     meter_peak = sa.meter_peak;
     meter_gain = sa.meter_gain;
+    meter_duck = sa.meter_duck;
     meter_frames = sa.meter_frames;
     meter_over = sa.meter_over;
     sa.meter_peak = 0;
-    sa.meter_gain = 1;
+    sa.meter_gain = sa.meter_duck = 1;
     sa.meter_frames = sa.meter_over = 0;
     mix_usec_sum = sa.mix_usec_sum;
     mix_usec_max = sa.mix_usec_max;
@@ -4663,6 +4924,8 @@ static void SA_Voices_f(void)
         Com_Printf("Mix peak %+.1f dBFS, over full scale %.1f%% of the time; the limiter took off up to %.1f dB\n",
                    20 * log10f(max(meter_peak, 1e-6f)), meter_over * 100.0f / meter_frames,
                    -20 * log10f(max(meter_gain, 1e-6f)));
+        Com_Printf("The player's weapon ducked the rest by up to %.1f dB\n",
+                   -20 * log10f(max(meter_duck, 1e-6f)));
         // the mixer has a frame's time for one, or the sound breaks up
         Com_Printf("Mixing took %.2f ms a frame on average, %.2f at worst, of %.1f; %.1f reflection slots run on average, %u at most\n",
                    mix_usec_sum / 1000.0f / meter_frames, mix_usec_max / 1000.0f,
@@ -5048,7 +5311,11 @@ bool SA_Init(void)
     s_steamaudio_interp = Cvar_Get("s_steamaudio_interp", "1", 0);
     s_steamaudio_volume = Cvar_Get("s_steamaudio_volume", "1", 0);
     s_steamaudio_limiter = Cvar_Get("s_steamaudio_limiter", "1", 0);
-    s_steamaudio_ceiling = Cvar_Get("s_steamaudio_ceiling", "-3", 0);
+    s_steamaudio_ceiling = Cvar_Get("s_steamaudio_ceiling", "-1", 0);
+    // dB: the player's own weapons over their other sounds, and the most
+    // everything else is turned down while one sounds (SA_Duck)
+    s_steamaudio_weapon = Cvar_Get("s_steamaudio_weapon", "2", 0);
+    s_steamaudio_duck = Cvar_Get("s_steamaudio_duck", "6", 0);
     s_occlusion =Cvar_Get("s_occlusion", "1", CVAR_ARCHIVE);
     s_global_floor = Cvar_Get("s_global_floor", "0.25", 0);
     s_reflections = Cvar_Get("s_reflections", "1", CVAR_ARCHIVE | CVAR_SOUND);
@@ -5060,6 +5327,10 @@ bool SA_Init(void)
     s_reflections_bounces = Cvar_Get("s_reflections_bounces", "64", 0);
     s_reflections_rate = Cvar_Get("s_reflections_rate", "10", 0);
     s_reflections_gain = Cvar_Get("s_reflections_gain", "1", CVAR_ARCHIVE);
+    // a far voice's echo against it: SA_ReflSend; and how it is decoded:
+    // SA_MixReflections
+    s_reflections_hold = Cvar_Get("s_reflections_hold", "3", 0);
+    s_reflections_hrtf = Cvar_Get("s_reflections_hrtf", "0", 0);
     s_reflections_gpu = Cvar_Get("s_reflections_gpu", "1", CVAR_ARCHIVE);
     s_reflections_gpu_rays = Cvar_Get("s_reflections_gpu_rays", "8192", 0);
     s_pathing = Cvar_Get("s_pathing", "1", CVAR_ARCHIVE | CVAR_SOUND);
@@ -5107,6 +5378,8 @@ bool SA_Init(void)
     sa.audio.samplingRate = rate;
     sa.audio.frameSize = SA_FRAME;
     sa.limit_gain = sa.meter_gain = 1;
+    sa.duck_gain = sa.meter_duck = 1;
+    sa.duck_level = 0;
 
     memset(&hrtf_settings, 0, sizeof(hrtf_settings));
     hrtf_settings.type = IPL_HRTFTYPE_DEFAULT;

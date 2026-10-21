@@ -26,7 +26,8 @@ WHAT IT DOES:
     Find*.cmake modules look (core/deps/...);
   * patches the Steam Audio source (see PATCHES): its own vector maths, which
     Valve's IPP builds never run, where it is wrong; the reflection response,
-    which it builds as one coherent signal; and pathing, which leaves stale
+    which it builds as one coherent signal and cuts short for a far source;
+    and pathing, which leaves stale
     results where no probe is in reach, keeps a path a door has shut, and
     counts a partial result's share twice; a hook that lets the game's
     own GPU tracer stand in for the reflection simulator; and a reflection
@@ -211,6 +212,35 @@ PATCHES = [
      '                    else if (type == ReconstructionType::Linear)\n'
      '                    {\n'
      '                        auto energy = 0.0f;\n', 1),
+
+    # Where the response ends. Valve's reconstruction leaves out every bin under
+    # kEnergyThreshold, a fixed energy, whatever the source's level - and the
+    # energy field is in proportion to that level, falling as the source gets
+    # farther. A soldier 25 m off in mgu6m1's canyon starts 75 times quieter
+    # than a sound at the listener, so his tail reached the threshold at 460
+    # ms and stopped dead while still only 30 dB down: the more a material
+    # absorbs, the sooner. The end is put instead 60 dB under the band's
+    # loudest bin, the range a reverberation time is measured over, so a far
+    # source's response fades out as a near one's does.
+    ('src/core/reconstructor.cpp',
+     '        numSamples = std::min({ impulseResponse.numSamples(), numSamples });\n'
+     '        auto numBins = std::min({ energyField.numBins(), ',
+     '        numSamples = std::min({ impulseResponse.numSamples(), numSamples });\n'
+     '\n'
+     '        // q2rtx: where the tail ends, per band, see setup/build_phonon.py\n'
+     '        float tailFloor[Bands::kNumBands];\n'
+     '        for (auto iBand = 0; iBand < Bands::kNumBands; ++iBand)\n'
+     '        {\n'
+     '            auto peak = 0.0f;\n'
+     '            for (auto iBin = 0; iBin < energyField.numBins(); ++iBin)\n'
+     '                peak = std::max(peak, energyField[0][iBand][iBin]);\n'
+     '            tailFloor[iBand] = peak * 1e-6f;\n'
+     '        }\n'
+     '\n'
+     '        auto numBins = std::min({ energyField.numBins(), ', 1),
+    ('src/core/reconstructor.cpp',
+     '                            if (e0 < kEnergyThreshold)\n',
+     '                            if (e0 <= tailFloor[iBand])\n', 1),
 
     # Pathing with no baked probe near the source or the listener returns
     # without writing its outputs, so a source keeps the paths of wherever it

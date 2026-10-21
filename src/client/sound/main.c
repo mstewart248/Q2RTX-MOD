@@ -57,6 +57,9 @@ playsound_t s_pendingplays;
 
 cvar_t      *s_volume;
 cvar_t      *s_ambient;
+cvar_t      *s_falloff;
+static cvar_t   *s_falloff_dist;
+static cvar_t   *s_falloff_ambient;
 #if USE_DEBUG
 cvar_t      *s_show;
 #endif
@@ -147,6 +150,19 @@ S_Init
 */
 void S_Init(void)
 {
+    // how sound falls off with distance (S_Falloff): 0 as Quake II had it,
+    // in a straight line to silence; 1 as real sound does, 1/r, in single
+    // player. Before s_enable is looked at, as S_AttenuationRange asks
+    // whether sound is on or not.
+    s_falloff = Cvar_Get("s_falloff", "1", CVAR_ARCHIVE);
+    // s_falloff 1: how far out a sound is at full volume, in units, before it
+    // falls off as 1/r (S_FalloffRef); twice it is every sound 6 dB louder
+    // at a distance
+    s_falloff_dist = Cvar_Get("s_falloff_dist", "160", CVAR_ARCHIVE);
+    // and the ambient sounds' - ATTN_STATIC, and every loop sound - as a
+    // fraction of it: 0.5 is 6 dB under gunfire at any distance past it
+    s_falloff_ambient = Cvar_Get("s_falloff_ambient", "0.5", CVAR_ARCHIVE);
+
     s_enable = Cvar_Get("s_enable", "2", CVAR_SOUND);
     if (s_enable->integer <= SS_NOT) {
         Com_Printf("Sound initialization disabled.\n");
@@ -627,7 +643,7 @@ Used for spatializing channels and autosounds
 void S_SpatializeOrigin(const vec3_t origin, float master_vol, float dist_mult, int *left_vol, int *right_vol)
 {
     vec_t       dot;
-    vec_t       dist;
+    vec_t       gain;
     vec_t       lscale, rscale, scale;
     vec3_t      source_vec;
 
@@ -639,11 +655,7 @@ void S_SpatializeOrigin(const vec3_t origin, float master_vol, float dist_mult, 
 // calculate stereo seperation and distance attenuation
     VectorSubtract(origin, listener_origin, source_vec);
 
-    dist = VectorNormalize(source_vec);
-    dist -= SOUND_FULLVOLUME;
-    if (dist < 0)
-        dist = 0;           // close enough to be at full volume
-    dist *= dist_mult;      // different attenuation levels
+    gain = S_Falloff(VectorNormalize(source_vec), dist_mult);
 
     dot = DotProduct(listener_right, source_vec);
     if (s_swapstereo->integer)
@@ -661,12 +673,12 @@ void S_SpatializeOrigin(const vec3_t origin, float master_vol, float dist_mult, 
     master_vol *= 255.0f;
 
     // add in distance effect
-    scale = (1.0f - dist) * rscale;
+    scale = gain * rscale;
     *right_vol = (int)(master_vol * scale);
     if (*right_vol < 0)
         *right_vol = 0;
 
-    scale = (1.0f - dist) * lscale;
+    scale = gain * lscale;
     *left_vol = (int)(master_vol * scale);
     if (*left_vol < 0)
         *left_vol = 0;
@@ -725,16 +737,140 @@ float S_DistMult(float attenuation)
 
 /*
 =================
+S_Falloff
+
+How much of a sound this far away is heard, by its channel's dist_mult:
+
+  0     no falloff: ATTN_NONE, full volume the entire level
+  > 0   Quake II's, LINEAR - full out to SOUND_FULLVOLUME, then down in a
+        straight line to EXACTLY silent at SOUND_FULLVOLUME + 1 / dist_mult
+  < 0   real sound's, 1/r - full out to -dist_mult units (S_FalloffRef), then
+        6 dB quieter each time the distance doubles, and never silent
+
+Every mixer goes through this one copy: S_SpatializeOrigin, the Steam Audio
+mixer, and OpenAL as the matching AL_LINEAR_DISTANCE_CLAMPED or
+AL_INVERSE_DISTANCE_CLAMPED per source (al.c).
+=================
+*/
+float S_Falloff(float dist, float dist_mult)
+{
+    float gain;
+
+    if (dist_mult < 0)
+        return dist > -dist_mult ? -dist_mult / dist : 1.0f;
+
+    gain = 1.0f - max(dist - SOUND_FULLVOLUME, 0) * dist_mult;
+    return min(max(gain, 0.0f), 1.0f);
+}
+
+/*
+=================
+S_FalloffRef
+
+The reference distance of real sound's falloff (S_Falloff), for a Quake II
+slope. A sound is at full volume out to there, then 6 dB quieter each time
+the distance doubles; real sound falls off the same way whatever made it.
+
+What the distance really sets is how loud a thing is, which Quake II's sounds
+do not say: a source twice as loud is at full volume twice as far out, and 6
+dB louder everywhere past it. Its attenuations are its stand-in, and say it
+only roughly - straight lines that for ATTN_NORM, gunfire and monsters
+waking, fell just 6 dB in 1000 units. Matched to them, 1/r stayed full out to
+540 units, and a monster calling from across a canyon sounded right beside
+you. So ATTN_NORM's is s_falloff_dist, 160 units (5 m): -6 dB at 320, -12 at
+640, -18 at 1280. Quake II's own full-volume radius, SOUND_FULLVOLUME's 80,
+put one across a room too far off.
+
+The ambient sounds, ATTN_STATIC and every loop sound - hums, flies, fans -
+are s_falloff_ambient of that, and ATTN_IDLE's in between in the proportion
+of the distances Quake II's lines carried them. Given gunfire's level, a
+map's dozens of hums drowned the fighting.
+=================
+*/
+static float S_HalfVolume(float dist_mult)
+{
+    return SOUND_FULLVOLUME + 0.5f / dist_mult;
+}
+
+static float S_FalloffRef(float dist_mult)
+{
+    float norm = S_HalfVolume(S_DistMult(ATTN_NORM));
+    float quiet = logf(Cvar_ClampValue(s_falloff_ambient, 0.05f, 1)) /
+                  logf(S_HalfVolume(SOUND_LOOPATTENUATE) / norm);
+
+    return Cvar_ClampValue(s_falloff_dist, 1, 8192) * powf(S_HalfVolume(dist_mult) / norm, quiet);
+}
+
+// s_falloff 1 is in force: in single player only, as in multiplayer how far a
+// sound carries is part of the game
+static bool S_RealFalloff(void)
+{
+    if (!s_falloff || s_falloff->integer <= 0 || cl.maxclients > 1)
+        return false;
+
+#if USE_OPENAL
+    // OpenAL takes it per source, not on its own mixer (al.c)
+    if (s_started == SS_OAL && !al_source_distance_model)
+        return false;
+#endif
+
+    return true;
+}
+
+// a channel's dist_mult (S_Falloff) for a Quake II slope, as s_falloff says
+static float S_FalloffMult(float dist_mult)
+{
+    if (!dist_mult || !S_RealFalloff())
+        return dist_mult;
+
+    return -S_FalloffRef(dist_mult);
+}
+
+// a channel's dist_mult for a sound started at this attenuation
+float S_ChannelDistMult(float attenuation)
+{
+    return S_FalloffMult(S_DistMult(attenuation));
+}
+
+// a channel's dist_mult for an entity's loop sound
+float S_LoopDistMult(void)
+{
+    return S_FalloffMult(SOUND_LOOPATTENUATE);
+}
+
+/*
+=================
+S_BoundedDistMult
+
+A channel's dist_mult for a sound that keeps Quake II's straight line whatever
+s_falloff says, to silence at `range` times the distance this attenuation's
+would reach it at: one that goes on so long that heard all over the level it
+would wear thin - a flare burns for 15 seconds (CL_ParseTEnt).
+=================
+*/
+static float S_BoundedDistMult(float attenuation, float range)
+{
+    float dist_mult = S_DistMult(attenuation);
+
+    if (!dist_mult)
+        return 0;
+
+    range *= SOUND_FULLVOLUME + 1 / dist_mult;
+    return 1 / max(range - SOUND_FULLVOLUME, 1.0f);
+}
+
+/*
+=================
 S_AttenuationRange
 
 How far a sound started at this attenuation carries, in units, or 0 if it carries
 forever.
 
 Quake II's falloff is LINEAR, not inverse-square: gain is
-1 - dist_mult * (dist - SOUND_FULLVOLUME) in S_SpatializeOrigin, and
-AL_LINEAR_DISTANCE_CLAMPED with a matching AL_ROLLOFF_FACTOR in al.c. So there is
-a finite distance at which a sound goes EXACTLY silent rather than merely quiet,
-and this returns it - ATTN_NORM 2080 units, ATTN_IDLE 1080, ATTN_STATIC 413.
+1 - dist_mult * (dist - SOUND_FULLVOLUME) (S_Falloff). So there is a finite
+distance at which a sound goes EXACTLY silent rather than merely quiet, and this
+returns it - ATTN_NORM 2080 units, ATTN_IDLE 1080, ATTN_STATIC 413. Real sound's
+(s_falloff 1) never goes silent, so under it this is 0.
 
 Worth having for a caller that rate limits or thins its own sounds: past this
 range a sound cannot be heard at all, so letting one through spends a voice and a
@@ -745,6 +881,9 @@ float S_AttenuationRange(float attenuation)
 {
     if (attenuation <= 0.f)
         return 0.f;             // ATTN_NONE - full volume the entire level
+
+    if (S_RealFalloff())
+        return 0.f;             // 1/r: quieter and quieter, never silent
 
     return SOUND_FULLVOLUME + 1.f / S_DistMult(attenuation);
 }
@@ -821,7 +960,10 @@ void S_IssuePlaysound(playsound_t *ps)
     }
 
     // spatialize
-    ch->dist_mult = S_DistMult(ps->attenuation);
+    if (ps->bound > 0)
+        ch->dist_mult = S_BoundedDistMult(ps->attenuation, ps->bound);
+    else
+        ch->dist_mult = S_ChannelDistMult(ps->attenuation);
     ch->master_vol = ps->volume;
     ch->entnum = ps->entnum;
     ch->entchannel = ps->entchannel;
@@ -852,14 +994,15 @@ void S_IssuePlaysound(playsound_t *ps)
 
 /*
 ====================
-S_StartSound
+S_QueueSound
 
 Validates the parms and ques the sound up
 if pos is NULL, the sound will be dynamically sourced from the entity
 Entchannel 0 will never override a playing sound
+`bound`: see S_StartBoundedSound, 0 for none
 ====================
 */
-void S_StartSound(const vec3_t origin, int entnum, int entchannel, qhandle_t hSfx, float vol, float attenuation, float timeofs)
+static void S_QueueSound(const vec3_t origin, int entnum, int entchannel, qhandle_t hSfx, float vol, float attenuation, float timeofs, float bound)
 {
     sfxcache_t  *sc;
     playsound_t *ps, *sort;
@@ -900,6 +1043,7 @@ void S_StartSound(const vec3_t origin, int entnum, int entchannel, qhandle_t hSf
     ps->entnum = entnum;
     ps->entchannel = entchannel;
     ps->attenuation = attenuation;
+    ps->bound = bound;
     ps->volume = vol;
     ps->sfx = sfx;
 
@@ -922,6 +1066,18 @@ void S_StartSound(const vec3_t origin, int entnum, int entchannel, qhandle_t hSf
 
     ps->next->prev = ps;
     ps->prev->next = ps;
+}
+
+void S_StartSound(const vec3_t origin, int entnum, int entchannel, qhandle_t hSfx, float vol, float attenuation, float timeofs)
+{
+    S_QueueSound(origin, entnum, entchannel, hSfx, vol, attenuation, timeofs, 0);
+}
+
+// One that falls off as Quake II's did whatever s_falloff says, to silence at
+// `range` times the distance its attenuation would: S_BoundedDistMult.
+void S_StartBoundedSound(const vec3_t origin, int entnum, int entchannel, qhandle_t hSfx, float vol, float attenuation, float timeofs, float range)
+{
+    S_QueueSound(origin, entnum, entchannel, hSfx, vol, attenuation, timeofs, max(range, 0.1f));
 }
 
 void S_ParseStartSound(void)
@@ -1068,7 +1224,7 @@ static void S_AddLoopSounds(void)
 
         // find the total contribution of all sounds of this type
         CL_GetEntitySoundOrigin(ent->number, origin);
-        S_SpatializeOrigin(origin, 1.0f, SOUND_LOOPATTENUATE,
+        S_SpatializeOrigin(origin, 1.0f, S_LoopDistMult(),
                            &left_total, &right_total);
         for (j = i + 1; j < cl.frame.numEntities; j++) {
             if (sounds[j] != sounds[i])
@@ -1079,7 +1235,7 @@ static void S_AddLoopSounds(void)
             ent = &cl.entityStates[num];
 
             CL_GetEntitySoundOrigin(ent->number, origin);
-            S_SpatializeOrigin(origin, 1.0f, SOUND_LOOPATTENUATE,
+            S_SpatializeOrigin(origin, 1.0f, S_LoopDistMult(),
                                &left, &right);
             left_total += left;
             right_total += right;

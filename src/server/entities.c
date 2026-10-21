@@ -325,6 +325,24 @@ Build a client frame structure
 =============================================================================
 */
 
+// whether a leaf the entity touches is in this PVS or PHS
+static bool ent_in_vis(client_t *client, edict_t *ent, byte *mask)
+{
+    int i;
+
+    if (ent->num_clusters == -1) {
+        // too many leafs for individual check, go by headnode
+        return CM_HeadnodeVisible(CM_NodeNum(client->cm, ent->headnode), mask);
+    }
+
+    // check individual leafs
+    for (i = 0; i < ent->num_clusters; i++)
+        if (Q_IsBitSet(mask, ent->clusternums[i]))
+            return true;
+
+    return false;
+}
+
 #if USE_FPS
 static void
 fix_old_origin(client_t *client, entity_packed_t *state, edict_t *ent, int e)
@@ -380,7 +398,7 @@ copies off the playerstat and areabits.
 */
 void SV_BuildClientFrame(client_t *client)
 {
-    int         e, i;
+    int         e;
     vec3_t      org;
     edict_t     *ent;
     edict_t     *clent;
@@ -394,6 +412,11 @@ void SV_BuildClientFrame(client_t *client)
     byte        clientpvs[VIS_MAX_BYTES];
     bool    ent_visible;
     int cull_nonvisible_entities = Cvar_Get("sv_cull_nonvisible_entities", "1", CVAR_CHEAT)->integer;
+    // Single player under the client's s_falloff 1 (S_Falloff), where sound
+    // falls off as 1/r and is never silent: what makes a sound is sent while
+    // it can be heard - in the PHS and not just the PVS, and at any distance
+    // for one with no model - and not cut off where it is still heard.
+    bool far_sounds = sv_maxclients->integer == 1 && Cvar_Get("s_falloff", "1", CVAR_ARCHIVE)->integer > 0;
 
     clent = client->edict;
     if (!clent->client)
@@ -496,22 +519,13 @@ void SV_BuildClientFrame(client_t *client)
                         ent_visible = false;
                 }
                 else {
-                    if (cull_nonvisible_entities) {
-                        if (ent->num_clusters == -1) {
-                            // too many leafs for individual check, go by headnode
-                            if (!CM_HeadnodeVisible(CM_NodeNum(client->cm, ent->headnode), clientpvs))
-                                ent_visible = false;
-                        } else {
-                            // check individual leafs
-                            for (i = 0; i < ent->num_clusters; i++)
-                                if (Q_IsBitSet(clientpvs, ent->clusternums[i]))
-                                    break;
-                            if (i == ent->num_clusters)
-                                ent_visible = false;       // not visible
-                        }
+                    if (cull_nonvisible_entities && !ent_in_vis(client, ent, clientpvs)) {
+                        // not visible, though perhaps heard
+                        if (!far_sounds || !ent->s.sound || !ent_in_vis(client, ent, clientphs))
+                            ent_visible = false;
                     }
 
-                    if (!ent->s.modelindex) {
+                    if (!ent->s.modelindex && !far_sounds) {
                         // don't send sounds if they will be attenuated away
                         vec3_t    delta;
                         float    len;

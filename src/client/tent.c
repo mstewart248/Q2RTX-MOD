@@ -166,6 +166,11 @@ static cvar_t   *cl_poi_marker_scale;
 // floated a foot or so in front of everyone's chest.
 static cvar_t   *cl_beam_muzzle_drop;
 
+// How far the flare's burn is heard, against ATTN_NORM's 2080 units. It keeps
+// Quake II's straight line to silence whatever s_falloff says: it goes on for
+// 15 seconds, and heard all over the level that would wear thin.
+static cvar_t   *s_flare_range;
+
 
 /*
 =================
@@ -1750,7 +1755,8 @@ void CL_ParseTEnt(void)
             // the same flare replaces the old one instead of eating another of
             // the 32 mix channels.
             if (te.count!=0)
-                S_StartSound(NULL, te.entity1, CHAN_VOICE, cl_sfx_flare, 0.5, ATTN_NORM, 0);
+                S_StartBoundedSound(NULL, te.entity1, CHAN_VOICE, cl_sfx_flare, 0.5, ATTN_NORM, 0,
+                                    s_flare_range->value);
         }
         break;
 
@@ -2194,6 +2200,7 @@ void CL_ClearTEnts(void)
 
 void CL_InitTEnts(void)
 {
+    s_flare_range = Cvar_Get("s_flare_range", "1.3", CVAR_ARCHIVE);
     cl_beam_thirdperson = Cvar_Get("cl_beam_thirdperson", "0", CVAR_ARCHIVE);
     cl_beam_track_view = Cvar_Get("cl_beam_track_view", "1", CVAR_ARCHIVE);
     // NOT archived, exactly like cl_muzzleflash_offset: a dev knob that

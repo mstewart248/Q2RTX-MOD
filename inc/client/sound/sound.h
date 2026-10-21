@@ -25,6 +25,11 @@ void S_Shutdown(void);
 // if origin is NULL, the sound will be dynamically sourced from the entity
 void S_StartSound(const vec3_t origin, int entnum, int entchannel,
                   qhandle_t sfx, float fvol, float attenuation, float timeofs);
+// one that falls off in Quake II's straight line whatever s_falloff says, to
+// silence at `range` times the distance its attenuation would
+void S_StartBoundedSound(const vec3_t origin, int entnum, int entchannel,
+                         qhandle_t sfx, float fvol, float attenuation, float timeofs,
+                         float range);
 void S_ParseStartSound(void);
 void S_StartLocalSound(const char *s);
 void S_StartLocalSound_(const char *s);
@@ -76,9 +81,10 @@ extern  vec3_t  listener_right;
 extern  vec3_t  listener_up;
 extern  int     listener_entnum;
 
-// Attenuation as the mixers' own linear falloff. S_AttenuationRange gives the
+// Attenuation as Quake II's linear falloff. S_AttenuationRange gives the
 // distance at which a sound of that attenuation goes exactly silent, or 0 if it
-// never does - see the definitions in sound/main.c.
+// never does - as under s_falloff 1 none does - see the definitions in
+// sound/main.c.
 float S_DistMult(float attenuation);
 float S_AttenuationRange(float attenuation);
 
