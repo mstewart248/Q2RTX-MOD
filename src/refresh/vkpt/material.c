@@ -325,6 +325,44 @@ static pbr_material_t* find_material_sorted(const char* name, pbr_material_t* fi
 	return NULL;
 }
 
+/* Where a MATERIAL INSTANCE's suffix starts - the '#' of the "#%08x" that
+   MAT_InstanceName appends - or NULL if (name) is not an instance.
+
+   Only a '#' followed by exactly eight hex digits at the very end counts. Any
+   '#' used to: the rerelease's own textures/tomf/#lava_tf1 then read as an
+   instance, and its name was cut down to "textures/tomf/". */
+static const char* instance_separator(const char* name)
+{
+	size_t len = strlen(name);
+
+	if (len < 9 || name[len - 9] != '#')
+		return NULL;
+
+	for (size_t i = len - 8; i < len; i++)
+	{
+		char c = Q_tolower(name[i]);
+		if (!Q_isdigit(c) && (c < 'a' || c > 'f'))
+			return NULL;
+	}
+
+	return name + len - 9;
+}
+
+// the live material (name) is an instance OF, or NULL if it is not an instance
+// or that material is not registered
+static pbr_material_t* find_instance_base(const char* name)
+{
+	const char* sep = instance_separator(name);
+
+	if (!sep)
+		return NULL;
+
+	char base_name[MAX_QPATH];
+	Q_strlcpy(base_name, name, min(sizeof(base_name), (size_t)(sep - name) + 1));
+
+	return find_material(base_name, Com_HashString(base_name, RMATERIALS_HASH), r_materials, MAX_PBR_MATERIALS);
+}
+
 enum AttributeIndex
 {
 	MAT_BUMP_SCALE,
@@ -1239,6 +1277,94 @@ void MAT_InheritScalars(pbr_material_t* mat, const char* source_name)
 	mat->flags = (mat->flags & ~inherited_flags) | (src->flags & inherited_flags);
 }
 
+/*
+=================
+material_inherit_instance
+
+A MATERIAL INSTANCE starts as an exact copy of its base - the live material, as
+its own .mat entry, sidecars and any synthesized emissive left it - and every
+line in the instance's own section overrides just that one thing. An empty
+section looks exactly like the texture does everywhere else; "texture_height 0"
+and the like drop a map the base has.
+
+It used to start from the texture with NO .mat entry instead, re-detecting the
+images from the instance's name. That name has no extension, which IMG_Find
+needs, so the base image was never found and the surface rendered white - and a
+base whose maps live in materialDev/ or are .png would have lost them anyway,
+along with every scalar its entry set (base_factor, metalness_factor, ...).
+=================
+*/
+static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t* base)
+{
+	// The surface's UVs come from its texinfo and the base .wal's size, which
+	// are the same whatever image this instance draws with.
+	mat->original_width = base->original_width;
+	mat->original_height = base->original_height;
+
+#define INHERIT(attr, field) do { if (!MAT_SPECIFIED(mat, attr)) mat->field = base->field; } while (0)
+#define INHERIT_TEXTURE(attr, image, filename) do { if (!MAT_SPECIFIED(mat, attr)) { \
+		mat->image = base->image; \
+		Q_strlcpy(mat->filename, base->filename, sizeof(mat->filename)); } } while (0)
+
+	INHERIT_TEXTURE(MAT_TEXTURE_BASE,      image_base,      filename_base);
+	INHERIT_TEXTURE(MAT_TEXTURE_NORMALS,   image_normals,   filename_normals);
+	INHERIT_TEXTURE(MAT_TEXTURE_ROUGHNESS, image_roughness, filename_roughness);
+	INHERIT_TEXTURE(MAT_TEXTURE_METALLIC,  image_metallic,  filename_metallic);
+	INHERIT_TEXTURE(MAT_TEXTURE_HEIGHT,    image_height,    filename_height);
+	INHERIT_TEXTURE(MAT_TEXTURE_MASK,      image_mask,      filename_mask);
+
+	INHERIT(MAT_SYNTH_EMISSIVE, synth_emissive);
+	INHERIT(MAT_EMISSIVE_THRESHOLD, emissive_threshold);
+
+	// A synthesized emissive ('*E') is the base image's bright texels at the
+	// base's threshold. An instance that changes either needs one of its own, so
+	// the slot is left empty for MAT_SynthesizeEmissive - which also covers a BSP
+	// surface light, synthesized by bsp_mesh_register_textures with no
+	// synth_emissive saying so.
+	if (!MAT_SPECIFIED(mat, MAT_TEXTURE_EMISSIVE))
+	{
+		const bool synthesized = base->image_emissive && strstr(base->image_emissive->name, "*E");
+
+		if (synthesized && (MAT_SPECIFIED(mat, MAT_TEXTURE_BASE) || MAT_SPECIFIED(mat, MAT_EMISSIVE_THRESHOLD)))
+		{
+			mat->image_emissive = NULL;
+			mat->filename_emissive[0] = 0;
+			if (!MAT_SPECIFIED(mat, MAT_SYNTH_EMISSIVE))
+				mat->synth_emissive = true;
+		}
+		else
+			INHERIT_TEXTURE(MAT_TEXTURE_EMISSIVE, image_emissive, filename_emissive);
+	}
+
+	INHERIT(MAT_BUMP_SCALE, bump_scale);
+	INHERIT(MAT_DISPLACE_IN, displace_in);
+	INHERIT(MAT_DISPLACE_OUT, displace_out);
+	INHERIT(MAT_ROUGHNESS_OVERRIDE, roughness_override);
+	INHERIT(MAT_METALNESS_FACTOR, metalness_factor);
+	INHERIT(MAT_EMISSIVE_FACTOR, emissive_factor);
+	INHERIT(MAT_SPECULAR_FACTOR, specular_factor);
+	INHERIT(MAT_BASE_FACTOR, base_factor);
+	INHERIT(MAT_LIGHT_STYLES, light_styles);
+	INHERIT(MAT_BSP_RADIANCE, bsp_radiance);
+	INHERIT(MAT_DEFAULT_RADIANCE, default_radiance);
+	INHERIT(MAT_VOLUMETRIC_SCALE, volumetric_scale);
+	INHERIT(MAT_DLSS_GUIDE_FIELD, dlss_guide_field);
+	INHERIT(MAT_ALBEDO_STRENGTH, albedo_strength);
+
+#undef INHERIT_TEXTURE
+#undef INHERIT
+
+	uint32_t inherited_flags = 0;
+	if (!MAT_SPECIFIED(mat, MAT_KIND))
+		inherited_flags |= MATERIAL_KIND_MASK;
+	if (!MAT_SPECIFIED(mat, MAT_IS_LIGHT))
+		inherited_flags |= MATERIAL_FLAG_LIGHT;
+	if (!MAT_SPECIFIED(mat, MAT_CURVED_WATER))
+		inherited_flags |= MATERIAL_FLAG_CURVED_WATER;
+
+	mat->flags = (mat->flags & ~inherited_flags) | (base->flags & inherited_flags);
+}
+
 pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 {
 	char mat_name_no_ext[MAX_QPATH];
@@ -1253,20 +1379,22 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 
 	   So the name splits in two here. `mat_name_no_ext` stays whole and keys
 	   the material; `texture_name` has the suffix cut off and is what every
-	   lookup that touches the filesystem uses. An instance with an empty .mat
-	   section therefore auto-detects exactly the textures the base would have
-	   found on its own, which is what makes a fresh instance look like the
-	   texture before anyone overrode it. */
+	   lookup that touches the filesystem uses. What the instance's own section
+	   leaves unsaid comes from the live base material - see
+	   material_inherit_instance - so an empty section looks exactly like the
+	   texture does everywhere else. */
 	char texture_name[MAX_QPATH];
 	char texture_name_no_ext[MAX_QPATH];
 	Q_strlcpy(texture_name, name, sizeof(texture_name));
 	Q_strlcpy(texture_name_no_ext, mat_name_no_ext, sizeof(texture_name_no_ext));
 	{
-		char* sep = strchr(texture_name, '#');
-		if (sep) *sep = 0;
-		sep = strchr(texture_name_no_ext, '#');
-		if (sep) *sep = 0;
+		const char* sep = instance_separator(texture_name);
+		if (sep) texture_name[sep - texture_name] = 0;
+		sep = instance_separator(texture_name_no_ext);
+		if (sep) texture_name_no_ext[sep - texture_name_no_ext] = 0;
 	}
+
+	const pbr_material_t* instance_base = find_instance_base(mat_name_no_ext);
 
 	uint32_t hash = Com_HashString(mat_name_no_ext, RMATERIALS_HASH);
 	
@@ -1332,7 +1460,11 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		// texture", i.e. exactly today's behaviour, so nothing that already
 		// ships changes.
 		if (!MAT_SPECIFIED(mat, MAT_TEXTURE_BASE))
-			autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
+		{
+			// an instance takes the slots it leaves unsaid from its base, below
+			if (!instance_base)
+				autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
+		}
 		else
 		{
 			// a player skin's own maps beat its model's shared ones
@@ -1432,8 +1564,12 @@ pbr_material_t* MAT_Find(const char* name, imagetype_t type, imageflags_t flags)
 		MAT_Reset(mat);
 		Q_strlcpy(mat->name, mat_name_no_ext, sizeof(mat->name));
 
-		autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
+		if (!instance_base)
+			autodetect_material_textures(mat, texture_name, texture_name_no_ext, type, flags);
 	}
+
+	if (instance_base)
+		material_inherit_instance(mat, instance_base);
 
 	if(mat->synth_emissive && !mat->image_emissive)
 		MAT_SynthesizeEmissive(mat);
@@ -1788,11 +1924,17 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	// bsp_mesh_register_textures during the CL_PrepRefresh below.
 	mat->flags = (matdef->flags & ~MATERIAL_INDEX_MASK) | (mat->flags & MATERIAL_INDEX_MASK);
 
+	// an instance re-inherits from its base after its own definition is applied;
+	// material_command_reload has already brought the base up to date
+	const pbr_material_t* instance_base = find_instance_base(mat->name);
+
 	// A synthesized emissive is cached under a derived '*E' name keyed on the
 	// old threshold, so a changed threshold has to retire it - the same thing
-	// 'mat emissive_threshold <n>' does.
+	// 'mat emissive_threshold <n>' does. Not one an instance borrowed from its
+	// base, though: retiring that would retire the base's.
 	if (mat->emissive_threshold != matdef->emissive_threshold
-		&& mat->image_emissive && strstr(mat->image_emissive->name, "*E"))
+		&& mat->image_emissive && strstr(mat->image_emissive->name, "*E")
+		&& !(instance_base && mat->image_emissive == instance_base->image_emissive))
 	{
 		mat->image_emissive->name[0] = 0;
 		mat->image_emissive = NULL;
@@ -1834,7 +1976,9 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 #undef RELOAD_SKIN_TEXTURE
 #undef RELOAD_TEXTURE
 
-	if (!describes_textures)
+	if (instance_base)
+		material_inherit_instance(mat, instance_base);
+	else if (!describes_textures)
 	{
 		// re-detect the slots the definition left unsaid, as a cold load would
 		autodetect_material_textures(mat, NULL, mat->name, mat->image_type,
@@ -1894,12 +2038,18 @@ static void material_command_reload(void)
 		}
 	}
 
+	// instances in a second pass: each one re-inherits from its base, which
+	// therefore has to have taken its own new definition first
 	int updated = 0, generated = 0;
+	for (int pass = 0; pass < 2; pass++)
 	for (uint32_t i = 0; i < MAX_PBR_MATERIALS; i++)
 	{
 		pbr_material_t* mat = r_materials + i;
 
 		if (!mat->registration_sequence)
+			continue;
+
+		if ((instance_separator(mat->name) != NULL) != (pass == 1))
 			continue;
 
 		// a wall takes its map's override in preference to the global table,
@@ -1937,6 +2087,62 @@ static void material_command_reload(void)
 	           updated, generated);
 }
 
+// The commented-out lines in a fresh instance stub: what the instance inherits
+// from (mat) right now - see material_create_instance.
+static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat)
+{
+	const bool synthesized = mat->image_emissive && strstr(mat->image_emissive->name, "*E");
+
+#define STUB_TEXTURE(key, filename) \
+	if (mat->filename[0]) \
+		FS_FPrintf(file, "#\t" key " %s\n", mat->filename)
+
+	STUB_TEXTURE("texture_base", filename_base);
+	STUB_TEXTURE("texture_normals", filename_normals);
+	STUB_TEXTURE("texture_roughness", filename_roughness);
+	STUB_TEXTURE("texture_metallic", filename_metallic);
+	STUB_TEXTURE("texture_height", filename_height);
+	if (!synthesized)
+		STUB_TEXTURE("texture_emissive", filename_emissive);
+	STUB_TEXTURE("texture_mask", filename_mask);
+
+#undef STUB_TEXTURE
+
+	FS_FPrintf(file, "#\tbump_scale %g\n", mat->bump_scale);
+	FS_FPrintf(file, "#\tdisplace_in %g\n", mat->displace_in);
+	FS_FPrintf(file, "#\tdisplace_out %g\n", mat->displace_out);
+	// negative means "no override" here, and is not something to write back
+	if (mat->roughness_override >= 0.f)
+		FS_FPrintf(file, "#\troughness_override %g\n", mat->roughness_override);
+	FS_FPrintf(file, "#\tmetalness_factor %g\n", mat->metalness_factor);
+	FS_FPrintf(file, "#\tspecular_factor %g\n", mat->specular_factor);
+	FS_FPrintf(file, "#\tbase_factor %g\n", mat->base_factor);
+	FS_FPrintf(file, "#\temissive_factor %g\n", mat->emissive_factor);
+	if (mat->synth_emissive || synthesized) {
+		FS_FPrintf(file, "#\tsynth_emissive 1\n");
+		FS_FPrintf(file, "#\temissive_threshold %d\n", mat->emissive_threshold);
+	}
+
+	const char* kind = getMaterialKindName(mat->flags);
+	if (kind)
+		FS_FPrintf(file, "#\tkind %s\n", kind);
+	FS_FPrintf(file, "#\tis_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) ? 1 : 0);
+	if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
+		FS_FPrintf(file, "#\tcurved_water 1\n");
+	FS_FPrintf(file, "#\tlight_styles %d\n", mat->light_styles ? 1 : 0);
+	FS_FPrintf(file, "#\tbsp_radiance %d\n", mat->bsp_radiance ? 1 : 0);
+	FS_FPrintf(file, "#\tdefault_radiance %g\n", mat->default_radiance);
+
+	// these three default to "not stated, the cvar decides" - only a stated
+	// value is worth listing
+	if (mat->volumetric_scale >= 0.f)
+		FS_FPrintf(file, "#\tvolumetric_scale %g\n", mat->volumetric_scale);
+	if (mat->dlss_guide_field >= 0)
+		FS_FPrintf(file, "#\tdlss_guide_field %d\n", mat->dlss_guide_field);
+	if (mat->albedo_strength > 0.f)
+		FS_FPrintf(file, "#\talbedo_strength %g\n", mat->albedo_strength);
+}
+
 /* `mat create_instance` - give the surface under the crosshair a material of its
    own, so it can be tuned without dragging every other use of its texture along
    with it.
@@ -1947,12 +2153,12 @@ static void material_command_reload(void)
    what "connected group" means and why the hash is stable enough to write into
    a file by hand.
 
-   THE STUB IS DELIBERATELY EMPTY. A fresh instance is the texture as it would
-   look with no .mat entry at all - which is the point: the usual reason to want
-   one is that a shared override suits one surface and ruins another, so the
-   surface being split off wants to start from neutral, not from the override it
-   is escaping. Anything written under the section header from then on applies to
-   this surface alone. */
+   A fresh instance is an exact copy of the texture's material as it stands -
+   see material_inherit_instance - so splitting a surface off changes nothing
+   until a line under its section says otherwise. The stub lists what it
+   inherits as commented-out lines, so the usual edit is to uncomment one and
+   change the value. Those lines are only a snapshot: the inheritance itself is
+   live, and an edit to the base still reaches every line left commented. */
 static void material_create_instance(const pbr_material_t* mat)
 {
 	if (!vkpt_refdef.fd)
@@ -1968,7 +2174,7 @@ static void material_create_instance(const pbr_material_t* mat)
 		return;
 	}
 
-	if (strchr(mat->name, '#'))
+	if (instance_separator(mat->name))
 	{
 		Com_Printf("'%s' is already an instance", mat->name);
 		if (mat->source_matfile[0])
@@ -2019,14 +2225,16 @@ static void material_create_instance(const pbr_material_t* mat)
 	FS_FPrintf(file, "\n# instance of %s\n", mat->name);
 	FS_FPrintf(file, "# %s, created at (%.0f %.0f %.0f)\n", map_base,
 	           vkpt_refdef.fd->vieworg[0], vkpt_refdef.fd->vieworg[1], vkpt_refdef.fd->vieworg[2]);
-	FS_FPrintf(file, "# Defaults to the texture with no overrides applied.\n");
+	FS_FPrintf(file, "# Inherits everything from %s; the commented lines are what\n", mat->name);
+	FS_FPrintf(file, "# it inherits now. Uncomment one and change it, then 'mat reload'.\n");
 	FS_FPrintf(file, "%s:\n", instance_name);
+	write_instance_stub_values(file, mat);
 
 	FS_CloseFile(file);
 
 	Com_Printf("Created %s\n", instance_name);
 	Com_Printf("  stub written to %s\n", file_name);
-	Com_Printf("  the surface now uses the plain texture; add attributes under that "
+	Com_Printf("  the surface looks as before; uncomment and edit a line under that "
 	           "section to change it, then 'mat reload'.\n");
 
 	/* Re-read the material files and rebuild the map so the new section takes
@@ -2148,7 +2356,7 @@ static void material_command(void)
 			char instance_name[MAX_QPATH];
 			MAT_InstanceName(mat->name, instance_hash, instance_name, sizeof(instance_name));
 
-			if (strchr(mat->name, '#'))
+			if (instance_separator(mat->name))
 				Com_Printf("    surface: this IS an instance\n");
 			else
 				Com_Printf("    surface: %s ('mat create_instance' to split it off)\n", instance_name);

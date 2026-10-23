@@ -845,7 +845,7 @@ S_BoundedDistMult
 A channel's dist_mult for a sound that keeps Quake II's straight line whatever
 s_falloff says, to silence at `range` times the distance this attenuation's
 would reach it at: one that goes on so long that heard all over the level it
-would wear thin - a flare burns for 15 seconds (CL_ParseTEnt).
+would wear thin - a flare burns for a minute (CL_ParseTEnt).
 =================
 */
 static float S_BoundedDistMult(float attenuation, float range)

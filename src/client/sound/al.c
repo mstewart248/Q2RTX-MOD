@@ -100,6 +100,7 @@ static unsigned s_looptime;     // cls.realtime of the last fade step (AL_LOOP_F
 bool al_source_distance_model;
 
 static cvar_t *s_global_sounds;
+static cvar_t *s_flyby_volume;
 
 void AL_SoundInfo(void)
 {
@@ -203,6 +204,7 @@ bool AL_Init(void)
     Com_DPrintf("Initializing OpenAL\n");
 
     s_global_sounds = Cvar_Get("s_global_sounds", "1", 0);
+    s_flyby_volume = Cvar_Get("s_flyby_volume", "-6", 0);
 
     if (!QAL_Init()) {
         goto fail0;
@@ -609,6 +611,38 @@ static float AL_LoopGain(int entnum, float dist_mult)
     return S_Falloff(VectorLength(origin), dist_mult);
 }
 
+/*
+=================
+AL_FlybyVolume
+
+The sound of a projectile going by - a blaster bolt's hiss, a rocket's roar -
+is a loop on the projectile, and Quake II's loops fell off in a steep line:
+a bolt was silent 400 units out. Under s_falloff 1 a loop carries as far as
+any, and a flyer's burst of eight bolts, all coming this way, hissed over its
+own shots from the fifth on: the flyer's and the floater's shots were seldom
+heard, the soldiers', whose bullets make no sound in flight, always
+(2026-10-21). So these are s_flyby_volume dB against the other loops, -6 by
+default, which keeps a burst's shots level with its hiss to the end, as
+Quake II had them. A grenade's tick is a warning and is left as it is.
+=================
+*/
+static const char *const al_flyby_sounds[] = {
+    "sound/misc/lasfly.wav",        // blaster, hyperblaster and ion ripper bolts, monsters' too
+    "sound/weapons/rockfly.wav",    // rockets, heat seekers, plasma
+    "sound/weapons/bfg__l1a.wav",   // the BFG's ball
+    "sound/weapons/disrupt.wav",    // the disruptor's bolt
+};
+
+static float AL_FlybyVolume(const sfx_t *sfx)
+{
+    int i;
+
+    for (i = 0; i < (int)q_countof(al_flyby_sounds); i++)
+        if (!Q_stricmp(sfx->name, al_flyby_sounds[i]))
+            return powf(10, Cvar_ClampValue(s_flyby_volume, -40, 0) / 20);
+    return 1.0f;
+}
+
 // loudest first
 static int AL_LoopCmp(const void *p1, const void *p2)
 {
@@ -666,7 +700,7 @@ static void AL_AddLoopSounds(void)
     al_loop_t   *loop;
     int         num;
     entity_state_t  *ent;
-    float       dist_mult, gain, total, kept;
+    float       dist_mult, gain, total, kept, flyby;
     int         loopchannels, maxloopchannels;
 
     if (cls.state != ca_active || sv_paused->integer || !s_ambient->integer) {
@@ -761,13 +795,14 @@ static void AL_AddLoopSounds(void)
 
     for (i = 0, loop = loops; i < numloops; i++, loop++) {
         sfx = loop->sfx;
+        flyby = AL_FlybyVolume(sfx);
         for (k = 0; k < loop->num; k++) {
             // its level is set as it fades, in AL_Update
             ch = AL_FindLoopingSound(loop->ent[k], sfx);
             if (ch) {
                 ch->autoframe = s_framecount;
                 ch->end = paintedtime + sfx->cache->length;
-                ch->loop_vol = loop->scale;
+                ch->loop_vol = loop->scale * flyby;
                 if (ch->dist_mult != dist_mult) {
                     ch->dist_mult = dist_mult;      // s_falloff changed
                     if (!ch->steam)
@@ -792,7 +827,7 @@ static void AL_AddLoopSounds(void)
             ch->autoframe = s_framecount;
             ch->sfx = sfx;
             ch->entnum = loop->ent[k];
-            ch->loop_vol = loop->scale;
+            ch->loop_vol = loop->scale * flyby;
             ch->fade = 0;
             ch->master_vol = 0;
             ch->dist_mult = dist_mult;

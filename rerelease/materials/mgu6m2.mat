@@ -1,0 +1,59 @@
+
+# instance of textures/tomc/tc_tomb_sediment_b
+# mgu6m2, created at (-1381 -1451 370)
+# Defaults to the texture with no overrides applied.
+textures/tomc/tc_tomb_sediment_b#c90133a1:
+	texture_base materialDev/textures/tomc/tc_tomb_sediment_b.tga
+	texture_normals materialDev/textures/tomc/tc_tomb_sediment_b_n.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_sediment_b_rough.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_sediment_b_metal.png
+	texture_height materialDev/textures/tomc/tc_tomb_sediment_b_height.png
+	displace_in .03
+	displace_out 0.0
+	base_factor 1.0
+	albedo_strength .1
+	specular_factor .5
+	
+# instance of textures/tomc/tc_tomb_light_64_a
+# mgu6m2, created at (-1580 -1627 399)
+# Inherits everything from textures/tomc/tc_tomb_light_64_a; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/tomc/tc_tomb_light_64_a#e805ce82:
+#	texture_base materialDev/textures/tomc/tc_tomb_light_64_a.tga
+#	texture_normals materialDev/textures/tomc/tc_tomb_light_64_a_n.tga
+#	texture_emissive materialDev/textures/tomc/tc_tomb_light_64_a_light.tga
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 1
+#	base_factor 1
+	emissive_factor 5
+#	kind REGULAR
+#	is_light 1
+#	light_styles 0
+	bsp_radiance 0
+	albedo_strength .1 
+	default_radiance 16
+
+# instance of textures/tomc/tc_tomb_light_64_a
+# mgu6m2, created at (-1570 -1459 382)
+# Inherits everything from textures/tomc/tc_tomb_light_64_a; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/tomc/tc_tomb_light_64_a#67d77d9a:
+#	texture_base materialDev/textures/tomc/tc_tomb_light_64_a.tga
+#	texture_normals materialDev/textures/tomc/tc_tomb_light_64_a_n.tga
+#	texture_emissive materialDev/textures/tomc/tc_tomb_light_64_a_light.tga
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 1
+#	base_factor 1
+	emissive_factor 5
+#	kind REGULAR
+#	is_light 1
+#	light_styles 0
+	bsp_radiance 0
+	albedo_strength .1
+	default_radiance 16

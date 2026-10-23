@@ -1466,6 +1466,29 @@ void fire_bfg(edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, fl
     gi.linkentity(bfg);
 }
 
+/* weapons/flare.wav is a 15 second burn and the flare lives 60 (fire_flaregun),
+   so the sound is started again until it covers the whole burn. A restart on the
+   same entity and CHAN_VOICE replaces the play before it (S_PickChannel), and the
+   hiss is level enough that the join doesn't show. */
+#define FLARE_SOUND_FRAMES      (int)(15.f * BASE_FRAMERATE)
+#define FLARE_SOUND_OVERLAP     2   // frames before a play runs out, at the latest
+
+/* The frame the burn sound has to start again on, given that it starts now.
+   Restarts are spread evenly so that the LAST play starts a full sound length
+   before the flare is freed and ends with it, instead of running on after it. */
+static int flare_next_sound_frame(edict_t *self)
+{
+	int until_last = self->timestamp - level.framenum - FLARE_SOUND_FRAMES;
+
+	if (until_last <= 0)
+		return self->timestamp + 1;    // this play outlasts the flare
+
+	int max_gap = FLARE_SOUND_FRAMES - FLARE_SOUND_OVERLAP;
+	int restarts = (until_last + max_gap - 1) / max_gap;
+
+	return level.framenum + until_last / restarts;
+}
+
 /*
  * Drops a spark from the flare flying thru the air.  Checks to make
  * sure we aren't in the water.
@@ -1481,13 +1504,18 @@ void flare_sparks(edict_t *self)
 	gi.WriteByte(TE_FLARE);
 
     gi.WriteShort((int)(self - g_edicts));
-    // count is 1 on the very first tick only - that byte is what starts the
-    // burn sound on the client. This used to be derived from the remaining
-    // lifetime, a test that only holds for the rerelease's 15 second flare;
-    // ours lives 60 seconds, so it stayed true for the first 45 and restarted
-    // the sound five times a second, starving all 32 sound channels.
-    gi.WriteByte(self->count ? 0 : 1);
-    self->count = 1;
+    // A 1 in this byte (re)starts the burn sound on the client, and goes out
+    // only on the frames flare_next_sound_frame picks; self->count holds the
+    // next one, 0 on the very first tick. This used to be derived from the
+    // remaining lifetime, a test that only holds for the rerelease's 15 second
+    // flare; ours lives 60 seconds, so it stayed true for the first 45 and
+    // restarted the sound five times a second, starving all 32 sound channels.
+    if (level.framenum >= self->count) {
+        gi.WriteByte(1);
+        self->count = flare_next_sound_frame(self);
+    } else {
+        gi.WriteByte(0);
+    }
 
     gi.WritePosition(self->s.origin);
 
@@ -1592,7 +1620,7 @@ void fire_flaregun(edict_t *self, vec3_t start, vec3_t aimdir,
 	flare->radius_dmg = damage;
 	flare->dmg_radius = damage_radius;
 	flare->classname = "flare";
-	flare->count = 0;           // see flare_sparks: 0 = sound not started yet
+	flare->count = 0;           // see flare_sparks: frame to (re)start the burn sound on
 	flare->timestamp = level.framenum + (int)(60.f * BASE_FRAMERATE); //live for 60 seconds 
 	gi.linkentity(flare);
 }

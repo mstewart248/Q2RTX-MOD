@@ -1750,7 +1750,8 @@ void CL_ParseTEnt(void)
         }
         else
         {
-            // te.count is set to 1 on the first tick of the flare, 0 afterwards.
+            // te.count is 1 on the ticks that (re)start the flare's burn sound -
+            // the wav is 15 seconds and the flare burns for 60 (flare_sparks).
             // Play it on CHAN_VOICE rather than CHAN_AUTO so that a repeat for
             // the same flare replaces the old one instead of eating another of
             // the 32 mix channels.

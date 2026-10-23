@@ -18830,6 +18830,16 @@ textures/tomc/tc_tomb_door_256_a:
 # Base extracted from rerelease/textures/tomc/tc_tomb_light_64_a.wal (32x32,
 # no animation, no transparent texels) against rerelease/pics/colormap.pcx.
 # materialDev/ is untracked, so no retail art is committed.
+#
+# light_styles 0 - same fault as textures/tomf/#lava_tf1 below. On mgu6m2, 43 of
+# these lamp faces carry a switchable style (32-36) borrowed from a nearby
+# targeted light, and bsp_mesh.c multiplies the lamp's emission by it. Styles 33
+# (3lock_puzz3) and 36 (wrap_room_door) are START_OFF, so those lamps sat black
+# until a button was pressed (e.g. instance #c2619356 at -648 -1832 432); the
+# rest went dark when their gate/door lights toggled. In the remaster's
+# DECOUPLED_LM lightmap those styles are under 1% of each face's light, so KEX
+# draws every one of them steadily lit. mgu6m1, mgu6m3 and mguboss have no styled
+# faces with this texture, so this changes mgu6m2 only.
 textures/tomc/tc_tomb_light_64_a:
 	texture_base materialDev/textures/tomc/tc_tomb_light_64_a.tga
 	texture_normals materialDev/textures/tomc/tc_tomb_light_64_a_n.tga
@@ -18837,6 +18847,7 @@ textures/tomc/tc_tomb_light_64_a:
 	metalness_factor 0
 	emissive_factor 10.0
 	is_light 1
+	light_styles 0
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
