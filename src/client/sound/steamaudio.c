@@ -87,7 +87,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // pathing, when they stood in for the sound that goes round.
 //
 // phonon.dll is loaded at run time. Without it, or with s_steamaudio 0, the
-// OpenAL path is exactly as it was.
+// OpenAL path is exactly as it was, without the room reverb too: the stock
+// sound. Occlusion, like the reflections and pathing, is part of the menu's
+// "ray traced sound" (s_raytracing).
 //
 
 #include "sound.h"
@@ -583,6 +585,7 @@ static struct {
     bool                refl;           // reflections are simulated and mixed
     bool                paths;          // pathing is
     bool                diffract;       // the GPU looks for ways round edges (see DIFFRACTION)
+    bool                gpu_avail;      // s_gpu_trace_available when they were set up
     int                 sim_threads;    // for reflections and the bake
     int                 num_slots;
     float               refl_duration;  // seconds of response
@@ -702,6 +705,7 @@ static cvar_t   *s_steamaudio_weapon;
 static cvar_t   *s_steamaudio_duck;
 static cvar_t   *s_occlusion;
 static cvar_t   *s_global_floor;
+static cvar_t   *s_raytracing;
 static cvar_t   *s_reflections;
 static cvar_t   *s_reflections_sources;
 static cvar_t   *s_reflections_all;
@@ -721,6 +725,25 @@ static cvar_t   *s_pathing_rate;
 static cvar_t   *s_pathing_alternates;
 static cvar_t   *s_pathing_gain;
 static cvar_t   *s_diffraction;
+
+// Whether Steam Audio can run: phonon.dll beside the exe until it is tried,
+// then whether it started. Outside `sa`, which SA_Init clears. The menu shows
+// "spatial simulation" only when s_steamaudio_available is 1, and without it
+// there is no room reverb either - the stock sound.
+static bool     sa_available;
+
+static void SA_SetAvailable(bool available)
+{
+    sa_available = available;
+    Cvar_FullSet("s_steamaudio_available", available ? "1" : "0", CVAR_ROM, FROM_CODE);
+}
+
+// How much walls muffle a sound. Occlusion is part of the menu's "ray traced
+// sound": spatial simulation alone is the HRTF and the room reverb.
+static float SA_OcclusionStrength(void)
+{
+    return s_raytracing->integer ? Cvar_ClampValue(s_occlusion, 0, 1) : 0;
+}
 
 /*
 ==============================================================================
@@ -4039,7 +4062,7 @@ static void SA_UpdateSimulation(void)
     // A way round for every voice placed in the world and heard, while the
     // walls are heard at all. A new one runs the paths soon, as till then
     // SA_FindPath stands in.
-    ask = (sa.paths || sa.diffract) && s_occlusion->value > 0 && !sa.listener_buried;
+    ask = (sa.paths || sa.diffract) && SA_OcclusionStrength() > 0 && !sa.listener_buried;
     for (i = 0, ch = channels, c = sa.chans; i < MAX_CHANNELS; i++, ch++, c++) {
         key = 0;
         if (ask && i < s_numchannels && ch->sfx && ch->steam && c->placed && c->level > 0)
@@ -4299,7 +4322,7 @@ static void SA_Occlude(channel_t *ch, const vec3_t origin, float dist, vec3_t di
     uint64_t    start;
     int         b;
 
-    strength = Cvar_ClampValue(s_occlusion, 0, 1);
+    strength = SA_OcclusionStrength();
     if (!strength || sa.listener_buried)
         return;
 
@@ -4658,6 +4681,14 @@ void SA_Update(void)
     if (!sa.active)
         return;
 
+    // a vid_restart gave or took the GPU's sound tracing: set up again for
+    // what it can do now (SA_InitSimulation), as the menu now offers
+    if (s_raytracing->integer && s_reflections_gpu->integer &&
+        Cvar_VariableInteger("s_gpu_trace_available") != sa.gpu_avail) {
+        sa.gpu_avail = !sa.gpu_avail;   // ask once
+        Cbuf_AddText(&cmd_buffer, "snd_restart\n");
+    }
+
     sa.listener_buried = sa.listener_wet = false;
     if (cls.state == ca_active && cl.bsp) {
         contents = CM_PointContents(listener_origin, cl.bsp->nodes);
@@ -4665,7 +4696,7 @@ void SA_Update(void)
         sa.listener_wet = contents & MASK_WATER;
     }
 
-    if (cls.state == ca_active && cl.bsp && !sa.listener_buried && s_occlusion->value > 0) {
+    if (cls.state == ca_active && cl.bsp && !sa.listener_buried && SA_OcclusionStrength() > 0) {
         start = Sys_Microseconds();
         SA_ListenerRelays();
         sa.trace_usec += (unsigned)(Sys_Microseconds() - start);
@@ -4689,6 +4720,13 @@ void SA_Update(void)
 bool SA_Active(void)
 {
     return sa.active;
+}
+
+// Whether Steam Audio can run here, for the menu's "spatial simulation" and
+// the room reverb that goes with it (reverb.c). See SA_SetAvailable.
+bool SA_Available(void)
+{
+    return sa_available;
 }
 
 // keep a copy of the samples to mix from (16 bit, the sfx's own rate)
@@ -4813,7 +4851,7 @@ static void SA_Voices_f(void)
         Com_Printf("No room reverb feed.\n");
 
     if (!sa.refl) {
-        Com_Printf("No reflections (s_reflections 0, or they could not be set up).\n");
+        Com_Printf("No reflections (s_raytracing or s_reflections 0, or they could not be set up).\n");
     } else {
         SDL_LockMutex(sa.param_lock);
         refl_on = sa.refl_on;
@@ -4849,7 +4887,7 @@ static void SA_Voices_f(void)
     }
 
     if (!sa.paths) {
-        Com_Printf("No pathing (s_pathing 0, or it could not be set up).\n");
+        Com_Printf("No pathing (s_raytracing or s_pathing 0, or it could not be set up).\n");
     } else {
         SDL_LockMutex(sa.param_lock);
         path_map = sa.path_map;
@@ -4875,7 +4913,7 @@ static void SA_Voices_f(void)
     }
 
     if (!sa.diffract) {
-        Com_Printf("No ways round edges (s_diffraction 0, or the simulation could not be set up).\n");
+        Com_Printf("No ways round edges (s_raytracing, s_reflections_gpu or s_diffraction 0, or the simulation could not be set up).\n");
     } else {
         SDL_LockMutex(sa.param_lock);
         edges = sa.diff_edges;
@@ -4940,7 +4978,7 @@ static void SA_Voices_f(void)
 static void SA_ReflCheck_f(void)
 {
     if (!sa.refl) {
-        Com_Printf("No reflections (s_reflections 0, or they could not be set up).\n");
+        Com_Printf("No reflections (s_raytracing or s_reflections 0, or they could not be set up).\n");
         return;
     }
     if (!qiplq2SetReflectionTracer) {
@@ -5101,6 +5139,13 @@ SA_InitSimulation
 The simulator, its sources and the thread, for reflections, pathing or both;
 and for reflections an effect per slot. Failing leaves the mix as it is
 without them.
+
+s_raytracing 0 turns all of it off. On the CPU - s_reflections_gpu 0, or a
+renderer that cannot trace sound (s_gpu_trace_available, published by
+vkpt/sound_trace.c) - there is no diffraction, which only the GPU works out,
+and s_reflections_all is ignored: each slot costs the CPU 2 to 3 ms a run, so
+only the loudest s_reflections_sources get one. SA_Update sets it all up again
+when a vid_restart changes what the GPU can do.
 =================
 */
 static void SA_InitSimulation(void)
@@ -5109,15 +5154,18 @@ static void SA_InitSimulation(void)
     IPLSourceSettings       source_settings;
     const char  *error;
     int         i, s, threads;
-    bool        refl = s_reflections->integer, paths = s_pathing->integer;
-    bool        diffract = s_diffraction->integer;
+    bool        avail = Cvar_VariableInteger("s_gpu_trace_available");
+    bool        rt = s_raytracing->integer, gpu = s_reflections_gpu->integer && avail;
+    bool        refl = rt && s_reflections->integer, paths = rt && s_pathing->integer;
+    bool        diffract = rt && gpu && s_diffraction->integer;
 
+    sa.gpu_avail = avail;
     if (!refl && !paths && !diffract)
         return;
 
     if (!refl)
         sa.num_slots = 0;
-    else if (s_reflections_all->integer)
+    else if (s_reflections_all->integer && gpu)
         sa.num_slots = SA_REFL_MAX_SLOTS;
     else
         sa.num_slots = Cvar_ClampInteger(s_reflections_sources, 0, SA_REFL_MAX_SLOTS);
@@ -5305,8 +5353,11 @@ bool SA_Init(void)
     ALCint      rate = 0;
     sa_voice_t  *v;
     int         i;
+    char        path[MAX_OSPATH];
 
-    s_steamaudio = Cvar_Get("s_steamaudio", "1", CVAR_ARCHIVE | CVAR_SOUND);
+    // off unless the player turns it on - the menu's "spatial simulation";
+    // must match reverb.c's registration
+    s_steamaudio = Cvar_Get("s_steamaudio", "0", CVAR_ARCHIVE | CVAR_SOUND);
     s_steamaudio_hrtf = Cvar_Get("s_steamaudio_hrtf", "1", CVAR_ARCHIVE);
     s_steamaudio_interp = Cvar_Get("s_steamaudio_interp", "1", 0);
     s_steamaudio_volume = Cvar_Get("s_steamaudio_volume", "1", 0);
@@ -5318,6 +5369,9 @@ bool SA_Init(void)
     s_steamaudio_duck = Cvar_Get("s_steamaudio_duck", "6", 0);
     s_occlusion =Cvar_Get("s_occlusion", "1", CVAR_ARCHIVE);
     s_global_floor = Cvar_Get("s_global_floor", "0.25", 0);
+    // the menu's "ray traced sound" and "hardware": over s_reflections,
+    // s_pathing and s_diffraction, which stay for the console (SA_InitSimulation)
+    s_raytracing = Cvar_Get("s_raytracing", "1", CVAR_ARCHIVE | CVAR_SOUND);
     s_reflections = Cvar_Get("s_reflections", "1", CVAR_ARCHIVE | CVAR_SOUND);
     s_reflections_sources = Cvar_Get("s_reflections_sources", "8", CVAR_SOUND);
     s_reflections_all = Cvar_Get("s_reflections_all", "1", CVAR_ARCHIVE | CVAR_SOUND);
@@ -5331,7 +5385,7 @@ bool SA_Init(void)
     // SA_MixReflections
     s_reflections_hold = Cvar_Get("s_reflections_hold", "3", 0);
     s_reflections_hrtf = Cvar_Get("s_reflections_hrtf", "0", 0);
-    s_reflections_gpu = Cvar_Get("s_reflections_gpu", "1", CVAR_ARCHIVE);
+    s_reflections_gpu = Cvar_Get("s_reflections_gpu", "1", CVAR_ARCHIVE | CVAR_SOUND);
     s_reflections_gpu_rays = Cvar_Get("s_reflections_gpu_rays", "8192", 0);
     s_pathing = Cvar_Get("s_pathing", "1", CVAR_ARCHIVE | CVAR_SOUND);
     s_pathing_spacing = Cvar_Get("s_pathing_spacing", "3", CVAR_SOUND);
@@ -5345,6 +5399,11 @@ bool SA_Init(void)
 
     memset(&sa, 0, sizeof(sa));
 
+    // until it is tried, whether there is a phonon.dll to try (SA_LoadLibrary
+    // looks beside the exe first); from then on, whether it started
+    Q_concat(path, sizeof(path), sys_libdir->string, PATH_SEP_STRING, SA_LIBNAME);
+    SA_SetAvailable(!os_access(path, F_OK));
+
     if (!s_steamaudio->integer)
         return false;
 
@@ -5353,12 +5412,14 @@ bool SA_Init(void)
         !qalIsExtensionPresent("AL_SOFT_direct_channels") ||
         !qalIsExtensionPresent("AL_EXT_FLOAT32")) {
         Com_Printf("Steam Audio: OpenAL lacks callback buffers, direct channels or float samples.\n");
+        SA_SetAvailable(false);
         return false;
     }
     qalBufferCallbackSOFT = (LPALBUFFERCALLBACKSOFT)qalGetProcAddress("alBufferCallbackSOFT");
     alcGetIntegerv(alcGetContextsDevice(alcGetCurrentContext()), ALC_FREQUENCY, 1, &rate);
     if (!qalBufferCallbackSOFT || rate < 8000) {
         Com_Printf("Steam Audio: no usable OpenAL output (rate %d).\n", rate);
+        SA_SetAvailable(false);
         return false;
     }
 
@@ -5476,10 +5537,12 @@ bool SA_Init(void)
 
     Com_Printf("Steam Audio initialized: %d Hz, HRTF %s.\n", rate,
                sa.use_hrtf ? "on" : "off (stereo panning)");
+    SA_SetAvailable(true);
     return true;
 
 fail:
     SA_Free();
+    SA_SetAvailable(false);
     Com_Printf("Steam Audio disabled, OpenAL places sounds.\n");
     return false;
 }
@@ -5496,6 +5559,7 @@ void SA_Shutdown(void)
 bool SA_Init(void) { return false; }
 void SA_Shutdown(void) { }
 bool SA_Active(void) { return false; }
+bool SA_Available(void) { return false; }
 void SA_Update(void) { }
 void SA_SoundInfo(void) { }
 bool SA_PlayChannel(channel_t *ch, const channel_t *sync) { return false; }

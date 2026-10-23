@@ -57,7 +57,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // presets (small_room, medium_hall, plate...), are not supported - only the
 // names in rv_presets below, which cover every one default.environments uses.
 //
-// OpenAL only: the software mixer (s_enable 1) has no effects.
+// OpenAL only: the software mixer (s_enable 1) has no effects. It is part of
+// the menu's "spatial simulation", so it needs s_steamaudio 1 and Steam Audio
+// able to run (SA_Available): without phonon.dll the menu offers none of it,
+// and the sound is the stock game's.
 //
 
 #include "sound.h"
@@ -81,6 +84,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 static cvar_t   *s_reverb;
 static cvar_t   *s_reverb_lerptime;
 static cvar_t   *s_reverb_debug;
+static cvar_t   *s_steamaudio;
 
 static const struct {
     const char              *name;
@@ -751,6 +755,7 @@ void AL_InitReverb(const unsigned *sources, int count)
     s_reverb = Cvar_Get("s_reverb", "1", CVAR_ARCHIVE);
     s_reverb_lerptime = Cvar_Get("s_reverb_lerptime", "1000", 0);
     s_reverb_debug = Cvar_Get("s_reverb_debug", "0", 0);
+    s_steamaudio = Cvar_Get("s_steamaudio", "0", CVAR_ARCHIVE | CVAR_SOUND);   // as steamaudio.c
 
     memset(&rv, 0, sizeof(rv));
     rv.target = -1;
@@ -926,7 +931,8 @@ void AL_UpdateReverb(void)
     if (!rv.available)
         return;
 
-    gain = (cls.state == ca_active && cl.bsp) ? Cvar_ClampValue(s_reverb, 0, 1) : 0;
+    gain = (cls.state == ca_active && cl.bsp && s_steamaudio->integer && SA_Available()) ?
+           Cvar_ClampValue(s_reverb, 0, 1) : 0;
     if (gain != rv.gain) {
         efx.AuxiliaryEffectSlotf(rv.slot, AL_EFFECTSLOT_GAIN, gain);
         rv.gain = gain;

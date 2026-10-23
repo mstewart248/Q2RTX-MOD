@@ -27,6 +27,11 @@
 DLSS dlssObj;
 cvar_t* cvar_pt_dlss = NULL;
 cvar_t* cvar_pt_dlss_dldn = NULL;
+
+/* Whether nvngx_dlssd.dll / nvngx_dlssg.dll are there and this GPU can run them.
+   See DLSSPublishAvailability. */
+static qboolean dlssRRAvailable = qfalse;
+static qboolean dlssFGAvailable = qfalse;
 cvar_t* cvar_pt_dlss_split_fields = NULL;
 cvar_t* cvar_pt_dlss_bypass_denoiser = NULL;
 cvar_t* cvar_pt_dlss_field_res = NULL;
@@ -225,7 +230,10 @@ int DLSSMode() {
 }
 
 int DLSSModeDenoise() {
-    return cvar_pt_dlss_dldn->integer;
+    /* Without Ray Reconstruction's DLL a pt_dlss_dldn 1 left in a config would take
+       Super Resolution down with it, and the menu hides RR then, so it could not be
+       switched off from there. */
+    return dlssRRAvailable ? cvar_pt_dlss_dldn->integer : 0;
 }
 
 float GetDLSSResolutionScale() {
@@ -374,6 +382,7 @@ qboolean DLSSConstructor(VkInstance _instance, VkDevice _device, VkPhysicalDevic
     dlssObj.isInitalized = TryInit(_instance,  _physDevice, _pAppGuid, _enableDebug);
 
     ReportFrameGenSupport();
+    DLSSPublishAvailability();  // before CheckSupport, which asks DLSSModeDenoise
 
     if (!CheckSupport()) {
         return qfalse;
@@ -470,7 +479,7 @@ qboolean CheckSupport() {
     NVSDK_NGX_Result featureInitResult;
     NVSDK_NGX_Result res;
     float isDlssSupported = 0;
-    bool dldenoise = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
+    bool dldenoise = DLSSModeDenoise() == 1;
 
     if (!dldenoise) {
         res = NVSDK_NGX_Parameter_GetF(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSampling_Available, &isDlssSupported);
@@ -570,6 +579,47 @@ NVSDK_NGX_PerfQuality_Value ToNGXPerfQuality()
 
 qboolean IsDLSSAvailable() {
     return dlssObj.isInitalized && dlssObj.pParams != NULL;
+}
+
+static qboolean DLSSFeatureAvailable(const char* folder, const char* dll, const char* ngxKey)
+{
+    float available = 0.0f;
+
+    if (!qvk.supports_ngx || os_access(va("%s\\%s", folder, dll), F_OK))
+        return qfalse;
+
+    // NGX not up (it starts only with pt_dlss on): the DLL is all there is to go by
+    if (!dlssObj.isInitalized || dlssObj.pParams == NULL)
+        return qtrue;
+
+    // a key this NGX does not know: leave it to the feature's own creation
+    if (NVSDK_NGX_FAILED(NVSDK_NGX_Parameter_GetF(dlssObj.pParams, ngxKey, &available)))
+        return qtrue;
+
+    return available ? qtrue : qfalse;
+}
+
+/* WHAT THE MENU OFFERS. The DLSS DLLs are not shipped (release.yml refuses to package
+   them): players put nvngx_dlss.dll (Super Resolution), nvngx_dlssd.dll (Ray
+   Reconstruction) and nvngx_dlssg.dll (Frame Generation) beside q2rtx.exe. q2rtx.menu
+   shows each only when its DLL is there on an NVIDIA GPU and, once NGX is up, NGX says
+   this GPU and driver can run it - frame generation wants an RTX 40 or later. A
+   setting left on in a config for one that is not there counts as off
+   (DLSSModeDenoise, DLSSGEnabled; Super Resolution falls back by itself through
+   dlssRuntimeFailed). Published from init_vulkan after every device creation, and
+   again once NGX is up. */
+void DLSSPublishAvailability(void)
+{
+    char* folder = GetFolderPath();
+    qboolean sr = DLSSFeatureAvailable(folder, "nvngx_dlss.dll", NVSDK_NGX_Parameter_SuperSampling_Available);
+
+    dlssRRAvailable = DLSSFeatureAvailable(folder, "nvngx_dlssd.dll", NVSDK_NGX_Parameter_SuperSamplingDenoising_Available);
+    dlssFGAvailable = DLSSFeatureAvailable(folder, "nvngx_dlssg.dll", NVSDK_NGX_Parameter_FrameGeneration_Available);
+    free(folder);
+
+    Cvar_FullSet("pt_dlss_available", sr ? "1" : "0", CVAR_ROM, FROM_CODE);
+    Cvar_FullSet("pt_dlss_dldn_available", dlssRRAvailable ? "1" : "0", CVAR_ROM, FROM_CODE);
+    Cvar_FullSet("pt_dlss_fg_available", dlssFGAvailable ? "1" : "0", CVAR_ROM, FROM_CODE);
 }
 
 qboolean AreSameDLSSFeatureValues(struct DLSSRenderResolution resObject) {
@@ -684,8 +734,8 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
 
     // only one phys device
     uint32_t creationNodeMask = 1;
-    uint32_t visibilityNodeMask = 1;    
-    bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
+    uint32_t visibilityNodeMask = 1;
+    bool denoiseMode = DLSSModeDenoise() == 1;
 
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_M);
     NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
@@ -801,7 +851,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 
     //qvk.images[]
     int frame_idx = qvk.frame_counter & 1;
-    bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
+    bool denoiseMode = DLSSModeDenoise() == 1;
     NVSDK_NGX_Coordinates sourceOffset = { 0, 0 };
     NVSDK_NGX_Dimensions  sourceSize = {
         resObject.inputWidth,
@@ -1503,7 +1553,7 @@ unsigned int DLSSGGeneratedFrames()
 
 qboolean DLSSGEnabled()
 {
-    if (dlssgFailed || cvar_pt_dlss_fg == NULL)
+    if (dlssgFailed || cvar_pt_dlss_fg == NULL || !dlssFGAvailable)
         return qfalse;
 
     /* The backbuffer we hand DLSS-G is VKPT_IMG_DLSS_OUTPUT, so frame generation only

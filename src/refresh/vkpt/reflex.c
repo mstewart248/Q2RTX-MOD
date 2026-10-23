@@ -314,6 +314,10 @@ void Reflex_Init(void)
     cvar_vrr            = Cvar_Get("pt_vrr", "-1", CVAR_ARCHIVE);
     cvar_reflex_vrr_cap = Cvar_Get("pt_reflex_vrr_cap", "1", CVAR_ARCHIVE);
 
+    /* The display menu shows the Reflex controls only when this ends up 1
+       (Reflex_Available): NVIDIA's VK_NV_low_latency2, which other GPUs lack. */
+    Cvar_FullSet("pt_reflex_available", "0", CVAR_ROM, FROM_CODE);
+
     if (!qvk.supports_low_latency) {
         Com_Printf("Reflex: VK_NV_low_latency2 not available, low latency mode disabled\n");
         return;
@@ -355,6 +359,7 @@ void Reflex_Init(void)
     Com_Printf("Reflex: VK_NV_low_latency2 available%s\n",
         Reflex_PresentIdAvailable() ? " (with VK_KHR_present_id)"
                                     : " (no VK_KHR_present_id - timings may not correlate)");
+    Cvar_FullSet("pt_reflex_available", Reflex_Available() ? "1" : "0", CVAR_ROM, FROM_CODE);
 }
 
 void Reflex_Shutdown(void)

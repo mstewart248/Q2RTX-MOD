@@ -106,9 +106,10 @@ typedef enum {
       range. cl_fog modes 2 and 3 share most of their settings, and "show this
       for mode 2 AND mode 3" needs >=, not a pair of duplicated menu entries.
 
-   MENU_MAX_CONDITIONS is the nesting depth. 4 is far more than the menus use
-   (the deepest is 2) and costs a few bytes per item. */
-#define MENU_MAX_CONDITIONS 4
+   MENU_MAX_CONDITIONS is the nesting depth. The sound menu goes 5 deep (the
+   engine, phonon.dll there, spatial simulation, ray traced sound, a GPU that
+   can trace it); each level costs a few bytes per item. */
+#define MENU_MAX_CONDITIONS 6
 
 typedef enum {
 	MENU_COND_EQ,    // ifeq  - show when cvar == value

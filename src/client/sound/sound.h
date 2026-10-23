@@ -146,6 +146,7 @@ float AL_ReverbDecayTime(void);
 bool SA_Init(void);
 void SA_Shutdown(void);
 bool SA_Active(void);
+bool SA_Available(void);
 void SA_Update(void);
 void SA_SoundInfo(void);
 bool SA_PlayChannel(channel_t *ch, const channel_t *sync);

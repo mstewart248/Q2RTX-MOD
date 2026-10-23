@@ -238,6 +238,8 @@ VkptInit_t vkpt_initialization[] = {
 	{ "bloom|",   vkpt_bloom_create_pipelines,         vkpt_bloom_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "mblur",    vkpt_motion_blur_initialize,         vkpt_motion_blur_destroy,             VKPT_INIT_DEFAULT,            0 },
 	{ "mblur|",   vkpt_motion_blur_create_pipelines,   vkpt_motion_blur_destroy_pipelines,   VKPT_INIT_RELOAD_SHADER,      0 },
+	{ "chroma",   vkpt_chromatic_aberration_initialize, vkpt_chromatic_aberration_destroy,   VKPT_INIT_DEFAULT,            0 },
+	{ "chroma|",  vkpt_chromatic_aberration_create_pipelines, vkpt_chromatic_aberration_destroy_pipelines, VKPT_INIT_RELOAD_SHADER, 0 },
 	{ "fghdr",    vkpt_dlssg_hdr_initialize,           vkpt_dlssg_hdr_destroy,               VKPT_INIT_DEFAULT,            0 },
 	{ "fghdr|",   vkpt_dlssg_hdr_create_pipelines,     vkpt_dlssg_hdr_destroy_pipelines,     VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "dlss5",    vkpt_dlss5_initialize,               vkpt_dlss5_destroy,                   VKPT_INIT_DEFAULT,            0 },
@@ -3163,6 +3165,9 @@ init_vulkan(void)
 	if (DLSSEnabled()) {
 		DLSSConstructor(qvk.instance, qvk.device, qvk.physical_device, "FFA5FAF5-2329-44AB-A423-3D9B3B177C88", qtrue);
 	}
+	// what the reconstruction menu may offer, NGX up or not - before the swapchain,
+	// which asks DLSSGEnabled
+	DLSSPublishAvailability();
 
 	return true;
 }
@@ -6960,6 +6965,16 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			END_PERF_MARKER(post_cmd_buf, PROFILER_MOTION_BLUR);
 		}
 
+		/* CHROMATIC ABERRATION, after motion blur and before bloom - a lens effect
+		   on the resolved, still-linear frame. Same two sites as motion blur;
+		   the DLSS arm is further down. See chromatic_aberration.comp. */
+		if (!DLSSEnabled() && vkpt_chromatic_aberration_is_enabled())
+		{
+			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_CHROMATIC_ABERRATION);
+			vkpt_chromatic_aberration_record_cmd_buffer(post_cmd_buf);
+			END_PERF_MARKER(post_cmd_buf, PROFILER_CHROMATIC_ABERRATION);
+		}
+
 		if (!DLSSEnabled()) {
 			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
 			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode || qvk.frame_ui_blur > 0.f)
@@ -7819,6 +7834,15 @@ R_EndFrame_RTX(void)
 				BEGIN_PERF_MARKER(cmd_buf, PROFILER_MOTION_BLUR);
 				vkpt_motion_blur_record_cmd_buffer(cmd_buf);
 				END_PERF_MARKER(cmd_buf, PROFILER_MOTION_BLUR);
+			}
+
+			// The DLSS arm of chromatic aberration - after the upscale, so DLSS
+			// never sees the fringe and resolves it away as aliasing.
+			if (vkpt_chromatic_aberration_is_enabled())
+			{
+				BEGIN_PERF_MARKER(cmd_buf, PROFILER_CHROMATIC_ABERRATION);
+				vkpt_chromatic_aberration_record_cmd_buffer(cmd_buf);
+				END_PERF_MARKER(cmd_buf, PROFILER_CHROMATIC_ABERRATION);
 			}
 
 			BEGIN_PERF_MARKER(cmd_buf, PROFILER_BLOOM);
@@ -9205,6 +9229,7 @@ R_Init_RTX(bool total)
 	drs_init();
 	vkpt_fsr_init_cvars();
 	vkpt_motion_blur_init_cvars();
+	vkpt_chromatic_aberration_init_cvars();
 	InitDLSSCvars();
 	InitDLSSGCvars();
 	DLSS5_InitCvars();

@@ -82,7 +82,8 @@ copies and put them in the same folder as q2rtx.exe:
     nvngx_dlssd.dll     Ray Reconstruction
     nvngx_dlssg.dll     Frame Generation
 
-Without them the game runs normally with the DLSS options unavailable.
+Without them the game runs normally, and the menu does not show the DLSS
+options whose DLL is missing.
 
 
 --------------------------------------------------------------------------------

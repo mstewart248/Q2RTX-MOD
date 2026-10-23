@@ -68,6 +68,16 @@ console. The renderer settings live under **Video** → **Advanced** and
 | **DLSS Frame Generation** | `pt_dlss_fg` | `0` off, or a multiplier of `2`–`6`. Implemented directly against NGX (`nvsdk_ngx_helpers_dlssg_vk.h`) — **no Streamline dependency**. Pick the multiplier so *base framerate × multiplier ≈ your refresh rate*, so a heavier scene wants a **higher** multiplier, not a lower one. Check the base rate with `pt_dlss_fg_stats 1`. |
 | **NVIDIA Reflex** | `pt_reflex` | `0` off, `1` on, `2` on + boost. Implemented over `VK_NV_low_latency2`, so it needs **no SDK at all**. Measured here at 16 ms → 3 ms without frame generation. `pt_reflex_fps_max` is a Reflex-paced frame cap, which is smoother and lower latency than sleeping in the main loop; `pt_dlss_fg_pace_to_refresh 1` caps the *render* rate to refresh ÷ multiplier so the presented rate lands exactly on the display refresh. |
 
+The DLSS runtime DLLs are not in the package: put NVIDIA's `nvngx_dlss.dll`,
+`nvngx_dlssd.dll` and `nvngx_dlssg.dll` beside `q2rtx.exe` (see
+`README-FIRST.txt`). The menu offers each DLSS control only when its DLL is
+there on an NVIDIA GPU that can run it (frame generation wants an RTX 40 or
+later, which NGX reports once DLSS is on), DLSS 5 only with
+`nvngx_dlssnr.dll`, and Reflex only on NVIDIA. A setting left on in a config
+for one that is missing counts as off. The read-only `pt_dlss_available`,
+`pt_dlss_dldn_available`, `pt_dlss_fg_available`, `pt_dlss5_available` and
+`pt_reflex_available` say what was found.
+
 DLSS-specific renderer work that made the above actually look right:
 
 * **Full-resolution reflection and refraction fields** (`pt_dlss_split_fields`,
@@ -255,6 +265,32 @@ In the menu: **graphics settings** → **motion blur**, with strength, quality,
 *hold moving objects sharp* and *maximum blur length* appearing underneath it
 once it is switched on.
 
+## Chromatic aberration
+
+Lateral colour, the fringe a real lens leaves because glass bends each
+wavelength by a slightly different amount: the red image is drawn a little
+larger than the blue one, so a bright edge picks up a red fringe on its outer
+side and a blue one on its inner side. Nothing moves at the centre of the
+screen, and the spread grows in proportion to the distance from it.
+
+The fringe is a smooth rainbow rather than three stacked copies. The pass
+samples a continuous blue-to-red ramp, with roughly one tap per pixel of spread,
+and normalises each channel so flat white and grey areas come out untouched.
+Green is read from the pixel itself, so the picture keeps its geometry.
+
+It runs after the temporal resolve and motion blur, before bloom and tone
+mapping, on the still-linear frame. With DLSS it runs after the upscale, so DLSS
+never sees the fringe and resolves it away as aliasing. The HUD is drawn later
+and is never touched. RTX renderer only.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `pt_chromatic_aberration` | `0` | Master switch. |
+| `pt_chromatic_aberration_amount` | `0.005` | How far the whole spectrum has spread at the screen corners, as a fraction of screen height (capped at `0.05`). The red and blue fringes sit about two thirds of this apart — about 7 pixels at 4K for the default (the slider's 0.50%). |
+
+In the menu: **options** → **screen setup** → **chromatic aberration**, with
+*aberration strength* appearing underneath it once it is switched on.
+
 ## Volumetric fog and atmosphere
 
 The remaster authors fog on `worldspawn` — 67 of the 76 in-scope maps set height
@@ -407,7 +443,8 @@ of `pak0.pak` — nothing has to be unpacked. What is supported:
   `scr_centertime` now counts from the last character), and the **end of unit
   table** of levels, kills, secrets and times over the intermission that ends
   each unit.
-* **`misc_flare` coronas** (`cl_flares`), the rerelease **weapon wheel / weapon
+* **`misc_flare` coronas** (`cl_flares`, off by default - the star-shaped fake
+  lens flares the remaster's maps put on lamps), the rerelease **weapon wheel / weapon
   bar** (`cl_weaponbar`, `cl_weaponbar_hold`, `cl_weaponbar_time`), **boss health
   bars** (`scr_health_bars`), the item-name readout, the flashlight,
   `misc_camera`, the tracker's bubble effect, and lava and emissive surfaces the
@@ -540,7 +577,10 @@ space, so a burst of sixty costs one instance, not sixty.
   words) pick a reverb preset from the rerelease's `sound/default.environments`,
   faded over `s_reverb_lerptime` milliseconds. `s_reverb_debug 1` prints what it
   picked. Menu and interface sounds stay dry, and so do radio voices (the
-  marines' calls in base1, the pilots, the radio sets).
+  marines' calls in base1, the pilots, the radio sets). It is part of Steam
+  Audio's "spatial simulation": `s_steamaudio 0`, or no working `phonon.dll`,
+  turns it off too, and the ray traced reflections take over from it while
+  they are on.
 * **Whole-level sounds** (`s_global_sounds`, 1 by default): sounds a map or
   monster plays at "no attenuation", heard at full level all over the level.
   Quake II put them in the player's head. At 1 the ones on something the
@@ -552,19 +592,32 @@ space, so a burst of sixty costs one instance, not sixty.
   Audio, walls muffle them down to `s_global_floor` (0.25) at most, the low
   rumble getting through more than the treble, so a ship overhead is loud
   outside and a rumble through the building inside.
-* **Steam Audio** (`s_steamaudio`, on by default): sounds in the world are mixed
+* **Steam Audio** (`s_steamaudio`, off by default): sounds in the world are mixed
   through Valve's Steam Audio instead of being placed by OpenAL. Each one goes
   through an HRTF, so direction comes across on headphones, and through a direct
   path filter fed by traces against the map and its moving brushes: a wall
   between the player and a sound muffles it by an amount that depends on the
   wall's material, and distance takes off treble. A sound round a corner comes
-  round it, a little muffled, from the way it arrives. `s_steamaudio_hrtf 0` pans for
+  round it, a little muffled, from the way it arrives (with `s_raytracing`, below). `s_steamaudio_hrtf 0` pans for
   speakers instead, `s_occlusion` (0-1) scales the muffling, `s_steamaudio_volume`
   trims the mix, and `sa_voices` lists every playing sound with its distance,
   gain and occlusion. The mix is held under `s_steamaudio_ceiling` (-3 dB under
   full scale; `s_steamaudio_limiter 0` turns it off), so a loud fight turns only
   the effects down rather than tripping OpenAL's limiter, which turns the
-  music down with them; `sa_voices` prints how hot the mix ran. With `s_reflections` (on by default) it also simulates
+  music down with them; `sa_voices` prints how hot the mix ran.
+  In the sound menu it is **spatial simulation**, shown only where
+  `phonon.dll` runs (`s_steamaudio_available`, read-only); off, or without
+  it, the sound is the stock game's. On, it gives the HRTF and the room
+  reverb, and under it: **ray traced sound** (`s_raytracing`, on by default)
+  switches the occlusion, reflections, pathing and diffraction on and off
+  together - the separate cvars stay for the console, under it; **hardware**
+  is `s_reflections_gpu`, offered only where the renderer can trace sound
+  (`s_gpu_trace_available`, read-only; anywhere else it is the CPU). On the
+  CPU there is no diffraction, and only the loudest `s_reflections_sources`
+  get an echo of their own; **spatial output** is `s_steamaudio_hrtf`; then
+  the room reverb's slider with ray traced sound off, or occlusion and the
+  reflections' level with it on.
+  With `s_reflections` (on by default) it also simulates
   sound off walls: rays from the player bounce round the map and its moving
   brushes (`s_reflections_bounces`, 64), every surface absorbing by its footstep
   material, and every sound gets the echo of where it is, while the player's
@@ -598,7 +651,7 @@ space, so a burst of sixty costs one instance, not sixty.
   the bass, from the way it comes round. That takes the place of the probes'
   way wherever one corner gets the sound round; round two (a doorway, then
   along a corridor) the probes' way stands. `sa_voices` marks such sounds
-  "e". It needs the RTX renderer on the ray query API. It needs
+  "e". It needs the RTX renderer on the ray query API, and `s_reflections_gpu`. It needs
   `phonon.dll` beside `q2rtx.exe`. Without it, or
   with `s_steamaudio 0`, OpenAL places everything as before. The release's
   phonon.dll is built from Steam Audio's source by `setup/build_phonon.py`,

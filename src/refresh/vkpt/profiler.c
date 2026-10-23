@@ -453,6 +453,10 @@ draw_profiler(int enable_asvgf)
 	{
 		PROFILER_DO(PROFILER_MOTION_BLUR, 1);
 	}
+	if (vkpt_chromatic_aberration_is_enabled())
+	{
+		PROFILER_DO(PROFILER_CHROMATIC_ABERRATION, 1);
+	}
 	PROFILER_DO(PROFILER_BLOOM, 1);
 	PROFILER_DO(PROFILER_TONE_MAPPING, 2);
 	if(cvar_flt_fsr_enable->integer != 0)

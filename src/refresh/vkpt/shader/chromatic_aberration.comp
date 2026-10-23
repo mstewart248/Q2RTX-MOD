@@ -1,0 +1,169 @@
+/*
+Copyright (C) 2026 Matt Stewart
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/* ============================================================================
+   CHROMATIC ABERRATION - lateral colour.
+
+   Glass bends each wavelength by a slightly different amount, so a lens
+   magnifies the red image a little more than the blue one. Nothing moves at
+   the centre of the frame, and the colours drift apart in proportion to the
+   distance from it: a bright edge near the corner of the screen picks up a
+   red fringe on its outer side and a blue one on its inner side. That linear
+   growth with distance is the first-order behaviour of a real lens, so there
+   is no falloff knob - the one parameter is how far apart the spectrum has
+   spread by the time it reaches the corner.
+
+   SPECTRAL, NOT THREE COPIES. The cheap version samples R, G and B at three
+   offsets, which at any visible strength reads as three ghost images stacked
+   on top of each other. Here the spectrum is a continuous ramp from blue
+   (t = 0) through green (0.5) to red (1), sampled with enough taps that
+   neighbouring taps are never more than about a pixel apart, and each tap is
+   weighted by three overlapping hat functions. The hats sum to one across the
+   ramp and every channel is normalised by its own weight sum, so a white or
+   grey pixel comes out exactly the colour it went in - only edges, where the
+   colours disagree, pick up a fringe. The fringe itself is a smooth rainbow,
+   like the real thing.
+
+   GREEN STAYS PUT. The spread is centred on the middle of the spectrum, so the
+   green channel - which carries most of the luminance detail the eye reads
+   sharpness from - is sampled at the pixel itself. The picture keeps its
+   geometry; only red and blue move.
+
+   WHERE IT RUNS: after the temporal resolve (TAA, or DLSS after the upscale)
+   and motion blur, before bloom and tone mapping. The colour is still linear
+   HDR, so a very bright pixel spreads a proportionally bright fringe instead
+   of a clipped one, and DLSS never sees the fringe - it would treat it as
+   aliasing to be resolved away. The HUD is drawn later and is never touched.
+
+   The output goes to VKPT_IMG_MOTION_BLUR and is copied back over the colour
+   image host side. That image is motion blur's scratch, and it is free here:
+   motion blur has already copied its own result out by the time this runs.
+   ============================================================================ */
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+/* Mirrors struct chromatic_aberration_push_constants in chromatic_aberration.c. */
+layout(push_constant) uniform ChromaticAberrationPushConstants {
+	/* The region we actually write, in pixels. */
+	ivec2 output_extent;
+	/* Allocated size of the colour image, which is what a UV is relative to. */
+	ivec2 image_extent;
+	/* How far the whole spectrum has spread, per pixel of distance from the
+	   screen centre. A pixel d pixels out spreads its spectrum over d * spread
+	   pixels. Computed host side from the corner width the cvar asks for. */
+	float spread;
+	/* 0: the colour source is VKPT_IMG_TAA_OUTPUT. 1: VKPT_IMG_DLSS_OUTPUT. */
+	int dlss_target;
+} pc;
+
+/* Upper bound on the taps one pixel takes. The count scales with the local
+   spread so taps stay about a pixel apart; this only binds at very strong
+   settings on very large screens, where the spacing grows a little past a
+   pixel and bilinear filtering covers the gap. */
+const int MAX_SAMPLES = 32;
+
+/* Below this many pixels of spread the pixel is passed through untouched. The
+   centre of the screen never fringes, so most of the frame costs one fetch. */
+const float MIN_SPREAD_PX = 0.25;
+
+vec4
+load_color(vec2 pos_px)
+{
+	/* Clamp inside the written region: the image can be larger than it, and
+	   the sampler repeats, so a tap past the edge would wrap to the far side. */
+	pos_px = clamp(pos_px, vec2(0.5), vec2(pc.output_extent) - vec2(0.5));
+
+	vec2 uv = pos_px / vec2(pc.image_extent);
+
+	return (pc.dlss_target != 0)
+		? textureLod(TEX_DLSS_OUTPUT, uv, 0)
+		: textureLod(TEX_TAA_OUTPUT, uv, 0);
+}
+
+/* Blue peaks at t = 0, green at 0.5, red at 1, each falling linearly to zero
+   half a ramp away. Any t in [0,1] gets weights summing to one. */
+vec3
+spectrum_weight(float t)
+{
+	return max(vec3(0), vec3(1) - abs(vec3(t) - vec3(1, 0.5, 0)) * 2);
+}
+
+void
+main()
+{
+	ivec2 ipos = ivec2(gl_GlobalInvocationID);
+
+	if (any(greaterThanEqual(ipos, pc.output_extent)))
+		return;
+
+	vec2 center_px = vec2(ipos) + vec2(0.5);
+	vec4 center_color = load_color(center_px);
+
+	/* Offset from the optical centre. Pixels are square, so measuring in
+	   pixels keeps the fringe circular on any aspect ratio. */
+	vec2 d = center_px - vec2(pc.output_extent) * 0.5;
+	float spread_px = length(d) * pc.spread;
+
+	if (spread_px < MIN_SPREAD_PX
+		|| any(isnan(center_color)) || any(isinf(center_color)))
+	{
+		imageStore(IMG_MOTION_BLUR, ipos, center_color);
+		return;
+	}
+
+	int num_samples = clamp(int(ceil(spread_px)) + 1, 3, MAX_SAMPLES);
+
+	vec3 sum = vec3(0);
+	vec3 weight_sum = vec3(0);
+
+	for (int i = 0; i < num_samples; i++)
+	{
+		float t = (float(i) + 0.5) / float(num_samples);
+
+		/* Red (t = 1) is read from nearer the centre, which draws the red
+		   image larger; blue (t = 0) from further out, drawing it smaller.
+		   Green, at t = 0.5, is read from the pixel itself. */
+		vec2 pos = center_px - d * (pc.spread * (t - 0.5));
+
+		vec3 c = load_color(pos).rgb;
+
+		/* A non-finite neighbour would poison the whole fringe; drop it and
+		   let the other taps carry the pixel. */
+		if (any(isnan(c)) || any(isinf(c)))
+			continue;
+
+		vec3 w = spectrum_weight(t);
+		sum += c * w;
+		weight_sum += w;
+	}
+
+	vec3 result = mix(center_color.rgb, sum / max(weight_sum, vec3(1e-6)),
+		greaterThan(weight_sum, vec3(0)));
+
+	imageStore(IMG_MOTION_BLUR, ipos, vec4(result, center_color.a));
+}

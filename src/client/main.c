@@ -3115,8 +3115,9 @@ static void CL_InitLocal(void)
     cl_instant_weapon_switch = Cvar_Get("g_instant_weapon_switch", "0", CVAR_ARCHIVE);
 
     cl_gibs = Cvar_Get("cl_gibs", "1", 0);
-    // rerelease misc_flare coronas, off to compare against the rerelease
-    cl_flares = Cvar_Get("cl_flares", "1", 0);
+    // rerelease misc_flare coronas - the fake lens-flare stars the remaster's
+    // maps put on lamps. Off unless the player wants them (Matt, 10-23).
+    cl_flares = Cvar_Get("cl_flares", "0", CVAR_ARCHIVE);
     cl_gibs->changed = cl_gibs_changed;
 
 #if USE_FPS

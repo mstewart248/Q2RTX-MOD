@@ -72,6 +72,7 @@ qboolean TryInit(VkInstance _instance, VkPhysicalDevice _physDevice, const char*
 void DLSSDeconstructor();
 void DestroyDLSSFeature();
 qboolean IsDLSSAvailable();
+void DLSSPublishAvailability(void);
 NVSDK_NGX_PerfQuality_Value ToNGXPerfQuality();
 qboolean AreSameDLSSFeatureValues(struct DLSSRenderResolution resObject);
 void SaveDLSSFeatureValues(DLSSRenderResolution resObject);

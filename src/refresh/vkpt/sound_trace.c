@@ -910,6 +910,10 @@ VkResult vkpt_sound_initialize(void)
 		Com_DPrintf("Sound tracing on the GPU: not available, %s.\n", snd.why);
 
 	vkpt_sound_unlock();
+
+	// The sound menu offers "hardware: GPU" only when this is 1, and
+	// steamaudio.c sets up for the CPU otherwise (SA_InitSimulation).
+	Cvar_FullSet("s_gpu_trace_available", snd.up ? "1" : "0", CVAR_ROM, FROM_CODE);
 	return VK_SUCCESS;
 }
 
@@ -922,6 +926,9 @@ VkResult vkpt_sound_destroy(void)
 	}
 	snd.up = false;
 	vkpt_sound_unlock();
+
+	// the GL renderer, or none, may come next
+	Cvar_FullSet("s_gpu_trace_available", "0", CVAR_ROM, FROM_CODE);
 	return VK_SUCCESS;
 }
 

@@ -256,9 +256,12 @@ begin video_display
         range --status "(tm_exposure_bias)" -f "%+.1f EV" "exposure bias (brightness)" tm_exposure_bias -5 0 0.1
         range --status "(tm_reinhard)" -p -f "%.0f%%" "contrast" tm_reinhard 0 1 0.1
         blank
-        pairs --status "NVIDIA Reflex. Stops the CPU queueing frames ahead of the GPU, which is where most input lag comes from. Measured here: 16ms down to 3ms without frame generation. Leave it on. Boost also holds GPU clocks up - more power, marginal gain. (pt_reflex)" "NVIDIA Reflex" pt_reflex off 0 on 1 "on + boost" 2
-        range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off. (pt_reflex_fps_max)" "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
-        blank
+        // NVIDIA only - Reflex_Init sets pt_reflex_available
+        ifeq pt_reflex_available 1
+            pairs --status "NVIDIA Reflex. Stops the CPU queueing frames ahead of the GPU, which is where most input lag comes from. Measured here: 16ms down to 3ms without frame generation. Leave it on. Boost also holds GPU clocks up - more power, marginal gain. (pt_reflex)" "NVIDIA Reflex" pt_reflex off 0 on 1 "on + boost" 2
+            range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off. (pt_reflex_fps_max)" "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
+            blank
+        endif
         toggle --status "(profiler)" "GPU profiler" profiler
     endif
 end
@@ -269,6 +272,10 @@ begin video_reconstruction
     title "Reconstruction"
     pairs --status "(flt_taa)" "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
     toggle --status "the path tracer's own denoiser (A-SVGF). Off shows the raw noisy samples - useful for comparing, or under DLSS Ray-Reconstruction, which denoises by itself and switches this off when turned on (flt_enable)" "denoiser" flt_enable
+    // Every DLSS control only where it can run: its DLL (not shipped - players
+    // supply nvngx_dlss/_dlssd/_dlssg.dll) beside q2rtx.exe on an NVIDIA GPU that
+    // can run it. DLSSPublishAvailability sets the pt_dlss*_available cvars.
+    ifeq pt_dlss_available 1
     pairs --status "(pt_dlss)" "DLSS Super Resolution" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
     // Ray Reconstruction REPLACES DLSS's denoiser, so it is meaningless without
     // DLSS itself. This whole submenu is only reachable with vid_rtx 1;
@@ -291,9 +298,13 @@ begin video_reconstruction
     // and the present path in main.c. Deferred deliberately; when it lands,
     // move the endif below back to just after Ray-Reconstruction.
     ifneq pt_dlss 0
+    ifeq pt_dlss_dldn_available 1
     pairs --status "DLSS's own denoiser and temporal upscaler in one. Turning this ON also switches anti-aliasing and the denoiser above OFF, because RR does both jobs and stacking them denoises twice - turn either back on if you prefer. Turning RR off restores whatever you had. (pt_dlss_dldn)" \
         "DLSS Ray-Reconstruction" pt_dlss_dldn off 0 on 1
+    endif
+    ifeq pt_dlss_fg_available 1
     pairs --status "generates extra frames between rendered ones. Needs DLSS on. Pick the multiplier so base framerate x multiplier is about your refresh rate - so a HEAVIER scene wants a HIGHER multiplier, not a lower one (60Hz: 2x at 30fps base, 3x at 20, 4x at 15, 6x at 10). Check the base rate with pt_dlss_fg_stats 1. With vsync ON the presented rate is capped at refresh instead, and 2x is all that helps. Turn Reflex on with this. (pt_dlss_fg)" "DLSS Frame Generation" pt_dlss_fg off 0 2x 2 3x 3 4x 4 5x 5 6x 6
+    endif
     // Only when nvngx_dlssnr.dll is next to q2rtx.exe - it is not shipped. See
     // DLSS5_InitCvars, which sets pt_dlss5_available.
     ifeq pt_dlss5_available 1
@@ -304,11 +315,17 @@ begin video_reconstruction
     endif
     endif
     endif
+    endif
     blank
     toggle --status "(flt_fsr_enable)" "AMD FSR 1.0" flt_fsr_enable
-    range --status "lower is sharper (flt_fsr_sharpness)" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01        
+    range --status "lower is sharper (flt_fsr_sharpness)" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01
+    // shown only on DLSS's own output path (main.c, the DLSSEnabled() blit)
+    ifeq pt_dlss_available 1
+    ifneq pt_dlss 0
     blank
     pairs --status "(pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 BeforeTransparent 16 RayLengthDiffuse 17 raylengthSpecular 18 transparent 19 PT_MOTION 20 DLSS_MOTION 21 ASVGF_HIST_COLOR_HF 22 ShadingPosition 23 FlatColor 24 FlatMotion 25 TAA_Output 26 PT_THROUGHPUT 27 BOUNCE_THROUGHPUT 28 HQ_COLOR_INTERLEAVED 29 Reflected_Albedo 30 COLOR_LF 31 COLOR_HF 32 COLOR_SPEC 33 GEO_NORMAL 34 VISBUF_B 35 VISBUF_A 36 VISBUF_BARY_B 37 VISBUF_BARY_A 38 BASECOLOR_B 39 BASECOLOR_A 40 METALLIC_B 41 METALLIC_A 42 DEPTH_B 43 DEPTH_A 44
+    endif
+    endif
 end
 
 begin video_renderer
@@ -437,17 +454,34 @@ begin sound
     toggle --status "(ogg_shuffle)" "shuffle tracks" ogg_shuffle
     blank
     values --status "(s_ambient)" "ambient sounds" s_ambient "no" "yes" "only player's own"
-    range --status "room echo by the size of the space and what it is made of, as in the rerelease. OpenAL only (s_reverb)" -p -f "%.0f%%" "room reverb" s_reverb 0 1 0.05
-    values --status "Steam Audio: 3D sound through an HRTF, and walls and doors that muffle what is behind them. Needs phonon.dll, OpenAL only (s_steamaudio)" "spatial audio" s_steamaudio "OpenAL" "Steam Audio"
-    values --status "binaural for headphones, or plain stereo panning for speakers. Steam Audio only (s_steamaudio_hrtf)" "spatial output" s_steamaudio_hrtf "speakers" "headphones (HRTF)"
-    range --status "how much walls, doors and water muffle a sound behind them. Steam Audio only (s_occlusion)" -p -f "%.0f%%" "occlusion" s_occlusion 0 1 0.05
-    toggle --status "sound off walls, ray traced through the map; replaces the room reverb. Steam Audio only (s_reflections)" "reflections" s_reflections
-    range --status "how loud sound off walls is against the direct sound. Steam Audio only (s_reflections_gain)" -p -f "%.0f%%" "reflections level" s_reflections_gain 0 2 0.1
-    toggle --status "trace the sound off walls on the GPU's RT cores instead of the CPU; the CPU stands in where it cannot. Steam Audio only (s_reflections_gpu)" "reflections on the GPU" s_reflections_gpu
-    toggle --status "every sound gets the echo of where it is, not only the 8 loudest; more work for the mixer, best with reflections on the GPU. Steam Audio only (s_reflections_all)" "echo for every sound" s_reflections_all
-    toggle --status "sound round corners and through doorways along the map's baked paths. Steam Audio only (s_pathing)" "sound pathing" s_pathing
-    toggle --status "sound bends round the map's corners, worked out on the GPU's RT cores; the baked paths stand in where it cannot. Steam Audio only (s_diffraction)" "sound round corners on the GPU" s_diffraction
     values --status "(cl_chat_sound)" "chat beep" cl_chat_sound "disabled" "default" "alternative"
+    // Off, or without phonon.dll, the sound is the stock game's: no reverb, no
+    // occlusion. On: sounds round your head and the room reverb. Ray traced: echoes
+    // off the walls and occlusion instead. steamaudio.c publishes
+    // s_steamaudio_available, vkpt/sound_trace.c s_gpu_trace_available (the RTX
+    // renderer on the ray query API).
+    ifeq s_enable 2
+        ifeq s_steamaudio_available 1
+            blank
+            values --status "Steam Audio: sounds placed round your head, with the echo of the room. Off: the stock game's sound (s_steamaudio)" "spatial simulation" s_steamaudio "off" "on"
+            ifeq s_steamaudio 1
+                values --status "echoes off the walls, and walls and doors muffling what is behind them, traced through the map; takes over from the room reverb (s_raytracing)" "ray traced sound" s_raytracing "off" "on"
+                ifeq s_raytracing 1
+                    ifeq s_gpu_trace_available 1
+                        values --status "GPU: traced on the RT cores, every sound gets its own echo and bends round corners. CPU: the 8 loudest get their own echo, and sound goes round only by the map's baked paths (s_reflections_gpu)" "hardware" s_reflections_gpu "CPU" "GPU"
+                    endif
+                endif
+                values --status "headphones: binaural (HRTF), so direction comes across. speakers: plain stereo panning (s_steamaudio_hrtf)" "spatial output" s_steamaudio_hrtf "speakers" "headphones"
+                ifeq s_raytracing 0
+                    range --status "room echo by the size of the space and what it is made of, as in the rerelease (s_reverb)" -p -f "%.0f%%" "room reverb" s_reverb 0 1 0.05
+                endif
+                ifeq s_raytracing 1
+                    range --status "how much walls, doors and water muffle a sound behind them (s_occlusion)" -p -f "%.0f%%" "occlusion" s_occlusion 0 1 0.05
+                    range --status "how loud sound off walls is against the direct sound (s_reflections_gain)" -p -f "%.0f%%" "reflections level" s_reflections_gain 0 2 0.1
+                endif
+            endif
+        endif
+    endif
     blank
     values --status "(s_enable)" "sound engine" s_enable "no sound" "software" "OpenAL"
 end
@@ -902,6 +936,17 @@ begin screen
     pairs --status "(scr_scale)" "HUD scale" scr_scale auto 0 1x 1 2x 2 4x 4
     pairs --status "(con_scale)" "console scale" con_scale auto 0 1x 1 2x 2 4x 4
     pairs --status "(ui_scale)" "menu scale" ui_scale auto 0 1x 1 2x 2 4x 4
+    // CHROMATIC ABERRATION. A pass in the RTX renderer only, so the GL
+    // renderer gets no row for it; the strength is nested under the toggle.
+    ifeq vid_rtx 1
+        blank
+        toggle --status "colour fringes that grow toward the edges of the screen, the way a real camera lens splits light into its colours - red on the outside of a bright edge, blue on the inside. Nothing moves at the centre, and the HUD is never touched (pt_chromatic_aberration)" \
+            "chromatic aberration" pt_chromatic_aberration
+        ifneq pt_chromatic_aberration 0
+            range --status "how far the colours have spread apart at the corners of the screen, as a fraction of screen height. It shrinks to nothing toward the centre (pt_chromatic_aberration_amount)" \
+                -p -f "%.2f%%" "aberration strength" pt_chromatic_aberration_amount 0.0005 0.01 0.0005
+        endif
+    endif
     blank
     action --align "crosshair setup..." pushmenu crosshair
 end

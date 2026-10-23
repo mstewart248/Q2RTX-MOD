@@ -87,6 +87,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_BLOOM_COMPOSITE_COMP)                   \
 	SHADER_MODULE_DO(QVK_MOD_BLOOM_DOWNSCALE_COMP)                   \
 	SHADER_MODULE_DO(QVK_MOD_MOTION_BLUR_COMP)                       \
+	SHADER_MODULE_DO(QVK_MOD_CHROMATIC_ABERRATION_COMP)              \
 	SHADER_MODULE_DO(QVK_MOD_DLSSG_HDR_COMP)                         \
 	SHADER_MODULE_DO(QVK_MOD_DLSS5_CONVERT_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_TONE_MAPPING_HISTOGRAM_COMP)            \
@@ -657,6 +658,7 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_ASVGF_TAA,                  2) \
 	PROFILER_DO(PROFILER_BLOOM,                      1) \
 	PROFILER_DO(PROFILER_MOTION_BLUR,                1) \
+	PROFILER_DO(PROFILER_CHROMATIC_ABERRATION,       1) \
 	PROFILER_DO(PROFILER_TONE_MAPPING,               1) \
 	PROFILER_DO(PROFILER_FSR,                        1) \
 	PROFILER_DO(PROFILER_FSR_EASU,                   2) \
@@ -942,6 +944,16 @@ void vkpt_motion_blur_init_cvars(void);
 bool vkpt_motion_blur_is_enabled(void);
 void vkpt_motion_blur_update(float frame_time);
 VkResult vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf);
+
+/* Lateral chromatic aberration - see chromatic_aberration.c and
+   shader/chromatic_aberration.comp. Borrows motion blur's scratch image. */
+VkResult vkpt_chromatic_aberration_initialize(void);
+VkResult vkpt_chromatic_aberration_destroy(void);
+VkResult vkpt_chromatic_aberration_create_pipelines(void);
+VkResult vkpt_chromatic_aberration_destroy_pipelines(void);
+void vkpt_chromatic_aberration_init_cvars(void);
+bool vkpt_chromatic_aberration_is_enabled(void);
+VkResult vkpt_chromatic_aberration_record_cmd_buffer(VkCommandBuffer cmd_buf);
 
 VkResult vkpt_tone_mapping_initialize(void);
 VkResult vkpt_tone_mapping_destroy(void);

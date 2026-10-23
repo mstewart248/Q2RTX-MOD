@@ -291,6 +291,7 @@ SET(SRC_VKPT
 	refresh/vkpt/asvgf.c
 	refresh/vkpt/bloom.c
 	refresh/vkpt/motion_blur.c
+	refresh/vkpt/chromatic_aberration.c
 	refresh/vkpt/dlssg_hdr.c
 	refresh/vkpt/blood.c
 	refresh/vkpt/bsp_mesh.c
@@ -360,6 +361,7 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/bloom_blur.comp
 	refresh/vkpt/shader/bloom_downscale.comp
 	refresh/vkpt/shader/motion_blur.comp
+	refresh/vkpt/shader/chromatic_aberration.comp
 	refresh/vkpt/shader/dlssg_hdr.comp
 	refresh/vkpt/shader/dlss5_convert.comp
 	refresh/vkpt/shader/compositing.comp
