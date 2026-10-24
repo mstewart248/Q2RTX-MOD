@@ -67,6 +67,7 @@ static VkPipelineLayout        pipeline_layout_final_blit;
 static VkRenderPass            render_pass_stretch_pic;
 static VkPipeline              pipeline_stretch_pic[STRETCH_PIC_NUM_PIPELINES];
 static VkPipeline              pipeline_final_blit;
+static VkPipeline              pipeline_film_grain;
 static VkFramebuffer*          framebuffer_stretch_pic = NULL;
 static BufferResource_t        buf_stretch_pic_queue[MAX_FRAMES_IN_FLIGHT];
 static BufferResource_t        buf_ubo[MAX_FRAMES_IN_FLIGHT];
@@ -84,6 +85,219 @@ VkExtent2D
 vkpt_draw_get_extent(void)
 {
 	return qvk.extent_unscaled;
+}
+
+/* FINAL BLIT EFFECTS: film grain and the CRT filter. Both are applied in the
+   final blit to the swapchain - after everything else that touches the
+   picture, frame generation included, and before the HUD. See
+   shader/film_grain.glsl and shader/crt.frag for why there. The fragment
+   shaders (film_grain.frag, crt.frag, final_blit_lanczos.frag) share one set
+   of push constants through pipeline_layout_final_blit; the CRT's grid pass
+   (crt_downsample.comp) takes the same set through its own compute layout. */
+cvar_t *cvar_film_grain           = NULL;
+cvar_t *cvar_film_grain_intensity = NULL;
+cvar_t *cvar_crt                  = NULL;
+cvar_t *cvar_crt_curvature        = NULL;
+
+/* Mirrors FinalBlitPushConstants in shader/final_blit_pc.glsl. */
+typedef struct {
+	int32_t  source;
+	int32_t  src_width, src_height;
+	int32_t  out_width, out_height;
+	int32_t  hdr;
+	float    hdr_white_nits;
+	uint32_t seed;
+
+	float    grain_intensity;
+	float    grain_sigma_px;
+	int32_t  grain_radius;
+
+	int32_t  crt_mode;
+	int32_t  crt_grid_width, crt_grid_height;
+	float    crt_warp_x, crt_warp_y;
+	float    crt_corner_radius_px;
+	float    crt_hard_pix;
+	float    crt_scan_hard_dark, crt_scan_hard_bright;
+	float    crt_mask_strength;
+	int32_t  crt_mask_pitch;
+	float    crt_glow;
+	float    crt_vignette;
+} FinalBlit_PushConstants_t;
+
+/* crt_mode in the push constants. */
+enum {
+	CRT_SHADER_OFF,
+	CRT_SHADER_GRID,     /* 240 or 480 lines, through crt_downsample.comp */
+	CRT_SHADER_NATIVE,   /* the frame itself, no scanlines */
+};
+
+/* Width of the grain kernel at 1080 lines, in pixels; it scales with screen
+   height from there, so the grain is the same size on screen at any
+   resolution. About a pixel and a half across at 1080p. */
+#define FILM_GRAIN_SIGMA_1080P 0.6f
+
+static VkPipeline       pipeline_crt;
+static VkPipeline       pipeline_crt_downsample;
+static VkPipelineLayout pipeline_layout_crt_downsample;
+
+/* Every image the final blit is handed in play, in the order
+   final_blit_fetch() in shader/final_blit_pc.glsl numbers them. Anything
+   else - the pt_dlss_debug views - goes through the plain blit, without
+   grain or CRT. */
+static const int final_blit_sources[] = {
+	VKPT_IMG_TAA_OUTPUT,
+	VKPT_IMG_DLSS_OUTPUT,
+	VKPT_IMG_FSR_EASU_OUTPUT,
+	VKPT_IMG_FSR_RCAS_OUTPUT,
+	VKPT_IMG_DLSS_FG_OUTPUT,
+	VKPT_IMG_DLSS_FG_OUTPUT2,
+	VKPT_IMG_DLSS_FG_OUTPUT3,
+	VKPT_IMG_DLSS_FG_OUTPUT4,
+	VKPT_IMG_DLSS_FG_OUTPUT5,
+};
+
+/* One per presented frame, generated frames included, so no two frames on
+   screen share a grain pattern. */
+static uint32_t final_blit_seed;
+
+void
+vkpt_film_grain_init_cvars(void)
+{
+	/* Master switch. Off by default like the other taste effects (motion
+	   blur, chromatic aberration). */
+	cvar_film_grain = Cvar_Get("pt_film_grain", "0", CVAR_ARCHIVE);
+
+	/* THE SLIDER. Standard deviation of the grain at mid-grey, in perceptual
+	   (sRGB-encoded) units: 0.04 moves a mid-tone pixel by about 10 of 255
+	   on average. It fades toward black and white - see film_grain.glsl.
+	   Clamped to 0.5 in final_blit_params. */
+	cvar_film_grain_intensity = Cvar_Get("pt_film_grain_intensity", "0.04", CVAR_ARCHIVE);
+
+	/* CRT filter: 0 off, 1 low (240 lines, as 320x240 had), 2 medium (480
+	   lines, as 640x480 had), 3 high (the tube at the game's own resolution,
+	   no scanlines). Pixels stay square, so on a 16:9 screen the low grid is
+	   427x240 rather than 320 stretched-wide columns. */
+	cvar_crt = Cvar_Get("pt_crt", "0", CVAR_ARCHIVE);
+
+	/* How far the tube face bulges, 0 (flat, square corners) to 1. 0.5 is
+	   the curvature of Timothy Lottes' CRT shader. Also sets the corner
+	   rounding. */
+	cvar_crt_curvature = Cvar_Get("pt_crt_curvature", "0.5", CVAR_ARCHIVE);
+}
+
+static bool
+crt_enabled(void)
+{
+	return cvar_crt && cvar_crt->integer >= 1 && cvar_crt->integer <= 3;
+}
+
+static bool
+film_grain_enabled(void)
+{
+	if (!cvar_film_grain || cvar_film_grain->integer == 0)
+		return false;
+
+	if (!cvar_film_grain_intensity || cvar_film_grain_intensity->value <= 0.f)
+		return false;
+
+	/* The pause menu's blurred backdrop is not the picture; leave it clean,
+	   as chromatic aberration does. */
+	if (qvk.frame_menu_mode)
+		return false;
+
+	return true;
+}
+
+/* The CRT half of the push constants, from pt_crt and pt_crt_curvature. The
+   per-mode numbers are the look of each tube: a TV for low (soft signal,
+   thick scanlines, coarse mask, more glow), a VGA monitor for medium, and a
+   fine high-resolution tube for high. */
+static void
+crt_params(FinalBlit_PushConstants_t *pc)
+{
+	if (!crt_enabled())
+		return;
+
+	const int out_w = pc->out_width;
+	const int out_h = pc->out_height;
+
+	const float curvature = max(0.f, min(1.f, cvar_crt_curvature->value));
+	pc->crt_warp_x           = curvature / 16.f;
+	pc->crt_warp_y           = curvature / 12.f;
+	pc->crt_corner_radius_px = curvature * 0.06f * (float)out_h;
+
+	pc->crt_mask_pitch = 3;
+
+	int lines = 0;
+	switch (cvar_crt->integer)
+	{
+	case 1:
+		lines                     = 240;
+		pc->crt_hard_pix          = -2.5f;
+		pc->crt_scan_hard_dark    = -12.f;
+		pc->crt_scan_hard_bright  = -6.f;
+		pc->crt_mask_strength     = 0.4f;
+		/* A TV's mask is coarse; keep it about 3 pixels a triad at 1080p,
+		   which is 6 at 4K. */
+		pc->crt_mask_pitch        = 3 * max(1, (int)((float)out_h / 1080.f + 0.5f));
+		pc->crt_glow              = 0.15f;
+		pc->crt_vignette          = 0.15f;
+		break;
+	case 2:
+		lines                     = 480;
+		pc->crt_hard_pix          = -4.f;
+		pc->crt_scan_hard_dark    = -10.f;
+		pc->crt_scan_hard_bright  = -5.f;
+		pc->crt_mask_strength     = 0.3f;
+		pc->crt_glow              = 0.08f;
+		pc->crt_vignette          = 0.12f;
+		break;
+	default:
+		pc->crt_mask_strength     = 0.25f;
+		pc->crt_vignette          = 0.1f;
+		break;
+	}
+
+	if (lines > 0)
+	{
+		/* Square pixels: as many columns as the screen's aspect gives 240 or
+		   480 lines. Never more than the output has. */
+		pc->crt_mode        = CRT_SHADER_GRID;
+		pc->crt_grid_height = min(lines, out_h);
+		pc->crt_grid_width  = min(out_w, (int)((float)pc->crt_grid_height * (float)out_w / (float)out_h + 0.5f));
+	}
+	else
+	{
+		pc->crt_mode = CRT_SHADER_NATIVE;
+	}
+}
+
+/* Everything but the source. Grain intensity is 0 and crt_mode is off when
+   they are off, which the Lanczos blit relies on. */
+static FinalBlit_PushConstants_t
+final_blit_params(void)
+{
+	FinalBlit_PushConstants_t pc = { 0 };
+	const VkExtent2D out = vkpt_draw_get_extent();
+
+	pc.source     = -1;
+	pc.out_width  = (int32_t)out.width;
+	pc.out_height = (int32_t)out.height;
+
+	pc.hdr            = qvk.surf_is_hdr ? 1 : 0;
+	pc.hdr_white_nits = cvar_ui_hdr_nits ? max(cvar_ui_hdr_nits->value, 1.f) : 200.f;
+
+	pc.seed = final_blit_seed++;
+
+	if (film_grain_enabled())
+		pc.grain_intensity = max(0.f, min(0.5f, cvar_film_grain_intensity->value));
+
+	pc.grain_sigma_px = FILM_GRAIN_SIGMA_1080P * (float)out.height / 1080.f;
+	pc.grain_radius   = max(1, min(3, (int)ceilf(2.f * pc.grain_sigma_px)));
+
+	crt_params(&pc);
+
+	return pc;
 }
 
 static inline void enqueue_stretch_pic(
@@ -403,6 +617,10 @@ vkpt_draw_destroy_pipelines()
 		vkDestroyPipeline(qvk.device, pipeline_stretch_pic[i], NULL);
 	}
 	vkDestroyPipeline(qvk.device, pipeline_final_blit, NULL);
+	vkDestroyPipeline(qvk.device, pipeline_film_grain, NULL);
+	vkDestroyPipeline(qvk.device, pipeline_crt, NULL);
+	vkDestroyPipeline(qvk.device, pipeline_crt_downsample, NULL);
+	vkDestroyPipelineLayout(qvk.device, pipeline_layout_crt_downsample, NULL);
 	vkDestroyPipelineLayout(qvk.device, pipeline_layout_stretch_pic, NULL);
 	vkDestroyPipelineLayout(qvk.device, pipeline_layout_final_blit, NULL);
 	for(int i = 0; i < qvk.num_swap_chain_images; i++) {
@@ -436,10 +654,47 @@ vkpt_draw_create_pipelines()
 
 	desc_set_layouts[0] = qvk.desc_set_layout_ubo;
 
+	VkPushConstantRange final_blit_push_range = {
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		.offset     = 0,
+		.size       = sizeof(FinalBlit_PushConstants_t)
+	};
+
 	CREATE_PIPELINE_LAYOUT(qvk.device, &pipeline_layout_final_blit,
 		.setLayoutCount = LENGTH(desc_set_layouts),
-		.pSetLayouts = desc_set_layouts
+		.pSetLayouts = desc_set_layouts,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &final_blit_push_range
 	);
+
+	/* The CRT grid pass: global UBO and textures, the same push constants. */
+	{
+		VkDescriptorSetLayout crt_desc_set_layouts[] = {
+			qvk.desc_set_layout_ubo, qvk.desc_set_layout_textures
+		};
+
+		VkPushConstantRange crt_push_range = {
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			.offset     = 0,
+			.size       = sizeof(FinalBlit_PushConstants_t)
+		};
+
+		CREATE_PIPELINE_LAYOUT(qvk.device, &pipeline_layout_crt_downsample,
+			.setLayoutCount = LENGTH(crt_desc_set_layouts),
+			.pSetLayouts = crt_desc_set_layouts,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges = &crt_push_range
+		);
+
+		VkComputePipelineCreateInfo crt_pipeline_info = {
+			.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage  = SHADER_STAGE(QVK_MOD_CRT_DOWNSAMPLE_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
+			.layout = pipeline_layout_crt_downsample,
+		};
+
+		_VK(vkCreateComputePipelines(qvk.device, 0, 1, &crt_pipeline_info, 0, &pipeline_crt_downsample));
+		ATTACH_LABEL_VARIABLE(pipeline_crt_downsample, PIPELINE);
+	}
 
 	VkSpecializationMapEntry specEntries[] = {
 		{ .constantID = 0, .offset = 0, .size = sizeof(uint32_t) }
@@ -588,6 +843,26 @@ vkpt_draw_create_pipelines()
 	_VK(vkCreateGraphicsPipelines(qvk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline_final_blit));
 	ATTACH_LABEL_VARIABLE(pipeline_final_blit, PIPELINE);
 
+	VkPipelineShaderStageCreateInfo shader_info_film_grain[] = {
+		SHADER_STAGE(QVK_MOD_FINAL_BLIT_VERT, VK_SHADER_STAGE_VERTEX_BIT),
+		SHADER_STAGE(QVK_MOD_FILM_GRAIN_FRAG, VK_SHADER_STAGE_FRAGMENT_BIT)
+	};
+
+	pipeline_info.pStages = shader_info_film_grain;
+
+	_VK(vkCreateGraphicsPipelines(qvk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline_film_grain));
+	ATTACH_LABEL_VARIABLE(pipeline_film_grain, PIPELINE);
+
+	VkPipelineShaderStageCreateInfo shader_info_crt[] = {
+		SHADER_STAGE(QVK_MOD_FINAL_BLIT_VERT, VK_SHADER_STAGE_VERTEX_BIT),
+		SHADER_STAGE(QVK_MOD_CRT_FRAG, VK_SHADER_STAGE_FRAGMENT_BIT)
+	};
+
+	pipeline_info.pStages = shader_info_crt;
+
+	_VK(vkCreateGraphicsPipelines(qvk.device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &pipeline_crt));
+	ATTACH_LABEL_VARIABLE(pipeline_crt, PIPELINE);
+
 	framebuffer_stretch_pic = malloc(qvk.num_swap_chain_images * sizeof(*framebuffer_stretch_pic));
 	for(int i = 0; i < qvk.num_swap_chain_images; i++) {
 		VkImageView attachments[] = {
@@ -675,9 +950,150 @@ vkpt_draw_submit_stretch_pics_keep(VkCommandBuffer cmd_buf)
 	return draw_stretch_pics_into_current_image(cmd_buf, true);
 }
 
+/* The CRT's low-resolution signal: crt_downsample.comp averages the source
+   down to the grid, in VKPT_IMG_MOTION_BLUR, for crt.frag to read. */
+static void
+crt_downsample(VkCommandBuffer cmd_buf, const FinalBlit_PushConstants_t *push)
+{
+	const VkImageSubresourceRange subresource_range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 1
+	};
+
+	/* The scratch image's last users this frame - motion blur's and
+	   chromatic aberration's copies, DLSS 5, or the previous presented
+	   frame's crt.frag - finish before the grid overwrites it. */
+	IMAGE_BARRIER(cmd_buf,
+		.image = qvk.images[VKPT_IMG_MOTION_BLUR],
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
+		               | VK_ACCESS_TRANSFER_READ_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL
+	);
+
+	VkDescriptorSet desc_sets[] = {
+		qvk.desc_set_ubo,
+		qvk_get_current_desc_set_textures()
+	};
+
+	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_crt_downsample);
+	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
+		pipeline_layout_crt_downsample, 0, LENGTH(desc_sets), desc_sets, 0, 0);
+	vkCmdPushConstants(cmd_buf, pipeline_layout_crt_downsample, VK_SHADER_STAGE_COMPUTE_BIT,
+		0, sizeof(*push), push);
+	vkCmdDispatch(cmd_buf,
+		(push->crt_grid_width  + 7) / 8,
+		(push->crt_grid_height + 7) / 8,
+		1);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = qvk.images[VKPT_IMG_MOTION_BLUR],
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL
+	);
+}
+
+/* vkpt_final_blit_simple with film grain and/or the CRT filter: into the
+   current swapchain image, drawn by film_grain.frag or crt.frag instead of
+   vkCmdBlitImage. Leaves the swapchain image in PRESENT_SRC_KHR and the
+   source in GENERAL, as the plain blit does. */
+static VkResult
+final_blit_effects(VkCommandBuffer cmd_buf, VkImage image, int source, VkExtent2D extent)
+{
+	VkImageSubresourceRange subresource_range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 1
+	};
+
+	/* The source was last written by a shader (resolve, tone mapping, DLSS-G)
+	   or by a copy (motion blur, chromatic aberration). */
+	IMAGE_BARRIER(cmd_buf,
+		.image = image,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL
+	);
+
+	FinalBlit_PushConstants_t push = final_blit_params();
+	push.source     = source;
+	push.src_width  = (int32_t)extent.width;
+	push.src_height = (int32_t)extent.height;
+
+	if (push.crt_mode == CRT_SHADER_GRID)
+		crt_downsample(cmd_buf, &push);
+
+	VkRenderPassBeginInfo render_pass_info = {
+		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+		.renderPass = render_pass_stretch_pic,
+		.framebuffer = framebuffer_stretch_pic[qvk.current_swap_chain_image_index],
+		.renderArea.offset = { 0, 0 },
+		.renderArea.extent = vkpt_draw_get_extent()
+	};
+
+	VkDescriptorSet desc_sets[] = {
+		qvk.desc_set_ubo,
+		qvk_get_current_desc_set_textures()
+	};
+
+	vkCmdBeginRenderPass(cmd_buf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		pipeline_layout_final_blit, 0, LENGTH(desc_sets), desc_sets, 0, 0);
+	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		push.crt_mode != CRT_SHADER_OFF ? pipeline_crt : pipeline_film_grain);
+	vkCmdPushConstants(cmd_buf, pipeline_layout_final_blit, VK_SHADER_STAGE_FRAGMENT_BIT,
+		0, sizeof(push), &push);
+	vkCmdDraw(cmd_buf, 4, 1, 0, 0);
+	vkCmdEndRenderPass(cmd_buf);
+
+	/* The HUD pass loads what this one stored. */
+	IMAGE_BARRIER(cmd_buf,
+		.image = qvk.swap_chain_images[qvk.current_swap_chain_image_index],
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+	);
+
+	/* Whatever writes the source next waits for this read. */
+	IMAGE_BARRIER(cmd_buf,
+		.image = image,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL
+	);
+
+	return VK_SUCCESS;
+}
+
 VkResult
 vkpt_final_blit_simple(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent)
 {
+	/* Every presented frame passes through here - the real one and each
+	   generated one - so this is the one place grain and the CRT need
+	   adding. */
+	if (film_grain_enabled() || crt_enabled()) {
+		for (int i = 0; i < LENGTH(final_blit_sources); i++) {
+			if (qvk.images[final_blit_sources[i]] == image)
+				return final_blit_effects(cmd_buf, image, i, extent);
+		}
+	}
+
 	VkImageSubresourceRange subresource_range = {
 		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 		.baseMipLevel = 0,
@@ -824,6 +1240,12 @@ vkpt_final_blit_simpleDLSS(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D ex
 VkResult
 vkpt_final_blit_filtered(VkCommandBuffer cmd_buf)
 {
+	/* The CRT does its own resampling, so it takes the frame as it is; this
+	   path only runs without DLSS, so that is TAA_OUTPUT. */
+	if (crt_enabled())
+		return final_blit_effects(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT],
+			0 /* final_blit_sources[0] */, qvk.extent_taa_output);
+
 	VkRenderPassBeginInfo render_pass_info = {
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 		.renderPass = render_pass_stretch_pic,
@@ -837,10 +1259,16 @@ vkpt_final_blit_filtered(VkCommandBuffer cmd_buf)
 		qvk_get_current_desc_set_textures()
 	};
 
+	/* Grain is added in final_blit_lanczos.frag on this path; intensity is 0
+	   when it is off. */
+	FinalBlit_PushConstants_t push = final_blit_params();
+
 	vkCmdBeginRenderPass(cmd_buf, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
 		pipeline_layout_final_blit, 0, LENGTH(desc_sets), desc_sets, 0, 0);
 	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_final_blit);
+	vkCmdPushConstants(cmd_buf, pipeline_layout_final_blit, VK_SHADER_STAGE_FRAGMENT_BIT,
+		0, sizeof(push), &push);
 	vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 	vkCmdEndRenderPass(cmd_buf);
 

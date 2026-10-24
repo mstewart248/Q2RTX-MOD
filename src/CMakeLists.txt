@@ -385,6 +385,9 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/stretch_pic.frag
 	refresh/vkpt/shader/stretch_pic.vert
 	refresh/vkpt/shader/final_blit_lanczos.frag
+	refresh/vkpt/shader/film_grain.frag
+	refresh/vkpt/shader/crt.frag
+	refresh/vkpt/shader/crt_downsample.comp
 	refresh/vkpt/shader/final_blit.vert
 	refresh/vkpt/shader/fsr_easu_fp16.comp
 	refresh/vkpt/shader/fsr_easu_fp32.comp

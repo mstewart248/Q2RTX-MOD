@@ -114,7 +114,7 @@ jobs:
         shell: bash
         run: |
           fail=0
-          for f in q2rtx.exe q2rtxded.exe baseq2/gamex86_64.dll phonon.dll \
+          for f in q2rtx.exe q2rtxded.exe baseq2/gamex86_64.dll phonon.dll nvngx.dll_dlssnr.dll \
                    extern/steamaudio/include/phonon.h \
                    baseq2/q2rtx_media.pkz baseq2/blue_noise.pkz baseq2/shaders.pkz; do
             if [ -s "$f" ]; then echo "ok   $f ($(du -h "$f" | cut -f1))"
@@ -129,7 +129,8 @@ jobs:
           python setup/package_release.py \
             --out "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip"
           # The DLSS runtime DLLs must never be in the package; players supply their own.
-          if unzip -l "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" | grep -i 'nvngx[^/]*\.dll'; then
+          # nvngx.dll_dlssnr.dll is our DLSS 5 forwarder, not an NVIDIA runtime.
+          if unzip -l "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" | grep -i 'nvngx[^/]*\.dll' | grep -vi 'nvngx\.dll_dlssnr\.dll'; then
             echo "ERROR: package contains NVIDIA runtime DLLs"; exit 1
           fi
 

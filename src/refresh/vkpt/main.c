@@ -9230,6 +9230,7 @@ R_Init_RTX(bool total)
 	vkpt_fsr_init_cvars();
 	vkpt_motion_blur_init_cvars();
 	vkpt_chromatic_aberration_init_cvars();
+	vkpt_film_grain_init_cvars();
 	InitDLSSCvars();
 	InitDLSSGCvars();
 	DLSS5_InitCvars();

@@ -74,6 +74,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_STRETCH_PIC_FRAG)                       \
 	SHADER_MODULE_DO(QVK_MOD_FINAL_BLIT_VERT)                        \
 	SHADER_MODULE_DO(QVK_MOD_FINAL_BLIT_LANCZOS_FRAG)                \
+	SHADER_MODULE_DO(QVK_MOD_FILM_GRAIN_FRAG)                        \
+	SHADER_MODULE_DO(QVK_MOD_CRT_FRAG)                               \
+	SHADER_MODULE_DO(QVK_MOD_CRT_DOWNSAMPLE_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_INSTANCE_GEOMETRY_COMP)                 \
 	SHADER_MODULE_DO(QVK_MOD_ANIMATE_MATERIALS_COMP)                 \
 	SHADER_MODULE_DO(QVK_MOD_ASVGF_GRADIENT_IMG_COMP)                \
@@ -828,6 +831,9 @@ VkResult vkpt_draw_submit_stretch_pics_keep(VkCommandBuffer cmd_buf);
 VkResult vkpt_final_blit_simple(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent);
 VkResult vkpt_final_blit_simpleDLSS(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D extent);
 VkResult vkpt_final_blit_filtered(VkCommandBuffer cmd_buf);
+/* Film grain and the CRT filter (pt_film_grain*, pt_crt*), added by the final
+   blits - see draw.c, shader/film_grain.glsl and shader/crt.frag. */
+void vkpt_film_grain_init_cvars(void);
 VkResult vkpt_draw_clear_stretch_pics(void);
 
 VkResult vkpt_uniform_buffer_create(void);

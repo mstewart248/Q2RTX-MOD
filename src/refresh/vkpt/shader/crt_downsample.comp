@@ -1,0 +1,84 @@
+/*
+Copyright (C) 2026 Matt Stewart
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/* ============================================================================
+   CRT FILTER, step 1 of 2: the low-resolution signal.
+
+   For pt_crt 1 and 2 the tube is fed a picture of 240 or 480 lines. This
+   pass makes that picture from the finished frame: each grid pixel is the
+   average of the screen pixels it covers, in linear light, so it is the
+   frame as if it had been rendered at the low resolution with perfect
+   anti-aliasing. crt.frag then draws it through the tube.
+
+   The grid goes into IMG_MOTION_BLUR, motion blur's scratch image. It is free
+   by the time the final blit runs: motion blur, chromatic aberration and
+   DLSS 5 have all copied their results out of it.
+
+   Taps are bilinear and spaced about two source pixels apart, so each one
+   averages a 2x2 block: a 4K frame on a 240-line grid (9x9 pixels a cell)
+   costs 25 taps a cell, on a grid of about 100 000 cells.
+   ============================================================================ */
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+#include "final_blit_pc.glsl"
+
+void
+main()
+{
+	ivec2 cell = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 grid = ivec2(blit_pc.crt_grid_width, blit_pc.crt_grid_height);
+
+	if (any(greaterThanEqual(cell, grid)))
+		return;
+
+	vec2 cell_size = vec2(blit_pc.src_width, blit_pc.src_height) / vec2(grid);
+	vec2 origin = vec2(cell) * cell_size;
+	ivec2 taps = max(ivec2(1), ivec2(ceil(cell_size * 0.5)));
+	vec2 step = cell_size / vec2(taps);
+
+	vec3 sum = vec3(0);
+	float count = 0.0;
+
+	for (int y = 0; y < taps.y; y++)
+	{
+		for (int x = 0; x < taps.x; x++)
+		{
+			vec3 c = final_blit_sample(origin + (vec2(x, y) + 0.5) * step);
+
+			/* One non-finite pixel would otherwise blank the whole cell. */
+			if (any(isnan(c)) || any(isinf(c)))
+				continue;
+
+			sum += c;
+			count += 1.0;
+		}
+	}
+
+	imageStore(IMG_MOTION_BLUR, cell, vec4(count > 0.0 ? sum / count : vec3(0), 1));
+}

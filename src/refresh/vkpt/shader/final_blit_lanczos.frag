@@ -34,6 +34,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define GLOBAL_TEXTURES_DESC_SET_IDX 1
 #include "global_textures.h"
 
+#include "film_grain.glsl"
+
 layout(location = 0) in vec2 tex_coord;
 layout(location = 0) out vec4 outColor;
 
@@ -116,6 +118,9 @@ main()
     else {
         color = filter_lanczos(TEX_DLSS_OUTPUT, uv);
     }
-	
+
+	// pt_film_grain - the push constants carry intensity 0 when it is off.
+	color = film_grain_apply(color, ivec2(gl_FragCoord.xy));
+
 	outColor = vec4(color, 1);
 }

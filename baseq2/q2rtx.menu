@@ -936,8 +936,9 @@ begin screen
     pairs --status "(scr_scale)" "HUD scale" scr_scale auto 0 1x 1 2x 2 4x 4
     pairs --status "(con_scale)" "console scale" con_scale auto 0 1x 1 2x 2 4x 4
     pairs --status "(ui_scale)" "menu scale" ui_scale auto 0 1x 1 2x 2 4x 4
-    // CHROMATIC ABERRATION. A pass in the RTX renderer only, so the GL
-    // renderer gets no row for it; the strength is nested under the toggle.
+    // CHROMATIC ABERRATION, FILM GRAIN and the CRT FILTER. RTX renderer only,
+    // so the GL renderer gets no rows for them; each slider is nested under
+    // the row that switches it on.
     ifeq vid_rtx 1
         blank
         toggle --status "colour fringes that grow toward the edges of the screen, the way a real camera lens splits light into its colours - red on the outside of a bright edge, blue on the inside. Nothing moves at the centre, and the HUD is never touched (pt_chromatic_aberration)" \
@@ -945,6 +946,18 @@ begin screen
         ifneq pt_chromatic_aberration 0
             range --status "how far the colours have spread apart at the corners of the screen, as a fraction of screen height. It shrinks to nothing toward the centre (pt_chromatic_aberration_amount)" \
                 -p -f "%.2f%%" "aberration strength" pt_chromatic_aberration_amount 0.0005 0.01 0.0005
+        endif
+        toggle --status "fine film grain over the picture, new on every frame shown. It only changes brightness, strongest in the mid-tones and fading out toward black and white, and the HUD is never touched (pt_film_grain)" \
+            "film grain" pt_film_grain
+        ifneq pt_film_grain 0
+            range --status "how strong the grain is: how far a mid-grey pixel moves on average, as a share of full brightness (pt_film_grain_intensity)" \
+                -p -f "%.0f%%" "grain intensity" pt_film_grain_intensity 0.01 0.15 0.01
+        endif
+        pairs --status "show the game through an old tube screen: scanlines, an RGB phosphor mask, glow and a curved face. Low and medium feed it 240 or 480 lines, as 320x240 and 640x480 had (pixels stay square on a widescreen); high keeps your own resolution, without scanlines. The HUD stays sharp (pt_crt)" \
+            "CRT filter" pt_crt off 0 "low (320x240)" 1 "medium (640x480)" 2 "high (native)" 3
+        ifneq pt_crt 0
+            range --status "how far the tube face bulges and how round its corners are. 0 is a flat screen (pt_crt_curvature)" \
+                -p -f "%.0f%%" "screen curvature" pt_crt_curvature 0 1 0.05
         endif
     endif
     blank

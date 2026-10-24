@@ -291,6 +291,55 @@ and is never touched. RTX renderer only.
 In the menu: **options** → **screen setup** → **chromatic aberration**, with
 *aberration strength* appearing underneath it once it is switched on.
 
+## Film grain
+
+Monochrome grain that changes only brightness, so colours keep their hue. It is
+strongest in the mid-tones and fades out toward black and white: blacks stay
+black instead of turning grey, and highlights don't clip. The grain is the same
+size on screen at any resolution.
+
+It is added in the final copy to the screen, after tone mapping, FSR, DLSS and
+frame generation, and before the HUD. DLSS and frame generation never see it,
+every frame shown gets fresh grain (generated frames included), and the HUD
+stays clean. RTX renderer only.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `pt_film_grain` | `0` | Master switch. |
+| `pt_film_grain_intensity` | `0.04` | How far a mid-grey pixel moves on average, as a fraction of full brightness in sRGB terms (the slider's 4%; capped at `0.5`). |
+
+In the menu: **options** → **screen setup** → **film grain**, with *grain
+intensity* appearing underneath it once it is switched on.
+
+## CRT filter
+
+Shows the game through an old tube screen. Like film grain, it is applied in
+the final copy to the screen, after frame generation and before the HUD, which
+stays sharp. Grain, if it's on too, goes on top.
+
+- **Low** feeds the tube 240 lines, as 320x240 had, and looks like a TV: a soft
+  signal, thick scanlines, a coarse phosphor mask and more glow.
+- **Medium** feeds it 480 lines, as 640x480 had, and looks like a VGA monitor.
+- **High** keeps the game's own resolution, with the tube face and mask but no
+  scanlines. At 2160 lines they would sit a pixel apart and turn to moiré.
+
+Pixels stay square, so on a 16:9 screen low is 427x240 rather than 320 columns
+stretched wide. The low-resolution picture is the frame averaged down, so it
+looks like the game rendered at that resolution with perfect anti-aliasing.
+Each scanline is drawn as a beam, wider where the picture is bright, so dark
+areas show black gaps between lines and highlights fill them in. Average
+brightness is kept, so the game gets no darker. The mask is red, green and
+blue stripes (an aperture grille). The curvature follows Timothy Lottes'
+public-domain CRT shader. RTX renderer only.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `pt_crt` | `0` | 0 off, 1 low (240 lines), 2 medium (480 lines), 3 high (native resolution). |
+| `pt_crt_curvature` | `0.5` | How far the tube face bulges and how round its corners are, 0 (flat) to 1. |
+
+In the menu: **options** → **screen setup** → **CRT filter**, with *screen
+curvature* appearing underneath it once a mode is picked.
+
 ## Volumetric fog and atmosphere
 
 The remaster authors fog on `worldspawn` — 67 of the 76 in-scope maps set height
