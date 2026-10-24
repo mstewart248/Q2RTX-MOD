@@ -1598,7 +1598,9 @@ void CL_AddPlayerModelFlash(void)
         return;
     }
 
-    if (!cl_muzzleflash_models->integer || !cl_mod_muzzleflash)
+    // the software renderer draws none: the original lit the walls with the
+    // flash's light and nothing more
+    if (!cl_muzzleflash_models->integer || !cl_mod_muzzleflash || cls.ref_type == REF_TYPE_SW)
         return;
 
     // Placed relative to the model AS DRAWN: CL_AddPacketEntities draws your
@@ -1665,7 +1667,9 @@ static void CL_AddViewWeaponFlash(const entity_t *gun)
         return;
     }
 
-    if (!cl_muzzleflash_models->integer)
+    // the software renderer draws none: the original lit the walls with the
+    // flash's light and nothing more
+    if (!cl_muzzleflash_models->integer || cls.ref_type == REF_TYPE_SW)
         return;
 
     model = MOD_ForHandle(gun->model);

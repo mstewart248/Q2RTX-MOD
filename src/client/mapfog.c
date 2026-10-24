@@ -108,6 +108,7 @@ typedef struct {
 
     float   density;            // plain distance fog
     vec3_t  color;
+    float   sky_factor;         // how far the sky is tinted to fog_color (KEX)
 
     float   hf_density;         // altitude-banded fog
     float   hf_falloff;
@@ -117,6 +118,8 @@ typedef struct {
     vec3_t  hf_end_color;
     float   hf_color_start_z;   // all hf_start_color here, all hf_end_color at
     float   hf_color_end_z;     // hf_color_end_z - KEX's ramp, see mapfog_finish
+    float   hf_ref_z;           // heightfog_start_dist as authored, never swapped:
+                                // the height KEX's density integral starts from
 } mapfog_t;
 
 static mapfog_t cl_mapfog;
@@ -176,6 +179,8 @@ static bool CL_ParseWorldspawnFog(const char *data, mapfog_t *out)
             got_any = true;
         } else if (!strcmp(key, "fog_color")) {
             sscanf(token, "%f %f %f", &out->color[0], &out->color[1], &out->color[2]);
+        } else if (!strcmp(key, "fog_sky_factor")) {
+            out->sky_factor = atof(token);
         } else if (!strcmp(key, "heightfog_density")) {
             out->hf_density = atof(token);
             got_any = true;
@@ -240,6 +245,7 @@ colours back on the band.
 */
 static void mapfog_finish(mapfog_t *f)
 {
+    f->hf_ref_z = f->hf_start_z;
     f->hf_color_start_z = 2 * f->hf_start_z;
     f->hf_color_end_z = f->hf_start_z + f->hf_end_z;
 
@@ -331,6 +337,8 @@ static bool mapfog_parse_key(const char *key, const char *value, mapfog_t *on, m
         f->density = atof(value);
     else if (!strcmp(key, "fog_color"))
         sscanf(value, "%f %f %f", &f->color[0], &f->color[1], &f->color[2]);
+    else if (!strcmp(key, "fog_sky_factor"))
+        f->sky_factor = atof(value);
     else if (!strcmp(key, "heightfog_density"))
         f->hf_density = atof(value);
     else if (!strcmp(key, "heightfog_falloff"))
@@ -450,6 +458,7 @@ static void mapfog_copy_part(mapfog_t *dst, const mapfog_t *src, int part)
 {
     if (part == FADE_FOG) {
         dst->density = src->density;
+        dst->sky_factor = src->sky_factor;
         VectorCopy(src->color, dst->color);
     } else {
         dst->hf_density = src->hf_density;
@@ -460,6 +469,7 @@ static void mapfog_copy_part(mapfog_t *dst, const mapfog_t *src, int part)
         VectorCopy(src->hf_end_color, dst->hf_end_color);
         dst->hf_color_start_z = src->hf_color_start_z;
         dst->hf_color_end_z = src->hf_color_end_z;
+        dst->hf_ref_z = src->hf_ref_z;
     }
 }
 
@@ -472,6 +482,8 @@ static void mapfog_lerp(mapfog_t *out, const mapfog_t *a, const mapfog_t *b, flo
     out->hf_end_z   = a->hf_end_z   + (b->hf_end_z   - a->hf_end_z)   * t;
     out->hf_color_start_z = a->hf_color_start_z + (b->hf_color_start_z - a->hf_color_start_z) * t;
     out->hf_color_end_z   = a->hf_color_end_z   + (b->hf_color_end_z   - a->hf_color_end_z)   * t;
+    out->hf_ref_z   = a->hf_ref_z   + (b->hf_ref_z   - a->hf_ref_z)   * t;
+    out->sky_factor = a->sky_factor + (b->sky_factor - a->sky_factor) * t;
     LerpVector(a->color, b->color, t, out->color);
     LerpVector(a->hf_start_color, b->hf_start_color, t, out->hf_start_color);
     LerpVector(a->hf_end_color, b->hf_end_color, t, out->hf_end_color);
@@ -723,6 +735,50 @@ bool CL_GetMapFog(mapfog_params_t *out)
     out->hf_color_start_z = fog.hf_color_start_z;
     out->hf_color_end_z   = fog.hf_color_end_z;
     out->color_layers     = rerelease;
+
+    return true;
+}
+
+/*
+=================
+CL_GetMapFogKEX
+
+The rerelease's fog as KEX draws it, for the software renderer's analytic
+fog: the authored values, not normalised, under KEX's rules and with its
+trigger_fog fades - whatever cl_fog and cl_fog_rerelease say, which are the
+path tracer's. False when the map has no fog at all.
+=================
+*/
+bool CL_GetMapFogKEX(mapfog_kex_t *out)
+{
+    mapfog_t    fog;
+
+    memset(out, 0, sizeof(*out));
+
+    CL_UpdateTriggerFog();
+
+    fog = cl_mapfog_kex;
+    mapfog_fade_value(&cl_fogfades[FADE_FOG], FADE_FOG, &fog);
+    mapfog_fade_value(&cl_fogfades[FADE_HEIGHTFOG], FADE_HEIGHTFOG, &fog);
+
+    // KEX draws height fog only with both a density and a falloff, and a band
+    // with no thickness would divide by zero in its colour ramp
+    if (fog.hf_falloff <= 0 || fog.hf_color_end_z == fog.hf_color_start_z)
+        fog.hf_density = 0;
+
+    if (fog.density <= 0 && fog.hf_density <= 0 && fog.sky_factor <= 0)
+        return false;
+
+    out->density = fog.density;
+    VectorCopy(fog.color, out->color);
+    out->sky_factor = fog.sky_factor;
+    out->hf_density = fog.hf_density;
+    out->hf_falloff = fog.hf_falloff;
+    out->hf_ref_z = fog.hf_ref_z;
+    VectorCopy(fog.hf_start_color, out->hf_start_color);
+    VectorCopy(fog.hf_end_color, out->hf_end_color);
+    out->hf_color_start_z = fog.hf_color_start_z;
+    out->hf_color_end_z = fog.hf_color_end_z;
 
     return true;
 }

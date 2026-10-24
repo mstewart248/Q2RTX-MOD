@@ -244,6 +244,37 @@ SET(HEADERS_GL
 	refresh/gl/gl.h
 )
 
+SET(SRC_SW
+	refresh/sw/aclip.c
+	refresh/sw/alias.c
+	refresh/sw/bsp.c
+	refresh/sw/draw.c
+	refresh/sw/edge.c
+	refresh/sw/thread.c
+	refresh/sw/fog.c
+	refresh/sw/image.c
+	refresh/sw/light.c
+	refresh/sw/main.c
+	refresh/sw/misc.c
+	refresh/sw/model.c
+	refresh/sw/part.c
+	refresh/sw/poly.c
+	refresh/sw/polyset.c
+	refresh/sw/raster.c
+	refresh/sw/scan.c
+	refresh/sw/sky.c
+	refresh/sw/surf.c
+)
+
+SET(HEADERS_SW
+	refresh/sw/adivtab.h
+	refresh/sw/block.h
+	refresh/sw/block8.h
+	refresh/sw/rand1k.h
+	refresh/sw/span.h
+	refresh/sw/sw.h
+)
+
 SET(SRC_SHARED
 	shared/m_flash.c
 	shared/shared.c
@@ -600,6 +631,11 @@ IF (TARGET client)
     IF (CONFIG_GL_RENDERER)
         TARGET_SOURCES(client PRIVATE ${SRC_GL} ${HEADERS_GL})
         TARGET_COMPILE_DEFINITIONS(client PRIVATE REF_GL=1 USE_REF=1)
+    ENDIF()
+
+    IF (CONFIG_SOFT_RENDERER)
+        TARGET_SOURCES(client PRIVATE ${SRC_SW} ${HEADERS_SW})
+        TARGET_COMPILE_DEFINITIONS(client PRIVATE REF_SOFT=1)
     ENDIF()
 
     IF (CONFIG_VKPT_RENDERER)

@@ -386,6 +386,12 @@ void CL_InitRefresh(void)
 
     Com_SetLastError(NULL);
 
+#if REF_SOFT
+	// vid_rtx 2 is the software renderer, whichever of the others are built
+	if (vid_rtx->integer == 2)
+		R_RegisterFunctionsSW();
+	else
+#endif
 #if REF_GL && REF_VKPT
 	if (vid_rtx->integer)
 		R_RegisterFunctionsRTX();

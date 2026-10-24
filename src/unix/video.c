@@ -125,6 +125,100 @@ void *VID_GetProcAddr(const char *sym)
 /*
 ===============================================================================
 
+SOFTWARE RENDERER PRESENT
+
+The software renderer draws each frame in system memory and hands it over
+here. An SDL_Renderer streaming texture carries it to the window: one upload
+and a copy on the GPU, vsync from the swap chain, and no scaling - the texture
+is always the size of the window.
+
+===============================================================================
+*/
+
+static SDL_Renderer     *sdl_renderer;
+static SDL_Texture      *sdl_texture;
+static int              sdl_texture_w, sdl_texture_h;
+
+static void sw_vsync_changed(cvar_t *self)
+{
+    if (sdl_renderer && SDL_RenderSetVSync(sdl_renderer, !!self->integer) < 0) {
+        Com_EPrintf("Couldn't set vsync %d: %s\n", self->integer, SDL_GetError());
+    }
+}
+
+static bool VID_SDL_CreateRenderer(void)
+{
+#ifdef _WINDOWS
+    // SDL2 tries Direct3D 9 first; 11 has the flip-model swap chain
+    SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "direct3d11", SDL_HINT_DEFAULT);
+#endif
+    SDL_SetHintWithPriority(SDL_HINT_RENDER_SCALE_QUALITY, "nearest", SDL_HINT_DEFAULT);
+
+    cvar_t *cvar_vsync = Cvar_Get("vid_vsync", "0", CVAR_ARCHIVE);
+    cvar_vsync->flags &= ~CVAR_REFRESH; // in case the RTX renderer has marked it as REFRESH
+
+    Uint32 flags = SDL_RENDERER_ACCELERATED;
+    if (cvar_vsync->integer)
+        flags |= SDL_RENDERER_PRESENTVSYNC;
+
+    sdl_renderer = SDL_CreateRenderer(sdl_window, -1, flags);
+    if (!sdl_renderer) {
+        Com_WPrintf("Couldn't create an accelerated SDL renderer: %s\n", SDL_GetError());
+        sdl_renderer = SDL_CreateRenderer(sdl_window, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (!sdl_renderer) {
+        Com_EPrintf("Couldn't create SDL renderer: %s\n", SDL_GetError());
+        return false;
+    }
+
+    SDL_RendererInfo info;
+    if (SDL_GetRendererInfo(sdl_renderer, &info) == 0)
+        Com_Printf("...presenting through SDL %s\n", info.name);
+
+    cvar_vsync->changed = sw_vsync_changed;
+    return true;
+}
+
+static void VID_SDL_DestroyRenderer(void)
+{
+    if (sdl_texture) {
+        SDL_DestroyTexture(sdl_texture);
+        sdl_texture = NULL;
+    }
+    if (sdl_renderer) {
+        SDL_DestroyRenderer(sdl_renderer);
+        sdl_renderer = NULL;
+    }
+    sdl_texture_w = sdl_texture_h = 0;
+}
+
+void VID_PresentSoftware(const void *pixels, int pitch, int width, int height)
+{
+    if (!sdl_renderer)
+        return;
+
+    if (!sdl_texture || sdl_texture_w != width || sdl_texture_h != height) {
+        if (sdl_texture)
+            SDL_DestroyTexture(sdl_texture);
+        sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB888,
+                                        SDL_TEXTUREACCESS_STREAMING, width, height);
+        if (!sdl_texture) {
+            Com_EPrintf("Couldn't create %dx%d SDL texture: %s\n", width, height, SDL_GetError());
+            sdl_texture_w = sdl_texture_h = 0;
+            return;
+        }
+        sdl_texture_w = width;
+        sdl_texture_h = height;
+    }
+
+    SDL_UpdateTexture(sdl_texture, NULL, pixels, pitch);
+    SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, NULL);
+    SDL_RenderPresent(sdl_renderer);
+}
+
+/*
+===============================================================================
+
 VIDEO
 
 ===============================================================================
@@ -428,6 +522,9 @@ bool VID_Init(graphics_api_t api)
 
     VID_SDL_SetMode();
 
+    if (api == GAPI_SOFTWARE && !VID_SDL_CreateRenderer())
+        goto fail;
+
 #if REF_GL
 	if (api == GAPI_OPENGL)
 	{
@@ -476,6 +573,7 @@ fail:
 
 void VID_Shutdown(void)
 {
+    VID_SDL_DestroyRenderer();
 #if REF_GL
     if (sdl_context) {
         SDL_GL_DeleteContext(sdl_context);

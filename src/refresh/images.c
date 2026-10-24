@@ -59,6 +59,14 @@ void stbi_write(void *context, void *data, int size)
 extern cvar_t* vid_rtx;
 extern cvar_t* gl_use_hd_assets;
 
+// GL without "use new textures and models", and the software renderer
+// always, draw the classic .wal/.pcx world and model textures
+static bool classic_assets(void)
+{
+    return (cls.ref_type == REF_TYPE_GL && !gl_use_hd_assets->integer) ||
+           cls.ref_type == REF_TYPE_SW;
+}
+
 /*
 ====================================================================
 
@@ -1391,7 +1399,7 @@ static int find_or_load_image(const char *name, size_t len,
     }
 
 	int override_textures = !!r_override_textures->integer;
-	if (cls.ref_type == REF_TYPE_GL && (type != IT_PIC) && !gl_use_hd_assets->integer)
+	if (type != IT_PIC && classic_assets())
 		override_textures = 0;
     if (flags & IF_EXACT)
         override_textures = 0;
@@ -1419,7 +1427,7 @@ static int find_or_load_image(const char *name, size_t len,
        weapons/v_shotg/skin.tga belongs to Q2RTX's tris.md3 there and comes
        out as camouflage on the md2's UVs. A substitute is still taken when
        there is no original at all. */
-    if (ret < 0 && cls.ref_type == REF_TYPE_GL && type != IT_PIC && !gl_use_hd_assets->integer &&
+    if (ret < 0 && type != IT_PIC && classic_assets() &&
         !(flags & (IF_EXACT | IF_SRC_MASK)))
     {
         memcpy(image->name, name, len + 1);
@@ -1839,6 +1847,90 @@ void IMG_GetPalette(void)
 
 fail:
     Com_Error(ERR_FATAL, "Couldn't load %s: %s", R_COLORMAP_PCX, Q_ErrorString(ret));
+}
+
+/*
+===============
+IMG_LoadColormap
+
+The pixels of colormap.pcx for the software renderer's 8-bit mode: 64 rows
+of light levels, then the 256 rows of the translucency table. `pixels` holds
+256 x 320.
+===============
+*/
+int IMG_LoadColormap(byte *pixels)
+{
+    byte    *data;
+    int     ret, len, w, h;
+
+    len = FS_LoadFile(R_COLORMAP_PCX, (void **)&data);
+    if (!data)
+        return len;
+
+    // decode the header first: the pixels must fit
+    ret = IMG_DecodePCX(data, len, NULL, NULL, &w, &h);
+    if (ret >= 0 && (w != 256 || h != 320))
+        ret = Q_ERR_INVALID_FORMAT;
+    if (ret >= 0)
+        ret = IMG_DecodePCX(data, len, pixels, NULL, NULL, NULL);
+
+    FS_FreeFile(data);
+    return ret;
+}
+
+/*
+===============
+IMG_LoadGlowMap
+
+A glow map for the software renderer: <name>_glow, the rerelease's, beside
+the image; for a wall also Q2RTX's <name>_light emissive map, beside it or in
+overrides/. Its pixels as RGBA at its own size, which the caller frees with
+Z_Free; it is not registered as an image. *from_light tells the two kinds
+apart, since they are read differently. NULL when there is none.
+===============
+*/
+byte *IMG_LoadGlowMap(const image_t *image, int *width, int *height, bool *from_light)
+{
+    char        base[MAX_QPATH];
+    const char  *slash;
+    image_t     temp;
+    byte        *pic;
+    size_t      len;
+    int         i, ret;
+
+    if (COM_StripExtension(base, image->name, sizeof(base)) >= sizeof(base))
+        return NULL;
+    slash = strrchr(base, '/');
+
+    for (i = 0; i < 3; i++) {
+        if (i > 0 && image->type != IT_WALL)
+            break;
+
+        memset(&temp, 0, sizeof(temp));
+        if (i == 0)
+            len = Q_concat(temp.name, sizeof(temp.name), base, "_glow.png");
+        else if (i == 1)
+            len = Q_concat(temp.name, sizeof(temp.name), base, "_light.png");
+        else
+            len = Q_concat(temp.name, sizeof(temp.name), "overrides/", slash ? slash + 1 : base, "_light.png");
+        if (len >= sizeof(temp.name))
+            continue;
+        temp.baselen = len - 4;
+
+        // any 32-bit format, then .pcx
+        pic = NULL;
+        ret = try_load_image_candidate(&temp, NULL, 0, &pic, IT_PIC, 0, true, TRY_IMAGE_SRC_BASE);
+        if (ret >= 0 && pic && temp.upload_width > 0 && temp.upload_height > 0) {
+            *width = temp.upload_width;
+            *height = temp.upload_height;
+            *from_light = i > 0;
+            return pic;
+        }
+        if (pic)
+            IMG_FreePixels(pic);
+    }
+
+    return NULL;
 }
 
 static const cmdreg_t img_cmd[] = {

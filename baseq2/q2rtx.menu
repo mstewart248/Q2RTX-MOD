@@ -332,8 +332,26 @@ begin video_renderer
     background #212F3CD0
     style --compact
     title "Renderer"
-	pairs --status "(vid_rtx)" "renderer" vid_rtx opengl 0 rtx 1
+	pairs --status "(vid_rtx)" "renderer" vid_rtx opengl 0 rtx 1 software 2
     blank
+    // The software renderer: id's original span renderer in 32-bit colour.
+    ifeq vid_rtx 2
+        pairs --status "8-bit is the original 256 colours: the palette, its lighting table and white dynamic lights; 32-bit keeps every colour and coloured light (sw_8bit)" \
+            "colour" sw_8bit "8-bit (original)" 1 "32-bit" 0
+        pairs --status "draws the 3D view at a fraction of the window's resolution and scales it up with nearest neighbour - the chunky original look, and much faster (sw_scale)" \
+            "internal resolution" sw_scale "native" 1 "1/2" 2 "1/3" 3 "1/4" 4 "1/6" 6 "1/8" 8
+        pairs --status "how many CPU threads draw the pixels: all of them, or one as the original did (sw_threads)" \
+            "CPU threads" sw_threads "all" 0 "1 (original)" 1 "2" 2 "4" 4 "8" 8 "16" 16
+        range --status "(vid_gamma)" "texture gamma" vid_gamma 1.3 0.3
+        toggle --status "rockets, muzzle flashes and other moving lights (sw_dynamic)" "dynamic lighting" sw_dynamic
+        toggle --status "the wobble when your head is under water (sw_waterwarp)" "underwater warp" sw_waterwarp
+        toggle --status "the full screen tint for damage, pickups and liquids (sw_polyblend)" "screen blending" sw_polyblend
+        // the rerelease's, not the original's: 32-bit colour only
+        ifeq sw_8bit 0
+            toggle --status "the rerelease's fog, by distance and in height bands, from the map's own values; the original had none (sw_fog)" "fog" sw_fog
+            toggle --status "the rerelease's glow maps: lights and screens stay lit in the dark; the original had none (sw_glowmaps)" "glow maps" sw_glowmaps
+        endif
+    endif
     ifeq vid_rtx 1
 		range --status "(pt_texture_lod_bias)" "texture LOD bias" pt_texture_lod_bias -2 2 0.5
         // Sits with the other texture settings rather than down among the
@@ -396,7 +414,7 @@ begin video_renderer
         pairs --status "(ray_tracing_api)" "ray tracing API" ray_tracing_api "automatic selection" "auto" "prefer KHR_ray_query" "query"  "prefer KHR_ray_tracing_pipeline" "pipeline"
     endif
 
-    ifneq vid_rtx 1
+    ifeq vid_rtx 0
         pairs --status "(gl_multisamples)" "anti-aliasing" gl_multisamples no 0 "2x MSAA" 2 "4x MSAA" 4 "8x MSAA" 8
         range --status "(vid_gamma)" "texture gamma" vid_gamma 1.3 0.3
         toggle --status "(vid_hwgamma)" "hardware gamma" vid_hwgamma
@@ -509,7 +527,7 @@ begin effects
     style --compact
     title "Effects Setup"
     blank
-    ifneq vid_rtx 1
+    ifeq vid_rtx 0
         values --status "(gl_dynamic)" "dynamic lighting" gl_dynamic "no" "yes" "only switchable"
         values --status "(gl_celshading)" "entity cel-shading" gl_celshading no 1x 2x 3x
         toggle --status "(cl_noglow)" "entity glowing" cl_noglow ~

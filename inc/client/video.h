@@ -33,7 +33,7 @@ void VID_PumpEvents(void);
 void VID_SetMode(void);
 char *VID_GetDefaultModeList(void);
 
-typedef enum { GAPI_OPENGL, GAPI_VULKAN } graphics_api_t;
+typedef enum { GAPI_OPENGL, GAPI_VULKAN, GAPI_SOFTWARE } graphics_api_t;
 
 bool    VID_Init(graphics_api_t api);
 void    VID_Shutdown(void);
@@ -45,6 +45,9 @@ void    *VID_GetProcAddr(const char *sym);
 
 void    VID_BeginFrame(void);
 void    VID_EndFrame(void);
+
+// GAPI_SOFTWARE: copies a frame of BGRX pixels to the window and presents it
+void    VID_PresentSoftware(const void *pixels, int pitch, int width, int height);
 
 char    *VID_GetClipboardData(void);
 void    VID_SetClipboardData(const char *data);

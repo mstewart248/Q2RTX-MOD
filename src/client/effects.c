@@ -5150,9 +5150,16 @@ Read at SPAWN rather than at draw time, so toggling the cvar mid-fight leaves th
 droplets already in the air alone instead of making them change form in place.
 ===============
 */
+// Sphere droplets are drawn by the path tracer alone: anywhere else they would
+// go nowhere, so blood stays the original's particles under GL and software.
+static inline bool CL_BloodSpheresOn(void)
+{
+    return cl_blood_spheres->integer && cls.ref_type == REF_TYPE_VKPT;
+}
+
 void CL_MakeBloodSphere(cparticle_t *p, float scale)
 {
-    if (!cl_blood_spheres->integer)
+    if (!CL_BloodSpheresOn())
         return;
 
     // Counted optimistically rather than measured, because a single burst spawns
@@ -5295,7 +5302,7 @@ void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int c
 
         // Only the simulated path needs the boost - the analytic one still runs
         // under PARTICLE_GRAVITY and its original tuning holds.
-        const float speed_scale = (cl_blood_spheres->integer && cl_blood_collision->integer)
+        const float speed_scale = (CL_BloodSpheresOn() && cl_blood_collision->integer)
             ? max(0.1f, cl_blood_speed->value) : 1.0f;
 
         VectorScale(velocity,

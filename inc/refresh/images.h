@@ -96,6 +96,16 @@ typedef struct image_s {
 #else
     byte            *pixels[4]; // mip levels
 #endif
+#if REF_SOFT
+    // Software renderer: every mip level twice, as RGBA (32-bit mode) and as
+    // palette indices (8-bit mode). Walls have 4 levels, everything else 1.
+    byte            *sw_pixels[4];
+    byte            *sw_pixels8[4];
+    // Glow map (sw_glowmaps), 32-bit mode only. A wall's is one byte a texel
+    // at its size and mips, how far each texel is taken to full light; a
+    // skin's is RGBA, premultiplied, added after lighting.
+    byte            *sw_glow[4];
+#endif
 } image_t;
 
 #define MAX_RIMAGES     8192
@@ -119,6 +129,8 @@ void IMG_FreeAll(void);
 void IMG_Init(void);
 void IMG_Shutdown(void);
 void IMG_GetPalette(void);
+int IMG_LoadColormap(byte *pixels);
+byte *IMG_LoadGlowMap(const image_t *image, int *width, int *height, bool *from_light);
 
 image_t *IMG_ForHandle(qhandle_t h);
 

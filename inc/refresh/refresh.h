@@ -380,6 +380,25 @@ typedef struct {
    signature. client.h keeps its identical declaration; the two agree. */
 bool CL_GetMapFog(mapfog_params_t *out);
 
+// The rerelease's fog as KEX draws it - the authored values, not normalised,
+// under KEX's rules, with trigger_fog's fades - for the software renderer's
+// analytic fog (src/client/mapfog.c CL_GetMapFogKEX). q2repro's
+// src/refresh/shader.c has the formulas these feed.
+typedef struct {
+    float   density;            // fog_density; the shader uses density / 64
+    vec3_t  color;              // fog_color
+    float   sky_factor;         // fog_sky_factor
+    float   hf_density;         // heightfog_density; 0 = no height fog
+    float   hf_falloff;
+    float   hf_ref_z;           // heightfog_start_dist as authored
+    vec3_t  hf_start_color;
+    vec3_t  hf_end_color;
+    float   hf_color_start_z;   // the colour is hf_start_color at this world Z
+    float   hf_color_end_z;     // and hf_end_color at this one
+} mapfog_kex_t;
+
+bool CL_GetMapFogKEX(mapfog_kex_t *out);
+
 typedef struct refdef_s {
     int         x, y, width, height;// in virtual screen coordinates
     float       fov_x, fov_y;
@@ -473,7 +492,8 @@ typedef enum ref_type_e
 {
     REF_TYPE_NONE = 0,
     REF_TYPE_GL,
-    REF_TYPE_VKPT
+    REF_TYPE_VKPT,
+    REF_TYPE_SW
 } ref_type_t;
 
 // called when the library is loaded
@@ -622,6 +642,10 @@ void R_RegisterFunctionsGL(void);
 #endif
 #if REF_VKPT
 void R_RegisterFunctionsRTX(void);
+#endif
+
+#if REF_SOFT
+void R_RegisterFunctionsSW(void);
 #endif
 
 #endif // REFRESH_H

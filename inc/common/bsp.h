@@ -26,6 +26,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "system/hunk.h"
 #include "format/bsp.h"
 
+#if REF_SOFT
+// mip levels the software renderer keeps of every wall texture and surface
+#define MIPLEVELS   4
+#endif
+
 // maximum size of a PVS row, in bytes
 #define VIS_MAX_BYTES   (MAX_MAP_LEAFS >> 3)
 
@@ -44,8 +49,11 @@ typedef struct mtexinfo_s {  // used internally due to name len probs //ZOID
 #if REF_VKPT
 	struct pbr_material_s *material;
 #endif
-#if REF_GL
+#if REF_GL || REF_SOFT
 	struct image_s      *image; // used for texturing
+#endif
+#if REF_SOFT
+    vec_t               mipadjust;  // texels per world unit, for mip selection
 #endif
     int                 numframes;
     struct mtexinfo_s   *next; // used for animation
@@ -66,6 +74,9 @@ typedef struct {
 
 typedef struct {
     mvertex_t   *v[2];
+#if REF_SOFT
+    uintptr_t   cachededgeoffset;   // software renderer: edge emitted this frame
+#endif
 } medge_t;
 
 typedef struct {
@@ -106,14 +117,19 @@ typedef struct mface_s {
     int             texturemins[2];
     int             extents[2];
 
-#if USE_REF == REF_GL
+#if REF_GL
     int             texnum[2];
     int             statebits;
     int             firstvert;
     int             light_s, light_t;
     float           stylecache[MAX_LIGHTMAPS];
-#else
+#endif
+#if REF_SOFT
     struct surfcache_s    *cachespots[MIPLEVELS]; // surface generation data
+    // The lightmap on the classic 16-texel grid from texturemins, which is
+    // the only layout the surface cache builds from. Same as `lightmap` for
+    // a classic face; resampled from it for a DECOUPLED_LM one.
+    byte            *sw_lightmap;
 #endif
 
     int             firstbasis;
@@ -178,6 +194,9 @@ typedef struct {
 #if USE_REF
     mface_t         **firstleafface;
     int             numleaffaces;
+#endif
+#if REF_SOFT
+    unsigned        key;    // software renderer: BSP order, for sorting bmodels
 #endif
 } mleaf_t;
 

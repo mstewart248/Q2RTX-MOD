@@ -37,6 +37,7 @@ execute_process(
 
 OPTION(CONFIG_GL_RENDERER "Enable GL renderer" ON)
 OPTION(CONFIG_VKPT_RENDERER "Enable VKPT renderer" ON)
+OPTION(CONFIG_SOFT_RENDERER "Enable software renderer" ON)
 OPTION(CONFIG_VKPT_ENABLE_DEVICE_GROUPS "Enable device groups (multi-gpu) support" ON)
 OPTION(CONFIG_VKPT_ENABLE_IMAGE_DUMPS "Enable image dumping functionality" OFF)
 OPTION(CONFIG_USE_CURL "Use CURL for HTTP support" ON)

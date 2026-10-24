@@ -514,7 +514,10 @@ void CL_MuzzleFlashModel2(const vec3_t origin, const vec3_t angles,
                           int view_fx, qhandle_t model)
 {
     explosion_t *ex;
-    if (!cl_muzzleflash_models->integer)
+
+    // the software renderer draws none: the original lit the walls with the
+    // flash's light and nothing more
+    if (!cl_muzzleflash_models->integer || cls.ref_type == REF_TYPE_SW)
         return;
 
     // `model` is this weapon's own flash graphic; 0 means the caller has none
