@@ -296,7 +296,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_sharc_voxel_min, 2) /* smallest cache voxel, in world units */ \
 	UBO_CVAR_DO(pt_sharc_min_samples, 4) /* an entry is not used until this many samples are behind it */ \
 	UBO_CVAR_DO(pt_sharc_clamp, 64) /* firefly clamp on a training sample, in multiples of the adapted luminance; 0 = none */ \
-	UBO_CVAR_DO(pt_sharc_scale, 250) /* multiplier on what the cache adds. Physically 1, but Quake's dark albedos leave the third bounce onwards at ~0.1% of the picture; 250 is the tuned look (with pt_sharc 2) */ \
+	UBO_CVAR_DO(pt_sharc_scale, 1) /* multiplier on what the cache adds; 1 = physically correct. Quake's dark albedos leave the third bounce onwards at ~0.1% of the picture, so anything well above 1 is an artistic boost */ \
 	UBO_CVAR_DO(pt_sharc_jitter, 1) /* the path tracer's cache lookup is jittered along the surface by up to this many voxels, so voxel edges become noise the denoiser removes instead of visible blocks; 0 = off */ \
 	UBO_CVAR_DO(pt_sharc_min_dist, 1) /* a bounce hit closer than this many voxels does not trust the cache (fades to 0 at contact): corners and crevices are where a voxel averages lit and shadowed surfaces and leaks light; 0 = always trust */ \
 	UBO_CVAR_DO(pt_restir_gi, 0) /* ReSTIR GI (shader/restir_gi.h): the first diffuse bounce becomes a sample that is reused across frames and between neighbouring pixels - a bounce that found the lit wall keeps lighting the pixel and its neighbours instead of being thrown away. 0 = off, 1 = on, 2 = debug view of the history length, 3 = of the sample age. Never used in accumulation (photo) mode. */ \

@@ -18,6 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // r_edge.c
 
 #include "sw.h"
+#include "common/cpuprof.h"
 
 /*
 the complex cases add new polys on most lines, so dont optimize for keeping them the same
@@ -712,6 +713,14 @@ typedef struct {
 static vec3_t       transformed_modelorg;
 static vec3_t       world_transformed_modelorg;
 
+drawstats_t         r_drawstats;
+
+// r_speeds' clock, or 0 when it is off
+static inline uint64_t D_Clock(void)
+{
+    return r_stagetime[0] ? Sys_Microseconds() : 0;
+}
+
 static surfdraw_t   *r_surfdraw;            // a surface's, while a batch is drawn
 static surfbuild_t  *r_surfbuilds;          // the blocks a batch has to draw
 static int          r_numsurfdraw;
@@ -1014,7 +1023,9 @@ static bool D_DrawSurfacesThreaded(int v0, int v1)
     surf_t      *s;
     int         numsurfs = surface_p - surfaces;
     int         numbuilds = 0;
+    int         polycount = r_drawnpolycount;
     bandjob_t   bands;
+    uint64_t    t0, t1, t2;
 
     if (numsurfs > r_numsurfdraw) {
         Z_Free(r_surfdraw);
@@ -1028,6 +1039,8 @@ static bool D_DrawSurfacesThreaded(int v0, int v1)
         batchid = 1;
     r_cachebatch = batchid;
     r_cacheoverflow = false;
+
+    t0 = D_Clock();
 
     for (s = &surfaces[1]; s < surface_p; s++) {
         if (!s->spans)
@@ -1047,16 +1060,23 @@ static bool D_DrawSurfacesThreaded(int v0, int v1)
     if (r_cacheoverflow) {
         r_cachegrow = true;
         r_cacheoverflow = false;
+        r_drawnpolycount = polycount;   // the one thread way counts them again
         return false;
     }
 
+    t1 = D_Clock();
     R_ParallelFor(numbuilds, D_BuildJob, NULL);
+    t2 = D_Clock();
 
     r_spanrows[v1] = span_p;
     bands.v0 = v0;
     bands.rows = v1 - v0;
     bands.jobs = R_RowJobs(bands.rows);
     R_ParallelFor(bands.jobs, D_DrawBandJob, &bands);
+
+    r_drawstats.prep += t1 - t0;
+    r_drawstats.build += t2 - t1;
+    r_drawstats.spans += D_Clock() - t2;
 
     return true;
 }
@@ -1074,14 +1094,19 @@ void D_DrawSurfaces(int v0, int v1)
     surf_t          *s;
     surfdraw_t      sd;
     surfbuild_t     b;
+    uint64_t        t0 = D_Clock();
 
 //  currententity = NULL;   //&r_worldentity;
     VectorSubtract(r_origin, vec3_origin, modelorg);
     R_TransformVector(modelorg, transformed_modelorg);
     VectorCopy(transformed_modelorg, world_transformed_modelorg);
 
+    r_drawstats.batches++;
+
     if (r_numthreads > 1 && D_DrawSurfacesThreaded(v0, v1))
         goto done;
+
+    r_drawstats.serial++;
 
     for (s = &surfaces[1]; s < surface_p; s++) {
         if (!s->spans)
@@ -1101,6 +1126,8 @@ done:
     currententity = NULL;   //&r_worldentity;
     VectorSubtract(r_origin, vec3_origin, modelorg);
     R_TransformFrustum();
+
+    r_drawstats.total += D_Clock() - t0;
 }
 
 

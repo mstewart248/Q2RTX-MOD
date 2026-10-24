@@ -934,6 +934,7 @@ static void R_RenderFrame_SW(refdef_t *fd, int waterLevel)
     if (r_speeds->integer)
         r_time1 = Sys_Milliseconds();
     r_stagetime[0] = r_speeds->integer ? Sys_Microseconds() : 0;
+    memset(&r_drawstats, 0, sizeof(r_drawstats));
 
     if (r_worldmodel && !(r_newrefdef.rdflags & RDF_NOWORLDMODEL))
         R_GrowPools();
@@ -962,16 +963,20 @@ static void R_RenderFrame_SW(refdef_t *fd, int waterLevel)
 
     R_DrawEntitiesOnList();
 
+    R_StageTime(3);
+
     R_DrawParticles();
+
+    R_StageTime(4);
 
     if (!(r_newrefdef.rdflags & RDF_NOWORLDMODEL))
         R_DrawAlphaSurfaces();
 
-    R_StageTime(3);
+    R_StageTime(5);
 
     R_DrawFog();
 
-    R_StageTime(4);
+    R_StageTime(6);
 
     // an 8-bit view takes the screen blend in its palette, as the
     // original did, on its way out to the window
@@ -986,7 +991,7 @@ static void R_RenderFrame_SW(refdef_t *fd, int waterLevel)
     if (!r_8bit && sw_polyblend->integer && r_newrefdef.blend[3] > 0)
         R_BlendScreen(r_newrefdef.blend);
 
-    R_StageTime(5);
+    R_StageTime(7);
 
     if (sw_aliasstats->integer)
         R_PrintAliasStats();

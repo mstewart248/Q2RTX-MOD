@@ -20,7 +20,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define AFFINE_SPANLET_SIZE      16
 #define AFFINE_SPANLET_SIZE_BITS 4
 
-typedef struct {
+// a translucent polygon this big has its rows drawn on every thread
+#define POLY_THREAD_PIXELS      16384
+
+// a span being drawn: on the stack of whichever thread draws it
+typedef struct spanletvars_s {
     byte        *pbase, *pdest;
     short       *pz;
     fixed16_t   s, t;
@@ -29,8 +33,6 @@ typedef struct {
     int         spancount;
     unsigned    u, v;
 } spanletvars_t;
-
-static spanletvars_t s_spanletvars;
 
 static fixed8_t r_polyblendcolor[3];
 static int      r_polyblendcolor8;
@@ -50,120 +52,145 @@ static int      s_minindex, s_maxindex;
 
 static void R_DrawPoly(int iswater);
 
-static void R_DrawSpanletOpaque(void)
+/*
+32-bit spanlets. The span's state comes in through sv and goes back out at
+the end (R_PolygonDrawSpans carries pdest, pz and izi on into the next
+spanlet); in between it is all locals, which every byte the loop stores
+could otherwise alias.
+*/
+#define SPANLET_BEGIN \
+    byte            *pdest = sv->pdest; \
+    short           *pz = sv->pz; \
+    const byte      *pbase = sv->pbase; \
+    fixed16_t       s = sv->s, t = sv->t; \
+    const fixed16_t sstep = sv->sstep, tstep = sv->tstep; \
+    int             izi = sv->izi; \
+    const int       izistep = sv->izistep; \
+    int             count = sv->spancount
+
+#define SPANLET_STEP() \
+    izi += izistep; \
+    pdest += VID_BYTES; \
+    pz++; \
+    s += sstep; \
+    t += tstep
+
+#define SPANLET_END() \
+    sv->pdest = pdest; \
+    sv->pz = pz; \
+    sv->izi = izi; \
+    sv->s = s; \
+    sv->t = t; \
+    sv->spancount = 0
+
+static void R_DrawSpanletOpaque(spanletvars_t *sv)
 {
-    unsigned    ts, tt;
-    byte        *ptex;
+    SPANLET_BEGIN;
+    const int   width = cachewidth;
+    const byte  *ptex;
 
     do {
-        ts = s_spanletvars.s >> 16;
-        tt = s_spanletvars.t >> 16;
-
-        if (*s_spanletvars.pz <= (s_spanletvars.izi >> 16)) {
-            ptex = s_spanletvars.pbase + (ts) * TEX_BYTES + (tt) * cachewidth;
-            s_spanletvars.pdest[0] = ptex[2];
-            s_spanletvars.pdest[1] = ptex[1];
-            s_spanletvars.pdest[2] = ptex[0];
-            *s_spanletvars.pz = s_spanletvars.izi >> 16;
+        if (*pz <= (izi >> 16)) {
+            ptex = pbase + (s >> 16) * TEX_BYTES + (t >> 16) * width;
+            pdest[0] = ptex[2];
+            pdest[1] = ptex[1];
+            pdest[2] = ptex[0];
+            *pz = izi >> 16;
         }
+        SPANLET_STEP();
+    } while (--count > 0);
 
-        s_spanletvars.izi += s_spanletvars.izistep;
-        s_spanletvars.pdest += VID_BYTES;
-        s_spanletvars.pz++;
-        s_spanletvars.s += s_spanletvars.sstep;
-        s_spanletvars.t += s_spanletvars.tstep;
-    } while (--s_spanletvars.spancount > 0);
+    SPANLET_END();
 }
 
-static void R_DrawSpanletTurbulentBlended(void)
+static void R_DrawSpanletTurbulentBlended(spanletvars_t *sv)
 {
-    int     sturb, tturb;
-    byte    *ptex;
+    SPANLET_BEGIN;
+    const int   *turb = r_turb_turb;
+    const int   alpha = r_polydesc.alpha, one_minus_alpha = r_polydesc.one_minus_alpha;
+    int         sturb, tturb;
+    const byte  *ptex;
 
     do {
-        sturb = ((s_spanletvars.s + r_turb_turb[(s_spanletvars.t >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
-        tturb = ((s_spanletvars.t + r_turb_turb[(s_spanletvars.s >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
-
-        if (*s_spanletvars.pz <= (s_spanletvars.izi >> 16)) {
-            ptex = s_spanletvars.pbase + (sturb) * TEX_BYTES + (tturb) * TURB_SIZE * TEX_BYTES;
-            s_spanletvars.pdest[0] = (s_spanletvars.pdest[0] * r_polydesc.one_minus_alpha + ptex[2] * r_polydesc.alpha) >> 8;
-            s_spanletvars.pdest[1] = (s_spanletvars.pdest[1] * r_polydesc.one_minus_alpha + ptex[1] * r_polydesc.alpha) >> 8;
-            s_spanletvars.pdest[2] = (s_spanletvars.pdest[2] * r_polydesc.one_minus_alpha + ptex[0] * r_polydesc.alpha) >> 8;
+        if (*pz <= (izi >> 16)) {
+            sturb = ((s + turb[(t >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
+            tturb = ((t + turb[(s >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
+            ptex = pbase + (sturb) * TEX_BYTES + (tturb) * TURB_SIZE * TEX_BYTES;
+            pdest[0] = (pdest[0] * one_minus_alpha + ptex[2] * alpha) >> 8;
+            pdest[1] = (pdest[1] * one_minus_alpha + ptex[1] * alpha) >> 8;
+            pdest[2] = (pdest[2] * one_minus_alpha + ptex[0] * alpha) >> 8;
         }
+        SPANLET_STEP();
+    } while (--count > 0);
 
-        s_spanletvars.izi += s_spanletvars.izistep;
-        s_spanletvars.pdest += VID_BYTES;
-        s_spanletvars.pz++;
-        s_spanletvars.s += s_spanletvars.sstep;
-        s_spanletvars.t += s_spanletvars.tstep;
-    } while (--s_spanletvars.spancount > 0);
+    SPANLET_END();
 }
 
-static void R_DrawSpanletConstantBlended(void)
+static void R_DrawSpanletConstantBlended(spanletvars_t *sv)
 {
-    do {
-        if (*s_spanletvars.pz <= (s_spanletvars.izi >> 16)) {
-            s_spanletvars.pdest[0] = (s_spanletvars.pdest[0] * r_polydesc.one_minus_alpha + r_polyblendcolor[2]) >> 8;
-            s_spanletvars.pdest[1] = (s_spanletvars.pdest[1] * r_polydesc.one_minus_alpha + r_polyblendcolor[1]) >> 8;
-            s_spanletvars.pdest[2] = (s_spanletvars.pdest[2] * r_polydesc.one_minus_alpha + r_polyblendcolor[0]) >> 8;
-        }
+    SPANLET_BEGIN;
+    const int   one_minus_alpha = r_polydesc.one_minus_alpha;
+    const int   c0 = r_polyblendcolor[2], c1 = r_polyblendcolor[1], c2 = r_polyblendcolor[0];
 
-        s_spanletvars.izi += s_spanletvars.izistep;
-        s_spanletvars.pdest += VID_BYTES;
-        s_spanletvars.pz++;
-    } while (--s_spanletvars.spancount > 0);
+    (void)pbase;
+    do {
+        if (*pz <= (izi >> 16)) {
+            pdest[0] = (pdest[0] * one_minus_alpha + c0) >> 8;
+            pdest[1] = (pdest[1] * one_minus_alpha + c1) >> 8;
+            pdest[2] = (pdest[2] * one_minus_alpha + c2) >> 8;
+        }
+        SPANLET_STEP();
+    } while (--count > 0);
+
+    SPANLET_END();
 }
 
-static void R_DrawSpanletBlended(void)
+static void R_DrawSpanletBlended(spanletvars_t *sv)
 {
-    unsigned    ts, tt;
-    byte        *ptex;
+    SPANLET_BEGIN;
+    const int   width = cachewidth;
+    const int   alpha = r_polydesc.alpha, one_minus_alpha = r_polydesc.one_minus_alpha;
+    const byte  *ptex;
 
     do {
-        ts = s_spanletvars.s >> 16;
-        tt = s_spanletvars.t >> 16;
-
-        if (*s_spanletvars.pz <= (s_spanletvars.izi >> 16)) {
-            ptex = s_spanletvars.pbase + (ts) * TEX_BYTES + (tt) * cachewidth;
-            s_spanletvars.pdest[0] = (s_spanletvars.pdest[0] * r_polydesc.one_minus_alpha + ptex[2] * r_polydesc.alpha) >> 8;
-            s_spanletvars.pdest[1] = (s_spanletvars.pdest[1] * r_polydesc.one_minus_alpha + ptex[1] * r_polydesc.alpha) >> 8;
-            s_spanletvars.pdest[2] = (s_spanletvars.pdest[2] * r_polydesc.one_minus_alpha + ptex[0] * r_polydesc.alpha) >> 8;
+        if (*pz <= (izi >> 16)) {
+            ptex = pbase + (s >> 16) * TEX_BYTES + (t >> 16) * width;
+            pdest[0] = (pdest[0] * one_minus_alpha + ptex[2] * alpha) >> 8;
+            pdest[1] = (pdest[1] * one_minus_alpha + ptex[1] * alpha) >> 8;
+            pdest[2] = (pdest[2] * one_minus_alpha + ptex[0] * alpha) >> 8;
         }
+        SPANLET_STEP();
+    } while (--count > 0);
 
-        s_spanletvars.izi += s_spanletvars.izistep;
-        s_spanletvars.pdest += VID_BYTES;
-        s_spanletvars.pz++;
-        s_spanletvars.s += s_spanletvars.sstep;
-        s_spanletvars.t += s_spanletvars.tstep;
-    } while (--s_spanletvars.spancount > 0);
+    SPANLET_END();
 }
 
-static void R_DrawSpanletAlphaTestBlended(void)
+static void R_DrawSpanletAlphaTestBlended(spanletvars_t *sv)
 {
-    unsigned    ts, tt;
-    byte        *ptex;
+    SPANLET_BEGIN;
+    const int   width = cachewidth;
+    const int   polyalpha = r_polydesc.alpha;
+    const byte  *ptex;
 
     do {
-        ts = s_spanletvars.s >> 16;
-        tt = s_spanletvars.t >> 16;
-
-        ptex = s_spanletvars.pbase + (ts) * TEX_BYTES + (tt) * cachewidth;
-        if (ptex[3] && *s_spanletvars.pz <= (s_spanletvars.izi >> 16)) {
-            int alpha = (ptex[3] * r_polydesc.alpha) >> 8;
+        ptex = pbase + (s >> 16) * TEX_BYTES + (t >> 16) * width;
+        if (ptex[3] && *pz <= (izi >> 16)) {
+            int alpha = (ptex[3] * polyalpha) >> 8;
             int one_minus_alpha = 255 - alpha;
 
-            s_spanletvars.pdest[0] = (s_spanletvars.pdest[0] * one_minus_alpha + ptex[2] * alpha) >> 8;
-            s_spanletvars.pdest[1] = (s_spanletvars.pdest[1] * one_minus_alpha + ptex[1] * alpha) >> 8;
-            s_spanletvars.pdest[2] = (s_spanletvars.pdest[2] * one_minus_alpha + ptex[0] * alpha) >> 8;
+            pdest[0] = (pdest[0] * one_minus_alpha + ptex[2] * alpha) >> 8;
+            pdest[1] = (pdest[1] * one_minus_alpha + ptex[1] * alpha) >> 8;
+            pdest[2] = (pdest[2] * one_minus_alpha + ptex[0] * alpha) >> 8;
         }
+        SPANLET_STEP();
+    } while (--count > 0);
 
-        s_spanletvars.izi += s_spanletvars.izistep;
-        s_spanletvars.pdest += VID_BYTES;
-        s_spanletvars.pz++;
-        s_spanletvars.s += s_spanletvars.sstep;
-        s_spanletvars.t += s_spanletvars.tstep;
-    } while (--s_spanletvars.spancount > 0);
+    SPANLET_END();
 }
+
+#undef SPANLET_BEGIN
+#undef SPANLET_STEP
+#undef SPANLET_END
 
 /*
 8-bit spanlets, the original's: 255 is a hole, translucency is the
@@ -171,89 +198,89 @@ colormap's 66/33 table - alphamap[row * 256 + column] is 66% of the row
 and 33% of the column.
 */
 #define SPANLET8_STEP() \
-    s_spanletvars.izi += s_spanletvars.izistep; \
-    s_spanletvars.pdest++; \
-    s_spanletvars.pz++; \
-    s_spanletvars.s += s_spanletvars.sstep; \
-    s_spanletvars.t += s_spanletvars.tstep
+    sv->izi += sv->izistep; \
+    sv->pdest++; \
+    sv->pz++; \
+    sv->s += sv->sstep; \
+    sv->t += sv->tstep
 
-static void R_DrawSpanletOpaque8(void)
+static void R_DrawSpanletOpaque8(spanletvars_t *sv)
 {
     byte    btemp;
 
     do {
-        btemp = s_spanletvars.pbase[(s_spanletvars.s >> 16) + (s_spanletvars.t >> 16) * cachewidth];
-        if (btemp != 255 && *s_spanletvars.pz <= (s_spanletvars.izi >> 16)) {
-            *s_spanletvars.pdest = btemp;
-            *s_spanletvars.pz = s_spanletvars.izi >> 16;
+        btemp = sv->pbase[(sv->s >> 16) + (sv->t >> 16) * cachewidth];
+        if (btemp != 255 && *sv->pz <= (sv->izi >> 16)) {
+            *sv->pdest = btemp;
+            *sv->pz = sv->izi >> 16;
         }
         SPANLET8_STEP();
-    } while (--s_spanletvars.spancount > 0);
+    } while (--sv->spancount > 0);
 }
 
-static void R_DrawSpanlet33_8(void)
+static void R_DrawSpanlet33_8(spanletvars_t *sv)
 {
     byte    btemp;
 
     do {
-        btemp = s_spanletvars.pbase[(s_spanletvars.s >> 16) + (s_spanletvars.t >> 16) * cachewidth];
-        if (btemp != 255 && *s_spanletvars.pz <= (s_spanletvars.izi >> 16))
-            *s_spanletvars.pdest = r_alphamap[btemp + *s_spanletvars.pdest * 256];
+        btemp = sv->pbase[(sv->s >> 16) + (sv->t >> 16) * cachewidth];
+        if (btemp != 255 && *sv->pz <= (sv->izi >> 16))
+            *sv->pdest = r_alphamap[btemp + *sv->pdest * 256];
         SPANLET8_STEP();
-    } while (--s_spanletvars.spancount > 0);
+    } while (--sv->spancount > 0);
 }
 
-static void R_DrawSpanlet66_8(void)
+static void R_DrawSpanlet66_8(spanletvars_t *sv)
 {
     byte    btemp;
 
     do {
-        btemp = s_spanletvars.pbase[(s_spanletvars.s >> 16) + (s_spanletvars.t >> 16) * cachewidth];
-        if (btemp != 255 && *s_spanletvars.pz <= (s_spanletvars.izi >> 16))
-            *s_spanletvars.pdest = r_alphamap[btemp * 256 + *s_spanletvars.pdest];
+        btemp = sv->pbase[(sv->s >> 16) + (sv->t >> 16) * cachewidth];
+        if (btemp != 255 && *sv->pz <= (sv->izi >> 16))
+            *sv->pdest = r_alphamap[btemp * 256 + *sv->pdest];
         SPANLET8_STEP();
-    } while (--s_spanletvars.spancount > 0);
+    } while (--sv->spancount > 0);
 }
 
-static inline byte R_TurbTexel8(void)
+static inline byte R_TurbTexel8(const spanletvars_t *sv)
 {
-    int sturb = ((s_spanletvars.s + r_turb_turb[(s_spanletvars.t >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
-    int tturb = ((s_spanletvars.t + r_turb_turb[(s_spanletvars.s >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
+    int sturb = ((sv->s + r_turb_turb[(sv->t >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
+    int tturb = ((sv->t + r_turb_turb[(sv->s >> 16) & (CYCLE - 1)]) >> 16) & TURB_MASK;
 
-    return s_spanletvars.pbase[sturb + tturb * TURB_SIZE];
+    return sv->pbase[sturb + tturb * TURB_SIZE];
 }
 
-static void R_DrawSpanletTurbulentBlended33_8(void)
-{
-    byte    btemp;
-
-    do {
-        btemp = R_TurbTexel8();
-        if (*s_spanletvars.pz <= (s_spanletvars.izi >> 16))
-            *s_spanletvars.pdest = r_alphamap[btemp + *s_spanletvars.pdest * 256];
-        SPANLET8_STEP();
-    } while (--s_spanletvars.spancount > 0);
-}
-
-static void R_DrawSpanletTurbulentBlended66_8(void)
+static void R_DrawSpanletTurbulentBlended33_8(spanletvars_t *sv)
 {
     byte    btemp;
 
     do {
-        btemp = R_TurbTexel8();
-        if (*s_spanletvars.pz <= (s_spanletvars.izi >> 16))
-            *s_spanletvars.pdest = r_alphamap[btemp * 256 + *s_spanletvars.pdest];
+        btemp = R_TurbTexel8(sv);
+        if (*sv->pz <= (sv->izi >> 16))
+            *sv->pdest = r_alphamap[btemp + *sv->pdest * 256];
         SPANLET8_STEP();
-    } while (--s_spanletvars.spancount > 0);
+    } while (--sv->spancount > 0);
 }
 
-static void R_DrawSpanletConstant33_8(void)
+static void R_DrawSpanletTurbulentBlended66_8(spanletvars_t *sv)
+{
+    byte    btemp;
+
+    do {
+        btemp = R_TurbTexel8(sv);
+        if (*sv->pz <= (sv->izi >> 16))
+            *sv->pdest = r_alphamap[btemp * 256 + *sv->pdest];
+        SPANLET8_STEP();
+    } while (--sv->spancount > 0);
+}
+
+static void R_DrawSpanletConstant33_8(spanletvars_t *sv)
 {
     do {
-        if (*s_spanletvars.pz <= (s_spanletvars.izi >> 16))
-            *s_spanletvars.pdest = r_alphamap[r_polyblendcolor8 + *s_spanletvars.pdest * 256];
+        if (*sv->pz <= (sv->izi >> 16))
+            *sv->pdest = r_alphamap[r_polyblendcolor8 + *sv->pdest * 256];
         SPANLET8_STEP();
-    } while (--s_spanletvars.spancount > 0);
+    } while (--sv->spancount > 0);
 }
 
 #undef SPANLET8_STEP
@@ -333,39 +360,33 @@ static int R_ClipPolyFace(int nump, clipplane_t *pclipplane)
 /*
 ** R_PolygonDrawSpans
 */
-static void R_PolygonDrawSpans(espan_t *pspan, int iswater)
+static void R_PolygonDrawSpans(espan_t *pspan, int numspans, int iswater)
 {
     int         count;
     fixed16_t   snext, tnext;
     float       sdivz, tdivz, zi, z, du, dv, spancountminus1;
     float       sdivzspanletstepu, tdivzspanletstepu, zispanletstepu;
+    spanletvars_t   spanlet = { 0 }, *sv = &spanlet;
 
-    s_spanletvars.pbase = cacheblock;
-
-    if (iswater & SURF_WARP)
-        r_turb_turb = sintable + ((int)(r_newrefdef.time * SPEED) & (CYCLE - 1));
-    else if (iswater & SURF_FLOWING)
-        r_turb_turb = blanktable;
+    sv->pbase = cacheblock;
 
     sdivzspanletstepu = d_sdivzstepu * AFFINE_SPANLET_SIZE;
     tdivzspanletstepu = d_tdivzstepu * AFFINE_SPANLET_SIZE;
     zispanletstepu = d_zistepu * AFFINE_SPANLET_SIZE;
 
 // we count on FP exceptions being turned off to avoid range problems
-    s_spanletvars.izistep = (int)(d_zistepu * 0x8000 * 0x10000);
+    sv->izistep = (int)(d_zistepu * 0x8000 * 0x10000);
 
-    s_spanletvars.pz = 0;
-
-    do {
-        s_spanletvars.pdest   = d_spantable[pspan->v] + pspan->u * r_pixbytes;
-        s_spanletvars.pz      = d_zspantable[pspan->v] + pspan->u;
-        s_spanletvars.u       = pspan->u;
-        s_spanletvars.v       = pspan->v;
+    for (; numspans > 0; numspans--, pspan++) {
+        sv->pdest   = d_spantable[pspan->v] + pspan->u * r_pixbytes;
+        sv->pz      = d_zspantable[pspan->v] + pspan->u;
+        sv->u       = pspan->u;
+        sv->v       = pspan->v;
 
         count = pspan->count;
 
         if (count <= 0)
-            goto NextSpan;
+            continue;
 
         // calculate the initial s/z, t/z, 1/z, s, and t and clamp
         du = (float)pspan->u;
@@ -377,31 +398,31 @@ static void R_PolygonDrawSpans(espan_t *pspan, int iswater)
         zi = d_ziorigin + dv * d_zistepv + du * d_zistepu;
         z = (float)0x10000 / zi;    // prescale to 16.16 fixed-point
         // we count on FP exceptions being turned off to avoid range problems
-        s_spanletvars.izi = (int)(zi * 0x8000 * 0x10000);
+        sv->izi = (int)(zi * 0x8000 * 0x10000);
 
-        s_spanletvars.s = (int)(sdivz * z) + sadjust;
-        s_spanletvars.t = (int)(tdivz * z) + tadjust;
+        sv->s = (int)(sdivz * z) + sadjust;
+        sv->t = (int)(tdivz * z) + tadjust;
 
         if (!iswater) {
-            if (s_spanletvars.s > bbextents)
-                s_spanletvars.s = bbextents;
-            else if (s_spanletvars.s < 0)
-                s_spanletvars.s = 0;
+            if (sv->s > bbextents)
+                sv->s = bbextents;
+            else if (sv->s < 0)
+                sv->s = 0;
 
-            if (s_spanletvars.t > bbextentt)
-                s_spanletvars.t = bbextentt;
-            else if (s_spanletvars.t < 0)
-                s_spanletvars.t = 0;
+            if (sv->t > bbextentt)
+                sv->t = bbextentt;
+            else if (sv->t < 0)
+                sv->t = 0;
         }
 
         do {
             // calculate s and t at the far end of the span
             if (count >= AFFINE_SPANLET_SIZE)
-                s_spanletvars.spancount = AFFINE_SPANLET_SIZE;
+                sv->spancount = AFFINE_SPANLET_SIZE;
             else
-                s_spanletvars.spancount = count;
+                sv->spancount = count;
 
-            count -= s_spanletvars.spancount;
+            count -= sv->spancount;
 
             if (count) {
                 // calculate s/z, t/z, zi->fixed s and t at far end of span,
@@ -428,14 +449,14 @@ static void R_PolygonDrawSpans(espan_t *pspan, int iswater)
                         tnext = AFFINE_SPANLET_SIZE;    // guard against round-off error on <0 steps
                 }
 
-                s_spanletvars.sstep = (snext - s_spanletvars.s) >> AFFINE_SPANLET_SIZE_BITS;
-                s_spanletvars.tstep = (tnext - s_spanletvars.t) >> AFFINE_SPANLET_SIZE_BITS;
+                sv->sstep = (snext - sv->s) >> AFFINE_SPANLET_SIZE_BITS;
+                sv->tstep = (tnext - sv->t) >> AFFINE_SPANLET_SIZE_BITS;
             } else {
                 // calculate s/z, t/z, zi->fixed s and t at last pixel in span (so
                 // can't step off polygon), clamp, calculate s and t steps across
                 // span by division, biasing steps low so we don't run off the
                 // texture
-                spancountminus1 = (float)(s_spanletvars.spancount - 1);
+                spancountminus1 = (float)(sv->spancount - 1);
                 sdivz += d_sdivzstepu * spancountminus1;
                 tdivz += d_tdivzstepu * spancountminus1;
                 zi += d_zistepu * spancountminus1;
@@ -457,28 +478,40 @@ static void R_PolygonDrawSpans(espan_t *pspan, int iswater)
                         tnext = AFFINE_SPANLET_SIZE;    // guard against round-off error on <0 steps
                 }
 
-                if (s_spanletvars.spancount > 1) {
-                    s_spanletvars.sstep = (snext - s_spanletvars.s) / (s_spanletvars.spancount - 1);
-                    s_spanletvars.tstep = (tnext - s_spanletvars.t) / (s_spanletvars.spancount - 1);
+                if (sv->spancount > 1) {
+                    sv->sstep = (snext - sv->s) / (sv->spancount - 1);
+                    sv->tstep = (tnext - sv->t) / (sv->spancount - 1);
                 }
             }
 
             if (iswater) {
-                s_spanletvars.s = s_spanletvars.s & ((CYCLE << 16) - 1);
-                s_spanletvars.t = s_spanletvars.t & ((CYCLE << 16) - 1);
+                sv->s = sv->s & ((CYCLE << 16) - 1);
+                sv->t = sv->t & ((CYCLE << 16) - 1);
             }
 
-            r_polydesc.drawspanlet();
+            r_polydesc.drawspanlet(sv);
 
-            s_spanletvars.s = snext;
-            s_spanletvars.t = tnext;
+            sv->s = snext;
+            sv->t = tnext;
 
         } while (count > 0);
+    }
+}
 
-NextSpan:
-        pspan++;
+// a big polygon's rows, a band of them a thread
+typedef struct {
+    espan_t     *spans;
+    int         numspans, iswater, jobs;
+} polyjob_t;
 
-    } while (pspan->count != DS_SPAN_LIST_END);
+static void R_PolygonSpanJob(void *arg, int index, int thread)
+{
+    const polyjob_t *j = arg;
+    int             s0 = j->numspans * index / j->jobs;
+    int             s1 = j->numspans * (index + 1) / j->jobs;
+
+    if (s1 > s0)
+        R_PolygonDrawSpans(j->spans + s0, s1 - s0, j->iswater);
 }
 
 /*
@@ -548,7 +581,7 @@ static void R_PolygonScanLeftEdge(void)
 ** Goes through the polygon and scans the right edge, filling in
 ** count values.
 */
-static void R_PolygonScanRightEdge(void)
+static int R_PolygonScanRightEdge(void)
 {
     int         i, v, itop, ibottom;
     emitpoint_t *pvert, *pnext;
@@ -619,6 +652,8 @@ static void R_PolygonScanRightEdge(void)
     } while (i != s_maxindex);
 
     pspan->count = DS_SPAN_LIST_END;    // mark the end of the span list
+
+    return pspan - s_polygon_spans;
 }
 
 /*
@@ -813,7 +848,7 @@ static void R_PolygonCalculateGradients(void)
 */
 static void R_DrawPoly(int iswater)
 {
-    int         i, nump;
+    int         i, nump, numspans, pixels;
     float       ymin, ymax;
     emitpoint_t *pverts;
     espan_t spans[MAXHEIGHT + 1];
@@ -855,11 +890,31 @@ static void R_DrawPoly(int iswater)
     pverts = r_polydesc.pverts;
     pverts[nump] = pverts[0];
 
+    if (iswater & SURF_WARP)
+        r_turb_turb = sintable + ((int)(r_newrefdef.time * SPEED) & (CYCLE - 1));
+    else if (iswater & SURF_FLOWING)
+        r_turb_turb = blanktable;
+
     R_PolygonCalculateGradients();
     R_PolygonScanLeftEdge();
-    R_PolygonScanRightEdge();
+    numspans = R_PolygonScanRightEdge();
 
-    R_PolygonDrawSpans(s_polygon_spans, iswater);
+    // water across half the view is too much for one thread; a sprite or a
+    // pane of glass isn't worth waking the others for
+    for (i = 0, pixels = 0; i < numspans && pixels < POLY_THREAD_PIXELS; i++)
+        pixels += max(spans[i].count, 0);
+
+    if (r_numthreads > 1 && pixels >= POLY_THREAD_PIXELS && numspans >= 16) {
+        polyjob_t   j;
+
+        j.spans = spans;
+        j.numspans = numspans;
+        j.iswater = iswater;
+        j.jobs = R_RowJobs(numspans);
+        R_ParallelFor(j.jobs, R_PolygonSpanJob, &j);
+    } else {
+        R_PolygonDrawSpans(spans, numspans, iswater);
+    }
 }
 
 /*

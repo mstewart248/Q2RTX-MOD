@@ -287,7 +287,7 @@ typedef struct {
     float       dist;
     float       s_offset, t_offset;
     float       viewer_position[3];
-    void        (*drawspanlet)(void);
+    void        (*drawspanlet)(struct spanletvars_s *sv);
     int         alpha;
     int         one_minus_alpha;
 } polydesc_t;
@@ -595,10 +595,19 @@ void R_AliasProjectAndClipTestFinalVert(finalvert_t *fv);
 
 extern unsigned r_time1;
 
-// r_speeds: setup, world, models (and particles and translucent surfaces),
-// fog, and the scale/warp/blend out to the window
-#define R_NUMSTAGES     6
+// r_speeds: setup, world, models, particles, translucent surfaces, fog, and
+// the scale/warp/blend out to the window
+#define R_NUMSTAGES     8
 extern uint64_t r_stagetime[R_NUMSTAGES];
+
+// r_speeds: the frame's span batches (D_DrawSurfaces) and where their time
+// went, in microseconds; serial counts batches drawn on one thread
+typedef struct {
+    int         batches, serial;
+    uint64_t    total, prep, build, spans;
+} drawstats_t;
+
+extern drawstats_t  r_drawstats;
 extern int      r_frustum_indexes[4 * 6];
 extern int      r_cnumsurfs;
 

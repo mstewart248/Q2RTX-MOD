@@ -354,10 +354,16 @@ void D_FlushCaches(void)
 }
 
 // a block is going: if the batch being set up needs it, the cache is too small
+// a block the batch being set up draws from: the rover steps over it
+static inline bool D_SCPinned(const surfcache_t *c)
+{
+    return r_cachebatch && c->owner && c->batch == r_cachebatch;
+}
+
 static inline void D_SCFree(surfcache_t *c)
 {
     if (c->owner) {
-        if (r_cachebatch && c->batch == r_cachebatch)
+        if (D_SCPinned(c))
             r_cacheoverflow = true;
         *c->owner = NULL;
     }
@@ -366,11 +372,17 @@ static inline void D_SCFree(surfcache_t *c)
 /*
 =================
 D_SCAlloc
+
+The rover takes the blocks after it, oldest first, as it goes round. While a
+batch is set up for the workers it steps over the ones that batch draws from,
+which may have been there since long before (a wall that has stayed in view):
+only when every run is pinned does the batch need more than the cache.
 =================
 */
 static surfcache_t *D_SCAlloc(int width, int size)
 {
-    surfcache_t             *new;
+    surfcache_t             *new, *c;
+    int                     total, wraps;
 
     if ((width < 0) || (width > 256))
         Com_Error(ERR_FATAL, "D_SCAlloc: bad cache width %d\n", width);
@@ -383,12 +395,30 @@ static surfcache_t *D_SCAlloc(int width, int size)
     if (size > sc_size)
         Com_Error(ERR_FATAL, "D_SCAlloc: %i > cache size of %i", size, sc_size);
 
-// if there is not size bytes after the rover, reset to the start
-    if (!sc_rover || (byte *)sc_rover - (byte *)sc_base > sc_size - size) {
-        sc_rover = sc_base;
+    for (wraps = 0; ; ) {
+        // if there is not size bytes after the rover, reset to the start
+        if (!sc_rover || (byte *)sc_rover - (byte *)sc_base > sc_size - size) {
+            sc_rover = sc_base;
+            if (++wraps > 1)
+                break;      // round twice: all of it is pinned
+        }
+
+        // enough unpinned bytes from here on? (the blocks tile the cache, so
+        // the size bytes after the rover are all in it)
+        for (c = sc_rover, total = 0; c && total < size; c = c->next) {
+            if (D_SCPinned(c))
+                break;
+            total += c->size;
+        }
+        if (total >= size)
+            break;
+        if (!c)
+            Com_Error(ERR_FATAL, "D_SCAlloc: hit the end of memory");
+        sc_rover = c->next;
     }
 
 // colect and free surfcache_t blocks until the rover block is large enough
+// (evicting a pinned one marks the batch as too big for the cache)
     new = sc_rover;
     D_SCFree(sc_rover);
 

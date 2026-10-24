@@ -35,21 +35,56 @@ static const float  basemip[NUM_MIPS - 1] = {1.0, 0.5 * 0.8, 0.25 * 0.8};
 R_PrintTimes
 =============
 */
+// once a second, the view's stages averaged over the frames since
 void R_PrintTimes(void)
 {
-    unsigned    r_time2;
-    unsigned    ms;
+    static uint64_t     stage[R_NUMSTAGES], last;
+    static drawstats_t  ds;
+    static int          frames, surfs;
+    uint64_t            now = r_stagetime[R_NUMSTAGES - 1];
+    double              f;
+    int                 i;
 
-    r_time2 = Sys_Milliseconds();
+    // just switched on (or back on): start counting from here
+    if (!last || now < last || now - last > 5000000) {
+        memset(stage, 0, sizeof(stage));
+        memset(&ds, 0, sizeof(ds));
+        frames = surfs = 0;
+        last = now;
+        c_surf = 0;
+        return;
+    }
 
-    ms = r_time2 - r_time1;
-
-    Com_Printf("%5u ms %3i/%3i/%3i poly %3i surf | setup %.2f world %.2f models %.2f fog %.2f out %.2f ms, %d threads\n",
-               ms, c_faceclip, r_polycount, r_drawnpolycount, c_surf,
-               (r_stagetime[1] - r_stagetime[0]) * 0.001, (r_stagetime[2] - r_stagetime[1]) * 0.001,
-               (r_stagetime[3] - r_stagetime[2]) * 0.001, (r_stagetime[4] - r_stagetime[3]) * 0.001,
-               (r_stagetime[5] - r_stagetime[4]) * 0.001, r_numthreads);
+    for (i = 1; i < R_NUMSTAGES; i++)
+        stage[i] += r_stagetime[i] - r_stagetime[i - 1];
+    ds.batches += r_drawstats.batches;
+    ds.serial += r_drawstats.serial;
+    ds.total += r_drawstats.total;
+    ds.prep += r_drawstats.prep;
+    ds.build += r_drawstats.build;
+    ds.spans += r_drawstats.spans;
+    surfs += c_surf;
     c_surf = 0;
+    frames++;
+
+    if (now - last < 1000000)
+        return;
+
+    // the edge scan is what the world took outside its span batches
+    f = 0.001 / frames;
+    Com_Printf("%.1f ms a frame over %d: setup %.2f | world %.2f (scan %.2f prep %.2f "
+               "build %.2f spans %.2f; %.1f batches, %d on one thread) | models %.2f | "
+               "particles %.2f | translucent %.2f | fog %.2f | out %.2f | %d surfaces lit, %d threads\n",
+               (now - last) * 0.001 / frames, frames, stage[1] * f,
+               stage[2] * f, (stage[2] - min(stage[2], ds.total)) * f, ds.prep * f,
+               ds.build * f, ds.spans * f, (float)ds.batches / frames, ds.serial,
+               stage[3] * f, stage[4] * f, stage[5] * f, stage[6] * f, stage[7] * f,
+               surfs / frames, r_numthreads);
+
+    memset(stage, 0, sizeof(stage));
+    memset(&ds, 0, sizeof(ds));
+    frames = surfs = 0;
+    last = now;
 }
 
 
