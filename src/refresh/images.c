@@ -1412,6 +1412,22 @@ static int find_or_load_image(const char *name, size_t len,
         image->baselen = len - 4;
     }
 
+    /* GL WITHOUT "use new textures and models" draws the classic .md2 and .wal,
+       so take the image in its original format first, from any directory. The
+       game-dir-first search below otherwise finds a replacement made for a
+       DIFFERENT model before it reaches baseq2's original: rerelease/models/
+       weapons/v_shotg/skin.tga belongs to Q2RTX's tris.md3 there and comes
+       out as camouflage on the md2's UVs. A substitute is still taken when
+       there is no original at all. */
+    if (ret < 0 && cls.ref_type == REF_TYPE_GL && type != IT_PIC && !gl_use_hd_assets->integer &&
+        !(flags & (IF_EXACT | IF_SRC_MASK)))
+    {
+        memcpy(image->name, name, len + 1);
+        image->baselen = len - 4;
+        ret = try_load_image_candidate(image, NULL, 0, &pic, type, flags | IF_EXACT, false, TRY_IMAGE_SRC_BASE);
+        image->flags &= ~IF_EXACT;
+    }
+
     // Try non-overridden image
     if (ret < 0)
     {

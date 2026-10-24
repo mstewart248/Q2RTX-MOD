@@ -1186,6 +1186,7 @@ void MOD_Reference_RTX(model_t *model);
 bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
                        const vec3_t start, const vec3_t end,
                        float *out_frac, vec3_t out_normal);
+void MOD_TraceMeshShutdown_RTX(void);
 
 #endif  /*__VKPT_H__*/
 

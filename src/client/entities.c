@@ -620,8 +620,9 @@ static void CL_AddPacketEntities(void)
             renderfx |= RF_SHELL_HALF_DAM;
         }
 
-        // optionally remove the glowing effect
-        if (cl_noglow->integer)
+        // optionally remove the glowing effect - a GL menu setting, so it
+        // stays out of the RTX renderer, where RF_GLOW on a beam is lightning
+        if (cl_noglow->integer && cls.ref_type != REF_TYPE_VKPT)
             renderfx &= ~RF_GLOW;
 
         ent.oldframe = cent->prev.frame;
@@ -1216,7 +1217,9 @@ void CL_AdjustGunPosition(vec3_t viewangles, vec3_t *gun_origin)
     VectorMA(gun_real_pos, gun_up, up_dir, gun_real_pos);
     VectorMA(gun_real_pos, gun_length, view_dir, gun_tip);
 
-    CM_BoxTrace(&trace, gun_real_pos, gun_tip, mins, maxs, cl.bsp->nodes, MASK_SOLID);
+    // Brush entities count too - doors, lifts and breakable glass. Monster and
+    // corpse boxes do not: the gun should not shy away from a body.
+    trace = CL_TraceBox(gun_real_pos, mins, maxs, gun_tip, MASK_SOLID, false);
 
     if (trace.fraction != 1.0f)
     {

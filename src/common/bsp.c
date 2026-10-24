@@ -1543,6 +1543,52 @@ static void BSP_LoadBspxNormals(bsp_t* bsp, const void* data, size_t data_size)
 		basis_offset += face->numsurfedges;
 	}
 }
+
+typedef struct {
+    uint16_t    width, height;
+    int32_t     offset;         // into the LIGHTING lump, -1 for none
+    float       axis[2][4];     // world -> luxels
+} bspx_decoupled_lm_t;
+
+/*
+The rerelease's maps light every face through this lump and set each face's
+own lightofs to -1, so without it the GL renderer drew them all fullbright.
+(The RTX renderer does not use lightmaps.) A face it covers takes its lightmap
+from here even if the face lump gave it one, since that offset was laid out
+for the other mapping.
+*/
+static void BSP_LoadDecoupledLM(bsp_t* bsp, const void* data, size_t data_size)
+{
+    const bspx_decoupled_lm_t *in = data;
+
+    if (data_size != sizeof(*in) * bsp->numfaces) {
+        Com_WPrintf("%s: DECOUPLED_LM is %zu bytes for %d faces, ignored\n",
+                    bsp->name, data_size, bsp->numfaces);
+        return;
+    }
+
+    for (int i = 0; i < bsp->numfaces; i++, in++) {
+        mface_t *face = bsp->faces + i;
+        int width = LittleShort(in->width);
+        int height = LittleShort(in->height);
+        int32_t offset = LittleLong(in->offset);
+
+        face->lightmap = NULL;
+        face->lm_width = face->lm_height = 0;
+
+        if (offset < 0 || width < 1 || height < 1)
+            continue;
+        if ((size_t)offset + (size_t)face->numstyles * width * height * 3 > bsp->numlightmapbytes)
+            continue;
+
+        face->lightmap = bsp->lightmap + offset;
+        face->lm_width = width;
+        face->lm_height = height;
+        for (int j = 0; j < 2; j++)
+            for (int k = 0; k < 4; k++)
+                face->lm_axis[j][k] = LittleFloat(in->axis[j][k]);
+    }
+}
 #endif
 
 /*
@@ -1688,6 +1734,13 @@ int BSP_Load(const char *name, bsp_t **bsp_p)
 	{
 		BSP_LoadBspxNormals(bsp, normal_lump_data, normal_lump_size);
 	}
+
+    const void* dlm_lump_data = NULL;
+    size_t dlm_lump_size = 0;
+    if (BSP_FindBspxLump(header, filelen, "DECOUPLED_LM", &dlm_lump_data, &dlm_lump_size))
+    {
+        BSP_LoadDecoupledLM(bsp, dlm_lump_data, dlm_lump_size);
+    }
 #endif
 
     Hunk_End(&bsp->hunk);
@@ -1756,15 +1809,25 @@ static bool BSP_RecursiveLightPoint(mnode_t *node, float p1f, float p2f, const v
             if (texinfo->c.flags & SURF_NOLM_MASK)
                 continue;
 
-            s = DotProduct(texinfo->axis[0], mid) + texinfo->offset[0];
-            t = DotProduct(texinfo->axis[1], mid) + texinfo->offset[1];
+            if (surf->lm_width) {
+                // decoupled: same 1/16-luxel fixed point the classic one has
+                s = floorf((DotProduct(surf->lm_axis[0], mid) + surf->lm_axis[0][3]) * 16);
+                t = floorf((DotProduct(surf->lm_axis[1], mid) + surf->lm_axis[1][3]) * 16);
+                if (s < 0 || s > (surf->lm_width - 1) * 16)
+                    continue;
+                if (t < 0 || t > (surf->lm_height - 1) * 16)
+                    continue;
+            } else {
+                s = DotProduct(texinfo->axis[0], mid) + texinfo->offset[0];
+                t = DotProduct(texinfo->axis[1], mid) + texinfo->offset[1];
 
-            s -= surf->texturemins[0];
-            t -= surf->texturemins[1];
-            if (s < 0 || s > surf->extents[0])
-                continue;
-            if (t < 0 || t > surf->extents[1])
-                continue;
+                s -= surf->texturemins[0];
+                t -= surf->texturemins[1];
+                if (s < 0 || s > surf->extents[0])
+                    continue;
+                if (t < 0 || t > surf->extents[1])
+                    continue;
+            }
 
             light_point->surf = surf;
             light_point->plane = *surf->plane;

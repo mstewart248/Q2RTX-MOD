@@ -159,6 +159,40 @@ static void add_dynamic_lights(mface_t *surf)
 
         VectorMA(light->transformed, -dist, surf->plane->normal, point);
 
+        if (surf->lm_width) {
+            // decoupled lightmap: luxel position, distances in world units
+            float us = DotProduct(point, surf->lm_axis[0]) + surf->lm_axis[0][3];
+            float ut = DotProduct(point, surf->lm_axis[1]) + surf->lm_axis[1][3];
+            float ls = VectorLength(surf->lm_axis[0]);
+            float lt = VectorLength(surf->lm_axis[1]);
+            float fsd, ftd;
+
+            if (ls <= 0 || lt <= 0)
+                continue;
+            ls = 1.0f / ls;     // world units per luxel
+            lt = 1.0f / lt;
+
+            bl = blocklights;
+            for (t = 0; t < tmax; t++) {
+                ftd = fabsf(ut - t) * lt;
+                for (s = 0; s < smax; s++) {
+                    fsd = fabsf(us - s) * ls;
+                    if (fsd > ftd)
+                        dist = fsd + ftd * 0.5f;
+                    else
+                        dist = ftd + fsd * 0.5f;
+                    if (dist < minlight) {
+                        frac = rad - dist * scale;
+                        bl[0] += light->color[0] * frac;
+                        bl[1] += light->color[1] * frac;
+                        bl[2] += light->color[2] * frac;
+                    }
+                    bl += 3;
+                }
+            }
+            continue;
+        }
+
         local[0] = DotProduct(point, tex->axis[0]) + tex->offset[0];
         local[1] = DotProduct(point, tex->axis[1]) + tex->offset[1];
 
@@ -587,9 +621,14 @@ static void build_surface_poly(mface_t *surf, vec_t *vbo)
         vbo[4] = tc[0] * scale[0];
         vbo[5] = tc[1] * scale[1];
 
-        // texture1 coordinates
-        vbo[6] = tc[0];
-        vbo[7] = tc[1];
+        // texture1 coordinates: texinfo units, or luxels for a decoupled lightmap
+        if (surf->lm_width) {
+            vbo[6] = DotProduct(vbo, surf->lm_axis[0]) + surf->lm_axis[0][3];
+            vbo[7] = DotProduct(vbo, surf->lm_axis[1]) + surf->lm_axis[1][3];
+        } else {
+            vbo[6] = tc[0];
+            vbo[7] = tc[1];
+        }
 
         vbo += VERTEX_SIZE;
     }
@@ -617,8 +656,13 @@ static void sample_surface_verts(mface_t *surf, vec_t *vbo)
     glr.lightpoint.surf = surf;
 
     for (i = 0; i < surf->numsurfedges; i++) {
-        glr.lightpoint.s = (int)vbo[6] - surf->texturemins[0];
-        glr.lightpoint.t = (int)vbo[7] - surf->texturemins[1];
+        if (surf->lm_width) {
+            glr.lightpoint.s = max(0, min((int)(vbo[6] * 16), (surf->lm_width - 1) * 16));
+            glr.lightpoint.t = max(0, min((int)(vbo[7] * 16), (surf->lm_height - 1) * 16));
+        } else {
+            glr.lightpoint.s = (int)vbo[6] - surf->texturemins[0];
+            glr.lightpoint.t = (int)vbo[7] - surf->texturemins[1];
+        }
 
         GL_SampleLightPoint(color);
         adjust_color_f(color, color, lm.add, lm.modulate, lm.scale);
@@ -651,9 +695,10 @@ static void build_surface_light(mface_t *surf, vec_t *vbo)
     if (surf->drawflags & SURF_NOLM_MASK)
         return;
 
-    // validate extents
-    if (surf->extents[0] < 0 || surf->extents[0] > MAX_SURFACE_EXTENTS ||
-        surf->extents[1] < 0 || surf->extents[1] > MAX_SURFACE_EXTENTS) {
+    // validate extents (a decoupled lightmap does not use them)
+    if (!surf->lm_width && (
+        surf->extents[0] < 0 || surf->extents[0] > MAX_SURFACE_EXTENTS ||
+        surf->extents[1] < 0 || surf->extents[1] > MAX_SURFACE_EXTENTS)) {
         Com_EPrintf("%s: bad surface extents\n", __func__);
         surf->lightmap = NULL;  // don't use this lightmap
         return;
@@ -689,6 +734,20 @@ static void normalize_surface_lmtc(mface_t *surf, vec_t *vbo)
 {
     float s, t;
     int i;
+
+    if (surf->lm_width) {
+        // already in luxels, with sample u at the centre of texel u
+        s = surf->light_s + 0.5f;
+        t = surf->light_t + 0.5f;
+
+        for (i = 0; i < surf->numsurfedges; i++) {
+            vbo[6] = (vbo[6] + s) * (1.0f / LM_BLOCK_WIDTH);
+            vbo[7] = (vbo[7] + t) * (1.0f / LM_BLOCK_HEIGHT);
+
+            vbo += VERTEX_SIZE;
+        }
+        return;
+    }
 
     s = ((surf->light_s << 4) + 8) - surf->texturemins[0];
     t = ((surf->light_t << 4) + 8) - surf->texturemins[1];

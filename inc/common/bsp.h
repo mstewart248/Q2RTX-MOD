@@ -80,8 +80,8 @@ typedef struct {
 #define DSURF_PLANEBACK     1
 
 // for lightmap block calculation
-#define S_MAX(surf) (((surf)->extents[0] >> 4) + 1)
-#define T_MAX(surf) (((surf)->extents[1] >> 4) + 1)
+#define S_MAX(surf) ((surf)->lm_width ? (surf)->lm_width : ((surf)->extents[0] >> 4) + 1)
+#define T_MAX(surf) ((surf)->lm_height ? (surf)->lm_height : ((surf)->extents[1] >> 4) + 1)
 
 typedef struct mface_s {
     msurfedge_t     *firstsurfedge;
@@ -93,6 +93,14 @@ typedef struct mface_s {
     byte            *lightmap;
     byte            styles[MAX_LIGHTMAPS];
     int             numstyles;
+
+    // BSPX DECOUPLED_LM, which is where the rerelease's maps keep all their
+    // lighting: the lightmap's own size, and u = DotProduct(point, lm_axis[0])
+    // + lm_axis[0][3] in luxels, one sample at each whole u from 0 to
+    // lm_width - 1 (v likewise). lm_width 0 is the classic mapping, a luxel
+    // per 16 texinfo units from texturemins.
+    int             lm_width, lm_height;
+    float           lm_axis[2][4];
 
     mtexinfo_t      *texinfo;
     int             texturemins[2];

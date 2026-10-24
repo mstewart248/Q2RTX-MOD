@@ -1908,6 +1908,15 @@ static mod_trace_pose_cache_t *mod_trace_get_pose(const model_t *model, int fram
     return slot;
 }
 
+// Called on renderer shutdown. Every renderer init starts registration_sequence
+// at 1 again and refills r_models from the front, so a slot kept across the
+// restart could match a different model on the same r_models entry.
+void MOD_TraceMeshShutdown_RTX(void)
+{
+    Z_Free(mod_trace_cache);
+    mod_trace_cache = NULL;
+}
+
 // Moller-Trumbore against a segment, with dir spanning the whole segment so the
 // hit parameter comes out directly as a fraction in [0, 1].
 static bool mod_trace_triangle(const vec3_t start, const vec3_t dir,

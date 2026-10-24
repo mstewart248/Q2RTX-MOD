@@ -764,6 +764,18 @@ static void GL_Register(void)
 static void GL_Unregister(void)
 {
     Cmd_RemoveCommand("strings");
+
+    // the cvars outlive the renderer, so don't leave them calling into it
+    gl_modulate->changed = NULL;
+    gl_modulate_world->changed = NULL;
+    gl_coloredlightmaps->changed = NULL;
+    gl_brightness->changed = NULL;
+    gl_dynamic->changed = NULL;
+    gl_modulate_entities->changed = NULL;
+    gl_drawsky->changed = NULL;
+    gl_novis->changed = NULL;
+    gl_fullbright->changed = NULL;
+    gl_vertexlight->changed = NULL;
 }
 
 static void GL_SetupConfig(void)
@@ -973,7 +985,11 @@ void R_RegisterFunctionsGL()
 	R_ModeChanged = R_ModeChanged_GL;
 	R_AddDecal = R_AddDecal_GL;
 	R_InterceptKey = R_InterceptKey_GL;
+	// Every hook the RTX renderer installs must be cleared here: switching
+	// renderers re-runs this, and a hook left set calls into a renderer that
+	// has been shut down.
 	R_IsHDR = NULL;
+	R_LatencySleep = NULL;
 	R_SoundTrace = NULL;
 	IMG_Load = IMG_Load_GL;
 	IMG_Unload = IMG_Unload_GL;
@@ -984,4 +1000,6 @@ void R_RegisterFunctionsGL()
     MOD_LoadIQM = NULL;
     MOD_LoadMD5 = NULL;   // no skeletal path in the GL renderer
 	MOD_Reference = MOD_Reference_GL;
+    // MOD_TraceMesh_RTX reads vkpt's maliasmesh_t; GL's has another layout
+    MOD_TraceMesh = NULL;
 }

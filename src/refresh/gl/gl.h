@@ -263,9 +263,11 @@ typedef struct maliasmesh_s {
 #define LIGHT_STYLE(surf, i) \
     &glr.fd.lightstyles[gl_static.lightstylemap[(surf)->styles[i]]]
 
+// 512, not 256: the rerelease's decoupled lightmaps are a luxel per 8 units
+// instead of 16, and sewer64 needs 1.6x what 32 pages of 256 hold
 #define LM_MAX_LIGHTMAPS    32
-#define LM_BLOCK_WIDTH      256
-#define LM_BLOCK_HEIGHT     256
+#define LM_BLOCK_WIDTH      512
+#define LM_BLOCK_HEIGHT     512
 
 typedef struct {
     int         inuse[LM_BLOCK_WIDTH];

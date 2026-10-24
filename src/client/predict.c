@@ -151,6 +151,20 @@ yet, so callers do not have to special-case a map that is still loading.
 */
 trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, bool clip_bbox_entities)
 {
+    return CL_TraceBox(start, vec3_origin, vec3_origin, end, contentmask, clip_bbox_entities);
+}
+
+/*
+====================
+CL_TraceBox
+
+CL_TracePoint with a box.  The view weapon's wall pullback uses it: a world-only
+CM_BoxTrace let the gun sink into doors, lifts and func_wall/func_explosive
+glass while it backed off every world wall.
+====================
+*/
+trace_t CL_TraceBox(const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, int contentmask, bool clip_bbox_entities)
+{
     trace_t t;
 
     if (!cl.bsp || !cl.bsp->nodes) {
@@ -160,7 +174,7 @@ trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, boo
         return t;
     }
 
-    CM_BoxTrace(&t, start, end, vec3_origin, vec3_origin, cl.bsp->nodes, contentmask);
+    CM_BoxTrace(&t, start, end, mins, maxs, cl.bsp->nodes, contentmask);
     if (t.fraction < 1.0f)
         t.ent = (struct edict_s *)1;
 
@@ -172,7 +186,7 @@ trace_t CL_TracePoint(const vec3_t start, const vec3_t end, int contentmask, boo
     // slab in mid-air. The caller's mask is also how WATER reaches a func_water,
     // which is a brush entity, not world contents (mgu6m1's pools are nothing
     // else); without it blood fell straight through one onto the floor beneath.
-    CL_ClipMoveToEntities_(start, vec3_origin, vec3_origin, end, &t, !clip_bbox_entities,
+    CL_ClipMoveToEntities_(start, mins, maxs, end, &t, !clip_bbox_entities,
                            contentmask);
 
     return t;

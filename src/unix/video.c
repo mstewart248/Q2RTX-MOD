@@ -444,8 +444,9 @@ bool VID_Init(graphics_api_t api)
 	}
 #endif
 
+    // only the GL renderer drives the gamma ramp, and only its menu shows this
     cvar_t *vid_hwgamma = Cvar_Get("vid_hwgamma", "0", CVAR_REFRESH);
-    if (vid_hwgamma->integer) {
+    if (vid_hwgamma->integer && api == GAPI_OPENGL) {
         Uint16  gamma[3][256];
 
         if (SDL_GetWindowGammaRamp(sdl_window, gamma[0], gamma[1], gamma[2]) == 0 &&

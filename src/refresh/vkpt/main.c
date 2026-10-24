@@ -9384,6 +9384,7 @@ R_Shutdown_RTX(bool total)
 	}
 
 	IMG_Shutdown();
+	MOD_TraceMeshShutdown_RTX();
 	MOD_Shutdown(); // todo: currently leaks memory, need to clear submeshes
 	VID_Shutdown();
 	

@@ -2364,8 +2364,12 @@ static int SA_TraceReflections(int phase, int num_sources, const float *sources,
     sa.gpu_traced = ok;
     if (!ok) {
         sa.gpu_why = why;
-        sa.gpu_failed_map = sa.sim_map;
-        sa.gpu_failed_why = why;
+        // a renderer that went down mid-run (vid_restart, a switch to GL) is
+        // not this map failing: the next run asks it again
+        if (trace && trace(NULL, NULL)) {
+            sa.gpu_failed_map = sa.sim_map;
+            sa.gpu_failed_why = why;
+        }
     }
     return ok;
 }
@@ -2391,16 +2395,19 @@ static void SA_SimRun(const sa_sim_input_t *in)
     sa.gpu_run = sa.gpu_traced = false;
     sa.gpu_why = NULL;
     if (in->gpu && !in->check) {
+        // read once: the main thread clears it when the renderer changes
+        bool (*trace)(const r_sound_trace_t *, const char **) = R_SoundTrace;
+
         if (!qiplq2SetReflectionTracer)
             sa.gpu_why = "this phonon.dll has no hook for it";
         else if (sa.gpu_failed_map == sa.sim_map)
             sa.gpu_why = sa.gpu_failed_why;
         else if (!sa.gpu_geom)
             sa.gpu_why = "no scene for it";
-        else if (!R_SoundTrace)
+        else if (!trace)
             sa.gpu_why = "not on this renderer";
         else
-            sa.gpu_run = R_SoundTrace(NULL, &sa.gpu_why);
+            sa.gpu_run = trace(NULL, &sa.gpu_why);
     }
 
     // the GPU's rays shared out among the sources this run simulates, so
@@ -2938,12 +2945,14 @@ static void SA_SimDiffract(const sa_sim_input_t *in)
     uint64_t    start = Sys_Microseconds();
     float       fall;
     int         i, j, b, n = 0;
+    // read once: the main thread clears it when the renderer changes
+    bool        (*trace)(const r_sound_trace_t *, const char **) = R_SoundTrace;
 
     if (sa.diff_failed_map && sa.diff_failed_map == sa.sim_map)
         why = sa.diff_failed_why;
     else if (!sa.gpu_geom)
         why = "no scene for it";
-    else if (!R_SoundTrace)
+    else if (!trace)
         why = "not on this renderer";
     if (why)
         goto done;
@@ -2971,10 +2980,15 @@ static void SA_SimDiffract(const sa_sim_input_t *in)
     t.num_queries = n;
     t.queries = queries;
     t.diffraction = out;
-    if (!R_SoundTrace(&t, &why)) {
-        sa.diff_failed_map = sa.sim_map;
-        sa.diff_failed_why = why ? why : "it failed";
-        why = sa.diff_failed_why;
+    if (!trace(&t, &why)) {
+        if (!why)
+            why = "it failed";
+        // only a renderer that is up has failed this map; one going down
+        // or coming back is asked again next run
+        if (trace(NULL, NULL)) {
+            sa.diff_failed_map = sa.sim_map;
+            sa.diff_failed_why = why;
+        }
         goto done;
     }
 
