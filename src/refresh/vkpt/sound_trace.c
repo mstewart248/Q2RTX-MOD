@@ -52,6 +52,8 @@ thread's.
 ==============================================================================
 */
 
+#include <assert.h>     // static_assert: MSVC has it without, glibc needs the header
+
 #include "shared/shared.h"
 #include "common/common.h"
 #include "vkpt.h"

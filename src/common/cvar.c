@@ -171,7 +171,7 @@ static void parse_string_value(cvar_t *var)
 }
 
 // string value has been changed, do some things
-static void change_string_value(cvar_t *var, const char *value, from_t from)
+void change_string_value(cvar_t *var, const char *value, from_t from)
 {
     // free the old value string
     Z_Free(var->string);

@@ -1175,7 +1175,7 @@ void CreateListOfPaths(const char* entities, const char* outString) {
     while ((funcTrainList && strlen(funcTrainList) > 0) || bNoSearchTargetUpdate) {
         
         if (!bNoSearchTargetUpdate) {
-            searchTarget = GetValueFromList(&funcTrainList);
+            searchTarget = GetValueFromList((const char **)&funcTrainList);
         }
         else {
             bNoSearchTargetUpdate = qfalse;

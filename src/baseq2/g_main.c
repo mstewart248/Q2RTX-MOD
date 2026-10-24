@@ -86,7 +86,7 @@ cvar_t  *g_quick_weapon_switch;
 cvar_t  *g_instant_weapon_switch;
 
 char* GetFuncTrainTargetList(const char* entities);
-char* GetValueFromList(const char* list);
+char* GetValueFromList(const char** list);
 void CreateListOfPaths(const char* entities, const char* outString);
 void SpawnEntities(const char *mapname, const char *entities, const char *spawnpoint, qboolean isMguMap);
 

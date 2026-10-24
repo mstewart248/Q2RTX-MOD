@@ -122,8 +122,9 @@ struct
 	cvar_t* enable;
 } god_rays;
 
-// read by profiler.c to decide whether to show the fog rows
-cvar_t* cvar_pt_fog_froxel = NULL;
+// read by profiler.c to decide whether to show the fog rows; defined by main.c's
+// UBO cvar list
+extern cvar_t* cvar_pt_fog_froxel;
 
 // Gates the two extra dispatches on the C side. The shaders read the same cvar
 // out of the UBO; this copy exists so the passes can be skipped entirely rather

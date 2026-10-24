@@ -164,7 +164,9 @@ static unsigned long R_AliasCheckFrameBBox(maliasframe_t *frame, float worldxf[3
 R_AliasCheckBBox
 ================
 */
-static bool R_AliasCheckBBox(void)
+// the clip codes, not a bool: as a bool BBOX_TRIVIAL_REJECT (8) came back as 1
+// and nothing off screen was ever rejected
+static unsigned R_AliasCheckBBox(void)
 {
     unsigned long ccodes[2] = { 0, 0 };
 

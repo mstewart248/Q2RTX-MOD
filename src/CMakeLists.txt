@@ -704,7 +704,12 @@ IF (WIN32)
     # macro redefinition, deprecation
     TARGET_COMPILE_OPTIONS(server PRIVATE /wd4005 /wd4996)
     TARGET_COMPILE_OPTIONS(baseq2 PRIVATE /wd4005 /wd4996)
+ENDIF()
 
+# DLSS on every platform: the SDK ships a Linux NGX library and runtimes too
+# (libnvidia-ngx-dlss*.so), and DLSS.c has no build without the SDK. Only the
+# DLSS 5 forwarder is Windows-only.
+IF(TARGET client)
 	if(CONFIG_USE_DLSS)
 		message(STATUS "${CMAKE_BUILD_TYPE} Q2RTX BUILD")
 
@@ -748,9 +753,6 @@ IF (WIN32)
 			set(CONFIG_USE_DLSS OFF)
 		endif()
 	endif()
-
-	
-
 ENDIF()
 
 TARGET_INCLUDE_DIRECTORIES(baseq2 PRIVATE ../inc)

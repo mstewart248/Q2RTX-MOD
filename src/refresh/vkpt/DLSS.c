@@ -24,8 +24,13 @@
 #include <float.h>
 #include <math.h>
 
+#ifndef _WIN32
+#include <dirent.h>
+#include <unistd.h>
+#endif
+
 DLSS dlssObj;
-cvar_t* cvar_pt_dlss = NULL;
+extern cvar_t* cvar_pt_dlss;    // defined by main.c's UBO cvar list
 cvar_t* cvar_pt_dlss_dldn = NULL;
 
 /* Whether nvngx_dlssd.dll / nvngx_dlssg.dll are there and this GPU can run them.
@@ -463,12 +468,12 @@ qboolean CheckSupport() {
     {
         if (needsUpdatedDriver)
         {
-            Com_EPrintf("DLSS: Can't load: Outdated driver. Min driver version: %d", minDriverVersionMinor);
+            Com_EPrintf("DLSS: Can't load: Outdated driver. Min driver version: %.0f", minDriverVersionMinor);
             return qfalse;
         }
         else
         {
-            Com_EPrintf("DLSS: Reported Min driver version: %d", minDriverVersionMinor);
+            Com_EPrintf("DLSS: Reported Min driver version: %.0f", minDriverVersionMinor);
         }
     }
     else
@@ -524,7 +529,8 @@ void DLSSDeconstructor() {
         }
 
         NVSDK_NGX_VULKAN_DestroyParameters(dlssObj.pParams);
-        NVSDK_NGX_VULKAN_Shutdown(dlssObj.device);
+        // all instances, as the deprecated NVSDK_NGX_VULKAN_Shutdown() did
+        NVSDK_NGX_VULKAN_Shutdown1(NULL);
 
         dlssObj.pParams = NULL;
         dlssObj.isInitalized = qfalse;
@@ -581,11 +587,42 @@ qboolean IsDLSSAvailable() {
     return dlssObj.isInitalized && dlssObj.pParams != NULL;
 }
 
+#ifdef _WIN32
+static qboolean DLSSFeatureFilePresent(const char* folder, const char* dll)
+{
+    return !os_access(va("%s\\%s", folder, dll), F_OK);
+}
+#else
+/* Linux's runtimes are libnvidia-ngx-dlss.so.<version> for nvngx_dlss.dll, and
+   dlssd and dlssg likewise; whichever version is beside the binary will do. */
+static qboolean DLSSFeatureFilePresent(const char* folder, const char* dll)
+{
+    char        prefix[64];
+    size_t      len;
+    DIR         *dir;
+    struct dirent *entry;
+    qboolean    found = qfalse;
+
+    // "nvngx_dlss.dll" -> "libnvidia-ngx-dlss.so"
+    len = Q_snprintf(prefix, sizeof(prefix), "libnvidia-ngx-%.*s.so", (int)strlen(dll) - 10, dll + 6);
+
+    if (!(dir = opendir(folder)))
+        return qfalse;
+
+    while (!found && (entry = readdir(dir)))
+        if (!strncmp(entry->d_name, prefix, len) && (entry->d_name[len] == 0 || entry->d_name[len] == '.'))
+            found = qtrue;
+
+    closedir(dir);
+    return found;
+}
+#endif
+
 static qboolean DLSSFeatureAvailable(const char* folder, const char* dll, const char* ngxKey)
 {
     float available = 0.0f;
 
-    if (!qvk.supports_ngx || os_access(va("%s\\%s", folder, dll), F_OK))
+    if (!qvk.supports_ngx || !DLSSFeatureFilePresent(folder, dll))
         return qfalse;
 
     // NGX not up (it starts only with pt_dlss on): the DLL is all there is to go by
@@ -1164,6 +1201,26 @@ char* GetDLSSVulkanDeviceExtensions()
     return vStart;
 }
 
+#ifndef _WIN32
+/* The directory the binary is in, where NGX looks for its feature libraries. */
+char* GetFolderPath()
+{
+    char*   outFolderPath = GetEmptyString(MAX_OSPATH);
+    ssize_t len = readlink("/proc/self/exe", outFolderPath, MAX_OSPATH - 1);
+    char*   slash;
+
+    if (len <= 0) {
+        strcpy(outFolderPath, ".");
+        return outFolderPath;
+    }
+
+    outFolderPath[len] = 0;
+    if ((slash = strrchr(outFolderPath, '/')))
+        *slash = 0;
+
+    return outFolderPath;
+}
+#else
 char* GetFolderPath()
 {
     wchar_t appPath[MAX_OSPATH];
@@ -1186,6 +1243,7 @@ char* GetFolderPath()
 
     return outFolderPath;
 }
+#endif
 
 void viewsize_changed(cvar_t* self) {
 

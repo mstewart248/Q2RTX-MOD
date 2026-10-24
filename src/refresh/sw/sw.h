@@ -38,6 +38,8 @@ What changed from the 2013 code:
   - the frame is presented through SDL_Renderer (VID_PresentSoftware).
 */
 
+#include <stddef.h>     // ptrdiff_t, offsetof: MSVC's headers bring it in, glibc's don't
+
 #include "shared/shared.h"
 #include "common/bsp.h"
 #include "common/cmd.h"
@@ -275,6 +277,8 @@ typedef struct espan_s {
     struct espan_s  *pnext;
     struct surf_s   *psurf;         // whose span, for drawing in row order
 } espan_t;
+
+struct spanletvars_s;   // poly.c's; declared here so drawspanlet's parameter is the same type
 
 // used by the polygon drawer (R_POLY.C) and sprite setup code (R_SPRITE.C)
 typedef struct {

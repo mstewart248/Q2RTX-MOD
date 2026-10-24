@@ -509,7 +509,7 @@ bool GL_ShowErrors(const char *func)
     return true;
 }
 
-void R_RenderFrame_GL(refdef_t *fd)
+void R_RenderFrame_GL(refdef_t *fd, int waterLevel)
 {
     GL_Flush2D();
 

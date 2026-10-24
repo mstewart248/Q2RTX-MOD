@@ -866,7 +866,7 @@ void SV_Physics_Toss(edict_t *ent)
 	else {
 		if (ent->s.effects == EF_GIB) {
 			ent->s.oldEffects = EF_GIB;
-			ent->s.effects = NULL;
+			ent->s.effects = 0;
 		}
 	}
 

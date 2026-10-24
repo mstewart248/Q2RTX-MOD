@@ -281,7 +281,7 @@ static uint32_t screen_image_profile_current = ~0u;
 // Why the most recent swapchain (re)create happened, for the Swapchain: log line.
 static const char *swapchain_reason = "initial create";
 
-static void viewsize_changed(cvar_t *self)
+static void scr_viewsize_changed(cvar_t *self)
 {
 	Cvar_ClampInteger(scr_viewsize, 25, 200);
 	Com_Printf("Resolution scale: %d%%\n", scr_viewsize->integer);
@@ -1913,15 +1913,16 @@ create_swapchain(void)
 	};
 	if (!fse_win32.hmonitor)
 		want_fse = false;
-#endif
 
 	VkSurfaceFullScreenExclusiveInfoEXT fse_info = {
 		.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT,
-#ifdef _WIN32
 		.pNext = &fse_win32,
-#endif
 		.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT,
 	};
+	const void* fse_chain = want_fse ? (const void*)&fse_info : NULL;
+#else
+	const void* fse_chain = NULL;   // VK_EXT_full_screen_exclusive is Win32-only
+#endif
 
 	/* Reflex latency tracking is opted into per swapchain, at creation. Chained ahead
 	   of the full-screen-exclusive info so both can be present. */
@@ -1946,11 +1947,11 @@ create_swapchain(void)
 
 	VkSwapchainLatencyCreateInfoNV latency_info = {
 		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV,
-		.pNext = want_fse ? &fse_info : NULL,
+		.pNext = fse_chain,
 		.latencyModeEnable = VK_TRUE,
 	};
 
-	const void* swpch_pnext = want_fse ? (const void*)&fse_info : NULL;
+	const void* swpch_pnext = fse_chain;
 	if (want_latency_mode)
 		swpch_pnext = &latency_info;
 
@@ -1984,6 +1985,7 @@ create_swapchain(void)
 
 	// APPLICATION_CONTROLLED only makes the mode available - it has to be taken. Failing
 	// is not fatal: the swapchain still works, we just did not get the flip.
+#ifdef _WIN32
 	if (want_fse && qvkAcquireFullScreenExclusiveModeEXT)
 	{
 		VkResult fse_res = qvkAcquireFullScreenExclusiveModeEXT(qvk.device, qvk.swap_chain);
@@ -1991,6 +1993,7 @@ create_swapchain(void)
 		Com_Printf("Full-screen exclusive: %s\n",
 			qvk.surf_fse_acquired ? "acquired" : qvk_result_to_string(fse_res));
 	}
+#endif
 
 	/* Frame generation phase-locks its presents to this. Started here rather than at
 	   renderer init because it is per-MONITOR, and the window may not have been on this
@@ -2478,8 +2481,10 @@ init_vulkan(void)
 				}
 			}
 
+#ifdef _WIN32
 			if (!strcmp(ext_properties[j].extensionName, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME))
 				qvk.supports_fse = true;
+#endif
 
 			if (!strcmp(ext_properties[j].extensionName, VK_NV_LOW_LATENCY_2_EXTENSION_NAME))
 				qvk.supports_low_latency = true;
@@ -3022,12 +3027,14 @@ init_vulkan(void)
 	// Full-screen exclusive. Without it a Vulkan swapchain on Windows is an ordinary
 	// windowed one as far as the compositor is concerned, whatever SDL did with the
 	// display mode, and whether it gets independent flip is entirely DWM's choice.
+#ifdef _WIN32
 	if (qvk.supports_fse)
 	{
 		static const char* fse_ext[] = { VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME };
 		append_string_list(device_extensions, &device_extension_count, max_extension_count,
 			fse_ext, LENGTH(fse_ext));
 	}
+#endif
 
 	// NVIDIA Reflex. Modern Reflex is a plain Vulkan extension - no SDK, no DLL, no
 	// Streamline interposer. It only became reachable when the Vulkan headers moved off
@@ -9221,7 +9228,7 @@ R_Init_RTX(bool total)
 #endif
 
 	scr_viewsize = Cvar_Get("viewsize", "100", CVAR_ARCHIVE);
-	scr_viewsize->changed = viewsize_changed;
+	scr_viewsize->changed = scr_viewsize_changed;
 
 	// enables or disables full screen blending effects
 	cvar_tm_blend_enable = Cvar_Get("tm_blend_enable", "1", CVAR_ARCHIVE);

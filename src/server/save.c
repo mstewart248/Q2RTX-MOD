@@ -289,9 +289,7 @@ char *SV_GetSaveInfo(const char *dir)
             len = strftime(date, sizeof(date), "%b %d %H:%M", tm);
         else
             len = strftime(date, sizeof(date), "%b %d  %Y", tm);
-    } else {
-        len = strftime(date, sizeof(date), "%b %d  %Y", tm);
-    }
+    }   // else no time to format: len stays 0 and the date reads "???"
     if (!len)
         strcpy(date, "???");
 

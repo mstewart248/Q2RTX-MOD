@@ -1192,7 +1192,6 @@ vkpt_final_blit_simpleDLSS(VkCommandBuffer cmd_buf, VkImage image, VkExtent2D ex
 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
 	);
 
-	float dlssScale = GetDLSSMultResolutionScale();
 
 	VkOffset3D blit_size = {
 		.x = qvk.extent_unscaled.width,

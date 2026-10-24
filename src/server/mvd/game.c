@@ -1803,7 +1803,7 @@ static void MVD_GameShutdown(void)
     Cvar_Set("g_features", "0");
 }
 
-static void MVD_GameSpawnEntities(const char *mapname, const char *entstring, const char *spawnpoint)
+static void MVD_GameSpawnEntities(const char *mapname, const char *entstring, const char *spawnpoint, qboolean isMguMap)
 {
 }
 static void MVD_GameWriteGame(const char *filename, qboolean autosave)
@@ -2262,6 +2262,13 @@ update:
     }
 }
 
+// game_export_t gained GetWaterLevel after RunFrame; without this entry the
+// table below put ServerCommand in its slot and left ServerCommand NULL
+static int MVD_GameGetWaterLevel(void)
+{
+    return 0;
+}
+
 static void MVD_GameServerCommand(void)
 {
 }
@@ -2305,6 +2312,7 @@ game_export_t mvd_ge = {
     MVD_GameClientCommand,
     MVD_GameClientThink,
     MVD_GameRunFrame,
+    MVD_GameGetWaterLevel,
     MVD_GameServerCommand
 };
 

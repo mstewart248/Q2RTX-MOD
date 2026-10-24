@@ -4210,7 +4210,7 @@ static void SCR_Draw2D(void)
 	R_SetAlphaScale(1.0f);
 }
 
-static void SCR_DrawActive(int waterLevel)
+static void SCR_DrawActive(void)
 {
     // if full screen menu is up, do nothing at all
     if (!UI_IsTransparent())
@@ -4272,7 +4272,7 @@ This is called every frame, and can also be called explicitly to flush
 text to the screen.
 ==================
 */
-void SCR_UpdateScreen(int waterLevel)
+void SCR_UpdateScreen(void)
 {
     static int recursive;
 
@@ -4313,7 +4313,7 @@ void SCR_UpdateScreen(int waterLevel)
     }
 
     // do 3D refresh drawing
-    SCR_DrawActive(waterLevel);
+    SCR_DrawActive();
 
     // draw main menu
     UI_Draw(cls.realtime);

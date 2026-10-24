@@ -38,7 +38,11 @@ pt_dlss5_strength above 1 speeds it up.
 #include "DLSSNR.h"
 #include "system/system.h"
 
+/* nvngx_dlssnr.dll exists for Windows only, so elsewhere DLSS 5 is never available:
+   the cvars are registered as usual and pt_dlss5_available stays 0. */
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #define DLSS5_REBUILD_DELAY_MS 300
 
@@ -56,7 +60,7 @@ typedef int   (*PFN_dlssnr_evaluate)(void*, void*, void*);
 typedef int   (*PFN_dlssnr_release)(void*);
 
 static struct {
-    HMODULE forwarder;
+    void* forwarder;            /* HMODULE */
     PFN_dlssnr_load load;
     PFN_dlssnr_init init;
     PFN_dlssnr_shutdown shutdown;
@@ -337,7 +341,9 @@ static void dlss5_info_f(void)
     }
 }
 
+#ifdef _WIN32
 static void ExeDir(wchar_t* out, size_t size);
+#endif
 
 /* Whether nvngx_dlssnr.dll sits next to q2rtx.exe. The model is not something this
    project ships, so without it DLSS 5 stays off and the menu hides its settings
@@ -346,10 +352,12 @@ static qboolean dlssnrPresent;
 
 void DLSS5_InitCvars(void)
 {
+#ifdef _WIN32
     wchar_t dir[MAX_PATH], path[MAX_PATH];
     ExeDir(dir, MAX_PATH);
     swprintf(path, MAX_PATH, L"%lsnvngx_dlssnr.dll", dir);
     dlssnrPresent = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+#endif
     Cvar_FullSet("pt_dlss5_available", dlssnrPresent ? "1" : "0", CVAR_ROM, FROM_CODE);
 
     cvar_pt_dlss5 = Cvar_Get("pt_dlss5", "0", CVAR_ARCHIVE);
@@ -488,6 +496,13 @@ static void FeedbackOut(VkCommandBuffer cmd, uint32_t width, uint32_t height)
     nr.feedbackSeeded = qtrue;
 }
 
+#ifndef _WIN32
+static qboolean EnsureLoaded(void)
+{
+    Fail("DLSS 5 needs nvngx_dlssnr.dll, which is Windows-only", 0);
+    return qfalse;
+}
+#else
 /* Module directory of q2rtx.exe, with a trailing backslash. */
 static void ExeDir(wchar_t* out, size_t size)
 {
@@ -543,6 +558,7 @@ static qboolean EnsureLoaded(void)
     }
     return qtrue;
 }
+#endif  /* _WIN32 */
 
 static qboolean EnsureNGX(void)
 {
