@@ -151,7 +151,10 @@ extern centity_t    cl_entities[MAX_EDICTS];
 // a room, so it is scaled up - see cl_poi_marker_scale.
 #define POI_MARKER_MODEL    "models/objects/pointer/tris.md2"
 
-#define MAX_CLIENTWEAPONMODELS        20        // PGM -- upped from 16 to fit the chainfist vwep
+// PGM -- upped from 16 to fit the chainfist vwep. 32 for the rerelease, which
+// registers 21 "#" vwep models (g_items.cpp) - with weapon.md2 in slot 0 that
+// is 22, and at 20 the BFG and the disruptor fell off the end of the list.
+#define MAX_CLIENTWEAPONMODELS        32
 
 typedef struct clientinfo_s {
     char name[MAX_QPATH];
@@ -643,6 +646,7 @@ extern cvar_t    *cl_demosmooth;
 extern cvar_t    *cl_muzzleflash_world_fwd;
 extern cvar_t    *cl_muzzleflash_world_right;
 extern cvar_t    *cl_muzzleflash_world_up;
+extern cvar_t    *cl_muzzleflash_world_track;
 extern cvar_t    *cl_footsteps;
 // Surface-dependent footsteps (footsteps.c). 0 restores the four generic
 // player/stepN.wav sounds.

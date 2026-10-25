@@ -21,6 +21,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "client.h"
 #include "refresh/models.h"
 #include "baseq2/g_local.h"
+#include "format/md2.h"
 
 extern qhandle_t cl_mod_powerscreen;
 extern qhandle_t cl_mod_tracker_shell;
@@ -523,6 +524,13 @@ static int adjust_shell_fx(int renderfx)
 	return renderfx;
 }
 
+// [Q2RTX] Your own player model's held weapon exactly as it was drawn this
+// frame - origin, angles, frame pair and lerp - for CL_AddPlayerModelFlash to
+// find the barrel on. Stamped with cls.framecount like the view gun, because
+// there are frames with no player model or no weapon model at all.
+static entity_t cl_player_gun_ent;
+static int      cl_player_gun_framecount = -1;
+
 /*
 ===============
 CL_AddPacketEntities
@@ -959,7 +967,13 @@ static void CL_AddPacketEntities(void)
             if (s1->modelindex2 == 255) {
                 // custom weapon
                 ci = &cl.clientinfo[s1->skinnum & 0xff];
-                i = (s1->skinnum >> 8); // 0 is default weapon model
+                // 0 is default weapon model. ONE byte: the rerelease packs
+                // its player skinnum as client | vwep << 8 | viewheight << 16
+                // | team/poi << 24 (player_skinnum_t, P_AssignClientSkinnum),
+                // so all of skinnum >> 8 was ~22 * 256 + vwep - always out of
+                // range, and every rerelease player held weapon.md2. The
+                // classic games never set anything above the vwep byte.
+                i = (s1->skinnum >> 8) & 0xff;
                 if (i < 0 || i > cl.numWeaponModels - 1)
                     i = 0;
                 ent.model = ci->weaponmodel[i];
@@ -983,6 +997,11 @@ static void CL_AddPacketEntities(void)
 			}
 
             V_AddEntity(&ent);
+
+            if (s1->number == cl.frame.clientNum + 1) {
+                cl_player_gun_ent = ent;
+                cl_player_gun_framecount = cls.framecount;
+            }
 
             //PGM - make sure these get reset.
             ent.flags = base_entity_flags;
@@ -1519,6 +1538,8 @@ invalidated by R_EndRegistration at every map load, and registering mid-game
 would stall on the first shot with each weapon while the model loads.
 =================
 */
+static void CL_ClearPlayerGuns(void);
+
 void CL_RegisterViewMuzzleFlashes(void)
 {
     static bool loaded;
@@ -1530,6 +1551,8 @@ void CL_RegisterViewMuzzleFlashes(void)
         loaded = true;
         CL_LoadMuzzleOffsets();
     }
+
+    CL_ClearPlayerGuns();
 
     for (i = 0; i < q_countof(cl_weapon_muzzles); i++) {
         char path[MAX_QPATH];
@@ -1584,6 +1607,192 @@ void CL_PlayerModelMuzzleFlash(void)
     cl_player_flash_roll = frand() * 360.0f;
 }
 
+/*
+THE PLAYER MODEL'S FLASH COMES OFF THE GUN THE MODEL IS HOLDING, and that gun
+moves. Every players/<model>/w_<weapon>.md2 is drawn with the body's frame, and
+the attack frames throw it back towards the body: on the rerelease players the
+barrel end is 7-11 units nearer at attack1 than standing. The weapons differ by
+20 units on top of that - at attack1 the machinegun's barrel end is only 3-4
+units in front of the model's origin, the chaingun's 18.
+
+The flash used to sit on one fixed point (cl_muzzleflash_world_*), 22 units in
+front of the model's origin and 25 once CL_SetupMuzzleFlashEntity lifts it off
+the muzzle - right for a standing chaingun, a long way past a firing machinegun.
+That was dialled in a mirror, which looks straight down the barrel and cannot
+show an error along it; any side-on camera showed the flash hanging in the air
+in front of the gun.
+
+So the muzzle is read off the weapon model. A held weapon has no muzzle marker,
+but it is a small rigid gun pointing down +X in its first frame (stand01), so
+its vertices within PLAYER_GUN_MUZZLE_DEPTH of the forward-most point are the
+barrel's end face, and those same vertices give the muzzle in every other frame.
+The md5 the renderer draws in the md2's place is animated off the same frames,
+and its barrel end agrees with the md2's to within two units, so the md2 stands
+in for both.
+*/
+#define PLAYER_GUN_MUZZLE_DEPTH 1.5f
+#define MAX_PLAYER_GUNS         64
+
+typedef struct {
+    char    name[MAX_QPATH];
+    int     numframes;      // 0 = no usable muzzle; don't load it again
+    vec3_t  *muzzles;       // model space, one per frame
+} player_gun_t;
+
+static player_gun_t cl_player_guns[MAX_PLAYER_GUNS];
+static int          cl_next_player_gun;
+
+// called at every map load, from CL_RegisterViewMuzzleFlashes: a model name can
+// mean a different file after a game directory change
+static void CL_ClearPlayerGuns(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_PLAYER_GUNS; i++)
+        Z_Free(cl_player_guns[i].muzzles);
+    memset(cl_player_guns, 0, sizeof(cl_player_guns));
+    cl_next_player_gun = 0;
+}
+
+static void CL_PlayerGunVertex(const dmd2frame_t *frame, int index, vec3_t out)
+{
+    int k;
+
+    for (k = 0; k < 3; k++)
+        out[k] = frame->verts[index].v[k] * LittleFloat(frame->scale[k]) +
+                 LittleFloat(frame->translate[k]);
+}
+
+static void CL_LoadPlayerGun(player_gun_t *gun)
+{
+    static uint16_t ring[MD2_MAX_VERTS];
+    dmd2header_t    header;
+    const dmd2frame_t *frame;
+    byte            *rawdata;
+    vec3_t          v;
+    float           front;
+    size_t          framesize, ofs_frames;
+    int             len, numverts, numframes, num_ring, i, j;
+
+    len = FS_LoadFile(gun->name, (void **)&rawdata);
+    if (!rawdata)
+        return;
+
+    if (len < (int)sizeof(header))
+        goto done;
+
+    memcpy(&header, rawdata, sizeof(header));
+    for (i = 0; i < (int)(sizeof(header) / 4); i++)
+        ((uint32_t *)&header)[i] = LittleLong(((uint32_t *)&header)[i]);
+
+    if (header.ident != MD2_IDENT || header.version != MD2_VERSION)
+        goto done;
+    if (header.num_xyz < 1 || header.num_xyz > MD2_MAX_VERTS)
+        goto done;
+    if (header.num_frames < 1 || header.num_frames > MD2_MAX_FRAMES)
+        goto done;
+
+    numverts   = header.num_xyz;
+    numframes  = header.num_frames;
+    framesize  = header.framesize;
+    ofs_frames = header.ofs_frames;
+    if (framesize < sizeof(dmd2frame_t) + (numverts - 1) * sizeof(dmd2trivertx_t))
+        goto done;
+    if (ofs_frames > (size_t)len || ((size_t)len - ofs_frames) / framesize < (size_t)numframes)
+        goto done;
+
+    // the barrel's end face: the forward-most vertices of the first frame
+    frame = (const dmd2frame_t *)(rawdata + ofs_frames);
+    CL_PlayerGunVertex(frame, 0, v);
+    front = v[0];
+    for (j = 1; j < numverts; j++) {
+        CL_PlayerGunVertex(frame, j, v);
+        front = max(front, v[0]);
+    }
+    num_ring = 0;
+    for (j = 0; j < numverts; j++) {
+        CL_PlayerGunVertex(frame, j, v);
+        if (v[0] > front - PLAYER_GUN_MUZZLE_DEPTH)
+            ring[num_ring++] = j;
+    }
+
+    gun->muzzles = Z_Malloc(numframes * sizeof(gun->muzzles[0]));
+    for (i = 0; i < numframes; i++) {
+        frame = (const dmd2frame_t *)(rawdata + ofs_frames + i * framesize);
+        VectorClear(gun->muzzles[i]);
+        for (j = 0; j < num_ring; j++) {
+            CL_PlayerGunVertex(frame, ring[j], v);
+            VectorAdd(gun->muzzles[i], v, gun->muzzles[i]);
+        }
+        VectorScale(gun->muzzles[i], 1.0f / num_ring, gun->muzzles[i]);
+    }
+    gun->numframes = numframes;
+
+done:
+    FS_FreeFile(rawdata);
+}
+
+static const player_gun_t *CL_PlayerGun(qhandle_t handle)
+{
+    const model_t   *model = MOD_ForHandle(handle);
+    player_gun_t    *gun;
+    int             i;
+
+    if (!model)
+        return NULL;
+
+    for (i = 0; i < MAX_PLAYER_GUNS; i++) {
+        gun = &cl_player_guns[i];
+        if (gun->name[0] && !FS_pathcmp(gun->name, model->name))
+            return gun->numframes ? gun : NULL;
+    }
+
+    // first sight of this weapon: read it once, into the next slot round robin
+    gun = &cl_player_guns[cl_next_player_gun];
+    cl_next_player_gun = (cl_next_player_gun + 1) % MAX_PLAYER_GUNS;
+    Z_Free(gun->muzzles);
+    memset(gun, 0, sizeof(*gun));
+    Q_strlcpy(gun->name, model->name, sizeof(gun->name));
+    CL_LoadPlayerGun(gun);
+
+    return gun->numframes ? gun : NULL;
+}
+
+// Where the barrel of the weapon your player model holds ends this frame, in
+// world space. False when there is no such weapon drawn or it has no muzzle,
+// and the caller falls back to the fixed offset.
+static bool CL_PlayerGunMuzzle(vec3_t muzzle)
+{
+    const entity_t      *ent = &cl_player_gun_ent;
+    const player_gun_t  *gun;
+    vec3_t              local, f, r, u;
+    int                 frame, oldframe;
+
+    if (!cl_muzzleflash_world_track->integer || cl_player_gun_framecount != cls.framecount)
+        return false;
+
+    gun = CL_PlayerGun(ent->model);
+    if (!gun)
+        return false;
+
+    // the same frame pair and lerp the weapon was drawn with; a frame the
+    // model does not have falls back to its first
+    frame    = (ent->frame    >= 0 && ent->frame    < gun->numframes) ? ent->frame    : 0;
+    oldframe = (ent->oldframe >= 0 && ent->oldframe < gun->numframes) ? ent->oldframe : 0;
+    LerpVector2(gun->muzzles[oldframe], gun->muzzles[frame],
+                ent->backlerp, 1.0f - ent->backlerp, local);
+    if (ent->scale)
+        VectorScale(local, ent->scale, local);
+
+    // model space is X forward, Y LEFT, Z up - see CL_AddViewWeaponFlash
+    AngleVectors(ent->angles, f, r, u);
+    VectorCopy(ent->origin, muzzle);
+    VectorMA(muzzle,  local[0], f, muzzle);
+    VectorMA(muzzle, -local[1], r, muzzle);
+    VectorMA(muzzle,  local[2], u, muzzle);
+    return true;
+}
+
 // Runs after CL_AddPacketEntities, so cl.playerEntityOrigin/Angles and
 // cl.thirdPersonView all describe the frame being drawn.
 void CL_AddPlayerModelFlash(void)
@@ -1603,22 +1812,24 @@ void CL_AddPlayerModelFlash(void)
     if (!cl_muzzleflash_models->integer || !cl_mod_muzzleflash || cls.ref_type == REF_TYPE_SW)
         return;
 
-    // Placed relative to the model AS DRAWN: CL_AddPacketEntities draws your
-    // own model at the predicted origin, yaw only, slid back 15 units so the
-    // view point sits in front of its head. The three cvars are where the
-    // player model holds its gun relative to that - a thing to look at and
-    // nudge, not to derive.
-    //
     // Yaw only, and from the prediction: the flash model grows along +X, and
     // the server's copy of your angles is what once had it pointing back at
     // you.
     VectorSet(yaw_only, 0, cl.playerEntityAngles[YAW], 0);
-    AngleVectors(yaw_only, f, r, u);
 
-    VectorCopy(cl.playerEntityOrigin, muzzle);
-    VectorMA(muzzle, -15.0f + cl_muzzleflash_world_fwd->value, f, muzzle);
-    VectorMA(muzzle, cl_muzzleflash_world_right->value, r, muzzle);
-    VectorMA(muzzle, cl_muzzleflash_world_up->value, u, muzzle);
+    // On the end of the held weapon's barrel, wherever its animation has it.
+    // Failing that (cl_muzzleflash_world_track 0, or no weapon model with a
+    // muzzle), the old fixed point, placed relative to the model AS DRAWN:
+    // CL_AddPacketEntities draws your own model at the predicted origin, yaw
+    // only, slid back 15 units so the view point sits in front of its head.
+    if (!CL_PlayerGunMuzzle(muzzle)) {
+        AngleVectors(yaw_only, f, r, u);
+
+        VectorCopy(cl.playerEntityOrigin, muzzle);
+        VectorMA(muzzle, -15.0f + cl_muzzleflash_world_fwd->value, f, muzzle);
+        VectorMA(muzzle, cl_muzzleflash_world_right->value, r, muzzle);
+        VectorMA(muzzle, cl_muzzleflash_world_up->value, u, muzzle);
+    }
 
     // In third person the model is in plain view, so the flash is too. In
     // first person the model is mirror-only and so is its flash - the view

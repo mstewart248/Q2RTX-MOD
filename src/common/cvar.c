@@ -456,6 +456,20 @@ void Cvar_SetByVar(cvar_t *var, const char *value, from_t from)
         var->latched_string = NULL;
     }
 
+    // A WEAK CVAR GIVEN A VALUE IS THE PLAYER'S NOW. The menu makes a weak
+    // placeholder for every cvar a row names that nothing has registered yet -
+    // all of sw_* while the RTX renderer is running. "+game rerelease" then
+    // execs that gamedir's q2config.cfg into those placeholders, and they
+    // stayed weak; switching to the software renderer registered them, and
+    // get_engine_cvar resets a weak cvar to its default, so every software
+    // setting was lost on the switch (and the defaults saved over them).
+    // As a custom cvar the value survives registration, as one set from the
+    // command line or a config before anything registered it always has.
+    if (from != FROM_CODE && (var->flags & CVAR_WEAK)) {
+        var->flags &= ~CVAR_WEAK;
+        var->flags |= CVAR_CUSTOM;
+    }
+
     change_string_value(var, value, from);
 }
 

@@ -110,6 +110,12 @@ resolve_volumetric_scale(const light_poly_t* light)
 
 	return cvar_pt_fog_scale_model ? cvar_pt_fog_scale_model->value : 1.f;
 }
+
+float vkpt_light_volumetric_scale(const light_poly_t *light)
+{
+	return resolve_volumetric_scale(light);
+}
+
 static uint32_t current_primbuf_size = 0;
 
 // Clamps and default setting for the animated primitive buffer size

@@ -391,6 +391,7 @@ enum AttributeIndex
 	MAT_DISPLACE_IN,
 	MAT_DISPLACE_OUT,
 	MAT_ALBEDO_STRENGTH,
+	MAT_DOUBLE_SIDED,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -425,6 +426,7 @@ static struct MaterialAttribute {
 	{MAT_DISPLACE_IN, "displace_in", ATTR_FLOAT},
 	{MAT_DISPLACE_OUT, "displace_out", ATTR_FLOAT},
 	{MAT_ALBEDO_STRENGTH, "albedo_strength", ATTR_FLOAT},
+	{MAT_DOUBLE_SIDED, "double_sided", ATTR_BOOL},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -553,6 +555,17 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	// See MATERIAL_FLAG_CURVED_WATER in shader/constants.h.
 	case MAT_CURVED_WATER:
 		mat->flags = bvalue == true ? mat->flags | MATERIAL_FLAG_CURVED_WATER : mat->flags & ~(MATERIAL_FLAG_CURVED_WATER);
+		if (reload_flags) *reload_flags |= RELOAD_MAP;
+		break;
+	// No back-face culling for MODELS drawn with this material, for meshes that
+	// are open shells which camera rays otherwise see straight through from
+	// inside. The Q2RTX super shotgun pickup (g_shotg2/tris.md3, which borrows
+	// v_shotg2's skin) is the case that needed it: its barrels are tubes with no
+	// inner wall, built for a first-person gun nobody looks down. See
+	// MAT_IsMasked for how. RELOAD_MAP because a static model sorts its meshes
+	// into BLASes when it is uploaded, and only a map reload re-uploads it.
+	case MAT_DOUBLE_SIDED:
+		mat->flags = bvalue == true ? mat->flags | MATERIAL_FLAG_DOUBLE_SIDED : mat->flags & ~(MATERIAL_FLAG_DOUBLE_SIDED);
 		if (reload_flags) *reload_flags |= RELOAD_MAP;
 		break;
 	// Overrides pt_dlss_guide_field for surfaces using this material. Only
@@ -875,6 +888,9 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 
 		if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
 			FS_FPrintf(file, "\tcurved_water 1\n");
+
+		if (mat->flags & MATERIAL_FLAG_DOUBLE_SIDED)
+			FS_FPrintf(file, "\tdouble_sided 1\n");
 		
 		if (!mat->light_styles)
 			FS_FPrintf(file, "\tlight_styles 0\n");
@@ -1172,11 +1188,26 @@ static void autodetect_material_textures(pbr_material_t* mat, const char* name, 
 	// A dedicated _metallic / _rough map counts as asking: the shader reads
 	// metallic = sample * metalness_factor, so zeroing the factor here threw a
 	// metallic map away whenever the texture had no normal map beside it.
+	//
+	// "Has a map" has to include one the entry only NAMES. On a cold load
+	// MAT_Find runs this before it loads the entry's texture_roughness /
+	// texture_metallic, so the images are still NULL here and a tuning-only
+	// md5 entry with both maps came up specular 0 / metalness 0 - and
+	// MAT_InheritScalars then (rightly) refused to inherit over its own maps.
+	// 'mat reload' loads the named maps first, which is why it looked right
+	// while being tuned and wrong from the next map load on.
+	// (Only a name the definition states: a reload refreshes specified_fields
+	// but leaves the old filename in a slot the entry has stopped naming.)
+	const bool has_roughness = mat->image_roughness
+		|| (MAT_SPECIFIED(mat, MAT_TEXTURE_ROUGHNESS) && mat->filename_roughness[0]);
+	const bool has_metallic = mat->image_metallic
+		|| (MAT_SPECIFIED(mat, MAT_TEXTURE_METALLIC) && mat->filename_metallic[0]);
+
 	if (!mat->image_normals)
 	{
-		if (!MAT_SPECIFIED(mat, MAT_SPECULAR_FACTOR) && !mat->image_roughness && !mat->image_metallic)
+		if (!MAT_SPECIFIED(mat, MAT_SPECULAR_FACTOR) && !has_roughness && !has_metallic)
 			mat->specular_factor = 0.f;
-		if (!MAT_SPECIFIED(mat, MAT_METALNESS_FACTOR) && !mat->image_metallic)
+		if (!MAT_SPECIFIED(mat, MAT_METALNESS_FACTOR) && !has_metallic)
 			mat->metalness_factor = 0.f;
 	}
 }
@@ -1361,6 +1392,8 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 		inherited_flags |= MATERIAL_FLAG_LIGHT;
 	if (!MAT_SPECIFIED(mat, MAT_CURVED_WATER))
 		inherited_flags |= MATERIAL_FLAG_CURVED_WATER;
+	if (!MAT_SPECIFIED(mat, MAT_DOUBLE_SIDED))
+		inherited_flags |= MATERIAL_FLAG_DOUBLE_SIDED;
 
 	mat->flags = (mat->flags & ~inherited_flags) | (base->flags & inherited_flags);
 }
@@ -1796,6 +1829,8 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    base_factor %f\n", mat->base_factor);
 	if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
 		Com_Printf("    curved_water 1\n");
+	if (mat->flags & MATERIAL_FLAG_DOUBLE_SIDED)
+		Com_Printf("    double_sided 1\n");
 	const char * kind = getMaterialKindName(mat->flags);
 	Com_Printf("    kind %s\n", kind ? kind : "");
 	Com_Printf("    is_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) != 0);
@@ -2129,6 +2164,8 @@ static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat
 	FS_FPrintf(file, "#\tis_light %d\n", (mat->flags & MATERIAL_FLAG_LIGHT) ? 1 : 0);
 	if (mat->flags & MATERIAL_FLAG_CURVED_WATER)
 		FS_FPrintf(file, "#\tcurved_water 1\n");
+	if (mat->flags & MATERIAL_FLAG_DOUBLE_SIDED)
+		FS_FPrintf(file, "#\tdouble_sided 1\n");
 	FS_FPrintf(file, "#\tlight_styles %d\n", mat->light_styles ? 1 : 0);
 	FS_FPrintf(file, "#\tbsp_radiance %d\n", mat->bsp_radiance ? 1 : 0);
 	FS_FPrintf(file, "#\tdefault_radiance %g\n", mat->default_radiance);
@@ -2545,9 +2582,14 @@ bool MAT_IsTransparent(uint32_t material)
 		|| MAT_IsKind(material, MATERIAL_KIND_TRANSP_MODEL);
 }
 
+// "Masked" here means "goes in the masked-model BLAS" - the one built with
+// VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR - so it is also how a
+// model becomes two-sided, and double_sided materials ride along. That costs
+// them nothing else: pt_logic_masked accepts every hit on a material with no
+// mask texture, and the hit shaders already flip a back face's normal.
 bool MAT_IsMasked(uint32_t material)
 {
 	const pbr_material_t* mat = MAT_ForIndex((int)(material & MATERIAL_INDEX_MASK));
 
-	return mat && mat->image_mask;
+	return mat && (mat->image_mask || (mat->flags & MATERIAL_FLAG_DOUBLE_SIDED));
 }

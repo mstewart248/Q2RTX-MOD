@@ -329,6 +329,7 @@ SET(SRC_VKPT
 	refresh/vkpt/draw.c
 	refresh/vkpt/fog.c
 	refresh/vkpt/cameras.c
+	refresh/vkpt/cpu_trace.c
 	refresh/vkpt/freecam.c
 	refresh/vkpt/fsr.c
 	refresh/vkpt/main.c

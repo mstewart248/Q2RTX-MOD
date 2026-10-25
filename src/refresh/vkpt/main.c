@@ -188,6 +188,10 @@ static uint32_t pt_field_offset_prev = 0;
 static int world_anim_frame = 0;
 
 static vec3_t avg_envmap_color = { 0.f };
+// From the last readback, for cpu_bench: the sun's colour is integrated from the
+// sky on the GPU and only these come back to the CPU.
+static float readback_sun_luminance = 0.f;
+static float readback_sky_luminance = 0.f;
 
 static image_t *water_normal_texture = NULL;
 
@@ -3564,6 +3568,12 @@ static uint32_t compute_mesh_material_flags(const entity_t* entity, const model_
 	return material_id;
 }
 
+uint32_t vkpt_mesh_material_id(const entity_t* entity, const model_t* model, const maliasmesh_t* mesh, bool is_viewer_weapon)
+{
+	float alpha = (entity->flags & RF_TRANSLUCENT) ? entity->alpha : 1.f;
+	return compute_mesh_material_flags(entity, model, mesh, is_viewer_weapon, false, alpha);
+}
+
 static void fill_model_instance(ModelInstance* instance, const entity_t* entity, const model_t* model, const maliasmesh_t* mesh,
 	const float* transform, uint32_t material_id, int instance_index, int iqm_matrix_index)
 {
@@ -4542,6 +4552,8 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 
 		*sun_visible = readback.sun_luminance > 0.f;
 		*adapted_luminance = readback.adapted_luminance;
+		readback_sun_luminance = readback.sun_luminance;
+		readback_sky_luminance = readback.sky_luminance;
 
 		/* TEMPORARY fog-fade diagnostic - pt_fog_log 1. GENERATION 2.
 
@@ -6116,6 +6128,15 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	vkpt_refdef.fd = fd;
 	bool render_world = (fd->rdflags & RDF_NOWORLDMODEL) == 0;
 
+	/* cpu_bench owns the screen while it runs and while its result is up: the
+	   frame is the CPU's picture, drawn as a 2D pic, and the GPU renders no world.
+	   The player setup menu's no-world frames still render as usual. */
+	if (render_world && vkpt_cpu_trace_active())
+	{
+		vkpt_cpu_trace_draw();
+		return;
+	}
+
 	static float previous_time = -1.f;
 
 	float frame_time = min(1.f, max(0.f, fd->time - previous_time));
@@ -6354,7 +6375,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	vec3_t sky_radiance;
 	VectorScale(avg_envmap_color, ubo->pt_env_scale, sky_radiance);
 	vkpt_light_buffer_upload_to_staging(render_world, &vkpt_refdef.bsp_mesh_world, bsp_world_model, num_model_lights, model_lights, sky_radiance);
-	
+
 	float shadowmap_view_proj[16];
 	float shadowmap_depth_scale;
 	vkpt_shadow_map_setup(
@@ -6372,6 +6393,13 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		*ubo->V,
 		shadowmap_view_proj,
 		shadowmap_depth_scale);
+
+	// `cpu_bench` takes its scene from this frame, once the sun, the sky scale,
+	// the light styles and the fog's UBO fields are all settled; the GPU still
+	// renders this one.
+	if (render_world && vkpt_cpu_trace_capture_pending())
+		vkpt_cpu_trace_capture(fd, bsp_world_model, &sun_light, (const vec3_t*)sky_matrix, ubo->pt_env_scale,
+			prev_adapted_luminance, readback_sun_luminance, readback_sky_luminance, ubo);
 
 	bool god_rays_enabled = vkpt_god_rays_enabled(&sun_light) && render_world;
 
@@ -9327,6 +9355,7 @@ R_Init_RTX(bool total)
 
 	vkpt_fog_init();
 	vkpt_cameras_init();
+	vkpt_cpu_trace_init();
 
 	for (int i = 0; i < 256; i++) {
 		qvk.sintab[i] = sinf(i * (2 * M_PI / 255));
@@ -9346,6 +9375,9 @@ void
 R_Shutdown_RTX(bool total)
 {
 	vkpt_freecam_reset();
+
+	// before the world mesh and the textures its workers read go away
+	vkpt_cpu_trace_shutdown();
 
 	// Idle FIRST. DLSSDeconstructor releases the NGX feature and everything NGX
 	// allocated behind it, and this ran before the wait - so on a vid_restart it could
@@ -9712,6 +9744,7 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 		(float)avg_color[2] * inv_num_pixels / 255.f
 	);
 
+	vkpt_cpu_trace_set_envmap(complete ? w_prev : 0, h_prev, complete ? data : NULL);
 	vkpt_textures_upload_envmap(w_prev, h_prev, data);
 	Z_Free(data);
 
@@ -9727,6 +9760,9 @@ void R_AddDecal_RTX(decal_t *d)
 void
 R_BeginRegistration_RTX(const char *name)
 {
+	// the bench's scene points into the map being unloaded
+	vkpt_cpu_trace_stop();
+
 	registration_sequence++;
 	LOG_FUNC();
 	Com_Printf("loading %s\n", name);

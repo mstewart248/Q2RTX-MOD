@@ -1171,6 +1171,27 @@ void R_DrawFill32_RTX(int x, int y, int w, int h, uint32_t color);
 void R_DrawChar_RTX(int x, int y, int flags, int c, qhandle_t font);
 int R_DrawString_RTX(int x, int y, int flags, size_t maxlen, const char *s, qhandle_t font);
 bool R_InterceptKey_RTX(unsigned key, bool down);
+// Saves the 2D state (scale, colour, alpha, clipping), resets it with the given
+// scale, and puts it back - for drawing from inside R_RenderFrame_RTX.
+void vkpt_draw_push_state(float scale);
+void vkpt_draw_pop_state(void);
+
+// cpu_trace.c - `cpu_bench`, the frame path traced on the CPU
+void vkpt_cpu_trace_init(void);
+void vkpt_cpu_trace_shutdown(void);
+void vkpt_cpu_trace_stop(void);
+// true while the bench owns the screen: R_RenderFrame_RTX draws it instead
+bool vkpt_cpu_trace_active(void);
+// true when `cpu_bench` is waiting for a world frame to take the scene from
+bool vkpt_cpu_trace_capture_pending(void);
+void vkpt_cpu_trace_capture(const refdef_t *fd, bsp_t *bsp, const sun_light_t *sun, const vec3_t sky_matrix[3],
+	float env_scale, float adapted_luminance, float sun_luminance, float sky_luminance, const QVKUniformBuffer_t *ubo);
+void vkpt_cpu_trace_draw(void);
+void vkpt_cpu_trace_set_envmap(int width, int height, const byte *data);
+// the material id an alias-model mesh is drawn with this frame, 0 = not drawn
+uint32_t vkpt_mesh_material_id(const entity_t *entity, const model_t *model, const maliasmesh_t *mesh, bool is_viewer_weapon);
+// how much a light scatters into the fog, as copy_light() uploads it
+float vkpt_light_volumetric_scale(const light_poly_t *light);
 
 void IMG_Load_RTX(image_t *image, byte *pic);
 void IMG_Unload_RTX(image_t *image);

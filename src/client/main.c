@@ -37,6 +37,7 @@ cvar_t  *cl_muzzleflash_scale;
 cvar_t  *cl_muzzleflash_world_fwd;
 cvar_t  *cl_muzzleflash_world_right;
 cvar_t  *cl_muzzleflash_world_up;
+cvar_t  *cl_muzzleflash_world_track;
 cvar_t  *cl_muzzleflash_view_size;
 cvar_t  *cl_muzzleflash_view_brightness;
 cvar_t  *cl_muzzleflash_time;
@@ -2945,6 +2946,12 @@ static void CL_InitLocal(void)
     cl_muzzleflash_world_fwd   = Cvar_Get("cl_muzzleflash_world_fwd", "22", CVAR_ARCHIVE);
     cl_muzzleflash_world_right = Cvar_Get("cl_muzzleflash_world_right", "8", CVAR_ARCHIVE);
     cl_muzzleflash_world_up    = Cvar_Get("cl_muzzleflash_world_up", "8", CVAR_ARCHIVE);
+    // Your own player model's flash: 1 puts it on the end of the barrel of the
+    // weapon the model is holding, following the weapon's animation (see
+    // CL_PlayerGunMuzzle); 0 goes back to the fixed point above, which was
+    // dialled in a mirror and sits well in front of most guns seen side-on.
+    // Not archived, so the default reaches everyone.
+    cl_muzzleflash_world_track = Cvar_Get("cl_muzzleflash_world_track", "1", 0);
     /* The flash is drawn by the effects path, which multiplies the texture by
        prev_adapted_luminance * 500. Entity alpha is the one lever that scales
        that back without touching the shader or the global UBO (whose cvar list

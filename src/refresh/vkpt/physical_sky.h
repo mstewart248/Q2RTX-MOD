@@ -42,6 +42,10 @@ VkResult vkpt_physical_sky_record_cmd_buffer(VkCommandBuffer cmd_buf);
 VkResult vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light, bool render_world);
 void vkpt_physical_sky_latch_local_time(void);
 bool vkpt_physical_sky_needs_update(void);
+// cpu_bench: a copy of the sky cube as last rendered, RGBA half floats in layer
+// order (+X -X +Y -Y +Z -Z), width * height * 6 texels; Z_Free it. Waits for
+// the device - call it between frames.
+uint16_t *vkpt_physical_sky_read_envmap(int *width, int *height);
 void vkpt_next_sun_preset(void);
 void vkpt_physical_sky_begin_map(void);
 

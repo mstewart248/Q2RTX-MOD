@@ -1320,6 +1320,9 @@ models/weapons/v_shotg2/skin:
 	texture_emissive models/weapons/v_shotg2/skin_light.tga
 	emissive_factor 0.1
 	kind CHROME
+	# the g_shotg2 pickup md3 shares this skin, and its barrels are open
+	# tubes: without this you can see out through them
+	double_sided 1
 
 models/weapons/v_shotg2/skin_hands:
 	texture_base models/weapons/v_shotg2/skin_hands.tga

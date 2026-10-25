@@ -1326,6 +1326,28 @@ R_SetScale_RTX(float scale)
 	draw.scale = scale;
 }
 
+static drawStatic_t draw_saved;
+static bool clip_enable_saved;
+
+void
+vkpt_draw_push_state(float scale)
+{
+	draw_saved = draw;
+	clip_enable_saved = clip_enable;
+
+	clip_enable = false;
+	draw.scale = scale;
+	draw.alpha_scale = 1.f;
+	R_ClearColor_RTX();
+}
+
+void
+vkpt_draw_pop_state(void)
+{
+	draw = draw_saved;
+	clip_enable = clip_enable_saved;
+}
+
 void
 R_DrawStretchPic_RTX(int x, int y, int w, int h, qhandle_t pic)
 {

@@ -491,6 +491,7 @@ initializeEnvTexture(int width, int height)
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_STORAGE_BIT
                                | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                               | VK_IMAGE_USAGE_TRANSFER_SRC_BIT   // cpu_bench reads it back
                                | VK_IMAGE_USAGE_SAMPLED_BIT,
         .flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -800,6 +801,81 @@ reset_sun_color_buffer(VkCommandBuffer cmd_buf)
 bool vkpt_physical_sky_needs_update()
 {
 	return skyNeedsUpdate;
+}
+
+uint16_t *
+vkpt_physical_sky_read_envmap(int *out_width, int *out_height)
+{
+	if (!img_envmap)
+		return NULL;
+
+	const VkDeviceSize size = (VkDeviceSize)width * height * 6 * 4 * sizeof(uint16_t);
+	BufferResource_t buf;
+	if (buffer_create(&buf, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS)
+		return NULL;
+
+	// whatever queue last wrote the sky, it has finished
+	vkpt_device_wait_idle();
+
+	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+	const VkImageSubresourceRange subresource_range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 6,
+	};
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = img_envmap,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+	);
+
+	VkBufferImageCopy region = {
+		.bufferOffset = 0,
+		.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 6 },
+		.imageExtent = { width, height, 1 },
+	};
+	vkCmdCopyImageToBuffer(cmd_buf, img_envmap, VK_IMAGE_LAYOUT_GENERAL, buf.buffer, 1, &region);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = img_envmap,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+	);
+
+	BUFFER_BARRIER(cmd_buf,
+		.buffer = buf.buffer,
+		.offset = 0,
+		.size = VK_WHOLE_SIZE,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_HOST_READ_BIT
+	);
+
+	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, false);
+	vkpt_wait_idle(qvk.queue_graphics, &qvk.cmd_buffers_graphics);
+
+	uint16_t *texels = NULL;
+	void *mapped = buffer_map(&buf);
+	if (mapped) {
+		texels = Z_Malloc(size);
+		memcpy(texels, mapped, size);
+		buffer_unmap(&buf);
+	}
+	buffer_destroy(&buf);
+
+	*out_width = width;
+	*out_height = height;
+	return texels;
 }
 
 extern float terrain_shadowmap_viewproj[16];
