@@ -1590,6 +1590,12 @@ vkpt_textures_initialize()
 			.descriptorCount = 1,
 			.binding = BINDING_OFFSET_FLOW_OCCUPANCY,
 			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.binding = BINDING_OFFSET_FLOW_AMBIENT,
+			.stageFlags = VK_SHADER_STAGE_ALL,
 		}
 	};
 

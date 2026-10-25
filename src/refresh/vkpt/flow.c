@@ -170,6 +170,9 @@ typedef struct {
 	uint64_t        luid;       // Flow's identity for the emitter
 	int             key;        // a trail's source
 	bool            seen;       // a trail: given again since the last frame
+	vec3_t          heading;    // a trail: which way its source last moved, or 0
+	int             light;      // a trail: its light slot, or -1
+	uint32_t        light_generation;   // ... while the slot has this generation
 	// A piece of a BFG blast: its own radius in units, push, emitting time and
 	// outward velocity instead of the cvars'. 0 radius for any other emitter.
 	float           radius;
@@ -186,6 +189,10 @@ typedef struct {
 	float           gather;     // how far from the seed a block may be
 	float           age;        // seconds of game time since it was taken
 	float           strength;   // pt_flow_light or pt_flow_bfg_light
+	// A trail's: the seed is where its source is now, and the light keeps to
+	// the glow's place relative to it, so it does not lag the two frames the
+	// sums take to come back.
+	bool            follow;
 	bool            lit;        // the glow has come back: the light below is real
 	vec3_t          origin;
 	vec3_t          radiance;   // absolute, like any light's
@@ -245,6 +252,8 @@ static cvar_t *cvar_pt_flow_bfg_vorticity;
 static cvar_t *cvar_pt_flow_trail_radius;
 static cvar_t *cvar_pt_flow_trail_expansion;
 static cvar_t *cvar_pt_flow_trail_smoke;
+static cvar_t *cvar_pt_flow_trail_length;
+static cvar_t *cvar_pt_flow_bfg_trail_light;
 static cvar_t *cvar_pt_flow_beam_radius;
 static cvar_t *cvar_pt_flow_beam_expansion;
 static cvar_t *cvar_pt_flow_beam_burst;
@@ -262,6 +271,13 @@ static cvar_t *cvar_pt_flow_light_radius;
 static cvar_t *cvar_pt_flow_shadow;
 static cvar_t *cvar_pt_flow_shadow_min;
 static cvar_t *cvar_pt_flow_collision_depth;
+static cvar_t *cvar_pt_flow_env;
+static cvar_t *cvar_pt_flow_env_light;
+static cvar_t *cvar_pt_flow_env_flat;
+static cvar_t *cvar_pt_flow_env_spacing;
+static cvar_t *cvar_pt_flow_env_history;
+static cvar_t *cvar_pt_flow_env_clamp;
+static cvar_t *cvar_pt_flow_env_max_probes;
 static cvar_t *cvar_pt_flow_collision_margin;
 
 static struct {
@@ -298,6 +314,27 @@ static struct {
 	// qvk.frame_counter + 1 of the frame vkpt_flow_update last ran in, 0 for none
 	uint64_t            updated_frame;
 
+	// The world's light on the smoke (pt_flow_env, flow_ambient.comp): the
+	// probes, which texel holds which probe, and the pass's own set per frame
+	// in flight for the TLAS. Only with ray query; otherwise env_view is null
+	// and the dummy stands in.
+	VkImage             env_image;
+	VkDeviceMemory      env_memory;
+	VkImageView         env_view;
+	VkImage             env_key_image;
+	VkDeviceMemory      env_key_memory;
+	VkImageView         env_key_view;
+	VkDescriptorSetLayout env_set_layout;
+	VkDescriptorPool    env_pool;
+	VkDescriptorSet     env_sets[MAX_FRAMES_IN_FLIGHT];
+	VkPipelineLayout    env_pipeline_layout;
+	VkPipeline          env_pipeline;
+	uint32_t            env_groups[3];
+	// given by vkpt_flow_set_env for this frame only
+	const bsp_t         *env_bsp;
+	int                 env_first_light;
+	int                 env_num_lights;
+
 #if USE_FLOW
 	bool                libraries_loaded;
 	NvFlowOpList        *op_list;
@@ -327,8 +364,9 @@ static struct {
 	// the simulation that reads them is done, so they live here.
 	NvFlowGridSimulateLayerParams   simulate[FLOW_LAYERS];
 	NvFlowGridSimulateLayerParams   *simulate_ptrs[FLOW_LAYERS];
-	NvFlowGridEmitterSphereParams   spheres[FLOW_MAX_EMITTERS];
-	NvFlowGridEmitterSphereParams   *sphere_ptrs[FLOW_MAX_EMITTERS];
+	// an emitter's own, and the sphere that ends a trail's glow
+	NvFlowGridEmitterSphereParams   spheres[2 * FLOW_MAX_EMITTERS];
+	NvFlowGridEmitterSphereParams   *sphere_ptrs[2 * FLOW_MAX_EMITTERS];
 	NvFlowGridEmitterBoxParams      boxes[FLOW_MAX_EMITTERS];
 	NvFlowGridEmitterBoxParams      *box_ptrs[FLOW_MAX_EMITTERS];
 	NvFlowGridEmitterMeshParams     mesh;
@@ -707,6 +745,7 @@ static int flow_take_light(int layer, const vec3_t origin, float scale)
 	l->gather = 96.f * scale;
 	l->age = 0.f;
 	l->strength = layer == R_FLOW_PLASMA ? cvar_pt_flow_bfg_light->value : cvar_pt_flow_light->value;
+	l->follow = false;
 	l->lit = false;
 	return slot;
 }
@@ -788,9 +827,13 @@ static void flow_lights_collect(int set)
 		const double variance = s[7] * inv_w - DotProduct(middle, middle);
 		const float spread = (float)sqrt(max(variance, 0.0));
 
-		VectorAdd(middle, flow.light_sum_seed[set][i], l->origin);
-		VectorCopy(l->origin, l->seed);
-		l->gather = max(96.f, 3.f * spread);
+		if (l->follow) {
+			VectorAdd(middle, l->seed, l->origin);
+		} else {
+			VectorAdd(middle, flow.light_sum_seed[set][i], l->origin);
+			VectorCopy(l->origin, l->seed);
+			l->gather = max(96.f, 3.f * spread);
+		}
 		l->radius = min(max(size * spread, 4.f), max_radius);
 
 		const float power = FLOW_LIGHT_UNIT * max(l->strength, 0.f) / (l->radius * l->radius);
@@ -1377,6 +1420,38 @@ static void flow_build_params(float dt)
 		sphere->coupleRateBurn = 0.f;
 		sphere->coupleRateSmoke = rate;
 		flow.sphere_ptrs[num_spheres++] = sphere;
+
+		// The end of a trail's glow: a sphere as far behind its source as
+		// pt_flow_trail_length, twice as wide as the trail, that pulls the
+		// heat to nothing and leaves everything else - smoke, velocity - be.
+		// It allocates nothing; it only acts on the blocks the trail has.
+		const float length = cvar_pt_flow_trail_length->value * e->scale;
+		if (e->kind == R_FLOW_TRAIL && length > 0.f && !VectorEmpty(e->heading) && e->layer != R_FLOW_BUBBLES) {
+			NvFlowGridEmitterSphereParams *quench = &flow.spheres[num_spheres];
+			*quench = NvFlowEmitterSphereParams_default;
+			quench->luid = e->luid | (1ull << 48);   // its own, as long as the trail's
+			quench->layer = e->layer;
+			quench->position.x = e->origin[0] - e->heading[0] * length;
+			quench->position.y = e->origin[1] - e->heading[1] * length;
+			quench->position.z = e->origin[2] - e->heading[2] * length;
+			quench->radius = 2.f * radius;
+			quench->allocationScale = 0.f;
+			quench->velocity.x = quench->velocity.y = quench->velocity.z = 0.f;
+			quench->divergence = 0.f;
+			quench->temperature = 0.f;
+			quench->fuel = 0.f;
+			quench->burn = 0.f;
+			quench->smoke = 0.f;
+			// gas passes through it in some 0.1 s and keeps an eighth of
+			// its heat: below the colour map's glow
+			quench->coupleRateVelocity = 0.f;
+			quench->coupleRateDivergence = 0.f;
+			quench->coupleRateTemperature = 20.f;
+			quench->coupleRateFuel = 0.f;
+			quench->coupleRateBurn = 0.f;
+			quench->coupleRateSmoke = 0.f;
+			flow.sphere_ptrs[num_spheres++] = quench;
+		}
 	}
 
 	flow.shadow_pass = flow_build_offscreen(cell_size);
@@ -1414,6 +1489,17 @@ static void flow_build_params(float dt)
 	flow.params_iface->commitParams(flow.grid_params, &snapshot);
 }
 
+// A trail's light slot, if it still has it.
+static flow_light_t *flow_trail_light(const flow_emitter_t *e)
+{
+	if (e->light < 0 || e->light >= FLOW_MAX_LIGHTS)
+		return NULL;
+	flow_light_t *l = &flow.lights[e->light];
+	if (l->layer != e->layer || l->generation != e->light_generation)
+		return NULL;
+	return l;
+}
+
 // Ages the emitters and the light slots by `dt`, and lets go of the emitters
 // that are done: a burst or a beam that has had its time, a trail that was not
 // given again this frame. Flow drops what it knew of an emitter once its luid
@@ -1425,8 +1511,14 @@ static void flow_age(float dt)
 		flow_emitter_t *e = &flow.emitters[i];
 		e->age += dt;
 		if (e->kind == R_FLOW_TRAIL) {
-			if (!e->seen)
+			if (!e->seen) {
+				// its light fades with what is left of the glow, and the
+				// blast at the end of a BFG ball's flight may take it over
+				flow_light_t *l = flow_trail_light(e);
+				if (l)
+					l->follow = false;
 				continue;
+			}
 			e->seen = false;
 		}
 		else if (e->age >= flow_emitter_life(e)) {
@@ -1784,9 +1876,19 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 		for (int i = 0; i < flow.num_emitters; i++) {
 			flow_emitter_t *e = &flow.emitters[i];
 			if (e->kind == R_FLOW_TRAIL && e->key == emit->key && e->layer == (int)emit->style) {
+				vec3_t moved;
+				VectorSubtract(emit->origin, e->origin, moved);
+				if (VectorLength(moved) > 0.5f)
+					VectorNormalize2(moved, e->heading);
 				VectorCopy(emit->origin, e->origin);
 				e->scale = emit->scale;
 				e->seen = true;
+				flow_light_t *l = flow_trail_light(e);
+				if (l) {
+					VectorCopy(e->origin, l->seed);
+					l->age = 0.f;
+					result |= R_FLOW_LIT;
+				}
 				flow.idle = false;
 				return result;
 			}
@@ -1795,6 +1897,19 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 			flow_emitter_t *e = flow_new_emitter(R_FLOW_TRAIL, emit->style, emit->origin, emit->scale);
 			e->key = emit->key;
 			e->seen = true;
+			// A light that keeps to its source: the glow behind it, gathered
+			// from as far back as the trail glows. Only plasma has a trail's
+			// light; flow_take_light knows no other.
+			e->light = emit->style == R_FLOW_PLASMA ? flow_take_light(R_FLOW_PLASMA, emit->origin, emit->scale) : -1;
+			if (e->light >= 0) {
+				flow_light_t *l = &flow.lights[e->light];
+				const float length = cvar_pt_flow_trail_length->value > 0.f ? cvar_pt_flow_trail_length->value : 200.f;
+				e->light_generation = l->generation;
+				l->follow = true;
+				l->strength = cvar_pt_flow_bfg_trail_light->value;
+				l->gather = (length + 32.f) * emit->scale;
+				result |= R_FLOW_LIT;
+			}
 		}
 		break;
 
@@ -1875,6 +1990,12 @@ static void flow_write_descriptors(int set, VkImageView density_view, VkImageLay
 		.offset = set * flow.occupancy_stride,
 		.range = flow.occupancy_stride,
 	};
+	// wraps, like the probe grid
+	VkDescriptorImageInfo ambient_info = {
+		.sampler = qvk.tex_sampler,
+		.imageView = flow.env_view ? flow.env_view : flow.dummy_view,
+		.imageLayout = flow.env_view ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
 
 	VkWriteDescriptorSet writes[] = {
 		{
@@ -1916,6 +2037,14 @@ static void flow_write_descriptors(int set, VkImageView density_view, VkImageLay
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.pBufferInfo = &occupancy_info,
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = desc_set,
+			.dstBinding = BINDING_OFFSET_FLOW_AMBIENT,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.pImageInfo = &ambient_info,
 		},
 	};
 
@@ -2049,6 +2178,280 @@ static void flow_destroy_dummies(void)
 	flow.dummy_memory = VK_NULL_HANDLE;
 }
 
+#if USE_FLOW
+// One of the probe grid's images, cleared, in the general layout for good.
+static VkResult flow_env_create_image(VkFormat format, VkImage *image, VkDeviceMemory *memory, VkImageView *view)
+{
+	VkImageCreateInfo img_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_3D,
+		.format = format,
+		.extent = { FLOW_ENV_DIM_X, FLOW_ENV_DIM_Y, FLOW_ENV_DIM_Z },
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	_VK(vkCreateImage(qvk.device, &img_info, NULL, image));
+	ATTACH_LABEL_VARIABLE(*image, IMAGE);
+
+	VkMemoryRequirements mem_req;
+	vkGetImageMemoryRequirements(qvk.device, *image, &mem_req);
+
+	VkMemoryAllocateInfo mem_alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = mem_req.size,
+		.memoryTypeIndex = get_memory_type(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+	};
+	_VK(vkAllocateMemory(qvk.device, &mem_alloc_info, NULL, memory));
+	_VK(vkBindImageMemory(qvk.device, *image, *memory, 0));
+
+	const VkImageSubresourceRange subresource_range = {
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 1,
+	};
+
+	VkImageViewCreateInfo view_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = *image,
+		.viewType = VK_IMAGE_VIEW_TYPE_3D,
+		.format = format,
+		.subresourceRange = subresource_range,
+	};
+	_VK(vkCreateImageView(qvk.device, &view_info, NULL, view));
+	ATTACH_LABEL_VARIABLE(*view, IMAGE_VIEW);
+
+	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = *image,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = 0,
+		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL
+	);
+
+	VkClearColorValue clear = { .uint32 = { 0, 0, 0, 0 } };
+	vkCmdClearColorImage(cmd_buf, *image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &subresource_range);
+
+	IMAGE_BARRIER(cmd_buf,
+		.image = *image,
+		.subresourceRange = subresource_range,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL
+	);
+
+	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
+	vkpt_wait_idle(qvk.queue_graphics, &qvk.cmd_buffers_graphics);
+
+	return VK_SUCCESS;
+}
+
+static bool flow_env_format_ok(VkFormat format, VkFormatFeatureFlags features)
+{
+	VkFormatProperties props;
+	vkGetPhysicalDeviceFormatProperties(qvk.physical_device, format, &props);
+	return (props.optimalTilingFeatures & features) == features;
+}
+
+// The probe grid and its pass's set and layout; the pipeline comes with the
+// others. Ray query only: the pass traces from a compute shader.
+static void flow_env_create(void)
+{
+	if (!qvk.use_ray_query)
+		return;
+
+	if (!flow_env_format_ok(VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ||
+		!flow_env_format_ok(VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+		Com_WPrintf("NVIDIA Flow: no filtered rgba32f storage images, so the smoke takes no light from the world\n");
+		return;
+	}
+
+	if (flow_env_create_image(VK_FORMAT_R32G32B32A32_SFLOAT, &flow.env_image, &flow.env_memory, &flow.env_view) != VK_SUCCESS ||
+		flow_env_create_image(VK_FORMAT_R32G32B32A32_UINT, &flow.env_key_image, &flow.env_key_memory, &flow.env_key_view) != VK_SUCCESS)
+		return;
+
+	VkDescriptorSetLayoutBinding bindings[3] = {
+		{ .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+		{ .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+		{ .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+	};
+	VkDescriptorSetLayoutCreateInfo layout_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = LENGTH(bindings),
+		.pBindings = bindings,
+	};
+	_VK(vkCreateDescriptorSetLayout(qvk.device, &layout_info, NULL, &flow.env_set_layout));
+	ATTACH_LABEL_VARIABLE(flow.env_set_layout, DESCRIPTOR_SET_LAYOUT);
+
+	const VkDescriptorPoolSize pool_sizes[] = {
+		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_FRAMES_IN_FLIGHT },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * MAX_FRAMES_IN_FLIGHT },
+	};
+	VkDescriptorPoolCreateInfo pool_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.maxSets = MAX_FRAMES_IN_FLIGHT,
+		.poolSizeCount = LENGTH(pool_sizes),
+		.pPoolSizes = pool_sizes,
+	};
+	_VK(vkCreateDescriptorPool(qvk.device, &pool_info, NULL, &flow.env_pool));
+	ATTACH_LABEL_VARIABLE(flow.env_pool, DESCRIPTOR_POOL);
+
+	VkDescriptorSetLayout set_layouts[MAX_FRAMES_IN_FLIGHT];
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		set_layouts[i] = flow.env_set_layout;
+	VkDescriptorSetAllocateInfo alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = flow.env_pool,
+		.descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+		.pSetLayouts = set_layouts,
+	};
+	_VK(vkAllocateDescriptorSets(qvk.device, &alloc_info, flow.env_sets));
+
+	// The images for good; the TLAS every frame, see vkpt_flow_ambient.
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		VkDescriptorImageInfo ambient_info = { .imageView = flow.env_view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+		VkDescriptorImageInfo key_info = { .imageView = flow.env_key_view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+		VkWriteDescriptorSet writes[] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = flow.env_sets[i],
+				.dstBinding = 1,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.pImageInfo = &ambient_info,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = flow.env_sets[i],
+				.dstBinding = 2,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.pImageInfo = &key_info,
+			},
+		};
+		vkUpdateDescriptorSets(qvk.device, LENGTH(writes), writes, 0, NULL);
+	}
+
+	VkDescriptorSetLayout desc_set_layouts[] = {
+		flow.env_set_layout, qvk.desc_set_layout_vertex_buffer, qvk.desc_set_layout_ubo, qvk.desc_set_layout_textures,
+	};
+	CREATE_PIPELINE_LAYOUT(qvk.device, &flow.env_pipeline_layout,
+		.setLayoutCount = LENGTH(desc_set_layouts),
+		.pSetLayouts = desc_set_layouts,
+	);
+	ATTACH_LABEL_VARIABLE(flow.env_pipeline_layout, PIPELINE_LAYOUT);
+}
+
+static void flow_env_destroy(void)
+{
+	if (flow.env_pipeline_layout)
+		vkDestroyPipelineLayout(qvk.device, flow.env_pipeline_layout, NULL);
+	if (flow.env_pool)
+		vkDestroyDescriptorPool(qvk.device, flow.env_pool, NULL);
+	if (flow.env_set_layout)
+		vkDestroyDescriptorSetLayout(qvk.device, flow.env_set_layout, NULL);
+	if (flow.env_view)
+		vkDestroyImageView(qvk.device, flow.env_view, NULL);
+	if (flow.env_image)
+		vkDestroyImage(qvk.device, flow.env_image, NULL);
+	if (flow.env_memory)
+		vkFreeMemory(qvk.device, flow.env_memory, NULL);
+	if (flow.env_key_view)
+		vkDestroyImageView(qvk.device, flow.env_key_view, NULL);
+	if (flow.env_key_image)
+		vkDestroyImage(qvk.device, flow.env_key_image, NULL);
+	if (flow.env_key_memory)
+		vkFreeMemory(qvk.device, flow.env_key_memory, NULL);
+	flow.env_pipeline_layout = VK_NULL_HANDLE;
+	flow.env_pool = VK_NULL_HANDLE;
+	flow.env_set_layout = VK_NULL_HANDLE;
+	flow.env_view = VK_NULL_HANDLE;
+	flow.env_image = VK_NULL_HANDLE;
+	flow.env_memory = VK_NULL_HANDLE;
+	flow.env_key_view = VK_NULL_HANDLE;
+	flow.env_key_image = VK_NULL_HANDLE;
+	flow.env_key_memory = VK_NULL_HANDLE;
+	memset(flow.env_sets, 0, sizeof(flow.env_sets));
+}
+
+/*
+Where this frame's probes go (pt_flow_env), into params: a grid fixed in the
+world, pt_flow_env_spacing apart, over the box round the gas and a probe past
+it each way, so that every point in the box has its eight. Twice, four or
+eight times as far apart when the box needs more probes than the texture
+holds each way or than pt_flow_env_max_probes; past that the smoke keeps its
+flat colour. The level is in a probe's key, so a new spacing starts every
+history over. The lights are the BSP cluster's at the middle of the box, or
+where the gas began when that is in a wall.
+*/
+static void flow_env_params(FlowParams *params)
+{
+	const bsp_t *bsp = flow.env_bsp;
+	const int first_light = flow.env_first_light;
+	const int num_lights = flow.env_num_lights;
+	flow.env_bsp = NULL;
+	flow.env_num_lights = 0;
+
+	if (!flow.env_pipeline || !cvar_pt_flow_env->integer || !params->block_dim_bits[3])
+		return;
+
+	static const int dim[3] = { FLOW_ENV_DIM_X, FLOW_ENV_DIM_Y, FLOW_ENV_DIM_Z };
+	const int max_probes = Cvar_ClampInteger(cvar_pt_flow_env_max_probes, 64, FLOW_ENV_DIM_X * FLOW_ENV_DIM_Y * FLOW_ENV_DIM_Z);
+	float spacing = max(cvar_pt_flow_env_spacing->value, 8.f);
+	int first[3], count[3];
+	int level = 0;
+	for (;; level++, spacing *= 2.f) {
+		bool fits = true;
+		int total = 1;
+		for (int k = 0; k < 3; k++) {
+			first[k] = (int)floorf(params->world_min[k] / spacing);
+			count[k] = (int)floorf(params->world_max[k] / spacing) + 2 - first[k];
+			fits = fits && count[k] >= 1 && count[k] <= dim[k];
+			total *= fits ? count[k] : 1;
+		}
+		if (fits && total <= max_probes)
+			break;
+		if (level == 3)
+			return;
+	}
+
+	int cluster = -1;
+	if (bsp && bsp->nodes) {
+		vec3_t middle;
+		VectorAdd(params->world_min, params->world_max, middle);
+		VectorScale(middle, 0.5f, middle);
+		cluster = BSP_PointLeaf(bsp->nodes, middle)->cluster;
+		for (int i = 0; cluster < 0 && i < flow.num_emitters; i++)
+			cluster = BSP_PointLeaf(bsp->nodes, flow.emitters[i].origin)->cluster;
+	}
+
+	for (int k = 0; k < 3; k++) {
+		params->env_first[k] = first[k];
+		params->env_count[k] = count[k];
+		flow.env_groups[k] = (uint32_t)(count[k] + 3) / 4;
+	}
+	params->env_first[3] = cluster;
+	params->env_count[3] = (int)(uint32_t)qvk.frame_counter;
+	params->env_params[0] = spacing;
+	params->env_params[1] = max(cvar_pt_flow_env_history->value, 1.f);
+	params->env_params[2] = max(cvar_pt_flow_env_light->value, 0.f);
+	params->env_params[3] = max(cvar_pt_flow_env_clamp->value, 0.f);
+	params->env_lights[0] = first_light;
+	params->env_lights[1] = num_lights;
+	params->env_lights[2] = level;
+}
+#endif
+
 /*
 ==============================================================================
 
@@ -2156,7 +2559,12 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_bfg_jet_length = Cvar_Get("pt_flow_bfg_jet_length", "200", 0);
 	cvar_pt_flow_bfg_blast_size = Cvar_Get("pt_flow_bfg_blast_size", "1", 0);
 	cvar_pt_flow_bfg_blast_expansion = Cvar_Get("pt_flow_bfg_blast_expansion", "60", 0);
-	cvar_pt_flow_bfg_blast_light = Cvar_Get("pt_flow_bfg_blast_light", "2.5", 0);
+	cvar_pt_flow_bfg_blast_light = Cvar_Get("pt_flow_bfg_blast_light", "3.75", 0);
+	// The light of the glow behind the BFG ball in flight (pt_flow_lighting),
+	// on top of the ball's own classic light. The glow of a trail is thin - a
+	// hundredth of a rocket's fireball - so it takes this much to come out at
+	// about the classic ball light's brightness again.
+	cvar_pt_flow_bfg_trail_light = Cvar_Get("pt_flow_bfg_trail_light", "12", 0);
 
 	// A trail (the BFG ball in flight) and a beam (its lasers): radius - a
 	// beam's half thickness - push and smoke at scale 1; a beam emits for
@@ -2164,6 +2572,13 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_trail_radius = Cvar_Get("pt_flow_trail_radius", "10", 0);
 	cvar_pt_flow_trail_expansion = Cvar_Get("pt_flow_trail_expansion", "60", 0);
 	cvar_pt_flow_trail_smoke = Cvar_Get("pt_flow_trail_smoke", "0.5", 0);
+	// How far behind its source a trail stops glowing, at scale 1: there a
+	// sphere takes the heat out of the gas (and only the heat - the smoke
+	// stays). On its own the plasma cools for some 0.6 s, and a BFG ball at
+	// 400 units/s drew a glowing tube 220 units long - from the player's eye
+	// out to the ball, the whole view down it, at the moment of firing. 96
+	// glows for some 90 units, measured headless. 0 = no limit.
+	cvar_pt_flow_trail_length = Cvar_Get("pt_flow_trail_length", "96", 0);
 	cvar_pt_flow_beam_radius = Cvar_Get("pt_flow_beam_radius", "4", 0);
 	cvar_pt_flow_beam_expansion = Cvar_Get("pt_flow_beam_expansion", "100", 0);
 	cvar_pt_flow_beam_burst = Cvar_Get("pt_flow_beam_burst", "0.1", 0);
@@ -2180,7 +2595,10 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_bubble_density = Cvar_Get("pt_flow_bubble_density", "0.05", 0);
 
 	// The light (pt_flow_lighting): fire at pt_flow_light times FLOW_LIGHT_UNIT,
-	// plasma at pt_flow_bfg_light (the BFG's blast at pt_flow_bfg_blast_light),
+	// plasma at pt_flow_bfg_light (the BFG's blast at pt_flow_bfg_blast_light,
+	// which peaks at some three times the classic BFG explosion light, as a
+	// rocket's fireball does the classic explosion's; the ball in flight at
+	// pt_flow_bfg_trail_light),
 	// a sphere pt_flow_light_size times as wide
 	// as the glow is spread, up to pt_flow_light_radius; the smoke's shadow
 	// toward it no darker than pt_flow_shadow_min.
@@ -2195,6 +2613,23 @@ VkResult vkpt_flow_initialize(void)
 	// in front of it where the gas is held still.
 	cvar_pt_flow_collision_depth = Cvar_Get("pt_flow_collision_depth", "12", 0);
 	cvar_pt_flow_collision_margin = Cvar_Get("pt_flow_collision_margin", "3", 0);
+
+	// The world's light on the smoke (pt_flow_env, ray query only): the sun,
+	// the sky and the map's lights, from probes pt_flow_env_spacing apart,
+	// pt_flow_env_light times as bright as they are (1 is right for smoke
+	// that scatters pt_flow_smoke_scatter of it), with pt_flow_env_flat of
+	// the flat smoke colour kept for the light the walls bounce, which the
+	// probes do not see. A probe averages over pt_flow_env_history frames,
+	// and one light sample brings no more than pt_flow_env_clamp times the
+	// adapted luminance. Past pt_flow_env_max_probes the probes spread out.
+	cvar_pt_flow_env = Cvar_Get("pt_flow_env", "1", CVAR_ARCHIVE);
+	cvar_pt_flow_env_light = Cvar_Get("pt_flow_env_light", "1", 0);
+	cvar_pt_flow_env_flat = Cvar_Get("pt_flow_env_flat", "0.01", 0);   // Matt's, 2026-10-25
+	cvar_pt_flow_env_spacing = Cvar_Get("pt_flow_env_spacing", "32", 0);
+	cvar_pt_flow_env_history = Cvar_Get("pt_flow_env_history", "16", 0);
+	cvar_pt_flow_env_clamp = Cvar_Get("pt_flow_env_clamp", "64", 0);
+	cvar_pt_flow_env_max_probes = Cvar_Get("pt_flow_env_max_probes", "32768", 0);
+	Cvar_Get("flow_env_available", "0", CVAR_ROM);
 
 	Cvar_FullSet("flow_available", "0", CVAR_ROM, FROM_CODE);
 
@@ -2222,6 +2657,8 @@ VkResult vkpt_flow_initialize(void)
 #if USE_FLOW
 	flow_free_lights();
 	flow_create_simulation();
+	if (flow.grid)
+		flow_env_create();
 #endif
 
 	return VK_SUCCESS;
@@ -2230,6 +2667,7 @@ VkResult vkpt_flow_initialize(void)
 VkResult vkpt_flow_destroy(void)
 {
 #if USE_FLOW
+	flow_env_destroy();
 	flow_destroy_simulation();
 	Z_Free(flow.world_tris);
 	Z_Free(flow.mesh_positions);
@@ -2267,6 +2705,15 @@ VkResult vkpt_flow_create_pipelines(void)
 	_VK(vkCreateComputePipelines(qvk.device, 0, 1, &pipeline_info, 0, &flow.occupancy_pipeline));
 	ATTACH_LABEL_VARIABLE(flow.occupancy_pipeline, PIPELINE);
 
+	// The world's light on the smoke, where flow_env_create made its layout.
+	if (flow.env_pipeline_layout) {
+		pipeline_info.stage = (VkPipelineShaderStageCreateInfo)SHADER_STAGE(QVK_MOD_FLOW_AMBIENT_COMP, VK_SHADER_STAGE_COMPUTE_BIT);
+		pipeline_info.layout = flow.env_pipeline_layout;
+		_VK(vkCreateComputePipelines(qvk.device, 0, 1, &pipeline_info, 0, &flow.env_pipeline));
+		ATTACH_LABEL_VARIABLE(flow.env_pipeline, PIPELINE);
+	}
+	Cvar_FullSet("flow_env_available", flow.env_pipeline ? "1" : "0", CVAR_ROM, FROM_CODE);
+
 	return VK_SUCCESS;
 }
 
@@ -2278,6 +2725,10 @@ VkResult vkpt_flow_destroy_pipelines(void)
 	if (flow.occupancy_pipeline)
 		vkDestroyPipeline(qvk.device, flow.occupancy_pipeline, NULL);
 	flow.occupancy_pipeline = VK_NULL_HANDLE;
+	if (flow.env_pipeline)
+		vkDestroyPipeline(qvk.device, flow.env_pipeline, NULL);
+	flow.env_pipeline = VK_NULL_HANDLE;
+	Cvar_FullSet("flow_env_available", "0", CVAR_ROM, FROM_CODE);
 
 	return VK_SUCCESS;
 }
@@ -2348,6 +2799,90 @@ void vkpt_flow_set_world(const bsp_mesh_t *wm)
 	flow.num_world_tris = n;
 #else
 	(void)wm;
+#endif
+}
+
+void vkpt_flow_set_env(const bsp_t *bsp, int first_flow_light, int num_flow_lights)
+{
+	flow.env_bsp = bsp;
+	flow.env_first_light = first_flow_light;
+	flow.env_num_lights = max(num_flow_lights, 0);
+}
+
+/*
+The probes of the world's light on the smoke (flow_ambient.comp), for this
+frame's march. Recorded right after the TLAS is built, into the same command
+buffer, and before the primary rays. The pass's set takes this frame's TLAS
+here every frame: a handle is not an identity - a TLAS rebuilt after a map
+change may come back with the same one (see
+vkpt_god_rays_update_tlas_descriptor) - and the set is per frame in flight,
+so the frame fence has retired its last use.
+*/
+void vkpt_flow_ambient(VkCommandBuffer cmd_buf)
+{
+#if USE_FLOW
+	if (!flow.env_pipeline || flow.updated_frame != qvk.frame_counter + 1)
+		return;
+
+	const int set = qvk.frame_counter & 1;
+	FlowParams *params = (FlowParams *)(flow.params_mapped + set * flow.params_stride);
+	if (params->env_count[0] <= 0)
+		return;
+
+	VkAccelerationStructureKHR tlas = vkpt_pt_get_geometry_tlas(qvk.current_frame_index);
+	if (tlas == VK_NULL_HANDLE) {
+		// no probes this frame: the march must not read the old ones
+		params->env_count[0] = 0;
+		return;
+	}
+
+	VkDescriptorSet desc_set = flow.env_sets[qvk.current_frame_index];
+	VkWriteDescriptorSetAccelerationStructureKHR as_info = {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+		.accelerationStructureCount = 1,
+		.pAccelerationStructures = &tlas,
+	};
+	VkWriteDescriptorSet write = {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.pNext = &as_info,
+		.dstSet = desc_set,
+		.dstBinding = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+	};
+	vkUpdateDescriptorSets(qvk.device, 1, &write, 0, NULL);
+
+	// The TLAS build, the uniform buffer's copy, and the last frame's march
+	// over the probes, all before this writes them.
+	VkMemoryBarrier before = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT,
+	};
+	vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 1, &before, 0, NULL, 0, NULL);
+
+	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, flow.env_pipeline);
+	VkDescriptorSet desc_sets[] = {
+		desc_set,
+		qvk.desc_set_vertex_buffer,
+		qvk.desc_set_ubo,
+		qvk_get_current_desc_set_textures(),
+	};
+	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, flow.env_pipeline_layout, 0,
+		LENGTH(desc_sets), desc_sets, 0, NULL);
+	vkCmdDispatch(cmd_buf, flow.env_groups[0], flow.env_groups[1], flow.env_groups[2]);
+
+	// The probes for the march, in whichever stage it runs.
+	VkMemoryBarrier after = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+	};
+	vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		0, 1, &after, 0, NULL, 0, NULL);
+#else
+	(void)cmd_buf;
 #endif
 }
 
@@ -2475,6 +3010,14 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 			for (int layer = 0; layer < FLOW_LAYERS; layer++)
 				flow_layer_look(&params->layers[layer], layer, cell_size);
 			flow_lights_params(set, params);
+			flow_env_params(params);
+			// Lit by the world, the smoke keeps only so much of its flat
+			// colour: what stands in for the light bounced off the walls.
+			if (params->env_count[0] > 0) {
+				const float flat = Cvar_ClampValue(cvar_pt_flow_env_flat, 0.f, 1.f);
+				for (int layer = 0; layer < FLOW_LAYERS; layer++)
+					VectorScale(params->layers[layer].smoke, flat, params->layers[layer].smoke);
+			}
 			blocks = params->counts[0];
 		}
 		else {

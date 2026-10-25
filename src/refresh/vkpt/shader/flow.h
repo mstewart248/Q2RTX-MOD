@@ -36,6 +36,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    to the seed so that float sums keep their precision far from the origin. */
 #define FLOW_LIGHT_SUM_VEC4S 3
 
+/* The ambient light the smoke takes from the world (flow_ambient.comp): a
+   probe every so many world units, kept in a texture this many probes each
+   way that wraps round - probe (i, j, k) is at texel (i, j, k) mod the size -
+   so that a probe keeps its texel, and its history, while the box round the
+   gas moves. Powers of two. */
+#define FLOW_ENV_DIM_X 64
+#define FLOW_ENV_DIM_Y 64
+#define FLOW_ENV_DIM_Z 32
+
 /* How flow.glsl draws one layer. */
 BEGIN_SHADER_STRUCT(FlowLayerParams)
 {
@@ -73,6 +82,10 @@ BEGIN_SHADER_STRUCT(FlowParams)
 	vec4  light_colors[FLOW_MAX_LIGHTS];    // rgb: radiance x radius^2 / 4, absolute - what smoke at distance r scatters is albedo x this / r^2
 	vec4  seeds[FLOW_MAX_LIGHTS];           // xyz: where flow_lights.comp gathers a light slot's glow from; w: how far from there a block may be, 0 for a slot not in use
 	uvec4 seed_layers[FLOW_MAX_LIGHTS];     // x: the Flow layerAndLevel a slot's glow is of
+	ivec4 env_first;            // xyz: world index of the first probe flow_ambient.comp updates - probe i sits at i x env_params.x; w: the BSP cluster whose lights it samples, -1 for none
+	ivec4 env_count;            // xyz: how many probes it updates each way, 0 when the smoke takes no light from the world; w: the frame, for the probes' history
+	vec4  env_params;           // x: probe spacing in world units; y: the most frames a probe's history averages; z: how bright the world's light is on the smoke; w: the most mean radiance one light sample may bring, relative to the adapted luminance
+	ivec4 env_lights;           // x: the first of Flow's own lights in the light buffer, y: how many - the smoke has those from flow_lit, with Flow's shadow; z: the spacing's level, 0 for pt_flow_env_spacing and 1 for twice it...
 }
 END_SHADER_STRUCT(FlowParams)
 

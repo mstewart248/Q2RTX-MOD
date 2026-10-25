@@ -6252,7 +6252,12 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		// the glow two frames ago - see flow_lights_collect.
 		dlight_t flow_lights[FLOW_MAX_LIGHTS];
 		const int num_flow_lights = vkpt_flow_lights(flow_lights, FLOW_MAX_LIGHTS);
+		const int first_flow_light = num_model_lights;
 		add_dlights(flow_lights, num_flow_lights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
+		// The smoke's probes of the world's light leave these out - the smoke
+		// has them already. They are the last of the model lights, and stay so:
+		// partition_bmodel_lights moves only the BSP-bound ones, to the front.
+		vkpt_flow_set_env(bsp_world_model, vkpt_refdef.bsp_mesh_world.num_light_polys + first_flow_light, num_model_lights - first_flow_light);
 	}
 	else if (!render_world)
 	{
@@ -6757,6 +6762,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		vkpt_pt_update_descripter_set_bindings(qvk.current_frame_index);
 		if (god_rays_enabled)
 			vkpt_god_rays_update_tlas_descriptor();
+		// the world's light on NVIDIA Flow's smoke, for the march (pt_flow_env)
+		vkpt_flow_ambient(trace_cmd_buf);
 		END_PERF_MARKER(trace_cmd_buf, PROFILER_BVH_UPDATE);
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_SHADOW_MAP);

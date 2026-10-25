@@ -569,7 +569,8 @@ int CL_FlowBfgBall(int number, const vec3_t origin, bool flying)
         VectorCopy(origin, emit.origin);
         VectorCopy(origin, emit.end);
         const int flow = R_FlowEmit(&emit);
-        // a trail casts no light of its own, so the ball keeps its classic one
+        // the trail's light (pt_flow_bfg_trail_light) is the glow behind the
+        // ball, on top of the ball's own, so the ball keeps its classic one
         return flow ? ((flow & ~R_FLOW_LIT) | hide) : 0;
     }
 

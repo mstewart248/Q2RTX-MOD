@@ -1,0 +1,356 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/* ============================================================================
+   The world's light round NVIDIA Flow's smoke: the sun, the sky and the map's
+   own lights, on a grid of probes over the box round the gas (pt_flow_env).
+
+   One thread per probe. A probe is a point in the air, and what it keeps is
+   the mean radiance arriving at it from all directions - what smoke that
+   scatters evenly every way gives back out per unit of albedo. Each frame it
+   traces
+     - FLOW_ENV_SKY_RAYS rays in random directions: one that reaches the front
+       of a sky face brings the sky's radiance, and one that meets the back of
+       any face, or nothing at all, says the probe is in a wall or the void;
+     - one ray at the sun, when there is a sun, which must reach a sky face;
+     - FLOW_ENV_LIGHT_SAMPLES of the lights of the BSP cluster the gas is in,
+       each picked from FLOW_ENV_CANDIDATES by how bright it would be here
+       (RIS), and traced for its shadow;
+   and averages that into what the probe had - the history - over up to
+   env_params.y frames. Light bounced off the walls is not here; the smoke's
+   flat colour stands in for it (flow.c).
+
+   The texture wraps (flow.h), so a probe keeps its texel while the box moves.
+   The key image says which probe a texel last was and in which frame; the
+   history starts over when that is not this probe or not the frame before.
+
+   A probe in a wall or the void keeps nothing, with nothing for its weight:
+   flow.glsl filters the probes premultiplied by their weight, so the far side
+   of a wall never lights a room.
+
+   Not Flow's own lights (env_lights): the smoke has those from flow_lit, with
+   Flow's shadow through the smoke itself, which a ray here cannot see.
+   ============================================================================ */
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+#extension GL_EXT_ray_query               : enable
+
+#define FLOW_ENV_GROUP 4
+layout(local_size_x = FLOW_ENV_GROUP, local_size_y = FLOW_ENV_GROUP, local_size_z = FLOW_ENV_GROUP) in;
+
+#include "constants.h"
+#include "utils.glsl"
+
+#define FLOW_AMBIENT_DESC_SET_IDX 0
+// The TLAS on a set of this pass's own, with a COMPUTE stage flag - the path
+// tracer's declares ray tracing stages unless qvk.use_ray_query, see flow.c.
+layout(set = FLOW_AMBIENT_DESC_SET_IDX, binding = 0) uniform accelerationStructureEXT flow_tlas;
+layout(set = FLOW_AMBIENT_DESC_SET_IDX, binding = 1, rgba32f) uniform image3D img_flow_ambient;
+// x: the probe's key, y: 1 + the frame it was last updated, z: frames in its history
+layout(set = FLOW_AMBIENT_DESC_SET_IDX, binding = 2, rgba32ui) uniform uimage3D img_flow_ambient_key;
+
+#define GLOBAL_UBO_DESC_SET_IDX 2
+#include "global_ubo.h"
+
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#define VERTEX_READONLY 1
+#include "vertex_buffer.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 3
+#include "global_textures.h"
+
+#include "light_sampling.h"
+#include "flow_common.glsl"
+
+#define FLOW_ENV_SKY_RAYS 4
+#define FLOW_ENV_LIGHT_SAMPLES 2
+#define FLOW_ENV_CANDIDATES 8
+// A probe that sees the back of a face, or nothing, more often than this is
+// in a wall or the void.
+#define FLOW_ENV_VOID 0.25
+#define FLOW_ENV_FAR 65536.0
+
+uint flow_env_rng;
+
+// [0, 1), PCG.
+float flow_env_rand()
+{
+	flow_env_rng = flow_env_rng * 747796405u + 2891336453u;
+	uint w = ((flow_env_rng >> ((flow_env_rng >> 28u) + 4u)) ^ flow_env_rng) * 277803737u;
+	w = (w >> 22u) ^ w;
+	return float(w >> 8u) * (1.0 / 16777216.0);
+}
+
+// The nearest of `mask`'s faces along a ray, -1 for none, and whether the ray
+// met its front.
+float flow_env_trace(vec3 origin, vec3 direction, float t_max, uint mask, out bool front)
+{
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, flow_tlas, gl_RayFlagsOpaqueEXT, mask, origin, 0.0, direction, t_max);
+	while (rayQueryProceedEXT(rq)) {}
+
+	front = true;
+	if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+		return -1.0;
+	front = rayQueryGetIntersectionFrontFaceEXT(rq, true);
+	return rayQueryGetIntersectionTEXT(rq, true);
+}
+
+// Whether anything opaque is in the way over the first `distance` of a ray.
+bool flow_env_blocked(vec3 origin, vec3 direction, float distance)
+{
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, flow_tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+		AS_FLAG_OPAQUE, origin, 0.0, direction, distance);
+	rayQueryProceedEXT(rq);
+	return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// The sky's radiance that way, as the path tracer's env_map has it, less the
+// sun, which is a sample of its own.
+vec3 flow_env_sky(vec3 direction)
+{
+	direction = (global_ubo.environment_rotation_matrix * vec4(direction, 0)).xyz;
+
+	vec3 envmap = vec3(0);
+	if (global_ubo.environment_type == ENVIRONMENT_DYNAMIC)
+	{
+		envmap = textureLod(TEX_PHYSICAL_SKY, direction.xzy, 0).rgb;
+		envmap = min(envmap, vec3((1 - dot(direction, global_ubo.sun_direction_envmap)) * 200));
+	}
+	else if (global_ubo.environment_type == ENVIRONMENT_STATIC)
+	{
+		envmap = textureLod(TEX_ENVMAP, direction.xzy, 0).rgb;
+	}
+	return envmap * global_ubo.pt_env_scale;
+}
+
+// About how bright a light is at p, without its shadow: what picks the lights
+// a probe traces. Only its proportions matter. 0 for a light the probes leave
+// out - the sky's polygons (the sky rays have the sky), a light that makes no
+// fog, and Flow's own.
+float flow_env_light_weight(uint light_idx, vec3 p)
+{
+	const uint first_flow = uint(flow_params.env_lights.x);
+	if (light_idx - first_flow < uint(flow_params.env_lights.y))
+		return 0.0;
+
+	const LightPolygon light = get_light_polygon(light_idx);
+	if (light.color.r < 0.0 || !(light.volumetric_scale > 0.0))
+		return 0.0;
+
+	float solid_angle;
+	switch (uint(light.type))
+	{
+	case DYNLIGHT_POLYGON:
+		{
+			const vec3 c = (light.positions[0] + light.positions[1] + light.positions[2]) / 3.0;
+			const vec3 n = cross(light.positions[1] - light.positions[0], light.positions[2] - light.positions[0]);
+			const vec3 d = p - c;
+			const float dd = max(dot(d, d), 1.0);
+			// either side: only a little wasted on the back of a light
+			solid_angle = 0.5 * abs(dot(n, d)) * inversesqrt(dd) / dd;
+		}
+		break;
+	case DYNLIGHT_SPHERE:
+	case DYNLIGHT_SPOT:
+		{
+			const vec3 d = p - light.positions[0];
+			const float r = max(light.positions[1].x, 1.0);
+			solid_angle = M_PI * r * r / max(dot(d, d), r * r);
+		}
+		break;
+	default:
+		return 0.0;
+	}
+
+	return luminance(light.color) * light.light_style_scale * light.volumetric_scale * min(solid_angle, 2.0 * M_PI);
+}
+
+// The mean radiance light `light_idx` brings to p, through its shadow, for a
+// point drawn on it with weight W.
+vec3 flow_env_light(uint light_idx, vec3 p, float W)
+{
+	const LightPolygon light = get_light_polygon(light_idx);
+	const vec2 rnd = vec2(flow_env_rand(), flow_env_rand());
+
+	vec3 light_normal;
+	float pdfw = 0.0;
+	vec3 position_light;
+	switch (uint(light.type))
+	{
+	case DYNLIGHT_POLYGON:
+		position_light = sample_projected_triangle(p, light.positions, rnd, light_normal, pdfw);
+		break;
+	case DYNLIGHT_SPHERE:
+		position_light = sample_projected_sphere(p, light.positions, rnd, light_normal, pdfw);
+		break;
+	case DYNLIGHT_SPOT:
+		position_light = sample_projected_spotlight(p, light.positions, light.spot_emission_profile, rnd, light_normal, pdfw);
+		break;
+	default:
+		return vec3(0);
+	}
+	if (!(pdfw > 0.0))
+		return vec3(0);
+
+	const vec3 d = position_light - p;
+	const float dist = length(d);
+	if (dist < 1e-3)
+		return vec3(0);
+	const vec3 L = d / dist;
+
+	// the path tracer's emission profile (light_lists.h)
+	const float spotlight = sqrt(max(0.0, -dot(light_normal, L)));
+	if (spotlight <= 0.0)
+		return vec3(0);
+
+	if (flow_env_blocked(p, L, max(dist - 1.0, 0.01)))
+		return vec3(0);
+
+	// an even phase function: a 4 pi'th of it goes each way
+	return light.color * (spotlight * light.light_style_scale * light.volumetric_scale * W / (pdfw * 4.0 * M_PI));
+}
+
+void main()
+{
+	const ivec3 local = ivec3(gl_GlobalInvocationID);
+	if (any(greaterThanEqual(local, flow_params.env_count.xyz)))
+		return;
+
+	const ivec3 probe = flow_params.env_first.xyz + local;
+	const vec3 p = vec3(probe) * flow_params.env_params.x;
+	const ivec3 dim = ivec3(FLOW_ENV_DIM_X, FLOW_ENV_DIM_Y, FLOW_ENV_DIM_Z);
+	// two's complement: the wrap of a negative index too
+	const ivec3 texel = probe & (dim - 1);
+
+	const uint frame = uint(flow_params.env_count.w);
+	flow_env_rng = uint(texel.x) * 73856093u ^ uint(texel.y) * 19349663u ^ uint(texel.z) * 83492791u ^ frame * 2654435761u;
+	flow_env_rand();
+
+	vec3 radiance = vec3(0);
+
+	// The sky, and whether this is open air.
+	int backs = 0;
+	for (int k = 0; k < FLOW_ENV_SKY_RAYS; k++)
+	{
+		const vec3 dir = sample_sphere(vec2(flow_env_rand(), flow_env_rand()));
+
+		bool front_opaque, front_sky;
+		const float t_opaque = flow_env_trace(p, dir, FLOW_ENV_FAR, AS_FLAG_OPAQUE, front_opaque);
+		const float t_sky = flow_env_trace(p, dir, t_opaque >= 0.0 ? t_opaque : FLOW_ENV_FAR, AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY, front_sky);
+
+		if (t_sky >= 0.0)
+		{
+			if (front_sky)
+				radiance += flow_env_sky(dir) * (1.0 / float(FLOW_ENV_SKY_RAYS));
+			else
+				backs++;
+		}
+		else if (t_opaque < 0.0 || !front_opaque)
+		{
+			backs++;
+		}
+	}
+	const float open = float(backs) > FLOW_ENV_VOID * float(FLOW_ENV_SKY_RAYS) ? 0.0 : 1.0;
+
+	if (open > 0.0)
+	{
+		// The sun: through the sky, with nothing in the way.
+		if (global_ubo.sun_visible != 0)
+		{
+			const vec2 disk = sample_disk(vec2(flow_env_rand(), flow_env_rand())) * global_ubo.sun_tan_half_angle;
+			const vec3 dir = normalize(global_ubo.sun_direction + global_ubo.sun_tangent * disk.x + global_ubo.sun_bitangent * disk.y);
+			bool front_sky;
+			const float t_sky = flow_env_trace(p, dir, FLOW_ENV_FAR, AS_FLAG_SKY | AS_FLAG_CUSTOM_SKY, front_sky);
+			if (t_sky >= 0.0 && front_sky && !flow_env_blocked(p, dir, t_sky))
+				radiance += sun_color_ubo.sun_color * (1.0 / (4.0 * M_PI));
+		}
+
+		// The cluster's lights.
+		const int cluster = flow_params.env_first.w;
+		if (cluster >= 0)
+		{
+			const uint list_start = light_buffer.light_list_offsets[cluster];
+			const uint list_count = light_buffer.light_list_offsets[cluster + 1] - list_start;
+			const float clamp_luminance = flow_params.env_params.w * global_ubo.prev_adapted_luminance;
+
+			for (int s = 0; s < FLOW_ENV_LIGHT_SAMPLES && list_count > 0u; s++)
+			{
+				// RIS: the candidates drawn evenly, one kept by its weight.
+				uint chosen = ~0u;
+				float chosen_weight = 0.0;
+				float weight_sum = 0.0;
+				for (int c = 0; c < FLOW_ENV_CANDIDATES; c++)
+				{
+					const uint i = min(uint(flow_env_rand() * float(list_count)), list_count - 1u);
+					const uint light_idx = light_buffer.light_list_lights[list_start + i];
+					const float w = flow_env_light_weight(light_idx, p);
+					if (!(w > 0.0))
+						continue;
+					weight_sum += w;
+					if (flow_env_rand() * weight_sum < w)
+					{
+						chosen = light_idx;
+						chosen_weight = w;
+					}
+				}
+				if (chosen == ~0u)
+					continue;
+
+				// sum of weight / source pdf (1 / list_count), over the candidates
+				const float W = weight_sum * float(list_count) / (float(FLOW_ENV_CANDIDATES) * chosen_weight);
+				vec3 l = flow_env_light(chosen, p, W);
+
+				// One unlucky sample right by a small light, shared by all the
+				// smoke round the probe: kept, but no brighter than this.
+				const float lum = luminance(l);
+				if (lum > clamp_luminance && clamp_luminance > 0.0)
+					l *= clamp_luminance / lum;
+
+				radiance += l * (1.0 / float(FLOW_ENV_LIGHT_SAMPLES));
+			}
+		}
+	}
+
+	if (any(isnan(radiance)) || any(isinf(radiance)))
+		radiance = vec3(0);
+
+	// Into the history: the same probe, updated the frame before, or none.
+	const ivec3 wraps = probe >> findMSB(dim);
+	const uint key = (uint(wraps.x) & 1023u)
+	               | ((uint(wraps.y) & 1023u) << 10)
+	               | ((uint(wraps.z) & 1023u) << 20)
+	               | ((uint(flow_params.env_lights.z) & 3u) << 30);
+	const uvec4 old_key = imageLoad(img_flow_ambient_key, texel);
+	const bool history = old_key.x == key && old_key.y != 0u && old_key.y == frame;
+	const uint frames = history ? min(old_key.z + 1u, uint(max(flow_params.env_params.y, 1.0))) : 1u;
+
+	const vec4 current = vec4(radiance * open, open);
+	vec4 result = current;
+	if (history)
+	{
+		const vec4 previous = imageLoad(img_flow_ambient, texel);
+		result = mix(previous, current, 1.0 / float(frames));
+	}
+
+	imageStore(img_flow_ambient, texel, result);
+	imageStore(img_flow_ambient_key, texel, uvec4(key, frame + 1u, frames, 0u));
+}

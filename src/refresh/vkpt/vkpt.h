@@ -119,6 +119,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_SOUND_DIFFRACT_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_FLOW_LIGHTS_COMP)                       \
 	SHADER_MODULE_DO(QVK_MOD_FLOW_OCCUPANCY_COMP)                    \
+	SHADER_MODULE_DO(QVK_MOD_FLOW_AMBIENT_COMP)                      \
 
 #define LIST_RT_RGEN_SHADER_MODULES \
 	SHADER_MODULE_DO(QVK_MOD_PRIMARY_RAYS_RGEN)                      \
@@ -1065,6 +1066,11 @@ VkResult vkpt_flow_destroy_pipelines(void);
 void vkpt_flow_set_world(const struct bsp_mesh_s *wm);
 // the lights the fire and plasma cast (pt_flow_lighting); how many
 int vkpt_flow_lights(dlight_t *lights, int max_lights);
+// the world's light on the smoke (pt_flow_env): this frame's BSP and which of
+// the light buffer's lights are Flow's own, before vkpt_flow_update; then the
+// probes, recorded right after the TLAS is built
+void vkpt_flow_set_env(const bsp_t *bsp, int first_flow_light, int num_flow_lights);
+void vkpt_flow_ambient(VkCommandBuffer cmd_buf);
 
 VkResult vkpt_initialize_god_rays(void);
 VkResult vkpt_destroy_god_rays(void);

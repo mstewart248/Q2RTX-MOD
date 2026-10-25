@@ -595,6 +595,11 @@ begin effects
         "simulated fire and smoke" cl_flow_explosions off 0 "with classic" 1 instead 2
     toggle --status "the simulated fire and plasma light the room and the smoke, in place of the classic explosion light (pt_flow_lighting)" \
         "simulated fire casts light" pt_flow_lighting
+    // Only with ray query (vkpt/flow.c sets flow_env_available).
+    ifeq flow_env_available 1
+    toggle --status "the smoke takes its light from the sun, the sky and the lamps around it instead of one flat colour, traced from a grid of probes round the smoke (pt_flow_env)" \
+        "smoke lit by the world" pt_flow_env
+    endif
     toggle --status "walls, floors and ceilings hold the simulated smoke in instead of letting it drift through - costs about 0.4 ms while there is smoke (pt_flow_collision)" \
         "smoke collides with the world" pt_flow_collision
     endif

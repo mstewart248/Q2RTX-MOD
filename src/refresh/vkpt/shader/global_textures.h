@@ -262,6 +262,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define BINDING_OFFSET_FLOW_PARAMS (BINDING_OFFSET_FLOW_TABLE + 1)
 #define BINDING_OFFSET_FLOW_LIGHTS (BINDING_OFFSET_FLOW_PARAMS + 1)
 #define BINDING_OFFSET_FLOW_OCCUPANCY (BINDING_OFFSET_FLOW_LIGHTS + 1)
+// The world's light on the smoke, see flow_ambient.comp.
+#define BINDING_OFFSET_FLOW_AMBIENT (BINDING_OFFSET_FLOW_OCCUPANCY + 1)
 
 
 #ifndef VKPT_SHADER

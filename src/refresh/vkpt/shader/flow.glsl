@@ -28,7 +28,9 @@ ds with smoke s takes 1 - exp(-s * density * ds) of what is behind it - and
 puts back that much of its own colour: a flat, unlit colour, plus what it
 scatters of the light the fire and plasma cast (flow_lights.comp, flow.c),
 darkened by Flow's shadow toward the brightest of them where flow.c runs
-that. Heat glows through a colour map at so much per unit of length,
+that, and of the world's own light round it (flow_ambient.comp), where that
+is on - then the flat colour is only what stands in for light bounced off
+the walls, which the probes do not see. Heat glows through a colour map at so much per unit of length,
 whether or not there is smoke in front of it to hide it, so thin smoke does
 not mean dim fire. Colours are relative to the adapted luminance, the way
 the particles and explosion sprites are, so they read the same under any
@@ -48,6 +50,26 @@ path_tracer_rgen.h first.
 // Which bricks of each block can show anything, see flow_occupancy.comp.
 layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_OCCUPANCY, std430)
 readonly buffer FLOW_OCCUPANCY_BUFFER { uvec4 flow_occupancy[]; };
+
+// The world's light round the gas, see flow_ambient.comp: rgb mean radiance
+// times a, a the share of the probe that is in the open air.
+layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_AMBIENT)
+uniform sampler3D TEX_FLOW_AMBIENT;
+
+// What smoke at `position` scatters per unit of albedo of the world's light
+// - the sun, the sky, the map's lights - relative to the adapted luminance.
+// The probes are premultiplied by how much each is in the open, so one in a
+// wall or the void gives the filter nothing rather than darkness, and a room
+// never takes light from the far side of its wall. The texture wraps, and so
+// does its sampler.
+vec3 flow_ambient(vec3 position)
+{
+	const vec3 probe = position / flow_params.env_params.x + 0.5;
+	const vec4 a = textureLod(TEX_FLOW_AMBIENT, probe / vec3(FLOW_ENV_DIM_X, FLOW_ENV_DIM_Y, FLOW_ENV_DIM_Z), 0);
+	if (!(a.w > 1e-3))
+		return vec3(0);
+	return a.rgb / a.w * (flow_params.env_params.z / max(global_ubo.prev_adapted_luminance, 1e-9));
+}
 
 // What smoke at `position` scatters per unit of extinction of the lights the
 // fire casts, relative to the adapted luminance; `shadow` is Flow's shadow
@@ -187,6 +209,8 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 				vec3 colour = flow_params.layers[l].smoke.rgb;
 				if (flow_params.counts.y > 0u)
 					colour += flow_params.layers[l].albedo.rgb * flow_lit(position, flow_params.layers[l].info.w, clamp(value.z, 0.0, 1.0));
+				if (flow_params.env_count.x > 0)
+					colour += flow_params.layers[l].albedo.rgb * flow_ambient(position);
 				source += colour * sigma;
 			}
 			source += flow_colormap(flow_params.layers[l].info.z, value.x) * flow_params.layers[l].emission.x * flow_params.layers[l].emission.yzw;
