@@ -6762,9 +6762,12 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		vkpt_pt_update_descripter_set_bindings(qvk.current_frame_index);
 		if (god_rays_enabled)
 			vkpt_god_rays_update_tlas_descriptor();
-		// the world's light on NVIDIA Flow's smoke, for the march (pt_flow_env)
-		vkpt_flow_ambient(trace_cmd_buf);
 		END_PERF_MARKER(trace_cmd_buf, PROFILER_BVH_UPDATE);
+
+		// the world's light on NVIDIA Flow's smoke, for the march (pt_flow_env)
+		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_FLOW_SMOKE_LIGHTING);
+		vkpt_flow_ambient(trace_cmd_buf);
+		END_PERF_MARKER(trace_cmd_buf, PROFILER_FLOW_SMOKE_LIGHTING);
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_SHADOW_MAP);
 

@@ -392,6 +392,7 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/sound_diffract.comp
 	refresh/vkpt/shader/flow_lights.comp
 	refresh/vkpt/shader/flow_occupancy.comp
+	refresh/vkpt/shader/flow_ambient.comp
 	refresh/vkpt/shader/bloom_composite.comp
 	refresh/vkpt/shader/bloom_blur.comp
 	refresh/vkpt/shader/bloom_downscale.comp

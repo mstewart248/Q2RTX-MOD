@@ -179,6 +179,13 @@ static cvar_t   *s_flare_range;
 // classic one stays whenever Flow cannot draw: another renderer, or no
 // nvflow.dll.
 static cvar_t   *cl_flow_explosions;
+// An explosion under water: 0 = the classic fireball and light, as the game
+// had them; 1 = Flow's fire, smaller, when Flow draws explosions, else the
+// classic fireball; 2 = the classic fireball, Flow or not. 1 and 2 turn the
+// light yellow-white. Flow never draws foam there (CL_FlowEffect).
+static cvar_t   *cl_explosion_water;
+static cvar_t   *cl_explosion_water_flame;  // Flow's flame, against the explosion's size
+static cvar_t   *cl_explosion_water_light;  // the light's strength under water
 static cvar_t   *cl_flow_bfg_zaps;
 static cvar_t   *cl_flow_bfg_particles;
 
@@ -322,6 +329,19 @@ static explosion_t *CL_AllocExplosion(void)
     return oldest;
 }
 
+/*
+=================
+CL_ExplosionUnderwater
+
+Whether an explosion at `origin` is in water or slime and cl_explosion_water
+is on. Lava is not water: an explosion there stays fire.
+=================
+*/
+static bool CL_ExplosionUnderwater(const vec3_t origin)
+{
+    return cl_explosion_water->integer && (CL_PointContents(origin) & (CONTENTS_WATER | CONTENTS_SLIME));
+}
+
 static explosion_t *CL_PlainExplosion(bool big)
 {
     explosion_t *ex;
@@ -354,39 +374,15 @@ static explosion_t *CL_PlainExplosion(bool big)
     ex->frames = 15;
 	}
 
+    // The classic renderers' light under water; the path tracer's is
+    // CL_AddExplosionLight's.
+    ex->underwater = CL_ExplosionUnderwater(te.pos1);
+    if (ex->underwater) {
+        VectorSet(ex->lightcolor, 1.0f, 0.8f, 0.45f);
+        ex->light *= max(cl_explosion_water_light->value, 0.f);
+    }
+
     return ex;
-}
-
-/*
-=================
-CL_WaterSurface
-
-The height of the top of the water `origin` is in, to half a unit: where
-the contents straight above it stop being water.
-=================
-*/
-static float CL_WaterSurface(const vec3_t origin)
-{
-    vec3_t p = { origin[0], origin[1], origin[2] };
-    float below = origin[2];
-
-    for (int i = 0; i < 256; i++) {
-        p[2] = below + 16;
-        if (!(CL_PointContents(p) & MASK_WATER))
-            break;
-        below = p[2];
-    }
-
-    float above = p[2];
-    for (int i = 0; i < 5; i++) {
-        p[2] = (below + above) * 0.5f;
-        if (CL_PointContents(p) & MASK_WATER)
-            below = p[2];
-        else
-            above = p[2];
-    }
-
-    return above;
 }
 
 /*
@@ -394,8 +390,11 @@ static float CL_WaterSurface(const vec3_t origin)
 CL_FlowEffect
 
 Hands an explosion at `origin` to NVIDIA Flow, see cl_flow_explosions.
-`scale` 1 is a rocket's. Fire does not burn in water or slime: there it
-churns up bubbles instead, whatever made it. In lava it stays fire.
+`scale` 1 is a rocket's. In water or slime Flow draws only cl_explosion_water
+1's smaller fireball, and otherwise nothing, so the classic fireball stays.
+It used to turn the fire into rising foam (R_FLOW_BUBBLES): with only that, an
+explosion all but vanished into the water, and Matt wanted no bubbles at all.
+In lava it stays fire.
 =================
 */
 static int CL_FlowEffect(const vec3_t origin, float scale, r_flow_style_t style)
@@ -412,8 +411,10 @@ static int CL_FlowEffect(const vec3_t origin, float scale, r_flow_style_t style)
     VectorCopy(origin, emit.end);
 
     if (style == R_FLOW_FIRE && (CL_PointContents(origin) & (CONTENTS_WATER | CONTENTS_SLIME))) {
-        emit.style = R_FLOW_BUBBLES;
-        emit.surface = CL_WaterSurface(origin);
+        const float flame_scale = cl_explosion_water_flame->value;
+        if (cl_explosion_water->integer != 1 || flame_scale <= 0)
+            return 0;
+        emit.scale = scale * flame_scale;
     }
 
     return R_FlowEmit(&emit);
@@ -933,6 +934,15 @@ static void CL_AddExplosionLight(explosion_t *ex, float phase)
 	VectorClear(color);
 	VectorMA(color, w0, s0->color, color);
 	VectorMA(color, w1, s1->color, color);
+
+	// Under water yellow-white and stronger: the curve is orange, nearly all
+	// red, and water takes red first - about 2.4 times the light gets through
+	// 150 units of it.
+	if (ex->underwater) {
+		color[1] = color[0] * 0.8f;
+		color[2] = color[0] * 0.45f;
+		VectorScale(color, 1.6f * max(cl_explosion_water_light->value, 0.f), color);
+	}
 
 	V_AddSphereLight(origin, 500.f, color[0], color[1], color[2], radius);
 }
@@ -2486,6 +2496,9 @@ void CL_InitTEnts(void)
 {
     s_flare_range = Cvar_Get("s_flare_range", "1.3", CVAR_ARCHIVE);
     cl_flow_explosions = Cvar_Get("cl_flow_explosions", "1", CVAR_ARCHIVE);
+    cl_explosion_water = Cvar_Get("cl_explosion_water", "1", CVAR_ARCHIVE);
+    cl_explosion_water_flame = Cvar_Get("cl_explosion_water_flame", "0.6", 0);
+    cl_explosion_water_light = Cvar_Get("cl_explosion_water_light", "1", 0);
     cl_flow_bfg_zaps = Cvar_Get("cl_flow_bfg_zaps", "8", 0);
     cl_flow_bfg_particles = Cvar_Get("cl_flow_bfg_particles", "0.25", 0);
     cl_beam_thirdperson = Cvar_Get("cl_beam_thirdperson", "0", CVAR_ARCHIVE);

@@ -971,6 +971,17 @@ extern uint32_t d_8to24table[256];
 cvar_t* cvar_pt_particle_emissive = NULL;
 static cvar_t* cl_particle_num_factor = NULL;
 
+// The rocket's trail, in or out of water, in place of the classic smoke and
+// sparks - see CL_RocketTrail: 1 = a little NVIDIA Flow fireball that cools
+// into smoke, or where Flow does not take it the particle flame; 2 = the
+// particle flame, a flame at the nozzle and a little smoke; 0 = classic.
+// _size is either flame's size, _smoke how much smoke the particle one leaves,
+// cl_rocket_water_light the light's strength under water; 0 drops any of them.
+static cvar_t *cl_rocket_flame = NULL;
+static cvar_t *cl_rocket_flame_size = NULL;
+static cvar_t *cl_rocket_flame_smoke = NULL;
+static cvar_t *cl_rocket_water_light = NULL;
+
 // Blood droplet collision - see CL_SimulateBloodSphere further down.
 static cvar_t *cl_blood_collision = NULL;
 static cvar_t *cl_blood_splat_life = NULL;
@@ -1301,6 +1312,10 @@ void FX_Init(void)
     Cmd_AddCommand("bloodtrace", CL_BloodTrace_f);
     cvar_pt_particle_emissive = Cvar_Get("pt_particle_emissive", "10.0", 0);
 	cl_particle_num_factor = Cvar_Get("cl_particle_num_factor", "1", 0);
+    cl_rocket_flame = Cvar_Get("cl_rocket_flame", "1", CVAR_ARCHIVE);
+    cl_rocket_flame_size = Cvar_Get("cl_rocket_flame_size", "1", 0);
+    cl_rocket_flame_smoke = Cvar_Get("cl_rocket_flame_smoke", "1", 0);
+    cl_rocket_water_light = Cvar_Get("cl_rocket_water_light", "1", 0);
 
     // Blood droplet collision. Its own cvar, separate from cl_blood_spheres, so
     // the simulation can be A/B'd against plain ballistic droplets without also
@@ -5942,11 +5957,12 @@ void CL_NonDiminishingTrail(vec3_t start, vec3_t end, centity_t *old, int flags)
 
 /*
 ===============
-CL_RocketTrail
+CL_RocketClassicTrail
 
+The classic rocket trail: thick smoke and falling sparks (cl_rocket_flame 0).
 ===============
 */
-void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old)
+static void CL_RocketClassicTrail(const vec3_t start, const vec3_t end, centity_t *old)
 {
     vec3_t      move;
     vec3_t      vec;
@@ -5991,6 +6007,276 @@ void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old)
         }
         VectorAdd(move, vec, move);
     }
+}
+
+#define ROCKET_NOZZLE           9.5f    // rocket/tris.md2 runs -9.8..8.6 along its heading
+#define ROCKET_FLAME_RATE       600.0f  // plume particles a second
+#define ROCKET_SMOKE_SPACING    4.0f    // units of flight per puff of smoke
+
+/*
+=================
+CL_RocketUnderwater
+
+Whether a rocket at `origin` with its flame (cl_rocket_flame) is in water or
+slime, where its light is CL_RocketWaterLight's. Lava is not water.
+=================
+*/
+bool CL_RocketUnderwater(const vec3_t origin)
+{
+    return cl_rocket_flame->integer && (CL_PointContents(origin) & (CONTENTS_WATER | CONTENTS_SLIME));
+}
+
+/*
+=================
+CL_RocketMotion
+
+A rocket's velocity over the last server frame - a new rocket's prev is its
+launch point - and its heading. No velocity when it jumped; its angles for the
+heading when it is barely moving.
+=================
+*/
+static float CL_RocketMotion(const centity_t *cent, vec3_t vel, vec3_t fwd)
+{
+    VectorSubtract(cent->current.origin, cent->prev.origin, vel);
+    VectorScale(vel, 1000.0f * CL_1_FRAMETIME, vel);
+
+    float speed = VectorLength(vel);
+    if (speed > 4000.0f) {
+        // teleported, or a stale prev: no motion to ride on
+        VectorClear(vel);
+        speed = 0;
+    }
+
+    if (speed > 50.0f)
+        VectorScale(vel, 1.0f / speed, fwd);
+    else
+        AngleVectors(cent->current.angles, fwd, NULL, NULL);
+
+    return speed;
+}
+
+/*
+=================
+CL_RocketSmoke
+
+A little smoke off the end of the flame (CL_RocketFlame), along the stretch
+flown since the last frame: a thin grey wisp that drifts up and thins out,
+where the classic trail was a thick column of it with sparks falling out.
+=================
+*/
+static void CL_RocketSmoke(const vec3_t start, const vec3_t end, const vec3_t fwd)
+{
+    const float amount = cl_rocket_flame_smoke->value;
+    if (amount <= 0)
+        return;
+
+    // from where the flame ends
+    const float back = ROCKET_NOZZLE + 12.0f * max(cl_rocket_flame_size->value, 0.f);
+    vec3_t from, to, dir;
+    VectorMA(start, -back, fwd, from);
+    VectorMA(end, -back, fwd, to);
+    VectorSubtract(to, from, dir);
+    const float len = VectorNormalize(dir);
+    const float spacing = ROCKET_SMOKE_SPACING / amount;
+
+    for (float d = frand() * spacing; d < len; d += spacing) {
+        cparticle_t *p = CL_AllocParticle();
+        if (!p)
+            return;
+
+        p->time = cl.time;
+        VectorMA(from, d, dir, p->org);
+        for (int j = 0; j < 3; j++) {
+            p->org[j] += crand() * 1.5f;
+            p->vel[j] = crand() * 6.0f;
+        }
+        VectorClear(p->accel);
+        p->accel[2] = 12.0f;    // drifts up
+
+        const float life = 0.6f + frand() * 0.5f;
+        p->alpha = 0.5f;
+        p->alphavel = -p->alpha / life;
+        p->color = -1;
+        const int grey = 100 + Q_rand() % 40;
+        p->rgba.u8[0] = grey;
+        p->rgba.u8[1] = grey;
+        p->rgba.u8[2] = grey;
+        p->rgba.u8[3] = 255;
+        p->brightness = 1.0f;
+        p->radius = 1.5f + frand() * 1.5f;
+    }
+}
+
+/*
+=================
+CL_RocketWaterLight
+
+The light of a rocket under water: the burning motor's, yellow-white and about
+five times the classic rocket light's 200 (0.6, 0.4, 0.12), so the walls and
+floor it passes light up through the water. The classic one, already orange,
+lost its red to the water within a few metres. 2.2 times it was not enough to
+notice.
+=================
+*/
+void CL_RocketWaterLight(const vec3_t origin)
+{
+    const float strength = cl_rocket_water_light->value;
+    if (strength > 0)
+        V_AddLight(origin, 500 * strength, 1.0f, 0.75f, 0.4f);
+}
+
+/*
+=================
+CL_RocketFlame
+
+The flame at a rocket's nozzle (cl_rocket_flame). Its body - a white-yellow core in an orange glow - is drawn
+afresh every frame (INSTANT_PARTICLE), so it is steady at any frame rate and
+sits on the nozzle; a short flickering plume is thrown back from it. The plume
+carries the rocket's own velocity, so it rides on the tail rather than being
+strung out behind it like a trail.
+
+The first version had only the plume, thin and short-lived: seen from behind,
+which is how the player sees his own rocket, it came down to a dot.
+=================
+*/
+static void CL_RocketFlame(const vec3_t start, const vec3_t origin,
+                           const vec3_t vel, const vec3_t fwd, float speed)
+{
+    const float size = cl_rocket_flame_size->value;
+    if (size <= 0)
+        return;
+
+    vec3_t nozzle;
+    VectorMA(origin, -ROCKET_NOZZLE, fwd, nozzle);
+
+    const float emissive = cvar_pt_particle_emissive->value;
+
+    // the body: offset back from the nozzle, radius, brightness (of
+    // pt_particle_emissive), colour
+    static const struct {
+        float   back, radius, brightness;
+        byte    rgb[3];
+    } body[] = {
+        { 1.5f, 3.0f, 0.30f, { 255, 235, 190 } },   // core
+        { 4.0f, 6.0f, 0.06f, { 255, 140,  40 } },   // glow round it
+    };
+
+    for (int i = 0; i < q_countof(body); i++) {
+        cparticle_t *p = CL_AllocParticle();
+        if (!p)
+            return;
+
+        const float flicker = 0.85f + frand() * 0.3f;
+
+        p->time = cl.time;
+        VectorMA(nozzle, -body[i].back * size, fwd, p->org);
+        VectorClear(p->vel);
+        VectorClear(p->accel);
+        p->alpha = 1.0f;
+        p->alphavel = INSTANT_PARTICLE;
+        p->color = -1;
+        p->rgba.u8[0] = body[i].rgb[0];
+        p->rgba.u8[1] = body[i].rgb[1];
+        p->rgba.u8[2] = body[i].rgb[2];
+        p->rgba.u8[3] = 255;
+        p->brightness = emissive * body[i].brightness * flicker;
+        p->radius = body[i].radius * size * flicker;
+    }
+
+    // The plume, at a rate per second of the time since the last rendered
+    // frame: the stretch flown since then over the speed, which follows the
+    // render rate even when the main loop ticks faster.
+    const float dt = speed > 50.0f ? min(Distance(start, origin) / speed, 0.2f) : cls.frametime;
+    const float want = ROCKET_FLAME_RATE * dt;
+    int count = (int)want;
+    if (frand() < want - count)
+        count++;
+
+    for (int i = 0; i < count; i++) {
+        cparticle_t *p = CL_AllocParticle();
+        if (!p)
+            return;
+
+        // a yellow inner part, the rest orange
+        const bool inner = frand() < 0.4f;
+        const float life = 0.06f + frand() * 0.08f;
+
+        p->time = cl.time;
+        for (int j = 0; j < 3; j++) {
+            p->org[j] = nozzle[j] + crand() * 1.0f * size;
+            p->vel[j] = vel[j] + crand() * 25.0f * size;
+        }
+        // thrown back faster for a longer flame
+        VectorMA(p->vel, -(150.0f + frand() * 150.0f) * size, fwd, p->vel);
+        VectorClear(p->accel);
+
+        p->alpha = 1.0f;
+        p->alphavel = -1.0f / life;
+        p->color = -1;
+        p->rgba.u8[0] = 255;
+        p->rgba.u8[1] = inner ? 210 : 110 + (Q_rand() & 63);
+        p->rgba.u8[2] = inner ? 120 : 25;
+        p->rgba.u8[3] = 255;
+        p->brightness = emissive * (inner ? 0.4f : 0.25f);
+        p->radius = (1.5f + frand() * 1.5f) * size;
+    }
+}
+
+/*
+===============
+CL_FlowRocket
+
+The rocket's trail by NVIDIA Flow (cl_rocket_flame 1): a little fireball at
+its nozzle that cools into a column of smoke, like the explosions at a much
+smaller scale (flow_rocket_spheres in vkpt/flow.c). False when Flow does not
+take it - missing, switched off, or its gas filling too much of the grid
+(pt_flow_rocket_budget) - and the particle flame goes instead.
+===============
+*/
+static bool CL_FlowRocket(const centity_t *cent, const vec3_t origin, const vec3_t fwd)
+{
+    if (cl_rocket_flame->integer != 1 || !R_FlowEmit)
+        return false;
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_TRAIL,
+        .style = R_FLOW_FIRE,
+        .scale = cl_rocket_flame_size->value,
+        .key = cent->current.number,
+    };
+    VectorMA(origin, -ROCKET_NOZZLE, fwd, emit.origin);
+    VectorCopy(emit.origin, emit.end);
+    return R_FlowEmit(&emit) & R_FLOW_DRAWN;
+}
+
+/*
+===============
+CL_RocketTrail
+
+A rocket burns at its tail, in or out of water, in place of the classic thick
+smoke and falling sparks (cl_rocket_flame): a little Flow fireball that cools
+into a column of smoke, like the explosions' (CL_FlowRocket), or a flame of
+particles and a little smoke. It began as the under-water trail - the water
+took the classic one's orange glow and grey smoke - and Matt wanted it
+everywhere, then simulated. Under water its light turns yellow-white as well
+(CL_RocketWaterLight).
+===============
+*/
+void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old)
+{
+    if (!cl_rocket_flame->integer) {
+        CL_RocketClassicTrail(start, end, old);
+        return;
+    }
+
+    vec3_t vel, fwd;
+    const float speed = CL_RocketMotion(old, vel, fwd);
+
+    if (CL_FlowRocket(old, end, fwd))
+        return;
+
+    CL_RocketSmoke(start, end, fwd);
+    CL_RocketFlame(start, end, vel, fwd, speed);
 }
 
 /*
@@ -6704,7 +6990,9 @@ void CL_AddParticles(void)
             part->color = color;
             part->brightness = p->brightness;
             part->alpha = alpha;
-            part->radius = 0.f;
+            // 0 = pt_particle_size; a rocket's flame and bubbles under water
+            // ask for their own (CL_RocketTrail)
+            part->radius = p->radius;
         }
 
         if (p->alphavel == INSTANT_PARTICLE) {

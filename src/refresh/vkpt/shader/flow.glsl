@@ -139,8 +139,14 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	uvec4 occupied = uvec4(0);   // the bricks of this block marked in any layer
 
 	// At most limits.x samples; going past empty space costs next to nothing,
-	// and is allowed three times as many again.
+	// and is allowed three times as many again. Past half of them the steps
+	// grow to reach t_max with what is left: a ray down a rocket's trail,
+	// inside its smoke all the way, used them all up some 600 units out and
+	// never got to the explosion at the end - a hole in the fire, the wall
+	// behind it showing through, with the trail's bricks for its edge (Matt,
+	// 10-25).
 	uint samples = 0u;
+	float step = step_length;
 	for (uint i = 0u; i < 4u * flow_params.limits.x && samples < flow_params.limits.x && t < t_max; i++)
 	{
 		const vec3 position = origin + direction * t;
@@ -185,10 +191,12 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 			const vec3 e1 = (box_max - origin) * inv_dir;
 			const vec3 e_far = max(e0, e1);
 			const float t_exit = min(e_far.x, min(e_far.y, e_far.z));
-			t = max(t + step_length, (ceil(t_exit / step_length - jitter) + jitter) * step_length);
+			t = max(t + step, (ceil(t_exit / step - jitter) + jitter) * step);
 			continue;
 		}
 		samples++;
+		if (2u * samples > flow_params.limits.x)
+			step = max(step_length, (t_max - t) / float(flow_params.limits.x - samples + 1u));
 
 		// What the layers here absorb per unit length, and what they put back
 		// per unit length: glow, and the smoke's own colour.
@@ -218,10 +226,10 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 
 		if (extinction > 0.0 || any(greaterThan(source, vec3(0))))
 		{
-			const float alpha = 1.0 - exp(-extinction * step_length);
+			const float alpha = 1.0 - exp(-extinction * step);
 			// What a step puts out, less what it absorbs of itself on the way:
 			// (1 - e^(-sigma ds)) / sigma, which is ds where nothing absorbs.
-			const float path = extinction > 1e-5 ? alpha / extinction : step_length;
+			const float path = extinction > 1e-5 ? alpha / extinction : step;
 			const vec3 contribution = transmittance * source * path;
 
 			radiance += contribution;
@@ -234,7 +242,7 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 				break;
 		}
 
-		t += step_length;
+		t += step;
 	}
 
 	if (depth_weight > 0.0)

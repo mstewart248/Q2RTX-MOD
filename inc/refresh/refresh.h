@@ -675,8 +675,9 @@ typedef struct {
 #define R_FLOW_LIT      2
 
 // An effect for NVIDIA Flow. 0 when it will not be drawn - Flow missing or
-// switched off - so the caller can keep its classic effect; NULL on
-// renderers without Flow.
+// switched off, or a rocket's trail (R_FLOW_TRAIL of fire) while the gas
+// fills too much of the grid - so the caller can keep its classic effect;
+// NULL on renderers without Flow.
 extern int     (*R_FlowEmit)(const r_flow_emit_t *emit);
 
 #if REF_GL

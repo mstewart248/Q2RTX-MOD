@@ -1045,7 +1045,11 @@ static void CL_AddPacketEntities(void)
                 if (!(cl_disable_particles->integer & NOPART_ROCKET_TRAIL)) {
                     CL_RocketTrail(cent->lerp_origin, ent.origin, cent);
                 }
-                if (cl_dlight_hacks->integer & DLHACK_ROCKET_COLOR)
+                // under water yellower and stronger: the water takes the red
+                // first (CL_RocketTrail)
+                if (CL_RocketUnderwater(ent.origin))
+                    CL_RocketWaterLight(ent.origin);
+                else if (cl_dlight_hacks->integer & DLHACK_ROCKET_COLOR)
                     V_AddLight(ent.origin, 200, 1, 0.23f, 0);
                 else
                     V_AddLight(ent.origin, 200, 0.6f, 0.4f, 0.12f);

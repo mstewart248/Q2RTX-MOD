@@ -91,6 +91,10 @@ typedef struct {
 	// What NVIDIA Flow made of it: R_FLOW_* flags, and CL_FLOW_HIDE when
 	// its sprite or model has gone in favour of Flow's (cl_flow_explosions 2).
 	int         flow;
+
+	// In water or slime, with cl_explosion_water on: its light is yellower
+	// and stronger, and it keeps a flame (CL_FlowEffect).
+	bool        underwater;
 } explosion_t;
 
 #define CL_FLOW_HIDE    0x100
@@ -1314,6 +1318,8 @@ typedef struct cdlight_s {
 
 void CL_BigTeleportParticles(const vec3_t org);
 void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old);
+bool CL_RocketUnderwater(const vec3_t origin);
+void CL_RocketWaterLight(const vec3_t origin);
 void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, int flags);
 void CL_FlyEffect(centity_t *ent, const vec3_t origin);
 void CL_BfgParticles(entity_t *ent);

@@ -588,11 +588,19 @@ begin effects
     toggle --status "(cl_disable_explosions)" "grenade explosions" cl_disable_explosions ~0
     toggle --status "(cl_disable_explosions)" "rocket explosions" cl_disable_explosions ~1
     toggle --status "(cl_explosion_sprites)" "explosion sprites" cl_explosion_sprites
+    pairs --status "an explosion under water keeps a flame and lights the water yellow-white. 'simulated' is NVIDIA Flow's fire, smaller, when Flow draws the explosions, otherwise the classic fireball; 'classic' is always the classic fireball; 'off' is the classic fireball and light (cl_explosion_water)" \
+        "underwater explosions" cl_explosion_water off 0 simulated 1 classic 2
+    ifneq flow_available 1
+    toggle --status "a flying rocket burns with a flame at its tail and leaves a little smoke, in place of the classic smoke and falling sparks; under water its light turns yellow-white (cl_rocket_flame)" \
+        "rocket flame" cl_rocket_flame
+    endif
     // Only with nvflow.dll and nvflowext.dll next to q2rtx.exe (setup/build_flow.py)
     // and the RTX renderer - see vkpt/flow.c, which sets flow_available.
     ifeq flow_available 1
     pairs --status "fire that burns out into rising smoke, and the BFG's plasma, simulated by NVIDIA Flow and path traced. 'with classic' adds it to the usual fireball, 'instead' replaces the fireball (cl_flow_explosions)" \
         "simulated fire and smoke" cl_flow_explosions off 0 "with classic" 1 instead 2
+    pairs --status "a flying rocket's trail. 'simulated' is a little NVIDIA Flow fireball at its tail that cools into a column of smoke, like the explosions at a much smaller scale - the particle flame while the simulation is full; 'particles' is a flame and a little smoke; 'classic' is the original smoke and falling sparks. Under water its light turns yellow-white (cl_rocket_flame)" \
+        "rocket trail" cl_rocket_flame classic 0 simulated 1 particles 2
     toggle --status "the simulated fire and plasma light the room and the smoke, in place of the classic explosion light (pt_flow_lighting)" \
         "simulated fire casts light" pt_flow_lighting
     // Only with ray query (vkpt/flow.c sets flow_env_available).

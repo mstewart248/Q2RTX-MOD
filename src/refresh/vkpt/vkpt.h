@@ -690,6 +690,11 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_FOG_FROXEL_SPATIAL,         2) \
 	PROFILER_DO(PROFILER_FOG_FROXEL_SCATTER,         2) \
 	PROFILER_DO(PROFILER_FOG_FROXEL_INTEGRATE,       2) \
+	/* NVIDIA Flow (vkpt/flow.c): its simulation, which the library submits \
+	   itself, with the two small passes after it; and the world's light on \
+	   its smoke (pt_flow_env). Its march is inside the ray passes. */ \
+	PROFILER_DO(PROFILER_FLOW_SIMULATION,            1) \
+	PROFILER_DO(PROFILER_FLOW_SMOKE_LIGHTING,        1) \
 	PROFILER_DO(PROFILER_SHADOW_MAP,                 1) \
 	PROFILER_DO(PROFILER_COMPOSITING,                1) \
 
@@ -734,6 +739,8 @@ VkDescriptorSet qvk_get_current_desc_set_textures(void);
 VkResult vkpt_profiler_initialize(void);
 VkResult vkpt_profiler_destroy(void);
 VkResult vkpt_profiler_query(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action);
+// the same, but the time is taken once everything submitted before has finished
+VkResult vkpt_profiler_query_after(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action);
 
 VkResult vkpt_reset_query_pool(VkCommandBuffer cmd_buf);
 VkResult vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass);
@@ -1071,6 +1078,9 @@ int vkpt_flow_lights(dlight_t *lights, int max_lights);
 // probes, recorded right after the TLAS is built
 void vkpt_flow_set_env(const bsp_t *bsp, int first_flow_light, int num_flow_lights);
 void vkpt_flow_ambient(VkCommandBuffer cmd_buf);
+// whether the profiler has rows to show for Flow, and for its probes
+bool vkpt_flow_profiled(void);
+bool vkpt_flow_env_profiled(void);
 
 VkResult vkpt_initialize_god_rays(void);
 VkResult vkpt_destroy_god_rays(void);

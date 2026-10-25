@@ -240,24 +240,39 @@ reset_samples(int idx)
 	entry_samples->next_idx = 0;
 }
 
-VkResult
-vkpt_profiler_query(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action)
+static void
+profiler_timestamp(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action, VkPipelineStageFlagBits stage)
 {
-	int profilerQueriesPerFrmae = NUM_PROFILER_QUERIES_PER_FRAME;
-
 	idx = idx * 2 + action + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME;
 
 	set_current_gpu(cmd_buf, 0);
-
-	VkPipelineStageFlagBits stage = (action == PROFILER_START) 
-		? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT 
-		: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 
 	vkCmdWriteTimestamp(cmd_buf, stage, profiler_data.query_pool, idx);
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
 
 	profiler_data.queries_used[idx] = true;
+}
+
+VkResult
+vkpt_profiler_query(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action)
+{
+	VkPipelineStageFlagBits stage = (action == PROFILER_START) 
+		? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT 
+		: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+
+	profiler_timestamp(cmd_buf, idx, action, stage);
+
+	return VK_SUCCESS;
+}
+
+/* For work the renderer does not record itself - NVIDIA Flow submits its own.
+   Its start goes in early in the frame, while the frame before may still be
+   running; at the top of the pipe it would be charged with the rest of that. */
+VkResult
+vkpt_profiler_query_after(VkCommandBuffer cmd_buf, int idx, VKPTProfilerAction action)
+{
+	profiler_timestamp(cmd_buf, idx, action, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
 	return VK_SUCCESS;
 }
@@ -430,6 +445,11 @@ draw_profiler(int enable_asvgf)
 		PROFILER_DO(PROFILER_FOG_FROXEL_SPATIAL, 2);
 		PROFILER_DO(PROFILER_FOG_FROXEL_SCATTER, 2);
 		PROFILER_DO(PROFILER_FOG_FROXEL_INTEGRATE, 2);
+	}
+	if (vkpt_flow_profiled())
+	{
+		PROFILER_DO(PROFILER_FLOW_SIMULATION, 1);
+		if (vkpt_flow_env_profiled()) { PROFILER_DO(PROFILER_FLOW_SMOKE_LIGHTING, 1); }
 	}
 	if (enable_asvgf)
 	{

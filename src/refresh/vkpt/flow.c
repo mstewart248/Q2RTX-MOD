@@ -160,6 +160,12 @@ Two things in the menu go further (pt_flow_lighting, pt_flow_collision):
 // is cut again only when the gas has moved on by about as much.
 #define FLOW_MESH_STEP      128.f
 
+// The most puffs a rocket's trail fills one step's flight with, and how far
+// its source may move in a step before that is taken for a jump - a new
+// rocket in the old one's slot - rather than flight.
+#define FLOW_TRAIL_PUFFS    8
+#define FLOW_TRAIL_JUMP     128.f
+
 typedef struct {
 	r_flow_kind_t   kind;
 	int             layer;      // an r_flow_style_t
@@ -171,6 +177,7 @@ typedef struct {
 	int             key;        // a trail's source
 	bool            seen;       // a trail: given again since the last frame
 	vec3_t          heading;    // a trail: which way its source last moved, or 0
+	vec3_t          last;       // a rocket's trail: where its source was at Flow's last step
 	int             light;      // a trail: its light slot, or -1
 	uint32_t        light_generation;   // ... while the slot has this generation
 	// A piece of a BFG blast: its own radius in units, push, emitting time and
@@ -254,6 +261,14 @@ static cvar_t *cvar_pt_flow_trail_expansion;
 static cvar_t *cvar_pt_flow_trail_smoke;
 static cvar_t *cvar_pt_flow_trail_length;
 static cvar_t *cvar_pt_flow_bfg_trail_light;
+static cvar_t *cvar_pt_flow_rocket_radius;
+static cvar_t *cvar_pt_flow_rocket_expansion;
+static cvar_t *cvar_pt_flow_rocket_smoke;
+static cvar_t *cvar_pt_flow_rocket_temperature;
+static cvar_t *cvar_pt_flow_rocket_glow;
+static cvar_t *cvar_pt_flow_rocket_flame;
+static cvar_t *cvar_pt_flow_rocket_lumps;
+static cvar_t *cvar_pt_flow_rocket_budget;
 static cvar_t *cvar_pt_flow_beam_radius;
 static cvar_t *cvar_pt_flow_beam_expansion;
 static cvar_t *cvar_pt_flow_beam_burst;
@@ -380,6 +395,13 @@ static struct {
 	float                   last_time;  // refdef time of the last world frame
 	bool                    have_last_time;
 	float                   frame_dt;   // game time a frame, smoothed, for pt_flow_rate
+	// Flow's own stepper mirrored (flow_step_mirror): the time it has yet to
+	// step, whether it steps this frame and how much time it steps in all.
+	float                   step_error;
+	bool                    stepping;
+	float                   step_time;
+	uint32_t                num_blocks; // the blocks Flow had after its last simulation
+	uint32_t                max_blocks; // the most it can have
 	bool                    idle;       // nothing allocated and nothing emitting: skip Flow
 	bool                    force_clear;
 	bool                    shadow_pass;    // this frame's simulation is followed by Flow's shadow pass
@@ -634,6 +656,9 @@ static void flow_create_simulation(void)
 	flow.have_last_time = false;
 	flow.idle = true;
 	flow.force_clear = false;
+	flow.step_error = 0.f;
+	flow.num_blocks = 0;
+	flow.max_blocks = grid_desc.maxLocations;
 
 	Cvar_FullSet("flow_available", "1", CVAR_ROM, FROM_CODE);
 	Com_Printf("NVIDIA Flow: ready, up to %u blocks.\n", grid_desc.maxLocations);
@@ -1253,7 +1278,15 @@ static void flow_emitter_gas(const flow_emitter_t *e, float *radius, float *expa
 		break;
 	}
 
-	if (e->kind == R_FLOW_TRAIL) {
+	if (e->kind == R_FLOW_TRAIL && e->layer == R_FLOW_FIRE) {
+		// a rocket's, see flow_rocket_spheres
+		*radius = cvar_pt_flow_rocket_radius->value;
+		*expansion = cvar_pt_flow_rocket_expansion->value;
+		*temperature = cvar_pt_flow_rocket_temperature->value;
+		*fuel = 0.f;
+		*smoke = cvar_pt_flow_rocket_smoke->value;
+	}
+	else if (e->kind == R_FLOW_TRAIL) {
 		*radius = cvar_pt_flow_trail_radius->value;
 		*expansion = cvar_pt_flow_trail_expansion->value;
 		if (e->layer != R_FLOW_BUBBLES)
@@ -1319,11 +1352,178 @@ static bool flow_build_offscreen(float cell_size)
 	return any;
 }
 
+// Whether Flow steps this frame, and how much time it steps in all: its own
+// stepper (TimeStepper_update in Grid.cpp) mirrored, under the settings
+// flow_layer_simulate gives it. A frame misjudged only overlaps a rocket
+// trail's puffs, or leaves one frame's flight to the puffs' radius.
+static void flow_step_mirror(float dt)
+{
+	const float rate = cvar_pt_flow_rate->value;
+	if (flow.force_clear)
+		flow.step_error = 0.f;
+	if (rate > 0.f && flow.frame_dt > 0.f && flow.frame_dt < 1.f / rate) {
+		flow.step_error += dt;
+		const int steps = min((int)floorf(flow.step_error * rate), 1);
+		flow.step_error = min(flow.step_error - steps / rate, 4.f / rate);
+		flow.stepping = steps > 0;
+		flow.step_time = 1.f / rate;
+	}
+	else {
+		// every frame steps, and Flow leaves its count of time as it was
+		flow.stepping = dt > 0.f;
+		flow.step_time = dt;
+	}
+}
+
+/*
+A rocket's trail (a trail of fire): a little fireball at its tail that cools
+into a column of smoke, like a small explosion that keeps going. Puts its
+spheres at `num_spheres` on and gives back the new count.
+
+A rocket flies some 11 units a step at 60 steps a second, more than a puff is
+wide, so each step fills the whole stretch its source flew since the last one
+with a chain of puffs half a radius apart: no gaps at any speed or frame rate.
+(Flow's own sub-steps for a moving emitter match it to last frame's by its
+place in the list, which the explosions' coming and going shifts.) Each step's
+puff is up to 40% bigger or smaller and off the line by up to 30% of its
+radius, times pt_flow_rocket_lumps, so the smoke comes out lumpy, not a tube.
+The heat goes into a smaller sphere at each puff's middle, pt_flow_rocket_flame
+of its radius: a smaller flame on the same smoke.
+
+pt_flow_rocket_glow behind the source a second chain, twice as wide, takes the
+heat out - a cell that goes through is left under a tenth, at any speed and
+however hot the flame - which leaves a ball of fire at the tail. Without it the
+whole trail glowed, the fire's cooling taking over a second. The trail has no
+fuel: what the quench left of a fuelled one lit again and burned back down the
+trail like a fuse. All measured headless.
+*/
+static int flow_rocket_spheres(flow_emitter_t *e, int num_spheres, float cell_size, float couple_rate)
+{
+	float radius, expansion, temperature, fuel, smoke;
+	flow_emitter_gas(e, &radius, &expansion, &temperature, &fuel, &smoke);
+	radius = max(radius * e->scale, cell_size);
+
+	vec3_t path;
+	VectorSubtract(e->origin, e->last, path);
+	float dist = VectorLength(path);
+	if (dist > FLOW_TRAIL_JUMP * max(e->scale, 1.f)) {
+		VectorCopy(e->origin, e->last);
+		VectorClear(path);
+		dist = 0.f;
+	}
+
+	const int room = ((int)LENGTH(flow.spheres) - num_spheres) / 3;
+	const int puffs = min(min(max((int)ceilf(dist / (0.5f * radius)), 1), FLOW_TRAIL_PUFFS), room);
+	if (puffs < 1)
+		return num_spheres;
+
+	const float lumps = max(cvar_pt_flow_rocket_lumps->value, 0.f);
+	const float r = radius * max(1.f + 0.4f * lumps * crand(), 0.2f);
+	vec3_t offset;
+	for (int k = 0; k < 3; k++)
+		offset[k] = 0.3f * lumps * radius * crand();
+	const float divergence = 3.f * expansion * (2.f * cell_size) / r;
+	// as hard as a blast's puff: the rocket is past in a hundredth of a second
+	const float rate = 5.f * couple_rate;
+	// The heat only part way each pass, and with the edge cells' coverage
+	// sampled eight times: set whole, a puff under three cells across came
+	// out a voxel ball, its yellow core a plus sign close up (Matt, 10-25).
+	// The puffs a cell is in build up a soft round core instead, hotter than
+	// the colour map's top (pt_flow_rocket_temperature) to stay yellow - the
+	// smaller the flame (pt_flow_rocket_flame), the hotter it has to be: at
+	// 0.65 of the puff and 1.5 it came out all orange.
+	const float heat_rate = 0.75f / max(flow.step_time, 1e-3f);
+	const float flame = r * Cvar_ClampValue(cvar_pt_flow_rocket_flame, 0.f, 1.f);
+
+	for (int i = 0; i < puffs; i++) {
+		const float f = (float)(i + 1) / puffs;
+		NvFlowGridEmitterSphereParams *sphere = &flow.spheres[num_spheres];
+		*sphere = NvFlowEmitterSphereParams_default;
+		sphere->luid = e->luid | ((uint64_t)i << 40);
+		sphere->layer = e->layer;
+		sphere->position.x = e->last[0] + path[0] * f + offset[0];
+		sphere->position.y = e->last[1] + path[1] * f + offset[1];
+		sphere->position.z = e->last[2] + path[2] * f + offset[2];
+		sphere->radius = r;
+		sphere->multisample = NV_FLOW_TRUE;
+		sphere->velocity.x = sphere->velocity.y = sphere->velocity.z = 0.f;
+		sphere->divergence = divergence;
+		sphere->temperature = temperature;
+		sphere->fuel = fuel;
+		sphere->burn = 0.f;
+		sphere->smoke = smoke;
+		sphere->coupleRateVelocity = 0.f;
+		sphere->coupleRateDivergence = rate;
+		sphere->coupleRateTemperature = 0.f;
+		sphere->coupleRateFuel = rate;
+		sphere->coupleRateBurn = 0.f;
+		sphere->coupleRateSmoke = rate;
+		flow.sphere_ptrs[num_spheres++] = sphere;
+
+		// the flame, in the puff's middle (which has made room for it)
+		if (flame > 0.f) {
+			NvFlowGridEmitterSphereParams *heat = &flow.spheres[num_spheres];
+			*heat = *sphere;
+			heat->luid = e->luid | (2ull << 48) | ((uint64_t)i << 40);
+			heat->radius = flame;
+			heat->allocationScale = 0.f;
+			heat->coupleRateDivergence = 0.f;
+			heat->coupleRateTemperature = heat_rate;
+			heat->coupleRateFuel = 0.f;
+			heat->coupleRateSmoke = 0.f;
+			flow.sphere_ptrs[num_spheres++] = heat;
+		}
+	}
+
+	const float glow = cvar_pt_flow_rocket_glow->value * e->scale;
+	if (glow > 0.f && !VectorEmpty(e->heading)) {
+		// A cell on the line is in some 2 qr / spacing of them as they pass,
+		// each taking rate x step time of what heat is left: ln (T / 0.09) in
+		// all, which leaves under a tenth, black on the colour map (0.15). A
+		// set share, a hotter flame left a faint glow 250 units down the trail.
+		const float qr = 2.f * radius;
+		const float spacing = max(dist / puffs, 1.f);
+		const float keep_inv = max(temperature * (16.f / 1.5f), 2.f);
+		const float quench_rate = logf(keep_inv) * spacing / (2.f * qr * max(flow.step_time, 1e-3f));
+		for (int i = 0; i < puffs; i++) {
+			const float f = (float)(i + 1) / puffs;
+			NvFlowGridEmitterSphereParams *quench = &flow.spheres[num_spheres];
+			*quench = NvFlowEmitterSphereParams_default;
+			quench->luid = e->luid | (1ull << 48) | ((uint64_t)i << 40);
+			quench->layer = e->layer;
+			quench->position.x = e->last[0] + path[0] * f - e->heading[0] * glow;
+			quench->position.y = e->last[1] + path[1] * f - e->heading[1] * glow;
+			quench->position.z = e->last[2] + path[2] * f - e->heading[2] * glow;
+			quench->radius = qr;
+			quench->allocationScale = 0.f;
+			quench->velocity.x = quench->velocity.y = quench->velocity.z = 0.f;
+			quench->divergence = 0.f;
+			quench->temperature = 0.f;
+			quench->fuel = 0.f;
+			quench->burn = 0.f;
+			quench->smoke = 0.f;
+			quench->coupleRateVelocity = 0.f;
+			quench->coupleRateDivergence = 0.f;
+			quench->coupleRateTemperature = quench_rate;
+			quench->coupleRateFuel = 0.f;
+			quench->coupleRateBurn = 0.f;
+			quench->coupleRateSmoke = 0.f;
+			flow.sphere_ptrs[num_spheres++] = quench;
+		}
+	}
+
+	if (flow.stepping)
+		VectorCopy(e->origin, e->last);
+	return num_spheres;
+}
+
 static void flow_build_params(float dt)
 {
 	const float cell_size = max(cvar_pt_flow_cell_size->value, 0.5f);
 	const float couple_rate = max(cvar_pt_flow_couple_rate->value, 0.f);
 	const bool collide = flow_collision_update();
+
+	flow_step_mirror(dt);
 
 	for (int layer = 0; layer < FLOW_LAYERS; layer++) {
 		flow_layer_simulate(&flow.simulate[layer], layer, cell_size, collide);
@@ -1333,9 +1533,14 @@ static void flow_build_params(float dt)
 	int num_spheres = 0;
 	int num_boxes = 0;
 	for (int i = 0; i < flow.num_emitters; i++) {
-		const flow_emitter_t *e = &flow.emitters[i];
+		flow_emitter_t *e = &flow.emitters[i];
 		if (!flow_emitter_emitting(e))
 			continue;
+
+		if (e->kind == R_FLOW_TRAIL && e->layer == R_FLOW_FIRE) {
+			num_spheres = flow_rocket_spheres(e, num_spheres, cell_size, couple_rate);
+			continue;
+		}
 
 		float radius, expansion, temperature, fuel, smoke;
 		flow_emitter_gas(e, &radius, &expansion, &temperature, &fuel, &smoke);
@@ -1391,6 +1596,10 @@ static void flow_build_params(float dt)
 			flow.box_ptrs[num_boxes++] = box;
 			continue;
 		}
+
+		// the rocket trails' chains may have taken the room
+		if (num_spheres + 2 > (int)LENGTH(flow.spheres))
+			continue;
 
 		NvFlowGridEmitterSphereParams *sphere = &flow.spheres[num_spheres];
 		*sphere = NvFlowEmitterSphereParams_default;
@@ -1487,6 +1696,17 @@ static void flow_build_params(float dt)
 		.globalForceClear = flow.force_clear,
 	};
 	flow.params_iface->commitParams(flow.grid_params, &snapshot);
+}
+
+// Whether the rocket trails may have more of Flow's blocks: while the gas
+// fills less than `share` x pt_flow_rocket_budget of them. One rocket's smoke
+// across a big room takes some 250 of the 512, so more than one would leave
+// the explosions none. Past the share R_FlowEmit gives 0 and the client draws
+// its particle flame instead.
+static bool flow_rocket_room(float share)
+{
+	const float budget = Cvar_ClampValue(cvar_pt_flow_rocket_budget, 0.f, 1.f);
+	return (float)flow.num_blocks < share * budget * (float)flow.max_blocks;
 }
 
 // A trail's light slot, if it still has it.
@@ -1591,6 +1811,7 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 			params->dim_inv[1] = level->dimInv.y;
 			params->dim_inv[2] = level->dimInv.z;
 			params->counts[0] = level->numLocations;
+			flow.num_blocks = level->numLocations;
 
 			vec3_t world_min = { FLT_MAX, FLT_MAX, FLT_MAX };
 			vec3_t world_max = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
@@ -1637,6 +1858,7 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 		}
 		else {
 			flow.have_blocks = false;
+			flow.num_blocks = 0;
 		}
 
 		flow.params_iface->unmapParamsDesc(flow.grid_params, snapshot);
@@ -1876,6 +2098,9 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 		for (int i = 0; i < flow.num_emitters; i++) {
 			flow_emitter_t *e = &flow.emitters[i];
 			if (e->kind == R_FLOW_TRAIL && e->key == emit->key && e->layer == (int)emit->style) {
+				// a rocket's lets go at half as much again as its share...
+				if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.5f))
+					return 0;
 				vec3_t moved;
 				VectorSubtract(emit->origin, e->origin, moved);
 				if (VectorLength(moved) > 0.5f)
@@ -1893,10 +2118,14 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 				return result;
 			}
 		}
+		// ... and starts only within it
+		if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.f))
+			return 0;
 		{
 			flow_emitter_t *e = flow_new_emitter(R_FLOW_TRAIL, emit->style, emit->origin, emit->scale);
 			e->key = emit->key;
 			e->seen = true;
+			VectorCopy(emit->origin, e->last);
 			// A light that keeps to its source: the glow behind it, gathered
 			// from as far back as the trail glows. Only plasma has a trail's
 			// light; flow_take_light knows no other.
@@ -2583,6 +2812,25 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_beam_expansion = Cvar_Get("pt_flow_beam_expansion", "100", 0);
 	cvar_pt_flow_beam_burst = Cvar_Get("pt_flow_beam_burst", "0.1", 0);
 
+	// A rocket's trail (a trail of fire, flow_rocket_spheres): its puffs'
+	// radius, push, smoke and heat at scale 1; how much of the puff the flame
+	// fills (the smoke the same either way); how far behind the rocket the
+	// fire is put out, which makes the ball at its tail (12: some 12-20 units
+	// of glow, measured headless); how lumpy the smoke comes out (0: a smooth
+	// tube); and the share of pt_flow_max_blocks the gas may fill for a new
+	// trail to start - past it the client's particle flame goes instead, and
+	// a trail stops at half as much again. One rocket's smoke lasts some 3 s
+	// and peaks at 250 blocks over a 2000-unit flight. The flame was 1 / 1.5
+	// / 16 until Matt asked for it smaller (10-25).
+	cvar_pt_flow_rocket_radius = Cvar_Get("pt_flow_rocket_radius", "8", 0);
+	cvar_pt_flow_rocket_expansion = Cvar_Get("pt_flow_rocket_expansion", "120", 0);
+	cvar_pt_flow_rocket_smoke = Cvar_Get("pt_flow_rocket_smoke", "4", 0);
+	cvar_pt_flow_rocket_temperature = Cvar_Get("pt_flow_rocket_temperature", "3", 0);
+	cvar_pt_flow_rocket_flame = Cvar_Get("pt_flow_rocket_flame", "0.65", 0);
+	cvar_pt_flow_rocket_glow = Cvar_Get("pt_flow_rocket_glow", "12", 0);
+	cvar_pt_flow_rocket_lumps = Cvar_Get("pt_flow_rocket_lumps", "1", 0);
+	cvar_pt_flow_rocket_budget = Cvar_Get("pt_flow_rocket_budget", "0.5", 0);
+
 	// An explosion under water (R_FLOW_BUBBLES): foam that rises to the
 	// surface. Rise is Flow's buoyancy per unit of smoke; fade the amount
 	// lost per second, on top of 30% of it.
@@ -2960,6 +3208,35 @@ static void flow_layer_look(FlowLayerParams *look, int layer, float cell_size)
 }
 #endif
 
+#if USE_FLOW
+// A timestamp for the profiler's Flow row, in a command buffer of its own:
+// Flow submits its work itself, so there is nowhere inside it to put one.
+static void flow_profile(VKPTProfilerAction action)
+{
+	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+	vkpt_profiler_query_after(cmd_buf, PROFILER_FLOW_SIMULATION, action);
+	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
+}
+#endif
+
+bool vkpt_flow_profiled(void)
+{
+#if USE_FLOW
+	return flow.grid != NULL;
+#else
+	return false;
+#endif
+}
+
+bool vkpt_flow_env_profiled(void)
+{
+#if USE_FLOW
+	return flow.grid && flow.env_pipeline && cvar_pt_flow_env->integer;
+#else
+	return false;
+#endif
+}
+
 void vkpt_flow_update(const refdef_t *fd, bool render_world)
 {
 	// Once a frame. timerefresh renders many views between one R_BeginFrame
@@ -2986,6 +3263,13 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 		flow_lights_collect(set);
 		flow_release_set(set);
 	}
+
+	// From before Flow's submission to after the passes that follow it - not
+	// on the frames it has nothing to do, as flow_simulate tells them.
+	const bool profiled = flow.grid && render_world &&
+		!(flow.idle && flow.num_emitters == 0 && !flow.force_clear);
+	if (profiled)
+		flow_profile(PROFILER_START);
 
 	// The player setup menu's model view is not the world; the fire holds
 	// still and stays out of it.
@@ -3037,6 +3321,8 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 #if USE_FLOW
 	flow_occupancy_dispatch(blocks);
 	flow_lights_dispatch(set, blocks);
+	if (profiled)
+		flow_profile(PROFILER_STOP);
 #else
 	(void)blocks;
 #endif
