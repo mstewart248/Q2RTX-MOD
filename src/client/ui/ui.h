@@ -271,6 +271,7 @@ typedef struct menuSpinControl_s {
     char    **itemvalues;
     int     numItems;
     int     curvalue;
+    int     pushed;     // curvalue as Menu_Push loaded it; Menu_Pop skips it unmoved
 
     int         mask;
     bool        negate;

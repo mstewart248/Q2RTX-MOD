@@ -1812,6 +1812,45 @@ static void UI_AddRectToBounds(const vrect_t *rc, int mins[2], int maxs[2])
     }
 }
 
+static bool Menu_IsSpinControl(const menuCommon_t *item)
+{
+    switch (item->type) {
+    case MTYPE_SPINCONTROL:
+    case MTYPE_PAIRS:
+    case MTYPE_STRINGS:
+    case MTYPE_TOGGLE:
+    case MTYPE_BITFIELD:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+=================
+SpinControl_Untouched
+
+True for a spin-style control the player has not moved since Menu_Push loaded
+it from its cvar. Menu_Pop leaves its cvar alone, as Slider_Pop already does
+for an untouched slider.
+
+Writing every control back regardless undid edits. Two controls can share a
+cvar with one hidden by a condition - the environment page's two "sky type"
+rows, one per game - and the hidden one, popped after the visible one, put back
+the value the page opened with: after picking stroggos, "rerelease" never stuck
+again. It also took every cvar on the page off the map's mapcvar overrides on a
+mere visit, since Cvar_SetByVar counts any menu set as the player's own.
+=================
+*/
+static bool SpinControl_Untouched(const menuCommon_t *item)
+{
+    if (!Menu_IsSpinControl(item))
+        return false;
+
+    const menuSpinControl_t *s = (const menuSpinControl_t *)item;
+    return s->curvalue == s->pushed;
+}
+
 /*
 =================
 Menu_PendingValue
@@ -1861,6 +1900,11 @@ static int Menu_PendingValue(menuFrameWork_t *menu, cvar_t *cvar)
             menuSpinControl_t *s = (menuSpinControl_t *)item;
 
             if (s->cvar != cvar)
+                continue;
+
+            /* Untouched, it writes nothing, so it says nothing about the value
+               to come - and must not hide a touched control on the same cvar. */
+            if (SpinControl_Untouched(item))
                 continue;
 
             if (item->type == MTYPE_TOGGLE || item->type == MTYPE_BITFIELD) {
@@ -2757,6 +2801,10 @@ bool Menu_Push(menuFrameWork_t *menu)
         default:
             break;
         }
+
+        // what Menu_Pop compares against; see SpinControl_Untouched
+        if (Menu_IsSpinControl(item))
+            ((menuSpinControl_t *)item)->pushed = ((menuSpinControl_t *)item)->curvalue;
     }
     return true;
 }
@@ -2768,6 +2816,10 @@ void Menu_Pop(menuFrameWork_t *menu)
 
     for (i = 0; i < menu->nitems; i++) {
         item = menu->items[i];
+
+        // only what the player changed; see SpinControl_Untouched
+        if (SpinControl_Untouched(item))
+            continue;
 
         switch (((menuCommon_t *)item)->type) {
         case MTYPE_SLIDER:
