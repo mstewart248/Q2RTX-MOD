@@ -738,6 +738,68 @@ space, so a burst of sixty costs one instance, not sixty.
   `vid_vsync_mailbox`, `vid_fullscreen_exclusive`, plus Vulkan validation helpers
   (`vk_gpu_av`, `vk_gpu_diag`, `vk_sync_validation`, `vk_shader_printf`).
 
+## CPU path tracer benchmark
+
+`cpu_bench` takes the frame on screen and path traces it again on the CPU alone,
+as a Cinebench-style benchmark. The screen is cut into tiles, handed out from
+the centre outwards. Every thread takes the next tile as soon as it finishes
+one, and a bracket marks each tile being worked on. On a hybrid Intel CPU the
+bracket's colour shows which kind of core has the tile, orange for a P-core and
+blue for an E-core, and the result says what share of the work each kind did.
+When the last tile lands, the panel in the top left shows the time and the
+samples and rays per second, and the same numbers go to the console.
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake035.jpg)
+
+*Part way through a run on an i9-12900K (8 P-cores + 8 E-cores, 24 threads):
+native resolution, 256 spp, 8 bounces, fog on.*
+
+* **`cpu_bench`** starts a run, or stops the one on screen and goes back to the
+  game. **`cpu_bench 1`** always starts a fresh run and **`cpu_bench 0`** always
+  stops. The number is not a thread count; that is `cpu_bench_threads`. A map
+  change also ends a run, and the game keeps running underneath while it
+  renders.
+* **What it renders** is the scene the GPU renderer already holds: the world and
+  brush models, the posed models, the textures with their normal, roughness,
+  metallic and emissive maps, the map's light polygons, the sun and the selected
+  sky. The physical sky only exists on the GPU, so its cube is copied back when
+  the run starts.
+* **How it renders**: each bounce takes one sun ray and one light sample (picked
+  by RIS from the cluster's light list), then a Lambert + GGX bounce. There is no
+  ReSTIR, no SHaRC and no denoiser. It is a reference renderer, so the picture
+  converges on the answer rather than on what the real-time frame looks like.
+* **Fog** follows the [photo mode](#photo-mode) fog: the same medium, `cl_fog`
+  and the map's fog settings, and the `pt_fog_*` brightness knobs. That covers
+  sun shafts with their shadows, light from the map's lights (lava included) and
+  sky light. As on the GPU, fog lies only along the camera ray and through glass
+  and mirrors, stops at water surfaces, and is absent when the camera is
+  underwater. It costs roughly 30% of the speed, so compare runs with fog on or
+  off, not one against the other.
+* **Infinite mode** (`cpu_bench_infinite 1`): once every tile has
+  `cpu_bench_spp` samples, another round starts on top, and the picture keeps
+  cleaning up until you stop it. Each round's time is printed to the console
+  (`cpu_bench: 128 spp in 56.3 s: ...`) and shown on screen, along with the total
+  spp so far and how far the next round has got.
+* **Not drawn**: dynamic and model lights (muzzle flashes, rockets, blaster
+  bolts), particles, sprites, beams, explosions, the player model, shells, and
+  animated or scrolling materials.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `cpu_bench_spp` | `64` | Samples per pixel. In infinite mode, samples per round. |
+| `cpu_bench_scale` | `0.5` | Render resolution as a fraction of the window, `0.05` to `2`. `1` is native. |
+| `cpu_bench_bounces` | `2` | Indirect bounces, `0` to `8`. |
+| `cpu_bench_threads` | `0` | Worker threads. `0` uses every logical processor. |
+| `cpu_bench_tile` | `64` | Tile size in pixels, `8` to `512`. |
+| `cpu_bench_progressive` | `0` | `1` gives every tile one sample per pass instead of finishing each tile in one go, so the whole picture appears at once and then cleans up. |
+| `cpu_bench_clamp` | `64` | Firefly clamp. An indirect sample brighter than this many times the scene's auto-exposure level is clipped. `0` turns it off. |
+| `cpu_bench_fog` | `1` | Fog, when `cl_fog` and the map have it. |
+| `cpu_bench_infinite` | `0` | Keep adding rounds of `cpu_bench_spp` until stopped. |
+
+All of them are saved to the config. The score depends on the view, the map and
+every setting above, so compare runs made from the same spot with the same
+settings. RTX renderer only.
+
 ## Inherited from Quake II RTX
 
 Everything the original project shipped still works: cutting-edge denoising,
