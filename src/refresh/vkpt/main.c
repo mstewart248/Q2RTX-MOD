@@ -91,6 +91,7 @@ static bool vkpt_get_window_gdi_device(char *out, size_t out_size)
 #include "server/server.h"
 
 #include "shader/vertex_buffer.h"
+#include "shader/flow.h"
 #include "DLSS.h"
 #include "DLSSNR.h"
 #include "fg_present.h"
@@ -260,6 +261,8 @@ VkptInit_t vkpt_initialization[] = {
 	{ "godraysI",   vkpt_god_rays_update_images,        vkpt_god_rays_noop,                 VKPT_INIT_SWAPCHAIN_RECREATE,  0 },
 	{ "sound",      vkpt_sound_initialize,              vkpt_sound_destroy,                 VKPT_INIT_DEFAULT,             0 },
 	{ "sound|",     vkpt_sound_create_pipelines,        vkpt_sound_destroy_pipelines,       VKPT_INIT_RELOAD_SHADER,       0 },
+	{ "flow",       vkpt_flow_initialize,               vkpt_flow_destroy,                  VKPT_INIT_DEFAULT,             0 },
+	{ "flow|",      vkpt_flow_create_pipelines,         vkpt_flow_destroy_pipelines,        VKPT_INIT_RELOAD_SHADER,       0 },
 };
 
 VkImage GetDLSSImage();
@@ -2679,6 +2682,8 @@ init_vulkan(void)
 		};
 		vkGetPhysicalDeviceFeatures2(qvk.physical_device, &device_features);
 		qvk.supports_fp16 = device_features_1_2.shaderFloat16 && features_16bit_storage.storageBuffer16BitAccess;
+		qvk.supports_storage_image_without_format = device_features.features.shaderStorageImageReadWithoutFormat
+		                                         && device_features.features.shaderStorageImageWriteWithoutFormat;
 	}
 	Com_Printf("FP16 support: %s\n", qvk.supports_fp16 ? "yes" : "no");
 
@@ -2953,8 +2958,10 @@ init_vulkan(void)
 			.shaderImageGatherExtended = VK_FALSE,
 			.shaderStorageImageExtendedFormats = VK_TRUE,
 			.shaderStorageImageMultisample = VK_FALSE,
-			.shaderStorageImageReadWithoutFormat = VK_FALSE,
-			.shaderStorageImageWriteWithoutFormat = VK_FALSE,
+			/* NVIDIA Flow's compute shaders (flow.c) declare their storage images
+			   without a format; ours all name one. */
+			.shaderStorageImageReadWithoutFormat = qvk.supports_storage_image_without_format,
+			.shaderStorageImageWriteWithoutFormat = qvk.supports_storage_image_without_format,
 			.shaderUniformBufferArrayDynamicIndexing = VK_TRUE,
 			.shaderSampledImageArrayDynamicIndexing = VK_TRUE,
 			.shaderStorageBufferArrayDynamicIndexing = VK_TRUE,
@@ -6240,6 +6247,12 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		vkpt_build_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, fd->entities, fd->num_entities, prev_adapted_luminance, light_entity_ids[entity_frame_num], &num_model_lights);
 		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
+
+		// What NVIDIA Flow's fire and plasma give off (pt_flow_lighting), from
+		// the glow two frames ago - see flow_lights_collect.
+		dlight_t flow_lights[FLOW_MAX_LIGHTS];
+		const int num_flow_lights = vkpt_flow_lights(flow_lights, FLOW_MAX_LIGHTS);
+		add_dlights(flow_lights, num_flow_lights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 	}
 	else if (!render_world)
 	{
@@ -6453,6 +6466,13 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			vkpt_device_wait_idle();
 		prev_async_fog = async_fog;
 	}
+
+	/* NVIDIA Flow's fire and smoke (flow.c). Flow submits its simulation to
+	   the graphics queue itself, so it goes in ahead of every submission below
+	   and the primary rays read a finished volume; and it writes this frame's
+	   global texture descriptors, which has to happen before any command
+	   buffer of the frame binds them. */
+	vkpt_flow_update(fd, render_world);
 
 	VkSemaphore transfer_semaphores[VKPT_MAX_GPUS];
 	VkSemaphore trace_semaphores[VKPT_MAX_GPUS];
@@ -7314,7 +7334,10 @@ rebuild_render_resources(bool new_swapchain)
 	}
 	else
 	{
+		// console only - photo mode does this on every enter and exit
+		Con_SkipNotify(true);
 		Com_Printf("Screen images rebuilt, swapchain kept [%s]\n", swapchain_reason);
+		Con_SkipNotify(false);
 	}
 	vkpt_initialize_all(VKPT_INIT_SWAPCHAIN_RECREATE);
 
@@ -9778,6 +9801,9 @@ R_BeginRegistration_RTX(const char *name)
 
 	vkpt_fog_reset();
 
+	// the last map's fire and smoke must not burn on in this one
+	vkpt_flow_reset();
+
 	// Undo the previous map's "mapcvar" settings before this map's cfgs run, so a
 	// per-map override lasts exactly one map and leaves the player's own value
 	// behind when they move on.
@@ -9823,6 +9849,7 @@ R_BeginRegistration_RTX(const char *name)
 	bsp_world_model = bsp;
 	bsp_mesh_register_textures(bsp);
 	bsp_mesh_create_from_bsp(&vkpt_refdef.bsp_mesh_world, bsp, name);
+	vkpt_flow_set_world(&vkpt_refdef.bsp_mesh_world);
 	vkpt_sky_exposure_begin_map(bsp, &vkpt_refdef.bsp_mesh_world.world_aabb);
 	vkpt_light_buffers_create(&vkpt_refdef.bsp_mesh_world);
 	_VK(vkpt_vertex_buffer_upload_bsp_mesh(&vkpt_refdef.bsp_mesh_world));
@@ -10132,6 +10159,7 @@ void R_RegisterFunctionsRTX()
 	R_IsHDR = R_IsHDR_RTX;
 	R_LatencySleep = Reflex_SleepAndBeginFrame;
 	vkpt_sound_register();
+	vkpt_flow_register();
 	IMG_Load = IMG_Load_RTX;
 	IMG_Unload = IMG_Unload_RTX;
 	IMG_ReadPixels = IMG_ReadPixels_RTX;

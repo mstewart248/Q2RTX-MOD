@@ -55,12 +55,15 @@ static void BLOCK_FUNC(blockctx_t *c)
                 prowdest[b * TEX_BYTES + 0] = min((psource[b * TEX_BYTES + 0] * l0) >> 15, 255);
                 prowdest[b * TEX_BYTES + 1] = min((psource[b * TEX_BYTES + 1] * l1) >> 15, 255);
                 prowdest[b * TEX_BYTES + 2] = min((psource[b * TEX_BYTES + 2] * l2) >> 15, 255);
+                prowdest[b * TEX_BYTES + 3] = psource[b * TEX_BYTES + 3];
 #else
                 // light is 8.8 lightmap units: 128 is the texture as it is
                 // and 255 twice that, as the colormap's top rows were
                 prowdest[b * TEX_BYTES + 0] = min((psource[b * TEX_BYTES + 0] * light[0]) >> 15, 255);
                 prowdest[b * TEX_BYTES + 1] = min((psource[b * TEX_BYTES + 1] * light[1]) >> 15, 255);
                 prowdest[b * TEX_BYTES + 2] = min((psource[b * TEX_BYTES + 2] * light[2]) >> 15, 255);
+                // alpha rides along for an alpha tested face's holes
+                prowdest[b * TEX_BYTES + 3] = psource[b * TEX_BYTES + 3];
 #endif
                 light[0] += lightstep[0];
                 light[1] += lightstep[1];

@@ -171,6 +171,17 @@ static cvar_t   *cl_beam_muzzle_drop;
 // 15 seconds, and heard all over the level that would wear thin.
 static cvar_t   *s_flare_range;
 
+// NVIDIA Flow fire that burns out into smoke, simulated and path traced by
+// the RTX renderer (refresh/vkpt/flow.c), and the BFG's plasma: its ball's
+// trail, its lasers and its blast. 1 adds it to the classic explosion; 2 lets
+// it replace the classic fireball - the model or sprite. The classic light
+// stays unless Flow's own fire lights the scene (pt_flow_lighting). The
+// classic one stays whenever Flow cannot draw: another renderer, or no
+// nvflow.dll.
+static cvar_t   *cl_flow_explosions;
+static cvar_t   *cl_flow_bfg_zaps;
+static cvar_t   *cl_flow_bfg_particles;
+
 
 /*
 =================
@@ -344,6 +355,253 @@ static explosion_t *CL_PlainExplosion(bool big)
 	}
 
     return ex;
+}
+
+/*
+=================
+CL_WaterSurface
+
+The height of the top of the water `origin` is in, to half a unit: where
+the contents straight above it stop being water.
+=================
+*/
+static float CL_WaterSurface(const vec3_t origin)
+{
+    vec3_t p = { origin[0], origin[1], origin[2] };
+    float below = origin[2];
+
+    for (int i = 0; i < 256; i++) {
+        p[2] = below + 16;
+        if (!(CL_PointContents(p) & MASK_WATER))
+            break;
+        below = p[2];
+    }
+
+    float above = p[2];
+    for (int i = 0; i < 5; i++) {
+        p[2] = (below + above) * 0.5f;
+        if (CL_PointContents(p) & MASK_WATER)
+            below = p[2];
+        else
+            above = p[2];
+    }
+
+    return above;
+}
+
+/*
+=================
+CL_FlowEffect
+
+Hands an explosion at `origin` to NVIDIA Flow, see cl_flow_explosions.
+`scale` 1 is a rocket's. Fire does not burn in water or slime: there it
+churns up bubbles instead, whatever made it. In lava it stays fire.
+=================
+*/
+static int CL_FlowEffect(const vec3_t origin, float scale, r_flow_style_t style)
+{
+    if (!cl_flow_explosions->integer || !R_FlowEmit)
+        return 0;
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_BURST,
+        .style = style,
+        .scale = scale,
+    };
+    VectorCopy(origin, emit.origin);
+    VectorCopy(origin, emit.end);
+
+    if (style == R_FLOW_FIRE && (CL_PointContents(origin) & (CONTENTS_WATER | CONTENTS_SLIME))) {
+        emit.style = R_FLOW_BUBBLES;
+        emit.surface = CL_WaterSurface(origin);
+    }
+
+    return R_FlowEmit(&emit);
+}
+
+/*
+=================
+CL_FlowBeam
+
+The BFG's laser as a line of plasma, see CL_FlowEffect.
+=================
+*/
+static void CL_FlowBeam(const vec3_t start, const vec3_t end)
+{
+    if (!cl_flow_explosions->integer || !R_FlowEmit)
+        return;
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_BEAM,
+        .style = R_FLOW_PLASMA,
+        .scale = 1,
+    };
+    VectorCopy(start, emit.origin);
+    VectorCopy(end, emit.end);
+    R_FlowEmit(&emit);
+}
+
+// The last few BFG blasts given to Flow, so that CL_FlowBfgBall can tell
+// the ball's entity, which goes on showing the blast's sprite, what became
+// of its blast.
+#define CL_FLOW_BLASTS  4
+
+static struct {
+    vec3_t  origin;
+    int     time;
+    int     flow;
+} cl_flow_blasts[CL_FLOW_BLASTS];
+static int cl_flow_next_blast;
+
+/*
+=================
+CL_FlowReach
+
+How far the BFG's blast may throw its gas from `start` along `dir`: to the
+first wall, door or window, up to `distance`. It goes past monsters and
+players.
+=================
+*/
+static float CL_FlowReach(const vec3_t start, const vec3_t dir, float distance)
+{
+    vec3_t end;
+    VectorMA(start, distance, dir, end);
+    const trace_t tr = CL_TracePoint(start, end, MASK_SOLID, false);
+    return tr.startsolid ? 0.0f : tr.fraction * distance;
+}
+
+static int CL_FlowBfgBlast(const vec3_t origin)
+{
+    if (!cl_flow_explosions->integer || !R_FlowEmit)
+        return 0;
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_BLAST,
+        .style = R_FLOW_PLASMA,
+        .scale = 1,
+        .reach = CL_FlowReach,
+    };
+    VectorCopy(origin, emit.origin);
+    VectorCopy(origin, emit.end);
+
+    const int flow = R_FlowEmit(&emit);
+    if (!flow)
+        return 0;
+
+    VectorCopy(origin, cl_flow_blasts[cl_flow_next_blast].origin);
+    cl_flow_blasts[cl_flow_next_blast].time = cl.time;
+    cl_flow_blasts[cl_flow_next_blast].flow = flow;
+    cl_flow_next_blast = (cl_flow_next_blast + 1) % CL_FLOW_BLASTS;
+    return flow;
+}
+
+/*
+=================
+CL_FlowBfgSparks
+
+CL_BFGExplosionParticles for a blast Flow draws: cl_flow_bfg_particles of
+its sparks, at half the speed and half the life, so that they stay in the
+cloud instead of filling the room round it.
+=================
+*/
+static void CL_FlowBfgSparks(const vec3_t org)
+{
+    const int count = 256 * Cvar_ClampValue(cl_flow_bfg_particles, 0, 1);
+
+    for (int i = 0; i < count; i++) {
+        cparticle_t *p = CL_AllocParticle();
+        if (!p)
+            return;
+
+        p->time = cl.time;
+
+        p->color = 0xd0 + (Q_rand() & 7);
+        p->brightness = cvar_pt_particle_emissive->value;
+
+        for (int j = 0; j < 3; j++) {
+            p->org[j] = org[j] + ((int)(Q_rand() % 32) - 16);
+            p->vel[j] = (int)(Q_rand() % 192) - 96;
+        }
+
+        p->accel[0] = p->accel[1] = 0;
+        p->accel[2] = -PARTICLE_GRAVITY;
+        p->alpha = 1.0f;
+
+        p->alphavel = -1.6f / (0.5f + frand() * 0.3f);
+    }
+}
+
+/*
+=================
+CL_FlowBfgZap
+
+Whether Flow gets the BFG's zap of one more target this frame. Its blast
+zaps every monster it can see at once; past cl_flow_bfg_zaps of them the
+rest keep only their classic sprite.
+=================
+*/
+static bool CL_FlowBfgZap(void)
+{
+    static int zap_time = -1;
+    static int zaps;
+
+    if (cl.servertime != zap_time) {
+        zap_time = cl.servertime;
+        zaps = 0;
+    }
+    return zaps++ < cl_flow_bfg_zaps->integer;
+}
+
+int CL_FlowBfgBall(int number, const vec3_t origin, bool flying)
+{
+    if (!cl_flow_explosions->integer || !R_FlowEmit)
+        return 0;
+
+    const int hide = (cl_flow_explosions->integer == 2) ? CL_FLOW_HIDE : 0;
+
+    if (flying) {
+        r_flow_emit_t emit = {
+            .kind = R_FLOW_TRAIL,
+            .style = R_FLOW_PLASMA,
+            .scale = 1,
+            .key = number,
+        };
+        VectorCopy(origin, emit.origin);
+        VectorCopy(origin, emit.end);
+        const int flow = R_FlowEmit(&emit);
+        // a trail casts no light of its own, so the ball keeps its classic one
+        return flow ? ((flow & ~R_FLOW_LIT) | hide) : 0;
+    }
+
+    // The blast's sprite runs about half a second.
+    for (int i = 0; i < CL_FLOW_BLASTS; i++) {
+        if (cl_flow_blasts[i].flow && cl.time - cl_flow_blasts[i].time < 1000 &&
+            cl.time >= cl_flow_blasts[i].time &&
+            Distance(cl_flow_blasts[i].origin, origin) < 64)
+            return cl_flow_blasts[i].flow | hide;
+    }
+
+    return 0;
+}
+
+/*
+=================
+CL_FlowExplosion
+
+CL_FlowEffect for the explosion `ex` at te.pos1; with cl_flow_explosions 2,
+the classic sprite then goes. Its light goes when Flow's fire lights the
+scene itself. Call it after cl_disable_explosions has had its say: an
+explosion it turned into a bare light gets no fire either.
+=================
+*/
+static void CL_FlowExplosion(explosion_t *ex, float scale, r_flow_style_t style)
+{
+    if (ex->type != ex_poly)
+        return;
+
+    ex->flow = CL_FlowEffect(te.pos1, scale, style);
+    if (ex->flow && cl_flow_explosions->integer == 2)
+        ex->flow |= CL_FLOW_HIDE;
 }
 
 /*
@@ -763,7 +1021,11 @@ static void CL_AddExplosions(void)
             continue;
 
 		if (cls.ref_type == REF_TYPE_VKPT)
-			CL_AddExplosionLight(ex, frac / (ex->frames - 1));
+		{
+			// Flow's fire lights the scene itself (pt_flow_lighting)
+			if (!(ex->flow & R_FLOW_LIT))
+				CL_AddExplosionLight(ex, frac / (ex->frames - 1));
+		}
 		else
 		{
         if (ex->light)
@@ -784,7 +1046,7 @@ static void CL_AddExplosions(void)
             ent->backlerp = 0.0f;
 
             V_AddEntity(ent);
-        } else if (ex->type != ex_light) {
+        } else if (ex->type != ex_light && !(ex->flow & CL_FLOW_HIDE)) {
             VectorCopy(ent->origin, ent->oldorigin);
 
             if (f < 0)
@@ -1780,6 +2042,8 @@ void CL_ParseTEnt(void)
         if (cl_disable_explosions->integer & NOEXP_GRENADE)
             ex->type = ex_light;
 
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+
         if (!(cl_disable_particles->integer & NOPART_GRENADE_EXPLOSION))
             CL_ExplosionParticles(te.pos1);
 
@@ -1799,12 +2063,14 @@ void CL_ParseTEnt(void)
             ex->frames = 19;
             ex->baseframe = 30;
 		}
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
         CL_ExplosionParticles(te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_grenexp, 1, ATTN_NORM, 0);
         break;
 
     case TE_PLASMA_EXPLOSION:
-        CL_PlainExplosion(false);
+        ex = CL_PlainExplosion(false);
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
         CL_ExplosionParticles(te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
@@ -1814,6 +2080,8 @@ void CL_ParseTEnt(void)
         ex = CL_PlainExplosion(false);
         if (cl_disable_explosions->integer & NOEXP_ROCKET)
             ex->type = ex_light;
+
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
 
         if (!(cl_disable_particles->integer & NOPART_ROCKET_EXPLOSION))
             CL_ExplosionParticles(te.pos1);
@@ -1828,18 +2096,21 @@ void CL_ParseTEnt(void)
         break;
 
     case TE_EXPLOSION1:
-        CL_PlainExplosion(false);
+        ex = CL_PlainExplosion(false);
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
         CL_ExplosionParticles(te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
 
     case TE_EXPLOSION1_NP:
-        CL_PlainExplosion(false);
+        ex = CL_PlainExplosion(false);
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
 
     case TE_EXPLOSION1_BIG:
         ex = CL_PlainExplosion(true);
+        CL_FlowExplosion(ex, 2.0f, R_FLOW_FIRE);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
 
@@ -1857,14 +2128,21 @@ void CL_ParseTEnt(void)
         ex->ent.flags |= RF_TRANSLUCENT;
         ex->ent.alpha = 0.80;
         ex->frames = 4;
+        if (CL_FlowBfgZap())
+            CL_FlowExplosion(ex, 1.0f, R_FLOW_PLASMA);
         break;
 
     case TE_BFG_BIGEXPLOSION:
-        CL_BFGExplosionParticles(te.pos1);
+        // The blast's sprite is the BFG ball's own entity: CL_FlowBfgBall.
+        if (CL_FlowBfgBlast(te.pos1))
+            CL_FlowBfgSparks(te.pos1);
+        else
+            CL_BFGExplosionParticles(te.pos1);
         break;
 
     case TE_BFG_LASER:
         CL_ParseLaser(0xd0d1d2d3);
+        CL_FlowBeam(te.pos1, te.pos2);
         break;
 
     case TE_BUBBLETRAIL:
@@ -1943,7 +2221,8 @@ void CL_ParseTEnt(void)
         break;
 
     case TE_PLAIN_EXPLOSION:
-        CL_PlainExplosion(false);
+        ex = CL_PlainExplosion(false);
+        CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
         break;
 
     case TE_FLASHLIGHT:
@@ -2205,6 +2484,9 @@ void CL_ClearTEnts(void)
 void CL_InitTEnts(void)
 {
     s_flare_range = Cvar_Get("s_flare_range", "1.3", CVAR_ARCHIVE);
+    cl_flow_explosions = Cvar_Get("cl_flow_explosions", "1", CVAR_ARCHIVE);
+    cl_flow_bfg_zaps = Cvar_Get("cl_flow_bfg_zaps", "8", 0);
+    cl_flow_bfg_particles = Cvar_Get("cl_flow_bfg_particles", "0.25", 0);
     cl_beam_thirdperson = Cvar_Get("cl_beam_thirdperson", "0", CVAR_ARCHIVE);
     cl_beam_track_view = Cvar_Get("cl_beam_track_view", "1", CVAR_ARCHIVE);
     // NOT archived, exactly like cl_muzzleflash_offset: a dev knob that

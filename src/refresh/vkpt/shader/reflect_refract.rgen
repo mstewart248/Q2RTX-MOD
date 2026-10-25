@@ -34,6 +34,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "path_tracer_rgen.h"
 #include "path_tracer_transparency.glsl"
 #include "projection.glsl"
+#include "flow.glsl"
 
 layout(constant_id = 0) const uint spec_bounce_index = 0;
 
@@ -877,6 +878,8 @@ main()
 	}
 
 	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false, /* reflection_ray = */ true);
+	// fire and smoke seen in a mirror or through glass (flow.glsl)
+	effects = flow_add_to_effects(effects, reflection_ray, get_rng(RNG_FLOW_JITTER), true);
 	transparent = alpha_blend_premultiplied(transparent, effects * vec4(throughput, 1));
 
 	if(!found_intersection(ray_payload_geometry) || is_sky(triangle.material_id))

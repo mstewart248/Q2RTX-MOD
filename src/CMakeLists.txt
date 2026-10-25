@@ -356,6 +356,7 @@ SET(SRC_VKPT
 	refresh/vkpt/DLSS.c
 	refresh/vkpt/DLSSG.cpp
 	refresh/vkpt/DLSSNR.c
+	refresh/vkpt/flow.c
 	refresh/vkpt/fg_present.c
 	refresh/vkpt/fg_present.h
 	refresh/vkpt/reflex.c
@@ -389,6 +390,8 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/sky_exposure_bake.comp
 	refresh/vkpt/shader/sound_trace.comp
 	refresh/vkpt/shader/sound_diffract.comp
+	refresh/vkpt/shader/flow_lights.comp
+	refresh/vkpt/shader/flow_occupancy.comp
 	refresh/vkpt/shader/bloom_composite.comp
 	refresh/vkpt/shader/bloom_blur.comp
 	refresh/vkpt/shader/bloom_downscale.comp
@@ -661,6 +664,15 @@ IF (TARGET client)
     IF (EXISTS "${CMAKE_SOURCE_DIR}/extern/steamaudio/include/phonon.h")
         TARGET_INCLUDE_DIRECTORIES(client PRIVATE "${CMAKE_SOURCE_DIR}/extern/steamaudio/include")
         TARGET_COMPILE_DEFINITIONS(client PRIVATE USE_STEAMAUDIO=1)
+    ENDIF()
+
+    # NVIDIA Flow (refresh/vkpt/flow.c): headers only, staged by setup/build_flow.py
+    # along with nvflow.dll and nvflowext.dll, which are loaded at run time
+    IF (CONFIG_VKPT_RENDERER AND EXISTS "${CMAKE_SOURCE_DIR}/extern/flow/include/nvflowext/NvFlowExt.h")
+        TARGET_INCLUDE_DIRECTORIES(client PRIVATE
+            "${CMAKE_SOURCE_DIR}/extern/flow/include/nvflow"
+            "${CMAKE_SOURCE_DIR}/extern/flow/include/nvflowext")
+        TARGET_COMPILE_DEFINITIONS(client PRIVATE USE_FLOW=1)
     ENDIF()
 
     TARGET_LINK_LIBRARIES(client stb)

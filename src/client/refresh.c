@@ -495,6 +495,7 @@ bool(*R_InterceptKey)(unsigned key, bool down) = NULL;
 bool(*R_IsHDR)(void) = NULL;
 void(*R_LatencySleep)(void) = NULL;
 bool(*R_SoundTrace)(const r_sound_trace_t *trace, const char **why) = NULL;
+int(*R_FlowEmit)(const r_flow_emit_t *emit) = NULL;
 
 void(*IMG_Unload)(image_t *image) = NULL;
 void(*IMG_Load)(image_t *image, byte *pic) = NULL;

@@ -637,6 +637,48 @@ typedef struct {
 // never can.
 extern bool    (*R_SoundTrace)(const r_sound_trace_t *trace, const char **why);
 
+// What NVIDIA Flow makes of an explosion (refresh/vkpt/flow.c).
+typedef enum {
+    R_FLOW_FIRE,        // a fireball that burns out into smoke
+    R_FLOW_PLASMA,      // the BFG's green flash
+    R_FLOW_BUBBLES,     // under water: foam that rises to `surface`
+    R_FLOW_STYLES
+} r_flow_style_t;
+
+// How an effect puts its gas into NVIDIA Flow.
+typedef enum {
+    R_FLOW_BURST,       // an explosion: a moment's emission at `origin`
+    R_FLOW_TRAIL,       // a moving source, the same `key` every frame it is
+                        // there; it stops the first frame it is not given
+    R_FLOW_BEAM,        // a moment's emission along `origin` to `end`
+    R_FLOW_BLAST,       // the BFG's blast at `origin`: puffs, lumps and jets
+                        // of plasma thrown out as far as `reach` lets them
+} r_flow_kind_t;
+
+typedef struct {
+    r_flow_kind_t   kind;
+    r_flow_style_t  style;
+    vec3_t          origin;
+    vec3_t          end;        // R_FLOW_BEAM
+    float           scale;      // 1 is a rocket's explosion, the BFG ball, a laser, its blast
+    float           surface;    // R_FLOW_BUBBLES: the height of the water above
+    int             key;        // R_FLOW_TRAIL: which source this is
+    // R_FLOW_BLAST: how far gas may go from `start` along the unit `dir`
+    // before the world stops it, up to `distance`; called during R_FlowEmit
+    // only. NULL lets it go anywhere.
+    float           (*reach)(const vec3_t start, const vec3_t dir, float distance);
+} r_flow_emit_t;
+
+// R_FlowEmit's result: drawn at all, and lighting the world itself (the
+// caller's own light for it would be counted twice).
+#define R_FLOW_DRAWN    1
+#define R_FLOW_LIT      2
+
+// An effect for NVIDIA Flow. 0 when it will not be drawn - Flow missing or
+// switched off - so the caller can keep its classic effect; NULL on
+// renderers without Flow.
+extern int     (*R_FlowEmit)(const r_flow_emit_t *emit);
+
 #if REF_GL
 void R_RegisterFunctionsGL(void);
 #endif

@@ -87,7 +87,13 @@ typedef struct {
 	// advanced, so the drift has to integrate from a fixed point.
 	vec3_t      vel;
 	vec3_t      spawn_origin;
+
+	// What NVIDIA Flow made of it: R_FLOW_* flags, and CL_FLOW_HIDE when
+	// its sprite or model has gone in favour of Flow's (cl_flow_explosions 2).
+	int         flow;
 } explosion_t;
+
+#define CL_FLOW_HIDE    0x100
 
 extern explosion_t  cl_explosions[MAX_EXPLOSIONS];
 
@@ -1055,6 +1061,10 @@ void CL_AddPlayerModelFlash(void);
 void CL_RegisterTEntSounds(void);
 void CL_RegisterTEntModels(void);
 void CL_ParseTEnt(void);
+// NVIDIA Flow's part in the BFG ball `number` at `origin` this frame: its
+// plasma trail while `flying`, its blast once it has hit. R_FLOW_* flags,
+// with CL_FLOW_HIDE when the ball's own sprite should go.
+int CL_FlowBfgBall(int number, const vec3_t origin, bool flying);
 void CL_AddTEnts(void);
 float CL_CompassFade(int endtime);
 void CL_ClearTEnts(void);

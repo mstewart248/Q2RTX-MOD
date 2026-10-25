@@ -991,6 +991,7 @@ void R_RegisterFunctionsGL()
 	R_IsHDR = NULL;
 	R_LatencySleep = NULL;
 	R_SoundTrace = NULL;
+	R_FlowEmit = NULL;
 	IMG_Load = IMG_Load_GL;
 	IMG_Unload = IMG_Unload_GL;
 	IMG_ReadPixels = IMG_ReadPixels_GL;

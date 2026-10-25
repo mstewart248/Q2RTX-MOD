@@ -87,7 +87,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_max_log_sky_luminance, -3) /* maximum sky luminance, log2 scale, used for polygon light selection, (-inf..inf) */ \
 	UBO_CVAR_DO(pt_min_log_sky_luminance, -10) /* minimum sky luminance, log2 scale, used for polygon light selection, (-inf..inf) */ \
 	UBO_CVAR_DO(pt_metallic_override, -1) /* overrides metallic parameter of all materials if non-negative, [0..1] */ \
-	UBO_CVAR_DO(pt_ndf_trim, 0.9) /* trim factor for GGX NDF sampling (0..1] */ \
+	UBO_CVAR_DO(pt_ndf_trim, 1) /* trim factor for GGX NDF sampling (0..1]. Below 1 it drops the lobe's tail without reweighting, so reflections lose energy. Was 0.9 (upstream A-SVGF stabilization); 1 since 2026-10-24, as photo mode already used. */ \
 	UBO_CVAR_DO(pt_num_bounce_rays, 1) /* number of bounce rays, valid values are 0 (disabled), 0.5 (half-res diffuse), 1 (full-res diffuse + specular), 2 to 8 (that many bounces; every bounce after the first is diffuse, light sampled with pt_bounce_nee, and from the third on Russian-rouletted with pt_bounce_rr) */ \
 	UBO_CVAR_DO(pt_particle_softness, 0.7) /* particle softness */ \
 	UBO_CVAR_DO(pt_particle_brightness, 100) /* particle brightness */ \
@@ -102,7 +102,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	UBO_CVAR_DO(pt_restir_debug, 0) /* ReSTIR debug view, same numbering the pt_restir 10..26 views used, 0 disables */ \
 	UBO_CVAR_DO(pt_glass_secondary_stochastic, 0) /* secondary glass Fresnel: 0 most-probable path, 1 importance sampled, 2 clamped like reference mode */ \
 	UBO_CVAR_DO(pt_roughness_override, -1) /* overrides roughness of all materials if non-negative, [0..1] */ \
-	UBO_CVAR_DO(pt_specular_anti_flicker, 2) /* fade factor for rough reflections of surfaces far away, [0..inf) */ \
+	UBO_CVAR_DO(pt_specular_anti_flicker, 0) /* fade factor for rough reflections of surfaces far away, [0..inf): divides traced indirect specular by hit distance * roughness * this / 100. Upstream default 2, an A-SVGF hack that only touched surfaces below roughness 0.3 (fake SH specular replaced the rest). With DLSS-RR every surface traces real specular (pt_dlss_indirect_spec), so it dimmed all rough bounce light in big rooms - 0 since 2026-10-24, as photo mode already used. */ \
 	UBO_CVAR_DO(pt_specular_mis, 1) /* enables the use of MIS between specular direct lighting and BRDF specular rays */ \
 	UBO_CVAR_DO(pt_show_sky, 0) /* switch for showing the sky polygons, 0 or 1 */ \
 	UBO_CVAR_DO(pt_sun_bounce_range, 2000) /* range limiter for indirect lighting from the sun, helps reduce noise, (0..inf) */ \

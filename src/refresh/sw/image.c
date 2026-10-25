@@ -247,9 +247,11 @@ void IMG_Unload_SW(image_t *image)
     if (image->sw_pixels8[0] != notexture_pixels8)
         Z_Free(image->sw_pixels8[0]);
     Z_Free(image->sw_glow[0]);
+    Z_Free(image->sw_holes8);
     memset(image->sw_pixels, 0, sizeof(image->sw_pixels));
     memset(image->sw_pixels8, 0, sizeof(image->sw_pixels8));
     memset(image->sw_glow, 0, sizeof(image->sw_glow));
+    image->sw_holes8 = NULL;
 }
 
 static void R_LightScaleTexture(byte *in, int count)
@@ -422,6 +424,17 @@ void IMG_Load_SW(image_t *image, byte *pic)
 
         for (i = 0; i < levels; i++)
             R_Quantize8(image->sw_pixels8[i], image->sw_pixels[i], b >> (i * 2), false);
+
+        // holes for an alpha tested face's 8-bit cache, which is only ever
+        // built at mip 0 (R_BuildPolygonFromSurface); 32-bit reads alpha
+        if (levels == 4 && !(image->flags & IF_TURBULENT)) {
+            for (i = 0; i < b && image->sw_pixels[0][i * TEX_BYTES + 3] >= 128; i++)
+                ;
+            if (i < b) {
+                image->sw_holes8 = R_Malloc(b);
+                R_Quantize8(image->sw_holes8, image->sw_pixels[0], b, true);
+            }
+        }
 
         R_LightScaleTexture(image->sw_pixels[0], size);
 

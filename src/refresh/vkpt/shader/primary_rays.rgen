@@ -34,6 +34,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "path_tracer_rgen.h"
 #include "projection.glsl"
 #include "water_warp.glsl"
+#include "flow.glsl"
 
 Ray
 get_primary_ray(vec2 screen_pos)
@@ -270,6 +271,8 @@ main()
 	}
 
 	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false, /* reflection_ray = */ false);
+	// NVIDIA Flow's fire and smoke (flow.glsl), between the eye and what the ray hit
+	effects = flow_add_to_effects(effects, ray, get_rng(RNG_FLOW_JITTER), false);
 
 	direction = ray.direction;
 

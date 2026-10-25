@@ -253,6 +253,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define BINDING_OFFSET_TERRAIN_NORMALS (BINDING_OFFSET_TERRAIN_ALBEDO + 1)
 #define BINDING_OFFSET_TERRAIN_DEPTH (BINDING_OFFSET_TERRAIN_NORMALS + 1)
 #define BINDING_OFFSET_TERRAIN_SHADOWMAP (BINDING_OFFSET_TERRAIN_DEPTH + 1)
+// NVIDIA Flow's fire and smoke: the density atlas, its block table and the
+// FlowParams that describe them - see flow.c and flow_common.glsl, which
+// declares them - and what flow_lights.comp adds up of their glow, and
+// which bricks of each block flow_occupancy.comp found anything in.
+#define BINDING_OFFSET_FLOW_DENSITY (BINDING_OFFSET_TERRAIN_SHADOWMAP + 1)
+#define BINDING_OFFSET_FLOW_TABLE (BINDING_OFFSET_FLOW_DENSITY + 1)
+#define BINDING_OFFSET_FLOW_PARAMS (BINDING_OFFSET_FLOW_TABLE + 1)
+#define BINDING_OFFSET_FLOW_LIGHTS (BINDING_OFFSET_FLOW_PARAMS + 1)
+#define BINDING_OFFSET_FLOW_OCCUPANCY (BINDING_OFFSET_FLOW_LIGHTS + 1)
 
 
 #ifndef VKPT_SHADER

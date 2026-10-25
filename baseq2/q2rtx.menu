@@ -588,6 +588,16 @@ begin effects
     toggle --status "(cl_disable_explosions)" "grenade explosions" cl_disable_explosions ~0
     toggle --status "(cl_disable_explosions)" "rocket explosions" cl_disable_explosions ~1
     toggle --status "(cl_explosion_sprites)" "explosion sprites" cl_explosion_sprites
+    // Only with nvflow.dll and nvflowext.dll next to q2rtx.exe (setup/build_flow.py)
+    // and the RTX renderer - see vkpt/flow.c, which sets flow_available.
+    ifeq flow_available 1
+    pairs --status "fire that burns out into rising smoke, and the BFG's plasma, simulated by NVIDIA Flow and path traced. 'with classic' adds it to the usual fireball, 'instead' replaces the fireball (cl_flow_explosions)" \
+        "simulated fire and smoke" cl_flow_explosions off 0 "with classic" 1 instead 2
+    toggle --status "the simulated fire and plasma light the room and the smoke, in place of the classic explosion light (pt_flow_lighting)" \
+        "simulated fire casts light" pt_flow_lighting
+    toggle --status "walls, floors and ceilings hold the simulated smoke in instead of letting it drift through - costs about 0.4 ms while there is smoke (pt_flow_collision)" \
+        "smoke collides with the world" pt_flow_collision
+    endif
     toggle --status "rerelease-style muzzle flash models, on your own weapon and on monsters (cl_muzzleflash_models)" "muzzle flash models" cl_muzzleflash_models
     range --status "size of the flash on monsters and other players (cl_muzzleflash_scale)" "muzzle flash size" cl_muzzleflash_scale 0.5 12 0.5
     range --status "how bright the flash renders on monsters and other players (cl_muzzleflash_brightness)" "muzzle flash brightness" cl_muzzleflash_brightness 0.05 1 0.05

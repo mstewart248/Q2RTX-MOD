@@ -105,6 +105,10 @@ typedef struct image_s {
     // at its size and mips, how far each texel is taken to full light; a
     // skin's is RGBA, premultiplied, added after lighting.
     byte            *sw_glow[4];
+    // A wall with holes (alpha under half): mip 0 again as palette indices,
+    // the holes 255, for the 8-bit cache of an alpha tested face; sw_pixels8
+    // keeps the filled texels every other face shows. NULL without holes.
+    byte            *sw_holes8;
 #endif
 } image_t;
 

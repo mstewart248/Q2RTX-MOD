@@ -89,9 +89,11 @@ static void R_DrawSpanletOpaque(spanletvars_t *sv)
     const int   width = cachewidth;
     const byte  *ptex;
 
+    // alpha under half is a hole, as 255 is in 8-bit (an alpha tested face;
+    // anything else drawn opaque has none)
     do {
-        if (*pz <= (izi >> 16)) {
-            ptex = pbase + (s >> 16) * TEX_BYTES + (t >> 16) * width;
+        ptex = pbase + (s >> 16) * TEX_BYTES + (t >> 16) * width;
+        if ((ptex[3] & 0x80) && *pz <= (izi >> 16)) {
             pdest[0] = ptex[2];
             pdest[1] = ptex[1];
             pdest[2] = ptex[0];
@@ -922,23 +924,38 @@ static void R_DrawPoly(int iswater)
 */
 void R_DrawAlphaSurfaces(void)
 {
-    mface_t *s = r_alpha_surfaces;
+    mface_t *s;
 
     //currentmodel = r_worldmodel;
+
+    // the faces are lit here, in world space: left as the last model drawn,
+    // that model's origin and frame moved the dynamic lights and animation
+    currententity = &r_worldentity;
 
     modelorg[0] = -r_origin[0];
     modelorg[1] = -r_origin[1];
     modelorg[2] = -r_origin[2];
 
-    while (s) {
+    // alpha tested faces first: they write z, so translucent ones in front
+    // still blend over them, and ones behind are still hidden
+    for (s = r_alpha_surfaces; s; s = s->next) {
+        if (!SW_ALPHATEST(s->texinfo->c.flags))
+            continue;
+
+        R_BuildPolygonFromSurface(s);
+        R_ClipAndDrawPoly(1.0f, false, true);
+    }
+
+    for (s = r_alpha_surfaces; s; s = s->next) {
+        if (SW_ALPHATEST(s->texinfo->c.flags))
+            continue;
+
         R_BuildPolygonFromSurface(s);
 
         if (s->texinfo->c.flags & SURF_TRANS66)
             R_ClipAndDrawPoly(0.66f, (s->texinfo->c.flags & (SURF_WARP | SURF_FLOWING)), true);
         else
             R_ClipAndDrawPoly(0.33f, (s->texinfo->c.flags & (SURF_WARP | SURF_FLOWING)), true);
-
-        s = s->next;
     }
 
     r_alpha_surfaces = NULL;

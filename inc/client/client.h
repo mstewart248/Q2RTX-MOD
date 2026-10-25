@@ -99,6 +99,7 @@ void Con_SetColor(color_index_t color);
 void Con_Print(const char *text);
 void Con_Printf(const char *fmt, ...) q_printf(1, 2);
 void Con_Close(bool force);
+void Con_SkipNotify(bool skip);
 
 void SCR_BeginLoadingPlaque(void);
 void SCR_EndLoadingPlaque(void);
@@ -150,6 +151,7 @@ float V_CalcFov(float fov_x, float width, float height);
 #define Con_Init()                      (void)0
 #define Con_SetColor(color)             (void)0
 #define Con_Print(text)                 (void)0
+#define Con_SkipNotify(skip)            (void)0
 
 #define SCR_BeginLoadingPlaque()        (void)0
 #define SCR_EndLoadingPlaque()          (void)0

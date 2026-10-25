@@ -1,0 +1,171 @@
+/*
+Copyright (C) 2026 Q2RTX contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+/* ============================================================================
+   The light NVIDIA Flow's fire and plasma give off, added up per block.
+
+   One workgroup per allocated block of the density level. It goes to the
+   light slot of its layer whose seed (FlowParams.seeds, where flow.c last
+   saw that explosion's glow) is nearest the block's centre and near enough,
+   and adds up, over every other cell in each direction, the glow of the
+   block's colour map: colour, glow-weighted position from the seed, and
+   glow-weighted squared distance from it. flow.c reads the sums back two
+   frames later, adds the blocks of each slot together, and puts a sphere
+   light where the glow is, as wide as it is spread and as bright as it is
+   in all - see flow_lights_collect in flow.c.
+
+   The glow here is the colour map alone, before pt_flow_fire_brightness and
+   without the adapted luminance: a light must not be brighter for a darker
+   room, or the room would never settle.
+   ============================================================================ */
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+#define GROUP_SIZE 256
+layout(local_size_x = GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+#include "flow_common.glsl"
+
+layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_LIGHTS, std430)
+writeonly buffer FLOW_LIGHTS_BUFFER { vec4 flow_light_sums[]; };
+
+shared vec4 s_glow[GROUP_SIZE];      // rgb glow, w unused
+shared vec4 s_position[GROUP_SIZE];  // glow-weighted position, glow
+shared float s_spread[GROUP_SIZE];   // glow-weighted squared distance
+
+void main()
+{
+	const uint block = gl_WorkGroupID.x;
+	const uint thread = gl_LocalInvocationIndex;
+	const uint out_base = block * FLOW_LIGHT_SUM_VEC4S;
+
+	// The block's location and layer: NvFlowBlockIdxToLocation.
+	const uint li = (block << 2u) + flow_params.table_offsets.y;
+	const ivec4 location = ivec4(int(flow_table[li + 0u]), int(flow_table[li + 1u]),
+	                             int(flow_table[li + 2u]), int(flow_table[li + 3u]));
+
+	uint colormap = 0u;
+	vec3 balance = vec3(1);   // the glow's colour balance, so the light is the colour of the fire
+	for (int l = 0; l < FLOW_LAYERS; l++)
+	{
+		if (flow_params.layers[l].info.x != 0u && int(flow_params.layers[l].info.y) == location.w)
+		{
+			colormap = flow_params.layers[l].info.z;
+			balance = flow_params.layers[l].emission.yzw;
+		}
+	}
+
+	const ivec3 bits = ivec3(flow_params.block_dim_bits.xyz);
+	const vec3 cells_per_unit = flow_params.cell_size_inv.xyz;
+	const ivec3 first_cell = location.xyz << bits;
+	const ivec3 dim = ivec3(1) << bits;
+
+	// The nearest seed of the layer to the block's centre takes the whole
+	// block, if the centre is within the seed's reach - the half diagonal of
+	// a block further, so that a block reaching into it counts.
+	int slot = -1;
+	if (colormap != 0u)
+	{
+		const vec3 centre = (vec3(first_cell) + 0.5 * vec3(dim)) / cells_per_unit;
+		const float half_diagonal = 0.5 * length(vec3(dim) / cells_per_unit);
+		float best = 1e30;
+		for (int i = 0; i < FLOW_MAX_LIGHTS; i++)
+		{
+			const float reach = flow_params.seeds[i].w;
+			if (reach <= 0.0 || int(flow_params.seed_layers[i].x) != location.w)
+				continue;
+			const vec3 d = flow_params.seeds[i].xyz - centre;
+			const float dd = dot(d, d);
+			if (dd < best && dd < (reach + half_diagonal) * (reach + half_diagonal))
+			{
+				best = dd;
+				slot = i;
+			}
+		}
+	}
+
+	// Uniform across the group: nothing glows here, or no light takes it.
+	if (slot < 0)
+	{
+		if (thread == 0u)
+		{
+			flow_light_sums[out_base + 0u] = vec4(0, 0, 0, -1);
+			flow_light_sums[out_base + 1u] = vec4(0);
+			flow_light_sums[out_base + 2u] = vec4(0);
+		}
+		return;
+	}
+
+	const ivec3 base = flow_block_base(flow_table[block + flow_params.table_offsets.z]);
+	const vec3 seed = flow_params.seeds[slot].xyz;
+
+	// Every other cell each way, each standing for the 2x2x2 round it.
+	const ivec3 sdim = max(dim >> 1, ivec3(1));
+	const int count = sdim.x * sdim.y * sdim.z;
+
+	vec3 glow = vec3(0);
+	vec4 position = vec4(0);
+	float spread = 0.0;
+	for (int s = int(thread); s < count; s += GROUP_SIZE)
+	{
+		const ivec3 c = ivec3(s % sdim.x, (s / sdim.x) % sdim.y, s / (sdim.x * sdim.y)) * 2;
+		const float temperature = texelFetch(TEX_FLOW_DENSITY, base + c, 0).x;
+		const vec3 e = flow_colormap(colormap, temperature) * balance;
+		const float w = flow_luminance(e);
+		if (w <= 0.0)
+			continue;
+		const vec3 p = (vec3(first_cell + c) + 1.0) / cells_per_unit - seed;
+		glow += e;
+		position += vec4(p * w, w);
+		spread += w * dot(p, p);
+	}
+
+	s_glow[thread] = vec4(glow, 0);
+	s_position[thread] = position;
+	s_spread[thread] = spread;
+	barrier();
+
+	for (uint stride = GROUP_SIZE / 2u; stride > 0u; stride >>= 1u)
+	{
+		if (thread < stride)
+		{
+			s_glow[thread] += s_glow[thread + stride];
+			s_position[thread] += s_position[thread + stride];
+			s_spread[thread] += s_spread[thread + stride];
+		}
+		barrier();
+	}
+
+	if (thread == 0u)
+	{
+		// A sample stands for 8 cells.
+		const vec3 cell_size = 1.0 / cells_per_unit;
+		const float volume = 8.0 * cell_size.x * cell_size.y * cell_size.z;
+		flow_light_sums[out_base + 0u] = vec4(s_glow[0].rgb * volume, float(slot));
+		flow_light_sums[out_base + 1u] = s_position[0] * volume;
+		flow_light_sums[out_base + 2u] = vec4(s_spread[0] * volume, 0, 0, 0);
+	}
+}

@@ -256,6 +256,14 @@ typedef struct clipplane_s {
 #define SW_S_MAX(surf)  (((surf)->extents[0] >> 4) + 1)
 #define SW_T_MAX(surf)  (((surf)->extents[1] >> 4) + 1)
 
+// An alpha tested face (the rerelease's foliage, roots, grates) can't be one
+// of the edge renderer's surfaces, which hide everything behind them; it is
+// drawn after the world with the translucent ones, holes cut. A translucent
+// one blends as it always did, and a warping one stays solid: the turbulent
+// spanlets have no holes.
+#define SW_ALPHATEST(flags) \
+    (((flags) & (SURF_ALPHATEST | SURF_TRANS_MASK | SURF_WARP | SURF_FLOWING)) == SURF_ALPHATEST)
+
 typedef int blocklight_t;
 
 typedef struct surfcache_s {

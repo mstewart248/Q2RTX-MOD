@@ -1117,6 +1117,7 @@ void R_RegisterFunctionsSW(void)
     R_IsHDR = NULL;
     R_LatencySleep = NULL;
     R_SoundTrace = NULL;
+    R_FlowEmit = NULL;
     IMG_Load = IMG_Load_SW;
     IMG_Unload = IMG_Unload_SW;
     IMG_ReadPixels = IMG_ReadPixels_SW;

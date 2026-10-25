@@ -1559,6 +1559,37 @@ vkpt_textures_initialize()
 			.descriptorCount = 1,
 			.binding = BINDING_OFFSET_TERRAIN_SHADOWMAP,
 			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		/* NVIDIA Flow (flow.c): written by vkpt_flow_initialize, then every frame */
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.binding = BINDING_OFFSET_FLOW_DENSITY,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = BINDING_OFFSET_FLOW_TABLE,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = BINDING_OFFSET_FLOW_PARAMS,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = BINDING_OFFSET_FLOW_LIGHTS,
+			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = BINDING_OFFSET_FLOW_OCCUPANCY,
+			.stageFlags = VK_SHADER_STAGE_ALL,
 		}
 	};
 
@@ -1579,6 +1610,11 @@ vkpt_textures_initialize()
 		{
 			.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			.descriptorCount = MAX_FRAMES_IN_FLIGHT * MAX_RIMAGES
+		},
+		{
+			/* BINDING_OFFSET_FLOW_TABLE, _PARAMS, _LIGHTS and _OCCUPANCY */
+			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = MAX_FRAMES_IN_FLIGHT * 4
 		}
 	};
 
@@ -2551,18 +2587,24 @@ LIST_IMAGES_A_B
 		/* Always printed, not Com_DPrintf: that is compiled out in release, so the
 		   only report of this figure was the over-half-of-VRAM warning above. That
 		   left it invisible on exactly the machines where it is still large but not
-		   yet alarming, and gave no way to measure a reduction in it. */
+		   yet alarming, and gave no way to measure a reduction in it. Console only,
+		   though: entering and leaving photo mode rebuilds these images, and the
+		   lines used to flash over the screen every time. */
+		Con_SkipNotify(true);
 		Com_Printf("Screen-space image memory: %.2f MB of %.2f MB video memory\n",
 		           (float)total_size / megabyte, (float)video_memory_size / megabyte);
+		Con_SkipNotify(false);
 	}
 
 	if (skipped_count > 0)
 	{
+		Con_SkipNotify(true);
 		Com_Printf("Screen-space images: %d not allocated (%.2f MB saved) -%s%s%s\n",
 		           skipped_count, (float)skipped_size / megabyte,
 		           (image_profile & SCREEN_IMG_GROUP_ASVGF_FILTER) ? "" : " A-SVGF",
 		           (image_profile & SCREEN_IMG_GROUP_FSR) ? "" : " FSR",
 		           (image_profile & SCREEN_IMG_GROUP_ACCUM) ? "" : " photo-mode");
+		Con_SkipNotify(false);
 	}
 
 	/* attach labels to images */

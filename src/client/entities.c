@@ -866,9 +866,12 @@ static void CL_AddPacketEntities(void)
             goto skip;
         }
 
+        // NVIDIA Flow's plasma: the ball's trail, or what became of its blast
+        int flow_bfg = 0;
         if (effects & EF_BFG) {
             ent.flags |= RF_TRANSLUCENT;
             ent.alpha = 0.30f;
+            flow_bfg = CL_FlowBfgBall(s1->number, ent.origin, effects & EF_ANIM_ALLFAST);
         }
 
         if (effects & EF_PLASMA) {
@@ -926,7 +929,8 @@ static void CL_AddPacketEntities(void)
 		}
 
         // add to refresh list
-        V_AddEntity(&ent);
+        if (!(flow_bfg & CL_FLOW_HIDE))
+            V_AddEntity(&ent);
 
 		// add dlights for flares
 		model_t* model;
@@ -1088,7 +1092,9 @@ static void CL_AddPacketEntities(void)
                     i = bfg_lightramp[i];
                 }
 				const vec3_t nvgreen = { 0.2716f, 0.5795f, 0.04615f };
-				V_AddSphereLight(ent.origin, i, nvgreen[0], nvgreen[1], nvgreen[2], 20.f);
+				// Flow's blast lights the scene itself (pt_flow_lighting)
+				if (!(flow_bfg & R_FLOW_LIT))
+					V_AddSphereLight(ent.origin, i, nvgreen[0], nvgreen[1], nvgreen[2], 20.f);
             } else if (effects & EF_TRAP) {
                 ent.origin[2] += 32;
                 CL_TrapParticles(cent, ent.origin);

@@ -117,6 +117,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_SHARC_RESOLVE_COMP)                     \
 	SHADER_MODULE_DO(QVK_MOD_SOUND_TRACE_COMP)                       \
 	SHADER_MODULE_DO(QVK_MOD_SOUND_DIFFRACT_COMP)                    \
+	SHADER_MODULE_DO(QVK_MOD_FLOW_LIGHTS_COMP)                       \
+	SHADER_MODULE_DO(QVK_MOD_FLOW_OCCUPANCY_COMP)                    \
 
 #define LIST_RT_RGEN_SHADER_MODULES \
 	SHADER_MODULE_DO(QVK_MOD_PRIMARY_RAYS_RGEN)                      \
@@ -266,6 +268,9 @@ typedef struct QVK_s {
 	bool                        use_ray_query;
 	bool                        enable_validation;
 	bool                        supports_fp16;
+	/* shaderStorageImageRead/WriteWithoutFormat, which NVIDIA Flow's shaders
+	   need (flow.c). Enabled on the device when present; nothing of ours uses them. */
+	bool                        supports_storage_image_without_format;
 
 	cmd_buf_group_t             cmd_buffers_graphics;
 	cmd_buf_group_t             cmd_buffers_transfer;
@@ -1047,6 +1052,19 @@ VkResult vkpt_sound_destroy_pipelines(void);
 void vkpt_sound_register(void);
 void vkpt_sound_lock(void);
 void vkpt_sound_unlock(void);
+
+// NVIDIA Flow fire and smoke for explosions - see flow.c
+VkResult vkpt_flow_initialize(void);
+VkResult vkpt_flow_destroy(void);
+void vkpt_flow_register(void);
+void vkpt_flow_reset(void);
+void vkpt_flow_update(const refdef_t *fd, bool render_world);
+VkResult vkpt_flow_create_pipelines(void);
+VkResult vkpt_flow_destroy_pipelines(void);
+// the world's opaque triangles, which hold the gas in (pt_flow_collision)
+void vkpt_flow_set_world(const struct bsp_mesh_s *wm);
+// the lights the fire and plasma cast (pt_flow_lighting); how many
+int vkpt_flow_lights(dlight_t *lights, int max_lights);
 
 VkResult vkpt_initialize_god_rays(void);
 VkResult vkpt_destroy_god_rays(void);

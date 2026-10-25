@@ -133,7 +133,12 @@ static void R_DrawSurface(surfbuild_t *b)
     mt = ds->image;
 
     if (r_8bit) {
-        source = mt->sw_pixels8[ds->surfmip];
+        // an alpha tested face keeps its holes (255), which every colormap
+        // row passes through for R_DrawSpanletOpaque8 to skip
+        if (ds->surfmip == 0 && mt->sw_holes8 && SW_ALPHATEST(ds->surf->texinfo->c.flags))
+            source = mt->sw_holes8;
+        else
+            source = mt->sw_pixels8[ds->surfmip];
         c.lightwidth = SW_S_MAX(ds->surf);
         pblockdrawer = surfmiptable8[ds->surfmip];
     } else {
