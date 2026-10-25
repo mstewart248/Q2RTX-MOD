@@ -1574,7 +1574,7 @@ vkpt_textures_initialize()
 			.stageFlags = VK_SHADER_STAGE_ALL,
 		},
 		{
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			.descriptorCount = 1,
 			.binding = BINDING_OFFSET_FLOW_PARAMS,
 			.stageFlags = VK_SHADER_STAGE_ALL,
@@ -1618,9 +1618,14 @@ vkpt_textures_initialize()
 			.descriptorCount = MAX_FRAMES_IN_FLIGHT * MAX_RIMAGES
 		},
 		{
-			/* BINDING_OFFSET_FLOW_TABLE, _PARAMS, _LIGHTS and _OCCUPANCY */
+			/* BINDING_OFFSET_FLOW_TABLE, _LIGHTS and _OCCUPANCY */
 			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.descriptorCount = MAX_FRAMES_IN_FLIGHT * 4
+			.descriptorCount = MAX_FRAMES_IN_FLIGHT * 3
+		},
+		{
+			/* BINDING_OFFSET_FLOW_PARAMS */
+			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = MAX_FRAMES_IN_FLIGHT
 		}
 	};
 

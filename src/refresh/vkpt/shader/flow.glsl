@@ -171,7 +171,9 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 
 		const ivec3 local = ivec3(floor(cell)) - (b << block_bits);
 		const uint bit = flow_brick_bit(local);
-		if ((occupied[bit >> 5u] & (1u << (bit & 31u))) == 0u)
+		// Not occupied[bit >> 5u]: a vector indexed at run time goes to local memory.
+		const uint word = bit < 64u ? (bit < 32u ? occupied.x : occupied.y) : (bit < 96u ? occupied.z : occupied.w);
+		if ((word & (1u << (bit & 31u))) == 0u)
 		{
 			// Nothing to see here: go to where the ray leaves this brick, or
 			// this block when none of it is marked.

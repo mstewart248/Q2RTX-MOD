@@ -46,8 +46,12 @@ uniform sampler3D TEX_FLOW_DENSITY;
 layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_TABLE, std430)
 readonly buffer FLOW_TABLE_BUFFER { uint flow_table[]; };
 
-layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_PARAMS, std430)
-readonly buffer FLOW_PARAMS_BUFFER { FlowParams flow_params; };
+// A uniform buffer: every thread reads the same values, which the constant
+// cache serves best, and a march reading it needs fewer registers than one
+// reading a storage buffer - a fifth faster again, after the colour maps.
+// FlowParams is all vec4s, so std140 lays it out as the C struct is.
+layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_PARAMS, std140)
+uniform FLOW_PARAMS_BUFFER { FlowParams flow_params; };
 
 // The atlas texel of the first cell of a block, past its one-cell border,
 // from the block's table value; NvFlowTableValueToIndexRead at thread 0.
@@ -121,16 +125,14 @@ uint flow_brick_bit(ivec3 cell)
 // adapted luminance at most.
 #define FLOW_EMPTY_EXTINCTION 1e-5
 
-// A colour map: six points over 0..1, linear in between.
-vec3 flow_ramp(float t, const float x[6], const vec3 c[6])
+// The colour maps are six points over 0..1, linear in between, written out a
+// stretch at a time rather than looked up in arrays: NVIDIA's compiler puts
+// constant arrays indexed in a loop in local memory, which made the march
+// more than twice as slow (measured headless on a 5070 Ti, 10-25). One
+// stretch, from c0 at x0 to c1 at x1:
+vec3 flow_ramp_stretch(float t, float x0, float x1, vec3 c0, vec3 c1)
 {
-	t = clamp(t, 0.0, 1.0);
-	for (int i = 1; i < 6; i++)
-	{
-		if (t <= x[i])
-			return mix(c[i - 1], c[i], (t - x[i - 1]) / (x[i] - x[i - 1]));
-	}
-	return c[5];
+	return mix(c0, c1, (t - x0) / (x1 - x0));
 }
 
 // The glow of fire over temperature 0..1: Flow's default fire colour map
@@ -140,33 +142,41 @@ vec3 flow_ramp(float t, const float x[6], const vec3 c[6])
 // has the dark grey of unlit smoke. Flow's renderer hides that grey wherever
 // there is no smoke by weighting the map with it; here the glow does not
 // depend on the smoke, so the grey would make every allocated block of
-// cold, clear air glow.
+// cold, clear air glow. Points at 0, 0.05, 0.15 (all black), 0.6, 0.85, 1.
 vec3 flow_fire_color(float temperature)
 {
-	const float x[6] = float[](0.0, 0.05, 0.15, 0.6, 0.85, 1.0);
-	const vec3 c[6] = vec3[](
-		vec3(0.0),
-		vec3(0.0),
-		vec3(0.0),
-		vec3(1.0, 0.1594125, 0.0135315),
-		vec3(13.534992, 2.986956, 0.125991),
-		vec3(78.08, 39.04, 6.1));
-	return flow_ramp(temperature, x, c) * 2.5;
+	const float t = clamp(temperature, 0.0, 1.0);
+	const vec3 c3 = vec3(1.0, 0.1594125, 0.0135315);
+	const vec3 c4 = vec3(13.534992, 2.986956, 0.125991);
+	const vec3 c5 = vec3(78.08, 39.04, 6.1);
+	if (t <= 0.15)
+		return vec3(0);
+	if (t <= 0.6)
+		return flow_ramp_stretch(t, 0.15, 0.6, vec3(0), c3) * 2.5;
+	if (t <= 0.85)
+		return flow_ramp_stretch(t, 0.6, 0.85, c3, c4) * 2.5;
+	return flow_ramp_stretch(t, 0.85, 1.0, c4, c5) * 2.5;
 }
 
 // The BFG's plasma: black when cool, then the green of its sprite and light,
 // going yellow-white at the hottest. About as bright as the fire map at the top.
+// Points at 0, 0.05 (both black), 0.2, 0.5, 0.8, 1.
 vec3 flow_plasma_color(float temperature)
 {
-	const float x[6] = float[](0.0, 0.05, 0.2, 0.5, 0.8, 1.0);
-	const vec3 c[6] = vec3[](
-		vec3(0.0),
-		vec3(0.0),
-		vec3(0.03, 0.2, 0.02),
-		vec3(0.5, 3.0, 0.3),
-		vec3(5.0, 20.0, 3.0),
-		vec3(35.0, 55.0, 20.0));
-	return flow_ramp(temperature, x, c) * 2.5;
+	const float t = clamp(temperature, 0.0, 1.0);
+	const vec3 c2 = vec3(0.03, 0.2, 0.02);
+	const vec3 c3 = vec3(0.5, 3.0, 0.3);
+	const vec3 c4 = vec3(5.0, 20.0, 3.0);
+	const vec3 c5 = vec3(35.0, 55.0, 20.0);
+	if (t <= 0.05)
+		return vec3(0);
+	if (t <= 0.2)
+		return flow_ramp_stretch(t, 0.05, 0.2, vec3(0), c2) * 2.5;
+	if (t <= 0.5)
+		return flow_ramp_stretch(t, 0.2, 0.5, c2, c3) * 2.5;
+	if (t <= 0.8)
+		return flow_ramp_stretch(t, 0.5, 0.8, c3, c4) * 2.5;
+	return flow_ramp_stretch(t, 0.8, 1.0, c4, c5) * 2.5;
 }
 
 // FlowLayerParams.info.z: 0 is a layer that does not glow.

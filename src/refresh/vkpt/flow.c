@@ -2248,7 +2248,7 @@ static void flow_write_descriptors(int set, VkImageView density_view, VkImageLay
 			.dstSet = desc_set,
 			.dstBinding = BINDING_OFFSET_FLOW_PARAMS,
 			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			.pBufferInfo = &params_info,
 		},
 		{
@@ -2357,9 +2357,10 @@ static VkResult flow_create_dummies(void)
 	_VK(buffer_create(&flow.dummy_table, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
 
-	// 256 is the most minStorageBufferOffsetAlignment may be.
+	// A uniform buffer (see flow_common.glsl). 256 is the most
+	// minUniformBufferOffsetAlignment may be.
 	flow.params_stride = align(sizeof(FlowParams), 256);
-	_VK(buffer_create(&flow.params, flow.params_stride * FLOW_SET_COUNT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	_VK(buffer_create(&flow.params, flow.params_stride * FLOW_SET_COUNT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 	flow.params_mapped = buffer_map(&flow.params);
 	memset(flow.params_mapped, 0, flow.params_stride * FLOW_SET_COUNT);
