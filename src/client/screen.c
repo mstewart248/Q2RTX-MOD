@@ -3628,6 +3628,11 @@ static void SCR_ExecuteLayoutString(const char *s)
         if (!strcmp(token, "stat_string")) {
             token = COM_Parse(&s);
             index = SCR_LayoutStat(atoi(token));
+            // the stat holds a configstring index in the sender's own layout
+            // (CS_PLAYERSKINS + n for "Chasing <name>"), which for a stock
+            // server or demo is not ours
+            if (cl.old_configstrings)
+                index = CL_RemapOldConfigstring(index);
             if (index < 0 || index >= MAX_CONFIGSTRINGS) {
                 if (!cl.kex_protocol)
                     Com_Error(ERR_DROP, "%s: invalid string index", __func__);

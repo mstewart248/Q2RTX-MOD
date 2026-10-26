@@ -375,14 +375,15 @@ typedef struct client_state_s {
     int         gun_prev_frame;
     int         gun_anim_start;
 
-    // Which protocol encoding the demo being played back uses. The two halves
-    // are tracked apart because this fork changed them in separate commits, so
-    // a demo recorded in between has one and not the other. Not known until the
-    // first configstring settles it. See the OLD CONFIGSTRING LAYOUT block in
-    // parse.c.
-    bool        demo_encoding_known;
-    bool        demo_old_configstrings;
-    bool        demo_old_indices;
+    // Which protocol encoding the server or the demo being played back uses.
+    // A live server's is known from serverdata: stock unless it is Overdrive.
+    // A demo's is not known until its first configstring settles it, and the
+    // two halves are tracked apart because this fork changed them in separate
+    // commits, so a demo recorded in between has one and not the other. See
+    // the OLD CONFIGSTRING LAYOUT block in parse.c.
+    bool        encoding_known;
+    bool        old_configstrings;
+    bool        old_indices;
 
     char        baseconfigstrings[MAX_CONFIGSTRINGS][MAX_QPATH];
     char        configstrings[MAX_CONFIGSTRINGS][MAX_QPATH];
@@ -547,6 +548,12 @@ typedef struct client_static_s {
     netchan_t   *netchan;
     int         serverProtocol;     // in case we are doing some kind of version hack
     int         protocolVersion;    // minor version
+
+    // Talking to an Overdrive server with Overdrive's encoding. serverProtocol
+    // is PROTOCOL_VERSION_Q2PRO then, since that is the framing on the wire;
+    // when this is false a live server is stock Quake II and its configstrings
+    // and model indices are translated. See PROTOCOL_VERSION_OVERDRIVE.
+    bool        overdrive;
 
     int         challenge;          // from the server to use for connecting
 
@@ -883,6 +890,11 @@ extern snd_params_t     snd;
 void CL_ParseServerMessage(void);
 void CL_SeekDemoMessage(void);
 void CL_SetServerFrameTime(int fps);
+
+// Turns a configstring index in the stock layout into ours, or -1 if it has no
+// counterpart. For indices that do not arrive as configstrings - a layout's
+// stat_string names one by a stat value. See OLD CONFIGSTRING LAYOUT in parse.c.
+int CL_RemapOldConfigstring(int index);
 
 // Handlers shared with the rerelease demo compatibility layer. Its message
 // dispatch is a separate loop (KEX renumbered every server command above

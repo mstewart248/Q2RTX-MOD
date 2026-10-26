@@ -493,6 +493,11 @@ packetentities:
   one and not the other. The two are therefore tracked apart, and cl_demo_encoding
   can force either or both if the guess ever comes out wrong.
 
+  A live server needs no guess. Overdrive's own server says so in the handshake
+  (PROTOCOL_VERSION_OVERDRIVE), so a server that did not is stock Quake II and
+  gets both translations from serverdata on. That is all it takes to play on
+  vanilla, R1Q2 and Q2PRO servers: the rest of the stream is unchanged.
+
 =====================================================================
 */
 
@@ -511,10 +516,28 @@ packetentities:
 #define DEMO_ENC_OLD_CONFIGSTRINGS  1
 #define DEMO_ENC_OLD_INDICES        2
 
-// Record which encoding the demo uses. The configstring layout and the width of
-// the model and gun indices moved together, in the same change, so one verdict
-// drives both - the index widths through cl.esFlags, which is what the entity
-// and player state parsers in msg.c read.
+// Record which encoding the server or demo uses. The index widths go through
+// cl.esFlags, which is what the entity and player state parsers in msg.c read.
+static void CL_SetEncoding(bool old_configstrings, bool old_indices)
+{
+    cl.encoding_known = true;
+    cl.old_configstrings = old_configstrings;
+    cl.old_indices = old_indices;
+
+    if (old_indices)
+        cl.esFlags |= MSG_ES_BYTEINDICES;
+    else
+        cl.esFlags &= ~MSG_ES_BYTEINDICES;
+
+    Com_DPrintf("%s encoding: %s configstrings, %s model and gun indices\n",
+                cls.demo.playback ? "Demo" : "Server",
+                old_configstrings ? "original" : "extended",
+                old_indices ? "original" : "extended");
+}
+
+// The demo flavour of the above, which cl_demo_encoding can override. The
+// configstring layout and the width of the model and gun indices moved
+// together, in the same change, so one verdict normally drives both.
 static void CL_SetDemoEncoding(bool old_configstrings, bool old_indices)
 {
     int forced = cl_demo_encoding->integer;
@@ -524,21 +547,10 @@ static void CL_SetDemoEncoding(bool old_configstrings, bool old_indices)
         old_indices = (forced & DEMO_ENC_OLD_INDICES) != 0;
     }
 
-    cl.demo_encoding_known = true;
-    cl.demo_old_configstrings = old_configstrings;
-    cl.demo_old_indices = old_indices;
-
-    if (old_indices)
-        cl.esFlags |= MSG_ES_BYTEINDICES;
-    else
-        cl.esFlags &= ~MSG_ES_BYTEINDICES;
-
-    Com_DPrintf("Demo encoding: %s configstrings, %s model and gun indices\n",
-                old_configstrings ? "original" : "extended",
-                old_indices ? "original" : "extended");
+    CL_SetEncoding(old_configstrings, old_indices);
 }
 
-static int CL_RemapOldConfigstring(int index)
+int CL_RemapOldConfigstring(int index)
 {
     if (index < CS_SOUNDS_OLD)
         return index;   // the fixed strings and the first 256 models: unmoved
@@ -579,7 +591,7 @@ static bool CL_PeekConfigstringIsSound(void)
 // translate this index into ours. Returns -1 for an index with nowhere to go.
 static int CL_DemoConfigstringIndex(int index)
 {
-    if (!cl.demo_encoding_known) {
+    if (!cl.encoding_known) {
         if (cl_demo_encoding->integer >= 0) {
             CL_SetDemoEncoding(false, false);   // the cvar decides both halves
         } else if (index < CS_SOUNDS_OLD) {
@@ -605,7 +617,7 @@ static int CL_DemoConfigstringIndex(int index)
         }
     }
 
-    if (cl.demo_old_configstrings)
+    if (cl.old_configstrings)
         return CL_RemapOldConfigstring(index);
 
     return index;
@@ -616,11 +628,14 @@ void CL_ParseConfigstring(int index)
     size_t  len, maxlen;
     char    *s;
 
-    // Demos recorded before this fork widened the model table index the
-    // sections above CS_MODELS differently. Rerelease demos have already been
-    // remapped by the time they get here.
-    if (cls.demo.playback && !cl.kex_protocol && MAX_MODELS != MAX_MODELS_OLD) {
-        index = CL_DemoConfigstringIndex(index);
+    // Stock servers, and demos recorded before this fork widened the model
+    // table, index the sections above CS_MODELS differently. Rerelease demos
+    // have already been remapped by the time they get here.
+    if (!cl.kex_protocol && MAX_MODELS != MAX_MODELS_OLD) {
+        if (cls.demo.playback)
+            index = CL_DemoConfigstringIndex(index);
+        else if (cl.old_configstrings)
+            index = CL_RemapOldConfigstring(index);
         if (index < 0) {
             MSG_ReadString(NULL, 0);
             return;
@@ -664,7 +679,7 @@ void CL_ParseBaseline(int index, uint64_t bits)
     // written before this fork widened its indices uses it, and this fork
     // writes more than enough configstrings to be recognised.
     if (cls.demo.playback && !cl.kex_protocol && MAX_MODELS != MAX_MODELS_OLD &&
-        !cl.demo_encoding_known) {
+        !cl.encoding_known) {
         CL_SetDemoEncoding(true, true);
     }
 
@@ -689,9 +704,13 @@ static void CL_ParseGamestate(void)
 {
     int        index, bits;
 
+    // the list ends at the SERVER's MAX_CONFIGSTRINGS, which for a stock
+    // Q2PRO server is the old layout's
+    int end = cl.old_configstrings ? MAX_CONFIGSTRINGS_OLD : MAX_CONFIGSTRINGS;
+
     while (msg_read.readcount < msg_read.cursize) {
         index = MSG_ReadShort();
-        if (index == MAX_CONFIGSTRINGS) {
+        if (index == end) {
             break;
         }
         CL_ParseConfigstring(index);
@@ -761,6 +780,19 @@ bool CL_ParseServerData(void)
         CL_KexDemo_ParseServerData(protocol);
     } else {
         cl.kex_protocol = 0;
+
+        // An Overdrive server confirms the encoding we asked for in 'connect'.
+        // On the wire it is Q2PRO's protocol from here on.
+        if (protocol == PROTOCOL_VERSION_OVERDRIVE) {
+            if (!cls.demo.playback && !cls.overdrive) {
+                Com_Error(ERR_DROP, "Server switched to the Overdrive protocol "
+                          "without being asked to.");
+            }
+            protocol = PROTOCOL_VERSION_Q2PRO;
+        } else if (!cls.demo.playback && cls.overdrive) {
+            Com_Error(ERR_DROP, "Requested the Overdrive protocol, but server "
+                      "returned %d.", protocol);
+        }
 
         // check protocol
         if (cls.serverProtocol != protocol) {
@@ -894,6 +926,12 @@ bool CL_ParseServerData(void)
         cl.pmp.flyhack = true; // fly hack is unconditionally enabled
         cl.pmp.flyfriction = 4;
     }
+
+    // A live server that did not offer Overdrive's protocol is stock Quake II:
+    // translate its configstrings and read its model indices as bytes. A
+    // demo's encoding is worked out from its first configstrings instead.
+    if (!cls.demo.playback && !kex && MAX_MODELS != MAX_MODELS_OLD)
+        CL_SetEncoding(!cls.overdrive, !cls.overdrive);
 
     if (cl.clientNum == -1) {
         SCR_PlayCinematic(levelname);

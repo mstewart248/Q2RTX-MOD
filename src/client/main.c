@@ -419,6 +419,29 @@ static void CL_Pause_f(void)
 
 /*
 =================
+CL_PreferredProtocol
+
+The protocol a new connection starts negotiating from. cl_protocol 0 (auto)
+starts at Overdrive's own; the challenge reply then steps it down to the best
+one the server offers, so a stock server still gets 36, 35 or 34. Setting it
+to 34-36 skips Overdrive and plays as stock Quake II; setting it to
+PROTOCOL_VERSION_OVERDRIVE refuses servers that are not Overdrive.
+=================
+*/
+static int CL_PreferredProtocol(void)
+{
+    int protocol = cl_protocol->integer;
+
+    if (protocol == PROTOCOL_VERSION_OVERDRIVE ||
+        (protocol >= PROTOCOL_VERSION_DEFAULT && protocol <= PROTOCOL_VERSION_Q2PRO)) {
+        return protocol;
+    }
+
+    return PROTOCOL_VERSION_OVERDRIVE;
+}
+
+/*
+=================
 CL_CheckForResend
 
 Resend a connect message if the last one has timed out
@@ -439,11 +462,9 @@ void CL_CheckForResend(void)
     if (cls.state < ca_connecting && sv_running->integer > ss_loading) {
         strcpy(cls.servername, "localhost");
         cls.serverAddress.type = NA_LOOPBACK;
-        cls.serverProtocol = cl_protocol->integer;
-        if (cls.serverProtocol < PROTOCOL_VERSION_DEFAULT ||
-            cls.serverProtocol > PROTOCOL_VERSION_Q2PRO) {
-            cls.serverProtocol = PROTOCOL_VERSION_Q2PRO;
-        }
+        // our own server, which speaks nothing else - whatever cl_protocol says
+        cls.serverProtocol = PROTOCOL_VERSION_Q2PRO;
+        cls.overdrive = true;
 
         // we don't need a challenge on the localhost
         cls.state = ca_connecting;
@@ -506,10 +527,13 @@ void CL_CheckForResend(void)
         break;
     }
 
+    // Overdrive's protocol is Q2PRO's with a number of its own, so it takes
+    // the Q2PRO tail above
     Cvar_BitInfo(userinfo, CVAR_USERINFO);
     Netchan_OutOfBand(NS_CLIENT, &cls.serverAddress,
-                      "connect %i %i %i \"%s\"%s\n", cls.serverProtocol, cls.quakePort,
-                      cls.challenge, userinfo, tail);
+                      "connect %i %i %i \"%s\"%s\n",
+                      cls.overdrive ? PROTOCOL_VERSION_OVERDRIVE : cls.serverProtocol,
+                      cls.quakePort, cls.challenge, userinfo, tail);
 }
 
 static void CL_RecentIP_g(genctx_t *ctx)
@@ -539,6 +563,7 @@ static void CL_Connect_c(genctx_t *ctx, int argnum)
             Prompt_AddMatch(ctx, "34");
             Prompt_AddMatch(ctx, "35");
             Prompt_AddMatch(ctx, "36");
+            Prompt_AddMatch(ctx, STRINGIFY(PROTOCOL_VERSION_OVERDRIVE));
         }
     }
 }
@@ -564,21 +589,20 @@ static void CL_Connect_f(void)
 
     if (argc < 2) {
 usage:
-        Com_Printf("Usage: %s <server> [34|35|36]\n", Cmd_Argv(0));
+        Com_Printf("Usage: %s <server> [34|35|36|%d]\n", Cmd_Argv(0),
+                   PROTOCOL_VERSION_OVERDRIVE);
         return;
     }
 
     if (argc > 2) {
         protocol = atoi(Cmd_Argv(2));
-        if (protocol < PROTOCOL_VERSION_DEFAULT ||
-            protocol > PROTOCOL_VERSION_Q2PRO) {
+        if (protocol != PROTOCOL_VERSION_OVERDRIVE &&
+            (protocol < PROTOCOL_VERSION_DEFAULT ||
+             protocol > PROTOCOL_VERSION_Q2PRO)) {
             goto usage;
         }
     } else {
-        protocol = cl_protocol->integer;
-        if (!protocol) {
-            protocol = PROTOCOL_VERSION_Q2PRO;
-        }
+        protocol = CL_PreferredProtocol();
     }
 
     server = Cmd_Argv(1);
@@ -609,6 +633,7 @@ usage:
     cls.serverAddress = address;
     cls.serverProtocol = protocol;
     cls.protocolVersion = 0;
+    cls.overdrive = false;  // settled by the challenge reply
     cls.passive = false;
     cls.state = ca_challenging;
     cls.connect_time -= CONNECT_FAST;
@@ -1382,6 +1407,8 @@ static void CL_ConnectionlessPacket(void)
                         mask |= 1;
                     } else if (k == PROTOCOL_VERSION_Q2PRO) {
                         mask |= 2;
+                    } else if (k == PROTOCOL_VERSION_OVERDRIVE) {
+                        mask |= 4;
                     }
                     s = strchr(s, ',');
                     if (s == NULL) {
@@ -1392,8 +1419,29 @@ static void CL_ConnectionlessPacket(void)
             }
         }
 
-        // choose supported protocol
+        // choose supported protocol. A second challenge - after a refusal such
+        // as "server is full", or a reconnect - finds serverProtocol already
+        // stepped down to Q2PRO for Overdrive, so ask for Overdrive again
+        if (cls.overdrive) {
+            cls.serverProtocol = PROTOCOL_VERSION_OVERDRIVE;
+        }
+        cls.overdrive = false;
         switch (cls.serverProtocol) {
+        case PROTOCOL_VERSION_OVERDRIVE:
+            if (mask & 4) {
+                // Q2PRO's framing with our encoding on top
+                cls.serverProtocol = PROTOCOL_VERSION_Q2PRO;
+                cls.overdrive = true;
+                break;
+            }
+            if (cl_protocol->integer == PROTOCOL_VERSION_OVERDRIVE) {
+                Com_Error(ERR_DISCONNECT, "This is not a Quake II RTX Overdrive "
+                          "server. Set the server protocol to auto or classic "
+                          "Quake II (cl_protocol 0 or 36) to join it.");
+            }
+            // a stock server: play as stock Quake II, best protocol first
+            cls.serverProtocol = PROTOCOL_VERSION_Q2PRO;
+            // fall through
         case PROTOCOL_VERSION_Q2PRO:
             if (mask & 2) {
                 break;
@@ -1476,7 +1524,8 @@ static void CL_ConnectionlessPacket(void)
         }
 
         Com_Printf("Connected to %s (protocol %d).\n",
-                   NET_AdrToString(&cls.serverAddress), cls.serverProtocol);
+                   NET_AdrToString(&cls.serverAddress),
+                   cls.overdrive ? PROTOCOL_VERSION_OVERDRIVE : cls.serverProtocol);
         if (cls.netchan) {
             // this may happen after svc_reconnect
             Netchan_Close(cls.netchan);
@@ -1522,7 +1571,8 @@ static void CL_ConnectionlessPacket(void)
         Com_Printf("Received passive connect from %s.\n", s);
 
         cls.serverAddress = net_from;
-        cls.serverProtocol = cl_protocol->integer;
+        cls.serverProtocol = CL_PreferredProtocol();
+        cls.overdrive = false;
         Q_strlcpy(cls.servername, s, sizeof(cls.servername));
         cls.passive = false;
 
@@ -3142,7 +3192,9 @@ static void CL_InitLocal(void)
     cl_changemapcmd = Cvar_Get("cl_changemapcmd", "", 0);
     cl_beginmapcmd = Cvar_Get("cl_beginmapcmd", "", 0);
 
-    cl_protocol = Cvar_Get("cl_protocol", "0", 0);
+    // 0 auto, 34-36 stock Quake II only, PROTOCOL_VERSION_OVERDRIVE Overdrive
+    // servers only - see CL_PreferredProtocol. Archived: it is a menu setting.
+    cl_protocol = Cvar_Get("cl_protocol", "0", CVAR_ARCHIVE);
 
     gender_auto = Cvar_Get("gender_auto", "1", CVAR_ARCHIVE);
 

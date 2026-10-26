@@ -611,9 +611,12 @@ static void SVC_GetChallenge(void)
         svs.challenges[i].time = com_eventTime;
     }
 
-    // send it back
+    // send it back. Only Overdrive's protocol: what this server sends is not
+    // stock 34/35/36 any more (see PROTOCOL_VERSION_OVERDRIVE). Stock clients
+    // ignore numbers they do not know, try 34, and are told why they cannot
+    // join.
     Netchan_OutOfBand(NS_SERVER, &net_from,
-                      "challenge %u p=34,35,36", challenge);
+                      "challenge %u p=%d", challenge, PROTOCOL_VERSION_OVERDRIVE);
 }
 
 /*
@@ -652,14 +655,15 @@ static bool parse_basic_params(conn_params_t *p)
     p->qport = atoi(Cmd_Argv(2)) ;
     p->challenge = atoi(Cmd_Argv(3));
 
-    // check for invalid protocol version
-    if (p->protocol < PROTOCOL_VERSION_OLD ||
-        p->protocol > PROTOCOL_VERSION_Q2PRO)
-        return reject("Unsupported protocol version %d.\n", p->protocol);
+    // A stock client would read this server's model indices and configstrings
+    // wrong and see garbage, so it is turned away with a reason instead.
+    if (p->protocol != PROTOCOL_VERSION_OVERDRIVE)
+        return reject("This server runs Quake II RTX Overdrive and needs an "
+                      "Overdrive client (protocol %d) to join.\n",
+                      PROTOCOL_VERSION_OVERDRIVE);
 
-    // check for valid, but outdated protocol version
-    if (p->protocol < PROTOCOL_VERSION_DEFAULT)
-        return reject("You need Quake 2 version 3.19 or higher.\n");
+    // past the handshake it is Q2PRO's protocol, Q2PRO's connect tail included
+    p->protocol = PROTOCOL_VERSION_Q2PRO;
 
     return true;
 }

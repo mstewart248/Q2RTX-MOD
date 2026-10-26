@@ -312,7 +312,10 @@ void SV_New_f(void)
 
     // send the serverdata
     MSG_WriteByte(svc_serverdata);
-    MSG_WriteLong(sv_client->protocol);
+    // every client that got this far asked for Overdrive's protocol (see
+    // parse_basic_params); confirm it, so the client knows its encoding
+    MSG_WriteLong(sv_client->protocol == PROTOCOL_VERSION_Q2PRO ?
+                  PROTOCOL_VERSION_OVERDRIVE : sv_client->protocol);
     MSG_WriteLong(sv_client->spawncount);
     MSG_WriteByte(0);   // no attract loop
     MSG_WriteString(sv_client->gamedir);

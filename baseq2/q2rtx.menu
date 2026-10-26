@@ -1074,6 +1074,8 @@ begin multiplayer
         action "start server" pushmenu startserver
         action "player setup" pushmenu players
         action "disconnect" disconnect
+        blank
+        pairs --status "which servers you can join. Auto: Overdrive servers with everything this mod adds, and original Quake II servers (vanilla, R1Q2, Q2PRO) as stock Quake II, the way Quake II RTX always could. Classic Quake II: original servers only. Overdrive only: Overdrive servers only (cl_protocol)" "server protocol" cl_protocol auto 0 "Overdrive only" 3600 "classic Quake II" 36
     endif
     ifneq fs_shareware 0
         action "multiplayer can only be enabled" _ignore

@@ -40,6 +40,18 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define PROTOCOL_VERSION_KEX_DEMOS  2022
 #define PROTOCOL_VERSION_KEX        2023
 
+// Overdrive's own protocol: Q2PRO's (36) with this fork's extensions - 16-bit
+// model and gun indices, the configstring layout MAX_MODELS 512 implies,
+// U_SCALE/U_ALPHA and svc_muzzleflash3. None of those can be told apart from
+// stock 34/35/36 on the wire, so it needs a number of its own: our server
+// offers it in its challenge reply and serves nothing else, and our client
+// asks for it when offered and otherwise speaks stock Quake II, translating
+// with the same code that plays back stock demos (OLD CONFIGSTRING LAYOUT in
+// src/client/parse.c). Only the handshake and serverdata carry this number;
+// past them both ends run as PROTOCOL_VERSION_Q2PRO, with cls.overdrive saying
+// which encoding.
+#define PROTOCOL_VERSION_OVERDRIVE  3600
+
 #define PROTOCOL_VERSION_R1Q2_MINIMUM           1903    // b6377
 #define PROTOCOL_VERSION_R1Q2_UCMD              1904    // b7387
 #define PROTOCOL_VERSION_R1Q2_LONG_SOLID        1905    // b7759
