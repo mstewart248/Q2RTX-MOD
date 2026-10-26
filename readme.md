@@ -996,6 +996,11 @@ exists to switch the map's own lighting on for comparison, and a hand-placed
 light has to stay lit while exactly that comparison is being made. `light_enable`
 is their own switch.
 
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake048.jpg)
+
+*Tuning a placed light on mgu6m1: `light debug_on` draws it as a sphere,
+`light print` reads it back and `light edit brightness 2` retunes it.*
+
 ## Quick start
 
 ```
