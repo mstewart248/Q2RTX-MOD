@@ -57,6 +57,27 @@ jobs:
       if: steps.phonon.outputs.cache-hit != 'true'
       run: python setup/build_phonon.py
 
+    # nvflow.dll and nvflowext.dll, the NVIDIA Flow 2 runtime behind the
+    # simulated fire and smoke (BSD-3-Clause), built from NVIDIA's source by
+    # setup/build_flow.py, which pins the source commit and the Slang
+    # compiler. Cached against the script and its CMake project. It runs
+    # before Configure because CMake only compiles Flow in (USE_FLOW) when
+    # extern/flow/include is there, and the script writes it when it is not.
+    - name: Cache NVIDIA Flow runtime
+      id: flow
+      uses: actions/cache@v4
+      with:
+        path: |
+          nvflow.dll
+          nvflowext.dll
+          extern/flow/include
+          extern/flow/LICENSE.md
+        key: flow-win64-${{ hashFiles('setup/build_flow.py', 'setup/flow/**') }}
+
+    - name: Build NVIDIA Flow runtime
+      if: steps.flow.outputs.cache-hit != 'true'
+      run: python setup/build_flow.py
+
     - name: Configure Win64
       env:
         DLSS_SDK2_PATH: ${{github.workspace}}/DLSS_SDK
@@ -118,7 +139,7 @@ jobs:
       shell: bash
       run: |
         missing=0
-        for f in baseq2/q2rtx_media.pkz baseq2/blue_noise.pkz phonon.dll; do
+        for f in baseq2/q2rtx_media.pkz baseq2/blue_noise.pkz phonon.dll nvflow.dll nvflowext.dll; do
           if [ -s "$f" ]; then
             echo "ok   $f ($(du -h "$f" | cut -f1))"
           else
@@ -137,8 +158,11 @@ jobs:
           q2rtxded.exe
           q2rtxded-x86.exe
           phonon.dll
+          nvflow.dll
+          nvflowext.dll
           extern/steamaudio/LICENSE.md
           extern/steamaudio/THIRDPARTY.md
+          extern/flow/LICENSE.md
           baseq2/
           rerelease/
           rogue/

@@ -668,8 +668,10 @@ IF (TARGET client)
     ENDIF()
 
     # NVIDIA Flow (refresh/vkpt/flow.c): headers only, staged by setup/build_flow.py
-    # along with nvflow.dll and nvflowext.dll, which are loaded at run time
-    IF (CONFIG_VKPT_RENDERER AND EXISTS "${CMAKE_SOURCE_DIR}/extern/flow/include/nvflowext/NvFlowExt.h")
+    # along with nvflow.dll and nvflowext.dll, which are loaded at run time.
+    # Windows only: build_flow.py builds no Linux libraries, so flow.c's Linux
+    # path has never run.
+    IF (CONFIG_VKPT_RENDERER AND WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/extern/flow/include/nvflowext/NvFlowExt.h")
         TARGET_INCLUDE_DIRECTORIES(client PRIVATE
             "${CMAKE_SOURCE_DIR}/extern/flow/include/nvflow"
             "${CMAKE_SOURCE_DIR}/extern/flow/include/nvflowext")

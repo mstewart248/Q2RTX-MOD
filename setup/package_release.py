@@ -25,6 +25,9 @@ WHAT GOES IN, and the rule behind it:
   * phonon.dll, the Steam Audio runtime, as built from source by
     setup/build_phonon.py, with its Apache-2.0 licence and third-party notices
     from extern/steamaudio/ under licenses/steam-audio/.
+  * nvflow.dll and nvflowext.dll, the NVIDIA Flow 2 runtime behind the
+    simulated fire and smoke, as built from source by setup/build_flow.py,
+    with its BSD-3-Clause licence from extern/flow/ under licenses/nvidia-flow/.
   * the stock Quake II RTX media that is too large for git: q2rtx_media.pkz and
     blue_noise.pkz. CI restores these from the `shipped-media` release.
   * the repo documentation plus a generated README-FIRST.txt.
@@ -63,7 +66,8 @@ STORE_EXT = ('.pkz', '.png', '.jpg', '.jpeg', '.kpf', '.mp3', '.ogg', '.zip')
 
 DLSSNR_FORWARDER = 'nvngx.dll_dlssnr.dll'
 
-REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe', 'phonon.dll', DLSSNR_FORWARDER]
+REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe', 'phonon.dll', 'nvflow.dll', 'nvflowext.dll',
+                 DLSSNR_FORWARDER]
 OPTIONAL_ROOT = ['q2rtxded-x86.exe']
 DOCS = ['license.txt', 'notice.txt', 'readme.md', 'changelog.md']
 
@@ -74,11 +78,12 @@ def is_nvidia_runtime(arc):
     n = os.path.basename(arc).lower()
     return n.startswith('nvngx') and n.endswith('.dll') and n != DLSSNR_FORWARDER
 
-# Steam Audio's licence and the notices for what is compiled into phonon.dll:
-# (file in the repository, path in the package).
+# Steam Audio's licence and the notices for what is compiled into phonon.dll,
+# and NVIDIA Flow's licence: (file in the repository, path in the package).
 LICENSES = [
     ('extern/steamaudio/LICENSE.md', 'licenses/steam-audio/LICENSE.md'),
     ('extern/steamaudio/THIRDPARTY.md', 'licenses/steam-audio/THIRDPARTY.md'),
+    ('extern/flow/LICENSE.md', 'licenses/nvidia-flow/LICENSE.md'),
 ]
 
 # Valve's prebuilt phonon.dll links Intel IPP (its PE sections are named

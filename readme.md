@@ -323,6 +323,14 @@ stays sharp. Grain, if it's on too, goes on top.
 - **High** keeps the game's own resolution, with the tube face and mask but no
   scanlines. At 2160 lines they would sit a pixel apart and turn to moiré.
 
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake022.jpg)
+
+*Low: 240 lines, like a TV.*
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake032.jpg)
+
+*Medium: 480 lines, like a VGA monitor.*
+
 Pixels stay square, so on a 16:9 screen low is 427x240 rather than 320 columns
 stretched wide. The low-resolution picture is the frame averaged down, so it
 looks like the game rendered at that resolution with perfect anti-aliasing.
@@ -619,6 +627,74 @@ space, so a burst of sixty costs one instance, not sixty.
   removing gibs and corpses, and the flies on corpses stay with them instead of
   leaving after a minute.
 
+## Simulated fire and smoke (NVIDIA Flow)
+
+Explosions, the BFG's plasma and rocket trails can be simulated by **NVIDIA
+Flow 2**, NVIDIA's gas solver (advection, combustion, vorticity and pressure on
+a sparse grid). It runs as Vulkan compute on the game's own GPU device and
+queue, and the path tracer marches the result. The fire is a volume in the
+room rather than a flat sprite: it has depth, it shows in mirrors, glass and
+water, and it burns out into smoke that rises, drifts and fades.
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake043.jpg)
+
+*Two rocket explosions lighting the room (photo mode).*
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake045.jpg)
+
+*A BFG blast: a cloud of green plasma throwing out jets.*
+
+* **Explosions** (`cl_flow_explosions`): a rocket or grenade makes a fireball
+  of burning fuel that goes from white-yellow through orange to grey smoke in
+  about a second and a half. The BFG's blast is a flower of plasma puffs with
+  thin jets thrown a couple of hundred units out, after the BFG impacts in
+  NVIDIA's RTX trailer, and each of its laser zaps leaves a small burst of
+  plasma. `1` adds the simulation to the classic fireball, `2` replaces the
+  fireball, `0` is off.
+* **Light** (`pt_flow_lighting`): the glowing gas is gathered into up to eight
+  lights that follow the fire, in place of the classic explosion light, so the
+  room is lit from where the fire actually is. The smoke scatters that light,
+  with Flow's self-shadow toward the brightest of them.
+* **Smoke lit by the world** (`pt_flow_env`): the smoke takes its light from
+  the sun, the sky and the map's lights, traced from a grid of probes around
+  it, instead of being one flat colour. Needs the ray query API.
+* **Collision** (`pt_flow_collision`): walls, floors and ceilings hold the
+  smoke in instead of letting it drift through. Costs about 0.4 ms while
+  there is smoke.
+* **Rocket trail** (`cl_rocket_flame`): `1` is a small simulated fireball at
+  the rocket's tail that cools into a column of smoke (the particle flame
+  stands in while the simulation is full), `2` a particle flame with a little
+  smoke, `0` the classic smoke and falling sparks.
+* **Under water** (`cl_explosion_water`): an explosion keeps a flame and
+  lights the water yellow-white. `1` is a smaller simulated flame when Flow
+  draws the explosions, `2` always the classic fireball, `0` the classic
+  fireball and light.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `cl_flow_explosions` | `1` | `0` off, `1` with the classic fireball, `2` instead of it. |
+| `cl_rocket_flame` | `1` | `0` classic, `1` simulated, `2` particles. |
+| `cl_explosion_water` | `1` | `0` off, `1` simulated, `2` classic. |
+| `pt_flow_lighting` | `1` | The fire and plasma cast light. |
+| `pt_flow_env` | `1` | Smoke lit by the world. |
+| `pt_flow_collision` | `1` | Smoke collides with the world. |
+| `pt_flow` | `1` | `0` skips Flow when the renderer starts. |
+
+The simulation steps 60 times a second (`pt_flow_rate`) at the start of the
+frame. The volume is marched per pixel at render resolution, in the primary
+and reflection passes, before DLSS, which denoises and upscales it with
+everything else. The GPU profiler (`profiler 1`) has *flow simulation* and
+*flow smoke lighting* rows.
+
+Flow needs the RTX renderer and `nvflow.dll` and `nvflowext.dll` beside
+`q2rtx.exe`. The release package includes them, with their licence (BSD-3) in
+`licenses/nvidia-flow/`; for your own build, `setup/build_flow.py` builds them
+from NVIDIA's source. Without them the game runs as before and the options
+stay hidden; the read-only `flow_available` and `flow_env_available` say what
+was found. Windows only for now.
+
+In the menu: **options** → **effects setup**.
+
 ## Sound
 
 * **Room reverb** (`s_reverb`, on by default): the rerelease's echo. The size of
@@ -799,6 +875,62 @@ native resolution, 256 spp, 8 bounces, fog on.*
 All of them are saved to the config. The score depends on the view, the map and
 every setting above, so compare runs made from the same spot with the same
 settings. RTX renderer only.
+
+## Software renderer
+
+`vid_rtx 2` is id's original span renderer, the one Quake II shipped with in
+1997 (by way of Q2PRO), drawing everything on the CPU. It starts out looking
+like the original and is brought up to date to run on today's CPUs at today's
+resolutions, native 4K included. It plays the classic game and the remaster's
+maps.
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake025.jpg)
+
+*8-bit: the original 256-colour palette and lighting.*
+
+![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake026.jpg)
+
+*32-bit: every colour, and coloured light.*
+
+* **Colour** (`sw_8bit`): 8-bit is the original look. Textures are reduced to
+  Quake II's palette, light goes through its lighting table (`colormap.pcx`),
+  dynamic lights are white, and Rogue's IR goggles work as they did. 32-bit
+  keeps every colour of the textures and the coloured light of the maps.
+* **Internal resolution** (`sw_scale`): draws the 3D view at a half, a third,
+  a quarter, a sixth or an eighth of the window and scales it up with nearest
+  neighbour, for the chunky original look and a lot of speed.
+* **Threads** (`sw_threads`): the world's surfaces and spans, large
+  translucent surfaces, fog and the upscale are shared across every CPU
+  thread. Walking the BSP, sorting the edges, models and particles stay on
+  one. `1` draws on one thread, as the original did.
+* **The remaster's maps**: their finer lightmaps are resampled onto the
+  original 16-texel grid, edges shared by more than two faces are drawn
+  correctly, and alpha-tested foliage and grates are see-through.
+* **Extras for 32-bit, off by default**, since the original had neither:
+  `sw_fog` is the remaster's fog, by distance and in height bands, computed
+  the way the remaster computes it from the map's own values, `trigger_fog`
+  fades included. `sw_glowmaps` uses the remaster's glow maps, so lights and
+  screens stay lit in the dark.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `sw_8bit` | `1` | `1` 8-bit (original), `0` 32-bit. |
+| `sw_scale` | `1` | `1` native, `2`, `3`, `4`, `6` or `8` for a fraction of the window. |
+| `sw_threads` | `0` | `0` every logical processor, `1` the original single thread, or a count. |
+| `sw_dynamic` | `1` | Rockets, muzzle flashes and other moving lights. |
+| `sw_waterwarp` | `1` | The wobble when your head is under water. |
+| `sw_polyblend` | `1` | The full-screen tint for damage, pickups and liquids. |
+| `sw_fog` | `0` | The remaster's fog. 32-bit only. |
+| `sw_glowmaps` | `0` | The remaster's glow maps. 32-bit only. |
+
+`r_speeds 1` prints how long each stage of the view took, and on how many
+threads. The software renderer always loads the classic `.wal` and `.pcx`
+textures, and none of the path tracer's effects apply: blood is plain
+particles, and there is no simulated fire, motion blur, CRT filter or film
+grain.
+
+In the menu: **options** → **graphics settings** → **renderer...** →
+**renderer**: *software*, with its settings underneath.
 
 ## Inherited from Quake II RTX
 

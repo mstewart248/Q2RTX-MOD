@@ -588,8 +588,15 @@ begin effects
     toggle --status "(cl_disable_explosions)" "grenade explosions" cl_disable_explosions ~0
     toggle --status "(cl_disable_explosions)" "rocket explosions" cl_disable_explosions ~1
     toggle --status "(cl_explosion_sprites)" "explosion sprites" cl_explosion_sprites
+    // 'simulated' only with Flow: without it 1 and 2 are both the classic fireball.
+    ifeq flow_available 1
     pairs --status "an explosion under water keeps a flame and lights the water yellow-white. 'simulated' is NVIDIA Flow's fire, smaller, when Flow draws the explosions, otherwise the classic fireball; 'classic' is always the classic fireball; 'off' is the classic fireball and light (cl_explosion_water)" \
         "underwater explosions" cl_explosion_water off 0 simulated 1 classic 2
+    endif
+    ifneq flow_available 1
+    pairs --status "an explosion under water lights the water yellow-white, and brighter, as fire seen through water would; off is the classic light (cl_explosion_water)" \
+        "underwater explosions" cl_explosion_water off 0 on 1
+    endif
     ifneq flow_available 1
     toggle --status "a flying rocket burns with a flame at its tail and leaves a little smoke, in place of the classic smoke and falling sparks; under water its light turns yellow-white (cl_rocket_flame)" \
         "rocket flame" cl_rocket_flame
