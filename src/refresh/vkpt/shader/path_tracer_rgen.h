@@ -631,6 +631,52 @@ trace_effects_ray(Ray ray, bool skip_procedural, bool reflection_ray)
 	return get_payload_transparency_with_fog(ray_payload_effects, ray.t_max);
 }
 
+/*
+SHADOW TERMINATOR - where a smooth-shaded triangle's rays should start.
+
+A low-poly model shaded with interpolated normals is lit as if it were round,
+but its rays leave from the flat triangle.  Near the light/shadow boundary the
+smooth normal still faces the light after the triangle itself has turned away
+from it, so the shadow ray heads INTO the model and hits the back of its own
+triangles (shadow rays do not cull back faces).  The lit/shadow edge then
+steps along the polygon edges and the model reads as faceted, however smooth
+its normals are - the rerelease soldier's helmet with md5 normals that were
+already perfectly smooth (2026-10-26).  A rasterizer never traces those rays,
+which is why KEX shows the same mesh round.
+
+Hanika, "Hacking the Shadow Terminator" (Ray Tracing Gems II, ch. 4), as used
+by Blender Cycles: project the hit point onto each vertex's tangent plane,
+only where it lies below that plane (a convex patch), and take the
+barycentric mean of the three.  On a flat triangle every projection is the
+point itself, so flat geometry is untouched; on a curved one the origin rises
+onto the implied smooth surface by a fraction of a unit.
+
+geo_normal is the interpolated normal after primary_rays.rgen flipped it to
+the side the ray arrived on; the same flip is carried to the vertex normals.
+*/
+vec3
+terminator_offset_position(Triangle t, vec3 bary, vec3 position, vec3 geo_normal)
+{
+	vec3 n_interp = t.normals * bary;
+
+	// vertex normals that disagree with the winding (a mirrored transform,
+	// a broken mesh) give no meaningful convexity; leave the point alone
+	vec3 flat_raw = cross(t.positions[1] - t.positions[0], t.positions[2] - t.positions[1]);
+	if (dot(n_interp, flat_raw) <= 0)
+		return position;
+
+	float side = dot(n_interp, geo_normal) < 0 ? -1.0 : 1.0;
+
+	vec3 offset = vec3(0);
+	for (int i = 0; i < 3; i++)
+	{
+		vec3 n = t.normals[i] * side;
+		offset -= bary[i] * min(0.0, dot(position - t.positions[i], n)) * n;
+	}
+
+	return position + offset;
+}
+
 Ray get_shadow_ray(vec3 p1, vec3 p2, float tmin)
 {
 	vec3 l = p2 - p1;

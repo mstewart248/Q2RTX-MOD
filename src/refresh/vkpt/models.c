@@ -181,9 +181,30 @@ surface - a head, a shoulder, a barrel - snaps to the SAME table entry as its
 neighbours.  The interpolation then has nothing to interpolate: the normal is
 constant over a patch of triangles and steps 16 degrees at the patch border.
 That is the faceted look, and it is why turning this off restores it exactly.
-The other formats are milder cases of the same thing: .md3 quantises to a
-lat/long byte pair, and .md5 has no normals at all so model_md5.c derives them
-from the bind pose without any weighting.
+
+ONLY .MD2 COMES THROUGH HERE (2026-10-26).  It used to run on .md3, .md5 and
+.iqm as well, and did harm on every one of them:
+  - .md3 stores an authored normal to about 1.4 degrees, but rebuilds it here
+    from positions rounded to 1/64 unit, separately for every frame.  On the
+    first-person rocket launcher (tris.md3, 3900 verts) the rebuilt normals
+    jumped up to 63 degrees between consecutive idle frames where the file's
+    move at most 5.6, 71% of the rocket vertices by more than 10 - the glossy
+    rockets visibly throbbed as the gun animated.  Every weapon .md3 also
+    landed 20-35 degrees away from its authored normals on average (the weld
+    caveat below).
+  - .md5 normals are already smooth: model_md5.c accumulates them across
+    every face and welds the UV-seam copies (MD5_WeldSeamNormals), which is
+    the remaster's look.  This pass re-cut creases into them - the line over
+    the top of the soldier's helmet.
+  - .iqm carries its own authored normals, the same case as .md3.
+What still looked faceted on .md5 models with this off was never their
+normals: it was shadow rays leaving the flat triangles, see
+terminator_offset_position in path_tracer_rgen.h.
+
+Known caveat for .md2: the crease test below is made per CORNER, but the sum
+is per WELDED position, so the copies on the two sides of a hard edge share
+one sum and edges up to about 120 degrees are averaged anyway.  Left as it
+is, because fixing it changes how every .md2 looks.
 
 So this pass does not add an interpolation scheme; it reconstructs the normal
 each vertex was rounded from, as the usual angle-weighted average of the
@@ -198,11 +219,10 @@ adjacent face normals.  Three details make it safe on 1997 content:
     derived normals - see MD5_WeldSeamNormals - which is where the problem was
     first found, on the rerelease soldier's helmet.)
 
-  - THE FACE NORMAL'S SIGN IS DERIVED, NOT ASSUMED.  MOD_LoadMD2_RTX reverses
-    its index order after building the mesh, the .md3 path does not, and the
-    IQM path reverses during conversion, so cross(e0, e1) does not point the
-    same way for all of them.  Taking the sign from the authored normals of the
-    corners makes this independent of the loader.
+  - THE FACE NORMAL'S SIGN IS DERIVED, NOT ASSUMED.  The loaders do not all
+    reverse their index order the same way, so cross(e0, e1) does not point
+    the same way for all of them.  Taking the sign from the authored normals
+    of the corners makes this independent of the loader.
 
   - THE AUTHORED NORMAL IS A SMOOTHING GROUP HINT, and it is respected.  A face
     whose normal is more than pt_model_smooth_angle away from the normal stored
@@ -215,10 +235,8 @@ adjacent face normals.  Three details make it safe on 1997 content:
     then the face normal itself and the cone test becomes the classic crease
     angle.
 
-The work is per frame because .md2 and .md3 quantise each frame's positions
+The work is per frame because .md2 quantises each frame's positions
 independently, so a pose's normals have to come from that pose's geometry.
-Skinned models (.md5, .iqm) carry one bind pose here and numframes is 1; the
-shader transforms the result by the bone matrices as it always did.
 */
 static inline uint32_t hash_vertex_position(const vec3_t p)
 {
@@ -974,7 +992,8 @@ int MOD_LoadMD3_RTX(model_t *model, const void *rawdata, size_t length, const ch
         dst_frame++;
     }
 
-	smooth_model_normals(model);
+	// no smooth_model_normals: the authored normals are better than any
+	// rebuilt from 1/64-unit positions (see the note above it)
 
 	compute_missing_model_tangents(model);
 
@@ -1047,8 +1066,6 @@ int MOD_LoadIQM_RTX(model_t* model, const void* rawdata, size_t length, const ch
 		mesh->materials[0] = mat;
 		mesh->numskins = 1; // looks like IQM only supports one skin?
 	}
-
-	smooth_model_normals(model);
 
 	compute_missing_model_tangents(model);
 
@@ -1637,7 +1654,8 @@ int MOD_LoadMD5_RTX(model_t *model, const void *rawdata, size_t length, const ch
 		mesh->numskins = numskins;
 	}
 
-	smooth_model_normals(model);
+	// no smooth_model_normals: model_md5.c already welded these smooth, and
+	// the crease test only cut seams back into them (see the note above it)
 
 	compute_missing_model_tangents(model);
 

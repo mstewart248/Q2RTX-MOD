@@ -1229,6 +1229,8 @@ float vkpt_light_volumetric_scale(const light_poly_t *light);
 
 void IMG_Load_RTX(image_t *image, byte *pic);
 void IMG_Unload_RTX(image_t *image);
+bool IMG_ReloadFrom(image_t *image, const char *filepath);
+bool IMG_ReloadIfModified(image_t *image);
 byte *IMG_ReadPixels_RTX(int *width, int *height, int *rowbytes);
 float *IMG_ReadPixelsHDR_RTX(int *width, int *height);
 

@@ -1093,6 +1093,32 @@ IMG_Load_RTX(image_t *image, byte *pic)
 	image_loading_dirty_flag = 1;
 }
 
+// Hands an image's GPU texture to the delayed-destruction list - frames still in
+// flight may be sampling it - and leaves its slot empty, for
+// vkpt_textures_end_registration to fill again if the image has pixels.
+static void retire_texture(uint32_t index)
+{
+	if (!tex_images[index])
+		return;
+
+	const uint32_t frame_index = (qvk.frame_counter + MAX_FRAMES_IN_FLIGHT + 1) % DESTROY_LATENCY;
+	UnusedResources* unused_resources = texture_system.unused_resources + frame_index;
+
+	const uint32_t unused_index = unused_resources->image_num++;
+
+	unused_resources->images[unused_index] = tex_images[index];
+	unused_resources->image_memory[unused_index] = tex_image_memory[index];
+	unused_resources->image_views[unused_index] = tex_image_views[index];
+	unused_resources->image_views_mip0[unused_index] = tex_image_views_mip0[index];
+
+	tex_images[index] = VK_NULL_HANDLE;
+	tex_image_views[index] = VK_NULL_HANDLE;
+	tex_image_views_mip0[index] = VK_NULL_HANDLE;
+	tex_upload_frames[index] = 0;
+
+	vkpt_invalidate_texture_descriptors();
+}
+
 void
 IMG_Unload_RTX(image_t *image)
 {
@@ -1100,27 +1126,81 @@ IMG_Unload_RTX(image_t *image)
 		Z_Free(image->pix_data);
 	image->pix_data = NULL;
 
-	const uint32_t index = image - r_images;
+	retire_texture(image - r_images);
+}
 
-	if (tex_images[index])
-	{
-		const uint32_t frame_index = (qvk.frame_counter + MAX_FRAMES_IN_FLIGHT + 1) % DESTROY_LATENCY;
-		UnusedResources* unused_resources = texture_system.unused_resources + frame_index;
+// Replaces (image)'s pixels with the file (filepath), in place: the slot, and
+// with it the texture index that materials and uploaded geometry refer to, is
+// kept. Exactly that file - not another format of the same name, which load_img
+// would otherwise fall back to. Returns true if it was loaded.
+bool IMG_ReloadFrom(image_t *image, const char *filepath)
+{
+    image_t new_image;
+    if (load_img(filepath, &new_image) != Q_ERR_SUCCESS)
+        return false;
 
-		const uint32_t unused_index = unused_resources->image_num++;
+    if (FS_pathcmp(new_image.filepath, filepath))
+    {
+        Z_Free(new_image.pix_data);
+        return false;
+    }
 
-		unused_resources->images[unused_index] = tex_images[index];
-		unused_resources->image_memory[unused_index] = tex_image_memory[index];
-		unused_resources->image_views[unused_index] = tex_image_views[index];
-		unused_resources->image_views_mip0[unused_index] = tex_image_views_mip0[index];
+    uint64_t last_modifed = 0;
+    FS_LastModified(filepath, &last_modifed);
 
-		tex_images[index] = VK_NULL_HANDLE;
-		tex_image_views[index] = VK_NULL_HANDLE;
-		tex_image_views_mip0[index] = VK_NULL_HANDLE;
-		tex_upload_frames[index] = 0;
+    // (filepath) may be image->filepath itself
+    if (filepath != image->filepath)
+        Q_strlcpy(image->filepath, filepath, sizeof(image->filepath));
 
-		vkpt_invalidate_texture_descriptors();
-	}
+    Z_Free(image->pix_data);
+
+    image->pix_data = new_image.pix_data;
+    image->width = new_image.width;
+    image->height = new_image.height;
+    image->upload_width = new_image.upload_width;
+    image->upload_height = new_image.upload_height;
+    image->processing_complete = false;
+
+    if (strstr(filepath, "_n."))
+    {
+        image->flags |= IF_NORMAL_MAP;
+    }
+    if (strstr(filepath, "_height."))
+    {
+        image->flags |= IF_HEIGHT_MAP;
+    }
+    if(image->flags & IF_FAKE_EMISSIVE)
+    {
+        apply_fake_emissive_threshold(image, (image->flags >> IF_FAKE_EMISSIVE_THRESH_SHIFT) & 0xff);
+    }
+
+    IMG_Load(image, new_image.pix_data);
+
+    image->last_modified = last_modifed; // reset time stamp because load_img doesn't
+
+    // vkpt_textures_end_registration recreates it next time a frame is drawn.
+    // Not destroyed here: this runs from the console with frames in flight.
+    retire_texture(image - r_images);
+
+    Com_Printf("Reloaded '%s'\n", image->filepath);
+    return true;
+}
+
+// Re-reads (image) from disk if its file was saved since it was loaded - see
+// IMG_ReloadFrom. Loose files only: a file in a pak has no modification time.
+// Returns true if it was reloaded.
+bool IMG_ReloadIfModified(image_t *image)
+{
+    char const * filepath = image->filepath[0] ? image->filepath : image->name;
+
+    uint64_t last_modifed;
+    if (FS_LastModified(filepath, &last_modifed) != Q_ERR_SUCCESS)
+        return false;
+
+    if (last_modifed <= image->last_modified)
+        return false; // skip if file has not been modified since last read
+
+    return IMG_ReloadFrom(image, filepath);
 }
 
 void IMG_ReloadAll(void)
@@ -1136,70 +1216,8 @@ void IMG_ReloadAll(void)
         if (image->type == IT_FONT || image->type == IT_PIC)
             continue;
 
-        // check if image has been updated since previous load
-
-        char const * filepath = image->filepath[0] ? image->filepath : image->name;
-
-        uint64_t last_modifed;
-        if (FS_LastModified(filepath, &last_modifed) != Q_ERR_SUCCESS)
-        {
-            //Com_EPrintf("Could not find '%s' (%s)\n", image->name, image->filepath);
-            continue;
-        }
-
-        if (last_modifed <= image->last_modified)
-            continue; // skip if file has not been modified since last read
-
-        // image has been modified : try loading in new_image
-        image_t new_image;
-        if (load_img(filepath, &new_image) == Q_ERR_SUCCESS)
-        {
-            Z_Free(image->pix_data);
-
-            image->pix_data = new_image.pix_data;
-            image->width = new_image.width;
-            image->height = new_image.height;
-            image->upload_width = new_image.upload_width;
-            image->upload_height = new_image.upload_height;
-            image->processing_complete = false;
-
-            if (strstr(filepath, "_n."))
-            {
-                image->flags |= IF_NORMAL_MAP;
-            }
-            if (strstr(filepath, "_height."))
-            {
-                image->flags |= IF_HEIGHT_MAP;
-            }
-            if(image->flags & IF_FAKE_EMISSIVE)
-            {
-                apply_fake_emissive_threshold(image, (image->flags >> IF_FAKE_EMISSIVE_THRESH_SHIFT) & 0xff);
-            }
-
-            IMG_Load(image, new_image.pix_data);
-
-            image->last_modified = last_modifed; // reset time stamp because load_img doesn't
-
-            // destroy Vk ressources to force vkpt_textures_end_registration
-            // to recreate them next time a frame is drawn
-            if (tex_image_views[i]) {
-                vkDestroyImageView(qvk.device, tex_image_views[i], NULL);
-                tex_image_views[i] = VK_NULL_HANDLE;
-            }
-            if (tex_image_views_mip0[i]) {
-                vkDestroyImageView(qvk.device, tex_image_views_mip0[i], NULL);
-                tex_image_views_mip0[i] = VK_NULL_HANDLE;
-            }
-            if (tex_images[i]) {
-                vkDestroyImage(qvk.device, tex_images[i], NULL);
-                tex_images[i] = VK_NULL_HANDLE;
-                free_device_memory(tex_device_memory_allocator, &tex_image_memory[i]);
-            }
+        if (IMG_ReloadIfModified(image))
             ++reloaded;
-            Com_Printf("Reloaded '%s'\n", image->name);
-        }
-        //else
-        //    Com_EPrintf("Skipped '%s'\n", image->name);
     }
     Com_Printf("Reloaded %d textures\n", reloaded);
 }

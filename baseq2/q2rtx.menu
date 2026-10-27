@@ -639,7 +639,7 @@ begin effects
         // land on the same entry and there is nothing between them to blend.
         // See smooth_model_normals() in vkpt/models.c. Both cvars are CVAR_FILES,
         // like cl_md5_models above, so changing one reloads the models at once.
-        toggle --status "rebuilds model vertex normals from the geometry when a model loads, so curved surfaces read as curved instead of faceted. An .md2 stores each normal as one byte picked from 162 directions about 16 degrees apart, which is where the facets come from; off is the classic look. Hard edges are kept - see the crease angle below (pt_model_smooth_normals)" \
+        toggle --status "rebuilds .md2 vertex normals from the geometry when a model loads, so curved surfaces read as curved instead of faceted (.md3 and .md5 keep their own). An .md2 stores each normal as one byte picked from 162 directions about 16 degrees apart, which is where the facets come from; off is the classic look. Hard edges are kept - see the crease angle below (pt_model_smooth_normals)" \
             "smooth model normals" pt_model_smooth_normals
         ifneq pt_model_smooth_normals 0
         range --status "how far a triangle may lean away from the normal the model file stored at a corner before it counts as a different surface and is left out of that corner's average. LOW keeps more hard edges and smooths less; HIGH rounds everything off. 60 smooths a gun barrel while leaving the edge where it meets the receiver (pt_model_smooth_angle)" \

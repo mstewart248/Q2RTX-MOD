@@ -67,12 +67,14 @@ void main()
 	const int layer_and_level = int(flow_table[li + 3u]);
 
 	uint colormap = 0u;
+	float glow_start = 0.0;
 	float extinction = 0.0;
 	for (int l = 0; l < FLOW_LAYERS; l++)
 	{
 		if (flow_params.layers[l].info.x != 0u && int(flow_params.layers[l].info.y) == layer_and_level)
 		{
 			colormap = flow_params.layers[l].info.z;
+			glow_start = flow_params.layers[l].albedo.w;
 			extinction = flow_params.layers[l].smoke.w;
 		}
 	}
@@ -95,7 +97,7 @@ void main()
 			// temperature, fuel, burn or shadow, smoke
 			const vec4 value = texelFetch(TEX_FLOW_DENSITY, first + ivec3(x, y, z), 0);
 			marked = max(value.w, 0.0) * extinction > FLOW_EMPTY_EXTINCTION
-			      || flow_luminance(flow_colormap(colormap, value.x)) > 0.0;
+			      || flow_luminance(flow_colormap(colormap, value.x, glow_start)) > 0.0;
 		}
 
 		if (marked)

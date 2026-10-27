@@ -18733,7 +18733,11 @@ textures/tomc/tc_rockwall_a:
 # so this entry is what switches the glow off. Do not add a texture_emissive here.
 textures/tomc/tc_rockwall_b:
 	texture_base materialDev/textures/tomc/tc_rockwall_b.tga
-	texture_normals materialDev/textures/tomc/tc_rockwall_b_n.tga
+	texture_normals materialDev/textures/tomc/tc_rockwall_b_n.png
+	texture_height materialDev/textures/tomc/tc_rockwall_b_height.png
+	texture_roughness materialDev/textures/tomc/tc_rockwall_b_rough.png
+	displace_in .01
+	displace_out 0.0
 	metalness_factor 0
 	albedo_strength .3
 
@@ -18873,13 +18877,17 @@ textures/tomc/tc_tomb_light_solid_a:
 
 textures/tomc/tc_tomb_panel_256_a:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_a.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_a_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_a_n.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_panel_256_a_metal.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_panel_256_a_rough.png
+	specular_factor .5
 
 textures/tomc/tc_tomb_panel_256_b:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_b.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_b_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_b_n.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_panel_256_b_metal.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_panel_256_b_rough.png
+	specular_factor .5
 
 textures/tomc/tc_tomb_panel_256_c:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_c.tga
@@ -18899,10 +18907,23 @@ textures/tomc/tc_tomb_panel_256_d:
 # and pt_enable_surface_lights defaults to 1. Any entry here sets source_matfile, which
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
-# textures/tomc/tc_tomb_panel_256_e:
-# 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_e.tga
-# 	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_e_n.tga
-# 	metalness_factor 0
+# ENABLED (10-26). The exporter counted this as a surface light because of 3 faces in
+# mgu6m3 - flags 0x9 (SURF_LIGHT|SURF_WARP), radiance 400 - but nothing ever glowed
+# there: bsp_mesh.c skips WARP surfaces while pt_enable_surface_lights_warp is 0 (the
+# default), and the texture's brightest channel is 123, under pt_surface_lights_threshold
+# 215, so the synthesized emissive would be black anyway. Every other face (mgu6m1,
+# mgu6m2, mgu6m3, mguboss - ~3800) is flags 0. So this entry turns off nothing.
+# Do NOT add 'synth_emissive 1': that synthesizes for every face, and with the default
+# default_radiance of 1 the flags-0 ones would light up as soon as the base has texels
+# over the threshold. A glow wants a texture_emissive and default_radiance 0.
+textures/tomc/tc_tomb_panel_256_e:
+	texture_base materialDev/textures/tomc/tc_tomb_panel_256_e.tga
+	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_e_n.png
+	texture_height materialDev/textures/tomc/tc_tomb_panel_256_e_height.png
+	specular_factor .1
+	displace_in .00
+	displace_out 0.008
+	metalness_factor 0
 
 textures/tomc/tc_tomb_panel_256_f:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_f.tga
@@ -18910,7 +18931,12 @@ textures/tomc/tc_tomb_panel_256_f:
 
 textures/tomc/tc_tomb_panel_256_g:
 	texture_base materialDev/textures/tomc/tc_tomb_panel_256_g.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_g_n.tga
+	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_g_n.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_panel_256_g_rough.png
+	texture_height materialDev/textures/tomc/tc_tomb_panel_256_g_height.png
+	displace_in .01
+	displace_out .00
+	specular_factor .1
 	metalness_factor 0
 
 textures/tomc/tc_tomb_panel_256_h:
@@ -18944,17 +18970,26 @@ textures/tomc/tc_tomb_sediment_b:
 
 textures/tomc/tc_tomb_tile_256_a:
 	texture_base materialDev/textures/tomc/tc_tomb_tile_256_a.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_tile_256_a_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_tomb_tile_256_a_n.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_tile_256_a_metal.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_tile_256_a_rough.png
+	texture_height materialDev/textures/tomc/tc_tomb_tile_256_a_height.png
+	displace_in .01
+	displace_out 0.0
+
 
 textures/tomc/tc_tomb_trim_256_a:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_256_a.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_trim_256_a_n.tga
+	texture_normals materialDev/textures/tomc/tc_tomb_trim_256_a_n.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_trim_256_a_metal.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_trim_256_a_rough.png
+	
 
 textures/tomc/tc_tomb_trim_32_a:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_32_a.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_trim_32_a_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_tomb_trim_32_d_n.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_trim_32_d_metal.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_trim_32_d_rough.png
 
 textures/tomc/tc_tomb_trim_32_b:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_32_b.tga
@@ -18968,8 +19003,9 @@ textures/tomc/tc_tomb_trim_32_c:
 
 textures/tomc/tc_tomb_trim_32_d:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_32_d.tga
-	texture_normals materialDev/textures/tomc/tc_tomb_trim_32_d_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_tomb_trim_32_d_n.png
+	texture_metallic materialDev/textures/tomc/tc_tomb_trim_32_d_metal.png
+	texture_roughness materialDev/textures/tomc/tc_tomb_trim_32_d_rough.png
 
 textures/tomc/tc_tomb_trim_32_e:
 	texture_base materialDev/textures/tomc/tc_tomb_trim_32_e.tga
@@ -20154,8 +20190,12 @@ textures/tomf/tf_conflr01_2:
 
 textures/tomf/tf_conflr02_2:
 	texture_base materialDev/textures/tomf/tf_conflr02_2.tga
-	texture_normals materialDev/textures/tomf/tf_conflr02_2_n.tga
+	texture_normals materialDev/textures/tomf/tf_conflr02_2_n.png
+	texture_height materialDev/textures/tomf/tf_conflr02_2_height.png
+	displace_in .005
+	displace_out 0.0
 	metalness_factor 0
+	specular_factor 0
 
 textures/tomf/tf_conflr02_2b:
 	texture_base materialDev/textures/tomf/tf_conflr02_2b.tga
@@ -20642,8 +20682,9 @@ textures/tomf/tf_metal4_b1:
 
 textures/tomf/tf_metal4_r2:
 	texture_base materialDev/textures/tomf/tf_metal4_r2.tga
-	texture_normals materialDev/textures/tomf/tf_metal4_r2_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/tf_metal4_r2_n.png
+	texture_metallic materialDev/textures/tomf/tf_metal4_r2_metal.png
+	texture_roughness materialDev/textures/tomf/tf_metal4_r2_rough.png
 
 textures/tomf/tf_metal4_rl:
 	texture_base materialDev/textures/tomf/tf_metal4_rl.tga
@@ -20677,8 +20718,9 @@ textures/tomf/tf_metal5_2:
 
 textures/tomf/tf_metal_02:
 	texture_base materialDev/textures/tomf/tf_metal_02.tga
-	texture_normals materialDev/textures/tomf/tf_metal_02_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/tf_metal_02_n.png
+	texture_metallic materialDev/textures/tomf/tf_metal_02_metal.png
+	texture_roughness materialDev/textures/tomf/tf_metal_02_rough.png
 
 textures/tomf/tf_metframe1_1:
 	texture_base materialDev/textures/tomf/tf_metframe1_1.tga

@@ -223,7 +223,7 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 					colour += flow_params.layers[l].albedo.rgb * flow_ambient(position);
 				source += colour * sigma;
 			}
-			source += flow_colormap(flow_params.layers[l].info.z, value.x) * flow_params.layers[l].emission.x * flow_params.layers[l].emission.yzw;
+			source += flow_colormap(flow_params.layers[l].info.z, value.x, flow_params.layers[l].albedo.w) * flow_params.layers[l].emission.x * flow_params.layers[l].emission.yzw;
 		}
 
 		if (extinction > 0.0 || any(greaterThan(source, vec3(0))))

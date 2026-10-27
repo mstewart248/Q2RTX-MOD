@@ -142,17 +142,20 @@ vec3 flow_ramp_stretch(float t, float x0, float x1, vec3 c0, vec3 c1)
 // has the dark grey of unlit smoke. Flow's renderer hides that grey wherever
 // there is no smoke by weighting the map with it; here the glow does not
 // depend on the smoke, so the grey would make every allocated block of
-// cold, clear air glow. Points at 0, 0.05, 0.15 (all black), 0.6, 0.85, 1.
-vec3 flow_fire_color(float temperature)
+// cold, clear air glow. Points at 0, 0.05, 0.15 (all black), 0.6, 0.85, 1 -
+// or black up to `start` rather than 0.15: the glow is so bright next to the
+// room that the cooling gas shows orange all the way down to where it goes
+// black, so that is what says when the fire has turned to smoke.
+vec3 flow_fire_color(float temperature, float start)
 {
 	const float t = clamp(temperature, 0.0, 1.0);
 	const vec3 c3 = vec3(1.0, 0.1594125, 0.0135315);
 	const vec3 c4 = vec3(13.534992, 2.986956, 0.125991);
 	const vec3 c5 = vec3(78.08, 39.04, 6.1);
-	if (t <= 0.15)
+	if (t <= start)
 		return vec3(0);
 	if (t <= 0.6)
-		return flow_ramp_stretch(t, 0.15, 0.6, vec3(0), c3) * 2.5;
+		return flow_ramp_stretch(t, start, 0.6, vec3(0), c3) * 2.5;
 	if (t <= 0.85)
 		return flow_ramp_stretch(t, 0.6, 0.85, c3, c4) * 2.5;
 	return flow_ramp_stretch(t, 0.85, 1.0, c4, c5) * 2.5;
@@ -179,11 +182,12 @@ vec3 flow_plasma_color(float temperature)
 	return flow_ramp_stretch(t, 0.8, 1.0, c4, c5) * 2.5;
 }
 
-// FlowLayerParams.info.z: 0 is a layer that does not glow.
-vec3 flow_colormap(uint map, float temperature)
+// FlowLayerParams.info.z: 0 is a layer that does not glow. `start` is the
+// layer's albedo.w, the temperature fire starts to glow at.
+vec3 flow_colormap(uint map, float temperature, float start)
 {
 	if (map == 1u)
-		return flow_fire_color(temperature);
+		return flow_fire_color(temperature, start);
 	if (map == 2u)
 		return flow_plasma_color(temperature);
 	return vec3(0);

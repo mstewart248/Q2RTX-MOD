@@ -52,7 +52,7 @@ BEGIN_SHADER_STRUCT(FlowLayerParams)
 	vec4  world_max;            // xyz: the opposite corner; w: nothing of the layer is drawn above this height (a water surface)
 	vec4  emission;             // x: colour map multiplier, per world unit, relative to the adapted luminance; yzw: colour balance of the glow
 	vec4  smoke;                // rgb: unlit smoke colour, relative to the adapted luminance; w: extinction per unit of smoke per world unit
-	vec4  albedo;               // rgb: the fraction of the lights' light the smoke scatters
+	vec4  albedo;               // rgb: the fraction of the lights' light the smoke scatters; w: the temperature fire starts to glow at
 	uvec4 info;                 // x: 1 when the layer has blocks; y: its Flow layerAndLevel; z: colour map, see flow_colormap; w: 1 + the light whose shadow the burn channel holds, 0 for none
 }
 END_SHADER_STRUCT(FlowLayerParams)

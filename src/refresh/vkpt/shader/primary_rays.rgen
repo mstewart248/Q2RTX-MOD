@@ -697,8 +697,16 @@ main()
 	if ((material_id & MATERIAL_FLAG_WEAPON) != 0)
 		checkerboard_flags |= CHECKERBOARD_FLAG_WEAPON;
 
+	// The lighting passes start their shadow and bounce rays from this
+	// position; on a model, lift it onto the smooth surface the vertex
+	// normals describe so they do not start inside the low-poly mesh. Depth
+	// and motion above were taken from the true hit.
+	vec3 shading_position = position;
+	if (global_ubo.pt_shadow_terminator != 0 && triangle.instance_index != ~0u)
+		shading_position = terminator_offset_position(triangle, bary, position, geo_normal);
+
 	imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(encode_normal(geo_normal)));
-	imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position.xyz, uintBitsToFloat(material_id)));
+	imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(shading_position, uintBitsToFloat(material_id)));
 	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags)));
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, distance_curr));
 	imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(1, 1, 1, half_cone_angle));

@@ -1877,11 +1877,14 @@ void MAT_Print(pbr_material_t const * mat)
 
 // Swap one of a live material's textures for the one the definition now names.
 // A name that has not changed keeps the image that is already loaded, so a
-// reload that only moves a number does no image work at all.
+// reload that only moves a number does no image work here - an edit to the
+// file itself is picked up by material_refresh_images. Unless that name has no
+// image: the name was recorded even when its file was missing, so a texture
+// saved after the reload that first named it was never loaded at all.
 static void material_reload_image(image_t** image, char* dest_name, const char* new_name,
                                   pbr_material_t* mat, imageflags_t extra)
 {
-	if (!strcmp(dest_name, new_name))
+	if (!strcmp(dest_name, new_name) && (*image || !new_name[0]))
 		return;
 
 	Q_strlcpy(dest_name, new_name, MAX_QPATH);
@@ -1892,6 +1895,16 @@ static void material_reload_image(image_t** image, char* dest_name, const char* 
 	}
 
 	load_material_image(image, new_name, mat, mat->image_type, mat->image_flags | extra);
+
+	/* IMG_Find matches an image that is already loaded by its name WITHOUT the
+	   extension, IF_EXACT or not. So switching a map from foo_n.tga to
+	   foo_n.png handed back the foo_n.tga still in memory, and the .png only
+	   showed after a restart, where it is the first one asked for. Read the file
+	   that was asked for into that image, or, failing that, treat it as missing,
+	   as a cold load would. */
+	if (*image != R_NOTEXTURE && (*image)->filepath[0] && FS_pathcmp((*image)->filepath, new_name)
+		&& !IMG_ReloadFrom(*image, new_name))
+		*image = R_NOTEXTURE;
 
 	if (*image == R_NOTEXTURE) {
 		Com_WPrintf("Texture '%s' specified in material '%s' could not be found.\n", new_name, mat->name);
@@ -2047,6 +2060,27 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	MAT_UpdateRegistration(mat);
 }
 
+// Re-read every texture of a live material whose file was saved since it was
+// loaded - the base, normal, roughness ... map edited in a paint program while
+// the game runs. The images keep their slots, so nothing that points at them
+// has to change. An image shared between materials is read once: after that
+// its time stamp is current.
+static void material_refresh_images(pbr_material_t* mat)
+{
+	image_t* images[] = {
+		mat->image_base, mat->image_normals, mat->image_roughness, mat->image_metallic,
+		mat->image_height, mat->image_emissive, mat->image_mask,
+	};
+
+	for (int i = 0; i < q_countof(images); i++)
+		if (images[i])
+			IMG_ReloadIfModified(images[i]);
+
+	// a light's color and extent are measured from the pixels
+	if (mat->image_emissive && !mat->image_emissive->processing_complete)
+		vkpt_extract_emissive_texture_info(mat->image_emissive);
+}
+
 // Re-read every .mat file from disk and push the new values onto the materials
 // that are already live, so brightness and other values can be tuned in a text
 // editor without restarting. The definition tables (r_global_materials /
@@ -2104,11 +2138,13 @@ static void material_command_reload(void)
 			// albedo_strength, ...) reached the md5 model only on a restart.
 			if (mat->inherit_source[0])
 				MAT_InheritScalars(mat, mat->inherit_source);
+			material_refresh_images(mat);
 			++generated;
 			continue;
 		}
 
 		material_reapply_definition(mat, matdef);
+		material_refresh_images(mat);
 		++updated;
 	}
 
@@ -2118,7 +2154,7 @@ static void material_command_reload(void)
 	vkpt_vertex_buffer_invalidate_static_model_vbos(-1);
 	CL_PrepRefresh();
 
-	Com_Printf("Reloaded material definitions (%d materials updated, %d auto-generated and left alone).\n",
+	Com_Printf("Reloaded material definitions (%d materials updated, %d auto-generated with no .mat entry).\n",
 	           updated, generated);
 }
 
@@ -2291,7 +2327,7 @@ static void material_command_help(void)
 	Com_Printf("    create_instance: give the surface at the crosshair its own material,\n");
 	Com_Printf("        so it can be tuned without affecting other uses of the same texture.\n");
 	Com_Printf("        Writes an empty section to materials/<map>.mat and reloads.\n");
-	Com_Printf("    reload: re-read all .mat files from disk and rebuild\n");
+	Com_Printf("    reload: re-read all .mat files, and any texture saved since it was loaded, from disk and rebuild\n");
 	Com_Printf("    save <filename> <options>: save the active materials to a file\n");
 	Com_Printf("        option 'all': save all materials (otherwise only the undefined ones)\n");
 	Com_Printf("        option 'force': overwrite the output file if it exists\n");

@@ -68,12 +68,14 @@ void main()
 	                             int(flow_table[li + 2u]), int(flow_table[li + 3u]));
 
 	uint colormap = 0u;
+	float glow_start = 0.0;
 	vec3 balance = vec3(1);   // the glow's colour balance, so the light is the colour of the fire
 	for (int l = 0; l < FLOW_LAYERS; l++)
 	{
 		if (flow_params.layers[l].info.x != 0u && int(flow_params.layers[l].info.y) == location.w)
 		{
 			colormap = flow_params.layers[l].info.z;
+			glow_start = flow_params.layers[l].albedo.w;
 			balance = flow_params.layers[l].emission.yzw;
 		}
 	}
@@ -133,7 +135,7 @@ void main()
 	{
 		const ivec3 c = ivec3(s % sdim.x, (s / sdim.x) % sdim.y, s / (sdim.x * sdim.y)) * 2;
 		const float temperature = texelFetch(TEX_FLOW_DENSITY, base + c, 0).x;
-		const vec3 e = flow_colormap(colormap, temperature) * balance;
+		const vec3 e = flow_colormap(colormap, temperature, glow_start) * balance;
 		const float w = flow_luminance(e);
 		if (w <= 0.0)
 			continue;

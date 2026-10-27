@@ -228,6 +228,7 @@ static cvar_t *cvar_pt_flow_smoke_per_burn;
 static cvar_t *cvar_pt_flow_vorticity;
 static cvar_t *cvar_pt_flow_fire_brightness;
 static cvar_t *cvar_pt_flow_fire_orange;
+static cvar_t *cvar_pt_flow_fire_glow_start;
 static cvar_t *cvar_pt_flow_smoke_brightness;
 static cvar_t *cvar_pt_flow_smoke_albedo;
 static cvar_t *cvar_pt_flow_smoke_scatter;
@@ -2739,12 +2740,16 @@ VkResult vkpt_flow_initialize(void)
 	// its colour map times pt_flow_fire_brightness for every 32 units of it
 	// looked through, however much smoke there is, and pt_flow_fire_orange
 	// more orange than Flow's own map (0 to 1: up to 40% less green and 80%
-	// less blue, in the glow and its light); the smoke darkens what is
-	// behind it by pt_flow_density per unit of smoke per cell, shows
+	// less blue, in the glow and its light) - none of it where the gas has
+	// cooled below pt_flow_fire_glow_start, 0 to 0.5 (Flow's own map: 0.15;
+	// with the heat going at pt_flow_cooling a second, 0.3 ends the glow and
+	// its light some 0.5 s sooner, 0.4 some 0.75 s); the smoke darkens what
+	// is behind it by pt_flow_density per unit of smoke per cell, shows
 	// pt_flow_smoke_albedo x pt_flow_smoke_brightness of its own, and
 	// scatters pt_flow_smoke_scatter of the fire's light.
 	cvar_pt_flow_fire_brightness = Cvar_Get("pt_flow_fire_brightness", "40", 0);
 	cvar_pt_flow_fire_orange = Cvar_Get("pt_flow_fire_orange", "0.3", 0);
+	cvar_pt_flow_fire_glow_start = Cvar_Get("pt_flow_fire_glow_start", "0.3", 0);
 	cvar_pt_flow_smoke_brightness = Cvar_Get("pt_flow_smoke_brightness", "20", 0);
 	cvar_pt_flow_smoke_albedo = Cvar_Get("pt_flow_smoke_albedo", "0.25", 0);
 	cvar_pt_flow_smoke_scatter = Cvar_Get("pt_flow_smoke_scatter", "0.8", 0);
@@ -3176,6 +3181,8 @@ static void flow_layer_look(FlowLayerParams *look, int layer, float cell_size)
 			look->emission[2] = 1.f - 0.4f * orange;
 			look->emission[3] = 1.f - 0.8f * orange;
 		}
+		// Short of the colour map's orange at 0.6.
+		look->albedo[3] = Cvar_ClampValue(cvar_pt_flow_fire_glow_start, 0.f, 0.5f);
 		smoke = cvar_pt_flow_smoke_albedo->value * cvar_pt_flow_smoke_brightness->value;
 		VectorSet(look->smoke, smoke, smoke, smoke);
 		look->smoke[3] = max(cvar_pt_flow_density->value, 0.f) / cell_size;
