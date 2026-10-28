@@ -18620,8 +18620,9 @@ textures/tomc/tc_dev128:
 
 textures/tomc/tc_indus_a:
 	texture_base materialDev/textures/tomc/tc_indus_a.tga
-	texture_normals materialDev/textures/tomc/tc_indus_a_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_indus_a_n.png
+	texture_metallic materialDev/textures/tomc/tc_indus_a_metal.png
+	texture_roughness materialDev/textures/tomc/tc_indus_a_rough.png
 
 textures/tomc/tc_indus_a_laser:
 	texture_base materialDev/textures/tomc/tc_indus_a_laser.tga
@@ -18635,8 +18636,9 @@ textures/tomc/tc_indus_b:
 
 textures/tomc/tc_indus_c:
 	texture_base materialDev/textures/tomc/tc_indus_c.tga
-	texture_normals materialDev/textures/tomc/tc_indus_c_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomc/tc_indus_c_n.png
+	texture_roughness materialDev/textures/tomc/tc_indus_c_rough.png
+	texture_metallic materialDev/textures/tomc/tc_indus_c_metal.png
 
 textures/tomc/tc_indus_d:
 	texture_base materialDev/textures/tomc/tc_indus_d.tga

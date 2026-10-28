@@ -883,6 +883,72 @@ void Com_AddConfigFile(const char *name, unsigned flags)
 
 /*
 =================
+Com_StartAttractLoop
+
+NO client_start ANYWHERE: play the attract loop - the id Software logo, then
+the demos - the way the original game did.
+
+No shipped config defines client_start, neither pak's default.cfg nor this
+port's q2rtx.cfg, so without this a stock install went straight to the menu
+and the intro only ever appeared on a machine with a hand-written
+autoexec.cfg. This is only the fallback: any client_start a player defines
+wins, and an empty one ('alias client_start ""') switches the loop off.
+
+idlog.cin is the original out of baseq2 (the remaster has no .ogv of it); a
+missing one is skipped and the demos still start. The "set nextserver" has to
+come AFTER the map command, which clears it, and the last demo points back at
+the first DEMO, so the logo plays once per launch. The rerelease adds the
+Ground Zero (rdemo*) and Reckoning (xdemo*) demos.
+
+Only demos that are actually installed join the loop, and with none at all
+the logo is skipped too and the player stays on the main menu. A player on
+the shareware demo data had no .dm2 files: there "demo demo1.dm2" failed, the
+"popmenu" after it closed the menu anyway, and they were left at the console.
+=================
+*/
+static void Com_StartAttractLoop(void)
+{
+    static const char *const base_demos[] = {
+        "demo1", "demo2"
+    };
+    static const char *const rerelease_demos[] = {
+        "demo1", "demo2", "rdemo1", "rdemo2", "xdemo1", "xdemo2", "xdemo3"
+    };
+    const char *const *demos = base_demos;
+    int num_demos = q_countof(base_demos);
+    const char *prefix = "attract";
+    const char *found[q_countof(rerelease_demos)];
+    char path[MAX_QPATH];
+    int i, count = 0;
+
+    if (Cvar_VariableInteger("fs_rerelease")) {
+        demos = rerelease_demos;
+        num_demos = q_countof(rerelease_demos);
+        prefix = "rr";
+    }
+
+    for (i = 0; i < num_demos; i++) {
+        Q_snprintf(path, sizeof(path), "demos/%s.dm2", demos[i]);
+        if (FS_FileExists(path))
+            found[count++] = demos[i];
+    }
+
+    if (!count) {
+        Com_DPrintf("No demos installed, skipping the attract loop\n");
+        return;
+    }
+
+    for (i = 0; i < count; i++) {
+        Cbuf_AddText(&cmd_buffer, va("alias %s%d \"demo %s.dm2; popmenu; set nextserver %s%d\"\n",
+                                     prefix, i + 1, found[i], prefix, (i + 1) % count + 1));
+    }
+    Cbuf_AddText(&cmd_buffer, va("alias %s_logo \"map idlog.cin; set nextserver %s1\"\n%s_logo\n",
+                                 prefix, prefix, prefix));
+    Cbuf_Execute(&cmd_buffer);
+}
+
+/*
+=================
 Qcommon_Init
 =================
 */
@@ -1061,41 +1127,7 @@ void Qcommon_Init(int argc, char **argv)
             Cbuf_AddText(&cmd_buffer, cmd);
             Cbuf_Execute(&cmd_buffer);
         } else if (!COM_DEDICATED) {
-            /* NO client_start ANYWHERE: play the attract loop - the id
-               Software logo, then the demos - the way the original game did.
-
-               No shipped config defines client_start, neither pak's default.cfg
-               nor this port's q2rtx.cfg, so without this a stock install went
-               straight to the menu and the intro only ever appeared on a
-               machine with a hand-written autoexec.cfg. This is only the
-               fallback: any client_start a player defines wins, and an empty
-               one ('alias client_start ""') switches the loop off.
-
-               idlog.cin is the original out of baseq2 (the remaster has no .ogv
-               of it); a missing one is skipped and the demos still start. The
-               "set nextserver" has to come AFTER the map command, which clears
-               it, and the last demo points back at the first DEMO, so the logo
-               plays once per launch. The rerelease adds the Ground Zero
-               (rdemo*) and Reckoning (xdemo*) demos. */
-            if (Cvar_VariableInteger("fs_rerelease")) {
-                Cbuf_AddText(&cmd_buffer,
-                    "alias rr_logo \"map idlog.cin; set nextserver rr1\"\n"
-                    "alias rr1 \"demo demo1.dm2; popmenu; set nextserver rr2\"\n"
-                    "alias rr2 \"demo demo2.dm2; popmenu; set nextserver rr3\"\n"
-                    "alias rr3 \"demo rdemo1.dm2; popmenu; set nextserver rr4\"\n"
-                    "alias rr4 \"demo rdemo2.dm2; popmenu; set nextserver rr5\"\n"
-                    "alias rr5 \"demo xdemo1.dm2; popmenu; set nextserver rr6\"\n"
-                    "alias rr6 \"demo xdemo2.dm2; popmenu; set nextserver rr7\"\n"
-                    "alias rr7 \"demo xdemo3.dm2; popmenu; set nextserver rr1\"\n"
-                    "rr_logo\n");
-            } else {
-                Cbuf_AddText(&cmd_buffer,
-                    "alias attract_logo \"map idlog.cin; set nextserver attract1\"\n"
-                    "alias attract1 \"demo demo1.dm2; popmenu; set nextserver attract2\"\n"
-                    "alias attract2 \"demo demo2.dm2; popmenu; set nextserver attract1\"\n"
-                    "attract_logo\n");
-            }
-            Cbuf_Execute(&cmd_buffer);
+            Com_StartAttractLoop();
         }
     }
 
