@@ -25,7 +25,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    or of the cells one round it - the ones a linearly filtered sample inside
    it can reach - glows through the layer's colour map or has smoke thicker
    than FLOW_EMPTY_EXTINCTION. Each block gets a uvec4 of bits, numbered as
-   flow_brick_bit numbers them, at its place in the table.
+   flow_brick_bit numbers them, at its place in the table; and a block with
+   any marked marks its group's bit (flow_coarse_bit) in the bitset after
+   them, which flow.c clears before this runs.
 
    Measured headless on a rocket and a BFG blast, only 12-21% of the march's
    steps through allocated blocks land in a marked brick: Flow keeps a border
@@ -49,7 +51,7 @@ layout(local_size_x = GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 #include "flow_common.glsl"
 
 layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_OCCUPANCY, std430)
-writeonly buffer FLOW_OCCUPANCY_BUFFER { uvec4 flow_occupancy[]; };
+buffer FLOW_OCCUPANCY_BUFFER { uvec4 flow_occupancy[]; };
 
 shared uint s_bits[4];
 
@@ -69,6 +71,7 @@ void main()
 	uint colormap = 0u;
 	float glow_start = 0.0;
 	float extinction = 0.0;
+	int grid = -1;
 	for (int l = 0; l < FLOW_LAYERS; l++)
 	{
 		if (flow_params.layers[l].info.x != 0u && int(flow_params.layers[l].info.y) == layer_and_level)
@@ -76,6 +79,7 @@ void main()
 			colormap = flow_params.layers[l].info.z;
 			glow_start = flow_params.layers[l].albedo.w;
 			extinction = flow_params.layers[l].smoke.w;
+			grid = FLOW_LAYER_GRID(l);
 		}
 	}
 
@@ -106,5 +110,23 @@ void main()
 	barrier();
 
 	if (thread == 0u)
-		flow_occupancy[block] = uvec4(s_bits[0], s_bits[1], s_bits[2], s_bits[3]);
+	{
+		const uvec4 bits = uvec4(s_bits[0], s_bits[1], s_bits[2], s_bits[3]);
+		flow_occupancy[block] = bits;
+
+		if (grid >= 0 && any(notEqual(bits, uvec4(0))))
+		{
+			const ivec3 location = ivec3(int(flow_table[li + 0u]), int(flow_table[li + 1u]), int(flow_table[li + 2u]));
+			const uint bit = flow_coarse_bit(location >> FLOW_COARSE_BITS, grid);
+			const uint i = flow_params.limits.z + (bit >> 7u);
+			const uint mask = 1u << (bit & 31u);
+			switch ((bit >> 5u) & 3u)
+			{
+			case 0u: atomicOr(flow_occupancy[i].x, mask); break;
+			case 1u: atomicOr(flow_occupancy[i].y, mask); break;
+			case 2u: atomicOr(flow_occupancy[i].z, mask); break;
+			default: atomicOr(flow_occupancy[i].w, mask); break;
+			}
+		}
+	}
 }

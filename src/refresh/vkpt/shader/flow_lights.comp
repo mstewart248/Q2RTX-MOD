@@ -70,6 +70,7 @@ void main()
 	uint colormap = 0u;
 	float glow_start = 0.0;
 	vec3 balance = vec3(1);   // the glow's colour balance, so the light is the colour of the fire
+	bool fine = false;        // the layer's cells are grid 1's
 	for (int l = 0; l < FLOW_LAYERS; l++)
 	{
 		if (flow_params.layers[l].info.x != 0u && int(flow_params.layers[l].info.y) == location.w)
@@ -77,11 +78,12 @@ void main()
 			colormap = flow_params.layers[l].info.z;
 			glow_start = flow_params.layers[l].albedo.w;
 			balance = flow_params.layers[l].emission.yzw;
+			fine = FLOW_LAYER_GRID(l) != 0;
 		}
 	}
 
 	const ivec3 bits = ivec3(flow_params.block_dim_bits.xyz);
-	const vec3 cells_per_unit = flow_params.cell_size_inv.xyz;
+	const vec3 cells_per_unit = fine ? flow_params.grids[1].xyz : flow_params.grids[0].xyz;
 	const ivec3 first_cell = location.xyz << bits;
 	const ivec3 dim = ivec3(1) << bits;
 

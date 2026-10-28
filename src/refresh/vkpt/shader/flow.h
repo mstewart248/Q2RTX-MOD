@@ -21,10 +21,27 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "shader_structs.h"
 
-/* Flow layers, one per kind of explosion (r_flow_style_t): fire, the BFG's
-   plasma and underwater bubbles. Each simulates and looks its own way; all
-   share one grid of cells. */
-#define FLOW_LAYERS 3
+/* Flow layers, one per kind of effect (r_flow_style_t): fire, the BFG's
+   plasma, underwater bubbles and the railgun's trail. Each simulates and
+   looks its own way; all share one grid of cells. */
+#define FLOW_LAYERS 4
+
+/* The cell grids the layers are on (FlowParams.grids): grid 0, every layer's
+   but one, at pt_flow_cell_size; grid 1, the railgun trail's layer alone, at
+   pt_flow_rail_cell_size - finer, as a spiral a cell or so thick came out
+   boxy on the main grid. Every grid has blocks of the same cells, so one
+   table and one atlas serve both. */
+#define FLOW_GRIDS 2
+#define FLOW_LAYER_RAIL 3
+#define FLOW_LAYER_GRID(l) ((l) == FLOW_LAYER_RAIL ? 1 : 0)
+
+/* Groups of FLOW_COARSE^3 blocks of a grid (block location >> FLOW_COARSE_BITS)
+   that hold anything to see, hashed into a bitset of FLOW_COARSE_HASH_BITS
+   that flow_occupancy.comp writes after the blocks' bricks - see
+   flow_coarse_bit in flow_common.glsl. */
+#define FLOW_COARSE_BITS 2
+#define FLOW_COARSE_HASH_BITS 8192u
+#define FLOW_COARSE_UVEC4S (FLOW_COARSE_HASH_BITS / 128u)
 
 /* Lights the fire and plasma cast, each gathered by flow_lights.comp from
    the glow nearest its seed. */
@@ -65,16 +82,16 @@ END_SHADER_STRUCT(FlowLayerParams)
    The first block is Flow's NvFlowSparseLevelParams for the density level,
    cut down to what a lookup reads - see NvFlowLocationToBlockIdx and
    NvFlowGlobalVirtualToReal in Flow's NvFlowShader.hlsli, which flow.glsl
-   follows. Every layer has the same cell size, so one cell grid serves all. */
+   follows. A layer's cells are those of its grid (FLOW_LAYER_GRID). */
 BEGIN_SHADER_STRUCT(FlowParams)
 {
 	uvec4 block_dim_bits;       // xyz: log2 of a density block's size in cells; w: 1 when there is anything to draw
 	uvec4 table_dim_less_one;   // xyz: Flow's hash table size - 1; w: tableDimBits_x
 	uvec4 table_offsets;        // x: tableDimBits_xy, y: locationOffset, z: blockLevelOffsetGlobal
-	uvec4 limits;               // x: most march samples per ray, y: most blocks one hash bucket is searched for
+	uvec4 limits;               // x: most march samples per ray, y: most blocks one hash bucket is searched for, z: the uvec4 of the occupancy buffer the group bitset starts at
 	vec4  dim_inv;              // xyz: 1 / the density atlas size in texels
-	vec4  cell_size_inv;        // xyz: density cells per world unit; w: march step in world units
-	vec4  world_min;            // xyz: corner of every layer's allocated blocks together; w: march step of a reflection or refraction ray, in world units
+	vec4  grids[FLOW_GRIDS];    // xyz: density cells per world unit on a grid, 0 for a grid none of whose layers has blocks; w: march step there in world units
+	vec4  world_min;            // xyz: corner of every layer's allocated blocks together; w: how many times longer a reflection or refraction ray's steps are
 	vec4  world_max;            // xyz: the opposite corner
 	uvec4 counts;               // x: blocks in the density level, y: lights
 	FlowLayerParams layers[FLOW_LAYERS];

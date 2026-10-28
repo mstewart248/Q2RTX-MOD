@@ -642,6 +642,7 @@ typedef enum {
     R_FLOW_FIRE,        // a fireball that burns out into smoke
     R_FLOW_PLASMA,      // the BFG's green flash
     R_FLOW_BUBBLES,     // under water: foam that rises to `surface`
+    R_FLOW_RAIL,        // the railgun's trail, an R_FLOW_BEAM: a blue spiral round a line of smoke
     R_FLOW_STYLES
 } r_flow_style_t;
 

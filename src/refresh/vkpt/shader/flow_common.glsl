@@ -118,6 +118,23 @@ uint flow_brick_bit(ivec3 cell)
 	return uint((brick.z * bricks.y + brick.y) * bricks.x + brick.x);
 }
 
+// flow_occupancy.comp also marks each group of blocks (FLOW_COARSE_BITS) of
+// a grid that holds a block with a marked brick, a bit in a hashed bitset,
+// so that the march crosses empty space a group at a time and not a block at
+// a time with a table search each. On the railgun trail's fine grid a block
+// is only 16x8x8 units, and as the trail starts at the gun the box round its
+// blocks holds the camera: every ray on the screen walked it block by block
+// (10-27). Two groups sharing a bit only cost the march a closer look. The
+// bit of group `group` of grid `grid`:
+uint flow_coarse_bit(ivec3 group, int grid)
+{
+	uint h = (uint(group.x) * 73856093u) ^ (uint(group.y) * 19349663u) ^ (uint(group.z) * 83492791u) ^ (uint(grid) * 2654435761u);
+	h ^= h >> 15u;
+	h *= 0x2c1b3c6du;
+	h ^= h >> 12u;
+	return h & (FLOW_COARSE_HASH_BITS - 1u);
+}
+
 // Extinction per world unit below which flow_occupancy.comp calls a cell's
 // smoke nothing. A brick is 12 units across at the default cell size, so
 // skipping one of them like this leaves out less than 1e-3 of what is behind
@@ -182,6 +199,28 @@ vec3 flow_plasma_color(float temperature)
 	return flow_ramp_stretch(t, 0.8, 1.0, c4, c5) * 2.5;
 }
 
+// The railgun's spiral: the cyan-blue of the classic trail's particles
+// (palette 0x74, linear about 0.05 : 0.55 : 1), deep blue as it cools out,
+// blue-white at the hottest. As bright as the plasma map, point for point.
+// Points at 0, 0.05 (both black), 0.2, 0.5, 0.8, 1.
+vec3 flow_rail_color(float temperature)
+{
+	const float t = clamp(temperature, 0.0, 1.0);
+	const vec3 c2 = vec3(0.002, 0.03, 0.06);
+	const vec3 c3 = vec3(0.15, 1.6, 3.0);
+	const vec3 c4 = vec3(2.0, 12.0, 20.0);
+	const vec3 c5 = vec3(30.0, 50.0, 60.0);
+	if (t <= 0.05)
+		return vec3(0);
+	if (t <= 0.2)
+		return flow_ramp_stretch(t, 0.05, 0.2, vec3(0), c2) * 2.5;
+	if (t <= 0.5)
+		return flow_ramp_stretch(t, 0.2, 0.5, c2, c3) * 2.5;
+	if (t <= 0.8)
+		return flow_ramp_stretch(t, 0.5, 0.8, c3, c4) * 2.5;
+	return flow_ramp_stretch(t, 0.8, 1.0, c4, c5) * 2.5;
+}
+
 // FlowLayerParams.info.z: 0 is a layer that does not glow. `start` is the
 // layer's albedo.w, the temperature fire starts to glow at.
 vec3 flow_colormap(uint map, float temperature, float start)
@@ -190,6 +229,8 @@ vec3 flow_colormap(uint map, float temperature, float start)
 		return flow_fire_color(temperature, start);
 	if (map == 2u)
 		return flow_plasma_color(temperature);
+	if (map == 3u)
+		return flow_rail_color(temperature);
 	return vec3(0);
 }
 

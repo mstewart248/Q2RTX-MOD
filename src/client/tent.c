@@ -1704,6 +1704,10 @@ static cvar_t *cl_railcore_color;
 static cvar_t *cl_railcore_width;
 static cvar_t *cl_railspiral_color;
 static cvar_t *cl_railspiral_radius;
+// 1 = the trail's particles - the classic spiral and core, or the setup
+// page's spiral - are NVIDIA Flow's gas instead (CL_FlowRail), whenever Flow
+// can draw it; the core beam and the lights stay as they are.
+static cvar_t *cl_flow_railtrail;
 
 static void cl_railcore_color_changed(cvar_t *self)
 {
@@ -1820,27 +1824,54 @@ static void CL_RailLights(color_t color)
 	}
 }
 
+/*
+=================
+CL_FlowRail
+
+The railgun's trail by NVIDIA Flow (cl_flow_railtrail): a spiral of
+cyan-blue glowing gas round a thread of pale smoke, after the classic one,
+that cools into wisps (flow_rail_boxes in vkpt/flow.c). False when Flow does
+not take it - missing, switched off, or its gas filling too much of the grid
+(pt_flow_rail_budget) - and the particles go instead.
+=================
+*/
+static bool CL_FlowRail(void)
+{
+    if (!cl_flow_railtrail->integer || !R_FlowEmit)
+        return false;
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_BEAM,
+        .style = R_FLOW_RAIL,
+        .scale = 1.0f,
+    };
+    VectorCopy(te.pos1, emit.origin);
+    VectorCopy(te.pos2, emit.end);
+    return R_FlowEmit(&emit) & R_FLOW_DRAWN;
+}
+
 extern uint32_t d_8to24table[256];
 extern cvar_t* cvar_pt_beam_lights;
 
 static void CL_RailTrail(void)
 {
 	color_t rail_color;
-	
-	if (!cl_railtrail_type->integer) 
+
+	if (!cl_railtrail_type->integer)
 	{
 		rail_color.u32 = d_8to24table[0x74];
 
-        CL_OldRailTrail();
+        if (!CL_FlowRail())
+            CL_OldRailTrail();
 	}
-	else 
+	else
 	{
 		rail_color = railcore_color;
 
         if (cl_railcore_width->integer > 0) {
             CL_RailCore();
         }
-        if (cl_railtrail_type->integer > 1) {
+        if (cl_railtrail_type->integer > 1 && !CL_FlowRail()) {
             CL_RailSpiral();
         }
     }
@@ -2523,6 +2554,7 @@ void CL_InitTEnts(void)
     cl_railspiral_color->generator = Com_Color_g;
     cl_railspiral_color_changed(cl_railspiral_color);
     cl_railspiral_radius = Cvar_Get("cl_railspiral_radius", "3", 0);
+    cl_flow_railtrail = Cvar_Get("cl_flow_railtrail", "1", CVAR_ARCHIVE);
     cl_poi_marker_scale = Cvar_Get("cl_poi_marker_scale", "3", CVAR_ARCHIVE);
 }
 
