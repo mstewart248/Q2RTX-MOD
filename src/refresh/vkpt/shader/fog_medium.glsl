@@ -1216,6 +1216,8 @@ to be used to judge it.
    light without tracing anything at all, and the scatter pass then adds this to
    whatever they chose. Still one sky ray per cell either way - the split
    duplicates no work, it only moves where the pieces are called from. */
+vec3 fog_sky_inscatter_vis(float sky_vis);
+
 vec3 fog_sky_inscatter(vec3 sky_p)
 {
 	fog_debug_sky_entered = 1.0;
@@ -1251,12 +1253,20 @@ vec3 fog_sky_inscatter(vec3 sky_p)
 		return vec3(0);
 	}
 
+	return fog_sky_inscatter_vis(getSkyVisibility(sky_p));
+}
+
+/* The rest of fog_sky_inscatter, for a visibility the caller has already
+   measured. froxel_scatter.comp's pt_fog_sky_refine passes the lit fraction of
+   the cell's depth instead of one point's answer; it checks
+   fog_sun_is_the_sky() itself. */
+vec3 fog_sky_inscatter_vis(float sky_vis)
+{
 	// The sky is ambient and has no preferred direction, so it keeps the
 	// isotropic phase rather than the medium's. Computed first for the same
 	// reason as in getClusterLightInscatter: an open area with no emissive
 	// surfaces in its cluster must still see the sky.
 	vec3 sky_term = vec3(0);
-	float sky_vis = getSkyVisibility(sky_p);
 	if (sky_vis > 0.0)
 	{
 		vec3 sky_radiance = vec3(0);

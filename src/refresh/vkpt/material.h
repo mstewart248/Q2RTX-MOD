@@ -153,6 +153,10 @@ void MAT_InstanceName(const char* base_name, uint32_t instance_hash, char* out, 
 // sorted lookup that fails fast and allocates nothing.
 pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_hash);
 
+// True if (mat)'s own definition or a 'mat kind' command set its kind, rather
+// than it inheriting the kind from a base material or a default.
+bool MAT_KindSpecified(const pbr_material_t* mat);
+
 // returns a material by index, if it's valid - NULL otherwise
 pbr_material_t* MAT_ForIndex(int index);
 

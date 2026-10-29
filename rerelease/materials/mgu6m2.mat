@@ -57,3 +57,27 @@ textures/tomc/tc_tomb_light_64_a#67d77d9a:
 	bsp_radiance 0
 	albedo_strength .1
 	default_radiance 16
+
+# instance of textures/tomc/tc_tomb_panel_256_d
+# mgu6m2, created at (388 1857 -275)
+# Inherits everything from textures/tomc/tc_tomb_panel_256_d; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/tomc/tc_tomb_panel_256_d#b8329f80:
+#	texture_base materialDev/textures/tomc/tc_tomb_panel_256_d.tga
+#	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_d_n.tga
+	texture_emissive materialDev/textures/tomc/tc_tomb_panel_256_d_light.png
+	emissive_factor 40
+	default_radiance 20
+	volumetric_scale 10
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

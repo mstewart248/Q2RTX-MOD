@@ -1634,6 +1634,11 @@ void MAT_InstanceName(const char* base_name, uint32_t instance_hash, char* out, 
 	Q_snprintf(out, out_size, "%s#%08x", base_name, instance_hash);
 }
 
+bool MAT_KindSpecified(const pbr_material_t* mat)
+{
+	return mat && MAT_SPECIFIED(mat, MAT_KIND);
+}
+
 pbr_material_t* MAT_FindInstance(const pbr_material_t* base, uint32_t instance_hash)
 {
 	if (!base || !instance_hash)

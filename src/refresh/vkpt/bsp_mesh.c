@@ -1073,6 +1073,34 @@ face_effective_material(bsp_t *bsp, const mface_t *surf)
 	return instance ? instance : base;
 }
 
+// True if a leaf touching either side of the face has any of `contents`.
+// qbsp emits a liquid boundary as two faces, one facing each way, so the
+// liquid can be on either side. Brush model faces are still in model space
+// here, so they are probed against the model's own subtree.
+static bool
+face_borders_contents(bsp_t *bsp, const mface_t *surf, int model_idx, int contents)
+{
+	mnode_t *headnode = model_idx < 0 ? bsp->nodes : bsp->models[model_idx].headnode;
+	vec3_t center = { 0.f, 0.f, 0.f };
+
+	if (!headnode || surf->numsurfedges <= 0)
+		return false;
+
+	for (int i = 0; i < surf->numsurfedges; i++)
+		VectorAdd(center, surf->firstsurfedge[i].edge->v[surf->firstsurfedge[i].vert]->point, center);
+	VectorScale(center, 1.f / surf->numsurfedges, center);
+
+	for (int side = -1; side <= 1; side += 2)
+	{
+		vec3_t probe;
+		VectorMA(center, 0.5f * side, surf->plane->normal, probe);
+		if (BSP_PointLeaf(headnode, probe)->contents & contents)
+			return true;
+	}
+
+	return false;
+}
+
 static void
 collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, int (*filter)(int, int))
 {
@@ -1131,10 +1159,24 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 			}
 		}
 
-		if ((MAT_IsKind(material_id, MATERIAL_KIND_WATER) || MAT_IsKind(material_id, MATERIAL_KIND_SLIME)) && !(surf_flags & SURF_WARP))
+		// The two downgrades below exist because a texture's material is shared by
+		// every face that uses it, and stock maps reuse liquid and glass textures on
+		// plain walls (mine1 has 173 faces of WATER-kind e2u1/grass1_7). A surface
+		// instance whose own section states 'kind' names these faces alone, so
+		// that kind is what they draw as.
+		bool kind_stated = surf_material && surf_material != surf->texinfo->material
+			&& MAT_KindSpecified(surf_material);
+
+		// Waterfalls: mgu6m2's e1u1/water1 columns are CONTENTS_WATER brushes whose
+		// faces are FLOWING instead of WARP, so the texture scrolls down. Those stay
+		// water. A FLOWING water texture on a solid wall still goes opaque, since
+		// refracting into it would show the void behind.
+		if ((MAT_IsKind(material_id, MATERIAL_KIND_WATER) || MAT_IsKind(material_id, MATERIAL_KIND_SLIME)) && !(surf_flags & SURF_WARP)
+			&& !kind_stated
+			&& !((surf_flags & SURF_FLOWING) && face_borders_contents(bsp, surf, model_idx, CONTENTS_WATER | CONTENTS_SLIME)))
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_REGULAR);
 
-		if (MAT_IsKind(material_id, MATERIAL_KIND_GLASS) && !(surf_flags & SURF_TRANS_MASK))
+		if (MAT_IsKind(material_id, MATERIAL_KIND_GLASS) && !(surf_flags & SURF_TRANS_MASK) && !kind_stated)
 			material_id = MAT_SetKind(material_id, MATERIAL_KIND_REGULAR);
 		// custom transparent surfaces
 		if (surf_flags & SURF_SKY)

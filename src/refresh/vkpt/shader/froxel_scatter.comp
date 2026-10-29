@@ -796,6 +796,65 @@ void froxel_cell_scatter(
 	result_preblend = result;
 }
 
+/* SKY ACROSS THE CELL'S DEPTH, NOT AT ITS CENTRE  (2026-10-28, pt_fog_sky_refine)
+
+   Under a map skybox the sky term is getSkyVisibility's one ray straight up, a
+   yes/no answer, and it was taken once at the cell centre: the whole cell was
+   sky or none. The grid's z is RADIAL, so a slice is a spherical shell around
+   the eye about 6% of its distance deep. Where a view ray crosses the wall of
+   a sky column (the air under a roof opening, or the edge of an overhang), the
+   column's fog grew by a whole slice each time the crossing passed a cell
+   centre. Neighbouring pixels cross at slightly different distances, so the
+   per-pixel sum stepped along curves of equal distance from the eye: ovals and
+   arcs in the fog that slide as the camera moves. Matt saw them on mgu3m1
+   (2026-10-28). They are the 2026-10-09 roof-hole rings again: skybox maps
+   went back to the one up-ray when pt_fog_sky_exposure 2 left the bake off
+   there.
+
+   This measures how much of the cell's depth is under open sky. One probe at
+   each end of the segment; where the two agree the whole segment takes that
+   answer, where they differ the crossing is found by bisection, `steps` more
+   probes, and the cell takes the lit fraction. A cell's far end is the next
+   cell's near end on the same line, so the lit length summed down a column
+   moves continuously with the crossing instead of a slice at a time.
+
+   The segment runs along the line through `tap` (the cell centre, or the side
+   point FROXEL_SKY_PROBE_CLAMP moved the probe to) from the cell's near face
+   to `t_far`, which the caller keeps short of the surface that pixel sees, so
+   no probe starts inside a wall. Only for the binary up-ray: the baked
+   exposure and pt_fog_sky_soften are already continuous. */
+float froxel_sky_segment_visibility(ivec3 cell, vec2 tap, float t_far, int steps)
+{
+	float v0 = getSkyVisibility(froxel_to_world(cell, vec3(tap, 0.0)));
+	float v1 = getSkyVisibility(froxel_to_world(cell, vec3(tap, t_far)));
+
+	bool lit0 = v0 >= 0.5;
+	float vis;
+	if (lit0 == (v1 >= 0.5))
+	{
+		vis = 0.5 * (v0 + v1);
+	}
+	else
+	{
+		float a = 0.0;
+		float b = t_far;
+		for (int i = 0; i < steps; i++)
+		{
+			float m = 0.5 * (a + b);
+			if ((getSkyVisibility(froxel_to_world(cell, vec3(tap, m))) >= 0.5) == lit0)
+				a = m;
+			else
+				b = m;
+		}
+
+		float front = 0.5 * (a + b) / t_far; // share of the segment before the crossing
+		vis = lit0 ? front : 1.0 - front;
+	}
+
+	fog_debug_sky_vis = vis;
+	return vis;
+}
+
 layout(local_size_x = FROXEL_GROUP_X, local_size_y = FROXEL_GROUP_Y, local_size_z = 1) in;
 void main()
 {
@@ -1461,6 +1520,8 @@ void main()
 #endif
 		vec3 sky_probe = world_pos_history;
 		bool sky_probe_ok = true;
+		vec2 sky_tap = vec2(0.5);  // pt_fog_sky_refine: the probe's screen point,
+		float sky_reach = 1e30;    // and the surface distance seen through it
 #if FROXEL_SKY_PROBE_CLAMP
 		{
 			// Same field-relative screen mapping god_rays_filter uses to read
@@ -1485,6 +1546,7 @@ void main()
 				if (i == 0 && surface_dist > probe_dist)
 				{
 					centre_open = true;
+					sky_reach = surface_dist;
 					break; // centre is in open air - leave it alone
 				}
 
@@ -1497,7 +1559,11 @@ void main()
 
 			// A few units of clearance so the probe does not sit on the surface.
 			if (best_dist > probe_dist + 4.0)
+			{
 				sky_probe = froxel_to_world(cell, vec3(best_tap, 0.5));
+				sky_tap = best_tap;
+				sky_reach = best_dist;
+			}
 #if FROXEL_SKY_PROBE_VOID
 			else if (!centre_open)
 				sky_probe_ok = false;
@@ -1507,7 +1573,29 @@ void main()
 
 		if (fog_lights && FROXEL_MODE3 && sky_probe_ok)
 		{
-			cell_sky_term = fog_sky_inscatter(sky_probe);
+			/* pt_fog_sky_refine - see froxel_sky_segment_visibility. Only where
+			   the sky term is the binary up-ray and the cell has medium to
+			   light; everything else keeps the single centre probe. */
+			int sky_steps = int(global_ubo.pt_fog_sky_refine);
+			bool sky_binary = global_ubo.fog_sky_trace != 0
+			               && global_ubo.pt_fog_sky_soften <= 0.0
+			               && (global_ubo.sky_exposure_ready == 0 || global_ubo.pt_fog_sky_exposure <= 0.0);
+
+			if (sky_steps > 0 && sky_binary && density > 0.0 && !fog_sun_is_the_sky())
+			{
+				// The segment ends 4 units short of the surface, as the probe
+				// clamp's own clearance, but never before the centre it accepted.
+				float t_far = FROXEL_DEPTH_TO_SLICE(clamp(sky_reach - 4.0, FROXEL_NEAR, FROXEL_FAR)) - float(z);
+				t_far = clamp(t_far, 0.5, 1.0);
+
+				fog_debug_sky_entered = 1.0;
+				cell_sky_term = fog_sky_inscatter_vis(
+					froxel_sky_segment_visibility(cell, sky_tap, t_far, min(sky_steps, 6)));
+			}
+			else
+			{
+				cell_sky_term = fog_sky_inscatter(sky_probe);
+			}
 			dbg_hoist_entered = fog_debug_sky_entered;
 		}
 
