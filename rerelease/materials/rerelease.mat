@@ -19429,7 +19429,10 @@ textures/tomf/glocrys_1c:
 
 textures/tomf/grnx2_3b:
 	texture_base materialDev/textures/tomf/grnx2_3b.tga
-	texture_normals materialDev/textures/tomf/grnx2_3b_n.tga
+	texture_normals materialDev/textures/tomf/grnx2_3b_n.png
+	texture_height materialDev/textures/tomf/grnx2_3b_height.png
+	displace_in 0.0
+	displace_out .03
 
 textures/tomf/grnx2_3c:
 	texture_base materialDev/textures/tomf/grnx2_3c.tga

@@ -1174,6 +1174,21 @@ begin loadgame
     loadgame save13
     loadgame save14
     loadgame save15
+    loadgame save16
+    loadgame save17
+    loadgame save18
+    loadgame save19
+    loadgame save20
+    loadgame save21
+    loadgame save22
+    loadgame save23
+    loadgame save24
+    loadgame save25
+    loadgame save26
+    loadgame save27
+    loadgame save28
+    loadgame save29
+    loadgame save30
 end
 
 begin savegame
@@ -1188,12 +1203,28 @@ begin savegame
     savegame save6
     savegame save7
     savegame save8
+    savegame save9
     savegame save10
     savegame save11
     savegame save12
     savegame save13
     savegame save14
     savegame save15
+    savegame save16
+    savegame save17
+    savegame save18
+    savegame save19
+    savegame save20
+    savegame save21
+    savegame save22
+    savegame save23
+    savegame save24
+    savegame save25
+    savegame save26
+    savegame save27
+    savegame save28
+    savegame save29
+    savegame save30
 end
 
 begin quit
