@@ -723,8 +723,8 @@ IF (WIN32)
 ENDIF()
 
 # DLSS on every platform: the SDK ships a Linux NGX library and runtimes too
-# (libnvidia-ngx-dlss*.so), and DLSS.c has no build without the SDK. Only the
-# DLSS 5 forwarder is Windows-only.
+# (libnvidia-ngx-dlss*.so), and DLSS.c has no build without the SDK. DLSS 5
+# (nvngx_dlssnr.dll) only exists on Windows; elsewhere DLSSNR.c leaves it off.
 IF(TARGET client)
 	if(CONFIG_USE_DLSS)
 		message(STATUS "${CMAKE_BUILD_TYPE} Q2RTX BUILD")
@@ -737,20 +737,8 @@ IF(TARGET client)
 			if (WIN32)
 				add_definitions(-DNV_WINDOWS)
 
-				# DLSS 5 Neural Rendering forwarder. nvngx_dlssnr.dll only accepts
-				# calls from a module whose path contains "nvngx.dll", so its calls are made
-				# from this DLL - see refresh/vkpt/dlssnr_forwarder.cpp. Loaded at runtime by
-				# DLSSNR.c, so the game still starts without it.
-				add_library(dlssnr_forwarder SHARED refresh/vkpt/dlssnr_forwarder.cpp)
-				target_include_directories(dlssnr_forwarder PRIVATE "$ENV{DLSS_SDK2_PATH}/include")
-				set_target_properties(dlssnr_forwarder PROPERTIES
-					OUTPUT_NAME "nvngx.dll_dlssnr" PREFIX "" SUFFIX ".dll"
-					RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
-					RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
-					RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
-					RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}"
-					RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}")
-				add_dependencies(client dlssnr_forwarder)
+				# DLSS 5 needs nothing extra: DLSSNR.c reaches nvngx_dlssnr.dll through the
+				# driver's NGX core, like the other DLSS features (no forwarder DLL since 2026-11).
 
 				if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 					target_link_libraries(client "$ENV{DLSS_SDK2_PATH}/lib/Windows_x86_64/x64/nvsdk_ngx_s_dbg.lib")

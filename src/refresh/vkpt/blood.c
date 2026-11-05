@@ -92,7 +92,8 @@ the first thing to look at if these ever start smearing.
 //
 // It is also the cost knob. Every per-frame expense scales linearly with it -
 // the CPU generation loop, the host copy, and the dynamic BLAS rebuild, which
-// happens every frame because the droplets move. The staging buffers are sized
+// happens on every frame anything in the section moves (see BLAS REUSE - a
+// settled floor keeps its BLAS). The staging buffers are sized
 // for MAX_BLOOD_SPHERES at the CURRENT tessellation and reallocated when it
 // changes, so picking 320 costs memory only while it is selected.
 #define BLOOD_SPHERE_MAX_SUBDIV 3
@@ -327,6 +328,124 @@ static struct {
 	int               model_instance_index;
 	bool              buffers_ready;
 } blood;
+
+/*
+BLAS REUSE - pt_blood_blas_reuse, default 1 (0 rebuilds every frame, as before).
+
+path_tracer.c used to rebuild blas_blood[] every frame over the whole section, and
+on a settled floor that is most of what blood costs: 2048 splats at
+pt_blood_tess 3 kept BVH_UPDATE at 3.5-4.5 ms for triangles that had not moved.
+
+A bottom-level build reads exactly one thing, the positions in its range of
+buf_positions_instanced, and the device's copy of this section is written in
+exactly one place, vkpt_blood_update - the epoch fill and the per-region copies.
+Nothing else ever lands in it while the section is reserved: instance_geometry
+writes the model sections below blood_prim_base, which is pinned. The two ways
+the bytes can change behind this file's back both end the epoch first, and an
+epoch frame always fills and copies:
+  - vkpt_vertex_buffer_ensure_primbuf_size recreating the buffers (generation);
+  - a frame with no blood, when the base is not reserved and models may grow
+    into it (have_last_offset goes false).
+
+So `version` counts frames that wrote the section, and a BLAS built at the same
+version, offset, count and build flags is the BLAS a rebuild would make now: same
+input bytes, same flags, same allocation. Reusing it changes nothing a shader
+reads either - attributes come from buf_primitive_instanced at
+tlas_instance_prim_offsets + primitive id, and neither that buffer (no write, so
+no bump) nor the offset (part of the key) has moved. The TLAS is still rebuilt
+every frame and takes the BLAS's device address, which is unchanged because
+nothing reallocated it: only a build can.
+
+There is one BLAS per frame in flight and one shared section, so the version is
+global and each BLAS is rebuilt once, on its own frame, after a change.
+*/
+static cvar_t* cvar_pt_blood_blas_reuse = NULL;
+
+typedef struct {
+	bool     valid;
+	uint32_t version;
+	uint32_t prim_offset;
+	uint32_t prim_count;
+	bool     fast_build;
+} blood_blas_record_t;
+
+static struct {
+	uint32_t            version;          // bumped on every frame that writes the section
+	uint64_t            reported_frame;   // qvk.frame_counter of the last vkpt_blood_update
+	uint32_t            reported_offset;  // and the section it reported
+	uint32_t            reported_count;
+	blood_blas_record_t built[MAX_FRAMES_IN_FLIGHT];
+	int                 builds, reuses;   // since the last pt_blood_stats line
+} blood_blas;
+
+static void blood_blas_reset(void)
+{
+	memset(&blood_blas, 0, sizeof(blood_blas));
+	blood_blas.reported_frame = ~0ull;
+}
+
+// What vkpt_blood_update leaves for the BLAS build this frame. `wrote` is true
+// whenever the device's copy of the section may have changed.
+static void blood_blas_report(uint32_t prim_offset, uint32_t prim_count, bool wrote)
+{
+	if (wrote)
+		blood_blas.version++;
+
+	blood_blas.reported_frame = qvk.frame_counter;
+	blood_blas.reported_offset = prim_offset;
+	blood_blas.reported_count = prim_count;
+}
+
+static inline bool blood_blas_matches_report(uint32_t prim_offset, uint32_t prim_count)
+{
+	return blood_blas.reported_frame == qvk.frame_counter
+		&& blood_blas.reported_offset == prim_offset
+		&& blood_blas.reported_count == prim_count;
+}
+
+/* path_tracer.c, around its blas_blood[frame_idx] build: whether that BLAS can
+   stand as it is. Anything this cannot vouch for - no section this frame, a
+   section other than the one vkpt_blood_update reported, a frame index out of
+   range - is a build. The caller still checks that the BLAS exists. */
+bool vkpt_blood_blas_needs_build(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build)
+{
+	if (frame_idx < 0 || frame_idx >= MAX_FRAMES_IN_FLIGHT || prim_count == 0)
+		return true;
+
+	if (!cvar_pt_blood_blas_reuse || !cvar_pt_blood_blas_reuse->integer)
+		return true;
+
+	if (!blood_blas_matches_report(prim_offset, prim_count))
+		return true;
+
+	const blood_blas_record_t* b = blood_blas.built + frame_idx;
+
+	if (!b->valid || b->version != blood_blas.version || b->prim_offset != prim_offset
+		|| b->prim_count != prim_count || b->fast_build != fast_build)
+		return true;
+
+	blood_blas.reuses++;
+	return false;
+}
+
+// ...and after every build it does make, so the next frame on this index knows
+// what the BLAS holds. Called with reuse off too, so turning it back on is safe.
+void vkpt_blood_blas_built(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build)
+{
+	if (frame_idx < 0 || frame_idx >= MAX_FRAMES_IN_FLIGHT)
+		return;
+
+	blood_blas_record_t* b = blood_blas.built + frame_idx;
+
+	b->valid = prim_count > 0 && blood_blas_matches_report(prim_offset, prim_count);
+	b->version = blood_blas.version;
+	b->prim_offset = prim_offset;
+	b->prim_count = prim_count;
+	b->fast_build = fast_build;
+
+	if (prim_count > 0)
+		blood_blas.builds++;
+}
 
 static inline uint32_t region_offset(int r)
 {
@@ -836,6 +955,11 @@ VkResult vkpt_blood_initialize(void)
 	// given firefight can be read off rather than guessed at.
 	cvar_pt_blood_stats = Cvar_Get("pt_blood_stats", "0", 0);
 
+	// Keep the blood BLAS while the section is unchanged - see BLAS REUSE. Not
+	// archived: an A/B switch should come back on by itself.
+	cvar_pt_blood_blas_reuse = Cvar_Get("pt_blood_blas_reuse", "1", 0);
+	blood_blas_reset();
+
 	// The appearance cvars live in the global UBO, which registers everything in
 	// its list with no flags at all. That is right for a tuning knob nobody sets
 	// twice, but these are exposed in the Effects menu, and a slider that forgets
@@ -898,6 +1022,7 @@ VkResult vkpt_blood_destroy(void)
 	release_buffers();
 
 	memset(&blood, 0, sizeof(blood));
+	blood_blas_reset();
 	templates_built = false;
 	return VK_SUCCESS;
 }
@@ -1996,6 +2121,7 @@ void vkpt_blood_update(
 	if (num_spheres <= 0 || model_instance_index < 0 || !cvar_pt_blood_spheres->integer)
 	{
 		blood.have_last_offset = false;
+		blood_blas_report(prim_offset, 0, true);
 		return;
 	}
 
@@ -2020,12 +2146,14 @@ void vkpt_blood_update(
 	if (needed == 0)
 	{
 		blood.have_last_offset = false;
+		blood_blas_report(prim_offset, 0, true);
 		return;
 	}
 
 	if (!ensure_buffers())
 	{
 		blood.have_last_offset = false;
+		blood_blas_report(prim_offset, 0, true);
 		return;
 	}
 
@@ -2049,6 +2177,7 @@ void vkpt_blood_update(
 	if (prim_count == 0)
 	{
 		blood.have_last_offset = false;
+		blood_blas_report(prim_offset, 0, true);
 		return;
 	}
 
@@ -2361,6 +2490,10 @@ void vkpt_blood_update(
 			0, 0, NULL, 2, barriers, 0, NULL);
 	}
 
+	// The fill and the copies above are the only writes this section gets - see
+	// BLAS REUSE. No fill and no region means the device holds what it held.
+	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0);
+
 	if (cvar_pt_blood_stats->integer)
 	{
 		static unsigned last_report = 0;
@@ -2368,12 +2501,15 @@ void vkpt_blood_update(
 		if (now - last_report > 1000)
 		{
 			last_report = now;
-			Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions%s\n",
+			Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions%s, blas %d built / %d reused\n",
 				blood.sphere_count, blood.splat_count, blood.cache_hits, blood.cache_moves, prim_count,
 				blood.sphere_count ? (float)prim_count / blood.sphere_count : 0.f,
 				gen_usec / 1000.f, copy_usec / 1000.f, skip_upload ? " (skipped)" : "",
 				(float)(up_prim_bytes + up_pos_bytes) / (1024.f * 1024.f),
-				blood.last_regions, blood.last_epoch ? " EPOCH" : "");
+				blood.last_regions, blood.last_epoch ? " EPOCH" : "",
+				blood_blas.builds, blood_blas.reuses);
+			blood_blas.builds = 0;
+			blood_blas.reuses = 0;
 		}
 	}
 

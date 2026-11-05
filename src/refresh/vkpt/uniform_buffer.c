@@ -26,6 +26,63 @@ static BufferResource_t device_uniform_buffer;
 static VkDescriptorPool desc_pool_ubo;
 static size_t ubo_alignment = 0;
 
+/*
+THE INSTANCE BUFFER IS UPLOADED IN TWO PIECES - pt_upload_ranges, default 1.
+
+InstanceBuffer is ~1.8 MB, and 1.5 MB of that is model_instances (8192 x 192 B),
+of which a frame typically fills a few hundred rows. The whole struct was copied
+into write-combined staging and then to the device at the head of the graphics
+queue every frame.
+
+The model_instances rows past the frame's count are never written by anything:
+prepare_entities fills rows 0..n-1 plus the blood row at n, and nothing clears or
+patches beyond that. So the host struct only CHANGES below the count, and copying
+just that prefix - every frame, from the first full copy on - keeps the device
+row-for-row equal to the host struct everywhere, which is exactly what the whole
+copy produced. That holds however a shader indexes the array, stale or not: a
+cached blood primitive whose `instance` field still names last frame's blood row,
+for one, reads the same bytes it always did.
+
+Everything around it is copied whole, since it is small and its counts are not
+known yet when the copy is recorded: the UBO itself, animated_model_indices and
+the two -1-filled prev/current maps in front (96 KB), mlight_prev_to_current and
+the two tlas_* arrays behind (128 KB) - the tlas_* ones are only filled by
+vkpt_pt_create_toplevel, after this copy is recorded and before the staging
+memcpy, which is why the regions are fixed here and replayed by
+vkpt_uniform_buffer_upload_to_staging.
+
+The count comes from main.c (vkpt_uniform_buffer_set_model_instance_count),
+stamped with the frame: a frame that did not report one gets the whole copy, so
+until main.c makes the call nothing changes.
+*/
+static cvar_t* cvar_pt_upload_ranges = NULL;
+
+static struct {
+	uint64_t count_frame;       // qvk.frame_counter the count below was reported for
+	uint32_t model_instances;   // model_instances rows written that frame
+	bool     full_pending;      // first copy after the buffers were created
+
+	// what copy_from_staging recorded, per staging buffer, for upload_to_staging
+	uint64_t recorded_frame[MAX_FRAMES_IN_FLIGHT];
+	size_t   head_bytes[MAX_FRAMES_IN_FLIGHT];  // InstanceBuffer bytes [0, head)
+	size_t   tail_offset[MAX_FRAMES_IN_FLIGHT]; // and [tail, sizeof) - sizeof when none
+} instance_upload;
+
+/* main.c, at the end of prepare_entities: how many model_instances rows it wrote
+   this frame, counting the blood row. Several calls in one frame keep the
+   largest. */
+void
+vkpt_uniform_buffer_set_model_instance_count(uint32_t count)
+{
+	if (instance_upload.count_frame != qvk.frame_counter)
+	{
+		instance_upload.count_frame = qvk.frame_counter;
+		instance_upload.model_instances = 0;
+	}
+
+	instance_upload.model_instances = max(instance_upload.model_instances, min(count, (uint32_t)MAX_MODEL_INSTANCES));
+}
+
 VkResult
 vkpt_uniform_buffer_create()
 {
@@ -58,6 +115,14 @@ vkpt_uniform_buffer_create()
 
 	const VkMemoryPropertyFlags host_memory_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 	const VkMemoryPropertyFlags device_memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+	// A new device buffer holds nothing yet, so its first copy is whole.
+	cvar_pt_upload_ranges = Cvar_Get("pt_upload_ranges", "1", 0);
+	memset(&instance_upload, 0, sizeof(instance_upload));
+	instance_upload.full_pending = true;
+	instance_upload.count_frame = ~0ull;
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		instance_upload.recorded_frame[i] = ~0ull;
 
 	VkPhysicalDeviceProperties properties;
 	vkGetPhysicalDeviceProperties(qvk.physical_device, &properties);
@@ -155,7 +220,23 @@ vkpt_uniform_buffer_upload_to_staging()
 	memcpy(mapped_ubo, &vkpt_refdef.uniform_buffer, sizeof(QVKUniformBuffer_t));
 
 	const size_t offset = align(sizeof(QVKUniformBuffer_t), ubo_alignment);
-	memcpy((uint8_t*)mapped_ubo + offset, &vkpt_refdef.uniform_instance_buffer, sizeof(InstanceBuffer));
+	uint8_t* dst = (uint8_t*)mapped_ubo + offset;
+	const uint8_t* src = (const uint8_t*)&vkpt_refdef.uniform_instance_buffer;
+
+	// Fill exactly what this frame's copy reads - see THE INSTANCE BUFFER IS
+	// UPLOADED IN TWO PIECES. Anything else in this staging buffer is never read.
+	const int fi = qvk.current_frame_index;
+	if (instance_upload.recorded_frame[fi] == qvk.frame_counter)
+	{
+		memcpy(dst, src, instance_upload.head_bytes[fi]);
+		if (instance_upload.tail_offset[fi] < sizeof(InstanceBuffer))
+			memcpy(dst + instance_upload.tail_offset[fi], src + instance_upload.tail_offset[fi],
+				sizeof(InstanceBuffer) - instance_upload.tail_offset[fi]);
+	}
+	else
+	{
+		memcpy(dst, src, sizeof(InstanceBuffer));
+	}
 
 	buffer_unmap(ubo);
 
@@ -221,10 +302,36 @@ vkpt_uniform_buffer_copy_from_staging(VkCommandBuffer command_buffer)
 			0, 0, NULL, 0, NULL, 0, NULL);
 	}
 
-	VkBufferCopy copy = { 0 };
-	copy.size = align(sizeof(QVKUniformBuffer_t), ubo_alignment) + sizeof(InstanceBuffer);
-	vkCmdCopyBuffer(command_buffer, ubo->buffer, device_uniform_buffer.buffer, 1, &copy);
+	const size_t ib_base = align(sizeof(QVKUniformBuffer_t), ubo_alignment);
+	const size_t total_size = ib_base + sizeof(InstanceBuffer);
+	const int fi = qvk.current_frame_index;
 
+	// The UBO and the instance buffer up to the end of the rows written this
+	// frame, then everything from mlight_prev_to_current on.
+	size_t head = sizeof(InstanceBuffer);
+	size_t tail = sizeof(InstanceBuffer);
+
+	if (!instance_upload.full_pending
+		&& instance_upload.count_frame == qvk.frame_counter
+		&& (!cvar_pt_upload_ranges || cvar_pt_upload_ranges->integer))
+	{
+		head = offsetof(InstanceBuffer, model_instances)
+			+ (size_t)instance_upload.model_instances * sizeof(ModelInstance);
+		tail = offsetof(InstanceBuffer, mlight_prev_to_current);
+	}
+
+	instance_upload.full_pending = false;
+	instance_upload.recorded_frame[fi] = qvk.frame_counter;
+	instance_upload.head_bytes[fi] = head;
+	instance_upload.tail_offset[fi] = tail;
+
+	VkBufferCopy copies[2] = {
+		{ .srcOffset = 0, .dstOffset = 0, .size = ib_base + head },
+		{ .srcOffset = ib_base + tail, .dstOffset = ib_base + tail, .size = sizeof(InstanceBuffer) - tail },
+	};
+	vkCmdCopyBuffer(command_buffer, ubo->buffer, device_uniform_buffer.buffer, (tail < sizeof(InstanceBuffer)) ? 2 : 1, copies);
+
+	// Over the whole buffer, as before: a superset of what was written.
 	VkBufferMemoryBarrier barrier = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
 		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -232,7 +339,7 @@ vkpt_uniform_buffer_copy_from_staging(VkCommandBuffer command_buffer)
 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.buffer = device_uniform_buffer.buffer,
-		.size = copy.size
+		.size = total_size
 	};
 
 	vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

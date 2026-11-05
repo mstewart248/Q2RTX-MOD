@@ -67,6 +67,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // target_changelevel spawnflags [rerelease]
 #define SPAWNFLAG_CHANGELEVEL_CLEAR_INVENTORY   0x00000008
 #define SPAWNFLAG_CHANGELEVEL_NO_END_OF_UNIT    0x00000010  // no end of unit screen
+#define SPAWNFLAG_CHANGELEVEL_FADE_OUT          0x00000020  // fade to black before leaving (every Quake II 64 exit)
 #define SPAWNFLAG_CHANGELEVEL_IMMEDIATE_LEAVE   0x00000040  // ...and no intermission either
 
 // edict->flags
@@ -586,6 +587,13 @@ typedef struct {
     level_entry_t   *entry;
     bool        intermission_eou;   // this intermission ends the unit
     bool        eou_screen;         // ...and its table has been sent
+
+    // [rerelease] FADE_OUT on the target_changelevel: ExitLevel first spends
+    // 1.3 s taking the screen to black, during which G_RunFrame does nothing
+    // else. Not saved - a level is never saved mid-exit.
+    bool        intermission_fade;          // this exit fades
+    bool        intermission_fading;        // ...and is doing so now
+    int         intermission_fade_framenum; // when it is done
 } level_locals_t;
 
 
@@ -2067,6 +2075,12 @@ struct gclient_s {
     // AI_GetMonsterAlertedByPlayers: other monsters that can see it wake up
     edict_t     *sight_entity;
     int         sight_entity_framenum;
+
+    // [rerelease] the "Quake II 64 does not have crouching." hint: how many
+    // crouch presses have been counted and when it may next be shown. Not
+    // saved and cleared on every spawn, so a level starts the count afresh.
+    int         n64_crouch_warn_times;
+    int         n64_crouch_warn_framenum;
 };
 
 

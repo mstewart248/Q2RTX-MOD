@@ -416,7 +416,13 @@ draw_profiler(int enable_asvgf)
 #define PROFILER_DO(name, indent) \
 	draw_query(x, y, font, &#name[9], name); y += 10;
 
-	PROFILER_DO(PROFILER_FRAME_TIME, 0);
+	// The whole frame first - what the fps counter shows when the GPU is the
+	// limit (11-03: Matt read 67 fps against a "frame time" of 13.5 ms; Flow's
+	// simulation, motion blur, bloom, tone mapping, the blit and the HUD all
+	// run outside that). Then the old frame time, up to DLSS, which DRS and
+	// frame generation pace from.
+	draw_query(x, y, font, "GPU_FRAME_(WHOLE)", PROFILER_GPU_FRAME); y += 10;
+	draw_query(x, y, font, "FRAME_TIME_(TO_DLSS)", PROFILER_FRAME_TIME); y += 10;
 	PROFILER_DO(PROFILER_UPLOAD_LIGHTS, 1);
 	PROFILER_DO(PROFILER_INSTANCE_GEOMETRY, 1);
 	PROFILER_DO(PROFILER_BVH_UPDATE, 1);	
@@ -450,6 +456,7 @@ draw_profiler(int enable_asvgf)
 	{
 		PROFILER_DO(PROFILER_FLOW_SIMULATION, 1);
 		if (vkpt_flow_env_profiled()) { PROFILER_DO(PROFILER_FLOW_SMOKE_LIGHTING, 1); }
+		if (vkpt_pt_flow_split_ran()) { PROFILER_DO(PROFILER_FLOW_MARCH, 1); }
 	}
 	if (enable_asvgf)
 	{

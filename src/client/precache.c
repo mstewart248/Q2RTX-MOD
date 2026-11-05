@@ -437,6 +437,9 @@ void CL_UpdateConfigstring(int index)
         }
         memcpy(cl.mapname, s + 5, len - 9);   // skip "maps/"
         cl.mapname[len - 9] = 0; // cut off ".bsp"
+        // Quake II 64 player physics - the same rule SV_SpawnServer applies,
+        // or prediction and the server disagree about crouching
+        cl.pmp.n64 = cl.pmp.rerelease && !Q_strncasecmp(cl.mapname, "q64/", 4);
         return;
     }
 

@@ -170,8 +170,8 @@ begin dlss5
     title "DLSS 5 Neural Rendering"
     pairs --status "(pt_dlss5)" "DLSS 5" pt_dlss5 off 0 on 1
     blank
-    pairs --status "the model's own presets - not the super resolution letters. default lets the model choose (pt_dlss5_preset)" \
-        "model preset" pt_dlss5_preset default 0 "preset 1" 1 "preset 2" 2 "preset 3" 3
+    pairs --status "which network runs. fast = the lightweight FP8 network (needs nvngx_dlssnr.dll 310.9.16 or newer, what RTX Remix uses); full = the original, slower one (pt_dlss5_preset)" \
+        "network" pt_dlss5_preset fast 2 full 1 "DLL default" 0
     pairs --status "the model's processing profiles (pt_dlss5_style)" \
         "style" pt_dlss5_style standard 0 natural 1 cinematic 2
     range --status "how strongly the model's answer replaces the frame (pt_dlss5_intensity)" \
@@ -1139,8 +1139,10 @@ end
 // intro cinematic and starts base1; 'newgame_mg2' drops straight into the Call
 // of the Machine hub with no cinematic. newgame_xatrix and newgame_rogue are
 // the two classic expansions - The Reckoning (xin.cin + xswamp) and Ground
-// Zero (rintro.cin + rmine1). ALL FOUR aliases live in rerelease/default.cfg;
-// the expansion pair was already defined there before the menu offered them.
+// Zero (rintro.cin + rmine1). newgame_n64 is Quake II 64, the N64 campaign
+// (q64/rtest, its in-engine intro, then q64/outpost); the order and names are
+// the rerelease's own, from mapdb.json. ALL FIVE aliases live in
+// rerelease/default.cfg - the rerelease's own file, so every install has them.
 begin campaign
     background #212F3CD0
     style --compact
@@ -1149,6 +1151,7 @@ begin campaign
     action "call of the machine" newgame_mg2
     action "the reckoning" newgame_xatrix
     action "ground zero" newgame_rogue
+    action "quake ii 64" newgame_n64
 end
 
 begin loadgame

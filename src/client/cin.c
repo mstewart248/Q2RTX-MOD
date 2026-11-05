@@ -484,7 +484,7 @@ qhandle_t SCR_ReadNextFrame(void)
 
     const char* image_name = va("%s[%d]", cin.file_name, cin.frame_index);
     return R_RegisterRawImage(image_name, cin.width, cin.height, (byte*)rgba, IT_SPRITE,
-                              IF_SRGB | IF_NO_MIPMAPS);
+                              IF_SRGB | IF_NO_MIPMAPS | IF_VIDEO);
 }
 
 
@@ -1198,29 +1198,81 @@ static qhandle_t OGV_ReadNextFrame(void)
 
     uint32_t *rgba = Z_Malloc(w * h * 4);
 
+    /* CHROMA IS INTERPOLATED, NOT REPEATED.
+
+       The rerelease's own player (KEX, progs/yuvMovieDisplay.shader in
+       Q2Game.kpf) uploads Y, Cb and Cr as three textures and converts per
+       screen pixel, so its chroma is bilinear-filtered from the half-size
+       planes. Repeating each chroma sample over its 2x2 luma block, as this
+       did, stair-steps every coloured edge in 2-pixel blocks - 4 at 4K - which
+       reads as blockiness the official game does not have. Its matrix is the
+       same BT.601 studio-swing one used below, so this is the only difference
+       in the picture itself.
+
+       Theora sites 4:2:0 chroma at the centre of each 2x2 block, so luma
+       column 2i sits a quarter sample left of chroma i and 2i+1 a quarter
+       right: the taps are 3:1 with the neighbour on that side, the same both
+       ways. Done at x16 fixed point, so the extra chroma precision reaches
+       the matrix instead of being rounded away first.
+
+       ~1.3 ms more than the repeated version on a 1080p frame (6.0 vs 4.6 ms,
+       measured offline on ntro.ogv). "cl_hd_cinematics_chroma 0" restores the
+       old repeat for comparison. */
+    const bool lerp_chroma = Cvar_VariableValue("cl_hd_cinematics_chroma") != 0;
+    const int cw = ycbcr[1].width;
+    const int ch = ycbcr[1].height;
+    int *row_u = Z_Malloc(cw * 2 * sizeof(int));
+    int *row_v = row_u + cw;
+
     for (int y = 0; y < h; y++)
     {
         const int sy = y + ogv.pic_y;
         const byte *Y = ycbcr[0].data + (ptrdiff_t)sy * ycbcr[0].stride;
-        const byte *U = ycbcr[1].data + (ptrdiff_t)(sy >> cshift_y) * ycbcr[1].stride;
-        const byte *V = ycbcr[2].data + (ptrdiff_t)(sy >> cshift_y) * ycbcr[2].stride;
         uint32_t *out = rgba + (ptrdiff_t)y * w;
+
+        // this row's chroma at x4 scale, blended vertically first
+        {
+            const int near_y = sy >> cshift_y;
+            int far_y = near_y;
+
+            if (cshift_y && lerp_chroma)
+                far_y = max(0, min(ch - 1, near_y + ((sy & 1) ? 1 : -1)));
+
+            const byte *Un = ycbcr[1].data + (ptrdiff_t)near_y * ycbcr[1].stride;
+            const byte *Uf = ycbcr[1].data + (ptrdiff_t)far_y * ycbcr[1].stride;
+            const byte *Vn = ycbcr[2].data + (ptrdiff_t)near_y * ycbcr[2].stride;
+            const byte *Vf = ycbcr[2].data + (ptrdiff_t)far_y * ycbcr[2].stride;
+
+            for (int i = 0; i < cw; i++)
+            {
+                row_u[i] = 3 * Un[i] + Uf[i];
+                row_v[i] = 3 * Vn[i] + Vf[i];
+            }
+        }
 
         for (int x = 0; x < w; x++)
         {
             const int sx = x + ogv.pic_x;
-            // BT.601 studio swing, the Theora default
-            const int yy = Y[sx] - 16;
-            const int uu = U[sx >> cshift_x] - 128;
-            const int vv = V[sx >> cshift_x] - 128;
+            const int near_x = sx >> cshift_x;
+            int far_x = near_x;
 
-            const int r = (298 * yy + 409 * vv + 128) >> 8;
-            const int g = (298 * yy - 100 * uu - 208 * vv + 128) >> 8;
-            const int b = (298 * yy + 516 * uu + 128) >> 8;
+            if (cshift_x && lerp_chroma)
+                far_x = max(0, min(cw - 1, near_x + ((sx & 1) ? 1 : -1)));
+
+            // BT.601 studio swing, the Theora default; chroma at x16 scale
+            const int yy = (Y[sx] - 16) * (298 * 16);
+            const int uu = 3 * row_u[near_x] + row_u[far_x] - 128 * 16;
+            const int vv = 3 * row_v[near_x] + row_v[far_x] - 128 * 16;
+
+            const int r = (yy + 409 * vv + 2048) >> 12;
+            const int g = (yy - 100 * uu - 208 * vv + 2048) >> 12;
+            const int b = (yy + 516 * uu + 2048) >> 12;
 
             out[x] = MakeColor(OGV_Clip255(r), OGV_Clip255(g), OGV_Clip255(b), 255);
         }
     }
+
+    Z_Free(row_u);
 
     cin_stats.convert_us += Sys_Microseconds() - convert_t0;
     cin_stats.presented++;
@@ -1233,7 +1285,7 @@ static qhandle_t OGV_ReadNextFrame(void)
        vkCmdBlitImage plus 20 barriers of pure waste, every frame, plus a third
        again as much device memory to allocate and free. Set
        "cl_hd_cinematics_mipmaps 1" to get the old behaviour back for comparison. */
-    imageflags_t flags = IF_SRGB;
+    imageflags_t flags = IF_SRGB | IF_VIDEO;
     if (Cvar_VariableValue("cl_hd_cinematics_mipmaps") == 0)
         flags |= IF_NO_MIPMAPS;
 
@@ -1415,7 +1467,14 @@ void SCR_PlayCinematic(const char *name)
         FS_OpenFile(cin.file_name, &cin.file, FS_MODE_READ);
         if (!cin.file)
         {
-            Com_WPrintf("Cinematic \"%s\" not found. Skipping.\n", name);
+            /* Quake II 64 changes level through "n64/n64l<N>t.cin+q64/<next>".
+               No such videos exist - the rerelease ships none and plays
+               nothing there either - so these are the expected way through,
+               not a missing install, and get no warning between every level. */
+            if (!Q_strncasecmp(name, "n64/", 4))
+                Com_DPrintf("Cinematic \"%s\" is a Quake II 64 transition; skipping.\n", name);
+            else
+                Com_WPrintf("Cinematic \"%s\" not found. Skipping.\n", name);
             SCR_SkipCinematic();
             return;
         }

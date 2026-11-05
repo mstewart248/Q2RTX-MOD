@@ -20,6 +20,7 @@
 
 #include "DLSS.h"
 #include "DLSSG.h"
+#include "DLSSNR.h"
 #include "reflex.h"
 #include <float.h>
 #include <math.h>
@@ -206,6 +207,12 @@ void DlssSplitFieldsChanged(cvar_t* self) {
 
 qboolean DLSSCreated() {
     return dlssObj.created;
+}
+
+NVSDK_NGX_Parameter* DLSSCapabilityParameters(VkDevice device) {
+    if (!dlssObj.isInitalized || !dlssObj.pParams || dlssObj.device != device)
+        return NULL;
+    return dlssObj.pParams;
 }
 
 /* Set when a DLSS feature could not be created at all. Makes DLSSEnabled() report false so
@@ -523,6 +530,8 @@ void DLSSDeconstructor() {
            NGX_VULKAN_CREATE_DLSS_EXT failed outright ("Internal error of Nvidia DLSS").
            A vid_restart is easy to hit: several CVAR_REFRESH cvars trigger one. */
         DestroyDLSSGFeature();
+        /* DLSS 5 lives on this NGX instance too: its feature and parameter block. */
+        DLSS5_ReleaseNGX();
 
         if (dlssObj.pDlssFeature != NULL) {
             DestroyDLSSFeature();
@@ -906,6 +915,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_MOTION]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_REFLECT_MOTION]);
+    // the image actually handed to RR as pInMotionVectorsReflections (the one above is its source)
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_ALBEDO]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_ROUGHNESS]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_NORMAL]);
@@ -1132,6 +1143,13 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         };
 
 		NVSDK_NGX_Result res = NGX_VULKAN_EVALUATE_DLSSD_EXT(cmd, dlssObj.pDlssFeature, dlssObj.pParams, &evalParams);
+		// Was never looked at: a failed evaluate just left last frame's output on screen.
+		static bool reported_eval_failure = false;
+		if (NVSDK_NGX_FAILED(res) && !reported_eval_failure)
+		{
+			Com_WPrintf("DLSS-RR evaluate failed: 0x%08x (reported once)\n", (unsigned)res);
+			reported_eval_failure = true;
+		}
     } 
    
 }

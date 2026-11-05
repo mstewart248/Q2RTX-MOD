@@ -1,5 +1,17 @@
 /*
-DLSS 5 NEURAL RENDERING - engine side. See DLSSNR.h and dlssnr_forwarder.cpp.
+DLSS 5 NEURAL RENDERING - engine side. See DLSSNR.h.
+
+HOW IT IS CALLED. Through the driver's NGX core, like DLSS/RR/FG and like RTX Remix: the
+instance DLSS.c's TryInit set up on this device, our own parameter block from
+NVSDK_NGX_VULKAN_GetCapabilityParameters, and NVSDK_NGX_VULKAN_CreateFeature1 with feature
+id 18. The core finds nvngx_dlssnr.dll next to q2rtx.exe itself, checks its signature and
+calls it. Until 2026-11 this went through a forwarder DLL instead (nvngx.dll_dlssnr.dll): the
+runtime only accepts calls from a module whose path contains "nvngx.dll" - normally the
+core, _nvngx.dll - and the core refused the unsigned 310.8 runtime, so the forwarder called
+it directly under a name that passed. 310.9.16 is signed and the core loads it, so the
+forwarder is gone; 310.8 now fails at DLSSNR.Available with a message saying so.
+Side benefit: the runtime's own log lines ("Created feature ... network WxH, preset=N ->
+name") reach the console through TryInit's logging callback.
 
 WHAT THE MODEL IS FED
 
@@ -7,6 +19,9 @@ WHAT THE MODEL IS FED
           sRGB first by dlss5_convert.comp mode 0. The frame is linear until the swapchain
           blit encodes it, and the model expects what an SDR game buffer holds - sRGB. Feeding
           it linear made its colour adaptation hunt between red and washed-out blue.
+          Under vid_hdr the frame is scRGB; the encode first maps it to the frame SDR mode
+          would have produced and the resolve maps the model's edit back (see
+          dlss5_convert.comp - clamping scRGB straight to [0,1] wrecked the colours).
   Depth   VKPT_IMG_DLSS_DEPTH, render resolution, not inverted - same image DLSS gets.
   MVec    VKPT_IMG_PT_DLSS_MOTION, render resolution, UV units, so the scale is the render
           size - again exactly what DLSS gets (InMVScaleX = render width).
@@ -46,49 +61,24 @@ pt_dlss5_strength above 1 speeds it up.
 
 #define DLSS5_REBUILD_DELAY_MS 300
 
-typedef int   (*PFN_dlssnr_load)(const wchar_t*);
-typedef int   (*PFN_dlssnr_init)(const wchar_t*, void*, void*, void*);
-typedef int   (*PFN_dlssnr_shutdown)(void*);
-typedef void* (*PFN_dlssnr_params_create)(void);
-typedef void  (*PFN_dlssnr_params_destroy)(void*);
-typedef void  (*PFN_dlssnr_set_ui)(void*, const char*, unsigned int);
-typedef void  (*PFN_dlssnr_set_f)(void*, const char*, float);
-typedef void  (*PFN_dlssnr_set_ptr)(void*, const char*, void*);
-typedef int   (*PFN_dlssnr_missed_keys)(void*, char*, int);
-typedef int   (*PFN_dlssnr_create)(void*, void*, void**);
-typedef int   (*PFN_dlssnr_evaluate)(void*, void*, void*);
-typedef int   (*PFN_dlssnr_release)(void*);
+/* DLSS 5 Neural Rendering. Not in the NGX SDK headers this project builds against (310.6
+   stops at NVSDK_NGX_Feature_Reserved17); the static lib passes the id through to the core
+   unchecked, and the core routes 18 to nvngx_dlssnr.dll. */
+#define DLSS5_NGX_FEATURE ((NVSDK_NGX_Feature)18)
 
 static struct {
-    void* forwarder;            /* HMODULE */
-    PFN_dlssnr_load load;
-    PFN_dlssnr_init init;
-    PFN_dlssnr_shutdown shutdown;
-    PFN_dlssnr_params_create params_create;
-    PFN_dlssnr_params_destroy params_destroy;
-    PFN_dlssnr_set_ui set_ui;
-    PFN_dlssnr_set_f set_f;
-    PFN_dlssnr_set_ptr set_ptr;
-    PFN_dlssnr_missed_keys missed_keys;
-    PFN_dlssnr_create create;
-    PFN_dlssnr_evaluate evaluate;
-    PFN_dlssnr_release release;
-
     qboolean failed;            /* sticky until pt_dlss5 is toggled */
     char reason[256];
     int lastResult;
 
-    qboolean ngxInitialised;
-    VkDevice ngxDevice;
-    void* params;
-    void* feature;
+    NVSDK_NGX_Parameter* params; /* ours, from GetCapabilityParameters; dies with NGX */
+    NVSDK_NGX_Handle* feature;
     uint32_t width, height;     /* what the feature was built for */
 
     qboolean reset;
     qboolean dirty;
     unsigned dirtyTime;
     unsigned long long frames;
-    qboolean warnedHdr;
 
     /* pt_dlss5_drugs */
     VkImage feedback;
@@ -108,6 +98,7 @@ struct dlss5_convert_push_constants {
     float   strength;
     float   colour;
     int32_t view;
+    int32_t hdr;        /* scRGB swapchain: map to/from the SDR-equivalent frame */
 };
 
 static cvar_t* cvar_pt_dlss5;
@@ -198,6 +189,7 @@ static void Convert(VkCommandBuffer cmd, int mode, uint32_t width, uint32_t heig
         .strength = cvar_pt_dlss5_strength->value,
         .colour = cvar_pt_dlss5_colour->value,
         .view = compare,
+        .hdr = qvk.surf_is_hdr ? 1 : 0,
     };
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, convert_pipeline);
@@ -224,8 +216,11 @@ static void Fail(const char* why, int result)
 
 static void ReleaseFeature(void)
 {
-    if (nr.feature && nr.release)
-        nr.release(nr.feature);
+    if (nr.feature) {
+        NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_ReleaseFeature(nr.feature);
+        if (NVSDK_NGX_FAILED(r))
+            Com_WPrintf("DLSS 5: ReleaseFeature failed (0x%08X)\n", (unsigned)r);
+    }
     nr.feature = NULL;
     nr.width = nr.height = 0;
     nr.reset = qtrue;
@@ -250,24 +245,20 @@ void DLSS5_DestroyFeature(void)
     DestroyFeedback();
 }
 
-void DLSS5_Shutdown(void)
+void DLSS5_ReleaseNGX(void)
 {
     ReleaseFeature();
+    if (nr.params)
+        NVSDK_NGX_VULKAN_DestroyParameters(nr.params);
+    nr.params = NULL;
+}
+
+void DLSS5_Shutdown(void)
+{
+    DLSS5_ReleaseNGX();
     DestroyFeedback();
 
-    if (nr.params && nr.params_destroy)
-        nr.params_destroy(nr.params);
-    nr.params = NULL;
-
-    if (nr.ngxInitialised && nr.shutdown)
-        nr.shutdown(nr.ngxDevice);
-    nr.ngxInitialised = qfalse;
-    nr.ngxDevice = VK_NULL_HANDLE;
-
     Cmd_RemoveCommand("dlss5_info");
-
-    /* The forwarder and the snippet stay loaded: unloading a library NGX has threads or
-       callbacks registered from is not worth the risk for a vid_restart. */
 }
 
 static void tuning_changed(cvar_t* self)
@@ -315,16 +306,46 @@ static void drugs_changed(cvar_t* self)
     nr.reset = qtrue;
 }
 
+/* What the NGX core says about DLSS 5 in a capability block - the same keys RTX Remix
+   checks before it creates the feature. "?" means the core did not report the key. */
+static void PrintCapabilities(NVSDK_NGX_Parameter* p)
+{
+    if (!p) {
+        Com_Printf("  NGX core: not initialised on this device (DLSS unavailable?)\n");
+        return;
+    }
+    int available = 0, needsDriver = 0, initResult = 0;
+    unsigned int major = 0, minor = 0;
+    const qboolean hasAvailable = NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetI(p, "DLSSNR.Available", &available));
+    const qboolean hasNeeds = NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetI(p, "DLSSNR.NeedsUpdatedDriver", &needsDriver));
+    const qboolean hasInit = NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetI(p, "DLSSNR.FeatureInitResult", &initResult));
+    const qboolean hasMin = NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetUI(p, "DLSSNR.MinDriverVersionMajor", &major))
+        && NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetUI(p, "DLSSNR.MinDriverVersionMinor", &minor));
+
+    char a[16], n[16], m[32], r[16];
+    Q_snprintf(a, sizeof(a), hasAvailable ? "%d" : "?", available);
+    Q_snprintf(n, sizeof(n), hasNeeds ? "%d" : "?", needsDriver);
+    Q_snprintf(m, sizeof(m), hasMin ? "%u.%u" : "?", major, minor);
+    Q_snprintf(r, sizeof(r), hasInit ? "0x%08X" : "?", (unsigned)initResult);
+    Com_Printf("  NGX core: DLSSNR.Available %s, NeedsUpdatedDriver %s (minimum driver %s), FeatureInitResult %s\n",
+        a, n, m, r);
+}
+
 static void dlss5_info_f(void)
 {
-    Com_Printf("DLSS 5 Neural Rendering\n");
-    Com_Printf("  pt_dlss5 %d, DLSS %s\n", cvar_pt_dlss5->integer, DLSSEnabled() ? "on" : "OFF (required)");
-    Com_Printf("  forwarder %s, NGX %s, feature %s %ux%u, frames %llu\n",
-        nr.forwarder ? "loaded" : "not loaded",
-        nr.ngxInitialised ? "initialised" : "not initialised",
+    Com_Printf("DLSS 5 Neural Rendering (NGX feature 18, through the driver's NGX core)\n");
+    Com_Printf("  pt_dlss5 %d, DLSS %s, nvngx_dlssnr.dll next to q2rtx.exe: %s\n", cvar_pt_dlss5->integer,
+        DLSSEnabled() ? "on" : "OFF (required)", Cvar_VariableInteger("pt_dlss5_available") ? "yes" : "NO");
+    Com_Printf("  parameters %s, feature %s %ux%u, frames %llu\n",
+        nr.params ? "allocated" : "none",
         nr.feature ? "up" : "down", nr.width, nr.height, nr.frames);
-    Com_Printf("  preset %d, style %d, intensity %.2f, local structure %.2f, local tone %.2f, skin %.2f, auto mask %d\n",
-        cvar_pt_dlss5_preset->integer, cvar_pt_dlss5_style->integer, cvar_pt_dlss5_intensity->value,
+    PrintCapabilities(nr.params ? nr.params : DLSSCapabilityParameters(qvk.device));
+    const int preset = cvar_pt_dlss5_preset->integer;
+    Com_Printf("  preset %d (%s), style %d, intensity %.2f, local structure %.2f, local tone %.2f, skin %.2f, auto mask %d\n",
+        preset,
+        preset == 2 ? "lightweight FP8 network, needs 310.9.16+" :
+        preset == 1 ? "full network" : "DLL default = full network",
+        cvar_pt_dlss5_style->integer, cvar_pt_dlss5_intensity->value,
         cvar_pt_dlss5_local_structure->value, cvar_pt_dlss5_local_tone->value, cvar_pt_dlss5_skin->value,
         cvar_pt_dlss5_automask->integer);
     Com_Printf("  strength %.2f, colour %.2f, compare %d\n",
@@ -333,16 +354,19 @@ static void dlss5_info_f(void)
         nr.feedback ? (nr.feedbackSeeded ? "looping" : "allocated") : "none");
     if (nr.failed)
         Com_Printf("  FAILED: %s (result 0x%08X)\n", nr.reason, (unsigned)nr.lastResult);
-
-    if (nr.params && nr.missed_keys) {
-        static char buf[8192];
-        int n = nr.missed_keys(nr.params, buf, sizeof(buf));
-        Com_Printf("  %d parameter(s) the model asked for that were never set:\n%s", n, buf);
-    }
+    Com_Printf("  The runtime's own log (network size, preset -> network name) is in the console "
+        "and DLSSTemp/nvngx_dlssnr*.log.\n");
 }
 
 #ifdef _WIN32
-static void ExeDir(wchar_t* out, size_t size);
+/* Module directory of q2rtx.exe, with a trailing backslash. */
+static void ExeDir(wchar_t* out, size_t size)
+{
+    GetModuleFileNameW(NULL, out, (DWORD)size);
+    wchar_t* slash = wcsrchr(out, L'\\');
+    if (slash)
+        slash[1] = 0;
+}
 #endif
 
 /* Whether nvngx_dlssnr.dll sits next to q2rtx.exe. The model is not something this
@@ -363,10 +387,19 @@ void DLSS5_InitCvars(void)
     cvar_pt_dlss5 = Cvar_Get("pt_dlss5", "0", CVAR_ARCHIVE);
     cvar_pt_dlss5->changed = enable_changed;
 
-    /* NR's own preset scale: 0 lets the model choose, 1-3 are its alternatives. NOT the
-       Super Resolution letters - J there is 10, which this model does not have. */
-    cvar_pt_dlss5_preset = Cvar_Get("pt_dlss5_preset", "0", CVAR_ARCHIVE);
-    /* 0 standard, 1 natural, 2 cinematic */
+    /* NR's preset picks the NETWORK (its size and speed); the look is pt_dlss5_style. From
+       the weight registry inside nvngx_dlssnr.dll 310.9.16:
+         1 (A)  honest_tench, the full network - the only one 310.8 has
+         2 (B)  hnet-crazy-cuckoo-small-fp8, a lightweight FP8 network, new in 310.9.16.
+                RTX Remix always creates the feature with Preset B ("Preset B selects the
+                lightweight network independently of the appearance model").
+         0      the DLL's shipping default (the full network)
+       Any other value is "not available in this DLL build" and falls back to the default,
+       so 3 runs the full network too. Default 2: the speed-up 310.9.16 was released for.
+       On 310.8, 2 is unavailable and falls back to the full network. */
+    cvar_pt_dlss5_preset = Cvar_Get("pt_dlss5_preset", "2", CVAR_ARCHIVE);
+    /* The appearance model - RTX Remix's "Model A/B/C" (0/1/2), sent as DLSSNR.Style. The
+       names below are ours; Remix only says the look is content-dependent. */
     cvar_pt_dlss5_style = Cvar_Get("pt_dlss5_style", "0", CVAR_ARCHIVE);
     cvar_pt_dlss5_intensity = Cvar_Get("pt_dlss5_intensity", "1.0", CVAR_ARCHIVE);
     cvar_pt_dlss5_local_structure = Cvar_Get("pt_dlss5_local_structure", "1.0", CVAR_ARCHIVE);
@@ -496,101 +529,58 @@ static void FeedbackOut(VkCommandBuffer cmd, uint32_t width, uint32_t height)
     nr.feedbackSeeded = qtrue;
 }
 
-#ifndef _WIN32
-static qboolean EnsureLoaded(void)
+/* Our parameter block on the NGX instance DLSS.c set up for this device. The core's block
+   is typed; values are set the way NVIDIA's helpers set their equivalents (UI for sizes,
+   flags and indices, F for strengths and scales, a void pointer per resource) and the
+   preset as an int, which is how RTX Remix sets it. */
+static qboolean EnsureParams(void)
 {
-    Fail("DLSS 5 needs nvngx_dlssnr.dll, which is Windows-only", 0);
-    return qfalse;
-}
-#else
-/* Module directory of q2rtx.exe, with a trailing backslash. */
-static void ExeDir(wchar_t* out, size_t size)
-{
-    GetModuleFileNameW(NULL, out, (DWORD)size);
-    wchar_t* slash = wcsrchr(out, L'\\');
-    if (slash)
-        slash[1] = 0;
-}
-
-static qboolean EnsureLoaded(void)
-{
-    if (nr.forwarder)
+    if (nr.params)
         return qtrue;
 
-    wchar_t dir[MAX_PATH], path[MAX_PATH];
-    ExeDir(dir, MAX_PATH);
-
-    swprintf(path, MAX_PATH, L"%lsnvngx.dll_dlssnr.dll", dir);
-    HMODULE m = LoadLibraryW(path);
-    if (!m) {
-        Fail("nvngx.dll_dlssnr.dll (the forwarder) was not found next to q2rtx.exe", 0);
+    if (!DLSSCapabilityParameters(qvk.device)) {
+        Fail("the NGX core is not initialised on this device (DLSS must be available)", 0);
         return qfalse;
     }
 
-#define GET(field, name) nr.field = (PFN_##name)GetProcAddress(m, #name)
-    GET(load, dlssnr_load);
-    GET(init, dlssnr_init);
-    GET(shutdown, dlssnr_shutdown);
-    GET(params_create, dlssnr_params_create);
-    GET(params_destroy, dlssnr_params_destroy);
-    GET(set_ui, dlssnr_set_ui);
-    GET(set_f, dlssnr_set_f);
-    GET(set_ptr, dlssnr_set_ptr);
-    GET(missed_keys, dlssnr_missed_keys);
-    GET(create, dlssnr_create);
-    GET(evaluate, dlssnr_evaluate);
-    GET(release, dlssnr_release);
-#undef GET
-
-    if (!nr.load || !nr.init || !nr.params_create || !nr.set_ui || !nr.set_f || !nr.set_ptr
-        || !nr.create || !nr.evaluate || !nr.release) {
-        Fail("the forwarder is missing exports - rebuild nvngx.dll_dlssnr.dll", 0);
+    NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetCapabilityParameters(&nr.params);
+    if (NVSDK_NGX_FAILED(r) || !nr.params) {
+        nr.params = NULL;
+        Fail("NVSDK_NGX_VULKAN_GetCapabilityParameters failed", r);
         return qfalse;
     }
-    nr.forwarder = m;
+    /* As for DLSS.c's own block: give a released feature's VRAM back right away. */
+    NVSDK_NGX_Parameter_SetUI(nr.params, NVSDK_NGX_Parameter_FreeMemOnReleaseFeature, 1);
 
-    swprintf(path, MAX_PATH, L"%lsnvngx_dlssnr.dll", dir);
-    int bits = nr.load(path);
-    if ((bits & 15) != 15) {
-        Fail(bits == 0 ? "nvngx_dlssnr.dll was not found next to q2rtx.exe"
-                       : "nvngx_dlssnr.dll is missing Vulkan entry points", bits);
+    /* Only an explicit "not available" stops us; an older core that does not report the
+       key at all gets to try the create. */
+    int available = 1;
+    if (NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetI(nr.params, "DLSSNR.Available", &available)) && !available) {
+        int needsDriver = 0, initResult = 0;
+        NVSDK_NGX_Parameter_GetI(nr.params, "DLSSNR.NeedsUpdatedDriver", &needsDriver);
+        NVSDK_NGX_Parameter_GetI(nr.params, "DLSSNR.FeatureInitResult", &initResult);
+        Fail(needsDriver
+            ? "the NGX core says the driver is too old for this nvngx_dlssnr.dll (DLSSNR.NeedsUpdatedDriver)"
+            : "the NGX core reports DLSS 5 unavailable (DLSSNR.Available 0). It refuses an unsigned "
+              "nvngx_dlssnr.dll such as 310.8 - use 310.9.16 or newer",
+            initResult);
         return qfalse;
     }
-    return qtrue;
-}
-#endif  /* _WIN32 */
-
-static qboolean EnsureNGX(void)
-{
-    if (nr.ngxInitialised && nr.ngxDevice == qvk.device)
-        return qtrue;
-
-    int r = nr.init(L"DLSSTemp/", qvk.instance, qvk.physical_device, qvk.device);
-    if (r != NVSDK_NGX_Result_Success) {
-        Fail("NVSDK_NGX_VULKAN_Init_Ext on nvngx_dlssnr.dll failed", r);
-        return qfalse;
-    }
-    nr.ngxInitialised = qtrue;
-    nr.ngxDevice = qvk.device;
-
-    if (!nr.params)
-        nr.params = nr.params_create();
-    Com_Printf("DLSS 5: NGX initialised on nvngx_dlssnr.dll\n");
     return qtrue;
 }
 
 static void SetTuning(void)
 {
-    void* p = nr.params;
+    NVSDK_NGX_Parameter* p = nr.params;
     const int preset = cvar_pt_dlss5_preset->integer;
     const int style = cvar_pt_dlss5_style->integer;
-    nr.set_ui(p, "DLSSNR.Hint.Render.Preset", (unsigned)(preset < 0 ? 0 : preset));
-    nr.set_f(p, "DLSSNR.Intensity", cvar_pt_dlss5_intensity->value);
-    nr.set_ui(p, "DLSSNR.Style", (unsigned)(style < 0 ? 0 : style));
-    nr.set_f(p, "DLSSNR.LocalStructureStrength", cvar_pt_dlss5_local_structure->value);
-    nr.set_f(p, "DLSSNR.LocalToneStrength", cvar_pt_dlss5_local_tone->value);
-    nr.set_f(p, "DLSSNR.SkinStructureStrength", cvar_pt_dlss5_skin->value);
-    nr.set_ui(p, "DLSSNR.UseAutoMask", cvar_pt_dlss5_automask->integer ? 1u : 0u);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.Hint.Render.Preset", preset < 0 ? 0 : preset);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.Intensity", cvar_pt_dlss5_intensity->value);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Style", (unsigned)(style < 0 ? 0 : style));
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.LocalStructureStrength", cvar_pt_dlss5_local_structure->value);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.LocalToneStrength", cvar_pt_dlss5_local_tone->value);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.SkinStructureStrength", cvar_pt_dlss5_skin->value);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.UseAutoMask", cvar_pt_dlss5_automask->integer ? 1u : 0u);
 }
 
 static qboolean EnsureFeature(VkCommandBuffer cmd, uint32_t width, uint32_t height)
@@ -606,19 +596,20 @@ static qboolean EnsureFeature(VkCommandBuffer cmd, uint32_t width, uint32_t heig
     if (nr.feature)
         return qtrue;
 
-    void* p = nr.params;
-    nr.set_ui(p, "DLSSNR.Enabled", 1u);
-    nr.set_ui(p, "DLSSNR.Width", width);
-    nr.set_ui(p, "DLSSNR.Height", height);
-    nr.set_ui(p, "CreationNodeMask", 1u);
-    nr.set_ui(p, "VisibilityNodeMask", 1u);
-    nr.set_ui(p, "DLSSNR.UICorrection", cvar_pt_dlss5_ui_correction->integer ? 1u : 0u);
+    NVSDK_NGX_Parameter* p = nr.params;
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Enabled", 1u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Width", width);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Height", height);
+    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_CreationNodeMask, 1u);
+    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.UICorrection", cvar_pt_dlss5_ui_correction->integer ? 1u : 0u);
     SetTuning();
 
-    void* handle = NULL;
-    int r = nr.create(cmd, p, &handle);
-    if (r != NVSDK_NGX_Result_Success || !handle) {
-        Fail("CreateFeature(18) failed", r);
+    NVSDK_NGX_Handle* handle = NULL;
+    NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_CreateFeature1(qvk.device, cmd, DLSS5_NGX_FEATURE, p, &handle);
+    if (NVSDK_NGX_FAILED(r) || !handle) {
+        Fail("CreateFeature1(18) through the NGX core failed - the NGX/DLSSNR lines above "
+             "and DLSSTemp/nvngx*.log say why", r);
         return qfalse;
     }
     nr.feature = handle;
@@ -637,18 +628,15 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
     if (!DLSS5Enabled())
         return;
 
-    if (!nr.warnedHdr && Cvar_VariableInteger("vid_hdr")) {
-        nr.warnedHdr = qtrue;
-        Com_WPrintf("DLSS 5: vid_hdr is on. The model is built for an SDR, display-referred frame, "
-            "so expect it to misjudge brightness.\n");
-    }
+    /* HDR needs nothing here: the model is LDR-only, so dlss5_convert.comp hands it the
+       SDR-equivalent frame and maps its edit back onto the scRGB original (push.hdr). */
 
     const uint32_t width = qvk.extent_unscaled.width;
     const uint32_t height = qvk.extent_unscaled.height;
     const uint32_t guideWidth = qvk.extent_render.width;
     const uint32_t guideHeight = qvk.extent_render.height;
 
-    if (!EnsureLoaded() || !EnsureNGX() || !EnsureFeature(cmd, width, height))
+    if (!EnsureParams() || !EnsureFeature(cmd, width, height))
         return;
 
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
@@ -677,41 +665,41 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
     NVSDK_NGX_Resource_VK output = ToNGXResource(qvk.images[VKPT_IMG_MOTION_BLUR], qvk.images_views[VKPT_IMG_MOTION_BLUR],
         outSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);
 
-    void* p = nr.params;
-    nr.set_ptr(p, "DLSSNR.Color", &color);
-    nr.set_ptr(p, "DLSSNR.Depth", &depth);
-    nr.set_ptr(p, "DLSSNR.MVec", &motion);
-    nr.set_ptr(p, "DLSSNR.Output", &output);
+    NVSDK_NGX_Parameter* p = nr.params;
+    NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Color", &color);
+    NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Depth", &depth);
+    NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.MVec", &motion);
+    NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Output", &output);
 
-    nr.set_ui(p, "DLSSNR.Enabled", 1u);
-    nr.set_ui(p, "DLSSNR.Width", width);
-    nr.set_ui(p, "DLSSNR.Height", height);
-    nr.set_ui(p, "DLSSNR.DepthInverted", 0u);
-    nr.set_ui(p, "DLSSNR.Reset", (resetHistory || nr.reset) ? 1u : 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Enabled", 1u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Width", width);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Height", height);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthInverted", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Reset", (resetHistory || nr.reset) ? 1u : 0u);
 
-    nr.set_ui(p, "DLSSNR.ColorSubrectBaseX", 0u);
-    nr.set_ui(p, "DLSSNR.ColorSubrectBaseY", 0u);
-    nr.set_ui(p, "DLSSNR.ColorSubrectWidth", width);
-    nr.set_ui(p, "DLSSNR.ColorSubrectHeight", height);
-    nr.set_ui(p, "DLSSNR.OutputSubrectBaseX", 0u);
-    nr.set_ui(p, "DLSSNR.OutputSubrectBaseY", 0u);
-    nr.set_ui(p, "DLSSNR.OutputSubrectWidth", width);
-    nr.set_ui(p, "DLSSNR.OutputSubrectHeight", height);
-    nr.set_ui(p, "DLSSNR.DepthSubrectBaseX", 0u);
-    nr.set_ui(p, "DLSSNR.DepthSubrectBaseY", 0u);
-    nr.set_ui(p, "DLSSNR.DepthSubrectWidth", guideWidth);
-    nr.set_ui(p, "DLSSNR.DepthSubrectHeight", guideHeight);
-    nr.set_ui(p, "DLSSNR.MVecSubrectBaseX", 0u);
-    nr.set_ui(p, "DLSSNR.MVecSubrectBaseY", 0u);
-    nr.set_ui(p, "DLSSNR.MVecSubrectWidth", guideWidth);
-    nr.set_ui(p, "DLSSNR.MVecSubrectHeight", guideHeight);
-    nr.set_f(p, "DLSSNR.MVecScaleX", (float)guideWidth);
-    nr.set_f(p, "DLSSNR.MVecScaleY", (float)guideHeight);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectWidth", width);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectHeight", height);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectWidth", width);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectHeight", height);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectWidth", guideWidth);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectHeight", guideHeight);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectWidth", guideWidth);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectHeight", guideHeight);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleX", (float)guideWidth);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleY", (float)guideHeight);
     SetTuning();
 
-    int r = nr.evaluate(cmd, nr.feature, p);
+    NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_EvaluateFeature_C(cmd, nr.feature, p, NULL);
     nr.reset = qfalse;
-    if (r != NVSDK_NGX_Result_Success) {
+    if (NVSDK_NGX_FAILED(r)) {
         /* Put the frame back to linear untouched: resolve at strength 0 would read garbage
            from the scratch image, so decode by resolving against itself is not an option -
            a failed evaluate leaves the encoded frame, and the next frame is a fresh one. */

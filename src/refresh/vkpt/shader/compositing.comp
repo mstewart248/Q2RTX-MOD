@@ -43,6 +43,22 @@ main()
 	if(any(greaterThanEqual(ipos, ivec2(global_ubo.current_gpu_slice_width, global_ubo.height))))
 		return;
 
+	/* FULL-RESOLUTION FIELDS: field 1 is only read for a split pixel.
+	   combine_fullres_fields (checkerboard_interleave.comp) loads field 1's
+	   ASVGF_COLOR and PT_BEFORE_TRANSPARENT at (x + pt_field_offset, y) only when
+	   field 0's flags at (x, y) - written below from this same VIEW_DIRECTION.w -
+	   say split, and the half-res row fill moves both fields to the same row. So
+	   the other ~95% of field 1 is composited for nothing. Nothing else reads these
+	   two images there: the god-rays march reuses ASVGF_COLOR but rewrites what it
+	   reads first, and PT_BEFORE_TRANSPARENT is cleared every frame. */
+	if(global_ubo.pt_fullres_fields != 0 && ipos.x >= global_ubo.pt_field_offset)
+	{
+		ivec2 field0_pos = ivec2(ipos.x - global_ubo.pt_field_offset, ipos.y);
+		int field0_flags = int(texelFetch(TEX_PT_VIEW_DIRECTION, field0_pos, 0).w);
+		if(bitCount(field0_flags & CHECKERBOARD_FLAG_FIELD_MASK) <= 1)
+			return;
+	}
+
 	// Load the surface parameters
 	vec3 normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
 	vec2 metallic_roughness = texelFetch(TEX_PT_METALLIC_A, ipos, 0).rg;

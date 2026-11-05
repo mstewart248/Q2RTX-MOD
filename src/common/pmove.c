@@ -704,8 +704,15 @@ static void PM_CategorizePosition(void)
             if (!(pm->s.pm_flags & PMF_ON_GROUND)) {
                 // just hit the ground
                 pm->s.pm_flags |= PMF_ON_GROUND;
+                if (pmp->n64) {
+                    // [rerelease] N64: every landing, however soft, holds the
+                    // next jump off for 128 ms (KEX's pm_time 128, in our 8 ms
+                    // units), so there is no bunny hopping
+                    pm->s.pm_flags |= PMF_TIME_LAND;
+                    pm->s.pm_time = 16;
+                }
                 // don't do landing time if we were just going down a slope
-                if (pml.velocity[2] < -200 && !pmp->strafehack) {
+                else if (pml.velocity[2] < -200 && !pmp->strafehack) {
                     pm->s.pm_flags |= PMF_TIME_LAND;
                     // don't allow another jump for a little while
                     if (pml.velocity[2] < -400)
@@ -963,8 +970,9 @@ static void PM_CheckDuck(void)
 
     if (pm->s.pm_type == PM_DEAD) {
         pm->s.pm_flags |= PMF_DUCKED;
-    } else if (pm->cmd.upmove < 0 && (pm->s.pm_flags & PMF_ON_GROUND)) {
-        // duck
+    } else if (pm->cmd.upmove < 0 && (pm->s.pm_flags & PMF_ON_GROUND) && !pmp->n64) {
+        // duck (never on the N64 maps, which were built for a player who
+        // cannot - the game prints $g_n64_crouching instead, see ClientThink)
         pm->s.pm_flags |= PMF_DUCKED;
     } else {
         // stand up if possible

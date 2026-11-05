@@ -54,8 +54,15 @@ typedef struct {
 
 typedef enum {
 	PIPELINE_PRIMARY_RAYS,
+	// pt_flow_split_pass: primary rays without the Flow march (spec_flow_mode 1),
+	// and the march as its own pass (spec_flow_mode 2) - see primary_rays.rgen
+	PIPELINE_PRIMARY_RAYS_FLOW_SPLIT,
+	PIPELINE_FLOW_PASS,
 	PIPELINE_REFLECT_REFRACT_1,
 	PIPELINE_REFLECT_REFRACT_2,
+	// the same two without the Flow march (spec_flow 0), for frames with no grid
+	PIPELINE_REFLECT_REFRACT_1_NOFLOW,
+	PIPELINE_REFLECT_REFRACT_2_NOFLOW,
     PIPELINE_DIRECT_LIGHTING,
     PIPELINE_DIRECT_LIGHTING_CAUSTICS,
     PIPELINE_INDIRECT_LIGHTING_FIRST,
@@ -119,7 +126,41 @@ static QvkGeometryInstance_t g_instances[MAX_TLAS_INSTANCES];
 typedef struct {
 	int gpu_index;
 	int bounce;
+	// TILE COMPACTION (shader/constants.h): list index + 1, 0 = none
+	uint32_t tile_read_list;
+	uint32_t tile_append_list;
+	VkDeviceAddress tile_buffer;
 } pt_push_constants_t;
+
+/* TILE COMPACTION, pt_tile_compaction (default 1; 0 = launch every bounce over
+   the whole screen as before). See the note in shader/constants.h. Sized for
+   the screen images, so it is rebuilt with them. */
+static BufferResource_t buf_tiles;
+static uint32_t tiles_max;           // tile ids one list can hold
+static uint32_t tiles_mask_stride;   // words per list's dedupe mask
+static uint32_t tiles_data_offset;   // word offset of list 0's tile ids
+static uint32_t tiles_max_groups;    // maxComputeWorkGroupCount[0]
+static bool     tiles_built;         // primary_rays filled the lists this view
+static cvar_t  *cvar_pt_tile_compaction;
+
+/* FLOW SPLIT PASS, pt_flow_split_pass (see the note in primary_rays.rgen):
+   1 (default) = with Flow's grid in view, the primary pass leaves the march
+   to a pass of its own, PROFILER_FLOW_MARCH; 0 = the march inline, as before.
+   Measured 11-04 at 3782x2064 with two rockets' smoke on screen: primary
+   2.67 ms inline against 0.83 + 1.61..1.71 split, whole GPU frame 14.10 ->
+   13.94 ms (all three split arms faster than all three inline ones). Photo
+   mode on one frozen explosion: the two differ by no more than two shots of
+   the same mode do. The march itself runs at 96 registers there, not 128.
+   One GPU only. */
+static cvar_t  *cvar_pt_flow_split_pass;
+static bool     flow_split_ran;      // last view, for the profiler overlay
+static cvar_t  *cvar_pt_merge_barriers;  // MERGED BARRIERS, at BARRIER_COMPUTE
+
+static void
+flow_split_pass_changed(cvar_t *self)
+{
+	vkpt_reset_accumulation();
+}
 
 /* WHICH STAGE ACTUALLY CONSUMES AN ACCELERATION STRUCTURE ON THIS DEVICE.
 
@@ -229,6 +270,12 @@ vkpt_pt_init()
 	vkGetPhysicalDeviceProperties2(qvk.physical_device, &dev_props2);
 
 	shaderGroupBaseAlignment = ray_pipeline_properties.shaderGroupBaseAlignment;
+	tiles_max_groups = dev_props2.properties.limits.maxComputeWorkGroupCount[0];
+	cvar_pt_tile_compaction = Cvar_Get("pt_tile_compaction", "1", 0);
+	cvar_pt_flow_split_pass = Cvar_Get("pt_flow_split_pass", "1", 0);
+	// so that a photo-mode A/B of the two starts a fresh image
+	cvar_pt_flow_split_pass->changed = flow_split_pass_changed;
+	cvar_pt_merge_barriers = Cvar_Get("pt_merge_barriers", "0", 0);
 	shaderGroupHandleSize = ray_pipeline_properties.shaderGroupHandleSize;
 	minAccelerationStructureScratchOffsetAlignment = accel_struct_properties.minAccelerationStructureScratchOffsetAlignment;
 
@@ -985,8 +1032,16 @@ vkpt_pt_create_all_dynamic(
 	// position buffer, so it builds exactly like the model sections above - the
 	// only difference is who wrote the vertices into it; see blood.c.
 	offset_vertex = offset_vertex_base + upload_info->blood_prim_offset * sizeof(prim_positions_t);
-	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
-		upload_info->blood_prim_count * 3, 0, blas_blood + idx, true, dyn_fast_build);
+	// Settled blood: the section has not been written since this BLAS was built
+	// from it, so it is still exactly what a rebuild would produce (pt_blood_blas_reuse,
+	// see BLAS REUSE in blood.c).
+	if (blas_blood[idx].accel == VK_NULL_HANDLE || !blas_blood[idx].present
+		|| vkpt_blood_blas_needs_build(idx, upload_info->blood_prim_offset, upload_info->blood_prim_count, dyn_fast_build))
+	{
+		vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
+			upload_info->blood_prim_count * 3, 0, blas_blood + idx, true, dyn_fast_build);
+		vkpt_blood_blas_built(idx, upload_info->blood_prim_offset, upload_info->blood_prim_count, dyn_fast_build);
+	}
 
 	BufferResource_t* buffer_vertex = NULL;
 	BufferResource_t* buffer_index = NULL;
@@ -1254,24 +1309,93 @@ vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo
 	return VK_SUCCESS;
 }
 
-#define BARRIER_COMPUTE(cmd_buf, img) \
-	do { \
-		VkImageSubresourceRange subresource_range = { \
-			.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT, \
-			.baseMipLevel   = 0, \
-			.levelCount     = 1, \
-			.baseArrayLayer = 0, \
-			.layerCount     = 1 \
-		}; \
-		IMAGE_BARRIER(cmd_buf, \
-				.image            = img, \
-				.subresourceRange = subresource_range, \
-				.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT, \
-				.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT, \
-				.oldLayout        = VK_IMAGE_LAYOUT_GENERAL, \
-				.newLayout        = VK_IMAGE_LAYOUT_GENERAL, \
-		); \
-	} while(0)
+/* MERGED BARRIERS, pt_merge_barriers. Each pass here ends in a list of
+   BARRIER_COMPUTE calls - one vkCmdPipelineBarrier per image, ALL_COMMANDS to
+   ALL_COMMANDS - of which the first drains the GPU and the rest find it idle.
+   Between BARRIER_BATCH_BEGIN and BARRIER_BATCH_END the list is recorded as:
+   0 - one call per image, as before;
+   1 - one call carrying all the image barriers;
+   2 - one global memory barrier. None of these images changes layout (GENERAL
+       to GENERAL), so that covers the same writes, and it adds SHADER_READ to
+       the destination access, which the per-image ones leave out.
+   A BARRIER_COMPUTE outside a batch is recorded on the spot.
+   MEASURED 11-04: no difference. Whole GPU frame 11.12 / 11.09 / 11.11 ms
+   for 0 / 1 / 2 over three rounds each, inside the noise - the barriers after
+   the first really are free. Left at 0, so the frame is recorded as before. The cvar is
+   declared with pt_flow_split_pass, at the top. */
+static struct {
+	VkImageMemoryBarrier barriers[48];
+	uint32_t count;
+	bool open;
+} barrier_batch;
+
+static void
+barrier_compute(VkCommandBuffer cmd_buf, VkImage img)
+{
+	const VkImageMemoryBarrier barrier = {
+		.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image               = img,
+		.subresourceRange    = {
+			.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel   = 0,
+			.levelCount     = 1,
+			.baseArrayLayer = 0,
+			.layerCount     = 1
+		},
+		.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT,
+		.oldLayout           = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout           = VK_IMAGE_LAYOUT_GENERAL,
+	};
+
+	if (barrier_batch.open && barrier_batch.count < LENGTH(barrier_batch.barriers))
+	{
+		barrier_batch.barriers[barrier_batch.count++] = barrier;
+		return;
+	}
+
+	vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+static void
+barrier_batch_begin(void)
+{
+	barrier_batch.open = cvar_pt_merge_barriers && cvar_pt_merge_barriers->integer != 0;
+	barrier_batch.count = 0;
+}
+
+static void
+barrier_batch_end(VkCommandBuffer cmd_buf)
+{
+	const uint32_t count = barrier_batch.count;
+	barrier_batch.open = false;
+	barrier_batch.count = 0;
+	if (count == 0)
+		return;
+
+	if (cvar_pt_merge_barriers->integer == 2)
+	{
+		const VkMemoryBarrier barrier = {
+			.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+		};
+		vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+	}
+	else
+	{
+		vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, count, barrier_batch.barriers);
+	}
+}
+
+#define BARRIER_COMPUTE(cmd_buf, img) barrier_compute(cmd_buf, img)
+#define BARRIER_BATCH_BEGIN() barrier_batch_begin()
+#define BARRIER_BATCH_END(cmd_buf) barrier_batch_end(cmd_buf)
 
 static void setup_rt_pipeline(VkCommandBuffer cmd_buf, VkPipelineBindPoint bind_point, pipeline_index_t index)
 {
@@ -1341,6 +1465,118 @@ dispatch_rays(VkCommandBuffer cmd_buf, pipeline_index_t pipeline_index, pt_push_
 	}
 }
 
+/* TILE COMPACTION helpers - see shader/constants.h. */
+
+VkResult
+vkpt_pt_create_tiles(void)
+{
+	// The launch grid of a field is never wider or taller than the screen images
+	// (both fields together fit in them), so this bounds every resolution the
+	// images can be rendered at until they are rebuilt.
+	const uint32_t tiles_x = (qvk.extent_screen_images.width + 7) / 8;
+	const uint32_t tiles_y = (qvk.extent_screen_images.height + 7) / 8;
+	tiles_max = tiles_x * tiles_y * 2;
+	tiles_mask_stride = (tiles_max + 31) / 32;
+	tiles_data_offset = PT_TILE_HDR_WORDS + PT_TILE_LISTS * tiles_mask_stride;
+
+	const VkDeviceSize size = (VkDeviceSize)(tiles_data_offset + PT_TILE_LISTS * tiles_max) * sizeof(uint32_t);
+
+	return buffer_create(&buf_tiles, size,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+}
+
+VkResult
+vkpt_pt_destroy_tiles(void)
+{
+	buffer_destroy(&buf_tiles);
+	tiles_max = 0;
+	tiles_built = false;
+	return VK_SUCCESS;
+}
+
+/* Empties the lists for this view and writes the layout the shaders read.
+   Returns whether this view uses them: ray query only (the pipeline path
+   launches through an SBT, which this does not drive), one GPU, and a launch
+   grid the buffer and the device's group count limit can hold. */
+static bool
+tile_lists_reset(VkCommandBuffer cmd_buf)
+{
+	if (!cvar_pt_tile_compaction || !cvar_pt_tile_compaction->integer)
+		return false;
+	if (!qvk.use_ray_query || qvk.device_count != 1 || !buf_tiles.buffer || !buf_tiles.address)
+		return false;
+
+	const uint32_t tiles_x = (vkpt_pt_field_width() + 7) / 8;
+	const uint32_t tiles_y = (qvk.extent_render.height + 7) / 8;
+	const uint32_t per_field = tiles_x * tiles_y;
+	if (per_field * 2 > tiles_max || per_field * 2 > tiles_max_groups)
+		return false;
+
+	uint32_t header[PT_TILE_HDR_WORDS] = { 0 };
+	for (int list = 0; list < PT_TILE_LISTS; list++)
+	{
+		header[PT_TILE_HDR_ARGS + list * 4 + 0] = 0;   // tile count = groups in x
+		header[PT_TILE_HDR_ARGS + list * 4 + 1] = 1;
+		header[PT_TILE_HDR_ARGS + list * 4 + 2] = 1;
+	}
+	header[PT_TILE_HDR_TILES_X] = tiles_x;
+	header[PT_TILE_HDR_PER_FIELD] = per_field;
+	header[PT_TILE_HDR_MASK] = PT_TILE_HDR_WORDS;
+	header[PT_TILE_HDR_MASK_STRIDE] = tiles_mask_stride;
+	header[PT_TILE_HDR_DATA] = tiles_data_offset;
+	header[PT_TILE_HDR_DATA_STRIDE] = tiles_max;
+
+	// the previous view's bounces read this buffer, indirectly and in shaders
+	BUFFER_BARRIER(cmd_buf,
+		.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.buffer = buf_tiles.buffer,
+		.offset = 0,
+		.size = VK_WHOLE_SIZE);
+
+	vkCmdUpdateBuffer(cmd_buf, buf_tiles.buffer, 0, sizeof(header), header);
+	vkCmdFillBuffer(cmd_buf, buf_tiles.buffer, PT_TILE_HDR_WORDS * sizeof(uint32_t),
+		(VkDeviceSize)PT_TILE_LISTS * tiles_mask_stride * sizeof(uint32_t), 0);
+
+	BUFFER_BARRIER(cmd_buf,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+		.buffer = buf_tiles.buffer,
+		.offset = 0,
+		.size = VK_WHOLE_SIZE);
+
+	return true;
+}
+
+// What a pass appended becomes the next pass's tile ids and dispatch arguments.
+static void
+tile_lists_barrier(VkCommandBuffer cmd_buf)
+{
+	BUFFER_BARRIER(cmd_buf,
+		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+		.buffer = buf_tiles.buffer,
+		.offset = 0,
+		.size = VK_WHOLE_SIZE);
+}
+
+// One 8x8 group per listed tile; the shader turns the group into the tile's launch IDs.
+static void
+dispatch_rays_indirect(VkCommandBuffer cmd_buf, pipeline_index_t pipeline_index, pt_push_constants_t push, int list)
+{
+	setup_rt_pipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_index);
+	vkCmdPushConstants(cmd_buf, rt_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+	vkCmdDispatchIndirect(cmd_buf, buf_tiles.buffer, (VkDeviceSize)(PT_TILE_HDR_ARGS + list * 4) * sizeof(uint32_t));
+}
+
+bool
+vkpt_pt_flow_split_ran(void)
+{
+	return flow_split_ran;
+}
+
 VkResult
 vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 {
@@ -1356,21 +1592,55 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 
 	BEGIN_PERF_MARKER(cmd_buf, PROFILER_PRIMARY_RAYS);
 
+	tiles_built = tile_lists_reset(cmd_buf);
+
+	const bool flow_split = cvar_pt_flow_split_pass->integer != 0 && qvk.device_count == 1 && vkpt_flow_marching();
+	flow_split_ran = flow_split;
+
 	for(int i = 0; i < qvk.device_count; i++)
 	{
 		set_current_gpu(cmd_buf, i);
 
-		pt_push_constants_t push;
+		pt_push_constants_t push = { 0 };
 		push.gpu_index = qvk.device_count == 1 ? -1 : i;
 		push.bounce = 0;
+		if (tiles_built)
+		{
+			push.tile_append_list = 1;
+			push.tile_buffer = buf_tiles.address;
+		}
 
-		dispatch_rays(cmd_buf, PIPELINE_PRIMARY_RAYS, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+		dispatch_rays(cmd_buf, flow_split ? PIPELINE_PRIMARY_RAYS_FLOW_SPLIT : PIPELINE_PRIMARY_RAYS, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
 	}
+
+	if (tiles_built)
+		tile_lists_barrier(cmd_buf);
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
 
 	END_PERF_MARKER(cmd_buf, PROFILER_PRIMARY_RAYS);
 
+	if (flow_split)
+	{
+		// The hand-off (primary_rays.rgen), and the seed the ray is rebuilt from
+		BARRIER_BATCH_BEGIN();
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAY_LENGTH]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_COLOR]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_RNG_SEED_A + frame_idx]);
+		BARRIER_BATCH_END(cmd_buf);
+
+		BEGIN_PERF_MARKER(cmd_buf, PROFILER_FLOW_MARCH);
+		pt_push_constants_t push = { 0 };
+		push.gpu_index = -1;
+		dispatch_rays(cmd_buf, PIPELINE_FLOW_PASS, push, vkpt_pt_field_width(), qvk.extent_render.height, 2);
+		END_PERF_MARKER(cmd_buf, PROFILER_FLOW_MARCH);
+
+		// god_rays pass 0 writes ASVGF_COLOR next
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_COLOR]);
+	}
+
+	BARRIER_BATCH_BEGIN();
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VISBUF_PRIM_A + frame_idx]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VISBUF_BARY_A + frame_idx]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
@@ -1393,6 +1663,7 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO]);
 	// The opaque-overlay accumulator for pt_dlss_bt_guide, read back by reflect_refract.
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_BEFORE_TRANSPARENT]);
+	BARRIER_BATCH_END(cmd_buf);
 
 
 	return VK_SUCCESS;
@@ -1403,21 +1674,46 @@ vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce)
 {
 	int frame_idx = qvk.frame_counter & 1;
 
+	/* pt_reflect_noflow (default 1; 0 = always the full shader). With no Flow
+	   grid this frame the march in reflect_refract.rgen returns at its first
+	   test, so the variant compiled without it gives the same image - and drops
+	   the shader from 167 to 128 registers, which is what it costs every
+	   reflect/refract pixel even where there is no fire anywhere. */
+	static cvar_t *cvar_pt_reflect_noflow = NULL;
+	if (!cvar_pt_reflect_noflow)
+		cvar_pt_reflect_noflow = Cvar_Get("pt_reflect_noflow", "1", 0);
+	const bool noflow = cvar_pt_reflect_noflow->integer != 0 && !vkpt_flow_marching();
+
 	for (int i = 0; i < qvk.device_count; i++)
     {
         set_current_gpu(cmd_buf, i);
 
         pipeline_index_t pipeline = (bounce == 0) ? PIPELINE_REFLECT_REFRACT_1 : PIPELINE_REFLECT_REFRACT_2;
+        if (noflow)
+            pipeline = (bounce == 0) ? PIPELINE_REFLECT_REFRACT_1_NOFLOW : PIPELINE_REFLECT_REFRACT_2_NOFLOW;
 
-        pt_push_constants_t push;
+        pt_push_constants_t push = { 0 };
         push.gpu_index = qvk.device_count == 1 ? -1 : i;
         push.bounce = bounce;
 
-        dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+        if (tiles_built && bounce < PT_TILE_LISTS)
+        {
+            // walk the tiles this bounce has work in; add the next bounce's
+            push.tile_read_list = bounce + 1;
+            push.tile_append_list = (bounce + 1 < PT_TILE_LISTS) ? bounce + 2 : 0;
+            push.tile_buffer = buf_tiles.address;
+            dispatch_rays_indirect(cmd_buf, pipeline, push, bounce);
+        }
+        else
+            dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
 	}
+
+	if (tiles_built)
+		tile_lists_barrier(cmd_buf);
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
 
+	BARRIER_BATCH_BEGIN();
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_MOTION]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_SHADING_POSITION]);
@@ -1442,6 +1738,7 @@ vkpt_pt_trace_reflections(VkCommandBuffer cmd_buf, int bounce)
 	// pt_dlss_bt_guide's opaque-overlay accumulator, carried bounce to bounce like
 	// PT_TRANSPARENT above.
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_BEFORE_TRANSPARENT]);
+	BARRIER_BATCH_END(cmd_buf);
 
 	return VK_SUCCESS;
 }
@@ -1473,7 +1770,7 @@ vkpt_pt_sharc_update(VkCommandBuffer cmd_buf, bool clear)
 
 	uint32_t stride = (uint32_t)max(1, min(16, (int)cvar_pt_sharc_stride->value));
 
-	pt_push_constants_t push;
+	pt_push_constants_t push = { 0 };
 	push.gpu_index = -1;
 	push.bounce = 0;
 
@@ -1505,7 +1802,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 
 		pipeline_index_t pipeline = (cvar_pt_caustics->value != 0) ? PIPELINE_DIRECT_LIGHTING_CAUSTICS : PIPELINE_DIRECT_LIGHTING;
 
-		pt_push_constants_t push;
+		pt_push_constants_t push = { 0 };
 		push.gpu_index = qvk.device_count == 1 ? -1 : i;
 		push.bounce = 0;
 
@@ -1516,6 +1813,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 
 	END_PERF_MARKER(cmd_buf, PROFILER_DIRECT_LIGHTING);
 
+	BARRIER_BATCH_BEGIN();
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_HF]);
@@ -1531,6 +1829,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_A + frame_idx]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_ID_A + frame_idx]);
 	}
+	BARRIER_BATCH_END(cmd_buf);
 
 	BUFFER_BARRIER(cmd_buf,
 		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
@@ -1564,12 +1863,13 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 					BEGIN_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING_0 + bounce_ray);
                 pipeline_index_t pipeline = (bounce_ray == 0) ? PIPELINE_INDIRECT_LIGHTING_FIRST : PIPELINE_INDIRECT_LIGHTING_SECOND;
 
-                pt_push_constants_t push;
+                pt_push_constants_t push = { 0 };
                 push.gpu_index = qvk.device_count == 1 ? -1 : i;
                 push.bounce = bounce_ray;
 
                 dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), height, qvk.device_count == 1 ? 2 : 1);
 
+				BARRIER_BATCH_BEGIN();
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_HF]);
@@ -1582,6 +1882,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_SHADING_POSITION]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_GEO_NORMAL2]);
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DIRECTION2]);
+				BARRIER_BATCH_END(cmd_buf);
 
 				if (bounce_ray == 0 || bounce_ray == num_bounces - 1)
 					END_PERF_MARKER(cmd_buf, PROFILER_INDIRECT_LIGHTING_0 + (bounce_ray == 0 ? 0 : 1));
@@ -1602,7 +1903,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 		{
 			set_current_gpu(cmd_buf, i);
 
-			pt_push_constants_t push;
+			pt_push_constants_t push = { 0 };
 			push.gpu_index = qvk.device_count == 1 ? -1 : i;
 			push.bounce = 0;
 
@@ -1611,11 +1912,13 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 
 		set_current_gpu(cmd_buf, ALL_GPUS);
 
+		BARRIER_BATCH_BEGIN();
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_POS_A + frame_idx]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RESTIR_GI_DATA_A + frame_idx]);
+		BARRIER_BATCH_END(cmd_buf);
 
 		// Spatial reuse (pt_restir_gi_spatial): the same shader again, bounce_index 1,
 		// reading the reservoirs every pixel's temporal pass has just written - which is
@@ -1626,7 +1929,7 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 			{
 				set_current_gpu(cmd_buf, i);
 
-				pt_push_constants_t push;
+				pt_push_constants_t push = { 0 };
 				push.gpu_index = qvk.device_count == 1 ? -1 : i;
 				push.bounce = 1;
 
@@ -1635,9 +1938,11 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 
 			set_current_gpu(cmd_buf, ALL_GPUS);
 
+			BARRIER_BATCH_BEGIN();
 			BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);
 			BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_COCG]);
 			BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_RAYLENGTH_DIFFUSE]);
+			BARRIER_BATCH_END(cmd_buf);
 		}
 
 		END_PERF_MARKER(cmd_buf, PROFILER_RESTIR_GI);
@@ -1693,6 +1998,38 @@ vkpt_pt_create_pipelines()
 		}
 	};
 
+	// reflect_refract.rgen: constant 0 = spec_bounce_index, constant 1 = spec_flow.
+	// Indexed [bounce != 0][no flow].
+	const VkSpecializationMapEntry specEntriesRR[2] = {
+		{ .constantID = 0, .offset = 0,                .size = sizeof(uint32_t) },
+		{ .constantID = 1, .offset = sizeof(uint32_t), .size = sizeof(uint32_t) },
+	};
+	const uint32_t numbersRR[4][2] = { { 0, 1 }, { 0, 0 }, { 1, 1 }, { 1, 0 } };
+
+	// primary_rays.rgen: constant 1 = spec_flow_mode (0 inline, 1 split primary, 2 flow pass)
+	const VkSpecializationMapEntry specEntryFlow = { .constantID = 1, .offset = 0, .size = sizeof(uint32_t) };
+	const uint32_t numbersFlow[3] = { 0, 1, 2 };
+	VkSpecializationInfo specInfoFlow[3];
+	for (int i = 0; i < 3; i++)
+	{
+		specInfoFlow[i] = (VkSpecializationInfo) {
+			.mapEntryCount = 1,
+			.pMapEntries = &specEntryFlow,
+			.dataSize = sizeof(uint32_t),
+			.pData = &numbersFlow[i],
+		};
+	}
+	VkSpecializationInfo specInfoRR[4];
+	for (int i = 0; i < 4; i++)
+	{
+		specInfoRR[i] = (VkSpecializationInfo) {
+			.mapEntryCount = 2,
+			.pMapEntries = specEntriesRR,
+			.dataSize = sizeof(numbersRR[i]),
+			.pData = numbersRR[i],
+		};
+	}
+
 	uint32_t num_shader_groups = SBT_ENTRIES_PER_PIPELINE * PIPELINE_COUNT;
 	char* shader_handles = alloca(num_shader_groups * shaderGroupHandleSize);
 	memset(shader_handles, 0, num_shader_groups * shaderGroupHandleSize);
@@ -1721,7 +2058,7 @@ vkpt_pt_create_pipelines()
 
 	for (pipeline_index_t index = 0; index < PIPELINE_COUNT; index++)
 	{
-		bool needs_beams = index <= PIPELINE_REFLECT_REFRACT_2;
+		bool needs_beams = index <= PIPELINE_REFLECT_REFRACT_2_NOFLOW;
 		bool needs_transparency = needs_beams || index == PIPELINE_INDIRECT_LIGHTING_FIRST;
 		unsigned int num_shader_stages = needs_beams ? LENGTH(shader_stages) : (needs_transparency ? num_transparent_no_beam_shader_stages : num_base_shader_stages);
 
@@ -1729,15 +2066,31 @@ vkpt_pt_create_pipelines()
 		{
 		case PIPELINE_PRIMARY_RAYS:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_PRIMARY_RAYS_RGEN];
-			shader_stages[0].pSpecializationInfo = NULL;
+			shader_stages[0].pSpecializationInfo = &specInfoFlow[0];
+			break;
+		case PIPELINE_PRIMARY_RAYS_FLOW_SPLIT:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_PRIMARY_RAYS_RGEN];
+			shader_stages[0].pSpecializationInfo = &specInfoFlow[1];
+			break;
+		case PIPELINE_FLOW_PASS:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_PRIMARY_RAYS_RGEN];
+			shader_stages[0].pSpecializationInfo = &specInfoFlow[2];
 			break;
 		case PIPELINE_REFLECT_REFRACT_1:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_REFLECT_REFRACT_RGEN];
-			shader_stages[0].pSpecializationInfo = &specInfo[0];
+			shader_stages[0].pSpecializationInfo = &specInfoRR[0];
 			break;
 		case PIPELINE_REFLECT_REFRACT_2:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_REFLECT_REFRACT_RGEN];
-			shader_stages[0].pSpecializationInfo = &specInfo[1];
+			shader_stages[0].pSpecializationInfo = &specInfoRR[2];
+			break;
+		case PIPELINE_REFLECT_REFRACT_1_NOFLOW:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_REFLECT_REFRACT_RGEN];
+			shader_stages[0].pSpecializationInfo = &specInfoRR[1];
+			break;
+		case PIPELINE_REFLECT_REFRACT_2_NOFLOW:
+			shader_stages[0].module = qvk.shader_modules[QVK_MOD_REFLECT_REFRACT_RGEN];
+			shader_stages[0].pSpecializationInfo = &specInfoRR[3];
 			break;
 		case PIPELINE_DIRECT_LIGHTING:
 			shader_stages[0].module = qvk.shader_modules[QVK_MOD_DIRECT_LIGHTING_RGEN];

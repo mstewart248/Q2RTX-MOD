@@ -36,6 +36,11 @@ enum {
 #define TEXNUM_WHITE (~0)
 #define MAX_STRETCH_PICS (1<<14)
 
+/* Per-quad flags in the top two bits of StretchPic_t.tex_handle; image handles
+   stay far below them (NUM_GLOBAL_TEXTUES). TEXNUM_WHITE, ~0, is exempt and
+   still means "no texture". stretch_pic.vert splits them off - keep in sync. */
+#define STRETCH_PIC_FLAG_VIDEO (1u << 30)
+
 static drawStatic_t draw = {
 	.scale = 1.0f,
 	.alpha_scale = 1.0f
@@ -55,6 +60,7 @@ typedef struct {
 typedef struct {
 	float ui_hdr_nits;
 	float tm_hdr_saturation_scale;
+	float ui_hdr_video_gamma;
 } StretchPic_UBO_t;
 
 static clipRect_t clip_rect;
@@ -80,6 +86,31 @@ static VkDescriptorSet         desc_set_ubo[MAX_FRAMES_IN_FLIGHT];
 
 extern cvar_t* cvar_ui_hdr_nits;
 extern cvar_t* cvar_tm_hdr_saturation_scale;
+
+/* HOW A CINEMATIC FRAME IS PUT ON AN HDR SCREEN.
+
+   The 2D layer decodes its sRGB textures with the piecewise sRGB curve and
+   scales the result to ui_hdr_nits. That curve has a straight-line toe that
+   sits far above the ~2.2 power an SDR monitor actually shows near black. At
+   ui_hdr_nits 500, code 4 of 255 lands at 0.61 nits where a 2.2 power gives
+   0.05 (11x), and code 1 at 0.15 against 0.0025 (60x). The rerelease videos
+   are mostly near black (half of ntro.ogv's pixels are luma 16-17, i.e. RGB
+   codes 0-1), and their 8x8 Theora blocks differ by a code or two there - so
+   on an HDR display every block of every shadow lit up as a visible grid.
+   The official game has no HDR output at all.
+
+   2.2 (default) maps video frames with the power curve an SDR monitor uses:
+   the picture as it was graded, near black included. From about code 100 up
+   the two curves agree within 2%, so mid-tones and whites do not move. 0
+   restores the piecewise curve the rest of the UI uses. Only IF_VIDEO
+   images, and only in HDR. */
+static cvar_t *cvar_ui_hdr_video_gamma;
+
+void
+vkpt_draw_init_cvars(void)
+{
+	cvar_ui_hdr_video_gamma = Cvar_Get("ui_hdr_video_gamma", "2.2", CVAR_ARCHIVE);
+}
 
 VkExtent2D
 vkpt_draw_get_extent(void)
@@ -394,6 +425,10 @@ static inline void enqueue_stretch_pic(
 	if(tex_handle >= 0 && tex_handle < MAX_RIMAGES
 	&& !r_images[tex_handle].registration_sequence) {
 		sp->tex_handle = TEXNUM_WHITE;
+	}
+	else if (tex_handle > 0 && tex_handle < MAX_RIMAGES
+	&& (r_images[tex_handle].flags & IF_VIDEO)) {
+		sp->tex_handle |= STRETCH_PIC_FLAG_VIDEO;
 	}
 }
 
@@ -909,6 +944,7 @@ draw_stretch_pics_into_current_image(VkCommandBuffer cmd_buf, bool keep_queue)
 	StretchPic_UBO_t *ubo = (StretchPic_UBO_t *) buffer_map(ubo_res);
 	ubo->ui_hdr_nits = cvar_ui_hdr_nits->value;
 	ubo->tm_hdr_saturation_scale = cvar_tm_hdr_saturation_scale->value;
+	ubo->ui_hdr_video_gamma = cvar_ui_hdr_video_gamma ? max(0.f, min(4.f, cvar_ui_hdr_video_gamma->value)) : 0.f;
 	buffer_unmap(ubo_res);
 	ubo = NULL;
 

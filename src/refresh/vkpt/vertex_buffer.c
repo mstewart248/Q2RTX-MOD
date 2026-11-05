@@ -611,6 +611,70 @@ barrier_before_shared_upload(VkCommandBuffer cmd_buf, VkBuffer buffer, VkDeviceS
 		0, 0, NULL, 1, &before_copy, 0, NULL);
 }
 
+/*
+=================
+WHAT THE LIGHT AND IQM UPLOADS COPY - pt_upload_ranges, default 1 (0 = whole
+buffers, exactly as before).
+
+Both used to copy their entire staging buffer every frame: sizeof(LightBuffer) is
+~16 MB, 12.8 MB of it light_list_lights, plus 1.5 MB of IqmMatrixBuffer - all on
+the transfer queue at PCIe speed (the 0.64-0.75 ms "upload lights" row) to move
+what is usually a fraction of that.
+
+The two big list arrays and the IQM matrices are now copied only as far as the
+CPU has EVER written into EITHER staging buffer since they were created - a
+high-water mark, deliberately not this frame's count. That is what makes this
+exact rather than "enough for what the shaders should read". The staging buffers
+alternate, so the bytes past this frame's used range are whatever an older frame
+left in staging[cur], and the whole-buffer copy put exactly those on the device.
+Copying up to the high-water mark from the same staging buffer puts the same
+bytes there, so after every upload the device holds what the old full copy left
+in every byte any CPU code ever wrote. Past the mark neither staging buffer has
+been written at all, by this code or the old - and the first upload after the
+buffers are created is still a full copy, so the device holds a staging buffer's
+initial contents there rather than its own.
+
+Everything else in LightBuffer - the material table, light_polys (which is not a
+prefix: the fog-only lights sit at its top), both offset tables, the styles and
+the three cluster masks - is ~1.1 MB together and is still copied whole.
+
+barrier_before_shared_upload still names the whole buffer; it orders against the
+previous frame's copy and reads, and a superset range is always correct.
+=================
+*/
+static cvar_t* cvar_pt_upload_ranges = NULL;
+
+static struct {
+	uint32_t light_list_hw;      // light_list_lights entries ever written to a light staging buffer
+	uint32_t fog_list_hw;        // fog_light_list_lights entries, likewise
+	uint32_t iqm_hw;             // IQM matrices ever staged - main.c reports these
+	bool     iqm_tracked;        // main.c has reported its IQM staging writes since creation
+	bool     light_full_pending; // first upload after the buffers were (re)created
+	bool     iqm_full_pending;
+} upload_ranges;
+
+static void reset_upload_ranges(void)
+{
+	memset(&upload_ranges, 0, sizeof(upload_ranges));
+	upload_ranges.light_full_pending = true;
+	upload_ranges.iqm_full_pending = true;
+}
+
+static inline bool upload_ranges_enabled(void)
+{
+	return !cvar_pt_upload_ranges || cvar_pt_upload_ranges->integer != 0;
+}
+
+/* main.c writes the IQM staging buffer, so it has to say how far. Called right
+   after that memcpy with the number of matrices it copied. Until the first call
+   the upload stays a full copy, so a main.c without the call is merely slow. */
+void
+vkpt_iqm_matrix_buffer_staged(uint32_t num_matrices)
+{
+	upload_ranges.iqm_hw = max(upload_ranges.iqm_hw, min(num_matrices, (uint32_t)MAX_IQM_MATRICES));
+	upload_ranges.iqm_tracked = true;
+}
+
 VkResult
 vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf)
 {
@@ -620,10 +684,31 @@ vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf)
 
 	barrier_before_shared_upload(cmd_buf, qvk.buf_light.buffer, sizeof(LightBuffer));
 
-	VkBufferCopy copyRegion = {
-		.size = sizeof(LightBuffer),
-	};
-	vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_light.buffer, 1, &copyRegion);
+	VkBufferCopy regions[2];
+	uint32_t num_regions = 1;
+
+	if (upload_ranges.light_full_pending || !upload_ranges_enabled())
+	{
+		regions[0] = (VkBufferCopy){ 0, 0, sizeof(LightBuffer) };
+		upload_ranges.light_full_pending = false;
+	}
+	else
+	{
+		// material table, light_polys, light_list_offsets, light_list_lights up to the mark
+		const VkDeviceSize head_end = offsetof(LightBuffer, light_list_lights)
+			+ (VkDeviceSize)upload_ranges.light_list_hw * sizeof(uint32_t);
+
+		// light_styles, the three masks, fog_light_list_offsets, fog_light_list_lights up to the mark
+		const VkDeviceSize tail_start = offsetof(LightBuffer, light_styles);
+		const VkDeviceSize tail_end = offsetof(LightBuffer, fog_light_list_lights)
+			+ (VkDeviceSize)upload_ranges.fog_list_hw * sizeof(uint32_t);
+
+		regions[0] = (VkBufferCopy){ 0, 0, head_end };
+		regions[1] = (VkBufferCopy){ tail_start, tail_start, tail_end - tail_start };
+		num_regions = 2;
+	}
+
+	vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_light.buffer, num_regions, regions);
 
 	int buffer_idx = qvk.frame_counter % 3;
 	if (qvk.buf_light_stats[buffer_idx].buffer)
@@ -645,10 +730,20 @@ vkpt_iqm_matrix_buffer_upload_staging(VkCommandBuffer cmd_buf)
 	   with a sharper consequence - see barrier_before_shared_upload. */
 	barrier_before_shared_upload(cmd_buf, qvk.buf_iqm_matrices.buffer, sizeof(IqmMatrixBuffer));
 
+	// Up to the high-water mark - see WHAT THE LIGHT AND IQM UPLOADS COPY. Zero
+	// when no skeletal model has been staged yet, and then there is nothing the
+	// device does not already hold.
 	VkBufferCopy copyRegion = {
 		.size = sizeof(IqmMatrixBuffer),
 	};
-	vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_iqm_matrices.buffer, 1, &copyRegion);
+
+	if (upload_ranges.iqm_full_pending || !upload_ranges.iqm_tracked || !upload_ranges_enabled())
+		upload_ranges.iqm_full_pending = false;
+	else
+		copyRegion.size = (VkDeviceSize)upload_ranges.iqm_hw * (sizeof(IqmMatrixBuffer) / MAX_IQM_MATRICES);
+
+	if (copyRegion.size)
+		vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_iqm_matrices.buffer, 1, &copyRegion);
 
 	return VK_SUCCESS;
 }
@@ -663,7 +758,9 @@ void vkpt_light_buffer_reset_counts()
 	max_model_lights = 0;
 }
 
-static void copy_bsp_lights(bsp_mesh_t* bsp_mesh, LightBuffer *lbo)
+// Both list builders return how many light_list_lights entries they wrote, for
+// the upload's high-water mark.
+static uint32_t copy_bsp_lights(bsp_mesh_t* bsp_mesh, LightBuffer *lbo)
 {
 	// Copy the BSP light lists verbatim
 	memcpy(lbo->light_list_lights, bsp_mesh->cluster_lights, sizeof(uint32_t) * bsp_mesh->cluster_light_offsets[bsp_mesh->num_clusters]);
@@ -676,9 +773,11 @@ static void copy_bsp_lights(bsp_mesh_t* bsp_mesh, LightBuffer *lbo)
 		sample_light_counts[c] = bsp_mesh->cluster_light_offsets[c + 1] - bsp_mesh->cluster_light_offsets[c];
 	}
 	buffer_unmap(qvk.buf_light_counts_history + history_index);
+
+	return bsp_mesh->cluster_light_offsets[bsp_mesh->num_clusters];
 }
 
-static void
+static uint32_t
 inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, light_poly_t* transformed_model_lights, int model_light_offset, LightBuffer *lbo)
 {
 	uint32_t *dst_list_offsets = lbo->light_list_offsets;
@@ -728,9 +827,7 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 		Com_WPrintf("Insufficient light interaction buffer size (%d needed). Increase MAX_LIGHT_LIST_NODES.\n", required_size);
 
 		// Copy the BSP light lists verbatim
-		copy_bsp_lights(bsp_mesh, lbo);
-
-		return;
+		return copy_bsp_lights(bsp_mesh, lbo);
 	}
 	
 	// Store the light counts in the light counts history entry for the current frame
@@ -791,6 +888,10 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 		assert(list_end - list_start == original_size + cluster_light_counts[c]);
 	}
 #endif
+
+	// Every entry below the last offset is written, either from a static list or
+	// by the injection loop, and none above it.
+	return (uint32_t)tail;
 }
 
 static inline void
@@ -854,6 +955,11 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	LightBuffer* lbo = (LightBuffer*)buffer_map(staging);
 	assert(lbo);
 
+	// How far into the two list arrays this frame writes - see WHAT THE LIGHT AND
+	// IQM UPLOADS COPY.
+	uint32_t lists_written = 0;
+	uint32_t fog_lists_written = 0;
+
 	if (render_world)
 	{
 		assert(bsp_mesh->num_clusters + 1 < MAX_LIGHT_LISTS);
@@ -884,11 +990,11 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			// If any of the BSP models contain lights, inject these lights right into the visibility lists.
 			// The shader doesn't know that these lights are dynamic.
 
-			inject_model_lights(bsp_mesh, bsp, num_model_lights, transformed_model_lights, model_light_offset, lbo);
+			lists_written = inject_model_lights(bsp_mesh, bsp, num_model_lights, transformed_model_lights, model_light_offset, lbo);
 		}
 		else
 		{
-			copy_bsp_lights(bsp_mesh, lbo);
+			lists_written = copy_bsp_lights(bsp_mesh, lbo);
 		}
 
 		for (int nlight = 0; nlight < bsp_mesh->num_light_polys && nlight < MAX_LIGHT_POLYS; nlight++)
@@ -919,6 +1025,7 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			}
 			memcpy(lbo->fog_light_list_offsets, bsp_mesh->fog_cluster_light_offsets, sizeof(uint32_t) * (bsp_mesh->num_clusters + 1));
 			memcpy(lbo->fog_light_list_lights, bsp_mesh->fog_cluster_lights, sizeof(uint32_t) * bsp_mesh->num_fog_cluster_lights);
+			fog_lists_written = (uint32_t)bsp_mesh->num_fog_cluster_lights;
 		}
 		else
 		{
@@ -939,6 +1046,7 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			copy_light(transformed_model_lights + nlight, vblight, sky_radiance);
 			lbo->light_list_lights[nlight] = nlight;
 		}
+		lists_written = (uint32_t)max(n, 0);
 		lbo->light_list_offsets[0] = 0;
 		lbo->light_list_offsets[1] = n;
 		lbo->fog_light_list_offsets[0] = 0;
@@ -965,12 +1073,19 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	}
 
 	// materials
+	//
+	// Built in ordinary memory and copied across in one go. `lbo` is mapped
+	// host-visible memory - write-combined, uncached - and every `|=` below is a
+	// read of it, which stalls on each one; 8192 rows of that every frame. The
+	// values are the same expressions in the same order, only the destination
+	// moved, so the table that reaches the device is byte-identical.
+	static uint32_t material_table[MAX_PBR_MATERIALS * MATERIAL_UINTS];
 
 	for (int nmat = 0; nmat < MAX_PBR_MATERIALS; nmat++)
 	{
 		pbr_material_t const* material = r_materials + nmat;
 
-		uint32_t* mat_data = lbo->material_table + nmat * MATERIAL_UINTS;
+		uint32_t* mat_data = material_table + nmat * MATERIAL_UINTS;
 		memset(mat_data, 0, sizeof(uint32_t) * MATERIAL_UINTS);
 
 		if (material->registration_sequence == 0)
@@ -1017,12 +1132,17 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			mat_data[9] = floatToHalf(material->albedo_strength);
 	}
 
+	memcpy(lbo->material_table, material_table, sizeof(lbo->material_table));
+
 	memcpy(lbo->cluster_debug_mask, cluster_debug_mask, MAX_LIGHT_LISTS / 8);
 	memcpy(lbo->sky_visibility, bsp_mesh->sky_visibility, MAX_LIGHT_LISTS / 8);
 	memcpy(lbo->sky_cluster_mask, bsp_mesh->sky_cluster_mask, MAX_LIGHT_LISTS / 8);
 
 	buffer_unmap(staging);
 	lbo = NULL;
+
+	upload_ranges.light_list_hw = max(upload_ranges.light_list_hw, min(lists_written, (uint32_t)MAX_LIGHT_LIST_NODES));
+	upload_ranges.fog_list_hw = max(upload_ranges.fog_list_hw, min(fog_lists_written, (uint32_t)MAX_FOG_LIGHT_LIST_NODES));
 
 	return VK_SUCCESS;
 }
@@ -1531,6 +1651,12 @@ vkpt_vertex_buffer_create()
 
 	// not archived: a comparison switch should come back on by itself
 	cvar_pt_bounce_albedo_material = Cvar_Get("pt_bounce_albedo_material", "1", 0);
+
+	// A/B for the ranged light/IQM uploads (and the instance buffer's, which
+	// uniform_buffer.c fetches under the same name). New staging buffers below,
+	// so the high-water marks start over and the first upload is whole.
+	cvar_pt_upload_ranges = Cvar_Get("pt_upload_ranges", "1", 0);
+	reset_upload_ranges();
 
 	// see the block comment on these at the top of the file
 	cvar_pt_fog_scale_emissive = Cvar_Get("pt_fog_scale_emissive", "1.0", 0);

@@ -692,11 +692,19 @@ void create_orthographic_matrix(mat4_t matrix, float xmin, float xmax,
 	PROFILER_DO(PROFILER_FOG_FROXEL_INTEGRATE,       2) \
 	/* NVIDIA Flow (vkpt/flow.c): its simulation, which the library submits \
 	   itself, with the two small passes after it; and the world's light on \
-	   its smoke (pt_flow_env). Its march is inside the ray passes. */ \
+	   its smoke (pt_flow_env). Its march is inside the ray passes, or under \
+	   pt_flow_split_pass 1 the primary one is its own pass, FLOW_MARCH. */ \
 	PROFILER_DO(PROFILER_FLOW_SIMULATION,            1) \
 	PROFILER_DO(PROFILER_FLOW_SMOKE_LIGHTING,        1) \
+	PROFILER_DO(PROFILER_FLOW_MARCH,                 1) \
 	PROFILER_DO(PROFILER_SHADOW_MAP,                 1) \
 	PROFILER_DO(PROFILER_COMPOSITING,                1) \
+	/* The whole frame on the graphics queue: from when the frame before it is \
+	   done (or this one starts, if the GPU sat idle) to the end of the last \
+	   submit before present - Flow's simulation, the passes after DLSS, the \
+	   blit and the HUD included, which PROFILER_FRAME_TIME leaves out. \
+	   GPU-bound, it is 1000 / fps. */ \
+	PROFILER_DO(PROFILER_GPU_FRAME,                  0) \
 
 enum {
 #define PROFILER_DO(a, ...) a,
@@ -847,12 +855,15 @@ VkResult vkpt_final_blit_filtered(VkCommandBuffer cmd_buf);
 /* Film grain and the CRT filter (pt_film_grain*, pt_crt*), added by the final
    blits - see draw.c, shader/film_grain.glsl and shader/crt.frag. */
 void vkpt_film_grain_init_cvars(void);
+/* ui_hdr_video_gamma: the SDR->HDR curve for cinematic frames - see draw.c. */
+void vkpt_draw_init_cvars(void);
 VkResult vkpt_draw_clear_stretch_pics(void);
 
 VkResult vkpt_uniform_buffer_create(void);
 VkResult vkpt_uniform_buffer_destroy(void);
 VkResult vkpt_uniform_buffer_upload_to_staging(void);
 void vkpt_uniform_buffer_copy_from_staging(VkCommandBuffer command_buffer);
+void vkpt_uniform_buffer_set_model_instance_count(uint32_t count);
 
 void vkpt_init_model_geometry(model_geometry_t* info, uint32_t max_geometries);
 void vkpt_destroy_model_geometry(model_geometry_t* info);
@@ -879,6 +890,7 @@ bool vkpt_model_is_static(const model_t* model);
 const model_vbo_t* vkpt_get_model_vbo(const model_t* model);
 
 VkResult vkpt_iqm_matrix_buffer_upload_staging(VkCommandBuffer cmd_buf);
+void vkpt_iqm_matrix_buffer_staged(uint32_t num_matrices);
 
 VkResult vkpt_load_shader_modules(void);
 VkResult vkpt_destroy_shader_modules(void);
@@ -888,7 +900,12 @@ VkResult vkpt_destroy_images(void);
 VkResult vkpt_pt_init(void);
 VkResult vkpt_pt_destroy(void);
 VkResult vkpt_pt_create_pipelines(void);
+// tile lists for the reflect/refract bounces, sized with the screen images (TILE COMPACTION, shader/constants.h)
+VkResult vkpt_pt_create_tiles(void);
+VkResult vkpt_pt_destroy_tiles(void);
 VkResult vkpt_pt_destroy_pipelines(void);
+// pt_flow_split_pass ran the Flow march as its own pass last view (PROFILER_FLOW_MARCH)
+bool vkpt_pt_flow_split_ran(void);
 
 void vkpt_pt_reset_instances(void);
 void vkpt_pt_instance_model_blas(const model_geometry_t* geom, const mat4 transform, uint32_t buffer_idx, int model_instance_index, uint32_t override_instance_mask);
@@ -946,6 +963,9 @@ VkResult vkpt_bloom_destroy_pipelines(void);
 void vkpt_bloom_reset(void);
 void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode, float ui_blur);
 VkResult vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf);
+// whether R_EndFrame_RTX records bloom this frame; motion blur's copy hand-off depends on it (bloom.c)
+bool vkpt_bloom_will_run(void);
+void vkpt_bloom_take_motion_blur(void);
 
 /* Screen-space motion blur - see motion_blur.c and shader/motion_blur.comp. */
 VkResult vkpt_motion_blur_initialize(void);
@@ -1045,6 +1065,8 @@ void vkpt_blood_update(
 	int model_instance_index,
 	uint32_t prim_offset,
 	uint32_t* prim_count_out);
+bool vkpt_blood_blas_needs_build(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build);
+void vkpt_blood_blas_built(int frame_idx, uint32_t prim_offset, uint32_t prim_count, bool fast_build);
 void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, entity_t* entities, int num_entites, float adapted_luminance, int* light_entity_ids, int* num_light_entities);
 bool vkpt_build_cylinder_light(light_poly_t* light_list, int* num_lights, int max_lights, bsp_t* bsp, vec3_t begin, vec3_t end, vec3_t color, float radius, entity_hash_t hash, int* light_entity_ids);
 bool get_triangle_off_center(const float* positions, float* center, float* anti_center, float offset);
@@ -1067,6 +1089,8 @@ VkResult vkpt_flow_destroy(void);
 void vkpt_flow_register(void);
 void vkpt_flow_reset(void);
 void vkpt_flow_update(const refdef_t *fd, bool render_world);
+// pt_flow_stats: the primary march's counters from this frame's readback.
+void vkpt_flow_stats(const ReadbackBuffer *readback);
 VkResult vkpt_flow_create_pipelines(void);
 VkResult vkpt_flow_destroy_pipelines(void);
 // the world's opaque triangles, which hold the gas in (pt_flow_collision)
@@ -1081,6 +1105,8 @@ void vkpt_flow_ambient(VkCommandBuffer cmd_buf);
 // whether the profiler has rows to show for Flow, and for its probes
 bool vkpt_flow_profiled(void);
 bool vkpt_flow_env_profiled(void);
+// this frame's march has a grid to read (set by vkpt_flow_update)
+bool vkpt_flow_marching(void);
 
 VkResult vkpt_initialize_god_rays(void);
 VkResult vkpt_destroy_god_rays(void);

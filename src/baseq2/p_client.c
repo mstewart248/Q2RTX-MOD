@@ -1834,6 +1834,24 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
         return;
     }
 
+    /* [rerelease] Quake II 64 has no crouching: on the q64/ maps pmove ignores
+       the key (pmoveParams_t.n64, set by the engine for the rerelease game
+       only - hence M_RereleaseGame). Say so rather than leave the key looking
+       broken, the way KEX does: on the third frame it is held, then at most
+       once every ten seconds, four times in all. Only on the ground; in water
+       the same key still swims down. */
+    if (level.is_n64 && M_RereleaseGame() && ucmd->upmove < 0 && ent->groundentity
+        && client->n64_crouch_warn_times < 12
+        && client->n64_crouch_warn_framenum <= level.framenum
+        && (++client->n64_crouch_warn_times % 3) == 0) {
+        char    msg[MAX_QPATH * 2];
+
+        client->n64_crouch_warn_framenum = level.framenum + 10 * BASE_FRAMERATE;
+        L10N_Format(msg, sizeof(msg), "$g_n64_crouching",
+                    "Quake II 64 does not have crouching.", "");
+        gi.centerprintf(ent, "%s", msg);
+    }
+
     pm_passent = ent;
 
     if (ent->client->chase_target) {

@@ -309,6 +309,8 @@ void BeginIntermission(edict_t *targ)
     // [rerelease] CLEAR_INVENTORY: strip the players back to defaults on the way out
     level.intermission_clear = (targ->spawnflags & SPAWNFLAG_CHANGELEVEL_CLEAR_INVENTORY) != 0;
     level.intermission_eou = false;
+    // [rerelease] FADE_OUT: the screen goes to black before the level changes
+    level.intermission_fade = (targ->spawnflags & SPAWNFLAG_CHANGELEVEL_FADE_OUT) != 0;
 
     // [rerelease] this level's row of the end of unit screen
     G_UpdateLevelEntry();

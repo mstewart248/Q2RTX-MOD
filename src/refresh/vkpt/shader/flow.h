@@ -88,12 +88,12 @@ BEGIN_SHADER_STRUCT(FlowParams)
 	uvec4 block_dim_bits;       // xyz: log2 of a density block's size in cells; w: 1 when there is anything to draw
 	uvec4 table_dim_less_one;   // xyz: Flow's hash table size - 1; w: tableDimBits_x
 	uvec4 table_offsets;        // x: tableDimBits_xy, y: locationOffset, z: blockLevelOffsetGlobal
-	uvec4 limits;               // x: most march samples per ray, y: most blocks one hash bucket is searched for, z: the uvec4 of the occupancy buffer the group bitset starts at
+	uvec4 limits;               // x: most march samples per ray, y: most blocks one hash bucket is searched for, z: the uvec4 of the occupancy buffer the group bitset starts at; w: pt_flow_march, how flow.glsl schedules its reads (1 world light once a step, 2 two steps at a time)
 	vec4  dim_inv;              // xyz: 1 / the density atlas size in texels
 	vec4  grids[FLOW_GRIDS];    // xyz: density cells per world unit on a grid, 0 for a grid none of whose layers has blocks; w: march step there in world units
 	vec4  world_min;            // xyz: corner of every layer's allocated blocks together; w: how many times longer a reflection or refraction ray's steps are
-	vec4  world_max;            // xyz: the opposite corner
-	uvec4 counts;               // x: blocks in the density level, y: lights
+	vec4  world_max;            // xyz: the opposite corner; w: pt_flow_glow_floor, the least share of glow smoke in front lets through (flow_step_add)
+	uvec4 counts;               // x: blocks in the density level, y: lights, z: pt_flow_stats - count the primary march into readback.flow_* (flow.glsl FLOW_STATS)
 	FlowLayerParams layers[FLOW_LAYERS];
 	vec4  lights[FLOW_MAX_LIGHTS];          // xyz: where a light is; w: its radius
 	vec4  light_colors[FLOW_MAX_LIGHTS];    // rgb: radiance x radius^2 / 4, absolute - what smoke at distance r scatters is albedo x this / r^2

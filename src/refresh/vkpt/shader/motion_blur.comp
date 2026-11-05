@@ -284,6 +284,19 @@ main()
 
 	vec2 velocity = load_motion_px(uv);
 
+	/* STILL PIXELS LEAVE BEFORE THE DEDUCTION. Everything below can only shorten
+	   the gather - the deduction scales velocity by a factor in [0, 1] and the cap
+	   only lowers it - so a pixel already under min_velocity_px here is written
+	   through by the test further down anyway, and camera_only_motion_px (an
+	   unprojection, a reprojection and a depth fetch) is wasted on it. The 0.9999
+	   keeps rounding in the two length() evaluations from ever letting this fire
+	   for a pixel the full path would blur. */
+	if (length(velocity * pc.strength) < pc.min_velocity_px * 0.9999)
+	{
+		imageStore(IMG_MOTION_BLUR, ipos, center_color);
+		return;
+	}
+
 	/* DYNAMIC DEDUCTION - a scale on the true motion, never a substitution.
 
 	   The obvious implementation, blur along the camera-only vector plus a

@@ -397,7 +397,55 @@ vkpt_compositing(VkCommandBuffer cmd_buf)
 	return VK_SUCCESS;
 }
 
-VkResult 
+/* The grid vkpt_taa dispatches: the TAA output, plus an 8 pixel border (which
+   asvgf_taau.comp zeroes) wherever the image has room for one. */
+static VkExtent2D
+taa_dispatch_size(void)
+{
+	VkExtent2D dispatch_size = qvk.extent_taa_output;
+
+	if (dispatch_size.width < qvk.extent_taa_images.width)
+		dispatch_size.width += 8;
+
+	if (dispatch_size.height < qvk.extent_taa_images.height)
+		dispatch_size.height += 8;
+
+	return dispatch_size;
+}
+
+/* TAA FOLDED INTO THE INTERLEAVE PASS. Must match taa_folded() in
+   checkerboard_interleave.comp, and reads the same values: this is the host copy
+   of the uniform buffer, uploaded before the post-processing passes are recorded
+   and not touched after.
+
+   Under DLSS with no TAA, no photo-mode accumulation, pt_dlss_exact_color and no
+   A-SVGF, asvgf_taau.comp only copies FLAT_COLOR into TAA_OUTPUT and FLAT_MOTION
+   into PT_DLSS_MOTION on the same grid, so the interleave pass writes those two
+   itself and the TAA dispatch is skipped. The NaN test keeps this from claiming
+   the fold for a value the shader's own comparison might read differently. */
+static bool
+taa_folded_in_shader(void)
+{
+	const QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
+
+	return ubo->pt_dlss != 0.f
+		&& ubo->flt_taa == (float)AA_MODE_OFF
+		&& !(ubo->temporal_blend_factor > 0.f)
+		&& ubo->pt_dlss_exact_color != 0.f && !isnan(ubo->pt_dlss_exact_color)
+		&& ubo->flt_enable == 0.f
+		&& ubo->width == ubo->taa_output_width
+		&& ubo->height == ubo->taa_output_height;
+}
+
+/* Whether vkpt_taa may skip its dispatch. Multi-GPU keeps it: the interleave pass
+   is pinned to GPU 0 there. */
+static bool
+taa_folded(void)
+{
+	return qvk.device_count == 1 && taa_folded_in_shader();
+}
+
+VkResult
 vkpt_interleave(VkCommandBuffer cmd_buf)
 {
 	VkDescriptorSet desc_sets[] = {
@@ -556,10 +604,23 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 
 	set_current_gpu(cmd_buf, 0);
 
-	// dispatch using the image dimensions, not render dimensions - to clear the unused area with black color
+	/* Render size only. This used to cover the whole screen image (twice the
+	   render width with split fields) to zero FLAT_COLOR outside the picture, but
+	   nothing reads FLAT_COLOR there: asvgf_taau.comp clamps every fetch to the
+	   render extent, DLSS and the pt_dlss_debug views read the render rectangle.
+	   When TAA is folded in, also cover the TAA grid so its zero border is
+	   written exactly as vkpt_taa would have. */
+	VkExtent2D dispatch_size = qvk.extent_render;
+	if (taa_folded())
+	{
+		VkExtent2D taa_size = taa_dispatch_size();
+		dispatch_size.width  = max(dispatch_size.width,  taa_size.width);
+		dispatch_size.height = max(dispatch_size.height, taa_size.height);
+	}
+
 	vkCmdDispatch(cmd_buf,
-		(qvk.extent_screen_images.width + 15) / 16,
-		(qvk.extent_screen_images.height + 15) / 16,
+		(dispatch_size.width + 15) / 16,
+		(dispatch_size.height + 15) / 16,
 		1);
 
 	END_PERF_MARKER(cmd_buf, PROFILER_INTERLEAVE);
@@ -567,6 +628,14 @@ vkpt_interleave(VkCommandBuffer cmd_buf)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_FLAT_COLOR]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_FLAT_MOTION]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_VIEW_DEPTH_SPLIT]);
+
+	/* The shader wrote TAA's two outputs. Also covers multi-GPU, where vkpt_taa
+	   still runs and rewrites the same values. */
+	if (taa_folded_in_shader())
+	{
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT]);
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
+	}
 
 	return VK_SUCCESS;
 }
@@ -581,25 +650,27 @@ VkResult vkpt_taa(VkCommandBuffer cmd_buf)
 
 	BEGIN_PERF_MARKER(cmd_buf, PROFILER_ASVGF_TAA);
 
+	/* Already done by the interleave pass - see taa_folded(). The history it
+	   would have written to ASVGF_TAA_A is never read: the fold needs
+	   flt_enable 0, which makes the next frame's flt_taa 0 (temporal_frame_valid). */
+	if (taa_folded())
+	{
+		END_PERF_MARKER(cmd_buf, PROFILER_ASVGF_TAA);
+		return VK_SUCCESS;
+	}
+
 	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_asvgf[TAAU]);
-	
+
 	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline_layout_taa, 0, LENGTH(desc_sets), desc_sets, 0, 0);
 
-	VkExtent2D dispatch_size = qvk.extent_taa_output;
-
-	if (dispatch_size.width < qvk.extent_taa_images.width)
-		dispatch_size.width += 8;
-
-	if (dispatch_size.height < qvk.extent_taa_images.height)
-		dispatch_size.height += 8;
+	VkExtent2D dispatch_size = taa_dispatch_size();
 
 	vkCmdDispatch(cmd_buf,
 			(dispatch_size.width + 15) / 16,
 			(dispatch_size.height + 15) / 16,
 			1);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_TAA_A]);
-	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_TAA_B]);
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_TAA_B]);
 
 	END_PERF_MARKER(cmd_buf, PROFILER_ASVGF_TAA);

@@ -28,6 +28,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_debug_printf : enable
+#extension GL_KHR_shader_subgroup_arithmetic : require   // flow.glsl's pt_flow_stats
 
 #pragma optionNV(unroll all)
 
@@ -35,6 +36,25 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "projection.glsl"
 #include "water_warp.glsl"
 #include "flow.glsl"
+
+/* FLOW SPLIT PASS (pt_flow_split_pass, path_tracer.c). The Flow march is most
+   of this shader's time with smoke on screen, and run in here it is run at
+   this shader's register count and in warps that are mostly busy with other
+   things. Split, it is its own dispatch right after this one:
+
+   0 - the march runs inline, below (always, with no Flow grid in view).
+   1 - this pass leaves the march out and hands the flow pass what it needs:
+       IMG_PT_RAY_LENGTH (dead otherwise) = (t_max, nearest effect distance),
+       t_max -1 where no overlay was traced; and IMG_ASVGF_COLOR (free until
+       god_rays pass 0) = the effects colour, where the volume may land behind
+       them. IMG_PT_TRANSPARENT is stored as always, effects over surface.
+   2 - this shader is the flow pass: flow_pass_main(). It rebuilds the same
+       camera ray from the stored rng seed, marches, and lays the volume into
+       IMG_PT_TRANSPARENT where flow_add_to_effects would have.
+
+   The result matches mode 0 up to half-float rounding: the effects and the
+   transparency go through rgba16f once more on their way. */
+layout(constant_id = 1) const uint spec_flow_mode = 0;
 
 Ray
 get_primary_ray(vec2 screen_pos)
@@ -136,9 +156,104 @@ void generate_rng_seed(ivec2 ipos, bool is_odd_checkerboard)
 	imageStore(IMG_ASVGF_RNG_SEED_A, ipos, uvec4(rng_seed));
 }
 
+// Where in the pixel this frame's camera ray goes, as a screen UV. Shared with
+// the flow pass, which has to rebuild exactly the same ray.
+vec2
+primary_sample_uv(out vec2 pixel_center)
+{
+	vec2 pixel_offset;
+	if(global_ubo.flt_taa == AA_MODE_TAA || global_ubo.temporal_blend_factor > 0)
+	{
+		// Photo mode or legacy TAA - use higher quality sampling
+		pixel_offset = vec2(get_rng(RNG_PRIMARY_OFF_X), get_rng(RNG_PRIMARY_OFF_Y));
+		pixel_offset -= vec2(0.5);
+	}
+	else
+	{
+		// Real-time mode - use predictable sampling for TAAU
+		pixel_offset = global_ubo.sub_pixel_jitter;
+	}
+
+	const ivec2 image_position = get_image_position();
+	pixel_center = vec2(image_position) + vec2(0.5);
+	return (pixel_center + pixel_offset) / vec2(get_image_size());
+}
+
+// Mode 1: what the flow pass needs, stored where the march would have run.
+// `effects_near` 0 sends the flow pass down the volume-in-front branch, which
+// needs nothing but IMG_PT_TRANSPARENT - flow_add_to_effects takes that branch
+// for every pixel without a covering effect in front, so the effects colour is
+// only stored where it does not.
+void
+flow_split_hand_off(ivec2 ipos, bool overlay, float t_max, vec4 effects)
+{
+	float effects_near = 0.0;
+	if (overlay && effects.a > 0.0)
+	{
+		effects_near = unpackHalf2x16(ray_payload_effects.distances).x;
+		if (effects_near > 0.0)
+			imageStore(IMG_ASVGF_COLOR, ipos, effects);
+		else
+			effects_near = 0.0;
+	}
+	imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(overlay ? t_max : -1.0, effects_near, 0, 0));
+}
+
+// Mode 2: the flow pass. Same launch grid as the primary pass.
+void
+flow_pass_main()
+{
+	// Field 0's padding threads land on field 1's first columns; leave those
+	// pixels to field 1, or the volume would be laid in twice.
+	if (int(rt_LaunchID.x) >= global_ubo.pt_field_offset || int(rt_LaunchID.y) >= global_ubo.height)
+		return;
+
+	ivec2 ipos = ivec2(rt_LaunchID.xy);
+	if (rt_LaunchID.z != 0)
+		ipos.x += global_ubo.pt_field_offset;
+
+	const vec2 hand_off = imageLoad(IMG_PT_RAY_LENGTH, ipos).xy;
+	if (hand_off.x < 0.0)
+		return;   // the primary pass traced no overlay here
+
+	rng_seed = imageLoad(IMG_ASVGF_RNG_SEED_A, ipos).r;
+	vec2 pixel_center;
+	Ray ray = get_primary_ray(primary_sample_uv(pixel_center));
+	ray.t_max = hand_off.x;
+
+	// flow_add_to_effects, with the effects read back instead of passed in
+	float depth;
+	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, 1.0, get_rng(RNG_FLOW_JITTER), depth);
+	flow_stats_flush();
+	if (volume.a <= 0.0 && all(lessThanEqual(volume.rgb, vec3(0))))
+		return;
+
+	vec4 transparent = imageLoad(IMG_PT_TRANSPARENT, ipos);
+	const float effects_near = hand_off.y;
+	if (effects_near <= 0.0 || depth < effects_near)
+	{
+		// (V over E) over S = V over (E over S), and E over S is what is stored
+		transparent = alpha_blend_premultiplied(volume, transparent);
+	}
+	else
+	{
+		// (E over V) over S, from T = E over S: S's share of T is T - E
+		const vec4 effects = imageLoad(IMG_ASVGF_COLOR, ipos);
+		transparent = vec4(effects.rgb + (1.0 - effects.a) * volume.rgb + (1.0 - volume.a) * (transparent.rgb - effects.rgb),
+		                   1.0 - (1.0 - volume.a) * (1.0 - transparent.a));
+	}
+	imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
+}
+
 void
 main()
 {
+	if (spec_flow_mode == 2u)
+	{
+		flow_pass_main();
+		return;
+	}
+
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	uint secondField = 0;
 
@@ -160,23 +275,9 @@ main()
 
 	vec3 position;
 	vec3 direction;
-	
-	vec2 pixel_offset;
-	if(global_ubo.flt_taa == AA_MODE_TAA || global_ubo.temporal_blend_factor > 0)
-	{   
-		// Photo mode or legacy TAA - use higher quality sampling
-		pixel_offset = vec2(get_rng(RNG_PRIMARY_OFF_X), get_rng(RNG_PRIMARY_OFF_Y));
-		pixel_offset -= vec2(0.5);
-	}
-	else 
-	{
-		// Real-time mode - use predictable sampling for TAAU
-		pixel_offset = global_ubo.sub_pixel_jitter;
-	}
-	
-	const ivec2 image_position = get_image_position();
-	const vec2 pixel_center = vec2(image_position) + vec2(0.5);
-	const vec2 inUV = (pixel_center + pixel_offset) / vec2(get_image_size());
+
+	vec2 pixel_center;
+	const vec2 inUV = primary_sample_uv(pixel_center);
 
 	Ray ray = get_primary_ray(inUV);
 
@@ -197,12 +298,14 @@ main()
 		trace_geometry_ray(ray, true, cull_mask);
 	}
 
-	Triangle triangle;
-
+	// The hit triangle itself is fetched after the effects and the Flow march,
+	// below: fetched here, all ~49 floats of it stayed live through both, and
+	// through every step of the march - the shader was at its 128 registers and
+	// spilling. Here only its material is read (the rest of the fetch is dead
+	// code); ray_payload_geometry ends this block holding the hit that wins, and
+	// neither the effects trace nor the march touches it.
 	if (found_intersection(ray_payload_geometry))
 	{
-	 	triangle = get_hit_triangle(ray_payload_geometry);	
-
 		// [Q2RTX] Draw the view weapon OVER your own plasma beam.
 		//
 		// CL_AddPlayerBeams starts the beam AT the muzzle, so its first 32-unit
@@ -218,7 +321,7 @@ main()
 		// beam segment pay for the extra ray and the second triangle fetch, and
 		// the viewer-weapon BLAS holds one model. Monster beams carry the same
 		// flag, which is consistent: nothing belongs in front of your barrel.
-		if ((triangle.material_id & MATERIAL_FLAG_PLAYER_BEAM) != 0)
+		if ((get_hit_triangle(ray_payload_geometry).material_id & MATERIAL_FLAG_PLAYER_BEAM) != 0)
 		{
 			RayPayloadGeometry beam_hit = ray_payload_geometry;
 			Ray weapon_ray = ray;
@@ -241,12 +344,9 @@ main()
 				if (!found_intersection(ray_payload_geometry))
 					break;
 
-				Triangle hit = get_hit_triangle(ray_payload_geometry);
-
-				if ((hit.material_id & MATERIAL_FLAG_PLAYER_BEAM) == 0)
+				if ((get_hit_triangle(ray_payload_geometry).material_id & MATERIAL_FLAG_PLAYER_BEAM) == 0)
 				{
-					triangle = hit;     // the gun - it wins
-					found_gun = true;
+					found_gun = true;   // the gun - it wins; ray_payload_geometry holds it
 					break;
 				}
 
@@ -258,21 +358,47 @@ main()
 		}
 
 		ray.t_max = ray_payload_geometry.hit_distance;
-		
-		
-		vec4 storedLength = imageLoad(IMG_PT_RAY_LENGTH, ipos);
-		float storedDistance = storedLength[0];
-		
-		float totalDistance = storedDistance + ray_payload_geometry.hit_distance;
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(totalDistance, 0,0,0));		
-	}
-	else {
-		imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
+		// IMG_PT_RAY_LENGTH used to be read and written here for every pixel; nothing
+		// reads it (indirect_lighting.rgen's reader is commented out), so it is gone.
 	}
 
-	vec4 effects = trace_effects_ray(ray, /* skip_procedural = */ false, /* reflection_ray = */ false);
-	// NVIDIA Flow's fire and smoke (flow.glsl), between the eye and what the ray hit
-	effects = flow_add_to_effects(effects, ray, get_rng(RNG_FLOW_JITTER), false);
+	/* FIELD 1 OF FULL-RESOLUTION FIELDS TRACES THIS SAME CAMERA RAY, and
+	   checkerboard_interleave.comp's combine_fullres_fields reads it back only
+	   where the pixel SPLITS - everywhere else the pixel is field 0 alone. A split
+	   starts only on a translucent primary (alpha below 1, further down) or on a
+	   reflect/refract kind (cameras and screens further down, the rest in
+	   reflect_refract.rgen, which early-outs on every other kind). So on any other
+	   field-1 pixel the effects overlay and the Flow march were thrown away - and
+	   the march is most of this shader's time with smoke on screen (pt_flow_stats
+	   counted 2x the pixels marching). Skipped there; the picture is unchanged.
+	   A material that is about to become one of those kinds below (water to glass)
+	   already is one. Checkerboard fields are different pixels: always traced.
+	   pt_dlss_field1_skip 0 traces both fields everywhere, for A/B. */
+	bool trace_overlay = true;
+	if (global_ubo.pt_dlss_field1_skip != 0 && global_ubo.pt_fullres_fields != 0 && secondField != 0)
+	{
+		trace_overlay = false;
+		if (found_intersection(ray_payload_geometry))
+		{
+			const Triangle hit = get_hit_triangle(ray_payload_geometry);
+			trace_overlay = IS_REFLECT_REFRACT_KIND(hit.material_id) || hit.alpha < 1.0;
+		}
+	}
+
+	vec4 effects = vec4(0);
+	if (trace_overlay)
+	{
+		effects = trace_effects_ray(ray, /* skip_procedural = */ false, /* reflection_ray = */ false);
+		// NVIDIA Flow's fire and smoke (flow.glsl), between the eye and what the ray hit
+		if (spec_flow_mode == 0u)
+			effects = flow_add_to_effects(effects, ray, get_rng(RNG_FLOW_JITTER), false);
+	}
+	if (spec_flow_mode != 0u)
+		flow_split_hand_off(ipos, trace_overlay, ray.t_max, effects);
+
+	Triangle triangle;
+	if (found_intersection(ray_payload_geometry))
+		triangle = get_hit_triangle(ray_payload_geometry);
 
 	direction = ray.direction;
 
@@ -707,6 +833,13 @@ main()
 
 	imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(encode_normal(geo_normal)));
 	imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(shading_position, uintBitsToFloat(material_id)));
+#ifdef KHR_RAY_QUERY
+	// The reflect/refract bounces only launch the tiles that hold one of their
+	// materials (TILE COMPACTION, constants.h). The sky store above writes
+	// material 0, so this is the only store that can put one here.
+	if (push_constants.tile_append_list != 0u && IS_REFLECT_REFRACT_KIND(material_id))
+		pt_tile_append(push_constants.tile_append_list - 1u, rt_LaunchID);
+#endif
 	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags)));
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, distance_curr));
 	imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(1, 1, 1, half_cone_angle));
@@ -729,6 +862,8 @@ main()
 			{
 				vec3 color = is_current ? vec3(1, 0, 0) : vec3(1, 0.5, 0);
 				imageStore(IMG_PT_TRANSPARENT, ipos, vec4(color, 0.05));
+				if (spec_flow_mode != 0u)
+					imageStore(IMG_PT_RAY_LENGTH, ipos, vec4(-1.0)); // no smoke over the debug colour, as inline
 				return;
 			}
 		}

@@ -368,7 +368,10 @@ process_selected_light_restir(
 	if (check_vis) vis *= trace_shadow_ray(shadow_ray, null_light ? 0 : shadow_cull_mask);
 
 #ifdef ENABLE_SHADOW_CAUSTICS
-	if (enable_caustics)
+	// Only where the light is seen: contrib_polygonal reaches the result solely as
+	// vis * contrib_polygonal (and under vis > 0), so the caustic ray of an occluded
+	// or null light was traced for nothing.
+	if (enable_caustics && vis > 0.0 && !null_light)
 	{
 		contrib_polygonal *= trace_caustic_ray(shadow_ray, surface_medium);
 	}

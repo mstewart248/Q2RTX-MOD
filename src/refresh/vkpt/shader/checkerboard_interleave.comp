@@ -89,7 +89,61 @@ right before this shader is invoked, see function `vkpt_interleave`.
 
 #include "utils.glsl"
 
+// For readback.hdr_color only - see taa_folded_store().
+#define VERTEX_BUFFER_DESC_SET_IDX 2
+#define VERTEX_READONLY 1
+#include "vertex_buffer.h"
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+/* TAA FOLDED INTO THIS PASS. Must match taa_folded_in_shader() in asvgf.c, which
+   skips the TAA dispatch when this holds (single GPU).
+
+   Under DLSS with no TAA (flt_taa 0), no photo-mode accumulation, pt_dlss_exact_color
+   and no A-SVGF, asvgf_taau.comp is a copy on this pass's own grid: TAA_OUTPUT =
+   (FLAT_COLOR.rgb, 1) and PT_DLSS_MOTION = FLAT_MOTION.xy through its fp16 shared
+   memory. Writing both here saves reading FLAT_COLOR and FLAT_MOTION back. Its
+   ASVGF_TAA_A history write is dead under these conditions: flt_enable 0 makes the
+   next frame's flt_taa 0, so nothing reads it. */
+bool taa_folded()
+{
+    return global_ubo.pt_dlss != 0
+        && global_ubo.flt_taa == AA_MODE_OFF
+        && !(global_ubo.temporal_blend_factor > 0)
+        && global_ubo.pt_dlss_exact_color != 0
+        && global_ubo.flt_enable == 0
+        && global_ubo.width == global_ubo.taa_output_width
+        && global_ubo.height == global_ubo.taa_output_height;
+}
+
+// asvgf_taau.comp's in-range outputs. TAA_OUTPUT and FLAT_COLOR are both rgba16f,
+// so storing the fp32 colour here rounds exactly as FLAT_COLOR did, and TAA's copy
+// of that fp16 value was exact. The motion goes through packHalf2x16 as TAA's shared
+// memory takes it; it came from rgba16f PT_MOTION, so FLAT_MOTION held it exactly.
+void taa_folded_store(ivec2 opos, vec3 color, vec2 motion)
+{
+    imageStore(IMG_TAA_OUTPUT, opos, vec4(color, 1));
+    imageStore(IMG_PT_DLSS_MOTION, opos, vec4(unpackHalf2x16(packHalf2x16(motion)), 0, 0));
+
+    // TAA reads FLAT_COLOR back for this, i.e. the fp16-rounded colour this
+    // invocation has just stored.
+    if (all(equal(opos, ivec2(global_ubo.unscaled_width / 2, global_ubo.unscaled_height / 2))))
+        readback.hdr_color = imageLoad(IMG_FLAT_COLOR, opos).rgb;
+}
+
+// asvgf_taau.comp zeroes TAA_OUTPUT over the rest of its dispatch grid; see
+// taa_dispatch_size() in asvgf.c, which also sizes this pass to cover it.
+void taa_folded_clear(ivec2 opos)
+{
+    ivec2 taa_size = ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height);
+    ivec2 grid = taa_size;
+    if (taa_size.x < global_ubo.taa_image_width)  grid.x += 8;
+    if (taa_size.y < global_ubo.taa_image_height) grid.y += 8;
+    grid = ((grid + 15) / 16) * 16;
+
+    if (all(lessThan(opos, grid)))
+        imageStore(IMG_TAA_OUTPUT, opos, vec4(0));
+}
 
 ivec2 get_input_position(out int other_side_offset)
 {
@@ -249,12 +303,15 @@ void combine_fullres_fields(ivec2 opos)
     }
 
     vec4 c_reflect = imageLoad(IMG_ASVGF_COLOR, p_reflect);
-    vec4 c_refract = imageLoad(IMG_ASVGF_COLOR, p_refract);
 
     // Both fields write the same flags; reflect_refract.rgen only marks a pixel as split
     // when the two fields genuinely diverge.
     int checkerboard_flags = int(c_reflect.a);
     bool paths_split = bitCount(checkerboard_flags & CHECKERBOARD_FLAG_FIELD_MASK) > 1;
+
+    // Field 1 is only read for a split pixel - compositing.comp no longer even
+    // writes it otherwise - so only load it then.
+    vec4 c_refract = paths_split ? imageLoad(IMG_ASVGF_COLOR, p_refract) : vec4(0);
 
     vec3 color;
     ivec2 p_primary;
@@ -419,6 +476,8 @@ void combine_fullres_fields(ivec2 opos)
     vec4 primary_motion = imageLoad(IMG_PT_MOTION, p_motion);
 
     imageStore(IMG_FLAT_MOTION,             opos, primary_motion);
+    if (taa_folded())
+        taa_folded_store(opos, color, primary_motion.xy);
     imageStore(IMG_DLSS_DEPTH,              opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT,    p_motion));
     /* DLSS FRAME GENERATION WANTS INVERSE DEPTH, NOT LINEAR DEPTH.
 
@@ -526,6 +585,8 @@ void main()
         if (opos_full.x >= global_ubo.width || opos_full.y >= global_ubo.height)
         {
             imageStore(IMG_FLAT_COLOR, opos_full, vec4(0));
+            if (taa_folded())
+                taa_folded_clear(opos_full);
             return;
         }
 
@@ -541,6 +602,8 @@ void main()
     if (opos.x >= global_ubo.width || opos.y >= global_ubo.height)
     {
         imageStore(IMG_FLAT_COLOR, opos, vec4(0));
+        if (taa_folded())
+            taa_folded_clear(opos);
         return;
     }
 
@@ -587,7 +650,10 @@ void main()
     // The two fields only differ in which one supplies the motion vector and guides.
     ivec2 src = use_center_mv ? ipos : ipos + ivec2(other_side_offset, 0);
 
-    imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, src));
+    vec4 flat_motion = imageLoad(IMG_PT_MOTION, src);
+    imageStore(IMG_FLAT_MOTION, opos, flat_motion);
+    if (taa_folded())
+        taa_folded_store(opos, color.rgb, flat_motion.xy);
     // motion_blur.comp reads this one whether or not DLSS is on.
     imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, src));
 

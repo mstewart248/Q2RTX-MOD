@@ -40,6 +40,9 @@ layout(location = 2) out vec2 tex_coord;
 // For a glyph this is its cell in the character atlas; the pixel shader keeps
 // the bilinear footprint inside it. See stretch_pic.frag.
 layout(location = 3) out flat vec4 tex_rect;
+// Per-quad flags carried in the top two bits of tex_handle (STRETCH_PIC_FLAG_*
+// in draw.c - keep in sync). Bit 0 here: the image is a video frame.
+layout(location = 4) out flat uint pic_flags;
 
 struct StretchPic {
 	float x, y, w,   h;
@@ -73,6 +76,12 @@ main()
 
 	tex_coord     = vec2(sp.s, sp.t) + positions[gl_VertexIndex] * vec2(sp.w_s, sp.h_t);
 	tex_id        = sp.tex_handle;
+	pic_flags     = 0u;
+	// ~0 is TEXNUM_WHITE, "no texture", and has every bit set - not flags
+	if (sp.tex_handle != ~0u) {
+		tex_id    = sp.tex_handle & 0x3fffffffu;
+		pic_flags = sp.tex_handle >> 30;
+	}
 
 	vec2 uv0      = vec2(sp.s, sp.t);
 	vec2 uv1      = uv0 + vec2(sp.w_s, sp.h_t);

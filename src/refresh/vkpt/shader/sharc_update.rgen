@@ -176,7 +176,17 @@ main()
 	}
 
 	slot[0] = sharc_insert(position, normal);
-	nee[0] = sharc_nee(position, normal, cluster_idx, material_id, view_direction);
+	/* The first vertex's NEE only ever reaches the cache's DIRECT channel (nee[v]
+	   of the later vertices also lights the path, through lit[v]), and pt_sharc 2
+	   - the default - never reads that channel: indirect_lighting.rgen adds it
+	   only under pt_sharc != 2. So skip the light sample and its shadow ray, but
+	   still advance the generator exactly as sharc_nee would, so every later
+	   draw on this path is the same as before. Cost: switching from 2 to 1, 3 or
+	   4 starts with a direct channel short of these samples for pt_sharc_frames. */
+	if (global_ubo.pt_sharc == 2)
+		sharc_reseed_nee();
+	else
+		nee[0] = sharc_nee(position, normal, cluster_idx, material_id, view_direction);
 
 	int num_vertices = 1;
 	bool ends_on_surface = false;

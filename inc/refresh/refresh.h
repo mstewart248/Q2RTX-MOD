@@ -472,6 +472,8 @@ typedef enum {
     IF_SRC_BASE     = (0x1 << 16),
     IF_SRC_GAME     = (0x2 << 16),
     IF_SRC_MASK     = (0x3 << 16),
+
+    IF_VIDEO        = (1 << 18), // a cinematic frame: SDR video, given its own SDR->HDR curve (ui_hdr_video_gamma)
 } imageflags_t;
 
 // Shift amount for storing fake emissive synthesis threshold

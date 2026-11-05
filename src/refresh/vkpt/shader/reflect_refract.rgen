@@ -27,16 +27,23 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #version 460
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_EXT_debug_printf : enable
+#extension GL_KHR_shader_subgroup_arithmetic : require   // flow.glsl's pt_flow_stats
 #pragma optionNV(unroll all)
 
 #define ENABLE_SHADOW_CAUSTICS
 #define ENABLE_SUN_SHAPE
+// dispatched over a tile list under pt_tile_compaction - see constants.h
+#define PT_TILE_LAUNCH
 #include "path_tracer_rgen.h"
 #include "path_tracer_transparency.glsl"
 #include "projection.glsl"
 #include "flow.glsl"
 
 layout(constant_id = 0) const uint spec_bounce_index = 0;
+// 0 = compiled without the Flow march below. path_tracer.c binds that variant on
+// frames with no Flow grid, where the march would return at its first test anyway:
+// the march is what takes this shader from 128 to 167 registers.
+layout(constant_id = 1) const uint spec_flow = 1;
 
 vec3 reflect_point_vs_plane(vec3 plane_pt, vec3 plane_normal, vec3 point)
 {
@@ -65,6 +72,9 @@ get_primary_ray(vec2 screen_pos)
 void
 main() 
 {
+	// before anything reads rt_LaunchID
+	pt_tile_launch_init();
+
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 
 	if(rt_LaunchID.z != 0)
@@ -863,13 +873,9 @@ main()
 
 	// Add the transparency encountered along the reflection ray
 
-	Triangle triangle;
-
 	if (found_intersection(ray_payload_geometry))
 	{
 		reflection_ray.t_max = ray_payload_geometry.hit_distance;
-	 	triangle = get_hit_triangle(ray_payload_geometry);
-
 
 		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(ray_payload_geometry.hit_distance, 0, 0, 0));
 	}
@@ -879,8 +885,16 @@ main()
 
 	vec4 effects = trace_effects_ray(reflection_ray, /* skip_procedural = */ false, /* reflection_ray = */ true);
 	// fire and smoke seen in a mirror or through glass (flow.glsl)
-	effects = flow_add_to_effects(effects, reflection_ray, get_rng(RNG_FLOW_JITTER), true);
+	if (spec_flow != 0u)
+		effects = flow_add_to_effects(effects, reflection_ray, get_rng(RNG_FLOW_JITTER), true);
 	transparent = alpha_blend_premultiplied(transparent, effects * vec4(throughput, 1));
+
+	// Fetched only now, as in primary_rays.rgen: before the effects and the
+	// march, the whole triangle stayed live through both. Neither touches
+	// ray_payload_geometry.
+	Triangle triangle;
+	if (found_intersection(ray_payload_geometry))
+		triangle = get_hit_triangle(ray_payload_geometry);
 
 	if(!found_intersection(ray_payload_geometry) || is_sky(triangle.material_id))
 	{
@@ -1431,6 +1445,13 @@ main()
 
 	imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(encode_normal(geo_normal)));
 	imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(position.xyz, uintBitsToFloat(material_id)));
+#ifdef KHR_RAY_QUERY
+	// The next bounce starts from this vertex. This is the only store that can
+	// leave a reflect/refract material behind (the sky branch above writes the
+	// medium alone), so it is the only place the next bounce's tile list grows.
+	if (push_constants.tile_append_list != 0u && IS_REFLECT_REFRACT_KIND(material_id))
+		pt_tile_append(push_constants.tile_append_list - 1u, rt_LaunchID);
+#endif
 	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags | checkerboard_weapon_flag | checkerboard_mirror_flag | checkerboard_glass_flag | checkerboard_mirrored_flag | checkerboard_guide_flags)));
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, optical_path_length));
 	imageStore(IMG_PT_TRANSPARENT, ipos, transparent);

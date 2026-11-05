@@ -264,6 +264,20 @@ BEGIN_SHADER_STRUCT( ReadbackBuffer )
 	uint instance;
 	uint readback_pad0;
 	uint readback_pad1;
+	/* NVIDIA Flow's primary-ray march, counted under pt_flow_stats (flow.glsl,
+	   flow_stats_report); monotonic, the CPU takes deltas (vkpt_flow_stats).
+	   Rays that entered the box round the gas, loop iterations, samples, block
+	   lookups, and the samples that added at least 1e-3 of the pixel (seen)
+	   or under 1e-4 of it (faint) - colour relative to the adapted luminance,
+	   coverage as is. */
+	uint flow_rays;
+	uint flow_iterations;
+	uint flow_samples;
+	uint flow_blocks;
+	uint flow_seen;
+	uint flow_faint;
+	uint flow_pad0;
+	uint flow_pad1;
 }
 END_SHADER_STRUCT( ReadbackBuffer )
 

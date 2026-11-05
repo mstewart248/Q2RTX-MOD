@@ -184,10 +184,20 @@ static int remove_file(const char *dir, const char *name)
     return remove(path);
 }
 
+/* Recursive, with names relative to the save directory.
+
+   A level is saved under its map name, and Quake II 64's maps live in a
+   subdirectory: q64/outpost writes .current/q64/outpost.sv2 and .sav. The old
+   flat extension search never saw those, so a save slot got server.ssv and
+   game.ssv but none of the N64 level files, and starting a new game never
+   wiped them - loading then picked up whatever q64 level state was last left
+   in .current, or none. A filtered search descends into subdirectories and
+   SAVEPATH keeps the "q64/" on the name, which copy_file (it creates the
+   directory) and remove_file both take as is. */
 static void **list_save_dir(const char *dir, int *count)
 {
-    return FS_ListFiles(va("%s/%s", sv_savedir->string, dir), ".ssv;.sav;.sv2",
-        FS_TYPE_REAL | FS_PATH_GAME, count);
+    return FS_ListFiles(va("%s/%s", sv_savedir->string, dir), "*.ssv;*.sav;*.sv2",
+        FS_TYPE_REAL | FS_PATH_GAME | FS_SEARCH_BYFILTER | FS_SEARCH_SAVEPATH, count);
 }
 
 static int wipe_save_dir(const char *dir)

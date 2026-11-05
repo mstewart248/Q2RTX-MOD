@@ -48,6 +48,21 @@ path_tracer_rgen.h first.
 // shader that marches the volume.
 #define RNG_FLOW_JITTER RNG_SUNLIGHT_Y(3)
 
+// pt_flow_stats: count what the primary march does (readback.flow_*, printed
+// by vkpt_flow_stats). A diagnostic - its counters cost registers in the
+// march loop, so it is compiled out unless this is 1.
+#ifndef FLOW_STATS
+#define FLOW_STATS 1
+#endif
+#if FLOW_STATS
+bool flow_stat_ray = false;
+uint flow_stat_iterations = 0u;
+uint flow_stat_samples = 0u;
+uint flow_stat_blocks = 0u;
+uint flow_stat_seen = 0u;
+uint flow_stat_faint = 0u;
+#endif
+
 // Which bricks of each block can show anything, see flow_occupancy.comp.
 layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_OCCUPANCY, std430)
 readonly buffer FLOW_OCCUPANCY_BUFFER { uvec4 flow_occupancy[]; };
@@ -101,6 +116,112 @@ vec3 flow_lit(vec3 position, uint shadow_light, float shadow)
 	return light / max(global_ubo.prev_adapted_luminance, 1e-9);
 }
 
+// Whether brick `bit` is marked in a block's occupancy mask.
+bool flow_brick_marked(uvec4 occupied, uint bit)
+{
+	// Not occupied[bit >> 5u]: a vector indexed at run time goes to local memory.
+	const uint word = bit < 64u ? (bit < 32u ? occupied.x : occupied.y) : (bit < 96u ? occupied.z : occupied.w);
+	return (word & (1u << (bit & 31u))) != 0u;
+}
+
+// What layer `l` adds to one march step at `position`, from its cell `value`:
+// how much it absorbs per unit length, and what it puts back - glow, and the
+// smoke's own colour. With `shared_ambient` the world's light is read once a
+// step, by the first layer with smoke there, and kept in `ambient` for the
+// rest (`have_ambient`); without, every layer with smoke reads it again. Only
+// where there is smoke, either way: reading it for every step ahead of the
+// smoke was tried (11-03) and cost more than it saved - the probe texture is
+// rgba32f, and most steps of a fireball have glow but no smoke.
+//
+// The glow goes into `glow`, apart from the smoke's light in `source`, for
+// flow_step_add's floor. `lit` false: the ray is already past where anything
+// shows through but glow, so the smoke's light is not worked out at all.
+void flow_layer_add(int l, vec4 value, vec3 position, bool shared_ambient, bool lit,
+	inout vec3 ambient, inout bool have_ambient, inout float extinction, inout vec3 source, inout vec3 glow)
+{
+	// temperature, fuel, burn or shadow, smoke
+	const float sigma = max(value.w, 0.0) * flow_params.layers[l].smoke.w;
+	extinction += sigma;
+	if (sigma > 0.0 && lit)
+	{
+		vec3 colour = flow_params.layers[l].smoke.rgb;
+		if (flow_params.counts.y > 0u)
+			colour += flow_params.layers[l].albedo.rgb * flow_lit(position, flow_params.layers[l].info.w, clamp(value.z, 0.0, 1.0));
+		if (flow_params.env_count.x > 0)
+		{
+			if (!shared_ambient || !have_ambient)
+			{
+				ambient = flow_ambient(position);
+				have_ambient = true;
+			}
+			colour += flow_params.layers[l].albedo.rgb * ambient;
+		}
+		source += colour * sigma;
+	}
+	glow += flow_colormap(flow_params.layers[l].info.z, value.x, flow_params.layers[l].albedo.w) * flow_params.layers[l].emission.x * flow_params.layers[l].emission.yzw;
+}
+
+// Lays one step of length `step` at `t` over what the march has gathered in
+// front of it; true once so little shows through that the march can stop.
+//
+// GLOW THROUGH SMOKE THAT HIDES EVERYTHING ELSE (pt_flow_glow_floor, in
+// flow_params.world_max.w). Seen from where it was fired, a rocket's trail
+// runs straight at the eye, and a ray to its explosion goes down the length
+// of it: some 1700 units of smoke, which lets through e^-10 or so. The blast
+// came out as a ring round a black disc, or a crescent - and twice the fire's
+// brightness did not fill it (Matt, 2026-11-03; the march's sample cap made a
+// hole of the same shape on 10-25, and still would without its fix). Real
+// smoke in front of a fire glows with the fire's light, scattered on through
+// it many times; one-bounce lighting from a dark smoke has none of that. So
+// glow is never let through less than this share of itself: where smoke in
+// front lets more through than that - all of a fireball's own smoke at the
+// defaults - nothing changes, and nothing else behind the smoke shows. 0 is
+// the old march, which stopped once next to nothing showed through.
+bool flow_step_add(float extinction, vec3 source, vec3 glow, float step, float t,
+	inout vec3 radiance, inout float transmittance, inout float depth_sum, inout float depth_weight)
+{
+#if FLOW_STATS
+	flow_stat_samples++;
+#endif
+	if (!(extinction > 0.0 || any(greaterThan(source + glow, vec3(0)))))
+	{
+#if FLOW_STATS
+		flow_stat_faint++;
+#endif
+		return false;
+	}
+
+	const float glow_floor = flow_params.world_max.w;
+	// Past here the old march had stopped: only glow can add anything.
+	const bool hidden = transmittance < 0.003;
+
+	const float alpha = 1.0 - exp(-extinction * step);
+	// What a step puts out, less what it absorbs of itself on the way:
+	// (1 - e^(-sigma ds)) / sigma, which is ds where nothing absorbs.
+	const float path = extinction > 1e-5 ? alpha / extinction : step;
+	const vec3 contribution = ((hidden ? vec3(0) : transmittance * source) + max(transmittance, glow_floor) * glow) * path;
+
+#if FLOW_STATS
+	{
+		const float covered = transmittance * alpha;
+		const float light = flow_luminance(contribution);
+		if (covered >= 1e-3 || light >= 1e-3)
+			flow_stat_seen++;
+		else if (covered < 1e-4 && light < 1e-4)
+			flow_stat_faint++;
+	}
+#endif
+
+	radiance += contribution;
+	const float weight = flow_luminance(contribution) + transmittance * alpha;
+	depth_sum += weight * t;
+	depth_weight += weight;
+	transmittance *= 1.0 - alpha;
+
+	// With a floor, glow further on can still show.
+	return transmittance < 0.003 && glow_floor <= 0.0;
+}
+
 // Premultiplied colour and coverage of the volume between t_min and t_max,
 // sampled every so many world units - each grid's march step, times
 // `step_scale`; `depth` is where along the ray most of what was seen is,
@@ -141,6 +262,9 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	}
 	if (t_min >= t_max)
 		return vec4(0);
+#if FLOW_STATS
+	flow_stat_ray = true;
+#endif
 
 	const ivec3 block_bits = ivec3(flow_params.block_dim_bits.xyz);
 
@@ -178,9 +302,19 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	// 10-25).
 	uint samples = 0u;
 	float step = lattice;
+
+	// pt_flow_march (flow.c): 1, the world's light read once a step for all
+	// the layers (flow_layer_add); 2, two steps read at a time (pair, below).
+	// Neither changes what is sampled or how it adds up.
+	const bool shared_ambient = (flow_params.limits.w & 1u) != 0u;
+	const bool pairs = (flow_params.limits.w & 2u) != 0u && !used1;
+
 	for (uint i = 0u; i < 4u * flow_params.limits.x && samples < flow_params.limits.x && t < t_max; i++)
 	{
 		const vec3 position = origin + direction * t;
+#if FLOW_STATS
+		flow_stat_iterations++;
+#endif
 
 		// Whether each grid's brick here is marked, and if neither is, where
 		// the clear space ends: the nearer of the grids' ends of it.
@@ -198,6 +332,9 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 			uvec4 occupied = g == 0 ? occupied0 : occupied1;
 			if (b != (g == 0 ? block0 : block1))
 			{
+#if FLOW_STATS
+				flow_stat_blocks++;
+#endif
 				occupied = uvec4(0);
 				const bool group = flow_coarse_marked(b >> FLOW_COARSE_BITS, g);
 				for (int l = 0; l < FLOW_LAYERS; l++)
@@ -226,10 +363,7 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 			}
 
 			const ivec3 local = ivec3(floor(cell)) - (b << block_bits);
-			const uint bit = flow_brick_bit(local);
-			// Not occupied[bit >> 5u]: a vector indexed at run time goes to local memory.
-			const uint word = bit < 64u ? (bit < 32u ? occupied.x : occupied.y) : (bit < 96u ? occupied.z : occupied.w);
-			if ((word & (1u << (bit & 31u))) != 0u)
+			if (flow_brick_marked(occupied, flow_brick_bit(local)))
 			{
 				if (g == 0)
 					marked0 = true;
@@ -271,54 +405,80 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 		if (2u * samples > flow_params.limits.x)
 			step = max(step, (t_max - t) / float(flow_params.limits.x - samples + 1u));
 
+		// The step after this one as well, when the loop would sample it next
+		// with nothing in between - grid 0 alone in use, the same block, a
+		// marked brick of it, short of t_max, of the budget, of where the steps
+		// start to grow and of the iteration cap - so that the two steps' reads
+		// go out together rather than one after the other. The same samples,
+		// laid on in the same order: a march is a chain of texture reads, each
+		// waiting on the last, and this halves the waits.
+		bool pair = false;
+		vec3 position_next = position;
+		if (pairs && marked0)
+		{
+			position_next = origin + direction * (t + step);
+			const ivec3 cell = ivec3(floor(position_next * flow_params.grids[0].xyz));
+			const ivec3 b = cell >> block_bits;
+			pair = b == block0
+				&& flow_brick_marked(occupied0, flow_brick_bit(cell - (b << block_bits)))
+				&& t + step < t_max
+				&& samples < flow_params.limits.x
+				&& 2u * (samples + 1u) <= flow_params.limits.x
+				&& i + 1u < 4u * flow_params.limits.x;
+		}
+
 		// What the layers here absorb per unit length, and what they put back
-		// per unit length: glow, and the smoke's own colour.
+		// per unit length: glow, and the smoke's own colour. The world's light
+		// is the same for every layer, so it is read once (shared_ambient).
 		const vec3 cell0 = position * flow_params.grids[0].xyz;
 		const vec3 cell1 = position * flow_params.grids[1].xyz;
+		const vec3 cell_next = position_next * flow_params.grids[0].xyz;
+		vec3 ambient = vec3(0);
+		vec3 ambient_next = vec3(0);
+		bool have_ambient = false;
+		bool have_ambient_next = false;
 		float extinction = 0.0;
+		float extinction_next = 0.0;
 		vec3 source = vec3(0);
+		vec3 source_next = vec3(0);
+		vec3 glow = vec3(0);
+		vec3 glow_next = vec3(0);
+		// Past this, flow_step_add takes only glow (pt_flow_glow_floor).
+		const bool lit = transmittance >= 0.003;
 		for (int l = 0; l < FLOW_LAYERS; l++)
 		{
-			if (offsets[l].w == 0 || position.z > flow_params.layers[l].world_max.w)
+			if (offsets[l].w == 0)
 				continue;
 
-			// temperature, fuel, burn or shadow, smoke
 			const vec3 cell = FLOW_LAYER_GRID(l) == 0 ? cell0 : cell1;
 			const vec4 value = textureLod(TEX_FLOW_DENSITY, (cell + vec3(offsets[l].xyz)) * flow_params.dim_inv.xyz, 0);
+			// A pair is on grid 0 alone, so every layer with blocks is too.
+			vec4 value_next = vec4(0);
+			if (pair)
+				value_next = textureLod(TEX_FLOW_DENSITY, (cell_next + vec3(offsets[l].xyz)) * flow_params.dim_inv.xyz, 0);
 
-			const float sigma = max(value.w, 0.0) * flow_params.layers[l].smoke.w;
-			extinction += sigma;
-			if (sigma > 0.0)
-			{
-				vec3 colour = flow_params.layers[l].smoke.rgb;
-				if (flow_params.counts.y > 0u)
-					colour += flow_params.layers[l].albedo.rgb * flow_lit(position, flow_params.layers[l].info.w, clamp(value.z, 0.0, 1.0));
-				if (flow_params.env_count.x > 0)
-					colour += flow_params.layers[l].albedo.rgb * flow_ambient(position);
-				source += colour * sigma;
-			}
-			source += flow_colormap(flow_params.layers[l].info.z, value.x, flow_params.layers[l].albedo.w) * flow_params.layers[l].emission.x * flow_params.layers[l].emission.yzw;
+			if (position.z <= flow_params.layers[l].world_max.w)
+				flow_layer_add(l, value, position, shared_ambient, lit, ambient, have_ambient, extinction, source, glow);
+			if (pair && position_next.z <= flow_params.layers[l].world_max.w)
+				flow_layer_add(l, value_next, position_next, shared_ambient, lit, ambient_next, have_ambient_next, extinction_next, source_next, glow_next);
 		}
 
-		if (extinction > 0.0 || any(greaterThan(source, vec3(0))))
-		{
-			const float alpha = 1.0 - exp(-extinction * step);
-			// What a step puts out, less what it absorbs of itself on the way:
-			// (1 - e^(-sigma ds)) / sigma, which is ds where nothing absorbs.
-			const float path = extinction > 1e-5 ? alpha / extinction : step;
-			const vec3 contribution = transmittance * source * path;
-
-			radiance += contribution;
-			const float weight = flow_luminance(contribution) + transmittance * alpha;
-			depth_sum += weight * t;
-			depth_weight += weight;
-			transmittance *= 1.0 - alpha;
-
-			if (transmittance < 0.003)
-				break;
-		}
-
+		if (flow_step_add(extinction, source, glow, step, t, radiance, transmittance, depth_sum, depth_weight))
+			break;
 		t += step;
+
+		if (pair)
+		{
+			// The iteration the loop would have spent on it.
+			samples++;
+			i++;
+#if FLOW_STATS
+			flow_stat_iterations++;
+#endif
+			if (flow_step_add(extinction_next, source_next, glow_next, step, t, radiance, transmittance, depth_sum, depth_weight))
+				break;
+			t += step;
+		}
 	}
 
 	if (depth_weight > 0.0)
@@ -333,11 +493,37 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 // wraps round a sprite is put wholly to one side of it. Glow alone covers
 // nothing - it only adds light - so it is not skipped for want of coverage.
 // `reflection` takes the coarser steps of a reflection or refraction ray.
+// pt_flow_stats: adds this march's counters to the readback. Primary rays
+// only - flow_add_to_effects inline, or primary_rays.rgen's flow pass.
+// subgroupAdd sums the invocations that got here, which is every one that
+// marched (primary_rays.rgen skips some on field 1).
+void flow_stats_flush()
+{
+#if FLOW_STATS
+	if (flow_params.counts.z != 0u)
+	{
+		const uvec4 a = subgroupAdd(uvec4(flow_stat_ray ? 1u : 0u, flow_stat_iterations, flow_stat_samples, flow_stat_blocks));
+		const uvec2 b = subgroupAdd(uvec2(flow_stat_seen, flow_stat_faint));
+		if (subgroupElect())
+		{
+			atomicAdd(readback.flow_rays, a.x);
+			atomicAdd(readback.flow_iterations, a.y);
+			atomicAdd(readback.flow_samples, a.z);
+			atomicAdd(readback.flow_blocks, a.w);
+			atomicAdd(readback.flow_seen, b.x);
+			atomicAdd(readback.flow_faint, b.y);
+		}
+	}
+#endif
+}
+
 vec4 flow_add_to_effects(vec4 effects, Ray ray, float jitter, bool reflection)
 {
 	float depth;
 	const float step_scale = reflection ? flow_params.world_min.w : 1.0;
 	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, step_scale, jitter, depth);
+	if (!reflection)
+		flow_stats_flush();
 	if (volume.a <= 0.0 && all(lessThanEqual(volume.rgb, vec3(0))))
 		return effects;
 

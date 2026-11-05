@@ -39,6 +39,12 @@ typedef struct {
     // pmove.c. Must match on client and server or prediction diverges, so both
     // derive it from the game directory the same way SV_SpawnServer does.
     bool        rerelease;
+    // [rerelease] Quake II 64's player physics (KEX pm_config.n64_physics) on
+    // the q64/ maps: no crouching, and every landing holds off the next jump
+    // for 128 ms. Same client/server rule as `rerelease` - both set it from the
+    // map name, the client in CL_ParseConfigstring, the server in
+    // SV_SpawnServer.
+    bool        n64;
     float       speedmult;
     float       watermult;
     float       maxspeed;

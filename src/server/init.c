@@ -191,6 +191,15 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     Q_strlcpy(sv.name, cmd->server, sizeof(sv.name));
     Q_strlcpy(sv.mapcmd, cmd->buffer, sizeof(sv.mapcmd));
 
+    // Quake II 64 player physics on the q64/ maps (see pmoveParams_t). Clients
+    // stay connected across a level change, so theirs is set here, every map;
+    // one that connects later copies sv_pmp. The client derives the same flag
+    // from the world model's name - keep the two rules identical.
+    sv_pmp.n64 = Q_strHas(fs_gamedir, "rerelease") && !Q_strncasecmp(sv.name, "q64/", 4);
+    FOR_EACH_CLIENT(client) {
+        client->pmp.n64 = sv_pmp.n64;
+    }
+
     // Publish the spawnpoint so a per-map cfg can vary by which entrance the
     // player arrived through.  A target_changelevel spells its destination
     // "base2$base3b", and by id's own convention that spawnpoint names the
@@ -335,8 +344,24 @@ bool SV_ParseMapCmd(mapcmd_t *cmd)
         if (Q_concat(expanded, sizeof(expanded), "pics/", s) < sizeof(expanded)) {
             ret = FS_LoadFile(expanded, NULL);
         }
+
+        // [rerelease] A campaign's last changelevel names a victory picture,
+        // and the rerelease ships only victory/victorr/victorx. Quake II 64
+        // ends on "*victorn64.pcx" and Call of the Machine on
+        // "*victorymg.pcx": KEX turns any "victor*.pcx" into its endgame
+        // screen, but here the missing file failed the gamemap and left the
+        // player frozen in the final intermission with nowhere to go. Show
+        // the original victory screen instead; its key press ends the game
+        // as it always has.
+        if (ret < 0 && !Q_strncasecmp(s, "victor", 6)
+            && FS_LoadFile("pics/victory.pcx", NULL) >= 0) {
+            Com_DPrintf("%s not found, ending on victory.pcx\n", expanded);
+            Q_strlcpy(cmd->server, "victory.pcx", sizeof(cmd->server));
+            cmd->spawnpoint = cmd->server + strlen(cmd->server);
+            ret = Q_ERR_SUCCESS;
+        }
         cmd->state = ss_pic;
-    } 
+    }
     else if (!COM_CompareExtension(s, ".cin")) {
         ret = Q_ERR_SUCCESS;
         cmd->state = ss_cinematic;

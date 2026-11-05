@@ -122,7 +122,15 @@ Converting skyboxes to local lights provides two benefits:
 
 #ifdef KHR_RAY_QUERY
 #extension GL_EXT_ray_query : enable
+#ifdef PT_TILE_LAUNCH
+// A pass that can be dispatched over a tile list (TILE COMPACTION, constants.h)
+// takes its launch ID from the tile, not the workgroup: pt_tile_launch_init()
+// sets this first thing in main().
+uvec3 pt_tile_launch_id;
+#define rt_LaunchID pt_tile_launch_id
+#else
 #define rt_LaunchID gl_GlobalInvocationID
+#endif
 #else
 #define rt_LaunchID gl_LaunchIDEXT
 #endif
@@ -143,7 +151,68 @@ Converting skyboxes to local lights provides two benefits:
 layout (push_constant) uniform push_constant_block {
    int gpu_index;
    int bounce_index;
+   // TILE COMPACTION (constants.h), ray query only. Both are a list index + 1, 0 = none.
+   uint tile_read_list;    // this dispatch walks that tile list instead of the screen
+   uint tile_append_list;  // tiles whose next vertex is a reflect/refract material go here
+   uvec2 tile_buffer;      // buffer device address of the tile lists
 } push_constants;
+
+#ifdef KHR_RAY_QUERY
+#extension GL_EXT_buffer_reference       : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_KHR_shader_subgroup_basic  : require
+#extension GL_KHR_shader_subgroup_vote   : require
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer PtTileBuffer {
+	uint words[];
+};
+
+// Adds this thread's launch tile to `list` (0-based), once per tile.
+void pt_tile_append(uint list, uvec3 launch_id)
+{
+	PtTileBuffer t = PtTileBuffer(push_constants.tile_buffer);
+	uint tile_id = launch_id.z * t.words[PT_TILE_HDR_PER_FIELD]
+	             + (launch_id.y >> 3) * t.words[PT_TILE_HDR_TILES_X]
+	             + (launch_id.x >> 3);
+
+	// With 8x8 workgroups a subgroup never spans two tiles, so one lane speaks for
+	// all of them; the mask below is what makes it correct if one ever did.
+	if (subgroupAllEqual(tile_id) && !subgroupElect())
+		return;
+
+	uint bit = 1u << (tile_id & 31u);
+	uint mask_word = t.words[PT_TILE_HDR_MASK] + list * t.words[PT_TILE_HDR_MASK_STRIDE] + (tile_id >> 5);
+	if ((atomicOr(t.words[mask_word], bit) & bit) != 0u)
+		return;
+
+	uint slot = atomicAdd(t.words[PT_TILE_HDR_ARGS + list * 4u], 1u);
+	t.words[t.words[PT_TILE_HDR_DATA] + list * t.words[PT_TILE_HDR_DATA_STRIDE] + slot] = tile_id;
+}
+#endif
+
+#ifdef PT_TILE_LAUNCH
+void pt_tile_launch_init()
+{
+#ifdef KHR_RAY_QUERY
+	if (push_constants.tile_read_list == 0u)
+	{
+		pt_tile_launch_id = gl_GlobalInvocationID;
+		return;
+	}
+
+	PtTileBuffer t = PtTileBuffer(push_constants.tile_buffer);
+	uint list = push_constants.tile_read_list - 1u;
+	uint tile_id = t.words[t.words[PT_TILE_HDR_DATA] + list * t.words[PT_TILE_HDR_DATA_STRIDE] + gl_WorkGroupID.x];
+	uint per_field = t.words[PT_TILE_HDR_PER_FIELD];
+	uint tiles_x = t.words[PT_TILE_HDR_TILES_X];
+	uint field = tile_id / per_field;
+	uint rest = tile_id - field * per_field;
+	uint ty = rest / tiles_x;
+	uint tx = rest - ty * tiles_x;
+	pt_tile_launch_id = uvec3(uvec2(tx, ty) * 8u + gl_LocalInvocationID.xy, field);
+#endif
+}
+#endif
 
 struct RayPayloadGeometry {
    vec2 barycentric;

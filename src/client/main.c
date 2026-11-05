@@ -3212,10 +3212,12 @@ static void CL_InitLocal(void)
        fresh install. See the comments in cin.c.
          catchup 0 - restore the old behaviour of never skipping a late frame
          mipmaps 1 - restore the old full mip chain on every video frame
-         stats   1 - print playback health once a second */
+         stats   1 - print playback health once a second
+         chroma  0 - restore the old repeated (blocky) chroma; read every frame */
     cl_hd_cinematics_catchup = Cvar_Get("cl_hd_cinematics_catchup", "1", 0);
     cl_hd_cinematics_mipmaps = Cvar_Get("cl_hd_cinematics_mipmaps", "0", 0);
     cl_hd_cinematics_stats = Cvar_Get("cl_hd_cinematics_stats", "0", 0);
+    Cvar_Get("cl_hd_cinematics_chroma", "1", 0);
 
     allow_download->changed = cl_allow_download_changed;
     cl_allow_download_changed(allow_download);

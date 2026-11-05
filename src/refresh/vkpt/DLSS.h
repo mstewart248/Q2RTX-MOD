@@ -59,6 +59,10 @@ typedef struct PrevDlssFeatureValues PrevDlssFeatureValues;
 typedef struct DLSSImageHandles DLSSImageHandles;
 
 qboolean DLSSCreated();
+/* The capability block of the NGX instance TryInit set up, when that instance is up on
+   `device`; NULL otherwise. DLSS 5 (DLSSNR.c) shares the instance and reads DLSSNR.* from
+   it. */
+NVSDK_NGX_Parameter* DLSSCapabilityParameters(VkDevice device);
 const wchar_t* GetWC(const char* c);
 void InitDLSSCvars();
 qboolean DLSSEnabled();

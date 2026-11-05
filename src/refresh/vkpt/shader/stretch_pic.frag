@@ -35,12 +35,14 @@ layout(constant_id = 0) const uint spec_tone_mapping_hdr = 0;
 layout(set = 2, binding = 2, std140) uniform UBO {
 	float ui_hdr_nits;
 	float tm_hdr_saturation_scale;
+	float ui_hdr_video_gamma;
 };
 
 layout(location = 0) in vec4 color;
 layout(location = 1) in flat uint tex_id;
 layout(location = 2) in vec2 tex_coord;
 layout(location = 3) in flat vec4 tex_rect;
+layout(location = 4) in flat uint pic_flags;  // bit 0: video frame
 
 layout(location = 0) out vec4 outColor;
 
@@ -83,7 +85,16 @@ main()
 		/* max() because an out-of-range handle reports a zero size. */
 		vec2 half_texel = 0.5 / vec2(max(global_textureSize(tex_id, 0), ivec2(1)));
 		vec2 tc = clamp(tex_coord, tex_rect.xy + half_texel, tex_rect.zw - half_texel);
-		c *= global_textureLod(tex_id, tc, 0);
+		vec4 t = global_textureLod(tex_id, tc, 0);
+
+		/* A video frame on an HDR screen: undo the piecewise sRGB decode the
+		   sampler did and apply the power curve an SDR monitor shows instead.
+		   The piecewise toe lifts near black 10-60x and with it the 8x8 block
+		   grid of every dark Theora frame - see ui_hdr_video_gamma in draw.c. */
+		if (spec_tone_mapping_hdr != 0 && (pic_flags & 1u) != 0u && ui_hdr_video_gamma > 0)
+			t.rgb = pow(linear_to_srgb(clamp(t.rgb, vec3(0), vec3(1))), vec3(ui_hdr_video_gamma));
+
+		c *= t;
 	}
 	if(spec_tone_mapping_hdr != 0) {
 		c.rgb *= ui_hdr_nits / 80;

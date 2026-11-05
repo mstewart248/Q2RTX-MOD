@@ -374,4 +374,30 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // 0.0 -> rectilinear, 1.0 -> cylindrical stereographic, +inf -> cylindrical orthographic.
 #define PANINI_D                    1.0
 
+/* TILE COMPACTION (pt_tile_compaction, ray query mode only; path_tracer.c).
+
+   The reflect/refract bounces only do anything on water, slime, glass, chrome,
+   screens, cameras and transparent surfaces, and used to be launched over BOTH
+   full-resolution fields anyway: in a room with no glass, four dispatches of
+   ~4M threads that each read one texel and returned. primary_rays.rgen now adds
+   every 8x8 tile (per field) holding such a surface to list 0, and bounce b of
+   reflect_refract.rgen walks list b with vkCmdDispatchIndirect and adds the
+   tiles whose NEXT vertex is one to list b + 1. A tile runs the same 64 threads
+   it always did, so the image is unchanged; the tiles with nothing to do are
+   simply never launched.
+
+   One buffer, in uints: per list a VkDispatchIndirectCommand padded to 4 words
+   whose x is the tile count, then the layout below, then per list a bitmask
+   that keeps a tile from being added twice, then per list the tile ids
+   (field * PER_FIELD + y * TILES_X + x, all in launch-ID tiles). */
+#define PT_TILE_LISTS              4
+#define PT_TILE_HDR_ARGS           0   /* list i: words 4i..4i+3 = { count, 1, 1, 0 } */
+#define PT_TILE_HDR_TILES_X        16  /* tiles per launch row */
+#define PT_TILE_HDR_PER_FIELD      17  /* tiles per field */
+#define PT_TILE_HDR_MASK           18  /* word offset of list 0's mask */
+#define PT_TILE_HDR_MASK_STRIDE    19  /* words per mask */
+#define PT_TILE_HDR_DATA           20  /* word offset of list 0's tile ids */
+#define PT_TILE_HDR_DATA_STRIDE    21  /* words per tile id list */
+#define PT_TILE_HDR_WORDS          32
+
 #endif /*_CONSTANTS_H_*/

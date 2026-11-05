@@ -3,7 +3,8 @@ DLSS 5 Neural Rendering (DLSSNR, NGX feature 18). Local experiment on the DLSS5 
 
 Runs on the finished, tone-mapped, HUD-less frame in VKPT_IMG_DLSS_OUTPUT - after bloom and
 tone mapping, before frame generation and the HUD - so it needs DLSS (any pt_dlss mode) on.
-The snippet is reached through nvngx.dll_dlssnr.dll (dlssnr_forwarder.cpp); see there for why.
+It goes through the driver's NGX core on the instance DLSS.c set up (feature id 18), like
+RTX Remix; the core loads nvngx_dlssnr.dll from next to q2rtx.exe itself. See DLSSNR.c.
 */
 #pragma once
 
@@ -24,7 +25,13 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory);
    Call with the device already idle (rebuild_render_resources). */
 void DLSS5_DestroyFeature(void);
 
-/* Full teardown, including NGX on this device. Device must be idle. */
+/* Releases the feature and the parameter block - everything held from NGX. DLSSDeconstructor
+   calls it before it shuts NGX down, since both live on DLSS.c's NGX instance. Idempotent;
+   device must be idle. */
+void DLSS5_ReleaseNGX(void);
+
+/* Full teardown: DLSS5_ReleaseNGX, the feedback image, the console command. Device must
+   be idle. */
 void DLSS5_Shutdown(void);
 
 /* The sRGB encode/decode pass around the model (shader/dlss5_convert.comp). */

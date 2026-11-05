@@ -1033,6 +1033,13 @@ void ClientEndServerFrame(edict_t *ent)
         // FIXME: add view drifting here?
         current_client->ps.blend[3] = 0;
         current_client->ps.fov = 90;
+        // [rerelease] Quake II 64 single player and coop: the view sits
+        // exactly on the intermission point / target_camera path, not at eye
+        // height above it. KEX does this with pmove.viewheight 0 (ClientThink);
+        // the old protocol carries eye height inside viewoffset, so clear
+        // that. Elsewhere it keeps the last frame's offset, as it always has.
+        if (level.is_n64 && !deathmatch->value)
+            VectorClear(current_client->ps.viewoffset);
         G_SetStats(ent);
         return;
     }

@@ -234,6 +234,7 @@ VkptInit_t vkpt_initialization[] = {
 	{ "draw",     vkpt_draw_initialize,                vkpt_draw_destroy,                    VKPT_INIT_DEFAULT,            0 },
 	{ "pt",       vkpt_pt_init,                        vkpt_pt_destroy,                      VKPT_INIT_DEFAULT,            0 },
 	{ "pt|",      vkpt_pt_create_pipelines,            vkpt_pt_destroy_pipelines,            VKPT_INIT_RELOAD_SHADER,      0 },
+	{ "ptTiles",  vkpt_pt_create_tiles,                vkpt_pt_destroy_tiles,                VKPT_INIT_SWAPCHAIN_RECREATE, 0 },
 	{ "draw|",    vkpt_draw_create_pipelines,          vkpt_draw_destroy_pipelines,          VKPT_INIT_SWAPCHAIN_RECREATE
 	                                                                                       | VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "vbo|",     vkpt_vertex_buffer_create_pipelines, vkpt_vertex_buffer_destroy_pipelines, VKPT_INIT_RELOAD_SHADER,      0 },
@@ -2517,8 +2518,12 @@ init_vulkan(void)
 			     2 - both, so a fault also names the pass that was in flight.
 
 			   CVAR_REFRESH: both are requested at device creation, so a change
-			   needs a vid_restart. */
-			const int gpu_diag = Cvar_Get("vk_gpu_diag", "2",
+			   needs a vid_restart.
+
+			   Default 0 since 2026-11-04: Matt measured 1-2 fps from 2 -> 0, and the
+			   hangs this was added for were overclock-related. Set 2 when hunting a
+			   device loss. */
+			const int gpu_diag = Cvar_Get("vk_gpu_diag", "0",
 				CVAR_REFRESH | CVAR_ARCHIVE)->integer;
 
 			if (gpu_diag >= 1 && !strcmp(ext_properties[j].extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME))
@@ -4379,12 +4384,17 @@ prepare_entities(EntityUploadInfo* upload_info)
 
 		int total_matrix_count = (iqm_matrix_count[entity_frame_num] + iqm_matrix_count[!entity_frame_num]);
 		memcpy(iqm_matrix_staging, qvk.iqm_matrices_shadow, total_matrix_count * 12 * sizeof(float));
+		// the device copy only needs what was ever staged (pt_upload_ranges, vertex_buffer.c)
+		vkpt_iqm_matrix_buffer_staged((uint32_t)total_matrix_count);
 
 		buffer_unmap(&qvk.buf_iqm_matrices_staging[qvk.current_frame_index]);
 	}
 
 	// Save the current model instances for the next frame
 	memcpy(model_instances_prev, instance_buffer->model_instances, sizeof(ModelInstance) * model_entity_id_count[entity_frame_num]);
+
+	// rows written this frame, + the blood row (pt_upload_ranges, uniform_buffer.c)
+	vkpt_uniform_buffer_set_model_instance_count((uint32_t)model_instance_idx + 1);
 }
 
 #ifdef VKPT_IMAGE_DUMPS
@@ -4510,6 +4520,7 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 		char const * view_material_override = unknown;
 		ReadbackBuffer readback;
 		vkpt_readback(&readback);
+		vkpt_flow_stats(&readback);
 		if (readback.material != ~0u)
 		{
 			int material_id = readback.material & MATERIAL_INDEX_MASK;
@@ -6430,6 +6441,28 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	// [froxel grid] the map fog's cheap path.
 	const bool run_froxel = god_rays_enabled && vkpt_froxel_enabled() && !fog_accum_march;
 
+	/* THE MARCH NOBODY READS, pt_fog_march_skip (default 1; 0 = always march).
+
+	   god_rays_filter.comp throws the march away (`result = grid`) for EVERY
+	   pixel when the map's fog is on, the grid is on, the march is not carrying
+	   the sun (fog_sun_in_march: physical sky only), photo mode is not marching
+	   per pixel, and pt_fog_froxel_reflect is not 1 (the only mode that keeps the
+	   march for reflection pixels). That is every skybox map with fog, and both
+	   march passes were still dispatched there: ~0.3 ms for an image the filter
+	   overwrites. The march writes nothing else (only GODRAYS_INTERMEDIATE, the
+	   ASVGF_COLOR alias, which compositing rewrites before anything else reads
+	   it), so skipping it is lossless. MUST MATCH fog_march_discarded() in
+	   global_ubo.h, which skips the filter's 5x5 upsample of it. */
+	static cvar_t *cvar_pt_fog_march_skip = NULL;
+	if (!cvar_pt_fog_march_skip)
+		cvar_pt_fog_march_skip = Cvar_Get("pt_fog_march_skip", "1", 0);
+	const bool god_rays_march_discarded = cvar_pt_fog_march_skip->integer != 0
+		&& ubo->fog_enable != 0
+		&& ubo->pt_fog_froxel > 0.f
+		&& (int)ubo->pt_fog_froxel_reflect != 1
+		&& !(ubo->temporal_blend_factor > 0.f && ubo->pt_fog_accum_march != 0.f)
+		&& ubo->environment_type != ENVIRONMENT_DYNAMIC;
+
 	/* ASYNC COMPUTE, pt_async_compute (default 0 = everything on the graphics
 	   queue, exactly as before; 1 = the froxel fog on the compute queue).
 
@@ -6532,16 +6565,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 			);
 
-		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_RAY_LENGTH], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
-
-		IMAGE_BARRIER(trace_cmd_buf,
-			.image = qvk.images[VKPT_IMG_PT_RAY_LENGTH],
-			.subresourceRange = subresource_range_reflect,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			);
+		// VKPT_IMG_PT_RAY_LENGTH is no longer cleared or written: its only reader
+		// (indirect_lighting.rgen) has been commented out for a long time.
 
 		vkCmdClearColorImage(trace_cmd_buf, qvk.images[VKPT_IMG_PT_ROUGHNESS], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyColor, 1, &reflectRange);
 
@@ -6901,7 +6926,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		if (god_rays_enabled)
 		{
 			BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS);
-			vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 0, fog_accum_march);
+			if (!god_rays_march_discarded)
+				vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 0, fog_accum_march);
 			END_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS);
 		}
 
@@ -6925,7 +6951,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		if (god_rays_enabled)
 		{
-			if (ref_mode.reflect_refract > 0)
+			if (ref_mode.reflect_refract > 0 && !god_rays_march_discarded)
 			{
 				BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_GOD_RAYS_REFLECT_REFRACT);
 				vkpt_record_god_rays_trace_command_buffer(trace_cmd_buf, 1, fog_accum_march);
@@ -7042,7 +7068,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 		if (!DLSSEnabled()) {
 			BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_BLOOM);
-			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode || qvk.frame_ui_blur > 0.f)
+			if (vkpt_bloom_will_run()) // the same test motion_blur.c's copy hand-off makes
 			{
 				vkpt_bloom_record_cmd_buffer(post_cmd_buf);
 			}
@@ -7228,6 +7254,16 @@ static uint64_t present_stats_prev_acquire_total = 0;
 static uint32_t present_stats_frames = 0;
 static uint32_t present_stats_long_frames = 0;
 
+/* The GPU's whole frame (PROFILER_GPU_FRAME), or up to DLSS where that has no
+   reading yet. The present stats compare it with the frame interval, so it has to
+   hold everything the GPU does for a frame - the old "frame time" stopped at DLSS
+   and read ~1-2 ms short of a GPU-bound frame. */
+static double present_stats_gpu_ms(void)
+{
+	const double whole = vkpt_get_profiler_result(PROFILER_GPU_FRAME);
+	return whole > 0.0 ? whole : vkpt_get_profiler_result(PROFILER_FRAME_TIME);
+}
+
 static void report_present_stats(void)
 {
 	uint64_t now = Sys_Microseconds();
@@ -7260,7 +7296,7 @@ static void report_present_stats(void)
 		present_stats_worst_us = this_frame_us;
 		present_stats_worst_fence_us = present_stats_fence_us - present_stats_prev_fence_total;
 		present_stats_worst_acquire_us = present_stats_acquire_us - present_stats_prev_acquire_total;
-		present_stats_worst_gpu_ms = vkpt_get_profiler_result(PROFILER_FRAME_TIME);
+		present_stats_worst_gpu_ms = present_stats_gpu_ms();
 	}
 	present_stats_prev_fence_total = present_stats_fence_us;
 	present_stats_prev_acquire_total = present_stats_acquire_us;
@@ -7289,7 +7325,7 @@ static void report_present_stats(void)
 		(double)present_stats_fence_us / 1000.0 / present_stats_frames,
 		(double)present_stats_acquire_us / 1000.0 / present_stats_frames,
 		(double)(window_us - present_stats_fence_us - present_stats_acquire_us) / 1000.0 / present_stats_frames,
-		vkpt_get_profiler_result(PROFILER_FRAME_TIME),
+		present_stats_gpu_ms(),
 		present_stats_long_frames,
 		(double)present_stats_worst_us / 1000.0,
 		(double)present_stats_worst_fence_us / 1000.0,
@@ -7813,6 +7849,10 @@ retry:;
 
 		vkpt_reset_query_pool(reset_cmd_buf);
 		_VK(vkpt_profiler_next_frame(reset_cmd_buf, qfalse));
+		// The whole GPU frame starts here, when the frame before it is done -
+		// the first thing this frame puts on the graphics queue. Bottom of the
+		// pipe, so the tail of that frame is not charged to this one.
+		_VK(vkpt_profiler_query_after(reset_cmd_buf, PROFILER_GPU_FRAME, PROFILER_START));
 
 		vkpt_submit_command_buffer_simple(reset_cmd_buf, qvk.queue_graphics, true);
 
@@ -7914,7 +7954,7 @@ R_EndFrame_RTX(void)
 			}
 
 			BEGIN_PERF_MARKER(cmd_buf, PROFILER_BLOOM);
-			if (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode || qvk.frame_ui_blur > 0.f)
+			if (vkpt_bloom_will_run()) // the same test motion_blur.c's copy hand-off makes
 			{
 				vkpt_bloom_record_cmd_buffer(cmd_buf);
 			}
@@ -8366,6 +8406,10 @@ R_EndFrame_RTX(void)
 			signal_semaphore_count++;
 		}
 	}
+
+	// ...and ends with the last of its work before present: the blit, the HUD
+	// and frame generation included (see PROFILER_GPU_FRAME).
+	_VK(vkpt_profiler_query_after(cmd_buf, PROFILER_GPU_FRAME, PROFILER_STOP));
 
 	vkpt_submit_command_buffer(
 		cmd_buf,
@@ -9299,6 +9343,7 @@ R_Init_RTX(bool total)
 	vkpt_motion_blur_init_cvars();
 	vkpt_chromatic_aberration_init_cvars();
 	vkpt_film_grain_init_cvars();
+	vkpt_draw_init_cvars();
 	InitDLSSCvars();
 	InitDLSSGCvars();
 	DLSS5_InitCvars();

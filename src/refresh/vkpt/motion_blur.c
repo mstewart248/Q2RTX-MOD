@@ -306,6 +306,28 @@ barrier_after_copy(VkCommandBuffer cmd_buf, VkImage dst)
 	);
 }
 
+/* Can bloom's downscale do the copy back over DLSS_OUTPUT instead of us (see
+   the hand-off note in bloom.c)? Only if bloom is the very next thing to touch
+   either image: in the DLSS arm of R_EndFrame_RTX the order is motion blur,
+   chromatic aberration, bloom, and chromatic aberration reads DLSS_OUTPUT and
+   reuses MOTION_BLUR as scratch, so it must be off. The rest makes sure the
+   downscale's copy covers exactly what ours does: it takes its DLSS branch
+   (the UBO's pt_dlss, which the shader tests, not the cvar), its bounds are
+   our copy extent, and its dispatch is not empty. */
+static bool
+bloom_can_take_copy(void)
+{
+	const QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
+
+	return vkpt_bloom_will_run()
+		&& !vkpt_chromatic_aberration_is_enabled()
+		&& ubo->pt_dlss != 0.f
+		&& ubo->unscaled_width  == (int)qvk.extent_unscaled.width
+		&& ubo->unscaled_height == (int)qvk.extent_unscaled.height
+		&& qvk.extent_unscaled.width  >= 4
+		&& qvk.extent_unscaled.height >= 4;
+}
+
 VkResult
 vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
 {
@@ -404,6 +426,16 @@ vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		(output_extent.width  + 15) / 16,
 		(output_extent.height + 15) / 16,
 		1);
+
+	/* DLSS arm with bloom next: bloom's downscale writes our result back over
+	   DLSS_OUTPUT as it reads it, bit for bit what the copy below would leave,
+	   saving a full-resolution pass. It only needs our writes made visible. */
+	if (dlss && bloom_can_take_copy())
+	{
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_MOTION_BLUR]);
+		vkpt_bloom_take_motion_blur();
+		return VK_SUCCESS;
+	}
 
 	/* Copy the blurred frame back over the colour image. This is what keeps
 	   the pass transparent to everything downstream: bloom, tone mapping, FSR

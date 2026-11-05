@@ -973,7 +973,9 @@ get_direct_illumination(
 
 	vis *= trace_shadow_ray(shadow_ray, null_light ? 0 : shadow_cull_mask);
 #ifdef ENABLE_SHADOW_CAUSTICS
-	if (enable_caustics)
+	// contrib only reaches the result as vis * contrib, so skip the caustic ray of an
+	// occluded or null light (same as get_sunlight already does).
+	if (enable_caustics && vis > 0.0 && !null_light)
 	{
 		contrib *= trace_caustic_ray(shadow_ray, surface_medium);
 	}

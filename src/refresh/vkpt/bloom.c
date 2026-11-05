@@ -51,6 +51,35 @@ cvar_t *cvar_bloom_intensity = NULL;
 cvar_t *cvar_bloom_sigma_water = NULL;
 cvar_t *cvar_bloom_intensity_water = NULL;
 
+/* MOTION BLUR HAND-OFF (DLSS arm only). Motion blur leaves its result in
+   MOTION_BLUR and normally copies it back over DLSS_OUTPUT, which this pass
+   then reads in full. When this pass is certain to run next, motion_blur.c
+   skips that copy and calls vkpt_bloom_take_motion_blur() instead: the
+   downscale reads MOTION_BLUR and writes every texel it reads back to
+   DLSS_OUTPUT itself, so the blur, the composite, the debug views and
+   everything after see exactly what the copy would have left. A texelFetch ->
+   imageStore round trip between two rgba16f images reproduces all 65536 fp16
+   bit patterns, NaN payloads and denormals included (checked exhaustively on
+   the GPU), so this is the copy moved, not an approximation of it - and it
+   saves one full-resolution read plus the copy's two barriers.
+
+   Stamped with the frame, so a hand-off nothing consumed can never be taken
+   up by a later frame's bloom. */
+static uint64_t motion_blur_handoff_frame = ~(uint64_t)0;
+
+/* The condition both call sites in main.c put around
+   vkpt_bloom_record_cmd_buffer. Motion blur has to know the answer before
+   bloom runs, so the two must stay the same expression. */
+bool vkpt_bloom_will_run(void)
+{
+	return cvar_bloom_enable && (cvar_bloom_enable->integer != 0 || qvk.frame_menu_mode || qvk.frame_ui_blur > 0.f);
+}
+
+void vkpt_bloom_take_motion_blur(void)
+{
+	motion_blur_handoff_frame = qvk.frame_counter;
+}
+
 /* Full-screen blur radii, relative to screen height.
 
    The menu can afford to be heavy handed: the world behind it is PAUSED and
@@ -212,9 +241,20 @@ vkpt_bloom_initialize()
 	);
 	ATTACH_LABEL_VARIABLE(pipeline_layout_blur, PIPELINE_LAYOUT);
 
+	/* One int for the downscale: 1 = take the motion blur hand-off (see the
+	   note at motion_blur_handoff_frame). The composite shares this layout
+	   and does not declare it. */
+	VkPushConstantRange push_constant_range_composite = {
+		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		.offset     = 0,
+		.size       = sizeof(int32_t)
+	};
+
 	CREATE_PIPELINE_LAYOUT(qvk.device, &pipeline_layout_composite,
 		.setLayoutCount         = LENGTH(desc_set_layouts),
 		.pSetLayouts            = desc_set_layouts,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges    = &push_constant_range_composite
 	);
 	ATTACH_LABEL_VARIABLE(pipeline_layout_composite, PIPELINE_LAYOUT);
 
@@ -397,6 +437,11 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 	}
 	compute_push_constants();
 
+	/* Consumed whether or not it applies, so it can only ever mean "this frame". */
+	const bool take_motion_blur = DLSSEnabled() && motion_blur_handoff_frame == qvk.frame_counter;
+	motion_blur_handoff_frame = ~(uint64_t)0;
+	const int32_t downscale_push = take_motion_blur ? 1 : 0;
+
 	VkDescriptorSet desc_sets[] = {
 		qvk.desc_set_ubo,
 		qvk_get_current_desc_set_textures(),
@@ -413,11 +458,28 @@ vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf)
 	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[DOWNSCALE]);
 	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline_layout_composite, 0, LENGTH(desc_sets), desc_sets, 0, 0);
+	vkCmdPushConstants(cmd_buf, pipeline_layout_composite, VK_SHADER_STAGE_COMPUTE_BIT,
+		0, sizeof(downscale_push), &downscale_push);
 
 	vkCmdDispatch(cmd_buf,
 		(extent.width / 4 + 15) / 16,
 		(extent.height / 4 + 15) / 16,
 		1);
+
+	/* The downscale has just written DLSS_OUTPUT (the hand-off); the composite
+	   reads it and then writes it again, and a debug view copies over it. */
+	if (take_motion_blur)
+	{
+		IMAGE_BARRIER(cmd_buf,
+			.image            = qvk.images[VKPT_IMG_DLSS_OUTPUT],
+			.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+			.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT,
+			.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
+			                  | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+			.oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
+			.newLayout        = VK_IMAGE_LAYOUT_GENERAL,
+		);
+	}
 
 	if (!DLSSEnabled()) {
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_BLOOM_VBLUR]);

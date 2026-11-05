@@ -530,6 +530,15 @@ void ExitLevel(void)
     edict_t *ent;
     char    command [256];
 
+    // [rerelease] FADE_OUT: not yet - fade the screen first. G_RunFrame runs
+    // the fade and calls back in here once it is over.
+    if (level.intermission_fade) {
+        level.intermission_fade = false;
+        level.intermission_fading = true;
+        level.intermission_fade_framenum = level.framenum + 13;    // 1.3 s
+        return;
+    }
+
     Q_snprintf(command, sizeof(command), "gamemap \"%s\"\n", level.changemap);
     gi.AddCommandString(command);
     level.changemap = NULL;
@@ -600,6 +609,29 @@ void G_RunFrame(void)
 
     // choose a client for monsters to target this frame
     AI_SetSightClient();
+
+    // [rerelease] a FADE_OUT level exit (every Quake II 64 exit). KEX's timing:
+    // black ramps up over the first second, holds for 0.3 s, then the level
+    // changes. The world holds still meanwhile, and nothing else runs - so
+    // nothing overwrites the blend before the frame goes out.
+    if (level.intermission_fading) {
+        if (level.framenum < level.intermission_fade_framenum) {
+            float alpha = 1.0f - (level.intermission_fade_framenum - level.framenum - 3) * FRAMETIME;
+
+            alpha = max(0.0f, min(1.0f, alpha));
+            for (i = 1; i <= maxclients->value; i++) {
+                ent = g_edicts + i;
+                if (!ent->inuse || !ent->client)
+                    continue;
+                ent->client->ps.blend[0] = ent->client->ps.blend[1] = ent->client->ps.blend[2] = 0;
+                ent->client->ps.blend[3] = alpha;
+            }
+        } else {
+            level.intermission_fading = false;
+            ExitLevel();
+        }
+        return;
+    }
 
     // exit intermissions
 

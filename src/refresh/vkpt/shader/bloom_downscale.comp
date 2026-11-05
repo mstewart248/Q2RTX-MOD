@@ -28,6 +28,40 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 #define GLOBAL_TEXTURES_DESC_SET_IDX 1
 #include "global_textures.h"
 
+/* take_motion_blur = 1: the motion blur hand-off (see bloom.c). Motion blur's
+   result is still in MOTION_BLUR - its copy back over DLSS_OUTPUT was skipped -
+   so read it from there and write each texel to DLSS_OUTPUT, which is that
+   copy. Only ever set on the DLSS arm. */
+layout(push_constant) uniform BloomDownscalePushConstants {
+    int take_motion_blur;
+} push;
+
+void hand_off_texel(ivec2 pos)
+{
+    imageStore(IMG_DLSS_OUTPUT, pos, texelFetch(TEX_MOTION_BLUR, pos, 0));
+}
+
+/* The thread grid is unscaled/4 rounded up to whole groups, which can stop up
+   to 3 texels short of the right or bottom edge. Those texels are not in the
+   bloom, but the copy covered them, so the last column and row of threads do
+   them here - the part of their extended block outside the 4x4 already done. */
+void hand_off_edge_remainder(ivec2 ipos)
+{
+    ivec2 grid = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+    if (ipos.x != grid.x - 1 && ipos.y != grid.y - 1)
+        return;
+
+    ivec2 size = ivec2(global_ubo.unscaled_width, global_ubo.unscaled_height);
+    ivec2 lo = ipos * 4;
+    ivec2 hi = min(lo + 4, size);
+    if (ipos.x == grid.x - 1) hi.x = size.x;
+    if (ipos.y == grid.y - 1) hi.y = size.y;
+
+    for (int y = lo.y; y < hi.y; y++)
+        for (int x = lo.x; x < hi.x; x++)
+            if (x >= lo.x + 4 || y >= lo.y + 4)
+                hand_off_texel(ivec2(x, y));
+}
 
 void
 main()
@@ -52,13 +86,26 @@ main()
             }
             else {
                 if (input_pos.x < global_ubo.unscaled_width && input_pos.y < global_ubo.unscaled_height)
-                {                 
-                    result += texelFetch(TEX_DLSS_OUTPUT, input_pos, 0);           
+                {
+                    if (push.take_motion_blur != 0)
+                    {
+                        // Same bits the copy would have put in DLSS_OUTPUT, so the same sum.
+                        vec4 c = texelFetch(TEX_MOTION_BLUR, input_pos, 0);
+                        imageStore(IMG_DLSS_OUTPUT, input_pos, c);
+                        result += c;
+                    }
+                    else
+                    {
+                        result += texelFetch(TEX_DLSS_OUTPUT, input_pos, 0);
+                    }
                     count += 1;
                 }
             }
         }
     }
+
+    if (!(global_ubo.pt_dlss == 0) && push.take_motion_blur != 0)
+        hand_off_edge_remainder(ipos);
 
     if (count > 0)
     {

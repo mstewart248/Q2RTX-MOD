@@ -251,6 +251,9 @@ static cvar_t *cvar_pt_flow_smoke_scatter;
 static cvar_t *cvar_pt_flow_density;
 static cvar_t *cvar_pt_flow_step;
 static cvar_t *cvar_pt_flow_max_steps;
+static cvar_t *cvar_pt_flow_march;
+static cvar_t *cvar_pt_flow_stats;
+static cvar_t *cvar_pt_flow_glow_floor;
 static cvar_t *cvar_pt_flow_rate;
 static cvar_t *cvar_pt_flow_reflect_step;
 static cvar_t *cvar_pt_flow_fuel_fade;
@@ -346,6 +349,8 @@ static struct {
 	BufferResource_t    params;         // a FlowParams per set, params_stride apart
 	byte                *params_mapped;
 	size_t              params_stride;
+	// this frame's FlowParams.block_dim_bits.w: the march has a grid to read
+	bool                marching;
 
 	// What flow_lights.comp writes: FLOW_LIGHT_SUM_VEC4S vec4s a block, a
 	// set's worth light_sums_stride apart. Read on the host once the set's
@@ -3129,6 +3134,19 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_density = Cvar_Get("pt_flow_density", "0.01", 0);
 	cvar_pt_flow_step = Cvar_Get("pt_flow_step", "0.75", 0);          // march step, in cells
 	cvar_pt_flow_max_steps = Cvar_Get("pt_flow_max_steps", "256", 0);  // samples, past empty bricks
+	// How the march schedules its texture reads, not what it reads: 1, the
+	// world's light read once a step for every layer with smoke there; 2, two
+	// steps of a brick read at a time. Same samples, same sums - 0 is the old
+	// one-read-after-another march, kept for A/B (11-03).
+	cvar_pt_flow_march = Cvar_Get("pt_flow_march", "3", 0);
+	// 1: print what the primary march did, once a second (FLOWSTATS, see
+	// vkpt_flow_stats) - needs FLOW_STATS compiled into flow.glsl.
+	cvar_pt_flow_stats = Cvar_Get("pt_flow_stats", "0", 0);
+	// The least share of the fire's glow smoke in front of it lets through
+	// (flow_step_add in flow.glsl): a rocket's own trail, seen down its length
+	// from where it was fired, hid the middle of the explosion at its end
+	// (11-03). Only where the smoke is thicker than that; 0 = the old march.
+	cvar_pt_flow_glow_floor = Cvar_Get("pt_flow_glow_floor", "0.2", 0);
 
 	// What it costs (see the top of this file): Flow's steps a second at
 	// most, 0 for one every frame; how much coarser a reflection marches;
@@ -3668,6 +3686,15 @@ bool vkpt_flow_profiled(void)
 #endif
 }
 
+/* Whether this frame's FlowParams has a grid for the march to read
+   (block_dim_bits.w). When it does not, every flow.glsl march returns at its
+   first test, so path_tracer.c binds the reflect/refract variant compiled
+   without it (spec_flow 0): 167 -> 128 registers, nothing else changes. */
+bool vkpt_flow_marching(void)
+{
+	return flow.marching;
+}
+
 bool vkpt_flow_env_profiled(void)
 {
 #if USE_FLOW
@@ -3675,6 +3702,61 @@ bool vkpt_flow_env_profiled(void)
 #else
 	return false;
 #endif
+}
+
+/*
+pt_flow_stats 1: what the primary-ray march did, per frame, averaged over a
+second - from flow.glsl's counters in the readback buffer, which only ever
+count up (a uint32 wraps, the deltas do not care). Rays that entered the box
+round the gas, loop iterations, samples, block lookups; seen = samples that
+added at least 1e-3 of their pixel, faint = under 1e-4 (all but nothing).
+*/
+void vkpt_flow_stats(const ReadbackBuffer *readback)
+{
+	static bool have_last;
+	static uint32_t last[6];
+	static uint64_t sums[6];
+	static int frames;
+	static unsigned start_ms;
+
+	if (!cvar_pt_flow_stats || !cvar_pt_flow_stats->integer) {
+		have_last = false;
+		return;
+	}
+
+	const uint32_t now[6] = {
+		readback->flow_rays, readback->flow_iterations, readback->flow_samples,
+		readback->flow_blocks, readback->flow_seen, readback->flow_faint,
+	};
+	const unsigned ms = Sys_Milliseconds();
+	if (have_last) {
+		for (int i = 0; i < 6; i++)
+			sums[i] += (uint32_t)(now[i] - last[i]);
+		frames++;
+	} else {
+		memset(sums, 0, sizeof(sums));
+		frames = 0;
+		start_ms = ms;
+	}
+	memcpy(last, now, sizeof(last));
+	have_last = true;
+
+	if (ms - start_ms < 1000 || frames == 0)
+		return;
+
+	const double f = (double)frames;
+	const double samples = (double)sums[2];
+	Com_Printf("FLOWSTATS %d frames | per frame: rays %.0f iterations %.0f samples %.0f blocks %.0f | "
+		"%.1f samples/ray, %.1f iterations/ray | seen %.1f%% faint %.1f%% of samples | %ux%u\n",
+		frames, sums[0] / f, sums[1] / f, samples / f, sums[3] / f,
+		sums[0] ? samples / (double)sums[0] : 0.0, sums[0] ? (double)sums[1] / (double)sums[0] : 0.0,
+		samples > 0.0 ? 100.0 * (double)sums[4] / samples : 0.0,
+		samples > 0.0 ? 100.0 * (double)sums[5] / samples : 0.0,
+		qvk.extent_render.width, qvk.extent_render.height);
+
+	memset(sums, 0, sizeof(sums));
+	frames = 0;
+	start_ms = ms;
 }
 
 void vkpt_flow_update(const refdef_t *fd, bool render_world)
@@ -3685,6 +3767,7 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 	if (flow.updated_frame == qvk.frame_counter + 1)
 		return;
 	flow.updated_frame = qvk.frame_counter + 1;
+	flow.marching = false;
 
 	const int set = qvk.frame_counter & 1;
 	FlowParams *params = (FlowParams *)(flow.params_mapped + set * flow.params_stride);
@@ -3733,15 +3816,19 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 			table = (VkBuffer)sparse_table.buffer;
 
 			params->block_dim_bits[3] = 1;
+			flow.marching = true;
 			params->limits[0] = (uint32_t)Cvar_ClampInteger(cvar_pt_flow_max_steps, 16, 4096);
 			params->limits[1] = 64;
 			params->limits[2] = flow.occupancy_blocks;
+			params->limits[3] = (uint32_t)Cvar_ClampInteger(cvar_pt_flow_march, 0, 3);
+			params->counts[2] = cvar_pt_flow_stats->integer ? 1u : 0u;
 			// Each grid in use marches pt_flow_step of its own cells a step.
 			for (int g = 0; g < FLOW_GRIDS; g++) {
 				if (params->grids[g][0] > 0.f)
 					params->grids[g][3] = max(cvar_pt_flow_step->value, 0.1f) / params->grids[g][0];
 			}
 			params->world_min[3] = max(cvar_pt_flow_reflect_step->value, 1.f);
+			params->world_max[3] = Cvar_ClampValue(cvar_pt_flow_glow_floor, 0.f, 1.f);
 			for (int layer = 0; layer < FLOW_LAYERS; layer++)
 				flow_layer_look(&params->layers[layer], layer, cell_size);
 			flow_lights_params(set, params);

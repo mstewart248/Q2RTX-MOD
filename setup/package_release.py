@@ -17,11 +17,6 @@ WHAT GOES IN, and the rule behind it:
   * the build outputs: q2rtx.exe, q2rtxded.exe, q2rtxded-x86.exe if it was
     built, baseq2/gamex86_64.dll, and the compiled shaders both loose in
     baseq2/shader_vkpt and packed in baseq2/shaders.pkz.
-  * nvngx.dll_dlssnr.dll, the DLSS 5 forwarder. It is our own code
-    (src/refresh/vkpt/dlssnr_forwarder.cpp), not an NVIDIA runtime, despite the
-    name - the name is what gets it past nvngx_dlssnr.dll's caller check.
-    Without it a player who supplies nvngx_dlssnr.dll gets the DLSS 5 menu but
-    "the forwarder was not found next to q2rtx.exe" (issue #24).
   * phonon.dll, the Steam Audio runtime, as built from source by
     setup/build_phonon.py, with its Apache-2.0 licence and third-party notices
     from extern/steamaudio/ under licenses/steam-audio/.
@@ -64,19 +59,16 @@ TOP = 'Q2RTX-Overdrive'
 # Already-compressed payloads - storing them is both faster and no larger.
 STORE_EXT = ('.pkz', '.png', '.jpg', '.jpeg', '.kpf', '.mp3', '.ogg', '.zip')
 
-DLSSNR_FORWARDER = 'nvngx.dll_dlssnr.dll'
-
-REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe', 'phonon.dll', 'nvflow.dll', 'nvflowext.dll',
-                 DLSSNR_FORWARDER]
+REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe', 'phonon.dll', 'nvflow.dll', 'nvflowext.dll']
 OPTIONAL_ROOT = ['q2rtxded-x86.exe']
 DOCS = ['license.txt', 'notice.txt', 'readme.md', 'changelog.md']
 
 # NVIDIA's DLSS runtime DLLs never go in a release - players bring their own.
-# Anything matching this is refused wherever it comes from, except the
-# forwarder, which only borrows the prefix.
+# Anything matching this is refused wherever it comes from. (DLSS 5 used to need
+# our own nvngx.dll_dlssnr.dll forwarder here; it goes through the NGX core now.)
 def is_nvidia_runtime(arc):
     n = os.path.basename(arc).lower()
-    return n.startswith('nvngx') and n.endswith('.dll') and n != DLSSNR_FORWARDER
+    return n.startswith('nvngx') and n.endswith('.dll')
 
 # Steam Audio's licence and the notices for what is compiled into phonon.dll,
 # and NVIDIA Flow's licence: (file in the repository, path in the package).
