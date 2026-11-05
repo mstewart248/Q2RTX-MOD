@@ -224,8 +224,16 @@ void CL_MuzzleFlash(void)
     // MZ_PODLIGHT is the same story: g_trigger.c's drop pod emergency light
     // rides svc_muzzleflash at the player for its red dlight, and without this
     // every strobe pulse also flashed a muzzle model at your gun.
+    //
+    // MZ_NUKE1/2/4/8 too: Ground Zero's armed A-M bomb blinks its countdown
+    // light by sending them from its OWN entity, faster as it nears zero. Not
+    // being you, it took the branch below, so every blink hung a flash model
+    // in the air 18 forward and 16 right of the bomb. The rerelease draws no
+    // flash on it (Matt, 2026-11-05); the coloured light below stays.
     if (mz.weapon != MZ_LOGIN && mz.weapon != MZ_LOGOUT && mz.weapon != MZ_RESPAWN
-        && mz.weapon != MZ_PODLIGHT) {
+        && mz.weapon != MZ_PODLIGHT
+        && mz.weapon != MZ_NUKE1 && mz.weapon != MZ_NUKE2
+        && mz.weapon != MZ_NUKE4 && mz.weapon != MZ_NUKE8) {
 
     // Rerelease: the flash model, at the same place the dlight was just put.
     // Our own gun in first person is handled separately - CL_AddViewWeapon is

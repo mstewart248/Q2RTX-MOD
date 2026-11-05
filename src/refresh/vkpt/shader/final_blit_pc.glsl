@@ -119,4 +119,17 @@ final_blit_sample(vec2 pos_px)
 
 #undef FINAL_BLIT_BILINEAR
 
+/* What a final blit writes, last step. On an HDR swapchain every channel is
+   held to [0, tm_hdr_peak_nits] again (tm_hdr_clip in global_ubo.h): Lanczos
+   and the CRT's filters have negative lobes, so next to a hard edge they ring
+   past whatever range the tone mapper left. An sRGB swapchain is UNORM and
+   clamps by itself. */
+vec3
+final_blit_output(vec3 color)
+{
+	if (blit_pc.hdr != 0 && global_ubo.tm_hdr_clip != 0)
+		color = clamp(color, vec3(0), vec3(global_ubo.tm_hdr_peak_nits / 80.0));
+	return color;
+}
+
 #endif /* _FINAL_BLIT_PC_GLSL_ */

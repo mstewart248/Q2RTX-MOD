@@ -122,5 +122,5 @@ main()
 	// pt_film_grain - the push constants carry intensity 0 when it is off.
 	color = film_grain_apply(color, ivec2(gl_FragCoord.xy));
 
-	outColor = vec4(color, 1);
+	outColor = vec4(final_blit_output(color), 1);
 }

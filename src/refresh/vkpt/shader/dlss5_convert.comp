@@ -128,6 +128,11 @@ void resolve_hdr(ivec2 ipos, vec4 c)
 	vec3 edited = mix(luma_only, model_colour, clamp(push.colour, 0.0, 1.0));
 	vec3 result = max(o + (edited - o) * push.strength, vec3(0));
 
+	/* The luma ratio can lift a channel up to 4x - past the peak the tone
+	   mapper clipped the original to (tm_hdr_clip in global_ubo.h). */
+	if (global_ubo.tm_hdr_clip != 0)
+		result = min(result, vec3(global_ubo.tm_hdr_peak_nits / 80.0));
+
 	if (push.view == 2)
 	{
 		/* Same |edit| x8 as SDR, measured in the model's own LDR units, shown at UI

@@ -53,5 +53,5 @@ main()
 
 	vec3 color = final_blit_fetch(src);
 
-	outColor = vec4(film_grain_apply(color, pixel), 1);
+	outColor = vec4(final_blit_output(film_grain_apply(color, pixel)), 1);
 }
