@@ -638,7 +638,7 @@ water, and it burns out into smoke that rises, drifts and fades.
 
 ![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake043.jpg)
 
-*Two rocket explosions lighting the room (photo mode).*
+*Rocket explosions lighting the room (photo mode).*
 
 ![image](https://github.com/mstewart248/Q2RTX-MOD/blob/master/rerelease/screenshots/quake045.jpg)
 
