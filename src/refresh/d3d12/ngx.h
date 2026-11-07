@@ -57,6 +57,7 @@ typedef struct {
     // Ray Reconstruction's guides
     ID3D12Resource  *diffuse_albedo, *specular_albedo, *normals, *roughness, *specular_hit_distance;
     ID3D12Resource  *reflection_motion, *diffuse_hit_distance, *reflected_albedo, *before_transparency;
+    ID3D12Resource  *responsivity_mask;     // "DLSSD.ResponsivityMask" (pt_dlss_glass_responsive), NULL = off
     uint32_t        width, height;
     float           jitter_x, jitter_y;  // render pixels
     bool            reset;

@@ -83,7 +83,26 @@ copies and put them in the same folder as q2rtx.exe:
     nvngx_dlssg.dll     Frame Generation
 
 Without them the game runs normally, and the menu does not show the DLSS
-options whose DLL is missing.
+options whose DLL is missing. The same DLLs serve both RTX renderers.
+
+THE DIRECT3D 12 RENDERER is around 20% faster than the Vulkan one on the
+developer's machine. Pick "rtx (direct3d 12)" under options -> graphics
+settings -> renderer..., or type  vid_rtx 3  in the console.
+
+On Windows 11 it runs as is. On Windows 10 it needs one DLL from Microsoft
+that cannot be included here, the DirectX 12 Agility SDK runtime:
+
+    1. Download version 1.620.1 of the Microsoft.Direct3D.D3D12 package
+       ("Download package" on the page):
+           https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.620.1
+    2. The file is a .nupkg. Rename it to .zip and open it.
+    3. Copy  build/native/bin/x64/D3D12Core.dll  from it into a folder named
+       D3D12 next to q2rtx.exe:
+
+           D3D12/D3D12Core.dll
+
+It has to be 1.620.1, the version the game is built against. Without it, on
+Windows 10, the game says so in the console and stays on Vulkan.
 
 
 --------------------------------------------------------------------------------
@@ -99,6 +118,7 @@ options whose DLL is missing.
     baseq2/blue_noise.pkz       sampling noise the path tracer needs
     baseq2/shaders.pkz          compiled shaders, packed
     baseq2/shader_vkpt/         the same compiled shaders, loose
+    baseq2/shader_d3d12/        compiled shaders for the Direct3D 12 renderer
     baseq2/                     sky definitions, materials, map configs, sounds
     rerelease/overrides/        the fork's texture override set
     rerelease/models/           PBR maps for the remaster's skeletal models

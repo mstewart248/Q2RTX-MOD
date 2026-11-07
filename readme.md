@@ -55,6 +55,51 @@ existing Quake II RTX install.
 
 # Features
 
+* **Four renderers**, picked under **options** → **graphics settings** →
+  **renderer...** or with `vid_rtx`:
+  * **[Direct3D 12 path tracer](#direct3d-12-renderer)** (`vid_rtx 3`): the
+    fastest, around 20% faster than Vulkan on the developer's RTX 5070 Ti. On
+    Windows 10 it needs one DLL from Microsoft; see its section.
+  * **Vulkan path tracer** (`vid_rtx 1`): the Quake II RTX renderer, carried
+    forward, and the default.
+  * **[Software renderer](#software-renderer)** (`vid_rtx 2`): id's original
+    1997 renderer, rebuilt for today's CPUs: native 4K, multithreaded, 8-bit or
+    32-bit colour.
+  * **OpenGL** (`vid_rtx 0`): the Q2PRO rasteriser Quake II RTX shipped with.
+* **DLSS Super Resolution, Ray Reconstruction and Frame Generation (2–6×), and
+  NVIDIA Reflex**, built straight against NGX with no Streamline. See
+  [Upscaling, frame generation and latency](#upscaling-frame-generation-and-latency).
+* **A stronger [path tracer](#path-tracer)**: ReSTIR direct and global
+  illumination, multi-bounce lighting from a radiance cache (SHaRC), full
+  materials on bounces, parallax occlusion mapping, and an animated sky with a
+  moving sun.
+* **[Volumetric fog](#volumetric-fog-and-atmosphere)** lit by the sun, the sky
+  and every light in the map, with real shadows through it, shaped by each
+  remaster map's own fog.
+* **[The Quake II (2023) remaster](#quake-ii-2023-rerelease-support)** read
+  straight from its `pak0.pak`: every campaign including *Call of the Machine*,
+  its skeletal models, HD cinematics, monsters and AI, weapon wheels and HUD.
+  *Ground Zero* and *The Reckoning* play from the same game library. See
+  [Playing the rerelease campaign](#playing-the-rerelease-campaign).
+* **[Remaster demos](#demo-playback)** play alongside classic `.dm2` files.
+* **[Physical blood and gore](#gore-and-physical-blood)**: droplets are real,
+  lit geometry that splats, runs down walls and pools.
+* **[Simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow)** with
+  NVIDIA Flow: explosions, BFG plasma and rocket trails that light the room.
+* **[Sound](#sound)**: the remaster's room reverb, and Steam Audio with HRTF,
+  occlusion, and ray-traced reflections and diffraction.
+* **Post effects**: [motion blur](#motion-blur),
+  [chromatic aberration](#chromatic-aberration), [film grain](#film-grain) and
+  a [CRT filter](#crt-filter).
+* **[Photo mode](#photo-mode)**: accumulated, noise-free screenshots with true
+  depth of field, during play or demo playback.
+* **[A CPU path tracer benchmark](#cpu-path-tracer-benchmark)** (`cpu_bench`).
+* **Tools for modders**: [in-game light placement](#the-light-placement-system),
+  an [expanded material system](#the-material-system),
+  [per-map settings](#per-map-settings-mapcvar), and
+  [debugging commands](#authoring-and-debugging-tools).
+* **[Everything Quake II RTX already had](#inherited-from-quake-ii-rtx)**.
+
 Almost everything below is exposed in the in-game menu as well as on the
 console. The renderer settings live under **Video** → **Advanced** and
 **Effects**; the fog, blood and gameplay pages are their own submenus.
@@ -949,9 +994,16 @@ In the menu: **options** → **graphics settings** → **renderer...** →
 **renderer**: *rtx (direct3d 12)*, shown when the build has it. Or `vid_rtx 3`
 in the console.
 
-**Source builds only, for now.** The release package and the Actions builds do
-not include it yet: they ship neither `baseq2/shader_d3d12` nor the Agility
-runtime. To build it, see step 5 of the
+**The DLL Windows 10 needs.** The release package and the Actions builds
+include the renderer and its shaders, and Windows 11 runs it on its own D3D12
+runtime. Windows 10's runtime is too old, so it also needs Microsoft's Agility
+SDK runtime. That is closed source and is not shipped with this GPL program,
+the same as the DLSS DLLs. Download version 1.620.1 of the
+[Microsoft.Direct3D.D3D12](https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.620.1)
+package, rename the `.nupkg` to `.zip`, and copy `build/native/bin/x64/D3D12Core.dll`
+out of it into a `D3D12\` folder next to `q2rtx.exe`. It has to be 1.620.1,
+the version the game is built against. `README-FIRST.txt` in the package says
+the same. To build the renderer yourself, see step 5 of the
 [build instructions](#build-instructions). How it is put together, and what is
 left, is in [src/refresh/d3d12/ROADMAP.md](src/refresh/d3d12/ROADMAP.md).
 

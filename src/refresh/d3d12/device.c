@@ -1114,6 +1114,19 @@ bool d3d12_device_init(void)
     if (d3d.caps.raytracing_tier < D3D12_RAYTRACING_TIER_1_1)
         Com_WPrintf("D3D12: this GPU has no DXR 1.1 ray query; the path tracer will not run on it\n");
 
+    /* Every shader is built for shader model 6.6 (D3D12_SHADER_MODEL in
+       cmake/compileShadersD3D12.cmake), the 2D ones included, so below it not one
+       pipeline would be made. Windows 11's own runtime has 6.6; Windows 10's stops
+       at 6.5 and needs the Agility SDK runtime, which the release does not ship
+       (a closed-source Microsoft DLL beside a GPL program - the same rule as the
+       DLSS DLLs). Failing here sends refresh.c back to Vulkan with a reason. */
+    if (d3d.caps.shader_model < D3D_SHADER_MODEL_6_6) {
+        Com_EPrintf("D3D12: shader model %d.%d - the renderer needs 6.6. Windows 11 has it; on Windows 10 put "
+                    "D3D12Core.dll from Microsoft's Agility SDK 1.620.1 in D3D12\\ beside q2rtx.exe (README-FIRST.txt)\n",
+                    d3d.caps.shader_model >> 4, d3d.caps.shader_model & 0xf);
+        goto fail;
+    }
+
     d3d.initialized = true;
     return true;
 

@@ -113,6 +113,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(DLSS_FG_DEPTH,             65, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(PT_PRIMARY_DIST,           66, R16_SFLOAT,          r32f,    IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(MOTION_BLUR,               67, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_POSTFX,    IMG_HEIGHT_POSTFX) \
+	IMG_DO(DLSS_RESPONSIVITY,         68, R16_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 
 
 /* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
@@ -146,7 +147,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    afterwards, which is also what lets the blur be skipped for a frame without
    leaving a stale image anywhere. Same format as both possible sources so the
    copy is a straight blit. */
-#define NUM_IMAGES_BASE     68
+/* DLSS_RESPONSIVITY: Ray Reconstruction's responsivity mask ("DLSSD.ResponsivityMask",
+   SDK 310.9+, Preset F / RR2): one channel, render resolution, R16F or R8_SNORM, range
+   -1..1 - positive makes RR trust the current frame over its history there, negative the
+   reverse, 0 changes nothing. Written every frame by the combine pass in
+   checkerboard_interleave.comp (pt_dlss_glass_responsive). R16_SFLOAT declared r32f,
+   PT_PRIMARY_DIST's pairing, which both renderers already handle. */
+#define NUM_IMAGES_BASE     69
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \

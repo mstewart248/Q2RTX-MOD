@@ -376,6 +376,7 @@ void d3d12_frontend_dlss_record(void *ctx, ID3D12GraphicsCommandList4 *cmd)
         .diffuse_hit_distance = ev.diffuse_hit_distance ? d3d12_world_image(VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE) : NULL,
         .reflected_albedo = ev.reflected_albedo ? d3d12_world_image(VKPT_IMG_DLSS_REFLECTED_ALBEDO) : NULL,
         .before_transparency = ev.before_transparency ? d3d12_world_image(VKPT_IMG_DLSS_BEFORE_TRANSPARENT) : NULL,
+        .responsivity_mask = ev.responsivity_mask ? d3d12_world_image(VKPT_IMG_DLSS_RESPONSIVITY) : NULL,
         .width = (uint32_t)res.inputWidth,
         .height = (uint32_t)res.inputHeight,
         .jitter_x = ev.jitter_x,

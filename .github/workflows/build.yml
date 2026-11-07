@@ -78,10 +78,38 @@ jobs:
       if: steps.flow.outputs.cache-hit != 'true'
       run: python setup/build_flow.py
 
+    # THE DIRECT3D 12 RENDERER (vid_rtx 3). It compiles against the Agility SDK's
+    # headers, and its shaders are the Vulkan GLSL translated by spv2dxil, which
+    # needs the Vulkan SDK's SPIRV-Cross, spirv-opt and DXC (CMake's
+    # D3D12_VULKAN_SDK defaults to $VULKAN_SDK). Both SDKs are build tools here:
+    # nothing from either goes in the artifact. fetch_agility_sdk.py also stages
+    # Microsoft's runtime DLLs in D3D12/; those are closed source and are never
+    # shipped (the Upload list below leaves D3D12/ out, package_release.py
+    # refuses them). The renderer runs on Windows 11's own D3D12 runtime.
+    - name: Install Vulkan SDK
+      uses: jakoch/install-vulkan-sdk-action@v1
+      with:
+        vulkan_version: 1.4.350.0
+        install_runtime: false
+        cache: true
+        stripdown: true
+
+    - name: Verify Vulkan SDK tools
+      shell: pwsh
+      run: |
+        $missing = 0
+        foreach ($f in 'Bin\dxcompiler.dll', 'Bin\spirv-opt.exe', 'Bin\spirv-cross-c-shared.dll', 'Lib\spirv-cross-c-shared.lib') {
+          if (Test-Path (Join-Path $env:VULKAN_SDK $f)) { "ok   $f" } else { "MISSING $env:VULKAN_SDK\$f"; $missing = 1 }
+        }
+        exit $missing
+
+    - name: Stage Agility SDK headers
+      run: python setup/fetch_agility_sdk.py
+
     - name: Configure Win64
       env:
         DLSS_SDK2_PATH: ${{github.workspace}}/DLSS_SDK
-      run: cmake -B ${{github.workspace}}/build-x64 -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCONFIG_BUILD_GLSLANG=ON
+      run: cmake -B ${{github.workspace}}/build-x64 -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCONFIG_BUILD_GLSLANG=ON -DCONFIG_D3D12_RENDERER=ON
 
     - name: Configure Win32
       # Win32 produces the dedicated server only, and the DLSS SDK ships no
@@ -147,6 +175,7 @@ jobs:
           fi
         done
         test -d baseq2/shader_vkpt || { echo "MISSING baseq2/shader_vkpt"; missing=1; }
+        ls baseq2/shader_d3d12/*.dxil >/dev/null 2>&1 || { echo "MISSING baseq2/shader_d3d12"; missing=1; }
         exit $missing
 
     - name: Upload

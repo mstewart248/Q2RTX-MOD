@@ -324,7 +324,7 @@ begin video_reconstruction
     ifeq pt_dlss_available 1
     ifneq pt_dlss 0
     blank
-    pairs --status "shown raw at render resolution: DLSS-RR's inputs, then the path tracer's (pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 "color (RR input)" 16 "diffuse albedo" 2 "specular albedo" 5 normal 4 roughness 3 depth 6 "motion vectors" 7 "reflection motion" 1 "diffuse hit distance" 9 "specular hit distance" 10 "reflected albedo" 22 "color before transparency" 8 "transparency overlay" 11 "path tracer motion" 12 "primary motion" 17 throughput 19 "bounce throughput" 20 "base color" 32 "metallic / roughness" 34 "view depth" 36 barycentrics 30 "shading position (last bounce)" 15
+    pairs --status "shown raw at render resolution: DLSS-RR's inputs, then the path tracer's (pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 "color (RR input)" 16 "diffuse albedo" 2 "specular albedo" 5 normal 4 roughness 3 depth 6 "motion vectors" 7 "reflection motion" 1 "diffuse hit distance" 9 "specular hit distance" 10 "reflected albedo" 22 "glass responsivity mask" 23"color before transparency" 8 "transparency overlay" 11 "path tracer motion" 12 "primary motion" 17 throughput 19 "bounce throughput" 20 "base color" 32 "metallic / roughness" 34 "view depth" 36 barycentrics 30 "shading position (last bounce)" 15
     endif
     endif
 end

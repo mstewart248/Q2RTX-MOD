@@ -324,6 +324,9 @@ void combine_fullres_fields(ivec2 opos)
     float fresnel_weight = 0.0;
     // pt_dlss_blood_guides: this split is a translucent blood splat's alpha, see below.
     bool blood_split = false;
+    // A water or slime surface (pt_dlss_water_responsive): only they and glass record a
+    // Fresnel weight, so a Fresnel split without the glass flag is a liquid.
+    bool liquid_split = false;
 
     if(paths_split)
     {
@@ -354,6 +357,7 @@ void combine_fullres_fields(ivec2 opos)
         bool blood_encoded = fresnel_encoded >= REFLECTED_ALBEDO_BLOOD_BIAS;
         bool have_fresnel = fresnel_encoded >= 1.0 && !blood_encoded;
         fresnel_weight = have_fresnel ? clamp(fresnel_encoded - 1.0, 0.0, 1.0) : 0.0;
+        liquid_split = have_fresnel && !split_was_glass;
 
         if(guide_field == 2)
             reflection_is_primary = true;
@@ -580,6 +584,43 @@ void combine_fullres_fields(ivec2 opos)
     // Alpha carries the Fresnel weight for mode 4 above; zero it so RR is handed a plain
     // albedo and never sees the side channel.
     imageStore(IMG_DLSS_REFLECTED_ALBEDO,   opos, vec4(imageLoad(IMG_PT_REFLECTED_ALBEDO, p_reflect).rgb, 0));
+
+    /* pt_dlss_glass_responsive - RR2's RESPONSIVITY MASK ON GLASS WHOSE REFLECTION MOVES.
+
+       With the refraction supplying the guides (guide field 0), RR reprojects a whole
+       glass pixel with the motion of what is seen THROUGH the pane. The reflection the
+       pane adds moves differently - the player model always does, and while the camera
+       moves every reflection does - so its history lands in the wrong place and RR blurs
+       it until everything stops: sharp when still, soft in motion (Matt, 2026-11-06).
+       Handing RR the guides of the reflection instead fixes that and breaks the view
+       through the glass (the lamp behind it slides with the player), and roughness /
+       specular albedo alone made no visible difference (2026-09-23 and 11-06).
+
+       So keep every guide and motion vector as it is and tell RR where to lean on the
+       current frame: exactly where the reflection's motion and the through-glass motion
+       disagree, by more than a quarter of a render pixel. A still pane - or a still
+       reflection over a still view - stays at 0 and keeps its full history, so it is as
+       clean as before; only the moving part trades history for sharpness.
+
+       Water and slime get the same rule under their own strength, pt_dlss_water_responsive.
+       Their reflection motion is the FLAT-surface mirror (reflect_refract.rgen), so the
+       waves themselves never trip it - a still camera over a still reflection stays at 0.
+
+       Nothing here when the reflection is primary (guide fields 2/3/5 hand RR the
+       reflection's motion already), or on blood. */
+    float strength = ((checkerboard_flags & CHECKERBOARD_FLAG_GLASS) != 0) ? global_ubo.pt_dlss_glass_responsive
+                   : liquid_split                                          ? global_ubo.pt_dlss_water_responsive
+                   : 0.0;
+    float responsivity = 0.0;
+    if(strength > 0.0 && paths_split && !blood_split && !reflection_is_primary)
+    {
+        // motion vectors are in screen fractions; this is the disagreement in render pixels
+        float pixels = length((reflect_motion - primary_motion.xy) * vec2(global_ubo.width, global_ubo.height));
+        if(!(pixels < 1e4)) // NaN and Inf too
+            pixels = 1e4;
+        responsivity = smoothstep(0.25, 1.5, pixels) * min(strength, 1.0);
+    }
+    imageStore(IMG_DLSS_RESPONSIVITY, opos, vec4(responsivity));
 }
 
 void main()
@@ -675,6 +716,9 @@ void main()
         imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, src));
         imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, src));
         imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, src));
+        // pt_dlss_glass_responsive is a split-field rule (combine_fullres_fields); here
+        // the mask only has to be defined
+        imageStore(IMG_DLSS_RESPONSIVITY, opos, vec4(0));
 
         float specularRayLength = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, src).x);
         float diffuseRayLength = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, src).x);

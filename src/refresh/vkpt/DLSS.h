@@ -72,6 +72,7 @@ typedef struct {
     qboolean    reflected_albedo;       // pt_dlss_reflected_albedo
     qboolean    before_transparency;    // pt_dlss_bt_guide != 2
     qboolean    reflection_motion;      // DLSS_REFLECT_MOTION as the reflections' motion
+    qboolean    responsivity_mask;      // DLSS_RESPONSIVITY as "DLSSD.ResponsivityMask" (pt_dlss_glass_responsive > 0)
     qboolean    matrices;               // world_to_view and view_to_clip go over
     float       world_to_view[16], view_to_clip[16];
 } DLSSEvaluation;

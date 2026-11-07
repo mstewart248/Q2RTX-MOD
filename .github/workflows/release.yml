@@ -104,10 +104,35 @@ jobs:
         if: steps.flow.outputs.cache-hit != 'true'
         run: python setup/build_flow.py
 
+      # The Direct3D 12 renderer (vid_rtx 3): the Agility SDK's headers and the
+      # Vulkan SDK's SPIRV-Cross, spirv-opt and DXC, as build tools only. See the
+      # note in build.yml. Microsoft's runtime DLLs that fetch_agility_sdk.py
+      # stages in D3D12/ are never packaged; README-FIRST tells Windows 10
+      # players where to get D3D12Core.dll.
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.350.0
+          install_runtime: false
+          cache: true
+          stripdown: true
+
+      - name: Verify Vulkan SDK tools
+        shell: pwsh
+        run: |
+          $missing = 0
+          foreach ($f in 'Bin\dxcompiler.dll', 'Bin\spirv-opt.exe', 'Bin\spirv-cross-c-shared.dll', 'Lib\spirv-cross-c-shared.lib') {
+            if (Test-Path (Join-Path $env:VULKAN_SDK $f)) { "ok   $f" } else { "MISSING $env:VULKAN_SDK\$f"; $missing = 1 }
+          }
+          exit $missing
+
+      - name: Stage Agility SDK headers
+        run: python setup/fetch_agility_sdk.py
+
       - name: Configure Win64
         env:
           DLSS_SDK2_PATH: ${{ github.workspace }}/DLSS_SDK
-        run: cmake -B ${{ github.workspace }}/build-x64 -A x64 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCONFIG_BUILD_GLSLANG=ON
+        run: cmake -B ${{ github.workspace }}/build-x64 -A x64 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCONFIG_BUILD_GLSLANG=ON -DCONFIG_D3D12_RENDERER=ON
 
       - name: Build Win64
         env:
@@ -143,6 +168,7 @@ jobs:
             else echo "MISSING $f"; fail=1; fi
           done
           test -d baseq2/shader_vkpt || { echo "MISSING baseq2/shader_vkpt"; fail=1; }
+          ls baseq2/shader_d3d12/*.dxil >/dev/null 2>&1 || { echo "MISSING baseq2/shader_d3d12"; fail=1; }
           exit $fail
 
       - name: Assemble package
@@ -153,6 +179,10 @@ jobs:
           # The DLSS runtime DLLs must never be in the package; players supply their own.
           if unzip -l "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" | grep -i 'nvngx[^/]*\.dll'; then
             echo "ERROR: package contains NVIDIA runtime DLLs"; exit 1
+          fi
+          # Nor Microsoft's Agility SDK runtime (closed source; see package_release.py).
+          if unzip -l "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" | grep -i -E 'd3d12core\.dll|d3d12sdklayers\.dll|d3dconfig\.exe'; then
+            echo "ERROR: package contains the Agility SDK runtime"; exit 1
           fi
 
       - name: Publish release

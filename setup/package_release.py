@@ -15,8 +15,9 @@ WHAT GOES IN, and the rule behind it:
     full of local experiments - savegames, configs, map compiles, scratch cfgs -
     out of a release without needing a hand-maintained exclude list.
   * the build outputs: q2rtx.exe, q2rtxded.exe, q2rtxded-x86.exe if it was
-    built, baseq2/gamex86_64.dll, and the compiled shaders both loose in
-    baseq2/shader_vkpt and packed in baseq2/shaders.pkz.
+    built, baseq2/gamex86_64.dll, the compiled shaders both loose in
+    baseq2/shader_vkpt and packed in baseq2/shaders.pkz, and the Direct3D 12
+    renderer's DXIL loose in baseq2/shader_d3d12.
   * phonon.dll, the Steam Audio runtime, as built from source by
     setup/build_phonon.py, with its Apache-2.0 licence and third-party notices
     from extern/steamaudio/ under licenses/steam-audio/.
@@ -33,6 +34,12 @@ WHAT STAYS OUT:
     a release: players supply their own copies and put them beside q2rtx.exe.
     build_manifest refuses to package one even if it turns up somewhere the
     rules above would otherwise pick it up.
+  * Microsoft's DirectX 12 Agility SDK runtime (D3D12Core.dll,
+    d3d12SDKLayers.dll, d3dconfig.exe), which setup/fetch_agility_sdk.py
+    stages in D3D12/ for a source build. Microsoft allows redistributing it, but
+    it is closed source, so it stays out of a GPL package by the same rule as the
+    DLSS DLLs. The D3D12 renderer runs on Windows 11's own runtime; README-FIRST
+    tells Windows 10 players where to get the DLL.
   * Valve's PREBUILT phonon.dll from the Steam Audio SDK zip. It links Intel
     IPP and oneMKL, which are not open source and cannot ship with a GPL
     program; the package is refused if the phonon.dll found carries them.
@@ -63,12 +70,15 @@ REQUIRED_ROOT = ['q2rtx.exe', 'q2rtxded.exe', 'phonon.dll', 'nvflow.dll', 'nvflo
 OPTIONAL_ROOT = ['q2rtxded-x86.exe']
 DOCS = ['license.txt', 'notice.txt', 'readme.md', 'changelog.md']
 
-# NVIDIA's DLSS runtime DLLs never go in a release - players bring their own.
-# Anything matching this is refused wherever it comes from. (DLSS 5 used to need
-# our own nvngx.dll_dlssnr.dll forwarder here; it goes through the NGX core now.)
-def is_nvidia_runtime(arc):
+# NVIDIA's DLSS runtime DLLs and Microsoft's Agility SDK runtime never go in a
+# release - players bring their own. Anything matching this is refused wherever
+# it comes from. (DLSS 5 used to need our own nvngx.dll_dlssnr.dll forwarder
+# here; it goes through the NGX core now.)
+AGILITY_RUNTIME = ('d3d12core.dll', 'd3d12sdklayers.dll', 'd3dconfig.exe')
+
+def is_vendor_runtime(arc):
     n = os.path.basename(arc).lower()
-    return n.startswith('nvngx') and n.endswith('.dll')
+    return (n.startswith('nvngx') and n.endswith('.dll')) or n in AGILITY_RUNTIME
 
 # Steam Audio's licence and the notices for what is compiled into phonon.dll,
 # and NVIDIA Flow's licence: (file in the repository, path in the package).
@@ -106,7 +116,7 @@ def build_manifest(repo):
     def add(disk, arc, required):
         if arc in seen:
             return
-        if is_nvidia_runtime(arc):
+        if is_vendor_runtime(arc):
             refused.append(arc)
             return
         if not os.path.isfile(disk):
@@ -136,6 +146,17 @@ def build_manifest(repo):
         for n in sorted(os.listdir(shaders)):
             add(os.path.join(shaders, n), 'baseq2/shader_vkpt/' + n, True)
 
+    # The D3D12 renderer (vid_rtx 3) reads shader_d3d12/<name>.dxil through the
+    # filesystem, loose; there is no pkz for it, so nothing stale can shadow it.
+    shaders = os.path.join(repo, 'baseq2', 'shader_d3d12')
+    if not os.path.isdir(shaders):
+        missing.append('baseq2/shader_d3d12/ (build with CONFIG_D3D12_RENDERER: '
+                       'run setup/fetch_agility_sdk.py, and have a Vulkan SDK)')
+    else:
+        for n in sorted(os.listdir(shaders)):
+            if n.endswith('.dxil'):
+                add(os.path.join(shaders, n), 'baseq2/shader_d3d12/' + n, True)
+
     for prefix in ('baseq2', 'rerelease', 'rogue'):
         for f in tracked(repo, prefix):
             add(os.path.join(repo, f), f, False)
@@ -160,7 +181,7 @@ def main():
     bad_phonon = [r for r in refused if r.startswith('phonon.dll')]
     refused = [r for r in refused if not r.startswith('phonon.dll')]
     if refused:
-        print('left out NVIDIA runtime DLL(s) - players supply their own:')
+        print('left out NVIDIA / Agility SDK runtime file(s) - players supply their own:')
         for r in refused:
             print('   ' + r)
 
