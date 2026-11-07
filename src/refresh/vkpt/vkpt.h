@@ -1351,7 +1351,7 @@ void get_transparency_counts(int* particle_num, int* beam_num, int* sprite_num);
 // Blood droplets as shaded sphere geometry - blood.c
 VkResult vkpt_blood_initialize(void);
 VkResult vkpt_blood_destroy(void);
-uint32_t vkpt_blood_prim_count(int num_spheres);
+uint32_t vkpt_blood_prim_count(int num_spheres, int num_films);
 // map load: the shadow copy at its worst-case size when blood is on; the capacity
 // in primitives for the backend's staging, 0 = blood off
 uint32_t vkpt_blood_preallocate(void);
@@ -1375,6 +1375,8 @@ typedef struct {
 void vkpt_blood_prepare(
 	const blood_sphere_t* spheres,
 	int num_spheres,
+	const blood_film_t* films,      // cl_blood_film tiles; may be NULL / 0
+	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
 	int model_instance_index,
@@ -1388,6 +1390,8 @@ void vkpt_blood_update(
 	VkCommandBuffer cmd_buf,
 	const blood_sphere_t* spheres,
 	int num_spheres,
+	const blood_film_t* films,
+	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
 	int model_instance_index,

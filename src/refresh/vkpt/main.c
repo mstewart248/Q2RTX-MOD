@@ -4462,7 +4462,8 @@ prepare_entities(EntityUploadInfo* upload_info)
 	// 4096-primitive steps. The gap between the models and the base is covered by
 	// no BLAS and read by nothing: every section names its own offset and count,
 	// and num_prims below only sizes the buffer.
-	const uint32_t blood_prims = vkpt_blood_prim_count(vkpt_refdef.fd->num_blood_spheres);
+	const uint32_t blood_prims = vkpt_blood_prim_count(vkpt_refdef.fd->num_blood_spheres,
+	                                                   vkpt_refdef.fd->num_blood_films);
 
 	if (blood_prims)
 	{
@@ -7039,6 +7040,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		// below; it only has to land before vkpt_pt_create_all_dynamic builds the
 		// BLAS over it.
 		vkpt_blood_update(trace_cmd_buf, fd->blood_spheres, fd->num_blood_spheres,
+			fd->blood_films, fd->num_blood_films,
 			bsp_world_model, fd->vieworg, blood_model_instance_idx,
 			upload_info.blood_prim_offset, &upload_info.blood_prim_count);
 

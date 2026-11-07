@@ -1165,7 +1165,8 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     vkpt_blood_frame_t blood;
     if (d3d12_world_take_blood_lost())
         vkpt_blood_invalidate();
-    vkpt_blood_prepare(fd->blood_spheres, fd->num_blood_spheres, prep->bsp, fd->vieworg, prep->blood_model_instance,
+    vkpt_blood_prepare(fd->blood_spheres, fd->num_blood_spheres, fd->blood_films, fd->num_blood_films,
+                       prep->bsp, fd->vieworg, prep->blood_model_instance,
                        frame_prep.upload_info.blood_prim_offset, &blood);
     frame_prep.upload_info.blood_prim_count = blood.prim_count;
     frame->blood.prim_offset = blood.prim_offset;

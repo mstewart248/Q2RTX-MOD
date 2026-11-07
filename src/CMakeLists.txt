@@ -116,6 +116,7 @@ SET(SRC_CLIENT
 	client/lightedit.c
 	client/mapfog.c
 	client/effects.c
+	client/blood_film.c
 	client/entities.c
 	client/footsteps.c
 	client/gtv.c

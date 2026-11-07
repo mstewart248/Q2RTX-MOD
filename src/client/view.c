@@ -682,6 +682,11 @@ void V_RenderView(void)
         cl.refdef.particles = r_particles;
         cl.refdef.num_blood_spheres = r_numbloodspheres;
         cl.refdef.blood_spheres = r_bloodspheres;
+        cl.refdef.blood_films = CL_BloodFilmList(&cl.refdef.num_blood_films);
+        if (!cl_add_particles->integer) {
+            cl.refdef.num_blood_films = 0;
+            cl.refdef.blood_films = NULL;
+        }
         cl.refdef.num_dlights = r_numdlights;
         cl.refdef.dlights = r_dlights;
         cl.refdef.lightstyles = r_lightstyles;

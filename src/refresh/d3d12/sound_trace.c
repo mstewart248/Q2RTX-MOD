@@ -20,7 +20,8 @@ THREADS, as sound_trace.c: runs come on the sound's simulation thread, and
 snd_lock (an SRW lock, never freed: the sound may ask after the renderer has
 gone) keeps them apart from init and shutdown. Nothing on that thread prints or
 touches the zone - the buffers here are made without D3D_CHECK - and its
-descriptors are its own set's slots (device calls, which are free-threaded).
+descriptors are its own set's slots (device calls, which are free-threaded) in
+the renderer's shader-visible heaps, which snd_run's list binds before its tables.
 D3D12 has no vkDeviceWaitIdle rule, so the renderer's idle waits need no lock.
 
 STATES: every buffer here decays to COMMON after each ExecuteCommandLists and is
@@ -373,6 +374,20 @@ static const char *snd_run(const r_sound_trace_t *t)
     d3d12_tlas_build(snd.cmd, ID3D12Resource_GetGPUVirtualAddress(snd.instances), (uint32_t)n, snd_build_flags,
                      snd.tlas, ID3D12Resource_GetGPUVirtualAddress(snd.scratch));
     d3d12_as_barrier(snd.cmd, &snd.tlas_pool);
+
+    /*
+    THE HEAPS FIRST. The set's descriptors live in the renderer's shader-visible
+    heaps, and a list binds tables only into the heaps IT has set -
+    d3d12_compute_begin leaves that to the caller, and every renderer list does
+    it. This one did not, so the first SetComputeRootDescriptorTable read through
+    a null heap inside the driver: an access violation in nvwgf2umx on the
+    simulation thread the moment ray traced sound ran on D3D12 (Matt, 2026-11-06,
+    CrashReport13: SA_TraceReflections > d3d12_sound_trace > snd_run > bind_sets).
+    The heaps outlive every run: d3d12_sound_shutdown takes snd_lock before
+    d3d12_device_shutdown releases them.
+    */
+    ID3D12DescriptorHeap *heaps[2] = { d3d.srv_heap, d3d.sampler_heap };
+    ID3D12GraphicsCommandList4_SetDescriptorHeaps(snd.cmd, 2, heaps);
 
     const d3d12_set_t *sets[1] = { &snd.set };
     d3d12_compute_begin(list, D3D12_PL_SOUND);

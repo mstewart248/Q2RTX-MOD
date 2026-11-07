@@ -1326,6 +1326,17 @@ typedef struct cparticle_s {
 // for the drips off a flying gib.  Call it AFTER setting org and vel.
 void CL_MakeBloodSphere(cparticle_t *p, float scale);
 
+// Surface blood (cl_blood_film) - blood_film.c.
+void CL_BloodFilmInit(void);
+void CL_BloodFilmClear(void);
+void CL_BloodFilmFrame(void);
+bool CL_BloodFilmOn(void);
+bool CL_BloodFilmDeposit(const vec3_t point, const vec3_t normal, float radius,
+                         int color, const color_t *rgba);
+const blood_film_t *CL_BloodFilmList(int *count);
+void CL_BloodFilmDrip(const vec3_t org, const vec3_t vel, float radius, int color, const color_t *rgba);
+void CL_BloodFilmDissolve(const vec3_t org, const vec3_t normal, float radius, int color, const color_t *rgba);
+
 typedef struct cdlight_s {
     int     key;        // so entities can reuse same entry
     vec3_t  color;

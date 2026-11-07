@@ -524,7 +524,7 @@ main()
 	position       = triangle.positions * bary;
 	vec2 tex_coord = triangle.tex_coords * bary;
 	vec3 geo_normal = normalize(triangle.normals * bary);
-	triangle.alpha = blood_hit_alpha(triangle, geo_normal);
+	triangle.alpha = blood_hit_alpha(triangle, geo_normal, bary);
 
 	vec3 flat_normal = normalize(cross(
 		triangle.positions[1] - triangle.positions[0],
@@ -827,8 +827,20 @@ main()
 	// position; on a model, lift it onto the smooth surface the vertex
 	// normals describe so they do not start inside the low-poly mesh. Depth
 	// and motion above were taken from the true hit.
+	//
+	// NEVER on a reflect/refract surface: reflect_refract.rgen starts its
+	// reflected and REFRACTED rays from this position, 1 mm past the surface.
+	// A brush model counts as a "model" here (instance_index != ~0u), and
+	// mgu2m1's water is one - func_water *12 - whose smoothed vertex normals
+	// lifted the point whole units above the flat water. The ray going into
+	// the water then hit the same surface again from above while already in
+	// MEDIUM_WATER, was taken as looking up from under water, and turned into
+	// total internal reflection at grazing angles: flat mirror blobs cut off by
+	// triangle edges, in both renderers and in photo mode, gone only at
+	// pt_reflect_refract 1 where that ray cannot see water (Matt, 2026-11-07).
 	vec3 shading_position = position;
-	if (global_ubo.pt_shadow_terminator != 0 && triangle.instance_index != ~0u)
+	if (global_ubo.pt_shadow_terminator != 0 && triangle.instance_index != ~0u
+	    && !IS_REFLECT_REFRACT_KIND(material_id))
 		shading_position = terminator_offset_position(triangle, bary, position, geo_normal);
 
 	imageStore(IMG_PT_GEO_NORMAL_A, ipos, uvec4(encode_normal(geo_normal)));

@@ -263,6 +263,11 @@ typedef struct {
 	uint16_t       faces;
 	uint16_t       dev_span;
 	bool           dev_pending;
+
+	// A film chunk's key instead of `sphere` - see FILM REGIONS.
+	bool           is_film;
+	uint8_t        film_part;   // which BLOOD_FILM_CHUNK_TRIS of the tile's triangles
+	blood_film_t   film;
 } blood_cache_entry_t;
 
 /*
@@ -292,7 +297,31 @@ went dead, the new one needs building" - which the machinery already handled.
 Below tess 3 there is no pool: U = 0 and region r is slot r, exactly as before.
 */
 #define BLOOD_ULTRA_MAX   64
-#define BLOOD_MAX_REGIONS (MAX_BLOOD_SPHERES + BLOOD_ULTRA_MAX)
+
+/*
+FILM REGIONS - surface blood (cl_blood_film), in CHUNKS of BLOOD_FILM_CHUNK_TRIS.
+
+    [ film chunk 0 .. F-1 ][ ultra 0 .. U-1 ][ normal slot 0 .. cl_blood_max-1 ]
+      BLOOD_FILM_CHUNK_TRIS   F = cl_blood_film_tris / BLOOD_FILM_CHUNK_TRIS
+
+At the FRONT, because the BLAS covers the section from its start to the highest
+region written. With the film in front, the droplet slots - thousands of them -
+are only covered up to the highest one in use, which with the film on is just the
+spray in the air; at the back, any tile would have dragged every slot into the
+build. F is 0 while cl_blood_film is off, and then every offset is what it was.
+
+A tile takes as many chunks as its triangles fill, the lowest free ones, and
+gives them all back whenever its triangles change - it is rewritten then anyway -
+so the film stays packed at the front however tiles come and go (FILM CHUNKS).
+It used to be one region of BLOOD_FILM_TILE_TRIS per tile slot: 192 tiles were a
+393K-primitive BLAS whatever they drew - typically 300-600 triangles a tile, the
+rest degenerate filler - and every rewrite cleared all 2048 (2026-11-07).
+
+A chunk is drawn straight from the client's triangles: the cache keys on the
+whole blood_film_t, whose `version` the client bumps whenever they change, and on
+which part of its triangles the chunk holds.
+*/
+#define BLOOD_MAX_REGIONS (MAX_BLOOD_FILM_CHUNKS + BLOOD_ULTRA_MAX + MAX_BLOOD_SPHERES)
 
 static blood_cache_entry_t blood_cache[BLOOD_MAX_REGIONS];
 
@@ -312,7 +341,12 @@ static struct {
 	int               cache_moves;      // droplets whose geometry was only TRANSLATED
 	uint32_t          stride;           // primitives reserved per droplet slot
 	uint32_t          ultra_stride;     // primitives per ultra region (0: no pool)
-	int               ultra_count;      // ultra regions at the front of the section
+	int               ultra_count;      // ultra regions, after the film's
+	int               film_count;       // film CHUNKS at the very front (0: film off)
+	int               film_tiles;       // tiles drawn this frame, for pt_blood_stats
+	int               film_tris;
+	int               film_chunks_used;
+	int               film_truncated;   // tiles not drawn whole: past BLOOD_FILM_TILE_TRIS, or out of chunks
 	bool              dirty_slot[BLOOD_MAX_REGIONS];  // regions rewritten this frame
 	uint32_t          last_prim_offset; // where the blood section sat last frame
 	bool              have_last_offset;
@@ -510,23 +544,81 @@ void vkpt_blood_blas_built(int frame_idx, uint32_t prim_offset, uint32_t prim_co
 		blood_blas.builds++;
 }
 
+// Regions are [film][ultra][slots] - see FILM REGIONS and ULTRA REGIONS.
 static inline uint32_t region_offset(int r)
 {
-	return r < blood.ultra_count
+	if (r < blood.film_count)
+		return (uint32_t)r * BLOOD_FILM_CHUNK_TRIS;
+
+	const uint32_t base = (uint32_t)blood.film_count * BLOOD_FILM_CHUNK_TRIS;
+	r -= blood.film_count;
+
+	return base + (r < blood.ultra_count
 		? (uint32_t)r * blood.ultra_stride
-		: (uint32_t)blood.ultra_count * blood.ultra_stride + (uint32_t)(r - blood.ultra_count) * blood.stride;
+		: (uint32_t)blood.ultra_count * blood.ultra_stride + (uint32_t)(r - blood.ultra_count) * blood.stride);
 }
 
 static inline uint32_t region_cap(int r)
 {
+	if (r < blood.film_count)
+		return BLOOD_FILM_CHUNK_TRIS;
+	r -= blood.film_count;
 	return r < blood.ultra_count ? blood.ultra_stride : blood.stride;
 }
 
 static inline int region_of_slot(int slot)
 {
 	if (blood.ultra_count && ultra_maps_ready && ultra_of_slot[slot] >= 0)
-		return ultra_of_slot[slot];
-	return blood.ultra_count + slot;
+		return blood.film_count + ultra_of_slot[slot];
+	return blood.film_count + blood.ultra_count + slot;
+}
+
+/*
+FILM CHUNKS - which chunks hold each client tile's triangles, part by part, and
+the blood_film_t they were given. Chunk c is region c (see FILM REGIONS).
+*/
+#define BLOOD_FILM_TILE_CHUNKS (BLOOD_FILM_TILE_TRIS / BLOOD_FILM_CHUNK_TRIS)
+
+static int16_t      film_chunk_of[MAX_BLOOD_FILM_TILES][BLOOD_FILM_TILE_CHUNKS];
+static uint8_t      film_num_chunks[MAX_BLOOD_FILM_TILES];
+static blood_film_t film_held[MAX_BLOOD_FILM_TILES];
+static bool         film_chunk_taken[MAX_BLOOD_FILM_CHUNKS];
+static int          film_chunk_low;     // no free chunk below this one
+
+static void reset_film_chunks(void)
+{
+	memset(film_num_chunks, 0, sizeof(film_num_chunks));
+	memset(film_held, 0, sizeof(film_held));
+	memset(film_chunk_taken, 0, sizeof(film_chunk_taken));
+	film_chunk_low = 0;
+}
+
+static void release_film_chunks(int slot)
+{
+	for (int p = 0; p < film_num_chunks[slot]; p++)
+	{
+		const int c = film_chunk_of[slot][p];
+		film_chunk_taken[c] = false;
+		if (c < film_chunk_low)
+			film_chunk_low = c;
+	}
+	film_num_chunks[slot] = 0;
+}
+
+// The lowest free chunk, or -1.
+static int take_film_chunk(void)
+{
+	for (int c = film_chunk_low; c < blood.film_count; c++)
+	{
+		if (!film_chunk_taken[c])
+		{
+			film_chunk_taken[c] = true;
+			film_chunk_low = c + 1;
+			return c;
+		}
+	}
+	film_chunk_low = blood.film_count;
+	return -1;
 }
 
 static void reset_ultra_maps(void)
@@ -909,8 +1001,28 @@ static int vkpt_blood_slot_capacity(void)
 The section layout - see ULTRA REGIONS. The ONE definition, shared by
 ensure_buffers and vkpt_blood_prim_count, which have to agree to the primitive.
 */
-static uint32_t blood_layout(int max_droplets, int* ultra_count, uint32_t* ultra_stride, uint32_t* stride)
+/*
+How many film CHUNKS the section carries - see FILM REGIONS. The client registers
+cl_blood_film_tris too and keeps its tiles within it, counting the same way.
+0 while the film is off: the layout is then exactly the old one.
+*/
+static int blood_film_capacity(void)
 {
+	const cvar_t* film = Cvar_FindVar("cl_blood_film");
+
+	if (!film || !film->integer)
+		return 0;
+
+	int tris = Cvar_Get("cl_blood_film_tris", BLOOD_FILM_TRIS_DEFAULT, CVAR_ARCHIVE)->integer;
+	tris = max(BLOOD_FILM_CHUNK_TRIS, min(tris, MAX_BLOOD_FILM_CHUNKS * BLOOD_FILM_CHUNK_TRIS));
+	return BLOOD_FILM_CHUNKS(tris);
+}
+
+static uint32_t blood_layout(int max_droplets, int* film_count, int* ultra_count,
+                             uint32_t* ultra_stride, uint32_t* stride)
+{
+	*film_count = blood_film_capacity();
+
 	const int subdiv = max(0, min(cvar_pt_blood_tess->integer, BLOOD_SPHERE_MAX_SUBDIV));
 	const int worst_faces = max(BLOOD_SPHERE_FACES(subdiv), BLOOD_PUDDLE_FACES(subdiv));
 
@@ -923,21 +1035,23 @@ static uint32_t blood_layout(int max_droplets, int* ultra_count, uint32_t* ultra
 	*stride = u ? (uint32_t)max(BLOOD_SPHERE_FACES(subdiv - 1), BLOOD_PUDDLE_FACES(subdiv - 1))
 	            : (uint32_t)worst_faces;
 
-	return (uint32_t)u * *ultra_stride + (uint32_t)max_droplets * *stride;
+	return (uint32_t)*film_count * BLOOD_FILM_CHUNK_TRIS
+	     + (uint32_t)u * *ultra_stride + (uint32_t)max_droplets * *stride;
 }
 
 static bool ensure_buffers(void)
 {
 	const int max_droplets = cvar_pt_blood_spheres->integer ? vkpt_blood_slot_capacity() : 1;
 
-	int ultra_count;
+	int film_count, ultra_count;
 	uint32_t ultra_stride, stride;
-	const uint32_t needed = blood_layout(max_droplets, &ultra_count, &ultra_stride, &stride);
+	const uint32_t needed = blood_layout(max_droplets, &film_count, &ultra_count, &ultra_stride, &stride);
 
 	// Exact compare, not >=: the point is to reallocate ONLY when the settings
 	// change, never in response to how much blood happens to be on screen.
 	if (blood.buffers_ready && blood.max_prims == needed
-		&& blood.stride == stride && blood.ultra_count == ultra_count && blood.ultra_stride == ultra_stride)
+		&& blood.stride == stride && blood.ultra_count == ultra_count && blood.ultra_stride == ultra_stride
+		&& blood.film_count == film_count)
 		return true;
 
 	release_buffers();
@@ -955,6 +1069,7 @@ static bool ensure_buffers(void)
 	blood.stride = stride;
 	blood.ultra_stride = ultra_stride;
 	blood.ultra_count = ultra_count;
+	blood.film_count = film_count;
 	blood.max_prims = needed;
 	reset_ultra_maps();
 	blood.buffers_ready = true;
@@ -964,8 +1079,9 @@ static bool ensure_buffers(void)
 	blood.epoch_reset = true;
 
 	// The shadow buffer is the cache's backing store, so a reallocation throws
-	// away everything it was vouching for.
+	// away everything it was vouching for - the film's chunks included.
 	memset(blood_cache, 0, sizeof(blood_cache));
+	reset_film_chunks();
 
 	return true;
 }
@@ -1125,9 +1241,9 @@ How many primitives this frame's droplets will need. Called before the buffers
 are sized, so it must not depend on anything allocated in ensure_buffers().
 ================
 */
-uint32_t vkpt_blood_prim_count(int num_spheres)
+uint32_t vkpt_blood_prim_count(int num_spheres, int num_films)
 {
-	if (!cvar_pt_blood_spheres || !cvar_pt_blood_spheres->integer || num_spheres <= 0)
+	if (!cvar_pt_blood_spheres || !cvar_pt_blood_spheres->integer || (num_spheres <= 0 && num_films <= 0))
 		return 0;
 
 	// THE WHOLE SLOT SPACE, not this frame's droplet count.
@@ -1144,14 +1260,14 @@ uint32_t vkpt_blood_prim_count(int num_spheres)
 	// The larger of the two meshes, because which one each droplet gets is not
 	// known until vkpt_blood_update picks it - and at tess 3, the ultra pool in
 	// front of the normal slots (blood_layout).
-	int ultra_count;
+	int film_count, ultra_count;
 	uint32_t ultra_stride, stride;
 
 	// The SLOT SPACE, which is cl_blood_max - not this frame's droplet count, and
 	// not MAX_BLOOD_SPHERES. Slots live as long as their droplet and are handed
 	// out lowest-first, so the highest occupied slot has nothing to do with how
 	// many are currently alive; and it must match what ensure_buffers allocated.
-	return blood_layout(vkpt_blood_slot_capacity(), &ultra_count, &ultra_stride, &stride);
+	return blood_layout(vkpt_blood_slot_capacity(), &film_count, &ultra_count, &ultra_stride, &stride);
 }
 
 // Face count for a droplet at a given LOD. A landed droplet is a puddle mesh and
@@ -1651,7 +1767,261 @@ uv2 is left at zero. If a future change ever gives blood a real texture, this is
 the thing that has to move first.
 ================
 */
-static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_spheres, bsp_t* bsp)
+/*
+The cluster a tile's triangles light from - see write_film_geometry. When the
+box around them, lifted off the surface, has all eight corners in one leaf, every
+triangle is in that leaf too (leaves are convex): most tiles, and eight lookups
+instead of one per triangle. Otherwise -2: each triangle looks its own up.
+*/
+static int film_tile_cluster(const blood_film_t* film, int faces, bsp_t* bsp)
+{
+	if (!bsp)
+		return -1;
+
+	vec3_t lo, hi;
+	ClearBounds(lo, hi);
+	for (int i = 0; i < faces * 3; i++)
+		AddPointToBounds(film->verts[i].pos, lo, hi);
+	VectorMA(lo, 0.25f, film->plane, lo);
+	VectorMA(hi, 0.25f, film->plane, hi);
+
+	const mleaf_t* first = NULL;
+	for (int i = 0; i < 8; i++)
+	{
+		const vec3_t corner = {
+			(i & 1) ? hi[0] : lo[0],
+			(i & 2) ? hi[1] : lo[1],
+			(i & 4) ? hi[2] : lo[2],
+		};
+		const mleaf_t* leaf = BSP_PointLeaf(bsp->nodes, corner);
+		if (!first)
+			first = leaf;
+		else if (leaf != first)
+			return -2;
+	}
+
+	return first->cluster;
+}
+
+/*
+================
+write_film_geometry
+
+The surface-blood tiles (cl_blood_film) into their chunks - see FILM REGIONS and
+FILM CHUNKS. The client has already built every triangle; this is the same
+per-primitive packing write_blood_geometry gives a LANDED splat, so the material,
+the translucency and the shadow handling are a splat's:
+
+  - normals: the plane's, with the depth per vertex in custom.w (uv2.x = 2);
+  - tangents: the surface plane, the material's thickness reference;
+  - no motion delta: a tile is world geometry and never translates.
+
+A chunk is rewritten only when its tile's blood_film_t changes - in practice its
+`version`.
+================
+*/
+static void write_film_geometry(const blood_film_t* films, int num_films, bsp_t* bsp,
+                                bool* slot_live, int* highest_slot)
+{
+	blood.film_tiles = 0;
+	blood.film_tris = 0;
+	blood.film_chunks_used = 0;
+	blood.film_truncated = 0;
+
+	if (!blood.film_count)
+		return;
+
+	static bool seen[MAX_BLOOD_FILM_TILES];
+	memset(seen, 0, sizeof(seen));
+
+	// Everything that is going goes first: the chunks of tiles that are gone, and
+	// of tiles whose triangles changed - those are rewritten anyway, so they may
+	// as well take the lowest free chunks again.
+	for (int k = 0; k < num_films; k++)
+	{
+		const blood_film_t* film = films + k;
+
+		if (film->slot < 0 || film->slot >= MAX_BLOOD_FILM_TILES || film->num_tris <= 0 || !film->verts)
+			continue;
+
+		seen[film->slot] = true;
+		if (film_num_chunks[film->slot] && memcmp(&film_held[film->slot], film, sizeof(*film)) != 0)
+			release_film_chunks(film->slot);
+	}
+
+	for (int slot = 0; slot < MAX_BLOOD_FILM_TILES; slot++)
+	{
+		if (!seen[slot] && film_num_chunks[slot])
+			release_film_chunks(slot);
+	}
+
+	for (int k = 0; k < num_films; k++)
+	{
+		const blood_film_t* film = films + k;
+
+		if (film->slot < 0 || film->slot >= MAX_BLOOD_FILM_TILES || film->num_tris <= 0 || !film->verts)
+			continue;
+
+		const int slot = film->slot;
+		const int faces = min(film->num_tris, BLOOD_FILM_TILE_TRIS);
+		const int need = BLOOD_FILM_CHUNKS(faces);
+
+		// Short of chunks (the client keeps within cl_blood_film_tris, so only
+		// for a frame), a tile draws what fits and tries for the rest next frame.
+		while (film_num_chunks[slot] < need)
+		{
+			const int c = take_film_chunk();
+			if (c < 0)
+				break;
+			film_chunk_of[slot][film_num_chunks[slot]++] = (int16_t)c;
+		}
+		film_held[slot] = *film;
+
+		const int have = film_num_chunks[slot];
+		if (have < need || film->num_tris > faces)
+			blood.film_truncated++;
+		if (!have)
+			continue;
+
+		const int drawn = min(faces, have * BLOOD_FILM_CHUNK_TRIS);
+		blood.film_tiles++;
+		blood.film_tris += drawn;
+		blood.film_chunks_used += have;
+
+		vec3_t color;
+		cast_u32_to_f32_color(film->color, &film->rgba, color, 1.0f);
+
+		const uint32_t plane_nrm = encode_normal(film->plane);
+		const float alpha = max(0.05f, min(cvar_pt_blood_splat_alpha->value, 1.f)) *
+		                    max(0.f, min(film->alpha, 1.f));
+		const uint32_t alpha_half = (uint32_t)floatToHalf(alpha);
+
+		// The light lists are per cluster, and a tile lies along walls and
+		// across doorways, so one cluster for every tile would light some of
+		// them from the wrong room - see film_tile_cluster.
+		bool have_cluster = false;
+		int tile_cluster = -1;
+
+		for (int part = 0; part < have; part++)
+		{
+			const int region = film_chunk_of[slot][part];  // film chunk c is region c
+			const uint32_t prim_index = region_offset(region);
+			const int first = part * BLOOD_FILM_CHUNK_TRIS;
+			const int count = min(BLOOD_FILM_CHUNK_TRIS, drawn - first);
+
+			slot_live[region] = true;
+			if (region > *highest_slot)
+				*highest_slot = region;
+
+			blood_cache_entry_t* cache = blood_cache + region;
+
+			if (cache->valid && cache->is_film && cache->film_part == part &&
+			    memcmp(&cache->film, film, sizeof(*film)) == 0)
+			{
+				blood.cache_hits++;
+				continue;
+			}
+
+			// What the chunk held before, for clearing what sticks out past
+			// the new triangles: everything beyond it is zero already.
+			const uint32_t held = cache->faces;
+
+			cache->valid = true;
+			cache->blanked = false;
+			cache->is_film = true;
+			cache->film_part = (uint8_t)part;
+			cache->film = *film;
+			cache->prim_offset = prim_index;
+			cache->level = 0;
+			cache->faces = (uint16_t)count;
+
+			blood.dirty_slot[region] = true;
+
+			if (!have_cluster)
+			{
+				tile_cluster = film_tile_cluster(film, faces, bsp);
+				have_cluster = true;
+			}
+
+			for (int f = 0; f < count; f++)
+			{
+				const uint32_t wi = prim_index + (uint32_t)f;
+				VboPrimitive* prim = blood.prim_shadow + wi;
+				float (*pos)[3] = blood.pos_shadow[wi];
+				const blood_film_vert_t* v = film->verts + (first + f) * 3;
+
+				VectorCopy(v[0].pos, pos[0]);
+				VectorCopy(v[1].pos, pos[1]);
+				VectorCopy(v[2].pos, pos[2]);
+				VectorCopy(pos[0], prim->pos0);
+				VectorCopy(pos[1], prim->pos1);
+				VectorCopy(pos[2], prim->pos2);
+
+				// Lifted off the surface so the point is in the open leaf the
+				// blood is actually in.
+				int cluster = tile_cluster;
+				if (cluster == -2)
+				{
+					vec3_t c;
+					VectorAdd(v[0].pos, v[1].pos, c);
+					VectorAdd(c, v[2].pos, c);
+					VectorScale(c, 1.f / 3.f, c);
+					VectorMA(c, 0.25f, film->plane, c);
+					cluster = BSP_PointLeaf(bsp->nodes, c)->cluster;
+				}
+
+				prim->material_id = MATERIAL_KIND_BLOOD;
+				prim->cluster = cluster;
+				prim->texture_flags = 0;
+
+				// The plane's normal, not one carrying the depth: every pass that
+				// treats the interpolated normal as the surface's - the sun's and
+				// the lights' horizon tests, ReSTIR's reuse, the see-through ray's
+				// second refraction, a secondary hit's facing flip - got a normal
+				// lying ALONG the floor at the outline, which is where the white rim
+				// was (2026-11-07). The depth rides in custom.w below instead.
+				prim->normals[0] = plane_nrm;
+				prim->normals[1] = plane_nrm;
+				prim->normals[2] = plane_nrm;
+				prim->tangents[0] = plane_nrm;
+				prim->tangents[1] = plane_nrm;
+				prim->tangents[2] = plane_nrm;
+
+				prim->instance = (uint32_t)blood.model_instance_index;
+				prim->emissive_and_alpha = 0x3c00u | (alpha_half << 16);
+
+				prim->uv0[0] = color[0];
+				prim->uv0[1] = color[1];
+				prim->uv1[0] = color[2];
+				prim->uv1[1] = film->seed;
+				prim->uv2[0] = 2.f;     // landed, and a film: shaded from the plane
+				prim->uv2[1] = 0.f;
+
+				// custom = half4(motion.xyz, w) per vertex. A film never moves, and
+				// w - unused by everything else - is its depth (Triangle.custom_w,
+				// blood_film_depth in path_tracer_rgen.h).
+				prim->custom0[0] = 0; prim->custom0[1] = (uint32_t)floatToHalf(v[0].depth) << 16;
+				prim->custom1[0] = 0; prim->custom1[1] = (uint32_t)floatToHalf(v[1].depth) << 16;
+				prim->custom2[0] = 0; prim->custom2[1] = (uint32_t)floatToHalf(v[2].depth) << 16;
+			}
+
+			// The rest of the chunk, as BLANK THE REST OF THE SLOT does for
+			// droplets - only as far as the old triangles reached. Clearing the
+			// whole region every time was ~300 KB per rewrite at the old size.
+			if (held > (uint32_t)count)
+			{
+				const uint32_t tail = prim_index + (uint32_t)count;
+				const uint32_t n = min(held, (uint32_t)BLOOD_FILM_CHUNK_TRIS) - (uint32_t)count;
+
+				memset(blood.prim_shadow + tail, 0, sizeof(VboPrimitive) * n);
+				memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * n);
+			}
+		}
+	}
+}
+
+static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_spheres,
+                                     const blood_film_t* films, int num_films, bsp_t* bsp)
 {
 	blood.sphere_count = 0;
 	blood.splat_count = 0;
@@ -1711,6 +2081,9 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 				blood_cache[i].valid = false;
 		}
 	}
+
+	// Surface blood first: its regions are the lowest - see FILM REGIONS.
+	write_film_geometry(films, num_films, bsp, slot_live, &highest_slot);
 
 	for (int s = 0; s < num_spheres; s++)
 	{
@@ -1850,6 +2223,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 		cache->valid = true;
 		cache->blanked = false;
+		cache->is_film = false;
 		cache->prim_offset = prim_index;
 		cache->level = level;
 		cache->sphere = *sphere;
@@ -1898,6 +2272,18 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			VectorScale(ax_t1, 1.f / (len_t1 * len_t1), inv_t1);
 			VectorScale(ax_t2, 1.f / (len_t2 * len_t2), inv_t2);
 			VectorScale(ax_n,  1.f / (len_n * len_n), inv_n);
+
+			// A CLOUD DISSOLVING INTO WATER is measured, not shaded, by its
+			// normals: blood_hit_alpha fades it by the same dot() the rim
+			// darkening reads. Steepened like a puddle's, that dot saturates in
+			// the outermost band and the cloud kept a hard outline as it faded.
+			// Scaled as if the dome were as tall as it is wide, the template's
+			// own hemisphere normals come through: dot falls 1 -> 0.7 -> 0 from
+			// the centre through the middle ring to the rim, a fade across the
+			// whole cloud. The cloud is shaded from its plane, so this changes
+			// nothing about how it is lit.
+			if (sphere->wobble > 0.f)
+				VectorScale(ax_n, 1.f / (len_n * sqrtf(len_t1 * len_t2)), inv_n);
 		}
 
 		/*
@@ -2027,6 +2413,18 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 				const float* tn = puddle_vert_nrm[vbase + v];
 				vec3_t nv;
+
+				// A cloud is seen from under the water as well, through its flat
+				// base - whose normals all point straight down and so measured it
+				// as solid to the rim: a hard disc from below. Give the base the
+				// dome's profile mirrored, so it fades out from the centre too.
+				vec3_t cloud_n;
+				if (sphere->wobble > 0.f && tn[2] < -0.5f)
+				{
+					VectorSet(cloud_n, t[0], t[1], -sqrtf(max(0.f, 1.f - t[0] * t[0] - t[1] * t[1])));
+					tn = cloud_n;
+				}
+
 				for (int a = 0; a < 3; a++)
 					nv[a] = inv_t1[a] * tn[0] + inv_t2[a] * tn[1] + inv_n[a] * tn[2];
 				VectorNormalize(nv);
@@ -2103,9 +2501,11 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			prim->uv1[0] = color[2];
 			prim->uv1[1] = sphere->seed;
 			// uv2.x: "this droplet has landed", read by get_material to freeze the
-			// animated surface ripple. uv2.y is still spare.
+			// animated surface ripple (2 is a film tile - write_film_geometry).
+			// uv2.y: 1 = dissolving into water, which blood_hit_alpha fades out
+			// to its rim and get_material draws without a dark edge or highlight.
 			prim->uv2[0] = is_splat ? 1.f : 0.f;
-			prim->uv2[1] = 0.f;
+			prim->uv2[1] = (is_splat && sphere->wobble > 0.f) ? 1.f : 0.f;
 
 			prim->custom0[0] = custom_xy;
 			prim->custom0[1] = custom_zw;
@@ -2194,6 +2594,8 @@ prim_offset. frame->prim_count is what the BLAS covers (0: no blood this frame).
 void vkpt_blood_prepare(
 	const blood_sphere_t* spheres,
 	int num_spheres,
+	const blood_film_t* films,
+	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
 	int model_instance_index,
@@ -2204,6 +2606,11 @@ void vkpt_blood_prepare(
 	frame->prim_offset = prim_offset;
 	blood.prim_count = 0;
 
+	if (num_spheres < 0 || !spheres)
+		num_spheres = 0;
+	if (num_films < 0 || !films)
+		num_films = 0;
+
 	// A negative instance index means prepare_entities ran out of ModelInstance
 	// slots. Every blood primitive names that instance, so there is nothing safe
 	// to draw - drop the frame's droplets rather than index the UBO array out of
@@ -2212,7 +2619,7 @@ void vkpt_blood_prepare(
 	// A frame that reserves nothing also ENDS THE EPOCH. The section's address is
 	// not tracked across a frame it does not occupy, and whatever the device
 	// holds for it belongs to a model by the time blood comes back.
-	if (num_spheres <= 0 || model_instance_index < 0 || !cvar_pt_blood_spheres->integer)
+	if ((num_spheres <= 0 && num_films <= 0) || model_instance_index < 0 || !cvar_pt_blood_spheres->integer)
 	{
 		blood.have_last_offset = false;
 		blood_blas_report(prim_offset, 0, true);
@@ -2236,7 +2643,10 @@ void vkpt_blood_prepare(
 	// around 80 MB of staging and shadow memory that a typical frame nowhere near
 	// uses. Growing to the high-water mark keeps the common case cheap without
 	// capping the uncommon one.
-	uint32_t needed = choose_lods(spheres, num_spheres, cam_pos);
+	// Surface blood alone still needs the section, with no droplet in the air.
+	uint32_t needed = num_spheres > 0 ? choose_lods(spheres, num_spheres, cam_pos) : 0;
+	for (int k = 0; k < num_films; k++)
+		needed += (uint32_t)max(0, films[k].num_tris);
 	if (needed == 0)
 	{
 		blood.have_last_offset = false;
@@ -2251,7 +2661,8 @@ void vkpt_blood_prepare(
 		return;
 	}
 
-	assign_ultra_regions(spheres, num_spheres);
+	if (num_spheres > 0)
+		assign_ultra_regions(spheres, num_spheres);
 
 	if (needed > blood.max_prims)
 	{
@@ -2264,7 +2675,7 @@ void vkpt_blood_prepare(
 	blood.model_instance_index = model_instance_index;
 
 	const uint64_t gen_t0 = Sys_Microseconds();
-	uint32_t prim_count = write_blood_geometry(spheres, num_spheres, bsp);
+	uint32_t prim_count = write_blood_geometry(spheres, num_spheres, films, num_films, bsp);
 	blood.last_gen_usec = Sys_Microseconds() - gen_t0;
 
 	if (prim_count == 0)
@@ -2323,7 +2734,8 @@ void vkpt_blood_prepare(
 	uint32_t slot_limit = 0;
 	{
 		const uint32_t limit = min(prim_count, blood.max_prims);
-		const uint32_t total = (uint32_t)blood.ultra_count + (uint32_t)vkpt_blood_slot_capacity();
+		const uint32_t total = (uint32_t)blood.film_count + (uint32_t)blood.ultra_count
+		                     + (uint32_t)vkpt_blood_slot_capacity();
 		while (slot_limit < total && slot_limit < BLOOD_MAX_REGIONS
 			&& region_offset((int)slot_limit) + region_cap((int)slot_limit) <= limit)
 			slot_limit++;
@@ -2482,6 +2894,10 @@ void vkpt_blood_print_stats(uint64_t copy_usec)
 			blood.last_gen_usec / 1000.f, copy_usec / 1000.f, blood.last_regions == 0 ? " (skipped)" : "",
 			(float)blood.last_up_bytes / (1024.f * 1024.f),
 			blood.last_regions, blood.last_epoch ? " EPOCH" : "", reuse);
+		if (blood.film_count)
+			Com_Printf("blood film: %d tiles, %d tris in %d / %d chunks%s\n",
+				blood.film_tiles, blood.film_tris, blood.film_chunks_used, blood.film_count,
+				blood.film_truncated ? va(", %d tiles TRUNCATED", blood.film_truncated) : "");
 		if (samples)
 			Com_Printf("blood gpu times: bvh update %.2f ms (worst %.2f), gpu frame %.2f ms (worst %.2f), %d frames\n",
 				bvh_sum / samples, bvh_max, frame_sum / samples, frame_max, samples);
@@ -2511,6 +2927,8 @@ void vkpt_blood_update(
 	VkCommandBuffer cmd_buf,
 	const blood_sphere_t* spheres,
 	int num_spheres,
+	const blood_film_t* films,
+	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
 	int model_instance_index,
@@ -2520,7 +2938,8 @@ void vkpt_blood_update(
 	*prim_count_out = 0;
 
 	vkpt_blood_frame_t frame;
-	vkpt_blood_prepare(spheres, num_spheres, bsp, cam_pos, model_instance_index, prim_offset, &frame);
+	vkpt_blood_prepare(spheres, num_spheres, films, num_films, bsp, cam_pos, model_instance_index,
+	                   prim_offset, &frame);
 	if (frame.prim_count == 0)
 		return;
 

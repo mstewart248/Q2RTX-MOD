@@ -327,14 +327,43 @@ Only while splats are translucent at all: at alpha 1 blood is FORCE_OPAQUE and
 in the shadow mask (see shadow_ray_cull_mask), and thinning the edge then would
 show the floor under it in the splat's own shadow.
 */
+/*
+A SURFACE BLOOD film (uv2.x 2, cl_blood_film) carries its depth per vertex in
+custom.w - 0 at its outline, 1 where it reads as a full pool - because its
+normals are the plane's (see write_film_geometry in blood.c).
+*/
 float
-blood_hit_alpha(Triangle t, vec3 geo_normal)
+blood_film_depth(Triangle t, vec3 bary)
 {
-	if (!is_blood(t.material_id) || t.tex_coords[2].x <= 0.5 || t.alpha >= 0.999
-	    || global_ubo.pt_blood_splat_alpha >= 0.999)
+	return clamp(dot(t.custom_w, bary), 0.0, 1.0);
+}
+
+float
+blood_hit_alpha(Triangle t, vec3 geo_normal, vec3 bary)
+{
+	if (!is_blood(t.material_id) || t.tex_coords[2].x <= 0.5)
 		return t.alpha;
 
-	float thickness = clamp(abs(dot(geo_normal, t.tangents[0])), 0.0, 1.0);
+	float thickness = (t.tex_coords[2].x > 1.5)
+		? blood_film_depth(t, bary)
+		: clamp(abs(dot(geo_normal, t.tangents[0])), 0.0, 1.0);
+
+	/*
+	BLOOD DISSOLVING INTO WATER HAS NO EDGE. uv2.y marks the cloud (see
+	write_blood_geometry). Its dome normals are NOT steepened by the flatten, so
+	the measured thickness falls from 1 at the centre to 0 at the rim across the
+	whole cloud instead of in a thin outer band, and the cloud's coverage follows
+	it all the way to nothing. Before this a cloud was drawn as a splat: a dark
+	outline at near-full alpha, which is the hard edge Matt saw on every cloud
+	(2026-11-06). Regardless of pt_blood_splat_alpha - a cloud is always see-
+	through, its alpha already carries the fade.
+	*/
+	if (t.tex_coords[2].y > 0.5)
+		return t.alpha * smoothstep(0.0, 1.0, thickness);
+
+	if (t.alpha >= 0.999 || global_ubo.pt_blood_splat_alpha >= 0.999)
+		return t.alpha;
+
 	thickness = pow(thickness, max(0.01, global_ubo.pt_blood_thin_power));
 	return t.alpha * mix(clamp(global_ubo.pt_blood_edge_alpha, 0.0, 1.0), 1.0, thickness);
 }
@@ -1502,6 +1531,15 @@ get_material(
 		                        triangle.tex_coords[1].x), vec3(0), vec3(1));
 		// uv2.x carries "this droplet has landed" - see write_blood_geometry.
 		bool blood_landed = triangle.tex_coords[2].x > 0.5;
+		// uv2.x 2 = a tile of SURFACE BLOOD (cl_blood_film): flat, with the plane's
+		// normals and its depth per vertex (blood_film_depth) - see film_mesh in
+		// src/client/blood_film.c. uv2.y 1 = a cloud dissolving into water, flat
+		// too: shaded from the surface plane, not from the normals that measure it.
+		bool blood_film = triangle.tex_coords[2].x > 1.5;
+		bool blood_cloud = triangle.tex_coords[2].y > 0.5;
+		vec3 blood_plane_n = triangle.tangents[0];
+		if (dot(blood_plane_n, ray_direction) > 0)
+			blood_plane_n = -blood_plane_n;
 
 		/*
 		pt_blood_spec_aa - WHAT ONE PIXEL OF BLOOD ACTUALLY SEES.
@@ -1523,7 +1561,7 @@ get_material(
 		float spec_aa = max(global_ubo.pt_blood_spec_aa, 0.0);
 		float ripple_lod = 0.0;
 		float geo_slope_var = 0.0;
-		if (spec_aa > 0.0)
+		if (spec_aa > 0.0 && !blood_film && !blood_cloud)
 		{
 			float curvature = 0.0;
 			for (int i = 0; i < 3; i++)
@@ -1549,8 +1587,30 @@ get_material(
 			geo_slope_var = square(curvature * footprint) * (1.0 + 1.0 / square(cos_view)) / 12.0;
 		}
 
-		float ripple_slope_var;
-		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y, blood_landed, ripple_lod, ripple_slope_var);
+		float ripple_slope_var = 0.0;
+		if (blood_film)
+		{
+			// Ripple fixed in the surface plane and fetched at the mip the pixel
+			// covers, ALWAYS - a pool can fill the screen or be a speck, and the
+			// mip-0 sparkle pt_blood_spec_aa exists for would be far worse on it.
+			vec3 film_pos = triangle.positions * bary;
+			float pixel_angle = 2.0 / (abs(global_ubo.P[1][1]) * float(global_ubo.height));
+			float cos_view = max(abs(dot(ray_direction, blood_plane_n)), 0.2);
+			float footprint = pixel_angle * length(film_pos - global_ubo.cam_pos.xyz) / cos_view;
+			float scale = global_ubo.pt_blood_normal_scale * BLOOD_FILM_RIPPLE_SCALE;
+			float texels = float(global_textureSize(global_ubo.water_normal_texture, 0).x)
+			             * scale * BLOOD_FILM_RIPPLE_SPREAD * footprint;
+			float film_lod = max(0.0, log2(max(texels, 1e-6)));
+			normal = get_blood_film_normal(blood_plane_n, film_pos, triangle.tex_coords[1].y,
+			                               scale, film_lod, ripple_slope_var);
+		}
+		else if (blood_cloud)
+		{
+			// Under the water surface: no ripple of its own and no rim to light.
+			normal = blood_plane_n;
+		}
+		else
+			normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y, blood_landed, ripple_lod, ripple_slope_var);
 
 		/*
 		A LANDED SPLAT IS A FILM, NOT A BEAD, AND IT IS THE ONE THAT MUST GO DARK.
@@ -1576,8 +1636,15 @@ get_material(
 		*/
 		if (blood_landed)
 		{
-			float thickness = clamp(dot(geo_normal, triangle.tangents[0]), 0.0, 1.0);
+			float thickness = blood_film
+				? blood_film_depth(triangle, bary)
+				: clamp(dot(geo_normal, triangle.tangents[0]), 0.0, 1.0);
 			thickness = pow(thickness, max(0.01, global_ubo.pt_blood_thin_power));
+
+			// A cloud in water thins out to NOTHING (blood_hit_alpha) - it has no
+			// dark rim, which was the outline that stayed visible as it faded.
+			if (blood_cloud)
+				thickness = 1.0;
 
 			base_color *= mix(global_ubo.pt_blood_thin_dark,
 			                  global_ubo.pt_blood_splat_dark,
@@ -1605,12 +1672,21 @@ get_material(
 		The film there is thinnest, so fade its specular and tip its normal back
 		to the floor's over the same band the darkening uses.
 		*/
-		if (blood_landed)
+		if (blood_cloud)
+		{
+			// Seen through the water, never on top of it: the surface above
+			// carries the highlight, and one of its own read as a sheet of film
+			// floating in the water.
+			specular_factor = 0.0;
+		}
+		else if (blood_landed)
 		{
 			vec3 plane_n = triangle.tangents[0];
 			if (dot(plane_n, geo_normal) < 0)
 				plane_n = -plane_n;
-			float thickness = clamp(dot(geo_normal, plane_n), 0.0, 1.0);
+			float thickness = blood_film
+				? blood_film_depth(triangle, bary)
+				: clamp(dot(geo_normal, plane_n), 0.0, 1.0);
 			thickness = pow(thickness, max(0.01, global_ubo.pt_blood_thin_power));
 
 			normal = normalize(mix(plane_n, normal, thickness));

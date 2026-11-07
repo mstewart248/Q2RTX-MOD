@@ -1798,11 +1798,16 @@ void FX_Init(void)
     // always the blood you keep.
     cl_blood_permanent = Cvar_Get("g_no_janitor", "1", CVAR_ARCHIVE);
     cl_blood_stats = Cvar_Get("cl_blood_stats", "0", 0);
+
+    // Surface blood (cl_blood_film) - after the cvars above, which it reads.
+    CL_BloodFilmInit();
 }
 
 static void CL_ClearParticles(void)
 {
     int     i;
+
+    CL_BloodFilmClear();
 
     free_particles = &particles[0];
     active_particles = NULL;
@@ -2300,13 +2305,17 @@ ent is the entity the landing droplet hit, or -1 for the world, and it has to
 match the splat being merged into. Two splats a few units apart right now are not
 a few units apart once one of them rides a door away, so merging across that
 boundary would put the combined blood on whichever surface won.
+
+CL_BloodPoolIntoSplat returns the splat that took the blood, for the one caller
+that has to do something to the pool afterwards - CL_BloodDrainToPool, which
+keeps the pool growing away from the wall that is feeding it.
 ===============
 */
-static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t normal,
-                            int ent, float give)
+static cparticle_t *CL_BloodPoolIntoSplat(cparticle_t *p, const vec3_t point,
+                                          const vec3_t normal, int ent, float give)
 {
     if (!cl_blood_pool->integer)
-        return false;
+        return NULL;
 
     // HOW MUCH BLOOD IS BEING HANDED OVER, as a radius. Zero means "all of p",
     // which is the whole-splat merge every original caller wants and the one
@@ -2373,11 +2382,20 @@ static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t no
         // given width. The early ones still grow it visibly; the hundredth one
         // barely moves it.
         const float gain = max(0.f, min(cl_blood_pool_gain->value, 1.f));
+        const float area_before = other->radius * other->radius;
 
         other->radius = sqrtf(other->radius * other->radius +
                               gain * donor * donor);
         if (other->radius > max_radius)
             other->radius = max_radius;
+
+        // INTO A MARK THAT IS DRAINING AT THE FOOT OF A WALL. Its radius is
+        // recomputed from blood_drain_total at every delivery, so growing it here
+        // alone was overwritten one quantum later - the run that caught up with
+        // it simply vanished. Counted into what it owes the floor instead, so a
+        // second run arriving at the same foot ends up in the same pool.
+        if (other->blood_arrived)
+            other->blood_drain_total += other->radius * other->radius - area_before;
 
         // IT IS A BIGGER POOL NOW, so it may be longer than that size is allowed
         // to be - see CL_BloodStretchLimit. Applied here rather than left to the
@@ -2413,10 +2431,16 @@ static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t no
         blood_pools++;
         CL_BloodPoolSound(point);
 
-        return true;
+        return other;
     }
 
-    return false;
+    return NULL;
+}
+
+static bool CL_BloodPoolInto(cparticle_t *p, const vec3_t point, const vec3_t normal,
+                             int ent, float give)
+{
+    return CL_BloodPoolIntoSplat(p, point, normal, ent, give) != NULL;
 }
 
 /*
@@ -3797,6 +3821,14 @@ static bool CL_BloodSpreadAlongWall(cparticle_t *p)
     if (!p->blood_block || p->blood_wall_spread)
         return false;
 
+    // GROUND ONLY. To a mark on a WALL the floor at its foot is the obstruction,
+    // so this widened it sideways along the skirting - a pool lying on the wall,
+    // which is the thing Matt never asked for. Blood at the foot of a wall goes
+    // onto the floor (CL_BloodDrainToPool); what is left on the wall stays a
+    // stain. Same "ground a pool would stay on" line CL_BloodArriveAtFloor uses.
+    if (p->blood_normal[2] < 0.7f)
+        return false;
+
     const float gain = cl_blood_wall_spread->value;
 
     if (gain <= 1.f)
@@ -4013,14 +4045,14 @@ CL_BloodPoolInto already plays it under its own spacing rule.
 WORLD SURFACES ONLY - see CL_BloodArriveAtFloor for why.
 ===============
 */
-static void CL_BloodSpawnMark(const cparticle_t *from, const vec3_t org,
-                              const vec3_t normal, float radius,
-                              const vec3_t tangent, float stretch)
+static cparticle_t *CL_BloodSpawnMark(const cparticle_t *from, const vec3_t org,
+                                      const vec3_t normal, float radius,
+                                      const vec3_t tangent, float stretch)
 {
     cparticle_t *seed = CL_AllocParticle();
 
     if (!seed)
-        return;
+        return NULL;
 
     seed->particleType = from->particleType;
     VectorCopy(org, seed->org);
@@ -4036,7 +4068,7 @@ static void CL_BloodSpawnMark(const cparticle_t *from, const vec3_t org,
     CL_MakeBloodSphere(seed, 1.0f);
 
     if (!seed->is_blood_sphere)
-        return;             // over budget; CL_MakeBloodSphere has retired it
+        return NULL;        // over budget; CL_MakeBloodSphere has retired it
 
     // Sized by what was handed over rather than by CL_MakeBloodSphere's own
     // random droplet radius. This IS that blood, not another droplet.
@@ -4079,6 +4111,8 @@ static void CL_BloodSpawnMark(const cparticle_t *from, const vec3_t org,
     seed->alphavel = cl_blood_permanent->integer
         ? 0.0f
         : -1.0f / max(0.1f, cl_blood_splat_life->value);
+
+    return seed;
 }
 
 
@@ -4258,6 +4292,104 @@ static bool CL_BloodArriveAtFloor(cparticle_t *p)
 
 /*
 ===============
+CL_BloodGrowFromWall
+
+Keeps a pool that a wall is draining into with its near rim at the foot of that
+wall, so it grows OUT ACROSS THE FLOOR instead of around a fixed centre.
+
+Matt: "I wanted the blood when it got to the bottom of the wall start to pool up
+on the floor away from the wall as it got larger."  A merge widens a pool about
+its own centre, and the centre of a pool fed from a wall is only a unit or two
+out from it - so half of every delivery's growth went back INTO the wall, where
+the rim clip cut it off and CL_BloodSpreadAlongWall turned it sideways.  Blood
+coming down a wall reaches the corner and spreads out from there; the side
+against the wall stays where it is.
+
+So the centre moves instead: out along the wall's normal laid into the floor's
+plane, by however far the rim now reaches past the wall.  Measured with the
+splat's drawn axes (CL_BloodSplatAxes), so an elongated pool is judged by the
+outline that is actually drawn rather than by its radius.
+
+`seat` is for a pool the drain has just created: that one is also pulled IN to
+the wall, so a new puddle starts at the corner rather than wherever the run's own
+width put the feed point.  An existing pool is only ever pushed away - a merge
+into one already lying further out must not drag it back to the wall.
+
+Re-snapped to the floor after the move.  If there is no floor there it is left in
+the plane, and the rim probe this re-queues decides - through the overhang code
+that already exists - whether it goes over the edge.
+===============
+*/
+// Left between the rim and the wall. The rim clip trims whatever the outline's
+// wobble still pushes past it, so this only has to keep the CENTRE honest.
+#define BLOOD_WALL_GAP      0.25f
+// Smaller moves are not worth a mesh rebuild and a rim probe.
+#define BLOOD_WALL_NUDGE    0.05f
+
+static void CL_BloodGrowFromWall(cparticle_t *pool, const vec3_t wall_org,
+                                 const vec3_t wall_normal, bool seat)
+{
+    vec3_t out, t1, t2, delta, org, start, end;
+    trace_t tr;
+
+    // Straight out from the wall, across the floor.
+    VectorMA(wall_normal, -DotProduct(wall_normal, pool->blood_normal),
+             pool->blood_normal, out);
+
+    if (VectorNormalize(out) < 0.1f)
+        return;             // the "wall" is parallel to the floor
+
+    // How far the centre gets from the wall's plane per unit moved along `out`.
+    const float rate = DotProduct(out, wall_normal);
+
+    if (rate < 0.1f)
+        return;
+
+    // How far the drawn outline reaches toward the wall: the support of the
+    // ellipse along `out`, from its two semi-axis vectors.
+    CL_BloodSplatAxes(pool, t1, t2);
+    const float a = DotProduct(t1, out);
+    const float b = DotProduct(t2, out);
+    const float reach = sqrtf(a * a + b * b);
+
+    VectorSubtract(pool->org, wall_org, delta);
+    const float dist = DotProduct(delta, wall_normal) / rate;
+
+    float move = reach + BLOOD_WALL_GAP - dist;
+
+    if (!seat && move < 0.f)
+        move = 0.f;
+
+    if (fabsf(move) < BLOOD_WALL_NUDGE)
+        return;
+
+    VectorMA(pool->org, move, out, org);
+
+    // Back down onto the floor, which need not be flat under the new centre.
+    VectorMA(org, 2.0f, pool->blood_normal, start);
+    VectorMA(org, -4.0f, pool->blood_normal, end);
+
+    blood_traces++;
+    tr = CL_TracePoint(start, end, MASK_SOLID, false);
+
+    if (!tr.startsolid && !tr.allsolid && tr.fraction < 1.0f &&
+        DotProduct(tr.plane.normal, pool->blood_normal) > 0.9f &&
+        !CL_TraceHitEntity(&tr)) {
+        VectorCopy(tr.plane.normal, pool->blood_normal);
+        VectorMA(tr.endpos, BLOOD_SURFACE_OFFSET, pool->blood_normal, org);
+    }
+
+    VectorCopy(org, pool->org);
+
+    // It is somewhere new, so what the rim probe measured describes ground it is
+    // no longer on - the same reset a change of plane gets.
+    pool->blood_rim = BLOOD_RIM_FULL;
+    pool->blood_block = 0;
+    pool->blood_rim_dirty = true;
+}
+
+/*
+===============
 CL_BloodDrainToPool
 
 Delivers a stopped run's blood to the pool at its foot, a share at a time.
@@ -4281,6 +4413,13 @@ static bool CL_BloodDrainToPool(cparticle_t *p, float dt)
     const float total = max(1e-4f, p->blood_drain_total);
     const float span = max(0.05f, cl_blood_drain->value);
 
+    // THE CLOCK. Set by CL_BloodArriveAtFloor and, until 11-06, never run down:
+    // `want` below stayed at zero, nothing was ever delivered and the run never
+    // finished arriving. It sat at the foot of the wall for good, relaxed into a
+    // round blob, and every later run down that wall merged into it - Matt's
+    // "blood will sometimes pool on walls at the bottom".
+    p->blood_drain = max(0.f, p->blood_drain - dt);
+
     // WHAT STAYS ON THE WALL. Draining a mark to nothing puts the pool at the
     // foot exactly right and leaves the wall above it bare - the opposite end of
     // the bug, and identical to look at. A run ends against the floor; it does
@@ -4300,10 +4439,24 @@ static bool CL_BloodDrainToPool(cparticle_t *p, float dt)
 
     if (owed > 0.f && (owed >= quantum || p->blood_drain <= 0.f)) {
         const float give = sqrtf(owed);
+        bool seat = false;
+        cparticle_t *pool = CL_BloodPoolIntoSplat(p, p->blood_feed_org,
+                                                  p->blood_feed_normal, -1, give);
 
-        if (!CL_BloodPoolInto(p, p->blood_feed_org, p->blood_feed_normal, -1, give))
-            CL_BloodSpawnMark(p, p->blood_feed_org, p->blood_feed_normal,
-                              give, NULL, 1.f);
+        if (!pool) {
+            pool = CL_BloodSpawnMark(p, p->blood_feed_org, p->blood_feed_normal,
+                                     give, NULL, 1.f);
+            seat = true;
+        }
+
+        // The pool grows OUT from the foot of the wall - see CL_BloodGrowFromWall
+        // - and the next delivery is aimed at where it now is, so it keeps finding
+        // the same pool however far that has spread.
+        if (pool) {
+            CL_BloodGrowFromWall(pool, p->org, p->blood_normal, seat);
+            VectorCopy(pool->org, p->blood_feed_org);
+            VectorCopy(pool->blood_normal, p->blood_feed_normal);
+        }
 
         p->blood_drain_done += owed;
 
@@ -5076,6 +5229,12 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
             return false;
         }
 
+        // SURFACE BLOOD (cl_blood_film): a landing on the world goes into the
+        // film and the droplet is done - see blood_film.c. Brush models, bodies
+        // and ceilings keep the splat path.
+        if (!hit && CL_BloodFilmDeposit(hit_point, hit_normal, p->radius, p->color, &p->rgba))
+            return true;
+
         if (CL_BloodPoolInto(p, hit_point, hit_normal,
                              hit ? (int)(hit - cl_entities) : -1, 0.f))
             return true;
@@ -5251,6 +5410,82 @@ void CL_MakeBloodSphere(cparticle_t *p, float scale)
     p->radius = cl_blood_sphere_radius->value * scale * (0.7f + frand() * 0.6f);
     p->seed = frand() * 64.f;
     VectorCopy(p->org, p->prev_org);
+}
+
+/*
+===============
+CL_BloodFilmDrip / CL_BloodFilmDissolve
+
+Blood LEAVING the surface film (cl_blood_film, blood_film.c) becomes a droplet
+again. Over an edge it is an ordinary airborne droplet, so the flight code lands
+it wherever it lands - usually back into the film below the ledge. Into water it
+becomes a dissolving cloud, exactly as a droplet landing there does: placed under
+the surface when one can be found above it, else where it is.
+===============
+*/
+static cparticle_t *CL_BloodFilmParticle(const vec3_t org, float radius, int color, const color_t *rgba)
+{
+    cparticle_t *p = CL_AllocParticle();
+
+    if (!p)
+        return NULL;
+
+    p->time = cl.time;
+    p->color = color;
+    if (rgba)
+        p->rgba = *rgba;
+    p->brightness = cl_ludicrous_gibs->integer ? 10.0f : 0.5f;
+    VectorCopy(org, p->org);
+    VectorClear(p->vel);
+    VectorSet(p->accel, 0, 0, -PARTICLE_GRAVITY);
+    p->alpha = 1.0f;
+    p->alphavel = 0.0f;
+
+    CL_MakeBloodSphere(p, radius / max(0.01f, cl_blood_sphere_radius->value));
+    if (!p->is_blood_sphere)
+        return NULL;    // over budget: CL_MakeBloodSphere already retired it
+
+    p->radius = radius;
+    return p;
+}
+
+void CL_BloodFilmDrip(const vec3_t org, const vec3_t vel, float radius, int color, const color_t *rgba)
+{
+    cparticle_t *p = CL_BloodFilmParticle(org, radius, color, rgba);
+
+    if (p)
+        VectorCopy(vel, p->vel);
+}
+
+void CL_BloodFilmDissolve(const vec3_t org, const vec3_t normal, float radius, int color, const color_t *rgba)
+{
+    cparticle_t *p = CL_BloodFilmParticle(org, radius, color, rgba);
+    const int liquid = CL_BloodLiquidMask();
+
+    if (!p)
+        return;
+
+    // Lava takes it outright, as it takes a droplet.
+    if (CL_BloodBurnUp(p, CM_PointContents(org, cl.bsp->nodes) & liquid)) {
+        p->alpha = 0.0f;
+        return;
+    }
+
+    // Look for the surface above, so the cloud hangs where a droplet's would.
+    vec3_t start;
+    VectorCopy(org, start);
+    start[2] += 16.f;
+
+    if (liquid && !(CM_PointContents(start, cl.bsp->nodes) & (liquid | MASK_SOLID))) {
+        trace_t tr = CL_TracePoint(start, org, MASK_SOLID | liquid, false);
+
+        if (!tr.startsolid && tr.fraction < 1.0f && (tr.contents & liquid)) {
+            CL_BloodDissolve(p, tr.endpos, tr.plane.normal, max(0.f, cl_blood_water_depth->value));
+            return;
+        }
+    }
+
+    CL_BloodDissolve(p, org, normal, 0.f);
 }
 
 void CL_BloodParticleEffect(const vec3_t org, const vec3_t dir, int color, int count)
@@ -7064,6 +7299,10 @@ void CL_AddParticles(void)
             blood_pool_acc = 0;
         }
     }
+
+    // Surface blood: step the flow and mesh what changed, after this frame's
+    // landings went into it above.
+    CL_BloodFilmFrame();
 }
 
 

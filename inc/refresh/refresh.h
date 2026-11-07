@@ -282,6 +282,60 @@ typedef struct blood_sphere_s {
     float   wobble;
 } blood_sphere_t;
 
+/*
+SURFACE BLOOD (cl_blood_film) - blood that has landed on the world, simulated by
+the client as a thickness field on each surface (src/client/blood_film.c) and
+handed over as one ready-made triangle list per TILE of that field.
+
+The renderer draws a tile with the landed-splat material, so everything the
+material reads has to be here: positions and the blood's DEPTH per vertex (0 at
+the outline, 1 where it reads as a full pool - see cl_blood_film_full), and the
+surface plane. A splat's material measures its thickness from its dome normals;
+a film is flat, so it hands the depth over directly and its normals are the
+plane's (write_film_geometry puts the depth in the spare half of each vertex's
+custom field).
+
+`slot` is stable for the tile's whole life; `version` changes whenever the
+triangles do, which is what the renderer caches on. The renderer stores a tile in
+as many CHUNKS of BLOOD_FILM_CHUNK_TRIS as it fills, out of cl_blood_film_tris
+worth - the client keeps its tiles within that, counting the same way
+(BLOOD_FILM_CHUNKS). Both renderers take these through blood.c, so neither
+backend has any film-specific code.
+*/
+#define MAX_BLOOD_FILM_TILES    1024
+// Triangles a tile may hand over. A 16x16-cell tile is 2 triangles per cell
+// of full pool and, at cl_blood_film_detail 2, up to 16 where the outline crosses
+// a cell - a typical tile lands between 300 and 1200. The rare tile past this cap
+// is meshed coarser or truncated (cl_blood_film_stats counts both).
+#define BLOOD_FILM_TILE_TRIS    2048
+
+// The renderer's unit of film storage, and how many a tile of n triangles takes.
+#define BLOOD_FILM_CHUNK_TRIS   256
+#define BLOOD_FILM_CHUNKS(n)    (((n) + BLOOD_FILM_CHUNK_TRIS - 1) / BLOOD_FILM_CHUNK_TRIS)
+#define MAX_BLOOD_FILM_CHUNKS   4096
+
+// cl_blood_film_tris: film triangles the blood section holds, all tiles together.
+// 256K is ~45 MB of primitives (and as much again on the GPU), and holds about
+// 450 typical tiles. Both sides register it, so both need the default.
+#define BLOOD_FILM_TRIS_DEFAULT "262144"
+
+typedef struct {
+    vec3_t  pos;
+    float   depth;      // 0 at the outline .. 1 full pool
+} blood_film_vert_t;
+
+typedef struct blood_film_s {
+    int                      slot;      // 0 .. MAX_BLOOD_FILM_TILES-1
+    uint32_t                 version;   // bumped whenever verts change
+    int                      num_tris;
+    const blood_film_vert_t  *verts;    // 3 * num_tris
+    vec3_t                   plane;     // the surface's normal
+    int                      color;     // as blood_sphere_t
+    color_t                  rgba;
+    float                    alpha;     // multiplies pt_blood_splat_alpha
+    float                    seed;      // ripple phase
+} blood_film_t;
+
 // The rim encoding, shared because the client measures it and the renderer
 // consumes it. Eight directions around the splat, each a reach in TENTHS of the
 // nominal rim radius - so 10 is exactly the rim, 15 covers the outward lobes
@@ -423,6 +477,9 @@ typedef struct refdef_s {
 
     int             num_blood_spheres;
     blood_sphere_t  *blood_spheres;
+
+    int                 num_blood_films;    // cl_blood_film - see blood_film_t
+    const blood_film_t  *blood_films;
 
     int         decal_beg;
     int         decal_end;

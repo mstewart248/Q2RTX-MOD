@@ -177,6 +177,29 @@ STATIC BOOL CALLBACK enum_modules_callback(
 
 #define CRASH_TITLE PRODUCT " Unhandled Exception"
 
+/*
+THE WAY OUT MUST NOT HANG. The filter runs on the thread that faulted, and
+finalize's Com_Quit is a clean quit run FROM that thread: it shuts the renderer
+and the sound down, which wait on locks and threads the faulted thread may itself
+be holding or be. 2026-11-06 (CrashReport13): ray traced sound faulted on the
+steam-audio-sim thread inside snd_run, holding snd_lock. The quit then ran on that
+thread: the sound shutdown joins the sim thread (itself) and d3d12_sound_shutdown
+takes snd_lock (its own) - either waits forever. VID_Shutdown had already taken
+the window, so what was left was an invisible q2rtx.exe holding ~15 GB, its VRAM
+included, and the next run crawled at 1 fps beside it. So the quit gets a
+deadline: a thread that ends the process outright if it is still here
+CRASH_EXIT_MS later.
+*/
+#define CRASH_EXIT_MS   5000
+
+static DWORD WINAPI crash_exit_watchdog(LPVOID unused)
+{
+    (void)unused;
+    Sleep(CRASH_EXIT_MS);
+    TerminateProcess(GetCurrentProcess(), 1);
+    return 0;
+}
+
 // be careful to avoid using any non-trivial C runtime functions here!
 // C runtime structures may be already corrupted and unusable at this point.
 LONG WINAPI Sys_ExceptionFilter(LPEXCEPTION_POINTERS exceptionInfo)
@@ -523,6 +546,13 @@ finalize:
     // report - the player said no, or dbghelp/version/shell32 would not load -
     // and the shutdown that follows is byte-for-byte a clean quit. A fault that
     // produced no report was indistinguishable from typing "quit".
+    {
+        // see crash_exit_watchdog
+        HANDLE watchdog = CreateThread(NULL, 0, crash_exit_watchdog, NULL, 0, NULL);
+        if (watchdog)
+            CloseHandle(watchdog);
+    }
+
     Com_Quit("unhandled exception", ERR_FATAL);
 
     return EXCEPTION_EXECUTE_HANDLER;

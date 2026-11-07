@@ -99,6 +99,42 @@ Toksvig-from-length (AdjustRoughnessToksvig) cannot see this loss at all.
 */
 #define BLOOD_RIPPLE_SLOPE_VAR 0.0036
 
+/*
+The ripple on SURFACE BLOOD (cl_blood_film). A film tile is flat and its normals
+carry how DEEP the blood is, not its shape (film_mesh, src/client/blood_film.c),
+so get_blood_normal's trick - index by the geometric normal - would read one
+texel over a whole pool. Index by the position in the surface plane instead, as
+get_water_normal does, at pt_blood_normal_scale * BLOOD_FILM_RIPPLE_SCALE tiles
+per world unit: features a few units across, a little uneven, never animated.
+Two fetches, the second rotated and BLOOD_FILM_RIPPLE_SPREAD finer, so the
+tiling does not show across a large pool. `lod` from the caller's footprint.
+*/
+#define BLOOD_FILM_RIPPLE_SCALE  0.12
+#define BLOOD_FILM_RIPPLE_SPREAD 1.37
+
+vec3 get_blood_film_normal(vec3 plane_n, vec3 position, float seed, float scale, float lod,
+                           out float lost_slope_var)
+{
+	// Column 1 is the normal (see get_blood_normal); 0 and 2 span the plane.
+	mat3 basis = construct_ONB_frisvad(plane_n);
+	vec2 p = vec2(dot(position, basis[0]), dot(position, basis[2]));
+
+	vec2 uv1 = p * scale + vec2(seed);
+	vec2 uv2 = mat2(0.8, 0.6, -0.6, 0.8) * p * (scale * BLOOD_FILM_RIPPLE_SPREAD) + vec2(seed * 1.7);
+
+	vec2 a = global_textureLod(global_ubo.water_normal_texture, uv1, lod).xy * 2 - vec2(1);
+	vec2 b = global_textureLod(global_ubo.water_normal_texture, uv2, lod).xy * 2 - vec2(1);
+
+	float strength = global_ubo.pt_blood_normal_strength * 0.7;
+	vec2 perturb = (a + b) * strength;
+
+	float lost_share = (lod > 0.0) ? 1.0 - exp(-(lod * 0.25) * (lod * 0.25)) : 0.0;
+	lost_slope_var = 2.0 * strength * strength * BLOOD_RIPPLE_SLOPE_VAR * lost_share;
+
+	vec3 n = normalize(vec3(perturb.x, 1.0, perturb.y));
+	return normalize(basis * n);
+}
+
 vec3 get_blood_normal(vec3 geo_normal, float seed, bool frozen, float lod, out float lost_slope_var)
 {
 	// A droplet in flight has a live surface - it is a falling bead of liquid,

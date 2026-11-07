@@ -422,6 +422,10 @@ struct Triangle
 	uint   instance_prim;
 	float  emissive_factor;
 	float  alpha;
+	// The w half of each vertex's custom field, which motion leaves unused. Only
+	// a blood film writes it: its depth (blood.c write_film_geometry). Never
+	// stored back - store_triangle writes 0, as it always has.
+	vec3   custom_w;
 };
 
 Triangle
@@ -437,7 +441,11 @@ load_triangle(uint buffer_idx, uint prim_id)
 	t.positions_prev[0] = t.positions[0] + unpackHalf4x16(prim.custom0).xyz;
 	t.positions_prev[1] = t.positions[1] + unpackHalf4x16(prim.custom1).xyz;
 	t.positions_prev[2] = t.positions[2] + unpackHalf4x16(prim.custom2).xyz;
-	
+
+	t.custom_w = vec3(unpackHalf2x16(prim.custom0.y).y,
+	                  unpackHalf2x16(prim.custom1.y).y,
+	                  unpackHalf2x16(prim.custom2.y).y);
+
 	t.normals[0] = decode_normal(prim.normals.x);
 	t.normals[1] = decode_normal(prim.normals.y);
 	t.normals[2] = decode_normal(prim.normals.z);
