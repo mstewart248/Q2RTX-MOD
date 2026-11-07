@@ -71,12 +71,27 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // Process the image in 128x1x1 workgroups.
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
+#ifdef VKPT_D3D12
+// The same 16 floats as below. HLSL cbuffers (D3D12 root constants) give every
+// array element 16 bytes, so a float[14] cannot sit at byte 8 there; read the
+// block as four vec4s instead.
+layout(push_constant) uniform PushConstants {
+    vec4 v[4];
+} push_d3d12;
+#define PUSH_RESET_CURVE (push_d3d12.v[0].x)
+#define PUSH_FRAME_TIME  (push_d3d12.v[0].y)
+float push_weight(int i) { int j = i + 2; return push_d3d12.v[j >> 2][j & 3]; }
+#else
 // We have to use std430 packing rules here in order for the array of floats to be naturally included
 layout(push_constant, std430) uniform PushConstants {
     float reset_curve; // Set to 1 if we should reset temporal blending of the tone curve
     float frame_time; // Time between this frame and the previous one.
     float weights[14]; // Weights (usually decreasing) used for blurring the slopes. Should sum to 1.
 } push;
+#define PUSH_RESET_CURVE push.reset_curve
+#define PUSH_FRAME_TIME  push.frame_time
+#define push_weight(i)   push.weights[i]
+#endif
 
 // Here are three functions for performing arithmetic across workgroups.
 // They use the GL_KHR_shader_subgroup arithmetic extension to perform
@@ -209,7 +224,7 @@ void main()
 
     // If we are not resetting the curve, blend the luminance over time to
     // provide for eye adaptation:
-    if(push.reset_curve == 0.0)
+    if(PUSH_RESET_CURVE == 0.0)
     {
         float log_old_lum = tonemap_buffer.adapted_luminance;
 
@@ -220,7 +235,7 @@ void main()
 
         const float speed = (log_old_lum < log_target_lum) ? global_ubo.tm_exposure_speed_up : global_ubo.tm_exposure_speed_down;
 
-        log_target_lum = mix(log_target_lum, log_old_lum, exp(-push.frame_time * speed));
+        log_target_lum = mix(log_target_lum, log_old_lum, exp(-PUSH_FRAME_TIME * speed));
     }
 
     if(linear_idx == 0)
@@ -271,12 +286,12 @@ void main()
     // filter kernel.
     s_Shared[linear_idx] = my_slope;
     barrier();
-    my_slope *= push.weights[0];
+    my_slope *= push_weight(0);
     for(int dx = -13; dx <= 13; dx++)
     {
         if(dx != 0)
         {
-            my_slope += push.weights[abs(dx)] * s_Shared[clamp(linear_idx + dx, 0, HISTOGRAM_BINS-1)];
+            my_slope += push_weight(abs(dx)) * s_Shared[clamp(linear_idx + dx, 0, HISTOGRAM_BINS-1)];
         }
     }
 
@@ -321,7 +336,7 @@ void main()
     // Interpolate values into row 1 with a suitable coefficient.
     // Default values of global_ubo.tm_exposure_speed_up and speed_down roughly
     // correspond to low-pass filters with cutoff times around seconds.
-    if(push.reset_curve != 0.0)
+    if(PUSH_RESET_CURVE != 0.0)
     {
         // Set last value of tonemap to 0, but only do this once
         if(linear_idx == HISTOGRAM_BINS - 1)
@@ -335,7 +350,7 @@ void main()
 
         const float blend_speed = (my_old_tonecurve < my_tonecurve) ? global_ubo.tm_exposure_speed_up : global_ubo.tm_exposure_speed_down;
 
-        my_tonecurve = mix(my_tonecurve, my_old_tonecurve, exp(-push.frame_time * blend_speed));
+        my_tonecurve = mix(my_tonecurve, my_old_tonecurve, exp(-PUSH_FRAME_TIME * blend_speed));
     }
 
     tonemap_buffer.curve[linear_idx] = my_tonecurve;

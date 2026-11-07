@@ -128,6 +128,12 @@ Converting skyboxes to local lights provides two benefits:
 // sets this first thing in main().
 uvec3 pt_tile_launch_id;
 #define rt_LaunchID pt_tile_launch_id
+#ifdef VKPT_D3D12
+// a group with no tile (D3D12's last row, past the list's end: constants.h) gets
+// this launch ID, outside every image; main() returns on pt_tile_launch_none()
+#define PT_TILE_NO_LAUNCH 0xfffffu
+bool pt_tile_launch_none() { return pt_tile_launch_id.x == PT_TILE_NO_LAUNCH; }
+#endif
 #else
 #define rt_LaunchID gl_GlobalInvocationID
 #endif
@@ -158,21 +164,39 @@ layout (push_constant) uniform push_constant_block {
 } push_constants;
 
 #ifdef KHR_RAY_QUERY
+#ifndef VKPT_D3D12
 #extension GL_EXT_buffer_reference       : require
 #extension GL_EXT_buffer_reference_uvec2 : require
+#endif
 #extension GL_KHR_shader_subgroup_basic  : require
 #extension GL_KHR_shader_subgroup_vote   : require
 
+#ifdef VKPT_D3D12
+/* The D3D12 renderer (src/refresh/d3d12) gets this shader through HLSL, which
+   has no buffer device addresses, so there the tile lists are an ordinary
+   storage buffer in a descriptor set of their own that only the D3D12 root
+   signature has (D3D12_PT_TILE_DESC_SET in d3d12/d3d12.h must match).
+   push_constants.tile_buffer is then unused. */
+#define PT_TILE_DESC_SET_D3D12 15
+layout(set = PT_TILE_DESC_SET_D3D12, binding = 0, std430) buffer PtTileBufferD3D12 {
+	uint words[];
+} pt_tile_buffer_d3d12;
+#define PT_TILE_BUFFER_OPEN
+#define PT_TILE_WORDS pt_tile_buffer_d3d12.words
+#else
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer PtTileBuffer {
 	uint words[];
 };
+#define PT_TILE_BUFFER_OPEN PtTileBuffer t = PtTileBuffer(push_constants.tile_buffer);
+#define PT_TILE_WORDS t.words
+#endif
 
 // Adds this thread's launch tile to `list` (0-based), once per tile.
 void pt_tile_append(uint list, uvec3 launch_id)
 {
-	PtTileBuffer t = PtTileBuffer(push_constants.tile_buffer);
-	uint tile_id = launch_id.z * t.words[PT_TILE_HDR_PER_FIELD]
-	             + (launch_id.y >> 3) * t.words[PT_TILE_HDR_TILES_X]
+	PT_TILE_BUFFER_OPEN
+	uint tile_id = launch_id.z * PT_TILE_WORDS[PT_TILE_HDR_PER_FIELD]
+	             + (launch_id.y >> 3) * PT_TILE_WORDS[PT_TILE_HDR_TILES_X]
 	             + (launch_id.x >> 3);
 
 	// With 8x8 workgroups a subgroup never spans two tiles, so one lane speaks for
@@ -181,12 +205,17 @@ void pt_tile_append(uint list, uvec3 launch_id)
 		return;
 
 	uint bit = 1u << (tile_id & 31u);
-	uint mask_word = t.words[PT_TILE_HDR_MASK] + list * t.words[PT_TILE_HDR_MASK_STRIDE] + (tile_id >> 5);
-	if ((atomicOr(t.words[mask_word], bit) & bit) != 0u)
+	uint mask_word = PT_TILE_WORDS[PT_TILE_HDR_MASK] + list * PT_TILE_WORDS[PT_TILE_HDR_MASK_STRIDE] + (tile_id >> 5);
+	if ((atomicOr(PT_TILE_WORDS[mask_word], bit) & bit) != 0u)
 		return;
 
-	uint slot = atomicAdd(t.words[PT_TILE_HDR_ARGS + list * 4u], 1u);
-	t.words[t.words[PT_TILE_HDR_DATA] + list * t.words[PT_TILE_HDR_DATA_STRIDE] + slot] = tile_id;
+	uint slot = atomicAdd(PT_TILE_WORDS[PT_TILE_HDR_ARGS + list * 4u], 1u);
+#ifdef VKPT_D3D12
+	// rows of word 1's groups (constants.h): a row's first tile adds the row
+	if (slot % PT_TILE_WORDS[PT_TILE_HDR_ARGS + list * 4u + 1u] == 0u)
+		atomicAdd(PT_TILE_WORDS[PT_TILE_HDR_ARGS + list * 4u + 2u], 1u);
+#endif
+	PT_TILE_WORDS[PT_TILE_WORDS[PT_TILE_HDR_DATA] + list * PT_TILE_WORDS[PT_TILE_HDR_DATA_STRIDE] + slot] = tile_id;
 }
 #endif
 
@@ -200,11 +229,23 @@ void pt_tile_launch_init()
 		return;
 	}
 
-	PtTileBuffer t = PtTileBuffer(push_constants.tile_buffer);
+	PT_TILE_BUFFER_OPEN
 	uint list = push_constants.tile_read_list - 1u;
-	uint tile_id = t.words[t.words[PT_TILE_HDR_DATA] + list * t.words[PT_TILE_HDR_DATA_STRIDE] + gl_WorkGroupID.x];
-	uint per_field = t.words[PT_TILE_HDR_PER_FIELD];
-	uint tiles_x = t.words[PT_TILE_HDR_TILES_X];
+#ifdef VKPT_D3D12
+	// rows of word 1's groups (constants.h); the last row's groups past the list's
+	// end have no tile
+	uint index = gl_WorkGroupID.y * PT_TILE_WORDS[PT_TILE_HDR_ARGS + list * 4u + 1u] + gl_WorkGroupID.x;
+	if (index >= PT_TILE_WORDS[PT_TILE_HDR_ARGS + list * 4u])
+	{
+		pt_tile_launch_id = uvec3(PT_TILE_NO_LAUNCH, PT_TILE_NO_LAUNCH, 0u);
+		return;
+	}
+#else
+	uint index = gl_WorkGroupID.x;
+#endif
+	uint tile_id = PT_TILE_WORDS[PT_TILE_WORDS[PT_TILE_HDR_DATA] + list * PT_TILE_WORDS[PT_TILE_HDR_DATA_STRIDE] + index];
+	uint per_field = PT_TILE_WORDS[PT_TILE_HDR_PER_FIELD];
+	uint tiles_x = PT_TILE_WORDS[PT_TILE_HDR_TILES_X];
 	uint field = tile_id / per_field;
 	uint rest = tile_id - field * per_field;
 	uint ty = rest / tiles_x;

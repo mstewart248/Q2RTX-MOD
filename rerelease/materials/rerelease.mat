@@ -19422,6 +19422,9 @@ textures/tomf/glocrys_1b:
 # turns material_custom off and silently kills the light. A stub is only safe for a
 # texture that is not a BSP surface light.
 
+textures/n64/water1:
+	kind WATER
+	
 textures/tomf/glocrys_1c:
  	texture_base textures/tomf/glocrys_1c.wal
 	kind WATER

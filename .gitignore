@@ -7,6 +7,9 @@ game*.so
 *.swp
 build*/
 shader_vkpt
+shader_d3d12
+# the Agility SDK headers setup/fetch_agility_sdk.py stages
+extern/agility-sdk/
 *.exe
 *.ilk
 *.pdb

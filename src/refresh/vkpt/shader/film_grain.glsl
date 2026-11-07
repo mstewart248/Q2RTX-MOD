@@ -22,7 +22,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    scaled final blit). Needs utils.glsl and global_textures.h.
 
    WHERE IT RUNS: in the final blit to the swapchain, after everything else
-   that touches the picture - tone mapping, FSR, DLSS 5 and frame generation -
+   that touches the picture - tone mapping, DLSS 5 and frame generation -
    and before the HUD is drawn over it. That placement is the point:
 
      - DLSS, TAA and frame generation never see the grain. A temporal resolve

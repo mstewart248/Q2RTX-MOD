@@ -2,9 +2,6 @@ set(SHADER_SOURCE_DEPENDENCIES
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/asvgf.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/brdf.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/constants.h
-    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/fsr_easu.glsl
-    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/fsr_rcas.glsl
-    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/fsr_utils.glsl
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/global_textures.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/global_ubo.h
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/god_rays_shared.h
@@ -39,8 +36,7 @@ if(NOT CMAKE_VERSION VERSION_LESS 3.12)
 endif()
 file(GLOB SHADER_INCLUDE_FILES ${SHADER_GLOB_FLAGS}
     ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/*.glsl
-    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/*.h
-    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/fsr/*.h)
+    ${CMAKE_SOURCE_DIR}/src/refresh/vkpt/shader/*.h)
 list(APPEND SHADER_SOURCE_DEPENDENCIES ${SHADER_INCLUDE_FILES})
 list(REMOVE_DUPLICATES SHADER_SOURCE_DEPENDENCIES)
 

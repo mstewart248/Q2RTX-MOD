@@ -123,14 +123,20 @@ void cast_u32_to_f32_color(int color_index, const color_t* pcolor, float* color_
 		color_f32[i] = hdr_factor * decode_srgb(color.u8[i]);
 }
 
-bool initialize_transparency()
+// vkpt_init_frontend: vkpt_build_beam_lights reads them in the frame's CPU half
+void vkpt_transparency_init_cvars(void)
 {
 	cvar_pt_particle_size = Cvar_Get("pt_particle_size", "0.5", 0);
 	cvar_pt_beam_width = Cvar_Get("pt_beam_width", "1.0", 0);
 	cvar_pt_beam_lights = Cvar_Get("pt_beam_lights", "1.0", 0);
+}
 
-	memset(&transparency, 0, sizeof(transparency));
-
+/* THE CPU HALF, shared with the D3D12 backend (d3d12/frontend.c): the sizes,
+   the frame's geometry written into host_buffer_shadow by
+   vkpt_transparency_prepare, its layout (vkpt_transparency_frame) and the
+   quads' index pattern. Each backend copies the shadow to its own buffers. */
+static void transparency_cpu_sizes(void)
+{
 	const size_t particle_vertex_position_max_size = TR_VERTEX_MAX_NUM * TR_POSITION_SIZE;
 	const size_t particle_color_size = TR_PARTICLE_MAX_NUM * TR_COLOR_SIZE;
 	const size_t particle_data_size = particle_vertex_position_max_size + particle_color_size;
@@ -147,6 +153,92 @@ bool initialize_transparency()
 	transparency.host_buffered_frame_num = MAX_FRAMES_IN_FLIGHT;
 	transparency.host_frame_size = particle_data_size + beam_data_size + sprite_data_size;
 	transparency.host_buffer_size = transparency.host_buffered_frame_num * transparency.host_frame_size;
+}
+
+bool vkpt_transparency_cpu_init(void)
+{
+	if (!transparency.host_buffer_shadow)
+	{
+		transparency_cpu_sizes();
+		transparency.host_buffer_shadow = Z_Mallocz(transparency.host_frame_size);
+	}
+	return true;
+}
+
+void vkpt_transparency_cpu_shutdown(void)
+{
+	if (transparency.host_buffer_shadow)
+	{
+		Z_Free(transparency.host_buffer_shadow);
+		transparency.host_buffer_shadow = NULL;
+	}
+}
+
+size_t vkpt_transparency_frame_capacity(void)
+{
+	return transparency.host_frame_size;
+}
+
+size_t vkpt_transparency_capacity(int stream)
+{
+	switch (stream)
+	{
+	case VKPT_TR_VERTICES:        return TR_VERTEX_MAX_NUM * TR_POSITION_SIZE;
+	case VKPT_TR_BEAM_AABBS:      return TR_BEAM_MAX_NUM * TR_BEAM_AABB_SIZE;
+	case VKPT_TR_PARTICLE_COLORS: return TR_PARTICLE_MAX_NUM * TR_COLOR_SIZE;
+	case VKPT_TR_BEAM_COLORS:     return TR_BEAM_MAX_NUM * TR_COLOR_SIZE;
+	case VKPT_TR_SPRITE_INFOS:    return TR_SPRITE_MAX_NUM * TR_SPRITE_INFO_SIZE;
+	case VKPT_TR_BEAM_INTERSECT:  return TR_BEAM_MAX_NUM * TR_BEAM_INTERSECT_SIZE;
+	case VKPT_TR_INDICES:         return TR_INDEX_MAX_NUM * sizeof(uint16_t);
+	default:                      return 0;
+	}
+}
+
+void vkpt_transparency_fill_indices(uint16_t* indices)
+{
+	for (size_t i = 0; i < TR_INDEX_MAX_NUM / 6; i++)
+	{
+		uint16_t* quad = indices + i * 6;
+
+		const uint16_t base_vertex = i * 4;
+		quad[0] = base_vertex + 0;
+		quad[1] = base_vertex + 1;
+		quad[2] = base_vertex + 2;
+		quad[3] = base_vertex + 2;
+		quad[4] = base_vertex + 3;
+		quad[5] = base_vertex + 0;
+	}
+}
+
+void vkpt_transparency_frame(vkpt_transparency_frame_t* f)
+{
+	memset(f, 0, sizeof(*f));
+	f->data = transparency.host_buffer_shadow;
+	f->particle_num = transparency.particle_num;
+	f->beam_num = transparency.beam_num;
+	f->sprite_num = transparency.sprite_num;
+	f->sprite_vertex_offset = transparency.sprite_vertex_device_offset;
+	f->offset[VKPT_TR_VERTICES]        = transparency.vertex_position_host_offset;
+	f->size[VKPT_TR_VERTICES]          = (transparency.particle_num + transparency.sprite_num) * 4 * TR_POSITION_SIZE;
+	f->offset[VKPT_TR_BEAM_AABBS]      = transparency.beam_aabb_host_offset;
+	f->size[VKPT_TR_BEAM_AABBS]        = transparency.beam_num * TR_BEAM_AABB_SIZE;
+	f->offset[VKPT_TR_PARTICLE_COLORS] = transparency.particle_color_host_offset;
+	f->size[VKPT_TR_PARTICLE_COLORS]   = transparency.particle_num * TR_COLOR_SIZE;
+	f->offset[VKPT_TR_BEAM_COLORS]     = transparency.beam_color_host_offset;
+	f->size[VKPT_TR_BEAM_COLORS]       = transparency.beam_num * TR_COLOR_SIZE;
+	f->offset[VKPT_TR_SPRITE_INFOS]    = transparency.sprite_info_host_offset;
+	f->size[VKPT_TR_SPRITE_INFOS]      = transparency.sprite_num * TR_SPRITE_INFO_SIZE;
+	f->offset[VKPT_TR_BEAM_INTERSECT]  = transparency.beam_intersect_host_offset;
+	f->size[VKPT_TR_BEAM_INTERSECT]    = transparency.beam_num * TR_BEAM_INTERSECT_SIZE;
+	f->upload_size = transparency.beam_intersect_host_offset + transparency.beam_num * TR_BEAM_INTERSECT_SIZE;
+}
+
+bool initialize_transparency()
+{
+	vkpt_transparency_init_cvars();
+
+	memset(&transparency, 0, sizeof(transparency));
+	transparency_cpu_sizes();
 
 	create_buffers();
 
@@ -176,14 +268,17 @@ void destroy_transparency()
 	vkDestroyBuffer(qvk.device, transparency.host_buffer, NULL);
 	vkFreeMemory(qvk.device, transparency.host_buffer_memory, NULL);
 
-	if (transparency.host_buffer_shadow)
-	{
-		Z_Free(transparency.host_buffer_shadow);
-		transparency.host_buffer_shadow = NULL;
-	}
+	vkpt_transparency_cpu_shutdown();
 }
 
 void update_transparency(VkCommandBuffer command_buffer, const float* view_matrix,
+	const particle_t* particles, int particle_num, const entity_t* entities, int entity_num)
+{
+	if (vkpt_transparency_prepare(view_matrix, particles, particle_num, entities, entity_num))
+		upload_geometry(command_buffer);
+}
+
+bool vkpt_transparency_prepare(const float* view_matrix,
 	const particle_t* particles, int particle_num, const entity_t* entities, int entity_num)
 {
 	transparency.host_frame_index = (transparency.host_frame_index + 1) % transparency.host_buffered_frame_num;
@@ -228,6 +323,7 @@ void update_transparency(VkCommandBuffer command_buffer, const float* view_matri
 	transparency.beam_color_host_offset = transparency.beam_aabb_host_offset + beam_num * TR_BEAM_AABB_SIZE;
 	transparency.beam_intersect_host_offset = transparency.beam_color_host_offset + beam_num * TR_COLOR_SIZE;
 	transparency.current_upload_size = transparency.beam_intersect_host_offset + beam_num * TR_BEAM_INTERSECT_SIZE;
+	transparency.sprite_vertex_device_offset = particle_num * 4 * TR_POSITION_SIZE;
 
 	if (particle_num > 0 || beam_num > 0 || sprite_num > 0)
 	{
@@ -246,8 +342,9 @@ void update_transparency(VkCommandBuffer command_buffer, const float* view_matri
 		write_particle_geometry(view_matrix, particles, particle_num);
 		write_beam_geometry(entities, entity_num);
 		write_sprite_geometry(view_matrix, entities, entity_num);
-		upload_geometry(command_buffer);
+		return true;
 	}
+	return false;
 }
 
 void vkpt_get_transparency_buffers(
@@ -1087,7 +1184,7 @@ static bool allocate_and_bind_memory_to_buffers(void)
 	_VK(vkMapMemory(qvk.device, transparency.host_buffer_memory, 0, host_buffer_size, 0,
 		(void**)&transparency.mapped_host_buffer));
 
-	transparency.host_buffer_shadow = Z_Mallocz(transparency.host_frame_size);
+	vkpt_transparency_cpu_init();
 	
 	return true;
 }
@@ -1138,19 +1235,7 @@ static void create_buffer_views(void)
 static void fill_index_buffer(void)
 {
 	uint16_t* indices = (uint16_t*)transparency.host_buffer_shadow;
-
-	for (size_t i = 0; i < TR_INDEX_MAX_NUM / 6; i++)
-	{
-		uint16_t* quad = indices + i * 6;
-
-		const uint16_t base_vertex = i * 4;
-		quad[0] = base_vertex + 0;
-		quad[1] = base_vertex + 1;
-		quad[2] = base_vertex + 2;
-		quad[3] = base_vertex + 2;
-		quad[4] = base_vertex + 3;
-		quad[5] = base_vertex + 0;
-	}
+	vkpt_transparency_fill_indices(indices);
 
 	memcpy(transparency.mapped_host_buffer, transparency.host_buffer_shadow, sizeof(uint16_t) * TR_INDEX_MAX_NUM);
 

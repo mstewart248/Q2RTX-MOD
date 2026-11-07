@@ -1,0 +1,110 @@
+/*
+THE COPY BACK after motion blur and chromatic aberration, for the D3D12 renderer
+(vid_rtx 3, d3d12/passes.c). Both passes write their result into MOTION_BLUR, and
+vkpt copies it back over the frame with vkCmdCopyImage (motion_blur.c,
+chromatic_aberration.c), so everything downstream reads the image it always reads.
+
+On D3D12 the G-buffer images are simultaneous-access textures that only ever serve
+as UAVs and SRVs (d3d12/ROADMAP.md, "Simultaneous-access images"). A copy would need
+state transitions nothing else there makes, so this is that copy as a compute pass:
+MOTION_BLUR's first extent texels into TAA_OUTPUT, or DLSS_OUTPUT. All three images
+are RGBA16F, so it is exact, as the copy is.
+
+Built for D3D12 only (src/CMakeLists.txt), against vkpt's shader headers.
+*/
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+/* d3d12/passes.c's postfx_copy, and photo mode's copy in place of DLSS */
+layout(push_constant) uniform PostfxCopyPushConstants {
+	ivec2 extent;       // the region motion blur / chromatic aberration wrote; mode 2: the output
+	int dlss_target;    // 0: TAA_OUTPUT, 1: DLSS_OUTPUT, 2: TAA_OUTPUT into DLSS_OUTPUT,
+	                    // 3 / 4: bloom_debug's view into TAA_OUTPUT / DLSS_OUTPUT
+	int bloom_image;    // modes 3 and 4: 0 the vertical blur's image, 1 the horizontal's
+} pc;
+
+/* Modes 3 and 4: bloom_debug (bloom.c's bloom_debug_show_image) - a stage of the bloom,
+   a quarter of `extent`, stretched over the frame: bilinear without DLSS, nearest with
+   it, as the blit's filters. Tone mapping then runs over it, as on Vulkan. */
+vec4
+bloom_fetch(ivec2 p)
+{
+	if (pc.dlss_target == 4)
+		return pc.bloom_image != 0 ? texelFetch(TEX_DLSS_BLOOM_HBLUR, p, 0) : texelFetch(TEX_DLSS_BLOOM_VBLUR, p, 0);
+	return pc.bloom_image != 0 ? texelFetch(TEX_BLOOM_HBLUR, p, 0) : texelFetch(TEX_BLOOM_VBLUR, p, 0);
+}
+
+vec4
+bloom_debug_at(ivec2 ipos)
+{
+	const ivec2 src = max(pc.extent / 4, ivec2(1));
+	if (pc.dlss_target == 4)
+		return bloom_fetch(min(ipos / 4, src - 1));
+
+	const vec2 p = (vec2(ipos) + 0.5) * 0.25 - 0.5;
+	const ivec2 i0 = ivec2(floor(p));
+	const vec2 t = p - vec2(i0);
+	const ivec2 lo = clamp(i0, ivec2(0), src - 1);
+	const ivec2 hi = clamp(i0 + 1, ivec2(0), src - 1);
+	const vec4 a = mix(bloom_fetch(ivec2(lo.x, lo.y)), bloom_fetch(ivec2(hi.x, lo.y)), t.x);
+	const vec4 b = mix(bloom_fetch(ivec2(lo.x, hi.y)), bloom_fetch(ivec2(hi.x, hi.y)), t.x);
+	return mix(a, b, t.y);
+}
+
+/* Mode 2: vkpt_blit_accumulated_to_dlss_output (main.c) - photo mode's accumulated
+   TAA_OUTPUT, at the UBO's taa_output size, into DLSS_OUTPUT at `extent`. The render
+   scale is pinned at 100% then (drs_photo_mode_scale), so it is a copy; otherwise
+   bilinear, as the blit's VK_FILTER_LINEAR is. */
+vec4
+taa_output_at(ivec2 ipos)
+{
+	const ivec2 src = ivec2(global_ubo.taa_output_width, global_ubo.taa_output_height);
+	if (src == pc.extent)
+		return texelFetch(TEX_TAA_OUTPUT, ipos, 0);
+
+	const vec2 p = (vec2(ipos) + 0.5) * vec2(src) / vec2(pc.extent) - 0.5;
+	const ivec2 i0 = ivec2(floor(p));
+	const vec2 t = p - vec2(i0);
+	const ivec2 lo = clamp(i0, ivec2(0), src - 1);
+	const ivec2 hi = clamp(i0 + 1, ivec2(0), src - 1);
+	const vec4 a = mix(texelFetch(TEX_TAA_OUTPUT, ivec2(lo.x, lo.y), 0), texelFetch(TEX_TAA_OUTPUT, ivec2(hi.x, lo.y), 0), t.x);
+	const vec4 b = mix(texelFetch(TEX_TAA_OUTPUT, ivec2(lo.x, hi.y), 0), texelFetch(TEX_TAA_OUTPUT, ivec2(hi.x, hi.y), 0), t.x);
+	return mix(a, b, t.y);
+}
+
+void
+main()
+{
+	const ivec2 ipos = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(ipos, pc.extent)))
+		return;
+
+	if (pc.dlss_target == 2) {
+		imageStore(IMG_DLSS_OUTPUT, ipos, taa_output_at(ipos));
+		return;
+	}
+	if (pc.dlss_target == 3) {
+		imageStore(IMG_TAA_OUTPUT, ipos, bloom_debug_at(ipos));
+		return;
+	}
+	if (pc.dlss_target == 4) {
+		imageStore(IMG_DLSS_OUTPUT, ipos, bloom_debug_at(ipos));
+		return;
+	}
+
+	const vec4 color = texelFetch(TEX_MOTION_BLUR, ipos, 0);
+	if (pc.dlss_target != 0)
+		imageStore(IMG_DLSS_OUTPUT, ipos, color);
+	else
+		imageStore(IMG_TAA_OUTPUT, ipos, color);
+}

@@ -628,6 +628,16 @@ typedef struct client_static_s {
 
 extern client_static_t    cls;
 
+// The path tracers: Vulkan's (vkpt) and D3D12's (vid_rtx 3), which runs vkpt's
+// own frontend - the same entity flags, light types, shells, flares and blood
+// mean the same to both (DLSS frame generation's presents too), and the player
+// setup's model view with no world (both draw it since 11-06). Never for what
+// only Vulkan has.
+static inline bool CL_PathTraced(void)
+{
+    return cls.ref_type == REF_TYPE_VKPT || cls.ref_type == REF_TYPE_D3D12;
+}
+
 extern cmdbuf_t    cl_cmdbuf;
 extern char        cl_cmdbuf_text[MAX_STRING_CHARS];
 

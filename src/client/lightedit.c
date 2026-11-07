@@ -2568,7 +2568,7 @@ void LE_AddLightsToScene(void)
         if (!light_enable->integer)
             continue;
 
-        if (cls.ref_type != REF_TYPE_VKPT)
+        if (!CL_PathTraced())
             continue;
 
         // A replacement light inherits its entity's switchability, so a light

@@ -149,8 +149,8 @@ vec3 CoarseRaymarching(vec3 camera, vec3 view_dir, float distToAtmStart, float d
         float Density = GetDensity(step, raylen, current_ray);
         if (Density> CLOUD_DENSITY_THRESHOLD)
         {
-            float lerp = (prev_density - CLOUD_DENSITY_THRESHOLD) / (Density - prev_density);
-            return mix(step, prev_step, lerp);
+            float frac_t = (prev_density - CLOUD_DENSITY_THRESHOLD) / (Density - prev_density);
+            return mix(step, prev_step, frac_t);
         }
         current_ray += raypart;
         prev_step = step;

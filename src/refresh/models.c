@@ -465,7 +465,7 @@ qhandle_t R_RegisterModel(const char *name)
         char* extension = source + srclen - 4;
         bool is_md2 = srclen > 4 && strcmp(extension, ".md2") == 0;
 
-        bool try_md3 = cls.ref_type == REF_TYPE_VKPT || (cls.ref_type == REF_TYPE_GL && gl_use_hd_assets->integer);
+        bool try_md3 = CL_PathTraced() || (cls.ref_type == REF_TYPE_GL && gl_use_hd_assets->integer);
 
         // Q2RTX's railgun is a redesign rather than a remaster - a different
         // gun, not a higher-poly one - so it gets its own switch. Declining it

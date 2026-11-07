@@ -172,9 +172,6 @@ enum {
 	GOD_RAYS_PIPELINE_SKY_EXPOSURE_BAKE,
 };
 
-#define SKY_EXPOSURE_MASK_WORDS \
-	((SKY_EXPOSURE_DIM_X * SKY_EXPOSURE_DIM_Y * SKY_EXPOSURE_DIM_Z + 31) / 32)
-
 // Smallest voxel edge, so a small map does not get a needlessly fine grid.
 #define SKY_EXPOSURE_MIN_VOXEL 8.f
 
@@ -189,13 +186,14 @@ static void update_descriptor_set(void);
 
 extern cvar_t *physical_sky_space;
 
-VkResult vkpt_initialize_god_rays(void)
+/* The cvars the frame's CPU half reads (vkpt_god_rays_prepare_ubo,
+   vkpt_god_rays_enabled, vkpt_froxel_ensure). Also called from
+   vkpt_init_frontend: the D3D12 renderer runs that half without
+   vkpt_initialize_god_rays, and a cold vid_rtx 3 start read gr_intensity
+   through a NULL pointer. vkpt_initialize_god_rays calls it again, after the
+   memset that clears god_rays' copies. */
+void vkpt_god_rays_init_cvars(void)
 {
-	memset(&god_rays, 0, sizeof(god_rays));
-
-	VkPhysicalDeviceProperties properties;
-	vkGetPhysicalDeviceProperties(qvk.physical_device, &properties);
-
 	// DEFAULTS OFF while the grid's in-scatter magnitude is still being
 	// calibrated against the march - see the note in froxel_scatter.comp.
 	// Same treatment cl_fog itself got: land it, default it off, tune in play.
@@ -210,6 +208,16 @@ VkResult vkpt_initialize_god_rays(void)
 	god_rays.enable = Cvar_Get("gr_enable", "1", 0);
 
 	cvar_pt_fog_sky_exposure_bake = Cvar_Get("pt_fog_sky_exposure_bake", "16384", 0);
+}
+
+VkResult vkpt_initialize_god_rays(void)
+{
+	memset(&god_rays, 0, sizeof(god_rays));
+
+	VkPhysicalDeviceProperties properties;
+	vkGetPhysicalDeviceProperties(qvk.physical_device, &properties);
+
+	vkpt_god_rays_init_cvars();
 
 	// 250 KB, host-visible: begin_map writes the solid mask straight into it.
 	// A renderer restart re-registers the map, which refills it.
@@ -382,7 +390,10 @@ void vkpt_god_rays_update_tlas_descriptor(void)
 	// because the frame fence guarantees the previous use of THAT set has
 	// completed - the sets are per frame in flight for exactly this reason.
 	{
-		VkAccelerationStructureKHR tlas = vkpt_pt_get_geometry_tlas(qvk.current_frame_index);
+		// the classic TLAS's handle or (pt_ptlas) the partitioned one's address
+		vkpt_tlas_write_t tlas_write;
+		const void *tlas_next = vkpt_pt_geometry_tlas_write(qvk.current_frame_index, &tlas_write);
+		const VkAccelerationStructureKHR tlas = tlas_write.handle;
 
 		/* TEMPORARY, pt_fog_log 1. The `if` below is the never-excluded
 		   candidate for the fog fade: on a frame where the handle is null the
@@ -446,16 +457,11 @@ void vkpt_god_rays_update_tlas_descriptor(void)
 		   TLAS, and after a map change that one is freed: device lost at the
 		   first level load (2026-09-27). Called from main.c right after
 		   vkpt_pt_create_toplevel, it precedes every bind on every queue. */
-		if (tlas != VK_NULL_HANDLE)
+		if (tlas_next)
 		{
-			VkWriteDescriptorSetAccelerationStructureKHR as_info = {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-				.accelerationStructureCount = 1,
-				.pAccelerationStructures = &tlas
-			};
 			VkWriteDescriptorSet as_write = {
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.pNext = &as_info,
+				.pNext = tlas_next,
 				.dstSet = god_rays.descriptor_set[qvk.current_frame_index],
 				.dstBinding = 1,
 				.descriptorCount = 1,
@@ -681,21 +687,46 @@ void vkpt_record_froxel_light_selection(VkCommandBuffer command_buffer)
    do not read the volume until prepare_ubo says the bake is complete, so this
    frame's scatter pass is not waiting on it; the barrier is for whatever reads
    it next on this queue. */
-static void record_sky_exposure_bake(VkCommandBuffer command_buffer)
+/* The bake's bookkeeping, for whichever renderer records it: the next batch of
+   voxels, or false when none is due this frame. Taking a batch counts it as
+   recorded - the D3D12 renderer restarts the bake (vkpt_sky_exposure_restart)
+   when a frame it took one for is not drawn after all. */
+bool vkpt_sky_exposure_next_batch(uint32_t* first, uint32_t* count)
 {
 	if (!sky_exposure.have_map || sky_exposure.next >= sky_exposure.total)
-		return;
+		return false;
 
 	if (!sky_exposure.wanted)
-		return;
+		return false;
 
-	uint32_t count = (uint32_t)max(1024, cvar_pt_fog_sky_exposure_bake->integer);
-	count = min(count, sky_exposure.total - sky_exposure.next);
+	uint32_t n = (uint32_t)max(1024, cvar_pt_fog_sky_exposure_bake->integer);
+	n = min(n, sky_exposure.total - sky_exposure.next);
+
+	*first = sky_exposure.next;
+	*count = n;
+
+	if (!sky_exposure.started)
+	{
+		sky_exposure.started = true;
+		sky_exposure.start_frame = sky_exposure.frame;
+	}
+
+	sky_exposure.next += n;
+	if (sky_exposure.next >= sky_exposure.total)
+		sky_exposure.done_frame = sky_exposure.frame;
+
+	return true;
+}
+
+static void record_sky_exposure_bake(VkCommandBuffer command_buffer)
+{
+	uint32_t first, count;
+	if (!vkpt_sky_exposure_next_batch(&first, &count))
+		return;
 
 	vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 		god_rays.pipelines[GOD_RAYS_PIPELINE_SKY_EXPOSURE_BAKE]);
 
-	uint32_t first = sky_exposure.next;
 	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout,
 		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &first);
 
@@ -714,16 +745,6 @@ static void record_sky_exposure_bake(VkCommandBuffer command_buffer)
 	int pass = 0;
 	vkCmdPushConstants(command_buffer, god_rays.pipeline_layout,
 		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &pass);
-
-	if (!sky_exposure.started)
-	{
-		sky_exposure.started = true;
-		sky_exposure.start_frame = sky_exposure.frame;
-	}
-
-	sky_exposure.next += count;
-	if (sky_exposure.next >= sky_exposure.total)
-		sky_exposure.done_frame = sky_exposure.frame;
 }
 
 static void restart_sky_exposure_bake(void)
@@ -734,11 +755,19 @@ static void restart_sky_exposure_bake(void)
 	sky_exposure.rays = cvar_pt_fog_sky_exposure_rays ? (int)cvar_pt_fog_sky_exposure_rays->value : 0;
 }
 
+void vkpt_sky_exposure_restart(void)
+{
+	restart_sky_exposure_bake();
+}
+
 /*
 =================
-vkpt_sky_exposure_begin_map
+vkpt_sky_exposure_fit_map
 
-Fits the sky-exposure grid to the new map and marks which voxels are solid.
+Fits the sky-exposure grid to the new map and marks which voxels are solid, in
+`bits` (SKY_EXPOSURE_MASK_WORDS words): Vulkan's host-visible mask through
+vkpt_sky_exposure_begin_map, the D3D12 renderer's copy for its own buffer
+(frontend.c's load_world). False when the map gets no grid.
 
 THE VOXEL IS CUBIC and sized so the whole of the world's bounds fit in
 SKY_EXPOSURE_DIM_*, centred on them; only that used box is baked and read. At the
@@ -757,19 +786,19 @@ Runs after vkpt_device_wait_idle in R_BeginRegistration_RTX, so the previous
 map's bake cannot be reading the mask while it is rewritten.
 =================
 */
-void vkpt_sky_exposure_begin_map(bsp_t* bsp, const aabb_t* world_aabb)
+bool vkpt_sky_exposure_fit_map(bsp_t* bsp, const aabb_t* world_aabb, uint32_t* bits)
 {
 	sky_exposure.have_map = false;
 	sky_exposure.total = 0;
 	restart_sky_exposure_bake();
 
-	if (!bsp || !bsp->nodes || !world_aabb || !god_rays.sky_exposure_mask.buffer)
-		return;
+	if (!bsp || !bsp->nodes || !world_aabb || !bits)
+		return false;
 
 	vec3_t size;
 	VectorSubtract(world_aabb->maxs, world_aabb->mins, size);
 	if (size[0] <= 0.f || size[1] <= 0.f || size[2] <= 0.f)
-		return;
+		return false;
 
 	const int alloc[3] = { SKY_EXPOSURE_DIM_X, SKY_EXPOSURE_DIM_Y, SKY_EXPOSURE_DIM_Z };
 
@@ -785,10 +814,6 @@ void vkpt_sky_exposure_begin_map(bsp_t* bsp, const aabb_t* world_aabb)
 	}
 	sky_exposure.voxel = voxel;
 	sky_exposure.total = (uint32_t)(sky_exposure.dims[0] * sky_exposure.dims[1] * sky_exposure.dims[2]);
-
-	uint32_t* bits = buffer_map(&god_rays.sky_exposure_mask);
-	if (!bits)
-		return;
 
 	memset(bits, 0, SKY_EXPOSURE_MASK_WORDS * sizeof(uint32_t));
 
@@ -817,14 +842,23 @@ void vkpt_sky_exposure_begin_map(bsp_t* bsp, const aabb_t* world_aabb)
 		}
 	}
 
-	buffer_unmap(&god_rays.sky_exposure_mask);
-
 	sky_exposure.have_map = true;
 
 	Com_Printf("sky exposure: %dx%dx%d voxels of %.1f units, %.0f%% open (mask %u ms)\n",
 		sky_exposure.dims[0], sky_exposure.dims[1], sky_exposure.dims[2], voxel,
 		100.0 * (double)(sky_exposure.total - solid) / (double)sky_exposure.total,
 		Sys_Milliseconds() - start_ms);
+	return true;
+}
+
+/* Runs after vkpt_device_wait_idle in R_BeginRegistration_RTX, so the previous
+   map's bake cannot be reading the mask while it is rewritten. */
+void vkpt_sky_exposure_begin_map(bsp_t* bsp, const aabb_t* world_aabb)
+{
+	uint32_t* bits = god_rays.sky_exposure_mask.buffer ? buffer_map(&god_rays.sky_exposure_mask) : NULL;
+	vkpt_sky_exposure_fit_map(bsp, world_aabb, bits);
+	if (bits)
+		buffer_unmap(&god_rays.sky_exposure_mask);
 }
 
 /* THE SECOND HALF: scatter and integrate. Scatter traces shadow rays against this
@@ -1691,6 +1725,15 @@ void vkpt_froxel_ensure(void)
 	if (!CL_GetMapFog(&mf) || mf.mode < 2)
 		return;
 
+	// vid_rtx 3 runs the frame's CPU half with no Vulkan device: the volumes are
+	// the D3D12 renderer's, made through its backend (which remembers a failure)
+	if (!qvk.device)
+	{
+		if (vkpt_prep_backend->create_froxel_volumes && vkpt_prep_backend->create_froxel_volumes())
+			god_rays.froxel_initialized = true;
+		return;
+	}
+
 	create_froxel_volumes();
 
 	// the sets were written without bindings 2-5; they exist now
@@ -1743,6 +1786,21 @@ static void destroy_froxel_volumes(void)
 	memset(&god_rays.sky_exposure, 0, sizeof(god_rays.sky_exposure));
 	god_rays.froxel_sampler = VK_NULL_HANDLE;
 	god_rays.froxel_initialized = false;
+}
+
+/* The D3D12 renderer's start and end: no volumes of its own yet (the next
+   vkpt_froxel_ensure asks its backend again) and no bake. Vulkan's init and
+   destroy do this for themselves. */
+void vkpt_god_rays_cpu_reset(void)
+{
+	god_rays.froxel_initialized = false;
+	memset(&sky_exposure, 0, sizeof(sky_exposure));
+}
+
+// pt_fog_restir: the froxel grid's light selection runs ahead of its scatter pass
+bool vkpt_froxel_restir_enabled(void)
+{
+	return cvar_pt_fog_restir && cvar_pt_fog_restir->integer;
 }
 
 bool vkpt_god_rays_enabled(const sun_light_t* sun_light)

@@ -1065,12 +1065,12 @@ static void SCR_DrawFPS(void)
 	int per_render = CL_GetPresentedFramesPerRender();
 
 	char buffer[MAX_QPATH];
-	if (scr_fps->integer == 2 && cls.ref_type == REF_TYPE_VKPT)
+	if (scr_fps->integer == 2 && CL_PathTraced())    // both report it (DRS, pt_dlss)
 		Q_snprintf(buffer, MAX_QPATH, "%d FPS at %3d%%", fps, scale);
 	else
 		Q_snprintf(buffer, MAX_QPATH, "%d FPS", fps);
 
-	if (per_render > 1 && cls.ref_type == REF_TYPE_VKPT) {
+	if (per_render > 1 && CL_PathTraced()) {    // both RTX renderers generate frames
 		char fg_buffer[MAX_QPATH];
 		Q_snprintf(fg_buffer, MAX_QPATH, "%s -> %d presented (%dx FG)",
 			buffer, fps * per_render, per_render);

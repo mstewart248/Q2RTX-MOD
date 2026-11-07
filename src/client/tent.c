@@ -235,6 +235,38 @@ void CL_RegisterTEntSounds(void)
 
     cl_sfx_lightning = S_RegisterSound("weapons/tesla.wav");
     cl_sfx_disrexp = S_RegisterSound("weapons/disrupthit.wav");
+
+    // Sounds played BY NAME mid-game, registered here so they load with the map.
+    // Unregistered, each is read from disk on the frame it first plays: the hit
+    // marker (cl_rerelease_hud) made the first monster shot after a map load hitch
+    // (11-06), and every weapon's and monster's first shot did the same in a
+    // smaller way. The last group are the sounds the game indexes on first use
+    // rather than precaching (mgu5m2 sits at the game's 256-sound limit); the
+    // configstring that brings them then finds them loaded. Client slots are
+    // MAX_SFX (512), separate from the game's 256; a missing file fails silently.
+    static const char *const played_by_name[] = {
+        // the HUD (screen.c, tent.c)
+        "weapons/marker.wav", "misc/help_marker.wav",
+        // the player's muzzle flashes (effects.c, CL_MuzzleFlash)
+        "weapons/blastf1a.wav", "weapons/hyprbf1a.wav", "weapons/shotgf1b.wav", "weapons/shotgr1b.wav",
+        "weapons/sshotf1b.wav", "weapons/rocklf1a.wav", "weapons/rocklr1b.wav", "weapons/grenlf1a.wav",
+        "weapons/grenlr1b.wav", "weapons/bfg__f1y.wav", "weapons/plasshot.wav", "weapons/rippfire.wav",
+        "weapons/nail1.wav", "weapons/proxlr1a.wav", "weapons/shotg2.wav", "weapons/disint2.wav",
+        "weapons/flaregun.wav",
+        // entity events (entities.c, tent.c)
+        "items/respawn1.wav", "misc/tele1.wav", "misc/bigtele.wav",
+        // monsters' muzzle flashes (effects.c, CL_MuzzleFlash2)
+        "infantry/infatck1.wav", "soldier/solatck1.wav", "soldier/solatck2.wav", "soldier/solatck3.wav",
+        "gunner/gunatck2.wav", "gunner/gunatck3.wav", "guncmdr/gcdratck2.wav", "guncmdr/gcdratck3.wav",
+        "flyer/flyatck3.wav", "medic/medatck1.wav", "hover/hovatck1.wav", "floater/fltatck1.wav",
+        "tank/tnkatck1.wav", "tank/tnkatck3.wav", "tank/rocket.wav", "chick/chkatck2.wav",
+        "makron/blaster.wav", "boss3/xfire.wav",
+        // the game's first-use gi.soundindex calls (src/baseq2)
+        "misc/fhit3.wav", "misc/mon_power2.wav", "tank/pain.wav", "gladiator/death.wav",
+        "weapons/hyprbl1a.wav", "berserk/idle.wav",
+    };
+    for (i = 0; i < (int)q_countof(played_by_name); i++)
+        S_RegisterSound(played_by_name[i]);
 }
 
 /*
@@ -1031,7 +1063,7 @@ static void CL_AddExplosions(void)
         if (ex->type == ex_free)
             continue;
 
-		if (cls.ref_type == REF_TYPE_VKPT)
+		if (CL_PathTraced())
 		{
 			// Flow's fire lights the scene itself (pt_flow_lighting)
 			if (!(ex->flow & R_FLOW_LIT))
@@ -1876,7 +1908,7 @@ static void CL_RailTrail(void)
         }
     }
 
-    if (!cl_railtrail_type->integer || (cls.ref_type == REF_TYPE_VKPT && cvar_pt_beam_lights->value <= 0))
+    if (!cl_railtrail_type->integer || (CL_PathTraced() && cvar_pt_beam_lights->value <= 0))
     {
         CL_RailLights(rail_color);
     }

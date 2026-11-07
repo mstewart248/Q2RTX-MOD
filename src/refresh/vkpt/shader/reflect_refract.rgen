@@ -74,6 +74,10 @@ main()
 {
 	// before anything reads rt_LaunchID
 	pt_tile_launch_init();
+#ifdef VKPT_D3D12
+	if (pt_tile_launch_none())   // the whole group: the condition is its group ID's
+		return;
+#endif
 
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 

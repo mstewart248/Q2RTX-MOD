@@ -445,6 +445,14 @@ taa_folded(void)
 	return qvk.device_count == 1 && taa_folded_in_shader();
 }
 
+/* taa_folded() for the D3D12 renderer, which records the same interleave and TAA
+   passes (d3d12/passes.c) from the same UBO. */
+bool
+vkpt_taa_folded(void)
+{
+	return taa_folded();
+}
+
 VkResult
 vkpt_interleave(VkCommandBuffer cmd_buf)
 {

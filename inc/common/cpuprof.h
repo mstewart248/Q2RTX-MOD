@@ -39,5 +39,13 @@ extern uint64_t cpuprof_us[CPUPROF_COUNT];
 
 uint64_t Sys_Microseconds(void);
 
+/* FILES READ, for first-use hitches (the first monster shot after a map load, 11-06):
+   such a hitch is nearly always something loaded from disk mid-game. FS_LoadFileEx and
+   FS_OpenFile (reads) note every file here, and with cl_cpustats 1 a long frame's
+   CPULONG line is followed by a CPULONG files line naming what that frame read. */
+void cpuprof_note_file(const char *path, int64_t bytes, uint64_t us);
+// this frame's notes as text into `buf` ("" when none), then cleared; returns the length
+size_t cpuprof_take_files(char *buf, size_t size);
+
 #define CPUPROF_BEGIN(id) const uint64_t cpuprof_t0_##id = Sys_Microseconds()
 #define CPUPROF_END(id)   (cpuprof_us[CPUPROF_##id] += Sys_Microseconds() - cpuprof_t0_##id)

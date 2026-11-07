@@ -13,6 +13,13 @@ forwarder is gone; 310.8 now fails at DLSSNR.Available with a message saying so.
 Side benefit: the runtime's own log lines ("Created feature ... network WxH, preset=N ->
 name") reach the console through TryInit's logging callback.
 
+THE D3D12 RENDERER (vid_rtx 3) runs this same code on its own NGX instance: the API calls
+are a dlss5_backend_t it hands over (d3d12/frontend.c), and it records the passes and the
+evaluation itself - DLSS5Prepare, DLSS5ConvertPush, DLSS5DescribeEvaluation and
+DLSS5Evaluated are DLSS5Apply in pieces, which DLSS5Apply below is made of too. Its
+resources go over as D3D12 ones (SetD3d12Resource, d3d12/ngx.c). pt_dlss5_drugs is
+Vulkan's only.
+
 WHAT THE MODEL IS FED
 
   Color   VKPT_IMG_DLSS_OUTPUT at output resolution, tone mapped and HUD-less, ENCODED TO
@@ -91,16 +98,6 @@ static struct {
 static VkPipeline       convert_pipeline;
 static VkPipelineLayout convert_pipeline_layout;
 
-struct dlss5_convert_push_constants {
-    int32_t extent[2];
-    int32_t mode;       /* 0 encode, 1 resolve */
-    int32_t split;
-    float   strength;
-    float   colour;
-    int32_t view;
-    int32_t hdr;        /* scRGB swapchain: map to/from the SDR-equivalent frame */
-};
-
 static cvar_t* cvar_pt_dlss5;
 static cvar_t* cvar_pt_dlss5_preset;
 static cvar_t* cvar_pt_dlss5_style;
@@ -115,6 +112,55 @@ static cvar_t* cvar_pt_dlss5_strength;
 static cvar_t* cvar_pt_dlss5_colour;
 static cvar_t* cvar_pt_dlss5_drugs;
 
+/* THE API HALF (DLSSNR.h's dlss5_backend_t): Vulkan's NGX calls, unless the D3D12 renderer
+   handed over its own (DLSS5_SetBackend). */
+static NVSDK_NGX_Parameter* VulkanInstanceParams(void)
+{
+    return DLSSCapabilityParameters(qvk.device);
+}
+
+static NVSDK_NGX_Result VulkanNewParams(NVSDK_NGX_Parameter** params)
+{
+    return NVSDK_NGX_VULKAN_GetCapabilityParameters(params);
+}
+
+static void VulkanDestroyParams(NVSDK_NGX_Parameter* params)
+{
+    NVSDK_NGX_VULKAN_DestroyParameters(params);
+}
+
+static NVSDK_NGX_Result VulkanCreate(void* cmd, NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** feature)
+{
+    return NVSDK_NGX_VULKAN_CreateFeature1(qvk.device, (VkCommandBuffer)cmd, DLSS5_NGX_FEATURE, params, feature);
+}
+
+static NVSDK_NGX_Result VulkanRelease(NVSDK_NGX_Handle* feature)
+{
+    return NVSDK_NGX_VULKAN_ReleaseFeature(feature);
+}
+
+static void VulkanWaitIdle(void)
+{
+    vkpt_device_wait_idle();
+}
+
+static const dlss5_backend_t vulkanBackend = {
+    .instance_params = VulkanInstanceParams,
+    .new_params = VulkanNewParams,
+    .destroy_params = VulkanDestroyParams,
+    .create = VulkanCreate,
+    .release = VulkanRelease,
+    .wait_idle = VulkanWaitIdle,
+    .feedback = qtrue,
+};
+
+static const dlss5_backend_t* api = &vulkanBackend;
+
+void DLSS5_SetBackend(const dlss5_backend_t* backend)
+{
+    api = backend ? backend : &vulkanBackend;
+}
+
 VkResult vkpt_dlss5_initialize(void)
 {
     VkDescriptorSetLayout desc_set_layouts[] = {
@@ -123,7 +169,7 @@ VkResult vkpt_dlss5_initialize(void)
     VkPushConstantRange push_constant_range = {
         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
         .offset     = 0,
-        .size       = sizeof(struct dlss5_convert_push_constants)
+        .size       = sizeof(dlss5_convert_push_t)
     };
     CREATE_PIPELINE_LAYOUT(qvk.device, &convert_pipeline_layout,
         .setLayoutCount         = LENGTH(desc_set_layouts),
@@ -173,6 +219,19 @@ static void ImageBarrier(VkCommandBuffer cmd, VkImage image, VkAccessFlags src, 
         .newLayout = VK_IMAGE_LAYOUT_GENERAL);
 }
 
+void DLSS5ConvertPush(int mode, uint32_t width, uint32_t height, qboolean hdr, dlss5_convert_push_t* push)
+{
+    const int compare = cvar_pt_dlss5_compare->integer;
+    push->extent[0] = (int32_t)width;
+    push->extent[1] = (int32_t)height;
+    push->mode = mode;
+    push->split = compare == 1 ? (int32_t)(width / 2) : 0;
+    push->strength = cvar_pt_dlss5_strength->value;
+    push->colour = cvar_pt_dlss5_colour->value;
+    push->view = compare;
+    push->hdr = hdr ? 1 : 0;
+}
+
 /* Writes VKPT_IMG_DLSS_OUTPUT, then a barrier so whatever reads it next - NGX, frame
    generation, the final blit - sees the result. */
 static void Convert(VkCommandBuffer cmd, int mode, uint32_t width, uint32_t height)
@@ -181,16 +240,8 @@ static void Convert(VkCommandBuffer cmd, int mode, uint32_t width, uint32_t heig
         qvk.desc_set_ubo,
         qvk_get_current_desc_set_textures(),
     };
-    const int compare = cvar_pt_dlss5_compare->integer;
-    struct dlss5_convert_push_constants push = {
-        .extent = { (int32_t)width, (int32_t)height },
-        .mode = mode,
-        .split = compare == 1 ? (int32_t)(width / 2) : 0,
-        .strength = cvar_pt_dlss5_strength->value,
-        .colour = cvar_pt_dlss5_colour->value,
-        .view = compare,
-        .hdr = qvk.surf_is_hdr ? 1 : 0,
-    };
+    dlss5_convert_push_t push;
+    DLSS5ConvertPush(mode, width, height, qvk.surf_is_hdr ? qtrue : qfalse, &push);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, convert_pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -217,7 +268,7 @@ static void Fail(const char* why, int result)
 static void ReleaseFeature(void)
 {
     if (nr.feature) {
-        NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_ReleaseFeature(nr.feature);
+        NVSDK_NGX_Result r = api->release(nr.feature);
         if (NVSDK_NGX_FAILED(r))
             Com_WPrintf("DLSS 5: ReleaseFeature failed (0x%08X)\n", (unsigned)r);
     }
@@ -249,7 +300,7 @@ void DLSS5_ReleaseNGX(void)
 {
     ReleaseFeature();
     if (nr.params)
-        NVSDK_NGX_VULKAN_DestroyParameters(nr.params);
+        api->destroy_params(nr.params);
     nr.params = NULL;
 }
 
@@ -274,7 +325,7 @@ static void enable_changed(cvar_t* self)
     nr.failed = qfalse;
     nr.reason[0] = 0;
     if (self->integer == 0 && nr.feature) {
-        vkpt_device_wait_idle();
+        api->wait_idle();
         ReleaseFeature();
     }
 }
@@ -282,6 +333,10 @@ static void enable_changed(cvar_t* self)
 static void drugs_changed(cvar_t* self)
 {
     if (self->integer) {
+        if (!api->feedback) {
+            Com_WPrintf("pt_dlss5_drugs: not on the Direct3D 12 renderer.\n");
+            return;
+        }
         if (!DLSS5Enabled())
             Com_WPrintf("pt_dlss5_drugs: DLSS 5 is not running (needs pt_dlss5 1 and DLSS on), "
                 "so there is nothing to feed back.\n");
@@ -339,7 +394,7 @@ static void dlss5_info_f(void)
     Com_Printf("  parameters %s, feature %s %ux%u, frames %llu\n",
         nr.params ? "allocated" : "none",
         nr.feature ? "up" : "down", nr.width, nr.height, nr.frames);
-    PrintCapabilities(nr.params ? nr.params : DLSSCapabilityParameters(qvk.device));
+    PrintCapabilities(nr.params ? nr.params : api->instance_params());
     const int preset = cvar_pt_dlss5_preset->integer;
     Com_Printf("  preset %d (%s), style %d, intensity %.2f, local structure %.2f, local tone %.2f, skin %.2f, auto mask %d\n",
         preset,
@@ -351,6 +406,7 @@ static void dlss5_info_f(void)
     Com_Printf("  strength %.2f, colour %.2f, compare %d\n",
         cvar_pt_dlss5_strength->value, cvar_pt_dlss5_colour->value, cvar_pt_dlss5_compare->integer);
     Com_Printf("  drugs %d, feedback %s\n", cvar_pt_dlss5_drugs->integer,
+        !api->feedback ? "not on Direct3D 12" :
         nr.feedback ? (nr.feedbackSeeded ? "looping" : "allocated") : "none");
     if (nr.failed)
         Com_Printf("  FAILED: %s (result 0x%08X)\n", nr.reason, (unsigned)nr.lastResult);
@@ -446,7 +502,7 @@ qboolean DLSS5Enabled(void)
 
 qboolean DLSS5DrugsActive(void)
 {
-    return cvar_pt_dlss5_drugs && cvar_pt_dlss5_drugs->integer != 0 && DLSS5Enabled();
+    return cvar_pt_dlss5_drugs && cvar_pt_dlss5_drugs->integer != 0 && api->feedback && DLSS5Enabled();
 }
 
 static qboolean EnsureFeedback(uint32_t width, uint32_t height)
@@ -538,15 +594,15 @@ static qboolean EnsureParams(void)
     if (nr.params)
         return qtrue;
 
-    if (!DLSSCapabilityParameters(qvk.device)) {
+    if (!api->instance_params()) {
         Fail("the NGX core is not initialised on this device (DLSS must be available)", 0);
         return qfalse;
     }
 
-    NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetCapabilityParameters(&nr.params);
+    NVSDK_NGX_Result r = api->new_params(&nr.params);
     if (NVSDK_NGX_FAILED(r) || !nr.params) {
         nr.params = NULL;
-        Fail("NVSDK_NGX_VULKAN_GetCapabilityParameters failed", r);
+        Fail("NGX's GetCapabilityParameters failed", r);
         return qfalse;
     }
     /* As for DLSS.c's own block: give a released feature's VRAM back right away. */
@@ -583,14 +639,14 @@ static void SetTuning(void)
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.UseAutoMask", cvar_pt_dlss5_automask->integer ? 1u : 0u);
 }
 
-static qboolean EnsureFeature(VkCommandBuffer cmd, uint32_t width, uint32_t height)
+static qboolean EnsureFeature(void* cmd, uint32_t width, uint32_t height)
 {
     qboolean rebuild = nr.feature && nr.dirty && Sys_Milliseconds() - nr.dirtyTime >= DLSS5_REBUILD_DELAY_MS;
     if (nr.feature && (nr.width != width || nr.height != height))
         rebuild = qtrue;
     if (rebuild) {
         /* Frames in flight still reference the feature. */
-        vkpt_device_wait_idle();
+        api->wait_idle();
         ReleaseFeature();
     }
     if (nr.feature)
@@ -606,7 +662,7 @@ static qboolean EnsureFeature(VkCommandBuffer cmd, uint32_t width, uint32_t heig
     SetTuning();
 
     NVSDK_NGX_Handle* handle = NULL;
-    NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_CreateFeature1(qvk.device, cmd, DLSS5_NGX_FEATURE, p, &handle);
+    NVSDK_NGX_Result r = api->create(cmd, p, &handle);
     if (NVSDK_NGX_FAILED(r) || !handle) {
         Fail("CreateFeature1(18) through the NGX core failed - the NGX/DLSSNR lines above "
              "and DLSSTemp/nvngx*.log say why", r);
@@ -623,6 +679,63 @@ static qboolean EnsureFeature(VkCommandBuffer cmd, uint32_t width, uint32_t heig
     return qtrue;
 }
 
+qboolean DLSS5Prepare(void* cmd, uint32_t width, uint32_t height)
+{
+    return DLSS5Enabled() && EnsureParams() && EnsureFeature(cmd, width, height);
+}
+
+NVSDK_NGX_Parameter* DLSS5DescribeEvaluation(qboolean resetHistory, uint32_t guideWidth, uint32_t guideHeight,
+                                             NVSDK_NGX_Handle** feature)
+{
+    /* the output size: the feature's (DLSS5Prepare made it for this frame's) */
+    const uint32_t width = nr.width;
+    const uint32_t height = nr.height;
+
+    NVSDK_NGX_Parameter* p = nr.params;
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Enabled", 1u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Width", width);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Height", height);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthInverted", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Reset", (resetHistory || nr.reset) ? 1u : 0u);
+
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectWidth", width);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectHeight", height);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectWidth", width);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectHeight", height);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectWidth", guideWidth);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectHeight", guideHeight);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectWidth", guideWidth);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectHeight", guideHeight);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleX", (float)guideWidth);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleY", (float)guideHeight);
+    SetTuning();
+
+    *feature = nr.feature;
+    return p;
+}
+
+qboolean DLSS5Evaluated(NVSDK_NGX_Result r)
+{
+    nr.reset = qfalse;
+    if (NVSDK_NGX_FAILED(r)) {
+        /* Put the frame back to linear untouched: resolve at strength 0 would read garbage
+           from the scratch image, so decode by resolving against itself is not an option -
+           a failed evaluate leaves the encoded frame, and the next frame is a fresh one. */
+        Fail("EvaluateFeature failed", r);
+        return qfalse;
+    }
+    nr.frames++;
+    return qtrue;
+}
+
 void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
 {
     if (!DLSS5Enabled())
@@ -636,7 +749,7 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
     const uint32_t guideWidth = qvk.extent_render.width;
     const uint32_t guideHeight = qvk.extent_render.height;
 
-    if (!EnsureParams() || !EnsureFeature(cmd, width, height))
+    if (!DLSS5Prepare(cmd, width, height))
         return;
 
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
@@ -665,48 +778,15 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
     NVSDK_NGX_Resource_VK output = ToNGXResource(qvk.images[VKPT_IMG_MOTION_BLUR], qvk.images_views[VKPT_IMG_MOTION_BLUR],
         outSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);
 
-    NVSDK_NGX_Parameter* p = nr.params;
+    NVSDK_NGX_Handle* feature = NULL;
+    NVSDK_NGX_Parameter* p = DLSS5DescribeEvaluation(resetHistory, guideWidth, guideHeight, &feature);
     NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Color", &color);
     NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Depth", &depth);
     NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.MVec", &motion);
     NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Output", &output);
 
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Enabled", 1u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Width", width);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Height", height);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthInverted", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Reset", (resetHistory || nr.reset) ? 1u : 0u);
-
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseX", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseY", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectWidth", width);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectHeight", height);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectBaseX", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectBaseY", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectWidth", width);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.OutputSubrectHeight", height);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectBaseX", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectBaseY", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectWidth", guideWidth);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthSubrectHeight", guideHeight);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectBaseX", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectBaseY", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectWidth", guideWidth);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectHeight", guideHeight);
-    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleX", (float)guideWidth);
-    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleY", (float)guideHeight);
-    SetTuning();
-
-    NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_EvaluateFeature_C(cmd, nr.feature, p, NULL);
-    nr.reset = qfalse;
-    if (NVSDK_NGX_FAILED(r)) {
-        /* Put the frame back to linear untouched: resolve at strength 0 would read garbage
-           from the scratch image, so decode by resolving against itself is not an option -
-           a failed evaluate leaves the encoded frame, and the next frame is a fresh one. */
-        Fail("EvaluateFeature failed", r);
+    if (!DLSS5Evaluated(NVSDK_NGX_VULKAN_EvaluateFeature_C(cmd, feature, p, NULL)))
         return;
-    }
-    nr.frames++;
 
     ImageBarrier(cmd, qvk.images[VKPT_IMG_MOTION_BLUR], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
 

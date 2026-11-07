@@ -128,6 +128,46 @@ time_t      com_startTime;
 
 uint64_t cpuprof_us[CPUPROF_COUNT];
 
+// cpuprof.h's FILES READ: the frame's first few by name, all of them counted
+#define CPUPROF_MAX_FILES   6
+static struct {
+    char        path[64];       // the path's tail when it is longer
+    int64_t     bytes;
+    uint64_t    us;
+} cpuprof_files[CPUPROF_MAX_FILES];
+static int      cpuprof_num_files;
+static uint64_t cpuprof_files_us;
+
+void cpuprof_note_file(const char *path, int64_t bytes, uint64_t us)
+{
+    if (cpuprof_num_files < CPUPROF_MAX_FILES) {
+        const size_t n = strlen(path), keep = sizeof(cpuprof_files[0].path) - 1;
+        Q_strlcpy(cpuprof_files[cpuprof_num_files].path, n > keep ? path + n - keep : path,
+                  sizeof(cpuprof_files[0].path));
+        cpuprof_files[cpuprof_num_files].bytes = bytes;
+        cpuprof_files[cpuprof_num_files].us = us;
+    }
+    cpuprof_num_files++;
+    cpuprof_files_us += us;
+}
+
+size_t cpuprof_take_files(char *buf, size_t size)
+{
+    size_t len = 0;
+    buf[0] = 0;
+    if (cpuprof_num_files) {
+        len = Q_scnprintf(buf, size, "%d files read, %.2f ms:", cpuprof_num_files, cpuprof_files_us * 1e-3);
+        for (int i = 0; i < cpuprof_num_files && i < CPUPROF_MAX_FILES; i++)
+            len += Q_scnprintf(buf + len, size - len, " %s (%lld KB, %.2f ms)", cpuprof_files[i].path,
+                               (long long)(cpuprof_files[i].bytes / 1024), cpuprof_files[i].us * 1e-3);
+        if (cpuprof_num_files > CPUPROF_MAX_FILES)
+            len += Q_scnprintf(buf + len, size - len, " ...");
+    }
+    cpuprof_num_files = 0;
+    cpuprof_files_us = 0;
+    return len;
+}
+
 #if USE_CLIENT
 cvar_t  *host_speeds;
 

@@ -42,6 +42,40 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// One queued present.
+typedef struct {
+    VkSwapchainKHR swapchain;
+    uint32_t       image_index;
+    VkSemaphore    wait_semaphore;
+    uint64_t       target_us;
+    uint64_t       min_gap_us;
+    uint64_t       queued_at_us;
+    uint64_t       reflex_present_id;   // 0 = generated frame, present out of band
+    uint64_t       group_id;            // the rendered frame this belongs to
+    uint64_t       timeline_value;      // frame work complete at this value
+    uint32_t       slot_index;          // position in the group (relative pacing only)
+    uint32_t       group_size;          // 0 = absolute deadline, >0 = relative pacing
+    float          pace;                // fraction of the cadence a group may span
+} fg_present_item_t;
+
+/* THE API'S HALF OF THE THREAD. The thread decides WHEN each present goes out - the
+   pacing below; these wait for the GPU and present. The Vulkan renderer's are the
+   default: the timeline semaphore and vkQueuePresentKHR on the present queue. The D3D12
+   renderer sets its own (d3d12/frontend.c), and fills in only the fields of the items it
+   reads - swapchain and wait_semaphore are VK_NULL_HANDLE there. */
+typedef struct {
+    // host wait for the frame work that completes at `value`; false if there is none
+    bool     (*ready_wait)(uint64_t value);
+    // non-blocking: has work queued after `value` - a newer group - finished?
+    bool     (*ready_passed)(uint64_t value);
+    // issue the present: `image_ready` says ready_wait returned true for its group.
+    // Failures are reported through FGPresent_TakeLastResult.
+    VkResult (*present)(const fg_present_item_t *item, bool image_ready);
+} fg_present_backend_t;
+
+// Selects the backend: NULL is the Vulkan renderer's. Only while the thread is stopped.
+void FGPresent_SetBackend(const fg_present_backend_t *backend);
+
 // Creates the worker thread and its sync objects. Safe to call repeatedly.
 void FGPresent_Init(void);
 

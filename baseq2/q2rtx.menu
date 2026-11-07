@@ -140,12 +140,15 @@ end
 begin resolution
     background #212F3CD0
     style --compact
+    // both RTX renderers (the D3D12 one since 11-06: vkpt main.c's vkpt_drs_update)
+    ifeqor vid_rtx 1 vid_rtx 3
 	toggle --status "(drs_enable)" "dynamic resolution scaling" drs_enable
 	blank
 	range -f "%.0f FPS" --status "only effective in dynamic mode (drs_target)" "target frames per second" drs_target 30 250 1
 	range -f "%.0f%%" --status "only effective in dynamic mode (drs_minscale)" "minimum scale" drs_minscale 25 100 5
 	range -f "%.0f%%" --status "only effective in dynamic mode (drs_maxscale)" "maximum scale" drs_maxscale 50 150 5
 	blank
+    endif
     range --status "(viewsize)" -f "%.0f%%" "fixed resolution scale" viewsize 25 200 5
 end
 
@@ -219,8 +222,8 @@ THE VIDEO MENU IS THREE SUBMENUS:
                      FPS counter, field of view, resolution scaling, HDR,
                      exposure, Reflex and the GPU profiler
   reconstruction     everything that rebuilds the frame from fewer samples -
-                     anti-aliasing, DLSS (SR, RR, frame generation, DLSS 5)
-                     and FSR
+                     anti-aliasing and DLSS (SR, RR, frame generation,
+                     DLSS 5)
   renderer           which renderer, and everything else about how it renders
 
 The renderer choice itself lives in the renderer submenu. Reconstruction is RTX
@@ -232,7 +235,7 @@ begin video
     style --compact
     banner m_banner_video
     action "display settings..." pushmenu video_display
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         action "reconstruction..." pushmenu video_reconstruction
     endif
     action "renderer..." pushmenu video_renderer
@@ -249,7 +252,7 @@ begin video_display
     pairs --status "(scr_fps)" "FPS counter" scr_fps "off" 0 "show FPS" 1 "show FPS and resolution scale" 2
     range --status "(fov)" -f "%.0f deg" "field of view" fov 60 160 5
     blank
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         action "resolution scaling options..." pushmenu resolution
         action "HDR options..." pushmenu hdr
         blank
@@ -278,7 +281,7 @@ begin video_reconstruction
     ifeq pt_dlss_available 1
     pairs --status "(pt_dlss)" "DLSS Super Resolution" pt_dlss ultra-performance -1 off 0 performance 1 balanced 2 quality 3 ultra-quality 4 DLAA 5
     // Ray Reconstruction REPLACES DLSS's denoiser, so it is meaningless without
-    // DLSS itself. This whole submenu is only reachable with vid_rtx 1;
+    // DLSS itself. This whole submenu is only reachable with vid_rtx 1 or 3;
     // see menuConditionSet_t in ui.h for how the nesting works.
     //
     // FRAME GENERATION IS IN HERE FOR A DIFFERENT AND WEAKER REASON, and it is
@@ -316,9 +319,6 @@ begin video_reconstruction
     endif
     endif
     endif
-    blank
-    toggle --status "(flt_fsr_enable)" "AMD FSR 1.0" flt_fsr_enable
-    range --status "lower is sharper (flt_fsr_sharpness)" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01
     // shown only on DLSS's own output path (main.c, the DLSSEnabled() blit)
     ifeq pt_dlss_available 1
     ifneq pt_dlss 0
@@ -332,7 +332,16 @@ begin video_renderer
     background #212F3CD0
     style --compact
     title "Renderer"
+    // Direct3D 12 (vid_rtx 3) only where it is built and has not failed to start
+    // this session - client/refresh.c sets vid_d3d12_available. Both RTX choices
+    // are the same path tracer; the rows under them are shared.
+    ifeq vid_d3d12_available 1
+	pairs --status "which renderer draws the game. The two RTX choices are the same path tracer on Vulkan or on Direct3D 12 - the newer one, for comparing the two. Restarts the renderer (vid_rtx)" \
+            "renderer" vid_rtx opengl 0 "rtx (vulkan)" 1 "rtx (direct3d 12)" 3 software 2
+    endif
+    ifneq vid_d3d12_available 1
 	pairs --status "(vid_rtx)" "renderer" vid_rtx opengl 0 rtx 1 software 2
+    endif
     blank
     // The software renderer: id's original span renderer in 32-bit colour.
     ifeq vid_rtx 2
@@ -352,7 +361,7 @@ begin video_renderer
             toggle --status "the rerelease's glow maps: lights and screens stay lit in the dark; the original had none (sw_glowmaps)" "glow maps" sw_glowmaps
         endif
     endif
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
 		range --status "(pt_texture_lod_bias)" "texture LOD bias" pt_texture_lod_bias -2 2 0.5
         // Sits with the other texture settings rather than down among the
         // denoiser and glass internals, which is where it used to be.
@@ -409,9 +418,42 @@ begin video_renderer
         pairs --status "experimental feature - simulates reflection and refraction effects in thick glass (pt_thick_glass)" \
             "thick glass refraction" pt_thick_glass "disabled" 0 "photo mode only" 1 "enabled" 2
         pairs --status "(pt_projection)" projection pt_projection perspective 0 panini 1 stereographic 2 cylindrical 3 equirectangular 4 mercator 5
+        // both RTX renderers, where the GPU and driver have it: vkpt/path_tracer.c
+        // (VK_NV_partitioned_acceleration_structure) and d3d12/world.c (NVAPI, or the
+        // preview runtime) set pt_ptlas_available
+        ifeq pt_ptlas_available 1
+        pairs --status "RTX Mega Geometry's partitioned top-level acceleration structure: the static world is kept from frame to frame and only what moved is rewritten, instead of the whole TLAS rebuilt every frame. For comparing with the GPU profiler's BVH rows; not saved (pt_ptlas)" \
+            "partitioned TLAS" pt_ptlas off 0 on 1
+        endif
+        // both RTX renderers, where the GPU and driver have it: vkpt/path_tracer.c
+        // (VK_NV_cluster_acceleration_structure) and d3d12/world.c (NVAPI) set
+        // pt_clusters_available
+        ifeq pt_clusters_available 1
+        pairs --status "RTX Mega Geometry's clustered geometry: the animated models, the weapon and blood are built every frame from small clusters of 85 triangles instead of one acceleration structure each. Restarts the renderer. For comparing with the GPU profiler's BVH rows; not saved (pt_clusters)" \
+            "clustered geometry" pt_clusters off 0 on 1
+        endif
         blank
+        // the Vulkan renderer's own
+        ifeq vid_rtx 1
 		pairs --status "(sli)" "multi-gpu support" sli "disabled" 0 "when available" 1
         pairs --status "(ray_tracing_api)" "ray tracing API" ray_tracing_api "automatic selection" "auto" "prefer KHR_ray_query" "query"  "prefer KHR_ray_tracing_pipeline" "pipeline"
+        endif
+        // ...and the Direct3D 12 renderer's
+        ifeq vid_rtx 3
+        pairs --status "how many finished frames may wait for the display: 1 is the least input lag, 3 the steadiest pacing. Restarts the renderer (d3d12_frame_latency)" \
+            "frame queue" d3d12_frame_latency 1 1 2 2 3 3
+        // shader model 6.9 (the Agility SDK runtime); world.c sets pt_ser_available
+        ifeq pt_ser_available 1
+        pairs --status "Shader Execution Reordering: the indirect lighting as ray generation shaders, regrouped by material, or without the regrouping to see what it buys. Measured on an RTX 5070 Ti: ray generation alone costs nothing, the reorder about 1 ms. For comparing with the GPU profiler; not saved (pt_ser)" \
+            "shader execution reordering" pt_ser off 0 on 1 "ray generation only" 2
+        endif
+        // only with Windows Developer Mode on and the preview runtime beside the exe:
+        // device.c sets d3d12_agility_preview_available
+        ifeq d3d12_agility_preview_available 1
+        pairs --status "Microsoft's preview D3D12 runtime, for its own clustered geometry and partitioned TLAS API instead of NVIDIA's. DLSS does not run on it. Restarts the renderer (d3d12_agility_preview)" \
+            "preview D3D12 runtime" d3d12_agility_preview off 0 on 1
+        endif
+        endif
     endif
 
     ifeq vid_rtx 0
@@ -440,7 +482,7 @@ begin options
     background #212F3CD0
     style --compact
     banner m_banner_options
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         action "environment setup" pushmenu environment
     endif
     action "graphics settings" pushmenu video
@@ -534,7 +576,7 @@ begin effects
         toggle --status "(gl_shadows)" "ground shadows" gl_shadows
         toggle --status "(gl_polyblend)" "screen blending" gl_polyblend
     endif
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         toggle --status "(tm_blend_enable)" "screen blending" tm_blend_enable
         range --status "(tm_blend_scale_center)" -p -f "%.0f%%" "screen blending center strength" tm_blend_scale_center 0 1
         range --status "(tm_blend_scale_border)" -p -f "%.0f%%" "screen blending border strength" tm_blend_scale_border 0 1
@@ -558,7 +600,7 @@ begin effects
        primary_rays.rgen, so there is nothing for the GL renderer to do with it.
        Nested behind its own toggle for the same reason the fog and blood menus
        nest - with the effect off, none of these does anything. */
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         blank
         /* Not behind the warp toggle: this is how murky the liquid itself is,
            and it applies whether or not the view warps. One scale covers water,
@@ -613,7 +655,7 @@ begin effects
     blank
     pairs --status "(g_ludicrous_gibs)" "ludicrous gibs" g_ludicrous_gibs "off - classic quake ii" 0 "on" 1
     blank
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         toggle --status "(cl_md5_models)" "md5 models" cl_md5_models
         // SMOOTH MODEL NORMALS. The path tracer has always interpolated vertex
         // normals across a triangle; what it could not do was interpolate an
@@ -631,7 +673,7 @@ begin effects
         toggle --status "(cl_classic_railgun)" "classic railgun" cl_classic_railgun
         blank
     endif
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         action --align "map fog and volumetrics..." pushmenu fog
         action --align "blood droplets..." pushmenu blood
     endif
@@ -1009,7 +1051,7 @@ begin screen
     // CHROMATIC ABERRATION, FILM GRAIN and the CRT FILTER. RTX renderer only,
     // so the GL renderer gets no rows for them; each slider is nested under
     // the row that switches it on.
-    ifeq vid_rtx 1
+    ifeqor vid_rtx 1 vid_rtx 3
         blank
         toggle --status "colour fringes that grow toward the edges of the screen, the way a real camera lens splits light into its colours - red on the outside of a bright edge, blue on the inside. Nothing moves at the centre, and the HUD is never touched (pt_chromatic_aberration)" \
             "chromatic aberration" pt_chromatic_aberration

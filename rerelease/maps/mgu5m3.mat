@@ -1,0 +1,33 @@
+# Material overrides for mgu5m3 only - loaded by MAT_ChangeMap on map load.
+# Entries are kept in name order, as in maps/mgu5m1.mat.
+
+# The ceiling lights (e1u1/ceil1_5, 147 faces). Only 7 are flagged SURF_LIGHT
+# (value 1000); the other 140 have no flag and value 0. With no .mat entry of its
+# own, bsp_mesh.c synthesizes this material from the flagged faces with
+# default_radiance 0, so the unflagged 140 drew black and were skipped as lights.
+# Their light styles are only 0, 1 and 11 (always on, flicker, pulse) - nothing
+# switchable - so nothing is waiting on a trigger to turn them on. bsp_radiance 0
+# gives all 147 the same strength: 1 is what the map's own flagged faces use.
+# Spelled out in full for the same reason as ceil1_16 below.
+textures/e1u1/ceil1_5:
+	texture_base overrides/ceil1_5.tga
+	texture_normals overrides/ceil1_5_n.tga
+	texture_emissive overrides/ceil1_5_light.tga
+	bsp_radiance 0
+	default_radiance 2
+	is_light 1
+
+# The ceiling lights (e1u2/ceil1_16, 163 faces) - same fix as maps/mgu5m1.mat.
+# Every face is flagged SURF_LIGHT but with radiance 0, so compute_emissive gives
+# 0: the _light.tga draws black and the faces are skipped as lights. The rerelease
+# draws _glow textures fullbright whatever the radiance, which is why they look lit
+# there. bsp_radiance 0 makes default_radiance the strength instead; keep it in
+# step with mgu5m1. An explicit entry loads only the files it names, so the three
+# override images are spelled out.
+textures/e1u2/ceil1_16:
+	texture_base overrides/ceil1_16.tga
+	texture_normals overrides/ceil1_16_n.tga
+	texture_emissive overrides/ceil1_16_light.tga
+	bsp_radiance 0
+	default_radiance 3
+	is_light 1

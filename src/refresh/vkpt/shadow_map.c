@@ -32,35 +32,34 @@ static VkImageView             imv_smap_depth_array;
 static VkDeviceMemory          mem_smap;
 
 
-typedef struct
-{
-	mat4_t model_matrix;
-	VkBuffer buffer;
-	size_t vertex_offset;
-	uint32_t prim_count;
-} shadowmap_instance_t;
-
 static uint32_t num_shadowmap_instances;
-static shadowmap_instance_t shadowmap_instances[MAX_MODEL_INSTANCES];
+static vkpt_shadow_map_instance_t shadowmap_instances[MAX_MODEL_INSTANCES];
 
 void vkpt_shadow_map_reset_instances()
 {
 	num_shadowmap_instances = 0;
 }
 
-void vkpt_shadow_map_add_instance(const float* model_matrix, VkBuffer buffer, size_t vertex_offset, uint32_t prim_count)
+void vkpt_shadow_map_add_instance(const float* model_matrix, uint32_t buffer_idx, size_t vertex_offset, uint32_t prim_count)
 {
 	if (num_shadowmap_instances < MAX_MODEL_INSTANCES)
 	{
-		shadowmap_instance_t* instance = shadowmap_instances + num_shadowmap_instances;
+		vkpt_shadow_map_instance_t* instance = shadowmap_instances + num_shadowmap_instances;
 
 		memcpy(instance->model_matrix, model_matrix, sizeof(mat4_t));
-		instance->buffer = buffer;
+		instance->buffer_idx = buffer_idx;
 		instance->vertex_offset = vertex_offset;
 		instance->prim_count = prim_count;
 
 		++num_shadowmap_instances;
 	}
+}
+
+// this frame's list, for the D3D12 renderer's draw of the same map
+uint32_t vkpt_shadow_map_instances(const vkpt_shadow_map_instance_t** list)
+{
+	*list = shadowmap_instances;
+	return num_shadowmap_instances;
 }
 
 static void
@@ -491,13 +490,16 @@ vkpt_shadow_map_render(VkCommandBuffer cmd_buf, float* view_projection_matrix,
 
 	for (uint32_t instance_idx = 0; instance_idx < num_shadowmap_instances; instance_idx++)
 	{
-		const shadowmap_instance_t* mi = shadowmap_instances + instance_idx;
+		const vkpt_shadow_map_instance_t* mi = shadowmap_instances + instance_idx;
 
 		mult_matrix_matrix(mvp_matrix, view_projection_matrix, mi->model_matrix);
 
 		vkCmdPushConstants(cmd_buf, pipeline_layout_smap, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4_t), mvp_matrix);
 
-		vkCmdBindVertexBuffers(cmd_buf, 0, 1, &mi->buffer, &mi->vertex_offset);
+		VkBuffer buffer = mi->buffer_idx == VERTEX_BUFFER_WORLD ? qvk.buf_world.buffer
+			: model_vertex_data[mi->buffer_idx - VERTEX_BUFFER_FIRST_MODEL].buffer.buffer;
+		VkDeviceSize offset = mi->vertex_offset;
+		vkCmdBindVertexBuffers(cmd_buf, 0, 1, &buffer, &offset);
 
 		vkCmdDraw(cmd_buf, mi->prim_count * 3, 1, 0, 0);
 	}

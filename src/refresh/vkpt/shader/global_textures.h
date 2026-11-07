@@ -80,41 +80,39 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(PT_COLOR_HF,               32, R32_UINT,            r32ui,   IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_COLOR_SPEC,             33, R32_UINT,            r32ui,   IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(PT_GEO_NORMAL2,            34, R32_UINT,            r32ui,   IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
-	IMG_DO(FSR_EASU_OUTPUT,           35, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(FSR_RCAS_OUTPUT,           36, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(PT_REFLECT_MOTION,         37, R32G32_SFLOAT,       rg32f,   IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_OUTPUT,               38, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
-	IMG_DO(PT_VIEW_DEPTH_SPLIT,       39, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(PT_RAY_LENGTH,             40, R32G32_SFLOAT,       rg32f,   IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(PT_DLSS_MOTION,            41, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA)  \
-	IMG_DO(DLSS_DEPTH,                42, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA )  \
-	IMG_DO(DLSS_REFLECT_MOTION,       43, R32G32_SFLOAT,       rg32f,   IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_ALBEDO,                 44, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_ALBEDO,               45, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,		 IMG_HEIGHT_TAA	) \
-	IMG_DO(PT_ROUGHNESS,              46, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_ROUGHNESS,            47, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,		 IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_NORMAL,                 48, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_NORMAL,               49, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,		 IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_SPECULAR_ALBEDO,        50, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_SPECULAR_ALBEDO,      51, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_BEFORE_TRANSPARENT,     52, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_BEFORE_TRANSPARENT,   53, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_RAYLENGTH_DIFFUSE,      54, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_RAYLENGTH_DIFFUSE,    55, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_RAYLENGTH_SPECULAR,     56, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_RAYLENGTH_SPECULAR,   57, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_REFLECTED_ALBEDO,       58, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
-	IMG_DO(DLSS_REFLECTED_ALBEDO,     59, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(DLSS_BLOOM_HBLUR,          60, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
-	IMG_DO(DLSS_BLOOM_VBLUR,          61, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
-	IMG_DO(DLSS_FG_OUTPUT,            62, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
-	IMG_DO(DLSS_FG_OUTPUT2,           63, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
-	IMG_DO(DLSS_FG_OUTPUT3,           64, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
-	IMG_DO(DLSS_FG_OUTPUT4,           65, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
-	IMG_DO(DLSS_FG_OUTPUT5,           66, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
-	IMG_DO(DLSS_FG_DEPTH,             67, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
-	IMG_DO(PT_PRIMARY_DIST,           68, R16_SFLOAT,          r32f,    IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
-	IMG_DO(MOTION_BLUR,               69, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_POSTFX,    IMG_HEIGHT_POSTFX) \
+	IMG_DO(PT_REFLECT_MOTION,         35, R32G32_SFLOAT,       rg32f,   IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_OUTPUT,               36, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(PT_VIEW_DEPTH_SPLIT,       37, R32G32B32A32_SFLOAT, rgba32f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(PT_RAY_LENGTH,             38, R32G32_SFLOAT,       rg32f,   IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(PT_DLSS_MOTION,            39, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA)  \
+	IMG_DO(DLSS_DEPTH,                40, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA )  \
+	IMG_DO(DLSS_REFLECT_MOTION,       41, R32G32_SFLOAT,       rg32f,   IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_ALBEDO,                 42, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_ALBEDO,               43, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,		 IMG_HEIGHT_TAA	) \
+	IMG_DO(PT_ROUGHNESS,              44, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_ROUGHNESS,            45, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,		 IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_NORMAL,                 46, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_NORMAL,               47, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,		 IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_SPECULAR_ALBEDO,        48, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_SPECULAR_ALBEDO,      49, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_BEFORE_TRANSPARENT,     50, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_BEFORE_TRANSPARENT,   51, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_RAYLENGTH_DIFFUSE,      52, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_RAYLENGTH_DIFFUSE,    53, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_RAYLENGTH_SPECULAR,     54, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_RAYLENGTH_SPECULAR,   55, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_REFLECTED_ALBEDO,       56, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH,           IMG_HEIGHT     ) \
+	IMG_DO(DLSS_REFLECTED_ALBEDO,     57, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(DLSS_BLOOM_HBLUR,          58, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
+	IMG_DO(DLSS_BLOOM_VBLUR,          59, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED / 4,   IMG_HEIGHT_UNSCALED / 4 ) \
+	IMG_DO(DLSS_FG_OUTPUT,            60, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT2,           61, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT3,           62, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT4,           63, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_OUTPUT5,           64, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_UNSCALED,  IMG_HEIGHT_UNSCALED) \
+	IMG_DO(DLSS_FG_DEPTH,             65, R32_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(PT_PRIMARY_DIST,           66, R16_SFLOAT,          r32f,    IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
+	IMG_DO(MOTION_BLUR,               67, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_POSTFX,    IMG_HEIGHT_POSTFX) \
 
 
 /* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
@@ -148,7 +146,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    afterwards, which is also what lets the blur be skipped for a frame without
    leaving a stale image anywhere. Same format as both possible sources so the
    copy is a straight blit. */
-#define NUM_IMAGES_BASE     70
+#define NUM_IMAGES_BASE     68
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
@@ -293,10 +291,44 @@ typedef char compile_time_check_num_images[(NUM_IMAGES == NUM_VKPT_IMAGES)*2-1];
 /***************************************************************************/
 
 /* general texture array for world, etc */
+#ifdef VKPT_D3D12
+/* D3D12 (src/refresh/d3d12) cannot take a combined-sampler array this big:
+   through HLSL it becomes a parallel array of NUM_GLOBAL_TEXTUES samplers, and
+   a shader-visible sampler heap holds 2048. So there it is separate images,
+   the four samplers textures.c chooses from (D3D12_GLOBAL_SAMPLER_* in
+   d3d12/d3d12.h, same order), and a byte per image saying which - the choice
+   textures.c makes when it writes each image's descriptor. The bindings are
+   D3D12-only; Vulkan never sees them. */
+#define D3D12_NUM_GLOBAL_SAMPLERS 4
+#define BINDING_OFFSET_D3D12_SAMPLERS      900
+#define BINDING_OFFSET_D3D12_SAMPLER_INDEX 901
+layout(
+	set = GLOBAL_TEXTURES_DESC_SET_IDX,
+	binding = GLOBAL_TEXTURES_TEX_ARR_BINDING_IDX
+) uniform texture2D global_textures_d3d12[];
+layout(
+	set = GLOBAL_TEXTURES_DESC_SET_IDX,
+	binding = BINDING_OFFSET_D3D12_SAMPLERS
+) uniform sampler global_samplers_d3d12[D3D12_NUM_GLOBAL_SAMPLERS];
+layout(
+	set = GLOBAL_TEXTURES_DESC_SET_IDX,
+	binding = BINDING_OFFSET_D3D12_SAMPLER_INDEX,
+	std430
+) readonly buffer GlobalSamplerIndexD3D12 {
+	uint global_sampler_index_d3d12[]; // 4 images per word, 8 bits each
+};
+uint global_sampler_of_d3d12(uint idx)
+{
+	return (global_sampler_index_d3d12[idx >> 2] >> ((idx & 3u) * 8u)) & 0xffu;
+}
+#define GLOBAL_TEX(idx) sampler2D(global_textures_d3d12[nonuniformEXT(idx)],                                   global_samplers_d3d12[nonuniformEXT(global_sampler_of_d3d12(idx))])
+#else
 layout(
 	set = GLOBAL_TEXTURES_DESC_SET_IDX,
 	binding = GLOBAL_TEXTURES_TEX_ARR_BINDING_IDX
 ) uniform sampler2D global_texture_descriptors[];
+#define GLOBAL_TEX(idx) global_texture_descriptors[nonuniformEXT(idx)]
+#endif
 
 #define SAMPLER_r16ui    usampler2D
 #define SAMPLER_r32ui    usampler2D
@@ -361,7 +393,14 @@ layout(
     set = GLOBAL_TEXTURES_DESC_SET_IDX,
     binding = BINDING_OFFSET_PHYSICAL_SKY_IMG,
     rgba16f
-) uniform imageCube IMG_PHYSICAL_SKY;
+)
+#ifdef VKPT_D3D12
+/* HLSL has no writable cube type; D3D12 writes a cube's six faces through a
+   Texture2DArray UAV, and imageStore(ivec3(x, y, face)) means the same thing. */
+uniform image2DArray IMG_PHYSICAL_SKY;
+#else
+uniform imageCube IMG_PHYSICAL_SKY;
+#endif
 
 //#precomputed_sky begin
 
@@ -411,7 +450,7 @@ global_texture(uint idx, vec2 tex_coord)
 {
 	if(idx >= NUM_GLOBAL_TEXTUES)
 		return vec4(1, 0, 1, 0);
-	return texture(global_texture_descriptors[nonuniformEXT(idx)], tex_coord);
+	return texture(GLOBAL_TEX(idx), tex_coord);
 }
 
 vec4
@@ -419,7 +458,7 @@ global_textureLod(uint idx, vec2 tex_coord, float lod)
 {
 	if(idx >= NUM_GLOBAL_TEXTUES)
 		return vec4(1, 1, 0, 0);
-	return textureLod(global_texture_descriptors[nonuniformEXT(idx)], tex_coord, lod);
+	return textureLod(GLOBAL_TEX(idx), tex_coord, lod);
 }
 
 vec4
@@ -427,7 +466,7 @@ global_textureGrad(uint idx, vec2 tex_coord, vec2 d_x, vec2 d_y)
 {
 	if(idx >= NUM_GLOBAL_TEXTUES)
 		return vec4(1, 1, 0, 0);
-	return textureGrad(global_texture_descriptors[nonuniformEXT(idx)], tex_coord, d_x, d_y);
+	return textureGrad(GLOBAL_TEX(idx), tex_coord, d_x, d_y);
 }
 
 ivec2
@@ -435,7 +474,7 @@ global_textureSize(uint idx, int level)
 {
 	if(idx >= NUM_GLOBAL_TEXTUES)
 		return ivec2(0);
-	return textureSize(global_texture_descriptors[nonuniformEXT(idx)], level);
+	return textureSize(GLOBAL_TEX(idx), level);
 }
 
 int
@@ -443,7 +482,7 @@ global_textureQueryLevels(uint idx)
 {
 	if(idx >= NUM_GLOBAL_TEXTUES)
 		return 1;
-	return textureQueryLevels(global_texture_descriptors[nonuniformEXT(idx)]);
+	return textureQueryLevels(GLOBAL_TEX(idx));
 }
 
 bool

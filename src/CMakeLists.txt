@@ -318,6 +318,39 @@ SET(HEADERS_WINDOWS
 	windows/threads/threads.h
 )
 
+# The D3D12 path tracer (vid_rtx 3) - see refresh/d3d12/ROADMAP.md
+SET(SRC_D3D12
+	refresh/d3d12/accel.c
+	refresh/d3d12/bindings.c
+	refresh/d3d12/passes.c
+	refresh/d3d12/device.c
+	refresh/d3d12/draw.c
+	refresh/d3d12/flow.c
+	refresh/d3d12/frontend.c
+	refresh/d3d12/gpu_timers.c
+	refresh/d3d12/main.c
+	refresh/d3d12/mipgen.c
+	refresh/d3d12/ngx.c
+	refresh/d3d12/ngx_dlssg.cpp
+	refresh/d3d12/nvapi_rt.c
+	refresh/d3d12/reflex_nvapi.c
+	refresh/d3d12/shaders.c
+	refresh/d3d12/sky.c
+	refresh/d3d12/sound_trace.c
+	refresh/d3d12/swapchain.c
+	refresh/d3d12/textures.c
+	refresh/d3d12/world.c
+)
+SET(HEADERS_D3D12
+	refresh/d3d12/accel.h
+	refresh/d3d12/bindings.h
+	refresh/d3d12/passes.h
+	refresh/d3d12/ngx.h
+	refresh/d3d12/nvapi_rt.h
+	refresh/d3d12/sky.h
+	refresh/d3d12/d3d12pt.h
+)
+
 SET(SRC_VKPT
 	refresh/vkpt/asvgf.c
 	refresh/vkpt/bloom.c
@@ -331,7 +364,6 @@ SET(SRC_VKPT
 	refresh/vkpt/cameras.c
 	refresh/vkpt/cpu_trace.c
 	refresh/vkpt/freecam.c
-	refresh/vkpt/fsr.c
 	refresh/vkpt/main.c
 	refresh/vkpt/material.c
 	refresh/vkpt/matrix.c
@@ -341,6 +373,8 @@ SET(SRC_VKPT
 	refresh/vkpt/physical_sky.c
 	refresh/vkpt/precomputed_sky.c
 	refresh/vkpt/profiler.c
+	refresh/vkpt/ptlas.c
+	refresh/vkpt/clusters.c
 	refresh/vkpt/shadow_map.c
 	refresh/vkpt/sound_trace.c
 	refresh/vkpt/textures.c
@@ -365,6 +399,8 @@ SET(SRC_VKPT
 
 SET(HEADERS_VKPT
 	refresh/vkpt/vkpt.h
+	refresh/vkpt/ptlas.h
+	refresh/vkpt/clusters.h
 	refresh/vkpt/vk_util.h
 	refresh/vkpt/buddy_allocator.h
 	refresh/vkpt/device_memory_allocator.h
@@ -373,9 +409,12 @@ SET(HEADERS_VKPT
 	refresh/vkpt/material.h
 	refresh/vkpt/physical_sky.h
 	refresh/vkpt/precomputed_sky.h
+	refresh/vkpt/precomputed_sky_params.h
 	refresh/vkpt/conversion.h
 	refresh/vkpt/DLSS.h
 	refresh/vkpt/DLSSG.h
+	refresh/vkpt/dlssg_desc.h
+	refresh/vkpt/dlssg_ngx.hpp
 )
 
 set(SRC_SHADERS
@@ -425,10 +464,6 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/crt.frag
 	refresh/vkpt/shader/crt_downsample.comp
 	refresh/vkpt/shader/final_blit.vert
-	refresh/vkpt/shader/fsr_easu_fp16.comp
-	refresh/vkpt/shader/fsr_easu_fp32.comp
-	refresh/vkpt/shader/fsr_rcas_fp16.comp
-	refresh/vkpt/shader/fsr_rcas_fp32.comp
 )
 
 set(SRC_RT_SHADERS
@@ -463,7 +498,7 @@ IF(IS_64_BIT)
     endforeach()
 
     foreach(s ${SRC_SHADERS})
-        compile_shader(SOURCE_FILE ${s} INCLUDES "-I${CMAKE_CURRENT_SOURCE_DIR}/refresh/vkpt/fsr" OUTPUT_FILE_LIST shader_bytecode)
+        compile_shader(SOURCE_FILE ${s} OUTPUT_FILE_LIST shader_bytecode)
     endforeach()
 
     add_custom_target(shaders DEPENDS ${shader_bytecode})
@@ -659,6 +694,89 @@ IF (TARGET client)
         ELSE ()
         TARGET_LINK_LIBRARIES(client vulkan)
         ENDIF()
+    ENDIF()
+
+    # THE D3D12 PATH TRACER (vid_rtx 3). Its frontend is vkpt's, so it needs the
+    # Vulkan renderer built too. d3d12.dll and dxgi.dll are loaded at run time,
+    # not linked; the Agility SDK runtime is staged in D3D12/ next to the exe.
+    IF (CONFIG_D3D12_RENDERER)
+        set(D3D12_VULKAN_SDK "$ENV{VULKAN_SDK}" CACHE PATH
+            "Vulkan SDK whose SPIRV-Cross (spirv-cross-c-shared) and DXC (dxcompiler.dll) spv2dxil uses")
+        IF (NOT WIN32 OR NOT CONFIG_VKPT_RENDERER)
+            message(FATAL_ERROR "CONFIG_D3D12_RENDERER needs Windows and CONFIG_VKPT_RENDERER")
+        ENDIF()
+        IF (NOT EXISTS "${CMAKE_SOURCE_DIR}/extern/agility-sdk/include/d3d12.h")
+            message(FATAL_ERROR "CONFIG_D3D12_RENDERER: no Agility SDK headers - run setup/fetch_agility_sdk.py")
+        ENDIF()
+        IF (NOT EXISTS "${D3D12_VULKAN_SDK}/Lib/spirv-cross-c-shared.lib" OR
+            NOT EXISTS "${D3D12_VULKAN_SDK}/Bin/spirv-cross-c-shared.dll" OR
+            NOT EXISTS "${D3D12_VULKAN_SDK}/Bin/dxcompiler.dll")
+            message(FATAL_ERROR "CONFIG_D3D12_RENDERER: D3D12_VULKAN_SDK (${D3D12_VULKAN_SDK}) has no "
+                "spirv-cross-c-shared or dxcompiler.dll - set it to a Vulkan SDK, or turn the option off")
+        ENDIF()
+
+        # the shader translator, a build tool
+        ADD_EXECUTABLE(spv2dxil refresh/d3d12/spv2dxil/spv2dxil.cpp)
+        target_compile_features(spv2dxil PRIVATE cxx_std_17)
+        target_include_directories(spv2dxil PRIVATE "${D3D12_VULKAN_SDK}/Include")
+        target_link_libraries(spv2dxil PRIVATE "${D3D12_VULKAN_SDK}/Lib/spirv-cross-c-shared.lib")
+        set_target_properties(spv2dxil PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools")
+        add_custom_command(TARGET spv2dxil POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${D3D12_VULKAN_SDK}/Bin/spirv-cross-c-shared.dll" "$<TARGET_FILE_DIR:spv2dxil>")
+
+        include(../cmake/compileShadersD3D12.cmake)
+        set(d3d12_dxil)
+        foreach(s ${SRC_RT_SHADERS})
+            get_filename_component(shader_name ${s} NAME)
+            get_filename_component(shader_ext ${s} EXT)
+            if (shader_ext STREQUAL ".rgen")
+                compile_shader_d3d12(SOURCE_FILE ${s} OUTPUT_FILE_LIST d3d12_dxil
+                    OUTPUT_FILE_NAME "${shader_name}.query" DEFINES "-DKHR_RAY_QUERY" STAGE "comp")
+            endif()
+        endforeach()
+        foreach(s ${SRC_SHADERS})
+            compile_shader_d3d12(SOURCE_FILE ${s} OUTPUT_FILE_LIST d3d12_dxil)
+        endforeach()
+        # the D3D12 renderer's own, against vkpt's shader headers: motion blur's and
+        # chromatic aberration's copy back (postfx_copy.comp says why it is a pass)
+        compile_shader_d3d12(SOURCE_FILE refresh/d3d12/shader/postfx_copy.comp OUTPUT_FILE_LIST d3d12_dxil
+            INCLUDES "-I${CMAKE_CURRENT_SOURCE_DIR}/refresh/vkpt/shader")
+        # the specialization variants vkpt makes at pipeline creation
+        # (path_tracer.c, asvgf.c, tone_mapping.c, draw.c); the default
+        # values are the base files above
+        compile_shader_d3d12_variant(BASE_NAME primary_rays.rgen.query      SPEC 1=1     OUTPUT_FILE_LIST d3d12_dxil) # flow split
+        # the flow pass: frozen, as with its ray queries specialized away DXC's
+        # validator fails the #define route ("Flags must match usage")
+        compile_shader_d3d12_variant(BASE_NAME primary_rays.rgen.query      SPEC 1=2 FREEZE OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil) # 2nd bounce
+        compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 1=0     OUTPUT_FILE_LIST d3d12_dxil) # 1st, no flow
+        compile_shader_d3d12_variant(BASE_NAME reflect_refract.rgen.query   SPEC 0=1 1=0 OUTPUT_FILE_LIST d3d12_dxil) # 2nd, no flow
+        compile_shader_d3d12_variant(BASE_NAME direct_lighting.rgen.query   SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil) # caustics
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil) # 2nd bounce
+        # the SER A/B (pt_ser): indirect lighting as ray generation shaders, without
+        # the reorder (1st bounce, 2nd) and with it
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query           ENTRY raygen OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1  ENTRY raygen OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query           ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME indirect_lighting.rgen.query SPEC 0=1  ENTRY ser    OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME asvgf_atrous.comp            SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME asvgf_atrous.comp            SPEC 0=2     OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME asvgf_atrous.comp            SPEC 0=3     OUTPUT_FILE_LIST d3d12_dxil)
+        compile_shader_d3d12_variant(BASE_NAME tone_mapping_apply.comp      SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil) # HDR
+        compile_shader_d3d12_variant(BASE_NAME stretch_pic.frag             SPEC 0=1     OUTPUT_FILE_LIST d3d12_dxil) # HDR
+        add_custom_target(shaders_d3d12 DEPENDS ${d3d12_dxil})
+        if(TARGET glslangValidator)
+            add_dependencies(shaders_d3d12 glslangValidator)
+        endif()
+        add_dependencies(client shaders_d3d12)
+
+        TARGET_SOURCES(client PRIVATE ${SRC_D3D12} ${HEADERS_D3D12})
+        # the Agility SDK's d3d12.h for these files only: the rest of the
+        # client keeps the Windows SDK's
+        set_source_files_properties(${SRC_D3D12} PROPERTIES
+            INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/extern/agility-sdk/include")
+        TARGET_COMPILE_DEFINITIONS(client PRIVATE REF_D3D12=1)
     ENDIF()
 
     # Steam Audio (sound/steamaudio.c): headers only, phonon.dll is loaded at run time

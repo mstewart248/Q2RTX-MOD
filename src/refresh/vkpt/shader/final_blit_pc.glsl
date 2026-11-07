@@ -81,13 +81,11 @@ final_blit_fetch(ivec2 p)
 	{
 	case 0:  return texelFetch(TEX_TAA_OUTPUT,      p, 0).rgb;
 	case 1:  return texelFetch(TEX_DLSS_OUTPUT,     p, 0).rgb;
-	case 2:  return texelFetch(TEX_FSR_EASU_OUTPUT, p, 0).rgb;
-	case 3:  return texelFetch(TEX_FSR_RCAS_OUTPUT, p, 0).rgb;
-	case 4:  return texelFetch(TEX_DLSS_FG_OUTPUT,  p, 0).rgb;
-	case 5:  return texelFetch(TEX_DLSS_FG_OUTPUT2, p, 0).rgb;
-	case 6:  return texelFetch(TEX_DLSS_FG_OUTPUT3, p, 0).rgb;
-	case 7:  return texelFetch(TEX_DLSS_FG_OUTPUT4, p, 0).rgb;
-	case 8:  return texelFetch(TEX_DLSS_FG_OUTPUT5, p, 0).rgb;
+	case 2:  return texelFetch(TEX_DLSS_FG_OUTPUT,  p, 0).rgb;
+	case 3:  return texelFetch(TEX_DLSS_FG_OUTPUT2, p, 0).rgb;
+	case 4:  return texelFetch(TEX_DLSS_FG_OUTPUT3, p, 0).rgb;
+	case 5:  return texelFetch(TEX_DLSS_FG_OUTPUT4, p, 0).rgb;
+	case 6:  return texelFetch(TEX_DLSS_FG_OUTPUT5, p, 0).rgb;
 	}
 	return vec3(0);
 }
@@ -106,13 +104,11 @@ final_blit_sample(vec2 pos_px)
 	{
 	case 0:  return FINAL_BLIT_BILINEAR(TEX_TAA_OUTPUT);
 	case 1:  return FINAL_BLIT_BILINEAR(TEX_DLSS_OUTPUT);
-	case 2:  return FINAL_BLIT_BILINEAR(TEX_FSR_EASU_OUTPUT);
-	case 3:  return FINAL_BLIT_BILINEAR(TEX_FSR_RCAS_OUTPUT);
-	case 4:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT);
-	case 5:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT2);
-	case 6:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT3);
-	case 7:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT4);
-	case 8:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT5);
+	case 2:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT);
+	case 3:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT2);
+	case 4:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT3);
+	case 5:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT4);
+	case 6:  return FINAL_BLIT_BILINEAR(TEX_DLSS_FG_OUTPUT5);
 	}
 	return vec3(0);
 }

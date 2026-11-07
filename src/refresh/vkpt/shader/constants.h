@@ -253,6 +253,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define MAX_RESERVED_INSTANCES   16   // TLAS instances reserved for skinned geometry, particles and the like
 #define MAX_TLAS_INSTANCES       (MAX_MODEL_INSTANCES + MAX_RESERVED_INSTANCES)
 
+// pt_clusters (vkpt/clusters.h): the triangles of one cluster of a clustered
+// dynamic BLAS - 255 vertices, all an 8-bit index reaches. The triangle of its
+// run a ray hit is geometry index * this + primitive index.
+#define PT_CLUSTER_TRIANGLES     85
+
 #define SHADER_MAX_ENTITIES                  8192
 #define SHADER_MAX_BSP_ENTITIES              8192
 #define MAX_LIGHT_STYLES                     64
@@ -299,6 +304,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SKY_EXPOSURE_DIM_Y      160
 #define SKY_EXPOSURE_DIM_Z      80
 #define SKY_EXPOSURE_BAKE_GROUP 64
+// the bake's solid mask: one bit per voxel (god_rays.c's, and the D3D12 renderer's buffer)
+#define SKY_EXPOSURE_MASK_WORDS \
+	((SKY_EXPOSURE_DIM_X * SKY_EXPOSURE_DIM_Y * SKY_EXPOSURE_DIM_Z + 31) / 32)
 
 // Effects TLAS flags
 #define AS_FLAG_EFFECTS         (1 << 0)
@@ -399,5 +407,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define PT_TILE_HDR_DATA           20  /* word offset of list 0's tile ids */
 #define PT_TILE_HDR_DATA_STRIDE    21  /* words per tile id list */
 #define PT_TILE_HDR_WORDS          32
+
+/* The D3D12 renderer (src/refresh/d3d12) cannot dispatch a list as one row of
+   groups: a dispatch holds at most 65535 groups a dimension, and a 4K view at full
+   resolution has 129600 tiles. There list i's words are { count, row, rows, 1 },
+   the last three its DISPATCH arguments - rows of `row` groups, the renderer's
+   choice - and the append adds a row with each row's first tile; the groups of the
+   last row past the list's end stand down (shader/path_tracer.h). */
 
 #endif /*_CONSTANTS_H_*/

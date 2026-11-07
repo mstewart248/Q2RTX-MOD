@@ -26,6 +26,8 @@
 #include <nvsdk_ngx_helpers_dlssd_vk.h>
 #include <nvsdk_ngx_defs_dlssg.h>
 
+#include "dlssg_desc.h"
+
 
 #include "shared/shared.h"
 #include "vkpt.h"
@@ -54,6 +56,23 @@ struct DLSSImageHandles {
     VkFormat format;
 };
 
+/* What an evaluation hands DLSS beyond the fixed images (DLSSDescribeEvaluation): the
+   colour image (TAA_OUTPUT, or pt_dlss_debug's), the jitter in render pixels, which of
+   Ray Reconstruction's optional guides go over, and its matrices (pt_dlss_spec_motion). */
+typedef struct {
+    int         color_image;            // VKPT_IMG_*
+    float       jitter_x, jitter_y;
+    qboolean    diffuse_hit_distance;   // pt_dlss_diff_hitdist
+    qboolean    reflected_albedo;       // pt_dlss_reflected_albedo
+    qboolean    before_transparency;    // pt_dlss_bt_guide != 2
+    qboolean    reflection_motion;      // DLSS_REFLECT_MOTION as the reflections' motion
+    qboolean    matrices;               // world_to_view and view_to_clip go over
+    float       world_to_view[16], view_to_clip[16];
+} DLSSEvaluation;
+
+// NGX's project id for this game, for either API's init
+#define DLSS_PROJECT_ID "FFA5FAF5-2329-44AB-A423-3D9B3B177C88"
+
 typedef struct DLSSRenderResolution DLSSRenderResolution;
 typedef struct PrevDlssFeatureValues PrevDlssFeatureValues;
 typedef struct DLSSImageHandles DLSSImageHandles;
@@ -81,6 +100,18 @@ NVSDK_NGX_PerfQuality_Value ToNGXPerfQuality();
 qboolean AreSameDLSSFeatureValues(struct DLSSRenderResolution resObject);
 void SaveDLSSFeatureValues(DLSSRenderResolution resObject);
 qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution resObject);
+/* The API-free halves of ValidateDLSSFeature and DLSSApply, which the D3D12 renderer
+   (d3d12/frontend.c) calls too - see each in DLSS.c. */
+qboolean DLSSAdoptParameters(NVSDK_NGX_Parameter* params);
+void DLSSClampResolution(struct DLSSRenderResolution* resObject);
+// The feature's resolution for a frame's (clamped) one: made for the largest render
+// extent, evaluated over the frame's as a sub-rectangle - DRS and photo mode remake nothing
+void DLSSFeatureResolution(struct DLSSRenderResolution* resObject);
+qboolean DLSSDescribeFeature(struct DLSSRenderResolution resObject, NVSDK_NGX_Parameter* params,
+                             NVSDK_NGX_DLSS_Create_Params* sr, NVSDK_NGX_DLSSD_Create_Params* rr);
+void DLSSDescribeEvaluation(const vec2 jitterOffset, DLSSEvaluation* ev);
+void DLSSFeatureFailed(void);
+void DLSSModeSelected(cvar_t* self);
 NVSDK_NGX_Resource_VK ToNGXResource(VkImage image, VkImageView imageView, NVSDK_NGX_Dimensions size, VkFormat format, bool withWriteAccess);
 NVSDK_NGX_Resource_VK ToNGXBufferResource(VkBuffer buffer, size_t bufferSize, bool withWriteAccess);
 void DLSSApply(VkCommandBuffer cmd, QVK_t qvk, struct DLSSRenderResolution resObject, vec2 jitterOffset, float timeDelta, qboolean resetAccum);
@@ -123,8 +154,22 @@ qboolean DLSSGShowInterpolated();
 qboolean DLSSGFeatureReady();
 /* Interpolated output for generated frame `generatedIndex`, counting from 1. */
 VkImage GetDLSSGImage(unsigned int generatedIndex);
+// the VKPT_IMG_DLSS_FG_OUTPUT* image generated frame `generatedIndex` (1..) is written to
+int DLSSGOutputImageIndex(unsigned int generatedIndex);
 void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum);
 void DestroyDLSSGFeature();
+
+/* The API-free half of DLSSGApply, which the D3D12 renderer (d3d12/frontend.c) calls
+   too: every evaluation input but the resources. */
+typedef struct {
+    DLSSGEvalDesc   desc;               // multiFrameIndex 1: the caller sets it per frame
+    int             depth_image;        // VKPT_IMG_DLSS_FG_DEPTH (DLSS_DEPTH: pt_dlss_fg_depthmode 0)
+    qboolean        hudless;            // hand the backbuffer over as the HUD-less colour too
+    unsigned int    generated_frames;   // DLSSGGeneratedFrames(): the evaluations to run
+} DLSSGEvaluation;
+void DLSSGDescribeEvaluation(qboolean resetAccum, DLSSGEvaluation* ev);
+// the D3D12 renderer's create or evaluate failed: frame generation stays off
+void DLSSGFeatureFailed(void);
 
 struct DLSS {	
 	VkDevice device;

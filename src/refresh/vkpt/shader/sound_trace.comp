@@ -121,6 +121,17 @@ float rand01(inout uint state)
 
 void shared_add(uint i, float v)
 {
+#ifdef VKPT_D3D12
+	/* The loop below, through SPIRV-Cross, fails DXIL validation ("ExtractValue
+	   should only be used on dxil struct types and cmpxchg") with every DXC
+	   tried (1.9.2602, 1.10.5347). Reloading each time round validates, and
+	   costs one groupshared read per retry. */
+	uint prev, got;
+	do {
+		prev = s_field[i];
+		got = atomicCompSwap(s_field[i], prev, floatBitsToUint(uintBitsToFloat(prev) + v));
+	} while (got != prev);
+#else
 	uint prev = s_field[i];
 	while (true) {
 		uint got = atomicCompSwap(s_field[i], prev, floatBitsToUint(uintBitsToFloat(prev) + v));
@@ -128,6 +139,7 @@ void shared_add(uint i, float v)
 			break;
 		prev = got;
 	}
+#endif
 }
 
 void global_add(uint i, float v)

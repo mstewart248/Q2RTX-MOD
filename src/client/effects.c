@@ -5173,11 +5173,12 @@ Read at SPAWN rather than at draw time, so toggling the cvar mid-fight leaves th
 droplets already in the air alone instead of making them change form in place.
 ===============
 */
-// Sphere droplets are drawn by the path tracer alone: anywhere else they would
-// go nowhere, so blood stays the original's particles under GL and software.
+// Sphere droplets are drawn by the path tracers alone - Vulkan's and D3D12's,
+// which share blood.c's CPU half: anywhere else they would go nowhere, so blood
+// stays the original's particles under GL and software.
 static inline bool CL_BloodSpheresOn(void)
 {
-    return cl_blood_spheres->integer && cls.ref_type == REF_TYPE_VKPT;
+    return cl_blood_spheres->integer && CL_PathTraced();
 }
 
 void CL_MakeBloodSphere(cparticle_t *p, float scale)

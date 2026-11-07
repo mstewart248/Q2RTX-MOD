@@ -302,13 +302,8 @@ static int16_t slot_of_ultra[BLOOD_ULTRA_MAX];
 static bool    ultra_maps_ready = false;
 
 static struct {
-	BufferResource_t  staging_prim[MAX_FRAMES_IN_FLIGHT];
-	BufferResource_t  staging_pos[MAX_FRAMES_IN_FLIGHT];
-	VboPrimitive*     mapped_prim[MAX_FRAMES_IN_FLIGHT];
-	prim_positions_t* mapped_pos[MAX_FRAMES_IN_FLIGHT];
 	VboPrimitive*     prim_shadow;
 	prim_positions_t* pos_shadow;
-	uint32_t          frame_index;
 	uint32_t          max_prims;        // capacity of the buffers as currently sized
 	uint32_t          prim_count;       // written by the last vkpt_blood_update
 	int               sphere_count;     // droplets actually written
@@ -326,8 +321,76 @@ static struct {
 	uint32_t          last_regions;     // copy regions used, for pt_blood_stats
 	bool              last_epoch;
 	int               model_instance_index;
+	uint64_t          last_gen_usec;    // write_blood_geometry's time, for pt_blood_stats
+	size_t            last_up_bytes;    // what the last frame's regions carried
 	bool              buffers_ready;
 } blood;
+
+/*
+THE VULKAN HALF'S STAGING. vkpt_blood_prepare is shared with the D3D12 backend
+(d3d12/frontend.c, world.c): it fills the shadow copy and names the regions that
+changed, and each backend has its own staging to carry them to the device.
+Vulkan's is here - a host-visible pair per frame in flight, the shadow's size,
+remade only when that changes (vk_staging_ensure).
+*/
+static struct {
+	BufferResource_t  staging_prim[MAX_FRAMES_IN_FLIGHT];
+	BufferResource_t  staging_pos[MAX_FRAMES_IN_FLIGHT];
+	VboPrimitive*     mapped_prim[MAX_FRAMES_IN_FLIGHT];
+	prim_positions_t* mapped_pos[MAX_FRAMES_IN_FLIGHT];
+	uint32_t          frame_index;
+	uint32_t          capacity;         // primitives; 0 = none made (and no Vulkan call)
+} blood_vk;
+
+static void vk_staging_release(void)
+{
+	if (!blood_vk.capacity)
+		return;
+
+	// The staging buffers may still be referenced by a command buffer that has
+	// not finished, so this cannot just free them.
+	vkpt_device_wait_idle();
+
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		if (blood_vk.mapped_prim[i]) { buffer_unmap(&blood_vk.staging_prim[i]); blood_vk.mapped_prim[i] = NULL; }
+		if (blood_vk.mapped_pos[i])  { buffer_unmap(&blood_vk.staging_pos[i]);  blood_vk.mapped_pos[i] = NULL; }
+		buffer_destroy(&blood_vk.staging_prim[i]);
+		buffer_destroy(&blood_vk.staging_pos[i]);
+	}
+	blood_vk.capacity = 0;
+}
+
+static bool vk_staging_ensure(uint32_t capacity)
+{
+	if (blood_vk.capacity == capacity)
+		return true;
+
+	vk_staging_release();
+
+	const size_t prim_size = sizeof(VboPrimitive) * capacity;
+	const size_t pos_size = sizeof(prim_positions_t) * capacity;
+
+	// set first, so a failure part way through releases what was made
+	blood_vk.capacity = capacity;
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		if (buffer_create(&blood_vk.staging_prim[i], prim_size,
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS
+			|| buffer_create(&blood_vk.staging_pos[i], pos_size,
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS)
+		{
+			vk_staging_release();
+			return false;
+		}
+
+		blood_vk.mapped_prim[i] = buffer_map(&blood_vk.staging_prim[i]);
+		blood_vk.mapped_pos[i] = buffer_map(&blood_vk.staging_pos[i]);
+	}
+	return true;
+}
 
 /*
 BLAS REUSE - pt_blood_blas_reuse, default 1 (0 rebuilds every frame, as before).
@@ -775,9 +838,9 @@ static void build_sphere_templates(void)
 ================
 ensure_buffers
 
-Allocated on FIRST USE rather than at startup, because cl_blood_spheres defaults
-off and this is ~20 MB of staging and shadow memory that a player who never turns
-it on should not pay for.
+Allocated at MAP LOAD when blood is on (vkpt_blood_preallocate), otherwise on first
+use, rather than at startup: cl_blood_spheres defaults off, and a player who never
+turns it on should not pay for this memory.
 ================
 */
 static void release_buffers(void)
@@ -785,18 +848,8 @@ static void release_buffers(void)
 	if (!blood.buffers_ready)
 		return;
 
-	// The staging buffers may still be referenced by a command buffer that has
-	// not finished, so this cannot just free them.
-	vkpt_device_wait_idle();
-
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-	{
-		if (blood.mapped_prim[i]) { buffer_unmap(&blood.staging_prim[i]); blood.mapped_prim[i] = NULL; }
-		if (blood.mapped_pos[i])  { buffer_unmap(&blood.staging_pos[i]);  blood.mapped_pos[i] = NULL; }
-		buffer_destroy(&blood.staging_prim[i]);
-		buffer_destroy(&blood.staging_pos[i]);
-	}
-
+	// Only the shadow copy, which the GPU never reads. The staging belongs to
+	// each backend (vk_staging_ensure remakes Vulkan's when the size changes).
 	if (blood.prim_shadow) { Z_Free(blood.prim_shadow); blood.prim_shadow = NULL; }
 	if (blood.pos_shadow)  { Z_Free(blood.pos_shadow);  blood.pos_shadow = NULL; }
 
@@ -826,8 +879,9 @@ landing, gone the moment it settled, and no CPU core anywhere near saturated -
 because the thread was not computing, it was blocked waiting on the GPU.
 
 The capacity is bounded and small enough to just take: at the default 512 droplets
-and 320 faces it is 27 MB of shadow plus 54 MB of staging. Allocated on first
-blood, not at startup, so a player who never turns this on pays nothing.
+and 320 faces it is 27 MB of shadow plus 54 MB of staging (cl_blood_max 5120: ten
+times that). Allocated at map load when blood is on (vkpt_blood_preallocate), else
+on first blood, never at startup, so a player who never turns this on pays nothing.
 ================
 */
 /*
@@ -891,22 +945,6 @@ static bool ensure_buffers(void)
 	const size_t prim_size = sizeof(VboPrimitive) * needed;
 	const size_t pos_size = sizeof(prim_positions_t) * needed;
 
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-	{
-		if (buffer_create(&blood.staging_prim[i], prim_size,
-			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS)
-			return false;
-
-		if (buffer_create(&blood.staging_pos[i], pos_size,
-			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS)
-			return false;
-
-		blood.mapped_prim[i] = buffer_map(&blood.staging_prim[i]);
-		blood.mapped_pos[i] = buffer_map(&blood.staging_pos[i]);
-	}
-
 	// Build into ordinary memory and copy the used range in one go, rather than
 	// writing straight through the mapped pointer: that is write-combined host
 	// memory, and the generation loop touches each primitive's fields out of
@@ -937,10 +975,10 @@ static bool ensure_buffers(void)
 vkpt_blood_initialize / vkpt_blood_destroy
 ================
 */
-VkResult vkpt_blood_initialize(void)
+// vkpt_init_frontend: prepare_entities sizes the blood section from these in
+// the frame's CPU half
+void vkpt_blood_init_cvars(void)
 {
-	memset(&blood, 0, sizeof(blood));
-
 	// Renderer-side master switch, separate from the client's cl_blood_spheres
 	// so a screenshot A/B does not have to wait for droplets already in the air
 	// to expire.
@@ -958,6 +996,13 @@ VkResult vkpt_blood_initialize(void)
 	// Keep the blood BLAS while the section is unchanged - see BLAS REUSE. Not
 	// archived: an A/B switch should come back on by itself.
 	cvar_pt_blood_blas_reuse = Cvar_Get("pt_blood_blas_reuse", "1", 0);
+}
+
+VkResult vkpt_blood_initialize(void)
+{
+	memset(&blood, 0, sizeof(blood));
+
+	vkpt_blood_init_cvars();
 	blood_blas_reset();
 
 	// The appearance cvars live in the global UBO, which registers everything in
@@ -1017,9 +1062,54 @@ VkResult vkpt_blood_initialize(void)
 	return VK_SUCCESS;
 }
 
+/*
+================
+vkpt_blood_preallocate
+
+THE FIRST-HIT HITCH (11-06). ensure_buffers sizes the shadow copy for the worst
+case, cl_blood_max droplets at the full mesh, and it used to run on the session's
+first droplet - the first monster shot after starting a map. At cl_blood_max 5120
+and pt_blood_tess 2 that is 1.6M primitives: 270 MB of shadow zeroed in one frame,
+then each backend's staging (Vulkan two frames' worth, D3D12 one per frame slot)
+made on that same frame, several hundred ms in all.
+
+vkpt_begin_registration calls this for both backends while the map loads, and
+hands what it returns to vkpt_prep_backend->reserve_blood_staging, so all of it is
+in place before play starts. Only with blood on (cl_blood_spheres and
+pt_blood_spheres): a player who never turns it on still pays nothing. Turning it on
+mid-map, or changing cl_blood_max / pt_blood_tess, still allocates on the next
+droplet, as before.
+
+Returns the capacity in primitives (0: blood off, nothing made).
+================
+*/
+uint32_t vkpt_blood_preallocate(void)
+{
+	const cvar_t* client = Cvar_FindVar("cl_blood_spheres");
+	if (!client || !client->integer || !cvar_pt_blood_spheres || !cvar_pt_blood_spheres->integer
+		|| !cvar_pt_blood_tess)
+		return 0;
+
+	if (!templates_built)
+		build_sphere_templates();
+
+	if (!ensure_buffers())
+		return 0;
+
+	return blood.max_prims;
+}
+
+// vkpt_prep_backend->reserve_blood_staging on Vulkan: the staging vkpt_blood_update
+// would otherwise make on the first droplet (vk_staging_ensure, an exact size)
+void vkpt_blood_reserve_vk_staging(uint32_t capacity)
+{
+	vk_staging_ensure(capacity);
+}
+
 VkResult vkpt_blood_destroy(void)
 {
 	release_buffers();
+	vk_staging_release();
 
 	memset(&blood, 0, sizeof(blood));
 	blood_blas_reset();
@@ -2088,26 +2178,30 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 /*
 ================
-vkpt_blood_update
+vkpt_blood_prepare
 
-Fills the blood section of the instanced buffers and reports how many primitives
-it actually wrote.
+THE CPU HALF of vkpt_blood_update, shared with the D3D12 backend: the frame's
+droplets written into the shadow copy of the section, and what has to reach the
+device - the whole section zeroed when the device's copy of it is void (an
+epoch), then one region per dirty slot. Each backend carries those regions out
+of the shadow copy through its own staging into the instanced buffers, before
+the BLAS build over the section; Vulkan's is vkpt_blood_update, below.
 
-Must run BEFORE vkpt_pt_create_all_dynamic, and the caller must already have
-reserved vkpt_blood_prim_count() primitives at prim_offset.
+The caller must already have reserved vkpt_blood_prim_count() primitives at
+prim_offset. frame->prim_count is what the BLAS covers (0: no blood this frame).
 ================
 */
-void vkpt_blood_update(
-	VkCommandBuffer cmd_buf,
+void vkpt_blood_prepare(
 	const blood_sphere_t* spheres,
 	int num_spheres,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
 	int model_instance_index,
 	uint32_t prim_offset,
-	uint32_t* prim_count_out)
+	vkpt_blood_frame_t* frame)
 {
-	*prim_count_out = 0;
+	memset(frame, 0, sizeof(*frame));
+	frame->prim_offset = prim_offset;
 	blood.prim_count = 0;
 
 	// A negative instance index means prepare_entities ran out of ModelInstance
@@ -2168,11 +2262,10 @@ void vkpt_blood_update(
 	}
 
 	blood.model_instance_index = model_instance_index;
-	blood.frame_index = (blood.frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
 
 	const uint64_t gen_t0 = Sys_Microseconds();
 	uint32_t prim_count = write_blood_geometry(spheres, num_spheres, bsp);
-	const uint64_t gen_usec = Sys_Microseconds() - gen_t0;
+	blood.last_gen_usec = Sys_Microseconds() - gen_t0;
 
 	if (prim_count == 0)
 	{
@@ -2241,7 +2334,8 @@ void vkpt_blood_update(
 	// untouched slot is still good. Across one it is not, and neither is anything
 	// dev_span remembers - and note that vkpt_vertex_buffer_ensure_primbuf_size
 	// DESTROYS and recreates those buffers, which is why the generation counter
-	// is part of the test rather than just the offset.
+	// is part of the test rather than just the offset. (The D3D12 backend bumps
+	// it too when it remakes its own - vkpt_primbuf_new_generation.)
 	const uint32_t primbuf_gen = vkpt_primbuf_generation();
 
 	const bool epoch_reset = blood.epoch_reset
@@ -2256,17 +2350,9 @@ void vkpt_blood_update(
 
 	if (epoch_reset)
 	{
-		// Zero the section on the GPU instead of sending zeros through staging.
-		// After this every slot needs only its real faces uploaded, and a slot
-		// holding nothing needs no upload at all.
-		vkCmdFillBuffer(cmd_buf, qvk.buf_primitive_instanced.buffer,
-			(VkDeviceSize)prim_offset * sizeof(VboPrimitive),
-			(VkDeviceSize)prim_count * sizeof(VboPrimitive), 0);
-
-		vkCmdFillBuffer(cmd_buf, qvk.buf_positions_instanced.buffer,
-			(VkDeviceSize)prim_offset * sizeof(prim_positions_t),
-			(VkDeviceSize)prim_count * sizeof(prim_positions_t), 0);
-
+		// The backend zeroes the section on the GPU instead of sending zeros
+		// through staging. After this every slot needs only its real faces
+		// uploaded, and a slot holding nothing needs no upload at all.
 		for (uint32_t i = 0; i < BLOOD_MAX_REGIONS; i++)
 		{
 			blood_cache[i].dev_pending = true;
@@ -2276,6 +2362,194 @@ void vkpt_blood_update(
 			// written across its whole stride.
 			blood_cache[i].dev_span = (i < slot_limit) ? 0 : (uint16_t)region_cap((int)i);
 		}
+	}
+	else
+	{
+		// The whole array, not just the slots in range: dev_pending is sticky, so
+		// a slot the section does not reach yet keeps its flag for the frame it
+		// does.
+		for (uint32_t i = 0; i < BLOOD_MAX_REGIONS; i++)
+		{
+			if (blood.dirty_slot[i])
+				blood_cache[i].dev_pending = true;
+		}
+	}
+
+	// One region per dirty slot. File scope rather than stack: 4096 slots is
+	// 48 KB of regions.
+	static vkpt_blood_region_t regions[BLOOD_MAX_REGIONS];
+	uint32_t num_regions = 0;
+	size_t up_bytes = 0;
+
+	for (uint32_t i = 0; i < slot_limit; i++)
+	{
+		blood_cache_entry_t* c = blood_cache + i;
+
+		if (!c->dev_pending)
+			continue;
+
+		// This slot's real geometry, plus however much of the device's older
+		// content sticks out past it. Everything beyond that is already zero on
+		// both sides.
+		uint32_t n = max((uint32_t)c->faces, (uint32_t)c->dev_span);
+		n = min(n, region_cap((int)i));
+
+		c->dev_pending = false;
+		c->dev_span = c->faces;
+
+		if (n == 0)
+			continue;
+
+		const uint32_t lo = region_offset((int)i);
+
+		// Neighbouring slots that both need their whole stride are one copy
+		// rather than two - which is the common shape on an epoch frame.
+		if (num_regions && regions[num_regions - 1].src + regions[num_regions - 1].count == lo)
+		{
+			regions[num_regions - 1].count += n;
+		}
+		else
+		{
+			regions[num_regions] = (vkpt_blood_region_t){ lo, prim_offset + lo, n };
+			num_regions++;
+		}
+
+		up_bytes += (size_t)n * (sizeof(VboPrimitive) + sizeof(prim_positions_t));
+	}
+
+	blood.last_regions = num_regions;
+	blood.last_epoch = epoch_reset;
+	blood.last_up_bytes = up_bytes;
+
+	// The fill and the copies are the only writes this section gets - see BLAS
+	// REUSE. No fill and no region means the device holds what it held.
+	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0);
+
+	blood.prim_count = prim_count;
+
+	frame->prim_count = prim_count;
+	frame->zero_section = epoch_reset;
+	frame->num_regions = num_regions;
+	frame->regions = regions;
+	frame->prims = blood.prim_shadow;
+	frame->positions = blood.pos_shadow;
+	frame->capacity = blood.max_prims;
+}
+
+// A backend could not carry a prepared frame to the device (no staging): what
+// it holds for the section is no longer what the cache believes, so the next
+// frame starts a new epoch - the section zeroed and every slot sent again.
+void vkpt_blood_invalidate(void)
+{
+	blood.epoch_reset = true;
+}
+
+/* pt_blood_stats' line, once a second; copy_usec is the backend's memcpy into its
+   staging. Called every frame by both backends. The second line is the GPU's side over
+   that second (profiler rows, so profiler 1 has to be on): the dynamic BLAS builds
+   (blood's among them) and the whole frame, average and worst. Blood the BLAS builds
+   cost shows in bvh; blood that costs tracing shows in frame but not bvh. "blas
+   built / reused" is pt_blood_blas_reuse's (Vulkan); left out where nothing counted it. */
+void vkpt_blood_print_stats(uint64_t copy_usec)
+{
+	if (!cvar_pt_blood_stats->integer)
+		return;
+
+	static double bvh_sum, bvh_max, frame_sum, frame_max;
+	static int samples;
+	const double bvh = vkpt_get_profiler_result(PROFILER_BVH_UPDATE);
+	const double frame = vkpt_get_profiler_result(PROFILER_GPU_FRAME);
+	if (frame > 0.0)
+	{
+		bvh_sum += bvh;
+		frame_sum += frame;
+		bvh_max = max(bvh_max, bvh);
+		frame_max = max(frame_max, frame);
+		samples++;
+	}
+
+	static unsigned last_report = 0;
+	unsigned now = Sys_Milliseconds();
+	if (now - last_report > 1000)
+	{
+		last_report = now;
+		char reuse[64] = "";
+		if (blood_blas.builds || blood_blas.reuses)
+			Q_snprintf(reuse, sizeof(reuse), ", blas %d built / %d reused", blood_blas.builds, blood_blas.reuses);
+		Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions%s%s\n",
+			blood.sphere_count, blood.splat_count, blood.cache_hits, blood.cache_moves, blood.prim_count,
+			blood.sphere_count ? (float)blood.prim_count / blood.sphere_count : 0.f,
+			blood.last_gen_usec / 1000.f, copy_usec / 1000.f, blood.last_regions == 0 ? " (skipped)" : "",
+			(float)blood.last_up_bytes / (1024.f * 1024.f),
+			blood.last_regions, blood.last_epoch ? " EPOCH" : "", reuse);
+		if (samples)
+			Com_Printf("blood gpu times: bvh update %.2f ms (worst %.2f), gpu frame %.2f ms (worst %.2f), %d frames\n",
+				bvh_sum / samples, bvh_max, frame_sum / samples, frame_max, samples);
+		else
+			Com_Printf("blood gpu times: none - profiler 1 for the GPU's side\n");
+		blood_blas.builds = 0;
+		blood_blas.reuses = 0;
+		bvh_sum = bvh_max = frame_sum = frame_max = 0.0;
+		samples = 0;
+	}
+}
+
+/*
+================
+vkpt_blood_update
+
+Fills the blood section of the instanced buffers and reports how many primitives
+it actually wrote: vkpt_blood_prepare, then Vulkan's half - the fill on an epoch
+frame, the dirty regions through this frame's staging, and the barrier before
+the BLAS build and the shaders read them.
+
+Must run BEFORE vkpt_pt_create_all_dynamic, and the caller must already have
+reserved vkpt_blood_prim_count() primitives at prim_offset.
+================
+*/
+void vkpt_blood_update(
+	VkCommandBuffer cmd_buf,
+	const blood_sphere_t* spheres,
+	int num_spheres,
+	bsp_t* bsp,
+	const vec3_t cam_pos,
+	int model_instance_index,
+	uint32_t prim_offset,
+	uint32_t* prim_count_out)
+{
+	*prim_count_out = 0;
+
+	vkpt_blood_frame_t frame;
+	vkpt_blood_prepare(spheres, num_spheres, bsp, cam_pos, model_instance_index, prim_offset, &frame);
+	if (frame.prim_count == 0)
+		return;
+
+	// The staging follows the shadow copy's size, which changes only with the
+	// settings that define the worst case (see ensure_buffers).
+	if (!vk_staging_ensure(frame.capacity))
+	{
+		// Nothing reached the device: the next frame starts the section afresh.
+		vkpt_blood_invalidate();
+		blood.prim_count = 0;
+		blood_blas_report(prim_offset, 0, true);
+		return;
+	}
+
+	blood_vk.frame_index = (blood_vk.frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
+
+	const uint32_t prim_count = frame.prim_count;
+	const bool epoch_reset = frame.zero_section;
+
+	if (epoch_reset)
+	{
+		// Zero the section on the GPU instead of sending zeros through staging.
+		vkCmdFillBuffer(cmd_buf, qvk.buf_primitive_instanced.buffer,
+			(VkDeviceSize)prim_offset * sizeof(VboPrimitive),
+			(VkDeviceSize)prim_count * sizeof(VboPrimitive), 0);
+
+		vkCmdFillBuffer(cmd_buf, qvk.buf_positions_instanced.buffer,
+			(VkDeviceSize)prim_offset * sizeof(prim_positions_t),
+			(VkDeviceSize)prim_count * sizeof(prim_positions_t), 0);
 
 		// The fill and the copies below write the same memory, so they have to be
 		// ordered against each other. Transfer to transfer, and only these two
@@ -2307,101 +2581,48 @@ void vkpt_blood_update(
 			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			0, 0, NULL, 2, fill_barriers, 0, NULL);
 	}
-	else
-	{
-		// The whole array, not just the slots in range: dev_pending is sticky, so
-		// a slot the section does not reach yet keeps its flag for the frame it
-		// does.
-		for (uint32_t i = 0; i < BLOOD_MAX_REGIONS; i++)
-		{
-			if (blood.dirty_slot[i])
-				blood_cache[i].dev_pending = true;
-		}
-	}
 
-	// One region per dirty slot. File scope rather than stack: 4096 slots is
-	// 200 KB of VkBufferCopy across the two.
+	// The prepare's regions as copies, in bytes. File scope rather than stack:
+	// 4096 slots is 200 KB of VkBufferCopy across the two.
 	static VkBufferCopy regions_prim[BLOOD_MAX_REGIONS];
 	static VkBufferCopy regions_pos[BLOOD_MAX_REGIONS];
-	uint32_t num_regions = 0;
-	size_t up_prim_bytes = 0;
-	size_t up_pos_bytes = 0;
-
-	for (uint32_t i = 0; i < slot_limit; i++)
+	const uint32_t num_regions = frame.num_regions;
+	for (uint32_t r = 0; r < num_regions; r++)
 	{
-		blood_cache_entry_t* c = blood_cache + i;
-
-		if (!c->dev_pending)
-			continue;
-
-		// This slot's real geometry, plus however much of the device's older
-		// content sticks out past it. Everything beyond that is already zero on
-		// both sides.
-		uint32_t n = max((uint32_t)c->faces, (uint32_t)c->dev_span);
-		n = min(n, region_cap((int)i));
-
-		c->dev_pending = false;
-		c->dev_span = c->faces;
-
-		if (n == 0)
-			continue;
-
-		const uint32_t lo = region_offset((int)i);
-
-		// Neighbouring slots that both need their whole stride are one copy
-		// rather than two - which is the common shape on an epoch frame.
-		if (num_regions
-			&& regions_prim[num_regions - 1].srcOffset + regions_prim[num_regions - 1].size
-			   == (VkDeviceSize)lo * sizeof(VboPrimitive))
-		{
-			regions_prim[num_regions - 1].size += (VkDeviceSize)n * sizeof(VboPrimitive);
-			regions_pos[num_regions - 1].size += (VkDeviceSize)n * sizeof(prim_positions_t);
-		}
-		else
-		{
-			regions_prim[num_regions] = (VkBufferCopy){
-				(VkDeviceSize)lo * sizeof(VboPrimitive),
-				(VkDeviceSize)(prim_offset + lo) * sizeof(VboPrimitive),
-				(VkDeviceSize)n * sizeof(VboPrimitive) };
-
-			regions_pos[num_regions] = (VkBufferCopy){
-				(VkDeviceSize)lo * sizeof(prim_positions_t),
-				(VkDeviceSize)(prim_offset + lo) * sizeof(prim_positions_t),
-				(VkDeviceSize)n * sizeof(prim_positions_t) };
-
-			num_regions++;
-		}
-
-		up_prim_bytes += (size_t)n * sizeof(VboPrimitive);
-		up_pos_bytes += (size_t)n * sizeof(prim_positions_t);
+		const vkpt_blood_region_t* g = frame.regions + r;
+		regions_prim[r] = (VkBufferCopy){
+			(VkDeviceSize)g->src * sizeof(VboPrimitive),
+			(VkDeviceSize)g->dst * sizeof(VboPrimitive),
+			(VkDeviceSize)g->count * sizeof(VboPrimitive) };
+		regions_pos[r] = (VkBufferCopy){
+			(VkDeviceSize)g->src * sizeof(prim_positions_t),
+			(VkDeviceSize)g->dst * sizeof(prim_positions_t),
+			(VkDeviceSize)g->count * sizeof(prim_positions_t) };
 	}
 
 	// Nothing dirty is the common case for a settled floor, and then the whole
 	// upload is dead work - the device still holds exactly this.
 	const bool skip_upload = (num_regions == 0);
 
-	blood.last_regions = num_regions;
-	blood.last_epoch = epoch_reset;
-
 	const uint64_t copy_t0 = Sys_Microseconds();
 	if (!skip_upload)
 	{
 		for (uint32_t r = 0; r < num_regions; r++)
 		{
-			memcpy((char*)blood.mapped_prim[blood.frame_index] + regions_prim[r].srcOffset,
-				(const char*)blood.prim_shadow + regions_prim[r].srcOffset, regions_prim[r].size);
-			memcpy((char*)blood.mapped_pos[blood.frame_index] + regions_pos[r].srcOffset,
-				(const char*)blood.pos_shadow + regions_pos[r].srcOffset, regions_pos[r].size);
+			memcpy((char*)blood_vk.mapped_prim[blood_vk.frame_index] + regions_prim[r].srcOffset,
+				(const char*)frame.prims + regions_prim[r].srcOffset, regions_prim[r].size);
+			memcpy((char*)blood_vk.mapped_pos[blood_vk.frame_index] + regions_pos[r].srcOffset,
+				(const char*)frame.positions + regions_pos[r].srcOffset, regions_pos[r].size);
 		}
 	}
 	const uint64_t copy_usec = Sys_Microseconds() - copy_t0;
 
 	if (!skip_upload && num_regions)
 	{
-		vkCmdCopyBuffer(cmd_buf, blood.staging_prim[blood.frame_index].buffer,
+		vkCmdCopyBuffer(cmd_buf, blood_vk.staging_prim[blood_vk.frame_index].buffer,
 			qvk.buf_primitive_instanced.buffer, num_regions, regions_prim);
 
-		vkCmdCopyBuffer(cmd_buf, blood.staging_pos[blood.frame_index].buffer,
+		vkCmdCopyBuffer(cmd_buf, blood_vk.staging_pos[blood_vk.frame_index].buffer,
 			qvk.buf_positions_instanced.buffer, num_regions, regions_pos);
 	}
 
@@ -2490,29 +2711,7 @@ void vkpt_blood_update(
 			0, 0, NULL, 2, barriers, 0, NULL);
 	}
 
-	// The fill and the copies above are the only writes this section gets - see
-	// BLAS REUSE. No fill and no region means the device holds what it held.
-	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0);
+	vkpt_blood_print_stats(copy_usec);
 
-	if (cvar_pt_blood_stats->integer)
-	{
-		static unsigned last_report = 0;
-		unsigned now = Sys_Milliseconds();
-		if (now - last_report > 1000)
-		{
-			last_report = now;
-			Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions%s, blas %d built / %d reused\n",
-				blood.sphere_count, blood.splat_count, blood.cache_hits, blood.cache_moves, prim_count,
-				blood.sphere_count ? (float)prim_count / blood.sphere_count : 0.f,
-				gen_usec / 1000.f, copy_usec / 1000.f, skip_upload ? " (skipped)" : "",
-				(float)(up_prim_bytes + up_pos_bytes) / (1024.f * 1024.f),
-				blood.last_regions, blood.last_epoch ? " EPOCH" : "",
-				blood_blas.builds, blood_blas.reuses);
-			blood_blas.builds = 0;
-			blood_blas.reuses = 0;
-		}
-	}
-
-	blood.prim_count = prim_count;
 	*prim_count_out = prim_count;
 }

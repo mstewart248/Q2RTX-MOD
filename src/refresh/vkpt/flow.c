@@ -130,6 +130,7 @@ Two things in the menu go further (pt_flow_lighting, pt_flow_collision):
 #define NV_FLOW_CPU 1
 #include "NvFlowExt.h"
 #include "NvFlowVulkanExternal.h"
+#include "NvFlowD3D12External.h"
 #endif
 
 #ifdef _WIN32
@@ -394,6 +395,10 @@ static struct {
 	VkPipelineLayout    env_pipeline_layout;
 	VkPipeline          env_pipeline;
 	uint32_t            env_groups[3];
+	// On another renderer (vkpt_flow_backend): its probe grid is there, and
+	// what vkpt_flow_update left it to record this frame.
+	bool                env_backend;
+	vkpt_flow_dispatch_t dispatch;
 	// given by vkpt_flow_set_env for this frame only
 	const bsp_t         *env_bsp;
 	int                 env_first_light;
@@ -410,6 +415,13 @@ static struct {
 	PFN_NvFlowVulkanExternalCreateDevice        create_device;
 	PFN_NvFlowVulkanExternalGetTexture          get_texture;
 	PFN_NvFlowVulkanExternalGetBuffer           get_buffer;
+	PFN_NvFlowGetDeviceInterface                get_device_iface;
+	// the D3D12 backend setup/build_flow.py adds (vkpt_flow_backend); NULL in a
+	// build of the libraries from before it
+	PFN_NvFlowD3D12ExternalCreateDeviceManager  d3d12_create_device_manager;
+	PFN_NvFlowD3D12ExternalCreateDevice         d3d12_create_device;
+	PFN_NvFlowD3D12ExternalGetTexture           d3d12_get_texture;
+	PFN_NvFlowD3D12ExternalGetBuffer            d3d12_get_buffer;
 
 	NvFlowDeviceManager     *device_manager;
 	NvFlowDevice            *device;
@@ -502,6 +514,8 @@ static struct {
 	int                     layer_shadow[FLOW_LAYERS];
 #endif
 } flow;
+
+const vkpt_flow_backend_t *vkpt_flow_backend;
 
 #if USE_FLOW
 
@@ -619,13 +633,17 @@ static bool flow_load_libraries(void)
 	PFN_NvFlowGetExtOpList get_ext_op_list = (PFN_NvFlowGetExtOpList)Sys_GetProcAddress(ext_lib, "NvFlowGetExtOpList");
 	PFN_NvFlowGetGridInterface get_grid = (PFN_NvFlowGetGridInterface)Sys_GetProcAddress(ext_lib, "NvFlowGetGridInterface");
 	PFN_NvFlowGetGridParamsInterface get_grid_params = (PFN_NvFlowGetGridParamsInterface)Sys_GetProcAddress(ext_lib, "NvFlowGetGridParamsInterface");
-	PFN_NvFlowGetDeviceInterface get_device = (PFN_NvFlowGetDeviceInterface)Sys_GetProcAddress(ext_lib, "NvFlowGetDeviceInterface");
+	flow.get_device_iface = (PFN_NvFlowGetDeviceInterface)Sys_GetProcAddress(ext_lib, "NvFlowGetDeviceInterface");
 	flow.create_device_manager = (PFN_NvFlowVulkanExternalCreateDeviceManager)Sys_GetProcAddress(ext_lib, "NvFlowVulkanExternalCreateDeviceManager");
 	flow.create_device = (PFN_NvFlowVulkanExternalCreateDevice)Sys_GetProcAddress(ext_lib, "NvFlowVulkanExternalCreateDevice");
 	flow.get_texture = (PFN_NvFlowVulkanExternalGetTexture)Sys_GetProcAddress(ext_lib, "NvFlowVulkanExternalGetTexture");
 	flow.get_buffer = (PFN_NvFlowVulkanExternalGetBuffer)Sys_GetProcAddress(ext_lib, "NvFlowVulkanExternalGetBuffer");
+	flow.d3d12_create_device_manager = (PFN_NvFlowD3D12ExternalCreateDeviceManager)Sys_GetProcAddress(ext_lib, "NvFlowD3D12ExternalCreateDeviceManager");
+	flow.d3d12_create_device = (PFN_NvFlowD3D12ExternalCreateDevice)Sys_GetProcAddress(ext_lib, "NvFlowD3D12ExternalCreateDevice");
+	flow.d3d12_get_texture = (PFN_NvFlowD3D12ExternalGetTexture)Sys_GetProcAddress(ext_lib, "NvFlowD3D12ExternalGetTexture");
+	flow.d3d12_get_buffer = (PFN_NvFlowD3D12ExternalGetBuffer)Sys_GetProcAddress(ext_lib, "NvFlowD3D12ExternalGetBuffer");
 
-	if (!get_op_list || !get_ext_op_list || !get_grid || !get_grid_params || !get_device ||
+	if (!get_op_list || !get_ext_op_list || !get_grid || !get_grid_params || !flow.get_device_iface ||
 		!flow.create_device_manager || !flow.create_device || !flow.get_texture || !flow.get_buffer) {
 		// A stock Flow build has no NvFlowVulkanExternal*: it can only make a
 		// device of its own, which the renderer cannot sample.
@@ -637,9 +655,8 @@ static bool flow_load_libraries(void)
 	flow.ext_op_list = get_ext_op_list();
 	flow.grid_iface = get_grid();
 	flow.params_iface = get_grid_params();
-	flow.device_iface = get_device(eNvFlowContextApi_vulkan);
 
-	if (!flow.op_list || !flow.ext_op_list || !flow.grid_iface || !flow.params_iface || !flow.device_iface)
+	if (!flow.op_list || !flow.ext_op_list || !flow.grid_iface || !flow.params_iface)
 		return false;
 
 	flow.libraries_loaded = true;
@@ -648,22 +665,20 @@ static bool flow_load_libraries(void)
 
 static void flow_destroy_simulation(void);
 
-static void flow_create_simulation(void)
+// Flow's device on the renderer's Vulkan device, submitting to its graphics queue
+static bool flow_create_device_vulkan(void)
 {
-	if (!cvar_pt_flow->integer) {
-		Com_Printf("NVIDIA Flow: off (pt_flow 0).\n");
-		return;
-	}
 	if (qvk.device_count > 1) {
 		Com_Printf("NVIDIA Flow: not with more than one GPU.\n");
-		return;
+		return false;
 	}
 	if (!qvk.supports_storage_image_without_format || !qvk.supports_fp16) {
 		Com_Printf("NVIDIA Flow: this GPU lacks storage images without a format, or FP16.\n");
-		return;
+		return false;
 	}
-	if (!flow_load_libraries())
-		return;
+	flow.device_iface = flow.get_device_iface(eNvFlowContextApi_vulkan);
+	if (!flow.device_iface)
+		return false;
 
 	flow_real_get_device_proc_addr = (PFN_vkGetDeviceProcAddr)vkGetInstanceProcAddr(qvk.instance, "vkGetDeviceProcAddr");
 	flow_real_queue_submit = (PFN_vkQueueSubmit)vkGetDeviceProcAddr(qvk.device, "vkQueueSubmit");
@@ -683,8 +698,48 @@ static void flow_create_simulation(void)
 	flow.device_manager = flow.create_device_manager(&desc);
 	if (flow.device_manager)
 		flow.device = flow.create_device(flow.device_manager, &desc);
-	if (!flow.device) {
+	if (!flow.device)
 		Com_EPrintf("NVIDIA Flow: could not start on the renderer's device.\n");
+	return flow.device != NULL;
+}
+
+// ...or on the D3D12 renderer's device (vkpt_flow_backend), executing on the
+// frame's queue: the backend setup/build_flow.py adds to Flow
+static bool flow_create_device_d3d12(void)
+{
+	if (!flow.d3d12_create_device_manager || !flow.d3d12_create_device || !flow.d3d12_get_texture ||
+		!flow.d3d12_get_buffer) {
+		Com_Printf("NVIDIA Flow: %s has no D3D12 backend - setup/build_flow.py builds one that has.\n",
+			FLOW_EXT_LIBNAME);
+		return false;
+	}
+	flow.device_iface = flow.get_device_iface(eNvFlowContextApi_d3d12);
+	if (!flow.device_iface)
+		return false;
+
+	NvFlowD3D12ExternalDesc desc = {
+		.device = vkpt_flow_backend->d3d12_device,
+		.queue = vkpt_flow_backend->d3d12_queue,
+		.logPrint = flow_log,
+	};
+	flow.device_manager = flow.d3d12_create_device_manager(&desc);
+	if (flow.device_manager)
+		flow.device = flow.d3d12_create_device(flow.device_manager, &desc);
+	if (!flow.device)
+		Com_EPrintf("NVIDIA Flow: could not start on the renderer's D3D12 device.\n");
+	return flow.device != NULL;
+}
+
+static void flow_create_simulation(void)
+{
+	if (!cvar_pt_flow->integer) {
+		Com_Printf("NVIDIA Flow: off (pt_flow 0).\n");
+		return;
+	}
+	if (!flow_load_libraries())
+		return;
+
+	if (!(vkpt_flow_backend ? flow_create_device_d3d12() : flow_create_device_vulkan())) {
 		flow_destroy_simulation();
 		return;
 	}
@@ -719,7 +774,8 @@ static void flow_create_simulation(void)
 	flow.max_blocks = grid_desc.maxLocations;
 
 	Cvar_FullSet("flow_available", "1", CVAR_ROM, FROM_CODE);
-	Com_Printf("NVIDIA Flow: ready, up to %u blocks.\n", grid_desc.maxLocations);
+	Com_Printf("NVIDIA Flow: ready on %s, up to %u blocks.\n", vkpt_flow_backend ? "D3D12" : "Vulkan",
+		grid_desc.maxLocations);
 }
 
 static void flow_release_set(int set)
@@ -1040,18 +1096,23 @@ static void flow_occupancy_dispatch(int set, uint32_t blocks)
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
 }
 
+// Whether flow_lights.comp has anything to add up: blocks, and a light slot in use.
+static bool flow_lights_wanted(uint32_t blocks)
+{
+	if (blocks == 0)
+		return false;
+	bool any = false;
+	for (int i = 0; i < FLOW_MAX_LIGHTS; i++)
+		any = any || flow.lights[i].layer >= 0;
+	return any;
+}
+
 // Adds up the glow round each light slot's seed, for flow_lights_collect two
 // frames on. Flow's own submission is already in the queue ahead of this.
 static void flow_lights_dispatch(int set, uint32_t blocks)
 {
 	flow.light_sum_blocks[set] = 0;
-	if (!flow.lights_pipeline || blocks == 0)
-		return;
-
-	bool any = false;
-	for (int i = 0; i < FLOW_MAX_LIGHTS; i++)
-		any = any || flow.lights[i].layer >= 0;
-	if (!any)
+	if (!flow.lights_pipeline || !flow_lights_wanted(blocks))
 		return;
 
 	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
@@ -2136,6 +2197,15 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 
 	flow_build_params(dt);
 
+	/* Paused - no game time - the gas holds still, and Flow is not stepped at all.
+	   Below pt_flow_rate fps (or at pt_flow_rate 0) its variable time step takes a
+	   solver step every frame even at dt 0 (Grid.cpp: at least one), and that is not
+	   quite nothing - the pressure solve, the advection resampling the atlas - so the
+	   gas kept moving a little under the pause (Matt, 11-06). Without a simulate
+	   getRenderData hands over what the last one left (the density, and the shadow
+	   pass's copy of it). A force clear still runs. */
+	const bool hold = dt <= 0.f && flow.have_blocks && !flow.force_clear;
+
 	NvFlowGridParamsSnapshot *snapshot = flow.params_iface->getParamsSnapshot(flow.grid_params, flow.sim_time, 0);
 	NvFlowGridParamsDesc params_desc = { 0 };
 	NvFlowTextureAcquire *density_acquire = NULL;
@@ -2146,11 +2216,13 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 	if (flow.params_iface->mapParamsDesc(flow.grid_params, snapshot, &params_desc)) {
 		NvFlowGridRenderData render_data = { 0 };
 
-		flow.grid_iface->simulate(flow.context, flow.grid, &params_desc, flow.force_clear);
-		// The shadow goes into the density's burn channel, and what
-		// getRenderData hands over after this is that copy.
-		if (flow.shadow_pass)
-			flow.grid_iface->offscreen(flow.context, flow.grid, &params_desc);
+		if (!hold) {
+			flow.grid_iface->simulate(flow.context, flow.grid, &params_desc, flow.force_clear);
+			// The shadow goes into the density's burn channel, and what
+			// getRenderData hands over after this is that copy.
+			if (flow.shadow_pass)
+				flow.grid_iface->offscreen(flow.context, flow.grid, &params_desc);
+		}
 		flow.grid_iface->getRenderData(flow.context, flow.grid, &render_data);
 
 		const NvFlowSparseParams *sparse = &render_data.sparseParams;
@@ -2657,6 +2729,24 @@ static void flow_write_descriptors(int set, VkImageView density_view, VkImageLay
 	vkUpdateDescriptorSets(qvk.device, LENGTH(writes), writes, 0, NULL);
 }
 
+// How far apart each set's FlowParams, light sums and occupancy are, for the
+// most blocks the grid can have.
+static void flow_set_strides(void)
+{
+	// A uniform buffer (see flow_common.glsl). 256 is the most
+	// minUniformBufferOffsetAlignment may be.
+	flow.params_stride = align(sizeof(FlowParams), 256);
+
+	// A block's sums for every block the grid can have.
+	const size_t max_blocks = (size_t)Cvar_ClampInteger(cvar_pt_flow_max_blocks, 16, 4096);
+	flow.light_sums_stride = align(max_blocks * FLOW_LIGHT_SUM_VEC4S * sizeof(vec4_t), 256);
+
+	// A block's bricks for every block the grid can have, and the group
+	// bitset. Written before it is read, every frame there are blocks.
+	flow.occupancy_blocks = (uint32_t)max_blocks;
+	flow.occupancy_stride = align((max_blocks + FLOW_COARSE_UVEC4S) * 4 * sizeof(uint32_t), 256);
+}
+
 static VkResult flow_create_dummies(void)
 {
 	VkImageCreateInfo img_info = {
@@ -2734,26 +2824,17 @@ static VkResult flow_create_dummies(void)
 	_VK(buffer_create(&flow.dummy_table, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
 
-	// A uniform buffer (see flow_common.glsl). 256 is the most
-	// minUniformBufferOffsetAlignment may be.
-	flow.params_stride = align(sizeof(FlowParams), 256);
+	flow_set_strides();
 	_VK(buffer_create(&flow.params, flow.params_stride * FLOW_SET_COUNT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 	flow.params_mapped = buffer_map(&flow.params);
 	memset(flow.params_mapped, 0, flow.params_stride * FLOW_SET_COUNT);
 
-	// A block's sums for every block the grid can have.
-	const size_t max_blocks = (size_t)Cvar_ClampInteger(cvar_pt_flow_max_blocks, 16, 4096);
-	flow.light_sums_stride = align(max_blocks * FLOW_LIGHT_SUM_VEC4S * sizeof(vec4_t), 256);
 	_VK(buffer_create(&flow.light_sums, flow.light_sums_stride * FLOW_SET_COUNT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 	flow.light_sums_mapped = buffer_map(&flow.light_sums);
 	memset(flow.light_sums_mapped, 0, flow.light_sums_stride * FLOW_SET_COUNT);
 
-	// A block's bricks for every block the grid can have, and the group
-	// bitset. Written before it is read, every frame there are blocks.
-	flow.occupancy_blocks = (uint32_t)max_blocks;
-	flow.occupancy_stride = align((max_blocks + FLOW_COARSE_UVEC4S) * 4 * sizeof(uint32_t), 256);
 	_VK(buffer_create(&flow.occupancy, flow.occupancy_stride * FLOW_SET_COUNT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
@@ -3003,6 +3084,12 @@ flat colour. The level is in a probe's key, so a new spacing starts every
 history over. The lights are the BSP cluster's at the middle of the box, or
 where the gas began when that is in a wall.
 */
+// the probe grid is there to fill: the Vulkan pass's, or the backend's
+static bool flow_env_ready(void)
+{
+	return vkpt_flow_backend ? flow.env_backend : flow.env_pipeline != VK_NULL_HANDLE;
+}
+
 static void flow_env_params(FlowParams *params)
 {
 	const bsp_t *bsp = flow.env_bsp;
@@ -3011,7 +3098,7 @@ static void flow_env_params(FlowParams *params)
 	flow.env_bsp = NULL;
 	flow.env_num_lights = 0;
 
-	if (!flow.env_pipeline || !cvar_pt_flow_env->integer || !params->block_dim_bits[3])
+	if (!flow_env_ready() || !cvar_pt_flow_env->integer || !params->block_dim_bits[3])
 		return;
 
 	static const int dim[3] = { FLOW_ENV_DIM_X, FLOW_ENV_DIM_Y, FLOW_ENV_DIM_Z };
@@ -3327,21 +3414,39 @@ VkResult vkpt_flow_initialize(void)
 
 	Cvar_FullSet("flow_available", "0", CVAR_ROM, FROM_CODE);
 
-	VkResult result = flow_create_dummies();
-	if (result != VK_SUCCESS)
-		return result;
+	if (vkpt_flow_backend) {
+		// The backend's buffers at the same strides, and its dummies in the
+		// sets; it makes the passes too. Without them there is no Flow.
+		flow_set_strides();
+		if (!vkpt_flow_backend->create(flow.params_stride, flow.light_sums_stride, flow.occupancy_stride,
+				&flow.params_mapped, &flow.light_sums_mapped)) {
+			flow.params_mapped = NULL;
+			flow.light_sums_mapped = NULL;
+			Com_WPrintf("NVIDIA Flow: the renderer could not make its buffers - no Flow.\n");
+			return VK_SUCCESS;
+		}
+		// (the light sums are read only where the GPU has written them: light_sum_blocks)
+		memset(flow.params_mapped, 0, flow.params_stride * FLOW_SET_COUNT);
+		for (int set = 0; set < FLOW_SET_COUNT; set++)
+			vkpt_flow_backend->bind(set, NULL, 0, NULL);
+	}
+	else {
+		VkResult result = flow_create_dummies();
+		if (result != VK_SUCCESS)
+			return result;
 
-	for (int set = 0; set < FLOW_SET_COUNT; set++)
-		flow_write_descriptors(set, flow.dummy_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, flow.dummy_table.buffer);
+		for (int set = 0; set < FLOW_SET_COUNT; set++)
+			flow_write_descriptors(set, flow.dummy_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, flow.dummy_table.buffer);
 
-	VkDescriptorSetLayout desc_set_layouts[] = {
-		qvk.desc_set_layout_ubo, qvk.desc_set_layout_textures,
-	};
-	CREATE_PIPELINE_LAYOUT(qvk.device, &flow.lights_pipeline_layout,
-		.setLayoutCount = LENGTH(desc_set_layouts),
-		.pSetLayouts = desc_set_layouts,
-	);
-	ATTACH_LABEL_VARIABLE(flow.lights_pipeline_layout, PIPELINE_LAYOUT);
+		VkDescriptorSetLayout desc_set_layouts[] = {
+			qvk.desc_set_layout_ubo, qvk.desc_set_layout_textures,
+		};
+		CREATE_PIPELINE_LAYOUT(qvk.device, &flow.lights_pipeline_layout,
+			.setLayoutCount = LENGTH(desc_set_layouts),
+			.pSetLayouts = desc_set_layouts,
+		);
+		ATTACH_LABEL_VARIABLE(flow.lights_pipeline_layout, PIPELINE_LAYOUT);
+	}
 
 	flow.num_emitters = 0;
 	flow.updated_frame = 0;
@@ -3351,8 +3456,15 @@ VkResult vkpt_flow_initialize(void)
 #if USE_FLOW
 	flow_free_lights();
 	flow_create_simulation();
-	if (flow.grid)
-		flow_env_create();
+	if (flow.grid) {
+		if (vkpt_flow_backend) {
+			// vkpt_flow_create_pipelines' word on the probes, for the menu
+			flow.env_backend = vkpt_flow_backend->create_env();
+			Cvar_FullSet("flow_env_available", flow.env_backend ? "1" : "0", CVAR_ROM, FROM_CODE);
+		}
+		else
+			flow_env_create();
+	}
 #endif
 
 	return VK_SUCCESS;
@@ -3361,7 +3473,13 @@ VkResult vkpt_flow_initialize(void)
 VkResult vkpt_flow_destroy(void)
 {
 #if USE_FLOW
-	flow_env_destroy();
+	if (vkpt_flow_backend) {
+		vkpt_flow_backend->destroy_env();
+		flow.env_backend = false;
+		Cvar_FullSet("flow_env_available", "0", CVAR_ROM, FROM_CODE);
+	}
+	else
+		flow_env_destroy();
 	flow_destroy_simulation();
 	Z_Free(flow.world_tris);
 	Z_Free(flow.mesh_positions);
@@ -3376,11 +3494,21 @@ VkResult vkpt_flow_destroy(void)
 	flow.num_mesh_tris = 0;
 	flow.mesh_region_valid = false;
 #endif
-	if (flow.lights_pipeline_layout)
-		vkDestroyPipelineLayout(qvk.device, flow.lights_pipeline_layout, NULL);
-	flow.lights_pipeline_layout = VK_NULL_HANDLE;
-	flow_destroy_dummies();
+	if (vkpt_flow_backend) {
+		vkpt_flow_backend->destroy();
+		flow.params_mapped = NULL;
+		flow.light_sums_mapped = NULL;
+	}
+	else {
+		if (flow.lights_pipeline_layout)
+			vkDestroyPipelineLayout(qvk.device, flow.lights_pipeline_layout, NULL);
+		flow.lights_pipeline_layout = VK_NULL_HANDLE;
+		flow_destroy_dummies();
+	}
 	flow.num_emitters = 0;
+	flow.marching = false;
+	flow.updated_frame = 0;
+	memset(&flow.dispatch, 0, sizeof(flow.dispatch));
 	return VK_SUCCESS;
 }
 
@@ -3523,22 +3651,19 @@ void vkpt_flow_ambient(VkCommandBuffer cmd_buf)
 	if (params->env_count[0] <= 0)
 		return;
 
-	VkAccelerationStructureKHR tlas = vkpt_pt_get_geometry_tlas(qvk.current_frame_index);
-	if (tlas == VK_NULL_HANDLE) {
+	// the classic TLAS's handle or (pt_ptlas) the partitioned one's address
+	vkpt_tlas_write_t tlas_write;
+	const void *tlas_next = vkpt_pt_geometry_tlas_write(qvk.current_frame_index, &tlas_write);
+	if (!tlas_next) {
 		// no probes this frame: the march must not read the old ones
 		params->env_count[0] = 0;
 		return;
 	}
 
 	VkDescriptorSet desc_set = flow.env_sets[qvk.current_frame_index];
-	VkWriteDescriptorSetAccelerationStructureKHR as_info = {
-		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-		.accelerationStructureCount = 1,
-		.pAccelerationStructures = &tlas,
-	};
 	VkWriteDescriptorSet write = {
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.pNext = &as_info,
+		.pNext = tlas_next,
 		.dstSet = desc_set,
 		.dstBinding = 0,
 		.descriptorCount = 1,
@@ -3668,9 +3793,15 @@ static void flow_layer_look(FlowLayerParams *look, int layer, float cell_size)
 
 #if USE_FLOW
 // A timestamp for the profiler's Flow row, in a command buffer of its own:
-// Flow submits its work itself, so there is nowhere inside it to put one.
+// Flow submits its work itself, so there is nowhere inside it to put one. On
+// another renderer, that renderer's (vkpt_flow_backend->profile).
 static void flow_profile(VKPTProfilerAction action)
 {
+	if (vkpt_flow_backend) {
+		if (vkpt_flow_backend->profile)
+			vkpt_flow_backend->profile((int)action);
+		return;
+	}
 	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 	vkpt_profiler_query_after(cmd_buf, PROFILER_FLOW_SIMULATION, action);
 	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
@@ -3698,7 +3829,7 @@ bool vkpt_flow_marching(void)
 bool vkpt_flow_env_profiled(void)
 {
 #if USE_FLOW
-	return flow.grid && flow.env_pipeline && cvar_pt_flow_env->integer;
+	return flow.grid && flow_env_ready() && cvar_pt_flow_env->integer;
 #else
 	return false;
 #endif
@@ -3768,6 +3899,10 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 		return;
 	flow.updated_frame = qvk.frame_counter + 1;
 	flow.marching = false;
+	memset(&flow.dispatch, 0, sizeof(flow.dispatch));
+	// the backend could not make its buffers (vkpt_flow_initialize said so)
+	if (!flow.params_mapped)
+		return;
 
 	const int set = qvk.frame_counter & 1;
 	FlowParams *params = (FlowParams *)(flow.params_mapped + set * flow.params_stride);
@@ -3775,6 +3910,9 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 	VkImageView density_view = flow.dummy_view;
 	VkImageLayout density_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	VkBuffer table = flow.dummy_table.buffer;
+	// ...or on the backend's renderer, its native resources (NULL: its dummies)
+	void *backend_density = NULL, *backend_table = NULL;
+	uint32_t backend_format = 0;
 	uint32_t blocks = 0;
 
 	memset(params, 0, sizeof(*params));
@@ -3788,7 +3926,9 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 	}
 
 	// From before Flow's submission to after the passes that follow it - not
-	// on the frames it has nothing to do, as flow_simulate tells them.
+	// on the frames it has nothing to do, as flow_simulate tells them. (On the
+	// backend's renderer those passes are in its frame list, which times them
+	// apart and adds them to the row.)
 	const bool profiled = flow.grid && render_world &&
 		!(flow.idle && flow.num_emitters == 0 && !flow.force_clear);
 	if (profiled)
@@ -3800,20 +3940,37 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 	// The player setup menu's model view is not the world; the fire holds
 	// still and stays out of it.
 	if (flow.grid && render_world && flow_simulate(fd, set, params)) {
-		NvFlowVulkanExternalTexture density;
-		NvFlowVulkanExternalBuffer sparse_table;
-		flow.get_texture(flow.set_density[set], &density);
-		flow.get_buffer(flow.set_table[set], &sparse_table);
+		bool have_grid;
+		if (vkpt_flow_backend) {
+			NvFlowD3D12ExternalTexture density;
+			NvFlowD3D12ExternalBuffer sparse_table;
+			flow.d3d12_get_texture(flow.set_density[set], &density);
+			flow.d3d12_get_buffer(flow.set_table[set], &sparse_table);
+			have_grid = density.resource && sparse_table.resource;
+			if (have_grid) {
+				backend_density = density.resource;
+				backend_format = density.format;
+				backend_table = sparse_table.resource;
+			}
+		}
+		else {
+			NvFlowVulkanExternalTexture density;
+			NvFlowVulkanExternalBuffer sparse_table;
+			flow.get_texture(flow.set_density[set], &density);
+			flow.get_buffer(flow.set_table[set], &sparse_table);
+			have_grid = density.imageView && sparse_table.buffer;
+			if (have_grid) {
+				density_view = (VkImageView)density.imageView;
+				density_layout = (VkImageLayout)density.layout;
+				table = (VkBuffer)sparse_table.buffer;
+			}
+		}
 
-		if (density.imageView && sparse_table.buffer) {
+		if (have_grid) {
 			// Smoke's extinction is per cell of the main grid on every layer,
 			// so the railgun trail's finer cells change how sharp it is, not
 			// how thick.
 			const float cell_size = flow_layer_cell_size(R_FLOW_FIRE);
-
-			density_view = (VkImageView)density.imageView;
-			density_layout = (VkImageLayout)density.layout;
-			table = (VkBuffer)sparse_table.buffer;
 
 			params->block_dim_bits[3] = 1;
 			flow.marching = true;
@@ -3854,14 +4011,41 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 	(void)render_world;
 #endif
 
-	flow_write_descriptors(set, density_view, density_layout, table);
+	if (vkpt_flow_backend)
+		vkpt_flow_backend->bind(set, backend_density, backend_format, backend_table);
+	else
+		flow_write_descriptors(set, density_view, density_layout, table);
 
 #if USE_FLOW
-	flow_occupancy_dispatch(set, blocks);
-	flow_lights_dispatch(set, blocks);
+	if (vkpt_flow_backend) {
+		// the same passes, recorded by the backend's renderer (vkpt_flow_dispatches)
+		vkpt_flow_dispatch_t *d = &flow.dispatch;
+		d->set = set;
+		d->occupancy_blocks = min(blocks, flow.occupancy_blocks);
+		flow.light_sum_blocks[set] = flow_lights_wanted(blocks) ? blocks : 0;
+		d->light_blocks = flow.light_sum_blocks[set];
+		if (flow.env_backend && params->env_count[0] > 0)
+			memcpy(d->env_groups, flow.env_groups, sizeof(d->env_groups));
+	}
+	else {
+		flow_occupancy_dispatch(set, blocks);
+		flow_lights_dispatch(set, blocks);
+	}
 	if (profiled)
 		flow_profile(PROFILER_STOP);
 #else
 	(void)blocks;
+	(void)backend_density;
+	(void)backend_table;
+	(void)backend_format;
 #endif
+}
+
+void vkpt_flow_dispatches(vkpt_flow_dispatch_t *out)
+{
+	if (flow.updated_frame == qvk.frame_counter + 1)
+		*out = flow.dispatch;
+	else
+		memset(out, 0, sizeof(*out));
+	out->set = qvk.frame_counter & 1;
 }

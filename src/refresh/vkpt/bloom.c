@@ -98,26 +98,31 @@ static float original_bloom_intensity = -1.0f;
 static float original_bloom_sigma = -1.0f;
 static bool dlssScaled = false;
 
-static void compute_push_constants(void)
+/* The blur's Gaussian, both passes, for an output extent_height pixels tall:
+   this frame's bloom_sigma (vkpt_bloom_update's) in pixels, a quarter of that at
+   the blur's quarter resolution, clamped to [1, 100]. Shared with the D3D12
+   backend, which records the same three passes (d3d12/passes.c). */
+void vkpt_bloom_blur_params(uint32_t extent_height, float *argument_scale, float *normalization_scale, int *num_samples)
 {
-	float sigma_pixels;
-
-	if (!DLSSEnabled()) {
-		sigma_pixels = bloom_sigma * (float)(qvk.extent_taa_output.height);
-	}
-	else {
-		sigma_pixels = bloom_sigma * (float)(qvk.extent_unscaled.height);
-	}
+	float sigma_pixels = bloom_sigma * (float)(extent_height);
 
 	float effective_sigma = sigma_pixels * 0.25f;
 	effective_sigma = min(effective_sigma, 100.f);
 	effective_sigma = max(effective_sigma, 1.f);
 
+	*argument_scale = -1.f / (2.0 * effective_sigma * effective_sigma);
+	*normalization_scale = 1.f / (sqrtf(2 * M_PI) * effective_sigma);
+	*num_samples = roundf(effective_sigma * 4.f);
+}
+
+static void compute_push_constants(void)
+{
+	vkpt_bloom_blur_params(!DLSSEnabled() ? qvk.extent_taa_output.height : qvk.extent_unscaled.height,
+		&push_constants_hblur.argument_scale, &push_constants_hblur.normalization_scale,
+		&push_constants_hblur.num_samples);
+
 	push_constants_hblur.pixstep_x = 1.f;
 	push_constants_hblur.pixstep_y = 0.f;
-	push_constants_hblur.argument_scale = -1.f / (2.0 * effective_sigma * effective_sigma);
-	push_constants_hblur.normalization_scale = 1.f / (sqrtf(2 * M_PI) * effective_sigma);
-	push_constants_hblur.num_samples = roundf(effective_sigma * 4.f);
 	push_constants_hblur.pass = 0;
 
 	push_constants_vblur = push_constants_hblur;
@@ -195,8 +200,9 @@ void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_wa
 	}
 }
 
-VkResult
-vkpt_bloom_initialize()
+// vkpt_init_frontend: vkpt_bloom_update reads them in the frame's CPU half
+void
+vkpt_bloom_init_cvars(void)
 {
 	cvar_bloom_enable = Cvar_Get("bloom_enable", "1", 0);
 	cvar_bloom_debug = Cvar_Get("bloom_debug", "0", 0);
@@ -204,6 +210,12 @@ vkpt_bloom_initialize()
 	cvar_bloom_intensity = Cvar_Get("bloom_intensity", "0.002", 0);
 	cvar_bloom_sigma_water = Cvar_Get("bloom_sigma_water", "0.037", 0);
 	cvar_bloom_intensity_water = Cvar_Get("bloom_intensity_water", "0.2", 0);
+}
+
+VkResult
+vkpt_bloom_initialize()
+{
+	vkpt_bloom_init_cvars();
 
 	if (original_bloom_intensity == -1.0f) {
 		original_bloom_intensity = cvar_bloom_intensity->value;

@@ -495,7 +495,12 @@ typedef enum ref_type_e
     REF_TYPE_NONE = 0,
     REF_TYPE_GL,
     REF_TYPE_VKPT,
-    REF_TYPE_SW
+    REF_TYPE_SW,
+    // the D3D12 path tracer (vid_rtx 3). Not REF_TYPE_VKPT: the client's
+    // "== REF_TYPE_VKPT" branches are what only Vulkan has (Flow, frame
+    // generation, dynamic resolution, the world-less player setup view); what
+    // both path tracers share asks CL_PathTraced() (client.h).
+    REF_TYPE_D3D12
 } ref_type_t;
 
 // called when the library is loaded
@@ -692,6 +697,10 @@ void R_RegisterFunctionsRTX(void);
 
 #if REF_SOFT
 void R_RegisterFunctionsSW(void);
+#endif
+
+#if REF_D3D12
+void R_RegisterFunctionsD3D12(void);
 #endif
 
 #endif // REFRESH_H

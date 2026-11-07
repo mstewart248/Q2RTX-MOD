@@ -281,7 +281,7 @@ Green is read from the pixel itself, so the picture keeps its geometry.
 It runs after the temporal resolve and motion blur, before bloom and tone
 mapping, on the still-linear frame. With DLSS it runs after the upscale, so DLSS
 never sees the fringe and resolves it away as aliasing. The HUD is drawn later
-and is never touched. RTX renderer only.
+and is never touched. RTX renderers only (Vulkan and Direct3D 12).
 
 | cvar | Default | Notes |
 |---|---|---|
@@ -301,7 +301,7 @@ size on screen at any resolution.
 It is added in the final copy to the screen, after tone mapping, FSR, DLSS and
 frame generation, and before the HUD. DLSS and frame generation never see it,
 every frame shown gets fresh grain (generated frames included), and the HUD
-stays clean. RTX renderer only.
+stays clean. RTX renderers only (Vulkan and Direct3D 12).
 
 | cvar | Default | Notes |
 |---|---|---|
@@ -338,7 +338,7 @@ Each scanline is drawn as a beam, wider where the picture is bright, so dark
 areas show black gaps between lines and highlights fill them in. Average
 brightness is kept, so the game gets no darker. The mask is red, green and
 blue stripes (an aperture grille). The curvature follows Timothy Lottes'
-public-domain CRT shader. RTX renderer only.
+public-domain CRT shader. RTX renderers only (Vulkan and Direct3D 12).
 
 | cvar | Default | Notes |
 |---|---|---|
@@ -356,26 +356,47 @@ per-pixel tint computed from depth and height: a filter over the framebuffer tha
 cannot be lit and casts nothing. Overdrive feeds the same authored numbers into
 the **density of a real scattering medium** instead.
 
-`cl_fog` selects the integrator. These are four genuinely different things, not
-four strengths of one effect, and they do not share their settings — the menu
-shows only what the selected mode actually reads:
+`cl_fog` is a switch: the fog is volumetric, or there is none.
 
-| `cl_fog` | Name | What it does |
+| `cl_fog` | What it does |
+|---|---|
+| `0` | No fog. Under the physical sky the original Quake II RTX sun shafts still show; `gr_enable 0` turns those off too. |
+| `1` | **Volumetric fog**: a real medium lit by the sun, the sky and every light in the map, each sampled with its own occlusion ray, so inverse square falls out of the pdf and walls cast shadows into it. |
+
+It is on by default in the remaster, whose maps author fog, and off in the
+classic campaign. A map with no fog of its own gets an even white medium, so
+turning it on looks the same in both. Older configs' `cl_fog 2` and `3` now read
+as `1`.
+
+**The map's fog sets the shape, not the brightness.** The authored density is
+normalised, so it decides where the fog is thick and where it is thin. How bright
+the fog is comes only from six knobs, one per kind of light, plus each light's own
+[volumetric scale](#volumetric-scale-how-much-fog-a-light-makes):
+
+| cvar | Default | What it scales |
 |---|---|---|
-| `0` | off | no atmosphere |
-| `1` | sunlight only | the classic god-ray march, sun term only, no map lights |
-| `2` | lit by map lights | per-pixel march that also evaluates the map's lights, with a hand-rolled falloff model (`pt_fog_light_knee`, `_falloff`, `_pivot`, `_radius`) |
-| `3` | volumetric lighting | the **froxel grid** — samples each light properly with its own occlusion ray, so inverse square falls out of the pdf. Ignores the mode-2 falloff knobs entirely. |
+| `pt_fog_scale_sun` | `2.0` | sunlight under the physical sky: the shafts through windows and openings |
+| `pt_fog_scale_skybox` | `1.0` | the sky's own light: the soft glow under open sky, under a map's skybox (and the physical sky when `pt_fog_sky_sun_only 0`) |
+| `pt_fog_scale_emissive` | `1.0` | the map's emissive surfaces, which are most of its lights |
+| `pt_fog_scale_dynamic` | `1.0` | weapon fire, muzzle flashes, flares, the flashlight and placed lights |
+| `pt_fog_scale_model` | `1.0` | lights on models |
+| `pt_fog_lava_scale` | `5.0` | lava's glow in the air above it; how lava lights the room is unchanged |
 
-**The froxel grid** (`pt_fog_froxel`, the engine behind `cl_fog 3`) is a
-160 × 88 × 64 view-frustum-aligned volume — screen-space in X and Y, and
-*exponentially* distributed in Z, because a linear slice distribution would spend
-most of its cells on distance nobody can resolve. That is ~900k cells against the
-tens of millions of light evaluations a per-pixel march costs, and because each
-cell is a fixed point in view space, last frame's result can be reprojected into
-this one, which is what removes the noise (`pt_fog_froxel_history`,
-rate-corrected by `pt_fog_froxel_history_hz` so the *time* constant stays fixed
-whatever framerate the machine runs at).
+`pt_fog_sky_sun_only` picks how the physical sky lights the fog: `1` (fast) is the
+sun's shafts through the shadow map only; `0` (accurate) adds the sky's own light,
+with a traced ray per fog cell so it clips crisply under roofs. The rerelease's
+map cfgs tune the six knobs per map with `mapcvar`.
+
+**The froxel grid** (`pt_fog_froxel`, on by default) is what `cl_fog 1` renders
+in. It is a 160 × 88 × 64 view-frustum-aligned volume — screen-space in X and Y,
+and *exponentially* distributed in Z, because a linear slice distribution would
+spend most of its cells on distance nobody can resolve. That is ~900k cells
+against the tens of millions of light evaluations a per-pixel march costs, and
+because each cell is a fixed point in view space, last frame's result can be
+reprojected into this one, which is what removes the noise
+(`pt_fog_froxel_history`, rate-corrected by `pt_fog_froxel_history_hz` so the
+*time* constant stays fixed whatever framerate the machine runs at).
+`pt_fog_froxel 0` falls back to the old per-pixel march, kept for comparison.
 
 Also in the fog system:
 
@@ -385,8 +406,8 @@ Also in the fog system:
   not soften the sky shafts.
 * **Real occlusion** (`pt_fog_light_shadow`) so fog is no longer lit *through*
   walls, floors and roofs — this is what makes a glow pool around a fixture
-  instead of appearing above the roof it is under. Affordable in the grid (one
-  ray per cell); very expensive in the per-pixel march.
+  instead of appearing above the roof it is under. Affordable in the grid: one
+  ray per cell.
 * **Per-light volumetric scale**, RTX Remix's `volumetricRadianceScale`. See
   [Volumetric scale](#volumetric-scale-how-much-fog-a-light-makes).
 * **Real extinction** (`pt_fog_extinction`, `pt_fog_opacity`) so a long ray
@@ -407,14 +428,6 @@ Also in the fog system:
   poison the whole volume — the fog would collapse to nothing or turn to white
   noise. Those values are now caught before they spread. Sky fog no longer
   leaks into indoor areas.
-* **Calibration**: `cl_fog_scale` maps the map's authored density onto
-  extinction (KEX's constant lives in a closed renderer and cannot be derived).
-  `cl_volumetric_fog_density` lets a map carry a *second* density for mode 3,
-  because mode 1 zeroes most of the volume behind a hard shadow cliff and needs a
-  far larger scale than mode 3, which lights every step. `-1` means "no opinion,
-  use `cl_fog_scale`". Set these **per map** with `mapcvar` — see
-  [Per-map settings](#per-map-settings-mapcvar) — because `cl_fog_scale` also
-  silently sets the march step length and therefore the cost of the pass.
 * **Rerelease level fog** (`cl_fog_rerelease`, off by default; "rerelease
   level fog" on the fog page). It makes rerelease maps follow the rerelease's
   own fog rules:
@@ -429,8 +442,9 @@ Also in the fog system:
   `_history_clamp`, `_history_hold`, `_const_src`, `_printf`) left in place
   deliberately; they are bisection tools, not settings.
 
-`pt_dlss_fg`, `cl_fog` and `pt_fog_froxel` all interact, so the fog page in the
-menu is the reliable way to drive this.
+In the menu: **effects** → **map fog and volumetrics...** holds the switch, the
+six knobs and the physical sky's fog quality, and shows only the switch while fog
+is off.
 
 ## Quake II (2023 rerelease) support
 
@@ -631,8 +645,10 @@ space, so a burst of sixty costs one instance, not sixty.
 
 Explosions, the BFG's plasma and rocket trails can be simulated by **NVIDIA
 Flow 2**, NVIDIA's gas solver (advection, combustion, vorticity and pressure on
-a sparse grid). It runs as Vulkan compute on the game's own GPU device and
-queue, and the path tracer marches the result. The fire is a volume in the
+a sparse grid). It runs as compute on the game's own GPU device and queue —
+Vulkan, or on the [Direct3D 12 renderer](#direct3d-12-renderer) a Direct3D 12
+backend for Flow written for this project — and the path tracer marches the
+result. The fire is a volume in the
 room rather than a flat sprite: it has depth, it shows in mirrors, glass and
 water, and it burns out into smoke that rises, drifts and fades.
 
@@ -812,7 +828,9 @@ In the menu: **options** → **effects setup**.
   for reaching behaviour that otherwise sits behind a level's worth of map.
 * `pt_sun_vis_feedback`, `vid_present_stats`, `vid_swapchain_images`,
   `vid_vsync_mailbox`, `vid_fullscreen_exclusive`, plus Vulkan validation helpers
-  (`vk_gpu_av`, `vk_gpu_diag`, `vk_sync_validation`, `vk_shader_printf`).
+  (`vk_gpu_av`, `vk_gpu_diag`, `vk_sync_validation`, `vk_shader_printf`), and on
+  Direct3D 12 `d3d12_info` and `d3d12_show <image>` (any G-buffer image on
+  screen).
 
 ## CPU path tracer benchmark
 
@@ -874,7 +892,68 @@ native resolution, 256 spp, 8 bounces, fog on.*
 
 All of them are saved to the config. The score depends on the view, the map and
 every setting above, so compare runs made from the same spot with the same
-settings. RTX renderer only.
+settings. RTX renderers only (Vulkan and Direct3D 12).
+
+## Direct3D 12 renderer
+
+`vid_rtx 3` is a second path tracer, on Direct3D 12 and DXR, alongside the
+Vulkan one (`vid_rtx 1`). It is the same renderer on another API, not a port:
+
+* **One shader source.** Every shader is the Vulkan GLSL, compiled a second time
+  and translated to DXIL at build time (`spv2dxil`: SPIRV-Cross, then DXC).
+  Nothing in `baseq2/shader_d3d12` is written by hand.
+* **One frontend.** The CPU half — the scene, models, materials, lights, fog,
+  blood, the DLSS settings — is the Vulkan renderer's own code, called rather
+  than copied. Only the API layer is new.
+
+So `vid_rtx 1` against `vid_rtx 3` compares the two APIs on the same frame. On
+the developer's RTX 5070 Ti the Direct3D 12 renderer has run noticeably faster,
+around 20%.
+
+What it runs:
+
+* The whole path tracer: the bounces, glass and water, the physical sky, ReSTIR,
+  the radiance cache (SHaRC), the volumetric fog, blood, NVIDIA Flow fire and
+  smoke, ray-traced sound, photo mode and dynamic resolution, and the post
+  effects (bloom, motion blur, chromatic aberration, film grain, the CRT filter).
+* DLSS Super Resolution, Ray Reconstruction and Frame Generation through NGX's
+  Direct3D 12 entry points, again with no Streamline. Reflex goes through NVAPI
+  (`nvapi64.dll`, which the NVIDIA driver installs). HDR output (`vid_hdr`) is
+  scRGB, as on Vulkan.
+* The same cvars and the same menus, the Player Setup model view, the profiler
+  (`profiler 1`), `vid_present_stats`, `cpu_bench` and the debug views.
+
+Its own options, under the renderer page while it is selected:
+
+| cvar | Default | Notes |
+|---|---|---|
+| `d3d12_frame_latency` | `2` | Finished frames that may wait for the display: `1` least input lag, `3` steadiest pacing. Restarts the renderer. |
+| `pt_ser` | `0` | Shader Execution Reordering, on shader model 6.9 GPUs: `1` on, `2` ray generation only. An A/B, not saved; measured here it costs about 1 ms. |
+
+`pt_ptlas` (partitioned TLAS) and `pt_clusters` (clustered geometry), from RTX
+Mega Geometry, are A/B switches on both RTX renderers, shown only where the
+driver supports them. Both default to off, and clustered geometry measured slower
+here.
+
+Not on Direct3D 12: multi-GPU, `ray_tracing_api` (it always uses ray queries),
+`pt_async_compute` (off by default on Vulkan too) and `reload_shader`.
+
+**Requirements:** Windows 10 or 11, 64-bit, and a GPU with feature level 12_0 and
+DXR 1.1 inline ray tracing. DirectX 12 Ultimate is not required: features beyond
+the base path are used only where the GPU reports them, and `d3d12_info` prints
+what it reports. The Agility SDK runtime runs from `D3D12\` next to the
+executable. If the renderer cannot start, the game says so and falls back to
+Vulkan.
+
+In the menu: **options** → **graphics settings** → **renderer...** →
+**renderer**: *rtx (direct3d 12)*, shown when the build has it. Or `vid_rtx 3`
+in the console.
+
+**Source builds only, for now.** The release package and the Actions builds do
+not include it yet: they ship neither `baseq2/shader_d3d12` nor the Agility
+runtime. To build it, see step 5 of the
+[build instructions](#build-instructions). How it is put together, and what is
+left, is in [src/refresh/d3d12/ROADMAP.md](src/refresh/d3d12/ROADMAP.md).
 
 ## Software renderer
 
@@ -1323,7 +1402,7 @@ load puts it back. This is what a per-map `maps/<name>.cfg` actually wants.
 
 The alternative — set the cvar in the map's cfg and `reset` it in
 `maps/default.cfg` — restores the cvar's **compiled-in default**, not the
-player's value, so a player running `cl_fog 2` everywhere would silently be
+player's value, so a player running `cl_fog 1` everywhere would silently be
 dropped to `cl_fog 0` by every map that touched it. `mapcvar` restores what they
 actually had.
 
@@ -1338,9 +1417,9 @@ actually had.
   per-map override cannot leak permanently by quitting while stood on that map.
 
 `maps/<mapname>.cfg` is exec'd on map load, immediately after
-`maps/default.cfg`. Fog calibration is the main user: see
+`maps/default.cfg`. Fog is the main user: see
 [`rerelease/maps/lights/`](rerelease/maps/lights) for placed lights, and the
-per-map cfgs for the density each map wants.
+per-map cfgs for the fog knobs each map sets.
 
 ---
 
@@ -1357,8 +1436,8 @@ Many source files carry long comments explaining a whole subsystem, and they are
 the real documentation for it:
 
   * [lightedit.c](src/client/lightedit.c) — the light placement system
-  * [mapfog.c](src/client/mapfog.c) — the rerelease's per-map fog, and why its
-    density scale is not derivable
+  * [mapfog.c](src/client/mapfog.c) — the rerelease's per-map fog, and how its
+    authored numbers become the shape of the medium
   * [dynamiclights.c](src/client/dynamiclights.c) — the `dynamic_light` entity,
     measured across every shipped map
   * [footsteps.c](src/client/footsteps.c) — surface-dependent footsteps
@@ -1388,9 +1467,10 @@ server only — the DLSS SDK ships no 32-bit library, and the path tracer is wha
 pulls DLSS in.
 
 DLSS Super Resolution, Ray Reconstruction and Frame Generation require an NVIDIA
-RTX GPU and a recent driver. Reflex uses `VK_NV_low_latency2`. Everything else,
-including the path tracer and the volumetric fog, runs on any GPU with Vulkan ray
-tracing.
+RTX GPU and a recent driver. Reflex uses `VK_NV_low_latency2` on Vulkan and NVAPI
+on Direct3D 12. Everything else, including the path tracer and the volumetric
+fog, runs on any GPU with Vulkan ray tracing, or, for the
+[Direct3D 12 renderer](#direct3d-12-renderer), DXR 1.1.
 
 ### Software
 
@@ -1411,7 +1491,8 @@ a warning is printed). CI does this automatically — see
 [.github/workflows/build.yml](.github/workflows/build.yml).
 
 Frame Generation goes through NGX directly, so **no Streamline SDK is needed**,
-and Reflex goes through a Vulkan extension, so it needs no SDK either.
+and Reflex goes through a Vulkan extension (or, on Direct3D 12, NVAPI loaded from
+the driver), so it needs no SDK either.
 
 ## Submodules
 
@@ -1447,7 +1528,14 @@ and Reflex goes through a Vulkan extension, so it needs no SDK either.
   4. Set `DLSS_SDK2_PATH` to a clone of https://github.com/NVIDIA/DLSS if you
      want DLSS.
 
-  5. Configure CMake with either the GUI or the command line and point the build
+  5. *Optional, Windows:* for the [Direct3D 12 renderer](#direct3d-12-renderer),
+     run `python setup/fetch_agility_sdk.py`. It stages the Agility SDK headers
+     in `extern/agility-sdk/include` and its runtime in `D3D12\` next to
+     `q2rtx.exe`, and CMake then turns `CONFIG_D3D12_RENDERER` on by itself. It
+     also needs the Vulkan SDK's `spirv-cross-c-shared` and `dxcompiler.dll`
+     (`D3D12_VULKAN_SDK`, which defaults to `$VULKAN_SDK`).
+
+  6. Configure CMake with either the GUI or the command line and point the build
      at the `build` folder created in step 2.
 
      `cd build`
@@ -1459,7 +1547,7 @@ and Reflex goes through a Vulkan extension, so it needs no SDK either.
      Note 2: when CMake is configuring `curl`, it will print warnings like
      `Found no *nroff program`. These can be ignored.
 
-  6. Build with Visual Studio on Windows, make on Linux, or the CMake command
+  7. Build with Visual Studio on Windows, make on Linux, or the CMake command
      line:
 
      `cmake --build .`

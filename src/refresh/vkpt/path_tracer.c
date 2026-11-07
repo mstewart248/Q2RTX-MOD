@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "shared/shared.h"
 #include "vkpt.h"
 #include "vk_util.h"
+#include "clusters.h"
 #include "shader/vertex_buffer.h"
 #include "../../client/client.h"
 
@@ -102,6 +103,7 @@ cvar_t*                      cvar_pt_enable_particles = NULL;
 cvar_t*                      cvar_pt_enable_beams = NULL;
 cvar_t*                      cvar_pt_enable_sprites = NULL;
 cvar_t*                      cvar_pt_tlas_fast_trace = NULL;
+cvar_t*                      cvar_pt_ptlas = NULL;
 cvar_t*                      cvar_pt_blas_fast_trace = NULL;
 
 extern cvar_t *cvar_pt_caustics;
@@ -121,6 +123,50 @@ typedef struct QvkGeometryInstance_s {
 } QvkGeometryInstance_t;
 
 static uint32_t g_num_instances;
+static uint32_t g_num_world_instances;     // the static world's, at the list's head
+
+/* THE PARTITIONED TLAS (ptlas.h, pt_ptlas), per frame slot: the geometry TLAS as a
+   persistent, partitioned one, updated with what changed since the slot's last
+   frame. Its own memory (a descriptor takes it by address); the classic TLAS stays
+   for pt_ptlas 0 and for the effects. */
+typedef struct {
+	ptlas_t             state;
+	BufferResource_t    memory;     // the PTLAS
+	BufferResource_t    scratch;
+	BufferResource_t    stage;      // the op list (host-visible)
+	bool                active;     // this frame's geometry TLAS is the PTLAS
+} vk_ptlas_t;
+static vk_ptlas_t       g_ptlas[MAX_FRAMES_IN_FLIGHT];
+static bool             g_ptlas_ready;
+
+/* CLUSTERED DYNAMIC GEOMETRY (clusters.h, pt_clusters), per frame slot: the model
+   sections' BLASes built from CLASes in two VK_NV_cluster_acceleration_structure
+   operations - the D3D12 renderer's NVAPI path's twin. Only on a device made with
+   the feature, which main.c enables while pt_clusters is 1 (CVAR_REFRESH). Each
+   buffer grows to fit and is only this slot's, so the slot's fence covers it. */
+typedef struct {
+	BufferResource_t    clas;       // the CLASes, packed by the driver (implicit destinations)
+	BufferResource_t    blas;       // the BLASes, each at the offset the plan gave it
+	BufferResource_t    addresses;  // step 1 writes the CLAS addresses, step 2 reads them
+	BufferResource_t    stage;      // host-visible: clusters.h's staging
+	BufferResource_t    scratch;    // both steps, one after the other
+	uint64_t            run_address[PT_CLUSTER_MAX_BLASES];   // this frame's BLAS of each run, 0 = none
+	bool                active;     // this frame's model sections are these
+} vk_clusters_t;
+static vk_clusters_t    g_clusters[MAX_FRAMES_IN_FLIGHT];
+static bool             g_clusters_ready;
+static VkPhysicalDeviceClusterAccelerationStructurePropertiesNV g_cluster_props;
+// the runs: vkpt's model sections, VKPT_DYN_OPAQUE..VKPT_DYN_VIEWER_MODELS. Not the
+// explosions, whose hits (pt_logic_explosion) read no geometry index, and not the
+// blood: its slots are padded with zeroed triangles, so a cluster straddling a
+// droplet's tail and the padding spans the droplet and the world origin, and a
+// floor of splats crawled (D3D12, 11-06). Built whole it also keeps
+// pt_blood_blas_reuse.
+#define CLUSTER_RUNS    (VKPT_DYN_VIEWER_MODELS - VKPT_DYN_OPAQUE + 1)
+typedef char cluster_runs_check[(CLUSTER_RUNS <= PT_CLUSTER_MAX_BLASES && VKPT_DYN_OPAQUE == 0) ? 1 : -1];
+// clusters.c writes NVAPI's structs, which are Vulkan's
+typedef char cluster_vk_args_check[sizeof(pt_cluster_args_t) == sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV) ? 1 : -1];
+typedef char cluster_vk_blas_args_check[sizeof(pt_cluster_blas_args_t) == sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV) ? 1 : -1];
 static QvkGeometryInstance_t g_instances[MAX_TLAS_INSTANCES];
 
 typedef struct {
@@ -136,9 +182,7 @@ typedef struct {
    the whole screen as before). See the note in shader/constants.h. Sized for
    the screen images, so it is rebuilt with them. */
 static BufferResource_t buf_tiles;
-static uint32_t tiles_max;           // tile ids one list can hold
-static uint32_t tiles_mask_stride;   // words per list's dedupe mask
-static uint32_t tiles_data_offset;   // word offset of list 0's tile ids
+static vkpt_tile_layout_t tiles_layout;  // buf_tiles' (vkpt_pt_tile_layout)
 static uint32_t tiles_max_groups;    // maxComputeWorkGroupCount[0]
 static bool     tiles_built;         // primary_rays filled the lists this view
 static cvar_t  *cvar_pt_tile_compaction;
@@ -249,6 +293,336 @@ flow_split_pass_changed(cvar_t *self)
 				&mem_barrier, 0, 0, 0, 0); \
 	} while(0)
 
+// vkpt_init_frontend: vkpt_pt_append_dynamic_instances reads them in the
+// frame's CPU half, under either backend
+void
+vkpt_pt_init_cvars(void)
+{
+	cvar_pt_enable_particles = Cvar_Get("pt_enable_particles", "1", 0);
+	cvar_pt_enable_beams = Cvar_Get("pt_enable_beams", "1", 0);
+	cvar_pt_enable_sprites= Cvar_Get("pt_enable_sprites", "1", 0);
+
+	// 1 = PREFER_FAST_TRACE, 0 = PREFER_FAST_BUILD (the 2019 default for both).
+	// Measured on a 5070 Ti at the base1 spawn: TLAS -0.30 ms, so on. Dynamic BLAS came
+	// out slightly slower - they rebuild every frame - so off; don't "fix" the asymmetry.
+	// Static world/model BLAS are always FAST_TRACE (vertex_buffer.c). Safe to change
+	// live: fast_build is in accel_match_info_t, so the structure gets recreated.
+	cvar_pt_tlas_fast_trace = Cvar_Get("pt_tlas_fast_trace", "1", 0);
+	cvar_pt_blas_fast_trace = Cvar_Get("pt_blas_fast_trace", "0", 0);
+
+	// THE PARTITIONED TLAS (ptlas.h): 1 = the geometry TLAS is a persistent,
+	// partitioned one, updated with only what changed, where the GPU and driver
+	// have it (pt_ptlas_available: the backend sets it). An A/B against the
+	// classic rebuild-every-frame TLAS, so not archived. Safe to change live.
+	cvar_pt_ptlas = Cvar_Get("pt_ptlas", "0", 0);
+
+	// TILE COMPACTION: vkpt_pt_tile_header reads it under either backend
+	cvar_pt_tile_compaction = Cvar_Get("pt_tile_compaction", "1", 0);
+}
+
+/* the partitioned TLAS's inputs for the shape ptlas.h gives every slot */
+static VkPartitionedAccelerationStructureInstancesInputNV
+ptlas_inputs(const ptlas_t* p, bool fast_trace)
+{
+	VkPartitionedAccelerationStructureInstancesInputNV in = {
+		.sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCES_INPUT_NV,
+		.flags = fast_trace ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR
+		                    : VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
+		.instanceCount = p->max_instances,
+		.maxInstancePerPartitionCount = PTLAS_INSTANCES_PER_PARTITION,
+		.partitionCount = ptlas_partition_count(p),
+		.maxInstanceInGlobalPartitionCount = p->max_global,
+	};
+	return in;
+}
+
+// the A/B's layouts: ptlas.c writes NVAPI's, which are Vulkan's
+typedef char ptlas_vk_write_check[sizeof(ptlas_write_t) == sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV) ? 1 : -1];
+typedef char ptlas_vk_op_check[sizeof(ptlas_op_t) == sizeof(VkBuildPartitionedAccelerationStructureIndirectCommandNV) ? 1 : -1];
+
+static void
+ptlas_destroy(void)
+{
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		vk_ptlas_t* s = &g_ptlas[i];
+		ptlas_shutdown(&s->state);
+		buffer_destroy(&s->memory);
+		buffer_destroy(&s->scratch);
+		buffer_destroy(&s->stage);
+		s->active = false;
+	}
+	g_ptlas_ready = false;
+}
+
+/* With the extension and its feature (qvk.supports_ptlas): every slot's memory,
+   sized for either of pt_tlas_fast_trace's builds. pt_ptlas_available says. */
+static void
+ptlas_create(void)
+{
+	g_ptlas_ready = false;
+	if (qvk.supports_ptlas && qvkGetPartitionedAccelerationStructuresBuildSizesNV &&
+	    qvkCmdBuildPartitionedAccelerationStructuresNV)
+	{
+		ptlas_t shape;
+		if (ptlas_init(&shape, MAX_TLAS_INSTANCES, PTLAS_MAX_GLOBAL))
+		{
+			VkDeviceSize result = 0, scratch = 0;
+			for (int fast = 0; fast < 2; fast++) {
+				VkPartitionedAccelerationStructureInstancesInputNV in = ptlas_inputs(&shape, fast);
+				VkAccelerationStructureBuildSizesInfoKHR sizes = {
+					.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+				};
+				qvkGetPartitionedAccelerationStructuresBuildSizesNV(qvk.device, &in, &sizes);
+				result = max(result, sizes.accelerationStructureSize);
+				scratch = max(scratch, max(sizes.buildScratchSize, sizes.updateScratchSize));
+			}
+			ptlas_shutdown(&shape);
+
+			bool ok = result > 0;
+			for (int i = 0; ok && i < MAX_FRAMES_IN_FLIGHT; i++) {
+				vk_ptlas_t* s = &g_ptlas[i];
+				ok = ptlas_init(&s->state, MAX_TLAS_INSTANCES, PTLAS_MAX_GLOBAL)
+					&& buffer_create(&s->memory, result,
+						VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+						VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_SUCCESS
+					&& buffer_create(&s->scratch, max(scratch, 256),
+						VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+						VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_SUCCESS
+					&& buffer_create(&s->stage, ptlas_stage_size(MAX_TLAS_INSTANCES),
+						VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+						VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+						VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == VK_SUCCESS;
+			}
+			if (ok) {
+				g_ptlas_ready = true;
+				Com_Printf("Partitioned TLAS available (VK_NV_partitioned_acceleration_structure; pt_ptlas 1; %llu KB)\n",
+					(unsigned long long)(result >> 10));
+			} else {
+				Com_WPrintf("The partitioned TLAS could not be made; pt_ptlas is off\n");
+				ptlas_destroy();
+			}
+		}
+	}
+	Cvar_FullSet("pt_ptlas_available", g_ptlas_ready ? "1" : "0", CVAR_ROM, FROM_CODE);
+}
+
+static void
+clusters_destroy(void)
+{
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		vk_clusters_t* c = &g_clusters[i];
+		buffer_destroy(&c->clas);
+		buffer_destroy(&c->blas);
+		buffer_destroy(&c->addresses);
+		buffer_destroy(&c->stage);
+		buffer_destroy(&c->scratch);
+		memset(c, 0, sizeof(*c));
+	}
+	g_clusters_ready = false;
+}
+
+/* On a device made with the feature: the limits the plan needs. The buffers come
+   with the first frame that has something to build. pt_clusters_available says
+   whether the GPU has it at all (the menu row), whatever pt_clusters holds. */
+static void
+clusters_create(void)
+{
+	g_clusters_ready = false;
+	if (qvk.clusters_enabled && qvkGetClusterAccelerationStructureBuildSizesNV &&
+	    qvkCmdBuildClusterAccelerationStructureIndirectNV)
+	{
+		g_cluster_props = (VkPhysicalDeviceClusterAccelerationStructurePropertiesNV){
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
+		};
+		VkPhysicalDeviceProperties2 props = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+			.pNext = &g_cluster_props,
+		};
+		vkGetPhysicalDeviceProperties2(qvk.physical_device, &props);
+		if (g_cluster_props.maxTrianglesPerCluster >= PT_CLUSTER_TRIANGLES &&
+		    g_cluster_props.maxVerticesPerCluster >= PT_CLUSTER_VERTICES)
+		{
+			g_clusters_ready = true;
+			Com_Printf("Clustered dynamic BLASes (VK_NV_cluster_acceleration_structure; pt_clusters 1, %d triangles a cluster)\n",
+				PT_CLUSTER_TRIANGLES);
+		}
+		else
+			Com_WPrintf("pt_clusters 1, but clusters here hold %u triangles / %u vertices (%d / %d needed) - the dynamic BLASes are built whole\n",
+				g_cluster_props.maxTrianglesPerCluster, g_cluster_props.maxVerticesPerCluster,
+				PT_CLUSTER_TRIANGLES, PT_CLUSTER_VERTICES);
+	}
+	else if (!qvk.clusters_enabled && Cvar_Get("pt_clusters", "0", CVAR_REFRESH)->integer)
+		Com_WPrintf("pt_clusters 1, but this GPU or driver has no VK_NV_cluster_acceleration_structure - the dynamic BLASes are built whole\n");
+	Cvar_FullSet("pt_clusters_available", qvk.supports_clusters ? "1" : "0", CVAR_ROM, FROM_CODE);
+}
+
+// half as much again, in whole megabytes, as accel.c's grown (D3D12)
+static bool
+cluster_buffer(BufferResource_t* b, VkDeviceSize needed, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory)
+{
+	if (b->buffer && b->size >= needed)
+		return true;
+	buffer_destroy(b);
+	const VkDeviceSize mb = 1ull << 20;
+	const VkDeviceSize size = (needed + needed / 2 + mb - 1) & ~(mb - 1);
+	if (buffer_create(b, size, usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, memory) != VK_SUCCESS) {
+		memset(b, 0, sizeof(*b));
+		return false;
+	}
+	return true;
+}
+
+/* This slot's clustered BLASes: planned (clusters.c), sized, staged and both steps
+   recorded. False: not this frame (the driver gave no sizes, or no memory) - the
+   caller builds the model sections whole. */
+static bool
+clusters_build(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo* upload_info, bool fast_build)
+{
+	vk_clusters_t* c = &g_clusters[idx];
+	c->active = false;
+	memset(c->run_address, 0, sizeof(c->run_address));
+
+	const uint32_t first[CLUSTER_RUNS] = {
+		[VKPT_DYN_OPAQUE]        = 0,
+		[VKPT_DYN_TRANSPARENT]   = upload_info->transparent_prim_offset,
+		[VKPT_DYN_MASKED]        = upload_info->masked_prim_offset,
+		[VKPT_DYN_VIEWER_WEAPON] = upload_info->viewer_weapon_prim_offset,
+		[VKPT_DYN_VIEWER_MODELS] = upload_info->viewer_model_prim_offset,
+	};
+	const uint32_t prims[CLUSTER_RUNS] = {
+		[VKPT_DYN_OPAQUE]        = upload_info->opaque_prim_count,
+		[VKPT_DYN_TRANSPARENT]   = upload_info->transparent_prim_count,
+		[VKPT_DYN_MASKED]        = upload_info->masked_prim_count,
+		[VKPT_DYN_VIEWER_WEAPON] = upload_info->viewer_weapon_prim_count,
+		[VKPT_DYN_VIEWER_MODELS] = upload_info->viewer_model_prim_count,
+	};
+	pt_cluster_plan_t plan;
+	if (!pt_cluster_plan(&plan, prims, CLUSTER_RUNS))
+		return false;
+	if (!plan.num_blases) {
+		c->active = true;   // nothing to build: every run's address 0
+		return true;
+	}
+
+	const VkBuildAccelerationStructureFlagsKHR flags = fast_build
+		? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
+		: VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	VkClusterAccelerationStructureTriangleClusterInputNV triangles = {
+		.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV,
+		.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+		.maxGeometryIndexValue = plan.max_clusters_per_blas - 1,
+		.maxClusterUniqueGeometryCount = 1,
+		.maxClusterTriangleCount = PT_CLUSTER_TRIANGLES,
+		.maxClusterVertexCount = PT_CLUSTER_VERTICES,
+		.maxTotalTriangleCount = plan.num_triangles,
+		.maxTotalVertexCount = 3 * plan.num_triangles,
+	};
+	const VkClusterAccelerationStructureInputInfoNV clas_input = {
+		.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+		.maxAccelerationStructureCount = plan.num_clusters,
+		.flags = flags,
+		.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+		.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
+		.opInput.pTriangleClusters = &triangles,
+	};
+	VkClusterAccelerationStructureClustersBottomLevelInputNV bottom = {
+		.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
+		.maxTotalClusterCount = plan.num_clusters,
+		.maxClusterCountPerAccelerationStructure = plan.max_clusters_per_blas,
+	};
+	VkClusterAccelerationStructureInputInfoNV blas_input = {
+		.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+		.maxAccelerationStructureCount = plan.num_blases,
+		.flags = flags,
+		.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV,
+		.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
+		.opInput.pClustersBottomLevel = &bottom,
+	};
+	VkAccelerationStructureBuildSizesInfoKHR clas_sizes = { .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+	VkAccelerationStructureBuildSizesInfoKHR blas_sizes = { .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+	qvkGetClusterAccelerationStructureBuildSizesNV(qvk.device, &clas_input, &clas_sizes);
+	qvkGetClusterAccelerationStructureBuildSizesNV(qvk.device, &blas_input, &blas_sizes);
+	if (!clas_sizes.accelerationStructureSize || !blas_sizes.accelerationStructureSize)
+		return false;
+
+	// each BLAS's own: the explicit size is the most one of these inputs makes
+	VkDeviceSize blas_offset[CLUSTER_RUNS] = { 0 }, blas_total = 0;
+	const VkDeviceSize blas_align = max(g_cluster_props.clusterBottomLevelByteAlignment, 256u);
+	for (int r = 0; r < CLUSTER_RUNS; r++) {
+		if (plan.blas_slot[r] < 0)
+			continue;
+		VkClusterAccelerationStructureClustersBottomLevelInputNV one = bottom;
+		one.maxTotalClusterCount = one.maxClusterCountPerAccelerationStructure = plan.clusters[r];
+		VkClusterAccelerationStructureInputInfoNV in = blas_input;
+		in.maxAccelerationStructureCount = 1;
+		in.opInput.pClustersBottomLevel = &one;
+		VkAccelerationStructureBuildSizesInfoKHR s = { .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+		qvkGetClusterAccelerationStructureBuildSizesNV(qvk.device, &in, &s);
+		if (!s.accelerationStructureSize)
+			return false;
+		blas_offset[r] = align(blas_total, blas_align);
+		blas_total = blas_offset[r] + s.accelerationStructureSize;
+	}
+
+	pt_cluster_layout_t layout;
+	pt_cluster_layout(&plan, &layout);
+	const VkBufferUsageFlags as_storage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	const VkBufferUsageFlags build_input = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	if (!cluster_buffer(&c->clas, clas_sizes.accelerationStructureSize, as_storage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+	    !cluster_buffer(&c->blas, blas_total, as_storage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+	    !cluster_buffer(&c->addresses, (VkDeviceSize)plan.num_clusters * sizeof(uint64_t), build_input, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+	    !cluster_buffer(&c->stage, layout.size, build_input, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
+	    !cluster_buffer(&c->scratch, max(max(clas_sizes.buildScratchSize, blas_sizes.buildScratchSize), 256),
+	                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+		return false;
+
+	uint64_t vertices[CLUSTER_RUNS];
+	for (int r = 0; r < CLUSTER_RUNS; r++) {
+		vertices[r] = qvk.buf_positions_instanced.address + (uint64_t)first[r] * sizeof(prim_positions_t);
+		if (plan.blas_slot[r] >= 0)
+			c->run_address[r] = c->blas.address + blas_offset[r];
+	}
+	pt_cluster_stage(&plan, &layout, buffer_map(&c->stage), c->stage.address, vertices, c->run_address,
+		c->addresses.address, sizeof(uint64_t));
+	buffer_unmap(&c->stage);
+
+	// 1: every cluster's CLAS, packed into this slot's CLAS memory, their addresses written
+	const VkClusterAccelerationStructureCommandsInfoNV step1 = {
+		.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+		.input = clas_input,
+		.dstImplicitData = c->clas.address,
+		.scratchData = c->scratch.address,
+		.dstAddressesArray = { c->addresses.address, sizeof(uint64_t), (VkDeviceSize)plan.num_clusters * sizeof(uint64_t) },
+		.srcInfosArray = { c->stage.address + layout.triangle_args, sizeof(pt_cluster_args_t),
+		                   (VkDeviceSize)plan.num_clusters * sizeof(pt_cluster_args_t) },
+	};
+	qvkCmdBuildClusterAccelerationStructureIndirectNV(cmd_buf, &step1);
+
+	// the CLASes and their addresses written and the scratch free again
+	VkMemoryBarrier barrier = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+	};
+	vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &barrier, 0, NULL, 0, NULL);
+
+	// 2: each run's BLAS from its slice of those addresses, where the plan put it
+	const VkClusterAccelerationStructureCommandsInfoNV step2 = {
+		.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+		.input = blas_input,
+		.scratchData = c->scratch.address,
+		.dstAddressesArray = { c->stage.address + layout.blas_addresses, sizeof(uint64_t),
+		                       (VkDeviceSize)plan.num_blases * sizeof(uint64_t) },
+		.srcInfosArray = { c->stage.address + layout.blas_args, sizeof(pt_cluster_blas_args_t),
+		                   (VkDeviceSize)plan.num_blases * sizeof(pt_cluster_blas_args_t) },
+	};
+	qvkCmdBuildClusterAccelerationStructureIndirectNV(cmd_buf, &step2);
+
+	c->active = true;
+	return true;
+}
+
 VkResult
 vkpt_pt_init()
 {
@@ -271,7 +645,6 @@ vkpt_pt_init()
 
 	shaderGroupBaseAlignment = ray_pipeline_properties.shaderGroupBaseAlignment;
 	tiles_max_groups = dev_props2.properties.limits.maxComputeWorkGroupCount[0];
-	cvar_pt_tile_compaction = Cvar_Get("pt_tile_compaction", "1", 0);
 	cvar_pt_flow_split_pass = Cvar_Get("pt_flow_split_pass", "1", 0);
 	// so that a photo-mode A/B of the two starts a fresh image
 	cvar_pt_flow_split_pass->changed = flow_split_pass_changed;
@@ -288,6 +661,9 @@ vkpt_pt_init()
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	}
+
+	ptlas_create();
+	clusters_create();
 
 	/* create descriptor set layout */
 	VkDescriptorSetLayoutBinding bindings[] = {
@@ -384,17 +760,7 @@ vkpt_pt_init()
 		ATTACH_LABEL_VARIABLE(rt_descriptor_set[i], DESCRIPTOR_SET);
 	}
 
-	cvar_pt_enable_particles = Cvar_Get("pt_enable_particles", "1", 0);
-	cvar_pt_enable_beams = Cvar_Get("pt_enable_beams", "1", 0);
-	cvar_pt_enable_sprites= Cvar_Get("pt_enable_sprites", "1", 0);
-
-	// 1 = PREFER_FAST_TRACE, 0 = PREFER_FAST_BUILD (the 2019 default for both).
-	// Measured on a 5070 Ti at the base1 spawn: TLAS -0.30 ms, so on. Dynamic BLAS came
-	// out slightly slower - they rebuild every frame - so off; don't "fix" the asymmetry.
-	// Static world/model BLAS are always FAST_TRACE (vertex_buffer.c). Safe to change
-	// live: fast_build is in accel_match_info_t, so the structure gets recreated.
-	cvar_pt_tlas_fast_trace = Cvar_Get("pt_tlas_fast_trace", "1", 0);
-	cvar_pt_blas_fast_trace = Cvar_Get("pt_blas_fast_trace", "0", 0);
+	vkpt_pt_init_cvars();
 
 	return VK_SUCCESS;
 }
@@ -416,6 +782,27 @@ vkpt_pt_get_geometry_tlas(int idx)
 	return tlas_geometry[idx].accel;
 }
 
+const void *
+vkpt_pt_geometry_tlas_write(int idx, vkpt_tlas_write_t *w)
+{
+	memset(w, 0, sizeof(*w));
+	if (g_ptlas_ready && g_ptlas[idx].active)
+	{
+		w->address = g_ptlas[idx].memory.address;
+		w->nv.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_PARTITIONED_ACCELERATION_STRUCTURE_NV;
+		w->nv.accelerationStructureCount = 1;
+		w->nv.pAccelerationStructures = &w->address;
+		return &w->nv;
+	}
+	w->handle = tlas_geometry[idx].accel;
+	if (w->handle == VK_NULL_HANDLE)
+		return NULL;
+	w->khr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+	w->khr.accelerationStructureCount = 1;
+	w->khr.pAccelerationStructures = &w->handle;
+	return &w->khr;
+}
+
 VkResult
 vkpt_pt_update_descripter_set_bindings(int idx)
 {
@@ -430,6 +817,39 @@ vkpt_pt_update_descripter_set_bindings(int idx)
 		.accelerationStructureCount = TLAS_COUNT,
 		.pAccelerationStructures = tlas
 	};
+
+	/* pt_ptlas: the geometry TLAS is the partitioned one, which a descriptor takes by
+	   address - so it and the effects TLAS go in two writes */
+	if (g_ptlas_ready && g_ptlas[idx].active)
+	{
+		vkpt_tlas_write_t geometry;
+		VkWriteDescriptorSetAccelerationStructureKHR effects = {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+			.accelerationStructureCount = 1,
+			.pAccelerationStructures = &tlas[TLAS_INDEX_EFFECTS]
+		};
+		VkWriteDescriptorSet as_writes[2] = {
+			{
+				.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext           = vkpt_pt_geometry_tlas_write(idx, &geometry),
+				.dstSet          = rt_descriptor_set[idx],
+				.dstBinding      = RAY_GEN_ACCEL_STRUCTURE_BINDING_IDX,
+				.dstArrayElement = TLAS_INDEX_GEOMETRY,
+				.descriptorCount = 1,
+				.descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+			},
+			{
+				.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext           = &effects,
+				.dstSet          = rt_descriptor_set[idx],
+				.dstBinding      = RAY_GEN_ACCEL_STRUCTURE_BINDING_IDX,
+				.dstArrayElement = TLAS_INDEX_EFFECTS,
+				.descriptorCount = 1,
+				.descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+			},
+		};
+		vkUpdateDescriptorSets(qvk.device, LENGTH(as_writes), as_writes, 0, NULL);
+	}
 	
 	VkBufferView particle_color_buffer_view = get_transparency_particle_color_buffer_view();
 	VkBufferView beam_color_buffer_view = get_transparency_beam_color_buffer_view();
@@ -479,7 +899,9 @@ vkpt_pt_update_descripter_set_bindings(int idx)
 		},
 	};
 
-	vkUpdateDescriptorSets(qvk.device, LENGTH(writes), writes, 0, NULL);
+	// with the PTLAS both TLASes were written above: writes[0] (the pair) is skipped
+	const int skip = (g_ptlas_ready && g_ptlas[idx].active) ? 1 : 0;
+	vkUpdateDescriptorSets(qvk.device, LENGTH(writes) - skip, writes + skip, 0, NULL);
 
 	return VK_SUCCESS;
 }
@@ -493,7 +915,13 @@ static void destroy_accel_struct(accel_struct_t* blas)
 		qvkDestroyAccelerationStructureKHR(qvk.device, blas->accel, NULL);
 		blas->accel = VK_NULL_HANDLE;
 	}
-	
+
+	// it has nothing to name now. Left true, a renderer restart into pt_clusters 1 -
+	// which skips the model sections' whole builds, the only thing that reset it -
+	// handed this NULL handle to vkGetAccelerationStructureDeviceAddressKHR on the
+	// first frame and crashed in the driver (11-06).
+	blas->present = false;
+
 	blas->match.fast_build = 0;
 	blas->match.index_count = 0;
 	blas->match.vertex_count = 0;
@@ -1002,9 +1430,21 @@ vkpt_pt_create_all_dynamic(
 	static accel_build_batch_t batch;
 	batch.numBuilds = 0;
 
+	// pt_clusters: the model sections from CLASes (clusters_build), else whole as below
+	g_clusters[idx].active = false;
+	const bool clustered = g_clusters_ready && clusters_build(cmd_buf, idx, upload_info, dyn_fast_build);
+	if (g_clusters_ready && !clustered) {
+		static bool warned;
+		if (!warned) {
+			warned = true;
+			Com_WPrintf("pt_clusters: the driver gave no cluster sizes (or no memory) - the model sections are built whole\n");
+		}
+	}
+
 	uint64_t offset_vertex_base = 0;
 	uint64_t offset_vertex = offset_vertex_base;
 	uint64_t offset_index = 0;
+	if (!clustered) {
 	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->opaque_prim_count * 3, 0, blas_dynamic + idx, true, dyn_fast_build);
 
@@ -1023,6 +1463,7 @@ vkpt_pt_create_all_dynamic(
 	offset_vertex = offset_vertex_base + upload_info->viewer_weapon_prim_offset * sizeof(prim_positions_t);
 	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
 		upload_info->viewer_weapon_prim_count * 3, 0, blas_viewer_weapon + idx, true, dyn_fast_build);
+	}
 
 	offset_vertex = offset_vertex_base + upload_info->explosions_prim_offset * sizeof(prim_positions_t);
 	vkpt_pt_create_accel_bottom(&batch, &qvk.buf_positions_instanced, offset_vertex, NULL, offset_index,
@@ -1068,9 +1509,9 @@ vkpt_pt_create_all_dynamic(
 }
 
 static void
-append_blas(QvkGeometryInstance_t *instances, uint32_t *num_instances, accel_struct_t* blas, int vbo_index, uint prim_offset, int mask, int flags, int sbt_offset)
+append_blas(QvkGeometryInstance_t *instances, uint32_t *num_instances, uint64_t blas_address, int vbo_index, uint prim_offset, int mask, int flags, int sbt_offset)
 {
-	if (!blas->present)
+	if (!blas_address)
 		return;
 
 	QvkGeometryInstance_t instance = {
@@ -1083,15 +1524,8 @@ append_blas(QvkGeometryInstance_t *instances, uint32_t *num_instances, accel_str
 		.mask = mask,
 		.instance_offset = sbt_offset,
 		.flags = flags,
-		.acceleration_structure = 0
+		.acceleration_structure = blas_address
 	};
-	
-	VkAccelerationStructureDeviceAddressInfoKHR  as_device_address_info = {
-		.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
-		.accelerationStructure = blas->accel,
-	};
-
-	instance.acceleration_structure = qvkGetAccelerationStructureDeviceAddressKHR(qvk.device, &as_device_address_info);
 	
 	assert(*num_instances < MAX_TLAS_INSTANCES);
 	memcpy(instances + *num_instances, &instance, sizeof(instance));
@@ -1103,11 +1537,31 @@ append_blas(QvkGeometryInstance_t *instances, uint32_t *num_instances, accel_str
 void vkpt_pt_reset_instances()
 {
 	g_num_instances = 0;
+	g_num_world_instances = 0;
+}
+
+void vkpt_pt_mark_world_instances(void)
+{
+	g_num_world_instances = g_num_instances;
+}
+
+uint32_t vkpt_pt_num_world_instances(void)
+{
+	return g_num_world_instances;
+}
+
+// the D3D12 backend hands this list to DXR as it is (d3d12/world.c)
+typedef char qvk_instance_is_vk_instance[(sizeof(QvkGeometryInstance_t) == 64) ? 1 : -1];
+
+const void *vkpt_pt_instance_list(uint32_t *count)
+{
+	*count = g_num_instances;
+	return g_instances;
 }
 
 void vkpt_pt_instance_model_blas(const model_geometry_t* geom, const mat4 transform, uint32_t buffer_idx, int model_instance_index, uint32_t override_instance_mask)
 {
-	if (!geom->accel)
+	if (!vkpt_model_geometry_has_blas(geom))
 		return;
 
 	QvkGeometryInstance_t gpu_instance = {
@@ -1233,26 +1687,26 @@ build_tlas(VkCommandBuffer cmd_buf, accel_struct_t* as, VkDeviceAddress instance
 		&offsets);
 }
 
-VkResult
-vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo* upload_info, bool weapon_left_handed)
+uint32_t
+vkpt_pt_append_dynamic_instances(const uint64_t blas[VKPT_NUM_DYN], const EntityUploadInfo* upload_info, bool weapon_left_handed)
 {
-	append_blas(g_instances, &g_num_instances, &blas_dynamic[idx], VERTEX_BUFFER_INSTANCED, 0,
+	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_OPAQUE], VERTEX_BUFFER_INSTANCED, 0,
 		AS_FLAG_OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, SBTO_OPAQUE);
 
-	append_blas(g_instances, &g_num_instances, &blas_transparent_models[idx], VERTEX_BUFFER_INSTANCED, upload_info->transparent_prim_offset,
+	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_TRANSPARENT], VERTEX_BUFFER_INSTANCED, upload_info->transparent_prim_offset,
 		AS_FLAG_TRANSPARENT, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, SBTO_OPAQUE);
 
-	append_blas(g_instances, &g_num_instances, &blas_masked_models[idx], VERTEX_BUFFER_INSTANCED, upload_info->masked_prim_offset,
+	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_MASKED], VERTEX_BUFFER_INSTANCED, upload_info->masked_prim_offset,
 		AS_FLAG_OPAQUE, VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_MASKED);
 
-    append_blas(g_instances, &g_num_instances, &blas_viewer_weapon[idx], VERTEX_BUFFER_INSTANCED, upload_info->viewer_weapon_prim_offset,
+    append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_VIEWER_WEAPON], VERTEX_BUFFER_INSTANCED, upload_info->viewer_weapon_prim_offset,
 		AS_FLAG_VIEWER_WEAPON, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | (weapon_left_handed ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR : 0), SBTO_OPAQUE);
 
 	// also without a world: the player setup menu's bounce card is a viewer model
 	if (cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON
 		|| (vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL)))
 	{
-		append_blas(g_instances, &g_num_instances, &blas_viewer_models[idx], VERTEX_BUFFER_INSTANCED, upload_info->viewer_model_prim_offset,
+		append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_VIEWER_MODELS], VERTEX_BUFFER_INSTANCED, upload_info->viewer_model_prim_offset,
 			AS_FLAG_VIEWER_MODELS, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_OPAQUE);
 	}
 	
@@ -1264,33 +1718,74 @@ vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo
 	// all carry it, so nothing about how blood is lit, shadowed or reflected
 	// changes - but the fog march's per-step rays cull on AS_FLAG_OPAQUE alone and
 	// now skip the droplets. See constants.h.
-	append_blas(g_instances, &g_num_instances, &blas_blood[idx], VERTEX_BUFFER_INSTANCED, upload_info->blood_prim_offset,
+	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_BLOOD], VERTEX_BUFFER_INSTANCED, upload_info->blood_prim_offset,
 		AS_FLAG_BLOOD, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR, SBTO_OPAQUE);
 
 	uint32_t num_instances_geometry = g_num_instances;
 
 	// Note: explosions use a different primitive addressing scheme from the other geometry.
 	// See the comment in pt_logic_explosion(...) in path_tracer_hit_shaders.h for more info.
-	append_blas(g_instances, &g_num_instances, &blas_explosions[idx], (int)upload_info->explosions_prim_offset, 0,
+	append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_EXPLOSIONS], (int)upload_info->explosions_prim_offset, 0,
 		AS_FLAG_EFFECTS, 0, SBTO_EXPLOSION);
 	
 	if (cvar_pt_enable_particles->integer != 0)
 	{
-		append_blas(g_instances, &g_num_instances, &blas_particles[idx], 0, 0,
+		append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_PARTICLES], 0, 0,
 			AS_FLAG_EFFECTS, VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_PARTICLE);
 	}
 
 	if (cvar_pt_enable_beams->integer != 0)
 	{
-		append_blas(g_instances, &g_num_instances, &blas_beams[idx], 0, 0,
+		append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_BEAMS], 0, 0,
 			AS_FLAG_EFFECTS, VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_BEAM);
 	}
 
 	if (cvar_pt_enable_sprites->integer != 0)
 	{
-		append_blas(g_instances, &g_num_instances, &blas_sprites[idx], 0, 0,
+		append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_SPRITES], 0, 0,
 			AS_FLAG_EFFECTS, VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR, SBTO_SPRITE);
 	}
+
+	return num_instances_geometry;
+}
+
+// a dynamic BLAS's device address for the instance list, 0 when it has nothing
+static uint64_t
+dynamic_blas_address(const accel_struct_t* blas)
+{
+	if (!blas->present || blas->accel == VK_NULL_HANDLE)
+		return 0;
+
+	VkAccelerationStructureDeviceAddressInfoKHR  as_device_address_info = {
+		.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+		.accelerationStructure = blas->accel,
+	};
+
+	return qvkGetAccelerationStructureDeviceAddressKHR(qvk.device, &as_device_address_info);
+}
+
+VkResult
+vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo* upload_info, bool weapon_left_handed)
+{
+	uint64_t blas[VKPT_NUM_DYN];
+	blas[VKPT_DYN_OPAQUE]        = dynamic_blas_address(&blas_dynamic[idx]);
+	blas[VKPT_DYN_TRANSPARENT]   = dynamic_blas_address(&blas_transparent_models[idx]);
+	blas[VKPT_DYN_MASKED]        = dynamic_blas_address(&blas_masked_models[idx]);
+	blas[VKPT_DYN_VIEWER_WEAPON] = dynamic_blas_address(&blas_viewer_weapon[idx]);
+	blas[VKPT_DYN_VIEWER_MODELS] = dynamic_blas_address(&blas_viewer_models[idx]);
+	blas[VKPT_DYN_BLOOD]         = dynamic_blas_address(&blas_blood[idx]);
+	blas[VKPT_DYN_EXPLOSIONS]    = dynamic_blas_address(&blas_explosions[idx]);
+	blas[VKPT_DYN_PARTICLES]     = dynamic_blas_address(&blas_particles[idx]);
+	blas[VKPT_DYN_BEAMS]         = dynamic_blas_address(&blas_beams[idx]);
+	blas[VKPT_DYN_SPRITES]       = dynamic_blas_address(&blas_sprites[idx]);
+	// pt_clusters: this frame's model sections were built from CLASes
+	if (g_clusters[idx].active)
+		for (int r = 0; r < CLUSTER_RUNS; r++)
+			blas[VKPT_DYN_OPAQUE + r] = g_clusters[idx].run_address[r];
+
+	// the instances so far are the static ones; the dynamic BLASes' come next
+	const uint32_t first_dynamic = g_num_instances;
+	const uint32_t num_instances_geometry = vkpt_pt_append_dynamic_instances(blas, upload_info, weapon_left_handed);
 
 	uint32_t num_instances_effects = g_num_instances - num_instances_geometry;
 	
@@ -1301,7 +1796,40 @@ vkpt_pt_create_toplevel(VkCommandBuffer cmd_buf, int idx, const EntityUploadInfo
 	instance_data = NULL;
 
 	scratch_buf_ptr = 0;
-	build_tlas(cmd_buf, &tlas_geometry[idx], buf_instances[idx].address, num_instances_geometry);
+	vk_ptlas_t* pt = &g_ptlas[idx];
+	pt->active = g_ptlas_ready && cvar_pt_ptlas && cvar_pt_ptlas->integer != 0;
+	if (pt->active)
+	{
+		/* THE PARTITIONED TLAS: this slot's, updated in place with what changed since
+		   the slot's last frame - the world in the global partition, the dynamic
+		   BLASes (rebuilt every frame, maybe at the same address) rewritten always.
+		   The slot's fence retired the last frame that read it. */
+		const bool fast_trace = cvar_pt_tlas_fast_trace && cvar_pt_tlas_fast_trace->integer;
+		if (ptlas_diff(&pt->state, g_instances, num_instances_geometry,
+			min(g_num_world_instances, num_instances_geometry), min(first_dynamic, num_instances_geometry),
+			fast_trace ? 1 : 2))
+		{
+			const VkDeviceAddress source = ptlas_diff_is_update(&pt->state) ? pt->memory.address : 0;
+			ptlas_stage(&pt->state, buffer_map(&pt->stage), pt->stage.address, false);
+			buffer_unmap(&pt->stage);
+
+			VkBuildPartitionedAccelerationStructureInfoNV info = {
+				.sType = VK_STRUCTURE_TYPE_BUILD_PARTITIONED_ACCELERATION_STRUCTURE_INFO_NV,
+				.input = ptlas_inputs(&pt->state, fast_trace),
+				.srcAccelerationStructureData = source,
+				.dstAccelerationStructureData = pt->memory.address,
+				.scratchData = pt->scratch.address,
+				.srcInfos = pt->stage.address + PTLAS_STAGE_OP,
+				.srcInfosCount = pt->stage.address,
+			};
+			qvkCmdBuildPartitionedAccelerationStructuresNV(cmd_buf, &info);
+		}
+	}
+	else
+	{
+		ptlas_invalidate(&pt->state);
+		build_tlas(cmd_buf, &tlas_geometry[idx], buf_instances[idx].address, num_instances_geometry);
+	}
 	build_tlas(cmd_buf, &tlas_effects[idx], buf_instances[idx].address + num_instances_geometry * sizeof(QvkGeometryInstance_t), num_instances_effects);
 
 	MEM_BARRIER_BUILD_ACCEL(cmd_buf); /* probably not needed here but doesn't matter */
@@ -1467,21 +1995,57 @@ dispatch_rays(VkCommandBuffer cmd_buf, pipeline_index_t pipeline_index, pt_push_
 
 /* TILE COMPACTION helpers - see shader/constants.h. */
 
-VkResult
-vkpt_pt_create_tiles(void)
+void
+vkpt_pt_tile_layout(uint32_t screen_width, uint32_t screen_height, vkpt_tile_layout_t *layout)
 {
 	// The launch grid of a field is never wider or taller than the screen images
 	// (both fields together fit in them), so this bounds every resolution the
 	// images can be rendered at until they are rebuilt.
-	const uint32_t tiles_x = (qvk.extent_screen_images.width + 7) / 8;
-	const uint32_t tiles_y = (qvk.extent_screen_images.height + 7) / 8;
-	tiles_max = tiles_x * tiles_y * 2;
-	tiles_mask_stride = (tiles_max + 31) / 32;
-	tiles_data_offset = PT_TILE_HDR_WORDS + PT_TILE_LISTS * tiles_mask_stride;
+	const uint32_t tiles_x = (screen_width + 7) / 8;
+	const uint32_t tiles_y = (screen_height + 7) / 8;
+	layout->max = tiles_x * tiles_y * 2;
+	layout->mask_stride = (layout->max + 31) / 32;
+	layout->data_offset = PT_TILE_HDR_WORDS + PT_TILE_LISTS * layout->mask_stride;
+	layout->size = (uint64_t)(layout->data_offset + PT_TILE_LISTS * layout->max) * sizeof(uint32_t);
+}
 
-	const VkDeviceSize size = (VkDeviceSize)(tiles_data_offset + PT_TILE_LISTS * tiles_max) * sizeof(uint32_t);
+/* Whether this view uses the lists - pt_tile_compaction, and a launch grid the
+   layout and `max_groups` (the most groups one list's dispatch can have) can
+   hold - and if so the header the shaders read, with every list empty. */
+bool
+vkpt_pt_tile_header(const vkpt_tile_layout_t *layout, uint32_t max_groups, uint32_t header[PT_TILE_HDR_WORDS])
+{
+	if (!cvar_pt_tile_compaction || !cvar_pt_tile_compaction->integer)
+		return false;
 
-	return buffer_create(&buf_tiles, size,
+	const uint32_t tiles_x = (vkpt_pt_field_width() + 7) / 8;
+	const uint32_t tiles_y = (qvk.extent_render.height + 7) / 8;
+	const uint32_t per_field = tiles_x * tiles_y;
+	if (per_field * 2 > layout->max || per_field * 2 > max_groups)
+		return false;
+
+	memset(header, 0, PT_TILE_HDR_WORDS * sizeof(uint32_t));
+	for (int list = 0; list < PT_TILE_LISTS; list++)
+	{
+		header[PT_TILE_HDR_ARGS + list * 4 + 0] = 0;   // tile count = groups in x
+		header[PT_TILE_HDR_ARGS + list * 4 + 1] = 1;
+		header[PT_TILE_HDR_ARGS + list * 4 + 2] = 1;
+	}
+	header[PT_TILE_HDR_TILES_X] = tiles_x;
+	header[PT_TILE_HDR_PER_FIELD] = per_field;
+	header[PT_TILE_HDR_MASK] = PT_TILE_HDR_WORDS;
+	header[PT_TILE_HDR_MASK_STRIDE] = layout->mask_stride;
+	header[PT_TILE_HDR_DATA] = layout->data_offset;
+	header[PT_TILE_HDR_DATA_STRIDE] = layout->max;
+	return true;
+}
+
+VkResult
+vkpt_pt_create_tiles(void)
+{
+	vkpt_pt_tile_layout(qvk.extent_screen_images.width, qvk.extent_screen_images.height, &tiles_layout);
+
+	return buffer_create(&buf_tiles, tiles_layout.size,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -1491,7 +2055,7 @@ VkResult
 vkpt_pt_destroy_tiles(void)
 {
 	buffer_destroy(&buf_tiles);
-	tiles_max = 0;
+	memset(&tiles_layout, 0, sizeof(tiles_layout));
 	tiles_built = false;
 	return VK_SUCCESS;
 }
@@ -1503,30 +2067,12 @@ vkpt_pt_destroy_tiles(void)
 static bool
 tile_lists_reset(VkCommandBuffer cmd_buf)
 {
-	if (!cvar_pt_tile_compaction || !cvar_pt_tile_compaction->integer)
-		return false;
 	if (!qvk.use_ray_query || qvk.device_count != 1 || !buf_tiles.buffer || !buf_tiles.address)
 		return false;
 
-	const uint32_t tiles_x = (vkpt_pt_field_width() + 7) / 8;
-	const uint32_t tiles_y = (qvk.extent_render.height + 7) / 8;
-	const uint32_t per_field = tiles_x * tiles_y;
-	if (per_field * 2 > tiles_max || per_field * 2 > tiles_max_groups)
+	uint32_t header[PT_TILE_HDR_WORDS];
+	if (!vkpt_pt_tile_header(&tiles_layout, tiles_max_groups, header))
 		return false;
-
-	uint32_t header[PT_TILE_HDR_WORDS] = { 0 };
-	for (int list = 0; list < PT_TILE_LISTS; list++)
-	{
-		header[PT_TILE_HDR_ARGS + list * 4 + 0] = 0;   // tile count = groups in x
-		header[PT_TILE_HDR_ARGS + list * 4 + 1] = 1;
-		header[PT_TILE_HDR_ARGS + list * 4 + 2] = 1;
-	}
-	header[PT_TILE_HDR_TILES_X] = tiles_x;
-	header[PT_TILE_HDR_PER_FIELD] = per_field;
-	header[PT_TILE_HDR_MASK] = PT_TILE_HDR_WORDS;
-	header[PT_TILE_HDR_MASK_STRIDE] = tiles_mask_stride;
-	header[PT_TILE_HDR_DATA] = tiles_data_offset;
-	header[PT_TILE_HDR_DATA_STRIDE] = tiles_max;
 
 	// the previous view's bounces read this buffer, indirectly and in shaders
 	BUFFER_BARRIER(cmd_buf,
@@ -1538,7 +2084,7 @@ tile_lists_reset(VkCommandBuffer cmd_buf)
 
 	vkCmdUpdateBuffer(cmd_buf, buf_tiles.buffer, 0, sizeof(header), header);
 	vkCmdFillBuffer(cmd_buf, buf_tiles.buffer, PT_TILE_HDR_WORDS * sizeof(uint32_t),
-		(VkDeviceSize)PT_TILE_LISTS * tiles_mask_stride * sizeof(uint32_t), 0);
+		(VkDeviceSize)PT_TILE_LISTS * tiles_layout.mask_stride * sizeof(uint32_t), 0);
 
 	BUFFER_BARRIER(cmd_buf,
 		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1575,6 +2121,13 @@ bool
 vkpt_pt_flow_split_ran(void)
 {
 	return flow_split_ran;
+}
+
+// the D3D12 renderer's, which records the split pass itself (d3d12/passes.c)
+void
+vkpt_pt_set_flow_split_ran(bool ran)
+{
+	flow_split_ran = ran;
 }
 
 VkResult
@@ -1965,6 +2518,8 @@ vkpt_pt_destroy()
 	}
 	
 	buffer_destroy(&buf_accel_scratch);
+	ptlas_destroy();
+	clusters_destroy();
 	vkDestroyDescriptorSetLayout(qvk.device, rt_descriptor_set_layout, NULL);
 	vkDestroyPipelineLayout(qvk.device, rt_pipeline_layout, NULL);
 	vkDestroyDescriptorPool(qvk.device, rt_descriptor_pool, NULL);
@@ -2223,9 +2778,15 @@ vkpt_pt_create_pipelines()
 			unsigned int num_shader_groups = needs_beams ? LENGTH(rt_shader_group_info) : (needs_transparency ? SBT_RINT_BEAM : SBT_FIRST_TRANSPARENCY);
 
 			VkPipelineLibraryCreateInfoKHR library_info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR };
+			// pt_clusters: a pipeline made without it must not meet a clustered BLAS (ray
+			// queries need nothing but the device feature)
+			VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV cluster_info = {
+				.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CLUSTER_ACCELERATION_STRUCTURE_CREATE_INFO_NV,
+				.allowClusterAccelerationStructure = VK_TRUE,
+			};
 			VkRayTracingPipelineCreateInfoKHR rt_pipeline_info = {
 				.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-				.pNext = NULL,
+				.pNext = qvk.clusters_enabled ? &cluster_info : NULL,
 				.flags = 0,
 				.stageCount = num_shader_stages,
 				.pStages = shader_stages,

@@ -165,6 +165,8 @@ void vkpt_destroy_model_geometry(model_geometry_t* info)
 		qvkDestroyAccelerationStructureKHR(qvk.device, info->accel, NULL);
 		info->accel = NULL;
 	}
+	// vkpt_model_geometry_has_blas reads it (and the D3D12 backend sets only it)
+	info->blas_device_address = 0;
 }
 
 void vkpt_append_model_geometry(model_geometry_t* info, uint32_t num_prims, uint32_t prim_offset, const char* model_name)
@@ -266,6 +268,8 @@ static void create_model_blas(model_geometry_t* info, VkBuffer buffer, const cha
 	};
 
 	info->blas_device_address = qvkGetAccelerationStructureDeviceAddressKHR(qvk.device, &as_device_address_info);
+	// a partitioned TLAS keeps its instances' bounds: a new BLAS, maybe at an old address
+	ptlas_static_changed();
 
 	if (name)
 		ATTACH_LABEL_VARIABLE_NAME(info->accel, ACCELERATION_STRUCTURE_KHR, name);
@@ -342,6 +346,41 @@ static void build_model_blas(VkCommandBuffer cmd_buf, model_geometry_t* info, si
 			                       | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
 		| VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1,
 		&barrier, 0, 0, 0, 0);
+}
+
+/* The world's instance masks, flags and SBT offsets, per geometry: what the
+   TLAS instances of the static world and of each brush model carry. API-free
+   (the flag bits are the same in DXR), so the D3D12 backend sets them too. */
+void vkpt_bsp_mesh_set_instance_flags(bsp_mesh_t* bsp_mesh)
+{
+	bsp_mesh->geom_opaque.instance_mask = AS_FLAG_OPAQUE;
+	bsp_mesh->geom_opaque.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+	bsp_mesh->geom_opaque.sbt_offset = SBTO_OPAQUE;
+
+	bsp_mesh->geom_transparent.instance_mask = AS_FLAG_TRANSPARENT;
+	bsp_mesh->geom_transparent.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+	bsp_mesh->geom_transparent.sbt_offset = SBTO_OPAQUE;
+
+	bsp_mesh->geom_masked.instance_mask = AS_FLAG_OPAQUE;
+	bsp_mesh->geom_masked.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+	bsp_mesh->geom_masked.sbt_offset = SBTO_MASKED;
+
+	bsp_mesh->geom_sky.instance_mask = AS_FLAG_SKY;
+	bsp_mesh->geom_sky.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+	bsp_mesh->geom_sky.sbt_offset = SBTO_OPAQUE;
+
+	bsp_mesh->geom_custom_sky.instance_mask = AS_FLAG_CUSTOM_SKY;
+	bsp_mesh->geom_custom_sky.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+	bsp_mesh->geom_custom_sky.sbt_offset = SBTO_OPAQUE;
+
+	for (int i = 0; i < bsp_mesh->num_models; i++)
+	{
+		bsp_model_t* model = bsp_mesh->models + i;
+
+		model->geometry.instance_mask = model->transparent ? bsp_mesh->geom_transparent.instance_mask : bsp_mesh->geom_opaque.instance_mask;
+		model->geometry.instance_flags = model->masked ? bsp_mesh->geom_masked.instance_flags : model->transparent ? bsp_mesh->geom_transparent.instance_flags : bsp_mesh->geom_opaque.instance_flags;
+		model->geometry.sbt_offset = model->masked ? bsp_mesh->geom_masked.sbt_offset : bsp_mesh->geom_opaque.sbt_offset;
+	}
 }
 
 VkResult
@@ -464,35 +503,10 @@ vkpt_vertex_buffer_upload_bsp_mesh(bsp_mesh_t* bsp_mesh)
 	build_model_blas(cmd_buf, &bsp_mesh->geom_sky,         bsp_mesh->vertex_data_offset, &qvk.buf_world);
 	build_model_blas(cmd_buf, &bsp_mesh->geom_custom_sky,  bsp_mesh->vertex_data_offset, &qvk.buf_world);
 
-	bsp_mesh->geom_opaque.instance_mask = AS_FLAG_OPAQUE;
-	bsp_mesh->geom_opaque.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-	bsp_mesh->geom_opaque.sbt_offset = SBTO_OPAQUE;
-
-	bsp_mesh->geom_transparent.instance_mask = AS_FLAG_TRANSPARENT;
-	bsp_mesh->geom_transparent.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-	bsp_mesh->geom_transparent.sbt_offset = SBTO_OPAQUE;
-
-	bsp_mesh->geom_masked.instance_mask = AS_FLAG_OPAQUE;
-	bsp_mesh->geom_masked.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-	bsp_mesh->geom_masked.sbt_offset = SBTO_MASKED;
-
-	bsp_mesh->geom_sky.instance_mask = AS_FLAG_SKY;
-	bsp_mesh->geom_sky.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-	bsp_mesh->geom_sky.sbt_offset = SBTO_OPAQUE;
-
-	bsp_mesh->geom_custom_sky.instance_mask = AS_FLAG_CUSTOM_SKY;
-	bsp_mesh->geom_custom_sky.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-	bsp_mesh->geom_custom_sky.sbt_offset = SBTO_OPAQUE;
-
 	for (int i = 0; i < bsp_mesh->num_models; i++)
-	{
-		bsp_model_t* model = bsp_mesh->models + i;
-		build_model_blas(cmd_buf, &model->geometry, bsp_mesh->vertex_data_offset, &qvk.buf_world);
+		build_model_blas(cmd_buf, &bsp_mesh->models[i].geometry, bsp_mesh->vertex_data_offset, &qvk.buf_world);
 
-		model->geometry.instance_mask = model->transparent ? bsp_mesh->geom_transparent.instance_mask : bsp_mesh->geom_opaque.instance_mask;
-		model->geometry.instance_flags = model->masked ? bsp_mesh->geom_masked.instance_flags : model->transparent ? bsp_mesh->geom_transparent.instance_flags : bsp_mesh->geom_opaque.instance_flags;
-		model->geometry.sbt_offset = model->masked ? bsp_mesh->geom_masked.sbt_offset : bsp_mesh->geom_opaque.sbt_offset;
-	}
+	vkpt_bsp_mesh_set_instance_flags(bsp_mesh);
 
 	if (qvk.buf_light_stats[0].buffer)
 	{
@@ -665,6 +679,38 @@ static inline bool upload_ranges_enabled(void)
 	return !cvar_pt_upload_ranges || cvar_pt_upload_ranges->integer != 0;
 }
 
+void vkpt_upload_ranges_reset(void)
+{
+	reset_upload_ranges();
+}
+
+uint32_t
+vkpt_light_upload_regions(uint64_t offsets[2], uint64_t sizes[2])
+{
+	if (upload_ranges.light_full_pending || !upload_ranges_enabled())
+	{
+		offsets[0] = 0;
+		sizes[0] = sizeof(LightBuffer);
+		upload_ranges.light_full_pending = false;
+		return 1;
+	}
+
+	// material table, light_polys, light_list_offsets, light_list_lights up to the mark
+	const uint64_t head_end = offsetof(LightBuffer, light_list_lights)
+		+ (uint64_t)upload_ranges.light_list_hw * sizeof(uint32_t);
+
+	// light_styles, the three masks, fog_light_list_offsets, fog_light_list_lights up to the mark
+	const uint64_t tail_start = offsetof(LightBuffer, light_styles);
+	const uint64_t tail_end = offsetof(LightBuffer, fog_light_list_lights)
+		+ (uint64_t)upload_ranges.fog_list_hw * sizeof(uint32_t);
+
+	offsets[0] = 0;
+	sizes[0] = head_end;
+	offsets[1] = tail_start;
+	sizes[1] = tail_end - tail_start;
+	return 2;
+}
+
 /* main.c writes the IQM staging buffer, so it has to say how far. Called right
    after that memcpy with the number of matrices it copied. Until the first call
    the upload stays a full copy, so a main.c without the call is merely slow. */
@@ -684,29 +730,11 @@ vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf)
 
 	barrier_before_shared_upload(cmd_buf, qvk.buf_light.buffer, sizeof(LightBuffer));
 
+	uint64_t offsets[2], sizes[2];
+	const uint32_t num_regions = vkpt_light_upload_regions(offsets, sizes);
 	VkBufferCopy regions[2];
-	uint32_t num_regions = 1;
-
-	if (upload_ranges.light_full_pending || !upload_ranges_enabled())
-	{
-		regions[0] = (VkBufferCopy){ 0, 0, sizeof(LightBuffer) };
-		upload_ranges.light_full_pending = false;
-	}
-	else
-	{
-		// material table, light_polys, light_list_offsets, light_list_lights up to the mark
-		const VkDeviceSize head_end = offsetof(LightBuffer, light_list_lights)
-			+ (VkDeviceSize)upload_ranges.light_list_hw * sizeof(uint32_t);
-
-		// light_styles, the three masks, fog_light_list_offsets, fog_light_list_lights up to the mark
-		const VkDeviceSize tail_start = offsetof(LightBuffer, light_styles);
-		const VkDeviceSize tail_end = offsetof(LightBuffer, fog_light_list_lights)
-			+ (VkDeviceSize)upload_ranges.fog_list_hw * sizeof(uint32_t);
-
-		regions[0] = (VkBufferCopy){ 0, 0, head_end };
-		regions[1] = (VkBufferCopy){ tail_start, tail_start, tail_end - tail_start };
-		num_regions = 2;
-	}
+	for (uint32_t i = 0; i < num_regions; i++)
+		regions[i] = (VkBufferCopy){ offsets[i], offsets[i], sizes[i] };
 
 	vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_light.buffer, num_regions, regions);
 
@@ -717,6 +745,21 @@ vkpt_light_buffer_upload_staging(VkCommandBuffer cmd_buf)
 	}
 
 	return VK_SUCCESS;
+}
+
+// Up to the high-water mark - see WHAT THE LIGHT AND IQM UPLOADS COPY. Zero
+// when no skeletal model has been staged yet, and then there is nothing the
+// device does not already hold. Both backends' uploads.
+uint64_t
+vkpt_iqm_upload_size(void)
+{
+	if (upload_ranges.iqm_full_pending || !upload_ranges.iqm_tracked || !upload_ranges_enabled())
+	{
+		upload_ranges.iqm_full_pending = false;
+		return sizeof(IqmMatrixBuffer);
+	}
+
+	return (uint64_t)upload_ranges.iqm_hw * (sizeof(IqmMatrixBuffer) / MAX_IQM_MATRICES);
 }
 
 VkResult
@@ -730,17 +773,9 @@ vkpt_iqm_matrix_buffer_upload_staging(VkCommandBuffer cmd_buf)
 	   with a sharper consequence - see barrier_before_shared_upload. */
 	barrier_before_shared_upload(cmd_buf, qvk.buf_iqm_matrices.buffer, sizeof(IqmMatrixBuffer));
 
-	// Up to the high-water mark - see WHAT THE LIGHT AND IQM UPLOADS COPY. Zero
-	// when no skeletal model has been staged yet, and then there is nothing the
-	// device does not already hold.
 	VkBufferCopy copyRegion = {
-		.size = sizeof(IqmMatrixBuffer),
+		.size = vkpt_iqm_upload_size(),
 	};
-
-	if (upload_ranges.iqm_full_pending || !upload_ranges.iqm_tracked || !upload_ranges_enabled())
-		upload_ranges.iqm_full_pending = false;
-	else
-		copyRegion.size = (VkDeviceSize)upload_ranges.iqm_hw * (sizeof(IqmMatrixBuffer) / MAX_IQM_MATRICES);
 
 	if (copyRegion.size)
 		vkCmdCopyBuffer(cmd_buf, staging->buffer, qvk.buf_iqm_matrices.buffer, 1, &copyRegion);
@@ -766,13 +801,12 @@ static uint32_t copy_bsp_lights(bsp_mesh_t* bsp_mesh, LightBuffer *lbo)
 	memcpy(lbo->light_list_lights, bsp_mesh->cluster_lights, sizeof(uint32_t) * bsp_mesh->cluster_light_offsets[bsp_mesh->num_clusters]);
 	memcpy(lbo->light_list_offsets, bsp_mesh->cluster_light_offsets, sizeof(uint32_t) * (bsp_mesh->num_clusters + 1));
 	// Store the light counts in the light counts history entry for the current frame
-	uint history_index = qvk.frame_counter % LIGHT_COUNT_HISTORY;
-	uint *sample_light_counts = (uint *)buffer_map(qvk.buf_light_counts_history + history_index);
+	uint *sample_light_counts = (uint *)vkpt_prep_backend->map_staging(VKPT_STAGING_LIGHT_COUNTS);
 	for (int c = 0; c < bsp_mesh->num_clusters; c++)
 	{
 		sample_light_counts[c] = bsp_mesh->cluster_light_offsets[c + 1] - bsp_mesh->cluster_light_offsets[c];
 	}
-	buffer_unmap(qvk.buf_light_counts_history + history_index);
+	vkpt_prep_backend->unmap_staging(VKPT_STAGING_LIGHT_COUNTS);
 
 	return bsp_mesh->cluster_light_offsets[bsp_mesh->num_clusters];
 }
@@ -831,8 +865,7 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 	}
 	
 	// Store the light counts in the light counts history entry for the current frame
-	uint history_index = qvk.frame_counter % LIGHT_COUNT_HISTORY;
-	uint *sample_light_counts = (uint *)buffer_map(qvk.buf_light_counts_history + history_index);
+	uint *sample_light_counts = (uint *)vkpt_prep_backend->map_staging(VKPT_STAGING_LIGHT_COUNTS);
 
 	// Copy the static light lists, and make room in these lists to inject the model lights
 
@@ -854,7 +887,7 @@ inject_model_lights(bsp_mesh_t* bsp_mesh, bsp_t* bsp, int num_model_lights, ligh
 	}
 	dst_list_offsets[bsp_mesh->num_clusters] = tail;
 
-	buffer_unmap(qvk.buf_light_counts_history + history_index);
+	vkpt_prep_backend->unmap_staging(VKPT_STAGING_LIGHT_COUNTS);
 
 	// Write the model light indices into the light lists
 
@@ -950,9 +983,8 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 {
 	assert(bsp_mesh);
 
-	BufferResource_t* staging = qvk.buf_light_staging + qvk.current_frame_index;
-
-	LightBuffer* lbo = (LightBuffer*)buffer_map(staging);
+	// this frame's light staging, Vulkan's or D3D12's - see vkpt_prep_backend
+	LightBuffer* lbo = (LightBuffer*)vkpt_prep_backend->map_staging(VKPT_STAGING_LIGHTS);
 	assert(lbo);
 
 	// How far into the two list arrays this frame writes - see WHAT THE LIGHT AND
@@ -1138,7 +1170,7 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 	memcpy(lbo->sky_visibility, bsp_mesh->sky_visibility, MAX_LIGHT_LISTS / 8);
 	memcpy(lbo->sky_cluster_mask, bsp_mesh->sky_cluster_mask, MAX_LIGHT_LISTS / 8);
 
-	buffer_unmap(staging);
+	vkpt_prep_backend->unmap_staging(VKPT_STAGING_LIGHTS);
 	lbo = NULL;
 
 	upload_ranges.light_list_hw = max(upload_ranges.light_list_hw, min(lists_written, (uint32_t)MAX_LIGHT_LIST_NODES));
@@ -1168,15 +1200,27 @@ static void write_model_vbo_descriptor(int index, VkBuffer buffer, VkDeviceSize 
 	vkUpdateDescriptorSets(qvk.device, 1, &write_descriptor_set, 0, NULL);
 }
 
-static void destroy_model_vbo(model_vbo_t* vbo)
+// the CPU half of destroying a model VBO: no Vulkan object is touched but a
+// BLAS handle, which only Vulkan ever sets (vkpt_model_vbo_clear, both backends)
+static void clear_model_vbo(model_vbo_t* vbo)
 {
 	vkpt_destroy_model_geometry(&vbo->geom_opaque);
 	vkpt_destroy_model_geometry(&vbo->geom_transparent);
 	vkpt_destroy_model_geometry(&vbo->geom_masked);
 
-	buffer_destroy(&vbo->buffer);
-	
 	memset(vbo, 0, sizeof(model_vbo_t));
+}
+
+static void destroy_model_vbo(model_vbo_t* vbo)
+{
+	// the BLASes first: their memory is the buffer's
+	vkpt_destroy_model_geometry(&vbo->geom_opaque);
+	vkpt_destroy_model_geometry(&vbo->geom_transparent);
+	vkpt_destroy_model_geometry(&vbo->geom_masked);
+
+	buffer_destroy(&vbo->buffer);
+
+	clear_model_vbo(vbo);
 }
 
 static void
@@ -1320,6 +1364,169 @@ void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index)
 	}
 }
 
+/*
+=================
+THE MODEL VBOs' CPU HALF, for both backends.
+
+vkpt_vertex_buffer_upload_models below and the D3D12 backend (d3d12/frontend.c)
+walk model_vertex_data the same way: vkpt_model_vbo_action says what a slot
+needs this frame, vkpt_model_vbo_layout sizes a model's buffer and lists the
+geometries a static model's BLASes are built from, vkpt_model_vbo_stage writes
+it. The buffers, BLASes and descriptors are each backend's own; `present` says
+one exists, which is what prepare_entities asks before instancing a model.
+=================
+*/
+vkpt_model_vbo_action_t vkpt_model_vbo_action(int index)
+{
+	const model_t* model = &r_models[index];
+	const model_vbo_t* vbo = model_vertex_data + index;
+
+	if (!model->meshes)
+	{
+		// unloaded: destroy the VBO; or the model does not exist
+		return vbo->present ? VKPT_MODEL_VBO_FREE : VKPT_MODEL_VBO_KEEP;
+	}
+
+	if (model->registration_sequence <= vbo->registration_sequence && vbo->present)
+	{
+		// VBO is valid, nothing to do
+		return VKPT_MODEL_VBO_KEEP;
+	}
+
+	// Destroy the old buffers if they exist, then upload. A slot is reused when
+	// a model is unloaded and another one loaded in its place on a map change.
+	return VKPT_MODEL_VBO_UPLOAD;
+}
+
+void vkpt_model_vbo_clear(int index)
+{
+	clear_model_vbo(model_vertex_data + index);
+}
+
+size_t vkpt_model_vbo_layout(int index)
+{
+	const model_t* model = &r_models[index];
+	model_vbo_t* vbo = model_vertex_data + index;
+
+	assert(model->numframes > 0);
+
+	bool model_is_static = model->numframes == 1 && (!model->iqmData || !model->iqmData->blend_indices);
+	vbo->is_static = model_is_static;
+	vbo->total_tris = 0;
+
+	if (model_is_static)
+	{
+		// Count the geometries of all supported kinds
+
+		uint32_t geom_count_opaque = 0;
+		uint32_t geom_count_transparent = 0;
+		uint32_t geom_count_masked = 0;
+
+		for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
+		{
+			maliasmesh_t* m = model->meshes + nmesh;
+
+			if (MAT_IsTransparent(m->materials[0]->flags))
+			{
+				++geom_count_transparent;
+			}
+			else if (MAT_IsMasked(m->materials[0]->flags))
+			{
+				++geom_count_masked;
+			}
+			else
+			{
+				++geom_count_opaque;
+			}
+		}
+
+		vkpt_init_model_geometry(&vbo->geom_opaque, geom_count_opaque);
+		vkpt_init_model_geometry(&vbo->geom_transparent, geom_count_transparent);
+		vkpt_init_model_geometry(&vbo->geom_masked, geom_count_masked);
+	}
+
+	// Count the triangles and create the geometry descriptors for static geometries.
+	// *Note*: the descriptor creation depends on the running value of vbo->total_tris.
+	for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
+	{
+		maliasmesh_t* m = model->meshes + nmesh;
+
+		if (model_is_static)
+		{
+			if (MAT_IsTransparent(m->materials[0]->flags))
+			{
+				vkpt_append_model_geometry(&vbo->geom_transparent, m->numtris, vbo->total_tris, model->name);
+			}
+			else if (MAT_IsMasked(m->materials[0]->flags))
+			{
+				vkpt_append_model_geometry(&vbo->geom_masked, m->numtris, vbo->total_tris, model->name);
+			}
+			else
+			{
+				vkpt_append_model_geometry(&vbo->geom_opaque, m->numtris, vbo->total_tris, model->name);
+			}
+		}
+
+		vbo->total_tris += m->numtris * model->numframes;
+	}
+
+	vbo->vertex_data_offset = 0;
+
+	size_t size = vbo->total_tris * sizeof(VboPrimitive);
+
+	if (model_is_static)
+	{
+		vbo->vertex_data_offset = size;
+		size += vbo->total_tris * sizeof(vec3) * 3;
+	}
+
+	return size;
+}
+
+void vkpt_model_vbo_stage(int index, uint8_t* staging_data, size_t size)
+{
+	model_t* model = &r_models[index];
+	const model_vbo_t* vbo = model_vertex_data + index;
+
+	memset(staging_data, 0, size);
+	int write_ptr = 0;
+	float* vertex_write_ptr = vbo->is_static ? (float*)(staging_data + vbo->vertex_data_offset) : NULL;
+
+	for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
+	{
+		maliasmesh_t* m = model->meshes + nmesh;
+
+		m->tri_offset = write_ptr;
+
+		stage_mesh_primitives(staging_data, &write_ptr, &vertex_write_ptr, model, m);
+	}
+}
+
+void vkpt_model_vbo_mark_uploaded(int index, bool present)
+{
+	model_vertex_data[index].registration_sequence = r_models[index].registration_sequence;
+	model_vertex_data[index].present = present;
+}
+
+// How a static model's BLASes are instanced (vkpt_pt_instance_model_blas reads it):
+// API-free, as vkpt_bsp_mesh_set_instance_flags is for the world's
+void vkpt_model_vbo_set_instance_flags(int index)
+{
+	model_vbo_t* vbo = model_vertex_data + index;
+
+	vbo->geom_opaque.instance_mask = AS_FLAG_OPAQUE;
+	vbo->geom_opaque.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+	vbo->geom_opaque.sbt_offset = SBTO_OPAQUE;
+
+	vbo->geom_transparent.instance_mask = AS_FLAG_TRANSPARENT;
+	vbo->geom_transparent.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+	vbo->geom_transparent.sbt_offset = SBTO_OPAQUE;
+
+	vbo->geom_masked.instance_mask = AS_FLAG_OPAQUE;
+	vbo->geom_masked.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+	vbo->geom_masked.sbt_offset = SBTO_MASKED;
+}
+
 VkResult
 vkpt_vertex_buffer_upload_models()
 {
@@ -1330,121 +1537,45 @@ vkpt_vertex_buffer_upload_models()
 		const model_t* model = &r_models[i];
 		model_vbo_t* vbo = model_vertex_data + i;
 
-		if (!model->meshes && vbo->buffer.buffer) {
+		switch (vkpt_model_vbo_action(i))
+		{
+		case VKPT_MODEL_VBO_KEEP:
+			continue;
+		case VKPT_MODEL_VBO_FREE:
 			// model unloaded, destroy the VBO
 			write_model_vbo_descriptor(i, null_buffer.buffer, null_buffer.size);
 			destroy_model_vbo(vbo);
 			//Com_Printf("Unloaded model[%d]\n", i);
 			continue;
+		case VKPT_MODEL_VBO_UPLOAD:
+			break;
 		}
 
-		if (!model->meshes) {
-			// model does not exist
-			continue;
-		}
-
-		if (model->registration_sequence <= vbo->registration_sequence && vbo->buffer.buffer) {
-			// VBO is valid, nothing to do
-			continue;
-		}
-
-		// Destroy the old buffers if they exist.
-		// This may happen when a model is unloaded and then another model
-		// is loaded in the same slot when changing a map.
 		destroy_model_vbo(vbo);
 
-		memset(vbo, 0, sizeof(model_vbo_t));
-
-		assert(model->numframes > 0);
-
-		bool model_is_static = model->numframes == 1 && (!model->iqmData || !model->iqmData->blend_indices);
-		vbo->is_static = model_is_static;
-		vbo->total_tris = 0;
+		const size_t staging_size = vkpt_model_vbo_layout(i);
+		size_t vbo_size = staging_size;
+		const bool model_is_static = vbo->is_static;
 
 		if (model_is_static)
 		{
-			// Count the geometries of all supported kinds
-
-			uint32_t geom_count_opaque = 0;
-			uint32_t geom_count_transparent = 0;
-			uint32_t geom_count_masked = 0;
-
-			for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
-			{
-				maliasmesh_t* m = model->meshes + nmesh;
-
-				if (MAT_IsTransparent(m->materials[0]->flags))
-				{
-					++geom_count_transparent;
-				}
-				else if (MAT_IsMasked(m->materials[0]->flags))
-				{
-					++geom_count_masked;
-				}
-				else
-				{
-					++geom_count_opaque;
-				}
-			}
-
-			vkpt_init_model_geometry(&vbo->geom_opaque, geom_count_opaque);
-			vkpt_init_model_geometry(&vbo->geom_transparent, geom_count_transparent);
-			vkpt_init_model_geometry(&vbo->geom_masked, geom_count_masked);
-		}
-
-		// Count the triangles and create the geometry descriptors for static geometries.
-		// *Note*: the descriptor creation depends on the running value of vbo->total_tris.
-		for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
-		{
-			maliasmesh_t* m = model->meshes + nmesh;
-
-			if (model_is_static)
-			{
-				if (MAT_IsTransparent(m->materials[0]->flags))
-				{
-					vkpt_append_model_geometry(&vbo->geom_transparent, m->numtris, vbo->total_tris, model->name);
-				}
-				else if (MAT_IsMasked(m->materials[0]->flags))
-				{
-					vkpt_append_model_geometry(&vbo->geom_masked, m->numtris, vbo->total_tris, model->name);
-				}
-				else
-				{
-					vkpt_append_model_geometry(&vbo->geom_opaque, m->numtris, vbo->total_tris, model->name);
-				}
-			}
-
-			vbo->total_tris += m->numtris * model->numframes;
-		}
-
-		vbo->vertex_data_offset = 0;
-
-		size_t vbo_size = vbo->total_tris * sizeof(VboPrimitive);
-		size_t staging_size = vbo_size;
-		
-		if (model_is_static)
-		{
-			vbo->vertex_data_offset = vbo_size;
-			vbo_size += vbo->total_tris * sizeof(vec3) * 3;
-			staging_size = vbo_size;
-
 			suballocate_model_blas_memory(&vbo->geom_opaque, &vbo_size, model->name);
 			suballocate_model_blas_memory(&vbo->geom_masked, &vbo_size, model->name);
 			suballocate_model_blas_memory(&vbo->geom_transparent, &vbo_size, model->name);
 		}
 
-		const VkBufferUsageFlags accel_usage = 
+		const VkBufferUsageFlags accel_usage =
 			VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 			VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
 			VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
-		buffer_create(&vbo->buffer, vbo_size, 
+		buffer_create(&vbo->buffer, vbo_size,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
 			(model_is_static ? accel_usage : 0),
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		
+
 		buffer_create(&vbo->staging_buffer, staging_size,
 			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -1468,22 +1599,10 @@ vkpt_vertex_buffer_upload_models()
 		}
 
 		uint8_t* staging_data = buffer_map(&vbo->staging_buffer);
-		memset(staging_data, 0, vbo->staging_buffer.size);
-		int write_ptr = 0;
-		float* vertex_write_ptr = model_is_static ? (float*)(staging_data + vbo->vertex_data_offset) : NULL;
-		
-		for (int nmesh = 0; nmesh < model->nummeshes; nmesh++)
-		{
-			maliasmesh_t* m = model->meshes + nmesh;
-			
-			m->tri_offset = write_ptr;
-
-			stage_mesh_primitives(staging_data, &write_ptr, &vertex_write_ptr, model, m);
-		}
-
+		vkpt_model_vbo_stage(i, staging_data, vbo->staging_buffer.size);
 		buffer_unmap(&vbo->staging_buffer);
 
-		vbo->registration_sequence = model->registration_sequence;
+		vkpt_model_vbo_mark_uploaded(i, vbo->buffer.buffer != VK_NULL_HANDLE);
 		any_models_to_upload = true;
 	}
 
@@ -1534,17 +1653,7 @@ vkpt_vertex_buffer_upload_models()
 				build_model_blas(cmd_buf, &vbo->geom_transparent, vbo->vertex_data_offset, &vbo->buffer);
 				build_model_blas(cmd_buf, &vbo->geom_masked, vbo->vertex_data_offset, &vbo->buffer);
 
-				vbo->geom_opaque.instance_mask = AS_FLAG_OPAQUE;
-				vbo->geom_opaque.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-				vbo->geom_opaque.sbt_offset = SBTO_OPAQUE;
-
-				vbo->geom_transparent.instance_mask = AS_FLAG_TRANSPARENT;
-				vbo->geom_transparent.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-				vbo->geom_transparent.sbt_offset = SBTO_OPAQUE;
-
-				vbo->geom_masked.instance_mask = AS_FLAG_OPAQUE;
-				vbo->geom_masked.instance_flags = VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR | VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-				vbo->geom_masked.sbt_offset = SBTO_MASKED;
+				vkpt_model_vbo_set_instance_flags(i);
 
 			}
 		}
@@ -1580,11 +1689,29 @@ uint32_t vkpt_primbuf_generation(void)
 	return primbuf_generation;
 }
 
+void vkpt_primbuf_new_generation(void)
+{
+	primbuf_generation++;
+}
+
+uint32_t vkpt_primbuf_size(void)
+{
+	return (uint32_t)Cvar_ClampInteger(cvar_pt_primbuf, PRIMBUF_SIZE_MIN, PRIMBUF_SIZE_MAX);
+}
+
+void vkpt_primbuf_grow(uint32_t prim_count)
+{
+	prim_count = (uint32_t)align(prim_count, PRIMBUF_SIZE_MIN);
+	Cvar_SetInteger(cvar_pt_primbuf, (int)prim_count, FROM_CODE);
+
+	Com_DPrintf("Resizing the animation buffers to fit all meshes. Set pt_primbuf to at least %d to avoid this.\n", prim_count);
+}
+
 void create_primbuf(void)
 {
-	int primbuf_size = Cvar_ClampInteger(cvar_pt_primbuf, PRIMBUF_SIZE_MIN, PRIMBUF_SIZE_MAX);
+	int primbuf_size = (int)vkpt_primbuf_size();
 
-	primbuf_generation++;
+	vkpt_primbuf_new_generation();
 
 	buffer_create(&qvk.buf_primitive_instanced, sizeof(VboPrimitive) * primbuf_size,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -1634,17 +1761,16 @@ void vkpt_vertex_buffer_ensure_primbuf_size(uint32_t prim_count)
 
 	destroy_primbuf();
 
-	prim_count = (uint32_t)align(prim_count, PRIMBUF_SIZE_MIN);
-	Cvar_SetInteger(cvar_pt_primbuf, (int)prim_count, FROM_CODE);
-
-	Com_DPrintf("Resizing the animation buffers to fit all meshes. Set pt_primbuf to at least %d to avoid this.\n", prim_count);
+	vkpt_primbuf_grow(prim_count);
 
 	create_primbuf();
 }
 
-VkResult
-vkpt_vertex_buffer_create()
+// vkpt_init_frontend: the light upload reads these in the frame's CPU half
+void
+vkpt_vertex_buffer_init_cvars(void)
 {
+	// the instanced buffers' size (vkpt_primbuf_size), for both backends
 	char primbuf_initial_value[16];
 	Q_snprintf(primbuf_initial_value, sizeof(primbuf_initial_value), "%d", PRIMBUF_SIZE_DEFAULT);
 	cvar_pt_primbuf = Cvar_Get("pt_primbuf", primbuf_initial_value, CVAR_ARCHIVE);
@@ -1653,10 +1779,8 @@ vkpt_vertex_buffer_create()
 	cvar_pt_bounce_albedo_material = Cvar_Get("pt_bounce_albedo_material", "1", 0);
 
 	// A/B for the ranged light/IQM uploads (and the instance buffer's, which
-	// uniform_buffer.c fetches under the same name). New staging buffers below,
-	// so the high-water marks start over and the first upload is whole.
+	// uniform_buffer.c fetches under the same name).
 	cvar_pt_upload_ranges = Cvar_Get("pt_upload_ranges", "1", 0);
-	reset_upload_ranges();
 
 	// see the block comment on these at the top of the file
 	cvar_pt_fog_scale_emissive = Cvar_Get("pt_fog_scale_emissive", "1.0", 0);
@@ -1664,6 +1788,15 @@ vkpt_vertex_buffer_create()
 	cvar_pt_fog_scale_dynamic  = Cvar_Get("pt_fog_scale_dynamic",  "1.0", 0);
 	cvar_pt_fog_scale_model    = Cvar_Get("pt_fog_scale_model",    "1.0", 0);
 	cvar_pt_fog_lava_scale     = Cvar_Get("pt_fog_lava_scale",     "5.0", 0);
+}
+
+VkResult
+vkpt_vertex_buffer_create()
+{
+	vkpt_vertex_buffer_init_cvars();    // pt_primbuf among them
+	// New staging buffers below, so the high-water marks start over and the
+	// first upload is whole.
+	reset_upload_ranges();
 
 	VkDescriptorSetLayoutBinding vbo_layout_bindings[] = {
 		{
@@ -1915,15 +2048,14 @@ vkpt_vertex_buffer_create()
 VkResult
 vkpt_readback(ReadbackBuffer* dst)
 {
-	BufferResource_t* buffer = &qvk.buf_readback_staging[qvk.current_frame_index];
-	void* mapped = buffer_map(buffer);
+	void* mapped = vkpt_prep_backend->map_staging(VKPT_STAGING_READBACK);
 
 	if (mapped == NULL)
 		return VK_ERROR_MEMORY_MAP_FAILED;
 
 	memcpy(dst, mapped, sizeof(ReadbackBuffer));
 
-	buffer_unmap(buffer);
+	vkpt_prep_backend->unmap_staging(VKPT_STAGING_READBACK);
 
 	return VK_SUCCESS;
 }

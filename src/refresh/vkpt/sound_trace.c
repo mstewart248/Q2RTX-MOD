@@ -59,6 +59,7 @@ thread's.
 #include "vkpt.h"
 #include "vk_util.h"
 #include "shader/sound_trace_shared.h"
+#include "sound_trace.h"
 
 #include <SDL.h>
 
@@ -76,28 +77,13 @@ typedef struct {
 	uint32_t                    first_tri;  // its triangles' place in snd.tris
 } snd_blas_t;
 
-// sound_trace.comp's SoundTraceParams, std140
-typedef struct {
-	float       listener[4];
-	float       sources[SOUND_TRACE_MAX_SOURCES][4];
-	float       materials[SOUND_TRACE_MAX_MATERIALS][4];
-	uint32_t    counts[4];
-	uint32_t    counts2[4];
-	float       dists[4];
-	float       shift[4];
-	float       queries[SOUND_TRACE_MAX_QUERIES][4];
-	uint32_t    counts3[4];
-} snd_params_t;
+// sound_trace.h's, shared with the D3D12 renderer (d3d12/sound_trace.c)
+typedef vkpt_sound_params_t snd_params_t;
+typedef vkpt_sound_tri_t    snd_tri_t;
 
-// and its SoundTri
-typedef struct {
-	float       normal[3];
-	uint32_t    material;
-} snd_tri_t;
-
-#define SND_FIELD_FLOATS    (SOUND_TRACE_CHANNELS * SOUND_TRACE_BANDS * SOUND_TRACE_MAX_BINS)
-#define SND_FIELDS_SIZE     ((VkDeviceSize)SOUND_TRACE_MAX_SOURCES * SND_FIELD_FLOATS * sizeof(float))
-#define SND_DIFF_SIZE       ((VkDeviceSize)SOUND_TRACE_MAX_QUERIES * SOUND_DIFFRACT_FLOATS * sizeof(float))
+#define SND_FIELD_FLOATS    VKPT_SOUND_FIELD_FLOATS
+#define SND_FIELDS_SIZE     ((VkDeviceSize)VKPT_SOUND_FIELDS_SIZE)
+#define SND_DIFF_SIZE       ((VkDeviceSize)VKPT_SOUND_DIFF_SIZE)
 
 static_assert(SOUND_EDGE_FLOATS == R_SOUND_EDGE_FLOATS && SOUND_DIFFRACT_FLOATS == R_SOUND_DIFFRACTION_FLOATS,
               "sound_trace_shared.h and refresh.h disagree");
@@ -384,8 +370,9 @@ static bool snd_build_scene(const r_sound_geom_t *geom)
 {
 	snd_buffer_t    verts = { 0 }, indices = { 0 }, staging = { 0 }, edge_staging = { 0 };
 	size_t          *first_vert = NULL;
-	size_t          nv = 0, nt = 0, v0, t0;
-	size_t          edges_size = (size_t)max(geom->num_edges, 1) * SOUND_EDGE_FLOATS * sizeof(float);
+	uint32_t        *first_tri = NULL;
+	size_t          nv = 0, nt = 0;
+	size_t          edges_size = vkpt_sound_edges_size(geom);
 	VkDeviceSize    scratch = 0, blas_size = 0;
 	VkAccelerationStructureGeometryKHR          ag;
 	VkAccelerationStructureBuildGeometryInfoKHR info;
@@ -395,21 +382,17 @@ static bool snd_build_scene(const r_sound_geom_t *geom)
 	const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 	const VkBufferUsageFlags input = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
 	bool    ok = false, submitted = false;
-	int     i, j, k;
+	int     i;
 
 	snd_free_scene();
 
-	for (i = 0; i < geom->num_meshes; i++) {
-		nv += geom->meshes[i].num_verts;
-		nt += geom->meshes[i].num_tris;
-	}
-	// the TLAS instance's custom index, where a mesh's triangles start, is 24 bits
-	if (!nt || nt >= (1u << 24))
+	if (!vkpt_sound_scene_size(geom, &nv, &nt))
 		return false;
 
 	snd.blas = calloc(geom->num_meshes, sizeof(*snd.blas));
 	first_vert = calloc(geom->num_meshes, sizeof(*first_vert));
-	if (!snd.blas || !first_vert)
+	first_tri = calloc(geom->num_meshes, sizeof(*first_tri));
+	if (!snd.blas || !first_vert || !first_tri)
 		goto done;
 	snd.num_meshes = geom->num_meshes;
 
@@ -425,46 +408,13 @@ static bool snd_build_scene(const r_sound_geom_t *geom)
 	                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0))
 		goto done;
 
-	memset(edge_staging.mapped, 0, edges_size);
-	if (geom->num_edges > 0)
-		memcpy(edge_staging.mapped, geom->edges, (size_t)geom->num_edges * SOUND_EDGE_FLOATS * sizeof(float));
+	vkpt_sound_pack_edges(geom, edge_staging.mapped);
 	snd.num_edges = max(geom->num_edges, 0);
 
-	// the vertices as they are, the indices per mesh, and each triangle's
-	// normal (either way: the shader turns it to face the ray) and material
-	for (i = 0, v0 = 0, t0 = 0; i < geom->num_meshes; i++) {
-		const r_sound_mesh_t *m = &geom->meshes[i];
-		float       *v = (float *)verts.mapped + v0 * 3;
-		uint32_t    *ix = (uint32_t *)indices.mapped + t0 * 3;
-		snd_tri_t   *st = (snd_tri_t *)staging.mapped + t0;
-
-		if (m->num_verts)
-			memcpy(v, m->verts, m->num_verts * 3 * sizeof(float));
-		for (j = 0; j < m->num_tris; j++) {
-			const float *p[3];
-			vec3_t      e1, e2, n;
-
-			for (k = 0; k < 3; k++) {
-				int index = m->tris[j * 3 + k];
-				if (index < 0 || index >= m->num_verts)
-					goto done;
-				ix[j * 3 + k] = index;
-				p[k] = m->verts + index * 3;
-			}
-			VectorSubtract(p[1], p[0], e1);
-			VectorSubtract(p[2], p[0], e2);
-			CrossProduct(e1, e2, n);
-			if (VectorNormalize(n) == 0)
-				VectorSet(n, 0, 1, 0);
-			VectorCopy(n, st[j].normal);
-			st[j].material = m->mats[j] >= 0 && m->mats[j] < SOUND_TRACE_MAX_MATERIALS ? m->mats[j] : 0;
-		}
-
-		first_vert[i] = v0;
-		snd.blas[i].first_tri = (uint32_t)t0;
-		v0 += m->num_verts;
-		t0 += m->num_tris;
-	}
+	if (!vkpt_sound_pack_scene(geom, verts.mapped, indices.mapped, staging.mapped, first_vert, first_tri))
+		goto done;
+	for (i = 0; i < geom->num_meshes; i++)
+		snd.blas[i].first_tri = first_tri[i];
 
 	// a BLAS per mesh with faces, all in one buffer
 	for (i = 0; i < geom->num_meshes; i++) {
@@ -593,6 +543,7 @@ done:
 	snd_buffer_destroy(&staging);
 	snd_buffer_destroy(&edge_staging);
 	free(first_vert);
+	free(first_tri);
 	if (!ok)
 		snd_free_scene();
 	return ok;
@@ -607,23 +558,12 @@ static const char *snd_run(const r_sound_trace_t *t)
 	VkAccelerationStructureBuildGeometryInfoKHR info;
 	VkAccelerationStructureBuildRangeInfoKHR    range = { 0 };
 	const VkAccelerationStructureBuildRangeInfoKHR *ranges = &range;
-	uint32_t    field_floats = 0, per_thread = 0, groups = 0, h;
+	uint32_t    field_floats = 0, groups = 0;
 	int         i, n = 0;
 
-	if (t->num_sources < 0 || t->num_sources > SOUND_TRACE_MAX_SOURCES)
-		return "too many sources";
-	if (t->num_queries < 0 || t->num_queries > SOUND_TRACE_MAX_QUERIES)
-		return "too many queries";
-	if (t->num_sources > 0) {
-		if (t->num_channels != SOUND_TRACE_CHANNELS || t->num_bins < 1 || t->num_bins > SOUND_TRACE_MAX_BINS)
-			return "an energy field it cannot make";
-		if (t->num_materials < 1 || t->num_materials > SOUND_TRACE_MAX_MATERIALS)
-			return "too many materials";
-		if (t->num_rays < 1)
-			return "nothing to trace";
-	}
-	if (!t->geom || !t->geom->key || (t->num_sources < 1 && t->num_queries < 1))
-		return "nothing to trace";
+	const char *why = vkpt_sound_check_run(t);
+	if (why)
+		return why;
 	if (t->num_queries > 0 && !snd.diff_pipeline)
 		return "no shader for it";
 
@@ -652,37 +592,7 @@ static const char *snd_run(const r_sound_trace_t *t)
 		n++;
 	}
 
-	memset(p, 0, sizeof(*p));
-	VectorCopy(t->listener, p->listener);
-
-	if (t->num_sources > 0) {
-		per_thread = max(1, t->num_rays / (SOUND_TRACE_GROUP * SND_GROUPS_WANTED));
-		groups = (t->num_rays + SOUND_TRACE_GROUP * per_thread - 1) / (SOUND_TRACE_GROUP * per_thread);
-		field_floats = SOUND_TRACE_CHANNELS * SOUND_TRACE_BANDS * t->num_bins;
-
-		for (i = 0; i < t->num_sources; i++)
-			VectorCopy(t->sources + i * 3, p->sources[i]);
-		for (i = 0; i < t->num_materials; i++)
-			Vector4Copy(t->materials[i], p->materials[i]);
-		p->counts[0] = t->num_sources;
-		p->counts[1] = t->num_rays;
-		p->counts[2] = t->num_bounces;
-		p->counts[3] = t->num_bins;
-		p->counts2[0] = per_thread;
-		p->counts2[1] = t->seed;
-		p->dists[0] = t->duration * SOUND_TRACE_SPEED_OF_SOUND;
-		p->dists[1] = t->min_distance;
-		p->dists[2] = 4 * M_PI / t->num_rays;
-		h = t->seed * 2654435761u;
-		p->shift[0] = (h >> 8) / 16777216.0f;
-		h = h * 1664525u + 1013904223u;
-		p->shift[1] = (h >> 8) / 16777216.0f;
-	}
-
-	for (i = 0; i < t->num_queries; i++)
-		VectorCopy(t->queries + i * 3, p->queries[i]);
-	p->counts3[0] = t->num_queries;
-	p->counts3[1] = snd.num_edges;
+	vkpt_sound_pack_params(t, snd.num_edges, p, &groups, &field_floats);
 
 	if (!snd_begin())
 		return "couldn't record a run";
@@ -728,11 +638,7 @@ static const char *snd_run(const r_sound_trace_t *t)
 	if (!snd_submit())
 		return snd.why ? snd.why : "a run failed";
 
-	for (i = 0; i < t->num_sources; i++)
-		memcpy(t->fields[i], (const float *)snd.readback.mapped + i * field_floats, field_floats * sizeof(float));
-	if (t->num_queries > 0)
-		memcpy(t->diffraction, snd.diff_readback.mapped,
-		       (size_t)t->num_queries * SOUND_DIFFRACT_FLOATS * sizeof(float));
+	vkpt_sound_unpack(t, field_floats, snd.readback.mapped, snd.diff_readback.mapped);
 	return NULL;
 }
 
@@ -974,4 +880,155 @@ VkResult vkpt_sound_destroy_pipelines(void)
 	snd.diff_pipeline = VK_NULL_HANDLE;
 	vkpt_sound_unlock();
 	return VK_SUCCESS;
+}
+
+/*
+==============================================================================
+
+SHARED WITH THE D3D12 RENDERER (d3d12/sound_trace.c) - sound_trace.h
+
+==============================================================================
+*/
+
+const char *vkpt_sound_check_run(const r_sound_trace_t *t)
+{
+	if (t->num_sources < 0 || t->num_sources > SOUND_TRACE_MAX_SOURCES)
+		return "too many sources";
+	if (t->num_queries < 0 || t->num_queries > SOUND_TRACE_MAX_QUERIES)
+		return "too many queries";
+	if (t->num_sources > 0) {
+		if (t->num_channels != SOUND_TRACE_CHANNELS || t->num_bins < 1 || t->num_bins > SOUND_TRACE_MAX_BINS)
+			return "an energy field it cannot make";
+		if (t->num_materials < 1 || t->num_materials > SOUND_TRACE_MAX_MATERIALS)
+			return "too many materials";
+		if (t->num_rays < 1)
+			return "nothing to trace";
+	}
+	if (!t->geom || !t->geom->key || (t->num_sources < 1 && t->num_queries < 1))
+		return "nothing to trace";
+	return NULL;
+}
+
+bool vkpt_sound_scene_size(const r_sound_geom_t *geom, size_t *num_verts, size_t *num_tris)
+{
+	size_t  nv = 0, nt = 0;
+	int     i;
+
+	for (i = 0; i < geom->num_meshes; i++) {
+		nv += geom->meshes[i].num_verts;
+		nt += geom->meshes[i].num_tris;
+	}
+	*num_verts = nv;
+	*num_tris = nt;
+	// the TLAS instance's custom index, where a mesh's triangles start, is 24 bits
+	return nt && nt < (1u << 24);
+}
+
+size_t vkpt_sound_edges_size(const r_sound_geom_t *geom)
+{
+	return (size_t)max(geom->num_edges, 1) * SOUND_EDGE_FLOATS * sizeof(float);
+}
+
+void vkpt_sound_pack_edges(const r_sound_geom_t *geom, void *edges)
+{
+	memset(edges, 0, vkpt_sound_edges_size(geom));
+	if (geom->num_edges > 0)
+		memcpy(edges, geom->edges, (size_t)geom->num_edges * SOUND_EDGE_FLOATS * sizeof(float));
+}
+
+// the vertices as they are, the indices per mesh, and each triangle's
+// normal (either way: the shader turns it to face the ray) and material
+bool vkpt_sound_pack_scene(const r_sound_geom_t *geom, float *verts, uint32_t *indices, vkpt_sound_tri_t *tris,
+						   size_t *first_vert, uint32_t *first_tri)
+{
+	size_t  v0, t0;
+	int     i, j, k;
+
+	for (i = 0, v0 = 0, t0 = 0; i < geom->num_meshes; i++) {
+		const r_sound_mesh_t *m = &geom->meshes[i];
+		float       *v = verts + v0 * 3;
+		uint32_t    *ix = indices + t0 * 3;
+		vkpt_sound_tri_t *st = tris + t0;
+
+		if (m->num_verts)
+			memcpy(v, m->verts, m->num_verts * 3 * sizeof(float));
+		for (j = 0; j < m->num_tris; j++) {
+			const float *p[3];
+			vec3_t      e1, e2, n;
+
+			for (k = 0; k < 3; k++) {
+				int index = m->tris[j * 3 + k];
+				if (index < 0 || index >= m->num_verts)
+					return false;
+				ix[j * 3 + k] = index;
+				p[k] = m->verts + index * 3;
+			}
+			VectorSubtract(p[1], p[0], e1);
+			VectorSubtract(p[2], p[0], e2);
+			CrossProduct(e1, e2, n);
+			if (VectorNormalize(n) == 0)
+				VectorSet(n, 0, 1, 0);
+			VectorCopy(n, st[j].normal);
+			st[j].material = m->mats[j] >= 0 && m->mats[j] < SOUND_TRACE_MAX_MATERIALS ? m->mats[j] : 0;
+		}
+
+		first_vert[i] = v0;
+		first_tri[i] = (uint32_t)t0;
+		v0 += m->num_verts;
+		t0 += m->num_tris;
+	}
+	return true;
+}
+
+void vkpt_sound_pack_params(const r_sound_trace_t *t, int num_edges, vkpt_sound_params_t *p,
+							uint32_t *groups_out, uint32_t *field_floats_out)
+{
+	uint32_t    field_floats = 0, per_thread = 0, groups = 0, h;
+	int         i;
+
+	memset(p, 0, sizeof(*p));
+	VectorCopy(t->listener, p->listener);
+
+	if (t->num_sources > 0) {
+		per_thread = max(1, t->num_rays / (SOUND_TRACE_GROUP * SND_GROUPS_WANTED));
+		groups = (t->num_rays + SOUND_TRACE_GROUP * per_thread - 1) / (SOUND_TRACE_GROUP * per_thread);
+		field_floats = SOUND_TRACE_CHANNELS * SOUND_TRACE_BANDS * t->num_bins;
+
+		for (i = 0; i < t->num_sources; i++)
+			VectorCopy(t->sources + i * 3, p->sources[i]);
+		for (i = 0; i < t->num_materials; i++)
+			Vector4Copy(t->materials[i], p->materials[i]);
+		p->counts[0] = t->num_sources;
+		p->counts[1] = t->num_rays;
+		p->counts[2] = t->num_bounces;
+		p->counts[3] = t->num_bins;
+		p->counts2[0] = per_thread;
+		p->counts2[1] = t->seed;
+		p->dists[0] = t->duration * SOUND_TRACE_SPEED_OF_SOUND;
+		p->dists[1] = t->min_distance;
+		p->dists[2] = 4 * M_PI / t->num_rays;
+		h = t->seed * 2654435761u;
+		p->shift[0] = (h >> 8) / 16777216.0f;
+		h = h * 1664525u + 1013904223u;
+		p->shift[1] = (h >> 8) / 16777216.0f;
+	}
+
+	for (i = 0; i < t->num_queries; i++)
+		VectorCopy(t->queries + i * 3, p->queries[i]);
+	p->counts3[0] = t->num_queries;
+	p->counts3[1] = num_edges;
+
+	*groups_out = groups;
+	*field_floats_out = field_floats;
+}
+
+void vkpt_sound_unpack(const r_sound_trace_t *t, uint32_t field_floats, const float *fields,
+					   const float *diffraction)
+{
+	int i;
+
+	for (i = 0; i < t->num_sources; i++)
+		memcpy(t->fields[i], fields + i * field_floats, field_floats * sizeof(float));
+	if (t->num_queries > 0)
+		memcpy(t->diffraction, diffraction, (size_t)t->num_queries * SOUND_DIFFRACT_FLOATS * sizeof(float));
 }

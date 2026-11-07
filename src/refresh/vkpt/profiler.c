@@ -29,7 +29,6 @@ extern cvar_t *cvar_pt_reflect_refract;
 extern cvar_t *cvar_pt_fog_froxel;
 extern cvar_t *cvar_pt_sharc;
 extern cvar_t *cvar_pt_restir_gi;
-extern cvar_t *cvar_flt_fsr_enable;
 extern cvar_t *cvar_profiler_samples;
 
 // Sample data for a single profiled value
@@ -56,6 +55,9 @@ static struct {
 	size_t allocated_samples;
 	// Sample data for profiled values
 	profiler_entry_samples_t samples[NUM_PROFILER_ENTRIES];
+
+	// the results are the D3D12 renderer's (vkpt_profiler_take_results)
+	bool d3d12;
 } profiler_data;
 
 /* UPLOAD SPIKE TRACKER - diagnostic, read out by profiler_dump.
@@ -150,9 +152,20 @@ VkResult
 vkpt_profiler_destroy()
 {
 	vkDestroyQueryPool(qvk.device, profiler_data.query_pool, NULL);
+	vkpt_profiler_release();
+	return VK_SUCCESS;
+}
+
+/* Nothing left behind for the next renderer: it used to keep the freed sample
+   buffers and their count, so a renderer that took results without making its
+   own pool first (D3D12) would have written into freed memory. */
+void
+vkpt_profiler_release(void)
+{
 	for (int i = 0; i < NUM_PROFILER_ENTRIES; i++)
 		Z_Free(profiler_data.samples[i].data);
-	return VK_SUCCESS;
+	memset(&profiler_data, 0, sizeof(profiler_data));
+	upload_spikes_reset();
 }
 
 static inline void
@@ -286,13 +299,72 @@ vkpt_reset_query_pool(VkCommandBuffer cmd_buf) {
 	return VK_SUCCESS;
 }
 
-VkResult
-vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
+// Resize sample buffers, if necessary
+static void
+resize_samples(void)
 {
-	// Resize sample buffers, if necessary
 	size_t new_samples = max(cvar_profiler_samples->integer, 1);
 	if (profiler_data.allocated_samples != new_samples)
 		set_sample_count(new_samples);
+}
+
+/* A frame's results, in query_pool_results: a sample for every entry whose start
+   was written (used[entry * 2]), the others' averages started over. Both
+   renderers'. */
+static void
+take_results(const bool *used)
+{
+	for (int idx = 0; idx < NUM_PROFILER_ENTRIES; idx++)
+	{
+		if (!used[idx * 2])
+		{
+			profiler_data.query_pool_results[idx * 2 + 0] = 0;
+			profiler_data.query_pool_results[idx * 2 + 1] = 0;
+			reset_samples(idx);
+		}
+		else
+		{
+			uint64_t begin = profiler_data.query_pool_results[idx * 2 + 0];
+			uint64_t end = profiler_data.query_pool_results[idx * 2 + 1];
+
+			if (begin != 0 && end != 0)
+				record_sample(idx, end - begin);
+			else
+				reset_samples(idx);
+		}
+	}
+
+	double upload_ms = vkpt_get_profiler_result(PROFILER_UPLOAD_LIGHTS);
+	if (upload_ms > 0.0)
+		upload_spikes_record((float)upload_ms, (float)vkpt_get_profiler_result(PROFILER_FRAME_TIME));
+}
+
+void
+vkpt_profiler_take_results(const uint64_t *ticks, const bool *used, double ns_per_tick)
+{
+	profiler_data.d3d12 = true;
+	qvk.timestampPeriod = (float)ns_per_tick;
+	resize_samples();
+
+	bool any_queries_used = false;
+	for (int idx = 0; idx < NUM_PROFILER_QUERIES_PER_FRAME && !any_queries_used; idx++)
+		any_queries_used = used[idx];
+
+	if (any_queries_used)
+	{
+		memcpy(profiler_data.query_pool_results, ticks, sizeof(profiler_data.query_pool_results));
+		take_results(used);
+	}
+	else
+	{
+		memset(profiler_data.query_pool_results, 0, sizeof(profiler_data.query_pool_results));
+	}
+}
+
+VkResult
+vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
+{
+	resize_samples();
 
 	bool any_queries_used = false;
 	int profileQueriesPerframe = NUM_PROFILER_QUERIES_PER_FRAME;
@@ -329,32 +401,7 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
 
 	if (any_queries_used)
 	{
-		for (int idx = 0; idx < NUM_PROFILER_ENTRIES; idx++)
-		{
-
-			int queriesUsedIndex = idx * 2 + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME;
-
-			if (!profiler_data.queries_used[queriesUsedIndex])
-			{
-				profiler_data.query_pool_results[idx * 2 + 0] = 0;
-				profiler_data.query_pool_results[idx * 2 + 1] = 0;
-				reset_samples(idx);
-			}
-			else
-			{
-				uint64_t begin = profiler_data.query_pool_results[idx * 2 + 0];
-				uint64_t end = profiler_data.query_pool_results[idx * 2 + 1];
-
-				if (begin != 0 && end != 0)
-					record_sample(idx, end - begin);
-				else
-					reset_samples(idx);
-			}
-		}
-
-		double upload_ms = vkpt_get_profiler_result(PROFILER_UPLOAD_LIGHTS);
-		if (upload_ms > 0.0)
-			upload_spikes_record((float)upload_ms, (float)vkpt_get_profiler_result(PROFILER_FRAME_TIME));
+		take_results(profiler_data.queries_used + qvk.current_frame_index * NUM_PROFILER_QUERIES_PER_FRAME);
 	}
 	else
 	{
@@ -486,12 +533,6 @@ draw_profiler(int enable_asvgf)
 	}
 	PROFILER_DO(PROFILER_BLOOM, 1);
 	PROFILER_DO(PROFILER_TONE_MAPPING, 2);
-	if(cvar_flt_fsr_enable->integer != 0)
-	{
-		PROFILER_DO(PROFILER_FSR, 1);
-		PROFILER_DO(PROFILER_FSR_EASU, 2);
-		PROFILER_DO(PROFILER_FSR_RCAS, 2);
-	}
 	if (DLSSEnabled())
 	{
 		PROFILER_DO(PROFILER_DLSS, 1);
@@ -525,7 +566,8 @@ vkpt_profiler_dump(void)
 #undef PROFILER_DO
 	};
 
-	Com_Printf("PROFDUMP begin api=%s samples=%d\n", qvk.use_ray_query ? "query" : "pipeline", (int)profiler_data.allocated_samples);
+	Com_Printf("PROFDUMP begin api=%s samples=%d\n",
+		profiler_data.d3d12 ? "d3d12" : qvk.use_ray_query ? "query" : "pipeline", (int)profiler_data.allocated_samples);
 	for (int idx = 0; idx < NUM_PROFILER_ENTRIES; idx++)
 	{
 		const profiler_entry_samples_t *e = &profiler_data.samples[idx];
@@ -539,7 +581,7 @@ vkpt_profiler_dump(void)
 	const int n = upload_spikes.frames;
 	Com_Printf("UPLOADSPIKES transfer_on_graphics=%d frames=%d upload_mean=%.3f upload_max=%.2f "
 		"up>2=%d up>5=%d up>20=%d cpu_max=%.2f cpu>25=%d cpu>50=%d both=%d\n",
-		qvk.queue_idx_transfer == qvk.queue_idx_graphics, n,
+		profiler_data.d3d12 || qvk.queue_idx_transfer == qvk.queue_idx_graphics, n,
 		n ? upload_spikes.upload_sum / n : 0.0, upload_spikes.upload_max,
 		upload_spikes.upload_over_2, upload_spikes.upload_over_5, upload_spikes.upload_over_20,
 		upload_spikes.cpu_max, upload_spikes.cpu_over_25, upload_spikes.cpu_over_50, upload_spikes.both);

@@ -28,6 +28,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 // Console variables that we need to access from this module
 cvar_t      *vid_rtx;
+#if REF_D3D12
+// the D3D12 renderer did not start this session: the menu stops offering it
+static bool d3d12_start_failed;
+#endif
 cvar_t      *vid_geometry;
 cvar_t      *vid_modelist;
 cvar_t      *vid_fullscreen;
@@ -386,6 +390,19 @@ void CL_InitRefresh(void)
 
     Com_SetLastError(NULL);
 
+	// the renderer menu's Direct3D 12 choice (q2rtx.menu)
+#if REF_D3D12
+	Cvar_FullSet("vid_d3d12_available", d3d12_start_failed ? "0" : "1", CVAR_ROM, FROM_CODE);
+#else
+	Cvar_FullSet("vid_d3d12_available", "0", CVAR_ROM, FROM_CODE);
+#endif
+
+#if REF_D3D12
+	// vid_rtx 3 is the D3D12 path tracer (src/refresh/d3d12, experimental)
+	if (vid_rtx->integer == 3)
+		R_RegisterFunctionsD3D12();
+	else
+#endif
 #if REF_SOFT
 	// vid_rtx 2 is the software renderer, whichever of the others are built
 	if (vid_rtx->integer == 2)
@@ -406,6 +423,18 @@ void CL_InitRefresh(void)
 #endif
 
     cls.ref_type = R_Init(true);
+#if REF_D3D12 && REF_VKPT
+    // vid_rtx is archived: a D3D12 renderer that cannot start on this machine
+    // must not leave a game that dies at every launch. Back to Vulkan.
+    if (cls.ref_type == REF_TYPE_NONE && vid_rtx->integer == 3) {
+        Com_WPrintf("The D3D12 renderer did not start; using the Vulkan one (vid_rtx 1).\n");
+        d3d12_start_failed = true;
+        Cvar_FullSet("vid_d3d12_available", "0", CVAR_ROM, FROM_CODE);
+        Cvar_Set("vid_rtx", "1");
+        R_RegisterFunctionsRTX();
+        cls.ref_type = R_Init(true);
+    }
+#endif
     if (cls.ref_type == REF_TYPE_NONE) {
         Com_Error(ERR_FATAL, "Couldn't initialize refresh: %s", Com_GetLastError());
     }

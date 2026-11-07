@@ -3833,6 +3833,10 @@ static void CL_CpuStatsFrame(void)
     }
     frame_us[CPUPROF_COUNT] = wall > claimed ? wall - claimed : 0;
 
+    // the files this frame read (cpuprof.h), taken every frame so none carry over
+    char files[512];
+    cpuprof_take_files(files, sizeof(files));
+
     if (!cl_cpustats->integer || !wall) {
         second_start_us = now;
         return;
@@ -3849,6 +3853,8 @@ static void CL_CpuStatsFrame(void)
                 len += Q_snprintf(buf + len, sizeof(buf) - len, " %s %.2f",
                                   i < CPUPROF_COUNT ? names[i] : "other", frame_us[i] * 1e-3);
         Com_Printf("%s\n", buf);
+        if (files[0])
+            Com_Printf("CPULONG files: %s\n", files);
     }
 
     frames++;

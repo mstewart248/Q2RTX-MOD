@@ -356,9 +356,10 @@ STB_IMAGE LOADING
 =================================================================
 */
 
+// PF_R16_UNORM: both path tracers upload it (d3d12/textures.c maps it to R16_UNORM)
 static bool supports_extended_pixel_format(void)
 {
-	return cls.ref_type == REF_TYPE_VKPT;
+	return CL_PathTraced();
 }
 
 IMG_LOAD(STB)

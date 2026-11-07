@@ -630,7 +630,7 @@ static void CL_AddPacketEntities(void)
 
         // optionally remove the glowing effect - a GL menu setting, so it
         // stays out of the RTX renderer, where RF_GLOW on a beam is lightning
-        if (cl_noglow->integer && cls.ref_type != REF_TYPE_VKPT)
+        if (cl_noglow->integer && !CL_PathTraced())
             renderfx &= ~RF_GLOW;
 
         ent.oldframe = cent->prev.frame;
@@ -701,8 +701,8 @@ static void CL_AddPacketEntities(void)
             vec3_t  delta;
             float   dist, fade_start, fade_end, alpha = 1.0f;
 
-            // only the vkpt back end knows how to draw one
-            if (cls.ref_type != REF_TYPE_VKPT || !cl_flares->integer)
+            // only the path tracers know how to draw one (transparency.c)
+            if (!CL_PathTraced() || !cl_flares->integer)
                 goto skip;
 
             VectorSubtract(ent.origin, cl.refdef.vieworg, delta);
@@ -842,7 +842,7 @@ static void CL_AddPacketEntities(void)
 
 			if (!cl.thirdPersonView)
 			{
-				if(cls.ref_type == REF_TYPE_VKPT)
+				if(CL_PathTraced())
 					base_entity_flags |= RF_VIEWERMODEL;    // only draw from mirrors
 				else
                 goto skip;
@@ -923,7 +923,7 @@ static void CL_AddPacketEntities(void)
         ent.flags |= base_entity_flags;
 
 		// in rtx mode, the base entity has the renderfx for shells
-		if ((effects & EF_COLOR_SHELL) && cls.ref_type == REF_TYPE_VKPT) {
+		if ((effects & EF_COLOR_SHELL) && CL_PathTraced()) {
 			renderfx = adjust_shell_fx(renderfx);
 			ent.flags |= renderfx;
 		}
@@ -954,7 +954,7 @@ static void CL_AddPacketEntities(void)
                 }
 
         // color shells generate a separate entity for the main model
-        if ((effects & EF_COLOR_SHELL) && cls.ref_type != REF_TYPE_VKPT) {
+        if ((effects & EF_COLOR_SHELL) && !CL_PathTraced()) {
 			renderfx = adjust_shell_fx(renderfx);
             ent.flags = renderfx | RF_TRANSLUCENT | base_entity_flags;
             ent.alpha = 0.30f;
@@ -996,7 +996,7 @@ static void CL_AddPacketEntities(void)
                 ent.flags = RF_TRANSLUCENT;
             }
 
-			if ((effects & EF_COLOR_SHELL) && cls.ref_type == REF_TYPE_VKPT) {
+			if ((effects & EF_COLOR_SHELL) && CL_PathTraced()) {
 				ent.flags |= renderfx;
 			}
 
@@ -2069,7 +2069,7 @@ static void CL_AddViewWeapon(void)
 	shell_flags = shell_effect_hack();
 
 	// same entity in rtx mode
-	if (cls.ref_type == REF_TYPE_VKPT) {
+	if (CL_PathTraced()) {
 		gun.flags |= shell_flags;
 	}
 
@@ -2087,7 +2087,7 @@ static void CL_AddViewWeapon(void)
     CL_AddViewWeaponFlash(&gun);
 
 	// separate entity in non-rtx mode
-    if (shell_flags && cls.ref_type != REF_TYPE_VKPT) {
+    if (shell_flags && !CL_PathTraced()) {
         gun.alpha = 0.30f * cl_gunalpha->value;
         gun.flags |= shell_flags | RF_TRANSLUCENT;
         V_AddEntity(&gun);

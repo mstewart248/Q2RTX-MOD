@@ -71,7 +71,7 @@ static HMONITOR vkpt_get_window_monitor(void)
    the compositor is bypassed and those timestamps describe nothing the screen is doing,
    which is how snapping to them cost 4 fps in fullscreen. The adapter's own vblank event
    is valid either way. */
-static bool vkpt_get_window_gdi_device(char *out, size_t out_size)
+bool vkpt_get_window_gdi_device(char *out, size_t out_size)
 {
 	HMONITOR mon = vkpt_get_window_monitor();
 	if (!mon)
@@ -151,6 +151,20 @@ extern cvar_t* cvar_flt_taa;
 static int drs_current_scale = 0;
 static int drs_effective_scale = 0;
 static bool drs_last_frame_world = false;
+
+// pt_photo_mode_reserve: see render_scale_capacity
+static cvar_t *cvar_pt_photo_mode_reserve = NULL;
+
+/* DRS on both renderers (11-06: the D3D12 one through vkpt_drs_update, over its
+   own PROFILER_FRAME_TIME). A step changes the render extent and nothing else:
+   the images are made for the largest scale it can reach (render_scale_capacity),
+   and DLSS evaluates its feature over a sub-rectangle (DLSSFeatureResolution). */
+static bool drs_on(void)
+{
+	return cvar_drs_enable->integer != 0;
+}
+
+static int drs_photo_mode_scale(void);
 
 cvar_t* cvar_min_driver_version_nvidia = NULL;
 cvar_t* cvar_min_driver_version_amd = NULL;
@@ -252,8 +266,6 @@ VkptInit_t vkpt_initialization[] = {
 	{ "dlss5|",   vkpt_dlss5_create_pipelines,         vkpt_dlss5_destroy_pipelines,         VKPT_INIT_RELOAD_SHADER,      0 },
 	{ "tonemap",  vkpt_tone_mapping_initialize,        vkpt_tone_mapping_destroy,            VKPT_INIT_DEFAULT,            0 },
 	{ "tonemap|", vkpt_tone_mapping_create_pipelines,  vkpt_tone_mapping_destroy_pipelines,  VKPT_INIT_RELOAD_SHADER,      0 },
-	{ "fsr",      vkpt_fsr_initialize,                 vkpt_fsr_destroy,                     VKPT_INIT_DEFAULT,            0 },
-	{ "fsr|",     vkpt_fsr_create_pipelines,           vkpt_fsr_destroy_pipelines,           VKPT_INIT_RELOAD_SHADER,      0 },
 
 	{ "physicalSky", vkpt_physical_sky_initialize,         vkpt_physical_sky_destroy,            VKPT_INIT_DEFAULT,        0 },
 	{ "physicalSky|", vkpt_physical_sky_create_pipelines,  vkpt_physical_sky_destroy_pipelines,  VKPT_INIT_RELOAD_SHADER,  0 },
@@ -282,7 +294,7 @@ static void recreate_swapchain(void);
 
 /* Which optional screen-image groups the CURRENT set of images was allocated for.
    vkpt_create_images() only allocates the groups the configuration uses, so turning
-   A-SVGF, FSR or photo mode back on has to rebuild them - otherwise the pass that was
+   A-SVGF or photo mode back on has to rebuild them - otherwise the pass that was
    just re-enabled writes into the 1x1 placeholders. ~0u forces the first comparison to
    miss, which is right: nothing is allocated yet. */
 static uint32_t screen_image_profile_current = ~0u;
@@ -334,6 +346,18 @@ static inline bool extents_equal(VkExtent2D a, VkExtent2D b)
 	return a.width == b.width && a.height == b.height;
 }
 
+// The render extent at `scale` percent of the output's (the width even)
+static VkExtent2D scaled_extent(int scale)
+{
+	VkExtent2D result;
+	result.width = (uint32_t)(qvk.extent_unscaled.width * (float)scale / 100.f);
+	result.height = (uint32_t)(qvk.extent_unscaled.height * (float)scale / 100.f);
+
+	result.width = (result.width + 1) & ~1;
+
+	return result;
+}
+
 static VkExtent2D get_render_extent(void)
 {
 	int scale;
@@ -344,20 +368,56 @@ static VkExtent2D get_render_extent(void)
 	else
 	{
 		scale = scr_viewsize->integer;
-		if(cvar_drs_enable->integer)
+		if(drs_on())
 		{
 			// Ensure render extent stays below get_screen_image_extent() result
 			scale = min(cvar_drs_maxscale->integer, scale);
 		}
 	}
 
-	VkExtent2D result;
-	result.width = (uint32_t)(qvk.extent_unscaled.width * (float)scale / 100.f);
-	result.height = (uint32_t)(qvk.extent_unscaled.height * (float)scale / 100.f);
+	return scaled_extent(scale);
+}
 
-	result.width = (result.width + 1) & ~1;
+/* THE RENDER SCALE THE IMAGES ARE MADE FOR (11-06). The render extent moves
+   inside images made for the largest scale it reaches without a settings change,
+   so a change of scale - a DRS step, or photo mode pinning 100% and letting go -
+   remakes nothing: no image (both renderers wait for the GPU to do that, and the
+   D3D12 one remade its whole G-buffer at every one) and no DLSS feature
+   (DLSSFeatureResolution).
+     DRS on:  the top of its range, which photo mode pins as well.
+     DRS off: viewsize; and while photo mode is allowed (pt_accumulation_rendering)
+              with pt_photo_mode_reserve 1, photo mode's scale too - at least 100%,
+              so at 4K with split fields the screen images are 7680 wide all the
+              time (7.9 GB of G-buffer instead of 3.9 GB). pt_photo_mode_reserve 0:
+              they are remade on the way into photo mode and out, as before.
+   Never below the scale in use now. */
+static int render_scale_capacity(void)
+{
+	int scale;
+	if (drs_on())
+		scale = max(cvar_drs_minscale->integer, cvar_drs_maxscale->integer);
+	else {
+		scale = scr_viewsize->integer;
+		if (cvar_pt_accumulation_rendering && cvar_pt_accumulation_rendering->integer > 0
+		    && (!cvar_pt_photo_mode_reserve || cvar_pt_photo_mode_reserve->integer != 0))
+			scale = max(scale, drs_photo_mode_scale());
+	}
+	if (drs_effective_scale)
+		scale = max(scale, drs_effective_scale);
+	return scale;
+}
 
-	return result;
+/* The largest render extent DLSS evaluates without its feature being remade: the
+   top of DRS's range, else viewsize - not photo mode's 100%, as photo mode
+   bypasses DLSS (accumulation_bypasses_dlss). DLSSFeatureResolution makes the
+   feature for this, or for the frame's own extent where that is larger. */
+void vkpt_dlss_input_capacity(int *width, int *height)
+{
+	const int scale = drs_on() ? max(cvar_drs_minscale->integer, cvar_drs_maxscale->integer)
+	                           : scr_viewsize->integer;
+	const VkExtent2D e = scaled_extent(scale);
+	*width = (int)e.width;
+	*height = (int)e.height;
 }
 
 // Width of one path-tracer field. The two fields are packed side by side into the
@@ -377,32 +437,46 @@ static uint32_t get_pt_packed_width(void)
 
 static VkExtent2D get_screen_image_extent(void)
 {
+	// the largest render extent (render_scale_capacity), not the one in use
+	const VkExtent2D capacity = scaled_extent(render_scale_capacity());
 	VkExtent2D result;
-	if (cvar_drs_enable->integer)
+	if (drs_on())
 	{
-		int image_scale = max(cvar_drs_minscale->integer, cvar_drs_maxscale->integer);
-
-		// In case FSR enable we'll always upscale to 100% and thus need at least the unscaled extent
-		if(vkpt_fsr_is_enabled())
-			image_scale = max(image_scale, 100);
-
-		result.width = (uint32_t)(qvk.extent_unscaled.width * (float)image_scale / 100.f);
-		result.height = (uint32_t)(qvk.extent_unscaled.height * (float)image_scale / 100.f);
+		result = capacity;
 	}
 	else
 	{
-		result.width = max(qvk.extent_render.width, qvk.extent_unscaled.width);
-		result.height = max(qvk.extent_render.height, qvk.extent_unscaled.height);
+		result.width = max(capacity.width, qvk.extent_unscaled.width);
+		result.height = max(capacity.height, qvk.extent_unscaled.height);
 	}
 
 	// With full-resolution fields the screen images must hold two width x height layers
 	// side by side. At the usual DLSS scales this is at or below what the images were
-	// already allocated at (Performance: 2 * 50% == 100% of the output width).
+	// already allocated at (Performance: 2 * 50% == 100% of the output width). Two of
+	// the LARGEST render width: from the current one (until 11-06), every DRS step up
+	// past 50% remade the images.
 	if (DLSSSplitFieldsEnabled())
-		result.width = max(result.width, qvk.extent_render.width * 2);
+		result.width = max(result.width, capacity.width * 2);
 
 	result.width = (result.width + 1) & ~1;
 
+	return result;
+}
+
+/* The TAA-sized images (TAA_OUTPUT and DLSS's inputs, IMG_WIDTH_TAA). Under DLSS
+   the render extent's - the largest one (render_scale_capacity), which it moves
+   inside: until 11-06 the one in use, so a scale change either remade them (D3D12)
+   or left them at the size of the last rebuild (Vulkan). Without DLSS, TAA's
+   output is the output's size, in images at least as large as the screen images.
+   The UBO's taa_image_width/height are these: what the shaders' UVs divide by. */
+static VkExtent2D get_taa_image_extent(VkExtent2D screen_images)
+{
+	if (DLSSEnabled())
+		return scaled_extent(render_scale_capacity());
+
+	VkExtent2D result;
+	result.width = max(screen_images.width, qvk.extent_unscaled.width);
+	result.height = max(screen_images.height, qvk.extent_unscaled.height);
 	return result;
 }
 
@@ -452,10 +526,52 @@ void vkpt_dlss_request_history_reset(void)
 	dlss5_reset_history = true;
 }
 
+// DLSS 5's history reset for this frame (DLSS5Apply's resetHistory), taken once: both
+// renderers' evaluations ask
+bool vkpt_dlss5_take_history_reset(void)
+{
+	const bool reset = dlss5_reset_history;
+	dlss5_reset_history = false;
+	return reset;
+}
+
 /* Radiance cache (pt_sharc): zero it before its next use. Set for the first frame,
    a new map, and whenever it has been off (disabled, or photo mode) - entries from
    before that describe lighting that may no longer exist. */
 static bool sharc_clear_pending = true;
+
+/* dlss_reset_history, consumed by the frame that evaluates DLSS (both renderers):
+   whether it starts its history afresh.
+
+   The player setup preview opened from PHOTO MODE is the only frame that reaches DLSS
+   during the pause: the world frames around it bypass it (accumulation_bypasses_dlss),
+   and every one of them asks for a history reset for the first frame after the pause.
+   That reset is the world's, not the preview's - taking it restarted RR on every
+   preview frame. The preview resets once, on its first frame (what RR holds then is
+   the pre-pause world), and leaves the flag standing for the world. */
+static bool is_accumulation_rendering_active(void);
+bool vkpt_dlss_take_history_reset(bool render_world)
+{
+	const bool photo_preview = !render_world && is_accumulation_rendering_active();
+	bool reset = dlss_reset_history;
+	if (photo_preview) {
+		reset = !dlss_photo_preview_running;
+		dlss_photo_preview_running = true;
+	} else {
+		dlss_reset_history = false;
+		dlss_photo_preview_running = false;
+	}
+	return reset;
+}
+
+/* ...and its frame generation's dlssg_reset_history, as R_EndFrame_RTX consumes it at
+   DLSSGApply. */
+bool vkpt_dlssg_take_history_reset(void)
+{
+	const bool reset = dlssg_reset_history;
+	dlssg_reset_history = false;
+	return reset;
+}
 
 void vkpt_reset_accumulation()
 {
@@ -463,24 +579,31 @@ void vkpt_reset_accumulation()
 	vkpt_dlss_request_history_reset();
 }
 
+void
+vkpt_compute_extents(void)
+{
+	qvk.extent_render = get_render_extent();
+	qvk.extent_screen_images = get_screen_image_extent();
+	qvk.gpu_slice_width = (get_pt_packed_width() + qvk.device_count - 1) / qvk.device_count;
+	qvk.extent_taa_images = get_taa_image_extent(qvk.extent_screen_images);
+}
+
+/* The images the UBO names by index whatever the map: the water normal map
+   (water.glsl's get_water_normal). Both backends call it once their texture
+   upload works - vkpt_initialize_all here, the D3D12 renderer from
+   d3d12_frontend_world_init. Before it, prepare_ubo names image 0. */
+void
+vkpt_find_permanent_images(void)
+{
+	water_normal_texture = IMG_Find("textures/water_n.tga", IT_SKIN, IF_PERMANENT);
+}
+
 VkResult
 vkpt_initialize_all(VkptInitFlags_t init_flags)
 {
 	vkpt_device_wait_idle();
 
-	qvk.extent_render = get_render_extent();
-	qvk.extent_screen_images = get_screen_image_extent();	
-	qvk.extent_taa_images.width = max(qvk.extent_screen_images.width, qvk.extent_unscaled.width);
-	qvk.extent_taa_images.height = max(qvk.extent_screen_images.height, qvk.extent_unscaled.height);
-	qvk.gpu_slice_width = (get_pt_packed_width() + qvk.device_count - 1) / qvk.device_count;
-
-	if (DLSSEnabled()) {		
-		qvk.extent_taa_images = qvk.extent_render;
-	}
-	else {
-		qvk.extent_taa_images.width = max(qvk.extent_screen_images.width, qvk.extent_unscaled.width);
-		qvk.extent_taa_images.height = max(qvk.extent_screen_images.height, qvk.extent_unscaled.height);
-	}
+	vkpt_compute_extents();
 
 	for(int i = 0; i < LENGTH(vkpt_initialization); i++) {
 		VkptInit_t *init = vkpt_initialization + i;
@@ -510,7 +633,7 @@ vkpt_initialize_all(VkptInitFlags_t init_flags)
 
 	vkpt_textures_prefetch();
 
-	water_normal_texture = IMG_Find("textures/water_n.tga", IT_SKIN, IF_PERMANENT);
+	vkpt_find_permanent_images();
 
 	//char* vkExtensions = GetDLSSVulkanInstanceExtensions();
 	//char* dlssExtensions = GetDLSSVulkanDeviceExtensions();
@@ -602,6 +725,8 @@ LIST_EXTENSIONS_DEBUG
 LIST_EXTENSIONS_INSTANCE
 LIST_EXTENSIONS_DEVICE_FAULT
 LIST_EXTENSIONS_CHECKPOINTS
+LIST_EXTENSIONS_PTLAS
+LIST_EXTENSIONS_CLUSTERS
 #undef VK_EXTENSION_DO
 
 const char *vk_validation_layers[] = {
@@ -936,23 +1061,19 @@ static bool pick_surface_format_sdr(picked_surface_format_t* picked_fmt, const V
 #define FG_CMP_H 144
 #define FG_CMP_BYTES (FG_CMP_W * FG_CMP_H * 8)   /* rgba16f */
 
-static bool fg_cmp_read_region(VkImage image, void *out)
+/* THE IMAGE READS, per renderer: RGBA16F texels of a VKPT_IMG_* image's w x h region at
+   (x, y), packed into `out`, the GPU idle around it. Vulkan's, or the D3D12 renderer's
+   (vkpt_fg_debug_frames). */
+static bool fg_vulkan_read(int image, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t *out)
 {
-	static BufferResource_t staging;
-	static bool staging_ready = false;
-
-	if (!staging_ready) {
-		if (buffer_create(&staging, FG_CMP_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-			!= VK_SUCCESS)
-			return false;
-		staging_ready = true;
-	}
-
-	VkExtent2D ext = GetDLSSExtent();
-	if (ext.width < FG_CMP_W || ext.height < FG_CMP_H)
+	const VkDeviceSize bytes = (VkDeviceSize)w * h * 8;
+	BufferResource_t staging;
+	if (buffer_create(&staging, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		!= VK_SUCCESS)
 		return false;
 
+	const VkImage img = qvk.images[image];
 	vkpt_device_wait_idle();
 
 	VkCommandBuffer cmd = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
@@ -964,7 +1085,7 @@ static bool fg_cmp_read_region(VkImage image, void *out)
 	};
 
 	IMAGE_BARRIER(cmd,
-		.image = image, .subresourceRange = range,
+		.image = img, .subresourceRange = range,
 		.srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
 		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -977,15 +1098,14 @@ static bool fg_cmp_read_region(VkImage image, void *out)
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
 		},
-		.imageOffset = { (int32_t)(ext.width - FG_CMP_W) / 2,
-		                 (int32_t)(ext.height - FG_CMP_H) / 2, 0 },
-		.imageExtent = { FG_CMP_W, FG_CMP_H, 1 },
+		.imageOffset = { (int32_t)x, (int32_t)y, 0 },
+		.imageExtent = { w, h, 1 },
 	};
-	vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		staging.buffer, 1, &copy);
 
 	IMAGE_BARRIER(cmd,
-		.image = image, .subresourceRange = range,
+		.image = img, .subresourceRange = range,
 		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .dstAccessMask = 0,
 		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		.newLayout = VK_IMAGE_LAYOUT_GENERAL);
@@ -993,12 +1113,26 @@ static bool fg_cmp_read_region(VkImage image, void *out)
 	vkpt_submit_command_buffer_simple(cmd, qvk.queue_graphics, false);
 	vkpt_device_wait_idle();
 
+	bool ok = false;
 	void *mapped = buffer_map(&staging);
-	if (!mapped)
+	if (mapped) {
+		memcpy(out, mapped, (size_t)bytes);
+		buffer_unmap(&staging);
+		ok = true;
+	}
+	buffer_destroy(&staging);
+	return ok;
+}
+
+static vkpt_fg_read_t fg_read = fg_vulkan_read;
+
+// the middle FG_CMP_W x FG_CMP_H of the output
+static bool fg_cmp_read_region(int image, void *out)
+{
+	VkExtent2D ext = GetDLSSExtent();
+	if (ext.width < FG_CMP_W || ext.height < FG_CMP_H)
 		return false;
-	memcpy(out, mapped, FG_CMP_BYTES);
-	buffer_unmap(&staging);
-	return true;
+	return fg_read(image, (ext.width - FG_CMP_W) / 2, (ext.height - FG_CMP_H) / 2, FG_CMP_W, FG_CMP_H, out);
 }
 
 /* rgba16f -> float. Needed because the first version of this compared RAW BITS, which
@@ -1120,54 +1254,9 @@ static void fg_dump_write_png(const char *name, const uint16_t *src, int w, int 
 	Z_Free(rgb);
 }
 
-static bool fg_dump_read_full(VkImage image, uint16_t *out, VkExtent2D ext,
-                              BufferResource_t *staging)
+static bool fg_dump_read_full(int image, uint16_t *out, VkExtent2D ext)
 {
-	vkpt_device_wait_idle();
-
-	VkCommandBuffer cmd = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
-
-	VkImageSubresourceRange range = {
-		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-		.baseMipLevel = 0, .levelCount = 1,
-		.baseArrayLayer = 0, .layerCount = 1,
-	};
-
-	IMAGE_BARRIER(cmd,
-		.image = image, .subresourceRange = range,
-		.srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-
-	VkBufferImageCopy copy = {
-		.bufferOffset = 0,
-		.bufferRowLength = 0,
-		.bufferImageHeight = 0,
-		.imageSubresource = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
-		},
-		.imageOffset = { 0, 0, 0 },
-		.imageExtent = { ext.width, ext.height, 1 },
-	};
-	vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		staging->buffer, 1, &copy);
-
-	IMAGE_BARRIER(cmd,
-		.image = image, .subresourceRange = range,
-		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .dstAccessMask = 0,
-		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		.newLayout = VK_IMAGE_LAYOUT_GENERAL);
-
-	vkpt_submit_command_buffer_simple(cmd, qvk.queue_graphics, false);
-	vkpt_device_wait_idle();
-
-	void *mapped = buffer_map(staging);
-	if (!mapped)
-		return false;
-	memcpy(out, mapped, (size_t)ext.width * ext.height * 8);
-	buffer_unmap(staging);
-	return true;
+	return fg_read(image, 0, 0, ext.width, ext.height, out);
 }
 
 /* GROUND TRUTH: the swapchain image itself, i.e. exactly what was put on the screen.
@@ -1286,7 +1375,7 @@ static void fg_dump_swapchain_image(uint32_t index)
 
    Greyscale is |mv| in render pixels, 8 px = white. The console line gives the mean and
    max, and how many pixels are exactly zero - a stale field shows up there first. */
-static void fg_dump_motion(BufferResource_t *staging)
+static void fg_dump_motion(void)
 {
 	VkExtent2D ext = qvk.extent_taa_output;
 	uint16_t *mv = Z_Malloc((size_t)ext.width * ext.height * 8);
@@ -1297,7 +1386,7 @@ static void fg_dump_motion(BufferResource_t *staging)
 		return;
 	}
 
-	if (fg_dump_read_full(qvk.images[VKPT_IMG_PT_DLSS_MOTION], mv, ext, staging)) {
+	if (fg_dump_read_full(VKPT_IMG_PT_DLSS_MOTION, mv, ext)) {
 		double sum = 0.0, sumx = 0.0, sumy = 0.0;
 		float maxmag = 0.0f;
 		size_t zeros = 0, nonfinite = 0;
@@ -1352,25 +1441,15 @@ static void fg_debug_dump_frames(unsigned int generated_count)
 	Com_Printf("DLSS-G: dump %u at frame %llu\n", fg_dump_run,
 		(unsigned long long)qvk.frame_counter);
 
-	if (dump_mode != 2)
+	/* The swapchain images are Vulkan's to read; the D3D12 renderer dumps the rest. */
+	if (dump_mode != 2 && fg_read == fg_vulkan_read)
 		for (uint32_t i = 0; i < qvk.num_swap_chain_images; i++)
 			fg_dump_swapchain_image(i);
 
 	VkExtent2D ext = GetDLSSExtent();
-	VkDeviceSize bytes = (VkDeviceSize)ext.width * ext.height * 8;
-
-	BufferResource_t staging;
-	if (buffer_create(&staging, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-		!= VK_SUCCESS) {
-		Com_EPrintf("DLSS-G: dump staging buffer (%llu bytes) failed\n",
-			(unsigned long long)bytes);
-		return;
-	}
-
-	uint16_t *pixels = Z_Malloc((size_t)bytes);
+	uint16_t *pixels = Z_Malloc((size_t)ext.width * ext.height * 8);
 	if (pixels) {
-		if (fg_dump_read_full(qvk.images[VKPT_IMG_DLSS_OUTPUT], pixels, ext, &staging))
+		if (fg_dump_read_full(VKPT_IMG_DLSS_OUTPUT, pixels, ext))
 			{
 				char rname[64];
 				Q_snprintf(rname, sizeof(rname), "fgdump%u_real.png", fg_dump_run);
@@ -1380,16 +1459,14 @@ static void fg_debug_dump_frames(unsigned int generated_count)
 		for (unsigned int i = 1; i <= generated_count; i++) {
 			char name[64];
 			Q_snprintf(name, sizeof(name), "fgdump%u_gen%u.png", fg_dump_run, i);
-			if (fg_dump_read_full(GetDLSSGImage(i), pixels, ext, &staging))
+			if (fg_dump_read_full(DLSSGOutputImageIndex(i), pixels, ext))
 				fg_dump_write_png(name, pixels, ext.width, ext.height);
 		}
 		Z_Free(pixels);
 	}
 
 	if (dump_mode == 2)
-		fg_dump_motion(&staging);
-
-	buffer_destroy(&staging);
+		fg_dump_motion();
 }
 
 static void fg_debug_compare_frames(unsigned int generated_count)
@@ -1426,7 +1503,7 @@ static void fg_debug_compare_frames(unsigned int generated_count)
 	if (!armed) {
 		if (last_us != 0 && now - last_us < 1000000)
 			return;
-		if (fg_cmp_read_region(qvk.images[VKPT_IMG_DLSS_OUTPUT], real_prev))
+		if (fg_cmp_read_region(VKPT_IMG_DLSS_OUTPUT, real_prev))
 			armed = true;
 		return;
 	}
@@ -1434,7 +1511,7 @@ static void fg_debug_compare_frames(unsigned int generated_count)
 	armed = false;
 	last_us = now;
 
-	if (!fg_cmp_read_region(qvk.images[VKPT_IMG_DLSS_OUTPUT], real_now))
+	if (!fg_cmp_read_region(VKPT_IMG_DLSS_OUTPUT, real_now))
 		return;
 
 	double step = fg_cmp_mean_abs_diff(real_now, real_prev);
@@ -1456,7 +1533,7 @@ static void fg_debug_compare_frames(unsigned int generated_count)
 		(step < 0.0002) ? " (very low motion, noisy)" : "");
 
 	for (unsigned int i = 1; i <= generated_count; i++) {
-		if (!fg_cmp_read_region(GetDLSSGImage(i), gen))
+		if (!fg_cmp_read_region(DLSSGOutputImageIndex(i), gen))
 			continue;
 
 		/* WHERE THIS GENERATED FRAME SITS BETWEEN THE TWO REAL ONES.
@@ -1484,6 +1561,24 @@ static void fg_debug_compare_frames(unsigned int generated_count)
 	}
 
 	Com_Printf("%s\n", line);
+}
+
+/* pt_dlss_fg_compare and pt_dlss_fg_dump for the D3D12 renderer: the same tools over its
+   images, read by `read` once the frame's list has run (R_EndFrame_D3D12). Its swapchain
+   is not dumped. */
+bool vkpt_fg_debug_wanted(void)
+{
+	return Cvar_VariableInteger("pt_dlss_fg_compare") != 0 || Cvar_VariableInteger("pt_dlss_fg_dump") != 0;
+}
+
+void vkpt_fg_debug_frames(unsigned int generated, vkpt_fg_read_t read)
+{
+	if (!read)
+		return;
+	fg_read = read;
+	fg_debug_compare_frames(generated);
+	fg_debug_dump_frames(generated);
+	fg_read = fg_vulkan_read;
 }
 
 /* Debug: paint the CURRENT swapchain image a solid colour. Used by pt_dlss_fg_debug to
@@ -2500,6 +2595,14 @@ init_vulkan(void)
 			if (!strcmp(ext_properties[j].extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME))
 				qvk.supports_present_id = true;
 
+			// the partitioned TLAS (pt_ptlas); its feature is asked at device creation
+			if (!strcmp(ext_properties[j].extensionName, VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME))
+				qvk.supports_ptlas = true;
+
+			// clustered dynamic geometry (pt_clusters); its feature is asked at device creation
+			if (!strcmp(ext_properties[j].extensionName, VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME))
+				qvk.supports_clusters = true;
+
 			/* vk_gpu_diag - HOW MUCH GPU-FAULT INSTRUMENTATION TO ASK FOR.
 
 			   Gated because the instrumentation is not free of side effects, and
@@ -3006,6 +3109,8 @@ init_vulkan(void)
 	max_extension_count += 2; /* VK_NV_low_latency2, VK_KHR_present_id */
 	max_extension_count += 2; /* VK_EXT_device_fault, VK_NV_device_diagnostic_checkpoints */
 	max_extension_count += 1; /* VK_EXT_device_address_binding_report */
+	max_extension_count += 1; /* VK_NV_partitioned_acceleration_structure */
+	max_extension_count += 1; /* VK_NV_cluster_acceleration_structure */
 
 	const char** device_extensions = alloca(sizeof(char*) * max_extension_count);
 	uint32_t device_extension_count = 0;
@@ -3101,6 +3206,58 @@ init_vulkan(void)
 			cp_ext, LENGTH(cp_ext));
 	}
 
+	/* THE PARTITIONED TLAS (pt_ptlas): the extension and its feature, when the
+	   picked device has both - the A/B's twin of the D3D12 renderer's NVAPI route. */
+	VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV device_features_ptlas = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV,
+	};
+	if (qvk.supports_ptlas)
+	{
+		VkPhysicalDeviceFeatures2 query = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+			.pNext = &device_features_ptlas,
+		};
+		vkGetPhysicalDeviceFeatures2(qvk.physical_device, &query);
+		qvk.supports_ptlas = device_features_ptlas.partitionedAccelerationStructure == VK_TRUE;
+	}
+	if (qvk.supports_ptlas)
+	{
+		static const char* ptlas_ext[] = { VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			ptlas_ext, LENGTH(ptlas_ext));
+
+		device_features_ptlas.pNext = (void*)device_features.pNext;
+		device_features.pNext = &device_features_ptlas;
+	}
+
+	/* CLUSTERED DYNAMIC GEOMETRY (pt_clusters, clusters.h): the extension and its
+	   feature where the device has both (pt_clusters_available), but ENABLED only
+	   while pt_clusters is 1. It is CVAR_REFRESH, so changing it makes a new device,
+	   and pt_clusters 0 runs on one without the feature - nothing of it in the
+	   baseline of the A/B (on D3D12 the same goes for NVAPI's pipeline option). */
+	VkPhysicalDeviceClusterAccelerationStructureFeaturesNV device_features_clusters = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV,
+	};
+	if (qvk.supports_clusters)
+	{
+		VkPhysicalDeviceFeatures2 query = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+			.pNext = &device_features_clusters,
+		};
+		vkGetPhysicalDeviceFeatures2(qvk.physical_device, &query);
+		qvk.supports_clusters = device_features_clusters.clusterAccelerationStructure == VK_TRUE;
+	}
+	qvk.clusters_enabled = qvk.supports_clusters && Cvar_Get("pt_clusters", "0", CVAR_REFRESH)->integer != 0;
+	if (qvk.clusters_enabled)
+	{
+		static const char* clusters_ext[] = { VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			clusters_ext, LENGTH(clusters_ext));
+
+		device_features_clusters.pNext = (void*)device_features.pNext;
+		device_features.pNext = &device_features_clusters;
+	}
+
 	/* Chain the present-id feature in only when the extension is actually enabled -
 	   passing a feature struct for an unrequested extension is invalid usage. The
 	   Reflex extension itself has no feature struct to enable. */
@@ -3180,13 +3337,23 @@ init_vulkan(void)
 		LIST_EXTENSIONS_CHECKPOINTS
 	}
 
+	if (qvk.supports_ptlas)
+	{
+		LIST_EXTENSIONS_PTLAS
+	}
+
+	if (qvk.clusters_enabled)
+	{
+		LIST_EXTENSIONS_CLUSTERS
+	}
+
 #undef VK_EXTENSION_DO
 
 	Com_Printf("-----------------------\n");
 
 
 	if (DLSSEnabled()) {
-		DLSSConstructor(qvk.instance, qvk.device, qvk.physical_device, "FFA5FAF5-2329-44AB-A423-3D9B3B177C88", qtrue);
+		DLSSConstructor(qvk.instance, qvk.device, qvk.physical_device, DLSS_PROJECT_ID, qtrue);
 	}
 	// what the reconstruction menu may offer, NGX up or not - before the swapchain,
 	// which asks DLSSGEnabled
@@ -3390,8 +3557,15 @@ destroy_vulkan(void)
 	qvk.cmd_buffers_compute.command_pool = VK_NULL_HANDLE;
 
 	vkDestroyDevice(qvk.device,   NULL);
+	// Never leave a destroyed handle behind: the code vkpt shares with the D3D12
+	// renderer reads qvk.device != NULL as "Vulkan is running". A stale one after
+	// vid_rtx 1 -> 3 sent the D3D12 frame into vkCreateImage on the dead device,
+	// and the loader's invalid-handle check abort()ed the game without a word.
+	qvk.device = VK_NULL_HANDLE;
 	_VK(qvkDestroyDebugUtilsMessengerEXT(qvk.instance, qvk.dbg_messenger, NULL));
+	qvk.dbg_messenger = VK_NULL_HANDLE;
 	vkDestroyInstance(qvk.instance, NULL);
+	qvk.instance = VK_NULL_HANDLE;
 
 	free(qvk.extensions);
 	qvk.extensions = NULL;
@@ -3409,6 +3583,8 @@ destroy_vulkan(void)
 	LIST_EXTENSIONS_INSTANCE
 	LIST_EXTENSIONS_DEVICE_FAULT
 	LIST_EXTENSIONS_CHECKPOINTS
+	LIST_EXTENSIONS_PTLAS
+	LIST_EXTENSIONS_CLUSTERS
 #undef VK_EXTENSION_DO
 
 	return 0;
@@ -3873,14 +4049,14 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	
 	instance_model_lights(model->num_light_polys, model->light_polys, transform, hash);
 
-	if (model->geometry.accel)
+	if (vkpt_model_geometry_has_blas(&model->geometry))
 	{
 		vkpt_pt_instance_model_blas(&model->geometry, mi->transform, VERTEX_BUFFER_WORLD, current_instance_idx, (mi->alpha < 1.f) ? AS_FLAG_TRANSPARENT : 0);
 	}
 
 	if (!model->transparent)
 	{
-		vkpt_shadow_map_add_instance(transform, qvk.buf_world.buffer, vkpt_refdef.bsp_mesh_world.vertex_data_offset
+		vkpt_shadow_map_add_instance(transform, VERTEX_BUFFER_WORLD, vkpt_refdef.bsp_mesh_world.vertex_data_offset
 			+ mi->render_prim_offset * sizeof(prim_positions_t), mi->prim_count);
 	}
 
@@ -3951,7 +4127,7 @@ static void process_regular_entity(
 	   tri_offset lives in hunk memory that is zeroed on allocation and is only
 	   ever ASSIGNED by the uploader, so a mesh that was never uploaded carries
 	   offset 0 - a valid-looking pointer into a buffer that does not exist. */
-	if (!vbo || !vbo->buffer.buffer)
+	if (!vbo || !vbo->present)      // either backend's buffer (vkpt_model_vbo_mark_uploaded)
 	{
 		if (warn_once_for_model(model, 1))
 			Com_WPrintf("Model '%s' has no vertex buffer and will not be drawn.\n",
@@ -3970,7 +4146,7 @@ static void process_regular_entity(
 		else
 			geom = &vbo->geom_opaque;
 		
-		if (geom->accel)
+		if (vkpt_model_geometry_has_blas(geom))
 		{
 			// ugly typecast
 			mat4 transform_;
@@ -4058,7 +4234,7 @@ static void process_regular_entity(
 
 			if (!MAT_IsTransparent(material_id))
 			{
-				vkpt_shadow_map_add_instance(transform, vbo->buffer.buffer, vbo->vertex_data_offset
+				vkpt_shadow_map_add_instance(transform, mi->source_buffer_idx, vbo->vertex_data_offset
 					+ mi->render_prim_offset * sizeof(prim_positions_t), mi->prim_count);
 			}
 		}
@@ -4380,14 +4556,14 @@ prepare_entities(EntityUploadInfo* upload_info)
 		memcpy(qvk.iqm_matrices_prev, qvk.iqm_matrices_shadow, iqm_matrix_count[entity_frame_num] * 12 * sizeof(float));
 
 		// Upload the current matrices to the staging buffer
-		IqmMatrixBuffer* iqm_matrix_staging = buffer_map(&qvk.buf_iqm_matrices_staging[qvk.current_frame_index]);
+		IqmMatrixBuffer* iqm_matrix_staging = vkpt_prep_backend->map_staging(VKPT_STAGING_IQM_MATRICES);
 
 		int total_matrix_count = (iqm_matrix_count[entity_frame_num] + iqm_matrix_count[!entity_frame_num]);
 		memcpy(iqm_matrix_staging, qvk.iqm_matrices_shadow, total_matrix_count * 12 * sizeof(float));
 		// the device copy only needs what was ever staged (pt_upload_ranges, vertex_buffer.c)
 		vkpt_iqm_matrix_buffer_staged((uint32_t)total_matrix_count);
 
-		buffer_unmap(&qvk.buf_iqm_matrices_staging[qvk.current_frame_index]);
+		vkpt_prep_backend->unmap_staging(VKPT_STAGING_IQM_MATRICES);
 	}
 
 	// Save the current model instances for the next frame
@@ -4769,18 +4945,7 @@ process_render_feedback(ref_feedback_t *feedback, mleaf_t* viewleaf, bool* sun_v
 	}
 }
 
-typedef struct reference_mode_s 
-{
-	bool enable_accumulation;
-	bool enable_denoiser;
-	// DLSS Ray Reconstruction is doing the denoising, so A-SVGF must be bypassed
-	// (enable_denoiser is forced false) but the engine should still behave as though a
-	// denoiser is present for the material / sampling tunings that care.
-	bool rr_denoiser;
-	float num_bounce_rays;
-	float temporal_blend_factor;
-	int reflect_refract;
-} reference_mode_t;
+// reference_mode_t is in vkpt.h: vkpt_frame_prep_t carries one to the D3D12 renderer
 
 /* Radiance cache (pt_sharc): never in photo mode - the cache is biased, and that mode
    is the reference - and only at exactly 2 bounces, the one setting the video menu
@@ -5205,15 +5370,8 @@ evaluate_taa_settings(const reference_mode_t* ref_mode)
 		return;
 
 	int flt_taa = cvar_flt_taa->integer;
-	// FSR RCAS needs upscaled input; if EASU was disabled, force to TAAU
-	bool force_upscaling = vkpt_fsr_is_enabled() && vkpt_fsr_needs_upscale();
 	qboolean dlssEnabled = DLSSEnabled();
 
-	if(force_upscaling && !dlssEnabled)
-	{
-		flt_taa = AA_MODE_UPSCALE;
-	}
-	
 	if (dlssEnabled) {
 		flt_taa = AA_MODE_OFF;
 	}
@@ -5222,7 +5380,7 @@ evaluate_taa_settings(const reference_mode_t* ref_mode)
 	{
 		qvk.effective_aa_mode = AA_MODE_TAA;
 	}
-	else if (flt_taa == AA_MODE_UPSCALE) // TAAU or TAA+FSR
+	else if (flt_taa == AA_MODE_UPSCALE) // TAAU
 	{
 		if (qvk.extent_render.width > qvk.extent_unscaled.width || qvk.extent_render.height > qvk.extent_unscaled.height)
 		{
@@ -5231,8 +5389,7 @@ evaluate_taa_settings(const reference_mode_t* ref_mode)
 		else
 		{
 			qvk.effective_aa_mode = AA_MODE_UPSCALE;
-			if (!vkpt_fsr_is_enabled() || force_upscaling)
-				qvk.extent_taa_output = qvk.extent_unscaled;
+			qvk.extent_taa_output = qvk.extent_unscaled;
 		}
 	}
 }
@@ -5401,7 +5558,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	ubo->prev_gpu_slice_width = qvk.gpu_slice_width_prev;
 	ubo->screen_image_width = qvk.extent_screen_images.width;
 	ubo->screen_image_height = qvk.extent_screen_images.height;
-	ubo->water_normal_texture = water_normal_texture - r_images;
+	ubo->water_normal_texture = water_normal_texture ? (int)(water_normal_texture - r_images) : 0;
 	ubo->pt_swap_checkerboard = 0;
 
 	// Field layout. See the comment on pt_fullres_fields in global_ubo.h.
@@ -5889,7 +6046,6 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	if (ref_mode->enable_denoiser && !DLSSRayReconstructionActive())
 		ubo->pt_restir = 0.f;
 
-	bool fsr_enabled = vkpt_fsr_is_enabled();
 	qboolean dlss_enabled = DLSSEnabled();
 
 	if (!ref_mode->enable_denoiser)
@@ -5934,7 +6090,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 			ubo->pt_ndf_trim = 1.f;
 		}
 	}
-	else if(fsr_enabled || (qvk.effective_aa_mode == AA_MODE_UPSCALE || qvk.effective_aa_mode == AA_MODE_DLSS))
+	else if (qvk.effective_aa_mode == AA_MODE_UPSCALE || qvk.effective_aa_mode == AA_MODE_DLSS)
 	{
 		// adjust texture LOD bias to the resolution scale, i.e. use negative bias if scale is < 100
 		float resolution_scale = (drs_effective_scale != 0) ? (float)drs_effective_scale : (float)scr_viewsize->integer;
@@ -5998,7 +6154,11 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	ubo->temporal_blend_factor = ref_mode->temporal_blend_factor;
 	ubo->flt_enable = ref_mode->enable_denoiser;
 	ubo->flt_taa = qvk.effective_aa_mode;
-	ubo->pt_dlss =	DLSSMode();
+	/* Whether DLSS is actually running, as pt_dlssdn below: the raw cvar stays
+	   set in the config without NGX (and in the D3D12 renderer, which has no
+	   DLSS yet), and the interleave and tone mapping take their DLSS branches on
+	   it - the picture DLSS would have finished, with no DLSS to finish it. */
+	ubo->pt_dlss = DLSSEnabled() ? DLSSMode() : 0;
 	// Whether RR is actually running, not the raw pt_dlss_dldn cvar: that stays 1 in the
 	// config after DLSS is switched off (the RR menu entry is hidden at pt_dlss 0), and
 	// reflect_refract.rgen reads this to randomise the reflect/refract split per pixel -
@@ -6037,12 +6197,6 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	{
 		ubo->sub_pixel_jitter[0] = 0.f;
 		ubo->sub_pixel_jitter[1] = 0.f;
-	}
-
-	// Set up constants for FSR
-	if (fsr_enabled)
-	{
-		vkpt_fsr_update_ubo(ubo);
 	}
 
 	// also on without a world: the player setup menu's bounce card is a viewer model
@@ -6136,24 +6290,71 @@ update_mlight_prev_to_current()
 static float lastFrameTime = 0.f;
 static float lastWallClocktime = 0.f;
 
-/* renders the map ingame */
-void
-R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
+/* THE BACKEND HOOKS OF THE FRAME'S CPU HALF. vkpt_prepare_frame and what it
+   calls write the light and IQM staging through these, grow the animation
+   buffers and load a new sky preset's scatter tables - the only places in it
+   that need the GPU. These are Vulkan's; the D3D12 renderer installs its own
+   (src/refresh/d3d12) and R_Init_RTX puts these back. */
+static BufferResource_t *vulkan_staging_buffer(vkpt_staging_t which)
 {
-	if (!qvk.swap_chain)
-		return;
+	switch (which)
+	{
+	case VKPT_STAGING_LIGHTS:       return &qvk.buf_light_staging[qvk.current_frame_index];
+	case VKPT_STAGING_IQM_MATRICES: return &qvk.buf_iqm_matrices_staging[qvk.current_frame_index];
+	case VKPT_STAGING_LIGHT_COUNTS: return &qvk.buf_light_counts_history[qvk.frame_counter % LIGHT_COUNT_HISTORY];
+	case VKPT_STAGING_READBACK:     return &qvk.buf_readback_staging[qvk.current_frame_index];
+	}
+	assert(!"unknown staging buffer");
+	return &qvk.buf_light_staging[qvk.current_frame_index];
+}
 
+static void *vulkan_map_staging(vkpt_staging_t which)
+{
+	return buffer_map(vulkan_staging_buffer(which));
+}
+
+static void vulkan_unmap_staging(vkpt_staging_t which)
+{
+	buffer_unmap(vulkan_staging_buffer(which));
+}
+
+static void vulkan_load_world(bsp_mesh_t *mesh, bsp_t *bsp)
+{
+	vkpt_sky_exposure_begin_map(bsp, &mesh->world_aabb);
+	vkpt_light_buffers_create(mesh);
+	_VK(vkpt_vertex_buffer_upload_bsp_mesh(mesh));
+}
+
+static void vulkan_upload_envmap(int w, int h, byte *data)
+{
+	vkpt_textures_upload_envmap(w, h, data);
+}
+
+static const vkpt_prep_backend_t vulkan_prep_backend = {
+	.map_staging = vulkan_map_staging,
+	.unmap_staging = vulkan_unmap_staging,
+	.ensure_primbuf_size = vkpt_vertex_buffer_ensure_primbuf_size,
+	.load_sky_preset = vkpt_physical_sky_load_preset,
+	.upload_envmap = vulkan_upload_envmap,
+	.load_world = vulkan_load_world,
+	.reserve_blood_staging = vkpt_blood_reserve_vk_staging,
+};
+
+const vkpt_prep_backend_t *vkpt_prep_backend = &vulkan_prep_backend;
+
+/* THE FRAME'S CPU HALF, shared with the D3D12 renderer: everything
+   R_RenderFrame_RTX did before its first command buffer, except what is
+   Vulkan's own (cpu_bench's screen, the async-fog queue switch, NVIDIA Flow).
+   It fills vkpt_refdef - the UBO, the instance buffer, the light polys and the
+   TLAS instance list - and the light and IQM staging, through
+   vkpt_prep_backend. Returns false when there is nothing to render. */
+bool
+vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
+{
+	memset(prep, 0, sizeof(*prep));
 	vkpt_refdef.fd = fd;
 	bool render_world = (fd->rdflags & RDF_NOWORLDMODEL) == 0;
-
-	/* cpu_bench owns the screen while it runs and while its result is up: the
-	   frame is the CPU's picture, drawn as a 2D pic, and the GPU renders no world.
-	   The player setup menu's no-world frames still render as usual. */
-	if (render_world && vkpt_cpu_trace_active())
-	{
-		vkpt_cpu_trace_draw();
-		return;
-	}
+	prep->render_world = render_world;
 
 	static float previous_time = -1.f;
 
@@ -6200,7 +6401,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	if (!vkpt_refdef.bsp_mesh_world_loaded && render_world)
 	{
 		drs_last_frame_world = false;
-		return;
+		return false;
 	}
 
 	vec3_t sky_matrix[3];
@@ -6244,7 +6445,11 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	EntityUploadInfo upload_info = { 0 };
 	vkpt_pt_reset_instances();
 	vkpt_shadow_map_reset_instances();
-	prepare_entities(&upload_info);
+	// The static world FIRST in the TLAS instance list (it was after the entities
+	// until 11-06; nothing reads an instance's position in the list - the tables
+	// are written with it): a partitioned TLAS keeps the first
+	// vkpt_pt_num_world_instances in its global partition, and the entities after
+	// them keep their indices from frame to frame (ptlas.h).
 	if (bsp_world_model && render_world)
 	{
 		// AS_FLAG_WORLD_STATIC rides along with AS_FLAG_OPAQUE on the static world
@@ -6255,7 +6460,11 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_masked,      g_identity_transform, VERTEX_BUFFER_WORLD, -1, AS_FLAG_OPAQUE | AS_FLAG_WORLD_STATIC);
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_sky,         g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
 		vkpt_pt_instance_model_blas(&vkpt_refdef.bsp_mesh_world.geom_custom_sky,  g_identity_transform, VERTEX_BUFFER_WORLD, -1, 0);
-
+	}
+	vkpt_pt_mark_world_instances();
+	prepare_entities(&upload_info);
+	if (bsp_world_model && render_world)
+	{
 		vkpt_build_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, fd->entities, fd->num_entities, prev_adapted_luminance, light_entity_ids[entity_frame_num], &num_model_lights);
 		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 
@@ -6282,7 +6491,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 
 	partition_bmodel_lights();
 	update_mlight_prev_to_current();
-	vkpt_vertex_buffer_ensure_primbuf_size(upload_info.num_prims);
+	vkpt_prep_backend->ensure_primbuf_size(upload_info.num_prims);
 
 	QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
 	prepare_ubo(fd, viewleaf, &ref_mode, sky_matrix, render_world, waterLevel);
@@ -6462,6 +6671,62 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		&& (int)ubo->pt_fog_froxel_reflect != 1
 		&& !(ubo->temporal_blend_factor > 0.f && ubo->pt_fog_accum_march != 0.f)
 		&& ubo->environment_type != ENVIRONMENT_DYNAMIC;
+
+	prep->frame_time = frame_time;
+	prep->frame_wallclock_time = frame_wallclock_time;
+	prep->update_world_animations = update_world_animations;
+	prep->ref_mode = ref_mode;
+	prep->upload_info = upload_info;
+	prep->sun_light = sun_light;
+	memcpy(prep->shadowmap_view_proj, shadowmap_view_proj, sizeof(prep->shadowmap_view_proj));
+	prep->shadowmap_depth_scale = shadowmap_depth_scale;
+	prep->god_rays_enabled = god_rays_enabled;
+	prep->fog_accum_march = fog_accum_march;
+	prep->run_froxel = run_froxel;
+	prep->god_rays_march_discarded = god_rays_march_discarded;
+	prep->blood_model_instance = blood_model_instance_idx;
+	prep->bsp = bsp_world_model;
+	// a frame the cache sits out queues a clear for the next one it runs in
+	prep->sharc_active = sharc_active(&ref_mode);
+	prep->sharc_clear = sharc_clear_pending;
+	sharc_clear_pending = !prep->sharc_active;
+	return true;
+}
+
+/* renders the map ingame */
+void
+R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
+{
+	if (!qvk.swap_chain)
+		return;
+
+	vkpt_refdef.fd = fd;
+	bool render_world = (fd->rdflags & RDF_NOWORLDMODEL) == 0;
+
+	/* cpu_bench owns the screen while it runs and while its result is up: the
+	   frame is the CPU's picture, drawn as a 2D pic, and the GPU renders no world.
+	   The player setup menu's no-world frames still render as usual. */
+	if (render_world && vkpt_cpu_trace_active())
+	{
+		vkpt_cpu_trace_draw();
+		return;
+	}
+
+	vkpt_frame_prep_t prep;
+	if (!vkpt_prepare_frame(fd, waterLevel, &prep))
+		return;
+
+	QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
+	const float frame_time = prep.frame_time;
+	const float frame_wallclock_time = prep.frame_wallclock_time;
+	const bool update_world_animations = prep.update_world_animations;
+	const reference_mode_t ref_mode = prep.ref_mode;
+	EntityUploadInfo upload_info = prep.upload_info;
+	float *shadowmap_view_proj = prep.shadowmap_view_proj;
+	const bool god_rays_enabled = prep.god_rays_enabled;
+	const bool fog_accum_march = prep.fog_accum_march;
+	const bool run_froxel = prep.run_froxel;
+	const bool god_rays_march_discarded = prep.god_rays_march_discarded;
 
 	/* ASYNC COMPUTE, pt_async_compute (default 0 = everything on the graphics
 	   queue, exactly as before; 1 = the froxel fog on the compute queue).
@@ -6997,15 +7262,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			END_PERF_MARKER(trace_cmd_buf, PROFILER_ASVGF_GRADIENT_REPROJECT);
 		}
 
-		if (sharc_active(&ref_mode))
-		{
-			vkpt_pt_sharc_update(trace_cmd_buf, sharc_clear_pending);
-			sharc_clear_pending = false;
-		}
-		else
-		{
-			sharc_clear_pending = true;
-		}
+		if (prep.sharc_active)
+			vkpt_pt_sharc_update(trace_cmd_buf, prep.sharc_clear);
 
 		vkpt_pt_trace_lighting(trace_cmd_buf, ref_mode.num_bounce_rays);
 
@@ -7083,12 +7341,6 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 #endif
 
 
-		// Skip FSR (upscaling) if image is going to be heavily blurred anyway (menu mode)
-		if(vkpt_fsr_is_enabled() && !qvk.frame_menu_mode)
-		{
-			vkpt_fsr_do(post_cmd_buf);
-		}
-
 		// not for a menu frame opened from photo mode: that one is not accumulated
 		// (see evaluate_reference_mode), so it goes through DLSS as it does in play
 		if (ref_mode.enable_accumulation && accumulation_bypasses_dlss()) {
@@ -7108,22 +7360,8 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			lastWallClocktime = frame_wallclock_time;
 		}
 		else if (DLSSEnabled()) {
-			/* The player setup preview opened from PHOTO MODE is the only frame that
-			   reaches DLSS during the pause: the world frames around it take the
-			   bypass above, and every one of them asks for a history reset for the
-			   first frame after the pause. That reset is the world's, not the
-			   preview's - taking it restarted RR on every preview frame. The preview
-			   resets once, on its first frame (what RR holds then is the pre-pause
-			   world), and leaves the flag standing for the world. */
-			const bool photo_preview = !render_world && is_accumulation_rendering_active();
-			bool reset_history = dlss_reset_history;
-			if (photo_preview) {
-				reset_history = !dlss_photo_preview_running;
-				dlss_photo_preview_running = true;
-			} else {
-				dlss_reset_history = false;
-				dlss_photo_preview_running = false;
-			}
+			// the photo-mode preview's rule is in there
+			const bool reset_history = vkpt_dlss_take_history_reset(render_world);
 
 			DLSSRenderResolution resObj;
 			resObj.inputWidth = qvk.extent_render.width;
@@ -7222,9 +7460,18 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		vkpt_submit_command_buffer_simple(post_cmd_buf, qvk.queue_graphics, true);
 	}
 
-	temporal_frame_valid = ref_mode.enable_denoiser;
-	
 	frame_ready = true;
+	vkpt_finish_frame(&prep);
+}
+
+/* The frame's CPU bookkeeping once its commands are recorded, shared with the
+   D3D12 renderer: next frame's UBO treats this one as valid history (TAA, the
+   A-SVGF histories) only when the denoiser ran. */
+void
+vkpt_finish_frame(const vkpt_frame_prep_t *prep)
+{
+	temporal_frame_valid = prep->ref_mode.enable_denoiser;
+
 	drs_last_frame_world = true;
 
 	if (vkpt_refdef.fd && vkpt_refdef.fd->lightstyles) {
@@ -7264,7 +7511,9 @@ static double present_stats_gpu_ms(void)
 	return whole > 0.0 ? whole : vkpt_get_profiler_result(PROFILER_FRAME_TIME);
 }
 
-static void report_present_stats(void)
+/* `mode` and `images`: the presentation the report names (vkpt's present mode and
+   swapchain size, or the D3D12 renderer's). */
+static void report_present_stats(const char *mode, uint32_t images)
 {
 	uint64_t now = Sys_Microseconds();
 	if (present_stats_last_us == 0)
@@ -7332,9 +7581,7 @@ static void report_present_stats(void)
 		(double)present_stats_worst_acquire_us / 1000.0,
 		(double)(present_stats_worst_us - present_stats_worst_fence_us - present_stats_worst_acquire_us) / 1000.0,
 		present_stats_worst_gpu_ms,
-		qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" :
-		qvk.present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "IMMEDIATE",
-		qvk.surf_num_images);
+		mode, images);
 
 	present_stats_fence_us = 0;
 	present_stats_acquire_us = 0;
@@ -7345,6 +7592,21 @@ static void report_present_stats(void)
 	present_stats_frames = 0;
 	present_stats_long_frames = 0;
 	present_stats_last_us = now;
+}
+
+/* vid_present_stats for the D3D12 renderer: R_BeginFrame's two waits - its frame
+   slot's fence, and the presentation (the swapchain's latency wait, or frame
+   generation's present thread) - into the same accumulators and report. */
+bool vkpt_present_stats_enabled(void)
+{
+	return cvar_present_stats && cvar_present_stats->integer != 0;
+}
+
+void vkpt_present_stats_frame(uint64_t fence_us, uint64_t present_wait_us, const char *mode, uint32_t images)
+{
+	present_stats_fence_us += fence_us;
+	present_stats_acquire_us += present_wait_us;
+	report_present_stats(mode, images);
 }
 
 /* Rebuilds every VKPT_INIT_SWAPCHAIN_RECREATE resource. With new_swapchain false the
@@ -7429,18 +7691,28 @@ static void drs_init(void)
 	cvar_drs_last_scale = Cvar_Get("drs_last_scale", "0", CVAR_ARCHIVE);
 }
 
+/* The render scale photo mode pins: at least the output's without DRS, so the
+   accumulated frame goes into DLSS_OUTPUT as a copy (accumulation_bypasses_dlss);
+   with DRS, the largest it allows - what the screen images are made for. */
+static int drs_photo_mode_scale(void)
+{
+	if (!drs_on())
+		return max(100, scr_viewsize->integer);
+	return max(cvar_drs_minscale->integer, cvar_drs_maxscale->integer);
+}
+
 static void drs_process(void)
 {
 #define SCALING_FRAMES 5
 	static int num_valid_frames = 0;
 	static double valid_frame_times[SCALING_FRAMES];
 
-	if (cvar_drs_enable->integer == 0)
+	if (!drs_on())
 	{
 		num_valid_frames = 0;
 
 		if (is_accumulation_rendering_active())
-			drs_effective_scale = max(100, scr_viewsize->integer);
+			drs_effective_scale = drs_photo_mode_scale();
 		else
 			drs_effective_scale = 0;
 
@@ -7450,7 +7722,7 @@ static void drs_process(void)
 	if (is_accumulation_rendering_active())
 	{
 		num_valid_frames = 0;
-		drs_effective_scale = max(cvar_drs_minscale->integer, cvar_drs_maxscale->integer);
+		drs_effective_scale = drs_photo_mode_scale();
 		return;
 	}
 
@@ -7511,6 +7783,16 @@ static void drs_process(void)
 
 	drs_current_scale = max(cvar_drs_minscale->integer, min(cvar_drs_maxscale->integer, scale));
 	drs_effective_scale = drs_current_scale;
+}
+
+/* drs_process for the D3D12 renderer (d3d12_frontend_prepare_frame): its frame's
+   GPU time is the same profiler row's (PROFILER_FRAME_TIME), and its world frames
+   set drs_last_frame_world through vkpt_finish_frame. Returns the scale in use,
+   for the readout R_BeginFrame_RTX feeds back (feedback.resolution_scale). */
+int vkpt_drs_update(void)
+{
+	drs_process();
+	return drs_effective_scale ? drs_effective_scale : scr_viewsize->integer;
 }
 
 /*
@@ -7734,9 +8016,12 @@ R_BeginFrame_RTX(void)
 	qvk.gpu_slice_width = (get_pt_packed_width() + qvk.device_count - 1) / qvk.device_count;
 	
 	VkExtent2D extent_screen_images = get_screen_image_extent();
+	// not the screen images' size under DLSS (get_taa_image_extent)
+	VkExtent2D extent_taa_images = get_taa_image_extent(extent_screen_images);
 	uint32_t screen_image_profile = vkpt_screen_image_profile();
 
-	if(!extents_equal(extent_screen_images, qvk.extent_screen_images) || (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync)
+	if(!extents_equal(extent_screen_images, qvk.extent_screen_images) || !extents_equal(extent_taa_images, qvk.extent_taa_images)
+	   || (!!cvar_hdr->integer != qvk.surf_is_hdr) || (!!cvar_vsync->integer != qvk.surf_vsync)
 	   || (!!cvar_vsync_mailbox->integer != qvk.surf_vsync_mailbox)
 	   || (screen_image_profile != screen_image_profile_current)
 	   || (desired_swapchain_images() != swapchain_requested_images)
@@ -7744,6 +8029,7 @@ R_BeginFrame_RTX(void)
 	{
 		swapchain_reason =
 			!extents_equal(extent_screen_images, qvk.extent_screen_images) ? "screen image extent changed" :
+			!extents_equal(extent_taa_images, qvk.extent_taa_images) ? "TAA image extent changed" :
 			(screen_image_profile != screen_image_profile_current) ? "screen image profile changed" :
 			(!!cvar_hdr->integer != qvk.surf_is_hdr) ? "vid_hdr changed" :
 			(!!cvar_vsync->integer != qvk.surf_vsync) ? "vid_vsync changed" :
@@ -7755,6 +8041,7 @@ R_BeginFrame_RTX(void)
 		   || (desired_swapchain_images() != swapchain_requested_images)
 		   || (fg_wants_no_vsync() != swapchain_fg_forced_no_vsync);
 		qvk.extent_screen_images = extent_screen_images;
+		qvk.extent_taa_images = extent_taa_images;
 		screen_image_profile_current = screen_image_profile;
 		rebuild_render_resources(swapchain_changed);
 	}
@@ -7787,7 +8074,9 @@ retry:;
 	if (present_stats)
 	{
 		present_stats_acquire_us += Sys_Microseconds() - t_block_begin;
-		report_present_stats();
+		report_present_stats(qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" :
+			qvk.present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "IMMEDIATE",
+			qvk.surf_num_images);
 	}
 	if(res_swapchain == VK_ERROR_OUT_OF_DATE_KHR || res_swapchain == VK_SUBOPTIMAL_KHR
 	   || res_swapchain == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
@@ -7920,11 +8209,7 @@ R_EndFrame_RTX(void)
 
 	if (frame_ready)
 	{
-		if (vkpt_fsr_is_enabled() && !qvk.frame_menu_mode)
-		{
-			vkpt_fsr_final_blit(cmd_buf);
-		}
-		else if (qvk.effective_aa_mode == AA_MODE_UPSCALE)
+		if (qvk.effective_aa_mode == AA_MODE_UPSCALE)
 		{
 			vkpt_final_blit_simple(cmd_buf, qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.extent_taa_output);
 		}
@@ -8010,8 +8295,7 @@ R_EndFrame_RTX(void)
 			// before frame generation interpolates it and before the HUD is drawn.
 			// Photo mode skips it - accumulation stays the unbiased reference.
 			if (DLSS5Enabled() && !accumulation_bypasses_dlss()) {
-				DLSS5Apply(cmd_buf, dlss5_reset_history ? qtrue : qfalse);
-				dlss5_reset_history = false;
+				DLSS5Apply(cmd_buf, vkpt_dlss5_take_history_reset() ? qtrue : qfalse);
 			}
 
 
@@ -9130,6 +9414,36 @@ static void vkpt_fog_debug(void)
 }
 
 
+/* THE CONSOLE COMMANDS BOTH PATH TRACERS HAVE (R_Init_RTX's, and the D3D12
+   renderer's through frontend.c). None needs a device: the fog volumes, the PVS
+   overlay and the sun preset reach the GPU through prepare_ubo, cpu_bench draws a 2D
+   pic, reload_textures goes through IMG_Load. reload_shader stays Vulkan's. */
+void vkpt_register_commands(void)
+{
+	Cmd_AddCommand("fog_debug", (xcommand_t)&vkpt_fog_debug);
+	Cmd_AddCommand("profiler_dump", (xcommand_t)&vkpt_profiler_dump);
+	Cmd_AddCommand("reload_textures", (xcommand_t)&vkpt_reload_textures);
+	Cmd_AddCommand("show_pvs", (xcommand_t)&vkpt_show_pvs);
+	Cmd_AddCommand("next_sun", (xcommand_t)&vkpt_next_sun_preset);
+	vkpt_fog_init();
+	vkpt_cameras_init();
+	vkpt_cpu_trace_init();
+}
+
+/* ...and gone again: first thing at a shutdown - cpu_bench's workers read the world
+   mesh and the textures. (fog_debug was never removed before 11-06.) */
+void vkpt_unregister_commands(void)
+{
+	vkpt_cpu_trace_shutdown();
+	Cmd_RemoveCommand("fog_debug");
+	Cmd_RemoveCommand("profiler_dump");
+	Cmd_RemoveCommand("reload_textures");
+	Cmd_RemoveCommand("show_pvs");
+	Cmd_RemoveCommand("next_sun");
+	vkpt_fog_shutdown();
+	vkpt_cameras_shutdown();
+}
+
 static void ray_tracing_api_g(genctx_t *ctx)
 {
 	Prompt_AddMatch(ctx, "auto");
@@ -9137,58 +9451,13 @@ static void ray_tracing_api_g(genctx_t *ctx)
 	Prompt_AddMatch(ctx, "pipeline");
 }
 
-/* called when the library is loaded */
-ref_type_t
-R_Init_RTX(bool total)
+/* WHAT BOTH PATH TRACERS SET UP BEFORE ANY DEVICE EXISTS: every cvar the
+   frame's CPU half and the materials read, the md2 normal table, the TAA
+   jitter sequence. R_Init_RTX runs it ahead of init_vulkan, and the D3D12
+   renderer runs it too. Nothing here may need a device. */
+void
+vkpt_init_frontend(void)
 {
-	registration_sequence = 1;
-
-	if (!VID_Init(GAPI_VULKAN)) {
-		Com_Error(ERR_FATAL, "VID_Init failed\n");
-		return REF_TYPE_NONE;
-	}
-
-	/* Paces the presents when frame generation is on. Idle and harmless otherwise. */
-	/* REGISTER THE FRAME-GENERATION DEBUG CVARS UP FRONT.
-	
-	   They were all created lazily by Cvar_Get inside the render loop, which meant
-	   they did not exist until a frame with FG active had run - and the console is
-	   open exactly when that is not happening, so typing one got "unknown command".
-	   That cost a test run with pt_dlss_fg_stats and another with pt_dlss_fg_indices.
-	   The lazy Cvar_Get calls downstream simply fetch these instead. Any new FG debug
-	   cvar belongs in this list too. */
-	Cvar_Get("pt_dlss_fg_stats", "0", 0);
-	Cvar_Get("pt_dlss_fg_debug", "0", 0);
-	Cvar_Get("pt_dlss_fg_compare", "0", 0);
-	Cvar_Get("pt_dlss_fg_dump", "0", 0);
-	Cvar_Get("pt_dlss_fg_indices", "0", 0);
-	Cvar_Get("pt_dlss_fg_lead", "1.0", 0);
-	Cvar_Get("pt_dlss_fg_vblank_offset", "500", 0);
-	Cvar_Get("pt_dlss_fg_fifo_pacing", "0", 0);
-	/* Undocumented DLSSG.* parameters, read from the runtime's string table rather than
-	   any header - see the note in DLSSG.h. Created here for the reason above: they are
-	   fetched inside the Evaluate loop, so without this they do not exist until a frame
-	   with FG active has already run. Made that exact mistake again after the comment
-	   above says not to. */
-	Cvar_Get("pt_dlss_fg_indicator", "0", 0);
-	Cvar_Get("pt_dlss_fg_slmode", "0", 0);
-	Cvar_Get("pt_dlss_fg_split_eval", "0", 0);
-	Cvar_Get("pt_dlss_fg_timeline", "1", 0);
-	Cvar_Get("pt_dlss_fg_queue", "1", 0);
-	Cvar_Get("pt_dlss_fg_ready_wait", "0", 0);
-	/* These three live in DLSS.c and were created inside DLSSGApply, which does not
-	   run while the console is open - so they could never be typed. Third time this
-	   trap has cost a test run. */
-	Cvar_Get("pt_dlss_fg_mvsign", "1", 0);
-	Cvar_Get("pt_dlss_fg_cammotion", "1", 0);
-	Cvar_Get("pt_dlss_fg_depthinv", "0", 0);
-	Cvar_Get("pt_dlss_fg_mvscale", "0", CVAR_ARCHIVE);
-
-	FGPresent_Init();
-
-	extern SDL_Window *sdl_window;
-	qvk.window = sdl_window;
-
 	/* Reconstructs .md2 vertex normals from the geometry at load time, so the
 	   path tracer's barycentric interpolation has something to interpolate -
 	   see smooth_quantized_model_normals in models.c for why the file itself
@@ -9285,6 +9554,11 @@ R_Init_RTX(bool total)
 	// 0 -> photo mode keeps running DLSS, as it used to. See accumulation_bypasses_dlss().
 	cvar_pt_accumulation_bypass_dlss = Cvar_Get("pt_accumulation_bypass_dlss", "1", CVAR_ARCHIVE);
 
+	// 1 -> the screen images are always made for photo mode's 100% render scale, so
+	// pausing into it and out remakes nothing (no stall); 0 -> less video memory,
+	// and the images are remade on the way in and out. See render_scale_capacity().
+	cvar_pt_photo_mode_reserve = Cvar_Get("pt_photo_mode_reserve", "1", CVAR_ARCHIVE);
+
 	// Camera projection; see PROJECTION_* in shader/constants.h, projection.glsl,
 	// and the pt_projection entry in doc/client.md.
 	// 0 -> perspective (rectilinear), 1 -> panini, 2 -> stereographic,
@@ -9339,11 +9613,17 @@ R_Init_RTX(bool total)
 	cvar_tm_blend_enable = Cvar_Get("tm_blend_enable", "1", CVAR_ARCHIVE);
 
 	drs_init();
-	vkpt_fsr_init_cvars();
+	vkpt_pt_init_cvars();
 	vkpt_motion_blur_init_cvars();
 	vkpt_chromatic_aberration_init_cvars();
 	vkpt_film_grain_init_cvars();
 	vkpt_draw_init_cvars();
+	// registered here rather than in their Vulkan init functions, which the D3D12
+	// renderer does not run, because the frame's CPU half reads them
+	vkpt_bloom_init_cvars();
+	vkpt_transparency_init_cvars();
+	vkpt_blood_init_cvars();
+	vkpt_vertex_buffer_init_cvars();
 	InitDLSSCvars();
 	InitDLSSGCvars();
 	DLSS5_InitCvars();
@@ -9399,6 +9679,81 @@ R_Init_RTX(bool total)
 	// on a slider in the effects menu, so it has to survive a restart
 	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
 
+	// god_rays.c's, read by the frame's CPU half - which the D3D12 renderer runs
+	// without the Vulkan init that made them. After the UBO list: pt_fog_froxel
+	// is in both, and the UBO's default has always come first.
+	vkpt_god_rays_init_cvars();
+
+	for (int i = 0; i < 256; i++) {
+		qvk.sintab[i] = sinf(i * (2 * M_PI / 255));
+	}
+
+	for (int i = 0; i < NUM_TAA_SAMPLES; i++)
+	{
+		taa_samples[i][0] = halton(2, i + 1) - 0.5f;
+		taa_samples[i][1] = halton(3, i + 1) - 0.5f;
+	}
+}
+
+/* called when the library is loaded */
+ref_type_t
+R_Init_RTX(bool total)
+{
+	registration_sequence = 1;
+
+	if (!VID_Init(GAPI_VULKAN)) {
+		Com_Error(ERR_FATAL, "VID_Init failed\n");
+		return REF_TYPE_NONE;
+	}
+
+	/* Paces the presents when frame generation is on. Idle and harmless otherwise. */
+	/* REGISTER THE FRAME-GENERATION DEBUG CVARS UP FRONT.
+	
+	   They were all created lazily by Cvar_Get inside the render loop, which meant
+	   they did not exist until a frame with FG active had run - and the console is
+	   open exactly when that is not happening, so typing one got "unknown command".
+	   That cost a test run with pt_dlss_fg_stats and another with pt_dlss_fg_indices.
+	   The lazy Cvar_Get calls downstream simply fetch these instead. Any new FG debug
+	   cvar belongs in this list too. */
+	Cvar_Get("pt_dlss_fg_stats", "0", 0);
+	Cvar_Get("pt_dlss_fg_debug", "0", 0);
+	Cvar_Get("pt_dlss_fg_compare", "0", 0);
+	Cvar_Get("pt_dlss_fg_dump", "0", 0);
+	Cvar_Get("pt_dlss_fg_indices", "0", 0);
+	Cvar_Get("pt_dlss_fg_lead", "1.0", 0);
+	Cvar_Get("pt_dlss_fg_vblank_offset", "500", 0);
+	Cvar_Get("pt_dlss_fg_fifo_pacing", "0", 0);
+	/* Undocumented DLSSG.* parameters, read from the runtime's string table rather than
+	   any header - see the note in DLSSG.h. Created here for the reason above: they are
+	   fetched inside the Evaluate loop, so without this they do not exist until a frame
+	   with FG active has already run. Made that exact mistake again after the comment
+	   above says not to. */
+	Cvar_Get("pt_dlss_fg_indicator", "0", 0);
+	Cvar_Get("pt_dlss_fg_slmode", "0", 0);
+	Cvar_Get("pt_dlss_fg_split_eval", "0", 0);
+	Cvar_Get("pt_dlss_fg_timeline", "1", 0);
+	Cvar_Get("pt_dlss_fg_queue", "1", 0);
+	Cvar_Get("pt_dlss_fg_ready_wait", "0", 0);
+	/* These three live in DLSS.c and were created inside DLSSGApply, which does not
+	   run while the console is open - so they could never be typed. Third time this
+	   trap has cost a test run. */
+	Cvar_Get("pt_dlss_fg_mvsign", "1", 0);
+	Cvar_Get("pt_dlss_fg_cammotion", "1", 0);
+	Cvar_Get("pt_dlss_fg_depthinv", "0", 0);
+	Cvar_Get("pt_dlss_fg_mvscale", "0", CVAR_ARCHIVE);
+
+	FGPresent_Init();
+
+	extern SDL_Window *sdl_window;
+	qvk.window = sdl_window;
+
+	vkpt_init_frontend();
+	vkpt_prep_backend = &vulkan_prep_backend;
+	// flow.c on Vulkan, whatever renderer ran before
+	vkpt_flow_backend = NULL;
+	// and DLSS 5's NGX calls (DLSSNR.c)
+	DLSS5_SetBackend(NULL);
+
 	qvk.win_width  = r_config.width;
 	qvk.win_height = r_config.height;
 
@@ -9424,26 +9779,8 @@ R_Init_RTX(bool total)
 	_VK(vkpt_initialize_all(VKPT_INIT_RELOAD_SHADER));
 	_VK(vkpt_initialize_all(VKPT_INIT_SWAPCHAIN_RECREATE));
 
-	Cmd_AddCommand("fog_debug", (xcommand_t)&vkpt_fog_debug);
 	Cmd_AddCommand("reload_shader", (xcommand_t)&vkpt_reload_shader);
-	Cmd_AddCommand("profiler_dump", (xcommand_t)&vkpt_profiler_dump);
-	Cmd_AddCommand("reload_textures", (xcommand_t)&vkpt_reload_textures);
-	Cmd_AddCommand("show_pvs", (xcommand_t)&vkpt_show_pvs);
-	Cmd_AddCommand("next_sun", (xcommand_t)&vkpt_next_sun_preset);
-
-	vkpt_fog_init();
-	vkpt_cameras_init();
-	vkpt_cpu_trace_init();
-
-	for (int i = 0; i < 256; i++) {
-		qvk.sintab[i] = sinf(i * (2 * M_PI / 255));
-	}
-
-	for (int i = 0; i < NUM_TAA_SAMPLES; i++)
-	{
-		taa_samples[i][0] = halton(2, i + 1) - 0.5f;
-		taa_samples[i][1] = halton(3, i + 1) - 0.5f;
-	}
+	vkpt_register_commands();
 
 	return REF_TYPE_VKPT;
 }
@@ -9454,8 +9791,8 @@ R_Shutdown_RTX(bool total)
 {
 	vkpt_freecam_reset();
 
-	// before the world mesh and the textures its workers read go away
-	vkpt_cpu_trace_shutdown();
+	// cpu_bench's workers before the world mesh and the textures they read go away
+	vkpt_unregister_commands();
 
 	// Idle FIRST. DLSSDeconstructor releases the NGX feature and everything NGX
 	// allocated behind it, and this ran before the wait - so on a vid_restart it could
@@ -9476,10 +9813,6 @@ R_Shutdown_RTX(bool total)
 		Cvar_SetInteger(cvar_drs_last_scale, drs_current_scale, FROM_CODE);
 
 	Cmd_RemoveCommand("reload_shader");
-	Cmd_RemoveCommand("profiler_dump");
-	Cmd_RemoveCommand("reload_textures");
-	Cmd_RemoveCommand("show_pvs");
-	Cmd_RemoveCommand("next_sun");
 
 	if (vkpt_refdef.bsp_mesh_world_loaded)
 	{
@@ -9487,8 +9820,6 @@ R_Shutdown_RTX(bool total)
 		bsp_mesh_destroy(&vkpt_refdef.bsp_mesh_world);
 	}
 
-	vkpt_fog_shutdown();
-	vkpt_cameras_shutdown();
 	MAT_Shutdown();
 	IMG_FreeAll();
 	vkpt_textures_destroy_unused();
@@ -9823,7 +10154,8 @@ R_SetSky_RTX(const char *name, float rotate, int autorotate, const vec3_t axis)
 	);
 
 	vkpt_cpu_trace_set_envmap(complete ? w_prev : 0, h_prev, complete ? data : NULL);
-	vkpt_textures_upload_envmap(w_prev, h_prev, data);
+	// through vkpt_prep_backend: the D3D12 renderer runs this function too
+	vkpt_prep_backend->upload_envmap(w_prev, h_prev, data);
 	Z_Free(data);
 
 	// Let the sky renderer know whether this map brought a skybox of its own,
@@ -9836,7 +10168,7 @@ void R_AddDecal_RTX(decal_t *d)
 { }
 
 void
-R_BeginRegistration_RTX(const char *name)
+vkpt_begin_registration(const char *name)
 {
 	// the bench's scene points into the map being unloaded
 	vkpt_cpu_trace_stop();
@@ -9844,7 +10176,8 @@ R_BeginRegistration_RTX(const char *name)
 	registration_sequence++;
 	LOG_FUNC();
 	Com_Printf("loading %s\n", name);
-	vkpt_device_wait_idle();
+	if (qvk.device)
+		vkpt_device_wait_idle();
 
 	// The blood section's base tracks this map's peak model primitive count, so
 	// it must not inherit the last one's - a big map followed by a small one
@@ -9905,10 +10238,16 @@ R_BeginRegistration_RTX(const char *name)
 	bsp_mesh_register_textures(bsp);
 	bsp_mesh_create_from_bsp(&vkpt_refdef.bsp_mesh_world, bsp, name);
 	vkpt_flow_set_world(&vkpt_refdef.bsp_mesh_world);
-	vkpt_sky_exposure_begin_map(bsp, &vkpt_refdef.bsp_mesh_world.world_aabb);
-	vkpt_light_buffers_create(&vkpt_refdef.bsp_mesh_world);
-	_VK(vkpt_vertex_buffer_upload_bsp_mesh(&vkpt_refdef.bsp_mesh_world));
-	sharc_clear_pending = true;
+	vkpt_prep_backend->load_world(&vkpt_refdef.bsp_mesh_world, bsp);
+	sharc_clear_pending = true;     // the old map's keys would light the new one
+
+	// Blood's worst-case memory now, while the map loads, rather than on the
+	// first droplet - the first monster shot used to hitch (vkpt_blood_preallocate).
+	{
+		const uint32_t blood_capacity = vkpt_blood_preallocate();
+		if (blood_capacity && vkpt_prep_backend->reserve_blood_staging)
+			vkpt_prep_backend->reserve_blood_staging(blood_capacity);
+	}
 	vkpt_refdef.bsp_mesh_world_loaded = 1;
 	bsp = NULL;
 	world_anim_frame = 0;
@@ -9931,15 +10270,42 @@ R_BeginRegistration_RTX(const char *name)
 }
 
 void
-R_EndRegistration_RTX(void)
+R_BeginRegistration_RTX(const char *name)
 {
-	LOG_FUNC();
-	
+	vkpt_begin_registration(name);
+}
+
+void
+vkpt_end_registration(void)
+{
 	vkpt_physical_sky_endRegistration();
 
 	IMG_FreeUnused();
 	MOD_FreeUnused();
 	MAT_FreeUnused();
+}
+
+void
+R_EndRegistration_RTX(void)
+{
+	LOG_FUNC();
+
+	vkpt_end_registration();
+}
+
+void
+vkpt_unload_world(void)
+{
+	if (vkpt_refdef.bsp_mesh_world_loaded) {
+		vkpt_vertex_buffer_cleanup_bsp_mesh(&vkpt_refdef.bsp_mesh_world);
+		bsp_mesh_destroy(&vkpt_refdef.bsp_mesh_world);
+		vkpt_refdef.bsp_mesh_world_loaded = 0;
+	}
+
+	if (bsp_world_model) {
+		BSP_Free(bsp_world_model);
+		bsp_world_model = NULL;
+	}
 }
 
 void vkpt_image_sharing_graphics_compute(VkImageCreateInfo* info)

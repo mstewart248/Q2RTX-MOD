@@ -140,7 +140,7 @@ static void ReloadMedia(void)
 
     m_player.num_actors = 0;
 
-    m_player.card.model = (cls.ref_type == REF_TYPE_VKPT)
+    m_player.card.model = CL_PathTraced()
         ? R_RegisterModel("models/rtx/bounce_card/tris.md2") : 0;
 
     Q_concat(scratch, sizeof(scratch), "players/", model, "/tris.md2");
@@ -482,10 +482,11 @@ void M_Menu_PlayerConfig(void)
     m_player.menu.free = Free;
 	m_player.menu.image = uis.backgroundHandle;
 
-	if (cls.ref_type == REF_TYPE_VKPT)
+	if (CL_PathTraced())
 	{
 		// Q2RTX: make the player menu transparent so that we can see 
-		// the model below: all 2D stuff is rendered after 3D, in stretch_pics.
+		// the model below: all 2D stuff is rendered after 3D, in stretch_pics
+		// (D3D12's 2D layer too, at R_EndFrame).
 		m_player.menu.color.u32 = 0;
 	}
 	else
@@ -515,7 +516,7 @@ void M_Menu_PlayerConfig(void)
     m_player.refdef.entities = m_player.scene;
     m_player.refdef.rdflags = RDF_NOWORLDMODEL;
 
-	if (cls.ref_type == REF_TYPE_VKPT)
+	if (CL_PathTraced())
 	{
 		m_player.refdef.num_dlights = sizeof(dlights) / sizeof(*dlights);
 		m_player.refdef.dlights = dlights;

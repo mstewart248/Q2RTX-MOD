@@ -38,6 +38,15 @@ execute_process(
 OPTION(CONFIG_GL_RENDERER "Enable GL renderer" ON)
 OPTION(CONFIG_VKPT_RENDERER "Enable VKPT renderer" ON)
 OPTION(CONFIG_SOFT_RENDERER "Enable software renderer" ON)
+# The D3D12 path tracer (vid_rtx 3, src/refresh/d3d12): Windows only, and on by
+# default only where the Agility SDK headers are (setup/fetch_agility_sdk.py).
+# Translating its shaders also needs the Vulkan SDK's SPIRV-Cross and DXC.
+IF (WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/extern/agility-sdk/include/d3d12.h")
+    SET(DEFAULT_D3D12_RENDERER ON)
+ELSE()
+    SET(DEFAULT_D3D12_RENDERER OFF)
+ENDIF()
+OPTION(CONFIG_D3D12_RENDERER "Enable the D3D12 path tracer (vid_rtx 3)" ${DEFAULT_D3D12_RENDERER})
 OPTION(CONFIG_VKPT_ENABLE_DEVICE_GROUPS "Enable device groups (multi-gpu) support" ON)
 OPTION(CONFIG_VKPT_ENABLE_IMAGE_DUMPS "Enable image dumping functionality" OFF)
 OPTION(CONFIG_USE_CURL "Use CURL for HTTP support" ON)

@@ -233,11 +233,11 @@ vec3 Sample4D(
 	vec4 uvwz = GetScatteringUVWZ(atmosphere, PointHeight, ViewAngleCos, SunZenithAngleCos, SunViewAngleCos, IntersectsGround);
 	float ux = uvwz.x * float(SCATTERING_TEXTURE_NU_SIZE - 1);
 	float offset = floor(ux);
-	float lerp = fract(ux);
+	float frac_t = fract(ux);
 	vec3 uvw0 = vec3((offset + uvwz.y) / float(SCATTERING_TEXTURE_NU_SIZE), uvwz.z, uvwz.w);
 	vec3 uvw1 = vec3((offset + 1.0 + uvwz.y) / float(SCATTERING_TEXTURE_NU_SIZE), uvwz.z, uvwz.w);
 
-	vec4 InterpolatedScattering = texture(scattering_texture, uvw0) * (1.0 - lerp) + texture(scattering_texture, uvw1) * lerp;
+	vec4 InterpolatedScattering = texture(scattering_texture, uvw0) * (1.0 - frac_t) + texture(scattering_texture, uvw1) * frac_t;
 	OutMieScattering = GetMieFromVec4(atmosphere, InterpolatedScattering);
 
 	return InterpolatedScattering.xyz;
@@ -418,12 +418,12 @@ vec3 GetSkyRadianceToPoint(
 		vec3 scattering_p2 = Sample4D(atmosphere, scattering_texture, PointHeight_p2, ViewAngle_p2, SunZenithCos_p2, ViewSunCos, IntersectsGround2, single_mie_scattering_p2);
 
 		// combine
-		float lerp = (ViewAngleCos1 - ViewAngleCos) / (ViewAngleCos1 - ViewAngleCos2);
-		transmittance = mix(transmittance1, transmittance2, lerp);
-		scattering = mix(scattering1, scattering2, lerp);
-		single_mie_scattering = mix(single_mie_scattering1, single_mie_scattering2, lerp);
-		single_mie_scattering_p = mix(single_mie_scattering_p1, single_mie_scattering_p2, lerp);
-		scattering_p = mix(scattering_p1, scattering_p2, lerp);
+		float frac_t = (ViewAngleCos1 - ViewAngleCos) / (ViewAngleCos1 - ViewAngleCos2);
+		transmittance = mix(transmittance1, transmittance2, frac_t);
+		scattering = mix(scattering1, scattering2, frac_t);
+		single_mie_scattering = mix(single_mie_scattering1, single_mie_scattering2, frac_t);
+		single_mie_scattering_p = mix(single_mie_scattering_p1, single_mie_scattering_p2, frac_t);
+		scattering_p = mix(scattering_p1, scattering_p2, frac_t);
 	}
 
     scattering = scattering - transmittance * scattering_p;

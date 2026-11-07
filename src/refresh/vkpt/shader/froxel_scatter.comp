@@ -756,9 +756,11 @@ void froxel_cell_scatter(
 	    && cell.x == FROXEL_GRID_X / 2 && cell.y == FROXEL_GRID_Y / 2
 	    && z == FROXEL_GRID_Z / 2)
 	{
+#ifndef VKPT_D3D12 // no shader printf through HLSL
 		debugPrintfEXT("FOGP f=%u dens=%f alb=%f insc=%f pz=%f",
 		               global_ubo.current_frame_idx, density, albedo.x,
 		               luminance(inscatter), world_pos_history.z);
+#endif
 	}
 
 #if FOG_NAN_GUARD

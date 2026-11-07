@@ -97,3 +97,41 @@ void Reflex_NotifyOutOfBandPresent(VkQueue queue);
 // True when VkPresentIdKHR may be chained onto a present (the extension and its feature
 // are both enabled). The driver needs it to tie a present back to its markers.
 bool Reflex_PresentIdAvailable(void);
+
+// ---- Shared with the D3D12 renderer's Reflex (d3d12/reflex_nvapi.c, NVAPI) ----
+// Policy, not Vulkan: one copy of it for both renderers.
+
+// pt_reflex, pt_reflex_fps_max, pt_reflex_stats, pt_vrr, pt_reflex_vrr_cap and
+// pt_dlss_fg_pace_to_refresh, and pt_reflex_available set to 0 (the renderer sets 1).
+// Reflex_Init runs it.
+void Reflex_RegisterCvars(void);
+
+// What the driver is to be told: pt_reflex (0 off, 1 on, 2 + boost) and the minimum
+// frame interval from pt_reflex_fps_max, frame generation's pacing and the VRR cap.
+typedef struct reflex_mode_s {
+    int      mode;
+    int      fps_max;
+    int      effective_fps;     // fps_max or the pacing's, whichever is lower
+    int      paced_fps;
+    uint32_t interval_us;       // minimumIntervalUs; 0 = no cap
+    bool     vrr_capped;        // interval_us is the VRR cap's
+} reflex_mode_t;
+
+// Fills `m`; false when `applied` and it is the mode last given to Reflex_ModeApplied.
+bool Reflex_ModeToApply(reflex_mode_t *m, bool applied);
+// The driver took `m`: prints the console line and remembers it.
+void Reflex_ModeApplied(const reflex_mode_t *m);
+
+// Asks NVAPI about VRR again once a second (Reflex_DetectVRR's monitor) unless pt_vrr
+// overrides it. Call at the top of each frame, ahead of Reflex_ModeToApply.
+void Reflex_PollVRR(void);
+
+// One frame's latency report, in microseconds.
+typedef struct reflex_timings_s {
+    uint64_t input_sample, sim_start, sim_end, submit_start, submit_end,
+             gpu_start, gpu_end, present_start, present_end;
+} reflex_timings_t;
+
+// pt_reflex_stats: true at most once a second, when its line is due.
+bool Reflex_TimingsDue(void);
+void Reflex_PrintTimings(const reflex_timings_t *t);

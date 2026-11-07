@@ -28,6 +28,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "system/system.h"
 #include "client/client.h"
 #include "format/pak.h"
+#include "common/cpuprof.h"
 
 #include <fcntl.h>
 
@@ -1746,7 +1747,10 @@ int64_t FS_OpenFile(const char *name, qhandle_t *f, unsigned mode)
     file->mode = mode;
 
     if ((mode & FS_MODE_MASK) == FS_MODE_READ) {
+        const uint64_t t0 = Sys_Microseconds();
         ret = expand_open_file_read(file, name);
+        if (ret >= 0)
+            cpuprof_note_file(name, ret, Sys_Microseconds() - t0);   // cpuprof.h's FILES READ
     } else {
         ret = open_file_write(file, name);
     }
@@ -1889,6 +1893,7 @@ int FS_LoadFileEx(const char *path, void **buffer, unsigned flags, memtag_t tag)
     byte *buf;
     int64_t len;
     int read;
+    const uint64_t t0 = Sys_Microseconds();     // cpuprof.h's FILES READ
 
     Q_assert(path);
 
@@ -1938,6 +1943,7 @@ int FS_LoadFileEx(const char *path, void **buffer, unsigned flags, memtag_t tag)
 
     *buffer = buf;
     buf[len] = 0;
+    cpuprof_note_file(path, len, Sys_Microseconds() - t0);
 
 done:
     FS_CloseFile(f);

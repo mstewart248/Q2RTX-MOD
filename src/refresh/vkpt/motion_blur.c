@@ -30,25 +30,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 static VkPipeline       pipeline;
 static VkPipelineLayout pipeline_layout;
 
-/* Mirrors MotionBlurPushConstants in motion_blur.comp. Keep the two in step -
-   there is no reflection here, a mismatch just reads garbage. */
-struct motion_blur_push_constants {
-	int32_t output_width,  output_height;
-	int32_t image_width,   image_height;
-	int32_t motion_width,  motion_height;
-	int32_t render_width,  render_height;
-
-	float strength;
-	float max_blur_px;
-	float dynamic_deduction;
-	float jitter;
-	float min_velocity_px;
-	float soft_z_extent;
-
-	int32_t num_samples;
-	int32_t frame_idx;
-	int32_t dlss_target;
-};
+/* vkpt.h's vkpt_motion_blur_push_t mirrors MotionBlurPushConstants in
+   motion_blur.comp. Keep the two in step - there is no reflection here, a
+   mismatch just reads garbage. */
 
 cvar_t *cvar_motion_blur_enable      = NULL;
 cvar_t *cvar_motion_blur_strength    = NULL;
@@ -183,7 +167,7 @@ vkpt_motion_blur_initialize(void)
 	VkPushConstantRange push_constant_range = {
 		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 		.offset     = 0,
-		.size       = sizeof(struct motion_blur_push_constants)
+		.size       = sizeof(vkpt_motion_blur_push_t)
 	};
 
 	CREATE_PIPELINE_LAYOUT(qvk.device, &pipeline_layout,
@@ -328,8 +312,17 @@ bloom_can_take_copy(void)
 		&& qvk.extent_unscaled.height >= 4;
 }
 
-VkResult
-vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
+// motion_blur.c's own test, for the D3D12 renderer's frame (d3d12/frontend.c)
+bool
+vkpt_motion_blur_bloom_takes_copy(void)
+{
+	return DLSSEnabled() && bloom_can_take_copy();
+}
+
+/* THIS FRAME'S PUSH CONSTANTS, shared with the D3D12 renderer, which dispatches
+   the same shader (d3d12/frontend.c, passes.c). False when the frame is empty. */
+bool
+vkpt_motion_blur_params(vkpt_motion_blur_push_t *push_out)
 {
 	const bool dlss = DLSSEnabled();
 
@@ -341,8 +334,6 @@ vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
 	   extent_unscaled. The two differ, and the shader needs both numbers: the
 	   region to bound its dispatch, and the allocation to turn a pixel into a
 	   UV. */
-	const int target_image = dlss ? VKPT_IMG_DLSS_OUTPUT : VKPT_IMG_TAA_OUTPUT;
-
 	const VkExtent2D output_extent = dlss ? qvk.extent_unscaled : qvk.extent_taa_output;
 	const VkExtent2D image_extent  = dlss ? qvk.extent_unscaled : qvk.extent_taa_images;
 
@@ -354,9 +345,9 @@ vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
 	const VkExtent2D motion_extent = qvk.extent_taa_output;
 
 	if (output_extent.width == 0 || output_extent.height == 0)
-		return VK_SUCCESS;
+		return false;
 
-	struct motion_blur_push_constants push = { 0 };
+	vkpt_motion_blur_push_t push = { 0 };
 
 	push.output_width  = (int32_t)output_extent.width;
 	push.output_height = (int32_t)output_extent.height;
@@ -405,6 +396,21 @@ vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
 	push.frame_idx   = (int32_t)qvk.frame_counter;
 	push.dlss_target = dlss ? 1 : 0;
 
+	*push_out = push;
+	return true;
+}
+
+VkResult
+vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
+{
+	vkpt_motion_blur_push_t push;
+	if (!vkpt_motion_blur_params(&push))
+		return VK_SUCCESS;
+
+	const bool dlss = push.dlss_target != 0;
+	const int target_image = dlss ? VKPT_IMG_DLSS_OUTPUT : VKPT_IMG_TAA_OUTPUT;
+	const VkExtent2D output_extent = { (uint32_t)push.output_width, (uint32_t)push.output_height };
+
 	VkDescriptorSet desc_sets[] = {
 		qvk.desc_set_ubo,
 		qvk_get_current_desc_set_textures(),
@@ -438,7 +444,7 @@ vkpt_motion_blur_record_cmd_buffer(VkCommandBuffer cmd_buf)
 	}
 
 	/* Copy the blurred frame back over the colour image. This is what keeps
-	   the pass transparent to everything downstream: bloom, tone mapping, FSR
+	   the pass transparent to everything downstream: bloom, tone mapping
 	   and the final blit all still read the image they always read, and none
 	   of them has to know whether this ran. */
 	barrier_before_copy(cmd_buf, qvk.images[VKPT_IMG_MOTION_BLUR], qvk.images[target_image]);

@@ -236,7 +236,7 @@ static void reflex_update_vrr(const char *gdi_device)
                    "G-SYNC / FreeSync display\n");
 }
 
-/* Asked again once a second after this, by reflex_poll_vrr(): the swapchain create that
+/* Asked again once a second after this, by Reflex_PollVRR(): the swapchain create that
    calls this runs before the first present, so whatever only shows up once G-SYNC has
    engaged arrives later - and a switch in the control panel does not recreate the
    swapchain at all. */
@@ -247,7 +247,7 @@ void Reflex_DetectVRR(const char *gdi_device)
     reflex_update_vrr(reflex_vrr_gdi_device);
 }
 
-static void reflex_poll_vrr(void)
+void Reflex_PollVRR(void)
 {
     if (!reflex_vrr_gdi_device[0] || (cvar_vrr && cvar_vrr->integer >= 0))
         return;
@@ -300,7 +300,10 @@ static uint32_t reflex_vrr_interval_us(void)
     return (uint32_t)(1000000.0 * (double)reflex_presents_per_frame() / presented_fps + 0.5);
 }
 
-void Reflex_Init(void)
+/* Shared with the D3D12 renderer's Reflex (d3d12/reflex_nvapi.c, NVAPI), as is everything
+   here that does not touch Vulkan: the mode (Reflex_ModeToApply), the VRR poll and the
+   pt_reflex_stats line. */
+void Reflex_RegisterCvars(void)
 {
     cvar_reflex         = Cvar_Get("pt_reflex", "1", CVAR_ARCHIVE);
     cvar_reflex_fps_max = Cvar_Get("pt_reflex_fps_max", "0", CVAR_ARCHIVE);
@@ -315,8 +318,14 @@ void Reflex_Init(void)
     cvar_reflex_vrr_cap = Cvar_Get("pt_reflex_vrr_cap", "1", CVAR_ARCHIVE);
 
     /* The display menu shows the Reflex controls only when this ends up 1
-       (Reflex_Available): NVIDIA's VK_NV_low_latency2, which other GPUs lack. */
+       (Reflex_Available): NVIDIA's VK_NV_low_latency2, which other GPUs lack (on D3D12,
+       NVAPI's sleep mode: d3d12_reflex_init). */
     Cvar_FullSet("pt_reflex_available", "0", CVAR_ROM, FROM_CODE);
+}
+
+void Reflex_Init(void)
+{
+    Reflex_RegisterCvars();
 
     if (!qvk.supports_low_latency) {
         Com_Printf("Reflex: VK_NV_low_latency2 not available, low latency mode disabled\n");
@@ -408,49 +417,79 @@ void Reflex_OnSwapchainDestroyed(void)
     reflex_mode_applied = false;
 }
 
+/* The last mode Reflex_ModeApplied() was given, for Reflex_ModeToApply()'s "changed". */
+static reflex_mode_t reflex_last_mode;
+
+/* What the cvars, frame generation's pacing and the VRR cap ask of the driver now. */
+bool Reflex_ModeToApply(reflex_mode_t *m, bool applied)
+{
+    memset(m, 0, sizeof(*m));
+    m->mode = cvar_reflex ? cvar_reflex->integer : 0;
+    m->fps_max = cvar_reflex_fps_max ? cvar_reflex_fps_max->integer : 0;
+
+    /* Frame generation wants the render rate pinned to refresh / multiplier. An explicit
+       pt_reflex_fps_max still wins when it is lower - the user asked for it. */
+    m->paced_fps = reflex_paced_render_fps();
+    m->effective_fps = m->fps_max;
+    if (m->paced_fps > 0 && (m->effective_fps == 0 || m->paced_fps < m->effective_fps))
+        m->effective_fps = m->paced_fps;
+
+    /* minimumIntervalUs is the frame rate cap: the minimum time between frame starts.
+       0 disables it. */
+    m->interval_us = (m->effective_fps > 0) ? (uint32_t)(1000000.0 / (double)m->effective_fps) : 0;
+
+    /* The VRR cap is a longer interval than any of the above unless the user asked for
+       less, so the longest interval wins. */
+    uint32_t vrr_interval_us = reflex_vrr_interval_us();
+    m->vrr_capped = vrr_interval_us > m->interval_us;
+    if (m->vrr_capped)
+        m->interval_us = vrr_interval_us;
+
+    return !applied || m->mode != reflex_last_mode.mode || m->fps_max != reflex_last_mode.fps_max
+        || m->interval_us != reflex_last_mode.interval_us;
+}
+
+void Reflex_ModeApplied(const reflex_mode_t *m)
+{
+    if (m->vrr_capped)
+        Com_Printf("Reflex: %s%s, render capped at %.1f fps (VRR: %.0f presented on the %d Hz "
+            "display, pt_reflex_vrr_cap)\n",
+            m->mode == 0 ? "off" : "on",
+            (m->mode >= 2) ? " + boost" : "",
+            1000000.0 / (double)m->interval_us,
+            1000000.0 * (double)reflex_presents_per_frame() / (double)m->interval_us,
+            Reflex_DisplayRefreshHz());
+    else
+        Com_Printf("Reflex: %s%s%s\n",
+            m->mode == 0 ? "off" : "on",
+            (m->mode >= 2) ? " + boost" : "",
+            m->interval_us
+                ? va(", render capped at %d fps%s", m->effective_fps,
+                     (m->paced_fps > 0 && m->effective_fps == m->paced_fps)
+                         ? va(" (paced to %d Hz display)", Reflex_DisplayRefreshHz()) : "")
+                : "");
+
+    reflex_last_mode = *m;
+}
+
 /* The sleep mode is per swapchain and has to be re-applied whenever the swapchain is
    recreated or the cvars change. Cheap enough to check every frame. */
 static void reflex_apply_mode(void)
 {
-    static int last_mode = -1;
-    static int last_fps_max = -1;
-    static uint32_t last_interval_us = (uint32_t)-1;
-
     if (!qvk.supports_low_latency || !qvkSetLatencySleepModeNV)
         return;
     if (reflex_swapchain == VK_NULL_HANDLE)
         return;
 
-    int mode = cvar_reflex ? cvar_reflex->integer : 0;
-    int fps_max = cvar_reflex_fps_max ? cvar_reflex_fps_max->integer : 0;
-
-    /* Frame generation wants the render rate pinned to refresh / multiplier. An explicit
-       pt_reflex_fps_max still wins when it is lower - the user asked for it. */
-    int paced_fps = reflex_paced_render_fps();
-    int effective_fps = fps_max;
-    if (paced_fps > 0 && (effective_fps == 0 || paced_fps < effective_fps))
-        effective_fps = paced_fps;
-
-    /* minimumIntervalUs is the frame rate cap: the minimum time between frame starts.
-       0 disables it. */
-    uint32_t interval_us = (effective_fps > 0) ? (uint32_t)(1000000.0 / (double)effective_fps) : 0;
-
-    /* The VRR cap is a longer interval than any of the above unless the user asked for
-       less, so the longest interval wins. */
-    uint32_t vrr_interval_us = reflex_vrr_interval_us();
-    bool vrr_capped = vrr_interval_us > interval_us;
-    if (vrr_capped)
-        interval_us = vrr_interval_us;
-
-    if (reflex_mode_applied && mode == last_mode && fps_max == last_fps_max
-        && interval_us == last_interval_us)
+    reflex_mode_t m;
+    if (!Reflex_ModeToApply(&m, reflex_mode_applied))
         return;
 
     VkLatencySleepModeInfoNV info = {
         .sType             = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV,
-        .lowLatencyMode    = (mode != 0) ? VK_TRUE : VK_FALSE,
-        .lowLatencyBoost   = (mode >= 2) ? VK_TRUE : VK_FALSE,
-        .minimumIntervalUs = interval_us,
+        .lowLatencyMode    = (m.mode != 0) ? VK_TRUE : VK_FALSE,
+        .lowLatencyBoost   = (m.mode >= 2) ? VK_TRUE : VK_FALSE,
+        .minimumIntervalUs = m.interval_us,
     };
 
     FGPresent_SwapchainLock();
@@ -461,42 +500,44 @@ static void reflex_apply_mode(void)
         return;
     }
 
-    if (vrr_capped)
-        Com_Printf("Reflex: %s%s, render capped at %.1f fps (VRR: %.0f presented on the %d Hz "
-            "display, pt_reflex_vrr_cap)\n",
-            mode == 0 ? "off" : "on",
-            (mode >= 2) ? " + boost" : "",
-            1000000.0 / (double)interval_us,
-            1000000.0 * (double)reflex_presents_per_frame() / (double)interval_us,
-            Reflex_DisplayRefreshHz());
-    else
-        Com_Printf("Reflex: %s%s%s\n",
-            mode == 0 ? "off" : "on",
-            (mode >= 2) ? " + boost" : "",
-            interval_us
-                ? va(", render capped at %d fps%s", effective_fps,
-                     (paced_fps > 0 && effective_fps == paced_fps)
-                         ? va(" (paced to %d Hz display)", Reflex_DisplayRefreshHz()) : "")
-                : "");
-
-    last_mode = mode;
-    last_fps_max = fps_max;
-    last_interval_us = interval_us;
+    Reflex_ModeApplied(&m);
     reflex_mode_applied = true;
 }
 
-static void reflex_report_timings(void)
+bool Reflex_TimingsDue(void)
 {
-    if (!cvar_reflex_stats || !cvar_reflex_stats->integer || !qvkGetLatencyTimingsNV)
-        return;
-    if (reflex_swapchain == VK_NULL_HANDLE)
-        return;
+    if (!cvar_reflex_stats || !cvar_reflex_stats->integer)
+        return false;
 
     static uint64_t last_report_us = 0;
     uint64_t now = Sys_Microseconds();
     if (now - last_report_us < 1000000)
-        return;
+        return false;
     last_report_us = now;
+    return true;
+}
+
+/* End-to-end latency is input sample to the point the frame finished being presented. */
+void Reflex_PrintTimings(const reflex_timings_t *t)
+{
+    if (t->input_sample == 0 || t->present_end < t->input_sample)
+        return;
+
+    Com_Printf("Reflex: input->present %.1f ms (sim %.1f, render submit %.1f, "
+               "gpu %.1f, present %.1f)\n",
+        (double)(t->present_end - t->input_sample) / 1000.0,
+        (double)(t->sim_end - t->sim_start) / 1000.0,
+        (double)(t->submit_end - t->submit_start) / 1000.0,
+        (double)(t->gpu_end - t->gpu_start) / 1000.0,
+        (double)(t->present_end - t->present_start) / 1000.0);
+}
+
+static void reflex_report_timings(void)
+{
+    if (!qvkGetLatencyTimingsNV || reflex_swapchain == VK_NULL_HANDLE)
+        return;
+    if (!Reflex_TimingsDue())
+        return;
 
     /* Query the count first: the driver reports however many frames it has retained. */
     VkGetLatencyMarkerInfoNV info = {
@@ -527,19 +568,20 @@ static void reflex_report_timings(void)
     qvkGetLatencyTimingsNV(qvk.device, reflex_swapchain, &info);
     FGPresent_SwapchainUnlock();
 
-    /* The most recent complete report. End-to-end latency is input sample to the point
-       the frame finished being presented. */
+    /* The most recent complete report. */
     const VkLatencyTimingsFrameReportNV *r = &reports[count - 1];
-    if (r->inputSampleTimeUs == 0 || r->presentEndTimeUs < r->inputSampleTimeUs)
-        return;
-
-    Com_Printf("Reflex: input->present %.1f ms (sim %.1f, render submit %.1f, "
-               "gpu %.1f, present %.1f)\n",
-        (double)(r->presentEndTimeUs - r->inputSampleTimeUs) / 1000.0,
-        (double)(r->simEndTimeUs - r->simStartTimeUs) / 1000.0,
-        (double)(r->renderSubmitEndTimeUs - r->renderSubmitStartTimeUs) / 1000.0,
-        (double)(r->gpuRenderEndTimeUs - r->gpuRenderStartTimeUs) / 1000.0,
-        (double)(r->presentEndTimeUs - r->presentStartTimeUs) / 1000.0);
+    const reflex_timings_t t = {
+        .input_sample  = r->inputSampleTimeUs,
+        .sim_start     = r->simStartTimeUs,
+        .sim_end       = r->simEndTimeUs,
+        .submit_start  = r->renderSubmitStartTimeUs,
+        .submit_end    = r->renderSubmitEndTimeUs,
+        .gpu_start     = r->gpuRenderStartTimeUs,
+        .gpu_end       = r->gpuRenderEndTimeUs,
+        .present_start = r->presentStartTimeUs,
+        .present_end   = r->presentEndTimeUs,
+    };
+    Reflex_PrintTimings(&t);
 }
 
 void Reflex_SetMarkerForFrame(VkLatencyMarkerNV marker, uint64_t present_id)
@@ -574,7 +616,7 @@ uint64_t Reflex_CurrentPresentID(void)
 void Reflex_SleepAndBeginFrame(void)
 {
     /* Ahead of the mode, which reads the answer for the VRR cap. */
-    reflex_poll_vrr();
+    Reflex_PollVRR();
 
     /* Apply mode changes even while disabled, so switching pt_reflex off actually tells
        the driver to stop rather than just skipping our sleep. */

@@ -32,32 +32,20 @@ typedef enum
 	SKY_STROGGOS
 } SkyPreset;
 
-/*-----------------------------------------------------------------------------
-	Structures for sky constant buffer
------------------------------------------------------------------------------*/
-
-struct AtmosphereParameters
-{
-	float solar_irradiance[3];
-	float sun_angular_radius;
-
-	float rayleigh_scattering[3];
-	float bottom_radius;
-
-	float mie_scattering[3];
-	float top_radius;
-
-	float mie_phase_function_g;
-	float SqDistanceToHorizontalBoundary;
-	float AtmosphereHeight;
-	float reserved;
-};
+// struct AtmosphereParameters, Params_Earth and Params_Stroggos
+#include "precomputed_sky_params.h"
 
 
 VkResult SkyInitializeDataGPU(void);
 void SkyReleaseDataGPU(void);
 void UpdateTerrainShadowMapView(vec3_t forward);
 VkResult SkyLoadScatterParameters(SkyPreset preset);
+
+// API-free halves, shared with the D3D12 renderer (precomputed_sky.c says more)
+const struct AtmosphereParameters *SkySelectPreset(SkyPreset preset, const char **planet);
+uint32_t SkyBuildTerrainGrid(const char* FileName, unsigned int SideSize, float size_km,
+	float** out_vertices, uint32_t** out_indices);
+extern float terrain_shadowmap_viewproj[16];
 
 VkDescriptorSetLayout* SkyGetDescriptorLayout(void);
 VkDescriptorSet SkyGetDescriptorSet(void);

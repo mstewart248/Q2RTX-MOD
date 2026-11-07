@@ -112,6 +112,16 @@ vkpt_draw_init_cvars(void)
 	cvar_ui_hdr_video_gamma = Cvar_Get("ui_hdr_video_gamma", "2.2", CVAR_ARCHIVE);
 }
 
+/* stretch_pic.frag's UBO, as both renderers fill it: the UI's brightness on an HDR
+   screen, its saturation, and the video frames' curve (above). */
+void
+vkpt_draw_ui_hdr_params(float *ui_hdr_nits, float *saturation_scale, float *video_gamma)
+{
+	*ui_hdr_nits = cvar_ui_hdr_nits->value;
+	*saturation_scale = cvar_tm_hdr_saturation_scale->value;
+	*video_gamma = cvar_ui_hdr_video_gamma ? max(0.f, min(4.f, cvar_ui_hdr_video_gamma->value)) : 0.f;
+}
+
 VkExtent2D
 vkpt_draw_get_extent(void)
 {
@@ -130,30 +140,9 @@ cvar_t *cvar_film_grain_intensity = NULL;
 cvar_t *cvar_crt                  = NULL;
 cvar_t *cvar_crt_curvature        = NULL;
 
-/* Mirrors FinalBlitPushConstants in shader/final_blit_pc.glsl. */
-typedef struct {
-	int32_t  source;
-	int32_t  src_width, src_height;
-	int32_t  out_width, out_height;
-	int32_t  hdr;
-	float    hdr_white_nits;
-	uint32_t seed;
-
-	float    grain_intensity;
-	float    grain_sigma_px;
-	int32_t  grain_radius;
-
-	int32_t  crt_mode;
-	int32_t  crt_grid_width, crt_grid_height;
-	float    crt_warp_x, crt_warp_y;
-	float    crt_corner_radius_px;
-	float    crt_hard_pix;
-	float    crt_scan_hard_dark, crt_scan_hard_bright;
-	float    crt_mask_strength;
-	int32_t  crt_mask_pitch;
-	float    crt_glow;
-	float    crt_vignette;
-} FinalBlit_PushConstants_t;
+/* FinalBlitPushConstants in shader/final_blit_pc.glsl - vkpt.h's, which the
+   D3D12 blit sends too. */
+typedef vkpt_final_blit_push_t FinalBlit_PushConstants_t;
 
 /* crt_mode in the push constants. */
 enum {
@@ -178,8 +167,6 @@ static VkPipelineLayout pipeline_layout_crt_downsample;
 static const int final_blit_sources[] = {
 	VKPT_IMG_TAA_OUTPUT,
 	VKPT_IMG_DLSS_OUTPUT,
-	VKPT_IMG_FSR_EASU_OUTPUT,
-	VKPT_IMG_FSR_RCAS_OUTPUT,
 	VKPT_IMG_DLSS_FG_OUTPUT,
 	VKPT_IMG_DLSS_FG_OUTPUT2,
 	VKPT_IMG_DLSS_FG_OUTPUT3,
@@ -303,30 +290,47 @@ crt_params(FinalBlit_PushConstants_t *pc)
 	}
 }
 
+bool
+vkpt_final_blit_effects_enabled(void)
+{
+	return film_grain_enabled() || crt_enabled();
+}
+
+/* final_blit_params without the swapchain's part (hdr), for an out_width x
+   out_height target - shared with the D3D12 blit (d3d12/frontend.c), which sends
+   the same push constants to the same shaders. */
+void
+vkpt_final_blit_effects_params(int out_width, int out_height, FinalBlit_PushConstants_t *pc)
+{
+	memset(pc, 0, sizeof(*pc));
+
+	pc->source     = -1;
+	pc->out_width  = (int32_t)out_width;
+	pc->out_height = (int32_t)out_height;
+
+	pc->seed = final_blit_seed++;
+
+	if (film_grain_enabled())
+		pc->grain_intensity = max(0.f, min(0.5f, cvar_film_grain_intensity->value));
+
+	pc->grain_sigma_px = FILM_GRAIN_SIGMA_1080P * (float)out_height / 1080.f;
+	pc->grain_radius   = max(1, min(3, (int)ceilf(2.f * pc->grain_sigma_px)));
+
+	crt_params(pc);
+}
+
 /* Everything but the source. Grain intensity is 0 and crt_mode is off when
    they are off, which the Lanczos blit relies on. */
 static FinalBlit_PushConstants_t
 final_blit_params(void)
 {
-	FinalBlit_PushConstants_t pc = { 0 };
+	FinalBlit_PushConstants_t pc;
 	const VkExtent2D out = vkpt_draw_get_extent();
 
-	pc.source     = -1;
-	pc.out_width  = (int32_t)out.width;
-	pc.out_height = (int32_t)out.height;
+	vkpt_final_blit_effects_params((int)out.width, (int)out.height, &pc);
 
 	pc.hdr            = qvk.surf_is_hdr ? 1 : 0;
 	pc.hdr_white_nits = cvar_ui_hdr_nits ? max(cvar_ui_hdr_nits->value, 1.f) : 200.f;
-
-	pc.seed = final_blit_seed++;
-
-	if (film_grain_enabled())
-		pc.grain_intensity = max(0.f, min(0.5f, cvar_film_grain_intensity->value));
-
-	pc.grain_sigma_px = FILM_GRAIN_SIGMA_1080P * (float)out.height / 1080.f;
-	pc.grain_radius   = max(1, min(3, (int)ceilf(2.f * pc.grain_sigma_px)));
-
-	crt_params(&pc);
 
 	return pc;
 }
@@ -928,6 +932,15 @@ vkpt_draw_clear_stretch_pics()
 	return VK_SUCCESS;
 }
 
+const void *
+vkpt_draw_stretch_pic_queue(int *count, size_t *record_size, int *max_count)
+{
+	*count = num_stretch_pics;
+	*record_size = sizeof(StretchPic_t);
+	*max_count = MAX_STRETCH_PICS;
+	return stretch_pic_queue;
+}
+
 static VkResult
 draw_stretch_pics_into_current_image(VkCommandBuffer cmd_buf, bool keep_queue)
 {
@@ -942,9 +955,7 @@ draw_stretch_pics_into_current_image(VkCommandBuffer cmd_buf, bool keep_queue)
 
 	BufferResource_t *ubo_res = buf_ubo + qvk.current_frame_index;
 	StretchPic_UBO_t *ubo = (StretchPic_UBO_t *) buffer_map(ubo_res);
-	ubo->ui_hdr_nits = cvar_ui_hdr_nits->value;
-	ubo->tm_hdr_saturation_scale = cvar_tm_hdr_saturation_scale->value;
-	ubo->ui_hdr_video_gamma = cvar_ui_hdr_video_gamma ? max(0.f, min(4.f, cvar_ui_hdr_video_gamma->value)) : 0.f;
+	vkpt_draw_ui_hdr_params(&ubo->ui_hdr_nits, &ubo->tm_hdr_saturation_scale, &ubo->ui_hdr_video_gamma);
 	buffer_unmap(ubo_res);
 	ubo = NULL;
 

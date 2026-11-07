@@ -31,14 +31,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 static VkPipeline       pipeline;
 static VkPipelineLayout pipeline_layout;
 
-/* Mirrors ChromaticAberrationPushConstants in chromatic_aberration.comp. */
-struct chromatic_aberration_push_constants {
-	int32_t output_width,  output_height;
-	int32_t image_width,   image_height;
-
-	float spread;
-	int32_t dlss_target;
-};
+/* vkpt.h's vkpt_chromatic_aberration_push_t mirrors ChromaticAberrationPushConstants
+   in chromatic_aberration.comp. */
 
 cvar_t *cvar_chromatic_aberration        = NULL;
 cvar_t *cvar_chromatic_aberration_amount = NULL;
@@ -93,7 +87,7 @@ vkpt_chromatic_aberration_initialize(void)
 	VkPushConstantRange push_constant_range = {
 		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 		.offset     = 0,
-		.size       = sizeof(struct chromatic_aberration_push_constants)
+		.size       = sizeof(vkpt_chromatic_aberration_push_t)
 	};
 
 	CREATE_PIPELINE_LAYOUT(qvk.device, &pipeline_layout,
@@ -147,21 +141,21 @@ static const VkImageSubresourceRange color_range = {
 	.layerCount     = 1
 };
 
-VkResult
-vkpt_chromatic_aberration_record_cmd_buffer(VkCommandBuffer cmd_buf)
+/* THIS FRAME'S PUSH CONSTANTS, shared with the D3D12 renderer, which dispatches
+   the same shader (d3d12/frontend.c, passes.c). False when the frame is empty. */
+bool
+vkpt_chromatic_aberration_params(vkpt_chromatic_aberration_push_t *push_out)
 {
 	const bool dlss = DLSSEnabled();
 
 	/* Same image selection as motion_blur.c - see the note there. */
-	const int target_image = dlss ? VKPT_IMG_DLSS_OUTPUT : VKPT_IMG_TAA_OUTPUT;
-
 	const VkExtent2D output_extent = dlss ? qvk.extent_unscaled : qvk.extent_taa_output;
 	const VkExtent2D image_extent  = dlss ? qvk.extent_unscaled : qvk.extent_taa_images;
 
 	if (output_extent.width == 0 || output_extent.height == 0)
-		return VK_SUCCESS;
+		return false;
 
-	struct chromatic_aberration_push_constants push = { 0 };
+	vkpt_chromatic_aberration_push_t push = { 0 };
 
 	push.output_width  = (int32_t)output_extent.width;
 	push.output_height = (int32_t)output_extent.height;
@@ -178,6 +172,21 @@ vkpt_chromatic_aberration_record_cmd_buffer(VkCommandBuffer cmd_buf)
 
 	push.spread      = amount * h / corner_distance;
 	push.dlss_target = dlss ? 1 : 0;
+
+	*push_out = push;
+	return true;
+}
+
+VkResult
+vkpt_chromatic_aberration_record_cmd_buffer(VkCommandBuffer cmd_buf)
+{
+	vkpt_chromatic_aberration_push_t push;
+	if (!vkpt_chromatic_aberration_params(&push))
+		return VK_SUCCESS;
+
+	const bool dlss = push.dlss_target != 0;
+	const int target_image = dlss ? VKPT_IMG_DLSS_OUTPUT : VKPT_IMG_TAA_OUTPUT;
+	const VkExtent2D output_extent = { (uint32_t)push.output_width, (uint32_t)push.output_height };
 
 	VkDescriptorSet desc_sets[] = {
 		qvk.desc_set_ubo,
@@ -219,7 +228,7 @@ vkpt_chromatic_aberration_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		(output_extent.height + 15) / 16,
 		1);
 
-	/* Copy the result back over the colour image, so bloom, tone mapping, FSR
+	/* Copy the result back over the colour image, so bloom, tone mapping
 	   and the final blit all read the image they always read. */
 	IMAGE_BARRIER(cmd_buf,
 		.image            = qvk.images[VKPT_IMG_MOTION_BLUR],

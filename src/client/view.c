@@ -271,7 +271,7 @@ static bool V_MapFlashlight(void)
 
 void V_Flashlight(void)
 {
-    if(cls.ref_type == REF_TYPE_VKPT) {
+    if(CL_PathTraced()) {
         player_state_t* ps = &cl.frame.ps;
         player_state_t* ops = &cl.oldframe.ps;
 
@@ -757,7 +757,7 @@ void V_Init(void)
 	cl_show_lights = Cvar_Get("cl_show_lights", "0", 0);
     cl_flashlight = Cvar_Get("cl_flashlight", "0", 0);
     cl_flashlight_intensity = Cvar_Get("cl_flashlight_intensity", "20000", CVAR_CHEAT);
-    if(cls.ref_type == REF_TYPE_VKPT)
+    if(CL_PathTraced())
         flashlight_profile_tex = R_RegisterImage("flashlight_profile", IT_PIC, IF_PERMANENT | IF_BILERP, NULL);
     else
         flashlight_profile_tex = -1;

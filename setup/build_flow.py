@@ -10,7 +10,7 @@ CMake, Ninja and git on PATH. Without the two DLLs the game runs as before and
 the Flow options stay hidden.
 
 WHAT FLOW IS: a sparse-grid gaseous fluid solver (advection, combustion,
-vorticity, pressure) that runs as Vulkan compute. It lives in the flow/
+vorticity, pressure) that runs as Vulkan or Direct3D 12 compute. It lives in the flow/
 directory of NVIDIA's PhysX repository, BSD-3 licensed; the licence is copied
 to extern/flow/LICENSE.md and ships next to the DLLs.
 
@@ -19,11 +19,17 @@ WHAT IT DOES:
   * checks out flow/ of the pinned PhysX commit (a sparse git clone, ~10 MB
     instead of the whole repository);
   * downloads the Slang release Flow's dependencies.xml names and checks its
-    SHA-256 - Flow's shaders are HLSL compiled to SPIR-V by Slang at build
-    time and embedded in the DLLs;
+    SHA-256 - Flow's shaders are HLSL compiled by Slang at build time, to
+    SPIR-V and (through DXC) to DXIL, and embedded in the DLLs;
+  * takes DXC (dxcompiler.dll, 1.8.2505 or later, which signs DXIL itself)
+    from the Vulkan SDK the game builds with: $VULKAN_SDK, else the newest
+    C:/VulkanSDK/*;
   * adds setup/flow/ExternalVulkan.cpp and NvFlowVulkanExternal.h to the
     source and applies PATCHES (see there), so Flow can run on the game's own
     VkDevice and queue rather than creating a second device;
+  * adds setup/flow/d3d12/ and NvFlowD3D12External.h: a Direct3D 12 backend,
+    which Flow 2.2 does not have, for the game's D3D12 renderer (vid_rtx 3),
+    on its ID3D12Device and queue the same way;
   * builds with setup/flow/CMakeLists.txt, which replaces Flow's premake and
     packman bootstrap (packman fetches its own Python and toolchain from
     NVIDIA's CDN; nothing here needs it).
@@ -32,10 +38,11 @@ OUTPUTS:
 
   * nvflow.dll and nvflowext.dll at the repository root, next to q2rtx.exe
     (gitignored as *.dll).
-  * extern/flow/include: Flow's public headers plus NvFlowVulkanExternal.h,
-    written when absent. When present they must match this source, or the
-    script stops - compiling against one version and loading another is how a
-    struct layout silently goes wrong. Pass --update-headers after a bump.
+  * extern/flow/include: Flow's public headers plus NvFlowVulkanExternal.h
+    and NvFlowD3D12External.h, written when absent. When present they must
+    match this source, or the script stops - compiling against one version
+    and loading another is how a struct layout silently goes wrong. Pass
+    --update-headers after a bump.
 
 Work files go to build-flow/ (gitignored); a second run reuses the checkout,
 the Slang download and the CMake build.
@@ -67,20 +74,57 @@ SLANG = {
 ADDITIONS = [
     ('ExternalVulkan.cpp', 'source/nvflowext/vulkan/ExternalVulkan.cpp'),
     ('NvFlowVulkanExternal.h', 'include/nvflowext/NvFlowVulkanExternal.h'),
+    ('NvFlowD3D12External.h', 'include/nvflowext/NvFlowD3D12External.h'),
+    ('d3d12/DeviceD3D12.h', 'source/nvflowext/d3d12/DeviceD3D12.h'),
+    ('d3d12/DeviceD3D12.cpp', 'source/nvflowext/d3d12/DeviceD3D12.cpp'),
+    ('d3d12/ContextD3D12.cpp', 'source/nvflowext/d3d12/ContextD3D12.cpp'),
+    ('d3d12/ResourcesD3D12.cpp', 'source/nvflowext/d3d12/ResourcesD3D12.cpp'),
+    ('d3d12/ComputePipelineD3D12.cpp', 'source/nvflowext/d3d12/ComputePipelineD3D12.cpp'),
+]
+
+# Patches earlier versions of this script made, undone when a checkout still
+# has them: (file under flow/, text as patched, text as in Flow's source).
+REVERTS = [
+    # Shaders were compiled for Vulkan only before the D3D12 backend.
+    ('source/nvflowshadercompiler/ShaderPreprocessor.cpp',
+     '    NvFlowUint64 slangPasses = 1u; // q2rtx: Vulkan only, see setup/build_flow.py\n',
+     '    NvFlowUint64 slangPasses = 2u;\n'),
 ]
 
 # Changes to the Flow source: (file under flow/, text, replacement, times the
 # text occurs). Written with '\n'; matched against CRLF checkouts as well.
 PATCHES = [
     # Windows builds compile every shader twice, for Vulkan and through DXC
-    # for D3D12, and the D3D12 pass needs a DXC Flow only gets from packman.
-    # Flow 2 has no D3D12 backend in this source and the game is Vulkan, so
-    # compile the Vulkan pass only, as Linux builds already do.
-    ('source/nvflowshadercompiler/ShaderPreprocessor.cpp',
+    # for D3D12. Flow points Slang at a DXC under external/dxc that only
+    # packman provides; setup/flow/CMakeLists.txt puts the Vulkan SDK's
+    # dxcompiler.dll beside the shader compiler instead, where Slang's
+    # default search finds it.
+    ('source/nvflowshadercompiler/SlangCompiler.cpp',
+     '        slangSession->setDownstreamCompilerPath(SLANG_PASS_THROUGH_DXC, kDxcPath.c_str());\n',
+     '        // q2rtx: dxcompiler.dll beside this executable, see setup/build_flow.py\n', 1),
+
+    # The D3D12 backend in setup/flow/d3d12 behind NvFlowGetDeviceInterface.
+    ('source/nvflowext/NvFlowExt.cpp',
+     'NvFlowDeviceInterface* NvFlowGetDeviceInterface_cpu();\n',
+     'NvFlowDeviceInterface* NvFlowGetDeviceInterface_cpu();\n'
      '#if defined(_WIN32)\n'
-     '    NvFlowUint64 slangPasses = 2u;\n',
+     'NvFlowDeviceInterface* NvFlowGetDeviceInterface_d3d12(); // q2rtx: setup/flow/d3d12\n'
+     '#endif\n', 1),
+    ('source/nvflowext/NvFlowExt.cpp',
+     '    if (api == eNvFlowContextApi_cpu)\n'
+     '    {\n'
+     '        return NvFlowGetDeviceInterface_cpu();\n'
+     '    }\n',
+     '    if (api == eNvFlowContextApi_cpu)\n'
+     '    {\n'
+     '        return NvFlowGetDeviceInterface_cpu();\n'
+     '    }\n'
      '#if defined(_WIN32)\n'
-     '    NvFlowUint64 slangPasses = 1u; // q2rtx: Vulkan only, see setup/build_flow.py\n', 1),
+     '    if (api == eNvFlowContextApi_d3d12) // q2rtx\n'
+     '    {\n'
+     '        return NvFlowGetDeviceInterface_d3d12();\n'
+     '    }\n'
+     '#endif\n', 1),
 
     # ExternalVulkan.cpp builds the device manager and device around the
     # game's instance and device; these flags keep Flow from destroying them.
@@ -163,7 +207,9 @@ EXPORTS = {
     'nvflowext': ['NvFlowGetExtOpList', 'NvFlowGetGridInterface', 'NvFlowGetGridParamsInterface',
                   'NvFlowGetDeviceInterface', 'NvFlowVulkanExternalCreateDeviceManager',
                   'NvFlowVulkanExternalCreateDevice', 'NvFlowVulkanExternalGetTexture',
-                  'NvFlowVulkanExternalGetBuffer'],
+                  'NvFlowVulkanExternalGetBuffer', 'NvFlowD3D12ExternalCreateDeviceManager',
+                  'NvFlowD3D12ExternalCreateDevice', 'NvFlowD3D12ExternalGetTexture',
+                  'NvFlowD3D12ExternalGetBuffer'],
 }
 
 HEADERS = [
@@ -174,6 +220,7 @@ HEADERS = [
     'nvflow/shaders/NvFlowShaderTypes.h',
     'nvflowext/NvFlowExt.h',
     'nvflowext/NvFlowVulkanExternal.h',
+    'nvflowext/NvFlowD3D12External.h',
 ]
 
 
@@ -255,8 +302,18 @@ def patch_source(flow, setup):
     for src, rel in ADDITIONS:
         dst = os.path.join(flow, rel)
         if not os.path.isfile(dst) or not same_text(os.path.join(setup, src), dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(os.path.join(setup, src), dst)
             log('added ' + rel)
+
+    for rel, patched, original in REVERTS:
+        path = os.path.join(flow, rel)
+        text = open(path, encoding='utf-8', newline='').read()
+        if '\r\n' in text:
+            patched, original = patched.replace('\n', '\r\n'), original.replace('\n', '\r\n')
+        if patched in text:
+            open(path, 'w', encoding='utf-8', newline='').write(text.replace(patched, original))
+            log('reverted an old patch of ' + rel)
 
     for rel, old, new, count in PATCHES:
         path = os.path.join(flow, rel)
@@ -271,14 +328,53 @@ def patch_source(flow, setup):
                      'against this Flow version' % rel)
 
 
+def stale_shaders(flow):
+    """Shaders compiled before the D3D12 pass have no X_d3d12.hlsl.h. Flow's
+    shader tool only recompiles a shader whose source differs from the copy it
+    keeps beside the output (X.hlsl), so remove that copy to make it."""
+    gen = os.path.join(flow, '_generated')
+    n = 0
+    for root, _, files in os.walk(gen):
+        for f in files:
+            if f.endswith('_vulkan.hlsl.h'):
+                base = f[:-len('_vulkan.hlsl.h')]
+                copy = os.path.join(root, base + '.hlsl')
+                if not os.path.isfile(os.path.join(root, base + '_d3d12.hlsl.h')) and os.path.isfile(copy):
+                    os.remove(copy)
+                    n += 1
+    if n:
+        log('%d shaders to compile for D3D12 as well' % n)
+
+
+def find_dxc():
+    """dxcompiler.dll from the Vulkan SDK: $VULKAN_SDK, else the newest C:/VulkanSDK/*."""
+    roots = []
+    if os.environ.get('VULKAN_SDK'):
+        roots.append(os.environ['VULKAN_SDK'])
+    roots += sorted(glob.glob('C:/VulkanSDK/*'), reverse=True)
+    for root in roots:
+        dll = os.path.join(root, 'Bin', 'dxcompiler.dll')
+        if os.path.isfile(dll):
+            return dll
+    sys.exit('build_flow: no dxcompiler.dll in a Vulkan SDK (set VULKAN_SDK); Flow\'s D3D12 '
+             'shaders are compiled with it')
+
+
 def build(work, flow, setup):
     out = os.path.join(work, 'build')
+    dxc = find_dxc()
+    log('DXC: ' + dxc)
     # Ninja when it and the compiler are both on PATH (a developer prompt);
     # otherwise CMake's default, which is Visual Studio on a Windows runner.
     # Both put the DLLs in the same place (RUNTIME_OUTPUT_DIRECTORY_RELEASE).
     gen = ['-G', 'Ninja'] if shutil.which('ninja') and shutil.which('cl') else ['-A', 'x64']
     run(['cmake', '-S', setup, '-B', out, *gen, '-DCMAKE_BUILD_TYPE=Release',
-         '-DFLOW_ROOT=' + flow.replace('\\', '/')])
+         '-DFLOW_ROOT=' + flow.replace('\\', '/'), '-DFLOW_DXC=' + dxc.replace('\\', '/')])
+    # The shader headers first, in a build of their own: the tool writes them
+    # as it goes, unknown to Ninja, which works out what is out of date
+    # before it starts - in one build the libraries would keep the old ones.
+    run(['cmake', '--build', out, '--config', 'Release', '--parallel',
+         '--target', 'nvflow_shaders', 'nvflowext_shaders'])
     run(['cmake', '--build', out, '--config', 'Release', '--parallel'])
     return os.path.join(flow, '_build', 'windows-x86_64' if sys.platform == 'win32' else 'linux-x86_64', 'release')
 
@@ -316,6 +412,7 @@ def main():
     flow = fetch_flow(work)
     fetch_slang(work, flow)
     patch_source(flow, setup)
+    stale_shaders(flow)
     bindir = build(work, flow, setup)
 
     for name, exports in EXPORTS.items():

@@ -29,35 +29,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 const struct AtmosphereParameters* Constants = NULL;
 
-#define EARTH_SURFACE_RADIUS (6360.0f)
-#define EARTH_ATMOSPHERE_RADIUS (6420.f)
-#define STROGGOS_SURFACE_RADIUS (6360.0f)
-#define STROGGOS_ATMOSPHERE_RADIUS (6520.f)
-#define DIST_TO_HORIZON(LOW,HIGH) ( HIGH*HIGH - LOW*LOW )
-
-static struct AtmosphereParameters Params_Earth = {
-	.solar_irradiance = { 1.47399998f, 1.85039997f, 1.91198003f },
-	.sun_angular_radius = 0.00467499997f,
-	.rayleigh_scattering = { 0.00580233941f, 0.0135577619f, 0.0331000052f },
-	.bottom_radius = EARTH_SURFACE_RADIUS,
-	.mie_scattering = { 0.0014985f, 0.0014985f, 0.0014985f },
-	.top_radius = EARTH_ATMOSPHERE_RADIUS,
-	.mie_phase_function_g = 0.8f,
-	.SqDistanceToHorizontalBoundary = DIST_TO_HORIZON(EARTH_SURFACE_RADIUS, EARTH_ATMOSPHERE_RADIUS),
-	.AtmosphereHeight = EARTH_ATMOSPHERE_RADIUS - EARTH_SURFACE_RADIUS,
-};
-
-static struct AtmosphereParameters Params_Stroggos = {
-	.solar_irradiance = { 2.47399998, 1.85039997, 1.01198006 },
-	.sun_angular_radius = 0.00934999995f,
-	.rayleigh_scattering = { 0.0270983186, 0.0414223559, 0.0647224262 },
-	.bottom_radius = STROGGOS_SURFACE_RADIUS,
-	.mie_scattering = { 0.00342514296, 0.00342514296, 0.00342514296 },
-	.top_radius = STROGGOS_ATMOSPHERE_RADIUS,
-	.mie_phase_function_g = 0.9f,
-	.SqDistanceToHorizontalBoundary = DIST_TO_HORIZON(STROGGOS_SURFACE_RADIUS, STROGGOS_ATMOSPHERE_RADIUS),
-	.AtmosphereHeight = STROGGOS_ATMOSPHERE_RADIUS - STROGGOS_SURFACE_RADIUS,
-};
+// Params_Earth, Params_Stroggos: precomputed_sky_params.h
 
 // ----------------------------------------------------------------------------
 
@@ -560,7 +532,11 @@ void UpdateTerrainShadowMapView(vec3_t forward)
 }
 
 
-VkResult SkyLoadScatterParameters(SkyPreset preset)
+/* A preset's atmosphere, made the current one (Constants), and the stem of its
+   scatter tables' file names (env/transmittance_<stem>.dds, inscatter_, irradiance_).
+   API-free: the D3D12 renderer loads the same tables. A preset without an
+   atmosphere leaves Constants as it was and names no real file. */
+const struct AtmosphereParameters *SkySelectPreset(SkyPreset preset, const char **planet)
 {
 	const char* Planet = "UNKNOWN";
 
@@ -574,6 +550,16 @@ VkResult SkyLoadScatterParameters(SkyPreset preset)
 		Planet = "stroggos";
 		Constants = &Params_Stroggos;
 	}
+
+	if (planet)
+		*planet = Planet;
+	return Constants;
+}
+
+VkResult SkyLoadScatterParameters(SkyPreset preset)
+{
+	const char* Planet = "UNKNOWN";
+	SkySelectPreset(preset, &Planet);
 
 	ReleaseInfo(&SkyTransmittance);
 	ReleaseInfo(&SkyInscatter);
@@ -674,9 +660,15 @@ extern VkPipeline              pipeline_smap;
 //				Functions
 // ----------------------------------------------------------------------------
 
-struct ShadowmapGeometry FillVertexAndIndexBuffers(const char* FileName, unsigned int SideSize, float size_km)
+/* The terrain shadow map's grid, from its R32 heightmap: SideSize^2 vertices of
+   three floats, (SideSize-1)^2 * 2 triangles of three uint32 indices. API-free:
+   the D3D12 renderer draws the same grid. Z_Free both arrays. Returns the index
+   count, 0 (and nothing allocated) when the heightmap does not load. */
+uint32_t SkyBuildTerrainGrid(const char* FileName, unsigned int SideSize, float size_km,
+	float** out_vertices, uint32_t** out_indices)
 {
-	struct  ShadowmapGeometry result = { 0 };
+	*out_vertices = NULL;
+	*out_indices = NULL;
 
 	unsigned char* file_data = NULL;
 	FS_LoadFile(FileName, (void**)&file_data);
@@ -684,7 +676,7 @@ struct ShadowmapGeometry FillVertexAndIndexBuffers(const char* FileName, unsigne
 	if (!file_data)
 	{
 		Com_EPrintf("Couldn't read file %s\n", FileName);
-		goto done;
+		return 0;
 	}
 
 	DDS_HEADER* dds = (DDS_HEADER*)file_data;
@@ -693,33 +685,14 @@ struct ShadowmapGeometry FillVertexAndIndexBuffers(const char* FileName, unsigne
 	if (dds->magic != DDS_MAGIC || dds->size != sizeof(DDS_HEADER) - 4 || dds->ddspf.fourCC != MAKEFOURCC('D', 'X', '1', '0') || dxt10->dxgiFormat != DXGI_FORMAT_R32_FLOAT)
 	{
 		Com_EPrintf("File %s does not have the expected DDS file format\n", FileName);
-		goto done;
+		FS_FreeFile(file_data);
+		return 0;
 	}
 
 	float* file_pixels = (float*)(file_data + sizeof(DDS_HEADER) + sizeof(DDS_HEADER_DXT10));
-	
 
-	size_t VertexBufferSize = SideSize * SideSize * sizeof(struct ShadowVertex);	
-	size_t IndexBufferSize = (SideSize - 1) * (SideSize - 1) * 2 * sizeof(struct ShadowFace);
-	size_t IndexCount = IndexBufferSize / sizeof(uint32_t);
-
-	VertexBufferSize = align(VertexBufferSize, 64 * 1024);
-	IndexBufferSize = align(IndexBufferSize, 64 * 1024);
-
-	BufferResource_t upload_buffer;
-	buffer_create(&upload_buffer, VertexBufferSize + IndexBufferSize,
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-	byte* mapped_upload_buf = (byte*)buffer_map(&upload_buffer);
-
-	struct ShadowVertex* vertexes = (struct ShadowVertex*)mapped_upload_buf;
-	struct ShadowFace* indexes = (struct ShadowFace*)(mapped_upload_buf + VertexBufferSize);
-
-	if (!vertexes || !indexes)
-		return result;
-
-	result.IndexCount = IndexCount;
+	struct ShadowVertex* vertexes = Z_Malloc(SideSize * SideSize * sizeof(struct ShadowVertex));
+	struct ShadowFace* indexes = Z_Malloc((SideSize - 1) * (SideSize - 1) * 2 * sizeof(struct ShadowFace));
 
 	float delta = size_km / (float)SideSize;
 	float X = -0.5f * size_km;
@@ -759,6 +732,50 @@ struct ShadowmapGeometry FillVertexAndIndexBuffers(const char* FileName, unsigne
 			i++;
 		}
 	}
+
+	FS_FreeFile(file_data);
+	*out_vertices = (float*)vertexes;
+	*out_indices = (uint32_t*)indexes;
+	return i * 3;
+}
+
+struct ShadowmapGeometry FillVertexAndIndexBuffers(const char* FileName, unsigned int SideSize, float size_km)
+{
+	struct  ShadowmapGeometry result = { 0 };
+
+	float* grid_vertices = NULL;
+	uint32_t* grid_indices = NULL;
+	const uint32_t IndexCount = SkyBuildTerrainGrid(FileName, SideSize, size_km, &grid_vertices, &grid_indices);
+	if (!IndexCount)
+		return result;
+
+	size_t VertexBufferSize = SideSize * SideSize * sizeof(struct ShadowVertex);
+	size_t IndexBufferSize = (SideSize - 1) * (SideSize - 1) * 2 * sizeof(struct ShadowFace);
+	const size_t grid_vertex_bytes = VertexBufferSize, grid_index_bytes = IndexBufferSize;
+
+	VertexBufferSize = align(VertexBufferSize, 64 * 1024);
+	IndexBufferSize = align(IndexBufferSize, 64 * 1024);
+
+	BufferResource_t upload_buffer;
+	buffer_create(&upload_buffer, VertexBufferSize + IndexBufferSize,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	byte* mapped_upload_buf = (byte*)buffer_map(&upload_buffer);
+
+	if (!mapped_upload_buf)
+	{
+		Z_Free(grid_vertices);
+		Z_Free(grid_indices);
+		return result;
+	}
+
+	memcpy(mapped_upload_buf, grid_vertices, grid_vertex_bytes);
+	memcpy(mapped_upload_buf + VertexBufferSize, grid_indices, grid_index_bytes);
+	Z_Free(grid_vertices);
+	Z_Free(grid_indices);
+
+	result.IndexCount = IndexCount;
 
 	buffer_unmap(&upload_buffer);
 
@@ -835,10 +852,6 @@ struct ShadowmapGeometry FillVertexAndIndexBuffers(const char* FileName, unsigne
 
 	vkpt_queue_wait_idle(qvk.queue_graphics);
 	buffer_destroy(&upload_buffer);
-
-done:
-	if (file_data)
-		FS_FreeFile(file_data);
 
 	return result;
 }

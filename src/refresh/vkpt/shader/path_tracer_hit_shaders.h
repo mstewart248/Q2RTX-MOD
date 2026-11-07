@@ -39,7 +39,12 @@ void get_model_index_and_prim_offset(int instanceID, int geometryIndex, out int 
 	}
 	else
 	{
-		prim_offset = instance_buffer.tlas_instance_prim_offsets[instanceID];
+		// a per-frame dynamic BLAS. Built from clusters (pt_clusters, vkpt/clusters.h),
+		// each cluster is a geometry of PT_CLUSTER_TRIANGLES triangles of the run and
+		// the primitive index counts within it; built whole, it is one geometry (0) -
+		// as every other BLAS without a model index is
+		prim_offset = instance_buffer.tlas_instance_prim_offsets[instanceID]
+		            + uint(geometryIndex) * PT_CLUSTER_TRIANGLES;
 	}
 }
 

@@ -27,6 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "color.h"
 #include "material.h"
+#include "texture_mips.h"
 #include "../stb/stb_image.h"
 #include "../stb/stb_image_resize.h"
 #include "../stb/stb_image_write.h"
@@ -516,8 +517,8 @@ get_num_miplevels(int w, int h)
    third again as much device memory. That is worth paying once for a wall texture and
    never for one that is replaced every frame and only ever sampled 1:1 - which is what
    a video frame is. IF_NO_MIPMAPS opts an image out. */
-static int
-image_num_miplevels(const image_t *q_img)
+int
+vkpt_image_num_miplevels(const image_t *q_img)
 {
 	if (q_img->flags & IF_NO_MIPMAPS)
 		return 1;
@@ -534,10 +535,10 @@ image_num_miplevels(const image_t *q_img)
    box is lower than its peaks, so rays would slip through them. Remix's texture
    tools build height mips with a max filter; this does the same, on the CPU, at
    upload. */
-static bool
-image_has_max_mips(const image_t *q_img)
+bool
+vkpt_image_has_max_mips(const image_t *q_img)
 {
-	return (q_img->flags & IF_HEIGHT_MAP) && image_num_miplevels(q_img) > 1;
+	return (q_img->flags & IF_HEIGHT_MAP) && vkpt_image_num_miplevels(q_img) > 1;
 }
 
 static int
@@ -558,14 +559,14 @@ mip_level_bytes(int wd, int ht, int bpp)
 static size_t
 image_staging_size(const image_t *q_img, VkDeviceSize device_size)
 {
-	if (!image_has_max_mips(q_img))
+	if (!vkpt_image_has_max_mips(q_img))
 		return device_size;
 
 	int bpp = image_bytes_per_pixel(q_img);
 	int wd = q_img->upload_width;
 	int ht = q_img->upload_height;
 	size_t total = 0;
-	for (int mip = 0; mip < image_num_miplevels(q_img); mip++)
+	for (int mip = 0; mip < vkpt_image_num_miplevels(q_img); mip++)
 	{
 		total += mip_level_bytes(wd, ht, bpp);
 		wd = (wd > 1) ? (wd >> 1) : wd;
@@ -576,8 +577,8 @@ image_staging_size(const image_t *q_img, VkDeviceSize device_size)
 
 // One level down: each texel takes the per-channel maximum of the 2x2 texels above
 // it, plus the extra row or column an odd-sized level leaves over at its far edge.
-static void
-downsample_max(const byte *src, int wd, int ht, byte *dst, int nwd, int nht, int bpp)
+void
+vkpt_downsample_max(const byte *src, int wd, int ht, byte *dst, int nwd, int nht, int bpp)
 {
 	for (int y = 0; y < nht; y++)
 	{
@@ -1823,7 +1824,7 @@ vkpt_textures_end_registration()
 
 		img_info.extent.width = q_img->upload_width;
 		img_info.extent.height = q_img->upload_height;
-		img_info.mipLevels = image_num_miplevels(q_img);
+		img_info.mipLevels = vkpt_image_num_miplevels(q_img);
 		img_info.format = get_image_format(q_img);
 		if (!q_img->is_srgb)
 			img_info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
@@ -1878,7 +1879,7 @@ vkpt_textures_end_registration()
 
 		image_t* q_img = r_images + i;
 		
-		int num_mip_levels = image_num_miplevels(q_img);
+		int num_mip_levels = vkpt_image_num_miplevels(q_img);
 
 		img_view_info.image = tex_images[i];
 		img_view_info.subresourceRange.levelCount = num_mip_levels;
@@ -1914,7 +1915,7 @@ vkpt_textures_end_registration()
 		if (tex_upload_frames[i] != qvk.current_frame_index + 1)
 			continue;
 		
-		int num_mip_levels = image_num_miplevels(q_img);
+		int num_mip_levels = vkpt_image_num_miplevels(q_img);
 
 		VkMemoryRequirements mem_req;
 		vkGetImageMemoryRequirements(qvk.device, tex_images[i], &mem_req);
@@ -1959,10 +1960,10 @@ vkpt_textures_end_registration()
 		} };
 		uint32_t num_regions = 1;
 
-		// Height maps: every level comes from here, max-filtered (see image_has_max_mips).
+		// Height maps: every level comes from here, max-filtered (see vkpt_image_has_max_mips).
 		// Levels are built in system memory - the staging buffer is write-combined and
 		// slow to read back - and each is copied in as its own region.
-		bool max_mips = image_has_max_mips(q_img);
+		bool max_mips = vkpt_image_has_max_mips(q_img);
 		if (max_mips)
 		{
 			assert(num_mip_levels <= (int)q_countof(cpy_info));
@@ -1980,7 +1981,7 @@ vkpt_textures_end_registration()
 				int nht = (lht > 1) ? (lht >> 1) : lht;
 				byte *level = scratch[(mip - 1) & 1];
 
-				downsample_max(prev_level, lwd, lht, level, nwd, nht, bytes_per_pixel);
+				vkpt_downsample_max(prev_level, lwd, lht, level, nwd, nht, bytes_per_pixel);
 
 				level_offset += mip_level_bytes(lwd, lht, bytes_per_pixel);
 				memcpy(staging_buffer + level_offset, level, (size_t)nwd * nht * bytes_per_pixel);
@@ -2057,7 +2058,7 @@ vkpt_textures_end_registration()
 		};
 
 		// Height maps uploaded their whole max-filtered chain in phase 3.
-		if (image_has_max_mips(q_img))
+		if (vkpt_image_has_max_mips(q_img))
 			continue;
 
 		bool normalize = (q_img->flags & IF_NORMAL_MAP) && !q_img->is_srgb;
@@ -2077,7 +2078,7 @@ vkpt_textures_end_registration()
 				(q_img->upload_height + 15) / 16, 1);
 		}
 
-		int num_mip_levels = image_num_miplevels(q_img);
+		int num_mip_levels = vkpt_image_num_miplevels(q_img);
 
 		int wd = q_img->upload_width;
 		int ht = q_img->upload_height;
@@ -2215,6 +2216,63 @@ vkpt_textures_end_registration()
 	return VK_SUCCESS;
 }
 
+/* Which of the four texture samplers an image is read through, by type, flags
+   and the pt_nearest / pt_bilerp_chars / pt_bilerp_pics settings. The answer is
+   an index into the samplers in the order they are created above, which is also
+   the order of D3D12_GLOBAL_SAMPLER_* - the D3D12 renderer (src/refresh/d3d12)
+   calls this too, so both renderers sample every image the same way. It touches
+   no Vulkan state and no cvars of its own: the caller passes the settings. */
+int vkpt_image_sampler_kind(const image_t *q_img, int pt_nearest, int bilerp_chars, int bilerp_pics)
+{
+	if (q_img->type == IT_WALL || q_img->type == IT_SKIN) {
+		/* pt_nearest - how world and model textures are sampled.
+
+		     0  filtered (trilinear + anisotropic)
+		     1  nearest magnification, linear mips + aniso - crisp texels
+		        up close without the shimmer, on EVERY map
+		     2  nearest, mip 0 only - crisp and noisy, on every map
+		     3  as 1, but only on the COLOUR maps
+		     4  as 2, but only on the colour maps
+
+		   WHY 3 AND 4 EXIST. Modes 1 and 2 hit every texture a material
+		   owns, and only one of them is a picture. Normal, roughness and
+		   metallic maps are SHADING DATA sampled per hit, and point
+		   sampling them quantises the surface itself: the normal map steps
+		   between texels instead of sweeping, so a smooth wall lights in
+		   flat facets and every specular highlight crawls between them as
+		   the camera moves. That has nothing to do with wanting visible
+		   texels, and under a temporal denoiser it is the difference that
+		   shows up most.
+
+		   So 3 and 4 point sample the albedo and the emissive - the two the
+		   eye reads as "the texture" - and leave the data maps filtered.
+
+		   IF_SRGB IS THE DISCRIMINATOR, and it is exact rather than a
+		   guess: the material loader tags base and emissive IF_SRGB because
+		   they are colour, and gives normal, roughness and metallic none
+		   because they are not. The same split the renderer already needs
+		   for correct decoding is the split wanted here. */
+		const int  mode = pt_nearest;
+		const bool colour_map = (q_img->flags & IF_SRGB) != 0;
+
+		if (mode == 1 || (mode == 3 && colour_map))
+			return VKPT_SAMPLER_NEAREST_MIPMAP_ANISO;
+		else if (mode == 2 || (mode == 4 && colour_map))
+			return VKPT_SAMPLER_NEAREST;
+	} else if (q_img->flags & IF_NEAREST) {
+		return VKPT_SAMPLER_NEAREST;
+	} else if (q_img->flags & IF_BILERP) {
+		return VKPT_SAMPLER_LINEAR_CLAMP;
+	} else if (q_img->type == IT_SPRITE) {
+		return VKPT_SAMPLER_LINEAR_CLAMP;
+	} else if (q_img->type == IT_FONT) {
+		return bilerp_chars == 0 ? VKPT_SAMPLER_NEAREST : VKPT_SAMPLER_LINEAR_CLAMP;
+	} else if (q_img->type == IT_PIC) {
+		return bilerp_pics == 0 ? VKPT_SAMPLER_NEAREST : VKPT_SAMPLER_LINEAR_CLAMP;
+	}
+	return VKPT_SAMPLER_DEFAULT;
+}
+
 // scratch for the batched descriptor write below; too large to sit on the stack
 static VkDescriptorImageInfo descriptor_image_infos[MAX_RIMAGES];
 
@@ -2232,54 +2290,14 @@ void vkpt_textures_update_descriptor_set()
 		if (image_view == VK_NULL_HANDLE)
 			image_view = tex_invalid_texture_image_view;
 		
-		VkSampler sampler = qvk.tex_sampler;
-
-		if (q_img->type == IT_WALL || q_img->type == IT_SKIN) {
-			/* pt_nearest - how world and model textures are sampled.
-
-			     0  filtered (trilinear + anisotropic)
-			     1  nearest magnification, linear mips + aniso - crisp texels
-			        up close without the shimmer, on EVERY map
-			     2  nearest, mip 0 only - crisp and noisy, on every map
-			     3  as 1, but only on the COLOUR maps
-			     4  as 2, but only on the colour maps
-
-			   WHY 3 AND 4 EXIST. Modes 1 and 2 hit every texture a material
-			   owns, and only one of them is a picture. Normal, roughness and
-			   metallic maps are SHADING DATA sampled per hit, and point
-			   sampling them quantises the surface itself: the normal map steps
-			   between texels instead of sweeping, so a smooth wall lights in
-			   flat facets and every specular highlight crawls between them as
-			   the camera moves. That has nothing to do with wanting visible
-			   texels, and under a temporal denoiser it is the difference that
-			   shows up most.
-
-			   So 3 and 4 point sample the albedo and the emissive - the two the
-			   eye reads as "the texture" - and leave the data maps filtered.
-
-			   IF_SRGB IS THE DISCRIMINATOR, and it is exact rather than a
-			   guess: the material loader tags base and emissive IF_SRGB because
-			   they are colour, and gives normal, roughness and metallic none
-			   because they are not. The same split the renderer already needs
-			   for correct decoding is the split wanted here. */
-			const int  mode = cvar_pt_nearest->integer;
-			const bool colour_map = (q_img->flags & IF_SRGB) != 0;
-
-			if (mode == 1 || (mode == 3 && colour_map))
-				sampler = qvk.tex_sampler_nearest_mipmap_aniso;
-			else if (mode == 2 || (mode == 4 && colour_map))
-				sampler = qvk.tex_sampler_nearest;
-		} else if (q_img->flags & IF_NEAREST) {
-			sampler = qvk.tex_sampler_nearest;
-		} else if (q_img->flags & IF_BILERP) {
-			sampler = qvk.tex_sampler_linear_clamp;
-		} else if (q_img->type == IT_SPRITE) {
-			sampler = qvk.tex_sampler_linear_clamp;
-		} else if (q_img->type == IT_FONT) {
-			sampler = (cvar_pt_bilerp_chars->integer == 0) ? qvk.tex_sampler_nearest : qvk.tex_sampler_linear_clamp;
-		} else if (q_img->type == IT_PIC) {
-			sampler = (cvar_pt_bilerp_pics->integer == 0) ? qvk.tex_sampler_nearest : qvk.tex_sampler_linear_clamp;
-		} 
+		const VkSampler samplers[VKPT_NUM_SAMPLER_KINDS] = {
+			[VKPT_SAMPLER_DEFAULT]               = qvk.tex_sampler,
+			[VKPT_SAMPLER_NEAREST]               = qvk.tex_sampler_nearest,
+			[VKPT_SAMPLER_NEAREST_MIPMAP_ANISO]  = qvk.tex_sampler_nearest_mipmap_aniso,
+			[VKPT_SAMPLER_LINEAR_CLAMP]          = qvk.tex_sampler_linear_clamp,
+		};
+		VkSampler sampler = samplers[vkpt_image_sampler_kind(q_img, cvar_pt_nearest->integer,
+			cvar_pt_bilerp_chars->integer, cvar_pt_bilerp_pics->integer)];
 
 		VkDescriptorImageInfo *img_info = descriptor_image_infos + i;
 
@@ -2390,9 +2408,6 @@ uint32_t vkpt_screen_image_profile(void)
 	if (cvar_flt_enable && cvar_flt_enable->integer != 0 && !DLSSBypassDenoiser())
 		profile |= SCREEN_IMG_GROUP_ASVGF_FILTER;
 
-	if (vkpt_fsr_is_enabled())
-		profile |= SCREEN_IMG_GROUP_FSR;
-
 	if (cvar_pt_accumulation_rendering && cvar_pt_accumulation_rendering->integer > 0)
 		profile |= SCREEN_IMG_GROUP_ACCUM;
 
@@ -2450,10 +2465,6 @@ static bool image_is_active(int index, uint32_t profile)
 	case VKPT_IMG_ASVGF_GRAD_SMPL_POS_B:
 		return (profile & SCREEN_IMG_GROUP_ASVGF_FILTER) != 0;
 
-	case VKPT_IMG_FSR_EASU_OUTPUT:
-	case VKPT_IMG_FSR_RCAS_OUTPUT:
-		return (profile & SCREEN_IMG_GROUP_FSR) != 0;
-
 	/* Only asvgf_taau.comp's temporal_blend_factor > 0 branch, i.e. photo mode. */
 	case VKPT_IMG_HQ_COLOR_INTERLEAVED:
 		return (profile & SCREEN_IMG_GROUP_ACCUM) != 0;
@@ -2461,6 +2472,13 @@ static bool image_is_active(int index, uint32_t profile)
 	default:
 		return true;
 	}
+}
+
+/* image_is_active for the D3D12 renderer, whose G-buffer is the same list
+   (d3d12/world.c ensure_images): an inactive image is made 1x1 there too. */
+bool vkpt_screen_image_active(int index, uint32_t profile)
+{
+	return image_is_active(index, profile);
 }
 
 VkResult
@@ -2628,10 +2646,9 @@ LIST_IMAGES_A_B
 	if (skipped_count > 0)
 	{
 		Con_SkipNotify(true);
-		Com_Printf("Screen-space images: %d not allocated (%.2f MB saved) -%s%s%s\n",
+		Com_Printf("Screen-space images: %d not allocated (%.2f MB saved) -%s%s\n",
 		           skipped_count, (float)skipped_size / megabyte,
 		           (image_profile & SCREEN_IMG_GROUP_ASVGF_FILTER) ? "" : " A-SVGF",
-		           (image_profile & SCREEN_IMG_GROUP_FSR) ? "" : " FSR",
 		           (image_profile & SCREEN_IMG_GROUP_ACCUM) ? "" : " photo-mode");
 		Con_SkipNotify(false);
 	}

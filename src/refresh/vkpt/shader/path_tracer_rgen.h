@@ -91,6 +91,18 @@ RayPayloadEffects ray_payload_effects;
 
 #include "path_tracer_hit_shaders.h"
 
+#ifdef VKPT_D3D12
+/* SHADER EXECUTION REORDERING (pt_ser, D3D12 only; Vulkan never sees this). spv2dxil
+   --ser builds a pass as a ray generation shader and gives this function the body
+   dx::MaybeReorderThread(hint, bits): the GPU may regroup the lanes by the low `bits`
+   of `hint` before what follows. Empty in every other build (the compute pass, and the
+   raygen one without --ser), so all of them run the same code and write the same
+   pixels - only which lanes run together changes. */
+void d3d12_ser_reorder(uint hint, uint bits)
+{
+}
+#endif
+
 #else // !KHR_RAY_QUERY
 
 layout(location = RT_PAYLOAD_GEOMETRY) rayPayloadEXT RayPayloadGeometry ray_payload_geometry;

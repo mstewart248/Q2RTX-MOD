@@ -33,7 +33,8 @@ void VID_PumpEvents(void);
 void VID_SetMode(void);
 char *VID_GetDefaultModeList(void);
 
-typedef enum { GAPI_OPENGL, GAPI_VULKAN, GAPI_SOFTWARE } graphics_api_t;
+// GAPI_D3D12: a plain window; the renderer makes its own DXGI swapchain on it
+typedef enum { GAPI_OPENGL, GAPI_VULKAN, GAPI_SOFTWARE, GAPI_D3D12 } graphics_api_t;
 
 bool    VID_Init(graphics_api_t api);
 void    VID_Shutdown(void);

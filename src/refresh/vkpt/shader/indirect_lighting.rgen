@@ -535,6 +535,12 @@ indirect_lighting(
 
 	triangle = get_hit_triangle(ray_payload_geometry);
 
+#ifdef VKPT_D3D12
+	// SER (pt_ser 1): regroup the lanes by what the bounce hit - the material's kind,
+	// then its index - before shading it
+	d3d12_ser_reorder(((triangle.material_id >> 28) << 12) | (triangle.material_id & MATERIAL_INDEX_MASK), 16u);
+#endif
+
 	float indirect_specular_weight = 1;
 	if(is_specular_ray)
 	{

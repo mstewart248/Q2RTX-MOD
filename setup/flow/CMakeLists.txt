@@ -1,10 +1,12 @@
 # Builds nvflow and nvflowext - the NVIDIA Flow 2 runtime that
-# src/refresh/vkpt/flow.c loads - from the Flow source in FLOW_ROOT, without
+# src/refresh/vkpt/flow.c (and the D3D12 renderer) loads - from the Flow
+# source in FLOW_ROOT, without
 # Flow's own premake/packman bootstrap. setup/build_flow.py drives it; see
 # there for the pinned source and the patches applied first.
 #
 # The project mirrors flow/premake5.lua: the shader compiler (HLSL -> SPIR-V
-# through Slang) and the shader tool that runs it over a .nfproj are built
+# through Slang, and on Windows -> DXIL through Slang and DXC, FLOW_DXC's
+# dxcompiler.dll) and the shader tool that runs it over a .nfproj are built
 # first, the tool generates each library's shader headers, then the libraries
 # build against them. The editor and the *_rtx variants are left out.
 
@@ -74,10 +76,15 @@ endfunction()
 flow_tool(nvflowshadercompiler)
 target_include_directories(nvflowshadercompiler PRIVATE ${FLOW_ROOT}/external/slang/include)
 if(WIN32)
+	if(NOT FLOW_DXC)
+		message(FATAL_ERROR "set FLOW_DXC to a dxcompiler.dll (1.8.2505 or later), for the D3D12 shaders")
+	endif()
 	target_link_libraries(nvflowshadercompiler PRIVATE ${FLOW_ROOT}/external/slang/lib/slang.lib)
+	# dxcompiler.dll beside the compiler: Slang's default search finds it there
 	set(SLANG_RUNTIME
 		${FLOW_ROOT}/external/slang/bin/slang.dll
-		${FLOW_ROOT}/external/slang/bin/slang-glslang.dll)
+		${FLOW_ROOT}/external/slang/bin/slang-glslang.dll
+		${FLOW_DXC})
 else()
 	target_link_libraries(nvflowshadercompiler PRIVATE ${FLOW_ROOT}/external/slang/lib/libslang.so)
 	set(SLANG_RUNTIME
@@ -115,6 +122,11 @@ file(GLOB NVFLOWEXT_SOURCES
 	${FLOW_ROOT}/source/nvflowext/vulkan/*.cpp
 	${FLOW_ROOT}/source/nvflowext/cpu/*.cpp
 	${FLOW_ROOT}/source/nvflowext/opt/*.cpp)
+if(WIN32)
+	# Q2RTX's D3D12 backend (setup/flow/d3d12, copied in by build_flow.py)
+	file(GLOB NVFLOWEXT_D3D12_SOURCES ${FLOW_ROOT}/source/nvflowext/d3d12/*.cpp)
+	list(APPEND NVFLOWEXT_SOURCES ${NVFLOWEXT_D3D12_SOURCES})
+endif()
 add_library(nvflowext SHARED ${FLOW_SHARED_SOURCES} ${NVFLOWEXT_SOURCES})
 target_include_directories(nvflowext PRIVATE ${FLOW_COMMON_INCLUDES}
 	${FLOW_GENERATED}/nvflowext

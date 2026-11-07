@@ -135,7 +135,12 @@ void InitDLSSCvars()
     dldn_last_state = cvar_pt_dlss_dldn->integer ? 1 : 0;
     cvar_pt_dlss_split_fields->changed = DlssSplitFieldsChanged;
     cvar_pt_dlss_field_res->changed = DlssFieldResChanged;
-    viewsize_changed(cvar_pt_dlss);
+    // The mode the config left, without viewsize_changed's vid_rtx 0/1: the renderer is
+    // starting anyway. On Vulkan that toggle set 1 over 1 and CL_InitRefresh / the
+    // restart cleared its CVAR_REFRESH bit, so nothing changes there; but the D3D12
+    // renderer runs this too (vkpt_init_frontend), and it turned vid_rtx 3 into an
+    // archived 1 - the next vid_restart, or launch, came up in Vulkan.
+    DLSSModeSelected(cvar_pt_dlss);
 }
 
 // True when the path tracer should trace two full-resolution layers (field 0 =
@@ -520,6 +525,25 @@ qboolean CheckSupport() {
     return qtrue;
 }
 
+/* THE D3D12 RENDERER'S NGX INSTANCE (d3d12/ngx.c) in TryInit's place. The capability
+   block is NGX's own type whichever API made it, so everything that only reads it -
+   CheckSupport, DLSSPublishAvailability (and so DLSSModeDenoise), DLSSDescribeFeature -
+   works from it unchanged. The Vulkan entry points (ValidateDLSSFeature, DLSSApply,
+   DLSSDeconstructor's releases) are never reached while it stands: the D3D12 renderer
+   holds its own feature handle, and lets go with NULL (isInitalized false again) before
+   it shuts its instance down. True when the mode pt_dlss_dldn asks for is supported. */
+qboolean DLSSAdoptParameters(NVSDK_NGX_Parameter* params) {
+    dlssObj.device = VK_NULL_HANDLE;
+    dlssObj.pParams = params;
+    dlssObj.pDlssFeature = NULL;
+    dlssObj.isInitalized = params != NULL ? qtrue : qfalse;
+
+    DLSSPublishAvailability();  // before CheckSupport, which asks DLSSModeDenoise
+
+    dlssObj.created = CheckSupport();
+    return dlssObj.created;
+}
+
 void DLSSDeconstructor() {
     if (dlssObj.isInitalized) {
         vkpt_device_wait_idle();
@@ -693,41 +717,50 @@ void SaveDLSSFeatureValues(struct DLSSRenderResolution resObject)
     dlssObj.prevDlssFeatureValues = newObj;
 }
 
-qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution resObject) {
-    if (!dlssObj.isInitalized || dlssObj.pParams == NULL) {
-        /* Both early returns here used to be silent, so a failure to CREATE and a refusal
-           to TRY were indistinguishable in the log - and the caller turned either one into
-           the same fatal error. Name them. */
-        Com_EPrintf("DLSS: not creating a feature - NGX %s\n",
-            !dlssObj.isInitalized ? "is not initialized" : "has no parameter block");
-        return qfalse;
+/* What DLSS is handed, in pixels: DLAA renders at the output size, and the input is
+   never wider than the output. get_render_extent() rounds the render width up to even,
+   so at a 100% render scale an odd-width window renders one column more than it outputs
+   - 3438 in for 3437 out - and NGX refuses to create the feature ("Input dimensions ...
+   must be <= output dimensions"), which switches DLSS off until pt_dlss is changed.
+   Photo mode pins the scale at 100%, and the player setup preview opened from it runs
+   DLSS at that scale: Matt, "stuck with the denoiser off even though RR looks like it
+   was turned on in the menu". The spare column is simply not handed over. */
+void DLSSClampResolution(struct DLSSRenderResolution* resObject) {
+    if (ToNGXPerfQuality() == NVSDK_NGX_PerfQuality_Value_DLAA) {
+        resObject->outputWidth = resObject->inputWidth;
+        resObject->outputHeight = resObject->inputHeight;
     }
 
-    /* THE FEATURE HANDLE MUST BE CHECKED, NOT JUST THE CACHED RESOLUTION.
+    if (resObject->inputWidth > resObject->outputWidth)
+        resObject->inputWidth = resObject->outputWidth;
+    if (resObject->inputHeight > resObject->outputHeight)
+        resObject->inputHeight = resObject->outputHeight;
+}
 
-       AreSameDLSSFeatureValues() compares the requested resolution against values saved by
-       the last successful create, and those values are file-scope state that SURVIVES a
-       renderer restart. pDlssFeature does not - it dies with the device. So after a
-       vid_restart that came back to a resolution the cache already knew, this returned
-       "already valid" for a feature that no longer existed, DLSSApply() found a NULL handle
-       and killed the game with a fatal error.
+/* DYNAMIC RESOLUTION (11-06). The feature is made for the largest render extent
+   the frame can have without a settings change (vkpt_dlss_input_capacity: DRS's
+   top scale, else viewsize), or the frame's own where that is larger, and each
+   evaluation names the frame's extent as InRenderSubrectDimensions - the DLSS
+   guide's dynamic resolution. Until then it was made for the frame's extent, so
+   every DRS step (and the first frame after photo mode, when DLSS ran in it)
+   remade it behind an idle wait. `resObject` is the frame's, clamped. */
+void DLSSFeatureResolution(struct DLSSRenderResolution* resObject) {
+    int width, height;
+    vkpt_dlss_input_capacity(&width, &height);
+    if (resObject->inputWidth < width)
+        resObject->inputWidth = width;
+    if (resObject->inputHeight < height)
+        resObject->inputHeight = height;
+    DLSSClampResolution(resObject);
+}
 
-       Same shape as the FG timeline semaphore surviving a restart: device-lifetime objects
-       and the static state describing them have to agree, and the handle is the one that
-       tells the truth. */
-    if (dlssObj.pDlssFeature != NULL && AreSameDLSSFeatureValues(resObject)) {
-        return qtrue;
-    }
-
-    // NOTE: the resolution is recorded only after a *successful* create, further down.
-    // Saving it up front meant a single failed creation was cached as the current state,
-    // so AreSameDLSSFeatureValues() short-circuited every later call and the feature was
-    // never retried - turning any transient failure into a permanent fatal error.
-    if (dlssObj.pDlssFeature != NULL) {
-        DestroyDLSSFeature();
-    }
-
-
+/* The feature for this resolution and the current settings: Super Resolution's and Ray
+   Reconstruction's creation parameters, and the preset and denoiser hints the creation
+   reads from `params`. Returns whether it is Ray Reconstruction (DLSSModeDenoise).
+   ValidateDLSSFeature creates it through NGX's Vulkan helpers, the D3D12 renderer
+   (d3d12/frontend.c) through its D3D12 ones. */
+qboolean DLSSDescribeFeature(struct DLSSRenderResolution resObject, NVSDK_NGX_Parameter* params,
+                             NVSDK_NGX_DLSS_Create_Params* sr, NVSDK_NGX_DLSSD_Create_Params* rr) {
     NVSDK_NGX_DLSSD_Create_Params denoiseParm = {
         .InWidth = resObject.inputWidth,
         .InHeight = resObject.inputHeight,
@@ -778,26 +811,71 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
     dlssParams.InFeatureCreateFlags = SuperSamplingCreateFlags;
     denoiseParm.InFeatureCreateFlags = RayReconstructionCreateFlags;
 
+    bool denoiseMode = DLSSModeDenoise() == 1;
+
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_M);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
+
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
+    
+    //NVSDK_NGX_Parameter_SetF(params, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0f);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_Denoise, 1);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Denoise_Mode, NVSDK_NGX_DLSS_Denoise_Mode_DLUnified);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Roughness_Mode, NVSDK_NGX_DLSS_Roughness_Mode_Unpacked);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_Use_HW_Depth, NVSDK_NGX_DLSS_Depth_Type_Linear);
+
+    *sr = dlssParams;
+    *rr = denoiseParm;
+    return denoiseMode ? qtrue : qfalse;
+}
+
+qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution resObject) {
+    if (!dlssObj.isInitalized || dlssObj.pParams == NULL) {
+        /* Both early returns here used to be silent, so a failure to CREATE and a refusal
+           to TRY were indistinguishable in the log - and the caller turned either one into
+           the same fatal error. Name them. */
+        Com_EPrintf("DLSS: not creating a feature - NGX %s\n",
+            !dlssObj.isInitalized ? "is not initialized" : "has no parameter block");
+        return qfalse;
+    }
+
+    /* THE FEATURE HANDLE MUST BE CHECKED, NOT JUST THE CACHED RESOLUTION.
+
+       AreSameDLSSFeatureValues() compares the requested resolution against values saved by
+       the last successful create, and those values are file-scope state that SURVIVES a
+       renderer restart. pDlssFeature does not - it dies with the device. So after a
+       vid_restart that came back to a resolution the cache already knew, this returned
+       "already valid" for a feature that no longer existed, DLSSApply() found a NULL handle
+       and killed the game with a fatal error.
+
+       Same shape as the FG timeline semaphore surviving a restart: device-lifetime objects
+       and the static state describing them have to agree, and the handle is the one that
+       tells the truth. */
+    if (dlssObj.pDlssFeature != NULL && AreSameDLSSFeatureValues(resObject)) {
+        return qtrue;
+    }
+
+    // NOTE: the resolution is recorded only after a *successful* create, further down.
+    // Saving it up front meant a single failed creation was cached as the current state,
+    // so AreSameDLSSFeatureValues() short-circuited every later call and the feature was
+    // never retried - turning any transient failure into a permanent fatal error.
+    if (dlssObj.pDlssFeature != NULL) {
+        DestroyDLSSFeature();
+    }
+
+
+    NVSDK_NGX_DLSSD_Create_Params denoiseParm;
+    NVSDK_NGX_DLSS_Create_Params dlssParams;
+    bool denoiseMode = DLSSDescribeFeature(resObject, dlssObj.pParams, &dlssParams, &denoiseParm);
+
     // only one phys device
     uint32_t creationNodeMask = 1;
     uint32_t visibilityNodeMask = 1;
-    bool denoiseMode = DLSSModeDenoise() == 1;
-
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, NVSDK_NGX_DLSS_Hint_Render_Preset_M);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
-
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F);
-    
-    //NVSDK_NGX_Parameter_SetF(dlssObj.pParams, NVSDK_NGX_Parameter_Hint_UseFireflySwatter, 1.0f);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Denoise, 1);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Denoise_Mode, NVSDK_NGX_DLSS_Denoise_Mode_DLUnified);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_DLSS_Roughness_Mode, NVSDK_NGX_DLSS_Roughness_Mode_Unpacked);
-    NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, NVSDK_NGX_Parameter_Use_HW_Depth, NVSDK_NGX_DLSS_Depth_Type_Linear);
 
     NVSDK_NGX_Result res;
 
@@ -829,6 +907,138 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
     return qtrue;
 }
 
+/* No feature could be created: DLSS switches itself off (DLSSEnabled) until pt_dlss is
+   changed. NOT FATAL. This used to be Com_Error(ERR_FATAL, ...), so any transient
+   failure to produce a DLSS feature killed the game outright - and the reproducible one
+   was a vid_restart, which a DLSS quality-mode change performs every single time
+   (viewsize_changed() toggles vid_rtx). Losing upscaling is a degraded picture; losing
+   the process is a crash. Switch DLSS off, say why, and keep running. The renderer
+   targets are rebuilt because DLSSEnabled() feeds extent_taa_images.
+
+   dlssRuntimeFailed is cleared whenever the user changes pt_dlss, so this is a fallback
+   rather than a latch - re-picking a mode retries the creation. */
+void DLSSFeatureFailed(void) {
+    static qboolean warned = qfalse;
+    if (!warned) {
+        warned = qtrue;
+        Com_EPrintf("DLSS: no feature could be created, so DLSS is switching itself "
+            "off rather than aborting. Re-select a DLSS mode to retry. See the "
+            "reason above and DLSSTemp/nvngx*.log.\n");
+    }
+    dlssRuntimeFailed = qtrue;
+    recreateSwapChain = qtrue;
+}
+
+/* What this frame's evaluation hands DLSS beyond the fixed images (DLSSEvaluation in
+   DLSS.h), from the cvars and the frame's matrices. DLSSApply's, and the D3D12
+   renderer's. */
+void DLSSDescribeEvaluation(const vec2 jitterOffset, DLSSEvaluation* ev) {
+    memset(ev, 0, sizeof(*ev));
+
+    // pt_dlss_debug: an intermediate image in place of the colour
+    static const int debug_images[] = {
+        [1] = VKPT_IMG_DLSS_REFLECT_MOTION,
+        [2] = VKPT_IMG_DLSS_ALBEDO,
+        [3] = VKPT_IMG_DLSS_ROUGHNESS,
+        [4] = VKPT_IMG_DLSS_NORMAL,
+        [5] = VKPT_IMG_DLSS_SPECULAR_ALBEDO,
+        [6] = VKPT_IMG_DLSS_DEPTH,
+        [7] = VKPT_IMG_PT_DLSS_MOTION,
+        [8] = VKPT_IMG_DLSS_BEFORE_TRANSPARENT,
+        [9] = VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE,
+        [10] = VKPT_IMG_DLSS_RAYLENGTH_SPECULAR,
+        [11] = VKPT_IMG_PT_TRANSPARENT,
+        [12] = VKPT_IMG_PT_MOTION,
+        [13] = VKPT_IMG_PT_DLSS_MOTION,
+        [14] = VKPT_IMG_ASVGF_HIST_COLOR_HF,
+        [15] = VKPT_IMG_PT_SHADING_POSITION,
+        [16] = VKPT_IMG_FLAT_COLOR,
+        [17] = VKPT_IMG_FLAT_MOTION,
+        [18] = VKPT_IMG_TAA_OUTPUT,
+        [19] = VKPT_IMG_PT_THROUGHPUT,
+        [20] = VKPT_IMG_PT_BOUNCE_THROUGHPUT,
+        [21] = VKPT_IMG_HQ_COLOR_INTERLEAVED,
+        [22] = VKPT_IMG_DLSS_REFLECTED_ALBEDO,
+    };
+    const int debug = Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer;
+    ev->color_image = (debug >= 1 && debug < (int)LENGTH(debug_images)) ? debug_images[debug] : VKPT_IMG_TAA_OUTPUT;
+
+    // Jitter.
+    //
+    // The programming guide (3.7.3) asks for "the jitter applied to the projection
+    // matrix". Q2RTX never jitters a projection matrix - primary_rays.rgen samples at
+    // (pixel_centre + sub_pixel_jitter) instead. Those are not the same sign: sampling
+    // toward +j makes scene content land at -j in the image, so the equivalent
+    // projection jitter is -sub_pixel_jitter. Hence the negation, which is also what
+    // stock Q2RTX did.
+    //
+    // The axes themselves already agree and need no per-component flip: the jitter is in
+    // y-down pixel space (image_position is a launch index) and projection_view_to_screen
+    // produces y-down UVs, which is why asvgf_temporal.comp can add motion.xy straight
+    // onto a y-down pixel coordinate.
+    //
+    // To settle it empirically rather than by argument, the development nvngx_dlssd.dll
+    // remaps the jitter live: CTRL+ALT+F9 cycles the configurations in the SDK's
+    // utils/DLSS_Debug_Jitter_Configs.txt (0 = as sent, 9 = negate Y, 10 = negate X,
+    // 11 = negate both) and CTRL+ALT+F10 swaps X and Y. Set pt_dlss_jitter_sign 1 first
+    // so the engine sends the raw offset, then cycle.
+    float jitterSign = (float)Cvar_Get("pt_dlss_jitter_sign", "-1", CVAR_ARCHIVE)->integer;
+    if (jitterSign != 1.0f && jitterSign != -1.0f)
+        jitterSign = 1.0f;
+
+    ev->jitter_x = jitterOffset[0] * jitterSign;
+    ev->jitter_y = jitterOffset[1] * jitterSign;
+
+    ev->diffuse_hit_distance = (cvar_pt_dlss_diff_hitdist != NULL)
+        && cvar_pt_dlss_diff_hitdist->integer != 0;
+
+    ev->reflected_albedo = (cvar_pt_dlss_reflected_albedo != NULL)
+        && cvar_pt_dlss_reflected_albedo->integer != 0;
+
+    // pt_dlss_bt_guide 2: leave the colour-before-transparency guide out (RR guide 3.4.11
+    // calls it optional). 0 and 1 choose what the shaders put in it - see global_ubo.h.
+    ev->before_transparency = !(cvar_pt_dlss_bt_guide != NULL && cvar_pt_dlss_bt_guide->integer == 2);
+
+    // pt_dlss_spec_motion - see InitDLSSCvars. The matrices are "row major, left
+    // multiplication" per RR guide 3.4.9; as the DLSS-G code below explains, a row-vector
+    // matrix stored row-major is the same 16 floats as this tree's column-vector matrices
+    // stored column-major, so V and P go over without a transpose.
+    const int specMotion = (cvar_pt_dlss_spec_motion != NULL) ? cvar_pt_dlss_spec_motion->integer : 0;
+    ev->matrices = (specMotion == 1 || specMotion == 2)
+        && (cvar_pt_projection == NULL || cvar_pt_projection->integer == PROJECTION_RECTILINEAR);
+    if (ev->matrices) {
+        const QVKUniformBuffer_t* ubo = &vkpt_refdef.uniform_buffer;
+        memcpy(ev->world_to_view, *ubo->V, sizeof(ev->world_to_view));
+        memcpy(ev->view_to_clip, *ubo->P, sizeof(ev->view_to_clip));
+
+        /* ubo->P's depth row is z/w = (f+n)/(f-n) + 2fn/((f-n) z), which spans 1.0005..3 and
+           is used for nothing - see pt_dlss_fg_proj below. RR is created with LINEAR depth
+           (view-space z), so hand it a standard D3D-style row instead, z/w = 0 at the near
+           plane and 1 at the far one. Column-major: row 2 is elements 2, 6, 10, 14. */
+        const float zn = vkpt_refdef.z_near, zf = vkpt_refdef.z_far;
+        ev->view_to_clip[2] = 0.0f;
+        ev->view_to_clip[6] = 0.0f;
+        ev->view_to_clip[10] = zf / (zf - zn);
+        ev->view_to_clip[14] = -zf * zn / (zf - zn);
+
+        if (cvar_pt_dlss_rr_mat_yflip != NULL && cvar_pt_dlss_rr_mat_yflip->integer) {
+            // row 1: elements 1, 5, 9, 13
+            for (int c = 0; c < 4; c++)
+                ev->view_to_clip[c * 4 + 1] = -ev->view_to_clip[c * 4 + 1];
+        }
+    }
+    ev->reflection_motion = !(ev->matrices && specMotion == 1);
+}
+
+// the format each image DLSSApply may hand over has (LIST_IMAGES)
+static VkFormat DLSSImageFormat(int image) {
+    switch (image) {
+    case VKPT_IMG_DLSS_REFLECT_MOTION: return VK_FORMAT_R32G32_SFLOAT;
+    case VKPT_IMG_DLSS_DEPTH:          return VK_FORMAT_R32_SFLOAT;
+    default:                           return VK_FORMAT_R16G16B16A16_SFLOAT;
+    }
+}
+
 NVSDK_NGX_Resource_VK ToNGXResource(VkImage image, VkImageView imageView, NVSDK_NGX_Dimensions size, VkFormat format, bool withWriteAccess) {
     VkImageSubresourceRange subresourceRange = {
         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -852,46 +1062,16 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         Com_Error(ERR_FATAL, "Nvidia DLSS is not supported (or DLSS dynamic library files are notfound). Check availability before usage.");
     }
 
-    if (ToNGXPerfQuality() == NVSDK_NGX_PerfQuality_Value_DLAA) {
-        resObject.outputWidth = resObject.inputWidth;
-        resObject.outputHeight = resObject.inputHeight;
-    }
+    DLSSClampResolution(&resObject);
 
-    /* INPUT NEVER WIDER THAN OUTPUT. get_render_extent() rounds the render width up
-       to even, so at a 100% render scale an odd-width window renders one column more
-       than it outputs - 3438 in for 3437 out - and NGX refuses to create the feature
-       ("Input dimensions ... must be <= output dimensions"), which switches DLSS off
-       until pt_dlss is changed. Photo mode pins the scale at 100%, and the player
-       setup preview opened from it runs DLSS at that scale: Matt, "stuck with the
-       denoiser off even though RR looks like it was turned on in the menu". The
-       spare column is simply not handed over. */
-    if (resObject.inputWidth > resObject.outputWidth)
-        resObject.inputWidth = resObject.outputWidth;
-    if (resObject.inputHeight > resObject.outputHeight)
-        resObject.inputHeight = resObject.outputHeight;
-
-    ValidateDLSSFeature(cmd, resObject);
+    // the feature: for the largest render extent; this frame's is a sub-rectangle
+    struct DLSSRenderResolution featureRes = resObject;
+    DLSSFeatureResolution(&featureRes);
+    ValidateDLSSFeature(cmd, featureRes);
 
     if (dlssObj.pDlssFeature == NULL)
     {
-        /* NOT FATAL. This used to be Com_Error(ERR_FATAL, ...), so any transient failure to
-           produce a DLSS feature killed the game outright - and the reproducible one was a
-           vid_restart, which a DLSS quality-mode change performs every single time
-           (viewsize_changed() toggles vid_rtx). Losing upscaling is a degraded picture;
-           losing the process is a crash. Switch DLSS off, say why, and keep running. The
-           renderer targets are rebuilt because DLSSEnabled() feeds extent_taa_images.
-
-           dlssRuntimeFailed is cleared whenever the user changes pt_dlss, so this is a
-           fallback rather than a latch - re-picking a mode retries the creation. */
-        static qboolean warned = qfalse;
-        if (!warned) {
-            warned = qtrue;
-            Com_EPrintf("DLSS: no feature could be created, so DLSS is switching itself "
-                "off rather than aborting. Re-select a DLSS mode to retry. See the "
-                "reason above and DLSSTemp/nvngx*.log.\n");
-        }
-        dlssRuntimeFailed = qtrue;
-        recreateSwapChain = qtrue;
+        DLSSFeatureFailed();
         return;
     }
 
@@ -907,7 +1087,14 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Dimensions targetSize = {
         resObject.outputWidth,
         resObject.outputHeight,
-    };    
+    };
+
+    // what the render-resolution inputs are made at (get_taa_image_extent): the
+    // frame's extent is a sub-rectangle of them, from the corner
+    NVSDK_NGX_Dimensions imageSize = {
+        qvk.extent_taa_images.width,
+        qvk.extent_taa_images.height,
+    };
 
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_TAA_OUTPUT]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
@@ -934,168 +1121,36 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
         .size = VK_WHOLE_SIZE,
         );
 
-    NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    DLSSEvaluation ev;
+    DLSSDescribeEvaluation(jitterOffset, &ev);
+
+    // TAA_OUTPUT, or pt_dlss_debug's view
+    NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[ev.color_image], qvk.images_views[ev.color_image], imageSize, DLSSImageFormat(ev.color_image), false);
+    NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);    
-    NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
-    NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R32G32_SFLOAT, false);
-    NVSDK_NGX_Resource_VK albedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK normal = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK specularAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK beforeTransparent = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], imageSize, VK_FORMAT_R32_SFLOAT, false);
+    NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], imageSize, VK_FORMAT_R32G32_SFLOAT, false);
+    NVSDK_NGX_Resource_VK albedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK normal = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK specularAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK beforeTransparent = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     NVSDK_NGX_VK_GBuffer inBuffer = {
         .pInAttrib[NVSDK_NGX_GBUFFER_ALBEDO] = &albedo        
     };
 
-    switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
-        case 1:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R32G32_SFLOAT, false);
-            break;
-        case 2:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 3:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 4:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 5:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 6:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
-            break;
-        case 7:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 8:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 9:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 10:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 11:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_TRANSPARENT], qvk.images_views[VKPT_IMG_PT_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 12:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_MOTION], qvk.images_views[VKPT_IMG_PT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 13:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 14:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_ASVGF_HIST_COLOR_HF], qvk.images_views[VKPT_IMG_ASVGF_HIST_COLOR_HF], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 15:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_SHADING_POSITION], qvk.images_views[VKPT_IMG_PT_SHADING_POSITION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 16:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_COLOR], qvk.images_views[VKPT_IMG_FLAT_COLOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 17:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_MOTION], qvk.images_views[VKPT_IMG_FLAT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 18:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_TAA_OUTPUT], qvk.images_views[VKPT_IMG_TAA_OUTPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 19:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_THROUGHPUT], qvk.images_views[VKPT_IMG_PT_THROUGHPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 20:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_PT_BOUNCE_THROUGHPUT], qvk.images_views[VKPT_IMG_PT_BOUNCE_THROUGHPUT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 21:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_HQ_COLOR_INTERLEAVED], qvk.images_views[VKPT_IMG_HQ_COLOR_INTERLEAVED], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-        case 22:
-            unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-            break;
-    }
-
-
-    // Jitter.
-    //
-    // The programming guide (3.7.3) asks for "the jitter applied to the projection
-    // matrix". Q2RTX never jitters a projection matrix - primary_rays.rgen samples at
-    // (pixel_centre + sub_pixel_jitter) instead. Those are not the same sign: sampling
-    // toward +j makes scene content land at -j in the image, so the equivalent
-    // projection jitter is -sub_pixel_jitter. Hence the negation, which is also what
-    // stock Q2RTX did.
-    //
-    // The axes themselves already agree and need no per-component flip: the jitter is in
-    // y-down pixel space (image_position is a launch index) and projection_view_to_screen
-    // produces y-down UVs, which is why asvgf_temporal.comp can add motion.xy straight
-    // onto a y-down pixel coordinate.
-    //
-    // To settle it empirically rather than by argument, the development nvngx_dlssd.dll
-    // remaps the jitter live: CTRL+ALT+F9 cycles the configurations in the SDK's
-    // utils/DLSS_Debug_Jitter_Configs.txt (0 = as sent, 9 = negate Y, 10 = negate X,
-    // 11 = negate both) and CTRL+ALT+F10 swaps X and Y. Set pt_dlss_jitter_sign 1 first
-    // so the engine sends the raw offset, then cycle.
-    float jitterSign = (float)Cvar_Get("pt_dlss_jitter_sign", "-1", CVAR_ARCHIVE)->integer;
-    if (jitterSign != 1.0f && jitterSign != -1.0f)
-        jitterSign = 1.0f;
-
-    const float jitterX = jitterOffset[0] * jitterSign;
-    const float jitterY = jitterOffset[1] * jitterSign;
-
-    const bool useDiffuseHitDist = (cvar_pt_dlss_diff_hitdist != NULL)
-        && cvar_pt_dlss_diff_hitdist->integer != 0;
-
-    const bool useReflectedAlbedo = (cvar_pt_dlss_reflected_albedo != NULL)
-        && cvar_pt_dlss_reflected_albedo->integer != 0;
-    NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-
-    // pt_dlss_bt_guide 2: leave the colour-before-transparency guide out (RR guide 3.4.11
-    // calls it optional). 0 and 1 choose what the shaders put in it - see global_ubo.h.
-    const bool useBeforeTransparency = !(cvar_pt_dlss_bt_guide != NULL && cvar_pt_dlss_bt_guide->integer == 2);
-
-    // pt_dlss_spec_motion - see InitDLSSCvars. The matrices are "row major, left
-    // multiplication" per RR guide 3.4.9; as the DLSS-G code below explains, a row-vector
-    // matrix stored row-major is the same 16 floats as this tree's column-vector matrices
-    // stored column-major, so V and P go over without a transpose.
-    const int specMotion = (cvar_pt_dlss_spec_motion != NULL) ? cvar_pt_dlss_spec_motion->integer : 0;
-    const bool rrMatrices = (specMotion == 1 || specMotion == 2)
-        && (cvar_pt_projection == NULL || cvar_pt_projection->integer == PROJECTION_RECTILINEAR);
-    float rrWorldToView[16], rrViewToClip[16];
-    if (rrMatrices) {
-        const QVKUniformBuffer_t* ubo = &vkpt_refdef.uniform_buffer;
-        memcpy(rrWorldToView, *ubo->V, sizeof(rrWorldToView));
-        memcpy(rrViewToClip, *ubo->P, sizeof(rrViewToClip));
-
-        /* ubo->P's depth row is z/w = (f+n)/(f-n) + 2fn/((f-n) z), which spans 1.0005..3 and
-           is used for nothing - see pt_dlss_fg_proj below. RR is created with LINEAR depth
-           (view-space z), so hand it a standard D3D-style row instead, z/w = 0 at the near
-           plane and 1 at the far one. Column-major: row 2 is elements 2, 6, 10, 14. */
-        const float zn = vkpt_refdef.z_near, zf = vkpt_refdef.z_far;
-        rrViewToClip[2] = 0.0f;
-        rrViewToClip[6] = 0.0f;
-        rrViewToClip[10] = zf / (zf - zn);
-        rrViewToClip[14] = -zf * zn / (zf - zn);
-
-        if (cvar_pt_dlss_rr_mat_yflip != NULL && cvar_pt_dlss_rr_mat_yflip->integer) {
-            // row 1: elements 1, 5, 9, 13
-            for (int c = 0; c < 4; c++)
-                rrViewToClip[c * 4 + 1] = -rrViewToClip[c * 4 + 1];
-        }
-    }
-    const bool useReflectionMotion = !(rrMatrices && specMotion == 1);
+    NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     if (!denoiseMode) {
         NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {
             .Feature = {.pInColor = &unresolvedColorResource, .pInOutput = &resolvedColorResource },
             .pInDepth = &depthResource,
             .pInMotionVectors = &motionVectorsResource,
-            .InJitterOffsetX = jitterX,
-            .InJitterOffsetY = jitterY,
+            .InJitterOffsetX = ev.jitter_x,
+            .InJitterOffsetY = ev.jitter_y,
             .InRenderSubrectDimensions = sourceSize,
             .InReset = resetAccum ? 1 : 0,
             .InMVScaleX = sourceSize.Width,
@@ -1118,8 +1173,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 			.pInOutput = &resolvedColorResource,
             .pInDepth = &depthResource,
             .pInMotionVectors = &motionVectorsResource,
-            .InJitterOffsetX = jitterX,
-            .InJitterOffsetY = jitterY,
+            .InJitterOffsetX = ev.jitter_x,
+            .InJitterOffsetY = ev.jitter_y,
             .InRenderSubrectDimensions = sourceSize,
             .InReset = resetAccum ? 1 : 0,
             .InMVScaleX = sourceSize.Width,
@@ -1127,18 +1182,18 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .InColorSubrectBase = sourceOffset,
             .InDepthSubrectBase = sourceOffset,
             .InMVSubrectBase = sourceOffset,
-            .pInMotionVectorsReflections = useReflectionMotion ? &reflectMotion : NULL,
-            .pInWorldToViewMatrix = rrMatrices ? rrWorldToView : NULL,
-            .pInViewToClipMatrix = rrMatrices ? rrViewToClip : NULL,
+            .pInMotionVectorsReflections = ev.reflection_motion ? &reflectMotion : NULL,
+            .pInWorldToViewMatrix = ev.matrices ? ev.world_to_view : NULL,
+            .pInViewToClipMatrix = ev.matrices ? ev.view_to_clip : NULL,
 			.pInNormals = &normal,
-			.pInDiffuseHitDistance = useDiffuseHitDist ? &diffuseLength : NULL,
+			.pInDiffuseHitDistance = ev.diffuse_hit_distance ? &diffuseLength : NULL,
 			.pInSpecularHitDistance = &specularLength,
 			.pInSpecularAlbedo = &specularAlbedo,
 			.pInDiffuseAlbedo = &albedo,
             .pInRoughness = &roughness,
-            .pInReflectedAlbedo = useReflectedAlbedo ? &reflectedAlbedo : NULL,
+            .pInReflectedAlbedo = ev.reflected_albedo ? &reflectedAlbedo : NULL,
             .InReflectedAlbedoSubrectBase = sourceOffset,
-            .pInColorBeforeTransparency = useBeforeTransparency ? &beforeTransparent : NULL,
+            .pInColorBeforeTransparency = ev.before_transparency ? &beforeTransparent : NULL,
             .InColorBeforeTransparencySubrectBase = sourceOffset
         };
 
@@ -1263,7 +1318,11 @@ char* GetFolderPath()
 }
 #endif
 
-void viewsize_changed(cvar_t* self) {
+/* pt_dlss's choice without the renderer restart: the render scale it implies, and a
+   retry for a feature that failed. The D3D12 renderer's pt_dlss callback - it remakes
+   its images at the new size the next frame, and a vid_rtx 0/1 would leave it for
+   Vulkan. */
+void DLSSModeSelected(cvar_t* self) {
 
     recreateSwapChain = qtrue;
 
@@ -1291,6 +1350,10 @@ void viewsize_changed(cvar_t* self) {
     }
 
     oldCvarValue = self->integer;
+}
+
+void viewsize_changed(cvar_t* self) {
+    DLSSModeSelected(self);
     Cvar_SetByVar(vid_rtx, "0", FROM_MENU);
     Cvar_SetByVar(vid_rtx, "1", FROM_MENU);
 }
@@ -1409,11 +1472,12 @@ const wchar_t* GetWC(const char* c)
 static NVSDK_NGX_Handle* dlssgFeature = NULL;
 static uint32_t dlssgWidth = 0;
 static uint32_t dlssgHeight = 0;
-/* The RENDER extent the feature was created for. Tracked separately from the output
-   extent because changing the DLSS mode (Quality -> DLAA, say) changes the render
-   resolution while the output resolution stays put. The feature is created with
-   DynamicResolutionScaling = false, so continuing to feed it depth and motion vectors
-   at a different size than it was promised faults inside NGX. */
+/* The RENDER extent the feature was created for - the largest it may be fed. Tracked
+   separately from the output extent because changing the DLSS mode (Quality -> DLAA,
+   say) changes the render resolution while the output resolution stays put. Since
+   11-06 the feature is made with DynamicResolutionScaling for DLSSFeatureResolution's
+   extent, and a frame within it is fed as a subrect; a frame LARGER than it remakes
+   it (fed past its promise, NGX faults). */
 static uint32_t dlssgRenderWidth = 0;
 static uint32_t dlssgRenderHeight = 0;
 /* Generated frames per real frame the feature was CREATED for (1 = 2x, 3 = 4x). Held
@@ -1642,6 +1706,13 @@ qboolean DLSSGFeatureReady()
     return dlssgFeature != NULL ? qtrue : qfalse;
 }
 
+/* A renderer whose feature create or evaluate failed (the D3D12 one; the Vulkan path
+   sets it itself): DLSSGEnabled() is false from then on, as after a failure here. */
+void DLSSGFeatureFailed(void)
+{
+    dlssgFailed = qtrue;
+}
+
 qboolean DLSSGShowInterpolated()
 {
     return dlssgFeature != NULL
@@ -1650,8 +1721,9 @@ qboolean DLSSGShowInterpolated()
 }
 
 /* Output image for generated frame `generatedIndex` (1-based). One image per generated
-   frame, because they all have to stay live until each has been presented. */
-static int DLSSGOutputImageIndex(unsigned int generatedIndex)
+   frame, because they all have to stay live until each has been presented. (The D3D12
+   renderer's evaluations write the same images.) */
+int DLSSGOutputImageIndex(unsigned int generatedIndex)
 {
     switch (generatedIndex) {
     case 2:  return VKPT_IMG_DLSS_FG_OUTPUT2;
@@ -1702,14 +1774,23 @@ static qboolean ValidateDLSSGFeature(VkCommandBuffer cmd, uint32_t width, uint32
        resolution change does. Leaving it out of this comparison would keep a 2x feature
        alive after the player selected 4x, which is the state that was measured on
        2026-09-02: three generated frames, all identical, all at the 2x midpoint. */
+    /* DYNAMIC RESOLUTION (11-06): a feature whose render extent still covers this
+       frame's is kept - a DRS step down, or back up to where it was, remakes nothing.
+       A new one is made for the largest extent the frame can have without a settings
+       change, Super Resolution's rule (DLSSFeatureResolution). */
     if (dlssgFeature != NULL
         && dlssgWidth == width && dlssgHeight == height
-        && dlssgRenderWidth == renderWidth && dlssgRenderHeight == renderHeight
+        && dlssgRenderWidth >= renderWidth && dlssgRenderHeight >= renderHeight
         && dlssgMultiFrameCount == multiFrameCount)
         return qtrue;
 
     if (dlssgFeature != NULL)
         DestroyDLSSGFeature();
+
+    struct DLSSRenderResolution made = { (int)renderWidth, (int)renderHeight, (int)width, (int)height };
+    DLSSFeatureResolution(&made);
+    renderWidth = (uint32_t)made.inputWidth;
+    renderHeight = (uint32_t)made.inputHeight;
 
     /* The "native backbuffer format" is the format of the colour we hand over, which
        is VKPT_IMG_DLSS_OUTPUT - rgba16f, not the swapchain format, because the
@@ -1734,7 +1815,7 @@ static qboolean ValidateDLSSGFeature(VkCommandBuffer cmd, uint32_t width, uint32
     /* The multi-frame count is in this line deliberately: a feature created with 1 when
        the player asked for 4x is the exact failure this was, and it was invisible in the
        log for weeks because the line only mentioned the extents. */
-    Com_Printf("DLSS-G: frame generation feature created at %ux%u (render %ux%u), "
+    Com_Printf("DLSS-G: frame generation feature created at %ux%u (render up to %ux%u), "
         "%u generated frame(s) per real frame (%ux)\n",
         width, height, renderWidth, renderHeight, multiFrameCount, multiFrameCount + 1);
     return qtrue;
@@ -1754,22 +1835,17 @@ static void mat4_transpose(float* dst, const float* src)
     }
 }
 
-void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
+/* THE API-FREE HALF OF DLSSGApply: every input to an evaluation but the resources,
+   for the Vulkan path below and the D3D12 renderer (d3d12/frontend.c), which hand it to
+   NGX through the same code (dlssg_ngx.hpp). Run once the feature is valid for this
+   frame; multiFrameIndex is the caller's to set for each generated frame. */
+void DLSSGDescribeEvaluation(qboolean resetAccum, DLSSGEvaluation* ev)
 {
-    if (!DLSSGEnabled())
-        return;
-
     const uint32_t outWidth = qvk.extent_unscaled.width;
     const uint32_t outHeight = qvk.extent_unscaled.height;
 
-    /* Same value the Evaluate loop below counts up to, read once so the feature is
-       created for exactly the multiplier this frame is about to ask it for. */
-    const unsigned int fgGeneratedFrames = DLSSGGeneratedFrames();
-
-    if (!ValidateDLSSGFeature(cmd, outWidth, outHeight,
-                              qvk.extent_render.width, qvk.extent_render.height,
-                              fgGeneratedFrames))
-        return;
+    memset(ev, 0, sizeof(*ev));
+    DLSSGEvalDesc* d = &ev->desc;
 
     QVKUniformBuffer_t* ubo = &vkpt_refdef.uniform_buffer;
 
@@ -1957,7 +2033,6 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
         }
     }
 
-    NVSDK_NGX_Dimensions outSize = { outWidth, outHeight };
     NVSDK_NGX_Dimensions renderSize = {
         qvk.extent_render.width,
         qvk.extent_render.height
@@ -1969,23 +2044,6 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
        what produced the glass artifacts. */
     const int fgDepthMode = Cvar_Get("pt_dlss_fg_depthmode", "1", 0)->integer;
     const int fgDepthImage = fgDepthMode ? VKPT_IMG_DLSS_FG_DEPTH : VKPT_IMG_DLSS_DEPTH;
-
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_FG_DEPTH]);
-    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
-
-    NVSDK_NGX_Resource_VK backbuffer = ToNGXResource(
-        qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT],
-        outSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-
-    NVSDK_NGX_Resource_VK depth = ToNGXResource(
-        qvk.images[fgDepthImage], qvk.images_views[fgDepthImage],
-        renderSize, VK_FORMAT_R32_SFLOAT, false);
-
-    NVSDK_NGX_Resource_VK mvecs = ToNGXResource(
-        qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION],
-        renderSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     float fovYRadians = 0.0f;
     float aspect = (outHeight > 0) ? ((float)outWidth / (float)outHeight) : 1.0f;
@@ -2008,12 +2066,200 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
        optional, but it costs nothing and removes a guess. */
     const int fgMvecSign = Cvar_Get("pt_dlss_fg_mvsign", "1", 0)->integer < 0 ? -1 : 1;
 
+    /* The count the caller's Evaluate loop runs to: the one the feature was just
+       validated for. */
+    ev->generated_frames = DLSSGGeneratedFrames();
+    ev->depth_image = fgDepthImage;
+
+
+    /* THE FRAME HAS NO HUD IN IT, SO SAY SO. The 2D layer (status bar, crosshair,
+       console notify lines) is drawn onto each swapchain image AFTER frame
+       generation, so VKPT_IMG_DLSS_OUTPUT is already the HUD-less image the SDK
+       describes for pHudless. Handing the same resource over in both roles makes
+       the guide's identity hold exactly - Backbuffer = UI + (1 - a) * Hudless with
+       UI = 0 everywhere - and tells the runtime that nothing in the frame is UI.
+       Without either hint, DLSS-G runs its own UI-detection heuristics, which look
+       for static, saturated, high-contrast content, i.e. a stationary laser beam
+       in a still camera. pt_dlss_fg_hudless 0 restores the old no-hint behaviour
+       for an A/B. */
+    ev->hudless = Cvar_Get("pt_dlss_fg_hudless", "1", 0)->integer ? qtrue : qfalse;
+
+    d->renderWidth = renderSize.Width;
+    d->renderHeight = renderSize.Height;
+
+    /* MEASURED THE HARD WAY. The Super Resolution path passes
+       InMVScaleX/Y = the render extent (DLSS.c:894), which means
+       VKPT_IMG_PT_DLSS_MOTION holds NORMALIZED motion and the scale is what turns
+       it into pixels. DLSS-G's mvecScale is the same kind of multiplier, so it
+       needs the render extent too.
+
+       This was 1.0 at first, on the theory that DLSS-G wanted vectors already in
+       [-1,1]. That made the applied motion ~3000x too small, so every interpolated
+       frame came out a near-copy of one endpoint: the presented frame rate doubled
+       while the motion still stepped at the render rate, which looks SLOWER than
+       frame generation switched off, and only a very fast camera produced enough
+       motion to show any warping at all. Matt spotted it as "the movement doesn't
+       look smooth" while the counter read double.
+
+       pt_dlss_fg_mvscale overrides it so the convention stays testable rather than
+       re-derived: 0 = render extent, anything else is used literally. */
+    d->mvecScaleX = fgMvecScaleX * (float)fgMvecSign;
+    d->mvecScaleY = fgMvecScaleY * (float)fgMvecSign;
+
+    memcpy(d->cameraPos, fgCamPos, sizeof(d->cameraPos));
+    memcpy(d->cameraUp, fgCamUp, sizeof(d->cameraUp));
+    memcpy(d->cameraRight, fgCamRight, sizeof(d->cameraRight));
+    memcpy(d->cameraFwd, fgCamFwd, sizeof(d->cameraFwd));
+
+    d->cameraNear = vkpt_refdef.z_near;
+    d->cameraFar = vkpt_refdef.z_far;
+    d->cameraFOV = fovYRadians;
+    d->cameraAspectRatio = aspect;
+
+    /* SAME SIGN CONVENTION AS SUPER RESOLUTION. DLSSApply() multiplies the jitter
+       by pt_dlss_jitter_sign (default -1) before handing it over, because Q2RTX never
+       jitters a projection matrix - primary_rays.rgen samples at
+       (pixel_centre + sub_pixel_jitter), and sampling toward +j puts scene content at
+       -j, so the equivalent projection jitter is negated. This path was passing the
+       RAW offset, i.e. the opposite sign to the one super resolution uses.
+
+       A wrong-signed jitter displaces content by a sub-pixel amount that flips every
+       frame. Invisible when the camera is still; reads as judder as soon as it turns,
+       which is exactly how it showed up. */
+    d->jitterOffsetX = ubo->sub_pixel_jitter[0] * fgJitterSign;
+    d->jitterOffsetY = ubo->sub_pixel_jitter[1] * fgJitterSign;
+
+    memcpy(d->cameraViewToClip, mViewToClip, sizeof(d->cameraViewToClip));
+    memcpy(d->clipToCameraView, mClipToView, sizeof(d->clipToCameraView));
+    memcpy(d->clipToPrevClip, mClipToPrev, sizeof(d->clipToPrevClip));
+    memcpy(d->prevClipToClip, mPrevToClip, sizeof(d->prevClipToClip));
+
+    /* VKPT_IMG_DLSS_OUTPUT is linear HDR - tone mapping happens after this point. */
+    /* NOT "is our colour buffer linear HDR" - the SDK comment on this field says
+       "full HDR (RENDERING TO AN HDR MONITOR)". It describes the OUTPUT path, not the
+       format of the buffer we hand over, and we were passing 1 on an SDR swapchain.
+
+       The cost was visible and constant: dumped side by side, the generated frame had
+       the same geometry and view as the real one but its highlights were crushed - a
+       blown-out white window came back dull amber, the strip light came back orange -
+       while the mid-tones lifted (mean 86 vs 62 in sRGB). Every generated frame
+       therefore looked wrong in any scene with a bright light in it, which at 2x is
+       every other frame presented, and reads as constant artifacting.
+
+       Note the SR path a few hundred lines up passes NVSDK_NGX_DLSS_Feature_Flags_IsHDR
+       unconditionally and that is CORRECT - for Super Resolution the flag means the
+       INPUT is HDR linear. Same word, different question. Do not "make them consistent". */
+    d->colorBuffersHDR = qvk.surf_is_hdr ? 1 : 0;
+
+    /* VKPT_IMG_DLSS_DEPTH is LINEAR view depth, not a reversed hardware depth
+       buffer - the SR/RR features are created with
+       NVSDK_NGX_DLSS_Depth_Type_Linear. DLSS-G has no equivalent "depth type"
+       parameter, so if the interpolation misbehaves around depth discontinuities
+       this is a prime suspect. */
+    /* A/B KNOBS FOR THE INPUT CONVENTIONS.
+
+       The compare instrument measures the generated frame sitting ~100% of a frame
+       step from the real one when it should be ~50%, i.e. on top of an endpoint
+       rather than between the two. Neither split fields nor mvecScale changed it, so
+       what remains is a convention mismatch in what we hand DLSS-G. These are all
+       per-frame Opt_Eval fields, so they take effect immediately - no feature
+       recreation, no rebuild, sweepable in one session.
+
+         pt_dlss_fg_mvsign    -1 flips the motion vector direction. The guide says the
+                              buffer must describe motion from the CURRENT frame to the
+                              PREVIOUS one; Q2RTX's DLSS motion may run the other way,
+                              and a sign error moves everything backwards, which
+                              interpolation resolves toward an endpoint.
+         pt_dlss_fg_cammotion 0 says camera motion is NOT already baked into the mvecs,
+                              so DLSS-G derives it from the matrices instead.
+         pt_dlss_fg_depthinv  1 for reversed-Z depth. VKPT_IMG_DLSS_DEPTH is linear view
+                              depth, so 0 should be right - but it has never been tested
+                              against 1, and getting it wrong breaks disocclusion. */
+    /* 1 with the FG depth image, because it holds 1/|d| - DLSS-G then computes
+       lin_depth = |d|, the linear view distance in Quake units. 0 only makes sense
+       alongside pt_dlss_fg_depthmode 0. */
+    d->depthInverted = fgDepthMode
+        ? 1
+        : (Cvar_Get("pt_dlss_fg_depthinv", "0", 0)->integer ? 1 : 0);
+
+    d->cameraMotionIncluded = Cvar_Get("pt_dlss_fg_cammotion", "1", 0)->integer ? 1 : 0;
+    d->reset = resetAccum ? 1 : 0;
+    d->notRenderingGameFrames = qvk.frame_menu_mode ? 1 : 0;
+
+    d->linearizedDepthScale =
+        Cvar_Get("pt_dlss_fg_depth_scale", "1.0", 0)->value;
+    d->linearizedDepthNearFarPartition =
+        Cvar_Get("pt_dlss_fg_depth_partition", "600.0", 0)->value;
+    d->minRelativeLinearDepthObjectSeparation =
+        Cvar_Get("pt_dlss_fg_depth_separation", "40.0", 0)->value;
+
+    /* FLT_MIN, never 0 - see the comment in dlssg_ngx.hpp. */
+    d->motionVectorsInvalidValue =
+        Cvar_Get("pt_dlss_fg_mvinvalid", "0", 0)->integer ? 0.0f : FLT_MIN;
+
+    d->multiFrameCount = ev->generated_frames;
+    d->multiFrameIndex = 1;    // the caller's, for each generated frame
+
+    /* Undocumented, experimental - see dlssg_desc.h. Both default 0 = parameter not set,
+       so leaving them alone reproduces the previous behaviour exactly.
+         pt_dlss_fg_indicator 1..3  NVIDIA's on-screen DLSS-G state readout
+         pt_dlss_fg_slmode 1        claim Streamline is driving, which is the one
+                                    structural difference between this integration
+                                    and every title where MFG demonstrably works */
+    d->indicatorLevel = (unsigned int)Cvar_Get("pt_dlss_fg_indicator", "0", 0)->integer;
+    d->streamlineMode = (unsigned int)Cvar_Get("pt_dlss_fg_slmode", "0", 0)->integer;
+}
+
+void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
+{
+    if (!DLSSGEnabled())
+        return;
+
+    const uint32_t outWidth = qvk.extent_unscaled.width;
+    const uint32_t outHeight = qvk.extent_unscaled.height;
+
+    /* Same value the Evaluate loop below counts up to, read once so the feature is
+       created for exactly the multiplier this frame is about to ask it for. */
+    const unsigned int fgGeneratedFrames = DLSSGGeneratedFrames();
+
+    if (!ValidateDLSSGFeature(cmd, outWidth, outHeight,
+                              qvk.extent_render.width, qvk.extent_render.height,
+                              fgGeneratedFrames))
+        return;
+
+    DLSSGEvaluation ev;
+    DLSSGDescribeEvaluation(resetAccum, &ev);
+
+    NVSDK_NGX_Dimensions outSize = { outWidth, outHeight };
+    NVSDK_NGX_Dimensions renderSize = {
+        qvk.extent_render.width,
+        qvk.extent_render.height
+    };
+    const int fgDepthImage = ev.depth_image;
+
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_OUTPUT]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_FG_DEPTH]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
+
+    NVSDK_NGX_Resource_VK backbuffer = ToNGXResource(
+        qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT],
+        outSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+
+    NVSDK_NGX_Resource_VK depth = ToNGXResource(
+        qvk.images[fgDepthImage], qvk.images_views[fgDepthImage],
+        renderSize, VK_FORMAT_R32_SFLOAT, false);
+
+    NVSDK_NGX_Resource_VK mvecs = ToNGXResource(
+        qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION],
+        renderSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+
     NVSDK_NGX_Parameter_SetULL(dlssObj.pParams,
         NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, (unsigned long long)qvk.frame_counter);
 
     /* Multi Frame Generation: Evaluate runs once per generated frame, each writing its
        own output image, with multiFrameIndex counting 1..multiFrameCount. */
-    const unsigned int generatedFrames = DLSSGGeneratedFrames();
+    const unsigned int generatedFrames = ev.generated_frames;
 
     /* ONE SUBMIT PER EVALUATE, instead of batching all N into the caller's buffer.
 
@@ -2063,148 +2309,15 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
         qvk.images[outImg], qvk.images_views[outImg],
         outSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);
 
+    ev.desc.multiFrameIndex = genIndex;
     DLSSG_EvalInputs in = {
         .pBackbuffer = &backbuffer,
         .pDepth = &depth,
         .pMotionVectors = &mvecs,
         .pOutputInterpolated = &outputInterp,
-
-        /* THE FRAME HAS NO HUD IN IT, SO SAY SO. The 2D layer (status bar, crosshair,
-           console notify lines) is drawn onto each swapchain image AFTER frame
-           generation, so VKPT_IMG_DLSS_OUTPUT is already the HUD-less image the SDK
-           describes for pHudless. Handing the same resource over in both roles makes
-           the guide's identity hold exactly - Backbuffer = UI + (1 - a) * Hudless with
-           UI = 0 everywhere - and tells the runtime that nothing in the frame is UI.
-           Without either hint, DLSS-G runs its own UI-detection heuristics, which look
-           for static, saturated, high-contrast content, i.e. a stationary laser beam
-           in a still camera. pt_dlss_fg_hudless 0 restores the old no-hint behaviour
-           for an A/B. */
-        .pHudless = Cvar_Get("pt_dlss_fg_hudless", "1", 0)->integer ? &backbuffer : NULL,
-
-        .renderWidth = renderSize.Width,
-        .renderHeight = renderSize.Height,
-
-        /* MEASURED THE HARD WAY. The Super Resolution path passes
-           InMVScaleX/Y = the render extent (DLSS.c:894), which means
-           VKPT_IMG_PT_DLSS_MOTION holds NORMALIZED motion and the scale is what turns
-           it into pixels. DLSS-G's mvecScale is the same kind of multiplier, so it
-           needs the render extent too.
-
-           This was 1.0 at first, on the theory that DLSS-G wanted vectors already in
-           [-1,1]. That made the applied motion ~3000x too small, so every interpolated
-           frame came out a near-copy of one endpoint: the presented frame rate doubled
-           while the motion still stepped at the render rate, which looks SLOWER than
-           frame generation switched off, and only a very fast camera produced enough
-           motion to show any warping at all. Matt spotted it as "the movement doesn't
-           look smooth" while the counter read double.
-
-           pt_dlss_fg_mvscale overrides it so the convention stays testable rather than
-           re-derived: 0 = render extent, anything else is used literally. */
-        .mvecScaleX = fgMvecScaleX * (float)fgMvecSign,
-        .mvecScaleY = fgMvecScaleY * (float)fgMvecSign,
-
-        .cameraPos = { fgCamPos[0], fgCamPos[1], fgCamPos[2] },
-        .cameraUp = { fgCamUp[0], fgCamUp[1], fgCamUp[2] },
-        .cameraRight = { fgCamRight[0], fgCamRight[1], fgCamRight[2] },
-        .cameraFwd = { fgCamFwd[0], fgCamFwd[1], fgCamFwd[2] },
-
-        .cameraNear = vkpt_refdef.z_near,
-        .cameraFar = vkpt_refdef.z_far,
-        .cameraFOV = fovYRadians,
-        .cameraAspectRatio = aspect,
-
-        /* SAME SIGN CONVENTION AS SUPER RESOLUTION. DLSSApply() multiplies the jitter
-           by pt_dlss_jitter_sign (default -1) before handing it over, because Q2RTX never
-           jitters a projection matrix - primary_rays.rgen samples at
-           (pixel_centre + sub_pixel_jitter), and sampling toward +j puts scene content at
-           -j, so the equivalent projection jitter is negated. This path was passing the
-           RAW offset, i.e. the opposite sign to the one super resolution uses.
-
-           A wrong-signed jitter displaces content by a sub-pixel amount that flips every
-           frame. Invisible when the camera is still; reads as judder as soon as it turns,
-           which is exactly how it showed up. */
-        .jitterOffsetX = ubo->sub_pixel_jitter[0] * fgJitterSign,
-        .jitterOffsetY = ubo->sub_pixel_jitter[1] * fgJitterSign,
-
-        .pCameraViewToClip = mViewToClip,
-        .pClipToCameraView = mClipToView,
-        .pClipToPrevClip = mClipToPrev,
-        .pPrevClipToClip = mPrevToClip,
-
-        /* VKPT_IMG_DLSS_OUTPUT is linear HDR - tone mapping happens after this point. */
-        /* NOT "is our colour buffer linear HDR" - the SDK comment on this field says
-           "full HDR (RENDERING TO AN HDR MONITOR)". It describes the OUTPUT path, not the
-           format of the buffer we hand over, and we were passing 1 on an SDR swapchain.
-
-           The cost was visible and constant: dumped side by side, the generated frame had
-           the same geometry and view as the real one but its highlights were crushed - a
-           blown-out white window came back dull amber, the strip light came back orange -
-           while the mid-tones lifted (mean 86 vs 62 in sRGB). Every generated frame
-           therefore looked wrong in any scene with a bright light in it, which at 2x is
-           every other frame presented, and reads as constant artifacting.
-
-           Note the SR path a few hundred lines up passes NVSDK_NGX_DLSS_Feature_Flags_IsHDR
-           unconditionally and that is CORRECT - for Super Resolution the flag means the
-           INPUT is HDR linear. Same word, different question. Do not "make them consistent". */
-        .colorBuffersHDR = qvk.surf_is_hdr ? 1 : 0,
-
-        /* VKPT_IMG_DLSS_DEPTH is LINEAR view depth, not a reversed hardware depth
-           buffer - the SR/RR features are created with
-           NVSDK_NGX_DLSS_Depth_Type_Linear. DLSS-G has no equivalent "depth type"
-           parameter, so if the interpolation misbehaves around depth discontinuities
-           this is a prime suspect. */
-        /* A/B KNOBS FOR THE INPUT CONVENTIONS.
-
-           The compare instrument measures the generated frame sitting ~100% of a frame
-           step from the real one when it should be ~50%, i.e. on top of an endpoint
-           rather than between the two. Neither split fields nor mvecScale changed it, so
-           what remains is a convention mismatch in what we hand DLSS-G. These are all
-           per-frame Opt_Eval fields, so they take effect immediately - no feature
-           recreation, no rebuild, sweepable in one session.
-
-             pt_dlss_fg_mvsign    -1 flips the motion vector direction. The guide says the
-                                  buffer must describe motion from the CURRENT frame to the
-                                  PREVIOUS one; Q2RTX's DLSS motion may run the other way,
-                                  and a sign error moves everything backwards, which
-                                  interpolation resolves toward an endpoint.
-             pt_dlss_fg_cammotion 0 says camera motion is NOT already baked into the mvecs,
-                                  so DLSS-G derives it from the matrices instead.
-             pt_dlss_fg_depthinv  1 for reversed-Z depth. VKPT_IMG_DLSS_DEPTH is linear view
-                                  depth, so 0 should be right - but it has never been tested
-                                  against 1, and getting it wrong breaks disocclusion. */
-        /* 1 with the FG depth image, because it holds 1/|d| - DLSS-G then computes
-           lin_depth = |d|, the linear view distance in Quake units. 0 only makes sense
-           alongside pt_dlss_fg_depthmode 0. */
-        .depthInverted = fgDepthMode
-            ? 1
-            : (Cvar_Get("pt_dlss_fg_depthinv", "0", 0)->integer ? 1 : 0),
-
-        .cameraMotionIncluded = Cvar_Get("pt_dlss_fg_cammotion", "1", 0)->integer ? 1 : 0,
-        .reset = resetAccum ? 1 : 0,
-        .notRenderingGameFrames = qvk.frame_menu_mode ? 1 : 0,
-
-        .linearizedDepthScale =
-            Cvar_Get("pt_dlss_fg_depth_scale", "1.0", 0)->value,
-        .linearizedDepthNearFarPartition =
-            Cvar_Get("pt_dlss_fg_depth_partition", "600.0", 0)->value,
-        .minRelativeLinearDepthObjectSeparation =
-            Cvar_Get("pt_dlss_fg_depth_separation", "40.0", 0)->value,
-
-        /* FLT_MIN, never 0 - see the comment in DLSSG.cpp. */
-        .motionVectorsInvalidValue =
-            Cvar_Get("pt_dlss_fg_mvinvalid", "0", 0)->integer ? 0.0f : FLT_MIN,
-
-        .multiFrameCount = generatedFrames,
-        .multiFrameIndex = genIndex,
-
-        /* Undocumented, experimental - see DLSSG.h. Both default 0 = parameter not set,
-           so leaving them alone reproduces the previous behaviour exactly.
-             pt_dlss_fg_indicator 1..3  NVIDIA's on-screen DLSS-G state readout
-             pt_dlss_fg_slmode 1        claim Streamline is driving, which is the one
-                                        structural difference between this integration
-                                        and every title where MFG demonstrably works */
-        .indicatorLevel = (unsigned int)Cvar_Get("pt_dlss_fg_indicator", "0", 0)->integer,
-        .streamlineMode = (unsigned int)Cvar_Get("pt_dlss_fg_slmode", "0", 0)->integer,
+        // the HUD-less hint: see DLSSGDescribeEvaluation
+        .pHudless = ev.hudless ? &backbuffer : NULL,
+        .desc = &ev.desc,
     };
 
     unsigned int res = DLSSG_EvaluateFeature(evalCmd, dlssgFeature, dlssObj.pParams, &in);

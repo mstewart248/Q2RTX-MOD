@@ -397,8 +397,8 @@ void CL_AddDynamicLightsToScene(void)
     if (!cl_num_dynamiclights)
         return;
 
-    // the analytic light types only exist in the path tracer
-    if (cls.ref_type != REF_TYPE_VKPT)
+    // the analytic light types only exist in the path tracers
+    if (!CL_PathTraced())
         return;
 
     // mode 2: on everywhere except the maps in cl_dynamic_lights_exclude.

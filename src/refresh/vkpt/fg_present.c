@@ -47,22 +47,12 @@
 // dropping a frame on the floor.
 #define FG_PRESENT_QUEUE_SIZE 32
 
-typedef struct {
-    VkSwapchainKHR swapchain;
-    uint32_t       image_index;
-    VkSemaphore    wait_semaphore;
-    uint64_t       target_us;
-    uint64_t       min_gap_us;
-    uint64_t       queued_at_us;
-    uint64_t       reflex_present_id;   // 0 = generated frame, present out of band
-    uint64_t       group_id;            // the rendered frame this belongs to
-    uint64_t       timeline_value;      // frame work complete at this value
-    uint32_t       slot_index;          // position in the group (relative pacing only)
-    uint32_t       group_size;          // 0 = absolute deadline, >0 = relative pacing
-    float          pace;                // fraction of the cadence a group may span
-} fg_present_item_t;
-
 static fg_present_item_t fg_queue[FG_PRESENT_QUEUE_SIZE];
+
+/* The API's half of the thread (fg_present.h): the D3D12 renderer's when it has set its
+   own, otherwise the Vulkan renderer's (fg_vulkan_backend), which FGPresent_Init falls
+   back to. */
+static const fg_present_backend_t *fg_backend = NULL;
 static int          fg_queue_head = 0;
 static int          fg_queue_count = 0;
 static uint64_t     fg_newest_group = 0;
@@ -378,7 +368,7 @@ static void fg_wait_until_or_superseded(uint64_t target_us, uint64_t timeline_va
         uint64_t now = Sys_Microseconds();
         if (now >= target_us)
             return;
-        if (fg_timeline_passed(timeline_value))
+        if (fg_backend->ready_passed(timeline_value))
             return;
 
         uint64_t remaining = target_us - now;
@@ -409,6 +399,76 @@ static bool fg_timeline_wait(uint64_t value)
 bool FGPresent_WaitTimeline(uint64_t value)
 {
     return fg_timeline_wait(value);
+}
+
+/* THE VULKAN RENDERER'S PRESENT, the backend's third hook: the thread has waited for the
+   group's GPU work (image_ready) and slept to the slot. */
+static VkResult fg_vulkan_present(const fg_present_item_t *item, bool image_ready)
+{
+    VkPresentInfoKHR present_info = {
+        .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        /* No wait semaphore once the image is already presentable: the flip then
+           fires at this call instead of at some future signal. */
+        .waitSemaphoreCount = image_ready ? 0 : 1,
+        .pWaitSemaphores    = image_ready ? NULL : &item->wait_semaphore,
+        .swapchainCount     = 1,
+        .pSwapchains        = &item->swapchain,
+        .pImageIndices      = &item->image_index,
+        .pResults           = NULL,
+    };
+
+    /* The real frame carries the Reflex id, so the driver can see the frame it slept
+       for actually reach the screen. The generated frames are presented out of band:
+       they are not work the game simulated, and counting them as render submissions
+       corrupts the driver's latency maths. */
+    VkPresentIdKHR present_id_info = {
+        .sType          = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1,
+        .pPresentIds    = &item->reflex_present_id,
+    };
+    if (item->reflex_present_id && Reflex_PresentIdAvailable())
+        present_info.pNext = &present_id_info;
+
+    FGPresent_SwapchainLock();
+
+    if (item->reflex_present_id)
+        Reflex_SetMarkerForFrame(VK_LATENCY_MARKER_PRESENT_START_NV, item->reflex_present_id);
+    else
+        Reflex_NotifyOutOfBandPresent(fg_use_present_queue() ? qvk.queue_present
+                                                             : qvk.queue_graphics);
+
+    /* qvk.queue_present, NOT queue_graphics. A present is a queue operation and one
+       queue processes its submissions in order, so a present issued here after the
+       main thread has already submitted the NEXT frame's rendering cannot flip until
+       that rendering completes on the GPU - which is why a whole group's flips landed
+       together at the render rate however evenly these calls were spaced. See the
+       comment on qvk.queue_present in vkpt.h.
+
+       pt_dlss_fg_queue 0 puts presents back on the graphics queue, so the fix can be
+       A/B'd against the old behaviour in one build. Judge it ONLY on PresentMon's
+       MsBetweenDisplayChange - every in-process measurement is blind to this. */
+    VkQueue present_queue = fg_use_present_queue() ? qvk.queue_present
+                                                   : qvk.queue_graphics;
+    VkResult res = vkQueuePresentKHR(present_queue, &present_info);
+    vkpt_note_image_presented(item->image_index);
+
+    if (item->reflex_present_id)
+        Reflex_SetMarkerForFrame(VK_LATENCY_MARKER_PRESENT_END_NV, item->reflex_present_id);
+
+    FGPresent_SwapchainUnlock();
+
+    return res;
+}
+
+static const fg_present_backend_t fg_vulkan_backend = {
+    .ready_wait = fg_timeline_wait,
+    .ready_passed = fg_timeline_passed,
+    .present = fg_vulkan_present,
+};
+
+void FGPresent_SetBackend(const fg_present_backend_t *backend)
+{
+    fg_backend = backend;
 }
 
 static int SDLCALL fg_present_thread(void *unused)
@@ -459,7 +519,7 @@ static int SDLCALL fg_present_thread(void *unused)
         bool image_ready = false;
         if (item.timeline_value != 0) {
             if (item.group_id != fg_ready_group) {
-                if (fg_timeline_wait(item.timeline_value))
+                if (fg_backend->ready_wait(item.timeline_value))
                     fg_ready_group = item.group_id;
             }
             image_ready = (item.group_id == fg_ready_group);
@@ -499,57 +559,7 @@ static int SDLCALL fg_present_thread(void *unused)
             fg_wait_until(effective_target);
         }
 
-        VkPresentInfoKHR present_info = {
-            .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            /* No wait semaphore once the image is already presentable: the flip then
-               fires at this call instead of at some future signal. */
-            .waitSemaphoreCount = image_ready ? 0 : 1,
-            .pWaitSemaphores    = image_ready ? NULL : &item.wait_semaphore,
-            .swapchainCount     = 1,
-            .pSwapchains        = &item.swapchain,
-            .pImageIndices      = &item.image_index,
-            .pResults           = NULL,
-        };
-
-        /* The real frame carries the Reflex id, so the driver can see the frame it slept
-           for actually reach the screen. The generated frames are presented out of band:
-           they are not work the game simulated, and counting them as render submissions
-           corrupts the driver's latency maths. */
-        VkPresentIdKHR present_id_info = {
-            .sType          = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
-            .swapchainCount = 1,
-            .pPresentIds    = &item.reflex_present_id,
-        };
-        if (item.reflex_present_id && Reflex_PresentIdAvailable())
-            present_info.pNext = &present_id_info;
-
-        FGPresent_SwapchainLock();
-
-        if (item.reflex_present_id)
-            Reflex_SetMarkerForFrame(VK_LATENCY_MARKER_PRESENT_START_NV, item.reflex_present_id);
-        else
-            Reflex_NotifyOutOfBandPresent(fg_use_present_queue() ? qvk.queue_present
-                                                                 : qvk.queue_graphics);
-
-        /* qvk.queue_present, NOT queue_graphics. A present is a queue operation and one
-           queue processes its submissions in order, so a present issued here after the
-           main thread has already submitted the NEXT frame's rendering cannot flip until
-           that rendering completes on the GPU - which is why a whole group's flips landed
-           together at the render rate however evenly these calls were spaced. See the
-           comment on qvk.queue_present in vkpt.h.
-
-           pt_dlss_fg_queue 0 puts presents back on the graphics queue, so the fix can be
-           A/B'd against the old behaviour in one build. Judge it ONLY on PresentMon's
-           MsBetweenDisplayChange - every in-process measurement is blind to this. */
-        VkQueue present_queue = fg_use_present_queue() ? qvk.queue_present
-                                                       : qvk.queue_graphics;
-        VkResult res = vkQueuePresentKHR(present_queue, &present_info);
-        vkpt_note_image_presented(item.image_index);
-
-        if (item.reflex_present_id)
-            Reflex_SetMarkerForFrame(VK_LATENCY_MARKER_PRESENT_END_NV, item.reflex_present_id);
-
-        FGPresent_SwapchainUnlock();
+        VkResult res = fg_backend->present(&item, image_ready);
 
         last_issue_us = Sys_Microseconds();
 
@@ -607,6 +617,9 @@ void FGPresent_Init(void)
 {
     if (fg_thread)
         return;
+
+    if (!fg_backend)
+        fg_backend = &fg_vulkan_backend;
 
     fg_queue_mutex   = SDL_CreateMutex();
     fg_queue_added   = SDL_CreateCond();

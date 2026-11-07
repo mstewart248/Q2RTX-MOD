@@ -36,6 +36,8 @@
 #include <vulkan/vulkan.h>
 #include <nvsdk_ngx_vk.h>
 
+#include "dlssg_desc.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,8 +46,8 @@ extern "C" {
 // Returns the NVSDK_NGX_Result as an unsigned; 0 (NVSDK_NGX_Result_Success) on success.
 // width/height are the OUTPUT (post-upscale) size; renderWidth/renderHeight are the
 // size of the depth and motion-vector buffers, which differ whenever DLSS is upscaling.
-// Getting the render pair wrong is not cosmetic: the feature is created with
-// DynamicResolutionScaling = false, so DLSS-G treats them as a fixed promise.
+// The render pair is the LARGEST extent it will be fed (DynamicResolutionScaling,
+// dlssg_ngx.hpp); feeding it more than that faults inside NGX.
 // multiFrameCount is the number of GENERATED frames per real frame pair (1 = 2x,
 // 2 = 3x, 3 = 4x). It is passed at CREATE time as well as per-Evaluate: see the note
 // in DLSSG_CreateFeature for why the per-Evaluate value alone is not enough.
@@ -62,7 +64,7 @@ unsigned int DLSSG_CreateFeature(VkCommandBuffer cmd,
 // Inputs for one frame generation evaluation.
 //
 // backbuffer / outputInterpolated are at OUTPUT (post-upscale) resolution.
-// depth / motionVectors are at RENDER resolution - renderWidth/renderHeight say which.
+// depth / motionVectors are at RENDER resolution - desc->renderWidth/renderHeight say which.
 typedef struct DLSSG_EvalInputs {
     NVSDK_NGX_Resource_VK* pBackbuffer;
     NVSDK_NGX_Resource_VK* pDepth;
@@ -74,86 +76,9 @@ typedef struct DLSSG_EvalInputs {
     // HUD-less and this can simply alias it; NULL leaves the runtime to detect UI itself.
     NVSDK_NGX_Resource_VK* pHudless;
 
-    unsigned int renderWidth;
-    unsigned int renderHeight;
-
-    // Motion vectors here are already normalized to [-1,1] screen units (the Super
-    // Resolution path compensates by passing InMVScale = render extent), so DLSS-G
-    // needs a scale of 1.0 rather than the render dimensions. Left configurable so
-    // the convention can be re-tested rather than re-derived.
-    float mvecScaleX;
-    float mvecScaleY;
-
-    // WORLD-SPACE CAMERA FRAME. These were never set and NGX's "= {}" left DLSS-G with a
-    // camera at the world origin and an all-zero orientation basis, which is not a valid
-    // frame at all. Extracted from the inverse view matrix so they cannot disagree with
-    // the V/P pair handed over alongside them.
-    float cameraPos[3];
-    float cameraUp[3];
-    float cameraRight[3];
-    float cameraFwd[3];
-
-    float cameraNear;
-    float cameraFar;
-    float cameraFOV;          // radians
-    float cameraAspectRatio;
-
-    float jitterOffsetX;
-    float jitterOffsetY;
-
-    // Row-major 4x4, WITHOUT temporal AA jitter, as NGX requires.
-    const float* pCameraViewToClip;
-    const float* pClipToCameraView;
-    const float* pClipToPrevClip;
-    const float* pPrevClipToClip;
-
-    int colorBuffersHDR;      // our colour is linear HDR pre-tonemap
-    int depthInverted;
-    int cameraMotionIncluded;
-    int reset;                // no usable history this frame
-    int notRenderingGameFrames;
-
-    // DEPTH-SPACE TUNING. DLSS-G linearizes the depth buffer itself
-    // (lin_depth = 1/depth when depthInverted), and these three are thresholds and a
-    // scale IN THAT LINEARIZED SPACE. With the FG depth image holding 1/|d| they are in
-    // Quake world units, so the SDK defaults are meaningful here; they are cvars anyway
-    // because Quake's world scale is not what NVIDIA tuned against.
-    float linearizedDepthScale;             // SDK default 1.0
-    float linearizedDepthNearFarPartition;  // SDK default 600.0
-    float minRelativeLinearDepthObjectSeparation;   // SDK default 40.0
-
-    // Which value in the motion vector buffer means "invalid". MUST NOT be 0.0 - a pixel
-    // that did not move has motion exactly (0,0), so 0.0 marks every static pixel invalid.
-    float motionVectorsInvalidValue;
-
-    // Multi Frame Generation. multiFrameCount is the number of GENERATED frames per
-    // real frame pair (1 = 2x, 3 = 4x, 5 = 6x); multiFrameIndex is which one of them
-    // this call produces, counting from 1. Evaluate is called once per generated frame,
-    // each writing its own output image.
-    unsigned int multiFrameCount;
-    unsigned int multiFrameIndex;
-
-    // UNDOCUMENTED PARAMETERS, TAKEN FROM THE RUNTIME'S OWN STRING TABLE.
-    //
-    // nvngx_dlssg.dll 310.7.128 accepts a number of DLSSG.* parameters that appear in
-    // no public SDK header. Found by dumping the DLL's strings after dxvk-remix turned
-    // out to set three parameters (EnableInterp, IsRecording, CmdQueue) that this DLL
-    // does NOT contain - Remix targets an older NGX, so its approach does not transfer.
-    //
-    // indicatorLevel  -> "DLSSG.IndicatorLevel". NVIDIA's on-screen DLSS-G state
-    //                    readout. The dev-build DLL draws the same thing, but only onto
-    //                    generated frames (we pass no pOutputRealFrame), so it strobes.
-    //                    0 = off.
-    // streamlineMode  -> "DLSSG.StreamlineMode". The runtime knows whether Streamline is
-    //                    driving it, and every title that gets working multi-frame
-    //                    generation goes through Streamline while we drive NGX directly.
-    //                    That is the one structural difference we have not been able to
-    //                    account for. 0 = leave unset (current behaviour).
-    //
-    // Both are EXPERIMENTS. Zero means "do not set the parameter at all", so the default
-    // path is byte-identical to before.
-    unsigned int indicatorLevel;
-    unsigned int streamlineMode;
+    // Everything else, which the D3D12 renderer hands over too: see dlssg_desc.h
+    // (DLSSGDescribeEvaluation fills it).
+    const DLSSGEvalDesc* desc;
 } DLSSG_EvalInputs;
 
 // Returns the NVSDK_NGX_Result as an unsigned; 0 on success.

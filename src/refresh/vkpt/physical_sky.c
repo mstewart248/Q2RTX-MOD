@@ -803,9 +803,29 @@ bool vkpt_physical_sky_needs_update()
 	return skyNeedsUpdate;
 }
 
+/* The D3D12 renderer's side of the flag: true when its sky pipelines are
+   (re)made, as vkpt_physical_sky_create_pipelines; false once it has rendered
+   the sky, as vkpt_physical_sky_record_cmd_buffer. */
+void vkpt_physical_sky_set_needs_update(bool needs_update)
+{
+	skyNeedsUpdate = needs_update ? VK_TRUE : VK_FALSE;
+}
+
+/* The D3D12 renderer's vkpt_physical_sky_initialize: its scatter tables are
+   new, so the next update_ubo loads the preset (load_sky_preset) again. */
+void vkpt_physical_sky_reset(void)
+{
+	current_preset = 0;
+	skyNeedsUpdate = VK_TRUE;
+}
+
 uint16_t *
 vkpt_physical_sky_read_envmap(int *out_width, int *out_height)
 {
+	// the D3D12 renderer's own cube
+	if (vkpt_prep_backend && vkpt_prep_backend->read_sky_envmap)
+		return vkpt_prep_backend->read_sky_envmap(out_width, out_height);
+
 	if (!img_envmap)
 		return NULL;
 
@@ -1214,6 +1234,15 @@ static void publish_sky_state(void)
 		Cvar_SetInteger(sun_animate_available, animate_ok, FROM_CODE);
 }
 
+/* vkpt_prep_backend's sky hook for Vulkan: the scatter tables of a new preset,
+   once the GPU is done with the old ones. */
+void
+vkpt_physical_sky_load_preset(int preset)
+{
+	vkpt_queue_wait_idle(qvk.queue_graphics);
+	SkyLoadScatterParameters((SkyPreset)preset);
+}
+
 void
 vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float time)
 {
@@ -1239,8 +1268,7 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 
 	if (skyIndex != current_preset)
 	{
-		vkpt_queue_wait_idle(qvk.queue_graphics);
-		SkyLoadScatterParameters(skyDesc->preset);
+		vkpt_prep_backend->load_sky_preset(skyDesc->preset);
 		current_preset = skyIndex;
 	}
 
