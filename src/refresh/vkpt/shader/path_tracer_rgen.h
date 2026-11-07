@@ -1503,7 +1503,54 @@ get_material(
 		// uv2.x carries "this droplet has landed" - see write_blood_geometry.
 		bool blood_landed = triangle.tex_coords[2].x > 0.5;
 
-		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y, blood_landed);
+		/*
+		pt_blood_spec_aa - WHAT ONE PIXEL OF BLOOD ACTUALLY SEES.
+
+		The ripple is indexed by the geometric normal, so it moves across the
+		surface at pt_blood_normal_scale times the rate the normal turns - the
+		droplet's curvature. Measure that from the triangle (radians of normal per
+		world unit, largest over its edges: 1/r on a sphere, ~1/radius on a landed
+		dome, whose normals cl_blood_flatten steepens back to a hemisphere's), take
+		the pixel's footprint from the camera distance, and fetch the ripple at the
+		mip that footprint covers. The footprint is the camera leg only, so blood
+		seen in a mirror or from a bounce is under-filtered, never over-filtered.
+
+		Filtering removes detail, and a mirror over removed detail is too sharp:
+		hand both what the mip hid and what the curvature turns within the pixel
+		back as GGX alpha^2 - the geometric specular anti-aliasing of Kaplanyan
+		et al. 2016 / Tokuyoshi & Kaplanyan 2019, with their 0.18 cap.
+		*/
+		float spec_aa = max(global_ubo.pt_blood_spec_aa, 0.0);
+		float ripple_lod = 0.0;
+		float geo_slope_var = 0.0;
+		if (spec_aa > 0.0)
+		{
+			float curvature = 0.0;
+			for (int i = 0; i < 3; i++)
+			{
+				int j = (i + 1) % 3;
+				float dp = length(triangle.positions[j] - triangle.positions[i]);
+				if (dp > 1e-4)
+					curvature = max(curvature, length(triangle.normals[j] - triangle.normals[i]) / dp);
+			}
+
+			// P[1][1] is negative (Vulkan Y flip) - see the same line in indirect_lighting.rgen.
+			float pixel_angle = 2.0 / (abs(global_ubo.P[1][1]) * float(global_ubo.height));
+			float footprint = pixel_angle * length(triangle.positions * bary - global_ubo.cam_pos.xyz);
+			float cos_view = max(abs(dot(ray_direction, geo_normal)), 0.2);
+
+			// Mip from the footprint's long axis, as hardware trilinear would pick it.
+			float texels = float(global_textureSize(global_ubo.water_normal_texture, 0).x)
+			             * global_ubo.pt_blood_normal_scale * curvature * (footprint / cos_view) * spec_aa;
+			ripple_lod = max(0.0, log2(max(texels, 1e-6)));
+
+			// The normal turns curvature * footprint across each screen axis of the pixel,
+			// and a uniform sweep of width d has variance d^2 / 12; sum both axes.
+			geo_slope_var = square(curvature * footprint) * (1.0 + 1.0 / square(cos_view)) / 12.0;
+		}
+
+		float ripple_slope_var;
+		normal = get_blood_normal(geo_normal, triangle.tex_coords[1].y, blood_landed, ripple_lod, ripple_slope_var);
 
 		/*
 		A LANDED SPLAT IS A FILM, NOT A BEAD, AND IT IS THE ONE THAT MUST GO DARK.
@@ -1541,6 +1588,14 @@ get_material(
 		roughness = clamp(global_ubo.pt_blood_roughness, 0.0, 1.0);
 		emissive = vec3(0);
 		specular_factor = global_ubo.pt_blood_specular;
+
+		// pt_blood_spec_aa - see above. GGX alpha is roughness^2 in this renderer.
+		if (spec_aa > 0.0)
+		{
+			float alpha2 = square(square(roughness));
+			alpha2 += min((geo_slope_var + ripple_slope_var) * spec_aa, 0.18);
+			roughness = clamp(sqrt(sqrt(alpha2)), 0.0, 1.0);
+		}
 
 		/*
 		THE RIM MUST NOT BE A MIRROR. Its dome normal lies in the floor plane, so

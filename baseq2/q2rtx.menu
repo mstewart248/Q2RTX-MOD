@@ -319,11 +319,12 @@ begin video_reconstruction
     endif
     endif
     endif
-    // shown only on DLSS's own output path (main.c, the DLSSEnabled() blit)
+    // shown only on DLSS's own output path (both renderers). The values and names are
+    // DLSS.c's dlss_debug_views table - keep them in step; gaps are removed views.
     ifeq pt_dlss_available 1
     ifneq pt_dlss 0
     blank
-    pairs --status "(pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 Ray-Length 1 3D-Motion-Vectors 2 Reflect-Motion 3 Albedo 4 Specular 5 Roughness 6 metallic 7 normal 8 materialid 9 emissive 10 indirectAlbedo 11 specularAlbedo 12 transparent 13 depth 14 motion-vectors 15 BeforeTransparent 16 RayLengthDiffuse 17 raylengthSpecular 18 transparent 19 PT_MOTION 20 DLSS_MOTION 21 ASVGF_HIST_COLOR_HF 22 ShadingPosition 23 FlatColor 24 FlatMotion 25 TAA_Output 26 PT_THROUGHPUT 27 BOUNCE_THROUGHPUT 28 HQ_COLOR_INTERLEAVED 29 Reflected_Albedo 30 COLOR_LF 31 COLOR_HF 32 COLOR_SPEC 33 GEO_NORMAL 34 VISBUF_B 35 VISBUF_A 36 VISBUF_BARY_B 37 VISBUF_BARY_A 38 BASECOLOR_B 39 BASECOLOR_A 40 METALLIC_B 41 METALLIC_A 42 DEPTH_B 43 DEPTH_A 44
+    pairs --status "shown raw at render resolution: DLSS-RR's inputs, then the path tracer's (pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 "color (RR input)" 16 "diffuse albedo" 2 "specular albedo" 5 normal 4 roughness 3 depth 6 "motion vectors" 7 "reflection motion" 1 "diffuse hit distance" 9 "specular hit distance" 10 "reflected albedo" 22 "color before transparency" 8 "transparency overlay" 11 "path tracer motion" 12 "primary motion" 17 throughput 19 "bounce throughput" 20 "base color" 32 "metallic / roughness" 34 "view depth" 36 barycentrics 30 "shading position (last bounce)" 15
     endif
     endif
 end

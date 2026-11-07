@@ -929,39 +929,80 @@ void DLSSFeatureFailed(void) {
     recreateSwapChain = qtrue;
 }
 
+/* pt_dlss_debug - THE ONE TABLE BOTH RENDERERS SHOW.
+
+   The menu row (baseq2/q2rtx.menu, "DLSS Debug") lists exactly these values with these
+   names; keep the three in step. Values are stable - a gap is a view that was removed -
+   so a saved pt_dlss_debug keeps meaning the same image.
+
+   There used to be three lists that disagreed: DLSSDescribeEvaluation's 1..22 (fed to
+   DLSS as its COLOUR input, which is all D3D12 ever showed, filtered by RR), main.c's
+   GetDLSSImage 1..36 (blitted raw on Vulkan) and the menu's 44 labels from an older
+   numbering (2026-11-06: "normal" was 8, which is the colour-before-transparency guide).
+   Removed then: 13 (a second PT_DLSS_MOTION), 14 ASVGF_HIST_COLOR_HF and 21
+   HQ_COLOR_INTERLEAVED (A-SVGF; not written under RR), 18 TAA_OUTPUT (= 16 under RR,
+   and on D3D12 the name stands for the finished picture), 23 PT_COLOR_LF_SH (A-SVGF's SH
+   channel), 24-28 (R32_UINT / RG32_UINT images: vkCmdBlitImage cannot copy an integer
+   image to the swapchain, so those never showed anything), and the _B halves of the A/B
+   pairs - those swap every frame, so "A" and "B" each flickered between this frame and
+   the last one. `pair` views show this frame's image of the pair.
+
+   The view is shown RAW on both renderers (Vulkan: GetDLSSImage's blit; D3D12: world.c's
+   display image) and DLSS keeps its real colour input, so switching back to 0 does not
+   leave RR a history full of normals. */
+typedef struct {
+    int value;
+    int image;      // VKPT_IMG_*; for a pair, its _A
+    int pair;
+} dlss_debug_view_t;
+
+static const dlss_debug_view_t dlss_debug_views[] = {
+    { 1,  VKPT_IMG_DLSS_REFLECT_MOTION,     0 },
+    { 2,  VKPT_IMG_DLSS_ALBEDO,             0 },
+    { 3,  VKPT_IMG_DLSS_ROUGHNESS,          0 },
+    { 4,  VKPT_IMG_DLSS_NORMAL,             0 },
+    { 5,  VKPT_IMG_DLSS_SPECULAR_ALBEDO,    0 },
+    { 6,  VKPT_IMG_DLSS_DEPTH,              0 },
+    { 7,  VKPT_IMG_PT_DLSS_MOTION,          0 },
+    { 8,  VKPT_IMG_DLSS_BEFORE_TRANSPARENT, 0 },
+    { 9,  VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE,  0 },
+    { 10, VKPT_IMG_DLSS_RAYLENGTH_SPECULAR, 0 },
+    { 11, VKPT_IMG_PT_TRANSPARENT,          0 },
+    { 12, VKPT_IMG_PT_MOTION,               0 },
+    { 15, VKPT_IMG_PT_SHADING_POSITION,     0 },
+    { 16, VKPT_IMG_FLAT_COLOR,              0 },
+    { 17, VKPT_IMG_FLAT_MOTION,             0 },
+    { 19, VKPT_IMG_PT_THROUGHPUT,           0 },
+    { 20, VKPT_IMG_PT_BOUNCE_THROUGHPUT,    0 },
+    { 22, VKPT_IMG_DLSS_REFLECTED_ALBEDO,   0 },
+    { 30, VKPT_IMG_PT_VISBUF_BARY_A,        1 },
+    { 32, VKPT_IMG_PT_BASE_COLOR_A,         1 },
+    { 34, VKPT_IMG_PT_METALLIC_A,           1 },
+    { 36, VKPT_IMG_PT_VIEW_DEPTH_A,         1 },
+};
+
+int DLSSDebugImage(int* pair) {
+    const int debug = Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer;
+    for (int i = 0; debug != 0 && i < (int)LENGTH(dlss_debug_views); i++) {
+        if (dlss_debug_views[i].value == debug) {
+            if (pair)
+                *pair = dlss_debug_views[i].pair;
+            return dlss_debug_views[i].image;
+        }
+    }
+    if (pair)
+        *pair = 0;
+    return -1;
+}
+
 /* What this frame's evaluation hands DLSS beyond the fixed images (DLSSEvaluation in
    DLSS.h), from the cvars and the frame's matrices. DLSSApply's, and the D3D12
    renderer's. */
 void DLSSDescribeEvaluation(const vec2 jitterOffset, DLSSEvaluation* ev) {
     memset(ev, 0, sizeof(*ev));
 
-    // pt_dlss_debug: an intermediate image in place of the colour
-    static const int debug_images[] = {
-        [1] = VKPT_IMG_DLSS_REFLECT_MOTION,
-        [2] = VKPT_IMG_DLSS_ALBEDO,
-        [3] = VKPT_IMG_DLSS_ROUGHNESS,
-        [4] = VKPT_IMG_DLSS_NORMAL,
-        [5] = VKPT_IMG_DLSS_SPECULAR_ALBEDO,
-        [6] = VKPT_IMG_DLSS_DEPTH,
-        [7] = VKPT_IMG_PT_DLSS_MOTION,
-        [8] = VKPT_IMG_DLSS_BEFORE_TRANSPARENT,
-        [9] = VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE,
-        [10] = VKPT_IMG_DLSS_RAYLENGTH_SPECULAR,
-        [11] = VKPT_IMG_PT_TRANSPARENT,
-        [12] = VKPT_IMG_PT_MOTION,
-        [13] = VKPT_IMG_PT_DLSS_MOTION,
-        [14] = VKPT_IMG_ASVGF_HIST_COLOR_HF,
-        [15] = VKPT_IMG_PT_SHADING_POSITION,
-        [16] = VKPT_IMG_FLAT_COLOR,
-        [17] = VKPT_IMG_FLAT_MOTION,
-        [18] = VKPT_IMG_TAA_OUTPUT,
-        [19] = VKPT_IMG_PT_THROUGHPUT,
-        [20] = VKPT_IMG_PT_BOUNCE_THROUGHPUT,
-        [21] = VKPT_IMG_HQ_COLOR_INTERLEAVED,
-        [22] = VKPT_IMG_DLSS_REFLECTED_ALBEDO,
-    };
-    const int debug = Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer;
-    ev->color_image = (debug >= 1 && debug < (int)LENGTH(debug_images)) ? debug_images[debug] : VKPT_IMG_TAA_OUTPUT;
+    // Always the real colour: pt_dlss_debug's view is blitted raw instead (DLSSDebugImage).
+    ev->color_image = VKPT_IMG_TAA_OUTPUT;
 
     // Jitter.
     //
@@ -1124,7 +1165,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     DLSSEvaluation ev;
     DLSSDescribeEvaluation(jitterOffset, &ev);
 
-    // TAA_OUTPUT, or pt_dlss_debug's view
+    // TAA_OUTPUT (pt_dlss_debug's view is blitted raw, not fed to DLSS - DLSSDebugImage)
     NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[ev.color_image], qvk.images_views[ev.color_image], imageSize, DLSSImageFormat(ev.color_image), false);
     NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);    

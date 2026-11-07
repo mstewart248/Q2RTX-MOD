@@ -207,6 +207,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define CHECKERBOARD_FLAG_GUIDE_SHIFT 8
 #define CHECKERBOARD_FLAG_GUIDE_MASK  1792  /* bits 8-10 */
 
+// pt_dlss_blood_guides: the bias primary_rays.rgen puts on a translucent blood splat's
+// alpha in the alpha of IMG_PT_REFLECTED_ALBEDO, field 0. Glass and water park
+// 1 + Fresnel weight (1..2) in the same channel, so 3 + alpha (3..4) marks the pixel as
+// a BLOOD split by itself. The combine pass used to recognise blood by field 0's
+// material in IMG_PT_SHADING_POSITION, but with pt_num_bounce_rays > 1
+// indirect_lighting.rgen overwrites that image with each bounce's hit for the next
+// bounce, so the test never passed and RR got the floor's guides under every splat.
+#define REFLECTED_ALBEDO_BLOOD_BIAS 3.0
+
 // The value a material stores for the above, as packed into the material table.
 // 0 means the material said nothing and pt_dlss_guide_field decides; otherwise
 // the guide field is this minus one. Three bits, so it fits beside next_frame.

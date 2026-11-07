@@ -56,8 +56,14 @@ struct DLSSImageHandles {
     VkFormat format;
 };
 
+/* pt_dlss_debug's image (VKPT_IMG_*), shown raw in place of the picture by both
+   renderers, or -1 when off or not a view. `pair` (may be NULL) is set for an A/B pair,
+   whose _A this is: Vulkan shows _A + (frame_counter & 1), D3D12 its binding's image. The
+   table is in DLSS.c; declared again in d3d12/d3d12pt.h. */
+int DLSSDebugImage(int* pair);
+
 /* What an evaluation hands DLSS beyond the fixed images (DLSSDescribeEvaluation): the
-   colour image (TAA_OUTPUT, or pt_dlss_debug's), the jitter in render pixels, which of
+   colour image (always TAA_OUTPUT now), the jitter in render pixels, which of
    Ray Reconstruction's optional guides go over, and its matrices (pt_dlss_spec_motion). */
 typedef struct {
     int         color_image;            // VKPT_IMG_*

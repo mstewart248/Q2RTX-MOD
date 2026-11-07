@@ -88,8 +88,18 @@ summed - the standard triplanar trick - avoid the seam a single one would leave.
 
 `seed` is a per-droplet phase, so that a burst of sixty does not read as sixty
 copies of one object.
+
+`lod` is the mip to fetch the ripple at (pt_blood_spec_aa; 0 = full detail), and
+`lost_slope_var` returns the slope variance that filtering hid, for the caller to
+put back as roughness. The map's tangent slopes, measured offline on
+textures/water_n.tga (2026-11-06), have E|xy|^2 = 0.0036 at mip 0, and the share
+of it a 2^L box filter removes follows 1 - exp(-(L/4)^2) to within ~0.01 over
+levels 1-8. The map stores z raw (~1), so its mip LENGTHS stay at 1.000 and
+Toksvig-from-length (AdjustRoughnessToksvig) cannot see this loss at all.
 */
-vec3 get_blood_normal(vec3 geo_normal, float seed, bool frozen)
+#define BLOOD_RIPPLE_SLOPE_VAR 0.0036
+
+vec3 get_blood_normal(vec3 geo_normal, float seed, bool frozen, float lod, out float lost_slope_var)
 {
 	// A droplet in flight has a live surface - it is a falling bead of liquid,
 	// and the moving ripple is what sells that. A LANDED one does not: blood on
@@ -109,11 +119,17 @@ vec3 get_blood_normal(vec3 geo_normal, float seed, bool frozen)
 	vec2 uv2 = geo_normal.yz * s + vec2(seed * 1.7) + t * vec2(-0.06,  0.04);
 	vec2 uv3 = geo_normal.zx * s + vec2(seed * 2.3) + t * vec2( 0.03, -0.05);
 
-	vec2 a = global_textureLod(global_ubo.water_normal_texture, uv1, 0).xy * 2 - vec2(1);
-	vec2 b = global_textureLod(global_ubo.water_normal_texture, uv2, 0).xy * 2 - vec2(1);
-	vec2 c = global_textureLod(global_ubo.water_normal_texture, uv3, 0).xy * 2 - vec2(1);
+	vec2 a = global_textureLod(global_ubo.water_normal_texture, uv1, lod).xy * 2 - vec2(1);
+	vec2 b = global_textureLod(global_ubo.water_normal_texture, uv2, lod).xy * 2 - vec2(1);
+	vec2 c = global_textureLod(global_ubo.water_normal_texture, uv3, lod).xy * 2 - vec2(1);
 
-	vec2 perturb = (a + b + c) * global_ubo.pt_blood_normal_strength;
+	float strength = global_ubo.pt_blood_normal_strength;
+	vec2 perturb = (a + b + c) * strength;
+
+	// The tangent-space normal below is (perturb.x, 1, perturb.y), so perturb IS its
+	// slope: three independent fetches, each scaled by strength.
+	float lost_share = (lod > 0.0) ? 1.0 - exp(-(lod * 0.25) * (lod * 0.25)) : 0.0;
+	lost_slope_var = 3.0 * strength * strength * BLOOD_RIPPLE_SLOPE_VAR * lost_share;
 
 	// Tangent space in the layout construct_ONB_frisvad returns: column 1 is the
 	// normal, so the sampled normal's "up" component belongs in .y.

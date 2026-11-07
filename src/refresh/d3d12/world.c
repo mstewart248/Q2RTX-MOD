@@ -242,7 +242,8 @@ static struct {
     bool                images_made;
     d3d12_set_t         textures[2];        // even, odd frames (vkpt's desc_set_textures_even/odd)
     d3d12_set_t         display[2];         // the same, TAA_OUTPUT's texture = the image shown
-    int                 display_image;
+    int                 display_image;      // what display[] shows: pt_dlss_debug's view, else show_image
+    int                 show_image;         // d3d12_show's choice
     d3d12_set_t         vertex_buffer_set;
     d3d12_set_t         tiles_set;
     // TILE COMPACTION (pt_tile_compaction): the lists (vkpt's buf_tiles, sized by the
@@ -1577,10 +1578,14 @@ bool d3d12_world_init(void)
     Cvar_FullSet("pt_ser_available", d3d.caps.shader_model >= D3D_SHADER_MODEL_6_9 ? "1" : "0", CVAR_ROM, FROM_CODE);
     w.show = Cvar_Get("d3d12_show", "TAA_OUTPUT", 0);
     // survives a vid_restart with whatever was last chosen
-    w.display_image = find_image(w.show->string);
-    if (w.display_image < 0)
-        w.display_image = VKPT_IMG_TAA_OUTPUT;
+    w.show_image = find_image(w.show->string);
+    if (w.show_image < 0)
+        w.show_image = VKPT_IMG_TAA_OUTPUT;
     w.show->modified = false;
+    // pt_dlss_debug wins - update_display_image
+    w.display_image = DLSSDebugImage(NULL);
+    if (w.display_image < 0)
+        w.display_image = w.show_image;
 
     // big enough for either of pt_tlas_fast_trace's builds
     d3d12_as_sizes_t trace_sizes, build_sizes;
@@ -2324,15 +2329,24 @@ void d3d12_world_plan_dynamic(const uint32_t first[D3D12_NUM_DYN_RUNS], const ui
 
 static void update_display_image(void)
 {
-    if (!w.show->modified)
-        return;
-    w.show->modified = false;
-    int image = find_image(w.show->string);
-    if (image < 0) {
-        Com_WPrintf("d3d12_show: no G-buffer image \"%s\" - names as in global_textures.h, e.g. PT_ALBEDO\n",
-                    w.show->string);
-        return;
+    if (w.show->modified) {
+        w.show->modified = false;
+        int image = find_image(w.show->string);
+        if (image < 0)
+            Com_WPrintf("d3d12_show: no G-buffer image \"%s\" - names as in global_textures.h, e.g. PT_ALBEDO\n",
+                        w.show->string);
+        else
+            w.show_image = image;
     }
+
+    /* pt_dlss_debug - the DLSS Debug menu row - shows the same views as vkpt, from the
+       one table in DLSS.c, raw like vkpt's blit. It used to only swap DLSS's colour
+       input here, so the screen showed RR's reconstruction of a normal map, and only
+       for 1..22. An A/B pair needs nothing extra: the display sets put the image's
+       BINDING at TAA_OUTPUT's, and each parity's set already holds that frame's image. */
+    int image = DLSSDebugImage(NULL);
+    if (image < 0)
+        image = w.show_image;
     if (image == w.display_image)
         return;
     // the display sets are rewritten in place
@@ -2796,7 +2810,9 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         } else if (final || !strncmp(name, "ASVGF_TAA_", 10)) {
             src_w = min(src_w, frame->taa_output_width);
             src_h = min(src_h, frame->taa_output_height);
-        } else if (!strncmp(name, "FLAT_", 5)) {
+        } else if (!strncmp(name, "FLAT_", 5) || !strncmp(name, "DLSS_", 5)
+                   || shown == VKPT_IMG_PT_DLSS_MOTION) {
+            // the combine pass's outputs (pt_dlss_debug's RR inputs): one image, not fields
             src_w = min(src_w, frame->render_width);
             src_h = min(src_h, frame->render_height);
         } else {

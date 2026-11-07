@@ -769,7 +769,7 @@ main()
 			    && is_blood(triangle.material_id))
 			{
 				vec3 reflected_albedo = imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos).rgb;
-				imageStore(IMG_PT_REFLECTED_ALBEDO, ipos, vec4(reflected_albedo, 1.0 + triangle.alpha));
+				imageStore(IMG_PT_REFLECTED_ALBEDO, ipos, vec4(reflected_albedo, REFLECTED_ALBEDO_BLOOD_BIAS + triangle.alpha));
 			}
 		}
 		else

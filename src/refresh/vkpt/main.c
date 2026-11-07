@@ -9202,8 +9202,9 @@ R_EndFrame_RTX(void)
 	qvk.frame_counter++;
 }
 
+// pt_dlss_debug's view is blitted at the render extent; the picture at the output's.
 VkExtent2D GetDLSSExtent() {
-	if (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer == 0) {
+	if (DLSSDebugImage(NULL) < 0) {
 		return qvk.extent_unscaled;
 	}
 	else {
@@ -9211,125 +9212,19 @@ VkExtent2D GetDLSSExtent() {
 	}
 }
 
+/* The image the DLSS path puts on screen: DLSS_OUTPUT, or pt_dlss_debug's view raw.
+   The views are DLSS.c's table (DLSSDebugImage), which the menu row and the D3D12
+   renderer share. An A/B pair is swapped between bindings every frame (LIST_IMAGES_A_B /
+   LIST_IMAGES_B_A), so this frame's image of the pair is _A + (frame_counter & 1) - the
+   counter only advances at the end of R_EndFrame_RTX, after this blit. */
 VkImage GetDLSSImage() {
-	VkImage DisplayImage = NULL;
-
-	switch (Cvar_Get("pt_dlss_debug", "0", CVAR_ARCHIVE)->integer) {
-	
-	case 1:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION];
-		break;
-	case 2:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_ALBEDO];
-		break;
-	case 3:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_ROUGHNESS];
-		break;
-	case 4:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_NORMAL];
-		break;
-	case 5:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO];
-		break;
-	case 6:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_DEPTH];
-		break;
-	case 7:
-		DisplayImage = qvk.images[VKPT_IMG_PT_DLSS_MOTION];
-		break;
-	case 8:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT];
-		break;
-	case 9:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE];
-		break;
-	case 10:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR];
-		break;
-	case 11:
-		DisplayImage = qvk.images[VKPT_IMG_PT_TRANSPARENT];
-		break;
-	case 12:
-		DisplayImage = qvk.images[VKPT_IMG_PT_MOTION];
-		break;
-	case 13:
-		DisplayImage = qvk.images[VKPT_IMG_PT_DLSS_MOTION];
-		break;
-	case 14:
-		DisplayImage = qvk.images[VKPT_IMG_ASVGF_HIST_COLOR_HF];
-		break;
-	case 15:
-		DisplayImage = qvk.images[VKPT_IMG_PT_SHADING_POSITION];
-		break;
-	case 16:
-		DisplayImage = qvk.images[VKPT_IMG_FLAT_COLOR];
-		break;
-	case 17:
-		DisplayImage = qvk.images[VKPT_IMG_FLAT_MOTION];
-		break;
-	case 18:
-		DisplayImage = qvk.images[VKPT_IMG_TAA_OUTPUT];
-		break;
-	case 19:
-		DisplayImage = qvk.images[VKPT_IMG_PT_THROUGHPUT];
-		break;
-	case 20:
-		DisplayImage = qvk.images[VKPT_IMG_PT_BOUNCE_THROUGHPUT];
-		break;
-	case 21:
-		DisplayImage = qvk.images[VKPT_IMG_HQ_COLOR_INTERLEAVED];
-		break;
-	case 22:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO];
-		break;
-	case 23:
-		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_LF_SH];
-		break;
-	case 24:
-		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_HF];
-		break;
-	case 25:
-		DisplayImage = qvk.images[VKPT_IMG_PT_COLOR_SPEC];
-		break;
-	case 26:
-		DisplayImage = qvk.images[VKPT_IMG_PT_GEO_NORMAL2];
-		break;
-	case 27:
-		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_PRIM_B];
-		break;
-	case 28:
-		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_PRIM_A];
-		break;
-	case 29:
-		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_BARY_B];
-		break;
-	case 30:
-		DisplayImage = qvk.images[VKPT_IMG_PT_VISBUF_BARY_A];
-		break;
-	case 31:
-		DisplayImage = qvk.images[VKPT_IMG_PT_BASE_COLOR_B];
-		break;
-	case 32:
-		DisplayImage = qvk.images[VKPT_IMG_PT_BASE_COLOR_A];
-		break;
-	case 33:
-		DisplayImage = qvk.images[VKPT_IMG_PT_METALLIC_B];
-		break;
-	case 34:
-		DisplayImage = qvk.images[VKPT_IMG_PT_METALLIC_A];
-		break;
-	case 35:
-		DisplayImage = qvk.images[VKPT_IMG_PT_VIEW_DEPTH_B];
-		break;
-	case 36:
-		DisplayImage = qvk.images[VKPT_IMG_PT_VIEW_DEPTH_A];
-		break;
-	default:
-		DisplayImage = qvk.images[VKPT_IMG_DLSS_OUTPUT];
-		break;
-	}
-
-	return DisplayImage;
+	int pair = 0;
+	int image = DLSSDebugImage(&pair);
+	if (image < 0)
+		return qvk.images[VKPT_IMG_DLSS_OUTPUT];
+	if (pair)
+		image += (int)(qvk.frame_counter & 1);
+	return qvk.images[image];
 }
 
 void

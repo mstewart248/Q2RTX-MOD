@@ -590,10 +590,44 @@ main()
 					correction_factor = do_refraction ? 1 - F : F;
 					correction_factor *= split_weight;
 					checkerboard_flags = CHECKERBOARD_FLAG_REFLECTION | CHECKERBOARD_FLAG_REFRACTION;
+
+					/* pt_glass_secondary_stochastic 3 - THE GHOST'S LIGHT WITHOUT ITS NOISE.
+
+					   The most-probable path refracts out of the back face and drops what that
+					   face reflects: the ghost, a second copy of the room offset by the pane's
+					   thickness. Mode 1 traces it on a random F_back of the pixels, and those
+					   pixels then show a different scene, with different depth, normal, albedo
+					   and motion, from their neighbours - RR has nothing coherent to accumulate.
+					   The ghost leaves the front face parallel to this reflection, so add its
+					   light here instead: back-face reflection, out through the front, and the
+					   series of further round trips, (1 - F) * Fb / (1 + Fb), tinted once like
+					   the refraction. F_back is computed as the back face below will compute it
+					   (flat pane, same TIR blend on N.V) and is left out wherever the back face
+					   takes the reflection itself (Fb >= 0.75, or TIR), which the most-probable
+					   path already follows. Photo mode traces the real ghost. */
+					float split_F = F;
+					if(!do_refraction && primary_medium == MEDIUM_NONE
+						&& global_ubo.pt_glass_secondary_stochastic == 3 && global_ubo.pt_denoiser_present != 0
+						&& dot(refracted_direction, refracted_direction) > 0.0)
+					{
+						float back_n_dot_v = 1.0 - (1.0 - abs(dot(normalize(refracted_direction), geo_normal))) * 4;
+						if(back_n_dot_v > 0.0)
+						{
+							float F_back = 0.05 + 0.95 * pow(1.0 - back_n_dot_v, 5.0);
+							if(F_back < 0.75)
+							{
+								float ghost = (1.0 - F) * F_back / (1.0 + F_back);
+								throughput *= vec3(1.0) + primary_base_color * (ghost / F);
+								split_F = F + ghost;
+							}
+						}
+					}
+
 					if(!was_split_on_entry)
-						fresnel_guide_weight = F;
+						fresnel_guide_weight = split_F;
 				}
-				else if(global_ubo.pt_denoiser_present != 0 && global_ubo.pt_glass_secondary_stochastic == 0)
+				else if(global_ubo.pt_denoiser_present != 0
+					&& (global_ubo.pt_glass_secondary_stochastic == 0 || global_ubo.pt_glass_secondary_stochastic == 3))
 				{
 					// Secondary surface with a denoiser downstream - follow the most probable
 					// path. Deterministic, so it costs no variance.

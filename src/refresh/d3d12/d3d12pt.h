@@ -591,6 +591,10 @@ enum {
     D3D12_NUM_WORLD_STAGING
 };
 
+// vkpt/DLSS.c (declared in DLSS.h, which pulls in Vulkan): pt_dlss_debug's VKPT_IMG_*
+// to show raw, or -1. world.c shows it in place of d3d12_show's image.
+int DLSSDebugImage(int *pair);
+
 bool d3d12_world_init(void);
 void d3d12_world_shutdown(void);
 bool d3d12_world_ready(void);
