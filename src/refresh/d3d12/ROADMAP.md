@@ -112,6 +112,23 @@ the SER A/B (`pt_ser`) on it: no gain, so it stays off.** Since 11-06 it is in t
     `fog_debug`, `profiler_dump`, `reload_textures`, `show_pvs` (the PVS overlay, through
     the UBO), `next_sun`. D3D12 had only `profiler_dump` before. `reload_shader` stays
     Vulkan's. Before, `fog_debug` was never removed at a Vulkan shutdown.
+    - **`mat` (11-06 eve, built, not run):** MAT_Init registers it on both renderers, but
+      `d3d12_frontend_init` used to remove it again. The reason was that
+      `vkpt_vertex_buffer_invalidate_static_model_vbos` (`mat reload`, `mat <attribute>`,
+      `mat create_instance`) waits on the Vulkan device and frees Vulkan buffers. Matt
+      found `mat print`, `mat reload` and the edits missing.
+      - Two new `vkpt_prep_backend` hooks do that part, `wait_idle` and `free_model`, both
+        NULL on Vulkan. D3D12's are `d3d12_wait_idle` and `d3d12_world_model_free` +
+        `vkpt_model_vbo_clear`.
+      - The next frame's `d3d12_frontend_upload_models` sees the slot as UPLOAD and builds
+        it again, reclassified from the new material.
+      - The crosshair's material comes from primary_rays' readback, through
+        `process_render_feedback` in the shared `vkpt_prepare_frame`.
+    - **Photo mode's free camera (11-06 eve, built, not run):** `R_InterceptKey_D3D12` was
+      a stub that returned false, so WASD/QE, the depth-of-field wheel and the mouse-button
+      swallowing never reached freecam.c, and the camera sat still. Now main.c sets the hook
+      NULL and `d3d12_frontend_register_functions` sets vkpt's `R_InterceptKey_RTX`. The
+      per-frame half, `vkpt_freecam_update`, already ran in the shared `vkpt_prepare_frame`.
     - `reload_textures` needed `IMG_Load_D3D12` to make an existing slot's texture again.
       It used to keep the new pixels but never re-upload them, so an `IMG_ReloadFrom`
       changed nothing on screen. Now the old texture goes as an unload's does (a deferred
@@ -839,6 +856,20 @@ found little Vulkan in it.
     - each level made from the stored level above.
     It runs at upload, so no UAV-flagged textures or per-level descriptors are needed. A
     2048x2048 sRGB chain costs 11.7 ms, against tens of ms for decoding that PNG.
+  - **On every core since 11-06 (built, not run).** Matt: the world stayed black for about
+    5 s after a level's music started. The decode runs during registration, before the
+    music (precache.c's OGG_PlayTrack follows R_EndRegistration). The chains run at the
+    first frame's d3d12_textures_begin_frame, after it, which is where vkpt also makes its
+    textures. There they were on one thread, for hundreds of textures.
+    - `make_pending_textures` now builds each texture's `build_chain` buffer (renormalised
+      level 0, then every level) on all logical processors, biggest first, in batches
+      of at most 512 MB.
+    - The main thread then creates and uploads them as before, so the bytes don't change.
+    - It prints `D3D12: N textures made in X ms (mip chains Y ms on Z threads)` for any
+      burst of 64 or more.
+    - `d3d12_texture_threads 1` is the old single thread, for the A/B. It isn't saved.
+    - Workers use malloc, not Z_Malloc, which isn't thread-safe. `d3d12_mip_init` makes
+      mipgen.c's sRGB tables before any worker starts.
   - Each level goes into the upload batch as its own copy, then every level moves to
     shader reads. The samplers already allowed every LOD (16x anisotropic).
   - Left: BC formats (vkpt has none either, so this is not a parity gap). The extended

@@ -777,6 +777,18 @@ static vkpt_flow_backend_t d3d12_flow_backend = {
     .profile = d3d12_timers_flow,
 };
 
+/* `mat reload` / `mat <attribute>` (vkpt_vertex_buffer_invalidate_static_model_vbos):
+   a static model whose material changed is let go here, outside any frame, and the
+   next frame's d3d12_frontend_upload_models sees it as VKPT_MODEL_VBO_UPLOAD (meshes,
+   no VBO) and builds it again - with the mesh reclassified (opaque / transparent /
+   masked) from the new material, which is why the BLASes cannot simply be kept.
+   d3d12_world_model_free defers the release anyway. */
+static void d3d12_backend_free_model(int index)
+{
+    d3d12_world_model_free(index);
+    vkpt_model_vbo_clear(index);
+}
+
 static const vkpt_prep_backend_t d3d12_backend = {
     .map_staging = d3d12_map_staging,
     .unmap_staging = d3d12_unmap_staging,
@@ -787,6 +799,8 @@ static const vkpt_prep_backend_t d3d12_backend = {
     .reserve_blood_staging = d3d12_world_reserve_blood_staging,
     .create_froxel_volumes = d3d12_world_froxel_create,
     .read_sky_envmap = d3d12_world_read_sky_envmap,
+    .wait_idle = d3d12_wait_idle,
+    .free_model = d3d12_backend_free_model,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -829,9 +843,9 @@ void d3d12_frontend_init(void)
     // fresh staging buffers: the first light upload is whole
     vkpt_upload_ranges_reset();
 
-    // `mat reload` ends in vkpt_vertex_buffer_invalidate_static_model_vbos,
-    // which waits on the Vulkan device. Back with the world pass.
-    Cmd_RemoveCommand("mat");
+    // MAT_Init's `mat` command stays: its model rebuild goes through the backend's
+    // wait_idle / free_model (d3d12_backend above), the crosshair's material through
+    // the shared readback (process_render_feedback in vkpt_prepare_frame)
 
     // restarts the renderer with vid_rtx 0 then 1 - which would leave D3D12
     // for Vulkan. The images follow the field layout's extents the next frame
@@ -1391,6 +1405,10 @@ void d3d12_frontend_register_functions(void)
     // the faces, the rotation, the map's skybox scope; the cube through
     // d3d12_backend's upload_envmap
     R_SetSky = R_SetSky_RTX;
+    // photo mode's free camera (freecam.c): the keys it moves by, the depth of
+    // field's wheel, and the mouse buttons it keeps from the game. Its per-frame
+    // half, vkpt_freecam_update, already ran in the shared vkpt_prepare_frame
+    R_InterceptKey = R_InterceptKey_RTX;
 
     MOD_LoadMD2 = MOD_LoadMD2_RTX;
 #if USE_MD3

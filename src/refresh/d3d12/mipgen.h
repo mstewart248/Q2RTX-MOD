@@ -9,6 +9,10 @@ tests/d3d12_mip_test.c includes the .c.
 #include <stddef.h>
 #include <stdint.h>
 
+// The sRGB tables, made on first use otherwise: call it once before the two below
+// run on several threads (textures.c's map-load workers). Everything else is pure.
+void d3d12_mip_init(void);
+
 // One level down, as vkpt's linear vkCmdBlitImage makes it: `src` is wd x ht, `dst`
 // nwd x nht, both tightly packed, `bpp` 4 (RGBA8; sRGB colour when `srgb`) or 2 (R16)
 void d3d12_mip_downsample(const uint8_t *src, int wd, int ht, uint8_t *dst, int nwd, int nht, int bpp, bool srgb);

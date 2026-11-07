@@ -23,7 +23,8 @@ WHAT IT DOES:
     SPIR-V and (through DXC) to DXIL, and embedded in the DLLs;
   * takes DXC (dxcompiler.dll, 1.8.2505 or later, which signs DXIL itself)
     from the Vulkan SDK the game builds with: $VULKAN_SDK, else the newest
-    C:/VulkanSDK/*;
+    C:/VulkanSDK/*; with no SDK (the CI runner installs none), Microsoft's own
+    DXC release pinned in DXC, its SHA-256 checked;
   * adds setup/flow/ExternalVulkan.cpp and NvFlowVulkanExternal.h to the
     source and applies PATCHES (see there), so Flow can run on the game's own
     VkDevice and queue rather than creating a second device;
@@ -68,6 +69,16 @@ SLANG = {
     'win32': ('https://github.com/shader-slang/slang/releases/download/v2025.6.1/'
               'slang-2025.6.1-windows-x86_64.zip',
               '47ef4f7f2df17f9965612bc39e63dac0d9748985887339bb5f11f2d931c0cb61'),
+}
+
+# DXC for Flow's D3D12 shaders when no Vulkan SDK has one - the GitHub runner
+# installs no Vulkan SDK, and without this the Windows build stopped here.
+# Microsoft's release: (url, SHA-256, the dll inside the archive).
+DXC = {
+    'win32': ('https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/'
+              'dxc_2026_09_29.zip',
+              'ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1',
+              'bin/x64/dxcompiler.dll'),
 }
 
 # Files added to the Flow source: (file in setup/flow, destination under flow/).
@@ -262,16 +273,8 @@ def fetch_flow(work):
     return flow
 
 
-def fetch_slang(work, flow):
-    """Download and unpack Slang into flow/external/slang, where Flow looks."""
-    if sys.platform not in SLANG:
-        sys.exit('build_flow: no Slang release is pinned for ' + sys.platform)
-    url, digest = SLANG[sys.platform]
-    dst = os.path.join(flow, 'external', 'slang')
-    stamp = os.path.join(dst, '.unpacked-' + digest[:16])
-    if os.path.isfile(stamp):
-        return
-
+def download(work, url, digest, what):
+    """`url` into work/dl, kept across runs, its SHA-256 checked against `digest`."""
     archive = os.path.join(work, 'dl', url.rsplit('/', 1)[1])
     os.makedirs(os.path.dirname(archive), exist_ok=True)
     if not os.path.isfile(archive) or sha256(archive) != digest:
@@ -282,8 +285,22 @@ def fetch_slang(work, flow):
         got = sha256(tmp)
         if got != digest:
             os.remove(tmp)
-            sys.exit('build_flow: Slang archive has SHA-256 %s, expected %s' % (got, digest))
+            sys.exit('build_flow: %s archive has SHA-256 %s, expected %s' % (what, got, digest))
         os.replace(tmp, archive)
+    return archive
+
+
+def fetch_slang(work, flow):
+    """Download and unpack Slang into flow/external/slang, where Flow looks."""
+    if sys.platform not in SLANG:
+        sys.exit('build_flow: no Slang release is pinned for ' + sys.platform)
+    url, digest = SLANG[sys.platform]
+    dst = os.path.join(flow, 'external', 'slang')
+    stamp = os.path.join(dst, '.unpacked-' + digest[:16])
+    if os.path.isfile(stamp):
+        return
+
+    archive = download(work, url, digest, 'Slang')
 
     log('unpacking Slang')
     if os.path.isdir(dst):
@@ -346,8 +363,28 @@ def stale_shaders(flow):
         log('%d shaders to compile for D3D12 as well' % n)
 
 
-def find_dxc():
-    """dxcompiler.dll from the Vulkan SDK: $VULKAN_SDK, else the newest C:/VulkanSDK/*."""
+def fetch_dxc(work):
+    """dxcompiler.dll out of the pinned DXC release, into work/dxc."""
+    if sys.platform not in DXC:
+        sys.exit('build_flow: no DXC release is pinned for ' + sys.platform)
+    url, digest, member = DXC[sys.platform]
+    dst = os.path.join(work, 'dxc', digest[:16])
+    dll = os.path.join(dst, 'dxcompiler.dll')
+    if os.path.isfile(dll):
+        return dll
+
+    archive = download(work, url, digest, 'DXC')
+    log('unpacking DXC')
+    os.makedirs(dst, exist_ok=True)
+    with zipfile.ZipFile(archive) as z, z.open(member) as src, open(dll + '.part', 'wb') as out:
+        shutil.copyfileobj(src, out)
+    os.replace(dll + '.part', dll)
+    return dll
+
+
+def find_dxc(work):
+    """dxcompiler.dll from the Vulkan SDK: $VULKAN_SDK, else the newest C:/VulkanSDK/*;
+    else the pinned DXC release (fetch_dxc)."""
     roots = []
     if os.environ.get('VULKAN_SDK'):
         roots.append(os.environ['VULKAN_SDK'])
@@ -356,13 +393,13 @@ def find_dxc():
         dll = os.path.join(root, 'Bin', 'dxcompiler.dll')
         if os.path.isfile(dll):
             return dll
-    sys.exit('build_flow: no dxcompiler.dll in a Vulkan SDK (set VULKAN_SDK); Flow\'s D3D12 '
-             'shaders are compiled with it')
+    log('no dxcompiler.dll in a Vulkan SDK: using the pinned DXC release')
+    return fetch_dxc(work)
 
 
 def build(work, flow, setup):
     out = os.path.join(work, 'build')
-    dxc = find_dxc()
+    dxc = find_dxc(work)
     log('DXC: ' + dxc)
     # Ninja when it and the compiler are both on PATH (a developer prompt);
     # otherwise CMake's default, which is Visual Studio on a Windows runner.

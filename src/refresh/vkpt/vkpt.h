@@ -741,6 +741,12 @@ typedef struct vkpt_prep_backend_s {
 	// back, Z_Malloc'd (vkpt_physical_sky_read_envmap); NULL = none. NULL on
 	// Vulkan, which reads its own.
 	uint16_t *(*read_sky_envmap)(int *width, int *height);
+	// `mat reload` and `mat <attribute>` (vkpt_vertex_buffer_invalidate_static_model_vbos):
+	// wait for the GPU, and drop model slot `index`'s buffers and BLASes so the next
+	// frame uploads it again (vkpt_model_vbo_action). NULL on Vulkan, which does both
+	// itself.
+	void (*wait_idle)(void);
+	void (*free_model)(int index);
 } vkpt_prep_backend_t;
 
 extern const vkpt_prep_backend_t *vkpt_prep_backend;

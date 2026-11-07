@@ -20,8 +20,11 @@ textures.c). Normal maps are renormalised first (d3d12_mip_normalize_normals, th
 same arithmetic as normalize_normal_map.comp).
 
 Done here, at upload, rather than on the GPU: that needs no UAV-flagged textures and
-no per-level descriptors. A map's textures already pay a PNG/TGA decode on the CPU,
-which is several times this cost.
+no per-level descriptors. On one thread it was not cheap, though: a rerelease map's
+first frame makes hundreds of textures, and the world stayed black for about 5 s after
+the level's music started (Matt, 11-06). textures.c now runs a map load's chains on
+every logical processor (make_pending_textures), so these functions must stay
+thread-safe: no state but the tables, which d3d12_mip_init makes up front.
 */
 
 #include "mipgen.h"
@@ -62,6 +65,12 @@ static void make_tables(void)
         srgb_bucket[i] = (uint8_t)code;
     }
     tables_made = true;
+}
+
+void d3d12_mip_init(void)
+{
+    if (!tables_made)
+        make_tables();
 }
 
 // the code whose interval holds `v`: how many halfway points lie below it

@@ -363,12 +363,6 @@ static bool R_IsHDR_D3D12(void)
     return d3d.hdr;
 }
 
-static bool R_InterceptKey_D3D12(unsigned key, bool down)
-{
-    (void)key; (void)down;
-    return false;
-}
-
 /* ------------------------------------------------------------------------- */
 
 void R_RegisterFunctionsD3D12(void)
@@ -384,7 +378,9 @@ void R_RegisterFunctionsD3D12(void)
     R_EndFrame = R_EndFrame_D3D12;
     R_ModeChanged = R_ModeChanged_D3D12;
     R_AddDecal = R_AddDecal_D3D12;
-    R_InterceptKey = R_InterceptKey_D3D12;
+    // vkpt's R_InterceptKey_RTX, photo mode's free camera (WASD/QE, the DOF wheel):
+    // d3d12_frontend_register_functions. A stub here once left the camera deaf.
+    R_InterceptKey = NULL;
 
     R_IsHDR = R_IsHDR_D3D12;
     R_LatencySleep = d3d12_reflex_sleep;

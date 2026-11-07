@@ -1327,7 +1327,12 @@ stage_mesh_primitives(uint8_t* staging_data, int* p_write_ptr, float** p_vertex_
 
 void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index)
 {
-	vkpt_device_wait_idle();
+	// the D3D12 renderer (vid_rtx 3) waits for its own queue and frees its own
+	// model buffers: there is no Vulkan device then
+	if (vkpt_prep_backend->wait_idle)
+		vkpt_prep_backend->wait_idle();
+	else
+		vkpt_device_wait_idle();
 
 	pbr_material_t* mat = MAT_ForIndex(material_index);
 
@@ -1357,8 +1362,13 @@ void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index)
 			// Invalidate and later re-upload the VBO if the material is used
 			if (found)
 			{
-				write_model_vbo_descriptor(i, null_buffer.buffer, null_buffer.size);
-				destroy_model_vbo(vbo);
+				if (vkpt_prep_backend->free_model)
+					vkpt_prep_backend->free_model(i);
+				else
+				{
+					write_model_vbo_descriptor(i, null_buffer.buffer, null_buffer.size);
+					destroy_model_vbo(vbo);
+				}
 			}
 		}
 	}

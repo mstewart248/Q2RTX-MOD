@@ -8,11 +8,13 @@ the next frame or at the end of registration, for every registered image that
 has pixels and no texture yet. A qhandle_t is its own descriptor index.
 
 Every texture gets vkpt's mip chain (upload_levels below), built on the CPU at
-upload (mipgen.c).
+upload (mipgen.c) - a map load's on every logical processor (make_pending_textures).
 */
 
 #include "d3d12pt.h"
 #include "mipgen.h"
+#include "system/system.h"
+#include <SDL.h>
 #include "../vkpt/shader/constants.h"
 #include "../vkpt/texture_mips.h"
 #include "../stb/stb_image.h"
@@ -40,6 +42,7 @@ static bool             sampler_table_dirty;
 static ID3D12Resource   *sampler_table;     // MAX_RIMAGES bytes, a UAV (storage buffers all are)
 
 static cvar_t *pt_nearest, *pt_bilerp_chars, *pt_bilerp_pics;
+static cvar_t *d3d12_texture_threads;
 
 static void sampler_settings_changed(cvar_t *self)
 {
@@ -129,6 +132,9 @@ bool d3d12_textures_init(void)
     pt_bilerp_chars = Cvar_Get("pt_bilerp_chars", "0", CVAR_ARCHIVE);
     pt_bilerp_pics = Cvar_Get("pt_bilerp_pics", "0", CVAR_ARCHIVE);
     pt_nearest->changed = pt_bilerp_chars->changed = pt_bilerp_pics->changed = sampler_settings_changed;
+    // the map-load mip chain workers (make_pending_textures): 0 every logical
+    // processor, 1 the main thread alone, as before 11-06 - an A/B, not saved
+    d3d12_texture_threads = Cvar_Get("d3d12_texture_threads", "0", 0);
 
     create_samplers();
     D3D12_DESCRIPTOR_HEAP_DESC hd = { 0 };
@@ -286,59 +292,106 @@ static DXGI_FORMAT image_format(const image_t *image, int *bytes_per_pixel)
      pix_data keeps what was loaded (materials read it);
    - everything else: the linear blit chain (mipgen.c), filtered in linear light for
      sRGB images.
-   Each level goes into the upload batch as its own copy. */
-static bool upload_levels(ID3D12Resource *res, const image_t *image, int w, int h, int bpp, int levels)
+   build_chain makes all of it but level 0 as loaded into one buffer, level after level,
+   each from the one before; upload_levels puts each level into the upload batch as its
+   own copy. */
+typedef struct {
+    int     w, h, bpp, levels;
+    bool    max_mips, normalize, srgb;
+} chain_t;
+
+static bool chain_of(const image_t *image, chain_t *c)
 {
-    const bool max_mips = vkpt_image_has_max_mips(image);
-    const bool normalize = !max_mips && (image->flags & IF_NORMAL_MAP) && !image->is_srgb && bpp == 4;
-    const bool srgb = image->is_srgb && bpp == 4;
+    image_format(image, &c->bpp);
+    c->w = image->upload_width;
+    c->h = image->upload_height;
+    if (c->w <= 0 || c->h <= 0)
+        return false;
+    c->levels = vkpt_image_num_miplevels(image);
+    c->max_mips = vkpt_image_has_max_mips(image);
+    c->normalize = !c->max_mips && (image->flags & IF_NORMAL_MAP) && !image->is_srgb && c->bpp == 4;
+    c->srgb = image->is_srgb && c->bpp == 4;
+    return true;
+}
 
+// build_chain's buffer: the renormalised level 0 of a normal map, then levels 1 and
+// down, tightly packed. 0 for a texture that is level 0 as loaded and nothing else.
+static size_t chain_bytes(const chain_t *c)
+{
+    size_t total = c->normalize ? (size_t)c->w * c->h * 4 : 0;
+    int lw = c->w, lh = c->h;
+    for (int mip = 1; mip < c->levels; mip++) {
+        lw = lw > 1 ? lw >> 1 : lw;
+        lh = lh > 1 ? lh >> 1 : lh;
+        total += (size_t)lw * lh * c->bpp;
+    }
+    return total;
+}
+
+// Fills `out` (chain_bytes of it). Only reads the image's pixels and calls mipgen.c's
+// pure functions, so a worker thread may run it (make_pending_textures).
+static void build_chain(const image_t *image, const chain_t *c, uint8_t *out)
+{
     const uint8_t *level = image->pix_data;
-    uint8_t *normalized = NULL;
-    if (normalize) {
-        normalized = Z_Malloc((size_t)w * h * 4);
-        memcpy(normalized, image->pix_data, (size_t)w * h * 4);
-        d3d12_mip_normalize_normals(normalized, (size_t)w * h);
-        level = normalized;
+    if (c->normalize) {
+        // pix_data keeps what was loaded: the materials read it
+        memcpy(out, level, (size_t)c->w * c->h * 4);
+        d3d12_mip_normalize_normals(out, (size_t)c->w * c->h);
+        level = out;
+        out += (size_t)c->w * c->h * 4;
     }
-    bool ok = d3d12_upload_subresource(res, 0, level, w, h, bpp);
-
-    // two buffers taking turns, each the size of level 1 (every later level fits)
-    uint8_t *scratch[2] = { NULL, NULL };
-    if (levels > 1 && ok) {
-        const size_t size = (size_t)max(w >> 1, 1) * max(h >> 1, 1) * bpp;
-        scratch[0] = Z_Malloc(size);
-        scratch[1] = Z_Malloc(size);
-    }
-    int lw = w, lh = h;
-    for (int mip = 1; mip < levels && ok; mip++) {
+    int lw = c->w, lh = c->h;
+    for (int mip = 1; mip < c->levels; mip++) {
         const int nw = lw > 1 ? lw >> 1 : lw, nh = lh > 1 ? lh >> 1 : lh;
-        uint8_t *next = scratch[(mip - 1) & 1];
-        if (max_mips)
-            vkpt_downsample_max(level, lw, lh, next, nw, nh, bpp);
+        if (c->max_mips)
+            vkpt_downsample_max(level, lw, lh, out, nw, nh, c->bpp);
         else
-            d3d12_mip_downsample(level, lw, lh, next, nw, nh, bpp, srgb);
-        ok = d3d12_upload_subresource(res, (uint32_t)mip, next, nw, nh, bpp);
-        level = next;
+            d3d12_mip_downsample(level, lw, lh, out, nw, nh, c->bpp, c->srgb);
+        level = out;
+        out += (size_t)nw * nh * c->bpp;
         lw = nw;
         lh = nh;
     }
+}
 
-    Z_Free(scratch[0]);
-    Z_Free(scratch[1]);
-    Z_Free(normalized);
+// `chain` is build_chain's buffer, already made, or NULL to make it here
+static bool upload_levels(ID3D12Resource *res, const image_t *image, const chain_t *c, const uint8_t *chain)
+{
+    uint8_t *own = NULL;
+    const size_t bytes = chain_bytes(c);
+    if (bytes && !chain) {
+        own = malloc(bytes);
+        if (!own) {
+            // level 0 as loaded beats no texture at all
+            const bool ok = d3d12_upload_subresource(res, 0, image->pix_data, c->w, c->h, c->bpp);
+            return ok && c->levels == 1;
+        }
+        build_chain(image, c, own);
+        chain = own;
+    }
+
+    const uint8_t *level0 = c->normalize ? chain : image->pix_data;
+    const uint8_t *next = chain ? chain + (c->normalize ? (size_t)c->w * c->h * 4 : 0) : NULL;
+    bool ok = d3d12_upload_subresource(res, 0, level0, c->w, c->h, c->bpp);
+    int lw = c->w, lh = c->h;
+    for (int mip = 1; mip < c->levels && ok; mip++) {
+        lw = lw > 1 ? lw >> 1 : lw;
+        lh = lh > 1 ? lh >> 1 : lh;
+        ok = d3d12_upload_subresource(res, (uint32_t)mip, next, lw, lh, c->bpp);
+        next += (size_t)lw * lh * c->bpp;
+    }
+    free(own);
     return ok;
 }
 
-static void create_texture(int index)
+static void create_texture(int index, const uint8_t *chain)
 {
     image_t *image = r_images + index;
-    int bpp;
-    DXGI_FORMAT format = image_format(image, &bpp);
-    int w = image->upload_width, h = image->upload_height;
-    if (w <= 0 || h <= 0)
+    chain_t c;
+    if (!chain_of(image, &c))
         return;
-    const int levels = vkpt_image_num_miplevels(image);
+    const DXGI_FORMAT format = image_format(image, &c.bpp);
+    const int w = c.w, h = c.h, levels = c.levels;
 
     D3D12_HEAP_PROPERTIES hp = { 0 };
     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -358,7 +411,7 @@ static void create_texture(int index)
                                                          (void **)&res)))
         return;
     d3d12_set_name((ID3D12Object *)res, image->name);
-    if (!upload_levels(res, image, w, h, bpp, levels))
+    if (!upload_levels(res, image, &c, chain))
         Com_EPrintf("D3D12: %s: not every mip level was uploaded\n", image->name);
 
     // every level to shader reads, uploaded or not, so nothing samples a COPY_DEST texture
@@ -390,6 +443,141 @@ static void create_texture(int index)
     }
 }
 
+/* A MAP LOAD'S TEXTURES, ON EVERY CORE. The first frame after a map load makes every
+   texture the map registered - hundreds on a rerelease map, many 2048 square, with
+   their normal maps - and their mip chains and renormalisation are CPU work here,
+   where vkpt hands them to the GPU (blits, normalize_normal_map.comp). On the main
+   thread alone that kept the world black for about 5 s after the level's music had
+   started (Matt, 11-06).
+
+   So the frame first makes every texture's build_chain buffer on all the logical
+   processors (the main thread works too), biggest first so a batch does not end on
+   one big texture, in batches of at most PREP_BATCH_BYTES of chains held at once;
+   then the main thread creates and uploads that batch's textures as before. The
+   bytes are the same either way. The workers use malloc, not Z_Malloc, which is not
+   thread-safe. A few textures (a HUD picture, a cinematic frame) skip all this. */
+#define PREP_BATCH_BYTES    ((size_t)512 << 20)
+#define PREP_MIN_BYTES      ((size_t)8 << 20)
+#define PREP_MAX_THREADS    64
+
+typedef struct {
+    int         index;      // the r_images slot
+    chain_t     chain;
+    size_t      bytes;      // chain_bytes, 0 = nothing to make
+    uint8_t     *data;      // build_chain's buffer once made; NULL = create_texture makes it
+} tex_job_t;
+
+static tex_job_t    tex_jobs[MAX_RIMAGES];
+
+typedef struct {
+    tex_job_t       *jobs;
+    int             count;
+    SDL_atomic_t    next;   // the next job to take
+} prep_batch_t;
+
+static void prep_run(prep_batch_t *b)
+{
+    int i;
+    while ((i = SDL_AtomicAdd(&b->next, 1)) < b->count) {
+        tex_job_t *j = &b->jobs[i];
+        if (!j->bytes)
+            continue;
+        j->data = malloc(j->bytes);
+        if (j->data)
+            build_chain(r_images + j->index, &j->chain, j->data);
+    }
+}
+
+static int SDLCALL prep_worker(void *arg)
+{
+    prep_run(arg);
+    return 0;
+}
+
+static int prep_order(const void *a, const void *b)
+{
+    const tex_job_t *x = a, *y = b;
+    if (x->bytes != y->bytes)
+        return x->bytes < y->bytes ? 1 : -1;
+    return x->index - y->index;
+}
+
+static void make_pending_textures(void)
+{
+    int count = 0, with_chain = 0;
+    size_t chain_total = 0;
+    for (int i = 0; i < MAX_RIMAGES; i++) {
+        const image_t *image = r_images + i;
+        if (tex[i] || !image->registration_sequence || !image->pix_data)
+            continue;
+        tex_job_t *j = &tex_jobs[count++];
+        j->index = i;
+        j->data = NULL;
+        j->bytes = chain_of(image, &j->chain) ? chain_bytes(&j->chain) : 0;
+        chain_total += j->bytes;
+        with_chain += j->bytes > 0;
+    }
+    if (!count)
+        return;
+
+    const uint64_t start = Sys_Microseconds();
+    int threads = d3d12_texture_threads->integer > 0 ? d3d12_texture_threads->integer : SDL_GetCPUCount();
+    threads = threads < 1 ? 1 : threads > PREP_MAX_THREADS ? PREP_MAX_THREADS : threads;
+    if (with_chain < 2 || chain_total < PREP_MIN_BYTES)
+        threads = 1;
+
+    uint64_t chains_us = 0;
+    if (threads == 1) {
+        // create_texture makes each chain itself, on this thread
+        for (int k = 0; k < count; k++)
+            create_texture(tex_jobs[k].index, NULL);
+    } else {
+        d3d12_mip_init();   // the sRGB tables, before any worker reads them
+        qsort(tex_jobs, (size_t)count, sizeof(tex_jobs[0]), prep_order);
+        for (int first = 0; first < count;) {
+            int end = first;
+            size_t held = 0;
+            while (end < count && (end == first || held + tex_jobs[end].bytes <= PREP_BATCH_BYTES))
+                held += tex_jobs[end++].bytes;
+
+            prep_batch_t b;
+            b.jobs = tex_jobs + first;
+            b.count = end - first;
+            SDL_AtomicSet(&b.next, 0);
+
+            const uint64_t t0 = Sys_Microseconds();
+            SDL_Thread *workers[PREP_MAX_THREADS];
+            int started = 0;
+            for (int t = 1; t < threads && t < b.count; t++) {
+                workers[started] = SDL_CreateThread(prep_worker, "texture mips", &b);
+                if (workers[started])
+                    started++;
+            }
+            prep_run(&b);   // and whatever no worker took, if none started
+            for (int t = 0; t < started; t++)
+                SDL_WaitThread(workers[t], NULL);
+            chains_us += Sys_Microseconds() - t0;
+
+            for (int k = first; k < end; k++) {
+                create_texture(tex_jobs[k].index, tex_jobs[k].data);
+                free(tex_jobs[k].data);
+                tex_jobs[k].data = NULL;
+            }
+            first = end;
+        }
+    }
+
+    // a map load's: one line, to compare with d3d12_texture_threads 1 and with Vulkan
+    if (count >= 64) {
+        const int total_ms = (int)((Sys_Microseconds() - start) / 1000);
+        if (threads > 1)
+            Com_Printf("D3D12: %d textures made in %d ms (mip chains %d ms on %d threads)\n", count, total_ms,
+                       (int)(chains_us / 1000), threads);
+        else
+            Com_Printf("D3D12: %d textures made in %d ms (one thread)\n", count, total_ms);
+    }
+}
+
 /* Called at the start of every frame and before its 2D layer is drawn (R_EndFrame).
    Records into the upload batch, which runs before the frame's commands, and brings
    the frame's copy of the bindless table up to date. */
@@ -397,11 +585,7 @@ void d3d12_textures_begin_frame(void)
 {
     if (tex_pending) {
         tex_pending = false;
-        for (int i = 0; i < MAX_RIMAGES; i++) {
-            const image_t *image = r_images + i;
-            if (!tex[i] && image->registration_sequence && image->pix_data)
-                create_texture(i);
-        }
+        make_pending_textures();
     }
 
     if (sampler_table_dirty) {
