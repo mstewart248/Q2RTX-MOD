@@ -612,6 +612,197 @@ recheck:
     CM_RecursiveHullCheck(node->children[side ^ 1], midf, p2f, mid, p2);
 }
 
+/*
+==================
+CM_PointTraceReentrant
+
+The point case of CM_BoxTrace with everything it keeps in file statics on the
+stack instead, for the client's surface blood (blood_film.c), which traces from
+a worker thread while the game and the client trace on the main one.
+
+It never writes to the map either: CM_TraceToLeaf stamps checkcount into every
+brush it clips so a brush spanning several leaves is clipped once, and two
+threads stamping the same brushes would make each skip brushes the other had
+just done. Here a brush in several leaves is simply clipped again - the same
+answer, a little more work. The clip and the walk are CM_ClipBoxToBrush and
+CM_RecursiveHullCheck with the extents at zero.
+
+A start equal to the end only reports whether the point is in solid.
+==================
+*/
+typedef struct {
+    vec3_t      start, end;
+    trace_t     *trace;
+    int         contents;
+} cm_point_trace_t;
+
+static void CM_ClipPointToBrush(cm_point_trace_t *w, mbrush_t *brush)
+{
+    trace_t         *trace = w->trace;
+    cplane_t        *clipplane = NULL;
+    mbrushside_t    *leadside = NULL;
+    float           enterfrac = -1, leavefrac = 1;
+    bool            getout = false, startout = false;
+    mbrushside_t    *side = brush->firstbrushside;
+
+    if (!brush->numsides)
+        return;
+
+    for (int i = 0; i < brush->numsides; i++, side++) {
+        cplane_t *plane = side->plane;
+        float d1 = DotProduct(w->start, plane->normal) - plane->dist;
+        float d2 = DotProduct(w->end, plane->normal) - plane->dist;
+
+        if (d2 > 0)
+            getout = true;
+        if (d1 > 0)
+            startout = true;
+
+        if (d1 > 0 && d2 >= d1)
+            return;
+        if (d1 <= 0 && d2 <= 0)
+            continue;
+
+        if (d1 > d2) {
+            float f = (d1 - DIST_EPSILON) / (d1 - d2);
+            if (f > enterfrac) {
+                enterfrac = f;
+                clipplane = plane;
+                leadside = side;
+            }
+        } else {
+            float f = (d1 + DIST_EPSILON) / (d1 - d2);
+            if (f < leavefrac)
+                leavefrac = f;
+        }
+    }
+
+    if (!startout) {
+        trace->startsolid = true;
+        if (!getout) {
+            trace->allsolid = true;
+            if (!map_allsolid_bug->integer) {
+                trace->fraction = 0;
+                trace->contents = brush->contents;
+            }
+        }
+        return;
+    }
+    if (enterfrac < leavefrac && enterfrac > -1 && enterfrac < trace->fraction) {
+        trace->fraction = max(enterfrac, 0);
+        trace->plane = *clipplane;
+        trace->surface = &(leadside->texinfo->c);
+        trace->contents = brush->contents;
+    }
+}
+
+static void CM_RecursivePointCheck(cm_point_trace_t *w, mnode_t *node, float p1f, float p2f,
+                                   const vec3_t p1, const vec3_t p2)
+{
+    float   t1, t2, frac, frac2, idist, midf;
+    vec3_t  mid;
+    int     side;
+
+    if (w->trace->fraction <= p1f)
+        return;
+
+    while (node->plane) {
+        const cplane_t *plane = node->plane;
+
+        if (plane->type < 3) {
+            t1 = p1[plane->type] - plane->dist;
+            t2 = p2[plane->type] - plane->dist;
+        } else {
+            t1 = PlaneDiff(p1, plane);
+            t2 = PlaneDiff(p2, plane);
+        }
+
+        if (t1 >= 0 && t2 >= 0) {
+            node = node->children[0];
+            continue;
+        }
+        if (t1 < 0 && t2 < 0) {
+            node = node->children[1];
+            continue;
+        }
+
+        if (t1 < t2) {
+            idist = 1.0f / (t1 - t2);
+            side = 1;
+            frac2 = (t1 + DIST_EPSILON) * idist;
+            frac = (t1 + DIST_EPSILON) * idist;
+        } else if (t1 > t2) {
+            idist = 1.0f / (t1 - t2);
+            side = 0;
+            frac2 = (t1 - DIST_EPSILON) * idist;
+            frac = (t1 + DIST_EPSILON) * idist;
+        } else {
+            side = 0;
+            frac = 1;
+            frac2 = 0;
+        }
+
+        midf = p1f + (p2f - p1f) * clamp(frac, 0, 1);
+        LerpVector(p1, p2, frac, mid);
+        CM_RecursivePointCheck(w, node->children[side], p1f, midf, p1, mid);
+
+        midf = p1f + (p2f - p1f) * clamp(frac2, 0, 1);
+        LerpVector(p1, p2, frac2, mid);
+        CM_RecursivePointCheck(w, node->children[side ^ 1], midf, p2f, mid, p2);
+        return;
+    }
+
+    mleaf_t *leaf = (mleaf_t *)node;
+    if (!(leaf->contents & w->contents))
+        return;
+
+    mbrush_t **leafbrush = leaf->firstleafbrush;
+    for (int k = 0; k < leaf->numleafbrushes; k++, leafbrush++) {
+        mbrush_t *b = *leafbrush;
+        if (!(b->contents & w->contents))
+            continue;
+        CM_ClipPointToBrush(w, b);
+        if (!w->trace->fraction)
+            return;
+    }
+}
+
+void CM_PointTraceReentrant(trace_t *trace, const vec3_t start, const vec3_t end,
+                            mnode_t *headnode, int brushmask)
+{
+    cm_point_trace_t w;
+
+    memset(trace, 0, sizeof(*trace));
+    trace->fraction = 1;
+    trace->surface = &(nulltexinfo.c);
+
+    if (!headnode)
+        return;
+
+    if (VectorCompare(start, end)) {
+        const mleaf_t *leaf = BSP_PointLeaf(headnode, start);
+        if (leaf->contents & brushmask) {
+            trace->startsolid = trace->allsolid = true;
+            trace->fraction = 0;
+            trace->contents = leaf->contents;
+        }
+        VectorCopy(start, trace->endpos);
+        return;
+    }
+
+    VectorCopy(start, w.start);
+    VectorCopy(end, w.end);
+    w.trace = trace;
+    w.contents = brushmask;
+
+    CM_RecursivePointCheck(&w, headnode, 0, 1, start, end);
+
+    if (trace->fraction == 1)
+        VectorCopy(end, trace->endpos);
+    else
+        LerpVector(start, end, trace->fraction, trace->endpos);
+}
+
 //======================================================================
 
 /*

@@ -25,6 +25,8 @@ void S_Shutdown(void);
 // if origin is NULL, the sound will be dynamically sourced from the entity
 void S_StartSound(const vec3_t origin, int entnum, int entchannel,
                   qhandle_t sfx, float fvol, float attenuation, float timeofs);
+// voices playing nothing: a sound started now takes no other sound's voice
+int S_FreeChannels(void);
 // one that falls off in Quake II's straight line whatever s_falloff says, to
 // silence at `range` times the distance its attenuation would
 void S_StartBoundedSound(const vec3_t origin, int entnum, int entchannel,

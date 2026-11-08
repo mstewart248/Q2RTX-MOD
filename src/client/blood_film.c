@@ -62,6 +62,8 @@ over per vertex and its normals are the plane's (uv2.x 2).
 */
 
 #include "client.h"
+#include <SDL_mutex.h>
+#include <SDL_thread.h>
 
 static cvar_t *cl_blood_film;
 static cvar_t *cl_blood_film_tiles;
@@ -90,7 +92,7 @@ static cvar_t *film_splat_life;
 #define FILM_TILE       16
 #define FILM_CELLS      (FILM_TILE * FILM_TILE)
 #define FILM_MAX_PLANES 1024
-#define FILM_HASH_SIZE  2048        // power of two
+#define FILM_HASH_SIZE  4096        // power of two, ~2x MAX_BLOOD_FILM_TILES
 
 // How far the drawn surface sits off the wall or floor, so the two are never
 // coplanar. The outline is at this height and the blood rises from it.
@@ -185,10 +187,18 @@ typedef struct {
     uint8_t     kind[FILM_CELLS];
     uint8_t     run[FILM_CELLS];    // a run has been through: holds only the trail
 
+    // The mesh the renderer has - read by it while the worker builds the next
+    // one in mverts (see THE WORKER). Swapped in film_finish, never written by
+    // the worker.
     blood_film_vert_t *verts;
     int         num_tris;
     int         max_tris;
     uint32_t    version;
+
+    blood_film_vert_t *mverts;  // film_mesh builds here
+    int         mtris;
+    int         mmax;
+    bool        fresh;          // mverts holds a mesh film_finish has not swapped in
 } film_tile_t;
 
 static film_plane_t film_planes[FILM_MAX_PLANES];
@@ -199,8 +209,10 @@ static int          film_cap;       // tiles usable this session: cl_blood_film_
 static int          film_chunk_cap; // renderer chunks the tiles may fill: cl_blood_film_tris
 static int          film_chunks_used;   // ... wanted by the last frame's tiles, drawn or not
 static float        film_cell;      // cell size the grid was built with
-static const bsp_t *film_bsp;
+static bsp_t       *film_bsp;       // a reference of the film's own - see film_check_world
 static bool         film_ready;
+static int          film_now;       // cl.time of the frame the running job was started on
+static vec3_t       film_view_org, film_view_fwd;   // ... and where the player looked from
 static int          film_last_time;
 static float        film_accum;
 static uint32_t     film_version_seq;   // never reset, so a reused slot never repeats a version
@@ -215,7 +227,52 @@ static int          film_stat_unshown;  // tiles left out of a frame: over cl_bl
 static int          film_starved;   // tiles asked for with the pool full, since film_fade last ran
 static int          film_stat_classified;   // cells traced (film_classify_cell)
 static int          film_stat_coarser;  // tiles meshed below cl_blood_film_detail to fit
+static int          film_stat_seen_faded;   // ... of film_stat_faded, in sight of the player
 static uint64_t     film_stat_step_us, film_stat_mesh_us, film_stat_new_us;
+static uint64_t     film_stat_job_us, film_stat_wait_us, film_stat_job_max_us;
+
+/*
+What the worker hands back for the main thread to do - see THE WORKER. Particles
+are effects.c's and are only ever touched on the main thread.
+*/
+typedef struct {
+    vec3_t      point, normal;
+    float       radius;
+    int         color;
+    color_t     rgba;
+    bool        has_rgba;
+} film_landing_t;
+
+typedef struct {
+    vec3_t      org, dir;       // dir: a drip's velocity; a cloud's up
+    float       radius;
+    int         color;
+    color_t     rgba;
+    bool        liquid;         // into water: a dissolving cloud, not a drip
+} film_spill_t;
+
+#define FILM_MAX_LANDINGS   4096    // a frame's worth; past it a landing splats
+#define FILM_MAX_SPILLS     1024
+
+static film_landing_t film_landings[2][FILM_MAX_LANDINGS];  // one filling, one the job's
+static int          film_num_landings[2];
+static int          film_landing_fill;  // which one CL_BloodFilmDeposit fills
+static film_landing_t film_refused[FILM_MAX_LANDINGS];      // job -> main: splat these
+static int          film_num_refused;
+static film_spill_t film_spills[FILM_MAX_SPILLS];           // job -> main
+static int          film_num_spills;
+
+// A landing the film took, for the sound a splat would have made (job -> main):
+// `wet` is blood landing on blood already drawn - the pooling sound, not the
+// impact. The film made no sound at all before (2026-11-07, Matt).
+typedef struct {
+    vec3_t      point;
+    bool        wet;
+} film_sound_t;
+
+static film_sound_t film_sounds[FILM_MAX_LANDINGS];
+static int          film_num_sounds;
+static bool         film_add_wet;       // film_add's landing cell was already drawn
 
 /*
 ===============
@@ -519,7 +576,7 @@ into, or comes within the blur's reach of are classified (2026-11-07).
 static void film_classify_cell(film_tile_t *t, int i)
 {
     const film_plane_t *p = &film_planes[t->plane];
-    mnode_t *headnode = cl.bsp->nodes;
+    mnode_t *headnode = film_bsp->nodes;
     const int gx = t->tx * FILM_TILE + i % FILM_TILE;
     const int gy = t->ty * FILM_TILE + i / FILM_TILE;
     vec3_t c, above, start, end;
@@ -543,10 +600,14 @@ static void film_classify_cell(film_tile_t *t, int i)
 
     VectorMA(c, 0.6f, p->normal, start);
     VectorMA(c, -0.6f, p->normal, end);
-    CM_BoxTrace(&tr, start, end, vec3_origin, vec3_origin, headnode, MASK_SOLID);
+    CM_PointTraceReentrant(&tr, start, end, headnode, MASK_SOLID);
 
     if (tr.startsolid || tr.allsolid) {
         t->kind[i] = CELL_BLOCKED;
+    } else if (tr.fraction < 1.0f && CL_BloodVoidSurface(tr.surface)) {
+        // the void is no surface - an edge blood drips off, and the drip is
+        // then taken where it lands (CL_BloodVoidSurface)
+        t->kind[i] = CELL_OPEN;
     } else if (tr.fraction < 1.0f && DotProduct(tr.plane.normal, p->normal) > 0.98f &&
                fabsf(DotProduct(tr.endpos, p->normal) - p->dist) < 0.2f) {
         t->kind[i] = (contents & MASK_WATER) ? CELL_LIQUID : CELL_SURFACE;
@@ -609,19 +670,27 @@ static int film_tile_get(int plane, int tx, int ty, bool create, bool may_recycl
 
     const uint64_t t0 = Sys_Microseconds();
     film_tile_t *t = &film_tiles[idx];
-    blood_film_vert_t *verts = t->verts;
-    const int max_tris = t->max_tris;
+    blood_film_vert_t *verts = t->verts, *mverts = t->mverts;
+    const int max_tris = t->max_tris, mmax = t->mmax;
 
     memset(t, 0, sizeof(*t));
     t->verts = verts;
     t->max_tris = max_tris;
+    t->mverts = mverts;
+    t->mmax = mmax;
     t->used = true;
     t->plane = plane;
     t->tx = tx;
     t->ty = ty;
     t->alpha = 1.f;
-    t->seed = frand() * 64.f;
-    t->fed_time = cl.time;
+    // From the tile's place, not frand(): the worker must not touch the shared
+    // generator, and the same tile coming back looks the same. The key as the
+    // 2048-entry hash had it, not film_hash_key: growing the table must not
+    // reseed every tile and change where its runs wander.
+    const unsigned seed_key = ((unsigned)plane * 73856093u ^ (unsigned)tx * 19349663u ^
+                               (unsigned)ty * 83492791u) & 2047u;
+    t->seed = (seed_key * 2654435761u >> 8 & 0xffff) * (64.f / 65536.f);
+    t->fed_time = film_now;
 
     const unsigned key = film_hash_key(plane, tx, ty);
     t->hash_next = film_hash[key];
@@ -662,7 +731,7 @@ static void film_wake(film_tile_t *t)
 {
     t->awake = true;
     t->calm = 0;
-    t->fed_time = cl.time;
+    t->fed_time = film_now;
 
     // A patch fading to make room keeps going, new blood and all - see Fading.
     if (t->alpha != 1.f && !t->fade_from) {
@@ -752,6 +821,13 @@ static bool film_add(const vec3_t point, const vec3_t normal, float volume, floa
         p->rgba = *rgba;
     }
 
+    // For the landing's sound: blood under it already deep enough to be drawn -
+    // the outline level the mesh contours at (see THE COVERAGE FIELD). Read
+    // before this droplet's own blood goes in, and before the passes below can
+    // make or recycle tiles.
+    if (immediate)
+        film_add_wet = film_tiles[ti].h[cell] >= max(0.005f, max(0.f, cl_blood_film_trail->value) * 0.4f);
+
     // Spread over the droplet's footprint, peaked in the middle, so one droplet
     // makes a round spot rather than a single square cell of blood.
     const float rc = max(0.5f, spread / film_cell);
@@ -814,6 +890,22 @@ Leaving the grid
 ===============
 */
 
+// Blood leaving the grid becomes a particle again, on the main thread.
+static void film_spill(const vec3_t org, const vec3_t dir, float radius,
+                       const film_plane_t *p, bool liquid)
+{
+    if (film_num_spills >= FILM_MAX_SPILLS)
+        return;
+
+    film_spill_t *s = &film_spills[film_num_spills++];
+    VectorCopy(org, s->org);
+    VectorCopy(dir, s->dir);
+    s->radius = radius;
+    s->color = p->color;
+    s->rgba = p->rgba;
+    s->liquid = liquid;
+}
+
 // Over an edge: gathered until there is a droplet's worth, then dropped off it.
 static void film_spill_edge(film_tile_t *t, const film_plane_t *p, int gx, int gy,
                             int dx, int dy, float volume)
@@ -831,7 +923,7 @@ static void film_spill_edge(film_tile_t *t, const film_plane_t *p, int gx, int g
     if (t->spill_edge >= film_drop_volume(cl_blood_sphere_radius->value * 0.8f)) {
         vec3_t vel;
         VectorScale(t->spill_edge_dir, 6.f, vel);
-        CL_BloodFilmDrip(t->spill_edge_org, vel, film_drop_radius(t->spill_edge), p->color, &p->rgba);
+        film_spill(t->spill_edge_org, vel, film_drop_radius(t->spill_edge), p, false);
         t->spill_edge = 0.f;
         film_stat_drips++;
     }
@@ -847,8 +939,7 @@ static void film_spill_liquid(film_tile_t *t, const film_plane_t *p, int gx, int
 
     if (t->spill_liquid >= film_drop_volume(cl_blood_sphere_radius->value * 0.8f)) {
         static const vec3_t up = { 0.f, 0.f, 1.f };
-        CL_BloodFilmDissolve(t->spill_liquid_org, up, film_drop_radius(t->spill_liquid),
-                             p->color, &p->rgba);
+        film_spill(t->spill_liquid_org, up, film_drop_radius(t->spill_liquid), p, true);
         t->spill_liquid = 0.f;
     }
 }
@@ -870,11 +961,13 @@ static bool film_corner(const film_plane_t *p, int gx, int gy, int dx, int dy, f
     VectorMA(c, 0.4f, p->normal, start);
     VectorMA(start, film_cell * 1.5f, dir, end);
 
-    CM_BoxTrace(&tr, start, end, vec3_origin, vec3_origin, cl.bsp->nodes, MASK_SOLID);
+    CM_PointTraceReentrant(&tr, start, end, film_bsp->nodes, MASK_SOLID);
 
     if (tr.startsolid || tr.allsolid || tr.fraction >= 1.0f)
         return false;
     if (DotProduct(tr.plane.normal, p->normal) > 0.98f || tr.plane.normal[2] < -0.3f)
+        return false;
+    if (CL_BloodVoidSurface(tr.surface))
         return false;
 
     film_stat_corner++;
@@ -1105,7 +1198,7 @@ static void film_step(float dt)
             const bool wall = film_planes[t->plane].slope > 0.5f;
             const bool now = t->publish_now || (wall && need >= FILM_PUBLISH_NOW);
 
-            const int age = cl.time - t->fed_time;
+            const int age = film_now - t->fed_time;
             const unsigned period = age < 1000 ? 1 : age < 3000 ? 2 : FILM_PUBLISH_SLOW;
 
             if (now)
@@ -1339,18 +1432,25 @@ static inline int film_quad_at(int x, int y)
 static bool film_emit(film_tile_t *t, const film_plane_t *p, const film_mvert_t *a,
                       const film_mvert_t *b, const film_mvert_t *c, float height_scale)
 {
-    if (t->num_tris >= BLOOD_FILM_TILE_TRIS) {
+    if (t->mtris >= BLOOD_FILM_TILE_TRIS) {
         film_dropped++;
         return false;
     }
 
-    if (t->num_tris >= t->max_tris) {
-        const int grow = min(BLOOD_FILM_TILE_TRIS, max(256, t->max_tris * 2));
-        t->verts = Z_Realloc(t->verts, sizeof(blood_film_vert_t) * 3 * grow);
-        t->max_tris = grow;
+    // realloc, not Z_Realloc: this runs on the worker, and the zone allocator
+    // keeps one unlocked list for the whole engine.
+    if (t->mtris >= t->mmax) {
+        const int grow = min(BLOOD_FILM_TILE_TRIS, max(256, t->mmax * 2));
+        blood_film_vert_t *more = realloc(t->mverts, sizeof(blood_film_vert_t) * 3 * grow);
+        if (!more) {
+            film_dropped++;
+            return false;
+        }
+        t->mverts = more;
+        t->mmax = grow;
     }
 
-    blood_film_vert_t *out = t->verts + t->num_tris * 3;
+    blood_film_vert_t *out = t->mverts + t->mtris * 3;
     const film_mvert_t *v[3] = { a, b, c };
 
     for (int k = 0; k < 3; k++) {
@@ -1360,7 +1460,7 @@ static bool film_emit(film_tile_t *t, const film_plane_t *p, const film_mvert_t 
         out[k].depth = T;
     }
 
-    t->num_tris++;
+    t->mtris++;
     return true;
 }
 
@@ -1651,7 +1751,7 @@ remesh:;
         }
     }
 
-    t->num_tris = 0;
+    t->mtris = 0;
     film_dropped = 0;
 
     for (int y = -1; y < FILM_TILE; y++) {
@@ -1680,6 +1780,7 @@ remesh:;
 
     t->version = ++film_version_seq;
     t->dirty = false;
+    t->fresh = true;
     film_stat_meshes++;
 }
 
@@ -1717,6 +1818,52 @@ static int film_group_of[MAX_BLOOD_FILM_TILES];
 static int film_group_fed[MAX_BLOOD_FILM_TILES];    // a patch's most recent fed_time
 static int film_group_fade[MAX_BLOOD_FILM_TILES];   // when it was picked to make room (0: not)
 static int film_group_size[MAX_BLOOD_FILM_TILES];
+static bool film_group_seen[MAX_BLOOD_FILM_TILES];  // some tile of it is in sight - see film_tile_seen
+
+/*
+Whether the player can see a tile, roughly: near enough to turn round and look
+at, or anywhere in a cone wider than any field of view in front. Walls are not
+considered - blood in the next room counts as seen, which only makes it last.
+
+Room is made from blood NOT seen first (film_pick_fade). Matt (2026-11-07) was
+"worried about the blood film disappearing after more blood is added": with a
+full pool the patch fed longest ago went, and in a long fight in one room that
+is the pool in front of you while the corridor behind you kept all of its.
+*/
+#define FILM_SEEN_NEAR  256.f
+#define FILM_SEEN_FAR   4096.f
+#define FILM_SEEN_COS   0.42f       // 65 degrees either side of where the player looks
+
+static bool film_tile_has_blood(const film_tile_t *t)
+{
+    for (int c = 0; c < FILM_CELLS; c++)
+        if (t->h_mesh[c] > 0.f)
+            return true;
+    return false;
+}
+
+static bool film_tile_seen(const film_tile_t *t)
+{
+    const film_plane_t *p = &film_planes[t->plane];
+    const float half = FILM_TILE * film_cell * 0.5f;
+    const float s = (t->tx * FILM_TILE) * film_cell + half;
+    const float r = (t->ty * FILM_TILE) * film_cell + half;
+    vec3_t c, d;
+
+    VectorMA(p->origin, s, p->u, c);
+    VectorMA(c, r, p->v, c);
+    VectorSubtract(c, film_view_org, d);
+
+    // From the nearest point of the tile, not its centre: a big tile right under
+    // the player has its centre well off to the side.
+    const float dist = max(0.f, VectorLength(d) - half * 1.42f);
+    if (dist < FILM_SEEN_NEAR)
+        return true;
+    if (dist > FILM_SEEN_FAR)
+        return false;
+
+    return DotProduct(d, film_view_fwd) > FILM_SEEN_COS * VectorLength(d) - half * 1.42f;
+}
 
 static int film_label_groups(void)
 {
@@ -1736,6 +1883,7 @@ static int film_label_groups(void)
         film_group_fed[g] = INT_MIN;
         film_group_fade[g] = 0;
         film_group_size[g] = 0;
+        film_group_seen[g] = false;
         film_group_of[i] = g;
         queue[tail++] = i;
 
@@ -1743,6 +1891,8 @@ static int film_label_groups(void)
             const film_tile_t *t = &film_tiles[queue[head++]];
 
             film_group_size[g]++;
+            if (!film_group_seen[g] && film_tile_seen(t))
+                film_group_seen[g] = true;
             film_group_fed[g] = max(film_group_fed[g], t->fed_time);
             if (t->fade_from && !t->fade_part &&
                 (!film_group_fade[g] || t->fade_from < film_group_fade[g]))
@@ -1764,7 +1914,8 @@ static int film_label_groups(void)
 }
 
 // The patch fed longest ago starts to fade - or, if it is too big to go whole,
-// its oldest quarter. Returns how many tiles that is.
+// its oldest quarter. Out of sight before in sight, whatever the age: see
+// film_tile_seen. Returns how many tiles that is.
 static int film_pick_fade(int groups, int now)
 {
     int pick = -1;
@@ -1772,6 +1923,11 @@ static int film_pick_fade(int groups, int now)
     for (int g = 0; g < groups; g++) {
         if (film_group_fade[g])
             continue;
+        if (pick >= 0 && film_group_seen[g] != film_group_seen[pick]) {
+            if (!film_group_seen[g])
+                pick = g;
+            continue;
+        }
         if (pick < 0 || film_group_fed[g] < film_group_fed[pick])
             pick = g;
     }
@@ -1789,28 +1945,101 @@ static int film_pick_fade(int groups, int now)
             }
         }
         film_stat_faded += film_group_size[pick];
+        if (film_group_seen[pick])
+            film_stat_seen_faded += film_group_size[pick];
         return film_group_size[pick];
     }
 
-    int oldest = INT_MAX;
-    for (int i = 0; i < film_cap; i++)
-        if (film_tiles[i].used && film_group_of[i] == pick && !film_tiles[i].fade_from)
-            oldest = min(oldest, film_tiles[i].fed_time);
+    // Too big to go whole: its oldest quarter, by when blood last reached each
+    // tile - and of the part out of sight, while any of it is. The square edge
+    // a part leaves is then somewhere the player is not looking.
+    static bool seen[MAX_BLOOD_FILM_TILES];
+    bool any_unseen = false;
+
+    for (int i = 0; i < film_cap; i++) {
+        const film_tile_t *t = &film_tiles[i];
+        if (t->used && film_group_of[i] == pick && !t->fade_from) {
+            seen[i] = film_tile_seen(t);
+            any_unseen |= !seen[i];
+        }
+    }
+
+    int oldest = INT_MAX, newest = INT_MIN;
+    for (int i = 0; i < film_cap; i++) {
+        const film_tile_t *t = &film_tiles[i];
+        if (t->used && film_group_of[i] == pick && !t->fade_from && !(any_unseen && seen[i])) {
+            oldest = min(oldest, t->fed_time);
+            newest = max(newest, t->fed_time);
+        }
+    }
     if (oldest == INT_MAX)
         return 0;
 
-    const int cutoff = oldest + (film_group_fed[pick] - oldest) / 4;
+    const int cutoff = oldest + (newest - oldest) / 4;
     int n = 0;
     for (int i = 0; i < film_cap; i++) {
         film_tile_t *t = &film_tiles[i];
-        if (t->used && film_group_of[i] == pick && !t->fade_from && t->fed_time <= cutoff) {
+        if (t->used && film_group_of[i] == pick && !t->fade_from && !(any_unseen && seen[i]) &&
+            t->fed_time <= cutoff) {
+            t->fade_from = start;
+            t->fade_part = true;
+            n++;
+            film_stat_seen_faded += seen[i];
+        }
+    }
+
+    // With them the tiles beside them that hold no blood of their own - only
+    // the outline of theirs, which stayed at full strength while the blood it
+    // belonged to faded, and went when that blood was freed: a sliver popping
+    // off at the edge of every part (2026-11-07, harness).
+    // Only beside blood that is ALL going, or the outline of blood that stays is
+    // cut instead.
+    for (int i = 0; i < film_cap; i++) {
+        film_tile_t *t = &film_tiles[i];
+        if (!t->used || film_group_of[i] != pick || t->fade_from || film_tile_has_blood(t))
+            continue;
+
+        bool going = false, staying = false;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) {
+                const int k = film_tile_lookup(t->plane, t->tx + dx, t->ty + dy);
+                if (k < 0 || k == i || !film_tile_has_blood(&film_tiles[k]))
+                    continue;
+                if (film_tiles[k].fade_part && film_tiles[k].fade_from == start)
+                    going = true;
+                else
+                    staying = true;
+            }
+        if (going && !staying) {
             t->fade_from = start;
             t->fade_part = true;
             n++;
         }
     }
+
     film_stat_faded += n;
     return n;
+}
+
+// A tile with no blood of its own draws only its neighbours' outline; if every
+// neighbour holding blood is fading, that outline is theirs and goes with them.
+static bool film_tile_outline_of_fading(const film_tile_t *t)
+{
+    if (film_tile_has_blood(t))
+        return false;
+
+    bool fading = false;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            const int k = film_tile_lookup(t->plane, t->tx + dx, t->ty + dy);
+            if (k < 0 || &film_tiles[k] == t || !film_tile_has_blood(&film_tiles[k]))
+                continue;
+            if (!film_tiles[k].fade_from)
+                return false;
+            fading = true;
+        }
+    }
+    return fading;
 }
 
 static void film_fade(int now, int elapsed)
@@ -1836,6 +2065,13 @@ static void film_fade(int now, int elapsed)
         return;
 
     int groups = film_label_groups();
+
+    // NOT DONE: new blood landing on a patch already fading does not stop the
+    // fade - it goes with the patch. Stopping it was tried (2026-11-07): in a
+    // fight over one big pool every part picked got fed again, five times as
+    // many fades started, and the fight area dimmed and snapped back over and
+    // over. Fading what is out of sight first (film_pick_fade) is what keeps
+    // this off screen.
 
     // Running low, and what is already going will not free enough: the patch
     // fed longest ago goes too.
@@ -1869,15 +2105,24 @@ static void film_fade(int now, int elapsed)
         const int g = film_group_of[i];
         int start = film_group_fade[g];
 
-        // A tile that joined a fading patch goes with it; an old part of a big
-        // patch goes on its own.
-        if (start) {
+        // A tile already going keeps its own clock. A tile joins a fading patch
+        // only if it is not on screen yet (new blood: it appears at the patch's
+        // strength) or draws nothing but that patch's outline.
+        //
+        // NOT a drawn tile with blood of its own. Every tile of a patch used to
+        // take the patch's start, so new blood joining a live pool to a patch
+        // ~2 s into its fade made the live pool take that start too - alpha 1,
+        // freed the same frame (2026-11-07). Matt's "the blood disappears as you
+        // kill more enemies". What that costs: where the fading blood's outline
+        // crossed into a live tile, it goes when the fading tile is freed - a
+        // sliver, not the pool.
+        if (t->fade_from) {
+            start = t->fade_from;
+        } else if (start && (!t->shown || film_tile_outline_of_fading(t))) {
             t->fade_from = start;
             t->fade_part = false;
-        } else if (t->fade_part) {
-            start = t->fade_from;
         } else {
-            t->fade_from = 0;
+            start = 0;
         }
 
         if (!permanent) {
@@ -1918,16 +2163,75 @@ static void film_fade(int now, int elapsed)
 Public
 ===============
 */
+/*
+===============
+THE WORKER - cl_blood_film_thread (default 1)
+
+Everything the film does in a frame - the landings, the flow steps, the fade,
+the meshing - is one JOB, run on a thread of its own: started at the end of
+CL_BloodFilmFrame, finished at the start of the next one, so it overlaps the
+renderer and the rest of the frame. On the main thread it was 1.6-2.5 ms a frame
+in the headless fight with frames of 7-17 ms, and in the game every cell it
+classifies is a trace through the real map, which the harness does not pay. Matt
+(2026-11-07) was "worried about ... the performance". A frame now waits only for
+a job that outlasts the whole frame before it.
+
+What makes that safe:
+  - From film_kick to film_join the job owns every tile, plane, queue and
+    counter in this file; the main thread touches them only once joined.
+  - The renderer reads a tile's `verts` while the job runs. Only film_finish,
+    on the main thread, changes them: the job meshes into `mverts` and
+    film_finish swaps the two.
+  - Nothing the job calls shares state with the main thread: traces are
+    CM_PointTraceReentrant (CM_BoxTrace keeps statics and stamps the map),
+    memory is realloc (the zone allocator is one unlocked list), a tile's seed
+    is hashed (frand is one shared generator), the time and the view are copied
+    in at the kick.
+  - Landings are queued by CL_BloodFilmDeposit and taken by the next job. Drips,
+    clouds and landings there was no room for come back the same way and become
+    particles in film_finish - a refused landing splats a frame late
+    (CL_BloodFilmSplat) instead of at once.
+  - The film holds its own reference to the map (film_check_world), so a job
+    still running when the client lets go of the map traces one that is there.
+
+Results are a frame behind the landings that made them, threaded or not:
+cl_blood_film_thread 0 runs the very same job in the same place, inline, for an
+A/B.
+===============
+*/
+static cvar_t      *cl_blood_film_thread;
+static SDL_Thread  *film_thread;
+static SDL_sem     *film_go, *film_done;
+static bool         film_busy;          // a job was started and has not been joined
+static bool         film_no_thread;     // creating the thread failed: inline from then on
+static int          film_job_elapsed;   // game time the job steps over, ms
+static int          film_job_queue;     // which film_landings the job takes
+
+static void film_join(void)
+{
+    if (!film_busy)
+        return;
+
+    const uint64_t w0 = Sys_Microseconds();
+    SDL_SemWait(film_done);
+    film_stat_wait_us += Sys_Microseconds() - w0;
+    film_busy = false;
+}
+
 void CL_BloodFilmClear(void)
 {
+    film_join();
+
     for (int i = 0; i < MAX_BLOOD_FILM_TILES; i++) {
         film_tile_t *t = &film_tiles[i];
-        blood_film_vert_t *verts = t->verts;
-        const int max_tris = t->max_tris;
+        blood_film_vert_t *verts = t->verts, *mverts = t->mverts;
+        const int max_tris = t->max_tris, mmax = t->mmax;
 
         memset(t, 0, sizeof(*t));
         t->verts = verts;
         t->max_tris = max_tris;
+        t->mverts = mverts;
+        t->mmax = mmax;
     }
 
     memset(film_planes, 0, sizeof(film_planes));
@@ -1938,6 +2242,14 @@ void CL_BloodFilmClear(void)
     film_accum = 0.f;
     film_last_time = cl.time;
     film_ready = false;
+
+    film_num_landings[0] = film_num_landings[1] = 0;
+    film_num_refused = film_num_spills = film_num_sounds = 0;
+
+    if (film_bsp) {
+        BSP_Free(film_bsp);
+        film_bsp = NULL;
+    }
 }
 
 void CL_BloodFilmInit(void)
@@ -2006,6 +2318,10 @@ void CL_BloodFilmInit(void)
     // see BUDGET. Blood landing, new tiles and runs are never held back.
     cl_blood_film_mesh_ms = Cvar_Get("cl_blood_film_mesh_ms", "1", 0);
 
+    // The film's work on a thread of its own (1) or on the main one (0) - see
+    // THE WORKER. Not archived: it is there for an A/B.
+    cl_blood_film_thread = Cvar_Get("cl_blood_film_thread", "1", 0);
+
     // How finely an outline is drawn: each cell is cut this many times each way
     // where an outline crosses it, and the outline follows a smooth curve
     // between the cells. 1 is the cell grid, 3 the finest.
@@ -2027,7 +2343,11 @@ static bool film_active(void)
 }
 
 // The grid is built for one map, one cell size and one pool size; a change of
-// any of them starts it again.
+// any of them starts it again. Main thread, joined.
+//
+// The film takes a reference to the map of its own (released in Clear): the
+// job runs on past the end of a frame, and the frame that drops the map would
+// otherwise free it under a job still tracing it.
 static void film_check_world(void)
 {
     const int cap = max(1, min(cl_blood_film_tiles->integer, MAX_BLOOD_FILM_TILES));
@@ -2036,6 +2356,7 @@ static void film_check_world(void)
     if (!film_ready || film_bsp != cl.bsp || film_cap != cap || film_cell != cell) {
         CL_BloodFilmClear();
         film_bsp = cl.bsp;
+        film_bsp->refcount++;
         film_cap = cap;
         film_cell = cell;
         film_ready = true;
@@ -2046,9 +2367,13 @@ static void film_check_world(void)
 ===============
 CL_BloodFilmDeposit
 
-A droplet landed on the world. True means its blood is in the film and the
+A droplet landed on the world. True means its blood goes into the film and the
 droplet should be retired; false leaves it to the splat path (film off, a
-ceiling, or no surface the grid can use under it).
+ceiling, the film not made for this map yet, or a frame's queue full).
+
+Only queued here - the job running meanwhile owns the grid (THE WORKER). The
+next job puts it in; if the grid has no room for it there, it comes back to
+CL_BloodFilmSplat a frame later.
 ===============
 */
 bool CL_BloodFilmDeposit(const vec3_t point, const vec3_t normal, float radius,
@@ -2061,10 +2386,27 @@ bool CL_BloodFilmDeposit(const vec3_t point, const vec3_t normal, float radius,
     if (normal[2] < -0.3f)
         return false;
 
-    film_check_world();
+    // Not made for this map yet: nothing can be running (Clear joined, and no
+    // job starts until the grid is made), so it can be made here, as it always
+    // was. Made for another map with a job maybe still on it: splat this one.
+    if (!film_ready && !film_busy)
+        film_check_world();
+    if (!film_ready || film_bsp != cl.bsp)
+        return false;
 
-    const float spread = radius * max(0.1f, film_splat_size->value);
-    return film_add(point, normal, film_drop_volume(radius), spread, color, rgba, NULL, true);
+    int *n = &film_num_landings[film_landing_fill];
+    if (*n >= FILM_MAX_LANDINGS)
+        return false;
+
+    film_landing_t *l = &film_landings[film_landing_fill][(*n)++];
+    VectorCopy(point, l->point);
+    VectorCopy(normal, l->normal);
+    l->radius = radius;
+    l->color = color;
+    l->has_rgba = rgba != NULL;
+    if (rgba)
+        l->rgba = *rgba;
+    return true;
 }
 
 bool CL_BloodFilmOn(void)
@@ -2091,35 +2433,43 @@ static void film_mesh_dirty(void)
     }
 }
 
-void CL_BloodFilmFrame(void)
+// One frame's work - see THE WORKER. On the worker thread, or inline at
+// cl_blood_film_thread 0; either way nothing else touches the film meanwhile.
+static void film_job(void)
 {
-    film_num_out = 0;
+    const uint64_t t0 = Sys_Microseconds();
 
-    if (!film_active()) {
-        if (film_ready)
-            CL_BloodFilmClear();
-        return;
-    }
-
-    film_check_world();
-
+    // Last frame's landings, as CL_BloodFilmDeposit used to put them straight in.
     {
-        int tris = cl_blood_film_tris->integer;
-        tris = max(BLOOD_FILM_CHUNK_TRIS, min(tris, MAX_BLOOD_FILM_CHUNKS * BLOOD_FILM_CHUNK_TRIS));
-        film_chunk_cap = BLOOD_FILM_CHUNKS(tris);
+        const film_landing_t *l = film_landings[film_job_queue];
+        const int n = film_num_landings[film_job_queue];
+
+        for (int k = 0; k < n; k++, l++) {
+            const float spread = l->radius * max(0.1f, film_splat_size->value);
+            film_add_wet = false;
+            if (film_add(l->point, l->normal, film_drop_volume(l->radius), spread, l->color,
+                         l->has_rgba ? &l->rgba : NULL, NULL, true)) {
+                if (film_num_sounds < FILM_MAX_LANDINGS) {
+                    film_sound_t *s = &film_sounds[film_num_sounds++];
+                    VectorCopy(l->point, s->point);
+                    s->wet = film_add_wet;
+                }
+            } else if (film_num_refused < FILM_MAX_LANDINGS) {
+                film_refused[film_num_refused++] = *l;  // a splat, which makes its own sound
+            }
+        }
+        film_num_landings[film_job_queue] = 0;
     }
 
     // Fixed steps on the game clock, so a pause stops the blood and a slow frame
     // does not make it flow faster. At most three a frame; a hitch drops time
     // rather than catching up.
-    const int now = cl.time;
-    const int elapsed = max(0, min(now - film_last_time, 100));
-    film_last_time = now;
+    const int now = film_now;
+    const int elapsed = film_job_elapsed;
     film_accum += elapsed * 0.001f;
 
     const float step = 1.f / max(5.f, min(cl_blood_film_rate->value, 120.f));
     int steps = 0;
-    const uint64_t t0 = Sys_Microseconds();
 
     while (film_accum >= step && steps < 3) {
         film_step(step);
@@ -2209,12 +2559,67 @@ void CL_BloodFilmFrame(void)
         }
     }
 
+    const uint64_t t2 = Sys_Microseconds();
+    film_stat_step_us += t1 - t0;
+    film_stat_mesh_us += t2 - t1;
+    film_stat_job_us += t2 - t0;
+    film_stat_job_max_us = max(film_stat_job_max_us, t2 - t0);
+}
+
+/*
+The last job's results, on the main thread once it is joined: its particles, its
+meshes swapped in where the renderer reads them, and the list the renderer gets.
+*/
+static void film_finish(void)
+{
+    for (int k = 0; k < film_num_spills; k++) {
+        const film_spill_t *s = &film_spills[k];
+        if (s->liquid)
+            CL_BloodFilmDissolve(s->org, s->dir, s->radius, s->color, &s->rgba);
+        else
+            CL_BloodFilmDrip(s->org, s->dir, s->radius, s->color, &s->rgba);
+    }
+    film_num_spills = 0;
+
+    for (int k = 0; k < film_num_refused; k++) {
+        const film_landing_t *l = &film_refused[k];
+        CL_BloodFilmSplat(l->point, l->normal, l->radius, l->color, l->has_rgba ? &l->rgba : NULL);
+    }
+    film_num_refused = 0;
+
+    // The landings' sounds, a frame late like the blood itself. All of them go
+    // through the splats' gaps and thinning (cl_blood_sound_*), which pass the
+    // first of a frame's batch and drop the rest - as a frame of splats landing
+    // at the same cl.time always did.
+    for (int k = 0; k < film_num_sounds; k++)
+        CL_BloodFilmSound(film_sounds[k].point, film_sounds[k].wet);
+    film_num_sounds = 0;
+
+    for (int i = 0; i < film_cap; i++) {
+        film_tile_t *t = &film_tiles[i];
+        if (!t->fresh)
+            continue;
+
+        blood_film_vert_t *v = t->verts;
+        const int m = t->max_tris;
+        t->verts = t->mverts;
+        t->max_tris = t->mmax;
+        t->num_tris = t->mtris;
+        t->mverts = v;
+        t->mmax = m;
+        t->fresh = false;
+    }
+
     // Out to the renderer, within cl_blood_film_tris, counted in its chunks. The
     // fade keeps a fifth free, so this binds only while a burst outruns it -
     // and then it is new blood that waits a frame or two, not blood already on
-    // screen that vanishes: what was drawn last frame goes first, the fading
-    // part of it last.
+    // screen: what was drawn last frame goes first, the fading part of it last,
+    // and it goes even past cl_blood_film_tris, into the eighth more the renderer
+    // keeps for it (blood_film_capacity). It used to be cut at the cap like new
+    // blood, and a tile on screen that grew past it vanished whole - ten such
+    // pops in a 40 s headless fight, all in one second (2026-11-07).
     static bool was_shown[MAX_BLOOD_FILM_TILES];
+    const int hard_cap = film_chunk_cap + film_chunk_cap / 8;
     int chunks = 0, wanted = 0;
 
     for (int i = 0; i < film_cap; i++) {
@@ -2233,7 +2638,7 @@ void CL_BloodFilmFrame(void)
 
         const int need = BLOOD_FILM_CHUNKS(min(t->num_tris, BLOOD_FILM_TILE_TRIS));
         wanted += need;
-        if (chunks + need > film_chunk_cap) {
+        if (chunks + need > (pass == 2 ? film_chunk_cap : hard_cap)) {
             film_starved++;
             film_stat_unshown++;
             continue;
@@ -2256,9 +2661,9 @@ void CL_BloodFilmFrame(void)
     }
     film_chunks_used = wanted;
 
-    const uint64_t t2 = Sys_Microseconds();
-    film_stat_step_us += t1 - t0;
-    film_stat_mesh_us += t2 - t1;
+    // Past the cap on blood already shown: make room as a refused tile would.
+    if (chunks > film_chunk_cap)
+        film_starved++;
 
     if (cl_blood_film_stats->integer) {
         static unsigned last;
@@ -2281,7 +2686,8 @@ void CL_BloodFilmFrame(void)
             if (film_stat_unshown)
                 Q_strlcat(extra, va(", %d tile-frames not drawn (over cl_blood_film_tris)", film_stat_unshown), sizeof(extra));
             if (film_stat_faded)
-                Q_strlcat(extra, va(", %d tiles faded to make room", film_stat_faded), sizeof(extra));
+                Q_strlcat(extra, va(", %d tiles faded to make room (%d in sight)",
+                                    film_stat_faded, film_stat_seen_faded), sizeof(extra));
             if (film_stat_dropped)
                 Q_strlcat(extra, va(", %d tris over the tile cap", film_stat_dropped), sizeof(extra));
             if (film_stat_coarser)
@@ -2295,14 +2701,87 @@ void CL_BloodFilmFrame(void)
                        film_stat_meshes, film_stat_mesh_us / 1000.f, film_stat_new,
                        film_stat_new_us / 1000.f, film_stat_classified, film_stat_corner,
                        film_stat_drips, extra);
+            Com_Printf("blood film: %s, job %.2f ms total, worst %.2f ms; main thread waited %.2f ms\n",
+                       film_thread && cl_blood_film_thread->integer ? "worker thread" : "inline",
+                       film_stat_job_us / 1000.f, film_stat_job_max_us / 1000.f,
+                       film_stat_wait_us / 1000.f);
 
             last = ms;
             film_stat_steps = film_stat_meshes = film_stat_drips = film_stat_corner = 0;
             film_stat_full = film_stat_new = film_stat_dropped = film_stat_faded = film_stat_coarser = 0;
-            film_stat_unshown = film_stat_classified = 0;
+            film_stat_unshown = film_stat_classified = film_stat_seen_faded = 0;
             film_stat_step_us = film_stat_mesh_us = film_stat_new_us = 0;
+            film_stat_job_us = film_stat_wait_us = film_stat_job_max_us = 0;
         }
     }
+}
+
+static int SDLCALL film_worker(void *arg)
+{
+    for (;;) {
+        SDL_SemWait(film_go);
+        film_job();
+        SDL_SemPost(film_done);
+    }
+    return 0;
+}
+
+static void film_kick(void)
+{
+    const bool threaded = cl_blood_film_thread->integer != 0;
+
+    if (threaded && !film_thread && !film_no_thread) {
+        film_go = SDL_CreateSemaphore(0);
+        film_done = SDL_CreateSemaphore(0);
+        if (film_go && film_done)
+            film_thread = SDL_CreateThread(film_worker, "blood film", NULL);
+        if (!film_thread) {
+            film_no_thread = true;
+            Com_WPrintf("blood film: no worker thread (%s), running on the main thread\n", SDL_GetError());
+        }
+    }
+
+    if (threaded && film_thread) {
+        film_busy = true;
+        SDL_SemPost(film_go);
+    } else {
+        film_job();
+    }
+}
+
+void CL_BloodFilmFrame(void)
+{
+    film_join();
+
+    if (!film_active()) {
+        film_num_out = 0;
+        if (film_ready)
+            CL_BloodFilmClear();
+        return;
+    }
+
+    film_check_world();
+
+    {
+        int tris = cl_blood_film_tris->integer;
+        tris = max(BLOOD_FILM_CHUNK_TRIS, min(tris, MAX_BLOOD_FILM_CHUNKS * BLOOD_FILM_CHUNK_TRIS));
+        film_chunk_cap = BLOOD_FILM_CHUNKS(tris);
+    }
+
+    film_num_out = 0;
+    film_finish();
+
+    // The next job: what it steps over, where the player is looking, and the
+    // landings since the last one (Deposit fills the other queue meanwhile).
+    film_now = cl.time;
+    film_job_elapsed = max(0, min(film_now - film_last_time, 100));
+    film_last_time = film_now;
+    VectorCopy(cl.refdef.vieworg, film_view_org);
+    VectorCopy(cl.v_forward, film_view_fwd);
+    film_job_queue = film_landing_fill;
+    film_landing_fill ^= 1;
+
+    film_kick();
 }
 
 const blood_film_t *CL_BloodFilmList(int *count)

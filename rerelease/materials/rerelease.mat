@@ -1412,11 +1412,16 @@ textures/dark_1/train_sd4:
 	texture_base materialDev/textures/dark_1/train_sd4.tga
 	texture_normals materialDev/textures/dark_1/train_sd4_n.tga
 	metalness_factor 0
+	
+textures/n64/wndow1_2:
+	kind GLASS
 
 textures/dark_1/wall70:
 	texture_base materialDev/textures/dark_1/wall70.tga
-	texture_normals materialDev/textures/dark_1/wall70_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/dark_1/wall70_n.png
+	texture_metallic materialDev/textures/dark_1/wall70_metal.png
+	texture_roughness materialDev/textures/dark_1/wall70_rough.png
+	base_factor 2.5
 
 textures/dark_1/wall71:
 	texture_base materialDev/textures/dark_1/wall71.tga
@@ -1430,13 +1435,17 @@ textures/dark_1/wall72:
 
 textures/dark_1/wall73:
 	texture_base materialDev/textures/dark_1/wall73.tga
-	texture_normals materialDev/textures/dark_1/wall73_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/dark_1/wall73_n.png
+	texture_metallic materialDev/textures/dark_1/wall73_metal.png
+	texture_roughness materialDev/textures/dark_1/wall73_rough.png
+	base_factor 2.5
 
 textures/dark_1/wall74:
 	texture_base materialDev/textures/dark_1/wall74.tga
-	texture_normals materialDev/textures/dark_1/wall74_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/dark_1/wall74_n.png
+	texture_metallic materialDev/textures/dark_1/wall74_metal.png
+	texture_roughness materialDev/textures/dark_1/wall74_rough.png
+	base_factor 2.0
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
 # so Q2RTX synthesizes an emissive material for it. That synthesis only happens when the
@@ -2168,7 +2177,10 @@ textures/e1u1/ggrat2_6:
 textures/e1u1/ggrate10_1:
 	texture_base materialDev/textures/e1u1/ggrate10_1.tga
 	texture_normals materialDev/textures/e1u1/ggrate10_1_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e1u1/ggrate10_2_n.png
+	texture_metallic materialDev/textures/e1u1/ggrate10_2_metal.png
+	texture_roughness materialDev/textures/e1u1/ggrate10_2_rough.png
+	base_factor 3.0
 
 textures/e1u1/ggrate10_2:
 	texture_base materialDev/textures/e1u1/ggrate10_2.tga
@@ -2184,8 +2196,11 @@ textures/e1u1/ggrate7_2:
 
 textures/e1u1/ggrate8_2:
 	texture_base materialDev/textures/e1u1/ggrate8_2.tga
-	texture_normals materialDev/textures/e1u1/ggrate8_2_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e1u1/ggrate8_2_n.png
+	texture_metallic materialDev/textures/e1u1/ggrate8_2_metallic.png
+	texture_roughness materialDev/textures/e1u1/ggrate8_2_rough.png
+	base_factor 3.5
+
 
 textures/e1u1/ggrate9_1:
 	texture_base materialDev/textures/e1u1/ggrate9_1.tga
@@ -2321,8 +2336,9 @@ textures/e1u1/grnmt1_2:
 
 textures/e1u1/metal13_1:
 	texture_base materialDev/textures/e1u1/metal13_1.tga
-	texture_normals materialDev/textures/e1u1/metal13_1_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e1u1/metal13_1_n.png
+	texture_roughness materialDev/textures/e1u1/metal13_1_rough.png
+	texture_metallic materialDev/textures/e1u1/metal13_1_metal.png
 
 textures/e1u1/metal1_6:
 	texture_base materialDev/textures/e1u1/metal1_6.tga
@@ -19488,8 +19504,9 @@ textures/tomf/hvydoor1_1b:
 
 textures/tomf/hvydoor1_1c:
 	texture_base materialDev/textures/tomf/hvydoor1_1c.tga
-	texture_normals materialDev/textures/tomf/hvydoor1_1c_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/hvydoor1_1c_n.png
+	texture_metallic materialDev/textures/tomf/hvydoor1_1c_metal.png
+	texture_roughness materialDev/textures/tomf/hvydoor1_1c_rough.png
 
 textures/tomf/key03_1b:
 	texture_base materialDev/textures/tomf/key03_1b.tga
@@ -19909,7 +19926,10 @@ textures/tomf/tf_box03_side:
 
 textures/tomf/tf_box03_side2:
 	texture_base materialDev/textures/tomf/tf_box03_side2.tga
-	texture_normals materialDev/textures/tomf/tf_box03_side2_n.tga
+	texture_normals materialDev/textures/tomf/tf_box03_side2_n.png
+	texture_height materialDev/textures/tomf/tf_box03_side2_height.png
+	displace_in .03
+	displace_out 0.0
 
 textures/tomf/tf_box03_top:
 	texture_base materialDev/textures/tomf/tf_box03_top.tga

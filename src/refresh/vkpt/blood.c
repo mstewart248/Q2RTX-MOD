@@ -1015,7 +1015,12 @@ static int blood_film_capacity(void)
 
 	int tris = Cvar_Get("cl_blood_film_tris", BLOOD_FILM_TRIS_DEFAULT, CVAR_ARCHIVE)->integer;
 	tris = max(BLOOD_FILM_CHUNK_TRIS, min(tris, MAX_BLOOD_FILM_CHUNKS * BLOOD_FILM_CHUNK_TRIS));
-	return BLOOD_FILM_CHUNKS(tris);
+
+	// An eighth more than the client fills with new blood: a tile already on
+	// screen that grows past the cap keeps being drawn (film_finish in
+	// blood_film.c, which counts the same eighth).
+	const int chunks = BLOOD_FILM_CHUNKS(tris);
+	return min(chunks + chunks / 8, MAX_BLOOD_FILM_CHUNKS);
 }
 
 static uint32_t blood_layout(int max_droplets, int* film_count, int* ultra_count,

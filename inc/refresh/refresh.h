@@ -302,7 +302,11 @@ worth - the client keeps its tiles within that, counting the same way
 (BLOOD_FILM_CHUNKS). Both renderers take these through blood.c, so neither
 backend has any film-specific code.
 */
-#define MAX_BLOOD_FILM_TILES    1024
+// cl_blood_film_tiles' ceiling. A tile averages ~530 triangles, so this has to be
+// ~1/500 of the most triangles (MAX_BLOOD_FILM_CHUNKS) or that most could never
+// be filled: at 1024 the 1M-triangle ceiling stopped at ~600K. ~4.6 KB of state a
+// tile on the client, a few bytes in the renderer.
+#define MAX_BLOOD_FILM_TILES    2048
 // Triangles a tile may hand over. A 16x16-cell tile is 2 triangles per cell
 // of full pool and, at cl_blood_film_detail 2, up to 16 where the outline crosses
 // a cell - a typical tile lands between 300 and 1200. The rare tile past this cap
@@ -317,6 +321,13 @@ backend has any film-specific code.
 // cl_blood_film_tris: film triangles the blood section holds, all tiles together.
 // 256K is ~45 MB of primitives (and as much again on the GPU), and holds about
 // 450 typical tiles. Both sides register it, so both need the default.
+//
+// WHAT MORE COSTS (g_no_janitor: blood only goes when this runs low). The blood
+// BLAS is rebuilt on every frame the section changes - a fight, blood flowing -
+// and measured ~0.23 ms per 256K triangles on top of a 0.3 ms base (D3D12,
+// 2026-11-06: 1.13 ms at ~957K). Settled blood reuses its BLAS and costs nothing.
+// Each 256K is also ~45 MB more on each side. cl_blood_film_tiles has to rise with
+// it (~1 tile per 500 triangles) or the tiles run out first.
 #define BLOOD_FILM_TRIS_DEFAULT "262144"
 
 typedef struct {
@@ -728,6 +739,9 @@ typedef struct {
     float           scale;      // 1 is a rocket's explosion, the BFG ball, a laser, its blast
     float           surface;    // R_FLOW_BUBBLES: the height of the water above
     int             key;        // R_FLOW_TRAIL: which source this is
+    // R_FLOW_TRAIL of fire: smoke and no flame - a grenade's, where the rest
+    // are a rocket's
+    bool            smoke_only;
     // R_FLOW_BLAST: how far gas may go from `start` along the unit `dir`
     // before the world stops it, up to `distance`; called during R_FlowEmit
     // only. NULL lets it go anywhere.

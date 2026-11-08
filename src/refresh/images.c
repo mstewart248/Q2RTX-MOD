@@ -1119,12 +1119,13 @@ static int try_other_formats(imageformat_t orig, image_t *image, int try_src, by
     return try_image_format(fmt, image, try_src, pic);
 }
 
-int IMG_GetDimensions(const char* name, int* width, int* height)
+// The size in the header of the .wal or .pcx at (name).
+static int get_8bit_dimensions(const char* name, int* width, int* height)
 {
     assert(name);
     assert(width);
     assert(height);
-    
+
     int w = 0;
     int h = 0;
 
@@ -1176,18 +1177,154 @@ int IMG_GetDimensions(const char* name, int* width, int* height)
     return Q_ERR_SUCCESS;
 }
 
-static void get_image_dimensions(imageformat_t fmt, image_t *image)
+/*
+The size of the image at (name)'s path in whatever format is there, for an
+original that has no .wal or .pcx to read it from. The rerelease's N64 textures
+are like that: textures/n64/block1_6 is a 32x32 .tga and nothing else. A full
+load, since the formats keep their sizes in different places - but only ever of
+an original that an override is standing in for, and those are 16..64 pixels.
+*/
+static int get_32bit_dimensions(const char *name, int *width, int *height)
+{
+    image_t temp;
+    byte    *pic = NULL;
+    size_t  len = strlen(name);
+    int     ret;
+
+    if (len <= 4 || len >= sizeof(temp.name))
+        return Q_ERR_INVALID_PATH;
+
+    memset(&temp, 0, sizeof(temp));
+    memcpy(temp.name, name, len + 1);
+    temp.baselen = len - 4;
+    temp.type = IT_WALL;
+
+    ret = try_other_formats(IM_MAX, &temp, TRY_IMAGE_SRC_BASE, &pic);
+    if (pic)
+        IMG_FreePixels(pic);
+    if (ret < 0)
+        return ret;
+    if (temp.upload_width < 1 || temp.upload_height < 1)
+        return Q_ERR_INVALID_FORMAT;
+
+    *width = temp.upload_width;
+    *height = temp.upload_height;
+    return Q_ERR_SUCCESS;
+}
+
+// The original size of the texture (name) - its .wal or .pcx, or failing that
+// the 32-bit image at the same path.
+int IMG_GetDimensions(const char* name, int* width, int* height)
+{
+    int ret = get_8bit_dimensions(name, width, height);
+
+    if (ret == Q_ERR(ENOENT))
+        ret = get_32bit_dimensions(name, width, height);
+    return ret;
+}
+
+// .wal/.pcx only: an image loaded under its own name already has the size of
+// the 32-bit file it came from, and reading that again would be a second load.
+// An override is the case that needs more - see override_fits_original.
+static int get_image_dimensions(imageformat_t fmt, image_t *image)
 {
     char buffer[MAX_QPATH];
     memcpy(buffer, image->name, image->baselen + 1);
-    
+
     if (fmt == IM_WAL) {
         memcpy(buffer + image->baselen + 1, "wal", 4);
     } else {
         memcpy(buffer + image->baselen + 1, "pcx", 4);
     }
 
-    IMG_GetDimensions(buffer, &image->width, &image->height);
+    return get_8bit_dimensions(buffer, &image->width, &image->height);
+}
+
+/*
+=================
+override_fits_original
+
+THE N64 EPISODE'S TEXTURES HAVE NO .WAL. An override replaces a texture by its
+base name alone (overrides/block1_6.tga for a block1_6 in any directory), and
+the size the map's texture coordinates are measured in is then recovered from
+the .wal or .pcx it stands in for (get_image_dimensions). The N64 maps' textures
+are only
+32-bit - textures/n64/block1_6.tga, 32x32 - so nothing was recovered and the
+override's own size stood in: a 256x256 replacement drew 8x too big, and every
+face against one that had no override drew at the right size, out of line with
+it. Matt saw that as the textures being "zoomed in" and "badly aligned". 159 of
+the episode's 292 textures, 47k of its 74k faces.
+
+So when a wall's override has no 8-bit original to measure, it is measured
+against the 32-bit one instead:
+
+  - The same shape: the original's size is the one the coordinates are in.
+  - A different shape: it is a different picture, and is refused - the N64
+    maps reuse PC names for their own art, and n64/door1_1 (32x32) is not the
+    PC door1_1 (640x256), which squeezed into a square would be no door at all.
+    The original is drawn instead.
+
+Sidecars follow their base: <base>_n, _rough, _metallic, _height, _light and
+_glow are measured against the BASE's original, so a refused texture does not
+keep the PC normal map of the picture that was refused.
+
+A texture with a .wal or .pcx - every PC texture, every MGU one - is never
+touched here: its override was already measured against that, and is kept.
+Neither is one with no original at all.
+=================
+*/
+static bool override_fits_original(image_t *image, imagetype_t type)
+{
+    static const char *const sidecars[] = {
+        "_n", "_rough", "_metallic", "_height", "_light", "_glow",
+    };
+    char    base[MAX_QPATH];
+    size_t  len;
+    bool    is_sidecar = false;
+    int     w, h, ret;
+
+    if (type != IT_WALL || image->baselen >= sizeof(base) - 4)
+        return true;
+
+    memcpy(base, image->name, image->baselen);
+    len = image->baselen;
+    base[len] = 0;
+
+    for (int i = 0; i < q_countof(sidecars); i++) {
+        size_t n = strlen(sidecars[i]);
+
+        if (len > n && !Q_stricmp(base + len - n, sidecars[i])) {
+            len -= n;
+            is_sidecar = true;
+            break;
+        }
+    }
+
+    // the 8-bit original, if any, decides - and it already has
+    memcpy(base + len, ".wal", 5);
+    ret = get_8bit_dimensions(base, &w, &h);
+    if (ret != Q_ERR(ENOENT))
+        return true;
+    memcpy(base + len, ".pcx", 5);
+    ret = get_8bit_dimensions(base, &w, &h);
+    if (ret != Q_ERR(ENOENT))
+        return true;
+
+    memcpy(base + len, ".tga", 5);
+    if (get_32bit_dimensions(base, &w, &h) < 0)
+        return true;            // no original at all: nothing to measure against
+
+    // aspect, cross-multiplied, with a little slack for a replacement that
+    // was resized to a not-quite-proportional size
+    if (fabsf((float)w * image->upload_height - (float)h * image->upload_width) >
+        0.02f * (float)w * image->upload_height)
+        return false;
+
+    if (!is_sidecar) {
+        image->width = w;
+        image->height = h;
+    }
+    return true;
 }
 
 static void r_texture_formats_changed(cvar_t *self)
@@ -1419,6 +1556,15 @@ static int find_or_load_image(const char *name, size_t len,
         ret = try_load_image_candidate(image, name, len, &pic, type, flags, true, -1);
         memcpy(image->name, name, len + 1);
         image->baselen = len - 4;
+
+        // a different picture that only shares the name - the original is
+        // loaded below instead
+        if (ret >= 0 && !override_fits_original(image, type)) {
+            if (pic)
+                IMG_FreePixels(pic);
+            pic = NULL;
+            ret = Q_ERR(ENOENT);
+        }
     }
 
     /* GL WITHOUT "use new textures and models" draws the classic .md2 and .wal,

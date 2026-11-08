@@ -726,6 +726,10 @@ water, and it burns out into smoke that rises, drifts and fades.
   the rocket's tail that cools into a column of smoke (the particle flame
   stands in while the simulation is full), `2` a particle flame with a little
   smoke, `0` the classic smoke and falling sparks.
+* **Grenade trail** (`cl_flow_grenadetrail`): `1` is simulated smoke along a
+  grenade's flight, thick where it leaves and thinning out like the classic
+  trail (the classic particles stand in while the simulation is full), `0`
+  the classic particles.
 * **Under water** (`cl_explosion_water`): an explosion keeps a flame and
   lights the water yellow-white. `1` is a smaller simulated flame when Flow
   draws the explosions, `2` always the classic fireball, `0` the classic
@@ -735,6 +739,7 @@ water, and it burns out into smoke that rises, drifts and fades.
 |---|---|---|
 | `cl_flow_explosions` | `1` | `0` off, `1` with the classic fireball, `2` instead of it. |
 | `cl_rocket_flame` | `1` | `0` classic, `1` simulated, `2` particles. |
+| `cl_flow_grenadetrail` | `1` | `0` classic, `1` simulated. |
 | `cl_explosion_water` | `1` | `0` off, `1` simulated, `2` classic. |
 | `pt_flow_lighting` | `1` | The fire and plasma cast light. |
 | `pt_flow_env` | `1` | Smoke lit by the world. |

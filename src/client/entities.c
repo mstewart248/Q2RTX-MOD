@@ -692,6 +692,14 @@ static void CL_AddPacketEntities(void)
             float b = ((s1->skinnum >>  8) & 0xff) / 255.0f;
 
             V_AddLight(ent.origin, s1->frame, r, g, b);
+
+            // A target_light is a point entity that never moves - a lamp of the
+            // map's, not a flash - so the froxel fog keeps it on the long history
+            // with the map's own lights and the light editor's, where it is not
+            // noisy. Matt, on the three that light q64/rtest's intro: "using
+            // froxel grid with the faster history". Switched and flickering ones
+            // too: a light-editor light with a flicker style is a fixture as well.
+            V_MarkLightFixture();
             goto skip;
         }
 
@@ -1081,7 +1089,7 @@ static void CL_AddPacketEntities(void)
                 CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
             } else if (effects & EF_GRENADE) {
                 if (!(cl_disable_particles->integer & NOPART_GRENADE_TRAIL)) {
-                    CL_DiminishingTrail(cent->lerp_origin, ent.origin, cent, effects);
+                    CL_GrenadeTrail(cent->lerp_origin, ent.origin, cent);
                 }
             } else if (effects & EF_FLIES) {
                 CL_FlyEffect(cent, ent.origin);

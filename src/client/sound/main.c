@@ -64,6 +64,27 @@ static cvar_t   *s_falloff_ambient;
 cvar_t      *s_show;
 #endif
 
+/*
+s_voice_stats - who has the MAX_CHANNELS voices (2026-11-07, Matt: "the audio is
+cutting out at weird times"). With every voice busy, S_PickChannel takes the one
+nearest its end, and a sound cut short is heard as audio cutting out; under
+s_falloff 1 the loops hold all but AL_LOOP_CHANNEL_RESERVE of them all the time.
+1: once a second, the fewest voices free and the most held by loops, and how many
+sounds lost their voice while still playing - loops, and one-shots with more than
+250 ms still to go - or got none. 2: each such steal as well, by name.
+*/
+static cvar_t   *s_voice_stats;
+static int      s_vs_steals, s_vs_loops, s_vs_cut, s_vs_drops;
+static unsigned s_vs_time;      // cls.realtime of the last line
+static int      s_vs_min_free = MAX_CHANNELS, s_vs_max_loops;
+static struct {
+    bool        set;
+    bool        loop;
+    int         entnum;
+    int         left;
+    char        name[MAX_QPATH];
+} s_vs_stolen;
+
 static cvar_t   *s_enable;
 static cvar_t   *s_auto_focus;
 static cvar_t   *s_swapstereo;
@@ -176,6 +197,7 @@ void S_Init(void)
 #if USE_DEBUG
     s_show = Cvar_Get("s_show", "0", 0);
 #endif
+    s_voice_stats = Cvar_Get("s_voice_stats", "0", 0);
     s_auto_focus = Cvar_Get("s_auto_focus", "0", 0);
     s_swapstereo = Cvar_Get("s_swapstereo", "0", 0);
 
@@ -589,6 +611,7 @@ channel_t *S_PickChannel(int entnum, int entchannel)
     int         first_to_die;
     int         life_left;
     channel_t   *ch;
+    bool        replace = false;
 
     if (entchannel < 0)
         Com_Error(ERR_DROP, "S_PickChannel: entchannel < 0");
@@ -601,10 +624,12 @@ channel_t *S_PickChannel(int entnum, int entchannel)
         // channel 0 never overrides unless out of channels
         if (ch->entnum == entnum && ch->entchannel == entchannel && entchannel != 0) {
             if (entchannel > 255 && ch->sfx) {
+                s_vs_drops++;
                 return NULL; // channels >255 never override
             }
             // always override sound from same entity
             first_to_die = ch_idx;
+            replace = true;
             break;
         }
 
@@ -618,10 +643,30 @@ channel_t *S_PickChannel(int entnum, int entchannel)
         }
     }
 
-    if (first_to_die == -1)
+    if (first_to_die == -1) {
+        s_vs_drops++;
         return NULL;
+    }
 
     ch = &channels[first_to_die];
+
+    // s_voice_stats: a sound losing its voice while still playing, to a sound
+    // that is not its own entity's replacement on the same channel.
+    if (ch->sfx && !replace) {
+        const int left = ch->end - paintedtime;
+
+        s_vs_steals++;
+        if (ch->autosound)
+            s_vs_loops++;
+        else if (left > 250)
+            s_vs_cut++;
+
+        s_vs_stolen.set = true;
+        s_vs_stolen.loop = ch->autosound;
+        s_vs_stolen.entnum = ch->entnum;
+        s_vs_stolen.left = left;
+        Q_strlcpy(s_vs_stolen.name, ch->sfx->name, sizeof(s_vs_stolen.name));
+    }
 #if USE_OPENAL
     if (s_started == SS_OAL && ch->sfx)
         AL_StopChannel(ch);
@@ -946,11 +991,18 @@ void S_IssuePlaysound(playsound_t *ps)
         Com_Printf("Issue %i\n", ps->begin);
 #endif
     // pick a channel to play on
+    s_vs_stolen.set = false;
     ch = S_PickChannel(ps->entnum, ps->entchannel);
     if (!ch) {
+        if (s_voice_stats->integer > 1)
+            Com_Printf("voice: none for %s (ent %d)\n", ps->sfx->name, ps->entnum);
         S_FreePlaysound(ps);
         return;
     }
+    if (s_vs_stolen.set && s_voice_stats->integer > 1)
+        Com_Printf("voice: %s (ent %d) cut %s%d ms early for %s (ent %d)\n",
+                   s_vs_stolen.name, s_vs_stolen.entnum, s_vs_stolen.loop ? "(loop) " : "",
+                   s_vs_stolen.left, ps->sfx->name, ps->entnum);
 
     sc = S_LoadSound(ps->sfx);
     if (!sc) {
@@ -1271,6 +1323,54 @@ S_Update
 Called once each time through the main loop
 ============
 */
+// Voices playing nothing. Purely cosmetic sounds (blood) start only into one, so
+// they never cut off a sound that is playing - see s_voice_stats.
+int S_FreeChannels(void)
+{
+    int n = 0;
+
+    if (!s_started)
+        return 0;
+
+    for (int i = 0; i < s_numchannels; i++)
+        n += !channels[i].sfx;
+    return n;
+}
+
+// s_voice_stats 1: once a second - see its declaration.
+static void S_VoiceStatsFrame(void)
+{
+    if (!s_voice_stats->integer) {
+        s_vs_steals = s_vs_loops = s_vs_cut = s_vs_drops = 0;
+        s_vs_min_free = MAX_CHANNELS;
+        s_vs_max_loops = 0;
+        return;
+    }
+
+    int loops = 0, used = 0;
+    for (int i = 0; i < s_numchannels; i++) {
+        if (!channels[i].sfx)
+            continue;
+        used++;
+        loops += channels[i].autosound;
+    }
+    s_vs_min_free = min(s_vs_min_free, s_numchannels - used);
+    s_vs_max_loops = max(s_vs_max_loops, loops);
+
+    if (cls.realtime >= s_vs_time && cls.realtime - s_vs_time < 1000)
+        return;
+    s_vs_time = cls.realtime;
+
+    Com_Printf("voices %d: fewest free %d, most loops %d | %d cut off while playing "
+               "(%d loops, %d with over 250 ms to go), %d got no voice\n",
+               s_numchannels, s_vs_min_free, s_vs_max_loops,
+               s_vs_steals, s_vs_loops, s_vs_cut, s_vs_drops);
+
+    s_vs_steals = s_vs_loops = s_vs_cut = s_vs_drops = 0;
+    s_vs_min_free = MAX_CHANNELS;
+    s_vs_max_loops = 0;
+}
+
 void S_Update(void)
 {
 #if USE_SNDDMA
@@ -1307,6 +1407,7 @@ void S_Update(void)
     if (s_started == SS_OAL) {
 		OGG_Stream();
 		AL_Update();
+        S_VoiceStatsFrame();
         return;
     }
 #endif

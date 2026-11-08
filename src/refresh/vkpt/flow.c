@@ -192,6 +192,8 @@ typedef struct {
 	bool            seen;       // a trail: given again since the last frame
 	vec3_t          heading;    // a trail: which way its source last moved, or 0
 	vec3_t          last;       // a rocket's trail: where its source was at Flow's last step
+	bool            smoke_only; // a trail of fire with no flame: a grenade's
+	float           flown;      // a grenade's trail: units its source has gone
 	int             light;      // a trail: its light slot, or -1
 	uint32_t        light_generation;   // ... while the slot has this generation
 	// A piece of a BFG blast: its own radius in units, push, emitting time and
@@ -290,6 +292,13 @@ static cvar_t *cvar_pt_flow_rocket_glow;
 static cvar_t *cvar_pt_flow_rocket_flame;
 static cvar_t *cvar_pt_flow_rocket_lumps;
 static cvar_t *cvar_pt_flow_rocket_budget;
+static cvar_t *cvar_pt_flow_grenade_radius;
+static cvar_t *cvar_pt_flow_grenade_expansion;
+static cvar_t *cvar_pt_flow_grenade_smoke;
+static cvar_t *cvar_pt_flow_grenade_heat;
+static cvar_t *cvar_pt_flow_grenade_thin;
+static cvar_t *cvar_pt_flow_grenade_thin_length;
+static cvar_t *cvar_pt_flow_grenade_lumps;
 static cvar_t *cvar_pt_flow_beam_radius;
 static cvar_t *cvar_pt_flow_beam_expansion;
 static cvar_t *cvar_pt_flow_beam_burst;
@@ -1489,7 +1498,17 @@ static void flow_emitter_gas(const flow_emitter_t *e, float *radius, float *expa
 		break;
 	}
 
-	if (e->kind == R_FLOW_TRAIL && e->layer == R_FLOW_FIRE) {
+	if (e->kind == R_FLOW_TRAIL && e->layer == R_FLOW_FIRE && e->smoke_only) {
+		// a grenade's, see flow_grenade_spheres
+		*radius = cvar_pt_flow_grenade_radius->value;
+		*expansion = cvar_pt_flow_grenade_expansion->value;
+		// well under where the fire starts to glow, whatever that is set to
+		*temperature = min(max(cvar_pt_flow_grenade_heat->value, 0.f),
+			0.5f * Cvar_ClampValue(cvar_pt_flow_fire_glow_start, 0.f, 0.5f));
+		*fuel = 0.f;
+		*smoke = cvar_pt_flow_grenade_smoke->value;
+	}
+	else if (e->kind == R_FLOW_TRAIL && e->layer == R_FLOW_FIRE) {
 		// a rocket's, see flow_rocket_spheres
 		*radius = cvar_pt_flow_rocket_radius->value;
 		*expansion = cvar_pt_flow_rocket_expansion->value;
@@ -1728,6 +1747,94 @@ static int flow_rocket_spheres(flow_emitter_t *e, int num_spheres, float cell_si
 	return num_spheres;
 }
 
+/*
+A grenade's trail (a trail of fire with smoke_only): the classic trail's smoke
+as Flow gas, lit like the explosions' smoke. The puffs go along the stretch
+flown since Flow's last step, half a radius apart and jittered by
+pt_flow_grenade_lumps, as a rocket's do (flow_rocket_spheres), but with no
+flame and nothing to quench.
+
+The classic trail is thick for the first ~90 units of flight and then thin
+(trailcount, CL_DiminishingTrail): the smoke here starts at
+pt_flow_grenade_smoke and falls to pt_flow_grenade_thin of that over the first
+pt_flow_grenade_thin_length units. A little heat, pt_flow_grenade_heat, lifts
+it the way the classic particles drift up: 0.1 x pt_flow_buoyancy 2 is their 20
+units/s^2. It stays well under where the fire starts to glow.
+
+A grenade lying still puts nothing in, the same as the classic trail. A source
+held in one place keeps pushing gas out and fills the room. A slow roll adds
+up until it has gone a quarter of a radius.
+*/
+static int flow_grenade_spheres(flow_emitter_t *e, int num_spheres, float cell_size, float couple_rate)
+{
+	float radius, expansion, temperature, fuel, smoke;
+	flow_emitter_gas(e, &radius, &expansion, &temperature, &fuel, &smoke);
+	radius = max(radius * e->scale, cell_size);
+
+	vec3_t path;
+	VectorSubtract(e->origin, e->last, path);
+	float dist = VectorLength(path);
+	if (dist > FLOW_TRAIL_JUMP * max(e->scale, 1.f)) {
+		VectorCopy(e->origin, e->last);
+		return num_spheres;
+	}
+	if (dist < 0.25f * radius)
+		return num_spheres;
+
+	const int room = (int)LENGTH(flow.spheres) - num_spheres;
+	const int puffs = min(min((int)ceilf(dist / (0.5f * radius)), FLOW_TRAIL_PUFFS), room);
+	if (puffs < 1)
+		return num_spheres;
+
+	const float thin_length = max(cvar_pt_flow_grenade_thin_length->value, 0.f);
+	const float thin = Cvar_ClampValue(cvar_pt_flow_grenade_thin, 0.f, 1.f);
+	const float lumps = max(cvar_pt_flow_grenade_lumps->value, 0.f);
+	const float r = radius * max(1.f + 0.4f * lumps * crand(), 0.2f);
+	vec3_t offset;
+	for (int k = 0; k < 3; k++)
+		offset[k] = 0.3f * lumps * radius * crand();
+	const float divergence = 3.f * expansion * (2.f * cell_size) / r;
+	// as hard as a rocket's: a grenade flies past at some 600 units/s
+	const float rate = 5.f * couple_rate;
+
+	for (int i = 0; i < puffs; i++) {
+		const float f = (float)(i + 1) / puffs;
+		const float flown = e->flown + dist * f;
+		const float share = thin_length > 0.f && flown < thin_length
+			? 1.f - (1.f - thin) * (flown / thin_length) : thin;
+
+		NvFlowGridEmitterSphereParams *sphere = &flow.spheres[num_spheres];
+		*sphere = NvFlowEmitterSphereParams_default;
+		sphere->luid = e->luid | ((uint64_t)i << 40);
+		sphere->layer = e->layer;
+		sphere->position.x = e->last[0] + path[0] * f + offset[0];
+		sphere->position.y = e->last[1] + path[1] * f + offset[1];
+		sphere->position.z = e->last[2] + path[2] * f + offset[2];
+		sphere->radius = r;
+		sphere->multisample = NV_FLOW_TRUE;
+		sphere->velocity.x = sphere->velocity.y = sphere->velocity.z = 0.f;
+		sphere->divergence = divergence;
+		sphere->temperature = temperature;
+		sphere->fuel = 0.f;
+		sphere->burn = 0.f;
+		sphere->smoke = smoke * share;
+		sphere->coupleRateVelocity = 0.f;
+		sphere->coupleRateDivergence = rate;
+		// none when there is no heat: it would cool what it went through
+		sphere->coupleRateTemperature = temperature > 0.f ? rate : 0.f;
+		sphere->coupleRateFuel = 0.f;
+		sphere->coupleRateBurn = 0.f;
+		sphere->coupleRateSmoke = rate;
+		flow.sphere_ptrs[num_spheres++] = sphere;
+	}
+
+	if (flow.stepping) {
+		e->flown = min(e->flown + dist, 1e6f);
+		VectorCopy(e->origin, e->last);
+	}
+	return num_spheres;
+}
+
 // A box round the line from `a` to `b`, `half_width` each way across it and
 // `pad` past either end, sampled eight times a cell at its edges (it is
 // about a cell thick), its gas, velocity and rates for the caller to fill.
@@ -1917,7 +2024,10 @@ static void flow_build_params(float dt)
 			continue;
 
 		if (e->kind == R_FLOW_TRAIL && e->layer == R_FLOW_FIRE) {
-			num_spheres = flow_rocket_spheres(e, num_spheres, cell_size, couple_rate);
+			if (e->smoke_only)
+				num_spheres = flow_grenade_spheres(e, num_spheres, cell_size, couple_rate);
+			else
+				num_spheres = flow_rocket_spheres(e, num_spheres, cell_size, couple_rate);
 			continue;
 		}
 		if (e->layer == R_FLOW_RAIL) {
@@ -2531,8 +2641,10 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 	case R_FLOW_TRAIL:
 		for (int i = 0; i < flow.num_emitters; i++) {
 			flow_emitter_t *e = &flow.emitters[i];
-			if (e->kind == R_FLOW_TRAIL && e->key == emit->key && e->layer == (int)emit->style) {
-				// a rocket's lets go at half as much again as its share...
+			if (e->kind == R_FLOW_TRAIL && e->key == emit->key && e->layer == (int)emit->style &&
+				e->smoke_only == emit->smoke_only) {
+				// a rocket's or a grenade's lets go at half as much again as
+				// its share...
 				if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.5f))
 					return 0;
 				vec3_t moved;
@@ -2559,6 +2671,7 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 			flow_emitter_t *e = flow_new_emitter(R_FLOW_TRAIL, emit->style, emit->origin, emit->scale);
 			e->key = emit->key;
 			e->seen = true;
+			e->smoke_only = emit->style == R_FLOW_FIRE && emit->smoke_only;
 			VectorCopy(emit->origin, e->last);
 			// A light that keeps to its source: the glow behind it, gathered
 			// from as far back as the trail glows. Only plasma has a trail's
@@ -3363,6 +3476,21 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_rocket_glow = Cvar_Get("pt_flow_rocket_glow", "12", 0);
 	cvar_pt_flow_rocket_lumps = Cvar_Get("pt_flow_rocket_lumps", "1", 0);
 	cvar_pt_flow_rocket_budget = Cvar_Get("pt_flow_rocket_budget", "0.5", 0);
+
+	// A grenade's trail (a trail of fire with smoke_only, flow_grenade_spheres):
+	// its puffs' radius, push and smoke at scale 1. The smoke falls to _thin of
+	// that over the first _thin_length units of flight, as the classic trail
+	// thins. _heat lifts it and is held well under the fire's glow. _lumps is
+	// as the rocket's. A grenade's trail shares the rockets'
+	// pt_flow_rocket_budget, and past it the client draws the classic
+	// particles. Picked by reasoning, not tuned by eye (11-07).
+	cvar_pt_flow_grenade_radius = Cvar_Get("pt_flow_grenade_radius", "6", 0);
+	cvar_pt_flow_grenade_expansion = Cvar_Get("pt_flow_grenade_expansion", "60", 0);
+	cvar_pt_flow_grenade_smoke = Cvar_Get("pt_flow_grenade_smoke", "2", 0);
+	cvar_pt_flow_grenade_heat = Cvar_Get("pt_flow_grenade_heat", "0.1", 0);
+	cvar_pt_flow_grenade_thin = Cvar_Get("pt_flow_grenade_thin", "0.35", 0);
+	cvar_pt_flow_grenade_thin_length = Cvar_Get("pt_flow_grenade_thin_length", "96", 0);
+	cvar_pt_flow_grenade_lumps = Cvar_Get("pt_flow_grenade_lumps", "1", 0);
 
 	// An explosion under water (R_FLOW_BUBBLES): foam that rises to the
 	// surface. Rise is Flow's buoyancy per unit of smoke; fade the amount

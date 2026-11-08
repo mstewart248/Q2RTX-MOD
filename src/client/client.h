@@ -1230,6 +1230,7 @@ typedef struct cparticle_s {
     // the leading edge it contracts toward the foot of the run - into the pool
     // it is feeding - for free.
     bool    blood_arrived;      // reached the foot; no longer slides
+    bool    blood_no_film;      // a landing the surface film had no room for: splat it (CL_BloodFilmSplat)
     float   blood_drain;        // seconds of handing-over left
     float   blood_drain_total;  // area (radius squared) it arrived with
     float   blood_drain_done;   // area delivered so far
@@ -1326,6 +1327,10 @@ typedef struct cparticle_s {
 // for the drips off a flying gib.  Call it AFTER setting org and vel.
 void CL_MakeBloodSphere(cparticle_t *p, float scale);
 
+// A surface blood never lands on: sky, nodraw and the cl_blood_void textures.
+// Safe from blood_film.c's job thread.
+bool CL_BloodVoidSurface(const csurface_t *surf);
+
 // Surface blood (cl_blood_film) - blood_film.c.
 void CL_BloodFilmInit(void);
 void CL_BloodFilmClear(void);
@@ -1336,6 +1341,8 @@ bool CL_BloodFilmDeposit(const vec3_t point, const vec3_t normal, float radius,
 const blood_film_t *CL_BloodFilmList(int *count);
 void CL_BloodFilmDrip(const vec3_t org, const vec3_t vel, float radius, int color, const color_t *rgba);
 void CL_BloodFilmDissolve(const vec3_t org, const vec3_t normal, float radius, int color, const color_t *rgba);
+void CL_BloodFilmSplat(const vec3_t point, const vec3_t normal, float radius, int color, const color_t *rgba);
+void CL_BloodFilmSound(const vec3_t point, bool into_blood);
 
 typedef struct cdlight_s {
     int     key;        // so entities can reuse same entry
@@ -1351,6 +1358,7 @@ typedef struct cdlight_s {
 
 void CL_BigTeleportParticles(const vec3_t org);
 void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old);
+void CL_GrenadeTrail(const vec3_t start, const vec3_t end, centity_t *old);
 bool CL_RocketUnderwater(const vec3_t origin);
 void CL_RocketWaterLight(const vec3_t origin);
 void CL_DiminishingTrail(const vec3_t start, const vec3_t end, centity_t *old, int flags);

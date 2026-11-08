@@ -59,6 +59,10 @@ void        CM_BoxTrace(trace_t *trace,
                         const vec3_t start, const vec3_t end,
                         const vec3_t mins, const vec3_t maxs,
                         mnode_t *headnode, int brushmask);
+// A point trace (no extents) safe to run on another thread alongside the above:
+// it keeps its state on the stack and writes nothing into the map.
+void        CM_PointTraceReentrant(trace_t *trace, const vec3_t start, const vec3_t end,
+                                   mnode_t *headnode, int brushmask);
 void        CM_TransformedBoxTrace(trace_t *trace,
                                    const vec3_t start, const vec3_t end,
                                    const vec3_t mins, const vec3_t maxs,

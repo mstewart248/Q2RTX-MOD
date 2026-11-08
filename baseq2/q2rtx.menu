@@ -689,8 +689,8 @@ end
 /*
 THE NVIDIA FLOW MENU.
 
-Everything NVIDIA Flow draws - the explosions, the BFG, the rocket's and the
-railgun's trails - and what the simulated gas does, on a page of its own off
+Everything NVIDIA Flow draws - the explosions, the BFG, the rocket's, the
+grenade's and the railgun's trails - and what the simulated gas does, on a page of its own off
 the effects page, which links to it only when flow_available says Flow is
 running (nvflow.dll and nvflowext.dll next to q2rtx.exe, the RTX renderer).
 Without Flow the effects page keeps its own "rocket flame" row, and the
@@ -706,6 +706,8 @@ begin flow
         "explosions" cl_flow_explosions off 0 "with classic" 1 instead 2
     pairs --status "a flying rocket's trail. 'simulated' is a little NVIDIA Flow fireball at its tail that cools into a column of smoke, like the explosions at a much smaller scale - the particle flame while the simulation is full; 'particles' is a flame and a little smoke; 'classic' is the original smoke and falling sparks. Under water its light turns yellow-white (cl_rocket_flame)" \
         "rocket trail" cl_rocket_flame classic 0 simulated 1 particles 2
+    pairs --status "a grenade's smoke trail. 'simulated' is NVIDIA Flow smoke along its flight, thick where it leaves and thinning out like the classic trail, lit like the explosions' smoke - the classic particles while the simulation is full (cl_flow_grenadetrail)" \
+        "grenade trail" cl_flow_grenadetrail classic 0 simulated 1
     pairs --status "the railgun's trail. 'simulated' is NVIDIA Flow gas in place of the trail's particles: a cyan-blue spiral that glows and cools into wisps round a thread of pale smoke - the classic particles while the simulation is full. The core beam from the railgun trail setup page and the trail's light stay either way (cl_flow_railtrail)" \
         "railgun trail" cl_flow_railtrail classic 0 simulated 1
     blank

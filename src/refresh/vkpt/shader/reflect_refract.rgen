@@ -270,6 +270,7 @@ main()
 	bool include_player_model = !primary_is_weapon;
 	bool backface_culling = true;
 	bool primary_is_blood_film = false;
+	bool glass_exit = false;	// thick glass: this ray refracts OUT of the glass - see pt_glass_flush
 	
 	// Process reflection or refraction.
 	// Each pixel follows either the reflected or the refracted path, depending on 
@@ -680,6 +681,7 @@ main()
 					else
 					{
 			 			primary_medium = MEDIUM_NONE;
+						glass_exit = true;
 					}
 					correct_motion_vector = 2;
 				}
@@ -893,7 +895,46 @@ main()
 	else
 		reflection_ray.origin -= normal.xyz * 0.001;
 
-	trace_geometry_ray(reflection_ray, backface_culling, reflection_cull_mask);
+	/*
+	GLASS FLUSH WITH A WALL - see pt_glass_flush.
+
+	A glass brush entity is not CSG'd against the world, so the faces it presses
+	against its frame are still there, on the frame's own faces, back to back. The
+	start above puts a ray leaving through one of those faces 1 mm past the shared
+	plane - inside the solid frame, where nothing faces it - and it left the map and
+	showed the sky. So before the real trace, look from just inside the exit face
+	(geo_normal was turned to face back into the glass above) a few hundredths of a
+	unit out, at opaque geometry only, so the pane itself is not in the way. A
+	surface there that is not see-through and not sky is the wall the glass is set
+	into, and the ray stops on it. The material test keeps the probe off the pane
+	when a brush entity mixes glass with solid faces and so is instanced opaque.
+	*/
+	bool flush_hit = false;
+	if(glass_exit && global_ubo.pt_glass_flush != 0)
+	{
+		Ray probe;
+		probe.origin = position + geo_normal * 0.01;
+		probe.direction = direction;
+		probe.t_min = 0;
+		probe.t_max = 0.03 / max(abs(dot(direction, geo_normal)), 0.1);
+
+		trace_geometry_ray(probe, false, reflection_cull_mask & ~AS_FLAG_TRANSPARENT);
+
+		if(found_intersection(ray_payload_geometry))
+		{
+			uint probe_material = get_hit_triangle(ray_payload_geometry).material_id;
+			flush_hit = !is_glass(probe_material) && !is_transparent(probe_material)
+				&& !is_water(probe_material) && !is_slime(probe_material)
+				&& !is_sky(probe_material);
+		}
+
+		// hit_distance below is measured from here
+		if(flush_hit)
+			reflection_ray.origin = probe.origin;
+	}
+
+	if(!flush_hit)
+		trace_geometry_ray(reflection_ray, backface_culling, reflection_cull_mask);
 
 #ifdef KHR_RAY_QUERY
 	// A liquid face flush with a wall (the rerelease z-fights there): the ray entering the

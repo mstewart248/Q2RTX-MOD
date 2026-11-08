@@ -990,6 +990,10 @@ static cvar_t *cl_rocket_flame_size = NULL;
 static cvar_t *cl_rocket_flame_smoke = NULL;
 static cvar_t *cl_rocket_water_light = NULL;
 
+// A grenade's trail: 1 = NVIDIA Flow smoke (CL_GrenadeTrail), and where Flow
+// does not take it the classic particles; 0 = classic.
+static cvar_t *cl_flow_grenadetrail = NULL;
+
 // Blood droplet collision - see CL_SimulateBloodSphere further down.
 static cvar_t *cl_blood_collision = NULL;
 static cvar_t *cl_blood_splat_life = NULL;
@@ -1044,6 +1048,7 @@ static cvar_t *cl_blood_cling_size = NULL;
 static cvar_t *cl_blood_trail = NULL;
 static cvar_t *cl_blood_water = NULL;
 static cvar_t *cl_blood_lava = NULL;
+static cvar_t *cl_blood_void = NULL;
 static cvar_t *cl_blood_water_life = NULL;
 static cvar_t *cl_blood_water_spread = NULL;
 static cvar_t *cl_blood_water_depth = NULL;
@@ -1051,6 +1056,68 @@ static cvar_t *cl_blood_water_wobble = NULL;
 static cvar_t *cl_blood_water_thin = NULL;
 static cvar_t *cl_blood_water_merge = NULL;
 static cvar_t *cl_blood_water_max = NULL;
+
+/*
+===============
+CL_BloodVoidSurface
+
+BLOOD DOES NOT LAND ON THE VOID. Matt, on the N64 intro (q64/rtest): "the room
+the level is in a black void but I can see the blood splats all over the
+floor". That floor is n64/BLACK, the black backdrop the N64 maps paint their
+out-of-bounds with, and blood lying on it was the only thing that gave the void
+away as a floor. Sky and nodraw faces are the same thing anywhere: nothing is
+drawn there for blood to lie on.
+
+So a droplet that reaches one is gone, the way lava takes it (CL_BloodBurnUp);
+a run that reaches one at the foot of a wall does not pool there; a splat that
+slides onto one is gone; and the surface film treats one as an edge. The Quake
+sign the intro's monsters fight on is n64/BLUMT2_6 and keeps its blood.
+
+cl_blood_void names the textures, space-separated, exactly as the map names
+them (case does not matter). Sky and nodraw are void whatever it says.
+
+The names are parsed into a fixed table when the cvar changes, on the main
+thread. blood_film.c's job reads the table from its own thread; a change that
+lands mid-job can only give a cell or two the old answer.
+===============
+*/
+#define BLOOD_VOID_MAX      16
+#define BLOOD_VOID_NAME     sizeof(((csurface_t *)0)->name)
+
+static char blood_void_names[BLOOD_VOID_MAX][BLOOD_VOID_NAME];
+static int  blood_void_count;
+
+static void cl_blood_void_changed(cvar_t *self)
+{
+    const char *s = self->string;
+    int n = 0;
+
+    while (n < BLOOD_VOID_MAX) {
+        const char *tok = COM_Parse(&s);
+
+        if (!*tok)
+            break;
+        Q_strlcpy(blood_void_names[n++], tok, BLOOD_VOID_NAME);
+    }
+
+    blood_void_count = n;
+}
+
+bool CL_BloodVoidSurface(const csurface_t *surf)
+{
+    if (!surf)
+        return false;
+
+    if (surf->flags & (SURF_SKY | SURF_NODRAW))
+        return true;
+
+    // the map's name need not be terminated - it can fill all 16 bytes
+    for (int i = 0; i < blood_void_count; i++)
+        if (!Q_strncasecmp(surf->name, blood_void_names[i], BLOOD_VOID_NAME))
+            return true;
+
+    return false;
+}
 
 /*
 ===============
@@ -1324,6 +1391,7 @@ void FX_Init(void)
     cl_rocket_flame_size = Cvar_Get("cl_rocket_flame_size", "1", 0);
     cl_rocket_flame_smoke = Cvar_Get("cl_rocket_flame_smoke", "1", 0);
     cl_rocket_water_light = Cvar_Get("cl_rocket_water_light", "1", 0);
+    cl_flow_grenadetrail = Cvar_Get("cl_flow_grenadetrail", "1", CVAR_ARCHIVE);
 
     // Blood droplet collision. Its own cvar, separate from cl_blood_spheres, so
     // the simulation can be A/B'd against plain ballistic droplets without also
@@ -1365,6 +1433,11 @@ void FX_Init(void)
     // LAVA IS NOT WATER, for blood - see CL_BloodBurnUp. 1: blood that reaches
     // lava is simply gone. 0: lava is one more water and gets the cloud.
     cl_blood_lava = Cvar_Get("cl_blood_lava", "1", CVAR_ARCHIVE);
+    // Textures blood never lands on - see CL_BloodVoidSurface. Not archived,
+    // so a later default reaches everyone; add to it in autoexec.cfg.
+    cl_blood_void = Cvar_Get("cl_blood_void", "n64/black", 0);
+    cl_blood_void->changed = cl_blood_void_changed;
+    cl_blood_void_changed(cl_blood_void);
     // How fast a cloud goes see-through as it spreads: opacity falls as its
     // width to this power. 2 is the same blood spread over the area - twice as
     // wide, a quarter as dense - and is what makes it read as dissolving.
@@ -1841,6 +1914,7 @@ cparticle_t *CL_AllocParticle(void)
     p->blood_block = 0;
     p->blood_wall_spread = false;
     p->blood_arrived = false;
+    p->blood_no_film = false;
     p->blood_drain = 0.f;
     p->blood_edge_tries = 0;
     p->blood_stretch_base = 1.f;
@@ -2559,6 +2633,14 @@ static bool CL_BloodSoundFloorReady(void)
 
 static void CL_BloodPlaySoundAt(const vec3_t point, qhandle_t sfx)
 {
+    // ONLY INTO A FREE VOICE. With all MAX_CHANNELS busy, S_PickChannel takes the
+    // one nearest its end - a monster's line, a gun, a loop - and that sound
+    // stops dead. Blood is decoration; it never takes a voice from what plays
+    // (2026-11-07, Matt: "the audio is cutting out at weird times", just after
+    // the film got its sounds).
+    if (S_FreeChannels() < 1)
+        return;
+
     // entnum 0 with a world origin: a positioned sound that belongs to no
     // entity, so it will not cut off a sound another entity is playing.
     // cl_blood_sound_attn, not ATTN_NORM - a droplet is a small quiet event and
@@ -4275,6 +4357,9 @@ static bool CL_BloodArriveAtFloor(cparticle_t *p)
     if (tr.plane.normal[2] < 0.7f)
         return false;           // not ground a pool would stay on
 
+    if (CL_BloodVoidSurface(tr.surface))
+        return false;           // nothing to pool on - see CL_BloodVoidSurface
+
     if (CL_TraceHitEntity(&tr))
         return false;           // a brush model; see the note above
 
@@ -5036,6 +5121,13 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         blood_traces++;
         tr = CL_TracePoint(probe_start, probe_end, MASK_SOLID, false);
 
+        // Slid onto the void - see CL_BloodVoidSurface. Gone, as a droplet
+        // landing there would be.
+        if (tr.fraction < 1.0f && !tr.allsolid && CL_BloodVoidSurface(tr.surface)) {
+            CL_BloodDetachFromEntity(p);
+            return true;
+        }
+
         if (tr.fraction < 1.0f && !tr.allsolid) {
             centity_t *hit = CL_TraceHitEntity(&tr);
             const bool same_plane =
@@ -5220,6 +5312,12 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
             return false;
         }
 
+        // The void takes it, as lava does - see CL_BloodVoidSurface.
+        if (CL_BloodVoidSurface(tr.surface)) {
+            CL_BloodDetachFromEntity(p);
+            return true;
+        }
+
         // Landing on a fast spinner does not stick: the surface throws the
         // droplet on at its own speed, and it never becomes a rider.
         if (hit && CL_BloodSpinVelocity(hit, hit_point, fling)) {
@@ -5232,7 +5330,7 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
         // SURFACE BLOOD (cl_blood_film): a landing on the world goes into the
         // film and the droplet is done - see blood_film.c. Brush models, bodies
         // and ceilings keep the splat path.
-        if (!hit && CL_BloodFilmDeposit(hit_point, hit_normal, p->radius, p->color, &p->rgba))
+        if (!hit && !p->blood_no_film && CL_BloodFilmDeposit(hit_point, hit_normal, p->radius, p->color, &p->rgba))
             return true;
 
         if (CL_BloodPoolInto(p, hit_point, hit_normal,
@@ -5455,6 +5553,35 @@ void CL_BloodFilmDrip(const vec3_t org, const vec3_t vel, float radius, int colo
 
     if (p)
         VectorCopy(vel, p->vel);
+}
+
+// A droplet the film took (blood_film.c reports them a frame later, from its
+// worker): the sound a splat would have made - the impact on a dry surface, the
+// pooling sound into blood already there - through the same gaps and thinning,
+// so a fight sounds the same with the film on as off.
+void CL_BloodFilmSound(const vec3_t point, bool into_blood)
+{
+    if (into_blood)
+        CL_BloodPoolSound(point);
+    else
+        CL_BloodImpactSound(point);
+}
+
+// A landing the film had no room for, handed back a frame later by its worker
+// (blood_film.c, THE WORKER): the droplet again, a unit off the surface and
+// falling onto it, flagged so the landing takes the splat path this time.
+void CL_BloodFilmSplat(const vec3_t point, const vec3_t normal, float radius, int color, const color_t *rgba)
+{
+    vec3_t org;
+
+    VectorMA(point, 1.0f, normal, org);
+
+    cparticle_t *p = CL_BloodFilmParticle(org, radius, color, rgba);
+
+    if (p) {
+        VectorScale(normal, -60.f, p->vel);
+        p->blood_no_film = true;
+    }
 }
 
 void CL_BloodFilmDissolve(const vec3_t org, const vec3_t normal, float radius, int color, const color_t *rgba)
@@ -6521,6 +6648,45 @@ void CL_RocketTrail(const vec3_t start, const vec3_t end, centity_t *old)
 
     CL_RocketSmoke(start, end, fwd);
     CL_RocketFlame(start, end, vel, fwd, speed);
+}
+
+/*
+===============
+CL_GrenadeTrail
+
+A grenade's smoke (cl_flow_grenadetrail): NVIDIA Flow smoke along its flight,
+thick where it leaves and thinning out as the classic trail does, lit like the
+explosions' smoke (flow_grenade_spheres in vkpt/flow.c). The classic particles
+are drawn instead when Flow does not take it: Flow is missing or switched off,
+or the gas fills too much of the grid (pt_flow_rocket_budget, shared with the
+rockets).
+
+While Flow draws it, trailcount still runs down as the classic trail's would.
+A trail that falls back to particles partway through then starts thin, as it
+would have been by then.
+===============
+*/
+void CL_GrenadeTrail(const vec3_t start, const vec3_t end, centity_t *old)
+{
+    if (cl_flow_grenadetrail->integer && R_FlowEmit) {
+        r_flow_emit_t emit = {
+            .kind = R_FLOW_TRAIL,
+            .style = R_FLOW_FIRE,
+            .scale = 1.0f,
+            .key = old->current.number,
+            .smoke_only = true,
+        };
+        VectorCopy(end, emit.origin);
+        VectorCopy(end, emit.end);
+        if (R_FlowEmit(&emit) & R_FLOW_DRAWN) {
+            // CL_DiminishingTrail takes 5 off every half unit, down to 100
+            const int spent = (int)(Distance(start, end) * 10.0f);
+            old->trailcount = max(old->trailcount - spent, 100);
+            return;
+        }
+    }
+
+    CL_DiminishingTrail(start, end, old, EF_GRENADE);
 }
 
 /*
