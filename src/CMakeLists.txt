@@ -387,6 +387,7 @@ SET(SRC_VKPT
 	refresh/vkpt/buddy_allocator.c
 	refresh/vkpt/device_memory_allocator.c
 	refresh/vkpt/god_rays.c
+	refresh/vkpt/hdr_display.c
 	refresh/vkpt/conversion.c
 	refresh/vkpt/DLSS.c
 	refresh/vkpt/DLSSG.cpp

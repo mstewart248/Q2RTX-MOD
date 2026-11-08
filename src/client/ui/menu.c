@@ -1518,6 +1518,7 @@ static void Slider_Free(menuSlider_t *s)
     Z_Free(s->generic.name);
     Z_Free(s->generic.status);
     Z_Free(s->format);
+    Z_Free(s->min_text);
     Z_Free(s);
 }
 
@@ -1671,7 +1672,9 @@ static void Slider_Draw(menuSlider_t *s)
 		display_value *= 100.f;
 
 	char sbuf[16];
-    if (s->format)
+    if (s->min_text && s->curvalue <= s->minvalue)
+        Q_strlcpy(sbuf, s->min_text, sizeof(sbuf));
+    else if (s->format)
         snprintf(sbuf, sizeof(sbuf), s->format, display_value);
     else
 	    snprintf(sbuf, sizeof(sbuf), "%.1f", display_value);
@@ -2556,6 +2559,64 @@ static menuSound_t Menu_AfterValueChange(menuFrameWork_t *s, menuSound_t sound)
     return sound;
 }
 
+/*
+=================
+Menu_WriteItem
+
+Writes one control's value to its cvar - what Menu_Pop does for every control
+the player moved when the menu is left.
+=================
+*/
+static void Menu_WriteItem(void *item)
+{
+    switch (((menuCommon_t *)item)->type) {
+    case MTYPE_SLIDER:
+        Slider_Pop(item);
+        break;
+    case MTYPE_BITFIELD:
+        BitField_Pop(item);
+        break;
+    case MTYPE_PAIRS:
+        Pairs_Pop(item);
+        break;
+    case MTYPE_STRINGS:
+        Strings_Pop(item);
+        break;
+    case MTYPE_SPINCONTROL:
+        SpinControl_Pop(item);
+        break;
+    case MTYPE_TOGGLE:
+        Toggle_Pop(item);
+        break;
+    case MTYPE_KEYBIND:
+        Keybind_Pop(item);
+        break;
+    case MTYPE_FIELD:
+        Field_Pop(item);
+        break;
+    default:
+        break;
+    }
+}
+
+/*
+=================
+Menu_LiveWrite
+
+A QMF_LIVE control (`--live` in the menu script) writes its cvar as soon as it
+moves rather than when the menu is left, so a setting judged by eye - HDR
+brightness, say - can be dialed in against the picture behind the menu.  Menu_Pop
+still writes it again on the way out; that is the same value and harmless.
+=================
+*/
+static menuSound_t Menu_LiveWrite(menuCommon_t *item, menuSound_t sound)
+{
+    if (sound != QMS_NOTHANDLED && item && (item->flags & QMF_LIVE))
+        Menu_WriteItem(item);
+
+    return sound;
+}
+
 menuSound_t Menu_SelectItem(menuFrameWork_t *s)
 {
     menuCommon_t *item;
@@ -2573,7 +2634,7 @@ menuSound_t Menu_SelectItem(menuFrameWork_t *s)
     case MTYPE_VALUES:
     case MTYPE_STRINGS:
     case MTYPE_TOGGLE:
-        return Menu_AfterValueChange(s, SpinControl_DoEnter((menuSpinControl_t *)item));
+        return Menu_AfterValueChange(s, Menu_LiveWrite(item, SpinControl_DoEnter((menuSpinControl_t *)item)));
     case MTYPE_KEYBIND:
         return Keybind_DoEnter((menuKeybind_t *)item);
     case MTYPE_FIELD:
@@ -2598,14 +2659,14 @@ menuSound_t Menu_SlideItem(menuFrameWork_t *s, int dir)
 
     switch (item->type) {
     case MTYPE_SLIDER:
-        return Slider_DoSlide((menuSlider_t *)item, dir);
+        return Menu_LiveWrite(item, Slider_DoSlide((menuSlider_t *)item, dir));
     case MTYPE_SPINCONTROL:
     case MTYPE_BITFIELD:
     case MTYPE_PAIRS:
     case MTYPE_VALUES:
     case MTYPE_STRINGS:
     case MTYPE_TOGGLE:
-        return Menu_AfterValueChange(s, SpinControl_DoSlide((menuSpinControl_t *)item, dir));
+        return Menu_AfterValueChange(s, Menu_LiveWrite(item, SpinControl_DoSlide((menuSpinControl_t *)item, dir)));
     default:
         return QMS_NOTHANDLED;
     }
@@ -2626,7 +2687,7 @@ menuSound_t Menu_KeyEvent(menuCommon_t *item, int key)
     case MTYPE_LIST:
         return MenuList_Key((menuList_t *)item, key);
     case MTYPE_SLIDER:
-        return Slider_Key((menuSlider_t *)item, key);
+        return Menu_LiveWrite(item, Slider_Key((menuSlider_t *)item, key));
     case MTYPE_KEYBIND:
         return Keybind_Key((menuKeybind_t *)item, key);
     default:
@@ -2650,7 +2711,7 @@ menuSound_t Menu_MouseMove(menuCommon_t *item)
     case MTYPE_LIST:
         return MenuList_MouseMove((menuList_t *)item);
     case MTYPE_SLIDER:
-        return Slider_MouseMove((menuSlider_t *)item);
+        return Menu_LiveWrite(item, Slider_MouseMove((menuSlider_t *)item));
     default:
         return QMS_NOTHANDLED;
     }
@@ -2821,34 +2882,7 @@ void Menu_Pop(menuFrameWork_t *menu)
         if (SpinControl_Untouched(item))
             continue;
 
-        switch (((menuCommon_t *)item)->type) {
-        case MTYPE_SLIDER:
-            Slider_Pop(item);
-            break;
-        case MTYPE_BITFIELD:
-            BitField_Pop(item);
-            break;
-        case MTYPE_PAIRS:
-            Pairs_Pop(item);
-            break;
-        case MTYPE_STRINGS:
-            Strings_Pop(item);
-            break;
-        case MTYPE_SPINCONTROL:
-            SpinControl_Pop(item);
-            break;
-        case MTYPE_TOGGLE:
-            Toggle_Pop(item);
-            break;
-        case MTYPE_KEYBIND:
-            Keybind_Pop(item);
-            break;
-        case MTYPE_FIELD:
-            Field_Pop(item);
-            break;
-        default:
-            break;
-        }
+        Menu_WriteItem(item);
     }
 }
 

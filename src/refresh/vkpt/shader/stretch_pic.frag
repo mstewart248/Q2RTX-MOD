@@ -36,6 +36,7 @@ layout(set = 2, binding = 2, std140) uniform UBO {
 	float ui_hdr_nits;
 	float tm_hdr_saturation_scale;
 	float ui_hdr_video_gamma;
+	float ui_hdr_gamma;     // tm_hdr_sdr_gamma: the whole UI as an SDR monitor shows it; 0 = off
 };
 
 layout(location = 0) in vec4 color;
@@ -97,6 +98,13 @@ main()
 		c *= t;
 	}
 	if(spec_tone_mapping_hdr != 0) {
+		/* The UI as an SDR monitor shows it - the sRGB encode an SDR swapchain does,
+		   decoded with a plain power - the same match tone_mapping_hdr.glsl gives the
+		   world (tm_hdr_sdr_gamma). Without it dark panels, the console and shadowed
+		   HUD art come out lifted. A video frame already had its own curve above. */
+		bool video_curve = (pic_flags & 1u) != 0u && ui_hdr_video_gamma > 0;
+		if (ui_hdr_gamma > 0 && !video_curve)
+			c.rgb = pow(linear_to_srgb(clamp(c.rgb, vec3(0), vec3(1))), vec3(ui_hdr_gamma));
 		c.rgb *= ui_hdr_nits / 80;
 		c.rgb = apply_saturation_scale(c.rgb, tm_hdr_saturation_scale * 0.01);
 	}

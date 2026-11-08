@@ -64,6 +64,9 @@ typedef enum {
 #define QMF_HIDDEN          0x00000010
 #define QMF_DISABLED        0x00000020
 #define QMF_CUSTOM_COLOR    0x00000040
+// writes its cvar on every change instead of when the menu is left (`--live` in a
+// menu script): for settings judged by eye while the menu is open, like HDR's
+#define QMF_LIVE            0x00000080
 
 typedef enum {
     QMS_NOTHANDLED,
@@ -143,6 +146,9 @@ typedef struct menuFrameWork_s {
     bool compact;
     bool transparent;
     bool keywait;
+    // `style --clear-view`: the world behind is drawn as it plays, not with the
+    // pause menu's blur and HDR dimming - for pages set by eye, like HDR's
+    bool clear_view;
 
     qhandle_t image;
     color_t color;
@@ -217,6 +223,7 @@ typedef struct menuSlider_s {
     float step;
     char* format;
     bool percentage;
+    char* min_text;     // shown instead of the value at the minimum (`--min-text`), e.g. "auto"
 } menuSlider_t;
 
 #define MAX_COLUMNS     8

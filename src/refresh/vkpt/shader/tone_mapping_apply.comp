@@ -49,6 +49,7 @@ layout(constant_id = 0) const uint spec_tone_mapping_hdr = 0;
 #include "vertex_buffer.h"
 
 #include "tone_mapping_utils.glsl"
+#include "tone_mapping_hdr.glsl"
 
 // Process the image in 16x16x1 workgroups.
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -236,8 +237,17 @@ void main()
         // Apply dither:
         mapped_color = srgb_dither(mapped_color, ipos);
     }
+    else if(global_ubo.tm_hdr_mode != 0)
+    {
+        // HDR (tm_hdr_mode 1, tone_mapping_hdr.glsl): the SDR picture at game brightness
+        // below the knee, highlights carried on above it and rolled off into the peak.
+        // Replaces the colour worked out above.
+        mapped_color = hdr_tone_map(input_color, lum, true);
+    }
     else
     {
+        // HDR, tm_hdr_mode 0 - the 2021 mapping, kept for A/B: the SDR result scaled so
+        // that SDR white lands at tm_hdr_peak_nits, which scales the whole picture with it.
         // HDR: map colors such that values at EV 0 map to a display brightness of 'tm_hdr_peak_nits'
         const float nits_factor = global_ubo.tm_hdr_peak_nits / 80; // an scRGB luminance of 1.0 is defined as 80 nits
         const float nits_factor_ui = global_ubo.ui_hdr_nits / 80;
@@ -252,6 +262,11 @@ void main()
         if(global_ubo.tm_hdr_clip != 0)
             mapped_color = clamp(mapped_color, vec3(0), vec3(nits_factor));
     }
+
+    // HDR test patterns (tm_hdr_calibrate), only while a menu is open: the CPU zeroes
+    // the UBO value otherwise. Drawn in nits, past every clip.
+    if(spec_tone_mapping_hdr != 0 && global_ubo.tm_hdr_calibrate != 0)
+        mapped_color = hdr_test_pattern(mapped_color, ipos, screenSize);
 
     // Show tonemapping curve if enabled:
     if(global_ubo.tm_debug != 0)

@@ -1437,6 +1437,7 @@ static void CL_AddPlayerBeams(void)
     int         framenum;
     float       hand_multiplier;
     bool        view_chain;
+    bool        ring_split;
     vec3_t      aim_end;
     player_state_t  *ps, *ops;
 
@@ -1463,6 +1464,7 @@ static void CL_AddPlayerBeams(void)
         // world chain is used for everything.
         view_chain = (b->entity == cl.frame.clientNum + 1) &&
                      !cl.thirdPersonView && !cl_beam_thirdperson->integer;
+        ring_split = false;
 
         if (view_chain) {
             // set up gun position
@@ -1555,8 +1557,19 @@ static void CL_AddPlayerBeams(void)
                 VectorScale(dist, d, dist);
             }
 
+            // [Q2RTX] The rings are particles, and a particle used to show in
+            // BOTH views - so a mirror showed these eye-level rings beside the
+            // chest-level world chain, a few units above it and off to the
+            // hand side (Matt, 11-08). Where the mirror draws your body these
+            // are first-person only and the world chain gets its own set
+            // below. Anywhere else the mirror shows the VIEW chain (no body:
+            // reflect_refract.rgen falls back to AS_FLAG_VIEWER_WEAPON), so
+            // these rings are the right ones there, and GL/SW have no mirrors.
+            ring_split = CL_PathTraced() &&
+                         cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON;
+
             // Same vector to both, so a sparkle can no longer sit off the beam.
-            CL_Heatbeam(org, dist);
+            CL_Heatbeam(org, dist, ring_split ? RF_FIRST_PERSON_FX : 0);
 
             vectoangles2(dist, angles);
 
@@ -1621,6 +1634,11 @@ static void CL_AddPlayerBeams(void)
 
             CL_EmitBeamChain(b->model, world_org, world_dist, world_angles,
                              2, RF_VIEWERMODEL);
+
+            // ...and the rings that go with it, built on the same start and
+            // vector so they sit on the beam the mirror actually shows.
+            if (ring_split)
+                CL_Heatbeam(world_org, world_dist, RF_REFLECTION_FX);
         }
     }
 }

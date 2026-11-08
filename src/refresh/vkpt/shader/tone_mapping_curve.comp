@@ -62,6 +62,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "vertex_buffer.h"
 
 #include "tone_mapping_utils.glsl"
+#include "tone_mapping_hdr.glsl"
 
 // Make sure that HISTOGRAM_BINS is exactly 128.
 #if HISTOGRAM_BINS != 128
@@ -164,6 +165,72 @@ float computePrefixSum(float val, const uint linear_idx)
     val = s_Shared[linear_idx];
     barrier();
     return val;
+}
+
+// HDR OUTPUT'S KNEE (tone_mapping_hdr.glsl): the scene luminance at which this
+// frame's SDR curve - the adaptive curve blended with Reinhard, as the apply pass
+// combines them - reaches tm_hdr_knee, with its value and log-log slope there.
+// The HDR picture is the SDR one below it and carries on past it. Found here, once
+// a frame, because the apply pass cannot search the curve per pixel.
+shared float s_Curve[HISTOGRAM_BINS];
+shared float s_Y[HISTOGRAM_BINS];
+shared float s_Adapted;
+
+float bin_log_lum(float bin)
+{
+    return (bin / float(HISTOGRAM_BINS)) * (max_log_luminance - min_log_luminance) + min_log_luminance;
+}
+
+// the SDR curve's output at any luminance, from this frame's curve - the apply
+// pass's lookup (tm_curve_log), on the shared copy
+float sdr_display_luminance_at(float lum)
+{
+    const float pos = tm_curve_position(lum);
+    const int l = int(pos);
+    const int r = min(l + 1, HISTOGRAM_BINS - 1);
+    return tm_sdr_display_luminance(mix(s_Curve[l], s_Curve[r], pos - float(l)), lum, s_Adapted);
+}
+
+void find_hdr_knee(float my_tonecurve, int linear_idx, float bin_log_luminance, float adapted)
+{
+    s_Curve[linear_idx] = my_tonecurve;
+    // thread 0's: it is the one that wrote tonemap_buffer.adapted_luminance
+    if (linear_idx == 0)
+        s_Adapted = adapted;
+    barrier();
+
+    const float knee = clamp(global_ubo.tm_hdr_knee, 0.05, 0.95);
+    const float y = tm_sdr_display_luminance(my_tonecurve, exp2(bin_log_luminance), s_Adapted);
+    s_Y[linear_idx] = y;
+    // the curve only rises, so the bins below the knee are the first `below` ones
+    const float below = computeSharedSum(y < knee ? 1.0 : 0.0, linear_idx);
+
+    if (linear_idx == 0)
+    {
+        const int b = int(below + 0.5);
+        float log_lum;
+        if (b <= 0)
+            log_lum = bin_log_lum(0.0);
+        else if (b >= HISTOGRAM_BINS)
+            log_lum = bin_log_lum(float(HISTOGRAM_BINS - 1));
+        else
+        {
+            // between bins b-1 and b, interpolated in log-log like the curve itself
+            const float l0 = log2(max(s_Y[b - 1], 1e-30));
+            const float l1 = log2(max(s_Y[b], 1e-30));
+            const float t = clamp((log2(knee) - l0) / max(l1 - l0, 1e-6), 0.0, 1.0);
+            log_lum = bin_log_lum(float(b - 1) + t);
+        }
+
+        const float lum = exp2(log_lum);
+        // the slope over the stop around the knee: two bins either side, so one
+        // bin's kink does not decide it
+        const float lo = sdr_display_luminance_at(lum * exp2(-0.5));
+        const float hi = sdr_display_luminance_at(lum * exp2(0.5));
+        tonemap_buffer.hdr_knee_log_lum = log_lum;
+        tonemap_buffer.hdr_knee_value = sdr_display_luminance_at(lum);
+        tonemap_buffer.hdr_knee_slope = clamp(log2(max(hi, 1e-30)) - log2(max(lo, 1e-30)), 0.05, 2.0);
+    }
 }
 
 void main()
@@ -354,6 +421,9 @@ void main()
     }
 
     tonemap_buffer.curve[linear_idx] = my_tonecurve;
+
+    // HDR output's knee, from the curve just made (tone_mapping_hdr.glsl)
+    find_hdr_knee(my_tonecurve, linear_idx, bin_log_luminance, exp2(log_target_lum));
 
     // Finally, clear the histogram accumulator for the next frame.
     tonemap_buffer.accumulator[linear_idx] = 0;

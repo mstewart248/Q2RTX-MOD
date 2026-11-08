@@ -22,18 +22,23 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "shader_structs.h"
 
 /* Flow layers, one per kind of effect (r_flow_style_t): fire, the BFG's
-   plasma, underwater bubbles and the railgun's trail. Each simulates and
-   looks its own way; all share one grid of cells. */
-#define FLOW_LAYERS 4
+   plasma, underwater bubbles and the railgun's trail - and the far part of
+   the railgun's trail again (FLOW_LAYER_RAIL_FAR), which no client asks for
+   by name. Each simulates and looks its own way. */
+#define FLOW_LAYERS 5
 
-/* The cell grids the layers are on (FlowParams.grids): grid 0, every layer's
-   but one, at pt_flow_cell_size; grid 1, the railgun trail's layer alone, at
-   pt_flow_rail_cell_size - finer, as a spiral a cell or so thick came out
-   boxy on the main grid. Every grid has blocks of the same cells, so one
-   table and one atlas serve both. */
-#define FLOW_GRIDS 2
+/* The cell grids the layers are on (FlowParams.grids): grid 0, the fire's,
+   the plasma's and the bubbles', at pt_flow_cell_size; grid 1, the railgun
+   trail's, at pt_flow_rail_cell_size - finer, as a spiral a cell or so thick
+   came out boxy on the main grid; grid 2, the same trail's beyond
+   pt_flow_rail_lod_distance of the view, at pt_flow_rail_far_cell_size - a
+   level of detail: out there the fine cells are smaller than anyone can see,
+   and cost the most blocks. Every grid has blocks of the same cells, so one
+   table and one atlas serve them all. */
+#define FLOW_GRIDS 3
 #define FLOW_LAYER_RAIL 3
-#define FLOW_LAYER_GRID(l) ((l) == FLOW_LAYER_RAIL ? 1 : 0)
+#define FLOW_LAYER_RAIL_FAR 4
+#define FLOW_LAYER_GRID(l) ((l) == FLOW_LAYER_RAIL ? 1 : ((l) == FLOW_LAYER_RAIL_FAR ? 2 : 0))
 
 /* Groups of FLOW_COARSE^3 blocks of a grid (block location >> FLOW_COARSE_BITS)
    that hold anything to see, hashed into a bitset of FLOW_COARSE_HASH_BITS

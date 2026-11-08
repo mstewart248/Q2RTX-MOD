@@ -158,16 +158,25 @@ static void Parse_Spin(menuFrameWork_t *menu, menuType_t type)
     Menu_AddItem(menu, s);
 }
 
+static const cmd_option_t o_pairs[] = {
+    { "s:", "status" },
+    { "l", "live" },
+    { NULL }
+};
 static void Parse_Pairs(menuFrameWork_t *menu)
 {
     menuSpinControl_t *s;
     int c, i, numItems;
     char *status = NULL;
+    bool live = false;
 
-    while ((c = Cmd_ParseOptions(o_common)) != -1) {
+    while ((c = Cmd_ParseOptions(o_pairs)) != -1) {
         switch (c) {
         case 's':
             status = cmd_optarg;
+            break;
+        case 'l':
+            live = true;
             break;
         default:
             return;
@@ -193,6 +202,8 @@ static void Parse_Pairs(menuFrameWork_t *menu)
         s->itemvalues[i] = UI_CopyString(Cmd_Argv(cmd_optind + 3 + i * 2));
     }
     s->numItems = numItems;
+    if (live)
+        s->generic.flags |= QMF_LIVE;
 
     Menu_AddItem(menu, s);
 }
@@ -201,6 +212,8 @@ static const cmd_option_t o_range[] = {
     { "s:", "status" },
     { "f:", "format" },
     { "p", "percentage" },
+    { "l", "live" },
+    { "m:", "min-text" },
     { NULL }
 };
 static void Parse_Range(menuFrameWork_t *menu)
@@ -208,7 +221,9 @@ static void Parse_Range(menuFrameWork_t *menu)
     menuSlider_t *s;
     char *status = NULL;
     char *format = NULL;
+    char *min_text = NULL;
     bool percentage = false;
+    bool live = false;
     int c;
 
     while ((c = Cmd_ParseOptions(o_range)) != -1) {
@@ -221,6 +236,12 @@ static void Parse_Range(menuFrameWork_t *menu)
             break;
         case 'p':
             percentage = true;
+            break;
+        case 'l':
+            live = true;
+            break;
+        case 'm':
+            min_text = cmd_optarg;
             break;
         default:
             return;
@@ -246,6 +267,9 @@ static void Parse_Range(menuFrameWork_t *menu)
     }
     s->format = UI_CopyString(format);
     s->percentage = percentage;
+    s->min_text = UI_CopyString(min_text);
+    if (live)
+        s->generic.flags |= QMF_LIVE;
 
     Menu_AddItem(menu, s);
 }
@@ -544,12 +568,16 @@ static void Parse_Style(menuFrameWork_t *menu)
         { "C", "no-compact" },
         { "t", "transparent" },
         { "T", "no-transparent" },
+        { "v", "clear-view" },
         { NULL }
     };
     int c;
 
     while ((c = Cmd_ParseOptions(o_style)) != -1) {
         switch (c) {
+        case 'v':
+            menu->clear_view = true;
+            break;
         case 'c':
             menu->compact = true;
             break;

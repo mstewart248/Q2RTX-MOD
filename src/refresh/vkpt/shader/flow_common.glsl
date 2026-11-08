@@ -63,12 +63,12 @@ ivec3 flow_block_base(uint value)
 		int((value >> 20u) | 1u) & 0x7FF);
 }
 
-// The density atlas offset of the block at `location` (in blocks) of the
-// layer `layer_and_level`, so that virtual cell + offset is the atlas texel;
-// w is 0 when the block is not allocated. `index` is its place in the table,
-// as flow_lights.comp and flow_occupancy.comp number blocks.
-// NvFlowLocationToBlockIdx + NvFlowGlobalVirtualToRealOffset.
-ivec4 flow_block_find(ivec3 location, int layer_and_level, out uint index)
+// The table value of the block at `location` (in blocks) of the layer
+// `layer_and_level`: where it is in the density atlas (flow_block_base), and
+// in the top bit whether it is allocated; 0 when there is no such block.
+// `index` is its place in the table, as flow_lights.comp and
+// flow_occupancy.comp number blocks. NvFlowLocationToBlockIdx.
+uint flow_block_value(ivec3 location, int layer_and_level, out uint index)
 {
 	const uvec3 bucket = uvec3(location) & flow_params.table_dim_less_one.xyz;
 	const uint bucket_1d = (bucket.z << flow_params.table_offsets.x)
@@ -93,7 +93,16 @@ ivec4 flow_block_find(ivec3 location, int layer_and_level, out uint index)
 			break;
 		}
 	}
+	return value;
+}
 
+// The density atlas offset of the block at `location` of the layer
+// `layer_and_level`, so that virtual cell + offset is the atlas texel; w is 0
+// when the block is not allocated. NvFlowLocationToBlockIdx +
+// NvFlowGlobalVirtualToRealOffset.
+ivec4 flow_block_find(ivec3 location, int layer_and_level, out uint index)
+{
+	const uint value = flow_block_value(location, layer_and_level, index);
 	// The top bit marks an allocated block.
 	const ivec3 base = flow_block_base(value);
 	return ivec4(base - (location << ivec3(flow_params.block_dim_bits.xyz)), int(value >> 31u));

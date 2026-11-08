@@ -438,6 +438,30 @@ static void write_particle_geometry(const float* view_matrix, const particle_t* 
 
 		cast_u32_to_f32_color(particle->color, &particle->rgba, particle_colors, particle->brightness);
 		particle_colors[3] = particle->alpha;
+
+		// Which view the particle belongs to, carried in the SIGN BITS of G
+		// (first person only) and B (mirrors only). The colour channels are
+		// never negative, so the bits are free, and a sign bit survives the
+		// RGBA32F texel buffer even on a channel that is exactly 0 - both
+		// backends' views are R32G32B32A32 float. pt_logic_particle strips
+		// them again.
+		if (particle->flags & (RF_FIRST_PERSON_FX | RF_REFLECTION_FX))
+		{
+			uint32_t bits;
+			if (particle->flags & RF_FIRST_PERSON_FX)
+			{
+				memcpy(&bits, &particle_colors[1], sizeof(bits));
+				bits |= 0x80000000u;
+				memcpy(&particle_colors[1], &bits, sizeof(bits));
+			}
+			if (particle->flags & RF_REFLECTION_FX)
+			{
+				memcpy(&bits, &particle_colors[2], sizeof(bits));
+				bits |= 0x80000000u;
+				memcpy(&particle_colors[2], &bits, sizeof(bits));
+			}
+		}
+
 		particle_colors = particle_colors + 4;
 
 		vec3_t origin;

@@ -76,9 +76,13 @@ pt_flow_cell_size cells:
   - RAIL, the railgun's trail (cl_flow_railtrail): heat and smoke with no
     fuel, like the plasma, but glowing the classic trail's cyan-blue. A shot
     is one beam, built each frame it emits into a helix of small boxes round
-    a thread of smoke (flow_rail_boxes). The one layer not on
-    pt_flow_cell_size cells: its own pt_flow_rail_cell_size are finer, for a
-    spiral only a cell or so thick (FLOW_GRIDS in shader/flow.h).
+    a thread of smoke (flow_rail_boxes). Not on pt_flow_cell_size cells:
+    its own pt_flow_rail_cell_size are finer, for a spiral only a cell or so
+    thick (FLOW_GRIDS in shader/flow.h). Its LEVEL OF DETAIL: the part of a
+    shot further than pt_flow_rail_lod_distance from the view when it was
+    fired goes on a layer of its own, FLOW_LAYER_RAIL_FAR, that is the same
+    gas on coarser pt_flow_rail_far_cell_size cells - far fewer blocks, and
+    a longer march step, where the fine cells would be too small to see.
 
 Flow allocates blocks where there is smoke and frees them once it has faded,
 so when nothing is going on the grid is empty and this module skips Flow
@@ -218,8 +222,11 @@ typedef struct {
 	float           life;
 	vec3_t          velocity;
 	// A railgun's trail: the stretch of it drawn, in units from `origin`
-	// toward `end` (pt_flow_rail_length).
+	// toward `end` (pt_flow_rail_length); and the part of that on the fine
+	// grid, near_from to near_to, the rest being on FLOW_LAYER_RAIL_FAR's
+	// coarse one (flow_rail_stretch).
 	float           from, to;
+	float           near_from, near_to;
 } flow_emitter_t;
 
 // A light that a fire or plasma burst casts, see flow_lights_collect.
@@ -319,6 +326,9 @@ static cvar_t *cvar_pt_flow_beam_radius;
 static cvar_t *cvar_pt_flow_beam_expansion;
 static cvar_t *cvar_pt_flow_beam_burst;
 static cvar_t *cvar_pt_flow_rail_cell_size;
+static cvar_t *cvar_pt_flow_rail_far_cell_size;
+static cvar_t *cvar_pt_flow_rail_lod_distance;
+static cvar_t *cvar_pt_flow_rail_far_brightness;
 static cvar_t *cvar_pt_flow_rail_life;
 static cvar_t *cvar_pt_flow_rail_drain;
 static cvar_t *cvar_pt_flow_rail_radius;
@@ -521,8 +531,11 @@ static struct {
 	bool                    have_bubble_surface;
 
 	// Where the last world frame was seen from, for the stretch of a long
-	// railgun trail that is drawn.
+	// railgun trail that is drawn; and how much nearer than it is things look
+	// for its field of view - 1 at Quake's 90 degrees, more zoomed in - for
+	// the part of the trail on the fine grid.
 	vec3_t                  view_origin;
+	float                   view_zoom;
 
 	// The corners of every block Flow had last frame, for the collision mesh.
 	vec3_t                  blocks_min, blocks_max;
@@ -1334,17 +1347,26 @@ THE FRAME
 ==============================================================================
 */
 
-// Flow's layer for each r_flow_style_t is the style's own number.
-typedef char flow_layers_match_styles[(R_FLOW_STYLES == FLOW_LAYERS) ? 1 : -1];
+// Flow's layer for each r_flow_style_t is the style's own number; after them
+// comes the far part of the railgun's trail, which only flow_rail_boxes puts
+// anything in.
+typedef char flow_layers_match_styles[(R_FLOW_STYLES + 1 == FLOW_LAYERS) ? 1 : -1];
 typedef char flow_rail_layer_matches[(R_FLOW_RAIL == FLOW_LAYER_RAIL) ? 1 : -1];
+typedef char flow_rail_far_layer_last[(FLOW_LAYER_RAIL_FAR == R_FLOW_STYLES) ? 1 : -1];
 
-// A layer's cell size in world units: pt_flow_cell_size, or the railgun
-// trail's own finer pt_flow_rail_cell_size (FLOW_GRIDS in shader/flow.h).
+// A layer's cell size in world units: pt_flow_cell_size, the railgun trail's
+// own finer pt_flow_rail_cell_size, or pt_flow_rail_far_cell_size for its far
+// part (FLOW_GRIDS in shader/flow.h).
 static float flow_layer_cell_size(int layer)
 {
-	if (FLOW_LAYER_GRID(layer) != 0)
+	switch (FLOW_LAYER_GRID(layer)) {
+	case 1:
 		return max(cvar_pt_flow_rail_cell_size->value, 0.5f);
-	return max(cvar_pt_flow_cell_size->value, 0.5f);
+	case 2:
+		return max(cvar_pt_flow_rail_far_cell_size->value, 0.5f);
+	default:
+		return max(cvar_pt_flow_cell_size->value, 0.5f);
+	}
 }
 
 // The railgun trails' end: pt_flow_rail_life after the last shot nothing is
@@ -1469,9 +1491,11 @@ static void flow_layer_simulate(NvFlowGridSimulateLayerParams *simulate, int lay
 		break;
 
 	case R_FLOW_RAIL:
+	case FLOW_LAYER_RAIL_FAR:
 		// Heat without fuel, as the plasma: the spiral glows for as long as
 		// it takes to cool - about the second the classic particles last -
 		// rising a little, then leaves pale wisps that the vorticity curls.
+		// Its far part is the same gas, on coarser cells.
 		advection->buoyancyPerTemp = max(cvar_pt_flow_rail_buoyancy->value, 0.f);
 		advection->coolingRate = max(cvar_pt_flow_rail_cooling->value, 0.1f);
 		advection->smoke.damping = Cvar_ClampValue(cvar_pt_flow_rail_smoke_damping, 0.f, 1.f);
@@ -1948,16 +1972,24 @@ _core_expansion) instead.
 
 Only the stretch from e->from to e->to units along the shot is drawn, chosen
 when it came in (vkpt_flow_emit); the twist counts from the true start, so
-the spiral turns where the classic one would. Returns the new box count.
+the spiral turns where the classic one would. Of that, e->near_from to
+e->near_to goes on the rail layer's fine grid and the rest, either side, on
+FLOW_LAYER_RAIL_FAR's coarse one (flow_rail_stretch) - each piece by
+flow_rail_piece, cut where the other starts. Returns the new box count.
 */
-static int flow_rail_boxes(const flow_emitter_t *e, int num_boxes, float cell_size, float couple_rate)
+static int flow_rail_piece(const flow_emitter_t *e, int num_boxes, float couple_rate,
+	float from, float to, int piece, int layer)
 {
 	vec3_t dir, right, up;
 	VectorSubtract(e->end, e->origin, dir);
-	if (VectorNormalize(dir) < 1.f || e->to - e->from < 1.f)
+	if (VectorNormalize(dir) < 1.f || to - from < 1.f)
 		return num_boxes;
 	// the classic spiral's own axes
 	MakeNormalVectors(dir, right, up);
+
+	const float cell_size = flow_layer_cell_size(layer);
+	// Each piece's boxes are Flow emitters of their own.
+	const uint64_t luid = e->luid | ((uint64_t)piece << 57);
 
 	// It emits for a few frames, so it fills itself as hard as a blast's puff.
 	const float rate = 5.f * couple_rate;
@@ -1969,13 +2001,13 @@ static int flow_rail_boxes(const flow_emitter_t *e, int num_boxes, float cell_si
 	{
 		const float radius = max(cvar_pt_flow_rail_core_radius->value, 0.5f);
 		const float divergence = 2.f * cvar_pt_flow_rail_core_expansion->value * (2.f * cell_size) / max(radius, cell_size);
-		const int segments = max((int)ceilf((e->to - e->from) / FLOW_BEAM_SEGMENT), 1);
+		const int segments = max((int)ceilf((to - from) / FLOW_BEAM_SEGMENT), 1);
 		for (int s = 0; s < segments; s++) {
 			vec3_t a, b;
-			VectorMA(e->origin, e->from + (e->to - e->from) * s / segments, dir, a);
-			VectorMA(e->origin, e->from + (e->to - e->from) * (s + 1) / segments, dir, b);
-			NvFlowGridEmitterBoxParams *box = flow_line_box(&num_boxes, e->luid | ((uint64_t)(s + 1) << 32),
-				e->layer, a, b, radius, 0.f);
+			VectorMA(e->origin, from + (to - from) * s / segments, dir, a);
+			VectorMA(e->origin, from + (to - from) * (s + 1) / segments, dir, b);
+			NvFlowGridEmitterBoxParams *box = flow_line_box(&num_boxes, luid | ((uint64_t)(s + 1) << 32),
+				layer, a, b, radius, 0.f);
 			if (!box)
 				return num_boxes;
 			box->divergence = divergence;
@@ -2002,11 +2034,11 @@ static int flow_rail_boxes(const flow_emitter_t *e, int num_boxes, float cell_si
 	if (radius <= 0.f)
 		return num_boxes;
 
-	const int first = (int)floorf(e->from / step);
-	const int last = (int)ceilf(e->to / step);
+	const int first = (int)floorf(from / step);
+	const int last = (int)ceilf(to / step);
 	for (int i = first; i < last; i++) {
-		const float s0 = max(i * step, e->from);
-		const float s1 = min((i + 1) * step, e->to);
+		const float s0 = max(i * step, from);
+		const float s1 = min((i + 1) * step, to);
 		if (s1 - s0 < 0.5f)
 			continue;
 
@@ -2018,8 +2050,8 @@ static int flow_rail_boxes(const flow_emitter_t *e, int num_boxes, float cell_si
 		VectorMA(b, radius * cosf(k * s1), right, b);
 		VectorMA(b, radius * sinf(k * s1), up, b);
 
-		NvFlowGridEmitterBoxParams *box = flow_line_box(&num_boxes, e->luid | (1ull << 56) | ((uint64_t)(i + 1) << 32),
-			e->layer, a, b, width, 0.5f * width);
+		NvFlowGridEmitterBoxParams *box = flow_line_box(&num_boxes, luid | (1ull << 56) | ((uint64_t)(i + 1) << 32),
+			layer, a, b, width, 0.5f * width);
 		if (!box)
 			return num_boxes;
 
@@ -2045,6 +2077,13 @@ static int flow_rail_boxes(const flow_emitter_t *e, int num_boxes, float cell_si
 	}
 
 	return num_boxes;
+}
+
+static int flow_rail_boxes(const flow_emitter_t *e, int num_boxes, float couple_rate)
+{
+	num_boxes = flow_rail_piece(e, num_boxes, couple_rate, e->from, e->near_from, 0, FLOW_LAYER_RAIL_FAR);
+	num_boxes = flow_rail_piece(e, num_boxes, couple_rate, e->near_from, e->near_to, 1, R_FLOW_RAIL);
+	return flow_rail_piece(e, num_boxes, couple_rate, e->near_to, e->to, 2, FLOW_LAYER_RAIL_FAR);
 }
 
 static void flow_build_params(float dt)
@@ -2075,7 +2114,7 @@ static void flow_build_params(float dt)
 			continue;
 		}
 		if (e->layer == R_FLOW_RAIL) {
-			num_boxes = flow_rail_boxes(e, num_boxes, flow_layer_cell_size(R_FLOW_RAIL), couple_rate);
+			num_boxes = flow_rail_boxes(e, num_boxes, couple_rate);
 			continue;
 		}
 
@@ -2265,26 +2304,61 @@ static bool flow_rail_room(void)
 	return (float)flow.num_blocks < budget * (float)flow.max_blocks;
 }
 
+// The shortest piece of a railgun's trail put on a grid of its own: a shorter
+// one goes with the piece next to it, so that no sliver is left out.
+#define FLOW_RAIL_MIN_PIECE 16.f
+
 // The stretch of the railgun's trail `e` that is drawn: all of it up to
 // pt_flow_rail_length units, or that much round the point of it nearest the
 // view - which for the one who fired is the near end, and for the one shot
 // at the far end.
+//
+// And the part of that within pt_flow_rail_lod_distance of the view, which
+// goes on the fine grid; the rest goes on FLOW_LAYER_RAIL_FAR's coarser one.
+// The distance grows as the view zooms in (flow.view_zoom). It is settled
+// here, once, from where the shot was seen when it came in: the gas stays on
+// the grid it started on for the second or so it lasts, and moving the cut
+// while the shot still emits would leave a ragged seam.
 static void flow_rail_stretch(flow_emitter_t *e)
 {
 	vec3_t dir, to_view;
 	VectorSubtract(e->end, e->origin, dir);
 	const float length = VectorNormalize(dir);
 	const float keep = max(cvar_pt_flow_rail_length->value, 64.f);
+	VectorSubtract(flow.view_origin, e->origin, to_view);
+	// where along the shot the view is nearest it, and how far off it it is
+	const float along = DotProduct(to_view, dir);
+	const float across2 = max(DotProduct(to_view, to_view) - along * along, 0.f);
 
 	e->from = 0.f;
 	e->to = length;
-	if (length <= keep)
+	if (length > keep) {
+		const float nearest = min(max(along, 0.f), length);
+		e->from = min(max(nearest - 0.5f * keep, 0.f), length - keep);
+		e->to = e->from + keep;
+	}
+
+	e->near_from = e->from;
+	e->near_to = e->to;
+	const float lod = max(cvar_pt_flow_rail_lod_distance->value, 0.f) * (flow.view_zoom > 0.f ? flow.view_zoom : 1.f);
+	if (lod <= 0.f)
 		return;
 
-	VectorSubtract(flow.view_origin, e->origin, to_view);
-	const float nearest = min(max(DotProduct(to_view, dir), 0.f), length);
-	e->from = min(max(nearest - 0.5f * keep, 0.f), length - keep);
-	e->to = e->from + keep;
+	// The shot is within `lod` of the view from along - reach to along + reach.
+	const float reach2 = lod * lod - across2;
+	const float reach = reach2 > 0.f ? sqrtf(reach2) : 0.f;
+	e->near_from = min(max(along - reach, e->from), e->to);
+	e->near_to = min(max(along + reach, e->from), e->to);
+
+	// no slivers, on either grid
+	if (e->near_to - e->near_from < FLOW_RAIL_MIN_PIECE) {
+		e->near_from = e->near_to = e->from;
+		return;
+	}
+	if (e->near_from - e->from < FLOW_RAIL_MIN_PIECE)
+		e->near_from = e->from;
+	if (e->to - e->near_to < FLOW_RAIL_MIN_PIECE)
+		e->near_to = e->to;
 }
 
 // A trail's light slot, if it still has it.
@@ -2353,11 +2427,12 @@ static void flow_pool_stats(void)
 			counts[flow.refused[i].grenade][flow.refused[i].cut]++;
 
 		if (flow.peak_blocks || flow.num_refused || flow.refused_rail) {
-			Com_Printf("FLOWPOOL %u/%u blocks, peak %u | fire %u plasma %u bubbles %u rail %u | "
+			Com_Printf("FLOWPOOL %u/%u blocks, peak %u | fire %u plasma %u bubbles %u rail %u (+%u far) | "
 				"to particles: rockets %u (+%u cut), grenades %u (+%u cut), rail shots %u\n",
 				flow.num_blocks, flow.max_blocks, flow.peak_blocks,
 				flow.layer_blocks[R_FLOW_FIRE], flow.layer_blocks[R_FLOW_PLASMA],
 				flow.layer_blocks[R_FLOW_BUBBLES], flow.layer_blocks[R_FLOW_RAIL],
+				flow.layer_blocks[FLOW_LAYER_RAIL_FAR],
 				counts[0][0], counts[0][1], counts[1][0], counts[1][1], flow.refused_rail);
 		}
 	}
@@ -3598,6 +3673,20 @@ VkResult vkpt_flow_initialize(void)
 	// blocks than there are - hence the budget of a half, not three
 	// quarters, and pt_flow_rail_life.
 	cvar_pt_flow_rail_cell_size = Cvar_Get("pt_flow_rail_cell_size", "0.5", 0);
+	// Its level of detail (Matt, 11-08: "a tight grid when it's close to the
+	// camera ... more loose grid" further off): the part of a shot further
+	// than pt_flow_rail_lod_distance from the view when it came in - at
+	// Quake's 90 degree field of view, further zoomed in - is on cells of
+	// pt_flow_rail_far_cell_size (FLOW_LAYER_RAIL_FAR). At 1.5 a block is
+	// 48x24x24 units, so the far part takes a fifth or less of the blocks a
+	// unit of length the fine one does - worked out, not measured.
+	// At 256 a far cell looks no bigger than a fine one 85 units off. 0 puts
+	// the whole shot on the fine grid, as before. Its glow is
+	// pt_flow_rail_far_brightness times the fine part's. Read when a shot
+	// comes in.
+	cvar_pt_flow_rail_lod_distance = Cvar_Get("pt_flow_rail_lod_distance", "256", 0);
+	cvar_pt_flow_rail_far_cell_size = Cvar_Get("pt_flow_rail_far_cell_size", "1.5", 0);
+	cvar_pt_flow_rail_far_brightness = Cvar_Get("pt_flow_rail_far_brightness", "1", 0);
 	cvar_pt_flow_rail_radius = Cvar_Get("pt_flow_rail_radius", "6", 0);
 	cvar_pt_flow_rail_width = Cvar_Get("pt_flow_rail_width", "1.25", 0);     // 2 until Matt found it too big (10-27)
 	cvar_pt_flow_rail_turn = Cvar_Get("pt_flow_rail_turn", "63", 0);
@@ -4074,9 +4163,15 @@ static void flow_layer_look(FlowLayerParams *look, int layer, float cell_size)
 		break;
 
 	case R_FLOW_RAIL:
-		// Cyan-blue heat, then pale blue-grey smoke.
+	case FLOW_LAYER_RAIL_FAR:
+		// Cyan-blue heat, then pale blue-grey smoke. On the coarse cells of
+		// the far part the spiral comes out a little thicker - a cell only
+		// partly in a box still fills up to its heat in a frame or two - so
+		// its glow has a knob of its own.
 		look->info[2] = 3;
 		look->emission[0] = max(cvar_pt_flow_rail_brightness->value, 0.f) * per_unit;
+		if (layer == FLOW_LAYER_RAIL_FAR)
+			look->emission[0] *= max(cvar_pt_flow_rail_far_brightness->value, 0.f);
 		smoke = max(cvar_pt_flow_rail_smoke_brightness->value, 0.f);
 		VectorSet(look->smoke, 0.85f * smoke, 0.92f * smoke, smoke);
 		look->smoke[3] = max(cvar_pt_flow_rail_density->value, 0.f) / cell_size;
@@ -4232,8 +4327,13 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 	if (profiled)
 		flow_profile(PROFILER_START);
 
-	if (render_world)
+	if (render_world) {
 		VectorCopy(fd->vieworg, flow.view_origin);
+		// 90 degrees across at 4:3 is about 73.7 up and down, whatever the
+		// screen's shape (cl_adjustfov keeps the height)
+		const float half_y = 0.5f * (float)DEG2RAD(fd->fov_y);
+		flow.view_zoom = (half_y > 0.01f && half_y < 1.56f) ? 0.75f / tanf(half_y) : 1.f;
+	}
 
 	// The player setup menu's model view is not the world; the fire holds
 	// still and stays out of it.

@@ -639,7 +639,7 @@ trace_effects_ray(Ray ray, bool skip_procedural, bool reflection_ray)
 			switch (sbtOffset)
 			{
 			case SBTO_PARTICLE: // particles
-				transparent = pt_logic_particle(primitiveID, bary);
+				transparent = pt_logic_particle(primitiveID, bary, reflection_ray);
 				break;
 
 			case SBTO_EXPLOSION: // explosions

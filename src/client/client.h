@@ -1144,6 +1144,11 @@ typedef struct cparticle_s {
 	float   brightness;
     int     particleType;
 
+    // 0, or RF_FIRST_PERSON_FX / RF_REFLECTION_FX - copied to particle_t.flags.
+    // Your own plasma beam's sparkle rings come in two sets, one along the
+    // first-person beam and one along its mirror twin. See CL_AddPlayerBeams.
+    int     view_fx;
+
     // Draw this one as shaded sphere geometry instead of a camera-facing quad.
     //
     // A FLAG OF ITS OWN, not another particleType value: the ludicrous-gibs
@@ -1403,7 +1408,7 @@ void CL_DebugTrail(const vec3_t start, const vec3_t end);
 void CL_Flashlight(int ent, const vec3_t pos);
 void CL_ForceWall(const vec3_t start, const vec3_t end, int color);
 void CL_BubbleTrail2(const vec3_t start, const vec3_t end, int dist);
-void CL_Heatbeam(const vec3_t start, const vec3_t end);
+void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx);
 void CL_ParticleSteamEffect(const vec3_t org, const vec3_t dir, int color, int count, int magnitude);
 void CL_TrackerTrail(const vec3_t start, const vec3_t end, int particleColor);
 void CL_TagTrail(const vec3_t start, const vec3_t end, int color);

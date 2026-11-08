@@ -61,6 +61,7 @@ typedef struct {
 	float ui_hdr_nits;
 	float tm_hdr_saturation_scale;
 	float ui_hdr_video_gamma;
+	float ui_hdr_gamma;
 } StretchPic_UBO_t;
 
 static clipRect_t clip_rect;
@@ -120,6 +121,15 @@ vkpt_draw_ui_hdr_params(float *ui_hdr_nits, float *saturation_scale, float *vide
 	*ui_hdr_nits = cvar_ui_hdr_nits->value;
 	*saturation_scale = cvar_tm_hdr_saturation_scale->value;
 	*video_gamma = cvar_ui_hdr_video_gamma ? max(0.f, min(4.f, cvar_ui_hdr_video_gamma->value)) : 0.f;
+}
+
+/* stretch_pic.frag's ui_hdr_gamma: tm_hdr_sdr_gamma, which matches the world's
+   shadows to SDR, applied to the whole UI too (0 = off) */
+float
+vkpt_draw_ui_hdr_gamma(void)
+{
+	extern cvar_t *cvar_tm_hdr_sdr_gamma;
+	return cvar_tm_hdr_sdr_gamma ? max(0.f, min(4.f, cvar_tm_hdr_sdr_gamma->value)) : 0.f;
 }
 
 VkExtent2D
@@ -956,6 +966,7 @@ draw_stretch_pics_into_current_image(VkCommandBuffer cmd_buf, bool keep_queue)
 	BufferResource_t *ubo_res = buf_ubo + qvk.current_frame_index;
 	StretchPic_UBO_t *ubo = (StretchPic_UBO_t *) buffer_map(ubo_res);
 	vkpt_draw_ui_hdr_params(&ubo->ui_hdr_nits, &ubo->tm_hdr_saturation_scale, &ubo->ui_hdr_video_gamma);
+	ubo->ui_hdr_gamma = vkpt_draw_ui_hdr_gamma();
 	buffer_unmap(ubo_res);
 	ubo = NULL;
 

@@ -21,9 +21,10 @@ The resolve, in linear light:
   view 2    |edit| x8 in sRGB units - black means the model left the pixel alone.
   split     pixels left of it are the original (compare mode 1).
 
-HDR (push.hdr, the swapchain is scRGB). DLSS_OUTPUT then holds scRGB: the SDR tone mapper's
-answer BEFORE its knee and clamp, times tm_hdr_peak_nits / 80 (tone_mapping_apply.comp), so
-SDR white is ~10, not 1. The model is LDR-only - RTX Remix's own integration says as much
+HDR (push.hdr, the swapchain is scRGB). DLSS_OUTPUT then holds scRGB: SDR white times
+tm_hdr_paper_white / 80 under tm_hdr_mode 1 (tone_mapping_hdr.glsl; highlights run on to
+tm_hdr_peak_nits), or the SDR tone mapper's answer BEFORE its knee and clamp times
+tm_hdr_peak_nits / 80 under tm_hdr_mode 0 - either way SDR white is well above 1. The model is LDR-only - RTX Remix's own integration says as much
 ("highlights compressed by ... LDR-domain processing"). Clamping that straight to [0,1], as
 the SDR encode does, clipped everything above a tenth of SDR white channel by channel: the
 model saw a blown-out frame with hues bent toward yellow/cyan/white and the clipped result
@@ -70,9 +71,12 @@ layout(push_constant) uniform Dlss5ConvertPushConstants {
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
 
 /* scRGB per unit of SDR tone-mapped colour - the factor tone_mapping_apply.comp's HDR
-   branch multiplies by, including the menu-mode clamp toward ui_hdr_nits. */
+   branch multiplies by: game brightness under tm_hdr_mode 1 (its menu cap touches only
+   highlights), the peak with the menu-mode clamp toward ui_hdr_nits under mode 0. */
 float hdr_scale()
 {
+	if (global_ubo.tm_hdr_mode != 0)
+		return max(global_ubo.tm_hdr_paper_white / 80.0, 1e-3);
 	const float nits_factor = global_ubo.tm_hdr_peak_nits / 80.0;
 	const float nits_factor_ui = global_ubo.ui_hdr_nits / 80.0;
 	return max(mix(nits_factor, min(nits_factor, nits_factor_ui), global_ubo.tonemap_hdr_clamp_strength), 1e-3);
@@ -85,6 +89,10 @@ void knee_params(out float k, out float w, out float a, out float b, out float w
 {
 	k = clamp(global_ubo.tm_knee_start, 0.0, 0.99);
 	white = max(global_ubo.tm_white_point, 1.001);
+	/* tm_hdr_mode 1: highlights reach peak / game brightness times SDR white, which
+	   can pass tm_white_point (2000 nits at 180); the knee must reach that far */
+	if (push.hdr != 0 && global_ubo.tm_hdr_mode != 0)
+		white = max(white, global_ubo.tm_hdr_peak_nits / max(global_ubo.tm_hdr_paper_white, 1.0));
 	w = (k * (k - 2.0) + white) / (white - 1.0);
 	a = -k * k;
 	b = w - 2.0 * k;

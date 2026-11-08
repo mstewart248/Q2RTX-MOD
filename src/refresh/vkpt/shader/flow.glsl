@@ -21,8 +21,8 @@ NVIDIA Flow's fire, plasma, bubbles and rail trails, marched along a primary or 
 ray and laid over the effects overlay (see flow.c for where the volume comes
 from, flow_common.glsl for how it is found). The march follows Flow's
 NvFlowRayMarchBlock; a step looks each layer up at its block on its grid -
-the main one, or the railgun trail's finer one (FLOW_GRIDS) - and adds them
-together.
+the main one, the railgun trail's finer one, or the one its far part is on
+(FLOW_GRIDS) - and adds them together.
 
 Shading is an emissive, scattering medium. Smoke absorbs - a step of length
 ds with smoke s takes 1 - exp(-s * density * ds) of what is behind it - and
@@ -114,6 +114,19 @@ vec3 flow_lit(vec3 position, uint shadow_light, float shadow)
 		light += l;
 	}
 	return light / max(global_ubo.prev_adapted_luminance, 1e-9);
+}
+
+// The march's key for block `b` of a grid, to tell when a ray has gone into
+// another: 10 bits a coordinate, wrapping round, and never FLOW_NO_BLOCK. Two
+// blocks one step apart along a ray could share a key only if they were 1024
+// blocks apart every way at once - further than any step goes. One register
+// a grid, where the block's ivec3 took three: with the railgun trail's far
+// grid the march came to more than the 128 the ray-gen shaders get, and
+// spilled (11-08).
+#define FLOW_NO_BLOCK 0x80000000u
+uint flow_block_key(ivec3 b)
+{
+	return (uint(b.x) & 0x3ffu) | ((uint(b.y) & 0x3ffu) << 10u) | ((uint(b.z) & 0x3ffu) << 20u);
 }
 
 // Whether brick `bit` is marked in a block's occupancy mask.
@@ -235,12 +248,15 @@ bool flow_step_add(float extinction, vec3 source, vec3 glow, float step, float t
 // air - Flow keeps blocks round the gas and long after the gas has faded to
 // nothing - so this is most of what a march would otherwise cost.
 //
-// The two grids (FLOW_GRIDS) have blocks and bricks of their own sizes, so
-// each keeps its own block and marked bricks here: a step is sampled when
-// either grid's brick is marked, at the fine grid's shorter step where its
-// is, and clear space runs to the nearer of the two grids' ends of it. Each
-// grid's state is in variables of its own, picked by `g == 0 ? :` - arrays
-// indexed at run time would go to local memory (flow_common.glsl).
+// The grids (FLOW_GRIDS) have blocks and bricks of their own sizes, so each
+// keeps its own block and marked bricks here: a step is sampled when any
+// grid's brick is marked, at the shortest step of the grids whose is, and
+// clear space runs to the nearest of the grids' ends of it. Each grid's
+// state is in variables of its own, picked by `g == 0 ? : g == 1 ? :` -
+// arrays indexed at run time would go to local memory (flow_common.glsl).
+// Each layer keeps only its block's table value (flow_block_value), a
+// register where the atlas offset and a flag took four; a sample works the
+// offset out again from the cell it is in, which is the same block.
 vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float step_scale, float jitter, out float depth)
 {
 	depth = t_max;
@@ -271,13 +287,15 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	// A grid none of whose layers has blocks is left out altogether.
 	const bool used0 = flow_params.grids[0].x > 0.0;
 	const bool used1 = flow_params.grids[1].x > 0.0;
+	const bool used2 = flow_params.grids[2].x > 0.0;
 	const float step0 = flow_params.grids[0].w * step_scale;
 	const float step1 = flow_params.grids[1].w * step_scale;
+	const float step2 = flow_params.grids[2].w * step_scale;
 
 	// Steps sit on a grid fixed along the ray, so moving the box does not
-	// move the samples - the finer grid's steps while it is in use, so that
+	// move the samples - the finest grid's steps of those in use, so that
 	// the ray comes out of clear space close to where its gas starts.
-	const float lattice = used1 ? step1 : step0;
+	const float lattice = min(used0 ? step0 : 1e30, min(used1 ? step1 : 1e30, used2 ? step2 : 1e30));
 	float t = (ceil(t_min / lattice - jitter) + jitter) * lattice;
 
 	vec3 radiance = vec3(0);
@@ -285,13 +303,15 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	float depth_sum = 0.0;
 	float depth_weight = 0.0;
 
-	ivec3 block0 = ivec3(0x7fffffff);
-	ivec3 block1 = ivec3(0x7fffffff);
+	uint block0 = FLOW_NO_BLOCK;  // flow_block_key of the block of grid 0 the ray is in
+	uint block1 = FLOW_NO_BLOCK;
+	uint block2 = FLOW_NO_BLOCK;
 	uvec4 occupied0 = uvec4(0);   // the bricks of grid 0's block marked in any of its layers
 	uvec4 occupied1 = uvec4(0);
-	ivec4 offsets[FLOW_LAYERS];
+	uvec4 occupied2 = uvec4(0);
+	uint blocks[FLOW_LAYERS];     // each layer's flow_block_value there, 0 for none
 	for (int l = 0; l < FLOW_LAYERS; l++)
-		offsets[l] = ivec4(0);
+		blocks[l] = 0u;
 
 	// At most limits.x samples; going past empty space costs next to nothing,
 	// and is allowed three times as many again. Past half of them the steps
@@ -307,7 +327,7 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	// the layers (flow_layer_add); 2, two steps read at a time (pair, below).
 	// Neither changes what is sampled or how it adds up.
 	const bool shared_ambient = (flow_params.limits.w & 1u) != 0u;
-	const bool pairs = (flow_params.limits.w & 2u) != 0u && !used1;
+	const bool pairs = (flow_params.limits.w & 2u) != 0u && !used1 && !used2;
 
 	for (uint i = 0u; i < 4u * flow_params.limits.x && samples < flow_params.limits.x && t < t_max; i++)
 	{
@@ -320,17 +340,19 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 		// the clear space ends: the nearer of the grids' ends of it.
 		bool marked0 = false;
 		bool marked1 = false;
+		bool marked2 = false;
 		float t_exit = t_max;
 		for (int g = 0; g < FLOW_GRIDS; g++)
 		{
-			if (!(g == 0 ? used0 : used1))
+			if (!(g == 0 ? used0 : (g == 1 ? used1 : used2)))
 				continue;
 
 			const vec3 cells_per_unit = flow_params.grids[g].xyz;
 			const vec3 cell = position * cells_per_unit;
 			const ivec3 b = ivec3(floor(cell)) >> block_bits;
-			uvec4 occupied = g == 0 ? occupied0 : occupied1;
-			if (b != (g == 0 ? block0 : block1))
+			const uint key = flow_block_key(b);
+			uvec4 occupied = g == 0 ? occupied0 : (g == 1 ? occupied1 : occupied2);
+			if (key != (g == 0 ? block0 : (g == 1 ? block1 : block2)))
 			{
 #if FLOW_STATS
 				flow_stat_blocks++;
@@ -341,24 +363,30 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 				{
 					if (FLOW_LAYER_GRID(l) != g)
 						continue;
-					offsets[l] = ivec4(0);
+					blocks[l] = 0u;
 					if (group && flow_params.layers[l].info.x != 0u)
 					{
 						uint index;
-						offsets[l] = flow_block_find(b, int(flow_params.layers[l].info.y), index);
-						if (offsets[l].w != 0)
+						blocks[l] = flow_block_value(b, int(flow_params.layers[l].info.y), index);
+						// the top bit marks an allocated block
+						if ((blocks[l] >> 31u) != 0u)
 							occupied |= flow_occupancy[index];
 					}
 				}
 				if (g == 0)
 				{
-					block0 = b;
+					block0 = key;
 					occupied0 = occupied;
+				}
+				else if (g == 1)
+				{
+					block1 = key;
+					occupied1 = occupied;
 				}
 				else
 				{
-					block1 = b;
-					occupied1 = occupied;
+					block2 = key;
+					occupied2 = occupied;
 				}
 			}
 
@@ -367,8 +395,10 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 			{
 				if (g == 0)
 					marked0 = true;
-				else
+				else if (g == 1)
 					marked1 = true;
+				else
+					marked2 = true;
 				continue;
 			}
 
@@ -395,13 +425,14 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 			t_exit = min(t_exit, min(e_far.x, min(e_far.y, e_far.z)));
 		}
 
-		if (!marked0 && !marked1)
+		if (!marked0 && !marked1 && !marked2)
 		{
 			t = max(t + step, (ceil(t_exit / lattice - jitter) + jitter) * lattice);
 			continue;
 		}
 		samples++;
-		step = marked1 ? step1 : step0;
+		// the shortest step of the grids marked here
+		step = min(marked0 ? step0 : 1e30, min(marked1 ? step1 : 1e30, marked2 ? step2 : 1e30));
 		if (2u * samples > flow_params.limits.x)
 			step = max(step, (t_max - t) / float(flow_params.limits.x - samples + 1u));
 
@@ -419,7 +450,7 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 			position_next = origin + direction * (t + step);
 			const ivec3 cell = ivec3(floor(position_next * flow_params.grids[0].xyz));
 			const ivec3 b = cell >> block_bits;
-			pair = b == block0
+			pair = flow_block_key(b) == block0
 				&& flow_brick_marked(occupied0, flow_brick_bit(cell - (b << block_bits)))
 				&& t + step < t_max
 				&& samples < flow_params.limits.x
@@ -430,8 +461,6 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 		// What the layers here absorb per unit length, and what they put back
 		// per unit length: glow, and the smoke's own colour. The world's light
 		// is the same for every layer, so it is read once (shared_ambient).
-		const vec3 cell0 = position * flow_params.grids[0].xyz;
-		const vec3 cell1 = position * flow_params.grids[1].xyz;
 		const vec3 cell_next = position_next * flow_params.grids[0].xyz;
 		vec3 ambient = vec3(0);
 		vec3 ambient_next = vec3(0);
@@ -447,15 +476,21 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 		const bool lit = transmittance >= 0.003;
 		for (int l = 0; l < FLOW_LAYERS; l++)
 		{
-			if (offsets[l].w == 0)
+			if ((blocks[l] >> 31u) == 0u)
 				continue;
 
-			const vec3 cell = FLOW_LAYER_GRID(l) == 0 ? cell0 : cell1;
-			const vec4 value = textureLod(TEX_FLOW_DENSITY, (cell + vec3(offsets[l].xyz)) * flow_params.dim_inv.xyz, 0);
-			// A pair is on grid 0 alone, so every layer with blocks is too.
+			// The cell, and the first cell of its block - the one blocks[l] is
+			// of; FLOW_LAYER_GRID(l) is a constant once the loop is unrolled.
+			// The atlas texel is the block's base plus the cell within it.
+			const vec3 cell = position * flow_params.grids[FLOW_LAYER_GRID(l)].xyz;
+			const vec3 first = vec3((ivec3(floor(cell)) >> block_bits) << block_bits);
+			const vec3 base = vec3(flow_block_base(blocks[l])) - first;
+			const vec4 value = textureLod(TEX_FLOW_DENSITY, (cell + base) * flow_params.dim_inv.xyz, 0);
+			// A pair is on grid 0 alone, so every layer with blocks is too, and
+			// in the same block.
 			vec4 value_next = vec4(0);
 			if (pair)
-				value_next = textureLod(TEX_FLOW_DENSITY, (cell_next + vec3(offsets[l].xyz)) * flow_params.dim_inv.xyz, 0);
+				value_next = textureLod(TEX_FLOW_DENSITY, (cell_next + base) * flow_params.dim_inv.xyz, 0);
 
 			if (position.z <= flow_params.layers[l].world_max.w)
 				flow_layer_add(l, value, position, shared_ambient, lit, ambient, have_ambient, extinction, source, glow);

@@ -175,7 +175,9 @@ void CL_BubbleTrail2(const vec3_t start, const vec3_t end, int dist)
     }
 }
 
-void CL_Heatbeam(const vec3_t start, const vec3_t forward)
+// view_fx: 0, or RF_FIRST_PERSON_FX / RF_REFLECTION_FX for one half of your
+// own beam's split pair - see CL_AddPlayerBeams.
+void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx)
 {
     vec3_t      move;
     vec3_t      vec;
@@ -229,6 +231,7 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward)
                 return;
 
             p->time = cl.time;
+            p->view_fx = view_fx;
             VectorClear(p->accel);
             variance = 0.5f;
             c = cos(rot) * variance;

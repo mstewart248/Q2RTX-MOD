@@ -152,15 +152,39 @@ begin resolution
     range --status "(viewsize)" -f "%.0f%%" "fixed resolution scale" viewsize 25 200 5
 end
 
+/*
+HDR. Everything here is --live: it applies while you move it, and this page shows the
+world as it plays (--clear-view: no pause blur or dimming), so it can be set by eye.
+Peak and game brightness are separate jobs - see src/refresh/vkpt/shader/tone_mapping_hdr.glsl.
+*/
 begin hdr
     background #212F3CD0
-    style --compact
+    style --compact --clear-view
     title "HDR Settings"
     toggle --status "(vid_hdr)" "Enable HDR" vid_hdr
-    blank
-    range --status "(tm_hdr_peak_nits)" -f "%.0f nits" "peak brightness" tm_hdr_peak_nits 100 2000 10
-    range --status "(ui_hdr_nits)" -f "%.0f nits" "UI brightness" ui_hdr_nits 100 2000 10
-    range --status "(tm_hdr_saturation_scale)" -f "%.0f%%" "Saturation adjustment" tm_hdr_saturation_scale 0 200 5
+    ifeq vid_hdr 1
+        blank
+        range --live --min-text "auto" --status "the brightest your screen can show - only highlights go near it. Turn on the peak test pattern and raise this until the centres of the two squares just disappear. auto = what the screen reports (vid_hdr_display_peak) (tm_hdr_peak_nits)" \
+            -f "%.0f nits" "peak brightness" tm_hdr_peak_nits 0 4000 10
+        range --live --status "how bright ordinary scenery is: where SDR white lands. 203 is the HDR standard (BT.2408); raise it for a bright room. Does not change the peak (tm_hdr_paper_white)" \
+            -f "%.0f nits" "game brightness" tm_hdr_paper_white 80 500 5
+        range --live --status "menus and HUD (ui_hdr_nits)" \
+            -f "%.0f nits" "UI brightness" ui_hdr_nits 80 500 5
+        blank
+        range --live -p --status "how far up the picture stays exactly as SDR shows it before highlights go brighter than SDR white. Lower gives more of the picture HDR punch (tm_hdr_knee)" \
+            -f "%.0f%% of white" "highlights start" tm_hdr_knee 0.2 0.9 0.05
+        range --live -p --status "0 = highlights keep the SDR picture's contrast, only brighter. 100 = the scene's real contrast: lamps, sky and fire far brighter than the walls (tm_hdr_highlight_contrast)" \
+            -f "%.0f%%" "highlight contrast" tm_hdr_highlight_contrast 0 1 0.05
+        pairs --live --status "shows the range below SDR white as an SDR monitor does. Without it shadows look lifted and washed out in HDR (tm_hdr_sdr_gamma)" \
+            "shadows" tm_hdr_sdr_gamma "match SDR" 2.2 "deeper" 2.4 "raw" 0
+        range --live --status "(tm_hdr_saturation_scale)" \
+            -f "%.0f%%" "saturation" tm_hdr_saturation_scale 0 200 5
+        blank
+        pairs --live --status "peak: two squares at the top - raise peak brightness until their centres vanish. steps: grey patches a stop apart - the darkest ones should stay just separate. Turns off when the menu closes (tm_hdr_calibrate)" \
+            "test pattern" tm_hdr_calibrate off 0 peak 1 steps 2
+        pairs --live --status "modern: SDR-matched picture with real highlights. legacy: the 2021 mapping, where peak brightness scaled the whole frame (tm_hdr_mode)" \
+            "tone mapper" tm_hdr_mode modern 1 legacy 0
+    endif
 end
 
 /*

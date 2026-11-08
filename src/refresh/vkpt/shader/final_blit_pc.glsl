@@ -119,11 +119,13 @@ final_blit_sample(vec2 pos_px)
    held to [0, tm_hdr_peak_nits] again (tm_hdr_clip in global_ubo.h): Lanczos
    and the CRT's filters have negative lobes, so next to a hard edge they ring
    past whatever range the tone mapper left. An sRGB swapchain is UNORM and
-   clamps by itself. */
+   clamps by itself. Not while an HDR test pattern is up (tm_hdr_calibrate):
+   the peak pattern's 10000-nit field must reach the screen unclipped, or it
+   matches the centre at any setting. */
 vec3
 final_blit_output(vec3 color)
 {
-	if (blit_pc.hdr != 0 && global_ubo.tm_hdr_clip != 0)
+	if (blit_pc.hdr != 0 && global_ubo.tm_hdr_clip != 0 && global_ubo.tm_hdr_calibrate == 0)
 		color = clamp(color, vec3(0), vec3(global_ubo.tm_hdr_peak_nits / 80.0));
 	return color;
 }

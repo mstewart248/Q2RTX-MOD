@@ -1899,6 +1899,7 @@ cparticle_t *CL_AllocParticle(void)
         return NULL;
     p = free_particles;
     p->particleType = PARTICLE_TYPE_NORMAL;
+    p->view_fx = 0;
     p->is_blood_sphere = false;
     p->blood_slot = -1;
     p->blood_state = BLOOD_AIRBORNE;
@@ -7403,6 +7404,7 @@ void CL_AddParticles(void)
             // 0 = pt_particle_size; a rocket's flame and bubbles under water
             // ask for their own (CL_RocketTrail)
             part->radius = p->radius;
+            part->flags = p->view_fx;
         }
 
         if (p->alphavel == INSTANT_PARTICLE) {

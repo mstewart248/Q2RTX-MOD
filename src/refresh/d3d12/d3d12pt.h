@@ -753,6 +753,10 @@ void d3d12_frontend_detect_vrr(void);
 // stretch_pic.frag's UBO (vkpt_draw_ui_hdr_params): the UI's nits on an HDR screen,
 // its saturation, the video frames' curve
 void d3d12_frontend_ui_hdr_params(float *ui_hdr_nits, float *saturation_scale, float *video_gamma);
+// ...and its ui_hdr_gamma (vkpt_draw_ui_hdr_gamma): tm_hdr_sdr_gamma, 0 = off
+float d3d12_frontend_ui_hdr_gamma(void);
+// the swapchain's HDR10 metadata (vkpt_hdr_metadata), in nits
+void d3d12_frontend_hdr_metadata(float *max_mastering, float *min_mastering, float *max_cll, float *max_fall);
 // after d3d12_world_init: the images the UBO names (the water normal map), the
 // terrain grid, and the sky's preset loaded afresh
 void d3d12_frontend_world_init(void);

@@ -272,6 +272,13 @@ void MoveClientToIntermission(edict_t *ent)
     ent->s.effects = 0;
     ent->s.sound = 0;
     ent->solid = SOLID_NOT;
+    // [rerelease] KEX ClientThink parks intermission clients in MOVETYPE_NOCLIP,
+    // which SV_Push skips. Without it the frozen player still counts as a rider
+    // of whatever it stood on (groundentity is never cleared), but its origin is
+    // now the camera's: on q64/outpost the exit lift returns while the camera
+    // sits in a wall, every push of that "rider" fails, and the door reversed
+    // each frame - dr1_strt restarted into a buzz, 2 crush damage a frame.
+    ent->movetype = MOVETYPE_NOCLIP;
 
     // add the layout
 

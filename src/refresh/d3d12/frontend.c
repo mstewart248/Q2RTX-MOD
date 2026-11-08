@@ -645,6 +645,8 @@ void d3d12_frontend_detect_vrr(void)
     char gdi[64];
     if (vkpt_get_window_gdi_device(gdi, sizeof(gdi)))
         Reflex_DetectVRR(gdi);
+    // and its HDR numbers: the window may be on another screen, or HDR just came on
+    vkpt_hdr_detect_display();
 }
 
 // vid_present_stats: frame generation's wait for the present thread, below, which
@@ -1375,6 +1377,21 @@ void d3d12_frontend_clear_stretch_pics(void)
 void d3d12_frontend_ui_hdr_params(float *ui_hdr_nits, float *saturation_scale, float *video_gamma)
 {
     vkpt_draw_ui_hdr_params(ui_hdr_nits, saturation_scale, video_gamma);
+}
+
+float d3d12_frontend_ui_hdr_gamma(void)
+{
+    return vkpt_draw_ui_hdr_gamma();
+}
+
+void d3d12_frontend_hdr_metadata(float *max_mastering, float *min_mastering, float *max_cll, float *max_fall)
+{
+    vkpt_hdr_metadata_t md;
+    vkpt_hdr_metadata(&md);
+    *max_mastering = md.max_mastering_nits;
+    *min_mastering = md.min_mastering_nits;
+    *max_cll = md.max_cll;
+    *max_fall = md.max_fall;
 }
 
 // VKPT_SAMPLER_* and D3D12_GLOBAL_SAMPLER_* are the same list (fails to compile if not)

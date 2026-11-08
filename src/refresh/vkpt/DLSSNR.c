@@ -681,6 +681,10 @@ static qboolean EnsureFeature(void* cmd, uint32_t width, uint32_t height)
 
 qboolean DLSS5Prepare(void* cmd, uint32_t width, uint32_t height)
 {
+    /* not over an HDR test pattern (hdr_display.c): the LDR model would repaint it, and
+       the peak pattern's 10000-nit field would not survive the encode */
+    if (vkpt_hdr_calibrating())
+        return qfalse;
     return DLSS5Enabled() && EnsureParams() && EnsureFeature(cmd, width, height);
 }
 

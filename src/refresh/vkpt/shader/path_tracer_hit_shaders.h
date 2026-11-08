@@ -86,7 +86,7 @@ bool pt_logic_masked(int primitiveID, int instanceID, int geometryIndex, uint in
 	return mask_value.x >= 0.5;
 }
 
-vec4 pt_logic_particle(int primitiveID, vec2 bary)
+vec4 pt_logic_particle(int primitiveID, vec2 bary, bool reflection_ray)
 {
 	const vec3 barycentric = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
 	const vec2 uv = vec2(0.0, 0.0) * barycentric.x + vec2(1.0, 0.0) * barycentric.y + vec2(1.0, 1.0) * barycentric.z;
@@ -97,6 +97,18 @@ vec4 pt_logic_particle(int primitiveID, vec2 bary)
 	{
 		const int particle_index = primitiveID / 2;
 		vec4 color = texelFetch(particle_color_buffer, particle_index);
+
+		// [Q2RTX] A particle that belongs to the other view contributes
+		// nothing - the particle twin of the MATERIAL_FLAG_FX_* test in
+		// pt_logic_explosion. transparency.c sets the sign bit of G for
+		// first-person-only particles (RF_FIRST_PERSON_FX) and of B for
+		// mirror-only ones (RF_REFLECTION_FX): your own plasma beam's sparkle
+		// rings, one set on the beam down the barrel, one on its mirror twin.
+		const bool first_person_only = (floatBitsToUint(color.g) & 0x80000000u) != 0u;
+		const bool reflection_only   = (floatBitsToUint(color.b) & 0x80000000u) != 0u;
+		if (reflection_ray ? first_person_only : reflection_only)
+			return vec4(0);
+		color.gb = abs(color.gb);
 
 		/* CLAMPED, so an alpha ABOVE 1 means "solid disc with a soft rim".
 

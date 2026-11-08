@@ -199,6 +199,37 @@ static bool set_color_space(void)
     return SUCCEEDED(IDXGISwapChain3_SetColorSpace1(d3d.swapchain, cs));
 }
 
+// HDR10 metadata (IDXGISwapChain4): the peak the frame is tone-mapped to, as both the
+// mastering display's peak and MaxCLL, so a screen that tone-maps by metadata sees
+// content that already fits it and leaves the game's own roll-off alone (HGIG's
+// arrangement). Windows composes scRGB itself and may not pass it on - a hint, set
+// whenever the swapchain is made or remade (a peak change waits for the next one).
+static void set_hdr_metadata(void)
+{
+    if (!d3d.hdr || !d3d.swapchain)
+        return;
+    IDXGISwapChain4 *sc4 = NULL;
+    if (FAILED(IDXGISwapChain3_QueryInterface(d3d.swapchain, &IID_IDXGISwapChain4, (void **)&sc4)))
+        return;
+
+    float max_mastering, min_mastering, max_cll, max_fall;
+    d3d12_frontend_hdr_metadata(&max_mastering, &min_mastering, &max_cll, &max_fall);
+
+    // scRGB's primaries and white: BT.709 and D65, in units of 0.00002
+    DXGI_HDR_METADATA_HDR10 md = { 0 };
+    md.RedPrimary[0] = 32000;   md.RedPrimary[1] = 16500;
+    md.GreenPrimary[0] = 15000; md.GreenPrimary[1] = 30000;
+    md.BluePrimary[0] = 7500;   md.BluePrimary[1] = 3000;
+    md.WhitePoint[0] = 15635;   md.WhitePoint[1] = 16450;
+    md.MaxMasteringLuminance = (UINT)(max_mastering + 0.5f);                 // nits
+    md.MinMasteringLuminance = (UINT)(min_mastering * 10000.f + 0.5f);       // 0.0001 nits
+    md.MaxContentLightLevel = (UINT16)(max_cll < 65535.f ? max_cll + 0.5f : 65535.f);
+    md.MaxFrameAverageLightLevel = (UINT16)(max_fall < 65535.f ? max_fall + 0.5f : 65535.f);
+    if (FAILED(IDXGISwapChain4_SetHDRMetaData(sc4, DXGI_HDR_METADATA_TYPE_HDR10, sizeof(md), &md)))
+        Com_DPrintf("D3D12: SetHDRMetaData failed\n");
+    IDXGISwapChain4_Release(sc4);
+}
+
 // the swapchain's buffers released (release_buffers): at this size, in the format
 // `hdr` asks for, or SDR when scRGB cannot be shown
 static bool resize_buffers(int width, int height, bool hdr)
@@ -256,6 +287,7 @@ static bool create_swapchain(void)
     IDXGISwapChain3_SetMaximumFrameLatency(d3d.swapchain, (UINT)(latency < 1 ? 1 : latency > 3 ? 3 : latency));
     d3d.swapchain_waitable = IDXGISwapChain3_GetFrameLatencyWaitableObject(d3d.swapchain);
 
+    set_hdr_metadata();
     return get_buffers();
 }
 
@@ -578,8 +610,10 @@ bool d3d12_swapchain_update(void)
     if (!get_buffers())
         return false;
 
-    // the window may be on another monitor now: Reflex's VRR answer for it
+    // the window may be on another monitor now: Reflex's VRR answer for it (and the
+    // screen's HDR numbers, which the metadata below is made from)
     d3d12_frontend_detect_vrr();
+    set_hdr_metadata();
 
     if (d3d.hdr != was_hdr)
         Com_Printf("D3D12: swapchain %s\n", d3d.hdr ? "HDR (scRGB)" : "SDR");

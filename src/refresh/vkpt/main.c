@@ -2110,6 +2110,8 @@ create_swapchain(void)
 		}
 	}
 #endif
+	// the screen's HDR figures (hdr_display.c): another monitor, or HDR just came on
+	vkpt_hdr_detect_display();
 
 	vkGetSwapchainImagesKHR(qvk.device, qvk.swap_chain, &qvk.num_swap_chain_images, NULL);
 	assert(qvk.num_swap_chain_images);
@@ -6028,6 +6030,10 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
 
+	// HDR output: the peak in use (tm_hdr_peak_nits 0 = what the screen reports), and
+	// the test patterns only while a menu is in front of the world (hdr_display.c)
+	vkpt_hdr_prepare_ubo(ubo, uis.menuDepth > 0 && uis.activeMenu && uis.activeMenu->clear_view, render_world);
+
 	// pt_accumulation_rendering 3 - see is_pure_accumulation_active().
 	if (ref_mode->enable_accumulation && is_pure_accumulation_active())
 	{
@@ -6431,7 +6437,11 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	evaluate_reference_mode(&ref_mode);
 	evaluate_taa_settings(&ref_mode);
 	
-	qvk.frame_menu_mode = cl_paused->integer == 1 && uis.menuDepth > 0 && render_world;
+	/* A page with `style --clear-view` (HDR settings) is set by eye against the
+	   picture behind it, so it gets the world as it plays: no pause blur, no HDR
+	   dimming under the menu. */
+	const bool menu_clear_view = uis.menuDepth > 0 && uis.activeMenu && uis.activeMenu->clear_view;
+	qvk.frame_menu_mode = cl_paused->integer == 1 && uis.menuDepth > 0 && render_world && !menu_clear_view;
 	qvk.frame_ui_blur = render_world ? SCR_ItemWheelBlur() : 0.f;
 
 	int new_world_anim_frame = (int)(fd->time * 2);
@@ -9322,6 +9332,7 @@ void vkpt_register_commands(void)
 	Cmd_AddCommand("reload_textures", (xcommand_t)&vkpt_reload_textures);
 	Cmd_AddCommand("show_pvs", (xcommand_t)&vkpt_show_pvs);
 	Cmd_AddCommand("next_sun", (xcommand_t)&vkpt_next_sun_preset);
+	vkpt_hdr_register_commands();
 	vkpt_fog_init();
 	vkpt_cameras_init();
 	vkpt_cpu_trace_init();
@@ -9337,6 +9348,7 @@ void vkpt_unregister_commands(void)
 	Cmd_RemoveCommand("reload_textures");
 	Cmd_RemoveCommand("show_pvs");
 	Cmd_RemoveCommand("next_sun");
+	vkpt_hdr_unregister_commands();
 	vkpt_fog_shutdown();
 	vkpt_cameras_shutdown();
 }
@@ -9575,6 +9587,8 @@ vkpt_init_frontend(void)
 	cvar_pt_fog_froxel_sky_history->flags |= CVAR_ARCHIVE; // the fog menu's "split froxel histories"
 	// on a slider in the effects menu, so it has to survive a restart
 	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
+	// the HDR page's settings (archived there) and the screen's read-only figures
+	vkpt_hdr_init_cvars();
 
 	// god_rays.c's, read by the frame's CPU half - which the D3D12 renderer runs
 	// without the Vulkan init that made them. After the UBO list: pt_fog_froxel

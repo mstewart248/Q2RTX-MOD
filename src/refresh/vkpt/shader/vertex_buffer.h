@@ -149,6 +149,13 @@ BEGIN_SHADER_STRUCT( ToneMappingBuffer )
 	float normalized[HISTOGRAM_BINS];
 	float adapted_luminance;
 	float tonecurve;
+	/* HDR output (tone_mapping_hdr.glsl): where this frame's SDR curve reaches
+	   tm_hdr_knee. Below it the HDR picture is the SDR one; above it highlights
+	   carry on into the display's headroom. tone_mapping_curve.comp writes them. */
+	float hdr_knee_log_lum;     // log2 of the scene luminance at the knee
+	float hdr_knee_value;       // the SDR curve's output there (1 = SDR white)
+	float hdr_knee_slope;       // the SDR curve's log-log slope there
+	float hdr_knee_pad;
 }
 END_SHADER_STRUCT( ToneMappingBuffer )
 

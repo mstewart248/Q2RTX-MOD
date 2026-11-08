@@ -42,6 +42,7 @@ typedef struct {
     float ui_hdr_nits;
     float tm_hdr_saturation_scale;
     float ui_hdr_video_gamma;
+    float ui_hdr_gamma;
 } StretchPic_UBO_t;        // stretch_pic.frag's UBO
 
 static ID3D12RootSignature  *root_signature;
@@ -251,6 +252,7 @@ void d3d12_draw_submit(ID3D12GraphicsCommandList4 *cmd, D3D12_CPU_DESCRIPTOR_HAN
         // read by the HDR pipeline only, as vkpt's
         StretchPic_UBO_t ubo;
         d3d12_frontend_ui_hdr_params(&ubo.ui_hdr_nits, &ubo.tm_hdr_saturation_scale, &ubo.ui_hdr_video_gamma);
+        ubo.ui_hdr_gamma = d3d12_frontend_ui_hdr_gamma();
         memcpy(per_frame[f].staging_map, &ubo, sizeof(ubo));
         memcpy(per_frame[f].staging_map + UBO_SIZE, queue, bytes);
 

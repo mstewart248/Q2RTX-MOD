@@ -163,6 +163,7 @@ void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float
 		part->rgba.u8[2] = (uint8_t)max(0.f, min(255.f, b / part->brightness * 255.f));
 		part->rgba.u8[3] = 255;
 		part->alpha = 1.f;
+		part->flags = 0;
 	}
 }
 
@@ -376,6 +377,7 @@ static void V_TestParticles(void)
 
         p->color = 8;
         p->alpha = 1;
+        p->flags = 0;
     }
 }
 

@@ -170,6 +170,12 @@ typedef struct particle_s {
     color_t rgba;
 	float   brightness;
 	float   radius;
+    // [Q2RTX] Which view the particle belongs to: 0 = both, or
+    // RF_FIRST_PERSON_FX (primary rays only) / RF_REFLECTION_FX (mirrors only),
+    // the same split the muzzle flash makes. The path tracers honour it per
+    // ray (pt_logic_particle); GL and SW are never sent RF_REFLECTION_FX ones.
+    // EVERY writer must set it - r_particles is reused from frame to frame.
+    int     flags;
 } particle_t;
 
 // A blood droplet drawn as real, shaded SPHERE GEOMETRY in the path tracer's

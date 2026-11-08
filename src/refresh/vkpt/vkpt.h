@@ -1021,6 +1021,8 @@ void vkpt_final_blit_effects_params(int out_width, int out_height, vkpt_final_bl
 void vkpt_draw_init_cvars(void);
 // stretch_pic.frag's UBO values (ui_hdr_nits, tm_hdr_saturation_scale, ui_hdr_video_gamma)
 void vkpt_draw_ui_hdr_params(float *ui_hdr_nits, float *saturation_scale, float *video_gamma);
+// ...and its ui_hdr_gamma: tm_hdr_sdr_gamma, the UI's shadows as an SDR monitor shows them
+float vkpt_draw_ui_hdr_gamma(void);
 VkResult vkpt_draw_clear_stretch_pics(void);
 /* The 2D queue the R_Draw*_RTX functions fill, for the D3D12 renderer, which
    draws it with the same shaders (src/refresh/d3d12/frontend.c). Records are
@@ -1158,6 +1160,24 @@ VkResult vkpt_bloom_create_pipelines(void);
 VkResult vkpt_bloom_destroy_pipelines(void);
 void vkpt_bloom_reset(void);
 void vkpt_bloom_update(QVKUniformBuffer_t * ubo, float frame_time, bool under_water, bool menu_mode, float ui_blur);
+
+/* HDR OUTPUT (hdr_display.c), both path tracers: what the screen the window is on
+   reports, the per-frame HDR values of the UBO, the test patterns. */
+typedef struct {
+	float max_mastering_nits;   // the peak the frame is tone-mapped to
+	float min_mastering_nits;   // the screen's reported black, 0 if unknown
+	float max_cll;              // brightest pixel: the peak
+	float max_fall;             // brightest frame average: the screen's full-frame limit, else game brightness
+} vkpt_hdr_metadata_t;
+
+void  vkpt_hdr_init_cvars(void);                    // vkpt_init_frontend
+void  vkpt_hdr_register_commands(void);             // hdr_detect (vkpt_register_commands)
+void  vkpt_hdr_unregister_commands(void);
+void  vkpt_hdr_detect_display(void);                // the window's screen, asked again (a new swapchain)
+void  vkpt_hdr_prepare_ubo(QVKUniformBuffer_t *ubo, bool hdr_page_open, bool render_world);
+bool  vkpt_hdr_calibrating(void);                   // a test pattern is on screen this frame
+float vkpt_hdr_peak_nits(void);                     // tm_hdr_peak_nits, 0 resolved
+void  vkpt_hdr_metadata(vkpt_hdr_metadata_t *md);   // for the swapchain's HDR10 metadata
 VkResult vkpt_bloom_record_cmd_buffer(VkCommandBuffer cmd_buf);
 // whether R_EndFrame_RTX records bloom this frame; motion blur's copy hand-off depends on it (bloom.c)
 bool vkpt_bloom_will_run(void);
