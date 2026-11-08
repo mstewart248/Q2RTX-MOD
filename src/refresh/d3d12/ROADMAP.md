@@ -1035,6 +1035,20 @@ found little Vulkan in it.
     - `pt_ser 1` running at all shows the export gave the game SM 6.9.
     - It stays as an A/B at default 0. SER is only worth another look if the bounce gets
       full materials or a multi-bounce loop.
+    - 11-07 correction: the bounce already HAS full materials - `pt_bounce_material` 1
+      (the default) runs get_material (normal map, roughness, metallic, ray-cone mip) and
+      GGX direct light at the hit. So "light shading" is not the reason. What stood out:
+      the reorder came AFTER `get_hit_triangle`, so the fetched Triangle (~40 live values)
+      went through memory with every lane, and its scattered fetch ran before the regroup.
+  - **`pt_ser 3` (11-07; Matt measured it "just about breaks even"):** so the 1 ms loss of
+    `pt_ser 1` was the spill, and the regroup itself buys about nothing here. The reorder BEFORE the triangle fetch,
+    keyed by the primitive's own material (one load; instance override and animation left
+    out). Only the 5-value hit record crosses it, and the fetch runs regrouped.
+    indirect_lighting.rgen `spec_ser_early` (constant 1, under `VKPT_D3D12`); CMake
+    variants `.spec_1_1.ser` / `.spec_0_1_1_1.ser`; world.c `ser_variant`. A/B 1 vs 3 vs 2.
+    The rest of the pass's live state (primary surface, throughput, ReSTIR GI candidate)
+    still crosses it - reloading that from the G-buffer after the reorder is the next step
+    if 3 helps but not enough.
 - **Clustered geometry + partitioned TLAS (Agility 1.722 preview, RTX 50 driver):**
   - This is what the wccftech "220x" story measured: acceleration structure *build* speed
     on heavily animated, dense geometry in a synthetic test, not a game's frame rate.

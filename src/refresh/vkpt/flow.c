@@ -174,6 +174,21 @@ Two things in the menu go further (pt_flow_lighting, pt_flow_collision):
 // is cut again only when the gas has moved on by about as much.
 #define FLOW_MESH_STEP      128.f
 
+// Trails pt_flow_pool_stats tells apart in its second; past that it stops counting.
+#define FLOW_REFUSED_TRAILS 64
+
+// The block pool, pt_flow_max_blocks, can be anything from FLOW_POOL_MIN to
+// FLOW_POOL_MAX, and changes while the game runs (flow_pool_resize). What is
+// sized by it on our side - the light sums and the occupancy - is sized for
+// the most, a few hundred KB.
+#define FLOW_POOL_MIN       16
+#define FLOW_POOL_MAX       4096
+
+// After a resize Flow keeps stepping, gas or none, for this many steps, so
+// that its backend frees the old pool's textures: that is done in its flush,
+// 60 fences after their last use (ContextD3D12.cpp / ContextVulkan.cpp).
+#define FLOW_POOL_SETTLE    72
+
 // The most puffs a rocket's trail fills one step's flight with, and how far
 // its source may move in a step before that is taken for a jump - a new
 // rocket in the old one's slot - rather than flight.
@@ -256,6 +271,7 @@ static cvar_t *cvar_pt_flow_step;
 static cvar_t *cvar_pt_flow_max_steps;
 static cvar_t *cvar_pt_flow_march;
 static cvar_t *cvar_pt_flow_stats;
+static cvar_t *cvar_pt_flow_pool_stats;
 static cvar_t *cvar_pt_flow_glow_floor;
 static cvar_t *cvar_pt_flow_rate;
 static cvar_t *cvar_pt_flow_reflect_step;
@@ -477,6 +493,24 @@ static struct {
 	float                   step_time;
 	uint32_t                num_blocks; // the blocks Flow had after its last simulation
 	uint32_t                max_blocks; // the most it can have
+	// pt_flow_pool_stats (flow_pool_stats): each layer's share of num_blocks,
+	// the most in use since the last print, and the trails sent back to the
+	// client's particles since then for want of blocks - by source, as the
+	// client asks again every frame (flow_refused).
+	uint32_t                layer_blocks[FLOW_LAYERS];
+	uint32_t                peak_blocks;
+	struct {
+		int     key;
+		bool    grenade;
+		bool    cut;        // it was in Flow, then cut off in flight
+	}                       refused[FLOW_REFUSED_TRAILS];
+	uint32_t                num_refused;
+	uint32_t                refused_rail;   // railgun shots
+	unsigned                pool_stats_ms;
+	// flow_pool_resize: the second reset is still to come, and the steps
+	// Flow still takes, idle or not, for the old pool to be freed
+	bool                    pool_reset_again;
+	int                     pool_settle;
 	bool                    idle;       // nothing allocated and nothing emitting: skip Flow
 	bool                    force_clear;
 	bool                    shadow_pass;    // this frame's simulation is followed by Flow's shadow pass
@@ -739,6 +773,15 @@ static bool flow_create_device_d3d12(void)
 	return flow.device != NULL;
 }
 
+// The grid as pt_flow_max_blocks asks for it.
+static NvFlowGridDesc flow_grid_desc(void)
+{
+	NvFlowGridDesc grid_desc = NvFlowGridDesc_default;
+	grid_desc.maxLocations = (NvFlowUint)Cvar_ClampInteger(cvar_pt_flow_max_blocks, FLOW_POOL_MIN, FLOW_POOL_MAX);
+	grid_desc.maxLocationsIsosurface = 16;  // the isosurface path is never used
+	return grid_desc;
+}
+
 static void flow_create_simulation(void)
 {
 	if (!cvar_pt_flow->integer) {
@@ -757,12 +800,11 @@ static void flow_create_simulation(void)
 	flow.context_iface = flow.device_iface->getContextInterface(flow.queue);
 	flow.context = flow.device_iface->getContext(flow.queue);
 
-	// The block pool is allocated whole up front: an atlas of max_blocks
-	// blocks of 34x18x18 RGBA16F texels, about 88 KB each, twice over for
-	// the density and again for the velocity and the solver's scratch.
-	NvFlowGridDesc grid_desc = NvFlowGridDesc_default;
-	grid_desc.maxLocations = (NvFlowUint)Cvar_ClampInteger(cvar_pt_flow_max_blocks, 16, 4096);
-	grid_desc.maxLocationsIsosurface = 16;  // the isosurface path is never used
+	// The block pool is allocated whole at Flow's first step: an atlas of
+	// max_blocks blocks of 34x18x18 RGBA16F texels, about 88 KB each, twice
+	// over for the density and again for the velocity and the solver's
+	// scratch - some 0.45 MB a block in all (measured, see pt_flow_max_blocks).
+	const NvFlowGridDesc grid_desc = flow_grid_desc();
 
 	flow.grid = flow.grid_iface->createGrid(flow.context_iface, flow.context, flow.op_list, flow.ext_op_list, &grid_desc);
 	flow.params_named = flow.params_iface->createGridParamsNamed("q2rtx");
@@ -781,6 +823,8 @@ static void flow_create_simulation(void)
 	flow.step_error = 0.f;
 	flow.num_blocks = 0;
 	flow.max_blocks = grid_desc.maxLocations;
+	flow.pool_reset_again = false;
+	flow.pool_settle = 0;
 
 	Cvar_FullSet("flow_available", "1", CVAR_ROM, FROM_CODE);
 	Com_Printf("NVIDIA Flow: ready on %s, up to %u blocks.\n", vkpt_flow_backend ? "D3D12" : "Vulkan",
@@ -2196,9 +2240,12 @@ static void flow_build_params(float dt)
 
 // Whether the rocket trails may have more of Flow's blocks: while the gas
 // fills less than `share` x pt_flow_rocket_budget of them. One rocket's smoke
-// across a big room takes some 250 of the 512, so more than one would leave
-// the explosions none. Past the share R_FlowEmit gives 0 and the client draws
-// its particle flame instead.
+// across a big room takes some 250 blocks, so with the old pool of 512 more
+// than one left the explosions none. Past the share R_FlowEmit gives 0 and
+// the client draws its particle flame instead. Explosions are never refused:
+// what the trails leave is kept for them, as Flow drops new blocks, not old
+// ones, once the pool is full (compactNonZeroWithLimit) - a blast into a full
+// pool comes out cut off.
 static bool flow_rocket_room(float share)
 {
 	const float budget = Cvar_ClampValue(cvar_pt_flow_rocket_budget, 0.f, 1.f);
@@ -2285,10 +2332,109 @@ static void flow_age(float dt)
 	}
 }
 
+// pt_flow_pool_stats 1: once a second while Flow has anything, how full its
+// block pool is, by layer, the most it held since the last line, and how
+// many trails went to the client's particles for want of room.
+static void flow_pool_stats(void)
+{
+	if (!cvar_pt_flow_pool_stats->integer) {
+		flow.pool_stats_ms = 0;
+		return;
+	}
+
+	const unsigned ms = Sys_Milliseconds();
+	if (flow.pool_stats_ms && ms - flow.pool_stats_ms < 1000)
+		return;
+
+	if (flow.pool_stats_ms) {
+		// rockets / grenades never started, then cut off in flight
+		uint32_t counts[2][2] = { 0 };
+		for (uint32_t i = 0; i < flow.num_refused; i++)
+			counts[flow.refused[i].grenade][flow.refused[i].cut]++;
+
+		if (flow.peak_blocks || flow.num_refused || flow.refused_rail) {
+			Com_Printf("FLOWPOOL %u/%u blocks, peak %u | fire %u plasma %u bubbles %u rail %u | "
+				"to particles: rockets %u (+%u cut), grenades %u (+%u cut), rail shots %u\n",
+				flow.num_blocks, flow.max_blocks, flow.peak_blocks,
+				flow.layer_blocks[R_FLOW_FIRE], flow.layer_blocks[R_FLOW_PLASMA],
+				flow.layer_blocks[R_FLOW_BUBBLES], flow.layer_blocks[R_FLOW_RAIL],
+				counts[0][0], counts[0][1], counts[1][0], counts[1][1], flow.refused_rail);
+		}
+	}
+
+	flow.pool_stats_ms = ms;
+	flow.peak_blocks = flow.num_blocks;
+	flow.num_refused = 0;
+	flow.refused_rail = 0;
+}
+
+// A trail of fire sent back to the client's particles, for flow_pool_stats:
+// once a source, however many frames it asks again, `cut` if it had been in
+// Flow before.
+static void flow_refused(const r_flow_emit_t *emit, bool cut)
+{
+	if (!cvar_pt_flow_pool_stats->integer)
+		return;
+
+	uint32_t i = 0;
+	while (i < flow.num_refused && flow.refused[i].key != emit->key)
+		i++;
+	if (i == flow.num_refused) {
+		if (i == FLOW_REFUSED_TRAILS)
+			return;
+		flow.num_refused++;
+		flow.refused[i].key = emit->key;
+		flow.refused[i].grenade = emit->smoke_only;
+		flow.refused[i].cut = false;
+	}
+	flow.refused[i].cut |= cut;
+}
+
+/* pt_flow_max_blocks changed - the menu's slider, or the console: Flow takes
+   the new pool size at its next step (resetGrid), clearing the gas. Its
+   textures of the old size stay referenced until one more reset, so a second
+   follows the first step on the new pool (flow_pool_step). Measured headless
+   on D3D12 (11-07): 4096 -> 1024 held 2070 MB with one reset, 470 with the
+   second one step later - the same as starting at 1024. Then Flow keeps
+   stepping FLOW_POOL_SETTLE times, gas or none, for its backend to free
+   them. */
+static void flow_pool_resize(void)
+{
+	NvFlowGridDesc grid_desc = flow_grid_desc();
+	if (grid_desc.maxLocations == flow.max_blocks)
+		return;
+
+	flow.grid_iface->resetGrid(flow.context, flow.grid, &grid_desc);
+	Com_DPrintf("NVIDIA Flow: pool %u -> %u blocks.\n", flow.max_blocks, grid_desc.maxLocations);
+	flow.max_blocks = grid_desc.maxLocations;
+	flow.num_blocks = 0;
+	flow.pool_reset_again = true;
+	flow.pool_settle = FLOW_POOL_SETTLE;
+	flow.idle = false;
+}
+
+// After each step Flow has taken: the second reset of a resize, and the
+// count of steps it must still take.
+static void flow_pool_step(void)
+{
+	if (flow.pool_reset_again) {
+		NvFlowGridDesc grid_desc = flow_grid_desc();
+		grid_desc.maxLocations = flow.max_blocks;
+		flow.grid_iface->resetGrid(flow.context, flow.grid, &grid_desc);
+		flow.pool_reset_again = false;
+	}
+	else if (flow.pool_settle > 0) {
+		flow.pool_settle--;
+	}
+}
+
 // Runs this frame's simulation and acquires its result for `set`, filling
 // `params` with where everything is. False when there is nothing to draw.
 static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 {
+	flow_pool_stats();
+	flow_pool_resize();
+
 	float dt = 0.f;
 	if (flow.have_last_time && fd->time >= flow.last_time)
 		dt = fd->time - flow.last_time;
@@ -2332,10 +2478,16 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 			// getRenderData hands over after this is that copy.
 			if (flow.shadow_pass)
 				flow.grid_iface->offscreen(flow.context, flow.grid, &params_desc);
+			// At dt 0 simulate returns before it takes a pending reset
+			// (Grid.cpp canSkipSimulation); at any other, even one its
+			// stepper takes no step on, it does.
+			if (dt > 0.f)
+				flow_pool_step();
 		}
 		flow.grid_iface->getRenderData(flow.context, flow.grid, &render_data);
 
 		const NvFlowSparseParams *sparse = &render_data.sparseParams;
+		memset(flow.layer_blocks, 0, sizeof(flow.layer_blocks));
 		if (render_data.densityTexture && render_data.sparseBuffer &&
 			sparse->levelCount > 0 && sparse->levels[0].numLocations > 0) {
 			// The density level; every layer's blocks are in its one table.
@@ -2355,6 +2507,7 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 			params->dim_inv[2] = level->dimInv.z;
 			params->counts[0] = level->numLocations;
 			flow.num_blocks = level->numLocations;
+			flow.peak_blocks = max(flow.peak_blocks, flow.num_blocks);
 
 			vec3_t world_min = { FLT_MAX, FLT_MAX, FLT_MAX };
 			vec3_t world_max = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
@@ -2366,6 +2519,7 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 					l++;
 				if (l == FLOW_LAYERS || layer->numLocations == 0)
 					continue;
+				flow.layer_blocks[l] = layer->numLocations;
 
 				FlowLayerParams *dst = &params->layers[l];
 				VectorCopy(&layer->worldMin.x, dst->world_min);
@@ -2434,7 +2588,7 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 	}
 
 	if (!have_blocks || !flow.set_density[set] || !flow.set_table[set]) {
-		flow.idle = (flow.num_emitters == 0);
+		flow.idle = flow.num_emitters == 0 && !flow.pool_reset_again && flow.pool_settle == 0;
 		flow_release_set(set);
 		return false;
 	}
@@ -2645,8 +2799,10 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 				e->smoke_only == emit->smoke_only) {
 				// a rocket's or a grenade's lets go at half as much again as
 				// its share...
-				if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.5f))
+				if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.5f)) {
+					flow_refused(emit, true);
 					return 0;
+				}
 				vec3_t moved;
 				VectorSubtract(emit->origin, e->origin, moved);
 				if (VectorLength(moved) > 0.5f)
@@ -2665,8 +2821,10 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 			}
 		}
 		// ... and starts only within it
-		if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.f))
+		if (emit->style == R_FLOW_FIRE && !flow_rocket_room(1.f)) {
+			flow_refused(emit, false);
 			return 0;
+		}
 		{
 			flow_emitter_t *e = flow_new_emitter(R_FLOW_TRAIL, emit->style, emit->origin, emit->scale);
 			e->key = emit->key;
@@ -2694,8 +2852,10 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 		// it emits (flow_rail_boxes); it casts no light of its own - the
 		// client's classic beam lights stay.
 		if (emit->style == R_FLOW_RAIL) {
-			if (!flow_rail_room())
+			if (!flow_rail_room()) {
+				flow.refused_rail++;
 				return 0;
+			}
 			flow_emitter_t *e = flow_new_emitter(R_FLOW_BEAM, R_FLOW_RAIL, emit->origin, emit->scale);
 			VectorCopy(emit->end, e->end);
 			flow_rail_stretch(e);
@@ -2850,8 +3010,9 @@ static void flow_set_strides(void)
 	// minUniformBufferOffsetAlignment may be.
 	flow.params_stride = align(sizeof(FlowParams), 256);
 
-	// A block's sums for every block the grid can have.
-	const size_t max_blocks = (size_t)Cvar_ClampInteger(cvar_pt_flow_max_blocks, 16, 4096);
+	// A block's sums for every block the grid can have, at the largest pool
+	// pt_flow_max_blocks can ask for while the game runs (flow_pool_resize).
+	const size_t max_blocks = FLOW_POOL_MAX;
 	flow.light_sums_stride = align(max_blocks * FLOW_LIGHT_SUM_VEC4S * sizeof(vec4_t), 256);
 
 	// A block's bricks for every block the grid can have, and the group
@@ -3285,9 +3446,15 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_lighting = Cvar_Get("pt_flow_lighting", "1", CVAR_ARCHIVE);
 	cvar_pt_flow_collision = Cvar_Get("pt_flow_collision", "1", CVAR_ARCHIVE);
 
-	// The grid. The block count is read when the renderer starts.
+	// The grid. The block pool is the menu's slider, FLOW_POOL_MIN to
+	// FLOW_POOL_MAX, and a change takes at Flow's next step (flow_pool_resize).
+	// Flow's own default is 4096; 512 sent the rocket and rail trails to
+	// particles in a big fight (Matt, 11-07), as their budgets are shares of
+	// it. The whole pool's VRAM, used or not, is taken at Flow's first step -
+	// measured on D3D12, headless (11-07): 214 MB at 512, 455 at 1024, 916 at
+	// 2048, 1600 at 4096, some 0.45 MB a block.
 	cvar_pt_flow_cell_size = Cvar_Get("pt_flow_cell_size", "3", 0);
-	cvar_pt_flow_max_blocks = Cvar_Get("pt_flow_max_blocks", "512", 0);
+	cvar_pt_flow_max_blocks = Cvar_Get("pt_flow_max_blocks", "1024", CVAR_ARCHIVE);
 	cvar_pt_flow_substeps = Cvar_Get("pt_flow_substeps", "1", 0);
 
 	// An explosion: its size at scale 1 (a rocket), how long it emits, how
@@ -3342,6 +3509,9 @@ VkResult vkpt_flow_initialize(void)
 	// 1: print what the primary march did, once a second (FLOWSTATS, see
 	// vkpt_flow_stats) - needs FLOW_STATS compiled into flow.glsl.
 	cvar_pt_flow_stats = Cvar_Get("pt_flow_stats", "0", 0);
+	// 1: print how full the block pool is, once a second (FLOWPOOL, see
+	// flow_pool_stats), and which trails went to particles for want of room.
+	cvar_pt_flow_pool_stats = Cvar_Get("pt_flow_pool_stats", "0", 0);
 	// The least share of the fire's glow smoke in front of it lets through
 	// (flow_step_add in flow.glsl): a rocket's own trail, seen down its length
 	// from where it was fired, hid the middle of the explosion at its end

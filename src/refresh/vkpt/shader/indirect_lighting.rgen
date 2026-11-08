@@ -36,6 +36,23 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 layout(constant_id = 0) const uint spec_bounce_index = 0;
 
+#ifdef VKPT_D3D12
+/* SER (pt_ser) WHERE THE REORDER GOES. 0 (pt_ser 1): after the hit's triangle is
+   fetched, keyed by its final material. 1 (pt_ser 3): BEFORE the fetch. MaybeReorderThread
+   moves every value live across it through memory, and the fetched Triangle is about 40
+   of them (positions, normals, UVs, tangents...) - early, only the hit record (5) goes
+   along, and the fetch itself runs in the regrouped order, lanes on the same mesh
+   together. The key is then the primitive's own material, one load (an instance's
+   override and animation left out: it only groups the lanes). Only the D3D12 SER
+   builds set it (CMakeLists' ".spec_1_1.ser" variants); Vulkan never sees it. */
+layout(constant_id = 1) const uint spec_ser_early = 0;
+
+uint ser_hit_key(uint material)
+{
+	return ((material >> 28) << 12) | (material & MATERIAL_INDEX_MASK);
+}
+#endif
+
 /* WHICH BOUNCE THIS DISPATCH TRACES (0 = the first). The first-bounce pipeline is
    always bounce 0. The second-bounce pipeline is dispatched once for every later
    bounce - pt_num_bounce_rays goes up to 8 - with its number in the push constant;
@@ -533,12 +550,23 @@ indirect_lighting(
 		return;
 	}
 
+#ifdef VKPT_D3D12
+	// SER, pt_ser 3: regroup the lanes before the triangle is fetched (see spec_ser_early)
+	if (spec_ser_early != 0)
+	{
+		uint ser_buffer = ray_payload_geometry.buffer_and_instance_idx & 0xffff;
+		d3d12_ser_reorder(ser_hit_key(
+			primitive_buffers[nonuniformEXT(ser_buffer)].primitives[ray_payload_geometry.primitive_id].material_id), 16u);
+	}
+#endif
+
 	triangle = get_hit_triangle(ray_payload_geometry);
 
 #ifdef VKPT_D3D12
 	// SER (pt_ser 1): regroup the lanes by what the bounce hit - the material's kind,
 	// then its index - before shading it
-	d3d12_ser_reorder(((triangle.material_id >> 28) << 12) | (triangle.material_id & MATERIAL_INDEX_MASK), 16u);
+	if (spec_ser_early == 0)
+		d3d12_ser_reorder(ser_hit_key(triangle.material_id), 16u);
 #endif
 
 	float indirect_specular_weight = 1;

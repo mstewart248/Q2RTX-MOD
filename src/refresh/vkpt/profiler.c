@@ -24,6 +24,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <assert.h>
 
 
+extern cvar_t *cvar_profiler;
 extern cvar_t *cvar_profiler_scale;
 extern cvar_t *cvar_pt_reflect_refract;
 extern cvar_t *cvar_pt_fog_froxel;
@@ -132,6 +133,134 @@ upload_spikes_record(float upload_ms, float gpu_frame_ms)
 			(SPIKE_WORST - slot - 1) * sizeof(upload_spike_t));
 		upload_spikes.worst[slot] = (upload_spike_t){ upload_ms, gpu_frame_ms, cpu_window };
 	}
+}
+
+/* PROFILER 2: THE FRAME AS GRAPHS (Matt, 11-07) - frame time and fps over the last
+   several seconds, newest on the right (draw_graphs). A sample per frame the
+   renderer begins: the time since the one before by the CPU clock, which is what
+   the fps counter counts - rendered frames, frame generation's not among them -
+   and the whole GPU frame, the table's first row, which arrives
+   MAX_FRAMES_IN_FLIGHT frames late. Recorded always, as the GPU times are, so the
+   graphs have their history the moment they are turned on. With frame generation,
+   the presents per rendered frame too: the fps panel's second line. */
+#define GRAPH_SAMPLES 2048	// one a pixel column: the panels are 1408 pixels wide at 4K
+
+static struct {
+	uint64_t last_us;
+	float frame_ms[GRAPH_SAMPLES];
+	float gpu_ms[GRAPH_SAMPLES];	// 0 where the GPU frame was not timed
+	uint8_t presents[GRAPH_SAMPLES];	// DLSS-G's presents per rendered frame, 1 without
+	int next, count;
+	// the panels' tops (graph_scale)
+	float frame_top, fps_top;
+	// the numbers printed, refreshed twice a second so they can be read
+	unsigned text_ms;
+	char text[5][64];
+} graph;
+
+/* THE PANELS' TOPS (Matt, 11-07). Frame time: 33.3 ms (30 fps), so its middle
+   line is 16.7 ms (60 fps). Fps: 120, its middle line 60. Each doubled for what
+   does not fit, the middle line then being the top before, and changed only on a
+   second of evidence, both ways - it followed every frame in view at first, and a
+   level load's spikes held the frame time's at seconds long after:
+   - up once the panel's values have kept coming in over the top for a second, to
+     fit the largest of them. Counted from the first one's END, so one long frame
+     (a load's) is never a second of them, however long it took;
+   - down to the smallest top every value of the last second fits, which is the
+     default again a second after a spike.
+   A panel's value at a frame is the largest of its lines there: the frame's time
+   or the GPU's; the rendered fps or frame generation's presented. */
+#define GRAPH_FRAME_TOP (1000.f / 30.f)
+#define GRAPH_FPS_TOP   120.f
+
+static float
+graph_frame_value(int k)
+{
+	return max(graph.frame_ms[k], graph.gpu_ms[k]);
+}
+
+static float
+graph_fps_value(int k)
+{
+	return 1000.f / graph.frame_ms[k] * (float)max(graph.presents[k], 1);
+}
+
+static float
+graph_fit(float base, float v)
+{
+	float top = base;
+	while (top < v && top < base * 1024.f)
+		top *= 2.f;
+	return top;
+}
+
+static void
+graph_scale(float *top, float base, float (*value)(int k))
+{
+	if (*top < base)
+		*top = base;
+
+	// Up: back from the newest frame through the run over the top. Reaching one
+	// more frame of the run with a second already behind it means the run has
+	// lasted a second since that frame ended; the top then fits that second's
+	// values, not the one that started it. A frame of a second or more is a stall
+	// (a load's), not a frame rate: it ends the run - else a slow frame before one
+	// made a second of "evidence" with it and the top went to 2 s (the scale test,
+	// 11-07).
+	float run = 0.f, run_largest = 0.f;
+	for (int i = 0; i < graph.count; i++)
+	{
+		const int k = (graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		const float v = value(k);
+		if (!(v > *top) || graph.frame_ms[k] >= 1000.f)
+			break;
+		if (run >= 1000.f)
+		{
+			*top = graph_fit(base, run_largest);
+			return;
+		}
+		run += graph.frame_ms[k];
+		run_largest = max(run_largest, v);
+	}
+
+	// Down: the largest value of the last second, once there is a second of them
+	float span = 0.f, largest = 0.f;
+	for (int i = 0; i < graph.count && span < 1000.f; i++)
+	{
+		const int k = (graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		span += graph.frame_ms[k];
+		largest = max(largest, value(k));
+	}
+	if (span >= 1000.f && graph_fit(base, largest) < *top)
+		*top = graph_fit(base, largest);
+}
+
+static void
+graph_record(void)
+{
+	const uint64_t now = Sys_Microseconds();
+	const float ms = graph.last_us ? (float)(now - graph.last_us) * 1e-3f : 0.f;
+	graph.last_us = now;
+	if (ms <= 0.f)
+		return;
+	// Two seconds or more is a level load, a vid_restart or the window put away:
+	// start over, rather than carry it in the averages for the next ten seconds.
+	if (ms >= 2000.f)
+	{
+		graph.count = graph.next = 0;
+		graph.frame_top = graph.fps_top = 0.f;
+		graph.text_ms = 0;
+		return;
+	}
+	// what the renderer last reported (the fps counter's "presented")
+	const int presents = vkpt_refdef.fd ? vkpt_refdef.fd->feedback.presented_frames : 1;
+	graph.frame_ms[graph.next] = ms;
+	graph.gpu_ms[graph.next] = (float)vkpt_get_profiler_result(PROFILER_GPU_FRAME);
+	graph.presents[graph.next] = (uint8_t)max(1, min(presents, 255));
+	graph.next = (graph.next + 1) % GRAPH_SAMPLES;
+	graph.count = min(graph.count + 1, GRAPH_SAMPLES);
+	graph_scale(&graph.frame_top, GRAPH_FRAME_TOP, graph_frame_value);
+	graph_scale(&graph.fps_top, GRAPH_FPS_TOP, graph_fps_value);
 }
 
 VkResult
@@ -359,6 +488,8 @@ vkpt_profiler_take_results(const uint64_t *ticks, const bool *used, double ns_pe
 	{
 		memset(profiler_data.query_pool_results, 0, sizeof(profiler_data.query_pool_results));
 	}
+
+	graph_record();
 }
 
 VkResult
@@ -408,6 +539,8 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
 		memset(profiler_data.query_pool_results, 0, sizeof(profiler_data.query_pool_results));
 	}
 
+	graph_record();
+
 	vkCmdResetQueryPool(cmd_buf, profiler_data.query_pool,
 			NUM_PROFILER_QUERIES_PER_FRAME * qvk.current_frame_index, 
 			NUM_PROFILER_QUERIES_PER_FRAME);
@@ -443,12 +576,241 @@ draw_query(int x, int y, qhandle_t font, const char *enum_name, int idx)
 	R_DrawString(x + 256, y, 0, 128, buf, font);
 }
 
+/* THE ORDER THEY RUN IN (Matt, 2026-11-07): below the two whole-frame rows, the
+   table is sorted by where each pass STARTED on the GPU, relative to the start of
+   the frame, in the latest frame that timed it - so it reads top to bottom as the
+   frame runs, on either renderer (vkpt and D3D12 order their passes differently),
+   and stays right when a pass moves. A pass that did not run this frame keeps the
+   place it had; one never timed yet goes last, as listed. A sub-pass that starts
+   with its parent comes after it (the longer first). A pass the D3D12 renderer
+   times in two pieces (its shadow maps, BVH, Flow) sits where the first starts. */
+typedef struct {
+	int idx;			// PROFILER_*
+	int listed;			// its place in draw_profiler's list, the last tie-break
+	const char *name;
+} profiler_row_t;
+
+// ticks from the frame's start, of the latest frame that timed each entry
+static int64_t row_start[NUM_PROFILER_ENTRIES], row_end[NUM_PROFILER_ENTRIES];
+static bool row_seen[NUM_PROFILER_ENTRIES];
+
+static void note_row_times(void)
+{
+	const uint64_t *r = profiler_data.query_pool_results;
+	const uint64_t frame = r[PROFILER_GPU_FRAME * 2] ? r[PROFILER_GPU_FRAME * 2] : r[PROFILER_FRAME_TIME * 2];
+	if (!frame)
+		return;
+	for (int i = 0; i < NUM_PROFILER_ENTRIES; i++)
+	{
+		const uint64_t b = r[i * 2], e = r[i * 2 + 1];
+		if (b && e >= b)
+		{
+			// before the frame's start (vkpt's transfer queue) comes out negative
+			row_start[i] = (int64_t)(b - frame);
+			row_end[i] = (int64_t)(e - frame);
+			row_seen[i] = true;
+		}
+	}
+}
+
+static bool row_before(const profiler_row_t *a, const profiler_row_t *b)
+{
+	const bool sa = row_seen[a->idx], sb = row_seen[b->idx];
+	if (sa != sb)
+		return sa;
+	if (sa && row_start[a->idx] != row_start[b->idx])
+		return row_start[a->idx] < row_start[b->idx];
+	if (sa && row_end[a->idx] != row_end[b->idx])
+		return row_end[a->idx] > row_end[b->idx];
+	return a->listed < b->listed;
+}
+
+// The graphs' colours: frame time amber, the GPU's green, fps blue, frame
+// generation's presented fps violet
+#define GRAPH_FRAME	MakeColor(255, 200, 60, 255)
+#define GRAPH_GPU	MakeColor(90, 220, 90, 255)
+#define GRAPH_FPS	MakeColor(90, 170, 255, 255)
+#define GRAPH_FG	MakeColor(225, 120, 255, 255)
+
+static int
+graph_cmp(const void *a, const void *b)
+{
+	const float x = *(const float *)a, y = *(const float *)b;
+	return (x > y) - (x < y);
+}
+
+/* A series as a line, a sample a pixel column with the newest at the right edge,
+   each column joined to the one before. A value over the top runs along it; 0 (not
+   measured) is a gap. */
+static void
+graph_line(int left, int top, int w, int h, int thick, const float *v, int n, float vmax,
+	uint32_t color)
+{
+	int prev = -1;
+	for (int i = 0; i < n; i++)
+	{
+		if (!(v[i] > 0.f))
+		{
+			prev = -1;
+			continue;
+		}
+		const float f = v[i] / vmax;
+		const int y = top + (int)((1.f - min(f, 1.f)) * (float)(h - thick));
+		const int y0 = prev >= 0 ? min(y, prev) : y;
+		const int y1 = prev >= 0 ? max(y, prev) : y;
+		R_DrawFill32(left + w - n + i, y0, 1, y1 - y0 + thick, color);
+		prev = y;
+	}
+}
+
+// the panel behind a graph, with lines at its quarters
+static void
+graph_panel(int left, int top, int w, int h)
+{
+	R_DrawFill32(left, top, w, h, MakeColor(0, 0, 0, 150));
+	for (int i = 1; i < 4; i++)
+		R_DrawFill32(left, top + h * i / 4, w, 1, MakeColor(255, 255, 255, i == 2 ? 70 : 35));
+}
+
+static void
+graph_text(float scale, int px, int py, uint32_t color, const char *s, qhandle_t font)
+{
+	R_SetColor(color);
+	R_DrawString((int)((float)px * scale), (int)((float)py * scale), 0, 128, s, font);
+}
+
+/* profiler 2. Two panels where the table goes: frame time (the CPU's frame to
+   frame, and the GPU's whole frame under it) and fps, with their latest, average
+   and worst values over what the panel shows. The lines are drawn in pixels, a
+   sample a column; the text in the table's scale. */
+static void
+draw_graphs(float scale, qhandle_t font)
+{
+	const float u = 1.f / scale;			// pixels a text unit (a character is 8)
+	const int left = 500, top = 100;		// where the table starts, in pixels
+	const int w = (int)(352.f * u), h = (int)(64.f * u), row = (int)(10.f * u);
+	const int thick = max(1, (int)(0.5f * u));	// 2 pixels at 4K
+	const int n = min(graph.count, min(w, GRAPH_SAMPLES));
+
+	static float frame[GRAPH_SAMPLES], gpu[GRAPH_SAMPLES], fps[GRAPH_SAMPLES], fg[GRAPH_SAMPLES];
+	static float sorted[GRAPH_SAMPLES];
+	double sum = 0.0, gpu_sum = 0.0, presented = 0.0;
+	int gpu_n = 0, fg_n = 0;
+	float gpu_max = 0.f, gpu_last = 0.f;
+	for (int i = 0; i < n; i++)
+	{
+		const int k = (graph.next - n + i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		frame[i] = sorted[i] = graph.frame_ms[k];
+		fps[i] = 1000.f / frame[i];
+		// frame generation's output: rendered fps times the presents each made;
+		// a gap (0) where it was off
+		fg[i] = graph.presents[k] > 1 ? fps[i] * (float)graph.presents[k] : 0.f;
+		fg_n += graph.presents[k] > 1;
+		presented += max(graph.presents[k], 1);
+		gpu[i] = graph.gpu_ms[k];
+		sum += frame[i];
+		if (gpu[i] > 0.f)
+		{
+			gpu_sum += gpu[i];
+			gpu_n++;
+			gpu_max = max(gpu_max, gpu[i]);
+			gpu_last = gpu[i];
+		}
+	}
+	if (n > 0)
+		qsort(sorted, n, sizeof(sorted[0]), graph_cmp);
+	const float gpu_avg = gpu_n ? (float)(gpu_sum / gpu_n) : 0.f;
+	// graph_scale keeps them; until the first sample, the defaults
+	graph.frame_top = max(graph.frame_top, GRAPH_FRAME_TOP);
+	graph.fps_top = max(graph.fps_top, GRAPH_FPS_TOP);
+
+	const unsigned now = Sys_Milliseconds();
+	if (n > 0 && (graph.text_ms == 0 || now - graph.text_ms >= 500))
+	{
+		graph.text_ms = now;
+		const float last = frame[n - 1], avg = (float)(sum / n);
+		// 1% low: the frame time 99% of frames beat, as an fps
+		const float p99 = sorted[(int)(0.99f * (float)(n - 1))], worst = sorted[n - 1];
+		const int per_render = graph.presents[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES];
+		Q_snprintf(graph.text[0], sizeof(graph.text[0]), "frame %6.2f ms   avg %6.2f   max %6.1f", last, avg, worst);
+		if (gpu_n)
+			Q_snprintf(graph.text[1], sizeof(graph.text[1]), "gpu   %6.2f ms   avg %6.2f   max %6.1f", gpu_last, gpu_avg, gpu_max);
+		else
+			Q_strlcpy(graph.text[1], "gpu   not timed", sizeof(graph.text[1]));
+		Q_snprintf(graph.text[2], sizeof(graph.text[2]), "fps   %6.0f      avg %6.0f   1%% low %4.0f",
+			1000.f / last, 1000.f / avg, 1000.f / p99);
+		// frame generation's row while any of the panel had it; the average is every
+		// present over the panel's time, rendered frames counted once where it was off
+		if (fg_n)
+			Q_snprintf(graph.text[3], sizeof(graph.text[3]), "fg %dx %6.0f      avg %6.0f   presented",
+				max(per_render, 1), 1000.f / last * (float)max(per_render, 1), presented * 1000.0 / sum);
+		else
+			graph.text[3][0] = 0;
+		Q_snprintf(graph.text[4], sizeof(graph.text[4]), "the last %.1f s, newest on the right", sum * 1e-3);
+	}
+
+	// frame time: two text rows, then its panel
+	int y = top;
+	const int frame_box = y + 2 * row;
+	const int fps_text = frame_box + h + row / 2;
+	const int fps_box = fps_text + (graph.text[3][0] ? 2 : 1) * row;
+
+	R_SetScale(1.0f);
+	graph_panel(left, frame_box, w, h);
+	graph_panel(left, fps_box, w, h);
+	if (n > 0)
+	{
+		graph_line(left, frame_box, w, h, thick, gpu, n, graph.frame_top, GRAPH_GPU);
+		graph_line(left, frame_box, w, h, thick, frame, n, graph.frame_top, GRAPH_FRAME);
+		if (fg_n)
+			graph_line(left, fps_box, w, h, thick, fg, n, graph.fps_top, GRAPH_FG);
+		graph_line(left, fps_box, w, h, thick, fps, n, graph.fps_top, GRAPH_FPS);
+	}
+
+	R_SetScale(scale);
+	const uint32_t grey = MakeColor(170, 170, 170, 255);
+	graph_text(scale, left, y, GRAPH_FRAME, graph.text[0], font);
+	graph_text(scale, left, y + row, GRAPH_GPU, graph.text[1], font);
+	graph_text(scale, left, fps_text, GRAPH_FPS, graph.text[2], font);
+	if (graph.text[3][0])
+		graph_text(scale, left, fps_text + row, GRAPH_FG, graph.text[3], font);
+	graph_text(scale, left, fps_box + h + row / 4, grey, graph.text[4], font);
+
+	// each panel's scale, at its top and middle lines, to its right
+	char buf[32];
+	const int label_x = left + w + (int)(4.f * u);
+	Q_snprintf(buf, sizeof(buf), "%.1f ms", graph.frame_top);
+	graph_text(scale, label_x, frame_box, grey, buf, font);
+	Q_snprintf(buf, sizeof(buf), "%.1f", graph.frame_top * 0.5f);
+	graph_text(scale, label_x, frame_box + h / 2 - (int)(4.f * u), grey, buf, font);
+	Q_snprintf(buf, sizeof(buf), "%g fps", graph.fps_top);
+	graph_text(scale, label_x, fps_box, grey, buf, font);
+	Q_snprintf(buf, sizeof(buf), "%g", graph.fps_top * 0.5f);
+	graph_text(scale, label_x, fps_box + h / 2 - (int)(4.f * u), grey, buf, font);
+
+	R_ClearColor();
+	R_SetScale(1.0f);
+}
+
 void
-draw_profiler(int enable_asvgf)
+draw_profiler(int enable_asvgf, const char *title)
 {
 	float profiler_scale = R_ClampScale(cvar_profiler_scale);
+
+	if (cvar_profiler && cvar_profiler->integer == 2)
+	{
+		const qhandle_t font = R_RegisterFont("conchars");
+		if (font)
+			draw_graphs(profiler_scale, font);
+		return;
+	}
+
 	int x = 500 * profiler_scale;
-	int y = 100 * profiler_scale;
+	// The title line 100 pixels down at every scale, the headers 14 units under
+	// it and the rows 16 under those - room kept for the title with or without
+	// one. 11-07: D3D12's pt_ser line was drawn 30 units above y = 100 pixels,
+	// which at 4K (scale 0.25: 25 units) put it off the top of the screen.
+	int y = 100 * profiler_scale + 30;
 
 	qhandle_t font;
 	font = R_RegisterFont("conchars");
@@ -457,19 +819,28 @@ draw_profiler(int enable_asvgf)
 
 	R_SetScale(profiler_scale);
 
+	if (title)
+		R_DrawString(x, y - 30, 0, 128, title, font);
+
 	// Table headers
 	R_DrawString(x + 256, y - 16, 0, 128, "    imm         avg", font);
-
-#define PROFILER_DO(name, indent) \
-	draw_query(x, y, font, &#name[9], name); y += 10;
 
 	// The whole frame first - what the fps counter shows when the GPU is the
 	// limit (11-03: Matt read 67 fps against a "frame time" of 13.5 ms; Flow's
 	// simulation, motion blur, bloom, tone mapping, the blit and the HUD all
-	// run outside that). Then the old frame time, up to DLSS, which DRS and
-	// frame generation pace from.
+	// run outside that). Then the old frame time, which DRS and frame
+	// generation pace from: up to the END of DLSS, DLSS included (both
+	// renderers stop it after the DLSS pass). It read "(to dlss)" until 11-07,
+	// and Matt added the DLSS row to it: 9.7 + 3.6 ms in an 11 ms frame.
 	draw_query(x, y, font, "GPU_FRAME_(WHOLE)", PROFILER_GPU_FRAME); y += 10;
-	draw_query(x, y, font, "FRAME_TIME_(TO_DLSS)", PROFILER_FRAME_TIME); y += 10;
+	draw_query(x, y, font, "FRAME_TIME_(THROUGH_DLSS)", PROFILER_FRAME_TIME); y += 10;
+
+	// the passes this frame shows, collected, then drawn in the order they ran
+	profiler_row_t rows[NUM_PROFILER_ENTRIES];
+	int n = 0;
+#define PROFILER_DO(entry, indent) \
+	do { if (n < NUM_PROFILER_ENTRIES) { rows[n].idx = entry; rows[n].listed = n; rows[n].name = &#entry[9]; n++; } } while (0)
+
 	PROFILER_DO(PROFILER_UPLOAD_LIGHTS, 1);
 	PROFILER_DO(PROFILER_INSTANCE_GEOMETRY, 1);
 	PROFILER_DO(PROFILER_BVH_UPDATE, 1);	
@@ -538,6 +909,21 @@ draw_profiler(int enable_asvgf)
 		PROFILER_DO(PROFILER_DLSS, 1);
 	}
 #undef PROFILER_DO
+
+	note_row_times();
+	for (int i = 1; i < n; i++)	// insertion sort: a few dozen rows, nearly in order already
+	{
+		const profiler_row_t r = rows[i];
+		int j = i;
+		for (; j > 0 && row_before(&r, &rows[j - 1]); j--)
+			rows[j] = rows[j - 1];
+		rows[j] = r;
+	}
+	for (int i = 0; i < n; i++)
+	{
+		draw_query(x, y, font, rows[i].name, rows[i].idx);
+		y += 10;
+	}
 
 	R_SetScale(1.0f);
 }

@@ -28,6 +28,22 @@ STATES: every buffer here decays to COMMON after each ExecuteCommandLists and is
 promoted from it on first use, so only a change of write state within one list
 (the fields: zeroed by a copy, then written by the shader, then copied out) needs
 a barrier.
+
+THE QUEUE (d3d12_sound_queue, live; an A/B for Matt's 2026-11-07 report - ray traced
+sound ~10 fps slower on D3D12, nothing on Vulkan):
+    0   a plain NORMAL compute queue of its own (as vkpt), beside the frame
+    1   the renderer's own queue (d3d.queue, which is free-threaded): the runs go
+        in between the frame's lists, so they cost exactly their own GPU time and
+        nothing in sharing it - but each waits behind up to two queued frames
+    2   a compute queue in a scheduling group of its own (ALLOW_DYNAMIC_PRIORITY)
+Matt's logs (D3D12, base1, standing still): the frame's GPU time 10.4-11.1 ms with
+sound off, 11.7 with it on, while the main thread's CPU time stayed at 1.5 ms -
+and Vulkan, whose frame is 11.7 ms either way, lost nothing. tests/d3d12_sound_bench.c
+could not reproduce it headless: base1's scene (BSP, 17 sources at the player start)
+costs 0.9-1.0 ms of GPU a run alone, and beside 4K frames of full-screen ray and
+blur passes 1.4-2% of the frame rate, inside its noise, on any queue. GLOBAL_PRIORITY_IDLE
+starved the runs (one in 5 s), so it is not offered. d3d12_sound_stats prints what the
+runs cost in the game: each dispatch timestamped on the GPU.
 */
 
 #include "d3d12pt.h"
@@ -41,16 +57,48 @@ static const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS snd_build_flags
 
 static SRWLOCK snd_lock = SRWLOCK_INIT;
 
+static cvar_t *d3d12_sound_queue;
+
+// d3d12_sound_queue, 0-2
+static int snd_queue_wanted(void)
+{
+    const int mode = d3d12_sound_queue ? d3d12_sound_queue->integer : 0;
+    return mode < 0 || mode > 2 ? 0 : mode;
+}
+
+// a run's GPU timestamps: the list's start and end, and each dispatch's
+enum { SND_TS_BEGIN, SND_TS_REFL, SND_TS_REFL_END, SND_TS_DIFF, SND_TS_DIFF_END, SND_TS_END, SND_TS_COUNT };
+
+/* d3d12_sound_stats: what the runs cost since the last time it was asked, written by
+   the simulation thread and printed by the main thread - its own lock, so the
+   command never waits for a run. */
+static SRWLOCK snd_stats_lock = SRWLOCK_INIT;
+static struct {
+    uint64_t    since;                      // QueryPerformanceCounter
+    unsigned    refl_runs, diff_runs, runs;
+    double      refl_gpu, refl_gpu_max;     // ms, the reflection dispatch
+    double      diff_gpu, diff_gpu_max;     // the diffraction dispatch
+    double      list_gpu, wall, wall_max;   // the whole list on the GPU; submit to done
+    int         queue_mode;
+} snd_stats;
+
 static struct {
     bool                        up;         // set up on this device; the rest under snd_lock
     const char                  *why;       // why there is no tracing, NULL = there is
 
-    ID3D12CommandQueue          *queue;
+    ID3D12CommandQueue          *queue;     // d3d.queue when queue_borrowed
+    bool                        queue_borrowed;
+    int                         queue_mode; // d3d12_sound_queue the queue, allocator and list are for
     ID3D12CommandAllocator      *allocator;
     ID3D12GraphicsCommandList4  *cmd;
     ID3D12Fence                 *fence;
     uint64_t                    fence_value;
     HANDLE                      event;
+
+    ID3D12QueryHeap             *ts_heap;   // SND_TS_COUNT stamps a run
+    ID3D12Resource              *ts_readback;
+    void                        *ts_map;
+    uint64_t                    ts_frequency;   // of the queue's timestamps
 
     d3d12_set_t                 set;
     ID3D12PipelineState         *pipeline, *diff_pipeline;
@@ -324,17 +372,127 @@ done:
     return ok;
 }
 
+/*
+The queue, allocator and list for d3d12_sound_queue `mode` (see the top), the old
+ones idle and gone first. The fence and its values carry over: it is only ever
+waited on for the value just signalled.
+*/
+static bool snd_make_queue(int mode)
+{
+    snd_wait_idle();
+    D3D12_RELEASE(snd.cmd);
+    D3D12_RELEASE(snd.allocator);
+    if (snd.queue_borrowed)
+        snd.queue = NULL;
+    D3D12_RELEASE(snd.queue);
+    snd.queue_borrowed = false;
+    snd.queue_mode = -1;
+
+    D3D12_COMMAND_LIST_TYPE type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+    if (mode == 1) {
+        type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        snd.queue = d3d.queue;
+        snd.queue_borrowed = true;
+    } else {
+        D3D12_COMMAND_QUEUE_DESC qd;
+        memset(&qd, 0, sizeof(qd));
+        qd.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        if (mode == 2) {
+            qd.Flags = D3D12_COMMAND_QUEUE_FLAG_ALLOW_DYNAMIC_PRIORITY;
+            if (FAILED(ID3D12Device5_CreateCommandQueue(d3d.device, &qd, &IID_ID3D12CommandQueue, (void **)&snd.queue)))
+                snd.queue = NULL;   // a runtime without it: a plain one
+        }
+        if (!snd.queue) {
+            qd.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+            if (FAILED(ID3D12Device5_CreateCommandQueue(d3d.device, &qd, &IID_ID3D12CommandQueue, (void **)&snd.queue))) {
+                snd.queue = NULL;
+                return false;
+            }
+        }
+        d3d12_set_name((ID3D12Object *)snd.queue, "sound queue");
+    }
+    if (FAILED(ID3D12Device5_CreateCommandAllocator(d3d.device, type, &IID_ID3D12CommandAllocator,
+                                                    (void **)&snd.allocator)) ||
+        FAILED(ID3D12Device5_CreateCommandList(d3d.device, 0, type, snd.allocator, NULL,
+                                               &IID_ID3D12GraphicsCommandList4, (void **)&snd.cmd)) ||
+        FAILED(ID3D12GraphicsCommandList4_Close(snd.cmd)))
+        return false;
+    snd.ts_frequency = 0;
+    if (FAILED(ID3D12CommandQueue_GetTimestampFrequency(snd.queue, &snd.ts_frequency)))
+        snd.ts_frequency = 0;
+    snd.queue_mode = mode;
+    return true;
+}
+
+static void snd_stamp(int which)
+{
+    if (snd.ts_heap)
+        ID3D12GraphicsCommandList4_EndQuery(snd.cmd, snd.ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, (UINT)which);
+}
+
+static void snd_resolve(int first, int count)
+{
+    ID3D12GraphicsCommandList4_ResolveQueryData(snd.cmd, snd.ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, (UINT)first,
+                                                (UINT)count, snd.ts_readback, (UINT64)first * sizeof(uint64_t));
+}
+
+static double snd_ts_ms(const uint64_t *ts, int a, int b)
+{
+    if (!snd.ts_frequency || ts[b] < ts[a])
+        return 0;
+    return (double)(ts[b] - ts[a]) * 1000.0 / (double)snd.ts_frequency;
+}
+
+// a finished run into d3d12_sound_stats
+static void snd_count_run(bool refl, bool diff, uint64_t start)
+{
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    const double wall = (double)(now.QuadPart - (LONGLONG)start) * 1000.0 / (double)freq.QuadPart;
+    const uint64_t *ts = snd.ts_map;
+
+    AcquireSRWLockExclusive(&snd_stats_lock);
+    snd_stats.runs++;
+    snd_stats.queue_mode = snd.queue_mode;
+    snd_stats.wall += wall;
+    snd_stats.wall_max = max(snd_stats.wall_max, wall);
+    if (ts) {
+        snd_stats.list_gpu += snd_ts_ms(ts, SND_TS_BEGIN, SND_TS_END);
+        if (refl) {
+            const double ms = snd_ts_ms(ts, SND_TS_REFL, SND_TS_REFL_END);
+            snd_stats.refl_runs++;
+            snd_stats.refl_gpu += ms;
+            snd_stats.refl_gpu_max = max(snd_stats.refl_gpu_max, ms);
+        }
+        if (diff) {
+            const double ms = snd_ts_ms(ts, SND_TS_DIFF, SND_TS_DIFF_END);
+            snd_stats.diff_runs++;
+            snd_stats.diff_gpu += ms;
+            snd_stats.diff_gpu_max = max(snd_stats.diff_gpu_max, ms);
+        }
+    }
+    ReleaseSRWLockExclusive(&snd_stats_lock);
+}
+
 // NULL, or why the run was not made (sound_trace.c's snd_run)
 static const char *snd_run(const r_sound_trace_t *t)
 {
     uint32_t    field_floats = 0, groups = 0;
     int         i, n = 0;
+    LARGE_INTEGER start;
 
     const char *why = vkpt_sound_check_run(t);
     if (why)
         return why;
     if (t->num_queries > 0 && !snd.diff_pipeline)
         return "no shader for it";
+
+    // d3d12_sound_queue, changed: the queue it asks for, from this run on
+    const int mode = snd_queue_wanted();
+    if ((mode != snd.queue_mode || !snd.cmd) && !snd_make_queue(mode))
+        return "couldn't make the sound's queue";
+    QueryPerformanceCounter(&start);
 
     if (snd.key != t->geom->key) {
         if (snd.failed_key == t->geom->key)
@@ -371,6 +529,7 @@ static const char *snd_run(const r_sound_trace_t *t)
         return "couldn't record a run";
 
     ID3D12GraphicsCommandList *list = (ID3D12GraphicsCommandList *)snd.cmd;
+    snd_stamp(SND_TS_BEGIN);
     d3d12_tlas_build(snd.cmd, ID3D12Resource_GetGPUVirtualAddress(snd.instances), (uint32_t)n, snd_build_flags,
                      snd.tlas, ID3D12Resource_GetGPUVirtualAddress(snd.scratch));
     d3d12_as_barrier(snd.cmd, &snd.tlas_pool);
@@ -400,12 +559,16 @@ static const char *snd_run(const r_sound_trace_t *t)
         ID3D12GraphicsCommandList4_CopyBufferRegion(snd.cmd, snd.fields, 0, snd.zeros, 0, field_bytes);
         snd_transition(snd.fields, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         ID3D12GraphicsCommandList4_SetPipelineState(snd.cmd, snd.pipeline);
+        snd_stamp(SND_TS_REFL);
         d3d12_compute_dispatch(list, D3D12_PL_SOUND, groups, (uint32_t)t->num_sources, 1);
+        snd_stamp(SND_TS_REFL_END);
     }
 
     if (t->num_queries > 0) {
         ID3D12GraphicsCommandList4_SetPipelineState(snd.cmd, snd.diff_pipeline);
+        snd_stamp(SND_TS_DIFF);
         d3d12_compute_dispatch(list, D3D12_PL_SOUND, (uint32_t)t->num_queries, 1, 1);
+        snd_stamp(SND_TS_DIFF_END);
     }
 
     if (t->num_sources > 0) {
@@ -417,9 +580,21 @@ static const char *snd_run(const r_sound_trace_t *t)
         ID3D12GraphicsCommandList4_CopyBufferRegion(snd.cmd, snd.diff_readback, 0, snd.diff, 0, diff_bytes);
     }
 
+    // only the stamps this run wrote, as gpu_timers.c: a query never ended has nothing to resolve
+    snd_stamp(SND_TS_END);
+    if (snd.ts_heap) {
+        snd_resolve(SND_TS_BEGIN, 1);
+        if (t->num_sources > 0)
+            snd_resolve(SND_TS_REFL, 2);
+        if (t->num_queries > 0)
+            snd_resolve(SND_TS_DIFF, 2);
+        snd_resolve(SND_TS_END, 1);
+    }
+
     if (!snd_submit())
         return snd.why ? snd.why : "a run failed";
 
+    snd_count_run(t->num_sources > 0, t->num_queries > 0, (uint64_t)start.QuadPart);
     vkpt_sound_unpack(t, field_floats, snd.readback_map, snd.diff_readback_map);
     return NULL;
 }
@@ -459,7 +634,13 @@ static void snd_destroy_objects(void)
     D3D12_RELEASE(snd.cmd);
     D3D12_RELEASE(snd.allocator);
     D3D12_RELEASE(snd.fence);
+    if (snd.queue_borrowed)
+        snd.queue = NULL;   // the renderer's (d3d12_sound_queue 1)
     D3D12_RELEASE(snd.queue);
+    snd.queue_borrowed = false;
+    D3D12_RELEASE(snd.ts_heap);
+    D3D12_RELEASE(snd.ts_readback);
+    snd.ts_map = NULL;
     if (snd.event)
         CloseHandle(snd.event);
     snd.event = NULL;
@@ -480,24 +661,26 @@ static ID3D12PipelineState *snd_pipeline(const char *name, const wchar_t *debug_
 
 static bool snd_create_objects(void)
 {
-    D3D12_COMMAND_QUEUE_DESC qd;
-    memset(&qd, 0, sizeof(qd));
-    qd.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-    if (FAILED(ID3D12Device5_CreateCommandQueue(d3d.device, &qd, &IID_ID3D12CommandQueue, (void **)&snd.queue)))
-        return false;
-    d3d12_set_name((ID3D12Object *)snd.queue, "sound queue");
-    if (FAILED(ID3D12Device5_CreateCommandAllocator(d3d.device, D3D12_COMMAND_LIST_TYPE_COMPUTE,
-                                                    &IID_ID3D12CommandAllocator, (void **)&snd.allocator)) ||
-        FAILED(ID3D12Device5_CreateCommandList(d3d.device, 0, D3D12_COMMAND_LIST_TYPE_COMPUTE, snd.allocator, NULL,
-                                               &IID_ID3D12GraphicsCommandList4, (void **)&snd.cmd)) ||
-        FAILED(ID3D12GraphicsCommandList4_Close(snd.cmd)) ||
-        FAILED(ID3D12Device5_CreateFence(d3d.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence,
+    if (FAILED(ID3D12Device5_CreateFence(d3d.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence,
                                          (void **)&snd.fence)))
         return false;
     snd.fence_value = 0;
     snd.event = CreateEventA(NULL, FALSE, FALSE, NULL);
     if (!snd.event)
         return false;
+    if (!snd_make_queue(snd_queue_wanted()))
+        return false;
+
+    // d3d12_sound_stats' stamps; without them the runs are only not timed
+    D3D12_QUERY_HEAP_DESC qh;
+    memset(&qh, 0, sizeof(qh));
+    qh.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qh.Count = SND_TS_COUNT;
+    if (FAILED(ID3D12Device5_CreateQueryHeap(d3d.device, &qh, &IID_ID3D12QueryHeap, (void **)&snd.ts_heap)))
+        snd.ts_heap = NULL;
+    snd.ts_readback = snd_buffer(SND_TS_COUNT * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK, false, &snd.ts_map);
+    if (!snd.ts_readback)
+        D3D12_RELEASE(snd.ts_heap);
 
     if (!d3d12_set_alloc(&snd.set, D3D12_SET_SOUND, "sound"))
         return false;
@@ -523,8 +706,50 @@ static bool snd_create_objects(void)
     return true;
 }
 
+/*
+d3d12_sound_stats: what the GPU runs cost since it was last asked. A dispatch's time
+is its first stamp to its last, so beside the frame (d3d12_sound_queue 0 and 2) it
+is stretched by sharing the GPU; on the frame's own queue (1) it is its own.
+*/
+static void snd_stats_f(void)
+{
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+
+    AcquireSRWLockExclusive(&snd_stats_lock);
+    const double sec = snd_stats.since ? (double)(now.QuadPart - (LONGLONG)snd_stats.since) / (double)freq.QuadPart : 0;
+    const unsigned rr = snd_stats.refl_runs, dr = snd_stats.diff_runs, runs = snd_stats.runs;
+    const double refl = rr ? snd_stats.refl_gpu / rr : 0, diff = dr ? snd_stats.diff_gpu / dr : 0;
+    const double refl_max = snd_stats.refl_gpu_max, diff_max = snd_stats.diff_gpu_max;
+    const double list = runs ? snd_stats.list_gpu / runs : 0, wall = runs ? snd_stats.wall / runs : 0;
+    const double wall_max = snd_stats.wall_max, list_total = snd_stats.list_gpu;
+    const int mode = snd_stats.queue_mode;
+    memset(&snd_stats, 0, sizeof(snd_stats));
+    snd_stats.since = (uint64_t)now.QuadPart;
+    ReleaseSRWLockExclusive(&snd_stats_lock);
+
+    static const char *const queues[] = {
+        "a compute queue beside the frame", "the frame's own queue", "a compute queue in its own scheduling group"
+    };
+    if (sec <= 0) {
+        Com_Printf("d3d12_sound_stats: counting from now; ask again in a few seconds.\n");
+        return;
+    }
+    Com_Printf("D3D12 sound, the last %.1f s, on %s (d3d12_sound_queue %d):\n", sec,
+               queues[mode < 0 || mode > 2 ? 0 : mode], mode);
+    Com_Printf("  reflections: %u runs (%.1f a second), GPU %.2f ms each, %.2f at most\n", rr, rr / sec, refl, refl_max);
+    Com_Printf("  corners:     %u runs (%.1f a second), GPU %.2f ms each, %.2f at most\n", dr, dr / sec, diff, diff_max);
+    Com_Printf("  every list:  GPU %.2f ms (%.1f ms of GPU a second); submit to done %.1f ms, %.1f at most\n",
+               list, list_total / sec, wall, wall_max);
+}
+
 void d3d12_sound_init(void)
 {
+    // see the top; read by the simulation thread at each run
+    d3d12_sound_queue = Cvar_Get("d3d12_sound_queue", "0", 0);
+    Cmd_AddCommand("d3d12_sound_stats", snd_stats_f);
+
     AcquireSRWLockExclusive(&snd_lock);
     memset(&snd, 0, sizeof(snd));
 
@@ -549,6 +774,8 @@ void d3d12_sound_init(void)
 
 void d3d12_sound_shutdown(void)
 {
+    Cmd_RemoveCommand("d3d12_sound_stats");
+
     AcquireSRWLockExclusive(&snd_lock);
     snd_wait_idle();
     snd_destroy_objects();

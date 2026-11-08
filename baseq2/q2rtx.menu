@@ -265,7 +265,7 @@ begin video_display
             range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off. (pt_reflex_fps_max)" "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
             blank
         endif
-        toggle --status "(profiler)" "GPU profiler" profiler
+        pairs --status "pass times: what each pass of the frame costs the GPU. frame graphs: frame time (the GPU's under it) and fps over the last few seconds, with averages and 1% lows (profiler)" "GPU profiler" profiler off 0 "pass times" 1 "frame graphs" 2
     endif
 end
 
@@ -446,7 +446,7 @@ begin video_renderer
         // shader model 6.9 (the Agility SDK runtime); world.c sets pt_ser_available
         ifeq pt_ser_available 1
         pairs --status "Shader Execution Reordering: the indirect lighting as ray generation shaders, regrouped by material, or without the regrouping to see what it buys. Measured on an RTX 5070 Ti: ray generation alone costs nothing, the reorder about 1 ms. For comparing with the GPU profiler; not saved (pt_ser)" \
-            "shader execution reordering" pt_ser off 0 on 1 "ray generation only" 2
+            "shader execution reordering" pt_ser off 0 on 1 "ray generation only" 2 "on, before the triangle fetch" 3
         endif
         // only with Windows Developer Mode on and the preview runtime beside the exe:
         // device.c sets d3d12_agility_preview_available
@@ -710,6 +710,9 @@ begin flow
         "grenade trail" cl_flow_grenadetrail classic 0 simulated 1
     pairs --status "the railgun's trail. 'simulated' is NVIDIA Flow gas in place of the trail's particles: a cyan-blue spiral that glows and cools into wisps round a thread of pale smoke - the classic particles while the simulation is full. The core beam from the railgun trail setup page and the trail's light stay either way (cl_flow_railtrail)" \
         "railgun trail" cl_flow_railtrail classic 0 simulated 1
+    // Read every frame (flow_pool_resize in vkpt/flow.c): no restart.
+    range -f "%.0f blocks" --status "how much gas NVIDIA Flow can hold at once. The rocket, grenade and railgun trails go to particles once it is half full, so big fights want more - but all of it takes video memory, used or not: 512 about 215 MB, 1024 about 455 MB, 2048 about 915 MB, 4096 about 1.6 GB. Changing it clears the smoke in the air (pt_flow_max_blocks)" \
+        "simulation pool size" pt_flow_max_blocks 512 4096 256
     blank
     toggle --status "the simulated fire and plasma light the room and the smoke, in place of the classic explosion light (pt_flow_lighting)" \
         "simulated fire casts light" pt_flow_lighting
@@ -1051,6 +1054,10 @@ begin screen
     pairs --status "(scr_scale)" "HUD scale" scr_scale auto 0 1x 1 2x 2 4x 4
     pairs --status "(con_scale)" "console scale" con_scale auto 0 1x 1 2x 2 4x 4
     pairs --status "(ui_scale)" "menu scale" ui_scale auto 0 1x 1 2x 2 4x 4
+    // the GPU profiler's table (profiler 1), which only the RTX renderers have
+    ifeqor vid_rtx 1 vid_rtx 3
+        pairs --status "size of the GPU profiler's table and graphs; auto matches the HUD (profiler_scale)" "profiler scale" profiler_scale auto 0 1x 1 2x 2 3x 3 4x 4
+    endif
     // CHROMATIC ABERRATION, FILM GRAIN and the CRT FILTER. RTX renderer only,
     // so the GL renderer gets no rows for them; each slider is nested under
     // the row that switches it on.

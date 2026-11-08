@@ -8174,7 +8174,7 @@ R_EndFrame_RTX(void)
 	if (cvar_profiler->integer) {
 		VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_transfer);
 
-		draw_profiler(cvar_flt_enable->integer != 0);
+		draw_profiler(cvar_flt_enable->integer != 0, NULL);
 	}
 		
 	if(cvar_tm_debug->integer)
@@ -9366,7 +9366,7 @@ vkpt_init_frontend(void)
 	Cvar_Get("pt_model_smooth_angle", "60", CVAR_ARCHIVE | CVAR_FILES);
 	cvar_profiler = Cvar_Get("profiler", "0", 0);
 	cvar_profiler_samples = Cvar_Get("profiler_samples", "60", CVAR_ARCHIVE);
-	cvar_profiler_scale = Cvar_Get("profiler_scale", "1", CVAR_ARCHIVE);
+	cvar_profiler_scale = Cvar_Get("profiler_scale", "0", CVAR_ARCHIVE);   // 0 = auto, as scr_scale
 	cvar_vsync = Cvar_Get("vid_vsync", "0", CVAR_ARCHIVE);
 	cvar_vsync->changed = NULL; // in case the GL renderer has set it
 	/* How many images the swapchain asks for. 0 = pick automatically, which is

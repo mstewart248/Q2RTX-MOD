@@ -100,7 +100,7 @@ static ref_type_t R_Init_D3D12(bool total)
     Com_Printf("D3D12: the world and its models path traced and lit, with the physical sky, fog, "
                "glass, water, particles, beams, sprites, blood and NVIDIA Flow, DLSS / Ray Reconstruction, frame generation "
                "and HDR. d3d12_show <image> shows a G-buffer image, d3d12_info lists the GPU's features, "
-               "profiler 1 the GPU times, pt_ser 1/2 the SER A/B.\n");
+               "profiler 1 the GPU times (2 frame time and fps graphs), pt_ser 1-3 the SER A/B.\n");
     Com_Printf("----------------------------------\n");
     return REF_TYPE_D3D12;
 

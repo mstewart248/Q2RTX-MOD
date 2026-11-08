@@ -87,8 +87,8 @@ typedef enum {
 	PROFILER_STOP,
 } VKPTProfilerAction;
 
-// profiler.c, for both renderers
-void draw_profiler(int enable_asvgf);
+// profiler.c, for both renderers; title (or NULL) is a line drawn above the table
+void draw_profiler(int enable_asvgf, const char *title);
 void vkpt_profiler_dump(void);
 double vkpt_get_profiler_result(int idx);
 

@@ -41,7 +41,7 @@ typedef char extra_targets_listed[sizeof(extra_target) / sizeof(extra_target[0])
                                   D3D12_NUM_PROFILER_ENTRIES - NUM_PROFILER_ENTRIES ? 1 : -1];
 
 static struct {
-    cvar_t                      *profiler, *ser, *scale;
+    cvar_t                      *profiler, *ser;
     ID3D12QueryHeap             *heap;
     ID3D12Resource              *readback;
     // the stamps outside the frame's list: an allocator per frame slot, reset
@@ -214,26 +214,18 @@ void d3d12_timers_draw(void)
     if (!t.profiler) {
         t.profiler = Cvar_Get("profiler", "0", 0);
         t.ser = Cvar_Get("pt_ser", "0", 0);
-        t.scale = Cvar_Get("profiler_scale", "1", CVAR_ARCHIVE);
     }
     if (!t.profiler->integer)
         return;
 
-    // vkpt's table, as R_EndFrame_RTX draws it
-    draw_profiler(Cvar_VariableInteger("flt_enable") != 0);
-
-    // ...and above it, which indirect lighting pass the SER A/B is timing
-    const qhandle_t font = R_RegisterFont("conchars");
-    if (!font)
-        return;
-    const float scale = R_ClampScale(t.scale);
-    R_SetScale(scale);
+    // vkpt's table, as R_EndFrame_RTX draws it, titled with which indirect
+    // lighting pass the SER A/B is timing (draw_profiler places the line)
     char buf[128];
     const int ser = t.ser->integer;
     Q_snprintf(buf, sizeof(buf), "D3D12, pt_ser %d: %s", ser,
-               ser == 1 ? "ray generation + MaybeReorderThread" : ser == 2 ? "ray generation, no reorder" : "compute");
-    R_DrawString((int)(500 * scale), (int)(100 * scale) - 30, 0, 128, buf, font);
-    R_SetScale(1.0f);
+               ser == 1 ? "ray generation + MaybeReorderThread" : ser == 2 ? "ray generation, no reorder" :
+               ser == 3 ? "ray generation + MaybeReorderThread before the triangle fetch" : "compute");
+    draw_profiler(Cvar_VariableInteger("flt_enable") != 0, buf);
 }
 
 void d3d12_timers_shutdown(void)

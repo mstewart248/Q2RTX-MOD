@@ -260,10 +260,11 @@ static struct {
     // passes.c pass
     ID3D12PipelineState *passes[D3D12_NUM_PASSES];
     // SER (pt_ser): indirect lighting as ray generation shaders, [0 without the reorder
-    // (pt_ser 2), 1 with it (pt_ser 1)][first bounce, later], made when first asked
-    // for; their raygen records, one 64-byte slot each, in an upload buffer
-    ID3D12StateObject   *ser[2][2];
-    bool                ser_failed[2];
+    // (pt_ser 2), 1 with it (pt_ser 1), 2 with it before the triangle fetch (pt_ser 3)]
+    // [first bounce, later], made when first asked for; their raygen records, one
+    // 64-byte slot each, in an upload buffer
+    ID3D12StateObject   *ser[3][2];
+    bool                ser_failed[3];
     ID3D12Resource      *ser_table;
     uint8_t             *ser_table_map;
     ID3D12PipelineState *blit[2];       // [d3d.hdr]: film_grain.frag into the frame target's format
@@ -384,14 +385,34 @@ static ID3D12PipelineState *compute_pso(d3d12_pipeline_layout_id_t layout, const
      1  ray generation + dx::MaybeReorderThread, the lanes regrouped by the hit's material
         (indirect_lighting.rgen's d3d12_ser_reorder)
      2  ray generation without the reorder: what the dispatch path costs by itself
-   All three write the same pixels. Needs shader model 6.9 - the Agility runtime (device.c).
+     3  as 1, but the reorder BEFORE the hit's triangle is fetched, keyed by the
+        primitive's own material: ~40 fewer live values moved through memory, and the
+        fetch in the regrouped order (indirect_lighting.rgen's spec_ser_early). 1 measured
+        +1 ms on 11-06 (Matt: 10.7 / 11.7 / 10.6 ms for 0 / 1 / 2); 3 is the try at why.
+   All four write the same pixels. Needs shader model 6.9 - the Agility runtime (device.c).
    Read every frame; the state objects are made the first time a mode is asked for, so
    pt_ser 0 costs nothing. profiler 1 shows the indirect lighting's GPU time. */
 static cvar_t *pt_ser;
 
+// w.ser's first index for a pt_ser mode (1, 2 or 3)
+static int ser_variant(int mode)
+{
+    return mode == 1 ? 1 : mode == 3 ? 2 : 0;
+}
+
 static bool ser_ready(int mode)
 {
-    const int v = mode == 1 ? 1 : 0;
+    static const char *const suffix[3][2] = {
+        { ".raygen", ".spec_0_1.raygen" },
+        { ".ser", ".spec_0_1.ser" },
+        { ".spec_1_1.ser", ".spec_0_1_1_1.ser" },
+    };
+    static const char *const what[3] = {
+        "without the reorder",
+        "with MaybeReorderThread by material",
+        "with MaybeReorderThread by material, before the triangle fetch",
+    };
+    const int v = ser_variant(mode);
     if (w.ser[v][0])
         return true;
     if (w.ser_failed[v])
@@ -404,8 +425,8 @@ static bool ser_ready(int mode)
         return false;
     }
     if (!w.ser_table) {
-        // four records, 64 bytes apart (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT)
-        w.ser_table = d3d12_create_buffer(4 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT, D3D12_HEAP_TYPE_UPLOAD,
+        // six records, 64 bytes apart (D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT)
+        w.ser_table = d3d12_create_buffer(6 * D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT, D3D12_HEAP_TYPE_UPLOAD,
                                           D3D12_RESOURCE_FLAG_NONE, "SER raygen records");
         D3D12_RANGE none = { 0, 0 };
         void *map = NULL;
@@ -417,7 +438,7 @@ static bool ser_ready(int mode)
     }
 
     for (int k = 0; k < 2; k++) {
-        const char *name = va("indirect_lighting.rgen.query%s.%s", k ? ".spec_0_1" : "", v ? "ser" : "raygen");
+        const char *name = va("indirect_lighting.rgen.query%s", suffix[v][k]);
         size_t size = 0;
         void *dxil = d3d12_load_shader(name, &size);
         if (!dxil)
@@ -435,8 +456,7 @@ static bool ser_ready(int mode)
         }
     }
     w.ser_failed[v] = false;
-    Com_Printf("D3D12: pt_ser %d - indirect lighting as a ray generation shader, %s\n", mode,
-               v ? "with MaybeReorderThread by material" : "without the reorder");
+    Com_Printf("D3D12: pt_ser %d - indirect lighting as a ray generation shader, %s\n", mode, what[v]);
     return true;
 }
 
@@ -444,9 +464,9 @@ static bool ser_ready(int mode)
 static void ser_select(d3d12_passes_t *p)
 {
     const int mode = pt_ser ? pt_ser->integer : 0;
-    if ((mode != 1 && mode != 2) || !ser_ready(mode))
+    if (mode < 1 || mode > 3 || !ser_ready(mode))
         return;
-    const int v = mode == 1 ? 1 : 0;
+    const int v = ser_variant(mode);
     const D3D12_GPU_VIRTUAL_ADDRESS table = ID3D12Resource_GetGPUVirtualAddress(w.ser_table);
     for (int k = 0; k < 2; k++) {
         p->raygen[k] = w.ser[v][k];
@@ -1806,7 +1826,7 @@ bool d3d12_world_init(void)
 void d3d12_world_shutdown(void)
 {
     // the GPU is idle here
-    for (int v = 0; v < 2; v++)
+    for (int v = 0; v < 3; v++)
         for (int k = 0; k < 2; k++)
             D3D12_RELEASE(w.ser[v][k]);
     D3D12_RELEASE(w.ser_table);
