@@ -784,7 +784,7 @@ qboolean DLSSDescribeFeature(struct DLSSRenderResolution resObject, NVSDK_NGX_Pa
                    }
     };
 
-    // Motion vectors are produced at render resolution (IMG_WIDTH_TAA == extent_render)
+    // Motion vectors are produced at render resolution (the extent_render corner of IMG_WIDTH_TAA)
     // and are NOT jittered - primary_rays.rgen reprojects unjittered positions, and the
     // jitter is reported separately through InJitterOffset. So MVLowRes on, MVJittered off.
     int DlssCreateFeatureFlags = NVSDK_NGX_DLSS_Feature_Flags_None;
@@ -2289,9 +2289,20 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
     DLSSGDescribeEvaluation(resetAccum, &ev);
 
     NVSDK_NGX_Dimensions outSize = { outWidth, outHeight };
-    NVSDK_NGX_Dimensions renderSize = {
-        qvk.extent_render.width,
-        qvk.extent_render.height
+    /* THE SIZE THE DEPTH AND MOTION IMAGES ARE MADE AT, NOT THE RENDER EXTENT.
+       Since 11-06 they are made for the largest reachable render scale
+       (get_taa_image_extent: photo mode's 100% under pt_photo_mode_reserve 1, or the
+       top of DRS's range) and the frame fills a corner of them - the subrect
+       DLSSGDescribeEvaluation names (mvecs/depthSubrectSize = extent_render).
+       A Vulkan resource carries no size of its own: NGX believes the Width/Height in
+       the image view info. Declaring the render extent (pt_dlss 1 at viewsize 50 =
+       half of what the image really is) put DLSS-G's depth and motion vectors out of
+       register with the frame - generated-frame artifacts on Vulkan only, because a
+       D3D12 resource reports its real size itself. Super Resolution made the same
+       switch on 11-06 (DLSSApply's imageSize). */
+    NVSDK_NGX_Dimensions imageSize = {
+        qvk.extent_taa_images.width,
+        qvk.extent_taa_images.height
     };
     const int fgDepthImage = ev.depth_image;
 
@@ -2306,11 +2317,11 @@ void DLSSGApply(VkCommandBuffer cmd, qboolean resetAccum)
 
     NVSDK_NGX_Resource_VK depth = ToNGXResource(
         qvk.images[fgDepthImage], qvk.images_views[fgDepthImage],
-        renderSize, VK_FORMAT_R32_SFLOAT, false);
+        imageSize, VK_FORMAT_R32_SFLOAT, false);
 
     NVSDK_NGX_Resource_VK mvecs = ToNGXResource(
         qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION],
-        renderSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+        imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     NVSDK_NGX_Parameter_SetULL(dlssObj.pParams,
         NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, (unsigned long long)qvk.frame_counter);

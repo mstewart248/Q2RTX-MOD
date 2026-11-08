@@ -166,6 +166,16 @@ static cvar_t   *cl_poi_marker_scale;
 // floated a foot or so in front of everyone's chest.
 static cvar_t   *cl_beam_muzzle_drop;
 
+// Size of the sparkle rings on your own beam's MIRROR twin, against the
+// first-person set's. The mirror shows the world chain, which is frame 2 of
+// models/proj/beam/tris.md2 (the same file in rogue/pak0 and the rerelease):
+// about 1.5 units in radius, against frame 1's 0.58 down the barrel.
+// CL_Heatbeam lays its rings at 1.5 units - 2.6x the first-person beam, but ON
+// the surface of the thicker one, so the opaque beam hid every ring in a
+// mirror (Matt, 11-08: "now it's gone"). 2.6 keeps the first-person ring:beam
+// ratio; it scales the dots with the ring so it reads the same.
+static cvar_t   *cl_beam_mirror_ring_scale;
+
 // How far the flare's burn is heard, against ATTN_NORM's 2080 units. It keeps
 // Quake II's straight line to silence whatever s_falloff says: it goes on for
 // 15 seconds, and heard all over the level that would wear thin.
@@ -1569,7 +1579,7 @@ static void CL_AddPlayerBeams(void)
                          cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON;
 
             // Same vector to both, so a sparkle can no longer sit off the beam.
-            CL_Heatbeam(org, dist, ring_split ? RF_FIRST_PERSON_FX : 0);
+            CL_Heatbeam(org, dist, ring_split ? RF_FIRST_PERSON_FX : 0, 1.0f);
 
             vectoangles2(dist, angles);
 
@@ -1636,9 +1646,12 @@ static void CL_AddPlayerBeams(void)
                              2, RF_VIEWERMODEL);
 
             // ...and the rings that go with it, built on the same start and
-            // vector so they sit on the beam the mirror actually shows.
+            // vector so they sit on the beam the mirror actually shows - and
+            // scaled to its thicker frame, or the beam swallows them. See
+            // cl_beam_mirror_ring_scale.
             if (ring_split)
-                CL_Heatbeam(world_org, world_dist, RF_REFLECTION_FX);
+                CL_Heatbeam(world_org, world_dist, RF_REFLECTION_FX,
+                            Cvar_ClampValue(cl_beam_mirror_ring_scale, 0.1f, 10));
         }
     }
 }
@@ -2590,6 +2603,7 @@ void CL_InitTEnts(void)
     cl_beam_muzzle_offset = Cvar_Get("cl_beam_muzzle_offset", "7 -2 -3", 0);
     cl_beam_follow_gun = Cvar_Get("cl_beam_follow_gun", "1", 0);
     cl_beam_muzzle_drop = Cvar_Get("cl_beam_muzzle_drop", "10", CVAR_ARCHIVE);
+    cl_beam_mirror_ring_scale = Cvar_Get("cl_beam_mirror_ring_scale", "2.6", 0);
     cl_railtrail_type = Cvar_Get("cl_railtrail_type", "0", 0);
     cl_railtrail_time = Cvar_Get("cl_railtrail_time", "1.0", 0);
     cl_railtrail_time->changed = cl_timeout_changed;

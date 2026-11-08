@@ -605,8 +605,8 @@ models/monsters/gunner/skin:
 	texture_emissive models/monsters/gunner/skin_light.tga
 	roughness_override 1
 	emissive_factor 0.1
-	base_factor 1.5
-	specular_factor 0
+	base_factor 5.0
+	specular_factor .1
 
 models/monsters/hover/pain:
 	texture_base models/monsters/hover/pain.tga

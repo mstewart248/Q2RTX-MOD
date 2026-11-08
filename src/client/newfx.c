@@ -177,7 +177,10 @@ void CL_BubbleTrail2(const vec3_t start, const vec3_t end, int dist)
 
 // view_fx: 0, or RF_FIRST_PERSON_FX / RF_REFLECTION_FX for one half of your
 // own beam's split pair - see CL_AddPlayerBeams.
-void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx)
+// scale: 1 for the rings down the barrel; the mirror set passes
+// cl_beam_mirror_ring_scale so its rings clear the thicker world beam. It
+// grows the ring and its dots together, so the ring keeps its look.
+void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx, float scale)
 {
     vec3_t      move;
     vec3_t      vec;
@@ -207,6 +210,13 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx)
     // the beam is aimed at, so the two can no longer come apart.
     vectoangles2(forward, beam_angles);
     AngleVectors(beam_angles, beam_forward, beam_right, beam_up);
+
+    // A scaled dot needs an explicit size: radius 0 means pt_particle_size,
+    // which the renderer applies unscaled. The same size the renderer would
+    // give it (transparency.c: size * alpha^0.05, alpha 0.5 below), times scale.
+    float dot_radius = 0.f;
+    if (scale != 1.0f)
+        dot_radius = Cvar_VariableValue("pt_particle_size") * powf(0.5f, 0.05f) * scale;
 
     VectorMA(start, 4096, forward, end);
 
@@ -249,8 +259,9 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx)
             p->alpha = 0.5f;
             p->alphavel = -1000.0f;
             p->color = 223 - (Q_rand() & 7);
+            p->radius = dot_radius;
             for (j = 0; j < 3; j++) {
-                p->org[j] = move[j] + dir[j] * 3;
+                p->org[j] = move[j] + dir[j] * 3 * scale;
                 p->vel[j] = 0;
             }
         }

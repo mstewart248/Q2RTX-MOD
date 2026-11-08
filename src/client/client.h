@@ -1408,7 +1408,7 @@ void CL_DebugTrail(const vec3_t start, const vec3_t end);
 void CL_Flashlight(int ent, const vec3_t pos);
 void CL_ForceWall(const vec3_t start, const vec3_t end, int color);
 void CL_BubbleTrail2(const vec3_t start, const vec3_t end, int dist);
-void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx);
+void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx, float scale);
 void CL_ParticleSteamEffect(const vec3_t org, const vec3_t dir, int color, int count, int magnitude);
 void CL_TrackerTrail(const vec3_t start, const vec3_t end, int particleColor);
 void CL_TagTrail(const vec3_t start, const vec3_t end, int color);
