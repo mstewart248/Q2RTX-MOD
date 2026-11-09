@@ -450,7 +450,31 @@ extern QVK_t qvk;
 	VK_EXTENSION_DO(vkGetQueueCheckpointDataNV)
 
 /* THE PARTITIONED TLAS (ptlas.h, pt_ptlas): NVIDIA's VK_NV_partitioned_acceleration_
-   structure, the D3D12 renderer's NVAPI route's twin */
+   structure, the D3D12 renderer's NVAPI route's twin.
+
+   OFF ON VULKAN (VKPT_PTLAS 0; GitHub issue #27, 11-08). pt_ptlas 1 crashed in the
+   NVIDIA driver (access violation in nvoglv64, under vkUpdateDescriptorSets) the
+   first frame it was on - a laptop 5090 in the report, and the same on the 5070 Ti
+   here with a headless repro. On Vulkan a PTLAS needs a descriptor of ITS OWN TYPE,
+   VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV, in a binding of that
+   type. path_tracer.c, god_rays.c and flow.c wrote its address with
+   VkWriteDescriptorSetPartitionedAccelerationStructureNV into their ordinary
+   ACCELERATION_STRUCTURE_KHR bindings, which the validation layer rejects
+   (VUID-VkWriteDescriptorSet-descriptorType-02382) and the driver dies on. With the
+   right type on both sides the same write and build are clean. (On D3D12 a PTLAS is
+   just a GPU address in the TLAS's own SRV, which is why that renderer is fine.)
+
+   Doing it properly is more than a type swap: a binding has one type, and the rt
+   set's binding 0 is topLevelAS[TLAS_COUNT] - the geometry TLAS and the effects TLAS
+   side by side - so the geometry TLAS would need a binding of its own (shaders
+   included), and since a classic TLAS may not go into a PARTITIONED binding either,
+   the layouts and pipelines would have to be made for one or the other (pt_ptlas
+   restarting the renderer, as pt_clusters does). Not worth it for an A/B that
+   measured no gain (Matt, on the issue). At 0 the extension is never asked for,
+   pt_ptlas_available stays 0, the menu row stays hidden and pt_ptlas does nothing;
+   path_tracer.c's PTLAS code is kept for whoever does it properly. */
+#define VKPT_PTLAS 0
+
 #define LIST_EXTENSIONS_PTLAS \
 	VK_EXTENSION_DO(vkGetPartitionedAccelerationStructuresBuildSizesNV) \
 	VK_EXTENSION_DO(vkCmdBuildPartitionedAccelerationStructuresNV)

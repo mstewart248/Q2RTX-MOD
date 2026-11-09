@@ -443,9 +443,9 @@ begin video_renderer
         pairs --status "experimental feature - simulates reflection and refraction effects in thick glass (pt_thick_glass)" \
             "thick glass refraction" pt_thick_glass "disabled" 0 "photo mode only" 1 "enabled" 2
         pairs --status "(pt_projection)" projection pt_projection perspective 0 panini 1 stereographic 2 cylindrical 3 equirectangular 4 mercator 5
-        // both RTX renderers, where the GPU and driver have it: vkpt/path_tracer.c
-        // (VK_NV_partitioned_acceleration_structure) and d3d12/world.c (NVAPI, or the
-        // preview runtime) set pt_ptlas_available
+        // the Direct3D 12 renderer, where the GPU and driver have it: d3d12/world.c
+        // (NVAPI, or the preview runtime) sets pt_ptlas_available. Vulkan leaves it 0
+        // (VKPT_PTLAS in vkpt/vkpt.h: the driver crashed on its descriptor, issue #27)
         ifeq pt_ptlas_available 1
         pairs --status "RTX Mega Geometry's partitioned top-level acceleration structure: the static world is kept from frame to frame and only what moved is rewritten, instead of the whole TLAS rebuilt every frame. For comparing with the GPU profiler's BVH rows; not saved (pt_ptlas)" \
             "partitioned TLAS" pt_ptlas off 0 on 1

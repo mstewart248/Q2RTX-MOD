@@ -355,7 +355,9 @@ ptlas_destroy(void)
 }
 
 /* With the extension and its feature (qvk.supports_ptlas): every slot's memory,
-   sized for either of pt_tlas_fast_trace's builds. pt_ptlas_available says. */
+   sized for either of pt_tlas_fast_trace's builds. pt_ptlas_available says.
+   Never on Vulkan for now: VKPT_PTLAS 0 (vkpt.h) keeps qvk.supports_ptlas false,
+   because the descriptor writes below use the wrong descriptor type (issue #27). */
 static void
 ptlas_create(void)
 {

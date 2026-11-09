@@ -459,7 +459,8 @@ the SER A/B (`pt_ser`) on it: no gain, so it stays off.** Since 11-06 it is in t
   - Matt confirmed it in game on 11-06: the cinematics' macroblocking is gone.
 - The SER A/B (`pt_ser`): see phase 4. Measured by Matt on 11-06: the reorder loses 1 ms.
 - Clusters and the partitioned TLAS: done on both renderers (11-06), see the acceleration
-  structure layer.
+  structure layer. The Vulkan partitioned TLAS is switched off since 11-08 (issue #27:
+  wrong descriptor type, the NVIDIA driver crashed; `VKPT_PTLAS` in `vkpt/vkpt.h`).
 
 **DirectX 12 Ultimate, or the base path.** The device needs feature level 12_0 and
 DXR 1.1 ray query, nothing more. `d3d12_is_ultimate()` reports DX12 Ultimate (12_2, DXR
@@ -1055,8 +1056,10 @@ found little Vulkan in it.
   - In Quake II the win is in rebuilding animated model BLAS every frame (players, monsters,
     gibs, Flow) and in TLAS updates on busy maps.
   - Vulkan has the same hardware path through `VK_NV_cluster_acceleration_structure` and
-    `VK_NV_partitioned_acceleration_structure`. Both renderers have both since 11-06
-    (`pt_clusters`, `pt_ptlas`).
+    `VK_NV_partitioned_acceleration_structure`. Both renderers have had both since 11-06
+    (`pt_clusters`, `pt_ptlas`), but the Vulkan PTLAS is off since 11-08: a PTLAS needs
+    `VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV` bindings, which vkpt
+    lacks (issue #27, `VKPT_PTLAS` in `vkpt/vkpt.h`).
 - **Work graphs 1.0 (retail):** GPU-driven pass scheduling. It has a chance on the many small
   froxel/fog/Flow dispatches.
 - **Enhanced barriers, GPU upload heap:** fewer state transitions, and per-frame uploads

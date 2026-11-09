@@ -2597,8 +2597,9 @@ init_vulkan(void)
 			if (!strcmp(ext_properties[j].extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME))
 				qvk.supports_present_id = true;
 
-			// the partitioned TLAS (pt_ptlas); its feature is asked at device creation
-			if (!strcmp(ext_properties[j].extensionName, VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME))
+			// the partitioned TLAS (pt_ptlas); its feature is asked at device creation.
+			// Off on Vulkan, so never asked for: VKPT_PTLAS in vkpt.h (issue #27)
+			if (VKPT_PTLAS && !strcmp(ext_properties[j].extensionName, VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME))
 				qvk.supports_ptlas = true;
 
 			// clustered dynamic geometry (pt_clusters); its feature is asked at device creation

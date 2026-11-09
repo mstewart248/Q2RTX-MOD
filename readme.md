@@ -981,9 +981,10 @@ Its own options, under the renderer page while it is selected:
 | `pt_ser` | `0` | Shader Execution Reordering, on shader model 6.9 GPUs: `1` on, `2` ray generation only. An A/B, not saved; measured here it costs about 1 ms. |
 
 `pt_ptlas` (partitioned TLAS) and `pt_clusters` (clustered geometry), from RTX
-Mega Geometry, are A/B switches on both RTX renderers, shown only where the
-driver supports them. Both default to off, and clustered geometry measured slower
-here.
+Mega Geometry, are A/B switches, shown only where the driver supports them. Both
+default to off, and clustered geometry measured slower here. Clustered geometry is
+on both RTX renderers; the partitioned TLAS is Direct3D 12 only, since the Vulkan
+version crashed the NVIDIA driver (issue #27) and is switched off.
 
 Not on Direct3D 12: multi-GPU, `ray_tracing_api` (it always uses ray queries),
 `pt_async_compute` (off by default on Vulkan too) and `reload_shader`.
