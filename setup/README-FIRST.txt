@@ -5,10 +5,11 @@
 A fork of NVIDIA's Quake II RTX that takes the path tracer forward and pairs it
 with the content and game logic of the 2023 Quake II remaster.
 
-This archive contains the engine, the renderer, every shader, all of the fork's
-own authored content, and the stock Quake II RTX media package. It does NOT
-contain any Quake II game data, because that data is id Software's and cannot be
-redistributed. You supply that from your own copy of the game.
+This archive contains the engine, the renderers, every shader and all of the
+fork's own authored content. The stock Quake II RTX media package comes in a
+second archive (see 1a below). Neither contains any Quake II game data, because
+that data is id Software's and cannot be redistributed. You supply that from
+your own copy of the game.
 
 
 --------------------------------------------------------------------------------
@@ -18,7 +19,23 @@ redistributed. You supply that from your own copy of the game.
 Extract this archive anywhere. You will have a folder containing q2rtx.exe next
 to baseq2/ and rerelease/.
 
-(a) ORIGINAL QUAKE II  -  required
+(a) THE STOCK QUAKE II RTX MEDIA  -  required
+
+    A release comes as two zips, because GitHub limits one download to 2 GB:
+
+        Q2RTX-Overdrive-<version>-win64.zip    this one
+        Q2RTX-Overdrive-<version>-media.zip    the stock Quake II RTX media
+
+    Extract the -media zip into the same place as this one. Both hold a
+    Q2RTX-Overdrive folder, so they merge, and it adds two files:
+
+        baseq2/q2rtx_media.pkz
+        baseq2/blue_noise.pkz
+
+    They are the same in every release. If you have them from an earlier
+    one, copy them over instead of downloading the -media zip again.
+
+(b) ORIGINAL QUAKE II  -  required
 
     Copy the pak files from your Quake II install into baseq2/ here:
 
@@ -28,7 +45,7 @@ to baseq2/ and rerelease/.
 
     On Steam these are under  steamapps/common/Quake 2/baseq2
 
-(b) THE 2023 REMASTER  -  required for the rerelease campaign
+(c) THE 2023 REMASTER  -  required for the rerelease campaign
 
     Copy the WHOLE rerelease folder out of your remaster install and merge it
     into the rerelease folder here, so you end up with:
@@ -47,7 +64,7 @@ to baseq2/ and rerelease/.
     project adds. Loose files always take priority over the archives, so the
     overrides win regardless of which order you copy in.
 
-(c) MUSIC AND CINEMATICS  -  optional
+(d) MUSIC AND CINEMATICS  -  optional
 
     Copy music/ and video/ from the remaster if you want them. They are large
     and purely optional; nothing else depends on them.
@@ -114,8 +131,8 @@ Windows 10, the game says so in the console and stays on Vulkan.
     phonon.dll                  Steam Audio: 3D sound and occlusion
     nvflow.dll, nvflowext.dll   NVIDIA Flow: simulated fire and smoke
     baseq2/gamex86_64.dll       game logic module
-    baseq2/q2rtx_media.pkz      stock Quake II RTX art: textures, models, sky
-    baseq2/blue_noise.pkz       sampling noise the path tracer needs
+    baseq2/q2rtx_media.pkz      -media zip: stock art, textures, models, sky
+    baseq2/blue_noise.pkz       -media zip: sampling noise the path tracer needs
     baseq2/shaders.pkz          compiled shaders, packed
     baseq2/shader_vkpt/         the same compiled shaders, loose
     baseq2/shader_d3d12/        compiled shaders for the Direct3D 12 renderer

@@ -171,19 +171,27 @@ jobs:
           ls baseq2/shader_d3d12/*.dxil >/dev/null 2>&1 || { echo "MISSING baseq2/shader_d3d12"; fail=1; }
           exit $fail
 
+      # TWO ZIPS, because a GitHub release asset may not exceed 2 GiB and the
+      # single package passed that at v1.0.8 (2.36 GB). The stock media - the two
+      # .pkz files, ~1 GB, never changing - goes in a zip of its own under the
+      # same top folder, so extracting both into one place is the full install.
+      # package_release.py has the details.
       - name: Assemble package
         shell: bash
         run: |
-          python setup/package_release.py \
-            --out "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip"
-          # The DLSS runtime DLLs must never be in the package; players supply their own.
-          if unzip -l "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" | grep -i 'nvngx[^/]*\.dll'; then
-            echo "ERROR: package contains NVIDIA runtime DLLs"; exit 1
-          fi
-          # Nor Microsoft's Agility SDK runtime (closed source; see package_release.py).
-          if unzip -l "Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip" | grep -i -E 'd3d12core\.dll|d3d12sdklayers\.dll|d3dconfig\.exe'; then
-            echo "ERROR: package contains the Agility SDK runtime"; exit 1
-          fi
+          MAIN="Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-win64.zip"
+          MEDIA="Q2RTX-Overdrive-${{ steps.tag.outputs.name }}-media.zip"
+          python setup/package_release.py --out "$MAIN" --media-out "$MEDIA"
+          for z in "$MAIN" "$MEDIA"; do
+            # The DLSS runtime DLLs must never be in the package; players supply their own.
+            if unzip -l "$z" | grep -i 'nvngx[^/]*\.dll'; then
+              echo "ERROR: $z contains NVIDIA runtime DLLs"; exit 1
+            fi
+            # Nor Microsoft's Agility SDK runtime (closed source; see package_release.py).
+            if unzip -l "$z" | grep -i -E 'd3d12core\.dll|d3d12sdklayers\.dll|d3dconfig\.exe'; then
+              echo "ERROR: $z contains the Agility SDK runtime"; exit 1
+            fi
+          done
 
       - name: Publish release
         env:
@@ -191,18 +199,28 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.tag.outputs.name }}"
-          ASSET="Q2RTX-Overdrive-$TAG-win64.zip"
+          MAIN="Q2RTX-Overdrive-$TAG-win64.zip"
+          MEDIA="Q2RTX-Overdrive-$TAG-media.zip"
           DRAFT=""
           if [ "${{ github.event.inputs.draft }}" = "true" ]; then DRAFT="--draft"; fi
 
+          NOTES="Complete package built from \`${{ github.sha }}\`.
+
+          **Download both zips** and extract them into the same folder:
+
+          - \`$MAIN\` - the game, both renderers, the shaders and this fork's content
+          - \`$MEDIA\` - the stock Quake II RTX media (\`baseq2/q2rtx_media.pkz\` and \`baseq2/blue_noise.pkz\`), which the game needs. It is a separate download only because GitHub limits each file to 2 GB, and it is the same in every release, so if you already have those two files you can copy them over instead.
+
+          Then add your own Quake II pak files - see README-FIRST.txt inside the archive. Game data is not included and cannot be redistributed."
+
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "release $TAG exists - replacing the asset"
-            gh release upload "$TAG" "$ASSET" --repo "${{ github.repository }}" --clobber
+            echo "release $TAG exists - replacing the assets"
+            gh release upload "$TAG" "$MAIN" "$MEDIA" --repo "${{ github.repository }}" --clobber
           else
-            gh release create "$TAG" "$ASSET" \
+            gh release create "$TAG" "$MAIN" "$MEDIA" \
               --repo "${{ github.repository }}" \
               --target "${{ github.sha }}" \
               --title "Quake II RTX Overdrive $TAG" \
-              --notes "Complete package built from \`${{ github.sha }}\`. Extract it and add your own Quake II pak files - see README-FIRST.txt inside the archive. Game data is not included and cannot be redistributed." \
+              --notes "$NOTES" \
               $DRAFT
           fi

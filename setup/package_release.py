@@ -3,10 +3,23 @@
 Assemble a complete, playable Quake II RTX Overdrive package.
 
     python setup/package_release.py --out Q2RTX-Overdrive-win64.zip
+    python setup/package_release.py --out Q2RTX-Overdrive-win64.zip \
+                                    --media-out Q2RTX-Overdrive-media.zip
 
 Run from the repository root. Used by .github/workflows/release.yml and usable
 by hand for a local package; both go through here so a release built on CI and
 one built on a workstation contain the same thing.
+
+WHY A RELEASE IS TWO ZIPS. A GitHub release asset may not exceed 2 GiB
+(2.15 GB), and from v1.0.8 on - when the material work added ~370 MB of
+textures - the single package came to 2.36 GB and the release job failed. The
+stock media (MEDIA below, ~1.0 GB) is the natural part to split off: it is
+already compressed, so it is stored at full size; it never changes, so a player
+updating can keep the copy they have; and nothing about it depends on the
+build. --media-out writes it to a zip of its own under the same top folder, so
+extracting both zips into one place gives the complete install. Without
+--media-out everything goes in --out, as before. Every zip written is checked
+against the limit.
 
 WHAT GOES IN, and the rule behind it:
 
@@ -25,7 +38,8 @@ WHAT GOES IN, and the rule behind it:
     simulated fire and smoke, as built from source by setup/build_flow.py,
     with its BSD-3-Clause licence from extern/flow/ under licenses/nvidia-flow/.
   * the stock Quake II RTX media that is too large for git: q2rtx_media.pkz and
-    blue_noise.pkz. CI restores these from the `shipped-media` release.
+    blue_noise.pkz. CI restores these from the `shipped-media` release. With
+    --media-out they go in the second zip.
   * the repo documentation plus a generated README-FIRST.txt.
 
 WHAT STAYS OUT:
@@ -46,6 +60,9 @@ WHAT STAYS OUT:
   * every .pak file. They are id Software's and cannot be redistributed; the
     README tells the player where to get their own.
   * music/ and video/ - the player's own copies from the remaster.
+  * rerelease/screenshots/, although tracked: 111 MB of the readme's images.
+    The game never reads them, and they would land in the player's own
+    screenshot folder.
   * anything untracked that is not named above. Notably shader_balls.pkz (a
     202 MB Q2RTX test scene nothing loads during play) and
     blue_noise_restir.pkz (a duplicate of blue_noise.pkz).
@@ -98,10 +115,20 @@ def has_proprietary_code(path):
 
 REQUIRED_BASEQ2 = [
     'baseq2/gamex86_64.dll',
-    'baseq2/q2rtx_media.pkz',
-    'baseq2/blue_noise.pkz',
     'baseq2/shaders.pkz',
 ]
+
+# The stock media: required, and what --media-out splits into a zip of its own.
+MEDIA = [
+    'baseq2/q2rtx_media.pkz',
+    'baseq2/blue_noise.pkz',
+]
+
+# Tracked but not for players (see WHAT STAYS OUT).
+EXCLUDE_TRACKED = ('rerelease/screenshots/',)
+
+# A GitHub release asset may not exceed 2 GiB.
+ASSET_LIMIT = 2 * 1024 ** 3
 
 
 def tracked(repo, prefix):
@@ -125,7 +152,7 @@ def build_manifest(repo):
         seen.add(arc)
         members.append((disk, arc))
 
-    for f in REQUIRED_ROOT + DOCS + REQUIRED_BASEQ2:
+    for f in REQUIRED_ROOT + DOCS + REQUIRED_BASEQ2 + MEDIA:
         add(os.path.join(repo, f), f, True)
     for f in OPTIONAL_ROOT:
         add(os.path.join(repo, f), f, False)
@@ -159,7 +186,8 @@ def build_manifest(repo):
 
     for prefix in ('baseq2', 'rerelease', 'rogue'):
         for f in tracked(repo, prefix):
-            add(os.path.join(repo, f), f, False)
+            if not f.startswith(EXCLUDE_TRACKED):
+                add(os.path.join(repo, f), f, False)
 
     return members, missing, skipped, refused
 
@@ -169,9 +197,41 @@ def readme_text():
                              'README-FIRST.txt'), 'rb').read()
 
 
+def write_package(out, members, with_readme):
+    """Write one zip; False if it is over the release asset limit."""
+    raw = sum(os.path.getsize(d) for d, _ in members)
+    print('%d files, %.2f GB raw -> %s' % (len(members), raw / 1e9, out))
+
+    if os.path.exists(out):
+        os.remove(out)
+
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED,
+                         allowZip64=True, compresslevel=6) as z:
+        if with_readme:
+            z.writestr(TOP + '/README-FIRST.txt', readme_text())
+        for disk, arc in members:
+            method = (zipfile.ZIP_STORED if arc.lower().endswith(STORE_EXT)
+                      else zipfile.ZIP_DEFLATED)
+            z.write(disk, TOP + '/' + arc, compress_type=method)
+
+    size = os.path.getsize(out)
+    print('wrote %.2f GB (%.1f%% of raw)' % (size / 1e9, 100.0 * size / raw))
+
+    if size >= ASSET_LIMIT:
+        print('ERROR: %s is %.2f GB, over the 2 GiB (%.2f GB) per-asset limit'
+              % (out, size / 1e9, ASSET_LIMIT / 1e9), file=sys.stderr)
+        return False
+    print('headroom under the 2 GiB asset limit: %.2f GB'
+          % ((ASSET_LIMIT - size) / 1e9))
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', required=True)
+    ap.add_argument('--media-out',
+                    help='write the stock media (%s) to this second zip '
+                         'instead of --out' % ', '.join(MEDIA))
     ap.add_argument('--repo', default='.')
     args = ap.parse_args()
 
@@ -198,30 +258,19 @@ def main():
     if skipped:
         print('%d tracked path(s) absent from the working tree, skipped' % len(skipped))
 
-    raw = sum(os.path.getsize(d) for d, _ in members)
-    print('%d files, %.2f GB raw -> %s' % (len(members), raw / 1e9, args.out))
+    if args.media_out:
+        media = [m for m in members if m[1] in MEDIA]
+        main_members = [m for m in members if m[1] not in MEDIA]
+        packages = [(args.out, main_members, True), (args.media_out, media, False)]
+    else:
+        packages = [(args.out, members, True)]
 
-    if os.path.exists(args.out):
-        os.remove(args.out)
-
-    with zipfile.ZipFile(args.out, 'w', zipfile.ZIP_DEFLATED,
-                         allowZip64=True, compresslevel=6) as z:
-        z.writestr(TOP + '/README-FIRST.txt', readme_text())
-        for disk, arc in members:
-            method = (zipfile.ZIP_STORED if arc.lower().endswith(STORE_EXT)
-                      else zipfile.ZIP_DEFLATED)
-            z.write(disk, TOP + '/' + arc, compress_type=method)
-
-    size = os.path.getsize(args.out)
-    print('wrote %.2f GB (%.1f%% of raw)' % (size / 1e9, 100.0 * size / raw))
-
-    # A GitHub release asset may not exceed 2 GiB.
-    limit = 2 * 1024 ** 3
-    if size >= limit:
-        print('ERROR: %.2f GB exceeds the 2 GiB per-asset limit' % (size / 1e9),
-              file=sys.stderr)
+    # Write every zip before failing, so one run reports all their sizes.
+    ok = [write_package(out, mem, readme) for out, mem, readme in packages]
+    if not all(ok):
+        if not args.media_out:
+            print('split the stock media off with --media-out', file=sys.stderr)
         return 1
-    print('headroom under the 2 GiB asset limit: %.2f GB' % ((limit - size) / 1e9))
     return 0
 
 
