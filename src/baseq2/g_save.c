@@ -1378,5 +1378,11 @@ void ReadLevel(const char *filename)
     // do not. Without this a loaded rogue map has hint_paths_present == 0 and
     // the whole system silently switches itself off.
     InitHintPaths();
+
+    // The configstrings are the save's by now (SV_ReadLevelFile reads them
+    // first). A revisited level was saved before the players picked up what
+    // they carry back into it, and a weapon not on this map would load
+    // mid-game on its first switch or shot.
+    G_PrecacheInventoryItems();
 }
 

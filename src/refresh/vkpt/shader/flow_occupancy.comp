@@ -27,7 +27,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    than FLOW_EMPTY_EXTINCTION. Each block gets a uvec4 of bits, numbered as
    flow_brick_bit numbers them, at its place in the table; and a block with
    any marked marks its group's bit (flow_coarse_bit) in the bitset after
-   them, which flow.c clears before this runs.
+   them, and its own (flow_block_bit) in the block bitset after that, both of
+   which flow.c clears before this runs.
 
    Measured headless on a rocket and a BFG blast, only 12-21% of the march's
    steps through allocated blocks land in a marked brick: Flow keeps a border
@@ -117,15 +118,19 @@ void main()
 		if (grid >= 0 && any(notEqual(bits, uvec4(0))))
 		{
 			const ivec3 location = ivec3(int(flow_table[li + 0u]), int(flow_table[li + 1u]), int(flow_table[li + 2u]));
-			const uint bit = flow_coarse_bit(location >> FLOW_COARSE_BITS, grid);
-			const uint i = flow_params.limits.z + (bit >> 7u);
-			const uint mask = 1u << (bit & 31u);
-			switch ((bit >> 5u) & 3u)
+			// its group's bit, then its own in the block bitset after the groups'
+			for (int level = 0; level < 2; level++)
 			{
-			case 0u: atomicOr(flow_occupancy[i].x, mask); break;
-			case 1u: atomicOr(flow_occupancy[i].y, mask); break;
-			case 2u: atomicOr(flow_occupancy[i].z, mask); break;
-			default: atomicOr(flow_occupancy[i].w, mask); break;
+				const uint bit = level == 0 ? flow_coarse_bit(location >> FLOW_COARSE_BITS, grid) : flow_block_bit(location, grid);
+				const uint i = flow_params.limits.z + (level == 0 ? 0u : FLOW_COARSE_UVEC4S) + (bit >> 7u);
+				const uint mask = 1u << (bit & 31u);
+				switch ((bit >> 5u) & 3u)
+				{
+				case 0u: atomicOr(flow_occupancy[i].x, mask); break;
+				case 1u: atomicOr(flow_occupancy[i].y, mask); break;
+				case 2u: atomicOr(flow_occupancy[i].z, mask); break;
+				default: atomicOr(flow_occupancy[i].w, mask); break;
+				}
 			}
 		}
 	}

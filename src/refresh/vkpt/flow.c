@@ -63,6 +63,13 @@ pt_flow_cell_size cells:
     pressure solve turns into an expanding flow round it). Then it goes, and
     Flow's combustion runs on by itself: fuel above the ignition temperature
     burns, burning makes heat and smoke, heat rises and cools, smoke fades.
+    A rocket's trail (a TRAIL of fire, flow_rocket_spheres) is the same gas
+    on a layer of its own, FLOW_LAYER_FIRE_TRAIL, which glows by
+    pt_flow_rocket_brightness: with HDR Matt took the blasts down from 40 to
+    5, and the small fireball at a flying rocket's tail wanted the 40 still
+    (11-09). Its light is the fire's (seed_layers). A grenade's trail, smoke
+    with too little heat to glow, stays on the fire's layer, where its own
+    blast blows it about.
   - PLASMA, the BFG's: heat and smoke with no fuel, so nothing burns. It
     glows green while it cools and leaves dark green smoke behind. The ball
     in flight is a TRAIL - a sphere that follows it, drawing a glowing tail
@@ -83,6 +90,14 @@ pt_flow_cell_size cells:
     fired goes on a layer of its own, FLOW_LAYER_RAIL_FAR, that is the same
     gas on coarser pt_flow_rail_far_cell_size cells - far fewer blocks, and
     a longer march step, where the fine cells would be too small to see.
+  - HEATBEAM, the plasma beam (cl_flow_heatbeam): heat and a little smoke,
+    glowing yellow on the fire's colour map, and in place of the beam's
+    model. A beam given every frame it is on, like a trail, and built each
+    frame into a hot core along it, rings of small boxes running out round
+    that and a hot spot where it hits (flow_heatbeam). Its fuel never burns:
+    it is how bright the glow is, part by part (FLOW_COLORMAP_WEIGHTED_FIRE).
+    On a grid of its own, pt_flow_heatbeam_cell_size, finer than the main
+    grid's cells.
 
 Flow allocates blocks where there is smoke and frees them once it has faded,
 so when nothing is going on the grid is empty and this module skips Flow
@@ -224,9 +239,15 @@ typedef struct {
 	// A railgun's trail: the stretch of it drawn, in units from `origin`
 	// toward `end` (pt_flow_rail_length); and the part of that on the fine
 	// grid, near_from to near_to, the rest being on FLOW_LAYER_RAIL_FAR's
-	// coarse one (flow_rail_stretch).
+	// coarse one (flow_rail_stretch). A plasma beam: the stretch its core
+	// is drawn on, the client's model being on the rest (flow_heatbeam_stretch).
 	float           from, to;
 	float           near_from, near_to;
+	// A plasma beam: given again since the last frame (`seen`, as a trail),
+	// and its end on something it burns; and the line its gas was last laid
+	// along, which a pause can leave behind (flow_heatbeam_relay).
+	bool            hit;
+	vec3_t          laid_origin, laid_end;
 } flow_emitter_t;
 
 // A light that a fire or plasma burst casts, see flow_lights_collect.
@@ -312,6 +333,7 @@ static cvar_t *cvar_pt_flow_rocket_expansion;
 static cvar_t *cvar_pt_flow_rocket_smoke;
 static cvar_t *cvar_pt_flow_rocket_temperature;
 static cvar_t *cvar_pt_flow_rocket_glow;
+static cvar_t *cvar_pt_flow_rocket_brightness;
 static cvar_t *cvar_pt_flow_rocket_flame;
 static cvar_t *cvar_pt_flow_rocket_lumps;
 static cvar_t *cvar_pt_flow_rocket_budget;
@@ -353,6 +375,42 @@ static cvar_t *cvar_pt_flow_rail_smoke_brightness;
 static cvar_t *cvar_pt_flow_rail_density;
 static cvar_t *cvar_pt_flow_rail_length;
 static cvar_t *cvar_pt_flow_rail_budget;
+static cvar_t *cvar_pt_flow_heatbeam_ring_radius;
+static cvar_t *cvar_pt_flow_heatbeam_ring_width;
+static cvar_t *cvar_pt_flow_heatbeam_ring_spacing;
+static cvar_t *cvar_pt_flow_heatbeam_ring_speed;
+static cvar_t *cvar_pt_flow_heatbeam_ring_temperature;
+static cvar_t *cvar_pt_flow_heatbeam_ring_smoke;
+static cvar_t *cvar_pt_flow_heatbeam_ring_expansion;
+static cvar_t *cvar_pt_flow_heatbeam_ring_brightness;
+static cvar_t *cvar_pt_flow_heatbeam_core_brightness;
+static cvar_t *cvar_pt_flow_heatbeam_end_on;
+static cvar_t *cvar_pt_flow_heatbeam_core_clear;
+static cvar_t *cvar_pt_flow_heatbeam_near_fade;
+static cvar_t *cvar_pt_flow_heatbeam_near_brightness;
+static cvar_t *cvar_pt_flow_heatbeam_relay;
+static cvar_t *cvar_pt_flow_heatbeam_cell_size;
+static cvar_t *cvar_pt_flow_heatbeam_mirror;
+static cvar_t *cvar_pt_flow_heatbeam_radius;
+static cvar_t *cvar_pt_flow_heatbeam_temperature;
+static cvar_t *cvar_pt_flow_heatbeam_smoke;
+static cvar_t *cvar_pt_flow_heatbeam_expansion;
+static cvar_t *cvar_pt_flow_heatbeam_flow;
+static cvar_t *cvar_pt_flow_heatbeam_impact_radius;
+static cvar_t *cvar_pt_flow_heatbeam_impact_temperature;
+static cvar_t *cvar_pt_flow_heatbeam_impact_smoke;
+static cvar_t *cvar_pt_flow_heatbeam_impact_expansion;
+static cvar_t *cvar_pt_flow_heatbeam_cooling;
+static cvar_t *cvar_pt_flow_heatbeam_buoyancy;
+static cvar_t *cvar_pt_flow_heatbeam_vorticity;
+static cvar_t *cvar_pt_flow_heatbeam_smoke_fade;
+static cvar_t *cvar_pt_flow_heatbeam_brightness;
+static cvar_t *cvar_pt_flow_heatbeam_yellow;
+static cvar_t *cvar_pt_flow_heatbeam_smoke_brightness;
+static cvar_t *cvar_pt_flow_heatbeam_density;
+static cvar_t *cvar_pt_flow_heatbeam_length;
+static cvar_t *cvar_pt_flow_heatbeam_clear;
+static cvar_t *cvar_pt_flow_heatbeam_budget;
 static cvar_t *cvar_pt_flow_bubble_radius;
 static cvar_t *cvar_pt_flow_bubble_expansion;
 static cvar_t *cvar_pt_flow_bubble_amount;
@@ -398,8 +456,8 @@ static struct {
 	VkPipeline          lights_pipeline;
 
 	// What flow_occupancy.comp writes for the march: a uvec4 a block, for
-	// occupancy_blocks blocks, then the group bitset (FLOW_COARSE_UVEC4S); a
-	// set's worth occupancy_stride apart.
+	// occupancy_blocks blocks, then the group bitset (FLOW_COARSE_UVEC4S) and
+	// the block bitset (FLOW_BLOCK_UVEC4S); a set's worth occupancy_stride apart.
 	BufferResource_t    occupancy;
 	size_t              occupancy_stride;
 	uint32_t            occupancy_blocks;
@@ -516,6 +574,7 @@ static struct {
 	}                       refused[FLOW_REFUSED_TRAILS];
 	uint32_t                num_refused;
 	uint32_t                refused_rail;   // railgun shots
+	uint32_t                refused_heatbeam;   // plasma beams, frames of them
 	unsigned                pool_stats_ms;
 	// flow_pool_resize: the second reset is still to come, and the steps
 	// Flow still takes, idle or not, for the old pool to be freed
@@ -536,6 +595,19 @@ static struct {
 	// the part of the trail on the fine grid.
 	vec3_t                  view_origin;
 	float                   view_zoom;
+
+	// Laying a plasma beam's gas again under a pause (flow_heatbeam_relay):
+	// the frame of it this is - -1 none, 0 its clearing, 1 to relay_steps its
+	// steps - and how long each step is; where the view was when it was last
+	// laid, and the frame before this one; and whether one has been laid
+	// since time last ran, to be cleared when it runs again.
+	int                     relay_step;
+	int                     relay_steps;
+	float                   relay_dt;
+	vec3_t                  relay_view;
+	vec3_t                  last_view;
+	bool                    relaid;
+	bool                    heatbeam_clear;     // this simulation clears the plasma beam's layer
 
 	// The corners of every block Flow had last frame, for the collision mesh.
 	vec3_t                  blocks_min, blocks_max;
@@ -838,6 +910,9 @@ static void flow_create_simulation(void)
 	flow.max_blocks = grid_desc.maxLocations;
 	flow.pool_reset_again = false;
 	flow.pool_settle = 0;
+	flow.relay_step = -1;
+	flow.relaid = false;
+	flow.heatbeam_clear = false;
 
 	Cvar_FullSet("flow_available", "1", CVAR_ROM, FROM_CODE);
 	Com_Printf("NVIDIA Flow: ready on %s, up to %u blocks.\n", vkpt_flow_backend ? "D3D12" : "Vulkan",
@@ -1086,6 +1161,9 @@ static void flow_lights_collect(int set)
 
 		if (flow.layer_shadow[l->layer] < 0)
 			flow.layer_shadow[l->layer] = n;
+		// a rocket's trail is the fire's gas on a layer of its own
+		if (l->layer == R_FLOW_FIRE && flow.layer_shadow[FLOW_LAYER_FIRE_TRAIL] < 0)
+			flow.layer_shadow[FLOW_LAYER_FIRE_TRAIL] = n;
 	}
 }
 
@@ -1112,6 +1190,8 @@ static void flow_lights_params(int set, FlowParams *params)
 		VectorCopy(l->seed, params->seeds[i]);
 		params->seeds[i][3] = l->gather;
 		params->seed_layers[i][0] = (uint32_t)NvFlow_packLayerAndLevel(l->layer, 0);
+		// a fire's light is its rocket's trail's as well, on a layer of its own
+		params->seed_layers[i][1] = (uint32_t)NvFlow_packLayerAndLevel(l->layer == R_FLOW_FIRE ? FLOW_LAYER_FIRE_TRAIL : l->layer, 0);
 		flow.light_sum_generation[set][i] = l->generation;
 		VectorCopy(l->seed, flow.light_sum_seed[set][i]);
 	}
@@ -1129,10 +1209,12 @@ static void flow_occupancy_dispatch(int set, uint32_t blocks)
 
 	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 
-	// The group bitset is only ever ORed into, so it starts each frame clear.
+	// The group and block bitsets are only ever ORed into, so they start each
+	// frame clear.
 	const size_t uvec4_size = 4 * sizeof(uint32_t);
 	vkCmdFillBuffer(cmd_buf, flow.occupancy.buffer,
-		set * flow.occupancy_stride + flow.occupancy_blocks * uvec4_size, FLOW_COARSE_UVEC4S * uvec4_size, 0);
+		set * flow.occupancy_stride + flow.occupancy_blocks * uvec4_size,
+		(FLOW_COARSE_UVEC4S + FLOW_BLOCK_UVEC4S) * uvec4_size, 0);
 	VkMemoryBarrier cleared = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
 		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1349,14 +1431,19 @@ THE FRAME
 
 // Flow's layer for each r_flow_style_t is the style's own number; after them
 // comes the far part of the railgun's trail, which only flow_rail_boxes puts
-// anything in.
-typedef char flow_layers_match_styles[(R_FLOW_STYLES + 1 == FLOW_LAYERS) ? 1 : -1];
+// anything in, the rocket's fire trail, and your own plasma beam's two
+// first-person layers (r_flow_emit_t.view).
+typedef char flow_layers_match_styles[(R_FLOW_STYLES + 4 == FLOW_LAYERS) ? 1 : -1];
 typedef char flow_rail_layer_matches[(R_FLOW_RAIL == FLOW_LAYER_RAIL) ? 1 : -1];
-typedef char flow_rail_far_layer_last[(FLOW_LAYER_RAIL_FAR == R_FLOW_STYLES) ? 1 : -1];
+typedef char flow_heatbeam_layer_matches[(R_FLOW_HEATBEAM == FLOW_LAYER_HEATBEAM) ? 1 : -1];
+typedef char flow_rail_far_layer_after_styles[(FLOW_LAYER_RAIL_FAR == R_FLOW_STYLES) ? 1 : -1];
+typedef char flow_fire_trail_layer_after_rail_far[(FLOW_LAYER_FIRE_TRAIL == R_FLOW_STYLES + 1) ? 1 : -1];
+typedef char flow_heatbeam_view_layers_last[(FLOW_LAYER_HEATBEAM_VIEW == R_FLOW_STYLES + 2 && FLOW_LAYER_HEATBEAM_MIRROR == R_FLOW_STYLES + 3) ? 1 : -1];
 
 // A layer's cell size in world units: pt_flow_cell_size, the railgun trail's
-// own finer pt_flow_rail_cell_size, or pt_flow_rail_far_cell_size for its far
-// part (FLOW_GRIDS in shader/flow.h).
+// own finer pt_flow_rail_cell_size, pt_flow_rail_far_cell_size for its far
+// part, or the plasma beam's pt_flow_heatbeam_cell_size (FLOW_GRIDS in
+// shader/flow.h).
 static float flow_layer_cell_size(int layer)
 {
 	switch (FLOW_LAYER_GRID(layer)) {
@@ -1364,6 +1451,8 @@ static float flow_layer_cell_size(int layer)
 		return max(cvar_pt_flow_rail_cell_size->value, 0.5f);
 	case 2:
 		return max(cvar_pt_flow_rail_far_cell_size->value, 0.5f);
+	case 3:
+		return max(cvar_pt_flow_heatbeam_cell_size->value, 0.5f);
 	default:
 		return max(cvar_pt_flow_cell_size->value, 0.5f);
 	}
@@ -1436,6 +1525,41 @@ static void flow_layer_simulate(NvFlowGridSimulateLayerParams *simulate, int lay
 		simulate->maxStepsPerSimulate = (NvFlowUint)Cvar_ClampInteger(cvar_pt_flow_substeps, 1, 4);
 	}
 	simulate->forceClear = flow.force_clear;
+	// Laying a plasma beam again under a pause (flow_heatbeam_relay): one
+	// step a frame, of flow.relay_dt; the beam's layer cleared first, then
+	// stepped though there is no game time; every other layer's emitters
+	// off, so that only its gas changes - Flow cannot step one layer alone
+	// (its advection takes every layer by the same time), which is what
+	// relay_dt is chosen for.
+	if (flow.relay_step >= 0) {
+		simulate->enableVariableTimeStep = NV_FLOW_TRUE;
+		simulate->maxStepsPerSimulate = 1;
+		if (FLOW_LAYER_IS_HEATBEAM(layer)) {
+			if (flow.relay_step == 0)
+				simulate->forceClear = NV_FLOW_TRUE;
+			else
+				simulate->simulateWhenPaused = NV_FLOW_TRUE;
+		}
+		else {
+			simulate->forceDisableEmitters = NV_FLOW_TRUE;
+		}
+	}
+	// ...and once time runs again, what was laid goes: the beam is back where
+	// the one firing sees it, and builds again in a step
+	if (flow.heatbeam_clear && FLOW_LAYER_IS_HEATBEAM(layer))
+		simulate->forceClear = NV_FLOW_TRUE;
+	/* A layer's forceClear does not empty it. All it does is stop Flow asking
+	   for the layer's blocks (Summary.cpp), and a block nobody asks for is kept
+	   for blockMinLifetime more simulations, gas and all (Sparse.cpp) - the
+	   most any layer has, so every layer's 4 kept it. The re-lay is one or a
+	   few simulations, then the pause holds whatever is there: the first-person
+	   beam stayed where it was, the re-laid one under it - two beams (Matt,
+	   11-09). Flow gives a cleared layer no lifetime only when every layer
+	   clears; so, on a frame that clears the plasma beam, none has any. What
+	   that drops of the others is only blocks Flow's last summary did not
+	   want - under a pause, where nothing has emitted since, empty ones. */
+	if ((flow.relay_step == 0 || flow.heatbeam_clear) && !flow.force_clear)
+		simulate->blockMinLifetime = 0;
 	simulate->vorticity.forceScale = cvar_pt_flow_vorticity->value;
 	simulate->physicsCollisionEnabled = collide ? NV_FLOW_TRUE : NV_FLOW_FALSE;
 
@@ -1446,6 +1570,7 @@ static void flow_layer_simulate(NvFlowGridSimulateLayerParams *simulate, int lay
 
 	switch (layer) {
 	case R_FLOW_FIRE:
+	case FLOW_LAYER_FIRE_TRAIL:     // the same gas, but for how bright it glows
 		advection->buoyancyPerTemp = cvar_pt_flow_buoyancy->value;
 		advection->coolingRate = max(cvar_pt_flow_cooling->value, 0.f);
 		advection->smokePerBurn = max(cvar_pt_flow_smoke_per_burn->value, 0.f);
@@ -1514,6 +1639,29 @@ static void flow_layer_simulate(NvFlowGridSimulateLayerParams *simulate, int lay
 		advection->smoke.fade = flow.rail_smoke_fade;
 		advection->temperature.fade = flow.rail_heat_fade;
 		break;
+
+	case R_FLOW_HEATBEAM:
+	case FLOW_LAYER_HEATBEAM_VIEW:      // your own, as the camera sees it...
+	case FLOW_LAYER_HEATBEAM_MIRROR:    // ...and as a mirror does
+		// Heat cooling fast: the rings glow only just behind where they are,
+		// and what a swept beam leaves behind goes in a quarter of a second,
+		// lifting off in curls as it cools. Its little smoke is what keeps a
+		// block while there is glow in it, and is gone soon after - as the
+		// railgun's, speed alone keeps no block. Its fuel is how bright its
+		// glow is (FLOW_COLORMAP_WEIGHTED_FIRE), so it must never burn: no
+		// temperature reaches the ignition, and none would burn any if it did.
+		// It neither fades nor damps (Flow's defaults for fuel), and goes with
+		// the gas it is in.
+		advection->ignitionTemp = 1e6f;
+		advection->burnPerTemp = 0.f;
+		advection->buoyancyPerTemp = max(cvar_pt_flow_heatbeam_buoyancy->value, 0.f);
+		advection->coolingRate = max(cvar_pt_flow_heatbeam_cooling->value, 0.1f);
+		advection->smoke.damping = 0.6f;
+		advection->smoke.fade = max(cvar_pt_flow_heatbeam_smoke_fade->value, 0.f);
+		simulate->vorticity.forceScale = max(cvar_pt_flow_heatbeam_vorticity->value, 0.f);
+		advection->velocity.damping = 0.5f;
+		simulate->summaryAllocate.speedThresholdMinSmoke = simulate->summaryAllocate.smokeThreshold;
+		break;
 	}
 }
 
@@ -1529,9 +1677,15 @@ static float flow_emitter_life(const flow_emitter_t *e)
 	return max(cvar_pt_flow_burst->value, 0.f);
 }
 
+// A trail, and a plasma beam: given every frame, gone the first one it is not.
+static bool flow_emitter_given(const flow_emitter_t *e)
+{
+	return e->kind == R_FLOW_TRAIL || FLOW_LAYER_IS_HEATBEAM(e->layer);
+}
+
 static bool flow_emitter_emitting(const flow_emitter_t *e)
 {
-	if (e->kind == R_FLOW_TRAIL)
+	if (flow_emitter_given(e))
 		return e->seen;
 	return e->age >= 0.f && e->age < flow_emitter_life(e);
 }
@@ -1657,6 +1811,13 @@ static bool flow_build_offscreen(float cell_size)
 static void flow_step_mirror(float dt)
 {
 	const float rate = cvar_pt_flow_rate->value;
+	// laying a plasma beam again under a pause: a step a frame, of relay_dt -
+	// none on the frame that clears it - and the stepper's count left alone
+	if (flow.relay_step >= 0) {
+		flow.stepping = true;
+		flow.step_time = flow.relay_step > 0 ? flow.relay_dt : 0.f;
+		return;
+	}
 	if (flow.force_clear)
 		flow.step_error = 0.f;
 	if (rate > 0.f && flow.frame_dt > 0.f && flow.frame_dt < 1.f / rate) {
@@ -1738,7 +1899,7 @@ static int flow_rocket_spheres(flow_emitter_t *e, int num_spheres, float cell_si
 		NvFlowGridEmitterSphereParams *sphere = &flow.spheres[num_spheres];
 		*sphere = NvFlowEmitterSphereParams_default;
 		sphere->luid = e->luid | ((uint64_t)i << 40);
-		sphere->layer = e->layer;
+		sphere->layer = FLOW_LAYER_FIRE_TRAIL;   // the fire's gas, pt_flow_rocket_brightness
 		sphere->position.x = e->last[0] + path[0] * f + offset[0];
 		sphere->position.y = e->last[1] + path[1] * f + offset[1];
 		sphere->position.z = e->last[2] + path[2] * f + offset[2];
@@ -1788,7 +1949,7 @@ static int flow_rocket_spheres(flow_emitter_t *e, int num_spheres, float cell_si
 			NvFlowGridEmitterSphereParams *quench = &flow.spheres[num_spheres];
 			*quench = NvFlowEmitterSphereParams_default;
 			quench->luid = e->luid | (1ull << 48) | ((uint64_t)i << 40);
-			quench->layer = e->layer;
+			quench->layer = FLOW_LAYER_FIRE_TRAIL;
 			quench->position.x = e->last[0] + path[0] * f - e->heading[0] * glow;
 			quench->position.y = e->last[1] + path[1] * f - e->heading[1] * glow;
 			quench->position.z = e->last[2] + path[2] * f - e->heading[2] * glow;
@@ -2086,6 +2247,287 @@ static int flow_rail_boxes(const flow_emitter_t *e, int num_boxes, float couple_
 	return flow_rail_piece(e, num_boxes, couple_rate, e->near_to, e->to, 2, FLOW_LAYER_RAIL_FAR);
 }
 
+// `from` along the beam from `origin` in unit `dir`, moved on past the ball of
+// `clear` round the view where that ball is round it - no further than `to`.
+static float flow_beam_clear(const vec3_t origin, const vec3_t dir, float from, float to, float clear)
+{
+	vec3_t to_view;
+	VectorSubtract(flow.view_origin, origin, to_view);
+	// where along the beam the view is nearest it, and how far off it it is
+	const float along = DotProduct(to_view, dir);
+	const float across2 = max(DotProduct(to_view, to_view) - along * along, 0.f);
+	if (clear * clear > across2) {
+		const float reach = sqrtf(clear * clear - across2);
+		if (along - reach <= from)
+			from = max(from, along + reach);
+	}
+	return min(from, to);
+}
+
+// The stretch of plasma beam `e` its core is drawn on (e->from to e->to): all
+// of it up to pt_flow_heatbeam_length units, or that much round the point of
+// it nearest the view, as the railgun's trail (flow_rail_stretch) - and none
+// within pt_flow_heatbeam_core_clear of the view where that is round its
+// start, but for the one only a mirror sees, which is not seen from the view.
+// Worked out as it is given, from the view of the frame before; the client
+// draws the beam's model on the stretch past it, and both go by this.
+static void flow_heatbeam_stretch(flow_emitter_t *e)
+{
+	vec3_t dir, to_view;
+	VectorSubtract(e->end, e->origin, dir);
+	const float length = VectorNormalize(dir);
+	e->from = e->to = 0.f;
+	if (length < 1.f)
+		return;
+
+	VectorSubtract(flow.view_origin, e->origin, to_view);
+	const float keep = max(cvar_pt_flow_heatbeam_length->value, 64.f);
+	e->to = length;
+	if (length > keep) {
+		const float nearest = min(max(DotProduct(to_view, dir), 0.f), length);
+		e->from = min(max(nearest - 0.5f * keep, 0.f), length - keep);
+		e->to = e->from + keep;
+	}
+	if (e->layer != FLOW_LAYER_HEATBEAM_MIRROR)
+		e->from = flow_beam_clear(e->origin, dir, e->from, e->to,
+			max(cvar_pt_flow_heatbeam_core_clear->value, 0.f));
+}
+
+/*
+A plasma beam (R_FLOW_HEATBEAM), given every frame it is on, after the classic
+one (the beam's model, and CL_Heatbeam in client/newfx.c): rings of yellow
+particles round the beam, 32 units apart, running out along it at 96 units/s,
+gone each frame. Here, on FLOW_LAYER_HEATBEAM's own grid
+(pt_flow_heatbeam_cell_size):
+
+  - the beam itself is a core of hot gas pt_flow_heatbeam_radius round, the
+    yellow-orange of the model's skin at its hottest, pushed out along the
+    beam at pt_flow_heatbeam_flow; what leaves it cools to a glow round it,
+    which the layer's buoyancy and curl lift off in wisps;
+  - the rings are glowing gas, pt_flow_heatbeam_ring_radius round, each
+    FLOW_RAIL_CHORDS boxes pt_flow_heatbeam_ring_width thick, running out at
+    pt_flow_heatbeam_ring_speed from where the beam came on - and pushing the
+    gas they heat along with them, so what cools trails just behind;
+  - where it hits (`hit`), a hot spot pulled back off the surface by half its
+    radius, which burns off a thin column of smoke.
+
+All of it fills its cells in the step it reaches them, at five times the
+coupling rate, as the railgun's spiral and a blast's puffs do. A ring runs on
+a cell and more in a step, and at the plain rate it left each cell it crossed
+at half its heat or less, most of a cell's only partly in it: on the fire's
+colour map, which is steep at the top, a dull red a small part as bright as
+the heat it was given (Matt, 11-09: "the rings need to be a lot brighter or
+start brighter"). Worked out, not seen.
+
+THE CORE SEEN END-ON. Glowing gas is as bright as the length of it looked
+through. A line of it seen from near one end - by the one firing it, down the
+barrel - is looked through for 1/sin of the angle it is seen at, against its
+width side-on: tens of times, and more toward the crosshair, where the model
+it stands in for, a surface, is as bright from any side. The sheath this was
+before outshone the rings that way. So each piece of the core glows that sine
+as brightly - pt_flow_heatbeam_end_on of it - by its fuel, which weights the
+layer's glow (FLOW_COLORMAP_WEIGHTED_FIRE) and never burns here. The sine
+changes fastest near the view, so the pieces are shorter there - a quarter
+of their distance from it, down to two cells - and 16 cells long at most
+further off: Flow allocates every block in a box's axis-aligned bounds, and a
+FLOW_BEAM_SEGMENT of 48 units across a diagonal took a 2x3x3 run of the
+grid's 48x24x24-unit blocks, where 24 takes 2x2x2 at most. It is the one
+view's sine. Your own beam in first person is laid a second time, from the
+gun your body holds, for mirrors only (FLOW_LAYER_HEATBEAM_MIRROR): that one
+is not seen from the view, so it is neither dimmed nor kept clear of it.
+
+NEAR THE VIEW the core starts pt_flow_heatbeam_core_clear units from it
+(flow_heatbeam_stretch) and comes up from pt_flow_heatbeam_near_brightness of
+its glow there to all of it pt_flow_heatbeam_near_fade units further on. Gas
+a few units from the eye is cells magnified many times over, the glow lifting
+off them with it: from the model's start, 8 units from the eye, a blob of
+fire over the gun (Matt, 11-09: "too much fire near the camera", "it looks
+like it's top of the gun"), and kept 24 units off it, a beam that began in
+mid-air (11-10). So the one firing has its gas start in the barrel instead
+(cl_flow_heatbeam_muzzle), where the gun hides the near end, as it hides the
+model's. Nothing is drawn short of the core: keeping the model there - the
+core from 32 units out - left the model as most of what the one firing sees
+of the beam, the rest of it end-on near the crosshair ("I shouldn't see the
+old beam").
+
+The core is on e->from to e->to (flow_heatbeam_stretch); the client draws
+the beam's model past it. The rings are not within pt_flow_heatbeam_clear of
+the view either, nor the hot spot within FLOW_HEATBEAM_POINT_BLANK: the one
+firing has the start of the beam on the gun, where they would fill the
+screen - and seen end-on, the first rings out stack into a ball round the
+crosshair. Ring radius grows from nothing over the first 10 units, as the
+classic's does.
+
+Laid again under a pause (flow_heatbeam_relay), the coupling fills a cell in
+the one step whatever its length, and the rings are where they were
+`ring_back` seconds before, run out over the steps it takes.
+*/
+// No hot spot where the beam hits closer to the view than this: a wall at
+// point blank, all fire. It went with the rings' pt_flow_heatbeam_clear until
+// that was 80 (11-10).
+#define FLOW_HEATBEAM_POINT_BLANK 32.f
+
+static void flow_heatbeam(const flow_emitter_t *e, int *num_boxes, int *num_spheres, float couple_rate)
+{
+	vec3_t dir, right, up;
+	VectorSubtract(e->end, e->origin, dir);
+	const float length = VectorNormalize(dir);
+	if (length < 1.f)
+		return;
+	MakeNormalVectors(dir, right, up);
+
+	const int layer = e->layer;
+	const bool mirror = layer == FLOW_LAYER_HEATBEAM_MIRROR;  // not seen from the view
+	const float cell_size = flow_layer_cell_size(layer);
+	// laid again under a pause: full in a step, however short the step
+	const bool relay = flow.relay_step > 0;
+	const float rate = relay ? max(5.f * couple_rate, 1.f / max(flow.relay_dt, 1e-4f)) : 5.f * couple_rate;
+	const float ring_back = relay ? (float)(flow.relay_steps - flow.relay_step) * flow.relay_dt : 0.f;
+	const float from = min(max(e->from, 0.f), length);
+	const float to = min(max(e->to, from), length);
+	const float clear = mirror ? 0.f : max(cvar_pt_flow_heatbeam_clear->value, 0.f);
+
+	// The core. A cylinder growing at `expansion` units/s at its surface
+	// diverges by 2 * expansion / radius per unit length, on velocity cells
+	// twice the density cells' size, as the railgun's line.
+	if (to - from >= 1.f) {
+		const float radius = max(cvar_pt_flow_heatbeam_radius->value, 0.5f);
+		const float divergence = 2.f * cvar_pt_flow_heatbeam_expansion->value * (2.f * cell_size) / max(radius, cell_size);
+		const float speed = cvar_pt_flow_heatbeam_flow->value;
+		const float brightness = max(cvar_pt_flow_heatbeam_core_brightness->value, 0.f);
+		const float end_on = mirror ? 0.f : Cvar_ClampValue(cvar_pt_flow_heatbeam_end_on, 0.f, 1.f);
+		const float near_glow = Cvar_ClampValue(cvar_pt_flow_heatbeam_near_brightness, 0.f, 1.f);
+		const float near_fade = mirror ? 0.f : max(cvar_pt_flow_heatbeam_near_fade->value, 0.f);
+		const float near_start = max(cvar_pt_flow_heatbeam_core_clear->value, 0.f);
+		float s = from;
+		for (uint64_t piece = 1; s < to - 0.01f; piece++) {
+			vec3_t a, b, middle, seen, across;
+			VectorMA(e->origin, s, dir, a);
+			const float step = min(max(0.25f * Distance(a, flow.view_origin), 2.f * cell_size), 16.f * cell_size);
+			float t = min(s + step, to);
+			if (to - t < 0.5f * step)   // no sliver at the end
+				t = to;
+			VectorMA(e->origin, t, dir, b);
+
+			// the sine of the angle the view sees its middle at
+			VectorMA(e->origin, 0.5f * (s + t), dir, middle);
+			VectorSubtract(middle, flow.view_origin, seen);
+			CrossProduct(seen, dir, across);
+			const float distance = VectorLength(seen);
+			const float sine = distance > 0.01f ? min(VectorLength(across) / distance, 1.f) : 1.f;
+			// and how far up from near_glow it has come, that far from the view
+			const float near = near_fade > 0.f ? min(max((distance - near_start) / near_fade, near_glow), 1.f) : 1.f;
+			s = t;
+
+			NvFlowGridEmitterBoxParams *box = flow_line_box(num_boxes, e->luid | (piece << 32),
+				layer, a, b, radius, 0.f);
+			if (!box)
+				return;
+			box->velocity.x = dir[0] * speed;
+			box->velocity.y = dir[1] * speed;
+			box->velocity.z = dir[2] * speed;
+			box->coupleRateVelocity = speed != 0.f ? rate : 0.f;
+			box->divergence = divergence;
+			box->temperature = cvar_pt_flow_heatbeam_temperature->value;
+			box->fuel = brightness * near * (1.f - end_on + end_on * max(sine, 0.02f));
+			box->burn = 0.f;
+			box->smoke = cvar_pt_flow_heatbeam_smoke->value;
+			box->coupleRateDivergence = rate;
+			box->coupleRateTemperature = rate;
+			box->coupleRateFuel = rate;
+			box->coupleRateSmoke = rate;
+		}
+	}
+
+	// The rings: ring n is at the beam's age x speed - n x spacing along it,
+	// all along the beam from its first frame, as the classic's are (n below
+	// 0 for the ones further out than the first has run yet). A ring's boxes
+	// keep their luids as it runs out, n's last ten bits.
+	const float ring_from = flow_beam_clear(e->origin, dir, from, to, clear);
+	const float ring_radius = max(cvar_pt_flow_heatbeam_ring_radius->value, 0.f);
+	const float width = max(cvar_pt_flow_heatbeam_ring_width->value, 0.5f);
+	const float spacing = max(cvar_pt_flow_heatbeam_ring_spacing->value, 4.f);
+	const float ring_speed = max(cvar_pt_flow_heatbeam_ring_speed->value, 0.f);
+	const float ring_brightness = max(cvar_pt_flow_heatbeam_ring_brightness->value, 0.f);
+	if (ring_radius > 0.f && to - ring_from >= 1.f) {
+		const float divergence = 2.f * cvar_pt_flow_heatbeam_ring_expansion->value * (2.f * cell_size) / max(width, cell_size);
+		const double run = (double)max(e->age - ring_back, 0.f) * ring_speed;
+		const int newest = (int)floor(run / spacing);
+		// the furthest ring not past `to`, then in toward the start
+		int n = newest - (int)floor((to - fmod(run, spacing)) / spacing);
+		for (; n <= newest; n++) {
+			const float s = (float)(run - (double)n * spacing);
+			if (s < ring_from || s > to)
+				continue;
+			const float r = ring_radius * min(s / 10.f, 1.f);
+			if (r < 0.5f)
+				continue;
+
+			vec3_t centre;
+			VectorMA(e->origin, s, dir, centre);
+			for (int c = 0; c < FLOW_RAIL_CHORDS; c++) {
+				const float a0 = 2.f * (float)M_PI * c / FLOW_RAIL_CHORDS;
+				const float a1 = 2.f * (float)M_PI * (c + 1) / FLOW_RAIL_CHORDS;
+				vec3_t a, b;
+				VectorMA(centre, r * cosf(a0), right, a);
+				VectorMA(a, r * sinf(a0), up, a);
+				VectorMA(centre, r * cosf(a1), right, b);
+				VectorMA(b, r * sinf(a1), up, b);
+
+				const uint64_t id = (uint64_t)(((unsigned)n & 1023u) * FLOW_RAIL_CHORDS + c + 1);
+				NvFlowGridEmitterBoxParams *box = flow_line_box(num_boxes, e->luid | (1ull << 56) | (id << 32),
+					layer, a, b, width, 0.5f * width);
+				if (!box)
+					return;
+				box->velocity.x = dir[0] * ring_speed;
+				box->velocity.y = dir[1] * ring_speed;
+				box->velocity.z = dir[2] * ring_speed;
+				box->coupleRateVelocity = ring_speed > 0.f ? rate : 0.f;
+				box->divergence = divergence;
+				box->temperature = cvar_pt_flow_heatbeam_ring_temperature->value;
+				box->fuel = ring_brightness;
+				box->burn = 0.f;
+				box->smoke = cvar_pt_flow_heatbeam_ring_smoke->value;
+				box->coupleRateDivergence = rate;
+				box->coupleRateTemperature = rate;
+				box->coupleRateFuel = rate;
+				box->coupleRateSmoke = rate;
+			}
+		}
+	}
+
+	// Where it hits: a ball growing at `expansion` at its surface diverges by
+	// 3 * expansion / radius, as an explosion's. Whether or not the core
+	// reaches it - the model does - but not right in front of the view - a
+	// wall at point blank. Its glow as bright as its heat makes it.
+	if (e->hit && *num_spheres < (int)LENGTH(flow.spheres) &&
+		(mirror || Distance(e->end, flow.view_origin) > FLOW_HEATBEAM_POINT_BLANK)) {
+		const float radius = max(cvar_pt_flow_heatbeam_impact_radius->value, cell_size);
+		NvFlowGridEmitterSphereParams *sphere = &flow.spheres[*num_spheres];
+		*sphere = NvFlowEmitterSphereParams_default;
+		sphere->luid = e->luid | (1ull << 48);
+		sphere->layer = layer;
+		sphere->position.x = e->end[0] - dir[0] * 0.5f * radius;
+		sphere->position.y = e->end[1] - dir[1] * 0.5f * radius;
+		sphere->position.z = e->end[2] - dir[2] * 0.5f * radius;
+		sphere->radius = radius;
+		sphere->multisample = NV_FLOW_TRUE;
+		sphere->velocity.x = sphere->velocity.y = sphere->velocity.z = 0.f;
+		sphere->divergence = 3.f * cvar_pt_flow_heatbeam_impact_expansion->value * (2.f * cell_size) / radius;
+		sphere->temperature = cvar_pt_flow_heatbeam_impact_temperature->value;
+		sphere->fuel = 1.f;
+		sphere->burn = 0.f;
+		sphere->smoke = cvar_pt_flow_heatbeam_impact_smoke->value;
+		sphere->coupleRateVelocity = 0.f;
+		sphere->coupleRateDivergence = rate;
+		sphere->coupleRateTemperature = rate;
+		sphere->coupleRateFuel = rate;
+		sphere->coupleRateBurn = 0.f;
+		sphere->coupleRateSmoke = rate;
+		flow.sphere_ptrs[(*num_spheres)++] = sphere;
+	}
+}
+
 static void flow_build_params(float dt)
 {
 	const float cell_size = max(cvar_pt_flow_cell_size->value, 0.5f);
@@ -2115,6 +2557,10 @@ static void flow_build_params(float dt)
 		}
 		if (e->layer == R_FLOW_RAIL) {
 			num_boxes = flow_rail_boxes(e, num_boxes, couple_rate);
+			continue;
+		}
+		if (FLOW_LAYER_IS_HEATBEAM(e->layer)) {
+			flow_heatbeam(e, &num_boxes, &num_spheres, couple_rate);
 			continue;
 		}
 
@@ -2304,6 +2750,17 @@ static bool flow_rail_room(void)
 	return (float)flow.num_blocks < budget * (float)flow.max_blocks;
 }
 
+// Whether a plasma beam may have more of Flow's blocks: while the gas fills
+// less than `share` x pt_flow_heatbeam_budget of them. A beam starts within
+// its share and keeps going to half as much again, as a rocket's trail
+// (flow_rocket_room), so that one held at the edge does not flick between
+// the gas and the client's rings frame by frame.
+static bool flow_heatbeam_room(float share)
+{
+	const float budget = Cvar_ClampValue(cvar_pt_flow_heatbeam_budget, 0.f, 1.f);
+	return (float)flow.num_blocks < share * budget * (float)flow.max_blocks;
+}
+
 // The shortest piece of a railgun's trail put on a grid of its own: a shorter
 // one goes with the piece next to it, so that no sliver is left out.
 #define FLOW_RAIL_MIN_PIECE 16.f
@@ -2382,7 +2839,7 @@ static void flow_age(float dt)
 	for (int i = 0; i < flow.num_emitters; i++) {
 		flow_emitter_t *e = &flow.emitters[i];
 		e->age += dt;
-		if (e->kind == R_FLOW_TRAIL) {
+		if (flow_emitter_given(e)) {
 			if (!e->seen) {
 				// its light fades with what is left of the glow, and the
 				// blast at the end of a BFG ball's flight may take it over
@@ -2426,14 +2883,15 @@ static void flow_pool_stats(void)
 		for (uint32_t i = 0; i < flow.num_refused; i++)
 			counts[flow.refused[i].grenade][flow.refused[i].cut]++;
 
-		if (flow.peak_blocks || flow.num_refused || flow.refused_rail) {
-			Com_Printf("FLOWPOOL %u/%u blocks, peak %u | fire %u plasma %u bubbles %u rail %u (+%u far) | "
-				"to particles: rockets %u (+%u cut), grenades %u (+%u cut), rail shots %u\n",
+		if (flow.peak_blocks || flow.num_refused || flow.refused_rail || flow.refused_heatbeam) {
+			Com_Printf("FLOWPOOL %u/%u blocks, peak %u | fire %u (+%u rocket trails) plasma %u bubbles %u rail %u (+%u far) plasma beam %u (+%u first person, +%u mirror) | "
+				"to particles: rockets %u (+%u cut), grenades %u (+%u cut), rail shots %u, plasma beam frames %u\n",
 				flow.num_blocks, flow.max_blocks, flow.peak_blocks,
-				flow.layer_blocks[R_FLOW_FIRE], flow.layer_blocks[R_FLOW_PLASMA],
+				flow.layer_blocks[R_FLOW_FIRE], flow.layer_blocks[FLOW_LAYER_FIRE_TRAIL], flow.layer_blocks[R_FLOW_PLASMA],
 				flow.layer_blocks[R_FLOW_BUBBLES], flow.layer_blocks[R_FLOW_RAIL],
-				flow.layer_blocks[FLOW_LAYER_RAIL_FAR],
-				counts[0][0], counts[0][1], counts[1][0], counts[1][1], flow.refused_rail);
+				flow.layer_blocks[FLOW_LAYER_RAIL_FAR], flow.layer_blocks[R_FLOW_HEATBEAM],
+				flow.layer_blocks[FLOW_LAYER_HEATBEAM_VIEW], flow.layer_blocks[FLOW_LAYER_HEATBEAM_MIRROR],
+				counts[0][0], counts[0][1], counts[1][0], counts[1][1], flow.refused_rail, flow.refused_heatbeam);
 		}
 	}
 
@@ -2441,6 +2899,7 @@ static void flow_pool_stats(void)
 	flow.peak_blocks = flow.num_blocks;
 	flow.num_refused = 0;
 	flow.refused_rail = 0;
+	flow.refused_heatbeam = 0;
 }
 
 // A trail of fire sent back to the client's particles, for flow_pool_stats:
@@ -2503,6 +2962,99 @@ static void flow_pool_step(void)
 	}
 }
 
+/*
+A plasma beam's gas laid again under a pause. Paused, Flow holds still
+(flow_simulate), but the client goes on giving the beam where it is now - and
+photo mode's free camera, once moved, switches to third person, which moves
+your own beam from the gun you see in first person (at the eye, some 15 units
+ahead of and 10 above your body's) to the barrel of the gun your body holds.
+The gas stayed where first person laid it, its core dimmed for being seen
+end-on from the eye: a beam ahead of the gun and above it, its core faint
+(Matt, 11-09: "it needs to be right in both").
+
+So, under a pause, when a beam's line has moved since its gas was laid - or
+the view has come to rest more than 8 units from where it was then, the core's
+end-on dimming and near fade being the view's - the beam's layer is cleared on
+one frame and laid again over the next ones: Flow steps though there is no
+game time, with every other layer's emitters off. Flow's advection takes every
+layer by the same time, so it is only where no other layer has any blocks that
+the beam is run for pt_flow_heatbeam_relay seconds, a step a frame - its rings
+running out over them, its glow lifting off; with other gas about it is laid
+in one step of a thousandth of a second, which leaves that gas as it was: the
+core and the rings, without what they leave behind. Photo mode's picture
+starts again on each of these frames. When time runs again what was laid
+goes, and the beam builds again where the one firing sees it.
+pt_flow_heatbeam_relay 0: never.
+
+Run before flow_build_params, which reads flow.relay_step.
+*/
+static void flow_heatbeam_relay(float dt)
+{
+	flow.heatbeam_clear = false;
+
+	bool any = false, moved = false;
+	for (int i = 0; i < flow.num_emitters; i++) {
+		const flow_emitter_t *e = &flow.emitters[i];
+		if (!FLOW_LAYER_IS_HEATBEAM(e->layer) || !flow_emitter_emitting(e))
+			continue;
+		any = true;
+		if (Distance(e->origin, e->laid_origin) > 1.f || Distance(e->end, e->laid_end) > 1.f)
+			moved = true;
+	}
+	const bool still = Distance(flow.view_origin, flow.last_view) < 0.1f;
+	VectorCopy(flow.view_origin, flow.last_view);
+
+	const float relay_time = max(cvar_pt_flow_heatbeam_relay->value, 0.f);
+	if (dt > 0.f || relay_time <= 0.f || !any) {
+		// time runs (or none to lay): the gas is laid where the beam is given,
+		// and what a pause laid goes
+		flow.heatbeam_clear = flow.relaid && dt > 0.f;
+		if (dt > 0.f)
+			flow.relaid = false;
+		flow.relay_step = -1;
+		for (int i = 0; i < flow.num_emitters; i++) {
+			flow_emitter_t *e = &flow.emitters[i];
+			if (FLOW_LAYER_IS_HEATBEAM(e->layer)) {
+				VectorCopy(e->origin, e->laid_origin);
+				VectorCopy(e->end, e->laid_end);
+			}
+		}
+		VectorCopy(flow.view_origin, flow.relay_view);
+		return;
+	}
+
+	if (moved || (still && Distance(flow.view_origin, flow.relay_view) > 8.f)) {
+		bool others = false;
+		for (int l = 0; l < FLOW_LAYERS; l++) {
+			if (!FLOW_LAYER_IS_HEATBEAM(l) && flow.layer_blocks[l] > 0)
+				others = true;
+		}
+		const float rate = cvar_pt_flow_rate->value > 0.f ? cvar_pt_flow_rate->value : 60.f;
+		flow.relay_steps = others ? 1 : max((int)ceilf(relay_time * rate), 1);
+		flow.relay_dt = others ? 1e-3f : 1.f / rate;
+		flow.relay_step = 0;
+		flow.relaid = true;
+		for (int i = 0; i < flow.num_emitters; i++) {
+			flow_emitter_t *e = &flow.emitters[i];
+			if (FLOW_LAYER_IS_HEATBEAM(e->layer)) {
+				VectorCopy(e->origin, e->laid_origin);
+				VectorCopy(e->end, e->laid_end);
+			}
+		}
+		VectorCopy(flow.view_origin, flow.relay_view);
+		vkpt_reset_accumulation();
+		return;
+	}
+
+	if (flow.relay_step >= 0 && flow.relay_step < flow.relay_steps) {
+		flow.relay_step++;
+		vkpt_reset_accumulation();
+	}
+	else {
+		flow.relay_step = -1;
+	}
+}
+
 // Runs this frame's simulation and acquires its result for `set`, filling
 // `params` with where everything is. False when there is nothing to draw.
 static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
@@ -2526,7 +3078,12 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 	if (flow.idle && flow.num_emitters == 0 && !flow.force_clear)
 		return false;
 
-	flow_build_params(dt);
+	// A plasma beam laid again under a pause steps Flow by a time of its own.
+	flow_heatbeam_relay(dt);
+	const bool relaying = flow.relay_step >= 0;
+	const float sim_dt = relaying ? (flow.relay_step > 0 ? flow.relay_dt : 0.f) : dt;
+
+	flow_build_params(sim_dt);
 
 	/* Paused - no game time - the gas holds still, and Flow is not stepped at all.
 	   Below pt_flow_rate fps (or at pt_flow_rate 0) its variable time step takes a
@@ -2534,8 +3091,9 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 	   quite nothing - the pressure solve, the advection resampling the atlas - so the
 	   gas kept moving a little under the pause (Matt, 11-06). Without a simulate
 	   getRenderData hands over what the last one left (the density, and the shadow
-	   pass's copy of it). A force clear still runs. */
-	const bool hold = dt <= 0.f && flow.have_blocks && !flow.force_clear;
+	   pass's copy of it). A force clear still runs, and so does a plasma beam
+	   being laid again (flow_heatbeam_relay). */
+	const bool hold = dt <= 0.f && flow.have_blocks && !flow.force_clear && !relaying;
 
 	NvFlowGridParamsSnapshot *snapshot = flow.params_iface->getParamsSnapshot(flow.grid_params, flow.sim_time, 0);
 	NvFlowGridParamsDesc params_desc = { 0 };
@@ -2555,8 +3113,9 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 				flow.grid_iface->offscreen(flow.context, flow.grid, &params_desc);
 			// At dt 0 simulate returns before it takes a pending reset
 			// (Grid.cpp canSkipSimulation); at any other, even one its
-			// stepper takes no step on, it does.
-			if (dt > 0.f)
+			// stepper takes no step on, it does - and so it does on a plasma
+			// beam's clearing, whose forced clear keeps it from returning.
+			if (sim_dt > 0.f || relaying)
 				flow_pool_step();
 		}
 		flow.grid_iface->getRenderData(flow.context, flow.grid, &render_data);
@@ -2586,6 +3145,7 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 
 			vec3_t world_min = { FLT_MAX, FLT_MAX, FLT_MAX };
 			vec3_t world_max = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+			bool grid_seen[FLOW_GRIDS] = { false };
 
 			for (NvFlowUint i = 0; i < sparse->layerCount; i++) {
 				const NvFlowSparseLayerParams *layer = &sparse->layers[i];
@@ -2606,6 +3166,15 @@ static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 					world_min[k] = min(world_min[k], dst->world_min[k]);
 					world_max[k] = max(world_max[k], dst->world_max[k]);
 				}
+
+				// And round each grid's layers alone, for the march to leave a
+				// grid out where it has no blocks (pt_flow_march 8).
+				const int g = FLOW_LAYER_GRID(l);
+				for (int k = 0; k < 3; k++) {
+					params->grid_min[g][k] = grid_seen[g] ? min(params->grid_min[g][k], dst->world_min[k]) : dst->world_min[k];
+					params->grid_max[g][k] = grid_seen[g] ? max(params->grid_max[g][k], dst->world_max[k]) : dst->world_max[k];
+				}
+				grid_seen[g] = true;
 
 				// The cells of the layer's grid; the layers of a grid all have the same.
 				float *grid = params->grids[FLOW_LAYER_GRID(l)];
@@ -2923,6 +3492,44 @@ static int vkpt_flow_emit(const r_flow_emit_t *emit)
 		break;
 
 	case R_FLOW_BEAM:
+		// A plasma beam is one emitter for as long as it is given, by its
+		// key, as a trail; flow_heatbeam builds it from where it is each
+		// frame. No light of its own. On the layer of whoever sees it: your
+		// own in first person is given twice, down the barrel and for mirrors.
+		if (emit->style == R_FLOW_HEATBEAM) {
+			const int layer = emit->view == R_FLOW_VIEW_FIRST_PERSON ? FLOW_LAYER_HEATBEAM_VIEW
+				: emit->view == R_FLOW_VIEW_MIRROR ? FLOW_LAYER_HEATBEAM_MIRROR : R_FLOW_HEATBEAM;
+			// the mirror's copy off: a mirror shows the beam's model instead
+			if (layer == FLOW_LAYER_HEATBEAM_MIRROR && !cvar_pt_flow_heatbeam_mirror->integer)
+				return 0;
+			flow_emitter_t *e = NULL;
+			for (int i = 0; i < flow.num_emitters && !e; i++) {
+				if (flow.emitters[i].layer == layer && flow.emitters[i].key == emit->key)
+					e = &flow.emitters[i];
+			}
+			if (!flow_heatbeam_room(e ? 1.5f : 1.f)) {
+				flow.refused_heatbeam++;
+				return 0;
+			}
+			if (!e) {
+				e = flow_new_emitter(R_FLOW_BEAM, layer, emit->origin, emit->scale);
+				e->layer = layer;
+				e->key = emit->key;
+				e->light = -1;
+			}
+			VectorCopy(emit->origin, e->origin);
+			VectorCopy(emit->end, e->end);
+			e->scale = emit->scale;
+			e->hit = emit->hit;
+			e->seen = true;
+			flow_heatbeam_stretch(e);
+			if (emit->stretch) {
+				emit->stretch[0] = e->from;
+				emit->stretch[1] = e->to;
+			}
+			flow.idle = false;
+			break;
+		}
 		// A railgun's trail is one emitter, made into its boxes every frame
 		// it emits (flow_rail_boxes); it casts no light of its own - the
 		// client's classic beam lights stay.
@@ -3090,10 +3697,11 @@ static void flow_set_strides(void)
 	const size_t max_blocks = FLOW_POOL_MAX;
 	flow.light_sums_stride = align(max_blocks * FLOW_LIGHT_SUM_VEC4S * sizeof(vec4_t), 256);
 
-	// A block's bricks for every block the grid can have, and the group
-	// bitset. Written before it is read, every frame there are blocks.
+	// A block's bricks for every block the grid can have, then the group
+	// bitset and the block bitset. Written before it is read, every frame
+	// there are blocks.
 	flow.occupancy_blocks = (uint32_t)max_blocks;
-	flow.occupancy_stride = align((max_blocks + FLOW_COARSE_UVEC4S) * 4 * sizeof(uint32_t), 256);
+	flow.occupancy_stride = align((max_blocks + FLOW_COARSE_UVEC4S + FLOW_BLOCK_UVEC4S) * 4 * sizeof(uint32_t), 256);
 }
 
 static VkResult flow_create_dummies(void)
@@ -3527,9 +4135,11 @@ VkResult vkpt_flow_initialize(void)
 	// particles in a big fight (Matt, 11-07), as their budgets are shares of
 	// it. The whole pool's VRAM, used or not, is taken at Flow's first step -
 	// measured on D3D12, headless (11-07): 214 MB at 512, 455 at 1024, 916 at
-	// 2048, 1600 at 4096, some 0.45 MB a block.
-	cvar_pt_flow_cell_size = Cvar_Get("pt_flow_cell_size", "3", 0);
-	cvar_pt_flow_max_blocks = Cvar_Get("pt_flow_max_blocks", "1024", CVAR_ARCHIVE);
+	// 2048, 1600 at 4096, some 0.45 MB a block. 3584 is Matt's own setting,
+	// made the default (11-10). The cell sizes - this one and the railgun's
+	// and plasma beam's below - are menu sliders since 11-10, so archived.
+	cvar_pt_flow_cell_size = Cvar_Get("pt_flow_cell_size", "3", CVAR_ARCHIVE);
+	cvar_pt_flow_max_blocks = Cvar_Get("pt_flow_max_blocks", "3584", CVAR_ARCHIVE);
 	cvar_pt_flow_substeps = Cvar_Get("pt_flow_substeps", "1", 0);
 
 	// An explosion: its size at scale 1 (a rocket), how long it emits, how
@@ -3566,8 +4176,10 @@ VkResult vkpt_flow_initialize(void)
 	// its light some 0.5 s sooner, 0.4 some 0.75 s); the smoke darkens what
 	// is behind it by pt_flow_density per unit of smoke per cell, shows
 	// pt_flow_smoke_albedo x pt_flow_smoke_brightness of its own, and
-	// scatters pt_flow_smoke_scatter of the fire's light.
-	cvar_pt_flow_fire_brightness = Cvar_Get("pt_flow_fire_brightness", "40", 0);
+	// scatters pt_flow_smoke_scatter of the fire's light. The fire was 40
+	// until Matt set 5 for HDR, which looked better (11-09); a rocket's trail
+	// keeps the 40 (pt_flow_rocket_brightness).
+	cvar_pt_flow_fire_brightness = Cvar_Get("pt_flow_fire_brightness", "5", 0);
 	cvar_pt_flow_fire_orange = Cvar_Get("pt_flow_fire_orange", "0.3", 0);
 	cvar_pt_flow_fire_glow_start = Cvar_Get("pt_flow_fire_glow_start", "0.3", 0);
 	cvar_pt_flow_smoke_brightness = Cvar_Get("pt_flow_smoke_brightness", "20", 0);
@@ -3576,11 +4188,19 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_density = Cvar_Get("pt_flow_density", "0.01", 0);
 	cvar_pt_flow_step = Cvar_Get("pt_flow_step", "0.75", 0);          // march step, in cells
 	cvar_pt_flow_max_steps = Cvar_Get("pt_flow_max_steps", "256", 0);  // samples, past empty bricks
-	// How the march schedules its texture reads, not what it reads: 1, the
+	// How the march gets through the volume, not what it reads: 1, the
 	// world's light read once a step for every layer with smoke there; 2, two
 	// steps of a brick read at a time. Same samples, same sums - 0 is the old
-	// one-read-after-another march, kept for A/B (11-03).
-	cvar_pt_flow_march = Cvar_Get("pt_flow_march", "3", 0);
+	// one-read-after-another march, kept for A/B (11-03). 4, a block with
+	// nothing to see passed on a bit of the block bitset, not a search of
+	// Flow's table; 8, each grid looked at only inside the box round its own
+	// blocks - both for a railgun shot, whose box holds the one who fired it,
+	// so that every ray on the screen walked it (11-09). Neither changes the
+	// look: the steps sampled are the ones in marked bricks either way (fewer
+	// stops on the way only ever land one nearer the start of a brick), less
+	// what an unmarked brick of one grid would have added to a step another
+	// grid samples, which flow_occupancy.comp already calls nothing.
+	cvar_pt_flow_march = Cvar_Get("pt_flow_march", "15", 0);
 	// 1: print what the primary march did, once a second (FLOWSTATS, see
 	// vkpt_flow_stats) - needs FLOW_STATS compiled into flow.glsl.
 	cvar_pt_flow_stats = Cvar_Get("pt_flow_stats", "0", 0);
@@ -3672,7 +4292,7 @@ VkResult vkpt_flow_initialize(void)
 	// 10-27). A block is then 16x8x8 units, and a long shot can want more
 	// blocks than there are - hence the budget of a half, not three
 	// quarters, and pt_flow_rail_life.
-	cvar_pt_flow_rail_cell_size = Cvar_Get("pt_flow_rail_cell_size", "0.5", 0);
+	cvar_pt_flow_rail_cell_size = Cvar_Get("pt_flow_rail_cell_size", "0.5", CVAR_ARCHIVE);
 	// Its level of detail (Matt, 11-08: "a tight grid when it's close to the
 	// camera ... more loose grid" further off): the part of a shot further
 	// than pt_flow_rail_lod_distance from the view when it came in - at
@@ -3685,7 +4305,7 @@ VkResult vkpt_flow_initialize(void)
 	// pt_flow_rail_far_brightness times the fine part's. Read when a shot
 	// comes in.
 	cvar_pt_flow_rail_lod_distance = Cvar_Get("pt_flow_rail_lod_distance", "256", 0);
-	cvar_pt_flow_rail_far_cell_size = Cvar_Get("pt_flow_rail_far_cell_size", "1.5", 0);
+	cvar_pt_flow_rail_far_cell_size = Cvar_Get("pt_flow_rail_far_cell_size", "1.5", CVAR_ARCHIVE);
 	cvar_pt_flow_rail_far_brightness = Cvar_Get("pt_flow_rail_far_brightness", "1", 0);
 	cvar_pt_flow_rail_radius = Cvar_Get("pt_flow_rail_radius", "6", 0);
 	cvar_pt_flow_rail_width = Cvar_Get("pt_flow_rail_width", "1.25", 0);     // 2 until Matt found it too big (10-27)
@@ -3717,6 +4337,88 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_rail_length = Cvar_Get("pt_flow_rail_length", "2048", 0);
 	cvar_pt_flow_rail_budget = Cvar_Get("pt_flow_rail_budget", "0.5", 0);
 
+	// The plasma beam (R_FLOW_HEATBEAM, flow_heatbeam), after the classic
+	// beam model and the rings of yellow particles 1.5 units round the
+	// first-person beam (3.9 round the thicker third-person one,
+	// cl_beam_mirror_ring_scale), 32 units apart, running out at 96 units/s.
+	// Rings: how far round, half how thick, how far apart, how fast they run
+	// out, their heat (1, the top of the colour map), smoke, swell and how
+	// bright their glow is for that heat. The core, in place of the model:
+	// how bright for its heat; how much it is dimmed where seen end-on (1 as
+	// much as a solid beam would be, 0 not at all - a line of gas seen from
+	// down the barrel is looked through for far further than its width);
+	// none within pt_flow_heatbeam_core_clear of the view, and nothing else
+	// there either; its glow pt_flow_heatbeam_near_brightness as bright where
+	// it starts and all of it pt_flow_heatbeam_near_fade units further on.
+	// Your own first-person beam's gas starts in the barrel, 17 units from the
+	// eye (cl_flow_heatbeam_muzzle), and the gun hides it out to some 24: 16
+	// and 8 are on full where it comes out from behind the gun. From the
+	// model's start, 8 units from the eye, 4 put fire on top of the gun and
+	// 24 / 32 left it floating mid-screen (Matt, 11-09 / 11-10); 32 with the
+	// model there left the model most of what the one firing sees, and Matt
+	// wants none of the old beam with Flow. Then half how thick, its heat
+	// (0.88, the model skin's yellow-orange), smoke, swell, and how fast its
+	// gas is pushed out along the beam. Where the beam hits: how big the hot
+	// spot is, its heat, smoke and swell. The gas: cooling (4: the rings' glow
+	// is gone in about a quarter of a second, so a beam swept round the room
+	// leaves only a short wake), rise, curl and smoke fade. Looks: glow per
+	// 32 units looked through on the fire's colour map, pt_flow_heatbeam_yellow
+	// (0 to 1) toward the classic rings' yellow - 0 is the fire's own
+	// orange-white - and the smoke's colour and extinction per unit of smoke
+	// per cell. The core is only pt_flow_heatbeam_length units of the beam,
+	// the stretch nearest the view, the model being the rest; the rings are
+	// not within pt_flow_heatbeam_clear of the view (80: from 48, the first
+	// rings, seen end-on, were a ball of fire round the crosshair - Matt,
+	// 11-10: "so much fire taking up the player's field of view"), the hot
+	// spot not within FLOW_HEATBEAM_POINT_BLANK; and a
+	// beam starts only while the gas fills less than pt_flow_heatbeam_budget
+	// of the blocks (keeps going to half as much again). On a grid of its own,
+	// pt_flow_heatbeam_cell_size: it shared the railgun's far one (1.5), which
+	// came out boxy, and the railgun's cells are not to get any finer for it
+	// (Matt, 11-09). How long a beam is run for when a pause lays it again
+	// (flow_heatbeam_relay), 0 never. Picked by reasoning, not tuned by
+	// eye: the rings' heat 0.9, the sheath's 0.7 and 512 long were the first
+	// guesses, rings Matt found far too dim (11-09).
+	cvar_pt_flow_heatbeam_ring_radius = Cvar_Get("pt_flow_heatbeam_ring_radius", "4", 0);
+	cvar_pt_flow_heatbeam_ring_width = Cvar_Get("pt_flow_heatbeam_ring_width", "1", 0);
+	cvar_pt_flow_heatbeam_ring_spacing = Cvar_Get("pt_flow_heatbeam_ring_spacing", "32", 0);
+	cvar_pt_flow_heatbeam_ring_speed = Cvar_Get("pt_flow_heatbeam_ring_speed", "96", 0);
+	cvar_pt_flow_heatbeam_ring_temperature = Cvar_Get("pt_flow_heatbeam_ring_temperature", "1", 0);
+	cvar_pt_flow_heatbeam_ring_smoke = Cvar_Get("pt_flow_heatbeam_ring_smoke", "0.3", 0);
+	cvar_pt_flow_heatbeam_ring_expansion = Cvar_Get("pt_flow_heatbeam_ring_expansion", "4", 0);
+	cvar_pt_flow_heatbeam_ring_brightness = Cvar_Get("pt_flow_heatbeam_ring_brightness", "1", 0);
+	cvar_pt_flow_heatbeam_core_brightness = Cvar_Get("pt_flow_heatbeam_core_brightness", "1", 0);
+	cvar_pt_flow_heatbeam_end_on = Cvar_Get("pt_flow_heatbeam_end_on", "1", 0);
+	cvar_pt_flow_heatbeam_core_clear = Cvar_Get("pt_flow_heatbeam_core_clear", "16", 0);
+	cvar_pt_flow_heatbeam_near_fade = Cvar_Get("pt_flow_heatbeam_near_fade", "8", 0);
+	cvar_pt_flow_heatbeam_near_brightness = Cvar_Get("pt_flow_heatbeam_near_brightness", "0", 0);
+	cvar_pt_flow_heatbeam_relay = Cvar_Get("pt_flow_heatbeam_relay", "0.25", 0);
+	cvar_pt_flow_heatbeam_cell_size = Cvar_Get("pt_flow_heatbeam_cell_size", "1", CVAR_ARCHIVE);
+	// Your own beam in first person laid a second time, from the gun your
+	// body holds, for mirrors (FLOW_LAYER_HEATBEAM_MIRROR): twice the blocks
+	// for it. 0: a mirror shows the beam's model and classic rings there.
+	cvar_pt_flow_heatbeam_mirror = Cvar_Get("pt_flow_heatbeam_mirror", "1", 0);
+	cvar_pt_flow_heatbeam_radius = Cvar_Get("pt_flow_heatbeam_radius", "1.5", 0);
+	cvar_pt_flow_heatbeam_temperature = Cvar_Get("pt_flow_heatbeam_temperature", "0.88", 0);
+	cvar_pt_flow_heatbeam_smoke = Cvar_Get("pt_flow_heatbeam_smoke", "0.15", 0);
+	cvar_pt_flow_heatbeam_expansion = Cvar_Get("pt_flow_heatbeam_expansion", "10", 0);
+	cvar_pt_flow_heatbeam_flow = Cvar_Get("pt_flow_heatbeam_flow", "100", 0);
+	cvar_pt_flow_heatbeam_impact_radius = Cvar_Get("pt_flow_heatbeam_impact_radius", "6", 0);
+	cvar_pt_flow_heatbeam_impact_temperature = Cvar_Get("pt_flow_heatbeam_impact_temperature", "1", 0);
+	cvar_pt_flow_heatbeam_impact_smoke = Cvar_Get("pt_flow_heatbeam_impact_smoke", "1.5", 0);
+	cvar_pt_flow_heatbeam_impact_expansion = Cvar_Get("pt_flow_heatbeam_impact_expansion", "30", 0);
+	cvar_pt_flow_heatbeam_cooling = Cvar_Get("pt_flow_heatbeam_cooling", "4", 0);
+	cvar_pt_flow_heatbeam_buoyancy = Cvar_Get("pt_flow_heatbeam_buoyancy", "1", 0);
+	cvar_pt_flow_heatbeam_vorticity = Cvar_Get("pt_flow_heatbeam_vorticity", "2", 0);
+	cvar_pt_flow_heatbeam_smoke_fade = Cvar_Get("pt_flow_heatbeam_smoke_fade", "0.5", 0);
+	cvar_pt_flow_heatbeam_brightness = Cvar_Get("pt_flow_heatbeam_brightness", "40", 0);
+	cvar_pt_flow_heatbeam_yellow = Cvar_Get("pt_flow_heatbeam_yellow", "1", 0);
+	cvar_pt_flow_heatbeam_smoke_brightness = Cvar_Get("pt_flow_heatbeam_smoke_brightness", "4", 0);
+	cvar_pt_flow_heatbeam_density = Cvar_Get("pt_flow_heatbeam_density", "0.05", 0);
+	cvar_pt_flow_heatbeam_length = Cvar_Get("pt_flow_heatbeam_length", "1024", 0);
+	cvar_pt_flow_heatbeam_clear = Cvar_Get("pt_flow_heatbeam_clear", "80", 0);  // 32, then 48 (11-09), then 80 (11-10): Matt wants the rings further out
+	cvar_pt_flow_heatbeam_budget = Cvar_Get("pt_flow_heatbeam_budget", "0.5", 0);
+
 	// A rocket's trail (a trail of fire, flow_rocket_spheres): its puffs'
 	// radius, push, smoke and heat at scale 1; how much of the puff the flame
 	// fills (the smoke the same either way); how far behind the rocket the
@@ -3735,6 +4437,11 @@ VkResult vkpt_flow_initialize(void)
 	cvar_pt_flow_rocket_glow = Cvar_Get("pt_flow_rocket_glow", "12", 0);
 	cvar_pt_flow_rocket_lumps = Cvar_Get("pt_flow_rocket_lumps", "1", 0);
 	cvar_pt_flow_rocket_budget = Cvar_Get("pt_flow_rocket_budget", "0.5", 0);
+	// How bright the trail's fire glows, as pt_flow_fire_brightness for the
+	// blasts: the trail is on a layer of its own (FLOW_LAYER_FIRE_TRAIL) so
+	// that it could keep the 40 the blasts had before they went down to 5 for
+	// HDR - its small ball of fire looked better at it (Matt, 11-09).
+	cvar_pt_flow_rocket_brightness = Cvar_Get("pt_flow_rocket_brightness", "40", 0);
 
 	// A grenade's trail (a trail of fire with smoke_only, flow_grenade_spheres):
 	// its puffs' radius, push and smoke at scale 1. The smoke falls to _thin of
@@ -3958,6 +4665,8 @@ void vkpt_flow_reset(void)
 	flow.have_last_time = false;
 	flow.have_bubble_surface = false;
 	flow.have_blocks = false;
+	flow.relay_step = -1;
+	flow.relaid = false;
 	flow_free_lights();
 	for (int set = 0; set < FLOW_SET_COUNT; set++)
 		flow.light_sum_blocks[set] = 0;
@@ -4119,13 +4828,14 @@ static void flow_layer_look(FlowLayerParams *look, int layer, float cell_size)
 
 	look->world_max[3] = FLT_MAX;
 
-	// The glow's colour balance, none but fire's.
+	// The glow's colour balance, none but the fire's and the plasma beam's.
 	look->emission[1] = look->emission[2] = look->emission[3] = 1.f;
 
 	switch (layer) {
 	case R_FLOW_FIRE:
+	case FLOW_LAYER_FIRE_TRAIL:
 		look->info[2] = 1;
-		look->emission[0] = max(cvar_pt_flow_fire_brightness->value, 0.f) * per_unit;
+		look->emission[0] = max((layer == FLOW_LAYER_FIRE_TRAIL ? cvar_pt_flow_rocket_brightness : cvar_pt_flow_fire_brightness)->value, 0.f) * per_unit;
 		{
 			// Less green and less blue still: the hot heart goes from
 			// yellow-white toward yellow and its edges toward orange.
@@ -4176,6 +4886,29 @@ static void flow_layer_look(FlowLayerParams *look, int layer, float cell_size)
 		VectorSet(look->smoke, 0.85f * smoke, 0.92f * smoke, smoke);
 		look->smoke[3] = max(cvar_pt_flow_rail_density->value, 0.f) / cell_size;
 		VectorSet(look->albedo, 0.9f * scatter, 0.95f * scatter, scatter);
+		break;
+
+	case R_FLOW_HEATBEAM:
+	case FLOW_LAYER_HEATBEAM_VIEW:      // the march draws these two as this one (flow_march)
+	case FLOW_LAYER_HEATBEAM_MIRROR:
+		// The fire's colour map, toward the yellow of the classic rings
+		// (palette 0xd8-0xdf, linear 1 : 0.5-1 : under 0.1): at
+		// pt_flow_heatbeam_yellow 1 its hottest is golden yellow where the
+		// fire's is orange-white, then orange and dull red as it cools, as
+		// the fire's. Weighted by the fuel, how bright each part of it is
+		// (flow_heatbeam). Faint warm grey smoke.
+		look->info[2] = FLOW_COLORMAP_WEIGHTED_FIRE;
+		look->emission[0] = max(cvar_pt_flow_heatbeam_brightness->value, 0.f) * per_unit;
+		{
+			const float yellow = Cvar_ClampValue(cvar_pt_flow_heatbeam_yellow, 0.f, 1.f);
+			look->emission[2] = 1.f + 0.4f * yellow;
+			look->emission[3] = 1.f - 0.7f * yellow;
+		}
+		look->albedo[3] = Cvar_ClampValue(cvar_pt_flow_fire_glow_start, 0.f, 0.5f);
+		smoke = max(cvar_pt_flow_heatbeam_smoke_brightness->value, 0.f);
+		VectorSet(look->smoke, smoke, 0.95f * smoke, 0.9f * smoke);
+		look->smoke[3] = max(cvar_pt_flow_heatbeam_density->value, 0.f) / cell_size;
+		VectorSet(look->albedo, scatter, scatter, scatter);
 		break;
 	}
 
@@ -4375,7 +5108,7 @@ void vkpt_flow_update(const refdef_t *fd, bool render_world)
 			params->limits[0] = (uint32_t)Cvar_ClampInteger(cvar_pt_flow_max_steps, 16, 4096);
 			params->limits[1] = 64;
 			params->limits[2] = flow.occupancy_blocks;
-			params->limits[3] = (uint32_t)Cvar_ClampInteger(cvar_pt_flow_march, 0, 3);
+			params->limits[3] = (uint32_t)Cvar_ClampInteger(cvar_pt_flow_march, 0, 15);
 			params->counts[2] = cvar_pt_flow_stats->integer ? 1u : 0u;
 			// Each grid in use marches pt_flow_step of its own cells a step.
 			for (int g = 0; g < FLOW_GRIDS; g++) {

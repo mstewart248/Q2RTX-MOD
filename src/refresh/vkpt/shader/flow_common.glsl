@@ -144,6 +144,19 @@ uint flow_coarse_bit(ivec3 group, int grid)
 	return h & (FLOW_COARSE_HASH_BITS - 1u);
 }
 
+// And the bit of block `location` of grid `grid` in the block bitset that
+// follows the groups' (FLOW_BLOCK_HASH_BITS): set when the block has a marked
+// brick. Its own constants, so that blocks sharing a group bit do not share
+// this one too.
+uint flow_block_bit(ivec3 location, int grid)
+{
+	uint h = (uint(location.x) * 2246822519u) ^ (uint(location.y) * 3266489917u) ^ (uint(location.z) * 668265263u) ^ (uint(grid) * 374761393u);
+	h ^= h >> 15u;
+	h *= 0x2c1b3c6du;
+	h ^= h >> 12u;
+	return h & (FLOW_BLOCK_HASH_BITS - 1u);
+}
+
 // Extinction per world unit below which flow_occupancy.comp calls a cell's
 // smoke nothing. A brick is 12 units across at the default cell size, so
 // skipping one of them like this leaves out less than 1e-3 of what is behind
@@ -230,11 +243,12 @@ vec3 flow_rail_color(float temperature)
 	return flow_ramp_stretch(t, 0.8, 1.0, c4, c5) * 2.5;
 }
 
-// FlowLayerParams.info.z: 0 is a layer that does not glow. `start` is the
-// layer's albedo.w, the temperature fire starts to glow at.
+// FlowLayerParams.info.z, a FLOW_COLORMAP_*. `start` is the layer's albedo.w,
+// the temperature fire starts to glow at. FLOW_COLORMAP_WEIGHTED_FIRE is fire
+// here, as bright as it can be: its fuel's weight is put on in flow_layer_add.
 vec3 flow_colormap(uint map, float temperature, float start)
 {
-	if (map == 1u)
+	if (map == FLOW_COLORMAP_FIRE || map == FLOW_COLORMAP_WEIGHTED_FIRE)
 		return flow_fire_color(temperature, start);
 	if (map == 2u)
 		return flow_plasma_color(temperature);

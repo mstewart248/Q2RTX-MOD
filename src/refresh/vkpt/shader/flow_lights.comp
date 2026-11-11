@@ -99,7 +99,7 @@ void main()
 		for (int i = 0; i < FLOW_MAX_LIGHTS; i++)
 		{
 			const float reach = flow_params.seeds[i].w;
-			if (reach <= 0.0 || int(flow_params.seed_layers[i].x) != location.w)
+			if (reach <= 0.0 || (int(flow_params.seed_layers[i].x) != location.w && int(flow_params.seed_layers[i].y) != location.w))
 				continue;
 			const vec3 d = flow_params.seeds[i].xyz - centre;
 			const float dd = dot(d, d);

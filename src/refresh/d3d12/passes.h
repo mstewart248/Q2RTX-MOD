@@ -273,7 +273,7 @@ typedef struct {
     ID3D12Resource  *occupancy;             // both sets' (flow.c's occupancy_stride apart)
     uint64_t        occupancy_offset;       // this set's: a uvec4 a block,
     uint32_t        occupancy_capacity;     // ...for this many blocks (flow.c's occupancy_blocks),
-    uint32_t        group_bitset_size;      // ...then the group bitset, this many bytes
+    uint32_t        group_bitset_size;      // ...then the group and block bitsets, this many bytes
     uint32_t        occupancy_blocks;       // the pass's groups, at most the capacity
     ID3D12Resource  *light_sums;            // both sets' (DEFAULT, written by the pass)
     ID3D12Resource  *light_sums_readback;   // ...and the host's copy (READBACK)

@@ -1779,14 +1779,24 @@ static const player_gun_t *CL_PlayerGun(qhandle_t handle)
 // Where the barrel of the weapon your player model holds ends this frame, in
 // world space. False when there is no such weapon drawn or it has no muzzle,
 // and the caller falls back to the fixed offset.
-static bool CL_PlayerGunMuzzle(vec3_t muzzle)
+//
+// max_age 0 wants this frame's gun, so it only answers after
+// CL_AddPacketEntities. 1 also takes the last frame drawn: an effect spawned
+// from a server message (the rail trail) is parsed before this frame's
+// entities are added. Also the start of your own plasma beam seen from outside
+// - third person and its mirror twin (tent.c) - which used to come from the
+// eye, 15 units in front of the body your model is drawn with, and so started
+// out ahead of the gun (Matt, 11-09).
+bool CL_PlayerGunMuzzlePoint(vec3_t muzzle, int max_age)
 {
     const entity_t      *ent = &cl_player_gun_ent;
     const player_gun_t  *gun;
     vec3_t              local, f, r, u;
     int                 frame, oldframe;
 
-    if (!cl_muzzleflash_world_track->integer || cl_player_gun_framecount != cls.framecount)
+    if (!cl_muzzleflash_world_track->integer || cl_player_gun_framecount < 0 ||
+        cls.framecount - cl_player_gun_framecount > max_age ||
+        cls.framecount < cl_player_gun_framecount)
         return false;
 
     gun = CL_PlayerGun(ent->model);
@@ -1840,7 +1850,7 @@ void CL_AddPlayerModelFlash(void)
     // muzzle), the old fixed point, placed relative to the model AS DRAWN:
     // CL_AddPacketEntities draws your own model at the predicted origin, yaw
     // only, slid back 15 units so the view point sits in front of its head.
-    if (!CL_PlayerGunMuzzle(muzzle)) {
+    if (!CL_PlayerGunMuzzlePoint(muzzle, 0)) {
         AngleVectors(yaw_only, f, r, u);
 
         VectorCopy(cl.playerEntityOrigin, muzzle);

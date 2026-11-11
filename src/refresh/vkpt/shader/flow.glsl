@@ -78,6 +78,16 @@ bool flow_coarse_marked(ivec3 group, int grid)
 	return (word & (1u << (bit & 31u))) != 0u;
 }
 
+// Whether block `location` of grid `grid` has anything to see, or shares its
+// bit with one that has (flow_block_bit): the block bitset, after the groups'.
+bool flow_block_marked(ivec3 location, int grid)
+{
+	const uint bit = flow_block_bit(location, grid);
+	const uvec4 words = flow_occupancy[flow_params.limits.z + FLOW_COARSE_UVEC4S + (bit >> 7u)];
+	const uint word = (bit & 64u) == 0u ? ((bit & 32u) == 0u ? words.x : words.y) : ((bit & 32u) == 0u ? words.z : words.w);
+	return (word & (1u << (bit & 31u))) != 0u;
+}
+
 // The world's light round the gas, see flow_ambient.comp: rgb mean radiance
 // times a, a the share of the probe that is in the open air.
 layout(set = GLOBAL_TEXTURES_DESC_SET_IDX, binding = BINDING_OFFSET_FLOW_AMBIENT)
@@ -124,6 +134,20 @@ vec3 flow_lit(vec3 position, uint shadow_light, float shadow)
 // grid the march came to more than the 128 the ray-gen shaders get, and
 // spilled (11-08).
 #define FLOW_NO_BLOCK 0x80000000u
+
+// Two blocks' places in Flow's table in one register, 16 bits each - there
+// are FLOW_POOL_MAX (4096) blocks at most - FLOW_NO_INDEX for none.
+#define FLOW_NO_INDEX 0xFFFFu
+#define FLOW_NO_INDICES 0xFFFFFFFFu
+uint flow_index(uint pair, bool high)
+{
+	return high ? pair >> 16u : pair & 0xFFFFu;
+}
+uint flow_set_index(uint pair, bool high, uint index)
+{
+	return high ? (pair & 0xFFFFu) | (index << 16u) : (pair & 0xFFFF0000u) | index;
+}
+
 uint flow_block_key(ivec3 b)
 {
 	return (uint(b.x) & 0x3ffu) | ((uint(b.y) & 0x3ffu) << 10u) | ((uint(b.z) & 0x3ffu) << 20u);
@@ -171,7 +195,10 @@ void flow_layer_add(int l, vec4 value, vec3 position, bool shared_ambient, bool 
 		}
 		source += colour * sigma;
 	}
-	glow += flow_colormap(flow_params.layers[l].info.z, value.x, flow_params.layers[l].albedo.w) * flow_params.layers[l].emission.x * flow_params.layers[l].emission.yzw;
+	// FLOW_COLORMAP_WEIGHTED_FIRE: as bright as the cell's fuel says.
+	const uint map = flow_params.layers[l].info.z;
+	const float weight = map == FLOW_COLORMAP_WEIGHTED_FIRE ? max(value.y, 0.0) : 1.0;
+	glow += flow_colormap(map, value.x, flow_params.layers[l].albedo.w) * (flow_params.layers[l].emission.x * weight) * flow_params.layers[l].emission.yzw;
 }
 
 // Lays one step of length `step` at `t` over what the march has gathered in
@@ -257,7 +284,18 @@ bool flow_step_add(float extinction, vec3 source, vec3 glow, float step, float t
 // Each layer keeps only its block's table value (flow_block_value), a
 // register where the atlas offset and a flag took four; a sample works the
 // offset out again from the cell it is in, which is the same block.
-vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float step_scale, float jitter, out float depth)
+//
+// YOUR OWN PLASMA BEAM IN FIRST PERSON is two layers of gas, one down the
+// barrel and one from the gun your body holds (flow.h): a march sees the
+// first unless `mirror`, the second if it is - a mirror ray where a mirror
+// shows your body, as reflect_refract.rgen's AS_FLAG_VIEWER_MODELS. They are
+// the last two layers, and the loops over layers stop short of them
+// (FLOW_MARCH_LAYERS); the one seen, `own`, keeps only its block's place in
+// Flow's table (index3o), its value read again from there at a sample.
+// The loops running over all nine layers took the reflection shader's local
+// memory from 16 bytes to 32, and holding both layers' blocks to 48 (11-09).
+#define FLOW_MARCH_LAYERS FLOW_LAYER_HEATBEAM_VIEW
+vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float step_scale, float jitter, bool mirror, out float depth)
 {
 	depth = t_max;
 
@@ -284,18 +322,21 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 
 	const ivec3 block_bits = ivec3(flow_params.block_dim_bits.xyz);
 
-	// A grid none of whose layers has blocks is left out altogether.
-	const bool used0 = flow_params.grids[0].x > 0.0;
-	const bool used1 = flow_params.grids[1].x > 0.0;
-	const bool used2 = flow_params.grids[2].x > 0.0;
-	const float step0 = flow_params.grids[0].w * step_scale;
-	const float step1 = flow_params.grids[1].w * step_scale;
-	const float step2 = flow_params.grids[2].w * step_scale;
+	// A grid none of whose layers has blocks (grids[g].x 0) is left out
+	// altogether. Which grids are in use and their steps are read from the
+	// params where they are wanted, not held: with four grids, held, the
+	// reflection shader went from 128 registers to 167 (11-09).
 
 	// Steps sit on a grid fixed along the ray, so moving the box does not
 	// move the samples - the finest grid's steps of those in use, so that
 	// the ray comes out of clear space close to where its gas starts.
-	const float lattice = min(used0 ? step0 : 1e30, min(used1 ? step1 : 1e30, used2 ? step2 : 1e30));
+	float lattice = 1e30;
+	for (int g = 0; g < FLOW_GRIDS; g++)
+	{
+		if (flow_params.grids[g].x > 0.0)
+			lattice = min(lattice, flow_params.grids[g].w);
+	}
+	lattice *= step_scale;
 	float t = (ceil(t_min / lattice - jitter) + jitter) * lattice;
 
 	vec3 radiance = vec3(0);
@@ -306,11 +347,22 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	uint block0 = FLOW_NO_BLOCK;  // flow_block_key of the block of grid 0 the ray is in
 	uint block1 = FLOW_NO_BLOCK;
 	uint block2 = FLOW_NO_BLOCK;
+	uint block3 = FLOW_NO_BLOCK;
 	uvec4 occupied0 = uvec4(0);   // the bricks of grid 0's block marked in any of its layers
-	uvec4 occupied1 = uvec4(0);
-	uvec4 occupied2 = uvec4(0);
-	uint blocks[FLOW_LAYERS];     // each layer's flow_block_value there, 0 for none
-	for (int l = 0; l < FLOW_LAYERS; l++)
+	// Grids 1 to 3 - the railgun's trail near the view, the same trail far
+	// off, and the plasma beam - have one layer each the loops walk, so their
+	// marked bricks are that block's flow_occupancy, read again where wanted.
+	// Held, as grid 0's are, the fourth grid took the reflection shader from
+	// 128 registers to 167, and grid 3 alone so read still spilled 16 bytes;
+	// the first-person beam's layer spilled 48 until grid 1 was read so too,
+	// the values read again at a sample, and the places two to a register
+	// (11-09). Their blocks' places in Flow's table (flow_index): grid 1's
+	// and grid 2's, and grid 3's FLOW_LAYER_HEATBEAM and `own`.
+	uint index12 = FLOW_NO_INDICES;
+	uint index3o = FLOW_NO_INDICES;
+	const int own = mirror ? FLOW_LAYER_HEATBEAM_MIRROR : FLOW_LAYER_HEATBEAM_VIEW;
+	uint blocks[FLOW_MARCH_LAYERS];   // each layer's flow_block_value there, 0 for none
+	for (int l = 0; l < FLOW_MARCH_LAYERS; l++)
 		blocks[l] = 0u;
 
 	// At most limits.x samples; going past empty space costs next to nothing,
@@ -327,7 +379,8 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 	// the layers (flow_layer_add); 2, two steps read at a time (pair, below).
 	// Neither changes what is sampled or how it adds up.
 	const bool shared_ambient = (flow_params.limits.w & 1u) != 0u;
-	const bool pairs = (flow_params.limits.w & 2u) != 0u && !used1 && !used2;
+	const bool pairs = (flow_params.limits.w & 2u) != 0u
+		&& flow_params.grids[1].x <= 0.0 && flow_params.grids[2].x <= 0.0 && flow_params.grids[3].x <= 0.0;
 
 	for (uint i = 0u; i < 4u * flow_params.limits.x && samples < flow_params.limits.x && t < t_max; i++)
 	{
@@ -338,39 +391,124 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 
 		// Whether each grid's brick here is marked, and if neither is, where
 		// the clear space ends: the nearer of the grids' ends of it.
-		bool marked0 = false;
-		bool marked1 = false;
-		bool marked2 = false;
+		uint marked = 0u;   // bit g: grid g's brick here is marked
 		float t_exit = t_max;
 		for (int g = 0; g < FLOW_GRIDS; g++)
 		{
-			if (!(g == 0 ? used0 : (g == 1 ? used1 : used2)))
+			if (flow_params.grids[g].x <= 0.0)
 				continue;
+
+			// pt_flow_march 8: outside the box round a grid's blocks there is
+			// nothing of it. A railgun shot's fine piece and its coarse ones,
+			// or a shot and an explosion, can be far apart in the one box round
+			// everything - and the one who fires is inside that - so without
+			// this every ray stopped at every group of every grid in use all
+			// the way through it (11-09). Ahead of its box the grid only says
+			// where the ray comes into it; past it, nothing. Its block is
+			// forgotten, so that no step another grid samples reads its layers
+			// from where the ray last was. Where the box test and the ray's own
+			// t disagree by a rounding, the grid is looked at as usual.
+			if ((flow_params.limits.w & 8u) != 0u)
+			{
+				const vec3 g_min = flow_params.grid_min[g].xyz;
+				const vec3 g_max = flow_params.grid_max[g].xyz;
+				if (any(lessThan(position, g_min)) || any(greaterThan(position, g_max)))
+				{
+					const vec3 e0 = (g_min - origin) * inv_dir;
+					const vec3 e1 = (g_max - origin) * inv_dir;
+					const vec3 e_near = min(e0, e1);
+					const vec3 e_far = max(e0, e1);
+					const float t_in = max(e_near.x, max(e_near.y, e_near.z));
+					const float t_out = min(e_far.x, min(e_far.y, e_far.z));
+					if (t_in > t || t_out < t)
+					{
+						if (t_in > t && t_in <= t_out)
+							t_exit = min(t_exit, t_in);
+						if (g == 0)
+						{
+							block0 = FLOW_NO_BLOCK;
+							occupied0 = uvec4(0);
+						}
+						else if (g == 1)
+						{
+							block1 = FLOW_NO_BLOCK;
+							index12 = flow_set_index(index12, false, FLOW_NO_INDEX);
+						}
+						else if (g == 2)
+						{
+							block2 = FLOW_NO_BLOCK;
+							index12 = flow_set_index(index12, true, FLOW_NO_INDEX);
+						}
+						else
+						{
+							block3 = FLOW_NO_BLOCK;
+							index3o = FLOW_NO_INDICES;
+						}
+						for (int l = 0; l < FLOW_MARCH_LAYERS; l++)
+						{
+							if (FLOW_LAYER_GRID(l) == g)
+								blocks[l] = 0u;
+						}
+						continue;
+					}
+				}
+			}
 
 			const vec3 cells_per_unit = flow_params.grids[g].xyz;
 			const vec3 cell = position * cells_per_unit;
 			const ivec3 b = ivec3(floor(cell)) >> block_bits;
 			const uint key = flow_block_key(b);
-			uvec4 occupied = g == 0 ? occupied0 : (g == 1 ? occupied1 : occupied2);
-			if (key != (g == 0 ? block0 : (g == 1 ? block1 : block2)))
+			uvec4 occupied = uvec4(0);
+			if (g == 0)
+				occupied = occupied0;
+			else if (g == 1)
+			{
+				if (flow_index(index12, false) != FLOW_NO_INDEX)
+					occupied = flow_occupancy[flow_index(index12, false)];
+			}
+			else if (g == 2)
+			{
+				if (flow_index(index12, true) != FLOW_NO_INDEX)
+					occupied = flow_occupancy[flow_index(index12, true)];
+			}
+			else
+			{
+				if (flow_index(index3o, false) != FLOW_NO_INDEX)
+					occupied = flow_occupancy[flow_index(index3o, false)];
+				if (flow_index(index3o, true) != FLOW_NO_INDEX)
+					occupied |= flow_occupancy[flow_index(index3o, true)];
+			}
+			if (key != (g == 0 ? block0 : (g == 1 ? block1 : (g == 2 ? block2 : block3))))
 			{
 #if FLOW_STATS
 				flow_stat_blocks++;
 #endif
 				occupied = uvec4(0);
-				const bool group = flow_coarse_marked(b >> FLOW_COARSE_BITS, g);
-				for (int l = 0; l < FLOW_LAYERS; l++)
+				// Whether to look the block up in Flow's table at all: its group
+				// has something, and - pt_flow_march 4 - so has the block. A
+				// railgun shot's gas is a thin tube through groups many blocks
+				// across, and each block of them the ray went into cost a table
+				// search; most have nothing, or are not allocated (11-09). A block
+				// passed here is passed the way an empty one always was: blocks[l]
+				// 0, nothing marked, the ray on to where it leaves the block.
+				const bool look = flow_coarse_marked(b >> FLOW_COARSE_BITS, g)
+					&& ((flow_params.limits.w & 4u) == 0u || flow_block_marked(b, g));
+				uint found = FLOW_NO_INDEX;   // the last allocated block's place in the table, for grids 1 to 3
+				for (int l = 0; l < FLOW_MARCH_LAYERS; l++)
 				{
 					if (FLOW_LAYER_GRID(l) != g)
 						continue;
 					blocks[l] = 0u;
-					if (group && flow_params.layers[l].info.x != 0u)
+					if (look && flow_params.layers[l].info.x != 0u)
 					{
 						uint index;
 						blocks[l] = flow_block_value(b, int(flow_params.layers[l].info.y), index);
 						// the top bit marks an allocated block
 						if ((blocks[l] >> 31u) != 0u)
+						{
 							occupied |= flow_occupancy[index];
+							found = index;
+						}
 					}
 				}
 				if (g == 0)
@@ -381,24 +519,35 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 				else if (g == 1)
 				{
 					block1 = key;
-					occupied1 = occupied;
+					index12 = flow_set_index(index12, false, found);
+				}
+				else if (g == 2)
+				{
+					block2 = key;
+					index12 = flow_set_index(index12, true, found);
 				}
 				else
 				{
-					block2 = key;
-					occupied2 = occupied;
+					block3 = key;
+					uint own_found = FLOW_NO_INDEX;
+					if (look && flow_params.layers[own].info.x != 0u)
+					{
+						uint index;
+						// the top bit marks an allocated block
+						if ((flow_block_value(b, int(flow_params.layers[own].info.y), index) >> 31u) != 0u)
+						{
+							occupied |= flow_occupancy[index];
+							own_found = index;
+						}
+					}
+					index3o = found | (own_found << 16u);
 				}
 			}
 
 			const ivec3 local = ivec3(floor(cell)) - (b << block_bits);
 			if (flow_brick_marked(occupied, flow_brick_bit(local)))
 			{
-				if (g == 0)
-					marked0 = true;
-				else if (g == 1)
-					marked1 = true;
-				else
-					marked2 = true;
+				marked |= 1u << uint(g);
 				continue;
 			}
 
@@ -425,14 +574,20 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 			t_exit = min(t_exit, min(e_far.x, min(e_far.y, e_far.z)));
 		}
 
-		if (!marked0 && !marked1 && !marked2)
+		if (marked == 0u)
 		{
 			t = max(t + step, (ceil(t_exit / lattice - jitter) + jitter) * lattice);
 			continue;
 		}
 		samples++;
 		// the shortest step of the grids marked here
-		step = min(marked0 ? step0 : 1e30, min(marked1 ? step1 : 1e30, marked2 ? step2 : 1e30));
+		step = 1e30;
+		for (int g = 0; g < FLOW_GRIDS; g++)
+		{
+			if ((marked & (1u << uint(g))) != 0u)
+				step = min(step, flow_params.grids[g].w);
+		}
+		step *= step_scale;
 		if (2u * samples > flow_params.limits.x)
 			step = max(step, (t_max - t) / float(flow_params.limits.x - samples + 1u));
 
@@ -445,7 +600,7 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 		// waiting on the last, and this halves the waits.
 		bool pair = false;
 		vec3 position_next = position;
-		if (pairs && marked0)
+		if (pairs && (marked & 1u) != 0u)
 		{
 			position_next = origin + direction * (t + step);
 			const ivec3 cell = ivec3(floor(position_next * flow_params.grids[0].xyz));
@@ -474,17 +629,22 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 		vec3 glow_next = vec3(0);
 		// Past this, flow_step_add takes only glow (pt_flow_glow_floor).
 		const bool lit = transmittance >= 0.003;
-		for (int l = 0; l < FLOW_LAYERS; l++)
+		for (int l = 0; l < FLOW_MARCH_LAYERS; l++)
 		{
-			if ((blocks[l] >> 31u) == 0u)
+			// FLOW_LAYER_GRID(l) is a constant once the loop is unrolled. The
+			// layer of grids 1 to 3 has its block's value read again by its
+			// place in the table.
+			const int g = FLOW_LAYER_GRID(l);
+			const uint index = g == 1 ? flow_index(index12, false) : (g == 2 ? flow_index(index12, true) : flow_index(index3o, false));
+			if (g == 0 ? (blocks[l] >> 31u) == 0u : index == FLOW_NO_INDEX)
 				continue;
+			const uint block = g == 0 ? blocks[l] : flow_table[index + flow_params.table_offsets.z];
 
-			// The cell, and the first cell of its block - the one blocks[l] is
-			// of; FLOW_LAYER_GRID(l) is a constant once the loop is unrolled.
-			// The atlas texel is the block's base plus the cell within it.
-			const vec3 cell = position * flow_params.grids[FLOW_LAYER_GRID(l)].xyz;
+			// The cell, and the first cell of its block - the one `block` is
+			// of. The atlas texel is the block's base plus the cell within it.
+			const vec3 cell = position * flow_params.grids[g].xyz;
 			const vec3 first = vec3((ivec3(floor(cell)) >> block_bits) << block_bits);
-			const vec3 base = vec3(flow_block_base(blocks[l])) - first;
+			const vec3 base = vec3(flow_block_base(block)) - first;
 			const vec4 value = textureLod(TEX_FLOW_DENSITY, (cell + base) * flow_params.dim_inv.xyz, 0);
 			// A pair is on grid 0 alone, so every layer with blocks is too, and
 			// in the same block.
@@ -496,6 +656,17 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 				flow_layer_add(l, value, position, shared_ambient, lit, ambient, have_ambient, extinction, source, glow);
 			if (pair && position_next.z <= flow_params.layers[l].world_max.w)
 				flow_layer_add(l, value_next, position_next, shared_ambient, lit, ambient_next, have_ambient_next, extinction_next, source_next, glow_next);
+		}
+		// `own`, drawn as FLOW_LAYER_HEATBEAM, which it looks like (flow.c).
+		// Never a pair: that is grid 0 alone.
+		if (flow_index(index3o, true) != FLOW_NO_INDEX)
+		{
+			const vec3 cell = position * flow_params.grids[3].xyz;
+			const vec3 first = vec3((ivec3(floor(cell)) >> block_bits) << block_bits);
+			const vec3 base = vec3(flow_block_base(flow_table[flow_index(index3o, true) + flow_params.table_offsets.z])) - first;
+			const vec4 value = textureLod(TEX_FLOW_DENSITY, (cell + base) * flow_params.dim_inv.xyz, 0);
+			if (position.z <= flow_params.layers[own].world_max.w)
+				flow_layer_add(FLOW_LAYER_HEATBEAM, value, position, shared_ambient, lit, ambient, have_ambient, extinction, source, glow);
 		}
 
 		if (flow_step_add(extinction, source, glow, step, t, radiance, transmittance, depth_sum, depth_weight))
@@ -527,7 +698,8 @@ vec4 flow_march(vec3 origin, vec3 direction, float t_min, float t_max, float ste
 // effects overlay keeps only its nearest hit distance, so a volume that
 // wraps round a sprite is put wholly to one side of it. Glow alone covers
 // nothing - it only adds light - so it is not skipped for want of coverage.
-// `reflection` takes the coarser steps of a reflection or refraction ray.
+// `reflection` takes the coarser steps of a reflection or refraction ray;
+// `mirror` sees your own plasma beam as a mirror does (flow_march).
 // pt_flow_stats: adds this march's counters to the readback. Primary rays
 // only - flow_add_to_effects inline, or primary_rays.rgen's flow pass.
 // subgroupAdd sums the invocations that got here, which is every one that
@@ -552,11 +724,11 @@ void flow_stats_flush()
 #endif
 }
 
-vec4 flow_add_to_effects(vec4 effects, Ray ray, float jitter, bool reflection)
+vec4 flow_add_to_effects(vec4 effects, Ray ray, float jitter, bool reflection, bool mirror)
 {
 	float depth;
 	const float step_scale = reflection ? flow_params.world_min.w : 1.0;
-	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, step_scale, jitter, depth);
+	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, step_scale, jitter, mirror, depth);
 	if (!reflection)
 		flow_stats_flush();
 	if (volume.a <= 0.0 && all(lessThanEqual(volume.rgb, vec3(0))))

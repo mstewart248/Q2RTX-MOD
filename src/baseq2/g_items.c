@@ -1228,6 +1228,40 @@ void PrecacheItem(gitem_t *it)
 }
 
 /*
+===============
+G_PrecacheInventoryItems
+
+[Paril-KEX] (rerelease g_spawn.cpp). Precaches every item the players carry.
+The comment above always promised this, but nothing did it: PrecacheItem only
+ran for items spawned in the map. A weapon brought in from an earlier map, or
+carried back to a level being revisited, had its view model registered the
+first time it was switched to (ChangeWeapon), and its projectile and sounds
+the first time it fired. Each is a new configstring, which the client loads
+from disk there and then - the first-switch / first-shot hitch, in every
+renderer (Matt, 11-09).
+
+Called once the map's own entities have spawned, so they keep first claim on
+the 256-entry sound table (mgu5m2 sits at it), and after a level is read
+from a save. Not in deathmatch: inventories start over on every respawn.
+===============
+*/
+void G_PrecacheInventoryItems(void)
+{
+    int i, j;
+
+    if (deathmatch->value)
+        return;
+
+    for (i = 0; i < game.maxclients; i++) {
+        const gclient_t *cl = &game.clients[i];
+
+        for (j = 1; j < game.num_items; j++)
+            if (cl->pers.inventory[j])
+                PrecacheItem(&itemlist[j]);
+    }
+}
+
+/*
 ============
 SpawnItem
 
@@ -1494,7 +1528,7 @@ gitem_t itemlist[] = {
         WEAP_BLASTER,
         NULL,
         0,
-        /* precache */ "weapons/blastf1a.wav misc/lasfly.wav"
+        /* precache */ "weapons/blastf1a.wav misc/lasfly.wav models/objects/laser/tris.md2"
     },
 
     /*QUAKED weapon_shotgun (.3 .3 1) (-16 -16 -16) (16 16 16)
@@ -1609,7 +1643,7 @@ gitem_t itemlist[] = {
         WEAP_GRENADES,
         NULL,
         AMMO_GRENADES,
-        /* precache */ "weapons/hgrent1a.wav weapons/hgrena1b.wav weapons/hgrenc1b.wav weapons/hgrenb1a.wav weapons/hgrenb2a.wav "
+        /* precache */ "weapons/hgrent1a.wav weapons/hgrena1b.wav weapons/hgrenc1b.wav weapons/hgrenb1a.wav weapons/hgrenb2a.wav models/objects/grenade2/tris.md2"
     },
 
     /*QUAKED weapon_grenadelauncher (.3 .3 1) (-16 -16 -16) (16 16 16)
@@ -1678,7 +1712,7 @@ gitem_t itemlist[] = {
         WEAP_HYPERBLASTER,
         NULL,
         0,
-        /* precache */ "weapons/hyprbu1a.wav weapons/hyprbl1a.wav weapons/hyprbf1a.wav weapons/hyprbd1a.wav misc/lasfly.wav"
+        /* precache */ "weapons/hyprbu1a.wav weapons/hyprbl1a.wav weapons/hyprbf1a.wav weapons/hyprbd1a.wav misc/lasfly.wav models/objects/laser/tris.md2"
     },
 
     /*QUAKED weapon_railgun (.3 .3 1) (-16 -16 -16) (16 16 16)
@@ -1747,7 +1781,7 @@ gitem_t itemlist[] = {
 		WEAP_FLAREGUN,
 		NULL, // userinfo? (void*) 
 		0, // tag 
-		"" //things to precache 
+		"models/objects/flare/tris.md2" //things to precache 
 	},
     //
     // AMMO ITEMS
@@ -2936,7 +2970,7 @@ gitem_t itemlist[] = {
         WEAP_CHAINFIST,
         NULL,
         1,
-        /* precache */ "weapons/sawidle.wav weapons/sawhit.wav"
+        /* precache */ "weapons/sawidle.wav weapons/sawhit.wav weapons/swish.wav weapons/meatht.wav weapons/tink1.wav"
     },
 
     /*QUAKED item_legacy_head (.3 .3 1) (-16 -16 -16) (16 16 16)
@@ -3040,7 +3074,7 @@ gitem_t itemlist[] = {
         WEAP_BOOMER,
         NULL,
         0,
-        /* precache */ "weapons/rg_hum.wav weapons/rippfire.wav"
+        /* precache */ "weapons/rg_hum.wav weapons/rippfire.wav models/objects/boomrang/tris.md2"
     },
 
     /*QUAKED weapon_phalanx (.3 .3 1) (-16 -16 -16) (16 16 16)
@@ -3065,7 +3099,7 @@ gitem_t itemlist[] = {
         WEAP_PHALANX,
         NULL,
         0,
-        /* precache */ "weapons/plasshot.wav"
+        /* precache */ "weapons/plasshot.wav sprites/s_photon.sp2"
     },
 
     /*QUAKED ammo_magslug (.3 .3 1) (-16 -16 -16) (16 16 16)

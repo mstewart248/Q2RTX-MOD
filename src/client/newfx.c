@@ -180,7 +180,12 @@ void CL_BubbleTrail2(const vec3_t start, const vec3_t end, int dist)
 // scale: 1 for the rings down the barrel; the mirror set passes
 // cl_beam_mirror_ring_scale so its rings clear the thicker world beam. It
 // grows the ring and its dots together, so the ring keeps its look.
-void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx, float scale)
+// max_rings: 5 is the original - rings only down the first 160 units, which
+// from behind the gun is all of the beam you can make out. 0 runs them the
+// whole length of `forward` (start to impact), for the beam seen from outside:
+// a mirror, third person, the photo mode camera. Five there bunched up at the
+// player's end and left the rest of the beam bare (Matt, 11-09).
+void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx, float scale, int max_rings)
 {
     vec3_t      move;
     vec3_t      vec;
@@ -224,6 +229,11 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx, float sc
     VectorSubtract(end, start, vec);
     len = VectorNormalize(vec);
 
+    // `forward` is muzzle to impact, so its length is the beam's. Capped at
+    // the 8192-unit range the server traces the beam to.
+    if (max_rings <= 0)
+        len = min(VectorLength(forward), 8192.0f);
+
     ltime = cl.time * 0.001f;
     start_pt = fmod(ltime * 96.0f, step);
     VectorMA(move, start_pt, vec, move);
@@ -232,7 +242,7 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx, float sc
 
     rstep = M_PI / 10.0f;
     for (i = start_pt; i < len; i += step) {
-        if (i > step * 5) // don't bother after the 5th ring
+        if (max_rings > 0 && i > step * max_rings) // don't bother after the 5th ring
             break;
 
         for (rot = 0; rot < M_PI * 2; rot += rstep) {
@@ -257,7 +267,12 @@ void CL_Heatbeam(const vec3_t start, const vec3_t forward, int view_fx, float sc
             }
 
             p->alpha = 0.5f;
-            p->alphavel = -1000.0f;
+            // One frame, whatever the clock does. These are rebuilt every
+            // frame; -1000 only died once cl.time moved, so with the game
+            // paused (photo mode) every frame's set stayed and they piled up -
+            // and when the photo mode camera switched you to third person the
+            // first-person set stayed too, at eye level, above the beam.
+            p->alphavel = INSTANT_PARTICLE;
             p->color = 223 - (Q_rand() & 7);
             p->radius = dot_radius;
             for (j = 0; j < 3; j++) {

@@ -174,7 +174,31 @@ static cvar_t   *cl_beam_muzzle_drop;
 // the surface of the thicker one, so the opaque beam hid every ring in a
 // mirror (Matt, 11-08: "now it's gone"). 2.6 keeps the first-person ring:beam
 // ratio; it scales the dots with the ring so it reads the same.
+// Third person (and the photo mode camera, which switches to it) draws the
+// same frame-2 world chain, so its rings take this scale too.
 static cvar_t   *cl_beam_mirror_ring_scale;
+
+// 1 = the plasma beam is NVIDIA Flow's gas - its rings, and the beam itself
+// in place of its model - whenever Flow can draw it (CL_FlowHeatbeam).
+static cvar_t   *cl_flow_heatbeam;
+
+// Where your own first-person beam's GAS starts, "forward left up" in the
+// gun's basis as cl_beam_muzzle_offset: the mouth of the barrel, the middle of
+// the front face of models/weapons/v_beamer (md5 and md2 alike, through the
+// firing frames: forward 14.5-15.0, right 2.3-8.0, down 4.9-10.7), a little
+// back inside it so the recoil never brings it out. Empty: the model's start.
+//
+// The model's start, 7 units out and above the gun's top, reads as coming out
+// of the barrel because the gun is drawn over the model there (the
+// MATERIAL_FLAG_PLAYER_BEAM rule in primary_rays.rgen). Nothing does that for
+// gas: from there the core came out over the top of the gun, magnified cells
+// a few units from the eye - "fire on top of the gun" (Matt, 11-09) - and kept
+// away from the view it floated mid-screen instead ("the beam needs to come
+// closer to the gun and start a little bit lower", 11-10). From the barrel the
+// gun itself hides the first nine units or so, and the gas comes out from
+// behind its front edge some 24 units from the eye, with the classic beam's
+// end. The model is left where it was ("lined up perfect").
+static cvar_t   *cl_flow_heatbeam_muzzle;
 
 // How far the flare's burn is heard, against ATTN_NORM's 2080 units. It keeps
 // Quake II's straight line to silence whatever s_falloff says: it goes on for
@@ -1430,6 +1454,103 @@ static void CL_EmitBeamChain(qhandle_t model, const vec3_t org_in,
 
 /*
 =================
+CL_EmitBeamPiece
+
+The part of a beam chain from `a` to `b` units along org + dist, the rest of
+it being Flow's gas (CL_FlowHeatbeam). A piece shorter than one 32-unit
+segment is drawn as one: back from `b` when that is the end of the beam - it
+must not poke out past what the beam hits - and on from `a` otherwise, either
+way into the gas.
+=================
+*/
+static void CL_EmitBeamPiece(qhandle_t model, const vec3_t org, const vec3_t dist,
+                             const vec3_t angles, int framenum, int extra_flags,
+                             float a, float b)
+{
+    vec3_t      dir, piece_org, piece_dist;
+    float       length = VectorLength(dist);
+
+    a = max(a, 0.0f);
+    b = min(b, length);
+    if (length < 1.0f || b - a < 1.0f)
+        return;
+
+    if (b - a < 32.0f) {
+        if (b >= length - 0.5f)
+            a = max(b - 32.0f, 0.0f);
+        else
+            b = min(a + 32.0f, length);
+    }
+
+    VectorScale(dist, 1.0f / length, dir);
+    VectorMA(org, a, dir, piece_org);
+    VectorScale(dir, b - a, piece_dist);
+    CL_EmitBeamChain(model, piece_org, piece_dist, angles, framenum, extra_flags);
+}
+
+/*
+=================
+CL_FlowHeatbeam
+
+The plasma beam by NVIDIA Flow (cl_flow_heatbeam): a core of hot gas in place
+of the beam's model, yellow rings of glowing gas running out along it in place
+of CL_Heatbeam's particles, and a hot spot burning off smoke where it hits
+(flow_heatbeam in vkpt/flow.c). Given every frame the beam is on, by its slot.
+Your own in first person is given twice, as its model is drawn twice: down
+the view chain for the camera and for glass (`view` R_FLOW_VIEW_FIRST_PERSON),
+and along the world chain, from the gun your body holds, for mirrors
+(R_FLOW_VIEW_MIRROR) - each on a layer of its own that only those rays see.
+The gas was one volume for every view, and the mirror showed the old model
+(Matt, 11-09: "the reflected effect is the old non flow effect").
+
+`stretch` is set to where along start - end the core is, in units from
+`start`: no more than pt_flow_heatbeam_length of the beam, the part nearest
+the view, and none right by the view. The caller draws the model past it,
+and nothing short of it. False when Flow does not take it - missing,
+switched off, or its gas filling too much of the grid
+(pt_flow_heatbeam_budget) - and the model and the rings go instead.
+=================
+*/
+static bool CL_FlowHeatbeam(int key, const vec3_t start, const vec3_t end, float range,
+                            float stretch[2], int view)
+{
+    vec3_t      dir, back, past;
+    trace_t     tr;
+
+    stretch[0] = stretch[1] = 0;
+    if (!cl_flow_heatbeam->integer || !R_FlowEmit)
+        return false;
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_BEAM,
+        .style = R_FLOW_HEATBEAM,
+        .scale = 1.0f,
+        .key = key,
+        .stretch = stretch,
+        .view = view,
+    };
+    VectorCopy(start, emit.origin);
+    VectorCopy(end, emit.end);
+
+    // What it burns: a wall at its end that is not the sky - or, nothing
+    // solid there, a monster or a player, the server's trace having stopped
+    // short of the beam's 8192 units.
+    VectorSubtract(end, start, dir);
+    if (VectorNormalize(dir) > 1.0f) {
+        VectorMA(end, -8.0f, dir, back);
+        VectorMA(end, 8.0f, dir, past);
+        tr = CL_TracePoint(back, past, MASK_SOLID, false);
+        if (tr.fraction < 1.0f || tr.startsolid)
+            emit.hit = !(tr.surface && (tr.surface->flags & SURF_SKY));
+        else
+            emit.hit = range > 0 && range < 8000;
+    }
+
+    return R_FlowEmit(&emit) & R_FLOW_DRAWN;
+}
+
+/*
+=================
 CL_AddPlayerBeams
 
 Draw player locked beams. Currently only used by the plasma beam.
@@ -1448,7 +1569,9 @@ static void CL_AddPlayerBeams(void)
     float       hand_multiplier;
     bool        view_chain;
     bool        ring_split;
-    vec3_t      aim_end;
+    bool        flow_drawn;     // the beam and its rings are Flow's gas (CL_FlowHeatbeam)...
+    float       stretch[2];     // ...the beam from stretch[0] to stretch[1] along org + dist
+    vec3_t      aim_end, flow_end, flow_org;
     player_state_t  *ps, *ops;
 
     if (info_hand->integer == 2)
@@ -1475,6 +1598,7 @@ static void CL_AddPlayerBeams(void)
         view_chain = (b->entity == cl.frame.clientNum + 1) &&
                      !cl.thirdPersonView && !cl_beam_thirdperson->integer;
         ring_split = false;
+        flow_drawn = false;
 
         if (view_chain) {
             // set up gun position
@@ -1579,7 +1703,30 @@ static void CL_AddPlayerBeams(void)
                          cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON;
 
             // Same vector to both, so a sparkle can no longer sit off the beam.
-            CL_Heatbeam(org, dist, ring_split ? RF_FIRST_PERSON_FX : 0, 1.0f);
+            // With Flow the gas takes the place of both ring sets, the mirror's
+            // included, and of this chain's model (see CL_FlowHeatbeam) - this
+            // chain's gas for the camera only where the mirror has its own.
+            // The gas starts in the barrel (cl_flow_heatbeam_muzzle) and ends
+            // where the model would; what is drawn of the model past it goes
+            // along the gas's line.
+            VectorAdd(org, dist, flow_end);
+            VectorCopy(org, flow_org);
+            if (have_gun && cl_flow_heatbeam_muzzle->string[0] &&
+                sscanf(cl_flow_heatbeam_muzzle->string, "%f %f %f",
+                       &mz[0], &mz[1], &mz[2]) == 3) {
+                VectorMA(gun_origin, mz[0], gun_forward, flow_org);
+                VectorMA(flow_org, -mz[1] * hand_multiplier, gun_right, flow_org);
+                VectorMA(flow_org, mz[2], gun_up, flow_org);
+            }
+            if (b->model == cl_mod_heatbeam)
+                flow_drawn = CL_FlowHeatbeam(i, flow_org, flow_end, b->range, stretch,
+                                             ring_split ? R_FLOW_VIEW_FIRST_PERSON : R_FLOW_VIEW_ALL);
+            if (flow_drawn) {
+                VectorCopy(flow_org, org);
+                VectorSubtract(flow_end, flow_org, dist);
+            } else {
+                CL_Heatbeam(org, dist, ring_split ? RF_FIRST_PERSON_FX : 0, 1.0f, 5);
+            }
 
             vectoangles2(dist, angles);
 
@@ -1600,12 +1747,32 @@ static void CL_AddPlayerBeams(void)
             // angles[YAW] + 180 and ended up moving the start FORWARD, which is
             // what put the beam out in front of everybody's chest.
             if (!VectorEmpty(b->offset)) {
-                org[2] -= cl_beam_muzzle_drop->value;
+                // Your own, from the end of the barrel your model is holding,
+                // as the third-person muzzle flash is. The dropped eye point
+                // is everyone else's, and yours with cl_muzzleflash_world_track
+                // 0: it sits a few units out in front of the held gun.
+                if (b->entity != cl.frame.clientNum + 1 || !CL_PlayerGunMuzzlePoint(org, 0))
+                    org[2] -= cl_beam_muzzle_drop->value;
                 VectorSubtract(b->end, org, dist);
                 vectoangles2(dist, angles);
+
+                // Your own beam seen from outside - third person, or the photo
+                // mode camera, which switches to it - had no rings at all (the
+                // original only ever made them for the first-person view).
+                // Built on this chain and scaled to its frame, like the mirror
+                // set, and down its whole length. No view flag: from out here
+                // the camera and a mirror both see this one chain. With Flow,
+                // everyone's beam is its gas instead, along this chain.
+                if (b->model == cl_mod_heatbeam)
+                    flow_drawn = CL_FlowHeatbeam(i, org, b->end, b->range, stretch, R_FLOW_VIEW_ALL);
+                if (!flow_drawn && b->entity == cl.frame.clientNum + 1 && b->model == cl_mod_heatbeam)
+                    CL_Heatbeam(org, dist, 0, Cvar_ClampValue(cl_beam_mirror_ring_scale, 0.1f, 10), 0);
             } else {
-                // if it's a monster, do the particle effect
+                // if it's a monster, do the particle effect - and with Flow,
+                // the beam is the gas as well
                 CL_MonsterPlasma_Shell(b->start);
+                if (b->model == cl_mod_heatbeam)
+                    flow_drawn = CL_FlowHeatbeam(i, org, b->end, b->range, stretch, R_FLOW_VIEW_ALL);
             }
 
             framenum = 2;
@@ -1625,33 +1792,66 @@ static void CL_AddPlayerBeams(void)
         // AS_FLAG_VIEWER_WEAPON whenever cl_player_model is FIRST_PERSON, which
         // is the default - the same rule that already hides your gun, and shows
         // your body, in a mirror.
-        CL_EmitBeamChain(b->model, org, dist, angles, framenum,
-                         view_chain ? RF_WEAPONMODEL : 0);
+        //
+        // With Flow the gas is the beam from stretch[0] to stretch[1], and the
+        // model is only past it, if there is any of the beam past
+        // pt_flow_heatbeam_length. Nothing is drawn short of stretch[0], where
+        // the beam is right by the view: the model there was the old beam at
+        // the gun (Matt, 11-09: "I shouldn't see the old beam"). Nor is the
+        // model on the gas's stretch as a viewer model any more: in first
+        // person that is what a mirror showed of the beam, over the gas, and
+        // what bounce light it gave the room there, third person never had.
+        if (flow_drawn) {
+            const int   flags = view_chain ? RF_WEAPONMODEL : 0;
+
+            CL_EmitBeamPiece(b->model, org, dist, angles, framenum, flags, stretch[1], VectorLength(dist));
+        } else {
+            CL_EmitBeamChain(b->model, org, dist, angles, framenum,
+                             view_chain ? RF_WEAPONMODEL : 0);
+        }
 
         // ...and the matching world chain, which only a mirror (or another
         // player) ever sees. RF_VIEWERMODEL is the exact complement: primary
         // rays drop it, reflections keep it.
         if (view_chain) {
             vec3_t  world_org, world_dist, world_angles;
+            float   world_stretch[2];
+            bool    world_flow = false;
 
-            VectorCopy(b->start, world_org);
-            world_org[2] -= cl_beam_muzzle_drop->value;
+            // From the barrel of the gun your body holds in the mirror. The
+            // eye this used to start from (dropped to gun height) is 15 units
+            // in front of that body - CL_AddPacketEntities slides it back so
+            // the camera sits in front of its head - so the beam began out in
+            // front of the gun (Matt, 11-09).
+            if (!CL_PlayerGunMuzzlePoint(world_org, 0)) {
+                VectorCopy(b->start, world_org);
+                world_org[2] -= cl_beam_muzzle_drop->value;
+            }
             // Same corrected endpoint as the view chain - a mirror showing a
             // beam that disagrees with the one down the barrel is worse than
             // either being slightly wrong.
             VectorSubtract(aim_end, world_org, world_dist);
             vectoangles2(world_dist, world_angles);
 
-            CL_EmitBeamChain(b->model, world_org, world_dist, world_angles,
-                             2, RF_VIEWERMODEL);
+            // With Flow, the mirror's beam is gas of its own along this chain
+            // (R_FLOW_VIEW_MIRROR), and the model only past its stretch.
+            if (flow_drawn && ring_split && b->model == cl_mod_heatbeam)
+                world_flow = CL_FlowHeatbeam(i, world_org, aim_end, b->range, world_stretch,
+                                             R_FLOW_VIEW_MIRROR);
+            if (world_flow)
+                CL_EmitBeamPiece(b->model, world_org, world_dist, world_angles, 2, RF_VIEWERMODEL,
+                                 world_stretch[1], VectorLength(world_dist));
+            else
+                CL_EmitBeamChain(b->model, world_org, world_dist, world_angles,
+                                 2, RF_VIEWERMODEL);
 
             // ...and the rings that go with it, built on the same start and
             // vector so they sit on the beam the mirror actually shows - and
             // scaled to its thicker frame, or the beam swallows them. See
             // cl_beam_mirror_ring_scale.
-            if (ring_split)
+            if (ring_split && !world_flow)
                 CL_Heatbeam(world_org, world_dist, RF_REFLECTION_FX,
-                            Cvar_ClampValue(cl_beam_mirror_ring_scale, 0.1f, 10));
+                            Cvar_ClampValue(cl_beam_mirror_ring_scale, 0.1f, 10), 0);
         }
     }
 }
@@ -1916,9 +2116,50 @@ static bool CL_FlowRail(void)
 extern uint32_t d_8to24table[256];
 extern cvar_t* cvar_pt_beam_lights;
 
+/*
+=================
+CL_RailFromPlayerGun
+
+Your own rail shot in third person (or the photo mode camera) starts on the
+barrel of the gun your model holds, as its muzzle flash does. The server
+starts it from the eye, 7 right and 8 down: right for the first-person gun,
+but out in front of and above the third-person one (Matt, 11-09).
+
+The message names no shooter, so a trail counts as yours when it starts
+within 64 units of that barrel AND heads the way you face - a monster's rail
+fired back at you from close by does not. In first person nothing moves: the
+trail has to leave the view gun, and it is one trail for the camera and a
+mirror both (the Flow gas cannot be split per view as the beam's chains are).
+=================
+*/
+static void CL_RailFromPlayerGun(void)
+{
+    vec3_t  muzzle, dir, yaw_only, forward;
+
+    if (!cl.thirdPersonView)
+        return;
+    // parsed before this frame's entities: the gun as last drawn
+    if (!CL_PlayerGunMuzzlePoint(muzzle, 2))
+        return;
+    if (Distance(muzzle, te.pos1) > 64.0f)
+        return;
+
+    VectorSubtract(te.pos2, te.pos1, dir);
+    dir[2] = 0;
+    VectorSet(yaw_only, 0, cl.playerEntityAngles[YAW], 0);
+    AngleVectors(yaw_only, forward, NULL, NULL);
+    // a shot straight up or down has no heading to compare
+    if (VectorNormalize(dir) > 0.01f && DotProduct(dir, forward) < 0.5f)
+        return;
+
+    VectorCopy(muzzle, te.pos1);
+}
+
 static void CL_RailTrail(void)
 {
 	color_t rail_color;
+
+    CL_RailFromPlayerGun();
 
 	if (!cl_railtrail_type->integer)
 	{
@@ -2589,7 +2830,7 @@ void CL_ClearTEnts(void)
 void CL_InitTEnts(void)
 {
     s_flare_range = Cvar_Get("s_flare_range", "1.3", CVAR_ARCHIVE);
-    cl_flow_explosions = Cvar_Get("cl_flow_explosions", "1", CVAR_ARCHIVE);
+    cl_flow_explosions = Cvar_Get("cl_flow_explosions", "2", CVAR_ARCHIVE);     // Matt's setting, the default since 11-10
     cl_explosion_water = Cvar_Get("cl_explosion_water", "1", CVAR_ARCHIVE);
     cl_explosion_water_flame = Cvar_Get("cl_explosion_water_flame", "0.6", 0);
     cl_explosion_water_light = Cvar_Get("cl_explosion_water_light", "1", 0);
@@ -2619,6 +2860,8 @@ void CL_InitTEnts(void)
     cl_railspiral_color_changed(cl_railspiral_color);
     cl_railspiral_radius = Cvar_Get("cl_railspiral_radius", "3", 0);
     cl_flow_railtrail = Cvar_Get("cl_flow_railtrail", "1", CVAR_ARCHIVE);
+    cl_flow_heatbeam = Cvar_Get("cl_flow_heatbeam", "1", CVAR_ARCHIVE);
+    cl_flow_heatbeam_muzzle = Cvar_Get("cl_flow_heatbeam_muzzle", "14 -5.1 -7.8", 0);
     cl_poi_marker_scale = Cvar_Get("cl_poi_marker_scale", "3", CVAR_ARCHIVE);
 }
 

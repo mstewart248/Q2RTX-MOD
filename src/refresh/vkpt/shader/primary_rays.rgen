@@ -223,7 +223,7 @@ flow_pass_main()
 
 	// flow_add_to_effects, with the effects read back instead of passed in
 	float depth;
-	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, 1.0, get_rng(RNG_FLOW_JITTER), depth);
+	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, 1.0, get_rng(RNG_FLOW_JITTER), false, depth);
 	flow_stats_flush();
 	if (volume.a <= 0.0 && all(lessThanEqual(volume.rgb, vec3(0))))
 		return;
@@ -391,7 +391,7 @@ main()
 		effects = trace_effects_ray(ray, /* skip_procedural = */ false, /* reflection_ray = */ false);
 		// NVIDIA Flow's fire and smoke (flow.glsl), between the eye and what the ray hit
 		if (spec_flow_mode == 0u)
-			effects = flow_add_to_effects(effects, ray, get_rng(RNG_FLOW_JITTER), false);
+			effects = flow_add_to_effects(effects, ray, get_rng(RNG_FLOW_JITTER), false, false);
 	}
 	if (spec_flow_mode != 0u)
 		flow_split_hand_off(ipos, trace_overlay, ray.t_max, effects);

@@ -1380,6 +1380,10 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     }
 #endif
 
+    // the weapons and items the players bring with them, after the map's own
+    // precaches, so switching to one or firing it does not load it mid-game
+    G_PrecacheInventoryItems();
+
     G_FindTeams();
 
     // rogue hint paths have to be chained AFTER everything has spawned,

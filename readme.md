@@ -730,6 +730,12 @@ water, and it burns out into smoke that rises, drifts and fades.
   grenade's flight, thick where it leaves and thinning out like the classic
   trail (the classic particles stand in while the simulation is full), `0`
   the classic particles.
+* **Plasma beam** (`cl_flow_heatbeam`): `1` makes the beam simulated gas: a
+  hot yellow-orange core in place of the beam model, yellow rings of heat
+  running out along it, and a hot spot burning off smoke where it hits. The
+  model is still drawn past the first 1024 units of a long beam, and it still
+  lights the room (the classic beam and rings stand in while the simulation
+  is full). `0` is the classic beam and rings.
 * **Under water** (`cl_explosion_water`): an explosion keeps a flame and
   lights the water yellow-white. `1` is a smaller simulated flame when Flow
   draws the explosions, `2` always the classic fireball, `0` the classic
@@ -737,13 +743,19 @@ water, and it burns out into smoke that rises, drifts and fades.
 
 | cvar | Default | Notes |
 |---|---|---|
-| `cl_flow_explosions` | `1` | `0` off, `1` with the classic fireball, `2` instead of it. |
+| `cl_flow_explosions` | `2` | `0` off, `1` with the classic fireball, `2` instead of it. |
 | `cl_rocket_flame` | `1` | `0` classic, `1` simulated, `2` particles. |
 | `cl_flow_grenadetrail` | `1` | `0` classic, `1` simulated. |
+| `cl_flow_heatbeam` | `1` | `0` classic beam and rings, `1` simulated. |
 | `cl_explosion_water` | `1` | `0` off, `1` simulated, `2` classic. |
 | `pt_flow_lighting` | `1` | The fire and plasma cast light. |
 | `pt_flow_env` | `1` | Smoke lit by the world. |
 | `pt_flow_collision` | `1` | Smoke collides with the world. |
+| `pt_flow_max_blocks` | `3584` | The simulation pool, 512 to 4096 blocks; about 0.45 MB of video memory a block, taken whether used or not. |
+| `pt_flow_cell_size` | `3` | Cell size in units for the explosions, the BFG, bubbles and the rocket and grenade trails. Half the size takes eight times the blocks. |
+| `pt_flow_rail_cell_size` | `0.5` | The railgun trail near the view. |
+| `pt_flow_rail_far_cell_size` | `1.5` | The railgun trail beyond `pt_flow_rail_lod_distance` (256). |
+| `pt_flow_heatbeam_cell_size` | `1` | The plasma beam. |
 | `pt_flow` | `1` | `0` skips Flow when the renderer starts. |
 
 The simulation steps 60 times a second (`pt_flow_rate`) at the start of the

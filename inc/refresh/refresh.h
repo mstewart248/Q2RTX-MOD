@@ -724,6 +724,9 @@ typedef enum {
     R_FLOW_PLASMA,      // the BFG's green flash
     R_FLOW_BUBBLES,     // under water: foam that rises to `surface`
     R_FLOW_RAIL,        // the railgun's trail, an R_FLOW_BEAM: a blue spiral round a line of smoke
+    R_FLOW_HEATBEAM,    // the plasma beam, an R_FLOW_BEAM given every frame it is on, by `key`:
+                        // a hot core in place of its model, yellow rings of heat running out
+                        // along it, and a hot spot where it `hit`s
     R_FLOW_STYLES
 } r_flow_style_t;
 
@@ -732,7 +735,9 @@ typedef enum {
     R_FLOW_BURST,       // an explosion: a moment's emission at `origin`
     R_FLOW_TRAIL,       // a moving source, the same `key` every frame it is
                         // there; it stops the first frame it is not given
-    R_FLOW_BEAM,        // a moment's emission along `origin` to `end`
+    R_FLOW_BEAM,        // a moment's emission along `origin` to `end` - but
+                        // R_FLOW_HEATBEAM's is a TRAIL's: the same `key`
+                        // every frame, gone the first frame it is not given
     R_FLOW_BLAST,       // the BFG's blast at `origin`: puffs, lumps and jets
                         // of plasma thrown out as far as `reach` lets them
 } r_flow_kind_t;
@@ -744,10 +749,23 @@ typedef struct {
     vec3_t          end;        // R_FLOW_BEAM
     float           scale;      // 1 is a rocket's explosion, the BFG ball, a laser, its blast
     float           surface;    // R_FLOW_BUBBLES: the height of the water above
-    int             key;        // R_FLOW_TRAIL: which source this is
+    int             key;        // R_FLOW_TRAIL, R_FLOW_HEATBEAM: which source this is
     // R_FLOW_TRAIL of fire: smoke and no flame - a grenade's, where the rest
     // are a rocket's
     bool            smoke_only;
+    // R_FLOW_HEATBEAM: `end` is on something the beam burns - not the sky,
+    // not the end of its range
+    bool            hit;
+    // R_FLOW_HEATBEAM, when drawn: if not NULL, set to the stretch of the
+    // beam its core takes the place of the model on, in units from `origin`
+    // toward `end` - [0] from, [1] to. The caller draws the rest its own way.
+    float           *stretch;
+    // R_FLOW_HEATBEAM: who sees it - everyone (R_FLOW_VIEW_ALL), or, for your
+    // own beam in first person, given twice: the camera and anything seen
+    // through glass (R_FLOW_VIEW_FIRST_PERSON, down the barrel), or a mirror
+    // (R_FLOW_VIEW_MIRROR, from the gun your body holds) - the beam's model's
+    // RF_WEAPONMODEL and RF_VIEWERMODEL.
+    int             view;
     // R_FLOW_BLAST: how far gas may go from `start` along the unit `dir`
     // before the world stops it, up to `distance`; called during R_FlowEmit
     // only. NULL lets it go anywhere.
@@ -758,6 +776,11 @@ typedef struct {
 // caller's own light for it would be counted twice).
 #define R_FLOW_DRAWN    1
 #define R_FLOW_LIT      2
+
+// r_flow_emit_t.view
+#define R_FLOW_VIEW_ALL             0
+#define R_FLOW_VIEW_FIRST_PERSON    1
+#define R_FLOW_VIEW_MIRROR          2
 
 // An effect for NVIDIA Flow. 0 when it will not be drawn - Flow missing or
 // switched off, or a rocket's trail (R_FLOW_TRAIL of fire) while the gas

@@ -714,7 +714,7 @@ end
 THE NVIDIA FLOW MENU.
 
 Everything NVIDIA Flow draws - the explosions, the BFG, the rocket's, the
-grenade's and the railgun's trails - and what the simulated gas does, on a page of its own off
+grenade's and the railgun's trails, the plasma beam - and what the simulated gas does, on a page of its own off
 the effects page, which links to it only when flow_available says Flow is
 running (nvflow.dll and nvflowext.dll next to q2rtx.exe, the RTX renderer).
 Without Flow the effects page keeps its own "rocket flame" row, and the
@@ -734,9 +734,24 @@ begin flow
         "grenade trail" cl_flow_grenadetrail classic 0 simulated 1
     pairs --status "the railgun's trail. 'simulated' is NVIDIA Flow gas in place of the trail's particles: a cyan-blue spiral that glows and cools into wisps round a thread of pale smoke - the classic particles while the simulation is full. The core beam from the railgun trail setup page and the trail's light stay either way (cl_flow_railtrail)" \
         "railgun trail" cl_flow_railtrail classic 0 simulated 1
+    pairs --status "the plasma beam. 'simulated' makes the beam NVIDIA Flow gas: a hot yellow-orange core in place of the beam model, yellow rings of heat running out along it, and a hot spot burning off smoke where it hits - the classic beam and rings while the simulation is full (cl_flow_heatbeam)" \
+        "plasma beam" cl_flow_heatbeam classic 0 simulated 1
     // Read every frame (flow_pool_resize in vkpt/flow.c): no restart.
-    range -f "%.0f blocks" --status "how much gas NVIDIA Flow can hold at once. The rocket, grenade and railgun trails go to particles once it is half full, so big fights want more - but all of it takes video memory, used or not: 512 about 215 MB, 1024 about 455 MB, 2048 about 915 MB, 4096 about 1.6 GB. Changing it clears the smoke in the air (pt_flow_max_blocks)" \
+    range -f "%.0f blocks" --status "how much gas NVIDIA Flow can hold at once. The rocket, grenade and railgun trails and the plasma beam go to particles once it is half full, so big fights want more - but all of it takes video memory, used or not: 512 about 215 MB, 1024 about 455 MB, 2048 about 915 MB, 4096 about 1.6 GB. Changing it clears the smoke in the air (pt_flow_max_blocks)" \
         "simulation pool size" pt_flow_max_blocks 512 4096 256
+    blank
+    // Cell sizes: read every frame (flow_layer_cell_size in vkpt/flow.c), no
+    // restart; the code clamps each to 0.5 and up. A cell half the size takes
+    // eight times the blocks for the same gas, so smaller fills the pool above
+    // sooner.
+    range -f "%.1f units" --status "size of one cell of the simulated gas for the explosions, the BFG, bubbles and the rocket and grenade trails. Smaller is finer, less blocky fire and smoke - but half the size takes eight times the simulation pool for the same fireball, so the trails go to particles sooner (pt_flow_cell_size)" \
+        "explosion cell size" pt_flow_cell_size 1 6 0.5
+    range -f "%.2f units" --status "cell size of the railgun trail's spiral near the view, on a grid of its own. Larger saves blocks and comes out boxier; 0.5 is the finest (pt_flow_rail_cell_size)" \
+        "railgun trail cell size" pt_flow_rail_cell_size 0.5 2 0.25
+    range -f "%.2f units" --status "cell size of the far part of a railgun trail - further from the view when the shot came in than pt_flow_rail_lod_distance, 256 units - which can be coarser than the near part without looking it (pt_flow_rail_far_cell_size)" \
+        "railgun far trail cell size" pt_flow_rail_far_cell_size 0.5 4 0.25
+    range -f "%.2f units" --status "cell size of the plasma beam's gas, on a grid of its own. Larger saves blocks and comes out boxier (pt_flow_heatbeam_cell_size)" \
+        "plasma beam cell size" pt_flow_heatbeam_cell_size 0.5 3 0.25
     blank
     toggle --status "the simulated fire and plasma light the room and the smoke, in place of the classic explosion light (pt_flow_lighting)" \
         "simulated fire casts light" pt_flow_lighting
@@ -787,12 +802,68 @@ begin blood
         action --align "droplet look and detail..." pushmenu blood_droplets
 
         ifeq cl_blood_collision 1
+            blank
+            // Surface blood (src/client/blood_film.c) takes over landed blood on
+            // the world: what a splat does after landing - running, pooling,
+            // edges - is the film's own flow, so those pages go while it is on.
+            // Doors, lifts, bodies and ceilings still get splats.
+            toggle --status "blood that lands on the world becomes a film of liquid simulated on the surface itself, instead of splats: it spreads into puddles, runs down walls once there is enough of it and leaves trails, gathers at the foot of a wall and drips off edges. Doors, lifts, bodies and ceilings still get splats. Replaces the runs and pooling pages while on (cl_blood_film)" \
+                "surface blood" cl_blood_film
+            ifeq cl_blood_film 1
+                action --align "surface blood settings..." pushmenu blood_film
+            endif
             action --align "splats and puddles..." pushmenu blood_splats
-            action --align "runs and streaks..." pushmenu blood_runs
-            action --align "pooling and edges..." pushmenu blood_pooling
+            ifneq cl_blood_film 1
+                action --align "runs and streaks..." pushmenu blood_runs
+                action --align "pooling and edges..." pushmenu blood_pooling
+            endif
             action --align "blood sound effects..." pushmenu blood_sound
         endif
     endif
+end
+
+/*
+SURFACE BLOOD - cl_blood_film (src/client/blood_film.c). Only reached with it on.
+Blood that lands on the world is a depth field on the surface: it flows from
+high to low, a puddle spreads until it is cl_blood_film_thick deep, a wall cell
+runs once it holds more than cl_blood_film_cling. The cell size and the tile
+pool restart the film (film_check_world), clearing the blood on the surfaces.
+*/
+begin blood_film
+    background #212F3CD0
+    style --compact
+    title "Surface Blood"
+    blank
+    range -f "%.2f units" --status "size of one cell of the blood film. Smaller gives smoother outlines and thinner trails, and costs the square of it - half the size is four times the work and the memory. Changing it clears the blood already on the surfaces (cl_blood_film_cell)" \
+        "cell size" cl_blood_film_cell 0.25 2 0.05
+    pairs --status "how finely an outline is drawn between the cells: each cell crossed by an edge is cut this many times each way, following a smooth curve. 'low' is the cell grid itself (cl_blood_film_detail)" \
+        "outline detail" cl_blood_film_detail low 1 medium 2 high 3
+    toggle --status "smooth the blood's depth before it is drawn, so puddles have soft rounded rims instead of stepped ones (cl_blood_film_smooth)" \
+        "smooth surface" cl_blood_film_smooth
+    blank
+    range --status "how much blood each droplet puts down, as a multiple of the splat it would otherwise have made. The puddle width on the splats page scales this too (cl_blood_film_volume)" \
+        "blood per droplet" cl_blood_film_volume 0.25 4 0.25
+    range -f "%.2f" --status "how deep a puddle settles on flat ground before it stops spreading - so, with the amount of blood, how far a pool spreads. Lower spreads further and thinner (cl_blood_film_thick)" \
+        "puddle depth" cl_blood_film_thick 0.1 1 0.05
+    range -f "%.2f" --status "how much blood a spot on a WALL holds before it starts to run. A lone droplet peaks at about 0.34, so it sticks where it lands; two or three landing together run. Higher keeps spatter on the wall, lower lets single drops run (cl_blood_film_cling)" \
+        "wall cling" cl_blood_film_cling 0.2 1.5 0.05
+    range -f "%.2f" --status "how much blood a run leaves behind it on a wall - the wet trail later blood will follow (cl_blood_film_trail)" \
+        "run trail" cl_blood_film_trail 0 0.2 0.01
+    range --status "how fast blood moves, spreading and running alike (cl_blood_film_flow)" \
+        "flow speed" cl_blood_film_flow 0.25 4 0.25
+    range --status "how much faster blood runs down a wall than it spreads on a floor. Around 2 a spray runs a short way and slows to a stop; 3 and up it dashes and stops dead (cl_blood_film_run)" \
+        "wall run speed" cl_blood_film_run 0.5 5 0.25
+    range -f "%.2f" --status "unevenness of the surface the blood flows over: makes runs wander and outlines irregular. 0 is a perfectly flat world (cl_blood_film_rough)" \
+        "surface roughness" cl_blood_film_rough 0 0.2 0.01
+    blank
+    range --status "drawn depth of the blood as a multiple of the simulated one (cl_blood_film_height)" \
+        "drawn thickness" cl_blood_film_height 0.25 3 0.25
+    range -f "%.2f" --status "depth at which blood reads as a full pool rather than a thin film - thinner is darker and more see-through, as the edge of a splat is. The edge settings on the splats page shape it (cl_blood_film_full)" \
+        "full pool depth" cl_blood_film_full 0.01 0.3 0.01
+    range -f "%.0f steps/s" --status "simulation steps per second (cl_blood_film_rate)" \
+        "simulation rate" cl_blood_film_rate 10 60 5
+    range -f "%.0f tiles" --status "how many 16x16-cell tiles may hold blood at once. As it runs low the patch blood reached longest ago fades out. Changing it clears the blood already on the surfaces (cl_blood_film_tiles)" \
+        "tile pool" cl_blood_film_tiles 128 2048 64
 end
 
 /*
@@ -854,16 +925,24 @@ begin blood_splats
 
     range --status "how many blood droplets and splats may exist at once. With no janitor on, this is what bounds the floor - the oldest splat is recycled once it is reached. 512 holds about two monsters' worth. Costs memory: about 160 KB per droplet at droplet detail 'high', so 5120 is ~800 MB (cl_blood_max)" \
         "droplet budget" cl_blood_max 64 5120 64
-    range --status "height of a landed puddle as a fraction of its width. Low values lie flat on the floor; high values sit up off it like a bead (cl_blood_flatten)" \
-        "puddle height" cl_blood_flatten 0.04 1 0.02
-    range --status "width of a landed puddle, as a multiple of the droplet that made it. Independent of the height above - neither drags the other with it (cl_blood_splat_size)" \
+    // With surface blood on (cl_blood_film) only the rows it reads stay: the
+    // janitor and lifetime, the budget, the width (blood_film.c's volume per
+    // droplet) and the landed material below (write_film_geometry in
+    // vkpt/blood.c, blood_hit_alpha). The dome's shape rows go.
+    ifneq cl_blood_film 1
+        range --status "height of a landed puddle as a fraction of its width. Low values lie flat on the floor; high values sit up off it like a bead (cl_blood_flatten)" \
+            "puddle height" cl_blood_flatten 0.04 1 0.02
+    endif
+    range --status "width of a landed puddle, as a multiple of the droplet that made it. Independent of the height above - neither drags the other with it. With surface blood on it sets how much blood a droplet puts down instead (cl_blood_splat_size)" \
         "puddle width" cl_blood_splat_size 0.5 5 0.25
-    range --status "how far a puddle is sunk into the surface, as a fraction of its height. Its job is to bury the puddle rim so it feathers into the floor instead of ending in a visible lip (pt_blood_puddle_sink)" \
-        "puddle sink" pt_blood_puddle_sink 0 1 0.05
-    range --status "how irregular a landed puddle outline is. A perfect ellipse reads as a squashed ball however well it is lit; a wandering rim reads as something that splashed (pt_blood_wobble)" \
-        "puddle irregularity" pt_blood_wobble 0 0.9 0.05
-    range --status "largest wobble lobe in WORLD UNITS, whatever the puddle's size. The setting above is a FRACTION of the radius, which is the right unit for a droplet and the wrong one for a pool that has absorbed twenty of them - at a high pooling limit it pushes the rim in and out by several units and the pool reads as an amoeba. This holds the lobes to the size of a splash as a pool grows, while a lone droplet never reaches it. 0 removes the limit (pt_blood_wobble_max)" \
-        "largest wobble" pt_blood_wobble_max 0 12 0.5
+    ifneq cl_blood_film 1
+        range --status "how far a puddle is sunk into the surface, as a fraction of its height. Its job is to bury the puddle rim so it feathers into the floor instead of ending in a visible lip (pt_blood_puddle_sink)" \
+            "puddle sink" pt_blood_puddle_sink 0 1 0.05
+        range --status "how irregular a landed puddle outline is. A perfect ellipse reads as a squashed ball however well it is lit; a wandering rim reads as something that splashed (pt_blood_wobble)" \
+            "puddle irregularity" pt_blood_wobble 0 0.9 0.05
+        range --status "largest wobble lobe in WORLD UNITS, whatever the puddle's size. The setting above is a FRACTION of the radius, which is the right unit for a droplet and the wrong one for a pool that has absorbed twenty of them - at a high pooling limit it pushes the rim in and out by several units and the pool reads as an amoeba. This holds the lobes to the size of a splash as a pool grows, while a lone droplet never reaches it. 0 removes the limit (pt_blood_wobble_max)" \
+            "largest wobble" pt_blood_wobble_max 0 12 0.5
+    endif
     range --status "how dark landed blood is drawn, against the droplet that made it. Blood in the air is a lit bead and reads correctly bright; blood on a floor is a thin absorbing film over a surface, and drawing it the same saturated red is most of what makes a pool look like spilled paint. Airborne droplets are not affected. 1 is the old behaviour (pt_blood_splat_dark)" \
         "landed blood darkness" pt_blood_splat_dark 0.05 1 0.05
     range --status "how dark the feather edge of a puddle is, where the film is thinnest. Well below the setting above on purpose - a hard bright rim is the other half of what reads as a decal (pt_blood_thin_dark)" \
@@ -872,9 +951,11 @@ begin blood_splats
         "dark edge width" pt_blood_thin_power 0.5 6 0.25
     range --status "how solid landed blood is. Below 1 the surface underneath is traced through the splat, so the floor's own texture and lighting show through it. Droplets in the AIR stay solid whatever this says - a bead in flight is a body of liquid, and seeing through a spray would mean tracing through sixty of them. Landed blood stops casting shadows below 1, which it has to: a splat lies flush on the floor, so the floor you would see through it is the floor it is shadowing (pt_blood_splat_alpha)" \
         "landed blood opacity" pt_blood_splat_alpha 0.2 1 0.05
-    blank
-    range --status "how far a splat elongates along the direction the droplet was travelling. 1 is a round dot; higher values leave a directional smear on glancing impacts, and none on head-on ones (cl_blood_stretch)" \
-        "splatter directionality" cl_blood_stretch 1 5 0.25
+    ifneq cl_blood_film 1
+        blank
+        range --status "how far a splat elongates along the direction the droplet was travelling. 1 is a round dot; higher values leave a directional smear on glancing impacts, and none on head-on ones (cl_blood_stretch)" \
+            "splatter directionality" cl_blood_stretch 1 5 0.25
+    endif
 end
 
 /*

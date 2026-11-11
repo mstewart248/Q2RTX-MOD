@@ -1415,6 +1415,18 @@ textures/dark_1/train_sd4:
 	
 textures/n64/wndow1_2:
 	kind GLASS
+	
+# Glass tints whatever is seen through it by texture_base, so the base must be
+# a flat light colour. The screen image (81% black) as the base made the pane
+# opaque black. The picture lives in the emissive only, the way stock Q2RTX does
+# e2u3/mont1_4tr (flat 197 grey base + the screen as _light).
+textures/e2u1/mont1_4:
+	texture_base overrides/mont1_4tr.tga
+	texture_emissive overrides/mont1_4_light.png
+	emissive_factor 0.5
+	default_radiance 0.5
+	is_light 1
+	kind GLASS
 
 textures/dark_1/wall70:
 	texture_base materialDev/textures/dark_1/wall70.tga
@@ -25224,9 +25236,17 @@ models/proj/beam/skin:
 # NEGATIVE light. Making the bolt glow turned the black fuzzy ball into a
 # bright dot and destroyed the effect. Left here as a no-op override purely so
 # the next person does not re-add it.
+#
+# 11-09 (Matt): WATER, like the SpawnGrow spheres below - a refractive, warping
+# shell instead of an opaque ball. Still not emissive. curved_water because
+# the bolt is a closed round shape: without it only the sideways-facing band
+# round its middle takes the force-field path and shows as a line on it.
+# kind and curved_water take a map reload, not just 'mat reload'.
 models/proj/disintegrator/pskin:
 	texture_base materialDev/models/proj/disintegrator/pskin.tga
 	texture_normals materialDev/models/proj/disintegrator/pskin_n.tga
+	kind WATER
+	curved_water 1
 	metalness_factor 0
 
 
@@ -26634,4 +26654,13 @@ models/weapons/g_shotg2/md5/skin:
 	texture_roughness models/weapons/g_shotg2/md5/skin_rough.png
 	emissive_factor .1
 	
+
+# Plasma beam, first person (md5). The .md2 lists skin1.pcx, so the md5 draws
+# md5/skin1.png (MD5_SkinPath), not md5/skin.png - same UV layout, one tube dark.
+# Matt's maps (11-09) are named for skin; this points skin1 at them. No
+# texture_base, so the entry stays tuning-only (base, _glow and scalars as before).
+models/weapons/v_beamer/md5/skin1:
+	texture_normals models/weapons/v_beamer/md5/skin_n.png
+	texture_metallic models/weapons/v_beamer/md5/skin_metallic.png
+	texture_roughness models/weapons/v_beamer/md5/skin_rough.png
 

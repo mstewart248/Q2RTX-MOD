@@ -1,0 +1,20 @@
+
+# instance of textures/e1u1/black
+# xcompnd1, created at (192 -963 180)
+# Inherits everything from textures/e1u1/black; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/e1u1/black#240939ce:
+	kind GLASS
+#	texture_base overrides/black.tga
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 1
+#	specular_factor 1
+#	base_factor 2.5
+#	emissive_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1

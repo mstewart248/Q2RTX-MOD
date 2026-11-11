@@ -185,6 +185,11 @@ void Cmd_Give_f(edict_t *ent)
             if (!(it->flags & IT_WEAPON))
                 continue;
             ent->client->pers.inventory[i] += 1;
+            // Load it now, as a map's own weapons are. Otherwise each gun's
+            // view model was registered on its first switch, its projectile
+            // and sounds on its first shot, each one a disk load that hitched
+            // the frame - what a give all weapon test measured (Matt, 11-09).
+            PrecacheItem(it);
         }
         if (!give_all)
             return;
@@ -198,6 +203,7 @@ void Cmd_Give_f(edict_t *ent)
             if (!(it->flags & IT_AMMO))
                 continue;
             Add_Ammo(ent, it, 1000);
+            PrecacheItem(it);   // grenades, traps, tesla, prox are used as weapons
         }
         if (!give_all)
             return;
@@ -267,6 +273,7 @@ void Cmd_Give_f(edict_t *ent)
             ent->client->pers.inventory[index] = atoi(gi.argv(2));
         else
             ent->client->pers.inventory[index] += it->quantity;
+        PrecacheItem(it);   // the other branch does it through SpawnItem
     } else {
         it_ent = G_Spawn();
         it_ent->classname = it->classname;

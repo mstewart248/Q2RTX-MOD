@@ -1239,6 +1239,7 @@ void Cmd_Score_f(edict_t *ent);
 // g_items.c
 //
 void PrecacheItem(gitem_t *it);
+void G_PrecacheInventoryItems(void);
 void InitItems(void);
 extern int weapon_cycle[MAX_ITEMS];
 extern int weapon_cycle_pos[MAX_ITEMS];
