@@ -37,13 +37,30 @@ WHAT THE MODEL IS FED
           least output-sized. Using a global image lets the resolve shader read the model's
           answer and the original side by side (mode 1), which is what makes the strength,
           colour and difference controls possible.
+  Jitter  the sub-pixel jitter the depth and motion guides were rendered with, signed the
+          way DLSS gets it (pt_dlss_jitter_sign) - RTX Remix sends its camera jitter too.
+  Mask    VKPT_IMG_DLSS5_MASK as DLSSNR.ControlMask (RGBA8: R intensity, G local tone,
+          B local structure, per pixel), render resolution, while pt_dlss5_volumetric is on
+          - RTX Remix's "Volumetric Improvement", which multiplies its per-material mask by
+          the fog/volumetric/alpha-blend transmittance so the model leaves fog alone. We
+          have no per-material values, so ours is (t, t, t, 1): t the scene's share of the
+          pixel's light, the rest being fog in-scatter and the transparent overlay
+          (dlss5_scene_share in shader/brdf.glsl - why a share and not a transmittance is
+          there). Sky and emissive count as scene. Off, no mask: NGX treats it as all 1s.
 
-TUNING IS READ AT CREATE TIME. The model reads preset, style and the strengths once, when the
-feature is built, and ignores them at evaluate (OptiScaler found this the hard way). So every
-tuning cvar marks the feature dirty, and it is rebuilt once the value has held still for
-DLSS5_REBUILD_DELAY_MS - dragging a slider would otherwise rebuild it every frame. They are
-also re-sent at evaluate, which is harmless and covers any the model does read live.
-pt_dlss5_strength, _colour and _compare are ours, applied in the resolve, and are live.
+THE PARAMETERS are the ones in NVIDIA's DLSS 5 header (nvsdk_ngx_defs_dlssnr.h, 310.9.16,
+shipped in the SDK package RTX Remix builds against - not on the public DLSS GitHub), set
+with the types its Vulkan helper uses: SetI for flags, enums and the preset, SetUI for sizes
+and the style, SetF for strengths and scales. Mask blend and skin strength follow RTX Remix:
+with the auto mask on, the blend is Min and the skin strength the cvar; off, None and 0.
+
+TUNING IS LIVE. The header lists style, intensity, the strengths, the auto mask, the mask
+blend and UI correction as evaluate parameters, and RTX Remix sets them on every evaluate and
+rebuilds its feature only when the output size changes. Only the preset (which network) is a
+creation parameter, so only pt_dlss5_preset rebuilds the feature, once the value has held
+still for DLSS5_REBUILD_DELAY_MS. (Until 2026-11-12 every tuning cvar rebuilt it - a rule
+from OptiScaler's 310.8 days.) pt_dlss5_strength, _colour and _compare are ours, applied in
+the resolve, and are live as well.
 
 FEEDBACK (pt_dlss5_drugs 1). Pauses the game and feeds the model its own finished output:
 after the resolve, DLSS_OUTPUT is copied into a private image, and on every following frame
@@ -69,9 +86,19 @@ pt_dlss5_strength above 1 speeds it up.
 #define DLSS5_REBUILD_DELAY_MS 300
 
 /* DLSS 5 Neural Rendering. Not in the NGX SDK headers this project builds against (310.6
-   stops at NVSDK_NGX_Feature_Reserved17); the static lib passes the id through to the core
+   stops at NVSDK_NGX_Feature_Reserved17); NVIDIA's DLSS 5 header defines
+   NVSDK_NGX_Feature_DLSSNR as Reserved18. The static lib passes the id through to the core
    unchecked, and the core routes 18 to nvngx_dlssnr.dll. */
 #define DLSS5_NGX_FEATURE ((NVSDK_NGX_Feature)18)
+
+/* NVSDK_NGX_DLSSNR_Mask_Blend_Mode: how the control mask and the skin auto mask combine.
+   0 (zero-initialised evaluate params) keeps the control mask's precedence. */
+#define DLSS5_MASK_BLEND_NONE 0
+#define DLSS5_MASK_BLEND_MIN  2
+
+/* PFN_NVSDK_NGX_DLSSNR_GetStatsCallback, registered under "DLSSNRGetStatsCallback": writes
+   the snippet's aggregate VRAM into "SizeInBytes" of the block it is given. */
+typedef NVSDK_NGX_Result (NVSDK_CONV *dlss5_stats_callback_t)(NVSDK_NGX_Parameter* params);
 
 static struct {
     qboolean failed;            /* sticky until pt_dlss5 is toggled */
@@ -107,6 +134,7 @@ static cvar_t* cvar_pt_dlss5_local_tone;
 static cvar_t* cvar_pt_dlss5_skin;
 static cvar_t* cvar_pt_dlss5_automask;
 static cvar_t* cvar_pt_dlss5_ui_correction;
+static cvar_t* cvar_pt_dlss5_volumetric;
 static cvar_t* cvar_pt_dlss5_compare;
 static cvar_t* cvar_pt_dlss5_strength;
 static cvar_t* cvar_pt_dlss5_colour;
@@ -312,7 +340,8 @@ void DLSS5_Shutdown(void)
     Cmd_RemoveCommand("dlss5_info");
 }
 
-static void tuning_changed(cvar_t* self)
+/* pt_dlss5_preset only: the network is chosen when the feature is created. */
+static void preset_changed(cvar_t* self)
 {
     (void)self;
     nr.dirty = qtrue;
@@ -386,6 +415,26 @@ static void PrintCapabilities(NVSDK_NGX_Parameter* p)
         a, n, m, r);
 }
 
+/* The runtime's VRAM, through its stats callback (NVIDIA's NGX_DLSSNR_GET_STATS; RTX Remix's
+   "show VRAM usage"). Aggregate for the snippet, so it is only meaningful with the feature up. */
+static void PrintVram(NVSDK_NGX_Parameter* p)
+{
+    void* callback = NULL;
+    if (!p || NVSDK_NGX_FAILED(NVSDK_NGX_Parameter_GetVoidPointer(p, "DLSSNRGetStatsCallback", &callback))
+        || !callback) {
+        Com_Printf("  VRAM: not reported (no DLSSNRGetStatsCallback in this runtime)\n");
+        return;
+    }
+    const NVSDK_NGX_Result r = ((dlss5_stats_callback_t)callback)(p);
+    unsigned long long bytes = 0;
+    if (NVSDK_NGX_FAILED(r) || NVSDK_NGX_FAILED(NVSDK_NGX_Parameter_GetULL(p, NVSDK_NGX_Parameter_SizeInBytes, &bytes))) {
+        Com_Printf("  VRAM: stats callback failed (0x%08X)\n", (unsigned)r);
+        return;
+    }
+    Com_Printf("  VRAM: %.1f MiB allocated by nvngx_dlssnr%s\n", (double)bytes / (1024.0 * 1024.0),
+        nr.feature ? "" : " (feature down)");
+}
+
 static void dlss5_info_f(void)
 {
     Com_Printf("DLSS 5 Neural Rendering (NGX feature 18, through the driver's NGX core)\n");
@@ -395,14 +444,23 @@ static void dlss5_info_f(void)
         nr.params ? "allocated" : "none",
         nr.feature ? "up" : "down", nr.width, nr.height, nr.frames);
     PrintCapabilities(nr.params ? nr.params : api->instance_params());
+    if (nr.params)
+        PrintVram(nr.params);
     const int preset = cvar_pt_dlss5_preset->integer;
-    Com_Printf("  preset %d (%s), style %d, intensity %.2f, local structure %.2f, local tone %.2f, skin %.2f, auto mask %d\n",
+    const qboolean automask = cvar_pt_dlss5_automask->integer != 0;
+    Com_Printf("  preset %d (%s), model %c, intensity %.2f, structure %.2f, tone %.2f\n",
         preset,
         preset == 2 ? "lightweight FP8 network, needs 310.9.16+" :
         preset == 1 ? "full network" : "DLL default = full network",
-        cvar_pt_dlss5_style->integer, cvar_pt_dlss5_intensity->value,
-        cvar_pt_dlss5_local_structure->value, cvar_pt_dlss5_local_tone->value, cvar_pt_dlss5_skin->value,
-        cvar_pt_dlss5_automask->integer);
+        'A' + (cvar_pt_dlss5_style->integer < 0 ? 0 : cvar_pt_dlss5_style->integer),
+        cvar_pt_dlss5_intensity->value, cvar_pt_dlss5_local_structure->value, cvar_pt_dlss5_local_tone->value);
+    Com_Printf("  auto mask %s (mask blend %s), character %.2f%s, UI correction %d\n",
+        automask ? "on" : "off", automask ? "min" : "none",
+        automask ? cvar_pt_dlss5_skin->value : 0.0f, automask ? "" : " (auto mask off)",
+        cvar_pt_dlss5_ui_correction->integer);
+    Com_Printf("  control mask: %s\n", DLSS5ControlMask()
+        ? "volumetric improvement (DLSS5_MASK: the scene's share of the light, fog and transparencies excluded)"
+        : "none (pt_dlss5_volumetric 0: the model treats every pixel alike)");
     Com_Printf("  strength %.2f, colour %.2f, compare %d\n",
         cvar_pt_dlss5_strength->value, cvar_pt_dlss5_colour->value, cvar_pt_dlss5_compare->integer);
     Com_Printf("  drugs %d, feedback %s\n", cvar_pt_dlss5_drugs->integer,
@@ -454,15 +512,30 @@ void DLSS5_InitCvars(void)
        so 3 runs the full network too. Default 2: the speed-up 310.9.16 was released for.
        On 310.8, 2 is unavailable and falls back to the full network. */
     cvar_pt_dlss5_preset = Cvar_Get("pt_dlss5_preset", "2", CVAR_ARCHIVE);
-    /* The appearance model - RTX Remix's "Model A/B/C" (0/1/2), sent as DLSSNR.Style. The
-       names below are ours; Remix only says the look is content-dependent. */
+
+    /* The rest are read live, every evaluate. Defaults and meanings are RTX Remix's
+       (rtx.dlssNeuralRendering.*), whose sliders run 0..1. */
+
+    /* The appearance model, sent as DLSSNR.Style: Remix's "Model A/B/C" (0/1/2). Remix only
+       says the look is content-dependent - compare them in the scene. */
     cvar_pt_dlss5_style = Cvar_Get("pt_dlss5_style", "0", CVAR_ARCHIVE);
+    /* The whole effect (Remix keeps it at 1 and has no slider for it) */
     cvar_pt_dlss5_intensity = Cvar_Get("pt_dlss5_intensity", "1.0", CVAR_ARCHIVE);
-    cvar_pt_dlss5_local_structure = Cvar_Get("pt_dlss5_local_structure", "1.0", CVAR_ARCHIVE);
-    cvar_pt_dlss5_local_tone = Cvar_Get("pt_dlss5_local_tone", "1.0", CVAR_ARCHIVE);
-    /* -1 leaves it to the model, which is also OptiScaler's default */
-    cvar_pt_dlss5_skin = Cvar_Get("pt_dlss5_skin", "-1.0", CVAR_ARCHIVE);
+    /* "Structure Intensity": details, shadows, materials */
+    cvar_pt_dlss5_local_structure = Cvar_Get("pt_dlss5_local_structure", "0.7", CVAR_ARCHIVE);
+    /* "Tone Intensity": lightness, darkness, colour */
+    cvar_pt_dlss5_local_tone = Cvar_Get("pt_dlss5_local_tone", "0.3", CVAR_ARCHIVE);
+    /* "Character Intensity": structure changes on characters the auto mask finds. Sent as 0
+       while the auto mask is off, as Remix does. */
+    cvar_pt_dlss5_skin = Cvar_Get("pt_dlss5_skin", "0.5", CVAR_ARCHIVE);
+    /* "Enable Auto Mask": the model's own character mask, combined (Min) with the control
+       mask below. */
     cvar_pt_dlss5_automask = Cvar_Get("pt_dlss5_automask", "1", CVAR_ARCHIVE);
+    /* "Volumetric Improvement" (Remix's rtx.dlssNeuralRendering.enableVolumetricControlMask,
+       on by default there too): send DLSS5_MASK as DLSSNR.ControlMask, so the model leaves
+       fog, particles, sprites, beams, explosions and Flow gas alone and works on the scene
+       behind them. 0 sends no mask - NGX then treats every pixel as 1. Live. */
+    cvar_pt_dlss5_volumetric = Cvar_Get("pt_dlss5_volumetric", "1", CVAR_ARCHIVE);
     /* The model can correct around a UI layer it is given. We run before the HUD is drawn,
        so there is none; 0 by default, exposed in case the model behaves better with it. */
     cvar_pt_dlss5_ui_correction = Cvar_Get("pt_dlss5_ui_correction", "0", CVAR_ARCHIVE);
@@ -482,14 +555,7 @@ void DLSS5_InitCvars(void)
     cvar_pt_dlss5_drugs = Cvar_Get("pt_dlss5_drugs", "0", 0);
     cvar_pt_dlss5_drugs->changed = drugs_changed;
 
-    cvar_pt_dlss5_preset->changed = tuning_changed;
-    cvar_pt_dlss5_style->changed = tuning_changed;
-    cvar_pt_dlss5_intensity->changed = tuning_changed;
-    cvar_pt_dlss5_local_structure->changed = tuning_changed;
-    cvar_pt_dlss5_local_tone->changed = tuning_changed;
-    cvar_pt_dlss5_skin->changed = tuning_changed;
-    cvar_pt_dlss5_automask->changed = tuning_changed;
-    cvar_pt_dlss5_ui_correction->changed = tuning_changed;
+    cvar_pt_dlss5_preset->changed = preset_changed;
 
     Cmd_AddCommand("dlss5_info", dlss5_info_f);
 }
@@ -498,6 +564,11 @@ qboolean DLSS5Enabled(void)
 {
     return cvar_pt_dlss5 && cvar_pt_dlss5->integer != 0 && !nr.failed && qvk.supports_ngx
         && dlssnrPresent;
+}
+
+qboolean DLSS5ControlMask(void)
+{
+    return cvar_pt_dlss5_volumetric && cvar_pt_dlss5_volumetric->integer != 0;
 }
 
 qboolean DLSS5DrugsActive(void)
@@ -586,9 +657,9 @@ static void FeedbackOut(VkCommandBuffer cmd, uint32_t width, uint32_t height)
 }
 
 /* Our parameter block on the NGX instance DLSS.c set up for this device. The core's block
-   is typed; values are set the way NVIDIA's helpers set their equivalents (UI for sizes,
-   flags and indices, F for strengths and scales, a void pointer per resource) and the
-   preset as an int, which is how RTX Remix sets it. */
+   is typed; every value is set with the type NGX_VULKAN_EVALUATE_DLSSNR_EXT (NVIDIA's
+   helper in nvsdk_ngx_helpers_dlssnr_vk.h) uses for it, and the preset as an int, as RTX
+   Remix sets it. */
 static qboolean EnsureParams(void)
 {
     if (nr.params)
@@ -625,18 +696,20 @@ static qboolean EnsureParams(void)
     return qtrue;
 }
 
+/* The evaluate-time controls, as RTX Remix sends them. */
 static void SetTuning(void)
 {
     NVSDK_NGX_Parameter* p = nr.params;
-    const int preset = cvar_pt_dlss5_preset->integer;
     const int style = cvar_pt_dlss5_style->integer;
-    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.Hint.Render.Preset", preset < 0 ? 0 : preset);
+    const qboolean automask = cvar_pt_dlss5_automask->integer != 0;
     NVSDK_NGX_Parameter_SetF(p, "DLSSNR.Intensity", cvar_pt_dlss5_intensity->value);
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Style", (unsigned)(style < 0 ? 0 : style));
     NVSDK_NGX_Parameter_SetF(p, "DLSSNR.LocalStructureStrength", cvar_pt_dlss5_local_structure->value);
     NVSDK_NGX_Parameter_SetF(p, "DLSSNR.LocalToneStrength", cvar_pt_dlss5_local_tone->value);
-    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.SkinStructureStrength", cvar_pt_dlss5_skin->value);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.UseAutoMask", cvar_pt_dlss5_automask->integer ? 1u : 0u);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.UseAutoMask", automask ? 1 : 0);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.MaskBlendMode", automask ? DLSS5_MASK_BLEND_MIN : DLSS5_MASK_BLEND_NONE);
+    NVSDK_NGX_Parameter_SetF(p, "DLSSNR.SkinStructureStrength", automask ? cvar_pt_dlss5_skin->value : 0.0f);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.UICorrection", cvar_pt_dlss5_ui_correction->integer ? 1 : 0);
 }
 
 static qboolean EnsureFeature(void* cmd, uint32_t width, uint32_t height)
@@ -652,13 +725,16 @@ static qboolean EnsureFeature(void* cmd, uint32_t width, uint32_t height)
     if (nr.feature)
         return qtrue;
 
+    /* NGX_VULKAN_CREATE_DLSSNR_EXT1's two (NVSDK_NGX_DLSSNR_Create_Params) plus the preset
+       hint; the controls go along too, so the first frame needs nothing new */
+    const int preset = cvar_pt_dlss5_preset->integer;
     NVSDK_NGX_Parameter* p = nr.params;
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Enabled", 1u);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.Enabled", 1);
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Width", width);
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Height", height);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.Hint.Render.Preset", preset < 0 ? 0 : preset);
     NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_CreationNodeMask, 1u);
     NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.UICorrection", cvar_pt_dlss5_ui_correction->integer ? 1u : 0u);
     SetTuning();
 
     NVSDK_NGX_Handle* handle = NULL;
@@ -673,9 +749,7 @@ static qboolean EnsureFeature(void* cmd, uint32_t width, uint32_t height)
     nr.height = height;
     nr.dirty = qfalse;
     nr.reset = qtrue;
-    Com_Printf("DLSS 5: feature created at %ux%u (preset %d, style %d, intensity %.2f)\n",
-        width, height, cvar_pt_dlss5_preset->integer, cvar_pt_dlss5_style->integer,
-        cvar_pt_dlss5_intensity->value);
+    Com_Printf("DLSS 5: feature created at %ux%u (preset %d)\n", width, height, preset);
     return qtrue;
 }
 
@@ -696,11 +770,20 @@ NVSDK_NGX_Parameter* DLSS5DescribeEvaluation(qboolean resetHistory, uint32_t gui
     const uint32_t height = nr.height;
 
     NVSDK_NGX_Parameter* p = nr.params;
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Enabled", 1u);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.Enabled", 1);
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Width", width);
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Height", height);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.DepthInverted", 0u);
-    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.Reset", (resetHistory || nr.reset) ? 1u : 0u);
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.DepthInverted", 0);   /* DLSS_DEPTH is linear view depth */
+    NVSDK_NGX_Parameter_SetI(p, "DLSSNR.Reset", (resetHistory || nr.reset) ? 1 : 0);
+
+    /* The guides' jitter, in render pixels, on the NGX-wide keys RTX Remix sets it on; same
+       value and sign as DLSS gets (DLSS.c's DLSSDescribeEvaluation). Both renderers keep
+       this frame's in vkpt_refdef until the frame is recorded. */
+    float jitterSign = (float)Cvar_Get("pt_dlss_jitter_sign", "-1", CVAR_ARCHIVE)->integer;
+    if (jitterSign != 1.0f && jitterSign != -1.0f)
+        jitterSign = 1.0f;
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Jitter_Offset_X, vkpt_refdef.uniform_buffer.sub_pixel_jitter[0] * jitterSign);
+    NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Jitter_Offset_Y, vkpt_refdef.uniform_buffer.sub_pixel_jitter[1] * jitterSign);
 
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseX", 0u);
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ColorSubrectBaseY", 0u);
@@ -720,6 +803,12 @@ NVSDK_NGX_Parameter* DLSS5DescribeEvaluation(qboolean resetHistory, uint32_t gui
     NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.MVecSubrectHeight", guideHeight);
     NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleX", (float)guideWidth);
     NVSDK_NGX_Parameter_SetF(p, "DLSSNR.MVecScaleY", (float)guideHeight);
+    /* The control mask is a guide too (DLSS5_MASK, written with the others); its subrect is
+       the whole render size, as RTX Remix sets it. Only read when a mask is passed. */
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ControlMaskSubrectBaseX", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ControlMaskSubrectBaseY", 0u);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ControlMaskSubrectWidth", guideWidth);
+    NVSDK_NGX_Parameter_SetUI(p, "DLSSNR.ControlMaskSubrectHeight", guideHeight);
     SetTuning();
 
     *feature = nr.feature;
@@ -758,6 +847,9 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
 
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_DEPTH]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_PT_DLSS_MOTION]);
+    const qboolean controlMask = DLSS5ControlMask();
+    if (controlMask)
+        BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS5_MASK]);
     /* Motion blur's scratch: last written/read by that pass (compute + transfer). */
     ImageBarrier(cmd, qvk.images[VKPT_IMG_MOTION_BLUR],
         VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
@@ -781,6 +873,8 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
         guideSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK output = ToNGXResource(qvk.images[VKPT_IMG_MOTION_BLUR], qvk.images_views[VKPT_IMG_MOTION_BLUR],
         outSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);
+    NVSDK_NGX_Resource_VK mask = ToNGXResource(qvk.images[VKPT_IMG_DLSS5_MASK], qvk.images_views[VKPT_IMG_DLSS5_MASK],
+        guideSize, VK_FORMAT_R8G8B8A8_UNORM, false);
 
     NVSDK_NGX_Handle* feature = NULL;
     NVSDK_NGX_Parameter* p = DLSS5DescribeEvaluation(resetHistory, guideWidth, guideHeight, &feature);
@@ -788,6 +882,8 @@ void DLSS5Apply(VkCommandBuffer cmd, qboolean resetHistory)
     NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Depth", &depth);
     NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.MVec", &motion);
     NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.Output", &output);
+    /* The block outlives the frame, so "off" has to clear what "on" set. */
+    NVSDK_NGX_Parameter_SetVoidPointer(p, "DLSSNR.ControlMask", controlMask ? &mask : NULL);
 
     if (!DLSS5Evaluated(NVSDK_NGX_VULKAN_EvaluateFeature_C(cmd, feature, p, NULL)))
         return;

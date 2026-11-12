@@ -323,28 +323,57 @@ static void sharc_update(recorder_t *r, const d3d12_passes_frame_t *f)
     mark(r, PROFILER_SHARC, PROFILER_STOP);
 }
 
-// vkpt_pt_trace_lighting
-static void trace_lighting(recorder_t *r, const d3d12_passes_frame_t *f)
+static void trace_paths(recorder_t *r, d3d12_pass_t pass, int bounce, uint32_t list, uint32_t append);
+
+// vkpt_pt_trace_lighting (`tiles`: the view has the tile lists, so maybe path lists)
+static void trace_lighting(recorder_t *r, const d3d12_passes_frame_t *f, bool tiles)
 {
+    /* SPARSE RENDERING (pt_sparse, shader/constants.h; path_tracer.c's): direct lighting
+       covers the grid, where the pixels this frame skips get their guides and the rest
+       fill the sparse path list, then runs again over that list, and so does the first
+       bounce. Without the list the shaders still skip the same pixels, one dispatch over
+       the grid each. */
+    const bool sparse = tiles && f->sparse;
+    const d3d12_pass_t direct = f->caustics ? D3D12_PASS_DIRECT_LIGHTING_CAUSTICS : D3D12_PASS_DIRECT_LIGHTING;
+
     mark(r, PROFILER_DIRECT_LIGHTING, PROFILER_START);
-    trace(r, f->caustics ? D3D12_PASS_DIRECT_LIGHTING_CAUSTICS : D3D12_PASS_DIRECT_LIGHTING, 0,
-          f->field_width, f->render_height);
+    if (sparse) {
+        trace_grid_append(r, direct, 0, f->field_width, f->render_height, 2, PT_PATH_LIST_SPARSE);
+        trace_paths(r, direct, 0, PT_PATH_LIST_SPARSE, 0);
+    } else {
+        trace(r, direct, 0, f->field_width, f->render_height);
+    }
     mark(r, PROFILER_DIRECT_LIGHTING, PROFILER_STOP);
 
     mark(r, PROFILER_INDIRECT_LIGHTING, PROFILER_START);
     if (f->num_bounce_rays > 0) {
         const uint32_t height = f->num_bounce_rays == 0.5f ? f->render_height / 2 : f->render_height;
         const int num_bounces = (int)ceilf(f->num_bounce_rays);
+        // pt_bounce_cull's path lists (trace_paths); not under SER, whose raygen
+        // dispatch covers the grid. pt_sparse's first bounce walks the sparse list (not
+        // at half resolution, whose rows it renames), and then the later bounces have to
+        // take the lists too, as it never visits the other pixels to end their paths.
+        const bool no_ser = !r->p->raygen[0] && !r->p->raygen[1];
+        const bool sparse_first = sparse && no_ser && f->num_bounce_rays >= 1.f;
+        const bool paths = tiles && num_bounces >= 2 && num_bounces <= PT_PATH_LISTS && no_ser &&
+                           (f->paths || sparse_first);
         for (int bounce = 0; bounce < num_bounces; bounce++) {
             // INDIRECT_LIGHTING_0 is the first bounce, _1 every later one (path_tracer.c's)
             if (bounce <= 1)
                 mark(r, PROFILER_INDIRECT_LIGHTING_0 + bounce, PROFILER_START);
             const int k = bounce ? 1 : 0;
-            if (r->p->raygen[k])
+            const d3d12_pass_t pass = bounce ? D3D12_PASS_INDIRECT_LIGHTING_SECOND : D3D12_PASS_INDIRECT_LIGHTING_FIRST;
+            const uint32_t append = bounce + 1 < num_bounces ? (uint32_t)bounce + 1 : 0;
+            if (sparse_first && bounce == 0)
+                trace_paths(r, pass, 0, PT_PATH_LIST_SPARSE, paths ? append : 0);
+            else if (paths && bounce > 0)
+                trace_paths(r, pass, bounce, (uint32_t)bounce, append);
+            else if (paths)
+                trace_grid_append(r, pass, bounce, f->field_width, height, 2, append);
+            else if (r->p->raygen[k])
                 trace_raygen(r, r->p->raygen[k], r->p->raygen_records[k], bounce, f->field_width, height);
             else
-                trace(r, bounce ? D3D12_PASS_INDIRECT_LIGHTING_SECOND : D3D12_PASS_INDIRECT_LIGHTING_FIRST, bounce,
-                      f->field_width, height);
+                trace(r, pass, bounce, f->field_width, height);
             if (bounce == 0 || bounce == num_bounces - 1)
                 mark(r, PROFILER_INDIRECT_LIGHTING_0 + (bounce ? 1 : 0), PROFILER_STOP);
         }
@@ -590,9 +619,9 @@ static bool tile_lists_reset(recorder_t *r)
     return true;
 }
 
-// path_tracer.c's dispatch_rays_indirect: bounce `bounce` over list `bounce`, adding
-// to the next list
-static void trace_tiles(recorder_t *r, d3d12_pass_t pass, int bounce)
+// `pass` with `push`, dispatched by the DISPATCH at word `args_word` of the lists,
+// copied out to tile_args first (above)
+static void execute_from_lists(recorder_t *r, d3d12_pass_t pass, const pt_push_t *push, uint32_t args_word)
 {
     const d3d12_passes_t *p = r->p;
     D3D12_RESOURCE_BARRIER b[2];
@@ -604,7 +633,7 @@ static void trace_tiles(recorder_t *r, d3d12_pass_t pass, int bounce)
                                     D3D12_RESOURCE_STATE_COPY_DEST);
     ID3D12GraphicsCommandList4_ResourceBarrier(p->cmd, n, b);
     ID3D12GraphicsCommandList4_CopyBufferRegion(p->cmd, p->tile_args, 0, p->tile_buffer,
-                                                (PT_TILE_HDR_ARGS + (uint64_t)bounce * 4 + 1) * sizeof(uint32_t),
+                                                (uint64_t)args_word * sizeof(uint32_t),
                                                 sizeof(D3D12_DISPATCH_ARGUMENTS));
     b[0] = transition_barrier(p->tile_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     b[1] = transition_barrier(p->tile_args, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
@@ -614,16 +643,39 @@ static void trace_tiles(recorder_t *r, d3d12_pass_t pass, int bounce)
     ID3D12GraphicsCommandList *gl = (ID3D12GraphicsCommandList *)p->cmd;
     ID3D12GraphicsCommandList4_SetPipelineState(p->cmd, p->psos[pass]);
     use_layout(r, D3D12_PL_PATH_TRACER);
+    d3d12_compute_push_constants(gl, D3D12_PL_PATH_TRACER, push, sizeof(*push));
+    // (none of reflect_refract, direct_lighting and indirect_lighting reads gl_NumWorkGroups, the root
+    // constant d3d12_compute_dispatch sets and a DISPATCH argument cannot)
+    ID3D12GraphicsCommandList4_ExecuteIndirect(p->cmd, p->tile_dispatch, 1, p->tile_args, 0, NULL, 0);
+    d3d12_barrier_all(p->cmd, p->enhanced_barriers);
+}
+
+// path_tracer.c's dispatch_rays_indirect: bounce `bounce` over list `bounce`, adding
+// to the next list
+static void trace_tiles(recorder_t *r, d3d12_pass_t pass, int bounce)
+{
     pt_push_t push = { 0 };
     push.gpu_index = -1;
     push.bounce_index = bounce;
     push.tile_read_list = (uint32_t)bounce + 1;
     push.tile_append_list = bounce + 1 < PT_TILE_LISTS ? (uint32_t)bounce + 2 : 0;
-    d3d12_compute_push_constants(gl, D3D12_PL_PATH_TRACER, &push, sizeof(push));
-    // (reflect_refract reads no gl_NumWorkGroups, the root constant d3d12_compute_dispatch
-    // sets and a DISPATCH argument cannot)
-    ID3D12GraphicsCommandList4_ExecuteIndirect(p->cmd, p->tile_dispatch, 1, p->tile_args, 0, NULL, 0);
-    d3d12_barrier_all(p->cmd, p->enhanced_barriers);
+    execute_from_lists(r, pass, &push, PT_TILE_HDR_ARGS + (uint32_t)bounce * 4 + 1);
+}
+
+/* PATH LISTS (pt_bounce_cull, pt_sparse, shader/constants.h; path_tracer.c's
+   dispatch_rays_paths): a lighting pass over path list `list` - for indirect lighting
+   bounce `bounce` > 0 list `bounce`, the pixels whose path the bounce before continued;
+   for direct lighting and the first bounce under pt_sparse PT_PATH_LIST_SPARSE - filling
+   list `append` (0: none). Without pt_sparse bounce 0 covers the grid and fills list 1
+   (trace_grid_append). */
+static void trace_paths(recorder_t *r, d3d12_pass_t pass, int bounce, uint32_t list, uint32_t append)
+{
+    pt_push_t push = { 0 };
+    push.gpu_index = -1;
+    push.bounce_index = bounce;
+    push.tile_read_list = list;
+    push.tile_append_list = append;
+    execute_from_lists(r, pass, &push, PT_PATH_HDR(list) + 1);
 }
 
 // vkpt_pt_trace_reflections: over the bounce's tile list when the view has them
@@ -794,7 +846,7 @@ void d3d12_record_passes(const d3d12_passes_t *p, const d3d12_passes_frame_t *f)
     // overwrites SHADING_POSITION when there is a second
     if (f->sharc && p->sharc_buffers[0] && p->sharc_buffers[1] && p->sharc_buffers[2])
         sharc_update(&r, f);
-    trace_lighting(&r, f);
+    trace_lighting(&r, f, tiles);
 
     // ...and its post list
     mark(&r, PROFILER_ASVGF_FULL, PROFILER_START);

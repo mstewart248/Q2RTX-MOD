@@ -1,5 +1,6 @@
 /*
-DLSS 5 Neural Rendering (DLSSNR, NGX feature 18). Local experiment on the DLSS5 branch.
+DLSS 5 Neural Rendering (DLSSNR, NGX feature 18), on both renderers; off and hidden unless
+nvngx_dlssnr.dll sits next to q2rtx.exe.
 
 Runs on the finished, tone-mapped, HUD-less frame in VKPT_IMG_DLSS_OUTPUT - after bloom and
 tone mapping, before frame generation and the HUD - so it needs DLSS (any pt_dlss mode) on.
@@ -69,9 +70,10 @@ void DLSS5_SetBackend(const dlss5_backend_t* backend);
                               size): its parameter block, and its feature made into `cmd`
                               (or remade - the tuning changed, or the size)
      DLSS5ConvertPush         the encode's (mode 0) or the resolve's (1) push constants
-     DLSS5DescribeEvaluation  every evaluation parameter but the four resources
-                              (DLSSNR.Color, .Depth, .MVec, .Output), on the block it
-                              returns; *feature is the feature to evaluate. The guides are
+     DLSS5DescribeEvaluation  every evaluation parameter but the resources (DLSSNR.Color,
+                              .Depth, .MVec, .Output, and .ControlMask - DLSS5_MASK while
+                              DLSS5ControlMask(), else NULL), on the block it returns;
+                              *feature is the feature to evaluate. The guides are
                               guideWidth x guideHeight (the render size).
      DLSS5Evaluated           what the evaluation returned: false, and DLSS 5 off until
                               pt_dlss5 is toggled, on a failure (no resolve then) */
@@ -80,6 +82,8 @@ void DLSS5ConvertPush(int mode, uint32_t width, uint32_t height, qboolean hdr, d
 NVSDK_NGX_Parameter* DLSS5DescribeEvaluation(qboolean resetHistory, uint32_t guideWidth, uint32_t guideHeight,
                                              NVSDK_NGX_Handle** feature);
 qboolean DLSS5Evaluated(NVSDK_NGX_Result result);
+/* pt_dlss5_volumetric: whether DLSS5_MASK goes in as DLSSNR.ControlMask this frame */
+qboolean DLSS5ControlMask(void);
 
 /* The sRGB encode/decode pass around the model (shader/dlss5_convert.comp). */
 VkResult vkpt_dlss5_initialize(void);

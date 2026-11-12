@@ -69,6 +69,9 @@ existing Quake II RTX install.
 * **DLSS Super Resolution, Ray Reconstruction and Frame Generation (2–6×), and
   NVIDIA Reflex**, built straight against NGX with no Streamline. See
   [Upscaling, frame generation and latency](#upscaling-frame-generation-and-latency).
+* **[DLSS 5 Neural Rendering](#dlss-5-neural-rendering)** on RTX 50 series
+  cards: NVIDIA's neural model reworks the finished frame's detail, shadows,
+  materials and tone, on both path tracers.
 * **A stronger [path tracer](#path-tracer)**: ReSTIR direct and global
   illumination, multi-bounce lighting from a radiance cache (SHaRC), full
   materials on bounces, parallax occlusion mapping, and an animated sky with a
@@ -111,6 +114,7 @@ console. The renderer settings live under **Video** → **Advanced** and
 | **DLSS Super Resolution** | `pt_dlss` | `-1` ultra-performance, `0` off, `1` performance, `2` balanced, `3` quality, `4` ultra-quality, `5` DLAA. Built against the current NVIDIA DLSS SDK — no patched SDK needed. |
 | **DLSS Ray Reconstruction** | `pt_dlss_dldn` | DLSS's own denoiser *and* upscaler in one pass. By default it **replaces** A-SVGF (`pt_dlss_bypass_denoiser 1`), which is what the RR integration guide asks for: RR wants the raw, independent path-traced samples that A-SVGF's temporal accumulation destroys. Turning RR on also switches TAA and the classic denoiser off, and restores your previous settings when you turn it back off. |
 | **DLSS Frame Generation** | `pt_dlss_fg` | `0` off, or a multiplier of `2`–`6`. Implemented directly against NGX (`nvsdk_ngx_helpers_dlssg_vk.h`) — **no Streamline dependency**. Pick the multiplier so *base framerate × multiplier ≈ your refresh rate*, so a heavier scene wants a **higher** multiplier, not a lower one. Check the base rate with `pt_dlss_fg_stats 1`. |
+| **DLSS 5 Neural Rendering** | `pt_dlss5` | RTX 50 series. Runs on the finished frame; see [DLSS 5 Neural Rendering](#dlss-5-neural-rendering) below. |
 | **NVIDIA Reflex** | `pt_reflex` | `0` off, `1` on, `2` on + boost. Implemented over `VK_NV_low_latency2`, so it needs **no SDK at all**. Measured here at 16 ms → 3 ms without frame generation. `pt_reflex_fps_max` is a Reflex-paced frame cap, which is smoother and lower latency than sleeping in the main loop; `pt_dlss_fg_pace_to_refresh 1` caps the *render* rate to refresh ÷ multiplier so the presented rate lands exactly on the display refresh. |
 
 The DLSS runtime DLLs are not in the package: put NVIDIA's `nvngx_dlss.dll`,
@@ -154,6 +158,50 @@ DLSS-specific renderer work that made the above actually look right:
   off, rather than trying to initialise NGX on hardware that cannot run it.
 * An extensive DLSS/G-buffer debug view set: `pt_dlss_debug`,
   `pt_dlss_fg_stats`, `pt_dlss_fg_indicator`, `pt_dlss_fg_compare`.
+
+### DLSS 5 Neural Rendering
+
+NVIDIA's DLSS 5 neural rendering model (`nvngx_dlssnr.dll`, RTX 50 series)
+runs on the finished frame: after bloom and tone mapping, before frame
+generation and the HUD, on both the Vulkan and the Direct3D 12 path tracer. It
+reworks the picture's detail, shadows and materials, and its lightness, darkness
+and colour. It needs DLSS on (any `pt_dlss` mode) and a driver that supports
+it.
+
+The model is not in the package: put `nvngx_dlssnr.dll` (310.9.16 or newer)
+beside `q2rtx.exe` and the option appears under **Video** →
+**reconstruction...** → **DLSS 5 Neural Rendering**. If it does not start,
+`dlss5_info` in the console says why, and also shows how much VRAM the model
+holds.
+
+The model's own controls follow RTX Remix's DLSS 5 panel, with the same names
+and defaults. All of them apply live except the network, which rebuilds the
+model after a short pause.
+
+| cvar | Default | Notes |
+|---|---|---|
+| `pt_dlss5` | `0` | On/off. |
+| `pt_dlss5_preset` | `2` | The network: `2` the lightweight FP8 network (the fast one, and the one RTX Remix uses), `1` the full network, `0` the DLL's default. |
+| `pt_dlss5_style` | `0` | Model A, B or C (`0`–`2`). How each one looks depends on the scene, so compare them. |
+| `pt_dlss5_intensity` | `1` | The whole effect at once. |
+| `pt_dlss5_local_structure` | `0.7` | Structure intensity: details, shadows and materials. Lower keeps the original structure. |
+| `pt_dlss5_local_tone` | `0.3` | Tone intensity: lightness, darkness and colour. Lower keeps the original tone. |
+| `pt_dlss5_automask` | `1` | The model's own character mask. |
+| `pt_dlss5_skin` | `0.5` | Character intensity: structure changes on the characters the auto mask finds. Not used while the auto mask is off. |
+| `pt_dlss5_ui_correction` | `0` | The model's UI correction. The frame it sees has no HUD, so off is expected. |
+
+Then three of this port's own, applied after the model and also live:
+
+| cvar | Default | Notes |
+|---|---|---|
+| `pt_dlss5_strength` | `1` | How much of the model's change reaches the screen: `0` is the original frame, above `1` exaggerates it. |
+| `pt_dlss5_colour` | `0` | `0` keeps the original colours and takes only the model's lighting change; `1` takes its colours too. On Quake II the model tends to re-grade colour from one moment to the next, which is why `0` is the default. |
+| `pt_dlss5_compare` | `0` | `1` split screen (the left half is the frame without DLSS 5), `2` only what the model changed, ×8. |
+
+The model works on SDR images. Under HDR output (`vid_hdr`) it is shown the
+frame SDR mode would have produced, and its change is mapped back onto the HDR
+image, so highlights keep their range. On Vulkan, `pt_dlss5_drugs 1` pauses the
+game and feeds the model its own output, frame after frame.
 
 ## Path tracer
 
@@ -736,9 +784,26 @@ water, and it burns out into smoke that rises, drifts and fades.
   grenade's flight, thick where it leaves and thinning out like the classic
   trail (the classic particles stand in while the simulation is full), `0`
   the classic particles.
+* **Railgun trail** (`cl_flow_railtrail`): `1` is simulated gas in place of
+  the trail's particles, a cyan-blue spiral that glows and cools into wisps
+  round a thread of pale smoke (the classic particles stand in while the
+  simulation is full), `0` the classic particles. While it is on, **railgun
+  trail fade time** (`pt_flow_rail_fade`) lets it linger longer than the
+  1.4 seconds it is tuned to, up to 5; a longer fade holds the simulation
+  pool longer, so a quick second shot may go to particles.
 * **Plasma beam** (`cl_flow_heatbeam`): `1` makes the beam simulated gas: a
-  hot yellow-orange core in place of the beam model, yellow rings of heat
-  running out along it, and a hot spot burning off smoke where it hits. The
+  hot yellow-orange core in place of the beam model, rings of heat running
+  out along it that start white-hot and cool through yellow and orange to
+  smoke, and a hot spot burning off smoke where it hits - or, with **plasma
+  beam impact** set to fire (`cl_flow_heatbeam_fire`), what it hits set
+  alight: a wall bursts into flames where the beam is on it (size
+  `cl_flow_heatbeam_fire_size`, white-hot heart `cl_flow_heatbeam_fire_core`),
+  a monster or player burns over its top half and dies down once the beam moves off
+  (`cl_flow_burn_after`, 1.5 s), and the gibs it blows off burn and go out
+  into smoke (`cl_flow_gib_burn`, 3 s). **Plasma beam trails**
+  (`pt_flow_heatbeam_trails`) is off by default: the gas stays with the
+  weapon as you sweep it. On, it leaves glow and smoke where it was, which
+  costs a lot while strafing. The
   model is still drawn past the first 1024 units of a long beam, and it still
   lights the room (the classic beam and rings stand in while the simulation
   is full). `0` is the classic beam and rings.
@@ -752,7 +817,11 @@ water, and it burns out into smoke that rises, drifts and fades.
 | `cl_flow_explosions` | `2` | `0` off, `1` with the classic fireball, `2` instead of it. |
 | `cl_rocket_flame` | `1` | `0` classic, `1` simulated, `2` particles. |
 | `cl_flow_grenadetrail` | `1` | `0` classic, `1` simulated. |
+| `cl_flow_railtrail` | `1` | `0` classic, `1` simulated. |
+| `pt_flow_rail_fade` | `1.4` | Seconds the simulated railgun trail takes to fade, 1.4 (the shortest) to 5. |
 | `cl_flow_heatbeam` | `1` | `0` classic beam and rings, `1` simulated. |
+| `cl_flow_heatbeam_fire` | `0` | Where the simulated plasma beam hits: `0` a hot spot, `1` fire. |
+| `pt_flow_heatbeam_trails` | `0` | `0` the simulated plasma beam stays with the weapon, `1` it leaves glow and smoke behind as it is swept. |
 | `cl_explosion_water` | `1` | `0` off, `1` simulated, `2` classic. |
 | `pt_flow_lighting` | `1` | The fire and plasma cast light. |
 | `pt_flow_env` | `1` | Smoke lit by the world. |

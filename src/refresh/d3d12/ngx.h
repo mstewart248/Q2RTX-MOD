@@ -70,16 +70,18 @@ NVSDK_NGX_Result d3d12_ngx_evaluate(ID3D12GraphicsCommandList *cmd, NVSDK_NGX_Ha
 
 /* DLSS 5 NEURAL RENDERING (NGX feature 18; vkpt/DLSSNR.c says what it is told). A
    parameter block of its own from the instance (DLSSNR.c keeps it), the feature recorded
-   into `cmd`, and one evaluation: every parameter but the four resources is on `params`
+   into `cmd`, and one evaluation: every parameter but the resources is on `params`
    already (DLSS5DescribeEvaluation); the resources go over as D3D12 ones, as NGX's
-   helpers hand theirs (SetD3d12Resource). */
+   helpers hand theirs (SetD3d12Resource). `control` is DLSSNR.ControlMask, NULL for none
+   (pt_dlss5_volumetric 0) - set either way, since the block outlives the frame. */
 NVSDK_NGX_Result d3d12_ngx_new_params(NVSDK_NGX_Parameter **params);
 void d3d12_ngx_destroy_params(NVSDK_NGX_Parameter *params);
 NVSDK_NGX_Result d3d12_ngx_dlss5_create(ID3D12GraphicsCommandList *cmd, NVSDK_NGX_Parameter *params,
                                         NVSDK_NGX_Handle **feature);
 NVSDK_NGX_Result d3d12_ngx_dlss5_evaluate(ID3D12GraphicsCommandList *cmd, NVSDK_NGX_Handle *feature,
                                           NVSDK_NGX_Parameter *params, ID3D12Resource *color, ID3D12Resource *depth,
-                                          ID3D12Resource *motion, ID3D12Resource *output);
+                                          ID3D12Resource *motion, ID3D12Resource *output,
+                                          ID3D12Resource *control);
 
 /* FRAME GENERATION (ngx_dlssg.cpp), as vkpt/DLSSG.cpp makes it. The feature, recorded
    into `cmd` on node 1: `width` x `height` the output (the backbuffer handed over, in

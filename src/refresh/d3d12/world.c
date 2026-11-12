@@ -733,8 +733,12 @@ static void destroy_tiles(void)
 // it changes. Without them the bounces cover the whole grid, as before.
 static bool ensure_tiles(const uint32_t *header)
 {
-    const uint64_t size = ((uint64_t)header[PT_TILE_HDR_DATA] +
-                           (uint64_t)PT_TILE_LISTS * header[PT_TILE_HDR_DATA_STRIDE]) * sizeof(uint32_t);
+    // (pt_bounce_cull's path lists after the tile ids, while it is on: constants.h)
+    const uint64_t size = (header[PT_TILE_HDR_PATH_DATA]
+        ? (uint64_t)header[PT_TILE_HDR_PATH_DATA] +
+          (uint64_t)header[PT_TILE_HDR_PATH_REGIONS] * header[PT_TILE_HDR_PATH_STRIDE]
+        : (uint64_t)header[PT_TILE_HDR_DATA] +
+          (uint64_t)PT_TILE_LISTS * header[PT_TILE_HDR_DATA_STRIDE]) * sizeof(uint32_t);
     const uint32_t reset_size = header[PT_TILE_HDR_DATA] * (uint32_t)sizeof(uint32_t);
     if (w.tiles && size == w.tiles_size && reset_size == w.tiles_reset_size)
         return true;
@@ -2760,6 +2764,11 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
         .enable_denoiser = frame->enable_denoiser,
         .reflect_refract = (int)ubo->pt_reflect_refract,    // ref_mode's: at least 4 in photo mode
         .num_bounce_rays = frame->num_bounce_rays,
+        // pt_bounce_cull's path lists: in the tile buffer when the header has them
+        .paths = tiles && frame->tile_header[PT_TILE_HDR_PATH_DATA] != 0 && ubo->pt_bounce_cull != 0,
+        // pt_sparse's list: the second region (shader/constants.h); the rate main.c settled on
+        .sparse = tiles && frame->tile_header[PT_TILE_HDR_PATH_DATA] != 0 &&
+                  frame->tile_header[PT_TILE_HDR_PATH_REGIONS] >= 2 && ubo->pt_sparse > 0.f,
         .caustics = frame->caustics,
         .restir_gi = ubo->pt_restir_gi != 0,
         .restir_gi_spatial = ubo->pt_restir_gi_spatial > 0,

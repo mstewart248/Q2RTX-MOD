@@ -33,6 +33,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #pragma optionNV(unroll all)
 
+// pt_sparse runs this over a path list of the pixels it lights - see constants.h
+#define PT_PATH_LAUNCH
 #define ENABLE_SHADOW_CAUSTICS
 #include "restir.h"
 #include "projection.glsl"
@@ -1016,9 +1018,138 @@ direct_lighting(ivec2 ipos, bool is_odd_checkerboard, out vec3 high_freq, out ve
 		imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, alpha, dot(normal, view_direction.xyz)), 0));
 }
 
+// SPARSE RENDERING (pt_sparse): the ReSTIR reservoir of a pixel this frame does not
+// light. Remix leaves such a pixel's reservoir as it was, so the next frame reuses
+// one that may be several frames old; here it is carried forward instead - last
+// frame's reservoir at the reprojected position, under the same depth and normal
+// tests the temporal reuse applies, with its light renumbered for this frame. That
+// keeps the temporal history whole while only a third of the pixels sample lights,
+// and a dynamic light's index can never go stale (get_light_current_idx only maps
+// one frame). Nothing is traced: the sample is shaded, and its visibility tested,
+// by whichever pixel takes it next.
 void
-main() 
+restir_sparse_carry(ivec2 ipos, ivec2 ipos_r, bool valid_surface)
 {
+	uint carried_id = RESTIR_INVALID_ID;
+	uvec4 carried = uvec4(0);
+
+	if(valid_surface)
+	{
+		int field_left = 0;
+		int field_right = global_ubo.pt_prev_field_offset;
+		if(ipos.x >= global_ubo.pt_field_offset)
+		{
+			field_left = field_right;
+			field_right = global_ubo.pt_prev_field_offset * 2;
+		}
+
+		// direct_lighting_restir's temporal lookup, without the permutation: this only
+		// keeps the history where it was, it does not reuse it
+		vec4 motion = texelFetch(TEX_PT_MOTION, ipos, 0);
+		float field_scale_x = (global_ubo.pt_fullres_fields != 0) ? 1.0 : 2.0;
+		ivec2 pos_prev = ivec2(((vec2(ipos) + vec2(0.5)) * vec2(global_ubo.inv_width * field_scale_x, global_ubo.inv_height) + motion.xy) * vec2(global_ubo.pt_prev_field_offset, global_ubo.prev_height));
+		ivec2 pos_prev_r = pos_prev;
+		if(global_ubo.pt_restir == 2)
+		{
+			pos_prev.x = (pos_prev.x & ~1) + (pos_prev.y & 1);
+			pos_prev_r = pos_prev;
+			pos_prev_r.y >>= 1;
+		}
+		else if(global_ubo.pt_restir == 3)
+		{
+			pos_prev &= ~1;
+			pos_prev_r >>= 1;
+		}
+
+		if(pos_prev.x >= field_left && pos_prev.x < field_right && pos_prev.y >= 0 && pos_prev.y < global_ubo.height)
+		{
+			uint prev_idx = get_light_current_idx(texelFetch(TEX_PT_RESTIR_ID_B, pos_prev_r, 0).x);
+			float view_depth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
+			float depth_prev = texelFetch(TEX_PT_VIEW_DEPTH_B, pos_prev, 0).x;
+			vec3 normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+			vec3 normal_prev = decode_normal(texelFetch(TEX_PT_NORMAL_B, pos_prev, 0).x);
+
+			if(prev_idx != RESTIR_INVALID_ID
+				&& abs(depth_prev - view_depth) < 0.1 * abs(view_depth)
+				&& dot(normal_prev, normal) > 0.9)
+			{
+				carried_id = prev_idx;
+				carried = texelFetch(TEX_PT_RESTIR_B, pos_prev_r, 0);
+			}
+		}
+	}
+
+	imageStore(IMG_PT_RESTIR_ID_A, ipos_r, uvec4(carried_id));
+	if(carried_id != RESTIR_INVALID_ID)
+		imageStore(IMG_PT_RESTIR_A, ipos_r, carried);
+}
+
+// SPARSE RENDERING (pt_sparse): everything a pixel this frame does not light still
+// needs. Its light is zero - compositing.comp scales the lit pixels by 1 / rate, and
+// DLSS-RR fills the rest in - but RR gets dense guides, as in Remix: the albedo,
+// specular albedo, normal and roughness direct_lighting_restir() writes at a lit
+// pixel, from the same G-buffer. The hit distances are left alone: the specular one
+// keeps the frame's clear (or reflect_refract's exact mirror distance), and the
+// diffuse one gets 0, which is what Remix hands RR wherever it has none.
+void
+sparse_inactive_pixel(ivec2 ipos)
+{
+	imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
+	imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
+	imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(vec3(0))));
+	imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(vec3(0))));
+	imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(0));
+
+	uint material_id = floatBitsToUint(texelFetch(TEX_PT_SHADING_POSITION, ipos, 0).w);
+
+	if(global_ubo.pt_restir > 0)
+	{
+		// one pixel of each reservoir's footprint writes it, as in direct_lighting_restir()
+		ivec2 ipos_r = ipos;
+		bool owner = true;
+		if(global_ubo.pt_restir == 2)
+		{
+			ipos_r.y >>= 1;
+			owner = (ipos.x & 1) == (ipos.y & 1);
+		}
+		else if(global_ubo.pt_restir == 3)
+		{
+			ipos_r >>= 1;
+			owner = (ipos.x & 1) == 0 && (ipos.y & 1) == 0;
+		}
+		if(owner)
+			restir_sparse_carry(ipos, ipos_r, material_id != 0);
+	}
+
+	if(material_id == 0)
+		return;
+
+	vec4 view_direction = texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0);
+	if((int(view_direction.w) & CHECKERBOARD_FLAG_MIRROR_MODEL) != 0)
+		return; // reflect_refract.rgen wrote the mirror's own guides
+
+	vec3 normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+	vec4 primary_base_color = texelFetch(TEX_PT_BASE_COLOR_A, ipos, 0);
+	vec2 metal_rough = texelFetch(TEX_PT_METALLIC_A, ipos, 0).xy;
+	vec3 primary_albedo, primary_base_reflectivity;
+	get_reflectivity(primary_base_color.rgb, metal_rough.x, primary_albedo, primary_base_reflectivity);
+
+	imageStore(IMG_PT_NORMAL, ipos, vec4(normal, 0));
+	imageStore(IMG_PT_ALBEDO, ipos, vec4(primary_albedo, 0));
+	imageStore(IMG_PT_ROUGHNESS, ipos, vec4(metal_rough.y));
+	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(EnvBRDFApprox2(primary_base_reflectivity, square(metal_rough.y), dot(normal, view_direction.xyz)), 0));
+}
+
+void
+main()
+{
+#ifdef KHR_RAY_QUERY
+	// pt_sparse: the dispatch over the active pixels takes its pixel from the list
+	pt_path_launch_init();
+	if (pt_tile_launch_none())
+		return;
+#endif
+
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	if(rt_LaunchID.z != 0)
 		ipos.x += global_ubo.pt_field_offset;
@@ -1051,6 +1182,31 @@ main()
 			imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
 			imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(vec3(0))));
 			imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(vec3(0))));
+			return;
+		}
+	}
+
+	// SPARSE RENDERING (pt_sparse, constants.h). With the tile buffer the frame runs this
+	// shader twice: first over the whole grid, where the pixels this frame does not light
+	// get their guides and leave, and the rest only add themselves to the sparse path
+	// list; then over that list, lighting them. Without it (the pipeline API, the list
+	// would not fit) the one dispatch over the grid does both, the lit pixels scattered
+	// among idle ones - the same picture, without the saving.
+	if(global_ubo.pt_sparse > 0.0 && push_constants.tile_read_list != PT_PATH_LIST_SPARSE)
+	{
+		bool lit = sparse_pixel_active(ipos)
+			&& floatBitsToUint(texelFetch(TEX_PT_SHADING_POSITION, ipos, 0).w) != 0; // nothing to light on the sky
+#ifdef KHR_RAY_QUERY
+		if(push_constants.tile_append_list == PT_PATH_LIST_SPARSE)
+		{
+			pt_path_append(PT_PATH_LIST_SPARSE, lit, rt_LaunchID);
+			if(lit)
+				return;
+		}
+#endif
+		if(!lit)
+		{
+			sparse_inactive_pixel(ipos);
 			return;
 		}
 	}

@@ -190,6 +190,8 @@ typedef struct {
     bool        enable_denoiser;    // reference mode: A-SVGF, else plain compositing
     int         reflect_refract;    // the UBO's pt_reflect_refract: reflection / refraction bounces
     float       num_bounce_rays;    // 0, 0.5 (half height), 1..8
+    bool        paths;              // pt_bounce_cull: the later bounces walk the path lists (needs tile_buffer)
+    bool        sparse;             // pt_sparse with its path list: direct lighting fills it, then it and the first bounce walk it
     bool        caustics;           // pt_caustics
     bool        restir_gi;          // the UBO's pt_restir_gi
     bool        restir_gi_spatial;  // the UBO's pt_restir_gi_spatial > 0

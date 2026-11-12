@@ -243,6 +243,19 @@ vec3 flow_rail_color(float temperature)
 	return flow_ramp_stretch(t, 0.8, 1.0, c4, c5) * 2.5;
 }
 
+// The plasma beam's rings start hotter than the top of the fire map
+// (FLOW_COLORMAP_WEIGHTED_FIRE only): `colour` is the map's at `temperature`
+// with the layer's balance on, golden yellow at 1, and from there to 1 +
+// FLOW_WHITE_HOT_SPAN it goes white - a little brighter, as hotter. Unchanged
+// at 1 and below, so the core and the hot spot look as they did (Matt, 11-12:
+// rings that "start out as white hot and fade to yellow to orange to smoke").
+#define FLOW_WHITE_HOT_SPAN 0.25
+vec3 flow_white_hot(vec3 colour, float temperature)
+{
+	const float f = clamp((temperature - 1.0) * (1.0 / FLOW_WHITE_HOT_SPAN), 0.0, 1.0);
+	return mix(colour, vec3(230.0, 214.0, 189.0), f);
+}
+
 // FlowLayerParams.info.z, a FLOW_COLORMAP_*. `start` is the layer's albedo.w,
 // the temperature fire starts to glow at. FLOW_COLORMAP_WEIGHTED_FIRE is fire
 // here, as bright as it can be: its fuel's weight is put on in flow_layer_add.

@@ -5442,6 +5442,66 @@ prepare_camera(const vec3_t position, const vec3_t direction, mat4_t data)
 	VectorScale(up, -2.f * tan_half_fov_y, data + 12);
 }
 
+/* SPARSE RENDERING (pt_sparse, global_ubo.h): the fraction of the pixels this frame
+   lights, or 0 for all of them - what the shaders read as pt_sparse, decided after the
+   rest of the UBO. Both renderers run this (vkpt_prepare_frame). When the cvar is on
+   the console hears what it settled on whenever that changes: the rate, or why not. */
+static float
+sparse_rendering_rate(const reference_mode_t *ref_mode, const QVKUniformBuffer_t *ubo)
+{
+	static float last_rate = -1.f; // printed (dynamic resolution moves the automatic one)
+	static const char *last_reason = NULL;
+
+	const float setting = cvar_pt_sparse->value;
+	const uint32_t width = qvk.extent_render.width, height = qvk.extent_render.height;
+	const char *reason = NULL;
+	float rate = 0.f;
+
+	if (setting <= 0.f)
+		reason = "";
+	// DLSS-RR fills the pixels it skips in. A-SVGF on top of it (pt_dlss_bypass_denoiser
+	// 0) would take them for noise, and photo mode accumulates every pixel.
+	else if (!ref_mode->rr_denoiser || ref_mode->enable_denoiser || ref_mode->enable_accumulation)
+		reason = "needs DLSS Ray Reconstruction with pt_dlss_bypass_denoiser 1, and not in photo mode";
+	// ReSTIR GI resamples every pixel's first bounce; Remix turns sparse rendering off
+	// under it too
+	else if (ubo->pt_restir_gi != 0.f)
+		reason = "off while ReSTIR GI (pt_restir_gi) is on";
+	// the radiance cache's debug views show the cache itself
+	else if (ubo->pt_sharc >= 3.f)
+		reason = "off in the pt_sharc debug views";
+	else if (setting >= 1.f)
+	{
+		// Remix's automatic rate at its default quality (rtx.sparseRendering): tuned at
+		// 2227x1238, 4K with DLSS Auto, and scaled by pixel count to the 0.69
+		const float pixels = max(1.f, (float)width * (float)height);
+		rate = 0.357f * powf(2227.f * 1238.f / pixels, 0.69f);
+		if (rate > 0.75f)
+		{
+			rate = 0.f;
+			reason = "off - the render resolution is too low to gain from it";
+		}
+	}
+	else
+		rate = setting;
+
+	if (rate > 0.f)
+		rate = max(rate, 1.f / 16.f);
+	if (rate >= 1.f)
+		rate = 0.f;
+
+	if (reason != last_reason || fabsf(rate - last_rate) >= 0.02f)
+	{
+		if (setting > 0.f && rate > 0.f)
+			Com_Printf("pt_sparse: lighting %.0f%% of the pixels a frame (%ux%u)\n", rate * 100.f, width, height);
+		else if (reason && reason[0])
+			Com_Printf("pt_sparse: %s\n", reason);
+		last_rate = rate;
+		last_reason = reason;
+	}
+	return rate;
+}
+
 static void
 prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, const vec3_t sky_matrix[3], bool render_world, int waterLevel)
 {
@@ -6209,6 +6269,8 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 
 	// also on without a world: the player setup menu's bounce card is a viewer model
 	ubo->first_person_model = CL_PlayerModel() == CL_PLAYER_MODEL_FIRST_PERSON || !render_world;
+
+	ubo->pt_sparse = sparse_rendering_rate(ref_mode, ubo);
 
 	memset(ubo->environment_rotation_matrix, 0, sizeof(ubo->environment_rotation_matrix));
 	VectorCopy(sky_matrix[0], ubo->environment_rotation_matrix[0]);
@@ -8059,6 +8121,9 @@ R_BeginFrame_RTX(void)
 		rebuild_render_resources(swapchain_changed);
 	}
 
+	// pt_bounce_cull's path lists, which live in the tile buffer only while it is on
+	vkpt_pt_ensure_tiles();
+
 retry:;
 
 	if (!qvk.swap_chain) // we're minimized, don't render
@@ -9588,6 +9653,9 @@ vkpt_init_frontend(void)
 	cvar_pt_fog_froxel_sky_history->flags |= CVAR_ARCHIVE; // the fog menu's "split froxel histories"
 	// on a slider in the effects menu, so it has to survive a restart
 	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
+	// performance choices Matt keeps across launches (11-12: pt_bounce_cull did not save)
+	cvar_pt_bounce_cull->flags |= CVAR_ARCHIVE;
+	cvar_pt_sparse->flags |= CVAR_ARCHIVE;
 	// the HDR page's settings (archived there) and the screen's read-only figures
 	vkpt_hdr_init_cvars();
 

@@ -195,10 +195,15 @@ void flow_layer_add(int l, vec4 value, vec3 position, bool shared_ambient, bool 
 		}
 		source += colour * sigma;
 	}
-	// FLOW_COLORMAP_WEIGHTED_FIRE: as bright as the cell's fuel says.
+	// FLOW_COLORMAP_WEIGHTED_FIRE: as bright as the cell's fuel says, and
+	// white above 1 (the plasma beam's rings, flow_white_hot).
 	const uint map = flow_params.layers[l].info.z;
-	const float weight = map == FLOW_COLORMAP_WEIGHTED_FIRE ? max(value.y, 0.0) : 1.0;
-	glow += flow_colormap(map, value.x, flow_params.layers[l].albedo.w) * (flow_params.layers[l].emission.x * weight) * flow_params.layers[l].emission.yzw;
+	const bool weighted = map == FLOW_COLORMAP_WEIGHTED_FIRE;
+	const float weight = weighted ? max(value.y, 0.0) : 1.0;
+	vec3 heat = flow_colormap(map, value.x, flow_params.layers[l].albedo.w) * flow_params.layers[l].emission.yzw;
+	if (weighted)
+		heat = flow_white_hot(heat, value.x);
+	glow += heat * (flow_params.layers[l].emission.x * weight);
 }
 
 // Lays one step of length `step` at `t` over what the march has gathered in

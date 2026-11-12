@@ -1100,6 +1100,8 @@ VkResult vkpt_pt_create_pipelines(void);
 // tile lists for the reflect/refract bounces, sized with the screen images (TILE COMPACTION, shader/constants.h)
 VkResult vkpt_pt_create_tiles(void);
 VkResult vkpt_pt_destroy_tiles(void);
+// ...remade at a frame's start (the GPU idle) when pt_bounce_cull's path lists change it
+void vkpt_pt_ensure_tiles(void);
 /* ...and their API-free half, which the D3D12 backend calls too: the lists' layout
    for screen images of a size, and this view's header (false: no lists this view -
    pt_tile_compaction 0, or more tiles than one list's dispatch can hold). */
@@ -1107,6 +1109,11 @@ typedef struct {
 	uint32_t max;           // tile ids one list can hold
 	uint32_t mask_stride;   // words per list's dedupe mask
 	uint32_t data_offset;   // word offset of list 0's tile ids
+	// PATH LISTS (pt_bounce_cull, shader/constants.h), after the tile ids: 0 regions
+	// while it is off, so the buffer costs nothing extra then
+	uint32_t path_regions;  // 0, 1 (two bounces) or 2 (more)
+	uint32_t path_stride;   // words per region: every pixel a launch grid can have
+	uint32_t path_offset;   // word offset of region 0
 	uint64_t size;          // the buffer, in bytes
 } vkpt_tile_layout_t;
 void vkpt_pt_tile_layout(uint32_t screen_width, uint32_t screen_height, vkpt_tile_layout_t *layout);

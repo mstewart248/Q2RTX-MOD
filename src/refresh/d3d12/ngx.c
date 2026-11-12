@@ -122,7 +122,14 @@ NVSDK_NGX_Result d3d12_ngx_evaluate(ID3D12GraphicsCommandList *cmd, NVSDK_NGX_Ha
 
 /* DLSS 5: not in the SDK's headers (310.6 stops at NVSDK_NGX_Feature_Reserved17); the
    static library passes the id to the driver's core, which routes 18 to
-   nvngx_dlssnr.dll (DLSSNR.c's DLSS5_NGX_FEATURE) */
+   nvngx_dlssnr.dll (DLSSNR.c's DLSS5_NGX_FEATURE). Every control parameter, the jitter
+   included, is DLSSNR.c's (DLSS5DescribeEvaluation), shared with Vulkan.
+
+   The resource keys are the ones NVIDIA's DLSS 5 header defines (nvsdk_ngx_defs_dlssnr.h,
+   310.9.16) and its Vulkan helper sets with SetVoidPointer. That SDK package ships no D3D12
+   helper (nvsdk_ngx_helpers_dlssnr.h includes a _d3d.h it does not contain), so these go
+   over as D3D12 resources on the same keys, the way every other NGX feature's D3D12 helper
+   does it. Not yet confirmed on hardware. */
 #define D3D12_NGX_FEATURE_DLSS5 ((NVSDK_NGX_Feature)18)
 
 NVSDK_NGX_Result d3d12_ngx_new_params(NVSDK_NGX_Parameter **params)
@@ -151,11 +158,13 @@ NVSDK_NGX_Result d3d12_ngx_dlss5_create(ID3D12GraphicsCommandList *cmd, NVSDK_NG
 
 NVSDK_NGX_Result d3d12_ngx_dlss5_evaluate(ID3D12GraphicsCommandList *cmd, NVSDK_NGX_Handle *feature,
                                           NVSDK_NGX_Parameter *params, ID3D12Resource *color, ID3D12Resource *depth,
-                                          ID3D12Resource *motion, ID3D12Resource *output)
+                                          ID3D12Resource *motion, ID3D12Resource *output,
+                                          ID3D12Resource *control)
 {
     NVSDK_NGX_Parameter_SetD3d12Resource(params, "DLSSNR.Color", color);
     NVSDK_NGX_Parameter_SetD3d12Resource(params, "DLSSNR.Depth", depth);
     NVSDK_NGX_Parameter_SetD3d12Resource(params, "DLSSNR.MVec", motion);
     NVSDK_NGX_Parameter_SetD3d12Resource(params, "DLSSNR.Output", output);
+    NVSDK_NGX_Parameter_SetD3d12Resource(params, "DLSSNR.ControlMask", control);
     return NVSDK_NGX_D3D12_EvaluateFeature_C(cmd, feature, params, NULL);
 }

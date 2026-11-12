@@ -197,6 +197,42 @@ vec3 composite_color_without_transparent(vec3 surf_base_color, float surf_metall
     return final_color;
 }
 
+/* DLSS 5's CONTROL MASK ("Volumetric Improvement", pt_dlss5_volumetric, DLSSNR.c): how
+   much of this pixel's light is the SCENE - the surfaces, the sky, emissive - rather than
+   something in front of it: fog in-scatter, particles, sprites, beams, explosions, Flow
+   gas. 1 = all scene, 0 = all veil. The model is told to leave the veil alone, which is
+   what RTX Remix does with its fog/volumetric/alpha-blend transmittance.
+
+   Remix's mask is a transmittance. Ours cannot be: map fog is ADDITIVE unless
+   pt_fog_extinction > 0 (its default is 0), so its transmittance is 1 everywhere and a
+   transmittance mask would never move. What is in this pixel is known, though: the
+   composited colour, and the scene before the overlay. So the mask is the scene's share
+   of the light that reaches the eye - which is Remix's transmittance wherever the veil is
+   as bright as what it covers, and still works for additive fog, beams and explosions.
+
+     final         the composited colour (composite_color)
+     scene         the colour before the overlay WITH its opaque part - sky, emissive -
+                   put back (pt_dlss_bt_guide 1 keeps that part in PT_BEFORE_TRANSPARENT)
+     coverage      the overlay's alpha
+     opaque_alpha  that opaque part's own alpha: 1 under the sky, 0 on emissive
+
+   Overlay alphas multiply: 1 - coverage = (1 - veil alpha)(1 - opaque_alpha), so the
+   scene shows through by (1 - coverage) / (1 - opaque_alpha). Under the sky that ratio is
+   0 / 0 and the veil's own alpha is lost; there only its light counts. Self-contained:
+   brdf.glsl is included by shaders that do not include utils.glsl. */
+float dlss5_scene_share(vec3 final_color, vec3 scene, float coverage, float opaque_alpha)
+{
+    const vec3 luma = vec3(0.299, 0.587, 0.114);
+    float through = opaque_alpha < 0.999
+        ? clamp((1.0 - coverage) / (1.0 - opaque_alpha), 0.0, 1.0)
+        : 1.0;
+    float total = dot(max(final_color, vec3(0)), luma);
+    if (!(total > 1e-6))
+        return through;     /* black (or not finite): coverage is all there is */
+    float seen = dot(max(scene, vec3(0)), luma) * through;
+    return clamp(seen / total, 0.0, 1.0);
+}
+
 // Split-sum approximation of the specular BRDF's directional albedo.
 // [Ray Tracing Gems, Chapter 32]. Lives here rather than in direct_lighting.rgen
 // because reflect_refract.rgen also needs it to write the DLSS-RR specular albedo

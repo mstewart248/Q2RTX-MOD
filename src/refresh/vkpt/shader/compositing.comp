@@ -75,6 +75,19 @@ main()
 	high_freq /= STORAGE_SCALE_HF;
 	specular /= STORAGE_SCALE_SPEC;
 
+	// SPARSE RENDERING (pt_sparse, constants.h): a pixel is lit with probability
+	// pt_sparse, so its light counts 1 / pt_sparse times - unbiased, as in Remix. The
+	// pixels left dark hold zero, so scaling every pixel is the same thing. Only the
+	// path-traced light: the sky, emissive surfaces and the transparent overlay are
+	// drawn at every pixel.
+	if(global_ubo.pt_sparse > 0.0 && global_ubo.pt_sparse < 1.0)
+	{
+		float sparse_weight = 1.0 / global_ubo.pt_sparse;
+		low_freq *= sparse_weight;
+		high_freq *= sparse_weight;
+		specular *= sparse_weight;
+	}
+
 	// Load the other image channels
 	vec3 base_color = texelFetch(TEX_PT_BASE_COLOR_A, ipos, 0).rgb;
 	vec2 metal_rough = texelFetch(TEX_PT_METALLIC_A, ipos, 0).rg;
@@ -89,18 +102,27 @@ main()
 	// exactly as composite_color blends `transparent`. Where no particle, sprite, beam,
 	// explosion or fog volume covers the pixel the guide then equals the colour, so
 	// DLSS-RR only sees real transparencies as transparencies. See global_ubo.h.
+	vec4 opaque_overlay = vec4(0);
 	if(global_ubo.pt_dlss_bt_guide == 1)
 	{
-		vec4 opaque_overlay = imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos) * global_ubo.flt_scale_overlay;
+		opaque_overlay = imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos) * global_ubo.flt_scale_overlay;
 		color_no_transparency = color_no_transparency * (1 - opaque_overlay.a) + opaque_overlay.rgb;
 	}
+
+	// DLSS 5's control mask (pt_dlss5_volumetric): the scene's share of this pixel's light,
+	// fog and real transparencies being the rest - see dlss5_scene_share in brdf.glsl. It
+	// rides in the alpha of PT_BEFORE_TRANSPARENT, which nothing else reads after this
+	// point; checkerboard_interleave.comp resolves it into IMG_DLSS5_MASK. Needs
+	// pt_dlss_bt_guide 1 (the default) to tell the sky and emissive from a veil.
+	float scene_share = dlss5_scene_share(final_color, color_no_transparency,
+		transparent.a * global_ubo.flt_scale_overlay, opaque_overlay.a);
 
 	//imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb, 0));
 	//imageStore(IMG_PT_ALBEDO, ipos, vec4(base_color.rgb, 0));
 
 	final_color *= STORAGE_SCALE_HDR;
-	
+
 	imageStore(IMG_ASVGF_COLOR, ipos, vec4(final_color, checkerboard_flags));
-	imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb * STORAGE_SCALE_HDR, 0));
+	imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb * STORAGE_SCALE_HDR, scene_share));
 }
 

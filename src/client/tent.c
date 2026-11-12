@@ -200,6 +200,19 @@ static cvar_t   *cl_flow_heatbeam;
 // end. The model is left where it was ("lined up perfect").
 static cvar_t   *cl_flow_heatbeam_muzzle;
 
+// What the Flow plasma beam does where it hits: 0, a hot spot; 1, fire - a
+// little fire where it hits a wall, and what it hits that can be hurt burning
+// all over, and the gibs it throws (CL_FlowBeamFire, CL_FlowBurnEntity).
+// cl_flow_burn_after: seconds what it hit burns on once the beam is off it.
+// cl_flow_gib_burn: seconds a gib burns. cl_flow_heatbeam_fire_size: half the
+// size of the box the wall's fire is in. cl_flow_heatbeam_fire_core: how much
+// of each of its flames is the white-hot heart, 0 to 1.
+static cvar_t   *cl_flow_heatbeam_fire;
+static cvar_t   *cl_flow_burn_after;
+static cvar_t   *cl_flow_gib_burn;
+static cvar_t   *cl_flow_heatbeam_fire_size;
+static cvar_t   *cl_flow_heatbeam_fire_core;
+
 // How far the flare's burn is heard, against ATTN_NORM's 2080 units. It keeps
 // Quake II's straight line to silence whatever s_falloff says: it goes on for
 // 15 seconds, and heard all over the level that would wear thin.
@@ -1490,12 +1503,252 @@ static void CL_EmitBeamPiece(qhandle_t model, const vec3_t org, const vec3_t dis
 
 /*
 =================
+FIRE FROM THE PLASMA BEAM
+
+With cl_flow_heatbeam_fire 1 the Flow plasma beam sets alight what it hits
+(Matt, 11-12), in place of its hot spot: "where the plasma beam is hitting I
+want it to make it look like it's bursting into flames"; what it hits that
+can take damage "bursting into flames like the palm tree"; and the gibs it
+blows off "little fires on them that go out into smoke". All of it
+NVIDIA Flow fire (R_FLOW_BURN, flow_burn_spheres in vkpt/flow.c) - what is
+left once nothing feeds it rises and cools into smoke on its own.
+
+  - A wall: a little fire where the beam hits, in a box
+    cl_flow_heatbeam_fire_size each way, its centre 0.6 of that off the wall
+    along the wall's normal (back along the beam with no wall found), keyed
+    by the beam (FLOW_BURN_IMPACT + its slot), with hearts
+    cl_flow_heatbeam_fire_core of each flame. Swept along a wall, it fills
+    the way it went; what it leaves goes out.
+  - Something with a box that can be hurt - a monster, a player, a corpse,
+    a barrel: the server's trace stopped on its box, so it is found again by
+    a trace through the beam's end that takes boxes (CL_FlowBurnTarget). It
+    burns over the top half of its box (Matt, 11-12: "only roughly the top
+    half of the model, not the entire model"), from where it is drawn, while
+    the beam is on it, then dies down over cl_flow_burn_after seconds.
+  - A gib that turns up within 32 units of the box of something burning that
+    the beam was on in the last half second (CL_FlowBurnNewGib, when the gib
+    first appears): it burns, full for the first 40% of cl_flow_gib_burn,
+    then dies down. A monster's head turned into a gib is the same entity
+    and burns on as it was. Nothing on the server knows: any server's gibs.
+
+Not from the mirror's copy of your own beam, which would be a second fire;
+not within 32 units of the view. Burning things are kept by entity number,
+MAX_FLOW_BURNS of them, the oldest giving way.
+=================
+*/
+#define MAX_FLOW_BURNS      64
+#define FLOW_BURN_IMPACT    0x10000     // the beams' own fires' keys, past any entity number
+#define FLOW_BURN_SLACK     100         // ms a target counts as still hit after the beam was last on it
+
+typedef struct {
+    int     number;     // the entity on fire, 0 = none
+    int     hit;        // cl.time the beam was last on it; 0 for a gib
+    int     start;      // cl.time it caught
+    int     out;        // cl.time it has gone out by
+    vec3_t  mins, maxs; // its box where it was the last time the beam was on it
+} cl_flow_burn_t;
+
+static cl_flow_burn_t   cl_flow_burns[MAX_FLOW_BURNS];
+
+static void CL_ClearFlowBurns(void)
+{
+    memset(cl_flow_burns, 0, sizeof(cl_flow_burns));
+}
+
+// Entity `number`'s burning, or with `add` a new one for it - a free slot, or
+// failing that the one going out soonest. NULL when it is not burning.
+static cl_flow_burn_t *CL_FlowBurnFind(int number, bool add)
+{
+    cl_flow_burn_t  *b, *free_slot = NULL, *soonest = NULL;
+    int             i;
+
+    for (i = 0, b = cl_flow_burns; i < MAX_FLOW_BURNS; i++, b++) {
+        const bool burning = b->number && cl.time < b->out;
+
+        if (burning && b->number == number)
+            return b;
+        if (!burning) {
+            if (!free_slot)
+                free_slot = b;
+        } else if (!soonest || b->out < soonest->out) {
+            soonest = b;
+        }
+    }
+    if (!add)
+        return NULL;
+
+    b = free_slot ? free_slot : soonest;
+    memset(b, 0, sizeof(*b));
+    b->number = number;
+    b->start = cl.time;
+    return b;
+}
+
+// How hot it burns, 0 to 1 (R_FLOW_BURN's scale).
+static float CL_FlowBurnHeat(const cl_flow_burn_t *b)
+{
+    if (b->hit) {
+        const int since = cl.time - b->hit - FLOW_BURN_SLACK;
+        const int fade = b->out - b->hit - FLOW_BURN_SLACK;
+
+        if (since <= 0)
+            return 1.0f;
+        return fade > 0 ? 1.0f - (float)since / fade : 0.0f;
+    } else {
+        const int length = b->out - b->start;
+        const float f = length > 0 ? (float)(cl.time - b->start) / length : 1.0f;
+
+        return f < 0.4f ? 1.0f : 1.0f - (f - 0.4f) / 0.6f;
+    }
+}
+
+// The beam is on `cent` this frame.
+static void CL_FlowBurnTarget(const centity_t *cent)
+{
+    cl_flow_burn_t  *b = CL_FlowBurnFind(cent->current.number, true);
+
+    b->hit = cl.time;
+    b->out = cl.time + FLOW_BURN_SLACK + (int)(1000 * max(cl_flow_burn_after->value, 0.0f));
+    VectorAdd(cent->current.origin, cent->mins, b->mins);
+    VectorAdd(cent->current.origin, cent->maxs, b->maxs);
+}
+
+/*
+=================
+CL_FlowBurnNewGib
+
+A gib that has just turned up at `origin` (parse_entity_update): alight, if
+it came off something the beam has had on fire in the last half second.
+=================
+*/
+void CL_FlowBurnNewGib(int number, const vec3_t origin)
+{
+    cl_flow_burn_t  *b, *gib;
+    int             i, j;
+
+    if (!cl_flow_heatbeam_fire->integer || !R_FlowEmit)
+        return;
+
+    for (i = 0, b = cl_flow_burns; i < MAX_FLOW_BURNS; i++, b++) {
+        if (!b->number || !b->hit || cl.time - b->hit > 500)
+            continue;
+        for (j = 0; j < 3; j++) {
+            if (origin[j] < b->mins[j] - 32 || origin[j] > b->maxs[j] + 32)
+                break;
+        }
+        if (j < 3)
+            continue;
+
+        gib = CL_FlowBurnFind(number, true);
+        gib->hit = 0;
+        gib->start = cl.time;
+        gib->out = cl.time + (int)(1000 * max(cl_flow_gib_burn->value, 0.0f));
+        return;
+    }
+}
+
+/*
+=================
+CL_FlowBurnEntity
+
+Entity `cent`, drawn at `origin` this frame (CL_AddPacketEntities): its fire,
+if it is burning. Over the top half of its box, or one 4 units each way for
+what has none - a gib, which is not solid.
+=================
+*/
+void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
+{
+    const cl_flow_burn_t    *b;
+    float                   heat;
+    int                     j;
+
+    if (!cl_flow_heatbeam_fire->integer || !R_FlowEmit)
+        return;
+
+    b = CL_FlowBurnFind(cent->current.number, false);
+    if (!b)
+        return;
+    heat = CL_FlowBurnHeat(b);
+    if (heat <= 0)
+        return;
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_BURN,
+        .style = R_FLOW_FIRE,
+        .scale = max(heat, 0.01f),
+        .key = cent->current.number,
+    };
+    if (cent->current.solid && cent->current.solid != PACKED_BSP) {
+        VectorAdd(origin, cent->mins, emit.origin);
+        VectorAdd(origin, cent->maxs, emit.end);
+        emit.origin[2] += 0.5f * (cent->maxs[2] - cent->mins[2]);
+    } else {
+        for (j = 0; j < 3; j++) {
+            emit.origin[j] = origin[j] - 4;
+            emit.end[j] = origin[j] + 4;
+        }
+    }
+    R_FlowEmit(&emit);
+}
+
+// The plasma beam in slot `key` burns what it hits at `end`, coming along
+// the unit `dir`; `normal`: the world, or a brush model, is there, facing
+// that way (zero when the trace started in it), NULL when not.
+static void CL_FlowBeamFire(int key, const vec3_t end, const vec3_t dir, const vec3_t normal)
+{
+    vec3_t      a, b, centre;
+    trace_t     tr;
+    centity_t   *cent;
+    float       half;
+    int         j;
+
+    if (Distance(end, cl.refdef.vieworg) < 32)
+        return;
+
+    if (!normal) {
+        VectorMA(end, -16, dir, a);
+        VectorMA(end, 16, dir, b);
+        tr = CL_TracePoint(a, b, MASK_SHOT, true);
+        cent = CL_TraceHitEntity(&tr);
+        if (cent && cent->current.solid && cent->current.solid != PACKED_BSP) {
+            CL_FlowBurnTarget(cent);
+            return;
+        }
+    }
+
+    // a wall - or nothing found where the server's beam stopped. Off the wall
+    // along its normal, so a beam coming in low along a floor does not set
+    // the fire down a box's length back along itself.
+    half = Cvar_ClampValue(cl_flow_heatbeam_fire_size, 1, 64);
+    if (normal && DotProduct(normal, normal) > 0.5f)
+        VectorMA(end, 0.6f * half, normal, centre);
+    else
+        VectorMA(end, -half, dir, centre);
+
+    r_flow_emit_t emit = {
+        .kind = R_FLOW_BURN,
+        .style = R_FLOW_FIRE,
+        .scale = 1.0f,
+        .key = FLOW_BURN_IMPACT + key,
+        .core = Cvar_ClampValue(cl_flow_heatbeam_fire_core, 0, 1),
+        .beam_fire = true,
+    };
+    for (j = 0; j < 3; j++) {
+        emit.origin[j] = centre[j] - half;
+        emit.end[j] = centre[j] + half;
+    }
+    R_FlowEmit(&emit);
+}
+
+/*
+=================
 CL_FlowHeatbeam
 
 The plasma beam by NVIDIA Flow (cl_flow_heatbeam): a core of hot gas in place
 of the beam's model, yellow rings of glowing gas running out along it in place
 of CL_Heatbeam's particles, and a hot spot burning off smoke where it hits
-(flow_heatbeam in vkpt/flow.c). Given every frame the beam is on, by its slot.
+(flow_heatbeam in vkpt/flow.c) - or with cl_flow_heatbeam_fire, what it hits
+set alight (CL_FlowBeamFire). Given every frame the beam is on, by its slot.
 Your own in first person is given twice, as its model is drawn twice: down
 the view chain for the camera and for glass (`view` R_FLOW_VIEW_FIRST_PERSON),
 and along the world chain, from the gun your body holds, for mirrors
@@ -1514,8 +1767,9 @@ switched off, or its gas filling too much of the grid
 static bool CL_FlowHeatbeam(int key, const vec3_t start, const vec3_t end, float range,
                             float stretch[2], int view)
 {
-    vec3_t      dir, back, past;
+    vec3_t      dir, back, past, normal;
     trace_t     tr;
+    bool        wall = false, fire, drawn;
 
     stretch[0] = stretch[1] = 0;
     if (!cl_flow_heatbeam->integer || !R_FlowEmit)
@@ -1540,13 +1794,28 @@ static bool CL_FlowHeatbeam(int key, const vec3_t start, const vec3_t end, float
         VectorMA(end, -8.0f, dir, back);
         VectorMA(end, 8.0f, dir, past);
         tr = CL_TracePoint(back, past, MASK_SOLID, false);
-        if (tr.fraction < 1.0f || tr.startsolid)
+        if (tr.fraction < 1.0f || tr.startsolid) {
             emit.hit = !(tr.surface && (tr.surface->flags & SURF_SKY));
-        else
+            wall = emit.hit;
+            if (tr.startsolid)
+                VectorClear(normal);
+            else
+                VectorCopy(tr.plane.normal, normal);
+        } else {
             emit.hit = range > 0 && range < 8000;
+        }
     }
 
-    return R_FlowEmit(&emit) & R_FLOW_DRAWN;
+    // Fire where it hits instead of the hot spot (cl_flow_heatbeam_fire) -
+    // once a beam, so not from the mirror's copy of your own.
+    fire = cl_flow_heatbeam_fire->integer && emit.hit;
+    if (fire)
+        emit.hit = false;
+
+    drawn = R_FlowEmit(&emit) & R_FLOW_DRAWN;
+    if (drawn && fire && view != R_FLOW_VIEW_MIRROR)
+        CL_FlowBeamFire(key, end, dir, wall ? normal : NULL);
+    return drawn;
 }
 
 /*
@@ -2825,6 +3094,7 @@ void CL_ClearTEnts(void)
     CL_ClearExplosions();
     CL_ClearLasers();
     CL_ClearSustains();
+    CL_ClearFlowBurns();
 }
 
 void CL_InitTEnts(void)
@@ -2862,6 +3132,15 @@ void CL_InitTEnts(void)
     cl_flow_railtrail = Cvar_Get("cl_flow_railtrail", "1", CVAR_ARCHIVE);
     cl_flow_heatbeam = Cvar_Get("cl_flow_heatbeam", "1", CVAR_ARCHIVE);
     cl_flow_heatbeam_muzzle = Cvar_Get("cl_flow_heatbeam_muzzle", "14 -5.1 -7.8", 0);
+    // An option to try (Matt, 11-12), so off unless picked in the menu.
+    cl_flow_heatbeam_fire = Cvar_Get("cl_flow_heatbeam_fire", "0", CVAR_ARCHIVE);
+    cl_flow_burn_after = Cvar_Get("cl_flow_burn_after", "1.5", 0);
+    cl_flow_gib_burn = Cvar_Get("cl_flow_gib_burn", "3", 0);
+    // Matt, 11-12, of the wall's fire at 8 and pt_flow_burn_flame's 0.65: "the
+    // bright core of the fire larger with the over fire a little larger" -
+    // its flames 5 -> 6.6 units, their hearts 3.25 -> 5.6.
+    cl_flow_heatbeam_fire_size = Cvar_Get("cl_flow_heatbeam_fire_size", "11", 0);
+    cl_flow_heatbeam_fire_core = Cvar_Get("cl_flow_heatbeam_fire_core", "0.85", 0);
     cl_poi_marker_scale = Cvar_Get("cl_poi_marker_scale", "3", CVAR_ARCHIVE);
 }
 

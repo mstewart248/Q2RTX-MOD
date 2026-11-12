@@ -122,15 +122,17 @@ Converting skyboxes to local lights provides two benefits:
 
 #ifdef KHR_RAY_QUERY
 #extension GL_EXT_ray_query : enable
-#ifdef PT_TILE_LAUNCH
+#if defined(PT_TILE_LAUNCH) || defined(PT_PATH_LAUNCH)
 // A pass that can be dispatched over a tile list (TILE COMPACTION, constants.h)
 // takes its launch ID from the tile, not the workgroup: pt_tile_launch_init()
-// sets this first thing in main().
+// sets this first thing in main(). One dispatched over a PATH LIST (constants.h)
+// takes it from the list: pt_path_launch_init().
 uvec3 pt_tile_launch_id;
 #define rt_LaunchID pt_tile_launch_id
-#ifdef VKPT_D3D12
-// a group with no tile (D3D12's last row, past the list's end: constants.h) gets
-// this launch ID, outside every image; main() returns on pt_tile_launch_none()
+#if defined(VKPT_D3D12) || defined(PT_PATH_LAUNCH)
+// a group with no tile (D3D12's last row, past the list's end: constants.h), or a
+// thread past a path list's end, gets this launch ID, outside every image; main()
+// returns on pt_tile_launch_none()
 #define PT_TILE_NO_LAUNCH 0xfffffu
 bool pt_tile_launch_none() { return pt_tile_launch_id.x == PT_TILE_NO_LAUNCH; }
 #endif
@@ -158,6 +160,8 @@ layout (push_constant) uniform push_constant_block {
    int gpu_index;
    int bounce_index;
    // TILE COMPACTION (constants.h), ray query only. Both are a list index + 1, 0 = none.
+   // In the lighting passes (PT_PATH_LAUNCH) they are PATH LIST numbers, 1..7, or
+   // PT_PATH_LIST_SPARSE (8).
    uint tile_read_list;    // this dispatch walks that tile list instead of the screen
    uint tile_append_list;  // tiles whose next vertex is a reflect/refract material go here
    uvec2 tile_buffer;      // buffer device address of the tile lists
@@ -170,6 +174,10 @@ layout (push_constant) uniform push_constant_block {
 #endif
 #extension GL_KHR_shader_subgroup_basic  : require
 #extension GL_KHR_shader_subgroup_vote   : require
+#ifdef PT_PATH_LAUNCH
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_ballot     : require
+#endif
 
 #ifdef VKPT_D3D12
 /* The D3D12 renderer (src/refresh/d3d12) gets this shader through HLSL, which
@@ -216,6 +224,73 @@ void pt_tile_append(uint list, uvec3 launch_id)
 		atomicAdd(PT_TILE_WORDS[PT_TILE_HDR_ARGS + list * 4u + 2u], 1u);
 #endif
 	PT_TILE_WORDS[PT_TILE_WORDS[PT_TILE_HDR_DATA] + list * PT_TILE_WORDS[PT_TILE_HDR_DATA_STRIDE] + slot] = tile_id;
+}
+
+#ifdef PT_PATH_LAUNCH
+// PATH LISTS (constants.h): word offset of list `list`'s (1..7) slot `slot`
+uint pt_path_word(uint list, uint slot)
+{
+	PT_TILE_BUFFER_OPEN
+	return PT_TILE_WORDS[PT_TILE_HDR_PATH_DATA] + ((list - 1u) & 1u) * PT_TILE_WORDS[PT_TILE_HDR_PATH_STRIDE] + slot;
+}
+
+// Every thread still running calls this at the same point, with whether its path goes
+// on to the next bounce; those that do are added to `list`. One atomic per subgroup,
+// so a subgroup's survivors stay together in the list - the next bounce runs them
+// side by side.
+void pt_path_append(uint list, bool alive, uvec3 launch_id)
+{
+	uint a = alive ? 1u : 0u;
+	uint n = subgroupAdd(a);
+	if (n == 0u)
+		return;
+	uint prefix = subgroupExclusiveAdd(a);
+
+	PT_TILE_BUFFER_OPEN
+	uint h = PT_PATH_HDR(list);
+	uint base = 0u;
+	if (subgroupElect())
+	{
+		base = atomicAdd(PT_TILE_WORDS[h], n);
+		// a group of 64 starting inside [base, base + n) - at most one, n <= 64 - is a
+		// new row when it is a row's first
+		uint group = (base + 63u) >> 6;
+		if ((group << 6) < base + n && group % PT_TILE_WORDS[h + 1u] == 0u)
+			atomicAdd(PT_TILE_WORDS[h + 2u], 1u);
+	}
+	base = subgroupBroadcastFirst(base);
+
+	uint slot = base + prefix;
+	if (alive && slot < PT_TILE_WORDS[PT_TILE_HDR_PATH_STRIDE])
+		PT_TILE_WORDS[pt_path_word(list, slot)] = (launch_id.z << 31) | (launch_id.y << 15) | launch_id.x;
+}
+#endif
+#endif
+
+#ifdef PT_PATH_LAUNCH
+// The pixel this thread takes: entry gl_GlobalInvocationID of path list
+// push_constants.tile_read_list (64 per 8x8 group, groups in rows of the list's
+// word 1), or with no list the launch ID as it is.
+void pt_path_launch_init()
+{
+#ifdef KHR_RAY_QUERY
+	pt_tile_launch_id = gl_GlobalInvocationID;
+	if (push_constants.tile_read_list == 0u)
+		return;
+
+	PT_TILE_BUFFER_OPEN
+	uint list = push_constants.tile_read_list;
+	uint h = PT_PATH_HDR(list);
+	uvec3 g = gl_GlobalInvocationID;
+	uint index = (((g.y >> 3) * PT_TILE_WORDS[h + 1u] + (g.x >> 3)) << 6) + ((g.y & 7u) << 3) + (g.x & 7u);
+	if (index >= min(PT_TILE_WORDS[h], PT_TILE_WORDS[PT_TILE_HDR_PATH_STRIDE]))
+	{
+		pt_tile_launch_id = uvec3(PT_TILE_NO_LAUNCH, PT_TILE_NO_LAUNCH, 0u);
+		return;
+	}
+	uint id = PT_TILE_WORDS[pt_path_word(list, index)];
+	pt_tile_launch_id = uvec3(id & 0x7fffu, (id >> 15) & 0x7fffu, id >> 31);
+#endif
 }
 #endif
 

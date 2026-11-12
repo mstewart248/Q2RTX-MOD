@@ -188,8 +188,9 @@ begin hdr
 end
 
 /*
-DLSS 5 Neural Rendering. The model reads everything except the compare split when it is
-BUILT, so changing any of these rebuilds it after a short pause (a brief hitch, by design).
+DLSS 5 Neural Rendering. Everything here is live except "network", which picks the model
+when it is BUILT: changing it rebuilds it after a short pause (a brief hitch, by design).
+Names and defaults follow RTX Remix's DLSS 5 panel; its sliders stop at 1.
 */
 begin dlss5
     background #212F3CD0
@@ -197,22 +198,26 @@ begin dlss5
     title "DLSS 5 Neural Rendering"
     pairs --status "(pt_dlss5)" "DLSS 5" pt_dlss5 off 0 on 1
     blank
-    pairs --status "which network runs. fast = the lightweight FP8 network (needs nvngx_dlssnr.dll 310.9.16 or newer, what RTX Remix uses); full = the original, slower one (pt_dlss5_preset)" \
+    pairs --status "which network runs. fast = the lightweight FP8 network (needs nvngx_dlssnr.dll 310.9.16 or newer, what RTX Remix uses); full = the original, slower one. Rebuilds the model (pt_dlss5_preset)" \
         "network" pt_dlss5_preset fast 2 full 1 "DLL default" 0
-    pairs --status "the model's processing profiles (pt_dlss5_style)" \
-        "style" pt_dlss5_style standard 0 natural 1 cinematic 2
-    range --status "how strongly the model's answer replaces the frame (pt_dlss5_intensity)" \
+    pairs --status "three variants of the model. How each looks depends on the scene - compare them here (pt_dlss5_style)" \
+        "model" pt_dlss5_style A 0 B 1 C 2
+    range --status "the whole effect at once. RTX Remix keeps it at 1 (pt_dlss5_intensity)" \
         -f "%.2f" "intensity" pt_dlss5_intensity 0 2 0.05
-    range --status "how much fine surface detail the model adds or reshapes (pt_dlss5_local_structure)" \
-        -f "%.2f" "local structure" pt_dlss5_local_structure 0 2 0.05
-    range --status "how much the model re-grades local contrast and tone (pt_dlss5_local_tone)" \
-        -f "%.2f" "local tone" pt_dlss5_local_tone 0 2 0.05
-    range --status "skin detail on faces and bodies. -1 leaves it to the model (pt_dlss5_skin)" \
-        -f "%.2f" "skin structure" pt_dlss5_skin -1 2 0.05
-    toggle --status "let the model mask out what it should not touch (pt_dlss5_automask)" \
+    range --status "changes to details, shadows and materials. Lower keeps the original structure. RTX Remix default 0.70 (pt_dlss5_local_structure)" \
+        -f "%.2f" "structure intensity" pt_dlss5_local_structure 0 2 0.05
+    range --status "changes to lightness, darkness and colour. Lower keeps the original tone and colour. RTX Remix default 0.30 (pt_dlss5_local_tone)" \
+        -f "%.2f" "tone intensity" pt_dlss5_local_tone 0 2 0.05
+    toggle --status "the model's own character mask, so characters get their own structure strength below (pt_dlss5_automask)" \
         "auto mask" pt_dlss5_automask
+    ifneq pt_dlss5_automask 0
+        range --status "structure changes on the characters the auto mask finds. Lower keeps them as they are. RTX Remix default 0.50 (pt_dlss5_skin)" \
+            -f "%.2f" "character intensity" pt_dlss5_skin 0 2 0.05
+    endif
     toggle --status "UI correction. There is no HUD in the frame the model sees, so off is expected (pt_dlss5_ui_correction)" \
         "UI correction" pt_dlss5_ui_correction
+    toggle --status "volumetric improvement: the model leaves fog, smoke, particles, beams and explosions alone and works on the scene behind them. RTX Remix default on (pt_dlss5_volumetric)" \
+        "volumetric improvement" pt_dlss5_volumetric
     blank
     range --status "how much of the model's edit reaches the screen. 0 is the original frame, above 1 exaggerates what the model changed. Live, no rebuild (pt_dlss5_strength)" \
         -f "%.2f" "edit strength" pt_dlss5_strength 0 3 0.1
@@ -410,6 +415,29 @@ begin video_renderer
         ifeq pt_num_bounce_rays 2
         pairs --status "stands in for the bounces after the second with light looked up in a world-space radiance cache. Costs about 0.5ms (pt_sharc)" \
             "SHaRC multi-bounce approximation" pt_sharc off 0 on 2
+        endif
+        // Ends paths that can no longer add light (pt_bounce_cull in global_ubo.h). It
+        // starts at the second bounce, so it does nothing below 2.
+        ifneq pt_num_bounce_rays 0
+        ifneq pt_num_bounce_rays 1
+        pairs --status "stops tracing light paths that can no longer add light: a path gone black ends, dim later bounces are cut at random and the ones kept weighted up, and the GPU only runs the paths still going. on: faster with no visible change; lossless: only the exact parts, the same picture as off; aggressive: judges by brightness alone - faster still, but darkens places lit only by bounce light (pt_bounce_cull)" \
+            "bounce culling" pt_bounce_cull off 0 on 1 lossless 2 aggressive 3
+        endif
+        endif
+        // RTX Remix's sparse rendering (pt_sparse in global_ubo.h): only with DLSS
+        // Ray-Reconstruction to fill in the pixels it skips, and not with ReSTIR GI -
+        // main.c turns it off in either case, so hidden here it is off too.
+        ifeq pt_dlss_available 1
+        ifneq pt_dlss 0
+        ifeq pt_dlss_dldn_available 1
+        ifneq pt_dlss_dldn 0
+        ifeq pt_restir_gi 0
+        pairs --status "lights only part of the pixels each frame - a different blue-noise set every time - and lets DLSS Ray-Reconstruction fill in the rest, as in RTX Remix. auto picks the share from the render resolution, about 1/3 at 4K with DLSS; fewer pixels is faster but less stable. Not with ReSTIR GI (pt_sparse)" \
+            "sparse rendering" pt_sparse off 0 auto 1 "1/2 of the pixels" 0.5 "1/3 of the pixels" 0.33 "1/4 of the pixels" 0.25
+        endif
+        endif
+        endif
+        endif
         endif
         pairs --status "(pt_reflect_refract)" "reflection/refraction depth" pt_reflect_refract off 0 1 1 2 2 4 4 8 8
 		toggle --status "turn some monitors in the game into security camera views (pt_cameras)" \
@@ -734,8 +762,22 @@ begin flow
         "grenade trail" cl_flow_grenadetrail classic 0 simulated 1
     pairs --status "the railgun's trail. 'simulated' is NVIDIA Flow gas in place of the trail's particles: a cyan-blue spiral that glows and cools into wisps round a thread of pale smoke - the classic particles while the simulation is full. The core beam from the railgun trail setup page and the trail's light stay either way (cl_flow_railtrail)" \
         "railgun trail" cl_flow_railtrail classic 0 simulated 1
-    pairs --status "the plasma beam. 'simulated' makes the beam NVIDIA Flow gas: a hot yellow-orange core in place of the beam model, yellow rings of heat running out along it, and a hot spot burning off smoke where it hits - the classic beam and rings while the simulation is full (cl_flow_heatbeam)" \
+    // Read every frame (flow_rail_slow in vkpt/flow.c). The least is the fade
+    // as tuned; longer stretches all of it alike.
+    ifeq cl_flow_railtrail 1
+        range -f "%.1f s" --status "how long the simulated railgun trail takes to fade away. Longer keeps its glow and smoke in the air longer - but it holds its share of the simulation pool that much longer too, so a second shot soon after can find it full and go to particles (pt_flow_rail_fade)" \
+            "railgun trail fade time" pt_flow_rail_fade 1.4 5 0.2
+    endif
+    pairs --status "the plasma beam. 'simulated' makes the beam NVIDIA Flow gas: a hot yellow-orange core in place of the beam model, rings of heat running out along it that start white-hot and cool through yellow and orange to smoke, and a hot spot burning off smoke where it hits - the classic beam and rings while the simulation is full (cl_flow_heatbeam)" \
         "plasma beam" cl_flow_heatbeam classic 0 simulated 1
+    // Client side (CL_FlowBeamFire in client/tent.c), read every frame.
+    ifeq cl_flow_heatbeam 1
+        pairs --status "what the simulated plasma beam does where it hits. 'hot spot' is a ball of heat burning off a little smoke; 'fire' sets it alight - a wall bursts into flames where the beam is on it, a monster or player burns over its top half and dies down once the beam is off it, and the gibs it blows off burn and go out into smoke (cl_flow_heatbeam_fire)" \
+            "plasma beam impact" cl_flow_heatbeam_fire "hot spot" 0 fire 1
+        // Read every frame (flow_layer_simulate in vkpt/flow.c).
+        pairs --status "whether the simulated plasma beam leaves its gas behind as you sweep it. 'off' keeps it only where the beam is now, with the weapon - much cheaper while strafing; 'on' leaves glow curling off and smoke where it was, and costs a lot more (pt_flow_heatbeam_trails)" \
+            "plasma beam trails" pt_flow_heatbeam_trails off 0 on 1
+    endif
     // Read every frame (flow_pool_resize in vkpt/flow.c): no restart.
     range -f "%.0f blocks" --status "how much gas NVIDIA Flow can hold at once. The rocket, grenade and railgun trails and the plasma beam go to particles once it is half full, so big fights want more - but all of it takes video memory, used or not: 512 about 215 MB, 1024 about 455 MB, 2048 about 915 MB, 4096 about 1.6 GB. Changing it clears the smoke in the air (pt_flow_max_blocks)" \
         "simulation pool size" pt_flow_max_blocks 512 4096 256

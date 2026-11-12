@@ -29,6 +29,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #extension GL_GOOGLE_include_directive    : enable
 #pragma optionNV(unroll all)
 
+// later bounces run over a path list under pt_bounce_cull - see constants.h
+#define PT_PATH_LAUNCH
 #include "path_tracer_rgen.h"
 #include "path_tracer_transparency.glsl"
 #include "sharc.h"
@@ -76,6 +78,9 @@ bool ray_origin_light_sampled()
 
 // pt_sharc 4 debug: -1 = no cache query on this path, 0 = query missed, 1 = hit
 int sharc_debug_hit = -1;
+
+// This bounce stored the next one's surface: the path goes on (pt_bounce_cull's path lists)
+bool path_continues = false;
 
 // ReSTIR GI candidate (pt_restir_gi), filled in by indirect_lighting() on the first
 // bounce and written out by main() - see restir_gi.h.
@@ -159,6 +164,58 @@ bounce_specular_probability(vec3 albedo, vec3 base_reflectivity, float specular_
 
 	float glossy = 1.0 - smoothstep(0.25, 0.5, roughness);
 	return max(p, 0.5 * glossy);
+}
+
+/* pt_bounce_cull 1: the least probability the roulette may keep this path with, judged
+   by what the rest of the path is worth to ITS OWN PIXEL.
+
+   The throughput rule alone (pt_bounce_rr's: p = remaining throughput) assumes every
+   pixel is about as bright as a white, directly lit surface. On Quake albedos (~0.07
+   rendered) it kept 12-17% of diffuse second bounces and 5% of specular ones (those
+   carry the primary's Fresnel, ~0.04-0.1) everywhere - fine where direct light
+   dominates, but in base1's armor tunnel the second bounce IS the light, and DLSS-RR
+   given 1-in-6..20 samples at 6..20x weight lost about half of it, and the armor's
+   reflection of that rock (Matt, 2026-11-12: pt_bounce_cull 3 now).
+
+   share = what the rest is expected to bring / (that + what the pixel has so far), in
+   the channel the rest lands in (the first bounce's lobe), and the rest is expected to
+   bring its throughput times a typical radiance: the frame's adapted luminance, what a
+   ray sees on average. Cutting the rest adds about share * sqrt((1 - p) / p) of noise
+   relative to the pixel; keeping p = share^2 / (share^2 + e^2) holds that near e (25%).
+   Lit surfaces (share ~1%) keep the throughput rule's p; a pixel lit only by what is
+   still to come (share ~1) keeps ~94% of its paths.
+
+   Any p in (0, 1] keeps the estimate unbiased; this only moves where the rays go. The
+   units are the ones the images hold under DLSS-RR (flt_enable 0); under A-SVGF the
+   specular image is demodulated, which makes `so_far` large there, and the throughput
+   rule decides - as before. */
+float
+bounce_cull_keep_probability(ivec2 ipos, vec3 contrib, vec3 throughput, bool specular_channel)
+{
+	float so_far;
+	if(specular_channel)
+	{
+		so_far = luminance(unpackRGBE(imageLoad(IMG_PT_COLOR_SPEC, ipos).x)) / STORAGE_SCALE_SPEC;
+	}
+	else
+	{
+		// direct light (HF) and the bounces before this one (LF: RGB under DLSS-RR, its
+		// luminance SH under A-SVGF)
+		vec4 lf = texelFetch(TEX_PT_COLOR_LF_SH, ipos, 0);
+		float lf_lum = global_ubo.flt_enable == 0 ? luminance(lf.xyz) : lf.w / 0.282095;
+		so_far = luminance(unpackRGBE(imageLoad(IMG_PT_COLOR_HF, ipos).x)) / STORAGE_SCALE_HF
+		       + max(lf_lum, 0.0) / STORAGE_SCALE_LF;
+	}
+	so_far += luminance(contrib);
+
+	float ahead = luminance(throughput) * global_ubo.prev_adapted_luminance;
+	float share = ahead / max(ahead + max(so_far, 0.0), 1e-20);
+	if(isnan(share) || isinf(share))
+		return 0.0;    // (the throughput rule decides)
+
+	const float e2 = 0.25 * 0.25;
+	float s2 = share * share;
+	return s2 / (s2 + e2);
 }
 
 void
@@ -881,9 +938,38 @@ indirect_lighting(
 			   further. What keeps 8 bounces from costing 8 bounce passes. Never ends a
 			   path at the first or second bounce, so 1 and 2 bounces are unchanged. */
 			bool continue_path = true;
-			if(global_ubo.pt_bounce_rr != 0 && bounce_number + 1 >= 2)
+
+			/* pt_bounce_cull: a path with nothing left to carry (a black texel, a failed
+			   specular sample: throughput exactly zero) ends here - whatever it found
+			   further on would be multiplied by zero. Under 1 and 3, roulette also
+			   starts at the second bounce, except behind a diffuse first bounce that is
+			   a ReSTIR GI candidate: that light becomes the candidate's radiance, the
+			   resampling target, and a 1/p-weighted survivor would be picked and spread
+			   around. Under 1 a path is also kept as often as its own pixel needs it -
+			   bounce_cull_keep_probability(). */
+			bool rr_on = global_ubo.pt_bounce_rr != 0;
+			int rr_from = 2;
+			if(global_ubo.pt_bounce_cull != 0)
+			{
+				if(!any(greaterThan(bounce_throughput, vec3(0))))
+					continue_path = false;
+				if(global_ubo.pt_bounce_cull == 1 || global_ubo.pt_bounce_cull == 3)
+				{
+					rr_on = true;
+					if(!gi_candidate)
+						rr_from = 1;
+				}
+			}
+
+			if(continue_path && rr_on && bounce_number + 1 >= rr_from)
 			{
 				float p = clamp(max(bounce_throughput.r, max(bounce_throughput.g, bounce_throughput.b)), 0.05, 1.0);
+				if(global_ubo.pt_bounce_cull == 1)
+				{
+					// the channel the rest of the path lands in: the first bounce's lobe
+					bool rest_specular = (spec_bounce_index == 0) ? is_specular_ray : first_bounce_is_specular;
+					p = max(p, bounce_cull_keep_probability(ipos, bounce_contrib, bounce_throughput, rest_specular));
+				}
 				if(get_rng(RNG_RUSSIAN_ROULETTE(bounce_number + 1)) >= p)
 					continue_path = false;
 				else
@@ -900,6 +986,7 @@ indirect_lighting(
 				// lobe, carried through every later bounce (those are always diffuse).
 				bool path_is_specular = (spec_bounce_index == 0) ? is_specular_ray : first_bounce_is_specular;
 				imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(bounce_throughput, path_is_specular ? 1 : 0));
+				path_continues = true;
 			}
 			else
 			{
@@ -920,8 +1007,15 @@ indirect_lighting(
 }
 
 void
-main() 
+main()
 {
+#ifdef KHR_RAY_QUERY
+	// pt_bounce_cull: a later bounce over a path list takes its pixel from the list
+	pt_path_launch_init();
+	if (pt_tile_launch_none())
+		return;
+#endif
+
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	if(rt_LaunchID.z != 0)
 		ipos.x += global_ubo.pt_field_offset;
@@ -964,6 +1058,18 @@ main()
 			return;
 	}
 
+	// SPARSE RENDERING (pt_sparse, constants.h): the first bounce lights the pixels direct
+	// lighting did. Over the sparse path list those are all there is; over the whole grid
+	// (no tile buffer, half-resolution bounces, SER on D3D12) the others stop here, and
+	// end their path for the later bounces as a miss would.
+	if(spec_bounce_index == 0 && global_ubo.pt_sparse > 0.0
+		&& push_constants.tile_read_list != PT_PATH_LIST_SPARSE && !sparse_pixel_active(ipos))
+	{
+		if(bounce_number < global_ubo.pt_num_bounce_rays - 1)
+			imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(0));
+		return;
+	}
+
 	// pt_sharc 3: debug view of the radiance cache itself. The screen shows what the
 	// cache holds at each visible surface (indirect + direct, times the albedo applied
 	// downstream) and nothing else; black means the lookup found no usable entry.
@@ -990,6 +1096,13 @@ main()
 	}
 
 	indirect_lighting(ipos, half_res, bounce_direction, bounce_contrib, is_specular_ray);
+
+#ifdef KHR_RAY_QUERY
+	// pt_bounce_cull: the next bounce runs only over the paths that go on to it. Every
+	// thread still here takes part; the ones that returned above never have a next bounce.
+	if (push_constants.tile_append_list != 0u)
+		pt_path_append(push_constants.tile_append_list, path_continues, rt_LaunchID);
+#endif
 
 	// pt_sharc 4: hit-rate view of the cache lookups the path tracer itself makes at its
 	// last bounce. Green = found a usable entry, red = missed, black = the path ended

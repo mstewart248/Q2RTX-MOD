@@ -114,6 +114,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(PT_PRIMARY_DIST,           66, R16_SFLOAT,          r32f,    IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
 	IMG_DO(MOTION_BLUR,               67, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_POSTFX,    IMG_HEIGHT_POSTFX) \
 	IMG_DO(DLSS_RESPONSIVITY,         68, R16_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(DLSS5_MASK,                69, R8G8B8A8_UNORM,      rgba8,   IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 
 
 /* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
@@ -153,7 +154,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    reverse, 0 changes nothing. Written every frame by the combine pass in
    checkerboard_interleave.comp (pt_dlss_glass_responsive). R16_SFLOAT declared r32f,
    PT_PRIMARY_DIST's pairing, which both renderers already handle. */
-#define NUM_IMAGES_BASE     69
+/* DLSS5_MASK: DLSS 5's control mask ("DLSSNR.ControlMask", pt_dlss5_volumetric, DLSSNR.c):
+   render resolution like the other guides, RGBA8 like RTX Remix's - R scales the model's
+   intensity, G its local tone, B its local structure, per pixel. We write (t, t, t, 1),
+   t being how much of the pixel's light is the scene rather than fog or a transparency in
+   front of it (dlss5_scene_share, brdf.glsl). Written by the combine pass in
+   checkerboard_interleave.comp whenever the DLSS guides are. */
+#define NUM_IMAGES_BASE     70
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \

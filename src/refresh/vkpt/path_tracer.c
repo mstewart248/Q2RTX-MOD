@@ -112,6 +112,9 @@ extern cvar_t* cvar_pt_restir;
 extern cvar_t* cvar_pt_sharc_stride;
 extern cvar_t* cvar_pt_restir_gi;
 extern cvar_t* cvar_pt_restir_gi_spatial;
+extern cvar_t* cvar_pt_bounce_cull;
+extern cvar_t* cvar_pt_num_bounce_rays;
+extern cvar_t* cvar_pt_sparse;
 
 typedef struct QvkGeometryInstance_s {
 	float    transform[12];
@@ -185,6 +188,9 @@ static BufferResource_t buf_tiles;
 static vkpt_tile_layout_t tiles_layout;  // buf_tiles' (vkpt_pt_tile_layout)
 static uint32_t tiles_max_groups;    // maxComputeWorkGroupCount[0]
 static bool     tiles_built;         // primary_rays filled the lists this view
+static bool     paths_built;         // ...and the header has pt_bounce_cull's path lists
+static bool     sparse_built;        // ...with pt_sparse's region (the second) too
+static uint64_t tiles_failed_size;   // a size buffer_create refused: not tried again
 static cvar_t  *cvar_pt_tile_compaction;
 
 /* FLOW SPLIT PASS, pt_flow_split_pass (see the note in primary_rays.rgen):
@@ -2008,7 +2014,27 @@ vkpt_pt_tile_layout(uint32_t screen_width, uint32_t screen_height, vkpt_tile_lay
 	layout->max = tiles_x * tiles_y * 2;
 	layout->mask_stride = (layout->max + 31) / 32;
 	layout->data_offset = PT_TILE_HDR_WORDS + PT_TILE_LISTS * layout->mask_stride;
-	layout->size = (uint64_t)(layout->data_offset + PT_TILE_LISTS * layout->max) * sizeof(uint32_t);
+
+	/* PATH LISTS (pt_bounce_cull): both fields of the launch grid side by side are the
+	   packed width the screen images hold, so a region of the images' pixels - one tile
+	   column more for each field's last partial tile - holds every pixel one bounce can
+	   launch. A list numbered past the second region reuses the first (constants.h):
+	   one region for two bounces, two for more. Photo mode traces at least two.
+	   pt_sparse's list is in the second region (PT_PATH_LIST_SPARSE), and its first
+	   bounce fills list 1 in the first one: two whenever it is on - on the cvar, not
+	   the rate the frame settles on, which would remake the buffer every time DLSS-RR
+	   came and went. */
+	layout->path_regions = 0;
+	if (cvar_pt_bounce_cull && cvar_pt_bounce_cull->integer != 0)
+	{
+		const int bounces = cvar_pt_num_bounce_rays ? (int)roundf(cvar_pt_num_bounce_rays->value) : 2;
+		layout->path_regions = bounces >= 3 ? 2 : 1;
+	}
+	if (cvar_pt_sparse && cvar_pt_sparse->value > 0.f)
+		layout->path_regions = 2;
+	layout->path_stride = (tiles_x + 2) * tiles_y * 64;
+	layout->path_offset = layout->data_offset + PT_TILE_LISTS * layout->max;
+	layout->size = ((uint64_t)layout->path_offset + (uint64_t)layout->path_regions * layout->path_stride) * sizeof(uint32_t);
 }
 
 /* Whether this view uses the lists - pt_tile_compaction, and a launch grid the
@@ -2039,18 +2065,54 @@ vkpt_pt_tile_header(const vkpt_tile_layout_t *layout, uint32_t max_groups, uint3
 	header[PT_TILE_HDR_MASK_STRIDE] = layout->mask_stride;
 	header[PT_TILE_HDR_DATA] = layout->data_offset;
 	header[PT_TILE_HDR_DATA_STRIDE] = layout->max;
+
+	// PATH LISTS: every list empty, as rows of PT_PATH_ROW_GROUPS groups on both APIs
+	// (PT_TILE_HDR_PATH_DATA stays 0 - no lists - without the regions, or if this
+	// view's grid could outgrow one)
+	for (int list = 0; list < PT_PATH_LISTS; list++)
+	{
+		header[PT_TILE_HDR_PATHS + list * 4 + 0] = 0;
+		header[PT_TILE_HDR_PATHS + list * 4 + 1] = PT_PATH_ROW_GROUPS;
+		header[PT_TILE_HDR_PATHS + list * 4 + 2] = 0;
+		header[PT_TILE_HDR_PATHS + list * 4 + 3] = 1;
+	}
+	if (layout->path_regions > 0 && (uint64_t)per_field * 2 * 64 <= layout->path_stride)
+	{
+		header[PT_TILE_HDR_PATH_DATA] = layout->path_offset;
+		header[PT_TILE_HDR_PATH_STRIDE] = layout->path_stride;
+		header[PT_TILE_HDR_PATH_REGIONS] = layout->path_regions;
+	}
 	return true;
+}
+
+static VkResult
+create_tiles_buffer(const vkpt_tile_layout_t *layout)
+{
+	tiles_layout = *layout;
+	return buffer_create(&buf_tiles, tiles_layout.size,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 }
 
 VkResult
 vkpt_pt_create_tiles(void)
 {
-	vkpt_pt_tile_layout(qvk.extent_screen_images.width, qvk.extent_screen_images.height, &tiles_layout);
+	vkpt_tile_layout_t layout;
+	vkpt_pt_tile_layout(qvk.extent_screen_images.width, qvk.extent_screen_images.height, &layout);
 
-	return buffer_create(&buf_tiles, tiles_layout.size,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	VkResult result = create_tiles_buffer(&layout);
+	if (result != VK_SUCCESS && layout.path_regions > 0)
+	{
+		// the path lists did not fit: the tiles alone, every bounce over the whole grid
+		Com_WPrintf("pt_bounce_cull: no room for the path lists (%.1f MB) - later bounces cover the whole screen\n",
+			(double)layout.path_regions * layout.path_stride * sizeof(uint32_t) / (1024.0 * 1024.0));
+		tiles_failed_size = layout.size;
+		layout.path_regions = 0;
+		layout.size = (uint64_t)layout.path_offset * sizeof(uint32_t);
+		result = create_tiles_buffer(&layout);
+	}
+	return result;
 }
 
 VkResult
@@ -2059,7 +2121,34 @@ vkpt_pt_destroy_tiles(void)
 	buffer_destroy(&buf_tiles);
 	memset(&tiles_layout, 0, sizeof(tiles_layout));
 	tiles_built = false;
+	paths_built = false;
+	sparse_built = false;
 	return VK_SUCCESS;
+}
+
+/* pt_bounce_cull's path lists are part of buf_tiles, and only while it is on:
+   turning it on or off, or crossing two bounces, changes the layout, and the
+   buffer is remade here at the start of a frame, before anything records into it,
+   with the GPU idle (the frames in flight read it by address). */
+void
+vkpt_pt_ensure_tiles(void)
+{
+	if (!buf_tiles.buffer)
+		return;
+
+	vkpt_tile_layout_t layout;
+	vkpt_pt_tile_layout(qvk.extent_screen_images.width, qvk.extent_screen_images.height, &layout);
+	if (layout.size == tiles_layout.size || layout.size == tiles_failed_size)
+		return;
+
+	vkpt_device_wait_idle();
+	vkpt_pt_destroy_tiles();
+	tiles_failed_size = 0;
+	if (vkpt_pt_create_tiles() == VK_SUCCESS)
+		Com_DPrintf("tile lists remade: %.1f MB, %u path list region(s)\n",
+			(double)tiles_layout.size / (1024.0 * 1024.0), tiles_layout.path_regions);
+	else
+		Com_WPrintf("tile lists could not be remade - the reflect/refract bounces cover the whole screen\n");
 }
 
 /* Empties the lists for this view and writes the layout the shaders read.
@@ -2069,12 +2158,17 @@ vkpt_pt_destroy_tiles(void)
 static bool
 tile_lists_reset(VkCommandBuffer cmd_buf)
 {
+	paths_built = false;
+	sparse_built = false;
 	if (!qvk.use_ray_query || qvk.device_count != 1 || !buf_tiles.buffer || !buf_tiles.address)
 		return false;
 
+	paths_built = false;
 	uint32_t header[PT_TILE_HDR_WORDS];
 	if (!vkpt_pt_tile_header(&tiles_layout, tiles_max_groups, header))
 		return false;
+	paths_built = header[PT_TILE_HDR_PATH_DATA] != 0;
+	sparse_built = paths_built && header[PT_TILE_HDR_PATH_REGIONS] >= 2;
 
 	// the previous view's bounces read this buffer, indirectly and in shaders
 	BUFFER_BARRIER(cmd_buf,
@@ -2117,6 +2211,15 @@ dispatch_rays_indirect(VkCommandBuffer cmd_buf, pipeline_index_t pipeline_index,
 	setup_rt_pipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_index);
 	vkCmdPushConstants(cmd_buf, rt_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
 	vkCmdDispatchIndirect(cmd_buf, buf_tiles.buffer, (VkDeviceSize)(PT_TILE_HDR_ARGS + list * 4) * sizeof(uint32_t));
+}
+
+// ...over PATH LIST `list` (pt_bounce_cull, pt_sparse): its { row, rows, 1 } words
+static void
+dispatch_rays_paths(VkCommandBuffer cmd_buf, pipeline_index_t pipeline_index, pt_push_constants_t push, int list)
+{
+	setup_rt_pipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_index);
+	vkCmdPushConstants(cmd_buf, rt_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+	vkCmdDispatchIndirect(cmd_buf, buf_tiles.buffer, (VkDeviceSize)(PT_PATH_HDR(list) + 1) * sizeof(uint32_t));
 }
 
 bool
@@ -2349,6 +2452,13 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 {
 	int frame_idx = qvk.frame_counter & 1;
 
+	/* SPARSE RENDERING (pt_sparse, shader/constants.h): direct lighting covers the grid,
+	   where the pixels this frame skips get their guides and the rest fill the sparse
+	   path list, then runs again over that list, and so does the first bounce. Without
+	   the list (the pipeline API, several GPUs, no tile buffer) the shaders still skip
+	   the same pixels, one dispatch over the grid each. */
+	const bool sparse = sparse_built && vkpt_refdef.uniform_buffer.pt_sparse > 0.f;
+
 	BEGIN_PERF_MARKER(cmd_buf, PROFILER_DIRECT_LIGHTING);
 
 	for (int i = 0; i < qvk.device_count; i++)
@@ -2361,7 +2471,19 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 		push.gpu_index = qvk.device_count == 1 ? -1 : i;
 		push.bounce = 0;
 
-		dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+		if (sparse)
+		{
+			push.tile_append_list = PT_PATH_LIST_SPARSE;
+			push.tile_buffer = buf_tiles.address;
+			dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), qvk.extent_render.height, 2);
+			tile_lists_barrier(cmd_buf);
+
+			push.tile_append_list = 0;
+			push.tile_read_list = PT_PATH_LIST_SPARSE;
+			dispatch_rays_paths(cmd_buf, pipeline, push, PT_PATH_LIST_SPARSE);
+		}
+		else
+			dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
 	}
 
 	set_current_gpu(cmd_buf, ALL_GPUS);
@@ -2410,6 +2532,18 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
                 height = qvk.extent_render.height;
 
 			const int num_bounces = (int)ceilf(num_bounce_rays);
+
+			/* PATH LISTS (pt_bounce_cull, shader/constants.h): bounce b > 0 runs over
+			   list b, the pixels whose path bounce b - 1 continued, and every bounce
+			   but the last fills the next one. Without them (pt_bounce_cull 0, the
+			   pipeline API, several GPUs, no tile buffer) every bounce covers the grid.
+			   pt_sparse: the first bounce runs over the sparse list (not at half resolution,
+			   whose rows it renames), and then the later ones have to take the lists too,
+			   as it never visits the other pixels to end their paths. */
+			const bool sparse_first = sparse && num_bounce_rays >= 1.f;
+			const bool paths = paths_built && num_bounces >= 2 && num_bounces <= PT_PATH_LISTS
+				&& ((cvar_pt_bounce_cull && cvar_pt_bounce_cull->integer != 0) || sparse_first);
+
 			for (int bounce_ray = 0; bounce_ray < num_bounces; bounce_ray++)
             {
 				// Marker 0 is the first bounce; marker 1 spans every later bounce, which all
@@ -2422,7 +2556,27 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
                 push.gpu_index = qvk.device_count == 1 ? -1 : i;
                 push.bounce = bounce_ray;
 
-                dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), height, qvk.device_count == 1 ? 2 : 1);
+				if (paths)
+				{
+					push.tile_read_list = (uint32_t)bounce_ray;
+					push.tile_append_list = (bounce_ray + 1 < num_bounces) ? (uint32_t)bounce_ray + 1 : 0;
+					push.tile_buffer = buf_tiles.address;
+				}
+
+				if (sparse_first && bounce_ray == 0)
+				{
+					push.tile_read_list = PT_PATH_LIST_SPARSE;
+					push.tile_buffer = buf_tiles.address;
+					dispatch_rays_paths(cmd_buf, pipeline, push, PT_PATH_LIST_SPARSE);
+				}
+				else if (paths && bounce_ray > 0)
+					dispatch_rays_paths(cmd_buf, pipeline, push, bounce_ray);
+				else
+					dispatch_rays(cmd_buf, pipeline, push, vkpt_pt_field_width(), height, qvk.device_count == 1 ? 2 : 1);
+
+				// what it appended is the next bounce's dispatch and pixels
+				if (paths)
+					tile_lists_barrier(cmd_buf);
 
 				BARRIER_BATCH_BEGIN();
 				BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_COLOR_LF_SH]);

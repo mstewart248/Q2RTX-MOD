@@ -156,8 +156,16 @@ static void parse_entity_update(const entity_state_t *state)
         && cl.numSolidEntities < MAX_PACKET_ENTITIES) {
         cl.solidEntities[cl.numSolidEntities++] = ent;
         if (state->solid != PACKED_BSP) {
-            // encoded bbox
-            if (cl.esFlags & MSG_ES_LONGSOLID) {
+            // encoded bbox. A remaster demo's is packed its own way; read as
+            // ours (its esFlags are 0, so 16-bit), a soldier's 16 x 16 x 24+32
+            // came out a flat plate 256 units across at its origin's height -
+            // which nothing the client traces through a body ever crossed:
+            // the plasma beam's fire never found a monster to set alight in
+            // the attract demos (Matt, 11-12). Every other client trace that
+            // takes boxes had the plates too.
+            if (cl.kex_protocol) {
+                MSG_UnpackSolid32_Ver2((uint32_t)state->solid, ent->mins, ent->maxs);
+            } else if (cl.esFlags & MSG_ES_LONGSOLID) {
                 MSG_UnpackSolid32(state->solid, ent->mins, ent->maxs);
             } else {
                 MSG_UnpackSolid16(state->solid, ent->mins, ent->maxs);
@@ -176,6 +184,9 @@ static void parse_entity_update(const entity_state_t *state)
     if (entity_is_new(ent)) {
         // wasn't in last update, so initialize some things
         entity_update_new(ent, state, origin);
+        // a gib off something the plasma beam set alight burns too (tent.c)
+        if (state->effects & EF_GIB)
+            CL_FlowBurnNewGib(state->number, origin);
     } else {
         entity_update_old(ent, state, origin);
     }
@@ -1206,6 +1217,9 @@ static void CL_AddPacketEntities(void)
                 V_AddLight(ent.origin, 130, 1, 0.5f, 0.5f);
             }
         }
+
+        // on fire from the plasma beam (cl_flow_heatbeam_fire, tent.c)
+        CL_FlowBurnEntity(cent, ent.origin);
 
 skip:
         VectorCopy(ent.origin, cent->lerp_origin);

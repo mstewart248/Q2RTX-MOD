@@ -995,6 +995,10 @@ trace_t CL_TraceBox(const vec3_t start, const vec3_t mins, const vec3_t maxs, co
 int CL_PointContents(const vec3_t point);
 // Which entity a CL_TracePoint result hit, or NULL for the world.
 centity_t *CL_TraceHitEntity(const trace_t *tr);
+// Things the Flow plasma beam set alight (cl_flow_heatbeam_fire, tent.c): a
+// gib just turned up, and an entity's fire where it is drawn this frame.
+void CL_FlowBurnNewGib(int number, const vec3_t origin);
+void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin);
 blood_sphere_t *V_AddBloodSphere(void);
 
 // Wet impact sounds for landing blood - registered in CL_RegisterTEntSounds,

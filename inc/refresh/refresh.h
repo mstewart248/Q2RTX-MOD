@@ -740,6 +740,11 @@ typedef enum {
                         // every frame, gone the first frame it is not given
     R_FLOW_BLAST,       // the BFG's blast at `origin`: puffs, lumps and jets
                         // of plasma thrown out as far as `reach` lets them
+    R_FLOW_BURN,        // something on fire (R_FLOW_FIRE): flames over the box
+                        // `origin` (its mins) to `end` (its maxs), as hot as
+                        // `scale` - 1 burning, toward 0 going out into smoke;
+                        // the same `key` every frame it burns, as a TRAIL's,
+                        // and it stops the first frame it is not given
 } r_flow_kind_t;
 
 typedef struct {
@@ -749,7 +754,7 @@ typedef struct {
     vec3_t          end;        // R_FLOW_BEAM
     float           scale;      // 1 is a rocket's explosion, the BFG ball, a laser, its blast
     float           surface;    // R_FLOW_BUBBLES: the height of the water above
-    int             key;        // R_FLOW_TRAIL, R_FLOW_HEATBEAM: which source this is
+    int             key;        // R_FLOW_TRAIL, R_FLOW_HEATBEAM, R_FLOW_BURN: which source this is
     // R_FLOW_TRAIL of fire: smoke and no flame - a grenade's, where the rest
     // are a rocket's
     bool            smoke_only;
@@ -766,6 +771,13 @@ typedef struct {
     // (R_FLOW_VIEW_MIRROR, from the gun your body holds) - the beam's model's
     // RF_WEAPONMODEL and RF_VIEWERMODEL.
     int             view;
+    // R_FLOW_BURN: how much of each flame is its white-hot heart, 0 to 1;
+    // 0 takes pt_flow_burn_flame's
+    float           core;
+    // R_FLOW_BURN: the plasma beam's own fire where it hits a wall. With
+    // pt_flow_heatbeam_trails 0 it burns only where the beam is, not all along
+    // the way it was swept since Flow's last step.
+    bool            beam_fire;
     // R_FLOW_BLAST: how far gas may go from `start` along the unit `dir`
     // before the world stops it, up to `distance`; called during R_FlowEmit
     // only. NULL lets it go anywhere.

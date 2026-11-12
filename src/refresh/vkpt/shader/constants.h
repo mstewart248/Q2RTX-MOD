@@ -415,7 +415,39 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define PT_TILE_HDR_MASK_STRIDE    19  /* words per mask */
 #define PT_TILE_HDR_DATA           20  /* word offset of list 0's tile ids */
 #define PT_TILE_HDR_DATA_STRIDE    21  /* words per tile id list */
-#define PT_TILE_HDR_WORDS          32
+#define PT_TILE_HDR_PATH_DATA      22  /* PATH LISTS (below): word offset of region 0, 0 = none this view */
+#define PT_TILE_HDR_PATH_STRIDE    23  /* words per region */
+#define PT_TILE_HDR_PATH_REGIONS   24  /* regions after PATH_DATA (1 or 2): the buffer's size, for the renderer */
+#define PT_TILE_HDR_PATHS          32  /* path list j's 4 words { count, row, rows, 1 } at 32 + 4j */
+#define PT_TILE_HDR_WORDS          64
+
+/* PATH LISTS (pt_bounce_cull 1-3, ray query, the same buffer). Bounce b > 0 of
+   indirect_lighting.rgen used to be launched over the whole grid, and every pixel
+   whose path had ended (a miss, the sky, Russian roulette, nothing left to carry)
+   read one texel and returned - but a GPU runs 32 neighbouring pixels together, so
+   a group of them only finishes early if ALL of them have ended. Roulette ends
+   paths at random, which is the worst case: at 5% survival 81% of the groups still
+   ran. Tiles do not help either (96% of 8x8 tiles keep a survivor), so here it is
+   per pixel: bounce b - 1 appends each pixel whose path continues to list b
+   (field << 31 | y << 15 | x), and bounce b walks list b with an indirect dispatch,
+   64 entries per 8x8 group. Lists alternate between two regions of
+   PT_TILE_HDR_PATH_STRIDE words (list j in region (j - 1) & 1), each as big as the
+   launch grid. The dispatch goes as rows of PT_PATH_ROW_GROUPS groups on both
+   APIs (D3D12's 65535-group cap, see below), the append adding a row with every
+   row's first group; the threads past the list's end stand down. */
+#define PT_PATH_ROW_GROUPS         256
+#define PT_PATH_LISTS              8   /* lists 1..7 (bounce 1 to 7), and list 0's words hold PT_PATH_LIST_SPARSE */
+
+/* SPARSE RENDERING (pt_sparse, after RTX Remix's): the pixels a frame lights. Direct
+   lighting first covers the grid and appends each active pixel here (the rest get their
+   guides and an empty sample there and then), then direct lighting and the first
+   indirect bounce run over this list alone, and the bounce fills list 1 as usual. Its
+   number is 8 so that 0 can keep meaning "no list" in the push constants: its header is
+   path list 0's unused words (PT_PATH_HDR) and its pixels region 1 (list 8 - 1 is odd),
+   which list 2 only overwrites at the second bounce, after the last reader. The layout
+   gives it the second region whenever pt_sparse is on. */
+#define PT_PATH_LIST_SPARSE        8
+#define PT_PATH_HDR(list)          (PT_TILE_HDR_PATHS + ((list) & 7) * 4)
 
 /* The D3D12 renderer (src/refresh/d3d12) cannot dispatch a list as one row of
    groups: a dispatch holds at most 65535 groups a dimension, and a 4K view at full

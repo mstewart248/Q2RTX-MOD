@@ -245,4 +245,24 @@ static inline void MSG_UnpackSolid32(int solid, vec3_t mins, vec3_t maxs)
     maxs[2] = zu;
 }
 
+// The 2023 remaster's packing, in its demos (protocols 2022 and 2023): a byte
+// each of x, y, z down and z up + 32, x and y apart - q2proto's
+// kex_unpack_solid, q2pro's "Ver2" (Paril/q2repro inc/common/msg.h).
+static inline void MSG_UnpackSolid32_Ver2(uint32_t solid, vec3_t mins, vec3_t maxs)
+{
+    int x, y, zd, zu;
+
+    x = solid & 255;
+    y = (solid >> 8) & 255;
+    zd = (solid >> 16) & 255;
+    zu = ((solid >> 24) & 255) - 32;
+
+    mins[0] = -x;
+    mins[1] = -y;
+    mins[2] = -zd;
+    maxs[0] = x;
+    maxs[1] = y;
+    maxs[2] = zu;
+}
+
 #endif // MSG_H

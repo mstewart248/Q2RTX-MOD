@@ -386,7 +386,17 @@ main()
 		vec3 final_color = composite_color(base_color.rgb, metallic, throughput, projected_lf, filtered_hf, filtered_spec, transparent);
 		vec3 color_no_transparency = composite_color_without_transparent(base_color.rgb, metallic, throughput, projected_lf, filtered_hf, filtered_spec);
 
-		
+		// DLSS 5's control mask (pt_dlss5_volumetric), as compositing.comp makes it: the
+		// scene's share of the light, parked in PT_BEFORE_TRANSPARENT's alpha for
+		// checkerboard_interleave.comp. This path does not put the opaque overlay (sky,
+		// emissive) back into the guide colour, so it is added for the share only.
+		vec4 opaque_overlay = global_ubo.pt_dlss_bt_guide == 1
+			? imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos) * global_ubo.flt_scale_overlay
+			: vec4(0);
+		float scene_share = dlss5_scene_share(final_color,
+			color_no_transparency * (1 - opaque_overlay.a) + opaque_overlay.rgb,
+			transparent.a * global_ubo.flt_scale_overlay, opaque_overlay.a);
+
 
 	    if(global_ubo.flt_show_gradients != 0)
 	    {
@@ -404,7 +414,7 @@ main()
 		final_color *= STORAGE_SCALE_HDR;
 		color_no_transparency *= STORAGE_SCALE_HDR;
 
-		imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb, 0));
+		imageStore(IMG_PT_BEFORE_TRANSPARENT, ipos, vec4(color_no_transparency.rgb, scene_share));
 		imageStore(IMG_ASVGF_COLOR, ipos, vec4(final_color, checkerboard_flags));
 	}
 }

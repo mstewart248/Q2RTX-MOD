@@ -413,7 +413,9 @@ bool d3d12_frontend_dlss5_record(void *ctx, ID3D12GraphicsCommandList4 *cmd, int
     const NVSDK_NGX_Result r = d3d12_ngx_dlss5_evaluate(
         (ID3D12GraphicsCommandList *)cmd, feature, params, d3d12_world_image(VKPT_IMG_DLSS_OUTPUT),
         d3d12_world_image(VKPT_IMG_DLSS_DEPTH), d3d12_world_image(VKPT_IMG_PT_DLSS_MOTION),
-        d3d12_world_image(VKPT_IMG_MOTION_BLUR));
+        d3d12_world_image(VKPT_IMG_MOTION_BLUR),
+        // pt_dlss5_volumetric: the control mask checkerboard_interleave.comp wrote
+        DLSS5ControlMask() ? d3d12_world_image(VKPT_IMG_DLSS5_MASK) : NULL);
     return DLSS5Evaluated(r) != qfalse;
 }
 

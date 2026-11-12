@@ -552,10 +552,26 @@ void combine_fullres_fields(ivec2 opos)
     // Colour before the transparency overlay. Like the main colour, the two layers are
     // summed for split pixels and averaged otherwise, so that this guide stays consistent
     // with what was written to IMG_FLAT_COLOR above.
-    vec3 before_transparent = paths_split
-        ? imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_reflect).rgb + imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_refract).rgb
-        : imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_reflect).rgb;
-    imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, vec4(before_transparent, 0));
+    vec4 bt_reflect = imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_reflect);
+    vec4 bt_refract = paths_split ? imageLoad(IMG_PT_BEFORE_TRANSPARENT, p_refract) : vec4(0);
+    imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, vec4(bt_reflect.rgb + bt_refract.rgb, 0));
+
+    /* DLSS 5's control mask (pt_dlss5_volumetric). Compositing left each field's share of
+       scene light - as opposed to fog and transparencies - in the alpha of
+       PT_BEFORE_TRANSPARENT (dlss5_scene_share, brdf.glsl). A split pixel's colour is the
+       two layers summed, so their shares are weighted by how much light each brings. */
+    float scene_share = bt_reflect.a;
+    if(paths_split)
+    {
+        float l_reflect = luminance(max(c_reflect.rgb, vec3(0)));
+        float l_refract = luminance(max(c_refract.rgb, vec3(0)));
+        float l_sum = l_reflect + l_refract;
+        scene_share = l_sum > 1e-6
+            ? (bt_reflect.a * l_reflect + bt_refract.a * l_refract) / l_sum
+            : min(bt_reflect.a, bt_refract.a);
+    }
+    scene_share = clamp(scene_share, 0.0, 1.0);
+    imageStore(IMG_DLSS5_MASK, opos, vec4(vec3(scene_share), 1));
 
     float diffuse_length  = imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, p_primary).x;
     imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuse_length));
@@ -714,7 +730,14 @@ void main()
         imageStore(IMG_DLSS_ROUGHNESS, opos, imageLoad(IMG_PT_ROUGHNESS, src));
         imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL, src));
         imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, src));
-        imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, src));
+        // alpha is DLSS 5's per-field scene share (below), not part of RR's guide
+        imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, vec4(imageLoad(IMG_PT_BEFORE_TRANSPARENT, src).rgb, 0));
+        // DLSS 5's control mask (pt_dlss5_volumetric) - see combine_fullres_fields. A
+        // checkerboarded pixel's colour is half its own field, half the other's.
+        float scene_share = imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos).a;
+        if(is_checkerboarded_surface)
+            scene_share = mix(scene_share, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)).a, 0.5);
+        imageStore(IMG_DLSS5_MASK, opos, vec4(vec3(clamp(scene_share, 0.0, 1.0)), 1));
         imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, src));
         // pt_dlss_glass_responsive is a split-field rule (combine_fullres_fields); here
         // the mask only has to be defined

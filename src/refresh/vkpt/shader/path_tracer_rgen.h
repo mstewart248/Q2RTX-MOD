@@ -247,6 +247,31 @@ get_rng(uint idx)
 	return min(texelFetch(TEX_BLUE_NOISE, ivec3(p), 0).r, 0.9999999999999);
 }
 
+// SPARSE RENDERING (pt_sparse, constants.h): whether this frame lights pixel `ipos`.
+// global_ubo.pt_sparse is the rate the frontend settled on (main.c), 0 = every pixel.
+// The test is RTX Remix's, blue noise below the rate, with two changes:
+// - Remix's noise runs through 64 frames of a spatio-temporal texture; ours has
+//   independent layers, so instead one layer is rotated by the golden ratio every
+//   frame. Every frame's active set is still a blue-noise pattern, and each pixel
+//   comes round at even intervals - a rate of 1/3 lights it every third frame or so,
+//   never five frames running dark, which is what keeps DLSS-RR's history fed.
+// - The layer is read 97 x 131 texels away from the pixel. get_rng draws from the
+//   same layers at the pixel itself, and a pixel chosen for a low value there would
+//   then sample its lights with a low value too.
+// 16-bit noise, so a pixel is active with the rate's probability to 1/65536 - the
+// 1/rate weight in compositing.comp needs that to be unbiased.
+bool sparse_pixel_active(ivec2 ipos)
+{
+	float rate = global_ubo.pt_sparse;
+	if(rate <= 0.0 || rate >= 1.0)
+		return true;
+
+	ivec2 p = (ipos + ivec2(97, 131)) & ivec2(BLUE_NOISE_RES - 1);
+	float noise = texelFetch(TEX_BLUE_NOISE, ivec3(p, 0), 0).r;
+	float shift = float((uint(global_ubo.current_frame_idx) * 0x9E3779B9u) >> 8) * (1.0 / 16777216.0);
+	return fract(noise + shift) < rate;
+}
+
 bool
 is_water(uint material)
 {
