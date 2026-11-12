@@ -271,6 +271,7 @@ main()
 	bool backface_culling = true;
 	bool primary_is_blood_film = false;
 	bool glass_exit = false;	// thick glass: this ray refracts OUT of the glass - see pt_glass_flush
+	bool glass_inner_hit = false;	// thick glass: this ray hit a glass face from INSIDE the glass - pt_glass_flush 2
 	
 	// Process reflection or refraction.
 	// Each pixel follows either the reflected or the refracted path, depending on 
@@ -562,6 +563,9 @@ main()
 			{
 				// Adjust N.V to make the Fresnel term blend smoothly with total internal reflection
 				n_dot_v = 1.0 - (1.0 - n_dot_v) * 4;
+				// Already split: the probe below can undo this bounce without touching the
+				// field weights (a camera inside the glass would split here).
+				glass_inner_hit = was_split_on_entry;
 			}
 			else
 			{
@@ -908,15 +912,31 @@ main()
 	surface there that is not see-through and not sky is the wall the glass is set
 	into, and the ray stops on it. The material test keeps the probe off the pane
 	when a brush entity mixes glass with solid faces and so is instanced opaque.
+
+	pt_glass_flush 2 - THE PANE'S EDGE AGAINST ITS FRAME. Mode 1 only looked on the way
+	out, and a ray inside a pane meets an edge face at 49 degrees or more off its normal,
+	past the 41-degree critical angle: it takes TOTAL INTERNAL REFLECTION there, never the
+	exit, so mode 1 never ran on an edge. The edge face and the frame face are coplanar,
+	so which one a ray hits is decided by rounding, pixel by pixel: the frame (dark, the
+	jamb) or the edge (TIR back through the pane to the sky, bright). That is the band of
+	black and white speckle along every func_wall window in mgu3m3 (Matt, 2026-11-11),
+	as wide as the glass is thick, and RR cannot settle it - the refraction field's
+	guides flip between the jamb and the sky. Glass pressed against a frame has no air
+	gap to reflect off, so the frame is the right answer. Mode 2 probes at EVERY hit from
+	inside the glass, along the ray as it arrived (view_direction), and on a wall hit
+	undoes this bounce's Fresnel choice: same direction, throughput (re-read, as it came
+	in), medium and motion-vector state as the pixels where the jamb won outright, so
+	both outcomes shade the same jamb point the same way.
 	*/
 	bool flush_hit = false;
-	if(glass_exit && global_ubo.pt_glass_flush != 0)
+	bool glass_wall_probe = glass_inner_hit && global_ubo.pt_glass_flush >= 2;
+	if((glass_exit && global_ubo.pt_glass_flush != 0) || glass_wall_probe)
 	{
 		Ray probe;
 		probe.origin = position + geo_normal * 0.01;
-		probe.direction = direction;
+		probe.direction = glass_wall_probe ? view_direction.xyz : direction;
 		probe.t_min = 0;
-		probe.t_max = 0.03 / max(abs(dot(direction, geo_normal)), 0.1);
+		probe.t_max = 0.03 / max(abs(dot(probe.direction, geo_normal)), 0.1);
 
 		trace_geometry_ray(probe, false, reflection_cull_mask & ~AS_FLAG_TRANSPARENT);
 
@@ -930,8 +950,26 @@ main()
 
 		// hit_distance below is measured from here
 		if(flush_hit)
+		{
 			reflection_ray.origin = probe.origin;
+
+			if(glass_wall_probe)
+			{
+				// The ray went straight into the frame: no reflection, no refraction.
+				direction = probe.direction;
+				reflection_ray.direction = direction;
+				throughput = imageLoad(IMG_PT_THROUGHPUT, ipos).rgb;
+				primary_medium = MEDIUM_GLASS;
+				do_refraction = true;
+				correct_motion_vector = 2;
+				bounce_folds_path = false;
+				checkerboard_mirrored_flag = path_already_folded ? CHECKERBOARD_FLAG_MIRRORED : 0;
+			}
+		}
 	}
+	// pt_glass_flush 2 found the frame: the hit distance and god-ray segment the previous
+	// bounce wrote (into the glass, up to the edge) are what the jamb-won pixels have.
+	bool glass_wall_hit = flush_hit && glass_wall_probe;
 
 	if(!flush_hit)
 		trace_geometry_ray(reflection_ray, backface_culling, reflection_cull_mask);
@@ -956,7 +994,8 @@ main()
 	{
 		reflection_ray.t_max = ray_payload_geometry.hit_distance;
 
-		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(ray_payload_geometry.hit_distance, 0, 0, 0));
+		if(!glass_wall_hit)
+			imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(ray_payload_geometry.hit_distance, 0, 0, 0));
 	}
 	else {
 		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX, 0, 0, 0));
@@ -1120,7 +1159,8 @@ main()
 	}
 
 	// Throughput before extinction
-	imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, ray_payload_geometry.hit_distance));
+	if(!glass_wall_hit)
+		imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, ray_payload_geometry.hit_distance));
 
 	if(primary_medium != MEDIUM_NONE)
 	{

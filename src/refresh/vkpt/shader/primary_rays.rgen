@@ -129,6 +129,64 @@ get_primary_ray(vec2 screen_pos)
 	return ray;
 }
 
+/* SCROLLING TEXTURES (pt_scroll_mv). A SURF_FLOWING or N64-scroll face does not
+   move; its picture slides across it (perturb_tex_coord). A geometry-only motion
+   vector is therefore zero there, and DLSS-RR / TAA / A-SVGF see a different
+   texel under a "still" pixel every frame - albedo, normal map and the shading
+   on it all disagree with history, it gets rejected, and the face reads as raw
+   noise (the q64 conveyor belts).
+
+   The pixel shows the texel at uv + time * rate. Last frame that same texel was
+   drawn where uv' + time_prev * rate equals it, i.e. at uv' = uv + delta with
+   delta = (time - time_prev) * rate. That UV step is turned into a world step
+   with the triangle's own UV-to-position mapping, taken from LAST frame's
+   corners so a scrolling texture on a moving brush model gets both motions.
+   Planar mapping makes this exact past the triangle's edges too.
+
+   Opaque kinds only. On water, glass, chrome and the like the pixel shows what
+   reflect_refract finds, not this texture, and that pass owns the vector. WARP
+   is not a translation, so warped faces (lava, water) keep the geometry vector. */
+vec3 texture_scroll_prev_offset(Triangle triangle)
+{
+	if(global_ubo.pt_scroll_mv == 0)
+		return vec3(0);
+
+	if((triangle.material_id & MATERIAL_FLAG_WARP) != 0)
+		return vec3(0);
+
+	uint kind = triangle.material_id & MATERIAL_KIND_MASK;
+	if(kind != MATERIAL_KIND_REGULAR && kind != MATERIAL_KIND_LAVA)
+		return vec3(0);
+
+	vec2 rate = tex_coord_scroll_rate(triangle.material_id, triangle.texture_flags);
+	if(rate.x == 0 && rate.y == 0)
+		return vec3(0);
+
+	// time_prev == time on the first frame, after a level load and after a
+	// jump in game time (vkpt_prepare_frame), so a pause or a seek gives zero.
+	vec2 delta_uv = (global_ubo.time - global_ubo.time_prev) * rate;
+
+	vec3 e1 = triangle.positions_prev[1] - triangle.positions_prev[0];
+	vec3 e2 = triangle.positions_prev[2] - triangle.positions_prev[0];
+	vec2 t1 = triangle.tex_coords[1] - triangle.tex_coords[0];
+	vec2 t2 = triangle.tex_coords[2] - triangle.tex_coords[0];
+
+	float det = t1.x * t2.y - t2.x * t1.y;
+	if(abs(det) < 1e-12)
+		return vec3(0);
+
+	vec3 dp_du = (e1 * t2.y - e2 * t1.y) / det;
+	vec3 dp_dv = (e2 * t1.x - e1 * t2.x) / det;
+	vec3 offset = dp_du * delta_uv.x + dp_dv * delta_uv.y;
+
+	// A sliver UV mapping can blow this up; a wrong vector reprojects softly,
+	// an Inf one wrecks the frame generator. NaN fails the compare as well.
+	if(!(dot(offset, offset) < 1e8))
+		return vec3(0);
+
+	return offset;
+}
+
 void generate_rng_seed(ivec2 ipos, bool is_odd_checkerboard)
 {
 	int frame_num = global_ubo.current_frame_idx;
@@ -556,8 +614,8 @@ main()
 	}
 
 	vec3 pos_ws_curr = position;
-	vec3 pos_ws_prev = triangle.positions_prev * bary;
-	
+	vec3 pos_ws_prev = triangle.positions_prev * bary + texture_scroll_prev_offset(triangle);
+
 	vec2 screen_pos_curr, screen_pos_prev;
 	float distance_curr, distance_prev;
 	vec3 view_pos_curr = (global_ubo.V * vec4(pos_ws_curr, 1)).xyz;

@@ -1251,9 +1251,26 @@ Only the texture lookup moves. The hit position, depth and motion vectors stay o
 the triangle, and shadow rays still see the flat surface.
 */
 
+/* displace_clamp (set per trace by parallax_occlusion). A texture drawn ONCE on its
+face - a light fixture - has nothing beyond its own tile, but the height texture
+repeats, so a grazing trace that leaves the tile climbed the neighbouring copy and
+showed the lens twice. With the clamp, everything outside the tile the hit lands in
+reads as flat at the surface (neutral height). Box boundaries line up with tile
+boundaries at every mip of a power-of-two map, so a quadtree box is wholly in or out. */
+bool pom_clamp = false;
+vec2 pom_clamp_tile = vec2(0);
+float pom_clamp_height = 0;
+
+bool pom_outside_tile(vec2 uv)
+{
+	return pom_clamp && any(notEqual(floor(uv), pom_clamp_tile));
+}
+
 // Remix pomSampleHeight: depth below the top of the slab, sampled at mip 0.
 float pom_sample_depth(uint height_texture, vec2 uv)
 {
+	if (pom_outside_tile(uv))
+		return 1.0 - pom_clamp_height;
 	return 1.0 - global_textureLod(height_texture, uv, 0).r;
 }
 
@@ -1261,6 +1278,8 @@ float pom_sample_depth(uint height_texture, vec2 uv)
 // texel centre at an exact lod returns that texel unfiltered.
 float pom_box_height(uint height_texture, vec2 box_center, int level)
 {
+	if (pom_outside_tile(box_center))
+		return pom_clamp_height;
 	return global_textureLod(height_texture, box_center, float(level)).r;
 }
 
@@ -1467,6 +1486,24 @@ vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, 
 	if (dot(N, V) < 0)
 		N = -N;
 
+	/* Raised relief (displace_out) is drawn by starting the trace ABOVE the surface,
+	   displace_out * tan(angle) toward the eye. Near grazing that start runs off the
+	   feature: a lamp's lens dome (tomf/tf_light01_2, displace_out 0.209) slid its
+	   glowing top into a crescent at the far edge of the face, and POM has no
+	   silhouette to show what really sticks out there. So the raised part fades away
+	   between pt_pom_fade_start and pt_pom_fade_end (degrees from the normal), and the
+	   surface eases back to its flat, painted look. Sunken relief (displace_in) traces
+	   from the real surface inward, holds up at any angle, and is left alone. */
+	if (displace_out > 0 && global_ubo.pt_pom_fade_end > global_ubo.pt_pom_fade_start)
+	{
+		float view_angle = degrees(acos(clamp(dot(N, normalize(V)), 0.0, 1.0)));
+		displace_out *= 1.0 - smoothstep(global_ubo.pt_pom_fade_start, global_ubo.pt_pom_fade_end, view_angle);
+		total_height = displace_in + displace_out;
+		if (total_height < 1e-5)
+			return tex_coord;
+		neutral_height = displace_in / total_height;
+	}
+
 	// Remix: worldToTexture = inverse(transpose(mat3(rawTangent, rawBitangent, normal))).
 	mat3 texture_to_world = mat3(dPdu / longer, dPdv / longer, N);
 	if (abs(determinant(texture_to_world)) < 1e-6)
@@ -1474,6 +1511,10 @@ vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, 
 	vec3 view_dir = normalize(inverse(texture_to_world) * V);
 	if (view_dir.z < 1e-3)
 		return tex_coord;
+
+	pom_clamp = minfo.displace_clamp;
+	pom_clamp_tile = floor(tex_coord);
+	pom_clamp_height = neutral_height;
 
 	vec2 result;
 	if (global_ubo.pt_pom == 2)
@@ -1490,9 +1531,15 @@ vec2 parallax_occlusion(Triangle triangle, MaterialInfo minfo, vec3 geo_normal, 
 		                            tex_coord_x, tex_coord_y, mip_level, neutral_height);
 	}
 
+	pom_clamp = false;
+
 	// Remix WAR for REMIX-3709: POM sometimes produces NaNs.
 	if (any(isnan(result)) || any(isinf(result)))
 		return tex_coord;
+
+	// and every map is then sampled inside the tile too, not on the next copy
+	if (minfo.displace_clamp)
+		result = clamp(result, pom_clamp_tile + 1e-4, pom_clamp_tile + (1.0 - 1e-4));
 	return result;
 }
 

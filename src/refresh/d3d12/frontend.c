@@ -874,6 +874,9 @@ void d3d12_frontend_init(void)
 
 void d3d12_frontend_shutdown(void)
 {
+    // photo mode's free camera, as R_Shutdown_RTX does: a renderer switch from
+    // inside photo mode would otherwise leave the next renderer in third person
+    vkpt_freecam_reset();
     // the commands; cpu_bench's workers before the world mesh and the textures go
     vkpt_unregister_commands();
     // the present thread, its queue issued (the swapchain goes after this)

@@ -1996,7 +1996,7 @@ static void CL_AddViewWeapon(void)
     int         i, shell_flags;
 
     // allow the gun to be completely removed
-    if (cl_player_model->integer == CL_PLAYER_MODEL_DISABLED) {
+    if (CL_PlayerModel() == CL_PLAYER_MODEL_DISABLED) {
         return;
     }
 
@@ -2187,7 +2187,7 @@ static void CL_FinishViewValues(void)
 {
     centity_t *ent;
 
-    if (cl_player_model->integer != CL_PLAYER_MODEL_THIRD_PERSON)
+    if (CL_PlayerModel() != CL_PLAYER_MODEL_THIRD_PERSON)
         goto first;
 
     if (cl.frame.clientNum == CLIENTNUM_NONE)

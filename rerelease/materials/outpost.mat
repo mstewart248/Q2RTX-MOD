@@ -1,0 +1,291 @@
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2128 -478 510)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#3dba1563:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2371 -485 304)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#6d1294ae:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2371 -488 210)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#180bf326:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2132 -349 503)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#29751a33:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2290 -479 506)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#ca323a13:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2287 -608 510)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#8e381e63:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2130 -608 506)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#a84ab913:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2389 -542 380)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#9ea4e44b:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2386 -737 380)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#6503e213:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2375 -407 300)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#418613ec:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2373 -408 212)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#efa48358:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2376 -410 111)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#ec7f7264:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2374 -486 111)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#27e705f6:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2373 -600 113)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#035bf80c:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2372 -679 109)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#4d3bf05e:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2371 -599 207)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#fdf18e40:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+	
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2372 -680 207)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#88527fee:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2370 -600 304)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#c4f227c4:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2369 -682 304)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#334bde66:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-3118 -735 -127)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#8008a8b3:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-3119 -610 -124)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#9b42cc43:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-3117 -479 -127)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#4c285d13:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-3118 -351 -124)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#a0ebbca3:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-3117 -224 -123)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#e9ee7f73:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2819 -211 -125)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#022f4f7a:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_12
+# outpost, created at (-2644 -257 -5)
+# Inherits everything from textures/n64/ceil1_12; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_12#96a6c1ff:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2512 -353 -2)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#268f8296:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2513 -545 -2)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#b1d7151e:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5
+
+# instance of textures/n64/ceil1_6
+# outpost, created at (-2814 -752 -127)
+# Inherits everything from textures/n64/ceil1_6; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/n64/ceil1_6#7f92f57a:
+	emissive_factor 2.5
+	is_light 1
+	bsp_radiance 0
+	default_radiance 2.5

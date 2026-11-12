@@ -392,6 +392,7 @@ enum AttributeIndex
 	MAT_DISPLACE_OUT,
 	MAT_ALBEDO_STRENGTH,
 	MAT_DOUBLE_SIDED,
+	MAT_DISPLACE_CLAMP,
 };
 enum AttributeType { ATTR_BOOL, ATTR_FLOAT, ATTR_STRING, ATTR_INT };
 
@@ -427,6 +428,7 @@ static struct MaterialAttribute {
 	{MAT_DISPLACE_OUT, "displace_out", ATTR_FLOAT},
 	{MAT_ALBEDO_STRENGTH, "albedo_strength", ATTR_FLOAT},
 	{MAT_DOUBLE_SIDED, "double_sided", ATTR_BOOL},
+	{MAT_DISPLACE_CLAMP, "displace_clamp", ATTR_BOOL},
 };
 
 static int c_NumAttributes = sizeof(c_Attributes) / sizeof(struct MaterialAttribute);
@@ -526,6 +528,7 @@ static int set_material_attribute(pbr_material_t* mat, const char* attribute, co
 	case MAT_BUMP_SCALE: mat->bump_scale = fvalue; break;
 	case MAT_DISPLACE_IN: mat->displace_in = fvalue; break;
 	case MAT_DISPLACE_OUT: mat->displace_out = fvalue; break;
+	case MAT_DISPLACE_CLAMP: mat->displace_clamp = bvalue; break;
 	case MAT_VOLUMETRIC_SCALE: mat->volumetric_scale = fvalue; break;
 	case MAT_ROUGHNESS_OVERRIDE: mat->roughness_override = fvalue; break;
 	case MAT_METALNESS_FACTOR: mat->metalness_factor = fvalue; break;
@@ -862,7 +865,10 @@ static void save_materials(const char* file_name, bool save_all, bool force)
 
 		if (mat->displace_out != 0.f)
 			FS_FPrintf(file, "\tdisplace_out %f\n", mat->displace_out);
-		
+
+		if (mat->displace_clamp)
+			FS_FPrintf(file, "\tdisplace_clamp 1\n");
+
 		if (mat->roughness_override > 0.f)
 			FS_FPrintf(file, "\troughness_override %f\n", mat->roughness_override);
 		
@@ -1370,6 +1376,7 @@ static void material_inherit_instance(pbr_material_t* mat, const pbr_material_t*
 	INHERIT(MAT_BUMP_SCALE, bump_scale);
 	INHERIT(MAT_DISPLACE_IN, displace_in);
 	INHERIT(MAT_DISPLACE_OUT, displace_out);
+	INHERIT(MAT_DISPLACE_CLAMP, displace_clamp);
 	INHERIT(MAT_ROUGHNESS_OVERRIDE, roughness_override);
 	INHERIT(MAT_METALNESS_FACTOR, metalness_factor);
 	INHERIT(MAT_EMISSIVE_FACTOR, emissive_factor);
@@ -1827,6 +1834,7 @@ void MAT_Print(pbr_material_t const * mat)
 	Com_Printf("    bump_scale %f\n", mat->bump_scale);
 	Com_Printf("    displace_in %f\n", mat->displace_in);
 	Com_Printf("    displace_out %f\n", mat->displace_out);
+	Com_Printf("    displace_clamp %d\n", mat->displace_clamp ? 1 : 0);
 	Com_Printf("    roughness_override %f\n", mat->roughness_override);
 	Com_Printf("    metalness_factor %f\n", mat->metalness_factor);
 	Com_Printf("    emissive_factor %f\n", mat->emissive_factor);
@@ -1951,6 +1959,7 @@ static void material_reapply_definition(pbr_material_t* mat, const pbr_material_
 	mat->bump_scale         = matdef->bump_scale;
 	mat->displace_in        = matdef->displace_in;
 	mat->displace_out       = matdef->displace_out;
+	mat->displace_clamp     = matdef->displace_clamp;
 	mat->roughness_override = matdef->roughness_override;
 	mat->metalness_factor   = matdef->metalness_factor;
 	mat->emissive_factor    = matdef->emissive_factor;
@@ -2187,6 +2196,8 @@ static void write_instance_stub_values(qhandle_t file, const pbr_material_t* mat
 	FS_FPrintf(file, "#\tbump_scale %g\n", mat->bump_scale);
 	FS_FPrintf(file, "#\tdisplace_in %g\n", mat->displace_in);
 	FS_FPrintf(file, "#\tdisplace_out %g\n", mat->displace_out);
+	if (mat->displace_clamp)
+		FS_FPrintf(file, "#\tdisplace_clamp 1\n");
 	// negative means "no override" here, and is not something to write back
 	if (mat->roughness_override >= 0.f)
 		FS_FPrintf(file, "#\troughness_override %g\n", mat->roughness_override);

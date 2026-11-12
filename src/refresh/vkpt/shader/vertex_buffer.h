@@ -324,6 +324,9 @@ struct MaterialInfo
 	uint height_texture;
 	float displace_in;
 	float displace_out;
+	/* displace_clamp: the texture is drawn once on its face, so POM stays
+	   inside the tile the hit is in - see parallax_occlusion(). */
+	bool displace_clamp;
 	float bump_scale;
 	float roughness_override;
 	float metalness_factor;
@@ -617,6 +620,7 @@ get_material_info(uint material_id)
 	minfo.height_texture = data[7] >> 16;
 	minfo.displace_in = unpackHalf2x16(data[8]).x;
 	minfo.displace_out = unpackHalf2x16(data[8]).y;
+	minfo.displace_clamp = (data[7] & 8u) != 0;
 	minfo.bump_scale = unpackHalf2x16(data[2]).x;
 	minfo.roughness_override = unpackHalf2x16(data[2]).y;
 	minfo.metalness_factor = unpackHalf2x16(data[3]).x;

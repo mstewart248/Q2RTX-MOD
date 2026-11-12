@@ -1700,7 +1700,7 @@ static void CL_AddPlayerBeams(void)
             // reflect_refract.rgen falls back to AS_FLAG_VIEWER_WEAPON), so
             // these rings are the right ones there, and GL/SW have no mirrors.
             ring_split = CL_PathTraced() &&
-                         cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON;
+                         CL_PlayerModel() == CL_PLAYER_MODEL_FIRST_PERSON;
 
             // Same vector to both, so a sparkle can no longer sit off the beam.
             // With Flow the gas takes the place of both ring sets, the mirror's

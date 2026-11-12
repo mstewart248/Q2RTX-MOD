@@ -1705,7 +1705,7 @@ vkpt_pt_append_dynamic_instances(const uint64_t blas[VKPT_NUM_DYN], const Entity
 		AS_FLAG_VIEWER_WEAPON, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR | (weapon_left_handed ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR : 0), SBTO_OPAQUE);
 
 	// also without a world: the player setup menu's bounce card is a viewer model
-	if (cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON
+	if (CL_PlayerModel() == CL_PLAYER_MODEL_FIRST_PERSON
 		|| (vkpt_refdef.fd && (vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL)))
 	{
 		append_blas(g_instances, &g_num_instances, blas[VKPT_DYN_VIEWER_MODELS], VERTEX_BUFFER_INSTANCED, upload_info->viewer_model_prim_offset,

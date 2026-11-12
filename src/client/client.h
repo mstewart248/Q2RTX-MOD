@@ -749,6 +749,23 @@ extern cvar_t    *cl_player_model;
 extern cvar_t    *cl_thirdperson_angle;
 extern cvar_t    *cl_thirdperson_range;
 
+// Photo mode's free camera (vkpt/freecam.c) shows the player from outside once
+// the camera moves. That is a view, not the player's setting, so it lives here
+// rather than in cl_player_model: no config write (quit, closing the menu, a
+// game change, a crash after any of those) can save it as "third person", and
+// Player Setup keeps showing the real choice. Freecam used to set the cvar to
+// 3 and rely on getting to restore it, which the D3D12 renderer's shutdown
+// never did - quitting from photo mode came back in third person.
+extern bool      cl_photo_third_person;
+
+// The player-model mode to draw with: the setting, or third person while photo
+// mode asks for it. Everything that DRAWS reads this; only the menu, the gun
+// setting sent to the server and the config read the cvar itself.
+static inline int CL_PlayerModel(void)
+{
+    return cl_photo_third_person ? CL_PLAYER_MODEL_THIRD_PERSON : cl_player_model->integer;
+}
+
 extern cvar_t    *cl_async;
 
 //

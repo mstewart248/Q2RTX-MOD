@@ -1154,6 +1154,9 @@ vkpt_light_buffer_upload_to_staging(bool render_world, bsp_mesh_t *bsp_mesh, bsp
 			mat_data[7] |= (uint32_t)(material->image_height - r_images) << 16;
 			mat_data[8] = floatToHalf(material->displace_in);
 			mat_data[8] |= (uint32_t)floatToHalf(material->displace_out) << 16;
+			// displace_clamp in bit 3 of word 7, above the guide field's three
+			if (material->displace_clamp)
+				mat_data[7] |= 1u << 3;
 		}
 
 		// albedo_strength as a half in the low half of word 9, top half spare.

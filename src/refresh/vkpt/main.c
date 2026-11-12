@@ -4307,7 +4307,7 @@ prepare_entities(EntityUploadInfo* upload_info)
 	// how the player setup menu's bounce card (playerconfig.c) gets into its
 	// no-world scene, whatever the menu's own view setting says.
 	const bool first_person_model = ((vkpt_refdef.fd->rdflags & RDF_NOWORLDMODEL) != 0)
-		|| ((cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON) && cl.baseclientinfo.model);
+		|| ((CL_PlayerModel() == CL_PLAYER_MODEL_FIRST_PERSON) && cl.baseclientinfo.model);
 
 	for (int i = 0; i < vkpt_refdef.fd->num_entities; i++)
 	{
@@ -6208,7 +6208,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	}
 
 	// also on without a world: the player setup menu's bounce card is a viewer model
-	ubo->first_person_model = cl_player_model->integer == CL_PLAYER_MODEL_FIRST_PERSON || !render_world;
+	ubo->first_person_model = CL_PlayerModel() == CL_PLAYER_MODEL_FIRST_PERSON || !render_world;
 
 	memset(ubo->environment_rotation_matrix, 0, sizeof(ubo->environment_rotation_matrix));
 	VectorCopy(sky_matrix[0], ubo->environment_rotation_matrix[0]);

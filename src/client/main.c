@@ -68,6 +68,7 @@ cvar_t  *cl_showclamp;
 #endif
 
 cvar_t  *cl_player_model;
+bool    cl_photo_third_person;  // see client.h
 cvar_t  *cl_thirdperson_angle;
 cvar_t  *cl_thirdperson_range;
 

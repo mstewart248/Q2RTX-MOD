@@ -66,14 +66,39 @@ textures/tomc/tc_tomb_panel_256_d#b8329f80:
 #	texture_base materialDev/textures/tomc/tc_tomb_panel_256_d.tga
 #	texture_normals materialDev/textures/tomc/tc_tomb_panel_256_d_n.tga
 	texture_emissive materialDev/textures/tomc/tc_tomb_panel_256_d_light.png
-	emissive_factor 40
-	default_radiance 20
-	volumetric_scale 10
+	emissive_factor 10
+	default_radiance 5
+	volumetric_scale 1.0
+	is_light 1
 #	bump_scale 1
 #	displace_in 0.05
 #	displace_out 0
 #	metalness_factor 0
 #	specular_factor 1
+#	base_factor 1
+#	emissive_factor 1
+#	kind REGULAR
+#	is_light 0
+#	light_styles 1
+#	bsp_radiance 1
+#	default_radiance 1
+
+# instance of textures/tomf/#teleport
+# mgu6m2, created at (61 1841 -684)
+# Inherits everything from textures/tomf/#teleport; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/tomf/#teleport#5e133213:
+	synth_emissive 1
+	emissive_threshold 10
+	is_light 1
+	emissive_factor 5
+	default_radiance 5.0
+#	texture_base textures/tomf/#teleport.wal
+#	bump_scale 1
+#	displace_in 0.05
+#	displace_out 0
+#	metalness_factor 0
+#	specular_factor 0
 #	base_factor 1
 #	emissive_factor 1
 #	kind REGULAR

@@ -503,8 +503,11 @@ lava_uv_warp(vec2 uv, float time)
     return uv.xy + sin(fract(uv.yx * 0.5 + time * 20 / 128) * 2 * M_PI) * 0.125;
 }
 
-// applies FLOWING, the rerelease's N64 scroll, and WARP to texture coordinates
-void perturb_tex_coord(uint material_id, uint texture_flags, float time, inout vec2 tex_coord)
+// The rigid part of perturb_tex_coord: how fast FLOWING and the rerelease's N64
+// scroll slide the texture along its own UV axes, in texture widths per second.
+// tex_coord + time * rate is the scrolled coordinate. primary_rays.rgen turns
+// the same rate into a motion vector (pt_scroll_mv), so the two cannot drift.
+vec2 tex_coord_scroll_rate(uint material_id, uint texture_flags)
 {
     // The N64 scroll flags take priority over SURF_FLOWING when a face carries
     // both (mgu4m2's glocrys_1c does), which is how GL_ScrollSpeed() resolves
@@ -518,9 +521,9 @@ void perturb_tex_coord(uint material_id, uint texture_flags, float time, inout v
             speed = -speed;
 
         if((texture_flags & TEXTURE_FLAG_SCROLL_Y) != 0)
-            tex_coord.y += time * speed;
+            return vec2(0, speed);
         else
-            tex_coord.x -= time * speed;
+            return vec2(-speed, 0);
     }
     else if((material_id & MATERIAL_FLAG_FLOWING) != 0)
     {
@@ -530,8 +533,16 @@ void perturb_tex_coord(uint material_id, uint texture_flags, float time, inout v
         float speed = ((material_id & MATERIAL_FLAG_WARP) != 0) ? 0.5 : 1.6;
         if((texture_flags & TEXTURE_FLAG_FAST_FLOW) != 0)
             speed *= 2.0;
-        tex_coord.x -= time * speed;
+        return vec2(-speed, 0);
     }
+
+    return vec2(0);
+}
+
+// applies FLOWING, the rerelease's N64 scroll, and WARP to texture coordinates
+void perturb_tex_coord(uint material_id, uint texture_flags, float time, inout vec2 tex_coord)
+{
+    tex_coord += time * tex_coord_scroll_rate(material_id, texture_flags);
 
     if((material_id & MATERIAL_FLAG_WARP) != 0)
     {

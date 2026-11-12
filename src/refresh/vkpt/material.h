@@ -66,6 +66,12 @@ typedef struct pbr_material_s {
 	// Remix's displaceOut. Height h lands at h * (in + out) - in, so with both
 	// set the surface itself sits at h = in / (in + out).
 	float displace_out;
+	// displace_clamp 1: for a texture drawn ONCE on its face (a light fixture, a
+	// sign), not tiled. POM treats everything outside the tile the hit lands in
+	// as flat at the surface and keeps its result inside that tile. Without it a
+	// grazing view traces round into the neighbouring copy of the texture, and a
+	// lamp shows its lens twice. Default off, because tiled maps need the wrap.
+	bool displace_clamp;
 	float roughness_override;
 	float metalness_factor;
 	float emissive_factor;

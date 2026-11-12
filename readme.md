@@ -268,7 +268,13 @@ DLSS-specific renderer work that made the above actually look right:
   `pt_pom_scale` multiplies every material's depth at once, and
   `pt_pom_max_steps` (default `32`) trades cost for smoother deep displacement.
   Only the texture lookup moves: silhouettes and shadows still come from the
-  flat surface. See [Attributes](#attributes-1).
+  flat surface. For a texture drawn once on its face rather than tiled (a light
+  fixture, a sign), add `displace_clamp 1`. At grazing angles the trace then
+  stays inside that one tile instead of running into the neighbouring copy and
+  showing the feature twice. Raised relief (`displace_out`) also fades back to
+  flat between `pt_pom_fade_start` and `pt_pom_fade_end` (default 40° to 75° from
+  the surface normal), because POM can't show something sticking out past the
+  edge of its face. Sunken relief never fades. See [Attributes](#attributes-1).
 * **VRAM reduction** of up to ~3 GB versus upstream, plus `pt_blas_fast_trace` /
   `pt_tlas_fast_trace` build-quality switches and a resizable animated primitive
   buffer (`pt_primbuf`).
@@ -1359,6 +1365,7 @@ Attributes marked **(new)** do not exist in upstream Quake II RTX.
 | `texture_height` | path | **(new)** height map for parallax occlusion mapping. Greyscale, white raised, black sunken; red channel read |
 | `displace_in` | float | **(new)** how far black in the height map sinks below the surface, in texture-repeat units (`0.05` = 5% of one tile). Default `0.05`, as in RTX Remix |
 | `displace_out` | float | **(new)** how far white rises above the surface, same units. Default `0` |
+| `displace_clamp` | bool | **(new)** the texture is drawn once on its face, not tiled: parallax occlusion treats everything outside the tile the hit lands in as flat and never samples the next copy. Default `0` |
 | `kind` | name | `REGULAR`, `CHROME`, `GLASS`, `WATER`, `SLIME`, `LAVA`, `SKY`, `INVISIBLE`, `SCREEN`, `CAMERA`, and — newly namable from a `.mat` — `TRANSPARENT`, `TRANSP_MODEL`, `CHROME_MODEL` |
 | `is_light` | bool | this surface emits |
 | `light_styles` | bool | honour lightstyles |
