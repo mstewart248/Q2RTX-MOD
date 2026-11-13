@@ -388,8 +388,9 @@ static VkExtent2D get_render_extent(void)
      DRS off: viewsize; and while photo mode is allowed (pt_accumulation_rendering)
               with pt_photo_mode_reserve 1, photo mode's scale too - at least 100%,
               so at 4K with split fields the screen images are 7680 wide all the
-              time (7.9 GB of G-buffer instead of 3.9 GB). pt_photo_mode_reserve 0:
-              they are remade on the way into photo mode and out, as before.
+              time (7.9 GB of G-buffer instead of 3.9 GB). pt_photo_mode_reserve 0
+              (default since 11-13): they are remade on the way into photo mode and
+              out, as before.
    Never below the scale in use now. */
 static int render_scale_capacity(void)
 {
@@ -9535,7 +9536,10 @@ vkpt_init_frontend(void)
 	// 1 -> the screen images are always made for photo mode's 100% render scale, so
 	// pausing into it and out remakes nothing (no stall); 0 -> less video memory,
 	// and the images are remade on the way in and out. See render_scale_capacity().
-	cvar_pt_photo_mode_reserve = Cvar_Get("pt_photo_mode_reserve", "1", CVAR_ARCHIVE);
+	// Default 0 since 11-13: Matt ran photo mode on D3D12 with 0 and it was fine (the
+	// 11-06 D3D12 pause/slow-exit was fixed by the rest of that change), and 1 holds
+	// ~4 GB extra at 4K with split fields for the whole session.
+	cvar_pt_photo_mode_reserve = Cvar_Get("pt_photo_mode_reserve", "0", CVAR_ARCHIVE);
 
 	// Camera projection; see PROJECTION_* in shader/constants.h, projection.glsl,
 	// and the pt_projection entry in doc/client.md.

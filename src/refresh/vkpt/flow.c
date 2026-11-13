@@ -286,6 +286,7 @@ static cvar_t *cvar_pt_flow_lighting;
 static cvar_t *cvar_pt_flow_collision;
 static cvar_t *cvar_pt_flow_cell_size;
 static cvar_t *cvar_pt_flow_max_blocks;
+static cvar_t *cvar_pt_flow_prewarm;
 static cvar_t *cvar_pt_flow_substeps;
 static cvar_t *cvar_pt_flow_radius;
 static cvar_t *cvar_pt_flow_burst;
@@ -634,6 +635,11 @@ static struct {
 	bool                    idle;       // nothing allocated and nothing emitting: skip Flow
 	bool                    force_clear;
 	bool                    shadow_pass;    // this frame's simulation is followed by Flow's shadow pass
+	// pt_flow_prewarm (flow_warm_emitters): a map was loaded and its warm-up
+	// step is still to come; this frame is that step; where it is put
+	bool                    warm_pending;
+	bool                    warm_now;
+	vec3_t                  warm_origin;
 
 	// Where the bubbles stop: the highest water surface over any underwater
 	// explosion since the bubble layer was last empty.
@@ -957,6 +963,8 @@ static void flow_create_simulation(void)
 	flow.have_last_time = false;
 	flow.idle = true;
 	flow.force_clear = false;
+	flow.warm_pending = false;      // the map's registration asks for it (vkpt_flow_reset)
+	flow.warm_now = false;
 	flow.step_error = 0.f;
 	flow.num_blocks = 0;
 	flow.max_blocks = grid_desc.maxLocations;
@@ -1444,6 +1452,14 @@ static bool flow_collision_update(void)
 		if (e->kind == R_FLOW_BEAM)
 			AddPointToBounds(e->end, mins, maxs);
 	}
+	// the warm-up's emitters, for Flow to make the mesh's buffers too
+	if (flow.warm_now) {
+		vec3_t p;
+		for (int k = 0; k < 3; k++) p[k] = flow.warm_origin[k] - 128.f;
+		AddPointToBounds(p, mins, maxs);
+		for (int k = 0; k < 3; k++) p[k] = flow.warm_origin[k] + 128.f;
+		AddPointToBounds(p, mins, maxs);
+	}
 	if (mins[0] > maxs[0])
 		return false;
 
@@ -1712,6 +1728,12 @@ static void flow_layer_simulate(NvFlowGridSimulateLayerParams *simulate, int lay
 	else {
 		simulate->enableVariableTimeStep = NV_FLOW_TRUE;
 		simulate->maxStepsPerSimulate = (NvFlowUint)Cvar_ClampInteger(cvar_pt_flow_substeps, 1, 4);
+	}
+	// The warm-up (flow_warm_emitters): exactly one step, whatever the frame
+	// rate and Flow's own stepper say - a frame with none would make nothing.
+	if (flow.warm_now) {
+		simulate->enableVariableTimeStep = NV_FLOW_TRUE;
+		simulate->maxStepsPerSimulate = 1;
 	}
 	simulate->forceClear = flow.force_clear;
 	// Laying a plasma beam again under a pause (flow_heatbeam_relay): one
@@ -2064,6 +2086,13 @@ static void flow_step_mirror(float dt)
 	if (flow.relay_step >= 0) {
 		flow.stepping = true;
 		flow.step_time = flow.relay_step > 0 ? flow.relay_dt : 0.f;
+		return;
+	}
+	// the warm-up: one step of its own time (flow_layer_simulate), the
+	// stepper's count left alone as for a relay
+	if (flow.warm_now) {
+		flow.stepping = true;
+		flow.step_time = dt;
 		return;
 	}
 	if (flow.force_clear)
@@ -3181,6 +3210,68 @@ static void flow_heatbeam(const flow_emitter_t *e, int *num_boxes, int *num_sphe
 	}
 }
 
+/*
+THE WARM-UP (pt_flow_prewarm). Flow makes its GPU memory the first time it
+steps with blocks, not at createGrid: with no blocks its passes return before
+they ask for any (Advection.cpp, Pressure.cpp, Vorticity.cpp: numLocations 0).
+So the first explosion after the game starts made it all on its own frame -
+13 textures, 883 MB at the 3584-block pool, each a zeroed committed resource
+made on the spot (CreateCommittedResource on D3D12, a fresh allocation on
+Vulkan), with the shadow pass's and the collision mesh's buffers on top - a
+hitch on that explosion (Matt, 11-13). Headless at 3584 (a copy of
+d3d12_flow_bench): that frame took 30 ms on an idle GPU, every later one
+under 2; the game's own GPU memory, nearly full, makes it worse.
+
+So one step after a map loads makes it, with emitters that give nothing: a
+sphere on the explosions' layer and a box on the railgun's (the boxes' path
+has buffers of its own), coupling nothing - the gas in their blocks stays
+zero, so nothing is drawn or lit - and Flow's shadow pass on the sphere's
+layer, and the collision mesh round it. Their blocks hold no gas, so Flow
+drops them by itself some five steps on; no clear is needed, nor wanted (it
+would take a real explosion of those frames with it). What Flow made stays:
+its textures are held from one step to the next, and 87 steps of an empty
+grid later the first real one made no texture (headless, 11-13; the backend
+frees only what nothing holds). The first explosion then made 3.7 ms of small
+buffers - sized by what is emitted, which no warm-up can guess - not 30 ms.
+*/
+#define FLOW_WARM_LUID      0x7f000000ull   // clear of the emitters' (0x1000 up) and the layers'/mesh's
+#define FLOW_WARM_DT        (1.f / 60.f)
+
+static void flow_warm_emitters(int *num_spheres, int *num_boxes, float cell_size)
+{
+	if (*num_spheres < (int)LENGTH(flow.spheres)) {
+		NvFlowGridEmitterSphereParams *sphere = &flow.spheres[*num_spheres];
+		*sphere = NvFlowEmitterSphereParams_default;
+		sphere->luid = FLOW_WARM_LUID;
+		sphere->layer = R_FLOW_FIRE;
+		sphere->position.x = flow.warm_origin[0];
+		sphere->position.y = flow.warm_origin[1];
+		sphere->position.z = flow.warm_origin[2];
+		sphere->radius = cell_size;
+		sphere->velocity.x = sphere->velocity.y = sphere->velocity.z = 0.f;
+		sphere->divergence = 0.f;
+		sphere->temperature = 0.f;
+		sphere->fuel = 0.f;
+		sphere->burn = 0.f;
+		sphere->smoke = 0.f;
+		sphere->coupleRateVelocity = 0.f;
+		sphere->coupleRateDivergence = 0.f;
+		sphere->coupleRateTemperature = 0.f;
+		sphere->coupleRateFuel = 0.f;
+		sphere->coupleRateBurn = 0.f;
+		sphere->coupleRateSmoke = 0.f;
+		flow.sphere_ptrs[(*num_spheres)++] = sphere;
+	}
+
+	// flow_line_box couples nothing as it comes
+	vec3_t a, b;
+	VectorCopy(flow.warm_origin, a);
+	VectorCopy(flow.warm_origin, b);
+	a[0] += 16.f;
+	b[0] += 48.f;
+	flow_line_box(num_boxes, FLOW_WARM_LUID + 1, FLOW_LAYER_RAIL, a, b, flow_layer_cell_size(FLOW_LAYER_RAIL), 0.f);
+}
+
 static void flow_build_params(float dt)
 {
 	const float cell_size = max(cvar_pt_flow_cell_size->value, 0.5f);
@@ -3349,6 +3440,9 @@ static void flow_build_params(float dt)
 		}
 	}
 
+	if (flow.warm_now)
+		flow_warm_emitters(&num_spheres, &num_boxes, cell_size);
+
 	/* COLLISION ONLY WHERE THERE IS GAS (pt_flow_collision_layers 1). Flow
 	   builds the collision mesh's tree again for every layer that has
 	   physicsCollisionEnabled, every step - its bounds, an 8-pass radix sort,
@@ -3385,6 +3479,23 @@ static void flow_build_params(float dt)
 	}
 
 	flow.shadow_pass = flow_build_offscreen(cell_size);
+
+	// The warm-up's shadow pass, whose textures Flow makes the first time it
+	// runs one - only where explosions would light one (pt_flow_lighting).
+	// The march never reads it: the layer has no light (flow_layer_look).
+	if (flow.warm_now && cvar_pt_flow_shadow->integer && cvar_pt_flow_lighting->integer) {
+		NvFlowGridOffscreenLayerParams *off = &flow.offscreen[R_FLOW_FIRE];
+		if (!off->shadow.enabled) {
+			off->shadow.enabled = NV_FLOW_TRUE;
+			off->shadow.isPointLight = NV_FLOW_TRUE;
+			off->shadow.lightPosition.x = flow.warm_origin[0];
+			off->shadow.lightPosition.y = flow.warm_origin[1];
+			off->shadow.lightPosition.z = flow.warm_origin[2] + 32.f;
+			off->shadow.attenuation = max(cvar_pt_flow_density->value, 0.f) / cell_size;
+			off->shadow.minIntensity = Cvar_ClampValue(cvar_pt_flow_shadow_min, 0.f, 1.f);
+		}
+		flow.shadow_pass = true;
+	}
 
 	flow.version++;
 	flow.type_snapshots[0] = (NvFlowDatabaseTypeSnapshot) {
@@ -3926,13 +4037,20 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 		flow.frame_dt = flow.frame_dt > 0.f ? 0.9f * flow.frame_dt + 0.1f * dt : dt;
 	flow_rail_fade(dt);
 
-	if (flow.idle && flow.num_emitters == 0 && !flow.force_clear)
+	if (flow.idle && flow.num_emitters == 0 && !flow.force_clear && !flow.warm_pending)
 		return false;
 
 	// A plasma beam laid again under a pause steps Flow by a time of its own.
 	flow_heatbeam_relay(dt);
 	const bool relaying = flow.relay_step >= 0;
-	const float sim_dt = relaying ? (flow.relay_step > 0 ? flow.relay_dt : 0.f) : dt;
+
+	// The warm-up (flow_warm_emitters), at the view: not on the map's clearing
+	// frame, whose clear would leave it no blocks to make memory for. A step
+	// of its own time, paused or not.
+	flow.warm_now = flow.warm_pending && !flow.force_clear && !relaying;
+	if (flow.warm_now)
+		VectorCopy(fd->vieworg, flow.warm_origin);
+	const float sim_dt = relaying ? (flow.relay_step > 0 ? flow.relay_dt : 0.f) : flow.warm_now ? FLOW_WARM_DT : dt;
 
 	const uint64_t build_t0 = flow_prof.on ? Sys_Microseconds() : 0;
 	flow_build_params(sim_dt);
@@ -3947,7 +4065,7 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 	   getRenderData hands over what the last one left (the density, and the shadow
 	   pass's copy of it). A force clear still runs, and so does a plasma beam
 	   being laid again (flow_heatbeam_relay). */
-	const bool hold = dt <= 0.f && flow.have_blocks && !flow.force_clear && !relaying;
+	const bool hold = dt <= 0.f && flow.have_blocks && !flow.force_clear && !relaying && !flow.warm_now;
 
 	NvFlowGridParamsSnapshot *snapshot = flow.params_iface->getParamsSnapshot(flow.grid_params, flow.sim_time, 0);
 	NvFlowGridParamsDesc params_desc = { 0 };
@@ -3971,6 +4089,8 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 			// beam's clearing, whose forced clear keeps it from returning.
 			if (sim_dt > 0.f || relaying)
 				flow_pool_step();
+			if (flow.warm_now)
+				flow.warm_pending = false;
 		}
 		flow.grid_iface->getRenderData(flow.context, flow.grid, &render_data);
 
@@ -4061,6 +4181,7 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 	}
 
 	flow.force_clear = false;
+	flow.warm_now = false;
 
 	// Submits to qvk.queue_graphics, through flow_queue_submit.
 	NvFlowUint64 flushed_frame;
@@ -5033,6 +5154,10 @@ VkResult vkpt_flow_initialize(void)
 	// and plasma beam's below - are menu sliders since 11-10, so archived.
 	cvar_pt_flow_cell_size = Cvar_Get("pt_flow_cell_size", "3", CVAR_ARCHIVE);
 	cvar_pt_flow_max_blocks = Cvar_Get("pt_flow_max_blocks", "3584", CVAR_ARCHIVE);
+	// That VRAM, and the rest of what Flow makes the first time it steps with
+	// blocks, made while a map loads, not on the first explosion's frame
+	// (flow_warm_emitters). 0 = made at the first explosion, as before.
+	cvar_pt_flow_prewarm = Cvar_Get("pt_flow_prewarm", "1", 0);
 	cvar_pt_flow_substeps = Cvar_Get("pt_flow_substeps", "1", 0);
 
 	// An explosion: its size at scale 1 (a rocket), how long it emits, how
@@ -5675,6 +5800,28 @@ void vkpt_flow_register(void)
 #endif
 }
 
+/* d3d12_vram (Matt, 11-13: "where is the vram budget all going?"): what Flow's own
+   device has made - its backend counts every allocation and free (DeviceD3D12.cpp's
+   device_reportMemoryAllocate) - and the block pool it was asked for. False without
+   a Flow device. The renderer's own Flow buffers (the march's) are not in it. */
+bool vkpt_flow_memory(uint64_t *device_bytes, uint64_t *upload_bytes, uint64_t *readback_bytes, int *pool)
+{
+#if USE_FLOW
+	if (flow.device && flow.device_iface && flow.device_iface->getMemoryStats) {
+		NvFlowDeviceMemoryStats stats = { 0 };
+		flow.device_iface->getMemoryStats(flow.device, &stats);
+		*device_bytes = stats.deviceMemoryBytes;
+		*upload_bytes = stats.uploadMemoryBytes;
+		*readback_bytes = stats.readbackMemoryBytes;
+		*pool = Cvar_ClampInteger(cvar_pt_flow_max_blocks, FLOW_POOL_MIN, FLOW_POOL_MAX);
+		return true;
+	}
+#endif
+	*device_bytes = *upload_bytes = *readback_bytes = 0;
+	*pool = 0;
+	return false;
+}
+
 void vkpt_flow_reset(void)
 {
 	flow.num_emitters = 0;
@@ -5690,6 +5837,9 @@ void vkpt_flow_reset(void)
 	if (flow.grid) {
 		flow.force_clear = true;
 		flow.idle = false;
+		// After the clear, a step that makes Flow's memory (flow_warm_emitters).
+		// Every map: once made it is kept, so later ones cost a step and no more.
+		flow.warm_pending = cvar_pt_flow_prewarm && cvar_pt_flow_prewarm->integer;
 	}
 #endif
 }

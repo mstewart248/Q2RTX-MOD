@@ -240,6 +240,7 @@ static struct {
     ID3D12Resource      *images[NUM_VKPT_IMAGES];
     d3d12_extents_t     extents;
     bool                images_made;
+    uint64_t            images_bytes;       // the G-buffer's VRAM (d3d12_world_memory)
     d3d12_set_t         textures[2];        // even, odd frames (vkpt's desc_set_textures_even/odd)
     d3d12_set_t         display[2];         // the same, TAA_OUTPUT's texture = the image shown
     int                 display_image;      // what display[] shows: pt_dlss_debug's view, else show_image
@@ -300,6 +301,7 @@ static struct {
     ID3D12Resource      *sky_exposure_mask;
     ID3D12Resource      *froxel[NUM_FROXEL_VOLUMES];
     bool                fog_ready, froxel_made, froxel_failed;
+    uint64_t            froxel_bytes;       // the froxel volumes' VRAM (d3d12_world_memory)
 
     cvar_t              *show;              // d3d12_show: TAA_OUTPUT, or a G-buffer image
     bool                show_warned;
@@ -630,11 +632,20 @@ static void destroy_images(void)
     for (int i = 0; i < NUM_VKPT_IMAGES; i++)
         D3D12_DEFER_RELEASE(w.images[i]);
     w.images_made = false;
+    w.images_bytes = 0;
 }
 
 ID3D12Resource *d3d12_world_image(int image)
 {
     return w.images_made && image >= 0 && image < NUM_VKPT_IMAGES ? w.images[image] : NULL;
+}
+
+void d3d12_world_memory(uint64_t *gbuffer, uint32_t *width, uint32_t *height, uint64_t *froxel)
+{
+    *gbuffer = w.images_made ? w.images_bytes : 0;
+    *width = w.images_made ? w.extents.screen_width : 0;
+    *height = w.images_made ? w.extents.screen_height : 0;
+    *froxel = w.froxel_made ? w.froxel_bytes : 0;
 }
 
 const d3d12_set_t *d3d12_world_textures_set(int odd)
@@ -735,6 +746,7 @@ static bool ensure_images(const d3d12_extents_t *e)
 
     w.extents = *e;
     w.images_made = true;
+    w.images_bytes = total;
 
     // every rebuild (photo mode in and out, a resolution or DLSS change): its size,
     // its time, and the video memory against the budget Windows gives the process -
@@ -1429,6 +1441,7 @@ static void fog_shutdown(void)
     for (int v = 0; v < NUM_FROXEL_VOLUMES; v++)
         D3D12_RELEASE(w.froxel[v]);
     w.fog_ready = w.froxel_made = w.froxel_failed = false;
+    w.froxel_bytes = 0;
 }
 
 bool d3d12_world_fog_ready(void)
@@ -1524,6 +1537,7 @@ bool d3d12_world_froxel_create(void)
     for (int f = 0; f < D3D12_FRAMES_IN_FLIGHT; f++)
         write_froxel_bindings(&w.frame[f].god_rays_set, f);
     w.froxel_made = true;
+    w.froxel_bytes = total;
     Com_Printf("froxel grid: %d volumes of %dx%dx%d, %.1f MB of VRAM\n", NUM_FROXEL_VOLUMES, FROXEL_GRID_X,
                FROXEL_GRID_Y, FROXEL_GRID_Z, total / (1024.0 * 1024.0));
     return true;

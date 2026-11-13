@@ -442,6 +442,111 @@ static void dlss_stop(void)
     ngx_start_failed = false;
 }
 
+/* ------------------------------------------------------------------------- */
+/* VIDEO MEMORY                                                               */
+/* ------------------------------------------------------------------------- */
+
+/* Matt, 11-13: "the game is using a lot more vram ... where is the vram budget all
+   going?", then "maybe there is a memory leak somewhere?"
+
+   Task Manager's dedicated GPU memory is the whole card, every program's: the
+   desktop, a browser and Visual Studio held 2.2 GB of his 16 GB with the game shut.
+   Windows gives this process a budget of what is left (13.56 GB). Over it, Windows
+   moves some of the process's memory to system RAM - the frame rate drops - and the
+   card's graph stays pinned at the top whatever the game frees, since what comes
+   free is filled again by what was moved out.
+
+   d3d12_vram says the process's own use against its budget, what it has in system
+   memory, the parts this renderer can name, and the change since the map loaded: a
+   figure that keeps climbing through play, map after map, is a leak. The map load's
+   "Map load VRAM:" line (common.c) takes the same query at each part of the load. */
+static uint64_t d3d12_vram_usage(uint64_t *budget)
+{
+    DXGI_QUERY_VIDEO_MEMORY_INFO local = { 0 };
+    if (!d3d.adapter ||
+        FAILED(IDXGIAdapter4_QueryVideoMemoryInfo(d3d.adapter, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)))
+        return 0;
+    if (budget)
+        *budget = local.Budget;
+    return local.CurrentUsage;
+}
+
+void d3d12_vram_hook(bool on)
+{
+    com_vram_usage = on ? d3d12_vram_usage : NULL;
+}
+
+void d3d12_print_vram(void)
+{
+    const double gb = 1073741824.0, mb = 1048576.0;
+    DXGI_QUERY_VIDEO_MEMORY_INFO local = { 0 }, shared = { 0 };
+    if (!d3d.adapter ||
+        FAILED(IDXGIAdapter4_QueryVideoMemoryInfo(d3d.adapter, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local))) {
+        Com_Printf("d3d12_vram: Windows' video memory query failed\n");
+        return;
+    }
+    IDXGIAdapter4_QueryVideoMemoryInfo(d3d.adapter, 0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &shared);
+
+    Com_Printf("Video memory: %.2f of %.2f GB budget (Windows keeps the rest of the card for other "
+               "programs); %.2f GB in system memory\n", local.CurrentUsage / gb, local.Budget / gb,
+               shared.CurrentUsage / gb);
+    if (local.Budget && local.CurrentUsage > local.Budget)
+        Com_WPrintf("  OVER the budget by %.0f MB - Windows moves memory to system RAM and the frame rate drops\n",
+                    (local.CurrentUsage - local.Budget) / mb);
+
+    uint64_t named = 0;
+
+    uint64_t gbuffer, froxel;
+    uint32_t gw, gh;
+    d3d12_world_memory(&gbuffer, &gw, &gh, &froxel);
+    if (gbuffer) {
+        const bool reserve = Cvar_VariableInteger("pt_photo_mode_reserve") &&
+                             Cvar_VariableInteger("pt_accumulation_rendering") > 0;
+        Com_Printf("  G-buffer         %6.2f GB  %ux%u%s\n", gbuffer / gb, gw, gh,
+                   reserve ? " - photo mode's size kept made (pt_photo_mode_reserve 1)" : "");
+        named += gbuffer;
+    }
+
+    int textures_count;
+    const uint64_t textures = d3d12_textures_memory(&textures_count);
+    Com_Printf("  textures         %6.2f GB  %d images\n", textures / gb, textures_count);
+    named += textures;
+
+    if (froxel) {
+        Com_Printf("  fog volumes      %6.2f GB\n", froxel / gb);
+        named += froxel;
+    }
+
+    uint64_t flow_device, flow_upload, flow_readback;
+    int pool;
+    if (vkpt_flow_memory(&flow_device, &flow_upload, &flow_readback, &pool)) {
+        Com_Printf("  NVIDIA Flow      %6.2f GB  pool %d blocks (pt_flow_max_blocks); %.0f MB more in system "
+                   "memory\n", flow_device / gb, pool, (flow_upload + flow_readback) / mb);
+        named += flow_device;
+    }
+
+    if (ngx_params) {
+        unsigned long long ngx_bytes = 0;
+        const NVSDK_NGX_Result r = NGX_DLSS_GET_STATS(ngx_params, &ngx_bytes);
+        if (!NVSDK_NGX_FAILED(r) && ngx_bytes) {
+            Com_Printf("  DLSS (NGX)       %6.2f GB  %s\n", ngx_bytes / gb,
+                       ngx_feature ? (ngx_made.rr ? "Ray Reconstruction" : "Super Resolution") : "no feature made");
+            named += ngx_bytes;
+        } else {
+            Com_Printf("  DLSS (NGX)            ?    NGX does not say (0x%08x)\n", (unsigned)r);
+        }
+    }
+
+    if (local.CurrentUsage > named)
+        Com_Printf("  everything else  %6.2f GB  geometry and BVHs, blood, lights, the swapchain, buffers\n",
+                   (local.CurrentUsage - named) / gb);
+
+    if (com_load_vram_end) {
+        const int64_t since = ((int64_t)local.CurrentUsage - (int64_t)com_load_vram_end) / (1024 * 1024);
+        Com_Printf("Since the map loaded: %+d MB (%.2f GB then)\n", (int)since, com_load_vram_end / gb);
+    }
+}
+
 // pt_dlss: DLSSModeSelected (no vid_rtx restart - the images follow the extents
 // each frame), and NGX may be tried again
 static void dlss_mode_selected(cvar_t *self)

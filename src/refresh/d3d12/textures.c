@@ -174,6 +174,25 @@ void d3d12_textures_shutdown(void)
     memset(bindless_dirty, 0, sizeof(bindless_dirty));
 }
 
+// d3d12_vram: what every image's texture takes, as the device lays it out (main thread,
+// between loads - the load's workers fill tex[])
+uint64_t d3d12_textures_memory(int *count)
+{
+    uint64_t total = 0;
+    *count = 0;
+    for (int i = 0; i < MAX_RIMAGES; i++) {
+        if (!tex[i])
+            continue;
+        D3D12_RESOURCE_DESC rd;
+        ID3D12Resource_GetDesc(tex[i], &rd);
+        D3D12_RESOURCE_ALLOCATION_INFO ai;
+        ID3D12Device5_GetResourceAllocationInfo(d3d.device, &ai, 0, 1, &rd);
+        total += ai.SizeInBytes;
+        (*count)++;
+    }
+    return total;
+}
+
 /* THE BLUE NOISE the path tracer draws its random numbers from (TEX_BLUE_NOISE,
    get_rng in path_tracer_rgen.h): vkpt's load_blue_noise, the same files and
    layout. 128 RGBA 16-bit PNGs become 512 R16 layers of 256x256, layer

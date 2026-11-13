@@ -908,16 +908,32 @@ world (a cinematic) is simply begun again by the next one. Main thread only.
 static struct {
     const char  *what;
     unsigned    time;
+    uint64_t    vram;       // com_vram_usage's, 0 = no query
 } com_load_marks[MAX_LOAD_MARKS];
 static int      com_load_count;
 static unsigned com_load_start;
+static uint64_t com_load_vram_start;
 static bool     com_load_active;
+
+/* Matt, 11-13: "the game is using a lot more vram ... where is the vram budget
+   all going?" Each mark also takes the process's video memory, so the load's
+   second line says what each part of it added (the G-buffer, NGX's feature,
+   Flow's warm-up, the textures) - and what the previous map's resources were
+   still holding when this one began. d3d12_vram says the same during play. */
+uint64_t (*com_vram_usage)(uint64_t *budget);
+uint64_t com_load_vram_end;
+
+static uint64_t com_load_vram(void)
+{
+    return com_vram_usage ? com_vram_usage(NULL) : 0;
+}
 
 void Com_LoadBegin(void)
 {
     com_load_active = true;
     com_load_count = 0;
     com_load_start = Sys_Milliseconds();
+    com_load_vram_start = com_load_vram();
 }
 
 bool Com_LoadActive(void)
@@ -936,6 +952,7 @@ void Com_LoadMark(const char *what)
     }
     com_load_marks[com_load_count].what = what;
     com_load_marks[com_load_count].time = Sys_Milliseconds();
+    com_load_marks[com_load_count].vram = com_load_vram();
     com_load_count++;
 }
 
@@ -959,6 +976,26 @@ void Com_LoadFinish(const char *what)
         prev = com_load_marks[i].time;
     }
     Com_Printf("%s; total %u ms\n", line, prev - com_load_start);
+
+    // the video memory each part added (or freed), when the renderer can say: only
+    // parts that moved it by 16 MB or more, so the line names where it went
+    uint64_t budget = 0;
+    const uint64_t now = com_vram_usage ? com_vram_usage(&budget) : 0;
+    com_load_vram_end = now;
+    if (!now || !com_load_vram_start)
+        return;
+    Q_snprintf(line, sizeof(line), "Map load VRAM: %.2f GB at the start", com_load_vram_start / 1073741824.0);
+    uint64_t vprev = com_load_vram_start;
+    for (i = 0; i < com_load_count; i++) {
+        const uint64_t v = com_load_marks[i].vram;
+        if (!v)
+            continue;
+        const int64_t mb = ((int64_t)v - (int64_t)vprev) / (1024 * 1024);
+        if (mb >= 16 || mb <= -16)
+            Q_strlcat(line, va(", %s %+d MB", com_load_marks[i].what, (int)mb), sizeof(line));
+        vprev = v;
+    }
+    Com_Printf("%s; now %.2f of %.2f GB budget\n", line, now / 1073741824.0, budget / 1073741824.0);
 }
 
 /*

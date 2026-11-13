@@ -1477,6 +1477,8 @@ VkResult vkpt_flow_initialize(void);
 VkResult vkpt_flow_destroy(void);
 void vkpt_flow_register(void);
 void vkpt_flow_reset(void);
+// d3d12_vram: Flow's device memory by kind and pt_flow_max_blocks; false without Flow
+bool vkpt_flow_memory(uint64_t *device_bytes, uint64_t *upload_bytes, uint64_t *readback_bytes, int *pool);
 void vkpt_flow_update(const refdef_t *fd, bool render_world);
 // pt_flow_stats: the primary march's counters from this frame's readback.
 void vkpt_flow_stats(const ReadbackBuffer *readback);

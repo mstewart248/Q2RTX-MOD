@@ -42,6 +42,11 @@ static void d3d12_info_f(void)
     d3d12_print_info();
 }
 
+static void d3d12_vram_f(void)
+{
+    d3d12_print_vram();
+}
+
 /* ------------------------------------------------------------------------- */
 /* INIT / SHUTDOWN                                                            */
 /* ------------------------------------------------------------------------- */
@@ -68,6 +73,8 @@ static ref_type_t R_Init_D3D12(bool total)
     if (!d3d12_device_init())
         goto fail;
     stage = STAGE_DEVICE;
+    // the map load's "Map load VRAM:" line (common.c) from here on
+    d3d12_vram_hook(true);
     // NGX's ~2 s start, alongside the rest of this one, instead of in the first map's load
     d3d12_frontend_ngx_prestart();
     // ray traced sound: its own queue, scene and set (sound_trace.c)
@@ -98,10 +105,11 @@ static ref_type_t R_Init_D3D12(bool total)
 
     // (profiler_dump and vkpt's other device-free commands: d3d12_frontend_init)
     Cmd_AddCommand("d3d12_info", d3d12_info_f);
+    Cmd_AddCommand("d3d12_vram", d3d12_vram_f);
 
     Com_Printf("D3D12: the world and its models path traced and lit, with the physical sky, fog, "
                "glass, water, particles, beams, sprites, blood and NVIDIA Flow, DLSS / Ray Reconstruction, frame generation "
-               "and HDR. d3d12_show <image> shows a G-buffer image, d3d12_info lists the GPU's features, "
+               "and HDR. d3d12_show <image> shows a G-buffer image, d3d12_info lists the GPU's features, d3d12_vram where the video memory goes, "
                "profiler 1 the GPU times (2 frame time and fps graphs), pt_ser 1-3 the SER A/B.\n");
     Com_Printf("----------------------------------\n");
     return REF_TYPE_D3D12;
@@ -120,6 +128,8 @@ static void R_Shutdown_D3D12(bool total)
         d3d12_wait_idle();
     d3d.frame_open = false;
     Cmd_RemoveCommand("d3d12_info");
+    Cmd_RemoveCommand("d3d12_vram");
+    d3d12_vram_hook(false);
     d3d12_frontend_clear_stretch_pics();
 
     if (stage >= STAGE_FRONTEND) {

@@ -239,14 +239,15 @@ the SER A/B (`pt_ser`) on it: no gain, so it stays off.** Since 11-06 it is in t
       DLSS feature. Now, shared with Vulkan (vkpt main.c):
       - `render_scale_capacity`: the images are made for the largest scale reachable
         without a settings change - DRS's top scale, else viewsize and, while photo mode
-        is allowed and `pt_photo_mode_reserve` 1 (default, archived), photo mode's 100%.
+        is allowed and `pt_photo_mode_reserve` 1 (archived; default 0 since 11-13), photo mode's 100%.
         The screen images' split-fields width is twice THAT render width (it was twice the
         current one, so on Vulkan every DRS step past 50% rebuilt), and the TAA images are
         its extent under DLSS (`get_taa_image_extent`; the UBO's `taa_image_width` is the
         allocated size, which the shaders' UVs divide by). Cost at 4K with split fields:
         7.9 GB of G-buffer all the time instead of 3.9 GB (Matt's photo-mode peak was
         14.2 GB of 16 with the old 9.3 GB set). `pt_photo_mode_reserve 0` = remade on the
-        way in and out, as before.
+        way in and out, as before. 11-13: Matt ran D3D12 photo mode with 0 and it was fine
+        (the 11-06 pause/slow-exit was fixed by the rest of this change), so 0 is the default.
       - `DLSSFeatureResolution` (DLSS.c): the feature is made for `vkpt_dlss_input_capacity`
         (DRS's top, else viewsize - not photo mode's, which bypasses DLSS) or the frame's
         own extent where larger, and evaluated over the frame's extent as

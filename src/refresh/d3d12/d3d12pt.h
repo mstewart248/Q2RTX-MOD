@@ -622,6 +622,10 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
 // a G-buffer image (VKPT_IMG_*), simultaneous-access, in COMMON between lists; NULL
 // before the first frame made them
 ID3D12Resource *d3d12_world_image(int image);
+// d3d12_vram's figures: the G-buffer's bytes and size, the froxel volumes' bytes (0 = not made)
+void d3d12_world_memory(uint64_t *gbuffer, uint32_t *width, uint32_t *height, uint64_t *froxel);
+// d3d12_vram's: every image's texture, its count in *count
+uint64_t d3d12_textures_memory(int *count);
 // the even (0) or odd (1) textures set, NULL without the world (flow.c writes its bindings)
 const d3d12_set_t *d3d12_world_textures_set(int odd);
 // a volume zeroed in the upload batch ahead of the next frame (copies out of the zero
@@ -774,6 +778,10 @@ void d3d12_frontend_world_init(void);
 // right after the device is made: NGX started on a thread of its own (pt_dlss on, an
 // NVIDIA adapter), so the first map does not wait for it
 void d3d12_frontend_ngx_prestart(void);
+// com_vram_usage (the map load's VRAM line) while the device is up
+void d3d12_vram_hook(bool on);
+// d3d12_vram: the process's video memory against its budget, and the parts that take it
+void d3d12_print_vram(void);
 // the 2D queue vkpt's R_Draw*_RTX functions fill
 const void *d3d12_frontend_stretch_pics(int *count, size_t *record_size, int *max_count);
 void d3d12_frontend_clear_stretch_pics(void);

@@ -192,6 +192,12 @@ void Com_LoadBegin(void);
 void Com_LoadMark(const char *what);
 void Com_LoadFinish(const char *what);
 bool Com_LoadActive(void);
+// The renderer's video memory query while it is up (D3D12 sets it, NULL = none):
+// bytes the process has in VRAM, and Windows' budget for it. With it the load
+// prints a second line, "Map load VRAM:", what each part of the load added.
+extern uint64_t (*com_vram_usage)(uint64_t *budget);
+// com_vram_usage at the last map load's first world frame (0 = none yet)
+extern uint64_t com_load_vram_end;
 void Qcommon_Frame(void);
 
 #endif // COMMON_H
