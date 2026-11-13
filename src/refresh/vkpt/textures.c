@@ -28,6 +28,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "color.h"
 #include "material.h"
 #include "texture_mips.h"
+#include "common/common.h"
+#include "system/system.h"
 #include "../stb/stb_image.h"
 #include "../stb/stb_image_resize.h"
 #include "../stb/stb_image_write.h"
@@ -1758,6 +1760,9 @@ vkpt_textures_end_registration()
 		return VK_SUCCESS;
 	image_loading_dirty_flag = 0;
 
+	// a map load's: one line, to compare with the D3D12 renderer's (make_pending_textures)
+	const unsigned textures_start = Sys_Milliseconds();
+
 	VkImageCreateInfo img_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.extent = {
@@ -2207,6 +2212,11 @@ vkpt_textures_end_registration()
 	unused_resources->buffer_memory[unused_index] = buf_img_upload.memory;
 
 	vkpt_invalidate_texture_descriptors();
+
+	if (new_image_num >= 64) {
+		Com_Printf("Vulkan: %u textures made in %u ms\n", new_image_num, Sys_Milliseconds() - textures_start);
+		Com_LoadMark("textures");
+	}
 
 	size_t texture_memory_allocated, texture_memory_used;
 	get_device_malloc_stats(tex_device_memory_allocator, &texture_memory_allocated, &texture_memory_used);

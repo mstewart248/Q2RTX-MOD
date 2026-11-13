@@ -979,6 +979,8 @@ void CL_GetEntitySoundOrigin(int ent, vec3_t org);
 //
 extern    int       gun_frame;
 extern    qhandle_t gun_model;
+// V_RenderView drew the world while a map load is timed (Com_LoadFinish in SCR_UpdateScreen)
+extern    bool      cl_load_world_drawn;
 
 void V_Init(void);
 void V_Shutdown(void);
@@ -997,7 +999,7 @@ int CL_PointContents(const vec3_t point);
 centity_t *CL_TraceHitEntity(const trace_t *tr);
 // Things the Flow plasma beam set alight (cl_flow_heatbeam_fire, tent.c): a
 // gib just turned up, and an entity's fire where it is drawn this frame.
-void CL_FlowBurnNewGib(int number, const vec3_t origin);
+void CL_FlowBurnNewGib(const entity_state_t *state, const vec3_t origin, bool turned);
 void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin);
 blood_sphere_t *V_AddBloodSphere(void);
 
@@ -1088,6 +1090,9 @@ typedef struct cl_sustain_s {
 
 void CL_SmokeAndFlash(const vec3_t origin);
 void CL_ImpactSmokeAndFlash(const vec3_t origin, const vec3_t dir);
+// the plasma beam casts its own light (pt_flow_heatbeam_light): its muzzle
+// flashes have none, and no flash
+bool CL_FlowHeatbeamLit(void);
 // view_fx: 0 for a flash both views should see, or RF_FIRST_PERSON_FX /
 // RF_REFLECTION_FX for one half of your own gun's split pair.
 void CL_MuzzleFlashModel(const vec3_t origin, const vec3_t angles, int view_fx);

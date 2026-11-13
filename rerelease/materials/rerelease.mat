@@ -26053,17 +26053,20 @@ models/monsters/infantry/gibs/arm:
 models/monsters/infantry/gibs/chest:
 	texture_base materialDev/models/monsters/infantry/gibs/chest.tga
 	texture_normals materialDev/models/monsters/infantry/gibs/chest_n.tga
-	metalness_factor 0
+	texture_metallic materialDev/models/monsters/infantry/gibs/chest_metallic.png
+	texture_roughness materialDev/models/monsters/infantry/gibs/chest_rough.png
 
 models/monsters/infantry/gibs/foot:
 	texture_base materialDev/models/monsters/infantry/gibs/foot.tga
 	texture_normals materialDev/models/monsters/infantry/gibs/foot_n.tga
+	texture_roughness materialDev/models/monsters/infantry/gibs/foot_rough.png
 	metalness_factor 0
 
 models/monsters/infantry/gibs/gun:
 	texture_base materialDev/models/monsters/infantry/gibs/gun.tga
 	texture_normals materialDev/models/monsters/infantry/gibs/gun_n.tga
-	metalness_factor 0
+	texture_metallic materialDev/models/monsters/infantry/gibs/gun_metallic.png
+	texture_roughness materialDev/models/monsters/infantry/gibs/gun_rough.png
 
 models/monsters/infantry/gibs/head:
 	texture_base materialDev/models/monsters/infantry/gibs/head.tga
@@ -26713,6 +26716,8 @@ models/weapons/g_boom/md5/ripper:
 	# w_ripper; inherits metalness_factor 0 (rerelease.mat)
 
 models/weapons/g_rocket/md5/skin:
+	texture_roughness models/weapons/g_rocket/md5/skin_rough.png
+	texture_metallic models/weapons/g_rocket/md5/skin_metal.png
 	# w_rlauncher; inherits specular_factor 0, emissive_factor 0.1 (baseq2.mat)
 
 models/weapons/g_shotg/md5/skin:

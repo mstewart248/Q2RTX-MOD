@@ -6540,6 +6540,9 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	if (bsp_world_model && render_world)
 	{
 		vkpt_build_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, fd->entities, fd->num_entities, prev_adapted_luminance, light_entity_ids[entity_frame_num], &num_model_lights);
+		// the Flow plasma beams', as the rail's beam above (pt_flow_heatbeam_light);
+		// before Flow's own lights, so the smoke's probes see them
+		vkpt_flow_beam_lights(model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 		add_dlights(vkpt_refdef.fd->dlights, vkpt_refdef.fd->num_dlights, model_lights, &num_model_lights, MAX_MODEL_LIGHTS, bsp_world_model, light_entity_ids[entity_frame_num]);
 
 		// What NVIDIA Flow's fire and plasma give off (pt_flow_lighting), from
@@ -10158,6 +10161,7 @@ vkpt_begin_registration(const char *name)
 	Com_Printf("loading %s\n", name);
 	if (qvk.device)
 		vkpt_device_wait_idle();
+	Com_LoadMark("renderer idle");
 
 	// The blood section's base tracks this map's peak model primitive count, so
 	// it must not inherit the last one's - a big map followed by a small one
@@ -10215,10 +10219,16 @@ vkpt_begin_registration(const char *name)
 		Com_Error(ERR_DROP, "BSP not vis'd; this is required for Q2RTX.");
 	}
 	bsp_world_model = bsp;
+	// Map load: the map's cfgs and BSP file, its textures (read and decoded on
+	// this thread), its mesh and light lists, then the renderer's GPU side
+	Com_LoadMark("BSP");
 	bsp_mesh_register_textures(bsp);
+	Com_LoadMark("world textures");
 	bsp_mesh_create_from_bsp(&vkpt_refdef.bsp_mesh_world, bsp, name);
+	Com_LoadMark("world mesh");
 	vkpt_flow_set_world(&vkpt_refdef.bsp_mesh_world);
 	vkpt_prep_backend->load_world(&vkpt_refdef.bsp_mesh_world, bsp);
+	Com_LoadMark("world GPU");
 	sharc_clear_pending = true;     // the old map's keys would light the new one
 
 	// Blood's worst-case memory now, while the map loads, rather than on the

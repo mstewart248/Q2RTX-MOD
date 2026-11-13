@@ -31,7 +31,7 @@ glue (d3d12_flow_backend).
 #include "passes.h"
 
 #include "../vkpt/shader/global_textures.h"     // BINDING_OFFSET_FLOW_*
-#include "../vkpt/shader/flow.h"                // FLOW_ENV_DIM_*, FLOW_COARSE_UVEC4S, FLOW_BLOCK_UVEC4S
+#include "../vkpt/shader/flow.h"                // FLOW_ENV_DIM_*, FLOW_BITSET_UVEC4S
 
 #define FLOW_SETS   2       // flow.c's FLOW_SET_COUNT: the even and odd textures sets
 
@@ -295,7 +295,7 @@ const d3d12_set_t *d3d12_flow_frame(const d3d12_world_flow_t *flow, int slot, D3
     // flow.c's layout of a slice: a uvec4 a block, then the group bitset and the
     // block bitset - all of the slice that is not the blocks' (flow_set_strides
     // makes that exact: FLOW_POOL_MAX blocks and the bitsets fill whole 256s)
-    out->group_bitset_size = (FLOW_COARSE_UVEC4S + FLOW_BLOCK_UVEC4S) * 16;
+    out->group_bitset_size = FLOW_BITSET_UVEC4S * 16;
     out->occupancy_capacity = (uint32_t)((fl.occupancy_stride - out->group_bitset_size) / 16);
     out->occupancy_blocks = flow->occupancy_blocks;
     out->light_sums = fl.light_sums;

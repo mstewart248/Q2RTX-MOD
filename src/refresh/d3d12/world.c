@@ -378,6 +378,25 @@ static ID3D12PipelineState *compute_pso(d3d12_pipeline_layout_id_t layout, const
     return pso;
 }
 
+// the passes' pipelines, made across threads (d3d12_world_init): each pass's DXIL,
+// read on the main thread, and what make_pass_pso made of it
+typedef struct {
+    void                    *code[D3D12_NUM_PASSES];
+    size_t                  size[D3D12_NUM_PASSES];
+    ID3D12PipelineState     *pso[D3D12_NUM_PASSES];
+} pass_psos_t;
+
+// d3d12_parallel_for's job: pass i's pipeline (free-threaded calls only)
+static void make_pass_pso(void *ctx, int i)
+{
+    pass_psos_t *pp = ctx;
+    if (!pp->code[i])
+        return;
+    pp->pso[i] = d3d12_create_compute_pso(d3d12_pass_info[i].layout, pp->code[i], pp->size[i], NULL);
+    if (pp->pso[i])
+        d3d12_set_name((ID3D12Object *)pp->pso[i], d3d12_pass_info[i].shader);
+}
+
 /* SHADER EXECUTION REORDERING (pt_ser), Matt's A/B: the indirect lighting bounces built
    again as ray generation shaders (spv2dxil --raygen / --ser), dispatched with
    DispatchRays over the same threads (passes.c's trace_raygen).
@@ -636,6 +655,44 @@ static void image_made_extent(int image, const d3d12_extents_t *e, uint32_t *wid
         *width = *height = 1;
 }
 
+typedef struct {
+    const d3d12_extents_t   *e;
+    HRESULT                 hr[NUM_VKPT_IMAGES];
+    uint64_t                bytes[NUM_VKPT_IMAGES];
+} image_job_t;
+
+// d3d12_parallel_for's job: G-buffer image i into w.images[i] (NULL and its HRESULT
+// on failure, for the main thread to say)
+static void make_image(void *ctx, int i)
+{
+    image_job_t *job = ctx;
+    uint32_t iw, ih;
+    image_made_extent(i, job->e, &iw, &ih);
+    D3D12_HEAP_PROPERTIES hp = { D3D12_HEAP_TYPE_DEFAULT };
+    D3D12_RESOURCE_DESC rd = { 0 };
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = iw;
+    rd.Height = ih;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = d3d12_image_format(i);
+    rd.SampleDesc.Count = 1;
+    // storage + sampled with no layout changes, as vkpt's (VK_IMAGE_LAYOUT_GENERAL)
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+    job->hr[i] = ID3D12Device5_CreateCommittedResource(d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                       D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource,
+                                                       (void **)&w.images[i]);
+    if (FAILED(job->hr[i])) {
+        w.images[i] = NULL;
+        job->bytes[i] = 0;
+        return;
+    }
+    d3d12_set_name((ID3D12Object *)w.images[i], d3d12_image_name(i));
+    D3D12_RESOURCE_ALLOCATION_INFO ai;
+    ID3D12Device5_GetResourceAllocationInfo(d3d.device, &ai, 0, 1, &rd);
+    job->bytes[i] = ai.SizeInBytes;
+}
+
 // (Re)makes the G-buffer at these extents. The textures sets are rewritten in
 // place, so the GPU must be idle first: frames in flight read them.
 static bool ensure_images(const d3d12_extents_t *e)
@@ -656,32 +713,20 @@ static bool ensure_images(const d3d12_extents_t *e)
         D3D12_RELEASE(w.images[i]);
     w.images_made = false;
 
+    // made on every logical processor (make_image): ~110 committed resources, 4-9 GB
+    image_job_t job = { .e = e };
+    d3d12_parallel_for(NUM_VKPT_IMAGES, make_image, &job, 0);
     uint64_t total = 0;
     for (int i = 0; i < NUM_VKPT_IMAGES; i++) {
-        uint32_t iw, ih;
-        image_made_extent(i, e, &iw, &ih);
-        D3D12_HEAP_PROPERTIES hp = { D3D12_HEAP_TYPE_DEFAULT };
-        D3D12_RESOURCE_DESC rd = { 0 };
-        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width = iw;
-        rd.Height = ih;
-        rd.DepthOrArraySize = 1;
-        rd.MipLevels = 1;
-        rd.Format = d3d12_image_format(i);
-        rd.SampleDesc.Count = 1;
-        // storage + sampled with no layout changes, as vkpt's (VK_IMAGE_LAYOUT_GENERAL)
-        rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-        if (!D3D_CHECK(ID3D12Device5_CreateCommittedResource(d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &rd,
-                                                            D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource,
-                                                            (void **)&w.images[i]))) {
-            Com_EPrintf("D3D12: G-buffer image %s (%ux%u) failed\n", d3d12_image_name(i), iw, ih);
+        if (!w.images[i]) {
+            uint32_t iw, ih;
+            image_made_extent(i, e, &iw, &ih);
+            Com_EPrintf("D3D12: G-buffer image %s (%ux%u) failed: 0x%08x\n", d3d12_image_name(i), iw, ih,
+                        (unsigned)job.hr[i]);
             destroy_images();
             return false;
         }
-        d3d12_set_name((ID3D12Object *)w.images[i], d3d12_image_name(i));
-        D3D12_RESOURCE_ALLOCATION_INFO ai;
-        ID3D12Device5_GetResourceAllocationInfo(d3d.device, &ai, 0, 1, &rd);
-        total += ai.SizeInBytes;
+        total += job.bytes[i];
     }
 
     for (int odd = 0; odd < 2; odd++)
@@ -710,6 +755,8 @@ static bool ensure_images(const d3d12_extents_t *e)
         Com_Printf("D3D12: G-buffer %ux%u (output %ux%u), %.2f GB in %u ms\n", e->screen_width, e->screen_height,
                    e->unscaled_width, e->unscaled_height, total / 1073741824.0, ms);
     }
+    // the first map after start-up makes it (vkpt makes its images at init)
+    Com_LoadMark("G-buffer");
     return true;
 }
 
@@ -1798,9 +1845,30 @@ bool d3d12_world_init(void)
         d3d12_set_write_as(&fr->rt_set, RT_BINDING_TLAS, TLAS_INDEX_EFFECTS, fr->tlas_effects);
     }
 
+    /* Timed (Matt, 11-12, on loading faster): 917 ms made one after another on this
+       thread, each the driver's compile of its DXIL - or its shader cache's copy,
+       after the first run. ID3D12Device is free-threaded: the files are read here
+       (the filesystem is not), the pipelines made on every logical processor. */
     bool psos = true;
+    const unsigned pso_start = Sys_Milliseconds();
+    pass_psos_t *pp = Z_Mallocz(sizeof(*pp));
     for (int i = 0; i < D3D12_NUM_PASSES; i++)
-        psos &= (w.passes[i] = compute_pso(d3d12_pass_info[i].layout, d3d12_pass_info[i].shader)) != NULL;
+        pp->code[i] = d3d12_load_shader(d3d12_pass_info[i].shader, &pp->size[i]);
+    const int pso_threads = d3d12_parallel_for(D3D12_NUM_PASSES, make_pass_pso, pp, 0);
+    for (int i = 0; i < D3D12_NUM_PASSES; i++) {
+        if (pp->code[i])
+            FS_FreeFile(pp->code[i]);
+        w.passes[i] = pp->pso[i];
+        if (!w.passes[i]) {
+            psos = false;
+            if (pp->code[i])
+                Com_EPrintf("D3D12: no pipeline for %s against the %s layout\n", d3d12_pass_info[i].shader,
+                            d3d12_pipeline_layouts[d3d12_pass_info[i].layout].name);
+        }
+    }
+    Z_Free(pp);
+    Com_Printf("D3D12: %d pipelines made in %u ms (%d threads)\n", D3D12_NUM_PASSES, Sys_Milliseconds() - pso_start,
+               pso_threads);
     // [d3d.hdr]: the frame target's sRGB view, or the scRGB target (vid_hdr)
     w.blit[0] = blit_pso("final_blit.vert", "film_grain.frag", D3D12_FRAME_TARGET_RTV_FORMAT);
     w.blit[1] = blit_pso("final_blit.vert", "film_grain.frag", D3D12_HDR_FORMAT);

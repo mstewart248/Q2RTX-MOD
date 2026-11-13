@@ -184,10 +184,16 @@ static void parse_entity_update(const entity_state_t *state)
     if (entity_is_new(ent)) {
         // wasn't in last update, so initialize some things
         entity_update_new(ent, state, origin);
-        // a gib off something the plasma beam set alight burns too (tent.c)
+        // a gib off something the plasma beam set alight burns too, and an
+        // explosion's or a rail's may catch fire or smoke (tent.c)
         if (state->effects & EF_GIB)
-            CL_FlowBurnNewGib(state->number, origin);
+            CL_FlowBurnNewGib(state, origin, false);
     } else {
+        // a monster turned into its own head (ThrowHead): a new model with
+        // EF_GIB on. Not EF_GIB alone - a gib drops it at rest and takes it
+        // back when knocked moving (SV_Physics_Toss).
+        if ((state->effects & EF_GIB) && state->modelindex != ent->current.modelindex)
+            CL_FlowBurnNewGib(state, origin, true);
         entity_update_old(ent, state, origin);
     }
 
@@ -255,6 +261,8 @@ static void parse_entity_event(int number)
 static void set_active_state(void)
 {
     cls.state = ca_active;
+    // Map load: from the precache's end to the server's first frame
+    Com_LoadMark("first server frame");
 
     cl.serverdelta = Q_align(cl.frame.number, CL_FRAMEDIV);
     cl.time = cl.servertime = 0; // set time, needed for demos

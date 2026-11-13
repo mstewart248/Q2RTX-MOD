@@ -86,6 +86,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define FLOW_BLOCK_HASH_BITS 65536u
 #define FLOW_BLOCK_UVEC4S (FLOW_BLOCK_HASH_BITS / 128u)
 
+/* And the screen (pt_flow_march 16): FLOW_SCREEN_TX x FLOW_SCREEN_TY tiles of
+   the plane one unit in front of the camera (FlowParams.camera_*), a bit each
+   in rows after the block bitset, set by flow_occupancy.comp under every
+   marked brick; then one uvec4 whose x is set when a marked brick comes so
+   near the camera that no tile can say anything (flow_screen_mark). A primary ray
+   whose tile is clear can meet no marked brick - and the march samples
+   nothing else - so flow.glsl passes it without a march (flow_screen_clear). */
+#define FLOW_SCREEN_TX 128u
+#define FLOW_SCREEN_TY 64u
+#define FLOW_SCREEN_UVEC4S (FLOW_SCREEN_TX * FLOW_SCREEN_TY / 128u + 1u)
+
+// all of the occupancy buffer after the blocks' bricks, cleared each frame
+#define FLOW_BITSET_UVEC4S (FLOW_COARSE_UVEC4S + FLOW_BLOCK_UVEC4S + FLOW_SCREEN_UVEC4S)
+
 /* Lights the fire and plasma cast, each gathered by flow_lights.comp from
    the glow nearest its seed. */
 #define FLOW_MAX_LIGHTS 8
@@ -131,12 +145,12 @@ BEGIN_SHADER_STRUCT(FlowParams)
 	uvec4 block_dim_bits;       // xyz: log2 of a density block's size in cells; w: 1 when there is anything to draw
 	uvec4 table_dim_less_one;   // xyz: Flow's hash table size - 1; w: tableDimBits_x
 	uvec4 table_offsets;        // x: tableDimBits_xy, y: locationOffset, z: blockLevelOffsetGlobal
-	uvec4 limits;               // x: most march samples per ray, y: most blocks one hash bucket is searched for, z: the uvec4 of the occupancy buffer the group bitset starts at (the block bitset FLOW_COARSE_UVEC4S after it); w: pt_flow_march, how flow.glsl walks the volume (1 world light once a step, 2 two steps at a time, 4 the block bitset, 8 each grid only inside grid_min/max)
+	uvec4 limits;               // x: most march samples per ray, y: most blocks one hash bucket is searched for, z: the uvec4 of the occupancy buffer the group bitset starts at (the block bitset FLOW_COARSE_UVEC4S after it); w: pt_flow_march, how flow.glsl walks the volume (1 world light once a step, 2 two steps at a time, 4 the block bitset, 8 each grid only inside grid_min/max; 16, flow.c: primary rays passed by screen tile, camera_pos.w)
 	vec4  dim_inv;              // xyz: 1 / the density atlas size in texels
 	vec4  grids[FLOW_GRIDS];    // xyz: density cells per world unit on a grid, 0 for a grid none of whose layers has blocks; w: march step there in world units
 	vec4  world_min;            // xyz: corner of every layer's allocated blocks together; w: how many times longer a reflection or refraction ray's steps are
 	vec4  world_max;            // xyz: the opposite corner; w: pt_flow_glow_floor, the least share of glow smoke in front lets through (flow_step_add)
-	uvec4 counts;               // x: blocks in the density level, y: lights, z: pt_flow_stats - count the primary march into readback.flow_* (flow.glsl FLOW_STATS)
+	uvec4 counts;               // x: blocks in the density level, y: lights, z: pt_flow_stats - count the primary march into readback.flow_* (flow.glsl FLOW_STATS); 2, only the rays the screen tiles pass
 	FlowLayerParams layers[FLOW_LAYERS];
 	vec4  lights[FLOW_MAX_LIGHTS];          // xyz: where a light is; w: its radius
 	vec4  light_colors[FLOW_MAX_LIGHTS];    // rgb: radiance x radius^2 / 4, absolute - what smoke at distance r scatters is albedo x this / r^2
@@ -148,6 +162,10 @@ BEGIN_SHADER_STRUCT(FlowParams)
 	ivec4 env_lights;           // x: the first of Flow's own lights in the light buffer, y: how many - the smoke has those from flow_lit, with Flow's shadow; z: the spacing's level, 0 for pt_flow_env_spacing and 1 for twice it...
 	vec4  grid_min[FLOW_GRIDS]; // xyz: corner of the allocated blocks of a grid's layers together (layers[].world_min), for a grid in use
 	vec4  grid_max[FLOW_GRIDS]; // xyz: the opposite corner
+	vec4  camera_pos;           // xyz: where this frame's primary rays start (refdef vieworg); w: 1 when the march may pass a ray by its screen tile (pt_flow_march 16)
+	vec4  camera_forward;       // xyz: the view's forward axis; w: tan of the tiles' half width - they span -w..w to the right
+	vec4  camera_right;         // xyz: its right; w: tan of the tiles' half height
+	vec4  camera_up;            // xyz: its up
 }
 END_SHADER_STRUCT(FlowParams)
 

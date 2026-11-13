@@ -213,6 +213,14 @@ static cvar_t   *cl_flow_gib_burn;
 static cvar_t   *cl_flow_heatbeam_fire_size;
 static cvar_t   *cl_flow_heatbeam_fire_core;
 
+// Gibs from explosions and the railgun (CL_FlowGibEvent), one setting on the
+// Flow page: a rocket's or grenade's gibs each catch fire
+// cl_flow_gib_fire_chance of the time and burn cl_flow_gib_burn seconds, a
+// rail's smoke, no flame, for cl_flow_gib_smoke seconds.
+static cvar_t   *cl_flow_gib_effects;
+static cvar_t   *cl_flow_gib_fire_chance;
+static cvar_t   *cl_flow_gib_smoke;
+
 // How far the flare's burn is heard, against ATTN_NORM's 2080 units. It keeps
 // Quake II's straight line to silence whatever s_falloff says: it goes on for
 // 15 seconds, and heard all over the level that would wear thin.
@@ -1530,6 +1538,11 @@ left once nothing feeds it rises and cools into smoke on its own.
     first appears): it burns, full for the first 40% of cl_flow_gib_burn,
     then dies down. A monster's head turned into a gib is the same entity
     and burns on as it was. Nothing on the server knows: any server's gibs.
+    A corpse has no box here (the server sends the dead as not solid), so it
+    is not a target. Its body does not burn - the hot spot where the beam
+    stops on it, as without fire (Matt, 11-12: "I just want the gibs to
+    catch on fire") - and its gibs are the ones that turn up within
+    FLOW_GIB_REACH of where a beam was hitting in the last half second.
 
 Not from the mirror's copy of your own beam, which would be a second fire;
 not within 32 units of the view. Burning things are kept by entity number,
@@ -1542,17 +1555,105 @@ MAX_FLOW_BURNS of them, the oldest giving way.
 
 typedef struct {
     int     number;     // the entity on fire, 0 = none
+    int     model;      // a gib: its model index, so its number taken by
+                        // something new does not burn on; 0 for a target
     int     hit;        // cl.time the beam was last on it; 0 for a gib
     int     start;      // cl.time it caught
     int     out;        // cl.time it has gone out by
+    bool    smoke;      // smoking, no flame: a gib the railgun blew off
     vec3_t  mins, maxs; // its box where it was the last time the beam was on it
 } cl_flow_burn_t;
 
 static cl_flow_burn_t   cl_flow_burns[MAX_FLOW_BURNS];
 
+/* Where each beam has been hitting (CL_FlowBeamFire), for CL_FlowBurnNewGib: a
+   corpse has no box on the client - the server sends a dead monster as not
+   solid (SV_LinkEdict, SVF_DEADMONSTER) - so the trace that finds a target
+   never finds one, and a corpse the beam gibbed threw gibs that did not burn,
+   where a live monster's did (Matt, 11-12). Kept by beam, the oldest giving
+   way. */
+#define MAX_FLOW_BEAM_ENDS  16
+#define FLOW_GIB_REACH      48          // units from where a beam hit that its gibs turn up
+
+typedef struct {
+    int     key;        // the beam's slot + 1, 0 = none
+    int     time;       // cl.time it was last there
+    vec3_t  end;
+} cl_flow_beam_end_t;
+
+static cl_flow_beam_end_t   cl_flow_beam_ends[MAX_FLOW_BEAM_ENDS];
+
+/*
+=================
+GIBS FROM EXPLOSIONS AND THE RAILGUN
+
+cl_flow_gib_effects 1 (Matt, 11-12): when a rocket or grenade gibs something,
+"randomly sometimes have the meat chunks catch on fire (not every gib every
+time)" - each gib cl_flow_gib_fire_chance of the time, burning as the plasma
+beam's gibs do (cl_flow_gib_burn) - and when the railgun does, "have the meat
+gibs smoke a little bit": a wisp off each, no flame, for cl_flow_gib_smoke
+seconds (R_FLOW_BURN with smoke_only, flow_burn_spheres in vkpt/flow.c).
+
+Nothing from the server says what gibbed what, so it goes by place and time:
+a gib that turns up within FLOW_GIB_WINDOW ms of an explosion - a rocket's,
+a grenade's, TE_EXPLOSION1/2 and kin (a barrel), the phalanx's; not under
+water - within FLOW_GIB_BLAST_REACH of it, or of a rail within
+FLOW_GIB_RAIL_REACH of its line. A frame's entities come before its temp
+entities in the packet, so it is matched both ways round: the gib looks back
+for the explosion (CL_FlowGibSeen), the explosion for the gib
+(CL_FlowGibEvent). A monster's head is the monster's own entity turned into a
+gib (ThrowHead), seen when its model changes with EF_GIB on. Any other gib
+that turns up there then - a shotgun's - counts too. Worked out, not seen.
+=================
+*/
+#define MAX_FLOW_GIB_EVENTS     16
+#define MAX_FLOW_NEW_GIBS       64
+#define FLOW_GIB_WINDOW         250     // ms
+#define FLOW_GIB_BLAST_REACH    224     // units: a grenade's 160 of splash and a body's size
+#define FLOW_GIB_RAIL_REACH     64      // units: a body's size and a frame's flight
+
+typedef struct {
+    bool    used;
+    bool    rail;
+    int     time;       // cl.time
+    vec3_t  a, b;       // an explosion at `a`; a rail from `a` to `b`
+} cl_flow_gib_event_t;
+
+typedef struct {
+    int     number;     // 0 = none
+    int     model;
+    int     time;       // cl.time it turned up
+    vec3_t  origin;
+} cl_flow_new_gib_t;
+
+static cl_flow_gib_event_t  cl_flow_gib_events[MAX_FLOW_GIB_EVENTS];
+static cl_flow_new_gib_t    cl_flow_new_gibs[MAX_FLOW_NEW_GIBS];
+static unsigned             cl_flow_gib_event_next, cl_flow_new_gib_next;
+
 static void CL_ClearFlowBurns(void)
 {
     memset(cl_flow_burns, 0, sizeof(cl_flow_burns));
+    memset(cl_flow_beam_ends, 0, sizeof(cl_flow_beam_ends));
+    memset(cl_flow_gib_events, 0, sizeof(cl_flow_gib_events));
+    memset(cl_flow_new_gibs, 0, sizeof(cl_flow_new_gibs));
+}
+
+static void CL_FlowBeamEnd(int key, const vec3_t end)
+{
+    cl_flow_beam_end_t  *e, *slot = NULL;
+    int                 i;
+
+    for (i = 0, e = cl_flow_beam_ends; i < MAX_FLOW_BEAM_ENDS; i++, e++) {
+        if (e->key == key + 1) {
+            slot = e;
+            break;
+        }
+        if (!slot || e->time < slot->time)
+            slot = e;
+    }
+    slot->key = key + 1;
+    slot->time = cl.time;
+    VectorCopy(end, slot->end);
 }
 
 // Entity `number`'s burning, or with `add` a new one for it - a free slot, or
@@ -1608,43 +1709,157 @@ static void CL_FlowBurnTarget(const centity_t *cent)
     cl_flow_burn_t  *b = CL_FlowBurnFind(cent->current.number, true);
 
     b->hit = cl.time;
+    b->model = 0;
+    b->smoke = false;
     b->out = cl.time + FLOW_BURN_SLACK + (int)(1000 * max(cl_flow_burn_after->value, 0.0f));
     VectorAdd(cent->current.origin, cent->mins, b->mins);
     VectorAdd(cent->current.origin, cent->maxs, b->maxs);
+}
+
+// Gib `number` (model `model`) set alight, or with `smoke` smoking. Not if it
+// burns already, or smokes and only smoke is asked for; fire takes over from
+// smoke.
+static void CL_FlowGibLight(int number, int model, bool smoke)
+{
+    cl_flow_burn_t  *b = CL_FlowBurnFind(number, false);
+
+    if (b && (smoke || !b->smoke))
+        return;
+
+    b = CL_FlowBurnFind(number, true);
+    b->hit = 0;
+    b->model = model;
+    b->smoke = smoke;
+    b->start = cl.time;
+    b->out = cl.time + (int)(1000 * max(smoke ? cl_flow_gib_smoke->value : cl_flow_gib_burn->value, 0.0f));
+}
+
+static bool CL_FlowGibRecent(int time)
+{
+    return (unsigned)(cl.time - time) <= FLOW_GIB_WINDOW;
+}
+
+// Whether a gib at `origin` came from `ev`, by place.
+static bool CL_FlowGibNear(const cl_flow_gib_event_t *ev, const vec3_t origin)
+{
+    vec3_t  ab, ao, nearest;
+    float   len2, t;
+
+    if (!ev->rail)
+        return Distance(origin, ev->a) <= FLOW_GIB_BLAST_REACH;
+
+    VectorSubtract(ev->b, ev->a, ab);
+    VectorSubtract(origin, ev->a, ao);
+    len2 = DotProduct(ab, ab);
+    t = len2 > 0 ? DotProduct(ao, ab) / len2 : 0;
+    t = min(max(t, 0.0f), 1.0f);
+    VectorMA(ev->a, t, ab, nearest);
+    return Distance(origin, nearest) <= FLOW_GIB_RAIL_REACH;
+}
+
+// What `ev` does to a gib it threw: a rail's smokes; an explosion's catches
+// fire cl_flow_gib_fire_chance of the time.
+static void CL_FlowGibHit(int number, int model, const cl_flow_gib_event_t *ev)
+{
+    if (ev->rail)
+        CL_FlowGibLight(number, model, true);
+    else if (frand() < Cvar_ClampValue(cl_flow_gib_fire_chance, 0, 1))
+        CL_FlowGibLight(number, model, false);
+}
+
+// A gib has turned up: kept for the explosions and rails still to be parsed
+// this frame, and matched against those already seen.
+static void CL_FlowGibSeen(int number, int model, const vec3_t origin)
+{
+    cl_flow_new_gib_t   *g = &cl_flow_new_gibs[cl_flow_new_gib_next++ % MAX_FLOW_NEW_GIBS];
+    int                 i;
+
+    g->number = number;
+    g->model = model;
+    g->time = cl.time;
+    VectorCopy(origin, g->origin);
+
+    for (i = 0; i < MAX_FLOW_GIB_EVENTS; i++) {
+        const cl_flow_gib_event_t *ev = &cl_flow_gib_events[i];
+        if (ev->used && CL_FlowGibRecent(ev->time) && CL_FlowGibNear(ev, origin))
+            CL_FlowGibHit(number, model, ev);
+    }
+}
+
+// An explosion at `a`, or with `rail` a rail from `a` to `b` (CL_ParseTEnt):
+// kept for the gibs still to turn up, and matched against those that have.
+static void CL_FlowGibEvent(bool rail, const vec3_t a, const vec3_t b)
+{
+    cl_flow_gib_event_t *ev;
+    int                 i;
+
+    if (!cl_flow_gib_effects->integer || !R_FlowEmit)
+        return;
+
+    ev = &cl_flow_gib_events[cl_flow_gib_event_next++ % MAX_FLOW_GIB_EVENTS];
+    ev->used = true;
+    ev->rail = rail;
+    ev->time = cl.time;
+    VectorCopy(a, ev->a);
+    VectorCopy(b, ev->b);
+
+    for (i = 0; i < MAX_FLOW_NEW_GIBS; i++) {
+        const cl_flow_new_gib_t *g = &cl_flow_new_gibs[i];
+        if (g->number && CL_FlowGibRecent(g->time) && CL_FlowGibNear(ev, g->origin))
+            CL_FlowGibHit(g->number, g->model, ev);
+    }
 }
 
 /*
 =================
 CL_FlowBurnNewGib
 
-A gib that has just turned up at `origin` (parse_entity_update): alight, if
-it came off something the beam has had on fire in the last half second.
+A gib that has just turned up at `origin` (parse_entity_update) - or with
+`turned`, a monster that has just turned into one, its head: for
+cl_flow_gib_effects, matched against the explosions and rails about it
+(CL_FlowGibSeen). And alight, if it came off something the beam has had on
+fire in the last half second - or turned up within FLOW_GIB_REACH of where a
+beam was hitting then, which is how a corpse's gibs are found
+(cl_flow_beam_ends). Not a head: it burns on as the monster was.
 =================
 */
-void CL_FlowBurnNewGib(int number, const vec3_t origin)
+void CL_FlowBurnNewGib(const entity_state_t *state, const vec3_t origin, bool turned)
 {
     cl_flow_burn_t  *b, *gib;
     int             i, j;
+    bool            near = false;
 
-    if (!cl_flow_heatbeam_fire->integer || !R_FlowEmit)
+    if (!R_FlowEmit)
         return;
 
-    for (i = 0, b = cl_flow_burns; i < MAX_FLOW_BURNS; i++, b++) {
+    if (cl_flow_gib_effects->integer)
+        CL_FlowGibSeen(state->number, state->modelindex, origin);
+
+    if (turned || !cl_flow_heatbeam_fire->integer)
+        return;
+
+    for (i = 0, b = cl_flow_burns; i < MAX_FLOW_BURNS && !near; i++, b++) {
         if (!b->number || !b->hit || cl.time - b->hit > 500)
             continue;
         for (j = 0; j < 3; j++) {
             if (origin[j] < b->mins[j] - 32 || origin[j] > b->maxs[j] + 32)
                 break;
         }
-        if (j < 3)
-            continue;
-
-        gib = CL_FlowBurnFind(number, true);
-        gib->hit = 0;
-        gib->start = cl.time;
-        gib->out = cl.time + (int)(1000 * max(cl_flow_gib_burn->value, 0.0f));
-        return;
+        near = j == 3;
     }
+    for (i = 0; i < MAX_FLOW_BEAM_ENDS && !near; i++) {
+        const cl_flow_beam_end_t *e = &cl_flow_beam_ends[i];
+        near = e->key && cl.time - e->time <= 500 && Distance(origin, e->end) <= FLOW_GIB_REACH;
+    }
+    if (!near)
+        return;
+
+    gib = CL_FlowBurnFind(state->number, true);
+    gib->hit = 0;
+    gib->model = state->modelindex;
+    gib->smoke = false;
+    gib->start = cl.time;
+    gib->out = cl.time + (int)(1000 * max(cl_flow_gib_burn->value, 0.0f));
 }
 
 /*
@@ -1652,8 +1867,8 @@ void CL_FlowBurnNewGib(int number, const vec3_t origin)
 CL_FlowBurnEntity
 
 Entity `cent`, drawn at `origin` this frame (CL_AddPacketEntities): its fire,
-if it is burning. Over the top half of its box, or one 4 units each way for
-what has none - a gib, which is not solid.
+or its smoke, if it is burning. Over the top half of its box, or one 4 units
+each way for what has none - a gib, which is not solid.
 =================
 */
 void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
@@ -1662,11 +1877,11 @@ void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
     float                   heat;
     int                     j;
 
-    if (!cl_flow_heatbeam_fire->integer || !R_FlowEmit)
+    if ((!cl_flow_heatbeam_fire->integer && !cl_flow_gib_effects->integer) || !R_FlowEmit)
         return;
 
     b = CL_FlowBurnFind(cent->current.number, false);
-    if (!b)
+    if (!b || (b->model && b->model != cent->current.modelindex))
         return;
     heat = CL_FlowBurnHeat(b);
     if (heat <= 0)
@@ -1677,6 +1892,7 @@ void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
         .style = R_FLOW_FIRE,
         .scale = max(heat, 0.01f),
         .key = cent->current.number,
+        .smoke_only = b->smoke,
     };
     if (cent->current.solid && cent->current.solid != PACKED_BSP) {
         VectorAdd(origin, cent->mins, emit.origin);
@@ -1691,34 +1907,51 @@ void CL_FlowBurnEntity(const centity_t *cent, const vec3_t origin)
     R_FlowEmit(&emit);
 }
 
-// The plasma beam in slot `key` burns what it hits at `end`, coming along
-// the unit `dir`; `normal`: the world, or a brush model, is there, facing
-// that way (zero when the trace started in it), NULL when not.
-static void CL_FlowBeamFire(int key, const vec3_t end, const vec3_t dir, const vec3_t normal)
+// What the plasma beam stopped on at `end`, coming along the unit `dir`, short
+// of a wall: something with a box that can be hurt, found by a trace that
+// takes boxes. NULL for a corpse, which the server sends as not solid.
+static centity_t *CL_FlowBeamTarget(const vec3_t end, const vec3_t dir)
 {
-    vec3_t      a, b, centre;
+    vec3_t      a, b;
     trace_t     tr;
     centity_t   *cent;
+
+    VectorMA(end, -16, dir, a);
+    VectorMA(end, 16, dir, b);
+    tr = CL_TracePoint(a, b, MASK_SHOT, true);
+    cent = CL_TraceHitEntity(&tr);
+    if (cent && cent->current.solid && cent->current.solid != PACKED_BSP)
+        return cent;
+    return NULL;
+}
+
+// The plasma beam in slot `key` burns what it hits at `end`, coming along
+// the unit `dir`: `target` (CL_FlowBeamTarget); or the world, or a brush
+// model, facing `normal` (zero when the trace started in it); or, with
+// neither, nothing - a corpse, whose body does not burn (Matt, 11-12: "I
+// don't think the body needs to catch on fire. I just want the gibs to catch
+// on fire"), only the gibs it throws (cl_flow_beam_ends).
+static void CL_FlowBeamFire(int key, const vec3_t end, const vec3_t dir, const vec3_t normal,
+                            centity_t *target)
+{
+    vec3_t      centre;
     float       half;
     int         j;
 
     if (Distance(end, cl.refdef.vieworg) < 32)
         return;
 
-    if (!normal) {
-        VectorMA(end, -16, dir, a);
-        VectorMA(end, 16, dir, b);
-        tr = CL_TracePoint(a, b, MASK_SHOT, true);
-        cent = CL_TraceHitEntity(&tr);
-        if (cent && cent->current.solid && cent->current.solid != PACKED_BSP) {
-            CL_FlowBurnTarget(cent);
-            return;
-        }
-    }
+    CL_FlowBeamEnd(key, end);
 
-    // a wall - or nothing found where the server's beam stopped. Off the wall
-    // along its normal, so a beam coming in low along a floor does not set
-    // the fire down a box's length back along itself.
+    if (target) {
+        CL_FlowBurnTarget(target);
+        return;
+    }
+    if (!normal)
+        return;
+
+    // a wall. Off it along its normal, so a beam coming in low along a floor
+    // does not set the fire down a box's length back along itself.
     half = Cvar_ClampValue(cl_flow_heatbeam_fire_size, 1, 64);
     if (normal && DotProduct(normal, normal) > 0.5f)
         VectorMA(end, 0.6f * half, normal, centre);
@@ -1738,6 +1971,43 @@ static void CL_FlowBeamFire(int key, const vec3_t end, const vec3_t dir, const v
         emit.end[j] = centre[j] + half;
     }
     R_FlowEmit(&emit);
+}
+
+/*
+=================
+CL_FlowHeatbeamLit
+
+Whether the plasma beam lights the scene itself: Flow draws it
+(cl_flow_heatbeam) and the renderer casts its light along the gas and from the
+fire it starts (pt_flow_heatbeam_light, with pt_flow_lighting - see
+vkpt_flow_beam_lights and flow_burn_light in vkpt/flow.c). Then the beam's
+muzzle flashes - yours (MZ_HEATBEAM) and the Widows' - put up no light and no
+flash, so that all of its light is the beam's and its fire's (Matt, 11-12).
+Read from the settings, not from whether Flow took this beam: the flash is
+parsed before the beam is drawn in the frame it comes on. So a beam Flow
+turns away for want of room (pt_flow_heatbeam_budget) has no light at all.
+=================
+*/
+bool CL_FlowHeatbeamLit(void)
+{
+    cvar_t  *var;
+
+    if (!CL_PathTraced() || !cl_flow_heatbeam->integer || !R_FlowEmit)
+        return false;
+
+    // the renderer's, registered when it starts
+    var = Cvar_FindVar("flow_available");
+    if (!var || !var->integer)
+        return false;
+    var = Cvar_FindVar("pt_flow_lighting");
+    if (!var || !var->integer)
+        return false;
+    // set with the beam's fire (cl_flow_heatbeam_fire_changed)
+    var = Cvar_FindVar("pt_flow_heatbeam_light");
+    if (!var || var->integer <= 0)
+        return false;
+    var = Cvar_FindVar("pt_flow_heatbeam_light_power");
+    return var && var->value > 0;
 }
 
 /*
@@ -1769,7 +2039,8 @@ static bool CL_FlowHeatbeam(int key, const vec3_t start, const vec3_t end, float
 {
     vec3_t      dir, back, past, normal;
     trace_t     tr;
-    bool        wall = false, fire, drawn;
+    centity_t   *target = NULL;
+    bool        wall = false, fire, corpse, drawn;
 
     stretch[0] = stretch[1] = 0;
     if (!cl_flow_heatbeam->integer || !R_FlowEmit)
@@ -1809,12 +2080,17 @@ static bool CL_FlowHeatbeam(int key, const vec3_t start, const vec3_t end, float
     // Fire where it hits instead of the hot spot (cl_flow_heatbeam_fire) -
     // once a beam, so not from the mirror's copy of your own.
     fire = cl_flow_heatbeam_fire->integer && emit.hit;
-    if (fire)
+    if (fire && !wall)
+        target = CL_FlowBeamTarget(end, dir);
+    // Stopped short of a wall on nothing found: a corpse. The hot spot there,
+    // as without fire, not the wall's fire on its body (CL_FlowBeamFire).
+    corpse = fire && !wall && !target;
+    if (fire && !corpse)
         emit.hit = false;
 
     drawn = R_FlowEmit(&emit) & R_FLOW_DRAWN;
     if (drawn && fire && view != R_FLOW_VIEW_MIRROR)
-        CL_FlowBeamFire(key, end, dir, wall ? normal : NULL);
+        CL_FlowBeamFire(key, end, dir, wall ? normal : NULL, target);
     return drawn;
 }
 
@@ -2642,6 +2918,7 @@ void CL_ParseTEnt(void)
         break;
 
     case TE_RAILTRAIL:          // railgun effect
+        CL_FlowGibEvent(true, te.pos1, te.pos2);
         CL_RailTrail();
         S_StartSound(te.pos2, 0, 0, cl_sfx_railg, 1, ATTN_NORM, 0);
         break;
@@ -2658,6 +2935,8 @@ void CL_ParseTEnt(void)
             ex->type = ex_light;
 
         CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        if (te.type == TE_GRENADE_EXPLOSION)
+            CL_FlowGibEvent(false, te.pos1, te.pos1);
 
         if (!(cl_disable_particles->integer & NOPART_GRENADE_EXPLOSION))
             CL_ExplosionParticles(te.pos1);
@@ -2679,6 +2958,7 @@ void CL_ParseTEnt(void)
             ex->baseframe = 30;
 		}
         CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
         CL_ExplosionParticles(te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_grenexp, 1, ATTN_NORM, 0);
         break;
@@ -2686,6 +2966,7 @@ void CL_ParseTEnt(void)
     case TE_PLASMA_EXPLOSION:
         ex = CL_PlainExplosion(false);
         CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
         CL_ExplosionParticles(te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
@@ -2697,6 +2978,8 @@ void CL_ParseTEnt(void)
             ex->type = ex_light;
 
         CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        if (te.type == TE_ROCKET_EXPLOSION)
+            CL_FlowGibEvent(false, te.pos1, te.pos1);
 
         if (!(cl_disable_particles->integer & NOPART_ROCKET_EXPLOSION))
             CL_ExplosionParticles(te.pos1);
@@ -2713,6 +2996,7 @@ void CL_ParseTEnt(void)
     case TE_EXPLOSION1:
         ex = CL_PlainExplosion(false);
         CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
         CL_ExplosionParticles(te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
@@ -2720,12 +3004,14 @@ void CL_ParseTEnt(void)
     case TE_EXPLOSION1_NP:
         ex = CL_PlainExplosion(false);
         CL_FlowExplosion(ex, 1.0f, R_FLOW_FIRE);
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
 
     case TE_EXPLOSION1_BIG:
         ex = CL_PlainExplosion(true);
         CL_FlowExplosion(ex, 2.0f, R_FLOW_FIRE);
+        CL_FlowGibEvent(false, te.pos1, te.pos1);
         S_StartSound(te.pos1, 0, 0, cl_sfx_rockexp, 1, ATTN_NORM, 0);
         break;
 
@@ -3097,6 +3383,16 @@ void CL_ClearTEnts(void)
     CL_ClearFlowBurns();
 }
 
+// The plasma beam's own light (the renderer's pt_flow_heatbeam_light, not
+// archived) goes with its fire: 1 while cl_flow_heatbeam_fire is on, 0 while
+// it is off - set here at start and on every change, so it reads what it does
+// (Matt, 11-12). Set to the other by hand, it stays so until the fire changes.
+// Made before the renderer registers it, it keeps this value then.
+static void cl_flow_heatbeam_fire_changed(cvar_t *self)
+{
+    Cvar_Set("pt_flow_heatbeam_light", self->integer ? "1" : "0");
+}
+
 void CL_InitTEnts(void)
 {
     s_flare_range = Cvar_Get("s_flare_range", "1.3", CVAR_ARCHIVE);
@@ -3134,8 +3430,19 @@ void CL_InitTEnts(void)
     cl_flow_heatbeam_muzzle = Cvar_Get("cl_flow_heatbeam_muzzle", "14 -5.1 -7.8", 0);
     // An option to try (Matt, 11-12), so off unless picked in the menu.
     cl_flow_heatbeam_fire = Cvar_Get("cl_flow_heatbeam_fire", "0", CVAR_ARCHIVE);
+    cl_flow_heatbeam_fire->changed = cl_flow_heatbeam_fire_changed;
+    cl_flow_heatbeam_fire_changed(cl_flow_heatbeam_fire);
     cl_flow_burn_after = Cvar_Get("cl_flow_burn_after", "1.5", 0);
     cl_flow_gib_burn = Cvar_Get("cl_flow_gib_burn", "3", 0);
+    // Asked for (Matt, 11-12), so on.
+    cl_flow_gib_effects = Cvar_Get("cl_flow_gib_effects", "1", CVAR_ARCHIVE);
+    cl_flow_gib_fire_chance = Cvar_Get("cl_flow_gib_fire_chance", "0.35", 0);
+    // 2.5 until Matt, 11-12: "the smoke goes away by the time all gibs land.
+    // I just wanted to have a smoking pile of gibs after a rail shot gib";
+    // then 6, "lasting too long ... end the smoking maybe 1.5 to 2 seconds
+    // before it is now". Full for 3 s (flow_burn_spheres), fading over the
+    // last 1.25.
+    cl_flow_gib_smoke = Cvar_Get("cl_flow_gib_smoke", "4.25", 0);
     // Matt, 11-12, of the wall's fire at 8 and pt_flow_burn_flame's 0.65: "the
     // bright core of the fire larger with the over fire a little larger" -
     // its flames 5 -> 6.6 units, their hearts 3.25 -> 5.6.

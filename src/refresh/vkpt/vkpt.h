@@ -1486,6 +1486,8 @@ VkResult vkpt_flow_destroy_pipelines(void);
 void vkpt_flow_set_world(const struct bsp_mesh_s *wm);
 // the lights the fire and plasma cast (pt_flow_lighting); how many
 int vkpt_flow_lights(dlight_t *lights, int max_lights);
+// the plasma beams' cylinder lights along their gas (pt_flow_heatbeam_light)
+void vkpt_flow_beam_lights(light_poly_t *lights, int *num_lights, int max_lights, bsp_t *bsp, int *light_entity_ids);
 // the world's light on the smoke (pt_flow_env): this frame's BSP and which of
 // the light buffer's lights are Flow's own, before vkpt_flow_update; then the
 // probes, recorded right after the TLAS is built

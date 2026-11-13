@@ -168,8 +168,32 @@ void Cmd_Give_f(edict_t *ent)
     else
         give_all = false;
 
+    // "give unlimited": everything "give all" gives, plus ammo that never
+    // runs out (FL_UNLIMITED_AMMO, refilled every frame by
+    // G_RefillUnlimitedAmmo). It toggles like god mode; "give unlimited 1"
+    // or "give unlimited 0" sets it outright. Turning it off keeps whatever
+    // is in the inventory.
+    if (Q_stricmp(gi.argv(1), "unlimited") == 0) {
+        bool on;
+
+        if (gi.argc() >= 3)
+            on = atoi(gi.argv(2)) != 0;
+        else
+            on = !(ent->flags & FL_UNLIMITED_AMMO);
+
+        if (!on) {
+            ent->flags &= ~FL_UNLIMITED_AMMO;
+            gi.cprintf(ent, PRINT_HIGH, "unlimited ammo OFF\n");
+            return;
+        }
+
+        ent->flags |= FL_UNLIMITED_AMMO;
+        gi.cprintf(ent, PRINT_HIGH, "unlimited ammo ON\n");
+        give_all = true;
+    }
+
     if (give_all || Q_stricmp(gi.argv(1), "health") == 0) {
-        if (gi.argc() == 3)
+        if (!give_all && gi.argc() == 3)    // not "give unlimited 1"'s 1
             ent->health = atoi(gi.argv(2));
         else
             ent->health = ent->max_health;

@@ -858,7 +858,7 @@ void SaveClientData(void)
             continue;
         game.clients[i].pers.health = ent->health;
         game.clients[i].pers.max_health = ent->max_health;
-        game.clients[i].pers.savedFlags = (ent->flags & (FL_GODMODE | FL_NOTARGET | FL_POWER_ARMOR));
+        game.clients[i].pers.savedFlags = (ent->flags & (FL_GODMODE | FL_NOTARGET | FL_POWER_ARMOR | FL_UNLIMITED_AMMO));
         if (coop->value)
             game.clients[i].pers.score = ent->client->resp.score;
     }

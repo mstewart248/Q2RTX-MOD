@@ -1841,12 +1841,14 @@ void CL_Begin(void)
     CL_PrepRefresh();
     CL_LoadState(LOAD_SOUNDS);
     CL_RegisterSounds();
+    Com_LoadMark("sounds");
     LOC_LoadLocations();
     // the candidates have to exist before the light editor reads its file:
     // an adopted map light is stored by origin and resolved against them.
     CL_LoadDynamicLights();
     LE_LoadLights();
     CL_LoadMapFog();
+    Com_LoadMark("lights and fog");
     CL_LoadState(LOAD_NONE);
     cls.state = ca_precached;
 
@@ -1879,6 +1881,11 @@ static void CL_Precache_f(void)
     }
 
     cls.state = ca_loading;
+    // a demo or a remote server: the map load's timing line starts here, not
+    // at a local server's map command (Com_LoadBegin in SV_ParseMapCmd)
+    if (!Com_LoadActive())
+        Com_LoadBegin();
+    Com_LoadMark("connect");
     CL_LoadState(LOAD_MAP);
 
     S_StopAllSounds();
@@ -3950,10 +3957,14 @@ void CL_Init(void)
 
 #ifdef _WIN32
     CL_InitRefresh();
+    Com_StartupMark("renderer");
     S_Init();   // sound must be initialized after window is created
+    Com_StartupMark("sound");
 #else
     S_Init();
+    Com_StartupMark("sound");
     CL_InitRefresh();
+    Com_StartupMark("renderer");
 #endif
 
     CL_InitLocal();

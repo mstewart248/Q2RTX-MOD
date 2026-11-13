@@ -206,6 +206,11 @@ void CL_MuzzleFlash(void)
 
     pl = &cl_entities[mz.entity];
 
+    // The plasma beam lit by its own gas and fire (pt_flow_heatbeam_light):
+    // no flash light, and no flash on either view's gun. It has no sound.
+    if (mz.weapon == MZ_HEATBEAM && CL_FlowHeatbeamLit())
+        return;
+
     dl = CL_AllocDlight(mz.entity);
     VectorCopy(pl->current.origin,  dl->origin);
     AngleVectors(pl->current.angles, fv, rv, NULL);
@@ -543,6 +548,32 @@ void CL_MuzzleFlash2(void)
     origin[0] = ent->current.origin[0] + forward[0] * fwd_ofs + right[0] * ofs[1];
     origin[1] = ent->current.origin[1] + forward[1] * fwd_ofs + right[1] * ofs[1];
     origin[2] = ent->current.origin[2] + forward[2] * fwd_ofs + right[2] * ofs[1] + ofs[2];
+
+    // The Widows' plasma beams, lit by their own gas and fire
+    // (pt_flow_heatbeam_light): no flash light and no flash, as yours in
+    // CL_MuzzleFlash. They have no sound.
+    if (CL_FlowHeatbeamLit()) {
+        switch (mz.weapon) {
+        case MZ2_WIDOW_PLASMABEAM:
+        case MZ2_WIDOW2_BEAMER_1:
+        case MZ2_WIDOW2_BEAMER_2:
+        case MZ2_WIDOW2_BEAMER_3:
+        case MZ2_WIDOW2_BEAMER_4:
+        case MZ2_WIDOW2_BEAMER_5:
+        case MZ2_WIDOW2_BEAM_SWEEP_1:
+        case MZ2_WIDOW2_BEAM_SWEEP_2:
+        case MZ2_WIDOW2_BEAM_SWEEP_3:
+        case MZ2_WIDOW2_BEAM_SWEEP_4:
+        case MZ2_WIDOW2_BEAM_SWEEP_5:
+        case MZ2_WIDOW2_BEAM_SWEEP_6:
+        case MZ2_WIDOW2_BEAM_SWEEP_7:
+        case MZ2_WIDOW2_BEAM_SWEEP_8:
+        case MZ2_WIDOW2_BEAM_SWEEP_9:
+        case MZ2_WIDOW2_BEAM_SWEEP_10:
+        case MZ2_WIDOW2_BEAM_SWEEP_11:
+            return;
+        }
+    }
 
     dl = CL_AllocDlight(mz.entity);
     VectorCopy(origin,  dl->origin);

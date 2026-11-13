@@ -340,7 +340,11 @@ void CL_PrepRefresh(void)
         return;     // no map loaded
 
     // register models, pics, and skins
+    Com_LoadMark("precache");
     R_BeginRegistration(cl.mapname);
+    // the RTX renderers mark their parts (BSP, world textures, mesh, GPU); this
+    // is what follows them: blood's memory, the sky's settings
+    Com_LoadMark("world settings");
 
     CL_LoadState(LOAD_MODELS);
 
@@ -369,6 +373,7 @@ void CL_PrepRefresh(void)
         }
         cl.model_draw[i] = R_RegisterModel(name);
     }
+    Com_LoadMark("models");
 
     CL_LoadState(LOAD_IMAGES);
     for (i = 1; i < MAX_IMAGES; i++) {
@@ -378,6 +383,7 @@ void CL_PrepRefresh(void)
         }
         cl.image_precache[i] = R_RegisterPic2(name);
     }
+    Com_LoadMark("pics");
 
     CL_LoadState(LOAD_CLIENTS);
     for (i = 0; i < MAX_CLIENTS; i++) {
@@ -389,6 +395,7 @@ void CL_PrepRefresh(void)
     }
 
     CL_LoadClientinfo(&cl.baseclientinfo, "unnamed\\male/grunt");
+    Com_LoadMark("player models");
 
     // set sky textures and speed
     // Rerelease maps used to be forced onto a dummy "base" sky here so that the
@@ -398,6 +405,7 @@ void CL_PrepRefresh(void)
 
     // the renderer can now free unneeded stuff
     R_EndRegistration();
+    Com_LoadMark("sky and end registration");
 
     // clear any lines of console text
     Con_ClearNotify_f();

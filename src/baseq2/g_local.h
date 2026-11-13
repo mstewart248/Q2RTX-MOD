@@ -95,7 +95,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // [rerelease] a monster that never moves (the turret): never pathed and never
 // nudged out of solid at spawn. Set by stationarymonster_start.
 #define FL_STATIONARY           0x00020000
-#define FL_FLASHLIGHT           0x00400000  // rerelease - player flashlight is on
+// cheat "give unlimited": the player's ammo is topped up to its max every
+// frame (G_RefillUnlimitedAmmo); kept across level changes like god mode
+#define FL_UNLIMITED_AMMO       0x00040000
+#define FL_FLASHLIGHT          0x00400000  // rerelease - player flashlight is on
 #define FL_DISGUISED            0x00800000  // ROGUE - trigger_disguise; monsters do not acquire you
 #define FL_DODGE                0x02000000  // rerelease - projectile monsters try to dodge (M_CheckDodge)
 #define FL_RESPAWN              0x80000000  // used for item respawning
@@ -1257,6 +1260,7 @@ int ArmorIndex(edict_t *ent);
 int PowerArmorType(edict_t *ent);
 gitem_t *GetItemByIndex(int index);
 bool Add_Ammo(edict_t *ent, gitem_t *item, int count);
+void G_RefillUnlimitedAmmo(edict_t *ent);
 void Touch_Item(edict_t *ent, edict_t *other, cplane_t *plane, csurface_t *surf);
 
 //

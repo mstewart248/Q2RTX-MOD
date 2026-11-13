@@ -292,6 +292,10 @@ map finished loading.  Two launches in a row died at the same spot.
 
 So Qcommon_Init calls this in between, while nothing is loaded and a restart
 costs nothing.  By the time the demo starts there is nothing left pending.
+
+(Since 11-12 "+game <dir>" is set with the +set commands, before the filesystem
+starts - Com_AddEarlyCommands - so rerelease.bat never starts in baseq2 and
+this no longer fires for it.  A gamedir changed late still can.)
 ============
 */
 void CL_ApplyPendingRestart(void)

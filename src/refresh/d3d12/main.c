@@ -68,6 +68,8 @@ static ref_type_t R_Init_D3D12(bool total)
     if (!d3d12_device_init())
         goto fail;
     stage = STAGE_DEVICE;
+    // NGX's ~2 s start, alongside the rest of this one, instead of in the first map's load
+    d3d12_frontend_ngx_prestart();
     // ray traced sound: its own queue, scene and set (sound_trace.c)
     d3d12_sound_init();
 

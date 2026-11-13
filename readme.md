@@ -807,6 +807,11 @@ water, and it burns out into smoke that rises, drifts and fades.
   model is still drawn past the first 1024 units of a long beam, and it still
   lights the room (the classic beam and rings stand in while the simulation
   is full). `0` is the classic beam and rings.
+* **Gib fire and smoke** (`cl_flow_gib_effects`): `1` sets some of the gibs
+  a rocket, grenade or exploding barrel blows off alight, at random (about
+  one in three, `cl_flow_gib_fire_chance`), burning like the plasma beam's
+  gibs and going out into smoke; and the railgun's gibs smoke with no flame,
+  in the air and on as they lie (`cl_flow_gib_smoke`, 4.25 s). `0` off.
 * **Under water** (`cl_explosion_water`): an explosion keeps a flame and
   lights the water yellow-white. `1` is a smaller simulated flame when Flow
   draws the explosions, `2` always the classic fireball, `0` the classic
@@ -822,10 +827,14 @@ water, and it burns out into smoke that rises, drifts and fades.
 | `cl_flow_heatbeam` | `1` | `0` classic beam and rings, `1` simulated. |
 | `cl_flow_heatbeam_fire` | `0` | Where the simulated plasma beam hits: `0` a hot spot, `1` fire. |
 | `pt_flow_heatbeam_trails` | `0` | `0` the simulated plasma beam stays with the weapon, `1` it leaves glow and smoke behind as it is swept. |
+| `pt_flow_heatbeam_lean` | `1` | With trails off, the plasma beam skips the simulation work it never shows (moving the gas, the room kept round it); `0` runs it all, for comparison. Same picture. |
+| `cl_flow_gib_effects` | `1` | Explosions' gibs sometimes catch fire, the railgun's smoke. |
 | `cl_explosion_water` | `1` | `0` off, `1` simulated, `2` classic. |
 | `pt_flow_lighting` | `1` | The fire and plasma cast light. |
 | `pt_flow_env` | `1` | Smoke lit by the world. |
 | `pt_flow_collision` | `1` | Smoke collides with the world. |
+| `pt_flow_collision_layers` | `1` | Collision only for the effects with gas this frame; `0` for all of them, as before. Same picture. |
+| `pt_flow_march` | `31` | Shortcuts in the march through the volume, as bits (`1` light read once a step, `2` two steps at a time, `4` and `8` empty space passed quickly, `16` pixels with no gas in front not marched at all); `15` leaves out the last, `0` all of them, for comparison. Same picture. |
 | `pt_flow_max_blocks` | `3584` | The simulation pool, 512 to 4096 blocks; about 0.45 MB of video memory a block, taken whether used or not. |
 | `pt_flow_cell_size` | `3` | Cell size in units for the explosions, the BFG, bubbles and the rocket and grenade trails. Half the size takes eight times the blocks. |
 | `pt_flow_rail_cell_size` | `0.5` | The railgun trail near the view. |
@@ -837,7 +846,8 @@ The simulation steps 60 times a second (`pt_flow_rate`) at the start of the
 frame. The volume is marched per pixel at render resolution, in the primary
 and reflection passes, before DLSS, which denoises and upscales it with
 everything else. The GPU profiler (`profiler 1`) has *flow simulation* and
-*flow smoke lighting* rows.
+*flow smoke lighting* rows; `pt_flow_profile 1` prints Flow's own passes
+and their GPU time once a second (FLOWPROF lines in the console).
 
 Flow needs the RTX renderer and `nvflow.dll` and `nvflowext.dll` beside
 `q2rtx.exe`. The release package includes them, with their licence (BSD-3) in

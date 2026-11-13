@@ -618,6 +618,30 @@ bool Add_Ammo(edict_t *ent, gitem_t *item, int count)
     return true;
 }
 
+/*
+"give unlimited": fill every ammo type to the player's current max. Called
+each frame from ClientEndServerFrame, so the weapon code still spends ammo as
+usual but the next frame puts it back; no single shot costs more than a max
+(the BFG's 50 cells is the largest), so a gun never sees itself run dry.
+Covers grenades, traps, tesla, prox (ammo used as weapons) and the power
+armour's cells too.
+*/
+void G_RefillUnlimitedAmmo(edict_t *ent)
+{
+    int         i;
+    gitem_t     *it;
+
+    if (!ent->client || !(ent->flags & FL_UNLIMITED_AMMO))
+        return;
+
+    for (i = 0 ; i < game.num_items ; i++) {
+        it = itemlist + i;
+        if (!it->pickup || !(it->flags & IT_AMMO))
+            continue;
+        Add_Ammo(ent, it, 9999);
+    }
+}
+
 bool Pickup_Ammo(edict_t *ent, edict_t *other)
 {
     int         oldcount;

@@ -26,6 +26,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 //
 int         gun_frame;
 qhandle_t   gun_model;
+bool        cl_load_world_drawn;
 
 //=============
 
@@ -710,6 +711,9 @@ void V_RenderView(void)
     CPUPROF_BEGIN(R_RENDER);
     R_RenderFrame(&cl.refdef, waterLevel);
     CPUPROF_END(R_RENDER);
+    // a map load's timing line ends with this frame's R_EndFrame (SCR_UpdateScreen)
+    if (!(cl.refdef.rdflags & RDF_NOWORLDMODEL) && Com_LoadActive())
+        cl_load_world_drawn = true;
 #if USE_DEBUG
     if (cl_stats->integer)
         Com_Printf("ent:%i  lt:%i  part:%i\n", r_numentities, r_numdlights, r_numparticles);

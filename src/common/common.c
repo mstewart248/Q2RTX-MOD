@@ -828,6 +828,141 @@ void Com_Color_g(genctx_t *ctx)
 
 /*
 ===============
+STARTUP TIMES
+
+Matt, 11-12: "is there any way to use more cpu threads or something to load the
+exe faster". What to speed up is measured first: each part of start-up marks
+when it is done (Com_StartupMark), and Qcommon_Init prints one line of them at
+the end - from the process starting (the exe and its DLLs loading) to the
+start-up action. Sys_Milliseconds needs Sys_Init's timer, so the first mark is
+after it, and what came before is the process's own creation time. Later
+marks - a vid_restart's renderer, say - are not kept.
+===============
+*/
+#define MAX_STARTUP_MARKS   12
+
+static struct {
+    const char  *what;
+    unsigned    time;
+} com_startup_marks[MAX_STARTUP_MARKS];
+static int      com_startup_count;
+static bool     com_startup_done;
+static unsigned com_startup_before;     // ms from the process starting to the first mark
+
+void Com_StartupMark(const char *what)
+{
+    if (com_startup_done || com_startup_count == MAX_STARTUP_MARKS) {
+        return;
+    }
+#ifdef _WIN32
+    if (!com_startup_count) {
+        FILETIME created, exited, kernel, user, now;
+        if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+            GetSystemTimeAsFileTime(&now);
+            ULARGE_INTEGER a = { .LowPart = created.dwLowDateTime, .HighPart = created.dwHighDateTime };
+            ULARGE_INTEGER b = { .LowPart = now.dwLowDateTime, .HighPart = now.dwHighDateTime };
+            if (b.QuadPart > a.QuadPart) {
+                com_startup_before = (unsigned)((b.QuadPart - a.QuadPart) / 10000);  // 100 ns units
+            }
+        }
+    }
+#endif
+    com_startup_marks[com_startup_count].what = what;
+    com_startup_marks[com_startup_count].time = Sys_Milliseconds();
+    com_startup_count++;
+}
+
+static void Com_PrintStartupTimes(void)
+{
+    char    line[MAX_STRING_CHARS];
+    int     i;
+
+    com_startup_done = true;
+    if (com_startup_count < 2) {
+        return;
+    }
+
+    Q_snprintf(line, sizeof(line), "Start-up: process to %s %u ms", com_startup_marks[0].what, com_startup_before);
+    for (i = 1; i < com_startup_count; i++) {
+        Q_strlcat(line, va(", %s %u", com_startup_marks[i].what,
+                           com_startup_marks[i].time - com_startup_marks[i - 1].time), sizeof(line));
+    }
+    Com_Printf("%s; total %u ms\n", line,
+               com_startup_before + com_startup_marks[com_startup_count - 1].time - com_startup_marks[0].time);
+}
+
+/*
+===============
+MAP LOAD TIMES
+
+Matt, 11-12: the D3D12 renderer's map load is "a little bit slower than vulkan".
+One line per map load, to compare the two: the server's spawn begins it (or the
+client's precache, for a demo or a remote server), each part marks when it is
+done, and the first frame that draws the world ends it. A mark made with no load
+under way (a vid_restart's registration) is ignored; a load that never draws a
+world (a cinematic) is simply begun again by the next one. Main thread only.
+===============
+*/
+#define MAX_LOAD_MARKS  24
+
+static struct {
+    const char  *what;
+    unsigned    time;
+} com_load_marks[MAX_LOAD_MARKS];
+static int      com_load_count;
+static unsigned com_load_start;
+static bool     com_load_active;
+
+void Com_LoadBegin(void)
+{
+    com_load_active = true;
+    com_load_count = 0;
+    com_load_start = Sys_Milliseconds();
+}
+
+bool Com_LoadActive(void)
+{
+    return com_load_active;
+}
+
+void Com_LoadMark(const char *what)
+{
+    if (!com_load_active) {
+        return;
+    }
+    if (com_load_count == MAX_LOAD_MARKS) {
+        // the last slot keeps the latest mark, so the total stays right
+        com_load_count--;
+    }
+    com_load_marks[com_load_count].what = what;
+    com_load_marks[com_load_count].time = Sys_Milliseconds();
+    com_load_count++;
+}
+
+void Com_LoadFinish(const char *what)
+{
+    char        line[MAX_STRING_CHARS];
+    unsigned    prev;
+    int         i;
+
+    if (!com_load_active) {
+        return;
+    }
+    Com_LoadMark(what);
+    com_load_active = false;
+
+    Q_strlcpy(line, "Map load:", sizeof(line));
+    prev = com_load_start;
+    for (i = 0; i < com_load_count; i++) {
+        Q_strlcat(line, va("%s %s %u", i ? "," : "", com_load_marks[i].what,
+                           com_load_marks[i].time - prev), sizeof(line));
+        prev = com_load_marks[i].time;
+    }
+    Com_Printf("%s; total %u ms\n", line, prev - com_load_start);
+}
+
+/*
+===============
 Com_AddEarlyCommands
 
 Adds command line parameters as script statements.
@@ -835,6 +970,15 @@ Commands lead with a +, and continue until another +
 
 Set commands are added early, so they are guaranteed to be set before
 the client and server initialize for the first time.
+
+So is "+game <dir>", as "+set game <dir>". Run late it started everything in
+baseq2 first - its configs, the renderer, sound - and then switched: the
+filesystem restart took the renderer down and up again, and the new gamedir's
+own q2config.cfg, differing from baseq2's, set off a vid_restart and a sound
+restart on top. "q2rtx +game rerelease" (rerelease.bat) brought the renderer
+up three times, two of them Vulkan that D3D12 then replaced (Matt, 11-12:
+"it loads the baseq2 game then vid_restarts to rerelease"). Only with a single
+directory after it - "+game" alone prints the value, late as before.
 
 Other commands are added late, after all initialization is complete.
 ===============
@@ -847,6 +991,19 @@ static void Com_AddEarlyCommands(bool clear)
     for (i = 1; i < com_argc; i++) {
         s = com_argv[i];
         if (!s) {
+            continue;
+        }
+        if (!strcmp(s, "+game")) {
+            if (i + 1 < com_argc && com_argv[i + 1] && com_argv[i + 1][0] != '+' &&
+                (i + 2 >= com_argc || !com_argv[i + 2] || com_argv[i + 2][0] == '+')) {
+                // baseq2 is "" to the filesystem (fs_game_changed resets it),
+                // so the second pass does not find it changed and restart
+                Cvar_SetEx("game", Q_stricmp(com_argv[i + 1], BASEGAME) ? com_argv[i + 1] : "", FROM_CMDLINE);
+                if (clear) {
+                    com_argv[i] = com_argv[i + 1] = NULL;
+                }
+                i += 1;
+            }
             continue;
         }
         if (strcmp(s, "+set")) {
@@ -1089,10 +1246,12 @@ void Qcommon_Init(int argc, char **argv)
     Com_AddEarlyCommands(false);
 
     Sys_Init();
+    Com_StartupMark("Sys_Init");
 
     Sys_RunConsole();
 
     FS_Init();
+    Com_StartupMark("filesystem");
 
     Sys_RunConsole();
 
@@ -1114,6 +1273,7 @@ void Qcommon_Init(int argc, char **argv)
     Com_AddConfigFile(COM_POSTEXEC_CFG, FS_TYPE_REAL);
 
     Com_AddEarlyCommands(true);
+    Com_StartupMark("configs");
 
     Cmd_AddCommand("lasterror", Com_LastError_f);
 
@@ -1131,7 +1291,9 @@ void Qcommon_Init(int argc, char **argv)
     BSP_Init();
     CM_Init();
     SV_Init();
+    Com_StartupMark("server");
     CL_Init();
+    Com_StartupMark("client");    // after CL_Init's own renderer and sound marks
     TST_Init();
 
     Sys_RunConsole();
@@ -1144,22 +1306,25 @@ void Qcommon_Init(int argc, char **argv)
         SCR_EndLoadingPlaque();
     }
 
-    // A + command can leave a renderer restart pending: "+game rerelease"
-    // re-execs the new gamedir's default.cfg/q2rtx.cfg/q2config.cfg, and every
-    // gamedir keeps its own copy of the last one, so a CVAR_FILES or
-    // CVAR_REFRESH cvar that has drifted between them really does change here.
+    // A + command can leave a renderer restart pending: one that changes the
+    // gamedir late ("+set game" is early, and "+game <dir>" with it now - see
+    // Com_AddEarlyCommands) re-execs the new gamedir's default.cfg/q2rtx.cfg/
+    // q2config.cfg, and every gamedir keeps its own copy of the last one, so a
+    // CVAR_FILES or CVAR_REFRESH cvar that has drifted between them really does
+    // change here.
     // Do it NOW, with nothing loaded. Left pending it fires on the first frame
     // instead - by which time client_start below has already started the
     // attract-loop demo, and the device is torn down mid-demo.
     CL_ApplyPendingRestart();
+    Com_StartupMark("commands");
 
     // Run the start-up action. A dedicated server keeps the original rule -
     // any + command counts as the user having asked for something. The client
     // instead asks whether anything actually STARTED, because a command line
     // can contain + commands that select a game directory or exec a config and
-    // then sit at the menu; "+game rerelease" is the obvious one, and treating
-    // it as "the user asked for a map" suppresses the attract loop for no good
-    // reason.
+    // then sit at the menu - "+exec" a settings file, say - and treating that
+    // as "the user asked for a map" suppresses the attract loop for no good
+    // reason. ("+game rerelease" was the obvious one; it is early now.)
     if (COM_DEDICATED ? !late_commands : CL_StartupActionPending()) {
         char *cmd = COM_DEDICATED ? "dedicated_start" : "client_start";
 
@@ -1179,6 +1344,8 @@ void Qcommon_Init(int argc, char **argv)
     }
 
     Com_AddConfigFile(COM_POSTINIT_CFG, FS_TYPE_REAL);
+    Com_StartupMark("start-up action");
+    Com_PrintStartupTimes();
 
     Com_Printf("====== " PRODUCT " initialized ======\n\n");
 

@@ -1687,6 +1687,8 @@ vkpt_vertex_buffer_upload_models()
 				write_model_vbo_descriptor(i, vbo->buffer.buffer, vbo->buffer.size);
 			}
 		}
+		// a map load's models: their buffers, BLASes and the wait for both
+		Com_LoadMark("model upload");
 	}
 
 	return VK_SUCCESS;

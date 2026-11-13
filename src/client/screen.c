@@ -4335,6 +4335,12 @@ void SCR_UpdateScreen(void)
         CPUPROF_END(R_END);
     }
 
+    // the first frame of a map load that drew the world (V_RenderView): its line
+    if (cl_load_world_drawn) {
+        cl_load_world_drawn = false;
+        Com_LoadFinish("first world frame");
+    }
+
     recursive--;
 }
 

@@ -756,7 +756,8 @@ typedef struct {
     float           surface;    // R_FLOW_BUBBLES: the height of the water above
     int             key;        // R_FLOW_TRAIL, R_FLOW_HEATBEAM, R_FLOW_BURN: which source this is
     // R_FLOW_TRAIL of fire: smoke and no flame - a grenade's, where the rest
-    // are a rocket's
+    // are a rocket's. R_FLOW_BURN: a wisp of smoke and no flame - a gib the
+    // railgun blew off
     bool            smoke_only;
     // R_FLOW_HEATBEAM: `end` is on something the beam burns - not the sky,
     // not the end of its range

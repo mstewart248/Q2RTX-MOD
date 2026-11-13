@@ -593,11 +593,13 @@ typedef struct {
 // ticks from the frame's start, of the latest frame that timed each entry
 static int64_t row_start[NUM_PROFILER_ENTRIES], row_end[NUM_PROFILER_ENTRIES];
 static bool row_seen[NUM_PROFILER_ENTRIES];
+static bool row_now[NUM_PROFILER_ENTRIES];	// timed in this frame's results
 
 static void note_row_times(void)
 {
 	const uint64_t *r = profiler_data.query_pool_results;
 	const uint64_t frame = r[PROFILER_GPU_FRAME * 2] ? r[PROFILER_GPU_FRAME * 2] : r[PROFILER_FRAME_TIME * 2];
+	memset(row_now, 0, sizeof(row_now));
 	if (!frame)
 		return;
 	for (int i = 0; i < NUM_PROFILER_ENTRIES; i++)
@@ -609,6 +611,7 @@ static void note_row_times(void)
 			row_start[i] = (int64_t)(b - frame);
 			row_end[i] = (int64_t)(e - frame);
 			row_seen[i] = true;
+			row_now[i] = true;
 		}
 	}
 }
@@ -623,6 +626,109 @@ static bool row_before(const profiler_row_t *a, const profiler_row_t *b)
 	if (sa && row_end[a->idx] != row_end[b->idx])
 		return row_end[a->idx] > row_end[b->idx];
 	return a->listed < b->listed;
+}
+
+/* A ROW WITH NO TIME THIS FRAME (N/A: a pass that skipped this frame) has only
+   the start it had the last time it ran, while the passes round it start a
+   little earlier or later from frame to frame. Sorted by that old start, it
+   swapped places with a neighbour that starts at about the same time, back and
+   forth (Matt, 11-12: flow smoke lighting hopping over fog froxel scatter -
+   "is order of operations constantly changing?" It is not; only the sort was).
+   So only the rows timed this frame are sorted by when they started, and each
+   of the others goes back in right after the row it was drawn after last
+   time - in front of the table if nothing was. A row never drawn yet goes where
+   its last start puts it, or after the row listed before it if it never ran. */
+static int drawn_order[NUM_PROFILER_ENTRIES];	// PROFILER_* as drawn last time
+static int drawn_count;
+
+static int drawn_place(int idx)
+{
+	for (int i = 0; i < drawn_count; i++)
+		if (drawn_order[i] == idx)
+			return i;
+	return -1;
+}
+
+static void order_rows(profiler_row_t *rows, int n)
+{
+	profiler_row_t out[NUM_PROFILER_ENTRIES], rest[NUM_PROFILER_ENTRIES];
+	int rest_place[NUM_PROFILER_ENTRIES];
+	int m = 0, k = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		if (row_now[rows[i].idx])
+		{
+			// insertion sort: a few dozen rows, nearly in order already
+			int j = m++;
+			for (; j > 0 && row_before(&rows[i], &out[j - 1]); j--)
+				out[j] = out[j - 1];
+			out[j] = rows[i];
+		}
+		else
+		{
+			// the rest in the order they were drawn, those never drawn after, as listed
+			const int place = drawn_place(rows[i].idx);
+			const int key = place >= 0 ? place : NUM_PROFILER_ENTRIES + rows[i].listed;
+			int j = k++;
+			for (; j > 0 && key < rest_place[j - 1]; j--)
+			{
+				rest[j] = rest[j - 1];
+				rest_place[j] = rest_place[j - 1];
+			}
+			rest[j] = rows[i];
+			rest_place[j] = key;
+		}
+	}
+
+	for (int i = 0; i < k; i++)
+	{
+		int at;
+		if (rest_place[i] < NUM_PROFILER_ENTRIES)
+		{
+			// after the nearest row before it last time that is in the table now
+			at = 0;
+			for (int p = rest_place[i] - 1; p >= 0 && !at; p--)
+			{
+				for (int j = 0; j < m; j++)
+				{
+					if (out[j].idx == drawn_order[p])
+					{
+						at = j + 1;
+						break;
+					}
+				}
+			}
+		}
+		else if (row_seen[rest[i].idx])
+		{
+			at = m;
+			while (at > 0 && row_before(&rest[i], &out[at - 1]))
+				at--;
+		}
+		else
+		{
+			// never ran: after the row listed nearest before it
+			at = 0;
+			int best = -1;
+			for (int j = 0; j < m; j++)
+			{
+				if (out[j].listed < rest[i].listed && out[j].listed > best)
+				{
+					best = out[j].listed;
+					at = j + 1;
+				}
+			}
+		}
+		memmove(&out[at + 1], &out[at], (size_t)(m - at) * sizeof(out[0]));
+		out[at] = rest[i];
+		m++;
+	}
+
+	memcpy(rows, out, (size_t)n * sizeof(rows[0]));
+	for (int i = 0; i < n; i++)
+		drawn_order[i] = rows[i].idx;
+	drawn_count = n;
 }
 
 // The graphs' colours: frame time amber, the GPU's green, fps blue, frame
@@ -870,11 +976,16 @@ draw_profiler(int enable_asvgf, const char *title)
 		PROFILER_DO(PROFILER_FOG_FROXEL_SCATTER, 2);
 		PROFILER_DO(PROFILER_FOG_FROXEL_INTEGRATE, 2);
 	}
+	// All three whenever Flow is there at all, N/A on a frame one did not run:
+	// listed only while it ran, the march's row came and went with the beam and
+	// the table jumped by a row (Matt, 11-12). The march has a row of its own
+	// only when it ran as its own pass (vkpt_pt_flow_split_ran); otherwise it is
+	// inside primary rays.
 	if (vkpt_flow_profiled())
 	{
 		PROFILER_DO(PROFILER_FLOW_SIMULATION, 1);
-		if (vkpt_flow_env_profiled()) { PROFILER_DO(PROFILER_FLOW_SMOKE_LIGHTING, 1); }
-		if (vkpt_pt_flow_split_ran()) { PROFILER_DO(PROFILER_FLOW_MARCH, 1); }
+		PROFILER_DO(PROFILER_FLOW_SMOKE_LIGHTING, 1);
+		PROFILER_DO(PROFILER_FLOW_MARCH, 1);
 	}
 	if (enable_asvgf)
 	{
@@ -911,14 +1022,7 @@ draw_profiler(int enable_asvgf, const char *title)
 #undef PROFILER_DO
 
 	note_row_times();
-	for (int i = 1; i < n; i++)	// insertion sort: a few dozen rows, nearly in order already
-	{
-		const profiler_row_t r = rows[i];
-		int j = i;
-		for (; j > 0 && row_before(&r, &rows[j - 1]); j--)
-			rows[j] = rows[j - 1];
-		rows[j] = r;
-	}
+	order_rows(rows, n);
 	for (int i = 0; i < n; i++)
 	{
 		draw_query(x, y, font, rows[i].name, rows[i].idx);

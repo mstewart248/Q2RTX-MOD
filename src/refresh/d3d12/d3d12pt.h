@@ -235,6 +235,10 @@ void d3d12_upload_texture(ID3D12Resource *dst, const void *pixels, int width, in
 bool d3d12_upload_subresource(ID3D12Resource *dst, uint32_t subresource, const void *pixels, int width, int height,
                               int bytes_per_pixel);
 void d3d12_upload_buffer(ID3D12Resource *dst, uint64_t offset, const void *data, uint64_t size);
+// `size` bytes of staging memory in one piece, at a D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT
+// offset into *buffer, for the caller to fill (from any thread) and copy from in the
+// upload batch before the next d3d12_upload_flush. NULL when out of memory.
+uint8_t *d3d12_upload_reserve(uint64_t size, ID3D12Resource **buffer, uint64_t *offset);
 void d3d12_upload_flush(void);
 // The upload batch's command list, opened if need be: for other copies that
 // must run before the next frame (screenshot readback)
@@ -246,6 +250,13 @@ HRESULT d3d12_serialize_root_signature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC
 
 // Every resource the renderer makes is named for PIX / the debug layer.
 void d3d12_set_name(ID3D12Object *object, const char *name);
+
+// fn(ctx, i) for every i below `count`, on up to every logical processor, the calling
+// thread too; back when all are done. The jobs may only call what is free-threaded:
+// ID3D12Device methods, malloc - no Com_Printf, Z_Malloc, FS_* or command lists.
+// `max_threads` 0 = every logical processor. Returns the threads that ran.
+typedef void (*d3d12_job_fn)(void *ctx, int index);
+int d3d12_parallel_for(int count, d3d12_job_fn fn, void *ctx, int max_threads);
 
 /* ------------------------------------------------------------------------- */
 /* swapchain.c                                                                */
@@ -760,6 +771,9 @@ void d3d12_frontend_hdr_metadata(float *max_mastering, float *min_mastering, flo
 // after d3d12_world_init: the images the UBO names (the water normal map), the
 // terrain grid, and the sky's preset loaded afresh
 void d3d12_frontend_world_init(void);
+// right after the device is made: NGX started on a thread of its own (pt_dlss on, an
+// NVIDIA adapter), so the first map does not wait for it
+void d3d12_frontend_ngx_prestart(void);
 // the 2D queue vkpt's R_Draw*_RTX functions fill
 const void *d3d12_frontend_stretch_pics(int *count, size_t *record_size, int *max_count);
 void d3d12_frontend_clear_stretch_pics(void);

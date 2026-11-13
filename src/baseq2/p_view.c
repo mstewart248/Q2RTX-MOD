@@ -1012,6 +1012,8 @@ void ClientEndServerFrame(edict_t *ent)
     current_player = ent;
     current_client = ent->client;
 
+    G_RefillUnlimitedAmmo(ent);     // "give unlimited"; before G_SetStats so the HUD reads full
+
     //
     // If the origin or velocity have changed since ClientThink(),
     // update the pmove values.  This will happen when the client

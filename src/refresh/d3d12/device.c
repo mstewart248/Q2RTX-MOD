@@ -5,6 +5,7 @@ deferred release and uploads. See d3d12pt.h and ROADMAP.md.
 
 #define D3D12PT_DEFINE_GUIDS
 #include "d3d12pt.h"
+#include <SDL.h>    // d3d12_parallel_for's threads
 
 d3d12_state_t d3d;
 
@@ -304,8 +305,20 @@ D3D12_CPU_DESCRIPTOR_HANDLE d3d12_rtv(UINT index)
     return h;
 }
 
+static ID3D12Resource *create_buffer(uint64_t size, D3D12_HEAP_TYPE heap, D3D12_RESOURCE_FLAGS flags,
+                                     D3D12_HEAP_FLAGS heap_flags, const char *name);
+
 ID3D12Resource *d3d12_create_buffer(uint64_t size, D3D12_HEAP_TYPE heap, D3D12_RESOURCE_FLAGS flags,
                                     const char *name)
+{
+    return create_buffer(size, heap, flags, D3D12_HEAP_FLAG_NONE, name);
+}
+
+/* `heap_flags` D3D12_HEAP_FLAG_CREATE_NOT_ZEROED: for memory written whole before it is
+   read (the upload chunks) - a 512 MB batch of a map load's textures need not be
+   zeroed first. A runtime that refuses the flag gets the buffer made without it. */
+static ID3D12Resource *create_buffer(uint64_t size, D3D12_HEAP_TYPE heap, D3D12_RESOURCE_FLAGS flags,
+                                     D3D12_HEAP_FLAGS heap_flags, const char *name)
 {
     D3D12_HEAP_PROPERTIES hp = { 0 };
     hp.Type = heap;
@@ -328,6 +341,13 @@ ID3D12Resource *d3d12_create_buffer(uint64_t size, D3D12_HEAP_TYPE heap, D3D12_R
         state = D3D12_RESOURCE_STATE_COPY_DEST;
 
     ID3D12Resource *res = NULL;
+    if (heap_flags != D3D12_HEAP_FLAG_NONE &&
+        SUCCEEDED(ID3D12Device5_CreateCommittedResource(d3d.device, &hp, heap_flags, &rd, state, NULL,
+                                                        &IID_ID3D12Resource, (void **)&res))) {
+        d3d12_set_name((ID3D12Object *)res, name);
+        return res;
+    }
+    res = NULL;
     if (!D3D_CHECK(ID3D12Device5_CreateCommittedResource(d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &rd, state, NULL,
                                                          &IID_ID3D12Resource, (void **)&res)))
         return NULL;
@@ -442,7 +462,8 @@ static int upload_take_chunk(uint64_t min_size)
     upload_chunk_t *c = &up.chunks[up.num_chunks];
     memset(c, 0, sizeof(*c));
     c->size = max(UPLOAD_CHUNK_SIZE, min_size);
-    c->buffer = d3d12_create_buffer(c->size, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE, "upload chunk");
+    c->buffer = create_buffer(c->size, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
+                              D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, "upload chunk");
     if (!c->buffer)
         return -1;
     D3D12_RANGE none = { 0, 0 };
@@ -540,9 +561,74 @@ void d3d12_upload_buffer(ID3D12Resource *dst, uint64_t offset, const void *data,
     ID3D12GraphicsCommandList_CopyBufferRegion(up.open->cmd, dst, offset, src, src_offset, size);
 }
 
+uint8_t *d3d12_upload_reserve(uint64_t size, ID3D12Resource **buffer, uint64_t *offset)
+{
+    // one allocation: a chunk of its own when bigger than the pooled size (released
+    // once the batch is done, as any giant)
+    return upload_alloc(size ? size : 1, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, buffer, offset);
+}
+
 ID3D12GraphicsCommandList *d3d12_upload_list(void)
 {
     return upload_open() ? up.open->cmd : NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/* PARALLEL FOR                                                               */
+/* ------------------------------------------------------------------------- */
+
+/* Loading faster (Matt, 11-12): the map load's textures, the G-buffer and the
+   start-up pipelines are each many independent ID3D12Device calls, and the device
+   is free-threaded. Threads are made for the call and gone after it - a few
+   hundred microseconds for all of them, against hundreds of milliseconds of work. */
+#define PARALLEL_MAX_THREADS    64
+
+typedef struct {
+    d3d12_job_fn    fn;
+    void            *ctx;
+    int             count;
+    SDL_atomic_t    next;
+} parallel_t;
+
+static void parallel_run(parallel_t *p)
+{
+    int i;
+    while ((i = SDL_AtomicAdd(&p->next, 1)) < p->count)
+        p->fn(p->ctx, i);
+}
+
+static int SDLCALL parallel_worker(void *arg)
+{
+    parallel_run(arg);
+    return 0;
+}
+
+int d3d12_parallel_for(int count, d3d12_job_fn fn, void *ctx, int max_threads)
+{
+    if (count <= 0)
+        return 0;
+    int threads = max_threads > 0 ? max_threads : SDL_GetCPUCount();
+    threads = threads < 1 ? 1 : threads > PARALLEL_MAX_THREADS ? PARALLEL_MAX_THREADS : threads;
+    if (threads > count)
+        threads = count;
+
+    parallel_t p;
+    p.fn = fn;
+    p.ctx = ctx;
+    p.count = count;
+    SDL_AtomicSet(&p.next, 0);
+
+    SDL_Thread *workers[PARALLEL_MAX_THREADS];
+    int started = 0;
+    for (int t = 1; t < threads; t++) {
+        workers[started] = SDL_CreateThread(parallel_worker, "d3d12 jobs", &p);
+        if (workers[started])
+            started++;
+    }
+    parallel_run(&p);   // and whatever no worker took, if none started
+    for (int t = 0; t < started; t++)
+        SDL_WaitThread(workers[t], NULL);
+    return started + 1;
 }
 
 void d3d12_upload_flush(void)

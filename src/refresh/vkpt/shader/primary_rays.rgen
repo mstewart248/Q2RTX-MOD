@@ -279,6 +279,12 @@ flow_pass_main()
 	Ray ray = get_primary_ray(primary_sample_uv(pixel_center));
 	ray.t_max = hand_off.x;
 
+	// Nothing of the volume in front of this ray (flow.glsl). Tested here, not
+	// in the primary pass at its hand-off: there it cost that pass 0.19 ms
+	// (registers, 11-12) and this one hardly less.
+	if (flow_screen_pass(ray.origin, ray.direction))
+		return;
+
 	// flow_add_to_effects, with the effects read back instead of passed in
 	float depth;
 	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, 1.0, get_rng(RNG_FLOW_JITTER), false, depth);

@@ -56,6 +56,100 @@ buffer FLOW_OCCUPANCY_BUFFER { uvec4 flow_occupancy[]; };
 
 shared uint s_bits[4];
 
+/* pt_flow_march 16: the screen tiles under this block's marked bricks, ORed
+   here first and into the buffer once (flow.h FLOW_SCREEN_TX). The march
+   tests a ray's own direction against them (flow.glsl flow_screen_clear), not
+   its pixel - jitter, the underwater warp and the projection make no
+   difference - and only rays on the tiles: so only the part of a brick inside
+   the pyramid from the camera through them matters.
+   - The part at least FLOW_SCREEN_NEAR in front of the camera is seen inside
+     the box round its corners on the plane one unit in front (all of it in
+     front, a straight line in the world is one there): the box's own corners
+     that far in front, and where its edges cross that depth.
+   - Nearer than that, the pyramid is all within `reach` of the camera. A brick
+     that comes that close sets s_behind, and no ray is passed this frame; one
+     that does not has nothing nearer in the pyramid.
+   A railgun shot starts beside the eye, its first bricks across the camera's
+   plane: without the cut no ray was ever passed (11-12). */
+#define FLOW_SCREEN_WORDS (FLOW_SCREEN_TX * FLOW_SCREEN_TY / 32u)
+#define FLOW_SCREEN_NEAR 0.25
+shared uint s_tiles[FLOW_SCREEN_WORDS];
+shared uint s_behind;
+
+vec3 flow_brick_corner(vec3 lo, vec3 hi, int k)
+{
+	return vec3((k & 1) != 0 ? hi.x : lo.x, (k & 2) != 0 ? hi.y : lo.y, (k & 4) != 0 ? hi.z : lo.z)
+		- flow_params.camera_pos.xyz;
+}
+
+void flow_screen_mark(vec3 lo, vec3 hi)
+{
+	const vec3 forward = flow_params.camera_forward.xyz;
+	const vec3 right = flow_params.camera_right.xyz;
+	const vec3 up = flow_params.camera_up.xyz;
+	const vec2 range = vec2(flow_params.camera_forward.w, flow_params.camera_right.w);
+
+	const float reach = FLOW_SCREEN_NEAR * sqrt(1.0 + dot(range, range)) + 0.01;
+	const vec3 nearest = clamp(flow_params.camera_pos.xyz, lo, hi) - flow_params.camera_pos.xyz;
+	if (dot(nearest, nearest) <= reach * reach)
+	{
+		atomicOr(s_behind, 1u);
+		return;
+	}
+
+	vec2 t_min = vec2(1e30);
+	vec2 t_max = vec2(-1e30);
+	bool seen = false;
+	for (int k = 0; k < 8; k++)
+	{
+		const vec3 c = flow_brick_corner(lo, hi, k);
+		const float h = dot(c, forward);
+		if (h >= FLOW_SCREEN_NEAR)
+		{
+			const vec2 t = vec2(dot(c, right), dot(c, up)) / h;
+			t_min = min(t_min, t);
+			t_max = max(t_max, t);
+			seen = true;
+		}
+		// the edges from this corner up each axis, where they cross the cut
+		for (int b = 1; b < 8; b <<= 1)
+		{
+			if ((k & b) != 0)
+				continue;
+			const vec3 e = flow_brick_corner(lo, hi, k | b);
+			const float he = dot(e, forward);
+			if ((h < FLOW_SCREEN_NEAR) != (he < FLOW_SCREEN_NEAR))
+			{
+				const vec3 p = mix(c, e, (FLOW_SCREEN_NEAR - h) / (he - h));
+				const vec2 t = vec2(dot(p, right), dot(p, up)) / FLOW_SCREEN_NEAR;
+				t_min = min(t_min, t);
+				t_max = max(t_max, t);
+			}
+		}
+	}
+	if (!seen)
+		return;   // all of it nearer than the cut, and away from the camera
+
+	// a little wider than the box, for the rounding of either side
+	const vec2 f0 = clamp(((t_min - 1e-4 * (1.0 + abs(t_min))) / range) * 0.5 + 0.5, vec2(-1.0), vec2(2.0));
+	const vec2 f1 = clamp(((t_max + 1e-4 * (1.0 + abs(t_max))) / range) * 0.5 + 0.5, vec2(-1.0), vec2(2.0));
+	if (f0.x >= 1.0 || f0.y >= 1.0 || f1.x < 0.0 || f1.y < 0.0)
+		return;   // off the tiles: the rays there are marched anyway
+	const ivec2 dim = ivec2(FLOW_SCREEN_TX, FLOW_SCREEN_TY);
+	const ivec2 a = clamp(ivec2(floor(f0 * vec2(dim))), ivec2(0), dim - 1);
+	const ivec2 b = clamp(ivec2(floor(f1 * vec2(dim))), ivec2(0), dim - 1);
+	for (int y = a.y; y <= b.y; y++)
+	{
+		for (int w = a.x >> 5; w <= (b.x >> 5); w++)
+		{
+			const int from = max(a.x - w * 32, 0);
+			const int to = min(b.x - w * 32, 31);
+			const uint mask = (to - from == 31) ? 0xffffffffu : (((1u << uint(to - from + 1)) - 1u) << uint(from));
+			atomicOr(s_tiles[y * int(FLOW_SCREEN_TX / 32u) + w], mask);
+		}
+	}
+}
+
 void main()
 {
 	const uint block = gl_WorkGroupID.x;
@@ -63,6 +157,14 @@ void main()
 
 	if (thread < 4u)
 		s_bits[thread] = 0u;
+	const bool screen = flow_params.camera_pos.w != 0.0;
+	if (screen)
+	{
+		for (uint i = thread; i < FLOW_SCREEN_WORDS; i += GROUP_SIZE)
+			s_tiles[i] = 0u;
+		if (thread == 0u)
+			s_behind = 0u;
+	}
 	barrier();
 
 	// The block's layer: NvFlowBlockIdxToLocation.
@@ -73,6 +175,7 @@ void main()
 	float glow_start = 0.0;
 	float extinction = 0.0;
 	int grid = -1;
+	bool primary = false;   // a layer primary rays march: all but the mirror's plasma beam
 	for (int l = 0; l < FLOW_LAYERS; l++)
 	{
 		if (flow_params.layers[l].info.x != 0u && int(flow_params.layers[l].info.y) == layer_and_level)
@@ -81,6 +184,7 @@ void main()
 			glow_start = flow_params.layers[l].albedo.w;
 			extinction = flow_params.layers[l].smoke.w;
 			grid = FLOW_LAYER_GRID(l);
+			primary = l != FLOW_LAYER_HEATBEAM_MIRROR;
 		}
 	}
 
@@ -107,8 +211,39 @@ void main()
 
 		if (marked)
 			atomicOr(s_bits[thread >> 5u], 1u << (thread & 31u));
+
+		// the brick's cells in the world, as the march finds them (flow.glsl)
+		if (marked && screen && primary && grid >= 0)
+		{
+			const ivec3 location = ivec3(int(flow_table[li + 0u]), int(flow_table[li + 1u]), int(flow_table[li + 2u]));
+			const ivec3 first_cell = (location << ivec3(flow_params.block_dim_bits.xyz)) + brick * FLOW_BRICK;
+			const vec3 cells_per_unit = flow_params.grids[grid].xyz;
+			flow_screen_mark(vec3(first_cell) / cells_per_unit, vec3(first_cell + FLOW_BRICK) / cells_per_unit);
+		}
 	}
 	barrier();
+
+	if (screen)
+	{
+		const uint base = flow_params.limits.z + FLOW_COARSE_UVEC4S + FLOW_BLOCK_UVEC4S;
+		for (uint i = thread; i < FLOW_SCREEN_WORDS; i += GROUP_SIZE)
+		{
+			const uint bits = s_tiles[i];
+			if (bits != 0u)
+			{
+				const uint at = base + (i >> 2u);
+				switch (i & 3u)
+				{
+				case 0u: atomicOr(flow_occupancy[at].x, bits); break;
+				case 1u: atomicOr(flow_occupancy[at].y, bits); break;
+				case 2u: atomicOr(flow_occupancy[at].z, bits); break;
+				default: atomicOr(flow_occupancy[at].w, bits); break;
+				}
+			}
+		}
+		if (thread == 0u && s_behind != 0u)
+			atomicOr(flow_occupancy[base + FLOW_SCREEN_WORDS / 4u].x, 1u);
+	}
 
 	if (thread == 0u)
 	{

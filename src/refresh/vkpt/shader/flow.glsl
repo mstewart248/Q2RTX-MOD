@@ -729,8 +729,54 @@ void flow_stats_flush()
 #endif
 }
 
+/* PRIMARY RAYS PASSED BY THEIR SCREEN TILE (pt_flow_march 16, camera_pos.w).
+   A plasma beam or a railgun shot starts at the gun, and the one who fires
+   is inside its box: every ray on the screen went into it and walked out
+   past the bricks round the gun, some ten steps each, though most of the
+   screen has none of the gas in front of it (pt_flow_stats, 11-12).
+   flow_occupancy.comp marks each tile of the plane one unit in front of the
+   camera that a marked brick covers; a ray from the camera whose tile is
+   clear meets no marked brick, and the march samples nothing else, so it
+   would add nothing - it is not marched. Only rays from the camera itself
+   (not a lens's, pt_aperture), at least a little in front, and on the
+   tiles; and none while a marked brick is within a fraction of a unit of
+   the camera (flow_occupancy.comp flow_screen_mark). */
+bool flow_screen_clear(vec3 origin, vec3 direction)
+{
+	if (flow_params.camera_pos.w == 0.0 || any(notEqual(origin, flow_params.camera_pos.xyz)))
+		return false;
+	const uint base = flow_params.limits.z + FLOW_COARSE_UVEC4S + FLOW_BLOCK_UVEC4S;
+	if (flow_occupancy[base + FLOW_SCREEN_TX * FLOW_SCREEN_TY / 128u].x != 0u)
+		return false;
+	const vec3 d = normalize(direction);
+	const float z = dot(d, flow_params.camera_forward.xyz);
+	if (!(z > 1e-3))
+		return false;
+	const vec2 t = vec2(dot(d, flow_params.camera_right.xyz), dot(d, flow_params.camera_up.xyz)) / z;
+	const vec2 f = (t / vec2(flow_params.camera_forward.w, flow_params.camera_right.w)) * 0.5 + 0.5;
+	if (!(f.x >= 0.0 && f.y >= 0.0 && f.x < 1.0 && f.y < 1.0))
+		return false;
+	const uvec2 tile = min(uvec2(f * vec2(FLOW_SCREEN_TX, FLOW_SCREEN_TY)), uvec2(FLOW_SCREEN_TX - 1u, FLOW_SCREEN_TY - 1u));
+	const uint bit = tile.y * FLOW_SCREEN_TX + tile.x;
+	const uvec4 words = flow_occupancy[base + (bit >> 7u)];
+	const uint c = (bit >> 5u) & 3u;
+	const uint word = c < 2u ? (c == 0u ? words.x : words.y) : (c == 2u ? words.z : words.w);
+	return (word & (1u << (bit & 31u))) == 0u;
+}
+
+// Whether a primary ray is left unmarched. pt_flow_stats 2 turns it round:
+// only the rays the tiles pass are marched, so that FLOWSTATS counts what
+// they would have sampled - anything at all is the tiles' mistake.
+bool flow_screen_pass(vec3 origin, vec3 direction)
+{
+	const bool clear = flow_screen_clear(origin, direction);
+	return flow_params.counts.z == 2u ? !clear : clear;
+}
+
 vec4 flow_add_to_effects(vec4 effects, Ray ray, float jitter, bool reflection, bool mirror)
 {
+	if (!reflection && flow_screen_pass(ray.origin, ray.direction))
+		return effects;
 	float depth;
 	const float step_scale = reflection ? flow_params.world_min.w : 1.0;
 	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, step_scale, jitter, mirror, depth);

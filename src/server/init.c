@@ -144,6 +144,8 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     char        *entitystring;
 
     SCR_BeginLoadingPlaque();           // for local system
+    // the game library (re)started, a savegame's game state read
+    Com_LoadMark("game init");
 
     Com_Printf("------- Server Initialization -------\n");
     Com_Printf("SpawnServer: %s\n", cmd->server);
@@ -262,6 +264,7 @@ void SV_SpawnServer(mapcmd_t *cmd, qboolean isMguMap)
     // run two frames to allow everything to settle
     ge->RunFrame(); sv.framenum++;
     ge->RunFrame(); sv.framenum++;
+    Com_LoadMark("spawn entities");
 
     // make sure maxclients string is correct
     sprintf(sv.configstrings[CS_MAXCLIENTS], "%d", sv_maxclients->integer);
@@ -309,6 +312,9 @@ bool SV_ParseMapCmd(mapcmd_t *cmd)
     int         ret = Q_ERR(ENAMETOOLONG);
 
     s = cmd->buffer;
+
+    // a map load's timing line starts here (Com_LoadFinish: the first world frame)
+    Com_LoadBegin();
 
     // skip the end-of-unit flag if necessary
     if (*s == '*') {
@@ -371,6 +377,7 @@ bool SV_ParseMapCmd(mapcmd_t *cmd)
             ret = CM_LoadMap(&cmd->cm, expanded);
         }
         cmd->state = ss_game;
+        Com_LoadMark("collision map");
     }
 
     if (ret < 0) {

@@ -37,6 +37,7 @@ Borrowed now:
 #include "d3d12pt.h"
 #include "ngx.h"
 #include "common/cpuprof.h"     // Sys_Microseconds (vid_present_stats)
+#include "system/system.h"      // Sys_Milliseconds (NGX's start)
 
 // bindings.c sizes primitive_buffers[] without the engine headers
 typedef char d3d12_max_models_agree[(D3D12_MAX_MODELS == MAX_MODELS) ? 1 : -1];
@@ -222,16 +223,162 @@ static void dlss_release_feature(void)
     ngx_feature = NULL;
 }
 
+/* NGX STARTS IN THE BACKGROUND (Matt, 11-12: this renderer loaded a map "a little bit
+   slower than vulkan"). vkpt starts its NGX instance with the device, at start-up; this
+   one started it on the first frame that wanted DLSS - the first map's - and
+   NVSDK_NGX_D3D12_Init with the capability block took ~2 s of that load (NGX's core and
+   every feature's DLL, the model folder, the cubins). Now a thread starts it as soon as
+   the device exists (d3d12_frontend_ngx_prestart), alongside the pipelines and the rest
+   of the renderer's start, and the first frame that wants DLSS only waits for whatever is
+   left of it, then adopts the result here (the cvars, the lines). The device is
+   free-threaded, and nothing else calls NGX before then: every other entry point waits
+   for ngx_params. NGX's log lines from any thread but this one are held and printed by
+   this one (Com_Printf is not thread-safe). */
+static SDL_Thread           *ngx_thread;
+static NVSDK_NGX_Result     ngx_thread_result;
+static NVSDK_NGX_Parameter  *ngx_thread_params;
+static unsigned             ngx_thread_ms;      // how long its start took
+static SDL_threadID         ngx_main_thread;
+static SDL_mutex            *ngx_log_lock;
+static SDL_atomic_t         ngx_log_pending;
+static char                 *ngx_log_held;      // malloc'd lines, each ending in '\n'
+static size_t               ngx_log_len, ngx_log_size;
+
+// the held lines, printed on this thread as DLSSPrintCallback prints them
+static void ngx_log_flush(void)
+{
+    if (!ngx_log_lock || !SDL_AtomicGet(&ngx_log_pending))
+        return;
+    SDL_LockMutex(ngx_log_lock);
+    char *held = ngx_log_held;
+    const size_t len = ngx_log_len;
+    ngx_log_held = NULL;
+    ngx_log_len = ngx_log_size = 0;
+    SDL_AtomicSet(&ngx_log_pending, 0);
+    SDL_UnlockMutex(ngx_log_lock);
+
+    // a line at a time: Com_Printf's buffer is far smaller than NGX's start-up log
+    for (size_t at = 0; at < len;) {
+        const char *line = held + at;
+        const char *end = memchr(line, '\n', len - at);
+        const size_t n = end ? (size_t)(end - line) + 1 : len - at;
+        Com_EPrintf("%.*s", (int)n, line);
+        at += n;
+    }
+    free(held);
+}
+
+static void ngx_log(const char *message, NVSDK_NGX_Logging_Level level, NVSDK_NGX_Feature source)
+{
+    if (!message)
+        return;
+    if (SDL_ThreadID() == ngx_main_thread || !ngx_log_lock) {
+        ngx_log_flush();
+        Com_EPrintf("%s", message);     // DLSSPrintCallback's, without the format string
+        return;
+    }
+    (void)level; (void)source;
+    const size_t n = strlen(message);
+    SDL_LockMutex(ngx_log_lock);
+    if (ngx_log_len + n + 2 > ngx_log_size) {
+        const size_t size = max(ngx_log_size * 2, ngx_log_len + n + 2 + 4096);
+        char *grown = realloc(ngx_log_held, size);
+        if (grown) {
+            ngx_log_held = grown;
+            ngx_log_size = size;
+        }
+    }
+    if (ngx_log_len + n + 2 <= ngx_log_size) {
+        memcpy(ngx_log_held + ngx_log_len, message, n);
+        ngx_log_len += n;
+        if (!n || message[n - 1] != '\n')
+            ngx_log_held[ngx_log_len++] = '\n';
+        SDL_AtomicSet(&ngx_log_pending, 1);
+    }
+    SDL_UnlockMutex(ngx_log_lock);
+}
+
+// what NGX is told where its DLLs and its data are; it may keep them
+static void ngx_make_paths(void)
+{
+    if (!ngx_dll_path) {
+        char *folder = GetFolderPath();
+        ngx_dll_path = (wchar_t *)GetWC(folder);
+        free(folder);
+    }
+    if (!ngx_data_path)
+        ngx_data_path = (wchar_t *)GetWC("DLSSTemp/");
+}
+
+static int SDLCALL ngx_start_worker(void *arg)
+{
+    (void)arg;
+    const unsigned t0 = Sys_Milliseconds();
+    ngx_thread_result = d3d12_ngx_init((ID3D12Device *)d3d.device, DLSS_PROJECT_ID, LONG_VERSION_STRING,
+                                       ngx_dll_path, ngx_data_path, ngx_log, &ngx_thread_params);
+    ngx_thread_ms = Sys_Milliseconds() - t0;
+    return 0;
+}
+
+/* R_Init, as soon as the device is made: NGX's start on a thread of its own, when the
+   first map will want it - an NVIDIA adapter (what d3d12_frontend_world_init makes
+   qvk.supports_ngx of) and pt_dlss on. Otherwise dlss_start starts it as before, on the
+   first frame that asks. */
+void d3d12_frontend_ngx_prestart(void)
+{
+    ngx_main_thread = SDL_ThreadID();
+    if (!ngx_log_lock)
+        ngx_log_lock = SDL_CreateMutex();
+    if (ngx_thread || ngx_params || !d3d.device || !d3d.adapter)
+        return;
+    DXGI_ADAPTER_DESC3 adapter;
+    if (FAILED(IDXGIAdapter4_GetDesc3(d3d.adapter, &adapter)) || adapter.VendorId != 0x10de)
+        return;
+    const cvar_t *pt_dlss = Cvar_FindVar("pt_dlss");
+    if (!pt_dlss || !pt_dlss->integer)
+        return;
+
+    ngx_make_paths();
+    ngx_thread_params = NULL;
+    ngx_thread_result = NVSDK_NGX_Result_Fail;
+    ngx_thread_ms = 0;
+    ngx_thread = SDL_CreateThread(ngx_start_worker, "NGX start", NULL);
+    // no thread: the first frame starts it, as before
+}
+
+// the background start's result, waited for; false when there was none
+static bool ngx_join(NVSDK_NGX_Result *r)
+{
+    if (!ngx_thread)
+        return false;
+    SDL_WaitThread(ngx_thread, NULL);
+    ngx_thread = NULL;
+    *r = ngx_thread_result;
+    ngx_params = NVSDK_NGX_FAILED(*r) ? NULL : ngx_thread_params;
+    ngx_thread_params = NULL;
+    ngx_log_flush();
+    return true;
+}
+
 // TryInit and CheckSupport, on this device; false (and said why) when NGX is not up
 static bool dlss_start(void)
 {
-    char *folder = GetFolderPath();
-    ngx_dll_path = (wchar_t *)GetWC(folder);
-    free(folder);
-    ngx_data_path = (wchar_t *)GetWC("DLSSTemp/");
-
-    NVSDK_NGX_Result r = d3d12_ngx_init((ID3D12Device *)d3d.device, DLSS_PROJECT_ID, LONG_VERSION_STRING,
-                                        ngx_dll_path, ngx_data_path, DLSSPrintCallback, &ngx_params);
+    const unsigned t0 = Sys_Milliseconds();
+    NVSDK_NGX_Result r;
+    const bool background = ngx_join(&r);
+    if (!background) {
+        ngx_make_paths();
+        r = d3d12_ngx_init((ID3D12Device *)d3d.device, DLSS_PROJECT_ID, LONG_VERSION_STRING, ngx_dll_path,
+                           ngx_data_path, ngx_log, &ngx_params);
+    }
+    // Map load: what NGX's start still cost the first map (the whole start without
+    // the thread)
+    Com_LoadMark("NGX");
+    if (background)
+        Com_Printf("D3D12: NGX started in the background in %u ms; the first frame waited %u ms for it\n",
+                   ngx_thread_ms, Sys_Milliseconds() - t0);
+    else
+        Com_Printf("D3D12: NGX started in %u ms\n", Sys_Milliseconds() - t0);
     if (NVSDK_NGX_FAILED(r)) {
         Com_EPrintf("DLSS: NGX did not start on this D3D12 device: 0x%08x%s\n", (unsigned)r,
                     d3d.caps.sdk_version && !d3d.caps.process_sdk
@@ -276,6 +423,9 @@ static void dlssg_release_feature(void);
 // DLSSDeconstructor's part: the GPU is idle
 static void dlss_stop(void)
 {
+    // a background start still running, or never adopted: done, then shut down below
+    NVSDK_NGX_Result r;
+    ngx_join(&r);
     // DLSSDeconstructor's order: DLSS 5's feature and block (they live on the
     // instance), frame generation's feature, then the instance
     DLSS5_ReleaseNGX();
@@ -1049,8 +1199,12 @@ void d3d12_frontend_upload_models(void)
         vkpt_model_vbo_mark_uploaded(i, present);
     }
 
-    if (changed)
+    if (changed) {
         d3d12_world_models_commit();
+        // a map load's models (vkpt's mark): buffers, BLASes, and the wait for them -
+        // and for whatever else the upload batch held, the textures' copies included
+        Com_LoadMark("model upload");
+    }
 }
 
 static bool frame_sky_update;       // the frame was asked to render the sky
@@ -1099,8 +1253,11 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     qvk.extent_unscaled.height = (uint32_t)d3d.height;
     qvk.frame_counter = d3d.frame_counter;
     qvk.current_frame_index = d3d.frame_index;
-    // NGX for the first frame that wants DLSS; if it cannot start, DLSS is off
-    // until pt_dlss is changed (DLSSFeatureFailed)
+    // NGX's lines from other threads (its background start), printed here
+    ngx_log_flush();
+    // NGX for the first frame that wants DLSS - started in the background at R_Init
+    // when pt_dlss was on (d3d12_frontend_ngx_prestart); if it cannot start, DLSS is
+    // off until pt_dlss is changed (DLSSFeatureFailed)
     if (DLSSEnabled() && !ngx_params && !ngx_start_failed && !dlss_start()) {
         ngx_start_failed = true;
         DLSSFeatureFailed();

@@ -210,6 +210,68 @@ PATCHES = [
      '                EmitterNanoVdbCS_init(&ptr->contextInterface, in->context, &ptr->emitterNanoVdbCS);\n'
      '            }\n'
      '            EmitterNanoVdbCS_addPassCompute(in->context, &ptr->emitterNanoVdbCS, gridDim, &passParams);\n', 1),
+
+    # EmitterBoxCS, for a multisampled box: every cell of every block a box
+    # touches tested eight points against it, each a full 4x4 transform into
+    # the box's space - also for the cells far outside it, which are most of
+    # them (a plasma beam's boxes are a few cells across, its blocks 32x16x16).
+    # The cell's centre, transformed once, says the same for most cells: the
+    # eight points are within a quarter cell of it along each world axis, so
+    # within `reach` of it along each of the box's. Wholly outside by more
+    # than that, the eight tests would add up to 0; wholly inside (and no
+    # clipping planes), to exactly 1 (8 x 0.125). `slack` is ten times what
+    # float rounding can move a point, and only cells nearer the edges than
+    # that run the eight tests, as before - so what is written is the same,
+    # bit for bit. Measured on the plasma beam (d3d12_flow_bench, 11-12).
+    ('source/nvflowext/shaders/EmitterBoxCS.hlsl',
+     '    return inBox ? 1.f : 0.f;\n'
+     '}\n',
+     '    return inBox ? 1.f : 0.f;\n'
+     '}\n'
+     '\n'
+     '// q2rtx: 1 if all eight multisample points of the cell centred at worldPos\n'
+     '// are inside the box (with no clipping planes), -1 if all are outside, 0 if\n'
+     '// it is too near an edge to say - see setup/build_flow.py\n'
+     'int multisampleBound(uint instanceIdx, float3 worldPos)\n'
+     '{\n'
+     '    float4x4 worldToLocal = gInstanceParams[instanceIdx].worldToLocal;\n'
+     '    float3 axisX = abs(mul(float4(1.f, 0.f, 0.f, 0.f), worldToLocal).xyz);\n'
+     '    float3 axisY = abs(mul(float4(0.f, 1.f, 0.f, 0.f), worldToLocal).xyz);\n'
+     '    float3 axisZ = abs(mul(float4(0.f, 0.f, 1.f, 0.f), worldToLocal).xyz);\n'
+     '    float3 origin = mul(float4(0.f, 0.f, 0.f, 1.f), worldToLocal).xyz;\n'
+     '    float3 vidxToWorld = gInstanceParams[instanceIdx].vidxToWorld;\n'
+     '    float3 position = gInstanceParams[instanceIdx].position;\n'
+     '    float3 halfSize = gInstanceParams[instanceIdx].halfSize;\n'
+     '    float3 centre = abs(mul(float4(worldPos, 1.f), worldToLocal).xyz - position);\n'
+     '    float3 reach = 0.25f * (axisX * vidxToWorld.x + axisY * vidxToWorld.y + axisZ * vidxToWorld.z);\n'
+     '    float3 magnitude = axisX * abs(worldPos.x) + axisY * abs(worldPos.y) + axisZ * abs(worldPos.z)\n'
+     '        + abs(origin) + abs(position) + reach;\n'
+     '    float3 slack = 1e-5f * magnitude + 1e-6f;\n'
+     '    if (any(centre > halfSize + reach + slack))\n'
+     '    {\n'
+     '        return -1;\n'
+     '    }\n'
+     '    if (all(centre + reach + slack < halfSize) &&\n'
+     '        gInstanceParams[instanceIdx].clippingPlaneCountCount == 0u &&\n'
+     '        gInstanceParams[instanceIdx].clippingPlaneCount == 0u)\n'
+     '    {\n'
+     '        return 1;\n'
+     '    }\n'
+     '    return 0;\n'
+     '}\n', 1),
+    ('source/nvflowext/shaders/EmitterBoxCS.hlsl',
+     '            float coverage = 0.f;\n'
+     '            if (gInstanceParams[instanceIdx].multisample != 0u)\n'
+     '            {\n',
+     '            float coverage = 0.f;\n'
+     '            // q2rtx: most cells settled from their centre, see multisampleBound\n'
+     '            int bound = gInstanceParams[instanceIdx].multisample != 0u ? multisampleBound(instanceIdx, worldPos) : 0;\n'
+     '            if (bound != 0)\n'
+     '            {\n'
+     '                coverage = bound > 0 ? 1.f : 0.f;\n'
+     '            }\n'
+     '            else if (gInstanceParams[instanceIdx].multisample != 0u)\n'
+     '            {\n', 1),
 ]
 
 # The functions flow.c looks up in each DLL.

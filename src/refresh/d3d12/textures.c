@@ -450,56 +450,217 @@ static void create_texture(int index, const uint8_t *chain)
    thread alone that kept the world black for about 5 s after the level's music had
    started (Matt, 11-06).
 
-   So the frame first makes every texture's build_chain buffer on all the logical
-   processors (the main thread works too), biggest first so a batch does not end on
-   one big texture, in batches of at most PREP_BATCH_BYTES of chains held at once;
-   then the main thread creates and uploads that batch's textures as before. The
-   bytes are the same either way. The workers use malloc, not Z_Malloc, which is not
+   11-06: the chains were made on every logical processor, and the main thread then
+   created each texture and copied every level into the upload chunks - 954 textures
+   in 468 ms on base1, 98 of it the chains (Matt's 11-12 log). 11-12, on the D3D12 map
+   load being slower than Vulkan's: now the workers do all of it but the recording. A
+   batch of textures (biggest first, at most PREP_BATCH_BYTES of staging) gets one
+   piece of upload memory (d3d12_upload_reserve), each texture its place in it as
+   GetCopyableFootprints lays its levels out; then on every logical processor
+   (d3d12_parallel_for, the main thread too) each texture is created - not zeroed,
+   every level is written - its chain built in cached memory, and every level written
+   into its place; then the main thread records the copies, the barriers and the views,
+   and sends the batch to the GPU, which copies it while the next batch is made. The
+   bytes are the same as before. The workers use malloc, not Z_Malloc, which is not
    thread-safe. A few textures (a HUD picture, a cinematic frame) skip all this. */
-#define PREP_BATCH_BYTES    ((size_t)512 << 20)
+#define PREP_BATCH_BYTES    ((uint64_t)512 << 20)
 #define PREP_MIN_BYTES      ((size_t)8 << 20)
-#define PREP_MAX_THREADS    64
+#define PREP_MAX_LEVELS     16      // a 32768-texel side; more goes the one-thread way
 
 typedef struct {
-    int         index;      // the r_images slot
-    chain_t     chain;
-    size_t      bytes;      // chain_bytes, 0 = nothing to make
-    uint8_t     *data;      // build_chain's buffer once made; NULL = create_texture makes it
+    int             index;          // the r_images slot
+    chain_t         chain;
+    size_t          bytes;          // chain_bytes, 0 = nothing to make
+    // the batched way's:
+    D3D12_RESOURCE_DESC desc;
+    uint64_t        upload_bytes;   // every level, as GetCopyableFootprints lays them out
+    uint64_t        upload_at;      // its place in the batch's upload memory
+    int             levels;         // levels written: chain.levels, or 1 if its chain failed
+    ID3D12Resource  *res;           // the worker's; NULL = failed (hr says why)
+    HRESULT         hr;
 } tex_job_t;
 
 static tex_job_t    tex_jobs[MAX_RIMAGES];
 
 typedef struct {
     tex_job_t       *jobs;
-    int             count;
-    SDL_atomic_t    next;   // the next job to take
+    uint8_t         *upload;        // the batch's upload memory, mapped
 } prep_batch_t;
-
-static void prep_run(prep_batch_t *b)
-{
-    int i;
-    while ((i = SDL_AtomicAdd(&b->next, 1)) < b->count) {
-        tex_job_t *j = &b->jobs[i];
-        if (!j->bytes)
-            continue;
-        j->data = malloc(j->bytes);
-        if (j->data)
-            build_chain(r_images + j->index, &j->chain, j->data);
-    }
-}
-
-static int SDLCALL prep_worker(void *arg)
-{
-    prep_run(arg);
-    return 0;
-}
 
 static int prep_order(const void *a, const void *b)
 {
     const tex_job_t *x = a, *y = b;
-    if (x->bytes != y->bytes)
-        return x->bytes < y->bytes ? 1 : -1;
+    if (x->upload_bytes != y->upload_bytes)
+        return x->upload_bytes < y->upload_bytes ? 1 : -1;
     return x->index - y->index;
+}
+
+// the texture's resource desc, as create_texture makes it; false for none
+static bool job_desc(tex_job_t *j)
+{
+    const image_t *image = r_images + j->index;
+    if (!chain_of(image, &j->chain) || j->chain.levels > PREP_MAX_LEVELS)
+        return false;
+    int bpp;
+    memset(&j->desc, 0, sizeof(j->desc));
+    j->desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    j->desc.Width = (UINT64)j->chain.w;
+    j->desc.Height = (UINT)j->chain.h;
+    j->desc.DepthOrArraySize = 1;
+    j->desc.MipLevels = (UINT16)j->chain.levels;
+    j->desc.Format = image_format(image, &bpp);
+    j->desc.SampleDesc.Count = 1;
+    j->desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    UINT64 total = 0;
+    ID3D12Device5_GetCopyableFootprints(d3d.device, &j->desc, 0, (UINT)j->chain.levels, 0, NULL, NULL, NULL, &total);
+    j->upload_bytes = total;
+    return total != 0 && total != UINT64_MAX;
+}
+
+// d3d12_parallel_for's job: texture k of the batch made, and every level of it written
+// into the batch's upload memory. Free-threaded calls only.
+static void prep_texture(void *ctx, int k)
+{
+    prep_batch_t *b = ctx;
+    tex_job_t *j = &b->jobs[k];
+    const image_t *image = r_images + j->index;
+    const chain_t *c = &j->chain;
+
+    // the chain first, in cached memory (building it in write-combined upload memory
+    // would read that back); without memory for it, level 0 as loaded alone
+    uint8_t *chain = NULL;
+    if (j->bytes) {
+        chain = malloc(j->bytes);
+        if (chain)
+            build_chain(image, c, chain);
+    }
+    j->levels = j->bytes && !chain ? 1 : c->levels;
+    D3D12_RESOURCE_DESC desc = j->desc;
+    desc.MipLevels = (UINT16)j->levels;
+
+    // not zeroed: every level is written; a runtime without the flag gets it zeroed
+    D3D12_HEAP_PROPERTIES hp = { 0 };
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    j->hr = ID3D12Device5_CreateCommittedResource(d3d.device, &hp, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc,
+                                                  D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource,
+                                                  (void **)&j->res);
+    if (FAILED(j->hr))
+        j->hr = ID3D12Device5_CreateCommittedResource(d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &desc,
+                                                      D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource,
+                                                      (void **)&j->res);
+    if (FAILED(j->hr)) {
+        j->res = NULL;
+        free(chain);
+        return;
+    }
+    d3d12_set_name((ID3D12Object *)j->res, image->name);
+
+    // where each level goes (the full chain's layout: its first levels are the same
+    // with fewer of them)
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[PREP_MAX_LEVELS];
+    UINT rows[PREP_MAX_LEVELS];
+    UINT64 row_size[PREP_MAX_LEVELS];
+    ID3D12Device5_GetCopyableFootprints(d3d.device, &j->desc, 0, (UINT)c->levels, 0, fp, rows, row_size, NULL);
+
+    const uint8_t *level = c->normalize && chain ? chain : image->pix_data;
+    const uint8_t *next = chain ? chain + (c->normalize ? (size_t)c->w * c->h * 4 : 0) : NULL;
+    int lw = c->w, lh = c->h;
+    for (int mip = 0; mip < j->levels; mip++) {
+        if (mip) {
+            lw = lw > 1 ? lw >> 1 : lw;
+            lh = lh > 1 ? lh >> 1 : lh;
+            level = next;
+            next += (size_t)lw * lh * c->bpp;
+        }
+        uint8_t *out = b->upload + j->upload_at + fp[mip].Offset;
+        const size_t pitch = (size_t)lw * c->bpp;
+        const size_t copy = pitch < (size_t)row_size[mip] ? pitch : (size_t)row_size[mip];
+        for (UINT y = 0; y < rows[mip] && y < (UINT)lh; y++)
+            memcpy(out + (size_t)y * fp[mip].Footprint.RowPitch, level + (size_t)y * pitch, copy);
+    }
+    free(chain);
+}
+
+// a texture the batch made: its copies, its barrier and its view (main thread)
+static void finish_texture(tex_job_t *j, ID3D12GraphicsCommandList *cmd, ID3D12Resource *upload,
+                           uint64_t upload_offset)
+{
+    const image_t *image = r_images + j->index;
+    if (!j->res) {
+        Com_EPrintf("D3D12: %s: no texture (%ux%u, 0x%08x)\n", image->name, (unsigned)j->desc.Width,
+                    (unsigned)j->desc.Height, (unsigned)j->hr);
+        return;
+    }
+    if (j->levels < j->chain.levels)
+        Com_EPrintf("D3D12: %s: no memory for its mip chain - level 0 alone\n", image->name);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[PREP_MAX_LEVELS];
+    ID3D12Device5_GetCopyableFootprints(d3d.device, &j->desc, 0, (UINT)j->chain.levels, upload_offset + j->upload_at,
+                                        fp, NULL, NULL, NULL);
+    for (int mip = 0; mip < j->levels; mip++) {
+        D3D12_TEXTURE_COPY_LOCATION to = { 0 }, from = { 0 };
+        to.pResource = j->res;
+        to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        to.SubresourceIndex = (UINT)mip;
+        from.pResource = upload;
+        from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        from.PlacedFootprint = fp[mip];
+        ID3D12GraphicsCommandList_CopyTextureRegion(cmd, &to, 0, 0, 0, &from, NULL);
+    }
+
+    D3D12_RESOURCE_BARRIER b = { 0 };
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = j->res;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+    ID3D12GraphicsCommandList_ResourceBarrier(cmd, 1, &b);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC sv = { 0 };
+    sv.Format = j->desc.Format;
+    sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sv.Texture2D.MipLevels = (UINT)j->levels;
+    ID3D12Device5_CreateShaderResourceView(d3d.device, j->res, &sv, staging_cpu(j->index));
+    bindless_changed(j->index);
+    tex[j->index] = j->res;
+    j->res = NULL;
+
+    uint8_t kind = (uint8_t)sampler_kind_of(image);
+    if (kind != sampler_kind[j->index]) {
+        sampler_kind[j->index] = kind;
+        sampler_table_dirty = true;
+    }
+}
+
+// one batch on every logical processor; false: no upload memory for it (nothing done)
+static bool make_batch(tex_job_t *jobs, int count, int threads)
+{
+    uint64_t total = 0;
+    for (int k = 0; k < count; k++) {
+        total = (total + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1) &
+                ~(uint64_t)(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1);
+        jobs[k].upload_at = total;
+        total += jobs[k].upload_bytes;
+    }
+    ID3D12Resource *upload = NULL;
+    uint64_t upload_offset = 0;
+    uint8_t *map = d3d12_upload_reserve(total, &upload, &upload_offset);
+    ID3D12GraphicsCommandList *cmd = map ? d3d12_upload_list() : NULL;
+    if (!cmd)
+        return false;
+
+    prep_batch_t b = { .jobs = jobs, .upload = map };
+    for (int k = 0; k < count; k++)
+        jobs[k].res = NULL;
+    d3d12_parallel_for(count, prep_texture, &b, threads);
+
+    for (int k = 0; k < count; k++)
+        finish_texture(&jobs[k], cmd, upload, upload_offset);
+    // to the GPU now: it copies this batch while the next one is made, and the
+    // batch's upload memory goes once it is done
+    d3d12_upload_flush();
+    return true;
 }
 
 static void make_pending_textures(void)
@@ -512,7 +673,7 @@ static void make_pending_textures(void)
             continue;
         tex_job_t *j = &tex_jobs[count++];
         j->index = i;
-        j->data = NULL;
+        j->res = NULL;
         j->bytes = chain_of(image, &j->chain) ? chain_bytes(&j->chain) : 0;
         chain_total += j->bytes;
         with_chain += j->bytes > 0;
@@ -522,59 +683,58 @@ static void make_pending_textures(void)
 
     const uint64_t start = Sys_Microseconds();
     int threads = d3d12_texture_threads->integer > 0 ? d3d12_texture_threads->integer : SDL_GetCPUCount();
-    threads = threads < 1 ? 1 : threads > PREP_MAX_THREADS ? PREP_MAX_THREADS : threads;
+    threads = threads < 1 ? 1 : threads;
     if (with_chain < 2 || chain_total < PREP_MIN_BYTES)
         threads = 1;
 
-    uint64_t chains_us = 0;
+    int batches = 0;
     if (threads == 1) {
         // create_texture makes each chain itself, on this thread
         for (int k = 0; k < count; k++)
             create_texture(tex_jobs[k].index, NULL);
     } else {
         d3d12_mip_init();   // the sRGB tables, before any worker reads them
-        qsort(tex_jobs, (size_t)count, sizeof(tex_jobs[0]), prep_order);
-        for (int first = 0; first < count;) {
-            int end = first;
-            size_t held = 0;
-            while (end < count && (end == first || held + tex_jobs[end].bytes <= PREP_BATCH_BYTES))
-                held += tex_jobs[end++].bytes;
 
-            prep_batch_t b;
-            b.jobs = tex_jobs + first;
-            b.count = end - first;
-            SDL_AtomicSet(&b.next, 0);
-
-            const uint64_t t0 = Sys_Microseconds();
-            SDL_Thread *workers[PREP_MAX_THREADS];
-            int started = 0;
-            for (int t = 1; t < threads && t < b.count; t++) {
-                workers[started] = SDL_CreateThread(prep_worker, "texture mips", &b);
-                if (workers[started])
-                    started++;
+        // the batched way's textures first (biggest first, so a batch does not end
+        // on one big texture), then any it cannot take, one at a time
+        int batched = 0;
+        for (int k = 0; k < count; k++) {
+            if (job_desc(&tex_jobs[k])) {
+                tex_job_t t = tex_jobs[batched];
+                tex_jobs[batched++] = tex_jobs[k];
+                tex_jobs[k] = t;
             }
-            prep_run(&b);   // and whatever no worker took, if none started
-            for (int t = 0; t < started; t++)
-                SDL_WaitThread(workers[t], NULL);
-            chains_us += Sys_Microseconds() - t0;
+        }
+        qsort(tex_jobs, (size_t)batched, sizeof(tex_jobs[0]), prep_order);
 
-            for (int k = first; k < end; k++) {
-                create_texture(tex_jobs[k].index, tex_jobs[k].data);
-                free(tex_jobs[k].data);
-                tex_jobs[k].data = NULL;
+        for (int first = 0; first < batched;) {
+            int end = first;
+            uint64_t held = 0;
+            while (end < batched && (end == first || held + tex_jobs[end].upload_bytes +
+                                     D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT <= PREP_BATCH_BYTES))
+                held += tex_jobs[end++].upload_bytes + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+            if (make_batch(tex_jobs + first, end - first, threads)) {
+                batches++;
+            } else {
+                // no upload memory in one piece: one at a time, as before
+                for (int k = first; k < end; k++)
+                    create_texture(tex_jobs[k].index, NULL);
             }
             first = end;
         }
+        for (int k = batched; k < count; k++)
+            create_texture(tex_jobs[k].index, NULL);
     }
 
     // a map load's: one line, to compare with d3d12_texture_threads 1 and with Vulkan
     if (count >= 64) {
         const int total_ms = (int)((Sys_Microseconds() - start) / 1000);
         if (threads > 1)
-            Com_Printf("D3D12: %d textures made in %d ms (mip chains %d ms on %d threads)\n", count, total_ms,
-                       (int)(chains_us / 1000), threads);
+            Com_Printf("D3D12: %d textures made in %d ms (%d batches on %d threads)\n", count, total_ms, batches,
+                       threads);
         else
             Com_Printf("D3D12: %d textures made in %d ms (one thread)\n", count, total_ms);
+        Com_LoadMark("textures");
     }
 }
 

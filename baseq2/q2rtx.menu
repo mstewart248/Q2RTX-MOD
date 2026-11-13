@@ -778,6 +778,9 @@ begin flow
         pairs --status "whether the simulated plasma beam leaves its gas behind as you sweep it. 'off' keeps it only where the beam is now, with the weapon - much cheaper while strafing; 'on' leaves glow curling off and smoke where it was, and costs a lot more (pt_flow_heatbeam_trails)" \
             "plasma beam trails" pt_flow_heatbeam_trails off 0 on 1
     endif
+    // Client side (CL_FlowGibEvent in client/tent.c), read as each gib turns up.
+    pairs --status "gibs from explosions and the railgun. 'on' sets some of the gibs a rocket or grenade blows off alight - about one in three, at random, burning like the plasma beam's gibs and going out into smoke - and makes the railgun's gibs smoke with no flame, in the air and for a few seconds as they lie (cl_flow_gib_effects)" \
+        "gib fire and smoke" cl_flow_gib_effects off 0 on 1
     // Read every frame (flow_pool_resize in vkpt/flow.c): no restart.
     range -f "%.0f blocks" --status "how much gas NVIDIA Flow can hold at once. The rocket, grenade and railgun trails and the plasma beam go to particles once it is half full, so big fights want more - but all of it takes video memory, used or not: 512 about 215 MB, 1024 about 455 MB, 2048 about 915 MB, 4096 about 1.6 GB. Changing it clears the smoke in the air (pt_flow_max_blocks)" \
         "simulation pool size" pt_flow_max_blocks 512 4096 256

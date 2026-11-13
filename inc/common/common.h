@@ -184,6 +184,14 @@ extern bool         com_initialized;
 extern time_t       com_startTime;
 
 void Qcommon_Init(int argc, char **argv);
+// a part of start-up done, for the start-up times Qcommon_Init prints
+void Com_StartupMark(const char *what);
+// a map load's times: begun by the server's spawn (or the client's precache), each
+// part marked when done, one "Map load:" line printed with the first world frame
+void Com_LoadBegin(void);
+void Com_LoadMark(const char *what);
+void Com_LoadFinish(const char *what);
+bool Com_LoadActive(void);
 void Qcommon_Frame(void);
 
 #endif // COMMON_H
