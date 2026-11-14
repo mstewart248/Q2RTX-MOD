@@ -75,6 +75,14 @@ bool fire_hit(edict_t *self, vec3_t aim, int damage, int kick)
     float       range;
     vec3_t      dir;
 
+    // No enemy to hit. A melee frame whose aifunc is ai_run (the berserker's
+    // running club, the gekk's running bites) runs ai_run first, and ai_run
+    // clears self->enemy when it has just died with no oldenemy to fall back
+    // on - then the same frame's thinkfunc lands here. Both id sources
+    // dereference it unguarded; mgu3m2 crashed on exactly that (11-13).
+    if (!self->enemy || !self->enemy->inuse)
+        return false;
+
     // [rerelease] fire_hit from g_weapon.cpp: reach is the box gap, the blow
     // lands on the closest point of the enemy's box, and needs a clear line to
     // that point and on from it to the enemy. Its MELEE_DISTANCE is 50 of box

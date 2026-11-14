@@ -19701,66 +19701,140 @@ textures/tomf/metl5b_3h:
 textures/tomf/mg_mission1_1:
 	texture_base materialDev/textures/tomf/mg_mission1_1.tga
 	texture_normals materialDev/textures/tomf/mg_mission1_1_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission1_1_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission1_2:
 	texture_base materialDev/textures/tomf/mg_mission1_2.tga
 	texture_normals materialDev/textures/tomf/mg_mission1_2_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission1_2_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission2_1:
 	texture_base materialDev/textures/tomf/mg_mission2_1.tga
 	texture_normals materialDev/textures/tomf/mg_mission2_1_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission2_1_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission2_2:
 	texture_base materialDev/textures/tomf/mg_mission2_2.tga
 	texture_normals materialDev/textures/tomf/mg_mission2_2_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission2_2_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission3_1:
-	texture_base materialDev/textures/tomf/mg_mission3_1.tga
+	texture_base materialDev/textures/tomf/mg_mission3_1.tga	
 	texture_normals materialDev/textures/tomf/mg_mission3_1_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission3_1_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission3_2:
 	texture_base materialDev/textures/tomf/mg_mission3_2.tga
 	texture_normals materialDev/textures/tomf/mg_mission3_2_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission3_2_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission4_1:
 	texture_base materialDev/textures/tomf/mg_mission4_1.tga
 	texture_normals materialDev/textures/tomf/mg_mission4_1_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission4_1_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission4_2:
 	texture_base materialDev/textures/tomf/mg_mission4_2.tga
 	texture_normals materialDev/textures/tomf/mg_mission4_2_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission4_2_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission5_1:
 	texture_base materialDev/textures/tomf/mg_mission5_1.tga
 	texture_normals materialDev/textures/tomf/mg_mission5_1_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission5_1_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission5_2:
 	texture_base materialDev/textures/tomf/mg_mission5_2.tga
 	texture_normals materialDev/textures/tomf/mg_mission5_2_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission5_2_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission6_1:
 	texture_base materialDev/textures/tomf/mg_mission6_1.tga
 	texture_normals materialDev/textures/tomf/mg_mission6_1_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission6_1_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_mission6_2:
 	texture_base materialDev/textures/tomf/mg_mission6_2.tga
 	texture_normals materialDev/textures/tomf/mg_mission6_2_n.tga
+	texture_emissive materialDev/textures/tomf/mg_mission6_2_light.png
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
+	emissive_factor .05
+	default_radiance .1
+	is_light 1
 
 textures/tomf/mg_missions:
 	texture_base materialDev/textures/tomf/mg_missions.tga
 	texture_normals materialDev/textures/tomf/mg_missions_n.tga
+	texture_roughness materialDev/textures/tomf/mg_mission3_1_rough.png	
+	kind GLASS
 	metalness_factor 0
 
 # Commented out - this texture carries SURF_LIGHT with a non-zero radiance in the BSP,
@@ -20741,7 +20815,7 @@ textures/tomf/tf_light01_2:
 	displace_in 0
     displace_out 0.209
 	emissive_factor 1
-	default_radiance 1.5
+	default_radiance 2.5
 	bsp_radiance 0.0
 	is_light 1
 	displace_clamp 1

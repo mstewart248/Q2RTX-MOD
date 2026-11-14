@@ -1406,6 +1406,8 @@ static int MD5_AppendMergedSkins(const char *base_path, maliasmesh_t *mesh, int 
 		int         classic_skins;  // how many names the 1997 .md2 carries
 		const char *inherit_dir;    // where these skins' classic materials live
 		const char *stems[6];
+		// classic material to take tuning from, when it is not stems[j] itself
+		const char *inherit_stems[6];
 	} merged[] = {
 		{ "models/monsters/soldier/md5", 6, "models/monsters/soldierh",
 		  { "sold01", "sold01_p", "sold02", "sold02_p", "sold03", "sold03_p" } },
@@ -1413,6 +1415,11 @@ static int MD5_AppendMergedSkins(const char *base_path, maliasmesh_t *mesh, int 
 		// the classic pair; the 1997 one in baseq2/pak0.pak stops at two
 		{ "models/monsters/gladiatr/md5", 2, "models/monsters/gladiatr",
 		  { "skin2", "pain2" } },
+		// monster_guncmdr: skinnum 2 (cskin), 3 when hurt (cpain). The 1997
+		// gunner.md2 stops at skin/pain, so the commander drew the plain
+		// gunner skin. No classic cskin material exists; take the gunner's.
+		{ "models/monsters/gunner/md5", 2, "models/monsters/gunner",
+		  { "cskin", "cpain" }, { "skin", "pain" } },
 	};
 
 	for (int i = 0; i < q_countof(merged); i++) {
@@ -1438,8 +1445,8 @@ static int MD5_AppendMergedSkins(const char *base_path, maliasmesh_t *mesh, int 
 			// Same reason as the .md2's own skins below: take the classic
 			// material's tuning, which lives under the soldierh path these
 			// skins came from.
-			Q_snprintf(inherit, sizeof(inherit), "%s/%s.pcx",
-			           merged[i].inherit_dir, merged[i].stems[j]);
+			Q_snprintf(inherit, sizeof(inherit), "%s/%s.pcx", merged[i].inherit_dir,
+			           merged[i].inherit_stems[j] ? merged[i].inherit_stems[j] : merged[i].stems[j]);
 			MAT_InheritScalars(mesh->materials[numskins], inherit);
 
 			numskins++;
