@@ -10600,8 +10600,9 @@ textures/e2u3/blum14_2:
 
 textures/e2u3/bmetal14_1:
 	texture_base materialDev/textures/e2u3/bmetal14_1.tga
-	texture_normals materialDev/textures/e2u3/bmetal14_1_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e2u3/bmetal14_1_n.png
+	texture_metallic materialDev/textures/e2u3/bmetal14_1_metal.png
+	texture_roughness materialDev/textures/e2u3/bmetal14_1_rough.png
 
 textures/e2u3/bmtb13_2:
 	texture_base materialDev/textures/e2u3/bmtb13_2.tga
@@ -21351,12 +21352,14 @@ textures/tomf/thinm1_1c:
 textures/tomf/thinm1_1d:
 	texture_base materialDev/textures/tomf/thinm1_1d.tga
 	texture_normals materialDev/textures/tomf/thinm1_1d_n.tga
-	metalness_factor 0
+	texture_metallic materialDev/textures/tomf/thinm1_1d_metal.png
+	texture_roughness materialDev/textures/tomf/thinm1_1d_rough.png
 
 textures/tomf/thinm1_1e:
 	texture_base materialDev/textures/tomf/thinm1_1e.tga
-	texture_normals materialDev/textures/tomf/thinm1_1e_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/thinm1_1e_n.png
+	texture_metallic materialDev/textures/tomf/thinm1_1e_metal.png
+	texture_roughness materialDev/textures/tomf/thinm1_1e_rough.png
 
 textures/tomf/thinm1_1f:
 	texture_base materialDev/textures/tomf/thinm1_1f.tga

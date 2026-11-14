@@ -1,0 +1,24 @@
+
+# instance of textures/e2u3/wstlt1_2
+# mgu3m3, created at (-1605 3697 524)
+# Inherits everything from textures/e2u3/wstlt1_2; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/e2u3/wstlt1_2#f9c9bc60:
+	default_radiance 5
+	emissive_factor 5
+
+# instance of textures/e2u3/wstlt1_2
+# mgu3m3, created at (-1609 3343 520)
+# Inherits everything from textures/e2u3/wstlt1_2; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/e2u3/wstlt1_2#99141e80:
+	default_radiance 5
+	emissive_factor 5
+	
+# instance of textures/e2u3/wstlt1_2
+# mgu3m3, created at (-1037 3519 527)
+# Inherits everything from textures/e2u3/wstlt1_2; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/e2u3/wstlt1_2#6f3e1fe8:
+	default_radiance 5
+	emissive_factor 5

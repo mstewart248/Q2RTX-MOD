@@ -1362,6 +1362,13 @@ void ReadLevel(const char *filename)
                 strcmp(ent->classname, "target_crossunit_target") == 0)
                 ent->nextthink = level.framenum + cross_trigger_delay(ent->delay);
 
+        // Gunner commanders saved before 2026-11-13 carry skinnum 0 or 1:
+        // monster_start used to zero the cskin bit SP_monster_guncmdr had just
+        // set, and a level save restores s.skinnum as stored. Put bit 2 back
+        // (cskin, cpain with bit 0) so existing saves and hub levels heal.
+        if (ent->classname && !strcmp(ent->classname, "monster_guncmdr") && M_RereleaseAnims())
+            ent->s.skinnum |= 2;
+
         if (ent->think == func_clock_think || ent->use == func_clock_use) {
             char *msg = ent->message;
             ent->message = gi.TagMalloc(CLOCK_MESSAGE_SIZE, TAG_LEVEL);
