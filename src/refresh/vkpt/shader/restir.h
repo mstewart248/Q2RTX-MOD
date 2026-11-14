@@ -395,6 +395,16 @@ process_selected_light_restir(
 		direct_specular_weight *= get_specular_sampled_lighting_weight(roughness,
 			normal, -view_direction, L, polygonal_light_pdfw);
 	}
+	else if (direct_specular_weight > 0 && !is_sun && !polygonal_light_is_sky
+		&& global_ubo.pt_light_mis != 0 && global_ubo.pt_specular_mis != 0
+		&& int(light_idx) < global_ubo.num_static_lights)
+	{
+		// pt_light_mis: ReSTIR DI only runs on the first surface. Same weight as
+		// get_direct_illumination, so the bounce ray's share in indirect_lighting.rgen
+		// completes it.
+		direct_specular_weight *= get_polygon_light_mis_weight(roughness, normal, -view_direction, L,
+			cluster_idx, get_light_polygon(light_idx).positions, length(pos_on_light_polygonal - position));
+	}
 
 	vec3 F = vec3(0);
 
@@ -406,12 +416,12 @@ process_selected_light_restir(
 		// pt_direct_roughness_threshold), but those rays never pick up the sun, so
 		// applying it here zeroed the sun's highlight on every glossy surface: tiled
 		// and metal floors visibly lost their sheen whenever ReSTIR was switched on.
-		// Same disk-widened lobe (NoH_offset) and pt_sun_specular switch as well.
+		// Same disk-widened lobe (sun_specular_times_NdotL, pt_sun_disk_lobe) and
+		// pt_sun_specular switch as well.
 		if (vis > 0 && global_ubo.pt_sun_specular > 0)
 		{
-			float NoH_offset = 0.5 * square(global_ubo.sun_tan_half_angle);
-			vec3 specular_brdf = GGX_times_NdotL(view_direction, global_ubo.sun_direction,
-				normal, roughness, base_reflectivity, NoH_offset, specular_factor, F);
+			vec3 specular_brdf = sun_specular_times_NdotL(view_direction, normal, roughness,
+				base_reflectivity, specular_factor, F);
 			specular = radiance * specular_brdf;
 		}
 	}

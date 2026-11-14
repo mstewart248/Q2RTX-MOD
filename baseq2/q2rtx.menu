@@ -425,16 +425,14 @@ begin video_renderer
         endif
         endif
         // RTX Remix's sparse rendering (pt_sparse in global_ubo.h): only with DLSS
-        // Ray-Reconstruction to fill in the pixels it skips, and not with ReSTIR GI -
-        // main.c turns it off in either case, so hidden here it is off too.
+        // Ray-Reconstruction to fill in the pixels it skips - main.c turns it off
+        // otherwise, so hidden here it is off too. Works with ReSTIR GI (unlike Remix).
         ifeq pt_dlss_available 1
         ifneq pt_dlss 0
         ifeq pt_dlss_dldn_available 1
         ifneq pt_dlss_dldn 0
-        ifeq pt_restir_gi 0
-        pairs --status "lights only part of the pixels each frame - a different blue-noise set every time - and lets DLSS Ray-Reconstruction fill in the rest, as in RTX Remix. auto picks the share from the render resolution, about 1/3 at 4K with DLSS; fewer pixels is faster but less stable. Not with ReSTIR GI (pt_sparse)" \
+        pairs --status "lights only part of the pixels each frame - a different blue-noise set every time - and lets DLSS Ray-Reconstruction fill in the rest, as in RTX Remix. auto picks the share from the render resolution, about 1/3 at 4K with DLSS; fewer pixels is faster but less stable (pt_sparse)" \
             "sparse rendering" pt_sparse off 0 auto 1 "1/2 of the pixels" 0.5 "1/3 of the pixels" 0.33 "1/4 of the pixels" 0.25
-        endif
         endif
         endif
         endif

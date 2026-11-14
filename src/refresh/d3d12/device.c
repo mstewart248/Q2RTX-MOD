@@ -6,6 +6,7 @@ deferred release and uploads. See d3d12pt.h and ROADMAP.md.
 #define D3D12PT_DEFINE_GUIDS
 #include "d3d12pt.h"
 #include <SDL.h>    // d3d12_parallel_for's threads
+#include <time.h>   // the device-removed report's date
 
 d3d12_state_t d3d;
 
@@ -150,10 +151,273 @@ bool d3d12_check(HRESULT hr, const char *what, const char *file, int line)
         return true;
 
     Com_EPrintf("D3D12: %s failed: 0x%08lx (%s:%d)\n", what, (unsigned long)hr, file, line);
-    if ((hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG) && d3d.device)
+    if ((hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG) && d3d.device) {
         Com_EPrintf("D3D12: device removed, reason 0x%08lx\n",
                     (unsigned long)ID3D12Device5_GetDeviceRemovedReason(d3d.device));
+        // the report waits for the main thread (d3d12_device_lost): this may be a worker
+        d3d.device_lost = true;
+    }
     return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/* WHEN THE GPU STOPS (d3d12_dred)                                            */
+/* ------------------------------------------------------------------------- */
+
+/* DRED - Device Removed Extended Data - is set before the device is made and read
+   after it is removed.
+   - d3d12_dred 1 (the default): the runtime keeps every resource's GPU addresses, so a
+     page fault names the resource it fell in, or the one freed under it. Nothing a frame.
+   - 2: auto-breadcrumbs as well - the GPU writes how far it got through each command
+     list - with the profiler's pass names as markers in the frame's list
+     (d3d12_timer_mark), so a hang names its pass. That costs some GPU time: it is for
+     chasing a hang.
+   CVAR_REFRESH: a change restarts the renderer.
+
+   Why (11-13): the landing pod exploding at the start of mgu1m1 hung the GPU
+   (DXGI_ERROR_DEVICE_HUNG at Present; nvlddmkm event 153 in the System log) and the
+   next frame's NVIDIA Flow step died on the removed device - an access violation in
+   nvflowext.dll (its createBuffer came back NULL), which looked like Flow's own bug and
+   said nothing about where the GPU had stopped. Now the first frame after a removal
+   writes this report to the console and to logs/gpu_crash.txt, which a relaunch
+   does not overwrite, and ends the game with a plain error (R_BeginFrame_D3D12); Flow
+   is not stepped on a removed device (frontend.c). */
+static cvar_t *d3d12_dred;
+
+static void set_dred(int level)
+{
+    static bool was_set;    // the runtime's DRED settings outlive a device: turn them off again
+    if (level <= 0 && !was_set)
+        return;
+
+    ID3D12DeviceRemovedExtendedDataSettings1 *s = NULL;
+    HRESULT hr = E_NOINTERFACE;
+    if (d3d.device_factory)
+        hr = ID3D12DeviceFactory_GetConfigurationInterface(d3d.device_factory, &CLSID_D3D12DeviceRemovedExtendedData,
+                                                           &IID_ID3D12DeviceRemovedExtendedDataSettings1, (void **)&s);
+    else if (pD3D12GetDebugInterface)
+        hr = pD3D12GetDebugInterface(&IID_ID3D12DeviceRemovedExtendedDataSettings1, (void **)&s);
+    if (FAILED(hr) || !s) {
+        Com_WPrintf("D3D12: no DRED settings (0x%08lx) - d3d12_dred does nothing\n", (unsigned long)hr);
+        return;
+    }
+    const D3D12_DRED_ENABLEMENT on = D3D12_DRED_ENABLEMENT_FORCED_ON, off = D3D12_DRED_ENABLEMENT_FORCED_OFF;
+    ID3D12DeviceRemovedExtendedDataSettings1_SetPageFaultEnablement(s, level >= 1 ? on : off);
+    ID3D12DeviceRemovedExtendedDataSettings1_SetAutoBreadcrumbsEnablement(s, level >= 2 ? on : off);
+    ID3D12DeviceRemovedExtendedDataSettings1_SetBreadcrumbContextEnablement(s, level >= 2 ? on : off);
+    ID3D12DeviceRemovedExtendedDataSettings1_Release(s);
+    was_set = level > 0;
+    d3d.dred = max(level, 0);
+    if (level >= 2)
+        Com_Printf("D3D12: DRED breadcrumbs on (d3d12_dred 2): a GPU hang names its pass, at some GPU cost\n");
+}
+
+static const char *const dred_ops[] = {
+    "SetMarker", "BeginEvent", "EndEvent", "DrawInstanced", "DrawIndexedInstanced", "ExecuteIndirect",
+    "Dispatch", "CopyBufferRegion", "CopyTextureRegion", "CopyResource", "CopyTiles", "ResolveSubresource",
+    "ClearRenderTargetView", "ClearUnorderedAccessView", "ClearDepthStencilView", "ResourceBarrier",
+    "ExecuteBundle", "Present", "ResolveQueryData", "BeginSubmission", "EndSubmission", "DecodeFrame",
+    "ProcessFrames", "AtomicCopyBufferUINT", "AtomicCopyBufferUINT64", "ResolveSubresourceRegion",
+    "WriteBufferImmediate", "DecodeFrame1", "SetProtectedResourceSession", "DecodeFrame2", "ProcessFrames1",
+    "BuildRaytracingAccelerationStructure", "EmitRaytracingAccelerationStructurePostbuildInfo",
+    "CopyRaytracingAccelerationStructure", "DispatchRays", "InitializeMetaCommand", "ExecuteMetaCommand",
+    "EstimateMotion", "ResolveMotionVectorHeap", "SetPipelineState1", "InitializeExtensionCommand",
+    "ExecuteExtensionCommand", "DispatchMesh", "EncodeFrame", "ResolveEncoderOutputMetadata", "Barrier",
+    "BeginCommandList",
+};
+
+static const char *dred_op_name(D3D12_AUTO_BREADCRUMB_OP op, char *buf, size_t size)
+{
+    if ((unsigned)op < ARRAYSIZE(dred_ops))
+        return dred_ops[op];
+    Q_snprintf(buf, size, "op %d", (int)op);
+    return buf;
+}
+
+static const char *dred_name(const char *a, const wchar_t *w, char *buf, size_t size, const char *none)
+{
+    if (a && *a)
+        return a;
+    if (w && *w && WideCharToMultiByte(CP_UTF8, 0, w, -1, buf, (int)size, NULL, NULL) > 0)
+        return buf;
+    return none;
+}
+
+static void dred_line(qhandle_t f, const char *fmt, ...) q_printf(2, 3);
+static void dred_line(qhandle_t f, const char *fmt, ...)
+{
+    char buf[MAXPRINTMSG];
+    va_list ap;
+    va_start(ap, fmt);
+    Q_vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Com_EPrintf("%s\n", buf);
+    if (f)
+        FS_FPrintf(f, "%s\n", buf);
+}
+
+static void dred_breadcrumbs(qhandle_t f, ID3D12DeviceRemovedExtendedData1 *dred)
+{
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 out = { 0 };
+    HRESULT hr = ID3D12DeviceRemovedExtendedData1_GetAutoBreadcrumbsOutput1(dred, &out);
+    if (FAILED(hr)) {
+        dred_line(f, "breadcrumbs: none (0x%08lx)%s", (unsigned long)hr,
+                  d3d.dred < 2 ? " - d3d12_dred 2 records which pass the GPU was in" : "");
+        return;
+    }
+
+    int finished = 0;
+    for (const D3D12_AUTO_BREADCRUMB_NODE1 *n = out.pHeadAutoBreadcrumbNode; n; n = n->pNext) {
+        char lname[256], qname[256], opbuf[32];
+        // ours are all named: a list without one is NVIDIA Flow's (or a DLSS library's)
+        const char *list = dred_name(n->pCommandListDebugNameA, n->pCommandListDebugNameW, lname, sizeof(lname),
+                                     "(no name: NVIDIA Flow's, or DLSS's)");
+        const char *queue = dred_name(n->pCommandQueueDebugNameA, n->pCommandQueueDebugNameW, qname, sizeof(qname),
+                                      "(no name)");
+        const UINT count = n->BreadcrumbCount;
+        const UINT done = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+        if (count && done >= count) {
+            finished++;
+            continue;
+        }
+        if (!done) {
+            dred_line(f, "list \"%s\" on \"%s\": not started (%u operations)", list, queue, count);
+            continue;
+        }
+
+        // the one it was in: the first operation not done, and the pass marker before it
+        dred_line(f, "list \"%s\" on \"%s\": STOPPED in operation %u of %u, %s", list, queue, done + 1, count,
+                  dred_op_name(n->pCommandHistory[done], opbuf, sizeof(opbuf)));
+        const wchar_t *pass = NULL;
+        UINT pass_index = 0;
+        for (UINT c = 0; c < n->BreadcrumbContextsCount; c++) {
+            const D3D12_DRED_BREADCRUMB_CONTEXT *ctx = &n->pBreadcrumbContexts[c];
+            if (ctx->BreadcrumbIndex <= done && ctx->pContextString && (!pass || ctx->BreadcrumbIndex >= pass_index)) {
+                pass = ctx->pContextString;
+                pass_index = ctx->BreadcrumbIndex;
+            }
+        }
+        if (pass) {
+            char pbuf[256];
+            dred_line(f, "  after marker \"%s\" (operation %u)", dred_name(NULL, pass, pbuf, sizeof(pbuf), "?"),
+                      pass_index + 1);
+        }
+        const UINT first = done > 6 ? done - 6 : 0, last = min(count, done + 4);
+        for (UINT i = first; i < last; i++)
+            dred_line(f, "  %s %u %s", i == done ? "->" : i < done ? "  " : " .", i + 1,
+                      dred_op_name(n->pCommandHistory[i], opbuf, sizeof(opbuf)));
+    }
+    if (finished)
+        dred_line(f, "%d more command lists had finished", finished);
+}
+
+static const char *dred_allocation_type(D3D12_DRED_ALLOCATION_TYPE type, char *buf, size_t size)
+{
+    switch (type) {
+    case D3D12_DRED_ALLOCATION_TYPE_RESOURCE:           return "resource";
+    case D3D12_DRED_ALLOCATION_TYPE_HEAP:               return "heap";
+    case D3D12_DRED_ALLOCATION_TYPE_DESCRIPTOR_HEAP:    return "descriptor heap";
+    case D3D12_DRED_ALLOCATION_TYPE_QUERY_HEAP:         return "query heap";
+    case D3D12_DRED_ALLOCATION_TYPE_COMMAND_LIST:       return "command list";
+    case D3D12_DRED_ALLOCATION_TYPE_COMMAND_ALLOCATOR:  return "command allocator";
+    case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_STATE:     return "pipeline";
+    case D3D12_DRED_ALLOCATION_TYPE_STATE_OBJECT:       return "state object";
+    default:
+        Q_snprintf(buf, size, "type %d", (int)type);
+        return buf;
+    }
+}
+
+static void dred_allocations(qhandle_t f, const char *what, const D3D12_DRED_ALLOCATION_NODE1 *n)
+{
+    int shown = 0, total = 0;
+    for (; n; n = n->pNext, total++) {
+        if (shown == 24)
+            continue;
+        char nbuf[256], tbuf[32];
+        dred_line(f, "  %s: %s (%s)", what, dred_name(n->ObjectNameA, n->ObjectNameW, nbuf, sizeof(nbuf), "(no name)"),
+                  dred_allocation_type(n->AllocationType, tbuf, sizeof(tbuf)));
+        shown++;
+    }
+    if (total > shown)
+        dred_line(f, "  ... and %d more %s", total - shown, what);
+    if (!total)
+        dred_line(f, "  %s: nothing", what);
+}
+
+static void report_device_removed(void)
+{
+    const HRESULT reason = ID3D12Device5_GetDeviceRemovedReason(d3d.device);
+    qhandle_t f = 0;
+    if (FS_OpenFile("logs/gpu_crash.txt", &f, FS_MODE_APPEND | FS_FLAG_TEXT) < 0)
+        f = 0;
+
+    char date[64] = "";
+    const time_t now = time(NULL);
+    const struct tm *tm = localtime(&now);
+    if (tm)
+        strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", tm);
+    const char *why = reason == DXGI_ERROR_DEVICE_HUNG ? "DXGI_ERROR_DEVICE_HUNG: the GPU hung or faulted" :
+                      reason == DXGI_ERROR_DEVICE_REMOVED ? "DXGI_ERROR_DEVICE_REMOVED" :
+                      reason == DXGI_ERROR_DEVICE_RESET ? "DXGI_ERROR_DEVICE_RESET" :
+                      reason == DXGI_ERROR_DRIVER_INTERNAL_ERROR ? "DXGI_ERROR_DRIVER_INTERNAL_ERROR" :
+                      reason == E_OUTOFMEMORY ? "E_OUTOFMEMORY" : "?";
+    dred_line(f, "==== %s D3D12 device removed: 0x%08lx (%s), map %s, frame %llu, d3d12_dred %d ====", date,
+              (unsigned long)reason, why, Cvar_VariableString("mapname"), (unsigned long long)d3d.frame_counter,
+              d3d.dred);
+
+    ID3D12DeviceRemovedExtendedData1 *dred = NULL;
+    if (FAILED(ID3D12Device5_QueryInterface(d3d.device, &IID_ID3D12DeviceRemovedExtendedData1, (void **)&dred)) ||
+        !dred) {
+        dred_line(f, "no DRED report%s", d3d.dred ? "" : " (d3d12_dred 0)");
+    } else {
+        ID3D12DeviceRemovedExtendedData2 *dred2 = NULL;
+        if (SUCCEEDED(ID3D12DeviceRemovedExtendedData1_QueryInterface(dred, &IID_ID3D12DeviceRemovedExtendedData2,
+                                                                      (void **)&dred2)) && dred2) {
+            const D3D12_DRED_DEVICE_STATE state = ID3D12DeviceRemovedExtendedData2_GetDeviceState(dred2);
+            dred_line(f, "device state: %s", state == D3D12_DRED_DEVICE_STATE_HUNG ? "HUNG (a timeout: still running)" :
+                      state == D3D12_DRED_DEVICE_STATE_FAULT ? "FAULT" :
+                      state == D3D12_DRED_DEVICE_STATE_PAGEFAULT ? "PAGEFAULT (a bad memory access)" : "unknown");
+            ID3D12DeviceRemovedExtendedData2_Release(dred2);
+        }
+
+        dred_breadcrumbs(f, dred);
+
+        D3D12_DRED_PAGE_FAULT_OUTPUT1 pf = { 0 };
+        const HRESULT hr = ID3D12DeviceRemovedExtendedData1_GetPageFaultAllocationOutput1(dred, &pf);
+        if (FAILED(hr)) {
+            dred_line(f, "page fault: none recorded (0x%08lx)", (unsigned long)hr);
+        } else if (!pf.PageFaultVA) {
+            dred_line(f, "page fault: none");
+        } else {
+            dred_line(f, "page fault at GPU address 0x%016llx", (unsigned long long)pf.PageFaultVA);
+            dred_allocations(f, "in", pf.pHeadExistingAllocationNode);
+            dred_allocations(f, "freed", pf.pHeadRecentFreedAllocationNode);
+        }
+        ID3D12DeviceRemovedExtendedData1_Release(dred);
+    }
+
+    if (f) {
+        FS_FPrintf(f, "\n");
+        FS_CloseFile(f);
+        Com_EPrintf("D3D12: this report is also in logs/gpu_crash.txt\n");
+    }
+}
+
+bool d3d12_device_lost(void)
+{
+    if (!d3d.device)
+        return false;
+    if (!d3d.device_lost) {
+        if (ID3D12Device5_GetDeviceRemovedReason(d3d.device) == S_OK)
+            return false;
+        d3d.device_lost = true;
+    }
+    if (!d3d.device_reported) {
+        d3d.device_reported = true;
+        report_device_removed();
+    }
+    return true;
 }
 
 void d3d12_set_name(ID3D12Object *object, const char *name)
@@ -1081,6 +1345,7 @@ bool d3d12_device_init(void)
     memset(&d3d, 0, sizeof(d3d));
 
     d3d12_debug = Cvar_Get("d3d12_debug", "0", CVAR_REFRESH);
+    d3d12_dred = Cvar_Get("d3d12_dred", "1", CVAR_REFRESH);
     d3d12_agility_preview = Cvar_Get("d3d12_agility_preview", "0", CVAR_REFRESH | CVAR_ARCHIVE);
     d3d12_adapter = Cvar_Get("d3d12_adapter", "-1", CVAR_REFRESH | CVAR_ARCHIVE);
 
@@ -1125,6 +1390,7 @@ bool d3d12_device_init(void)
 
     if (d3d12_debug->integer)
         enable_debug_layer(d3d12_debug->integer);
+    set_dred(d3d12_dred->integer);
 
     if (!D3D_CHECK(pCreateDXGIFactory2(d3d12_debug->integer ? DXGI_CREATE_FACTORY_DEBUG : 0, &IID_IDXGIFactory6,
                                        (void **)&d3d.factory)))

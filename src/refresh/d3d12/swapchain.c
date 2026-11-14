@@ -380,6 +380,7 @@ static bool fg_create_objects(void)
         return false;
     }
     d3d12_set_name((ID3D12Object *)fg.queue, "present queue");
+    d3d12_set_name((ID3D12Object *)fg.list, "frame generation");  // DRED: an unnamed list is Flow's
     // Reflex: the presents here are out of band (the real frame's are marked by its id)
     d3d12_reflex_out_of_band_present_queue(fg.queue);
     fg.ready_value = fg.done_value = 0;

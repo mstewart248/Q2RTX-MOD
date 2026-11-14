@@ -251,8 +251,38 @@ static void trace_raygen(recorder_t *r, ID3D12StateObject *so, D3D12_GPU_VIRTUAL
     d3d12_barrier_all(r->p->cmd, r->p->enhanced_barriers);
 }
 
+// the profiler's rows by name, for the markers (vkpt/profiler.h, then passes.h's pieces)
+static const char *const timer_names[D3D12_NUM_PROFILER_ENTRIES] = {
+#define PROFILER_DO(a, ...) #a,
+    PROFILER_LIST
+#undef PROFILER_DO
+    "SHADOW_MAP_DYNAMIC", "BVH_TLAS", "FLOW_PASSES",
+};
+
+/* d3d12_dred 2 (device.c): a marker per mark, which DRED's breadcrumbs keep with the
+   operation it came before, so a report of where the GPU stopped names the pass. A
+   PIX-style marker: metadata 0 is a UTF-16 string. */
+static void timer_marker(ID3D12GraphicsCommandList4 *cmd, int entry, int action)
+{
+    const char *name = entry >= 0 && entry < D3D12_NUM_PROFILER_ENTRIES && timer_names[entry] ?
+                       timer_names[entry] : "?";
+    if (!strncmp(name, "PROFILER_", 9))
+        name += 9;
+    const char *what = action == PROFILER_START ? " start" : " end";
+    WCHAR text[96];
+    UINT n = 0;
+    for (const char *s = name; *s && n < 80; s++)
+        text[n++] = (WCHAR)*s;
+    for (const char *s = what; *s && n < 95; s++)
+        text[n++] = (WCHAR)*s;
+    text[n++] = 0;
+    ID3D12GraphicsCommandList4_SetMarker(cmd, 0, text, n * (UINT)sizeof(WCHAR));
+}
+
 void d3d12_timer_mark(ID3D12GraphicsCommandList4 *cmd, const d3d12_timers_t *t, int entry, int action)
 {
+    if (t && t->markers)
+        timer_marker(cmd, entry, action);
     if (!t || !t->heap)
         return;
     const uint32_t q = (uint32_t)(entry * 2 + action);

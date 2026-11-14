@@ -5464,10 +5464,9 @@ sparse_rendering_rate(const reference_mode_t *ref_mode, const QVKUniformBuffer_t
 	// 0) would take them for noise, and photo mode accumulates every pixel.
 	else if (!ref_mode->rr_denoiser || ref_mode->enable_denoiser || ref_mode->enable_accumulation)
 		reason = "needs DLSS Ray Reconstruction with pt_dlss_bypass_denoiser 1, and not in photo mode";
-	// ReSTIR GI resamples every pixel's first bounce; Remix turns sparse rendering off
-	// under it too
-	else if (ubo->pt_restir_gi != 0.f)
-		reason = "off while ReSTIR GI (pt_restir_gi) is on";
+	// ReSTIR GI is allowed (Remix turns sparse rendering off under it): a skipped pixel
+	// carries its GI reservoir forward and lights nothing - see sparse_inactive_pixel in
+	// direct_lighting.rgen and RESTIR_GI_CAND_SPARSE in restir_gi.h
 	// the radiance cache's debug views show the cache itself
 	else if (ubo->pt_sharc >= 3.f)
 		reason = "off in the pt_sharc debug views";

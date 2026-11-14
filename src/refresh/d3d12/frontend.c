@@ -1385,8 +1385,9 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
 
     // NVIDIA Flow, where R_RenderFrame_RTX runs it: Flow's simulation executes on the
     // queue now, ahead of this frame's list, and the textures set's Flow bindings are
-    // this frame's; then what is left to record, and path_tracer.c's variants
-    if (vkpt_flow_backend) {
+    // this frame's; then what is left to record, and path_tracer.c's variants. Not on a
+    // removed device: Flow's allocations come back NULL and it dereferences them.
+    if (vkpt_flow_backend && !d3d12_device_lost()) {
         static cvar_t *pt_flow_split_pass, *pt_reflect_noflow;
         if (!pt_flow_split_pass) {
             pt_flow_split_pass = Cvar_Get("pt_flow_split_pass", "1", 0);    // path_tracer.c's

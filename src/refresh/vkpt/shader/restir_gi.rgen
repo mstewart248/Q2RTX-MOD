@@ -251,6 +251,10 @@ temporal_pass(ivec2 ipos)
 
 	bool have_candidate = marker == RESTIR_GI_CAND_DIFFUSE;
 
+	// pt_sparse skipped this pixel this frame (direct_lighting.rgen's
+	// sparse_inactive_pixel): carry the history forward, light nothing.
+	bool sparse_idle = marker == RESTIR_GI_CAND_SPARSE;
+
 	// POS.w holds the pixel's throughput before the lobe choice on every frame
 	// (indirect_lighting.rgen); it is replaced by W below, and kept in DATA.w for
 	// the spatial pass.
@@ -537,7 +541,7 @@ temporal_pass(ivec2 ipos)
 	// read as ghosting. With spatial reuse on the spatial pass shades, with its own
 	// visibility test (pt_restir_gi_spatial_vis), so this ray would go unused.
 	float visibility = 1.0;
-	if(!spatial && r.W > 0 && global_ubo.pt_restir_gi_vis != 0)
+	if(!spatial && !sparse_idle && r.W > 0 && global_ubo.pt_restir_gi_vis != 0)
 	{
 		Ray shadow_ray = get_shadow_ray(x_v - view_dir * 0.01, r.pos, 0);
 		visibility = trace_shadow_ray(shadow_ray, gi_shadow_cull_mask(int(view.w)));
@@ -580,6 +584,10 @@ temporal_pass(ivec2 ipos)
 		imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(vec3(0))));
 		return;
 	}
+
+	// Its light is zero this frame (compositing.comp scales the lit pixels by 1 / rate).
+	if(sparse_idle)
+		return;
 
 	/* pt_restir_gi_fresh_mix: light this share of the diffuse indirect with this
 	   frame's own bounce, as the plain path tracer would, and the rest with the

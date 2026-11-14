@@ -231,6 +231,12 @@ static void R_BeginFrame_D3D12(void)
     if (stage != STAGE_DRAW || d3d.frame_open)
         return;
 
+    // the GPU stopped (a hang or a fault): nothing more can be drawn, and NVIDIA Flow
+    // died on the next frame's allocations (11-13) - the report, then a plain error
+    if (d3d12_device_lost())
+        Com_Error(ERR_FATAL, "D3D12: the GPU stopped (device removed) - the console and logs/gpu_crash.txt "
+                  "say where");
+
     // frame generation on or off: the swapchain moves queues between frames
     d3d12_frontend_fg_begin_frame();
     fg_generated = 0;

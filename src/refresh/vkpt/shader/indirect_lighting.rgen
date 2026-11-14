@@ -783,6 +783,19 @@ indirect_lighting(
 			   notes advise clamping the secondary roughness. Lighting at the hit only. */
 			if(gi_candidate && global_ubo.pt_restir_gi_secondary_roughness > 0)
 				bounce_roughness = max(bounce_roughness, global_ubo.pt_restir_gi_secondary_roughness);
+
+			/* pt_bounce_min_roughness - see global_ubo.h. Path regularisation: a bounce
+			   cannot resolve a lobe sharper than the one it left, so a diffuse bounce (or
+			   any later one) lights the surface it lands on with at least this roughness,
+			   and a specular bounce off the first surface with at least that surface's
+			   own roughness. Only this hit's lamp and sun highlight sees it. */
+			if(global_ubo.pt_bounce_min_roughness > 0)
+			{
+				float min_roughness = global_ubo.pt_bounce_min_roughness;
+				if(spec_bounce_index == 0 && is_specular_ray)
+					min_roughness = min(min_roughness, primary_roughness);
+				bounce_roughness = max(bounce_roughness, min_roughness);
+			}
 		}
 
 		if(luminance(emissive) > 0) 
@@ -801,7 +814,27 @@ indirect_lighting(
 			if(is_specular_ray)
 			{
 				if(is_analytic_light)
-					bounce_contrib += emissive * (1.0 - direct_specular_weight);
+				{
+					// The share light sampling did not take. pt_light_mis: for a BSP-world
+					// lamp hit from the first surface it is the balance-heuristic share,
+					// the same get_polygon_light_mis_weight that get_direct_illumination
+					// and process_selected_light_restir weighted their sample of this lamp
+					// with, so the two add up to the whole highlight. Instanced models
+					// (doors, lamps on models) keep the old split, as their light side does.
+					float light_share = direct_specular_weight;
+					if(light_share > 0 && spec_bounce_index == 0
+						&& global_ubo.pt_light_mis != 0 && global_ubo.pt_specular_mis != 0
+						&& (ray_payload_geometry.buffer_and_instance_idx & 0xffff) == VERTEX_BUFFER_WORLD
+						&& triangle.instance_index == ~0u)
+					{
+						uint primary_cluster = texelFetch(TEX_PT_CLUSTER_A, ipos, 0).x;
+						if(primary_cluster == 0xffff) primary_cluster = ~0u; // uint16 image
+						light_share *= get_polygon_light_mis_weight(primary_roughness, normal,
+							-view_direction.xyz, bounce_direction, primary_cluster,
+							triangle.positions, length(triangle.positions * bary - position));
+					}
+					bounce_contrib += emissive * (1.0 - light_share);
+				}
 				else
 					bounce_contrib += emissive * indirect_specular_weight;
 			}

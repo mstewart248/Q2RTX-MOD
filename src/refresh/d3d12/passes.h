@@ -113,6 +113,7 @@ typedef struct {
     ID3D12QueryHeap     *heap;
     uint32_t            base;       // the slot's first query
     bool                *used;      // [D3D12_PROFILER_QUERIES]: the ones written, for the resolve
+    bool                markers;    // d3d12_dred 2: each mark is also a marker DRED's breadcrumbs keep
 } d3d12_timers_t;
 
 // vkpt's BEGIN_PERF_MARKER / END_PERF_MARKER: entry's timestamp (action: PROFILER_START

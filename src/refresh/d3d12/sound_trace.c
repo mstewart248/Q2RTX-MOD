@@ -417,6 +417,7 @@ static bool snd_make_queue(int mode)
                                                &IID_ID3D12GraphicsCommandList4, (void **)&snd.cmd)) ||
         FAILED(ID3D12GraphicsCommandList4_Close(snd.cmd)))
         return false;
+    d3d12_set_name((ID3D12Object *)snd.cmd, "sound tracing");    // DRED: an unnamed list is Flow's
     snd.ts_frequency = 0;
     if (FAILED(ID3D12CommandQueue_GetTimestampFrequency(snd.queue, &snd.ts_frequency)))
         snd.ts_frequency = 0;

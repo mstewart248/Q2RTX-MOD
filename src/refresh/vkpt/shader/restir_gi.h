@@ -115,6 +115,7 @@ is the unbiased reference.
 #define RESTIR_GI_CAND_DIFFUSE   0.0  // a fresh diffuse candidate, M not yet assigned
 #define RESTIR_GI_CAND_SPECULAR -2.0  // this frame's first bounce went specular: reuse only
 #define RESTIR_GI_CAND_INVALID  -1.0  // nothing to light (sky, invalid surface, lava)
+#define RESTIR_GI_CAND_SPARSE   -3.0  // pt_sparse skipped this pixel this frame: carry the history, light nothing
 
 bool restir_gi_enabled()
 {

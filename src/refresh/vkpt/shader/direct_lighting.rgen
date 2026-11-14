@@ -37,6 +37,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define PT_PATH_LAUNCH
 #define ENABLE_SHADOW_CAUSTICS
 #include "restir.h"
+#include "restir_gi.h"
 #include "projection.glsl"
 
 layout(constant_id = 0) const uint spec_enable_caustics = 0;
@@ -1119,6 +1120,24 @@ sparse_inactive_pixel(ivec2 ipos)
 		}
 		if(owner)
 			restir_sparse_carry(ipos, ipos_r, material_id != 0);
+	}
+
+	/* ReSTIR GI (pt_restir_gi). indirect_lighting.rgen never visits this pixel this
+	   frame, so the candidate images still hold an older frame's - this leaves the
+	   marker it would have. SPARSE: restir_gi.rgen's temporal pass carries the history
+	   forward without a candidate, as on a frame whose bounce went specular, and lights
+	   nothing, so the pixel's light stays zero like the rest of it; the zero throughput
+	   in POS.w makes the spatial pass skip it too. Its reservoir is still this frame's,
+	   so the lit pixels around it keep borrowing it. The sky is INVALID, as
+	   indirect_lighting.rgen marks it. */
+	if(restir_gi_enabled())
+	{
+		vec3 gi_origin = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0).xyz;
+		vec3 gi_origin_normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+		float marker = material_id != 0 ? RESTIR_GI_CAND_SPARSE : RESTIR_GI_CAND_INVALID;
+		imageStore(IMG_PT_RESTIR_GI_ORIGIN_A, ipos, vec4(gi_origin, uintBitsToFloat(encode_normal(gi_origin_normal))));
+		imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(0, 0, 0, uintBitsToFloat(packRGBE(vec3(0)))));
+		imageStore(IMG_PT_RESTIR_GI_DATA_A, ipos, uvec4(0, 0, floatBitsToUint(marker), 0));
 	}
 
 	if(material_id == 0)

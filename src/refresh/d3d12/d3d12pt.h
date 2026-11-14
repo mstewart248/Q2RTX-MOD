@@ -134,6 +134,12 @@ typedef struct {
     uint64_t                frame_counter;
     bool                    frame_open;         // between R_BeginFrame and R_EndFrame
 
+    // d3d12_dred: what the runtime was told to keep for a device-removed report
+    // (0 nothing, 1 page faults, 2 + breadcrumbs and the passes' markers)
+    int                     dred;
+    bool                    device_lost;        // a call came back with the device removed
+    bool                    device_reported;    // and its report is written (d3d12_device_lost)
+
     ID3D12DescriptorHeap    *srv_heap;          // shader visible, D3D12_HEAP_SIZE
     ID3D12DescriptorHeap    *sampler_heap;      // shader visible, D3D12_SAMPLER_HEAP_SIZE
     ID3D12DescriptorHeap    *rtv_heap;          // CPU only: D3D12_RTV_* below
@@ -200,6 +206,9 @@ bool d3d12_is_ultimate(void);     // DirectX 12 Ultimate: feature level 12_2 and
 // HRESULT check: prints what failed and where, returns true on success
 bool d3d12_check(HRESULT hr, const char *what, const char *file, int line);
 #define D3D_CHECK(expr) d3d12_check((expr), #expr, __FILE__, __LINE__)
+// the device is gone (a call said so, or the runtime does now): the first time, the
+// DRED report to the console and logs/gpu_crash.txt. Main thread only.
+bool d3d12_device_lost(void);
 
 // Releases a COM object once the GPU can no longer be using it: after the frame
 // being recorded (or, between frames, every frame submitted) has finished.

@@ -176,6 +176,7 @@ void d3d12_timers_get(d3d12_timers_t *out)
     out->heap = t.heap;
     out->base = (uint32_t)(slot * D3D12_PROFILER_QUERIES);
     out->used = t.used[slot];
+    out->markers = d3d.dred >= 2;
 }
 
 void d3d12_timers_flow(int action)

@@ -931,6 +931,38 @@ get_specular_sampled_lighting_weight(float roughness, vec3 N, vec3 V, vec3 L, fl
 	return clamp(pdfw / (pdfw + ggxVndfPdf), 0, 1);
 }
 
+/* pt_light_mis - see global_ubo.h. The share of a BSP-world lamp's highlight on the
+   first surface that LIGHT SAMPLING keeps; the specular bounce ray that hits the same
+   point on the lamp keeps the rest. get_direct_illumination, process_selected_light_restir
+   and indirect_lighting.rgen call this with the same inputs for the same point, so the
+   two shares add up to 1 and the sum stays unbiased whatever the pdfs are worth.
+   The light-sampling pdf is a stand-in both sides can compute: the bounce ray sees the
+   lamp's triangle, not the trimmed light polygon sample_lights used, so it is the
+   chance a pixel looks at this lamp at all (1 / partitions, as sample_lights
+   partitions the list) times the solid-angle density of a pt_light_mis_area lamp at
+   this distance and angle. light_positions only supply the lamp's plane. */
+float
+get_polygon_light_mis_weight(float roughness, vec3 N, vec3 V, vec3 L, uint cluster_idx, mat3 light_positions, float dist)
+{
+	float partitions = 1.0;
+	if (cluster_idx != ~0u)
+	{
+		uint list_len = light_buffer.light_list_offsets[cluster_idx + 1] - light_buffer.light_list_offsets[cluster_idx];
+		partitions = max(1.0, ceil(float(list_len) / float(MAX_BRUTEFORCE_SAMPLING)));
+	}
+
+	vec3 light_n = cross(light_positions[1] - light_positions[0], light_positions[2] - light_positions[0]);
+	float n_len = length(light_n);
+	float cos_light = n_len > 0 ? abs(dot(light_n / n_len, L)) : 0;
+
+	float area = max(global_ubo.pt_light_mis_area, 1.0);
+	float light_pdf = dist * dist / (area * max(cos_light, 0.01) * partitions);
+	float brdf_pdf = ImportanceSampleGGX_VNDF_PDF(max(roughness, 0.01), N, V, L);
+
+	float w = light_pdf / (light_pdf + brdf_pdf);
+	return (isnan(w) || isinf(w)) ? 1.0 : clamp(w, 0, 1);
+}
+
 float get_unshadowed_env_path_contrib(
 	vec3 normal,
 	vec3 view_direction,
@@ -1096,6 +1128,15 @@ get_direct_illumination(
 		direct_specular_weight *= get_specular_sampled_lighting_weight(roughness,
 			normal, -view_direction, L, light_pdfw);
 	}
+	else if (direct_specular_weight > 0 && bounce == 0 && !polygonal_light_is_sky
+		&& global_ubo.pt_light_mis != 0 && global_ubo.pt_specular_mis != 0
+		&& light_index >= 0 && light_index < global_ubo.num_static_lights)
+	{
+		// pt_light_mis: a BSP-world lamp on the first surface. indirect_lighting.rgen
+		// gives the specular bounce ray that hits it the other share.
+		direct_specular_weight *= get_polygon_light_mis_weight(roughness, normal, -view_direction, L,
+			cluster_idx, get_light_polygon(light_index).positions, length(pos_on_light - position));
+	}
 
 	vec3 F = vec3(0);
 
@@ -1112,6 +1153,29 @@ get_direct_illumination(
 	diffuse = radiance * diffuse_brdf * (vec3(1.0) - F);
 }
 
+
+/* The sun's highlight, shaded once toward the sun's centre with the lobe widened to cover
+   its disk. pt_sun_disk_lobe - see global_ubo.h: 1 folds the disk into GGX's alpha (the
+   disk's half-vector radius is half its angular radius), so D stays normalised; 0 is the
+   upstream NoH offset, which held D at its peak across the disk and gave glossy surfaces
+   up to hundreds of times the sun's light. get_sunlight and process_selected_light_restir
+   both call this. */
+vec3
+sun_specular_times_NdotL(vec3 view_direction, vec3 normal, float roughness, vec3 base_reflectivity, float specular_factor, out vec3 F)
+{
+	if (global_ubo.pt_sun_disk_lobe != 0)
+	{
+		float alpha = square(max(roughness, 0.02));
+		float disk = 0.5 * global_ubo.sun_tan_half_angle;
+		float disk_roughness = sqrt(sqrt(square(alpha) + square(disk)));
+		return GGX_times_NdotL(view_direction, global_ubo.sun_direction,
+			normal, disk_roughness, base_reflectivity, 0.0, specular_factor, F);
+	}
+
+	float NoH_offset = 0.5 * square(global_ubo.sun_tan_half_angle);
+	return GGX_times_NdotL(view_direction, global_ubo.sun_direction,
+		normal, roughness, base_reflectivity, NoH_offset, specular_factor, F);
+}
 
 void
 get_sunlight(
@@ -1187,9 +1251,8 @@ get_sunlight(
 
 	if (global_ubo.pt_sun_specular > 0)
 	{
-		float NoH_offset = 0.5 * square(global_ubo.sun_tan_half_angle);
-		vec3 specular_brdf = GGX_times_NdotL(view_direction, global_ubo.sun_direction,
-			normal, roughness, base_reflectivity, NoH_offset, specular_factor, F);
+		vec3 specular_brdf = sun_specular_times_NdotL(view_direction, normal, roughness,
+			base_reflectivity, specular_factor, F);
 		specular = radiance * specular_brdf;
 	}
 
