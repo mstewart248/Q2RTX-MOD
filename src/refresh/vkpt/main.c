@@ -6439,6 +6439,16 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 	if (render_world)
 		vkpt_freecam_update(cls.frametime);
 
+	/* waterLevel is RDF_UNDERWATER, the game's test at the PLAYER'S EYE. Once
+	   photo mode's camera has moved off that eye it describes the wrong point:
+	   a player under water forced MEDIUM_WATER (extinction, warp) onto a camera
+	   flown out into the air. Ask the same question at the camera instead -
+	   CL_PointContents covers moving brush water (func_water) as the game's
+	   gi.pointcontents does, which the view-leaf lookup in prepare_ubo cannot. */
+	const bool camera_detached = render_world && vkpt_freecam_detached();
+	if (camera_detached)
+		waterLevel = (cl.bsp && (CL_PointContents(fd->vieworg) & MASK_WATER)) ? 3 : 0;
+
 	static unsigned previous_wallclock_time = 0;
 	unsigned current_wallclock_time = Sys_Milliseconds();
 	float frame_wallclock_time = (previous_wallclock_time != 0) ? (float)(current_wallclock_time - previous_wallclock_time) * 1e-3f : 0.f;
@@ -6674,7 +6684,9 @@ vkpt_prepare_frame(refdef_t *fd, int waterLevel, vkpt_frame_prep_t *prep)
 		}
 	}
 
-	if (cvar_tm_blend_enable->integer)
+	// The screen blend is the player's eye too (liquid tint, damage and pickup
+	// flashes), so it goes once photo mode's camera has left that eye.
+	if (cvar_tm_blend_enable->integer && !camera_detached)
 		Vector4Copy(fd->blend, ubo->fs_blend_color);
 	else
 		Vector4Set(ubo->fs_blend_color, 0.f, 0.f, 0.f, 0.f);

@@ -1588,6 +1588,7 @@ void vkpt_god_rays_prepare_ubo(
 
 void vkpt_freecam_reset(void);
 void vkpt_freecam_update(float frame_time);
+bool vkpt_freecam_detached(void);
 void vkpt_reset_accumulation(void);
 void vkpt_dlss_request_history_reset(void);
 uint32_t vkpt_pt_field_width(void);

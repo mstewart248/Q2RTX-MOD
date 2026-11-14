@@ -1526,7 +1526,9 @@ void SP_monster_guncmdr(edict_t *self)
         self->s.scale = 1.25f;
     VectorSet(self->mins, -16, -16, -24);
     VectorSet(self->maxs, 16, 16, 36);
-    self->s.skinnum = 2;    // cskin, the commander skin
+    // skinnum 2 (cskin, the commander skin) is set after walkmonster_start:
+    // monster_start zeroes s.skinnum (1997 code; the rerelease dropped that
+    // line), so setting it here drew the plain gunner skin.
 
     self->health = 325;     // health_multiplier: applied in monster_start
 	self->gib_health = -175;
@@ -1570,4 +1572,7 @@ void SP_monster_guncmdr(edict_t *self)
 	self->monsterinfo.jump_height = 40;
 
 	walkmonster_start(self);
+
+    if (self->inuse)
+        self->s.skinnum = 2;    // cskin; see above
 }

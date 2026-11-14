@@ -34,6 +34,7 @@ player's own setting can't be saved as third person (see client.h).
 
 
 static vec3_t freecam_vieworg = { 0.f };
+static vec3_t freecam_start_vieworg = { 0.f };  // the player's eye when photo mode began
 static vec3_t freecam_viewangles = { 0.f };
 static float freecam_zoom = 1.f;
 static bool freecam_keystate[6] = { 0 };
@@ -60,6 +61,15 @@ void vkpt_freecam_reset()
 
 	cl_photo_third_person = false;
 	freecam_active = false;
+}
+
+/* True once photo mode's camera has moved away from the player's eye. From
+   then on, what the game sends about that eye - RDF_UNDERWATER and the screen
+   blend (its liquid tint, damage and pickup flashes) - is no longer about the
+   picture being rendered. Turning the camera without moving it keeps both. */
+bool vkpt_freecam_detached(void)
+{
+	return freecam_active && !VectorCompare(freecam_vieworg, freecam_start_vieworg);
 }
 
 static void vkpt_freecam_mousemove(void)
@@ -129,6 +139,7 @@ void vkpt_freecam_update(float frame_time)
 	if (!freecam_active)
 	{
 		VectorCopy(vkpt_refdef.fd->vieworg, freecam_vieworg);
+		VectorCopy(vkpt_refdef.fd->vieworg, freecam_start_vieworg);
 		VectorCopy(vkpt_refdef.fd->viewangles, freecam_viewangles);
 		freecam_zoom = 1.f;
 		freecam_active = true;

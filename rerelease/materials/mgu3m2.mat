@@ -1,0 +1,50 @@
+
+# instance of textures/tomf/tf_light01_2
+# mgu3m2, created at (-2056 895 -402)
+# Inherits everything from textures/tomf/tf_light01_2; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/tomf/tf_light01_2#0c032d72:
+#	texture_base textures/tomf/TF_Light01_2.wal
+#	texture_normals materialDev/textures/tomf/tf_light01_2b_n.png
+#	texture_roughness materialDev/textures/tomf/tf_light01_2b_rough.png
+#	texture_metallic materialDev/textures/tomf/tf_light01_2b_metal.png
+#	texture_height materialDev/textures/tomf/tf_light01_2b_height.png
+#	texture_emissive materialDev/textures/tomf/tf_light01_2_light.png
+#	bump_scale 1
+#	displace_in 0
+#	displace_out 0.209
+#	displace_clamp 1
+#	metalness_factor 1
+#	specular_factor 4
+#	base_factor 1
+#	emissive_factor 1
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+	default_radiance 5.0
+
+# instance of textures/tomf/tf_light01_2
+# mgu3m2, created at (-2241 1202 -401)
+# Inherits everything from textures/tomf/tf_light01_2; the commented lines are what
+# it inherits now. Uncomment one and change it, then 'mat reload'.
+textures/tomf/tf_light01_2#87cfaee2:
+#	texture_base textures/tomf/TF_Light01_2.wal
+#	texture_normals materialDev/textures/tomf/tf_light01_2b_n.png
+#	texture_roughness materialDev/textures/tomf/tf_light01_2b_rough.png
+#	texture_metallic materialDev/textures/tomf/tf_light01_2b_metal.png
+#	texture_height materialDev/textures/tomf/tf_light01_2b_height.png
+#	texture_emissive materialDev/textures/tomf/tf_light01_2_light.png
+#	bump_scale 1
+#	displace_in 0
+#	displace_out 0.209
+#	displace_clamp 1
+#	metalness_factor 1
+#	specular_factor 4
+#	base_factor 1
+#	emissive_factor 1
+#	kind REGULAR
+#	is_light 1
+#	light_styles 1
+#	bsp_radiance 0
+	default_radiance 5.0
