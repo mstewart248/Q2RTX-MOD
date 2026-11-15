@@ -216,6 +216,18 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 // bounce, so the test never passed and RR got the floor's guides under every splat.
 #define REFLECTED_ALBEDO_BLOOD_BIAS 3.0
 
+// DLSS_RESPONSIVITY between primary_rays.rgen and checkerboard_interleave.comp (DLSS
+// split fields only). primary_rays writes field 0's PRIMARY surface verdict there:
+// the responsivity it wants (0..1, pt_dlss_animated_responsive), plus this bias when
+// the primary surface is a security-camera screen. The combine pass needs to know that
+// (pt_dlss_camera_mv) and by then reflect_refract.rgen has replaced every G-buffer
+// trace of it with what the camera sees. The combine strips the bias before RR reads
+// the image. R16F: 2..3 still resolves steps of 0.002.
+#define DLSS_RESPONSIVITY_CAMERA_BIAS 2.0
+// The first part of each half-second world animation step during which a screen that
+// has just cut to its next camera gets the responsivity mask (0.3 of 0.5 s = 150 ms).
+#define DLSS_CAMERA_CUT_WINDOW        0.3
+
 // The value a material stores for the above, as packed into the material table.
 // 0 means the material said nothing and pt_dlss_guide_field decides; otherwise
 // the guide field is this minus one. Three bits, so it fits beside next_frame.

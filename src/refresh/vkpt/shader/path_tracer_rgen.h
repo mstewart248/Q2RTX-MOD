@@ -2005,10 +2005,16 @@ get_material(
 	emissive += get_emissive_shell(triangle.material_id) * base_color * (1 - metallic * 0.9);
 }
 
+// The picture rectangle inside a security-camera screen texture, in texture coordinates.
+// Shared by get_camera_uv and by pt_dlss_camera_mv 2's portal motion vector in
+// reflect_refract.rgen, which maps a camera UV back onto the screen through it.
+#define CAMERA_SCREEN_MIN_UV vec2(11.0 / 256.0, 14.0 / 256.0)
+#define CAMERA_SCREEN_MAX_UV vec2(245.0 / 256.0, 148.0 / 256.0)
+
 bool get_camera_uv(vec2 tex_coord, out vec2 cameraUV)
 {
-	const vec2 minUV = vec2(11.0 / 256.0, 14.0 / 256.0);
-	const vec2 maxUV = vec2(245.0 / 256.0, 148.0 / 256.0);
+	const vec2 minUV = CAMERA_SCREEN_MIN_UV;
+	const vec2 maxUV = CAMERA_SCREEN_MAX_UV;
 
 	tex_coord = fract(tex_coord);
 	cameraUV = (tex_coord - minUV) / (maxUV - minUV);
@@ -2017,6 +2023,26 @@ bool get_camera_uv(vec2 tex_coord, out vec2 cameraUV)
 	//cameraUV = (floor(cameraUV * resolution) + vec2(0.5)) / resolution;
 
 	return all(greaterThan(cameraUV, vec2(0))) && all(lessThan(cameraUV, vec2(1)));
+}
+
+/* Where world point p lands in a security camera's picture, in the 0..1 camera UV that
+   reflect_refract.rgen builds the camera ray from - the inverse of
+   direction = data[1] + data[2] * u + data[3] * v. prepare_camera (main.c) makes data[0]
+   the camera position, data[1] the corner ray at forward distance 1, and data[2]/data[3]
+   the picture's edges, both perpendicular to forward, so forward is the centre ray
+   data[1] + (data[2] + data[3]) / 2 (unit length). False behind the camera. */
+bool camera_uv_of_point(mat4 camera_data, vec3 p, out vec2 uv)
+{
+	vec3 d = p - camera_data[0].xyz;
+	vec3 forward = camera_data[1].xyz + 0.5 * (camera_data[2].xyz + camera_data[3].xyz);
+	float depth = dot(d, forward);
+	uv = vec2(0);
+	if(depth <= 1e-3)
+		return false;
+	vec3 on_plane = d / depth - camera_data[1].xyz;
+	uv.x = dot(on_plane, camera_data[2].xyz) / dot(camera_data[2].xyz, camera_data[2].xyz);
+	uv.y = dot(on_plane, camera_data[3].xyz) / dot(camera_data[3].xyz, camera_data[3].xyz);
+	return true;
 }
 
 // Anisotropic texture sampling algorithm from 

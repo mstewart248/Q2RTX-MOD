@@ -47,8 +47,7 @@ cvar_t* cvar_pt_dlss_spec_motion = NULL;
 cvar_t* cvar_pt_dlss_rr_mat_yflip = NULL;
 // UBO cvars, defined in main.c by the UBO_CVAR_LIST expansion.
 extern cvar_t* cvar_pt_dlss_bt_guide;
-extern cvar_t* cvar_pt_dlss_glass_responsive;
-extern cvar_t* cvar_pt_dlss_water_responsive;
+extern cvar_t* cvar_pt_dlss_animated_responsive;
 extern cvar_t* cvar_pt_projection;
 qboolean recreateSwapChain = qfalse;
 qboolean dlssModeChanged = qfalse;
@@ -977,7 +976,7 @@ static const dlss_debug_view_t dlss_debug_views[] = {
     { 19, VKPT_IMG_PT_THROUGHPUT,           0 },
     { 20, VKPT_IMG_PT_BOUNCE_THROUGHPUT,    0 },
     { 22, VKPT_IMG_DLSS_REFLECTED_ALBEDO,   0 },
-    { 23, VKPT_IMG_DLSS_RESPONSIVITY,       0 }, // pt_dlss_glass_responsive (red)
+    { 23, VKPT_IMG_DLSS_RESPONSIVITY,       0 }, // responsivity mask, pt_dlss_animated_responsive (red)
     { 30, VKPT_IMG_PT_VISBUF_BARY_A,        1 },
     { 32, VKPT_IMG_PT_BASE_COLOR_A,         1 },
     { 34, VKPT_IMG_PT_METALLIC_A,           1 },
@@ -1073,12 +1072,13 @@ void DLSSDescribeEvaluation(const vec2 jitterOffset, DLSSEvaluation* ev) {
     }
     ev->reflection_motion = !(ev->matrices && specMotion == 1);
 
-    /* pt_dlss_glass_responsive / pt_dlss_water_responsive: RR2's responsivity mask, which
-       checkerboard_interleave.comp writes into DLSS_RESPONSIVITY every frame (0 off glass
-       and liquids). Not in the 310.6 helpers, so both renderers set "DLSSD.ResponsivityMask"
-       by name - and to NULL when both are off, since the parameter block outlives the frame. */
-    ev->responsivity_mask = (cvar_pt_dlss_glass_responsive != NULL && cvar_pt_dlss_glass_responsive->value > 0.0f)
-        || (cvar_pt_dlss_water_responsive != NULL && cvar_pt_dlss_water_responsive->value > 0.0f);
+    /* pt_dlss_animated_responsive: RR2's responsivity mask, which checkerboard_interleave.comp
+       writes into DLSS_RESPONSIVITY every frame (non-zero only on texinfo animations and
+       security-camera screens, see primary_rays.rgen). Not in the 310.6 helpers, so both
+       renderers set "DLSSD.ResponsivityMask" by name - and to NULL when it is off, since the
+       parameter block outlives the frame. */
+    ev->responsivity_mask = cvar_pt_dlss_animated_responsive != NULL
+        && cvar_pt_dlss_animated_responsive->value > 0.0f;
 }
 
 // the format each image DLSSApply may hand over has (LIST_IMAGES)
@@ -1250,7 +1250,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .InColorBeforeTransparencySubrectBase = sourceOffset
         };
 
-		// pt_dlss_glass_responsive - see DLSSDescribeEvaluation; the helper above predates it
+		// the responsivity mask (pt_dlss_animated_responsive) - see DLSSDescribeEvaluation; the helper above predates it
 		NVSDK_NGX_Parameter_SetVoidPointer(dlssObj.pParams, "DLSSD.ResponsivityMask", ev.responsivity_mask ? &responsivity : NULL);
 		NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, "DLSSD.ResponsivityMask.Subrect.Base.X", sourceOffset.X);
 		NVSDK_NGX_Parameter_SetUI(dlssObj.pParams, "DLSSD.ResponsivityMask.Subrect.Base.Y", sourceOffset.Y);

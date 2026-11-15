@@ -950,6 +950,15 @@ typedef struct {
 #define RF_CUSTOM_LIGHT     0x00100000      // target_light: s.frame is the radius, s.skinnum the packed RGBA
 #define RF_FLARE            0x00200000      // misc_flare: see SP_misc_flare for the rest of the state
 
+// [Q2RTX] An RF_BEAM placed by the MAP (target_laser, target_mal_laser), set by
+// the game. The RTX renderers light the fog from a map's beams on the froxel
+// grid's long history with the other fixtures, and from beams a monster fires
+// (the lasergun soldier, the brain's eyes, the guardian, the fixbot) or the
+// player's weapons on the short one (pt_fog_froxel_map_beams). Bit 27: the
+// rerelease's renderfx stop at bit 26, so neither a KEX server nor a KEX demo
+// can set it by accident. Without it a beam is treated as fire, as before.
+#define RF_BEAM_FIXTURE     0x08000000
+
 // the rerelease aliases these two as well - a flare is never a viewmodel, so
 // RF_MINLIGHT is free to mean "do not turn to face the camera".
 #define RF_FLARE_LOCK_ANGLE RF_MINLIGHT

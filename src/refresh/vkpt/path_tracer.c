@@ -2321,6 +2321,9 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_ALBEDO]);
 	// The opaque-overlay accumulator for pt_dlss_bt_guide, read back by reflect_refract.
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_BEFORE_TRANSPARENT]);
+	// primary_rays' responsivity code / camera mark, read by reflect_refract and the
+	// combine pass (pt_dlss_animated_responsive, pt_dlss_camera_mv)
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_RESPONSIVITY]);
 	BARRIER_BATCH_END(cmd_buf);
 
 
@@ -2632,6 +2635,12 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 		// Spatial reuse (pt_restir_gi_spatial): the same shader again, bounce_index 1,
 		// reading the reservoirs every pixel's temporal pass has just written - which is
 		// why it is a separate dispatch behind the barriers above.
+		// pt_sparse: only the pixels lit this frame have anything to shade, so it walks the
+		// sparse list (restir_gi.rgen's main). That list is region 1, which the bounces
+		// only overwrite from the third on (list 2, constants.h), so it is intact here
+		// with up to 2 bounces; past that the grid, the same picture without the saving.
+		const bool spatial_sparse = sparse && (int)ceilf(num_bounce_rays) <= 2;
+
 		if (cvar_pt_restir_gi_spatial->value > 0)
 		{
 			for (int i = 0; i < qvk.device_count; i++)
@@ -2642,7 +2651,14 @@ vkpt_pt_trace_lighting(VkCommandBuffer cmd_buf, float num_bounce_rays)
 				push.gpu_index = qvk.device_count == 1 ? -1 : i;
 				push.bounce = 1;
 
-				dispatch_rays(cmd_buf, PIPELINE_RESTIR_GI, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
+				if (spatial_sparse)
+				{
+					push.tile_read_list = PT_PATH_LIST_SPARSE;
+					push.tile_buffer = buf_tiles.address;
+					dispatch_rays_paths(cmd_buf, PIPELINE_RESTIR_GI, push, PT_PATH_LIST_SPARSE);
+				}
+				else
+					dispatch_rays(cmd_buf, PIPELINE_RESTIR_GI, push, vkpt_pt_field_width(), qvk.extent_render.height, qvk.device_count == 1 ? 2 : 1);
 			}
 
 			set_current_gpu(cmd_buf, ALL_GPUS);

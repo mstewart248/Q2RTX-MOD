@@ -778,6 +778,11 @@ void target_laser_think(edict_t *self)
     else
         count = 4;
 
+    // a map's laser (RF_BEAM_FIXTURE, shared.h) - set here as well as at spawn
+    // so the lasers in a save made before the flag existed get it too.
+    // target_mal_laser comes through here as well.
+    self->s.renderfx |= RF_BEAM_FIXTURE;
+
     if (self->enemy) {
         VectorCopy(self->movedir, last_movedir);
         VectorMA(self->enemy->absmin, 0.5f, self->enemy->size, point);
@@ -863,7 +868,8 @@ void target_laser_start(edict_t *self)
 
     self->movetype = MOVETYPE_NONE;
     self->solid = SOLID_NOT;
-    self->s.renderfx |= RF_BEAM | RF_TRANSLUCENT;
+    // RF_BEAM_FIXTURE: placed by the map, not fired - see shared.h
+    self->s.renderfx |= RF_BEAM | RF_TRANSLUCENT | RF_BEAM_FIXTURE;
     self->s.modelindex = 1;         // must be non-zero
 
     // [rerelease] on Q2N64 spawnflag 128 is a lightning bolt, not WINDOWSTOP.

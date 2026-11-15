@@ -102,6 +102,7 @@ static void upload_geometry(VkCommandBuffer command_buffer);
 cvar_t* cvar_pt_particle_size = NULL;
 cvar_t* cvar_pt_beam_width = NULL;
 cvar_t* cvar_pt_beam_lights = NULL;
+static cvar_t* cvar_pt_fog_froxel_map_beams = NULL;
 extern cvar_t* cvar_pt_enable_particles;
 extern cvar_t* cvar_pt_particle_emissive;
 extern cvar_t* cvar_pt_projection;
@@ -129,6 +130,9 @@ void vkpt_transparency_init_cvars(void)
 	cvar_pt_particle_size = Cvar_Get("pt_particle_size", "0.5", 0);
 	cvar_pt_beam_width = Cvar_Get("pt_beam_width", "1.0", 0);
 	cvar_pt_beam_lights = Cvar_Get("pt_beam_lights", "1.0", 0);
+	// 1 = a map's lasers light the fog on the froxel grid's long history (see
+	// vkpt_build_beam_lights); 0 = every beam on the short one, as before 11-14
+	cvar_pt_fog_froxel_map_beams = Cvar_Get("pt_fog_froxel_map_beams", "1", 0);
 }
 
 /* THE CPU HALF, shared with the D3D12 backend (d3d12/frontend.c): the sizes,
@@ -786,7 +790,22 @@ void vkpt_build_beam_lights(light_poly_t* light_list, int* num_lights, int max_l
 		hash.entity = beam_id & 0x3FFF;
 		hash.model = RF_BEAM;
 		hash.mesh = 0;   // set per triangle by vkpt_build_cylinder_light
-		hash.bsp = 0;
+
+		/* WHICH FOG HISTORY (pt_fog_froxel_dyn_split). A beam the MAP placed - a
+		   target_laser, which the game marks RF_BEAM_FIXTURE - is a fixture: it
+		   gets hash.bsp, so partition_bmodel_lights (main.c) packs it with the
+		   brush-entity lights and the placed dlights and the froxel grid lights
+		   the fog from it on the LONG history. On the short one (~2.5 frames) a
+		   laser's fog sparkled red all along it (Matt, 11-14): a beam is six
+		   triangles as long as the beam and a few units wide, and the RIS
+		   estimate prices each from its centroid, so a cell beside the beam
+		   rarely picks it and then gets a huge sample. Beams a monster fires
+		   (the lasergun soldier, the brain, the guardian, the fixbot) and the
+		   player's stay on the short history with the other weapon light, so
+		   the fog lets go of them as soon as they stop. Shared with D3D12:
+		   both renderers build their lights here, in vkpt_prepare_frame. */
+		hash.bsp = ((beam->flags & RF_BEAM_FIXTURE) != 0
+		            && cvar_pt_fog_froxel_map_beams->integer != 0) ? 1 : 0;
 
 		// Adjust beam width. Default "narrow" beams have a width of 4, "fat" beams have 16.
 		if (beam->frame == 0)

@@ -767,6 +767,14 @@ is set to 1, god rays are disabled by the renderer. Default value is 0.
 Enables display of the GPU profiler, i.e. rendering time distribution between passes.
 Default value is 0.
 
+- 0 — off
+- 1 — the table of pass times
+- 2 — frame time and fps graphs
+- 3 — the GPU frame by category over the last few seconds, with the GPU and CPU keys
+- 4 — this frame's GPU frame by category against the average, with the keys
+- 5 — as 3, the graph and its colour legend only
+- 6 — as 4, the bars and their colour legend only
+
 #### `pt_accumulation_rendering` 
 Controls whether accumulation rendering (photo mode) should be used 
 when the game is paused, and how to handle the UI in that case. Default value is 1.
@@ -850,6 +858,20 @@ Materials with roughness above this setting will be rendered with fake indirect
 specular reflections in order to reduce noise. This setting does not affect the 
 photo mode. Set `pt_fake_roughness_threshold` to 1.02 or higher 
 to disable fake specular. Default value is 0.2.
+
+#### `pt_fog_estimate_closest`
+How the volumetric fog (`cl_fog 3`) decides which light to trace toward. 0 measures
+each light triangle from its centre. 1 measures it from its closest point, which
+suits laser beams: a beam is a few long, thin triangles, so measured from the centre
+it is picked too rarely next to the beam and then sparkles. Only the noise changes,
+not the average brightness. Default value is 0.
+
+#### `pt_fog_froxel_map_beams`
+Which fog history the map's lasers (`target_laser`) use while the fog menu's "split
+froxel histories" is on. 1 puts them on the long history with the map's other lights,
+so their fog is smooth. Beams that monsters or weapons fire stay on the short history,
+so they disappear from the fog as soon as they stop. 0 puts every beam on the short
+history, as before. Default value is 1.
 
 #### `pt_focus`
 Sets the distance to the focal plane for the Depth of Field effect.

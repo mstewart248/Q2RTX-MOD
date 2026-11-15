@@ -1497,6 +1497,8 @@ static void order_rows(profiler_row_t *rows, int n)
 #define GRAPH_GPU	MakeColor(90, 220, 90, 255)
 #define GRAPH_FPS	MakeColor(90, 170, 255, 255)
 #define GRAPH_FG	MakeColor(225, 120, 255, 255)
+// profiler 3-6's capture line (profiler_capture_fps, or the display's rate)
+#define GRAPH_CAPTURE	MakeColor(255, 255, 255, 190)
 
 static int
 graph_cmp(const void *a, const void *b)
@@ -1709,7 +1711,7 @@ draw_capture_line(int left, int box, int w, int h, int thick, float vtop)
 {
 	const float line_ms = 1000.f / capture_threshold_fps();
 	if (line_ms < vtop)
-		R_DrawFill32(left, box + h - (int)(line_ms / vtop * (float)h), w, thick, MakeColor(255, 255, 255, 190));
+		R_DrawFill32(left, box + h - (int)(line_ms / vtop * (float)h), w, thick, GRAPH_CAPTURE);
 }
 
 /* profiler_capture's lines above whatever the mode draws: what it is doing, and on
@@ -1750,13 +1752,107 @@ avg_result_ms(int idx)
 	return e->num_samples ? ((double)e->accumulated / ((double)e->num_samples * 1e6)) * qvk.timestampPeriod : 0.0;
 }
 
+/* A key's numbers, six characters each: two decimals to 999.99, whole ms past that
+   (a load's hitch), so a column never grows into the next. */
 static void
 key_numbers(char *buf, size_t size, const float *v, int columns)
 {
-	if (columns >= 3)
-		Q_snprintf(buf, size, "%6.2f  %6.2f  %6.2f", v[0], v[1], v[2]);
-	else
-		Q_snprintf(buf, size, "%6.2f  %6.2f", v[0], v[1]);
+	size_t at = 0;
+	buf[0] = 0;
+	for (int i = 0; i < min(columns, 3) && at + 1 < size; i++)
+	{
+		const char *sep = i ? "  " : "";
+		at += v[i] < 999.995f ? Q_scnprintf(buf + at, size - at, "%s%6.2f", sep, v[i])
+			: Q_scnprintf(buf + at, size - at, "%s%6.0f", sep, v[i]);
+	}
+}
+
+/* THE KEYS' LAYOUT (Matt 11-14: in profiler 3 the CPU key printed over the GPU key's
+   max column, and "blas plan, instances" ran into its own numbers). The columns
+   come from the names: each key's numbers start a little past its widest name, the
+   CPU key a gap past the GPU key's numbers - a longer name moves them instead of
+   running into them. In text units, a character 8. */
+#define KEY_SWATCH_UNITS	11	// a GPU key row's swatch and the space after it
+#define KEY_NAME_GAP		12	// the widest name to the numbers
+#define KEY_GAP				32	// the GPU key's last column to the CPU key
+#define LEGEND_GAP			80	// profiler 5/6: the panel to its legend, past the scale labels
+
+// the GPU key's rows under the categories
+enum { KEYROW_TOTAL, KEYROW_CPU, KEYROW_SUBMIT, KEYROW_FRAME, KEYROW_GAP, KEYROW_SOUND, NUM_KEYROWS };
+static const char *const key_row_names[NUM_KEYROWS] = {
+	[KEYROW_TOTAL]  = "gpu frame (total)",
+	[KEYROW_CPU]    = "cpu frame time",
+	[KEYROW_SUBMIT] = "cpu recording it",
+	[KEYROW_FRAME]  = "frame to frame",
+	[KEYROW_GAP]    = "gpu idle",
+	[KEYROW_SOUND]  = "sound sim (own queue)",
+};
+
+static int
+key_numbers_units(int columns)
+{
+	return 8 * (columns >= 3 ? 22 : 14);
+}
+
+static int
+widest_cat_name(void)
+{
+	int most = 0;
+	for (int c = 0; c < NUM_CATS; c++)
+		most = max(most, (int)strlen(cat_info[c].name));
+	return most;
+}
+
+// where the GPU key's numbers start, from its left
+static int
+gpu_key_num_units(void)
+{
+	int most = widest_cat_name();
+	for (int r = 0; r < NUM_KEYROWS; r++)
+		most = max(most, (int)strlen(key_row_names[r]));
+	return KEY_SWATCH_UNITS + 8 * most + KEY_NAME_GAP;
+}
+
+// where the CPU key's numbers start, from its left: the widest name with its indent
+static int
+cpu_key_num_units(void)
+{
+	int most = 0;
+	for (int r = 0; r < NUM_CPUROWS; r++)
+		most = max(most, 6 * max(cpurow_info[r].depth, 0) + 8 * (int)strlen(cpurow_info[r].name));
+	return most + KEY_NAME_GAP;
+}
+
+// the CPU key's left, from the GPU key's
+static int
+cpu_key_offset_units(int columns)
+{
+	return gpu_key_num_units() + key_numbers_units(columns) + KEY_GAP;
+}
+
+// both keys side by side
+static int
+keys_units(int columns)
+{
+	return cpu_key_offset_units(columns) + cpu_key_num_units() + key_numbers_units(columns);
+}
+
+// profiler 5/6's legend: a category's name, or the capture line's "60 fps (16.67 ms)"
+static int
+legend_units(void)
+{
+	return KEY_SWATCH_UNITS + 8 * max(widest_cat_name(), 18);
+}
+
+/* Where a panel starts: 500 pixels in, as the table does, or as far left as keeps
+   width_units of it on the screen (both keys of profiler 3 are 760 units: 1520
+   pixels at 1080p's 2x, past the right edge from 500). */
+static int
+panel_left(float u, int width_units)
+{
+	const int margin = (int)(8.f * u);
+	const int room = r_config.width - (int)((float)width_units * u) - margin;
+	return max(margin, min(500, room));
 }
 
 /* The key: a row a category, top of the stack first, its swatch in pixels and its
@@ -1787,7 +1883,7 @@ draw_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_v
 
 	R_SetScale(scale);
 	char buf[192];
-	const int name_x = key_x + (int)(11.f * u), num_x = key_x + (int)(160.f * u);
+	const int name_x = key_x + (int)((float)KEY_SWATCH_UNITS * u), num_x = key_x + (int)((float)gpu_key_num_units() * u);
 	const char *hold = cap.hold ? "  held" : "   now";
 	Q_snprintf(buf, sizeof(buf), k->columns >= 3 ? "%s     avg     max" : "%s     avg", hold);
 	graph_text(scale, num_x, key_y - row, grey, buf, font);
@@ -1800,22 +1896,22 @@ draw_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_v
 		graph_text(scale, num_x, key_y + j * row, white, buf, font);
 	}
 	y = key_y + NUM_CATS * row;
-	graph_text(scale, name_x, y, white, "gpu frame (total)", font);
+	graph_text(scale, name_x, y, white, key_row_names[KEYROW_TOTAL], font);
 	key_numbers(buf, sizeof(buf), k->total, k->columns);
 	graph_text(scale, num_x, y, white, buf, font);
 	y += row;
-	graph_text(scale, name_x, y, GRAPH_FRAME, "cpu frame time", font);
+	graph_text(scale, name_x, y, GRAPH_FRAME, key_row_names[KEYROW_CPU], font);
 	key_numbers(buf, sizeof(buf), k->cpu, k->columns);
 	graph_text(scale, num_x, y, GRAPH_FRAME, buf, font);
 	if (submit)
 	{
 		y += row;
-		graph_text(scale, name_x, y, GRAPH_SUBMIT, "cpu recording it", font);
+		graph_text(scale, name_x, y, GRAPH_SUBMIT, key_row_names[KEYROW_SUBMIT], font);
 		key_numbers(buf, sizeof(buf), k->submit, k->columns);
 		graph_text(scale, num_x, y, GRAPH_SUBMIT, buf, font);
 	}
 	y += row;
-	graph_text(scale, name_x, y, grey, "frame to frame", font);
+	graph_text(scale, name_x, y, grey, key_row_names[KEYROW_FRAME], font);
 	key_numbers(buf, sizeof(buf), k->frame, k->columns);
 	graph_text(scale, num_x, y, grey, buf, font);
 	/* What makes the GPU's total short of frame to frame (Matt 11-14: "the GPU total
@@ -1824,16 +1920,16 @@ draw_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_v
 	if (k->gap[0] > 0.f || k->gap[1] > 0.f)
 	{
 		y += row;
-		graph_text(scale, name_x, y, grey, "gpu idle", font);
+		graph_text(scale, name_x, y, grey, key_row_names[KEYROW_GAP], font);
 		key_numbers(buf, sizeof(buf), k->gap, k->columns);
 		graph_text(scale, num_x, y, grey, buf, font);
 	}
 	if (sound_now > 0.0)
 	{
 		y += row;
-		graph_text(scale, name_x, y, grey, "sound sim (own queue)", font);
+		graph_text(scale, name_x, y, grey, key_row_names[KEYROW_SOUND], font);
 		const float v[3] = { (float)sound_now, (float)avg_result_ms(PROFILER_SOUND_TRACE), 0.f };
-		Q_snprintf(buf, sizeof(buf), "%6.2f  %6.2f", v[0], v[1]);
+		key_numbers(buf, sizeof(buf), v, 2);
 		graph_text(scale, num_x, y, grey, buf, font);
 	}
 
@@ -1923,7 +2019,7 @@ draw_cpu_key(float scale, qhandle_t font, int key_x, int key_y, int row, const k
 {
 	const float u = 1.f / scale;
 	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
-	const int num_x = key_x + (int)(150.f * u);
+	const int num_x = key_x + (int)((float)cpu_key_num_units() * u);
 	char buf[192];
 
 	R_SetScale(scale);
@@ -1951,18 +2047,55 @@ draw_cpu_key(float scale, qhandle_t font, int key_x, int key_y, int row, const k
 	return y;
 }
 
+/* profiler 5 and 6 (Matt, 11-14: "profilers 3 and 4 with only the graphs, colors and
+   labels for the colors"): the GPU key without its numbers - each category's colour
+   and name, top of the stack first as in the key, then the lines over the stack:
+   the capture line, the CPU's frame time and, where it is drawn, its recording. */
+static void
+draw_legend(float scale, qhandle_t font, int x, int y, int row, bool submit)
+{
+	const float u = 1.f / scale;
+	const int thick = max(1, (int)(0.5f * u));
+	const int sw = max(3, (int)(7.f * u)), mid = (int)(3.f * u);
+	const int name_x = x + (int)((float)KEY_SWATCH_UNITS * u);
+	const int lines_y = y + NUM_CATS * row + row / 2;
+	const uint32_t white = MakeColor(255, 255, 255, 255);
+
+	R_SetScale(1.0f);
+	for (int j = 0; j < NUM_CATS; j++)
+		draw_swatch(x, y + j * row + (int)u, u, NUM_CATS - 1 - j);
+	R_DrawFill32(x, lines_y + mid, sw, thick, GRAPH_CAPTURE);
+	R_DrawFill32(x, lines_y + row + mid, sw, thick, GRAPH_FRAME);
+	if (submit)
+		R_DrawFill32(x, lines_y + 2 * row + mid, sw, thick, GRAPH_SUBMIT);
+
+	R_SetScale(scale);
+	for (int j = 0; j < NUM_CATS; j++)
+		graph_text(scale, name_x, y + j * row, white, cat_info[NUM_CATS - 1 - j].name, font);
+	char buf[64];
+	Q_snprintf(buf, sizeof(buf), "%.0f fps (%.2f ms)", capture_threshold_fps(), 1000.f / capture_threshold_fps());
+	graph_text(scale, name_x, lines_y, white, buf, font);
+	graph_text(scale, name_x, lines_y + row, GRAPH_FRAME, key_row_names[KEYROW_CPU], font);
+	if (submit)
+		graph_text(scale, name_x, lines_y + 2 * row, GRAPH_SUBMIT, key_row_names[KEYROW_SUBMIT], font);
+	R_ClearColor();
+	R_SetScale(1.0f);
+}
+
 /* profiler 3 (Matt, 11-14): the GPU frame by category over the last few seconds, a
    stacked column a frame with the newest on the right, the capture line in white,
    the CPU's frame time over it in amber (its own work, the waits taken out) and, on
    D3D12, the CPU's recording of each frame in light cyan. Where the amber line
    rises over the stack, the CPU is the limit; where "gpu idle" grows with the cyan
    line, the GPU was waiting for the CPU to finish the frame. The key gives each category this frame
-   (the held one while a capture holds), its average and its worst over the panel. */
+   (the held one while a capture holds), its average and its worst over the panel.
+   profiler 5: the panel alone, its legend to the right (keys false). */
 static void
-draw_cat_history(float scale, qhandle_t font)
+draw_cat_history(float scale, qhandle_t font, bool keys)
 {
 	const float u = 1.f / scale;
-	const int left = 500, top = 100;		// where the table starts, in pixels
+	const int top = 100;		// where the table starts, in pixels
+	const int left = panel_left(u, keys ? max(352, keys_units(3)) : 352 + LEGEND_GAP + legend_units());
 	const int w = (int)(352.f * u), h = (int)(128.f * u), row = (int)(10.f * u);
 	const int thick = max(1, (int)(0.5f * u));
 	const int cw = max(1, (int)(0.75f * u + 0.5f));	// 3 pixels a frame at 4K
@@ -2040,7 +2173,7 @@ draw_cat_history(float scale, qhandle_t font)
 	key_gap(&k, n);
 
 	const float vtop = max(graph.cat_top, GRAPH_FRAME_TOP);
-	const int box = top + 2 * row;
+	const int box = keys ? top + 3 * row : top;	// under the title's three lines
 	const int key_y = box + h + 2 * row;	// the key's first row, under its header
 	const int seg_gap = max(1, thick / 2);
 
@@ -2060,11 +2193,17 @@ draw_cat_history(float scale, qhandle_t font)
 	R_SetScale(scale);
 	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
 	char buf[160];
-	graph_text(scale, left, top, white, "gpu frame by category, newest on the right", font);
-	Q_snprintf(buf, sizeof(buf), "the last %.1f s; white line %.0f fps (%.2f ms); amber the cpu's own time%s",
-		span * 1e-3, capture_threshold_fps(), 1000.f / capture_threshold_fps(),
-		submits ? ", cyan its recording of the frame shown" : "");
-	graph_text(scale, left, top + row, grey, buf, font);
+	if (keys)
+	{
+		/* the lines' meaning over two lines: as one (107 characters) it ran off a 4K
+		   screen's right edge from 500 pixels in (Matt's 11-14 shot) */
+		graph_text(scale, left, top, white, "gpu frame by category, newest on the right", font);
+		Q_snprintf(buf, sizeof(buf), "the last %.1f s; white line %.0f fps (%.2f ms)",
+			span * 1e-3, capture_threshold_fps(), 1000.f / capture_threshold_fps());
+		graph_text(scale, left, top + row, grey, buf, font);
+		Q_snprintf(buf, sizeof(buf), "amber the cpu's own time%s", submits ? ", cyan its recording of the frame shown" : "");
+		graph_text(scale, left, top + 2 * row, grey, buf, font);
+	}
 
 	// the panel's scale, at its top and middle lines, to its right
 	const int label_x = left + w + (int)(4.f * u);
@@ -2074,25 +2213,33 @@ draw_cat_history(float scale, qhandle_t font)
 	graph_text(scale, label_x, box + h / 2 - (int)(4.f * u), grey, buf, font);
 	R_ClearColor();
 
+	if (!keys)
+	{
+		draw_legend(scale, font, left + w + (int)((float)LEGEND_GAP * u), box, row, submits > 0);
+		return;
+	}
 	const int gpu_end = draw_key(scale, font, left, key_y, row, &k);
-	const int cpu_end = draw_cpu_key(scale, font, left + (int)(330.f * u), key_y, row, &k);
+	const int cpu_end = draw_cpu_key(scale, font, left + (int)((float)cpu_key_offset_units(3) * u), key_y, row, &k);
 	draw_key_footer(scale, font, left, max(gpu_end, cpu_end) + row / 2, row, &k);
 }
 
 /* profiler 4 (Matt, 11-14): two stacked bars - this frame's GPU frame by category
    (the held one while a capture holds) and the average over profiler_samples
    frames - each with the CPU's frame to frame on it as an amber tick, the capture
-   line across both, and the key to their right with both numbers. */
+   line across both, and the key to their right with both numbers.
+   profiler 6: the bars alone, their legend to the right (keys false). */
 static void
-draw_cat_bars(float scale, qhandle_t font)
+draw_cat_bars(float scale, qhandle_t font, bool keys)
 {
 	const float u = 1.f / scale;
-	const int left = 500, top = 100;
+	const int top = 100;
+	const int w_units = 3 * 16 + 2 * 44;	// the panel: the gaps and the bars below
+	const int left = panel_left(u, w_units + (keys ? 48 + keys_units(2) : LEGEND_GAP + legend_units()));
 	const int h = (int)(128.f * u), row = (int)(10.f * u);
 	const int thick = max(1, (int)(0.5f * u));
 	const int bar = (int)(44.f * u), gap = (int)(16.f * u);
 	const int w = 3 * gap + 2 * bar;
-	const int box = top + 2 * row, bottom = box + h;
+	const int box = keys ? top + 2 * row : top, bottom = box + h;
 	const int now_x = left + gap, avg_x = left + 2 * gap + bar;
 
 	key_values_t k;
@@ -2168,10 +2315,13 @@ draw_cat_bars(float scale, qhandle_t font)
 	R_SetScale(scale);
 	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
 	char buf[160];
-	graph_text(scale, left, top, white, "gpu frame by category", font);
-	Q_snprintf(buf, sizeof(buf), "%s and the average of the last %d; white line %.0f fps (%.2f ms)",
-		cap.hold ? "the held frame" : "this frame", n, capture_threshold_fps(), 1000.f / capture_threshold_fps());
-	graph_text(scale, left, top + row, grey, buf, font);
+	if (keys)
+	{
+		graph_text(scale, left, top, white, "gpu frame by category", font);
+		Q_snprintf(buf, sizeof(buf), "%s and the average of the last %d; white line %.0f fps (%.2f ms)",
+			cap.hold ? "the held frame" : "this frame", n, capture_threshold_fps(), 1000.f / capture_threshold_fps());
+		graph_text(scale, left, top + row, grey, buf, font);
+	}
 
 	// under the bars, and the panel's scale to its right
 	graph_text(scale, now_x + bar / 2 - (int)(12.f * u), bottom + row / 4, grey, cap.hold ? "held" : " now", font);
@@ -2183,8 +2333,13 @@ draw_cat_bars(float scale, qhandle_t font)
 	graph_text(scale, label_x, box + h / 2 - (int)(4.f * u), grey, buf, font);
 	R_ClearColor();
 
+	if (!keys)
+	{
+		draw_legend(scale, font, left + w + (int)((float)LEGEND_GAP * u), box, row, k.submit[0] > 0.f || k.submit[1] > 0.f);
+		return;
+	}
 	const int gpu_end = draw_key(scale, font, key_x, key_y, row, &k);
-	const int cpu_end = draw_cpu_key(scale, font, key_x + (int)(330.f * u), key_y, row, &k);
+	const int cpu_end = draw_cpu_key(scale, font, key_x + (int)((float)cpu_key_offset_units(2) * u), key_y, row, &k);
 	draw_key_footer(scale, font, key_x, max(gpu_end, cpu_end) + row / 2, row, &k);
 }
 
@@ -2194,17 +2349,18 @@ draw_profiler(int enable_asvgf, const char *title)
 	float profiler_scale = R_ClampScale(cvar_profiler_scale);
 	const int mode = cvar_profiler ? cvar_profiler->integer : 1;
 
-	if (mode >= 2 && mode <= 4)
+	// 5 and 6 are 3 and 4 without the numbers: the graph and its legend
+	if (mode >= 2 && mode <= 6)
 	{
 		const qhandle_t font = R_RegisterFont("conchars");
 		if (!font)
 			return;
 		if (mode == 2)
 			draw_graphs(profiler_scale, font);
-		else if (mode == 3)
-			draw_cat_history(profiler_scale, font);
+		else if (mode == 3 || mode == 5)
+			draw_cat_history(profiler_scale, font, mode == 3);
 		else
-			draw_cat_bars(profiler_scale, font);
+			draw_cat_bars(profiler_scale, font, mode == 4);
 		draw_capture_text(profiler_scale, font);
 		return;
 	}

@@ -102,7 +102,7 @@ void SP_target_mal_laser(edict_t *self)
 {
     self->movetype = MOVETYPE_NONE;
     self->solid = SOLID_NOT;
-    self->s.renderfx |= RF_BEAM;
+    self->s.renderfx |= RF_BEAM | RF_BEAM_FIXTURE;   // placed by the map - see shared.h
     self->s.modelindex = 1;         // must be non-zero
 
     // set the beam diameter

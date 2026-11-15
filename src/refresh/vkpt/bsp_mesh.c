@@ -1205,8 +1205,29 @@ collect_surfaces(uint32_t *prim_ctr, bsp_mesh_t *wm, bsp_t *bsp, int model_idx, 
 
 		if (MAT_IsKind(material_id, MATERIAL_KIND_CAMERA) && wm->num_cameras > 0)
 		{
-			// Assign a random camera for this face
-			int camera_id = Q_rand() % (wm->num_cameras * 4);
+			/* Pick the camera slot (camera = slot / 4; animate_materials.comp steps the slot
+			   every half second). It used to be a random slot PER FACE, but the BSP cuts one
+			   monitor into several faces - base3's screens are 2-16 faces on one texinfo - so
+			   a single monitor showed pieces of different cameras, cutting at different times,
+			   with a seam between them. Hash the texinfo and plane instead: every face of one
+			   monitor shares both. pt_camera_per_face 1 = the old random per face (map reload). */
+			static cvar_t *cvar_pt_camera_per_face = NULL;
+			if (!cvar_pt_camera_per_face)
+				cvar_pt_camera_per_face = Cvar_Get("pt_camera_per_face", "0", 0);
+
+			int num_slots = wm->num_cameras * 4;
+			int camera_id;
+			if (cvar_pt_camera_per_face->integer)
+				camera_id = Q_rand() % num_slots;
+			else
+			{
+				uint32_t h = (uint32_t)(surf->texinfo - bsp->texinfo) * 0x9E3779B1u
+					^ (uint32_t)(surf->plane - bsp->planes) * 0x85EBCA77u;
+				h ^= h >> 16;
+				h *= 0x7FEB352Du;
+				h ^= h >> 15;
+				camera_id = (int)(h % (uint32_t)num_slots);
+			}
 			material_id = (material_id & ~MATERIAL_LIGHT_STYLE_MASK) | ((camera_id << MATERIAL_LIGHT_STYLE_SHIFT) & MATERIAL_LIGHT_STYLE_MASK);
 		}
 		

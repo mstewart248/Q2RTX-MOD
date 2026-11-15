@@ -294,7 +294,7 @@ begin video_display
             range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off. (pt_reflex_fps_max)" "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
             blank
         endif
-        pairs --status "pass times: what each pass of the frame costs the GPU. frame graphs: frame time (the GPU's under it) and fps over the last few seconds, with averages and 1% lows. category history / category bars: the GPU frame in 12 groups (frame setup, primary rays, Flow, volumetrics, lighting, denoiser, DLSS, post...), over time or this frame against the average (profiler)" "GPU profiler" profiler off 0 "pass times" 1 "frame graphs" 2 "category history" 3 "category bars" 4
+        pairs --status "pass times: what each pass of the frame costs the GPU. frame graphs: frame time (the GPU's under it) and fps over the last few seconds, with averages and 1% lows. category history / category bars: the GPU frame in 12 groups (frame setup, primary rays, Flow, volumetrics, lighting, denoiser, DLSS, post...), over time or this frame against the average. graph only: the same without the numbers, just the graph and what its colours are (profiler)" "GPU profiler" profiler off 0 "pass times" 1 "frame graphs" 2 "category history" 3 "category bars" 4 "history, graph only" 5 "bars, graph only" 6
         pairs --status "with the GPU profiler on, a screenshot of it when the frame rate drops under the display's refresh rate (profiler_capture_fps for another): the dip's first slow frame, then its worst, in screenshots/profcap with PROFCAPTURE lines in the console (profiler_capture)" "capture fps dips" profiler_capture off 0 on 1
     endif
 end
@@ -354,7 +354,7 @@ begin video_reconstruction
     ifeq pt_dlss_available 1
     ifneq pt_dlss 0
     blank
-    pairs --status "shown raw at render resolution: DLSS-RR's inputs, then the path tracer's (pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 "color (RR input)" 16 "diffuse albedo" 2 "specular albedo" 5 normal 4 roughness 3 depth 6 "motion vectors" 7 "reflection motion" 1 "diffuse hit distance" 9 "specular hit distance" 10 "reflected albedo" 22 "glass responsivity mask" 23"color before transparency" 8 "transparency overlay" 11 "path tracer motion" 12 "primary motion" 17 throughput 19 "bounce throughput" 20 "base color" 32 "metallic / roughness" 34 "view depth" 36 barycentrics 30 "shading position (last bounce)" 15
+    pairs --status "shown raw at render resolution: DLSS-RR's inputs, then the path tracer's (pt_dlss_debug)" "DLSS Debug" pt_dlss_debug off 0 "color (RR input)" 16 "diffuse albedo" 2 "specular albedo" 5 normal 4 roughness 3 depth 6 "motion vectors" 7 "reflection motion" 1 "diffuse hit distance" 9 "specular hit distance" 10 "reflected albedo" 22 "responsivity mask" 23"color before transparency" 8 "transparency overlay" 11 "path tracer motion" 12 "primary motion" 17 throughput 19 "bounce throughput" 20 "base color" 32 "metallic / roughness" 34 "view depth" 36 barycentrics 30 "shading position (last bounce)" 15
     endif
     endif
 end

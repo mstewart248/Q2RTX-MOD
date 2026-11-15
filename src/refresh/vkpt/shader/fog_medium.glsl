@@ -1064,8 +1064,57 @@ only a binary front/back test.
 What remains outside it is VISIBILITY, which cannot be known without the ray
 this function exists to place.  That is the noise the spatial filter and the
 temporal history are left to deal with.
+
+pt_fog_estimate_closest: a polygon is priced from its CENTROID, which is fine for
+a lamp panel but not for a BEAM - six triangles as long as the beam and a few
+units wide (vkpt_build_cylinder_light). A cell right beside a laser sees each
+triangle's centroid a third of the beam away and nearly edge-on, so the beam is
+priced ~25x under what it delivers: rarely picked, then one enormous sample.
+1 measures from the triangle's closest point to p instead, with the solid angle
+capped at a hemisphere so a long triangle right beside p does not swamp the list.
 =================
 */
+
+// Ericson, Real-Time Collision Detection 5.1.5. The callers have already
+// rejected degenerate triangles (zero cross product), so no division is by zero.
+vec3 fog_closest_point_on_triangle(vec3 p, vec3 a, vec3 b, vec3 c)
+{
+	vec3 ab = b - a;
+	vec3 ac = c - a;
+	vec3 ap = p - a;
+	float d1 = dot(ab, ap);
+	float d2 = dot(ac, ap);
+	if (d1 <= 0.0 && d2 <= 0.0)
+		return a;
+
+	vec3 bp = p - b;
+	float d3 = dot(ab, bp);
+	float d4 = dot(ac, bp);
+	if (d3 >= 0.0 && d4 <= d3)
+		return b;
+
+	float vc = d1 * d4 - d3 * d2;
+	if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0)
+		return a + ab * (d1 / (d1 - d3));
+
+	vec3 cp = p - c;
+	float d5 = dot(ab, cp);
+	float d6 = dot(ac, cp);
+	if (d6 >= 0.0 && d5 <= d6)
+		return c;
+
+	float vb = d5 * d2 - d1 * d6;
+	if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0)
+		return a + ac * (d2 / (d2 - d6));
+
+	float va = d3 * d6 - d5 * d4;
+	if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0)
+		return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+
+	float denom = 1.0 / (va + vb + vc);
+	return a + ab * (vb * denom) + ac * (vc * denom);
+}
+
 float volume_light_estimate(LightPolygon light, vec3 p, vec3 view_dir, float g)
 {
 	// sky brushes are marked with a negative colour and belong to sky_term
@@ -1081,6 +1130,7 @@ float volume_light_estimate(LightPolygon light, vec3 p, vec3 view_dir, float g)
 	vec3  lp;
 	float emit_area;
 	float emit_profile = 1.0;
+	const bool closest = global_ubo.pt_fog_estimate_closest != 0.0;   // see above
 
 	if (light_type == DYNLIGHT_POLYGON)
 	{
@@ -1121,7 +1171,16 @@ float volume_light_estimate(LightPolygon light, vec3 p, vec3 view_dir, float g)
 			   flash still worked. That is exactly the reported asymmetry.
 
 			   sqrt() to match the softening the real evaluation applies. */
-			float cos_emit = -dot(cr / cr_len, normalize(lp - p));
+			if (closest)
+				lp = fog_closest_point_on_triangle(p, light.positions[0],
+				                                   light.positions[1], light.positions[2]);
+
+			vec3 to_light = lp - p;
+			float to_len = length(to_light);
+			if (!(to_len > 1e-3))
+				return 0.0;   // p on the emitter's own plane: it lights nothing there
+
+			float cos_emit = -dot(cr / cr_len, to_light / to_len);
 			if (cos_emit <= 0.0)
 				return 0.0;
 			emit_profile *= sqrt(cos_emit);
@@ -1150,8 +1209,14 @@ float volume_light_estimate(LightPolygon light, vec3 p, vec3 view_dir, float g)
 	// made more candidates pointless. See the note above.
 	float phase = ScatterPhase_HenyeyGreenstein(dot(view_dir, normalize(d)), g);
 
-	return luminance(light.color) * emit_area * emit_profile * phase
-	     * vol_scale * light.light_style_scale / dist2;
+	// area / dist2 stands for the solid angle; measured from the closest point a
+	// long triangle right beside p would claim many hemispheres' worth
+	float solid_angle = emit_area / dist2;
+	if (closest)
+		solid_angle = min(solid_angle, 2.0 * M_PI);
+
+	return luminance(light.color) * solid_angle * emit_profile * phase
+	     * vol_scale * light.light_style_scale;
 }
 
 /*
@@ -1392,8 +1457,8 @@ them addable - a neighbour has no way to know the count its source cell used.
    draws from. The split rides on the sky part's short history volume, so it is
    only live while pt_fog_froxel_sky_history is. */
 #define FOG_LIGHTS_ALL      0u
-#define FOG_LIGHTS_STATIC   1u   // the BSP's own lights, brush-entity emissives, placed lights + the fog-only (lava) list
-#define FOG_LIGHTS_DYNAMIC  2u   // the other model lights: weapon dlights, flashes, flashlight, md2 emissives, beams
+#define FOG_LIGHTS_STATIC   1u   // the BSP's own lights, brush-entity emissives, placed lights, a map's lasers + the fog-only (lava) list
+#define FOG_LIGHTS_DYNAMIC  2u   // the other model lights: weapon dlights, flashes, flashlight, md2 emissives, fired beams
 
 #define FOG_DYN_SPLIT (global_ubo.pt_fog_froxel_dyn_split != 0.0                        && global_ubo.pt_fog_froxel_sky_history > 0.0)
 
@@ -1407,7 +1472,8 @@ them addable - a neighbour has no way to know the count its source cell used.
    Brush-entity emissive surfaces (doors, trains, mgu4m1's crate clamps) are
    model lights too, but they are fixtures, not flashes, and so are the
    dlights placed with the light editor and the dynamic_light entities
-   (dlight_t.fixture): main.c packs them at the front of the model lights and
+   (dlight_t.fixture), and a map's lasers (RF_BEAM_FIXTURE, unlike the beams
+   monsters fire): main.c packs them at the front of the model lights and
    fog_num_bmodel_lights says how many, so they count as static here and stay
    on the long history. */
 uint fog_light_static_count(uint cluster_idx)

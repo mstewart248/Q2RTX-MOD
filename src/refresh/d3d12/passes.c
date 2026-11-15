@@ -410,12 +410,18 @@ static void trace_lighting(recorder_t *r, const d3d12_passes_frame_t *f, bool ti
     }
     mark(r, PROFILER_INDIRECT_LIGHTING, PROFILER_STOP);
 
-    // its temporal pass, then the spatial one
+    // its temporal pass, then the spatial one - under pt_sparse over the sparse list, the
+    // pixels lit this frame (path_tracer.c's): region 1, intact here with up to 2
+    // bounces, as only the third bounce's list (2) overwrites it
     if (f->restir_gi && f->num_bounce_rays >= 1) {
         mark(r, PROFILER_RESTIR_GI, PROFILER_START);
         trace(r, D3D12_PASS_RESTIR_GI, 0, f->field_width, f->render_height);
-        if (f->restir_gi_spatial)
-            trace(r, D3D12_PASS_RESTIR_GI, 1, f->field_width, f->render_height);
+        if (f->restir_gi_spatial) {
+            if (sparse && (int)ceilf(f->num_bounce_rays) <= 2)
+                trace_paths(r, D3D12_PASS_RESTIR_GI, 1, PT_PATH_LIST_SPARSE, 0);
+            else
+                trace(r, D3D12_PASS_RESTIR_GI, 1, f->field_width, f->render_height);
+        }
         mark(r, PROFILER_RESTIR_GI, PROFILER_STOP);
     }
 }
@@ -674,7 +680,7 @@ static void execute_from_lists(recorder_t *r, d3d12_pass_t pass, const pt_push_t
     ID3D12GraphicsCommandList4_SetPipelineState(p->cmd, p->psos[pass]);
     use_layout(r, D3D12_PL_PATH_TRACER);
     d3d12_compute_push_constants(gl, D3D12_PL_PATH_TRACER, push, sizeof(*push));
-    // (none of reflect_refract, direct_lighting and indirect_lighting reads gl_NumWorkGroups, the root
+    // (none of reflect_refract, direct_lighting, indirect_lighting and restir_gi reads gl_NumWorkGroups, the root
     // constant d3d12_compute_dispatch sets and a DISPATCH argument cannot)
     ID3D12GraphicsCommandList4_ExecuteIndirect(p->cmd, p->tile_dispatch, 1, p->tile_args, 0, NULL, 0);
     d3d12_barrier_all(p->cmd, p->enhanced_barriers);

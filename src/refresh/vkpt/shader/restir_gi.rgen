@@ -36,6 +36,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #extension GL_GOOGLE_include_directive    : enable
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
+// under pt_sparse the spatial pass runs over the sparse path list - see main()
+#define PT_PATH_LAUNCH
 #include "path_tracer_rgen.h"
 #include "restir_gi.h"
 
@@ -962,6 +964,18 @@ spatial_pass(ivec2 ipos)
 void
 main()
 {
+#ifdef KHR_RAY_QUERY
+	/* SPARSE RENDERING (pt_sparse): the spatial pass can run over the sparse path list,
+	   the pixels direct lighting lit this frame (vkpt_pt_trace_lighting). Only those have
+	   anything to shade - a skipped pixel's throughput is 0, and the pass returns on it
+	   below - but over the grid they are scattered among the skipped ones by blue noise,
+	   so every subgroup ran half idle and the pass cost what it did at full rate. The
+	   temporal pass stays on the grid: it carries the skipped pixels' history forward. */
+	pt_path_launch_init();
+	if (pt_tile_launch_none())
+		return;
+#endif
+
 	if(!restir_gi_enabled())
 		return;
 

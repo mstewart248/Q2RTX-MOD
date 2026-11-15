@@ -324,9 +324,22 @@ void combine_fullres_fields(ivec2 opos)
     float fresnel_weight = 0.0;
     // pt_dlss_blood_guides: this split is a translucent blood splat's alpha, see below.
     bool blood_split = false;
-    // A water or slime surface (pt_dlss_water_responsive): only they and glass record a
-    // Fresnel weight, so a Fresnel split without the glass flag is a liquid.
-    bool liquid_split = false;
+
+    /* primary_rays.rgen's RESPONSIVITY CODE for this pixel: the mask value it wants
+       (pt_dlss_animated_responsive), plus DLSS_RESPONSIVITY_CAMERA_BIAS on a security-camera
+       screen. Read at opos, never at p_reflect: this pass overwrites opos with the final
+       mask below, and a half-resolution row borrowing its neighbour's p_reflect would race
+       that write. Field 0 of every render pixel stores a code, so nothing here is stale. */
+    float responsivity_code = imageLoad(IMG_DLSS_RESPONSIVITY, opos).x;
+    bool camera_screen = responsivity_code >= DLSS_RESPONSIVITY_CAMERA_BIAS;
+    float responsivity = camera_screen ? responsivity_code - DLSS_RESPONSIVITY_CAMERA_BIAS : responsivity_code;
+    /* pt_dlss_camera_mv 1/2: a camera split hands RR the CAMERA field. Field 0 is the
+       picture, field 1 the 5% black-mirror reflection (primary_rays.rgen turns the odd
+       field into a SCREEN). Under guide field 0 - and motion field 0 - RR got field 1's
+       mirrored motion vector and depth for the whole picture: a doubled, offset image
+       that ghosts even up close. Take field 0 for the guides, depth and motion, and hand
+       field 1 over through the reflection inputs, which is what they are for. */
+    bool camera_fields = false;
 
     if(paths_split)
     {
@@ -357,7 +370,6 @@ void combine_fullres_fields(ivec2 opos)
         bool blood_encoded = fresnel_encoded >= REFLECTED_ALBEDO_BLOOD_BIAS;
         bool have_fresnel = fresnel_encoded >= 1.0 && !blood_encoded;
         fresnel_weight = have_fresnel ? clamp(fresnel_encoded - 1.0, 0.0, 1.0) : 0.0;
-        liquid_split = have_fresnel && !split_was_glass;
 
         if(guide_field == 2)
             reflection_is_primary = true;
@@ -447,6 +459,14 @@ void combine_fullres_fields(ivec2 opos)
             mix_albedo_by_fresnel = true;
         }
 
+        // A security-camera screen - see camera_fields above. Overrides every mode.
+        if(camera_screen && global_ubo.pt_dlss_camera_mv >= 1 && !blood_split)
+        {
+            camera_fields = true;
+            reflection_is_primary = true;
+            mix_albedo_by_fresnel = false;
+        }
+
         p_primary = reflection_is_primary ? p_reflect : p_refract;
     }
     else
@@ -481,6 +501,8 @@ void combine_fullres_fields(ivec2 opos)
         int motion_field = int(global_ubo.pt_dlss_guide_motion);
         if(motion_field == 1)      p_motion = p_refract;
         else if(motion_field == 2) p_motion = p_reflect;
+        // the camera picture's own vector (the screen's, plus the portal step in mode 2)
+        if(camera_fields)          p_motion = p_reflect;
     }
 
     vec4 primary_motion = imageLoad(IMG_PT_MOTION, p_motion);
@@ -589,54 +611,33 @@ void combine_fullres_fields(ivec2 opos)
     // to both PT_MOTION and PT_REFLECT_MOTION there.
     // A blood split has no mirrored layer: its specular lobe rides the surface the
     // guides describe, exactly as on a non-split pixel.
+    // A camera split's reflection layer is field 1, the black mirror: its mirrored
+    // vector, hit distance and reflected albedo (camera_fields above).
+    ivec2 p_specular = camera_fields ? p_refract : p_reflect;
     vec2 reflect_motion = (paths_split && !blood_split)
-        ? imageLoad(IMG_PT_REFLECT_MOTION, p_reflect).xy
+        ? imageLoad(IMG_PT_REFLECT_MOTION, p_specular).xy
         : primary_motion.xy;
 
-    float specular_length = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, p_reflect).x;
+    float specular_length = imageLoad(IMG_PT_RAYLENGTH_SPECULAR, p_specular).x;
 
     imageStore(IMG_DLSS_REFLECT_MOTION,     opos, vec4(reflect_motion, 0, 0));
     imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specular_length));
     // Alpha carries the Fresnel weight for mode 4 above; zero it so RR is handed a plain
     // albedo and never sees the side channel.
-    imageStore(IMG_DLSS_REFLECTED_ALBEDO,   opos, vec4(imageLoad(IMG_PT_REFLECTED_ALBEDO, p_reflect).rgb, 0));
+    imageStore(IMG_DLSS_REFLECTED_ALBEDO,   opos, vec4(imageLoad(IMG_PT_REFLECTED_ALBEDO, p_specular).rgb, 0));
 
-    /* pt_dlss_glass_responsive - RR2's RESPONSIVITY MASK ON GLASS WHOSE REFLECTION MOVES.
+    /* RR2's RESPONSIVITY MASK (pt_dlss_animated_responsive): where the picture changes with
+       no motion vector that could describe it - a texinfo animation chain (the mguhub
+       SECURITY OFF signs blink on and off twice a second, and RR's history kept the near one
+       dark while the far ones were lit), a security camera without portal motion vectors,
+       or one that has just cut to its next camera. primary_rays.rgen decided the strength;
+       this only strips the camera mark.
 
-       With the refraction supplying the guides (guide field 0), RR reprojects a whole
-       glass pixel with the motion of what is seen THROUGH the pane. The reflection the
-       pane adds moves differently - the player model always does, and while the camera
-       moves every reflection does - so its history lands in the wrong place and RR blurs
-       it until everything stops: sharp when still, soft in motion (Matt, 2026-11-06).
-       Handing RR the guides of the reflection instead fixes that and breaks the view
-       through the glass (the lamp behind it slides with the player), and roughness /
-       specular albedo alone made no visible difference (2026-09-23 and 11-06).
-
-       So keep every guide and motion vector as it is and tell RR where to lean on the
-       current frame: exactly where the reflection's motion and the through-glass motion
-       disagree, by more than a quarter of a render pixel. A still pane - or a still
-       reflection over a still view - stays at 0 and keeps its full history, so it is as
-       clean as before; only the moving part trades history for sharpness.
-
-       Water and slime get the same rule under their own strength, pt_dlss_water_responsive.
-       Their reflection motion is the FLAT-surface mirror (reflect_refract.rgen), so the
-       waves themselves never trip it - a still camera over a still reflection stays at 0.
-
-       Nothing here when the reflection is primary (guide fields 2/3/5 hand RR the
-       reflection's motion already), or on blood. */
-    float strength = ((checkerboard_flags & CHECKERBOARD_FLAG_GLASS) != 0) ? global_ubo.pt_dlss_glass_responsive
-                   : liquid_split                                          ? global_ubo.pt_dlss_water_responsive
-                   : 0.0;
-    float responsivity = 0.0;
-    if(strength > 0.0 && paths_split && !blood_split && !reflection_is_primary)
-    {
-        // motion vectors are in screen fractions; this is the disagreement in render pixels
-        float pixels = length((reflect_motion - primary_motion.xy) * vec2(global_ubo.width, global_ubo.height));
-        if(!(pixels < 1e4)) // NaN and Inf too
-            pixels = 1e4;
-        responsivity = smoothstep(0.25, 1.5, pixels) * min(strength, 1.0);
-    }
-    imageStore(IMG_DLSS_RESPONSIVITY, opos, vec4(responsivity));
+       The glass and water masks that used to live here (pt_dlss_glass_responsive,
+       pt_dlss_water_responsive: mask where the reflection's motion and the through-pane
+       motion disagree) were removed on 2026-11-14: on glass and water the mask was the
+       wrong tool. This channel now carries only the animation and camera mask. */
+    imageStore(IMG_DLSS_RESPONSIVITY, opos, vec4(clamp(responsivity, 0.0, 1.0)));
 }
 
 void main()
@@ -739,8 +740,9 @@ void main()
             scene_share = mix(scene_share, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos + ivec2(other_side_offset, 0)).a, 0.5);
         imageStore(IMG_DLSS5_MASK, opos, vec4(vec3(clamp(scene_share, 0.0, 1.0)), 1));
         imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, src));
-        // pt_dlss_glass_responsive is a split-field rule (combine_fullres_fields); here
-        // the mask only has to be defined
+        // The responsivity mask (pt_dlss_animated_responsive) is split-field only:
+        // primary_rays.rgen writes its code only under pt_fullres_fields, so here the mask
+        // only has to be defined
         imageStore(IMG_DLSS_RESPONSIVITY, opos, vec4(0));
 
         float specularRayLength = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, src).x);

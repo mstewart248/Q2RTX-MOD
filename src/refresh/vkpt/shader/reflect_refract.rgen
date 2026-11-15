@@ -267,6 +267,8 @@ main()
 	bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
 	
 	int correct_motion_vector = 0; // 1 -> flat reflection, 2 -> flat refraction
+	// The security camera this bounce looks through, at the first bounce only; -1 otherwise.
+	int portal_camera_id = -1;
 	bool include_player_model = !primary_is_weapon;
 	bool backface_culling = true;
 	bool primary_is_blood_film = false;
@@ -436,6 +438,9 @@ main()
 		uv.y = float((packedUV >> 14) & 0x3fff) / float(0x3fff);
 
 		uint camera_id = (packedUV >> 28) & (MAX_CAMERAS - 1);
+		// pt_dlss_camera_mv 2: the portal motion vector after the trace needs the camera
+		if(spec_bounce_index == 0)
+			portal_camera_id = int(camera_id);
 
 		mat4 camera_data = global_ubo.security_camera_data[camera_id];
 		position = camera_data[0].xyz;
@@ -1062,9 +1067,21 @@ main()
 		// (where the weapon reflects sky over much of its surface) that is most of the
 		// gun. The reflected sky is already described by the specular hit distance of
 		// PRIMARY_RAY_T_MAX written before this branch.
+		//
+		// pt_dlss_camera_mv 1/2: a security-camera screen's field 0 keeps the SCREEN's own
+		// depth and motion vector wherever its camera sees sky, at any bounce - the combine
+		// pass hands RR the camera field's depth and motion for the whole picture, and a
+		// far depth on the sky parts of it (or this branch's vector, built from a camera
+		// ray as if it came from the player's eye) would tear the picture apart. A static
+		// camera sees the sky standing still, so the screen's motion is its right vector.
+		// The mark is primary_rays.rgen's - see DLSS_RESPONSIVITY_CAMERA_BIAS.
+		bool camera_screen_keeps_mv = global_ubo.pt_dlss_camera_mv >= 1
+			&& global_ubo.pt_fullres_fields != 0 && !is_odd_checkerboard
+			&& imageLoad(IMG_DLSS_RESPONSIVITY, ipos).x >= DLSS_RESPONSIVITY_CAMERA_BIAS;
 		if(checkerboard_mirror_flag == 0)
 		{
-			imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(PRIMARY_RAY_T_MAX));
+			if(!camera_screen_keeps_mv)
+				imageStore(IMG_PT_VIEW_DEPTH_SPLIT, ipos, vec4(PRIMARY_RAY_T_MAX));
 			imageStore(IMG_PT_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
 			imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(0.5, 0.5, 0.5, 0));
 			imageStore(IMG_PT_ROUGHNESS, ipos, vec4(1.0));
@@ -1136,7 +1153,7 @@ main()
 					sky_motion = through_motion;
 			}
 
-			if(checkerboard_mirror_flag == 0)
+			if(checkerboard_mirror_flag == 0 && !camera_screen_keeps_mv)
 				imageStore(IMG_PT_MOTION, ipos, vec4(sky_motion, 0, 0));
 			if(!do_refraction)
 				imageStore(IMG_PT_REFLECT_MOTION, ipos, vec4(sky_motion, 0, 0));
@@ -1327,12 +1344,78 @@ main()
 		}
 	}
 
+	/* pt_dlss_camera_mv 2: PORTAL MOTION VECTOR for a security-camera screen. Field 0 of a
+	   camera pixel is the camera's picture, but the fallback below hands it the SCREEN
+	   surface's motion vector - right only for what stands still in front of the (static)
+	   camera. Whatever moves in the camera's view moved across the monitor too, and RR,
+	   told it had not, dragged it into a trail.
+
+	   Follow the hit through the portal instead: where the camera saw this point last frame
+	   (its previous position, through the same camera), where that camera UV sat on the
+	   screen surface last frame (the screen triangle's texture mapping run backwards), and
+	   where the player's previous view saw that spot. The step from the screen point's own
+	   previous position is added to the surface vector, so a still hit gives exactly the
+	   surface vector and a still player gives just the picture's own motion. The mapping is
+	   extrapolated along the screen triangle's plane - fine for flat monitors. At this point
+	   the visibility buffer still holds the primary (screen) hit; bounce 0 only. */
+	vec2 camera_portal_delta = vec2(0);
+	if(portal_camera_id >= 0 && spec_bounce_index == 0 && global_ubo.pt_dlss_camera_mv >= 2)
+	{
+		mat4 portal_camera = global_ubo.security_camera_data[portal_camera_id];
+		vec2 portal_uv_curr, portal_uv_prev;
+		if(camera_uv_of_point(portal_camera, new_position, portal_uv_curr)
+			&& camera_uv_of_point(portal_camera, new_pos_prev, portal_uv_prev))
+		{
+			uvec2 screen_vis = imageLoad(IMG_PT_VISBUF_PRIM_A, ipos).xy;
+			vec3 screen_bary;
+			screen_bary.yz = imageLoad(IMG_PT_VISBUF_BARY_A, ipos).xy;
+			screen_bary.x = 1.0 - screen_bary.y - screen_bary.z;
+
+			Triangle screen_tri;
+			if(screen_vis.x == ~0u)
+				screen_tri = load_triangle(VERTEX_BUFFER_WORLD, screen_vis.y);
+			else
+			{
+				ModelInstance screen_mi = instance_buffer.model_instances[screen_vis.x];
+				int screen_static_idx = (screen_mi.render_buffer_idx == screen_mi.source_buffer_idx)
+					? int(screen_vis.x) : -1;
+				screen_tri = load_and_transform_triangle(screen_static_idx, screen_mi.render_buffer_idx,
+					screen_mi.render_prim_offset + screen_vis.y);
+			}
+
+			mat2 screen_tex_edges = mat2(
+				screen_tri.tex_coords[1] - screen_tri.tex_coords[0],
+				screen_tri.tex_coords[2] - screen_tri.tex_coords[0]);
+			if(abs(determinant(screen_tex_edges)) > 1e-10)
+			{
+				mat2x3 screen_pos_edges = mat2x3(
+					screen_tri.positions_prev[1] - screen_tri.positions_prev[0],
+					screen_tri.positions_prev[2] - screen_tri.positions_prev[0]);
+				vec2 tex_step = (portal_uv_prev - portal_uv_curr) * (CAMERA_SCREEN_MAX_UV - CAMERA_SCREEN_MIN_UV);
+				vec3 screen_point_prev = screen_tri.positions_prev * screen_bary;
+				vec3 portal_point_prev = screen_point_prev + screen_pos_edges * (inverse(screen_tex_edges) * tex_step);
+
+				vec2 screen_point_proj, portal_point_proj;
+				float portal_unused_distance;
+				projection_view_to_screen((global_ubo.V_prev * vec4(screen_point_prev, 1)).xyz,
+					screen_point_proj, portal_unused_distance, true);
+				projection_view_to_screen((global_ubo.V_prev * vec4(portal_point_prev, 1)).xyz,
+					portal_point_proj, portal_unused_distance, true);
+				vec2 portal_delta = portal_point_proj - screen_point_proj;
+				// NaN and Inf fail lessThan, so the bound doubles as the finite check
+				if(all(lessThan(abs(portal_delta), vec2(4.0))))
+					camera_portal_delta = portal_delta;
+			}
+		}
+	}
+
 	if(!apparent_mv_written && spec_bounce_index == 0)
 	{
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, -imageLoad(IMG_PT_VIEW_DEPTH_A, ipos));
-		
+
 		vec4 motion = imageLoad(IMG_PT_MOTION, ipos);
 		motion.z = -motion.z;
+		motion.xy += camera_portal_delta;
 		imageStore(IMG_PT_MOTION, ipos, motion);
 
 		if(!do_refraction) {

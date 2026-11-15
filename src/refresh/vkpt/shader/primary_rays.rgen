@@ -309,6 +309,22 @@ flow_pass_main()
 	imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
 }
 
+/* RR2'S RESPONSIVITY MASK (pt_dlss_animated_responsive) AND THE CAMERA MARK
+   (pt_dlss_camera_mv): field 0's verdict on its own primary surface, parked in
+   DLSS_RESPONSIVITY for checkerboard_interleave.comp - see
+   DLSS_RESPONSIVITY_CAMERA_BIAS in constants.h. Decided here because this is the
+   last pass that sees the primary surface: reflect_refract.rgen replaces the
+   G-buffer of a camera screen with what the camera sees. DLSS split fields only,
+   where field 0's pixel IS the render pixel the combine pass writes (field width =
+   render width, so there are no padding threads). Every field-0 pixel stores,
+   sky included, so nothing stale survives into the combine. */
+void
+store_responsivity_code(ivec2 ipos, uint secondField, float code)
+{
+	if (global_ubo.pt_fullres_fields != 0 && secondField == 0u)
+		imageStore(IMG_DLSS_RESPONSIVITY, ipos, vec4(code));
+}
+
 void
 main()
 {
@@ -543,6 +559,7 @@ main()
 		imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, 0));
 		imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(global_ubo.cam_pos.xyz + direction * PRIMARY_RAY_T_MAX, 0));
 		imageStore(IMG_PT_MOTION, ipos, vec4(motion, 0, 0));
+		store_responsivity_code(ipos, secondField, 0.0);
 		imageStore(IMG_PT_VISBUF_PRIM_A, ipos, uvec4(0));
 		imageStore(IMG_PT_VISBUF_BARY_A, ipos, vec4(0));
 		imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(0));
@@ -744,6 +761,14 @@ main()
 
 	int checkerboard_flags = CHECKERBOARD_FLAG_PRIMARY;
 
+	/* pt_dlss_animated_responsive: a texinfo animation chain (num_frames > 1 - world
+	   faces are stepped by animate_materials.comp, brush entities by their frame)
+	   changes the picture with a zero motion vector, so RR is told to trust the
+	   current frame here. Word 4 of the material table is num_frames | next_frame. */
+	float responsivity_code = 0.0;
+	if ((light_buffer.material_table[(triangle.material_id & MATERIAL_INDEX_MASK) * MATERIAL_UINTS + 4] & 0xffffu) > 1u)
+		responsivity_code = clamp(global_ubo.pt_dlss_animated_responsive, 0.0, 1.0);
+
 	vec2 cameraUV = vec2(0);
 	if(is_camera(material_id))
 	{
@@ -752,6 +777,26 @@ main()
 			throughput *= split_weight;
 			checkerboard_flags = CHECKERBOARD_FLAG_REFRACTION | CHECKERBOARD_FLAG_REFLECTION;
 			primary_emissive = vec3(0);
+
+			/* A security-camera screen: mark it for the combine pass (pt_dlss_camera_mv),
+			   and ask for the mask where no motion vector can describe the change - the
+			   whole picture without portal motion vectors (mode < 2), otherwise only the
+			   first DLSS_CAMERA_CUT_WINDOW of the half-second step in which this face has
+			   just cut to its next camera. animate_materials.comp advances a WORLD face's
+			   camera slot every half second and the camera shown is slot / 4, so a slot
+			   that is now a multiple of 4 has just changed camera. Brush-entity screens
+			   never cycle. */
+			float camera_responsivity = clamp(global_ubo.pt_dlss_animated_responsive, 0.0, 1.0);
+			if (global_ubo.pt_dlss_camera_mv >= 2)
+			{
+				uint camera_slot = (material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT;
+				bool just_cut = global_ubo.num_cameras > 1 && triangle.instance_index == ~0u
+					&& (camera_slot & 3u) == 0u
+					&& fract(global_ubo.time * 2.0) < DLSS_CAMERA_CUT_WINDOW;
+				if (!just_cut)
+					camera_responsivity = 0.0;
+			}
+			responsivity_code = max(responsivity_code, camera_responsivity) + DLSS_RESPONSIVITY_CAMERA_BIAS;
 
 			if(is_odd_checkerboard)
 			{	
@@ -917,6 +962,7 @@ main()
 		pt_tile_append(push_constants.tile_append_list - 1u, rt_LaunchID);
 #endif
 	imageStore(IMG_PT_VIEW_DIRECTION, ipos, vec4(direction, float(checkerboard_flags)));
+	store_responsivity_code(ipos, secondField, responsivity_code);
 	imageStore(IMG_PT_THROUGHPUT, ipos, vec4(throughput, distance_curr));
 	imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(1, 1, 1, half_cone_angle));
 	imageStore(IMG_PT_CLUSTER_A, ipos, ivec4(triangle.cluster));

@@ -152,7 +152,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    SDK 310.9+, Preset F / RR2): one channel, render resolution, R16F or R8_SNORM, range
    -1..1 - positive makes RR trust the current frame over its history there, negative the
    reverse, 0 changes nothing. Written every frame by the combine pass in
-   checkerboard_interleave.comp (pt_dlss_glass_responsive). R16_SFLOAT declared r32f,
+   checkerboard_interleave.comp (pt_dlss_animated_responsive); before that, primary_rays.rgen
+   parks a per-pixel code in it for the combine (DLSS_RESPONSIVITY_CAMERA_BIAS, constants.h),
+   which is why it must hold values above 1. R16_SFLOAT declared r32f,
    PT_PRIMARY_DIST's pairing, which both renderers already handle. */
 /* DLSS5_MASK: DLSS 5's control mask ("DLSSNR.ControlMask", pt_dlss5_volumetric, DLSSNR.c):
    render resolution like the other guides, RGBA8 like RTX Remix's - R scales the model's

@@ -6313,7 +6313,9 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
    entities - doors, trains, mgu4m1's tomf/shoot01 crate clamps - are fixtures,
    not flashes, so they belong with the BSP lights. So do the dlights that stay
    put - lights placed with the light editor and dynamic_light entities, which
-   add_dlights() gives the same hash.bsp bit (dlight_t.fixture). prepare_entities
+   add_dlights() gives the same hash.bsp bit (dlight_t.fixture) - and a map's
+   lasers, which vkpt_build_beam_lights marks (RF_BEAM_FIXTURE,
+   pt_fog_froxel_map_beams). prepare_entities
    instances the brush lights interleaved with the md2 lights in entity order;
    this moves all of them to the front, keeping the order otherwise, and counts
    them for the fog. Reordering
@@ -9707,6 +9709,7 @@ vkpt_init_frontend(void)
 	// UBO cvars are registered without CVAR_ARCHIVE, so a console value lasts until the next
 	// launch and the header default comes back. This one is a per-setup choice, so keep it.
 	cvar_pt_dlss_guide_field->flags |= CVAR_ARCHIVE;
+	cvar_pt_dlss_animated_responsive->flags |= CVAR_ARCHIVE; // a tuned strength, like the above
 	cvar_pt_fog_froxel_sky_history->flags |= CVAR_ARCHIVE; // the fog menu's "split froxel histories"
 	// on a slider in the effects menu, so it has to survive a restart
 	cvar_pt_water_density->flags |= CVAR_ARCHIVE;
