@@ -508,6 +508,11 @@ void combine_fullres_fields(ivec2 opos)
     vec4 primary_motion = imageLoad(IMG_PT_MOTION, p_motion);
 
     imageStore(IMG_FLAT_MOTION,             opos, primary_motion);
+    // pt_dlss_particle_layer 2: where primary_rays found no effect to give the
+    // transparency layer a vector of its own (.z 0), it moves with the colour
+    if (global_ubo.pt_dlss_particle_layer >= 2.0
+        && imageLoad(IMG_DLSS_PARTICLE_MOTION, opos).z == 0.0)
+        imageStore(IMG_DLSS_PARTICLE_MOTION, opos, vec4(primary_motion.xy, 0, 0));
     if (taa_folded())
         taa_folded_store(opos, color, primary_motion.xy);
     imageStore(IMG_DLSS_DEPTH,              opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT,    p_motion));

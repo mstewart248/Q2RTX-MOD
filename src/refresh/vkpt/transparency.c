@@ -33,6 +33,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define TR_BEAM_AABB_SIZE      sizeof(VkAabbPositionsKHR)
 #define TR_POSITION_SIZE       (3 * sizeof(float))
 #define TR_COLOR_SIZE          (4 * sizeof(float))
+// A particle's two RGBA32F texels: its colour, then its motion since the previous frame
+// (particle_t.motion, xyz) for pt_dlss_particle_layer 2 - see particle_motion() in
+// path_tracer_hit_shaders.h. Interleaved rather than a stream of its own so that D3D12,
+// which sizes this view from vkpt_transparency_capacity, needs nothing new.
+#define TR_PARTICLE_DATA_SIZE  (2 * TR_COLOR_SIZE)
 #define TR_BEAM_INTERSECT_SIZE (12 * sizeof(float))
 // texture index, alpha, packed RGBA tint, unused. The tint is what lets a
 // rerelease misc_flare colour its corona; ordinary sprites write white.
@@ -142,7 +147,7 @@ void vkpt_transparency_init_cvars(void)
 static void transparency_cpu_sizes(void)
 {
 	const size_t particle_vertex_position_max_size = TR_VERTEX_MAX_NUM * TR_POSITION_SIZE;
-	const size_t particle_color_size = TR_PARTICLE_MAX_NUM * TR_COLOR_SIZE;
+	const size_t particle_color_size = TR_PARTICLE_MAX_NUM * TR_PARTICLE_DATA_SIZE;
 	const size_t particle_data_size = particle_vertex_position_max_size + particle_color_size;
 
 	const size_t beam_aabb_max_size = TR_BEAM_MAX_NUM * TR_BEAM_AABB_SIZE;
@@ -189,7 +194,7 @@ size_t vkpt_transparency_capacity(int stream)
 	{
 	case VKPT_TR_VERTICES:        return TR_VERTEX_MAX_NUM * TR_POSITION_SIZE;
 	case VKPT_TR_BEAM_AABBS:      return TR_BEAM_MAX_NUM * TR_BEAM_AABB_SIZE;
-	case VKPT_TR_PARTICLE_COLORS: return TR_PARTICLE_MAX_NUM * TR_COLOR_SIZE;
+	case VKPT_TR_PARTICLE_COLORS: return TR_PARTICLE_MAX_NUM * TR_PARTICLE_DATA_SIZE;
 	case VKPT_TR_BEAM_COLORS:     return TR_BEAM_MAX_NUM * TR_COLOR_SIZE;
 	case VKPT_TR_SPRITE_INFOS:    return TR_SPRITE_MAX_NUM * TR_SPRITE_INFO_SIZE;
 	case VKPT_TR_BEAM_INTERSECT:  return TR_BEAM_MAX_NUM * TR_BEAM_INTERSECT_SIZE;
@@ -227,7 +232,7 @@ void vkpt_transparency_frame(vkpt_transparency_frame_t* f)
 	f->offset[VKPT_TR_BEAM_AABBS]      = transparency.beam_aabb_host_offset;
 	f->size[VKPT_TR_BEAM_AABBS]        = transparency.beam_num * TR_BEAM_AABB_SIZE;
 	f->offset[VKPT_TR_PARTICLE_COLORS] = transparency.particle_color_host_offset;
-	f->size[VKPT_TR_PARTICLE_COLORS]   = transparency.particle_num * TR_COLOR_SIZE;
+	f->size[VKPT_TR_PARTICLE_COLORS]   = transparency.particle_num * TR_PARTICLE_DATA_SIZE;
 	f->offset[VKPT_TR_BEAM_COLORS]     = transparency.beam_color_host_offset;
 	f->size[VKPT_TR_BEAM_COLORS]       = transparency.beam_num * TR_COLOR_SIZE;
 	f->offset[VKPT_TR_SPRITE_INFOS]    = transparency.sprite_info_host_offset;
@@ -322,7 +327,7 @@ bool vkpt_transparency_prepare(const float* view_matrix,
 
 	transparency.vertex_position_host_offset = 0;
 	transparency.particle_color_host_offset = transparency.vertex_position_host_offset + particle_vertices_size + sprite_vertices_size;
-	transparency.sprite_info_host_offset = transparency.particle_color_host_offset + particle_num * TR_COLOR_SIZE;
+	transparency.sprite_info_host_offset = transparency.particle_color_host_offset + particle_num * TR_PARTICLE_DATA_SIZE;
 	transparency.beam_aabb_host_offset = transparency.sprite_info_host_offset + sprite_num * TR_SPRITE_INFO_SIZE;
 	transparency.beam_color_host_offset = transparency.beam_aabb_host_offset + beam_num * TR_BEAM_AABB_SIZE;
 	transparency.beam_intersect_host_offset = transparency.beam_color_host_offset + beam_num * TR_COLOR_SIZE;
@@ -466,7 +471,12 @@ static void write_particle_geometry(const float* view_matrix, const particle_t* 
 			}
 		}
 
-		particle_colors = particle_colors + 4;
+		// the second texel: the world-space distance it moved since the previous frame
+		// (pt_dlss_particle_layer 2), 0 for a particle that holds still
+		VectorCopy(particle->motion, &particle_colors[4]);
+		particle_colors[7] = 0.f;
+
+		particle_colors = particle_colors + 8;
 
 		vec3_t origin;
 		VectorCopy(particle->origin, origin);
@@ -999,7 +1009,7 @@ static void upload_geometry(VkCommandBuffer command_buffer)
 	const VkBufferCopy particle_colors = {
 		.srcOffset = host_buffer_offset + transparency.particle_color_host_offset,
 		.dstOffset = 0,
-		.size = transparency.particle_num * TR_COLOR_SIZE
+		.size = transparency.particle_num * TR_PARTICLE_DATA_SIZE
 	};
 
 	const VkBufferCopy beam_colors = {
@@ -1173,7 +1183,7 @@ static void create_buffers(void)
 
 	buffer_create(
 		&transparency.particle_color_buffer,
-		TR_PARTICLE_MAX_NUM * TR_COLOR_SIZE,
+		TR_PARTICLE_MAX_NUM * TR_PARTICLE_DATA_SIZE,
 		VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
@@ -1238,7 +1248,7 @@ static void create_buffer_views(void)
 		.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
 		.buffer = transparency.particle_color_buffer.buffer,
 		.format = VK_FORMAT_R32G32B32A32_SFLOAT,
-		.range = TR_PARTICLE_MAX_NUM * TR_COLOR_SIZE
+		.range = TR_PARTICLE_MAX_NUM * TR_PARTICLE_DATA_SIZE
 	};
 
 	const VkBufferViewCreateInfo beam_color_view_info = {

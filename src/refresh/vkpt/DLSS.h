@@ -73,7 +73,9 @@ typedef struct {
     qboolean    before_transparency;    // pt_dlss_bt_guide != 2
     qboolean    reflection_motion;      // DLSS_REFLECT_MOTION as the reflections' motion
     qboolean    responsivity_mask;      // DLSS_RESPONSIVITY as "DLSSD.ResponsivityMask" (pt_dlss_animated_responsive > 0)
-    qboolean    matrices;               // world_to_view and view_to_clip go over
+    qboolean    particle_layer;         // DLSS_PARTICLE_LAYER as the transparency layer (pt_dlss_particle_layer > 0)
+    qboolean    particle_motion;        // DLSS_PARTICLE_MOTION as its motion vectors (pt_dlss_particle_layer 2)
+    qboolean    matrices;             // world_to_view and view_to_clip go over
     float       world_to_view[16], view_to_clip[16];
 } DLSSEvaluation;
 

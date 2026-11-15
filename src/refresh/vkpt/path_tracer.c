@@ -685,7 +685,8 @@ vkpt_pt_init()
 			.binding         = RAY_GEN_PARTICLE_COLOR_BUFFER_BINDING_IDX,
 			.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
 			.descriptorCount = 1,
-			.stageFlags      = qvk.use_ray_query ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
+			// raygen too: primary_rays.rgen reads a particle's motion (pt_dlss_particle_layer 2)
+			.stageFlags      = qvk.use_ray_query ? VK_SHADER_STAGE_COMPUTE_BIT : (VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR),
 		},
 		{
 			.binding         = RAY_GEN_BEAM_COLOR_BUFFER_BINDING_IDX,
@@ -2286,6 +2287,8 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_COLOR]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_PT_TRANSPARENT]);
 		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_ASVGF_RNG_SEED_A + frame_idx]);
+		// pt_dlss_particle_layer: the flow pass veils the layer where smoke is in front
+		BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_PARTICLE_LAYER]);
 		BARRIER_BATCH_END(cmd_buf);
 
 		BEGIN_PERF_MARKER(cmd_buf, PROFILER_FLOW_MARCH);
@@ -2324,6 +2327,10 @@ vkpt_pt_trace_primary_rays(VkCommandBuffer cmd_buf)
 	// primary_rays' responsivity code / camera mark, read by reflect_refract and the
 	// combine pass (pt_dlss_animated_responsive, pt_dlss_camera_mv)
 	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_RESPONSIVITY]);
+	// pt_dlss_particle_layer: the layer (god_rays_filter dims it by the fog) and its
+	// motion (the combine pass fills the gaps)
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_PARTICLE_LAYER]);
+	BARRIER_COMPUTE(cmd_buf, qvk.images[VKPT_IMG_DLSS_PARTICLE_MOTION]);
 	BARRIER_BATCH_END(cmd_buf);
 
 

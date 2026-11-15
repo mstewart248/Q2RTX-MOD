@@ -977,6 +977,8 @@ static const dlss_debug_view_t dlss_debug_views[] = {
     { 20, VKPT_IMG_PT_BOUNCE_THROUGHPUT,    0 },
     { 22, VKPT_IMG_DLSS_REFLECTED_ALBEDO,   0 },
     { 23, VKPT_IMG_DLSS_RESPONSIVITY,       0 }, // responsivity mask, pt_dlss_animated_responsive (red)
+    { 24, VKPT_IMG_DLSS_PARTICLE_LAYER,     0 }, // RR's transparency layer, pt_dlss_particle_layer (x STORAGE_SCALE_HDR)
+    { 25, VKPT_IMG_DLSS_PARTICLE_MOTION,    0 }, // its motion vectors, pt_dlss_particle_layer 2 (blue = a vector)
     { 30, VKPT_IMG_PT_VISBUF_BARY_A,        1 },
     { 32, VKPT_IMG_PT_BASE_COLOR_A,         1 },
     { 34, VKPT_IMG_PT_METALLIC_A,           1 },
@@ -1079,6 +1081,16 @@ void DLSSDescribeEvaluation(const vec2 jitterOffset, DLSSEvaluation* ev) {
        parameter block outlives the frame. */
     ev->responsivity_mask = cvar_pt_dlss_animated_responsive != NULL
         && cvar_pt_dlss_animated_responsive->value > 0.0f;
+
+    /* pt_dlss_particle_layer: RR's transparency layer (guide 3.4.10) - the particles,
+       beams, sprites and explosions, upscaled but not denoised, and kept out of the
+       colour. The UBO holds the resolved value (main.c: 0 unless RR denoises a live
+       frame with full-resolution fields), which is also what the shaders wrote by, so
+       the colour and the layer always agree. NULL when off: the helpers set every
+       parameter on every evaluate. */
+    const float particle_layer = vkpt_refdef.uniform_buffer.pt_dlss_particle_layer;
+    ev->particle_layer = particle_layer > 0.0f;
+    ev->particle_motion = particle_layer >= 2.0f;
 }
 
 // the format each image DLSSApply may hand over has (LIST_IMAGES)
@@ -1164,6 +1176,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO]);
     BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_RESPONSIVITY]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_PARTICLE_LAYER]);
+    BARRIER_COMPUTE(cmd, qvk.images[VKPT_IMG_DLSS_PARTICLE_MOTION]);
 
     BUFFER_BARRIER(cmd,
         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1190,6 +1204,8 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK responsivity = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RESPONSIVITY], qvk.images_views[VKPT_IMG_DLSS_RESPONSIVITY], imageSize, VK_FORMAT_R16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK particleLayer = ToNGXResource(qvk.images[VKPT_IMG_DLSS_PARTICLE_LAYER], qvk.images_views[VKPT_IMG_DLSS_PARTICLE_LAYER], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK particleMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_PARTICLE_MOTION], qvk.images_views[VKPT_IMG_DLSS_PARTICLE_MOTION], imageSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     NVSDK_NGX_VK_GBuffer inBuffer = {
         .pInAttrib[NVSDK_NGX_GBUFFER_ALBEDO] = &albedo        
@@ -1247,7 +1263,12 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
             .pInReflectedAlbedo = ev.reflected_albedo ? &reflectedAlbedo : NULL,
             .InReflectedAlbedoSubrectBase = sourceOffset,
             .pInColorBeforeTransparency = ev.before_transparency ? &beforeTransparent : NULL,
-            .InColorBeforeTransparencySubrectBase = sourceOffset
+            .InColorBeforeTransparencySubrectBase = sourceOffset,
+            // pt_dlss_particle_layer - see DLSSDescribeEvaluation
+            .pInTransparencyLayer = ev.particle_layer ? &particleLayer : NULL,
+            .InTransparencyLayerSubrectBase = sourceOffset,
+            .pInTransparencyLayerMvecs = ev.particle_motion ? &particleMotion : NULL,
+            .InTransparencyLayerMvecsSubrectBase = sourceOffset
         };
 
 		// the responsivity mask (pt_dlss_animated_responsive) - see DLSSDescribeEvaluation; the helper above predates it

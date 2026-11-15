@@ -347,6 +347,12 @@ struct RayPayloadEffects {
    uint distances; // half2x16 - min and max
    uvec4 fog1; // half8x16: .xy = color.rgba; .z = t_min, t_max; .w = density: a and b for (a*t + b)
    uvec4 fog2; // same as fog1 but for a fog volume further away
+   // pt_dlss_particle_layer 2: the most opaque single effect hit so far, whose motion the
+   // layer's motion vector follows - update_payload_dominant. Particle index + 1, or 0 for
+   // anything that stays put with the world (beams, sprites, explosions).
+   uint dominant_particle;
+   float dominant_t;
+   float dominant_alpha;
 #ifndef KHR_RAY_QUERY
    // Store TMax in the payload because gl_RayTmaxEXT changes while the ray is being traced.
    // See the GLSL_EXT_ray_tracing spec near "description for gl_RayTminEXT and gl_RayTmaxEXT"

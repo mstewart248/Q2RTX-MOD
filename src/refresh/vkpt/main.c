@@ -6105,6 +6105,15 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	UBO_CVAR_LIST
 #undef UBO_CVAR_DO
 
+	// pt_dlss_particle_layer: Ray Reconstruction composites the layer, so it exists only
+	// while RR denoises a live frame, and only with full-resolution fields, where field 0's
+	// pixel is the output pixel the shaders write it at. Anything else - A-SVGF, photo-mode
+	// accumulation, checkerboard fields - keeps the effects in the colour. DLSS.c reads
+	// this resolved value to decide whether to hand the layer over.
+	if (!(DLSSRayReconstructionActive() && !ref_mode->enable_accumulation
+	      && ubo->pt_fullres_fields != PT_FIELDS_CHECKERBOARD))
+		ubo->pt_dlss_particle_layer = 0.f;
+
 	// HDR output: the peak in use (tm_hdr_peak_nits 0 = what the screen reports), and
 	// the test patterns only while a menu is in front of the world (hdr_display.c)
 	vkpt_hdr_prepare_ubo(ubo, uis.menuDepth > 0 && uis.activeMenu && uis.activeMenu->clear_view, render_world);

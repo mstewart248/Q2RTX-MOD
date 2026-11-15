@@ -112,6 +112,12 @@ NVSDK_NGX_Result d3d12_ngx_evaluate(ID3D12GraphicsCommandList *cmd, NVSDK_NGX_Ha
     p.InReflectedAlbedoSubrectBase = origin;
     p.pInColorBeforeTransparency = e->before_transparency;
     p.InColorBeforeTransparencySubrectBase = origin;
+    // pt_dlss_particle_layer (vkpt/DLSS.c's DLSSDescribeEvaluation); the helper sets all
+    // four on every evaluate, NULL included
+    p.pInTransparencyLayer = e->particle_layer;
+    p.InTransparencyLayerSubrectBase = origin;
+    p.pInTransparencyLayerMvecs = e->particle_motion;
+    p.InTransparencyLayerMvecsSubrectBase = origin;
     // RR2's responsivity mask is newer than these 310.6 helpers: set it by name, and to
     // NULL when off - the parameter block outlives the frame (DLSSDescribeEvaluation)
     NVSDK_NGX_Parameter_SetD3d12Resource(params, "DLSSD.ResponsivityMask", e->responsivity_mask);

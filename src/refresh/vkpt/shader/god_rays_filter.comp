@@ -407,6 +407,17 @@ void main()
 	}
 
 	vec3 composition = originalColor.rgb * transmittance + result.rgb;
-	
+
 	imageStore(IMG_PT_TRANSPARENT, ivec2(gl_GlobalInvocationID.xy), vec4(composition.rgb, originalColor.a));
+
+	/* pt_dlss_particle_layer: the effects are in RR's transparency layer now, not in
+	   PT_TRANSPARENT, so the fog's dimming has to reach them there - by the same
+	   whole-path transmittance it used to apply to them (an effect half way to the
+	   wall is dimmed as if at the wall, as before). Its alpha stays: the fog does not
+	   change how much of the surface an effect hides. Field 0 owns the layer. */
+	if (global_ubo.pt_dlss_particle_layer != 0 && transmittance < 1.0 && i_position.x < global_ubo.pt_field_offset)
+	{
+		vec4 layer = imageLoad(IMG_DLSS_PARTICLE_LAYER, i_position);
+		imageStore(IMG_DLSS_PARTICLE_LAYER, i_position, vec4(layer.rgb * transmittance, layer.a));
+	}
 }

@@ -7108,6 +7108,16 @@ void CL_AddParticles(void)
     blood_sim_time = cl.time;
     blood_dt = max(0.f, min(blood_dt, 0.05f));
 
+    // pt_dlss_particle_layer 2: the client time these particles were last drawn at, so
+    // each one can say how far it has moved since (particle_t.motion). No motion on the
+    // first frame, after a stall longer than a hitch, or when the clock went backwards
+    // (a demo seek, a map change) - a particle then simply reports holding still.
+    static int particle_motion_time;
+    float motion_dt = (cl.time - particle_motion_time) * 0.001f;
+    particle_motion_time = cl.time;
+    if (motion_dt < 0.f || motion_dt > 0.25f)
+        motion_dt = 0.f;
+
     num_blood_splats = 0;
     num_blood_airborne = 0;
     num_blood_dissolving = 0;
@@ -7442,6 +7452,16 @@ void CL_AddParticles(void)
             // ask for their own (CL_RocketTrail)
             part->radius = p->radius;
             part->flags = p->view_fx;
+
+            // Where the same analytic path had it one frame ago. An instant particle is
+            // re-spawned every frame and `time` is not even its own here, so it holds still.
+            if (p->alphavel != INSTANT_PARTICLE && motion_dt > 0.f) {
+                const float t0 = time - motion_dt;
+                for (int k = 0; k < 3; k++)
+                    part->motion[k] = p->vel[k] * motion_dt + p->accel[k] * (time2 - t0 * t0);
+            } else {
+                VectorClear(part->motion);
+            }
         }
 
         if (p->alphavel == INSTANT_PARTICLE) {

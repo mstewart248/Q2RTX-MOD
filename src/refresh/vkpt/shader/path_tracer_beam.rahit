@@ -44,6 +44,7 @@ void main()
 	if (transparency.a > 0)
 	{
 		update_payload_transparency(ray_payload, transparency, gl_HitTEXT);
+		update_payload_dominant(ray_payload, transparency.a, gl_HitTEXT, 0u);
 	}
 
 	ignoreIntersectionEXT;

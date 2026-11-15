@@ -86,6 +86,14 @@ bool pt_logic_masked(int primitiveID, int instanceID, int geometryIndex, uint in
 	return mask_value.x >= 0.5;
 }
 
+/* pt_dlss_particle_layer 2: how far particle `particle_index` moved in the world since the
+   previous frame (particle_t.motion), from the texel after its colour - transparency.c
+   writes the two side by side. */
+vec3 particle_motion(int particle_index)
+{
+	return texelFetch(particle_color_buffer, particle_index * 2 + 1).xyz;
+}
+
 vec4 pt_logic_particle(int primitiveID, vec2 bary, bool reflection_ray)
 {
 	const vec3 barycentric = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
@@ -96,7 +104,8 @@ vec4 pt_logic_particle(int primitiveID, vec2 bary, bool reflection_ray)
 	if (factor > 0.0)
 	{
 		const int particle_index = primitiveID / 2;
-		vec4 color = texelFetch(particle_color_buffer, particle_index);
+		// two texels per particle: the colour, then its motion (particle_motion below)
+		vec4 color = texelFetch(particle_color_buffer, particle_index * 2);
 
 		// [Q2RTX] A particle that belongs to the other view contributes
 		// nothing - the particle twin of the MATERIAL_FLAG_FX_* test in

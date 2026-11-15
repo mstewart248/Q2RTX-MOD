@@ -165,6 +165,7 @@ void V_AddSphereLight(const vec3_t org, float intensity, float r, float g, float
 		part->rgba.u8[3] = 255;
 		part->alpha = 1.f;
 		part->flags = 0;
+		VectorClear(part->motion);
 	}
 }
 
@@ -379,6 +380,7 @@ static void V_TestParticles(void)
         p->color = 8;
         p->alpha = 1;
         p->flags = 0;
+        VectorClear(p->motion);
     }
 }
 

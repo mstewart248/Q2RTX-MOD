@@ -58,6 +58,8 @@ typedef struct {
     ID3D12Resource  *diffuse_albedo, *specular_albedo, *normals, *roughness, *specular_hit_distance;
     ID3D12Resource  *reflection_motion, *diffuse_hit_distance, *reflected_albedo, *before_transparency;
     ID3D12Resource  *responsivity_mask;     // "DLSSD.ResponsivityMask" (pt_dlss_animated_responsive), NULL = off
+    ID3D12Resource  *particle_layer;        // the transparency layer (pt_dlss_particle_layer), NULL = off
+    ID3D12Resource  *particle_motion;       // its motion vectors (pt_dlss_particle_layer 2), NULL = off
     uint32_t        width, height;
     float           jitter_x, jitter_y;  // render pixels
     bool            reset;

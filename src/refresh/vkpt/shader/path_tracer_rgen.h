@@ -612,6 +612,9 @@ trace_effects_ray(Ray ray, bool skip_procedural, bool reflection_ray)
 	ray_payload_effects.distances = 0;
 	ray_payload_effects.fog1 = uvec4(0);
 	ray_payload_effects.fog2 = uvec4(0);
+	ray_payload_effects.dominant_particle = 0u;
+	ray_payload_effects.dominant_t = 0.0;
+	ray_payload_effects.dominant_alpha = 0.0;
 #ifndef KHR_RAY_QUERY
 	ray_payload_effects.rayTmax = ray.t_max;
 #endif
@@ -680,6 +683,9 @@ trace_effects_ray(Ray ray, bool skip_procedural, bool reflection_ray)
 		if (transparent.a > 0)
 		{
 			update_payload_transparency(ray_payload_effects, transparent, hitT);
+			// pt_dlss_particle_layer 2 - see update_payload_dominant
+			update_payload_dominant(ray_payload_effects, transparent.a, hitT,
+				(!isProcedural && sbtOffset == SBTO_PARTICLE) ? uint(primitiveID / 2 + 1) : 0u);
 		}
 	}
 

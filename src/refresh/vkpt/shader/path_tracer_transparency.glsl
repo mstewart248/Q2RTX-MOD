@@ -86,6 +86,19 @@ void update_payload_transparency(inout RayPayloadEffects rp, vec4 color, float h
 	rp.distances = packHalf2x16(distances);
 }
 
+/* pt_dlss_particle_layer 2: remember the most opaque single hit. Ray Reconstruction takes ONE
+   motion vector per pixel for its transparency overlay, so it follows whatever covers the pixel
+   most. `particle` is the particle's index + 1, 0 for an effect that does not move with one. */
+void update_payload_dominant(inout RayPayloadEffects rp, float alpha, float hitT, uint particle)
+{
+	if (alpha > rp.dominant_alpha)
+	{
+		rp.dominant_alpha = alpha;
+		rp.dominant_t = hitT;
+		rp.dominant_particle = particle;
+	}
+}
+
 vec4 get_payload_transparency(in RayPayloadEffects rp)
 {
 	return unpackHalf4x16(rp.transparency);

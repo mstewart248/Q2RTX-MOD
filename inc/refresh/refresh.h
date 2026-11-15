@@ -176,6 +176,11 @@ typedef struct particle_s {
     // ray (pt_logic_particle); GL and SW are never sent RF_REFLECTION_FX ones.
     // EVERY writer must set it - r_particles is reused from frame to frame.
     int     flags;
+    // [Q2RTX] How far it moved in the world since the previous frame, so that
+    // origin - motion is where it was then: the motion vector Ray
+    // Reconstruction's particle layer follows (pt_dlss_particle_layer 2).
+    // 0 = held still. EVERY writer must set this too, for the same reason.
+    vec3_t  motion;
 } particle_t;
 
 // A blood droplet drawn as real, shaded SPHERE GEOMETRY in the path tracer's

@@ -792,4 +792,29 @@ vec4 flow_add_to_effects(vec4 effects, Ray ray, float jitter, bool reflection, b
 	return alpha_blend_premultiplied(effects, volume);
 }
 
+/* flow_add_to_effects for the camera ray, with the blend left to primary_rays.rgen:
+   the volume alone, and `behind` = flow_add_to_effects' ordering test (the volume
+   begins behind the nearest effect; `effects_alpha` is the alpha of what
+   trace_effects_ray just returned for this ray, or 0). Under pt_dlss_particle_layer
+   the effects go to Ray Reconstruction's transparency layer and the volume to the
+   colour; without it primary_rays blends exactly as flow_add_to_effects does. ONE
+   march either way - two inlined copies of flow_march spilled primary_rays
+   (16 -> 64 B local memory). */
+vec4 flow_volume_alone(Ray ray, float jitter, float effects_alpha, out bool behind)
+{
+	behind = false;
+	if (flow_screen_pass(ray.origin, ray.direction))
+		return vec4(0);
+	float depth;
+	const vec4 volume = flow_march(ray.origin, ray.direction, ray.t_min, ray.t_max, 1.0, jitter, false, depth);
+	flow_stats_flush();
+
+	if (effects_alpha > 0.0)
+	{
+		const float effects_near = unpackHalf2x16(ray_payload_effects.distances).x;
+		behind = effects_near > 0.0 && depth >= effects_near;
+	}
+	return volume;
+}
+
 #endif // FLOW_GLSL_

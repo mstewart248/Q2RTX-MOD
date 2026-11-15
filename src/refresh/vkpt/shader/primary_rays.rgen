@@ -37,6 +37,18 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "water_warp.glsl"
 #include "flow.glsl"
 
+#ifndef KHR_RAY_QUERY
+// path_tracer_hit_shaders.h is the any-hit shaders' here: the particle buffer and
+// particle_motion() for store_particle_motion (path_tracer.c gives raygen the binding)
+layout(set = 0, binding = 1)
+uniform textureBuffer particle_color_buffer;
+
+vec3 particle_motion(int particle_index)
+{
+	return texelFetch(particle_color_buffer, particle_index * 2 + 1).xyz;
+}
+#endif
+
 /* FLOW SPLIT PASS (pt_flow_split_pass, path_tracer.c). The Flow march is most
    of this shader's time with smoke on screen, and run in here it is run at
    this shader's register count and in warps that are mostly busy with other
@@ -294,7 +306,16 @@ flow_pass_main()
 
 	vec4 transparent = imageLoad(IMG_PT_TRANSPARENT, ipos);
 	const float effects_near = hand_off.y;
-	if (effects_near <= 0.0 || depth < effects_near)
+	if (global_ubo.pt_dlss_particle_layer != 0)
+	{
+		// The effects are in RR's transparency layer, not in IMG_PT_TRANSPARENT; the
+		// volume goes over what is, and veils the layer where it begins in front of
+		// them (store_particle_layer; flow_volume_alone inline). Field 0 owns the layer.
+		transparent = alpha_blend_premultiplied(volume, transparent);
+		if (rt_LaunchID.z == 0 && effects_near > 0.0 && depth < effects_near)
+			imageStore(IMG_DLSS_PARTICLE_LAYER, ipos, imageLoad(IMG_DLSS_PARTICLE_LAYER, ipos) * (1.0 - volume.a));
+	}
+	else if (effects_near <= 0.0 || depth < effects_near)
 	{
 		// (V over E) over S = V over (E over S), and E over S is what is stored
 		transparent = alpha_blend_premultiplied(volume, transparent);
@@ -323,6 +344,61 @@ store_responsivity_code(ivec2 ipos, uint secondField, float code)
 {
 	if (global_ubo.pt_fullres_fields != 0 && secondField == 0u)
 		imageStore(IMG_DLSS_RESPONSIVITY, ipos, vec4(code));
+}
+
+/* RAY RECONSTRUCTION'S TRANSPARENCY LAYER (pt_dlss_particle_layer, global_ubo.h).
+   Field 0 of the DLSS split fields only - main.c forces the cvar to 0 otherwise -
+   where field 0's pixel IS the render pixel RR reads (see store_responsivity_code).
+   Every field-0 pixel stores, so nothing stale is left for RR.
+
+   `overlay` is what used to be blended over the surface: the particles, beams,
+   sprites, explosions and fog volumes in front of it. RR wants it in the units of
+   its colour input, so it is scaled as compositing.comp scales `transparent`
+   (flt_scale_overlay) and as that pass scales the colour (STORAGE_SCALE_HDR);
+   RGB premultiplied, alpha the blend factor (RR guide 3.4.10).
+
+   Mode 2 adds the layer's own motion vectors: from the effect that covers the most
+   of this pixel (update_payload_dominant), where it is now and where it was last
+   frame - a particle's own step (transparency.c's motion texel) taken off. Same
+   space and conventions as the surface vector further down: screen UV, prev minus
+   current, both ends unwarped. .z = 1 marks a vector; where it is 0 the combine
+   pass writes the surface's vector instead. Stored straight after the effects
+   trace, before the Flow march, so the dominant hit is not held through it. */
+void
+store_particle_layer(ivec2 ipos, vec4 overlay)
+{
+	vec4 layer = overlay * global_ubo.flt_scale_overlay;
+	layer.rgb *= STORAGE_SCALE_HDR;
+	imageStore(IMG_DLSS_PARTICLE_LAYER, ipos, layer);
+}
+
+void
+store_particle_motion(ivec2 ipos, Ray ray, vec4 overlay)
+{
+	if (global_ubo.pt_dlss_particle_layer < 2)
+		return;
+
+	vec4 motion = vec4(0);
+	if (overlay.a > 0.0 && ray_payload_effects.dominant_alpha > 0.0)
+	{
+		const vec3 pos_curr = ray.origin + ray.direction * ray_payload_effects.dominant_t;
+		vec3 pos_prev = pos_curr;
+		if (ray_payload_effects.dominant_particle != 0u)
+			pos_prev -= particle_motion(int(ray_payload_effects.dominant_particle) - 1);
+
+		vec2 screen_curr, screen_prev;
+		float distance_curr, distance_prev;
+		projection_view_to_screen((global_ubo.V * vec4(pos_curr, 1)).xyz, screen_curr, distance_curr, false);
+		projection_view_to_screen((global_ubo.V_prev * vec4(pos_prev, 1)).xyz, screen_prev, distance_prev, true);
+		screen_curr = underwater_unwarp(screen_curr, false);
+		screen_prev = underwater_unwarp(screen_prev, true);
+
+		const vec2 mv = screen_prev - screen_curr;
+		// a particle behind the previous camera has no screen position; let the combine fill it
+		if (all(lessThan(abs(mv), vec2(4.0))))
+			motion = vec4(mv, 1, 0);
+	}
+	imageStore(IMG_DLSS_PARTICLE_MOTION, ipos, motion);
 }
 
 void
@@ -465,16 +541,49 @@ main()
 		}
 	}
 
+	/* pt_dlss_particle_layer: the effects go to RR's transparency layer
+	   (store_particle_layer) and only the Flow volume stays in the colour, which RR
+	   denoises - smoke is noisy, particles are not. Field 1 needs no effects then:
+	   the layer is field 0's. */
+	const bool particle_layer = global_ubo.pt_dlss_particle_layer != 0;
 	vec4 effects = vec4(0);
+	vec4 overlay = vec4(0);
 	if (trace_overlay)
 	{
-		effects = trace_effects_ray(ray, /* skip_procedural = */ false, /* reflection_ray = */ false);
-		// NVIDIA Flow's fire and smoke (flow.glsl), between the eye and what the ray hit
+		if (!particle_layer || secondField == 0u)
+			effects = trace_effects_ray(ray, /* skip_procedural = */ false, /* reflection_ray = */ false);
+		const float effects_alpha = effects.a;
+		if (particle_layer)
+		{
+			// stored now, not after the march: holding the overlay through it as well
+			// as `effects` cost 9 dwords of shared-memory spill (11-14)
+			overlay = effects;
+			effects = vec4(0);
+			if (secondField == 0u)
+			{
+				store_particle_motion(ipos, ray, overlay);
+				store_particle_layer(ipos, overlay);
+			}
+		}
+		// NVIDIA Flow's fire and smoke (flow.glsl), between the eye and what the ray hit:
+		// flow_add_to_effects' blend, or under the layer the volume alone in the colour,
+		// veiling the stored layer where it begins in front of the effects
 		if (spec_flow_mode == 0u)
-			effects = flow_add_to_effects(effects, ray, get_rng(RNG_FLOW_JITTER), false, false);
+		{
+			bool volume_behind;
+			const vec4 volume = flow_volume_alone(ray, get_rng(RNG_FLOW_JITTER), effects_alpha, volume_behind);
+			if (particle_layer)
+			{
+				effects = volume;
+				if (secondField == 0u && effects_alpha > 0.0 && volume.a > 0.0 && !volume_behind)
+					imageStore(IMG_DLSS_PARTICLE_LAYER, ipos, imageLoad(IMG_DLSS_PARTICLE_LAYER, ipos) * (1.0 - volume.a));
+			}
+			else
+				effects = volume_behind ? alpha_blend_premultiplied(effects, volume) : alpha_blend_premultiplied(volume, effects);
+		}
 	}
 	if (spec_flow_mode != 0u)
-		flow_split_hand_off(ipos, trace_overlay, ray.t_max, effects);
+		flow_split_hand_off(ipos, trace_overlay, ray.t_max, particle_layer ? overlay : effects);
 
 	Triangle triangle;
 	if (found_intersection(ray_payload_geometry))

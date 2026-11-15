@@ -115,6 +115,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	IMG_DO(MOTION_BLUR,               67, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_POSTFX,    IMG_HEIGHT_POSTFX) \
 	IMG_DO(DLSS_RESPONSIVITY,         68, R16_SFLOAT,          r32f,    IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 	IMG_DO(DLSS5_MASK,                69, R8G8B8A8_UNORM,      rgba8,   IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(DLSS_PARTICLE_LAYER,       70, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
+	IMG_DO(DLSS_PARTICLE_MOTION,      71, R16G16B16A16_SFLOAT, rgba16f, IMG_WIDTH_TAA,       IMG_HEIGHT_TAA ) \
 
 
 /* PT_PRIMARY_DIST: THE DISTANCE TO THE FIRST HIT, KEPT WHERE reflect_refract CANNOT
@@ -162,7 +164,18 @@ with this program; if not, write to the Free Software Foundation, Inc.,
    t being how much of the pixel's light is the scene rather than fog or a transparency in
    front of it (dlss5_scene_share, brdf.glsl). Written by the combine pass in
    checkerboard_interleave.comp whenever the DLSS guides are. */
-#define NUM_IMAGES_BASE     70
+/* DLSS_PARTICLE_LAYER / DLSS_PARTICLE_MOTION: pt_dlss_particle_layer - Ray Reconstruction's
+   TRANSPARENCY OVERLAY ("DLSS.TransparencyLayer", RR guide 3.4.10) and its own motion vectors
+   ("DLSS.TransparencyLayerMvecs"). The particles, sprites, beams and explosions in front of the
+   first surface go here INSTEAD of into the colour RR denoises: it upscales this layer without
+   denoising it and lays it over its output, RGB premultiplied, alpha the coverage. Render
+   resolution, written straight at field 0's pixel by primary_rays.rgen - under full-resolution
+   fields field 0's position IS the output position, and the layer is only on with those -
+   already in the colour's storage scale; god_rays_filter.comp fogs it, the Flow pass hides it
+   behind smoke. The motion image holds the dominant effect's motion in .xy with .z = 1, or 0
+   where primary_rays had none to give, which the combine pass in checkerboard_interleave.comp
+   fills with the surface's motion. */
+#define NUM_IMAGES_BASE     72
 
 #define LIST_IMAGES_A_B \
 	IMG_DO(PT_VISBUF_PRIM_A,          NUM_IMAGES_BASE + 0,  R32G32_UINT,         rg32ui,  IMG_WIDTH_MGPU,      IMG_HEIGHT     ) \
