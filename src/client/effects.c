@@ -1056,6 +1056,9 @@ static cvar_t *cl_blood_sound_dist = NULL;
 static cvar_t *cl_blood_sound_attn = NULL;
 static cvar_t *cl_blood_permanent = NULL;
 static cvar_t *cl_blood_model_collision = NULL;
+static cvar_t *cl_blood_skin = NULL;
+static cvar_t *cl_blood_skin_size = NULL;
+static cvar_t *cl_blood_skin_strength = NULL;
 static cvar_t *cl_blood_fling_speed = NULL;
 static cvar_t *cl_blood_flesh_damp = NULL;
 static cvar_t *cl_blood_flesh_run = NULL;
@@ -1434,6 +1437,15 @@ void FX_Init(void)
     // is stop on the box, which is nowhere near the surface being drawn.
     // See CL_TracePoint and CL_BloodTraceModels.
     cl_blood_model_collision = Cvar_Get("cl_blood_model_collision", "1", CVAR_ARCHIVE);
+    // BLOOD ON BODIES (11-15): a droplet that hits a monster, a corpse, an item
+    // or another player paints a splat into that model's skin, and a droplet
+    // running down it leaves a trail (vkpt/blood_skin.c; not gibs). 0 = none
+    // painted and none shown - the A/B. Needs cl_blood_model_collision.
+    // size: a splat's radius over the droplet's; strength: an impact's soak at
+    // its centre (a droplet running down a body paints 0.4 of it).
+    cl_blood_skin = Cvar_Get("cl_blood_skin", "1", CVAR_ARCHIVE);
+    cl_blood_skin_size = Cvar_Get("cl_blood_skin_size", "2", CVAR_ARCHIVE);
+    cl_blood_skin_strength = Cvar_Get("cl_blood_skin_strength", "0.6", CVAR_ARCHIVE);
     // Surface speed, in units/sec, above which blood cannot stay on a ROTATING
     // brush model and is thrown off it instead - see CL_BloodSpinVelocity.
     // 0 lets blood ride anything.
@@ -3487,10 +3499,60 @@ bounds the worst case a burst can produce.  Returns the closest hit that beats
 // through - the behaviour with the feature off, not a glitch.
 #define BLOOD_MODEL_TRACE_BUDGET 384
 
-static int blood_model_traces, blood_model_hits;
+static int blood_model_traces, blood_model_hits, blood_model_calls;
+
+// The box a body without a server box is tested in first: corpses (the server
+// sends a dead monster no box) and items. Generous on purpose - the renderer
+// rejects on the model's own frame or pose bounds next, before any triangle.
+#define BLOOD_LOOSE_BOX         64.0f
+
+/*
+===============
+CL_BloodNoteBody
+
+From CL_AddPacketEntities, for each packet entity's main model as it is drawn.
+Every alias model gets its blood key (cl_blood_skin) - a gib too, so the renderer
+sees a monster's entity turn into its head and drops the monster's blood. What
+blood may LAND on goes on cl.bloodBodies with its render pose: monsters, corpses,
+items and other players. Not gibs (Matt: no blood on gibs), not projectiles, not
+see-through models, not your own body.
+===============
+*/
+void CL_BloodNoteBody(centity_t *cent, entity_t *ent, unsigned effects, unsigned renderfx, bool self)
+{
+    const model_t *model;
+
+    ent->blood_key = 0;
+    if (!ent->model || (ent->model & 0x80000000) || (renderfx & RF_BEAM) || self)
+        return;
+    model = MOD_ForHandle(ent->model);
+    if (!model || model->type != MOD_ALIAS)
+        return;
+
+    if (cl_blood_skin && cl_blood_skin->integer)
+        ent->blood_key = (int)(cent - cl_entities) + 1;
+
+    if (effects & (EF_GIB | EF_GREENGIB))
+        return;
+    if (effects & (EF_BLASTER | EF_ROCKET | EF_GRENADE | EF_HYPERBLASTER | EF_BFG | EF_IONRIPPER |
+                   EF_BLUEHYPERBLASTER | EF_PLASMA | EF_TRAP | EF_TRACKER | EF_SPHERETRANS))
+        return;
+    if ((renderfx & RF_TRANSLUCENT) || (ent->flags & RF_TRANSLUCENT))
+        return;
+    if (cl.numBloodBodies >= MAX_PACKET_ENTITIES)
+        return;
+
+    cent->blood_model = ent->model;
+    VectorCopy(ent->origin, cent->blood_origin);
+    VectorCopy(ent->angles, cent->blood_angles);
+    cent->blood_frame = ent->frame;
+    cent->blood_scale = ent->scale;
+    cl.bloodBodies[cl.numBloodBodies++] = cent;
+}
 
 static bool CL_BloodTraceModels(const vec3_t start, const vec3_t end,
-                                float *best, vec3_t out_normal, centity_t **out_ent)
+                                float *best, vec3_t out_normal, centity_t **out_ent,
+                                mod_trace_result_t *out_res)
 {
     vec3_t seg_mins, seg_maxs;
     bool found = false;
@@ -3503,70 +3565,96 @@ static bool CL_BloodTraceModels(const vec3_t start, const vec3_t end,
         seg_maxs[i] = max(start[i], end[i]) + BLOOD_MODEL_BOX_MARGIN;
     }
 
-    for (int i = 0; i < cl.numSolidEntities; i++) {
-        centity_t *cent = cl.solidEntities[i];
+    for (int i = 0; i < cl.numBloodBodies; i++) {
+        centity_t *cent = cl.bloodBodies[i];
         const model_t *model;
         mod_pose_t pose;
-        vec3_t normal;
-        float frac;
+        mod_trace_result_t res;
         int j;
 
-        if (cent->current.solid == PACKED_BSP)
-            continue;   // real geometry already; CL_TracePoint has it
-
+        // The server's box where it sends one (a live monster, a player, a
+        // crate), a loose one where it does not (a corpse, an item).
+        const bool boxed = cent->current.solid && cent->current.solid != PACKED_BSP;
         for (j = 0; j < 3; j++) {
-            if (cent->current.origin[j] + cent->maxs[j] < seg_mins[j])
+            const float lo = boxed ? cent->mins[j] : -BLOOD_LOOSE_BOX;
+            const float hi = boxed ? cent->maxs[j] : BLOOD_LOOSE_BOX;
+            if (cent->blood_origin[j] + hi < seg_mins[j])
                 break;
-            if (cent->current.origin[j] + cent->mins[j] > seg_maxs[j])
+            if (cent->blood_origin[j] + lo > seg_maxs[j])
                 break;
         }
         if (j < 3)
             continue;
 
-        // modelindex 255 is not an index at all - it means "look the model up in
-        // the clientinfo for this player's chosen skin", and cl.model_draw[255]
-        // is somebody else's model entirely. Other players therefore get no mesh
-        // trace and blood passes through them, which is the safe half of the
-        // trade; resolving it would mean duplicating the clientinfo fallback
-        // chain out of CL_AddPacketEntities.
-        if (cent->current.modelindex <= 0 || cent->current.modelindex >= 255)
-            continue;
-
-        model = MOD_ForHandle(cl.model_draw[cent->current.modelindex]);
+        model = MOD_ForHandle(cent->blood_model);
         if (!model || model->type != MOD_ALIAS)
             continue;
 
-        if (blood_model_traces >= BLOOD_MODEL_TRACE_BUDGET)
+        // Budgeted on the traces that looked at triangles; the rest stopped at
+        // the model's own bounds. The calls are capped too, at a few times that.
+        if (blood_model_traces >= BLOOD_MODEL_TRACE_BUDGET || blood_model_calls >= 4 * BLOOD_MODEL_TRACE_BUDGET)
             return found;
+        blood_model_calls++;
 
-        blood_model_traces++;
-
-        // The RENDER pose, not the collision one: these are the triangles the
-        // player can see, so the hit has to be where they are drawn.
-        LerpVector(cent->prev.origin, cent->current.origin, cl.lerpfrac, pose.origin);
-        LerpAngles(cent->prev.angles, cent->current.angles, cl.lerpfrac, pose.angles);
-        pose.scale = cent->current.scale;
-        pose.frame = cent->current.frame;
+        // The RENDER pose, as CL_AddPacketEntities drew it this frame: these are
+        // the triangles the player can see, so the hit has to be where they are.
+        VectorCopy(cent->blood_origin, pose.origin);
+        VectorCopy(cent->blood_angles, pose.angles);
+        pose.scale = cent->blood_scale;
+        pose.frame = cent->blood_frame;
 
         // timed for the GPU profiler's CPU breakdown (cpuprof.h)
         const uint64_t mesh_t0 = Sys_Microseconds();
-        const bool mesh_hit = MOD_TraceMesh(model, &pose, start, end, &frac, normal);
+        const bool mesh_hit = MOD_TraceMesh(model, &pose, start, end, &res);
         CPUPROF_DETAIL_ADD(BLOOD_BODIES, Sys_Microseconds() - mesh_t0);
+        if (res.tested)
+            blood_model_traces++;
         if (!mesh_hit)
             continue;
 
-        if (frac >= *best)
+        if (res.frac >= *best)
             continue;
 
-        *best = frac;
-        VectorCopy(normal, out_normal);
+        *best = res.frac;
+        VectorCopy(res.normal, out_normal);
         *out_ent = cent;
+        *out_res = res;
         if (!found)
             blood_model_hits++;
         found = true;
     }
 
     return found;
+}
+
+/*
+===============
+CL_BloodSkinPaint
+
+cl_blood_skin: where a droplet touched a body, a splat in that model's skin
+(vkpt/blood_skin.c). The droplet's own size in world units, turned into texture
+space by the triangle it hit - the same size on any UV layout. An impact soaks
+in; a droplet already running down the body leaves a thinner trail.
+===============
+*/
+static void CL_BloodSkinPaint(const centity_t *cent, const mod_trace_result_t *res,
+                              const cparticle_t *p, float into_speed)
+{
+    mod_blood_splat_t s;
+
+    if (!cl_blood_skin->integer || !MOD_BloodSkinSplat || !(res->st_per_unit > 0.f))
+        return;
+
+    s.key = (int)(cent - cl_entities) + 1;
+    s.model = cent->blood_model;
+    s.mesh = res->mesh;
+    s.st[0] = res->st[0];
+    s.st[1] = res->st[1];
+    s.radius = max(0.5f, p->radius) * max(0.f, cl_blood_skin_size->value) * res->st_per_unit;
+    s.strength = max(0.f, cl_blood_skin_strength->value) * (into_speed > 60.f ? 1.f : 0.4f);
+    s.color = p->color;
+    s.rgba = p->rgba;
+    MOD_BloodSkinSplat(&s);
 }
 
 
@@ -3597,27 +3685,17 @@ static void CL_BloodTrace_f(void)
         return;
     }
 
-    Com_Printf("bloodtrace: %d solid entities" "\n", cl.numSolidEntities);
+    Com_Printf("bloodtrace: %d bodies blood can land on" "\n", cl.numBloodBodies);
 
-    for (int i = 0; i < cl.numSolidEntities; i++) {
-        centity_t *cent = cl.solidEntities[i];
+    for (int i = 0; i < cl.numBloodBodies; i++) {
+        centity_t *cent = cl.bloodBodies[i];
         const model_t *model;
         mod_pose_t pose;
-        vec3_t start, end, dir, normal, point;
-        float frac, len;
+        mod_trace_result_t res;
+        vec3_t start, end, dir, point;
+        float len;
 
-        if (cent->current.solid == PACKED_BSP) {
-            Com_Printf("  ent %3d: brush model" "\n", (int)(cent - cl_entities));
-            continue;
-        }
-
-        if (cent->current.modelindex <= 0 || cent->current.modelindex >= 255) {
-            Com_Printf("  ent %3d: modelindex %d - skipped" "\n",
-                (int)(cent - cl_entities), cent->current.modelindex);
-            continue;
-        }
-
-        model = MOD_ForHandle(cl.model_draw[cent->current.modelindex]);
+        model = MOD_ForHandle(cent->blood_model);
         if (!model || model->type != MOD_ALIAS) {
             Com_Printf("  ent %3d: no alias model" "\n", (int)(cent - cl_entities));
             continue;
@@ -3630,18 +3708,18 @@ static void CL_BloodTrace_f(void)
         len = VectorNormalize(dir);
         VectorMA(start, len + 128.0f, dir, end);
 
-        LerpVector(cent->prev.origin, cent->current.origin, cl.lerpfrac, pose.origin);
-        LerpAngles(cent->prev.angles, cent->current.angles, cl.lerpfrac, pose.angles);
-        pose.scale = cent->current.scale;
-        pose.frame = cent->current.frame;
+        VectorCopy(cent->blood_origin, pose.origin);
+        VectorCopy(cent->blood_angles, pose.angles);
+        pose.scale = cent->blood_scale;
+        pose.frame = cent->blood_frame;
 
-        if (MOD_TraceMesh(model, &pose, start, end, &frac, normal)) {
-            LerpVector(start, end, frac, point);
+        if (MOD_TraceMesh(model, &pose, start, end, &res)) {
+            LerpVector(start, end, res.frac, point);
             Com_Printf("  ent %3d: %s frame %d dist %.1f -> HIT at %.1f units, "
-                       "%.1f %.1f %.1f nrm %.2f %.2f %.2f" "\n",
-                (int)(cent - cl_entities), model->name, cent->current.frame, len,
-                frac * (len + 128.0f), point[0], point[1], point[2],
-                normal[0], normal[1], normal[2]);
+                       "%.1f %.1f %.1f nrm %.2f %.2f %.2f, mesh %d st %.3f %.3f (%.4f a unit)" "\n",
+                (int)(cent - cl_entities), model->name, cent->blood_frame, len,
+                res.frac * (len + 128.0f), point[0], point[1], point[2],
+                res.normal[0], res.normal[1], res.normal[2], res.mesh, res.st[0], res.st[1], res.st_per_unit);
         } else {
             Com_Printf("  ent %3d: %s frame %d dist %.1f org %.0f %.0f %.0f -> MISS" "\n",
                 (int)(cent - cl_entities), model->name, cent->current.frame, len,
@@ -5320,12 +5398,15 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
     // is not dragged back onto the body.
     {
         centity_t *model_ent = NULL;
+        mod_trace_result_t model_res;
 
-        if (CL_BloodTraceModels(p->org, end, &frac, hit_normal, &model_ent)) {
+        if (CL_BloodTraceModels(p->org, end, &frac, hit_normal, &model_ent, &model_res)) {
             // A BODY IS NOT A SURFACE TO PARK ON. Run down it and keep falling -
             // see CL_BloodRunOffModel. Nothing is attached and nothing is stuck,
-            // so there is no state to strand when the animation moves on.
+            // so there is no state to strand when the animation moves on. What it
+            // leaves is in the skin instead (cl_blood_skin), which moves with it.
             LerpVector(p->org, end, frac, hit_point);
+            CL_BloodSkinPaint(model_ent, &model_res, p, -DotProduct(p->vel, hit_normal));
             CL_BloodRunOffModel(p, hit_point, hit_normal);
             return false;
         }
@@ -7169,6 +7250,7 @@ void CL_AddParticles(void)
     blood_traces = 0;
     blood_model_traces = 0;
     blood_model_hits = 0;
+    blood_model_calls = 0;
     blood_edge_traces = 0;
     blood_edge_probes = 0;
     blood_edge_slides = 0;

@@ -43,6 +43,8 @@ const d3d12_pass_info_t d3d12_pass_info[D3D12_NUM_PASSES] = {
     // path_tracer.c's PIPELINE_SHARC_UPDATE, and vertex_buffer.c's resolve
     [D3D12_PASS_SHARC_UPDATE]               = { D3D12_PL_PATH_TRACER, "sharc_update.rgen.query" },
     [D3D12_PASS_SHARC_RESOLVE]              = { D3D12_PL_UBO_VERTEX_BUFFER, "sharc_resolve.comp" },
+    // vertex_buffer.c's vkpt_blood_move_dispatch
+    [D3D12_PASS_BLOOD_MOVE]                 = { D3D12_PL_UBO_VERTEX_BUFFER, "blood_move.comp" },
     [D3D12_PASS_BLOOM_DOWNSCALE]            = { D3D12_PL_STANDARD, "bloom_downscale.comp" },
     [D3D12_PASS_BLOOM_BLUR]                 = { D3D12_PL_STANDARD, "bloom_blur.comp" },
     [D3D12_PASS_BLOOM_COMPOSITE]            = { D3D12_PL_STANDARD, "bloom_composite.comp" },
@@ -325,6 +327,13 @@ void d3d12_record_instance_geometry(const d3d12_passes_t *p, uint32_t num_instan
         geometry_pass(&r, D3D12_PASS_INSTANCE_GEOMETRY, num_instances);
     if (num_world_prims)
         geometry_pass(&r, D3D12_PASS_ANIMATE_MATERIALS, (num_world_prims + 255) / 256);
+}
+
+void d3d12_record_blood_move(const d3d12_passes_t *p, uint32_t num_moves)
+{
+    recorder_t r = { p, -1 };
+    if (num_moves)
+        geometry_pass(&r, D3D12_PASS_BLOOD_MOVE, num_moves);
 }
 
 void d3d12_record_dlssg_convert(const d3d12_passes_t *p, uint32_t mode, uint32_t target, uint32_t width,

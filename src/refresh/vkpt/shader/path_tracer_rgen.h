@@ -2009,6 +2009,33 @@ get_material(
 		emissive = vec3(0);
 
 	emissive += get_emissive_shell(triangle.material_id) * base_color * (1 - metallic * 0.9);
+
+	/* BLOOD ON THE BODY (cl_blood_skin, blood_skin.c): what droplets left on this
+	   monster or item, in its texture space - so it follows the animation for free.
+	   A thin smear tints the skin; where it is soaked, the skin IS blood: its colour
+	   darkened as a pool's is, no metal, wet, no glow. The skin's own normal map
+	   stays, so the stain lies in its folds. Every model instance carries the
+	   field; only meshes blood has reached have a slot. */
+	if (triangle.instance_index != ~0u)
+	{
+		const uint skin = instance_buffer.model_instances[triangle.instance_index].blood_skin;
+		if (skin != 0u)
+		{
+			float w = blood_skin_amount(skin - 1u, tex_coord);
+			if (w > 0.0)
+			{
+				w = smoothstep(0.0, 1.0, w);
+				vec3 blood = vec3(instance_buffer.model_instances[triangle.instance_index].blood_r,
+				                  instance_buffer.model_instances[triangle.instance_index].blood_g,
+				                  instance_buffer.model_instances[triangle.instance_index].blood_b);
+				base_color = mix(base_color, blood * global_ubo.pt_blood_skin_dark, w);
+				metallic = mix(metallic, 0.0, w);
+				roughness = mix(roughness, clamp(global_ubo.pt_blood_skin_roughness, 0.0, 1.0), w);
+				specular_factor = mix(specular_factor, global_ubo.pt_blood_skin_specular, w);
+				emissive *= 1.0 - w;
+			}
+		}
+	}
 }
 
 // The picture rectangle inside a security-camera screen texture, in texture coordinates.

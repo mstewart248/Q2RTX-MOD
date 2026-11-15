@@ -164,6 +164,8 @@ static void build_vertex_buffer(d3d12_set_layout_t *s)
     add(s, SHARC_KEY_BUFFER_BINDING_IDX, D3D12_BIND_UAV_BUFFER, 1);
     add(s, SHARC_ACCUM_BUFFER_BINDING_IDX, D3D12_BIND_UAV_BUFFER, 1);
     add(s, SHARC_RESOLVED_BUFFER_BINDING_IDX, D3D12_BIND_UAV_BUFFER, 1);
+    add(s, BLOOD_MOVE_BUFFER_BINDING_IDX, D3D12_BIND_UAV_BUFFER, 1);
+    add(s, BLOOD_SKIN_BUFFER_BINDING_IDX, D3D12_BIND_UAV_BUFFER, 1);
 }
 
 static void build_rt(d3d12_set_layout_t *s)

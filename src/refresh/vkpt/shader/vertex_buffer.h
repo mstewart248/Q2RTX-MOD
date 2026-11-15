@@ -71,6 +71,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define SHARC_KEY_BUFFER_BINDING_IDX 10
 #define SHARC_ACCUM_BUFFER_BINDING_IDX 11
 #define SHARC_RESOLVED_BUFFER_BINDING_IDX 12
+#define BLOOD_MOVE_BUFFER_BINDING_IDX 13      // BloodMove[], blood_move.comp's only
+#define BLOOD_SKIN_BUFFER_BINDING_IDX 14      // cl_blood_skin's masks (blood_skin.c)
+
+// cl_blood_skin: one mask is BLOOD_SKIN_RES x BLOOD_SKIN_RES bytes over a mesh's
+// texture space (0..1, wrapped), amount 0..255; mask s starts at byte s * RES * RES
+#define BLOOD_SKIN_RES 256
 
 // Spatial hash radiance cache (pt_sharc) - see shader/sharc.h. Must be a power of two.
 #define SHARC_CAPACITY          (1 << 20)
@@ -303,6 +309,26 @@ BEGIN_SHADER_STRUCT( SunColorBuffer )
 	float sky_luminance;
 }
 END_SHADER_STRUCT( SunColorBuffer )
+
+// A blood droplet that only SLID this frame (blood.c, pt_blood_gpu_move): its mesh
+// in the instanced buffers is last frame's, moved by `move`. blood_move.comp adds
+// that to every corner of its `count` primitives from `first`, and sets the two
+// things that go with the position - the leaf's cluster and the motion vector -
+// rather than the whole mesh being sent again from the CPU. 32 bytes.
+// With BLOOD_MOVE_CLEAR in mv_z it is a CLEAR instead: `count` primitives from
+// `first` zeroed, the stale tail of a region whose mesh shrank or went (blood.c,
+// ZEROS ON THE GPU) - `move`, `cluster` and the motion vector unused.
+#define BLOOD_MOVE_CLEAR 0x80000000u
+BEGIN_SHADER_STRUCT( BloodMove )
+{
+	vec3 move;
+	uint first;     // the droplet's first primitive in the instanced buffers
+	uint count;     // its primitives
+	int cluster;
+	uint mv_xy;     // custom0..2: the motion vector as halves, x | y << 16
+	uint mv_z;      // ... and z (a half, so bit 31 is free: BLOOD_MOVE_CLEAR)
+}
+END_SHADER_STRUCT( BloodMove )
 
 
 #ifdef VKPT_SHADER
@@ -696,6 +722,29 @@ get_iqm_matrix(uint index)
 	result[1] = iqm_matrix_buffer.iqm_matrices[index * 3 + 1];
 	result[2] = iqm_matrix_buffer.iqm_matrices[index * 3 + 2];
 	return result;
+}
+
+layout(set = VERTEX_BUFFER_DESC_SET_IDX, binding = BLOOD_SKIN_BUFFER_BINDING_IDX) readonly buffer BLOOD_SKIN_BUFFER {
+	uint blood_skin_texels[];   // four mask bytes a word
+};
+
+// cl_blood_skin: how much blood mask `slot` holds at texture coordinate st, 0..1,
+// filtered between the four nearest texels; wrapped as blood_skin.c paints it
+float
+blood_skin_amount(uint slot, vec2 st)
+{
+	vec2 p = fract(st) * float(BLOOD_SKIN_RES) - 0.5;
+	ivec2 i0 = ivec2(floor(p));
+	vec2 f = p - vec2(i0);
+	uint base = slot * uint(BLOOD_SKIN_RES * BLOOD_SKIN_RES);
+	vec4 v;
+	for (int k = 0; k < 4; k++)
+	{
+		ivec2 q = (i0 + ivec2(k & 1, k >> 1)) & (BLOOD_SKIN_RES - 1);
+		uint idx = base + uint(q.y * BLOOD_SKIN_RES + q.x);
+		v[k] = float((blood_skin_texels[idx >> 2] >> ((idx & 3u) * 8u)) & 0xffu);
+	}
+	return mix(mix(v.x, v.y, f.x), mix(v.z, v.w, f.x), f.y) * (1.0 / 255.0);
 }
 
 #endif

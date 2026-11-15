@@ -54,6 +54,7 @@ typedef enum {
     D3D12_PASS_ANIMATE_MATERIALS,           // the world's texture animation, in its primitives
     D3D12_PASS_SHARC_UPDATE,                // the radiance cache: trained from the primary surfaces
     D3D12_PASS_SHARC_RESOLVE,               // ...and folded into its resolved entries
+    D3D12_PASS_BLOOD_MOVE,                  // blood.c's droplets that only slid, moved in place
     D3D12_PASS_BLOOM_DOWNSCALE,             // bloom.c: TAA_OUTPUT to a quarter
     D3D12_PASS_BLOOM_BLUR,                  // ...blurred across, then down
     D3D12_PASS_BLOOM_COMPOSITE,             // ...and blended back into TAA_OUTPUT
@@ -308,6 +309,11 @@ void d3d12_tile_header(uint32_t *header, uint32_t row_groups);
 // this frame, animate_materials.comp over its first `num_world_prims` primitives (the
 // UBO's num_static_primitives; 0 = not this frame). Each followed by a barrier.
 void d3d12_record_instance_geometry(const d3d12_passes_t *p, uint32_t num_instances, uint32_t num_world_prims);
+
+// vkpt_blood_move_dispatch: blood_move.comp, a group per BloodMove (the vertex buffer
+// set's BLOOD_MOVE_BUFFER, already copied and UAV), on the instanced buffers (UAV);
+// followed by a barrier.
+void d3d12_record_blood_move(const d3d12_passes_t *p, uint32_t num_moves);
 
 /* vkpt_dlssg_hdr_convert: dlssg_hdr.comp over width x height of one image - `target` 0
    DLSS_OUTPUT, 1..5 DLSS_FG_OUTPUT..5 - in place: `mode` 2 encodes linear to sRGB for

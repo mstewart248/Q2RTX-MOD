@@ -1,0 +1,122 @@
+/*
+Copyright (C) 2026
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// ========================================================================== //
+// THE BLOOD DROPLETS THAT ONLY SLID THIS FRAME, moved where they already are
+// (blood.c, pt_blood_gpu_move).
+//
+// A droplet running down a wall changes its origin and nothing else, so its mesh
+// is last frame's mesh translated (drop_job's "THE SAME MESH, MOVED"). The CPU
+// used to send that whole mesh again - 164 bytes a triangle across the bus, every
+// frame, for every droplet in motion: Matt's 11-15 captures had 31-71 MB a frame
+// and 2.7-7.2 ms of copy on the GPU, plus the CPU's write into the staging. The
+// device already holds the mesh; only the offset is new.
+//
+// One workgroup a droplet (BloodMove), its threads striding over the droplet's
+// primitives: each corner gets `move` added in the position buffer, the primitive's
+// own copy of the corners is set from those, and the cluster and the motion vector
+// - the only per-droplet things that change with position - are written as
+// drop_job writes them into the shadow copy. The same float adds as the CPU's, so
+// the two copies stay as one.
+//
+// A record with BLOOD_MOVE_CLEAR zeroes its primitives instead, as the shadow copy
+// holds them: the part of a region the device still has from a bigger mesh (blood.c,
+// ZEROS ON THE GPU) - degenerate triangles at the origin, which nothing can hit.
+// ========================================================================== //
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#extension GL_EXT_nonuniform_qualifier    : enable
+
+#include "utils.glsl"
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define VERTEX_BUFFER_DESC_SET_IDX 1
+#include "vertex_buffer.h"
+
+layout(set = VERTEX_BUFFER_DESC_SET_IDX, binding = BLOOD_MOVE_BUFFER_BINDING_IDX) readonly buffer BLOOD_MOVE_BUFFER {
+	BloodMove blood_moves[];
+};
+
+#define GROUP_SIZE 64
+
+layout(local_size_x = GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+void
+main()
+{
+	const BloodMove m = blood_moves[gl_WorkGroupID.x];
+
+	if ((m.mv_z & BLOOD_MOVE_CLEAR) != 0u)
+	{
+		for (uint f = gl_LocalInvocationID.x; f < m.count; f += GROUP_SIZE)
+		{
+			const uint prim_id = m.first + f;
+			const uint p = prim_id * 9;
+			for (int i = 0; i < 9; i++)
+				instanced_position_buffer.positions[p + i] = 0.0;
+
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].pos0 = vec3(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].material_id = 0u;
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].pos1 = vec3(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].cluster = 0;
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].pos2 = vec3(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].texture_flags = 0u;
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].normals = uvec3(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].instance = 0u;
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].tangents = uvec3(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].emissive_and_alpha = 0u;
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].uv0 = vec2(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].uv1 = vec2(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].uv2 = vec2(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].custom0 = uvec2(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].custom1 = uvec2(0);
+			primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].custom2 = uvec2(0);
+		}
+		return;
+	}
+
+	const uvec2 mv = uvec2(m.mv_xy, m.mv_z);
+
+	for (uint f = gl_LocalInvocationID.x; f < m.count; f += GROUP_SIZE)
+	{
+		const uint prim_id = m.first + f;
+		const uint p = prim_id * 9;
+
+		vec3 pos[3];
+		for (int vert = 0; vert < 3; vert++)
+		{
+			for (int axis = 0; axis < 3; axis++)
+			{
+				const float v = instanced_position_buffer.positions[p + vert * 3 + axis] + m.move[axis];
+				instanced_position_buffer.positions[p + vert * 3 + axis] = v;
+				pos[vert][axis] = v;
+			}
+		}
+
+		primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].pos0 = pos[0];
+		primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].pos1 = pos[1];
+		primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].pos2 = pos[2];
+		primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].cluster = m.cluster;
+		primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].custom0 = mv;
+		primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].custom1 = mv;
+		primitive_buffers[VERTEX_BUFFER_INSTANCED].primitives[prim_id].custom2 = mv;
+	}
+}

@@ -467,6 +467,7 @@ void R_RegisterFunctionsD3D12(void)
     IMG_Unload = IMG_Unload_D3D12;
     IMG_ReadPixels = IMG_ReadPixels_D3D12;
     IMG_ReadPixelsHDR = d3d12_read_frame_target_hdr;
+    IMG_ReadPixelsTakesHDR = true;      // d3d12_read_frame_target: scRGB / ui_hdr_nits -> sRGB
 
     // the 2D functions and model loaders are vkpt's, unchanged
     d3d12_frontend_register_functions();

@@ -534,6 +534,7 @@ void(*IMG_Unload)(image_t *image) = NULL;
 void(*IMG_Load)(image_t *image, byte *pic) = NULL;
 byte* (*IMG_ReadPixels)(int *width, int *height, int *rowbytes) = NULL;
 float* (*IMG_ReadPixelsHDR)(int *width, int *height) = NULL;
+bool IMG_ReadPixelsTakesHDR = false;
 
 int(*MOD_LoadMD2)(model_t *model, const void *rawdata, size_t length, const char* mod_name) = NULL;
 #if USE_MD3
@@ -543,6 +544,7 @@ int(*MOD_LoadIQM)(model_t* model, const void* rawdata, size_t length, const char
 int(*MOD_LoadMD5)(model_t* model, const void* rawdata, size_t length, const char* mod_name) = NULL;
 void(*MOD_Reference)(model_t *model) = NULL;
 mod_trace_mesh_t MOD_TraceMesh = NULL;
+mod_blood_skin_splat_t MOD_BloodSkinSplat = NULL;
 
 float R_ClampScale(cvar_t *var)
 {

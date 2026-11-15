@@ -43,6 +43,26 @@ VkResult vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_
 void vkpt_physical_sky_latch_local_time(void);
 bool vkpt_physical_sky_needs_update(void);
 void vkpt_physical_sky_set_needs_update(bool needs_update);
+
+/* The sky's share of this frame, planned by vkpt_physical_sky_update_ubo (the
+   whole sky at once, a slice of a sun drift's update spread over frames, or
+   nothing - see sky_update_slices in physical_sky.c). The renderer records it,
+   then says so with vkpt_physical_sky_work_done; a frame that was not drawn
+   leaves the plan to be made again. */
+typedef struct {
+	bool  render;       // the sky pass runs this frame
+	bool  begin;        // the update's first part: the terrain shadow map drawn, the sun colour's sums cleared
+	bool  resolve;      // its last part: the sums resolved into the sun and sky colours
+	int   first_row;    // the rows rendered, of the six faces' 6 x 1024 one after another
+	int   row_count;    // (whole multiples of physical_sky.comp's 16-row groups)
+	int   slice, slices;    // which part of how many; 1 of 1 = the whole sky at once
+	float viewproj[16];     // the terrain shadow map's, as the update's first part draws it
+} vkpt_sky_work_t;
+const vkpt_sky_work_t *vkpt_physical_sky_work(void);
+void vkpt_physical_sky_work_done(void);
+// the bytes of SunColorBuffer the sky pass sums into, cleared by its first part
+// (the resolved colours after them stay readable through a sliced update)
+#define SKY_SUN_COLOR_SUMS_SIZE 32
 void vkpt_physical_sky_reset(void);
 bool vkpt_physical_sky_space_enabled(void);
 // cpu_bench: a copy of the sky cube as last rendered, RGBA half floats in layer

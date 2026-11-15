@@ -592,7 +592,9 @@ static void make_screenshot(const char *name, const char *ext,
     FILE        *fp;
     int         w, h, ret, row_stride;
     
-    if(is_render_hdr()) {
+    // D3D12's readback tone maps an HDR frame to SDR (the profiler's captures rely
+    // on it); Vulkan's reads only an 8-bit swapchain
+    if(is_render_hdr() && !IMG_ReadPixelsTakesHDR) {
         Com_WPrintf("Screenshot format not supported in HDR mode\n");
         return;
     }

@@ -27,6 +27,7 @@ show scRGB puts vid_hdr back to 0, as vkpt does without the surface format.
 
 #include "d3d12pt.h"
 #include "../vkpt/conversion.h"     // halfToFloat: the HDR screenshots
+#include "../vkpt/jobs.h"           // vkpt_parallel_for: the screenshot's rows
 
 #include <SDL.h>
 #include <SDL_syswm.h>
@@ -737,6 +738,51 @@ static byte srgb_byte(float v)
     return (byte)(v * 255.f + 0.5f);
 }
 
+/* THE CAPTURE'S OWN HITCH (Matt 11-15: single frames of 252 and 300+ ms on the
+   profiler's graph, each about half a second after a dip capture - "net, demo,
+   predict", where the screenshot command runs). The scRGB conversion below was a
+   halfToFloat and a powf per channel: 25 million of each at 4K, on the main thread.
+   A half has only 65536 values, so a table of their sRGB bytes at this white (65536
+   powf, well under a millisecond) makes each channel one lookup, and the rows go
+   over the renderer's workers (jobs.c). The bytes are the same as before: the table
+   is srgb_byte(halfToFloat(h) * white) for every h. The PNG itself is written on
+   the async worker (gl_screenshot_async) as it always was. */
+static byte  read_lut[65536];
+static float read_lut_white = -1.f;
+
+typedef struct {
+    const byte *map;
+    byte       *pixels;
+    UINT        row_pitch;
+    int         w, h, rows, pitch, band;
+    bool        hdr;
+} read_rows_t;
+
+static void read_rows_job(void *ctx, int index)
+{
+    const read_rows_t *r = ctx;
+    const int y0 = index * r->band;
+    const int y1 = min(y0 + r->band, min(r->h, r->rows));
+    for (int y = y0; y < y1; y++) {
+        const byte *src = r->map + (size_t)y * r->row_pitch;
+        byte *dst = r->pixels + (size_t)r->pitch * (r->h - y - 1);     // bottom-up, as vkpt's
+        if (r->hdr) {
+            const uint16_t *half = (const uint16_t *)src;
+            for (int x = 0; x < r->w; x++, half += 4, dst += 3) {
+                dst[0] = read_lut[half[0]];
+                dst[1] = read_lut[half[1]];
+                dst[2] = read_lut[half[2]];
+            }
+        } else {
+            for (int x = 0; x < r->w; x++, src += 4, dst += 3) {
+                dst[0] = src[2];    // BGRA -> RGB
+                dst[1] = src[1];
+                dst[2] = src[0];
+            }
+        }
+    }
+}
+
 byte *d3d12_read_frame_target(int *width, int *height, int *rowbytes)
 {
     // the savers write whatever comes back, so never return NULL
@@ -769,23 +815,25 @@ byte *d3d12_read_frame_target(int *width, int *height, int *rowbytes)
         float nits, saturation, video_gamma;
         d3d12_frontend_ui_hdr_params(&nits, &saturation, &video_gamma);
         white = 80.f / max(nits, 1.f);
-    }
-    for (int y = 0; y < h && y < (int)rows; y++) {
-        const byte *src = map + (size_t)y * fp.Footprint.RowPitch;
-        byte *dst = pixels + (size_t)pitch * (h - y - 1);     // bottom-up, as vkpt's
-        if (format == D3D12_HDR_FORMAT) {
-            const uint16_t *half = (const uint16_t *)src;
-            for (int x = 0; x < w; x++, half += 4, dst += 3)
-                for (int c = 0; c < 3; c++)
-                    dst[c] = srgb_byte(halfToFloat(half[c]) * white);
-        } else {
-            for (int x = 0; x < w; x++, src += 4, dst += 3) {
-                dst[0] = src[2];    // BGRA -> RGB
-                dst[1] = src[1];
-                dst[2] = src[0];
-            }
+        if (white != read_lut_white) {
+            for (int i = 0; i < 65536; i++)
+                read_lut[i] = srgb_byte(halfToFloat((uint16_t)i) * white);
+            read_lut_white = white;
         }
     }
+    const read_rows_t r = {
+        .map = map,
+        .pixels = pixels,
+        .row_pitch = fp.Footprint.RowPitch,
+        .w = w,
+        .h = h,
+        .rows = (int)rows,
+        .pitch = pitch,
+        .band = 16,
+        .hdr = format == D3D12_HDR_FORMAT,
+    };
+    const int filled = min(h, (int)rows);
+    vkpt_parallel_for((filled + r.band - 1) / r.band, read_rows_job, (void *)&r);
     read_done(readback);
     return pixels;
 }

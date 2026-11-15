@@ -73,19 +73,25 @@ typedef struct {
     uint32_t                    grid_index_count;
     float                       viewproj[16];   // terrain_shadowmap_viewproj, column-major
 
-    // physical_sky(_space).comp, then sky_buffer_resolve.comp
+    // physical_sky(_space).comp, then sky_buffer_resolve.comp. The whole sky at once is
+    // begin + resolve and 6 x 1024 rows; a sun drift's update comes a slice a frame
+    // (vkpt_sky_work_t), its rows from the UBO's sky_first_row
     ID3D12PipelineState         *sky_pso;
     ID3D12PipelineState         *resolve_pso;
+    bool                        begin;          // the shadow map drawn, the sun colour's sums cleared
+    bool                        resolve;        // the sums resolved into the sun and sky colours
+    uint32_t                    row_count;      // a multiple of 16
     const d3d12_set_t           *sets[4];       // ubo, textures, vertex buffer, sky
     ID3D12Resource              *sun_color_buffer;
-    uint64_t                    sun_color_size;
+    uint64_t                    sun_color_size;     // its sums, which the first part clears (SKY_SUN_COLOR_SUMS_SIZE)
     ID3D12Resource              *zero_buffer;   // passes.h's zeros, the sun colour's clear
 } d3d12_sky_pass_t;
 
-/* vkpt_physical_sky_record_cmd_buffer, for a frame whose sky needs it: the
-   shadow map, the sun colour cleared, the envmap and the sun colour rendered,
-   resolved, and left a constant buffer for the lighting. Compute root state is
-   left the sky's: the passes after it bind their own. */
+/* vkpt_physical_sky_record_cmd_buffer, for a frame with sky work: on the first
+   part, the shadow map and the sun colour's sums cleared; the envmap's rows and
+   the sums rendered; on the last part, resolved; the buffer left a constant
+   buffer for the lighting. Compute root state is left the sky's: the passes after
+   it bind their own. */
 void d3d12_record_sky(const d3d12_sky_pass_t *s);
 
 #endif

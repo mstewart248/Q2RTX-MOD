@@ -93,6 +93,11 @@ typedef struct entity_s {
 	int tent_type;
 
 	float scale;
+
+	// cl_blood_skin: the body's key into the renderer's blood masks (entity
+	// number + 1, MOD_BloodSkinSplat); 0 = none, as for everything but a packet
+	// entity's main model
+	int blood_key;
 } entity_t;
 
 typedef enum dlight_type_e

@@ -149,6 +149,10 @@ extern void (*IMG_Unload)(image_t *image);
 extern void (*IMG_Load)(image_t *image, byte *pic);
 extern byte* (*IMG_ReadPixels)(int *width, int *height, int *rowbytes);
 extern float* (*IMG_ReadPixelsHDR)(int *width, int *height);
+// IMG_ReadPixels can read an HDR frame too, tone mapped to SDR (D3D12's divides by
+// the UI's white), so PNG/JPG/TGA screenshots work in HDR mode. Every renderer's
+// R_RegisterFunctions sets it.
+extern bool IMG_ReadPixelsTakesHDR;
 
 #endif // IMAGES_H
 

@@ -359,6 +359,7 @@ SET(SRC_VKPT
 	refresh/vkpt/chromatic_aberration.c
 	refresh/vkpt/dlssg_hdr.c
 	refresh/vkpt/blood.c
+	refresh/vkpt/blood_skin.c
 	refresh/vkpt/bsp_mesh.c
 	refresh/vkpt/draw.c
 	refresh/vkpt/fog.c
@@ -402,6 +403,7 @@ SET(SRC_VKPT
 
 SET(HEADERS_VKPT
 	refresh/vkpt/vkpt.h
+	refresh/vkpt/blood_skin.h
 	refresh/vkpt/jobs.h
 	refresh/vkpt/ptlas.h
 	refresh/vkpt/clusters.h
@@ -453,6 +455,7 @@ set(SRC_SHADERS
 	refresh/vkpt/shader/asvgf_taau.comp
 	refresh/vkpt/shader/asvgf_temporal.comp
 	refresh/vkpt/shader/instance_geometry.comp
+	refresh/vkpt/shader/blood_move.comp
 	refresh/vkpt/shader/normalize_normal_map.comp
 	refresh/vkpt/shader/tone_mapping_histogram.comp
 	refresh/vkpt/shader/tone_mapping_curve.comp

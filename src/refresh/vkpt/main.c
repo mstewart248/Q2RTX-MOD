@@ -3837,6 +3837,14 @@ static void fill_model_instance(ModelInstance* instance, const entity_t* entity,
 	instance->render_buffer_idx = 0; // to be filled later
 	instance->render_prim_offset = 0;
 
+	// cl_blood_skin: the blood droplets left on this mesh, if any (blood_skin.c)
+	float blood_color[3] = { 0.f, 0.f, 0.f };
+	instance->blood_skin = vkpt_blood_skin_lookup(entity->blood_key, entity->model,
+		(int)(mesh - model->meshes), blood_color);
+	instance->blood_r = blood_color[0];
+	instance->blood_g = blood_color[1];
+	instance->blood_b = blood_color[2];
+
 	// If this is a static wall light model, the renderer creates a custom set of light polys
 	// for this model. Mark the material with the light flag to avoid double contribution and noise
 	// from the GI rays. This (together with the custom lights) is a hack that should be replaced
@@ -4064,6 +4072,8 @@ static void process_bsp_entity(const entity_t* entity, int* instance_count)
 	mi->alpha = (entity->flags & RF_TRANSLUCENT) ? entity->alpha : 1.f;
 	mi->render_buffer_idx = VERTEX_BUFFER_WORLD;
 	mi->render_prim_offset = model->geometry.prim_offsets[0];
+	mi->blood_skin = 0;
+	mi->blood_r = mi->blood_g = mi->blood_b = 0.f;
 	
 	instance_model_lights(model->num_light_polys, model->light_polys, transform, hash);
 
@@ -6110,8 +6120,21 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	// pixel is the output pixel the shaders write it at. Anything else - A-SVGF, photo-mode
 	// accumulation, checkerboard fields - keeps the effects in the colour. DLSS.c reads
 	// this resolved value to decide whether to hand the layer over.
+	//
+	// And only while the frame FILLS the render-resolution images (issue #28, 11-15). They
+	// are made for the largest scale reachable (get_taa_image_extent: the top of DRS's
+	// range, or photo mode's 100% under pt_photo_mode_reserve 1, which every config from
+	// 11-06..11-13 still carries) and the frame sits in their top-left corner. Every other
+	// RR input is cut to that corner by InRenderSubrectDimensions, but the transparency
+	// layer has a subrect BASE only, and RR stretches the whole image over the output: a
+	// second copy of every particle, shrunk toward the top-left corner by frame / image
+	// (DLSS Quality's 66% inside images made for 100%). Vulkan cannot declare a smaller
+	// extent instead (NGX samples the real image by the declared one - DLSSGApply's note),
+	// and a D3D12 resource reports its own. So the effects stay in the colour then.
+	const bool frame_fills_images = qvk.extent_render.width == qvk.extent_taa_images.width
+	                             && qvk.extent_render.height == qvk.extent_taa_images.height;
 	if (!(DLSSRayReconstructionActive() && !ref_mode->enable_accumulation
-	      && ubo->pt_fullres_fields != PT_FIELDS_CHECKERBOARD))
+	      && ubo->pt_fullres_fields != PT_FIELDS_CHECKERBOARD && frame_fills_images))
 		ubo->pt_dlss_particle_layer = 0.f;
 
 	// HDR output: the peak in use (tm_hdr_peak_nits 0 = what the screen reports), and
@@ -7161,6 +7184,9 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 			fd->blood_films, fd->num_blood_films,
 			bsp_world_model, fd->vieworg, fd->fov_y, fd->height, blood_model_instance_idx,
 			upload_info.blood_prim_offset, &upload_info.blood_prim_count);
+
+		// cl_blood_skin: the masks' painted rows, before anything traces (blood_skin.c)
+		vkpt_blood_skin_record(trace_cmd_buf);
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_INSTANCE_GEOMETRY);
 		vkpt_instance_geometry(trace_cmd_buf, upload_info.num_instances, update_world_animations);
@@ -10689,12 +10715,14 @@ void R_RegisterFunctionsRTX()
 	IMG_Unload = IMG_Unload_RTX;
 	IMG_ReadPixels = IMG_ReadPixels_RTX;
 	IMG_ReadPixelsHDR = IMG_ReadPixelsHDR_RTX;
+	IMG_ReadPixelsTakesHDR = false;     // IMG_ReadPixels_RTX: 8-bit swapchains only
 	MOD_LoadMD2 = MOD_LoadMD2_RTX;
 	MOD_LoadMD3 = MOD_LoadMD3_RTX;
 	MOD_LoadIQM = MOD_LoadIQM_RTX;
 	MOD_LoadMD5 = MOD_LoadMD5_RTX;
 	MOD_Reference = MOD_Reference_RTX;
 	MOD_TraceMesh = MOD_TraceMesh_RTX;
+	MOD_BloodSkinSplat = vkpt_blood_skin_splat;
 }
 
 // vim: shiftwidth=4 noexpandtab tabstop=4 cindent

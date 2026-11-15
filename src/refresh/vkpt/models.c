@@ -1745,9 +1745,10 @@ Three things make it affordable:
 #define MOD_TRACE_MAX_VERTS     8192
 #define MOD_TRACE_MAX_TRIS      8192
 
-// Three, because the realistic worst case is a couple of bodies being shot at
-// once. A fourth would only ever be paid for.
-#define MOD_TRACE_CACHE_SLOTS   3
+// Three were enough for a couple of bodies being shot at once. Six since blood
+// tests corpses and items too (cl_blood_skin, 11-15): their frames are frozen, so
+// each holds a slot as long as blood flies near it.
+#define MOD_TRACE_CACHE_SLOTS   6
 
 typedef struct {
     const model_t *model;
@@ -1761,11 +1762,14 @@ typedef struct {
     int         numtris;
     vec3_t      positions[MOD_TRACE_MAX_VERTS];
     vec3_t      normals[MOD_TRACE_MAX_VERTS];
+    vec2_t      st[MOD_TRACE_MAX_VERTS];        // the meshes' texture coordinates
     // Per triangle: its three vertex indices into the arrays above, and the
     // bounding box that rejects it.
     int         tris[MOD_TRACE_MAX_TRIS][3];
     vec3_t      tri_mins[MOD_TRACE_MAX_TRIS];
     vec3_t      tri_maxs[MOD_TRACE_MAX_TRIS];
+    uint8_t     tri_mesh[MOD_TRACE_MAX_TRIS];   // which mesh it came from
+    vec3_t      mins, maxs;                     // the whole pose
 } mod_trace_pose_cache_t;
 
 static mod_trace_pose_cache_t *mod_trace_cache;
@@ -1820,6 +1824,10 @@ static bool mod_trace_build_pose(mod_trace_pose_cache_t *slot, const model_t *mo
     slot->frame = frame;
     slot->numverts = 0;
     slot->numtris = 0;
+    ClearBounds(slot->mins, slot->maxs);
+
+    if (model->nummeshes > 256)
+        return false;   // tri_mesh is a byte
 
     if (skinned) {
         entity_t e;
@@ -1841,7 +1849,7 @@ static bool mod_trace_build_pose(mod_trace_pose_cache_t *slot, const model_t *mo
         const maliasmesh_t *mesh = &model->meshes[mesh_idx];
         const int base = slot->numverts;
 
-        if (!mesh->positions || !mesh->normals || !mesh->indices)
+        if (!mesh->positions || !mesh->normals || !mesh->indices || !mesh->tex_coords)
             return false;
 
         if (base + mesh->numverts > MOD_TRACE_MAX_VERTS)
@@ -1871,11 +1879,20 @@ static bool mod_trace_build_pose(mod_trace_pose_cache_t *slot, const model_t *mo
             }
         }
 
+        for (int i = 0; i < mesh->numverts; i++) {
+            // one set for every frame (md2/md3 and skinned alike)
+            slot->st[base + i][0] = mesh->tex_coords[i][0];
+            slot->st[base + i][1] = mesh->tex_coords[i][1];
+            AddPointToBounds(slot->positions[base + i], slot->mins, slot->maxs);
+        }
+
         slot->numverts += mesh->numverts;
 
         for (int i = 0; i < mesh->numtris; i++) {
             const int t = slot->numtris + i;
             int j;
+
+            slot->tri_mesh[t] = (uint8_t)mesh_idx;
 
             for (j = 0; j < 3; j++) {
                 const int idx = mesh->indices[i * 3 + j];
@@ -1983,7 +2000,7 @@ static bool mod_trace_triangle(const vec3_t start, const vec3_t dir,
 
 bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
                        const vec3_t start, const vec3_t end,
-                       float *out_frac, vec3_t out_normal)
+                       mod_trace_result_t *out)
 {
     mod_trace_pose_cache_t *c;
     vec3_t axis[3], local_start, local_end, dir, seg_mins, seg_maxs, normal;
@@ -1992,6 +2009,7 @@ bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
     float best_u = 0.f, best_v = 0.f;
     bool rotated;
 
+    out->tested = false;
     if (!model || model->type != MOD_ALIAS || model->nummeshes <= 0)
         return false;
 
@@ -2001,10 +2019,6 @@ bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
     else if (model->numframes > 0)
         frame = (int)((unsigned)frame % (unsigned)model->numframes);
     else
-        return false;
-
-    c = mod_trace_get_pose(model, frame);
-    if (!c)
         return false;
 
     // World -> model space. The inverse of create_entity_matrix, which builds
@@ -2034,6 +2048,25 @@ bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
         seg_mins[i] = min(local_start[i], local_end[i]);
         seg_maxs[i] = max(local_start[i], local_end[i]);
     }
+
+    // An md2/md3 frame's box, before any posing: corpses and items are tested
+    // with the client's generous boxes (cl_blood_skin), and most of those tests
+    // end here. Skinned models have no frame boxes; theirs is the pose's, below.
+    if (!model->iqmData && model->frames && frame < model->numframes) {
+        const maliasframe_t *f = &model->frames[frame];
+        for (int i = 0; i < 3; i++)
+            if (seg_maxs[i] < f->bounds[0][i] - 1.f || seg_mins[i] > f->bounds[1][i] + 1.f)
+                return false;
+    }
+
+    c = mod_trace_get_pose(model, frame);
+    if (!c)
+        return false;
+
+    for (int i = 0; i < 3; i++)
+        if (seg_maxs[i] < c->mins[i] || seg_mins[i] > c->maxs[i])
+            return false;
+    out->tested = true;
 
     for (int t = 0; t < c->numtris; t++) {
         const int *tri = c->tris[t];
@@ -2092,14 +2125,36 @@ bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
         }
     }
 
+    // Where on the skin (cl_blood_skin): the texture coordinate at the hit, and
+    // how far one world unit goes in texture space there - the triangle's texture
+    // area over its world area, so a splat is the same size on any UV layout.
+    {
+        const int *tri = c->tris[best_tri];
+        const float w0 = 1.f - best_u - best_v;
+        vec3_t e1, e2, cross;
+
+        for (int i = 0; i < 2; i++)
+            out->st[i] = c->st[tri[0]][i] * w0 + c->st[tri[1]][i] * best_u + c->st[tri[2]][i] * best_v;
+
+        VectorSubtract(c->positions[tri[1]], c->positions[tri[0]], e1);
+        VectorSubtract(c->positions[tri[2]], c->positions[tri[0]], e2);
+        CrossProduct(e1, e2, cross);
+        const float world_area = VectorLength(cross) * scale * scale;
+        const float s1 = c->st[tri[1]][0] - c->st[tri[0]][0], t1 = c->st[tri[1]][1] - c->st[tri[0]][1];
+        const float s2 = c->st[tri[2]][0] - c->st[tri[0]][0], t2 = c->st[tri[2]][1] - c->st[tri[0]][1];
+        const float st_area = fabsf(s1 * t2 - s2 * t1);
+        out->st_per_unit = world_area > 1e-6f ? sqrtf(st_area / world_area) : 0.f;
+        out->mesh = c->tri_mesh[best_tri];
+    }
+
     // Model -> world. Uniform scale, so the normal needs the rotation only.
     if (rotated) {
         TransposeAxis(axis);
         RotatePoint(normal, axis);
     }
 
-    VectorCopy(normal, out_normal);
-    *out_frac = best;
+    VectorCopy(normal, out->normal);
+    out->frac = best;
     return true;
 }
 

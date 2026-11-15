@@ -108,7 +108,8 @@ typedef enum {
     CPUPROF_DC(BLOOD_REBUILT)       /* meshes made again */ \
     CPUPROF_DC(BLOOD_STILL)         /* meshes untouched */ \
     CPUPROF_DC(BLOOD_COPIES)        /* upload regions */ \
-    CPUPROF_DC(BLOOD_UP_KB)         /* bytes those regions carry, KB */
+    CPUPROF_DC(BLOOD_UP_KB)         /* bytes those regions carry, KB */ \
+    CPUPROF_DC(BLOOD_GPU_MOVES)     /* moved meshes the GPU moved (pt_blood_gpu_move) */
 
 typedef enum {
 #define CPUPROF_DC(id) CPUPROF_C_##id,

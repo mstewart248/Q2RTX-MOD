@@ -306,9 +306,9 @@ blood_count_text(char *line1, char *line2, size_t size, const uint32_t *c)
 	Q_snprintf(line1, size, "blood: %u in the air, %u landed; %u traces, %u on monster meshes",
 		c[CPUPROF_C_BLOOD_AIR], c[CPUPROF_C_BLOOD_LANDED], c[CPUPROF_C_BLOOD_TRACES],
 		c[CPUPROF_C_BLOOD_BODY_TRACES]);
-	Q_snprintf(line2, size, "blood meshes: %u moved, %u rebuilt, %u still; up %.1f MB in %u regions",
-		c[CPUPROF_C_BLOOD_MOVED], c[CPUPROF_C_BLOOD_REBUILT], c[CPUPROF_C_BLOOD_STILL],
-		(float)c[CPUPROF_C_BLOOD_UP_KB] / 1024.f, c[CPUPROF_C_BLOOD_COPIES]);
+	Q_snprintf(line2, size, "blood meshes: %u moved (%u on the gpu), %u rebuilt, %u still; up %.1f MB in %u regions",
+		c[CPUPROF_C_BLOOD_MOVED], c[CPUPROF_C_BLOOD_GPU_MOVES], c[CPUPROF_C_BLOOD_REBUILT],
+		c[CPUPROF_C_BLOOD_STILL], (float)c[CPUPROF_C_BLOOD_UP_KB] / 1024.f, c[CPUPROF_C_BLOOD_COPIES]);
 }
 
 static struct {
@@ -324,8 +324,13 @@ static struct {
 	float gpu_ms[GRAPH_SAMPLES];	// 0 where the GPU frame was not timed
 	uint8_t presents[GRAPH_SAMPLES];	// DLSS-G's presents per rendered frame, 1 without
 	float cat_ms[GRAPH_SAMPLES][NUM_CATS];	// the GPU frame by category (categories_of)
-	float submit_ms[GRAPH_SAMPLES];	// the same frame's CPU, R_BeginFrame to submit (D3D12; 0 = not known)
 	float gap_ms[GRAPH_SAMPLES];	// the GPU idle before the frame, in no frame (D3D12; profiler_frame_extras_t)
+	/* THE CAPTURE'S OWN FRAMES (Matt 11-15: "the screen shot doesn't seem to capture
+	   the actual cpu spikes" - it cannot: the spike WAS the screenshot, 250 ms of
+	   readback then, ~40 now). The CPU frames CAPTURE_SKIP covers: profiler 3 draws
+	   them as a faint column with no CPU line, and no key's average or max counts
+	   them - the dip test already left them out. */
+	uint8_t shot[GRAPH_SAMPLES];
 	float cpu_rows[GRAPH_SAMPLES][NUM_CPUROWS];	// the CPU frame by section (cpu_rows_of)
 	uint32_t counts[GRAPH_SAMPLES][CPUPROF_COUNTER_COUNT];
 	int next, count;
@@ -610,7 +615,7 @@ cat_total(const float *v)
 static float
 graph_cat_value(int k)
 {
-	return max(cat_total(graph.cat_ms[k]), max(graph.cpu_ms[k], graph.submit_ms[k]));
+	return graph.shot[k] ? cat_total(graph.cat_ms[k]) : max(cat_total(graph.cat_ms[k]), graph.cpu_ms[k]);
 }
 
 /* PROFILER CAPTURE (profiler_capture 1, Matt 11-14): a screenshot of the profiler
@@ -639,8 +644,17 @@ graph_cat_value(int k)
 /* Samples after a map load that are never a dip (Matt 11-14: of a demo run's eight
    captures, one was rbase1's load itself, 1.5 s, and one the frame base2's started
    in). The GPU's results come in frames late, so the load's own frames land in
-   the first few samples after it. */
-#define CAPTURE_LOAD_QUIET   8
+   the first few samples after it.
+   THE WHOLE LOAD, AND A SECOND AFTER IT (Matt 11-15: "the profiler capture doesn't
+   need to capture a spike caused by level load"). The quiet used to start at
+   R_BeginRegistration and count samples - and the loading plaque's own frames used
+   them up before the map had drawn anything, so every map of the demo loop still
+   caught its first world frames: 77-210 ms GPU frames, 61 ms of it the GPU idle
+   while the CPU finished the load (the D3D12 garbage pass, the first models).
+   Now it holds while Com_LoadActive (through the first world frame, the "Map load:"
+   line) and for CAPTURE_LOAD_QUIET samples and CAPTURE_LOAD_QUIET_MS after. */
+#define CAPTURE_LOAD_QUIET     8
+#define CAPTURE_LOAD_QUIET_MS  1000
 
 static bool level_loaded;
 
@@ -667,6 +681,7 @@ static struct {
 	bool worst_done;	// the dip's worst frame was captured
 	int skip;			// frames left whose CPU time is a capture's own hitch (frames not known)
 	int quiet;			// samples left after a map load (CAPTURE_LOAD_QUIET)
+	unsigned quiet_until;	// ... and the time it lasts to (CAPTURE_LOAD_QUIET_MS)
 	uint32_t skip_from, skip_to;	// ... the CPU frames that are, where they are known
 	float good_ms;		// time back over the line
 	float dip_ms;		// time since the dip's first slow frame
@@ -756,7 +771,17 @@ capture_take(const char *which, int nth)
 
 	char name[MAX_QPATH];
 	Q_snprintf(name, sizeof(name), "profcap/%s_%03d_%s", stamp, ++cap.count % 1000, which);
-	const bool hdr = R_IsHDR && R_IsHDR();
+	/* SDR PNG, HDR display or not (Matt 11-15: in the .hdr shots nvidia flow's
+	   orange and direct lighting's yellow looked the same; in the game they are
+	   fine). The UI is drawn at ui_hdr_nits - Matt's 500, 6.25x scRGB's 1.0 - so
+	   the .hdr file holds orange as (6.25, 1.64, 0) and yellow as (6.25, 4.94,
+	   0.13); a viewer clipping each channel at 1.0 shows both as (1, 1, 0), the
+	   same pure yellow. D3D12's PNG
+	   readback (d3d12_read_frame_target) divides by that white, so the overlay
+	   comes out as drawn - the scene clips above it, which a review of the
+	   numbers does not need. Vulkan's PNG readback takes only an 8-bit swapchain,
+	   so an HDR one there stays .hdr. */
+	const bool hdr = R_IsHDR && R_IsHDR() && !profiler_data.d3d12;
 	Cbuf_AddText(&cmd_buffer, va("%s %s\n", hdr ? "screenshothdr" : "screenshotpng", name));
 	cap.skip = CAPTURE_SKIP;
 	// The command runs at the top of the frame after the one being made, which
@@ -832,16 +857,19 @@ capture_frame(float cpu_ms, float busy_ms, float gpu_ms, int presents, uint32_t 
 		return;
 	}
 
-	if (level_loaded)
+	const unsigned now_ms = Sys_Milliseconds();
+	if (level_loaded || Com_LoadActive())
 	{
 		level_loaded = false;
 		cap.quiet = CAPTURE_LOAD_QUIET;
+		cap.quiet_until = now_ms + CAPTURE_LOAD_QUIET_MS;
 	}
-	if (cap.quiet > 0)
+	if (cap.quiet > 0 || (cap.quiet_until && (int)(cap.quiet_until - now_ms) > 0))
 	{
-		cap.quiet--;
+		if (cap.quiet > 0)
+			cap.quiet--;
 		cap.in_dip = cap.hold = cap.release = false;
-		Q_snprintf(cap.status, sizeof(cap.status), "capture: a map loaded - armed again in %d frames", cap.quiet + 1);
+		Q_snprintf(cap.status, sizeof(cap.status), "capture: a map is loading - armed again a second after it");
 		return;
 	}
 
@@ -1003,8 +1031,8 @@ graph_record(uint32_t serial)
 	graph.gpu_ms[graph.next] = gpu_ms;
 	graph.presents[graph.next] = (uint8_t)max(1, min(presents, 255));
 	categories_of(profiler_data.query_pool_results, graph.cat_ms[graph.next]);
-	graph.submit_ms[graph.next] = frame_extras.cpu_submit_ms;
 	graph.gap_ms[graph.next] = frame_extras.gpu_gap_ms;
+	graph.shot[graph.next] = serial && cap.skip_from && serial - cap.skip_from <= cap.skip_to - cap.skip_from;
 	memcpy(graph.cpu_rows[graph.next], rows, sizeof(rows));
 	memcpy(graph.counts[graph.next], counts, sizeof(counts));
 	graph.next = (graph.next + 1) % GRAPH_SAMPLES;
@@ -1731,13 +1759,17 @@ draw_capture_text(float scale, qhandle_t font)
 	R_SetScale(1.0f);
 }
 
-// the CPU's R_BeginFrame-to-submit line over the history (D3D12): light cyan
-#define GRAPH_SUBMIT	MakeColor(110, 210, 255, 255)
+/* The CPU's frame time over profiler 3-6's stack (Matt 11-15: dark green - amber read
+   as flow's orange or direct lighting's yellow; darker than indirect lighting's green).
+   The CPU key's "cpu work (sum)" is the same number, in the same colour. Profiler 2's
+   frame time graph keeps GRAPH_FRAME's amber. The CPU's recording of the frame
+   (R_BeginFrame to submit) is no longer drawn: the capture log still prints it. */
+#define GRAPH_CPU	MakeColor(30, 125, 45, 255)
 
 // what a key shows: per category, and the lines under them; [0] now (or held), [1] average, [2] worst
 typedef struct {
 	float cat[3][NUM_CATS];
-	float total[3], cpu[3], frame[3], submit[3];	// cpu: its own work; frame: frame to frame
+	float total[3], cpu[3], frame[3];	// cpu: its own work; frame: frame to frame
 	float gap[3];	// the GPU idle between frames, before this one
 	float cpu_rows[3][NUM_CPUROWS];
 	uint32_t counts[CPUPROF_COUNTER_COUNT];	// the shown frame's
@@ -1778,11 +1810,10 @@ key_numbers(char *buf, size_t size, const float *v, int columns)
 #define LEGEND_GAP			80	// profiler 5/6: the panel to its legend, past the scale labels
 
 // the GPU key's rows under the categories
-enum { KEYROW_TOTAL, KEYROW_CPU, KEYROW_SUBMIT, KEYROW_FRAME, KEYROW_GAP, KEYROW_SOUND, NUM_KEYROWS };
+enum { KEYROW_TOTAL, KEYROW_CPU, KEYROW_FRAME, KEYROW_GAP, KEYROW_SOUND, NUM_KEYROWS };
 static const char *const key_row_names[NUM_KEYROWS] = {
 	[KEYROW_TOTAL]  = "gpu frame (total)",
 	[KEYROW_CPU]    = "cpu frame time",
-	[KEYROW_SUBMIT] = "cpu recording it",
 	[KEYROW_FRAME]  = "frame to frame",
 	[KEYROW_GAP]    = "gpu idle",
 	[KEYROW_SOUND]  = "sound sim (own queue)",
@@ -1857,10 +1888,8 @@ panel_left(float u, int width_units)
 
 /* The key: a row a category, top of the stack first, its swatch in pixels and its
    name and numbers in the table's scale; the GPU frame's total; the CPU's frame time
-   (amber: its own work, the waits on the GPU, the swapchain, Reflex and the limiter
-   taken out), and on D3D12 its recording of the same frame the GPU numbers are of
-   (light cyan - the one to set against "gpu idle: cpu late"); frame to frame, the
-   pace either one sets; the ray traced sound's last run, beside the frame on its
+   (dark green: its own work, the waits on the GPU, the swapchain, Reflex and the
+   limiter taken out); frame to frame, the pace either one sets; the ray traced sound's last run, beside the frame on its
    own queue; and where in the frame's list "unaccounted" mostly is. */
 // the GPU's key; returns the first row under it
 static int
@@ -1869,7 +1898,6 @@ draw_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_v
 	const float u = 1.f / scale;
 	const int thick = max(1, (int)(0.5f * u));
 	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
-	const bool submit = k->submit[0] > 0.f || k->submit[1] > 0.f;
 	const double sound_now = result_ms(shown_results(), PROFILER_SOUND_TRACE);
 
 	R_SetScale(1.0f);
@@ -1877,9 +1905,7 @@ draw_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_v
 		draw_swatch(key_x, key_y + j * row + (int)u, u, NUM_CATS - 1 - j);
 	const int sw = max(3, (int)(7.f * u));
 	int y = key_y + (NUM_CATS + 1) * row + (int)(3.f * u);
-	R_DrawFill32(key_x, y, sw, thick, GRAPH_FRAME);
-	if (submit)
-		R_DrawFill32(key_x, y + row, sw, thick, GRAPH_SUBMIT);
+	R_DrawFill32(key_x, y, sw, thick, GRAPH_CPU);
 
 	R_SetScale(scale);
 	char buf[192];
@@ -1900,16 +1926,9 @@ draw_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_v
 	key_numbers(buf, sizeof(buf), k->total, k->columns);
 	graph_text(scale, num_x, y, white, buf, font);
 	y += row;
-	graph_text(scale, name_x, y, GRAPH_FRAME, key_row_names[KEYROW_CPU], font);
+	graph_text(scale, name_x, y, GRAPH_CPU, key_row_names[KEYROW_CPU], font);
 	key_numbers(buf, sizeof(buf), k->cpu, k->columns);
-	graph_text(scale, num_x, y, GRAPH_FRAME, buf, font);
-	if (submit)
-	{
-		y += row;
-		graph_text(scale, name_x, y, GRAPH_SUBMIT, key_row_names[KEYROW_SUBMIT], font);
-		key_numbers(buf, sizeof(buf), k->submit, k->columns);
-		graph_text(scale, num_x, y, GRAPH_SUBMIT, buf, font);
-	}
+	graph_text(scale, num_x, y, GRAPH_CPU, buf, font);
 	y += row;
 	graph_text(scale, name_x, y, grey, key_row_names[KEYROW_FRAME], font);
 	key_numbers(buf, sizeof(buf), k->frame, k->columns);
@@ -1968,15 +1987,20 @@ draw_key_footer(float scale, qhandle_t font, int x, int y, int row, const key_va
 static void
 key_gap(key_values_t *k, int n)
 {
+	int counted = 0;
 	for (int i = 0; i < n; i++)
 	{
-		const float g = graph.gap_ms[(graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES];
+		const int s = (graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		if (graph.shot[s])
+			continue;
+		const float g = graph.gap_ms[s];
 		k->gap[1] += g;
 		k->gap[2] = max(k->gap[2], g);
+		counted++;
 	}
 	if (n > 0)
 	{
-		k->gap[1] /= (float)n;
+		k->gap[1] /= (float)max(counted, 1);
 		k->gap[0] = graph.gap_ms[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES];
 	}
 	if (cap.hold)
@@ -1987,20 +2011,25 @@ key_gap(key_values_t *k, int n)
 static void
 key_cpu_rows(key_values_t *k, int n)
 {
+	int counted = 0;
 	for (int i = 0; i < n; i++)
 	{
-		const float *v = graph.cpu_rows[(graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES];
+		const int s = (graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		if (graph.shot[s])
+			continue;	// the capture's screenshot (graph.shot)
+		const float *v = graph.cpu_rows[s];
 		for (int r = 0; r < NUM_CPUROWS; r++)
 		{
 			k->cpu_rows[1][r] += v[r];
 			k->cpu_rows[2][r] = max(k->cpu_rows[2][r], v[r]);
 		}
+		counted++;
 	}
 	if (n > 0)
 	{
 		const int latest = (graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES;
 		for (int r = 0; r < NUM_CPUROWS; r++)
-			k->cpu_rows[1][r] /= (float)n;
+			k->cpu_rows[1][r] /= (float)max(counted, 1);
 		memcpy(k->cpu_rows[0], graph.cpu_rows[latest], sizeof(k->cpu_rows[0]));
 		memcpy(k->counts, graph.counts[latest], sizeof(k->counts));
 	}
@@ -2036,7 +2065,7 @@ draw_cpu_key(float scale, qhandle_t font, int key_x, int key_y, int row, const k
 			continue;
 		if (depth == 0 && r != CPUROW_VIEW && r != CPUROW_RENDER && most < 0.05f)
 			continue;
-		const uint32_t color = depth < 0 ? (r == CPUROW_TOTAL ? GRAPH_FRAME : grey) : (depth == 0 ? white : grey);
+		const uint32_t color = depth < 0 ? (r == CPUROW_TOTAL ? GRAPH_CPU : grey) : (depth == 0 ? white : grey);
 		graph_text(scale, key_x + (int)((float)(6 * max(depth, 0)) * u), y, color, cpurow_info[r].name, font);
 		key_numbers(buf, sizeof(buf), v, k->columns);
 		graph_text(scale, num_x, y, color, buf, font);
@@ -2050,9 +2079,9 @@ draw_cpu_key(float scale, qhandle_t font, int key_x, int key_y, int row, const k
 /* profiler 5 and 6 (Matt, 11-14: "profilers 3 and 4 with only the graphs, colors and
    labels for the colors"): the GPU key without its numbers - each category's colour
    and name, top of the stack first as in the key, then the lines over the stack:
-   the capture line, the CPU's frame time and, where it is drawn, its recording. */
+   the capture line and the CPU's frame time. */
 static void
-draw_legend(float scale, qhandle_t font, int x, int y, int row, bool submit)
+draw_legend(float scale, qhandle_t font, int x, int y, int row)
 {
 	const float u = 1.f / scale;
 	const int thick = max(1, (int)(0.5f * u));
@@ -2065,9 +2094,7 @@ draw_legend(float scale, qhandle_t font, int x, int y, int row, bool submit)
 	for (int j = 0; j < NUM_CATS; j++)
 		draw_swatch(x, y + j * row + (int)u, u, NUM_CATS - 1 - j);
 	R_DrawFill32(x, lines_y + mid, sw, thick, GRAPH_CAPTURE);
-	R_DrawFill32(x, lines_y + row + mid, sw, thick, GRAPH_FRAME);
-	if (submit)
-		R_DrawFill32(x, lines_y + 2 * row + mid, sw, thick, GRAPH_SUBMIT);
+	R_DrawFill32(x, lines_y + row + mid, sw, thick, GRAPH_CPU);
 
 	R_SetScale(scale);
 	for (int j = 0; j < NUM_CATS; j++)
@@ -2075,19 +2102,16 @@ draw_legend(float scale, qhandle_t font, int x, int y, int row, bool submit)
 	char buf[64];
 	Q_snprintf(buf, sizeof(buf), "%.0f fps (%.2f ms)", capture_threshold_fps(), 1000.f / capture_threshold_fps());
 	graph_text(scale, name_x, lines_y, white, buf, font);
-	graph_text(scale, name_x, lines_y + row, GRAPH_FRAME, key_row_names[KEYROW_CPU], font);
-	if (submit)
-		graph_text(scale, name_x, lines_y + 2 * row, GRAPH_SUBMIT, key_row_names[KEYROW_SUBMIT], font);
+	graph_text(scale, name_x, lines_y + row, GRAPH_CPU, key_row_names[KEYROW_CPU], font);
 	R_ClearColor();
 	R_SetScale(1.0f);
 }
 
 /* profiler 3 (Matt, 11-14): the GPU frame by category over the last few seconds, a
    stacked column a frame with the newest on the right, the capture line in white,
-   the CPU's frame time over it in amber (its own work, the waits taken out) and, on
-   D3D12, the CPU's recording of each frame in light cyan. Where the amber line
-   rises over the stack, the CPU is the limit; where "gpu idle" grows with the cyan
-   line, the GPU was waiting for the CPU to finish the frame. The key gives each category this frame
+   the CPU's frame time over it in dark green (its own work, the waits taken out).
+   Where the green line rises over the stack, the CPU is the limit; where "gpu idle"
+   grows, the GPU was waiting for the CPU to finish the frame. The key gives each category this frame
    (the held one while a capture holds), its average and its worst over the panel.
    profiler 5: the panel alone, its legend to the right (keys false). */
 static void
@@ -2109,27 +2133,25 @@ draw_cat_history(float scale, qhandle_t font, bool keys)
 	const int room = max(0, queue_max - queued - 5000);	// the keys' text: ~3000 characters
 	const int n = max(0, min(min(graph.count, w / cw), room / (NUM_CATS + 2)));
 
-	static float cpu[GRAPH_SAMPLES], submit[GRAPH_SAMPLES];
+	static float cpu[GRAPH_SAMPLES];
 	double span = 0.0;
 	key_values_t k;
 	memset(&k, 0, sizeof(k));
 	k.columns = 3;
-	int timed = 0, submits = 0;
+	int timed = 0, cpu_counted = 0;
 	for (int i = 0; i < n; i++)
 	{
 		const int s = (graph.next - n + i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
-		cpu[i] = graph.cpu_ms[s];
-		submit[i] = graph.submit_ms[s];
 		span += graph.frame_ms[s];
-		k.cpu[1] += cpu[i];
-		k.cpu[2] = max(k.cpu[2], cpu[i]);
-		k.frame[1] += graph.frame_ms[s];
-		k.frame[2] = max(k.frame[2], graph.frame_ms[s]);
-		if (submit[i] > 0.f)
+		// the capture's screenshot: a gap in the line, and in no key (graph.shot)
+		cpu[i] = graph.shot[s] ? 0.f : graph.cpu_ms[s];
+		if (!graph.shot[s])
 		{
-			submits++;
-			k.submit[1] += submit[i];
-			k.submit[2] = max(k.submit[2], submit[i]);
+			k.cpu[1] += cpu[i];
+			k.cpu[2] = max(k.cpu[2], cpu[i]);
+			k.frame[1] += graph.frame_ms[s];
+			k.frame[2] = max(k.frame[2], graph.frame_ms[s]);
+			cpu_counted++;
 		}
 		if (graph.gpu_ms[s] > 0.f)
 		{
@@ -2146,15 +2168,12 @@ draw_cat_history(float scale, qhandle_t font, bool keys)
 	}
 	if (n > 0)
 	{
-		k.cpu[1] /= (float)n;
-		k.frame[1] /= (float)n;
-		k.cpu[0] = cpu[n - 1];
+		k.cpu[1] /= (float)max(cpu_counted, 1);
+		k.frame[1] /= (float)max(cpu_counted, 1);
+		k.cpu[0] = graph.cpu_ms[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES];
 		k.frame[0] = graph.frame_ms[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES];
-		k.submit[0] = submit[n - 1];
 		memcpy(k.cat[0], graph.cat_ms[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES], sizeof(k.cat[0]));
 	}
-	if (submits)
-		k.submit[1] /= (float)submits;
 	if (timed)
 	{
 		for (int c = 0; c < NUM_CATS; c++)
@@ -2166,7 +2185,6 @@ draw_cat_history(float scale, qhandle_t font, bool keys)
 		memcpy(k.cat[0], cap.held_cat, sizeof(k.cat[0]));
 		k.cpu[0] = cap.worst_cpu;
 		k.frame[0] = cap.worst_frame;
-		k.submit[0] = cap.held_extras.cpu_submit_ms;
 	}
 	k.total[0] = cat_total(k.cat[0]);
 	key_cpu_rows(&k, n);
@@ -2180,14 +2198,15 @@ draw_cat_history(float scale, qhandle_t font, bool keys)
 	R_SetScale(1.0f);
 	graph_panel(left, box, w, h);
 	for (int i = 0; i < n; i++)
+		if (graph.shot[(graph.next - n + i + GRAPH_SAMPLES) % GRAPH_SAMPLES])
+			R_DrawFill32(left + w - (n - i) * cw, box, cw, h, MakeColor(255, 255, 255, 45));
+	for (int i = 0; i < n; i++)
 		draw_stack(left + w - (n - i) * cw, cw, box + h, h, vtop,
 			graph.cat_ms[(graph.next - n + i + GRAPH_SAMPLES) % GRAPH_SAMPLES], seg_gap, 0, graph.next - n + i);
 	draw_capture_line(left, box, w, h, thick, vtop);
 	if (n > 0)
 	{
-		graph_line(left, box, w, h, thick, cw, cpu, n, vtop, GRAPH_FRAME);
-		if (submits)
-			graph_line(left, box, w, h, thick, cw, submit, n, vtop, GRAPH_SUBMIT);
+		graph_line(left, box, w, h, thick, cw, cpu, n, vtop, GRAPH_CPU);
 	}
 
 	R_SetScale(scale);
@@ -2201,8 +2220,7 @@ draw_cat_history(float scale, qhandle_t font, bool keys)
 		Q_snprintf(buf, sizeof(buf), "the last %.1f s; white line %.0f fps (%.2f ms)",
 			span * 1e-3, capture_threshold_fps(), 1000.f / capture_threshold_fps());
 		graph_text(scale, left, top + row, grey, buf, font);
-		Q_snprintf(buf, sizeof(buf), "amber the cpu's own time%s", submits ? ", cyan its recording of the frame shown" : "");
-		graph_text(scale, left, top + 2 * row, grey, buf, font);
+		graph_text(scale, left, top + 2 * row, grey, "dark green the cpu's own time; a faint column is a capture's screenshot", font);
 	}
 
 	// the panel's scale, at its top and middle lines, to its right
@@ -2215,7 +2233,7 @@ draw_cat_history(float scale, qhandle_t font, bool keys)
 
 	if (!keys)
 	{
-		draw_legend(scale, font, left + w + (int)((float)LEGEND_GAP * u), box, row, submits > 0);
+		draw_legend(scale, font, left + w + (int)((float)LEGEND_GAP * u), box, row);
 		return;
 	}
 	const int gpu_end = draw_key(scale, font, left, key_y, row, &k);
@@ -2225,7 +2243,7 @@ draw_cat_history(float scale, qhandle_t font, bool keys)
 
 /* profiler 4 (Matt, 11-14): two stacked bars - this frame's GPU frame by category
    (the held one while a capture holds) and the average over profiler_samples
-   frames - each with the CPU's frame to frame on it as an amber tick, the capture
+   frames - each with the CPU's frame time on it as a dark green tick, the capture
    line across both, and the key to their right with both numbers.
    profiler 6: the bars alone, their legend to the right (keys false). */
 static void
@@ -2247,16 +2265,15 @@ draw_cat_bars(float scale, qhandle_t font, bool keys)
 	k.columns = 2;
 	const int want = max(1, cvar_profiler_samples ? cvar_profiler_samples->integer : 60);
 	const int n = min(graph.count, min(want, GRAPH_SAMPLES));
-	int timed = 0, submits = 0;
+	int timed = 0, cpu_counted = 0;
 	for (int i = 0; i < n; i++)
 	{
 		const int s = (graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
-		k.cpu[1] += graph.cpu_ms[s];
-		k.frame[1] += graph.frame_ms[s];
-		if (graph.submit_ms[s] > 0.f)
+		if (!graph.shot[s])
 		{
-			submits++;
-			k.submit[1] += graph.submit_ms[s];
+			k.cpu[1] += graph.cpu_ms[s];
+			k.frame[1] += graph.frame_ms[s];
+			cpu_counted++;
 		}
 		if (graph.gpu_ms[s] > 0.f)
 		{
@@ -2268,15 +2285,12 @@ draw_cat_bars(float scale, qhandle_t font, bool keys)
 	if (n > 0)
 	{
 		const int s = (graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES;
-		k.cpu[1] /= (float)n;
-		k.frame[1] /= (float)n;
+		k.cpu[1] /= (float)max(cpu_counted, 1);
+		k.frame[1] /= (float)max(cpu_counted, 1);
 		k.cpu[0] = graph.cpu_ms[s];
 		k.frame[0] = graph.frame_ms[s];
-		k.submit[0] = graph.submit_ms[s];
 		memcpy(k.cat[0], graph.cat_ms[s], sizeof(k.cat[0]));
 	}
-	if (submits)
-		k.submit[1] /= (float)submits;
 	if (timed)
 		for (int c = 0; c < NUM_CATS; c++)
 			k.cat[1][c] /= (float)timed;
@@ -2285,7 +2299,6 @@ draw_cat_bars(float scale, qhandle_t font, bool keys)
 		memcpy(k.cat[0], cap.held_cat, sizeof(k.cat[0]));
 		k.cpu[0] = cap.worst_cpu;
 		k.frame[0] = cap.worst_frame;
-		k.submit[0] = cap.held_extras.cpu_submit_ms;
 	}
 	k.total[0] = cat_total(k.cat[0]);
 	k.total[1] = cat_total(k.cat[1]);
@@ -2301,16 +2314,13 @@ draw_cat_bars(float scale, qhandle_t font, bool keys)
 	draw_stack(now_x, bar, bottom, h, vtop, k.cat[0], thick, stripe, 0);
 	draw_stack(avg_x, bar, bottom, h, vtop, k.cat[1], thick, stripe, 0);
 	draw_capture_line(left, box, w, h, thick, vtop);
-	// the CPU's frame time (amber) and its recording of this frame (cyan) on each bar, a little wider than it
+	// the CPU's frame time (dark green) on each bar, a little wider than it
 	const int over = (int)(4.f * u);
-	const float ticks[2][2] = { { k.cpu[0], k.submit[0] }, { k.cpu[1], k.submit[1] } };
-	const uint32_t tick_colors[2] = { GRAPH_FRAME, GRAPH_SUBMIT };
 	for (int b = 0; b < 2; b++)
-		for (int t = 0; t < 2; t++)
-			if (ticks[b][t] > 0.f)
-				R_DrawFill32((b ? avg_x : now_x) - over,
-					bottom - (int)(min(ticks[b][t] / vtop, 1.f) * (float)(h - thick)) - thick,
-					bar + 2 * over, thick, tick_colors[t]);
+		if (k.cpu[b] > 0.f)
+			R_DrawFill32((b ? avg_x : now_x) - over,
+				bottom - (int)(min(k.cpu[b] / vtop, 1.f) * (float)(h - thick)) - thick,
+				bar + 2 * over, thick, GRAPH_CPU);
 
 	R_SetScale(scale);
 	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
@@ -2335,7 +2345,7 @@ draw_cat_bars(float scale, qhandle_t font, bool keys)
 
 	if (!keys)
 	{
-		draw_legend(scale, font, left + w + (int)((float)LEGEND_GAP * u), box, row, k.submit[0] > 0.f || k.submit[1] > 0.f);
+		draw_legend(scale, font, left + w + (int)((float)LEGEND_GAP * u), box, row);
 		return;
 	}
 	const int gpu_end = draw_key(scale, font, key_x, key_y, row, &k);

@@ -198,6 +198,7 @@ static struct {
 
     ID3D12Resource      *light_buffer;      // LightBuffer
     ID3D12Resource      *instance_buffer;   // InstanceBuffer
+    ID3D12Resource      *blood_skin;        // cl_blood_skin's masks, BLOOD_SKIN_POOL_BYTES
     ID3D12Resource      *readback_buffer;   // ReadbackBuffer, written by the shaders
     ID3D12Resource      *tonemap_buffer;    // ToneMappingBuffer: the histogram, the curve
     ID3D12Resource      *zero_buffer;       // D3D12_ZERO_BUFFER_SIZE zeros, the source of buffer clears
@@ -214,6 +215,9 @@ static struct {
     ID3D12Resource      *model_scratch[D3D12_MAX_MODELS];  // their BLASes', until the commit
     int                 num_model_scratch;
     ID3D12Resource      *iqm_buffer;        // IqmMatrixBuffer: the skeletal models' bones
+    // BloodMove[MAX_BLOOD_SPHERES]: blood.c's droplets that only slid (move_blood);
+    // NULL = none made, and every moved droplet is sent whole after an epoch
+    ID3D12Resource      *blood_moves;
     // the last frame's blood regions' memcpy into the staging (pt_blood_stats)
     uint64_t            blood_copy_usec;
     // a frame's blood regions went nowhere (d3d12_world_take_blood_lost)
@@ -320,6 +324,8 @@ static const size_t staging_sizes[D3D12_NUM_WORLD_STAGING] = {
     [D3D12_WORLD_STAGING_LIGHTS]    = sizeof(LightBuffer),
     [D3D12_WORLD_STAGING_IQM]       = sizeof(IqmMatrixBuffer),
     [D3D12_WORLD_STAGING_READBACK]  = sizeof(ReadbackBuffer),
+    [D3D12_WORLD_STAGING_BLOOD_MOVES] = sizeof(BloodMove) * MAX_BLOOD_SPHERES,
+    [D3D12_WORLD_STAGING_BLOOD_SKIN] = BLOOD_SKIN_UPLOAD_MAX,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -1788,6 +1794,12 @@ bool d3d12_world_init(void)
     }
     w.iqm_buffer = d3d12_create_buffer(sizeof(IqmMatrixBuffer), D3D12_HEAP_TYPE_DEFAULT,
                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "IQM matrices");
+    w.blood_moves = d3d12_create_buffer(sizeof(BloodMove) * MAX_BLOOD_SPHERES, D3D12_HEAP_TYPE_DEFAULT,
+                                        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "blood moves");
+    // cl_blood_skin's masks (blood_skin.c), 8 MB: sent again from the CPU pool
+    w.blood_skin = d3d12_create_buffer(BLOOD_SKIN_POOL_BYTES, D3D12_HEAP_TYPE_DEFAULT,
+                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "blood skin masks");
+    vkpt_blood_skin_device_reset();
     {
         // vkpt_vertex_buffer_create's radiance cache. Without it the cache stays
         // off (the UBO's pt_sharc zeroed below) rather than the map failing.
@@ -1839,6 +1851,12 @@ bool d3d12_world_init(void)
                            sizeof(ToneMappingBuffer));
     d3d12_set_write_buffer(&w.vertex_buffer_set, IQM_MATRIX_BUFFER_BINDING_IDX, 0, w.iqm_buffer, 0,
                            sizeof(IqmMatrixBuffer));
+    if (w.blood_moves)
+        d3d12_set_write_buffer(&w.vertex_buffer_set, BLOOD_MOVE_BUFFER_BINDING_IDX, 0, w.blood_moves, 0,
+                               sizeof(BloodMove) * MAX_BLOOD_SPHERES);
+    if (w.blood_skin)
+        d3d12_set_write_buffer(&w.vertex_buffer_set, BLOOD_SKIN_BUFFER_BINDING_IDX, 0, w.blood_skin, 0,
+                               BLOOD_SKIN_POOL_BYTES);
     if (w.sharc[0]) {
         d3d12_set_write_buffer(&w.vertex_buffer_set, SHARC_KEY_BUFFER_BINDING_IDX, 0, w.sharc[0], 0, w.sharc_size[0]);
         d3d12_set_write_buffer(&w.vertex_buffer_set, SHARC_ACCUM_BUFFER_BINDING_IDX, 0, w.sharc[1], 0,
@@ -1951,6 +1969,8 @@ void d3d12_world_shutdown(void)
         D3D12_RELEASE(w.model_scratch[i]);
     w.num_model_scratch = 0;
     D3D12_RELEASE(w.iqm_buffer);
+    D3D12_RELEASE(w.blood_moves);
+    D3D12_RELEASE(w.blood_skin);
     for (int i = 0; i < 3; i++)
         D3D12_RELEASE(w.sharc[i]);
     D3D12_RELEASE(w.prims_instanced);
@@ -2613,6 +2633,28 @@ static bool upload_blood(ID3D12GraphicsCommandList4 *cmd, world_frame_t *fr, con
     return d3d12_record_blood_upload(cmd, &up);
 }
 
+/* The droplets that only slid this frame (blood.c's MOVED ON THE GPU): their records
+   through this slot's staging into w.blood_moves, then blood_move.comp moves each in
+   place in the instanced buffers - which must be UAV, or COMMON to be promoted. Not
+   applied, the device's copy is behind blood.c's shadow, so the next frame is an epoch. */
+static void move_blood(ID3D12GraphicsCommandList4 *cmd, world_frame_t *fr, const d3d12_world_blood_t *b,
+                       const d3d12_passes_t *p)
+{
+    if (!b->num_moves)
+        return;
+    if (!b->prim_count || !b->moves || !w.prims_instanced || !w.positions_instanced || !w.blood_moves ||
+        !fr->staging_map[D3D12_WORLD_STAGING_BLOOD_MOVES] || b->num_moves > MAX_BLOOD_SPHERES) {
+        w.blood_lost = true;
+        return;
+    }
+    const uint64_t size = (uint64_t)b->num_moves * sizeof(BloodMove);
+    memcpy(fr->staging_map[D3D12_WORLD_STAGING_BLOOD_MOVES], b->moves, (size_t)size);
+    ID3D12GraphicsCommandList4_CopyBufferRegion(cmd, w.blood_moves, 0, fr->staging[D3D12_WORLD_STAGING_BLOOD_MOVES],
+                                                0, size);
+    transition(cmd, w.blood_moves, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    d3d12_record_blood_move(p, b->num_moves);
+}
+
 uint64_t d3d12_world_blood_copy_usec(void)
 {
     return w.blood_copy_usec;
@@ -2630,12 +2672,18 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     w.last_drawn = false;
     // the player setup's model view draws with no map loaded (nothing below reads
     // the world buffer without it: no world instances, fog, sky or animation)
-    if (!w.initialized || (!w.world_buffer && !frame->no_world))
+    if (!w.initialized || (!w.world_buffer && !frame->no_world)) {
+        if (frame->blood_skin.num_copies)
+            vkpt_blood_skin_device_reset();     // its rows were not sent
         return false;
+    }
 
     update_display_image();
-    if (!ensure_images(&frame->extents))
+    if (!ensure_images(&frame->extents)) {
+        if (frame->blood_skin.num_copies)
+            vkpt_blood_skin_device_reset();
         return false;
+    }
     // TILE COMPACTION: the lists this view's header names, if it has them
     const bool tiles = frame->tile_header && ensure_tiles(frame->tile_header);
 
@@ -2683,10 +2731,32 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     if (iqm_size)
         ID3D12GraphicsCommandList4_CopyBufferRegion(cmd, w.iqm_buffer, 0, fr->staging[D3D12_WORLD_STAGING_IQM], 0,
                                                     iqm_size);
+    // cl_blood_skin: the masks' painted rows (vkpt_blood_skin_collect), through
+    // this slot's staging. Not sent, the pool is sent whole again.
+    const blood_skin_upload_t *skin = &frame->blood_skin;
+    bool skin_copied = false;
+    if (skin->num_copies) {
+        byte *staging = fr->staging_map[D3D12_WORLD_STAGING_BLOOD_SKIN];
+        if (!w.blood_skin || !staging || skin->bytes > BLOOD_SKIN_UPLOAD_MAX) {
+            vkpt_blood_skin_device_reset();
+        } else {
+            uint64_t at = 0;
+            for (int i = 0; i < skin->num_copies; i++) {
+                const blood_skin_copy_t *c = &skin->copies[i];
+                memcpy(staging + at, skin->texels + c->offset, c->size);
+                ID3D12GraphicsCommandList4_CopyBufferRegion(cmd, w.blood_skin, c->offset,
+                                                            fr->staging[D3D12_WORLD_STAGING_BLOOD_SKIN], at, c->size);
+                at += c->size;
+            }
+            skin_copied = true;
+        }
+    }
     d3d12_timer_mark(cmd, &timers, PROFILER_UPLOAD_LIGHTS, PROFILER_STOP);
     // promoted to COPY_DEST by the copies, which a buffer cannot leave by
     // promotion; they decay back to COMMON once the list is done. A buffer
     // nothing copied into stays COMMON and is promoted by the shaders' use.
+    if (skin_copied)
+        transition(cmd, w.blood_skin, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     if (lights_copied)
         transition(cmd, w.light_buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     transition(cmd, w.instance_buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -2775,16 +2845,20 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     const bool blood_wrote = upload_blood(cmd, fr, &frame->blood);
     if (blood_wrote)
         transition(cmd, w.prims_instanced, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    d3d12_timer_mark(cmd, &timers, PROFILER_BLOOD_UPLOAD, PROFILER_STOP);
-
-    // vkpt_instance_geometry: the animated models into the instanced buffers,
-    // the world's texture animation stepped. The positions decayed to COMMON
-    // since last frame (or the blood copies left them COPY_DEST); explicit, so
-    // the transition to a build input below has a state to leave from.
+    // The positions decayed to COMMON since last frame (or the blood copies left
+    // them COPY_DEST); explicit, so the transition to a build input below has a
+    // state to leave from.
     if (w.positions_instanced)
         transition(cmd, w.positions_instanced,
                    blood_wrote ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_COMMON,
                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    // the droplets that only slid, moved in place (pt_blood_gpu_move): in the
+    // blood upload's time, as what replaced their copies
+    move_blood(cmd, fr, &frame->blood, &p);
+    d3d12_timer_mark(cmd, &timers, PROFILER_BLOOD_UPLOAD, PROFILER_STOP);
+
+    // vkpt_instance_geometry: the animated models into the instanced buffers,
+    // the world's texture animation stepped.
     d3d12_timer_mark(cmd, &timers, PROFILER_INSTANCE_GEOMETRY, PROFILER_START);
     d3d12_record_instance_geometry(&p, w.prims_instanced ? frame->num_model_instances : 0,
                                    frame->animate_world && w.world_buffer ? ubo->num_static_primitives : 0);
@@ -2844,6 +2918,39 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     d3d12_as_barrier(cmd, &fr->tlas_pool);
     d3d12_timer_mark(cmd, &timers, D3D12_PROFILER_BVH_TLAS, PROFILER_STOP);
 
+    // vkpt_physical_sky_record_cmd_buffer, ahead of the primary rays: the
+    // envmap and the sun colour this frame's lighting reads. Ahead of Flow's
+    // passes too (11-15), as Vulkan records it first: flow_ambient.comp reads the
+    // sun colour as a constant buffer, which promoted it out of COMMON before the
+    // sky pass's clear (a copy) or a later slice's transition could take it
+    d3d12_timer_mark(cmd, &timers, PROFILER_UPDATE_ENVIRONMENT, PROFILER_START);
+    if (frame->sky_update && !frame->no_world) {
+        d3d12_sky_pass_t s = {
+            .cmd = cmd,
+            .enhanced_barriers = d3d.caps.enhanced_barriers,
+            .shadowmap_pso = w.sky_shadowmap_pso,
+            .shadowmap = w.sky_shadowmap,
+            .shadowmap_dsv = sky_dsv(),
+            .grid_vertices = w.sky_grid_vertices,
+            .grid_indices = w.sky_grid_indices,
+            .grid_index_count = w.sky_grid_index_count,
+            .sky_pso = frame->sky_space ? w.sky_space_pso : w.sky_pso,
+            .resolve_pso = w.sky_resolve_pso,
+            .begin = frame->sky_begin,
+            .resolve = frame->sky_resolve,
+            .row_count = frame->sky_row_count,
+            .sets = { &fr->ubo_set, &w.textures[odd], &w.vertex_buffer_set, &w.sky_set },
+            .sun_color_buffer = w.sun_color_buffer,
+            // the sums only (SKY_SUN_COLOR_SUMS_SIZE): the resolved colours stay
+            // readable while a sliced update is under way
+            .sun_color_size = offsetof(SunColorBuffer, sun_color),
+            .zero_buffer = w.zero_buffer,
+        };
+        memcpy(s.viewproj, frame->sky_viewproj, sizeof(s.viewproj));
+        d3d12_record_sky(&s);
+    }
+    d3d12_timer_mark(cmd, &timers, PROFILER_UPDATE_ENVIRONMENT, PROFILER_STOP);
+
     // NVIDIA Flow's passes (flow.c; Flow's simulation is ahead of this list): the
     // occupancy and the light sums, then the probes over this slot's TLAS
     {
@@ -2858,31 +2965,6 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     // decayed to COMMON since last frame; explicit, so the copy-out below has
     // a state to leave from
     transition(cmd, w.readback_buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    // vkpt_physical_sky_record_cmd_buffer, ahead of the primary rays: the
-    // envmap and the sun colour this frame's lighting reads
-    d3d12_timer_mark(cmd, &timers, PROFILER_UPDATE_ENVIRONMENT, PROFILER_START);
-    if (frame->sky_update && !frame->no_world) {
-        d3d12_sky_pass_t s = {
-            .cmd = cmd,
-            .enhanced_barriers = d3d.caps.enhanced_barriers,
-            .shadowmap_pso = w.sky_shadowmap_pso,
-            .shadowmap = w.sky_shadowmap,
-            .shadowmap_dsv = sky_dsv(),
-            .grid_vertices = w.sky_grid_vertices,
-            .grid_indices = w.sky_grid_indices,
-            .grid_index_count = w.sky_grid_index_count,
-            .sky_pso = frame->sky_space ? w.sky_space_pso : w.sky_pso,
-            .resolve_pso = w.sky_resolve_pso,
-            .sets = { &fr->ubo_set, &w.textures[odd], &w.vertex_buffer_set, &w.sky_set },
-            .sun_color_buffer = w.sun_color_buffer,
-            .sun_color_size = SUN_COLOR_SIZE,
-            .zero_buffer = w.zero_buffer,
-        };
-        memcpy(s.viewproj, frame->sky_viewproj, sizeof(s.viewproj));
-        d3d12_record_sky(&s);
-    }
-    d3d12_timer_mark(cmd, &timers, PROFILER_UPDATE_ENVIRONMENT, PROFILER_STOP);
 
     // the UBO's switches are vkpt's cvars (zeroed in pure photo mode, where
     // the shaders stand down)

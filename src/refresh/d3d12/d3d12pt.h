@@ -35,6 +35,7 @@ renderer ray query is the faster mode anyway (Vulkan measurements, 09-23).
 #include "refresh/refresh.h"
 #include "refresh/images.h"
 #include "refresh/models.h"
+#include "../vkpt/blood_skin.h"
 
 #define COBJMACROS
 #include <windows.h>
@@ -433,6 +434,8 @@ typedef struct {
     bool                zero_section;       // the device's copy is void: zero it, then copy
     uint32_t            num_regions;
     const d3d12_blood_region_t *regions;    // ascending, disjoint
+    uint32_t            num_moves;          // droplets the GPU moves in place (pt_blood_gpu_move)
+    const void          *moves;             // BloodMove[]
     const void          *prims, *positions; // VboPrimitive[], 9 floats a primitive
     uint32_t            capacity;           // the shadow copy's primitives
 } d3d12_world_blood_t;
@@ -515,9 +518,14 @@ typedef struct {
     uint32_t            dlss5_push[2][D3D12_DLSS5_PUSH_WORDS];
     bool                taa_folded;         // vkpt_taa_folded
     float               frame_time;         // seconds, for the eye adaptation
-    // the physical sky: render it before the primary rays (vkpt_physical_sky_needs_update),
-    // as physical_sky_space.comp, through terrain_shadowmap_viewproj
+    // the physical sky: render this frame's share of it before the primary rays
+    // (vkpt_physical_sky_work: the whole sky, or a slice of a sun drift's update), as
+    // physical_sky_space.comp, through the terrain shadow map's view as the update's
+    // first part drew it
     bool                sky_update;
+    bool                sky_begin;          // the shadow map drawn, the sun colour's sums cleared
+    bool                sky_resolve;        // the sums resolved into the sun and sky colours
+    uint32_t            sky_row_count;      // rows of the six faces', from the UBO's sky_first_row
     bool                sky_space;
     float               sky_viewproj[16];
     // the models: instance_geometry.comp's groups (vkpt's upload_info.num_instances);
@@ -539,6 +547,8 @@ typedef struct {
     d3d12_world_transparency_t tr;
     // the blood droplets (vkpt_blood_update)
     d3d12_world_blood_t blood;
+    // cl_blood_skin: the masks' painted rows (vkpt_blood_skin_collect)
+    blood_skin_upload_t blood_skin;
     // the fog (god_rays.c), vkpt_frame_prep_t's switches: all of it (god_rays_enabled, and
     // d3d12_world_fog_ready), the march (not god_rays_march_discarded), a ray per pixel
     // (photo mode's fog_accum_march), the froxel grid (run_froxel) and its light selection
@@ -612,6 +622,8 @@ enum {
     D3D12_WORLD_STAGING_LIGHTS,         // LightBuffer, written by the frame's CPU half
     D3D12_WORLD_STAGING_IQM,            // IqmMatrixBuffer
     D3D12_WORLD_STAGING_READBACK,       // ReadbackBuffer, as this slot's last frame left it
+    D3D12_WORLD_STAGING_BLOOD_MOVES,    // BloodMove[MAX_BLOOD_SPHERES], blood.c's moved droplets
+    D3D12_WORLD_STAGING_BLOOD_SKIN,     // BLOOD_SKIN_UPLOAD_MAX, cl_blood_skin's painted rows
     D3D12_NUM_WORLD_STAGING
 };
 

@@ -27,6 +27,7 @@ static VkDescriptorPool desc_pool_vertex_buffer;
 static VkPipeline       pipeline_instance_geometry;
 static VkPipeline       pipeline_animate_materials;
 static VkPipeline       pipeline_sharc_resolve;
+static VkPipeline       pipeline_blood_move;
 static VkPipelineLayout pipeline_layout_instance_geometry;
 
 model_vbo_t model_vertex_data[MAX_MODELS];
@@ -1891,6 +1892,18 @@ vkpt_vertex_buffer_create()
 			.descriptorCount = 1,
 			.binding = SHARC_RESOLVED_BUFFER_BINDING_IDX,
 			.stageFlags = VK_SHADER_STAGE_ALL,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = BLOOD_MOVE_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		},
+		{
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.binding = BLOOD_SKIN_BUFFER_BINDING_IDX,
+			.stageFlags = VK_SHADER_STAGE_ALL,
 		}
 	};
 
@@ -1958,6 +1971,17 @@ vkpt_vertex_buffer_create()
 	buffer_create(&qvk.buf_sharc_resolved, sizeof(float) * 4 * SHARC_RESOLVED_VEC4S * SHARC_CAPACITY,
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	// blood.c's moved droplets (pt_blood_gpu_move), 256 KB
+	buffer_create(&qvk.buf_blood_moves, sizeof(BloodMove) * MAX_BLOOD_SPHERES,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	// cl_blood_skin's masks (blood_skin.c), 8 MB; sent again from the CPU pool
+	buffer_create(&qvk.buf_blood_skin, BLOOD_SKIN_POOL_BYTES,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	vkpt_blood_skin_device_reset();
 
 	VkDescriptorPoolSize pool_sizes[] = {
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, LENGTH(vbo_layout_bindings) + MAX_MODELS + 128 },
@@ -2048,6 +2072,16 @@ vkpt_vertex_buffer_create()
 	buf_info.range = qvk.buf_sharc_resolved.size;
 	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
 
+	output_buf_write.dstBinding = BLOOD_MOVE_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_blood_moves.buffer;
+	buf_info.range = qvk.buf_blood_moves.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
+	output_buf_write.dstBinding = BLOOD_SKIN_BUFFER_BINDING_IDX;
+	buf_info.buffer = qvk.buf_blood_skin.buffer;
+	buf_info.range = qvk.buf_blood_skin.size;
+	vkUpdateDescriptorSets(qvk.device, 1, &output_buf_write, 0, NULL);
+
 	create_primbuf();
 	
 	memset(model_vertex_data, 0, sizeof(model_vertex_data));
@@ -2109,6 +2143,9 @@ vkpt_vertex_buffer_destroy()
 	buffer_destroy(&qvk.buf_sharc_keys);
 	buffer_destroy(&qvk.buf_sharc_accum);
 	buffer_destroy(&qvk.buf_sharc_resolved);
+	buffer_destroy(&qvk.buf_blood_moves);
+	buffer_destroy(&qvk.buf_blood_skin);
+	vkpt_blood_skin_destroy_vk();
 
 	Z_Free(qvk.iqm_matrices_shadow);
 	Z_Free(qvk.iqm_matrices_prev);
@@ -2237,14 +2274,20 @@ vkpt_vertex_buffer_create_pipelines()
 			.stage = SHADER_STAGE(QVK_MOD_SHARC_RESOLVE_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
 			.layout = pipeline_layout_instance_geometry
 		},
+		{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = SHADER_STAGE(QVK_MOD_BLOOD_MOVE_COMP, VK_SHADER_STAGE_COMPUTE_BIT),
+			.layout = pipeline_layout_instance_geometry
+		},
 	};
 
-	VkPipeline pipelines[3];
+	VkPipeline pipelines[4];
 	_VK(vkCreateComputePipelines(qvk.device, 0, LENGTH(compute_pipeline_info), compute_pipeline_info, 0, pipelines));
 
 	pipeline_instance_geometry = pipelines[0];
 	pipeline_animate_materials = pipelines[1];
 	pipeline_sharc_resolve = pipelines[2];
+	pipeline_blood_move = pipelines[3];
 
 	return VK_SUCCESS;
 }
@@ -2259,11 +2302,13 @@ vkpt_vertex_buffer_destroy_pipelines()
 	vkDestroyPipeline(qvk.device, pipeline_instance_geometry, NULL);
 	vkDestroyPipeline(qvk.device, pipeline_animate_materials, NULL);
 	vkDestroyPipeline(qvk.device, pipeline_sharc_resolve, NULL);
+	vkDestroyPipeline(qvk.device, pipeline_blood_move, NULL);
 	vkDestroyPipelineLayout(qvk.device, pipeline_layout_instance_geometry, NULL);
 
 	pipeline_instance_geometry = VK_NULL_HANDLE;
 	pipeline_animate_materials = VK_NULL_HANDLE;
 	pipeline_sharc_resolve = VK_NULL_HANDLE;
+	pipeline_blood_move = VK_NULL_HANDLE;
 	pipeline_layout_instance_geometry = VK_NULL_HANDLE;
 
 	return VK_SUCCESS;
@@ -2319,6 +2364,25 @@ vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, bool upd
 		0, NULL);
 
 	return VK_SUCCESS;
+}
+
+// blood.c's moved droplets, a workgroup each (blood_move.comp). The caller has the
+// records copied and visible, and puts the barrier after it.
+void
+vkpt_blood_move_dispatch(VkCommandBuffer cmd_buf, uint32_t num_moves)
+{
+	if (!num_moves)
+		return;
+
+	VkDescriptorSet desc_sets[] = {
+		qvk.desc_set_ubo,
+		qvk.desc_set_vertex_buffer
+	};
+	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_blood_move);
+	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
+		pipeline_layout_instance_geometry, 0, LENGTH(desc_sets), desc_sets, 0, 0);
+
+	vkCmdDispatch(cmd_buf, num_moves, 1, 1);
 }
 
 /* Radiance cache (pt_sharc, shader/sharc.h): zero every entry. Needed before the

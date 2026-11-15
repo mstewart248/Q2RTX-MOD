@@ -996,6 +996,7 @@ void R_RegisterFunctionsGL()
 	IMG_Unload = IMG_Unload_GL;
 	IMG_ReadPixels = IMG_ReadPixels_GL;
 	IMG_ReadPixelsHDR = NULL;
+	IMG_ReadPixelsTakesHDR = false;
 	MOD_LoadMD2 = MOD_LoadMD2_GL;
 	MOD_LoadMD3 = MOD_LoadMD3_GL;
     MOD_LoadIQM = NULL;
@@ -1003,4 +1004,5 @@ void R_RegisterFunctionsGL()
 	MOD_Reference = MOD_Reference_GL;
     // MOD_TraceMesh_RTX reads vkpt's maliasmesh_t; GL's has another layout
     MOD_TraceMesh = NULL;
+    MOD_BloodSkinSplat = NULL;
 }

@@ -48,6 +48,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "shader/global_ubo.h"
 #include "shader/global_textures.h"
 #include "shader/vertex_buffer.h"
+#include "blood_skin.h"
 
 #define LENGTH(a) ((sizeof (a)) / (sizeof(*(a))))
 
@@ -79,6 +80,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	SHADER_MODULE_DO(QVK_MOD_CRT_DOWNSAMPLE_COMP)                    \
 	SHADER_MODULE_DO(QVK_MOD_INSTANCE_GEOMETRY_COMP)                 \
 	SHADER_MODULE_DO(QVK_MOD_ANIMATE_MATERIALS_COMP)                 \
+	SHADER_MODULE_DO(QVK_MOD_BLOOD_MOVE_COMP)                        \
 	SHADER_MODULE_DO(QVK_MOD_ASVGF_GRADIENT_IMG_COMP)                \
 	SHADER_MODULE_DO(QVK_MOD_ASVGF_GRADIENT_ATROUS_COMP)             \
 	SHADER_MODULE_DO(QVK_MOD_ASVGF_GRADIENT_REPROJECT_COMP)          \
@@ -369,6 +371,10 @@ typedef struct QVK_s {
 	
 	BufferResource_t            buf_iqm_matrices;
 	BufferResource_t            buf_iqm_matrices_staging[MAX_FRAMES_IN_FLIGHT];
+	// BloodMove[MAX_BLOOD_SPHERES], blood_move.comp's; filled from blood.c's own staging
+	BufferResource_t            buf_blood_moves;
+	// cl_blood_skin's masks (blood_skin.c), BLOOD_SKIN_POOL_BYTES
+	BufferResource_t            buf_blood_skin;
 	float*                      iqm_matrices_shadow;
 	float*                      iqm_matrices_prev;
 
@@ -1074,6 +1080,13 @@ void vkpt_vertex_buffer_cleanup_bsp_mesh(bsp_mesh_t *bsp_mesh);
 VkResult vkpt_vertex_buffer_create_pipelines(void);
 VkResult vkpt_vertex_buffer_destroy_pipelines(void);
 VkResult vkpt_instance_geometry(VkCommandBuffer cmd_buf, uint32_t num_instances, bool update_world_animations);
+// blood_move.comp over the first num_moves of buf_blood_moves (blood.c's caller does the barriers)
+void vkpt_blood_move_dispatch(VkCommandBuffer cmd_buf, uint32_t num_moves);
+
+// cl_blood_skin: blood on monsters and items (blood_skin.c; the shared half in
+// blood_skin.h) - Vulkan's upload and its staging
+void vkpt_blood_skin_record(VkCommandBuffer cmd);
+void vkpt_blood_skin_destroy_vk(void);
 void vkpt_sharc_clear(VkCommandBuffer cmd_buf);
 void vkpt_sharc_resolve(VkCommandBuffer cmd_buf);
 void vkpt_vertex_buffer_invalidate_static_model_vbos(int material_index);
@@ -1420,6 +1433,10 @@ typedef struct {
 	bool zero_section;                  // the device's copy is void: zero the section, then copy
 	uint32_t num_regions;
 	const vkpt_blood_region_t* regions; // ascending and disjoint
+	// droplets that only slid, for blood_move.comp to move in place (pt_blood_gpu_move);
+	// never a region of the above. A backend that cannot apply them must invalidate.
+	uint32_t num_moves;
+	const BloodMove* moves;
 	const VboPrimitive* prims;          // the shadow copy, `capacity` primitives
 	const prim_positions_t* positions;
 	uint32_t capacity;
@@ -1717,7 +1734,7 @@ void MOD_Reference_RTX(model_t *model);
 // Ray against an alias model's real triangles - see inc/refresh/models.h.
 bool MOD_TraceMesh_RTX(const model_t *model, const mod_pose_t *pose,
                        const vec3_t start, const vec3_t end,
-                       float *out_frac, vec3_t out_normal);
+                       mod_trace_result_t *out);
 void MOD_TraceMeshShutdown_RTX(void);
 
 #endif  /*__VKPT_H__*/

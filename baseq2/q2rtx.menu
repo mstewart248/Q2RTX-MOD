@@ -128,7 +128,7 @@ begin environment
         // The sun's DIRECTION is continuous either way - shadows, god rays and
         // fog read it straight from the frame's uniforms. This is about the sky
         // PICTURE, which also carries the sun's colour and the sky-lit ambient.
-        pairs --status "how far the sun may move before the sky is re-rendered. Throttled is the old cadence, about a quarter of a degree - cheapest, and you can see it step. Smooth is a twentieth of the sun's disc, sub-pixel, and still only a couple of re-renders a second. Real time re-renders every frame and costs a lot of frame rate (sun_animate_step)"             "sky updates" sun_animate_step "throttled" 0.28 "smooth" 0.05 "real time" 0
+        pairs --status "how far the sun may move before the sky is re-rendered. Throttled is the old cadence, about a quarter of a degree - cheapest, and you can see it step. Smooth is a twentieth of the sun's disc, sub-pixel, and still only a couple of re-renders a second. Real time re-renders it continuously. Each re-render is spread over several frames (sky_update_slices), so none of them is a spike (sun_animate_step)"             "sky updates" sun_animate_step "throttled" 0.28 "smooth" 0.05 "real time" 0
         blank
     endif
     toggle --status "physical sky only (physical_sky_draw_clouds)" "physical sky clouds" physical_sky_draw_clouds

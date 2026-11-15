@@ -413,6 +413,10 @@ static struct {
 	int               film_chunks_used;
 	int               film_truncated;   // tiles not drawn whole: past BLOOD_FILM_TILE_TRIS, or out of chunks
 	bool              dirty_slot[BLOOD_MAX_REGIONS];  // regions rewritten this frame
+	bool              moved_slot[BLOOD_MAX_REGIONS];  // ... or only translated, for the GPU to move (region_move)
+	bool              gpu_move;         // this frame's pt_blood_gpu_move, as the droplet jobs read it
+	uint32_t          last_moves;       // moves sent, for pt_blood_stats
+	uint32_t          last_clears;      // stale tails zeroed on the GPU (ZEROS ON THE GPU)
 	uint32_t          last_prim_offset; // where the blood section sat last frame
 	bool              have_last_offset;
 	uint32_t          primbuf_generation; // which incarnation of the instanced buffers
@@ -437,6 +441,8 @@ static struct {
 	BufferResource_t  staging_pos[MAX_FRAMES_IN_FLIGHT];
 	VboPrimitive*     mapped_prim[MAX_FRAMES_IN_FLIGHT];
 	prim_positions_t* mapped_pos[MAX_FRAMES_IN_FLIGHT];
+	BufferResource_t  staging_moves[MAX_FRAMES_IN_FLIGHT];    // BloodMove[MAX_BLOOD_SPHERES]
+	BloodMove*        mapped_moves[MAX_FRAMES_IN_FLIGHT];
 	uint32_t          frame_index;
 	uint32_t          capacity;         // primitives; 0 = none made (and no Vulkan call)
 } blood_vk;
@@ -454,8 +460,10 @@ static void vk_staging_release(void)
 	{
 		if (blood_vk.mapped_prim[i]) { buffer_unmap(&blood_vk.staging_prim[i]); blood_vk.mapped_prim[i] = NULL; }
 		if (blood_vk.mapped_pos[i])  { buffer_unmap(&blood_vk.staging_pos[i]);  blood_vk.mapped_pos[i] = NULL; }
+		if (blood_vk.mapped_moves[i]) { buffer_unmap(&blood_vk.staging_moves[i]); blood_vk.mapped_moves[i] = NULL; }
 		buffer_destroy(&blood_vk.staging_prim[i]);
 		buffer_destroy(&blood_vk.staging_pos[i]);
+		buffer_destroy(&blood_vk.staging_moves[i]);
 	}
 	blood_vk.capacity = 0;
 }
@@ -479,6 +487,9 @@ static bool vk_staging_ensure(uint32_t capacity)
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS
 			|| buffer_create(&blood_vk.staging_pos[i], pos_size,
 			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS
+			|| buffer_create(&blood_vk.staging_moves[i], sizeof(BloodMove) * MAX_BLOOD_SPHERES,
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != VK_SUCCESS)
 		{
 			vk_staging_release();
@@ -487,6 +498,7 @@ static bool vk_staging_ensure(uint32_t capacity)
 
 		blood_vk.mapped_prim[i] = buffer_map(&blood_vk.staging_prim[i]);
 		blood_vk.mapped_pos[i] = buffer_map(&blood_vk.staging_pos[i]);
+		blood_vk.mapped_moves[i] = buffer_map(&blood_vk.staging_moves[i]);
 	}
 	return true;
 }
@@ -721,6 +733,30 @@ static cvar_t* cvar_pt_blood_spheres = NULL;
 static cvar_t* cvar_pt_blood_lod_px = NULL;
 static cvar_t* cvar_pt_blood_lod_budget = NULL;
 static cvar_t* cvar_pt_blood_upload_merge = NULL;
+static cvar_t* cvar_pt_blood_gpu_move = NULL;
+
+/*
+MOVED ON THE GPU (pt_blood_gpu_move, 11-15). A droplet that only slid keeps its
+mesh, translated (drop_job's THE SAME MESH, MOVED), and the device already holds
+that mesh - yet the whole of it went over again: 164 bytes a triangle, every
+frame, for every droplet in motion. Matt's 11-15 dip captures were blood uploads
+in 12 of 22, 29-64 MB and 2.4-6.8 ms on the GPU a frame plus 1.3-3.4 ms of the
+CPU writing the staging, with 200-2000 droplets moved and none made again.
+
+Now such a droplet is a BloodMove (vertex_buffer.h) - its offset, its cluster and
+motion vector, where its primitives sit - and blood_move.comp applies it to the
+device's copy. The shadow copy is still moved on the CPU as before, so it stays
+what the device holds: a region sent whole later is right either way.
+
+A move is only good against a device copy in step with the shadow's LAST frame,
+so it falls back to the region's upload whenever that is in doubt: an epoch, the
+region already owed an upload (dev_pending), its device span not its mesh, or the
+region outside this frame's section. Any backend that cannot carry the moves out
+must invalidate (an epoch), exactly as for the regions. 0 = every moved droplet
+uploaded whole, as before - the A/B.
+*/
+static BloodMove region_move[BLOOD_MAX_REGIONS];   // drop_job's, by region
+static BloodMove move_list[MAX_BLOOD_SPHERES];     // vkpt_blood_prepare's, to the backend
 static cvar_t* cvar_pt_blood_tess = NULL;
 static cvar_t* cvar_pt_blood_stats = NULL;
 static cvar_t* cvar_pt_blood_lod_near = NULL;
@@ -1255,6 +1291,9 @@ void vkpt_blood_init_cvars(void)
 	// upload regions this many primitives apart or closer go as one copy, the gap
 	// with them (see MERGING ACROSS A GAP in vkpt_blood_prepare); 0 = only touching ones
 	cvar_pt_blood_upload_merge = Cvar_Get("pt_blood_upload_merge", "128", 0);
+	// droplets that only moved are moved by the GPU in place, not sent again (see
+	// MOVED ON THE GPU); 0 = sent whole, as before
+	cvar_pt_blood_gpu_move = Cvar_Get("pt_blood_gpu_move", "1", 0);
 
 	// Print live droplet and triangle counts once a second, so the cost of a
 	// given firefight can be read off rather than guessed at.
@@ -2520,12 +2559,30 @@ static void drop_job(void* ctx, int index)
 			cache->prim_offset = prim_index;
 			cache->faces = (uint16_t)faces;
 
-			blood.dirty_slot[region] = true;
+			if (blood.gpu_move)
+			{
+				// the device moves its own copy (MOVED ON THE GPU); `first` is
+				// the section's, which vkpt_blood_prepare knows
+				BloodMove* m = region_move + region;
+				VectorCopy(move, m->move);
+				m->first = 0;
+				m->count = (uint32_t)faces;
+				m->cluster = moved_cluster;
+				m->mv_xy = mv_xy;
+				m->mv_z = mv_zw;
+				blood.moved_slot[region] = true;
+			}
+			else
+				blood.dirty_slot[region] = true;
 
 			j->result = 2;
 			return;
 		}
 	}
+
+	// What the region held before, for clearing what sticks out past the new
+	// mesh: everything beyond it is zero already (BLANK THE REST OF THE SLOT).
+	const uint32_t held = cache->faces;
 
 	cache->valid = true;
 	cache->blanked = false;
@@ -2839,10 +2896,19 @@ static void drop_job(void* ctx, int index)
 	//
 	// Only runs when the droplet was regenerated, so the cost sits with the
 	// work that was already happening rather than with every frame.
-	if ((uint32_t)faces < cap)
+	//
+	// ONLY AS FAR AS THE OLD MESH REACHED (11-15), as film_chunk_job does: past
+	// cache->faces a region's shadow is always zero - every rewrite clears what it
+	// no longer covers, a dead region is zeroed whole, and a new shadow is made
+	// zeroed. Blanking to the cap was most of a burst's cost: Matt's captures had
+	// ~1000 new droplets a frame at 80 faces in 320-face slots, so each wrote
+	// 13 KB of mesh and memset 39 KB of zeros over zeros - 40 ms of work over the
+	// renderer's threads, 5 ms of the frame.
+	const uint32_t blank_to = min(held, cap);
+	if ((uint32_t)faces < blank_to)
 	{
 		const uint32_t tail = prim_index + (uint32_t)faces;
-		const uint32_t count = cap - (uint32_t)faces;
+		const uint32_t count = blank_to - (uint32_t)faces;
 
 		memset(blood.prim_shadow + tail, 0, sizeof(VboPrimitive) * count);
 		memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * count);
@@ -2880,6 +2946,8 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	// with stable slots almost everything is untouched, so only the slots that
 	// changed need to travel.
 	memset(blood.dirty_slot, 0, sizeof(blood.dirty_slot));
+	memset(blood.moved_slot, 0, sizeof(blood.moved_slot));
+	blood.gpu_move = cvar_pt_blood_gpu_move && cvar_pt_blood_gpu_move->integer;
 
 	/*
 	A SHAPE CVAR CHANGED, SO EVERY CACHED SPLAT IS NOW WRONG.
@@ -3231,6 +3299,24 @@ void vkpt_blood_prepare(
 		|| prim_offset != blood.last_prim_offset
 		|| primbuf_gen != blood.primbuf_generation;
 
+	/* WHY EVERYTHING WENT AGAIN (11-15: Matt's capture 004, xhangar2's first seconds,
+	   had 1122 moved droplets sent whole - 69 MB, 7 ms of upload on the GPU - and its
+	   blood work was under the slow-frame line's 4 ms, so nothing said why). Not the
+	   section's first frame of a map: that one is always an epoch. */
+	if (epoch_reset && blood.have_last_offset && blood.sphere_count > 0)
+	{
+		char why[96];
+		if (blood.epoch_reset)
+			Q_strlcpy(why, "invalidated (new shadow buffers, or a backend could not send a frame)", sizeof(why));
+		else if (primbuf_gen != blood.primbuf_generation)
+			Q_strlcpy(why, "the instanced buffers were remade (grown)", sizeof(why));
+		else
+			Q_snprintf(why, sizeof(why), "the section moved, primitive %u -> %u", blood.last_prim_offset, prim_offset);
+		Con_SkipNotify(true);
+		Com_Printf("Blood: epoch - %s; all %d droplets sent again\n", why, blood.sphere_count);
+		Con_SkipNotify(false);
+	}
+
 	blood.epoch_reset = false;
 	blood.last_prim_offset = prim_offset;
 	blood.have_last_offset = true;
@@ -3263,15 +3349,44 @@ void vkpt_blood_prepare(
 		}
 	}
 
+	// The droplets that only moved, as moves where the device's copy allows
+	// (MOVED ON THE GPU) - and otherwise owed their region's upload, below.
+	uint32_t num_moves = 0;
+	for (uint32_t i = 0; i < BLOOD_MAX_REGIONS; i++)
+	{
+		if (!blood.moved_slot[i])
+			continue;
+
+		blood_cache_entry_t* c = blood_cache + i;
+		if (epoch_reset || i >= slot_limit || c->dev_pending || c->dev_span != c->faces
+			|| region_move[i].count != c->faces || num_moves >= MAX_BLOOD_SPHERES)
+		{
+			c->dev_pending = true;
+			blood.moved_slot[i] = false;    // sent whole below, not moved
+			continue;
+		}
+
+		BloodMove* m = move_list + num_moves++;
+		*m = region_move[i];
+		m->first = prim_offset + region_offset((int)i);
+	}
+
 	// One region per dirty slot. File scope rather than stack: 4096 slots is
 	// 48 KB of regions.
 	static vkpt_blood_region_t regions[BLOOD_MAX_REGIONS];
 	uint32_t num_regions = 0;
 	size_t up_bytes = 0;
+	// a slot the GPU moves since the last region: no merging across it (below)
+	bool gap_has_move = false;
+	uint32_t num_clears = 0;
+	const bool gpu_clear = blood.gpu_move && !epoch_reset;
 
 	for (uint32_t i = 0; i < slot_limit; i++)
 	{
 		blood_cache_entry_t* c = blood_cache + i;
+
+		if (blood.moved_slot[i])
+			gap_has_move = true;
 
 		if (!c->dev_pending)
 			continue;
@@ -3282,13 +3397,38 @@ void vkpt_blood_prepare(
 		uint32_t n = max((uint32_t)c->faces, (uint32_t)c->dev_span);
 		n = min(n, region_cap((int)i));
 
+		const uint32_t lo = region_offset((int)i);
+
+		/*
+		ZEROS ON THE GPU (pt_blood_gpu_move, 11-15). The part past the new mesh is
+		zeros in the shadow, and sending them was most of a burst's upload: a new
+		droplet of 80 faces in a slot whose last puddle had 256 sent 42 KB, 13 of it
+		mesh - Matt's 1000-droplet frames were 60-81 MB, 5.5 ms of copy into the
+		staging. Now that part is a clear record beside the moves (BLOOD_MOVE_CLEAR,
+		blood_move.comp), and a region that went (faces 0) is a clear alone.
+
+		Ordered as the moves are: the copies first, then the dispatch. A copy that
+		merges across the cleared part (below) writes the shadow's zeros there
+		first, and the clear zeros again - the same bytes either way, so merging
+		need not stop at one, unlike at a move.
+		*/
+		const uint32_t real = min((uint32_t)c->faces, n);
+		if (gpu_clear && n > real && num_moves < MAX_BLOOD_SPHERES)
+		{
+			BloodMove* m = move_list + num_moves++;
+			memset(m, 0, sizeof(*m));
+			m->first = prim_offset + lo + real;
+			m->count = n - real;
+			m->mv_z = BLOOD_MOVE_CLEAR;
+			num_clears++;
+			n = real;
+		}
+
 		c->dev_pending = false;
 		c->dev_span = c->faces;
 
 		if (n == 0)
 			continue;
-
-		const uint32_t lo = region_offset((int)i);
 
 		/*
 		MERGING ACROSS A GAP (11-14). Neighbouring slots that both need their whole
@@ -3310,7 +3450,12 @@ void vkpt_blood_prepare(
 		vkpt_blood_region_t* last = num_regions ? &regions[num_regions - 1] : NULL;
 		const uint32_t last_end = last ? last->src + last->count : 0;
 
-		if (last && lo >= last_end && lo - last_end <= merge_gap)
+		// NOT ACROSS A MOVED SLOT (MOVED ON THE GPU): the shadow there is already
+		// moved, and blood_move.comp then adds the move again on the device.
+		const bool may_merge = !gap_has_move;
+		gap_has_move = false;
+
+		if (last && may_merge && lo >= last_end && lo - last_end <= merge_gap)
 		{
 			up_bytes += (size_t)(lo - last_end) * (sizeof(VboPrimitive) + sizeof(prim_positions_t));
 			last->count = lo + n - last->src;
@@ -3324,7 +3469,11 @@ void vkpt_blood_prepare(
 		up_bytes += (size_t)n * (sizeof(VboPrimitive) + sizeof(prim_positions_t));
 	}
 
+	up_bytes += (size_t)num_moves * sizeof(BloodMove);
+
 	blood.last_regions = num_regions;
+	blood.last_moves = num_moves - num_clears;
+	blood.last_clears = num_clears;
 	blood.last_epoch = epoch_reset;
 	blood.last_up_bytes = up_bytes;
 
@@ -3334,10 +3483,11 @@ void vkpt_blood_prepare(
 	CPUPROF_COUNT_SET(BLOOD_REBUILT, max(0, blood.sphere_count - blood.cache_hits - blood.cache_moves));
 	CPUPROF_COUNT_SET(BLOOD_COPIES, num_regions);
 	CPUPROF_COUNT_SET(BLOOD_UP_KB, (up_bytes + 1023) / 1024);
+	CPUPROF_COUNT_SET(BLOOD_GPU_MOVES, num_moves - num_clears);
 
-	// The fill and the copies are the only writes this section gets - see BLAS
-	// REUSE. No fill and no region means the device holds what it held.
-	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0);
+	// The fill, the copies and the moves are the only writes this section gets -
+	// see BLAS REUSE. None of them means the device holds what it held.
+	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0 || num_moves > 0);
 
 	/* A SLOW BLOOD FRAME SAYS WHERE (11-14): the profiler's "blood meshes" is this
 	   whole function; over 4 ms, its parts go to the log beside the PROFCAPTURE
@@ -3358,13 +3508,13 @@ void vkpt_blood_prepare(
 					js->by_caller, js->count, js->wake_us * 1e-3, js->tail_us * 1e-3);
 			Con_SkipNotify(true);
 			Com_Printf("Blood: slow frame %.1f ms - templates %.1f%s, lods %.1f, buffers %.1f, close-ups %.1f, "
-				"meshes %.1f (%d droplets: %d moved, %d rebuilt; %d film tiles), regions %.1f (%u, %.1f MB)%s%s\n",
+				"meshes %.1f (%d droplets: %d moved, %d rebuilt; %d film tiles), regions %.1f (%u + %u moves + %u clears, %.1f MB)%s%s\n",
 				total, (double)(lods_t0 - prep_t0) * 1e-3, had_templates ? "" : " (made)",
 				(double)(buffers_t0 - lods_t0) * 1e-3, (double)(closeups_t0 - buffers_t0) * 1e-3,
 				(double)(closeups_t1 - closeups_t0) * 1e-3, (double)blood.last_gen_usec * 1e-3,
 				blood.sphere_count, blood.cache_moves,
 				max(0, blood.sphere_count - blood.cache_hits - blood.cache_moves), blood.film_tiles,
-				(double)(done - (closeups_t1 + blood.last_gen_usec)) * 1e-3, num_regions,
+				(double)(done - (closeups_t1 + blood.last_gen_usec)) * 1e-3, num_regions, num_moves - num_clears, num_clears,
 				(double)up_bytes / (1024.0 * 1024.0), epoch_reset ? ", epoch reset" : "", jobs);
 			Con_SkipNotify(false);
 		}
@@ -3376,6 +3526,8 @@ void vkpt_blood_prepare(
 	frame->zero_section = epoch_reset;
 	frame->num_regions = num_regions;
 	frame->regions = regions;
+	frame->num_moves = num_moves;
+	frame->moves = move_list;
 	frame->prims = blood.prim_shadow;
 	frame->positions = blood.pos_shadow;
 	frame->capacity = blood.max_prims;
@@ -3421,12 +3573,12 @@ void vkpt_blood_print_stats(uint64_t copy_usec)
 		char reuse[64] = "";
 		if (blood_blas.builds || blood_blas.reuses)
 			Q_snprintf(reuse, sizeof(reuse), ", blas %d built / %d reused", blood_blas.builds, blood_blas.reuses);
-		Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions%s%s\n",
+		Com_Printf("blood gpu-side: %d droplets (%d splats, %d cached, %d moved), %d tris (%.0f avg), gen %.2f ms + copy %.2f ms%s, %.2f MB in %d regions + %u moves + %u clears%s%s\n",
 			blood.sphere_count, blood.splat_count, blood.cache_hits, blood.cache_moves, blood.prim_count,
 			blood.sphere_count ? (float)blood.prim_count / blood.sphere_count : 0.f,
 			blood.last_gen_usec / 1000.f, copy_usec / 1000.f, blood.last_regions == 0 ? " (skipped)" : "",
 			(float)blood.last_up_bytes / (1024.f * 1024.f),
-			blood.last_regions, blood.last_epoch ? " EPOCH" : "", reuse);
+			blood.last_regions, blood.last_moves, blood.last_clears, blood.last_epoch ? " EPOCH" : "", reuse);
 		if (blood.closeup_up || blood.closeup_short)
 			Com_Printf("blood close-up (pt_blood_lod_px %g): %d droplets drawn finer, %d of them in the %d-region pool, %d short of pool or budget\n",
 				cvar_pt_blood_lod_px->value, blood.closeup_up, blood.closeup_pool, blood.ultra_count, blood.closeup_short);
@@ -3687,6 +3839,84 @@ void vkpt_blood_update(
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | shader_read_stages,
 			0, 0, NULL, 2, barriers, 0, NULL);
+	}
+
+	/*
+	THE MOVES (MOVED ON THE GPU): the records through this frame's staging, then
+	blood_move.comp adds each one's offset to its droplet's corners in place. Its
+	regions are none of the copies' (vkpt_blood_prepare), so only last frame's use
+	of the section and the records' copy come before it: the barrier takes the
+	BLAS build's and the shaders' reads and the transfers, and gives the dispatch
+	the records and the section. After it, the build and the shaders read what it
+	wrote, as after the copies.
+	*/
+	const uint32_t num_moves = frame.num_moves;
+	if (num_moves && blood_vk.mapped_moves[blood_vk.frame_index] && qvk.buf_blood_moves.buffer)
+	{
+		memcpy(blood_vk.mapped_moves[blood_vk.frame_index], frame.moves, sizeof(BloodMove) * num_moves);
+		const VkBufferCopy move_copy = { 0, 0, sizeof(BloodMove) * num_moves };
+		vkCmdCopyBuffer(cmd_buf, blood_vk.staging_moves[blood_vk.frame_index].buffer,
+			qvk.buf_blood_moves.buffer, 1, &move_copy);
+
+		const VkDeviceSize sec_prim_offset = (VkDeviceSize)prim_offset * sizeof(VboPrimitive);
+		const VkDeviceSize sec_prim_size = (VkDeviceSize)prim_count * sizeof(VboPrimitive);
+		const VkDeviceSize sec_pos_offset = (VkDeviceSize)prim_offset * sizeof(prim_positions_t);
+		const VkDeviceSize sec_pos_size = (VkDeviceSize)prim_count * sizeof(prim_positions_t);
+
+		VkBufferMemoryBarrier before[3] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.buffer = qvk.buf_blood_moves.buffer,
+				.offset = 0,
+				.size = move_copy.size,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.buffer = qvk.buf_primitive_instanced.buffer,
+				.offset = sec_prim_offset,
+				.size = sec_prim_size,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.buffer = qvk.buf_positions_instanced.buffer,
+				.offset = sec_pos_offset,
+				.size = sec_pos_size,
+			}
+		};
+		vkCmdPipelineBarrier(cmd_buf,
+			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | shader_read_stages,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 0, NULL, 3, before, 0, NULL);
+
+		vkpt_blood_move_dispatch(cmd_buf, num_moves);
+
+		VkBufferMemoryBarrier after[2] = { before[1], before[2] };
+		for (int i = 0; i < 2; i++)
+		{
+			after[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			after[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		}
+		vkCmdPipelineBarrier(cmd_buf,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | shader_read_stages,
+			0, 0, NULL, 2, after, 0, NULL);
+	}
+	else if (num_moves)
+	{
+		// no staging for them: the section starts afresh next frame
+		vkpt_blood_invalidate();
 	}
 
 	vkpt_blood_print_stats(copy_usec);

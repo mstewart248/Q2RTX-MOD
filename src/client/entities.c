@@ -576,6 +576,7 @@ static void CL_AddPacketEntities(void)
     autoanim = 2 * cl.time / 1000;
 	
     memset(&ent, 0, sizeof(ent));
+    cl.numBloodBodies = 0;
 
     for (pnum = 0; pnum < cl.frame.numEntities; pnum++) {
         i = (cl.frame.firstEntity + pnum) & PARSE_ENTITIES_MASK;
@@ -583,6 +584,7 @@ static void CL_AddPacketEntities(void)
 
         cent = &cl_entities[s1->number];
         ent.id = cent->id + RESERVED_ENTITIY_COUNT;
+        ent.blood_key = 0;  // only the main model's add below sets it
 
         // (ent) is memset once before this loop, not per entity, so anything
         // only some entity kinds assign leaks into every later entity of the
@@ -955,9 +957,14 @@ static void CL_AddPacketEntities(void)
 			ent.flags |= renderfx;
 		}
 
+        // cl_blood_skin: the main model's key into the renderer's blood masks,
+        // and the body blood can land on (effects.c)
+        CL_BloodNoteBody(cent, &ent, effects, renderfx, s1->number == cl.frame.clientNum + 1);
+
         // add to refresh list
         if (!(flow_bfg & CL_FLOW_HIDE))
             V_AddEntity(&ent);
+        ent.blood_key = 0;  // not the linked models, shells and the rest
 
 		// add dlights for flares
 		model_t* model;

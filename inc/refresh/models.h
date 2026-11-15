@@ -245,10 +245,44 @@ typedef struct {
     int     frame;
 } mod_pose_t;
 
+// What a hit was. tested is set either way: false means the segment missed the
+// pose's bounds and no triangle was looked at (callers budget only the tested).
+typedef struct {
+    float   frac;           // along start -> end
+    vec3_t  normal;         // world space, interpolated
+    // cl_blood_skin (11-15): where on the SKIN it landed, for painting blood there
+    int     mesh;           // index into the model's meshes
+    vec2_t  st;             // texture coordinate at the hit
+    float   st_per_unit;    // texture-space distance per world unit, at the hit
+    bool    tested;
+} mod_trace_result_t;
+
 typedef bool (*mod_trace_mesh_t)(const model_t *model, const mod_pose_t *pose,
                                  const vec3_t start, const vec3_t end,
-                                 float *out_frac, vec3_t out_normal);
+                                 mod_trace_result_t *out);
 extern mod_trace_mesh_t MOD_TraceMesh;
+
+/*
+BLOOD ON BODIES (cl_blood_skin, 11-15): a droplet that hits a monster, a corpse or
+an item paints a splat into a small mask in that model's texture space, kept per
+entity and mesh by the renderer (vkpt/blood_skin.c) and blended over the skin by
+the material shader - so it follows the animation for nothing. The key is the
+entity's entity_t.blood_key; a different model under the same key (a monster
+gibbed into its head) starts the key afresh. NULL where the renderer has none.
+*/
+typedef struct {
+    int         key;        // entity_t.blood_key of the body (entity number + 1)
+    qhandle_t   model;      // the model it landed on
+    int         mesh;       // mod_trace_result_t.mesh
+    vec2_t      st;         // the centre, in texture space
+    float       radius;     // in texture space
+    float       strength;   // 0..1 at the centre
+    int         color;      // as a particle's: palette index, or -1 for rgba
+    color_t     rgba;
+} mod_blood_splat_t;
+
+typedef void (*mod_blood_skin_splat_t)(const mod_blood_splat_t *splat);
+extern mod_blood_skin_splat_t MOD_BloodSkinSplat;
 
 struct dmd2header_s;
 int MOD_ValidateMD2(struct dmd2header_s *header, size_t length);

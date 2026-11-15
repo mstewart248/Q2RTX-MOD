@@ -1353,9 +1353,10 @@ void d3d12_frontend_finish_frame(bool drawn)
     if (frame_prep_valid)
         vkpt_finish_frame(&frame_prep);
     frame_prep_valid = false;
-    // vkpt_physical_sky_record_cmd_buffer's last word, once the sky is recorded
+    // vkpt_physical_sky_record_cmd_buffer's last word, once the sky is recorded: the
+    // update (or this slice of it) is done
     if (drawn && frame_sky_update)
-        vkpt_physical_sky_set_needs_update(false);
+        vkpt_physical_sky_work_done();
     frame_sky_update = false;
     // a batch nothing baked: the bake starts again rather than leave a hole
     if (!drawn && frame_took_bake)
@@ -1485,10 +1486,14 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     frame->blood.zero_section = blood.zero_section;
     frame->blood.num_regions = blood.num_regions;
     frame->blood.regions = (const d3d12_blood_region_t *)blood.regions;
+    frame->blood.num_moves = blood.num_moves;
+    frame->blood.moves = blood.moves;
     frame->blood.prims = blood.prims;
     frame->blood.positions = blood.positions;
     frame->blood.capacity = blood.capacity;
     vkpt_blood_print_stats(d3d12_world_blood_copy_usec());  // pt_blood_stats (its copy is last frame's)
+    // cl_blood_skin: the masks' painted rows, copied by d3d12_world_render
+    vkpt_blood_skin_collect(&frame->blood_skin);
 
     // vkpt_pt_create_all_dynamic's BLASes, laid out in this frame slot's memory -
     // then added to the instance list after the static instances, as
@@ -1631,11 +1636,18 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     frame->frame_time = prep->frame_time <= 0.f ? prep->frame_wallclock_time : prep->frame_time;
 
     // R_RenderFrame_RTX records the sky in every frame with a world, when
-    // vkpt_physical_sky_update_ubo (in vkpt_prepare_frame) or a cvar asked; the
+    // vkpt_physical_sky_update_ubo (in vkpt_prepare_frame) planned some: the whole sky
+    // when a cvar or a jump asked, a slice a frame of a sun drift's update; the
     // request stands through the model view's frames (ENVIRONMENT_NONE)
-    frame->sky_update = frame_sky_update = prep->render_world && vkpt_physical_sky_needs_update();
+    {
+        const vkpt_sky_work_t *sky = vkpt_physical_sky_work();
+        frame->sky_update = frame_sky_update = prep->render_world && sky->render;
+        frame->sky_begin = sky->begin;
+        frame->sky_resolve = sky->resolve;
+        frame->sky_row_count = (uint32_t)sky->row_count;
+        memcpy(frame->sky_viewproj, sky->viewproj, sizeof(frame->sky_viewproj));
+    }
     frame->sky_space = vkpt_physical_sky_space_enabled();
-    memcpy(frame->sky_viewproj, terrain_shadowmap_viewproj, sizeof(frame->sky_viewproj));
 
     // the fog: R_RenderFrame_RTX's switches, vkpt_shadow_map_render's arguments and
     // shadow_map.c's instances, and a batch of the sky exposure bake for the grid
@@ -1748,6 +1760,7 @@ void d3d12_frontend_register_functions(void)
     MOD_LoadMD5 = MOD_LoadMD5_RTX;
     MOD_Reference = MOD_Reference_RTX;
     MOD_TraceMesh = MOD_TraceMesh_RTX;
+    MOD_BloodSkinSplat = vkpt_blood_skin_splat;   // vkpt/blood_skin.c, shared
     // R_FlowEmit: explosions, rockets, the BFG and the railgun into Flow (nothing
     // until flow.c has a grid)
     vkpt_flow_register();

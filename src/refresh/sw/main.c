@@ -1122,10 +1122,12 @@ void R_RegisterFunctionsSW(void)
     IMG_Unload = IMG_Unload_SW;
     IMG_ReadPixels = IMG_ReadPixels_SW;
     IMG_ReadPixelsHDR = NULL;
+    IMG_ReadPixelsTakesHDR = false;
     MOD_LoadMD2 = MOD_LoadMD2_SW;
     MOD_LoadMD3 = MOD_LoadMD3_SW;
     MOD_LoadIQM = NULL;
     MOD_LoadMD5 = NULL;
     MOD_Reference = MOD_Reference_SW;
     MOD_TraceMesh = NULL;
+    MOD_BloodSkinSplat = NULL;
 }

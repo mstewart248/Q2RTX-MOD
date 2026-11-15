@@ -21,6 +21,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "system/system.h"
 #include "../../client/client.h"
 #include <time.h>
+#include <stddef.h>     // offsetof
+#include <assert.h>     // static_assert: MSVC has it without, glibc needs the header
 
 #include <SDL_joystick.h>
 #include <SDL_gamecontroller.h>
@@ -270,6 +272,36 @@ static cvar_t *sun_animate_step;
 static float rendered_sun_elevation = 0.f;
 static float rendered_sun_azimuth = 0.f;
 static bool  have_rendered_sun_angles = false;
+
+/* THE SUN'S DRIFT RE-RENDERS THE SKY A SLICE A FRAME (Matt 11-15: demo2's
+   "frame setup" spikes, every second or half a second through the whole demo).
+   waste2 runs a live time of day (maps/waste2.cfg, sky_map_sun_animate 1), so the
+   angle rule above re-rendered the whole cube every 0.72 s - one frame of 4.4 ms
+   UPDATE_ENVIRONMENT at 4K on D3D12, the frame setup row 1.1 -> 5.6 ms.
+
+   A drift step is tiny (sun_animate_step, a twentieth of the sun's disc), so the
+   cube need not change all at once: it is re-rendered in sky_update_slices parts,
+   one a frame, rows of the six faces one after another (sky_first_row in the
+   UBO, physical_sky.comp). The terrain shadow map and the sun colour's sums are
+   cleared with the first part; the sums are resolved into the sun and sky colours
+   the lighting reads only after the last, so the lighting keeps the last whole
+   sky's colours until the new one is complete. Clouds do not move with time, so
+   rows a few frames apart join without a seam; the sun moves 0.0009 degrees a
+   frame at sun_animate 1.
+
+   Everything else - a map's first sky, a menu change, a preset, new pipelines,
+   a jump of a degree or more - still renders the whole sky in one frame, at
+   once, and cancels a sliced update under way: those are changes you can see.
+   sky_update_slices 1 is the old behaviour, every update whole. */
+#define SKY_ROWS            (6 * 1024)      // the six faces' rows, one after another
+#define SKY_ROW_GROUP       16              // physical_sky.comp's group height
+#define SKY_SLICE_MAX_JUMP  1.f             // degrees: a sun that moved further is re-rendered whole
+static cvar_t *sky_update_slices;
+static bool  skyDriftStep = false;          // the angle rule's request, which may be sliced
+static int   sky_slice_next = -1;           // the next part of a sliced update under way, -1 = none
+static int   sky_slice_count = 0;           // ... of this many
+static float sky_slice_viewproj[16];        // the terrain shadow map's, as its first part drew it
+static vkpt_sky_work_t sky_work;            // this frame's, planned in vkpt_physical_sky_update_ubo
 
 // Angular distance between two (elevation, azimuth) pairs, in degrees. The
 // spherical law of cosines, so it stays correct through the azimuth flip the
@@ -786,8 +818,10 @@ reset_sun_color_buffer(VkCommandBuffer cmd_buf)
 		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
 	);
 
+	// the sums only: the resolved colours after them stay readable while a
+	// sliced update is under way (sky_update_slices)
 	vkCmdFillBuffer(cmd_buf, qvk.buf_sun_color.buffer,
-		0, VK_WHOLE_SIZE, 0);
+		0, SKY_SUN_COLOR_SUMS_SIZE, 0);
 
 	BUFFER_BARRIER(cmd_buf,
 		.buffer = qvk.buf_sun_color.buffer,
@@ -801,6 +835,76 @@ reset_sun_color_buffer(VkCommandBuffer cmd_buf)
 bool vkpt_physical_sky_needs_update()
 {
 	return skyNeedsUpdate;
+}
+
+extern float terrain_shadowmap_viewproj[16];
+
+static_assert(offsetof(SunColorBuffer, sun_color) == SKY_SUN_COLOR_SUMS_SIZE,
+	"SKY_SUN_COLOR_SUMS_SIZE is SunColorBuffer's sums, ahead of the resolved colours");
+
+// the rows of slice `slice` of `slices`, in whole 16-row groups
+static void sky_slice_rows(int slice, int slices, int *first_row, int *row_count)
+{
+	const int groups = SKY_ROWS / SKY_ROW_GROUP;
+	const int g0 = slice * groups / slices, g1 = (slice + 1) * groups / slices;
+	*first_row = g0 * SKY_ROW_GROUP;
+	*row_count = (g1 - g0) * SKY_ROW_GROUP;
+}
+
+/* This frame's sky work (sky_update_slices above): a whole update when one was
+   asked for, else the next slice of a drift update under way, else the first
+   slice of a new one. Made again each frame until the renderer says it is done,
+   so a frame that is not drawn changes nothing. */
+static void plan_sky_work(bool render_world)
+{
+	vkpt_sky_work_t *w = &sky_work;
+	memset(w, 0, sizeof(*w));
+	if (!render_world)
+		return;
+
+	int slices = 1, slice = 0;
+	if (skyNeedsUpdate)
+		;	// whole, now
+	else if (sky_slice_next >= 0)
+	{
+		slices = sky_slice_count;
+		slice = sky_slice_next;
+	}
+	else if (skyDriftStep)
+		slices = max(1, min(96, sky_update_slices->integer));
+	else
+		return;
+
+	w->render = true;
+	w->slice = slice;
+	w->slices = slices;
+	w->begin = slice == 0;
+	w->resolve = slice == slices - 1;
+	sky_slice_rows(slice, slices, &w->first_row, &w->row_count);
+	memcpy(w->viewproj, w->begin ? terrain_shadowmap_viewproj : sky_slice_viewproj, sizeof(w->viewproj));
+}
+
+const vkpt_sky_work_t *vkpt_physical_sky_work(void)
+{
+	return &sky_work;
+}
+
+void vkpt_physical_sky_work_done(void)
+{
+	const vkpt_sky_work_t *w = &sky_work;
+	if (!w->render)
+		return;
+	if (w->begin)
+	{
+		// a whole update answers every request; a drift update's first slice
+		// answers the drift step, and any step after it starts the next update
+		skyNeedsUpdate = VK_FALSE;
+		skyDriftStep = false;
+		sky_slice_count = w->slices;
+		memcpy(sky_slice_viewproj, w->viewproj, sizeof(sky_slice_viewproj));
+	}
+	sky_slice_next = w->resolve ? -1 : w->slice + 1;
+	memset(&sky_work, 0, sizeof(sky_work));
 }
 
 /* The D3D12 renderer's side of the flag: true when its sky pipelines are
@@ -898,19 +1002,33 @@ vkpt_physical_sky_read_envmap(int *out_width, int *out_height)
 	return texels;
 }
 
-extern float terrain_shadowmap_viewproj[16];
 
 VkResult
 vkpt_physical_sky_record_cmd_buffer(VkCommandBuffer cmd_buf)
 {
-	if (!skyNeedsUpdate)
+	// this frame's share of the sky (plan_sky_work): the whole of it, a slice of
+	// a sun drift's update, or nothing
+	const vkpt_sky_work_t *work = vkpt_physical_sky_work();
+	if (!work->render)
 		return VK_SUCCESS;
 
-
-	RecordCommandBufferShadowmap(cmd_buf);
-	
-
-	reset_sun_color_buffer(cmd_buf);
+	if (work->begin)
+	{
+		RecordCommandBufferShadowmap(cmd_buf);
+		reset_sun_color_buffer(cmd_buf);
+	}
+	else
+	{
+		// a later slice adds to the sums the first one began, after the frames
+		// between have read the colours
+		BUFFER_BARRIER(cmd_buf,
+			.buffer = qvk.buf_sun_color.buffer,
+			.offset = 0,
+			.size = VK_WHOLE_SIZE,
+			.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
+		);
+	}
 
 
     {
@@ -927,15 +1045,31 @@ vkpt_physical_sky_record_cmd_buffer(VkCommandBuffer cmd_buf)
             vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_physical_sky);
         }
 
-		vkCmdPushConstants(cmd_buf, pipeline_layout_physical_sky, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float) * 16, terrain_shadowmap_viewproj);
+		// the shadow map's view as the update's first part drew it
+		vkCmdPushConstants(cmd_buf, pipeline_layout_physical_sky, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float) * 16, work->viewproj);
 
 		vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
 			pipeline_layout_physical_sky, 0, LENGTH(desc_sets), desc_sets, 0, 0);
+		// the rows from global_ubo.sky_first_row, faces one after another
 		const int group_size = 16;
-		vkCmdDispatch(cmd_buf, width / group_size, height / group_size, 6);
+		vkCmdDispatch(cmd_buf, width / group_size, work->row_count / group_size, 1);
 	}
 
 	BARRIER_COMPUTE(cmd_buf, img_envmap);
+
+	if (!work->resolve)
+	{
+		// the next slice's sums, a frame on
+		BUFFER_BARRIER(cmd_buf,
+			.buffer = qvk.buf_sun_color.buffer,
+			.offset = 0,
+			.size = VK_WHOLE_SIZE,
+			.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT
+		);
+		vkpt_physical_sky_work_done();
+		return VK_SUCCESS;
+	}
 
 	BUFFER_BARRIER(cmd_buf,
 		.buffer = qvk.buf_sun_color.buffer,
@@ -966,8 +1100,8 @@ vkpt_physical_sky_record_cmd_buffer(VkCommandBuffer cmd_buf)
 		.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT
 	);
 
-    skyNeedsUpdate = VK_FALSE;
-	
+	vkpt_physical_sky_work_done();
+
     return VK_SUCCESS;
 }
 
@@ -1433,15 +1567,21 @@ vkpt_evaluate_sun_light(sun_light_t* light, const vec3_t sky_matrix[3], float ti
 				// A map change needs no special case: the new map's hour is a
 				// long way from the rendered one, so the first frame on it
 				// re-renders by the ordinary rule.
-				if (!have_rendered_sun_angles
-					|| sun_angle_between((float)elevation, (float)azimuth,
+				const float moved = have_rendered_sun_angles
+					? sun_angle_between((float)elevation, (float)azimuth,
 						rendered_sun_elevation, rendered_sun_azimuth)
-						>= max(0.f, sun_animate_step->value))
+					: 360.f;
+				if (moved >= max(0.f, sun_animate_step->value))
 				{
 					rendered_sun_elevation = (float)elevation;
 					rendered_sun_azimuth = (float)azimuth;
 					have_rendered_sun_angles = true;
-					skyNeedsUpdate = VK_TRUE;
+					// a drift step may be spread over frames (sky_update_slices);
+					// a jump - a map's first frame, a new hour - is rendered whole
+					if (moved < SKY_SLICE_MAX_JUMP)
+						skyDriftStep = true;
+					else
+						skyNeedsUpdate = VK_TRUE;
 				}
 			}
 			else
@@ -1600,7 +1740,12 @@ vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light,
 		VectorCopy(ground_radiance, ubo->physical_sky_ground_radiance);
     }
 	else
+	{
+		// no procedural sky to render: no update, whole or sliced, is owed
 		skyNeedsUpdate = VK_FALSE;
+		skyDriftStep = false;
+		sky_slice_next = -1;
+	}
 
     // planet
 
@@ -1617,6 +1762,10 @@ vkpt_physical_sky_update_ubo(QVKUniformBuffer_t * ubo, const sun_light_t* light,
 		UpdateTerrainShadowMapView(forward);
 		
 	}
+
+	// after the shadow map's view, which a first part takes with it
+	plan_sky_work(render_world && light->use_physical_sky);
+	ubo->sky_first_row = sky_work.render ? sky_work.first_row : 0;
 
     return VK_SUCCESS;
 }
@@ -1734,6 +1883,10 @@ void InitialiseSkyCVars()
 	sky_map_sun_animate = Cvar_Get("sky_map_sun_animate", "0", 0);
 
 	sun_animate_step = Cvar_Get("sun_animate_step", "0.05", CVAR_ARCHIVE);
+
+	// a sun drift's re-render spread over this many frames (see sky_slice_next);
+	// 1 = the whole sky in one frame, as before 11-15
+	sky_update_slices = Cvar_Get("sky_update_slices", "24", 0);
 }
 
 void UpdatePhysicalSkyCVars()

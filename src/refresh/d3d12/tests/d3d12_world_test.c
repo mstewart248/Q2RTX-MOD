@@ -893,6 +893,7 @@ static void sky_ubo(QVKUniformBuffer_t *u, int environment)
     const float ground[3] = { 0.133f, 0.101f, 0.047f };
     const float half_angle = 0.5f * 3.14159265f / 180.f;
     u->environment_type = environment;
+    u->sky_first_row = 0;   // the whole sky in one dispatch
     u->physical_sky_flags = PHYSICAL_SKY_FLAG_DRAW_MOUNTAINS | PHYSICAL_SKY_FLAG_DRAW_CLOUDS;
     memcpy(u->sun_direction_envmap, dir, sizeof(vec3));
     memcpy(u->sun_color, color, sizeof(vec3));
@@ -2498,6 +2499,9 @@ int main(int argc, char **argv)
                     .grid_index_count = grid_n,
                     .sky_pso = sky_pso,
                     .resolve_pso = resolve_pso,
+                    .begin = true,          // the whole sky at once, sky_first_row 0 (sky_ubo)
+                    .resolve = true,
+                    .row_count = 6 * D3D12_SKY_ENVMAP_SIZE,
                     .sets = { &ubo_set, &textures[odd], &vb_set, &sky_set },
                     .sun_color_buffer = sun_color,
                     .sun_color_size = sky_sun_size,

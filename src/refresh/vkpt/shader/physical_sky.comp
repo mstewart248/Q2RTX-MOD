@@ -322,7 +322,10 @@ void main() {
 
     vec4 out_color = vec4(0,0,0,1);
 
-    ivec3 ipos = ivec3(gl_GlobalInvocationID);
+    // the rows of the six faces one after another, from global_ubo.sky_first_row:
+    // the whole sky in one dispatch, or a slice of it a frame (vkpt_sky_work_t)
+    const int row = int(gl_GlobalInvocationID.z) * res + int(gl_GlobalInvocationID.y) + global_ubo.sky_first_row;
+    ivec3 ipos = ivec3(int(gl_GlobalInvocationID.x), row % res, row / res);
 
     if(any(greaterThanEqual(ipos, ivec3(res, res, 6))))
         return;

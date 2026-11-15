@@ -307,27 +307,37 @@ void d3d12_record_sky(const d3d12_sky_pass_t *s)
     ID3D12GraphicsCommandList4 *cmd = s->cmd;
     ID3D12GraphicsCommandList *gl = (ID3D12GraphicsCommandList *)cmd;
 
-    if (s->shadowmap)
-        record_shadowmap(s);
+    if (s->begin) {
+        if (s->shadowmap)
+            record_shadowmap(s);
+        // reset_sun_color_buffer: the sky pass accumulates into its sums; the
+        // resolved colours after them are left for the frames of a sliced update
+        d3d12_clear_buffer(cmd, s->sun_color_buffer, s->sun_color_size, s->zero_buffer);
+    } else {
+        // a later slice adds to the sums the first one began; the buffer decayed
+        // to COMMON with the last frame's list, as d3d12_clear_buffer expects
+        sky_transition(cmd, s->sun_color_buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
 
-    // reset_sun_color_buffer: the sky pass accumulates into it
-    d3d12_clear_buffer(cmd, s->sun_color_buffer, s->sun_color_size, s->zero_buffer);
-
-    // the envmap's six faces, 16x16 groups
+    // the envmap's rows, faces one after another from the UBO's sky_first_row,
+    // 16x16 groups
     ID3D12GraphicsCommandList4_SetPipelineState(cmd, s->sky_pso);
     d3d12_compute_begin(gl, D3D12_PL_PHYSICAL_SKY);
     d3d12_compute_bind_sets(gl, D3D12_PL_PHYSICAL_SKY, s->sets);
     d3d12_compute_push_constants(gl, D3D12_PL_PHYSICAL_SKY, s->viewproj, sizeof(s->viewproj));
-    d3d12_compute_dispatch(gl, D3D12_PL_PHYSICAL_SKY, D3D12_SKY_ENVMAP_SIZE / 16, D3D12_SKY_ENVMAP_SIZE / 16, 6);
+    d3d12_compute_dispatch(gl, D3D12_PL_PHYSICAL_SKY, D3D12_SKY_ENVMAP_SIZE / 16, s->row_count / 16, 1);
     d3d12_barrier_all(cmd, s->enhanced_barriers);
 
-    // the accumulated sun and sky colours into the lighting's constants
-    const d3d12_set_t *resolve_sets[2] = { s->sets[0], s->sets[2] };
-    ID3D12GraphicsCommandList4_SetPipelineState(cmd, s->resolve_pso);
-    d3d12_compute_begin(gl, D3D12_PL_UBO_VERTEX_BUFFER);
-    d3d12_compute_bind_sets(gl, D3D12_PL_UBO_VERTEX_BUFFER, resolve_sets);
-    d3d12_compute_dispatch(gl, D3D12_PL_UBO_VERTEX_BUFFER, 1, 1, 1);
-    d3d12_barrier_all(cmd, s->enhanced_barriers);
+    // the accumulated sun and sky colours into the lighting's constants, once
+    // every row has added to them
+    if (s->resolve) {
+        const d3d12_set_t *resolve_sets[2] = { s->sets[0], s->sets[2] };
+        ID3D12GraphicsCommandList4_SetPipelineState(cmd, s->resolve_pso);
+        d3d12_compute_begin(gl, D3D12_PL_UBO_VERTEX_BUFFER);
+        d3d12_compute_bind_sets(gl, D3D12_PL_UBO_VERTEX_BUFFER, resolve_sets);
+        d3d12_compute_dispatch(gl, D3D12_PL_UBO_VERTEX_BUFFER, 1, 1, 1);
+        d3d12_barrier_all(cmd, s->enhanced_barriers);
+    }
 
     // read as SUN_COLOR_UBO from here on; it decays to COMMON when the frame's
     // list is done, from which the next frames' reads promote it

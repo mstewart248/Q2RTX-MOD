@@ -126,6 +126,14 @@ typedef struct centity_s {
     int             fly_stoptime;
 
     int             id;
+
+    // The main model as CL_AddPacketEntities last drew it, for the blood's mesh
+    // traces (CL_BloodNoteBody, CL_BloodTraceModels): the RENDER pose, items'
+    // spin and bob included, so a droplet lands where the body is drawn.
+    qhandle_t       blood_model;
+    vec3_t          blood_origin, blood_angles;
+    int             blood_frame;
+    float           blood_scale;
 } centity_t;
 
 extern centity_t    cl_entities[MAX_EDICTS];
@@ -270,6 +278,11 @@ typedef struct client_state_s {
     // rebuilt each valid frame
     centity_t       *solidEntities[MAX_PACKET_ENTITIES];
     int             numSolidEntities;
+
+    // What blood can land on this frame: monsters, corpses, items and other
+    // players, never gibs or projectiles (CL_BloodNoteBody, CL_BloodTraceModels)
+    centity_t       *bloodBodies[MAX_PACKET_ENTITIES];
+    int             numBloodBodies;
 
     entity_state_t  baselines[MAX_EDICTS];
 
@@ -1399,6 +1412,7 @@ void CL_BfgParticles(entity_t *ent);
 void CL_ItemRespawnParticles(const vec3_t org);
 void CL_InitEffects(void);
 void CL_ClearEffects(void);
+void CL_BloodNoteBody(centity_t *cent, entity_t *ent, unsigned effects, unsigned renderfx, bool self);
 void CL_BlasterParticles(const vec3_t org, const vec3_t dir);
 void CL_ExplosionParticles(const vec3_t org);
 void CL_BFGExplosionParticles(const vec3_t org);

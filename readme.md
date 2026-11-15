@@ -263,9 +263,12 @@ game and feeds the model its own output, frame after frame.
   sky in real time, taking the whole sky — colour, horizon, god rays and the
   light the level is actually lit by — with it. `sun_animate_step` sets the
   speed. The original throttled variant is still selectable for the old
-  behaviour; the default path updates smoothly with no measurable cost, because
-  the sun angle is recomputed per frame regardless and only the sky's own
-  lookup tables are rebuilt when the angle has moved enough to matter.
+  behaviour; the default path updates smoothly, because the sun angle is
+  recomputed per frame regardless and the sky is only re-rendered when the angle
+  has moved enough to matter — and then a slice a frame (`sky_update_slices`,
+  24 by default), so the re-render never lands in one frame as a 4-5 ms spike.
+  Anything you can see change at once (a new map, a menu setting) still
+  re-renders the whole sky in one frame.
   `sky_map_sun_animate` turns it on for a single map, and the base-game maps
   ship with sensible sun tracks.
 * **Reconstructed vertex normals on alias models** (`pt_model_smooth_normals`,
@@ -714,6 +717,14 @@ space, so a burst of sixty costs one instance, not sixty.
   sloped surfaces, edge detection so a run reaches a lip and drops off, pooling
   into puddles that grow and merge, draining, and flesh that behaves differently
   from stone (`cl_blood_flesh_cling`, `_damp`, `_run`).
+* **Blood on bodies** (`cl_blood_skin`, on by default): a droplet that hits a
+  monster, a corpse, an item or another player stains its skin where it
+  touched, and a droplet running down the body leaves a trail. Gibs stay clean.
+  The stain is painted into a small mask in the model's texture space, so it
+  moves with the animation for free and a corpse keeps it. Splat size and soak
+  are `cl_blood_skin_size` and `_strength`; the look is `pt_blood_skin_dark`,
+  `_roughness` and `_specular`, and `pt_blood_skin_stats 1` prints the pool's
+  use once a second.
 * **Shading**: per-droplet light/dark variation, roughness and specular
   (`pt_blood_roughness`, `pt_blood_specular`), an animated surface ripple
   (`pt_blood_normal_*`, `pt_blood_wobble`), thin-film darkening
@@ -728,6 +739,11 @@ space, so a burst of sixty costs one instance, not sixty.
 * **Cost controls**: `pt_blood_tess` (20 / 80 / 320 faces per droplet), distance
   LOD (`pt_blood_lod_near`, `_far`, `_air`), `cl_blood_max`, and
   `cl_blood_stats` / `pt_blood_stats`.
+* **Droplets moved on the GPU** (`pt_blood_gpu_move`, default 1): a droplet
+  that only slid since the last frame — running down a wall, say — keeps its
+  mesh, and the GPU moves the copy it already holds instead of the CPU sending
+  the whole mesh again. Blood in motion was tens of MB a frame over the bus;
+  now it is 32 bytes a droplet. 0 sends them whole, as before.
 * **Close-up droplets** (`pt_blood_lod_px`, default 1): a droplet in flight that
   is big on screen gets more triangles, up to 1280 or 5120, until its outline is
   within that many pixels of a circle. The largest droplets on screen get them
