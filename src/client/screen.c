@@ -4317,6 +4317,13 @@ void SCR_UpdateScreen(void)
         CPUPROF_END(R_BEGIN);
     }
 
+    /* The 2D between the frame's begin and end - the HUD, the menus, the console,
+       the profiler's own overlay - as the "hud" section (11-14: it was in "other",
+       which a capture showed at 5.7 ms). The view's two sections are inside
+       SCR_DrawActive, so they come out of it. */
+    const uint64_t hud_t0 = Sys_Microseconds();
+    const uint64_t hud_view0 = cpuprof_us[CPUPROF_VIEW_PREP] + cpuprof_us[CPUPROF_R_RENDER];
+
     // do 3D refresh drawing
     SCR_DrawActive();
 
@@ -4328,6 +4335,12 @@ void SCR_UpdateScreen(void)
 
     // draw loading plaque
     SCR_DrawLoading();
+
+    {
+        const uint64_t span = Sys_Microseconds() - hud_t0;
+        const uint64_t view = cpuprof_us[CPUPROF_VIEW_PREP] + cpuprof_us[CPUPROF_R_RENDER] - hud_view0;
+        cpuprof_us[CPUPROF_HUD] += span > view ? span - view : 0;
+    }
 
     {
         CPUPROF_BEGIN(R_END);

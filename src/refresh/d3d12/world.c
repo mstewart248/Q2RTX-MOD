@@ -84,6 +84,8 @@ a UAV barrier on everything (passes.c's d3d12_barrier_all).
 #include "passes.h"
 #include "sky.h"
 #include "system/system.h"
+#include "common/cpuprof.h"     // the profiler's CPU breakdown
+#include "../vkpt/jobs.h"       // vkpt_parallel_for: the blood staging copy
 
 #include "../vkpt/shader/constants.h"
 #include "../vkpt/shader/global_ubo.h"
@@ -2167,6 +2169,11 @@ bool d3d12_world_load(d3d12_world_map_t *map)
 /* THE MODELS                                                                 */
 /* ------------------------------------------------------------------------- */
 
+// a slot that held a model was freed since the last commit: a frame in flight may
+// still draw through its descriptor, so the commit waits for the GPU before it
+// rewrites it (a map load). Off, every rewritten slot is one no frame has used.
+static bool models_live_freed;
+
 void d3d12_world_model_free(int index)
 {
     if (index < 0 || index >= D3D12_MAX_MODELS)
@@ -2174,6 +2181,7 @@ void d3d12_world_model_free(int index)
     world_model_t *m = &w.models[index];
     if (!m->buffer && !m->blas_pool.buffer)
         return;
+    models_live_freed = true;
     // a frame in flight may still read them: gone once it is done (and the
     // commit waits for the GPU anyway)
     D3D12_DEFER_RELEASE(m->buffer);
@@ -2224,14 +2232,30 @@ bool d3d12_world_model_upload(int index, d3d12_world_model_t *model)
     return true;
 }
 
-void d3d12_world_models_commit(void)
+bool d3d12_world_models_commit(void)
 {
-    // the copies and builds are done, and no frame reads the descriptors the
-    // loop below rewrites
+    /* A MODEL LOADED MID-GAME STALLED THE FRAME (Matt, 11-14: a capture's "begin frame"
+       12.6 ms, the log's "models 11.0"). This waited for the GPU to go idle every time:
+       with frames queued that is most of a frame, for one new model.
+
+       The wait is needed only when a descriptor a frame in flight can read is about to
+       change - a slot that held a model (a map load's re-uploads and frees). A model
+       new to the game goes into a slot no frame has drawn from; the ranges are
+       DESCRIPTORS_VOLATILE (bindings.c), so writing an unused descriptor under a
+       running frame is allowed. The copies and BLAS builds are on the frame's own
+       queue, flushed here, so they finish before this frame's list starts; the
+       scratch goes when the frame is done. */
     d3d12_upload_flush();
-    d3d12_wait_idle();
-    for (int i = 0; i < w.num_model_scratch; i++)
-        D3D12_RELEASE(w.model_scratch[i]);
+    const bool wait = models_live_freed;
+    models_live_freed = false;
+    if (wait) {
+        d3d12_wait_idle();
+        for (int i = 0; i < w.num_model_scratch; i++)
+            D3D12_RELEASE(w.model_scratch[i]);
+    } else {
+        for (int i = 0; i < w.num_model_scratch; i++)
+            D3D12_DEFER_RELEASE(w.model_scratch[i]);
+    }
     w.num_model_scratch = 0;
 
     for (int i = 0; i < D3D12_MAX_MODELS; i++) {
@@ -2242,6 +2266,7 @@ void d3d12_world_models_commit(void)
         d3d12_set_write_buffer(&w.vertex_buffer_set, PRIMITIVE_BUFFER_BINDING_IDX, VERTEX_BUFFER_FIRST_MODEL + i,
                                m->buffer, 0, m->buffer ? m->primitives_size : 0);
     }
+    return wait;
 }
 
 uint32_t d3d12_world_primbuf_size(void)
@@ -2513,6 +2538,28 @@ void d3d12_world_reserve_blood_staging(uint32_t capacity)
     }
 }
 
+/* The blood regions' copy into the staging, a region a job (jobs.c, 11-14): Matt's
+   dip capture had 46 MB going over in ~3 ms on the one thread, and write-combined
+   memory takes more than one thread's writes at once. */
+typedef struct {
+    const d3d12_blood_region_t  *regions;
+    uint8_t                     *dst[2];
+    const uint8_t               *src[2];
+    uint32_t                    have;
+} blood_copy_t;
+
+static void blood_copy_job(void *ctx, int r)
+{
+    const blood_copy_t *c = ctx;
+    const d3d12_blood_region_t *g = &c->regions[r];
+    if (g->src > c->have || g->count > c->have - g->src)
+        return;
+    memcpy(c->dst[0] + (size_t)g->src * sizeof(VboPrimitive), c->src[0] + (size_t)g->src * sizeof(VboPrimitive),
+           (size_t)g->count * sizeof(VboPrimitive));
+    memcpy(c->dst[1] + (size_t)g->src * BLOOD_POSITION_SIZE, c->src[1] + (size_t)g->src * BLOOD_POSITION_SIZE,
+           (size_t)g->count * BLOOD_POSITION_SIZE);
+}
+
 /* vkpt_blood_update's device half: blood.c's changed regions through this
    slot's staging into the instanced buffers (d3d12_record_blood_upload, which
    also zeroes the section on an epoch frame). True when it wrote: both buffers
@@ -2535,17 +2582,17 @@ static bool upload_blood(ID3D12GraphicsCommandList4 *cmd, world_frame_t *fr, con
     const uint32_t have = min(fr->blood_capacity, b->capacity);
     if (b->num_regions && !have)
         w.blood_lost = true;
-    for (uint32_t r = 0; r < b->num_regions; r++) {
-        const d3d12_blood_region_t *g = &b->regions[r];
-        if (g->src > have || g->count > have - g->src)
-            continue;
-        memcpy(fr->blood_staging_map[0] + (size_t)g->src * sizeof(VboPrimitive),
-               (const uint8_t *)b->prims + (size_t)g->src * sizeof(VboPrimitive), (size_t)g->count * sizeof(VboPrimitive));
-        memcpy(fr->blood_staging_map[1] + (size_t)g->src * BLOOD_POSITION_SIZE,
-               (const uint8_t *)b->positions + (size_t)g->src * BLOOD_POSITION_SIZE,
-               (size_t)g->count * BLOOD_POSITION_SIZE);
+    if (have) {
+        const blood_copy_t copy = {
+            .regions = b->regions,
+            .dst = { fr->blood_staging_map[0], fr->blood_staging_map[1] },
+            .src = { (const uint8_t *)b->prims, (const uint8_t *)b->positions },
+            .have = have,
+        };
+        vkpt_parallel_for((int)b->num_regions, blood_copy_job, (void *)&copy);
     }
     w.blood_copy_usec = Sys_Microseconds() - copy_t0;
+    CPUPROF_DETAIL_ADD(BLOOD_COPY, w.blood_copy_usec);
 
     const d3d12_blood_upload_t up = {
         .prims = w.prims_instanced,
@@ -2652,6 +2699,7 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
     const d3d12_world_transparency_t *tr = &frame->tr;
     bool tr_quads = false;
     if (w.tr[0] && fr->tr_staging_map && tr->data && tr->upload_size && tr->upload_size <= w.tr_frame_capacity) {
+        d3d12_timer_mark(cmd, &timers, PROFILER_TRANSPARENT_UPLOAD, PROFILER_START);
         memcpy(fr->tr_staging_map, tr->data, tr->upload_size);
         for (int i = 0; i < D3D12_TR_NUM_STREAMS; i++) {
             if (!tr->size[i] || tr->size[i] > w.tr_capacity[i] || tr->offset[i] + tr->size[i] > tr->upload_size)
@@ -2660,6 +2708,7 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
             transition(cmd, w.tr[i], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         tr_quads = tr->size[D3D12_TR_VERTICES] != 0;
+        d3d12_timer_mark(cmd, &timers, PROFILER_TRANSPARENT_UPLOAD, PROFILER_STOP);
     }
     // the index list decayed to COMMON since its upload; a build input
     if (tr_quads)
@@ -2721,9 +2770,12 @@ bool d3d12_world_render(ID3D12GraphicsCommandList4 *cmd, const d3d12_world_frame
 
     // vkpt_blood_update: the droplets' section of the instanced buffers, ahead
     // of instance_geometry (as vkpt records it), which writes other sections
+    // (timed: the copy is the gore's GPU cost outside the ray passes and its BLAS build)
+    d3d12_timer_mark(cmd, &timers, PROFILER_BLOOD_UPLOAD, PROFILER_START);
     const bool blood_wrote = upload_blood(cmd, fr, &frame->blood);
     if (blood_wrote)
         transition(cmd, w.prims_instanced, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    d3d12_timer_mark(cmd, &timers, PROFILER_BLOOD_UPLOAD, PROFILER_STOP);
 
     // vkpt_instance_geometry: the animated models into the instanced buffers,
     // the world's texture animation stepped. The positions decayed to COMMON

@@ -332,8 +332,11 @@ backend has any film-specific code.
 // BLAS is rebuilt on every frame the section changes - a fight, blood flowing -
 // and measured ~0.23 ms per 256K triangles on top of a 0.3 ms base (D3D12,
 // 2026-11-06: 1.13 ms at ~957K). Settled blood reuses its BLAS and costs nothing.
-// Each 256K is also ~45 MB more on each side. cl_blood_film_tiles has to rise with
-// it (~1 tile per 500 triangles) or the tiles run out first.
+// Each 256K is also ~43 MB more on each side - and on the CPU side twice that again
+// in upload staging (one shadow-sized buffer per frame in flight, both backends),
+// so ~130 MB of system memory and ~43 MB of VRAM (2026-11-14, sizeof(VboPrimitive)
+// 128 + positions 36). cl_blood_film_tiles has to rise with it (~1 tile per 500
+// triangles) or the tiles run out first.
 #define BLOOD_FILM_TRIS_DEFAULT "262144"
 
 typedef struct {

@@ -21,6 +21,7 @@ always executes before the frame's, on the same queue.
 
 #include "d3d12pt.h"
 #include "common/cpuprof.h"     // Sys_Microseconds (vid_present_stats)
+#include "../../client/client.h"    // SCR_SetHudAlpha (R_BeginFrame_D3D12), as vkpt/main.c
 
 static enum {
     STAGE_NONE,
@@ -208,7 +209,9 @@ static void R_RenderFrame_D3D12(refdef_t *fd, int waterLevel)
         }
         return;
     }
+    CPUPROF_DETAIL_BEGIN(RECORD);   // the profiler's CPU breakdown (cpuprof.h)
     const bool drawn = d3d12_world_render(d3d.cmd, &frame);
+    CPUPROF_DETAIL_END(RECORD);
     // R_EndFrame_RTX's DLSSGApply, here where the frame's images are at hand: the
     // real frame is on the frame target already, as vkpt blits it before evaluating
     if (drawn && frame.dlss) {
@@ -231,6 +234,13 @@ static void R_BeginFrame_D3D12(void)
     if (stage != STAGE_DRAW || d3d.frame_open)
         return;
 
+    /* A SLOW BEGIN FRAME SAYS WHERE (11-14): two of Matt's dip captures spent 11.4
+       and 11.8 ms of WORK here, the waits taken out - its parts to the log when
+       they come to 4 ms. */
+    uint64_t mark[10];
+    int marks = 0;
+    mark[marks++] = Sys_Microseconds();
+
     // the GPU stopped (a hang or a fault): nothing more can be drawn, and NVIDIA Flow
     // died on the next frame's allocations (11-13) - the report, then a plain error
     if (d3d12_device_lost())
@@ -240,33 +250,48 @@ static void R_BeginFrame_D3D12(void)
     // frame generation on or off: the swapchain moves queues between frames
     d3d12_frontend_fg_begin_frame();
     fg_generated = 0;
+    mark[marks++] = Sys_Microseconds();     // 1: frame generation
 
     if (!d3d12_swapchain_update())
         return;     // minimized, or the resize failed: no frame
+    mark[marks++] = Sys_Microseconds();     // 2: swapchain
 
-    // vid_present_stats: the two places this thread blocks for a frame
+    // vid_present_stats: the two places this thread blocks for a frame; timed
+    // always, for the profiler's CPU frame time (cpuprof.h's CPUPROF_WAITED)
     const bool present_stats = d3d12_frontend_present_stats_on();
-    uint64_t t = present_stats ? Sys_Microseconds() : 0;
+    uint64_t t = Sys_Microseconds();
     d3d12_swapchain_wait();
-    const uint64_t present_wait_us = present_stats ? Sys_Microseconds() - t : 0;
+    const uint64_t present_wait_us = Sys_Microseconds() - t;
 
     d3d12_frame_t *frame = &d3d.frames[d3d.frame_index];
-    if (present_stats)
-        t = Sys_Microseconds();
+    t = Sys_Microseconds();
     d3d12_wait_fence(frame->fence_value);
+    const uint64_t fence_us = Sys_Microseconds() - t;
+    CPUPROF_WAITED(present_wait_us + fence_us);
+    CPUPROF_DETAIL_ADD(WAIT_BEGIN, present_wait_us + fence_us);
+    CPUPROF_DETAIL_ADD(WAIT_FENCE, fence_us);
     if (present_stats)
-        d3d12_frontend_present_stats(Sys_Microseconds() - t, present_wait_us);
+        d3d12_frontend_present_stats(fence_us, present_wait_us);
+    mark[marks++] = Sys_Microseconds();     // 3: the waits (taken out below)
     d3d12_collect_garbage(false);
+    mark[marks++] = Sys_Microseconds();     // 4: garbage
 
     if (!D3D_CHECK(ID3D12CommandAllocator_Reset(frame->allocator)) ||
         !D3D_CHECK(ID3D12GraphicsCommandList4_Reset(d3d.cmd, frame->allocator, NULL)))
         return;
     d3d.frame_open = true;
+    mark[marks++] = Sys_Microseconds();     // 5: allocators
     d3d12_timers_frame_begin();
+    mark[marks++] = Sys_Microseconds();     // 6: the profiler (and a capture's log)
 
+    // (the copies recorded here are the profiler's TEXTURE_UPLOAD)
+    d3d12_timers_mark(PROFILER_TEXTURE_UPLOAD, PROFILER_START);
     d3d12_textures_begin_frame();
+    mark[marks++] = Sys_Microseconds();     // 7: textures
     // R_BeginFrame_RTX's vkpt_vertex_buffer_upload_models, after the textures
     d3d12_frontend_upload_models();
+    mark[marks++] = Sys_Microseconds();     // 8: models
+    d3d12_timers_mark(PROFILER_TEXTURE_UPLOAD, PROFILER_STOP);
 
     D3D12_RESOURCE_BARRIER b = { 0 };
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -278,6 +303,28 @@ static void R_BeginFrame_D3D12(void)
 
     static const float black[4] = { 0.f, 0.f, 0.f, 1.f };
     ID3D12GraphicsCommandList4_ClearRenderTargetView(d3d.cmd, d3d12_rtv(D3D12_RTV_FRAME_TARGET), black, 0, NULL);
+
+    // as R_BeginFrame_RTX ends: the HUD starts every frame fully visible. Photo mode
+    // (the shared evaluate_reference_mode) fades it to 0 once accumulation is done and
+    // only ever sets it while it runs, so without this the HUD stayed hidden after
+    // leaving photo mode - until a short second visit left it at 1 again (11-14)
+    SCR_SetHudAlpha(1.f);
+
+    mark[marks++] = Sys_Microseconds();     // 9: the rest
+    {
+        double ms[10];
+        for (int i = 1; i < marks; i++)
+            ms[i] = (double)(mark[i] - mark[i - 1]) * 1e-3;
+        const double work = (double)(mark[marks - 1] - mark[0]) * 1e-3 - ms[3];
+        if (work >= 4.0) {
+            Con_SkipNotify(true);
+            Com_Printf("D3D12: slow begin frame %.1f ms of work (waits %.1f apart) - frame generation %.1f, "
+                       "swapchain %.1f, garbage %.1f, allocators %.1f, profiler %.1f, textures %.1f, "
+                       "models %.1f, rest %.1f\n", work, ms[3], ms[1], ms[2], ms[4], ms[5], ms[6], ms[7],
+                       ms[8], ms[9]);
+            Con_SkipNotify(false);
+        }
+    }
 }
 
 static void R_EndFrame_D3D12(void)
@@ -294,6 +341,9 @@ static void R_EndFrame_D3D12(void)
     // profiler 1: the GPU times over the HUD; tm_debug's line
     d3d12_timers_draw();
     d3d12_frontend_draw_debug();
+
+    // the profiler's HUD_PRESENT: from here to the list's end
+    d3d12_timers_mark(PROFILER_HUD_PRESENT, PROFILER_START);
 
     // images the HUD or menus registered since R_BeginFrame are drawn below
     d3d12_textures_begin_frame();
@@ -325,6 +375,7 @@ static void R_EndFrame_D3D12(void)
         d3d12_swapchain_record_copy(d3d.cmd);
     }
 
+    d3d12_timers_mark(PROFILER_HUD_PRESENT, PROFILER_STOP);
     d3d12_timers_frame_end(d3d.cmd);
     d3d12_frame_t *frame = &d3d.frames[d3d.frame_index];
     bool closed = D3D_CHECK(ID3D12GraphicsCommandList4_Close(d3d.cmd));
@@ -335,6 +386,7 @@ static void R_EndFrame_D3D12(void)
             d3d12_frontend_fg_before_submit(set);
         ID3D12CommandList *lists[1] = { (ID3D12CommandList *)d3d.cmd };
         ID3D12CommandQueue_ExecuteCommandLists(d3d.queue, 1, lists);
+        d3d12_timers_submitted();
     }
     frame->fence_value = d3d12_signal();
     d3d12_stamp_garbage(frame->fence_value);
@@ -345,6 +397,8 @@ static void R_EndFrame_D3D12(void)
         // pt_dlss_fg_compare / pt_dlss_fg_dump: this frame's finished images (each read
         // waits for the GPU)
         d3d12_frontend_fg_debug(generated);
+        // the present can block (a full queue, vsync): waiting, for the profiler's CPU time
+        const uint64_t present_t0 = Sys_Microseconds();
         if (fg) {
             // the real frame's present markers are set on the present thread
             d3d12_frontend_fg_present(set, presented);
@@ -353,6 +407,9 @@ static void R_EndFrame_D3D12(void)
             d3d12_present();
             d3d12_reflex_marker(D3D12_REFLEX_PRESENT_END);
         }
+        const uint64_t present_us = Sys_Microseconds() - present_t0;
+        CPUPROF_WAITED(present_us);
+        CPUPROF_DETAIL_ADD(WAIT_PRESENT, present_us);
     }
 
     d3d.frame_index = (d3d.frame_index + 1) % D3D12_FRAMES_IN_FLIGHT;

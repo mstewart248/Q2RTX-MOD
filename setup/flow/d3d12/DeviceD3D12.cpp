@@ -115,6 +115,8 @@ static NvFlowDevice* createDeviceExternal(NvFlowDeviceManager* deviceManagerIn, 
         return nullptr;
     }
 
+    uploadStash_create(ptr);
+
     return cast(ptr);
 }
 
@@ -127,6 +129,8 @@ void destroyDevice(NvFlowDeviceManager* manager, NvFlowDevice* device)
     }
 
     deviceQueue_destroy(ptr->deviceQueue);
+    // after the queue's context, whose buffers come back to it
+    uploadStash_destroy(ptr);
 
     ptr->queue->Release();
     ptr->device->Release();

@@ -294,7 +294,8 @@ begin video_display
             range --status "frame rate cap applied by Reflex itself, which is smoother and lower latency than an ordinary limiter. 0 for none. Capping just under your refresh rate is the classic low-latency setup with vsync off. (pt_reflex_fps_max)" "Reflex frame rate cap" pt_reflex_fps_max 0 240 5
             blank
         endif
-        pairs --status "pass times: what each pass of the frame costs the GPU. frame graphs: frame time (the GPU's under it) and fps over the last few seconds, with averages and 1% lows (profiler)" "GPU profiler" profiler off 0 "pass times" 1 "frame graphs" 2
+        pairs --status "pass times: what each pass of the frame costs the GPU. frame graphs: frame time (the GPU's under it) and fps over the last few seconds, with averages and 1% lows. category history / category bars: the GPU frame in 12 groups (frame setup, primary rays, Flow, volumetrics, lighting, denoiser, DLSS, post...), over time or this frame against the average (profiler)" "GPU profiler" profiler off 0 "pass times" 1 "frame graphs" 2 "category history" 3 "category bars" 4
+        pairs --status "with the GPU profiler on, a screenshot of it when the frame rate drops under the display's refresh rate (profiler_capture_fps for another): the dip's first slow frame, then its worst, in screenshots/profcap with PROFCAPTURE lines in the console (profiler_capture)" "capture fps dips" profiler_capture off 0 on 1
     endif
 end
 
@@ -899,13 +900,25 @@ begin blood_film
     range -f "%.2f" --status "unevenness of the surface the blood flows over: makes runs wander and outlines irregular. 0 is a perfectly flat world (cl_blood_film_rough)" \
         "surface roughness" cl_blood_film_rough 0 0.2 0.01
     blank
+    range --status "how far a mark is drawn out along the way the droplet was going when it lands at a slant: 1 keeps every mark round, 2 makes a skimming droplet's mark twice as long and half as wide. Drops falling straight down stay round. The same setting as the splats' (cl_blood_stretch)" \
+        "splatter directionality" cl_blood_stretch 1 5 0.25
+    range -f "%.2f" --status "how much a slanting mark narrows ahead of the impact into a teardrop, with a small satellite drop thrown past the tip on some of the flattest hits - the way a real stain points where the blood was going. 0 is a plain ellipse (cl_blood_film_tail)" \
+        "splatter tail" cl_blood_film_tail 0 1 0.05
+    blank
     range --status "drawn depth of the blood as a multiple of the simulated one (cl_blood_film_height)" \
         "drawn thickness" cl_blood_film_height 0.25 3 0.25
     range -f "%.2f" --status "depth at which blood reads as a full pool rather than a thin film - thinner is darker and more see-through, as the edge of a splat is. The edge settings on the splats page shape it (cl_blood_film_full)" \
         "full pool depth" cl_blood_film_full 0.01 0.3 0.01
     range -f "%.0f steps/s" --status "simulation steps per second (cl_blood_film_rate)" \
         "simulation rate" cl_blood_film_rate 10 60 5
-    range -f "%.0f tiles" --status "how many 16x16-cell tiles may hold blood at once. As it runs low the patch blood reached longest ago fades out. Changing it clears the blood already on the surfaces (cl_blood_film_tiles)" \
+    blank
+    // How much blood stays. With no janitor (the default) blood never ages out:
+    // it goes only when the triangle budget or the tile pool runs low.
+    pairs --status "how many triangles all the surface blood together may draw. With no janitor on, running low on these is the ONLY thing that makes blood go - old blood is squeezed first (below), then fades, out of sight before in sight. 1M holds about four times the blood. Memory, taken as soon as it is set: each 256K is about 130 MB of system memory (the renderer's copy and its two upload buffers) and 45 MB of video memory. Speed: about 0.23 ms a frame per 256K triangles of blood actually lying around, and only on frames where some blood lands or moves - settled blood costs nothing (cl_blood_film_tris)" \
+        "triangle budget" cl_blood_film_tris "256K" 262144 "512K" 524288 "768K" 786432 "1M" 1048576
+    toggle --status "before any blood fades to make room, patches blood stopped reaching a while ago - out of sight first - are drawn again with a plainer outline cut along the cells, which takes less than half the triangles. Nothing disappears: the oldest blood fades only once there is nothing left to squeeze. New blood on a squeezed patch draws it in full again if there is room. Needs outline detail above low (cl_blood_film_compact)" \
+        "squeeze old blood" cl_blood_film_compact
+    range -f "%.0f tiles" --status "how many 16x16-cell tiles may hold blood at once. As it runs low the patch blood reached longest ago fades out. Costs no video memory and next to nothing in speed - with old blood squeezed, the tiles run out before the triangles do below 2048. Changing it clears the blood already on the surfaces (cl_blood_film_tiles)" \
         "tile pool" cl_blood_film_tiles 128 2048 64
 end
 
@@ -937,8 +950,10 @@ begin blood_droplets
     pairs --status "force every droplet to one colour. \"as the game sends it\" leaves red blood red and the few green-blood effects green. Each droplet still gets its own light or dark shade, so a burst does not read as sixty copies of one object. Affects blood in the air as well as on the ground - the darkness settings further down apply to landed blood only (cl_blood_color)" \
         "blood colour" cl_blood_color "as the game sends it" 0 "red" 1 "green" 2 "blue" 3 "yellow" 4 "purple" 5 "black - oil" 6
     blank
-    pairs --status "triangles per droplet up close, as airborne bead / landed puddle. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading - and for a splat the outline is the RIM of a disc, which is why a puddle gets the larger share. ULTRA is for close-up work only: it quadruples the memory every droplet slot reserves whether or not anything is near enough to use it (pt_blood_tess)" \
-        "droplet detail" pt_blood_tess "low - 20 / 64 triangles" 0 "medium - 80 / 128" 1 "high - 320 / 320" 2 "ultra - 1280 / 1280" 3
+    pairs --status "triangles per droplet up close, as airborne bead / landed puddle. The vertex normals are smooth at every setting, so this buys the round OUTLINE, not the shading - and for a splat the outline is the RIM of a disc, which is why a puddle gets the larger share. ULTRA keeps that detail further out. At high and ultra, droplets that are big on screen get up to 1280 or 5120 on top - see close-up droplets below (pt_blood_tess)" \
+        "droplet detail" pt_blood_tess "low - 20 / 64 triangles" 0 "medium - 80 / 128" 1 "high - 320 / 320" 2 "ultra - 320 / 320, further out" 3
+    pairs --status "droplets in flight that are big ON SCREEN get extra triangles until their outline is within this many pixels of a true circle, largest first, from a small fixed pool - so a bead in your face is round and the spray across the room costs what it always did. Off uses distance alone (pt_blood_lod_px)" \
+        "close-up droplets" pt_blood_lod_px "off - distance only" 0 "smooth - 2 px" 2 "smoother - 1 px" 1 "smoothest - 0.5 px" 0.5
     range --status "a droplet of the standard size closer than this gets the full detail above. The level is picked from how much SCREEN a mark covers, not from distance alone, so a pool that has merged twenty droplets holds its detail twenty times further away and a small one drops a level sooner. Every expense scales with triangle count, so this is the knob that keeps a faceful of blood affordable (pt_blood_lod_near)" \
         "full detail within" pt_blood_lod_near 32 1024 32
     range --status "a droplet of the standard size past this distance drops to the lowest detail, where its outline is a couple of pixels anyway. Scaled by size like the setting above (pt_blood_lod_far)" \

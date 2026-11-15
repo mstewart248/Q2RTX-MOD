@@ -901,8 +901,12 @@ void d3d12_upload_flush(void)
         return;
 
     ID3D12CommandList *lists[1] = { (ID3D12CommandList *)up.open->cmd };
-    if (D3D_CHECK(ID3D12GraphicsCommandList_Close(up.open->cmd)))
+    if (D3D_CHECK(ID3D12GraphicsCommandList_Close(up.open->cmd))) {
+        // mid-frame, the profiler's UPLOAD_QUEUE (gpu_timers.c): it runs ahead of the frame's list
+        d3d12_timers_upload_flush(PROFILER_START);
         ID3D12CommandQueue_ExecuteCommandLists(d3d.queue, 1, lists);
+        d3d12_timers_upload_flush(PROFILER_STOP);
+    }
     uint64_t value = d3d12_signal();
 
     up.open->fence = value;
@@ -1515,7 +1519,28 @@ void d3d12_device_shutdown(void)
         }
     }
 
-    D3D12_RELEASE(d3d.device);
+    /* WHAT THE NEXT RENDERER STARTS ON TOP OF. Matt, 11-14: a vid_rtx 3 -> 1 switch
+       from a session at 13.7 of 13.9 GB, and Vulkan lost its device on its first frame.
+       A reference someone kept (NGX, Flow, NVAPI) keeps the device - and every resource
+       it made - alive past this. Vulkan prints its own start-up figure to compare. */
+    const bool had_device = d3d.device != NULL;
+    ULONG device_refs = 0;
+    if (d3d.device) {
+        device_refs = IUnknown_Release((IUnknown *)d3d.device);
+        d3d.device = NULL;
+    }
+    if (had_device && d3d.adapter) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO local = { 0 };
+        if (SUCCEEDED(IDXGIAdapter4_QueryVideoMemoryInfo(d3d.adapter, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local))) {
+            if (device_refs)
+                Com_WPrintf("D3D12: shut down with %lu reference(s) to the device left - it and its "
+                            "resources stay alive; %.2f GB of video memory still in use\n",
+                            device_refs, local.CurrentUsage / 1073741824.0);
+            else
+                Com_Printf("D3D12: shut down; %.2f GB of video memory still in use\n",
+                           local.CurrentUsage / 1073741824.0);
+        }
+    }
     D3D12_RELEASE(d3d.adapter);
     D3D12_RELEASE(d3d.factory);
     D3D12_RELEASE(d3d.device_factory);

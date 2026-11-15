@@ -728,6 +728,12 @@ space, so a burst of sixty costs one instance, not sixty.
 * **Cost controls**: `pt_blood_tess` (20 / 80 / 320 faces per droplet), distance
   LOD (`pt_blood_lod_near`, `_far`, `_air`), `cl_blood_max`, and
   `cl_blood_stats` / `pt_blood_stats`.
+* **Close-up droplets** (`pt_blood_lod_px`, default 1): a droplet in flight that
+  is big on screen gets more triangles, up to 1280 or 5120, until its outline is
+  within that many pixels of a circle. The largest droplets on screen get them
+  first, from a fixed pool of 20 (4 × 5120 + 16 × 1280). Steps up inside a
+  droplet's own slot are capped by `pt_blood_lod_budget` (extra triangles per
+  frame), so the cost stays bounded however much blood is in the air.
 * **Sound**: splatter and pooling sounds with their own distance, attenuation,
   spacing and thinning rules — because thinning landing sounds barely dents a
   busy fight, and the pooling rate is the knob that does.

@@ -399,6 +399,11 @@ def patch_source(flow, setup):
         text = open(path, encoding='utf-8', newline='').read()
         if '\r\n' in text:
             old, new = old.replace('\n', '\r\n'), new.replace('\n', '\r\n')
+        # Applied already: first, as a patch whose new text holds its old one
+        # (EmitterBoxCS's multisampleBound, added after a line it keeps) still
+        # finds its old text, and was added again on every run (11-14).
+        if text.count(new) == count:
+            continue
         if text.count(old) == count:
             open(path, 'w', encoding='utf-8', newline='').write(text.replace(old, new))
             log('patched ' + rel)

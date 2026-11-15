@@ -104,6 +104,11 @@ enum {
     // Flow's occupancy and light sums, which vkpt submits right after Flow's own work
     // and which are in the frame's list here (d3d12_record_flow): + FLOW_SIMULATION
     D3D12_PROFILER_FLOW_PASSES,
+    // the upload lists after the first executed ahead of the frame's list
+    // (d3d12_upload_flush, while a frame is open): + UPLOAD_QUEUE
+    D3D12_PROFILER_UPLOAD_QUEUE_2,
+    D3D12_PROFILER_UPLOAD_QUEUE_3,
+    D3D12_PROFILER_UPLOAD_QUEUE_4,
     D3D12_NUM_PROFILER_ENTRIES
 };
 #define D3D12_PROFILER_QUERIES  (D3D12_NUM_PROFILER_ENTRIES * 2)

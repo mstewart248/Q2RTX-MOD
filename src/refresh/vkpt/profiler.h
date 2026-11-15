@@ -66,6 +66,23 @@ averages, draws the table and answers profiler_dump for both.
 	PROFILER_DO(PROFILER_FLOW_MARCH,                 1) \
 	PROFILER_DO(PROFILER_SHADOW_MAP,                 1) \
 	PROFILER_DO(PROFILER_COMPOSITING,                1) \
+	/* What the D3D12 renderer's GPU frame held besides the passes above, timed \
+	   so profiler 3/4's "other" is a measurement (11-14; Vulkan leaves them \
+	   unmarked): DLSS 5's neural passes; the copies - the textures and models \
+	   at the head of the frame's list, the blood, the transparency, and the \
+	   upload lists executed on the queue ahead of the list; the HUD and the \
+	   copy to the screen (or frame generation's sources); the GPU with nothing \
+	   to do between the frame's start and its list (gpu_timers.c works it \
+	   out: the CPU still recording); and the ray traced sound's last run, on \
+	   a queue of its own, beside the frame rather than in it. */ \
+	PROFILER_DO(PROFILER_DLSS5,                      1) \
+	PROFILER_DO(PROFILER_TEXTURE_UPLOAD,             1) \
+	PROFILER_DO(PROFILER_BLOOD_UPLOAD,               1) \
+	PROFILER_DO(PROFILER_TRANSPARENT_UPLOAD,         1) \
+	PROFILER_DO(PROFILER_UPLOAD_QUEUE,               1) \
+	PROFILER_DO(PROFILER_HUD_PRESENT,                1) \
+	PROFILER_DO(PROFILER_GPU_IDLE,                   1) \
+	PROFILER_DO(PROFILER_SOUND_TRACE,                1) \
 	/* The whole frame on the graphics queue: from when the frame before it is \
 	   done (or this one starts, if the GPU sat idle) to the end of the last \
 	   submit before present - Flow's simulation, the passes after DLSS, the \
@@ -96,6 +113,21 @@ double vkpt_get_profiler_result(int idx);
    entry * 2 + action, used[] the queries it wrote, ns_per_tick its queue's
    timestamp period. Taken as vkpt_profiler_next_frame takes the Vulkan pool's. */
 void vkpt_profiler_take_results(const uint64_t *ticks, const bool *used, double ns_per_tick);
+
+/* What the D3D12 renderer knows about the same frame beyond its rows, handed over
+   just before vkpt_profiler_take_results (gpu_timers.c's collect). */
+typedef struct {
+	uint32_t cpu_serial;	// the CPU frame these results are (cpuprof.h's CPUPROF_RING); 0 = not known
+	float cpu_submit_ms;	// the CPU from R_BeginFrame (after its fence wait) to the list's submit; 0 = not known
+	float gpu_gap_ms;		// the GPU idle from the previous frame's end to this one's start: in no frame
+	float gap_ms;			// the frame's list: GPU time no row covers (barriers, untimed work)
+	float gap_largest_ms;	// its longest stretch,
+	int gap_after;			// after this row (-1: the list's start)
+	int gap_before;			// and before this one (-1: the list's end)
+} profiler_frame_extras_t;
+void vkpt_profiler_take_extras(const profiler_frame_extras_t *x);
+// a map was just loaded: the frames around it are not dips (profiler_capture)
+void vkpt_profiler_level_loaded(void);
 // the samples freed and every result cleared (the D3D12 renderer's shutdown)
 void vkpt_profiler_release(void);
 

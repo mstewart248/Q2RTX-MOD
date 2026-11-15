@@ -3548,7 +3548,11 @@ static bool CL_BloodTraceModels(const vec3_t start, const vec3_t end,
         pose.scale = cent->current.scale;
         pose.frame = cent->current.frame;
 
-        if (!MOD_TraceMesh(model, &pose, start, end, &frac, normal))
+        // timed for the GPU profiler's CPU breakdown (cpuprof.h)
+        const uint64_t mesh_t0 = Sys_Microseconds();
+        const bool mesh_hit = MOD_TraceMesh(model, &pose, start, end, &frac, normal);
+        CPUPROF_DETAIL_ADD(BLOOD_BODIES, Sys_Microseconds() - mesh_t0);
+        if (!mesh_hit)
             continue;
 
         if (frac >= *best)
@@ -5361,8 +5365,10 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
 
         // SURFACE BLOOD (cl_blood_film): a landing on the world goes into the
         // film and the droplet is done - see blood_film.c. Brush models, bodies
-        // and ceilings keep the splat path.
-        if (!hit && !p->blood_no_film && CL_BloodFilmDeposit(hit_point, hit_normal, p->radius, p->color, &p->rgba))
+        // and ceilings keep the splat path. The velocity it arrived with shapes
+        // the mark (DIRECTIONAL SPATTER there), as it does a splat's.
+        if (!hit && !p->blood_no_film &&
+            CL_BloodFilmDeposit(hit_point, hit_normal, p->radius, p->vel, p->color, &p->rgba))
             return true;
 
         if (CL_BloodPoolInto(p, hit_point, hit_normal,
@@ -7454,6 +7460,13 @@ void CL_AddParticles(void)
 
     num_blood_live = blood_air + blood_stuck;
 
+    // the GPU profiler's CPU breakdown (cpuprof.h)
+    CPUPROF_DETAIL_ADD(BLOOD_SIM, blood_sim_usec);
+    CPUPROF_COUNT_SET(BLOOD_AIR, blood_air);
+    CPUPROF_COUNT_SET(BLOOD_LANDED, blood_stuck);
+    CPUPROF_COUNT_SET(BLOOD_TRACES, blood_traces);
+    CPUPROF_COUNT_SET(BLOOD_BODY_TRACES, blood_model_traces);
+
     blood_sim_usec_acc += blood_sim_usec;
     blood_trace_acc += blood_traces;
     blood_model_trace_acc += blood_model_traces;
@@ -7501,7 +7514,9 @@ void CL_AddParticles(void)
 
     // Surface blood: step the flow and mesh what changed, after this frame's
     // landings went into it above.
+    CPUPROF_DETAIL_BEGIN(BLOOD_FILM);
     CL_BloodFilmFrame();
+    CPUPROF_DETAIL_END(BLOOD_FILM);
 }
 
 

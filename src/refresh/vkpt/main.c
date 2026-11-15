@@ -30,7 +30,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "refresh/images.h"
 #include "refresh/models.h"
 #include "system/hunk.h"
+#include "common/cpuprof.h"	// CPUPROF_WAITED: the profiler's CPU frame time
 #include "vkpt.h"
+#include "jobs.h"	// vkpt_parallel_threads: the CPU workers started at map load
 #include "material.h"
 #include "fog.h"
 #include "cameras.h"
@@ -2644,6 +2646,10 @@ init_vulkan(void)
 
 			if (gpu_diag >= 2 && !strcmp(ext_properties[j].extensionName, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME))
 				qvk.supports_checkpoints = true;
+
+			// the game's video memory against Windows' budget for it (vk_vram_usage)
+			if (!strcmp(ext_properties[j].extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
+				qvk.supports_memory_budget = true;
 		}
 	}
 
@@ -3115,6 +3121,7 @@ init_vulkan(void)
 	max_extension_count += 1; /* VK_EXT_device_address_binding_report */
 	max_extension_count += 1; /* VK_NV_partitioned_acceleration_structure */
 	max_extension_count += 1; /* VK_NV_cluster_acceleration_structure */
+	max_extension_count += 1; /* VK_EXT_memory_budget */
 
 	const char** device_extensions = alloca(sizeof(char*) * max_extension_count);
 	uint32_t device_extension_count = 0;
@@ -3208,6 +3215,13 @@ init_vulkan(void)
 		static const char* cp_ext[] = { VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME };
 		append_string_list(device_extensions, &device_extension_count, max_extension_count,
 			cp_ext, LENGTH(cp_ext));
+	}
+
+	if (qvk.supports_memory_budget)
+	{
+		static const char* budget_ext[] = { VK_EXT_MEMORY_BUDGET_EXTENSION_NAME };
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			budget_ext, LENGTH(budget_ext));
 	}
 
 	/* THE PARTITIONED TLAS (pt_ptlas): the extension and its feature, when the
@@ -6802,7 +6816,10 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	}
 
 	vkpt_frame_prep_t prep;
-	if (!vkpt_prepare_frame(fd, waterLevel, &prep))
+	CPUPROF_DETAIL_BEGIN(SCENE);	// the profiler's CPU breakdown (cpuprof.h)
+	const bool prepared = vkpt_prepare_frame(fd, waterLevel, &prep);
+	CPUPROF_DETAIL_END(SCENE);
+	if (!prepared)
 		return;
 
 	QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
@@ -6864,7 +6881,9 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 	   and the primary rays read a finished volume; and it writes this frame's
 	   global texture descriptors, which has to happen before any command
 	   buffer of the frame binds them. */
+	CPUPROF_DETAIL_BEGIN(FLOW);
 	vkpt_flow_update(fd, render_world);
+	CPUPROF_DETAIL_END(FLOW);
 
 	VkSemaphore transfer_semaphores[VKPT_MAX_GPUS];
 	VkSemaphore trace_semaphores[VKPT_MAX_GPUS];
@@ -7129,7 +7148,7 @@ R_RenderFrame_RTX(refdef_t *fd, int waterLevel)
 		// BLAS over it.
 		vkpt_blood_update(trace_cmd_buf, fd->blood_spheres, fd->num_blood_spheres,
 			fd->blood_films, fd->num_blood_films,
-			bsp_world_model, fd->vieworg, blood_model_instance_idx,
+			bsp_world_model, fd->vieworg, fd->fov_y, fd->height, blood_model_instance_idx,
 			upload_info.blood_prim_offset, &upload_info.blood_prim_count);
 
 		BEGIN_PERF_MARKER(trace_cmd_buf, PROFILER_INSTANCE_GEOMETRY);
@@ -7967,7 +7986,8 @@ void vkpt_report_device_lost(const char* context)
 	}
 	else
 	{
-		Com_EPrintf("No checkpoint data: VK_NV_device_diagnostic_checkpoints unavailable." "\n");
+		Com_EPrintf("No checkpoint data: VK_NV_device_diagnostic_checkpoints unavailable%s." "\n",
+			Cvar_VariableInteger("vk_gpu_diag") < 2 ? " (vk_gpu_diag 2 turns it on)" : "");
 	}
 
 	if (qvk.supports_device_fault && qvkGetDeviceFaultInfoEXT)
@@ -8050,7 +8070,8 @@ void vkpt_report_device_lost(const char* context)
 	}
 	else
 	{
-		Com_EPrintf("No fault info: VK_EXT_device_fault unavailable." "\n");
+		Com_EPrintf("No fault info: VK_EXT_device_fault unavailable%s." "\n",
+			Cvar_VariableInteger("vk_gpu_diag") < 1 ? " (vk_gpu_diag 1 turns it on: the faulting address, at no frame cost)" : "");
 	}
 
 	Com_EPrintf("===============================================" "\n");
@@ -8070,12 +8091,19 @@ R_BeginFrame_RTX(void)
 	qvk.current_frame_index = qvk.frame_counter % MAX_FRAMES_IN_FLIGHT;
 
 	const bool present_stats = (cvar_present_stats && cvar_present_stats->integer != 0);
-	uint64_t t_block_begin = present_stats ? Sys_Microseconds() : 0;
+	// timed always: the waits are taken from the profiler's CPU frame time (cpuprof.h)
+	uint64_t t_block_begin = Sys_Microseconds();
 
 	VkResult res_fence = vkWaitForFences(qvk.device, 1, qvk.fences_frame_sync + qvk.current_frame_index, VK_TRUE, ~((uint64_t) 0));
 
-	if (present_stats)
-		present_stats_fence_us += Sys_Microseconds() - t_block_begin;
+	{
+		const uint64_t fence_us = Sys_Microseconds() - t_block_begin;
+		CPUPROF_WAITED(fence_us);
+		CPUPROF_DETAIL_ADD(WAIT_BEGIN, fence_us);
+		CPUPROF_DETAIL_ADD(WAIT_FENCE, fence_us);
+		if (present_stats)
+			present_stats_fence_us += fence_us;
+	}
 	
 	if (res_fence == VK_ERROR_DEVICE_LOST)
 	{
@@ -8154,19 +8182,25 @@ retry:;
 		.deviceMask = (1 << qvk.device_count) - 1,
 	};
 
-	if (present_stats) t_block_begin = Sys_Microseconds();
+	t_block_begin = Sys_Microseconds();
 	VkResult res_swapchain = acquire_next_image_locked(
 		qvk.semaphores[qvk.current_frame_index][0].image_available,
 		&qvk.current_swap_chain_image_index);
 #else
-	if (present_stats) t_block_begin = Sys_Microseconds();
+	t_block_begin = Sys_Microseconds();
 	VkResult res_swapchain = acquire_next_image_locked(
 		qvk.semaphores[qvk.current_frame_index][0].image_available,
 		&qvk.current_swap_chain_image_index);
 #endif
+	{
+		const uint64_t acquire_us = Sys_Microseconds() - t_block_begin;
+		CPUPROF_WAITED(acquire_us);
+		CPUPROF_DETAIL_ADD(WAIT_BEGIN, acquire_us);
+		if (present_stats)
+			present_stats_acquire_us += acquire_us;
+	}
 	if (present_stats)
 	{
-		present_stats_acquire_us += Sys_Microseconds() - t_block_begin;
 		report_present_stats(qvk.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" :
 			qvk.present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "IMMEDIATE",
 			qvk.surf_num_images);
@@ -9246,10 +9280,15 @@ R_EndFrame_RTX(void)
 			present_info.pWaitSemaphores    = NULL;
 		}
 		Reflex_SetMarker(VK_LATENCY_MARKER_PRESENT_START_NV);
+		const uint64_t present_t0 = Sys_Microseconds();
 		FGPresent_SwapchainLock();
 		res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
 		vkpt_note_image_presented(qvk.current_swap_chain_image_index);
 		FGPresent_SwapchainUnlock();
+		// the present can block (a full queue, vsync): waiting (cpuprof.h)
+		const uint64_t present_us = Sys_Microseconds() - present_t0;
+		CPUPROF_WAITED(present_us);
+		CPUPROF_DETAIL_ADD(WAIT_PRESENT, present_us);
 		Reflex_SetMarker(VK_LATENCY_MARKER_PRESENT_END_NV);
 	}
 	if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR
@@ -9693,11 +9732,41 @@ vkpt_init_frontend(void)
 	}
 }
 
+/* The game's use of the card's own memory against what Windows lets it have
+   (VK_EXT_memory_budget, device-local heaps): com_vram_usage, as the D3D12 renderer's
+   d3d12_vram_usage. 0 without the extension. */
+static uint64_t vk_vram_usage(uint64_t *budget)
+{
+	if (!qvk.supports_memory_budget || qvk.physical_device == VK_NULL_HANDLE)
+		return 0;
+
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT mb = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+	};
+	VkPhysicalDeviceMemoryProperties2 props = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+		.pNext = &mb,
+	};
+	vkGetPhysicalDeviceMemoryProperties2(qvk.physical_device, &props);
+
+	uint64_t used = 0, total = 0;
+	for (uint32_t i = 0; i < props.memoryProperties.memoryHeapCount; i++) {
+		if (props.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+			used += mb.heapUsage[i];
+			total += mb.heapBudget[i];
+		}
+	}
+	if (budget)
+		*budget = total;
+	return used;
+}
+
 /* called when the library is loaded */
 ref_type_t
 R_Init_RTX(bool total)
 {
 	registration_sequence = 1;
+	qvk.supports_memory_budget = false;	// the extension scan sets it
 
 	if (!VID_Init(GAPI_VULKAN)) {
 		Com_Error(ERR_FATAL, "VID_Init failed\n");
@@ -9764,6 +9833,20 @@ R_Init_RTX(bool total)
 		return REF_TYPE_NONE;
 	}
 
+	/* VIDEO MEMORY, BEFORE THIS RENDERER HAS MADE ANYTHING. Matt, 11-14: Vulkan lost its
+	   device on its first frame after a vid_rtx 3 -> 1 switch, from a D3D12 session
+	   that had run at 13.7 of 13.9 GB, and nothing said whether D3D12 had given its
+	   memory back (its shutdown now says what it left). Anything well above zero here is
+	   a previous renderer's. Also the map load's "Map load VRAM:" line, as on D3D12. */
+	com_vram_usage = vk_vram_usage;
+	{
+		uint64_t budget = 0;
+		const uint64_t used = vk_vram_usage(&budget);
+		if (budget)
+			Com_Printf("Vulkan: video memory at start-up %.2f of %.2f GB budget\n",
+				used / 1073741824.0, budget / 1073741824.0);
+	}
+
 	_VK(create_command_pool_and_fences());
 	_VK(create_swapchain());
 
@@ -9788,6 +9871,7 @@ void
 R_Shutdown_RTX(bool total)
 {
 	vkpt_freecam_reset();
+	com_vram_usage = NULL;
 
 	// cpu_bench's workers before the world mesh and the textures they read go away
 	vkpt_unregister_commands();
@@ -10253,6 +10337,9 @@ vkpt_begin_registration(const char *name)
 		if (blood_capacity && vkpt_prep_backend->reserve_blood_staging)
 			vkpt_prep_backend->reserve_blood_staging(blood_capacity);
 	}
+	// and the renderer's CPU workers (jobs.c), which started on the first blood
+	vkpt_parallel_threads();
+	vkpt_profiler_level_loaded();
 	vkpt_refdef.bsp_mesh_world_loaded = 1;
 	bsp = NULL;
 	world_anim_frame = 0;

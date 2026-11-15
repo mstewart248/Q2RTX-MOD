@@ -83,6 +83,9 @@ static cvar_t *cl_blood_film_smooth;
 static cvar_t *cl_blood_film_detail;
 static cvar_t *cl_blood_film_stats;
 static cvar_t *cl_blood_film_mesh_ms;
+static cvar_t *cl_blood_film_compact;
+static cvar_t *cl_blood_film_tail;
+static cvar_t *film_stretch;            // cl_blood_stretch, the splats' own
 
 // Owned by effects.c; read here.
 static cvar_t *film_splat_size;
@@ -167,6 +170,7 @@ typedef struct {
     int         fed_time;       // cl.time blood last arrived
     int         fade_from;      // cl.time its patch was picked to make room (0: not)
     bool        fade_part;      // ... only this old part of a patch too big to go whole
+    int         compact_from;   // cl.time its patch was drawn coarse to make room (0: not) - see Compacting
     float       moved;
     float       moved_max;      // the most any one cell gave away this step
     bool        pending;        // h has moved on from h_mesh by less than shows
@@ -228,6 +232,8 @@ static int          film_starved;   // tiles asked for with the pool full, since
 static int          film_stat_classified;   // cells traced (film_classify_cell)
 static int          film_stat_coarser;  // tiles meshed below cl_blood_film_detail to fit
 static int          film_stat_seen_faded;   // ... of film_stat_faded, in sight of the player
+static int          film_stat_compacted, film_stat_seen_compacted, film_stat_uncompacted;
+static bool         film_compact_check; // a compact patch was fed or grew: film_fade looks at it
 static uint64_t     film_stat_step_us, film_stat_mesh_us, film_stat_new_us;
 static uint64_t     film_stat_job_us, film_stat_wait_us, film_stat_job_max_us;
 
@@ -237,6 +243,7 @@ are effects.c's and are only ever touched on the main thread.
 */
 typedef struct {
     vec3_t      point, normal;
+    vec3_t      vel;            // as it arrived - see DIRECTIONAL SPATTER
     float       radius;
     int         color;
     color_t     rgba;
@@ -709,6 +716,19 @@ static int film_tile_get(int plane, int tx, int ty, bool create, bool may_recycl
     t->dirty = true;
     film_mark_neighbours_dirty(t);
 
+    // Next to a patch drawn coarse (see Compacting): coarse as well, or the side
+    // the two share is cut at two details and cracks. film_fade then settles the
+    // whole patch, which has just grown, one way or the other.
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            const int n = film_tile_lookup(plane, tx + dx, ty + dy);
+            if (n >= 0 && n != idx && film_tiles[n].compact_from) {
+                t->compact_from = film_tiles[n].compact_from;
+                film_compact_check = true;
+            }
+        }
+    }
+
     film_stat_new++;
     film_stat_new_us += Sys_Microseconds() - t0;
     return idx;
@@ -733,11 +753,123 @@ static void film_wake(film_tile_t *t)
     t->calm = 0;
     t->fed_time = film_now;
 
+    // New blood on a patch drawn coarse: film_fade draws it fine again if there
+    // is room (Compacting).
+    if (t->compact_from)
+        film_compact_check = true;
+
     // A patch fading to make room keeps going, new blood and all - see Fading.
     if (t->alpha != 1.f && !t->fade_from) {
         t->alpha = 1.f;
         t->version = ++film_version_seq;
     }
+}
+
+/*
+===============
+DIRECTIONAL SPATTER
+
+A droplet that arrives at a slant leaves a mark drawn out along the way it was
+going, as a splat does (cl_blood_stretch, the same setting): its footprint is an
+ellipse stretched along the travel by up to cl_blood_stretch and narrowed across
+it by as much, so it covers the area a round one would and lands as deep - the
+cling and pooling tuning see the same blood. Matt (2026-11-14): "is there a way
+to add any directionality to the cl_blood_film splats?" - the film's landings
+were all round.
+
+The stretch ramps in with how glancing the hit is, from a quarter of the speed
+along the surface (straight down stays round) to all of it. cl_blood_film_tail
+then makes it a TEARDROP rather than an ellipse - longer and narrowing ahead of
+the impact, blunt behind - and throws a small satellite drop off past the tip on
+some of the hardest-glancing ones: the spine a real stain points the way it was
+travelling with. 0 is the plain ellipse.
+
+Same footprint as before for a droplet that arrives straight on, and for blood
+the flow hands over (no velocity): film_shape_t's `round`.
+===============
+*/
+typedef struct {
+    float   fs, ft;         // centre, in cells
+    int     gx, gy;         // the cell the loop is centred on, which always takes some
+    int     reach;          // ... and how far round it the loop looks
+    bool    always;         // gx, gy takes some even outside the shape (the landing cell)
+    bool    round;          // the plain disc of radius `rc`, exactly as it always was
+    float   rc;
+    float   ax, ay;         // the travel along the surface, unit, in (u, v)
+    float   front, back;    // extent ahead of and behind the centre, in cells
+    float   across;         // half-width at the centre, in cells
+    float   taper;          // ... shrinking to (1 - taper) of it at the front tip
+} film_shape_t;
+
+static float film_shape_weight(const film_shape_t *s, int cx, int cy)
+{
+    const float dx = (cx + 0.5f) - s->fs, dy = (cy + 0.5f) - s->ft;
+
+    if (s->round)
+        return 1.f - (dx * dx + dy * dy) / (s->rc * s->rc);
+
+    const float a = dx * s->ax + dy * s->ay;
+    const float c = dy * s->ax - dx * s->ay;
+    const float wa = a / (a >= 0.f ? s->front : s->back);
+    float across = s->across;
+    if (a > 0.f)
+        across *= 1.f - s->taper * min(wa, 1.f);
+    const float wc = c / max(across, 0.25f);
+
+    return 1.f - wa * wa - wc * wc;
+}
+
+// Puts `volume` over the shape's SURFACE cells, in proportion to the weight.
+// False, and nothing put down, if none of them can hold blood.
+static bool film_deposit(int plane, const film_shape_t *s, float volume, bool immediate)
+{
+    float wsum = 0.f;
+
+    // Two passes: weigh, then deposit, so cells that cannot hold blood do not
+    // take a share of it.
+    for (int pass = 0; pass < 2; pass++) {
+        for (int oy = -s->reach; oy <= s->reach; oy++) {
+            for (int ox = -s->reach; ox <= s->reach; ox++) {
+                float w = film_shape_weight(s, s->gx + ox, s->gy + oy);
+
+                if (ox == 0 && oy == 0 && s->always)
+                    w = max(w, 0.25f);      // the landing cell always takes some
+                if (w <= 0.f)
+                    continue;
+
+                int c, t2 = film_cell_at(plane, s->gx + ox, s->gy + oy, pass == 0 && immediate,
+                                         immediate, &c);
+                if (t2 < 0 || film_kind(&film_tiles[t2], c) != CELL_SURFACE)
+                    continue;
+
+                if (pass == 0) {
+                    wsum += w;
+                    continue;
+                }
+
+                film_tile_t *t = &film_tiles[t2];
+                const float add = volume * w / wsum;
+                if (immediate) {
+                    // Shown on the next step, with every other landing on the
+                    // tile by then: one mesh, not one per droplet (a blast lands
+                    // dozens a frame) - see WHAT THE MESHES SEE.
+                    t->h[c] += add;
+                    t->pending = true;
+                    t->publish_now = true;
+                } else {
+                    t->dh[c] += add;
+                    t->touched = true;
+                }
+
+                film_wake(t);
+            }
+        }
+
+        if (pass == 0 && wsum <= 0.f)
+            return false;
+    }
+
+    return true;
 }
 
 /*
@@ -752,10 +884,13 @@ dh, applied with the rest of the step).
 under the point is not - blood arriving at the foot of a wall can land on a cell
 the wall stands on, and the right place for it is the first free cell out from
 the wall.
+
+`vel`, when given, is how the droplet arrived - see DIRECTIONAL SPATTER.
 ===============
 */
 static bool film_add(const vec3_t point, const vec3_t normal, float volume, float spread,
-                     int color, const color_t *rgba, const vec3_t away, bool immediate)
+                     int color, const color_t *rgba, const vec3_t away, const vec3_t vel,
+                     bool immediate)
 {
     const float dist = DotProduct(point, normal);
     const int plane = film_find_plane(normal, dist, true);
@@ -829,57 +964,71 @@ static bool film_add(const vec3_t point, const vec3_t normal, float volume, floa
         film_add_wet = film_tiles[ti].h[cell] >= max(0.005f, max(0.f, cl_blood_film_trail->value) * 0.4f);
 
     // Spread over the droplet's footprint, peaked in the middle, so one droplet
-    // makes a round spot rather than a single square cell of blood.
+    // makes a round spot rather than a single square cell of blood - or, landing
+    // at a slant, a streak along the way it went (DIRECTIONAL SPATTER).
     const float rc = max(0.5f, spread / film_cell);
-    const int reach = (int)ceilf(rc);
-    float wsum = 0.f;
+    film_shape_t body = {
+        .fs = fs, .ft = ft, .gx = gx, .gy = gy, .reach = (int)ceilf(rc),
+        .always = true, .round = true, .rc = rc,
+    };
+    film_shape_t sat = body;
+    float sat_share = 0.f;
 
-    // Two passes: weigh, then deposit, so cells that cannot hold blood do not
-    // take a share of it.
-    for (int pass = 0; pass < 2; pass++) {
-        for (int oy = -reach; oy <= reach; oy++) {
-            for (int ox = -reach; ox <= reach; ox++) {
-                const float dx = (gx + ox + 0.5f) - fs, dy = (gy + oy + 0.5f) - ft;
-                float w = 1.f - (dx * dx + dy * dy) / (rc * rc);
+    if (vel && immediate) {
+        const float vu = DotProduct(vel, p->u), vv = DotProduct(vel, p->v);
+        const float along = sqrtf(vu * vu + vv * vv);
+        const float speed = VectorLength(vel);
+        const float stretch_max = film_stretch->value;
+        // 0 under a quarter of the speed along the surface, 1 skimming it.
+        const float slant = speed > 1.f ? max(0.f, min(1.f, (along / speed - 0.25f) / 0.75f)) : 0.f;
 
-                if (ox == 0 && oy == 0)
-                    w = max(w, 0.25f);      // the landing cell always takes some
-                if (w <= 0.f)
-                    continue;
+        if (slant > 0.f && stretch_max > 1.f) {
+            const float stretch = 1.f + (stretch_max - 1.f) * slant;
+            const float tail = max(0.f, min(cl_blood_film_tail->value, 1.f)) * slant;
 
-                int c, t2 = film_cell_at(plane, gx + ox, gy + oy, pass == 0 && immediate,
-                                         immediate, &c);
-                if (t2 < 0 || film_kind(&film_tiles[t2], c) != CELL_SURFACE)
-                    continue;
+            body.round = false;
+            body.ax = vu / along;
+            body.ay = vv / along;
+            body.front = rc * stretch * (1.f + 0.35f * tail);
+            body.back = rc * stretch * (1.f - 0.35f * tail);
+            body.across = rc / stretch;
+            body.taper = 0.6f * tail;
 
-                if (pass == 0) {
-                    wsum += w;
-                    continue;
-                }
+            // The loop is centred on the landing cell, which may have been
+            // moved a cell or two off the point to find surface.
+            const float off = max(fabsf(gx + 0.5f - fs), fabsf(gy + 0.5f - ft));
+            body.reach = (int)ceilf(body.front + off);
 
-                film_tile_t *t = &film_tiles[t2];
-                const float add = volume * w / wsum;
-                if (immediate) {
-                    // Shown on the next step, with every other landing on the
-                    // tile by then: one mesh, not one per droplet (a blast lands
-                    // dozens a frame) - see WHAT THE MESHES SEE.
-                    t->h[c] += add;
-                    t->pending = true;
-                    t->publish_now = true;
-                } else {
-                    t->dh[c] += add;
-                    t->touched = true;
-                }
+            // The satellite: one in so many of the slanting landings, more the
+            // flatter they come in - placed from a hash of where and how the
+            // droplet arrived, never frand (THE WORKER).
+            const float pick = film_noise(plane, gx + (int)(vu * 0.125f), gy + (int)(vv * 0.125f)) * 0.5f + 0.5f;
+            if (slant > 0.4f && pick < tail * 0.6f) {
+                const float h1 = film_noise(plane + 1, gx, gy), h2 = film_noise(plane + 2, gy, gx);
+                const float dist = body.front + rc * (0.9f + 0.4f * h1);
+                const float side = body.across * 0.6f * h2;
 
-                film_wake(t);
+                sat.fs = fs + body.ax * dist - body.ay * side;
+                sat.ft = ft + body.ay * dist + body.ax * side;
+                sat.gx = (int)floorf(sat.fs);
+                sat.gy = (int)floorf(sat.ft);
+                sat.rc = max(0.6f, rc * 0.4f);
+                sat.reach = (int)ceilf(sat.rc);
+                sat.always = false;
+                sat_share = 0.12f;
             }
         }
-
-        if (pass == 0 && wsum <= 0.f) {
-            film_release_plane_if_empty(plane);
-            return false;
-        }
     }
+
+    if (!film_deposit(plane, &body, volume * (1.f - sat_share), immediate)) {
+        film_release_plane_if_empty(plane);
+        return false;
+    }
+
+    // Off an edge or onto something standing there: its share stays with the
+    // mark, so no blood is lost.
+    if (sat_share > 0.f && !film_deposit(plane, &sat, volume * sat_share, immediate))
+        film_deposit(plane, &body, volume * sat_share, immediate);
 
     return true;
 }
@@ -971,7 +1120,7 @@ static bool film_corner(const film_plane_t *p, int gx, int gy, int dx, int dy, f
         return false;
 
     film_stat_corner++;
-    return film_add(tr.endpos, tr.plane.normal, volume, 0.f, p->color, &p->rgba, p->normal, false);
+    return film_add(tr.endpos, tr.plane.normal, volume, 0.f, p->color, &p->rgba, p->normal, NULL, false);
 }
 
 /*
@@ -1635,6 +1784,11 @@ static void film_mesh(film_tile_t *t)
     const bool smooth = cl_blood_film_smooth->integer != 0;
     int detail = max(1, min(cl_blood_film_detail->integer, FILM_DETAIL_MAX));
 
+    // A patch squeezed to make room is drawn at the cell grid - see Compacting.
+    // Its whole patch is, so no side is shared with a finer mesh.
+    if (t->compact_from)
+        detail = 1;
+
     inv_full = 1.f / full;
     t->starved = !film_ensure_neighbours(t);
 
@@ -1799,10 +1953,14 @@ is cut off").
     fading while a reserve of tiles is still free, so a landing does not have
     to recycle a tile out of the middle of a pool. A tile that joins a fading
     patch goes with it.
-  - A patch bigger than a quarter of the pool - a whole fight's floor, joined
-    up - would take all of that blood with it, so only its oldest quarter goes
-    (fade_part), and that does not spread to the rest. The one place a fade can
-    still show a tile edge.
+  - A patch holding more than a quarter of the blood there is - a whole fight's
+    floor, joined up - would take all of that with it, so only its oldest
+    quarter goes (fade_part), and that does not spread to the rest. The one
+    place a fade can still show a tile edge. A quarter of the tiles IN USE, or
+    of the triangles: it was a quarter of cl_blood_film_tiles, so at 2048 a
+    300-tile fight floor went whole - the triangles ran out long before - and a
+    bigger pool kept LESS blood than 512 did (2026-11-14, harness: 14.7K sq
+    units left after a 40 s fight against 29K).
   - STARVED: a tile was asked for with the pool full - a burst outran the fade,
     and some outline is closing along a tile edge for want of its neighbour.
     Whatever is fading goes FILM_HURRY times as fast while it lasts, and the
@@ -1818,7 +1976,13 @@ static int film_group_of[MAX_BLOOD_FILM_TILES];
 static int film_group_fed[MAX_BLOOD_FILM_TILES];    // a patch's most recent fed_time
 static int film_group_fade[MAX_BLOOD_FILM_TILES];   // when it was picked to make room (0: not)
 static int film_group_size[MAX_BLOOD_FILM_TILES];
+static int film_group_chunks[MAX_BLOOD_FILM_TILES]; // renderer chunks it fills
 static bool film_group_seen[MAX_BLOOD_FILM_TILES];  // some tile of it is in sight - see film_tile_seen
+
+static int film_tile_chunks(const film_tile_t *t)
+{
+    return BLOOD_FILM_CHUNKS(min(t->num_tris, BLOOD_FILM_TILE_TRIS));
+}
 
 /*
 Whether the player can see a tile, roughly: near enough to turn round and look
@@ -1883,6 +2047,7 @@ static int film_label_groups(void)
         film_group_fed[g] = INT_MIN;
         film_group_fade[g] = 0;
         film_group_size[g] = 0;
+        film_group_chunks[g] = 0;
         film_group_seen[g] = false;
         film_group_of[i] = g;
         queue[tail++] = i;
@@ -1891,6 +2056,7 @@ static int film_label_groups(void)
             const film_tile_t *t = &film_tiles[queue[head++]];
 
             film_group_size[g]++;
+            film_group_chunks[g] += film_tile_chunks(t);
             if (!film_group_seen[g] && film_tile_seen(t))
                 film_group_seen[g] = true;
             film_group_fed[g] = max(film_group_fed[g], t->fed_time);
@@ -1915,8 +2081,8 @@ static int film_label_groups(void)
 
 // The patch fed longest ago starts to fade - or, if it is too big to go whole,
 // its oldest quarter. Out of sight before in sight, whatever the age: see
-// film_tile_seen. Returns how many tiles that is.
-static int film_pick_fade(int groups, int now)
+// film_tile_seen. `used`: tiles in use. Returns how many tiles that is.
+static int film_pick_fade(int groups, int now, int used)
 {
     int pick = -1;
 
@@ -1936,7 +2102,8 @@ static int film_pick_fade(int groups, int now)
 
     const int start = now ? now : 1;
 
-    if (film_group_size[pick] <= max(max(4, film_cap / 8), film_cap / 4)) {
+    if (film_group_size[pick] <= max(4, used / 4) &&
+        film_group_chunks[pick] <= max(8, film_chunks_used / 4)) {
         film_group_fade[pick] = start;
         for (int i = 0; i < film_cap; i++) {
             if (film_tiles[i].used && film_group_of[i] == pick) {
@@ -2042,13 +2209,177 @@ static bool film_tile_outline_of_fading(const film_tile_t *t)
     return fading;
 }
 
+/*
+===============
+Compacting - cl_blood_film_compact (default 1)
+
+Matt (2026-11-14): "can we have an option so the blood never disappears like the
+old blood splat system". With g_no_janitor on (the default) the film never ages
+blood out: a patch fades only when the pool runs low, and what runs low first is
+the renderer's TRIANGLES - ~530 a tile at outline detail 2, so cl_blood_film_tris
+262144 holds about 500 tiles, a handful of shotgun blasts' spatter.
+
+So before anything fades, the patch blood stopped reaching longest ago is drawn
+again at outline detail 1, the cell grid, which takes FILM_COMPACT_GAIN times
+fewer of the renderer's chunks (harness, 2026-11-14: see the figures below).
+Nothing goes: the blood is all still there and still flows; its outline is only
+a little plainer, cut along the cells instead of curving between them. Out of
+sight first, then in sight, the stalest first, and only once a patch has been
+left alone for FILM_COMPACT_AFTER. A patch fades only when there is nothing left
+to compact - or when it is the TILES that run low, which this does not help:
+cl_blood_film_tiles is client memory only (allocated whatever it says), so it is
+worth raising to 2048 with this on.
+
+A whole PATCH at once, never a tile. Tiles meshed at two details do not meet
+along the side they share - hairline seams, as film_mesh's coarser remesh shows.
+So a tile made next to a compact one is compact too (film_tile_get), and a
+compact patch that new blood reaches, or that has grown into a fine one, is
+settled on the next job (film_compact_resolve): drawn fine again if there is room
+for it - it is the newest blood, and the last that would be compacted again - or
+else all of it coarse. Until then a tile made BETWEEN a compact patch and a fine
+one can show a hairline seam for a frame.
+
+0 fades as before, and draws any compact patch fine again.
+===============
+*/
+#define FILM_COMPACT_AFTER  2000    // ms blood has to have stopped reaching a patch
+#define FILM_COMPACT_GAIN   2       // chunks a patch takes drawn fine, per chunk compact
+
+static int  film_group_compact[MAX_BLOOD_FILM_TILES];       // tiles of it drawn coarse
+static int  film_group_compact_from[MAX_BLOOD_FILM_TILES];  // ... the earliest of them, when
+static bool film_group_busy[MAX_BLOOD_FILM_TILES];          // some tile of it is fading
+static int  film_group_new_compact[MAX_BLOOD_FILM_TILES];   // its tiles' compact_from to be (-1: as is)
+
+static bool film_compact_on(void)
+{
+    return cl_blood_film_compact->integer && cl_blood_film_detail->integer > 1;
+}
+
+static void film_group_compact_stats(int groups)
+{
+    for (int g = 0; g < groups; g++) {
+        film_group_compact[g] = 0;
+        film_group_compact_from[g] = 0;
+        film_group_busy[g] = false;
+        film_group_new_compact[g] = -1;
+    }
+
+    for (int i = 0; i < film_cap; i++) {
+        const film_tile_t *t = &film_tiles[i];
+        if (!t->used)
+            continue;
+
+        const int g = film_group_of[i];
+        film_group_busy[g] |= t->fade_from != 0;
+        if (t->compact_from) {
+            film_group_compact[g]++;
+            if (!film_group_compact_from[g] || t->compact_from < film_group_compact_from[g])
+                film_group_compact_from[g] = t->compact_from;
+        }
+    }
+}
+
+// Every tile of patch g to be drawn coarse from `from` on, or (0) at full detail -
+// done by film_group_apply_compact.
+static void film_group_set_compact(int g, int from)
+{
+    film_group_new_compact[g] = from;
+}
+
+// Only the tiles that change detail are meshed again: this job, all together, so
+// a patch is never drawn at two details at once.
+static void film_group_apply_compact(void)
+{
+    for (int i = 0; i < film_cap; i++) {
+        film_tile_t *t = &film_tiles[i];
+        if (!t->used)
+            continue;
+
+        const int from = film_group_new_compact[film_group_of[i]];
+        if (from < 0)
+            continue;
+        if ((t->compact_from != 0) != (from != 0))
+            t->dirty = true;
+        t->compact_from = from;
+    }
+}
+
+// A compact patch new blood has reached, or that has grown into fine tiles: fine
+// again if `room` (chunks) holds what that costs, else coarse all over.
+static void film_compact_resolve(int groups, int now, int *room)
+{
+    const bool on = film_compact_on();
+
+    for (int g = 0; g < groups; g++) {
+        if (!film_group_compact[g])
+            continue;
+
+        const bool mixed = film_group_compact[g] < film_group_size[g];
+        const bool fed = film_group_fed[g] > film_group_compact_from[g];
+        if (on && !mixed && !fed)
+            continue;
+
+        const int grow = film_group_chunks[g] * (FILM_COMPACT_GAIN - 1);
+        if (!on || grow <= *room) {
+            film_group_set_compact(g, 0);
+            *room -= grow;
+            film_stat_uncompacted += film_group_size[g];
+        } else {
+            film_group_set_compact(g, max(1, now));
+        }
+    }
+}
+
+// Patches blood has stopped reaching drawn coarse, the stalest first and out of
+// sight before in sight, until about `want` chunks are coming free. Returns how
+// many tiles that was (0: nothing left to compact).
+static int film_pick_compact(int groups, int now, int want)
+{
+    static bool tried[MAX_BLOOD_FILM_TILES];
+    int got = 0, tiles = 0;
+
+    for (int g = 0; g < groups; g++)
+        tried[g] = false;
+
+    while (got < want) {
+        int pick = -1;
+
+        for (int g = 0; g < groups; g++) {
+            if (tried[g] || film_group_compact[g] || film_group_busy[g] || film_group_fade[g])
+                continue;
+            if (film_group_chunks[g] <= film_group_size[g] || film_group_fed[g] > now - FILM_COMPACT_AFTER)
+                continue;   // a chunk a tile at most already: nothing to gain
+            if (pick >= 0 && film_group_seen[g] != film_group_seen[pick]) {
+                if (!film_group_seen[g])
+                    pick = g;
+                continue;
+            }
+            if (pick < 0 || film_group_fed[g] < film_group_fed[pick])
+                pick = g;
+        }
+        if (pick < 0)
+            break;
+
+        tried[pick] = true;
+        film_group_set_compact(pick, max(1, now));
+        film_group_compact[pick] = film_group_size[pick];
+        got += film_group_chunks[pick] - max(film_group_size[pick], film_group_chunks[pick] / FILM_COMPACT_GAIN);
+        tiles += film_group_size[pick];
+        film_stat_compacted += film_group_size[pick];
+        if (film_group_seen[pick])
+            film_stat_seen_compacted += film_group_size[pick];
+    }
+
+    return tiles;
+}
+
 static void film_fade(int now, int elapsed)
 {
     const bool permanent = film_permanent->integer != 0;
     const int reserve = max(4, film_cap / 8);
     const int chunk_reserve = max(8, film_chunk_cap / 5);   // a burst is ~100 chunks
     const bool starved = film_starved > 0;
-    int used = 0, fading = 0, freed = 0;
+    int used = 0, fading = 0, fading_chunks = 0, compact = 0, freed = 0;
 
     film_starved = 0;
 
@@ -2056,15 +2387,33 @@ static void film_fade(int now, int elapsed)
         if (!film_tiles[i].used)
             continue;
         used++;
-        fading += film_tiles[i].fade_from != 0;
+        if (film_tiles[i].fade_from) {
+            fading++;
+            fading_chunks += film_tile_chunks(&film_tiles[i]);
+        }
+        compact += film_tiles[i].compact_from != 0;
     }
 
-    const bool low = used > film_cap - reserve || film_chunks_used > film_chunk_cap - chunk_reserve;
+    const bool tiles_low = used > film_cap - reserve;
+    const bool chunks_low = film_chunks_used > film_chunk_cap - chunk_reserve;
+    const bool low = tiles_low || chunks_low;
 
-    if (permanent && !low && !fading && !starved)
+    // A compact patch to settle - see Compacting.
+    const bool settle = compact && (film_compact_check || !film_compact_on());
+    film_compact_check = false;
+
+    if (permanent && !low && !fading && !starved && !settle)
         return;
 
     int groups = film_label_groups();
+
+    if (compact || film_compact_on())
+        film_group_compact_stats(groups);
+
+    if (settle) {
+        int room = film_chunk_cap - chunk_reserve - film_chunks_used;
+        film_compact_resolve(groups, now, &room);
+    }
 
     // NOT DONE: new blood landing on a patch already fading does not stop the
     // fade - it goes with the patch. Stopping it was tried (2026-11-07): in a
@@ -2074,9 +2423,26 @@ static void film_fade(int now, int elapsed)
     // this off screen.
 
     // Running low, and what is already going will not free enough: the patch
-    // fed longest ago goes too.
-    if ((low || starved) && fading < reserve)
-        fading += film_pick_fade(groups, now);
+    // fed longest ago is drawn coarse (Compacting) or, with nothing left to
+    // compact or the tiles the short part, goes too.
+    //
+    // "Enough" in what is short. It was counted in tiles either way, against a
+    // reserve of an eighth of cl_blood_film_tiles - so with the TRIANGLES short
+    // and 2048 tiles, patches kept being picked until 256 tiles were fading:
+    // most of the blood there was (2026-11-14, harness).
+    const bool want_tiles = tiles_low && fading < reserve;
+    const bool want_chunks = (chunks_low || starved) && fading_chunks < chunk_reserve;
+
+    if (want_tiles || want_chunks) {
+        int compacted = 0;
+        if (film_compact_on() && !want_tiles)
+            compacted = film_pick_compact(groups, now, chunk_reserve);
+        if (!compacted)
+            fading += film_pick_fade(groups, now, used);
+    }
+
+    if (compact || film_compact_on())
+        film_group_apply_compact();
 
     // Starved: what is fading goes FILM_HURRY times as fast - its start moved
     // back by the extra time, so every tile of a patch stays in step.
@@ -2245,6 +2611,7 @@ void CL_BloodFilmClear(void)
 
     film_num_landings[0] = film_num_landings[1] = 0;
     film_num_refused = film_num_spills = film_num_sounds = 0;
+    film_compact_check = false;
 
     if (film_bsp) {
         BSP_Free(film_bsp);
@@ -2329,6 +2696,18 @@ void CL_BloodFilmInit(void)
     film_cr_init();
     cl_blood_film_stats = Cvar_Get("cl_blood_film_stats", "0", 0);
 
+    // Before any blood fades to make room, the patches blood stopped reaching
+    // longest ago are drawn at the cell grid, which takes about half the
+    // triangles - see Compacting. 0 fades as it always did.
+    cl_blood_film_compact = Cvar_Get("cl_blood_film_compact", "1", CVAR_ARCHIVE);
+
+    // A droplet landing at a slant: how much its mark narrows ahead of the
+    // impact into a teardrop, with a satellite drop past the tip on some - see
+    // DIRECTIONAL SPATTER. How long the mark is drawn out is the splats' own
+    // cl_blood_stretch. 0 is a plain ellipse.
+    cl_blood_film_tail = Cvar_Get("cl_blood_film_tail", "0.5", CVAR_ARCHIVE);
+    film_stretch = Cvar_Get("cl_blood_stretch", "2.0", CVAR_ARCHIVE);
+
     film_splat_size = Cvar_Get("cl_blood_splat_size", "1.5", CVAR_ARCHIVE);
     film_permanent = Cvar_Get("g_no_janitor", "1", CVAR_ARCHIVE);
     film_splat_life = Cvar_Get("cl_blood_splat_life", "8", CVAR_ARCHIVE);
@@ -2377,7 +2756,7 @@ CL_BloodFilmSplat a frame later.
 ===============
 */
 bool CL_BloodFilmDeposit(const vec3_t point, const vec3_t normal, float radius,
-                         int color, const color_t *rgba)
+                         const vec3_t vel, int color, const color_t *rgba)
 {
     if (!film_active())
         return false;
@@ -2401,6 +2780,10 @@ bool CL_BloodFilmDeposit(const vec3_t point, const vec3_t normal, float radius,
     film_landing_t *l = &film_landings[film_landing_fill][(*n)++];
     VectorCopy(point, l->point);
     VectorCopy(normal, l->normal);
+    if (vel)
+        VectorCopy(vel, l->vel);
+    else
+        VectorClear(l->vel);
     l->radius = radius;
     l->color = color;
     l->has_rgba = rgba != NULL;
@@ -2448,7 +2831,7 @@ static void film_job(void)
             const float spread = l->radius * max(0.1f, film_splat_size->value);
             film_add_wet = false;
             if (film_add(l->point, l->normal, film_drop_volume(l->radius), spread, l->color,
-                         l->has_rgba ? &l->rgba : NULL, NULL, true)) {
+                         l->has_rgba ? &l->rgba : NULL, NULL, l->vel, true)) {
                 if (film_num_sounds < FILM_MAX_LANDINGS) {
                     film_sound_t *s = &film_sounds[film_num_sounds++];
                     VectorCopy(l->point, s->point);
@@ -2685,6 +3068,11 @@ static void film_finish(void)
                 Q_strlcat(extra, va(", %d refused (pool full)", film_stat_full), sizeof(extra));
             if (film_stat_unshown)
                 Q_strlcat(extra, va(", %d tile-frames not drawn (over cl_blood_film_tris)", film_stat_unshown), sizeof(extra));
+            if (film_stat_compacted)
+                Q_strlcat(extra, va(", %d tiles drawn coarse to make room (%d in sight)",
+                                    film_stat_compacted, film_stat_seen_compacted), sizeof(extra));
+            if (film_stat_uncompacted)
+                Q_strlcat(extra, va(", %d back to full detail", film_stat_uncompacted), sizeof(extra));
             if (film_stat_faded)
                 Q_strlcat(extra, va(", %d tiles faded to make room (%d in sight)",
                                     film_stat_faded, film_stat_seen_faded), sizeof(extra));
@@ -2710,6 +3098,7 @@ static void film_finish(void)
             film_stat_steps = film_stat_meshes = film_stat_drips = film_stat_corner = 0;
             film_stat_full = film_stat_new = film_stat_dropped = film_stat_faded = film_stat_coarser = 0;
             film_stat_unshown = film_stat_classified = film_stat_seen_faded = 0;
+            film_stat_compacted = film_stat_seen_compacted = film_stat_uncompacted = 0;
             film_stat_step_us = film_stat_mesh_us = film_stat_new_us = 0;
             film_stat_job_us = film_stat_wait_us = film_stat_job_max_us = 0;
         }

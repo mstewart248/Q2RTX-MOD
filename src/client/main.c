@@ -3643,7 +3643,7 @@ unsigned CL_Frame(unsigned msec, int waterLevel)
     if (R_LatencySleep) {
         CPUPROF_BEGIN(REFLEX);
         R_LatencySleep();
-        CPUPROF_END(REFLEX);
+        CPUPROF_END_WAIT(REFLEX);
     }
 
     {
@@ -3840,6 +3840,17 @@ static void CL_CpuStatsFrame(void)
         cpuprof_us[i] = 0;
     }
     frame_us[CPUPROF_COUNT] = wall > claimed ? wall - claimed : 0;
+
+    // the closed frame for the GPU profiler's CPU breakdown (cpuprof.h), its details
+    // and counters with it; those start again from zero
+    memcpy(cpuprof_last.us, frame_us, sizeof(cpuprof_last.us));
+    memcpy(cpuprof_last.detail_us, cpuprof_detail_us, sizeof(cpuprof_last.detail_us));
+    memcpy(cpuprof_last.count, cpuprof_count, sizeof(cpuprof_last.count));
+    cpuprof_last.wall_us = wall;
+    cpuprof_last.serial++;
+    cpuprof_ring[cpuprof_last.serial % CPUPROF_RING] = cpuprof_last;
+    memset(cpuprof_detail_us, 0, sizeof(cpuprof_detail_us));
+    memset(cpuprof_count, 0, sizeof(cpuprof_count));
 
     // the files this frame read (cpuprof.h), taken every frame so none carry over
     char files[512];

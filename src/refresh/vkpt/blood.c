@@ -59,9 +59,11 @@ the first thing to look at if these ever start smearing.
 */
 
 #include "vkpt.h"
+#include "jobs.h"	// vkpt_parallel_for: the film's chunks, the staging copy
 #include "conversion.h"
 #include "shader/vertex_buffer.h"
 #include "system/system.h"
+#include "common/cpuprof.h"	// the GPU profiler's CPU breakdown
 
 #include <assert.h>
 
@@ -90,6 +92,14 @@ the first thing to look at if these ever start smearing.
 // only landed splats reach 1280. If it is the airborne beads that read as
 // polygonal up close, pt_blood_lod_air 0 is the cheaper knob to try first.
 //
+// 11-14 UPDATE - that is all superseded for droplets in flight by the
+// CLOSE-UP LOD (pt_blood_lod_px, see CLOSE-UP REGIONS): a normal slot now
+// holds at most level 2 at either tess 2 or 3, and a droplet that is large
+// ON SCREEN gets level 3 (1280) or BLOOD_CLOSEUP_LEVEL (5120) from a small
+// fixed pool, chosen by how far its outline would sit from a true circle in
+// pixels. Splats still top out at level 2, whose 80-segment rim is already
+// within a pixel at any size a pool reaches on screen.
+//
 // It is also the cost knob. Every per-frame expense scales linearly with it -
 // the CPU generation loop, the host copy, and the dynamic BLAS rebuild, which
 // happens on every frame anything in the section moves (see BLAS REUSE - a
@@ -99,6 +109,16 @@ the first thing to look at if these ever start smearing.
 #define BLOOD_SPHERE_MAX_SUBDIV 3
 #define BLOOD_SPHERE_MAX_FACES  (20 << (2 * BLOOD_SPHERE_MAX_SUBDIV))
 #define BLOOD_SPHERE_FACES(subdiv) (20 << (2 * (subdiv)))
+
+// The highest level a droplet's OWN slot holds. pt_blood_tess 3 no longer widens
+// the slots: anything above this lives in a close-up region.
+#define BLOOD_SLOT_TOP_LEVEL    2
+
+// The top close-up level, for an airborne SPHERE only (never a puddle - the
+// puddle tables stop at BLOOD_SPHERE_MAX_SUBDIV). 5120 faces: its outline is
+// within a pixel of a circle up to a ~1170 px radius, i.e. a droplet filling a
+// 4K screen.
+#define BLOOD_CLOSEUP_LEVEL     4
 
 typedef struct {
 	vec3_t pos[3];
@@ -162,16 +182,24 @@ static const int puddle_rings[BLOOD_SPHERE_MAX_SUBDIV + 1]    = {  2,  2,  2,   
 
 #define BLOOD_PUDDLE_FACES(level) (puddle_segments[level] * 2 * puddle_rings[level])
 
-// All four LOD levels, laid end to end: level 0 at [0,20), level 1 at [20,100),
-// level 2 at [100,420), level 3 at [420,1700). Built once - the whole set is
-// 1700 faces, so there is no reason to rebuild when the tessellation changes,
-// and holding all of them is what lets the level be picked PER DROPLET.
-#define BLOOD_TEMPLATE_TOTAL (20 + 80 + 320 + 1280)
+// All five sphere LOD levels, laid end to end: level 0 at [0,20), level 1 at
+// [20,100), level 2 at [100,420), level 3 at [420,1700), the close-up level 4
+// at [1700,6820). Built once - the whole set is 6820 faces, so there is no
+// reason to rebuild when the tessellation changes, and holding all of them is
+// what lets the level be picked PER DROPLET.
+#define BLOOD_TEMPLATE_TOTAL (20 + 80 + 320 + 1280 + 5120)
 
 static blood_face_t   sphere_template[BLOOD_TEMPLATE_TOTAL];
 static uint32_t       sphere_normals[BLOOD_TEMPLATE_TOTAL][3];    // encode_normal of the above
 static uint32_t       sphere_tangents[BLOOD_TEMPLATE_TOTAL][3];
-static int            lod_offset[BLOOD_SPHERE_MAX_SUBDIV + 1];    // first face of each level
+static int            lod_offset[BLOOD_CLOSEUP_LEVEL + 1];        // first face of each level
+
+// How far each level's OUTLINE falls inside the true sphere, as a fraction of
+// the radius: the worst edge midpoint's 1 - |m|, measured off the template when
+// it is built. 0.149 / 0.049 / 0.013 / 0.0034 / 0.00085. Times a droplet's
+// projected radius in pixels it is the faceting in pixels, which is what the
+// close-up LOD (pt_blood_lod_px) holds to a target.
+static float          sphere_sag[BLOOD_CLOSEUP_LEVEL + 1];
 
 static blood_face_t   puddle_template[BLOOD_PUDDLE_MAX_FACES];
 static uint32_t       puddle_tangents[BLOOD_PUDDLE_MAX_FACES][3];
@@ -238,6 +266,9 @@ typedef struct {
 	int            level;       // and at which tessellation
 	bool           valid;       // holds a droplet's geometry
 	bool           blanked;     // holds degenerate filler for an empty slot
+	// its whole region is zero in the SHADOW (made zeroed, or blanked since, and not
+	// written after): blanking it again is a memset of zeros - see FIRST BLOOD
+	bool           shadow_zero;
 
 	/*
 	WHAT THE DEVICE HOLDS, which is a different question from what the shadow
@@ -280,23 +311,54 @@ regenerated droplet cleared and re-uploaded 210 KB of slot. demo1 at 2048/tess 3
 went from ~90 fps to ~60 as the floor filled up, BVH_UPDATE 0.3 -> 3.5-4.5 ms,
 with 15-130 ms renderer hitches while blood landed.
 
-So at tess 3 the section is split into REGIONS:
+So the section is split into REGIONS:
 
     [ ultra 0 .. U-1 ][ normal slot 0 .. cl_blood_max-1 ]
-      ultra_stride       stride = worst case at tess 2
+      close-up pool      stride = worst case at BLOOD_SLOT_TOP_LEVEL
 
 A droplet lives in its client slot's normal region unless its chosen level
-needs more faces than that holds - which choose_lods only allows within
-pt_blood_ultra_dist of the camera - in which case it borrows one of
-pt_blood_ultra_slots ultra regions for as long as it stays that close. When the
-pool is full the extra droplets are drawn one level down, in their own slot.
+needs more faces than that holds, in which case it borrows one of the ultra
+regions for as long as it needs it. When the pool is full the extra droplets
+are drawn at the slot's top level, in their own slot.
 
 Everything that used to be per slot (cache, dirty flag, device span, blanking,
 uploads) is per REGION now, so a droplet changing region is just "the old region
 went dead, the new one needs building" - which the machinery already handled.
-Below tess 3 there is no pool: U = 0 and region r is slot r, exactly as before.
+With no pool, U = 0 and region r is slot r, exactly as before.
+
+CLOSE-UP REGIONS (11-14) - the pool, re-aimed at SCREEN SIZE.
+
+It used to be pt_blood_tess 3 only, 32 regions of 1280, handed to any droplet
+in flight within pt_blood_ultra_dist (40 units). Two things were wrong with
+that. Matt's setting is tess 2, where there was no pool at all, so a droplet
+in flight was 80 faces (tess 2 minus pt_blood_lod_air) however close it came:
+a bead filling a third of a 4K screen had an outline 26 px off a circle. And
+40 units says nothing about size on screen - one droplet at 5 units needs
+four times the detail of one at 20.
+
+Now the pool exists at pt_blood_tess 2 AND 3 (with pt_blood_lod_px on), in two
+sizes:
+
+    BLOOD_CLOSEUP_BIG regions of BLOOD_SPHERE_FACES(4) = 5120
+    BLOOD_CLOSEUP_MID regions of BLOOD_SPHERE_FACES(3) = 1280
+
+40960 primitives in all - exactly what 32 x 1280 used to be, so the blood BLAS
+carries the same degenerate filler at tess 3 as before, and at tess 2 that
+filler is the whole cost of having the pool (~0.05 ms on a rebuild, against
+~1.1 ms measured for 957K blood primitives; nothing on a reused BLAS).
+
+choose_lods measures each airborne droplet's projected radius in pixels and
+asks for the lowest level whose outline (sphere_sag) is within pt_blood_lod_px
+of a circle. assign_closeups then serves the requests LARGEST ON SCREEN FIRST:
+5120 and 1280 come from the pool, and a step up that still fits the droplet's
+own slot (80 -> 320) is paid from pt_blood_lod_budget. Whatever is left over
+keeps its distance-band level. So the cost is bounded by the pool and the
+budget however much blood is in the air, and it lands only on the few droplets
+big enough on screen to show the difference.
 */
-#define BLOOD_ULTRA_MAX   64
+#define BLOOD_CLOSEUP_BIG 4
+#define BLOOD_CLOSEUP_MID 16
+#define BLOOD_ULTRA_MAX   (BLOOD_CLOSEUP_BIG + BLOOD_CLOSEUP_MID)
 
 /*
 FILM REGIONS - surface blood (cl_blood_film), in CHUNKS of BLOOD_FILM_CHUNK_TRIS.
@@ -340,8 +402,11 @@ static struct {
 	int               cache_hits;       // droplets whose geometry was reused as-is
 	int               cache_moves;      // droplets whose geometry was only TRANSLATED
 	uint32_t          stride;           // primitives reserved per droplet slot
-	uint32_t          ultra_stride;     // primitives per ultra region (0: no pool)
-	int               ultra_count;      // ultra regions, after the film's
+	int               ultra_big;        // the first ultra_big ultra regions are BLOOD_CLOSEUP_LEVEL wide, the rest one level less
+	int               ultra_count;      // ultra regions, after the film's (0: no pool)
+	int               closeup_up;       // droplets drawn finer than their distance band this frame
+	int               closeup_pool;     // ... of those, in an ultra region
+	int               closeup_short;    // wanted finer and did not get it (pool full or budget spent)
 	int               film_count;       // film CHUNKS at the very front (0: film off)
 	int               film_tiles;       // tiles drawn this frame, for pt_blood_stats
 	int               film_tris;
@@ -544,6 +609,17 @@ void vkpt_blood_blas_built(int frame_idx, uint32_t prim_offset, uint32_t prim_co
 		blood_blas.builds++;
 }
 
+// Inside the close-up pool: `big` regions of the close-up level, then the rest
+// one level down (CLOSE-UP REGIONS). ultra_offset(count) is the pool's size.
+static inline uint32_t ultra_offset(int u, int big)
+{
+	const uint32_t big_faces = BLOOD_SPHERE_FACES(BLOOD_CLOSEUP_LEVEL);
+	const uint32_t mid_faces = BLOOD_SPHERE_FACES(BLOOD_CLOSEUP_LEVEL - 1);
+
+	return u <= big ? (uint32_t)u * big_faces
+	                : (uint32_t)big * big_faces + (uint32_t)(u - big) * mid_faces;
+}
+
 // Regions are [film][ultra][slots] - see FILM REGIONS and ULTRA REGIONS.
 static inline uint32_t region_offset(int r)
 {
@@ -554,8 +630,8 @@ static inline uint32_t region_offset(int r)
 	r -= blood.film_count;
 
 	return base + (r < blood.ultra_count
-		? (uint32_t)r * blood.ultra_stride
-		: (uint32_t)blood.ultra_count * blood.ultra_stride + (uint32_t)(r - blood.ultra_count) * blood.stride);
+		? ultra_offset(r, blood.ultra_big)
+		: ultra_offset(blood.ultra_count, blood.ultra_big) + (uint32_t)(r - blood.ultra_count) * blood.stride);
 }
 
 static inline uint32_t region_cap(int r)
@@ -563,7 +639,9 @@ static inline uint32_t region_cap(int r)
 	if (r < blood.film_count)
 		return BLOOD_FILM_CHUNK_TRIS;
 	r -= blood.film_count;
-	return r < blood.ultra_count ? blood.ultra_stride : blood.stride;
+	if (r >= blood.ultra_count)
+		return blood.stride;
+	return (uint32_t)BLOOD_SPHERE_FACES(r < blood.ultra_big ? BLOOD_CLOSEUP_LEVEL : BLOOD_CLOSEUP_LEVEL - 1);
 }
 
 static inline int region_of_slot(int slot)
@@ -593,16 +671,22 @@ static void reset_film_chunks(void)
 	film_chunk_low = 0;
 }
 
-static void release_film_chunks(int slot)
+static void release_film_chunks_from(int slot, int keep)
 {
-	for (int p = 0; p < film_num_chunks[slot]; p++)
+	for (int p = keep; p < film_num_chunks[slot]; p++)
 	{
 		const int c = film_chunk_of[slot][p];
 		film_chunk_taken[c] = false;
 		if (c < film_chunk_low)
 			film_chunk_low = c;
 	}
-	film_num_chunks[slot] = 0;
+	if (film_num_chunks[slot] > keep)
+		film_num_chunks[slot] = keep;
+}
+
+static void release_film_chunks(int slot)
+{
+	release_film_chunks_from(slot, 0);
 }
 
 // The lowest free chunk, or -1.
@@ -634,7 +718,9 @@ extern void cast_u32_to_f32_color(int color_index, const color_t* pcolor, float*
 extern uint32_t encode_normal(const vec3_t normal);
 
 static cvar_t* cvar_pt_blood_spheres = NULL;
-static cvar_t* cvar_pt_blood_ultra_dist = NULL;
+static cvar_t* cvar_pt_blood_lod_px = NULL;
+static cvar_t* cvar_pt_blood_lod_budget = NULL;
+static cvar_t* cvar_pt_blood_upload_merge = NULL;
 static cvar_t* cvar_pt_blood_tess = NULL;
 static cvar_t* cvar_pt_blood_stats = NULL;
 static cvar_t* cvar_pt_blood_lod_near = NULL;
@@ -882,7 +968,7 @@ static void build_sphere_templates(void)
 	};
 
 	int face_count = 0;
-	for (int level = 0; level <= BLOOD_SPHERE_MAX_SUBDIV; level++)
+	for (int level = 0; level <= BLOOD_CLOSEUP_LEVEL; level++)
 	{
 		lod_offset[level] = face_count;
 
@@ -890,6 +976,20 @@ static void build_sphere_templates(void)
 			subdivide_face(v[faces[i][0]], v[faces[i][1]], v[faces[i][2]], level, &face_count);
 
 		assert(face_count - lod_offset[level] == BLOOD_SPHERE_FACES(level));
+
+		// The outline is made of edges, so its worst gap to the circle is the
+		// edge whose midpoint sits deepest inside the unit sphere.
+		float sag = 0.f;
+		for (int f = lod_offset[level]; f < face_count; f++)
+		{
+			for (int e = 0; e < 3; e++)
+			{
+				vec3_t mid;
+				VectorAdd(sphere_template[f].pos[e], sphere_template[f].pos[(e + 1) % 3], mid);
+				sag = max(sag, 1.f - 0.5f * VectorLength(mid));
+			}
+		}
+		sphere_sag[level] = sag;
 	}
 
 	assert(face_count == BLOOD_TEMPLATE_TOTAL);
@@ -1023,41 +1123,67 @@ static int blood_film_capacity(void)
 	return min(chunks + chunks / 8, MAX_BLOOD_FILM_CHUNKS);
 }
 
+// The highest level a droplet's own slot is sized for: pt_blood_tess, but never
+// past BLOOD_SLOT_TOP_LEVEL - finer than that is the close-up pool's job.
+static inline int slot_top_level(void)
+{
+	return max(0, min(cvar_pt_blood_tess->integer, BLOOD_SLOT_TOP_LEVEL));
+}
+
+// Whether the section carries the close-up pool (CLOSE-UP REGIONS): from tess 2
+// up, with the close-up LOD on. Only whether pt_blood_lod_px is ZERO matters
+// here, so dragging its slider never reallocates anything.
+static inline bool closeup_pool_on(void)
+{
+	return cvar_pt_blood_tess->integer >= BLOOD_SLOT_TOP_LEVEL
+		&& cvar_pt_blood_lod_px && cvar_pt_blood_lod_px->value > 0.f;
+}
+
 static uint32_t blood_layout(int max_droplets, int* film_count, int* ultra_count,
-                             uint32_t* ultra_stride, uint32_t* stride)
+                             int* ultra_big, uint32_t* stride)
 {
 	*film_count = blood_film_capacity();
 
-	const int subdiv = max(0, min(cvar_pt_blood_tess->integer, BLOOD_SPHERE_MAX_SUBDIV));
-	const int worst_faces = max(BLOOD_SPHERE_FACES(subdiv), BLOOD_PUDDLE_FACES(subdiv));
+	const int top = slot_top_level();
+	*stride = (uint32_t)max(BLOOD_SPHERE_FACES(top), BLOOD_PUDDLE_FACES(top));
 
-	int u = 0;
-	if (subdiv == BLOOD_SPHERE_MAX_SUBDIV)
-		u = max(0, min(Cvar_Get("pt_blood_ultra_slots", "32", CVAR_ARCHIVE)->integer, BLOOD_ULTRA_MAX));
-
-	*ultra_count = u;
-	*ultra_stride = u ? (uint32_t)worst_faces : 0;
-	*stride = u ? (uint32_t)max(BLOOD_SPHERE_FACES(subdiv - 1), BLOOD_PUDDLE_FACES(subdiv - 1))
-	            : (uint32_t)worst_faces;
+	const bool pool = closeup_pool_on();
+	*ultra_big = pool ? BLOOD_CLOSEUP_BIG : 0;
+	*ultra_count = pool ? BLOOD_CLOSEUP_BIG + BLOOD_CLOSEUP_MID : 0;
 
 	return (uint32_t)*film_count * BLOOD_FILM_CHUNK_TRIS
-	     + (uint32_t)u * *ultra_stride + (uint32_t)max_droplets * *stride;
+	     + ultra_offset(*ultra_count, *ultra_big) + (uint32_t)max_droplets * *stride;
 }
+
+// set by vkpt_blood_prepare around its calls: the buffers made mid-game, not at load
+static bool blood_in_frame;
 
 static bool ensure_buffers(void)
 {
 	const int max_droplets = cvar_pt_blood_spheres->integer ? vkpt_blood_slot_capacity() : 1;
 
-	int film_count, ultra_count;
-	uint32_t ultra_stride, stride;
-	const uint32_t needed = blood_layout(max_droplets, &film_count, &ultra_count, &ultra_stride, &stride);
+	int film_count, ultra_count, ultra_big;
+	uint32_t stride;
+	const uint32_t needed = blood_layout(max_droplets, &film_count, &ultra_count, &ultra_big, &stride);
 
 	// Exact compare, not >=: the point is to reallocate ONLY when the settings
 	// change, never in response to how much blood happens to be on screen.
 	if (blood.buffers_ready && blood.max_prims == needed
-		&& blood.stride == stride && blood.ultra_count == ultra_count && blood.ultra_stride == ultra_stride
+		&& blood.stride == stride && blood.ultra_count == ultra_count && blood.ultra_big == ultra_big
 		&& blood.film_count == film_count)
 		return true;
+
+	/* Said every time (11-14): Matt's first blood of rbase1 took 14.6 ms in the
+	   renderer's blood meshes for 627 new droplets - the frame after, 0.7 ms for 744.
+	   Made in a frame rather than at map load, this is the one thing that big: a
+	   zeroed shadow of every primitive. What changed since the last one says why. */
+	const uint64_t alloc_t0 = Sys_Microseconds();
+	const bool had = blood.buffers_ready;
+	char why[160] = "first";
+	if (had)
+		Q_snprintf(why, sizeof(why), "prims %u -> %u, stride %u -> %u, close-up %d/%d -> %d/%d, film chunks %d -> %d",
+			blood.max_prims, needed, blood.stride, stride, blood.ultra_count, blood.ultra_big,
+			ultra_count, ultra_big, blood.film_count, film_count);
 
 	release_buffers();
 
@@ -1072,7 +1198,7 @@ static bool ensure_buffers(void)
 	blood.pos_shadow = Z_Mallocz(pos_size);
 
 	blood.stride = stride;
-	blood.ultra_stride = ultra_stride;
+	blood.ultra_big = ultra_big;
 	blood.ultra_count = ultra_count;
 	blood.film_count = film_count;
 	blood.max_prims = needed;
@@ -1087,7 +1213,14 @@ static bool ensure_buffers(void)
 	// away everything it was vouching for - the film's chunks included.
 	memset(blood_cache, 0, sizeof(blood_cache));
 	reset_film_chunks();
+	// Z_Mallocz: every region of the new shadow is zero already
+	for (int i = 0; i < BLOOD_MAX_REGIONS; i++)
+		blood_cache[i].shadow_zero = true;
 
+	Com_Printf("Blood: %.0f MB of shadow for %u primitives in %.1f ms (%s; %s)\n",
+		(double)(prim_size + pos_size) / (1024.0 * 1024.0), needed,
+		(double)(Sys_Microseconds() - alloc_t0) * 1e-3,
+		blood_in_frame ? "IN A FRAME" : "map load", why);
 	return true;
 }
 
@@ -1108,7 +1241,20 @@ void vkpt_blood_init_cvars(void)
 	// Triangles per droplet: 0 -> 20, 1 -> 80. This is the cost knob; see the
 	// comment on BLOOD_SPHERE_MAX_SUBDIV.
 	cvar_pt_blood_tess = Cvar_Get("pt_blood_tess", "2", CVAR_ARCHIVE);
-	cvar_pt_blood_ultra_dist = Cvar_Get("pt_blood_ultra_dist", "40", CVAR_ARCHIVE);
+
+	// CLOSE-UP LOD (see CLOSE-UP REGIONS): how far, in screen pixels, a droplet
+	// in flight may let its faceted outline stray from a circle before it is
+	// drawn finer. 0 = off, the distance bands alone (and no pool). Replaces
+	// pt_blood_ultra_dist.
+	cvar_pt_blood_lod_px = Cvar_Get("pt_blood_lod_px", "1", CVAR_ARCHIVE);
+
+	// Extra triangles a frame the close-up LOD may add INSIDE droplets' own
+	// slots (an 80-face bead stepped up to 320 is 240). The pool is bounded by
+	// its own size and does not draw on this.
+	cvar_pt_blood_lod_budget = Cvar_Get("pt_blood_lod_budget", "32768", CVAR_ARCHIVE);
+	// upload regions this many primitives apart or closer go as one copy, the gap
+	// with them (see MERGING ACROSS A GAP in vkpt_blood_prepare); 0 = only touching ones
+	cvar_pt_blood_upload_merge = Cvar_Get("pt_blood_upload_merge", "128", 0);
 
 	// Print live droplet and triangle counts once a second, so the cost of a
 	// given firefight can be read off rather than guessed at.
@@ -1263,16 +1409,16 @@ uint32_t vkpt_blood_prim_count(int num_spheres, int num_films)
 	// is still built over the range actually written, so over-reserving costs
 	// nothing at trace time.
 	// The larger of the two meshes, because which one each droplet gets is not
-	// known until vkpt_blood_update picks it - and at tess 3, the ultra pool in
-	// front of the normal slots (blood_layout).
-	int film_count, ultra_count;
-	uint32_t ultra_stride, stride;
+	// known until vkpt_blood_update picks it - and the close-up pool in front of
+	// the normal slots (blood_layout).
+	int film_count, ultra_count, ultra_big;
+	uint32_t stride;
 
 	// The SLOT SPACE, which is cl_blood_max - not this frame's droplet count, and
 	// not MAX_BLOOD_SPHERES. Slots live as long as their droplet and are handed
 	// out lowest-first, so the highest occupied slot has nothing to do with how
 	// many are currently alive; and it must match what ensure_buffers allocated.
-	return blood_layout(vkpt_blood_slot_capacity(), &film_count, &ultra_count, &ultra_stride, &stride);
+	return blood_layout(vkpt_blood_slot_capacity(), &film_count, &ultra_count, &ultra_big, &stride);
 }
 
 // Face count for a droplet at a given LOD. A landed droplet is a puddle mesh and
@@ -1491,11 +1637,38 @@ of pixels and no amount of geometry would show.
 
 Called once per frame, before the buffers are sized, so its answer is also what
 tells ensure_buffers how much room this frame needs.
+
+Its levels are the DISTANCE BANDS, capped at what a droplet's own slot holds.
+Airborne droplets whose outline the bands leave visibly faceted - measured in
+pixels, so it takes the view's fov and height - are listed in `closeups` for
+assign_closeups to step up, largest on screen first (CLOSE-UP REGIONS). The
+total returned is the banded one.
 ================
 */
-static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, const vec3_t cam_pos)
+typedef struct {
+	float px;       // projected radius, screen pixels
+	int   s;        // index into this frame's spheres
+	int   slot;     // its client slot - the tie-break, so the order is stable
+	int   need;     // the lowest level whose outline is within pt_blood_lod_px
+} blood_closeup_t;
+
+static blood_closeup_t closeups[MAX_BLOOD_SPHERES];
+static int             num_closeups;
+
+static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, const vec3_t cam_pos,
+                            float fov_y, int view_height)
 {
 	const int max_level = max(0, min(cvar_pt_blood_tess->integer, BLOOD_SPHERE_MAX_SUBDIV));
+	const int slot_top = slot_top_level();
+
+	num_closeups = 0;
+
+	// Pixels per unit of tan(angle) off the view axis, vertically. 0 turns the
+	// close-up LOD off for the frame (no view size to measure against).
+	const float lod_px = cvar_pt_blood_lod_px->value;
+	float px_per_tan = 0.f;
+	if (lod_px > 0.f && view_height > 0 && fov_y > 1.f && fov_y < 179.f)
+		px_per_tan = 0.5f * (float)view_height / tanf(DEG2RAD(fov_y) * 0.5f);
 
 	// Squared, to keep a square root out of the per-droplet loop.
 	const float near_dist = max(1.f, cvar_pt_blood_lod_near->value);
@@ -1654,32 +1827,52 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 		// is glaring on a squashed one. A splat wants MORE tessellation than a
 		// sphere, not less.
 
-		level = max(0, min(level, max_level));
+		/*
+		NOTHING PAST THE SLOT'S OWN LEVEL FROM THE BANDS.
+
+		At tess 3 the bands ask for 1280, and a floor of 2048 splats at 1280 was
+		the whole 90 -> 60 fps slide, so a splat tops out at tess 2's level and
+		falls off from there - as it always has. A droplet in flight used to get
+		1280 inside pt_blood_ultra_dist; now it gets it, or 5120, from the
+		close-up LOD below, by size on screen rather than by distance.
+		*/
+		level = max(0, min(level, min(max_level, slot_top)));
 
 		/*
-		THE ULTRA LEVEL (pt_blood_tess 3) IS FOR DROPLETS IN FLIGHT, RIGHT IN
-		FRONT OF THE CAMERA, and for nothing else.
+		THE CLOSE-UP LOD: is this droplet's outline visibly faceted?
 
-		It was built for the airborne droplets, yet pt_blood_lod_air kept every
-		one of those a level down while the SPLATS - which the bands above measure
-		as several reference droplets wide - sat at 1280 faces far across the
-		room. A floor of 2048 of them was the whole 90 -> 60 fps slide.
+		Airborne only - a splat's rim is 80 segments at level 2, within a pixel
+		of an ellipse at any size a pool reaches on screen. The projected radius
+		is the true one, r / sqrt(d^2 - r^2) (the tangent of the sphere's angular
+		radius), because the droplets this exists for are the ones close enough
+		for r / d to undersell them. Off-axis stretch is ignored: it makes an
+		edge-of-screen droplet up to ~1.4x larger, which only means the target
+		is met a little less tightly there.
 
-		So at tess 3: a splat tops out at tess 2's level and falls off from
-		there; a droplet within pt_blood_ultra_dist (~3 feet) gets the full level,
-		ignoring the in-flight bias, and past it is capped the same as a splat.
-		25% hysteresis on the distance, for the cache's sake like the bands.
+		No hysteresis, unlike the splat bands: a droplet in flight rebuilds every
+		frame anyway, and a frozen one (pause, photo mode) asks the same question
+		with the same numbers and gets the same answer.
 		*/
-		if (max_level == BLOOD_SPHERE_MAX_SUBDIV)
+		if (px_per_tan > 0.f && !is_splat && spheres[s].radius > 0.f
+			&& spheres[s].slot >= 0 && spheres[s].slot < MAX_BLOOD_SPHERES)
 		{
-			if (is_splat)
-				level = min(level, max_level - 1);
-			else
+			const float r = spheres[s].radius;
+			const float d2 = dist_sq - r * r;
+
+			// Inside or touching the droplet: as large as it gets.
+			const float px = d2 > 1e-4f * r * r ? r * px_per_tan / sqrtf(d2) : 1e6f;
+
+			int need = 0;
+			while (need < BLOOD_CLOSEUP_LEVEL && sphere_sag[need] * px > lod_px)
+				need++;
+
+			if (need > level)
 			{
-				float ultra = max(0.f, cvar_pt_blood_ultra_dist->value);
-				if (prev && prev->valid && prev->level == max_level)
-					ultra *= 1.25f;
-				level = (dist_sq <= ultra * ultra) ? max_level : min(level, max_level - 1);
+				blood_closeup_t* c = closeups + num_closeups++;
+				c->px = px;
+				c->s = s;
+				c->slot = spheres[s].slot;
+				c->need = need;
 			}
 		}
 
@@ -1690,67 +1883,151 @@ static uint32_t choose_lods(const blood_sphere_t* spheres, int num_spheres, cons
 	return total;
 }
 
+static int closeup_compare(const void* a, const void* b)
+{
+	const blood_closeup_t* x = a;
+	const blood_closeup_t* y = b;
+
+	if (x->px != y->px)
+		return x->px > y->px ? -1 : 1;
+	return x->slot - y->slot;
+}
+
 /*
 ================
-assign_ultra_regions
+assign_closeups
 
-Gives every droplet whose chosen level does not fit a normal region one of the
-ultra regions (see ULTRA REGIONS), keeping the one it already holds so a parked
-splat stays cached. Droplets that no longer need one release it first; when the
-pool is still full, the rest are drawn one level down in their own slot.
+Serves choose_lods' close-up requests, LARGEST ON SCREEN FIRST, then maps the
+ones that won a pool region onto actual regions (see CLOSE-UP REGIONS).
+
+A request above the slot's own level wants a region: BLOOD_CLOSEUP_LEVEL takes a
+big one, level 3 a mid one, and either takes whatever is left of the other size
+once its own is gone (a big droplet in a mid region is drawn at level 3). With
+the pool spent it falls back to the slot's top level. A step up that fits the
+droplet's own slot is paid from pt_blood_lod_budget, and is skipped once the
+budget cannot cover it.
+
+Regions are kept by the droplet that already holds one of the right size, so a
+droplet that stays big keeps its region and the cache key with it. Everything
+else - a droplet that shrank, landed, died, or changed size class - lets go
+before anything new is handed out, which is what guarantees the counts above
+always find a free region.
 ================
 */
-static void assign_ultra_regions(const blood_sphere_t* spheres, int num_spheres)
+static void assign_closeups(void)
 {
-	if (!blood.ultra_count)
-		return;
-	if (!ultra_maps_ready)
+	blood.closeup_up = 0;
+	blood.closeup_pool = 0;
+	blood.closeup_short = 0;
+
+	if (blood.ultra_count && !ultra_maps_ready)
 		reset_ultra_maps();
 
-	static bool wants[MAX_BLOOD_SPHERES];
-	memset(wants, 0, sizeof(wants));
+	// The region size each client slot holds a claim to this frame: 0 none,
+	// 1 mid (level 3), 2 big (BLOOD_CLOSEUP_LEVEL).
+	static uint8_t want[MAX_BLOOD_SPHERES];
+	memset(want, 0, sizeof(want));
 
-	for (int s = 0; s < num_spheres; s++)
+	if (num_closeups > 1)
+		qsort(closeups, num_closeups, sizeof(closeups[0]), closeup_compare);
+
+	const int slot_top = slot_top_level();
+	int big_left = blood.ultra_big;
+	int mid_left = blood.ultra_count - blood.ultra_big;
+	int budget = max(0, cvar_pt_blood_lod_budget->integer);
+
+	for (int c = 0; c < num_closeups; c++)
 	{
-		const int slot = spheres[s].slot;
-		if (spheres[s].radius <= 0.f || slot < 0 || slot >= MAX_BLOOD_SPHERES)
-			continue;
-		if ((uint32_t)faces_for(spheres + s, sphere_lod[s]) > blood.stride)
-			wants[slot] = true;
+		const blood_closeup_t* cu = closeups + c;
+		const int base = sphere_lod[cu->s];
+		int level = cu->need;
+
+		if (level > slot_top)
+		{
+			if (level >= BLOOD_CLOSEUP_LEVEL && big_left > 0)
+			{
+				big_left--;
+				want[cu->slot] = 2;
+				level = BLOOD_CLOSEUP_LEVEL;
+			}
+			else if (mid_left > 0)
+			{
+				mid_left--;
+				want[cu->slot] = 1;
+				level = BLOOD_CLOSEUP_LEVEL - 1;
+			}
+			else if (big_left > 0)
+			{
+				big_left--;
+				want[cu->slot] = 2;
+			}
+			else
+			{
+				level = slot_top;
+				blood.closeup_short++;
+			}
+		}
+
+		if (!want[cu->slot])
+		{
+			const int extra = BLOOD_SPHERE_FACES(level) - BLOOD_SPHERE_FACES(base);
+			if (extra <= 0)
+				continue;
+			if (extra > budget)
+			{
+				blood.closeup_short++;
+				continue;
+			}
+			budget -= extra;
+		}
+		else
+			blood.closeup_pool++;
+
+		sphere_lod[cu->s] = (uint8_t)level;
+		blood.closeup_up++;
 	}
 
+	if (!blood.ultra_count)
+		return;
+
+	// Let go of every region whose holder no longer has a claim to that size.
 	for (int u = 0; u < blood.ultra_count; u++)
 	{
 		const int slot = slot_of_ultra[u];
-		if (slot >= 0 && !wants[slot])
+		const int size = u < blood.ultra_big ? 2 : 1;
+
+		if (slot >= 0 && want[slot] != size)
 		{
 			ultra_of_slot[slot] = -1;
 			slot_of_ultra[u] = -1;
 		}
 	}
 
-	int next_free = 0;
-	for (int s = 0; s < num_spheres; s++)
+	// And hand the free ones to the claims that do not hold one yet.
+	for (int c = 0; c < num_closeups; c++)
 	{
-		const int slot = spheres[s].slot;
-		if (spheres[s].radius <= 0.f || slot < 0 || slot >= MAX_BLOOD_SPHERES || !wants[slot])
-			continue;
-		if (ultra_of_slot[slot] >= 0)
+		const int slot = closeups[c].slot;
+		if (!want[slot] || ultra_of_slot[slot] >= 0)
 			continue;
 
-		while (next_free < blood.ultra_count && slot_of_ultra[next_free] >= 0)
-			next_free++;
+		const int lo = want[slot] == 2 ? 0 : blood.ultra_big;
+		const int hi = want[slot] == 2 ? blood.ultra_big : blood.ultra_count;
 
-		if (next_free < blood.ultra_count)
+		for (int u = lo; u < hi; u++)
 		{
-			slot_of_ultra[next_free] = (int16_t)slot;
-			ultra_of_slot[slot] = (int16_t)next_free;
+			if (slot_of_ultra[u] < 0)
+			{
+				slot_of_ultra[u] = (int16_t)slot;
+				ultra_of_slot[slot] = (int16_t)u;
+				break;
+			}
 		}
-		else
-		{
-			sphere_lod[s] = (uint8_t)max(0, (int)sphere_lod[s] - 1);
-			wants[slot] = false;
-		}
+
+		// The counting above makes this unreachable; if it ever is reached, the
+		// droplet must still fit where it is about to be written, or it would
+		// silently not draw.
+		if (ultra_of_slot[slot] < 0)
+			sphere_lod[closeups[c].s] = (uint8_t)min((int)sphere_lod[closeups[c].s], slot_top);
 	}
 }
 
@@ -1773,12 +2050,16 @@ the thing that has to move first.
 ================
 */
 /*
-The cluster a tile's triangles light from - see write_film_geometry. When the
+The cluster a chunk's triangles light from - see write_film_geometry. When the
 box around them, lifted off the surface, has all eight corners in one leaf, every
-triangle is in that leaf too (leaves are convex): most tiles, and eight lookups
+triangle is in that leaf too (leaves are convex): most chunks, and eight lookups
 instead of one per triangle. Otherwise -2: each triangle looks its own up.
+
+Per CHUNK since 11-14 (it was per tile): a chunk's box is a part of its tile's, so
+it is in one leaf whenever the tile's was and often when the tile's was not -
+fewer per-triangle lookups - and each chunk is now written by a job of its own.
 */
-static int film_tile_cluster(const blood_film_t* film, int faces, bsp_t* bsp)
+static int film_chunk_cluster(const blood_film_vert_t* verts, int faces, const vec3_t plane, bsp_t* bsp)
 {
 	if (!bsp)
 		return -1;
@@ -1786,9 +2067,9 @@ static int film_tile_cluster(const blood_film_t* film, int faces, bsp_t* bsp)
 	vec3_t lo, hi;
 	ClearBounds(lo, hi);
 	for (int i = 0; i < faces * 3; i++)
-		AddPointToBounds(film->verts[i].pos, lo, hi);
-	VectorMA(lo, 0.25f, film->plane, lo);
-	VectorMA(hi, 0.25f, film->plane, hi);
+		AddPointToBounds(verts[i].pos, lo, hi);
+	VectorMA(lo, 0.25f, plane, lo);
+	VectorMA(hi, 0.25f, plane, hi);
 
 	const mleaf_t* first = NULL;
 	for (int i = 0; i < 8; i++)
@@ -1806,6 +2087,176 @@ static int film_tile_cluster(const blood_film_t* film, int faces, bsp_t* bsp)
 	}
 
 	return first->cluster;
+}
+
+/*
+THE FILM'S CHUNKS ON THE RENDERER'S WORKERS (jobs.c, 11-14). Matt's dip capture:
+26 ms of render, 20 of it this function - ~250K triangles rewritten in one frame
+while blood flowed (45.9 MB uploaded), one thread at ~80 ns a triangle. A tile's
+version moves for its whole mesh whenever its flow steps (cl_blood_film_rate), so
+every chunk of it used to be rewritten and sent again.
+
+Now the main thread does the bookkeeping - which chunks a tile holds, which ones
+the tile's own struct already matches - and every chunk left is a job: its own
+region of the shadow, its own cache entry and dirty flag, so the jobs share
+nothing they write. A job first checks whether the chunk ALREADY HOLDS these
+triangles (same positions, depths and look): the part of a tile the flow did not
+reach is byte for byte what it was, and is then neither rewritten nor uploaded.
+*/
+typedef struct {
+	const blood_film_t*	film;
+	uint32_t			prim_index;		// the chunk's region, in primitives
+	int					region;
+	int					part;			// which chunk of the tile
+	int					first, count;	// its triangles in the tile's list
+	vec3_t				color;
+	uint32_t			plane_nrm;
+	uint32_t			alpha_word;		// emissive_and_alpha
+	uint32_t			instance;
+	bool				kept;			// out: it held these triangles already
+} film_job_t;
+
+static film_job_t	film_jobs[MAX_BLOOD_FILM_CHUNKS];
+static bsp_t*		film_jobs_bsp;
+
+// Does the chunk's region hold exactly what film_chunk_job would write?
+static bool film_chunk_holds(const film_job_t* j, const blood_cache_entry_t* cache)
+{
+	if (!cache->valid || !cache->is_film || cache->faces != (uint16_t)j->count)
+		return false;
+
+	const blood_film_vert_t* v = j->film->verts + j->first * 3;
+	for (int f = 0; f < j->count; f++, v += 3)
+	{
+		const VboPrimitive* prim = blood.prim_shadow + j->prim_index + f;
+		if (!VectorCompare(prim->pos0, v[0].pos) || !VectorCompare(prim->pos1, v[1].pos)
+			|| !VectorCompare(prim->pos2, v[2].pos)
+			|| prim->custom0[1] != ((uint32_t)floatToHalf(v[0].depth) << 16)
+			|| prim->custom1[1] != ((uint32_t)floatToHalf(v[1].depth) << 16)
+			|| prim->custom2[1] != ((uint32_t)floatToHalf(v[2].depth) << 16)
+			|| prim->normals[0] != j->plane_nrm
+			|| prim->emissive_and_alpha != j->alpha_word
+			|| prim->instance != j->instance
+			|| prim->uv0[0] != j->color[0] || prim->uv0[1] != j->color[1]
+			|| prim->uv1[0] != j->color[2] || prim->uv1[1] != j->film->seed)
+			return false;
+	}
+	return true;
+}
+
+static void film_chunk_job(void* ctx, int index)
+{
+	(void)ctx;
+	film_job_t* j = film_jobs + index;
+	const blood_film_t* film = j->film;
+	blood_cache_entry_t* cache = blood_cache + j->region;
+	const uint32_t prim_index = j->prim_index;
+	const int count = j->count;
+	const blood_film_vert_t* verts = film->verts + j->first * 3;
+
+	if (film_chunk_holds(j, cache))
+	{
+		cache->film_part = (uint8_t)j->part;
+		cache->film = *film;
+		cache->prim_offset = prim_index;
+		j->kept = true;
+		return;
+	}
+
+	// What the chunk held before, for clearing what sticks out past
+	// the new triangles: everything beyond it is zero already.
+	const uint32_t held = cache->faces;
+
+	cache->valid = true;
+	cache->blanked = false;
+	cache->shadow_zero = false;
+	cache->is_film = true;
+	cache->film_part = (uint8_t)j->part;
+	cache->film = *film;
+	cache->prim_offset = prim_index;
+	cache->level = 0;
+	cache->faces = (uint16_t)count;
+
+	blood.dirty_slot[j->region] = true;
+
+	// The light lists are per cluster, and a tile lies along walls and
+	// across doorways, so one cluster for every tile would light some of
+	// them from the wrong room - see film_chunk_cluster.
+	const int chunk_cluster = film_chunk_cluster(verts, count, film->plane, film_jobs_bsp);
+
+	for (int f = 0; f < count; f++)
+	{
+		const uint32_t wi = prim_index + (uint32_t)f;
+		VboPrimitive* prim = blood.prim_shadow + wi;
+		float (*pos)[3] = blood.pos_shadow[wi];
+		const blood_film_vert_t* v = verts + f * 3;
+
+		VectorCopy(v[0].pos, pos[0]);
+		VectorCopy(v[1].pos, pos[1]);
+		VectorCopy(v[2].pos, pos[2]);
+		VectorCopy(pos[0], prim->pos0);
+		VectorCopy(pos[1], prim->pos1);
+		VectorCopy(pos[2], prim->pos2);
+
+		// Lifted off the surface so the point is in the open leaf the
+		// blood is actually in.
+		int cluster = chunk_cluster;
+		if (cluster == -2)
+		{
+			vec3_t c;
+			VectorAdd(v[0].pos, v[1].pos, c);
+			VectorAdd(c, v[2].pos, c);
+			VectorScale(c, 1.f / 3.f, c);
+			VectorMA(c, 0.25f, film->plane, c);
+			cluster = BSP_PointLeaf(film_jobs_bsp->nodes, c)->cluster;
+		}
+
+		prim->material_id = MATERIAL_KIND_BLOOD;
+		prim->cluster = cluster;
+		prim->texture_flags = 0;
+
+		// The plane's normal, not one carrying the depth: every pass that
+		// treats the interpolated normal as the surface's - the sun's and
+		// the lights' horizon tests, ReSTIR's reuse, the see-through ray's
+		// second refraction, a secondary hit's facing flip - got a normal
+		// lying ALONG the floor at the outline, which is where the white rim
+		// was (2026-11-07). The depth rides in custom.w below instead.
+		prim->normals[0] = j->plane_nrm;
+		prim->normals[1] = j->plane_nrm;
+		prim->normals[2] = j->plane_nrm;
+		prim->tangents[0] = j->plane_nrm;
+		prim->tangents[1] = j->plane_nrm;
+		prim->tangents[2] = j->plane_nrm;
+
+		prim->instance = j->instance;
+		prim->emissive_and_alpha = j->alpha_word;
+
+		prim->uv0[0] = j->color[0];
+		prim->uv0[1] = j->color[1];
+		prim->uv1[0] = j->color[2];
+		prim->uv1[1] = film->seed;
+		prim->uv2[0] = 2.f;     // landed, and a film: shaded from the plane
+		prim->uv2[1] = 0.f;
+
+		// custom = half4(motion.xyz, w) per vertex. A film never moves, and
+		// w - unused by everything else - is its depth (Triangle.custom_w,
+		// blood_film_depth in path_tracer_rgen.h).
+		prim->custom0[0] = 0; prim->custom0[1] = (uint32_t)floatToHalf(v[0].depth) << 16;
+		prim->custom1[0] = 0; prim->custom1[1] = (uint32_t)floatToHalf(v[1].depth) << 16;
+		prim->custom2[0] = 0; prim->custom2[1] = (uint32_t)floatToHalf(v[2].depth) << 16;
+	}
+
+	// The rest of the chunk, as BLANK THE REST OF THE SLOT does for
+	// droplets - only as far as the old triangles reached. Clearing the
+	// whole region every time was ~300 KB per rewrite at the old size.
+	if (held > (uint32_t)count)
+	{
+		const uint32_t tail = prim_index + (uint32_t)count;
+		const uint32_t n = min(held, (uint32_t)BLOOD_FILM_CHUNK_TRIS) - (uint32_t)count;
+
+		memset(blood.prim_shadow + tail, 0, sizeof(VboPrimitive) * n);
+		memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * n);
+	}
 }
 
 /*
@@ -1840,8 +2291,10 @@ static void write_film_geometry(const blood_film_t* films, int num_films, bsp_t*
 	memset(seen, 0, sizeof(seen));
 
 	// Everything that is going goes first: the chunks of tiles that are gone, and
-	// of tiles whose triangles changed - those are rewritten anyway, so they may
-	// as well take the lowest free chunks again.
+	// those a changed tile no longer fills. A changed tile KEEPS the chunks it still
+	// needs (11-14; it used to give them all back and take the lowest free again):
+	// in the same chunks, the part of it the flow did not reach is found already
+	// there by film_chunk_holds, and is neither rewritten nor uploaded.
 	for (int k = 0; k < num_films; k++)
 	{
 		const blood_film_t* film = films + k;
@@ -1851,7 +2304,8 @@ static void write_film_geometry(const blood_film_t* films, int num_films, bsp_t*
 
 		seen[film->slot] = true;
 		if (film_num_chunks[film->slot] && memcmp(&film_held[film->slot], film, sizeof(*film)) != 0)
-			release_film_chunks(film->slot);
+			release_film_chunks_from(film->slot,
+				BLOOD_FILM_CHUNKS(min(film->num_tris, BLOOD_FILM_TILE_TRIS)));
 	}
 
 	for (int slot = 0; slot < MAX_BLOOD_FILM_TILES; slot++)
@@ -1859,6 +2313,8 @@ static void write_film_geometry(const blood_film_t* films, int num_films, bsp_t*
 		if (!seen[slot] && film_num_chunks[slot])
 			release_film_chunks(slot);
 	}
+
+	int num_jobs = 0;
 
 	for (int k = 0; k < num_films; k++)
 	{
@@ -1893,6 +2349,7 @@ static void write_film_geometry(const blood_film_t* films, int num_films, bsp_t*
 		blood.film_tris += drawn;
 		blood.film_chunks_used += have;
 
+		// what every chunk of the tile takes from it
 		vec3_t color;
 		cast_u32_to_f32_color(film->color, &film->rgba, color, 1.0f);
 
@@ -1900,12 +2357,6 @@ static void write_film_geometry(const blood_film_t* films, int num_films, bsp_t*
 		const float alpha = max(0.05f, min(cvar_pt_blood_splat_alpha->value, 1.f)) *
 		                    max(0.f, min(film->alpha, 1.f));
 		const uint32_t alpha_half = (uint32_t)floatToHalf(alpha);
-
-		// The light lists are per cluster, and a tile lies along walls and
-		// across doorways, so one cluster for every tile would light some of
-		// them from the wrong room - see film_tile_cluster.
-		bool have_cluster = false;
-		int tile_cluster = -1;
 
 		for (int part = 0; part < have; part++)
 		{
@@ -1927,103 +2378,485 @@ static void write_film_geometry(const blood_film_t* films, int num_films, bsp_t*
 				continue;
 			}
 
-			// What the chunk held before, for clearing what sticks out past
-			// the new triangles: everything beyond it is zero already.
-			const uint32_t held = cache->faces;
+			// the rest is the chunk's job (film_chunk_job)
+			if (num_jobs >= MAX_BLOOD_FILM_CHUNKS)
+				continue;
+			film_job_t* j = film_jobs + num_jobs++;
+			j->film = film;
+			j->prim_index = prim_index;
+			j->region = region;
+			j->part = part;
+			j->first = first;
+			j->count = count;
+			VectorCopy(color, j->color);
+			j->plane_nrm = plane_nrm;
+			j->alpha_word = 0x3c00u | (alpha_half << 16);
+			j->instance = (uint32_t)blood.model_instance_index;
+			j->kept = false;
+		}
+	}
 
-			cache->valid = true;
-			cache->blanked = false;
-			cache->is_film = true;
-			cache->film_part = (uint8_t)part;
-			cache->film = *film;
-			cache->prim_offset = prim_index;
-			cache->level = 0;
-			cache->faces = (uint16_t)count;
+	film_jobs_bsp = bsp;
+	vkpt_parallel_for(num_jobs, film_chunk_job, NULL);
+	for (int i = 0; i < num_jobs; i++)
+		if (film_jobs[i].kept)
+			blood.cache_hits++;
+}
 
-			blood.dirty_slot[region] = true;
+/*
+THE DROPLETS ON THE RENDERER'S WORKERS (jobs.c, 11-14) - the film's chunks'
+treatment (film_chunk_job) for the spray and the runs: write_blood_geometry does
+the bookkeeping - each droplet's region, the slots in use, the droplets already in
+the shadow exactly as they are - and every droplet left, moved or made again, is a
+job writing its own region, cache entry and dirty flag. Matt's dip captures had
+these at 0.6-2 ms of the frame with ~1000 droplets in flight.
+*/
+typedef struct {
+	const blood_sphere_t*	sphere;
+	int						region;
+	uint32_t				prim_index, cap;
+	int						level, faces;
+	bool					is_splat;
+	uint8_t					result;		// out: 0 made again, 2 moved
+} drop_job_t;
 
-			if (!have_cluster)
-			{
-				tile_cluster = film_tile_cluster(film, faces, bsp);
-				have_cluster = true;
-			}
+static drop_job_t	drop_jobs[MAX_BLOOD_SPHERES];
+static bsp_t*		drop_jobs_bsp;
 
-			for (int f = 0; f < count; f++)
+static void drop_job(void* ctx, int index)
+{
+	(void)ctx;
+	drop_job_t* j = drop_jobs + index;
+	const blood_sphere_t* sphere = j->sphere;
+	const int region = j->region;
+	const uint32_t prim_index = j->prim_index;
+	const uint32_t cap = j->cap;
+	const int level = j->level;
+	const int faces = j->faces;
+	const bool is_splat = j->is_splat;
+	bsp_t* bsp = drop_jobs_bsp;
+	blood_cache_entry_t* cache = blood_cache + region;
+
+	const blood_face_t* tmpl = is_splat
+		? puddle_template + puddle_lod_offset[level]
+		: sphere_template + lod_offset[level];
+
+	const uint32_t (*tmpl_normals)[3] = sphere_normals + lod_offset[level];
+	const uint32_t (*tmpl_tangents)[3] = is_splat
+		? puddle_tangents + puddle_lod_offset[level]
+		: sphere_tangents + lod_offset[level];
+
+	/*
+	THE SAME MESH, MOVED - the case that costs everything while blood is
+	running down a wall.
+
+	A droplet that is sliding changes its ORIGIN and nothing else: same
+	normal, same radius, same flatten, same stretch, same seed, same LOD. Its
+	geometry is therefore last frame's geometry translated, and every
+	expensive thing below is already correct in the shadow buffer. Rebuilding
+	it recomputed, per vertex per frame: vertex_wobble (three harmonics, so
+	trig), the inverse-scale normal transform, a VectorNormalize and an
+	encode_normal - for a mesh identical apart from where it sits.
+
+	That is what "the splats cost a lot while they are dripping" was. A
+	SETTLED splat has always been free, because it hits the exact-match test
+	above; a MOVING one paid full price every frame, and moving is precisely
+	when there are a lot of them at once.
+
+	The test is a memcmp of the whole struct with the two position fields
+	masked out, rather than a field-by-field compare, for the same reason the
+	exact test above is a memcmp: a field added to blood_sphere_t later is
+	then automatically part of the check instead of silently escaping it.
+
+	Positions accumulate here rather than being rebuilt from the template, so
+	they drift by up to half an ulp per frame. At world coordinates of a few
+	thousand that is ~1e-4 units per frame against a droplet radius of 1.2,
+	and a droplet parks within a second or two - it cannot reach anything
+	visible.
+	*/
+	if (cache->valid && cache->level == level)
+	{
+		blood_sphere_t probe = *sphere;
+		VectorCopy(cache->sphere.origin, probe.origin);
+		VectorCopy(cache->sphere.prev_origin, probe.prev_origin);
+
+		if (memcmp(&cache->sphere, &probe, sizeof(blood_sphere_t)) == 0)
+		{
+			vec3_t move;
+			VectorSubtract(sphere->origin, cache->sphere.origin, move);
+
+			// The motion vector and the cluster are the only two things that
+			// genuinely change with position, and both are per DROPLET, not
+			// per vertex.
+			vec3_t mv_delta;
+			VectorSubtract(sphere->prev_origin, sphere->origin, mv_delta);
+			const uint32_t mv_xy = (uint32_t)floatToHalf(mv_delta[0])
+			                     | ((uint32_t)floatToHalf(mv_delta[1]) << 16);
+			const uint32_t mv_zw = (uint32_t)floatToHalf(mv_delta[2]);
+			const int moved_cluster = bsp
+				? BSP_PointLeaf(bsp->nodes, sphere->origin)->cluster : -1;
+
+			for (int f = 0; f < faces; f++)
 			{
 				const uint32_t wi = prim_index + (uint32_t)f;
 				VboPrimitive* prim = blood.prim_shadow + wi;
 				float (*pos)[3] = blood.pos_shadow[wi];
-				const blood_film_vert_t* v = film->verts + (first + f) * 3;
 
-				VectorCopy(v[0].pos, pos[0]);
-				VectorCopy(v[1].pos, pos[1]);
-				VectorCopy(v[2].pos, pos[2]);
+				for (int i = 0; i < 3; i++)
+					VectorAdd(pos[i], move, pos[i]);
+
 				VectorCopy(pos[0], prim->pos0);
 				VectorCopy(pos[1], prim->pos1);
 				VectorCopy(pos[2], prim->pos2);
 
-				// Lifted off the surface so the point is in the open leaf the
-				// blood is actually in.
-				int cluster = tile_cluster;
-				if (cluster == -2)
-				{
-					vec3_t c;
-					VectorAdd(v[0].pos, v[1].pos, c);
-					VectorAdd(c, v[2].pos, c);
-					VectorScale(c, 1.f / 3.f, c);
-					VectorMA(c, 0.25f, film->plane, c);
-					cluster = BSP_PointLeaf(bsp->nodes, c)->cluster;
-				}
+				prim->cluster = moved_cluster;
 
-				prim->material_id = MATERIAL_KIND_BLOOD;
-				prim->cluster = cluster;
-				prim->texture_flags = 0;
-
-				// The plane's normal, not one carrying the depth: every pass that
-				// treats the interpolated normal as the surface's - the sun's and
-				// the lights' horizon tests, ReSTIR's reuse, the see-through ray's
-				// second refraction, a secondary hit's facing flip - got a normal
-				// lying ALONG the floor at the outline, which is where the white rim
-				// was (2026-11-07). The depth rides in custom.w below instead.
-				prim->normals[0] = plane_nrm;
-				prim->normals[1] = plane_nrm;
-				prim->normals[2] = plane_nrm;
-				prim->tangents[0] = plane_nrm;
-				prim->tangents[1] = plane_nrm;
-				prim->tangents[2] = plane_nrm;
-
-				prim->instance = (uint32_t)blood.model_instance_index;
-				prim->emissive_and_alpha = 0x3c00u | (alpha_half << 16);
-
-				prim->uv0[0] = color[0];
-				prim->uv0[1] = color[1];
-				prim->uv1[0] = color[2];
-				prim->uv1[1] = film->seed;
-				prim->uv2[0] = 2.f;     // landed, and a film: shaded from the plane
-				prim->uv2[1] = 0.f;
-
-				// custom = half4(motion.xyz, w) per vertex. A film never moves, and
-				// w - unused by everything else - is its depth (Triangle.custom_w,
-				// blood_film_depth in path_tracer_rgen.h).
-				prim->custom0[0] = 0; prim->custom0[1] = (uint32_t)floatToHalf(v[0].depth) << 16;
-				prim->custom1[0] = 0; prim->custom1[1] = (uint32_t)floatToHalf(v[1].depth) << 16;
-				prim->custom2[0] = 0; prim->custom2[1] = (uint32_t)floatToHalf(v[2].depth) << 16;
+				prim->custom0[0] = mv_xy; prim->custom0[1] = mv_zw;
+				prim->custom1[0] = mv_xy; prim->custom1[1] = mv_zw;
+				prim->custom2[0] = mv_xy; prim->custom2[1] = mv_zw;
 			}
 
-			// The rest of the chunk, as BLANK THE REST OF THE SLOT does for
-			// droplets - only as far as the old triangles reached. Clearing the
-			// whole region every time was ~300 KB per rewrite at the old size.
-			if (held > (uint32_t)count)
-			{
-				const uint32_t tail = prim_index + (uint32_t)count;
-				const uint32_t n = min(held, (uint32_t)BLOOD_FILM_CHUNK_TRIS) - (uint32_t)count;
+			cache->sphere = *sphere;
+			cache->prim_offset = prim_index;
+			cache->faces = (uint16_t)faces;
 
-				memset(blood.prim_shadow + tail, 0, sizeof(VboPrimitive) * n);
-				memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * n);
-			}
+			blood.dirty_slot[region] = true;
+
+			j->result = 2;
+			return;
 		}
 	}
+
+	cache->valid = true;
+	cache->blanked = false;
+	cache->shadow_zero = false;
+	cache->is_film = false;
+	cache->prim_offset = prim_index;
+	cache->level = level;
+	cache->sphere = *sphere;
+	cache->faces = (uint16_t)faces;
+
+	blood.dirty_slot[region] = true;
+
+	vec3_t color;
+	cast_u32_to_f32_color(sphere->color, &sphere->rgba, color, 1.0f);
+
+	// The whole droplet translates rigidly, so one delta covers all of its
+	// vertices. Halves carry ~3 decimal digits, ample for the few units a
+	// droplet moves in a frame.
+	vec3_t delta;
+	VectorSubtract(sphere->prev_origin, sphere->origin, delta);
+
+	uint32_t custom_xy = (uint32_t)floatToHalf(delta[0]) | ((uint32_t)floatToHalf(delta[1]) << 16);
+	uint32_t custom_zw = (uint32_t)floatToHalf(delta[2]);
+
+	int cluster = bsp ? BSP_PointLeaf(bsp->nodes, sphere->origin)->cluster : -1;
+
+	// A droplet in flight is a plain sphere and takes the cheap path: a
+	// uniform scale changes no direction, so the template's precomputed
+	// encoded normals stand. A landed one is a puddle mesh under a
+	// non-uniform scale, which needs a basis AND needs its normals
+	// transformed by the INVERSE scale - flattening a surface steepens its
+	// normals rather than flattening them.
+	vec3_t ax_t1, ax_t2, ax_n;
+	vec3_t inv_t1, inv_t2, inv_n;
+
+	if (is_splat)
+	{
+		splat_basis(sphere->normal, sphere->tangent, sphere->radius,
+			sphere->flatten, sphere->stretch, sphere->cross,
+			ax_t1, ax_t2, ax_n);
+
+		// Inverse-transpose of the scale, in the same frame. The basis is
+		// orthonormal before scaling, so this is just the reciprocal of each
+		// axis length applied to the unit axis - no matrix inverse needed.
+		// The two tangents now have DIFFERENT lengths once a splat is
+		// stretched, so they need separate reciprocals; sharing one was
+		// correct only while the splat was circular.
+		const float len_t1 = VectorLength(ax_t1);
+		const float len_t2 = VectorLength(ax_t2);
+		const float len_n = VectorLength(ax_n);
+		VectorScale(ax_t1, 1.f / (len_t1 * len_t1), inv_t1);
+		VectorScale(ax_t2, 1.f / (len_t2 * len_t2), inv_t2);
+		VectorScale(ax_n,  1.f / (len_n * len_n), inv_n);
+
+		// A CLOUD DISSOLVING INTO WATER is measured, not shaded, by its
+		// normals: blood_hit_alpha fades it by the same dot() the rim
+		// darkening reads. Steepened like a puddle's, that dot saturates in
+		// the outermost band and the cloud kept a hard outline as it faded.
+		// Scaled as if the dome were as tall as it is wide, the template's
+		// own hemisphere normals come through: dot falls 1 -> 0.7 -> 0 from
+		// the centre through the middle ring to the rim, a fade across the
+		// whole cloud. The cloud is shaded from its plane, so this changes
+		// nothing about how it is lit.
+		if (sphere->wobble > 0.f)
+			VectorScale(ax_n, 1.f / (len_n * sqrtf(len_t1 * len_t2)), inv_n);
+	}
+
+	/*
+	THE SURFACE PLANE NORMAL, CARRIED IN THE TANGENT SLOT.
+
+	get_material() reads it to work out how THICK the puddle is at a shading
+	point, which is what drives the rim darkening: on a dome whose normals
+	have been steepened by the flatten, dot(shading normal, plane normal)
+	runs from 0 at the rim - where the surface faces sideways and the film is
+	a feather edge - to 1 over the body of the pool. No new vertex channel
+	and no interpolation of our own: it is one encode_normal per droplet, and
+	load_triangle already decodes tangents for every hit.
+
+	Safe because a blood surface never reaches the tangent-space code.
+	get_material intercepts is_blood() ahead of every texture fetch and
+	returns before the normal-map block, and the only other reader of
+	triangle.tangents is get_water_normal, which blood is not. The puddle
+	template's own tangents are left built and simply unused on this path.
+	*/
+	const uint32_t splat_plane_nrm = is_splat ? encode_normal(sphere->normal) : 0;
+
+	// Landed splats can be translucent; droplets in flight never are.
+	// A splat dissolving into water carries its own fade on top of that.
+	const float splat_alpha = is_splat
+		? max(0.05f, min(cvar_pt_blood_splat_alpha->value, 1.f)) *
+		  max(0.f, min(sphere->alpha, 1.f)) : 1.f;
+	const uint32_t splat_alpha_half = (uint32_t)floatToHalf(splat_alpha);
+
+	// A puddle's z runs from 0 at its base to 1 at its apex, where a sphere's
+	// spans the centre, so the two want different anchors: the puddle sits ON
+	// the contact point, sunk just far enough to bury its rim.
+	float wobble = is_splat ? max(0.f, min(cvar_pt_blood_wobble->value, 0.9f)) : 0.f;
+
+	/*
+	CAP THE LOBES IN WORLD UNITS.
+
+	pt_blood_wobble is a FRACTION of the outline's radius, which is the
+	correct unit for a droplet and badly wrong for a pool. At
+	cl_blood_pool_max 24 the drawn half-width reaches ~36 units, so the
+	shipped 0.3 pushes the rim in and out by eleven of them - three lobes
+	that size is an amoeba, and no amount of extra tessellation fixes it
+	because the shape itself is wrong.
+
+	Capping the amplitude rather than the fraction keeps a lone droplet
+	exactly as irregular as it was (it never reaches the cap) and holds a
+	pool's lobes to the size of a splash while it grows. The 13th harmonic
+	added to vertex_wobble at 64 segments is the other half of this: a large
+	outline with small lobes needs MORE of them, or it reads as a circle.
+
+	Cache-safe by construction - every input is either a cvar or a field of
+	blood_sphere_t that is already quantized, so this cannot make a parked
+	splat's geometry change from one frame to the next.
+	*/
+	if (is_splat && sphere->wobble > 0.f)
+	{
+		// Dissolving into water - see blood_sphere_t::wobble. Uncapped on
+		// purpose: the cloud grows several times its landed width and is
+		// meant to stay ragged the whole way, not round off into a disc.
+		wobble = min(sphere->wobble, 0.9f);
+	}
+	else if (is_splat && cvar_pt_blood_wobble_max->value > 0.f)
+	{
+		const float spread = sphere->radius * max(0.1f, global_blood_splat_size);
+		const float half_width = spread * max(1.f, max(sphere->stretch, sphere->cross));
+
+		if (half_width > 1e-3f)
+			wobble = min(wobble, cvar_pt_blood_wobble_max->value / half_width);
+	}
+
+	vec3_t mesh_origin;
+	VectorCopy(sphere->origin, mesh_origin);
+	if (is_splat)
+		VectorMA(mesh_origin, -cvar_pt_blood_puddle_sink->value, ax_n, mesh_origin);
+
+	// THE TRAIL HANGS BEHIND, NOT AROUND.
+	//
+	// splat_basis scales the ellipse symmetrically about the origin, so the
+	// length a pool picks up while sliding would grow forward as much as back -
+	// the leading edge running out ahead of the droplet, which reads as a
+	// stretched blob being carried rather than a smear being drawn.
+	//
+	// ax_t1 is spread*stretch long, so scaling it by trail/stretch gives a
+	// vector of exactly spread*trail: the length that was ADDED. Shifting back
+	// by it leaves the leading edge where a round splat's was and puts every
+	// bit of the growth behind. The impact smear is not included in `trail`
+	// and stays centred on the point of contact.
+	if (is_splat && sphere->stretch_trail > 0.f)
+	{
+		const float s = max(1.f, sphere->stretch);
+		VectorMA(mesh_origin, -sphere->stretch_trail / s, ax_t1, mesh_origin);
+	}
+
+	// ONCE PER UNIQUE VERTEX, NOT ONCE PER CORNER - see the block comment on
+	// puddle_vert_pos. The face loop below is then a pure gather, and the
+	// bytes it produces are identical to transforming every corner.
+	//
+	// Only the splat path needs this. A droplet in flight is a uniformly
+	// scaled sphere: its position is one VectorMA and its normals come
+	// straight from the template, so a corner costs about what a table lookup
+	// would.
+	// On the job's own stack (86 KB): the jobs run at once.
+	vec3_t   vert_pos[BLOOD_PUDDLE_MAX_VERTS];
+	uint32_t vert_nrm[BLOOD_PUDDLE_MAX_VERTS];
+
+	// Splats only: the puddle tables stop at BLOOD_SPHERE_MAX_SUBDIV, and a
+	// sphere can be at BLOOD_CLOSEUP_LEVEL.
+	const uint16_t (*face_vid)[3] = is_splat ? puddle_face_vid + puddle_lod_offset[level] : NULL;
+
+	if (is_splat)
+	{
+		const int vbase = puddle_vert_offset[level];
+		const int vcount = puddle_vert_count[level];
+
+		for (int v = 0; v < vcount; v++)
+		{
+			const float* t = puddle_vert_pos[vbase + v];
+
+			// Push the vertex in or out radially. Only the two in-plane
+			// axes are scaled, so the puddle stays exactly as tall and
+			// exactly as flat on the floor - it is the OUTLINE that goes
+			// irregular, which is the part that reads as a splash. The
+			// apex has zero radius and so cannot move, which keeps the
+			// dome centred over its own base.
+			const float w = vertex_wobble(t, sphere->seed, wobble,
+				puddle_segments[level], sphere->rim_support);
+
+			for (int a = 0; a < 3; a++)
+				vert_pos[v][a] = mesh_origin[a]
+				               + ax_t1[a] * t[0] * w + ax_t2[a] * t[1] * w + ax_n[a] * t[2];
+
+			const float* tn = puddle_vert_nrm[vbase + v];
+			vec3_t nv;
+
+			// A cloud is seen from under the water as well, through its flat
+			// base - whose normals all point straight down and so measured it
+			// as solid to the rim: a hard disc from below. Give the base the
+			// dome's profile mirrored, so it fades out from the centre too.
+			vec3_t cloud_n;
+			if (sphere->wobble > 0.f && tn[2] < -0.5f)
+			{
+				VectorSet(cloud_n, t[0], t[1], -sqrtf(max(0.f, 1.f - t[0] * t[0] - t[1] * t[1])));
+				tn = cloud_n;
+			}
+
+			for (int a = 0; a < 3; a++)
+				nv[a] = inv_t1[a] * tn[0] + inv_t2[a] * tn[1] + inv_n[a] * tn[2];
+			VectorNormalize(nv);
+			vert_nrm[v] = encode_normal(nv);
+		}
+	}
+
+	uint32_t write_index = prim_index;
+
+	for (int f = 0; f < faces; f++)
+	{
+		VboPrimitive* prim = blood.prim_shadow + write_index;
+		float (*pos)[3] = blood.pos_shadow[write_index];
+
+		for (int i = 0; i < 3; i++)
+		{
+			if (is_splat)
+				VectorCopy(vert_pos[face_vid[f][i]], pos[i]);
+			else
+				VectorMA(sphere->origin, sphere->radius, tmpl[f].pos[i], pos[i]);
+		}
+
+		VectorCopy(pos[0], prim->pos0);
+		VectorCopy(pos[1], prim->pos1);
+		VectorCopy(pos[2], prim->pos2);
+
+		prim->material_id = MATERIAL_KIND_BLOOD;
+		prim->cluster = cluster;
+		prim->texture_flags = 0;
+
+		if (is_splat)
+		{
+			prim->normals[0] = vert_nrm[face_vid[f][0]];
+			prim->normals[1] = vert_nrm[face_vid[f][1]];
+			prim->normals[2] = vert_nrm[face_vid[f][2]];
+		}
+		else
+		{
+			prim->normals[0] = tmpl_normals[f][0];
+			prim->normals[1] = tmpl_normals[f][1];
+			prim->normals[2] = tmpl_normals[f][2];
+		}
+
+		if (is_splat)
+		{
+			prim->tangents[0] = splat_plane_nrm;
+			prim->tangents[1] = splat_plane_nrm;
+			prim->tangents[2] = splat_plane_nrm;
+		}
+		else
+		{
+			prim->tangents[0] = tmpl_tangents[f][0];
+			prim->tangents[1] = tmpl_tangents[f][1];
+			prim->tangents[2] = tmpl_tangents[f][2];
+		}
+
+		// One ModelInstance backs the whole blood section. It exists only so
+		// load_and_transform_triangle() can subtract render_prim_offset and
+		// get a primitive index; nothing about the droplet is transformed by
+		// it, because the positions above are already in world space.
+		prim->instance = (uint32_t)blood.model_instance_index;
+
+		// Two halves: emissive_factor in the LOW 16 bits, alpha in the
+		// HIGH ones - unpackHalf2x16 puts .x in the low half and
+		// load_triangle reads alpha from .y. 0x3c00 is 1.0.
+		//
+		// Only a LANDED splat is ever less than solid. A droplet in flight
+		// is a body of liquid and reads correctly opaque, and making the
+		// spray translucent would mean tracing through sixty of them.
+		prim->emissive_and_alpha = 0x3c00u | (splat_alpha_half << 16);
+
+		prim->uv0[0] = color[0];
+		prim->uv0[1] = color[1];
+		prim->uv1[0] = color[2];
+		prim->uv1[1] = sphere->seed;
+		// uv2.x: "this droplet has landed", read by get_material to freeze the
+		// animated surface ripple (2 is a film tile - write_film_geometry).
+		// uv2.y: 1 = dissolving into water, which blood_hit_alpha fades out
+		// to its rim and get_material draws without a dark edge or highlight.
+		prim->uv2[0] = is_splat ? 1.f : 0.f;
+		prim->uv2[1] = (is_splat && sphere->wobble > 0.f) ? 1.f : 0.f;
+
+		prim->custom0[0] = custom_xy;
+		prim->custom0[1] = custom_zw;
+		prim->custom1[0] = custom_xy;
+		prim->custom1[1] = custom_zw;
+		prim->custom2[0] = custom_xy;
+		prim->custom2[1] = custom_zw;
+
+		write_index++;
+	}
+
+	// BLANK THE REST OF THE SLOT.
+	//
+	// A slot is `stride` primitives wide, sized for the worst case, but a
+	// droplet only writes as many as its own mesh needs - and the two differ
+	// constantly. A droplet that lands switches from a 320-face sphere to a
+	// 256-face puddle, and without this the sphere's last 64 faces stay in
+	// the slot and keep drawing: thin slivers of the old droplet hanging over
+	// the puddle it just became. A slot reused by a new droplet at a lower
+	// LOD leaves the same kind of debris.
+	//
+	// Only runs when the droplet was regenerated, so the cost sits with the
+	// work that was already happening rather than with every frame.
+	if ((uint32_t)faces < cap)
+	{
+		const uint32_t tail = prim_index + (uint32_t)faces;
+		const uint32_t count = cap - (uint32_t)faces;
+
+		memset(blood.prim_shadow + tail, 0, sizeof(VboPrimitive) * count);
+		memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * count);
+	}
+
+	// The stale primitives past the new mesh are cleared in the shadow copy
+	// above, and blood_cache_entry_t::dev_span is what gets them cleared on
+	// the GPU too: the upload covers max(faces, dev_span), so a droplet whose
+	// mesh shrank sends the difference exactly once.
 }
+
+// this frame's droplet jobs (vkpt_jobs_last), for the slow-frame line: the first blood
+// of a map took 14 ms for 637 droplets, about 3x a later frame's rate per droplet
+static vkpt_jobs_stats_t blood_drop_stats;
 
 static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_spheres,
                                      const blood_film_t* films, int num_films, bsp_t* bsp)
@@ -2040,6 +2873,7 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	memset(slot_live, 0, sizeof(slot_live));
 
 	int highest_slot = -1;
+	int num_drop_jobs = 0;
 
 	// Which slots were actually rewritten this frame. Uploading the whole used
 	// range every frame meant pushing 25 MB over PCIe to change a few slots -
@@ -2088,7 +2922,9 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 	}
 
 	// Surface blood first: its regions are the lowest - see FILM REGIONS.
+	CPUPROF_DETAIL_BEGIN(FILM_MESH);
 	write_film_geometry(films, num_films, bsp, slot_live, &highest_slot);
+	CPUPROF_DETAIL_END(FILM_MESH);
 
 	for (int s = 0; s < num_spheres; s++)
 	{
@@ -2106,6 +2942,10 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		const uint32_t prim_index = region_offset(region);
 		const uint32_t cap = region_cap(region);
 
+		// two droplets naming one slot would be two jobs writing one region:
+		// the first keeps it (the client never hands out a slot twice)
+		if (slot_live[region])
+			continue;
 		slot_live[region] = true;
 		if (region > highest_slot)
 			highest_slot = region;
@@ -2114,15 +2954,6 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 
 		const int level = sphere_lod[s];
 		const int faces = faces_for(sphere, level);
-
-		const blood_face_t* tmpl = is_splat
-			? puddle_template + puddle_lod_offset[level]
-			: sphere_template + lod_offset[level];
-
-		const uint32_t (*tmpl_normals)[3] = sphere_normals + lod_offset[level];
-		const uint32_t (*tmpl_tangents)[3] = is_splat
-			? puddle_tangents + puddle_lod_offset[level]
-			: sphere_tangents + lod_offset[level];
 
 		if (prim_index + (uint32_t)faces > blood.max_prims || (uint32_t)faces > cap)
 			continue;
@@ -2145,409 +2976,27 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 			continue;
 		}
 
-		/*
-		THE SAME MESH, MOVED - the case that costs everything while blood is
-		running down a wall.
-
-		A droplet that is sliding changes its ORIGIN and nothing else: same
-		normal, same radius, same flatten, same stretch, same seed, same LOD. Its
-		geometry is therefore last frame's geometry translated, and every
-		expensive thing below is already correct in the shadow buffer. Rebuilding
-		it recomputed, per vertex per frame: vertex_wobble (three harmonics, so
-		trig), the inverse-scale normal transform, a VectorNormalize and an
-		encode_normal - for a mesh identical apart from where it sits.
-
-		That is what "the splats cost a lot while they are dripping" was. A
-		SETTLED splat has always been free, because it hits the exact-match test
-		above; a MOVING one paid full price every frame, and moving is precisely
-		when there are a lot of them at once.
-
-		The test is a memcmp of the whole struct with the two position fields
-		masked out, rather than a field-by-field compare, for the same reason the
-		exact test above is a memcmp: a field added to blood_sphere_t later is
-		then automatically part of the check instead of silently escaping it.
-
-		Positions accumulate here rather than being rebuilt from the template, so
-		they drift by up to half an ulp per frame. At world coordinates of a few
-		thousand that is ~1e-4 units per frame against a droplet radius of 1.2,
-		and a droplet parks within a second or two - it cannot reach anything
-		visible.
-		*/
-		if (cache->valid && cache->level == level)
-		{
-			blood_sphere_t probe = *sphere;
-			VectorCopy(cache->sphere.origin, probe.origin);
-			VectorCopy(cache->sphere.prev_origin, probe.prev_origin);
-
-			if (memcmp(&cache->sphere, &probe, sizeof(blood_sphere_t)) == 0)
-			{
-				vec3_t move;
-				VectorSubtract(sphere->origin, cache->sphere.origin, move);
-
-				// The motion vector and the cluster are the only two things that
-				// genuinely change with position, and both are per DROPLET, not
-				// per vertex.
-				vec3_t mv_delta;
-				VectorSubtract(sphere->prev_origin, sphere->origin, mv_delta);
-				const uint32_t mv_xy = (uint32_t)floatToHalf(mv_delta[0])
-				                     | ((uint32_t)floatToHalf(mv_delta[1]) << 16);
-				const uint32_t mv_zw = (uint32_t)floatToHalf(mv_delta[2]);
-				const int moved_cluster = bsp
-					? BSP_PointLeaf(bsp->nodes, sphere->origin)->cluster : -1;
-
-				for (int f = 0; f < faces; f++)
-				{
-					const uint32_t wi = prim_index + (uint32_t)f;
-					VboPrimitive* prim = blood.prim_shadow + wi;
-					float (*pos)[3] = blood.pos_shadow[wi];
-
-					for (int i = 0; i < 3; i++)
-						VectorAdd(pos[i], move, pos[i]);
-
-					VectorCopy(pos[0], prim->pos0);
-					VectorCopy(pos[1], prim->pos1);
-					VectorCopy(pos[2], prim->pos2);
-
-					prim->cluster = moved_cluster;
-
-					prim->custom0[0] = mv_xy; prim->custom0[1] = mv_zw;
-					prim->custom1[0] = mv_xy; prim->custom1[1] = mv_zw;
-					prim->custom2[0] = mv_xy; prim->custom2[1] = mv_zw;
-				}
-
-				cache->sphere = *sphere;
-				cache->prim_offset = prim_index;
-				cache->faces = (uint16_t)faces;
-
-				blood.dirty_slot[region] = true;
-
-				blood.cache_moves++;
-				continue;
-			}
-		}
-
-		cache->valid = true;
-		cache->blanked = false;
-		cache->is_film = false;
-		cache->prim_offset = prim_index;
-		cache->level = level;
-		cache->sphere = *sphere;
-		cache->faces = (uint16_t)faces;
-
-		blood.dirty_slot[region] = true;
-
-		vec3_t color;
-		cast_u32_to_f32_color(sphere->color, &sphere->rgba, color, 1.0f);
-
-		// The whole droplet translates rigidly, so one delta covers all of its
-		// vertices. Halves carry ~3 decimal digits, ample for the few units a
-		// droplet moves in a frame.
-		vec3_t delta;
-		VectorSubtract(sphere->prev_origin, sphere->origin, delta);
-
-		uint32_t custom_xy = (uint32_t)floatToHalf(delta[0]) | ((uint32_t)floatToHalf(delta[1]) << 16);
-		uint32_t custom_zw = (uint32_t)floatToHalf(delta[2]);
-
-		int cluster = bsp ? BSP_PointLeaf(bsp->nodes, sphere->origin)->cluster : -1;
-
-		// A droplet in flight is a plain sphere and takes the cheap path: a
-		// uniform scale changes no direction, so the template's precomputed
-		// encoded normals stand. A landed one is a puddle mesh under a
-		// non-uniform scale, which needs a basis AND needs its normals
-		// transformed by the INVERSE scale - flattening a surface steepens its
-		// normals rather than flattening them.
-		vec3_t ax_t1, ax_t2, ax_n;
-		vec3_t inv_t1, inv_t2, inv_n;
-
-		if (is_splat)
-		{
-			splat_basis(sphere->normal, sphere->tangent, sphere->radius,
-				sphere->flatten, sphere->stretch, sphere->cross,
-				ax_t1, ax_t2, ax_n);
-
-			// Inverse-transpose of the scale, in the same frame. The basis is
-			// orthonormal before scaling, so this is just the reciprocal of each
-			// axis length applied to the unit axis - no matrix inverse needed.
-			// The two tangents now have DIFFERENT lengths once a splat is
-			// stretched, so they need separate reciprocals; sharing one was
-			// correct only while the splat was circular.
-			const float len_t1 = VectorLength(ax_t1);
-			const float len_t2 = VectorLength(ax_t2);
-			const float len_n = VectorLength(ax_n);
-			VectorScale(ax_t1, 1.f / (len_t1 * len_t1), inv_t1);
-			VectorScale(ax_t2, 1.f / (len_t2 * len_t2), inv_t2);
-			VectorScale(ax_n,  1.f / (len_n * len_n), inv_n);
-
-			// A CLOUD DISSOLVING INTO WATER is measured, not shaded, by its
-			// normals: blood_hit_alpha fades it by the same dot() the rim
-			// darkening reads. Steepened like a puddle's, that dot saturates in
-			// the outermost band and the cloud kept a hard outline as it faded.
-			// Scaled as if the dome were as tall as it is wide, the template's
-			// own hemisphere normals come through: dot falls 1 -> 0.7 -> 0 from
-			// the centre through the middle ring to the rim, a fade across the
-			// whole cloud. The cloud is shaded from its plane, so this changes
-			// nothing about how it is lit.
-			if (sphere->wobble > 0.f)
-				VectorScale(ax_n, 1.f / (len_n * sqrtf(len_t1 * len_t2)), inv_n);
-		}
-
-		/*
-		THE SURFACE PLANE NORMAL, CARRIED IN THE TANGENT SLOT.
-
-		get_material() reads it to work out how THICK the puddle is at a shading
-		point, which is what drives the rim darkening: on a dome whose normals
-		have been steepened by the flatten, dot(shading normal, plane normal)
-		runs from 0 at the rim - where the surface faces sideways and the film is
-		a feather edge - to 1 over the body of the pool. No new vertex channel
-		and no interpolation of our own: it is one encode_normal per droplet, and
-		load_triangle already decodes tangents for every hit.
-
-		Safe because a blood surface never reaches the tangent-space code.
-		get_material intercepts is_blood() ahead of every texture fetch and
-		returns before the normal-map block, and the only other reader of
-		triangle.tangents is get_water_normal, which blood is not. The puddle
-		template's own tangents are left built and simply unused on this path.
-		*/
-		const uint32_t splat_plane_nrm = is_splat ? encode_normal(sphere->normal) : 0;
-
-		// Landed splats can be translucent; droplets in flight never are.
-		// A splat dissolving into water carries its own fade on top of that.
-		const float splat_alpha = is_splat
-			? max(0.05f, min(cvar_pt_blood_splat_alpha->value, 1.f)) *
-			  max(0.f, min(sphere->alpha, 1.f)) : 1.f;
-		const uint32_t splat_alpha_half = (uint32_t)floatToHalf(splat_alpha);
-
-		// A puddle's z runs from 0 at its base to 1 at its apex, where a sphere's
-		// spans the centre, so the two want different anchors: the puddle sits ON
-		// the contact point, sunk just far enough to bury its rim.
-		float wobble = is_splat ? max(0.f, min(cvar_pt_blood_wobble->value, 0.9f)) : 0.f;
-
-		/*
-		CAP THE LOBES IN WORLD UNITS.
-
-		pt_blood_wobble is a FRACTION of the outline's radius, which is the
-		correct unit for a droplet and badly wrong for a pool. At
-		cl_blood_pool_max 24 the drawn half-width reaches ~36 units, so the
-		shipped 0.3 pushes the rim in and out by eleven of them - three lobes
-		that size is an amoeba, and no amount of extra tessellation fixes it
-		because the shape itself is wrong.
-
-		Capping the amplitude rather than the fraction keeps a lone droplet
-		exactly as irregular as it was (it never reaches the cap) and holds a
-		pool's lobes to the size of a splash while it grows. The 13th harmonic
-		added to vertex_wobble at 64 segments is the other half of this: a large
-		outline with small lobes needs MORE of them, or it reads as a circle.
-
-		Cache-safe by construction - every input is either a cvar or a field of
-		blood_sphere_t that is already quantized, so this cannot make a parked
-		splat's geometry change from one frame to the next.
-		*/
-		if (is_splat && sphere->wobble > 0.f)
-		{
-			// Dissolving into water - see blood_sphere_t::wobble. Uncapped on
-			// purpose: the cloud grows several times its landed width and is
-			// meant to stay ragged the whole way, not round off into a disc.
-			wobble = min(sphere->wobble, 0.9f);
-		}
-		else if (is_splat && cvar_pt_blood_wobble_max->value > 0.f)
-		{
-			const float spread = sphere->radius * max(0.1f, global_blood_splat_size);
-			const float half_width = spread * max(1.f, max(sphere->stretch, sphere->cross));
-
-			if (half_width > 1e-3f)
-				wobble = min(wobble, cvar_pt_blood_wobble_max->value / half_width);
-		}
-
-		vec3_t mesh_origin;
-		VectorCopy(sphere->origin, mesh_origin);
-		if (is_splat)
-			VectorMA(mesh_origin, -cvar_pt_blood_puddle_sink->value, ax_n, mesh_origin);
-
-		// THE TRAIL HANGS BEHIND, NOT AROUND.
-		//
-		// splat_basis scales the ellipse symmetrically about the origin, so the
-		// length a pool picks up while sliding would grow forward as much as back -
-		// the leading edge running out ahead of the droplet, which reads as a
-		// stretched blob being carried rather than a smear being drawn.
-		//
-		// ax_t1 is spread*stretch long, so scaling it by trail/stretch gives a
-		// vector of exactly spread*trail: the length that was ADDED. Shifting back
-		// by it leaves the leading edge where a round splat's was and puts every
-		// bit of the growth behind. The impact smear is not included in `trail`
-		// and stays centred on the point of contact.
-		if (is_splat && sphere->stretch_trail > 0.f)
-		{
-			const float s = max(1.f, sphere->stretch);
-			VectorMA(mesh_origin, -sphere->stretch_trail / s, ax_t1, mesh_origin);
-		}
-
-		// ONCE PER UNIQUE VERTEX, NOT ONCE PER CORNER - see the block comment on
-		// puddle_vert_pos. The face loop below is then a pure gather, and the
-		// bytes it produces are identical to transforming every corner.
-		//
-		// Only the splat path needs this. A droplet in flight is a uniformly
-		// scaled sphere: its position is one VectorMA and its normals come
-		// straight from the template, so a corner costs about what a table lookup
-		// would.
-		static vec3_t   vert_pos[BLOOD_PUDDLE_MAX_VERTS];
-		static uint32_t vert_nrm[BLOOD_PUDDLE_MAX_VERTS];
-
-		const uint16_t (*face_vid)[3] = puddle_face_vid + puddle_lod_offset[level];
-
-		if (is_splat)
-		{
-			const int vbase = puddle_vert_offset[level];
-			const int vcount = puddle_vert_count[level];
-
-			for (int v = 0; v < vcount; v++)
-			{
-				const float* t = puddle_vert_pos[vbase + v];
-
-				// Push the vertex in or out radially. Only the two in-plane
-				// axes are scaled, so the puddle stays exactly as tall and
-				// exactly as flat on the floor - it is the OUTLINE that goes
-				// irregular, which is the part that reads as a splash. The
-				// apex has zero radius and so cannot move, which keeps the
-				// dome centred over its own base.
-				const float w = vertex_wobble(t, sphere->seed, wobble,
-					puddle_segments[level], sphere->rim_support);
-
-				for (int a = 0; a < 3; a++)
-					vert_pos[v][a] = mesh_origin[a]
-					               + ax_t1[a] * t[0] * w + ax_t2[a] * t[1] * w + ax_n[a] * t[2];
-
-				const float* tn = puddle_vert_nrm[vbase + v];
-				vec3_t nv;
-
-				// A cloud is seen from under the water as well, through its flat
-				// base - whose normals all point straight down and so measured it
-				// as solid to the rim: a hard disc from below. Give the base the
-				// dome's profile mirrored, so it fades out from the centre too.
-				vec3_t cloud_n;
-				if (sphere->wobble > 0.f && tn[2] < -0.5f)
-				{
-					VectorSet(cloud_n, t[0], t[1], -sqrtf(max(0.f, 1.f - t[0] * t[0] - t[1] * t[1])));
-					tn = cloud_n;
-				}
-
-				for (int a = 0; a < 3; a++)
-					nv[a] = inv_t1[a] * tn[0] + inv_t2[a] * tn[1] + inv_n[a] * tn[2];
-				VectorNormalize(nv);
-				vert_nrm[v] = encode_normal(nv);
-			}
-		}
-
-		uint32_t write_index = prim_index;
-
-		for (int f = 0; f < faces; f++)
-		{
-			VboPrimitive* prim = blood.prim_shadow + write_index;
-			float (*pos)[3] = blood.pos_shadow[write_index];
-
-			for (int i = 0; i < 3; i++)
-			{
-				if (is_splat)
-					VectorCopy(vert_pos[face_vid[f][i]], pos[i]);
-				else
-					VectorMA(sphere->origin, sphere->radius, tmpl[f].pos[i], pos[i]);
-			}
-
-			VectorCopy(pos[0], prim->pos0);
-			VectorCopy(pos[1], prim->pos1);
-			VectorCopy(pos[2], prim->pos2);
-
-			prim->material_id = MATERIAL_KIND_BLOOD;
-			prim->cluster = cluster;
-			prim->texture_flags = 0;
-
-			if (is_splat)
-			{
-				prim->normals[0] = vert_nrm[face_vid[f][0]];
-				prim->normals[1] = vert_nrm[face_vid[f][1]];
-				prim->normals[2] = vert_nrm[face_vid[f][2]];
-			}
-			else
-			{
-				prim->normals[0] = tmpl_normals[f][0];
-				prim->normals[1] = tmpl_normals[f][1];
-				prim->normals[2] = tmpl_normals[f][2];
-			}
-
-			if (is_splat)
-			{
-				prim->tangents[0] = splat_plane_nrm;
-				prim->tangents[1] = splat_plane_nrm;
-				prim->tangents[2] = splat_plane_nrm;
-			}
-			else
-			{
-				prim->tangents[0] = tmpl_tangents[f][0];
-				prim->tangents[1] = tmpl_tangents[f][1];
-				prim->tangents[2] = tmpl_tangents[f][2];
-			}
-
-			// One ModelInstance backs the whole blood section. It exists only so
-			// load_and_transform_triangle() can subtract render_prim_offset and
-			// get a primitive index; nothing about the droplet is transformed by
-			// it, because the positions above are already in world space.
-			prim->instance = (uint32_t)blood.model_instance_index;
-
-			// Two halves: emissive_factor in the LOW 16 bits, alpha in the
-			// HIGH ones - unpackHalf2x16 puts .x in the low half and
-			// load_triangle reads alpha from .y. 0x3c00 is 1.0.
-			//
-			// Only a LANDED splat is ever less than solid. A droplet in flight
-			// is a body of liquid and reads correctly opaque, and making the
-			// spray translucent would mean tracing through sixty of them.
-			prim->emissive_and_alpha = 0x3c00u | (splat_alpha_half << 16);
-
-			prim->uv0[0] = color[0];
-			prim->uv0[1] = color[1];
-			prim->uv1[0] = color[2];
-			prim->uv1[1] = sphere->seed;
-			// uv2.x: "this droplet has landed", read by get_material to freeze the
-			// animated surface ripple (2 is a film tile - write_film_geometry).
-			// uv2.y: 1 = dissolving into water, which blood_hit_alpha fades out
-			// to its rim and get_material draws without a dark edge or highlight.
-			prim->uv2[0] = is_splat ? 1.f : 0.f;
-			prim->uv2[1] = (is_splat && sphere->wobble > 0.f) ? 1.f : 0.f;
-
-			prim->custom0[0] = custom_xy;
-			prim->custom0[1] = custom_zw;
-			prim->custom1[0] = custom_xy;
-			prim->custom1[1] = custom_zw;
-			prim->custom2[0] = custom_xy;
-			prim->custom2[1] = custom_zw;
-
-			write_index++;
-		}
-
-		// BLANK THE REST OF THE SLOT.
-		//
-		// A slot is `stride` primitives wide, sized for the worst case, but a
-		// droplet only writes as many as its own mesh needs - and the two differ
-		// constantly. A droplet that lands switches from a 320-face sphere to a
-		// 256-face puddle, and without this the sphere's last 64 faces stay in
-		// the slot and keep drawing: thin slivers of the old droplet hanging over
-		// the puddle it just became. A slot reused by a new droplet at a lower
-		// LOD leaves the same kind of debris.
-		//
-		// Only runs when the droplet was regenerated, so the cost sits with the
-		// work that was already happening rather than with every frame.
-		if ((uint32_t)faces < cap)
-		{
-			const uint32_t tail = prim_index + (uint32_t)faces;
-			const uint32_t count = cap - (uint32_t)faces;
-
-			memset(blood.prim_shadow + tail, 0, sizeof(VboPrimitive) * count);
-			memset(blood.pos_shadow + tail, 0, sizeof(prim_positions_t) * count);
-		}
-
-		// The stale primitives past the new mesh are cleared in the shadow copy
-		// above, and blood_cache_entry_t::dev_span is what gets them cleared on
-		// the GPU too: the upload covers max(faces, dev_span), so a droplet whose
-		// mesh shrank sends the difference exactly once.
+		// the rest is the droplet's job (drop_job): moved, or made again
+		drop_job_t* j = drop_jobs + num_drop_jobs++;
+		j->sphere = sphere;
+		j->region = region;
+		j->prim_index = prim_index;
+		j->cap = cap;
+		j->level = level;
+		j->faces = faces;
+		j->is_splat = is_splat;
+		j->result = 0;
 	}
+
+	drop_jobs_bsp = bsp;
+	vkpt_parallel_for(num_drop_jobs, drop_job, NULL);
+	if (num_drop_jobs > 0)
+		blood_drop_stats = vkpt_jobs_last;
+	else
+		memset(&blood_drop_stats, 0, sizeof(blood_drop_stats));
+	for (int i = 0; i < num_drop_jobs; i++)
+		if (drop_jobs[i].result == 2)
+			blood.cache_moves++;
 
 	// Blank any slot inside the used range that no longer holds a droplet.
 	// Degenerate triangles - all three vertices identical - cost the acceleration
@@ -2561,8 +3010,19 @@ static uint32_t write_blood_geometry(const blood_sphere_t* spheres, int num_sphe
 		if (slot_live[i] || blood_cache[i].blanked)
 			continue;
 
-		memset(blood.prim_shadow + region_offset(i), 0, sizeof(VboPrimitive) * region_cap(i));
-		memset(blood.pos_shadow + region_offset(i), 0, sizeof(prim_positions_t) * region_cap(i));
+		/* FIRST BLOOD (Matt 11-14: 13.4 ms of "blood meshes" for 619 new droplets, of
+		   which the droplets' own jobs were 1.5). The regions run [film][close-up][slots],
+		   so the first droplet in a slot puts every film chunk and close-up region below
+		   it in range - none of them blanked yet - and this cleared each one: the whole
+		   film area (164 MB of shadow at cl_blood_film_tris 1048576), on the first blood of every map. The shadow was
+		   made zeroed; a region still all zero needs only the bookkeeping. The device side
+		   is unchanged (dirty_slot, dev_span): the epoch reset zeroed the section there. */
+		if (!blood_cache[i].shadow_zero)
+		{
+			memset(blood.prim_shadow + region_offset(i), 0, sizeof(VboPrimitive) * region_cap(i));
+			memset(blood.pos_shadow + region_offset(i), 0, sizeof(prim_positions_t) * region_cap(i));
+			blood_cache[i].shadow_zero = true;
+		}
 
 		blood_cache[i].valid = false;
 		blood_cache[i].blanked = true;
@@ -2603,6 +3063,8 @@ void vkpt_blood_prepare(
 	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
+	float fov_y,
+	int view_height,
 	int model_instance_index,
 	uint32_t prim_offset,
 	vkpt_blood_frame_t* frame)
@@ -2631,6 +3093,8 @@ void vkpt_blood_prepare(
 		return;
 	}
 
+	const uint64_t prep_t0 = Sys_Microseconds();
+	const bool had_templates = templates_built;
 	if (!templates_built)
 		build_sphere_templates();
 
@@ -2649,7 +3113,8 @@ void vkpt_blood_prepare(
 	// uses. Growing to the high-water mark keeps the common case cheap without
 	// capping the uncommon one.
 	// Surface blood alone still needs the section, with no droplet in the air.
-	uint32_t needed = num_spheres > 0 ? choose_lods(spheres, num_spheres, cam_pos) : 0;
+	const uint64_t lods_t0 = Sys_Microseconds();
+	uint32_t needed = num_spheres > 0 ? choose_lods(spheres, num_spheres, cam_pos, fov_y, view_height) : 0;
 	for (int k = 0; k < num_films; k++)
 		needed += (uint32_t)max(0, films[k].num_tris);
 	if (needed == 0)
@@ -2659,15 +3124,21 @@ void vkpt_blood_prepare(
 		return;
 	}
 
-	if (!ensure_buffers())
+	const uint64_t buffers_t0 = Sys_Microseconds();
+	blood_in_frame = true;
+	const bool buffers_ok = ensure_buffers();
+	blood_in_frame = false;
+	if (!buffers_ok)
 	{
 		blood.have_last_offset = false;
 		blood_blas_report(prim_offset, 0, true);
 		return;
 	}
 
+	const uint64_t closeups_t0 = Sys_Microseconds();
 	if (num_spheres > 0)
-		assign_ultra_regions(spheres, num_spheres);
+		assign_closeups();
+	const uint64_t closeups_t1 = Sys_Microseconds();
 
 	if (needed > blood.max_prims)
 	{
@@ -2819,11 +3290,30 @@ void vkpt_blood_prepare(
 
 		const uint32_t lo = region_offset((int)i);
 
-		// Neighbouring slots that both need their whole stride are one copy
-		// rather than two - which is the common shape on an epoch frame.
-		if (num_regions && regions[num_regions - 1].src + regions[num_regions - 1].count == lo)
+		/*
+		MERGING ACROSS A GAP (11-14). Neighbouring slots that both need their whole
+		stride were always one copy rather than two - the common shape on an epoch
+		frame. Now so are two regions a few primitives apart, the gap going with
+		them: D3D12 has no many-region buffer copy, so each region was two
+		CopyBufferRegions, and Matt's dip captures had 700-1250 regions a frame -
+		up to 2500 copy commands - with the upload slower per byte the more of
+		them there were (46 MB in 712 regions 1.6 ms, 31 MB in 1252 2.1 ms).
+
+		Safe because the gap's bytes in the shadow are what the device holds: a
+		slot that is not dev_pending is in step with the device, and past a
+		region's n both sides are zero (dev_span; the shadow starts zeroed and
+		every rewrite clears what it no longer covers). pt_blood_upload_merge is
+		the most primitives a gap may be: 128 is 21 KB, well under what two copy
+		commands cost in time at PCIe rates.
+		*/
+		const uint32_t merge_gap = (uint32_t)max(0, cvar_pt_blood_upload_merge->integer);
+		vkpt_blood_region_t* last = num_regions ? &regions[num_regions - 1] : NULL;
+		const uint32_t last_end = last ? last->src + last->count : 0;
+
+		if (last && lo >= last_end && lo - last_end <= merge_gap)
 		{
-			regions[num_regions - 1].count += n;
+			up_bytes += (size_t)(lo - last_end) * (sizeof(VboPrimitive) + sizeof(prim_positions_t));
+			last->count = lo + n - last->src;
 		}
 		else
 		{
@@ -2838,9 +3328,47 @@ void vkpt_blood_prepare(
 	blood.last_epoch = epoch_reset;
 	blood.last_up_bytes = up_bytes;
 
+	// what the frame's blood work was, beside its times (cpuprof.h)
+	CPUPROF_COUNT_SET(BLOOD_MOVED, blood.cache_moves);
+	CPUPROF_COUNT_SET(BLOOD_STILL, blood.cache_hits);
+	CPUPROF_COUNT_SET(BLOOD_REBUILT, max(0, blood.sphere_count - blood.cache_hits - blood.cache_moves));
+	CPUPROF_COUNT_SET(BLOOD_COPIES, num_regions);
+	CPUPROF_COUNT_SET(BLOOD_UP_KB, (up_bytes + 1023) / 1024);
+
 	// The fill and the copies are the only writes this section gets - see BLAS
 	// REUSE. No fill and no region means the device holds what it held.
 	blood_blas_report(prim_offset, prim_count, epoch_reset || num_regions > 0);
+
+	/* A SLOW BLOOD FRAME SAYS WHERE (11-14): the profiler's "blood meshes" is this
+	   whole function; over 4 ms, its parts go to the log beside the PROFCAPTURE
+	   lines - the first blood of a map took 14.6 ms there, and its mesh work
+	   alone cannot have been more than about 3. */
+	{
+		const uint64_t done = Sys_Microseconds();
+		const double total = (double)(done - prep_t0) * 1e-3;
+		if (total >= 4.0)
+		{
+			// the droplet jobs' split: work / wall near the thread count = they ran side
+			// by side and each was simply slow; a big wake or wait = a worker came late
+			char jobs[160] = "";
+			const vkpt_jobs_stats_t* js = &blood_drop_stats;
+			if (js->count > 0)
+				Q_snprintf(jobs, sizeof(jobs), "; droplet jobs %.1f ms on %d threads - work %.1f, caller ran %d of %d, "
+					"slowest wake %.1f, caller waited %.1f", js->wall_us * 1e-3, js->woken + 1, js->work_us * 1e-3,
+					js->by_caller, js->count, js->wake_us * 1e-3, js->tail_us * 1e-3);
+			Con_SkipNotify(true);
+			Com_Printf("Blood: slow frame %.1f ms - templates %.1f%s, lods %.1f, buffers %.1f, close-ups %.1f, "
+				"meshes %.1f (%d droplets: %d moved, %d rebuilt; %d film tiles), regions %.1f (%u, %.1f MB)%s%s\n",
+				total, (double)(lods_t0 - prep_t0) * 1e-3, had_templates ? "" : " (made)",
+				(double)(buffers_t0 - lods_t0) * 1e-3, (double)(closeups_t0 - buffers_t0) * 1e-3,
+				(double)(closeups_t1 - closeups_t0) * 1e-3, (double)blood.last_gen_usec * 1e-3,
+				blood.sphere_count, blood.cache_moves,
+				max(0, blood.sphere_count - blood.cache_hits - blood.cache_moves), blood.film_tiles,
+				(double)(done - (closeups_t1 + blood.last_gen_usec)) * 1e-3, num_regions,
+				(double)up_bytes / (1024.0 * 1024.0), epoch_reset ? ", epoch reset" : "", jobs);
+			Con_SkipNotify(false);
+		}
+	}
 
 	blood.prim_count = prim_count;
 
@@ -2899,6 +3427,9 @@ void vkpt_blood_print_stats(uint64_t copy_usec)
 			blood.last_gen_usec / 1000.f, copy_usec / 1000.f, blood.last_regions == 0 ? " (skipped)" : "",
 			(float)blood.last_up_bytes / (1024.f * 1024.f),
 			blood.last_regions, blood.last_epoch ? " EPOCH" : "", reuse);
+		if (blood.closeup_up || blood.closeup_short)
+			Com_Printf("blood close-up (pt_blood_lod_px %g): %d droplets drawn finer, %d of them in the %d-region pool, %d short of pool or budget\n",
+				cvar_pt_blood_lod_px->value, blood.closeup_up, blood.closeup_pool, blood.ultra_count, blood.closeup_short);
 		if (blood.film_count)
 			Com_Printf("blood film: %d tiles, %d tris in %d / %d chunks%s\n",
 				blood.film_tiles, blood.film_tris, blood.film_chunks_used, blood.film_count,
@@ -2913,6 +3444,23 @@ void vkpt_blood_print_stats(uint64_t copy_usec)
 		bvh_sum = bvh_max = frame_sum = frame_max = 0.0;
 		samples = 0;
 	}
+}
+
+// vkpt_blood_update's copy into the staging, a region a job (jobs.c)
+typedef struct {
+	const VkBufferCopy*	prim;
+	const VkBufferCopy*	pos;
+	char*				dst_prim;
+	char*				dst_pos;
+	const char*			src_prim;
+	const char*			src_pos;
+} vk_copy_t;
+
+static void vk_copy_job(void* ctx, int r)
+{
+	const vk_copy_t* c = ctx;
+	memcpy(c->dst_prim + c->prim[r].srcOffset, c->src_prim + c->prim[r].srcOffset, c->prim[r].size);
+	memcpy(c->dst_pos + c->pos[r].srcOffset, c->src_pos + c->pos[r].srcOffset, c->pos[r].size);
 }
 
 /*
@@ -2936,6 +3484,8 @@ void vkpt_blood_update(
 	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
+	float fov_y,
+	int view_height,
 	int model_instance_index,
 	uint32_t prim_offset,
 	uint32_t* prim_count_out)
@@ -2943,8 +3493,10 @@ void vkpt_blood_update(
 	*prim_count_out = 0;
 
 	vkpt_blood_frame_t frame;
-	vkpt_blood_prepare(spheres, num_spheres, films, num_films, bsp, cam_pos, model_instance_index,
-	                   prim_offset, &frame);
+	CPUPROF_DETAIL_BEGIN(BLOOD_MESH);
+	vkpt_blood_prepare(spheres, num_spheres, films, num_films, bsp, cam_pos, fov_y, view_height,
+	                   model_instance_index, prim_offset, &frame);
+	CPUPROF_DETAIL_END(BLOOD_MESH);
 	if (frame.prim_count == 0)
 		return;
 
@@ -3031,15 +3583,17 @@ void vkpt_blood_update(
 	const uint64_t copy_t0 = Sys_Microseconds();
 	if (!skip_upload)
 	{
-		for (uint32_t r = 0; r < num_regions; r++)
-		{
-			memcpy((char*)blood_vk.mapped_prim[blood_vk.frame_index] + regions_prim[r].srcOffset,
-				(const char*)frame.prims + regions_prim[r].srcOffset, regions_prim[r].size);
-			memcpy((char*)blood_vk.mapped_pos[blood_vk.frame_index] + regions_pos[r].srcOffset,
-				(const char*)frame.positions + regions_pos[r].srcOffset, regions_pos[r].size);
-		}
+		// a region a job (jobs.c): see the D3D12 backend's blood_copy_job
+		vk_copy_t copy = {
+			.prim = regions_prim, .pos = regions_pos,
+			.dst_prim = (char*)blood_vk.mapped_prim[blood_vk.frame_index],
+			.dst_pos = (char*)blood_vk.mapped_pos[blood_vk.frame_index],
+			.src_prim = (const char*)frame.prims, .src_pos = (const char*)frame.positions,
+		};
+		vkpt_parallel_for((int)num_regions, vk_copy_job, &copy);
 	}
 	const uint64_t copy_usec = Sys_Microseconds() - copy_t0;
+	CPUPROF_DETAIL_ADD(BLOOD_COPY, copy_usec);
 
 	if (!skip_upload && num_regions)
 	{

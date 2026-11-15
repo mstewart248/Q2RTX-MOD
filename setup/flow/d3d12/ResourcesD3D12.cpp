@@ -4,8 +4,185 @@
 
 #include "DeviceD3D12.h"
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <vector>
+
 namespace NvFlowD3D12
 {
+
+/// ***************************** Upload stash *****************************************************
+
+/* THE UPLOAD STASH (q2rtx, 11-14). Flow maps a fresh constant buffer for every
+   emitter on every pass of a step (EmitterSphere.cpp, EmitterBox.cpp: an
+   NvFlowUploadBuffer_map per param per batch, 64 KB each, the smallest
+   NvFlowUploadBuffer_computeBufferSize makes), and its versioning keeps a ring
+   of them some frames deep: a step with more emitters than any before it makes
+   new ones, each a CreateCommittedResource on the game's main thread, ~0.1 ms
+   apiece. Matt's log (11-14): every Flow step over 4 ms was one that made 20-40
+   buffers, the rest made 0-6 and took 1-1.5 ms.
+   An upload heap takes no resource flags, so a 64 KB upload buffer is the same
+   resource whatever Flow's desc asks: a worker thread keeps kStashTarget of them
+   made and mapped, buffer_createResource takes one, and buffer_destroy gives
+   them back (up to kStashMax) rather than releasing them. */
+static const NvFlowUint64 kStashBytes = 65536u;
+static const size_t kStashTarget = 128u;     // 8 MB kept made
+static const size_t kStashMax = 512u;        // 32 MB at most, what comes back included
+
+struct UploadStashEntry
+{
+    ID3D12Resource* resource;
+    void* mapped;
+};
+
+struct UploadStash
+{
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::vector<UploadStashEntry> entries;
+    std::thread thread;
+    bool quit = false;
+    ID3D12Device* device = nullptr;     // the Device's, held until the thread is joined
+};
+
+static bool uploadStash_make(ID3D12Device* device, UploadStashEntry* out)
+{
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC resDesc = {};
+    resDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resDesc.Width = kStashBytes;
+    resDesc.Height = 1u;
+    resDesc.DepthOrArraySize = 1u;
+    resDesc.MipLevels = 1u;
+    resDesc.SampleDesc.Count = 1u;
+    resDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    ID3D12Resource* resource = nullptr;
+    if (FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&resource))))
+    {
+        return false;
+    }
+    resource->SetName(L"NVIDIA Flow buffer");
+    D3D12_RANGE noRead = { 0u, 0u };
+    void* mapped = nullptr;
+    if (FAILED(resource->Map(0u, &noRead, &mapped)))
+    {
+        mapped = nullptr;
+    }
+    out->resource = resource;
+    out->mapped = mapped;
+    return true;
+}
+
+static void uploadStash_thread(UploadStash* stash)
+{
+    std::unique_lock<std::mutex> lock(stash->mutex);
+    while (!stash->quit)
+    {
+        if (stash->entries.size() >= kStashTarget)
+        {
+            stash->wake.wait(lock);
+            continue;
+        }
+        lock.unlock();
+        UploadStashEntry entry = {};
+        const bool made = uploadStash_make(stash->device, &entry);
+        lock.lock();
+        if (!made)
+        {
+            // out of memory or a removed device: try again later, not in a spin
+            stash->wake.wait_for(lock, std::chrono::milliseconds(250));
+            continue;
+        }
+        stash->entries.push_back(entry);
+    }
+}
+
+void uploadStash_create(Device* device)
+{
+    // Q2RTX_FLOW_NO_STASH set: Flow makes every buffer itself, as before (an A/B)
+    if (GetEnvironmentVariableA("Q2RTX_FLOW_NO_STASH", nullptr, 0) > 0)
+    {
+        return;
+    }
+    auto stash = new UploadStash();
+    stash->device = device->device;
+    stash->entries.reserve(kStashMax);
+    stash->thread = std::thread(uploadStash_thread, stash);
+    device->uploadStash = stash;
+}
+
+void uploadStash_destroy(Device* device)
+{
+    auto stash = device->uploadStash;
+    if (!stash)
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(stash->mutex);
+        stash->quit = true;
+    }
+    stash->wake.notify_all();
+    stash->thread.join();
+    for (auto& entry : stash->entries)
+    {
+        if (entry.mapped)
+        {
+            entry.resource->Unmap(0u, nullptr);
+        }
+        entry.resource->Release();
+    }
+    delete stash;
+    device->uploadStash = nullptr;
+}
+
+static bool uploadStash_take(Device* device, UploadStashEntry* out)
+{
+    auto stash = device->uploadStash;
+    if (!stash)
+    {
+        return false;
+    }
+    bool refill = false;
+    {
+        std::lock_guard<std::mutex> lock(stash->mutex);
+        if (stash->entries.empty())
+        {
+            return false;
+        }
+        *out = stash->entries.back();
+        stash->entries.pop_back();
+        refill = stash->entries.size() < kStashTarget;
+    }
+    if (refill)
+    {
+        stash->wake.notify_one();
+    }
+    return true;
+}
+
+static bool uploadStash_give(Device* device, ID3D12Resource* resource, void* mapped)
+{
+    auto stash = device->uploadStash;
+    if (!stash)
+    {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(stash->mutex);
+    if (stash->quit || stash->entries.size() >= kStashMax)
+    {
+        return false;
+    }
+    stash->entries.push_back({ resource, mapped });
+    return true;
+}
 
 /// ***************************** Formats *****************************************************
 
@@ -127,6 +304,21 @@ static NvFlowBool32 buffer_createResource(Context* context, Buffer* ptr)
         }
     }
 
+    // made ahead (the upload stash, above): "stash take", not "allocate", in the log
+    UploadStashEntry stashed = {};
+    if (ptr->memoryType == eNvFlowMemoryType_upload && ptr->resourceBytes == kStashBytes &&
+        uploadStash_take(device, &stashed))
+    {
+        ptr->resource = stashed.resource;
+        ptr->mappedData = stashed.mapped;
+        device->logPrint(eNvFlowLogLevel_info, "Buffer stash take %lld bytes", (long long)ptr->resourceBytes);
+        ptr->allocationBytes = ptr->resourceBytes;
+        device_reportMemoryAllocate(device, ptr->memoryType, ptr->allocationBytes);
+        ptr->restoreState = initialState;
+        ptr->currentState = initialState;
+        return NV_FLOW_TRUE;
+    }
+
     D3D12_RESOURCE_DESC resDesc = {};
     resDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     resDesc.Width = ptr->resourceBytes;
@@ -185,6 +377,14 @@ Buffer* buffer_create(Context* context, NvFlowMemoryType memoryType, const NvFlo
 
 void buffer_destroy(Context* context, Buffer* ptr)
 {
+    // back to the stash, still mapped: the pool frees nothing the GPU may still read
+    if (ptr->resource && ptr->memoryType == eNvFlowMemoryType_upload && ptr->resourceBytes == kStashBytes &&
+        uploadStash_give(context->deviceQueue->device, ptr->resource, ptr->mappedData))
+    {
+        device_reportMemoryFree(context->deviceQueue->device, ptr->memoryType, ptr->allocationBytes);
+        ptr->mappedData = nullptr;
+        ptr->resource = nullptr;
+    }
     if (ptr->resource)
     {
         if (ptr->mappedData)

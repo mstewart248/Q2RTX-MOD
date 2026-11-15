@@ -19,9 +19,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "vkpt.h"
 #include "DLSS.h"
+#include "reflex.h"
 #include "system/system.h"
+#include "common/cpuprof.h"	// cpuprof_wait_us: the CPU's own frame time
 
 #include <assert.h>
+#include <time.h>
 
 
 extern cvar_t *cvar_profiler;
@@ -145,14 +148,189 @@ upload_spikes_record(float upload_ms, float gpu_frame_ms)
    the presents per rendered frame too: the fps panel's second line. */
 #define GRAPH_SAMPLES 2048	// one a pixel column: the panels are 1408 pixels wide at 4K
 
+/* THE GPU FRAME BY CATEGORY (profiler 3 and 4, Matt 11-14). Each pass's row goes
+   in one of these (category_of below). The last three are what used to be one
+   "other": the copies and the HUD, the GPU idle waiting for the CPU's list (both
+   timed on D3D12 only) and the remainder no row covers. */
+enum {
+	CAT_FRAME_SETUP,
+	CAT_PRIMARY_RAYS,
+	CAT_FLOW,
+	CAT_VOLUMETRICS,
+	CAT_DIRECT,
+	CAT_INDIRECT,
+	CAT_REFLECT_REFRACT,
+	CAT_DENOISER,
+	CAT_COMPOSITING,
+	CAT_DLSS,
+	CAT_POST,
+	CAT_OVERHEAD,
+	CAT_IDLE,
+	CAT_OTHER,
+	NUM_CATS
+};
+
+/* THE CPU FRAME BY SECTION (profiler 3 and 4, Matt 11-14: "CPU frame time is causing
+   the problem ... can we thread this or optimize it"). The client's sections and the
+   finer pieces inside them (cpuprof.h), of the last frame CL_CpuStatsFrame closed,
+   as a tree: depth 0 adds up to the CPU's work, each deeper row is part of the one
+   above it. rbegin and rend are shown without the renderer's waits in them, which
+   are counted under "waiting" with the limiter's and Reflex's. */
+enum {
+	CPUROW_BEGIN,
+	CPUROW_VIEW,
+	CPUROW_ENTITIES,
+	CPUROW_PARTICLES,
+	CPUROW_BLOOD_SIM,
+	CPUROW_BLOOD_BODIES,
+	CPUROW_BLOOD_FILM,
+	CPUROW_RENDER,
+	CPUROW_SCENE,
+	CPUROW_FLOW,
+	CPUROW_TRANSPARENT,
+	CPUROW_BLOOD_MESH,
+	CPUROW_FILM_MESH,
+	CPUROW_BLOOD_COPY,
+	CPUROW_BLAS,
+	CPUROW_RECORD,
+	CPUROW_RENDER_REST,
+	CPUROW_HUD,
+	CPUROW_END,
+	CPUROW_SERVER,
+	CPUROW_CLIENT,
+	CPUROW_SOUND,
+	CPUROW_OTHER,
+	CPUROW_TOTAL,
+	CPUROW_WAITING,
+	/* WHICH WAIT (11-14): Matt's dip captures held frames of 18-20 ms frame to frame
+	   whose own CPU work (4-11 ms) and GPU work (13-16 ms) were both under 16.67 -
+	   the rest was "waiting", and that alone did not say on what. The waits it adds
+	   up, each where it is timed (cpuprof.h). */
+	CPUROW_WAIT_LIMITER,
+	CPUROW_WAIT_REFLEX,
+	CPUROW_WAIT_SWAPCHAIN,
+	CPUROW_WAIT_FENCE,
+	CPUROW_WAIT_PRESENT,
+	NUM_CPUROWS
+};
+
+static const struct {
+	const char *name;
+	int depth;		// -1: a summary row
+} cpurow_info[NUM_CPUROWS] = {
+	[CPUROW_BEGIN]        = { "begin frame", 0 },
+	[CPUROW_VIEW]         = { "view setup", 0 },
+	[CPUROW_ENTITIES]     = { "entities", 1 },
+	[CPUROW_PARTICLES]    = { "particles + blood", 1 },
+	[CPUROW_BLOOD_SIM]    = { "blood sim", 2 },
+	[CPUROW_BLOOD_BODIES] = { "vs monster meshes", 3 },
+	[CPUROW_BLOOD_FILM]   = { "blood film", 2 },
+	[CPUROW_RENDER]       = { "render", 0 },
+	[CPUROW_SCENE]        = { "scene setup", 1 },
+	[CPUROW_FLOW]         = { "nvidia flow", 1 },
+	[CPUROW_TRANSPARENT]  = { "particles to geometry", 1 },
+	[CPUROW_BLOOD_MESH]   = { "blood meshes", 1 },
+	[CPUROW_FILM_MESH]    = { "film tiles", 2 },
+	[CPUROW_BLOOD_COPY]   = { "blood upload copy", 1 },
+	[CPUROW_BLAS]         = { "blas plan, instances", 1 },
+	[CPUROW_RECORD]       = { "command list", 1 },
+	[CPUROW_RENDER_REST]  = { "rest of render", 1 },
+	[CPUROW_END]          = { "end frame", 0 },
+	[CPUROW_SERVER]       = { "server", 0 },
+	[CPUROW_CLIENT]       = { "net, demo, predict", 0 },
+	[CPUROW_SOUND]        = { "sound", 0 },
+	[CPUROW_OTHER]        = { "other", 0 },
+	[CPUROW_HUD]          = { "hud, menus, console", 0 },
+	[CPUROW_TOTAL]        = { "cpu work (sum)", -1 },
+	[CPUROW_WAITING]      = { "waiting (not work)", -1 },
+	[CPUROW_WAIT_LIMITER] = { "fps limiter sleep", 1 },	// Qcommon_Frame's NET_Sleep and spin
+	[CPUROW_WAIT_REFLEX]  = { "reflex sleep", 1 },
+	[CPUROW_WAIT_SWAPCHAIN] = { "swapchain wait", 1 },	// D3D12's waitable, Vulkan's acquire
+	[CPUROW_WAIT_FENCE]   = { "gpu fence wait", 1 },	// an older frame's GPU work, its slot reused
+	[CPUROW_WAIT_PRESENT] = { "present call", 1 },
+};
+
+static void
+cpu_rows_of(const cpuprof_frame_t *f, float *row, uint32_t *count)
+{
+#define SECT(id)	((float)f->us[CPUPROF_##id] * 1e-3f)
+#define DET(id)		((float)f->detail_us[CPUPROF_D_##id] * 1e-3f)
+	row[CPUROW_BEGIN]        = max(SECT(R_BEGIN) - DET(WAIT_BEGIN), 0.f);
+	row[CPUROW_VIEW]         = SECT(VIEW_PREP);
+	row[CPUROW_ENTITIES]     = DET(ENTITIES);
+	row[CPUROW_PARTICLES]    = DET(PARTICLES);
+	row[CPUROW_BLOOD_SIM]    = DET(BLOOD_SIM);
+	row[CPUROW_BLOOD_BODIES] = DET(BLOOD_BODIES);
+	row[CPUROW_BLOOD_FILM]   = DET(BLOOD_FILM);
+	row[CPUROW_RENDER]       = SECT(R_RENDER);
+	row[CPUROW_SCENE]        = DET(SCENE);
+	row[CPUROW_FLOW]         = DET(FLOW);
+	row[CPUROW_TRANSPARENT]  = DET(TRANSPARENT);
+	row[CPUROW_BLOOD_MESH]   = DET(BLOOD_MESH);
+	row[CPUROW_FILM_MESH]    = DET(FILM_MESH);
+	row[CPUROW_BLOOD_COPY]   = DET(BLOOD_COPY);
+	row[CPUROW_BLAS]         = DET(BLAS);
+	// D3D12's command list has the blood copy in it; Vulkan's is not timed
+	row[CPUROW_RECORD]       = DET(RECORD) > 0.f ? max(DET(RECORD) - DET(BLOOD_COPY), 0.f) : 0.f;
+	float parts = 0.f;
+	for (int r = CPUROW_SCENE; r < CPUROW_RENDER_REST; r++)
+		if (cpurow_info[r].depth == 1)
+			parts += row[r];
+	row[CPUROW_RENDER_REST]  = max(row[CPUROW_RENDER] - parts, 0.f);
+	row[CPUROW_HUD]          = SECT(HUD);
+	row[CPUROW_END]          = max(SECT(R_END) - DET(WAIT_PRESENT), 0.f);
+	row[CPUROW_SERVER]       = SECT(SERVER);
+	row[CPUROW_CLIENT]       = SECT(CL_EVENTS) + SECT(DEMO) + SECT(PREDICT);
+	row[CPUROW_SOUND]        = SECT(SOUND);
+	row[CPUROW_OTHER]        = (float)f->us[CPUPROF_COUNT] * 1e-3f;
+	float total = 0.f;
+	for (int r = 0; r < CPUROW_TOTAL; r++)
+		if (cpurow_info[r].depth == 0)
+			total += row[r];
+	row[CPUROW_TOTAL]        = total;
+	row[CPUROW_WAITING]      = SECT(NET_SLEEP) + SECT(REFLEX) + DET(WAIT_BEGIN) + DET(WAIT_PRESENT);
+	row[CPUROW_WAIT_LIMITER] = SECT(NET_SLEEP);
+	row[CPUROW_WAIT_REFLEX]  = SECT(REFLEX);
+	row[CPUROW_WAIT_SWAPCHAIN] = max(DET(WAIT_BEGIN) - DET(WAIT_FENCE), 0.f);
+	row[CPUROW_WAIT_FENCE]   = DET(WAIT_FENCE);
+	row[CPUROW_WAIT_PRESENT] = DET(WAIT_PRESENT);
+#undef SECT
+#undef DET
+	memcpy(count, f->count, sizeof(f->count));
+}
+
+// "blood: ..." - what the blood work was, beside its times
+static void
+blood_count_text(char *line1, char *line2, size_t size, const uint32_t *c)
+{
+	Q_snprintf(line1, size, "blood: %u in the air, %u landed; %u traces, %u on monster meshes",
+		c[CPUPROF_C_BLOOD_AIR], c[CPUPROF_C_BLOOD_LANDED], c[CPUPROF_C_BLOOD_TRACES],
+		c[CPUPROF_C_BLOOD_BODY_TRACES]);
+	Q_snprintf(line2, size, "blood meshes: %u moved, %u rebuilt, %u still; up %.1f MB in %u regions",
+		c[CPUPROF_C_BLOOD_MOVED], c[CPUPROF_C_BLOOD_REBUILT], c[CPUPROF_C_BLOOD_STILL],
+		(float)c[CPUPROF_C_BLOOD_UP_KB] / 1024.f, c[CPUPROF_C_BLOOD_COPIES]);
+}
+
 static struct {
 	uint64_t last_us;
+	uint64_t last_wait_us;	// cpuprof_wait_us at the last frame
+	uint32_t last_serial;	// the CPU frame the last sample was (0 = not known)
 	float frame_ms[GRAPH_SAMPLES];
+	/* the CPU's own time in that frame: frame_ms less what the main thread spent
+	   waiting (cpuprof.h - the limiter's sleep, Reflex's, the fence, the swapchain,
+	   the present). GPU-bound, frame_ms is the GPU's pace and this is the CPU's work;
+	   Matt 11-14: "the cpu frame to frame mostly just matches the gpu number". */
+	float cpu_ms[GRAPH_SAMPLES];
 	float gpu_ms[GRAPH_SAMPLES];	// 0 where the GPU frame was not timed
 	uint8_t presents[GRAPH_SAMPLES];	// DLSS-G's presents per rendered frame, 1 without
+	float cat_ms[GRAPH_SAMPLES][NUM_CATS];	// the GPU frame by category (categories_of)
+	float submit_ms[GRAPH_SAMPLES];	// the same frame's CPU, R_BeginFrame to submit (D3D12; 0 = not known)
+	float gap_ms[GRAPH_SAMPLES];	// the GPU idle before the frame, in no frame (D3D12; profiler_frame_extras_t)
+	float cpu_rows[GRAPH_SAMPLES][NUM_CPUROWS];	// the CPU frame by section (cpu_rows_of)
+	uint32_t counts[GRAPH_SAMPLES][CPUPROF_COUNTER_COUNT];
 	int next, count;
-	// the panels' tops (graph_scale)
-	float frame_top, fps_top;
+	// the panels' tops (graph_scale); cat_top is profiler 3's and 4's
+	float frame_top, fps_top, cat_top;
 	// the numbers printed, refreshed twice a second so they can be read
 	unsigned text_ms;
 	char text[5][64];
@@ -235,12 +413,573 @@ graph_scale(float *top, float base, float (*value)(int k))
 		*top = graph_fit(base, largest);
 }
 
+/* THE CATEGORIES (Matt, 11-14). ReSTIR DI has no row of its own: it runs inside
+   the direct lighting pass, so it is in that one already. The Flow march is only
+   its own row under pt_flow_split_pass 1; otherwise it is inside primary rays.
+   ASVGF's TAA is with the denoiser it belongs to (an empty span under DLSS). */
+/* THE COLOURS: as shown in the game (Matt 11-14, after a scare - the HDR screenshots
+   made them look alike; on screen they are fine). The three greys are what is not a
+   pass, darker to lighter up the stack, the idle GPU's striped as well (draw_stack). */
+static const struct {
+	const char *name;
+	uint8_t r, g, b;
+} cat_info[NUM_CATS] = {
+	[CAT_FRAME_SETUP]     = { "frame setup",          0, 215, 255 },
+	[CAT_PRIMARY_RAYS]    = { "primary rays",        50,  80, 235 },
+	[CAT_FLOW]            = { "nvidia flow",        255, 140,   0 },
+	[CAT_VOLUMETRICS]     = { "volumetrics",        165,  70, 210 },
+	[CAT_DIRECT]          = { "direct lighting",    255, 230,  40 },
+	[CAT_INDIRECT]        = { "indirect lighting",   40, 200,  90 },
+	[CAT_REFLECT_REFRACT] = { "reflect refract",    255,  60, 200 },
+	[CAT_DENOISER]        = { "denoiser",           170, 120,  70 },
+	[CAT_COMPOSITING]     = { "compositing",        255, 170, 190 },
+	[CAT_DLSS]            = { "dlss",               225,  40,  40 },
+	[CAT_POST]            = { "post processing",    210, 210, 255 },
+	[CAT_OVERHEAD]        = { "uploads, hud, copy",  95,  95,  95 },
+	[CAT_IDLE]            = { "gpu idle: cpu late", 150, 150, 150 },
+	[CAT_OTHER]           = { "unaccounted",        235, 235, 235 },
+};
+
+static uint32_t
+display_color(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+	return MakeColor(r, g, b, a);
+}
+
+static uint32_t
+cat_color(int c)
+{
+	return display_color(cat_info[c].r, cat_info[c].g, cat_info[c].b, 255);
+}
+
+static int
+category_of(int idx)
+{
+	switch (idx)
+	{
+	case PROFILER_UPLOAD_LIGHTS:
+	case PROFILER_SHADOW_MAP:
+	case PROFILER_INSTANCE_GEOMETRY:
+	case PROFILER_BVH_UPDATE:
+	case PROFILER_UPDATE_ENVIRONMENT:
+		return CAT_FRAME_SETUP;
+	case PROFILER_PRIMARY_RAYS:
+		return CAT_PRIMARY_RAYS;
+	case PROFILER_FLOW_SIMULATION:
+	case PROFILER_FLOW_SMOKE_LIGHTING:
+	case PROFILER_FLOW_MARCH:
+		return CAT_FLOW;
+	case PROFILER_GOD_RAYS:
+	case PROFILER_GOD_RAYS_REFLECT_REFRACT:
+	case PROFILER_GOD_RAYS_FILTER:
+	case PROFILER_FOG_FROXEL:
+	case PROFILER_FOG_FROXEL_RESERVOIR:
+	case PROFILER_FOG_FROXEL_SPATIAL:
+	case PROFILER_FOG_FROXEL_SCATTER:
+	case PROFILER_FOG_FROXEL_INTEGRATE:
+		return CAT_VOLUMETRICS;
+	case PROFILER_DIRECT_LIGHTING:
+		return CAT_DIRECT;
+	case PROFILER_INDIRECT_LIGHTING:
+	case PROFILER_INDIRECT_LIGHTING_0:
+	case PROFILER_INDIRECT_LIGHTING_1:
+	case PROFILER_SHARC:
+	case PROFILER_RESTIR_GI:
+		return CAT_INDIRECT;
+	case PROFILER_REFLECT_REFRACT_1:
+	case PROFILER_REFLECT_REFRACT_2:
+		return CAT_REFLECT_REFRACT;
+	case PROFILER_ASVGF_GRADIENT_REPROJECT:
+	case PROFILER_ASVGF_FULL:
+	case PROFILER_ASVGF_RECONSTRUCT_GRADIENT:
+	case PROFILER_ASVGF_TEMPORAL:
+	case PROFILER_ASVGF_ATROUS:
+	case PROFILER_ASVGF_TAA:
+		return CAT_DENOISER;
+	case PROFILER_COMPOSITING:
+	case PROFILER_INTERLEAVE:
+	case PROFILER_MGPU_TRANSFERS:
+		return CAT_COMPOSITING;
+	case PROFILER_DLSS:
+	case PROFILER_DLSS5:
+		return CAT_DLSS;
+	case PROFILER_MOTION_BLUR:
+	case PROFILER_CHROMATIC_ABERRATION:
+	case PROFILER_BLOOM:
+	case PROFILER_TONE_MAPPING:
+		return CAT_POST;
+	case PROFILER_TEXTURE_UPLOAD:
+	case PROFILER_BLOOD_UPLOAD:
+	case PROFILER_TRANSPARENT_UPLOAD:
+	case PROFILER_UPLOAD_QUEUE:
+	case PROFILER_HUD_PRESENT:
+		return CAT_OVERHEAD;
+	case PROFILER_GPU_IDLE:
+		return CAT_IDLE;
+	default:
+		// FRAME_TIME and GPU_FRAME: the whole frame, not a pass; SOUND_TRACE: on a
+		// queue of its own, beside the frame and not in it
+		return -1;
+	}
+}
+
+/* The rows timed INSIDE another row, on both renderers - counted once, as the
+   inner row, with the outer row keeping only its own remainder. ASVGF_FULL is
+   marked even with the denoiser off, around compositing (so under DLSS-RR it is
+   compositing and nothing else). */
+static int
+parent_of(int idx)
+{
+	switch (idx)
+	{
+	case PROFILER_INDIRECT_LIGHTING_0:
+	case PROFILER_INDIRECT_LIGHTING_1:
+		return PROFILER_INDIRECT_LIGHTING;
+	case PROFILER_FOG_FROXEL_RESERVOIR:
+	case PROFILER_FOG_FROXEL_SPATIAL:
+	case PROFILER_FOG_FROXEL_SCATTER:
+	case PROFILER_FOG_FROXEL_INTEGRATE:
+		return PROFILER_FOG_FROXEL;
+	case PROFILER_ASVGF_RECONSTRUCT_GRADIENT:
+	case PROFILER_ASVGF_TEMPORAL:
+	case PROFILER_ASVGF_ATROUS:
+	case PROFILER_COMPOSITING:
+		return PROFILER_ASVGF_FULL;
+	default:
+		return -1;
+	}
+}
+
+static double
+result_ms(const uint64_t *r, int idx)
+{
+	const uint64_t begin = r[idx * 2 + 0], end = r[idx * 2 + 1];
+	if (begin == 0 || end == 0 || end < begin)
+		return 0.0;
+	return (double)(end - begin) * 1e-6 * qvk.timestampPeriod;
+}
+
+/* One frame's results by category, in ms. Each row counts its own time only (its
+   duration less the rows inside it), so nothing is counted twice; OTHER is what is
+   left of the whole GPU frame. On D3D12 the copies, the HUD and the idle GPU are
+   rows of their own (OVERHEAD, IDLE), so OTHER is only what no row covers in the
+   frame's list (barriers and the like - gpu_timers.c's gap line says where). On
+   Vulkan they are not timed and are all in OTHER, with the GPU waiting on the CPU
+   mid-frame; its froxel fog can run async and the upload is on the transfer queue,
+   so the sum can go past the GPU frame - OTHER is then 0. */
 static void
-graph_record(void)
+categories_of(const uint64_t *r, float *out)
+{
+	double self[NUM_PROFILER_ENTRIES];
+	for (int i = 0; i < NUM_PROFILER_ENTRIES; i++)
+		self[i] = result_ms(r, i);
+	for (int i = 0; i < NUM_PROFILER_ENTRIES; i++)
+	{
+		const int p = parent_of(i);
+		if (p >= 0 && self[p] > 0.0)
+			self[p] -= result_ms(r, i);
+	}
+
+	double sum = 0.0;
+	for (int c = 0; c < NUM_CATS; c++)
+		out[c] = 0.f;
+	for (int i = 0; i < NUM_PROFILER_ENTRIES; i++)
+	{
+		const int c = category_of(i);
+		if (c >= 0 && self[i] > 0.0)
+		{
+			out[c] += (float)self[i];
+			sum += self[i];
+		}
+	}
+
+	const double gpu = result_ms(r, PROFILER_GPU_FRAME);
+	out[CAT_OTHER] = gpu > sum ? (float)(gpu - sum) : 0.f;
+}
+
+static float
+cat_total(const float *v)
+{
+	float t = 0.f;
+	for (int c = 0; c < NUM_CATS; c++)
+		t += v[c];
+	return t;
+}
+
+// profiler 3's panel value at a frame: the stack, or the CPU's work over it
+static float
+graph_cat_value(int k)
+{
+	return max(cat_total(graph.cat_ms[k]), max(graph.cpu_ms[k], graph.submit_ms[k]));
+}
+
+/* PROFILER CAPTURE (profiler_capture 1, Matt 11-14): a screenshot of the profiler
+   when the frame rate drops under the display's refresh rate (profiler_capture_fps
+   to pick another) - twice a dip, not once a frame:
+
+   1. the dip's FIRST slow frame, the moment it crosses;
+   2. its WORST frame. From the first slow frame the overlay holds the slowest
+      frame's numbers instead of the live ones, and is captured once the frame rate
+      has been back over the line for CAPTURE_REARM_MS (or the dip has lasted
+      CAPTURE_MAX_HOLD_MS). Skipped when the first frame was the worst.
+
+   Then it re-arms for the next dip. A frame is slow when its time - the CPU's frame
+   to frame or the GPU's whole frame, whichever is longer, per presented frame under
+   frame generation - is over 1000 / fps ms. Each capture also prints its numbers as
+   PROFCAPTURE lines (console and log), every row and category.
+
+   The screenshot is taken by the screenshot command, which runs at the top of the
+   next frame and reads the frame just shown - the one whose overlay has the
+   capture's banner on it. Its own hitch lands in that next frame's CPU time, so
+   for CAPTURE_SKIP frames after a capture only the GPU's time counts: otherwise a
+   capture would make the dip's worst frame, or start a dip of its own. */
+#define CAPTURE_REARM_MS     500.f
+#define CAPTURE_MAX_HOLD_MS  5000.f
+#define CAPTURE_SKIP         3
+/* Samples after a map load that are never a dip (Matt 11-14: of a demo run's eight
+   captures, one was rbase1's load itself, 1.5 s, and one the frame base2's started
+   in). The GPU's results come in frames late, so the load's own frames land in
+   the first few samples after it. */
+#define CAPTURE_LOAD_QUIET   8
+
+static bool level_loaded;
+
+void
+vkpt_profiler_level_loaded(void)
+{
+	level_loaded = true;
+}
+
+// the D3D12 renderer's figures for the frame whose results are the latest (gpu_timers.c)
+static profiler_frame_extras_t frame_extras = { .gap_after = -1, .gap_before = -1 };
+
+void
+vkpt_profiler_take_extras(const profiler_frame_extras_t *x)
+{
+	frame_extras = *x;
+}
+
+static struct {
+	cvar_t *on, *fps;
+	bool in_dip;		// from a dip's first slow frame until it re-arms
+	bool hold;			// the overlay shows held[] (the dip's worst so far), not the live results
+	bool release;		// ... through this frame, then live again
+	bool worst_done;	// the dip's worst frame was captured
+	int skip;			// frames left whose CPU time is a capture's own hitch (frames not known)
+	int quiet;			// samples left after a map load (CAPTURE_LOAD_QUIET)
+	uint32_t skip_from, skip_to;	// ... the CPU frames that are, where they are known
+	float good_ms;		// time back over the line
+	float dip_ms;		// time since the dip's first slow frame
+	int dip_frames;		// slow frames in it
+	float first_value, worst_value, worst_frame, worst_cpu, worst_gpu, threshold_ms;
+	uint64_t held[NUM_PROFILER_QUERIES_PER_FRAME];
+	float held_cat[NUM_CATS];
+	float held_cpu_rows[NUM_CPUROWS];
+	uint32_t held_counts[CPUPROF_COUNTER_COUNT];
+	profiler_frame_extras_t held_extras;
+	int count;			// captures taken, for the file names
+	bool banner_now;	// this frame's overlay is the one being captured
+	char banner[192];
+	char status[192];	// while holding
+} cap;
+
+// what the overlay shows: the held frame during a dip, else the latest results
+static const uint64_t *
+shown_results(void)
+{
+	return cap.hold ? cap.held : profiler_data.query_pool_results;
+}
+
+static const profiler_frame_extras_t *
+shown_extras(void)
+{
+	return cap.hold ? &cap.held_extras : &frame_extras;
+}
+
+static const char *
+entry_name(int idx)
+{
+	static const char *const names[] = {
+#define PROFILER_DO(name, indent) #name,
+		PROFILER_LIST
+#undef PROFILER_DO
+	};
+	return idx >= 0 && idx < NUM_PROFILER_ENTRIES ? names[idx] + 9 : NULL;
+}
+
+// the gap line: "longest 6.20 ms, after BVH_UPDATE, before SHADOW_MAP"
+static void
+gap_text(char *buf, size_t size, const profiler_frame_extras_t *x)
+{
+	const char *after = entry_name(x->gap_after), *before = entry_name(x->gap_before);
+	Q_snprintf(buf, size, "longest %.2f ms, after %s, before %s", x->gap_largest_ms,
+		after ? after : "the list's start", before ? before : "the list's end");
+}
+
+static float
+capture_threshold_fps(void)
+{
+	float fps = cap.fps ? cap.fps->value : 0.f;
+	if (fps <= 0.f)
+	{
+		const int hz = Reflex_DisplayRefreshHz();
+		fps = hz > 0 ? (float)hz : 60.f;
+	}
+	return fps;
+}
+
+// the latest results become the held frame
+static void
+capture_hold_latest(float value, float frame_ms, float cpu_ms, float gpu_ms)
+{
+	memcpy(cap.held, profiler_data.query_pool_results, sizeof(cap.held));
+	const int latest = (graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+	memcpy(cap.held_cat, graph.cat_ms[latest], sizeof(cap.held_cat));
+	memcpy(cap.held_cpu_rows, graph.cpu_rows[latest], sizeof(cap.held_cpu_rows));
+	memcpy(cap.held_counts, graph.counts[latest], sizeof(cap.held_counts));
+	cap.held_extras = frame_extras;
+	cap.worst_value = value;
+	cap.worst_frame = frame_ms;
+	cap.worst_cpu = cpu_ms;
+	cap.worst_gpu = gpu_ms;
+	cap.hold = true;
+}
+
+static void
+capture_take(const char *which, int nth)
+{
+	char stamp[32] = "";
+	const time_t now = time(NULL);
+	const struct tm *lt = localtime(&now);
+	if (lt)
+		strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", lt);
+
+	char name[MAX_QPATH];
+	Q_snprintf(name, sizeof(name), "profcap/%s_%03d_%s", stamp, ++cap.count % 1000, which);
+	const bool hdr = R_IsHDR && R_IsHDR();
+	Cbuf_AddText(&cmd_buffer, va("%s %s\n", hdr ? "screenshothdr" : "screenshotpng", name));
+	cap.skip = CAPTURE_SKIP;
+	// The command runs at the top of the frame after the one being made, which
+	// closes as cpuprof_last.serial + 2: a sample's CPU time is the capture's own
+	// from the frame being made to CAPTURE_SKIP after that one.
+	cap.skip_from = cpuprof_last.serial + 1;
+	cap.skip_to = cpuprof_last.serial + 2 + CAPTURE_SKIP;
+
+	Q_snprintf(cap.banner, sizeof(cap.banner),
+		"CAPTURE %d/2 (%s): %s %.2f ms, over %.2f (frame to frame %.2f, cpu work %.2f, gpu %.2f); dip %.2f s, %d slow frames",
+		nth, nth == 1 ? "first slow frame" : "worst frame of the dip",
+		cap.worst_gpu >= cap.worst_cpu ? "gpu" : "cpu work", cap.worst_value, cap.threshold_ms,
+		cap.worst_frame, cap.worst_cpu, cap.worst_gpu, (cap.dip_ms - cap.good_ms) * 1e-3f, cap.dip_frames);
+	cap.banner_now = true;
+
+	// the numbers, for the log - and not over the overlay, as the console's notify
+	// lines (Matt 11-14: they printed over the capture banner)
+	Con_SkipNotify(true);
+	Com_Printf("PROFCAPTURE %s screenshots/%s: %s\n", which, name, cap.banner);
+	for (int c = NUM_CATS - 1; c >= 0; c--)
+		Com_Printf("PROFCAPTURE   %-18s %7.2f ms\n", cat_info[c].name, cap.held_cat[c]);
+	const profiler_frame_extras_t *x = &cap.held_extras;
+	if (x->cpu_submit_ms > 0.f)
+		Com_Printf("PROFCAPTURE   cpu, this frame's R_BeginFrame to submit %7.2f ms\n", x->cpu_submit_ms);
+	if (x->gpu_gap_ms > 0.f)
+		Com_Printf("PROFCAPTURE   gpu idle between frames, before this one %7.2f ms\n", x->gpu_gap_ms);
+	if (x->gap_ms > 0.f)
+	{
+		char gap[160];
+		gap_text(gap, sizeof(gap), x);
+		Com_Printf("PROFCAPTURE   list time no row covers %7.2f ms; %s\n", x->gap_ms, gap);
+	}
+	for (int i = 0; i < NUM_PROFILER_ENTRIES; i++)
+	{
+		const double ms = result_ms(cap.held, i);
+		if (ms > 0.005)
+			Com_Printf("PROFCAPTURE     %-34s %7.2f ms\n", entry_name(i), ms);
+	}
+	// the CPU's frame by section, and what the blood work was
+	Com_Printf("PROFCAPTURE   cpu by section (the same frame):\n");
+	for (int r = 0; r < NUM_CPUROWS; r++)
+		if (cap.held_cpu_rows[r] >= 0.01f || cpurow_info[r].depth <= 0)
+			Com_Printf("PROFCAPTURE     %*s%-*s %7.2f ms\n", 2 * max(cpurow_info[r].depth, 0), "",
+				30 - 2 * max(cpurow_info[r].depth, 0), cpurow_info[r].name, cap.held_cpu_rows[r]);
+	char line1[160], line2[160];
+	blood_count_text(line1, line2, sizeof(line1), cap.held_counts);
+	Com_Printf("PROFCAPTURE   %s\nPROFCAPTURE   %s\n", line1, line2);
+	Con_SkipNotify(false);
+}
+
+static void
+capture_frame(float cpu_ms, float busy_ms, float gpu_ms, int presents, uint32_t serial, const float *rows)
+{
+	if (!cap.on)
+	{
+		cap.on = Cvar_Get("profiler_capture", "0", 0);
+		cap.fps = Cvar_Get("profiler_capture_fps", "0", 0);
+	}
+
+	cap.banner_now = false;
+	if (cap.release)
+	{
+		cap.hold = false;
+		cap.release = false;
+	}
+
+	if (!cvar_profiler || cvar_profiler->integer <= 0 || !cap.on->integer)
+	{
+		cap.in_dip = cap.hold = cap.release = false;
+		cap.skip = 0;
+		cap.skip_from = cap.skip_to = 0;
+		cap.status[0] = 0;
+		return;
+	}
+
+	if (level_loaded)
+	{
+		level_loaded = false;
+		cap.quiet = CAPTURE_LOAD_QUIET;
+	}
+	if (cap.quiet > 0)
+	{
+		cap.quiet--;
+		cap.in_dip = cap.hold = cap.release = false;
+		Q_snprintf(cap.status, sizeof(cap.status), "capture: a map loaded - armed again in %d frames", cap.quiet + 1);
+		return;
+	}
+
+	/* A CAPTURE'S OWN FRAMES ARE NOT MEASURED (11-14). The HDR screenshot reads the
+	   frame back on the main thread - a 66 MB readback made, the GPU waited idle, 25M
+	   halves to floats: 40-130 ms in "net, demo, predict", where the command runs -
+	   and the frame after it starts on an empty GPU, idle while it is recorded. Those
+	   frames counted on the GPU's time alone, which that idle made slow: they were
+	   every "worst frame" of Matt's run, and three captures in a row set each other
+	   off. Now they are neither slow nor good. */
+	/* JUDGED BY THE FRAME'S OWN WORK (11-14; Matt: "fix the capture shot so it
+	   captures the right numbers"). By its frame to frame time, the capture held
+	   frames of 17-20 ms whose own CPU work (4-11 ms) and GPU time (13-16 ms) were
+	   both under the line - the rest waiting, on the swapchain or a fence, which
+	   showed nothing over. Now a frame is slow when its CPU work or its GPU time is
+	   over: the frame that did the work is the one held. A frame slow only from
+	   waiting says on what in the log (below), and takes no screenshot. */
+	float value = max(busy_ms, gpu_ms);
+	const bool skipped = serial
+		? (cap.skip_from && serial - cap.skip_from <= cap.skip_to - cap.skip_from)
+		: cap.skip > 0;
+	if (cap.skip > 0)
+		cap.skip--;
+	if (skipped)
+		return;
+	value /= (float)max(presents, 1);
+
+	cap.threshold_ms = 1000.f / capture_threshold_fps();
+	const bool slow = value > cap.threshold_ms;
+
+	// slow from waiting alone: which wait, at most once a second
+	if (!slow && cpu_ms / (float)max(presents, 1) > cap.threshold_ms && rows)
+	{
+		static unsigned last_ms;
+		const unsigned now = Sys_Milliseconds();
+		if (now - last_ms >= 1000)
+		{
+			last_ms = now;
+			Con_SkipNotify(true);
+			Com_Printf("PROFCAPTURE waited, no capture: frame to frame %.2f ms, cpu work %.2f, gpu %.2f; "
+				"fps limiter %.2f, reflex %.2f, swapchain %.2f, gpu fence %.2f, present %.2f\n",
+				cpu_ms, busy_ms, gpu_ms, rows[CPUROW_WAIT_LIMITER], rows[CPUROW_WAIT_REFLEX],
+				rows[CPUROW_WAIT_SWAPCHAIN], rows[CPUROW_WAIT_FENCE], rows[CPUROW_WAIT_PRESENT]);
+			Con_SkipNotify(false);
+		}
+	}
+
+	if (!cap.in_dip)
+	{
+		if (slow)
+		{
+			cap.in_dip = true;
+			cap.worst_done = false;
+			cap.dip_frames = 1;
+			cap.dip_ms = cpu_ms;
+			cap.good_ms = 0.f;
+			cap.first_value = value;
+			capture_hold_latest(value, cpu_ms, busy_ms, gpu_ms);
+			capture_take("first", 1);
+		}
+	}
+	else
+	{
+		cap.dip_ms += cpu_ms;
+		if (slow)
+		{
+			cap.good_ms = 0.f;
+			cap.dip_frames++;
+			if (!cap.worst_done && value > cap.worst_value)
+				capture_hold_latest(value, cpu_ms, busy_ms, gpu_ms);
+		}
+		else
+		{
+			cap.good_ms += cpu_ms;
+		}
+
+		const bool back = cap.good_ms >= CAPTURE_REARM_MS;
+		if (!cap.worst_done && (back || cap.dip_ms >= CAPTURE_MAX_HOLD_MS))
+		{
+			if (cap.worst_value > cap.first_value)
+				capture_take("worst", 2);
+			else
+			{
+				Con_SkipNotify(true);
+				Com_Printf("PROFCAPTURE the dip's first slow frame was its worst - no second capture\n");
+				Con_SkipNotify(false);
+			}
+			cap.worst_done = true;
+			cap.release = true;	// the held frame stays up for this frame's overlay
+		}
+		if (back)
+			cap.in_dip = false;
+	}
+
+	if (cap.hold && !cap.release)
+		Q_snprintf(cap.status, sizeof(cap.status),
+			"capture: over %.2f ms - holding the dip's worst frame, %.2f ms; captured once back under for %.1f s",
+			cap.threshold_ms, cap.worst_value, CAPTURE_REARM_MS * 1e-3f);
+	else if (cap.in_dip)
+		Q_snprintf(cap.status, sizeof(cap.status), "capture: dip captured - re-arming once back under %.2f ms for %.1f s",
+			cap.threshold_ms, CAPTURE_REARM_MS * 1e-3f);
+	else
+		Q_snprintf(cap.status, sizeof(cap.status), "capture: armed - cpu work or gpu over %.2f ms takes a screenshot",
+			cap.threshold_ms);
+}
+
+/* ONE FRAME A SAMPLE (Matt 11-14: "The CPU work and GPU work don't match the left
+   and right"). The GPU's results are a frame from MAX_FRAMES_IN_FLIGHT ago; the frame
+   time was this call's distance from the last one, and the CPU by section whichever
+   frame closed last - three frames, so a capture showed one frame's GPU time beside
+   another's CPU. serial names the CPU frame the results are (cpuprof.h's
+   CPUPROF_RING): its own time close to close, its sections and its waits go with
+   them, and "cpu frame time" is its "cpu work (sum)". 0 or gone from the ring:
+   as before. */
+static void
+graph_record(uint32_t serial)
 {
 	const uint64_t now = Sys_Microseconds();
-	const float ms = graph.last_us ? (float)(now - graph.last_us) * 1e-3f : 0.f;
+	float ms = graph.last_us ? (float)(now - graph.last_us) * 1e-3f : 0.f;
+	const float waited = graph.last_us ? (float)(cpuprof_wait_us - graph.last_wait_us) * 1e-3f : 0.f;
 	graph.last_us = now;
+	graph.last_wait_us = cpuprof_wait_us;
+	float busy = max(ms - waited, 0.f);
+
+	const cpuprof_frame_t *f = NULL;
+	if (serial && serial != graph.last_serial && cpuprof_ring[serial % CPUPROF_RING].serial == serial)
+		f = &cpuprof_ring[serial % CPUPROF_RING];
+	graph.last_serial = serial;
+	float rows[NUM_CPUROWS];
+	uint32_t counts[CPUPROF_COUNTER_COUNT];
+	cpu_rows_of(f ? f : &cpuprof_last, rows, counts);
+	if (f)
+	{
+		ms = (float)f->wall_us * 1e-3f;
+		busy = rows[CPUROW_TOTAL];
+	}
+	else
+		serial = 0;
 	if (ms <= 0.f)
 		return;
 	// Two seconds or more is a level load, a vid_restart or the window put away:
@@ -248,19 +987,33 @@ graph_record(void)
 	if (ms >= 2000.f)
 	{
 		graph.count = graph.next = 0;
-		graph.frame_top = graph.fps_top = 0.f;
+		graph.frame_top = graph.fps_top = graph.cat_top = 0.f;
 		graph.text_ms = 0;
+		// a dip in progress ends here too (its frames are gone); the frames
+		// after a load are judged afresh
+		cap.in_dip = cap.hold = cap.release = false;
+		cap.status[0] = 0;
 		return;
 	}
 	// what the renderer last reported (the fps counter's "presented")
 	const int presents = vkpt_refdef.fd ? vkpt_refdef.fd->feedback.presented_frames : 1;
+	const float gpu_ms = (float)vkpt_get_profiler_result(PROFILER_GPU_FRAME);
 	graph.frame_ms[graph.next] = ms;
-	graph.gpu_ms[graph.next] = (float)vkpt_get_profiler_result(PROFILER_GPU_FRAME);
+	graph.cpu_ms[graph.next] = busy;
+	graph.gpu_ms[graph.next] = gpu_ms;
 	graph.presents[graph.next] = (uint8_t)max(1, min(presents, 255));
+	categories_of(profiler_data.query_pool_results, graph.cat_ms[graph.next]);
+	graph.submit_ms[graph.next] = frame_extras.cpu_submit_ms;
+	graph.gap_ms[graph.next] = frame_extras.gpu_gap_ms;
+	memcpy(graph.cpu_rows[graph.next], rows, sizeof(rows));
+	memcpy(graph.counts[graph.next], counts, sizeof(counts));
 	graph.next = (graph.next + 1) % GRAPH_SAMPLES;
 	graph.count = min(graph.count + 1, GRAPH_SAMPLES);
 	graph_scale(&graph.frame_top, GRAPH_FRAME_TOP, graph_frame_value);
 	graph_scale(&graph.fps_top, GRAPH_FPS_TOP, graph_fps_value);
+	graph_scale(&graph.cat_top, GRAPH_FRAME_TOP, graph_cat_value);
+
+	capture_frame(ms, busy, gpu_ms, presents, serial, rows);
 }
 
 VkResult
@@ -295,6 +1048,8 @@ vkpt_profiler_release(void)
 		Z_Free(profiler_data.samples[i].data);
 	memset(&profiler_data, 0, sizeof(profiler_data));
 	upload_spikes_reset();
+	memset(&frame_extras, 0, sizeof(frame_extras));
+	frame_extras.gap_after = frame_extras.gap_before = -1;
 }
 
 static inline void
@@ -489,8 +1244,11 @@ vkpt_profiler_take_results(const uint64_t *ticks, const bool *used, double ns_pe
 		memset(profiler_data.query_pool_results, 0, sizeof(profiler_data.query_pool_results));
 	}
 
-	graph_record();
+	graph_record(frame_extras.cpu_serial);
 }
+
+// the CPU frame each query slot's frame closes as (cpuprof.h's CPUPROF_RING)
+static uint32_t vk_slot_serial[MAX_FRAMES_IN_FLIGHT];
 
 VkResult
 vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
@@ -539,7 +1297,8 @@ vkpt_profiler_next_frame(VkCommandBuffer cmd_buf, qboolean secondPass)
 		memset(profiler_data.query_pool_results, 0, sizeof(profiler_data.query_pool_results));
 	}
 
-	graph_record();
+	graph_record(vk_slot_serial[qvk.current_frame_index]);
+	vk_slot_serial[qvk.current_frame_index] = cpuprof_last.serial + 1;	// the frame starting now
 
 	vkCmdResetQueryPool(cmd_buf, profiler_data.query_pool,
 			NUM_PROFILER_QUERIES_PER_FRAME * qvk.current_frame_index, 
@@ -563,7 +1322,8 @@ draw_query(int x, int y, qhandle_t font, const char *enum_name, int idx)
 	buf[i] = 0;
 
 	R_DrawString(x, y, 0, 128, buf, font);
-	double ms = vkpt_get_profiler_result(idx);
+	// the held frame while a capture holds one (profiler_capture)
+	double ms = result_ms(shown_results(), idx);
 	double avg_ms = ((double)profiler_data.samples[idx].accumulated / (profiler_data.samples[idx].num_samples * 1e6)) * qvk.timestampPeriod;
 
 	if(ms > 0.005)
@@ -597,7 +1357,7 @@ static bool row_now[NUM_PROFILER_ENTRIES];	// timed in this frame's results
 
 static void note_row_times(void)
 {
-	const uint64_t *r = profiler_data.query_pool_results;
+	const uint64_t *r = shown_results();
 	const uint64_t frame = r[PROFILER_GPU_FRAME * 2] ? r[PROFILER_GPU_FRAME * 2] : r[PROFILER_FRAME_TIME * 2];
 	memset(row_now, 0, sizeof(row_now));
 	if (!frame)
@@ -745,11 +1505,11 @@ graph_cmp(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
-/* A series as a line, a sample a pixel column with the newest at the right edge,
-   each column joined to the one before. A value over the top runs along it; 0 (not
-   measured) is a gap. */
+/* A series as a line, a sample a column of cw pixels with the newest at the right
+   edge, each column joined to the one before. A value over the top runs along it; 0
+   (not measured) is a gap. */
 static void
-graph_line(int left, int top, int w, int h, int thick, const float *v, int n, float vmax,
+graph_line(int left, int top, int w, int h, int thick, int cw, const float *v, int n, float vmax,
 	uint32_t color)
 {
 	int prev = -1;
@@ -764,7 +1524,7 @@ graph_line(int left, int top, int w, int h, int thick, const float *v, int n, fl
 		const int y = top + (int)((1.f - min(f, 1.f)) * (float)(h - thick));
 		const int y0 = prev >= 0 ? min(y, prev) : y;
 		const int y1 = prev >= 0 ? max(y, prev) : y;
-		R_DrawFill32(left + w - n + i, y0, 1, y1 - y0 + thick, color);
+		R_DrawFill32(left + w - (n - i) * cw, y0, cw, y1 - y0 + thick, color);
 		prev = y;
 	}
 }
@@ -866,11 +1626,11 @@ draw_graphs(float scale, qhandle_t font)
 	graph_panel(left, fps_box, w, h);
 	if (n > 0)
 	{
-		graph_line(left, frame_box, w, h, thick, gpu, n, graph.frame_top, GRAPH_GPU);
-		graph_line(left, frame_box, w, h, thick, frame, n, graph.frame_top, GRAPH_FRAME);
+		graph_line(left, frame_box, w, h, thick, 1, gpu, n, graph.frame_top, GRAPH_GPU);
+		graph_line(left, frame_box, w, h, thick, 1, frame, n, graph.frame_top, GRAPH_FRAME);
 		if (fg_n)
-			graph_line(left, fps_box, w, h, thick, fg, n, graph.fps_top, GRAPH_FG);
-		graph_line(left, fps_box, w, h, thick, fps, n, graph.fps_top, GRAPH_FPS);
+			graph_line(left, fps_box, w, h, thick, 1, fg, n, graph.fps_top, GRAPH_FG);
+		graph_line(left, fps_box, w, h, thick, 1, fps, n, graph.fps_top, GRAPH_FPS);
 	}
 
 	R_SetScale(scale);
@@ -898,16 +1658,554 @@ draw_graphs(float scale, qhandle_t font)
 	R_SetScale(1.0f);
 }
 
+/* One stacked column or bar, bottom up in category order, in pixels. Each
+   category's top is placed from the running sum, so rounding never opens a gap
+   or piles up; one under a pixel is not drawn. Each segment stops gap pixels
+   short of the next, the panel showing between (any two neighbours apart even
+   where their colours are close). The idle GPU is striped - across, a stripe
+   pixels high, where stripe > 0 (the bars, the key); in the history, whose
+   columns would take too many quads for that, every other column (phase) darker. */
+static void
+draw_stack(int x, int bw, int bottom, int h, float vtop, const float *v, int gap, int stripe, int phase)
+{
+	static uint32_t idle_dark;
+	if (!idle_dark)
+		idle_dark = display_color(80, 80, 80, 255);
+	const uint32_t stripe_color = MakeColor(0, 0, 0, 140);
+	float sum = 0.f;
+	int below = bottom;
+	for (int c = 0; c < NUM_CATS; c++)
+	{
+		if (!(v[c] > 0.f))
+			continue;
+		sum += v[c];
+		const int y = bottom - (int)(min(sum / vtop, 1.f) * (float)h);
+		if (y < below)
+		{
+			const int top = below - y > 3 * gap ? y + gap : y;
+			const uint32_t color = c == CAT_IDLE && stripe <= 0 && (phase & 1) ? idle_dark : cat_color(c);
+			R_DrawFill32(x, top, bw, below - top, color);
+			if (c == CAT_IDLE && stripe > 0)
+				for (int s = below - 2 * stripe; s > top; s -= 2 * stripe)
+					R_DrawFill32(x, max(s, top), bw, min(stripe, below - max(s, top)), stripe_color);
+		}
+		below = y;
+	}
+}
+
+// a key's swatch for category c: a square, striped for the idle GPU as in the bars
+static void
+draw_swatch(int x, int y, float u, int c)
+{
+	const int sw = max(3, (int)(7.f * u));
+	float v[NUM_CATS] = { 0 };
+	v[c] = 1.f;
+	draw_stack(x, sw, y + sw, sw, 1.f, v, 0, c == CAT_IDLE ? max(1, (int)(0.75f * u)) : 0, 0);
+}
+
+// the capture line across a panel (profiler_capture_fps, or the display's rate)
+static void
+draw_capture_line(int left, int box, int w, int h, int thick, float vtop)
+{
+	const float line_ms = 1000.f / capture_threshold_fps();
+	if (line_ms < vtop)
+		R_DrawFill32(left, box + h - (int)(line_ms / vtop * (float)h), w, thick, MakeColor(255, 255, 255, 190));
+}
+
+/* profiler_capture's lines above whatever the mode draws: what it is doing, and on
+   the frame a screenshot is of, which capture and its numbers. */
+static void
+draw_capture_text(float scale, qhandle_t font)
+{
+	if (!cap.on || !cap.on->integer)
+		return;
+	const float u = 1.f / scale;
+	R_SetScale(scale);
+	if (cap.status[0])
+		graph_text(scale, 500, max(0, 100 - (int)(12.f * u)), MakeColor(255, 200, 60, 255), cap.status, font);
+	if (cap.banner_now)
+		graph_text(scale, 500, max(0, 100 - (int)(24.f * u)), MakeColor(255, 70, 70, 255), cap.banner, font);
+	R_ClearColor();
+	R_SetScale(1.0f);
+}
+
+// the CPU's R_BeginFrame-to-submit line over the history (D3D12): light cyan
+#define GRAPH_SUBMIT	MakeColor(110, 210, 255, 255)
+
+// what a key shows: per category, and the lines under them; [0] now (or held), [1] average, [2] worst
+typedef struct {
+	float cat[3][NUM_CATS];
+	float total[3], cpu[3], frame[3], submit[3];	// cpu: its own work; frame: frame to frame
+	float gap[3];	// the GPU idle between frames, before this one
+	float cpu_rows[3][NUM_CPUROWS];
+	uint32_t counts[CPUPROF_COUNTER_COUNT];	// the shown frame's
+	int columns;	// 3 with the worst, 2 without
+} key_values_t;
+
+// a row's running average over profiler_samples, as the table's (draw_query)
+static double
+avg_result_ms(int idx)
+{
+	const profiler_entry_samples_t *e = &profiler_data.samples[idx];
+	return e->num_samples ? ((double)e->accumulated / ((double)e->num_samples * 1e6)) * qvk.timestampPeriod : 0.0;
+}
+
+static void
+key_numbers(char *buf, size_t size, const float *v, int columns)
+{
+	if (columns >= 3)
+		Q_snprintf(buf, size, "%6.2f  %6.2f  %6.2f", v[0], v[1], v[2]);
+	else
+		Q_snprintf(buf, size, "%6.2f  %6.2f", v[0], v[1]);
+}
+
+/* The key: a row a category, top of the stack first, its swatch in pixels and its
+   name and numbers in the table's scale; the GPU frame's total; the CPU's frame time
+   (amber: its own work, the waits on the GPU, the swapchain, Reflex and the limiter
+   taken out), and on D3D12 its recording of the same frame the GPU numbers are of
+   (light cyan - the one to set against "gpu idle: cpu late"); frame to frame, the
+   pace either one sets; the ray traced sound's last run, beside the frame on its
+   own queue; and where in the frame's list "unaccounted" mostly is. */
+// the GPU's key; returns the first row under it
+static int
+draw_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_values_t *k)
+{
+	const float u = 1.f / scale;
+	const int thick = max(1, (int)(0.5f * u));
+	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
+	const bool submit = k->submit[0] > 0.f || k->submit[1] > 0.f;
+	const double sound_now = result_ms(shown_results(), PROFILER_SOUND_TRACE);
+
+	R_SetScale(1.0f);
+	for (int j = 0; j < NUM_CATS; j++)
+		draw_swatch(key_x, key_y + j * row + (int)u, u, NUM_CATS - 1 - j);
+	const int sw = max(3, (int)(7.f * u));
+	int y = key_y + (NUM_CATS + 1) * row + (int)(3.f * u);
+	R_DrawFill32(key_x, y, sw, thick, GRAPH_FRAME);
+	if (submit)
+		R_DrawFill32(key_x, y + row, sw, thick, GRAPH_SUBMIT);
+
+	R_SetScale(scale);
+	char buf[192];
+	const int name_x = key_x + (int)(11.f * u), num_x = key_x + (int)(160.f * u);
+	const char *hold = cap.hold ? "  held" : "   now";
+	Q_snprintf(buf, sizeof(buf), k->columns >= 3 ? "%s     avg     max" : "%s     avg", hold);
+	graph_text(scale, num_x, key_y - row, grey, buf, font);
+	for (int j = 0; j < NUM_CATS; j++)
+	{
+		const int c = NUM_CATS - 1 - j;
+		const float v[3] = { k->cat[0][c], k->cat[1][c], k->cat[2][c] };
+		graph_text(scale, name_x, key_y + j * row, white, cat_info[c].name, font);
+		key_numbers(buf, sizeof(buf), v, k->columns);
+		graph_text(scale, num_x, key_y + j * row, white, buf, font);
+	}
+	y = key_y + NUM_CATS * row;
+	graph_text(scale, name_x, y, white, "gpu frame (total)", font);
+	key_numbers(buf, sizeof(buf), k->total, k->columns);
+	graph_text(scale, num_x, y, white, buf, font);
+	y += row;
+	graph_text(scale, name_x, y, GRAPH_FRAME, "cpu frame time", font);
+	key_numbers(buf, sizeof(buf), k->cpu, k->columns);
+	graph_text(scale, num_x, y, GRAPH_FRAME, buf, font);
+	if (submit)
+	{
+		y += row;
+		graph_text(scale, name_x, y, GRAPH_SUBMIT, "cpu recording it", font);
+		key_numbers(buf, sizeof(buf), k->submit, k->columns);
+		graph_text(scale, num_x, y, GRAPH_SUBMIT, buf, font);
+	}
+	y += row;
+	graph_text(scale, name_x, y, grey, "frame to frame", font);
+	key_numbers(buf, sizeof(buf), k->frame, k->columns);
+	graph_text(scale, num_x, y, grey, buf, font);
+	/* What makes the GPU's total short of frame to frame (Matt 11-14: "the GPU total
+	   numbers are not matching"): the queue's idle BEFORE the frame started, in no
+	   GPU frame - a CPU stall ahead of R_BeginFrame is here, not in gpu idle. */
+	if (k->gap[0] > 0.f || k->gap[1] > 0.f)
+	{
+		y += row;
+		graph_text(scale, name_x, y, grey, "gpu idle", font);
+		key_numbers(buf, sizeof(buf), k->gap, k->columns);
+		graph_text(scale, num_x, y, grey, buf, font);
+	}
+	if (sound_now > 0.0)
+	{
+		y += row;
+		graph_text(scale, name_x, y, grey, "sound sim (own queue)", font);
+		const float v[3] = { (float)sound_now, (float)avg_result_ms(PROFILER_SOUND_TRACE), 0.f };
+		Q_snprintf(buf, sizeof(buf), "%6.2f  %6.2f", v[0], v[1]);
+		graph_text(scale, num_x, y, grey, buf, font);
+	}
+
+	R_ClearColor();
+	R_SetScale(1.0f);
+	return y + row;
+}
+
+/* The long lines, under BOTH keys (Matt, 11-14): the unaccounted gap was the GPU
+   key's last row and the blood counts the CPU key's, and either ran across into the
+   other column - the two printed over each other. */
+static void
+draw_key_footer(float scale, qhandle_t font, int x, int y, int row, const key_values_t *k)
+{
+	const uint32_t grey = MakeColor(170, 170, 170, 255);
+	const profiler_frame_extras_t *extras = shown_extras();
+
+	R_SetScale(scale);
+	if (extras->gap_largest_ms >= 0.05f)
+	{
+		char gap[160], buf[192];
+		gap_text(gap, sizeof(gap), extras);
+		Q_snprintf(buf, sizeof(buf), "unaccounted: %s", gap);
+		graph_text(scale, x, y, grey, buf, font);
+		y += row;
+	}
+	char line1[160], line2[160];
+	blood_count_text(line1, line2, sizeof(line1), k->counts);
+	graph_text(scale, x, y, grey, line1, font);
+	graph_text(scale, x, y + row, grey, line2, font);
+	R_ClearColor();
+	R_SetScale(1.0f);
+}
+
+// the GPU's idle between frames over the last n samples into the key
+static void
+key_gap(key_values_t *k, int n)
+{
+	for (int i = 0; i < n; i++)
+	{
+		const float g = graph.gap_ms[(graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES];
+		k->gap[1] += g;
+		k->gap[2] = max(k->gap[2], g);
+	}
+	if (n > 0)
+	{
+		k->gap[1] /= (float)n;
+		k->gap[0] = graph.gap_ms[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES];
+	}
+	if (cap.hold)
+		k->gap[0] = cap.held_extras.gpu_gap_ms;
+}
+
+// the CPU frame by section (cpu_rows_of) over the last n samples into the key
+static void
+key_cpu_rows(key_values_t *k, int n)
+{
+	for (int i = 0; i < n; i++)
+	{
+		const float *v = graph.cpu_rows[(graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES];
+		for (int r = 0; r < NUM_CPUROWS; r++)
+		{
+			k->cpu_rows[1][r] += v[r];
+			k->cpu_rows[2][r] = max(k->cpu_rows[2][r], v[r]);
+		}
+	}
+	if (n > 0)
+	{
+		const int latest = (graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		for (int r = 0; r < NUM_CPUROWS; r++)
+			k->cpu_rows[1][r] /= (float)n;
+		memcpy(k->cpu_rows[0], graph.cpu_rows[latest], sizeof(k->cpu_rows[0]));
+		memcpy(k->counts, graph.counts[latest], sizeof(k->counts));
+	}
+	if (cap.hold)
+	{
+		memcpy(k->cpu_rows[0], cap.held_cpu_rows, sizeof(k->cpu_rows[0]));
+		memcpy(k->counts, cap.held_counts, sizeof(k->counts));
+	}
+}
+
+/* The CPU's key, beside the GPU's: its frame by section as a tree (a row shown
+   when it reaches 0.05 ms in any column), the sum and the waits. What the blood
+   work was is under both keys (draw_key_footer). Returns the first row under it. */
+static int
+draw_cpu_key(float scale, qhandle_t font, int key_x, int key_y, int row, const key_values_t *k)
+{
+	const float u = 1.f / scale;
+	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
+	const int num_x = key_x + (int)(150.f * u);
+	char buf[192];
+
+	R_SetScale(scale);
+	graph_text(scale, key_x, key_y - row, white, "cpu by section", font);
+	Q_snprintf(buf, sizeof(buf), k->columns >= 3 ? "%s     avg     max" : "%s     avg", cap.hold ? "  held" : "   now");
+	graph_text(scale, num_x, key_y - row, grey, buf, font);
+	int y = key_y;
+	for (int r = 0; r < NUM_CPUROWS; r++)
+	{
+		const int depth = cpurow_info[r].depth;
+		const float v[3] = { k->cpu_rows[0][r], k->cpu_rows[1][r], k->cpu_rows[2][r] };
+		const float most = max(v[0], max(v[1], k->columns >= 3 ? v[2] : 0.f));
+		if (depth > 0 && most < 0.05f)
+			continue;
+		if (depth == 0 && r != CPUROW_VIEW && r != CPUROW_RENDER && most < 0.05f)
+			continue;
+		const uint32_t color = depth < 0 ? (r == CPUROW_TOTAL ? GRAPH_FRAME : grey) : (depth == 0 ? white : grey);
+		graph_text(scale, key_x + (int)((float)(6 * max(depth, 0)) * u), y, color, cpurow_info[r].name, font);
+		key_numbers(buf, sizeof(buf), v, k->columns);
+		graph_text(scale, num_x, y, color, buf, font);
+		y += row;
+	}
+	R_ClearColor();
+	R_SetScale(1.0f);
+	return y;
+}
+
+/* profiler 3 (Matt, 11-14): the GPU frame by category over the last few seconds, a
+   stacked column a frame with the newest on the right, the capture line in white,
+   the CPU's frame time over it in amber (its own work, the waits taken out) and, on
+   D3D12, the CPU's recording of each frame in light cyan. Where the amber line
+   rises over the stack, the CPU is the limit; where "gpu idle" grows with the cyan
+   line, the GPU was waiting for the CPU to finish the frame. The key gives each category this frame
+   (the held one while a capture holds), its average and its worst over the panel. */
+static void
+draw_cat_history(float scale, qhandle_t font)
+{
+	const float u = 1.f / scale;
+	const int left = 500, top = 100;		// where the table starts, in pixels
+	const int w = (int)(352.f * u), h = (int)(128.f * u), row = (int)(10.f * u);
+	const int thick = max(1, (int)(0.5f * u));
+	const int cw = max(1, (int)(0.75f * u + 0.5f));	// 3 pixels a frame at 4K
+
+	/* The 2D queue holds 16K quads a frame, the HUD's and the console's included,
+	   and a column is up to NUM_CATS of them and the lines' two: as many columns as
+	   what is left takes, with room kept for the text after. */
+	int queued = 0, queue_max = 0;
+	size_t record = 0;
+	vkpt_draw_stretch_pic_queue(&queued, &record, &queue_max);
+	const int room = max(0, queue_max - queued - 5000);	// the keys' text: ~3000 characters
+	const int n = max(0, min(min(graph.count, w / cw), room / (NUM_CATS + 2)));
+
+	static float cpu[GRAPH_SAMPLES], submit[GRAPH_SAMPLES];
+	double span = 0.0;
+	key_values_t k;
+	memset(&k, 0, sizeof(k));
+	k.columns = 3;
+	int timed = 0, submits = 0;
+	for (int i = 0; i < n; i++)
+	{
+		const int s = (graph.next - n + i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		cpu[i] = graph.cpu_ms[s];
+		submit[i] = graph.submit_ms[s];
+		span += graph.frame_ms[s];
+		k.cpu[1] += cpu[i];
+		k.cpu[2] = max(k.cpu[2], cpu[i]);
+		k.frame[1] += graph.frame_ms[s];
+		k.frame[2] = max(k.frame[2], graph.frame_ms[s]);
+		if (submit[i] > 0.f)
+		{
+			submits++;
+			k.submit[1] += submit[i];
+			k.submit[2] = max(k.submit[2], submit[i]);
+		}
+		if (graph.gpu_ms[s] > 0.f)
+		{
+			timed++;
+			for (int c = 0; c < NUM_CATS; c++)
+			{
+				k.cat[1][c] += graph.cat_ms[s][c];
+				k.cat[2][c] = max(k.cat[2][c], graph.cat_ms[s][c]);
+			}
+			const float t = cat_total(graph.cat_ms[s]);
+			k.total[1] += t;
+			k.total[2] = max(k.total[2], t);
+		}
+	}
+	if (n > 0)
+	{
+		k.cpu[1] /= (float)n;
+		k.frame[1] /= (float)n;
+		k.cpu[0] = cpu[n - 1];
+		k.frame[0] = graph.frame_ms[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES];
+		k.submit[0] = submit[n - 1];
+		memcpy(k.cat[0], graph.cat_ms[(graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES], sizeof(k.cat[0]));
+	}
+	if (submits)
+		k.submit[1] /= (float)submits;
+	if (timed)
+	{
+		for (int c = 0; c < NUM_CATS; c++)
+			k.cat[1][c] /= (float)timed;
+		k.total[1] /= (float)timed;
+	}
+	if (cap.hold)
+	{
+		memcpy(k.cat[0], cap.held_cat, sizeof(k.cat[0]));
+		k.cpu[0] = cap.worst_cpu;
+		k.frame[0] = cap.worst_frame;
+		k.submit[0] = cap.held_extras.cpu_submit_ms;
+	}
+	k.total[0] = cat_total(k.cat[0]);
+	key_cpu_rows(&k, n);
+	key_gap(&k, n);
+
+	const float vtop = max(graph.cat_top, GRAPH_FRAME_TOP);
+	const int box = top + 2 * row;
+	const int key_y = box + h + 2 * row;	// the key's first row, under its header
+	const int seg_gap = max(1, thick / 2);
+
+	R_SetScale(1.0f);
+	graph_panel(left, box, w, h);
+	for (int i = 0; i < n; i++)
+		draw_stack(left + w - (n - i) * cw, cw, box + h, h, vtop,
+			graph.cat_ms[(graph.next - n + i + GRAPH_SAMPLES) % GRAPH_SAMPLES], seg_gap, 0, graph.next - n + i);
+	draw_capture_line(left, box, w, h, thick, vtop);
+	if (n > 0)
+	{
+		graph_line(left, box, w, h, thick, cw, cpu, n, vtop, GRAPH_FRAME);
+		if (submits)
+			graph_line(left, box, w, h, thick, cw, submit, n, vtop, GRAPH_SUBMIT);
+	}
+
+	R_SetScale(scale);
+	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
+	char buf[160];
+	graph_text(scale, left, top, white, "gpu frame by category, newest on the right", font);
+	Q_snprintf(buf, sizeof(buf), "the last %.1f s; white line %.0f fps (%.2f ms); amber the cpu's own time%s",
+		span * 1e-3, capture_threshold_fps(), 1000.f / capture_threshold_fps(),
+		submits ? ", cyan its recording of the frame shown" : "");
+	graph_text(scale, left, top + row, grey, buf, font);
+
+	// the panel's scale, at its top and middle lines, to its right
+	const int label_x = left + w + (int)(4.f * u);
+	Q_snprintf(buf, sizeof(buf), "%.1f ms", vtop);
+	graph_text(scale, label_x, box, grey, buf, font);
+	Q_snprintf(buf, sizeof(buf), "%.1f", vtop * 0.5f);
+	graph_text(scale, label_x, box + h / 2 - (int)(4.f * u), grey, buf, font);
+	R_ClearColor();
+
+	const int gpu_end = draw_key(scale, font, left, key_y, row, &k);
+	const int cpu_end = draw_cpu_key(scale, font, left + (int)(330.f * u), key_y, row, &k);
+	draw_key_footer(scale, font, left, max(gpu_end, cpu_end) + row / 2, row, &k);
+}
+
+/* profiler 4 (Matt, 11-14): two stacked bars - this frame's GPU frame by category
+   (the held one while a capture holds) and the average over profiler_samples
+   frames - each with the CPU's frame to frame on it as an amber tick, the capture
+   line across both, and the key to their right with both numbers. */
+static void
+draw_cat_bars(float scale, qhandle_t font)
+{
+	const float u = 1.f / scale;
+	const int left = 500, top = 100;
+	const int h = (int)(128.f * u), row = (int)(10.f * u);
+	const int thick = max(1, (int)(0.5f * u));
+	const int bar = (int)(44.f * u), gap = (int)(16.f * u);
+	const int w = 3 * gap + 2 * bar;
+	const int box = top + 2 * row, bottom = box + h;
+	const int now_x = left + gap, avg_x = left + 2 * gap + bar;
+
+	key_values_t k;
+	memset(&k, 0, sizeof(k));
+	k.columns = 2;
+	const int want = max(1, cvar_profiler_samples ? cvar_profiler_samples->integer : 60);
+	const int n = min(graph.count, min(want, GRAPH_SAMPLES));
+	int timed = 0, submits = 0;
+	for (int i = 0; i < n; i++)
+	{
+		const int s = (graph.next - 1 - i + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		k.cpu[1] += graph.cpu_ms[s];
+		k.frame[1] += graph.frame_ms[s];
+		if (graph.submit_ms[s] > 0.f)
+		{
+			submits++;
+			k.submit[1] += graph.submit_ms[s];
+		}
+		if (graph.gpu_ms[s] > 0.f)
+		{
+			timed++;
+			for (int c = 0; c < NUM_CATS; c++)
+				k.cat[1][c] += graph.cat_ms[s][c];
+		}
+	}
+	if (n > 0)
+	{
+		const int s = (graph.next - 1 + GRAPH_SAMPLES) % GRAPH_SAMPLES;
+		k.cpu[1] /= (float)n;
+		k.frame[1] /= (float)n;
+		k.cpu[0] = graph.cpu_ms[s];
+		k.frame[0] = graph.frame_ms[s];
+		k.submit[0] = graph.submit_ms[s];
+		memcpy(k.cat[0], graph.cat_ms[s], sizeof(k.cat[0]));
+	}
+	if (submits)
+		k.submit[1] /= (float)submits;
+	if (timed)
+		for (int c = 0; c < NUM_CATS; c++)
+			k.cat[1][c] /= (float)timed;
+	if (cap.hold)
+	{
+		memcpy(k.cat[0], cap.held_cat, sizeof(k.cat[0]));
+		k.cpu[0] = cap.worst_cpu;
+		k.frame[0] = cap.worst_frame;
+		k.submit[0] = cap.held_extras.cpu_submit_ms;
+	}
+	k.total[0] = cat_total(k.cat[0]);
+	k.total[1] = cat_total(k.cat[1]);
+	key_cpu_rows(&k, n);
+	key_gap(&k, n);
+
+	const float vtop = max(graph.cat_top, GRAPH_FRAME_TOP);
+	const int key_x = left + w + (int)(48.f * u), key_y = box + row;
+
+	R_SetScale(1.0f);
+	graph_panel(left, box, w, h);
+	const int stripe = max(1, (int)(0.75f * u));
+	draw_stack(now_x, bar, bottom, h, vtop, k.cat[0], thick, stripe, 0);
+	draw_stack(avg_x, bar, bottom, h, vtop, k.cat[1], thick, stripe, 0);
+	draw_capture_line(left, box, w, h, thick, vtop);
+	// the CPU's frame time (amber) and its recording of this frame (cyan) on each bar, a little wider than it
+	const int over = (int)(4.f * u);
+	const float ticks[2][2] = { { k.cpu[0], k.submit[0] }, { k.cpu[1], k.submit[1] } };
+	const uint32_t tick_colors[2] = { GRAPH_FRAME, GRAPH_SUBMIT };
+	for (int b = 0; b < 2; b++)
+		for (int t = 0; t < 2; t++)
+			if (ticks[b][t] > 0.f)
+				R_DrawFill32((b ? avg_x : now_x) - over,
+					bottom - (int)(min(ticks[b][t] / vtop, 1.f) * (float)(h - thick)) - thick,
+					bar + 2 * over, thick, tick_colors[t]);
+
+	R_SetScale(scale);
+	const uint32_t white = MakeColor(255, 255, 255, 255), grey = MakeColor(170, 170, 170, 255);
+	char buf[160];
+	graph_text(scale, left, top, white, "gpu frame by category", font);
+	Q_snprintf(buf, sizeof(buf), "%s and the average of the last %d; white line %.0f fps (%.2f ms)",
+		cap.hold ? "the held frame" : "this frame", n, capture_threshold_fps(), 1000.f / capture_threshold_fps());
+	graph_text(scale, left, top + row, grey, buf, font);
+
+	// under the bars, and the panel's scale to its right
+	graph_text(scale, now_x + bar / 2 - (int)(12.f * u), bottom + row / 4, grey, cap.hold ? "held" : " now", font);
+	graph_text(scale, avg_x + bar / 2 - (int)(12.f * u), bottom + row / 4, grey, " avg", font);
+	const int label_x = left + w + (int)(4.f * u);
+	Q_snprintf(buf, sizeof(buf), "%.1f ms", vtop);
+	graph_text(scale, label_x, box, grey, buf, font);
+	Q_snprintf(buf, sizeof(buf), "%.1f", vtop * 0.5f);
+	graph_text(scale, label_x, box + h / 2 - (int)(4.f * u), grey, buf, font);
+	R_ClearColor();
+
+	const int gpu_end = draw_key(scale, font, key_x, key_y, row, &k);
+	const int cpu_end = draw_cpu_key(scale, font, key_x + (int)(330.f * u), key_y, row, &k);
+	draw_key_footer(scale, font, key_x, max(gpu_end, cpu_end) + row / 2, row, &k);
+}
+
 void
 draw_profiler(int enable_asvgf, const char *title)
 {
 	float profiler_scale = R_ClampScale(cvar_profiler_scale);
+	const int mode = cvar_profiler ? cvar_profiler->integer : 1;
 
-	if (cvar_profiler && cvar_profiler->integer == 2)
+	if (mode >= 2 && mode <= 4)
 	{
 		const qhandle_t font = R_RegisterFont("conchars");
-		if (font)
+		if (!font)
+			return;
+		if (mode == 2)
 			draw_graphs(profiler_scale, font);
+		else if (mode == 3)
+			draw_cat_history(profiler_scale, font);
+		else
+			draw_cat_bars(profiler_scale, font);
+		draw_capture_text(profiler_scale, font);
 		return;
 	}
 
@@ -1019,6 +2317,22 @@ draw_profiler(int enable_asvgf, const char *title)
 	{
 		PROFILER_DO(PROFILER_DLSS, 1);
 	}
+	/* What used to be "other" (profiler.h): timed on D3D12 only, so listed there;
+	   DLSS 5 and the sound only while they run. */
+	if (profiler_data.d3d12)
+	{
+		const uint64_t *rr = shown_results();
+		if (rr[PROFILER_DLSS5 * 2 + 1])
+			PROFILER_DO(PROFILER_DLSS5, 1);
+		PROFILER_DO(PROFILER_TEXTURE_UPLOAD, 1);
+		PROFILER_DO(PROFILER_BLOOD_UPLOAD, 1);
+		PROFILER_DO(PROFILER_TRANSPARENT_UPLOAD, 1);
+		PROFILER_DO(PROFILER_UPLOAD_QUEUE, 1);
+		PROFILER_DO(PROFILER_HUD_PRESENT, 1);
+		PROFILER_DO(PROFILER_GPU_IDLE, 1);
+		if (rr[PROFILER_SOUND_TRACE * 2 + 1])
+			PROFILER_DO(PROFILER_SOUND_TRACE, 1);
+	}
 #undef PROFILER_DO
 
 	note_row_times();
@@ -1030,6 +2344,7 @@ draw_profiler(int enable_asvgf, const char *title)
 	}
 
 	R_SetScale(1.0f);
+	draw_capture_text(profiler_scale, font);
 }
 
 double vkpt_get_profiler_result(int idx)

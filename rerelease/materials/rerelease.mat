@@ -11652,7 +11652,9 @@ textures/e2u3/thinm3_3:
 textures/e2u3/turret1_1:
 	texture_base materialDev/textures/e2u3/turret1_1.tga
 	texture_normals materialDev/textures/e2u3/turret1_1_n.tga
-	metalness_factor 0
+	texture_metallic materialDev/textures/e2u3/turret1_1_metal.png
+	texture_roughness materialDev/textures/e2u3/turret1_1_rough.png
+	base_factor 5.0
 
 # Commented out - stock Q2RTX already ships a high-res override for this texture in
 # q2rtx_media.pkz (overrides/<basename>.tga and/or _n.tga). The automatic MAT_Find
@@ -17840,8 +17842,9 @@ textures/r_sewer/flrswr01:
 
 textures/r_sewer/flrswr02:
 	texture_base materialDev/textures/r_sewer/flrswr02.tga
-	texture_normals materialDev/textures/r_sewer/flrswr02_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/r_sewer/flrswr02_n.png
+	texture_roughness materialDev/textures/r_sewer/flrswr02_rough.png
+	texture_metallic materialDev/textures/r_sewer/flrswr02_metal.png
 
 textures/r_sewer/flrswr03:
 	texture_base materialDev/textures/r_sewer/flrswr03.tga
@@ -17853,7 +17856,11 @@ textures/r_sewer/flrswr03:
 textures/r_sewer/flrswr04:
 	texture_base materialDev/textures/r_sewer/flrswr04.tga
 	texture_normals materialDev/textures/r_sewer/flrswr04_n.tga
-	metalness_factor 0
+	texture_roughness materialDev/textures/r_sewer/flrswr04_rough.png
+	texture_height materialDev/textures/r_sewer/flrswr04_height.png
+	displace_in .015
+	displace_out 0.0
+	specular_factor .5
 
 textures/r_sewer/flrswr05:
 	texture_base materialDev/textures/r_sewer/flrswr05.tga

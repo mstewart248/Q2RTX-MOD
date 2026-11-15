@@ -80,6 +80,9 @@ static struct {
     double      diff_gpu, diff_gpu_max;     // the diffraction dispatch
     double      list_gpu, wall, wall_max;   // the whole list on the GPU; submit to done
     int         queue_mode;
+    // the last run, for the profiler's SOUND_TRACE row (d3d12_sound_last_run)
+    double      last_gpu;
+    uint64_t    last_at;                    // QueryPerformanceCounter
 } snd_stats;
 
 static struct {
@@ -459,6 +462,8 @@ static void snd_count_run(bool refl, bool diff, uint64_t start)
     snd_stats.wall += wall;
     snd_stats.wall_max = max(snd_stats.wall_max, wall);
     if (ts) {
+        snd_stats.last_gpu = snd_ts_ms(ts, SND_TS_BEGIN, SND_TS_END);
+        snd_stats.last_at = (uint64_t)now.QuadPart;
         snd_stats.list_gpu += snd_ts_ms(ts, SND_TS_BEGIN, SND_TS_END);
         if (refl) {
             const double ms = snd_ts_ms(ts, SND_TS_REFL, SND_TS_REFL_END);
@@ -474,6 +479,21 @@ static void snd_count_run(bool refl, bool diff, uint64_t start)
         }
     }
     ReleaseSRWLockExclusive(&snd_stats_lock);
+}
+
+/* The profiler's SOUND_TRACE row (gpu_timers.c): the last run's whole list on the
+   GPU, while there was one in the last second - runs come at the simulation's own
+   rate, not a frame's, so the row holds the latest rather than going blank between. */
+bool d3d12_sound_last_run(float *gpu_ms)
+{
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    AcquireSRWLockShared(&snd_stats_lock);
+    const bool recent = snd_stats.last_at && (double)((uint64_t)now.QuadPart - snd_stats.last_at) < (double)freq.QuadPart;
+    *gpu_ms = recent ? (float)snd_stats.last_gpu : 0.f;
+    ReleaseSRWLockShared(&snd_stats_lock);
+    return recent;
 }
 
 // NULL, or why the run was not made (sound_trace.c's snd_run)

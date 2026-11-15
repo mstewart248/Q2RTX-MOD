@@ -759,6 +759,14 @@ flow_get_instance_proc_addr(VkInstance instance, const char *name)
 	return vkGetInstanceProcAddr(instance, name);
 }
 
+/* What the backend made and freed during a step (flow_simulate's line): both
+   backends say "... allocate N bytes" for every buffer and texture they create, and
+   "... destroy pool buffer/texture" for every pool entry their flush frees. */
+static struct {
+	int         made, freed, stashed;
+	uint64_t    bytes;
+} flow_allocs;
+
 static void NV_FLOW_ABI flow_log(NvFlowLogLevel level, const char *format, ...)
 {
 	char        buffer[MAXPRINTMSG];
@@ -767,6 +775,19 @@ static void NV_FLOW_ABI flow_log(NvFlowLogLevel level, const char *format, ...)
 	va_start(args, format);
 	Q_vsnprintf(buffer, sizeof(buffer), format, args);
 	va_end(args);
+
+	const char *alloc = strstr(buffer, "allocate ");
+	if (alloc && !strstr(buffer, "failed")) {
+		flow_allocs.made++;
+		flow_allocs.bytes += strtoull(alloc + 9, NULL, 10);
+	}
+	else if (strstr(buffer, "destroy pool")) {
+		flow_allocs.freed++;
+	}
+	// D3D12: a 64 KB upload buffer made ahead (setup/flow/d3d12 ResourcesD3D12.cpp, the upload stash)
+	else if (strstr(buffer, "stash take")) {
+		flow_allocs.stashed++;
+	}
 
 	if (level == eNvFlowLogLevel_error)
 		Com_EPrintf("NVIDIA Flow: %s\n", buffer);
@@ -4007,14 +4028,54 @@ static void flow_prof_update(void)
 
 static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params);
 
+/* A SLOW STEP SAYS WHERE (11-14): one of Matt's dip captures had 12.9 ms of CPU in
+   "nvidia flow", eight seconds into rbase1 with the warm-up done. flow_simulate_inner
+   marks its stages; a step whose CPU comes to 4 ms prints them. */
+enum { FLOW_MARK_POOL = 1, FLOW_MARK_EMITTERS, FLOW_MARK_SIMULATE, FLOW_MARK_RENDER_DATA,
+       FLOW_MARK_LAYERS, FLOW_MARK_FLUSH, FLOW_MARKS };
+static uint64_t flow_mark[FLOW_MARKS];
+#define FLOW_MARK(i) (flow_mark[i] = Sys_Microseconds())
+
 static bool flow_simulate(const refdef_t *fd, int set, FlowParams *params)
 {
 	flow_prof_update();
-	const uint64_t t0 = flow_prof.on ? Sys_Microseconds() : 0;
+	memset(flow_mark, 0, sizeof(flow_mark));
+	memset(&flow_allocs, 0, sizeof(flow_allocs));
+	const bool clearing = flow.force_clear, warm_pending = flow.warm_pending;
+	const uint64_t t0 = Sys_Microseconds();
+	flow_mark[0] = t0;
 	const bool ret = flow_simulate_inner(fd, set, params);
+	const uint64_t t1 = Sys_Microseconds();
 	if (flow_prof.on && ret) {
-		flow_prof.cpu_us += Sys_Microseconds() - t0;
+		flow_prof.cpu_us += t1 - t0;
 		flow_prof.frames++;
+	}
+	/* Said for a slow step, for any step the backend made something in (the
+	   warm-up leaves the big textures behind, but Flow's smaller buffers follow
+	   what is emitted: its upload buffers grow to the biggest emission yet, and a
+	   pool entry is reused only at exactly its size and freed after 60 of Flow's
+	   flushes unused), and for the warm-up's own step. */
+	const bool warmed = warm_pending && !flow.warm_pending;
+	if (t1 - t0 >= 4000 || flow_allocs.made > 0 || flow_allocs.stashed > 0 || warmed) {
+		static const char *const names[FLOW_MARKS] = { "", "pool", "emitters", "simulate", "render data",
+			"layers", "flush" };
+		char parts[256] = "";
+		size_t len = 0;
+		uint64_t last = t0;
+		for (int i = 1; i < FLOW_MARKS; i++) {
+			if (!flow_mark[i])
+				continue;
+			len += Q_scnprintf(parts + len, sizeof(parts) - len, "%s %.1f, ", names[i],
+				(double)(flow_mark[i] - last) * 1e-3);
+			last = flow_mark[i];
+		}
+		Con_SkipNotify(true);
+		Com_Printf("Flow: %s %.1f ms - %srest %.1f; %d emitters, %u blocks; made %d (%.1f MB), from stash %d, freed %d%s\n",
+			warmed ? "warm-up step" : t1 - t0 >= 4000 ? "slow step" : "step",
+			(double)(t1 - t0) * 1e-3, parts, (double)(t1 - last) * 1e-3, flow.num_emitters,
+			(unsigned)flow.num_blocks, flow_allocs.made, (double)flow_allocs.bytes / (1024.0 * 1024.0),
+			flow_allocs.stashed, flow_allocs.freed, clearing ? ", clearing" : "");
+		Con_SkipNotify(false);
 	}
 	return ret;
 }
@@ -4023,6 +4084,7 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 {
 	flow_pool_stats();
 	flow_pool_resize();
+	FLOW_MARK(FLOW_MARK_POOL);
 
 	float dt = 0.f;
 	if (flow.have_last_time && fd->time >= flow.last_time)
@@ -4056,6 +4118,7 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 	flow_build_params(sim_dt);
 	if (flow_prof.on)
 		flow_prof.build_us += Sys_Microseconds() - build_t0;
+	FLOW_MARK(FLOW_MARK_EMITTERS);
 
 	/* Paused - no game time - the gas holds still, and Flow is not stepped at all.
 	   Below pt_flow_rate fps (or at pt_flow_rate 0) its variable time step takes a
@@ -4092,7 +4155,9 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 			if (flow.warm_now)
 				flow.warm_pending = false;
 		}
+		FLOW_MARK(FLOW_MARK_SIMULATE);
 		flow.grid_iface->getRenderData(flow.context, flow.grid, &render_data);
+		FLOW_MARK(FLOW_MARK_RENDER_DATA);
 
 		const NvFlowSparseParams *sparse = &render_data.sparseParams;
 		memset(flow.layer_blocks, 0, sizeof(flow.layer_blocks));
@@ -4178,6 +4243,7 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 		}
 
 		flow.params_iface->unmapParamsDesc(flow.grid_params, snapshot);
+		FLOW_MARK(FLOW_MARK_LAYERS);
 	}
 
 	flow.force_clear = false;
@@ -4185,7 +4251,9 @@ static bool flow_simulate_inner(const refdef_t *fd, int set, FlowParams *params)
 
 	// Submits to qvk.queue_graphics, through flow_queue_submit.
 	NvFlowUint64 flushed_frame;
-	if (flow.device_iface->flush(flow.queue, &flushed_frame, NULL, NULL)) {
+	const int flush_failed = flow.device_iface->flush(flow.queue, &flushed_frame, NULL, NULL);
+	FLOW_MARK(FLOW_MARK_FLUSH);
+	if (flush_failed) {
 		// the renderer's own next submission reports it
 		return false;
 	}

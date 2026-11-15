@@ -2542,10 +2542,19 @@ void CL_AddEntities(void)
 {
     CL_CalcViewValues();
     CL_FinishViewValues();
-    CL_AddPacketEntities();
+    // timed for the GPU profiler's CPU breakdown (cpuprof.h)
+    {
+        CPUPROF_DETAIL_BEGIN(ENTITIES);
+        CL_AddPacketEntities();
+        CPUPROF_DETAIL_END(ENTITIES);
+    }
     CL_AddPlayerModelFlash();
     CL_AddTEnts();
-    CL_AddParticles();
+    {
+        CPUPROF_DETAIL_BEGIN(PARTICLES);
+        CL_AddParticles();
+        CPUPROF_DETAIL_END(PARTICLES);
+    }
     CL_AddDLights();
     CL_AddLightStyles();
 	CL_AddTestModel();

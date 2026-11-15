@@ -96,7 +96,13 @@ namespace NvFlowD3D12
         DeviceQueue* deviceQueue = nullptr;
 
         NvFlowDeviceMemoryStats memoryStats = {};
+
+        struct UploadStash* uploadStash = nullptr;  // ResourcesD3D12.cpp
     };
+
+    // 64 KB upload buffers made ahead on a worker thread (ResourcesD3D12.cpp)
+    void uploadStash_create(Device* device);
+    void uploadStash_destroy(Device* device);
 
     NvFlowDevice* createDevice(NvFlowDeviceManager* deviceManager, const NvFlowDeviceDesc* desc);
     void destroyDevice(NvFlowDeviceManager* deviceManager, NvFlowDevice* device);

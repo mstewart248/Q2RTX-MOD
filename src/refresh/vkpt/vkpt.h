@@ -313,6 +313,7 @@ typedef struct QVK_s {
 	bool                        supports_device_fault;   /* VK_EXT_device_fault */
 	bool                        supports_checkpoints;    /* VK_NV_device_diagnostic_checkpoints */
 	bool                        supports_address_binding_report; /* VK_EXT_device_address_binding_report */
+	bool                        supports_memory_budget;  /* VK_EXT_memory_budget: vk_vram_usage */
 	/* VK_NV_partitioned_acceleration_structure with its feature: the partitioned TLAS
 	   (ptlas.h, pt_ptlas) */
 	bool                        supports_ptlas;
@@ -1430,6 +1431,8 @@ void vkpt_blood_prepare(
 	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
+	float fov_y,                    // the view, for the close-up LOD's size on screen
+	int view_height,                // ... in pixels (refdef height)
 	int model_instance_index,
 	uint32_t prim_offset,
 	vkpt_blood_frame_t* frame);
@@ -1445,6 +1448,8 @@ void vkpt_blood_update(
 	int num_films,
 	bsp_t* bsp,
 	const vec3_t cam_pos,
+	float fov_y,
+	int view_height,
 	int model_instance_index,
 	uint32_t prim_offset,
 	uint32_t* prim_count_out);

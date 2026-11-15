@@ -127,6 +127,11 @@ bool        com_initialized;
 time_t      com_startTime;
 
 uint64_t cpuprof_us[CPUPROF_COUNT];
+uint64_t cpuprof_wait_us;
+uint64_t cpuprof_detail_us[CPUPROF_DETAIL_COUNT];
+uint32_t cpuprof_count[CPUPROF_COUNTER_COUNT];
+cpuprof_frame_t cpuprof_last;
+cpuprof_frame_t cpuprof_ring[CPUPROF_RING];
 
 // cpuprof.h's FILES READ: the frame's first few by name, all of them counted
 #define CPUPROF_MAX_FILES   6
@@ -1452,7 +1457,8 @@ void Qcommon_Frame(void)
     }
 #endif
 
-    CPUPROF_END(NET_SLEEP);
+    // (the frame limiter's sleep: waiting, not the CPU's work - cpuprof.h)
+    CPUPROF_END_WAIT(NET_SLEEP);
 
     if (msec > 250) {
         Com_DPrintf("Hitch warning: %u msec frame time\n", msec);

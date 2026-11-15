@@ -362,6 +362,7 @@ SET(SRC_VKPT
 	refresh/vkpt/bsp_mesh.c
 	refresh/vkpt/draw.c
 	refresh/vkpt/fog.c
+	refresh/vkpt/jobs.c
 	refresh/vkpt/cameras.c
 	refresh/vkpt/cpu_trace.c
 	refresh/vkpt/freecam.c
@@ -401,6 +402,7 @@ SET(SRC_VKPT
 
 SET(HEADERS_VKPT
 	refresh/vkpt/vkpt.h
+	refresh/vkpt/jobs.h
 	refresh/vkpt/ptlas.h
 	refresh/vkpt/clusters.h
 	refresh/vkpt/vk_util.h

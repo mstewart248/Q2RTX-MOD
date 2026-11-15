@@ -286,6 +286,10 @@ void d3d12_timers_frame_begin(void);                                // the slot'
 void d3d12_timers_frame_end(ID3D12GraphicsCommandList4 *cmd);      // before the list closes
 void d3d12_timers_get(d3d12_timers_t *out);                         // the open frame's (heap NULL: none)
 void d3d12_timers_flow(int action);                                 // the Flow row, around Flow's work
+void d3d12_timers_mark(int entry, int action);                      // entry's stamp into the open frame's list
+void d3d12_timers_upload_flush(int action);                         // around an upload list executed mid-frame
+void d3d12_timers_submitted(void);                                  // the frame's list was just executed
+bool d3d12_sound_last_run(float *gpu_ms);                           // sound_trace.c: the last run, if within 1 s
 void d3d12_timers_draw(void);                                       // into the 2D queue
 void d3d12_timers_shutdown(void);
 // reflex_nvapi.c: NVIDIA Reflex through NVAPI, with vkpt/reflex.c's cvars and policy
@@ -696,7 +700,8 @@ bool d3d12_world_read_image(int image, uint32_t x, uint32_t y, uint32_t w, uint3
 // for the GPU - as vkpt_vertex_buffer_upload_models waits for its queue.
 bool d3d12_world_model_upload(int index, d3d12_world_model_t *model);
 void d3d12_world_model_free(int index);
-void d3d12_world_models_commit(void);
+// true = it waited for the GPU (a slot a frame in flight may draw was rewritten)
+bool d3d12_world_models_commit(void);
 
 // The instanced buffers' size in primitives (pt_primbuf): a change waits for
 // the GPU and makes them afresh

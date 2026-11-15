@@ -1369,7 +1369,7 @@ void CL_BloodFilmClear(void);
 void CL_BloodFilmFrame(void);
 bool CL_BloodFilmOn(void);
 bool CL_BloodFilmDeposit(const vec3_t point, const vec3_t normal, float radius,
-                         int color, const color_t *rgba);
+                         const vec3_t vel, int color, const color_t *rgba);
 const blood_film_t *CL_BloodFilmList(int *count);
 void CL_BloodFilmDrip(const vec3_t org, const vec3_t vel, float radius, int color, const color_t *rgba);
 void CL_BloodFilmDissolve(const vec3_t org, const vec3_t normal, float radius, int color, const color_t *rgba);

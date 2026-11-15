@@ -256,7 +256,7 @@ static const char *const timer_names[D3D12_NUM_PROFILER_ENTRIES] = {
 #define PROFILER_DO(a, ...) #a,
     PROFILER_LIST
 #undef PROFILER_DO
-    "SHADOW_MAP_DYNAMIC", "BVH_TLAS", "FLOW_PASSES",
+    "SHADOW_MAP_DYNAMIC", "BVH_TLAS", "FLOW_PASSES", "UPLOAD_QUEUE_2", "UPLOAD_QUEUE_3", "UPLOAD_QUEUE_4",
 };
 
 /* d3d12_dred 2 (device.c): a marker per mark, which DRED's breadcrumbs keep with the
@@ -970,6 +970,7 @@ void d3d12_record_passes(const d3d12_passes_t *p, const d3d12_passes_frame_t *f)
     // its feature (made or remade first), the frame encoded for the model, the model's
     // answer into MOTION_BLUR, resolved back into DLSS_OUTPUT
     if (f->dlss5 && p->neural) {
+        mark(&r, PROFILER_DLSS5, PROFILER_START);
         const uint32_t gx = (pw + 15) / 16, gy = (ph + 15) / 16;
         const bool made = p->neural(p->upscale_ctx, p->cmd, 0);
         after_ngx(&r);
@@ -980,6 +981,7 @@ void d3d12_record_passes(const d3d12_passes_t *p, const d3d12_passes_frame_t *f)
             if (evaluated)
                 pass(&r, D3D12_PASS_DLSS5_CONVERT, f->dlss5_push[1], sizeof(f->dlss5_push[1]), gx, gy);
         }
+        mark(&r, PROFILER_DLSS5, PROFILER_STOP);
     }
     // ...and without DLSS, FRAME_TIME holds the whole post list
     if (!f->dlss)

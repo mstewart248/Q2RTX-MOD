@@ -1254,6 +1254,14 @@ void d3d12_frontend_upload_models(void)
     if (!d3d12_world_ready())
         return;
 
+    // a model loaded mid-game names itself in the log, with its times (a map load
+    // has its own line)
+    const bool loading = Com_LoadActive();
+    uint64_t stage_us = 0, upload_us = 0;
+    size_t upload_bytes = 0;
+    int uploads = 0;
+    char names[256] = "";
+
     bool changed = false;
     for (int i = 0; i < MAX_MODELS; i++) {
         switch (vkpt_model_vbo_action(i)) {
@@ -1273,10 +1281,12 @@ void d3d12_frontend_upload_models(void)
         vkpt_model_vbo_clear(i);
         changed = true;
 
+        const uint64_t t0 = Sys_Microseconds();
         model_vbo_t *vbo = &model_vertex_data[i];
         const size_t size = vkpt_model_vbo_layout(i);
         uint8_t *data = Z_Malloc(size);
         vkpt_model_vbo_stage(i, data, size);
+        const uint64_t t1 = Sys_Microseconds();
 
         d3d12_world_model_t m = {
             .data = data,
@@ -1295,6 +1305,15 @@ void d3d12_frontend_upload_models(void)
         }
         const bool present = d3d12_world_model_upload(i, &m);
         Z_Free(data);
+        stage_us += t1 - t0;
+        upload_us += Sys_Microseconds() - t1;
+        upload_bytes += size;
+        uploads++;
+        if (!loading) {
+            if (names[0])
+                Q_strlcat(names, ", ", sizeof(names));
+            Q_strlcat(names, r_models[i].name, sizeof(names));
+        }
 
         // what vkpt_pt_instance_model_blas reads (vkpt_model_geometry_has_blas:
         // with no Vulkan device, the address alone)
@@ -1305,10 +1324,20 @@ void d3d12_frontend_upload_models(void)
     }
 
     if (changed) {
-        d3d12_world_models_commit();
+        const uint64_t c0 = Sys_Microseconds();
+        const bool waited = d3d12_world_models_commit();
         // a map load's models (vkpt's mark): buffers, BLASes, and the wait for them -
         // and for whatever else the upload batch held, the textures' copies included
         Com_LoadMark("model upload");
+        if (!loading && uploads) {
+            Con_SkipNotify(true);
+            Com_Printf("D3D12: model loaded mid-game - %s (%.1f MB): staged %.1f ms, uploaded %.1f, "
+                       "commit %.1f%s\n", names, (double)upload_bytes / (1024.0 * 1024.0),
+                       (double)stage_us * 1e-3, (double)upload_us * 1e-3,
+                       (double)(Sys_Microseconds() - c0) * 1e-3,
+                       waited ? " (waited for the GPU: a slot in use was replaced)" : "");
+            Con_SkipNotify(false);
+        }
     }
 }
 
@@ -1376,7 +1405,11 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
 
     const vkpt_frame_prep_t *prep = &frame_prep;
     frame_prep_valid = false;
-    if (!vkpt_prepare_frame(fd, waterLevel, &frame_prep))
+    // the pieces of the CPU's frame are timed for the profiler's breakdown (cpuprof.h)
+    CPUPROF_DETAIL_BEGIN(SCENE);
+    const bool prepared = vkpt_prepare_frame(fd, waterLevel, &frame_prep);
+    CPUPROF_DETAIL_END(SCENE);
+    if (!prepared)
         return false;
     frame_prep_valid = true;
 
@@ -1394,7 +1427,9 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
             pt_reflect_noflow = Cvar_Get("pt_reflect_noflow", "1", 0);
         }
         // the model view: the fire holds still and stays out of it (no march)
+        CPUPROF_DETAIL_BEGIN(FLOW);
         vkpt_flow_update(fd, prep->render_world);
+        CPUPROF_DETAIL_END(FLOW);
         vkpt_flow_dispatch_t fdisp;
         vkpt_flow_dispatches(&fdisp);
         const bool marching = vkpt_flow_marching();
@@ -1412,9 +1447,11 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     // frame's preparation: the particles, beams and sprites into transparency.c's
     // frame, which d3d12_world_render copies into this slot's buffers. The CPU
     // half again (it does nothing once made): prepare writes into it.
+    CPUPROF_DETAIL_BEGIN(TRANSPARENT);
     vkpt_transparency_cpu_init();
     vkpt_transparency_prepare(*vkpt_refdef.uniform_buffer.V, fd->particles, fd->num_particles, fd->entities,
                               fd->num_entities);
+    CPUPROF_DETAIL_END(TRANSPARENT);
     vkpt_transparency_frame_t tf;
     vkpt_transparency_frame(&tf);
     d3d12_world_transparency_t *tr = &frame->tr;
@@ -1435,9 +1472,11 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     vkpt_blood_frame_t blood;
     if (d3d12_world_take_blood_lost())
         vkpt_blood_invalidate();
+    CPUPROF_DETAIL_BEGIN(BLOOD_MESH);
     vkpt_blood_prepare(fd->blood_spheres, fd->num_blood_spheres, fd->blood_films, fd->num_blood_films,
-                       prep->bsp, fd->vieworg, prep->blood_model_instance,
+                       prep->bsp, fd->vieworg, fd->fov_y, fd->height, prep->blood_model_instance,
                        frame_prep.upload_info.blood_prim_offset, &blood);
+    CPUPROF_DETAIL_END(BLOOD_MESH);
     frame_prep.upload_info.blood_prim_count = blood.prim_count;
     frame->blood.prim_offset = blood.prim_offset;
     frame->blood.prim_count = blood.prim_count;
@@ -1478,11 +1517,13 @@ bool d3d12_frontend_prepare_frame(refdef_t *fd, int waterLevel, d3d12_world_fram
     const bool blood_reuse = !vkpt_blood_blas_needs_build(d3d.frame_index, u->blood_prim_offset,
                                                           u->blood_prim_count, dyn_fast_build);
     bool blood_built = false;
+    CPUPROF_DETAIL_BEGIN(BLAS);
     d3d12_world_plan_dynamic(first, count, tr, !dyn_fast_build, blood_reuse, blas, &blood_built);
     if (blood_built)
         vkpt_blood_blas_built(d3d.frame_index, u->blood_prim_offset, u->blood_prim_count, dyn_fast_build);
     vkpt_pt_instance_list(&frame->first_dynamic_instance);
     frame->num_geometry_instances = vkpt_pt_append_dynamic_instances(blas, u, u->weapon_left_handed);
+    CPUPROF_DETAIL_END(BLAS);
     frame->num_world_instances = vkpt_pt_num_world_instances();
     frame->ptlas = cvar_pt_ptlas->integer != 0;
 
