@@ -379,6 +379,7 @@ typedef struct {
 #define IT_KEY          16
 #define IT_POWERUP      32
 #define IT_MELEE        64      // no ammo, never auto-switched away from on empty
+#define IT_CTF          128     // a flag or a tech: CTF's, never handed out by `give all`
 
 // Rerelease generic monster spawnflag: the mapper placed this monster off
 // the floor deliberately (a ledge, a pipe, mid-air), so do not drop it.
@@ -412,6 +413,7 @@ typedef struct {
 #define WEAP_PLASMA             17
 #define WEAP_ETFRIFLE           18
 #define WEAP_PROXLAUNCHER       19
+#define WEAP_GRAPPLE            20      // CTF only: registered by CTF_Precache, after the rest
 
 typedef struct gitem_s {
     char        *classname; // spawning name
@@ -1097,6 +1099,7 @@ extern  int snd_fry;
 #define MOD_DOPPLE_EXPLODE  53
 #define MOD_DOPPLE_VENGEANCE 54
 #define MOD_DOPPLE_HUNTER   55
+#define MOD_GRAPPLE         56
 #define MOD_FRIENDLY_FIRE   0x8000000
 
 extern  int meansOfDeath;
@@ -1648,7 +1651,26 @@ int  Nav_PathToPoint(const vec3_t from, const vec3_t to, int *out, int max_out);
 typedef struct {
     float   jump_height;    // tallest climb it will take; 0 = cannot climb
     float   drop_height;    // longest drop it will take; 0 = cannot drop
+    bool    player;         // a bot: take every link a player can (see
+                            // Nav_PrepareForBots) and ignore the two above
 } nav_caps_t;
+
+// What a player does to take one link of a route (g_nav.c, for the bots)
+typedef enum {
+    NAV_STEP_WALK,          // walk to the next node
+    NAV_STEP_DROP,          // walk off a ledge
+    NAV_STEP_JUMP,          // jump: onto a ledge, over a barrier, across a gap
+    NAV_STEP_ELEVATOR,      // ride a lift or climb a ladder
+    NAV_STEP_TELEPORT,      // walk onto a teleporter pad
+    NAV_STEP_BLOCKED        // not for players (rocket jumps and the like)
+} nav_step_t;
+
+void        Nav_PrepareForBots(void);
+int         Nav_NumNodes(void);
+bool        Nav_IsGenerated(void);
+int         Nav_RouteFor(edict_t *self, const vec3_t goal, int *out, int max_out, float *length);
+nav_step_t  Nav_StepKind(int a, int b, vec3_t start, vec3_t end);
+bool        Nav_BodyCanReach(edict_t *self, const vec3_t point);
 
 int  Nav_FindPathCaps(int from, int to, const nav_caps_t *caps, int *out, int max_out);
 int  Nav_PathToPointCaps(const vec3_t from, const vec3_t to, const nav_caps_t *caps,
@@ -1843,6 +1865,93 @@ void player_pain(edict_t *self, edict_t *other, float kick, int damage);
 void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage, vec3_t point);
 
 //
+// p_client.c, the game's entry points - g_bot.c drives its bots through them
+//
+qboolean ClientConnect(edict_t *ent, char *userinfo);
+void ClientBegin(edict_t *ent);
+void ClientThink(edict_t *ent, usercmd_t *ucmd);
+void ClientDisconnect(edict_t *ent);
+void ClientUserinfoChanged(edict_t *ent, char *userinfo);
+
+//
+// g_bot.c
+//
+#define TEAM_NONE   0
+#define TEAM_RED    1
+#define TEAM_BLUE   2
+
+extern  cvar_t  *teamplay;
+
+bool G_TeamPlay(void);
+const char *Team_Name(int team);
+int  Team_Score(int team);
+void Team_Assign(edict_t *ent);
+const char *Team_Skin(edict_t *ent, const char *skin);
+void Team_Command(edict_t *ent);
+
+//
+// g_ctf.c - capture the flag, `ctf 1` in deathmatch
+//
+extern  cvar_t  *ctf;
+
+// the CTF HUD, in the stats nothing else uses (shared.h: 24..31 are free)
+#define STAT_CTF_TEAM1_PIC          24
+#define STAT_CTF_TEAM1_CAPS         25
+#define STAT_CTF_TEAM2_PIC          26
+#define STAT_CTF_TEAM2_CAPS         27
+#define STAT_CTF_FLAG_PIC           28
+#define STAT_CTF_JOINED_TEAM1_PIC   29
+#define STAT_CTF_JOINED_TEAM2_PIC   30
+#define STAT_CTF_TECH               31
+
+#define CTF_GRAPPLE_STATE_FLY       0
+#define CTF_GRAPPLE_STATE_PULL      1
+#define CTF_GRAPPLE_STATE_HANG      2
+
+bool G_CTF(void);
+void CTF_Init(void);
+void CTF_Precache(void);
+const char *CTF_StatusBar(const char *dm_statusbar);
+void CTF_LevelStart(void);
+bool CTF_CheckRules(void);
+int  CTF_Caps(int team);
+bool CTF_HasFlag(const edict_t *ent);
+bool CTF_HasTech(const edict_t *ent);
+edict_t *CTF_BaseFlag(int team);
+edict_t *CTF_DroppedFlag(int team);
+edict_t *CTF_Carrier(int team);
+edict_t *CTF_SpawnPoint(edict_t *ent);
+void CTF_FlagSetup(edict_t *ent);
+bool CTFPickup_Flag(edict_t *ent, edict_t *other);
+void CTFDrop_Flag(edict_t *ent, gitem_t *item);
+bool CTFPickup_Tech(edict_t *ent, edict_t *other);
+void CTFDrop_Tech(edict_t *ent, gitem_t *item);
+void CTFWeapon_Grapple(edict_t *ent);
+void CTF_GivePersistant(gclient_t *client);
+void CTF_PlayerResetGrapple(edict_t *ent);
+void CTF_ClientThink(edict_t *ent);
+void CTF_ClientFrame(edict_t *ent);
+void CTF_PlayerDied(edict_t *self, edict_t *attacker);
+void CTF_PlayerLeft(edict_t *ent);
+void CTF_ClientEffects(edict_t *player);
+void CTF_SetStats(edict_t *ent);
+void CTF_CheckHurtCarrier(edict_t *targ, edict_t *attacker);
+int  CTF_ApplyResistance(edict_t *ent, int dmg);
+int  CTF_ApplyStrength(edict_t *ent, int dmg);
+bool CTF_HasHaste(edict_t *ent);
+void SP_info_player_team1(edict_t *self);
+void SP_info_player_team2(edict_t *self);
+
+void Bot_WrapImports(void);
+void Bot_Init(void);
+void Bot_LevelStart(void);
+void Bot_RunFrame(void);
+bool Bot_IsBot(const edict_t *ent);
+void Bot_Damaged(edict_t *self, edict_t *attacker);
+void Bot_ClientConnecting(edict_t *ent);
+bool Bot_ServerCommand(const char *cmd);
+
+//
 // g_svcmds.c
 //
 void ServerCommand(void);
@@ -1966,6 +2075,16 @@ typedef struct {
     vec3_t      cmd_angles;         // angles sent over in the last command
 
     bool        spectator;          // client is a spectator
+
+    // teamplay: TEAM_RED / TEAM_BLUE. Kept by InitClientResp, so a team holds
+    // across respawns and level changes; cleared on a fresh connection.
+    int         team;
+
+    // CTF (g_ctf.c): level.time of each, for its bonuses
+    float       ctf_lasthurtcarrier;
+    float       ctf_lastreturnedflag;
+    float       ctf_lastfraggedcarrier;
+    float       ctf_flagsince;
 } client_respawn_t;
 
 // this structure is cleared on each PutClientInServer(),
@@ -2086,6 +2205,14 @@ struct gclient_s {
     // saved and cleared on every spawn, so a level starts the count afresh.
     int         n64_crouch_warn_times;
     int         n64_crouch_warn_framenum;
+
+    // CTF (g_ctf.c): the grappling hook out, and the techs' timers
+    edict_t     *ctf_grapple;
+    int         ctf_grapplestate;   // CTF_GRAPPLE_STATE_*
+    float       ctf_grapplereleasetime;
+    float       ctf_regentime;
+    float       ctf_techsndtime;
+    float       ctf_lasttechmsg;
 };
 
 

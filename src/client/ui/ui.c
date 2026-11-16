@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "client/input.h"
 #include "../client.h"
 #include "common/prompt.h"
+#include "shared/bot_roster.h"
 
 uiStatic_t    uis;
 
@@ -592,10 +593,13 @@ static void UI_PopMenu_f(void)
 }
 
 
+static void UI_BotLineup_f(void);
+
 static const cmdreg_t c_ui[] = {
     { "forcemenuoff", UI_ForceMenuOff },
     { "pushmenu", UI_PushMenu_f, UI_PushMenu_c },
     { "popmenu", UI_PopMenu_f },
+    { "bot_lineup", UI_BotLineup_f },
 
     { NULL, NULL }
 };
@@ -622,6 +626,243 @@ static void UI_FreeMenus(void)
         }
     }
     List_Init(&ui_menus);
+}
+
+/*
+=================
+UI_BotLineup_f
+
+The Bot Match line-up. bot_skin1..15 are the skins the game puts its bots in
+(src/baseq2/g_bot.c), and a bot goes by its skin's name: _ui_botname1..15
+hold those names, which the menu shows as each bot's row. The skins are
+rolled at random from the installed skins a bot may wear (for now id's own
+male, female and cyborg skins - Bot_SkinUsable) - the first time the page
+opens each session ("bot_lineup"), again on "bot_lineup shuffle", and for
+any slot whose skin this game does not have. The bot picker
+(playerconfig.c) sets one by hand, from every installed model.
+=================
+*/
+#define UI_MAX_BOT_SKINS    256
+
+static bool ui_lineup_rolled;
+
+/*
+_ui_botlabelN is what the page's row for bot N says: its name, and in a team
+game the side it was put on, when it was (bot_teamN 1 red, 2 blue; 0, auto,
+the default, leaves the game to even the teams out).
+*/
+static void UI_BotLabel(int n)
+{
+    char    label[48];
+    int     team = Cvar_VariableInteger(va("bot_team%d", n));
+
+    Cvar_VariableStringBuffer(va("_ui_botname%d", n), label, sizeof(label));
+    if (Cvar_VariableInteger("bot_mode") >= 1 && (team == 1 || team == 2))
+        Q_strlcat(label, team == 1 ? " (red)" : " (blue)", sizeof(label));
+    Cvar_Set(va("_ui_botlabel%d", n), label);
+}
+
+static void UI_BotSkinChanged(cvar_t *var)
+{
+    char    name[32];
+    int     n = atoi(var->name + 8);    // after "bot_skin"
+
+    if (n < 1 || n > BOT_MAX_MATCH)
+        return;
+    Bot_SkinName(var->string, name, sizeof(name));
+    Cvar_Set(va("_ui_botname%d", n), name);
+    UI_BotLabel(n);
+}
+
+static void UI_BotTeamChanged(cvar_t *var)
+{
+    int n = atoi(var->name + 8);        // after "bot_team"
+
+    if (n >= 1 && n <= BOT_MAX_MATCH)
+        UI_BotLabel(n);
+}
+
+static void UI_BotModeChanged(cvar_t *var)
+{
+    int n;
+
+    for (n = 1; n <= BOT_MAX_MATCH; n++)
+        UI_BotLabel(n);
+}
+
+// every installed skin a bot may wear, as "model/skin"
+static int UI_BotSkins(char (*out)[MAX_QPATH], int max)
+{
+    int i, j, n = 0;
+
+    if (!uis.numPlayerModels)
+        PlayerModel_Load();
+
+    for (i = 0; i < uis.numPlayerModels; i++) {
+        const playerModelInfo_t *pmi = &uis.pmi[i];
+
+        for (j = 0; j < pmi->nskins && n < max; j++) {
+            Q_concat(out[n], MAX_QPATH, pmi->directory, "/", pmi->skindisplaynames[j]);
+            if (Bot_SkinUsable(out[n]))
+                n++;
+        }
+    }
+
+    return n;
+}
+
+// any installed skin, stock or not - what the bot picker can set
+static bool UI_BotSkinInstalled(const char *value)
+{
+    const char  *s = strchr(value, '/');
+    int         i, j;
+
+    if (!s)
+        return false;
+
+    for (i = 0; i < uis.numPlayerModels; i++) {
+        const playerModelInfo_t *pmi = &uis.pmi[i];
+
+        if (Q_strncasecmp(pmi->directory, value, s - value) || pmi->directory[s - value])
+            continue;
+        for (j = 0; j < pmi->nskins; j++)
+            if (!Q_stricmp(pmi->skindisplaynames[j], s + 1))
+                return true;
+    }
+
+    return false;
+}
+
+static void UI_BotLineup_f(void)
+{
+    static char skins[UI_MAX_BOT_SKINS][MAX_QPATH];
+    bool        used[UI_MAX_BOT_SKINS] = { false };
+    bool        keep[BOT_MAX_MATCH + 1] = { false };
+    bool        shuffle = !Q_stricmp(Cmd_Argv(1), "shuffle");
+    int         count = UI_BotSkins(skins, UI_MAX_BOT_SKINS);
+    int         i, k, start, tries, left = count;
+
+    // keep what was rolled or picked, where this game has it
+    if (!shuffle && ui_lineup_rolled) {
+        for (i = 1; i <= BOT_MAX_MATCH; i++) {
+            cvar_t *var = Cvar_Get(va("bot_skin%d", i), "random", 0);
+
+            if (!UI_BotSkinInstalled(var->string))
+                continue;
+            keep[i] = true;
+            for (k = 0; k < count; k++) {
+                if (!Q_stricmp(var->string, skins[k])) {
+                    if (!used[k])
+                        left--;
+                    used[k] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (i = 1; i <= BOT_MAX_MATCH; i++) {
+        cvar_t *var = Cvar_Get(va("bot_skin%d", i), "random", 0);
+
+        if (!keep[i]) {
+            if (!count) {
+                Cvar_SetByVar(var, "random", FROM_CODE);
+            } else {
+                // a skin nobody has yet, while there are any
+                if (!left) {
+                    memset(used, 0, sizeof(used));
+                    left = count;
+                }
+                start = k = Q_rand_uniform(count);
+                for (tries = 0; tries < count; tries++) {
+                    k = (start + tries) % count;
+                    if (!used[k])
+                        break;
+                }
+                used[k] = true;
+                left--;
+                Cvar_SetByVar(var, skins[k], FROM_CODE);
+            }
+        }
+        UI_BotSkinChanged(var);
+    }
+
+    ui_lineup_rolled = true;
+
+    // capture the flag is the rerelease's: its maps and media are in its pak
+    if (Cvar_VariableInteger("bot_mode") == 2 && Cvar_VariableInteger("fs_rerelease") != 1)
+        Cvar_Set("bot_mode", "0");
+}
+
+/*
+=================
+UI_BotInit
+
+The Bot Match menu's settings, which the game reads when the match starts.
+How many bots and each one's skill are archived; the line-up is not, so
+each session starts with new faces.
+=================
+*/
+static void UI_BotInit(void)
+{
+    cvar_t  *mode;
+    int     i;
+
+    // the game mode: 0 deathmatch, 1 team deathmatch, 2 capture the flag
+    // (rerelease only). The start action turns it into teamplay and ctf.
+    mode = Cvar_Get("bot_mode", "0", CVAR_ARCHIVE);
+    mode->changed = UI_BotModeChanged;
+
+    // sides in a team game: 0 auto - the default, the game evens the teams
+    // out - 1 red, 2 blue. Yours is kept; the bots' go with this session's
+    // line-up, so they start each session on auto.
+    Cvar_Get("bot_player_team", "0", CVAR_ARCHIVE);
+
+    Cvar_Get("bot_count", "3", CVAR_ARCHIVE);
+    for (i = 1; i <= BOT_MAX_MATCH; i++) {
+        cvar_t *skin = Cvar_Get(va("bot_skin%d", i), "random", 0);
+        cvar_t *team = Cvar_Get(va("bot_team%d", i), "0", 0);
+
+        Cvar_Get(va("bot_skill%d", i), "2", CVAR_ARCHIVE);
+        Cvar_Get(va("_ui_botname%d", i), "", 0);
+        Cvar_Get(va("_ui_botlabel%d", i), "", 0);
+        skin->changed = UI_BotSkinChanged;
+        team->changed = UI_BotTeamChanged;
+        UI_BotSkinChanged(skin);
+    }
+
+    // the map for each set of maps the menu offers
+    Cvar_Get("bot_map_q2", "q2dm1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_mg", "mgdm1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_xdm", "xdm1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_rdm", "rdm1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_q64", "q64/dm1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_any", "q2dm1", CVAR_ARCHIVE);
+    Cvar_Get("bot_map_ctf", "q2ctf1", CVAR_ARCHIVE);
+    // which of those the menu shows: a number, as the menu's ifeq compares
+    // numbers - 0 quake ii, 1 call of the machine, 2 the reckoning,
+    // 3 ground zero, 4 quake ii 64, 5 any map
+    Cvar_Get("_ui_botpack", "0", 0);
+
+    // the game's own, registered here too so the menu has a value to show
+    // before any game has run
+    Cvar_Get("teamplay", "0", 0);
+    Cvar_Get("capturelimit", "8", CVAR_ARCHIVE);
+}
+
+static void UI_BotShutdown(void)
+{
+    cvar_t  *var;
+    int     i;
+
+    for (i = 1; i <= BOT_MAX_MATCH; i++) {
+        if ((var = Cvar_FindVar(va("bot_skin%d", i))) != NULL)
+            var->changed = NULL;
+        if ((var = Cvar_FindVar(va("bot_team%d", i))) != NULL)
+            var->changed = NULL;
+    }
+    if ((var = Cvar_FindVar("bot_mode")) != NULL)
+        var->changed = NULL;
 }
 
 
@@ -659,11 +900,15 @@ void UI_Init(void)
 
     strcpy(uis.weaponModel, "w_railgun.md2");
 
+    // bot match settings, which the menus use
+    UI_BotInit();
+
     // load custom menus
     UI_LoadScript();
 
     // load built-in menus
     M_Menu_PlayerConfig();
+    M_Menu_BotPick();
     M_Menu_Servers();
     M_Menu_Demos();
 
@@ -685,6 +930,7 @@ void UI_Shutdown(void)
     UI_ForceMenuOff();
 
     ui_scale->changed = NULL;
+    UI_BotShutdown();
 
     PlayerModel_Free();
 

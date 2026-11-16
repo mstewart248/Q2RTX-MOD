@@ -397,6 +397,9 @@ void Think_Weapon(edict_t *ent)
             (deathmatch->value || damage_multiplier == 1))
             damage_multiplier *= 2;
         is_quadfire = (ent->client->quadfire_framenum > level.framenum);
+        // CTF's Time Accel: the weapon thinks twice, as the quadfire does
+        if (CTF_HasHaste(ent))
+            is_quadfire = true;
         if (ent->client->silencer_shots)
             is_silenced = MZ_SILENCED;
         else

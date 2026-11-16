@@ -521,6 +521,7 @@ static void SpinControl_Free(menuSpinControl_t *s)
 
     Z_Free(s->generic.name);
     Z_Free(s->generic.status);
+    Z_Free(s->cmd);
     for (i = 0; i < s->numItems; i++) {
         Z_Free(s->itemnames[i]);
     }
@@ -528,6 +529,26 @@ static void SpinControl_Free(menuSpinControl_t *s)
     Z_Free(s);
 }
 
+
+/*
+A spin control labelled "$name" shows the value of cvar `name` as its label,
+so a row can be named by what it stands for (the Bot Match page names each
+bot's row after the bot). The script keeps a quoted "$name" as it is.
+*/
+static const char *SpinControl_Label(const menuSpinControl_t *s)
+{
+    const char *name = s->generic.name;
+
+    if (name && name[0] == '$' && name[1]) {
+        cvar_t *var = Cvar_FindVar(name + 1);
+
+        if (var && !(var->flags & CVAR_PRIVATE))
+            return var->string;
+        return "";
+    }
+
+    return name;
+}
 
 /*
 =================
@@ -545,7 +566,7 @@ void SpinControl_Init(menuSpinControl_t *s)
     s->generic.rect.y = s->generic.y;
 
     UI_StringDimensions(&s->generic.rect,
-                        s->generic.uiFlags | UI_RIGHT, s->generic.name);
+                        s->generic.uiFlags | UI_RIGHT, SpinControl_Label(s));
 
     maxLength = 0;
     s->numItems = 0;
@@ -621,7 +642,7 @@ static void SpinControl_Draw(menuSpinControl_t *s)
     char *name;
 
     UI_DrawString(s->generic.x + LCOLUMN_OFFSET, s->generic.y,
-                  s->generic.uiFlags | UI_RIGHT | UI_ALTCOLOR, s->generic.name);
+                  s->generic.uiFlags | UI_RIGHT | UI_ALTCOLOR, SpinControl_Label(s));
 
     if (s->generic.flags & QMF_HASFOCUS) {
         if ((uis.realtime >> 8) & 1) {
@@ -2628,9 +2649,17 @@ menuSound_t Menu_SelectItem(menuFrameWork_t *s)
     switch (item->type) {
     //case MTYPE_SLIDER:
     //    return Slider_DoSlide((menuSlider_t *)item, 1);
+    case MTYPE_PAIRS:
+        // a row that opens something: Enter runs its command, the arrows and
+        // the wheel still step its value
+        if (((menuSpinControl_t *)item)->cmd) {
+            Cbuf_AddText(&cmd_buffer, ((menuSpinControl_t *)item)->cmd);
+            Cbuf_AddText(&cmd_buffer, "\n");
+            return QMS_IN;
+        }
+        // fall through
     case MTYPE_SPINCONTROL:
     case MTYPE_BITFIELD:
-    case MTYPE_PAIRS:
     case MTYPE_VALUES:
     case MTYPE_STRINGS:
     case MTYPE_TOGGLE:

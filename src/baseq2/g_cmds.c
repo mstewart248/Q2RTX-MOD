@@ -48,6 +48,14 @@ bool OnSameTeam(edict_t *ent1, edict_t *ent2)
     char    ent1Team [512];
     char    ent2Team [512];
 
+    // team deathmatch: red and blue (g_bot.c)
+    if (G_TeamPlay()) {
+        if (!ent1->client || !ent2->client)
+            return false;
+        return ent1->client->resp.team != TEAM_NONE &&
+               ent1->client->resp.team == ent2->client->resp.team;
+    }
+
     if (!((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))
         return false;
 
@@ -268,7 +276,7 @@ void Cmd_Give_f(edict_t *ent)
             it = itemlist + i;
             if (!it->pickup)
                 continue;
-            if (it->flags & (IT_ARMOR | IT_WEAPON | IT_AMMO))
+            if (it->flags & (IT_ARMOR | IT_WEAPON | IT_AMMO | IT_CTF))
                 continue;
             ent->client->pers.inventory[i] = 1;
         }
@@ -1371,6 +1379,8 @@ void ClientCommand(edict_t *ent)
         Cmd_PutAway_f(ent);
     else if (Q_stricmp(cmd, "wave") == 0)
         Cmd_Wave_f(ent);
+    else if (Q_stricmp(cmd, "team") == 0)
+        Team_Command(ent);
     else if (Q_stricmp(cmd, "playerlist") == 0)
         Cmd_PlayerList_f(ent);
     else    // anything that doesn't match a command will be a chat

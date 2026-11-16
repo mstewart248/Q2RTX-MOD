@@ -1364,6 +1364,23 @@ void SpawnItem(edict_t *ent, gitem_t *item)
         item->drop = NULL;
     }
 
+    // CTF's flags and techs: only in a CTF game, and a flag stands rather
+    // than falls (g_ctf.c)
+    if (item->flags & IT_CTF) {
+        if (!G_CTF()) {
+            G_FreeEdict(ent);
+            return;
+        }
+        if (item->pickup == CTFPickup_Flag) {
+            ent->item = item;
+            ent->nextthink = level.framenum + 2;
+            ent->think = CTF_FlagSetup;
+            ent->s.effects = item->world_model_flags;
+            ent->s.renderfx = RF_GLOW;
+            return;
+        }
+    }
+
     ent->item = item;
     ent->nextthink = level.framenum + 2;    // items start after other solids
     ent->think = droptofloor;
@@ -3194,6 +3211,167 @@ gitem_t itemlist[] = {
         NULL,
         0,
         /* precache */ "items/s_health.wav items/n_health.wav items/l_health.wav items/m_health.wav"
+    },
+
+    //
+    // CTF (g_ctf.c): the two flags, the four techs and the hook. Last, so
+    // every item before them keeps its index.
+    //
+
+    /*QUAKED item_flag_team1 (1 0.2 0) (-16 -16 -24) (16 16 32)
+    */
+    {
+        "item_flag_team1",
+        CTFPickup_Flag,
+        NULL,
+        CTFDrop_Flag,
+        NULL,
+        "ctf/flagtk.wav",
+        "players/male/flag1.md2", EF_FLAG1,
+        NULL,
+        /* icon */      "i_ctf1",
+        /* pickup */    "Red Flag",
+        /* width */     2,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ "ctf/flagcap.wav"
+    },
+
+    /*QUAKED item_flag_team2 (1 0.2 0) (-16 -16 -24) (16 16 32)
+    */
+    {
+        "item_flag_team2",
+        CTFPickup_Flag,
+        NULL,
+        CTFDrop_Flag,
+        NULL,
+        "ctf/flagtk.wav",
+        "players/male/flag2.md2", EF_FLAG2,
+        NULL,
+        /* icon */      "i_ctf2",
+        /* pickup */    "Blue Flag",
+        /* width */     2,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ "ctf/flagcap.wav"
+    },
+
+    // Resistance Tech
+    {
+        "item_tech1",
+        CTFPickup_Tech,
+        NULL,
+        CTFDrop_Tech,
+        NULL,
+        "items/pkup.wav",
+        "models/ctf/resistance/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "tech1",
+        /* pickup */    "Disruptor Shield",
+        /* width */     2,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ "ctf/tech1.wav"
+    },
+
+    // Strength Tech
+    {
+        "item_tech2",
+        CTFPickup_Tech,
+        NULL,
+        CTFDrop_Tech,
+        NULL,
+        "items/pkup.wav",
+        "models/ctf/strength/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "tech2",
+        /* pickup */    "Power Amplifier",
+        /* width */     2,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ "ctf/tech2.wav ctf/tech2x.wav"
+    },
+
+    // Haste Tech
+    {
+        "item_tech3",
+        CTFPickup_Tech,
+        NULL,
+        CTFDrop_Tech,
+        NULL,
+        "items/pkup.wav",
+        "models/ctf/haste/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "tech3",
+        /* pickup */    "Time Accel",
+        /* width */     2,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ "ctf/tech3.wav"
+    },
+
+    // Regeneration Tech
+    {
+        "item_tech4",
+        CTFPickup_Tech,
+        NULL,
+        CTFDrop_Tech,
+        NULL,
+        "items/pkup.wav",
+        "models/ctf/regeneration/tris.md2", EF_ROTATE,
+        NULL,
+        /* icon */      "tech4",
+        /* pickup */    "AutoDoc",
+        /* width */     2,
+        0,
+        NULL,
+        IT_CTF,
+        0,
+        NULL,
+        0,
+        /* precache */ "ctf/tech4.wav"
+    },
+
+    // the grappling hook: everyone has one in CTF (CTF_GivePersistant)
+    {
+        "weapon_grapple",
+        NULL,
+        Use_Weapon,
+        NULL,
+        CTFWeapon_Grapple,
+        "misc/w_pkup.wav",
+        NULL, 0,
+        "models/weapons/grapple/tris.md2",
+        /* icon */      "w_grapple",
+        /* pickup */    "Grapple",
+        0,
+        0,
+        NULL,
+        IT_WEAPON,
+        WEAP_GRAPPLE,
+        NULL,
+        0,
+        /* precache */ "weapons/grapple/grfire.wav weapons/grapple/grpull.wav weapons/grapple/grhang.wav weapons/grapple/grreset.wav weapons/grapple/grhit.wav weapons/grapple/grfly.wav"
     },
 
     // end of list marker

@@ -161,6 +161,7 @@ static void Parse_Spin(menuFrameWork_t *menu, menuType_t type)
 static const cmd_option_t o_pairs[] = {
     { "s:", "status" },
     { "l", "live" },
+    { "c:", "command" },
     { NULL }
 };
 static void Parse_Pairs(menuFrameWork_t *menu)
@@ -168,6 +169,7 @@ static void Parse_Pairs(menuFrameWork_t *menu)
     menuSpinControl_t *s;
     int c, i, numItems;
     char *status = NULL;
+    char *command = NULL;
     bool live = false;
 
     while ((c = Cmd_ParseOptions(o_pairs)) != -1) {
@@ -177,6 +179,9 @@ static void Parse_Pairs(menuFrameWork_t *menu)
             break;
         case 'l':
             live = true;
+            break;
+        case 'c':
+            command = cmd_optarg;
             break;
         default:
             return;
@@ -193,6 +198,7 @@ static void Parse_Pairs(menuFrameWork_t *menu)
     s->generic.type = MTYPE_PAIRS;
     s->generic.name = UI_CopyString(Cmd_Argv(cmd_optind));
     s->generic.status = UI_CopyString(status);
+    s->cmd = UI_CopyString(command);
     s->cvar = Cvar_WeakGet(Cmd_Argv(cmd_optind + 1));
     numItems /= 2;
     s->itemnames = UI_Mallocz(sizeof(char *) * (numItems + 1));

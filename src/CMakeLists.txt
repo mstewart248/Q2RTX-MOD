@@ -31,6 +31,8 @@ SET(SRC_BASEQ2
 	baseq2/g_sphere.c
 	baseq2/g_rogue_items.c
 	baseq2/g_nav.c
+	baseq2/g_bot.c
+	baseq2/g_ctf.c
 	baseq2/g_xatrix.c
 	baseq2/g_weapon.c
 	baseq2/m_actor.c

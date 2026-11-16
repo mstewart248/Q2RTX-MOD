@@ -738,7 +738,7 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
     // friendly fire avoidance
     // if enabled you can't hurt teammates (but you can hurt yourself)
     // knockback still occurs
-    if ((targ != attacker) && ((deathmatch->value && ((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS))) || (coop->value && targ->client))) {
+    if ((targ != attacker) && ((deathmatch->value && (G_TeamPlay() || ((int)(dmflags->value) & (DF_MODELTEAMS | DF_SKINTEAMS)))) || (coop->value && targ->client))) {
         if (OnSameTeam(targ, attacker)) {
             if ((int)(dmflags->value) & DF_NO_FRIENDLY_FIRE)
                 damage = 0;
@@ -756,6 +756,14 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
         damage /= 2;
         if (!damage)
             damage = 1;
+    }
+
+    // CTF's Power Amplifier and Disruptor Shield
+    if (G_CTF()) {
+        if (attacker && attacker->client)
+            damage = CTF_ApplyStrength(attacker, damage);
+        if (client)
+            damage = CTF_ApplyResistance(targ, damage);
     }
 
     if (dflags & DAMAGE_BULLET)
@@ -1007,6 +1015,11 @@ void T_Damage(edict_t *targ, edict_t *inflictor, edict_t *attacker, const vec3_t
         client->damage_blood += take;
         client->damage_knockback += knockback;
         VectorCopy(point, client->damage_from);
+
+        // a bot turns on whoever shot it
+        if (take || psave || asave)
+            Bot_Damaged(targ, attacker);
+        CTF_CheckHurtCarrier(targ, attacker);
 
         // [rerelease] where it came from, for the directional damage
         // indicators: hits close together are one source. A direct hit

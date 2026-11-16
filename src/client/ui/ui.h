@@ -282,6 +282,8 @@ typedef struct menuSpinControl_s {
 
     int         mask;
     bool        negate;
+
+    char        *cmd;   // `pairs --command`: Enter or a click runs it instead of stepping
 } menuSpinControl_t;
 
 typedef struct menuAction_s {
@@ -414,6 +416,7 @@ void        Menu_Pop(menuFrameWork_t *menu);
 void        Menu_Free(menuFrameWork_t *menu);
 
 void M_Menu_PlayerConfig(void);
+void M_Menu_BotPick(void);
 void M_Menu_Demos(void);
 void M_Menu_Servers(void);
 

@@ -298,6 +298,8 @@ void    ServerCommand(void)
         SVCmd_ListIP_f();
     else if (Q_stricmp(cmd, "writeip") == 0)
         SVCmd_WriteIP_f();
+    else if (Bot_ServerCommand(cmd))
+        ;   // addbot, removebot, listbots
     else
         gi.cprintf(NULL, PRINT_HIGH, "Unknown server command \"%s\"\n", cmd);
 }

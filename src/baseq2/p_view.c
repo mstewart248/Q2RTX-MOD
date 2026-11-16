@@ -852,6 +852,9 @@ void G_SetClientEffects(edict_t *ent)
         ent->s.effects |= EF_COLOR_SHELL;
         ent->s.renderfx |= (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE);
     }
+
+    // CTF: the flag's glow, and the flag on the carrier's back
+    CTF_ClientEffects(ent);
 }
 
 
@@ -1125,6 +1128,7 @@ void ClientEndServerFrame(edict_t *ent)
     G_SetClientEvent(ent);
 
     G_SetClientEffects(ent);
+    CTF_ClientFrame(ent);   // the AutoDoc tech
 
     G_SetClientSound(ent);
 

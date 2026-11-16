@@ -232,6 +232,8 @@ static const spawn_func_t spawn_funcs[] = {
     {"info_player_start", SP_info_player_start},
     {"info_player_deathmatch", SP_info_player_deathmatch},
     {"info_player_coop", SP_info_player_coop},
+    {"info_player_team1", SP_info_player_team1},
+    {"info_player_team2", SP_info_player_team2},
     {"info_player_intermission", SP_info_player_intermission},
     {"info_teleport_destination", SP_info_teleport_destination},
 
@@ -1397,6 +1399,11 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
     // runtime spawns (medic/carrier summons, target_spawner, resurrection) go
     // through ED_CallSpawn too, and must not see the last map entity's keys
     memset(&st, 0, sizeof(st));
+
+    // bots rejoin the new level, and a bot match adds its own (g_bot.c).
+    // Last, so a navmesh built for them sees every item and teleporter.
+    CTF_LevelStart();
+    Bot_LevelStart();
 }
 
 
@@ -1648,7 +1655,9 @@ void SP_worldspawn(edict_t *ent)
     gi.configstring(CS_GAME_ID, GAME_ID_STRING);
 
     // status bar program
-    if (deathmatch->value)
+    if (G_CTF())
+        gi.configstring(CS_STATUSBAR, CTF_StatusBar(dm_statusbar));
+    else if (deathmatch->value)
         gi.configstring(CS_STATUSBAR, dm_statusbar);
     else
         gi.configstring(CS_STATUSBAR, single_statusbar);
@@ -1743,6 +1752,9 @@ void SP_worldspawn(edict_t *ent)
     gi.modelindex("#w_plasma.md2");         // WEAP_PLASMA (17)
     gi.modelindex("#w_etfrifle.md2");       // WEAP_ETFRIFLE (18)
     gi.modelindex("#w_plauncher.md2");      // WEAP_PROXLAUNCHER (19)
+    // WEAP_GRAPPLE (20), the last slot: CTF_Precache, in a CTF game only
+    if (G_CTF())
+        CTF_Precache();
 
     //-------------------
 

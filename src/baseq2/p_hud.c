@@ -439,6 +439,61 @@ void DeathmatchScoreboardMessage(edict_t *ent, edict_t *killer)
 
     stringlength = strlen(string);
 
+    /*
+    Team deathmatch, or more players than the big blocks fit (a bot match
+    runs to sixteen): one line each - score, ping, name - in two columns. In
+    team play the columns are the teams, under their totals.
+    */
+    if (G_TeamPlay() || total > 12) {
+        int rows[2] = { 0, 0 };
+
+        if (G_CTF()) {
+            // captures first, the team's frags under them
+            Q_snprintf(entry, sizeof(entry),
+                       "xv 0 yv 0 string2 \"Red  %d caps\" xv 160 yv 0 string2 \"Blue %d caps\" "
+                       "xv 0 yv 8 string \"%d points\" xv 160 yv 8 string \"%d points\" "
+                       "xv 0 yv 20 string \"Scr Png Name\" xv 160 yv 20 string \"Scr Png Name\" ",
+                       CTF_Caps(TEAM_RED), CTF_Caps(TEAM_BLUE), Team_Score(TEAM_RED), Team_Score(TEAM_BLUE));
+        } else if (G_TeamPlay()) {
+            Q_snprintf(entry, sizeof(entry),
+                       "xv 0 yv 8 string2 \"Red   %d\" xv 160 yv 8 string2 \"Blue  %d\" "
+                       "xv 0 yv 20 string \"Scr Png Name\" xv 160 yv 20 string \"Scr Png Name\" ",
+                       Team_Score(TEAM_RED), Team_Score(TEAM_BLUE));
+        } else {
+            Q_snprintf(entry, sizeof(entry),
+                       "xv 0 yv 20 string \"Scr Png Name\" xv 160 yv 20 string \"Scr Png Name\" ");
+        }
+        j = strlen(entry);
+        if (stringlength + j < 1024) {
+            strcpy(string + stringlength, entry);
+            stringlength += j;
+        }
+
+        for (i = 0 ; i < total ; i++) {
+            int col;
+
+            cl = &game.clients[sorted[i]];
+            if (G_TeamPlay())
+                col = cl->resp.team == TEAM_BLUE ? 1 : 0;
+            else
+                col = i < (total + 1) / 2 ? 0 : 1;
+            if (rows[col] >= 16)
+                continue;
+
+            Q_snprintf(entry, sizeof(entry), "ctf %i %i %i %i %i ",
+                       col * 160, 32 + 8 * rows[col]++, sorted[i], cl->resp.score, cl->ping);
+            j = strlen(entry);
+            if (stringlength + j > 1024)
+                break;
+            strcpy(string + stringlength, entry);
+            stringlength += j;
+        }
+
+        gi.WriteByte(svc_layout);
+        gi.WriteString(string);
+        return;
+    }
+
     // add the clients in sorted order
     if (total > 12)
         total = 12;
@@ -943,6 +998,8 @@ void G_SetStats(edict_t *ent)
         ent->client->ps.stats[STAT_HIT_MARKER] = min(ent->client->hit_marker_damage, 0x7fff);
     }
     ent->client->hit_marker_damage = 0;
+
+    CTF_SetStats(ent);
 }
 
 /*

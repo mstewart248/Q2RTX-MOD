@@ -2505,6 +2505,9 @@ void teleporter_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t
         return;
     }
 
+    // CTF: the hook stays behind
+    CTF_PlayerResetGrapple(other);
+
     // unlink to make sure it can't possibly interfere with KillBox
     gi.unlinkentity(other);
 

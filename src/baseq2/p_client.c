@@ -599,6 +599,7 @@ void player_die(edict_t *self, edict_t *inflictor, edict_t *attacker, int damage
         LookAtKiller(self, inflictor, attacker);
         self->client->ps.pmove.pm_type = PM_DEAD;
         ClientObituary(self, inflictor, attacker);
+        CTF_PlayerDied(self, attacker);    // drops the flag and tech, before the inventory goes
         TossClientWeapon(self);
         if (deathmatch->value)
             Cmd_Help_f(self);       // show scores
@@ -797,6 +798,9 @@ void InitClientPersistant(gclient_t *client)
             client->pers.inventory[ITEM_INDEX(item_compass)] = 1;
     }
 
+    // CTF: the grappling hook
+    CTF_GivePersistant(client);
+
     client->pers.health         = 100;
     client->pers.max_health     = 100;
 
@@ -832,9 +836,12 @@ void InitClientPersistant(gclient_t *client)
 
 void InitClientResp(gclient_t *client)
 {
+    int team = client->resp.team;   // teamplay: kept, see client_respawn_t
+
     memset(&client->resp, 0, sizeof(client->resp));
     client->resp.enterframe = level.framenum;
     client->resp.coop_respawn = client->pers;
+    client->resp.team = team;
 }
 
 /*
@@ -1063,7 +1070,11 @@ void    SelectSpawnPoint(edict_t *ent, vec3_t origin, vec3_t angles)
 {
     edict_t *spot = NULL;
 
-    if (deathmatch->value)
+    if (G_CTF())
+        spot = CTF_SpawnPoint(ent);
+    if (spot)
+        ;
+    else if (deathmatch->value)
         spot = SelectDeathmatchSpawnPoint();
     else if (coop->value)
         spot = SelectCoopSpawnPoint(ent);
@@ -1335,6 +1346,8 @@ void PutClientInServer(edict_t *ent)
     // level load, so forget what we think it already has
     G_ResetInventoryTracking(ent);
 
+    CTF_PlayerResetGrapple(ent);
+
     // find a spawn point
     // do it before setting health back up, so farthest
     // ranging doesn't count this client
@@ -1492,6 +1505,9 @@ void ClientBeginDeathmatch(edict_t *ent)
 
     InitClientResp(ent->client);
 
+    // teamplay: onto the smaller team, before the skin is set below
+    Team_Assign(ent);
+
     // locate ent at a spawn point
     PutClientInServer(ent);
 
@@ -1619,8 +1635,8 @@ void ClientUserinfoChanged(edict_t *ent, char *userinfo)
     else
         ent->client->pers.spectator = false;
 
-    // set skin
-    s = Info_ValueForKey(userinfo, "skin");
+    // set skin; in team play, the team's (the userinfo keeps theirs)
+    s = (char *)Team_Skin(ent, Info_ValueForKey(userinfo, "skin"));
 
     playernum = ent - g_edicts - 1;
 
@@ -1704,13 +1720,16 @@ qboolean ClientConnect(edict_t *ent, char *userinfo)
     }
 
 
-    // they can connect
+    // they can connect - into a bot's slot, if that is the one the server
+    // gave them: the bot makes way
+    Bot_ClientConnecting(ent);
     ent->client = game.clients + (ent - g_edicts - 1);
 
     // if there is already a body waiting for us (a loadgame), just
     // take it, otherwise spawn one from scratch
     if (ent->inuse == false) {
-        // clear the respawning variables
+        // clear the respawning variables; a new connection starts teamless
+        ent->client->resp.team = TEAM_NONE;
         InitClientResp(ent->client);
         if (!game.autosaved || !ent->client->pers.weapon)
             InitClientPersistant(ent->client);
@@ -1742,6 +1761,9 @@ void ClientDisconnect(edict_t *ent)
         return;
 
     gi.bprintf(PRINT_HIGH, "%s disconnected\n", ent->client->pers.netname);
+
+    // a flag or tech they held goes back in play
+    CTF_PlayerLeft(ent);
 
     // send effect
     if (ent->inuse) {
@@ -1853,6 +1875,9 @@ void ClientThink(edict_t *ent, usercmd_t *ucmd)
     }
 
     pm_passent = ent;
+
+    // CTF: the hook pulls before the move
+    CTF_ClientThink(ent);
 
     if (ent->client->chase_target) {
 

@@ -263,6 +263,10 @@ void InitGame(void)
     game.maxclients = maxclients->value;
     game.clients = gi.TagMalloc(game.maxclients * sizeof(game.clients[0]), TAG_GAME);
     globals.num_edicts = game.maxclients + 1;
+
+    // bot match and team deathmatch (g_bot.c); needs game.maxclients
+    CTF_Init();
+    Bot_Init();
 }
 
 
@@ -277,6 +281,9 @@ and global variables
 q_exported game_export_t *GetGameAPI(game_import_t *import)
 {
     gi = *import;
+
+    // bots have no connection for these to reach - see g_bot.c
+    Bot_WrapImports();
 
     globals.apiversion = GAME_API_VERSION;
     globals.Init = InitGame;
@@ -503,6 +510,21 @@ void CheckDMRules(void)
         }
     }
 
+    // CTF ends on captures, not frags
+    if (G_CTF()) {
+        if (CTF_CheckRules())
+            EndDMLevel();
+        return;
+    }
+
+    if (fraglimit->value && G_TeamPlay()) {
+        if (Team_Score(TEAM_RED) >= fraglimit->value || Team_Score(TEAM_BLUE) >= fraglimit->value) {
+            gi.bprintf(PRINT_HIGH, "Fraglimit hit.\n");
+            EndDMLevel();
+        }
+        return;
+    }
+
     if (fraglimit->value) {
         for (i = 0 ; i < maxclients->value ; i++) {
             cl = game.clients + i;
@@ -654,6 +676,9 @@ void G_RunFrame(void)
             ent->old_origin_framenum = level.framenum;
         }
     }
+
+    // bots move now, as a player's own commands arrive before the frame
+    Bot_RunFrame();
 
     //
     // treat each object in turn

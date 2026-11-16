@@ -86,6 +86,9 @@ existing Quake II RTX install.
   *Ground Zero* and *The Reckoning* play from the same game library. See
   [Playing the rerelease campaign](#playing-the-rerelease-campaign).
 * **[Remaster demos](#demo-playback)** play alongside classic `.dm2` files.
+* **[Bot match](#bot-match)**: deathmatch, team deathmatch or capture the flag
+  against up to 15 bots, each with its own skill and its own pick of model and
+  skin, on any deathmatch map, classic or remaster.
 * **[Physical blood and gore](#gore-and-physical-blood)**: droplets are real,
   lit geometry that splats, runs down walls and pools.
 * **[Simulated fire and smoke](#simulated-fire-and-smoke-nvidia-flow)** with
@@ -700,6 +703,98 @@ The startup attract loop plays the id logo, then `demo1`, then the rest in
 random order as the remaster does (`cl_attract_random 0` keeps list order);
 `demo <file>` plays one directly, and [photo mode](#photo-mode) works during
 playback, so the free camera can be flown around a paused demo.
+
+## Bot match
+
+**Single player** now asks for the game first: *Quake II* and **bot match** in
+the classic game, and *Quake II*, *Call of the Machine*, *The Reckoning*,
+*Ground Zero*, *Quake II 64* and **bot match** with the remaster. A campaign
+then asks for the difficulty; a bot match opens its own page instead:
+
+* **Game mode**: deathmatch; **team deathmatch** (`teamplay 1`): red against
+  blue, everyone in their team's uniform, team scores on the scoreboard, and
+  friendly fire on or off; or, with the remaster, **capture the flag** (below).
+* **Teams**: in a team game, **teams...** sets which side you and each bot
+  play on — red, blue, or **auto**, the default, which leaves it to the game:
+  as the match starts it puts everyone on auto, you included, onto whichever
+  side is short, so the teams come out even around any picks you made.
+  **Even teams** puts everyone back on auto. A bot's row on the page shows its
+  side once you give it one.
+* **Maps**: the deathmatch maps of each set (the remaster's *The Edge* through
+  *Overflow*, by their real names), or **any map** the game can find. Capture
+  the flag has its own: the remaster's eight CTF maps, *McKinley Revival*
+  through *Nexus CTF*.
+* **Frag and time limits** (a **capture limit** in place of the frag limit for
+  capture the flag), and the usual deathmatch flags.
+* **1 to 15 bots**, each in a random skin from the ones id ships for the male,
+  female and cyborg models (28, plus the remaster's Deaddude and three Insane
+  skins), and named after it — `male/grunt` plays as Grunt. Custom models and
+  skins downloaded from servers are left out.
+  Each session starts with a new line-up, and **shuffle bots** rolls another.
+  Each bot has its own skill: practice, easy, medium, hard, expert or nightmare.
+* **Pick a bot**: Enter on a bot's row opens the bot picker, which shows it the
+  way *Player setup* shows you — turning, animated, lit — while you step
+  through every installed model and skin, custom ones included; the bot takes
+  that skin's name. Left and right on the row still set its skill. In a team
+  game it plays in its team's uniform whatever you pick; the skin gives it its
+  name.
+
+### Capture the flag
+
+`ctf 1` in a deathmatch game (the bot match page sets it) plays id's Threewave
+CTF the way the remaster does, carried over from its source
+(`src/rerelease/ctf/g_ctf.cpp`):
+
+* **Flags**: take theirs from its stand and touch yours, on its stand, to
+  capture. A carrier who dies drops it; the other team touches a dropped flag to
+  take it, its own team to send it home, and an untouched one goes home on its
+  own after 30 seconds. The carrier glows in the flag's colour and wears it on
+  their back.
+* **Scoring**: 15 for a capture and 10 to the rest of the team, and the
+  remaster's bonuses — for returning the flag, fragging their carrier, defending
+  your flag or your carrier, and the assists that lead to a capture.
+* **Team spawns** at each team's base. Everyone wears their team's red or
+  blue uniform: the remaster has them for the male, female and cyborg models,
+  and a custom model without one plays as a male in the uniform.
+* **Techs**: the *Disruptor Shield* (half damage), *Power Amplifier* (double
+  damage), *Time Accel* (fires twice as fast) and *AutoDoc* (health and armour
+  back up to 150). One at a time; they appear around the map, and one nobody
+  takes moves after a minute.
+* **Grappling hook**: everyone has one. Hold fire to throw it and be pulled to
+  where it lands; let go to drop off.
+* **HUD**: each team's flag — home, taken, or dropped — and captures, your
+  team, the flag you carry and your tech; captures on the scoreboard.
+
+Bots play it too. Every third bot on a team defends its flag; the rest arm
+themselves and go for the enemy flag, then run it home. Any bot near its own
+dropped flag returns it; when the other team has the flag, the defenders and
+any attacker nearby hunt the carrier, and a carrier is the first thing a bot
+shoots at. Bots take techs but don't use the grappling hook.
+
+The match mode, voting and admin menus of id's CTF are not carried over. CTF
+needs the remaster's maps and media, so the classic game doesn't offer it.
+
+The remaster's source ships the hooks for its bots but not the bots — they
+lived in the closed KEX engine — so these are written here, against the data
+it does ship: the six skill levels (`bots/settings_PC.txt`: aim speed and
+smoothing, reaction time, field of view, hearing, how far they lead a target,
+when they go for health and armour), the weapon ranges and priorities
+(`bots/weapons.txt`), and the navigation meshes of every deathmatch map. A map
+without a mesh — every map in the classic game, and any custom map — gets one
+built as it loads.
+
+Bots are real players to the game: they run, jump, ride lifts, take
+teleporters, swim, pick up items, fight at their weapon's best range, dodge
+rockets and grenades, and respawn. In any deathmatch game, from the console:
+
+| Command | |
+|---|---|
+| `sv addbot [skin] [skill] [red\|blue]` | add a bot: a skin's name (`grunt`), any `model/skin`, or `random`; skill 0–5 or its name |
+| `sv removebot <name\|all>` | remove one, or all |
+| `sv listbots` | who is playing |
+| `team [red\|blue]` | show or change your team in team deathmatch or CTF |
+
+`bot_debug 1` prints each bot's goal, route and target once a second.
 
 ## Gore and physical blood
 
