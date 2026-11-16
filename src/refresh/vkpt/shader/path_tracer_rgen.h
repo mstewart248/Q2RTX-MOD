@@ -2012,27 +2012,35 @@ get_material(
 
 	/* BLOOD ON THE BODY (cl_blood_skin, blood_skin.c): what droplets left on this
 	   monster or item, in its texture space - so it follows the animation for free.
-	   A thin smear tints the skin; where it is soaked, the skin IS blood: its colour
-	   darkened as a pool's is, no metal, wet, no glow. The skin's own normal map
-	   stays, so the stain lies in its folds. Every model instance carries the
+	   Two weights from the mask. The COLOUR comes in with the amount: a thin smear
+	   tints the skin, a soaked patch is blood, darkened as a pool's is. WETNESS
+	   comes in long before it: a film too thin to colour the skin is still liquid
+	   on top of it, so the gloss (pt_blood_skin_roughness, specular, no metal) is
+	   full at a third of the amount - 11-15, with the two together the stain read
+	   matte, the skin's own roughness showing through most of it. And wet blood
+	   fills the skin's bumps: the normal map's detail eases back toward the smooth
+	   surface by up to 0.7 where it is soaked. Every model instance carries the
 	   field; only meshes blood has reached have a slot. */
 	if (triangle.instance_index != ~0u)
 	{
 		const uint skin = instance_buffer.model_instances[triangle.instance_index].blood_skin;
 		if (skin != 0u)
 		{
-			float w = blood_skin_amount(skin - 1u, tex_coord);
-			if (w > 0.0)
+			const float amount = blood_skin_amount(skin - 1u, tex_coord);
+			if (amount > 0.0)
 			{
-				w = smoothstep(0.0, 1.0, w);
+				const float w = smoothstep(0.0, 1.0, amount);
+				const float wet = smoothstep(0.0, 0.35, amount);
 				vec3 blood = vec3(instance_buffer.model_instances[triangle.instance_index].blood_r,
 				                  instance_buffer.model_instances[triangle.instance_index].blood_g,
 				                  instance_buffer.model_instances[triangle.instance_index].blood_b);
 				base_color = mix(base_color, blood * global_ubo.pt_blood_skin_dark, w);
-				metallic = mix(metallic, 0.0, w);
-				roughness = mix(roughness, clamp(global_ubo.pt_blood_skin_roughness, 0.0, 1.0), w);
-				specular_factor = mix(specular_factor, global_ubo.pt_blood_skin_specular, w);
+				metallic = mix(metallic, 0.0, wet);
+				roughness = mix(roughness, clamp(global_ubo.pt_blood_skin_roughness, 0.0, 1.0), wet);
+				specular_factor = mix(specular_factor, global_ubo.pt_blood_skin_specular, wet);
 				emissive *= 1.0 - w;
+				if (dot(geo_normal, geo_normal) > 0.0)
+					normal = normalize(mix(normal, geo_normal, 0.7 * w));
 			}
 		}
 	}

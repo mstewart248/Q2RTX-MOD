@@ -65,7 +65,8 @@ existing Quake II RTX install.
   * **[Software renderer](#software-renderer)** (`vid_rtx 2`): id's original
     1997 renderer, rebuilt for today's CPUs: native 4K, multithreaded, 8-bit or
     32-bit colour.
-  * **OpenGL** (`vid_rtx 0`): the Q2PRO rasteriser Quake II RTX shipped with.
+  * **OpenGL** (`vid_rtx 0`): the Q2PRO rasteriser Quake II RTX shipped with,
+    now with the remaster's MD5 models and its fog (`gl_fog`, shaders backend).
 * **DLSS Super Resolution, Ray Reconstruction and Frame Generation (2–6×), and
   NVIDIA Reflex**, built straight against NGX with no Streamline. See
   [Upscaling, frame generation and latency](#upscaling-frame-generation-and-latency).
@@ -574,7 +575,8 @@ of `pak0.pak` — nothing has to be unpacked. What is supported:
   model. `skinnum` keeps selecting the same skin it always did, because the skin
   list is read from the classic model. Normals corrected, and the material system
   learned to carry Q2RTX's hand-authored PBR *tuning* onto the re-unwrapped MD5
-  skins — see [MD5 scalar inheritance](#md5-scalar-inheritance).
+  skins — see [MD5 scalar inheritance](#md5-scalar-inheritance). OpenGL and
+  the software renderer draw them too, skinned on the CPU.
 * `cl_classic_railgun` keeps the classic railgun shape instead of Q2RTX's
   redesigned one.
 
@@ -694,7 +696,8 @@ verified by parsing every `.dm2` id ships with the remaster end to end with no
 byte left over. A demo whose map differs from the local copy says so and plays
 anyway.
 
-The attract loop in `rerelease/autoexec.cfg` chains all seven on startup;
+The startup attract loop plays the id logo, then `demo1`, then the rest in
+random order as the remaster does (`cl_attract_random 0` keeps list order);
 `demo <file>` plays one directly, and [photo mode](#photo-mode) works during
 playback, so the free camera can be flown around a paused demo.
 
@@ -716,7 +719,8 @@ space, so a burst of sixty costs one instance, not sixty.
 * **Landing and flow**: splats, streaks down walls, runs under gravity across
   sloped surfaces, edge detection so a run reaches a lip and drops off, pooling
   into puddles that grow and merge, draining, and flesh that behaves differently
-  from stone (`cl_blood_flesh_cling`, `_damp`, `_run`).
+  from stone (`cl_blood_flesh_cling`, `_damp`, `_run`; `_soak` lets blood caught in a
+  pocket of a body, like the top of a medkit, soak in instead of circling).
 * **Blood on bodies** (`cl_blood_skin`, on by default): a droplet that hits a
   monster, a corpse, an item or another player stains its skin where it
   touched, and a droplet running down the body leaves a trail. Gibs stay clean.

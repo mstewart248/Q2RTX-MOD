@@ -74,7 +74,7 @@ textures/e2u1/wndow1_2:
 textures/e2u1/mont3_1:
 	texture_base overrides/mont3_1.png
 	texture_emissive overrides/mont3_1_light.png
-	emissive_factor 3
+	emissive_factor 1
 	bsp_radiance 0.0
 	is_light 1
 	kind GLASS
@@ -11522,8 +11522,10 @@ textures/e2u3/rmetal6_4:
 
 textures/e2u3/rmetal7_1:
 	texture_base materialDev/textures/e2u3/rmetal7_1.tga
-	texture_normals materialDev/textures/e2u3/rmetal7_1_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e2u3/rmetal7_1_n.png
+	texture_roughness materialDev/textures/e2u3/rmetal7_1_rough.png
+	texture_metallic materialDev/textures/e2u3/rmetal7_1_metal.png
+	base_factor 2.5
 
 textures/e2u3/rmtl37_3:
 	texture_base materialDev/textures/e2u3/rmtl37_3.tga
@@ -11933,8 +11935,9 @@ textures/e3u1/palsup2_2:
 
 textures/e3u1/pmetal5_2:
 	texture_base materialDev/textures/e3u1/pmetal5_2.tga
-	texture_normals materialDev/textures/e3u1/pmetal5_2_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/e3u1/pmetal5_2_n.png
+	texture_metallic materialDev/textures/e3u1/pmetal5_2_metal.png
+	texture_roughness materialDev/textures/e3u1/pmetal5_2_rough.png
 
 textures/e3u1/pmetal6_4:
 	texture_base materialDev/textures/e3u1/pmetal6_4.tga
@@ -19974,13 +19977,15 @@ textures/tomf/shoot01:
 
 textures/tomf/tf_accord1:
 	texture_base materialDev/textures/tomf/tf_accord1.tga
-	texture_normals materialDev/textures/tomf/tf_accord1_n.tga
-	metalness_factor 0
-
+	texture_normals materialDev/textures/tomf/tf_accord1_n.png
+	texture_roughness materialDev/textures/tomf/tf_accord1_rough.png
+	texture_metallic materialDev/textures/tomf/tf_accord1_metal.png
+	
 textures/tomf/tf_accord1b:
 	texture_base materialDev/textures/tomf/tf_accord1b.tga
-	texture_normals materialDev/textures/tomf/tf_accord1b_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/tf_accord1b_n.png
+	texture_metallic materialDev/textures/tomf/tf_accord1b_metal.png
+	texture_roughness materialDev/textures/tomf/tf_accord1b_rough.png
 
 textures/tomf/tf_accord2:
 	texture_base materialDev/textures/tomf/tf_accord2.tga
@@ -21343,8 +21348,10 @@ textures/tomf/tf_wood05_3:
 
 textures/tomf/thinm196d:
 	texture_base materialDev/textures/tomf/thinm196d.tga
-	texture_normals materialDev/textures/tomf/thinm196d_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/thinm196d_n.png
+	texture_metallic materialDev/textures/tomf/thinm196d_metal.png
+	texture_roughness materialDev/textures/tomf/thinm196d_rough.png
+	base_factor 2.5
 
 textures/tomf/thinm1_1b:
 	texture_base materialDev/textures/tomf/thinm1_1b.tga
@@ -21353,8 +21360,10 @@ textures/tomf/thinm1_1b:
 
 textures/tomf/thinm1_1c:
 	texture_base materialDev/textures/tomf/thinm1_1c.tga
-	texture_normals materialDev/textures/tomf/thinm1_1c_n.tga
-	metalness_factor 0
+	texture_normals materialDev/textures/tomf/thinm1_1c_n.png
+	texture_metallic materialDev/textures/tomf/thinm1_1c_metal.png
+	texture_roughness materialDev/textures/tomf/thinm1_1c_rough.png
+	base_factor 2.5
 
 textures/tomf/thinm1_1d:
 	texture_base materialDev/textures/tomf/thinm1_1d.tga

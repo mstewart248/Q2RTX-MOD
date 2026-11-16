@@ -1143,8 +1143,70 @@ Only demos that are actually installed join the loop, and with none at all
 the logo is skipped too and the player stays on the main menu. A player on
 the shareware demo data had no .dm2 files: there "demo demo1.dm2" failed, the
 "popmenu" after it closed the menu anyway, and they were left at the console.
+
+ORDER (cl_attract_random, default 1). The loop always opens on the first demo
+in the list - demo1 - and after that picks at random, the way the remaster
+does. Random is a shuffle, not a dice roll: after demo X, every OTHER demo
+plays once in a random order before X can come round again, so nothing
+repeats back to back and nothing goes missing for a long stretch.
+cl_attract_random 0 plays them in list order instead. Each demo's nextserver
+is the attract_next command rather than a fixed alias chain, so the cvar is
+read every time a demo ends and flipping it takes effect on the next one.
 =================
 */
+#if USE_CLIENT
+static cvar_t      *cl_attract_random;
+static const char  *attract_demos[8];
+static int          attract_count;
+static int          attract_last = -1;  // demo playing now, -1 = still the logo
+static int          attract_bag[q_countof(attract_demos)];
+static int          attract_bag_left;
+
+// Next pick of the shuffle: everything except the demo that just played, in
+// a random order. The first round therefore leaves out demo1, which opened it.
+static int Com_AttractShuffle(void)
+{
+    int i, j, t;
+
+    if (!attract_bag_left) {
+        for (i = 0; i < attract_count; i++) {
+            if (i != attract_last)
+                attract_bag[attract_bag_left++] = i;
+        }
+        for (i = attract_bag_left - 1; i > 0; i--) {
+            j = Q_rand_uniform(i + 1);
+            t = attract_bag[i];
+            attract_bag[i] = attract_bag[j];
+            attract_bag[j] = t;
+        }
+    }
+
+    return attract_bag[--attract_bag_left];
+}
+
+static void Com_AttractNext_f(void)
+{
+    int next;
+
+    if (!attract_count) {
+        Com_Printf("The attract loop is not running.\n");
+        return;
+    }
+
+    if (attract_last < 0) {
+        next = 0;   // always open on demo1
+    } else if (cl_attract_random->integer && attract_count > 1) {
+        next = Com_AttractShuffle();
+    } else {
+        next = (attract_last + 1) % attract_count;
+        attract_bag_left = 0;   // turning random back on starts a fresh round
+    }
+
+    attract_last = next;
+    Cbuf_InsertText(&cmd_buffer, va("demo %s.dm2; popmenu; set nextserver attract_next\n",
+                                    attract_demos[next]));
+}
+
 static void Com_StartAttractLoop(void)
 {
     static const char *const base_demos[] = {
@@ -1155,36 +1217,32 @@ static void Com_StartAttractLoop(void)
     };
     const char *const *demos = base_demos;
     int num_demos = q_countof(base_demos);
-    const char *prefix = "attract";
-    const char *found[q_countof(rerelease_demos)];
     char path[MAX_QPATH];
-    int i, count = 0;
+    int i;
 
     if (Cvar_VariableInteger("fs_rerelease")) {
         demos = rerelease_demos;
         num_demos = q_countof(rerelease_demos);
-        prefix = "rr";
     }
 
-    for (i = 0; i < num_demos; i++) {
+    attract_count = 0;
+    attract_last = -1;
+    attract_bag_left = 0;
+    for (i = 0; i < num_demos && attract_count < (int)q_countof(attract_demos); i++) {
         Q_snprintf(path, sizeof(path), "demos/%s.dm2", demos[i]);
         if (FS_FileExists(path))
-            found[count++] = demos[i];
+            attract_demos[attract_count++] = demos[i];
     }
 
-    if (!count) {
+    if (!attract_count) {
         Com_DPrintf("No demos installed, skipping the attract loop\n");
         return;
     }
 
-    for (i = 0; i < count; i++) {
-        Cbuf_AddText(&cmd_buffer, va("alias %s%d \"demo %s.dm2; popmenu; set nextserver %s%d\"\n",
-                                     prefix, i + 1, found[i], prefix, (i + 1) % count + 1));
-    }
-    Cbuf_AddText(&cmd_buffer, va("alias %s_logo \"map idlog.cin; set nextserver %s1\"\n%s_logo\n",
-                                 prefix, prefix, prefix));
+    Cbuf_AddText(&cmd_buffer, "map idlog.cin; set nextserver attract_next\n");
     Cbuf_Execute(&cmd_buffer);
 }
+#endif
 
 /*
 =================
@@ -1238,6 +1296,8 @@ void Qcommon_Init(int argc, char **argv)
 	backdoor = Cvar_Get("backdoor", "0", CVAR_ARCHIVE);
     cl_running = Cvar_Get("cl_running", "0", CVAR_ROM);
     cl_paused = Cvar_Get("cl_paused", "0", CVAR_ROM);
+    cl_attract_random = Cvar_Get("cl_attract_random", "1", CVAR_ARCHIVE);
+    Cmd_AddCommand("attract_next", Com_AttractNext_f);
 #else
     dedicated = Cvar_Get("dedicated", "1", CVAR_ROM);
 #endif
@@ -1373,9 +1433,12 @@ void Qcommon_Init(int argc, char **argv)
         if ((cmd = Cmd_AliasCommand(cmd)) != NULL) {
             Cbuf_AddText(&cmd_buffer, cmd);
             Cbuf_Execute(&cmd_buffer);
-        } else if (!COM_DEDICATED) {
+        }
+#if USE_CLIENT
+        else if (!COM_DEDICATED) {
             Com_StartAttractLoop();
         }
+#endif
     }
 
     // even not given a starting map, dedicated server starts

@@ -1276,6 +1276,9 @@ typedef struct cparticle_s {
     // it is feeding - for free.
     bool    blood_arrived;      // reached the foot; no longer slides
     bool    blood_no_film;      // a landing the surface film had no room for: splat it (CL_BloodFilmSplat)
+    float   blood_body_time;    // seconds on a body without getting lower; -1 = no contact yet (CL_BloodSoakIntoBody)
+    float   blood_body_z;       // height that clock started at
+    bool    blood_hold;         // a streak a run left behind at an edge: never runs, never a merge target (CL_BloodWrapOverEdge)
     float   blood_drain;        // seconds of handing-over left
     float   blood_drain_total;  // area (radius squared) it arrived with
     float   blood_drain_done;   // area delivered so far

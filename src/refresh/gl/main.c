@@ -47,6 +47,7 @@ cvar_t *gl_modulate_entities;
 cvar_t *gl_doublelight_entities;
 cvar_t *gl_fontshadow;
 cvar_t *gl_shaders;
+cvar_t *gl_fog;
 cvar_t *gl_use_hd_assets;
 
 // development variables
@@ -721,6 +722,8 @@ static void GL_Register(void)
     gl_doublelight_entities = Cvar_Get("gl_doublelight_entities", "1", 0);
     gl_fontshadow = Cvar_Get("gl_fontshadow", "0", 0);
     gl_shaders = Cvar_Get("gl_shaders", (gl_config.caps & QGL_CAP_SHADER) ? "1" : "0", CVAR_REFRESH);
+    // the rerelease's fog, as KEX draws it (shader.c); GLSL backend only
+    gl_fog = Cvar_Get("gl_fog", "1", CVAR_ARCHIVE);
     gl_use_hd_assets = Cvar_Get("gl_use_hd_assets", "0", CVAR_FILES);
 
     // development variables
@@ -1000,7 +1003,7 @@ void R_RegisterFunctionsGL()
 	MOD_LoadMD2 = MOD_LoadMD2_GL;
 	MOD_LoadMD3 = MOD_LoadMD3_GL;
     MOD_LoadIQM = NULL;
-    MOD_LoadMD5 = NULL;   // no skeletal path in the GL renderer
+    MOD_LoadMD5 = MOD_LoadMD5_GL;   // skinned on the CPU, see GL_DrawAliasModel
 	MOD_Reference = MOD_Reference_GL;
     // MOD_TraceMesh_RTX reads vkpt's maliasmesh_t; GL's has another layout
     MOD_TraceMesh = NULL;

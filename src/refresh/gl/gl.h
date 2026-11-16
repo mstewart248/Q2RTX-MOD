@@ -50,7 +50,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define TAB_SIN(x) gl_static.sintab[(x) & 255]
 #define TAB_COS(x) gl_static.sintab[((x) + 64) & 255]
 
-#define MAX_PROGRAMS    64
+#define MAX_PROGRAMS    512     // (GLS_SHADER_MASK >> 6) + 1; see program_index
 #define NUM_TEXNUMS     6
 
 typedef struct {
@@ -182,6 +182,7 @@ extern cvar_t *gl_modulate_entities;
 extern cvar_t *gl_doublelight_entities;
 extern cvar_t *gl_fontshadow;
 extern cvar_t *gl_shaders;
+extern cvar_t *gl_fog;
 extern cvar_t *gl_use_hd_assets;
 
 // development variables
@@ -246,10 +247,11 @@ typedef struct maliasmesh_s {
     int             numtris;
     int             numindices;
     QGL_INDEX_TYPE  *indices;
-    maliasvert_t    *verts;
+    maliasvert_t    *verts;         // NULL for a skeletal (md5) model
     maliastc_t      *tcoords;
     image_t         *skins[MAX_ALIAS_SKINS];
     int             numskins;
+    int             first_vertex;   // skeletal: this mesh's slice of model->iqmData
 } maliasmesh_t;
 
 // xyz[3] | color[1]  | st[2]    | lmst[2]
@@ -307,6 +309,11 @@ typedef enum {
     GLS_WARP_ENABLE         = (1 << 10),
     GLS_INTENSITY_ENABLE    = (1 << 11),
     GLS_SHADE_SMOOTH        = (1 << 12),
+    // the rerelease's fog (gl_fog, GLSL only): every 3D draw gets
+    // GLS_FOG_ENABLE from GL_StateBits while the view is drawn; the sky
+    // asks for GLS_FOG_SKY, which it keeps only while there is fog
+    GLS_FOG_ENABLE          = (1 << 13),
+    GLS_FOG_SKY             = (1 << 14),
 } glStateBits_t;
 
 #define GLS_BLEND_MASK \
@@ -317,7 +324,10 @@ typedef enum {
 
 #define GLS_SHADER_MASK \
     (GLS_ALPHATEST_ENABLE | GLS_TEXTURE_REPLACE | GLS_FLOW_ENABLE | \
-     GLS_LIGHTMAP_ENABLE | GLS_WARP_ENABLE | GLS_INTENSITY_ENABLE)
+     GLS_LIGHTMAP_ENABLE | GLS_WARP_ENABLE | GLS_INTENSITY_ENABLE | \
+     GLS_FOG_ENABLE | GLS_FOG_SKY)
+
+#define GLS_FOG_MASK    (GLS_FOG_ENABLE | GLS_FOG_SKY)
 
 typedef enum {
     GLA_NONE        = 0,
@@ -334,6 +344,7 @@ typedef struct {
     GLbitfield      state_bits;
     GLbitfield      array_bits;
     const GLfloat   *currentmatrix;
+    GLbitfield      fog_bits;       // GLS_FOG_ENABLE while a fogged view is drawn
     struct {
         GLfloat     view[16];
         GLfloat     proj[16];
@@ -341,6 +352,12 @@ typedef struct {
         GLfloat     modulate;
         GLfloat     add;
         GLfloat     intensity;
+        // the rerelease's fog, as shader.c's write_fog reads it
+        GLfloat     fog_color[4];   // rgb; a = fog_density / 64
+        GLfloat     fog_eye[4];     // eye world z, height fog e_eye, falloff, density
+        GLfloat     fog_up[4];      // world +Z in eye space; w = fog_sky_factor
+        GLfloat     fog_hstart[4];  // height fog colour at its start z, which is w
+        GLfloat     fog_hend[4];    // ...and at its end; w = 1 / (end z - start z)
     } u_block;
 } glState_t;
 
@@ -364,6 +381,13 @@ static inline void GL_ClientActiveTexture(GLuint tmu)
 
 static inline void GL_StateBits(GLbitfield bits)
 {
+    // fog rides along on every draw of a fogged view; the sky's own kind only
+    // while there is fog at all
+    if (bits & GLS_FOG_SKY)
+        bits = gls.fog_bits ? bits : bits & ~GLS_FOG_SKY;
+    else
+        bits |= gls.fog_bits;
+
     if (gls.state_bits != bits) {
         gl_static.backend.state_bits(bits);
         gls.state_bits = bits;
@@ -575,4 +599,5 @@ void HQ2x_Init(void);
 
 int MOD_LoadMD2_GL(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 int MOD_LoadMD3_GL(model_t *model, const void *rawdata, size_t length, const char* mod_name);
+int MOD_LoadMD5_GL(model_t *model, const void *rawdata, size_t length, const char* mod_name);
 void MOD_Reference_GL(model_t *model);

@@ -21,6 +21,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 ** use a real variable to control lerping
 */
 #include "sw.h"
+#include "format/iqm.h"
 
 int             r_amodels_drawn;
 
@@ -228,6 +229,65 @@ void R_AliasProjectAndClipTestFinalVert(finalvert_t *fv)
 
 /*
 ================
+R_AliasFinishVert
+
+A model space vertex, interpolated and scaled, into view space: the shell
+offset, the light, and the projection. Every alias model path ends here.
+================
+*/
+static inline void R_AliasFinishVert(finalvert_t *fv, vec3_t lerped_vert, const vec_t *plightnormal)
+{
+    float   lightcos;
+
+    if (currententity->flags & RF_SHELL_MASK) {
+        float   scale;
+
+        scale = (currententity->flags & RF_WEAPONMODEL) ?
+            WEAPONSHELL_SCALE : POWERSUIT_SCALE;
+
+        lerped_vert[0] += plightnormal[0] * scale;
+        lerped_vert[1] += plightnormal[1] * scale;
+        lerped_vert[2] += plightnormal[2] * scale;
+    }
+
+    fv->xyz[0] = DotProduct(lerped_vert, aliastransform[0]) + aliastransform[0][3];
+    fv->xyz[1] = DotProduct(lerped_vert, aliastransform[1]) + aliastransform[1][3];
+    fv->xyz[2] = DotProduct(lerped_vert, aliastransform[2]) + aliastransform[2][3];
+
+    fv->flags = 0;
+
+    // lighting
+    lightcos = DotProduct(plightnormal, r_plightvec);
+    if (r_8bit) {
+        // a colormap row << 8: smaller is brighter
+        int temp = r_ambientlight;
+
+        if (lightcos < 0) {
+            temp += (int)(r_shadelight * lightcos);
+
+            // clamp; because we limited the minimum ambient and shading light, we
+            // don't have to clamp low light, just bright
+            if (temp < 0)
+                temp = 0;
+        }
+
+        fv->l = temp;
+    } else {
+        if (lightcos < 0)
+            lightcos *= 0.3f;
+
+        fv->l = 0x8000 + (int)(0x7fff * lightcos);
+    }
+
+    if (fv->xyz[2] < ALIAS_Z_CLIP_PLANE) {
+        fv->flags |= ALIAS_Z_CLIP;
+    } else {
+        R_AliasProjectAndClipTestFinalVert(fv);
+    }
+}
+
+/*
+================
 R_AliasTransformFinalVerts
 ================
 */
@@ -236,62 +296,66 @@ static void R_AliasTransformFinalVerts(int numpoints, finalvert_t *fv, maliasver
     int i;
 
     for (i = 0; i < numpoints; i++, fv++, oldv++, newv++) {
-        float       lightcos;
-        const vec_t *plightnormal;
-        vec3_t      lerped_vert;
+        vec3_t  lerped_vert;
 
         lerped_vert[0] = r_lerp_move[0] + oldv->v[0] * r_lerp_backv[0] + newv->v[0] * r_lerp_frontv[0];
         lerped_vert[1] = r_lerp_move[1] + oldv->v[1] * r_lerp_backv[1] + newv->v[1] * r_lerp_frontv[1];
         lerped_vert[2] = r_lerp_move[2] + oldv->v[2] * r_lerp_backv[2] + newv->v[2] * r_lerp_frontv[2];
 
-        plightnormal = bytedirs[newv->lightnormalindex];
-
-        if (currententity->flags & RF_SHELL_MASK) {
-            float   scale;
-
-            scale = (currententity->flags & RF_WEAPONMODEL) ?
-                WEAPONSHELL_SCALE : POWERSUIT_SCALE;
-
-            lerped_vert[0] += plightnormal[0] * scale;
-            lerped_vert[1] += plightnormal[1] * scale;
-            lerped_vert[2] += plightnormal[2] * scale;
-        }
-
-        fv->xyz[0] = DotProduct(lerped_vert, aliastransform[0]) + aliastransform[0][3];
-        fv->xyz[1] = DotProduct(lerped_vert, aliastransform[1]) + aliastransform[1][3];
-        fv->xyz[2] = DotProduct(lerped_vert, aliastransform[2]) + aliastransform[2][3];
-
-        fv->flags = 0;
-
-        // lighting
-        lightcos = DotProduct(plightnormal, r_plightvec);
-        if (r_8bit) {
-            // a colormap row << 8: smaller is brighter
-            int temp = r_ambientlight;
-
-            if (lightcos < 0) {
-                temp += (int)(r_shadelight * lightcos);
-
-                // clamp; because we limited the minimum ambient and shading light, we
-                // don't have to clamp low light, just bright
-                if (temp < 0)
-                    temp = 0;
-            }
-
-            fv->l = temp;
-        } else {
-            if (lightcos < 0)
-                lightcos *= 0.3f;
-
-            fv->l = 0x8000 + (int)(0x7fff * lightcos);
-        }
-
-        if (fv->xyz[2] < ALIAS_Z_CLIP_PLANE) {
-            fv->flags |= ALIAS_Z_CLIP;
-        } else {
-            R_AliasProjectAndClipTestFinalVert(fv);
-        }
+        R_AliasFinishVert(fv, lerped_vert, bytedirs[newv->lightnormalindex]);
     }
+}
+
+/*
+================
+R_AliasTransformSkeletal
+
+A skeletal (md5) mesh, skinned on the CPU from the entity's bone matrices
+(R_AliasSetupSkeleton). The bones already interpolate between frames; what is
+left of the lerp is the origin's, and the scale - its frames are all scale 1,
+no translate, so r_lerp_frontv + r_lerp_backv is just the entity's scale.
+================
+*/
+static const iqm_model_t    *r_skel_model;
+static const float          *r_skel_poses;      // NULL: the bind pose
+static float                r_skel_matrices[IQM_MAX_JOINTS * 12];
+static float                r_skel_positions[MAX_ALIAS_VERTS * 3];
+static float                r_skel_normals[MAX_ALIAS_VERTS * 3];
+
+static void R_AliasTransformSkeletal(const maliasmesh_t *mesh, finalvert_t *fv)
+{
+    const float *pos = r_skel_positions;
+    const float *nrm = r_skel_normals;
+    int i;
+
+    MD5_SkinVertices(r_skel_model, r_skel_poses, mesh->first_vertex, mesh->numverts,
+                     r_skel_positions, r_skel_normals);
+
+    for (i = 0; i < mesh->numverts; i++, fv++, pos += 3, nrm += 3) {
+        vec3_t  lerped_vert;
+
+        lerped_vert[0] = r_lerp_move[0] + pos[0] * (r_lerp_frontv[0] + r_lerp_backv[0]);
+        lerped_vert[1] = r_lerp_move[1] + pos[1] * (r_lerp_frontv[1] + r_lerp_backv[1]);
+        lerped_vert[2] = r_lerp_move[2] + pos[2] * (r_lerp_frontv[2] + r_lerp_backv[2]);
+
+        R_AliasFinishVert(fv, lerped_vert, nrm);
+    }
+}
+
+static void R_AliasSetupSkeleton(void)
+{
+    // the frames R_AliasSetupFrames settled on, so a bad one poses frame 0
+    // the way it draws frame 0 for an .md2
+    entity_t    posed = *currententity;
+
+    posed.frame = r_thisframenum;
+    posed.oldframe = r_lastframenum;
+
+    r_skel_model = currentmodel->iqmData;
+    r_skel_poses = NULL;
+    if (r_skel_model->poses && r_skel_model->num_poses <= IQM_MAX_JOINTS &&
+        R_ComputeIQMTransforms(r_skel_model, &posed, r_skel_matrices))
+        r_skel_poses = r_skel_matrices;
 }
 
 
@@ -373,9 +437,12 @@ static void R_AliasPrepareMesh(const maliasmesh_t *mesh)
     if (!r_affinetridesc.pskin)
         smax = tmax = 1;
 
-    R_AliasTransformFinalVerts(mesh->numverts, pfinalverts,
-                               mesh->verts + r_lastframenum * mesh->numverts,
-                               mesh->verts + r_thisframenum * mesh->numverts);
+    if (currentmodel->iqmData)
+        R_AliasTransformSkeletal(mesh, pfinalverts);
+    else
+        R_AliasTransformFinalVerts(mesh->numverts, pfinalverts,
+                                   mesh->verts + r_lastframenum * mesh->numverts,
+                                   mesh->verts + r_thisframenum * mesh->numverts);
 
 // clip and draw all triangles
 //
@@ -808,6 +875,9 @@ void R_AliasDrawModel(void)
     ** compute this_frame and old_frame addresses
     */
     R_AliasSetUpLerpData(currententity->backlerp);
+
+    if (currentmodel->iqmData)
+        R_AliasSetupSkeleton();
 
     if (currententity->flags & RF_DEPTHHACK)
         s_ziscale = (float)0x8000 * (float)0x10000 * 3.0;

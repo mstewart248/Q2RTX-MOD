@@ -1063,6 +1063,7 @@ static cvar_t *cl_blood_fling_speed = NULL;
 static cvar_t *cl_blood_flesh_damp = NULL;
 static cvar_t *cl_blood_flesh_run = NULL;
 static cvar_t *cl_blood_flesh_cling = NULL;
+static cvar_t *cl_blood_flesh_soak = NULL;
 // Splats that overhang an edge - see CL_BloodProbeRim and CL_BloodSlideOffEdge.
 static cvar_t *cl_blood_edge = NULL;
 static cvar_t *cl_blood_edge_budget = NULL;
@@ -1285,6 +1286,8 @@ static cparticle_t *CL_PickBlood(cparticle_t *const *list, int count, bool newes
 static int blood_retired;
 static int blood_detached;
 static int blood_flung;       // thrown off a spinning brush model
+static int blood_soaked;      // soaked into a body it could not run off (CL_BloodSoakIntoBody)
+static int blood_wraps;       // runs carried over a convex edge (CL_BloodWrapOverEdge)
 // Runs that reached the foot of a surface and finished emptying into a pool
 // there - see CL_BloodDrainToPool. These are the ones that used to snap into a
 // floor splat in one frame, so this and detached/s are what tell the two apart.
@@ -1460,6 +1463,11 @@ void FX_Init(void)
     // reads as dripping past the body rather than running down it. A gentle
     // pull into the surface keeps it in contact so it follows the shape.
     cl_blood_flesh_cling = Cvar_Get("cl_blood_flesh_cling", "25", CVAR_ARCHIVE);
+    // Seconds on a body without getting lower, after which a droplet SOAKS
+    // INTO the stain instead of running on - see CL_BloodSoakIntoBody. 0 =
+    // never (the old behaviour: it circles until it finds a way off or its 15 s
+    // air life ends - the medkit that took 5-10 s to settle).
+    cl_blood_flesh_soak = Cvar_Get("cl_blood_flesh_soak", "0.5", CVAR_ARCHIVE);
     cl_blood_splat_life = Cvar_Get("cl_blood_splat_life", "8", CVAR_ARCHIVE);
 
     // BLOOD THAT REACHES WATER DISSOLVES INTO IT - see CL_BloodDissolve. The
@@ -1959,6 +1967,9 @@ cparticle_t *CL_AllocParticle(void)
     p->blood_wall_spread = false;
     p->blood_arrived = false;
     p->blood_no_film = false;
+    p->blood_body_time = -1.f;
+    p->blood_body_z = 0.f;
+    p->blood_hold = false;
     p->blood_drain = 0.f;
     p->blood_edge_tries = 0;
     p->blood_stretch_base = 1.f;
@@ -2451,6 +2462,12 @@ static cparticle_t *CL_BloodPoolIntoSplat(cparticle_t *p, const vec3_t point,
         // without this it merges into itself, doubles its own area and is then
         // retired for having been absorbed by the splat it still is.
         if (other == p)
+            continue;
+
+        // A streak a run left at an edge is a stain, not a pool. Feeding it would
+        // grow a mark that never runs (blood_hold) into a puddle parked on the
+        // lip, catching every later run before it reaches the edge.
+        if (other->blood_hold)
             continue;
 
         if (other->blood_ent != ent)
@@ -3831,6 +3848,69 @@ static void CL_BloodRunOffModel(cparticle_t *p, const vec3_t point, const vec3_t
 
 /*
 ===============
+CL_BloodSoakIntoBody
+
+A droplet that has been on a body for cl_blood_flesh_soak seconds without getting
+any lower has found somewhere it cannot run off, and soaks into the stain there.
+
+CL_BloodRunOffModel never lets blood rest on a body - every hit gives it at least
+cl_blood_flesh_run downhill, or along the way it was going on a flat face - and
+that is right for a body it can run DOWN. It is wrong for a pocket: the recess in
+the top of a medkit, the crook of a corpse's arm. Walls on every side, so each
+hit turns the droplet back in, and it circles there until cl_blood_air_life (15
+s) runs out - painting a fresh skin splat every frame it is in contact. Matt,
+playing: "it took about 5 to 10 seconds for the blood to settle on this med kit".
+Every one of those loiterers also spends a mesh trace a frame out of
+BLOOD_MODEL_TRACE_BUDGET, which the droplets actually in flight need.
+
+Real blood in a pocket pools there and soaks in, and the stain is exactly what
+draws that: one last splat at full strength where it came to rest, and the
+droplet is gone.
+
+THE CLOCK IS ON PROGRESS, NOT ON CONTACT. A run down a tank's back can take
+longer than a second, and cutting it short would leave the stain halfway down
+with nothing below it. So every BLOOD_SOAK_DROP units the droplet gets below
+where the clock started, the clock starts again: a run that is getting off the
+body never reaches the limit however long the body is. A droplet trapped in the
+top of a medkit cannot get lower, and does. So does one carried across the flat
+of a corpse's back for longer than the limit, which is a stain on the corpse
+rather than a run off it, and is fine.
+
+Not per contact: a droplet that bounces between two bodies at the same height is
+the same loiterer.
+
+Returns true when the droplet has soaked in and should be retired.
+===============
+*/
+#define BLOOD_SOAK_DROP     4.0f
+
+static bool CL_BloodSoakIntoBody(cparticle_t *p, float dt, const centity_t *cent,
+                                 const mod_trace_result_t *res, const vec3_t point)
+{
+    if (cl_blood_flesh_soak->value <= 0.f)
+        return false;
+
+    // First contact, or getting lower: going somewhere. Restart the clock here.
+    if (p->blood_body_time < 0.f || point[2] < p->blood_body_z - BLOOD_SOAK_DROP) {
+        p->blood_body_z = point[2];
+        p->blood_body_time = 0.f;
+        return false;
+    }
+
+    p->blood_body_time += dt;
+
+    if (p->blood_body_time < cl_blood_flesh_soak->value)
+        return false;
+
+    // An into-speed over CL_BloodSkinPaint's impact threshold: the full soak
+    // strength, not the thinner running trail.
+    CL_BloodSkinPaint(cent, res, p, 100.f);
+    blood_soaked++;
+    return true;
+}
+
+/*
+===============
 CL_BloodReshapeSlide
 
 Turns a moving pool's long axis toward the direction it is actually travelling,
@@ -4332,6 +4412,12 @@ sitting exactly on the threshold from chattering in and out of motion every fram
 */
 static bool CL_BloodMayRun(const cparticle_t *p)
 {
+    // The streak a run left behind at an edge. It is as big as the run was, so
+    // the size test below would start it running after the run it was copied
+    // from - see CL_BloodWrapOverEdge.
+    if (p->blood_hold)
+        return false;
+
     if (cl_blood_cling_size->value <= 0.f)
         return true;
 
@@ -4412,6 +4498,105 @@ static void CL_BloodShedMark(cparticle_t *p)
 
     p->radius = sqrtf(max(floor_area, area - give_area));
     p->blood_rim_dirty = true;
+}
+
+/*
+===============
+CL_BloodWrapOverEdge
+
+A run that has just gone over a CONVEX edge - off the bottom of a ramp onto the
+face below the lip, over the nose of a step - starts a fresh run on the new face
+and leaves the streak it has drawn so far on the face it came from.
+
+THE SPIKES. Matt, playing: "The blood sliding down this surface is coming off the
+surface when the ramp drops off". The re-attach probe wraps a run round a convex
+edge onto the face below it, which is right. But it carried the streak across
+whole, and the renderer hangs a streak's trail BEHIND the droplet (blood.c, THE
+TRAIL HANGS BEHIND): on the new face, behind is straight back UP past the edge,
+into the air. A ramp's worth of trail stood up off the lip as a tapered spike and
+stayed there for as long as the run took to cover a trail length down the face -
+seconds, at cl_blood_slide_speed. The rim probe could not cut it back, because it
+measures about the trail's own centre, which was also in the air.
+
+CL_BloodStretchLimit already says a smear cannot be longer than the run that drew
+it. What it measured was the run SINCE LANDING - most of it on the ramp. Starting
+the run again at the edge makes the same rule true on the new face: the trail
+grows down the face from the lip and never reaches back past it.
+
+The streak on the ramp is left where it is, as a copy (CL_BloodSpawnMark) with the
+run's exact shape, trail and outline, so the ramp does not lose a streak in one
+frame - the snap Matt has reported every time a streak has been collapsed. The
+copy is held (blood_hold): as big as the run, so it would otherwise start running
+after it, and over the edge, and copy itself again. Not paid for out of the run:
+it is the wet track the run's own shape was standing in for, and shrinking the run
+to pay for it would make it visibly thinner at the lip.
+
+Called only on a change of plane the run was heading OUT of: the new face's normal
+leans along the travel. A concave change - the foot of a wall, a ramp easing out -
+puts the trail inside the old surface, where it cannot be seen, and keeps its
+existing handling.
+===============
+*/
+static void CL_BloodWrapOverEdge(cparticle_t *p, const vec3_t old_org,
+                                 const vec3_t old_normal, int old_ent)
+{
+    blood_wraps++;
+
+    // Leave the streak behind. A round run has none to leave.
+    if (p->blood_stretch > 1.f) {
+        cparticle_t *mark = CL_BloodSpawnMark(p, old_org, old_normal, p->radius,
+                                              p->blood_tangent, p->blood_stretch);
+
+        if (mark) {
+            // The run's shape exactly, not CL_BloodSpawnMark's: the base it
+            // trails from (so the renderer hangs it back by the same amount), its
+            // width, flatness and outline noise.
+            mark->blood_stretch_base = p->blood_stretch_base;
+            mark->blood_cross = p->blood_cross;
+            mark->blood_cross_base = p->blood_cross_base;
+            mark->blood_cross_run = p->blood_cross;
+            mark->blood_flatten = p->blood_flatten;
+            mark->seed = p->seed;
+
+            // The reach the run last measured describes this same outline on
+            // this same face. Starting from it rather than from FULL means the
+            // part past the edge is not shown uncut until the probe gets to it.
+            mark->blood_rim = p->blood_rim;
+            mark->blood_block = p->blood_block;
+
+            mark->blood_hold = true;
+            mark->blood_edge_tries = 0;     // it is ON the lip; no shoving it off
+            mark->blood_wall_spread = true; // nor spreading it along anything
+
+            if (old_ent >= 0) {
+                // A brush model: sliding was only allowed while it stood still
+                // (CL_BloodMaySlide), so the collision pose is the drawn one.
+                centity_t *cent = &cl_entities[old_ent];
+                CL_BloodAttachToEntity(mark, cent, cent->current.origin,
+                                       cent->current.angles, old_org, old_normal);
+            }
+        }
+    }
+
+    // Start again on the new face: round, no axis, nothing run.
+    p->blood_stretch = 1.f;
+    p->blood_stretch_base = 1.f;
+    VectorClear(p->blood_slide_axis);
+    VectorClear(p->blood_tangent);
+    CL_BloodClearSlide(p);
+
+    // Measure the rim at once rather than BLOOD_SLIDE_RIM_STEP down the face:
+    // the round mark is centred on the lip, so half of it starts out in the air.
+    p->blood_rim_dist = -BLOOD_SLIDE_RIM_STEP;
+
+    // Turn the velocity round the edge, keeping its speed. Left alone it points
+    // off the new face, and only drag would ever take that part away.
+    const float speed = VectorLength(p->vel);
+    VectorMA(p->vel, -DotProduct(p->vel, p->blood_normal), p->blood_normal, p->vel);
+
+    const float in_plane = VectorLength(p->vel);
+    if (in_plane > 0.01f)
+        VectorScale(p->vel, speed / in_plane, p->vel);
 }
 
 /*
@@ -5247,6 +5432,16 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
             const bool same_plane =
                 DotProduct(tr.plane.normal, p->blood_normal) > 0.98f;
 
+            // Over a CONVEX edge: the new face leans along the way it was going.
+            // See CL_BloodWrapOverEdge, which needs the face it came off.
+            const bool over_edge = !same_plane &&
+                DotProduct(tr.plane.normal, p->vel) > 0.05f * speed;
+            vec3_t old_org, old_normal;
+            const int old_ent = p->blood_ent;
+
+            VectorCopy(p->org, old_org);
+            VectorCopy(p->blood_normal, old_normal);
+
             VectorCopy(tr.plane.normal, p->blood_normal);
             VectorMA(tr.endpos, BLOOD_SURFACE_OFFSET, p->blood_normal, p->org);
 
@@ -5305,6 +5500,11 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
                     floorf(p->blood_slide_dist / step))
                     CL_BloodShedMark(p);
             }
+
+            // Last: the merge and the shed above are metered on the distance
+            // run, which this starts again from zero.
+            if (over_edge)
+                CL_BloodWrapOverEdge(p, old_org, old_normal, old_ent);
         } else {
             // Ran off the end of the surface.
             //
@@ -5406,6 +5606,11 @@ static bool CL_SimulateBloodSphere(cparticle_t *p, float dt)
             // so there is no state to strand when the animation moves on. What it
             // leaves is in the skin instead (cl_blood_skin), which moves with it.
             LerpVector(p->org, end, frac, hit_point);
+
+            // Caught in a pocket it cannot run out of? See CL_BloodSoakIntoBody.
+            if (CL_BloodSoakIntoBody(p, dt, model_ent, &model_res, hit_point))
+                return true;
+
             CL_BloodSkinPaint(model_ent, &model_res, p, -DotProduct(p->vel, hit_normal));
             CL_BloodRunOffModel(p, hit_point, hit_normal);
             return false;
@@ -7244,6 +7449,7 @@ void CL_AddParticles(void)
     static int      blood_edge_trace_acc, blood_edge_probe_acc, blood_edge_slide_acc;
     static int      blood_wall_spread_acc;
     static int      blood_retired_acc, blood_detached_acc, blood_drain_acc, blood_flung_acc;
+    static int      blood_soaked_acc, blood_wraps_acc;
     static int      blood_settle_acc, blood_rest_pool_acc, blood_pool_full_acc;
     static int      blood_pool_acc;
     uint64_t blood_sim_usec = 0;
@@ -7258,6 +7464,8 @@ void CL_AddParticles(void)
     blood_retired = 0;
     blood_detached = 0;
     blood_flung = 0;
+    blood_soaked = 0;
+    blood_wraps = 0;
     blood_drains = 0;
     blood_pinned = 0;
     blood_runnable = 0;
@@ -7580,6 +7788,8 @@ void CL_AddParticles(void)
     blood_retired_acc += blood_retired;
     blood_detached_acc += blood_detached;
     blood_flung_acc += blood_flung;
+    blood_soaked_acc += blood_soaked;
+    blood_wraps_acc += blood_wraps;
     blood_drain_acc += blood_drains;
     blood_settle_acc += blood_settles;
     blood_rest_pool_acc += blood_rest_pools;
@@ -7594,7 +7804,7 @@ void CL_AddParticles(void)
             // Edge numbers are per SECOND, not per frame: measurements are
             // amortised across frames on purpose, so a per-frame figure would
             // round to zero and say nothing about what the sweep is costing.
-            Com_Printf("blood: %d airborne, %d stuck (%d riding, %d/%d pinned) | sim %.2f ms/frame, %d traces/frame, %d mesh/frame (%d hits/s) | edge %d probes/s, %d traces/s, %d slid off/s, %d walled/s | rest %d settled/s, %d pooled/s, %d full/s | %d merges/s, %d retired/s, %d detached/s, %d flung/s, %d drained/s | particles %d active, %d free\n",
+            Com_Printf("blood: %d airborne, %d stuck (%d riding, %d/%d pinned) | sim %.2f ms/frame, %d traces/frame, %d mesh/frame (%d hits/s) | edge %d probes/s, %d traces/s, %d slid off/s, %d walled/s | rest %d settled/s, %d pooled/s, %d full/s | %d merges/s, %d retired/s, %d detached/s, %d flung/s, %d drained/s, %d soaked/s, %d wrapped/s | particles %d active, %d free\n",
                 blood_air, blood_stuck, blood_riding, blood_pinned, blood_runnable,
                 blood_sim_frames ? (float)blood_sim_usec_acc / blood_sim_frames / 1000.f : 0.f,
                 blood_sim_frames ? blood_trace_acc / blood_sim_frames : 0,
@@ -7604,11 +7814,13 @@ void CL_AddParticles(void)
                 blood_wall_spread_acc,
                 blood_settle_acc, blood_rest_pool_acc, blood_pool_full_acc,
                 blood_pool_acc, blood_retired_acc, blood_detached_acc, blood_flung_acc, blood_drain_acc,
+                blood_soaked_acc, blood_wraps_acc,
                 num_active, num_free);
             blood_sim_usec_acc = 0; blood_trace_acc = 0; blood_model_trace_acc = 0; blood_model_hit_acc = 0; blood_sim_frames = 0;
             blood_edge_trace_acc = 0; blood_edge_probe_acc = 0; blood_edge_slide_acc = 0;
             blood_wall_spread_acc = 0;
             blood_retired_acc = 0; blood_detached_acc = 0; blood_flung_acc = 0; blood_drain_acc = 0;
+            blood_soaked_acc = 0; blood_wraps_acc = 0;
             blood_settle_acc = 0; blood_rest_pool_acc = 0; blood_pool_full_acc = 0;
             blood_pool_acc = 0;
         }

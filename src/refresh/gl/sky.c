@@ -345,7 +345,8 @@ void R_DrawSkyBox(void)
     if (!skyfaces)
         return; // nothing visible
 
-    GL_StateBits(GLS_TEXTURE_REPLACE);
+    // the sky takes fog_sky_factor of the fog colour and no distance fog
+    GL_StateBits(GLS_TEXTURE_REPLACE | GLS_FOG_SKY);
     GL_ArrayBits(GLA_VERTEX | GLA_TC);
     GL_VertexPointer(3, 5, &verts[0][0]);
     GL_TexCoordPointer(2, 5, &verts[0][3]);

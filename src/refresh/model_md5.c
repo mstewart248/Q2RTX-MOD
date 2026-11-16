@@ -46,6 +46,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <common/common.h>
 #include <common/files.h>
 #include <format/md5.h>
+#include <format/md2.h>
 #include <refresh/models.h>
 #include <refresh/refresh.h>
 
@@ -374,15 +375,23 @@ static bool MD5_LoadAnim(model_t *model, iqm_model_t *iqmData, const char *mesh_
     }
     MD5_Expect(&p, "}");
 
-    // bounds are per frame and the renderer does not use them
+    // bounds are per frame. The path tracers do not use them; GL and software
+    // cull by them, in iqmData->bounds as an IQM's (mins, maxs per frame)
     if (MD5_Check(&p, "bounds")) {
+        float *bounds = MOD_Malloc(sizeof(float) * 6 * num_frames);
+
         MD5_Expect(&p, "{");
         for (int i = 0; i < num_frames; i++) {
-            vec3_t unused;
-            MD5_ParseVector(&p, unused);
-            MD5_ParseVector(&p, unused);
+            vec3_t mins, maxs;
+            MD5_ParseVector(&p, mins);
+            MD5_ParseVector(&p, maxs);
+            if (bounds) {
+                VectorCopy(mins, bounds + i * 6);
+                VectorCopy(maxs, bounds + i * 6 + 3);
+            }
         }
         MD5_Expect(&p, "}");
+        iqmData->bounds = bounds;
     }
 
     MD5_Expect(&p, "baseframe");
@@ -451,6 +460,7 @@ done:
         // a partly parsed animation is worse than none: the pose array would
         // be allocated but full of garbage for every frame after the failure
         iqmData->poses = NULL;
+        iqmData->bounds = NULL;
         iqmData->num_frames = 0;
     }
     Z_Free(hierarchy);
@@ -1009,4 +1019,645 @@ fail:
     MD5_FreeMeshes(meshes, parsed_meshes);
     model->iqmData = NULL;
     return ret;
+}
+
+/*
+=================================================================
+
+  skins
+
+  Which image each skinnum of a .md5mesh draws. This used to live in
+  the path tracer's loader (vkpt/models.c); it is here so that the GL
+  and software renderers draw the same artwork from the same rules.
+  Every renderer gets the same list of names: the RTX ones hand each
+  to MAT_Find and inherit the classic material's tuning from
+  md5_skin_t.inherit, GL and software hand it to IMG_Find.
+
+=================================================================
+*/
+
+/*
+=================
+MD5_SkinPath
+
+The rerelease re-unwrapped its skeletal meshes and ships new artwork for them
+in an md5/ directory, so a skin cannot be taken from the .md2 path as written.
+What the .md2 still owns is the skin LIST - its order is what entity->skinnum
+indexes - so each entry is redirected into the md5/ directory beside it.
+
+Which md5/ directory, though, is not always the model's own. A monster names a
+skin in its own folder, so the two coincide. The player's third-person weapons
+do not: players/male/md5/w_railgun.md5mesh takes its list from
+players/male/w_railgun.md2, whose skin is models/weapons/g_rail/skin.pcx - and
+that mesh is vertex-for-vertex the world railgun, so the artwork it wants is
+the world model's, in models/weapons/g_rail/md5/. Redirecting into the MODEL's
+directory instead looked for players/male/md5/skin.png, which does not exist,
+and every held weapon rendered white.
+
+So: try the skin's own md5/ directory first and fall back to the model's. The
+stem is carried across either way - g_blast's skin is base.pcx, not skin.pcx.
+=================
+*/
+static bool MD5_SkinExists(const char *path)
+{
+    char probe[MAX_QPATH];
+    static const char *const exts[] = { "png", "tga", "jpg", "pcx" };
+
+    for (int i = 0; i < q_countof(exts); i++) {
+        Q_snprintf(probe, sizeof(probe), "%s.%s", path, exts[i]);
+        if (FS_FileExists(probe))
+            return true;
+    }
+    return false;
+}
+
+/*
+=================
+MD5_HeldWeaponSkin
+
+The last few player-held weapons cannot be resolved by path at all. Some ship
+no .md2 to take a skin list from (the rogue/xatrix guns were never in the 1997
+game); the shotgun and the default weapon do have one, but it names
+players/male/weapon.pcx - the low-detail texture the MD2 shared with the player
+body, which has no md5-era equivalent.
+
+Each of these meshes is vertex-for-vertex identical to a world weapon model
+(verified by comparing vertex counts, triangle counts and UVs), so the artwork
+they want is that model's. There is no rule that derives these names -
+w_disrupt's counterpart is g_dist, w_grapple's is g_flareg - so the mapping is
+written out. Keyed on basename, which is what makes it serve male, female and
+cyborg alike.
+=================
+*/
+static bool MD5_HeldWeaponSkin(const char *mod_name, char *buffer, size_t size)
+{
+    static const struct {
+        const char *model;
+        const char *skin;
+    } held[] = {
+        { "weapon",      "models/weapons/g_shotg/md5/skin"      },
+        { "w_shotgun",   "models/weapons/g_shotg/md5/skin"      },
+        { "w_chainfist", "models/weapons/g_chainf/md5/skin"     },
+        { "w_disrupt",   "models/weapons/g_dist/md5/skin"       },
+        { "w_etfrifle",  "models/weapons/g_etf_rifle/md5/skin"  },
+        { "w_grapple",   "models/weapons/g_flareg/md5/base"     },
+        { "w_plasma",    "models/weapons/g_beamer/md5/skin"     },
+        { "w_plauncher", "models/weapons/g_plaunch/md5/proxskin" },
+    };
+    const char *slash;
+    char name[MAX_QPATH];
+    char *dot;
+
+    // only ever applies to a model under players/<model>/md5/
+    if (strncmp(mod_name, "players/", 8) || !strstr(mod_name, "/md5/"))
+        return false;
+
+    slash = strrchr(mod_name, '/');
+    Q_strlcpy(name, slash ? slash + 1 : mod_name, sizeof(name));
+    dot = strrchr(name, '.');
+    if (dot)
+        *dot = 0;
+
+    for (int i = 0; i < q_countof(held); i++) {
+        if (Q_stricmp(name, held[i].model))
+            continue;
+        if (!MD5_SkinExists(held[i].skin))
+            break;
+        Q_snprintf(buffer, size, "%s.png", held[i].skin);
+        return true;
+    }
+    return false;
+}
+
+static void MD5_SkinPath(const char *base_path, const char *skin,
+                         const char *mod_name, char *buffer, size_t size)
+{
+    const char *slash = strrchr(skin, '/');
+    const char *stem = slash ? slash + 1 : skin;
+    char name[MAX_QPATH];
+    char candidate[MAX_QPATH];
+    char *dot;
+
+    Q_strlcpy(name, stem, sizeof(name));
+    dot = strrchr(name, '.');
+    if (dot)
+        *dot = 0;
+
+    // the md5/ directory belonging to the SKIN, which for a monster is the
+    // same one the model lives in and for a held weapon is not
+    if (slash) {
+        size_t dirlen = (size_t)(slash - skin);
+
+        if (dirlen < sizeof(candidate)) {
+            memcpy(candidate, skin, dirlen);
+            Q_snprintf(candidate + dirlen, sizeof(candidate) - dirlen,
+                       "/md5/%s", name);
+
+            if (MD5_SkinExists(candidate)) {
+                Q_snprintf(buffer, size, "%s.png", candidate);
+                return;
+            }
+        }
+    }
+
+    // a held weapon whose .md2 skin name points at nothing usable
+    if (MD5_HeldWeaponSkin(mod_name, buffer, size))
+        return;
+
+    /* THE REMASTER MERGED THIS MODEL INTO ANOTHER ONE, so its artwork is
+       filed under the other model's name.
+
+       models/monsters/soldierh is the case, and it is the mirror image of
+       MD5_AppendMergedSkins below. Xatrix shipped its three soldier variants
+       as a separate model; the remaster folded them into the stock soldier and
+       ships sold01..sold03_p in models/monsters/soldier/md5/ ONLY. This fork
+       keeps the two models apart (see SP_monster_soldier_h), so it still asks
+       for models/monsters/soldierh - and every probe above then looks under a
+       soldierh/md5/ that the remaster does not ship, which is how the ripper,
+       hypergun and LASERGUN soldiers render solid white for anyone whose
+       rerelease artwork comes out of the pak rather than a hand-built tree.
+
+       The stems are identical across the merge, so only the directory moves. */
+    if (slash) {
+        static const struct {
+            const char *from;   // the model directory this fork asks for
+            const char *to;     // where the remaster actually files the skins
+        } merged_dirs[] = {
+            { "models/monsters/soldierh", "models/monsters/soldier" },
+        };
+        size_t dirlen = (size_t)(slash - skin);
+
+        for (int i = 0; i < q_countof(merged_dirs); i++) {
+            if (dirlen != strlen(merged_dirs[i].from)
+                || Q_stricmpn(skin, merged_dirs[i].from, dirlen))
+                continue;
+
+            Q_snprintf(candidate, sizeof(candidate), "%s/md5/%s",
+                       merged_dirs[i].to, name);
+            if (MD5_SkinExists(candidate)) {
+                Q_snprintf(buffer, size, "%s.png", candidate);
+                return;
+            }
+            break;
+        }
+    }
+
+    // the MODEL's own md5/ directory, for a model whose .md2 names its skin
+    // somewhere else entirely
+    Q_snprintf(candidate, sizeof(candidate), "%s/%s", base_path, name);
+    if (MD5_SkinExists(candidate)) {
+        // MAT_Find truncates the extension anyway; the material system is what
+        // decides which image file actually backs this name
+        Q_snprintf(buffer, size, "%s.png", candidate);
+        return;
+    }
+
+    /* NO md5-ERA OVERRIDE EXISTS FOR THIS SKIN, so fall back to the name the
+       .md2 actually wrote - which is where the classic artwork is, normally
+       inside pak0.pak.
+
+       Every step above hunts for a re-unwrapped rerelease texture, and where
+       the rerelease ships one it is unambiguously the right answer. Where it
+       does not - the user mounted the geometry but not the artwork, or this
+       model's md5/ directory simply holds no image under this stem - the old
+       code still handed MAT_Find the md5/ path it had just failed to find, and
+       a material with no base image renders PURE WHITE. That is the "white
+       monsters" of the bug reports, and it is a regression against the .md2
+       the MD5 replaced: the classic skin was on the search path the whole time.
+
+       The UVs disagree, so a classic texture is not a perfect fit on a
+       re-unwrapped mesh. It is still enormously better than white, it is what
+       the model looked like before MD5 support existed, and it costs nothing
+       when the rerelease artwork is present because this line is not reached.
+       MAT_InheritScalars in the caller then inherits from this same name, which
+       is a no-op rather than a conflict. */
+    {
+        char classic[MAX_QPATH];
+        char *cdot;
+
+        Q_strlcpy(classic, skin, sizeof(classic));
+        cdot = strrchr(classic, '.');
+        if (cdot && !strchr(cdot, '/'))
+            *cdot = 0;
+
+        if (MD5_SkinExists(classic)) {
+            Q_strlcpy(buffer, skin, size);
+            return;
+        }
+    }
+
+    // nothing exists anywhere; name the md5/ path, so the material warning
+    // points at the directory the artwork is supposed to live in
+    Q_snprintf(buffer, size, "%s/%s.png", base_path, name);
+}
+
+/*
+=================
+MD5_LoneSkinInDir
+
+Last resort when no .md2 skin list is readable and neither the model's own
+stem nor the "skin" convention names an existing image.
+
+monster_fixbot is why this exists. Its md5 dir holds exactly one skin and it
+is called droid.png - the name comes from the .md2's skin list, and the retail
+pak the .md2 lives in is not mounted here, so that list is unavailable. The
+model then fell back to md5/skin.png, which does not exist, and rendered pure
+white. Every other monster happens to call its lone skin "skin", which is why
+only this one showed the fault.
+
+A directory with exactly ONE candidate image has no ambiguity to resolve, so
+take it. Sidecars (_n / _rough / _metallic / _glow) are not candidates. If
+there is more than one, do nothing and let the caller fall through to the
+convention - guessing between skins would be worse than the old behaviour.
+=================
+*/
+static bool MD5_LoneSkinInDir(const char *base_path, char *buffer, size_t size)
+{
+    static const char *const sidecars[] = { "_n", "_rough", "_metallic", "_glow" };
+    void **list;
+    int  num_files = 0;
+    int  found = 0;
+    char stem[MAX_QPATH];
+
+    list = FS_ListFiles(base_path, ".png;.tga;.jpg;.pcx", 0, &num_files);
+    if (!list)
+        return false;
+
+    for (int i = 0; i < num_files; i++) {
+        const char *file_name = list[i];
+        char name[MAX_QPATH];
+        char *dot;
+        bool is_sidecar = false;
+
+        Q_strlcpy(name, file_name, sizeof(name));
+        dot = strrchr(name, '.');
+        if (dot)
+            *dot = 0;
+
+        for (int s = 0; s < q_countof(sidecars); s++) {
+            size_t nlen = strlen(name), slen = strlen(sidecars[s]);
+            if (nlen > slen && !Q_stricmp(name + nlen - slen, sidecars[s])) {
+                is_sidecar = true;
+                break;
+            }
+        }
+        if (is_sidecar)
+            continue;
+
+        found++;
+        if (found > 1)
+            break;
+
+        Q_strlcpy(stem, name, sizeof(stem));
+    }
+
+    FS_FreeList(list);
+
+    if (found != 1)
+        return false;
+
+    Q_snprintf(buffer, size, "%s/%s.png", base_path, stem);
+    return true;
+}
+
+/*
+=================
+MD5_AppendMergedSkins
+
+Skins the rerelease added to a model's list that the classic .md2 cannot name,
+because the classic .md2 is the only one we can read.
+
+models/monsters/soldier is the case, and it is a real defect rather than a
+cosmetic one. Xatrix shipped its three soldier variants as a SEPARATE model,
+models/monsters/soldierh - a pure reskin of the stock soldier, same 434
+triangles - and the remaster MERGED them: its soldier/tris.md2 lists TWELVE
+skins (the classic six, then sold01, sold01_p, sold02, sold02_p, sold03,
+sold03_p) and its game code spawns the ripper, hypergun and lasergun soldiers
+as skinnum 6, 8 and 10 on the one model.
+
+This fork's game code goes the other way and keeps the two models apart - see
+SP_monster_soldier_h in m_soldier.c - which is fine while WE are the server.
+A rerelease DEMO is not: it replays the remaster's own entity states, so it
+sends modelindex = soldier with skinnum 8. Nothing has six-to-eleven, so
+get_mesh_material (main.c) fell back to materials[0], and every Xatrix soldier
+in every shipped demo played back wearing skin_lt - the LIGHT soldier's
+artwork, blue blaster and all.
+
+The artwork is not missing. The remaster ships sold01..sold03_p right there in
+the model's own md5/ directory. Only the LIST is short, because the only
+models/monsters/soldier/tris.md2 on the search path is the 1997 one out of
+baseq2/pak0.pak - the remaster ships no loose copy of its own twelve-skin file
+for us to read.
+
+So the extra names are written out, in the remaster's order, exactly as
+MD5_HeldWeaponSkin above writes out the held-weapon skins: there is no rule
+that derives them. (classic_skins) is what the 1997 list is expected to hold,
+and a list of any other length is left alone - so if a twelve-skin .md2 ever
+does turn up on the path, it wins and nothing is appended twice.
+=================
+*/
+static int MD5_AppendMergedSkins(const char *base_path, md5_skin_t *skins, int numskins)
+{
+    static const struct {
+        const char *md5_dir;        // the model's own md5/ directory
+        int         classic_skins;  // how many names the 1997 .md2 carries
+        const char *inherit_dir;    // where these skins' classic materials live
+        const char *stems[6];
+        // classic material to take tuning from, when it is not stems[j] itself
+        const char *inherit_stems[6];
+    } merged[] = {
+        { "models/monsters/soldier/md5", 6, "models/monsters/soldierh",
+          { "sold01", "sold01_p", "sold02", "sold02_p", "sold03", "sold03_p" } },
+        // monster_gladb: the remaster's gladiatr.md2 lists skin2/pain2 after
+        // the classic pair; the 1997 one in baseq2/pak0.pak stops at two
+        { "models/monsters/gladiatr/md5", 2, "models/monsters/gladiatr",
+          { "skin2", "pain2" } },
+        // monster_guncmdr: skinnum 2 (cskin), 3 when hurt (cpain). The 1997
+        // gunner.md2 stops at skin/pain, so the commander drew the plain
+        // gunner skin. No classic cskin material exists; take the gunner's.
+        { "models/monsters/gunner/md5", 2, "models/monsters/gunner",
+          { "cskin", "cpain" }, { "skin", "pain" } },
+    };
+
+    for (int i = 0; i < q_countof(merged); i++) {
+        if (Q_stricmp(base_path, merged[i].md5_dir))
+            continue;
+        if (numskins != merged[i].classic_skins)
+            break;
+
+        for (int j = 0; j < q_countof(merged[i].stems); j++) {
+            char probe[MAX_QPATH];
+            md5_skin_t *skin;
+
+            if (!merged[i].stems[j] || numskins >= MAX_ALIAS_SKINS)
+                break;
+
+            Q_snprintf(probe, sizeof(probe), "%s/%s", base_path, merged[i].stems[j]);
+            if (!MD5_SkinExists(probe))
+                break;      // an incomplete set is not worth guessing through
+
+            skin = &skins[numskins];
+            Q_snprintf(skin->path, sizeof(skin->path), "%s.png", probe);
+
+            // Same reason as the .md2's own skins below: take the classic
+            // material's tuning, which lives under the soldierh path these
+            // skins came from.
+            Q_snprintf(skin->inherit, sizeof(skin->inherit), "%s/%s.pcx", merged[i].inherit_dir,
+                       merged[i].inherit_stems[j] ? merged[i].inherit_stems[j] : merged[i].stems[j]);
+
+            numskins++;
+        }
+        break;
+    }
+
+    return numskins;
+}
+
+/*
+=================
+MD5_LoadSkinsFromMD2
+
+Reads the classic model's skin list so that skinnum keeps selecting the same
+skin it always did. Returns 0 when the .md2 is unreadable, in which case the
+caller uses a single default skin.
+=================
+*/
+static int MD5_LoadSkinsFromMD2(const char *mod_name, const char *base_path, md5_skin_t *skins)
+{
+    char md2_path[MAX_QPATH];
+    char skinname[MAX_QPATH];
+    byte *rawdata = NULL;
+    dmd2header_t header;
+    const char *src_skin;
+    const char *slash;
+    size_t dirlen, namelen;
+    int filelen, numskins = 0;
+
+    // "<dir>/md5/tris.md5mesh" -> "<dir>/tris.md2"
+    namelen = strlen(mod_name);
+    if (namelen < 13 || Q_stricmp(mod_name + namelen - 8, ".md5mesh"))
+        return 0;
+
+    slash = strrchr(mod_name, '/');
+    if (!slash || slash - mod_name < 4 || strncmp(slash - 4, "/md5", 4))
+        return 0;
+
+    dirlen = (size_t)(slash - mod_name) - 4 + 1;    // keep the '/' before "md5"
+    if (dirlen + (namelen - 8 - (size_t)(slash + 1 - mod_name)) + 5 >= sizeof(md2_path))
+        return 0;
+
+    memcpy(md2_path, mod_name, dirlen);
+    memcpy(md2_path + dirlen, slash + 1, namelen - 8 - (size_t)(slash + 1 - mod_name));
+    strcpy(md2_path + dirlen + namelen - 8 - (size_t)(slash + 1 - mod_name), ".md2");
+
+    filelen = FS_LoadFile(md2_path, (void **)&rawdata);
+    if (!rawdata)
+        return 0;
+
+    if (filelen < (int)sizeof(header))
+        goto done;
+
+    LittleBlock(&header, rawdata, sizeof(header));
+
+    if (MOD_ValidateMD2(&header, filelen))
+        goto done;
+
+    src_skin = (const char *)rawdata + header.ofs_skins;
+    for (int i = 0; i < header.num_skins && i < MAX_ALIAS_SKINS; i++, src_skin += MD2_MAX_SKINNAME) {
+        if (!Q_memccpy(skinname, src_skin, 0, sizeof(skinname)))
+            break;
+
+        FS_NormalizePath(skinname);
+        MD5_SkinPath(base_path, skinname, mod_name, skins[numskins].path, sizeof(skins[numskins].path));
+
+        // The re-unwrapped MD5 skins cannot use Q2RTX's hand-authored normal
+        // and emissive maps, but the classic material's tuning is not tied to
+        // a UV layout - without this the model renders at base_factor 1.0
+        // against the 1.5-2.5 the classic skin asks for, i.e. darker than the
+        // .md2 it replaces.
+        Q_strlcpy(skins[numskins].inherit, skinname, sizeof(skins[numskins].inherit));
+
+        numskins++;
+    }
+
+    // ...and the ones the remaster added to this model that the 1997 list
+    // cannot name. Only reached when the .md2 above actually read.
+    numskins = MD5_AppendMergedSkins(base_path, skins, numskins);
+
+done:
+    FS_FreeFile(rawdata);
+    return numskins;
+}
+
+/*
+=================
+MD5_ResolveSkins
+
+The skin list of the .md5mesh (mod_name): (skins) must hold MAX_ALIAS_SKINS.
+Always at least one entry - a model with no readable .md2 to take the list
+from gets a single default skin.
+=================
+*/
+int MD5_ResolveSkins(const char *mod_name, md5_skin_t *skins)
+{
+    char base_path[MAX_QPATH];
+    char default_skin[MAX_QPATH];
+    int numskins;
+
+    memset(skins, 0, sizeof(*skins) * MAX_ALIAS_SKINS);
+
+    COM_FilePath(mod_name, base_path, sizeof(base_path));
+
+    numskins = MD5_LoadSkinsFromMD2(mod_name, base_path, skins);
+    if (numskins)
+        return numskins;
+
+    // No readable .md2 to take the list from. The rerelease usually names
+    // the lone skin of such a model "skin", but not always - the carried
+    // CTF flags are players/male/md5/flag1.md5mesh + flag1.png - so try
+    // the model's own name before falling back to that convention.
+    const char *slash = strrchr(mod_name, '/');
+    const char *stem = slash ? slash + 1 : mod_name;
+    char name[MAX_QPATH], probe_path[MAX_QPATH];
+    char *dot;
+
+    Q_strlcpy(name, stem, sizeof(name));
+    dot = strrchr(name, '.');
+    if (dot)
+        *dot = 0;
+
+    Q_snprintf(probe_path, sizeof(probe_path), "%s/%s", base_path, name);
+
+    /* (base_path) is "<dir>/md5"; (classic_path) is the "<dir>" beside it,
+       which is where a .pcx out of pak0.pak lives. Same rule as
+       MD5_SkinPath: an md5-era override wins, and when there is none the
+       classic artwork is used rather than a name that resolves to nothing
+       and renders white. */
+    char classic_path[MAX_QPATH];
+    char *md5_slash;
+
+    Q_strlcpy(classic_path, base_path, sizeof(classic_path));
+    md5_slash = strrchr(classic_path, '/');
+    if (md5_slash && !Q_stricmp(md5_slash, "/md5"))
+        *md5_slash = 0;
+    else
+        classic_path[0] = 0;
+
+    if (MD5_SkinExists(probe_path))
+        Q_snprintf(default_skin, sizeof(default_skin), "%s.png", probe_path);
+    else if (!MD5_HeldWeaponSkin(mod_name, default_skin, sizeof(default_skin))
+             && !MD5_LoneSkinInDir(base_path, default_skin, sizeof(default_skin)))
+    {
+        char classic_probe[MAX_QPATH];
+
+        // the classic model's own stem, then the "skin" convention, then
+        // a directory that holds exactly one image - all beside the .md2
+        if (classic_path[0]
+            && (Q_snprintf(classic_probe, sizeof(classic_probe), "%s/%s", classic_path, name),
+                MD5_SkinExists(classic_probe)))
+            Q_snprintf(default_skin, sizeof(default_skin), "%s.pcx", classic_probe);
+        else if (classic_path[0]
+                 && (Q_snprintf(classic_probe, sizeof(classic_probe), "%s/skin", classic_path),
+                     MD5_SkinExists(classic_probe)))
+            Q_snprintf(default_skin, sizeof(default_skin), "%s.pcx", classic_probe);
+        else if (!classic_path[0]
+                 || !MD5_LoneSkinInDir(classic_path, default_skin, sizeof(default_skin)))
+            Q_snprintf(default_skin, sizeof(default_skin), "%s/skin.png", base_path);
+    }
+
+    Q_strlcpy(skins[0].path, default_skin, sizeof(skins[0].path));
+    return 1;
+}
+
+/*
+=================
+MD5_FrameBounds
+
+From the .md5anim's own per-frame bounds. Without them, the bind pose padded
+by half its size on every side, which a walk or a death fall stays inside.
+=================
+*/
+void MD5_FrameBounds(const iqm_model_t *model, int frame, vec3_t mins, vec3_t maxs)
+{
+    if (model->bounds && frame >= 0 && frame < (int)model->num_frames) {
+        VectorCopy(model->bounds + frame * 6, mins);
+        VectorCopy(model->bounds + frame * 6 + 3, maxs);
+        return;
+    }
+
+    ClearBounds(mins, maxs);
+    for (uint32_t v = 0; v < model->num_vertexes; v++)
+        AddPointToBounds(model->positions + v * 3, mins, maxs);
+
+    for (int i = 0; i < 3; i++) {
+        float pad = (maxs[i] - mins[i]) * 0.5f;
+        mins[i] -= pad;
+        maxs[i] += pad;
+    }
+}
+
+/*
+=================
+MD5_SkinVertices
+
+CPU skinning, for the renderers with no skinning shader (GL and software): the
+same blend instance_geometry.comp does, from the bone matrices
+R_ComputeIQMTransforms makes (3x4, row major). A model with no animation, or
+a vertex with no weights, keeps its bind pose.
+=================
+*/
+void MD5_SkinVertices(const iqm_model_t *model, const float *pose_matrices,
+                      uint32_t first_vertex, uint32_t num_vertexes,
+                      float *positions, float *normals)
+{
+    const float *src_pos = model->positions + first_vertex * 3;
+    const float *src_nrm = model->normals + first_vertex * 3;
+    const byte  *src_idx = model->blend_indices + first_vertex * 4;
+    const byte  *src_wgt = model->blend_weights + first_vertex * 4;
+
+    for (uint32_t v = 0; v < num_vertexes; v++) {
+        const float *p = src_pos + v * 3;
+        const float *n = src_nrm + v * 3;
+        float *out_p = positions + v * 3;
+        float m[12] = { 0 };
+        float sum = 0;
+
+        if (pose_matrices) {
+            for (int k = 0; k < 4; k++) {
+                const byte *idx = src_idx + v * 4;
+                const byte *wgt = src_wgt + v * 4;
+                const float *bone;
+                float w;
+
+                if (!wgt[k] || idx[k] >= model->num_poses)
+                    continue;
+                w = wgt[k];
+                bone = pose_matrices + idx[k] * 12;
+                for (int j = 0; j < 12; j++)
+                    m[j] += bone[j] * w;
+                sum += w;
+            }
+        }
+
+        if (sum <= 0) {
+            VectorCopy(p, out_p);
+            if (normals)
+                VectorCopy(n, normals + v * 3);
+            continue;
+        }
+
+        sum = 1.0f / sum;
+        for (int r = 0; r < 3; r++)
+            out_p[r] = (m[r * 4 + 0] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3]) * sum;
+
+        if (normals) {
+            float *out_n = normals + v * 3;
+
+            for (int r = 0; r < 3; r++)
+                out_n[r] = m[r * 4 + 0] * n[0] + m[r * 4 + 1] * n[1] + m[r * 4 + 2] * n[2];
+            // a joint scaled to nothing (.md5scale) leaves no direction at all
+            if (!VectorNormalize(out_n))
+                VectorCopy(n, out_n);
+        }
+    }
 }

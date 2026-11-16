@@ -17,6 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "gl.h"
+#include "format/iqm.h"
 
 typedef void (*tessfunc_t)(const maliasmesh_t *);
 
@@ -248,6 +249,59 @@ static void tess_lerped_plain(const maliasmesh_t *mesh)
 
         src_oldvert++;
         src_newvert++;
+    }
+}
+
+/*
+SKELETAL (md5) MODELS are skinned here, on the CPU, a mesh at a time: the
+entity's bone matrices are made once per draw (R_ComputeIQMTransforms, the
+path tracers' own), and the blended vertices go into tess like any other
+alias model's. The bones already interpolate between frames, so there is one
+tessfunc and no lerped variant.
+*/
+static const iqm_model_t    *skel_model;
+static const float          *skel_poses;    // NULL: the bind pose
+static float                skel_matrices[IQM_MAX_JOINTS * 12];
+static float                skel_positions[TESS_MAX_VERTICES * 3];
+static float                skel_normals[TESS_MAX_VERTICES * 3];
+
+static void tess_skeletal(const maliasmesh_t *mesh)
+{
+    const bool shell = glr.ent->flags & RF_SHELL_MASK;
+    const float *pos = skel_positions;
+    const float *nrm = skel_normals;
+    vec_t *dst_vert = tess.vertices;
+    int count = mesh->numverts;
+
+    MD5_SkinVertices(skel_model, skel_poses, mesh->first_vertex, mesh->numverts,
+                     skel_positions, (shell || shadelight) ? skel_normals : NULL);
+
+    while (count--) {
+        if (shell) {
+            dst_vert[0] = pos[0] + nrm[0] * shellscale;
+            dst_vert[1] = pos[1] + nrm[1] * shellscale;
+            dst_vert[2] = pos[2] + nrm[2] * shellscale;
+            dst_vert += 4;
+        } else if (shadelight) {
+            vec_t d = shadedot(nrm);
+
+            dst_vert[0] = pos[0];
+            dst_vert[1] = pos[1];
+            dst_vert[2] = pos[2];
+            dst_vert[4] = shadelight[0] * d;
+            dst_vert[5] = shadelight[1] * d;
+            dst_vert[6] = shadelight[2] * d;
+            dst_vert[7] = shadelight[3];
+            dst_vert += VERTEX_SIZE;
+        } else {
+            dst_vert[0] = pos[0];
+            dst_vert[1] = pos[1];
+            dst_vert[2] = pos[2];
+            dst_vert += 4;
+        }
+
+        pos += 3;
+        nrm += 3;
     }
 }
 
@@ -673,6 +727,23 @@ void GL_DrawAliasModel(const model_t *model)
     if (ent->flags & RF_SHELL_MASK) {
         shellscale = (ent->flags & RF_WEAPONMODEL) ?
             WEAPONSHELL_SCALE : POWERSUIT_SCALE;
+    }
+
+    if (model->iqmData) {
+        // the frames as checked above, so a bad one poses frame 0 as it
+        // draws frame 0 for an .md2
+        entity_t posed = *ent;
+
+        posed.frame = newframenum;
+        posed.oldframe = oldframenum;
+
+        skel_model = model->iqmData;
+        skel_poses = NULL;
+        if (skel_model->poses && skel_model->num_poses <= IQM_MAX_JOINTS &&
+            R_ComputeIQMTransforms(skel_model, &posed, skel_matrices))
+            skel_poses = skel_matrices;
+        tessfunc = tess_skeletal;
+    } else if (ent->flags & RF_SHELL_MASK) {
         tessfunc = newframenum == oldframenum ?
             tess_static_shell : tess_lerped_shell;
     } else if (shadelight) {

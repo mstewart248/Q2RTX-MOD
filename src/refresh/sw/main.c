@@ -1126,7 +1126,7 @@ void R_RegisterFunctionsSW(void)
     MOD_LoadMD2 = MOD_LoadMD2_SW;
     MOD_LoadMD3 = MOD_LoadMD3_SW;
     MOD_LoadIQM = NULL;
-    MOD_LoadMD5 = NULL;
+    MOD_LoadMD5 = MOD_LoadMD5_SW;   // skinned on the CPU, see R_AliasDrawModel
     MOD_Reference = MOD_Reference_SW;
     MOD_TraceMesh = NULL;
     MOD_BloodSkinSplat = NULL;

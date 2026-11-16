@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "sw.h"
 #include "format/md2.h"
+#include "format/iqm.h"
 #if USE_MD3
 #include "format/md3.h"
 #endif
@@ -753,6 +754,102 @@ int MOD_LoadMD3_SW(model_t *model, const void *rawdata, size_t length, const cha
     return Q_ERR_UNKNOWN_FORMAT;
 }
 #endif
+
+/*
+=================
+MOD_LoadMD5_SW
+
+The rerelease's skeletal models (cl_md5_models). As in GL: the mesh stays in
+model->iqmData as model_md5.c leaves it and R_AliasDrawModel skins it on the
+CPU; model->frames is one entry per animation frame for its bounds alone, at
+scale 1 with no translate. Whatever this cannot draw fails the load, and
+R_RegisterModel then takes the .md2 instead.
+=================
+*/
+int MOD_LoadMD5_SW(model_t *model, const void *rawdata, size_t length, const char *mod_name)
+{
+    md5_skin_t      skins[MAX_ALIAS_SKINS];
+    image_t         *images[MAX_ALIAS_SKINS];
+    iqm_model_t     *iqm;
+    int             i, j, numskins, ret;
+
+    Hunk_Begin(&model->hunk, 0x4000000);
+    model->type = MOD_ALIAS;
+
+    ret = MOD_LoadMD5_Base(model, rawdata, length, mod_name);
+    if (ret)
+        goto fail;
+    iqm = model->iqmData;
+
+    if (iqm->num_poses > IQM_MAX_JOINTS) {
+        ret = Q_ERR_TOO_MANY;
+        goto fail;
+    }
+    for (i = 0; i < (int)iqm->num_meshes; i++) {
+        // one mesh's vertices go through r_finalverts at a time, and the
+        // triangles index them in 16 bits
+        if (iqm->meshes[i].num_vertexes > MAX_ALIAS_VERTS) {
+            ret = Q_ERR_TOO_MANY;
+            goto fail;
+        }
+    }
+
+    model->numframes = max(iqm->num_frames, 1);
+    CHECK(model->frames = MOD_Malloc(sizeof(maliasframe_t) * model->numframes));
+    for (i = 0; i < model->numframes; i++) {
+        maliasframe_t *frame = &model->frames[i];
+
+        MD5_FrameBounds(iqm, i, frame->bounds[0], frame->bounds[1]);
+        VectorSet(frame->scale, 1, 1, 1);
+        VectorClear(frame->translate);
+        frame->radius = RadiusFromBounds(frame->bounds[0], frame->bounds[1]);
+    }
+
+    // every mesh shares the one skin list, as the .md2's single mesh had it
+    numskins = MD5_ResolveSkins(mod_name, skins);
+    for (i = 0; i < numskins; i++)
+        images[i] = IMG_Find(skins[i].path, IT_SKIN, IF_NONE);
+
+    model->nummeshes = (int)iqm->num_meshes;
+    CHECK(model->meshes = MOD_Malloc(sizeof(maliasmesh_t) * model->nummeshes));
+
+    for (i = 0; i < model->nummeshes; i++) {
+        const iqm_mesh_t *src = &iqm->meshes[i];
+        maliasmesh_t *mesh = &model->meshes[i];
+        const uint32_t *src_idx = iqm->indices + src->first_triangle * 3;
+
+        memset(mesh, 0, sizeof(*mesh));
+        mesh->numverts = (int)src->num_vertexes;
+        mesh->numtris = (int)src->num_triangles;
+        mesh->numsts = mesh->numverts;
+        mesh->first_vertex = (int)src->first_vertex;
+        mesh->sts = (maliasst_t *)(iqm->texcoords + src->first_vertex * 2);
+        CHECK(mesh->tris = MOD_Malloc(sizeof(maliastri_t) * mesh->numtris));
+
+        // global indices in the file's winding, which is the .md2's; one
+        // index serves both position and texture coordinate, as for md3
+        for (j = 0; j < mesh->numtris * 3; j++) {
+            uint32_t index = src_idx[j] - src->first_vertex;
+
+            if (index >= src->num_vertexes) {
+                ret = Q_ERR_BAD_INDEX;
+                goto fail;
+            }
+            mesh->tris[j / 3].index_xyz[j % 3] = mesh->tris[j / 3].index_st[j % 3] = index;
+        }
+
+        memcpy(mesh->skins, images, sizeof(images[0]) * numskins);
+        mesh->numskins = numskins;
+    }
+
+    Hunk_End(&model->hunk);
+    return Q_ERR_SUCCESS;
+
+fail:
+    Hunk_Free(&model->hunk);
+    model->iqmData = NULL;
+    return ret;
+}
 
 void MOD_Reference_SW(model_t *model)
 {

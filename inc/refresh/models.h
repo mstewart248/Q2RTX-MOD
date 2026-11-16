@@ -289,6 +289,26 @@ int MOD_ValidateMD2(struct dmd2header_s *header, size_t length);
 
 int MOD_LoadIQM_Base(model_t* mod, const void* rawdata, size_t length, const char* mod_name);
 int MOD_LoadMD5_Base(model_t* mod, const void* rawdata, size_t length, const char* mod_name);
+
+// The skin list of a rerelease .md5mesh as image names (model_md5.c), shared by
+// every renderer: the RTX ones MAT_Find each path and inherit the classic
+// material's tuning from (inherit), GL and software IMG_Find it. (skins) holds
+// MAX_ALIAS_SKINS; the result is always at least 1.
+typedef struct {
+    char    path[MAX_QPATH];        // the image to draw
+    char    inherit[MAX_QPATH];     // classic material to take tuning from; "" = none
+} md5_skin_t;
+
+int MD5_ResolveSkins(const char *mod_name, md5_skin_t *skins);
+
+// GL and software: skin a skeletal model (model->iqmData) on the CPU for one
+// entity. Writes num_vertexes positions and normals, model space, from
+// (pose_matrices) as R_ComputeIQMTransforms fills them. (normals) may be NULL.
+void MD5_SkinVertices(const iqm_model_t *model, const float *pose_matrices,
+                      uint32_t first_vertex, uint32_t num_vertexes,
+                      float *positions, float *normals);
+// ...and the box one animation frame fits in, for culling
+void MD5_FrameBounds(const iqm_model_t *model, int frame, vec3_t mins, vec3_t maxs);
 bool R_ComputeIQMTransforms(const iqm_model_t* model, const entity_t* entity, float* pose_matrices);
 
 // these are implemented in [gl,sw]_models.c

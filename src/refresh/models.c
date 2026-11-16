@@ -475,7 +475,8 @@ qhandle_t R_RegisterModel(const char *name)
             && (strstr(source, "weapons/g_rail") || strstr(source, "weapons/v_rail")))
             try_md3 = false;
 
-        // MOD_LoadMD5 is NULL in the GL renderer, which has no skeletal path
+        // every renderer has a skeletal path now - GL and software skin on the
+        // CPU - but MOD_LoadMD5 is still NULL wherever one does not
         bool try_md5 = is_md2 && MOD_LoadMD5 && cl_md5_models->integer;
 
         if (is_md2 && try_md3)

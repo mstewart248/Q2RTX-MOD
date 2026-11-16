@@ -134,6 +134,9 @@ void GL_Ortho(GLfloat xmin, GLfloat xmax, GLfloat ymin, GLfloat ymax, GLfloat zn
 
 void GL_Setup2D(void)
 {
+    // no fog past the 3D view: the HUD, the menus, the screen blends
+    gls.fog_bits = 0;
+
     qglViewport(0, 0, r_config.width, r_config.height);
 
     GL_Ortho(0, r_config.width, r_config.height, 0, -1, 1);

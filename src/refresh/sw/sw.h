@@ -368,11 +368,12 @@ typedef struct maliasmesh_s {
     int             numverts;   // per frame
     int             numtris;
     int             numsts;
-    maliasvert_t    *verts;     // numverts * model->numframes
+    maliasvert_t    *verts;     // numverts * model->numframes; NULL when skeletal
     maliastri_t     *tris;
     maliasst_t      *sts;
     int             numskins;
     image_t         *skins[MAX_ALIAS_SKINS];
+    int             first_vertex;   // skeletal (md5): this mesh's slice of model->iqmData
 } maliasmesh_t;
 
 typedef struct {
@@ -684,6 +685,7 @@ void R_BeginRegistration_SW(const char *name);
 void R_EndRegistration_SW(void);
 int MOD_LoadMD2_SW(model_t *model, const void *rawdata, size_t length, const char *mod_name);
 int MOD_LoadMD3_SW(model_t *model, const void *rawdata, size_t length, const char *mod_name);
+int MOD_LoadMD5_SW(model_t *model, const void *rawdata, size_t length, const char *mod_name);
 void MOD_Reference_SW(model_t *model);
 
 // image.c

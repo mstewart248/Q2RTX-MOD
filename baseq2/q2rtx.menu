@@ -524,6 +524,10 @@ begin video_renderer
         range --status "(gl_coloredlightmaps)" "lightmap saturation" gl_coloredlightmaps 0 1
         range --status "(gl_brightness)" "lightmap brightness" gl_brightness 0 0.3
         values --status "(gl_shaders)" "rendering backend" gl_shaders legacy shaders
+        // the shaders backend draws it; shader.c
+        ifeq gl_shaders 1
+            toggle --status "the rerelease's fog, by distance and in height bands, from the map's own values (gl_fog)" "fog" gl_fog
+        endif
         blank
         toggle --status "(gl_use_hd_assets)" "use new textures and models" gl_use_hd_assets
     endif
@@ -857,6 +861,11 @@ begin blood
                 action --align "surface blood settings..." pushmenu blood_film
             endif
             action --align "splats and puddles..." pushmenu blood_splats
+            toggle --status "droplets that hit a monster, a corpse, an item or another player stain its skin where they touch, and a droplet running down the body leaves a trail. The stain moves with the body and a corpse keeps it. Gibs stay clean (cl_blood_skin)" \
+                "blood on bodies" cl_blood_skin
+            ifeq cl_blood_skin 1
+                action --align "blood on bodies settings..." pushmenu blood_bodies
+            endif
             ifneq cl_blood_film 1
                 action --align "runs and streaks..." pushmenu blood_runs
                 action --align "pooling and edges..." pushmenu blood_pooling
@@ -961,6 +970,29 @@ begin blood_droplets
     blank
     range --status "how long a droplet may stay in the air before giving up. This is a backstop for blood thrown somewhere it can never land - droplets do NOT fade in flight, they persist until they hit something (cl_blood_air_life)" \
         "max time in the air" cl_blood_air_life 1 60 1
+end
+
+/*
+BLOOD ON BODIES - cl_blood_skin (vkpt/blood_skin.c): what droplets leave on
+monsters, corpses, items and other players, painted into the model's skin. Only
+reached with it on.
+*/
+begin blood_bodies
+    background #212F3CD0
+    style --compact
+    title "Blood on Bodies"
+    blank
+    range -f "%.2f" --status "size of the stain a droplet leaves, as a multiple of the droplet's own size (cl_blood_skin_size)" \
+        "stain size" cl_blood_skin_size 0.5 6 0.25
+    range -f "%.2f" --status "how much one droplet's impact soaks in at its centre: 1 is a full stain at once, lower builds up over several hits. A droplet running down the body leaves 0.4 of this as its trail (cl_blood_skin_strength)" \
+        "soak per droplet" cl_blood_skin_strength 0.05 1 0.05
+    blank
+    range -f "%.2f" --status "how dark blood on a body is drawn, against the droplet that made it - the same idea as landed blood darkness for blood on the floor. 1 is as bright as the droplet (pt_blood_skin_dark)" \
+        "stain darkness" pt_blood_skin_dark 0.05 1 0.05
+    range -f "%.2f" --status "surface roughness where a body is wet with blood. Low is glossy and reads as wet; very low on a moving body can sparkle under the denoiser (pt_blood_skin_roughness)" \
+        "wetness" pt_blood_skin_roughness 0.02 0.6 0.02
+    range -f "%.1f" --status "strength of the highlight on wet blood (pt_blood_skin_specular)" \
+        "highlight strength" pt_blood_skin_specular 0 3 0.1
 end
 
 /*
